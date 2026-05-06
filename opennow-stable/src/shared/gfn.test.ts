@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import type { GameInfo, GameVariant } from "./gfn";
 import {
   OWNED_LIBRARY_STATUSES,
+  buildNativeStreamerSessionContext,
   isEpicStore,
   isGameInLibrary,
   isOwnedLibraryStatus,
@@ -85,4 +86,72 @@ test("matches Epic store aliases only", () => {
   assert.equal(isEpicStore("EPIC"), true);
   assert.equal(isEpicStore("EGS"), true);
   assert.equal(isEpicStore("Steam"), false);
+});
+
+test("buildNativeStreamerSessionContext forwards requested/finalized streaming features", () => {
+  const context = buildNativeStreamerSessionContext(
+    {
+      sessionId: "session-1",
+      status: 2,
+      zone: "NP-AMS-01",
+      serverIp: "1.2.3.4",
+      signalingServer: "1.2.3.4:443",
+      signalingUrl: "wss://1.2.3.4/nvst/",
+      iceServers: [],
+      requestedStreamingFeatures: {
+        reflex: true,
+        bitDepth: 10,
+        cloudGsync: true,
+        chromaFormat: 2,
+        enabledL4S: true,
+      },
+      finalizedStreamingFeatures: {
+        reflex: false,
+        bitDepth: 8,
+        cloudGsync: false,
+        chromaFormat: 0,
+        enabledL4S: false,
+      },
+      negotiatedStreamProfile: {
+        resolution: "2560x1440",
+        fps: 240,
+        enableCloudGsync: false,
+      },
+    },
+    {
+      resolution: "2560x1440",
+      fps: 240,
+      maxBitrateMbps: 75,
+      codec: "H265",
+      colorQuality: "10bit_444",
+      keyboardLayout: "en-US",
+      gameLanguage: "en_US",
+      enableL4S: true,
+      enableCloudGsync: true,
+      clientMode: "native",
+      nativeStreamerBackend: "gstreamer",
+      nativeCloudGsyncMode: "auto",
+      nativeTransitionDiagnostics: {
+        forceQueueMode: "adaptive",
+      },
+    },
+  );
+
+  assert.deepEqual(context.session.requestedStreamingFeatures, {
+    reflex: true,
+    bitDepth: 10,
+    cloudGsync: true,
+    chromaFormat: 2,
+    enabledL4S: true,
+  });
+  assert.deepEqual(context.session.finalizedStreamingFeatures, {
+    reflex: false,
+    bitDepth: 8,
+    cloudGsync: false,
+    chromaFormat: 0,
+    enabledL4S: false,
+  });
+  assert.equal(context.session.negotiatedStreamProfile?.codec, "H265");
+  assert.equal(context.settings.enableCloudGsync, false);
+  assert.equal(context.settings.nativeTransitionDiagnostics?.forceQueueMode, "adaptive");
 });

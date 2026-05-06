@@ -1,4 +1,4 @@
-import { Globe, Check, Search, X, Loader, Zap, Mic, FileDown, Wifi, Trash2, Heart, Users, ExternalLink, Monitor, Keyboard, Download, RefreshCcw, Info } from "lucide-react";
+import { Globe, Check, Search, X, Loader, Zap, Mic, FileDown, Wifi, Trash2, Heart, Users, ExternalLink, Monitor, Keyboard, Download, RefreshCcw, Info, Cpu } from "lucide-react";
 import { useState, useCallback, useMemo, useEffect, useRef } from "react";
 import type { JSX } from "react";
 
@@ -17,6 +17,9 @@ import type {
     ThankYouContributor,
     ThankYouSupporter,
     AppUpdaterState,
+    NativeStreamerStatus,
+    NativeVideoBackendCapability,
+    NativeVideoBackendPreference,
   } from "@shared/gfn";
 import {
   colorQualityRequiresHevc,
@@ -38,11 +41,12 @@ interface SettingsPageProps {
 
 type ThanksLoadState = "idle" | "loading" | "loaded" | "error";
 
-type SettingsSectionId = "stream" | "game" | "audio" | "input" | "interface" | "about" | "thanks";
+type SettingsSectionId = "stream" | "native-streamer" | "game" | "audio" | "input" | "interface" | "about" | "thanks";
 type SettingsSearchScopeId =
   | "stream-region"
   | "stream-video"
   | "stream-codec-diagnostics"
+  | "native-streamer"
   | "game"
   | "audio"
   | "input"
@@ -51,7 +55,22 @@ type SettingsSearchScopeId =
   | "thanks";
 
 const SETTINGS_SCOPE_SEARCH_TERMS: Record<SettingsSearchScopeId, readonly string[]> = {
-  "stream-region": ["stream", "region", "latency", "ping", "server", "route", "auto best"],
+  "stream-region": [
+    "stream",
+    "region",
+    "latency",
+    "ping",
+    "server",
+    "route",
+    "auto best",
+    "proxy",
+    "vpn",
+    "queue",
+    "session",
+    "sponsor",
+    "github sponsor",
+    "supporter",
+  ],
   "stream-video": [
     "stream",
     "video",
@@ -74,6 +93,24 @@ const SETTINGS_SCOPE_SEARCH_TERMS: Record<SettingsSearchScopeId, readonly string
     "gpu",
     "cpu",
     "test codecs",
+  ],
+  "native-streamer": [
+    "native",
+    "streamer",
+    "native streaming",
+    "gstreamer",
+    "backend",
+    "directx",
+    "dx11",
+    "dx12",
+    "cloud gsync",
+    "diagnostics",
+    "experimental",
+    "issue",
+    "github",
+    "discord",
+    "report",
+    "bug",
   ],
   game: ["game", "language", "keyboard layout", "store", "launch"],
   audio: ["audio", "microphone", "mic", "push to talk", "voice activity"],
@@ -129,6 +166,71 @@ const allColorQualityOptions: { value: ColorQuality; label: string; description:
 ];
 
 const colorQualityOptions: { value: ColorQuality; label: string; description: string }[] = [...allColorQualityOptions];
+
+const nativeVideoBackendOptions: { value: NativeVideoBackendPreference; label: string; description: string }[] = [
+  { value: "auto", label: "Auto", description: "Pick the default native path for the session" },
+  { value: "d3d12", label: "DirectX 12", description: "Use the D3D12 decoder and renderer" },
+  { value: "d3d11", label: "DirectX 11", description: "Use the D3D11 decoder and renderer" },
+];
+
+function formatNativeVideoBackendName(backend: string | undefined): string {
+  switch (backend) {
+    case "d3d12":
+      return "D3D12";
+    case "d3d11":
+      return "D3D11";
+    case "videotoolbox":
+      return "VideoToolbox";
+    case "vaapi":
+      return "VAAPI";
+    case "v4l2":
+      return "V4L2";
+    case "vulkan":
+      return "Vulkan";
+    case "software":
+      return "Software";
+    default:
+      return backend ?? "Unknown";
+  }
+}
+
+function formatNativeVideoCodec(codec: string): string {
+  switch (codec.toLowerCase()) {
+    case "h264":
+      return "H.264";
+    case "h265":
+      return "H.265";
+    case "av1":
+      return "AV1";
+    default:
+      return codec.toUpperCase();
+  }
+}
+
+function getAvailableNativeCodecLabels(backend: NativeVideoBackendCapability | undefined): string[] {
+  return backend?.codecs
+    .filter((codec) => codec.available)
+    .map((codec) => formatNativeVideoCodec(codec.codec)) ?? [];
+}
+
+function formatGstreamerRuntimeLabel(status: NativeStreamerStatus | null): string {
+  switch (status?.gstreamerRuntime.source) {
+    case "bundled":
+      return status.gstreamerAvailable ? "Bundled Runtime Used" : "Bundled Runtime Found";
+    case "system":
+      return "System Runtime";
+    case "missing":
+      return "Runtime Missing";
+    default:
+      return "Runtime Unknown";
+  }
+}
+
+function getGstreamerRuntimeBadgeClass(status: NativeStreamerStatus | null): string {
+  if (status?.gstreamerRuntime.source === "bundled" && status.gstreamerAvailable) return "settings-inline-badge--codec-gpu";
+  if (status?.gstreamerRuntime.source === "system" && status.gstreamerAvailable) return "settings-inline-badge--codec-testing";
+  return "settings-inline-badge--updater-error";
+}
 
 /* ── Static fallbacks (used when MES API is unavailable) ─────────── */
 
@@ -584,6 +686,8 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
   const resolutionDropdownRef = useRef<HTMLDivElement | null>(null);
   const [settingsSearch, setSettingsSearch] = useState("");
   const [codecAdvancedOpen, setCodecAdvancedOpen] = useState(false);
+  const [nativeStreamerStatus, setNativeStreamerStatus] = useState<NativeStreamerStatus | null>(null);
+  const [nativeStreamerStatusLoading, setNativeStreamerStatusLoading] = useState(false);
   const [updaterState, setUpdaterState] = useState<AppUpdaterState>({
     status: "idle",
     currentVersion: "0.0.0",
@@ -652,6 +756,34 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
       unsubscribe();
     };
   }, []);
+
+  const refreshNativeStreamerStatus = useCallback(async () => {
+    setNativeStreamerStatusLoading(true);
+    try {
+      setNativeStreamerStatus(await window.openNow.getNativeStreamerStatus());
+    } catch (error) {
+      console.warn("[Settings] Failed to detect native streamer:", error);
+      setNativeStreamerStatus({
+        detected: false,
+        gstreamerAvailable: false,
+        supportsOfferAnswer: false,
+        gstreamerRuntime: {
+          source: "unknown",
+          bundled: false,
+          message: "GStreamer runtime could not be checked.",
+        },
+        message: "Native streamer status could not be checked.",
+      });
+    } finally {
+      setNativeStreamerStatusLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (activeSection === "native-streamer" || settingsSearch.length > 0) {
+      void refreshNativeStreamerStatus();
+    }
+  }, [activeSection, refreshNativeStreamerStatus, settingsSearch.length]);
 
   // Fetch subscription data (cached per account; reload only when account changes)
   useEffect(() => {
@@ -744,6 +876,19 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
     },
     [onSettingChange]
   );
+
+  const setNativeFramePacing = useCallback((mode: "low-latency" | "smooth") => {
+    if (mode === "low-latency") {
+      handleChange("enableCloudGsync", false);
+      handleChange("nativeCloudGsyncMode", "disabled");
+      handleChange("nativeD3dFullscreenMode", "disabled");
+      return;
+    }
+
+    handleChange("enableCloudGsync", true);
+    handleChange("nativeCloudGsyncMode", "auto");
+    handleChange("nativeD3dFullscreenMode", "auto");
+  }, [handleChange]);
 
   const handleColorQualityChange = useCallback(
     (cq: ColorQuality) => {
@@ -1387,6 +1532,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
     </div>
   );
 
+
   const normalizedSettingsSearch = settingsSearch.trim().toLowerCase();
   const showAll = normalizedSettingsSearch.length > 0;
   const tokenMatchesWord = (token: string, word: string): boolean => token === word || word.startsWith(token);
@@ -1415,13 +1561,14 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
   const showStreamVideo = showAll ? scopeMatchesSearch("stream-video") : activeSection === "stream";
   const showStreamCodecDiagnostics = showAll ? scopeMatchesSearch("stream-codec-diagnostics") : activeSection === "stream";
   const showStream = showStreamRegion || showStreamVideo || showStreamCodecDiagnostics;
+  const showNativeStreamer = showAll ? scopeMatchesSearch("native-streamer") : activeSection === "native-streamer";
   const showGame = showAll ? scopeMatchesSearch("game") : activeSection === "game";
   const showAudio = showAll ? scopeMatchesSearch("audio") : activeSection === "audio";
   const showInput = showAll ? scopeMatchesSearch("input") : activeSection === "input";
   const showInterface = showAll ? scopeMatchesSearch("interface") : activeSection === "interface";
   const showAbout = showAll ? scopeMatchesSearch("about") : activeSection === "about";
   const showThanks = showAll ? scopeMatchesSearch("thanks") : activeSection === "thanks";
-  const hasAnySearchMatches = showStream || showGame || showAudio || showInput || showInterface || showAbout || showThanks;
+  const hasAnySearchMatches = showStream || showNativeStreamer || showGame || showAudio || showInput || showInterface || showAbout || showThanks;
   const shouldRenderSettingsSections = showAll || activeSection !== "thanks";
 
   return (
@@ -1456,6 +1603,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
         <nav className="settings-nav">
           {([
             { id: "stream" as SettingsSectionId, label: "Stream", icon: <Wifi size={15} /> },
+            { id: "native-streamer" as SettingsSectionId, label: "Native Streamer", icon: <Cpu size={15} /> },
             { id: "game" as SettingsSectionId, label: "Game", icon: <Globe size={15} /> },
             { id: "audio" as SettingsSectionId, label: "Audio", icon: <Mic size={15} /> },
             { id: "input" as SettingsSectionId, label: "Input", icon: <Keyboard size={15} /> },
@@ -1838,6 +1986,37 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                   <div className="settings-row-top settings-row-top--compact">
                     <label className="settings-label settings-label--wrap">
                       <span className="settings-label-title">
+                        Session proxy
+                        <span className="settings-inline-badge settings-inline-badge--beta">Beta</span>
+                      </span>
+                    </label>
+                    <label className="settings-toggle">
+                      <input
+                        type="checkbox"
+                        checked={settings.sessionProxyEnabled}
+                        onChange={(e) => handleChange("sessionProxyEnabled", e.target.checked)}
+                      />
+                      <span className="settings-toggle-track" />
+                    </label>
+                  </div>
+                  <span className="settings-subtle-hint">
+                    Used only for Nvidia session creation and queue polling. Streaming/signaling traffic is not proxied. Zortos provides a proxy for GitHub Sponsors/supporters.
+                  </span>
+                  {settings.sessionProxyEnabled && (
+                    <input
+                      type="text"
+                      className="settings-text-input"
+                      placeholder="http://127.0.0.1:8080"
+                      value={settings.sessionProxyUrl}
+                      onChange={(e) => handleChange("sessionProxyUrl", e.target.value)}
+                    />
+                  )}
+                </div>
+
+                <div className="settings-row settings-row--column">
+                  <div className="settings-row-top settings-row-top--compact">
+                    <label className="settings-label settings-label--wrap">
+                      <span className="settings-label-title">
                         Experimental L4S Request
                         <span className="settings-inline-badge settings-inline-badge--beta">Beta</span>
                       </span>
@@ -1853,28 +2032,6 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                   </div>
                   <span className="settings-subtle-hint">
                     Request the GeForce NOW L4S streaming feature on newly created sessions. This does not change browser WebRTC behavior by itself and may be ignored by the service or network path.
-                  </span>
-                </div>
-
-                <div className="settings-row settings-row--column">
-                  <div className="settings-row-top settings-row-top--compact">
-                    <label className="settings-label settings-label--wrap">
-                      <span className="settings-label-title">
-                        Cloud G-Sync / Variable Refresh Rate
-                        <span className="settings-inline-badge settings-inline-badge--beta">Beta</span>
-                      </span>
-                    </label>
-                    <label className="settings-toggle">
-                      <input
-                        type="checkbox"
-                        checked={settings.enableCloudGsync}
-                        onChange={(e) => handleChange("enableCloudGsync", e.target.checked)}
-                      />
-                      <span className="settings-toggle-track" />
-                    </label>
-                  </div>
-                  <span className="settings-subtle-hint">
-                    Request Cloud G-Sync (VRR) on newly created sessions. Smooths frame pacing on variable frame rate streams. Requires a VRR-capable display. The service may ignore this request depending on your subscription tier.
                   </span>
                 </div>
               </div>
@@ -1970,6 +2127,189 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
             </div>
             )}
           </>
+        )}
+
+        {/* ═══ NATIVE STREAMER ═════════════════════════════ */}
+        {showNativeStreamer && (
+          <section className="settings-section">
+            {showAll && <div className="settings-section-context">Native Streamer</div>}
+            <div className="settings-section-header">
+              <h2>Native Streamer</h2>
+            </div>
+            <div className="settings-rows">
+              <div className="settings-row settings-row--column">
+                <div className="settings-row-top settings-row-top--compact">
+                  <label className="settings-label settings-label--wrap">
+                    <span className="settings-label-title">
+                      Native Streaming
+                      <span className="settings-inline-badge settings-inline-badge--beta">Experimental</span>
+                    </span>
+                  </label>
+                  <label className="settings-toggle">
+                    <input
+                      type="checkbox"
+                      checked={settings.streamClientMode === "native"}
+                      onChange={(e) => handleChange("streamClientMode", e.target.checked ? "native" : "web")}
+                    />
+                    <span className="settings-toggle-track" />
+                  </label>
+                </div>
+                <span className="settings-subtle-hint">
+                  Native streaming is experimental and may have platform-specific bugs, glitches, or fallbacks to Chromium/WebRTC. Enable it only if you are comfortable testing the GStreamer-based desktop streamer for new sessions.
+                </span>
+                <div className="settings-chip-row">
+                  <a className="settings-chip" href="https://github.com/OpenCloudGaming/OpenNOW/issues" target="_blank" rel="noreferrer">
+                    <span>Report on GitHub Issues</span>
+                    <ExternalLink size={13} />
+                  </a>
+                  <a className="settings-chip" href="https://discord.gg/8EJYaJcNfD" target="_blank" rel="noreferrer">
+                    <span>Report on Discord</span>
+                    <ExternalLink size={13} />
+                  </a>
+                </div>
+              </div>
+
+              <div className="settings-row settings-row--column">
+                <div className="settings-row-top settings-row-top--compact">
+                  <label className="settings-label settings-label--wrap">
+                    <span className="settings-label-title">Streamer Status</span>
+                  </label>
+                  <button
+                    type="button"
+                    className="settings-icon-button"
+                    onClick={() => void refreshNativeStreamerStatus()}
+                    disabled={nativeStreamerStatusLoading}
+                    title="Check native streamer"
+                    aria-label="Check native streamer"
+                  >
+                    {nativeStreamerStatusLoading ? <Loader size={15} className="spin" /> : <RefreshCcw size={15} />}
+                  </button>
+                </div>
+                <div className="settings-chip-row">
+                  <span
+                    className={`settings-inline-badge ${
+                      nativeStreamerStatusLoading
+                        ? "settings-inline-badge--codec-testing"
+                        : nativeStreamerStatus?.gstreamerAvailable
+                          ? "settings-inline-badge--codec-gpu"
+                          : "settings-inline-badge--updater-error"
+                    }`}
+                  >
+                    {nativeStreamerStatusLoading
+                      ? "Checking"
+                      : nativeStreamerStatus?.gstreamerAvailable
+                        ? "GStreamer Ready"
+                        : "Not Ready"}
+                  </span>
+                </div>
+                <span className="settings-subtle-hint">
+                  {nativeStreamerStatus?.message ?? "OpenNOW will check the bundled GStreamer streamer when this tab opens."}
+                </span>
+              </div>
+
+              <div className="settings-row settings-row--column">
+                <label className="settings-label">GStreamer Runtime</label>
+                <div className="settings-chip-row">
+                  <span className={`settings-inline-badge ${getGstreamerRuntimeBadgeClass(nativeStreamerStatus)}`}>
+                    {formatGstreamerRuntimeLabel(nativeStreamerStatus)}
+                  </span>
+                  {nativeStreamerStatus?.gstreamerRuntime.path ? (
+                    <span className="settings-inline-badge settings-inline-badge--codec">
+                      Bundled path detected
+                    </span>
+                  ) : null}
+                </div>
+                <span className="settings-subtle-hint">
+                  {nativeStreamerStatus?.gstreamerRuntime.message ?? "Packaged Windows/macOS builds auto-detect a bundled runtime next to the native streamer. Linux uses distro packages."}
+                </span>
+                {!nativeStreamerStatus?.gstreamerAvailable && nativeStreamerStatus?.gstreamerRuntime.installInstructions?.length ? (
+                  <div className="settings-install-steps">
+                    <span className="settings-subtle-hint">
+                      Linux AppImage/private GStreamer bundling is intentionally not used by default because VAAPI/V4L2/Vulkan plugins must match the host distro and GPU driver stack. .deb packages declare Debian/Ubuntu dependencies automatically.
+                    </span>
+                    {nativeStreamerStatus.gstreamerRuntime.installInstructions.map((instruction) => (
+                      <div key={instruction.distro} className="settings-install-step">
+                        <span className="settings-install-step-title">{instruction.distro}</span>
+                        <code>{instruction.command}</code>
+                        {instruction.note ? <span className="settings-subtle-hint">{instruction.note}</span> : null}
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+
+              <div className="settings-row settings-row--column">
+                <label className="settings-label">Video Path</label>
+                <div className="settings-chip-row">
+                  <span
+                    className={`settings-inline-badge ${
+                      nativeStreamerStatus?.activeVideoBackend?.available
+                        ? nativeStreamerStatus.activeVideoBackend.backend === "software"
+                          ? "settings-inline-badge--codec-testing"
+                          : "settings-inline-badge--codec-gpu"
+                        : "settings-inline-badge--updater-error"
+                    }`}
+                  >
+                    {formatNativeVideoBackendName(nativeStreamerStatus?.activeVideoBackend?.backend)}
+                  </span>
+                  {getAvailableNativeCodecLabels(nativeStreamerStatus?.activeVideoBackend).map((codec) => (
+                    <span key={codec} className="settings-inline-badge settings-inline-badge--codec">
+                      {codec}
+                    </span>
+                  ))}
+                </div>
+                <span className="settings-subtle-hint">
+                  {nativeStreamerStatus?.gstreamerAvailable
+                    ? `${nativeStreamerStatus.codecSummary ?? "Codec support unknown"}. ${nativeStreamerStatus.zeroCopySummary ?? "Memory path unknown"}.`
+                    : nativeStreamerStatus?.activeVideoBackend?.reason
+                      ?? "OpenNOW will show the active hardware decode path after GStreamer is detected."}
+                </span>
+              </div>
+
+              <div className="settings-row settings-row--column">
+                <label className="settings-label">DirectX Backend</label>
+                <div className="settings-chip-row">
+                  {nativeVideoBackendOptions.map((option) => (
+                    <button
+                      key={option.value}
+                      type="button"
+                      className={`settings-chip ${settings.nativeVideoBackend === option.value ? "active" : ""}`}
+                      onClick={() => handleChange("nativeVideoBackend", option.value)}
+                      title={option.description}
+                    >
+                      <span>{option.label}</span>
+                    </button>
+                  ))}
+                </div>
+                <span className="settings-subtle-hint">
+                  Applies to the next native streamer process. Auto uses the fastest default path; choose DirectX 11 or DirectX 12 to force a specific Windows renderer.
+                </span>
+              </div>
+
+              <div className="settings-row settings-row--column">
+                <label className="settings-label">Frame Pacing</label>
+                <div className="settings-chip-row">
+                  <button
+                    type="button"
+                    className={`settings-chip ${!settings.enableCloudGsync ? "active" : ""}`}
+                    onClick={() => setNativeFramePacing("low-latency")}
+                  >
+                    <span>Lowest Latency</span>
+                  </button>
+                  <button
+                    type="button"
+                    className={`settings-chip ${settings.enableCloudGsync ? "active" : ""}`}
+                    onClick={() => setNativeFramePacing("smooth")}
+                  >
+                    <span>Smooth G-Sync</span>
+                  </button>
+                </div>
+                <span className="settings-subtle-hint">
+                  Lowest Latency avoids G-Sync pacing and is best for mouse feel. Smooth G-Sync can reduce tearing, but may cap rendering to the monitor refresh rate.
+                </span>
+              </div>
+            </div>
+          </section>
         )}
 
         {/* ═══ GAME ══════════════════════════════════════ */}

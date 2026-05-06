@@ -11,6 +11,7 @@ import { getStoreDisplayName, getStoreIconComponent } from "./GameCard";
 import { RemainingPlaytimeIndicator, SessionElapsedIndicator } from "./ElapsedSessionIndicators";
 import type { MicrophoneMode, ScreenshotEntry, RecordingEntry, SubscriptionInfo } from "@shared/gfn";
 import { formatShortcutForDisplay, isShortcutMatch, normalizeShortcut, shortcutFromKeyboardEvent } from "../shortcuts";
+import { useMicMeter } from "../hooks/useMicMeter";
 
 const ANTI_AFK_TOGGLE_ACK_MS = 5000;
 
@@ -19,6 +20,7 @@ interface StreamViewProps {
   audioRef: React.Ref<HTMLAudioElement>;
   diagnosticsStore: StreamDiagnosticsStore;
   showStats: boolean;
+  gstreamerEnabled: boolean;
   shortcuts: {
     toggleStats: string;
     togglePointerLock: string;
@@ -102,6 +104,13 @@ function getInputQueueColor(bufferedBytes: number, dropCount: number): string {
   return "var(--success)";
 }
 
+function getBitratePerformanceColor(percent: number): string {
+  if (percent <= 0) return "var(--ink-muted)";
+  if (percent >= 70 && percent <= 110) return "var(--success)";
+  if (percent >= 45 && percent < 130) return "var(--warning)";
+  return "var(--error)";
+}
+
 function getLagReasonLabel(reason: StreamLagReason): string {
   switch (reason) {
     case "network":
@@ -180,20 +189,42 @@ function isMicBadgeStateEqual(prev: MicBadgeState, next: MicBadgeState): boolean
 
 function StreamStatsHud({
   diagnosticsStore,
+  gstreamerEnabled,
   serverRegion,
 }: {
   diagnosticsStore: StreamDiagnosticsStore;
+  gstreamerEnabled: boolean;
   serverRegion?: string;
 }): JSX.Element {
   const stats = useStreamDiagnosticsStore(diagnosticsStore);
-  const bitrateMbps = (stats.bitrateKbps / 1000).toFixed(1);
-  const hasResolution = stats.resolution && stats.resolution !== "";
+  const hasLiveBitrate = stats.bitrateKbps > 0;
+  const bitrateKbps = hasLiveBitrate ? stats.bitrateKbps : stats.targetBitrateKbps;
+  const bitrateMbps = bitrateKbps > 0 ? (bitrateKbps / 1000).toFixed(1) : "--";
+  const bitrateLabel = hasLiveBitrate
+    ? `${bitrateMbps} Mbps`
+    : stats.targetBitrateKbps > 0
+      ? `Target ${bitrateMbps} Mbps`
+      : "-- Mbps";
+  const bitratePerformancePercent = stats.targetBitrateKbps > 0 && stats.bitrateKbps > 0
+    ? (stats.bitrateKbps / stats.targetBitrateKbps) * 100
+    : 0;
+  const bitratePerformanceText = bitratePerformancePercent > 0
+    ? `${bitratePerformancePercent.toFixed(0)}%`
+    : "--";
+  const bitratePerformanceColor = getBitratePerformanceColor(bitratePerformancePercent);
+  const hasResolution = stats.nativeRendererActive || stats.resolution !== "";
+  const displayFps = Math.max(stats.decodeFps, stats.renderFps);
+  const primaryText = hasResolution
+    ? `${stats.resolution || "Native renderer"}${displayFps > 0 ? ` · ${displayFps}fps` : ""}`
+    : "";
   const hasCodec = stats.codec && stats.codec !== "";
   const regionLabel = stats.serverRegion || serverRegion || "";
   const decodeColor = getTimingColor(stats.decodeTimeMs, 8, 16);
   const renderColor = getTimingColor(stats.renderTimeMs, 12, 22);
   const jitterBufferColor = getTimingColor(stats.jitterBufferDelayMs, 10, 24);
   const lossColor = getPacketLossColor(stats.packetLossPercent);
+  const lossLabel = stats.nativeRendererActive ? "Drop" : "Loss";
+  const lossTitle = stats.nativeRendererActive ? "Native renderer dropped frame percentage" : "Packet loss percentage";
   const dText = stats.decodeTimeMs > 0 ? `${stats.decodeTimeMs.toFixed(1)}ms` : "--";
   const rText = stats.renderTimeMs > 0 ? `${stats.renderTimeMs.toFixed(1)}ms` : "--";
   const jbText = stats.jitterBufferDelayMs > 0 ? `${stats.jitterBufferDelayMs.toFixed(1)}ms` : "--";
@@ -202,12 +233,15 @@ function StreamStatsHud({
   const inputQueueText = `${(stats.inputQueueBufferedBytes / 1024).toFixed(1)}KB`;
   const partiallyReliableQueueText = `${(stats.partiallyReliableInputQueueBufferedBytes / 1024).toFixed(1)}KB`;
   const mouseResidualText = `${stats.mouseResidualMagnitude.toFixed(2)}px`;
+  const gstreamerStatusText = gstreamerEnabled
+    ? `GStreamer enabled · ${stats.nativeRendererActive ? "in use" : "not active"}`
+    : "GStreamer disabled · Chromium WebRTC";
 
   return (
     <div className="sv-stats">
       <div className="sv-stats-head">
         {hasResolution ? (
-          <span className="sv-stats-primary">{stats.resolution} · {stats.decodeFps}fps</span>
+          <span className="sv-stats-primary">{primaryText}</span>
         ) : (
           <span className="sv-stats-primary sv-stats-wait">Connecting...</span>
         )}
@@ -221,7 +255,7 @@ function StreamStatsHud({
           {hasCodec ? stats.codec : "N/A"}
           {stats.isHdr && <span className="sv-stats-hdr">HDR</span>}
         </span>
-        <span className="sv-stats-sub-right">{bitrateMbps} Mbps</span>
+        <span className="sv-stats-sub-right">{bitrateLabel}</span>
       </div>
 
       <div className="sv-stats-metrics">
@@ -237,8 +271,11 @@ function StreamStatsHud({
         <span className="sv-stats-chip" title="JB = jitter buffer delay">
           JB <span className="sv-stats-chip-val" style={{ color: jitterBufferColor }}>{jbText}</span>
         </span>
-        <span className="sv-stats-chip" title="Packet loss percentage">
-          Loss <span className="sv-stats-chip-val" style={{ color: lossColor }}>{stats.packetLossPercent.toFixed(2)}%</span>
+        <span className="sv-stats-chip" title={lossTitle}>
+          {lossLabel} <span className="sv-stats-chip-val" style={{ color: lossColor }}>{stats.packetLossPercent.toFixed(2)}%</span>
+        </span>
+        <span className="sv-stats-chip" title="Actual receive bitrate compared with the negotiated target">
+          Bit <span className="sv-stats-chip-val" style={{ color: bitratePerformanceColor }}>{bitratePerformanceText}</span>
         </span>
         <span className="sv-stats-chip" title="Input queue pressure (buffered bytes and delayed flush)">
           IQ <span className="sv-stats-chip-val" style={{ color: inputQueueColor }}>{inputQueueText}</span>
@@ -264,9 +301,31 @@ function StreamStatsHud({
         Input queue peak {(stats.inputQueuePeakBufferedBytes / 1024).toFixed(1)}KB · PR peak {(stats.partiallyReliableInputQueuePeakBufferedBytes / 1024).toFixed(1)}KB · drops {stats.inputQueueDropCount} · sched {stats.inputQueueMaxSchedulingDelayMs.toFixed(1)}ms · residual {mouseResidualText}
       </div>
 
+      <div className="sv-stats-foot">
+        {gstreamerStatusText}
+      </div>
+
+      {(stats.hardwareAcceleration || stats.colorCodec) && (
+        <div className="sv-stats-foot">
+          {[stats.hardwareAcceleration, stats.colorCodec].filter(Boolean).join(" · ")}
+        </div>
+      )}
+
       {(stats.decoderPressureActive || stats.decoderRecoveryAttempts > 0) && (
         <div className="sv-stats-foot">
           Decoder recovery {stats.decoderPressureActive ? "active" : "idle"} · attempts {stats.decoderRecoveryAttempts} · action {stats.decoderRecoveryAction}
+        </div>
+      )}
+
+      {(stats.nativeTransitionSummary || stats.nativeQueueMode || stats.nativeCapsFramerate) && (
+        <div className="sv-stats-foot">
+          Native transition {stats.nativeTransitionSummary ?? "none"} · queue {stats.nativeQueueMode ?? "unknown"} · caps {stats.nativeCapsFramerate ?? "unknown"}{typeof stats.nativeRequestedFps === "number" ? ` · requested ${stats.nativeRequestedFps}fps` : ""}{typeof stats.nativeFramesPendingToPresent === "number" ? ` · pending ${stats.nativeFramesPendingToPresent}` : ""}{typeof stats.nativePartialFlushCount === "number" || typeof stats.nativeCompleteFlushCount === "number" ? ` · flush ${stats.nativePartialFlushCount ?? 0}/${stats.nativeCompleteFlushCount ?? 0}` : ""}
+        </div>
+      )}
+
+      {(stats.nativeRequestedStreamingFeaturesSummary || stats.nativeFinalizedStreamingFeaturesSummary) && (
+        <div className="sv-stats-foot">
+          Stream features requested {stats.nativeRequestedStreamingFeaturesSummary ?? "none"} · finalized {stats.nativeFinalizedStreamingFeaturesSummary ?? "none"}
         </div>
       )}
 
@@ -296,13 +355,41 @@ function ControllerIndicator({
     diagnosticsStore,
     (stats) => stats.connectedGamepads,
   );
+  const [badgeVisible, setBadgeVisible] = useState(true);
+  const hideTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (hideTimerRef.current !== null) {
+      window.clearTimeout(hideTimerRef.current);
+      hideTimerRef.current = null;
+    }
+    if (connectedGamepads > 0) {
+      setBadgeVisible(true);
+      hideTimerRef.current = window.setTimeout(() => {
+        setBadgeVisible(false);
+        hideTimerRef.current = null;
+      }, 5000);
+    } else {
+      setBadgeVisible(true);
+    }
+    return () => {
+      if (hideTimerRef.current !== null) {
+        window.clearTimeout(hideTimerRef.current);
+        hideTimerRef.current = null;
+      }
+    };
+  }, [connectedGamepads]);
 
   if (isConnecting || connectedGamepads <= 0) {
     return null;
   }
 
   return (
-    <div className="sv-ctrl" title={`${connectedGamepads} controller(s) connected`}>
+    <div
+      className={`sv-ctrl${badgeVisible ? "" : " sv-ctrl--hidden"}`}
+      title={`${connectedGamepads} controller(s) connected`}
+      aria-hidden={!badgeVisible}
+    >
       <Gamepad2 size={18} />
       {connectedGamepads > 1 && <span className="sv-ctrl-n">{connectedGamepads}</span>}
     </div>
@@ -441,7 +528,7 @@ function StreamTitleBar({
 }): JSX.Element | null {
   const hasResolution = useStreamDiagnosticsSelector(
     diagnosticsStore,
-    (stats) => stats.resolution !== "",
+    (stats) => stats.nativeRendererActive || stats.resolution !== "",
   );
 
   if (!hasResolution || !showHints) {
@@ -470,7 +557,7 @@ function StreamEmptyState({
 }): JSX.Element | null {
   const hasResolution = useStreamDiagnosticsSelector(
     diagnosticsStore,
-    (stats) => stats.resolution !== "",
+    (stats) => stats.nativeRendererActive || stats.resolution !== "",
   );
 
   if (hasResolution) {
@@ -512,13 +599,13 @@ function VideoFocusOnReady({
   isConnecting: boolean;
   videoRef: React.RefObject<HTMLVideoElement | null>;
 }): null {
-  const hasResolution = useStreamDiagnosticsSelector(
+  const shouldFocusVideo = useStreamDiagnosticsSelector(
     diagnosticsStore,
-    (stats) => stats.resolution !== "",
+    (stats) => stats.resolution !== "" && !stats.nativeRendererActive,
   );
 
   useEffect(() => {
-    if (!isConnecting && videoRef.current && hasResolution) {
+    if (!isConnecting && videoRef.current && shouldFocusVideo) {
       const timer = window.setTimeout(() => {
         if (videoRef.current && document.activeElement !== videoRef.current) {
           videoRef.current.focus();
@@ -527,124 +614,9 @@ function VideoFocusOnReady({
       }, 100);
       return () => clearTimeout(timer);
     }
-  }, [hasResolution, isConnecting, videoRef]);
+  }, [isConnecting, shouldFocusVideo, videoRef]);
 
   return null;
-}
-
-function useMicMeter(
-  canvasRef: React.RefObject<HTMLCanvasElement | null>,
-  track: MediaStreamTrack | null,
-  active: boolean,
-): void {
-  const pendingCloseRef = useRef<Promise<void> | null>(null);
-
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!active || !track || !canvas) return;
-
-    const ctx2d = canvas.getContext("2d");
-    if (!ctx2d) return;
-
-    const dpr = window.devicePixelRatio || 1;
-    canvas.width = Math.round(canvas.clientWidth * dpr);
-    canvas.height = Math.round(canvas.clientHeight * dpr);
-    const W = canvas.width;
-    const H = canvas.height;
-    if (W <= 0 || H <= 0) {
-      return;
-    }
-
-    let audioCtx: AudioContext | null = null;
-    let source: MediaStreamAudioSourceNode | null = null;
-    let analyser: AnalyserNode | null = null;
-    let tickTimer: number | null = null;
-    let dead = false;
-
-    const start = async () => {
-      if (pendingCloseRef.current) {
-        try {
-          await pendingCloseRef.current;
-        } catch {
-          // Ignore close errors from previous contexts.
-        }
-      }
-      if (dead) {
-        return;
-      }
-
-      try {
-        audioCtx = new AudioContext();
-        await audioCtx.resume().catch(() => undefined);
-        if (dead) {
-          return;
-        }
-
-        analyser = audioCtx.createAnalyser();
-        analyser.fftSize = 256;
-        analyser.smoothingTimeConstant = 0.65;
-        source = audioCtx.createMediaStreamSource(new MediaStream([track]));
-        source.connect(analyser);
-
-        const buf = new Uint8Array(analyser.frequencyBinCount);
-        const SEG = 20;
-        const GAP = Math.round(2 * dpr);
-        const bw = (W - GAP * (SEG - 1)) / SEG;
-        const radius = Math.min(3 * dpr, bw / 2);
-        const frameIntervalMs = 33;
-
-        const frame = () => {
-          if (dead || !analyser) return;
-          tickTimer = window.setTimeout(frame, frameIntervalMs);
-          analyser.getByteTimeDomainData(buf);
-
-          let sum = 0;
-          for (let i = 0; i < buf.length; i++) {
-            const v = ((buf[i] ?? 128) - 128) / 128;
-            sum += v * v;
-          }
-          const rms = Math.sqrt(sum / buf.length);
-          const level = Math.min(1, rms * 5.5);
-          const filled = Math.round(level * SEG);
-
-          ctx2d.clearRect(0, 0, W, H);
-          for (let i = 0; i < SEG; i++) {
-            const x = i * (bw + GAP);
-            if (i < filled) {
-              ctx2d.fillStyle =
-                i < SEG * 0.7 ? "#58d98a" : i < SEG * 0.9 ? "#fbbf24" : "#f87171";
-            } else {
-              ctx2d.fillStyle = "rgba(255,255,255,0.07)";
-            }
-            ctx2d.beginPath();
-            ctx2d.roundRect(x, 0, Math.max(1, bw), H, radius);
-            ctx2d.fill();
-          }
-        };
-
-        frame();
-      } catch (e) {
-        console.warn("[MicMeter]", e);
-      }
-    };
-
-    void start();
-
-    return () => {
-      dead = true;
-      if (tickTimer !== null) {
-        window.clearTimeout(tickTimer);
-      }
-      source?.disconnect();
-      analyser?.disconnect();
-      if (audioCtx && audioCtx.state !== "closed") {
-        pendingCloseRef.current = audioCtx
-          .close()
-          .catch(() => undefined)
-          .then(() => undefined);
-      }
-    };
-  }, [track, active, canvasRef]);
 }
 
 export function StreamView({
@@ -652,6 +624,7 @@ export function StreamView({
   audioRef,
   diagnosticsStore,
   showStats,
+  gstreamerEnabled,
   shortcuts,
   serverRegion,
   antiAfkEnabled,
@@ -709,6 +682,11 @@ export function StreamView({
     typeof window.openNow?.listScreenshots === "function" &&
     typeof window.openNow?.deleteScreenshot === "function" &&
     typeof window.openNow?.saveScreenshotAs === "function";
+  const nativeRendererActive = useStreamDiagnosticsSelector(
+    diagnosticsStore,
+    (stats) => stats.nativeRendererActive,
+  );
+  const showStatsHud = showStats && !nativeRendererActive && !isConnecting;
 
   // Recording state
   const [isRecording, setIsRecording] = useState(false);
@@ -1365,6 +1343,81 @@ export function StreamView({
   }, [audioRef]);
 
   useEffect(() => {
+    const updateSurface = window.openNow?.updateNativeRenderSurface;
+    if (typeof updateSurface !== "function") {
+      return undefined;
+    }
+
+    let frame = 0;
+    const publish = (): void => {
+      const element = localVideoRef.current;
+      const dpr = window.devicePixelRatio || 1;
+      if (!element || document.visibilityState === "hidden") {
+        updateSurface({ rect: null, visible: false, deviceScaleFactor: dpr });
+        return;
+      }
+
+      const rect = element.getBoundingClientRect();
+      const width = Math.round(rect.width * dpr);
+      const height = Math.round(rect.height * dpr);
+      const visible = width >= 2 && height >= 2;
+      updateSurface({
+        deviceScaleFactor: dpr,
+        visible,
+        showStats,
+        rect: visible
+          ? {
+              x: Math.round(rect.left * dpr),
+              y: Math.round(rect.top * dpr),
+              width,
+              height,
+            }
+          : null,
+      });
+    };
+
+    const schedule = (): void => {
+      if (frame !== 0) {
+        return;
+      }
+      frame = window.requestAnimationFrame(() => {
+        frame = 0;
+        publish();
+      });
+    };
+
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(schedule);
+    if (observer && localVideoRef.current) {
+      observer.observe(localVideoRef.current);
+    }
+
+    window.addEventListener("resize", schedule);
+    window.addEventListener("fullscreenchange", schedule);
+    document.addEventListener("visibilitychange", schedule);
+    window.visualViewport?.addEventListener("resize", schedule);
+    window.visualViewport?.addEventListener("scroll", schedule);
+    schedule();
+
+    return () => {
+      if (frame !== 0) {
+        window.cancelAnimationFrame(frame);
+      }
+      observer?.disconnect();
+      window.removeEventListener("resize", schedule);
+      window.removeEventListener("fullscreenchange", schedule);
+      document.removeEventListener("visibilitychange", schedule);
+      window.visualViewport?.removeEventListener("resize", schedule);
+      window.visualViewport?.removeEventListener("scroll", schedule);
+      updateSurface({
+        rect: null,
+        visible: false,
+        deviceScaleFactor: window.devicePixelRatio || 1,
+        showStats: false,
+      });
+    };
+  }, [showStats]);
+
+  useEffect(() => {
     const handlePointerLockChange = () => {
       setIsPointerLocked(document.pointerLockElement === localVideoRef.current);
     };
@@ -1641,13 +1694,13 @@ export function StreamView({
                   {microphoneMode !== "disabled" && (
                     <div className="sidebar-row sidebar-row--column">
                       <div className="sidebar-row-top">
-                        <span className="sidebar-label">Input Level</span>
+                        <span className="sidebar-label">Send level</span>
                         <SidebarMicMutedBadge diagnosticsStore={diagnosticsStore} micTrack={micTrack} />
                       </div>
                       <canvas
                         ref={micMeterRef}
                         className="mic-meter-canvas"
-                        aria-label="Microphone input level"
+                        aria-label="Microphone send level (what others hear)"
                       />
                       {!micTrack && <span className="sidebar-hint">Mic not active — check mode and permissions.</span>}
                     </div>
@@ -2016,8 +2069,12 @@ export function StreamView({
       )}
 
       {/* Stats HUD (top-right) */}
-      {showStats && !isConnecting && (
-        <StreamStatsHud diagnosticsStore={diagnosticsStore} serverRegion={serverRegion} />
+      {(showStatsHud || showStats) && !isConnecting && (
+        <StreamStatsHud
+          diagnosticsStore={diagnosticsStore}
+          gstreamerEnabled={gstreamerEnabled}
+          serverRegion={serverRegion}
+        />
       )}
 
       {/* Controller indicator (top-left) */}

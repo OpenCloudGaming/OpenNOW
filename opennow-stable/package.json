@@ -1,6 +1,6 @@
 {
   "name": "opennow-stable",
-  "version": "0.3.6",
+  "version": "0.4.0",
   "description": "Electron-based OpenNOW stable client",
   "author": {
     "name": "zortos293",
@@ -18,10 +18,13 @@
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "preview": "electron-vite preview",
-    "dist": "npm run build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder",
-    "dist:signed": "npm run build && electron-builder",
+    "dist": "npm run build && npm run native:build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder",
+    "dist:signed": "npm run build && npm run native:build && electron-builder",
+    "native:check": "cargo check --manifest-path ../native/opennow-streamer/Cargo.toml",
+    "native:build": "node scripts/build-native-streamer.mjs",
+    "lint": "oxlint src",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.json",
-    "test": "tsx --test src/shared/gfn.test.ts src/shared/networkError.test.ts src/renderer/src/lib/launchOwnership.test.ts src/renderer/src/components/GameCard.test.ts src/renderer/src/gfn/inputProtocol.test.ts src/renderer/src/gfn/webrtcClient.test.ts"
+    "test": "node scripts/run-tests.mjs"
   },
   "dependencies": {
     "discord-rpc": "^4.0.1",
@@ -42,6 +45,7 @@
     "electron": "^41.1.1",
     "electron-builder": "^26.8.1",
     "electron-vite": "^5.0.0",
+    "oxlint": "^1.62.0",
     "react-scan": "^0.5.3",
     "tsx": "^4.20.6",
     "typescript": "^6.0.2",
@@ -68,6 +72,15 @@
       "dist/**",
       "dist-electron/**",
       "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "../native/opennow-streamer/bin",
+        "to": "native/opennow-streamer",
+        "filter": [
+          "**/*"
+        ]
+      }
     ],
     "asar": true,
     "win": {
@@ -98,6 +111,26 @@
       "category": "Game",
       "maintainer": "zortos293 <zortos293@users.noreply.github.com>",
       "artifactName": "OpenNOW-v${version}-linux-${arch}.${ext}"
+    },
+    "deb": {
+      "depends": [
+        "libgstreamer1.0-0",
+        "libgstreamer-plugins-base1.0-0",
+        "gstreamer1.0-tools",
+        "gstreamer1.0-libav",
+        "gstreamer1.0-plugins-base",
+        "gstreamer1.0-plugins-good",
+        "gstreamer1.0-plugins-bad",
+        "gstreamer1.0-plugins-ugly",
+        "gstreamer1.0-vaapi",
+        "gstreamer1.0-gl",
+        "gstreamer1.0-x",
+        "gstreamer1.0-alsa",
+        "libva2",
+        "libva-drm2",
+        "libvulkan1",
+        "mesa-vulkan-drivers"
+      ]
     }
   }
 }

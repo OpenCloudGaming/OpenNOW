@@ -1,11 +1,12 @@
-import { app, BrowserWindow, ipcMain, dialog, shell, systemPreferences, session } from "electron";
+import { app, BrowserWindow, ipcMain, dialog, shell, systemPreferences, session, protocol } from "electron";
 import { fileURLToPath } from "node:url";
-import { dirname, join, resolve, relative } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { existsSync, readFileSync, createWriteStream } from "node:fs";
 import { copyFile, mkdir, readdir, readFile, rename, stat, unlink, writeFile, realpath } from "node:fs/promises";
 import * as net from "node:net";
 import { randomUUID, createHash } from "node:crypto";
 import { spawn } from "node:child_process";
+import { Buffer } from "node:buffer";
 
 // Keyboard shortcuts reference (matching Rust implementation):
 // Screenshot keybind - configurable, handled in renderer
@@ -14,7 +15,13 @@ import { spawn } from "node:child_process";
 // F8  - Toggle mouse/pointer lock (handled in main process via IPC)
 
 import { IPC_CHANNELS } from "@shared/ipc";
+import {
+  getTrustedVideoPlaybackFileUrl,
+  registerOpenNowMediaProtocol,
+  resolveTrustedOpenNowMediaPath,
+} from "./mediaPaths";
 import { initLogCapture, exportLogs } from "@shared/logger";
+import type { NativeStreamerInputPacket } from "@shared/nativeStreamer";
 import { cacheManager } from "./services/cacheManager";
 import { refreshScheduler } from "./services/refreshScheduler";
 import { cacheEventBus } from "./services/cacheEventBus";
@@ -39,12 +46,17 @@ import type {
   SessionCreateRequest,
   SessionPollRequest,
   SessionStopRequest,
-  SessionClaimRequest,
-  SignalingConnectRequest,
+    SessionClaimRequest,
+    StreamSettings,
+    SignalingConnectRequest,
   SendAnswerRequest,
   IceCandidatePayload,
+  NativeInputPacket,
+  NativeRenderSurface,
+  NativeRenderSurfaceUpdate,
   KeyframeRequest,
   Settings,
+  NativeStreamerSessionContext,
   SubscriptionFetchRequest,
   SessionConflictChoice,
   PingResult,
@@ -62,12 +74,14 @@ import type {
   RecordingFinishRequest,
   RecordingAbortRequest,
   RecordingDeleteRequest,
-  MicrophonePermissionResult,
-  ThankYouContributor,
+    MicrophonePermissionResult,
+    NativeStreamerStatus,
+    ThankYouContributor,
   ThankYouDataResult,
   ThankYouSupporter,
 } from "@shared/gfn";
 import { serializeSessionErrorTransport } from "@shared/sessionError";
+import { normalizeCloudGsyncOverride, resolveCloudGsync } from "@shared/cloudGsync";
 import { enrichErrorForIpc, formatErrorChainForLog } from "@shared/networkError";
 
 import { getSettingsManager, type SettingsManager } from "./settings";
@@ -86,6 +100,8 @@ import { GfnSignalingClient } from "./gfn/signaling";
 import { isSessionError, SessionError, GfnErrorCode } from "./gfn/errorCodes";
 import { connectDiscordRpc, setActivity, clearActivity, destroyDiscordRpc, getCurrentActivity, isDiscordRpcConnected } from "./discordRpc";
 import { createAppUpdaterController, type AppUpdaterController } from "./updater";
+import { NativeStreamerManager } from "./nativeStreamer/manager";
+import { getNativeCloudGsyncCapabilities } from "./nativeCloudGsync";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -223,10 +239,28 @@ app.commandLine.appendSwitch("disable-backgrounding-occluded-windows");
 // Remove getUserMedia FPS cap (not strictly needed for receive-only but avoids potential limits)
 app.commandLine.appendSwitch("max-gum-fps", "999");
 
+// file:// in &lt;video&gt; is blocked by Chromium for renderer pages; use a privileged custom scheme.
+protocol.registerSchemesAsPrivileged([
+  {
+    scheme: "opennow-media",
+    privileges: {
+      standard: true,
+      secure: true,
+      supportFetchAPI: true,
+      stream: true,
+      corsEnabled: true,
+    },
+  },
+]);
+
 let mainWindow: BrowserWindow | null = null;
 let rendererControlledFullscreen = false;
 let signalingClient: GfnSignalingClient | null = null;
 let signalingClientKey: string | null = null;
+let nativeStreamerManager: NativeStreamerManager | null = null;
+let nativeStreamerContext: NativeStreamerSessionContext | null = null;
+let nativeStreamerFallbackSessionId: string | null = null;
+const MAX_NATIVE_INPUT_PACKET_BYTES = 4096;
 let authService: AuthService;
 let settingsManager: SettingsManager;
 let appUpdater: AppUpdaterController | null = null;
@@ -256,9 +290,23 @@ function runShutdownCleanup(reason = "app-quit"): void {
   console.log(`[Main] Running shutdown cleanup (${reason})`);
 
   refreshScheduler.stop();
-  signalingClient?.disconnect();
+  // Parity with soft-reset behavior: on full app quit, let process teardown close
+  // signaling sockets naturally instead of emitting an explicit disconnect event
+  // into the renderer during shutdown.
+  const shouldSkipExplicitSignalingDisconnect =
+    reason === "renderer-explicit-exit" ||
+    reason === "app-quit" ||
+    reason === "before-quit" ||
+    reason === "window-all-closed";
+  if (!shouldSkipExplicitSignalingDisconnect) {
+    signalingClient?.disconnect();
+  }
   signalingClient = null;
   signalingClientKey = null;
+  nativeStreamerManager?.dispose(reason);
+  nativeStreamerManager = null;
+  nativeStreamerContext = null;
+  nativeStreamerFallbackSessionId = null;
   void destroyDiscordRpc();
   appUpdater?.dispose();
   appUpdater = null;
@@ -557,16 +605,63 @@ function md5(input: string): string {
   return createHash("md5").update(input).digest("hex");
 }
 
-async function generateVideoThumbnail(sourcePath: string, outPath: string): Promise<boolean> {
+/** Seconds; null if ffprobe missing or unreadable. */
+async function probeVideoDurationSeconds(sourcePath: string): Promise<number | null> {
+  return new Promise((resolve) => {
+    const args = [
+      "-v",
+      "error",
+      "-show_entries",
+      "format=duration",
+      "-of",
+      "default=noprint_wrappers=1:nokey=1",
+      sourcePath,
+    ];
+    const child = spawn("ffprobe", args, { stdio: ["ignore", "pipe", "ignore"] });
+    let out = "";
+    child.stdout?.on("data", (chunk: Buffer) => {
+      out += chunk.toString();
+    });
+    child.on("error", () => resolve(null));
+    child.on("close", (code) => {
+      if (code !== 0) {
+        resolve(null);
+        return;
+      }
+      const n = Number.parseFloat(out.trim());
+      resolve(Number.isFinite(n) && n > 0 ? n : null);
+    });
+  });
+}
+
+function randomThumbnailSeekSeconds(durationSec: number | null): number {
+  if (durationSec !== null && durationSec > 0.2) {
+    const margin = Math.min(0.35, durationSec * 0.08);
+    const hi = Math.max(durationSec - margin, margin + 0.05);
+    const lo = Math.min(margin, hi * 0.5);
+    return lo + Math.random() * (hi - lo);
+  }
+  return 0.2 + Math.random() * 4.8;
+}
+
+function ffmpegExtractOneFrame(sourcePath: string, outPath: string, seekSec: number): Promise<boolean> {
+  const ss = seekSec.toFixed(3);
   return new Promise<boolean>((resolve) => {
-    // Try to run ffmpeg to extract a frame at 1s.
-    const args = ["-y", "-ss", "1", "-i", sourcePath, "-frames:v", "1", "-q:v", "2", outPath];
+    const args = ["-y", "-ss", ss, "-i", sourcePath, "-frames:v", "1", "-q:v", "2", outPath];
     const child = spawn("ffmpeg", args, { stdio: "ignore" });
     child.on("error", () => resolve(false));
     child.on("close", (code) => {
       resolve(code === 0);
     });
   });
+}
+
+async function generateVideoThumbnail(sourcePath: string, outPath: string): Promise<boolean> {
+  const durationSec = await probeVideoDurationSeconds(sourcePath);
+  const seekSec = randomThumbnailSeekSeconds(durationSec);
+  if (await ffmpegExtractOneFrame(sourcePath, outPath, seekSec)) return true;
+  if (seekSec > 0.02) return ffmpegExtractOneFrame(sourcePath, outPath, 0);
+  return false;
 }
 
 async function ensureThumbnailForMedia(filePath: string): Promise<string | null> {
@@ -638,7 +733,7 @@ async function listRecordings(): Promise<RecordingEntry[]> {
       const filePath = join(dir, fileName);
       try {
         const fileStats = await stat(filePath);
-        const stem = fileName.replace(/\.webm$/i, "");
+        const stem = fileName.replace(/\.(mp4|webm)$/i, "");
         const thumbName = `${stem}-thumb.jpg`;
         const thumbPath = join(dir, thumbName);
 
@@ -683,6 +778,245 @@ async function listRecordings(): Promise<RecordingEntry[]> {
 function emitToRenderer(event: MainToRendererSignalingEvent): void {
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send(IPC_CHANNELS.SIGNALING_EVENT, event);
+  }
+}
+
+function getNativeStreamerManager(): NativeStreamerManager {
+  nativeStreamerManager ??= new NativeStreamerManager({
+    mainDir: __dirname,
+    getBackendPreference: () => "gstreamer",
+    getVideoBackendPreference: () => settingsManager?.get("nativeVideoBackend") ?? "auto",
+    getExecutablePathOverride: () => settingsManager?.get("nativeStreamerExecutablePath") ?? "",
+    getCloudGsyncMode: () => settingsManager?.get("nativeCloudGsyncMode") ?? "auto",
+    getD3dFullscreenMode: () => settingsManager?.get("nativeD3dFullscreenMode") ?? "auto",
+    getExternalRendererEnabled: () => true,
+    emit: emitToRenderer,
+    sendAnswer: async (payload) => {
+      if (!signalingClient) {
+        throw new Error("Signaling is not connected");
+      }
+      await signalingClient.sendAnswer(payload);
+    },
+    sendIceCandidate: async (candidate) => {
+      if (!signalingClient) {
+        throw new Error("Signaling is not connected");
+      }
+      await signalingClient.sendIceCandidate(candidate);
+    },
+    requestKeyframe: async (payload) => {
+      if (!signalingClient) {
+        throw new Error("Signaling is not connected");
+      }
+      await signalingClient.requestKeyframe(payload);
+    },
+  });
+  return nativeStreamerManager;
+}
+
+function isNativeStreamerSelected(): boolean {
+  return settingsManager?.get("streamClientMode") === "native";
+}
+
+function normalizeMaxBitrateMbps(value: unknown): number | null {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return null;
+  }
+
+  return Math.min(150, Math.max(5, Math.round(value)));
+}
+
+function updateNativeStreamerBitrateSetting(value: unknown): void {
+  const maxBitrateMbps = normalizeMaxBitrateMbps(value);
+  if (maxBitrateMbps === null) {
+    return;
+  }
+
+  if (nativeStreamerContext) {
+    nativeStreamerContext = {
+      ...nativeStreamerContext,
+      settings: {
+        ...nativeStreamerContext.settings,
+        maxBitrateMbps,
+      },
+    };
+  }
+
+  nativeStreamerManager?.updateBitrateLimit(maxBitrateMbps * 1000);
+}
+
+function nativeWindowHandleToHex(window: BrowserWindow): string | null {
+  const handle = window.getNativeWindowHandle();
+  if (handle.byteLength >= 8) {
+    return `0x${handle.readBigUInt64LE(0).toString(16)}`;
+  }
+  if (handle.byteLength >= 4) {
+    return `0x${handle.readUInt32LE(0).toString(16)}`;
+  }
+  return null;
+}
+
+function normalizeNativeRenderSurface(
+  window: BrowserWindow,
+  input: NativeRenderSurfaceUpdate,
+): NativeRenderSurface | null {
+  if (!input || typeof input !== "object") {
+    return null;
+  }
+
+  const windowHandle = nativeWindowHandleToHex(window);
+  if (!windowHandle) {
+    return null;
+  }
+
+  const deviceScaleFactor = Number.isFinite(input.deviceScaleFactor)
+    ? Math.min(8, Math.max(0.25, input.deviceScaleFactor))
+    : 1;
+  const rect = input.rect;
+  const visible = input.visible === true
+    && rect !== null
+    && Number.isFinite(rect.x)
+    && Number.isFinite(rect.y)
+    && Number.isFinite(rect.width)
+    && Number.isFinite(rect.height)
+    && rect.width >= 2
+    && rect.height >= 2;
+
+  return {
+    windowHandle,
+    deviceScaleFactor,
+    visible,
+    showStats: input.showStats === true,
+    rect: visible
+      ? {
+          x: Math.round(rect.x),
+          y: Math.round(rect.y),
+          width: Math.max(2, Math.round(rect.width)),
+          height: Math.max(2, Math.round(rect.height)),
+        }
+      : null,
+  };
+}
+
+function normalizeNativeInputPacket(input: unknown): NativeStreamerInputPacket | null {
+  if (!input || typeof input !== "object") {
+    return null;
+  }
+
+  const packet = input as { payload?: unknown; partiallyReliable?: unknown };
+  const rawPayload = packet.payload;
+  let bytes: Uint8Array;
+
+  if (rawPayload instanceof ArrayBuffer) {
+    bytes = new Uint8Array(rawPayload);
+  } else if (ArrayBuffer.isView(rawPayload)) {
+    bytes = new Uint8Array(rawPayload.buffer, rawPayload.byteOffset, rawPayload.byteLength);
+  } else if (Array.isArray(rawPayload)) {
+    if (
+      rawPayload.length === 0
+      || rawPayload.length > MAX_NATIVE_INPUT_PACKET_BYTES
+      || rawPayload.some((byte) => !Number.isInteger(byte) || byte < 0 || byte > 255)
+    ) {
+      return null;
+    }
+    bytes = Uint8Array.from(rawPayload);
+  } else {
+    return null;
+  }
+
+  if (bytes.byteLength === 0 || bytes.byteLength > MAX_NATIVE_INPUT_PACKET_BYTES) {
+    return null;
+  }
+
+  return {
+    payloadBase64: Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("base64"),
+    partiallyReliable: packet.partiallyReliable === true,
+  };
+}
+
+function routeSignalingEvent(event: MainToRendererSignalingEvent): void {
+  if (event.type === "disconnected") {
+    void nativeStreamerManager?.stop(`signaling disconnected: ${event.reason}`);
+    nativeStreamerContext = null;
+    nativeStreamerFallbackSessionId = null;
+    emitToRenderer(event);
+    return;
+  }
+
+  const context = nativeStreamerContext;
+  const nativeFallbackActive =
+    context !== null && nativeStreamerFallbackSessionId === context.session.sessionId;
+
+  if (!isNativeStreamerSelected() || !context || nativeFallbackActive) {
+    emitToRenderer(event);
+    return;
+  }
+
+  if (event.type === "offer") {
+    void handleNativeStreamerOffer(event.sdp, context);
+    return;
+  }
+
+  if (event.type === "remote-ice") {
+    void getNativeStreamerManager().addRemoteIce(event.candidate, context).catch((error) => {
+      emitToRenderer({ type: "error", message: `Native streamer ICE failed: ${String(error)}` });
+    });
+    return;
+  }
+
+  emitToRenderer(event);
+}
+
+async function handleNativeStreamerOffer(sdp: string, context: NativeStreamerSessionContext): Promise<void> {
+  try {
+    await getNativeStreamerManager().handleOffer(sdp, context);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn("[NativeStreamer] Falling back to web streamer:", message);
+    nativeStreamerFallbackSessionId = context.session.sessionId;
+    const queuedRemoteIce = nativeStreamerManager?.drainQueuedRemoteIce(context.session.sessionId) ?? [];
+    await nativeStreamerManager?.stop("native streamer fallback").catch(() => undefined);
+    emitToRenderer({
+      type: "error",
+      message: `Native streamer failed: ${message}. Falling back to web streamer.`,
+    });
+    emitToRenderer({ type: "offer", sdp });
+    for (const candidate of queuedRemoteIce) {
+      emitToRenderer({ type: "remote-ice", candidate });
+    }
+  }
+}
+
+async function resetNativeStreamerForSignalingReconnect(): Promise<void> {
+  if (!nativeStreamerManager) {
+    return;
+  }
+
+  if (!isNativeStreamerSelected() || !nativeStreamerContext || nativeStreamerManager.hasActiveSession()) {
+    await nativeStreamerManager.stop("signaling reconnect");
+  }
+}
+
+async function prepareNativeStreamerBeforeSignaling(): Promise<void> {
+  const context = nativeStreamerContext;
+  if (!isNativeStreamerSelected() || !context) {
+    return;
+  }
+
+  try {
+    emitToRenderer({
+      type: "log",
+      message: "Preparing native streamer before signaling attach.",
+    });
+    await getNativeStreamerManager().prepareForSession(context);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn("[NativeStreamer] Pre-attach startup failed; falling back to web streamer:", message);
+    nativeStreamerFallbackSessionId = context.session.sessionId;
+    await nativeStreamerManager?.stop("native streamer pre-attach fallback").catch(() => undefined);
+    emitToRenderer({
+      type: "error",
+      message: `Native streamer failed before signaling attach: ${message}. Falling back to web streamer.`,
+    });
   }
 }
 
@@ -836,6 +1170,38 @@ function isAutoResumeReadySession(entry: ActiveSessionInfo): boolean {
 
 function isActiveCreateSessionConflict(entry: ActiveSessionInfo): boolean {
   return ACTIVE_CREATE_SESSION_STATUSES.has(entry.status);
+}
+
+async function resolveSessionCloudGsyncSettings(settings: StreamSettings): Promise<StreamSettings> {
+  const userRequested = settings.enableCloudGsync;
+  const clientMode = settings.clientMode ?? "web";
+  const cloudGsyncMode = settings.nativeCloudGsyncMode ?? "auto";
+  const capabilities = clientMode === "native"
+    ? await getNativeCloudGsyncCapabilities(cloudGsyncMode)
+    : undefined;
+  const resolution = resolveCloudGsync({
+    userRequested,
+    fps: settings.fps,
+    clientMode,
+    nativeBackendAvailable: clientMode === "native",
+    capabilities,
+    override: normalizeCloudGsyncOverride(cloudGsyncMode),
+  });
+
+  console.log(
+    `[CloudGsync] requested=${resolution.requested} resolved=${resolution.enabled} reflex=${resolution.reflexEnabled} reason=${resolution.reason} clientMode=${clientMode} fps=${settings.fps} capabilities=${JSON.stringify(resolution.capabilities)}`,
+  );
+
+  if (resolution.enabled) {
+    console.log("[CloudGsync] Native Cloud G-Sync/VRR mode is resolved on; keeping low-latency unthrottled presentation.");
+  }
+
+  return {
+    ...settings,
+    requestedCloudGsync: userRequested,
+    enableCloudGsync: resolution.enabled,
+    cloudGsyncResolution: resolution,
+  };
 }
 
 function selectReadySessionToClaim(activeSessions: ActiveSessionInfo[], numericAppId: number): ActiveSessionInfo | null {
@@ -1212,6 +1578,8 @@ function registerIpcHandlers(): void {
     const token = await resolveJwt(payload.token);
     const streamingBaseUrl = payload.streamingBaseUrl ?? authService.getSelectedProvider().streamingServiceUrl;
     const forceNewSession = shouldForceNewSession(payload.existingSessionStrategy);
+    const resolvedSettings = await resolveSessionCloudGsyncSettings(payload.settings);
+    const resolvedPayload: SessionCreateRequest = { ...payload, settings: resolvedSettings };
 
     /**
      * Attempt to find and claim an existing active session.
@@ -1231,7 +1599,7 @@ function registerIpcHandlers(): void {
       try {
         const activeSessions = await getActiveSessions(token, streamingBaseUrl);
         if (activeSessions.length === 0) return null;
-        const numericAppId = parseInt(payload.appId, 10);
+        const numericAppId = parseInt(resolvedPayload.appId, 10);
 
         // First prefer a paused/ready session (status 2 or 3) that can be RESUME'd.
         const readyCandidate = selectReadySessionToClaim(activeSessions, numericAppId);
@@ -1244,8 +1612,8 @@ function registerIpcHandlers(): void {
             streamingBaseUrl,
             sessionId: readyCandidate.sessionId,
             serverIp: readyCandidate.serverIp!,
-            appId: payload.appId,
-            settings: payload.settings,
+            appId: resolvedPayload.appId,
+            settings: resolvedPayload.settings,
           });
         }
 
@@ -1261,8 +1629,9 @@ function registerIpcHandlers(): void {
               token,
               streamingBaseUrl,
               serverIp: launchingCandidate.serverIp!,
-              zone: payload.zone,
+              zone: resolvedPayload.zone,
               sessionId: launchingCandidate.sessionId,
+              proxyUrl: payload.proxyUrl,
             });
           } catch (hydrateError) {
             console.warn(
@@ -1271,7 +1640,7 @@ function registerIpcHandlers(): void {
             return {
               sessionId: launchingCandidate.sessionId,
               status: 1,
-              zone: payload.zone,
+              zone: resolvedPayload.zone,
               streamingBaseUrl,
               serverIp: launchingCandidate.serverIp!,
               signalingServer: launchingCandidate.serverIp!,
@@ -1304,11 +1673,11 @@ function registerIpcHandlers(): void {
         await stopActiveSessionsForCreate({
           token,
           streamingBaseUrl,
-          zone: payload.zone,
-          appId: payload.appId,
+          zone: resolvedPayload.zone,
+          appId: resolvedPayload.appId,
         });
       }
-      const sessionResult = await createSession({ ...payload, token, streamingBaseUrl });
+      const sessionResult = await createSession({ ...resolvedPayload, token, streamingBaseUrl });
       if (settingsManager.get("discordRichPresence")) {
         void setActivity(payload.internalTitle || payload.appId, new Date(), payload.appId);
       }
@@ -1387,10 +1756,14 @@ function registerIpcHandlers(): void {
     try {
       const token = await resolveJwt(payload.token);
       const streamingBaseUrl = payload.streamingBaseUrl ?? authService.getSelectedProvider().streamingServiceUrl;
+      const resolvedSettings = payload.settings
+        ? await resolveSessionCloudGsyncSettings(payload.settings)
+        : undefined;
       return claimSession({
         ...payload,
         token,
         streamingBaseUrl,
+        settings: resolvedSettings,
       });
     } catch (error) {
       rethrowSerializedSessionError(error);
@@ -1405,6 +1778,20 @@ function registerIpcHandlers(): void {
     IPC_CHANNELS.CONNECT_SIGNALING,
     async (_event, payload: SignalingConnectRequest): Promise<void> => {
       const nextKey = `${payload.sessionId}|${payload.signalingServer}|${payload.signalingUrl ?? ""}`;
+      nativeStreamerContext = payload.nativeStreamer ?? null;
+      nativeStreamerFallbackSessionId = null;
+      if (nativeStreamerContext) {
+        console.log("[NativeStreamer] Signaling connect context:", JSON.stringify({
+          sessionId: nativeStreamerContext.session.sessionId,
+          resolution: nativeStreamerContext.settings.resolution,
+          fps: nativeStreamerContext.settings.fps,
+          codec: nativeStreamerContext.settings.codec,
+          negotiatedStreamProfile: nativeStreamerContext.session.negotiatedStreamProfile,
+          requestedStreamingFeatures: nativeStreamerContext.session.requestedStreamingFeatures,
+          finalizedStreamingFeatures: nativeStreamerContext.session.finalizedStreamingFeatures,
+        }));
+      }
+
       if (signalingClient && signalingClientKey === nextKey) {
         console.log("[Signaling] Reuse existing signaling connection (duplicate connect request ignored)");
         return;
@@ -1413,6 +1800,8 @@ function registerIpcHandlers(): void {
       if (signalingClient) {
         signalingClient.disconnect();
       }
+      await resetNativeStreamerForSignalingReconnect();
+      await prepareNativeStreamerBeforeSignaling();
 
       signalingClient = new GfnSignalingClient(
         payload.signalingServer,
@@ -1420,12 +1809,22 @@ function registerIpcHandlers(): void {
         payload.signalingUrl,
       );
       signalingClientKey = nextKey;
-      signalingClient.onEvent(emitToRenderer);
-      await signalingClient.connect();
+      signalingClient.onEvent(routeSignalingEvent);
+      try {
+        await signalingClient.connect();
+      } catch (error) {
+        await nativeStreamerManager?.stop("signaling connect failed").catch(() => undefined);
+        signalingClient = null;
+        signalingClientKey = null;
+        throw error;
+      }
     },
   );
 
   ipcMain.handle(IPC_CHANNELS.DISCONNECT_SIGNALING, async (): Promise<void> => {
+    await nativeStreamerManager?.stop("signaling disconnect");
+    nativeStreamerContext = null;
+    nativeStreamerFallbackSessionId = null;
     signalingClient?.disconnect();
     signalingClient = null;
     signalingClientKey = null;
@@ -1443,6 +1842,42 @@ function registerIpcHandlers(): void {
       throw new Error("Signaling is not connected");
     }
     return signalingClient.sendIceCandidate(payload);
+  });
+
+  ipcMain.on(IPC_CHANNELS.NATIVE_INPUT, (_event, payload: NativeInputPacket) => {
+    if (!isNativeStreamerSelected()) {
+      return;
+    }
+
+    const context = nativeStreamerContext;
+    if (!context || nativeStreamerFallbackSessionId === context.session.sessionId) {
+      return;
+    }
+
+    const packet = normalizeNativeInputPacket(payload);
+    if (!packet) {
+      return;
+    }
+
+    nativeStreamerManager?.sendInput(packet);
+  });
+
+  ipcMain.on(IPC_CHANNELS.NATIVE_RENDER_SURFACE, (event, payload: NativeRenderSurfaceUpdate) => {
+    if (!isNativeStreamerSelected()) {
+      return;
+    }
+
+    const window = BrowserWindow.fromWebContents(event.sender);
+    if (!window || window.isDestroyed()) {
+      return;
+    }
+
+    const surface = normalizeNativeRenderSurface(window, payload);
+    if (!surface) {
+      return;
+    }
+
+    getNativeStreamerManager().updateSurface(surface);
   });
 
   ipcMain.handle(IPC_CHANNELS.REQUEST_KEYFRAME, async (_event, payload: KeyframeRequest) => {
@@ -1552,6 +1987,40 @@ function registerIpcHandlers(): void {
       if (key === "autoCheckForUpdates") {
         appUpdater?.setAutomaticChecksEnabled(value as boolean);
       }
+      if (
+        (key === "streamClientMode" && value !== "native")
+        || key === "nativeStreamerBackend"
+        || key === "nativeStreamerExecutablePath"
+        || key === "nativeCloudGsyncMode"
+        || key === "nativeD3dFullscreenMode"
+        || key === "nativeExternalRenderer"
+      ) {
+        void nativeStreamerManager?.stop(
+          key === "nativeStreamerBackend"
+            ? "native streamer backend changed"
+            : key === "nativeStreamerExecutablePath"
+              ? "native streamer executable changed"
+              : key === "nativeCloudGsyncMode"
+                ? "native Cloud G-Sync mode changed"
+                : key === "nativeD3dFullscreenMode"
+                  ? "native D3D fullscreen mode changed"
+                  : key === "nativeExternalRenderer"
+                    ? "native external renderer setting changed"
+                    : "native streamer disabled",
+        );
+        nativeStreamerContext = null;
+        nativeStreamerFallbackSessionId = null;
+      }
+      if (key === "nativeVideoBackend") {
+        if (nativeStreamerManager?.hasActiveSession()) {
+          console.log("[NativeStreamer] Native video backend changed; active session will keep its current backend until the next native streamer restart.");
+        } else {
+          void nativeStreamerManager?.stop("native video backend changed");
+        }
+      }
+      if (key === "maxBitrateMbps") {
+        updateNativeStreamerBitrateSetting(value);
+      }
       if (key === "discordRichPresence") {
         if (value) {
           void connectDiscordRpc().then(() => discordMonitor.start());
@@ -1568,7 +2037,43 @@ function registerIpcHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.SETTINGS_RESET, async (): Promise<Settings> => {
     const resetSettings = settingsManager.reset();
     appUpdater?.setAutomaticChecksEnabled(resetSettings.autoCheckForUpdates);
+    void nativeStreamerManager?.stop("settings reset");
+    nativeStreamerContext = null;
+    nativeStreamerFallbackSessionId = null;
     return resetSettings;
+  });
+
+  ipcMain.handle(IPC_CHANNELS.SETTINGS_SELECT_NATIVE_STREAMER_EXECUTABLE, async (): Promise<string | null> => {
+    const filters = process.platform === "win32"
+      ? [
+          { name: "Executable", extensions: ["exe"] },
+          { name: "All Files", extensions: ["*"] },
+        ]
+      : [{ name: "All Files", extensions: ["*"] }];
+
+    const options: Electron.OpenDialogOptions = {
+      title: "Select OpenNOW streamer executable",
+      properties: ["openFile"],
+      filters,
+    };
+    const result = mainWindow && !mainWindow.isDestroyed()
+      ? await dialog.showOpenDialog(mainWindow, options)
+      : await dialog.showOpenDialog(options);
+
+    if (result.canceled || result.filePaths.length === 0) {
+      return null;
+    }
+    return result.filePaths[0] ?? null;
+  });
+
+  ipcMain.handle(IPC_CHANNELS.NATIVE_STREAMER_STATUS, async (): Promise<NativeStreamerStatus> => {
+    return getNativeStreamerManager().probeStatus();
+  });
+
+  ipcMain.handle(IPC_CHANNELS.NATIVE_CLOUD_GSYNC_CAPABILITIES, async () => {
+    const capabilities = await getNativeCloudGsyncCapabilities(settingsManager?.get("nativeCloudGsyncMode") ?? "auto");
+    console.log(`[CloudGsync] capability probe: ${JSON.stringify(capabilities)}`);
+    return capabilities;
   });
 
   ipcMain.handle(IPC_CHANNELS.MICROPHONE_PERMISSION_GET, async (): Promise<MicrophonePermissionResult> => {
@@ -1793,14 +2298,9 @@ function registerIpcHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.MEDIA_THUMBNAIL, async (_event, payload: { filePath: string }): Promise<string | null> => {
     const rawFp = payload?.filePath;
     if (typeof rawFp !== "string") return null;
-    if (rawFp.length > 4096) return null;
     try {
-      const allowedRoot = resolve(join(app.getPath("pictures"), "OpenNOW"));
-      const fpResolved = resolve(rawFp);
-      const allowedRootReal = await realpath(allowedRoot).catch(() => allowedRoot);
-      const fpReal = await realpath(fpResolved).catch(() => fpResolved);
-      const rel = relative(allowedRootReal, fpReal);
-      if (rel.startsWith("..")) return null;
+      const fpReal = await resolveTrustedOpenNowMediaPath(rawFp);
+      if (!fpReal) return null;
 
       const lower = fpReal.toLowerCase();
       if (lower.endsWith(".png") || lower.endsWith(".jpg") || lower.endsWith(".jpeg") || lower.endsWith(".webp")) {
@@ -1845,17 +2345,88 @@ function registerIpcHandlers(): void {
     const rawFp = payload?.filePath;
     if (typeof rawFp !== "string") return;
     try {
-      const allowedRoot = resolve(join(app.getPath("pictures"), "OpenNOW"));
-      const fpResolved = resolve(rawFp);
-      const allowedRootReal = await realpath(allowedRoot).catch(() => allowedRoot);
-      const fpReal = await realpath(fpResolved).catch(() => fpResolved);
-      const rel = relative(allowedRootReal, fpReal);
-      if (rel.startsWith("..")) return;
+      const fpReal = await resolveTrustedOpenNowMediaPath(rawFp);
+      if (!fpReal) return;
       shell.showItemInFolder(fpReal);
     } catch {
       return;
     }
   });
+
+  ipcMain.handle(IPC_CHANNELS.MEDIA_PLAYBACK_URL, async (_event, payload: { filePath: string }): Promise<string | null> => {
+    const rawFp = payload?.filePath;
+    if (typeof rawFp !== "string") return null;
+    try {
+      return await getTrustedVideoPlaybackFileUrl(rawFp);
+    } catch (err) {
+      console.warn("MEDIA_PLAYBACK_URL error:", err);
+      return null;
+    }
+  });
+
+  ipcMain.handle(IPC_CHANNELS.MEDIA_DELETE_FILE, async (_event, payload: { filePath: string }): Promise<{ ok: boolean }> => {
+    const rawFp = payload?.filePath;
+    if (typeof rawFp !== "string") return { ok: false };
+    try {
+      const fpReal = await resolveTrustedOpenNowMediaPath(rawFp);
+      if (!fpReal) return { ok: false };
+      let st: Awaited<ReturnType<typeof stat>>;
+      try {
+        st = await stat(fpReal);
+      } catch {
+        return { ok: false };
+      }
+      const key = md5(`${fpReal}|${st.mtimeMs}`);
+      const cacheDir = await ensureThumbnailCacheDirectory();
+      await unlink(join(cacheDir, `${key}.jpg`)).catch(() => undefined);
+      const stem = fpReal.replace(/\.(mp4|webm|mkv|mov|png|jpg|jpeg|webp)$/i, "");
+      await unlink(`${stem}-thumb.jpg`).catch(() => undefined);
+      await unlink(fpReal);
+      return { ok: true };
+    } catch (err) {
+      console.warn("MEDIA_DELETE_FILE error:", err);
+      return { ok: false };
+    }
+  });
+
+  ipcMain.handle(
+    IPC_CHANNELS.MEDIA_REGEN_THUMBNAIL,
+    async (_event, payload: { filePath: string }): Promise<{ ok: boolean; thumbnailDataUrl: string | null }> => {
+      const rawFp = payload?.filePath;
+      if (typeof rawFp !== "string") return { ok: false, thumbnailDataUrl: null };
+      try {
+        const fpReal = await resolveTrustedOpenNowMediaPath(rawFp);
+        if (!fpReal) return { ok: false, thumbnailDataUrl: null };
+        const st = await stat(fpReal);
+        const key = md5(`${fpReal}|${st.mtimeMs}`);
+        const cacheDir = await ensureThumbnailCacheDirectory();
+        await unlink(join(cacheDir, `${key}.jpg`)).catch(() => undefined);
+        if (/\.(mp4|webm|mkv|mov)$/i.test(fpReal)) {
+          const videoStem = fpReal.replace(/\.(mp4|webm|mkv|mov)$/i, "");
+          await unlink(`${videoStem}-thumb.jpg`).catch(() => undefined);
+        }
+        const genPath = await ensureThumbnailForMedia(fpReal);
+        if (!genPath) return { ok: false, thumbnailDataUrl: null };
+
+        if (/\.(mp4|webm|mkv|mov)$/i.test(fpReal)) {
+          const videoStem = fpReal.replace(/\.(mp4|webm|mkv|mov)$/i, "");
+          const sidecar = `${videoStem}-thumb.jpg`;
+          await copyFile(genPath, sidecar).catch((err) => {
+            console.warn("MEDIA_REGEN_THUMBNAIL sidecar copy:", err);
+          });
+        }
+
+        const b = await readFile(genPath);
+        return {
+          ok: true,
+          thumbnailDataUrl: `data:image/jpeg;base64,${b.toString("base64")}`,
+        };
+      } catch (err) {
+        console.warn("MEDIA_REGEN_THUMBNAIL error:", err);
+        return { ok: false, thumbnailDataUrl: null };
+      }
+    },
+  );
 
   ipcMain.handle(IPC_CHANNELS.CACHE_REFRESH_MANUAL, async (): Promise<void> => {
     await refreshScheduler.manualRefresh();
@@ -2163,6 +2734,7 @@ app.whenReady().then(async () => {
     return allowedPermissions.has(permission);
   });
 
+  registerOpenNowMediaProtocol();
   registerIpcHandlers();
 
   refreshScheduler.initialize(

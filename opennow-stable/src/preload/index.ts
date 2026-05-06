@@ -20,6 +20,8 @@ import type {
   SignalingConnectRequest,
   SendAnswerRequest,
   IceCandidatePayload,
+  NativeInputPacket,
+  NativeRenderSurfaceUpdate,
   KeyframeRequest,
   Settings,
   SubscriptionFetchRequest,
@@ -93,6 +95,12 @@ const api: OpenNowApi = {
   sendAnswer: (input: SendAnswerRequest) => ipcRenderer.invoke(IPC_CHANNELS.SEND_ANSWER, input),
   sendIceCandidate: (input: IceCandidatePayload) =>
     ipcRenderer.invoke(IPC_CHANNELS.SEND_ICE_CANDIDATE, input),
+  sendNativeInput: (input: NativeInputPacket) => {
+    ipcRenderer.send(IPC_CHANNELS.NATIVE_INPUT, input);
+  },
+  updateNativeRenderSurface: (input: NativeRenderSurfaceUpdate) => {
+    ipcRenderer.send(IPC_CHANNELS.NATIVE_RENDER_SURFACE, input);
+  },
   requestKeyframe: (input: KeyframeRequest) =>
     ipcRenderer.invoke(IPC_CHANNELS.REQUEST_KEYFRAME, input),
   onSignalingEvent: (listener: (event: MainToRendererSignalingEvent) => void) => {
@@ -134,6 +142,9 @@ const api: OpenNowApi = {
   setSetting: <K extends keyof Settings>(key: K, value: Settings[K]) =>
     ipcRenderer.invoke(IPC_CHANNELS.SETTINGS_SET, key, value),
   resetSettings: () => ipcRenderer.invoke(IPC_CHANNELS.SETTINGS_RESET),
+  selectNativeStreamerExecutable: () => ipcRenderer.invoke(IPC_CHANNELS.SETTINGS_SELECT_NATIVE_STREAMER_EXECUTABLE),
+  getNativeStreamerStatus: () => ipcRenderer.invoke(IPC_CHANNELS.NATIVE_STREAMER_STATUS),
+  getNativeCloudGsyncCapabilities: () => ipcRenderer.invoke(IPC_CHANNELS.NATIVE_CLOUD_GSYNC_CAPABILITIES),
   notifyPointerLockChange: (active: boolean) => ipcRenderer.send(IPC_CHANNELS.POINTER_LOCK_CHANGE, active),
   onExternalEscape: (listener: () => void) => {
     const wrapped = () => listener();
@@ -173,6 +184,12 @@ const api: OpenNowApi = {
   getMediaThumbnail: (input: { filePath: string }) => ipcRenderer.invoke(IPC_CHANNELS.MEDIA_THUMBNAIL, input),
   showMediaInFolder: (input: { filePath: string }): Promise<void> =>
     ipcRenderer.invoke(IPC_CHANNELS.MEDIA_SHOW_IN_FOLDER, input),
+  getMediaPlaybackUrl: (input: { filePath: string }): Promise<string | null> =>
+    ipcRenderer.invoke(IPC_CHANNELS.MEDIA_PLAYBACK_URL, input),
+  deleteMediaFile: (input: { filePath: string }): Promise<{ ok: boolean }> =>
+    ipcRenderer.invoke(IPC_CHANNELS.MEDIA_DELETE_FILE, input),
+  regenMediaThumbnail: (input: { filePath: string }): Promise<{ ok: boolean; thumbnailDataUrl: string | null }> =>
+    ipcRenderer.invoke(IPC_CHANNELS.MEDIA_REGEN_THUMBNAIL, input),
   deleteCache: (): Promise<void> =>
     ipcRenderer.invoke(IPC_CHANNELS.CACHE_DELETE_ALL),
   fetchPrintedWasteQueue: (): Promise<PrintedWasteQueueData> =>

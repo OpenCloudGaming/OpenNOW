@@ -2,13 +2,14 @@ import crypto from "node:crypto";
 import dns from "node:dns";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { app } from "electron";
+import { createRequire } from "node:module";
 
 import type {
   ActiveSessionInfo,
   ColorQuality,
   NegotiatedStreamProfile,
   IceServer,
+  StreamingFeatures,
   SessionAdAction,
   SessionAdInfo,
   SessionAdReportRequest,
@@ -27,9 +28,11 @@ import {
   colorQualityChromaFormat,
   resolveGfnKeyboardLayout,
 } from "@shared/gfn";
+import { DEFAULT_MINIMUM_FPS_FOR_REFLEX_WITHOUT_VRR } from "@shared/cloudGsync";
 
 import type { CloudMatchRequest, CloudMatchResponse, GetSessionsResponse } from "./types";
 import { SessionError } from "./errorCodes";
+import { fetchWithOptionalProxy } from "./proxyFetch";
 
 const GFN_USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36 NVIDIACEFClient/HEAD/debb5919f6 GFN-PC/2.0.80.173";
@@ -39,6 +42,15 @@ const READY_SESSION_STATUSES = new Set([2, 3]);
 const GFN_DEVICE_ID_FILENAME = "gfn-device-id.json";
 
 let cachedStableDeviceId: string | null = null;
+const require = createRequire(import.meta.url);
+
+function getElectronApp(): Electron.App | null {
+  try {
+    return require("electron").app ?? null;
+  } catch {
+    return null;
+  }
+}
 
 const AD_ACTION_CODES: Record<SessionAdAction, number> = {
   start: 1,
@@ -54,6 +66,46 @@ const GFN_AD_MEDIA_PROFILE_ORDER = new Map<string, number>([
   ["hlsadaptive", 2],
 ]);
 
+export function buildRequestedStreamingFeatures(
+  settings: StreamSettings,
+  bitDepth: number,
+  chromaFormat: number,
+  hdrEnabled: boolean,
+): CloudMatchRequest["sessionRequestData"]["requestedStreamingFeatures"] {
+  const cloudGsync = settings.enableCloudGsync;
+
+  return {
+    reflex: shouldRequestReflex(settings),
+    bitDepth,
+    cloudGsync,
+    enabledL4S: settings.enableL4S,
+    mouseMovementFlags: 0,
+    trueHdr: hdrEnabled,
+    supportedHidDevices: 0,
+    profile: 0,
+    fallbackToLogicalResolution: false,
+    hidDevices: null,
+    chromaFormat,
+    prefilterMode: 0,
+    prefilterSharpness: 0,
+    prefilterNoiseReduction: 0,
+    hudStreamingMode: 0,
+    sdrColorSpace: 2,
+    hdrColorSpace: hdrEnabled ? 4 : 0,
+  };
+}
+
+export function shouldRequestReflex(settings: StreamSettings): boolean {
+  if (typeof settings.cloudGsyncResolution?.reflexEnabled === "boolean") {
+    return settings.cloudGsyncResolution.reflexEnabled;
+  }
+
+  const reflexMinimum =
+    settings.cloudGsyncResolution?.capabilities.minimumFpsForReflexWithoutVrr
+    ?? DEFAULT_MINIMUM_FPS_FOR_REFLEX_WITHOUT_VRR;
+  return settings.enableCloudGsync || settings.fps >= reflexMinimum;
+}
+
 function isReadySessionStatus(status: number): boolean {
   return READY_SESSION_STATUSES.has(status);
 }
@@ -64,7 +116,11 @@ function getStableDeviceId(): string {
   }
 
   try {
-    const path = join(app.getPath("userData"), GFN_DEVICE_ID_FILENAME);
+    const electronApp = getElectronApp();
+    if (!electronApp) {
+      throw new Error("Electron app is unavailable outside the main process.");
+    }
+    const path = join(electronApp.getPath("userData"), GFN_DEVICE_ID_FILENAME);
     if (existsSync(path)) {
       const parsed = JSON.parse(readFileSync(path, "utf-8")) as { deviceId?: unknown };
       if (typeof parsed.deviceId === "string" && parsed.deviceId.length > 0) {
@@ -485,7 +541,22 @@ function timezoneOffsetMs(): number {
   return -new Date().getTimezoneOffset() * 60 * 1000;
 }
 
-function buildSessionRequestBody(input: SessionCreateRequest): CloudMatchRequest {
+function webRtcSessionMetadata(width: number, height: number): Array<{ key: string; value: string }> {
+  return [
+    { key: "SubSessionId", value: crypto.randomUUID() },
+    { key: "wssignaling", value: "1" },
+    { key: "GSStreamerType", value: "WebRTC" },
+    { key: "networkType", value: "Unknown" },
+    { key: "ClientImeSupport", value: "0" },
+    {
+      key: "clientPhysicalResolution",
+      value: JSON.stringify({ horizontalPixels: width, verticalPixels: height }),
+    },
+    { key: "surroundAudioInfo", value: "2" },
+  ];
+}
+
+function buildSessionRequestBody(input: SessionCreateRequest, deviceHashId: string): CloudMatchRequest {
   const { width, height } = parseResolution(input.settings.resolution);
   const cq = input.settings.colorQuality;
   // IMPORTANT: hdrEnabled is a SEPARATE toggle from color quality.
@@ -506,39 +577,36 @@ function buildSessionRequestBody(input: SessionCreateRequest): CloudMatchRequest
       networkTestSessionId: null,
       parentSessionId: null,
       clientIdentification: "GFN-PC",
-      deviceHashId: crypto.randomUUID(),
+      // Keep device identity stable across create -> reconnect/resume flows.
+      // The official client preserves this identity, and resume reliability depends on it.
+      deviceHashId,
       clientVersion: "30.0",
       sdkVersion: "1.0",
       streamerVersion: 1,
       clientPlatformName: "windows",
       clientRequestMonitorSettings: [
         {
+          monitorId: 0,
+          positionX: 0,
+          positionY: 0,
           widthInPixels: width,
           heightInPixels: height,
           framesPerSecond: input.settings.fps,
           sdrHdrMode: hdrEnabled ? 1 : 0,
-          displayData: {
-            desiredContentMaxLuminance: hdrEnabled ? 1000 : 0,
-            desiredContentMinLuminance: 0,
-            desiredContentMaxFrameAverageLuminance: hdrEnabled ? 500 : 0,
-          },
+          displayData: hdrEnabled
+            ? {
+                desiredContentMaxLuminance: 1000,
+                desiredContentMinLuminance: 0,
+                desiredContentMaxFrameAverageLuminance: 500,
+              }
+            : null,
+          hdr10PlusGamingData: null,
           dpi: 100,
         },
       ],
       useOps: true,
       audioMode: 2,
-      metaData: [
-        { key: "SubSessionId", value: crypto.randomUUID() },
-        { key: "wssignaling", value: "1" },
-        { key: "GSStreamerType", value: "WebRTC" },
-        { key: "networkType", value: "Unknown" },
-        { key: "ClientImeSupport", value: "0" },
-        {
-          key: "clientPhysicalResolution",
-          value: JSON.stringify({ horizontalPixels: width, verticalPixels: height }),
-        },
-        { key: "surroundAudioInfo", value: "2" },
-      ],
+      metaData: webRtcSessionMetadata(width, height),
       sdrHdrMode: hdrEnabled ? 1 : 0,
       clientDisplayHdrCapabilities: hdrEnabled
         ? {
@@ -557,25 +625,12 @@ function buildSessionRequestBody(input: SessionCreateRequest): CloudMatchRequest
       accountLinked,
       enablePersistingInGameSettings: true,
       userAge: 26,
-      requestedStreamingFeatures: {
-        reflex: input.settings.fps >= 120,
+      requestedStreamingFeatures: buildRequestedStreamingFeatures(
+        input.settings,
         bitDepth,
-        cloudGsync: input.settings.enableCloudGsync,
-        enabledL4S: input.settings.enableL4S,
-        mouseMovementFlags: 0,
-        trueHdr: hdrEnabled,
-        supportedHidDevices: 0,
-        profile: 0,
-        fallbackToLogicalResolution: false,
-        hidDevices: null,
         chromaFormat,
-        prefilterMode: 0,
-        prefilterSharpness: 0,
-        prefilterNoiseReduction: 0,
-        hudStreamingMode: 0,
-        sdrColorSpace: 2,
-        hdrColorSpace: hdrEnabled ? 4 : 0,
-      },
+        hdrEnabled,
+      ),
     },
   };
 }
@@ -833,6 +888,40 @@ function toColorQuality(bitDepth?: number, chromaFormat?: number): ColorQuality 
   return chromaFormat === 2 ? "8bit_444" : "8bit_420";
 }
 
+function normalizeStreamingFeatures(
+  features:
+    | NonNullable<CloudMatchResponse["session"]["sessionRequestData"]>["requestedStreamingFeatures"]
+    | CloudMatchResponse["session"]["finalizedStreamingFeatures"]
+    | undefined,
+): StreamingFeatures | undefined {
+  if (!features) {
+    return undefined;
+  }
+
+  const normalized: StreamingFeatures = {};
+
+  if (typeof features.reflex === "boolean") {
+    normalized.reflex = features.reflex;
+  }
+  if (typeof features.bitDepth === "number" && Number.isFinite(features.bitDepth)) {
+    normalized.bitDepth = Math.trunc(features.bitDepth);
+  }
+  if (typeof features.cloudGsync === "boolean") {
+    normalized.cloudGsync = features.cloudGsync;
+  }
+  if (typeof features.chromaFormat === "number" && Number.isFinite(features.chromaFormat)) {
+    normalized.chromaFormat = Math.trunc(features.chromaFormat);
+  }
+  if (typeof features.enabledL4S === "boolean") {
+    normalized.enabledL4S = features.enabledL4S;
+  }
+  if ("trueHdr" in features && typeof features.trueHdr === "boolean") {
+    normalized.trueHdr = features.trueHdr;
+  }
+
+  return Object.keys(normalized).length > 0 ? normalized : undefined;
+}
+
 function extractNegotiatedStreamProfile(payload: CloudMatchResponse): NegotiatedStreamProfile | undefined {
   const monitor = payload.session.sessionRequestData?.clientRequestMonitorSettings?.[0];
   const finalizedFeatures = payload.session.finalizedStreamingFeatures;
@@ -846,6 +935,8 @@ function extractNegotiatedStreamProfile(payload: CloudMatchResponse): Negotiated
     finalizedFeatures?.chromaFormat ?? requestedFeatures?.chromaFormat,
   );
   const enabledL4S = finalizedFeatures?.enabledL4S ?? requestedFeatures?.enabledL4S;
+  const enabledCloudGsync = finalizedFeatures?.cloudGsync ?? requestedFeatures?.cloudGsync;
+  const enabledReflex = finalizedFeatures?.reflex ?? requestedFeatures?.reflex;
 
   const profile: NegotiatedStreamProfile = {};
 
@@ -872,6 +963,14 @@ function extractNegotiatedStreamProfile(payload: CloudMatchResponse): Negotiated
     profile.enableL4S = enabledL4S;
   }
 
+  if (typeof enabledCloudGsync === "boolean") {
+    profile.enableCloudGsync = enabledCloudGsync;
+  }
+
+  if (typeof enabledReflex === "boolean") {
+    profile.enableReflex = enabledReflex;
+  }
+
   return Object.keys(profile).length > 0 ? profile : undefined;
 }
 
@@ -895,6 +994,13 @@ async function toSessionInfo(options: ToSessionInfoOptions): Promise<SessionInfo
   const queuePosition = extractQueuePosition(payload);
   const seatSetupStep = extractSeatSetupStep(payload);
   const adState = extractAdState(payload);
+  const negotiatedStreamProfile = extractNegotiatedStreamProfile(payload);
+  const requestedStreamingFeatures = normalizeStreamingFeatures(
+    payload.session.sessionRequestData?.requestedStreamingFeatures,
+  );
+  const finalizedStreamingFeatures = normalizeStreamingFeatures(
+    payload.session.finalizedStreamingFeatures,
+  );
 
   // Debug logging to trace signaling resolution
   const connections = payload.session.connectionInfo ?? [];
@@ -914,6 +1020,9 @@ async function toSessionInfo(options: ToSessionInfoOptions): Promise<SessionInfo
     `signalingUrl=${signaling.signalingUrl}, ` +
     `connections=[${connectionSummary}]`,
   );
+  console.log(
+    `[CloudMatch] negotiated streaming features: requested=${JSON.stringify(requestedStreamingFeatures ?? {})} finalized=${JSON.stringify(finalizedStreamingFeatures ?? {})} cloudGsync=${negotiatedStreamProfile?.enableCloudGsync ?? "n/a"}, reflex=${negotiatedStreamProfile?.enableReflex ?? "n/a"}, l4s=${negotiatedStreamProfile?.enableL4S ?? "n/a"}`,
+  );
 
   return {
     sessionId: payload.session.sessionId,
@@ -929,7 +1038,9 @@ async function toSessionInfo(options: ToSessionInfoOptions): Promise<SessionInfo
     gpuType: payload.session.gpuType,
     iceServers: await normalizeIceServers(payload),
     mediaConnectionInfo: signaling.mediaConnectionInfo,
-    negotiatedStreamProfile: extractNegotiatedStreamProfile(payload),
+    negotiatedStreamProfile,
+    requestedStreamingFeatures,
+    finalizedStreamingFeatures,
     clientId,
     deviceId,
   };
@@ -946,19 +1057,19 @@ export async function createSession(input: SessionCreateRequest): Promise<Sessio
 
   // Generate client/device IDs once for the entire session lifecycle
   const clientId = crypto.randomUUID();
-  const deviceId = crypto.randomUUID();
+  const deviceId = getStableDeviceId();
 
-  const body = buildSessionRequestBody(input);
+  const body = buildSessionRequestBody(input, deviceId);
 
   const base = resolveStreamingBaseUrl(input.zone, input.streamingBaseUrl);
   const keyboardLayout = resolveGfnKeyboardLayout(input.settings.keyboardLayout ?? DEFAULT_KEYBOARD_LAYOUT, process.platform);
   const languageCode = input.settings.gameLanguage ?? "en_US";
   const url = `${base}/v2/session?${new URLSearchParams({ keyboardLayout, languageCode }).toString()}`;
-  const response = await fetch(url, {
+  const response = await fetchWithOptionalProxy(url, {
     method: "POST",
     headers: requestHeaders({ token: input.token, clientId, deviceId, includeOrigin: true }),
     body: JSON.stringify(body),
-  });
+  }, input.proxyUrl);
 
   const text = await response.text();
   if (!response.ok) {
@@ -980,13 +1091,15 @@ export async function pollSession(input: SessionPollRequest): Promise<SessionInf
   const deviceId = input.deviceId ?? crypto.randomUUID();
 
   const base = resolvePollStopBase(input.zone, input.streamingBaseUrl, input.serverIp);
+  const baseHost = new URL(base).hostname;
+  const pollProxyUrl = isZoneHostname(baseHost) ? input.proxyUrl : undefined;
   const url = `${base}/v2/session/${input.sessionId}`;
   // Polling should NOT include Origin/Referer headers (matches claimSession polling pattern)
   const headers = requestHeaders({ token: input.token, clientId, deviceId, includeOrigin: false });
-  const response = await fetch(url, {
+  const response = await fetchWithOptionalProxy(url, {
     method: "GET",
     headers,
-  });
+  }, pollProxyUrl);
 
   const text = await response.text();
   if (!response.ok) {
@@ -994,7 +1107,6 @@ export async function pollSession(input: SessionPollRequest): Promise<SessionInf
   }
 
   const payload = JSON.parse(text) as CloudMatchResponse;
-  const baseHost = new URL(base).hostname;
 
   // Match Rust behavior: if the poll was routed through the zone load balancer
   // and the response now contains a real server IP in connectionInfo, re-poll
@@ -1017,6 +1129,7 @@ export async function pollSession(input: SessionPollRequest): Promise<SessionInf
     const directBase = `https://${realServerIp}`;
     const directUrl = `${directBase}/v2/session/${input.sessionId}`;
     try {
+      // The ready-session direct real-IP re-poll intentionally bypasses the session proxy.
       const directResponse = await fetch(directUrl, {
         method: "GET",
         headers,
@@ -1254,6 +1367,7 @@ function buildClaimRequestBody(sessionId: string, appId: string, settings: Strea
         { key: "GSStreamerType", value: "WebRTC" },
         { key: "networkType", value: "Unknown" },
         { key: "ClientImeSupport", value: "0" },
+        { key: "surroundAudioInfo", value: "2" },
       ],
       surroundAudioInfo: 0,
       clientTimezoneOffset: timezoneMs,
@@ -1271,17 +1385,6 @@ function buildClaimRequestBody(sessionId: string, appId: string, settings: Strea
       enablePersistingInGameSettings: true,
       secureRTSPSupported: false,
       userAge: 26,
-      requestedStreamingFeatures: {
-        reflex: false,
-        bitDepth: 0,
-        // RESUME claims must not renegotiate session creation-only streaming features.
-        cloudGsync: false,
-        profile: 0,
-        fallbackToLogicalResolution: false,
-        chromaFormat: 0,
-        prefilterMode: 0,
-        hudStreamingMode: 0,
-      },
     },
     metaData: [],
   };
@@ -1296,8 +1399,8 @@ export async function claimSession(input: SessionClaimRequest): Promise<SessionI
     throw new Error("Missing token for session claim");
   }
 
-  const deviceId = getStableDeviceId();
-  const clientId = crypto.randomUUID();
+  const deviceId = input.deviceId ?? getStableDeviceId();
+  const clientId = input.clientId ?? crypto.randomUUID();
 
   // Provide default values for optional parameters
   const appId = input.appId ?? "0";
@@ -1356,6 +1459,7 @@ export async function claimSession(input: SessionClaimRequest): Promise<SessionI
   // with SESSION_NOT_PAUSED. For these sessions we skip the claim PUT and poll directly.
   // Status 2/3 (ready/streaming) sessions are paused and can be RESUME'd normally.
   let preClaimStatus: number | null = null;
+  let shouldSendResumeClaim = true;
   try {
     const validationUrl = `https://${effectiveServerIp}/v2/session/${input.sessionId}`;
     const validationHeaders = requestHeaders({ token: input.token, clientId, deviceId, includeOrigin: false });
@@ -1369,6 +1473,17 @@ export async function claimSession(input: SessionClaimRequest): Promise<SessionI
       console.log(`[CloudMatch] claimSession: validation response (first 1000 chars): ${validationText.slice(0, 1000)}`);
       if (preClaimStatus === 1) {
         console.log(`[CloudMatch] claimSession: session is still launching (status=1), skipping RESUME claim — polling directly to ready state`);
+      } else if (
+        input.recoveryMode === true &&
+        (preClaimStatus === 2 || preClaimStatus === 3)
+      ) {
+        // Recovery parity: if the session is already ready/streaming, avoid sending
+        // another RESUME mutation. Repeated RESUME PUTs can rotate signaling hosts
+        // and push the session back into transient setup/cleanup states.
+        shouldSendResumeClaim = false;
+        console.log(
+          `[CloudMatch] claimSession: recoveryMode and session already ready (status=${preClaimStatus}); skipping redundant RESUME claim`,
+        );
       } else if (preClaimStatus !== 2 && preClaimStatus !== 3) {
         console.warn(`[CloudMatch] claimSession: session not in ready state (status=${preClaimStatus}), claim may fail`);
       }
@@ -1381,7 +1496,7 @@ export async function claimSession(input: SessionClaimRequest): Promise<SessionI
 
   // Only send the RESUME claim PUT if the session is in a paused state (status 2 or 3).
   // For status=1 (still launching) we bypass the claim and fall through to the polling loop.
-  if (preClaimStatus !== 1) {
+  if (preClaimStatus !== 1 && shouldSendResumeClaim) {
     const payload = buildClaimRequestBody(input.sessionId, appId, settings);
 
     const headers: Record<string, string> = {
@@ -1458,6 +1573,16 @@ export async function claimSession(input: SessionClaimRequest): Promise<SessionI
       // Session is ready
       const signaling = resolveSignaling(pollApiResponse);
       const queuePosition = extractQueuePosition(pollApiResponse);
+      const negotiatedStreamProfile = extractNegotiatedStreamProfile(pollApiResponse);
+      const requestedStreamingFeatures = normalizeStreamingFeatures(
+        pollApiResponse.session.sessionRequestData?.requestedStreamingFeatures,
+      );
+      const finalizedStreamingFeatures = normalizeStreamingFeatures(
+        pollApiResponse.session.finalizedStreamingFeatures,
+      );
+      console.log(
+        `[CloudMatch] claimed negotiated streaming features: requested=${JSON.stringify(requestedStreamingFeatures ?? {})} finalized=${JSON.stringify(finalizedStreamingFeatures ?? {})} cloudGsync=${negotiatedStreamProfile?.enableCloudGsync ?? "n/a"}, reflex=${negotiatedStreamProfile?.enableReflex ?? "n/a"}, l4s=${negotiatedStreamProfile?.enableL4S ?? "n/a"}`,
+      );
 
       return {
         sessionId: sessionData.sessionId,
@@ -1471,7 +1596,11 @@ export async function claimSession(input: SessionClaimRequest): Promise<SessionI
         gpuType: sessionData.gpuType,
         iceServers: await normalizeIceServers(pollApiResponse),
         mediaConnectionInfo: signaling.mediaConnectionInfo,
-        negotiatedStreamProfile: extractNegotiatedStreamProfile(pollApiResponse),
+        negotiatedStreamProfile: negotiatedStreamProfile ?? extractNegotiatedStreamProfile(pollApiResponse),
+        requestedStreamingFeatures,
+        finalizedStreamingFeatures,
+        clientId,
+        deviceId,
       };
     }
 

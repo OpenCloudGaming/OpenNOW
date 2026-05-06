@@ -5,6 +5,8 @@ import type {
   SessionInfo,
   VideoCodec,
   MicrophoneMode,
+  NativeTransitionDiagnostics,
+  NativeQueueMode,
 } from "@shared/gfn";
 
 import {
@@ -45,6 +47,7 @@ interface OfferSettings {
   resolution: string;
   fps: number;
   maxBitrateKbps: number;
+  nativeTransitionDiagnostics?: NativeTransitionDiagnostics;
 }
 
 interface RiInputCapabilities {
@@ -91,17 +94,47 @@ function hevcPreferredProfileId(colorQuality: ColorQuality): 1 | 2 {
   return colorQuality.startsWith("10bit") ? 2 : 1;
 }
 
+function describeColorQuality(colorQuality: ColorQuality): string {
+  switch (colorQuality) {
+    case "8bit_420":
+      return "8-bit 4:2:0";
+    case "8bit_444":
+      return "8-bit 4:4:4";
+    case "10bit_420":
+      return "10-bit 4:2:0";
+    case "10bit_444":
+      return "10-bit 4:4:4";
+    default:
+      return colorQuality;
+  }
+}
+
+function describeNativeHardwareAcceleration(): string {
+  const platform = navigator.platform.toLowerCase();
+  if (platform.includes("win")) {
+    return "GStreamer D3D11/DXVA";
+  }
+  if (platform.includes("mac")) {
+    return "GStreamer VideoToolbox";
+  }
+  return "GStreamer VAAPI/V4L2";
+}
+
 export interface StreamDiagnostics {
   // Connection state
   connectionState: RTCPeerConnectionState | "closed";
   inputReady: boolean;
+  nativeRendererActive: boolean;
   connectedGamepads: number;
 
   // Video stats
   resolution: string;
   codec: string;
+  hardwareAcceleration: string;
+  colorCodec: string;
   isHdr: boolean;
   bitrateKbps: number;
+  targetBitrateKbps: number;
   decodeFps: number;
   renderFps: number;
 
@@ -147,6 +180,15 @@ export interface StreamDiagnostics {
   decoderPressureActive: boolean;
   decoderRecoveryAttempts: number;
   decoderRecoveryAction: string;
+  nativeRequestedFps?: number;
+  nativeCapsFramerate?: string;
+  nativeQueueMode?: NativeQueueMode;
+  nativeFramesPendingToPresent?: number;
+  nativePartialFlushCount?: number;
+  nativeCompleteFlushCount?: number;
+  nativeTransitionSummary?: string;
+  nativeRequestedStreamingFeaturesSummary?: string;
+  nativeFinalizedStreamingFeaturesSummary?: string;
 
   // Microphone state
   micState: MicState;
@@ -183,6 +225,10 @@ interface ClientOptions {
   onStats?: (stats: StreamDiagnostics) => void;
   onTimeWarning?: (warning: StreamTimeWarning) => void;
   onMicStateChange?: (state: MicStateChange) => void;
+  onIceConnectionStateChange?: (state: RTCIceConnectionState) => void;
+  onPeerConnectionStateChange?: (state: RTCPeerConnectionState) => void;
+  /** Optional host callback for Meta/Home button edge presses (button 16). */
+  onControllerMetaPress?: (event: { controllerId: number; gamepad: Gamepad }) => void;
 }
 
 function timestampUs(sourceTimestampMs?: number): bigint {
@@ -536,8 +582,11 @@ export class GfnWebRtcClient {
   private reliableInputChannel: RTCDataChannel | null = null;
   private partiallyReliableInputChannel: RTCDataChannel | null = null;
   private controlChannel: RTCDataChannel | null = null;
+  private nativeInputActive = false;
   private audioContext: AudioContext | null = null;
   private audioSourceNode: MediaStreamAudioSourceNode | null = null;
+  private audioGainNode: GainNode | null = null;
+  private outputVolume = 1;
 
   private inputReady = false;
   /** When true, the host (e.g. in-stream controller menu) blocks forwarding; not cleared by focus/visibility. */
@@ -561,6 +610,7 @@ export class GfnWebRtcClient {
   private lastGamepadSendMs = 0;
   // Gamepad keepalive interval: resend last state every 100ms to keep server controller alive
   private static readonly GAMEPAD_KEEPALIVE_MS = 100;
+  private static readonly NATIVE_INPUT_PROTOCOL_FALLBACK = 3;
   private static readonly MOUSE_FLUSH_FAST_MS = 4;
   private static readonly MOUSE_FLUSH_NORMAL_MS = 8;
   private static readonly MOUSE_FLUSH_SAFE_MS = 16;
@@ -583,6 +633,13 @@ export class GfnWebRtcClient {
   private static readonly RUMBLE_THROTTLE_MS = 500;
   private static readonly HAPTICS_LOG_INTERVAL_MS = 5000;
 
+  private static normalizeInputProtocolVersion(protocolVersion: number): number {
+    if (!Number.isFinite(protocolVersion)) {
+      return 2;
+    }
+    return Math.min(255, Math.max(1, Math.trunc(protocolVersion)));
+  }
+
   // Gamepad bitmap sent at packet offset 8, matching official client's this.nu field:
   // bit i (0-3) = connected, bit i+8 = Xbox/xinput style device.
   // Haptics availability is advertised separately with input event type 13.
@@ -600,6 +657,8 @@ export class GfnWebRtcClient {
   } | null = null;
   private renderFpsCounter = { frames: 0, lastUpdate: 0, fps: 0 };
   private connectedGamepads: Set<number> = new Set();
+  private gamepadMetaPressed: Map<number, boolean> = new Map();
+  private lastEmittedDiagnostics: StreamDiagnostics | null = null;
   private previousGamepadStates: Map<number, GamepadInput> = new Map();
   private lastRumbleWeak: number[] = [0, 0, 0, 0];
   private lastRumbleStrong: number[] = [0, 0, 0, 0];
@@ -679,11 +738,15 @@ export class GfnWebRtcClient {
   private diagnostics: StreamDiagnostics = {
     connectionState: "closed",
     inputReady: false,
+    nativeRendererActive: false,
     connectedGamepads: 0,
     resolution: "",
     codec: "",
+    hardwareAcceleration: "Chromium GPU decode",
+    colorCodec: "",
     isHdr: false,
     bitrateKbps: 0,
+    targetBitrateKbps: 0,
     decodeFps: 0,
     renderFps: 0,
     packetsLost: 0,
@@ -716,6 +779,15 @@ export class GfnWebRtcClient {
     decoderPressureActive: false,
     decoderRecoveryAttempts: 0,
     decoderRecoveryAction: "none",
+    nativeRequestedFps: undefined,
+    nativeCapsFramerate: undefined,
+    nativeQueueMode: undefined,
+    nativeFramesPendingToPresent: undefined,
+    nativePartialFlushCount: undefined,
+    nativeCompleteFlushCount: undefined,
+    nativeTransitionSummary: undefined,
+    nativeRequestedStreamingFeaturesSummary: undefined,
+    nativeFinalizedStreamingFeaturesSummary: undefined,
     micState: "uninitialized",
     micEnabled: false,
   };
@@ -724,6 +796,7 @@ export class GfnWebRtcClient {
     options.videoElement.srcObject = this.videoStream;
     options.audioElement.srcObject = this.audioStream;
     options.audioElement.muted = true;
+    options.audioElement.volume = this.outputVolume;
     this.mouseSensitivity = options.mouseSensitivity ?? 1;
     this.mouseAccelerationPercent = Math.max(1, Math.min(150, Math.round(options.mouseAcceleration ?? 1)));
     this.autoFullScreenEnabled = options.autoFullScreen !== false;
@@ -734,6 +807,7 @@ export class GfnWebRtcClient {
     // Detect GPU once on construction
     this.gpuType = detectGpuType();
     this.diagnostics.gpuType = this.gpuType;
+    this.diagnostics.hardwareAcceleration = "Chromium GPU decode";
 
     // Initialize microphone manager if mode is enabled
     const micMode = options.microphoneMode ?? "disabled";
@@ -926,10 +1000,25 @@ export class GfnWebRtcClient {
     this.options.onLog(message);
   }
 
-  private emitStats(): void {
-    if (this.options.onStats) {
-      this.options.onStats({ ...this.diagnostics });
+  private diagnosticsChangedSinceLastEmit(): boolean {
+    if (!this.lastEmittedDiagnostics) return true;
+    const current = this.diagnostics as unknown as Record<string, unknown>;
+    const previous = this.lastEmittedDiagnostics as unknown as Record<string, unknown>;
+    const keys = Object.keys(current);
+    for (const key of keys) {
+      if (!Object.is(current[key], previous[key])) {
+        return true;
+      }
     }
+    return false;
+  }
+
+  private emitStats(force = false): void {
+    if (!this.options.onStats) return;
+    if (!force && !this.diagnosticsChangedSinceLastEmit()) return;
+    const snapshot = { ...this.diagnostics };
+    this.lastEmittedDiagnostics = snapshot;
+    this.options.onStats(snapshot);
   }
 
   private resetDecoderRecoveryState(): void {
@@ -947,10 +1036,20 @@ export class GfnWebRtcClient {
     this.diagnostics.decoderPressureActive = false;
     this.diagnostics.decoderRecoveryAttempts = 0;
     this.diagnostics.decoderRecoveryAction = "none";
+    this.diagnostics.nativeRequestedFps = undefined;
+    this.diagnostics.nativeCapsFramerate = undefined;
+    this.diagnostics.nativeQueueMode = undefined;
+    this.diagnostics.nativeFramesPendingToPresent = undefined;
+    this.diagnostics.nativePartialFlushCount = undefined;
+    this.diagnostics.nativeCompleteFlushCount = undefined;
+    this.diagnostics.nativeTransitionSummary = undefined;
+    this.diagnostics.nativeRequestedStreamingFeaturesSummary = undefined;
+    this.diagnostics.nativeFinalizedStreamingFeaturesSummary = undefined;
   }
 
   private resetDiagnostics(): void {
     this.lastStatsSample = null;
+    this.lastEmittedDiagnostics = null;
     this.currentCodec = "";
     this.currentResolution = "";
     this.isHdr = false;
@@ -959,11 +1058,15 @@ export class GfnWebRtcClient {
     this.diagnostics = {
       connectionState: this.pc?.connectionState ?? "closed",
       inputReady: false,
+      nativeRendererActive: false,
       connectedGamepads: 0,
       resolution: "",
       codec: "",
+      hardwareAcceleration: "Chromium GPU decode",
+      colorCodec: "",
       isHdr: false,
       bitrateKbps: 0,
+      targetBitrateKbps: 0,
       decodeFps: 0,
       renderFps: 0,
       packetsLost: 0,
@@ -996,6 +1099,15 @@ export class GfnWebRtcClient {
       decoderPressureActive: false,
       decoderRecoveryAttempts: 0,
       decoderRecoveryAction: "none",
+      nativeRequestedFps: undefined,
+      nativeCapsFramerate: undefined,
+      nativeQueueMode: undefined,
+      nativeFramesPendingToPresent: undefined,
+      nativePartialFlushCount: undefined,
+      nativeCompleteFlushCount: undefined,
+      nativeTransitionSummary: undefined,
+      nativeRequestedStreamingFeaturesSummary: undefined,
+      nativeFinalizedStreamingFeaturesSummary: undefined,
       micState: this.micState,
       micEnabled: this.micManager?.isEnabled() ?? false,
     };
@@ -1004,13 +1116,41 @@ export class GfnWebRtcClient {
 
   private resetInputState(): void {
     this.inputReady = false;
+    this.nativeInputActive = false;
     this.inputProtocolVersion = 2;
     this.hapticsAdvertised = false;
     this.inputEncoder.setProtocolVersion(2);
     this.diagnostics.inputReady = false;
+    this.diagnostics.nativeRendererActive = false;
     this.diagnostics.partiallyReliableInputOpen = false;
     this.diagnostics.mouseMoveTransport = "reliable";
     this.emitStats();
+  }
+
+  private applyStreamSettingsDiagnostics(
+    settings: OfferSettings,
+    codec: VideoCodec,
+    nativeRendererActive: boolean,
+  ): void {
+    this.currentCodec = codec;
+    this.currentResolution = settings.resolution;
+    this.isHdr = settings.colorQuality.startsWith("10bit");
+    this.negotiatedMaxBitrateKbps = Math.max(
+      GfnWebRtcClient.DECODER_MIN_RECOVERY_BITRATE_KBPS,
+      Math.floor(settings.maxBitrateKbps),
+    );
+    this.currentBitrateCeilingKbps = this.negotiatedMaxBitrateKbps;
+
+    this.diagnostics.resolution = settings.resolution;
+    this.diagnostics.codec = codec;
+    this.diagnostics.hardwareAcceleration = nativeRendererActive
+      ? describeNativeHardwareAcceleration()
+      : "Chromium GPU decode";
+    this.diagnostics.colorCodec = describeColorQuality(settings.colorQuality);
+    this.diagnostics.isHdr = this.isHdr;
+    this.diagnostics.targetBitrateKbps = this.negotiatedMaxBitrateKbps;
+    this.diagnostics.decodeFps = settings.fps;
+    this.diagnostics.renderFps = settings.fps;
   }
 
   private closeDataChannels(): void {
@@ -1641,6 +1781,15 @@ export class GfnWebRtcClient {
       this.audioSourceNode = null;
     }
 
+    if (this.audioGainNode) {
+      try {
+        this.audioGainNode.disconnect();
+      } catch {
+        // Ignore cleanup errors from an already-disconnected node.
+      }
+      this.audioGainNode = null;
+    }
+
     if (this.audioContext) {
       void this.audioContext.close().catch(() => {});
       this.audioContext = null;
@@ -1653,6 +1802,7 @@ export class GfnWebRtcClient {
   private startDirectAudioPlayback(reason: string): void {
     this.log(reason);
     this.options.audioElement.muted = false;
+    this.options.audioElement.volume = this.outputVolume;
     this.options.audioElement
       .play()
       .then(() => {
@@ -1710,6 +1860,58 @@ export class GfnWebRtcClient {
     this.inputQueueDropCount = 0;
     this.inputQueuePressureLoggedAtMs = 0;
     this.inputEncoder.resetGamepadSequences();
+  }
+
+  public activateNativeInput(protocolVersion?: number, settings?: OfferSettings): void {
+    this.cleanupPeerConnection();
+    this.nativeInputActive = true;
+    this.inputReady = true;
+    const nativeProtocolVersion = GfnWebRtcClient.normalizeInputProtocolVersion(
+      protocolVersion
+        ?? (this.inputProtocolVersion > 2
+          ? this.inputProtocolVersion
+          : GfnWebRtcClient.NATIVE_INPUT_PROTOCOL_FALLBACK),
+    );
+    this.inputProtocolVersion = nativeProtocolVersion;
+    this.inputEncoder.setProtocolVersion(nativeProtocolVersion);
+    this.diagnostics.connectionState = "connected";
+    this.diagnostics.inputReady = true;
+    this.diagnostics.nativeRendererActive = true;
+    if (settings) {
+      this.applyStreamSettingsDiagnostics(settings, settings.codec, true);
+    } else {
+      this.diagnostics.hardwareAcceleration = describeNativeHardwareAcceleration();
+      this.diagnostics.codec = this.currentCodec || "Native";
+    }
+    this.diagnostics.lagReason = "stable";
+    this.diagnostics.lagReasonDetail = "Native streamer input bridge active";
+    this.diagnostics.partiallyReliableInputOpen = true;
+    this.diagnostics.mouseMoveTransport = this.canSendInputTypePartiallyReliable(INPUT_MOUSE_REL)
+      ? "partially_reliable"
+      : "reliable";
+    this.emitStats();
+    this.detachInputCapture();
+    this.inputPaused = false;
+    // Restart the polling loop for Meta/Home button detection. Full gamepad
+    // state forwarding is suppressed inside pollGamepads() when nativeInputActive
+    // is true so the native renderer remains the sole source for controller input.
+    this.setupGamepadPolling();
+    this.log(`Native DX11 input forwarding active (protocol v${nativeProtocolVersion}); controller meta detection active, gamepad forwarding handled by native renderer.`);
+  }
+
+  public setNativeInputProtocolVersion(protocolVersion: number): void {
+    const version = GfnWebRtcClient.normalizeInputProtocolVersion(protocolVersion);
+    if (this.inputProtocolVersion === version) {
+      return;
+    }
+
+    this.inputProtocolVersion = version;
+    this.inputEncoder.setProtocolVersion(version);
+    this.inputEncoder.resetGamepadSequences();
+    this.previousGamepadStates.clear();
+    this.lastGamepadSendMs = 0;
+    this.log(`Native input protocol updated to v${version}`);
+
   }
 
   private attachTrack(track: MediaStreamTrack): void {
@@ -1770,6 +1972,7 @@ export class GfnWebRtcClient {
       // matching what the official GFN browser client does for low-latency playback.
       let audioContext: AudioContext | null = null;
       let audioSourceNode: MediaStreamAudioSourceNode | null = null;
+      let audioGainNode: GainNode | null = null;
 
       try {
         audioContext = new AudioContext({
@@ -1777,7 +1980,10 @@ export class GfnWebRtcClient {
           sampleRate: 48000,
         });
         audioSourceNode = audioContext.createMediaStreamSource(this.audioStream);
-        audioSourceNode.connect(audioContext.destination);
+        audioGainNode = audioContext.createGain();
+        audioGainNode.gain.value = this.outputVolume;
+        audioSourceNode.connect(audioGainNode);
+        audioGainNode.connect(audioContext.destination);
 
         // Resume the context (browsers require user gesture, but Electron is more lenient)
         if (audioContext.state === "suspended") {
@@ -1786,6 +1992,7 @@ export class GfnWebRtcClient {
 
         this.audioContext = audioContext;
         this.audioSourceNode = audioSourceNode;
+        this.audioGainNode = audioGainNode;
         this.log(
           `Audio routed through AudioContext (latency: ${(audioContext.baseLatency * 1000).toFixed(1)}ms, sampleRate: ${audioContext.sampleRate}Hz)`,
         );
@@ -1793,6 +2000,13 @@ export class GfnWebRtcClient {
         if (audioSourceNode) {
           try {
             audioSourceNode.disconnect();
+          } catch {
+            // Ignore cleanup errors from a partially-created node.
+          }
+        }
+        if (audioGainNode) {
+          try {
+            audioGainNode.disconnect();
           } catch {
             // Ignore cleanup errors from a partially-created node.
           }
@@ -1882,7 +2096,7 @@ export class GfnWebRtcClient {
   }
 
   private getGamepadPollIntervalMs(): number {
-    if (!this.inputReady || this.isStreamInputBlocked() || document.visibilityState !== "visible") {
+    if (!this.shouldPollGamepads()) {
       return 100;
     }
 
@@ -1890,7 +2104,15 @@ export class GfnWebRtcClient {
       return 100;
     }
 
-    return 4;
+    // Poll at reduced rate while input is paused (dashboard open) — fast enough
+    // to catch the Meta button release and next press, but not burning CPU at
+    // the full 4 ms stream-input rate.
+    return this.inputPaused ? 16 : 4;
+  }
+
+  private shouldPollGamepads(): boolean {
+    return this.inputReady
+      && document.visibilityState === "visible";
   }
 
   private gamepadSendCount = 0;
@@ -1912,7 +2134,8 @@ export class GfnWebRtcClient {
   }
 
   private pollGamepads(): void {
-    if (this.isStreamInputBlocked()) return;
+    if (!this.shouldPollGamepads()) return;
+    const streamInputBlocked = this.isStreamInputBlocked();
     const gamepads = navigator.getGamepads();
     if (!gamepads) {
       return;
@@ -1927,6 +2150,16 @@ export class GfnWebRtcClient {
       if (gamepad && gamepad.connected) {
         connectedCount++;
         this.updateGamepadBitmap(i, gamepad);
+        const metaPressed = Boolean(gamepad.buttons[16]?.pressed);
+        const prevMetaPressed = this.gamepadMetaPressed.get(i) ?? false;
+        if (metaPressed && !prevMetaPressed) {
+          try {
+            this.options.onControllerMetaPress?.({ controllerId: i, gamepad });
+          } catch {
+            // Host callbacks must never break stream input polling.
+          }
+        }
+        this.gamepadMetaPressed.set(i, metaPressed);
 
         // Track connected gamepads and update bitmap
         if (!this.connectedGamepads.has(i)) {
@@ -1939,6 +2172,11 @@ export class GfnWebRtcClient {
         }
 
         // Read and encode gamepad state
+        // Skip forwarding to the stream if input is blocked (dashboard open) or
+        // the native renderer is handling controller input directly.
+        if (streamInputBlocked || this.nativeInputActive) {
+          continue;
+        }
         const gamepadInput = this.readGamepadState(gamepad, i);
         const stateChanged = this.hasGamepadStateChanged(i, gamepadInput);
 
@@ -1974,6 +2212,7 @@ export class GfnWebRtcClient {
         // Gamepad disconnected — clear bit from bitmap
         this.stopGamepadRumble(i, gamepad ?? undefined);
         this.connectedGamepads.delete(i);
+        this.gamepadMetaPressed.delete(i);
         this.previousGamepadStates.delete(i);
         this.clearGamepadBitmap(i);
         this.log(`Gamepad ${i} disconnected, bitmap now: 0x${this.gamepadBitmap.toString(16)}`);
@@ -2325,6 +2564,9 @@ export class GfnWebRtcClient {
   }
 
   private isPartiallyReliableChannelOpen(): boolean {
+    if (this.nativeInputActive) {
+      return true;
+    }
     return this.partiallyReliableInputChannel?.readyState === "open";
   }
 
@@ -2349,6 +2591,11 @@ export class GfnWebRtcClient {
   }
 
   private sendPartiallyReliable(payload: Uint8Array): void {
+    if (this.nativeInputActive) {
+      this.sendNativeInput(payload, true);
+      return;
+    }
+
     if (this.partiallyReliableInputChannel?.readyState === "open") {
       const view = payload.byteOffset === 0 && payload.byteLength === payload.buffer.byteLength
         ? payload
@@ -2534,7 +2781,20 @@ export class GfnWebRtcClient {
 
   private reliableDropLogged = false;
 
+  private sendNativeInput(payload: Uint8Array, partiallyReliable: boolean): void {
+    const safePayload = Uint8Array.from(payload);
+    window.openNow.sendNativeInput({
+      payload: safePayload,
+      partiallyReliable,
+    });
+  }
+
   public sendReliable(payload: Uint8Array): void {
+    if (this.nativeInputActive) {
+      this.sendNativeInput(payload, false);
+      return;
+    }
+
     if (this.reliableInputChannel?.readyState === "open") {
       const view = payload.byteOffset === 0 && payload.byteLength === payload.buffer.byteLength
         ? payload
@@ -2763,6 +3023,17 @@ export class GfnWebRtcClient {
     this.detachInputCapture();
 
     const pointerLockTarget = (videoElement.parentElement as HTMLElement | null) ?? videoElement;
+    const originalPointerLockTargetTabIndex = pointerLockTarget.getAttribute("tabindex");
+    if (originalPointerLockTargetTabIndex === null) {
+      pointerLockTarget.tabIndex = -1;
+    }
+    const focusPointerLockTarget = (): void => {
+      try {
+        pointerLockTarget.focus({ preventScroll: true });
+      } catch {
+        pointerLockTarget.focus();
+      }
+    };
     const isPointerLockActive = (): boolean => {
       const lockElement = document.pointerLockElement;
       return lockElement === pointerLockTarget || lockElement === videoElement;
@@ -3252,6 +3523,7 @@ export class GfnWebRtcClient {
     };
 
     const onClick = () => {
+      focusPointerLockTarget();
       void this.requestPointerLockWithOptionalFullscreen(pointerLockTarget, this.shouldAutoFullscreen()).catch(
         (err: DOMException) => {
           this.log(`Pointer lock request failed: ${err.name}: ${err.message}`);
@@ -3404,7 +3676,11 @@ export class GfnWebRtcClient {
       lastAbsY = null;
       this.releasePressedKeys("window blur");
       // Pause forwarding while window is not focused (host overlay pause is separate).
-      this.windowStateInputPaused = true;
+      // In native mode the renderer sink can be a separate no-activate window,
+      // so a focus transition is not enough reason to stop controller polling.
+      if (!this.nativeInputActive) {
+        this.windowStateInputPaused = true;
+      }
     };
 
     const onVisibilityChange = () => {
@@ -3422,6 +3698,7 @@ export class GfnWebRtcClient {
       mouseInStreamView = true;
       lastAbsX = null;
       lastAbsY = null;
+      focusPointerLockTarget();
       // Auto-lock: acquire pointer lock when the user switches back to the app.
       tryAutoLock();
     };
@@ -3539,6 +3816,7 @@ export class GfnWebRtcClient {
       document.addEventListener("mouseover", onDocumentPointerEnterWindow, true);
       document.addEventListener("mousemove", onFirstMouseMoveIntoWindow as EventListener, true);
     }
+    focusPointerLockTarget();
     document.addEventListener("pointerlockchange", onPointerLockChange);
     document.addEventListener("fullscreenchange", onFullscreenChange);
     window.addEventListener("blur", onWindowBlur);
@@ -3592,6 +3870,13 @@ export class GfnWebRtcClient {
       this.inputCleanup.push(() => document.removeEventListener("mousemove", onFirstMouseMoveIntoWindow as EventListener, true));
     }
     this.inputCleanup.push(() => videoElement.removeEventListener("click", onClick));
+    this.inputCleanup.push(() => {
+      if (originalPointerLockTargetTabIndex === null) {
+        pointerLockTarget.removeAttribute("tabindex");
+      } else {
+        pointerLockTarget.setAttribute("tabindex", originalPointerLockTargetTabIndex);
+      }
+    });
     this.inputCleanup.push(() => document.removeEventListener("pointerlockchange", onPointerLockChange));
     this.inputCleanup.push(() => document.removeEventListener("fullscreenchange", onFullscreenChange));
     this.inputCleanup.push(() => window.removeEventListener("blur", onWindowBlur));
@@ -3904,6 +4189,7 @@ export class GfnWebRtcClient {
       this.diagnostics.connectionState = pc.connectionState;
       this.emitStats();
       this.log(`Peer connection state: ${pc.connectionState}`);
+      this.options.onPeerConnectionStateChange?.(pc.connectionState);
     };
 
     pc.ondatachannel = (event) => {
@@ -3939,6 +4225,7 @@ export class GfnWebRtcClient {
 
     pc.oniceconnectionstatechange = () => {
       this.log(`ICE connection state: ${pc.iceConnectionState}`);
+      this.options.onIceConnectionStateChange?.(pc.iceConnectionState);
     };
 
     pc.onicegatheringstatechange = () => {
@@ -4026,6 +4313,8 @@ export class GfnWebRtcClient {
       this.log(`Warning: ${settings.codec} not reported in browser codec list; forcing requested codec anyway`);
     }
     this.log(`Effective codec: ${effectiveCodec} (preferred HEVC profile-id=${preferredHevcProfileId})`);
+    this.applyStreamSettingsDiagnostics(settings, effectiveCodec, false);
+    this.emitStats();
     const filteredOffer = preferCodec(processedOffer, effectiveCodec, {
       preferHevcProfileId: preferredHevcProfileId,
     });
@@ -4114,6 +4403,8 @@ export class GfnWebRtcClient {
       codec: effectiveCodec,
       colorQuality: settings.colorQuality,
       credentials,
+      dynamicSplitEncodeUpdatesEnabled:
+        settings.nativeTransitionDiagnostics?.disableDynamicSplitEncodeUpdates !== true,
     });
 
     await window.openNow.sendAnswer({
@@ -4252,6 +4543,24 @@ export class GfnWebRtcClient {
     this.log(`Microphone ${enabled ? "enabled" : "disabled"}`);
   }
 
+  setMicrophoneLevel(level01: number): void {
+    if (!this.micManager) return;
+    this.micManager.setMicLevel(level01);
+  }
+
+  setOutputVolume(volume: number): void {
+    const next = Math.max(0, Math.min(1, Number.isFinite(volume) ? volume : 1));
+    this.outputVolume = next;
+    this.options.audioElement.volume = next;
+    if (this.audioGainNode) {
+      this.audioGainNode.gain.value = next;
+    }
+  }
+
+  getMicrophoneLevel(): number {
+    return this.micManager?.getMicLevel() ?? 1;
+  }
+
   /**
    * Check if microphone is currently enabled (unmuted)
    */
@@ -4267,8 +4576,8 @@ export class GfnWebRtcClient {
   }
 
   /**
-   * Return the live audio track from the microphone stream, or null if
-   * the mic has not been started or has been stopped.
+   * Live audio track for UI metering / local recording mix: post-gain send path when available
+   * (same levels the remote session hears), else raw capture.
    */
   getMicTrack(): MediaStreamTrack | null {
     return this.micManager?.getTrack() ?? null;
