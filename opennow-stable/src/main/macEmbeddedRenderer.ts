@@ -48,7 +48,7 @@ export class MacEmbeddedRendererController {
   private binding: NativeBinding | null = null;
   private active: boolean = false;
   private lastIOSurfaceId: number | null = null;
-  private lastDimensions: { width: number; height: number } | null = null;
+  private allocatedDimensions: { width: number; height: number } | null = null;
   private lastFrameReadyTime: number = 0;
   private frameReadyThrottleMs: number = 4; // ~250 fps cap
 
@@ -115,13 +115,15 @@ export class MacEmbeddedRendererController {
       const height = rect.height;
       const scale = surface.deviceScaleFactor || 1;
 
-      const dimensionThreshold = 8;
       const dimensionsChanged =
-        !this.lastDimensions ||
-        Math.abs(this.lastDimensions.width - width) >= dimensionThreshold ||
-        Math.abs(this.lastDimensions.height - height) >= dimensionThreshold;
+        !this.allocatedDimensions ||
+        width !== this.allocatedDimensions.width ||
+        height !== this.allocatedDimensions.height;
 
       if (dimensionsChanged && this.lastIOSurfaceId !== null) {
+        console.log(
+          `[MacEmbeddedRenderer] Recreating IOSurface for size change ${this.allocatedDimensions?.width ?? 0}x${this.allocatedDimensions?.height ?? 0} -> ${width}x${height}`
+        );
         this.binding.destroySurface();
         this.lastIOSurfaceId = null;
       }
@@ -129,14 +131,13 @@ export class MacEmbeddedRendererController {
       if (this.lastIOSurfaceId === null) {
         const result = this.binding.createSurface(windowHandle, width, height, scale);
         this.lastIOSurfaceId = result.iosurfaceId;
-        this.lastDimensions = { width, height };
-        console.log(`[MacEmbeddedRenderer] Created IOSurface: id=${result.iosurfaceId}, ${width}x${height}@${scale}x`);
+        this.allocatedDimensions = { width, height };
+        console.log(`[MacEmbeddedRenderer] Created IOSurface: id=${result.iosurfaceId}, size=${width}x${height}@${scale}x`);
         this.binding.updateSurface(windowHandle, rect.x, rect.y, width, height, scale, surface.visible);
         return result;
       }
 
       this.binding.updateSurface(windowHandle, rect.x, rect.y, width, height, scale, surface.visible);
-      this.lastDimensions = { width, height };
 
       return { iosurfaceId: this.lastIOSurfaceId };
     } catch (err) {
@@ -175,7 +176,7 @@ export class MacEmbeddedRendererController {
       console.error(`[MacEmbeddedRenderer] Error in dispose: ${err}`);
     } finally {
       this.lastIOSurfaceId = null;
-      this.lastDimensions = null;
+      this.allocatedDimensions = null;
       this.active = false;
       this.binding = null;
     }

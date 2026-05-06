@@ -3,6 +3,7 @@
 
 #include <napi.h>
 #import <Cocoa/Cocoa.h>
+#import <CoreImage/CoreImage.h>
 #import <QuartzCore/QuartzCore.h>
 #include <IOSurface/IOSurface.h>
 #include <mach/mach.h>
@@ -14,7 +15,6 @@ class EmbeddedRendererState {
 public:
   IOSurfaceRef iosurface = nullptr;
   NSView* nsview = nullptr;
-  CALayer* layer = nullptr;
   NSView* host_view = nullptr;
   std::string window_handle;
   uint32_t iosurface_id = 0;
@@ -22,8 +22,10 @@ public:
   int height = 0;
   bool attached = false;
   bool attachment_failed_logged = false;
-  uint64_t presented_frame_count = 0;
-  CFTimeInterval last_presentation_log_time = 0;
+  uint64_t frame_ready_count = 0;
+  uint64_t draw_count = 0;
+  uint64_t draw_skip_count = 0;
+  CFTimeInterval last_draw_log_time = 0;
 
   ~EmbeddedRendererState() {
     if (iosurface != nullptr) {
@@ -34,13 +36,107 @@ public:
       [nsview removeFromSuperview];
       nsview = nil;
     }
-    if (layer != nullptr) {
-      layer = nil;
-    }
   }
 };
 
 static std::unique_ptr<EmbeddedRendererState> g_state;
+
+@interface EmbeddedIOSurfaceView : NSView
+- (void)setIOSurface:(IOSurfaceRef)surface;
+- (void)presentCurrentFrame;
+@end
+
+@implementation EmbeddedIOSurfaceView {
+  IOSurfaceRef _surface;
+}
+
+- (instancetype)initWithFrame:(NSRect)frameRect {
+  self = [super initWithFrame:frameRect];
+  return self;
+}
+
+- (BOOL)isFlipped {
+  return YES;
+}
+
+- (BOOL)isOpaque {
+  return YES;
+}
+
+- (void)dealloc {
+  if (_surface != nullptr) {
+    CFRelease(_surface);
+    _surface = nullptr;
+  }
+}
+
+- (void)setIOSurface:(IOSurfaceRef)surface {
+  if (surface == _surface) {
+    return;
+  }
+
+  if (surface != nullptr) {
+    CFRetain(surface);
+  }
+  IOSurfaceRef previous = _surface;
+  _surface = surface;
+  if (previous != nullptr) {
+    CFRelease(previous);
+  }
+
+  [self setNeedsDisplay:YES];
+}
+
+- (void)presentCurrentFrame {
+  [self setNeedsDisplay:YES];
+  [self display];
+}
+
+- (void)drawRect:(NSRect)dirtyRect {
+  [super drawRect:dirtyRect];
+
+  CGContextRef context = NSGraphicsContext.currentContext.CGContext;
+  if (context == nullptr) {
+    return;
+  }
+
+  CGContextSetFillColorWithColor(context, NSColor.blackColor.CGColor);
+  CGContextFillRect(context, NSRectToCGRect(self.bounds));
+
+  IOSurfaceRef surface = _surface;
+  if (surface == nullptr) {
+    if (g_state) {
+      g_state->draw_skip_count += 1;
+    }
+    return;
+  }
+
+  NSDictionary* options = @{
+    kCIImageColorSpace: [NSNull null],
+  };
+  CIImage* image = [[CIImage alloc] initWithIOSurface:surface options:options];
+  if (image == nil) {
+    if (g_state) {
+      g_state->draw_skip_count += 1;
+    }
+    return;
+  }
+
+  CIContext* ciContext = [CIContext contextWithCGContext:context options:@{
+    kCIContextWorkingColorSpace: [NSNull null],
+    kCIContextOutputColorSpace: [NSNull null],
+  }];
+
+  CGRect bounds = NSRectToCGRect(self.bounds);
+  CGRect imageRect = CGRectMake(0, 0, IOSurfaceGetWidth(surface), IOSurfaceGetHeight(surface));
+  [ciContext drawImage:image inRect:bounds fromRect:imageRect];
+
+  if (g_state) {
+    g_state->draw_count += 1;
+  }
+}
+
+@end
 
 // Safely run a block on the main thread.
 // If already on main thread, executes inline (avoids dispatch_sync deadlock).
@@ -160,14 +256,17 @@ static void ApplyGeometry(EmbeddedRendererState* state,
   const CGFloat y_pts_top = static_cast<CGFloat>(y / safe_scale);
   const CGFloat width_pts = static_cast<CGFloat>(width / safe_scale);
   const CGFloat height_pts = static_cast<CGFloat>(height / safe_scale);
-  const CGFloat y_pts = NSMaxY(host_bounds) - y_pts_top - height_pts;
-  const NSRect frame = NSMakeRect(x_pts, y_pts, width_pts, height_pts);
+  const CGFloat y_pts = [host isFlipped]
+    ? y_pts_top
+    : NSMaxY(host_bounds) - y_pts_top - height_pts;
+  const NSRect requested_frame = NSMakeRect(x_pts, y_pts, width_pts, height_pts);
+  NSRect frame = NSIntersectionRect(requested_frame, host_bounds);
+  if (NSIsEmptyRect(frame)) {
+    frame = NSZeroRect;
+  }
 
   state->nsview.frame = frame;
-  if (state->layer) {
-    state->layer.frame = state->nsview.bounds;
-    state->layer.contentsScale = safe_scale;
-  }
+  [state->nsview setNeedsDisplay:YES];
 
   std::cout << "[renderer.mm] [" << source << "] hostBoundsPts="
             << host_bounds.origin.x << "," << host_bounds.origin.y << " "
@@ -175,6 +274,8 @@ static void ApplyGeometry(EmbeddedRendererState* state,
             << " inputPx=" << x << "," << y << " " << width << "x" << height
             << " scale=" << safe_scale
             << " convertedPts=" << x_pts << "," << y_pts_top << " " << width_pts << "x" << height_pts
+            << " requestedFramePts=" << requested_frame.origin.x << "," << requested_frame.origin.y << " "
+            << requested_frame.size.width << "x" << requested_frame.size.height
             << " appliedFramePts=" << frame.origin.x << "," << frame.origin.y << " "
             << frame.size.width << "x" << frame.size.height << std::endl;
 }
@@ -212,27 +313,20 @@ static void AttachToHost(EmbeddedRendererState* state) {
 }
 
 static void RefreshPresentedSurface(EmbeddedRendererState* state) {
-  if (!state || !state->layer || !state->nsview || !state->iosurface) {
+  if (!state || !state->nsview || !state->iosurface) {
     return;
   }
 
-  [CATransaction begin];
-  [CATransaction setDisableActions:YES];
-  state->layer.contents = nil;
-  state->layer.contents = (__bridge id)state->iosurface;
-  [state->layer setNeedsDisplay];
-  [state->layer displayIfNeeded];
-  [state->nsview setNeedsDisplay:YES];
-  [state->nsview displayIfNeeded];
-  [CATransaction commit];
-  [CATransaction flush];
+  EmbeddedIOSurfaceView* surfaceView = (EmbeddedIOSurfaceView*)state->nsview;
+  [surfaceView presentCurrentFrame];
 
-  state->presented_frame_count += 1;
+  state->frame_ready_count += 1;
   const CFTimeInterval now = CACurrentMediaTime();
-  if ((now - state->last_presentation_log_time) >= 2.0) {
-    state->last_presentation_log_time = now;
-    std::cout << "[renderer.mm] Presented IOSurface refresh frameCount="
-              << state->presented_frame_count << " surfaceId=" << state->iosurface_id
+  if ((now - state->last_draw_log_time) >= 2.0) {
+    state->last_draw_log_time = now;
+    std::cout << "[renderer.mm] Explicit IOSurface draw path active frameReady="
+              << state->frame_ready_count << " draws=" << state->draw_count
+              << " skipped=" << state->draw_skip_count << " surfaceId=" << state->iosurface_id
               << " size=" << state->width << "x" << state->height << std::endl;
   }
 }
@@ -302,26 +396,16 @@ Napi::Object CreateSurface(const Napi::CallbackInfo& info) {
 
   g_state->iosurface_id = surface_id;
 
-  // Create NSView + CALayer on main thread, then attempt attachment.
+  // Create NSView on main thread, then attempt attachment.
   // Uses sync so the view exists before we return to JS.
   RunOnMain(^{
     if (!g_state) return;
 
     const double safe_scale = scale > 0.0 ? scale : 1.0;
     NSRect frame = NSMakeRect(0, 0, width / safe_scale, height / safe_scale);
-    g_state->nsview = [[NSView alloc] initWithFrame:frame];
-    g_state->nsview.wantsLayer = YES;
-    g_state->nsview.layerContentsRedrawPolicy = NSViewLayerContentsRedrawOnSetNeedsDisplay;
-
-    g_state->layer = [CALayer layer];
-    g_state->layer.opaque = YES;
-    g_state->layer.backgroundColor = NSColor.blackColor.CGColor;
-    g_state->layer.contentsGravity = kCAGravityResize;
-    g_state->layer.contents = (__bridge id)g_state->iosurface;
-    g_state->layer.frame = g_state->nsview.bounds;
-    g_state->layer.contentsScale = safe_scale;
-    g_state->layer.needsDisplayOnBoundsChange = YES;
-    g_state->nsview.layer = g_state->layer;
+    EmbeddedIOSurfaceView* surfaceView = [[EmbeddedIOSurfaceView alloc] initWithFrame:frame];
+    [surfaceView setIOSurface:g_state->iosurface];
+    g_state->nsview = surfaceView;
 
     AttachToHost(g_state.get());
     ApplyGeometry(g_state.get(), 0, 0, width, height, safe_scale, "createSurface");
@@ -381,12 +465,12 @@ void DestroySurface(const Napi::CallbackInfo& info) {
 
 // NAPI: notifyFrameReady
 void NotifyFrameReady(const Napi::CallbackInfo& info) {
-  if (!g_state || !g_state->layer) {
+  if (!g_state || !g_state->nsview) {
     return;
   }
 
   dispatch_async(dispatch_get_main_queue(), ^{
-    if (!g_state || !g_state->layer) {
+    if (!g_state || !g_state->nsview) {
       return;
     }
     RefreshPresentedSurface(g_state.get());
