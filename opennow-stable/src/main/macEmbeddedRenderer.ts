@@ -115,7 +115,7 @@ export class MacEmbeddedRendererController {
       const height = rect.height;
       const scale = surface.deviceScaleFactor || 1;
 
-      const dimensionThreshold = 2;
+      const dimensionThreshold = 8;
       const dimensionsChanged =
         !this.lastDimensions ||
         Math.abs(this.lastDimensions.width - width) >= dimensionThreshold ||

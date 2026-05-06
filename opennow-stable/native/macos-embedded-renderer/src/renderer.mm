@@ -22,6 +22,8 @@ public:
   int height = 0;
   bool attached = false;
   bool attachment_failed_logged = false;
+  uint64_t presented_frame_count = 0;
+  CFTimeInterval last_presentation_log_time = 0;
 
   ~EmbeddedRendererState() {
     if (iosurface != nullptr) {
@@ -209,6 +211,32 @@ static void AttachToHost(EmbeddedRendererState* state) {
             << state->width << "x" << state->height << std::endl;
 }
 
+static void RefreshPresentedSurface(EmbeddedRendererState* state) {
+  if (!state || !state->layer || !state->nsview || !state->iosurface) {
+    return;
+  }
+
+  [CATransaction begin];
+  [CATransaction setDisableActions:YES];
+  state->layer.contents = nil;
+  state->layer.contents = (__bridge id)state->iosurface;
+  [state->layer setNeedsDisplay];
+  [state->layer displayIfNeeded];
+  [state->nsview setNeedsDisplay:YES];
+  [state->nsview displayIfNeeded];
+  [CATransaction commit];
+  [CATransaction flush];
+
+  state->presented_frame_count += 1;
+  const CFTimeInterval now = CACurrentMediaTime();
+  if ((now - state->last_presentation_log_time) >= 2.0) {
+    state->last_presentation_log_time = now;
+    std::cout << "[renderer.mm] Presented IOSurface refresh frameCount="
+              << state->presented_frame_count << " surfaceId=" << state->iosurface_id
+              << " size=" << state->width << "x" << state->height << std::endl;
+  }
+}
+
 static IOSurfaceRef CreateNewIOSurface(int width, int height, uint32_t* out_id) {
   NSDictionary* properties = @{
     (__bridge NSString*)kIOSurfaceWidth: @(width),
@@ -283,11 +311,16 @@ Napi::Object CreateSurface(const Napi::CallbackInfo& info) {
     NSRect frame = NSMakeRect(0, 0, width / safe_scale, height / safe_scale);
     g_state->nsview = [[NSView alloc] initWithFrame:frame];
     g_state->nsview.wantsLayer = YES;
+    g_state->nsview.layerContentsRedrawPolicy = NSViewLayerContentsRedrawOnSetNeedsDisplay;
 
     g_state->layer = [CALayer layer];
+    g_state->layer.opaque = YES;
+    g_state->layer.backgroundColor = NSColor.blackColor.CGColor;
+    g_state->layer.contentsGravity = kCAGravityResize;
     g_state->layer.contents = (__bridge id)g_state->iosurface;
     g_state->layer.frame = g_state->nsview.bounds;
     g_state->layer.contentsScale = safe_scale;
+    g_state->layer.needsDisplayOnBoundsChange = YES;
     g_state->nsview.layer = g_state->layer;
 
     AttachToHost(g_state.get());
@@ -356,11 +389,7 @@ void NotifyFrameReady(const Napi::CallbackInfo& info) {
     if (!g_state || !g_state->layer) {
       return;
     }
-    if (g_state->iosurface) {
-      g_state->layer.contents = (__bridge id)g_state->iosurface;
-    }
-    [g_state->layer setNeedsDisplay];
-    [g_state->nsview setNeedsDisplay:YES];
+    RefreshPresentedSurface(g_state.get());
   });
 }
 
