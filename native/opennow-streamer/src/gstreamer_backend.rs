@@ -3,11 +3,11 @@ use crate::backend::{
     update_context_bitrate_limit, BackendReply, NativeStreamerBackend,
 };
 use crate::input::{
-    GamepadInput, InputEncoder, KeyboardPayload, MouseButtonPayload, MouseMovePayload,
-    MouseWheelPayload, GAMEPAD_MAX_CONTROLLERS, PARTIALLY_RELIABLE_GAMEPAD_MASK_ALL,
+    InputEncoder, KeyboardPayload, MouseButtonPayload, MouseMovePayload,
+    MouseWheelPayload,
 };
 use crate::protocol::{
-    missing_field, CommandEnvelope, Event, IceCandidatePayload, NativeQueueMode, NativeRenderRect,
+    missing_field, CommandEnvelope, Event, IceCandidatePayload, NativeQueueMode,
     NativeRenderSurface, NativeStreamerCapabilities, NativeStreamerSessionContext,
     NativeVideoBackendCapability, NativeVideoCodecCapability, Response, SendAnswerRequest,
     StreamSettings, VideoStallEvent, VideoTransitionEvent, PROTOCOL_VERSION,
@@ -17,15 +17,15 @@ use crate::sdp::{
 };
 use gst::glib;
 use gst::prelude::*;
-use gst_video::prelude::*;
+
 use gstreamer as gst;
 use gstreamer_sdp as gst_sdp;
 use gstreamer_video as gst_video;
 use gstreamer_webrtc as gst_webrtc;
 use std::collections::HashSet;
-use std::ffi::{c_void, CString};
+use std::ffi::CString;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
-use std::sync::mpsc::{self, RecvTimeoutError, Sender, TryRecvError};
+use std::sync::mpsc::{Sender};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -1537,20 +1537,8 @@ fn handle_macos_navigation_event(
                 );
             }
         }
-        gst_video::NavigationEvent::MouseScroll { delta_y, .. } => {
-            let delta = (-delta_y * 120.0)
-                .round()
-                .clamp(f64::from(i16::MIN), f64::from(i16::MAX)) as i16;
-            if delta != 0 {
-                send_macos_navigation_event(
-                    input_state,
-                    NativeWindowInputEvent::MouseWheel {
-                        delta,
-                        timestamp_us,
-                    },
-                );
-            }
-        }
+        // Note: NavigationEvent::MouseScroll is not available in gstreamer-video v0.25.0 with v1_22 feature
+        // Mouse scroll events are currently not supported
         gst_video::NavigationEvent::KeyPress { key, .. } => {
             if let Some((keycode, scancode)) = map_macos_navigation_key(&key) {
                 send_macos_navigation_event(
@@ -2008,6 +1996,12 @@ struct SendableIOSurfaceRef(iosurface_ffi::IOSurfaceRef);
 unsafe impl Send for SendableIOSurfaceRef {}
 #[cfg(target_os = "macos")]
 unsafe impl Sync for SendableIOSurfaceRef {}
+#[cfg(target_os = "macos")]
+impl std::fmt::Debug for SendableIOSurfaceRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SendableIOSurfaceRef").finish_non_exhaustive()
+    }
+}
 
 #[derive(Clone, Debug)]
 struct GstreamerRenderState {
@@ -2135,6 +2129,10 @@ impl GstreamerPipeline {
             event_sender.clone(),
             video_liveness.stop.clone(),
             video_liveness.clone(),
+            #[cfg(target_os = "macos")]
+            input_state.clone(),
+            #[cfg(target_os = "macos")]
+            macos_navigation_input_state.clone(),
         );
         let present_max_fps = Arc::new(AtomicU32::new(0));
         let d3d_fullscreen_sink = Arc::new(AtomicBool::new(false));
@@ -2535,7 +2533,7 @@ impl GstreamerPipeline {
         self.render_state.set_surface(surface, &self.event_sender);
     }
 
-    fn stop(mut self) -> Result<(), String> {
+    fn stop(self) -> Result<(), String> {
         self.video_liveness.set_stats_overlay_visible(false);
         self.render_state.stop_external_renderer_window_guard();
         #[cfg(target_os = "windows")]
@@ -5103,6 +5101,8 @@ fn start_gstreamer_bus_diagnostics(
     event_sender: Option<Sender<Event>>,
     stop: Arc<AtomicBool>,
     video_liveness: VideoLivenessMonitor,
+    #[cfg(target_os = "macos")] _input_state: GstreamerInputState,
+    #[cfg(target_os = "macos")] _macos_navigation_input_state: MacosNavigationInputState,
 ) {
     let Some(bus) = pipeline.bus() else {
         send_log(
