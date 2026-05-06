@@ -1647,6 +1647,25 @@ export function App(): JSX.Element {
       nativeStreamer: buildNativeStreamerSessionContext(activeSession, streamSettings),
     };
   }, [buildCurrentStreamSettings]);
+
+  const warmNativeStreamerForLaunch = useCallback((): void => {
+    if (settings.streamClientMode !== "native") {
+      return;
+    }
+
+    void window.openNow.getNativeStreamerStatus()
+      .then((status) => {
+        if (status.detected) {
+          console.log("[NativeStreamer] Launch warm-up ready:", status.message);
+        } else {
+          console.warn("[NativeStreamer] Launch warm-up did not detect native streamer:", status.message);
+        }
+      })
+      .catch((error) => {
+        console.warn("[NativeStreamer] Launch warm-up failed:", error);
+      });
+  }, [settings.streamClientMode]);
+
   const resetSignalingRecoveryState = useCallback((options?: {
     keepExplicitShutdown?: boolean;
   }): void => {
@@ -3125,6 +3144,7 @@ export function App(): JSX.Element {
         if (!existingSession.serverIp) {
           throw new Error("Active session is missing server address. Start the game again to create a new session.");
         }
+        warmNativeStreamerForLaunch();
 
         console.log("[Resume] claimAndConnectSession: invoking claimSession", {
           sessionId: existingSession.sessionId,
@@ -3163,7 +3183,7 @@ export function App(): JSX.Element {
 
     claimResumePromisesRef.current.set(sid, resumePromiseHolder.promise);
     await resumePromiseHolder.promise;
-  }, [applyClaimedSessionAndConnect, authSession, buildCurrentStreamSettings, effectiveStreamingBaseUrl, findGameContextForSession, resolveResumeIdentity, resolveSessionClaimAppId]);
+  }, [applyClaimedSessionAndConnect, authSession, buildCurrentStreamSettings, effectiveStreamingBaseUrl, findGameContextForSession, resolveResumeIdentity, resolveSessionClaimAppId, warmNativeStreamerForLaunch]);
 
   const attemptSessionRecovery = useCallback(async (reason: string): Promise<boolean> => {
     const recoveryState = signalingRecoveryRef.current;
@@ -3755,6 +3775,7 @@ export function App(): JSX.Element {
     startPlaytimeSession(game.id);
     updateLoadingStep("queue");
     setQueuePosition(undefined);
+    warmNativeStreamerForLaunch();
 
     try {
       const token = authSession?.tokens.idToken ?? authSession?.tokens.accessToken;
@@ -4002,6 +4023,7 @@ export function App(): JSX.Element {
     settings,
     streamStatus,
     variantByGameId,
+    warmNativeStreamerForLaunch,
   ]);
 
   // Gate handler: shows queue server modal for FREE-tier users before launching

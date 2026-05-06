@@ -986,6 +986,40 @@ async function handleNativeStreamerOffer(sdp: string, context: NativeStreamerSes
   }
 }
 
+async function resetNativeStreamerForSignalingReconnect(): Promise<void> {
+  if (!nativeStreamerManager) {
+    return;
+  }
+
+  if (!isNativeStreamerSelected() || !nativeStreamerContext || nativeStreamerManager.hasActiveSession()) {
+    await nativeStreamerManager.stop("signaling reconnect");
+  }
+}
+
+async function prepareNativeStreamerBeforeSignaling(): Promise<void> {
+  const context = nativeStreamerContext;
+  if (!isNativeStreamerSelected() || !context) {
+    return;
+  }
+
+  try {
+    emitToRenderer({
+      type: "log",
+      message: "Preparing native streamer before signaling attach.",
+    });
+    await getNativeStreamerManager().prepareForSession(context);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn("[NativeStreamer] Pre-attach startup failed; falling back to web streamer:", message);
+    nativeStreamerFallbackSessionId = context.session.sessionId;
+    await nativeStreamerManager?.stop("native streamer pre-attach fallback").catch(() => undefined);
+    emitToRenderer({
+      type: "error",
+      message: `Native streamer failed before signaling attach: ${message}. Falling back to web streamer.`,
+    });
+  }
+}
+
 function emitUpdaterStateToRenderer(state: AppUpdaterState): void {
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send(IPC_CHANNELS.APP_UPDATER_STATE_CHANGED, state);
@@ -1766,7 +1800,8 @@ function registerIpcHandlers(): void {
       if (signalingClient) {
         signalingClient.disconnect();
       }
-      await nativeStreamerManager?.stop("signaling reconnect");
+      await resetNativeStreamerForSignalingReconnect();
+      await prepareNativeStreamerBeforeSignaling();
 
       signalingClient = new GfnSignalingClient(
         payload.signalingServer,
@@ -1775,7 +1810,14 @@ function registerIpcHandlers(): void {
       );
       signalingClientKey = nextKey;
       signalingClient.onEvent(routeSignalingEvent);
-      await signalingClient.connect();
+      try {
+        await signalingClient.connect();
+      } catch (error) {
+        await nativeStreamerManager?.stop("signaling connect failed").catch(() => undefined);
+        signalingClient = null;
+        signalingClientKey = null;
+        throw error;
+      }
     },
   );
 

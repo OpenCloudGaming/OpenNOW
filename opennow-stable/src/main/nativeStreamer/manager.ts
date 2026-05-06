@@ -1,6 +1,17 @@
 import { app } from "electron";
-import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, statSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import { tmpdir } from "node:os";
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, resolve, join, delimiter, sep } from "node:path";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 
@@ -60,9 +71,9 @@ interface PendingRequest {
 }
 
 const HELLO_TIMEOUT_MS = 10000;
-const BUNDLED_GSTREAMER_HELLO_TIMEOUT_MS = 30000;
+const BUNDLED_GSTREAMER_HELLO_TIMEOUT_MS = process.platform === "win32" ? 120000 : 30000;
 const CONTROL_TIMEOUT_MS = 8000;
-const SESSION_START_TIMEOUT_MS = 45000;
+const SESSION_START_TIMEOUT_MS = process.platform === "win32" ? 90000 : 45000;
 const SURFACE_UPDATE_TIMEOUT_MS = 15000;
 const OFFER_TIMEOUT_MS = 20000;
 const STOP_TIMEOUT_MS = 1200;
@@ -95,7 +106,13 @@ function isExistingDirectory(path: string): boolean {
 }
 
 function normalizePathForComparison(path: string): string {
-  const resolvedPath = resolve(path);
+  let resolvedPath = resolve(path);
+  try {
+    resolvedPath = realpathSync.native(resolvedPath);
+  } catch {
+    // The caller may compare a path that does not exist yet, such as a cache
+    // destination. Falling back to resolve still keeps comparisons stable.
+  }
   return process.platform === "win32" ? resolvedPath.toLowerCase() : resolvedPath;
 }
 
@@ -107,6 +124,14 @@ function isPathInside(parent: string, child: string): boolean {
 
 function hasBundledRuntimeNextToExecutable(executablePath: string): boolean {
   return isExistingDirectory(join(dirname(executablePath), "gstreamer"));
+}
+
+function safePathSegment(value: string): string {
+  return value.replace(/[^a-zA-Z0-9._-]/g, "_") || "unknown";
+}
+
+function fileSha256(path: string): string {
+  return createHash("sha256").update(readFileSync(path)).digest("hex");
 }
 
 function prependEnvPath(env: NodeJS.ProcessEnv, key: string, directory: string): void {
@@ -327,6 +352,133 @@ function isEvent(message: NativeStreamerMessage): message is NativeStreamerEvent
   return isRecord(message) && typeof (message as Record<string, unknown>)["id"] !== "string";
 }
 
+interface PackagedNativeStreamerCacheMarker {
+  appVersion: string;
+  platformKey: string;
+  exeName: string;
+  exeSha256: string;
+  bundledRuntime: boolean;
+  runtimeManifestSha256?: string;
+}
+
+function shouldUseStablePackagedNativeStreamerCache(): boolean {
+  return app.isPackaged
+    && process.platform === "win32"
+    && isPathInside(tmpdir(), process.resourcesPath);
+}
+
+function buildPackagedNativeStreamerCacheMarker(
+  sourceDirectory: string,
+  exeName: string,
+  platformKey: string,
+): PackagedNativeStreamerCacheMarker {
+  const runtimeManifest = join(sourceDirectory, "gstreamer", "OPENNOW-GSTREAMER-RUNTIME.txt");
+  return {
+    appVersion: app.getVersion(),
+    platformKey,
+    exeName,
+    exeSha256: fileSha256(join(sourceDirectory, exeName)),
+    bundledRuntime: isExistingDirectory(join(sourceDirectory, "gstreamer")),
+    runtimeManifestSha256: isExistingFile(runtimeManifest) ? fileSha256(runtimeManifest) : undefined,
+  };
+}
+
+function readCacheMarker(markerPath: string): PackagedNativeStreamerCacheMarker | null {
+  try {
+    return JSON.parse(readFileSync(markerPath, "utf8")) as PackagedNativeStreamerCacheMarker;
+  } catch {
+    return null;
+  }
+}
+
+function isSameCacheMarker(
+  left: PackagedNativeStreamerCacheMarker | null,
+  right: PackagedNativeStreamerCacheMarker,
+): boolean {
+  if (!left) {
+    return false;
+  }
+
+  return left.appVersion === right.appVersion
+    && left.platformKey === right.platformKey
+    && left.exeName === right.exeName
+    && left.exeSha256 === right.exeSha256
+    && left.bundledRuntime === right.bundledRuntime
+    && left.runtimeManifestSha256 === right.runtimeManifestSha256;
+}
+
+function materializePackagedNativeStreamerCache(
+  sourceExecutablePath: string,
+  platformKey: string,
+  exeName: string,
+): string | null {
+  if (!shouldUseStablePackagedNativeStreamerCache()) {
+    return null;
+  }
+
+  const sourceDirectory = dirname(sourceExecutablePath);
+  const cacheDirectory = join(
+    app.getPath("userData"),
+    "native-streamer",
+    "runtime",
+    safePathSegment(app.getVersion()),
+    safePathSegment(platformKey),
+  );
+  const cachedExecutablePath = join(cacheDirectory, exeName);
+  const markerPath = join(cacheDirectory, ".opennow-native-runtime.json");
+  let stagingDirectory: string | null = null;
+
+  try {
+    const expectedMarker = buildPackagedNativeStreamerCacheMarker(sourceDirectory, exeName, platformKey);
+    const cachedMarker = readCacheMarker(markerPath);
+    if (
+      isExistingFile(cachedExecutablePath)
+      && isSameCacheMarker(cachedMarker, expectedMarker)
+      && (!expectedMarker.bundledRuntime || hasBundledRuntimeNextToExecutable(cachedExecutablePath))
+    ) {
+      return cachedExecutablePath;
+    }
+
+    stagingDirectory = `${cacheDirectory}.tmp-${process.pid}-${Date.now()}`;
+    rmSync(stagingDirectory, { recursive: true, force: true });
+    mkdirSync(dirname(stagingDirectory), { recursive: true });
+    cpSync(sourceDirectory, stagingDirectory, {
+      recursive: true,
+      force: true,
+      dereference: true,
+      filter: (entry) => {
+        const lower = entry.toLowerCase();
+        return !lower.endsWith(".pdb") && !lower.endsWith(".lib") && !lower.endsWith(".a");
+      },
+    });
+    writeFileSync(
+      join(stagingDirectory, ".opennow-native-runtime.json"),
+      `${JSON.stringify(expectedMarker, null, 2)}\n`,
+      "utf8",
+    );
+
+    if (!isExistingFile(join(stagingDirectory, exeName))) {
+      throw new Error(`Cached native streamer executable was not created: ${join(stagingDirectory, exeName)}`);
+    }
+    if (expectedMarker.bundledRuntime && !hasBundledRuntimeNextToExecutable(join(stagingDirectory, exeName))) {
+      throw new Error("Cached native streamer runtime is missing its bundled GStreamer directory.");
+    }
+
+    rmSync(cacheDirectory, { recursive: true, force: true });
+    renameSync(stagingDirectory, cacheDirectory);
+    stagingDirectory = null;
+    console.log("[NativeStreamer] Cached packaged native streamer in stable runtime path:", cachedExecutablePath);
+    return cachedExecutablePath;
+  } catch (error) {
+    console.warn("[NativeStreamer] Failed to prepare stable packaged runtime cache; using packaged resource path:", error);
+    return null;
+  } finally {
+    if (stagingDirectory) {
+      rmSync(stagingDirectory, { recursive: true, force: true });
+    }
+  }
+}
+
 export class NativeStreamerManager {
   private child: ChildProcessWithoutNullStreams | null = null;
   private startupPromise: Promise<void> | null = null;
@@ -355,12 +507,33 @@ export class NativeStreamerManager {
     return this.activeSessionId !== null;
   }
 
-  async handleOffer(sdp: string, context: NativeStreamerSessionContext): Promise<void> {
+  async prepareForSession(context: NativeStreamerSessionContext): Promise<void> {
     if (this.activeSessionId && this.activeSessionId !== context.session.sessionId) {
       await this.stop("new native streamer session");
     }
     this.prepareRemoteIceQueue(context.session.sessionId);
 
+    await this.ensureProcess();
+
+    if (this.activeSessionId === context.session.sessionId) {
+      return;
+    }
+
+    if (context.settings.enableCloudGsync) {
+      console.log(
+        "[NativeStreamer] Cloud G-Sync/VRR mode resolved for this session; preserving unthrottled low-latency present behavior.",
+      );
+    }
+
+    await this.request({
+      type: "start",
+      context,
+    }, SESSION_START_TIMEOUT_MS);
+    this.activeSessionId = context.session.sessionId;
+    await this.flushQueuedRemoteIce(context.session.sessionId);
+  }
+
+  async handleOffer(sdp: string, context: NativeStreamerSessionContext): Promise<void> {
     const negotiatedProfile = context.session.negotiatedStreamProfile;
     console.log(
       "[NativeStreamer] Session context:",
@@ -377,26 +550,12 @@ export class NativeStreamerManager {
       }),
     );
 
-    await this.ensureProcess();
+    await this.prepareForSession(context);
 
     if (!this.capabilities?.supportsOfferAnswer) {
       console.warn(
         `[NativeStreamer] Backend "${this.capabilities?.backend ?? "unknown"}" reports offer/answer is not ready; forwarding offer for validation/fallback.`,
       );
-    }
-
-    if (this.activeSessionId !== context.session.sessionId) {
-      if (context.settings.enableCloudGsync) {
-        console.log(
-          "[NativeStreamer] Cloud G-Sync/VRR mode resolved for this session; preserving unthrottled low-latency present behavior.",
-        );
-      }
-      await this.request({
-        type: "start",
-        context,
-      }, SESSION_START_TIMEOUT_MS);
-      this.activeSessionId = context.session.sessionId;
-      await this.flushQueuedRemoteIce(context.session.sessionId);
     }
 
     this.answerInFlight = true;
@@ -779,6 +938,14 @@ export class NativeStreamerManager {
       candidates.push(candidate);
     };
 
+    if (app.isPackaged) {
+      for (const candidate of bundledCandidates) {
+        if (!isExistingFile(candidate) || !hasBundledRuntimeNextToExecutable(candidate)) {
+          continue;
+        }
+        addCandidate(materializePackagedNativeStreamerCache(candidate, platformKey, exeName) ?? undefined);
+      }
+    }
     bundledCandidates.forEach(addCandidate);
     if (app.isPackaged && candidates.length > 0) {
       const packagedBundledCandidates = candidates.filter((candidate) =>
@@ -860,7 +1027,7 @@ export class NativeStreamerManager {
     return new Promise<NativeStreamerResponse>((resolveRequest, rejectRequest) => {
       const timeout = setTimeout(() => {
         this.pending.delete(id);
-        rejectRequest(new Error(`Native streamer request "${input.type}" timed out.${this.formatStderrTail()}`));
+        rejectRequest(new Error(`Native streamer request "${input.type}" timed out after ${timeoutMs}ms.${this.formatStderrTail()}`));
       }, timeoutMs);
       timeout.unref?.();
 
