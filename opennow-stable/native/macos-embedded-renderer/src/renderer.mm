@@ -5,6 +5,7 @@
 #import <Cocoa/Cocoa.h>
 #import <QuartzCore/QuartzCore.h>
 #include <IOSurface/IOSurface.h>
+#include <mach/mach.h>
 #include <iostream>
 #include <memory>
 #include <map>
@@ -64,7 +65,7 @@ NSView* GetContentViewFromHandle(const std::string& handle) {
 }
 
 // Create an IOSurface for pixel data (BGRA format)
-IOSurfaceRef CreateIOSurface(int width, int height, uint32_t* out_id) {
+IOSurfaceRef CreateIOSurface(int width, int height, uint32_t* out_port) {
   NSDictionary* properties = @{
     (__bridge NSString*)kIOSurfaceWidth: @(width),
     (__bridge NSString*)kIOSurfaceHeight: @(height),
@@ -79,9 +80,17 @@ IOSurfaceRef CreateIOSurface(int width, int height, uint32_t* out_id) {
   }
   
   IOSurfaceIncrementUseCount(surface);
-  *out_id = IOSurfaceGetID(surface);
+  mach_port_t port = IOSurfaceCreateMachPort(surface);
+  if (port == MACH_PORT_NULL) {
+    std::cerr << "[renderer.mm] Failed to create IOSurface mach port" << std::endl;
+    IOSurfaceDecrementUseCount(surface);
+    return nullptr;
+  }
+  *out_port = (uint32_t)port;
   
-  std::cout << "[renderer.mm] Created IOSurface: id=" << *out_id 
+  uint32_t surface_id = IOSurfaceGetID(surface);
+  std::cout << "[renderer.mm] Created IOSurface: id=" << surface_id
+            << " machPort=" << *out_port
             << " " << width << "x" << height << std::endl;
   return surface;
 }
@@ -117,9 +126,9 @@ Napi::Object CreateSurface(const Napi::CallbackInfo& info) {
   g_state->width = width;
   g_state->height = height;
   
-  // Create IOSurface
-  uint32_t iosurface_id = 0;
-  g_state->iosurface = CreateIOSurface(width, height, &iosurface_id);
+  // Create IOSurface and mach port for cross-process sharing
+  uint32_t mach_port = 0;
+  g_state->iosurface = CreateIOSurface(width, height, &mach_port);
   if (g_state->iosurface == nullptr) {
     g_state.reset();
     Napi::Error::New(env, "Failed to create IOSurface")
@@ -127,7 +136,7 @@ Napi::Object CreateSurface(const Napi::CallbackInfo& info) {
     return env.Null().As<Napi::Object>();
   }
   
-  g_state->iosurface_id = iosurface_id;
+  g_state->iosurface_id = mach_port;
   
   // Find the content view and add NSView
   NSView* content_view = GetContentViewFromHandle(window_handle);
@@ -198,13 +207,17 @@ void NotifyFrameReady(const Napi::CallbackInfo& info) {
     return;
   }
   
-  // Update layer contents and mark for redisplay
-  if (g_state->iosurface) {
-    g_state->layer.contents = (__bridge id)g_state->iosurface;
-  }
-  
-  [g_state->layer setNeedsDisplay];
-  [g_state->nsview setNeedsDisplay:YES];
+  // Dispatch to main queue; NAPI callbacks may arrive on a worker thread
+  dispatch_async(dispatch_get_main_queue(), ^{
+    if (!g_state || !g_state->layer) {
+      return;
+    }
+    if (g_state->iosurface) {
+      g_state->layer.contents = (__bridge id)g_state->iosurface;
+    }
+    [g_state->layer setNeedsDisplay];
+    [g_state->nsview setNeedsDisplay:YES];
+  });
 }
 
 // Init function for the NAPI module

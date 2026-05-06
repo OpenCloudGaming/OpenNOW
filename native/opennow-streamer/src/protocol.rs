@@ -494,6 +494,8 @@ pub enum Event {
     Stats { stats: NativeStatsEvent },
     #[serde(rename = "error")]
     Error { code: String, message: String },
+    #[serde(rename = "frame-ready")]
+    FrameReady,
 }
 
 pub fn parse_command(value: Value) -> Result<CommandEnvelope, String> {

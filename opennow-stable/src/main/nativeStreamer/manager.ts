@@ -680,17 +680,18 @@ export class NativeStreamerManager {
     if (videoBackendPreference !== "auto") {
       childEnv.OPENNOW_NATIVE_VIDEO_BACKEND = videoBackendPreference;
     }
-    // macOS always uses the external (child-owned) GStreamer renderer window until the
-    // IOSurface appsink pipeline is fully wired in gstreamer_backend.rs and emitting
-    // frame-ready events. Flipping to "0" before that wiring is complete would leave
-    // macOS sessions with no valid render target. isEmbeddedRendererActive() is kept
-    // in the options interface for when IOSurface backend integration is finished.
     childEnv.OPENNOW_NATIVE_EXTERNAL_RENDERER =
-      process.platform === "darwin"
-        ? "1" // external renderer; switch to "0" when IOSurface backend is complete
-        : process.platform === "win32"
-          ? this.options.getExternalRendererEnabled() ? "1" : "0"
-          : childEnv.OPENNOW_NATIVE_EXTERNAL_RENDERER ?? "0";
+      process.platform === "darwin" && this.options.isEmbeddedRendererActive()
+        ? "0" // IOSurface embedded mode: child renders into shared surface
+        : process.platform === "darwin"
+          ? "1" // External child-owned window (default when embedded not active)
+          : process.platform === "win32"
+            ? this.options.getExternalRendererEnabled() ? "1" : "0"
+            : childEnv.OPENNOW_NATIVE_EXTERNAL_RENDERER ?? "0";
+    if (process.platform === "darwin") {
+      childEnv.OPENNOW_MACOS_EMBEDDED_RENDERER_PROTOTYPE =
+        this.options.isEmbeddedRendererActive() ? "1" : "0";
+    }
     childEnv.OPENNOW_NATIVE_CLOUD_GSYNC = nativeStreamerFeatureModeToEnvValue(this.options.getCloudGsyncMode());
     childEnv.OPENNOW_NATIVE_D3D_FULLSCREEN = nativeStreamerFeatureModeToEnvValue(this.options.getD3dFullscreenMode());
     if (backendPreference !== "auto") {

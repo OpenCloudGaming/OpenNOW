@@ -19,6 +19,8 @@ use gst::glib;
 use gst::prelude::*;
 
 use gstreamer as gst;
+#[cfg(feature = "gstreamer")]
+use gstreamer_app as gst_app;
 use gstreamer_sdp as gst_sdp;
 use gstreamer_video as gst_video;
 use gstreamer_webrtc as gst_webrtc;
@@ -2031,9 +2033,49 @@ impl Default for GstreamerRenderState {
 impl GstreamerRenderState {
     fn set_surface(&self, surface: NativeRenderSurface, event_sender: &Option<Sender<Event>>) {
         if let Ok(mut current) = self.surface.lock() {
-            *current = Some(surface);
+            *current = Some(surface.clone());
         }
+
+        #[cfg(target_os = "macos")]
+        if let Some(port_id) = surface.iosurface_id {
+            self.update_iosurface_ref(port_id, event_sender);
+        }
+
         self.apply(event_sender);
+    }
+
+    #[cfg(target_os = "macos")]
+    fn update_iosurface_ref(&self, port_id: u32, event_sender: &Option<Sender<Event>>) {
+        use iosurface_ffi::*;
+        if let Ok(mut guard) = self.iosurface_ref.lock() {
+            if let Some((old_port, ref old_wrapper)) = *guard {
+                if old_port == port_id {
+                    return;
+                }
+                unsafe { IOSurfaceDecrementUseCount(old_wrapper.0); }
+                *guard = None;
+            }
+            let surface_ref = unsafe { IOSurfaceLookupFromMachPort(port_id) };
+            if surface_ref.is_null() {
+                send_log(event_sender, "warn",
+                    format!("[MacEmbeddedRenderer] IOSurfaceLookupFromMachPort({port_id}) returned null"));
+                return;
+            }
+            *guard = Some((port_id, SendableIOSurfaceRef(surface_ref)));
+            send_log(event_sender, "info",
+                format!("[MacEmbeddedRenderer] IOSurface port {port_id} resolved and cached"));
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn release_iosurface(&self) {
+        use iosurface_ffi::IOSurfaceDecrementUseCount;
+        if let Ok(mut guard) = self.iosurface_ref.lock() {
+            if let Some((_, ref wrapper)) = *guard {
+                unsafe { IOSurfaceDecrementUseCount(wrapper.0); }
+            }
+            *guard = None;
+        }
     }
 
     fn set_video_sink(&self, sink: gst::Element, event_sender: &Option<Sender<Event>>) {
@@ -2540,6 +2582,8 @@ impl GstreamerPipeline {
         if let Some(mut bridge) = self.native_window_input_bridge.take() {
             bridge.stop();
         }
+        #[cfg(target_os = "macos")]
+        self.render_state.release_iosurface();
         self.input_state.stop_heartbeat();
         self.video_liveness.stop();
         self.pipeline
@@ -2742,6 +2786,21 @@ fn use_iosurface_mode(surface: &NativeRenderSurface) -> bool {
 
 #[cfg(not(target_os = "macos"))]
 fn use_iosurface_mode(_surface: &NativeRenderSurface) -> bool {
+    false
+}
+
+/// Returns true on macOS when the IOSurface embedded renderer prototype is enabled
+/// and OPENNOW_NATIVE_EXTERNAL_RENDERER=0 (i.e., the Electron main process owns rendering).
+#[cfg(target_os = "macos")]
+fn use_iosurface_appsink_mode() -> bool {
+    std::env::var("OPENNOW_MACOS_EMBEDDED_RENDERER_PROTOTYPE")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+        && !use_external_renderer_window()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn use_iosurface_appsink_mode() -> bool {
     false
 }
 
@@ -5523,6 +5582,42 @@ fn rtp_video_parser_factory(codec: &str) -> Option<&'static str> {
     }
 }
 
+/// Returns the GStreamer element chain for IOSurface mode on macOS:
+/// vtdec_hw → videoconvert → capsfilter(BGRA) → queue → appsink
+/// This produces CPU-accessible BGRA frames written directly to an IOSurface.
+#[cfg(target_os = "macos")]
+fn iosurface_rtp_video_chain_definition(encoding: &str) -> Option<Vec<RtpVideoChainSpec>> {
+    let codec = encoding.to_ascii_uppercase();
+    Some(vec![
+        RtpVideoChainSpec::new(
+            rtp_video_depayloader_factory(codec.as_str())?,
+            RtpVideoChainRole::Depayloader,
+        ),
+        RtpVideoChainSpec::new(
+            rtp_video_parser_factory(codec.as_str())?,
+            RtpVideoChainRole::Parser,
+        ),
+        RtpVideoChainSpec::new("queue", RtpVideoChainRole::PreDecodeQueue),
+        RtpVideoChainSpec::new(
+            RtpVideoApi::VideoToolbox.decoder_factory(codec.as_str())?,
+            RtpVideoChainRole::Decoder,
+        ),
+        RtpVideoChainSpec::new("videoconvert", RtpVideoChainRole::PostDecodeConverter),
+        RtpVideoChainSpec::with_caps(
+            "capsfilter",
+            RtpVideoChainRole::PostDecodeCapsFilter,
+            "video/x-raw,format=BGRA",
+        ),
+        RtpVideoChainSpec::new("queue", RtpVideoChainRole::PostDecodeQueue),
+        RtpVideoChainSpec::new("appsink", RtpVideoChainRole::Sink),
+    ])
+}
+
+#[cfg(not(target_os = "macos"))]
+fn iosurface_rtp_video_chain_definition(_encoding: &str) -> Option<Vec<RtpVideoChainSpec>> {
+    None
+}
+
 fn rtp_video_chain_definition(
     encoding: &str,
     video_api: RtpVideoApi,
@@ -5980,11 +6075,17 @@ fn link_rtp_video_pad(
     }
 
     let requested_fps = video_liveness.state.requested_fps();
-    let (video_api, specs) = rtp_video_chain_specs(encoding, requested_fps).ok_or_else(|| {
-        format!(
-            "Explicit low-latency decode chain is unavailable for RTP {encoding}; install the platform GStreamer plugin packages or set {NATIVE_VIDEO_BACKEND_ENV}=software to force software decode."
-        )
-    })?;
+    let (video_api, specs) = if use_iosurface_appsink_mode() {
+        let specs = iosurface_rtp_video_chain_definition(encoding)
+            .ok_or_else(|| format!("IOSurface appsink chain unavailable for RTP {encoding}"))?;
+        (RtpVideoApi::VideoToolbox, specs)
+    } else {
+        rtp_video_chain_specs(encoding, requested_fps).ok_or_else(|| {
+            format!(
+                "Explicit low-latency decode chain is unavailable for RTP {encoding}; install the platform GStreamer plugin packages or set {NATIVE_VIDEO_BACKEND_ENV}=software to force software decode."
+            )
+        })?
+    };
     video_liveness.update_hardware_acceleration(format!("GStreamer {}", video_api.label()));
     video_liveness.set_stats_overlay(None);
     let mut elements = Vec::with_capacity(specs.len());
@@ -6108,13 +6209,39 @@ fn link_rtp_video_pad(
             watch_video_caps_transitions(decoder, "decoder", event_sender, video_liveness.clone());
         }
         render_state.set_video_sink(sink.clone(), event_sender);
+
+        // IOSurface appsink frame handler (macOS embedded renderer)
+        if use_iosurface_appsink_mode() {
+            let probe_render_state = render_state.clone();
+            let probe_event_sender = event_sender.clone();
+            let last_frame_ready_us = Arc::new(AtomicU64::new(0));
+            sink.set_property("emit-signals", true);
+            sink.set_property("max-buffers", 1u32);
+            sink.set_property("drop", true);
+            if let Ok(appsink) = sink.clone().dynamic_cast::<gst_app::AppSink>() {
+                let callbacks = gst_app::AppSinkCallbacks::builder()
+                    .new_sample(move |appsink| {
+                        let sample = match appsink.pull_sample() {
+                            Ok(s) => s,
+                            Err(_) => return Ok(gst::FlowSuccess::Ok),
+                        };
+                        copy_sample_to_iosurface(&sample, &probe_render_state, &probe_event_sender, &last_frame_ready_us);
+                        Ok(gst::FlowSuccess::Ok)
+                    })
+                    .build();
+                appsink.set_callbacks(callbacks);
+            }
+        }
+
         #[cfg(target_os = "macos")]
-        install_macos_navigation_input_probe(
-            sink,
-            &input_state,
-            &macos_navigation_input_state,
-            event_sender,
-        );
+        if !use_iosurface_appsink_mode() {
+            install_macos_navigation_input_probe(
+                sink,
+                &input_state,
+                &macos_navigation_input_state,
+                event_sender,
+            );
+        }
         install_present_limiter(
             sink,
             present_max_fps,
@@ -6158,6 +6285,64 @@ fn link_rtp_video_pad(
     );
     Ok(())
 }
+
+#[cfg(target_os = "macos")]
+fn copy_sample_to_iosurface(
+    sample: &gst::Sample,
+    render_state: &GstreamerRenderState,
+    event_sender: &Option<Sender<Event>>,
+    last_frame_ready_us: &Arc<AtomicU64>,
+) {
+    use iosurface_ffi::*;
+
+    let Some(caps) = sample.caps() else { return; };
+    let Ok(video_info) = gst_video::VideoInfo::from_caps(caps) else { return; };
+    let Some(buffer) = sample.buffer() else { return; };
+    let Ok(video_frame) = gst_video::VideoFrameRef::from_buffer_ref_readable(buffer, &video_info) else { return; };
+    let Ok(frame_data) = video_frame.plane_data(0) else { return; };
+    let src_stride = video_frame.plane_stride()[0] as usize;
+    let frame_height = video_info.height() as usize;
+
+    let surface_ref = {
+        let Ok(guard) = render_state.iosurface_ref.lock() else { return; };
+        guard.as_ref().map(|(_, ref wrapper)| wrapper.0)
+    };
+    let Some(surface_ref) = surface_ref else { return; };
+    if surface_ref.is_null() { return; }
+
+    unsafe {
+        let mut seed: u32 = 0;
+        if IOSurfaceLock(surface_ref, 0, &mut seed) != 0 {
+            return;
+        }
+        let dst_base = IOSurfaceGetBaseAddress(surface_ref) as *mut u8;
+        let dst_stride = IOSurfaceGetBytesPerRow(surface_ref);
+        let dst_height = IOSurfaceGetHeight(surface_ref);
+        let rows = frame_height.min(dst_height);
+        let copy_stride = src_stride.min(dst_stride);
+        for row in 0..rows {
+            let src_ptr = frame_data.as_ptr().add(row * src_stride);
+            let dst_ptr = dst_base.add(row * dst_stride);
+            std::ptr::copy_nonoverlapping(src_ptr, dst_ptr, copy_stride);
+        }
+        IOSurfaceUnlock(surface_ref, 0, &mut seed);
+    }
+
+    let now_us = native_input_timestamp_us();
+    let last_us = last_frame_ready_us.load(Ordering::Relaxed);
+    if now_us.saturating_sub(last_us) >= 4_000 {
+        last_frame_ready_us.store(now_us, Ordering::Relaxed);
+        let _ = event_sender.as_ref().map(|s| s.send(Event::FrameReady));
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn copy_sample_to_iosurface(
+    _sample: &gst::Sample,
+    _render_state: &GstreamerRenderState,
+    _event_sender: &Option<Sender<Event>>,
+    _last_frame_ready_us: &Arc<AtomicU64>,
+) {}
 
 fn format_video_chain_selection(
     encoding: &str,
