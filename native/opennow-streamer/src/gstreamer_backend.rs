@@ -17,6 +17,7 @@ use crate::sdp::{
 };
 use gst::glib;
 use gst::prelude::*;
+use gstreamer_video::prelude::*;
 
 use gstreamer as gst;
 #[cfg(feature = "gstreamer")]
