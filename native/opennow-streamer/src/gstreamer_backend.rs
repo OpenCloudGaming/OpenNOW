@@ -2001,6 +2001,14 @@ fn native_input_timestamp_us() -> u64 {
         .min(u128::from(u64::MAX)) as u64
 }
 
+#[cfg(target_os = "macos")]
+struct SendableIOSurfaceRef(iosurface_ffi::IOSurfaceRef);
+// Safety: IOSurfaceRef access is always serialized through the Mutex it lives in.
+#[cfg(target_os = "macos")]
+unsafe impl Send for SendableIOSurfaceRef {}
+#[cfg(target_os = "macos")]
+unsafe impl Sync for SendableIOSurfaceRef {}
+
 #[derive(Clone, Debug)]
 struct GstreamerRenderState {
     surface: Arc<Mutex<Option<NativeRenderSurface>>>,
@@ -2009,7 +2017,7 @@ struct GstreamerRenderState {
     external_window_guard_started: Arc<AtomicBool>,
     external_window_guard_stop: Arc<AtomicBool>,
     #[cfg(target_os = "macos")]
-    iosurface_ref: Arc<Mutex<Option<(u32, iosurface_ffi::IOSurfaceRef)>>>, // (port_id, IOSurfaceRef)
+    iosurface_ref: Arc<Mutex<Option<(u32, SendableIOSurfaceRef)>>>, // (port_id, IOSurfaceRef)
 }
 
 impl Default for GstreamerRenderState {
@@ -2127,10 +2135,6 @@ impl GstreamerPipeline {
             event_sender.clone(),
             video_liveness.stop.clone(),
             video_liveness.clone(),
-            #[cfg(target_os = "macos")]
-            input_state.clone(),
-            #[cfg(target_os = "macos")]
-            macos_navigation_input_state.clone(),
         );
         let present_max_fps = Arc::new(AtomicU32::new(0));
         let d3d_fullscreen_sink = Arc::new(AtomicBool::new(false));
@@ -2142,6 +2146,10 @@ impl GstreamerPipeline {
             present_max_fps.clone(),
             d3d_fullscreen_sink.clone(),
             video_liveness.clone(),
+            #[cfg(target_os = "macos")]
+            input_state.clone(),
+            #[cfg(target_os = "macos")]
+            macos_navigation_input_state.clone(),
         );
 
         pipeline

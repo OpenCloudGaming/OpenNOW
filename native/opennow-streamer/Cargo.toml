@@ -12,6 +12,7 @@ gstreamer = [
     "dep:gstreamer-video",
     "dep:gstreamer-webrtc",
     "gstreamer/v1_22",
+    "gstreamer-video/v1_22",
     "gstreamer-webrtc/v1_22",
 ]
 
