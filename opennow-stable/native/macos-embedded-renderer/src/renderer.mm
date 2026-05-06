@@ -146,11 +146,7 @@ static std::unique_ptr<EmbeddedRendererState> g_state;
   }
 
   CGRect bounds = NSRectToCGRect(self.bounds);
-  CGContextSaveGState(context);
-  CGContextTranslateCTM(context, CGRectGetMinX(bounds), CGRectGetMinY(bounds) + CGRectGetHeight(bounds));
-  CGContextScaleCTM(context, 1.0, -1.0);
-  CGContextDrawImage(context, CGRectMake(0, 0, CGRectGetWidth(bounds), CGRectGetHeight(bounds)), cgImage);
-  CGContextRestoreGState(context);
+  CGContextDrawImage(context, bounds, cgImage);
   CGImageRelease(cgImage);
 
   if (g_state) {
