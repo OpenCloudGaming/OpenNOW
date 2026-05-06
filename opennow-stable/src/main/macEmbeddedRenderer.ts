@@ -105,6 +105,8 @@ export class MacEmbeddedRendererController {
         this.lastIOSurfaceId = result.iosurfaceId;
         this.lastDimensions = { width, height };
         console.log(`[MacEmbeddedRenderer] Created IOSurface: id=${result.iosurfaceId}, ${width}x${height}@${scale}x`);
+        // Apply initial position and visibility immediately after creation.
+        this.binding.updateSurface(windowHandle, rect.x, rect.y, width, height, scale, surface.visible);
         return result;
       }
 

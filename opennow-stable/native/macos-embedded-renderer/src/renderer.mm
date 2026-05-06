@@ -37,22 +37,30 @@ public:
 
 static std::unique_ptr<EmbeddedRendererState> g_state;
 
-// Get BrowserWindow's contentView from window handle (hex string UUID or similar)
+// Get BrowserWindow's contentView from the hex window handle string.
+// Electron's getNativeWindowHandle() on macOS returns a pointer to NSWindow.
+// The handle is serialized as a hex string (e.g. "0x7f9a3c800000").
 NSView* GetContentViewFromHandle(const std::string& handle) {
-  // The handle is expected to be a string representation of the window pointer
-  // or a unique identifier. In Electron, the window is typically passed as a
-  // native pointer stringified.
-  // For now, we use a simple approach: try to enumerate windows.
-  // In production, this would need coordination with Electron main.
-  
-  NSArray<NSWindow*>* windows = [NSApplication.sharedApplication windows];
-  for (NSWindow* window in windows) {
-    if (window.isVisible && window.contentView != nil) {
-      // Match the first visible window (simplified for prototype)
-      return window.contentView;
-    }
+  if (handle.empty()) {
+    return nil;
   }
-  return nil;
+  // Parse the hex string to a pointer value.
+  unsigned long long ptr_val = 0;
+  try {
+    ptr_val = std::stoull(handle, nullptr, 16);
+  } catch (...) {
+    return nil;
+  }
+  if (ptr_val == 0) {
+    return nil;
+  }
+  // Cast to NSWindow directly — valid because this addon is loaded in-process
+  // by Electron main, so the pointer is in the same address space.
+  NSWindow* window = (__bridge NSWindow*)(reinterpret_cast<void*>(ptr_val));
+  if (![window isKindOfClass:[NSWindow class]]) {
+    return nil;
+  }
+  return window.contentView;
 }
 
 // Create an IOSurface for pixel data (BGRA format)
