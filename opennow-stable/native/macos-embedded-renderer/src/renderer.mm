@@ -66,7 +66,11 @@ static std::unique_ptr<EmbeddedRendererState> g_state;
     CFRelease(_surface);
     _surface = nullptr;
   }
-  _ciContext = nil;
+  if (_ciContext != nil) {
+    [_ciContext release];
+    _ciContext = nil;
+  }
+  [super dealloc];
 }
 
 - (void)setIOSurface:(IOSurfaceRef)surface {
@@ -81,6 +85,10 @@ static std::unique_ptr<EmbeddedRendererState> g_state;
   _surface = surface;
   if (previous != nullptr) {
     CFRelease(previous);
+  }
+  if (_ciContext != nil) {
+    [_ciContext release];
+    _ciContext = nil;
   }
 
   [self setNeedsDisplay:YES];
@@ -113,7 +121,7 @@ static std::unique_ptr<EmbeddedRendererState> g_state;
   NSDictionary* options = @{
     kCIImageColorSpace: [NSNull null],
   };
-  CIImage* image = [[CIImage alloc] initWithIOSurface:surface options:options];
+  CIImage* image = [[[CIImage alloc] initWithIOSurface:surface options:options] autorelease];
   if (image == nil) {
     if (g_state) {
       g_state->draw_skip_count += 1;
@@ -123,10 +131,10 @@ static std::unique_ptr<EmbeddedRendererState> g_state;
 
   CGRect imageRect = CGRectMake(0, 0, IOSurfaceGetWidth(surface), IOSurfaceGetHeight(surface));
   if (_ciContext == nil) {
-    _ciContext = [CIContext contextWithOptions:@{
+    _ciContext = [[CIContext contextWithOptions:@{
       kCIContextWorkingColorSpace: [NSNull null],
       kCIContextOutputColorSpace: [NSNull null],
-    }];
+    }] retain];
   }
 
   CGImageRef cgImage = [_ciContext createCGImage:image fromRect:imageRect];
