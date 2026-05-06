@@ -12,8 +12,6 @@
   Browse the catalog, tune your stream, and launch sessions from a community-built app.
 </p>
 
-
-
 <p align="center">
   <a href="https://github.com/OpenCloudGaming/OpenNOW/releases">
     <img src="https://img.shields.io/github/v/tag/OpenCloudGaming/OpenNOW?style=for-the-badge&label=Download&color=brightgreen" alt="Download">
@@ -56,165 +54,42 @@
 
 ## Overview
 
-OpenNOW is a community-built Electron app for playing GeForce NOW from an open-source desktop client. The active implementation lives in [`opennow-stable/`](opennow-stable) and uses Electron, React, and TypeScript across the main, preload, and renderer processes.
+OpenNOW is a community-built Electron app for playing GeForce NOW from an open-source desktop client. The active implementation lives in [`opennow-stable/`](opennow-stable), and an iOS SwiftUI prototype lives under [`ios/OpenNOWiOS/`](ios/OpenNOWiOS/).
 
-The project aims to give players a transparent, customizable alternative to the official client without hiding the technical parts from contributors.
+## Downloads
 
-An iOS SwiftUI prototype app is also available under [`ios/OpenNOWiOS/`](ios/OpenNOWiOS).
+Grab the latest desktop build from [GitHub Releases](https://github.com/OpenCloudGaming/OpenNOW/releases). The iOS prototype is available through [TestFlight](https://testflight.apple.com/join/u1XPJKH2).
 
-## Highlights
+## Documentation
 
-- Open-source desktop client for Windows, macOS, and Linux
-- Catalog and public game browsing with search and library-aware session handling
-- Stream controls for codec, resolution, FPS, aspect ratio, region, and quality preferences
-- In-stream diagnostics overlay with latency, packet loss, decode, and render stats
-- Built-in screenshots, recording, microphone controls, and controller-friendly navigation
-- Local settings storage and zero-telemetry project direction
+Canonical documentation lives at [opennow.zortos.me](https://opennow.zortos.me):
 
-## Quick Start
+- [Getting Started](https://opennow.zortos.me/guides/getting-started/)
+- [Development](https://opennow.zortos.me/development/)
+- [Configuration](https://opennow.zortos.me/reference/configuration/)
+- [WebRTC](https://opennow.zortos.me/reference/webrtc/)
+- [Native Streamer](https://opennow.zortos.me/reference/native-streamer/)
+- [Project Website](https://opennow.zortos.me/)
 
-### Download
-
-Grab the latest build from [GitHub Releases](https://github.com/OpenCloudGaming/OpenNOW/releases).
-
-Current packaging targets:
-
-| Platform | Formats |
-| --- | --- |
-| Windows x64 | NSIS installer, portable executable, auto-update metadata |
-| Windows ARM64 | NSIS installer, portable executable |
-| macOS | `dmg`, `zip` |
-| Linux x64 | `AppImage`, `deb` |
-| Linux ARM64 | `AppImage`, `deb` |
-| iOS | `ipa` |
-
-## Settings
-
-<p align="center">
-  <img src="OpenNOW_Settings.png" alt="OpenNOW Settings" width="700" />
-</p>
-
-## Nix
-
-You'll need to add this repo into your flake.nix:
-```nix
-{
-  inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-    
-    opennow.url = "github:OpenCloudGaming/OpenNOW";
-    opennow.inputs.nixpkgs.follows = "nixpkgs";
-  };
-
-  outputs = {
-    self,
-    nixpkgs,
-    opennow,
-    ... }@inputs: {
-  };
-}
-```
-Then add the package to your configuration:
-
-```nix
-# Home-manager
-{
-  pkgs,
-  inputs,
-  ...
-}: {
-  home.packages = with pkgs; [
-    inputs.opennow.packages.${pkgs.system}.default
-  ];
-}
-```
-
-```nix
-# Nix configuration
-{
-  pkgs,
-  inputs,
-  ...
-}: {
-  environment.systemPackages = with pkgs; [
-    inputs.opennow.packages.${pkgs.system}.default
-  ];
-}
-```
-
-### Develop Locally
-
-From the repository root:
-
-```bash
-cd opennow-stable
-npm install
-cd ..
-npm run dev
-```
-
-Useful root scripts:
-
-```bash
-npm run dev
-npm run build
-npm run typecheck
-npm run dist
-```
-
-For a fuller setup guide, see [docs/development.md](docs/development.md).
+This repository intentionally does not carry duplicate long-form product, setup, development, native streamer, GStreamer packaging, or release workflow documentation.
 
 ## Repository Layout
 
 ```text
 .
-├── opennow-stable/   Electron app workspace
-├── ios/OpenNOWiOS/   Native iOS SwiftUI app prototype
-├── docs/             Local project documentation
-├── .github/          Workflows, templates, contributing docs
-├── logo.png          Project logo
-└── img.png           App preview image
+├── opennow-stable/          Active Electron desktop client
+├── native/opennow-streamer/ Native Rust streaming infrastructure
+├── ios/OpenNOWiOS/          Native iOS SwiftUI app prototype
+├── .github/                 Workflows, templates, and contributor metadata
+├── AGENTS.md                Repository instructions for AI agents and contributors
+├── LICENSE                  Project license
+├── logo.png                 Project logo
+└── img.png                  App preview image
 ```
-
-## Documentation
-
-- [Development Guide](docs/development.md)
-- [Contributing Guide](.github/CONTRIBUTING.md)
-- [Project Website](https://opennow.zortos.me)
-
-## Architecture At A Glance
-
-OpenNOW is split into three Electron layers:
-
-| Layer | Tech | Responsibility |
-| --- | --- | --- |
-| Main | Electron + Node.js | OAuth, CloudMatch/session orchestration, signaling, caching, local file handling |
-| Preload | Electron `contextBridge` | Safe IPC bridge between the app shell and UI |
-| Renderer | React + TypeScript | Login flow, browsing, settings, WebRTC playback, diagnostics, controls |
-
-The code lives under [`opennow-stable/src/`](opennow-stable/src), with shared TypeScript types and IPC contracts in [`opennow-stable/src/shared/`](opennow-stable/src/shared).
 
 ## Contributing
 
-Contributions are welcome. If you want to help:
-
-1. Read the [contributing guide](.github/CONTRIBUTING.md).
-2. Run `npm run typecheck` and `npm run build` before opening a PR.
-3. Keep changes focused and explain user-facing impact clearly.
-
-## FAQ
-
-### Is this the official GeForce NOW client?
-
-No. OpenNOW is a third-party, community-maintained client.
-
-### Does OpenNOW collect telemetry?
-
-The current project direction is zero telemetry. Settings and media stay on the local machine, and authentication is performed against NVIDIA services.
-
-### What happened to the earlier Tauri/Rust version?
-
-The active client in this repository is the Electron-based app in [`opennow-stable/`](opennow-stable).
+Contributions are welcome. Read the [contributing guide](.github/CONTRIBUTING.md), keep changes focused, and explain user-facing impact clearly.
 
 ## Star History
 
