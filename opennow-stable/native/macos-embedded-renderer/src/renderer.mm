@@ -65,7 +65,7 @@ NSView* GetContentViewFromHandle(const std::string& handle) {
 }
 
 // Create an IOSurface for pixel data (BGRA format)
-IOSurfaceRef CreateIOSurface(int width, int height, uint32_t* out_port) {
+IOSurfaceRef CreateIOSurface(int width, int height, uint32_t* out_id) {
   NSDictionary* properties = @{
     (__bridge NSString*)kIOSurfaceWidth: @(width),
     (__bridge NSString*)kIOSurfaceHeight: @(height),
@@ -80,17 +80,12 @@ IOSurfaceRef CreateIOSurface(int width, int height, uint32_t* out_port) {
   }
   
   IOSurfaceIncrementUseCount(surface);
-  mach_port_t port = IOSurfaceCreateMachPort(surface);
-  if (port == MACH_PORT_NULL) {
-    std::cerr << "[renderer.mm] Failed to create IOSurface mach port" << std::endl;
-    IOSurfaceDecrementUseCount(surface);
-    return nullptr;
-  }
-  *out_port = (uint32_t)port;
-  
+  // Use the global IOSurface ID (cross-process safe without Mach rights transfer).
+  // Any process can call IOSurfaceLookupFromID() with this value.
   uint32_t surface_id = IOSurfaceGetID(surface);
+  *out_id = surface_id;
+  
   std::cout << "[renderer.mm] Created IOSurface: id=" << surface_id
-            << " machPort=" << *out_port
             << " " << width << "x" << height << std::endl;
   return surface;
 }
@@ -126,9 +121,9 @@ Napi::Object CreateSurface(const Napi::CallbackInfo& info) {
   g_state->width = width;
   g_state->height = height;
   
-  // Create IOSurface and mach port for cross-process sharing
-  uint32_t mach_port = 0;
-  g_state->iosurface = CreateIOSurface(width, height, &mach_port);
+  // Create IOSurface and obtain the global cross-process ID
+  uint32_t surface_id = 0;
+  g_state->iosurface = CreateIOSurface(width, height, &surface_id);
   if (g_state->iosurface == nullptr) {
     g_state.reset();
     Napi::Error::New(env, "Failed to create IOSurface")
@@ -136,7 +131,7 @@ Napi::Object CreateSurface(const Napi::CallbackInfo& info) {
     return env.Null().As<Napi::Object>();
   }
   
-  g_state->iosurface_id = mach_port;
+  g_state->iosurface_id = surface_id;
   
   // Find the content view and add NSView
   NSView* content_view = GetContentViewFromHandle(window_handle);
@@ -162,9 +157,9 @@ Napi::Object CreateSurface(const Napi::CallbackInfo& info) {
   
   std::cout << "[renderer.mm] Created NSView with IOSurface layer" << std::endl;
   
-  // Return { iosurfaceId }
+  // Return { iosurfaceId } — the global cross-process IOSurface identifier
   Napi::Object result = Napi::Object::New(env);
-  result.Set("iosurfaceId", Napi::Number::New(env, iosurface_id));
+  result.Set("iosurfaceId", Napi::Number::New(env, g_state->iosurface_id));
   return result;
 }
 

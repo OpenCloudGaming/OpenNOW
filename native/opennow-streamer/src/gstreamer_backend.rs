@@ -2056,10 +2056,10 @@ impl GstreamerRenderState {
                 unsafe { IOSurfaceDecrementUseCount(old_wrapper.0); }
                 *guard = None;
             }
-            let surface_ref = unsafe { IOSurfaceLookupFromMachPort(port_id) };
+            let surface_ref = unsafe { IOSurfaceLookupFromID(port_id) };
             if surface_ref.is_null() {
                 send_log(event_sender, "warn",
-                    format!("[MacEmbeddedRenderer] IOSurfaceLookupFromMachPort({port_id}) returned null"));
+                    format!("[MacEmbeddedRenderer] IOSurfaceLookupFromID({port_id}) returned null"));
                 return;
             }
             *guard = Some((port_id, SendableIOSurfaceRef(surface_ref)));
@@ -2814,7 +2814,7 @@ mod iosurface_ffi {
     
     #[link(name = "IOSurface", kind = "framework")]
     unsafe extern "C" {
-        pub fn IOSurfaceLookupFromMachPort(port: u32) -> IOSurfaceRef;
+        pub fn IOSurfaceLookupFromID(csid: u32) -> IOSurfaceRef;
         pub fn IOSurfaceLock(surface: IOSurfaceRef, options: u32, seed: *mut u32) -> c_int;
         pub fn IOSurfaceUnlock(surface: IOSurfaceRef, options: u32, seed: *mut u32) -> c_int;
         pub fn IOSurfaceGetBaseAddress(surface: IOSurfaceRef) -> *mut c_void;
