@@ -37,18 +37,17 @@ function main() {
 
   console.log("[build-macos-embedded-renderer] Building macOS embedded renderer native addon...");
 
-  if (!existsSync(join(addonDir, "node_modules", "node-addon-api")) ||
-      !existsSync(join(addonDir, "node_modules", "node-gyp"))) {
-    console.log("[build-macos-embedded-renderer] Installing addon dependencies...");
-    const installResult = spawnSync("npm", ["install"], {
-      cwd: addonDir,
-      stdio: "inherit",
-      env: process.env,
-    });
-    if (installResult.status !== 0) {
-      console.error("[build-macos-embedded-renderer] npm install failed.");
-      process.exit(installResult.status ?? 1);
-    }
+  // Re-install dependencies each build to pick up node-gyp / node-addon-api version bumps
+  // and to avoid stale cached packages when the host Python/Node toolchain changes.
+  console.log("[build-macos-embedded-renderer] Installing addon dependencies...");
+  const installResult = spawnSync("npm", ["install"], {
+    cwd: addonDir,
+    stdio: "inherit",
+    env: process.env,
+  });
+  if (installResult.status !== 0) {
+    console.error("[build-macos-embedded-renderer] npm install failed.");
+    process.exit(installResult.status ?? 1);
   }
 
   const buildResult = spawnSync("npm", ["run", "build"], {
