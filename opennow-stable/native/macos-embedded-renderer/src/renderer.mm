@@ -15,6 +15,7 @@ public:
   IOSurfaceRef iosurface = nullptr;
   NSView* nsview = nullptr;
   CALayer* layer = nullptr;
+  NSView* host_view = nullptr;
   std::string window_handle;
   uint32_t iosurface_id = 0;
   int width = 0;
@@ -121,6 +122,61 @@ static NSView* ResolveHostView(const std::string& handle) {
   return nil;
 }
 
+static NSView* ResolveCurrentHostView(EmbeddedRendererState* state) {
+  if (!state) {
+    return nil;
+  }
+
+  if (state->host_view != nil) {
+    return state->host_view;
+  }
+
+  state->host_view = ResolveHostView(state->window_handle);
+  return state->host_view;
+}
+
+static void ApplyGeometry(EmbeddedRendererState* state,
+                          int x,
+                          int y,
+                          int width,
+                          int height,
+                          double scale,
+                          const char* source) {
+  if (!state || !state->nsview) {
+    return;
+  }
+
+  NSView* host = ResolveCurrentHostView(state);
+  if (!host) {
+    std::cerr << "[renderer.mm] [" << source << "] Missing host view for geometry update" << std::endl;
+    return;
+  }
+
+  const double safe_scale = scale > 0.0 ? scale : 1.0;
+  const NSRect host_bounds = host.bounds;
+  const CGFloat x_pts = static_cast<CGFloat>(x / safe_scale);
+  const CGFloat y_pts_top = static_cast<CGFloat>(y / safe_scale);
+  const CGFloat width_pts = static_cast<CGFloat>(width / safe_scale);
+  const CGFloat height_pts = static_cast<CGFloat>(height / safe_scale);
+  const CGFloat y_pts = NSMaxY(host_bounds) - y_pts_top - height_pts;
+  const NSRect frame = NSMakeRect(x_pts, y_pts, width_pts, height_pts);
+
+  state->nsview.frame = frame;
+  if (state->layer) {
+    state->layer.frame = state->nsview.bounds;
+    state->layer.contentsScale = safe_scale;
+  }
+
+  std::cout << "[renderer.mm] [" << source << "] hostBoundsPts="
+            << host_bounds.origin.x << "," << host_bounds.origin.y << " "
+            << host_bounds.size.width << "x" << host_bounds.size.height
+            << " inputPx=" << x << "," << y << " " << width << "x" << height
+            << " scale=" << safe_scale
+            << " convertedPts=" << x_pts << "," << y_pts_top << " " << width_pts << "x" << height_pts
+            << " appliedFramePts=" << frame.origin.x << "," << frame.origin.y << " "
+            << frame.size.width << "x" << frame.size.height << std::endl;
+}
+
 static void AttachToHost(EmbeddedRendererState* state) {
   if (!state || !state->nsview || state->attached) {
     return;
@@ -128,6 +184,7 @@ static void AttachToHost(EmbeddedRendererState* state) {
 
   NSView* host = ResolveHostView(state->window_handle);
   if (!host) {
+    state->host_view = nil;
     if (!state->attachment_failed_logged) {
       state->attachment_failed_logged = true;
       std::cerr << "[renderer.mm] Could not find host view for window handle; "
@@ -136,16 +193,13 @@ static void AttachToHost(EmbeddedRendererState* state) {
     return;
   }
 
+  state->host_view = host;
+
   if (state->nsview.superview != nil) {
     [state->nsview removeFromSuperview];
   }
 
   [host addSubview:state->nsview];
-
-  state->nsview.frame = NSMakeRect(0, 0, state->width, state->height);
-  if (state->layer) {
-    state->layer.frame = CGRectMake(0, 0, state->width, state->height);
-  }
 
   state->attached = true;
   state->attachment_failed_logged = false;
@@ -225,16 +279,19 @@ Napi::Object CreateSurface(const Napi::CallbackInfo& info) {
   RunOnMain(^{
     if (!g_state) return;
 
-    NSRect frame = NSMakeRect(0, 0, width, height);
+    const double safe_scale = scale > 0.0 ? scale : 1.0;
+    NSRect frame = NSMakeRect(0, 0, width / safe_scale, height / safe_scale);
     g_state->nsview = [[NSView alloc] initWithFrame:frame];
     g_state->nsview.wantsLayer = YES;
 
     g_state->layer = [CALayer layer];
     g_state->layer.contents = (__bridge id)g_state->iosurface;
-    g_state->layer.frame = CGRectMake(0, 0, width, height);
+    g_state->layer.frame = g_state->nsview.bounds;
+    g_state->layer.contentsScale = safe_scale;
     g_state->nsview.layer = g_state->layer;
 
     AttachToHost(g_state.get());
+    ApplyGeometry(g_state.get(), 0, 0, width, height, safe_scale, "createSurface");
   }, true);
 
   Napi::Object result = Napi::Object::New(env);
@@ -270,15 +327,12 @@ void UpdateSurface(const Napi::CallbackInfo& info) {
     // Retry attachment if not yet attached or if superview disappeared
     if (!g_state->attached || g_state->nsview.superview == nil) {
       g_state->attached = false;
+      g_state->host_view = nil;
       AttachToHost(g_state.get());
     }
 
-    g_state->nsview.frame = NSMakeRect(x, y, width, height);
+    ApplyGeometry(g_state.get(), x, y, width, height, scale, "updateSurface");
     g_state->nsview.hidden = !visible;
-
-    if (g_state->layer) {
-      g_state->layer.frame = CGRectMake(0, 0, width, height);
-    }
   }, true);
 }
 
