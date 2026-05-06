@@ -23,6 +23,7 @@
     "native:check": "cargo check --manifest-path ../native/opennow-streamer/Cargo.toml",
     "native:build": "node scripts/build-native-streamer.mjs",
     "lint": "oxlint src",
+    "locales:check": "node scripts/check-translations.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.json",
     "test": "node scripts/run-tests.mjs"
   },

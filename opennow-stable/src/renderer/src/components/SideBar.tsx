@@ -1,4 +1,5 @@
 import type { JSX, ReactNode } from "react";
+import { useTranslation } from "../i18n";
 
 interface SideBarProps {
   title?: string;
@@ -13,22 +14,24 @@ export default function SideBar({
   className = "",
   onClose,
 }: SideBarProps): JSX.Element {
+  const { t } = useTranslation();
   const classNames = ["sidebar", className].filter(Boolean).join(" ");
+  const sidebarTitle = title ?? t("sidebar.title");
 
   return (
     <aside
       className={classNames}
       role="dialog"
-      aria-label={title ?? "Sidebar"}
+      aria-label={sidebarTitle}
     >
       <div className="sidebar-header">
-        <h3>{title ?? "Sidebar"}</h3>
+        <h3>{sidebarTitle}</h3>
         {onClose && (
           <button
             type="button"
             className="sidebar-close"
             onClick={onClose}
-            aria-label="Close settings"
+            aria-label={t("sidebar.closeSettings")}
           >
             ✕
           </button>

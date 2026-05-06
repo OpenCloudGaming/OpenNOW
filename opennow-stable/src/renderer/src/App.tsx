@@ -56,6 +56,7 @@ import { createStreamDiagnosticsStore, useStreamDiagnosticsSelector } from "./ut
 import { playControllerUiSound } from "./utils/controllerUiSound";
 import { loadStoredCodecResults, saveStoredCodecResults, testCodecSupport, type CodecTestResult } from "./lib/codecDiagnostics";
 import { chooseAccountLinked, getEpicOwnershipLaunchError } from "./lib/launchOwnership";
+import { useTranslation } from "./i18n";
 
 // UI Components
 import { LoginScreen } from "./components/LoginScreen";
@@ -70,6 +71,8 @@ import { ControllerStreamLoading } from "./components/controllerMode/ControllerS
 import type { QueueAdPlaybackEvent, QueueAdPreviewHandle } from "./components/QueueAdPreview";
 import { StreamView } from "./components/StreamView";
 import { QueueServerSelectModal } from "./components/QueueServerSelectModal";
+
+type TranslateFunction = typeof import("./i18n").t;
 
 const codecOptions: VideoCodec[] = [...USER_FACING_VIDEO_CODEC_OPTIONS];
 const DEFAULT_STREAM_PREFERENCES = getDefaultStreamPreferences();
@@ -624,10 +627,10 @@ function warningTone(code: StreamTimeWarning["code"]): "warn" | "critical" {
   return "warn";
 }
 
-function warningMessage(code: StreamTimeWarning["code"]): string {
-  if (code === 1) return "Session time limit approaching";
-  if (code === 2) return "Idle timeout approaching";
-  return "Maximum session time approaching";
+function warningMessage(t: TranslateFunction, code: StreamTimeWarning["code"]): string {
+  if (code === 1) return t("session.warnings.sessionTimeLimitApproaching");
+  if (code === 2) return t("session.warnings.idleTimeoutApproaching");
+  return t("session.warnings.maximumSessionTimeApproaching");
 }
 
 function normalizeMembershipTier(tier: string | null | undefined): string | null {
@@ -662,13 +665,14 @@ function hasCrossedWarningThreshold(
 }
 
 function getLocalSessionTimerWarning(
+  t: TranslateFunction,
   stage: LocalSessionTimerWarningState["stage"],
   secondsLeft: number,
 ): StreamWarningState {
   if (stage === "free-tier-30m") {
     return {
       code: 1,
-      message: "30 minutes remaining in this free-tier session",
+      message: t("session.warnings.freeTier30MinutesRemaining"),
       tone: "warn",
     };
   }
@@ -676,14 +680,14 @@ function getLocalSessionTimerWarning(
   if (stage === "free-tier-15m") {
     return {
       code: 1,
-      message: "15 minutes remaining in this free-tier session",
+      message: t("session.warnings.freeTier15MinutesRemaining"),
       tone: "warn",
     };
   }
 
   return {
     code: 1,
-    message: "This free-tier session ends soon",
+    message: t("session.warnings.freeTierEndsSoon"),
     tone: "critical",
     secondsLeft: Math.max(0, secondsLeft),
   };
@@ -698,6 +702,7 @@ function shouldUseQueueAdPolling(session: SessionInfo, subscription: Subscriptio
 }
 
 function getEffectiveAdState(
+  t: TranslateFunction,
   session: SessionInfo | null,
   subscription: SubscriptionInfo | null,
   authSession: AuthSession | null,
@@ -714,9 +719,9 @@ function getEffectiveAdState(
     return {
       isAdsRequired: true,
       sessionAdsRequired: true,
-      message: "Free-tier queue ads begin as soon as you enter queue.",
+      message: t("streamLoading.ads.freeTierQueueAdsBegin"),
       opportunity: {
-        message: "Free-tier queue ads begin as soon as you enter queue.",
+        message: t("streamLoading.ads.freeTierQueueAdsBegin"),
       },
       sessionAds: [],
       ads: [],
@@ -735,22 +740,22 @@ function getEffectiveAdState(
   return {
     isAdsRequired: true,
     sessionAdsRequired: true,
-    message: "Free-tier queue ads begin as soon as you enter queue.",
+    message: t("streamLoading.ads.freeTierQueueAdsBegin"),
     opportunity: {
-      message: "Free-tier queue ads begin as soon as you enter queue.",
+      message: t("streamLoading.ads.freeTierQueueAdsBegin"),
     },
     sessionAds: [
       {
         adId: "queue-ad-placeholder",
-        title: "Advertisement in progress",
-        description: "Ad media will appear here as soon as it is available.",
+        title: t("streamLoading.ads.advertisementInProgress"),
+        description: t("streamLoading.ads.mediaWillAppear"),
       },
     ],
     ads: [
       {
         adId: "queue-ad-placeholder",
-        title: "Advertisement in progress",
-        description: "Ad media will appear here as soon as it is available.",
+        title: t("streamLoading.ads.advertisementInProgress"),
+        description: t("streamLoading.ads.mediaWillAppear"),
       },
     ],
   };
@@ -890,8 +895,8 @@ function extractLaunchErrorCode(error: unknown): number | undefined {
   return undefined;
 }
 
-function toLaunchErrorState(error: unknown, stage: StreamLoadingStatus): LaunchErrorState {
-  const unknownMessage = "The game could not start. Please try again.";
+function toLaunchErrorState(t: TranslateFunction, error: unknown, stage: StreamLoadingStatus): LaunchErrorState {
+  const unknownMessage = t("errors.launchUnknown");
 
   const titleFromError =
     error && typeof error === "object" && "title" in error && typeof error.title === "string"
@@ -917,15 +922,15 @@ function toLaunchErrorState(error: unknown, stage: StreamLoadingStatus): LaunchE
   ) {
     return {
       stage,
-      title: "Duplicate Session Detected",
-      description: "Another session is already running on your account. Close it first or wait for it to timeout, then launch again.",
+      title: t("errors.duplicateSessionTitle"),
+      description: t("errors.duplicateSessionDescription"),
       codeLabel: toCodeLabel(code),
     };
   }
 
   return {
     stage,
-    title: titleFromError || "Launch Failed",
+    title: titleFromError || t("errors.launchFailedTitle"),
     description: descriptionFromError || messageFromError || statusDescription || unknownMessage,
     codeLabel: toCodeLabel(code),
   };
@@ -939,6 +944,7 @@ function streamStatusToLoadingStage(status: StreamStatus): StreamLoadingStatus {
 }
 
 export function App(): JSX.Element {
+  const { locale, t } = useTranslation();
 
   // Auth State
   const [authSession, setAuthSession] = useState<AuthSession | null>(null);
@@ -948,7 +954,7 @@ export function App(): JSX.Element {
   const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [loginError, setLoginError] = useState<string | null>(null);
   const [isInitializing, setIsInitializing] = useState(true);
-  const [startupStatusMessage, setStartupStatusMessage] = useState("Restoring saved session...");
+  const [startupStatusMessage, setStartupStatusMessage] = useState(() => t("auth.status.restoringSavedSession"));
   const [startupRefreshNotice, setStartupRefreshNotice] = useState<{
     tone: "success" | "warn";
     text: string;
@@ -1048,7 +1054,7 @@ export function App(): JSX.Element {
   const [showStatsOverlay, setShowStatsOverlay] = useState(false);
   const [antiAfkEnabled, setAntiAfkEnabled] = useState(false);
   const [antiAfkAckNonce, setAntiAfkAckNonce] = useState(0);
-  const [exitPrompt, setExitPrompt] = useState<ExitPromptState>({ open: false, gameTitle: "Game" });
+  const [exitPrompt, setExitPrompt] = useState<ExitPromptState>({ open: false, gameTitle: t("app.labels.game") });
   const [streamingGame, setStreamingGame] = useState<GameInfo | null>(null);
   const [streamingStore, setStreamingStore] = useState<string | null>(null);
   const [queuePosition, setQueuePosition] = useState<number | undefined>();
@@ -1080,8 +1086,8 @@ export function App(): JSX.Element {
       return null;
     }
 
-    return getLocalSessionTimerWarning(localSessionTimerWarning.stage, freeTierSessionRemainingSeconds);
-  }, [freeTierSessionRemainingSeconds, localSessionTimerWarning]);
+    return getLocalSessionTimerWarning(t, localSessionTimerWarning.stage, freeTierSessionRemainingSeconds);
+  }, [freeTierSessionRemainingSeconds, localSessionTimerWarning, locale, t]);
   const streamWarning = useMemo(() => {
     if (visibleLocalSessionTimerWarning?.tone === "critical") {
       return visibleLocalSessionTimerWarning;
@@ -2427,10 +2433,10 @@ export function App(): JSX.Element {
       exitPromptResolverRef.current = resolve;
       setExitPrompt({
         open: true,
-        gameTitle: gameTitle || "this game",
+        gameTitle: gameTitle || t("session.thisGame"),
       });
     });
-  }, []);
+  }, [t]);
 
   const handleExitPromptConfirm = useCallback(() => {
     resolveExitPrompt(true);
@@ -2767,7 +2773,7 @@ export function App(): JSX.Element {
         setSettingsLoaded(true);
 
         // Load providers and session (refresh only if token is near expiry)
-        setStartupStatusMessage("Restoring saved session...");
+        setStartupStatusMessage(t("auth.status.restoringSavedSession"));
         const [providerList, sessionResult] = await Promise.all([
           window.openNow.getLoginProviders(),
           window.openNow.getAuthSession(),
@@ -2778,21 +2784,21 @@ export function App(): JSX.Element {
         if (sessionResult.refresh.outcome === "refreshed") {
           setStartupRefreshNotice({
             tone: "success",
-            text: "Session restored. Token refreshed.",
+            text: t("auth.status.sessionRestoredTokenRefreshed"),
           });
-          setStartupStatusMessage("Token refreshed. Loading your account...");
+          setStartupStatusMessage(t("auth.status.tokenRefreshedLoadingAccount"));
         } else if (sessionResult.refresh.outcome === "failed") {
           setStartupRefreshNotice({
             tone: "warn",
-            text: "Token refresh failed. Using saved session token.",
+            text: t("auth.status.tokenRefreshFailedUsingSaved"),
           });
-          setStartupStatusMessage("Token refresh failed. Continuing with saved session...");
+          setStartupStatusMessage(t("auth.status.tokenRefreshFailedContinuing"));
         } else if (sessionResult.refresh.outcome === "missing_refresh_token") {
-          setStartupStatusMessage("Saved session has no refresh token. Continuing...");
+          setStartupStatusMessage(t("auth.status.missingRefreshTokenContinuing"));
         } else if (persistedSession) {
-          setStartupStatusMessage("Session restored.");
+          setStartupStatusMessage(t("auth.status.sessionRestored"));
         } else {
-          setStartupStatusMessage("No saved session found.");
+          setStartupStatusMessage(t("auth.status.noSavedSessionFound"));
         }
 
         // Load persisted variant selections from localStorage before applying defaults
@@ -2837,14 +2843,14 @@ export function App(): JSX.Element {
         setIsInitializing(false);
       } catch (error) {
         console.error("Initialization failed:", error);
-        setStartupStatusMessage("Session restore failed. Please sign in again.");
+        setStartupStatusMessage(t("auth.status.sessionRestoreFailed"));
         // Always set isInitializing to false even on error
         setIsInitializing(false);
       }
     };
 
     void initialize();
-  }, [loadSessionRuntimeData]);
+  }, [loadSessionRuntimeData, t]);
 
   // Login handler
   const handleLogin = useCallback(async () => {
@@ -2857,11 +2863,11 @@ export function App(): JSX.Element {
       await refreshSavedAccounts();
       await loadSessionRuntimeData(session);
     } catch (error) {
-      setLoginError(error instanceof Error ? error.message : "Login failed");
+      setLoginError(error instanceof Error ? error.message : t("errors.loginFailed"));
     } finally {
       setIsLoggingIn(false);
     }
-  }, [loadSessionRuntimeData, providerIdpId, refreshSavedAccounts]);
+  }, [loadSessionRuntimeData, providerIdpId, refreshSavedAccounts, t]);
 
   const handleSwitchAccount = useCallback(async (userId: string) => {
     try {
@@ -2873,7 +2879,7 @@ export function App(): JSX.Element {
       await refreshNavbarActiveSession(session);
     } catch (error) {
       console.warn("Failed to switch account:", error);
-      setLoginError(error instanceof Error ? error.message : "Failed to switch account");
+      setLoginError(error instanceof Error ? error.message : t("errors.switchAccountFailed"));
       try {
         await refreshSavedAccounts();
         const sessionResult = await window.openNow.getAuthSession();
@@ -2897,7 +2903,7 @@ export function App(): JSX.Element {
         console.warn("Failed to recover account state after switch failure:", recoveryError);
       }
     }
-  }, [loadSessionRuntimeData, refreshNavbarActiveSession, refreshSavedAccounts]);
+  }, [loadSessionRuntimeData, refreshNavbarActiveSession, refreshSavedAccounts, t]);
 
   const handleRemoveAccount = useCallback((userId: string) => {
     setAccountToRemove(userId);
@@ -3394,7 +3400,7 @@ export function App(): JSX.Element {
         onTimeWarning: (warning) => {
           setRemoteStreamWarning({
             code: warning.code,
-            message: warningMessage(warning.code),
+            message: warningMessage(t, warning.code),
             tone: warningTone(warning.code),
             secondsLeft: warning.secondsLeft,
           });
@@ -3610,8 +3616,8 @@ export function App(): JSX.Element {
             }
             setLaunchError({
               stage: streamStatusToLoadingStage(streamStatusRef.current),
-              title: "Native Streamer Stopped",
-              description: "The native streaming process stopped and could not be restored automatically. Try resuming the session again from the app.",
+              title: t("errors.nativeStreamerStoppedTitle"),
+              description: t("errors.nativeStreamerStoppedDescription"),
             });
             resetLaunchRuntime({ keepLaunchError: true, keepStreamingContext: true });
             void refreshNavbarActiveSession();
@@ -3648,8 +3654,8 @@ export function App(): JSX.Element {
             clientRef.current = null;
             setLaunchError({
               stage: streamStatusToLoadingStage(streamStatusRef.current),
-              title: "Session Connection Lost",
-              description: "Resume attach failed before media handshake. Try resuming once again.",
+              title: t("errors.sessionConnectionLostTitle"),
+              description: t("errors.resumeAttachFailedDescription"),
             });
             resetLaunchRuntime({ keepLaunchError: true, keepStreamingContext: true });
             void refreshNavbarActiveSession();
@@ -3684,8 +3690,8 @@ export function App(): JSX.Element {
             clientRef.current = null;
             setLaunchError({
               stage: streamStatusToLoadingStage(streamStatusRef.current),
-              title: "Session Connection Lost",
-              description: "The connection to your running session was lost and could not be restored automatically. Try resuming it again from the app.",
+              title: t("errors.sessionConnectionLostTitle"),
+              description: t("errors.sessionConnectionLostDescription"),
             });
             resetLaunchRuntime({ keepLaunchError: true, keepStreamingContext: true });
             void refreshNavbarActiveSession();
@@ -3709,10 +3715,10 @@ export function App(): JSX.Element {
         console.error("Signaling event error:", error);
         clientRef.current?.dispose();
         clientRef.current = null;
-        const message = error instanceof Error ? error.message : "The connection to the running session was lost and resume failed.";
+        const message = error instanceof Error ? error.message : t("errors.sessionResumeFailedDescription");
         setLaunchError({
           stage: streamStatusToLoadingStage(streamStatusRef.current),
-          title: "Session Connection Lost",
+          title: t("errors.sessionConnectionLostTitle"),
           description: message,
         });
         resetLaunchRuntime({ keepLaunchError: true, keepStreamingContext: true });
@@ -3722,7 +3728,7 @@ export function App(): JSX.Element {
     });
 
     return () => unsubscribe();
-  }, [attemptSessionRecovery, diagnosticsStore, handleControllerMetaToggle, refreshNavbarActiveSession, resetLaunchRuntime, scheduleStableRecoveryReset, settings, streamMicLevel, streamVolume]);
+  }, [attemptSessionRecovery, diagnosticsStore, handleControllerMetaToggle, refreshNavbarActiveSession, resetLaunchRuntime, scheduleStableRecoveryReset, settings, streamMicLevel, streamVolume, t]);
 
   // Play game handler
   const handlePlayGame = useCallback(async (game: GameInfo, options?: { bypassGuards?: boolean; streamingBaseUrl?: string }) => {
@@ -4000,7 +4006,7 @@ export function App(): JSX.Element {
         return;
       }
       console.error("Launch failed:", error);
-      setLaunchError(toLaunchErrorState(error, loadingStep));
+      setLaunchError(toLaunchErrorState(t, error, loadingStep));
       await disconnectSignalingControlled();
       clientRef.current?.dispose();
       clientRef.current = null;
@@ -4022,6 +4028,7 @@ export function App(): JSX.Element {
     selectedProvider,
     settings,
     streamStatus,
+    t,
     variantByGameId,
     warmNativeStreamerForLaunch,
   ]);
@@ -4138,26 +4145,26 @@ export function App(): JSX.Element {
   }, [confirmLogout, confirmRemoveAccount, logoutConfirmOpen, removeAccountConfirmOpen]);
 
   const accountToRemoveDisplayName = useMemo(() => (
-    savedAccounts.find((account) => account.userId === accountToRemove)?.displayName ?? "this account"
-  ), [accountToRemove, savedAccounts]);
+    savedAccounts.find((account) => account.userId === accountToRemove)?.displayName ?? t("auth.accounts.thisAccount")
+  ), [accountToRemove, savedAccounts, locale, t]);
 
   const logoutConfirmModal = logoutConfirmOpen && typeof document !== "undefined"
     ? createPortal(
-        <div className="logout-confirm" role="dialog" aria-modal="true" aria-label="Log out confirmation">
+        <div className="logout-confirm" role="dialog" aria-modal="true" aria-label={t("auth.accounts.logOutConfirmation")}>
           <button
             type="button"
             className="logout-confirm-backdrop"
             onClick={() => setLogoutConfirmOpen(false)}
-            aria-label="Cancel log out"
+            aria-label={t("auth.accounts.cancelLogOut")}
           />
           <div className="logout-confirm-card">
-            <div className="logout-confirm-kicker">Accounts</div>
-            <h3 className="logout-confirm-title">Sign out all accounts?</h3>
+            <div className="logout-confirm-kicker">{t("auth.accounts.kicker")}</div>
+            <h3 className="logout-confirm-title">{t("auth.accounts.signOutAllTitle")}</h3>
             <p className="logout-confirm-text">
-              You&apos;re about to remove every saved account from this device and return to guest mode.
+              {t("auth.accounts.signOutAllDescription")}
             </p>
             <p className="logout-confirm-subtext">
-              Your cloud session data stays on the service. This just clears local OpenNOW account sessions.
+              {t("auth.accounts.signOutAllSubtext")}
             </p>
             <div className="logout-confirm-actions">
               <button
@@ -4165,7 +4172,7 @@ export function App(): JSX.Element {
                 className="logout-confirm-btn logout-confirm-btn-cancel"
                 onClick={() => setLogoutConfirmOpen(false)}
               >
-                Stay signed in
+                {t("auth.accounts.staySignedIn")}
               </button>
               <button
                 type="button"
@@ -4174,11 +4181,11 @@ export function App(): JSX.Element {
                   void confirmLogout();
                 }}
               >
-                Sign out all
+                {t("auth.accounts.signOutAll")}
               </button>
             </div>
             <div className="logout-confirm-hint">
-              <kbd>Enter</kbd> confirm · <kbd>Esc</kbd> cancel
+              <kbd>Enter</kbd> {t("app.actions.confirm")} · <kbd>Esc</kbd> {t("app.actions.cancel")}
             </div>
           </div>
         </div>,
@@ -4188,7 +4195,7 @@ export function App(): JSX.Element {
 
   const removeAccountConfirmModal = removeAccountConfirmOpen && typeof document !== "undefined"
     ? createPortal(
-        <div className="logout-confirm" role="dialog" aria-modal="true" aria-label="Remove account confirmation">
+        <div className="logout-confirm" role="dialog" aria-modal="true" aria-label={t("auth.accounts.removeAccountConfirmation")}>
           <button
             type="button"
             className="logout-confirm-backdrop"
@@ -4196,16 +4203,16 @@ export function App(): JSX.Element {
               setRemoveAccountConfirmOpen(false);
               setAccountToRemove(null);
             }}
-            aria-label="Cancel account removal"
+            aria-label={t("auth.accounts.cancelAccountRemoval")}
           />
           <div className="logout-confirm-card">
-            <div className="logout-confirm-kicker">Accounts</div>
-            <h3 className="logout-confirm-title">Remove account?</h3>
+            <div className="logout-confirm-kicker">{t("auth.accounts.kicker")}</div>
+            <h3 className="logout-confirm-title">{t("auth.accounts.removeAccountTitle")}</h3>
             <p className="logout-confirm-text">
-              Are you sure you want to remove {accountToRemoveDisplayName} from saved accounts?
+              {t("auth.accounts.removeAccountDescription", { name: accountToRemoveDisplayName })}
             </p>
             <p className="logout-confirm-subtext">
-              You can add this account again by signing in.
+              {t("auth.accounts.removeAccountSubtext")}
             </p>
             <div className="logout-confirm-actions">
               <button
@@ -4214,22 +4221,22 @@ export function App(): JSX.Element {
                 onClick={() => {
                   setRemoveAccountConfirmOpen(false);
                   setAccountToRemove(null);
-                }}
-              >
-                Cancel
+              }}
+            >
+                {t("app.actions.cancel")}
               </button>
               <button
                 type="button"
                 className="logout-confirm-btn logout-confirm-btn-confirm"
                 onClick={() => {
                   void confirmRemoveAccount();
-                }}
-              >
-                Remove
+              }}
+            >
+                {t("app.actions.remove")}
               </button>
             </div>
             <div className="logout-confirm-hint">
-              <kbd>Enter</kbd> confirm · <kbd>Esc</kbd> cancel
+              <kbd>Enter</kbd> {t("app.actions.confirm")} · <kbd>Esc</kbd> {t("app.actions.cancel")}
             </div>
           </div>
         </div>,
@@ -4282,7 +4289,7 @@ export function App(): JSX.Element {
       setNavbarActiveSession(null);
     } catch (error) {
       console.error("Navbar resume failed:", error);
-      setLaunchError(toLaunchErrorState(error, loadingStep));
+      setLaunchError(toLaunchErrorState(t, error, loadingStep));
       await disconnectSignalingControlled();
       clientRef.current?.dispose();
       clientRef.current = null;
@@ -4305,6 +4312,7 @@ export function App(): JSX.Element {
     resetStatsOverlayToPreference,
     selectedProvider,
     streamStatus,
+    t,
   ]);
 
   const handleTerminateNavbarSession = useCallback(async () => {
@@ -4320,8 +4328,8 @@ export function App(): JSX.Element {
       return;
     }
 
-    const activeSessionTitle = gameTitleByAppId.get(navbarActiveSession.appId)?.trim() || "this session";
-    if (!window.confirm(`Terminate ${activeSessionTitle}? This will end the active cloud session immediately.`)) {
+    const activeSessionTitle = gameTitleByAppId.get(navbarActiveSession.appId)?.trim() || t("session.thisSession");
+    if (!window.confirm(t("session.terminateConfirmation", { title: activeSessionTitle }))) {
       return;
     }
 
@@ -4351,6 +4359,7 @@ export function App(): JSX.Element {
     refreshNavbarActiveSession,
     stopSessionByTarget,
     streamStatus,
+    t,
   ]);
 
   // Stop stream handler
@@ -4472,14 +4481,14 @@ export function App(): JSX.Element {
       return;
     }
 
-    const gameName = (streamingGame?.title || "this game").trim();
+    const gameName = (streamingGame?.title || t("session.thisGame")).trim();
     const shouldExit = await requestExitPrompt(gameName);
     if (!shouldExit) {
       return;
     }
 
     await handleStopStream();
-  }, [handleStopStream, releasePointerLockIfNeeded, requestExitPrompt, streamStatus, streamingGame?.title]);
+  }, [handleStopStream, releasePointerLockIfNeeded, requestExitPrompt, streamStatus, streamingGame?.title, t]);
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -4660,7 +4669,7 @@ export function App(): JSX.Element {
     [isResumingNavbarSession, isTerminatingNavbarSession, navbarActiveSession, selectedProvider, streamStatus],
   );
 
-  const effectiveAdState = getEffectiveAdState(session, subscriptionInfo, authSession);
+  const effectiveAdState = getEffectiveAdState(t, session, subscriptionInfo, authSession);
   const activeQueueAd = useMemo(
     () => getActiveQueueAd(effectiveAdState, activeQueueAdId),
     [activeQueueAdId, effectiveAdState],
@@ -4770,7 +4779,7 @@ export function App(): JSX.Element {
             isFullscreen={sessionFullscreen || !!document.fullscreenElement}
             isConnecting={streamStatus === "connecting"}
             isStreaming={isStreaming}
-            gameTitle={streamingGame?.title ?? "Game"}
+            gameTitle={streamingGame?.title ?? t("app.labels.game")}
             platformStore={streamingStore ?? undefined}
             onToggleFullscreen={() => {
               void toggleSessionFullscreen();
@@ -4807,7 +4816,7 @@ export function App(): JSX.Element {
         )}
         {isSwitchingGame && settings.controllerMode && (
           <ControllerStreamLoading
-            gameTitle={pendingSwitchGameTitle ?? streamingGame?.title ?? "Game"}
+            gameTitle={pendingSwitchGameTitle ?? streamingGame?.title ?? t("app.labels.game")}
             status={loadingStatus}
             queuePosition={queuePosition}
             adState={effectiveAdState}
@@ -4828,7 +4837,7 @@ export function App(): JSX.Element {
         )}
         {isSwitchingGame && !settings.controllerMode && (
           <StreamLoading
-            gameTitle={pendingSwitchGameTitle ?? streamingGame?.title ?? "Game"}
+            gameTitle={pendingSwitchGameTitle ?? streamingGame?.title ?? t("app.labels.game")}
             gameCover={pendingSwitchGameCover ?? streamingGame?.imageUrl}
             platformStore={streamingStore ?? undefined}
             status={switchingPhase === "cleaning" ? "setup" : "starting"}
@@ -4938,7 +4947,7 @@ export function App(): JSX.Element {
         )}
         {showControllerLaunchLoading && (
           <ControllerStreamLoading
-            gameTitle={streamingGame?.title ?? "Game"}
+            gameTitle={streamingGame?.title ?? t("app.labels.game")}
             status={loadingStatus}
             queuePosition={queuePosition}
             adState={effectiveAdState}
@@ -4959,7 +4968,7 @@ export function App(): JSX.Element {
         )}
         {showDesktopLaunchLoading && (
           <StreamLoading
-            gameTitle={streamingGame?.title ?? "Game"}
+            gameTitle={streamingGame?.title ?? t("app.labels.game")}
             gameCover={streamingGame?.imageUrl}
             platformStore={streamingStore ?? undefined}
             status={loadingStatus}
@@ -4989,9 +4998,9 @@ export function App(): JSX.Element {
         )}
         {showControllerHint && streamStatus !== "streaming" && (
           <div className="controller-hint controller-hint--overlay">
-            <span>D-pad Navigate</span>
-            <span>A Select</span>
-            <span>B Back</span>
+            <span>{t("controllerMode.hints.dpadNavigate")}</span>
+            <span>{t("controllerMode.hints.aSelect")}</span>
+            <span>{t("controllerMode.hints.bBack")}</span>
           </div>
         )}
       </>
@@ -5145,10 +5154,10 @@ export function App(): JSX.Element {
       </main>
       {showControllerHint && (
         <div className="controller-hint">
-          <span>D-pad Navigate</span>
-          <span>A Select</span>
-          <span>B Back</span>
-          <span>LB/RB Tabs</span>
+          <span>{t("controllerMode.hints.dpadNavigate")}</span>
+          <span>{t("controllerMode.hints.aSelect")}</span>
+          <span>{t("controllerMode.hints.bBack")}</span>
+          <span>{t("controllerMode.hints.lbRbTabs")}</span>
         </div>
       )}
 

@@ -29,6 +29,7 @@ import {
 } from "@shared/gfn";
 import { formatShortcutForDisplay, normalizeShortcut, shortcutFromKeyboardEvent } from "../shortcuts";
 import { getCodecDecodeBadgeState, type CodecTestResult } from "../lib/codecDiagnostics";
+import { useTranslation } from "../i18n";
 
 interface SettingsPageProps {
   settings: Settings;
@@ -130,6 +131,10 @@ const SETTINGS_SCOPE_SEARCH_TERMS: Record<SettingsSearchScopeId, readonly string
   interface: [
     "interface",
     "ui",
+    "language",
+    "locale",
+    "translation",
+    "app language",
     "overlay",
     "controller mode",
     "controller mode library",
@@ -172,6 +177,16 @@ const nativeVideoBackendOptions: { value: NativeVideoBackendPreference; label: s
   { value: "d3d12", label: "DirectX 12", description: "Use the D3D12 decoder and renderer" },
   { value: "d3d11", label: "DirectX 11", description: "Use the D3D11 decoder and renderer" },
 ];
+
+const APP_LANGUAGE_LABELS: Record<string, string> = {
+  en: "English",
+  es: "Español",
+  fr: "Français",
+};
+
+function getAppLanguageLabel(locale: string): string {
+  return APP_LANGUAGE_LABELS[locale] ?? locale.toUpperCase();
+}
 
 function formatNativeVideoBackendName(backend: string | undefined): string {
   switch (backend) {
@@ -577,6 +592,7 @@ function saveCachedEntitledResolutions(cache: EntitledResolutionsCache): void {
 /* ── Component ────────────────────────────────────────────────────── */
 
 export function SettingsPage({ settings, regions, onSettingChange, codecResults, codecTesting, onRunCodecTest }: SettingsPageProps): JSX.Element {
+  const { locale, availableLocales, setLocale, t } = useTranslation();
   const [savedIndicator, setSavedIndicator] = useState(false);
   const [activeSection, setActiveSection] = useState<SettingsSectionId>("stream");
   const [thanksData, setThanksData] = useState<ThankYouDataResult | null>(null);
@@ -677,6 +693,9 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
 
   const [keyboardLayoutDropdownOpen, setKeyboardLayoutDropdownOpen] = useState(false);
   const keyboardLayoutDropdownRef = useRef<HTMLDivElement | null>(null);
+
+  const [appLanguageDropdownOpen, setAppLanguageDropdownOpen] = useState(false);
+  const appLanguageDropdownRef = useRef<HTMLDivElement | null>(null);
 
   // Game language dropdown state
   const [gameLanguageDropdownOpen, setGameLanguageDropdownOpen] = useState(false);
@@ -877,6 +896,15 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
     [onSettingChange]
   );
 
+  const handleAppLanguageChange = useCallback((nextLocale: string): void => {
+    setAppLanguageDropdownOpen(false);
+    void setLocale(nextLocale).catch((error) => {
+      console.warn("[Settings] Failed to change app language:", error);
+    });
+    setSavedIndicator(true);
+    setTimeout(() => setSavedIndicator(false), 1500);
+  }, [setLocale]);
+
   const setNativeFramePacing = useCallback((mode: "low-latency" | "smooth") => {
     if (mode === "low-latency") {
       handleChange("enableCloudGsync", false);
@@ -1040,6 +1068,15 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
     return found?.name ?? settings.region;
   }, [settings.region, regions]);
 
+  const appLanguageOptions = useMemo(
+    () => availableLocales.map((value) => ({ value, label: getAppLanguageLabel(value) })),
+    [availableLocales],
+  );
+
+  const selectedAppLanguageName = useMemo(() => {
+    return appLanguageOptions.find((option) => option.value === locale)?.label ?? getAppLanguageLabel(locale);
+  }, [appLanguageOptions, locale]);
+
   const selectedMicrophoneModeName = useMemo(() => {
     return microphoneModeOptions.find((option) => option.value === settings.microphoneMode)?.label ?? "Disabled";
   }, [settings.microphoneMode]);
@@ -1075,6 +1112,9 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
       }
       if (keyboardLayoutDropdownRef.current && !keyboardLayoutDropdownRef.current.contains(target)) {
         setKeyboardLayoutDropdownOpen(false);
+      }
+      if (appLanguageDropdownRef.current && !appLanguageDropdownRef.current.contains(target)) {
+        setAppLanguageDropdownOpen(false);
       }
       if (gameLanguageDropdownRef.current && !gameLanguageDropdownRef.current.contains(target)) {
         setGameLanguageDropdownOpen(false);
@@ -2818,6 +2858,40 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                 <h2>Appearance</h2>
               </div>
               <div className="settings-rows">
+                <div className="settings-row">
+                  <label className="settings-label">
+                    {t("settings.interface.appLanguage")}
+                    <span className="settings-hint">{t("settings.interface.appLanguageHint")}</span>
+                  </label>
+                  <div className="settings-dropdown" ref={appLanguageDropdownRef}>
+                    <button
+                      type="button"
+                      className={`settings-dropdown-selected ${appLanguageDropdownOpen ? "open" : ""}`}
+                      onClick={() => setAppLanguageDropdownOpen((open) => !open)}
+                    >
+                      <span className="settings-dropdown-selected-name">{selectedAppLanguageName}</span>
+                      <svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor" className={`settings-dropdown-chevron ${appLanguageDropdownOpen ? "flipped" : ""}`}>
+                        <path d="M4.47 5.97a.75.75 0 0 1 1.06 0L8 8.44l2.47-2.47a.75.75 0 1 1 1.06 1.06l-3 3a.75.75 0 0 1-1.06 0l-3-3a.75.75 0 0 1 0-1.06Z" />
+                      </svg>
+                    </button>
+                    {appLanguageDropdownOpen && (
+                      <div className="settings-dropdown-menu">
+                        {appLanguageOptions.map((option) => (
+                          <button
+                            key={option.value}
+                            type="button"
+                            className={`settings-dropdown-item ${locale === option.value ? "active" : ""}`}
+                            onClick={() => handleAppLanguageChange(option.value)}
+                          >
+                            <span>{option.label}</span>
+                            {locale === option.value && <Check size={14} className="settings-dropdown-check" />}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+
                 {/* 4-toggle grid */}
                 <div className="settings-toggle-grid">
                   <div className="settings-row">

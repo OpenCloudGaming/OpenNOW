@@ -12,6 +12,9 @@ import {
 import type { SessionAdInfo, SessionAdState } from "@shared/gfn";
 import { getStoreDisplayName, getStoreIconComponent } from "./GameCard";
 import { QueueAdPreview, type QueueAdPlaybackEvent, type QueueAdPreviewHandle } from "./QueueAdPreview";
+import { useTranslation } from "../i18n";
+
+type TranslateFunction = typeof import("../i18n").t;
 
 export interface StreamLoadingProps {
   gameTitle: string;
@@ -34,34 +37,35 @@ export interface StreamLoadingProps {
 }
 
 const steps = [
-  { id: "queue", label: "Queue", icon: Monitor },
-  { id: "setup", label: "Setup", icon: Cpu },
-  { id: "ready", label: "Ready", icon: Wifi },
+  { id: "queue", labelKey: "streamLoading.steps.queue", icon: Monitor },
+  { id: "setup", labelKey: "streamLoading.steps.setup", icon: Cpu },
+  { id: "ready", labelKey: "streamLoading.steps.ready", icon: Wifi },
 ] as const;
 
 function getStatusMessage(
+  t: TranslateFunction,
   status: StreamLoadingProps["status"],
   queuePosition?: number,
   adState?: SessionAdState,
   isError = false,
 ): string {
   if (isError) {
-    return "Game launch failed";
+    return t("streamLoading.status.gameLaunchFailed");
   }
   if (isSessionQueuePaused(adState)) {
-    return "Session queue paused";
+    return t("streamLoading.status.queuePaused");
   }
   switch (status) {
     case "queue":
-      return queuePosition ? `Position #${queuePosition} in queue` : "Waiting in queue...";
+      return queuePosition ? t("streamLoading.status.positionInQueue", { position: queuePosition }) : t("streamLoading.status.waitingInQueue");
     case "setup":
-      return "Setting up your gaming rig...";
+      return t("streamLoading.status.settingUpRig");
     case "starting":
-      return "Starting stream...";
+      return t("streamLoading.status.startingStream");
     case "connecting":
-      return "Connecting to server...";
+      return t("streamLoading.status.connectingToServer");
     default:
-      return "Loading...";
+      return t("streamLoading.status.loading");
   }
 }
 
@@ -79,7 +83,7 @@ function getActiveStepIndex(status: StreamLoadingProps["status"]): number {
   }
 }
 
-function getAdSummary(adState?: SessionAdState): string | null {
+function getAdSummary(t: TranslateFunction, adState?: SessionAdState): string | null {
   if (!isSessionAdsRequired(adState)) {
     return null;
   }
@@ -88,12 +92,12 @@ function getAdSummary(adState?: SessionAdState): string | null {
     return message;
   }
   if (isSessionQueuePaused(adState)) {
-    return "Resume ads to stay in queue.";
+    return t("streamLoading.ads.resumeToStayInQueue");
   }
   const ads = getSessionAdItems(adState);
   return ads.length > 0
-    ? `${ads.length} ad${ads.length === 1 ? "" : "s"} available for queue progression.`
-    : "Ad playback is required while your session is queued.";
+    ? t("streamLoading.ads.availableForProgression", { count: ads.length })
+    : t("streamLoading.ads.playbackRequired");
 }
 
 export function StreamLoading({
@@ -111,12 +115,13 @@ export function StreamLoading({
   adPreviewRef,
   onCancel,
 }: StreamLoadingProps): JSX.Element {
+  const { t } = useTranslation();
   const hasError = Boolean(error);
   const activeStepIndex = getActiveStepIndex(status);
-  const statusMessage = getStatusMessage(status, queuePosition, adState, hasError);
+  const statusMessage = getStatusMessage(t, status, queuePosition, adState, hasError);
   const platformName = platformStore ? getStoreDisplayName(platformStore) : "";
   const PlatformIcon = platformStore ? getStoreIconComponent(platformStore) : null;
-  const adSummary = getAdSummary(adState);
+  const adSummary = getAdSummary(t, adState);
   const cachedAdMediaUrl = activeAdMediaUrl ?? getPreferredSessionAdMediaUrl(activeAd);
   const activeAdDurationMs = getSessionAdDurationMs(activeAd);
   const activeAdDurationSeconds = activeAdDurationMs ? Math.round(activeAdDurationMs / 1000) : undefined;
@@ -143,7 +148,7 @@ export function StreamLoading({
             <div className="sload-cover-shine" />
           </div>
           <div className="sload-game-meta">
-            <span className="sload-label">{hasError ? "Launch Error" : "Now Loading"}</span>
+            <span className="sload-label">{hasError ? t("streamLoading.labels.launchError") : t("streamLoading.labels.nowLoading")}</span>
             <h2 className="sload-title" title={gameTitle}>
               {gameTitle}
             </h2>
@@ -176,7 +181,7 @@ export function StreamLoading({
                 <div className="sload-step-dot">
                   {isFailed ? <X size={18} /> : <StepIcon size={18} />}
                 </div>
-                <span className="sload-step-name">{step.label}</span>
+                <span className="sload-step-name">{t(step.labelKey)}</span>
                 {index < steps.length - 1 && (
                   <div className={`sload-step-line${nextIsFailed ? " failed" : ""}`}>
                     <div className="sload-step-line-fill" />
@@ -195,7 +200,7 @@ export function StreamLoading({
             {!hasError && activeAd && cachedAdMediaUrl && (
               <div className={`sload-ad${isSessionQueuePaused(adState) ? " sload-ad--paused" : ""}`}>
                 <div className="sload-ad-copy">
-                  <span className="sload-ad-chip">Ad Queue</span>
+                  <span className="sload-ad-chip">{t("streamLoading.labels.adQueue")}</span>
                   {adSummary && <p className="sload-ad-message">{adSummary}</p>}
                 </div>
                 <div className="sload-ad-media">
@@ -224,9 +229,9 @@ export function StreamLoading({
         </div>
 
         {/* Cancel */}
-        <button className="sload-cancel" onClick={onCancel} aria-label="Cancel loading">
+        <button className="sload-cancel" onClick={onCancel} aria-label={t("streamLoading.actions.cancelLoading")}>
           <X size={16} />
-          <span>{hasError ? "Close" : "Cancel"}</span>
+          <span>{hasError ? t("app.actions.close") : t("app.actions.cancel")}</span>
         </button>
       </div>
     </div>

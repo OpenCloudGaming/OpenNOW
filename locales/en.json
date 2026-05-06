@@ -9,6 +9,7 @@
       "browse": "Browse",
       "cancel": "Cancel",
       "close": "Close",
+      "confirm": "confirm",
       "continue": "Continue",
       "delete": "Delete",
       "done": "Done",
@@ -50,6 +51,7 @@
       "gbUsed": "{{value}} GB used",
       "hours": "{{value}}h",
       "hoursLeft": "{{value}}h left",
+      "hoursUsed": "{{value}}h used",
       "milliseconds": "{{value}}ms",
       "minutes": "{{value}} min",
       "percent": "{{value}}%",
@@ -63,6 +65,7 @@
       "default": "Default",
       "defaultDevice": "Default Device",
       "free": "Free",
+      "game": "Game",
       "hardware": "Hardware",
       "other": "Other",
       "priority": "Priority",
@@ -92,13 +95,37 @@
     "accounts": {
       "activeAccount": "Active account",
       "addAccount": "Add account",
+      "cancelAccountRemoval": "Cancel account removal",
+      "cancelLogOut": "Cancel log out",
+      "guest": "Guest",
       "logOutAll": "Log out all accounts",
       "logOutConfirmation": "Log out confirmation",
       "removeAccount": "Remove account",
       "removeAccountConfirmation": "Remove account confirmation",
+      "removeAccountTitle": "Remove account?",
+      "removeAccountDescription": "Are you sure you want to remove {{name}} from saved accounts?",
+      "removeAccountSubtext": "You can add this account again by signing in.",
+      "removeNamedAccount": "Remove {{name}}",
       "signOutAllTitle": "Sign out all accounts?",
+      "signOutAllDescription": "You're about to remove every saved account from this device and return to guest mode.",
+      "signOutAllSubtext": "Your cloud session data stays on the service. This just clears local OpenNOW account sessions.",
+      "signOutAll": "Sign out all",
+      "signOutAllAccounts": "Sign out all accounts",
+      "staySignedIn": "Stay signed in",
       "switchAccount": "Switch account",
+      "thisAccount": "this account",
       "kicker": "Accounts"
+    },
+    "status": {
+      "restoringSavedSession": "Restoring saved session...",
+      "sessionRestoredTokenRefreshed": "Session restored. Token refreshed.",
+      "tokenRefreshedLoadingAccount": "Token refreshed. Loading your account...",
+      "tokenRefreshFailedUsingSaved": "Token refresh failed. Using saved session token.",
+      "tokenRefreshFailedContinuing": "Token refresh failed. Continuing with saved session...",
+      "missingRefreshTokenContinuing": "Saved session has no refresh token. Continuing...",
+      "sessionRestored": "Session restored.",
+      "noSavedSessionFound": "No saved session found.",
+      "sessionRestoreFailed": "Session restore failed. Please sign in again."
     }
   },
   "navigation": {
@@ -178,6 +205,9 @@
       "availableForProgression": "{{count}} ad available for queue progression.",
       "availableForProgression_plural": "{{count}} ads available for queue progression.",
       "playbackRequired": "Ad playback is required while your session is queued.",
+      "freeTierQueueAdsBegin": "Free-tier queue ads begin as soon as you enter queue.",
+      "advertisementInProgress": "Advertisement in progress",
+      "mediaWillAppear": "Ad media will appear here as soon as it is available.",
       "advertisement": "Advertisement",
       "titledAdvertisement": "{{title}} advertisement"
     },
@@ -203,15 +233,29 @@
     "exitConfirmation": "Exit stream confirmation",
     "cancelExit": "Cancel exit",
     "resume": "Resume",
+    "resumeActiveCloudSession": "Resume active cloud session",
+    "resumeActiveCloudSessionTitle": "Resume active cloud session: {{title}}",
     "resumeCurrentStream": "Resume current stream",
     "readyToLaunch": "Ready To Launch",
     "readyToSwitch": "Ready To Switch",
     "timeWarning": "Session time warning",
     "elapsedTitle": "Current gaming session elapsed time",
+    "elapsedWithValue": "Session {{value}}",
+    "remainingPlaytime": "{{value}} left",
+    "terminate": "Terminate",
+    "terminateActiveCloudSession": "Terminate active cloud session",
+    "terminateActiveCloudSessionTitle": "Terminate active cloud session: {{title}}",
+    "terminateConfirmation": "Terminate {{title}}? This will end the active cloud session immediately.",
+    "activeSessionMissingServerAddress": "Active session found (missing server address)",
+    "thisGame": "this game",
+    "thisSession": "this session",
     "warnings": {
       "sessionTimeLimitApproaching": "Session time limit approaching",
       "idleTimeoutApproaching": "Idle timeout approaching",
-      "maximumSessionTimeApproaching": "Maximum session time approaching"
+      "maximumSessionTimeApproaching": "Maximum session time approaching",
+      "freeTier30MinutesRemaining": "30 minutes remaining in this free-tier session",
+      "freeTier15MinutesRemaining": "15 minutes remaining in this free-tier session",
+      "freeTierEndsSoon": "This free-tier session ends soon"
     }
   },
   "stream": {
@@ -227,6 +271,7 @@
       "renderTime": "R = render time",
       "jitterBuffer": "JB = jitter buffer delay",
       "packetLoss": "Packet loss percentage",
+      "packetLossValue": "{{value}}% loss",
       "inputQueuePressure": "Input queue pressure (buffered bytes and delayed flush)",
       "inputChannelState": "Partially reliable input channel state and queued bytes",
       "mouseFlushCadence": "Mouse flush cadence and packet rate"
@@ -278,6 +323,10 @@
       "examples": "Examples: F3, Ctrl+Shift+Q, Ctrl+Shift+K",
       "stats": "Stats"
     }
+  },
+  "sidebar": {
+    "title": "Sidebar",
+    "closeSettings": "Close settings"
   },
   "settings": {
     "title": "Settings",
@@ -365,6 +414,8 @@
     },
     "interface": {
       "appearance": "Appearance",
+      "appLanguage": "App Language",
+      "appLanguageHint": "Changes OpenNOW's interface language. English is used for untranslated strings.",
       "hideStreamOverlayButtons": "Hide Stream Overlay Buttons",
       "hideStreamOverlayButtonsHint": "Hide microphone, fullscreen, and end-session buttons while streaming.",
       "showStatsOnStreamLaunch": "Show Stats on Stream Launch",
@@ -459,6 +510,12 @@
     }
   },
   "controllerMode": {
+    "hints": {
+      "dpadNavigate": "D-pad Navigate",
+      "aSelect": "A Select",
+      "bBack": "B Back",
+      "lbRbTabs": "LB/RB Tabs"
+    },
     "gameHub": {
       "ariaLabel": "{{title}} game hub",
       "actions": "Game hub actions"
@@ -496,6 +553,17 @@
   },
   "errors": {
     "launchUnknown": "The game could not start. Please try again.",
+    "launchFailedTitle": "Launch Failed",
+    "duplicateSessionTitle": "Duplicate Session Detected",
+    "duplicateSessionDescription": "Another session is already running on your account. Close it first or wait for it to timeout, then launch again.",
+    "loginFailed": "Login failed",
+    "switchAccountFailed": "Failed to switch account",
+    "nativeStreamerStoppedTitle": "Native Streamer Stopped",
+    "nativeStreamerStoppedDescription": "The native streaming process stopped and could not be restored automatically. Try resuming the session again from the app.",
+    "sessionConnectionLostTitle": "Session Connection Lost",
+    "resumeAttachFailedDescription": "Resume attach failed before media handshake. Try resuming once again.",
+    "sessionConnectionLostDescription": "The connection to your running session was lost and could not be restored automatically. Try resuming it again from the app.",
+    "sessionResumeFailedDescription": "The connection to the running session was lost and resume failed.",
     "queueAdPlayTimeout": "Ad play timeout",
     "queueAdVideoStuck": "Ad video is stuck",
     "queueAdUrlLoad": "Error loading url"
