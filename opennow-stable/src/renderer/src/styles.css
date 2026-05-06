@@ -3678,6 +3678,7 @@ button.game-card-store-chip.owned.active:hover {
   border: 1px solid var(--panel-border);
   background: var(--chip);
   color: var(--ink-muted);
+  text-decoration: none;
   font-size: 0.84rem;
   font-weight: 600;
   font-family: inherit;

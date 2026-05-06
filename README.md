@@ -48,6 +48,8 @@
 
 > [!WARNING]
 > OpenNOW is under active development. Expect occasional bugs, rough edges, and platform-specific issues while the client matures.
+>
+> Native streamer / native streaming is experimental. It defaults to the web streamer path unless enabled, issues can be platform-specific, and users may see fallback to Chromium/WebRTC. Report native-streamer problems on [GitHub Issues](https://github.com/OpenCloudGaming/OpenNOW/issues) or [Discord](https://discord.gg/8EJYaJcNfD).
 
 > [!IMPORTANT]
 > OpenNOW is an independent community project and is not affiliated with, endorsed by, or sponsored by NVIDIA. NVIDIA and GeForce NOW are trademarks of NVIDIA Corporation. You must use your own GeForce NOW account.
