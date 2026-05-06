@@ -689,6 +689,8 @@ export class NativeStreamerManager {
             ? this.options.getExternalRendererEnabled() ? "1" : "0"
             : childEnv.OPENNOW_NATIVE_EXTERNAL_RENDERER ?? "0";
     if (process.platform === "darwin") {
+      const rendererMode = this.options.isEmbeddedRendererActive() ? "embedded IOSurface" : "external window";
+      console.log(`[NativeStreamer] macOS renderer mode: ${rendererMode}`);
       childEnv.OPENNOW_MACOS_EMBEDDED_RENDERER_PROTOTYPE =
         this.options.isEmbeddedRendererActive() ? "1" : "0";
     }

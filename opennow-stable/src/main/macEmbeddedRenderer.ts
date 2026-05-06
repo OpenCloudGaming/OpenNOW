@@ -1,8 +1,8 @@
+import { createRequire } from "node:module";
+import { existsSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { app } from "electron";
-import path from "path";
 import type { NativeRenderSurface } from "../shared/gfn";
-
-// MACOS COMPILE REQUIRED — runtime check ensures no-op on non-darwin platforms
 
 export interface MacEmbeddedRendererResult {
   iosurfaceId: number;
@@ -28,6 +28,22 @@ interface NativeBinding {
   notifyFrameReady(): void;
 }
 
+const ENABLED_ENV = "OPENNOW_MACOS_EMBEDDED_RENDERER";
+const PROTOTYPE_ENV = "OPENNOW_MACOS_EMBEDDED_RENDERER_PROTOTYPE";
+
+function envFlagDisabled(value: string | undefined): boolean {
+  if (value === undefined || value === null) return false;
+  const normalized = String(value).trim().toLowerCase();
+  return normalized === "0" || normalized === "false" || normalized === "off" || normalized === "no";
+}
+
+function isEmbeddedRendererEnabled(): boolean {
+  if (process.platform !== "darwin") return false;
+  if (envFlagDisabled(process.env[ENABLED_ENV])) return false;
+  if (envFlagDisabled(process.env[PROTOTYPE_ENV])) return false;
+  return true;
+}
+
 export class MacEmbeddedRendererController {
   private binding: NativeBinding | null = null;
   private active: boolean = false;
@@ -37,38 +53,51 @@ export class MacEmbeddedRendererController {
   private frameReadyThrottleMs: number = 4; // ~250 fps cap
 
   constructor() {
-    // Only load binding on darwin and when env gate is set
-    if (process.platform === "darwin" && process.env.OPENNOW_MACOS_EMBEDDED_RENDERER_PROTOTYPE === "1") {
+    if (isEmbeddedRendererEnabled()) {
       this.binding = this.loadBinding();
       this.active = this.binding !== null;
     }
   }
 
   private loadBinding(): NativeBinding | null {
-    try {
-      const mainDir = process.env.OPENNOW_MAIN_DIR || path.dirname(__dirname);
-      const bindingPath = path.join(mainDir, "..", "native", "macos-embedded-renderer", "build", "Release", "renderer.node");
+    const candidates: string[] = [];
 
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const binding = require(bindingPath) as NativeBinding;
-      console.log("[MacEmbeddedRenderer] Native addon loaded");
-      return binding;
-    } catch (err) {
-      console.log(`[MacEmbeddedRenderer] Failed to load native addon: ${err}`);
-      return null;
+    // 1. Dev build (from dist-electron/main)
+    candidates.push(resolve(__dirname, "../../native/macos-embedded-renderer/build/Release/renderer.node"));
+
+    // 2. Source/dev via app path
+    if (app.isReady()) {
+      candidates.push(join(app.getAppPath(), "native/macos-embedded-renderer/build/Release/renderer.node"));
     }
+
+    // 3. Packaged resource (flat copy)
+    candidates.push(join(process.resourcesPath, "native", "macos-embedded-renderer", "renderer.node"));
+
+    // 4. Packaged resource (build tree copy)
+    candidates.push(join(process.resourcesPath, "native", "macos-embedded-renderer", "build", "Release", "renderer.node"));
+
+    const failures: string[] = [];
+
+    for (const candidatePath of candidates) {
+      if (!existsSync(candidatePath)) {
+        failures.push(`${candidatePath} (not found)`);
+        continue;
+      }
+      try {
+        const requireFn = createRequire(import.meta.url);
+        const binding = requireFn(candidatePath) as NativeBinding;
+        console.log(`[MacEmbeddedRenderer] Native addon loaded from: ${candidatePath}`);
+        return binding;
+      } catch (err) {
+        failures.push(`${candidatePath} (load error: ${err})`);
+      }
+    }
+
+    console.log(`[MacEmbeddedRenderer] Failed to load native addon from all candidates:
+  ${failures.join("\n  ")}`);
+    return null;
   }
 
-  /**
-   * Creates or updates the IOSurface-backed NSView.
-   * On first visible call:
-   *   - Creates IOSurface + NSView
-   *   - Returns { iosurfaceId }
-   * On subsequent calls:
-   *   - Recreates IOSurface if dimensions changed by ≥2px
-   *   - Updates NSView frame/visibility
-   *   - Returns { iosurfaceId } or null if binding unavailable
-   */
   createOrUpdateSurface(surface: NativeRenderSurface): MacEmbeddedRendererResult | null {
     if (!this.binding || !this.active) {
       return null;
@@ -86,7 +115,6 @@ export class MacEmbeddedRendererController {
       const height = rect.height;
       const scale = surface.deviceScaleFactor || 1;
 
-      // Threshold for dimension change that triggers IOSurface recreation
       const dimensionThreshold = 2;
       const dimensionsChanged =
         !this.lastDimensions ||
@@ -94,23 +122,19 @@ export class MacEmbeddedRendererController {
         Math.abs(this.lastDimensions.height - height) >= dimensionThreshold;
 
       if (dimensionsChanged && this.lastIOSurfaceId !== null) {
-        // Recreate IOSurface for new dimensions
         this.binding.destroySurface();
         this.lastIOSurfaceId = null;
       }
 
-      // Create surface on first visible call or after dimension change
       if (this.lastIOSurfaceId === null) {
         const result = this.binding.createSurface(windowHandle, width, height, scale);
         this.lastIOSurfaceId = result.iosurfaceId;
         this.lastDimensions = { width, height };
         console.log(`[MacEmbeddedRenderer] Created IOSurface: id=${result.iosurfaceId}, ${width}x${height}@${scale}x`);
-        // Apply initial position and visibility immediately after creation.
         this.binding.updateSurface(windowHandle, rect.x, rect.y, width, height, scale, surface.visible);
         return result;
       }
 
-      // Update NSView frame and visibility on subsequent calls
       this.binding.updateSurface(windowHandle, rect.x, rect.y, width, height, scale, surface.visible);
       this.lastDimensions = { width, height };
 
@@ -121,10 +145,6 @@ export class MacEmbeddedRendererController {
     }
   }
 
-  /**
-   * Called by manager.ts when a frame-ready event is received from the Rust process.
-   * Rate-limited to ~250 fps to avoid excessive layer invalidation.
-   */
   notifyFrameReady(): void {
     if (!this.binding || !this.active) {
       return;
@@ -133,7 +153,7 @@ export class MacEmbeddedRendererController {
     try {
       const now = Date.now();
       if (now - this.lastFrameReadyTime < this.frameReadyThrottleMs) {
-        return; // Skip frame-ready if called too soon
+        return;
       }
 
       this.lastFrameReadyTime = now;
@@ -143,9 +163,6 @@ export class MacEmbeddedRendererController {
     }
   }
 
-  /**
-   * Stops the addon, releases NSView + IOSurface.
-   */
   dispose(reason: string = "unknown"): void {
     if (!this.binding || !this.active) {
       return;
@@ -154,11 +171,13 @@ export class MacEmbeddedRendererController {
     try {
       this.binding.destroySurface();
       console.log(`[MacEmbeddedRenderer] Disposed: ${reason}`);
+    } catch (err) {
+      console.error(`[MacEmbeddedRenderer] Error in dispose: ${err}`);
+    } finally {
       this.lastIOSurfaceId = null;
       this.lastDimensions = null;
       this.active = false;
-    } catch (err) {
-      console.error(`[MacEmbeddedRenderer] Error in dispose: ${err}`);
+      this.binding = null;
     }
   }
 

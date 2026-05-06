@@ -35,6 +35,42 @@ function sanitizedChildEnv(extra = {}) {
   return env;
 }
 
+function envFlagDisabled(value) {
+  if (value === undefined || value === null) return false;
+  const normalized = String(value).trim().toLowerCase();
+  return normalized === "0" || normalized === "false" || normalized === "off" || normalized === "no";
+}
+
+function runMacEmbeddedRendererBuild() {
+  if (process.env.OPENNOW_SKIP_NATIVE_STREAMER_BUILD === "1" || process.env.OPENNOW_SKIP_MACOS_EMBEDDED_RENDERER_BUILD === "1") {
+    console.log("Skipping macOS embedded renderer build (skip flag set).");
+    return;
+  }
+
+  if (process.platform !== "darwin") {
+    return;
+  }
+
+  if (envFlagDisabled(process.env.OPENNOW_MACOS_EMBEDDED_RENDERER)) {
+    console.log("Skipping macOS embedded renderer build (OPENNOW_MACOS_EMBEDDED_RENDERER disabled).");
+    return;
+  }
+
+  console.log("Building macOS embedded renderer addon...");
+  const args = [join(__dirname, "build-macos-embedded-renderer.mjs")];
+  const result = spawnSync(process.execPath, args, {
+    cwd: packageRoot,
+    stdio: "inherit",
+    env: sanitizedChildEnv(),
+  });
+
+  if (result.status !== 0) {
+    console.error("macOS embedded renderer build failed; continuing without it.");
+  } else {
+    console.log("macOS embedded renderer build completed.");
+  }
+}
+
 function runNativeBuild() {
   if (process.env.OPENNOW_SKIP_NATIVE_STREAMER_BUILD === "1") {
     console.log("Skipping native streamer build because OPENNOW_SKIP_NATIVE_STREAMER_BUILD=1.");
@@ -67,13 +103,20 @@ function runElectronVite() {
   const explicitStreamerBinary = process.env.OPENNOW_NATIVE_STREAMER?.trim() || streamerBinary;
   console.log(`Launching Electron dev server with native streamer: ${explicitStreamerBinary}`);
 
+  const extraEnv = {
+    OPENNOW_NATIVE_STREAMER: explicitStreamerBinary,
+  };
+
+  // Default embedded renderer on macOS dev unless explicitly disabled
+  if (process.platform === "darwin" && !envFlagDisabled(process.env.OPENNOW_MACOS_EMBEDDED_RENDERER)) {
+    extraEnv.OPENNOW_MACOS_EMBEDDED_RENDERER = "1";
+  }
+
   const child = spawn("electron-vite", ["dev"], {
     cwd: packageRoot,
     stdio: "inherit",
     shell: process.platform === "win32",
-    env: sanitizedChildEnv({
-      OPENNOW_NATIVE_STREAMER: explicitStreamerBinary,
-    }),
+    env: sanitizedChildEnv(extraEnv),
   });
 
   const forwardSignal = (signal) => {
@@ -101,4 +144,5 @@ function runElectronVite() {
 }
 
 runNativeBuild();
+runMacEmbeddedRendererBuild();
 runElectronVite();
