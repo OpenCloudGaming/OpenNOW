@@ -2059,7 +2059,7 @@ impl GstreamerRenderState {
             let surface_ref = unsafe { IOSurfaceLookup(port_id) };
             if surface_ref.is_null() {
                 send_log(event_sender, "warn",
-                    format!("[MacEmbeddedRenderer] IOSurfaceLookup({port_id}) returned null"));
+                    format!("[MacEmbeddedRenderer] IOSurfaceLookup({port_id}) returned null (cross-process surface requires kIOSurfaceIsGlobal=YES)"));
                 return;
             }
             *guard = Some((port_id, SendableIOSurfaceRef(surface_ref)));

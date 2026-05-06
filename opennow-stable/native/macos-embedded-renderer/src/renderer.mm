@@ -161,6 +161,7 @@ static IOSurfaceRef CreateNewIOSurface(int width, int height, uint32_t* out_id) 
     (__bridge NSString*)kIOSurfaceHeight: @(height),
     (__bridge NSString*)kIOSurfacePixelFormat: @(kCVPixelFormatType_32BGRA),
     (__bridge NSString*)kIOSurfaceBytesPerElement: @4,
+    (__bridge NSString*)kIOSurfaceIsGlobal: @YES,
   };
 
   IOSurfaceRef surface = IOSurfaceCreate((__bridge CFDictionaryRef)properties);
