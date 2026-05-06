@@ -48,15 +48,12 @@ static std::unique_ptr<EmbeddedRendererState> g_state;
 
 @implementation EmbeddedIOSurfaceView {
   IOSurfaceRef _surface;
+  CIContext* _ciContext;
 }
 
 - (instancetype)initWithFrame:(NSRect)frameRect {
   self = [super initWithFrame:frameRect];
   return self;
-}
-
-- (BOOL)isFlipped {
-  return YES;
 }
 
 - (BOOL)isOpaque {
@@ -68,6 +65,7 @@ static std::unique_ptr<EmbeddedRendererState> g_state;
     CFRelease(_surface);
     _surface = nullptr;
   }
+  _ciContext = nil;
 }
 
 - (void)setIOSurface:(IOSurfaceRef)surface {
@@ -122,14 +120,29 @@ static std::unique_ptr<EmbeddedRendererState> g_state;
     return;
   }
 
-  CIContext* ciContext = [CIContext contextWithCGContext:context options:@{
-    kCIContextWorkingColorSpace: [NSNull null],
-    kCIContextOutputColorSpace: [NSNull null],
-  }];
+  if (_ciContext == nil) {
+    _ciContext = [CIContext contextWithOptions:@{
+      kCIContextWorkingColorSpace: [NSNull null],
+      kCIContextOutputColorSpace: [NSNull null],
+    }];
+  }
+
+  CGRect imageRect = CGRectMake(0, 0, IOSurfaceGetWidth(surface), IOSurfaceGetHeight(surface));
+  CGImageRef cgImage = [_ciContext createCGImage:image fromRect:imageRect];
+  if (cgImage == nullptr) {
+    if (g_state) {
+      g_state->draw_skip_count += 1;
+    }
+    return;
+  }
 
   CGRect bounds = NSRectToCGRect(self.bounds);
-  CGRect imageRect = CGRectMake(0, 0, IOSurfaceGetWidth(surface), IOSurfaceGetHeight(surface));
-  [ciContext drawImage:image inRect:bounds fromRect:imageRect];
+  CGContextSaveGState(context);
+  CGContextTranslateCTM(context, CGRectGetMinX(bounds), CGRectGetMinY(bounds) + CGRectGetHeight(bounds));
+  CGContextScaleCTM(context, 1.0, -1.0);
+  CGContextDrawImage(context, CGRectMake(0, 0, CGRectGetWidth(bounds), CGRectGetHeight(bounds)), cgImage);
+  CGContextRestoreGState(context);
+  CGImageRelease(cgImage);
 
   if (g_state) {
     g_state->draw_count += 1;
