@@ -306,6 +306,7 @@ function runShutdownCleanup(reason = "app-quit"): void {
   signalingClientKey = null;
   nativeStreamerManager?.dispose(reason);
   nativeStreamerManager = null;
+  disposeMacEmbeddedRenderer(reason);
   nativeStreamerContext = null;
   nativeStreamerFallbackSessionId = null;
   void destroyDiscordRpc();
@@ -1070,6 +1071,7 @@ async function createMainWindow(): Promise<void> {
   }
 
   mainWindow.on("closed", () => {
+    disposeMacEmbeddedRenderer("window closed");
     mainWindow = null;
     rendererControlledFullscreen = false;
   });
