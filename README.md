@@ -82,6 +82,7 @@ This repository intentionally does not carry duplicate long-form product, setup,
 ├── opennow-stable/          Active Electron desktop client
 ├── native/opennow-streamer/ Native Rust streaming infrastructure
 ├── ios/OpenNOWiOS/          Native iOS SwiftUI app prototype
+├── locales/                 Crowdin-managed localization files
 ├── .github/                 Workflows, templates, and contributor metadata
 ├── AGENTS.md                Repository instructions for AI agents and contributors
 ├── LICENSE                  Project license
@@ -91,7 +92,7 @@ This repository intentionally does not carry duplicate long-form product, setup,
 
 ## Contributing
 
-Contributions are welcome. Read the [contributing guide](.github/CONTRIBUTING.md), keep changes focused, and explain user-facing impact clearly.
+Contributions are welcome. Read the [contributing guide](.github/CONTRIBUTING.md), keep changes focused, and explain user-facing impact clearly. When changing localized copy, edit only `locales/en.json`; Crowdin manages the other locale files.
 
 ## Star History
 

@@ -9,6 +9,8 @@
     "native:build": "npm --prefix opennow-stable run native:build",
     "typecheck": "npm --prefix opennow-stable run typecheck",
     "dist": "npm --prefix opennow-stable run dist",
-    "dist:signed": "npm --prefix opennow-stable run dist:signed"
+    "dist:signed": "npm --prefix opennow-stable run dist:signed",
+    "crowdin:upload": "crowdin upload sources",
+    "crowdin:download": "crowdin download"
   }
 }
