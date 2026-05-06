@@ -94,7 +94,24 @@ const SETTINGS_SCOPE_SEARCH_TERMS: Record<SettingsSearchScopeId, readonly string
     "cpu",
     "test codecs",
   ],
-  "native-streamer": ["native", "streamer", "gstreamer", "backend", "directx", "dx11", "dx12", "cloud gsync", "diagnostics"],
+  "native-streamer": [
+    "native",
+    "streamer",
+    "native streaming",
+    "gstreamer",
+    "backend",
+    "directx",
+    "dx11",
+    "dx12",
+    "cloud gsync",
+    "diagnostics",
+    "experimental",
+    "issue",
+    "github",
+    "discord",
+    "report",
+    "bug",
+  ],
   game: ["game", "language", "keyboard layout", "store", "launch"],
   audio: ["audio", "microphone", "mic", "push to talk", "voice activity"],
   input: [
@@ -2138,8 +2155,18 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                   </label>
                 </div>
                 <span className="settings-subtle-hint">
-                  Uses the faster GStreamer-based desktop streamer for new sessions. If it cannot start, OpenNOW falls back to the web streamer.
+                  Native streaming is experimental and may have platform-specific bugs, glitches, or fallbacks to Chromium/WebRTC. Enable it only if you are comfortable testing the GStreamer-based desktop streamer for new sessions.
                 </span>
+                <div className="settings-chip-row">
+                  <a className="settings-chip" href="https://github.com/OpenCloudGaming/OpenNOW/issues" target="_blank" rel="noreferrer">
+                    <span>Report on GitHub Issues</span>
+                    <ExternalLink size={13} />
+                  </a>
+                  <a className="settings-chip" href="https://discord.gg/8EJYaJcNfD" target="_blank" rel="noreferrer">
+                    <span>Report on Discord</span>
+                    <ExternalLink size={13} />
+                  </a>
+                </div>
               </div>
 
               <div className="settings-row settings-row--column">
