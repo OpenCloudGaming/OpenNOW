@@ -139,6 +139,17 @@ export interface TouchMouseTapInput {
   timestampMs?: number;
 }
 
+export interface TouchMouseButtonInput {
+  button: number;
+  pressed: boolean;
+  timestampMs?: number;
+}
+
+export interface TouchMouseWheelInput {
+  delta: number;
+  timestampMs?: number;
+}
+
 export type StreamLagReason =
   | "unknown"
   | "stable"
@@ -506,6 +517,7 @@ export class GfnWebRtcClient {
   private previousGamepadStates: Map<number, GamepadInput> = new Map();
   private previousGamepadTouchpadClicks: Set<number> = new Set();
   private virtualGamepadConnected = false;
+  private virtualGamepadControllerId: number | null = null;
   private previousVirtualGamepadState: GamepadInput | null = null;
 
   // Track currently pressed keys (VK codes) for synthetic Escape detection
@@ -1644,6 +1656,7 @@ export class GfnWebRtcClient {
     this.previousGamepadStates.clear();
     this.previousGamepadTouchpadClicks.clear();
     this.virtualGamepadConnected = false;
+    this.virtualGamepadControllerId = null;
     this.previousVirtualGamepadState = null;
     this.gamepadSendCount = 0;
     this.lastGamepadSendMs = 0;
@@ -1938,18 +1951,39 @@ export class GfnWebRtcClient {
     this.diagnostics.connectedGamepads = connectedCount + (this.virtualGamepadConnected ? 1 : 0);
   }
 
+  private resolveVirtualGamepadControllerId(connecting: boolean): number {
+    if (this.virtualGamepadControllerId !== null) {
+      return this.virtualGamepadControllerId;
+    }
+
+    if (!connecting) {
+      return 0;
+    }
+
+    for (let i = 0; i < GAMEPAD_MAX_CONTROLLERS; i += 1) {
+      if (!this.connectedGamepads.has(i)) {
+        this.virtualGamepadControllerId = i;
+        return i;
+      }
+    }
+
+    this.virtualGamepadControllerId = GAMEPAD_MAX_CONTROLLERS - 1;
+    return this.virtualGamepadControllerId;
+  }
+
   public setVirtualGamepadState(state: VirtualGamepadState): void {
     if (!this.inputReady || this.inputPaused) {
       return;
     }
 
-    const controllerId = 0;
+    const controllerId = this.resolveVirtualGamepadControllerId(state.connected);
     const wasConnected = this.virtualGamepadConnected;
     this.virtualGamepadConnected = state.connected;
     if (state.connected) {
       this.gamepadBitmap |= (1 << controllerId);
     } else {
       this.gamepadBitmap &= ~(1 << controllerId);
+      this.virtualGamepadControllerId = null;
     }
 
     const gamepadInput: GamepadInput = {
@@ -2046,14 +2080,52 @@ export class GfnWebRtcClient {
     }
 
     const timestamp = timestampUs(input.timestampMs);
-    this.sendReliable(this.inputEncoder.encodeMouseButtonDown({
-      button: toMouseButton(0),
-      timestampUs: timestamp,
+    this.sendMouseButtonPacket(0, true, timestamp);
+    this.sendMouseButtonPacket(0, false, timestamp + 1000n);
+  }
+
+  public sendTouchMouseButton(input: TouchMouseButtonInput): boolean {
+    if (!this.inputReady || this.inputPaused) {
+      return false;
+    }
+
+    const button = Math.trunc(input.button);
+    if (!Number.isFinite(button) || button < 0 || button > 4) {
+      return false;
+    }
+
+    this.sendMouseButtonPacket(button, input.pressed, timestampUs(input.timestampMs));
+    return true;
+  }
+
+  public sendTouchMouseWheel(input: TouchMouseWheelInput): boolean {
+    if (!this.inputReady || this.inputPaused) {
+      return false;
+    }
+
+    const delta = Math.max(-32768, Math.min(32767, Math.round(input.delta)));
+    if (delta === 0) {
+      return false;
+    }
+
+    this.sendReliable(this.inputEncoder.encodeMouseWheel({
+      delta,
+      timestampUs: timestampUs(input.timestampMs),
     }));
-    this.sendReliable(this.inputEncoder.encodeMouseButtonUp({
-      button: toMouseButton(0),
-      timestampUs: timestamp + 1000n,
-    }));
+    return true;
+  }
+
+  private sendMouseButtonPacket(button: number, pressed: boolean, timestamp: bigint): void {
+    const payload = pressed
+      ? this.inputEncoder.encodeMouseButtonDown({
+        button: toMouseButton(button),
+        timestampUs: timestamp,
+      })
+      : this.inputEncoder.encodeMouseButtonUp({
+        button: toMouseButton(button),
+        timestampUs: timestamp,
+      });
+    this.sendReliable(payload);
   }
 
   public sendKeyPress(key: "Backspace" | "Enter" | "Tab" | "Escape"): boolean {

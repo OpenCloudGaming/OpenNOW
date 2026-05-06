@@ -76,27 +76,85 @@ public class OpenNowAndroidPlugin extends Plugin {
 
         pointerCaptureView = view;
         view.setOnCapturedPointerListener((capturedView, event) -> {
-            if ((event.getSource() & InputDevice.SOURCE_MOUSE) != InputDevice.SOURCE_MOUSE) {
+            if (!isSupportedPointerSource(event.getSource())) {
                 return false;
             }
 
             int action = event.getActionMasked();
-            if (action != MotionEvent.ACTION_HOVER_MOVE && action != MotionEvent.ACTION_MOVE) {
-                return false;
+            long timestampMs = event.getEventTime();
+
+            if (action == MotionEvent.ACTION_HOVER_MOVE || action == MotionEvent.ACTION_MOVE) {
+                float dx = event.getAxisValue(MotionEvent.AXIS_RELATIVE_X);
+                float dy = event.getAxisValue(MotionEvent.AXIS_RELATIVE_Y);
+                if (dx == 0f && dy == 0f) {
+                    return false;
+                }
+
+                JSObject payload = new JSObject();
+                payload.put("dx", dx);
+                payload.put("dy", dy);
+                payload.put("timestampMs", timestampMs);
+                notifyListeners("nativeMouseMove", payload);
+                return true;
             }
 
-            float dx = event.getAxisValue(MotionEvent.AXIS_RELATIVE_X);
-            float dy = event.getAxisValue(MotionEvent.AXIS_RELATIVE_Y);
-            if (dx == 0f && dy == 0f) {
-                return false;
+            if (action == MotionEvent.ACTION_BUTTON_PRESS || action == MotionEvent.ACTION_BUTTON_RELEASE) {
+                int button = mapMouseButton(event.getActionButton());
+                if (button < 0) {
+                    return false;
+                }
+
+                JSObject payload = new JSObject();
+                payload.put("button", button);
+                payload.put("pressed", action == MotionEvent.ACTION_BUTTON_PRESS);
+                payload.put("timestampMs", timestampMs);
+                notifyListeners("nativeMouseButton", payload);
+                return true;
             }
 
-            JSObject payload = new JSObject();
-            payload.put("dx", dx);
-            payload.put("dy", dy);
-            notifyListeners("nativeMouseMove", payload);
-            return true;
+            if (action == MotionEvent.ACTION_SCROLL) {
+                float vertical = event.getAxisValue(MotionEvent.AXIS_VSCROLL);
+                if (vertical == 0f) {
+                    return false;
+                }
+
+                JSObject payload = new JSObject();
+                payload.put("delta", Math.round(vertical * 120f));
+                payload.put("timestampMs", timestampMs);
+                notifyListeners("nativeMouseWheel", payload);
+                return true;
+            }
+
+            return false;
         });
+    }
+
+    private int mapMouseButton(int actionButton) {
+        switch (actionButton) {
+            case MotionEvent.BUTTON_PRIMARY:
+                return 0;
+            case MotionEvent.BUTTON_TERTIARY:
+                return 1;
+            case MotionEvent.BUTTON_SECONDARY:
+                return 2;
+            case MotionEvent.BUTTON_BACK:
+                return 3;
+            case MotionEvent.BUTTON_FORWARD:
+                return 4;
+            default:
+                return -1;
+        }
+    }
+
+    private boolean isSupportedPointerSource(int source) {
+        if ((source & InputDevice.SOURCE_MOUSE) == InputDevice.SOURCE_MOUSE) {
+            return true;
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
+            && (source & InputDevice.SOURCE_MOUSE_RELATIVE) == InputDevice.SOURCE_MOUSE_RELATIVE) {
+            return true;
+        }
+        return (source & InputDevice.SOURCE_TOUCHPAD) == InputDevice.SOURCE_TOUCHPAD;
     }
 
     private void applyImmersiveFullscreen(boolean enabled) {

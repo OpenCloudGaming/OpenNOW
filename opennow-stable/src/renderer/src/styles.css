@@ -5720,7 +5720,7 @@ button.game-card-store-chip.active:hover {
   background: rgba(255, 255, 255, 0.22);
   border: 1px solid rgba(255, 255, 255, 0.22);
   box-shadow: 0 8px 18px rgba(0, 0, 0, 0.34);
-  transition: transform 34ms linear;
+  transition: none;
 }
 
 .sv-touch-dpad,
@@ -5888,6 +5888,17 @@ button.game-card-store-chip.active:hover {
   backdrop-filter: blur(12px) saturate(140%);
   box-shadow: 0 10px 26px rgba(0, 0, 0, 0.36);
   pointer-events: auto;
+  opacity: 1;
+  transform: translateY(0) scale(1);
+  transition:
+    opacity 180ms var(--ease),
+    transform 180ms var(--ease);
+}
+
+.sv-android-menu-toggle.is-hidden {
+  opacity: 0;
+  transform: translateY(-8px) scale(0.92);
+  pointer-events: none;
 }
 
 .sv-android-menu-panel {

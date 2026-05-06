@@ -69,18 +69,25 @@ export function formatLogEntry(entry: LogEntry): string {
   const prefixStr = entry.prefix ? `[${entry.prefix}] ` : "";
   const argsStr = entry.args.length > 0
     ? " " + entry.args.map(arg => {
-        try {
-          if (typeof arg === "object" && arg !== null) {
-            return JSON.stringify(arg);
-          }
-          return String(arg);
-        } catch {
-          return "[Object]";
-        }
+        return stringifyLogValue(arg);
       }).join(" ")
     : "";
 
   return `${timeStr} ${levelStr} ${prefixStr}${entry.message}${argsStr}`;
+}
+
+function stringifyLogValue(value: unknown): string {
+  if (value instanceof Error) {
+    return value.stack || `${value.name}: ${value.message}`;
+  }
+  if (typeof value === "object" && value !== null) {
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return "[Object]";
+    }
+  }
+  return String(value);
 }
 
 /**

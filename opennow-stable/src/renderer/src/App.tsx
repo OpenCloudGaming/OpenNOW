@@ -3635,6 +3635,12 @@ export function App(): JSX.Element {
             onTouchMouseTap={(input) => {
               clientRef.current?.sendTouchMouseTap(input);
             }}
+            onTouchMouseButton={(input) => {
+              clientRef.current?.sendTouchMouseButton(input);
+            }}
+            onTouchMouseWheel={(input) => {
+              clientRef.current?.sendTouchMouseWheel(input);
+            }}
             onSendText={(text) => clientRef.current?.sendText(text) ?? 0}
             onSendKeyPress={(key) => {
               clientRef.current?.sendKeyPress(key);

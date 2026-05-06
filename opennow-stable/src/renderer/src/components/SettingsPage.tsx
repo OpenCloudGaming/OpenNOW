@@ -1,4 +1,4 @@
-import { Globe, Check, Search, X, Loader, Zap, Mic, FileDown, Wifi, Trash2, Heart, Users, ExternalLink, Monitor, Keyboard, Download, RefreshCcw, Info } from "lucide-react";
+import { Globe, Check, Search, X, Loader, Zap, Mic, FileDown, Wifi, Trash2, Heart, Users, ExternalLink, Monitor, Keyboard, Download, RefreshCcw, Info, Copy } from "lucide-react";
 import { useState, useCallback, useMemo, useEffect, useRef } from "react";
 import type { JSX } from "react";
 
@@ -27,6 +27,7 @@ import {
 import { formatShortcutForDisplay, normalizeShortcut, shortcutFromKeyboardEvent } from "../shortcuts";
 import { openNow, platformCapabilities } from "../platform";
 import { getCodecDecodeBadgeState, type CodecTestResult } from "../lib/codecDiagnostics";
+import { copyTextToClipboard } from "../utils/clipboard";
 
 interface SettingsPageProps {
   settings: Settings;
@@ -38,6 +39,7 @@ interface SettingsPageProps {
 }
 
 type ThanksLoadState = "idle" | "loading" | "loaded" | "error";
+type DebugLogCopyState = "idle" | "copying" | "copied" | "failed";
 
 type SettingsSectionId = "stream" | "game" | "audio" | "input" | "interface" | "about" | "thanks";
 
@@ -652,6 +654,38 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
     ? `${formatBytes(updaterState.progress.bytesPerSecond)}/s`
     : null;
   const updaterBadgeLabel = useMemo(() => getUpdaterBadgeLabel(updaterState), [updaterState]);
+  const [debugLogCopyState, setDebugLogCopyState] = useState<DebugLogCopyState>("idle");
+
+  const handleDebugLogs = useCallback(async (): Promise<void> => {
+    try {
+      if (platformCapabilities.isAndroid) {
+        setDebugLogCopyState("copying");
+        const logs = await openNow.exportLogs("text");
+        await copyTextToClipboard(logs);
+        setDebugLogCopyState("copied");
+        window.setTimeout(() => setDebugLogCopyState("idle"), 1800);
+        return;
+      }
+
+      const logs = await openNow.exportLogs("text");
+      const blob = new Blob([logs], { type: "text/plain" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `opennow-logs-${new Date().toISOString().replace(/[:.]/g, "-")}.txt`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error("[Settings] Failed to export logs:", err);
+      if (platformCapabilities.isAndroid) {
+        setDebugLogCopyState("failed");
+        window.setTimeout(() => setDebugLogCopyState("idle"), 2200);
+      }
+      alert(platformCapabilities.isAndroid ? "Failed to copy logs. Please try again." : "Failed to export logs. Please try again.");
+    }
+  }, []);
 
   const selectedResolutionLabel = useMemo(() => {
     if (hasDynamic) {
@@ -2716,32 +2750,35 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
               {platformCapabilities.supportsLogExport && (
                 <div className="settings-row">
                   <label className="settings-label">
-                    Export Logs
-                    <span className="settings-hint">Download debug logs with sensitive data redacted for privacy</span>
+                    {platformCapabilities.isAndroid ? "Copy Debug Logs" : "Export Logs"}
+                    <span className="settings-hint">
+                      {platformCapabilities.isAndroid
+                        ? "Copy app, launch, queue, and setup logs with sensitive data redacted for privacy"
+                        : "Download debug logs with sensitive data redacted for privacy"}
+                    </span>
                   </label>
                   <button
                     type="button"
                     className="settings-export-logs-btn"
-                    onClick={async () => {
-                      try {
-                        const logs = await openNow.exportLogs("text");
-                        const blob = new Blob([logs], { type: "text/plain" });
-                        const url = URL.createObjectURL(blob);
-                        const a = document.createElement("a");
-                        a.href = url;
-                        a.download = `opennow-logs-${new Date().toISOString().replace(/[:.]/g, "-")}.txt`;
-                        document.body.appendChild(a);
-                        a.click();
-                        document.body.removeChild(a);
-                        URL.revokeObjectURL(url);
-                      } catch (err) {
-                        console.error("[Settings] Failed to export logs:", err);
-                        alert("Failed to export logs. Please try again.");
-                      }
+                    disabled={debugLogCopyState === "copying"}
+                    onClick={() => {
+                      void handleDebugLogs();
                     }}
                   >
-                    <FileDown size={16} />
-                    Export Logs
+                    {platformCapabilities.isAndroid
+                      ? debugLogCopyState === "copied"
+                        ? <Check size={16} />
+                        : <Copy size={16} />
+                      : <FileDown size={16} />}
+                    {platformCapabilities.isAndroid
+                      ? debugLogCopyState === "copying"
+                        ? "Copying..."
+                        : debugLogCopyState === "copied"
+                          ? "Copied"
+                          : debugLogCopyState === "failed"
+                            ? "Copy Failed"
+                            : "Copy Debug"
+                      : "Export Logs"}
                   </button>
                 </div>
               )}

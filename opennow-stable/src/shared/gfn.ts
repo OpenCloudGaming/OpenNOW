@@ -663,6 +663,18 @@ export type MainToRendererSignalingEvent =
 export interface NativeMouseMoveEvent {
   dx: number;
   dy: number;
+  timestampMs?: number;
+}
+
+export interface NativeMouseButtonEvent {
+  button: number;
+  pressed: boolean;
+  timestampMs?: number;
+}
+
+export interface NativeMouseWheelEvent {
+  delta: number;
+  timestampMs?: number;
 }
 
 /** Dialog result for session conflict resolution */
@@ -744,6 +756,8 @@ export interface OpenNowApi {
   togglePointerLock(): Promise<void>;
   setNativePointerCapture(enabled: boolean): Promise<void>;
   onNativeMouseMove(listener: (event: NativeMouseMoveEvent) => void): () => void;
+  onNativeMouseButton(listener: (event: NativeMouseButtonEvent) => void): () => void;
+  onNativeMouseWheel(listener: (event: NativeMouseWheelEvent) => void): () => void;
   getSettings(): Promise<Settings>;
   setSetting<K extends keyof Settings>(key: K, value: Settings[K]): Promise<void>;
   resetSettings(): Promise<Settings>;

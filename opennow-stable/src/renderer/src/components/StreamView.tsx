@@ -84,6 +84,8 @@ interface StreamViewProps {
   onVirtualGamepadState?: (state: VirtualGamepadState) => void;
   onTouchMouseMove?: (input: { dx: number; dy: number; timestampMs?: number }) => void;
   onTouchMouseTap?: (input: { timestampMs?: number }) => void;
+  onTouchMouseButton?: (input: { button: number; pressed: boolean; timestampMs?: number }) => void;
+  onTouchMouseWheel?: (input: { delta: number; timestampMs?: number }) => void;
   onSendText?: (text: string) => number;
   onSendKeyPress?: (key: "Backspace" | "Enter") => void;
   microphoneMode: MicrophoneMode;
@@ -576,12 +578,26 @@ const DEFAULT_ANDROID_TOUCH_SETTINGS: AndroidTouchSettings = {
   mousePad: true,
   mouseCapture: true,
 };
+const ANDROID_TOUCH_CONTROLLER_IDLE_DISCONNECT_MS = 3000;
+const ANDROID_TOUCH_CONTROLLER_KEEPALIVE_MS = 250;
+const ANDROID_TOUCH_CONTROLLER_MIN_EMIT_MS = 24;
+const ANDROID_TOUCH_STICK_STEP = 0.01;
 
 function clampNumber(value: number, min: number, max: number): number {
   if (!Number.isFinite(value)) {
     return min;
   }
   return Math.max(min, Math.min(max, value));
+}
+
+function quantizeTouchStickValue(value: StickValue): StickValue {
+  const quantizeAxis = (axis: number) => {
+    if (Math.abs(axis) < ANDROID_TOUCH_STICK_STEP) {
+      return 0;
+    }
+    return Math.round(axis / ANDROID_TOUCH_STICK_STEP) * ANDROID_TOUCH_STICK_STEP;
+  };
+  return { x: quantizeAxis(value.x), y: quantizeAxis(value.y) };
 }
 
 function readAndroidTouchSettings(): AndroidTouchSettings {
@@ -640,7 +656,7 @@ function TouchStick({
     const rawY = (event.clientY - centerY) / radius;
     const magnitude = Math.hypot(rawX, rawY);
     const scale = magnitude > 1 ? 1 / magnitude : 1;
-    onChange({ x: rawX * scale, y: rawY * scale });
+    onChange(quantizeTouchStickValue({ x: rawX * scale, y: rawY * scale }));
   }, [onChange]);
 
   return (
@@ -695,8 +711,28 @@ function TouchControllerOverlay({
   const triggersRef = useRef({ left: 0, right: 0 });
   const leftStickRef = useRef(leftStick);
   const rightStickRef = useRef(rightStick);
+  const virtualConnectedRef = useRef(false);
+  const lastTouchActivityMsRef = useRef(0);
+  const lastEmitMsRef = useRef(0);
+  const pendingEmitRef = useRef<number | null>(null);
 
-  const emit = useCallback((connected = true) => {
+  const isNeutral = useCallback(() => (
+    buttonsRef.current === 0 &&
+    triggersRef.current.left === 0 &&
+    triggersRef.current.right === 0 &&
+    leftStickRef.current.x === 0 &&
+    leftStickRef.current.y === 0 &&
+    rightStickRef.current.x === 0 &&
+    rightStickRef.current.y === 0
+  ), []);
+
+  const emitNow = useCallback((connected = virtualConnectedRef.current) => {
+    if (pendingEmitRef.current !== null) {
+      window.clearTimeout(pendingEmitRef.current);
+      pendingEmitRef.current = null;
+    }
+    lastEmitMsRef.current = performance.now();
+    virtualConnectedRef.current = connected;
     onVirtualGamepadState({
       connected,
       buttons: connected ? buttonsRef.current : 0,
@@ -709,32 +745,82 @@ function TouchControllerOverlay({
     });
   }, [onVirtualGamepadState]);
 
+  const scheduleEmit = useCallback((connected = virtualConnectedRef.current, immediate = false) => {
+    if (immediate) {
+      emitNow(connected);
+      return;
+    }
+
+    const now = performance.now();
+    const elapsed = now - lastEmitMsRef.current;
+    if (elapsed >= ANDROID_TOUCH_CONTROLLER_MIN_EMIT_MS) {
+      emitNow(connected);
+      return;
+    }
+
+    if (pendingEmitRef.current !== null) {
+      return;
+    }
+
+    pendingEmitRef.current = window.setTimeout(() => {
+      pendingEmitRef.current = null;
+      emitNow(connected);
+    }, Math.max(1, ANDROID_TOUCH_CONTROLLER_MIN_EMIT_MS - elapsed));
+  }, [emitNow]);
+
+  const markTouchActivity = useCallback(() => {
+    lastTouchActivityMsRef.current = performance.now();
+    if (!virtualConnectedRef.current) {
+      virtualConnectedRef.current = true;
+    }
+  }, []);
+
   const updateLeftStick = useCallback((value: StickValue) => {
+    if (leftStickRef.current.x === value.x && leftStickRef.current.y === value.y) {
+      return;
+    }
     leftStickRef.current = value;
     setLeftStick(value);
-    emit();
-  }, [emit]);
+    markTouchActivity();
+    scheduleEmit(true, value.x === 0 && value.y === 0);
+  }, [markTouchActivity, scheduleEmit]);
 
   const updateRightStick = useCallback((value: StickValue) => {
+    if (rightStickRef.current.x === value.x && rightStickRef.current.y === value.y) {
+      return;
+    }
     rightStickRef.current = value;
     setRightStick(value);
-    emit();
-  }, [emit]);
+    markTouchActivity();
+    scheduleEmit(true, value.x === 0 && value.y === 0);
+  }, [markTouchActivity, scheduleEmit]);
 
   const setButton = useCallback((mask: number, pressed: boolean) => {
+    const nextButtons = pressed
+      ? buttonsRef.current | mask
+      : buttonsRef.current & ~mask;
+    if (nextButtons === buttonsRef.current) {
+      return;
+    }
     buttonsRef.current = pressed
       ? buttonsRef.current | mask
       : buttonsRef.current & ~mask;
-    emit();
-  }, [emit]);
+    markTouchActivity();
+    emitNow(true);
+  }, [emitNow, markTouchActivity]);
 
   const setTrigger = useCallback((side: "left" | "right", pressed: boolean) => {
+    const nextValue = pressed ? 1 : 0;
+    if (triggersRef.current[side] === nextValue) {
+      return;
+    }
     triggersRef.current = {
       ...triggersRef.current,
-      [side]: pressed ? 1 : 0,
+      [side]: nextValue,
     };
-    emit();
-  }, [emit]);
+    markTouchActivity();
+    emitNow(true);
+  }, [emitNow, markTouchActivity]);
 
   const bindButton = (mask: number) => ({
     onPointerDown: (event: React.PointerEvent<HTMLButtonElement>) => {
@@ -752,6 +838,9 @@ function TouchControllerOverlay({
         event.currentTarget.releasePointerCapture(event.pointerId);
       }
       setButton(mask, false);
+    },
+    onContextMenu: (event: React.MouseEvent<HTMLButtonElement>) => {
+      event.preventDefault();
     },
   });
 
@@ -772,16 +861,34 @@ function TouchControllerOverlay({
       }
       setTrigger(side, false);
     },
+    onContextMenu: (event: React.MouseEvent<HTMLButtonElement>) => {
+      event.preventDefault();
+    },
   });
 
   useEffect(() => {
-    emit();
-    const keepalive = window.setInterval(() => emit(), 80);
+    const keepalive = window.setInterval(() => {
+      if (!virtualConnectedRef.current) {
+        return;
+      }
+      if (
+        isNeutral() &&
+        performance.now() - lastTouchActivityMsRef.current >= ANDROID_TOUCH_CONTROLLER_IDLE_DISCONNECT_MS
+      ) {
+        emitNow(false);
+        return;
+      }
+      scheduleEmit(true);
+    }, ANDROID_TOUCH_CONTROLLER_KEEPALIVE_MS);
     return () => {
+      if (pendingEmitRef.current !== null) {
+        window.clearTimeout(pendingEmitRef.current);
+        pendingEmitRef.current = null;
+      }
       window.clearInterval(keepalive);
       onVirtualGamepadState({ ...EMPTY_VIRTUAL_GAMEPAD_STATE, connected: false });
     };
-  }, [emit, onVirtualGamepadState]);
+  }, [emitNow, isNeutral, onVirtualGamepadState, scheduleEmit]);
 
   return (
     <div
@@ -1038,6 +1145,7 @@ function AndroidStreamMenu({
   onEndSession,
   onSendText,
   onSendKeyPress,
+  revealSignal,
 }: {
   diagnosticsStore: StreamDiagnosticsStore;
   sessionStartedAtMs: number | null;
@@ -1047,11 +1155,14 @@ function AndroidStreamMenu({
   onEndSession: () => void;
   onSendText?: (text: string) => number;
   onSendKeyPress?: (key: "Backspace" | "Enter") => void;
+  revealSignal?: number;
 }): JSX.Element {
   const [open, setOpen] = useState(false);
+  const [visible, setVisible] = useState(true);
   const battery = useBatterySnapshot();
   const elapsedSeconds = useElapsedSeconds(sessionStartedAtMs, isStreaming);
   const textInputRef = useRef<HTMLInputElement | null>(null);
+  const hideTimerRef = useRef<number | null>(null);
   const stats = useStreamDiagnosticsSelector(
     diagnosticsStore,
     (value) => ({
@@ -1076,6 +1187,41 @@ function AndroidStreamMenu({
     onTouchSettingsChange({ ...touchSettings, ...patch });
   }, [onTouchSettingsChange, touchSettings]);
   const batteryText = battery.level === null ? "Battery --" : `Battery ${battery.level}%${battery.charging ? " charging" : ""}`;
+  const scheduleHide = useCallback((delayMs = 3500) => {
+    if (hideTimerRef.current !== null) {
+      window.clearTimeout(hideTimerRef.current);
+      hideTimerRef.current = null;
+    }
+    hideTimerRef.current = window.setTimeout(() => {
+      hideTimerRef.current = null;
+      setVisible(false);
+    }, delayMs);
+  }, []);
+  const reveal = useCallback((delayMs = 3500) => {
+    setVisible(true);
+    if (!open) {
+      scheduleHide(delayMs);
+    }
+  }, [open, scheduleHide]);
+  useEffect(() => {
+    if (open) {
+      setVisible(true);
+      if (hideTimerRef.current !== null) {
+        window.clearTimeout(hideTimerRef.current);
+        hideTimerRef.current = null;
+      }
+      return;
+    }
+    scheduleHide();
+  }, [open, scheduleHide]);
+  useEffect(() => {
+    reveal(5000);
+  }, [revealSignal, reveal]);
+  useEffect(() => () => {
+    if (hideTimerRef.current !== null) {
+      window.clearTimeout(hideTimerRef.current);
+    }
+  }, []);
   const sendInputText = useCallback((input: HTMLInputElement) => {
     const text = input.value;
     input.value = "";
@@ -1088,8 +1234,11 @@ function AndroidStreamMenu({
     <div className="sv-android-menu">
       <button
         type="button"
-        className="sv-android-menu-toggle"
-        onClick={() => setOpen((value) => !value)}
+        className={`sv-android-menu-toggle${!visible && !open ? " is-hidden" : ""}`}
+        onClick={() => {
+          reveal();
+          setOpen((value) => !value);
+        }}
         aria-label="Open stream menu"
         aria-expanded={open}
         title="Stream menu"
@@ -1404,6 +1553,8 @@ export function StreamView({
   onVirtualGamepadState,
   onTouchMouseMove,
   onTouchMouseTap,
+  onTouchMouseButton,
+  onTouchMouseWheel,
   onSendText,
   onSendKeyPress,
   microphoneMode,
@@ -1445,6 +1596,7 @@ export function StreamView({
   const [recordingShortcutInput, setRecordingShortcutInput] = useState(shortcuts.recording);
   const [recordingShortcutError, setRecordingShortcutError] = useState<string | null>(null);
   const [androidTouchSettings, setAndroidTouchSettings] = useState<AndroidTouchSettings>(() => readAndroidTouchSettings());
+  const [androidMenuRevealSignal, setAndroidMenuRevealSignal] = useState(0);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const recordingIdRef = useRef<string | null>(null);
   const recordingStartTimeRef = useRef<number>(0);
@@ -1483,22 +1635,59 @@ export function StreamView({
       return;
     }
 
-    const unsubscribe = openNow.onNativeMouseMove((event) => {
+    const unsubscribeMove = openNow.onNativeMouseMove((event) => {
       const dx = Number(event.dx);
       const dy = Number(event.dy);
       if (!Number.isFinite(dx) || !Number.isFinite(dy) || (dx === 0 && dy === 0)) {
         return;
       }
-      onTouchMouseMove({ dx, dy });
+      onTouchMouseMove({ dx, dy, timestampMs: event.timestampMs });
+    });
+    const unsubscribeButton = openNow.onNativeMouseButton((event) => {
+      const button = Number(event.button);
+      if (!Number.isFinite(button)) {
+        return;
+      }
+      onTouchMouseButton?.({
+        button,
+        pressed: Boolean(event.pressed),
+        timestampMs: event.timestampMs,
+      });
+    });
+    const unsubscribeWheel = openNow.onNativeMouseWheel((event) => {
+      const delta = Number(event.delta);
+      if (!Number.isFinite(delta) || delta === 0) {
+        return;
+      }
+      onTouchMouseWheel?.({ delta, timestampMs: event.timestampMs });
     });
 
     void openNow.setNativePointerCapture(true);
 
     return () => {
-      unsubscribe();
+      unsubscribeMove();
+      unsubscribeButton();
+      unsubscribeWheel();
       void openNow.setNativePointerCapture(false);
     };
-  }, [androidTouchSettings.mouseCapture, isConnecting, isStreaming, onTouchMouseMove]);
+  }, [androidTouchSettings.mouseCapture, isConnecting, isStreaming, onTouchMouseButton, onTouchMouseMove, onTouchMouseWheel]);
+
+  useEffect(() => {
+    if (!platformCapabilities.isAndroid) {
+      return;
+    }
+
+    const revealAndroidUi = (event: Event) => {
+      if (!isStreaming || isConnecting) {
+        return;
+      }
+      event.preventDefault();
+      setAndroidMenuRevealSignal((value) => value + 1);
+    };
+
+    window.addEventListener("opennow:android-back", revealAndroidUi);
+    return () => window.removeEventListener("opennow:android-back", revealAndroidUi);
+  }, [isConnecting, isStreaming]);
 
   const microphoneModes = useMemo(
     () => [
@@ -2751,6 +2940,7 @@ export function StreamView({
             onEndSession={onEndSession}
             onSendText={onSendText}
             onSendKeyPress={onSendKeyPress}
+            revealSignal={androidMenuRevealSignal}
           />
         </>
       )}
@@ -2901,7 +3091,7 @@ export function StreamView({
       )}
 
       {/* Fullscreen toggle */}
-      {!hideStreamButtons && (
+      {!hideStreamButtons && !platformCapabilities.isAndroid && (
         <button
           className="sv-fs"
           onClick={handleFullscreenToggle}
@@ -2913,7 +3103,7 @@ export function StreamView({
       )}
 
       {/* End session button */}
-      {!hideStreamButtons && (
+      {!hideStreamButtons && !platformCapabilities.isAndroid && (
         <button
           className="sv-end"
           onClick={onEndSession}

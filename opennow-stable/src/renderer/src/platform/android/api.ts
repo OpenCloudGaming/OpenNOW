@@ -24,7 +24,9 @@ import type {
   MainToRendererSignalingEvent,
   MediaListingResult,
   MicrophonePermissionResult,
+  NativeMouseButtonEvent,
   NativeMouseMoveEvent,
+  NativeMouseWheelEvent,
   OpenNowApi,
   PingResult,
   RecordingAbortRequest,
@@ -84,6 +86,7 @@ import {
   toExpiresAt,
   userFromJwt,
 } from "@shared/gfnRuntime";
+import { exportLogs as exportCapturedLogs } from "@shared/logger";
 import { DEFAULT_SETTINGS } from "@shared/settings";
 import type { OpenNowPlatform } from "../types";
 import { BrowserSignalingClient } from "./browserSignaling";
@@ -135,7 +138,10 @@ const LocalhostAuth = registerPlugin<LocalhostAuthPlugin>("LocalhostAuth");
 interface OpenNowAndroidPlugin {
   setImmersiveFullscreen(options: { enabled: boolean }): Promise<{ enabled: boolean }>;
   setPointerCapture(options: { enabled: boolean }): Promise<{ supported: boolean; enabled: boolean }>;
-  addListener(eventName: "nativeMouseMove", listener: (event: NativeMouseMoveEvent) => void): Promise<PluginListenerHandle>;
+  addListener(
+    eventName: "nativeMouseMove" | "nativeMouseButton" | "nativeMouseWheel",
+    listener: (event: NativeMouseMoveEvent | NativeMouseButtonEvent | NativeMouseWheelEvent) => void,
+  ): Promise<PluginListenerHandle>;
 }
 
 const OpenNowAndroid = registerPlugin<OpenNowAndroidPlugin>("OpenNowAndroid");
@@ -184,6 +190,58 @@ async function tcpPingRegion(region: StreamRegion): Promise<PingResult> {
   } catch (error) {
     return { url: region.url, pingMs: null, error: error instanceof Error ? error.message : String(error) };
   }
+}
+
+async function exportAndroidLogs(format: "text" | "json" = "text"): Promise<string> {
+  const info = await Device.getInfo().catch(() => null);
+  const diagnostics = {
+    generatedAt: new Date().toISOString(),
+    platform: "android",
+    userAgent: navigator.userAgent,
+    url: window.location.href,
+    fullscreen: document.fullscreenElement !== null || document.body.dataset.androidFullscreen === "true",
+    viewport: {
+      width: window.innerWidth,
+      height: window.innerHeight,
+      devicePixelRatio: window.devicePixelRatio,
+    },
+    device: info
+      ? {
+          manufacturer: info.manufacturer,
+          model: info.model,
+          platform: info.platform,
+          osVersion: info.osVersion,
+          androidSDKVersion: info.androidSDKVersion,
+          webViewVersion: info.webViewVersion,
+          isVirtual: info.isVirtual,
+        }
+      : null,
+  };
+
+  const logs = exportCapturedLogs(format);
+  if (format === "json") {
+    let parsedLogs: unknown = logs;
+    try {
+      parsedLogs = JSON.parse(logs);
+    } catch {
+      parsedLogs = logs;
+    }
+    return JSON.stringify({ diagnostics, logs: parsedLogs }, null, 2);
+  }
+
+  return [
+    "OpenNOW Android Debug Bundle",
+    `Generated: ${diagnostics.generatedAt}`,
+    `URL: ${diagnostics.url}`,
+    `User Agent: ${diagnostics.userAgent}`,
+    `Viewport: ${diagnostics.viewport.width}x${diagnostics.viewport.height} @ ${diagnostics.viewport.devicePixelRatio}`,
+    `Fullscreen: ${diagnostics.fullscreen}`,
+    diagnostics.device
+      ? `Device: ${diagnostics.device.manufacturer ?? "unknown"} ${diagnostics.device.model ?? "unknown"}, Android ${diagnostics.device.osVersion ?? "unknown"} (SDK ${diagnostics.device.androidSDKVersion ?? "unknown"}), WebView ${diagnostics.device.webViewVersion ?? "unknown"}`
+      : "Device: unavailable",
+    "=".repeat(60),
+    logs,
+  ].join("\n");
 }
 function authRedirectUri(port: number): string { return `http://localhost:${port}`; }
 async function createPkce(): Promise<{ verifier: string; challenge: string }> { const bytes = new Uint8Array(64); crypto.getRandomValues(bytes); let binary = ""; for (const value of bytes) binary += String.fromCharCode(value); const verifier = btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "").slice(0, 86); const challengeBuffer = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier)); let challengeBinary = ""; for (const value of new Uint8Array(challengeBuffer)) challengeBinary += String.fromCharCode(value); const challenge = btoa(challengeBinary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, ""); return { verifier, challenge }; }
@@ -901,40 +959,40 @@ async function pollSessionRequest(input: SessionPollRequest): Promise<SessionInf
   try {
     response = await readSession(base);
   } catch (error) {
-    const shouldRetryViaZone = isNativeHttpError(error) && isTransientSessionRouteStatus(error.status);
+    const errorPayload = cloudMatchPayloadFromError(error);
+    if (errorPayload && isPollableSessionPayload(errorPayload)) {
+      response = errorPayload;
+    } else {
+      const shouldRetryViaZone = isNativeHttpError(error) && isTransientSessionRouteStatus(error.status);
 
-    if (!shouldRetryViaZone) {
-      throw error;
-    }
-
-    let recovered: CloudMatchResponse | null = null;
-    for (const fallbackBase of fallbackPollBases(input.zone, input.streamingBaseUrl, base)) {
-      try {
-        console.warn(`[Android] Session poll via ${base} failed with HTTP ${error.status}; retrying via ${fallbackBase}.`);
-        recovered = await readSession(fallbackBase);
-        base = fallbackBase;
-        break;
-      } catch (fallbackError) {
-        const fallbackPayload = cloudMatchPayloadFromError(fallbackError);
-        if (fallbackPayload && isPollableSessionPayload(fallbackPayload)) {
-          recovered = fallbackPayload;
-          base = fallbackBase;
-          break;
-        }
-        if (!isNativeHttpError(fallbackError) || !isTransientSessionRouteStatus(fallbackError.status)) {
-          throw fallbackError;
-        }
-      }
-    }
-    if (!recovered) {
-      const errorPayload = cloudMatchPayloadFromError(error);
-      if (errorPayload && isPollableSessionPayload(errorPayload)) {
-        response = errorPayload;
-      } else {
+      if (!shouldRetryViaZone) {
         throw error;
       }
-    } else {
-      response = recovered;
+
+      let recovered: CloudMatchResponse | null = null;
+      for (const fallbackBase of fallbackPollBases(input.zone, input.streamingBaseUrl, base)) {
+        try {
+          console.warn(`[Android] Session poll via ${base} failed with HTTP ${error.status}; retrying via ${fallbackBase}.`);
+          recovered = await readSession(fallbackBase);
+          base = fallbackBase;
+          break;
+        } catch (fallbackError) {
+          const fallbackPayload = cloudMatchPayloadFromError(fallbackError);
+          if (fallbackPayload && isPollableSessionPayload(fallbackPayload)) {
+            recovered = fallbackPayload;
+            base = fallbackBase;
+            break;
+          }
+          if (!isNativeHttpError(fallbackError) || !isTransientSessionRouteStatus(fallbackError.status)) {
+            throw fallbackError;
+          }
+        }
+      }
+      if (!recovered) {
+        throw error;
+      } else {
+        response = recovered;
+      }
     }
   }
 
@@ -1163,10 +1221,28 @@ async function setNativePointerCapture(enabled: boolean): Promise<void> {
 }
 
 function onNativeMouseMove(listener: (event: NativeMouseMoveEvent) => void): () => void {
+  return onAndroidPluginEvent("nativeMouseMove", listener);
+}
+
+function onNativeMouseButton(listener: (event: NativeMouseButtonEvent) => void): () => void {
+  return onAndroidPluginEvent("nativeMouseButton", listener);
+}
+
+function onNativeMouseWheel(listener: (event: NativeMouseWheelEvent) => void): () => void {
+  return onAndroidPluginEvent("nativeMouseWheel", listener);
+}
+
+function onAndroidPluginEvent<TEvent>(
+  eventName: "nativeMouseMove" | "nativeMouseButton" | "nativeMouseWheel",
+  listener: (event: TEvent) => void,
+): () => void {
   let active = true;
   let handle: PluginListenerHandle | null = null;
 
-  void OpenNowAndroid.addListener("nativeMouseMove", listener)
+  void OpenNowAndroid.addListener(
+    eventName,
+    listener as (event: NativeMouseMoveEvent | NativeMouseButtonEvent | NativeMouseWheelEvent) => void,
+  )
     .then((nextHandle) => {
       if (!active) {
         void nextHandle.remove();
@@ -1235,11 +1311,13 @@ const api: OpenNowApi = {
   togglePointerLock: async () => unsupported("Pointer lock is not supported on Android."),
   setNativePointerCapture,
   onNativeMouseMove,
+  onNativeMouseButton,
+  onNativeMouseWheel,
   getSettings: async () => getStoredSettings(),
   setSetting: async (key, value) => { const current = await getStoredSettings(); await saveSettings({ ...current, [key]: value }); },
   resetSettings: async () => { await saveSettings(DEFAULT_SETTINGS); return { ...DEFAULT_SETTINGS }; },
   getMicrophonePermission: async (): Promise<MicrophonePermissionResult> => ({ platform: "android", isMacOs: false, status: "not-applicable", granted: true, canRequest: true, shouldUseBrowserApi: true }),
-  exportLogs: async () => unsupported("Log export is not supported on Android in this pass."),
+  exportLogs: exportAndroidLogs,
   pingRegions: async (regions: StreamRegion[]): Promise<PingResult[]> => Promise.all(regions.map(tcpPingRegion)),
   saveScreenshot: async (input: ScreenshotSaveRequest): Promise<ScreenshotEntry> => { await ensureDirectory(SCREENSHOT_DIR); const fileName = `${Date.now()}-${Math.random().toString(16).slice(2)}.${dataUrlExtension(input.dataUrl)}`; const filePath = `${SCREENSHOT_DIR}/${fileName}`; await writeBase64File(filePath, decodeDataUrl(input.dataUrl), { relativeToBaseDir: false }); const stat = await Filesystem.stat({ path: filePath, directory: Directory.Data }); const entry: ScreenshotEntry = { id: fileName, fileName, filePath, createdAtMs: Number(stat.ctime ?? Date.now()), sizeBytes: stat.size, dataUrl: input.dataUrl, gameTitle: input.gameTitle }; const entries = await readScreenshotMeta(); await writeScreenshotMeta([{ id: entry.id, fileName: entry.fileName, filePath: entry.filePath, createdAtMs: entry.createdAtMs, sizeBytes: entry.sizeBytes, gameTitle: entry.gameTitle }, ...entries.filter((item) => item.id !== entry.id)]); return entry; },
   listScreenshots: async (): Promise<ScreenshotEntry[]> => { const files = await listDirectory(SCREENSHOT_DIR); const metadata = await readScreenshotMeta(); const metaById = new Map(metadata.map((entry) => [entry.id, entry])); const entries = await Promise.all(files.map(async (file) => { const filePath = `${SCREENSHOT_DIR}/${file.name}`; const stat = await Filesystem.stat({ path: filePath, directory: Directory.Data }); const meta = metaById.get(file.name); return { id: file.name, fileName: file.name, filePath, createdAtMs: meta?.createdAtMs ?? Number(stat.ctime ?? Date.now()), sizeBytes: meta?.sizeBytes ?? stat.size, gameTitle: meta?.gameTitle, dataUrl: await readDataUrl(filePath, screenshotMimeType(file.name)) } satisfies ScreenshotEntry; })); return entries.sort((a, b) => b.createdAtMs - a.createdAtMs); },
@@ -1264,8 +1342,13 @@ const api: OpenNowApi = {
 
 void CapacitorApp.addListener("backButton", () => {
   if (document.fullscreenElement || document.body.dataset.androidFullscreen === "true") {
+    const revealEvent = new CustomEvent("opennow:android-back", { cancelable: true });
+    const handled = !window.dispatchEvent(revealEvent);
+    if (handled) {
+      return;
+    }
     void exitAndroidFullscreenState();
   }
 });
 
-export const capacitorPlatform: OpenNowPlatform = { info: { kind: "android", capabilities: { isAndroid: true, isElectron: false, supportsQuitApp: false, supportsPointerLockToggle: false, supportsDesktopFullscreen: false, supportsLogExport: false, supportsCacheDeletion: false, supportsMediaFolderAccess: false, supportsScreenshotExport: false, supportsPersistentMedia: true, supportsKeyboardShortcuts: false, supportsControllerExitApp: false } }, api };
+export const capacitorPlatform: OpenNowPlatform = { info: { kind: "android", capabilities: { isAndroid: true, isElectron: false, supportsQuitApp: false, supportsPointerLockToggle: false, supportsDesktopFullscreen: false, supportsLogExport: true, supportsCacheDeletion: false, supportsMediaFolderAccess: false, supportsScreenshotExport: false, supportsPersistentMedia: true, supportsKeyboardShortcuts: false, supportsControllerExitApp: false } }, api };
