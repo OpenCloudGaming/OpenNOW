@@ -101,6 +101,7 @@ import { isSessionError, SessionError, GfnErrorCode } from "./gfn/errorCodes";
 import { connectDiscordRpc, setActivity, clearActivity, destroyDiscordRpc, getCurrentActivity, isDiscordRpcConnected } from "./discordRpc";
 import { createAppUpdaterController, type AppUpdaterController } from "./updater";
 import { NativeStreamerManager } from "./nativeStreamer/manager";
+import { getMacEmbeddedRenderer, disposeMacEmbeddedRenderer } from "./macEmbeddedRenderer";
 import { getNativeCloudGsyncCapabilities } from "./nativeCloudGsync";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -790,6 +791,7 @@ function getNativeStreamerManager(): NativeStreamerManager {
     getCloudGsyncMode: () => settingsManager?.get("nativeCloudGsyncMode") ?? "auto",
     getD3dFullscreenMode: () => settingsManager?.get("nativeD3dFullscreenMode") ?? "auto",
     getExternalRendererEnabled: () => settingsManager?.get("nativeExternalRenderer") ?? true,
+    isEmbeddedRendererActive: () => getMacEmbeddedRenderer().isActive(),
     emit: emitToRenderer,
     sendAnswer: async (payload) => {
       if (!signalingClient) {
@@ -1830,9 +1832,17 @@ function registerIpcHandlers(): void {
       return;
     }
 
-    const surface = normalizeNativeRenderSurface(window, payload);
+    let surface = normalizeNativeRenderSurface(window, payload);
     if (!surface) {
       return;
+    }
+
+    // On macOS, try to create or update the embedded renderer and pass iosurfaceId
+    if (process.platform === "darwin") {
+      const embeddedResult = getMacEmbeddedRenderer().createOrUpdateSurface(surface);
+      if (embeddedResult) {
+        surface = { ...surface, iosurfaceId: embeddedResult.iosurfaceId };
+      }
     }
 
     getNativeStreamerManager().updateSurface(surface);

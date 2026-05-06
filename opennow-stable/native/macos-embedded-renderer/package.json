@@ -1,0 +1,18 @@
+{
+  "name": "opennow-macos-embedded-renderer",
+  "version": "1.0.0",
+  "description": "macOS IOSurface-backed embedded renderer native addon",
+  "main": "build/Release/renderer.node",
+  "gypfile": true,
+  "scripts": {
+    "install": "node-gyp rebuild",
+    "build": "node-gyp rebuild",
+    "clean": "node-gyp clean"
+  },
+  "dependencies": {
+    "node-addon-api": "^7.0.0"
+  },
+  "devDependencies": {
+    "node-gyp": "^9.0.0"
+  }
+}

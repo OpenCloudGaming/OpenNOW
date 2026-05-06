@@ -115,6 +115,9 @@ export type NativeStreamerEvent =
       protocolVersion: number;
     }
   | {
+      type: "frame-ready";
+    }
+  | {
       type: "video-stall";
       stallMs: number;
       encodedKbps?: number;

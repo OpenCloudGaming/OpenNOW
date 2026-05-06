@@ -896,6 +896,7 @@ export interface NativeRenderSurfaceUpdate {
 
 export interface NativeRenderSurface extends NativeRenderSurfaceUpdate {
   windowHandle?: string;
+  iosurfaceId?: number; // macOS IOSurface cross-process sharing handle
 }
 
 export interface KeyframeRequest {

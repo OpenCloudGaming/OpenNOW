@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, statSync } from "node:fs";
 import { dirname, resolve, join, delimiter, sep } from "node:path";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 
+import { getMacEmbeddedRenderer } from "../macEmbeddedRenderer";
 import {
   nativeStreamerFeatureModeToEnvValue,
   type IceCandidatePayload,
@@ -51,6 +52,7 @@ interface NativeStreamerManagerOptions extends NativeStreamerCallbacks {
   getCloudGsyncMode(): NativeStreamerFeatureMode;
   getD3dFullscreenMode(): NativeStreamerFeatureMode;
   getExternalRendererEnabled(): boolean;
+  isEmbeddedRendererActive(): boolean;
 }
 
 interface PendingRequest {
@@ -678,11 +680,14 @@ export class NativeStreamerManager {
     if (videoBackendPreference !== "auto") {
       childEnv.OPENNOW_NATIVE_VIDEO_BACKEND = videoBackendPreference;
     }
-    childEnv.OPENNOW_NATIVE_EXTERNAL_RENDERER = process.platform === "darwin"
-      ? "1"
-      : process.platform === "win32"
-        ? this.options.getExternalRendererEnabled() ? "1" : "0"
-        : childEnv.OPENNOW_NATIVE_EXTERNAL_RENDERER ?? "0";
+    childEnv.OPENNOW_NATIVE_EXTERNAL_RENDERER =
+      process.platform === "darwin" && !this.options.isEmbeddedRendererActive()
+        ? "1" // external renderer (child-owned window, current default)
+        : process.platform === "darwin"
+          ? "0" // IOSurface embedded mode (Phase B)
+          : process.platform === "win32"
+            ? this.options.getExternalRendererEnabled() ? "1" : "0"
+            : childEnv.OPENNOW_NATIVE_EXTERNAL_RENDERER ?? "0";
     childEnv.OPENNOW_NATIVE_CLOUD_GSYNC = nativeStreamerFeatureModeToEnvValue(this.options.getCloudGsyncMode());
     childEnv.OPENNOW_NATIVE_D3D_FULLSCREEN = nativeStreamerFeatureModeToEnvValue(this.options.getD3dFullscreenMode());
     if (backendPreference !== "auto") {
@@ -1009,6 +1014,15 @@ export class NativeStreamerManager {
     if (message.type === "input-ready") {
       console.log(`[NativeStreamer] Input protocol ready: v${message.protocolVersion}`);
       this.options.emit({ type: "native-input-ready", protocolVersion: message.protocolVersion });
+      return;
+    }
+
+    if (message.type === "frame-ready") {
+      // Notify the embedded renderer that a frame is ready for display
+      // This is only used in IOSurface mode on macOS
+      if (process.platform === "darwin") {
+        getMacEmbeddedRenderer().notifyFrameReady();
+      }
       return;
     }
 

@@ -2001,13 +2001,29 @@ fn native_input_timestamp_us() -> u64 {
         .min(u128::from(u64::MAX)) as u64
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 struct GstreamerRenderState {
     surface: Arc<Mutex<Option<NativeRenderSurface>>>,
     video_sink: Arc<Mutex<Option<gst::Element>>>,
     external_renderer_logged: Arc<AtomicBool>,
     external_window_guard_started: Arc<AtomicBool>,
     external_window_guard_stop: Arc<AtomicBool>,
+    #[cfg(target_os = "macos")]
+    iosurface_ref: Arc<Mutex<Option<(u32, iosurface_ffi::IOSurfaceRef)>>>, // (port_id, IOSurfaceRef)
+}
+
+impl Default for GstreamerRenderState {
+    fn default() -> Self {
+        GstreamerRenderState {
+            surface: Arc::new(Mutex::new(None)),
+            video_sink: Arc::new(Mutex::new(None)),
+            external_renderer_logged: Arc::new(AtomicBool::new(false)),
+            external_window_guard_started: Arc::new(AtomicBool::new(false)),
+            external_window_guard_stop: Arc::new(AtomicBool::new(false)),
+            #[cfg(target_os = "macos")]
+            iosurface_ref: Arc::new(Mutex::new(None)),
+        }
+    }
 }
 
 impl GstreamerRenderState {
@@ -2714,8 +2730,51 @@ fn normalized_render_rect(rect: Option<&NativeRenderRect>) -> NativeRenderRect {
 }
 
 #[cfg(target_os = "macos")]
+fn use_iosurface_mode(surface: &NativeRenderSurface) -> bool {
+    surface.iosurface_id.is_some()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn use_iosurface_mode(_surface: &NativeRenderSurface) -> bool {
+    false
+}
+
+#[cfg(target_os = "macos")]
+mod iosurface_ffi {
+    use std::os::raw::{c_int, c_void};
+    
+    pub type IOSurfaceRef = *mut c_void;
+    pub const IOSURFACE_LOCK_READ_ONLY: u32 = 0x00000001;
+    
+    #[link(name = "IOSurface", kind = "framework")]
+    unsafe extern "C" {
+        pub fn IOSurfaceLookupFromMachPort(port: u32) -> IOSurfaceRef;
+        pub fn IOSurfaceLock(surface: IOSurfaceRef, options: u32, seed: *mut u32) -> c_int;
+        pub fn IOSurfaceUnlock(surface: IOSurfaceRef, options: u32, seed: *mut u32) -> c_int;
+        pub fn IOSurfaceGetBaseAddress(surface: IOSurfaceRef) -> *mut c_void;
+        pub fn IOSurfaceGetBytesPerRow(surface: IOSurfaceRef) -> usize;
+        pub fn IOSurfaceGetHeight(surface: IOSurfaceRef) -> usize;
+        pub fn IOSurfaceGetWidth(surface: IOSurfaceRef) -> usize;
+        pub fn IOSurfaceDecrementUseCount(surface: IOSurfaceRef);
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+mod iosurface_ffi {
+    pub type IOSurfaceRef = *mut std::ffi::c_void;
+    pub const IOSURFACE_LOCK_READ_ONLY: u32 = 0;
+}
+
+#[cfg(target_os = "macos")]
 fn use_external_renderer_window() -> bool {
-    true
+    std::env::var(EXTERNAL_RENDERER_ENV)
+        .map(|value| {
+            !matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "0" | "false" | "no" | "off"
+            )
+        })
+        .unwrap_or(true)
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -2732,7 +2791,11 @@ fn use_external_renderer_window() -> bool {
 
 #[cfg(target_os = "macos")]
 fn external_renderer_message() -> String {
-    "Using external native GStreamer renderer window on macOS because Electron Cocoa view handles are process-local and unsafe to embed from the native child process.".to_owned()
+    if use_external_renderer_window() {
+        "Using external native GStreamer renderer window on macOS.".to_owned()
+    } else {
+        "IOSurface embedded renderer active; Electron handles pointer lock and input.".to_owned()
+    }
 }
 
 #[cfg(not(target_os = "macos"))]

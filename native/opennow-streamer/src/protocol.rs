@@ -255,6 +255,8 @@ pub struct NativeRenderSurface {
     pub device_scale_factor: f64,
     #[serde(default)]
     pub show_stats: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub iosurface_id: Option<u32>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
