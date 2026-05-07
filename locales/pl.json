@@ -182,7 +182,7 @@
     "labels": {
       "launchError": "Launch Error",
       "nowLoading": "Now Loading",
-      "adQueue": "Ad Queue"
+      "adQueue": "Kolejka reklamowa"
     },
     "steps": {
       "queue": "Kolejka",
@@ -201,56 +201,56 @@
       "loading": "Ładowanie..."
     },
     "ads": {
-      "resumeToStayInQueue": "Resume ads to stay in queue.",
+      "resumeToStayInQueue": "Odpauzuj reklamy, aby zostać w kolejce. ",
       "availableForProgression": "{{count}} ad available for queue progression.",
       "availableForProgression_plural": "{{count}} ads available for queue progression.",
       "playbackRequired": "Ad playback is required while your session is queued.",
       "freeTierQueueAdsBegin": "Free-tier queue ads begin as soon as you enter queue.",
-      "advertisementInProgress": "Advertisement in progress",
+      "advertisementInProgress": "Reklama w toku",
       "mediaWillAppear": "Ad media will appear here as soon as it is available.",
-      "advertisement": "Advertisement",
+      "advertisement": "Reklama",
       "titledAdvertisement": "{{title}} advertisement"
     },
     "actions": {
-      "cancelLoading": "Cancel loading"
+      "cancelLoading": "Anuluj ładowanie"
     }
   },
   "queue": {
     "servers": {
-      "allServers": "All Servers",
+      "allServers": "Wszystkie serwery",
       "close": "Zamknij",
       "cancel": "Anuluj",
       "wait": "{{duration}} wait"
     }
   },
   "session": {
-    "active": "Active Session",
+    "active": "Aktywne sesje",
     "current": "Obecne",
-    "control": "Session Control",
+    "control": "Kontrola sesji",
     "elapsed": "Elapsed",
-    "endSession": "End session",
+    "endSession": "Zakończ sesje",
     "exitStream": "Exit Stream?",
     "exitConfirmation": "Exit stream confirmation",
-    "cancelExit": "Cancel exit",
+    "cancelExit": "Anuluj wyjście",
     "resume": "Wznów",
     "resumeActiveCloudSession": "Resume active cloud session",
     "resumeActiveCloudSessionTitle": "Resume active cloud session: {{title}}",
     "resumeCurrentStream": "Resume current stream",
     "readyToLaunch": "Ready To Launch",
-    "readyToSwitch": "Ready To Switch",
-    "timeWarning": "Session time warning",
+    "readyToSwitch": "Gotowe do zmiany",
+    "timeWarning": "Ostrzeżenie czasu sesji",
     "elapsedTitle": "Current gaming session elapsed time",
     "elapsedWithValue": "Session {{value}}",
-    "remainingPlaytime": "{{value}} left",
-    "terminate": "Terminate",
+    "remainingPlaytime": "{{value}} pozostało ",
+    "terminate": "Zakończ",
     "terminateActiveCloudSession": "Terminate active cloud session",
     "terminateActiveCloudSessionTitle": "Terminate active cloud session: {{title}}",
     "terminateConfirmation": "Terminate {{title}}? This will end the active cloud session immediately.",
     "activeSessionMissingServerAddress": "Active session found (missing server address)",
-    "thisGame": "this game",
-    "thisSession": "this session",
+    "thisGame": "ta gra",
+    "thisSession": "ta sesja",
     "warnings": {
-      "sessionTimeLimitApproaching": "Session time limit approaching",
+      "sessionTimeLimitApproaching": "Limit czasu sesji się zbliża",
       "idleTimeoutApproaching": "Idle timeout approaching",
       "maximumSessionTimeApproaching": "Maximum session time approaching",
       "freeTier30MinutesRemaining": "30 minutes remaining in this free-tier session",
@@ -261,96 +261,96 @@
   "stream": {
     "stats": {
       "connecting": "Łączenie...",
-      "network": "Network",
+      "network": "Sieć",
       "decode": "Decode",
       "input": "Input",
       "render": "Render",
-      "stable": "Stable",
+      "stable": "Stabilny",
       "roundTripLatency": "Round-trip network latency",
       "decodeTime": "D = decode time",
       "renderTime": "R = render time",
       "jitterBuffer": "JB = jitter buffer delay",
-      "packetLoss": "Packet loss percentage",
-      "packetLossValue": "{{value}}% loss",
+      "packetLoss": "Procent straty pakietów",
+      "packetLossValue": "{{value}}% straty",
       "inputQueuePressure": "Input queue pressure (buffered bytes and delayed flush)",
       "inputChannelState": "Partially reliable input channel state and queued bytes",
       "mouseFlushCadence": "Mouse flush cadence and packet rate"
     },
     "controls": {
-      "antiAfkEnabled": "Anti-AFK is enabled",
-      "muteMicrophone": "Mute microphone",
-      "unmuteMicrophone": "Unmute microphone",
+      "antiAfkEnabled": "Anty-AFK włączone",
+      "muteMicrophone": "Wycisz mikrofon",
+      "unmuteMicrophone": "Odcisz mikrofon",
       "enterFullscreen": "Enter fullscreen",
-      "exitFullscreen": "Exit fullscreen",
-      "controllerConnected": "{{count}} controller connected",
-      "controllerConnected_plural": "{{count}} controllers connected"
+      "exitFullscreen": "Opuść pełny ekran",
+      "controllerConnected": "{{count}} kontroler połączony",
+      "controllerConnected_plural": "{{count}} kontrolery połączone"
     },
     "sidebar": {
       "title": "Ustawienia",
       "remainingPlaytime": "Remaining Playtime",
       "sections": "Sidebar sections",
       "microphoneHandling": "Microphone handling",
-      "microphoneMode": "Microphone Mode",
+      "microphoneMode": "Tryb mikrofonu",
       "microphoneInputLevel": "Microphone input level",
-      "screenshotShortcut": "Screenshot Shortcut",
-      "recordingShortcut": "Recording Shortcut",
+      "screenshotShortcut": "Skrót klawiszowy zrzutu ekranu",
+      "recordingShortcut": "Skrót klawiszowy nagrania",
       "toggleStats": "Toggle Stats",
       "stopStream": "Stop Stream",
-      "toggleMicrophone": "Toggle Microphone",
+      "toggleMicrophone": "Przełącz mikrofon",
       "toggleStreamSidebar": "Toggle stream sidebar"
     },
     "screenshots": {
-      "title": "Screenshot",
-      "preview": "Screenshot preview",
-      "closePreview": "Close screenshot preview",
-      "alt": "Screenshot {{fileName}}",
+      "title": "Zrzut ekranu",
+      "preview": "Podgląd zrzutu ekranu",
+      "closePreview": "Zamknij podgląd zrzutu ekranu",
+      "alt": "Zrzut ekranu {{fileName}}",
       "scrollLeft": "Scroll gallery left",
       "scrollRight": "Scroll gallery right"
     },
     "recordings": {
-      "title": "Recordings",
-      "delete": "Delete recording",
+      "title": "Nagrania",
+      "delete": "Usuń nagranie",
       "scrollLeft": "Scroll recordings left",
       "scrollRight": "Scroll recordings right"
     },
     "shortcuts": {
-      "empty": "Shortcut cannot be empty.",
-      "invalidFormat": "Invalid shortcut format.",
+      "empty": "Skrót klawiszowy nie może być pusty",
+      "invalidFormat": "Niepoprawny format skrótu klawiszowego",
       "conflict": "Shortcut conflicts with an existing binding.",
       "clickThenPress": "Click, then press a key",
       "clickHereThenPress": "Click here, then press a key",
       "focusAndPress": "Focus and press the key combination to bind",
-      "examples": "Examples: F3, Ctrl+Shift+Q, Ctrl+Shift+K",
-      "stats": "Stats"
+      "examples": "Przykłady: F3, Ctrl+Shift+Q, Ctrl+Shift+K",
+      "stats": "Statystyki"
     }
   },
   "sidebar": {
     "title": "Sidebar",
-    "closeSettings": "Close settings"
+    "closeSettings": "Zamknij ustawienia"
   },
   "settings": {
     "title": "Ustawienia",
     "saved": "Zapisane",
-    "searchPlaceholder": "Search settings...",
-    "noMatches": "No settings matched \"{{query}}\".",
+    "searchPlaceholder": "Ustawienia wyszukiwania",
+    "noMatches": "Żadne ustawienia nie pasują do \"{{query}}\"",
     "sections": {
       "stream": "Stream",
-      "game": "Game",
-      "audio": "Audio",
+      "game": "Gra",
+      "audio": "Dźwięk",
       "input": "Input",
-      "interface": "Interface",
+      "interface": "Interfejs",
       "about": "About",
-      "thanks": "Thanks"
+      "thanks": "Podziękowania"
     },
     "region": {
       "title": "Region",
-      "autoBest": "Auto (Best)",
-      "searchPlaceholder": "Search regions...",
+      "autoBest": "Automatyczne (Najlepsze)",
+      "searchPlaceholder": "Szukaj regionów...",
       "refreshPing": "Refresh ping",
-      "noRegionsMatch": "No regions match \"{{query}}\""
+      "noRegionsMatch": "Żaden region nie pasuje do \"{{query}}\""
     },
     "video": {
-      "title": "Video",
+      "title": "Wideo",
       "aspectRatio": "Aspect Ratio",
       "resolution": "Resolution",
       "fps": "FPS",
@@ -366,23 +366,23 @@
       "cpu": "CPU"
     },
     "colorQuality": {
-      "mostCompatible": "Most compatible",
+      "mostCompatible": "Najbardziej kompatybilne",
       "sharperChroma": "Sharper chroma",
       "higherBitDepth": "Higher bit depth",
       "highestChromaAndBitDepth": "Highest chroma and bit depth",
-      "requiresH265OrAv1Title": "{{description}} - requires H265/AV1"
+      "requiresH265OrAv1Title": "{{description}} - potrzebuje H265/AV1"
     },
     "game": {
-      "title": "Game",
-      "language": "Language",
+      "title": "Gra",
+      "language": "Język",
       "keyboardLayout": "Keyboard Layout",
-      "preferredStore": "Preferred Store",
+      "preferredStore": "Preferowany sklep",
       "launchBehavior": "Launch Behavior"
     },
     "audio": {
-      "title": "Audio",
+      "title": "Dźwięk",
       "microphone": "Microphone",
-      "microphoneMode": "Microphone Mode",
+      "microphoneMode": "Tryb mikrofonu",
       "microphoneDevice": "Microphone Device",
       "microphoneInputLevel": "Microphone input level",
       "disabled": "Wyłączone",
@@ -399,15 +399,15 @@
       "shortcuts": "Shortcuts",
       "shortcutConflictSidebar": "Shortcut conflicts with the settings sidebar toggle.",
       "shortcutConflictBinding": "Shortcut conflicts with another binding.",
-      "shortcutEmpty": "Shortcut cannot be empty.",
-      "shortcutInvalid": "Invalid shortcut format.",
+      "shortcutEmpty": "Skrót klawiszowy nie może być pusty",
+      "shortcutInvalid": "Niepoprawny format skrótu klawiszowego",
       "toggleStats": "Toggle Stats",
       "togglePointerLock": "Toggle Pointer Lock",
       "toggleFullscreen": "Toggle Fullscreen",
       "stopStream": "Stop Stream",
       "toggleAntiAfk": "Toggle Anti-AFK",
-      "toggleMicrophone": "Toggle Microphone",
-      "screenshot": "Screenshot",
+      "toggleMicrophone": "Przełącz mikrofon",
+      "screenshot": "Zrzut ekranu",
       "recording": "Recording",
       "toggleStreamSidebar": "Toggle stream sidebar",
       "shortcutHint": "Click a field and press the keys to bind, or paste a shortcut ({{examples}}). Escape cancels focus. Full screen: {{fullscreen}}. Stop: {{stop}}. Mic: {{mic}}. Screenshot: {{screenshot}}. Recording: {{recording}}."
@@ -543,7 +543,7 @@
       "theme": "Theme {{label}}"
     },
     "streamLoading": {
-      "adQueue": "Ad Queue",
+      "adQueue": "Kolejka reklamowa",
       "queuePaused": "Session queue paused",
       "settingUpRig": "Setting up your gaming rig...",
       "startingStream": "Starting stream...",
