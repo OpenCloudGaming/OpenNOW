@@ -1548,8 +1548,13 @@ fn normalize_macos_gamepad_stick_axis(value: f32) -> i16 {
 }
 
 #[cfg(any(test, target_os = "macos"))]
-fn macos_mouse_delta_y_for_native_input(delta_y: i64) -> i16 {
-    clamp_i64_to_i16(delta_y.saturating_neg())
+fn macos_gamepad_stick_y_for_renderer_direction(raw_y: f32) -> i16 {
+    normalize_macos_gamepad_stick_axis(-raw_y)
+}
+
+#[cfg(any(test, target_os = "macos"))]
+fn macos_mouse_delta_y_positive_down_for_native_input(delta_y: i64) -> i16 {
+    clamp_i64_to_i16(delta_y)
 }
 
 #[cfg(any(test, target_os = "macos"))]
@@ -2471,11 +2476,12 @@ fn start_external_renderer_window_guard(
 #[cfg(target_os = "macos")]
 mod macos_native_input {
     use super::{
-        clamp_i64_to_i16, macos_gamepad_dpad_y_buttons, macos_mouse_delta_y_for_native_input,
-        native_input_timestamp_us, normalize_macos_gamepad_stick_axis, send_log,
-        send_native_window_input_events, Event, GstreamerInputChannels, GstreamerInputState,
-        NativeGamepadSnapshot, NativeWindowInputEvent, GAMEPAD_MAX_CONTROLLERS,
-        NATIVE_GAMEPAD_KEEPALIVE_INTERVAL, NATIVE_GAMEPAD_POLL_INTERVAL,
+        clamp_i64_to_i16, macos_gamepad_dpad_y_buttons,
+        macos_gamepad_stick_y_for_renderer_direction,
+        macos_mouse_delta_y_positive_down_for_native_input, native_input_timestamp_us,
+        normalize_macos_gamepad_stick_axis, send_log, send_native_window_input_events, Event,
+        GstreamerInputChannels, GstreamerInputState, NativeGamepadSnapshot, NativeWindowInputEvent,
+        GAMEPAD_MAX_CONTROLLERS, NATIVE_GAMEPAD_KEEPALIVE_INTERVAL, NATIVE_GAMEPAD_POLL_INTERVAL,
         NATIVE_INPUT_BRIDGE_POLL_INTERVAL, NATIVE_INPUT_DRAIN_MAX_EVENTS,
     };
     use gilrs::{Axis, Button, Gilrs};
@@ -2955,7 +2961,7 @@ mod macos_native_input {
 
     unsafe fn handle_mouse_move_event(state: &MacosKeyboardMouseState, event: CGEventRef) {
         let dx = clamp_i64_to_i16(CGEventGetIntegerValueField(event, K_CG_MOUSE_EVENT_DELTA_X));
-        let dy = macos_mouse_delta_y_for_native_input(CGEventGetIntegerValueField(
+        let dy = macos_mouse_delta_y_positive_down_for_native_input(CGEventGetIntegerValueField(
             event,
             K_CG_MOUSE_EVENT_DELTA_Y,
         ));
@@ -3312,9 +3318,13 @@ mod macos_native_input {
             left_trigger: gamepad_trigger(gamepad, Button::LeftTrigger2, Axis::LeftZ),
             right_trigger: gamepad_trigger(gamepad, Button::RightTrigger2, Axis::RightZ),
             left_stick_x: normalize_macos_gamepad_stick_axis(gamepad.value(Axis::LeftStickX)),
-            left_stick_y: normalize_macos_gamepad_stick_axis(gamepad.value(Axis::LeftStickY)),
+            left_stick_y: macos_gamepad_stick_y_for_renderer_direction(
+                gamepad.value(Axis::LeftStickY),
+            ),
             right_stick_x: normalize_macos_gamepad_stick_axis(gamepad.value(Axis::RightStickX)),
-            right_stick_y: normalize_macos_gamepad_stick_axis(gamepad.value(Axis::RightStickY)),
+            right_stick_y: macos_gamepad_stick_y_for_renderer_direction(
+                gamepad.value(Axis::RightStickY),
+            ),
         }
     }
 
@@ -8088,17 +8098,24 @@ mod tests {
     }
 
     #[test]
-    fn macos_native_gamepad_y_axes_match_xinput_direction() {
-        assert!(normalize_macos_gamepad_stick_axis(1.0) > 0);
-        assert!(normalize_macos_gamepad_stick_axis(-1.0) < 0);
-        assert_eq!(normalize_macos_gamepad_stick_axis(0.05), 0);
+    fn macos_native_gamepad_stick_y_negates_gilrs_browser_positive_down_for_renderer() {
+        assert_eq!(macos_gamepad_stick_y_for_renderer_direction(1.0), -32767);
+        assert_eq!(macos_gamepad_stick_y_for_renderer_direction(-1.0), 32767);
+        assert_eq!(macos_gamepad_stick_y_for_renderer_direction(0.05), 0);
     }
 
     #[test]
-    fn macos_native_mouse_vertical_delta_matches_windows_direction() {
-        assert_eq!(macos_mouse_delta_y_for_native_input(12), -12);
-        assert_eq!(macos_mouse_delta_y_for_native_input(-12), 12);
-        assert_eq!(macos_mouse_delta_y_for_native_input(i64::MIN), i16::MAX);
+    fn macos_native_mouse_delta_y_preserves_cg_event_positive_down_for_renderer() {
+        assert_eq!(macos_mouse_delta_y_positive_down_for_native_input(12), 12);
+        assert_eq!(macos_mouse_delta_y_positive_down_for_native_input(-12), -12);
+        assert_eq!(
+            macos_mouse_delta_y_positive_down_for_native_input(i64::MAX),
+            i16::MAX
+        );
+        assert_eq!(
+            macos_mouse_delta_y_positive_down_for_native_input(i64::MIN),
+            i16::MIN
+        );
     }
 
     #[test]
