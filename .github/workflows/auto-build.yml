@@ -19,47 +19,88 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  select-builds:
+    name: select-builds
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Select build matrix
+        id: matrix
+        shell: bash
+        run: |
+          node <<'NODE'
+          const fs = require("node:fs");
+
+          const builds = [
+            {
+              label: "windows-x64",
+              os: "blacksmith-4vcpu-windows-2025",
+              builder_args: "--win nsis portable --x64",
+              artifact_paths: "opennow-stable/dist-release/*-x64.exe\n",
+            },
+            {
+              label: "windows-arm64",
+              os: "blacksmith-4vcpu-windows-2025",
+              builder_args: "--win nsis portable --arm64",
+              artifact_paths: "opennow-stable/dist-release/*-arm64.exe\n",
+            },
+            {
+              label: "macos-x64",
+              os: "blacksmith-6vcpu-macos-latest",
+              builder_args: "--mac dmg zip --x64",
+              artifact_paths:
+                "opennow-stable/dist-release/*.dmg\n" +
+                "opennow-stable/dist-release/*-x64.zip\n",
+            },
+            {
+              label: "macos-arm64",
+              os: "blacksmith-6vcpu-macos-latest",
+              builder_args: "--mac dmg zip --arm64",
+              artifact_paths:
+                "opennow-stable/dist-release/*.dmg\n" +
+                "opennow-stable/dist-release/*-arm64.zip\n",
+            },
+            {
+              label: "linux-x64",
+              os: "blacksmith-4vcpu-ubuntu-2404",
+              builder_args: "--linux AppImage deb --x64",
+              artifact_paths:
+                "opennow-stable/dist-release/*-x86_64.AppImage\n" +
+                "opennow-stable/dist-release/*-amd64.deb\n",
+            },
+            {
+              label: "linux-arm64",
+              os: "blacksmith-4vcpu-ubuntu-2404-arm",
+              builder_args: "--linux AppImage deb --arm64",
+              artifact_paths:
+                "opennow-stable/dist-release/*-arm64.AppImage\n" +
+                "opennow-stable/dist-release/*-arm64.deb\n",
+            },
+          ];
+
+          const isPr = process.env.GITHUB_EVENT_NAME === "pull_request";
+          const include = isPr
+            ? builds.filter(
+                ({ label }) => label.startsWith("windows-") || label.startsWith("linux-"),
+              )
+            : builds;
+
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `matrix=${JSON.stringify({ include })}\n`);
+          NODE
+
   build:
     name: ${{ matrix.label }}
     runs-on: ${{ matrix.os }}
+    needs: select-builds
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - label: windows-x64
-            os: blacksmith-4vcpu-windows-2025
-            builder_args: "--win nsis portable --x64"
-            artifact_paths: |
-              opennow-stable/dist-release/*-x64.exe
-          - label: windows-arm64
-            os: blacksmith-4vcpu-windows-2025
-            builder_args: "--win nsis portable --arm64"
-            artifact_paths: |
-              opennow-stable/dist-release/*-arm64.exe
-          - label: macos-x64
-            os: blacksmith-6vcpu-macos-latest
-            builder_args: "--mac dmg zip --x64"
-            artifact_paths: |
-              opennow-stable/dist-release/*.dmg
-              opennow-stable/dist-release/*-x64.zip
-          - label: macos-arm64
-            os: blacksmith-6vcpu-macos-latest
-            builder_args: "--mac dmg zip --arm64"
-            artifact_paths: |
-              opennow-stable/dist-release/*.dmg
-              opennow-stable/dist-release/*-arm64.zip
-          - label: linux-x64
-            os: blacksmith-4vcpu-ubuntu-2404
-            builder_args: "--linux AppImage deb --x64"
-            artifact_paths: |
-              opennow-stable/dist-release/*-x86_64.AppImage
-              opennow-stable/dist-release/*-amd64.deb
-          - label: linux-arm64
-            os: blacksmith-4vcpu-ubuntu-2404-arm
-            builder_args: "--linux AppImage deb --arm64"
-            artifact_paths: |
-              opennow-stable/dist-release/*-arm64.AppImage
-              opennow-stable/dist-release/*-arm64.deb
+      matrix: ${{ fromJSON(needs.select-builds.outputs.matrix) }}
 
     defaults:
       run:
