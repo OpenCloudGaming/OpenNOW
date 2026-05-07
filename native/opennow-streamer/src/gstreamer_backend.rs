@@ -2,12 +2,16 @@ use crate::backend::{
     normalize_bitrate_kbps, prepare_native_offer, prepared_offer_events,
     update_context_bitrate_limit, BackendReply, NativeStreamerBackend,
 };
+use crate::input::InputEncoder;
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 use crate::input::{
-    GamepadInput, InputEncoder, KeyboardPayload, MouseButtonPayload, MouseMovePayload,
-    MouseWheelPayload, GAMEPAD_MAX_CONTROLLERS, PARTIALLY_RELIABLE_GAMEPAD_MASK_ALL,
+    GamepadInput, KeyboardPayload, MouseButtonPayload, MouseMovePayload, MouseWheelPayload,
+    GAMEPAD_MAX_CONTROLLERS, PARTIALLY_RELIABLE_GAMEPAD_MASK_ALL,
 };
+#[cfg(target_os = "windows")]
+use crate::protocol::NativeRenderRect;
 use crate::protocol::{
-    missing_field, CommandEnvelope, Event, IceCandidatePayload, NativeQueueMode, NativeRenderRect,
+    missing_field, CommandEnvelope, Event, IceCandidatePayload, NativeQueueMode,
     NativeRenderSurface, NativeStreamerCapabilities, NativeStreamerSessionContext,
     NativeVideoBackendCapability, NativeVideoCodecCapability, Response, SendAnswerRequest,
     StreamSettings, VideoStallEvent, VideoTransitionEvent, PROTOCOL_VERSION,
@@ -17,16 +21,24 @@ use crate::sdp::{
 };
 use gst::glib;
 use gst::prelude::*;
-use gst_video::prelude::*;
 use gstreamer as gst;
 use gstreamer_sdp as gst_sdp;
+#[cfg(target_os = "windows")]
 use gstreamer_video as gst_video;
 use gstreamer_webrtc as gst_webrtc;
 use std::collections::HashSet;
-use std::ffi::{c_void, CString};
+#[cfg(target_os = "windows")]
+use std::ffi::c_void;
+use std::ffi::CString;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
-use std::sync::mpsc::{self, RecvTimeoutError, Sender, TryRecvError};
-use std::sync::{Arc, Mutex, OnceLock};
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+use std::sync::mpsc;
+use std::sync::mpsc::Sender;
+#[cfg(target_os = "windows")]
+use std::sync::mpsc::{RecvTimeoutError, TryRecvError};
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+use std::sync::OnceLock;
+use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -51,9 +63,13 @@ const VIDEO_STARTUP_FATAL_MS: u64 = 8_000;
 const VIDEO_LIVENESS_POLL_INTERVAL: Duration = Duration::from_millis(250);
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(2);
 const HEARTBEAT_STOP_POLL_INTERVAL: Duration = Duration::from_millis(50);
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 const NATIVE_INPUT_BRIDGE_POLL_INTERVAL: Duration = Duration::from_millis(1);
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 const NATIVE_INPUT_DRAIN_MAX_EVENTS: usize = 512;
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 const NATIVE_GAMEPAD_POLL_INTERVAL: Duration = Duration::from_millis(4);
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 const NATIVE_GAMEPAD_KEEPALIVE_INTERVAL: Duration = Duration::from_millis(100);
 const EXTERNAL_RENDERER_ENV: &str = "OPENNOW_NATIVE_EXTERNAL_RENDERER";
 const NATIVE_VIDEO_API_ENV: &str = "OPENNOW_NATIVE_VIDEO_API";
@@ -63,7 +79,7 @@ const NATIVE_PRESENT_MAX_FPS_ENV: &str = "OPENNOW_NATIVE_PRESENT_MAX_FPS";
 const NATIVE_D3D_FULLSCREEN_ENV: &str = "OPENNOW_NATIVE_D3D_FULLSCREEN";
 const PRESENT_LIMITER_AUTO_SENTINEL: u32 = u32::MAX;
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 static NATIVE_INPUT_STARTED_AT: OnceLock<Instant> = OnceLock::new();
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -1031,7 +1047,7 @@ impl GstreamerInputState {
     }
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 #[derive(Debug, Clone, Copy)]
 enum NativeWindowInputEvent {
     Key {
@@ -1309,7 +1325,71 @@ impl Drop for NativeWindowInputBridge {
     }
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(target_os = "macos")]
+#[derive(Debug)]
+struct NativeWindowInputBridge {
+    stop: Arc<AtomicBool>,
+    input_thread: Option<JoinHandle<()>>,
+    gamepad_thread: Option<JoinHandle<()>>,
+}
+
+#[cfg(target_os = "macos")]
+impl NativeWindowInputBridge {
+    fn start(
+        input_state: GstreamerInputState,
+        input_channels: GstreamerInputChannels,
+        event_sender: Option<Sender<Event>>,
+    ) -> Self {
+        let stop = Arc::new(AtomicBool::new(false));
+        let (sender, receiver) =
+            mpsc::sync_channel::<NativeWindowInputEvent>(NATIVE_INPUT_DRAIN_MAX_EVENTS);
+        let input_thread = macos_native_input::spawn_keyboard_mouse_thread(
+            input_state.clone(),
+            input_channels.clone(),
+            event_sender.clone(),
+            stop.clone(),
+            sender,
+            receiver,
+        );
+        let gamepad_thread = Some(macos_native_input::spawn_gamepad_thread(
+            input_state,
+            input_channels,
+            event_sender,
+            stop.clone(),
+        ));
+
+        Self {
+            stop,
+            input_thread: Some(input_thread),
+            gamepad_thread,
+        }
+    }
+
+    fn stop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+        macos_native_input::stop_keyboard_mouse_capture();
+
+        if let Some(thread) = self.input_thread.take() {
+            if let Err(error) = thread.join() {
+                eprintln!("[NativeStreamer] Native macOS input bridge thread panicked: {error:?}");
+            }
+        }
+        if let Some(thread) = self.gamepad_thread.take() {
+            if let Err(error) = thread.join() {
+                eprintln!("[NativeStreamer] Native macOS gamepad thread panicked: {error:?}");
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl Drop for NativeWindowInputBridge {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 fn send_native_window_input_events(
     input_state: &GstreamerInputState,
     input_channels: &GstreamerInputChannels,
@@ -1345,7 +1425,7 @@ fn send_native_window_input_events(
     flush_pending_mouse_move(&encoder, input_channels, &mut pending_mouse_move);
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 fn flush_pending_mouse_move(
     encoder: &InputEncoder,
     input_channels: &GstreamerInputChannels,
@@ -1369,7 +1449,7 @@ fn flush_pending_mouse_move(
     }
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 fn send_encoded_native_window_input_event(
     encoder: &InputEncoder,
     input_channels: &GstreamerInputChannels,
@@ -1439,7 +1519,7 @@ fn send_encoded_native_window_input_event(
     let _ = input_channels.send_packet(&payload, partially_reliable);
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct NativeGamepadSnapshot {
     connected: bool,
@@ -1548,7 +1628,7 @@ fn spawn_native_gamepad_thread(
     })
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 fn send_native_gamepad_snapshot(
     input_state: &GstreamerInputState,
     input_channels: &GstreamerInputChannels,
@@ -1584,7 +1664,7 @@ fn send_native_gamepad_snapshot(
     let _ = input_channels.send_packet(&payload, use_partially_reliable);
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 fn native_input_timestamp_us() -> u64 {
     NATIVE_INPUT_STARTED_AT
         .get_or_init(Instant::now)
@@ -1671,7 +1751,7 @@ struct GstreamerPipeline {
     webrtc: gst::Element,
     input_state: GstreamerInputState,
     input_channels: Option<GstreamerInputChannels>,
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
     native_window_input_bridge: Option<NativeWindowInputBridge>,
     render_state: GstreamerRenderState,
     present_max_fps: Arc<AtomicU32>,
@@ -1730,7 +1810,7 @@ impl GstreamerPipeline {
             webrtc,
             input_state,
             input_channels: None,
-            #[cfg(target_os = "windows")]
+            #[cfg(any(target_os = "windows", target_os = "macos"))]
             native_window_input_bridge: None,
             render_state,
             present_max_fps,
@@ -1785,7 +1865,7 @@ impl GstreamerPipeline {
         Ok(())
     }
 
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
     fn ensure_native_window_input_bridge(&mut self) {
         if self.native_window_input_bridge.is_some() {
             return;
@@ -1801,7 +1881,7 @@ impl GstreamerPipeline {
         ));
     }
 
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     fn ensure_native_window_input_bridge(&mut self) {
         send_log(
             &self.event_sender,
@@ -2088,13 +2168,25 @@ impl GstreamerPipeline {
         self.render_state.set_surface(surface, &self.event_sender);
     }
 
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
     fn stop(mut self) -> Result<(), String> {
         self.video_liveness.set_stats_overlay_visible(false);
         self.render_state.stop_external_renderer_window_guard();
-        #[cfg(target_os = "windows")]
         if let Some(mut bridge) = self.native_window_input_bridge.take() {
             bridge.stop();
         }
+        self.input_state.stop_heartbeat();
+        self.video_liveness.stop();
+        self.pipeline
+            .set_state(gst::State::Null)
+            .map(|_| ())
+            .map_err(|error| format!("Failed to stop GStreamer pipeline: {error:?}"))
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    fn stop(self) -> Result<(), String> {
+        self.video_liveness.set_stats_overlay_visible(false);
+        self.render_state.stop_external_renderer_window_guard();
         self.input_state.stop_heartbeat();
         self.video_liveness.stop();
         self.pipeline
@@ -2337,6 +2429,948 @@ fn start_external_renderer_window_guard(
     _event_sender: Option<Sender<Event>>,
     _stop: Arc<AtomicBool>,
 ) {
+}
+
+#[cfg(target_os = "macos")]
+mod macos_native_input {
+    use super::{
+        native_input_timestamp_us, send_log, send_native_window_input_events, Event,
+        GstreamerInputChannels, GstreamerInputState, NativeGamepadSnapshot, NativeWindowInputEvent,
+        GAMEPAD_MAX_CONTROLLERS, NATIVE_GAMEPAD_KEEPALIVE_INTERVAL, NATIVE_GAMEPAD_POLL_INTERVAL,
+        NATIVE_INPUT_BRIDGE_POLL_INTERVAL, NATIVE_INPUT_DRAIN_MAX_EVENTS,
+    };
+    use gilrs::{Axis, Button, Gilrs};
+    use std::collections::HashMap;
+    use std::ffi::c_void;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::mpsc::{Receiver, Sender, SyncSender, TryRecvError};
+    use std::sync::{Arc, Mutex};
+    use std::thread::{self, JoinHandle};
+    use std::time::{Duration, Instant};
+
+    type Boolean = u8;
+    type CFAllocatorRef = *const c_void;
+    type CFRunLoopRef = *mut c_void;
+    type CFRunLoopSourceRef = *mut c_void;
+    type CFStringRef = *const c_void;
+    type CFMachPortRef = *mut c_void;
+    type CGEventRef = *mut c_void;
+    type CGEventTapProxy = *mut c_void;
+    type CGEventMask = u64;
+    type CGEventTapCallBack =
+        unsafe extern "C" fn(CGEventTapProxy, u32, CGEventRef, *mut c_void) -> CGEventRef;
+
+    const K_CG_HEAD_INSERT_EVENT_TAP: u32 = 0;
+    const K_CG_EVENT_TAP_OPTION_LISTEN_ONLY: u32 = 1;
+    const K_CG_EVENT_LEFT_MOUSE_DOWN: u32 = 1;
+    const K_CG_EVENT_LEFT_MOUSE_UP: u32 = 2;
+    const K_CG_EVENT_RIGHT_MOUSE_DOWN: u32 = 3;
+    const K_CG_EVENT_RIGHT_MOUSE_UP: u32 = 4;
+    const K_CG_EVENT_MOUSE_MOVED: u32 = 5;
+    const K_CG_EVENT_LEFT_MOUSE_DRAGGED: u32 = 6;
+    const K_CG_EVENT_RIGHT_MOUSE_DRAGGED: u32 = 7;
+    const K_CG_EVENT_KEY_DOWN: u32 = 10;
+    const K_CG_EVENT_KEY_UP: u32 = 11;
+    const K_CG_EVENT_FLAGS_CHANGED: u32 = 12;
+    const K_CG_EVENT_SCROLL_WHEEL: u32 = 22;
+    const K_CG_EVENT_OTHER_MOUSE_DOWN: u32 = 25;
+    const K_CG_EVENT_OTHER_MOUSE_UP: u32 = 26;
+    const K_CG_EVENT_OTHER_MOUSE_DRAGGED: u32 = 27;
+    const K_CG_EVENT_TAP_DISABLED_BY_TIMEOUT: u32 = 0xFFFF_FFFE;
+    const K_CG_EVENT_TAP_DISABLED_BY_USER_INPUT: u32 = 0xFFFF_FFFF;
+    const K_CG_MOUSE_EVENT_BUTTON_NUMBER: u32 = 3;
+    const K_CG_MOUSE_EVENT_DELTA_X: u32 = 4;
+    const K_CG_MOUSE_EVENT_DELTA_Y: u32 = 5;
+    const K_CG_KEYBOARD_EVENT_AUTOREPEAT: u32 = 8;
+    const K_CG_KEYBOARD_EVENT_KEYCODE: u32 = 9;
+    const K_CG_SCROLL_WHEEL_EVENT_DELTA_AXIS1: u32 = 11;
+    const K_CG_SCROLL_WHEEL_EVENT_POINT_DELTA_AXIS1: u32 = 96;
+    const K_CG_EVENT_FLAG_MASK_ALPHA_SHIFT: u64 = 1 << 16;
+    const K_CG_EVENT_FLAG_MASK_SHIFT: u64 = 1 << 17;
+    const K_CG_EVENT_FLAG_MASK_CONTROL: u64 = 1 << 18;
+    const K_CG_EVENT_FLAG_MASK_ALTERNATE: u64 = 1 << 19;
+    const K_CG_EVENT_FLAG_MASK_COMMAND: u64 = 1 << 20;
+    const K_CG_EVENT_FLAG_MASK_NUMERIC_PAD: u64 = 1 << 21;
+    const K_CG_EVENT_FLAG_MASK_SECONDARY_FN: u64 = 1 << 23;
+    const GAMEPAD_TRIGGER_DEADZONE: u8 = 30;
+    const GAMEPAD_STICK_DEADZONE: f32 = 0.15;
+
+    static EVENT_TAP_RUN_LOOP: AtomicUsize = AtomicUsize::new(0);
+    static EVENT_TAP_PORT: AtomicUsize = AtomicUsize::new(0);
+
+    #[derive(Clone, Copy)]
+    struct KeyMapping {
+        keycode: u16,
+        scancode: u16,
+    }
+
+    #[derive(Clone, Copy)]
+    struct PressedKey {
+        keycode: u16,
+        scancode: u16,
+    }
+
+    struct MacosKeyboardMouseState {
+        sender: SyncSender<NativeWindowInputEvent>,
+        pressed_keys: Mutex<HashMap<u16, PressedKey>>,
+        dropped_events: AtomicUsize,
+    }
+
+    struct TapResources {
+        tap: CFMachPortRef,
+        source: CFRunLoopSourceRef,
+        context: *mut MacosKeyboardMouseState,
+    }
+
+    impl Drop for TapResources {
+        fn drop(&mut self) {
+            unsafe {
+                if !self.tap.is_null() {
+                    CGEventTapEnable(self.tap, 0);
+                    CFMachPortInvalidate(self.tap);
+                }
+                if !self.source.is_null() {
+                    CFRelease(self.source.cast());
+                }
+                if !self.tap.is_null() {
+                    CFRelease(self.tap.cast());
+                }
+                if !self.context.is_null() {
+                    drop(Box::from_raw(self.context));
+                }
+            }
+        }
+    }
+
+    #[link(name = "ApplicationServices", kind = "framework")]
+    unsafe extern "C" {
+        fn CGEventTapCreateForPid(
+            pid: i32,
+            place: u32,
+            options: u32,
+            events_of_interest: CGEventMask,
+            callback: CGEventTapCallBack,
+            user_info: *mut c_void,
+        ) -> CFMachPortRef;
+        fn CGEventTapEnable(tap: CFMachPortRef, enable: Boolean);
+        fn CGEventGetIntegerValueField(event: CGEventRef, field: u32) -> i64;
+        fn CGEventGetFlags(event: CGEventRef) -> u64;
+    }
+
+    #[link(name = "CoreFoundation", kind = "framework")]
+    unsafe extern "C" {
+        static kCFRunLoopCommonModes: CFStringRef;
+        fn CFRelease(cf: *const c_void);
+        fn CFMachPortCreateRunLoopSource(
+            allocator: CFAllocatorRef,
+            port: CFMachPortRef,
+            order: isize,
+        ) -> CFRunLoopSourceRef;
+        fn CFMachPortInvalidate(port: CFMachPortRef);
+        fn CFRunLoopAddSource(rl: CFRunLoopRef, source: CFRunLoopSourceRef, mode: CFStringRef);
+        fn CFRunLoopGetCurrent() -> CFRunLoopRef;
+        fn CFRunLoopRun();
+        fn CFRunLoopStop(rl: CFRunLoopRef);
+    }
+
+    pub fn spawn_keyboard_mouse_thread(
+        input_state: GstreamerInputState,
+        input_channels: GstreamerInputChannels,
+        event_sender: Option<Sender<Event>>,
+        stop: Arc<std::sync::atomic::AtomicBool>,
+        sender: SyncSender<NativeWindowInputEvent>,
+        receiver: Receiver<NativeWindowInputEvent>,
+    ) -> JoinHandle<()> {
+        thread::spawn(move || {
+            let tap_state = Arc::new(Mutex::new(Vec::<PressedKey>::with_capacity(32)));
+            let tap_thread_stop = stop.clone();
+            let tap_thread_sender = sender.clone();
+            let tap_thread_events = event_sender.clone();
+            let tap_thread_state = tap_state.clone();
+            let tap_thread = thread::spawn(move || {
+                run_event_tap(
+                    tap_thread_sender,
+                    tap_thread_state,
+                    tap_thread_events,
+                    tap_thread_stop,
+                );
+            });
+            drop(sender);
+
+            let mut pending_events = Vec::with_capacity(NATIVE_INPUT_DRAIN_MAX_EVENTS);
+            while !stop.load(Ordering::SeqCst) {
+                match receiver.recv_timeout(NATIVE_INPUT_BRIDGE_POLL_INTERVAL) {
+                    Ok(event) => {
+                        pending_events.clear();
+                        pending_events.push(event);
+                        drain_pending_events(&receiver, &mut pending_events);
+                        send_native_window_input_events(
+                            &input_state,
+                            &input_channels,
+                            &pending_events,
+                        );
+                    }
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                }
+            }
+
+            stop_keyboard_mouse_capture();
+            if let Err(error) = tap_thread.join() {
+                eprintln!("[NativeStreamer] Native macOS event tap thread panicked: {error:?}");
+            }
+
+            pending_events.clear();
+            drain_pending_events(&receiver, &mut pending_events);
+            append_pressed_key_releases(&tap_state, &mut pending_events);
+            send_native_window_input_events(&input_state, &input_channels, &pending_events);
+        })
+    }
+
+    pub fn stop_keyboard_mouse_capture() {
+        let run_loop = EVENT_TAP_RUN_LOOP.swap(0, Ordering::SeqCst);
+        let tap = EVENT_TAP_PORT.load(Ordering::SeqCst);
+        if tap != 0 {
+            unsafe {
+                CGEventTapEnable(tap as CFMachPortRef, 0);
+            }
+        }
+        if run_loop != 0 {
+            unsafe {
+                CFRunLoopStop(run_loop as CFRunLoopRef);
+            }
+        }
+    }
+
+    fn run_event_tap(
+        sender: SyncSender<NativeWindowInputEvent>,
+        mirror_pressed_keys: Arc<Mutex<Vec<PressedKey>>>,
+        event_sender: Option<Sender<Event>>,
+        stop: Arc<std::sync::atomic::AtomicBool>,
+    ) {
+        let context = Box::new(MacosKeyboardMouseState {
+            sender,
+            pressed_keys: Mutex::new(HashMap::with_capacity(32)),
+            dropped_events: AtomicUsize::new(0),
+        });
+        let context = Box::into_raw(context);
+        let pid = std::process::id().min(i32::MAX as u32) as i32;
+        let tap = unsafe {
+            CGEventTapCreateForPid(
+                pid,
+                K_CG_HEAD_INSERT_EVENT_TAP,
+                K_CG_EVENT_TAP_OPTION_LISTEN_ONLY,
+                event_mask(),
+                event_tap_callback,
+                context.cast(),
+            )
+        };
+        if tap.is_null() {
+            unsafe {
+                drop(Box::from_raw(context));
+            }
+            send_log(
+                &event_sender,
+                "warn",
+                "Native macOS keyboard/mouse bridge unavailable; grant Input Monitoring/Accessibility or use the web renderer fallback.".to_owned(),
+            );
+            return;
+        }
+
+        let source = unsafe { CFMachPortCreateRunLoopSource(std::ptr::null(), tap, 0) };
+        if source.is_null() {
+            unsafe {
+                CFMachPortInvalidate(tap);
+                CFRelease(tap.cast());
+                drop(Box::from_raw(context));
+            }
+            send_log(
+                &event_sender,
+                "warn",
+                "Native macOS keyboard/mouse bridge unavailable; failed to create event tap run-loop source.".to_owned(),
+            );
+            return;
+        }
+
+        let resources = TapResources {
+            tap,
+            source,
+            context,
+        };
+        let run_loop = unsafe { CFRunLoopGetCurrent() };
+        EVENT_TAP_PORT.store(tap as usize, Ordering::SeqCst);
+        EVENT_TAP_RUN_LOOP.store(run_loop as usize, Ordering::SeqCst);
+        unsafe {
+            CFRunLoopAddSource(run_loop, source, kCFRunLoopCommonModes);
+            CGEventTapEnable(tap, 1);
+        }
+        send_log(
+            &event_sender,
+            "info",
+            "Native macOS keyboard/mouse bridge armed for this application.".to_owned(),
+        );
+
+        if !stop.load(Ordering::SeqCst) {
+            unsafe {
+                CFRunLoopRun();
+            }
+        }
+        EVENT_TAP_RUN_LOOP.store(0, Ordering::SeqCst);
+        EVENT_TAP_PORT.store(0, Ordering::SeqCst);
+        let final_state = unsafe { &*resources.context };
+        let dropped_events = final_state.dropped_events.load(Ordering::SeqCst);
+        if dropped_events > 0 {
+            send_log(
+                &event_sender,
+                "warn",
+                format!(
+                    "Native macOS keyboard/mouse bridge dropped {dropped_events} event(s) during shutdown."
+                ),
+            );
+        }
+        if let Ok(keys) = final_state.pressed_keys.lock() {
+            if let Ok(mut mirror) = mirror_pressed_keys.lock() {
+                mirror.clear();
+                mirror.extend(keys.values().copied());
+            }
+        }
+        drop(resources);
+    }
+
+    fn event_mask() -> CGEventMask {
+        [
+            K_CG_EVENT_LEFT_MOUSE_DOWN,
+            K_CG_EVENT_LEFT_MOUSE_UP,
+            K_CG_EVENT_RIGHT_MOUSE_DOWN,
+            K_CG_EVENT_RIGHT_MOUSE_UP,
+            K_CG_EVENT_MOUSE_MOVED,
+            K_CG_EVENT_LEFT_MOUSE_DRAGGED,
+            K_CG_EVENT_RIGHT_MOUSE_DRAGGED,
+            K_CG_EVENT_KEY_DOWN,
+            K_CG_EVENT_KEY_UP,
+            K_CG_EVENT_FLAGS_CHANGED,
+            K_CG_EVENT_SCROLL_WHEEL,
+            K_CG_EVENT_OTHER_MOUSE_DOWN,
+            K_CG_EVENT_OTHER_MOUSE_UP,
+            K_CG_EVENT_OTHER_MOUSE_DRAGGED,
+        ]
+        .iter()
+        .fold(0_u64, |mask, event_type| mask | (1_u64 << event_type))
+    }
+
+    fn drain_pending_events(
+        receiver: &Receiver<NativeWindowInputEvent>,
+        pending_events: &mut Vec<NativeWindowInputEvent>,
+    ) {
+        while pending_events.len() < NATIVE_INPUT_DRAIN_MAX_EVENTS {
+            match receiver.try_recv() {
+                Ok(event) => pending_events.push(event),
+                Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
+            }
+        }
+    }
+
+    fn append_pressed_key_releases(
+        tap_state: &Arc<Mutex<Vec<PressedKey>>>,
+        pending_events: &mut Vec<NativeWindowInputEvent>,
+    ) {
+        let Ok(mut keys) = tap_state.lock() else {
+            return;
+        };
+        let timestamp_us = native_input_timestamp_us();
+        for key in keys.drain(..) {
+            if pending_events.len() >= NATIVE_INPUT_DRAIN_MAX_EVENTS {
+                break;
+            }
+            pending_events.push(NativeWindowInputEvent::Key {
+                pressed: false,
+                keycode: key.keycode,
+                scancode: key.scancode,
+                modifiers: 0,
+                timestamp_us,
+            });
+        }
+    }
+
+    unsafe extern "C" fn event_tap_callback(
+        _proxy: CGEventTapProxy,
+        event_type: u32,
+        event: CGEventRef,
+        user_info: *mut c_void,
+    ) -> CGEventRef {
+        if matches!(
+            event_type,
+            K_CG_EVENT_TAP_DISABLED_BY_TIMEOUT | K_CG_EVENT_TAP_DISABLED_BY_USER_INPUT
+        ) {
+            let tap = EVENT_TAP_PORT.load(Ordering::SeqCst);
+            if tap != 0 {
+                CGEventTapEnable(tap as CFMachPortRef, 1);
+            }
+            return event;
+        }
+
+        if user_info.is_null() || event.is_null() {
+            return event;
+        }
+
+        let state = &*(user_info as *mut MacosKeyboardMouseState);
+        match event_type {
+            K_CG_EVENT_KEY_DOWN | K_CG_EVENT_KEY_UP => {
+                handle_key_event(state, event, event_type == K_CG_EVENT_KEY_DOWN);
+            }
+            K_CG_EVENT_FLAGS_CHANGED => handle_flags_changed_event(state, event),
+            K_CG_EVENT_MOUSE_MOVED
+            | K_CG_EVENT_LEFT_MOUSE_DRAGGED
+            | K_CG_EVENT_RIGHT_MOUSE_DRAGGED
+            | K_CG_EVENT_OTHER_MOUSE_DRAGGED => handle_mouse_move_event(state, event),
+            K_CG_EVENT_LEFT_MOUSE_DOWN | K_CG_EVENT_LEFT_MOUSE_UP => {
+                emit_mouse_button(state, 1, event_type == K_CG_EVENT_LEFT_MOUSE_DOWN);
+            }
+            K_CG_EVENT_RIGHT_MOUSE_DOWN | K_CG_EVENT_RIGHT_MOUSE_UP => {
+                emit_mouse_button(state, 3, event_type == K_CG_EVENT_RIGHT_MOUSE_DOWN);
+            }
+            K_CG_EVENT_OTHER_MOUSE_DOWN | K_CG_EVENT_OTHER_MOUSE_UP => {
+                if let Some(button) = map_other_mouse_button(event) {
+                    emit_mouse_button(state, button, event_type == K_CG_EVENT_OTHER_MOUSE_DOWN);
+                }
+            }
+            K_CG_EVENT_SCROLL_WHEEL => handle_scroll_wheel_event(state, event),
+            _ => {}
+        }
+
+        event
+    }
+
+    unsafe fn handle_key_event(state: &MacosKeyboardMouseState, event: CGEventRef, pressed: bool) {
+        if pressed && CGEventGetIntegerValueField(event, K_CG_KEYBOARD_EVENT_AUTOREPEAT) != 0 {
+            return;
+        }
+        let mac_keycode = CGEventGetIntegerValueField(event, K_CG_KEYBOARD_EVENT_KEYCODE) as u16;
+        let Some(mapping) = map_macos_keycode(mac_keycode) else {
+            return;
+        };
+        handle_keyboard_state(state, mapping, pressed, CGEventGetFlags(event));
+    }
+
+    unsafe fn handle_flags_changed_event(state: &MacosKeyboardMouseState, event: CGEventRef) {
+        let mac_keycode = CGEventGetIntegerValueField(event, K_CG_KEYBOARD_EVENT_KEYCODE) as u16;
+        let Some(mapping) = map_macos_keycode(mac_keycode) else {
+            return;
+        };
+        if !is_modifier_key(mapping.keycode) {
+            return;
+        }
+        let Ok(keys) = state.pressed_keys.lock() else {
+            return;
+        };
+        let pressed = !keys.contains_key(&mapping.scancode);
+        drop(keys);
+        handle_keyboard_state(state, mapping, pressed, CGEventGetFlags(event));
+    }
+
+    fn handle_keyboard_state(
+        state: &MacosKeyboardMouseState,
+        mapping: KeyMapping,
+        pressed: bool,
+        flags: u64,
+    ) {
+        let Ok(mut keys) = state.pressed_keys.lock() else {
+            return;
+        };
+        let was_pressed = keys.contains_key(&mapping.scancode);
+        if pressed {
+            if was_pressed {
+                return;
+            }
+            keys.insert(
+                mapping.scancode,
+                PressedKey {
+                    keycode: mapping.keycode,
+                    scancode: mapping.scancode,
+                },
+            );
+        } else if !was_pressed {
+            return;
+        } else {
+            keys.remove(&mapping.scancode);
+        }
+        let modifiers = current_modifier_flags(&keys, flags);
+        drop(keys);
+
+        send_or_count_drop(
+            state,
+            NativeWindowInputEvent::Key {
+                pressed,
+                keycode: mapping.keycode,
+                scancode: mapping.scancode,
+                modifiers,
+                timestamp_us: native_input_timestamp_us(),
+            },
+        );
+    }
+
+    fn send_or_count_drop(state: &MacosKeyboardMouseState, event: NativeWindowInputEvent) {
+        if state.sender.try_send(event).is_err() {
+            state.dropped_events.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    unsafe fn handle_mouse_move_event(state: &MacosKeyboardMouseState, event: CGEventRef) {
+        let dx = clamp_i64_to_i16(CGEventGetIntegerValueField(event, K_CG_MOUSE_EVENT_DELTA_X));
+        let dy = clamp_i64_to_i16(CGEventGetIntegerValueField(event, K_CG_MOUSE_EVENT_DELTA_Y));
+        if dx == 0 && dy == 0 {
+            return;
+        }
+        send_or_count_drop(
+            state,
+            NativeWindowInputEvent::MouseMove {
+                dx,
+                dy,
+                timestamp_us: native_input_timestamp_us(),
+            },
+        );
+    }
+
+    unsafe fn handle_scroll_wheel_event(state: &MacosKeyboardMouseState, event: CGEventRef) {
+        let point_delta =
+            CGEventGetIntegerValueField(event, K_CG_SCROLL_WHEEL_EVENT_POINT_DELTA_AXIS1);
+        let delta = if point_delta != 0 {
+            point_delta
+        } else {
+            CGEventGetIntegerValueField(event, K_CG_SCROLL_WHEEL_EVENT_DELTA_AXIS1)
+                .saturating_mul(120)
+        };
+        let delta = clamp_i64_to_i16(delta);
+        if delta == 0 {
+            return;
+        }
+        send_or_count_drop(
+            state,
+            NativeWindowInputEvent::MouseWheel {
+                delta,
+                timestamp_us: native_input_timestamp_us(),
+            },
+        );
+    }
+
+    unsafe fn map_other_mouse_button(event: CGEventRef) -> Option<u8> {
+        match CGEventGetIntegerValueField(event, K_CG_MOUSE_EVENT_BUTTON_NUMBER) {
+            2 => Some(2),
+            3 => Some(4),
+            4 => Some(5),
+            _ => None,
+        }
+    }
+
+    fn emit_mouse_button(state: &MacosKeyboardMouseState, button: u8, pressed: bool) {
+        send_or_count_drop(
+            state,
+            NativeWindowInputEvent::MouseButton {
+                pressed,
+                button,
+                timestamp_us: native_input_timestamp_us(),
+            },
+        );
+    }
+
+    fn current_modifier_flags(keys: &HashMap<u16, PressedKey>, flags: u64) -> u16 {
+        let mut modifiers = 0u16;
+        if keys
+            .values()
+            .any(|key| matches!(key.keycode, 0xA0 | 0xA1 | 0x10))
+            || (flags & K_CG_EVENT_FLAG_MASK_SHIFT) != 0
+        {
+            modifiers |= 0x01;
+        }
+        if keys
+            .values()
+            .any(|key| matches!(key.keycode, 0xA2 | 0xA3 | 0x11))
+            || (flags & K_CG_EVENT_FLAG_MASK_CONTROL) != 0
+        {
+            modifiers |= 0x02;
+        }
+        if keys
+            .values()
+            .any(|key| matches!(key.keycode, 0xA4 | 0xA5 | 0x12))
+            || (flags & K_CG_EVENT_FLAG_MASK_ALTERNATE) != 0
+        {
+            modifiers |= 0x04;
+        }
+        if keys.values().any(|key| matches!(key.keycode, 0x5B | 0x5C))
+            || (flags & K_CG_EVENT_FLAG_MASK_COMMAND) != 0
+        {
+            modifiers |= 0x08;
+        }
+        if (flags & K_CG_EVENT_FLAG_MASK_ALPHA_SHIFT) != 0 {
+            modifiers |= 0x10;
+        }
+        if (flags & (K_CG_EVENT_FLAG_MASK_NUMERIC_PAD | K_CG_EVENT_FLAG_MASK_SECONDARY_FN)) != 0 {
+            modifiers |= 0x20;
+        }
+        modifiers
+    }
+
+    fn is_modifier_key(keycode: u16) -> bool {
+        matches!(
+            keycode,
+            0x10 | 0x11 | 0x12 | 0x14 | 0x5B | 0x5C | 0xA0 | 0xA1 | 0xA2 | 0xA3 | 0xA4 | 0xA5
+        )
+    }
+
+    fn map_macos_keycode(keycode: u16) -> Option<KeyMapping> {
+        let (vk, scancode) = match keycode {
+            0x00 => (0x41, 0x001e),
+            0x01 => (0x53, 0x001f),
+            0x02 => (0x44, 0x0020),
+            0x03 => (0x46, 0x0021),
+            0x04 => (0x48, 0x0023),
+            0x05 => (0x47, 0x0022),
+            0x06 => (0x5a, 0x002c),
+            0x07 => (0x58, 0x002d),
+            0x08 => (0x43, 0x002e),
+            0x09 => (0x56, 0x002f),
+            0x0b => (0x42, 0x0030),
+            0x0c => (0x51, 0x0010),
+            0x0d => (0x57, 0x0011),
+            0x0e => (0x45, 0x0012),
+            0x0f => (0x52, 0x0013),
+            0x10 => (0x59, 0x0015),
+            0x11 => (0x54, 0x0014),
+            0x12 => (0x31, 0x0002),
+            0x13 => (0x32, 0x0003),
+            0x14 => (0x33, 0x0004),
+            0x15 => (0x34, 0x0005),
+            0x16 => (0x36, 0x0007),
+            0x17 => (0x35, 0x0006),
+            0x18 => (0xbb, 0x000d),
+            0x19 => (0x39, 0x000a),
+            0x1a => (0x37, 0x0008),
+            0x1b => (0xbd, 0x000c),
+            0x1c => (0x38, 0x0009),
+            0x1d => (0x30, 0x000b),
+            0x1e => (0xdd, 0x001b),
+            0x1f => (0x4f, 0x0018),
+            0x20 => (0x55, 0x0016),
+            0x21 => (0xdb, 0x001a),
+            0x22 => (0x49, 0x0017),
+            0x23 => (0x50, 0x0019),
+            0x24 => (0x0d, 0x001c),
+            0x25 => (0x4c, 0x0026),
+            0x26 => (0x4a, 0x0024),
+            0x27 => (0xde, 0x0028),
+            0x28 => (0x4b, 0x0025),
+            0x29 => (0xba, 0x0027),
+            0x2a => (0xdc, 0x002b),
+            0x2b => (0xbc, 0x0033),
+            0x2c => (0xbf, 0x0035),
+            0x2d => (0x4e, 0x0031),
+            0x2e => (0x4d, 0x0032),
+            0x2f => (0xbe, 0x0034),
+            0x30 => (0x09, 0x000f),
+            0x31 => (0x20, 0x0039),
+            0x32 => (0xc0, 0x0029),
+            0x33 => (0x08, 0x000e),
+            0x35 => (0x1b, 0x0001),
+            0x37 => (0x5b, 0xe05b),
+            0x38 => (0xa0, 0x002a),
+            0x39 => (0x14, 0x003a),
+            0x3a => (0xa4, 0x0038),
+            0x3b => (0xa2, 0x001d),
+            0x3c => (0xa1, 0x0036),
+            0x3d => (0xa5, 0xe038),
+            0x3e => (0xa3, 0xe01d),
+            0x40 => (0x80, 0x0064),
+            0x41 => (0x6e, 0x0053),
+            0x43 => (0x6a, 0x0037),
+            0x45 => (0x6b, 0x004e),
+            0x47 => (0x90, 0xe045),
+            0x4b => (0x6f, 0xe035),
+            0x4c => (0x0d, 0xe01c),
+            0x4e => (0x6d, 0x004a),
+            0x4f => (0x81, 0x0065),
+            0x50 => (0x82, 0x0066),
+            0x51 => (0xbb, 0x0059),
+            0x52 => (0x60, 0x0052),
+            0x53 => (0x61, 0x004f),
+            0x54 => (0x62, 0x0050),
+            0x55 => (0x63, 0x0051),
+            0x56 => (0x64, 0x004b),
+            0x57 => (0x65, 0x004c),
+            0x58 => (0x66, 0x004d),
+            0x59 => (0x67, 0x0047),
+            0x5a => (0x83, 0x0067),
+            0x5b => (0x68, 0x0048),
+            0x5c => (0x69, 0x0049),
+            0x60 => (0x74, 0x003f),
+            0x61 => (0x75, 0x0040),
+            0x62 => (0x76, 0x0041),
+            0x63 => (0x72, 0x003d),
+            0x64 => (0x77, 0x0042),
+            0x65 => (0x78, 0x0043),
+            0x67 => (0x7a, 0x0057),
+            0x69 => (0x7c, 0x0064),
+            0x6a => (0x7f, 0x0067),
+            0x6b => (0x7d, 0x0065),
+            0x6d => (0x79, 0x0044),
+            0x6f => (0x7b, 0x0058),
+            0x71 => (0x7e, 0x0066),
+            0x72 => (0x2d, 0xe052),
+            0x73 => (0x24, 0xe047),
+            0x74 => (0x21, 0xe049),
+            0x75 => (0x2e, 0xe053),
+            0x76 => (0x73, 0x003e),
+            0x77 => (0x23, 0xe04f),
+            0x78 => (0x71, 0x003c),
+            0x79 => (0x22, 0xe051),
+            0x7a => (0x70, 0x003b),
+            0x7b => (0x25, 0xe04b),
+            0x7c => (0x27, 0xe04d),
+            0x7d => (0x28, 0xe050),
+            0x7e => (0x26, 0xe048),
+            _ => return None,
+        };
+        Some(KeyMapping {
+            keycode: vk,
+            scancode,
+        })
+    }
+
+    pub fn spawn_gamepad_thread(
+        input_state: GstreamerInputState,
+        input_channels: GstreamerInputChannels,
+        event_sender: Option<Sender<Event>>,
+        stop: Arc<std::sync::atomic::AtomicBool>,
+    ) -> JoinHandle<()> {
+        thread::spawn(move || {
+            let mut gilrs = match Gilrs::new() {
+                Ok(gilrs) => gilrs,
+                Err(error) => {
+                    send_log(
+                        &event_sender,
+                        "warn",
+                        format!(
+                            "Native macOS gamepad bridge unavailable ({error}); controller input will require the web renderer fallback."
+                        ),
+                    );
+                    return;
+                }
+            };
+
+            send_log(
+                &event_sender,
+                "info",
+                "Native macOS gamepad bridge armed.".to_owned(),
+            );
+
+            let mut previous = [NativeGamepadSnapshot::default(); GAMEPAD_MAX_CONTROLLERS as usize];
+            let mut last_sent = [Instant::now(); GAMEPAD_MAX_CONTROLLERS as usize];
+            let mut ids_by_slot: [Option<usize>; GAMEPAD_MAX_CONTROLLERS as usize] =
+                [None; GAMEPAD_MAX_CONTROLLERS as usize];
+            let mut slot_by_id =
+                HashMap::<usize, usize>::with_capacity(GAMEPAD_MAX_CONTROLLERS as usize);
+
+            while !stop.load(Ordering::SeqCst) {
+                while gilrs.next_event().is_some() {}
+
+                if input_state.ready.load(Ordering::SeqCst) {
+                    let snapshots = poll_gamepads(&gilrs, &mut ids_by_slot, &mut slot_by_id);
+                    let bitmap =
+                        snapshots
+                            .iter()
+                            .enumerate()
+                            .fold(0u16, |bitmap, (slot, snapshot)| {
+                                if snapshot.connected {
+                                    bitmap | (1 << slot)
+                                } else {
+                                    bitmap
+                                }
+                            });
+
+                    for controller_id in 0..GAMEPAD_MAX_CONTROLLERS as usize {
+                        let snapshot = snapshots[controller_id];
+                        let state_changed = snapshot != previous[controller_id];
+                        let keepalive_due = snapshot.connected
+                            && last_sent[controller_id].elapsed()
+                                >= NATIVE_GAMEPAD_KEEPALIVE_INTERVAL;
+
+                        if state_changed || keepalive_due {
+                            super::send_native_gamepad_snapshot(
+                                &input_state,
+                                &input_channels,
+                                controller_id as u8,
+                                bitmap,
+                                snapshot,
+                            );
+                            last_sent[controller_id] = Instant::now();
+
+                            if snapshot.connected != previous[controller_id].connected {
+                                send_log(
+                                    &event_sender,
+                                    "info",
+                                    format!(
+                                        "Native macOS controller {controller_id} {}.",
+                                        if snapshot.connected {
+                                            "connected"
+                                        } else {
+                                            "disconnected"
+                                        }
+                                    ),
+                                );
+                            }
+                        }
+
+                        previous[controller_id] = snapshot;
+                        if !snapshot.connected {
+                            if let Some(id) = ids_by_slot[controller_id].take() {
+                                slot_by_id.remove(&id);
+                            }
+                        }
+                    }
+                }
+
+                thread::sleep(NATIVE_GAMEPAD_POLL_INTERVAL);
+            }
+        })
+    }
+
+    fn poll_gamepads(
+        gilrs: &Gilrs,
+        ids_by_slot: &mut [Option<usize>; GAMEPAD_MAX_CONTROLLERS as usize],
+        slot_by_id: &mut HashMap<usize, usize>,
+    ) -> [NativeGamepadSnapshot; GAMEPAD_MAX_CONTROLLERS as usize] {
+        let mut snapshots = [NativeGamepadSnapshot::default(); GAMEPAD_MAX_CONTROLLERS as usize];
+        let connected = gilrs
+            .gamepads()
+            .map(|(id, gamepad)| (usize::from(id), gamepad))
+            .collect::<Vec<_>>();
+
+        for (id, _) in &connected {
+            if slot_by_id.contains_key(id) {
+                continue;
+            }
+            if let Some(slot) = ids_by_slot.iter().position(Option::is_none) {
+                ids_by_slot[slot] = Some(*id);
+                slot_by_id.insert(*id, slot);
+            }
+        }
+
+        for (id, gamepad) in connected {
+            let Some(&slot) = slot_by_id.get(&id) else {
+                continue;
+            };
+            snapshots[slot] = snapshot_from_gamepad(&gamepad);
+        }
+
+        snapshots
+    }
+
+    fn snapshot_from_gamepad(gamepad: &gilrs::Gamepad<'_>) -> NativeGamepadSnapshot {
+        NativeGamepadSnapshot {
+            connected: true,
+            buttons: gamepad_buttons(gamepad),
+            left_trigger: gamepad_trigger(gamepad, Button::LeftTrigger2, Axis::LeftZ),
+            right_trigger: gamepad_trigger(gamepad, Button::RightTrigger2, Axis::RightZ),
+            left_stick_x: normalize_stick_axis(gamepad.value(Axis::LeftStickX)),
+            left_stick_y: normalize_stick_axis(-gamepad.value(Axis::LeftStickY)),
+            right_stick_x: normalize_stick_axis(gamepad.value(Axis::RightStickX)),
+            right_stick_y: normalize_stick_axis(-gamepad.value(Axis::RightStickY)),
+        }
+    }
+
+    fn gamepad_buttons(gamepad: &gilrs::Gamepad<'_>) -> u16 {
+        let mut buttons = 0u16;
+        if gamepad.is_pressed(Button::DPadUp) || gamepad.value(Axis::DPadY) > 0.5 {
+            buttons |= 0x0001;
+        }
+        if gamepad.is_pressed(Button::DPadDown) || gamepad.value(Axis::DPadY) < -0.5 {
+            buttons |= 0x0002;
+        }
+        if gamepad.is_pressed(Button::DPadLeft) || gamepad.value(Axis::DPadX) < -0.5 {
+            buttons |= 0x0004;
+        }
+        if gamepad.is_pressed(Button::DPadRight) || gamepad.value(Axis::DPadX) > 0.5 {
+            buttons |= 0x0008;
+        }
+        if gamepad.is_pressed(Button::Start) {
+            buttons |= 0x0010;
+        }
+        if gamepad.is_pressed(Button::Select) {
+            buttons |= 0x0020;
+        }
+        if gamepad.is_pressed(Button::LeftThumb) {
+            buttons |= 0x0040;
+        }
+        if gamepad.is_pressed(Button::RightThumb) {
+            buttons |= 0x0080;
+        }
+        if gamepad.is_pressed(Button::LeftTrigger) {
+            buttons |= 0x0100;
+        }
+        if gamepad.is_pressed(Button::RightTrigger) {
+            buttons |= 0x0200;
+        }
+        if gamepad.is_pressed(Button::Mode) {
+            buttons |= 0x0400;
+        }
+        if gamepad.is_pressed(Button::South) {
+            buttons |= 0x1000;
+        }
+        if gamepad.is_pressed(Button::East) {
+            buttons |= 0x2000;
+        }
+        if gamepad.is_pressed(Button::West) {
+            buttons |= 0x4000;
+        }
+        if gamepad.is_pressed(Button::North) {
+            buttons |= 0x8000;
+        }
+        buttons
+    }
+
+    fn gamepad_trigger(gamepad: &gilrs::Gamepad<'_>, button: Button, axis: Axis) -> u8 {
+        let value = gamepad
+            .button_data(button)
+            .map(|button| button.value())
+            .filter(|value| *value > 0.0)
+            .unwrap_or_else(|| {
+                let axis_value = gamepad.value(axis);
+                if axis_value < 0.0 {
+                    (axis_value + 1.0) * 0.5
+                } else {
+                    axis_value
+                }
+            });
+        let value = normalize_to_u8(value);
+        if value <= GAMEPAD_TRIGGER_DEADZONE {
+            0
+        } else {
+            value
+        }
+    }
+
+    fn normalize_stick_axis(value: f32) -> i16 {
+        let value = if value.abs() < GAMEPAD_STICK_DEADZONE {
+            0.0
+        } else {
+            let sign = value.signum();
+            let scaled = (value.abs() - GAMEPAD_STICK_DEADZONE) / (1.0 - GAMEPAD_STICK_DEADZONE);
+            sign * scaled.clamp(0.0, 1.0)
+        };
+        (value.clamp(-1.0, 1.0) * 32767.0).round() as i16
+    }
+
+    fn normalize_to_u8(value: f32) -> u8 {
+        (value.clamp(0.0, 1.0) * 255.0).round() as u8
+    }
+
+    fn clamp_i64_to_i16(value: i64) -> i16 {
+        value.clamp(i64::from(i16::MIN), i64::from(i16::MAX)) as i16
+    }
+
+    #[allow(dead_code)]
+    fn _assert_poll_interval_floor() {
+        let _ = Duration::from_millis(0);
+    }
 }
 
 #[cfg(target_os = "windows")]
