@@ -2,24 +2,13 @@ import { Monitor, Wifi, Activity, Gamepad2, AlertTriangle } from "lucide-react";
 import type { StreamDiagnostics } from "../gfn/webrtcClient";
 import type { JSX } from "react";
 import { useTranslation } from "../i18n";
+import { formatBitrate, getRttColor } from "../utils/streamDiagnosticsFormat";
 
 interface StatsOverlayProps {
   stats: StreamDiagnostics;
   isVisible: boolean;
   serverRegion?: string;
   connectedControllers: number;
-}
-
-function getRttColor(rttMs: number): string {
-  if (rttMs <= 0) return "var(--ink-muted)";
-  if (rttMs < 30) return "var(--success)";
-  if (rttMs < 60) return "var(--warning)";
-  return "var(--error)";
-}
-
-function formatBitrate(kbps: number): string {
-  if (kbps >= 1000) return `${(kbps / 1000).toFixed(1)} Mbps`;
-  return `${kbps.toFixed(0)} kbps`;
 }
 
 export function StatsOverlay({

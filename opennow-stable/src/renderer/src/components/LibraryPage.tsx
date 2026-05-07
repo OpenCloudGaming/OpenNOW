@@ -3,8 +3,7 @@ import type { JSX } from "react";
 import type { CatalogSortOption, GameInfo } from "@shared/gfn";
 import { GameCard } from "./GameCard";
 import { useTranslation } from "../i18n";
-
-type TranslateFunction = typeof import("../i18n").t;
+import { formatCatalogLastPlayed } from "../utils/lastPlayedFormat";
 
 export interface LibraryPageProps {
   games: GameInfo[];
@@ -20,25 +19,6 @@ export interface LibraryPageProps {
   sortOptions: CatalogSortOption[];
   selectedSortId: string;
   onSortChange: (sortId: string) => void;
-}
-
-function formatLastPlayed(t: TranslateFunction, date?: string): string {
-  if (!date) return t("library.lastPlayed.never");
-
-  const lastPlayed = new Date(date);
-  const now = new Date();
-  const diffMs = now.getTime() - lastPlayed.getTime();
-  const diffMins = Math.floor(diffMs / 60000);
-  const diffHours = Math.floor(diffMs / 3600000);
-  const diffDays = Math.floor(diffMs / 86400000);
-
-  if (diffMins < 1) return t("library.lastPlayed.justNow");
-  if (diffMins < 60) return t("library.lastPlayed.minutesAgo", { count: diffMins });
-  if (diffHours < 24) return t("library.lastPlayed.hoursAgo", { count: diffHours });
-  if (diffDays < 7) return t("library.lastPlayed.daysAgo", { count: diffDays });
-  if (diffDays < 30) return t("library.lastPlayed.weeksAgo", { count: Math.floor(diffDays / 7) });
-
-  return lastPlayed.toLocaleDateString();
 }
 
 export function LibraryPage({
@@ -123,7 +103,7 @@ export function LibraryPage({
                 {game.lastPlayed && (
                   <div className="library-last-played">
                     <Clock size={12} />
-                    <span>{formatLastPlayed(t, game.lastPlayed)}</span>
+                    <span>{formatCatalogLastPlayed(t, game.lastPlayed)}</span>
                   </div>
                 )}
               </div>

@@ -12,6 +12,14 @@ import { RemainingPlaytimeIndicator, SessionElapsedIndicator } from "./ElapsedSe
 import type { MicrophoneMode, ScreenshotEntry, RecordingEntry, SubscriptionInfo } from "@shared/gfn";
 import { formatShortcutForDisplay, isShortcutMatch, normalizeShortcut, shortcutFromKeyboardEvent } from "../shortcuts";
 import { useMicMeter } from "../hooks/useMicMeter";
+import {
+  getBitratePerformanceColor,
+  getInputQueueColor,
+  getPacketLossColor,
+  getRttColor,
+  getTimingColor,
+} from "../utils/streamDiagnosticsFormat";
+import { formatElapsed } from "../utils/timeFormat";
 
 const ANTI_AFK_TOGGLE_ACK_MS = 5000;
 
@@ -78,38 +86,6 @@ interface StreamViewProps {
   hideConnectingOverlay?: boolean;
 }
 
-function getRttColor(rttMs: number): string {
-  if (rttMs <= 0) return "var(--ink-muted)";
-  if (rttMs < 30) return "var(--success)";
-  if (rttMs < 60) return "var(--warning)";
-  return "var(--error)";
-}
-
-function getPacketLossColor(lossPercent: number): string {
-  if (lossPercent <= 0.15) return "var(--success)";
-  if (lossPercent < 1) return "var(--warning)";
-  return "var(--error)";
-}
-
-function getTimingColor(valueMs: number, goodMax: number, warningMax: number): string {
-  if (valueMs <= 0) return "var(--ink-muted)";
-  if (valueMs <= goodMax) return "var(--success)";
-  if (valueMs <= warningMax) return "var(--warning)";
-  return "var(--error)";
-}
-
-function getInputQueueColor(bufferedBytes: number, dropCount: number): string {
-  if (dropCount > 0 || bufferedBytes >= 65536) return "var(--error)";
-  if (bufferedBytes >= 32768) return "var(--warning)";
-  return "var(--success)";
-}
-
-function getBitratePerformanceColor(percent: number): string {
-  if (percent <= 0) return "var(--ink-muted)";
-  if (percent >= 70 && percent <= 110) return "var(--success)";
-  if (percent >= 45 && percent < 130) return "var(--warning)";
-  return "var(--error)";
-}
 
 function getLagReasonLabel(reason: StreamLagReason): string {
   switch (reason) {
@@ -143,16 +119,6 @@ function getLagReasonColor(reason: StreamLagReason): string {
   }
 }
 
-function formatElapsed(totalSeconds: number): string {
-  const safe = Math.max(0, Math.floor(totalSeconds));
-  const hours = Math.floor(safe / 3600);
-  const minutes = Math.floor((safe % 3600) / 60);
-  const seconds = safe % 60;
-  if (hours > 0) {
-    return `${hours}:${minutes.toString().padStart(2, "0")}:${seconds.toString().padStart(2, "0")}`;
-  }
-  return `${minutes}:${seconds.toString().padStart(2, "0")}`;
-}
 
 function formatFileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;

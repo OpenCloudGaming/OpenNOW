@@ -1,7 +1,7 @@
 import { useMemo } from "react";
 import type { GameInfo } from "@shared/gfn";
 import { PREVIEW_TILE_COUNT, SPOTLIGHT_RECENT_COUNT } from "./constants";
-import { sanitizeGenreName } from "./helpers";
+import { sanitizeGenreName } from "./genreHelpers";
 import type {
   GameSubcategory,
   LibrarySortId,

@@ -2,7 +2,9 @@ import type { JSX } from "react";
 import type { GameInfo } from "@shared/gfn";
 import { Clock, Calendar, Repeat2 } from "lucide-react";
 import { getStoreDisplayName } from "../GameCard";
-import { formatPlaytime, formatLastPlayed, type PlaytimeStore } from "../../utils/usePlaytime";
+import { formatPlaytime, type PlaytimeStore } from "../../utils/usePlaytime";
+import { formatPlaytimeLastPlayed } from "../../utils/lastPlayedFormat";
+import { sanitizeGenreName } from "./controllerLibrary/genreHelpers";
 
 export type GameHubTile = {
   id: string;
@@ -10,12 +12,6 @@ export type GameHubTile = {
   subtitle: string;
   disabled?: boolean;
 };
-
-function sanitizeGenreName(raw: string): string {
-  return raw
-    .replace(/_/g, " ")
-    .replace(/\b\w/g, (ch) => ch.toUpperCase());
-}
 
 export interface ControllerGameHubProps {
   game: GameInfo;
@@ -50,7 +46,7 @@ export function ControllerGameHub({
   const lastPlayedAt = record?.lastPlayedAt ?? null;
   const sessionCount = record?.sessionCount ?? 0;
   const playtimeLabel = formatPlaytime(totalSecs);
-  const lastPlayedLabel = formatLastPlayed(lastPlayedAt);
+  const lastPlayedLabel = formatPlaytimeLastPlayed(lastPlayedAt);
   const variant = game.variants.find((v) => v.id === selectedVariantId) || game.variants[0];
   const storeName = getStoreDisplayName(variant?.store || "");
   const genres = game.genres?.slice(0, 4) ?? [];

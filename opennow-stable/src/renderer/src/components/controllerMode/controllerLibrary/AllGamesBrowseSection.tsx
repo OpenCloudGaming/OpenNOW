@@ -2,9 +2,11 @@ import type { JSX, RefObject } from "react";
 import type { GameInfo } from "@shared/gfn";
 import { Star, Clock, Calendar, Repeat2 } from "lucide-react";
 import { getStoreDisplayName } from "../../GameCard";
-import { formatLastPlayed, formatPlaytime, type PlaytimeStore } from "../../../utils/usePlaytime";
+import { formatPlaytime, type PlaytimeStore } from "../../../utils/usePlaytime";
+import { formatPlaytimeLastPlayed } from "../../../utils/lastPlayedFormat";
 import { LIBRARY_SORT_LABEL, SHELF_IMAGE_PROPS } from "./constants";
-import { isWithinContentWindow, isWithinImageWindow, sanitizeGenreName } from "./helpers";
+import { isWithinContentWindow, isWithinImageWindow } from "./helpers";
+import { sanitizeGenreName } from "./genreHelpers";
 import type { LibrarySortId } from "./types";
 
 interface AllGamesBrowseSectionProps {
@@ -60,7 +62,7 @@ export function AllGamesBrowseSection({
               const lastPlayedAt = record?.lastPlayedAt ?? null;
               const sessionCount = record?.sessionCount ?? 0;
               const playtimeLabel = formatPlaytime(totalSecs);
-              const lastPlayedLabel = formatLastPlayed(lastPlayedAt);
+              const lastPlayedLabel = formatPlaytimeLastPlayed(lastPlayedAt);
               const vId = selectedVariantByGameId[selectedGame.id] || selectedGame.variants[0]?.id;
               const variant = selectedGame.variants.find((v) => v.id === vId) || selectedGame.variants[0];
               const storeName = getStoreDisplayName(variant?.store || "");

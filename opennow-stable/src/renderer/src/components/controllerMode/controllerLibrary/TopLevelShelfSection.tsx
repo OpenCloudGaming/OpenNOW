@@ -3,7 +3,8 @@ import type { GameInfo, SubscriptionInfo } from "@shared/gfn";
 import { Clock, Calendar, Repeat2, Star } from "lucide-react";
 import { spotlightEntryHasGame } from "./helpers";
 import type { HomeRootPlane, SpotlightEntry } from "./types";
-import { formatLastPlayed, formatPlaytime, type PlaytimeStore } from "../../../utils/usePlaytime";
+import { formatPlaytime, type PlaytimeStore } from "../../../utils/usePlaytime";
+import { formatPlaytimeLastPlayed } from "../../../utils/lastPlayedFormat";
 import { HomeSubscriptionMeta } from "./HomeSubscriptionMeta";
 import { SpotlightShelfBand } from "./SpotlightShelfBand";
 
@@ -123,7 +124,7 @@ export function TopLevelShelfSection({
                   </span>
                   <span className="xmb-game-meta-chip xmb-game-meta-chip--last-played">
                     <Calendar size={10} className="xmb-meta-icon" />
-                    {formatLastPlayed(lastPlayedAt)}
+                    {formatPlaytimeLastPlayed(lastPlayedAt)}
                   </span>
                   {sessionCount > 0 ? (
                     <span className="xmb-game-meta-chip xmb-game-meta-chip--sessions">
