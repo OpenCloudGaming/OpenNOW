@@ -5,18 +5,14 @@ import { createPortal } from "react-dom";
 import type {
   ActiveSessionInfo,
   AuthSession,
-  AuthUser,
   CatalogBrowseResult,
   CatalogFilterGroup,
   CatalogSortOption,
   ExistingSessionStrategy,
   GameInfo,
-  GameVariant,
   LoginProvider,
   MainToRendererSignalingEvent,
   SessionAdAction,
-  SessionAdInfo,
-  SessionAdState,
   SessionInfo,
   SessionStopRequest,
   SavedAccount,
@@ -25,16 +21,12 @@ import type {
   SignalingConnectRequest,
   StreamSettings,
   StreamRegion,
-  VideoCodec,
-  NativeStreamStats,
   PrintedWasteQueueData,
-  PrintedWasteServerMapping,
 } from "@shared/gfn";
 import {
   buildNativeStreamerSessionContext,
   DEFAULT_KEYBOARD_LAYOUT,
   getDefaultStreamPreferences,
-  USER_FACING_VIDEO_CODEC_OPTIONS,
   getPreferredSessionAdMediaUrl,
   getSessionAdDurationMs,
   getSessionAdItems,
@@ -42,20 +34,61 @@ import {
   isSessionAdsRequired,
   isSessionQueuePaused,
 } from "@shared/gfn";
-
-import {
-  GfnWebRtcClient,
-  type StreamDiagnostics,
-  type StreamTimeWarning,
-} from "./gfn/webrtcClient";
+import { GfnWebRtcClient } from "./gfn/webrtcClient";
 import { formatShortcutForDisplay, isShortcutMatch, normalizeShortcut } from "./shortcuts";
 import { useControllerNavigation } from "./controllerNavigation";
 import { useElapsedSeconds } from "./utils/useElapsedSeconds";
 import { usePlaytime } from "./utils/usePlaytime";
 import { createStreamDiagnosticsStore, useStreamDiagnosticsSelector } from "./utils/streamDiagnosticsStore";
 import { playControllerUiSound } from "./utils/controllerUiSound";
+import type {
+  LaunchErrorState,
+  LocalSessionTimerWarningState,
+  StreamLoadingStatus,
+  StreamStatus,
+  StreamWarningState,
+} from "./lib/appTypes";
+import { loadCatalogPreferences, saveCatalogPreferences, VARIANT_SELECTION_LOCALSTORAGE_KEY } from "./lib/catalogPreferences";
 import { loadStoredCodecResults, saveStoredCodecResults, testCodecSupport, type CodecTestResult } from "./lib/codecDiagnostics";
+import {
+  areStringArraysEqual,
+  defaultVariantId,
+  findSessionContextForAppId,
+  getSelectedVariant,
+  isNumericId,
+  matchesGameSearch,
+  mergeVariantSelections,
+  parseNumericId,
+  sortLibraryGames,
+} from "./lib/gameCatalog";
 import { chooseAccountLinked, getEpicOwnershipLaunchError } from "./lib/launchOwnership";
+import { hasAnyEligiblePrintedWasteZone, isAllianceStreamingBaseUrl } from "./lib/printedWaste";
+import {
+  getActiveQueueAd,
+  getEffectiveAdState,
+  getNextAdReportAction,
+  getNextQueueAd,
+  mergePolledSessionState,
+  normalizeMembershipTier,
+  shouldUseQueueAdPolling,
+} from "./lib/queueAds";
+import { clearRuntimeSnapshot, loadRuntimeSnapshot, saveRuntimeSnapshot, type RuntimeSnapshot } from "./lib/runtimeSnapshot";
+import {
+  getLocalSessionTimerWarning,
+  hasCrossedWarningThreshold,
+  shouldShowFreeTierSessionWarnings,
+  warningMessage,
+  warningTone,
+} from "./lib/sessionWarnings";
+import {
+  isSessionInQueue,
+  isSessionReadyForConnect,
+  streamStatusToLoadingStage,
+  toLaunchErrorState,
+  toLoadingStatus,
+} from "./lib/sessionState";
+import { defaultDiagnostics, mergeNativeStreamStats } from "./lib/streamDiagnostics";
+import { aspectRatioOptions, codecOptions, fpsOptions, getResolutionsByAspectRatio } from "./lib/streamOptions";
 import { useTranslation } from "./i18n";
 
 // UI Components
@@ -72,34 +105,7 @@ import type { QueueAdPlaybackEvent, QueueAdPreviewHandle } from "./components/Qu
 import { StreamView } from "./components/StreamView";
 import { QueueServerSelectModal } from "./components/QueueServerSelectModal";
 
-type TranslateFunction = typeof import("./i18n").t;
-
-const codecOptions: VideoCodec[] = [...USER_FACING_VIDEO_CODEC_OPTIONS];
 const DEFAULT_STREAM_PREFERENCES = getDefaultStreamPreferences();
-const allResolutionOptions = ["1280x720", "1280x800", "1440x900", "1680x1050", "1920x1080", "1920x1200", "2560x1080", "2560x1440", "2560x1600", "3440x1440", "3840x2160", "3840x2400"];
-const fpsOptions = [30, 60, 120, 144, 165, 240];
-const aspectRatioOptions = ["16:9", "16:10", "21:9", "32:9"] as const;
-
-const RESOLUTION_TO_ASPECT_RATIO: Record<string, string> = {
-  "1280x720": "16:9",
-  "1280x800": "16:10",
-  "1440x900": "16:10",
-  "1680x1050": "16:10",
-  "1920x1080": "16:9",
-  "1920x1200": "16:10",
-  "2560x1080": "21:9",
-  "2560x1440": "16:9",
-  "2560x1600": "16:10",
-  "3440x1440": "21:9",
-  "3840x2160": "16:9",
-  "3840x2400": "16:10",
-  "5120x1440": "32:9",
-};
-
-const getResolutionsByAspectRatio = (aspectRatio: string): string[] => {
-  return allResolutionOptions.filter(res => RESOLUTION_TO_ASPECT_RATIO[res] === aspectRatio);
-};
-const resolutionOptions = getResolutionsByAspectRatio("16:9");
 
 type AppStyle = CSSProperties & {
   "--game-poster-scale"?: string;
@@ -116,9 +122,6 @@ const SESSION_AD_PROGRESS_CHECK_INTERVAL_MS = 1000;
 const SESSION_AD_START_TIMEOUT_MS = 30000;
 const SESSION_AD_FORCE_PLAY_TIMEOUT_MS = 10000;
 const SESSION_AD_STUCK_TIMEOUT_MS = 30000;
-const VARIANT_SELECTION_LOCALSTORAGE_KEY = "opennow.variantByGameId";
-const CATALOG_PREFERENCES_LOCALSTORAGE_KEY = "opennow.catalogPreferences.v1";
-const RUNTIME_SNAPSHOT_LOCALSTORAGE_KEY = "opennow.runtimeSnapshot.v1";
 const PLAYTIME_RESYNC_INTERVAL_MS = 5 * 60 * 1000;
 const FREE_TIER_SESSION_LIMIT_SECONDS = 60 * 60;
 const FREE_TIER_30_MIN_WARNING_SECONDS = 30 * 60;
@@ -126,147 +129,8 @@ const FREE_TIER_15_MIN_WARNING_SECONDS = 15 * 60;
 const FREE_TIER_FINAL_MINUTE_WARNING_SECONDS = 60;
 const STREAM_WARNING_VISIBILITY_MS = 15 * 1000;
 
-interface CatalogPreferences {
-  sortId: string;
-  filterIds: string[];
-}
-
-interface RuntimeSnapshot {
-  version: 1;
-  updatedAt: number;
-  streamStatus: StreamStatus;
-  sessionId: string | null;
-  sessionAppId: number | null;
-  streamingGameId: string | null;
-  streamingStore: string | null;
-  recoveryAppId: number | null;
-  resumeContext: {
-    sessionId: string;
-    serverIp: string;
-    streamingBaseUrl?: string;
-    signalingServer?: string;
-    signalingUrl?: string;
-    appId?: number;
-    clientId?: string;
-    deviceId?: string;
-  } | null;
-}
-
-function loadCatalogPreferences(): CatalogPreferences {
-  try {
-    const raw = localStorage.getItem(CATALOG_PREFERENCES_LOCALSTORAGE_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw) as Partial<CatalogPreferences>;
-      return {
-        sortId: typeof parsed.sortId === "string" ? parsed.sortId : "relevance",
-        filterIds: Array.isArray(parsed.filterIds) ? parsed.filterIds.filter((id): id is string => typeof id === "string") : [],
-      };
-    }
-  } catch {
-    // ignore
-  }
-  return { sortId: "relevance", filterIds: [] };
-}
-
-function saveCatalogPreferences(prefs: CatalogPreferences): void {
-  try {
-    localStorage.setItem(CATALOG_PREFERENCES_LOCALSTORAGE_KEY, JSON.stringify(prefs));
-  } catch {
-    // ignore
-  }
-}
-
-function loadRuntimeSnapshot(): RuntimeSnapshot | null {
-  try {
-    const raw = localStorage.getItem(RUNTIME_SNAPSHOT_LOCALSTORAGE_KEY);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as Partial<RuntimeSnapshot>;
-    if (parsed.version !== 1) return null;
-    return {
-      version: 1,
-      updatedAt: typeof parsed.updatedAt === "number" ? parsed.updatedAt : Date.now(),
-      streamStatus: (typeof parsed.streamStatus === "string" ? parsed.streamStatus : "idle") as StreamStatus,
-      sessionId: typeof parsed.sessionId === "string" ? parsed.sessionId : null,
-      sessionAppId: typeof parsed.sessionAppId === "number" ? parsed.sessionAppId : null,
-      streamingGameId: typeof parsed.streamingGameId === "string" ? parsed.streamingGameId : null,
-      streamingStore: typeof parsed.streamingStore === "string" ? parsed.streamingStore : null,
-      recoveryAppId: typeof parsed.recoveryAppId === "number" ? parsed.recoveryAppId : null,
-      resumeContext:
-        parsed.resumeContext &&
-        typeof parsed.resumeContext === "object" &&
-        typeof parsed.resumeContext.sessionId === "string" &&
-        typeof parsed.resumeContext.serverIp === "string"
-          ? {
-            sessionId: parsed.resumeContext.sessionId,
-            serverIp: parsed.resumeContext.serverIp,
-            streamingBaseUrl:
-              typeof parsed.resumeContext.streamingBaseUrl === "string"
-                ? parsed.resumeContext.streamingBaseUrl
-                : undefined,
-            signalingServer:
-              typeof parsed.resumeContext.signalingServer === "string"
-                ? parsed.resumeContext.signalingServer
-                : undefined,
-            signalingUrl:
-              typeof parsed.resumeContext.signalingUrl === "string"
-                ? parsed.resumeContext.signalingUrl
-                : undefined,
-            appId:
-              typeof parsed.resumeContext.appId === "number" && Number.isFinite(parsed.resumeContext.appId)
-                ? parsed.resumeContext.appId
-                : undefined,
-            clientId:
-              typeof parsed.resumeContext.clientId === "string"
-                ? parsed.resumeContext.clientId
-                : undefined,
-            deviceId:
-              typeof parsed.resumeContext.deviceId === "string"
-                ? parsed.resumeContext.deviceId
-                : undefined,
-          }
-          : null,
-    };
-  } catch {
-    return null;
-  }
-}
-
-function saveRuntimeSnapshot(snapshot: RuntimeSnapshot): void {
-  try {
-    localStorage.setItem(RUNTIME_SNAPSHOT_LOCALSTORAGE_KEY, JSON.stringify(snapshot));
-  } catch {
-    // ignore
-  }
-}
-
-function clearRuntimeSnapshot(): void {
-  try {
-    localStorage.removeItem(RUNTIME_SNAPSHOT_LOCALSTORAGE_KEY);
-  } catch {
-    // ignore
-  }
-}
-
 type AppPage = "home" | "library" | "settings";
-type StreamStatus = "idle" | "queue" | "setup" | "starting" | "connecting" | "streaming";
-type StreamLoadingStatus = "queue" | "setup" | "starting" | "connecting";
 type ExitPromptState = { open: boolean; gameTitle: string };
-type StreamWarningState = {
-  code: StreamTimeWarning["code"];
-  message: string;
-  tone: "warn" | "critical";
-  secondsLeft?: number;
-};
-type LocalSessionTimerWarningState = {
-  stage: "free-tier-30m" | "free-tier-15m" | "free-tier-final-minute";
-  shownAtMs: number;
-};
-type LaunchErrorState = {
-  stage: StreamLoadingStatus;
-  title: string;
-  description: string;
-  codeLabel?: string;
-};
 type QueueAdCancelReason = "error" | "other";
 type QueueAdErrorInfo = "Ad play timeout" | "Ad video is stuck" | "Error loading url";
 type QueueAdMetrics = {
@@ -294,29 +158,6 @@ const SIGNALING_REMOTE_ICE_GRACE_MS = 5000;
 const ICE_DISCONNECTED_RECOVERY_GRACE_MS = 7000;
 
 const isMac = navigator.platform.toLowerCase().includes("mac");
-
-function isStandardPrintedWasteZone(zoneId: string): boolean {
-  return zoneId.startsWith("NP-") && !zoneId.startsWith("NPA-");
-}
-
-function isAllianceStreamingBaseUrl(streamingBaseUrl: string): boolean {
-  if (!streamingBaseUrl.trim()) return false;
-  try {
-    const { hostname } = new URL(streamingBaseUrl);
-    return !hostname.endsWith(".nvidiagrid.net");
-  } catch {
-    return false;
-  }
-}
-
-function hasAnyEligiblePrintedWasteZone(
-  queueData: PrintedWasteQueueData,
-  mapping: PrintedWasteServerMapping,
-): boolean {
-  return Object.keys(queueData).some((zoneId) => (
-    isStandardPrintedWasteZone(zoneId) && mapping[zoneId]?.nuked !== true
-  ));
-}
 
 const DEFAULT_SHORTCUTS = {
   shortcutToggleStats: "F3",
@@ -349,598 +190,6 @@ async function waitFor(
     // eslint-disable-next-line no-await-in-loop
     await sleep(interval);
   }
-}
-
-function isSessionReadyForConnect(status: number): boolean {
-  return status === 2 || status === 3;
-}
-
-function isSessionInQueue(session: SessionInfo): boolean {
-  // Official client treats seat setup step 1 as queue state even when queuePosition reaches 1.
-  // Fallback to queuePosition-based inference for payloads that do not expose seatSetupStep.
-  if (session.seatSetupStep === 1) {
-    return true;
-  }
-  return (session.queuePosition ?? 0) > 1;
-}
-
-function isNumericId(value: string | undefined): value is string {
-  if (!value) return false;
-  return /^\d+$/.test(value);
-}
-
-function parseNumericId(value: string | undefined): number | null {
-  if (!isNumericId(value)) return null;
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : null;
-}
-
-function defaultVariantId(game: GameInfo): string {
-  return game.variants[game.selectedVariantIndex]?.id ?? game.variants[0]?.id ?? game.id;
-}
-
-function getSelectedVariant(game: GameInfo, variantId: string): GameVariant | undefined {
-  return game.variants.find((variant) => variant.id === variantId) ?? game.variants[0];
-}
-
-function findSessionContextForAppId(
-  catalog: GameInfo[],
-  variantByGameId: Record<string, string>,
-  appId: number,
-): { game: GameInfo; variant?: GameVariant } | null {
-  for (const game of catalog) {
-    const matchedVariant = game.variants.find((variant) => parseNumericId(variant.id) === appId);
-    if (matchedVariant) {
-      return { game, variant: matchedVariant };
-    }
-
-    if (parseNumericId(game.launchAppId) === appId) {
-      const preferredVariantId = variantByGameId[game.id] ?? defaultVariantId(game);
-      return {
-        game,
-        variant: getSelectedVariant(game, preferredVariantId),
-      };
-    }
-  }
-
-  return null;
-}
-
-function matchesGameSearch(game: GameInfo, query: string): boolean {
-  const normalizedQuery = query.trim().toLowerCase();
-  if (!normalizedQuery) return true;
-  if (game.searchText?.includes(normalizedQuery)) return true;
-  return [
-    game.title,
-    game.description,
-    game.publisherName,
-    ...(game.genres ?? []),
-    ...(game.featureLabels ?? []),
-    ...(game.availableStores ?? []),
-  ]
-    .filter((value): value is string => typeof value === "string" && value.length > 0)
-    .some((value) => value.toLowerCase().includes(normalizedQuery));
-}
-
-function areStringArraysEqual(left: string[], right: string[]): boolean {
-  if (left.length != right.length) {
-    return false;
-  }
-  return left.every((value, index) => value === right[index]);
-}
-
-function sortLibraryGames(
-  games: GameInfo[],
-  sortId: string,
-  playtimeData: Record<string, { lastPlayedAt?: string | null; totalSeconds?: number; sessionCount?: number }>,
-): GameInfo[] {
-  const copy = [...games];
-  const compareTitle = (left: GameInfo, right: GameInfo) => left.title.localeCompare(right.title);
-  const playtimeLastPlayedMs = (gameId: string): number => {
-    const raw = playtimeData[gameId]?.lastPlayedAt;
-    if (!raw) return 0;
-    const ms = Date.parse(raw);
-    return Number.isFinite(ms) ? ms : 0;
-  };
-  const legacyLastPlayedMs = (game: GameInfo): number => {
-    if (!game.lastPlayed) return 0;
-    const ms = Date.parse(game.lastPlayed);
-    return Number.isFinite(ms) ? ms : 0;
-  };
-  if (sortId === "z_to_a") {
-    return copy.sort((left, right) => right.title.localeCompare(left.title));
-  }
-  if (sortId === "a_to_z") {
-    return copy.sort(compareTitle);
-  }
-  if (sortId === "last_played") {
-    return copy.sort((left, right) => {
-      const leftTime = playtimeLastPlayedMs(left.id) || legacyLastPlayedMs(left);
-      const rightTime = playtimeLastPlayedMs(right.id) || legacyLastPlayedMs(right);
-      if (leftTime === rightTime) return compareTitle(left, right);
-      return rightTime - leftTime;
-    });
-  }
-  if (sortId === "last_added") {
-    // Preserve server-provided order. We do not currently have a trustworthy local "addedAt" field.
-    return copy;
-  }
-  if (sortId === "most_popular") {
-    return copy.sort((left, right) => {
-      const leftSeconds = Math.max(0, playtimeData[left.id]?.totalSeconds ?? 0);
-      const rightSeconds = Math.max(0, playtimeData[right.id]?.totalSeconds ?? 0);
-      if (leftSeconds !== rightSeconds) return rightSeconds - leftSeconds;
-      const leftSessions = Math.max(0, playtimeData[left.id]?.sessionCount ?? 0);
-      const rightSessions = Math.max(0, playtimeData[right.id]?.sessionCount ?? 0);
-      if (leftSessions !== rightSessions) return rightSessions - leftSessions;
-      return compareTitle(left, right);
-    });
-  }
-  return copy.sort(compareTitle);
-}
-
-function mergeVariantSelections(
-  current: Record<string, string>,
-  catalog: GameInfo[],
-): Record<string, string> {
-  if (catalog.length === 0) {
-    return current;
-  }
-
-  const next = { ...current };
-  for (const game of catalog) {
-    const selectedVariantId = next[game.id];
-    const hasSelectedVariant = !!selectedVariantId && game.variants.some((variant) => variant.id === selectedVariantId);
-    if (!hasSelectedVariant) {
-      next[game.id] = defaultVariantId(game);
-    }
-  }
-  return next;
-}
-
-function defaultDiagnostics(): StreamDiagnostics {
-  return {
-    connectionState: "closed",
-    inputReady: false,
-    nativeRendererActive: false,
-    connectedGamepads: 0,
-    resolution: "",
-    codec: "",
-    hardwareAcceleration: "",
-    colorCodec: "",
-    isHdr: false,
-    bitrateKbps: 0,
-    targetBitrateKbps: 0,
-    decodeFps: 0,
-    renderFps: 0,
-    packetsLost: 0,
-    packetsReceived: 0,
-    packetLossPercent: 0,
-    jitterMs: 0,
-    rttMs: 0,
-    framesReceived: 0,
-    framesDecoded: 0,
-    framesDropped: 0,
-    decodeTimeMs: 0,
-    renderTimeMs: 0,
-    jitterBufferDelayMs: 0,
-    inputQueueBufferedBytes: 0,
-    inputQueuePeakBufferedBytes: 0,
-    partiallyReliableInputQueueBufferedBytes: 0,
-    partiallyReliableInputQueuePeakBufferedBytes: 0,
-    inputQueueDropCount: 0,
-    inputQueueMaxSchedulingDelayMs: 0,
-    partiallyReliableInputOpen: false,
-    mouseMoveTransport: "reliable",
-    mouseFlushIntervalMs: 8,
-    mousePacketsPerSecond: 0,
-    mouseResidualMagnitude: 0,
-    mouseAdaptiveFlushActive: false,
-    lagReason: "unknown",
-    lagReasonDetail: "Waiting for stream stats",
-    gpuType: "",
-    serverRegion: "",
-    decoderPressureActive: false,
-    decoderRecoveryAttempts: 0,
-    decoderRecoveryAction: "none",
-    nativeRequestedFps: undefined,
-    nativeCapsFramerate: undefined,
-    nativeQueueMode: undefined,
-    nativeFramesPendingToPresent: undefined,
-    nativePartialFlushCount: undefined,
-    nativeCompleteFlushCount: undefined,
-    nativeTransitionSummary: undefined,
-    nativeRequestedStreamingFeaturesSummary: undefined,
-    nativeFinalizedStreamingFeaturesSummary: undefined,
-    micState: "uninitialized",
-    micEnabled: false,
-  };
-}
-
-function mergeNativeStreamStats(
-  current: StreamDiagnostics,
-  stats: NativeStreamStats,
-): StreamDiagnostics {
-  const sinkDropped = stats.sinkDropped ?? 0;
-  const sinkRendered = stats.sinkRendered ?? stats.framesRendered;
-  const totalSinkFrames = sinkRendered + sinkDropped;
-  const dropPercent = totalSinkFrames > 0 ? (sinkDropped / totalSinkFrames) * 100 : 0;
-  const hardwareAcceleration = [
-    stats.hardwareAcceleration || "GStreamer native decode",
-    stats.zeroCopy && stats.memoryMode ? `${stats.memoryMode} zero-copy` : "",
-    !stats.zeroCopy && stats.memoryMode ? stats.memoryMode : "",
-    !stats.memoryMode && stats.zeroCopyD3D12 ? "D3D12 zero-copy" : "",
-    !stats.memoryMode && stats.zeroCopyD3D11 ? "D3D11 zero-copy" : "",
-  ].filter(Boolean).join(" · ");
-
-  return {
-    ...current,
-    connectionState: "connected",
-    inputReady: current.inputReady,
-    nativeRendererActive: true,
-    resolution: stats.resolution || current.resolution,
-    codec: stats.codec || current.codec,
-    hardwareAcceleration,
-    bitrateKbps: stats.bitrateKbps,
-    targetBitrateKbps: stats.targetBitrateKbps,
-    decodeFps: Math.round(stats.decodedFps),
-    renderFps: Math.round(stats.renderFps),
-    framesReceived: stats.framesDecoded,
-    framesDecoded: stats.framesDecoded,
-    framesDropped: sinkDropped,
-    packetLossPercent: dropPercent,
-    lagReason: dropPercent > 1 ? "render" : "stable",
-    lagReasonDetail: stats.lastTransitionSummary
-      ? `Native bitrate ${stats.bitratePerformancePercent.toFixed(0)}% of target · ${stats.lastTransitionSummary}`
-      : `Native bitrate ${stats.bitratePerformancePercent.toFixed(0)}% of target`,
-    decoderPressureActive: false,
-    nativeRequestedFps: stats.requestedFps,
-    nativeCapsFramerate: stats.capsFramerate,
-    nativeQueueMode: stats.queueMode,
-    nativeFramesPendingToPresent: stats.framesPendingToPresent,
-    nativePartialFlushCount: stats.partialFlushCount,
-    nativeCompleteFlushCount: stats.completeFlushCount,
-    nativeTransitionSummary: stats.lastTransitionSummary,
-    nativeRequestedStreamingFeaturesSummary: stats.requestedStreamingFeaturesSummary,
-    nativeFinalizedStreamingFeaturesSummary: stats.finalizedStreamingFeaturesSummary,
-  };
-}
-
-function isSessionLimitError(error: unknown): boolean {
-  if (error && typeof error === "object" && "gfnErrorCode" in error) {
-    const candidate = error.gfnErrorCode;
-    if (typeof candidate === "number") {
-      return candidate === 3237093643 || candidate === 3237093718;
-    }
-  }
-  if (error instanceof Error) {
-    const msg = error.message.toUpperCase();
-    return msg.includes("SESSION LIMIT") || msg.includes("INSUFFICIENT_PLAYABILITY") || msg.includes("DUPLICATE SESSION");
-  }
-  return false;
-}
-
-function warningTone(code: StreamTimeWarning["code"]): "warn" | "critical" {
-  if (code === 3) {
-    return "critical";
-  }
-  return "warn";
-}
-
-function warningMessage(t: TranslateFunction, code: StreamTimeWarning["code"]): string {
-  if (code === 1) return t("session.warnings.sessionTimeLimitApproaching");
-  if (code === 2) return t("session.warnings.idleTimeoutApproaching");
-  return t("session.warnings.maximumSessionTimeApproaching");
-}
-
-function normalizeMembershipTier(tier: string | null | undefined): string | null {
-  if (!tier) {
-    return null;
-  }
-  const normalized = tier.trim().toUpperCase();
-  return normalized.length > 0 ? normalized : null;
-}
-
-function shouldShowQueueAdsForMembership(
-  subscription: SubscriptionInfo | null,
-  authSession: AuthSession | null,
-): boolean {
-  const effectiveTier = normalizeMembershipTier(subscription?.membershipTier ?? authSession?.user.membershipTier);
-  return effectiveTier === null || effectiveTier === "FREE";
-}
-
-function shouldShowFreeTierSessionWarnings(subscription: SubscriptionInfo | null): boolean {
-  return normalizeMembershipTier(subscription?.membershipTier) === "FREE";
-}
-
-function hasCrossedWarningThreshold(
-  previousSeconds: number | null,
-  currentSeconds: number,
-  thresholdSeconds: number,
-): boolean {
-  if (previousSeconds === null) {
-    return currentSeconds === thresholdSeconds;
-  }
-  return previousSeconds > thresholdSeconds && currentSeconds <= thresholdSeconds;
-}
-
-function getLocalSessionTimerWarning(
-  t: TranslateFunction,
-  stage: LocalSessionTimerWarningState["stage"],
-  secondsLeft: number,
-): StreamWarningState {
-  if (stage === "free-tier-30m") {
-    return {
-      code: 1,
-      message: t("session.warnings.freeTier30MinutesRemaining"),
-      tone: "warn",
-    };
-  }
-
-  if (stage === "free-tier-15m") {
-    return {
-      code: 1,
-      message: t("session.warnings.freeTier15MinutesRemaining"),
-      tone: "warn",
-    };
-  }
-
-  return {
-    code: 1,
-    message: t("session.warnings.freeTierEndsSoon"),
-    tone: "critical",
-    secondsLeft: Math.max(0, secondsLeft),
-  };
-}
-
-function shouldUseQueueAdPolling(session: SessionInfo, subscription: SubscriptionInfo | null, authSession: AuthSession | null): boolean {
-  return (
-    shouldShowQueueAdsForMembership(subscription, authSession) &&
-    isSessionInQueue(session) &&
-    isSessionAdsRequired(session.adState)
-  );
-}
-
-function getEffectiveAdState(
-  t: TranslateFunction,
-  session: SessionInfo | null,
-  subscription: SubscriptionInfo | null,
-  authSession: AuthSession | null,
-): SessionAdState | undefined {
-  if (!session) {
-    return undefined;
-  }
-
-  if (session.adState) {
-    return session.adState;
-  }
-
-  if ((session.status === 1 || session.status === 2 || session.status === 3) && session.queuePosition !== undefined) {
-    return {
-      isAdsRequired: true,
-      sessionAdsRequired: true,
-      message: t("streamLoading.ads.freeTierQueueAdsBegin"),
-      opportunity: {
-        message: t("streamLoading.ads.freeTierQueueAdsBegin"),
-      },
-      sessionAds: [],
-      ads: [],
-      serverSentEmptyAds: true,
-    };
-  }
-
-  if (!shouldShowQueueAdsForMembership(subscription, authSession)) {
-    return undefined;
-  }
-
-  if (!isSessionInQueue(session)) {
-    return undefined;
-  }
-
-  return {
-    isAdsRequired: true,
-    sessionAdsRequired: true,
-    message: t("streamLoading.ads.freeTierQueueAdsBegin"),
-    opportunity: {
-      message: t("streamLoading.ads.freeTierQueueAdsBegin"),
-    },
-    sessionAds: [
-      {
-        adId: "queue-ad-placeholder",
-        title: t("streamLoading.ads.advertisementInProgress"),
-        description: t("streamLoading.ads.mediaWillAppear"),
-      },
-    ],
-    ads: [
-      {
-        adId: "queue-ad-placeholder",
-        title: t("streamLoading.ads.advertisementInProgress"),
-        description: t("streamLoading.ads.mediaWillAppear"),
-      },
-    ],
-  };
-}
-
-function mergeAdState(
-  previous: SessionAdState | undefined,
-  next: SessionAdState | undefined,
-): SessionAdState | undefined {
-  if (!next) {
-    return previous;
-  }
-  // Server only populates sessionAds in the first poll after session creation.
-  // Later polls return sessionAdsRequired=true but sessionAds=null (serverSentEmptyAds=true),
-  // which produces an empty ads array. Preserve the ad list from the most recent poll that
-  // had URLs so the ad player can continue.
-  // Do NOT restore when serverSentEmptyAds is false — that signals an explicit client-side
-  // clear after a rejected finish action, and we must NOT bring the stale ad back.
-  if (
-    isSessionAdsRequired(next) &&
-    next.serverSentEmptyAds === true &&
-    getSessionAdItems(next).length === 0 &&
-    previous?.sessionAds &&
-    previous.sessionAds.length > 0
-  ) {
-    return { ...next, sessionAds: previous.sessionAds, ads: previous.ads };
-  }
-  return next;
-}
-
-function mergePolledSessionState(previous: SessionInfo, next: SessionInfo): SessionInfo {
-  if (isSessionReadyForConnect(next.status)) {
-    return next;
-  }
-
-  return {
-    ...next,
-    adState: mergeAdState(previous.adState, next.adState),
-    mediaConnectionInfo: next.mediaConnectionInfo ?? previous.mediaConnectionInfo,
-  };
-}
-
-function getNextAdReportAction(
-  lastAction: SessionAdAction | undefined,
-  playbackEvent: "playing" | "paused" | "ended",
-): SessionAdAction | null {
-  switch (playbackEvent) {
-    case "playing":
-      if (!lastAction) {
-        return "start";
-      }
-      return lastAction === "pause" ? "resume" : null;
-    case "paused":
-      return lastAction === "start" || lastAction === "resume" ? "pause" : null;
-    case "ended":
-      return lastAction === "finish" || lastAction === "cancel" ? null : "finish";
-    default:
-      return null;
-  }
-}
-
-function getActiveQueueAd(
-  adState: SessionAdState | undefined,
-  activeAdId: string | null,
-): SessionAdInfo | undefined {
-  const ads = getSessionAdItems(adState);
-  if (!ads.length) {
-    return undefined;
-  }
-
-  if (activeAdId) {
-    const matched = ads.find((ad) => ad.adId === activeAdId);
-    if (matched) {
-      return matched;
-    }
-  }
-
-  return ads[0];
-}
-
-function getNextQueueAd(
-  adState: SessionAdState | undefined,
-  activeAdId: string,
-): SessionAdInfo | undefined {
-  const ads = getSessionAdItems(adState);
-  if (!ads.length) {
-    return undefined;
-  }
-
-  const currentIndex = ads.findIndex((ad) => ad.adId === activeAdId);
-  if (currentIndex < 0) {
-    return ads[0];
-  }
-
-  return ads[currentIndex + 1];
-}
-
-function toLoadingStatus(status: StreamStatus): StreamLoadingStatus {
-  switch (status) {
-    case "queue":
-    case "setup":
-    case "starting":
-    case "connecting":
-      return status;
-    default:
-      return "queue";
-  }
-}
-
-function toCodeLabel(code: number | undefined): string | undefined {
-  if (code === undefined) return undefined;
-  if (code === 3237093643) return `SessionLimitExceeded (${code})`;
-  if (code === 3237093718) return `SessionInsufficientPlayabilityLevel (${code})`;
-  return `GFN Error ${code}`;
-}
-
-function extractLaunchErrorCode(error: unknown): number | undefined {
-  if (error && typeof error === "object") {
-    if ("gfnErrorCode" in error) {
-      const directCode = error.gfnErrorCode;
-      if (typeof directCode === "number") return directCode;
-    }
-    if ("statusCode" in error) {
-      const statusCode = error.statusCode;
-      if (typeof statusCode === "number" && statusCode > 0 && statusCode < 255) {
-        return 3237093632 + statusCode;
-      }
-    }
-  }
-  if (error instanceof Error) {
-    const match = error.message.match(/\b(3237\d{6,})\b/);
-    if (match) {
-      const code = Number(match[1]);
-      if (Number.isFinite(code)) return code;
-    }
-  }
-  return undefined;
-}
-
-function toLaunchErrorState(t: TranslateFunction, error: unknown, stage: StreamLoadingStatus): LaunchErrorState {
-  const unknownMessage = t("errors.launchUnknown");
-
-  const titleFromError =
-    error && typeof error === "object" && "title" in error && typeof error.title === "string"
-      ? error.title.trim()
-      : "";
-  const descriptionFromError =
-    error && typeof error === "object" && "description" in error && typeof error.description === "string"
-      ? error.description.trim()
-      : "";
-  const statusDescription =
-    error && typeof error === "object" && "statusDescription" in error && typeof error.statusDescription === "string"
-      ? error.statusDescription.trim()
-      : "";
-  const messageFromError = error instanceof Error ? error.message.trim() : "";
-  const combined = `${statusDescription} ${messageFromError}`.toUpperCase();
-  const code = extractLaunchErrorCode(error);
-
-  if (
-    isSessionLimitError(error) ||
-    combined.includes("INSUFFICIENT_PLAYABILITY") ||
-    combined.includes("SESSION_LIMIT") ||
-    combined.includes("DUPLICATE SESSION")
-  ) {
-    return {
-      stage,
-      title: t("errors.duplicateSessionTitle"),
-      description: t("errors.duplicateSessionDescription"),
-      codeLabel: toCodeLabel(code),
-    };
-  }
-
-  return {
-    stage,
-    title: titleFromError || t("errors.launchFailedTitle"),
-    description: descriptionFromError || messageFromError || statusDescription || unknownMessage,
-    codeLabel: toCodeLabel(code),
-  };
-}
-
-function streamStatusToLoadingStage(status: StreamStatus): StreamLoadingStatus {
-  if (status === "queue" || status === "setup" || status === "starting" || status === "connecting") {
-    return status;
-  }
-  return "connecting";
 }
 
 export function App(): JSX.Element {
