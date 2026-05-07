@@ -6,20 +6,20 @@
     "actions": {
       "add": "Adaugă",
       "back": "Înapoi",
-      "browse": "Browse",
+      "browse": "Răsfoiește",
       "cancel": "Anulează",
       "close": "Închide",
-      "confirm": "confirm",
+      "confirm": "confirmă",
       "continue": "Continuă",
       "delete": "Șterge",
       "done": "Done",
       "open": "Deschide",
-      "play": "Play",
-      "refresh": "Refresh",
+      "play": "Joacă",
+      "refresh": "Reîmprospătează",
       "remove": "Elimină",
-      "reset": "Reset",
-      "resume": "Resume",
-      "retry": "Retry",
+      "reset": "Resetează",
+      "resume": "Continuă",
+      "retry": "Reîncearcă",
       "save": "Salvează",
       "search": "Caută",
       "select": "Selectează",
@@ -27,21 +27,21 @@
       "showInFolder": "Show in folder",
       "sort": "Sortează",
       "stop": "Oprește",
-      "switch": "Switch"
+      "switch": "Schimbă"
     },
     "status": {
-      "checking": "Checking",
-      "connecting": "Connecting...",
+      "checking": "Se verifică",
+      "connecting": "Se conectează...",
       "disabled": "Disabled",
-      "error": "Error",
-      "failed": "Failed",
-      "idle": "Idle",
-      "loading": "Loading...",
-      "ready": "Ready",
-      "saved": "Saved",
-      "testing": "Testing...",
-      "unknown": "Unknown",
-      "upToDate": "Up to date"
+      "error": "Eroare",
+      "failed": "Eșuat",
+      "idle": "Inactiv",
+      "loading": "Se încarcă...",
+      "ready": "Pregătit",
+      "saved": "Salvat",
+      "testing": "Se testează...",
+      "unknown": "Necunoscut",
+      "upToDate": "Actualizat"
     },
     "units": {
       "bitrateMbps": "{{value}} Mbps",
@@ -64,11 +64,11 @@
       "current": "Curent",
       "default": "Default",
       "defaultDevice": "Default Device",
-      "free": "Free",
+      "free": "Gratuit",
       "game": "Joc",
       "hardware": "Hardware",
-      "other": "Other",
-      "priority": "Priority",
+      "other": "Altele",
+      "priority": "Prioritate",
       "softwareCpu": "Software (CPU)",
       "ultimate": "Ultimate",
       "unlimited": "Unlimited"
@@ -76,7 +76,7 @@
   },
   "auth": {
     "title": {
-      "signIn": "Sign in",
+      "signIn": "Conectare",
       "restoringSession": "Restoring session"
     },
     "subtitle": {
@@ -85,16 +85,16 @@
     "provider": {
       "label": "Provider",
       "select": "Select provider",
-      "loading": "Loading..."
+      "loading": "Se încarcă..."
     },
     "actions": {
-      "signIn": "Sign In",
-      "connecting": "Connecting...",
+      "signIn": "Conectează-te",
+      "connecting": "Se conectează...",
       "restoringSession": "Restoring Session..."
     },
     "accounts": {
       "activeAccount": "Active account",
-      "addAccount": "Add account",
+      "addAccount": "Adaugă cont",
       "cancelAccountRemoval": "Cancel account removal",
       "cancelLogOut": "Cancel log out",
       "guest": "Guest",
@@ -112,9 +112,9 @@
       "signOutAll": "Sign out all",
       "signOutAllAccounts": "Sign out all accounts",
       "staySignedIn": "Stay signed in",
-      "switchAccount": "Switch account",
-      "thisAccount": "this account",
-      "kicker": "Accounts"
+      "switchAccount": "Schimbă contul",
+      "thisAccount": "acest cont",
+      "kicker": "Conturi"
     },
     "status": {
       "restoringSavedSession": "Restoring saved session...",
@@ -129,15 +129,15 @@
     }
   },
   "navigation": {
-    "home": "Store",
+    "home": "Magazin",
     "library": "Library",
     "settings": "Setări"
   },
   "home": {
-    "searchPlaceholder": "Search games...",
-    "filters": "Filters",
+    "searchPlaceholder": "Caută jocuri...",
+    "filters": "Filtre",
     "count": {
-      "loading": "Loading...",
+      "loading": "Se încarcă...",
       "shown": "{{shown}} shown",
       "shownTotal": "{{shown}} shown · {{total}} total",
       "shownTotalSupported": "{{shown}} shown · {{total}} total · {{supported}} supported",
@@ -153,29 +153,29 @@
   "library": {
     "title": "My Library",
     "searchPlaceholder": "Search your library...",
-    "gameCount": "{{count}} game",
-    "gameCount_plural": "{{count}} games",
+    "gameCount": "{{count}} joc",
+    "gameCount_plural": "{{count}} jocuri",
     "lastPlayed": {
       "never": "Never played",
       "justNow": "Just now",
-      "minutesAgo": "{{count}}m ago",
-      "hoursAgo": "{{count}}h ago",
-      "daysAgo": "{{count}}d ago",
-      "weeksAgo": "{{count}}w ago"
+      "minutesAgo": "acum {{count}} min",
+      "hoursAgo": "acum {{count}} ore",
+      "daysAgo": "acum {{count}} zile",
+      "weeksAgo": "acum {{count}} săptămâni"
     },
     "empty": {
       "loadingLibrary": "Loading your library...",
       "libraryEmpty": "Your library is empty",
       "ownedGamesAppearHere": "Games you own will appear here. Browse the catalog to find games.",
       "noGamesFound": "No games found",
-      "noGamesMatch": "No games match \"{{query}}\""
+      "noGamesMatch": "Nici un joc se potrivește \"{{query}}\""
     }
   },
   "gameCard": {
-    "selectGame": "Select {{title}}",
-    "playGame": "Play {{title}}",
+    "selectGame": "Selectează {{title}}",
+    "playGame": "Joacă {{title}}",
     "store": "{{store}} store",
-    "owned": "Owned",
+    "owned": "Deținut",
     "available": "Available"
   },
   "streamLoading": {
@@ -187,7 +187,7 @@
     "steps": {
       "queue": "Queue",
       "setup": "Setup",
-      "ready": "Ready"
+      "ready": "Pregătit"
     },
     "status": {
       "gameLaunchFailed": "Game launch failed",
@@ -198,7 +198,7 @@
       "startingStream": "Starting stream...",
       "connectingToServer": "Connecting to server...",
       "settingUpStream": "Setting up stream...",
-      "loading": "Loading..."
+      "loading": "Se încarcă..."
     },
     "ads": {
       "resumeToStayInQueue": "Resume ads to stay in queue.",
@@ -208,7 +208,7 @@
       "freeTierQueueAdsBegin": "Free-tier queue ads begin as soon as you enter queue.",
       "advertisementInProgress": "Advertisement in progress",
       "mediaWillAppear": "Ad media will appear here as soon as it is available.",
-      "advertisement": "Advertisement",
+      "advertisement": "Reclamă",
       "titledAdvertisement": "{{title}} advertisement"
     },
     "actions": {
@@ -232,7 +232,7 @@
     "exitStream": "Exit Stream?",
     "exitConfirmation": "Exit stream confirmation",
     "cancelExit": "Cancel exit",
-    "resume": "Resume",
+    "resume": "Continuă",
     "resumeActiveCloudSession": "Resume active cloud session",
     "resumeActiveCloudSessionTitle": "Resume active cloud session: {{title}}",
     "resumeCurrentStream": "Resume current stream",
@@ -247,21 +247,21 @@
     "terminateActiveCloudSessionTitle": "Terminate active cloud session: {{title}}",
     "terminateConfirmation": "Terminate {{title}}? This will end the active cloud session immediately.",
     "activeSessionMissingServerAddress": "Active session found (missing server address)",
-    "thisGame": "this game",
+    "thisGame": "acest joc",
     "thisSession": "this session",
     "warnings": {
       "sessionTimeLimitApproaching": "Session time limit approaching",
       "idleTimeoutApproaching": "Idle timeout approaching",
       "maximumSessionTimeApproaching": "Maximum session time approaching",
-      "freeTier30MinutesRemaining": "30 minutes remaining in this free-tier session",
-      "freeTier15MinutesRemaining": "15 minutes remaining in this free-tier session",
-      "freeTierEndsSoon": "This free-tier session ends soon"
+      "freeTier30MinutesRemaining": "30 de minute rămase în această sesiune gratuită",
+      "freeTier15MinutesRemaining": "15 minute rămase în această sesiune gratuită",
+      "freeTierEndsSoon": "Această sesiune gratuită se încheie în curând"
     }
   },
   "stream": {
     "stats": {
-      "connecting": "Connecting...",
-      "network": "Network",
+      "connecting": "Se conectează...",
+      "network": "Rețea",
       "decode": "Decode",
       "input": "Input",
       "render": "Render",
@@ -271,7 +271,7 @@
       "renderTime": "R = render time",
       "jitterBuffer": "JB = jitter buffer delay",
       "packetLoss": "Packet loss percentage",
-      "packetLossValue": "{{value}}% loss",
+      "packetLossValue": "{{value}}% pierdere",
       "inputQueuePressure": "Input queue pressure (buffered bytes and delayed flush)",
       "inputChannelState": "Partially reliable input channel state and queued bytes",
       "mouseFlushCadence": "Mouse flush cadence and packet rate"
@@ -320,8 +320,8 @@
       "clickThenPress": "Click, then press a key",
       "clickHereThenPress": "Click here, then press a key",
       "focusAndPress": "Focus and press the key combination to bind",
-      "examples": "Examples: F3, Ctrl+Shift+Q, Ctrl+Shift+K",
-      "stats": "Stats"
+      "examples": "Exemple: F3, Ctrl+Shift+Q, Ctrl+Shift+K",
+      "stats": "Statistici"
     }
   },
   "sidebar": {
@@ -330,38 +330,38 @@
   },
   "settings": {
     "title": "Setări",
-    "saved": "Saved",
-    "searchPlaceholder": "Search settings...",
-    "noMatches": "No settings matched \"{{query}}\".",
+    "saved": "Salvat",
+    "searchPlaceholder": "Caută setări...",
+    "noMatches": "Nicio setare nu se potrivește \"{{query}}\".",
     "sections": {
       "stream": "Stream",
-      "game": "Game",
+      "game": "Joc",
       "audio": "Audio",
       "input": "Input",
-      "interface": "Interface",
-      "about": "About",
+      "interface": "Interfață",
+      "about": "Despre",
       "thanks": "Thanks"
     },
     "region": {
-      "title": "Region",
+      "title": "Regiune",
       "autoBest": "Auto (Best)",
-      "searchPlaceholder": "Search regions...",
+      "searchPlaceholder": "Caută regiuni...",
       "refreshPing": "Refresh ping",
-      "noRegionsMatch": "No regions match \"{{query}}\""
+      "noRegionsMatch": "Nicio regiune nu se potrivește \"{{query}}\""
     },
     "video": {
       "title": "Video",
-      "aspectRatio": "Aspect Ratio",
-      "resolution": "Resolution",
+      "aspectRatio": "Raport de aspect",
+      "resolution": "Rezoluție",
       "fps": "FPS",
       "codec": "Codec",
-      "decoder": "Decoder",
-      "encoder": "Encoder",
+      "decoder": "Decodor",
+      "encoder": "Codificator",
       "colorDepth": "Color Depth",
-      "maxBitrate": "Max Bitrate",
+      "maxBitrate": "Rată de biți maximă",
       "appliesAfterRestart": "Applies after app restart.",
       "requiresH265OrAv1": "This mode requires H265 or AV1. Codec will be auto-switched.",
-      "testing": "Testing...",
+      "testing": "Se testează...",
       "gpu": "GPU",
       "cpu": "CPU"
     },
@@ -370,22 +370,22 @@
       "sharperChroma": "Sharper chroma",
       "higherBitDepth": "Higher bit depth",
       "highestChromaAndBitDepth": "Highest chroma and bit depth",
-      "requiresH265OrAv1Title": "{{description}} - requires H265/AV1"
+      "requiresH265OrAv1Title": "{{description}} - necesită H265/AV1"
     },
     "game": {
-      "title": "Game",
-      "language": "Language",
+      "title": "Joc",
+      "language": "Limbă",
       "keyboardLayout": "Keyboard Layout",
-      "preferredStore": "Preferred Store",
+      "preferredStore": "Magazin preferat",
       "launchBehavior": "Launch Behavior"
     },
     "audio": {
       "title": "Audio",
-      "microphone": "Microphone",
-      "microphoneMode": "Microphone Mode",
-      "microphoneDevice": "Microphone Device",
+      "microphone": "Microfon",
+      "microphoneMode": "Mod microfon",
+      "microphoneDevice": "Dispozitiv microfon",
       "microphoneInputLevel": "Microphone input level",
-      "disabled": "Disabled",
+      "disabled": "Dezactivat",
       "pushToTalk": "Push-to-Talk",
       "voiceActivity": "Voice Activity",
       "permissionDenied": "Microphone access was denied. Enable microphone access for OpenNOW in System Settings > Privacy & Security > Microphone.",
@@ -395,7 +395,7 @@
     },
     "input": {
       "title": "Input",
-      "mouseAndKeyboard": "Mouse and Keyboard",
+      "mouseAndKeyboard": "Mouse și tastatură",
       "shortcuts": "Shortcuts",
       "shortcutConflictSidebar": "Shortcut conflicts with the settings sidebar toggle.",
       "shortcutConflictBinding": "Shortcut conflicts with another binding.",
@@ -413,9 +413,9 @@
       "shortcutHint": "Click a field and press the keys to bind, or paste a shortcut ({{examples}}). Escape cancels focus. Full screen: {{fullscreen}}. Stop: {{stop}}. Mic: {{mic}}. Screenshot: {{screenshot}}. Recording: {{recording}}."
     },
     "interface": {
-      "appearance": "Appearance",
-      "appLanguage": "App Language",
-      "appLanguageHint": "Changes OpenNOW's interface language. English is used for untranslated strings.",
+      "appearance": "Aspect",
+      "appLanguage": "Limbă aplicație",
+      "appLanguageHint": "Schimbă limba interfeței OpenNOW. Limba engleză este folosită pentru text netradus.",
       "hideStreamOverlayButtons": "Hide Stream Overlay Buttons",
       "hideStreamOverlayButtonsHint": "Hide microphone, fullscreen, and end-session buttons while streaming.",
       "showStatsOnStreamLaunch": "Show Stats on Stream Launch",
@@ -453,7 +453,7 @@
     "about": {
       "updateStatus": {
         "packagedBuildsOnly": "Packaged builds only",
-        "checking": "Checking",
+        "checking": "Se verifică",
         "updateAvailable": "Update available",
         "downloading": "Downloading",
         "readyToInstall": "Ready to install"
@@ -476,7 +476,7 @@
     "showPlaytimeDetails": "Show playtime details",
     "showStorageDetails": "Show storage details",
     "time": {
-      "unlimitedTime": "Unlimited time",
+      "unlimitedTime": "Timp nelimitat",
       "timeUsage": "Time Usage",
       "used": "{{percent}} used",
       "tier": "Tier",
@@ -495,8 +495,8 @@
       "notifyAtInSession": "Notify At (In Session)",
       "planState": "Plan State",
       "gameplayAllowed": "Gameplay Allowed",
-      "yes": "Yes",
-      "no": "No"
+      "yes": "Da",
+      "no": "Nu"
     },
     "storage": {
       "storageUsage": "Storage Usage",
@@ -506,7 +506,7 @@
       "storageRegion": "Storage Region",
       "storageRegionCode": "Storage Region Code",
       "serverRegionVpc": "Server Region (VPC)",
-      "notAvailable": "N/A"
+      "notAvailable": "Indisponibil"
     }
   },
   "controllerMode": {
@@ -524,7 +524,7 @@
       "loadingTitle": "Loading your library",
       "loadingSubtitle": "Please wait",
       "gameHub": "Game hub",
-      "games": "Games",
+      "games": "Jocuri",
       "gameLibrary": "Game library",
       "emptySlot": "Empty slot",
       "emptyRecentSlot": "Empty recent slot",
@@ -535,7 +535,7 @@
       "resumeGame": "Resume {{title}}",
       "library": "Library",
       "detailRow": "Detail row",
-      "options": "Options",
+      "options": "Opţiuni",
       "browseLeftRight": "Browse · Left / Right",
       "backToMedia": "Back To Media",
       "libraryFiltersUp": "Library filters · Up",
@@ -548,11 +548,11 @@
       "settingUpRig": "Setting up your gaming rig...",
       "startingStream": "Starting stream...",
       "settingUpStream": "Setting up stream...",
-      "loading": "Loading..."
+      "loading": "Se încarcă..."
     }
   },
   "errors": {
-    "launchUnknown": "The game could not start. Please try again.",
+    "launchUnknown": "Jocul nu a putut începe. Vă rugăm să încercați din nou.",
     "launchFailedTitle": "Launch Failed",
     "duplicateSessionTitle": "Duplicate Session Detected",
     "duplicateSessionDescription": "Another session is already running on your account. Close it first or wait for it to timeout, then launch again.",
