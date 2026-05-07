@@ -139,9 +139,9 @@
     "count": {
       "loading": "Loading...",
       "shown": "{{shown}} shown",
-      "shownTotal": "{{shown}} shown \u00b7 {{total}} total",
-      "shownTotalSupported": "{{shown}} shown \u00b7 {{total}} total \u00b7 {{supported}} supported",
-      "shownSupported": "{{shown}} shown \u00b7 {{supported}} supported"
+      "shownTotal": "{{shown}} shown · {{total}} total",
+      "shownTotalSupported": "{{shown}} shown · {{total}} total · {{supported}} supported",
+      "shownSupported": "{{shown}} shown · {{supported}} supported"
     },
     "empty": {
       "loadingGames": "Loading games...",
@@ -529,16 +529,16 @@
       "emptySlot": "Empty slot",
       "emptyRecentSlot": "Empty recent slot",
       "recentlyPlayed": "Recently played",
-      "recentlyPlayedHint": "Recently played \u00b7 Enter opens this title in your library",
-      "recentlyPlayedEmptyHint": "Recently played \u00b7 Empty slot - play games to fill your shelf",
+      "recentlyPlayedHint": "Recently played · Enter opens this title in your library",
+      "recentlyPlayedEmptyHint": "Recently played · Empty slot - play games to fill your shelf",
       "recentlyPlayedGames": "Recently played games",
       "resumeGame": "Resume {{title}}",
       "library": "Library",
       "detailRow": "Detail row",
       "options": "Options",
-      "browseLeftRight": "Browse \u00b7 Left / Right",
+      "browseLeftRight": "Browse · Left / Right",
       "backToMedia": "Back To Media",
-      "libraryFiltersUp": "Library filters \u00b7 Up",
+      "libraryFiltersUp": "Library filters · Up",
       "bandwidthLimit": "Bandwidth Limit (Mbps)",
       "theme": "Theme {{label}}"
     },
