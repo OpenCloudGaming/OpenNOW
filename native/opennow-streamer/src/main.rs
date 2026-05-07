@@ -3,6 +3,18 @@
 mod backend;
 #[cfg(feature = "gstreamer")]
 mod gstreamer_backend;
+#[cfg(feature = "gstreamer")]
+mod gstreamer_config;
+#[cfg(feature = "gstreamer")]
+mod gstreamer_input;
+#[cfg(feature = "gstreamer")]
+mod gstreamer_liveness;
+#[cfg(feature = "gstreamer")]
+mod gstreamer_pipeline;
+#[cfg(feature = "gstreamer")]
+mod gstreamer_platform;
+#[cfg(feature = "gstreamer")]
+mod gstreamer_transitions;
 mod input;
 mod protocol;
 mod sdp;
