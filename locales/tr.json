@@ -4,44 +4,44 @@
     "tagline": "Open-source cloud gaming client",
     "description": "Cloud gaming, open source.",
     "actions": {
-      "add": "Add",
-      "back": "Back",
-      "browse": "Browse",
-      "cancel": "Cancel",
-      "close": "Close",
+      "add": "Ekle",
+      "back": "Geri",
+      "browse": "Göz at",
+      "cancel": "İptal Et",
+      "close": "Kapat",
       "confirm": "confirm",
-      "continue": "Continue",
-      "delete": "Delete",
-      "done": "Done",
-      "open": "Open",
-      "play": "Play",
-      "refresh": "Refresh",
-      "remove": "Remove",
-      "reset": "Reset",
-      "resume": "Resume",
-      "retry": "Retry",
-      "save": "Save",
-      "search": "Search",
-      "select": "Select",
-      "settings": "Settings",
-      "showInFolder": "Show in folder",
+      "continue": "Devam et",
+      "delete": "Sil",
+      "done": "Tamamlandı",
+      "open": "Aç",
+      "play": "Oyna",
+      "refresh": "Yenile",
+      "remove": "Kaldır",
+      "reset": "Sıfırla",
+      "resume": "Devam et",
+      "retry": "Yeniden dene",
+      "save": "Kaydet",
+      "search": "Ara",
+      "select": "Seç",
+      "settings": "Ayarlar",
+      "showInFolder": "Klasörde göster",
       "sort": "Sort",
-      "stop": "Stop",
+      "stop": "Durdur",
       "switch": "Switch"
     },
     "status": {
-      "checking": "Checking",
-      "connecting": "Connecting...",
-      "disabled": "Disabled",
-      "error": "Error",
-      "failed": "Failed",
-      "idle": "Idle",
-      "loading": "Loading...",
-      "ready": "Ready",
-      "saved": "Saved",
-      "testing": "Testing...",
-      "unknown": "Unknown",
-      "upToDate": "Up to date"
+      "checking": "Kontrol ediliyor",
+      "connecting": "Bağlanıyor...",
+      "disabled": "Devre dışı",
+      "error": "Hata",
+      "failed": "Başarısız",
+      "idle": "Boşta",
+      "loading": "Yükleniyor...",
+      "ready": "Hazır",
+      "saved": "Kaydedildi",
+      "testing": "Test ediliyor...",
+      "unknown": "Bilinmiyor",
+      "upToDate": "Güncel"
     },
     "units": {
       "bitrateMbps": "{{value}} Mbps",
@@ -58,51 +58,51 @@
       "seconds": "{{value}}s"
     },
     "labels": {
-      "auto": "Auto",
-      "best": "Best",
+      "auto": "Otomatik",
+      "best": "En iyi",
       "beta": "Beta",
-      "current": "Current",
-      "default": "Default",
-      "defaultDevice": "Default Device",
-      "free": "Free",
-      "game": "Game",
+      "current": "Mevcut",
+      "default": "Varsayılan",
+      "defaultDevice": "Varsayılan Cihaz",
+      "free": "Ücretsiz",
+      "game": "Oyun",
       "hardware": "Hardware",
-      "other": "Other",
+      "other": "Diğer",
       "priority": "Priority",
       "softwareCpu": "Software (CPU)",
       "ultimate": "Ultimate",
-      "unlimited": "Unlimited"
+      "unlimited": "Sınırsız"
     }
   },
   "auth": {
     "title": {
-      "signIn": "Sign in",
+      "signIn": "Giriş Yap",
       "restoringSession": "Restoring session"
     },
     "subtitle": {
       "checkingSavedAccounts": "Checking saved accounts."
     },
     "provider": {
-      "label": "Provider",
-      "select": "Select provider",
-      "loading": "Loading..."
+      "label": "Sağlayıcı",
+      "select": "Sağlayıcı seçin",
+      "loading": "Yükleniyor..."
     },
     "actions": {
-      "signIn": "Sign In",
-      "connecting": "Connecting...",
+      "signIn": "Giriş Yap",
+      "connecting": "Bağlanıyor...",
       "restoringSession": "Restoring Session..."
     },
     "accounts": {
-      "activeAccount": "Active account",
-      "addAccount": "Add account",
+      "activeAccount": "Etkin hesap",
+      "addAccount": "Hesap ekle",
       "cancelAccountRemoval": "Cancel account removal",
       "cancelLogOut": "Cancel log out",
-      "guest": "Guest",
-      "logOutAll": "Log out all accounts",
+      "guest": "Ziyaretçi",
+      "logOutAll": "Tüm hesaplardan çıkış yap",
       "logOutConfirmation": "Log out confirmation",
-      "removeAccount": "Remove account",
+      "removeAccount": "Hesabı kaldır",
       "removeAccountConfirmation": "Remove account confirmation",
-      "removeAccountTitle": "Remove account?",
+      "removeAccountTitle": "Hesap kaldırılsın mı?",
       "removeAccountDescription": "Are you sure you want to remove {{name}} from saved accounts?",
       "removeAccountSubtext": "You can add this account again by signing in.",
       "removeNamedAccount": "Remove {{name}}",
@@ -131,33 +131,33 @@
   "navigation": {
     "home": "Store",
     "library": "Library",
-    "settings": "Settings"
+    "settings": "Ayarlar"
   },
   "home": {
-    "searchPlaceholder": "Search games...",
-    "filters": "Filters",
+    "searchPlaceholder": "Oyun ara...",
+    "filters": "Filtreler",
     "count": {
-      "loading": "Loading...",
+      "loading": "Yükleniyor...",
       "shown": "{{shown}} shown",
       "shownTotal": "{{shown}} shown · {{total}} total",
       "shownTotalSupported": "{{shown}} shown · {{total}} total · {{supported}} supported",
       "shownSupported": "{{shown}} shown · {{supported}} supported"
     },
     "empty": {
-      "loadingGames": "Loading games...",
-      "noGamesFound": "No games found",
+      "loadingGames": "Oyunlar Yükleniyor...",
+      "noGamesFound": "Hiçbir oyun bulunamadı",
       "tryAdjustingSearch": "Try adjusting your search terms or filters",
       "checkBackLater": "Check back later for new additions"
     }
   },
   "library": {
-    "title": "My Library",
+    "title": "Kütüphanem",
     "searchPlaceholder": "Search your library...",
     "gameCount": "{{count}} game",
     "gameCount_plural": "{{count}} games",
     "lastPlayed": {
-      "never": "Never played",
-      "justNow": "Just now",
+      "never": "Hiç oynanmadı",
+      "justNow": "Az önce",
       "minutesAgo": "{{count}}m ago",
       "hoursAgo": "{{count}}h ago",
       "daysAgo": "{{count}}d ago",
@@ -165,9 +165,9 @@
     },
     "empty": {
       "loadingLibrary": "Loading your library...",
-      "libraryEmpty": "Your library is empty",
+      "libraryEmpty": "Kitaplığınız boş",
       "ownedGamesAppearHere": "Games you own will appear here. Browse the catalog to find games.",
-      "noGamesFound": "No games found",
+      "noGamesFound": "Hiçbir oyun bulunamadı",
       "noGamesMatch": "No games match \"{{query}}\""
     }
   },
@@ -175,30 +175,30 @@
     "selectGame": "Select {{title}}",
     "playGame": "Play {{title}}",
     "store": "{{store}} store",
-    "owned": "Owned",
-    "available": "Available"
+    "owned": "Sahipsin",
+    "available": "Mevcut"
   },
   "streamLoading": {
     "labels": {
-      "launchError": "Launch Error",
+      "launchError": "Başlatma hatası",
       "nowLoading": "Now Loading",
       "adQueue": "Ad Queue"
     },
     "steps": {
-      "queue": "Queue",
-      "setup": "Setup",
-      "ready": "Ready"
+      "queue": "Sıra",
+      "setup": "Kurulum",
+      "ready": "Hazır"
     },
     "status": {
       "gameLaunchFailed": "Game launch failed",
       "queuePaused": "Session queue paused",
       "positionInQueue": "Position #{{position}} in queue",
-      "waitingInQueue": "Waiting in queue...",
+      "waitingInQueue": "Kuyrukta bekleniliyor...",
       "settingUpRig": "Setting up your gaming rig...",
       "startingStream": "Starting stream...",
-      "connectingToServer": "Connecting to server...",
+      "connectingToServer": "Sunucuya bağlanılıyor...",
       "settingUpStream": "Setting up stream...",
-      "loading": "Loading..."
+      "loading": "Yükleniyor..."
     },
     "ads": {
       "resumeToStayInQueue": "Resume ads to stay in queue.",
@@ -218,21 +218,21 @@
   "queue": {
     "servers": {
       "allServers": "All Servers",
-      "close": "Close",
-      "cancel": "Cancel",
+      "close": "Kapat",
+      "cancel": "İptal Et",
       "wait": "{{duration}} wait"
     }
   },
   "session": {
     "active": "Active Session",
-    "current": "Current",
+    "current": "Mevcut",
     "control": "Session Control",
     "elapsed": "Elapsed",
     "endSession": "End session",
     "exitStream": "Exit Stream?",
     "exitConfirmation": "Exit stream confirmation",
     "cancelExit": "Cancel exit",
-    "resume": "Resume",
+    "resume": "Devam et",
     "resumeActiveCloudSession": "Resume active cloud session",
     "resumeActiveCloudSessionTitle": "Resume active cloud session: {{title}}",
     "resumeCurrentStream": "Resume current stream",
@@ -242,7 +242,7 @@
     "elapsedTitle": "Current gaming session elapsed time",
     "elapsedWithValue": "Session {{value}}",
     "remainingPlaytime": "{{value}} left",
-    "terminate": "Terminate",
+    "terminate": "Sonlandır",
     "terminateActiveCloudSession": "Terminate active cloud session",
     "terminateActiveCloudSessionTitle": "Terminate active cloud session: {{title}}",
     "terminateConfirmation": "Terminate {{title}}? This will end the active cloud session immediately.",
@@ -260,12 +260,12 @@
   },
   "stream": {
     "stats": {
-      "connecting": "Connecting...",
-      "network": "Network",
+      "connecting": "Bağlanıyor...",
+      "network": "Ağ",
       "decode": "Decode",
       "input": "Input",
       "render": "Render",
-      "stable": "Stable",
+      "stable": "Stabil",
       "roundTripLatency": "Round-trip network latency",
       "decodeTime": "D = decode time",
       "renderTime": "R = render time",
@@ -286,7 +286,7 @@
       "controllerConnected_plural": "{{count}} controllers connected"
     },
     "sidebar": {
-      "title": "Settings",
+      "title": "Ayarlar",
       "remainingPlaytime": "Remaining Playtime",
       "sections": "Sidebar sections",
       "microphoneHandling": "Microphone handling",
@@ -329,8 +329,8 @@
     "closeSettings": "Close settings"
   },
   "settings": {
-    "title": "Settings",
-    "saved": "Saved",
+    "title": "Ayarlar",
+    "saved": "Kaydedildi",
     "searchPlaceholder": "Search settings...",
     "noMatches": "No settings matched \"{{query}}\".",
     "sections": {
@@ -361,7 +361,7 @@
       "maxBitrate": "Max Bitrate",
       "appliesAfterRestart": "Applies after app restart.",
       "requiresH265OrAv1": "This mode requires H265 or AV1. Codec will be auto-switched.",
-      "testing": "Testing...",
+      "testing": "Test ediliyor...",
       "gpu": "GPU",
       "cpu": "CPU"
     },
@@ -385,7 +385,7 @@
       "microphoneMode": "Microphone Mode",
       "microphoneDevice": "Microphone Device",
       "microphoneInputLevel": "Microphone input level",
-      "disabled": "Disabled",
+      "disabled": "Devre dışı",
       "pushToTalk": "Push-to-Talk",
       "voiceActivity": "Voice Activity",
       "permissionDenied": "Microphone access was denied. Enable microphone access for OpenNOW in System Settings > Privacy & Security > Microphone.",
@@ -453,7 +453,7 @@
     "about": {
       "updateStatus": {
         "packagedBuildsOnly": "Packaged builds only",
-        "checking": "Checking",
+        "checking": "Kontrol ediliyor",
         "updateAvailable": "Update available",
         "downloading": "Downloading",
         "readyToInstall": "Ready to install"
@@ -548,7 +548,7 @@
       "settingUpRig": "Setting up your gaming rig...",
       "startingStream": "Starting stream...",
       "settingUpStream": "Setting up stream...",
-      "loading": "Loading..."
+      "loading": "Yükleniyor..."
     }
   },
   "errors": {
