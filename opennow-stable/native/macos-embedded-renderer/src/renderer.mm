@@ -49,15 +49,12 @@ static std::unique_ptr<EmbeddedRendererState> g_state;
 
 @implementation EmbeddedIOSurfaceView {
   IOSurfaceRef _surface;
+  CIContext* _ciContext;
 }
 
 - (instancetype)initWithFrame:(NSRect)frameRect {
   self = [super initWithFrame:frameRect];
   return self;
-}
-
-- (BOOL)isFlipped {
-  return YES;
 }
 
 - (BOOL)isOpaque {
@@ -69,6 +66,11 @@ static std::unique_ptr<EmbeddedRendererState> g_state;
     CFRelease(_surface);
     _surface = nullptr;
   }
+  if (_ciContext != nil) {
+    [_ciContext release];
+    _ciContext = nil;
+  }
+  [super dealloc];
 }
 
 - (void)setIOSurface:(IOSurfaceRef)surface {
@@ -83,6 +85,10 @@ static std::unique_ptr<EmbeddedRendererState> g_state;
   _surface = surface;
   if (previous != nullptr) {
     CFRelease(previous);
+  }
+  if (_ciContext != nil) {
+    [_ciContext release];
+    _ciContext = nil;
   }
 
   [self setNeedsDisplay:YES];
@@ -115,7 +121,7 @@ static std::unique_ptr<EmbeddedRendererState> g_state;
   NSDictionary* options = @{
     kCIImageColorSpace: [NSNull null],
   };
-  CIImage* image = [[CIImage alloc] initWithIOSurface:surface options:options];
+  CIImage* image = [[[CIImage alloc] initWithIOSurface:surface options:options] autorelease];
   if (image == nil) {
     if (g_state) {
       g_state->draw_skip_count += 1;
@@ -123,14 +129,25 @@ static std::unique_ptr<EmbeddedRendererState> g_state;
     return;
   }
 
-  CIContext* ciContext = [CIContext contextWithCGContext:context options:@{
-    kCIContextWorkingColorSpace: [NSNull null],
-    kCIContextOutputColorSpace: [NSNull null],
-  }];
+  CGRect imageRect = CGRectMake(0, 0, IOSurfaceGetWidth(surface), IOSurfaceGetHeight(surface));
+  if (_ciContext == nil) {
+    _ciContext = [[CIContext contextWithOptions:@{
+      kCIContextWorkingColorSpace: [NSNull null],
+      kCIContextOutputColorSpace: [NSNull null],
+    }] retain];
+  }
+
+  CGImageRef cgImage = [_ciContext createCGImage:image fromRect:imageRect];
+  if (cgImage == nullptr) {
+    if (g_state) {
+      g_state->draw_skip_count += 1;
+    }
+    return;
+  }
 
   CGRect bounds = NSRectToCGRect(self.bounds);
-  CGRect imageRect = CGRectMake(0, 0, IOSurfaceGetWidth(surface), IOSurfaceGetHeight(surface));
-  [ciContext drawImage:image inRect:bounds fromRect:imageRect];
+  CGContextDrawImage(context, bounds, cgImage);
+  CGImageRelease(cgImage);
 
   if (g_state) {
     g_state->draw_count += 1;
@@ -253,10 +270,25 @@ static void ApplyGeometry(EmbeddedRendererState* state,
 
   const double safe_scale = scale > 0.0 ? scale : 1.0;
   const NSRect host_bounds = host.bounds;
-  const CGFloat x_pts = static_cast<CGFloat>(x / safe_scale);
-  const CGFloat y_pts_top = static_cast<CGFloat>(y / safe_scale);
-  const CGFloat width_pts = static_cast<CGFloat>(width / safe_scale);
-  const CGFloat height_pts = static_cast<CGFloat>(height / safe_scale);
+
+  // Heuristic: pick the coordinate space (pixels or points) that best matches
+  // the host NSView bounds. This avoids persistent double-scaling on setups
+  // where Electron rects already arrive in points.
+  const CGFloat scaled_width_pts = static_cast<CGFloat>(width / safe_scale);
+  const CGFloat scaled_height_pts = static_cast<CGFloat>(height / safe_scale);
+  const CGFloat raw_width_pts = static_cast<CGFloat>(width);
+  const CGFloat raw_height_pts = static_cast<CGFloat>(height);
+  const CGFloat scaled_diff =
+    fabs(host_bounds.size.width - scaled_width_pts) + fabs(host_bounds.size.height - scaled_height_pts);
+  const CGFloat raw_diff =
+    fabs(host_bounds.size.width - raw_width_pts) + fabs(host_bounds.size.height - raw_height_pts);
+  const bool use_scaled_coordinates = scaled_diff <= raw_diff;
+  const double applied_scale = use_scaled_coordinates ? safe_scale : 1.0;
+
+  const CGFloat x_pts = static_cast<CGFloat>(x / applied_scale);
+  const CGFloat y_pts_top = static_cast<CGFloat>(y / applied_scale);
+  const CGFloat width_pts = static_cast<CGFloat>(width / applied_scale);
+  const CGFloat height_pts = static_cast<CGFloat>(height / applied_scale);
   const CGFloat y_pts = [host isFlipped]
     ? y_pts_top
     : NSMaxY(host_bounds) - y_pts_top - height_pts;
@@ -274,6 +306,8 @@ static void ApplyGeometry(EmbeddedRendererState* state,
             << host_bounds.size.width << "x" << host_bounds.size.height
             << " inputPx=" << x << "," << y << " " << width << "x" << height
             << " scale=" << safe_scale
+            << " geometryMode=" << (use_scaled_coordinates ? "scaled" : "raw")
+            << " appliedScale=" << applied_scale
             << " convertedPts=" << x_pts << "," << y_pts_top << " " << width_pts << "x" << height_pts
             << " requestedFramePts=" << requested_frame.origin.x << "," << requested_frame.origin.y << " "
             << requested_frame.size.width << "x" << requested_frame.size.height

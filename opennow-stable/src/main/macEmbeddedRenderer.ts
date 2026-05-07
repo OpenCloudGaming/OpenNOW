@@ -56,6 +56,15 @@ export class MacEmbeddedRendererController {
     if (isEmbeddedRendererEnabled()) {
       this.binding = this.loadBinding();
       this.active = this.binding !== null;
+
+      if (!this.active) {
+        app.whenReady().then(() => {
+          if (!this.binding) {
+            this.binding = this.loadBinding();
+            this.active = this.binding !== null;
+          }
+        }).catch(() => undefined);
+      }
     }
   }
 
@@ -98,8 +107,19 @@ export class MacEmbeddedRendererController {
     return null;
   }
 
+  private ensureBinding(): void {
+    if (this.binding) {
+      return;
+    }
+
+    this.binding = this.loadBinding();
+    this.active = this.binding !== null;
+  }
+
   createOrUpdateSurface(surface: NativeRenderSurface): MacEmbeddedRendererResult | null {
+    this.ensureBinding();
     if (!this.binding || !this.active) {
+      console.warn("[MacEmbeddedRenderer] createOrUpdateSurface skipped because the native addon is unavailable.");
       return null;
     }
 
@@ -147,6 +167,7 @@ export class MacEmbeddedRendererController {
   }
 
   notifyFrameReady(): void {
+    this.ensureBinding();
     if (!this.binding || !this.active) {
       return;
     }
@@ -183,6 +204,7 @@ export class MacEmbeddedRendererController {
   }
 
   isActive(): boolean {
+    this.ensureBinding();
     return this.active;
   }
 }

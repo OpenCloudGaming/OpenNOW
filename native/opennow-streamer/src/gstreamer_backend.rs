@@ -3,8 +3,7 @@ use crate::backend::{
     update_context_bitrate_limit, BackendReply, NativeStreamerBackend,
 };
 use crate::input::{
-    InputEncoder, KeyboardPayload, MouseButtonPayload, MouseMovePayload,
-    MouseWheelPayload,
+    InputEncoder, KeyboardPayload, MouseButtonPayload, MouseMovePayload, MouseWheelPayload,
 };
 use crate::protocol::{
     missing_field, CommandEnvelope, Event, IceCandidatePayload, NativeQueueMode,
@@ -28,7 +27,7 @@ use gstreamer_webrtc as gst_webrtc;
 use std::collections::HashSet;
 use std::ffi::CString;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
-use std::sync::mpsc::{Sender};
+use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -2032,7 +2031,8 @@ unsafe impl Sync for SendableIOSurfaceRef {}
 #[cfg(target_os = "macos")]
 impl std::fmt::Debug for SendableIOSurfaceRef {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SendableIOSurfaceRef").finish_non_exhaustive()
+        f.debug_struct("SendableIOSurfaceRef")
+            .finish_non_exhaustive()
     }
 }
 
@@ -2083,7 +2083,9 @@ impl GstreamerRenderState {
                 if old_port == port_id {
                     return;
                 }
-                unsafe { IOSurfaceDecrementUseCount(old_wrapper.0); }
+                unsafe {
+                    IOSurfaceDecrementUseCount(old_wrapper.0);
+                }
                 *guard = None;
             }
             let surface_ref = unsafe { IOSurfaceLookup(port_id) };
@@ -2093,8 +2095,11 @@ impl GstreamerRenderState {
                 return;
             }
             *guard = Some((port_id, SendableIOSurfaceRef(surface_ref)));
-            send_log(event_sender, "info",
-                format!("[MacEmbeddedRenderer] IOSurface port {port_id} resolved and cached"));
+            send_log(
+                event_sender,
+                "info",
+                format!("[MacEmbeddedRenderer] IOSurface port {port_id} resolved and cached"),
+            );
         }
     }
 
@@ -2103,7 +2108,9 @@ impl GstreamerRenderState {
         use iosurface_ffi::IOSurfaceDecrementUseCount;
         if let Ok(mut guard) = self.iosurface_ref.lock() {
             if let Some((_, ref wrapper)) = *guard {
-                unsafe { IOSurfaceDecrementUseCount(wrapper.0); }
+                unsafe {
+                    IOSurfaceDecrementUseCount(wrapper.0);
+                }
             }
             *guard = None;
         }
@@ -2838,10 +2845,10 @@ fn use_iosurface_appsink_mode() -> bool {
 #[cfg(target_os = "macos")]
 mod iosurface_ffi {
     use std::os::raw::{c_int, c_void};
-    
+
     pub type IOSurfaceRef = *mut c_void;
     pub const IOSURFACE_LOCK_READ_ONLY: u32 = 0x00000001;
-    
+
     #[link(name = "IOSurface", kind = "framework")]
     unsafe extern "C" {
         pub fn IOSurfaceLookup(csid: u32) -> IOSurfaceRef;
@@ -6249,7 +6256,12 @@ fn link_rtp_video_pad(
                             Ok(s) => s,
                             Err(_) => return Ok(gst::FlowSuccess::Ok),
                         };
-                        copy_sample_to_iosurface(&sample, &probe_render_state, &probe_event_sender, &last_frame_ready_us);
+                        copy_sample_to_iosurface(
+                            &sample,
+                            &probe_render_state,
+                            &probe_event_sender,
+                            &last_frame_ready_us,
+                        );
                         Ok(gst::FlowSuccess::Ok)
                     })
                     .build();
@@ -6319,20 +6331,38 @@ fn copy_sample_to_iosurface(
 ) {
     use iosurface_ffi::*;
 
-    let Some(caps) = sample.caps() else { return; };
-    let Ok(video_info) = gst_video::VideoInfo::from_caps(caps) else { return; };
-    let Some(buffer) = sample.buffer() else { return; };
-    let Ok(video_frame) = gst_video::VideoFrameRef::from_buffer_ref_readable(buffer, &video_info) else { return; };
-    let Ok(frame_data) = video_frame.plane_data(0) else { return; };
+    let Some(caps) = sample.caps() else {
+        return;
+    };
+    let Ok(video_info) = gst_video::VideoInfo::from_caps(caps) else {
+        return;
+    };
+    let Some(buffer) = sample.buffer() else {
+        return;
+    };
+    let Ok(video_frame) = gst_video::VideoFrameRef::from_buffer_ref_readable(buffer, &video_info)
+    else {
+        return;
+    };
+    let Ok(frame_data) = video_frame.plane_data(0) else {
+        return;
+    };
     let src_stride = video_frame.plane_stride()[0] as usize;
+    let frame_width = video_info.width() as usize;
     let frame_height = video_info.height() as usize;
 
     let surface_ref = {
-        let Ok(guard) = render_state.iosurface_ref.lock() else { return; };
+        let Ok(guard) = render_state.iosurface_ref.lock() else {
+            return;
+        };
         guard.as_ref().map(|(_, ref wrapper)| wrapper.0)
     };
-    let Some(surface_ref) = surface_ref else { return; };
-    if surface_ref.is_null() { return; }
+    let Some(surface_ref) = surface_ref else {
+        return;
+    };
+    if surface_ref.is_null() {
+        return;
+    }
 
     unsafe {
         let mut seed: u32 = 0;
@@ -6341,13 +6371,45 @@ fn copy_sample_to_iosurface(
         }
         let dst_base = IOSurfaceGetBaseAddress(surface_ref) as *mut u8;
         let dst_stride = IOSurfaceGetBytesPerRow(surface_ref);
+        let dst_width = IOSurfaceGetWidth(surface_ref);
         let dst_height = IOSurfaceGetHeight(surface_ref);
-        let rows = frame_height.min(dst_height);
-        let copy_stride = src_stride.min(dst_stride);
-        for row in 0..rows {
-            let src_ptr = frame_data.as_ptr().add(row * src_stride);
-            let dst_ptr = dst_base.add(row * dst_stride);
-            std::ptr::copy_nonoverlapping(src_ptr, dst_ptr, copy_stride);
+        const BYTES_PER_PIXEL: usize = 4; // BGRA from the IOSurface capsfilter.
+
+        if !dst_base.is_null()
+            && frame_width > 0
+            && frame_height > 0
+            && dst_width > 0
+            && dst_height > 0
+            && src_stride >= BYTES_PER_PIXEL
+            && dst_stride >= BYTES_PER_PIXEL
+        {
+            let safe_src_width = frame_width.min(src_stride / BYTES_PER_PIXEL);
+            let safe_dst_width = dst_width.min(dst_stride / BYTES_PER_PIXEL);
+            if safe_src_width > 0 && safe_dst_width > 0 {
+                if safe_src_width == safe_dst_width && frame_height == dst_height {
+                    let copy_stride = (safe_src_width * BYTES_PER_PIXEL)
+                        .min(src_stride)
+                        .min(dst_stride);
+                    for row in 0..frame_height {
+                        let src_ptr = frame_data.as_ptr().add(row * src_stride);
+                        let dst_ptr = dst_base.add(row * dst_stride);
+                        std::ptr::copy_nonoverlapping(src_ptr, dst_ptr, copy_stride);
+                    }
+                } else {
+                    for dst_y in 0..dst_height {
+                        let src_y = (dst_y * frame_height / dst_height).min(frame_height - 1);
+                        let src_row = frame_data.as_ptr().add(src_y * src_stride);
+                        let dst_row = dst_base.add(dst_y * dst_stride);
+                        for dst_x in 0..safe_dst_width {
+                            let src_x =
+                                (dst_x * safe_src_width / safe_dst_width).min(safe_src_width - 1);
+                            let src_ptr = src_row.add(src_x * BYTES_PER_PIXEL);
+                            let dst_ptr = dst_row.add(dst_x * BYTES_PER_PIXEL);
+                            std::ptr::copy_nonoverlapping(src_ptr, dst_ptr, BYTES_PER_PIXEL);
+                        }
+                    }
+                }
+            }
         }
         IOSurfaceUnlock(surface_ref, 0, &mut seed);
     }
@@ -6366,7 +6428,8 @@ fn copy_sample_to_iosurface(
     _render_state: &GstreamerRenderState,
     _event_sender: &Option<Sender<Event>>,
     _last_frame_ready_us: &Arc<AtomicU64>,
-) {}
+) {
+}
 
 fn format_video_chain_selection(
     encoding: &str,
