@@ -61,12 +61,6 @@ export function clampRgbByte(n: number): number {
   return Math.max(0, Math.min(255, Math.round(Number.isFinite(n) ? n : 0)));
 }
 
-export function sanitizeGenreName(raw: string): string {
-  return raw
-    .replace(/_/g, " ")
-    .replace(/\b\w/g, (ch) => ch.toUpperCase());
-}
-
 export function isEditableTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false;
   if (target.isContentEditable) return true;

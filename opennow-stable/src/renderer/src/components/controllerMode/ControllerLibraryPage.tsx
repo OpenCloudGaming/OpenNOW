@@ -5,7 +5,6 @@ import { Star, Clock, Calendar, Repeat2 } from "lucide-react";
 import { ButtonA, ButtonX, ButtonY, ButtonPSCross, ButtonPSSquare, ButtonPSTriangle } from "./ControllerButtons";
 import { getStoreDisplayName } from "../GameCard";
 import { SessionElapsedIndicator } from "../ElapsedSessionIndicators";
-import { formatPlaytime, formatLastPlayed } from "../../utils/usePlaytime";
 import { playControllerUiSound } from "../../utils/controllerUiSound";
 import {
   type ControllerOverlayNavSnapshot,
@@ -192,14 +191,6 @@ export function ControllerLibraryPage({
     return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   };
 
-  const formatElapsed = (totalSeconds: number) => {
-    const safe = Math.max(0, Math.floor(totalSeconds));
-    const hours = Math.floor(safe / 3600);
-    const minutes = Math.floor((safe % 3600) / 60);
-    const seconds = safe % 60;
-    if (hours > 0) return `${hours}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
-    return `${minutes}:${seconds.toString().padStart(2, '0')}`;
-  };
 
   const playUiSound = useCallback((kind: SoundKind): void => {
     playControllerUiSound(kind, uiSoundsEnabled);

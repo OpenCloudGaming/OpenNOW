@@ -30,6 +30,11 @@ import {
 import { formatShortcutForDisplay, normalizeShortcut, shortcutFromKeyboardEvent } from "../shortcuts";
 import { getCodecDecodeBadgeState, type CodecTestResult } from "../lib/codecDiagnostics";
 import { useTranslation } from "../i18n";
+import {
+  clearStoredRegionPingResults,
+  loadStoredRegionPingResults,
+  saveStoredRegionPingResults,
+} from "../utils/pingResultsStorage";
 
 interface SettingsPageProps {
   settings: Settings;
@@ -478,45 +483,11 @@ function getFpsForResolution(entitled: EntitledResolution[], resolution: string)
   return [...new Set(fpsList)].sort((a, b) => a - b);
 }
 
-const PING_RESULTS_STORAGE_KEY = "opennow.ping-results.v1";
 const ENTITLED_RESOLUTIONS_STORAGE_KEY = "opennow.entitled-resolutions.v1";
 
 interface EntitledResolutionsCache {
   userId: string;
   entitledResolutions: EntitledResolution[];
-}
-
-interface PingCacheEntry {
-  url: string;
-  pingMs: number | null;
-}
-
-function loadStoredPingResults(): Map<string, number | null> | null {
-  try {
-    const raw = window.sessionStorage.getItem(PING_RESULTS_STORAGE_KEY);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as unknown;
-    if (!Array.isArray(parsed)) return null;
-    const results = new Map<string, number | null>();
-    for (const entry of parsed as PingCacheEntry[]) {
-      results.set(entry.url, entry.pingMs);
-    }
-    return results;
-  } catch {
-    return null;
-  }
-}
-
-function saveStoredPingResults(results: Map<string, number | null>): void {
-  try {
-    const entries: PingCacheEntry[] = [];
-    results.forEach((pingMs, url) => {
-      entries.push({ url, pingMs });
-    });
-    window.sessionStorage.setItem(PING_RESULTS_STORAGE_KEY, JSON.stringify(entries));
-  } catch {
-    // Ignore storage failures
-  }
 }
 
 function loadCachedEntitledResolutions(): EntitledResolutionsCache | null {
@@ -606,7 +577,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
   const codecTestOpen = codecResults !== null || codecTesting;
 
   // Region ping state
-  const initialPingResults = useMemo(() => loadStoredPingResults(), []);
+  const initialPingResults = useMemo(() => loadStoredRegionPingResults(), []);
   const [pingResults, setPingResults] = useState<Map<string, number | null>>(initialPingResults ?? new Map());
   const [isPinging, setIsPinging] = useState(false);
   const [bestRegionUrl, setBestRegionUrl] = useState<string | null>(() => {
@@ -641,7 +612,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
 
       setPingResults(pingMap);
       setBestRegionUrl(bestUrl);
-      saveStoredPingResults(pingMap);
+      saveStoredRegionPingResults(pingMap);
     } catch (err) {
       console.error("Ping test failed:", err);
     } finally {
@@ -658,11 +629,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
         // Regions changed, clear cache and re-test
         setPingResults(new Map());
         setBestRegionUrl(null);
-        try {
-          window.sessionStorage.removeItem(PING_RESULTS_STORAGE_KEY);
-        } catch {
-          // Ignore
-        }
+        clearStoredRegionPingResults();
       }
     }
   }, [regions, pingResults]);

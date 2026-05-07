@@ -44,24 +44,6 @@ export function formatPlaytime(totalSeconds: number): string {
   return `${h} h ${m} m`;
 }
 
-export function formatLastPlayed(isoString: string | null): string {
-  if (!isoString) return "Never";
-  const then = new Date(isoString);
-  const now = new Date();
-
-  const thenDay = new Date(then.getFullYear(), then.getMonth(), then.getDate()).getTime();
-  const todayDay = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
-
-  const diffDays = Math.round((todayDay - thenDay) / 86_400_000);
-
-  if (diffDays === 0) return "Today";
-  if (diffDays === 1) return "Yesterday";
-  if (diffDays < 7) return `${diffDays} days ago`;
-  if (diffDays < 30) return `${Math.floor(diffDays / 7)} wk ago`;
-  if (diffDays < 365) return `${Math.floor(diffDays / 30)} mo ago`;
-  return `${Math.floor(diffDays / 365)} yr ago`;
-}
-
 export function formatRemainingPlaytimeFromSubscription(
   subscription: { isUnlimited: boolean; remainingHours: number } | null,
   consumedHours = 0,
