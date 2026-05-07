@@ -2,119 +2,119 @@
   "app": {
     "name": "OpenNOW",
     "tagline": "Open-source cloud gaming client",
-    "description": "Cloud gaming, open source.",
+    "description": "Gra w chmurze.",
     "actions": {
-      "add": "Add",
-      "back": "Back",
-      "browse": "Browse",
-      "cancel": "Cancel",
-      "close": "Close",
-      "confirm": "confirm",
-      "continue": "Continue",
-      "delete": "Delete",
-      "done": "Done",
-      "open": "Open",
-      "play": "Play",
-      "refresh": "Refresh",
-      "remove": "Remove",
+      "add": "Dodaj",
+      "back": "Cofnąć",
+      "browse": "Przeglądaj",
+      "cancel": "Anuluj",
+      "close": "Zamknij",
+      "confirm": "potwierdź",
+      "continue": "Kontynuuj",
+      "delete": "Usuń",
+      "done": "Gotowe",
+      "open": "Otwórz",
+      "play": "Graj",
+      "refresh": "Odśwież",
+      "remove": "Usuń",
       "reset": "Reset",
-      "resume": "Resume",
-      "retry": "Retry",
-      "save": "Save",
-      "search": "Search",
-      "select": "Select",
-      "settings": "Settings",
-      "showInFolder": "Show in folder",
-      "sort": "Sort",
-      "stop": "Stop",
-      "switch": "Switch"
+      "resume": "Wznów",
+      "retry": "Ponów",
+      "save": "Zapisz",
+      "search": "Wyszukaj",
+      "select": "Zaznacz",
+      "settings": "Ustawienia",
+      "showInFolder": "Pokaż w folderze",
+      "sort": "Sortuj",
+      "stop": "Zatrzymaj",
+      "switch": "Zamień"
     },
     "status": {
-      "checking": "Checking",
-      "connecting": "Connecting...",
-      "disabled": "Disabled",
+      "checking": "Sprawdzanie",
+      "connecting": "Łączenie...",
+      "disabled": "Wyłączone",
       "error": "Error",
       "failed": "Failed",
-      "idle": "Idle",
-      "loading": "Loading...",
-      "ready": "Ready",
-      "saved": "Saved",
-      "testing": "Testing...",
-      "unknown": "Unknown",
-      "upToDate": "Up to date"
+      "idle": "Bezczynny",
+      "loading": "Ładowanie...",
+      "ready": "Gotowe",
+      "saved": "Zapisane",
+      "testing": "Testowanie...",
+      "unknown": "Niewiadome",
+      "upToDate": "Najnowsze"
     },
     "units": {
       "bitrateMbps": "{{value}} Mbps",
       "gb": "{{value}} GB",
-      "gbLeft": "{{value}} GB left",
-      "gbTotal": "{{value}} GB total",
-      "gbUsed": "{{value}} GB used",
-      "hours": "{{value}}h",
-      "hoursLeft": "{{value}}h left",
-      "hoursUsed": "{{value}}h used",
-      "milliseconds": "{{value}}ms",
-      "minutes": "{{value}} min",
+      "gbLeft": "{{value}} GB pozostałe",
+      "gbTotal": "{{value}} GB łącznie",
+      "gbUsed": "{{value}} GB zużyte",
+      "hours": "{{value}} godzin",
+      "hoursLeft": "{{value}} godzin pozostało",
+      "hoursUsed": "{{value}} godziny zużyte",
+      "milliseconds": "{{value}} milisekund",
+      "minutes": "{{value}} minut",
       "percent": "{{value}}%",
-      "seconds": "{{value}}s"
+      "seconds": "{{value}} sekund"
     },
     "labels": {
-      "auto": "Auto",
-      "best": "Best",
+      "auto": "Automatyczne",
+      "best": "Najlepsze",
       "beta": "Beta",
-      "current": "Current",
-      "default": "Default",
-      "defaultDevice": "Default Device",
-      "free": "Free",
-      "game": "Game",
-      "hardware": "Hardware",
-      "other": "Other",
-      "priority": "Priority",
+      "current": "Obecne",
+      "default": "Domyślne",
+      "defaultDevice": "Urządzenie domyślne",
+      "free": "Darmowe",
+      "game": "Gra",
+      "hardware": "Sprzęt",
+      "other": "Inne",
+      "priority": "Priorytet",
       "softwareCpu": "Software (CPU)",
       "ultimate": "Ultimate",
-      "unlimited": "Unlimited"
+      "unlimited": "Nieskończone"
     }
   },
   "auth": {
     "title": {
-      "signIn": "Sign in",
+      "signIn": "Zaloguj się",
       "restoringSession": "Restoring session"
     },
     "subtitle": {
-      "checkingSavedAccounts": "Checking saved accounts."
+      "checkingSavedAccounts": "Sprawdzanie zapisanych kont."
     },
     "provider": {
       "label": "Provider",
       "select": "Select provider",
-      "loading": "Loading..."
+      "loading": "Ładowanie..."
     },
     "actions": {
-      "signIn": "Sign In",
-      "connecting": "Connecting...",
+      "signIn": "Zaloguj się",
+      "connecting": "Łączenie...",
       "restoringSession": "Restoring Session..."
     },
     "accounts": {
-      "activeAccount": "Active account",
-      "addAccount": "Add account",
-      "cancelAccountRemoval": "Cancel account removal",
-      "cancelLogOut": "Cancel log out",
-      "guest": "Guest",
-      "logOutAll": "Log out all accounts",
-      "logOutConfirmation": "Log out confirmation",
-      "removeAccount": "Remove account",
-      "removeAccountConfirmation": "Remove account confirmation",
-      "removeAccountTitle": "Remove account?",
-      "removeAccountDescription": "Are you sure you want to remove {{name}} from saved accounts?",
-      "removeAccountSubtext": "You can add this account again by signing in.",
-      "removeNamedAccount": "Remove {{name}}",
-      "signOutAllTitle": "Sign out all accounts?",
+      "activeAccount": "Aktywne konto",
+      "addAccount": "Dodaj konto",
+      "cancelAccountRemoval": "Anuluj usunięcie konta",
+      "cancelLogOut": "Anuluj wylogowanie",
+      "guest": "Gość",
+      "logOutAll": "Wyloguj się ze wszystkich kont",
+      "logOutConfirmation": "Potwierdzenie wylogowania",
+      "removeAccount": "Usuń konto",
+      "removeAccountConfirmation": "Potwierdzenie usunięcia konta",
+      "removeAccountTitle": "Usunąć konto?",
+      "removeAccountDescription": "Czy na pewno usunąć {{name}} z zapisanych kont?",
+      "removeAccountSubtext": "Możesz dodać to konto poprzez ponowne logowanie.",
+      "removeNamedAccount": "Usuń {{name}}",
+      "signOutAllTitle": "Wylogować się ze wszystkich kont?",
       "signOutAllDescription": "You're about to remove every saved account from this device and return to guest mode.",
       "signOutAllSubtext": "Your cloud session data stays on the service. This just clears local OpenNOW account sessions.",
-      "signOutAll": "Sign out all",
-      "signOutAllAccounts": "Sign out all accounts",
-      "staySignedIn": "Stay signed in",
-      "switchAccount": "Switch account",
-      "thisAccount": "this account",
-      "kicker": "Accounts"
+      "signOutAll": "Wyloguj wszystkie",
+      "signOutAllAccounts": "Wyloguj ze wszystkich kont",
+      "staySignedIn": "Zapamiętaj mnie",
+      "switchAccount": "Zmień konto",
+      "thisAccount": "To konto",
+      "kicker": "Konta"
     },
     "status": {
       "restoringSavedSession": "Restoring saved session...",
@@ -129,54 +129,54 @@
     }
   },
   "navigation": {
-    "home": "Store",
-    "library": "Library",
-    "settings": "Settings"
+    "home": "Sklep",
+    "library": "Biblioteka",
+    "settings": "Ustawienia"
   },
   "home": {
-    "searchPlaceholder": "Search games...",
-    "filters": "Filters",
+    "searchPlaceholder": "Wyszukaj gry...",
+    "filters": "Filtry",
     "count": {
-      "loading": "Loading...",
-      "shown": "{{shown}} shown",
-      "shownTotal": "{{shown}} shown · {{total}} total",
+      "loading": "Ładowanie...",
+      "shown": "{{shown}} pokazane",
+      "shownTotal": "{{shown}} pokazane · {{total}} łącznie",
       "shownTotalSupported": "{{shown}} shown · {{total}} total · {{supported}} supported",
       "shownSupported": "{{shown}} shown · {{supported}} supported"
     },
     "empty": {
-      "loadingGames": "Loading games...",
-      "noGamesFound": "No games found",
+      "loadingGames": "Ładowanie gier...",
+      "noGamesFound": "Żadnych gier nie znaleziono",
       "tryAdjustingSearch": "Try adjusting your search terms or filters",
       "checkBackLater": "Check back later for new additions"
     }
   },
   "library": {
-    "title": "My Library",
-    "searchPlaceholder": "Search your library...",
-    "gameCount": "{{count}} game",
-    "gameCount_plural": "{{count}} games",
+    "title": "Moja biblioteka",
+    "searchPlaceholder": "Przeszukaj swoją bibliotekę...",
+    "gameCount": "{{count}} gra",
+    "gameCount_plural": "{{count}} gry",
     "lastPlayed": {
-      "never": "Never played",
-      "justNow": "Just now",
-      "minutesAgo": "{{count}}m ago",
-      "hoursAgo": "{{count}}h ago",
-      "daysAgo": "{{count}}d ago",
-      "weeksAgo": "{{count}}w ago"
+      "never": "Nigdy nie grane",
+      "justNow": "Przed chwilą",
+      "minutesAgo": "{{count}} minut temu",
+      "hoursAgo": "{{count}} godzin temu",
+      "daysAgo": "{{count}} dni temu",
+      "weeksAgo": "{{count}} tygodni temu"
     },
     "empty": {
-      "loadingLibrary": "Loading your library...",
-      "libraryEmpty": "Your library is empty",
+      "loadingLibrary": "Ładowanie twojej biblioteki...",
+      "libraryEmpty": "Twoja biblioteka jest pusta",
       "ownedGamesAppearHere": "Games you own will appear here. Browse the catalog to find games.",
-      "noGamesFound": "No games found",
-      "noGamesMatch": "No games match \"{{query}}\""
+      "noGamesFound": "Żadnych gier nie znaleziono",
+      "noGamesMatch": "Żadna gra nie pasuje do \"{{query}}\""
     }
   },
   "gameCard": {
-    "selectGame": "Select {{title}}",
-    "playGame": "Play {{title}}",
-    "store": "{{store}} store",
-    "owned": "Owned",
-    "available": "Available"
+    "selectGame": "Wybierz {{title}}",
+    "playGame": "Graj w {{title}}",
+    "store": "{{store}} sklep",
+    "owned": "Posiadane",
+    "available": "Dostępne"
   },
   "streamLoading": {
     "labels": {
@@ -185,20 +185,20 @@
       "adQueue": "Ad Queue"
     },
     "steps": {
-      "queue": "Queue",
+      "queue": "Kolejka",
       "setup": "Setup",
-      "ready": "Ready"
+      "ready": "Gotowe"
     },
     "status": {
       "gameLaunchFailed": "Game launch failed",
       "queuePaused": "Session queue paused",
-      "positionInQueue": "Position #{{position}} in queue",
-      "waitingInQueue": "Waiting in queue...",
+      "positionInQueue": "Pozycja nr {{position}} w kolejce",
+      "waitingInQueue": "Czekanie w kolejce...",
       "settingUpRig": "Setting up your gaming rig...",
       "startingStream": "Starting stream...",
-      "connectingToServer": "Connecting to server...",
+      "connectingToServer": "Łączenie z serwerem...",
       "settingUpStream": "Setting up stream...",
-      "loading": "Loading..."
+      "loading": "Ładowanie..."
     },
     "ads": {
       "resumeToStayInQueue": "Resume ads to stay in queue.",
@@ -218,21 +218,21 @@
   "queue": {
     "servers": {
       "allServers": "All Servers",
-      "close": "Close",
-      "cancel": "Cancel",
+      "close": "Zamknij",
+      "cancel": "Anuluj",
       "wait": "{{duration}} wait"
     }
   },
   "session": {
     "active": "Active Session",
-    "current": "Current",
+    "current": "Obecne",
     "control": "Session Control",
     "elapsed": "Elapsed",
     "endSession": "End session",
     "exitStream": "Exit Stream?",
     "exitConfirmation": "Exit stream confirmation",
     "cancelExit": "Cancel exit",
-    "resume": "Resume",
+    "resume": "Wznów",
     "resumeActiveCloudSession": "Resume active cloud session",
     "resumeActiveCloudSessionTitle": "Resume active cloud session: {{title}}",
     "resumeCurrentStream": "Resume current stream",
@@ -260,7 +260,7 @@
   },
   "stream": {
     "stats": {
-      "connecting": "Connecting...",
+      "connecting": "Łączenie...",
       "network": "Network",
       "decode": "Decode",
       "input": "Input",
@@ -286,7 +286,7 @@
       "controllerConnected_plural": "{{count}} controllers connected"
     },
     "sidebar": {
-      "title": "Settings",
+      "title": "Ustawienia",
       "remainingPlaytime": "Remaining Playtime",
       "sections": "Sidebar sections",
       "microphoneHandling": "Microphone handling",
@@ -329,8 +329,8 @@
     "closeSettings": "Close settings"
   },
   "settings": {
-    "title": "Settings",
-    "saved": "Saved",
+    "title": "Ustawienia",
+    "saved": "Zapisane",
     "searchPlaceholder": "Search settings...",
     "noMatches": "No settings matched \"{{query}}\".",
     "sections": {
@@ -361,7 +361,7 @@
       "maxBitrate": "Max Bitrate",
       "appliesAfterRestart": "Applies after app restart.",
       "requiresH265OrAv1": "This mode requires H265 or AV1. Codec will be auto-switched.",
-      "testing": "Testing...",
+      "testing": "Testowanie...",
       "gpu": "GPU",
       "cpu": "CPU"
     },
@@ -385,7 +385,7 @@
       "microphoneMode": "Microphone Mode",
       "microphoneDevice": "Microphone Device",
       "microphoneInputLevel": "Microphone input level",
-      "disabled": "Disabled",
+      "disabled": "Wyłączone",
       "pushToTalk": "Push-to-Talk",
       "voiceActivity": "Voice Activity",
       "permissionDenied": "Microphone access was denied. Enable microphone access for OpenNOW in System Settings > Privacy & Security > Microphone.",
@@ -453,7 +453,7 @@
     "about": {
       "updateStatus": {
         "packagedBuildsOnly": "Packaged builds only",
-        "checking": "Checking",
+        "checking": "Sprawdzanie",
         "updateAvailable": "Update available",
         "downloading": "Downloading",
         "readyToInstall": "Ready to install"
@@ -533,7 +533,7 @@
       "recentlyPlayedEmptyHint": "Recently played · Empty slot - play games to fill your shelf",
       "recentlyPlayedGames": "Recently played games",
       "resumeGame": "Resume {{title}}",
-      "library": "Library",
+      "library": "Biblioteka",
       "detailRow": "Detail row",
       "options": "Options",
       "browseLeftRight": "Browse · Left / Right",
@@ -548,7 +548,7 @@
       "settingUpRig": "Setting up your gaming rig...",
       "startingStream": "Starting stream...",
       "settingUpStream": "Setting up stream...",
-      "loading": "Loading..."
+      "loading": "Ładowanie..."
     }
   },
   "errors": {
