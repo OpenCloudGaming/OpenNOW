@@ -1,7 +1,7 @@
 {
   "app": {
     "name": "OpenNOW",
-    "tagline": "Open-source cloud gaming client",
+    "tagline": "Klient do gier w chmurze Open-Source",
     "description": "Gra w chmurze.",
     "actions": {
       "add": "Dodaj",
@@ -34,7 +34,7 @@
       "connecting": "Łączenie...",
       "disabled": "Wyłączone",
       "error": "Error",
-      "failed": "Failed",
+      "failed": "Niepowodzenie",
       "idle": "Bezczynny",
       "loading": "Ładowanie...",
       "ready": "Gotowe",
@@ -69,7 +69,7 @@
       "hardware": "Sprzęt",
       "other": "Inne",
       "priority": "Priorytet",
-      "softwareCpu": "Software (CPU)",
+      "softwareCpu": "Oprogramowanie (CPU)",
       "ultimate": "Ultimate",
       "unlimited": "Nieskończone"
     }
@@ -77,20 +77,20 @@
   "auth": {
     "title": {
       "signIn": "Zaloguj się",
-      "restoringSession": "Restoring session"
+      "restoringSession": "Przywracanie sesji"
     },
     "subtitle": {
       "checkingSavedAccounts": "Sprawdzanie zapisanych kont."
     },
     "provider": {
-      "label": "Provider",
-      "select": "Select provider",
+      "label": "Dostawca",
+      "select": "Wybierz dostawce",
       "loading": "Ładowanie..."
     },
     "actions": {
       "signIn": "Zaloguj się",
       "connecting": "Łączenie...",
-      "restoringSession": "Restoring Session..."
+      "restoringSession": "Przywracanie sesji"
     },
     "accounts": {
       "activeAccount": "Aktywne konto",
@@ -107,8 +107,8 @@
       "removeAccountSubtext": "Możesz dodać to konto poprzez ponowne logowanie.",
       "removeNamedAccount": "Usuń {{name}}",
       "signOutAllTitle": "Wylogować się ze wszystkich kont?",
-      "signOutAllDescription": "You're about to remove every saved account from this device and return to guest mode.",
-      "signOutAllSubtext": "Your cloud session data stays on the service. This just clears local OpenNOW account sessions.",
+      "signOutAllDescription": "Zamierzasz usunąć wszystkie zapisane konta z tego urządzenia i powrócić do trybu gościa.",
+      "signOutAllSubtext": "Dane twojej sesji zostają w serwisie w chmurze. To tylko usuwa lokalne sesje konta w OpenNOW.",
       "signOutAll": "Wyloguj wszystkie",
       "signOutAllAccounts": "Wyloguj ze wszystkich kont",
       "staySignedIn": "Zapamiętaj mnie",
@@ -117,15 +117,15 @@
       "kicker": "Konta"
     },
     "status": {
-      "restoringSavedSession": "Restoring saved session...",
-      "sessionRestoredTokenRefreshed": "Session restored. Token refreshed.",
-      "tokenRefreshedLoadingAccount": "Token refreshed. Loading your account...",
-      "tokenRefreshFailedUsingSaved": "Token refresh failed. Using saved session token.",
-      "tokenRefreshFailedContinuing": "Token refresh failed. Continuing with saved session...",
-      "missingRefreshTokenContinuing": "Saved session has no refresh token. Continuing...",
-      "sessionRestored": "Session restored.",
-      "noSavedSessionFound": "No saved session found.",
-      "sessionRestoreFailed": "Session restore failed. Please sign in again."
+      "restoringSavedSession": "Przywracanie zapisanej sesji...",
+      "sessionRestoredTokenRefreshed": "Sesja przywrócona. Token odświeżony.",
+      "tokenRefreshedLoadingAccount": "Token odświeżony. Ładowanie twojego konta...",
+      "tokenRefreshFailedUsingSaved": "Odświeżenie tokenu nie powiodło się. Używanie zapisanego tokenu sesji.",
+      "tokenRefreshFailedContinuing": "Odświeżenie tokenu nie powiodło się. Kontynuowanie z zapisaną sesją...",
+      "missingRefreshTokenContinuing": "Zapisana sesja nie ma tokenu odświeżeniaa. Kontynuowanie...",
+      "sessionRestored": "Sesja przywrócona.",
+      "noSavedSessionFound": "Nie znaleziono zapisanej sesji.",
+      "sessionRestoreFailed": "Przywrócenie sesji się nie powiodło. Proszę, zaloguj się ponownie."
     }
   },
   "navigation": {
@@ -140,14 +140,14 @@
       "loading": "Ładowanie...",
       "shown": "{{shown}} pokazane",
       "shownTotal": "{{shown}} pokazane · {{total}} łącznie",
-      "shownTotalSupported": "{{shown}} shown · {{total}} total · {{supported}} supported",
-      "shownSupported": "{{shown}} shown · {{supported}} supported"
+      "shownTotalSupported": "{{shown}} pokazane · {{total}} łącznie · {{supported}} obsługiwane",
+      "shownSupported": "{{shown}} pokazane · {{supported}} obsługiwane"
     },
     "empty": {
       "loadingGames": "Ładowanie gier...",
       "noGamesFound": "Żadnych gier nie znaleziono",
-      "tryAdjustingSearch": "Try adjusting your search terms or filters",
-      "checkBackLater": "Check back later for new additions"
+      "tryAdjustingSearch": "Spróbuj zmienić twoje wyszukiwane hasło albo filtry",
+      "checkBackLater": "Sprawdź później dla nowych dodatków"
     }
   },
   "library": {
@@ -166,7 +166,7 @@
     "empty": {
       "loadingLibrary": "Ładowanie twojej biblioteki...",
       "libraryEmpty": "Twoja biblioteka jest pusta",
-      "ownedGamesAppearHere": "Games you own will appear here. Browse the catalog to find games.",
+      "ownedGamesAppearHere": "Gry, które posiadasz, pokażą się tutaj. Przeglądaj katalog, żeby znaleźć gry.",
       "noGamesFound": "Żadnych gier nie znaleziono",
       "noGamesMatch": "Żadna gra nie pasuje do \"{{query}}\""
     }
@@ -180,36 +180,36 @@
   },
   "streamLoading": {
     "labels": {
-      "launchError": "Launch Error",
-      "nowLoading": "Now Loading",
+      "launchError": "Błąd uruchomienia",
+      "nowLoading": "Teraz ładowanie",
       "adQueue": "Kolejka reklamowa"
     },
     "steps": {
       "queue": "Kolejka",
-      "setup": "Setup",
+      "setup": "Konfigurowanie",
       "ready": "Gotowe"
     },
     "status": {
-      "gameLaunchFailed": "Game launch failed",
-      "queuePaused": "Session queue paused",
+      "gameLaunchFailed": "Rozpoczęcie gry nie powiodło się",
+      "queuePaused": "Kolejka sesji wstrzymana",
       "positionInQueue": "Pozycja nr {{position}} w kolejce",
       "waitingInQueue": "Czekanie w kolejce...",
-      "settingUpRig": "Setting up your gaming rig...",
-      "startingStream": "Starting stream...",
+      "settingUpRig": "Konfigurowanie twojej sesji",
+      "startingStream": "Uruchamianie streamu...",
       "connectingToServer": "Łączenie z serwerem...",
-      "settingUpStream": "Setting up stream...",
+      "settingUpStream": "Konfigurowanie streamu...",
       "loading": "Ładowanie..."
     },
     "ads": {
       "resumeToStayInQueue": "Odpauzuj reklamy, aby zostać w kolejce. ",
-      "availableForProgression": "{{count}} ad available for queue progression.",
-      "availableForProgression_plural": "{{count}} ads available for queue progression.",
-      "playbackRequired": "Ad playback is required while your session is queued.",
-      "freeTierQueueAdsBegin": "Free-tier queue ads begin as soon as you enter queue.",
+      "availableForProgression": "{{count}} reklama dostępna, aby kontynuować kolejkę.",
+      "availableForProgression_plural": "{{count}} reklamy dostępne, aby kontynuować kolejkę.",
+      "playbackRequired": "Odtworzenie reklam wymagane podczas kolejki.",
+      "freeTierQueueAdsBegin": "Reklamy darmowego tieru zaczynają się, kiedy wchodzisz do kolejki.",
       "advertisementInProgress": "Reklama w toku",
-      "mediaWillAppear": "Ad media will appear here as soon as it is available.",
+      "mediaWillAppear": "Reklamy pokażą się tutaj, kiedy będą dostępne.",
       "advertisement": "Reklama",
-      "titledAdvertisement": "{{title}} advertisement"
+      "titledAdvertisement": "Reklama {{title}}"
     },
     "actions": {
       "cancelLoading": "Anuluj ładowanie"
@@ -220,112 +220,112 @@
       "allServers": "Wszystkie serwery",
       "close": "Zamknij",
       "cancel": "Anuluj",
-      "wait": "{{duration}} wait"
+      "wait": "Czekaj {{duration}}"
     }
   },
   "session": {
     "active": "Aktywne sesje",
     "current": "Obecne",
     "control": "Kontrola sesji",
-    "elapsed": "Elapsed",
+    "elapsed": "Upłynęło",
     "endSession": "Zakończ sesje",
-    "exitStream": "Exit Stream?",
-    "exitConfirmation": "Exit stream confirmation",
+    "exitStream": "Opuścić stream?",
+    "exitConfirmation": "Potwierdzenie opuszczenia streamu",
     "cancelExit": "Anuluj wyjście",
     "resume": "Wznów",
-    "resumeActiveCloudSession": "Resume active cloud session",
-    "resumeActiveCloudSessionTitle": "Resume active cloud session: {{title}}",
-    "resumeCurrentStream": "Resume current stream",
-    "readyToLaunch": "Ready To Launch",
+    "resumeActiveCloudSession": "Wznów aktywną sesję w chmurze",
+    "resumeActiveCloudSessionTitle": "Wznów aktywną sesję w chmurze: {{title}}",
+    "resumeCurrentStream": "Wznów obecny stream",
+    "readyToLaunch": "Gotowe do Uruchomienia",
     "readyToSwitch": "Gotowe do zmiany",
     "timeWarning": "Ostrzeżenie czasu sesji",
-    "elapsedTitle": "Current gaming session elapsed time",
-    "elapsedWithValue": "Session {{value}}",
+    "elapsedTitle": "Ubyty czas obecnej sesji gry",
+    "elapsedWithValue": "Sesja {{value}}",
     "remainingPlaytime": "{{value}} pozostało ",
     "terminate": "Zakończ",
-    "terminateActiveCloudSession": "Terminate active cloud session",
-    "terminateActiveCloudSessionTitle": "Terminate active cloud session: {{title}}",
-    "terminateConfirmation": "Terminate {{title}}? This will end the active cloud session immediately.",
-    "activeSessionMissingServerAddress": "Active session found (missing server address)",
+    "terminateActiveCloudSession": "Zakończ aktywną sesję w chmurze",
+    "terminateActiveCloudSessionTitle": "Zakończ aktywną sesję w chmurze: {{title}}",
+    "terminateConfirmation": "Zakończyć {{title}}? To zakończy aktywną sesję w chmurze natychmiastowo.",
+    "activeSessionMissingServerAddress": "Aktywne sesje odnalezione (brakujący adres serwera)",
     "thisGame": "ta gra",
     "thisSession": "ta sesja",
     "warnings": {
       "sessionTimeLimitApproaching": "Limit czasu sesji się zbliża",
-      "idleTimeoutApproaching": "Idle timeout approaching",
-      "maximumSessionTimeApproaching": "Maximum session time approaching",
-      "freeTier30MinutesRemaining": "30 minutes remaining in this free-tier session",
-      "freeTier15MinutesRemaining": "15 minutes remaining in this free-tier session",
-      "freeTierEndsSoon": "This free-tier session ends soon"
+      "idleTimeoutApproaching": "Koniec czasu bezczynności się zbliża.",
+      "maximumSessionTimeApproaching": "Maksymalny czas sesji się zbliża",
+      "freeTier30MinutesRemaining": "30 minut pozostało w tej sesji darmowego tieru",
+      "freeTier15MinutesRemaining": "15 minut pozostało w tej sesji darmowego tieru",
+      "freeTierEndsSoon": "Ta sesja darmowego tieru wkrótce się skończy"
     }
   },
   "stream": {
     "stats": {
       "connecting": "Łączenie...",
       "network": "Sieć",
-      "decode": "Decode",
-      "input": "Input",
-      "render": "Render",
+      "decode": "Dekodowanie",
+      "input": "Wejście",
+      "render": "Renderowanie",
       "stable": "Stabilny",
-      "roundTripLatency": "Round-trip network latency",
-      "decodeTime": "D = decode time",
-      "renderTime": "R = render time",
-      "jitterBuffer": "JB = jitter buffer delay",
+      "roundTripLatency": "Opóźnienie sesji, tam i z powrotem",
+      "decodeTime": "D = czas dekodowania",
+      "renderTime": "R = czas renderowania",
+      "jitterBuffer": "JB = opóźnienie bufora jitter",
       "packetLoss": "Procent straty pakietów",
       "packetLossValue": "{{value}}% straty",
-      "inputQueuePressure": "Input queue pressure (buffered bytes and delayed flush)",
-      "inputChannelState": "Partially reliable input channel state and queued bytes",
+      "inputQueuePressure": "Ciśnienie w kolejce wejściowej (buforowane bajty i spłukiwanie opóźnione)",
+      "inputChannelState": "Częściowo niezawodny stan kanału wejściowego i kolejki bajtów",
       "mouseFlushCadence": "Mouse flush cadence and packet rate"
     },
     "controls": {
       "antiAfkEnabled": "Anty-AFK włączone",
       "muteMicrophone": "Wycisz mikrofon",
       "unmuteMicrophone": "Odcisz mikrofon",
-      "enterFullscreen": "Enter fullscreen",
+      "enterFullscreen": "Przejdź do trybu pełnoekranowego",
       "exitFullscreen": "Opuść pełny ekran",
       "controllerConnected": "{{count}} kontroler połączony",
       "controllerConnected_plural": "{{count}} kontrolery połączone"
     },
     "sidebar": {
       "title": "Ustawienia",
-      "remainingPlaytime": "Remaining Playtime",
-      "sections": "Sidebar sections",
-      "microphoneHandling": "Microphone handling",
+      "remainingPlaytime": "Pozostały czas gry",
+      "sections": "Sekcje panelu bocznego",
+      "microphoneHandling": "Obsługo mikrofonu",
       "microphoneMode": "Tryb mikrofonu",
-      "microphoneInputLevel": "Microphone input level",
+      "microphoneInputLevel": "Poziom wprowadzenia mikrofonu",
       "screenshotShortcut": "Skrót klawiszowy zrzutu ekranu",
       "recordingShortcut": "Skrót klawiszowy nagrania",
-      "toggleStats": "Toggle Stats",
-      "stopStream": "Stop Stream",
+      "toggleStats": "Przełącz statystyki",
+      "stopStream": "Zatrzymaj stream",
       "toggleMicrophone": "Przełącz mikrofon",
-      "toggleStreamSidebar": "Toggle stream sidebar"
+      "toggleStreamSidebar": "Przełącz panel boczny streamu"
     },
     "screenshots": {
       "title": "Zrzut ekranu",
       "preview": "Podgląd zrzutu ekranu",
       "closePreview": "Zamknij podgląd zrzutu ekranu",
       "alt": "Zrzut ekranu {{fileName}}",
-      "scrollLeft": "Scroll gallery left",
-      "scrollRight": "Scroll gallery right"
+      "scrollLeft": "Przewiń galerie w lewo",
+      "scrollRight": "Przewiń galerie w prawo"
     },
     "recordings": {
       "title": "Nagrania",
       "delete": "Usuń nagranie",
-      "scrollLeft": "Scroll recordings left",
-      "scrollRight": "Scroll recordings right"
+      "scrollLeft": "Przewiń nagrania w lewo",
+      "scrollRight": "Przewiń nagrania w prawo"
     },
     "shortcuts": {
       "empty": "Skrót klawiszowy nie może być pusty",
       "invalidFormat": "Niepoprawny format skrótu klawiszowego",
-      "conflict": "Shortcut conflicts with an existing binding.",
-      "clickThenPress": "Click, then press a key",
-      "clickHereThenPress": "Click here, then press a key",
+      "conflict": "Skrót klawiszowy sprzeczny z istniejącym skrótem.",
+      "clickThenPress": "Kliknij, potem przyciśnij klawisz",
+      "clickHereThenPress": "Kliknij tutaj, potem przyciśnij klawisz",
       "focusAndPress": "Focus and press the key combination to bind",
       "examples": "Przykłady: F3, Ctrl+Shift+Q, Ctrl+Shift+K",
       "stats": "Statystyki"
     }
   },
   "sidebar": {
-    "title": "Sidebar",
+    "title": "Panel boczny",
     "closeSettings": "Zamknij ustawienia"
   },
   "settings": {
@@ -337,30 +337,30 @@
       "stream": "Stream",
       "game": "Gra",
       "audio": "Dźwięk",
-      "input": "Input",
+      "input": "Wejście",
       "interface": "Interfejs",
-      "about": "About",
+      "about": "O programie",
       "thanks": "Podziękowania"
     },
     "region": {
       "title": "Region",
       "autoBest": "Automatyczne (Najlepsze)",
       "searchPlaceholder": "Szukaj regionów...",
-      "refreshPing": "Refresh ping",
+      "refreshPing": "Odśwież opóźnienie",
       "noRegionsMatch": "Żaden region nie pasuje do \"{{query}}\""
     },
     "video": {
       "title": "Wideo",
-      "aspectRatio": "Aspect Ratio",
-      "resolution": "Resolution",
+      "aspectRatio": "Proporcje obrazu",
+      "resolution": "Rozdzielczość",
       "fps": "FPS",
-      "codec": "Codec",
-      "decoder": "Decoder",
-      "encoder": "Encoder",
-      "colorDepth": "Color Depth",
-      "maxBitrate": "Max Bitrate",
-      "appliesAfterRestart": "Applies after app restart.",
-      "requiresH265OrAv1": "This mode requires H265 or AV1. Codec will be auto-switched.",
+      "codec": "Kodek",
+      "decoder": "Dekoder",
+      "encoder": "Enkoder",
+      "colorDepth": "Głębia koloru",
+      "maxBitrate": "Maksymalna przepływność (bitrate)",
+      "appliesAfterRestart": "Stosuje się po ponownym uruchomieniu aplikacji.",
+      "requiresH265OrAv1": "Ten tryb potrzebuje H265 albo AV1. Kodek będzie automatycznie przełączony.",
       "testing": "Testowanie...",
       "gpu": "GPU",
       "cpu": "CPU"
@@ -368,53 +368,53 @@
     "colorQuality": {
       "mostCompatible": "Najbardziej kompatybilne",
       "sharperChroma": "Sharper chroma",
-      "higherBitDepth": "Higher bit depth",
+      "higherBitDepth": "Wyższa głębokość bitów",
       "highestChromaAndBitDepth": "Highest chroma and bit depth",
       "requiresH265OrAv1Title": "{{description}} - potrzebuje H265/AV1"
     },
     "game": {
       "title": "Gra",
       "language": "Język",
-      "keyboardLayout": "Keyboard Layout",
+      "keyboardLayout": "Układ klawiatury",
       "preferredStore": "Preferowany sklep",
-      "launchBehavior": "Launch Behavior"
+      "launchBehavior": "Zachowanie uruchomienia"
     },
     "audio": {
       "title": "Dźwięk",
-      "microphone": "Microphone",
+      "microphone": "Mikrofon",
       "microphoneMode": "Tryb mikrofonu",
-      "microphoneDevice": "Microphone Device",
-      "microphoneInputLevel": "Microphone input level",
+      "microphoneDevice": "Urządzenie mikrofonu",
+      "microphoneInputLevel": "Poziom wprowadzenia mikrofonu",
       "disabled": "Wyłączone",
-      "pushToTalk": "Push-to-Talk",
-      "voiceActivity": "Voice Activity",
-      "permissionDenied": "Microphone access was denied. Enable microphone access for OpenNOW in System Settings > Privacy & Security > Microphone.",
-      "permissionRestricted": "Microphone access is restricted by macOS and cannot be enabled from OpenNOW.",
-      "permissionUnknown": "Unable to determine microphone permission status. Check macOS microphone privacy settings for OpenNOW.",
-      "permissionUnavailable": "Microphone access is not available."
+      "pushToTalk": "Naciśnij aby Mówić",
+      "voiceActivity": "Aktywność Głosowa",
+      "permissionDenied": "Odmowa dostępu do mikrofonu. Włącz dostęp do mikrofonu dla OpenNOW w Ustawieniach Systemu > Prywatność i Bezpieczeństwo > Mikrofon.",
+      "permissionRestricted": "Dostęp mikrofonu jest ograniczony przez macOS i nie może być włączony w OpenNOW.",
+      "permissionUnknown": "Nie można określić dostępu do mikrofonu. Sprawdź ustawienia prywatności mikrofonu macOS dla OpenNOW.",
+      "permissionUnavailable": "Brak dostępu do mikrofonu."
     },
     "input": {
-      "title": "Input",
-      "mouseAndKeyboard": "Mouse and Keyboard",
-      "shortcuts": "Shortcuts",
-      "shortcutConflictSidebar": "Shortcut conflicts with the settings sidebar toggle.",
-      "shortcutConflictBinding": "Shortcut conflicts with another binding.",
+      "title": "Wejście",
+      "mouseAndKeyboard": "Mysz i Klawiatura",
+      "shortcuts": "Skróty klawiszowe",
+      "shortcutConflictSidebar": "Skrót klawiszowy jest sprzeczny z przełącznikiem panelu bocznego.",
+      "shortcutConflictBinding": "Skrót klawiszowy sprzeczny z innym.",
       "shortcutEmpty": "Skrót klawiszowy nie może być pusty",
       "shortcutInvalid": "Niepoprawny format skrótu klawiszowego",
-      "toggleStats": "Toggle Stats",
-      "togglePointerLock": "Toggle Pointer Lock",
-      "toggleFullscreen": "Toggle Fullscreen",
-      "stopStream": "Stop Stream",
-      "toggleAntiAfk": "Toggle Anti-AFK",
+      "toggleStats": "Przełącz statystyki",
+      "togglePointerLock": "Przełącz blokadę myszy",
+      "toggleFullscreen": "Przełącz tryb pełnoekranowy",
+      "stopStream": "Zatrzymaj stream",
+      "toggleAntiAfk": "Przełącz Anty-AFK",
       "toggleMicrophone": "Przełącz mikrofon",
       "screenshot": "Zrzut ekranu",
-      "recording": "Recording",
-      "toggleStreamSidebar": "Toggle stream sidebar",
+      "recording": "Nagrywanie",
+      "toggleStreamSidebar": "Przełącz panel boczny streamu",
       "shortcutHint": "Click a field and press the keys to bind, or paste a shortcut ({{examples}}). Escape cancels focus. Full screen: {{fullscreen}}. Stop: {{stop}}. Mic: {{mic}}. Screenshot: {{screenshot}}. Recording: {{recording}}."
     },
     "interface": {
-      "appearance": "Appearance",
-      "appLanguage": "App Language",
+      "appearance": "Wygląd",
+      "appLanguage": "Język aplikacji",
       "appLanguageHint": "Changes OpenNOW's interface language. English is used for untranslated strings.",
       "hideStreamOverlayButtons": "Hide Stream Overlay Buttons",
       "hideStreamOverlayButtonsHint": "Hide microphone, fullscreen, and end-session buttons while streaming.",
@@ -544,10 +544,10 @@
     },
     "streamLoading": {
       "adQueue": "Kolejka reklamowa",
-      "queuePaused": "Session queue paused",
-      "settingUpRig": "Setting up your gaming rig...",
-      "startingStream": "Starting stream...",
-      "settingUpStream": "Setting up stream...",
+      "queuePaused": "Kolejka sesji wstrzymana",
+      "settingUpRig": "Konfigurowanie twojej sesji",
+      "startingStream": "Uruchamianie streamu...",
+      "settingUpStream": "Konfigurowanie streamu...",
       "loading": "Ładowanie..."
     }
   },
