@@ -1,8 +1,8 @@
 {
   "app": {
     "name": "OpenNOW",
-    "tagline": "Open-source cloud gaming client",
-    "description": "Cloud gaming, open source.",
+    "tagline": "오픈소스 클라우드 게이밍 클라이언트",
+    "description": "클라우드 게이밍, 오픈 소스로.",
     "actions": {
       "add": "Add",
       "back": "Back",
