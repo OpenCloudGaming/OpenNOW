@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from "react";
 import type { JSX } from "react";
 import { LogIn, ChevronDown, Zap } from "lucide-react";
 import type { LoginProvider } from "@shared/gfn";
+import { useTranslation } from "../i18n";
 
 export interface LoginScreenProps {
   providers: LoginProvider[];
@@ -24,12 +25,13 @@ export function LoginScreen({
   isInitializing = false,
   statusMessage,
 }: LoginScreenProps): JSX.Element {
+  const { t } = useTranslation();
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
   const selectedProvider = providers.find((p) => p.idpId === selectedProviderId);
-  const title = isInitializing ? "Restoring session" : "Sign in";
-  const subtitle = isInitializing ? "Checking saved accounts." : "Cloud gaming, open source.";
+  const title = isInitializing ? t("auth.title.restoringSession") : t("auth.title.signIn");
+  const subtitle = isInitializing ? t("auth.subtitle.checkingSavedAccounts") : t("app.description");
 
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
@@ -86,7 +88,7 @@ export function LoginScreen({
           )}
 
           <div className="login-field" ref={dropdownRef}>
-            <label className="login-label">Provider</label>
+            <label className="login-label">{t("auth.provider.label")}</label>
             <button
               className={`login-select ${isDropdownOpen ? "open" : ""}`}
               onClick={() => setIsDropdownOpen(!isDropdownOpen)}
@@ -95,8 +97,8 @@ export function LoginScreen({
             >
               <span className="login-select-text">
                 {isInitializing
-                  ? "Loading..."
-                  : selectedProvider?.displayName ?? "Select provider"}
+                  ? t("auth.provider.loading")
+                  : selectedProvider?.displayName ?? t("auth.provider.select")}
               </span>
               <ChevronDown
                 size={16}
@@ -134,18 +136,18 @@ export function LoginScreen({
             {isLoading || isInitializing ? (
               <>
                 <span className="login-spinner" />
-                <span>{isInitializing ? "Restoring Session..." : "Connecting..."}</span>
+                <span>{isInitializing ? t("auth.actions.restoringSession") : t("auth.actions.connecting")}</span>
               </>
             ) : (
               <>
                 <LogIn size={18} />
-                <span>Sign In</span>
+                <span>{t("auth.actions.signIn")}</span>
               </>
             )}
           </button>
         </div>
 
-        <p className="login-footer">Open-source cloud gaming client</p>
+        <p className="login-footer">{t("app.tagline")}</p>
       </div>
     </div>
   );

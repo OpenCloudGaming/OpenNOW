@@ -28,6 +28,7 @@ jobs:
       prerelease: ${{ steps.release.outputs.prerelease }}
       make_latest: ${{ steps.release.outputs.make_latest }}
       release_tag: ${{ steps.release.outputs.release_tag }}
+      source_ref: ${{ steps.release.outputs.source_ref }}
 
     steps:
       - name: Checkout
@@ -80,8 +81,10 @@ jobs:
 
           if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
             release_tag="v${version}"
+            source_ref="$REF_NAME"
           else
             release_tag="$raw"
+            source_ref="$REF_NAME"
           fi
 
           {
@@ -89,12 +92,64 @@ jobs:
             echo "prerelease=$prerelease"
             echo "make_latest=$make_latest"
             echo "release_tag=$release_tag"
+            echo "source_ref=$source_ref"
           } >> "$GITHUB_OUTPUT"
+
+  prepare-source:
+    name: prepare-source
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    needs: preflight
+    permissions:
+      contents: write
+    outputs:
+      release_sha: ${{ steps.source.outputs.release_sha }}
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.preflight.outputs.source_ref }}
+          fetch-depth: 0
+          token: ${{ secrets.RELEASE_PUSH_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - name: Sync or validate release version
+        id: source
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          RELEASE_VERSION: ${{ needs.preflight.outputs.version }}
+          SOURCE_REF: ${{ needs.preflight.outputs.source_ref }}
+        run: |
+          if [[ "$EVENT_NAME" != "workflow_dispatch" ]]; then
+            node opennow-stable/scripts/sync-release-version.mjs --check "$RELEASE_VERSION"
+            echo "release_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [[ "$REF_TYPE" != "branch" ]]; then
+            echo "workflow_dispatch releases must run from a branch so the version bump can be committed before tagging." >&2
+            exit 1
+          fi
+
+          node opennow-stable/scripts/sync-release-version.mjs "$RELEASE_VERSION"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add opennow-stable/package.json opennow-stable/package-lock.json
+          if git diff --cached --quiet; then
+            echo "No version bump changes to commit."
+          else
+            git commit -m "chore(release): prepare v${RELEASE_VERSION}"
+            git push origin HEAD:"$SOURCE_REF"
+          fi
+          echo "release_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
   build:
     name: ${{ matrix.label }}
     runs-on: ${{ matrix.os }}
-    needs: preflight
+    needs:
+      - preflight
+      - prepare-source
     strategy:
       fail-fast: false
       matrix:
@@ -102,6 +157,10 @@ jobs:
           - label: windows-x64
             os: blacksmith-4vcpu-windows-2025
             builder_args: "--win nsis portable --x64"
+            native_build: "true"
+            bundle_gstreamer: "1"
+            native_target: ""
+            native_platform_key: "win32-x64"
             artifact_paths: |
               opennow-stable/dist-release/*-x64.exe
               opennow-stable/dist-release/latest*.yml
@@ -109,23 +168,39 @@ jobs:
           - label: windows-arm64
             os: blacksmith-4vcpu-windows-2025
             builder_args: "--win nsis portable --arm64"
+            native_build: "false"
+            bundle_gstreamer: "0"
+            native_target: ""
+            native_platform_key: "win32-arm64"
             artifact_paths: |
               opennow-stable/dist-release/*-arm64.exe
           - label: macos-x64
-            os: blacksmith-6vcpu-macos-latest
+            os: macos-latest
             builder_args: "--mac dmg zip --x64"
+            native_build: "true"
+            bundle_gstreamer: "1"
+            native_target: "x86_64-apple-darwin"
+            native_platform_key: "darwin-x64"
             artifact_paths: |
               opennow-stable/dist-release/*.dmg
               opennow-stable/dist-release/*-x64.zip
           - label: macos-arm64
-            os: blacksmith-6vcpu-macos-latest
+            os: macos-latest
             builder_args: "--mac dmg zip --arm64"
+            native_build: "true"
+            bundle_gstreamer: "1"
+            native_target: "aarch64-apple-darwin"
+            native_platform_key: "darwin-arm64"
             artifact_paths: |
               opennow-stable/dist-release/*.dmg
               opennow-stable/dist-release/*-arm64.zip
           - label: linux-x64
             os: blacksmith-4vcpu-ubuntu-2404
             builder_args: "--linux AppImage deb --x64"
+            native_build: "true"
+            bundle_gstreamer: "0"
+            native_target: ""
+            native_platform_key: "linux-x64"
             artifact_paths: |
               opennow-stable/dist-release/*-x86_64.AppImage
               opennow-stable/dist-release/*-amd64.deb
@@ -133,6 +208,10 @@ jobs:
           - label: linux-arm64
             os: blacksmith-4vcpu-ubuntu-2404-arm
             builder_args: "--linux AppImage deb --arm64"
+            native_build: "true"
+            bundle_gstreamer: "0"
+            native_target: ""
+            native_platform_key: "linux-arm64"
             artifact_paths: |
               opennow-stable/dist-release/*-arm64.AppImage
               opennow-stable/dist-release/*-arm64.deb
@@ -148,12 +227,20 @@ jobs:
       ELECTRON_BUILDER_CACHE: ${{ github.workspace }}/.cache/electron-builder
       npm_config_audit: "false"
       npm_config_fund: "false"
+      GSTREAMER_VERSION: "1.28.2"
+      GSTREAMER_WINDOWS_VERSION: "1.26.1"
+      CARGO_NET_RETRY: "10"
+      CARGO_HTTP_MULTIPLEXING: "false"
+      CARGO_REGISTRIES_CRATES_IO_PROTOCOL: sparse
+      CARGO_NET_GIT_FETCH_WITH_CLI: "true"
       RELEASE_VERSION: ${{ needs.preflight.outputs.version }}
       USE_SYSTEM_FPM: ${{ matrix.label == 'linux-arm64' && 'true' || 'false' }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare-source.outputs.release_sha }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -161,6 +248,26 @@ jobs:
           node-version: 22
           cache: npm
           cache-dependency-path: "**/package-lock.json"
+
+      - name: Setup Rust
+        if: matrix.native_build == 'true'
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Rust target
+        if: matrix.native_build == 'true' && matrix.native_target != ''
+        run: rustup target add ${{ matrix.native_target }}
+
+      - name: Cache Rust native build
+        if: matrix.native_build == 'true'
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            native/opennow-streamer/target
+          key: ${{ runner.os }}-${{ matrix.label }}-cargo-${{ hashFiles('native/opennow-streamer/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ matrix.label }}-cargo-
 
       - name: Cache Electron binaries
         uses: actions/cache@v4
@@ -172,11 +279,213 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-electron-
 
-      - name: Install Linux packaging tools
+      - name: Install Linux build/runtime packages
         if: runner.os == 'Linux'
+        env:
+          DEBIAN_FRONTEND: noninteractive
         run: |
           sudo apt-get update
-          sudo apt-get install -y fakeroot rpm
+          sudo apt-get install -y --no-install-recommends \
+            fakeroot \
+            rpm \
+            build-essential \
+            pkg-config \
+            libglib2.0-dev \
+            libgstreamer1.0-dev \
+            libgstreamer-plugins-base1.0-dev \
+            libgstreamer-plugins-bad1.0-dev \
+            gstreamer1.0-alsa \
+            gstreamer1.0-libav \
+            gstreamer1.0-plugins-base \
+            gstreamer1.0-plugins-good \
+            gstreamer1.0-plugins-bad \
+            gstreamer1.0-plugins-ugly \
+            gstreamer1.0-vaapi \
+            gstreamer1.0-gl \
+            libva2 \
+            libva-drm2 \
+            libvulkan1 \
+            mesa-vulkan-drivers
+
+      - name: Cache macOS GStreamer packages
+        if: matrix.native_build == 'true' && runner.os == 'macOS'
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.cache/gstreamer-macos
+          key: gstreamer-macos-${{ env.GSTREAMER_VERSION }}
+
+      - name: Install macOS GStreamer build/runtime packages
+        if: matrix.native_build == 'true' && runner.os == 'macOS'
+        run: |
+          primary_base="https://gstreamer.freedesktop.org/data/pkg/macos/${GSTREAMER_VERSION}"
+          mirror_base="https://gstreamer.freedesktop.org/pkg/macos/${GSTREAMER_VERSION}"
+          cache_dir="${GITHUB_WORKSPACE}/.cache/gstreamer-macos/${GSTREAMER_VERSION}"
+          mkdir -p "$cache_dir"
+          runtime="$cache_dir/gstreamer-1.0-${GSTREAMER_VERSION}-universal.pkg"
+          devel="$cache_dir/gstreamer-1.0-devel-${GSTREAMER_VERSION}-universal.pkg"
+          download_pkg() {
+            local name="$1"
+            local destination="$2"
+            local partial="${destination}.part"
+            if [ -s "$destination" ]; then
+              return 0
+            fi
+            rm -f "$partial"
+            if ! curl --fail --location --retry 8 --retry-all-errors --retry-delay 5 --connect-timeout 30 --continue-at - --output "$partial" "$primary_base/$name"; then
+              curl --fail --location --retry 8 --retry-all-errors --retry-delay 5 --connect-timeout 30 --continue-at - --output "$partial" "$mirror_base/$name"
+            fi
+            test -s "$partial"
+            mv "$partial" "$destination"
+          }
+          download_pkg "gstreamer-1.0-${GSTREAMER_VERSION}-universal.pkg" "$runtime"
+          download_pkg "gstreamer-1.0-devel-${GSTREAMER_VERSION}-universal.pkg" "$devel"
+          test -s "$runtime"
+          test -s "$devel"
+          sudo installer -pkg "$runtime" -target /
+          sudo installer -pkg "$devel" -target /
+          root="/Library/Frameworks/GStreamer.framework/Versions/1.0"
+          echo "GSTREAMER_1_0_ROOT_MACOS=$root" >> "$GITHUB_ENV"
+          echo "$root/bin" >> "$GITHUB_PATH"
+          echo "PKG_CONFIG_PATH=$root/lib/pkgconfig:$PKG_CONFIG_PATH" >> "$GITHUB_ENV"
+
+      - name: Cache Windows GStreamer SDK
+        if: matrix.native_build == 'true' && runner.os == 'Windows'
+        uses: actions/cache@v4
+        with:
+          path: |
+            C:\gstreamer
+            ${{ github.workspace }}\.cache\gstreamer-windows
+          key: gstreamer-windows-${{ env.GSTREAMER_WINDOWS_VERSION }}
+
+      - name: Install Windows GStreamer SDK
+        if: matrix.native_build == 'true' && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $installBase = "C:\gstreamer"
+          $roots = @(
+            "C:\gstreamer\1.0\msvc_x86_64",
+            "C:\Program Files\gstreamer\1.0\msvc_x86_64"
+          )
+          $searchBases = @("C:\gstreamer", "C:\Program Files\gstreamer")
+          $script:gstreamerPcPaths = @()
+          $script:lastRuntimeMsiExitCode = $null
+          $script:lastDevelMsiExitCode = $null
+          function Test-GStreamerRoot([string] $candidate) {
+            return [bool]($candidate -and
+              (Test-Path (Join-Path $candidate "lib\pkgconfig\gstreamer-1.0.pc")) -and
+              ((Test-Path (Join-Path $candidate "bin\pkg-config.exe")) -or (Test-Path (Join-Path $candidate "bin\pkgconf.exe"))))
+          }
+          function Find-GStreamerRoot {
+            $script:gstreamerPcPaths = @()
+            foreach ($candidate in $roots) {
+              if (Test-GStreamerRoot $candidate) { return $candidate }
+            }
+            foreach ($base in $searchBases) {
+              if (-not (Test-Path $base)) { continue }
+              $pcFiles = @(Get-ChildItem -Path $base -Filter "gstreamer-1.0.pc" -Recurse -ErrorAction SilentlyContinue | Where-Object { $_.FullName -like "*\lib\pkgconfig\gstreamer-1.0.pc" })
+              foreach ($pc in $pcFiles) {
+                $script:gstreamerPcPaths += $pc.FullName
+                $root = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $pc.FullName))
+                if (Test-GStreamerRoot $root) { return $root }
+              }
+            }
+            return $null
+          }
+          function Get-GStreamerMsi([string] $fileName, [string] $downloadDir, [string[]] $urlBases) {
+            New-Item -ItemType Directory -Force -Path $downloadDir | Out-Null
+            $output = Join-Path $downloadDir $fileName
+            $partial = "$output.part"
+            if ((Test-Path $output) -and ((Get-Item $output).Length -gt 0)) {
+              Write-Host "Using cached GStreamer MSI: $output"
+              return $output
+            }
+            foreach ($base in $urlBases) {
+              $url = "$base/$fileName"
+              Write-Host "Downloading GStreamer MSI from $url"
+              if ((Test-Path $partial) -and ((Get-Item $partial).Length -eq 0)) { Remove-Item -Force $partial }
+              $process = Start-Process -FilePath "curl.exe" -ArgumentList @(
+                "--fail",
+                "--location",
+                "--retry", "8",
+                "--retry-all-errors",
+                "--retry-delay", "5",
+                "--connect-timeout", "30",
+                "--continue-at", "-",
+                "--output", $partial,
+                $url
+              ) -Wait -PassThru -NoNewWindow
+              if ($process.ExitCode -eq 0 -and (Test-Path $partial) -and ((Get-Item $partial).Length -gt 0)) {
+                Move-Item -Force $partial $output
+                return $output
+              }
+              Write-Host "GStreamer MSI download failed from $url with curl exit code $($process.ExitCode)."
+              if ((Test-Path $partial) -and ((Get-Item $partial).Length -eq 0)) { Remove-Item -Force $partial }
+            }
+            if (Test-Path $partial) {
+              Write-Host "Removing incomplete GStreamer MSI download: $partial"
+              Remove-Item -Force $partial
+            }
+            return $null
+          }
+          function Install-GStreamerMsiSdk([string] $version) {
+            $urlBases = @(
+              "https://gstreamer.freedesktop.org/data/pkg/windows/$version/msvc",
+              "https://gstreamer.freedesktop.org/pkg/windows/$version/msvc"
+            )
+            $downloadDir = Join-Path $env:GITHUB_WORKSPACE ".cache\gstreamer-windows\$version"
+            $runtime = Get-GStreamerMsi "gstreamer-1.0-msvc-x86_64-$version.msi" $downloadDir $urlBases
+            if (-not $runtime) { return $false }
+            $devel = Get-GStreamerMsi "gstreamer-1.0-devel-msvc-x86_64-$version.msi" $downloadDir $urlBases
+            if (-not $devel) { return $false }
+            $runtimeInstall = Start-Process msiexec.exe -ArgumentList @("/i", $runtime, "/qn", "/norestart", "INSTALLDIR=$installBase", "ADDLOCAL=ALL") -Wait -PassThru
+            $script:lastRuntimeMsiExitCode = $runtimeInstall.ExitCode
+            if ($runtimeInstall.ExitCode -ne 0) { return $false }
+            $develInstall = Start-Process msiexec.exe -ArgumentList @("/i", $devel, "/qn", "/norestart", "INSTALLDIR=$installBase", "ADDLOCAL=ALL") -Wait -PassThru
+            $script:lastDevelMsiExitCode = $develInstall.ExitCode
+            if ($develInstall.ExitCode -ne 0) { return $false }
+            return [bool](Find-GStreamerRoot)
+          }
+          $root = Find-GStreamerRoot
+          if ($root) {
+            Write-Host "Using cached GStreamer Windows SDK: $root"
+          } elseif (-not (Install-GStreamerMsiSdk $env:GSTREAMER_WINDOWS_VERSION)) {
+            [void](Find-GStreamerRoot)
+            Write-Host "GStreamer explicit roots searched: $($roots -join ', ')"
+            Write-Host "GStreamer recursive search bases: $($searchBases -join ', ')"
+            Write-Host "Discovered gstreamer-1.0.pc paths: $(if ($script:gstreamerPcPaths.Count) { $script:gstreamerPcPaths -join ', ' } else { 'none' })"
+            Write-Error "Failed to install/discover GStreamer Windows MSI SDK version $env:GSTREAMER_WINDOWS_VERSION. Runtime MSI exit code: $script:lastRuntimeMsiExitCode; devel MSI exit code: $script:lastDevelMsiExitCode."
+            exit 1
+          }
+          $root = Find-GStreamerRoot
+          Write-Host "GStreamer explicit roots searched: $($roots -join ', ')"
+          Write-Host "GStreamer recursive search bases: $($searchBases -join ', ')"
+          Write-Host "Discovered gstreamer-1.0.pc paths: $(if ($script:gstreamerPcPaths.Count) { $script:gstreamerPcPaths -join ', ' } else { 'none' })"
+          if (-not $root) {
+            Write-Error "GStreamer SDK root not found. Checked: $($roots -join ', '). Expected lib\pkgconfig\gstreamer-1.0.pc and bin\pkg-config.exe or bin\pkgconf.exe."
+            exit 1
+          }
+          $gstInspect = Join-Path $root "bin\gst-inspect-1.0.exe"
+          if (-not (Test-Path $gstInspect)) {
+            Write-Error "gst-inspect-1.0.exe not found in $root\bin after GStreamer install."
+            exit 1
+          }
+          $h264Decoders = @("avdec_h264", "d3d11h264dec", "d3d12h264dec")
+          $availableH264Decoders = @()
+          foreach ($decoder in $h264Decoders) {
+            $inspect = Start-Process -FilePath $gstInspect -ArgumentList @($decoder) -Wait -PassThru -NoNewWindow
+            if ($inspect.ExitCode -eq 0) {
+              $availableH264Decoders += $decoder
+              Write-Host "GStreamer decoder available: $decoder"
+            } else {
+              Write-Host "GStreamer decoder unavailable: $decoder"
+            }
+          }
+          if ($availableH264Decoders.Count -eq 0) {
+            Write-Error "GStreamer Windows SDK installed, but no H.264 decoder plugins were found among: $($h264Decoders -join ', ')"
+            exit 1
+          }
+          "GSTREAMER_1_0_ROOT_MSVC_X86_64=$root" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "$root\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
 
       - name: Install FPM for arm64 deb builds
         if: matrix.label == 'linux-arm64'
@@ -185,8 +494,37 @@ jobs:
       - name: Install dependencies
         run: npm ci --prefer-offline --no-audit --progress=false
 
-      - name: Update package version
-        run: node -e "const fs=require('fs'); const path='package.json'; const pkg=JSON.parse(fs.readFileSync(path,'utf8')); pkg.version=process.env.RELEASE_VERSION; fs.writeFileSync(path, JSON.stringify(pkg, null, 2) + '\n');"
+      - name: Sync package version
+        run: node scripts/sync-release-version.mjs "$RELEASE_VERSION"
+
+      - name: Verify macOS Cargo network trust
+        if: matrix.native_build == 'true' && runner.os == 'macOS'
+        run: |
+          if [ -f /etc/ssl/cert.pem ]; then
+            cargo_cacert=/etc/ssl/cert.pem
+          else
+            cargo_cacert="$RUNNER_TEMP/cargo-cacert.pem"
+            security find-certificate -a -p /System/Library/Keychains/SystemRootCertificates.keychain /Library/Keychains/System.keychain > "$cargo_cacert"
+          fi
+          echo "CARGO_HTTP_CAINFO=$cargo_cacert" >> "$GITHUB_ENV"
+          echo "SSL_CERT_FILE=$cargo_cacert" >> "$GITHUB_ENV"
+          if ! curl --fail --location --retry 5 https://index.crates.io/config.json --output /tmp/cargo-index-config.json; then
+            if command -v brew >/dev/null 2>&1; then
+              brew update --quiet
+              brew reinstall ca-certificates
+            fi
+            curl --fail --location --retry 5 https://index.crates.io/config.json --output /tmp/cargo-index-config.json
+          fi
+          CARGO_HTTP_CAINFO="$cargo_cacert" SSL_CERT_FILE="$cargo_cacert" cargo search base64 --limit 1 >/tmp/cargo-search-check.txt
+
+      - name: Build native streamer
+        if: matrix.native_build == 'true'
+        env:
+          OPENNOW_NATIVE_STREAMER_FEATURES: gstreamer
+          OPENNOW_BUNDLE_GSTREAMER_RUNTIME: ${{ matrix.bundle_gstreamer }}
+          OPENNOW_NATIVE_STREAMER_TARGET: ${{ matrix.native_target }}
+          OPENNOW_NATIVE_STREAMER_PLATFORM_KEY: ${{ matrix.native_platform_key }}
+        run: npm run native:build
 
       - name: Build app bundles
         run: npm run build
@@ -208,6 +546,7 @@ jobs:
     runs-on: blacksmith-2vcpu-ubuntu-2404
     needs:
       - preflight
+      - prepare-source
       - build
     permissions:
       contents: write
@@ -223,58 +562,9 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.preflight.outputs.release_tag }}
+          target_commitish: ${{ needs.prepare-source.outputs.release_sha }}
           name: OpenNOW v${{ needs.preflight.outputs.version }}
           prerelease: ${{ needs.preflight.outputs.prerelease }}
           make_latest: ${{ needs.preflight.outputs.make_latest }}
           generate_release_notes: true
           files: release-artifacts/**/*
-
-  finalize:
-    name: finalize-version-bump
-    runs-on: blacksmith-2vcpu-ubuntu-2404
-    needs:
-      - preflight
-      - release
-    permissions:
-      contents: write
-
-    steps:
-      - name: Resolve release branch
-        id: branch
-        shell: bash
-        env:
-          REF_TYPE: ${{ github.ref_type }}
-          REF_NAME: ${{ github.ref_name }}
-        run: |
-          if [[ "$REF_TYPE" == "branch" ]]; then
-            branch="$REF_NAME"
-          else
-            branch="dev"
-          fi
-          echo "branch=$branch" >> "$GITHUB_OUTPUT"
-
-      - name: Checkout release branch
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ steps.branch.outputs.branch }}
-          fetch-depth: 0
-          token: ${{ secrets.RELEASE_PUSH_TOKEN || secrets.GITHUB_TOKEN }}
-
-      - name: Update package version
-        working-directory: opennow-stable
-        env:
-          RELEASE_VERSION: ${{ needs.preflight.outputs.version }}
-        run: node -e "const fs=require('fs'); const path='package.json'; const pkg=JSON.parse(fs.readFileSync(path,'utf8')); pkg.version=process.env.RELEASE_VERSION; fs.writeFileSync(path, JSON.stringify(pkg, null, 2) + '\n');"
-
-      - name: Commit and push
-        shell: bash
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add opennow-stable/package.json
-          if git diff --cached --quiet; then
-            echo "No version bump changes to commit."
-            exit 0
-          fi
-          git commit -m "chore(release): prepare v${{ needs.preflight.outputs.version }}"
-          git push origin HEAD:${{ steps.branch.outputs.branch }}

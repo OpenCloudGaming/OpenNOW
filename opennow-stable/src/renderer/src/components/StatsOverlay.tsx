@@ -1,6 +1,7 @@
 import { Monitor, Wifi, Activity, Gamepad2, AlertTriangle } from "lucide-react";
 import type { StreamDiagnostics } from "../gfn/webrtcClient";
 import type { JSX } from "react";
+import { useTranslation } from "../i18n";
 
 interface StatsOverlayProps {
   stats: StreamDiagnostics;
@@ -27,6 +28,7 @@ export function StatsOverlay({
   serverRegion,
   connectedControllers,
 }: StatsOverlayProps): JSX.Element | null {
+  const { t } = useTranslation();
   if (!isVisible) return null;
 
   const rttColor = getRttColor(stats.rttMs);
@@ -36,8 +38,8 @@ export function StatsOverlay({
   if (!hasData) {
     return (
       <div className="sovl">
-        <div className="sovl-body">
-          <span className="sovl-connecting">Connecting...</span>
+          <div className="sovl-body">
+          <span className="sovl-connecting">{t("stream.stats.connecting")}</span>
         </div>
       </div>
     );
@@ -78,7 +80,7 @@ export function StatsOverlay({
         {showPacketLoss && (
           <div className="sovl-pill sovl-pill--warn">
             <AlertTriangle size={13} className="sovl-icon" />
-            <span className="sovl-val">{stats.packetLossPercent.toFixed(1)}% loss</span>
+            <span className="sovl-val">{t("stream.stats.packetLossValue", { value: stats.packetLossPercent.toFixed(1) })}</span>
           </div>
         )}
 

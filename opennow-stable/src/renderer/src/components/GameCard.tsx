@@ -4,6 +4,7 @@ import type { JSX } from "react";
 import { normalizeGameStore } from "@shared/gfn";
 import type { GameInfo } from "@shared/gfn";
 import { getStoreOptions as getGameCardStoreOptions } from "../lib/gameCardStores";
+import { useTranslation } from "../i18n";
 
 interface GameCardProps {
   game: GameInfo;
@@ -164,6 +165,7 @@ export const GameCard = memo(function GameCard({
   selectedVariantId,
   onSelectStore,
 }: GameCardProps): JSX.Element {
+  const { t } = useTranslation();
   const storeOptions: StoreOption[] = getGameCardStoreOptions(game, selectedVariantId).map((option) => ({
     ...option,
     displayName: getStoreDisplayName(option.store),
@@ -207,7 +209,7 @@ export const GameCard = memo(function GameCard({
       }}
       role="button"
       tabIndex={0}
-      aria-label={`Select ${game.title}`}
+      aria-label={t("gameCard.selectGame", { title: game.title })}
     >
       <div
         className="game-card-image-wrapper"
@@ -236,7 +238,7 @@ export const GameCard = memo(function GameCard({
           <button
             className="game-card-play-button"
             onClick={handlePlayClick}
-            aria-label={`Play ${game.title}`}
+            aria-label={t("gameCard.playGame", { title: game.title })}
             tabIndex={-1}
           >
             <Play size={24} fill="currentColor" />
@@ -259,10 +261,10 @@ export const GameCard = memo(function GameCard({
                 ].filter(Boolean).join(" ");
                 const titleParts = [store.displayName];
                 if (store.isOwned) {
-                  titleParts.push("owned");
+                  titleParts.push(t("gameCard.owned"));
                 }
                 if (store.isActive) {
-                  titleParts.push("selected");
+                  titleParts.push(t("app.actions.select"));
                 }
                 const title = titleParts.join(" · ");
 
@@ -274,7 +276,7 @@ export const GameCard = memo(function GameCard({
                       className={className}
                       title={title}
                       onClick={(event) => handleStoreClick(event, store.variantId)}
-                      aria-label={`${store.displayName} store`}
+                      aria-label={t("gameCard.store", { store: store.displayName })}
                       aria-pressed={store.isActive}
                     >
                       <store.IconComponent />
