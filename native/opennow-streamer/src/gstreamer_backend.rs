@@ -71,6 +71,8 @@ const NATIVE_INPUT_DRAIN_MAX_EVENTS: usize = 512;
 const NATIVE_GAMEPAD_POLL_INTERVAL: Duration = Duration::from_millis(4);
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 const NATIVE_GAMEPAD_KEEPALIVE_INTERVAL: Duration = Duration::from_millis(100);
+#[cfg(any(test, target_os = "macos"))]
+const MACOS_GAMEPAD_STICK_DEADZONE: f32 = 0.15;
 const EXTERNAL_RENDERER_ENV: &str = "OPENNOW_NATIVE_EXTERNAL_RENDERER";
 const NATIVE_VIDEO_API_ENV: &str = "OPENNOW_NATIVE_VIDEO_API";
 const NATIVE_VIDEO_BACKEND_ENV: &str = "OPENNOW_NATIVE_VIDEO_BACKEND";
@@ -1532,6 +1534,41 @@ struct NativeGamepadSnapshot {
     right_stick_y: i16,
 }
 
+#[cfg(any(test, target_os = "macos"))]
+fn normalize_macos_gamepad_stick_axis(value: f32) -> i16 {
+    let value = if value.abs() < MACOS_GAMEPAD_STICK_DEADZONE {
+        0.0
+    } else {
+        let sign = value.signum();
+        let scaled =
+            (value.abs() - MACOS_GAMEPAD_STICK_DEADZONE) / (1.0 - MACOS_GAMEPAD_STICK_DEADZONE);
+        sign * scaled.clamp(0.0, 1.0)
+    };
+    (value.clamp(-1.0, 1.0) * 32767.0).round() as i16
+}
+
+#[cfg(any(test, target_os = "macos"))]
+fn macos_mouse_delta_y_for_native_input(delta_y: i64) -> i16 {
+    clamp_i64_to_i16(delta_y.saturating_neg())
+}
+
+#[cfg(any(test, target_os = "macos"))]
+fn macos_gamepad_dpad_y_buttons(axis_y: f32, up_pressed: bool, down_pressed: bool) -> u16 {
+    let mut buttons = 0u16;
+    if up_pressed || axis_y > 0.5 {
+        buttons |= 0x0001;
+    }
+    if down_pressed || axis_y < -0.5 {
+        buttons |= 0x0002;
+    }
+    buttons
+}
+
+#[cfg(any(test, target_os = "macos"))]
+fn clamp_i64_to_i16(value: i64) -> i16 {
+    value.clamp(i64::from(i16::MIN), i64::from(i16::MAX)) as i16
+}
+
 #[cfg(target_os = "windows")]
 impl NativeGamepadSnapshot {
     fn from_xinput(snapshot: win32_xinput::XInputGamepadSnapshot) -> Self {
@@ -2434,9 +2471,11 @@ fn start_external_renderer_window_guard(
 #[cfg(target_os = "macos")]
 mod macos_native_input {
     use super::{
-        native_input_timestamp_us, send_log, send_native_window_input_events, Event,
-        GstreamerInputChannels, GstreamerInputState, NativeGamepadSnapshot, NativeWindowInputEvent,
-        GAMEPAD_MAX_CONTROLLERS, NATIVE_GAMEPAD_KEEPALIVE_INTERVAL, NATIVE_GAMEPAD_POLL_INTERVAL,
+        clamp_i64_to_i16, macos_gamepad_dpad_y_buttons, macos_mouse_delta_y_for_native_input,
+        native_input_timestamp_us, normalize_macos_gamepad_stick_axis, send_log,
+        send_native_window_input_events, Event, GstreamerInputChannels, GstreamerInputState,
+        NativeGamepadSnapshot, NativeWindowInputEvent, GAMEPAD_MAX_CONTROLLERS,
+        NATIVE_GAMEPAD_KEEPALIVE_INTERVAL, NATIVE_GAMEPAD_POLL_INTERVAL,
         NATIVE_INPUT_BRIDGE_POLL_INTERVAL, NATIVE_INPUT_DRAIN_MAX_EVENTS,
     };
     use gilrs::{Axis, Button, Gilrs};
@@ -2493,7 +2532,6 @@ mod macos_native_input {
     const K_CG_EVENT_FLAG_MASK_NUMERIC_PAD: u64 = 1 << 21;
     const K_CG_EVENT_FLAG_MASK_SECONDARY_FN: u64 = 1 << 23;
     const GAMEPAD_TRIGGER_DEADZONE: u8 = 30;
-    const GAMEPAD_STICK_DEADZONE: f32 = 0.15;
 
     static EVENT_TAP_RUN_LOOP: AtomicUsize = AtomicUsize::new(0);
     static EVENT_TAP_PORT: AtomicUsize = AtomicUsize::new(0);
@@ -2917,7 +2955,10 @@ mod macos_native_input {
 
     unsafe fn handle_mouse_move_event(state: &MacosKeyboardMouseState, event: CGEventRef) {
         let dx = clamp_i64_to_i16(CGEventGetIntegerValueField(event, K_CG_MOUSE_EVENT_DELTA_X));
-        let dy = clamp_i64_to_i16(CGEventGetIntegerValueField(event, K_CG_MOUSE_EVENT_DELTA_Y));
+        let dy = macos_mouse_delta_y_for_native_input(CGEventGetIntegerValueField(
+            event,
+            K_CG_MOUSE_EVENT_DELTA_Y,
+        ));
         if dx == 0 && dy == 0 {
             return;
         }
@@ -3270,21 +3311,20 @@ mod macos_native_input {
             buttons: gamepad_buttons(gamepad),
             left_trigger: gamepad_trigger(gamepad, Button::LeftTrigger2, Axis::LeftZ),
             right_trigger: gamepad_trigger(gamepad, Button::RightTrigger2, Axis::RightZ),
-            left_stick_x: normalize_stick_axis(gamepad.value(Axis::LeftStickX)),
-            left_stick_y: normalize_stick_axis(-gamepad.value(Axis::LeftStickY)),
-            right_stick_x: normalize_stick_axis(gamepad.value(Axis::RightStickX)),
-            right_stick_y: normalize_stick_axis(-gamepad.value(Axis::RightStickY)),
+            left_stick_x: normalize_macos_gamepad_stick_axis(gamepad.value(Axis::LeftStickX)),
+            left_stick_y: normalize_macos_gamepad_stick_axis(gamepad.value(Axis::LeftStickY)),
+            right_stick_x: normalize_macos_gamepad_stick_axis(gamepad.value(Axis::RightStickX)),
+            right_stick_y: normalize_macos_gamepad_stick_axis(gamepad.value(Axis::RightStickY)),
         }
     }
 
     fn gamepad_buttons(gamepad: &gilrs::Gamepad<'_>) -> u16 {
         let mut buttons = 0u16;
-        if gamepad.is_pressed(Button::DPadUp) || gamepad.value(Axis::DPadY) > 0.5 {
-            buttons |= 0x0001;
-        }
-        if gamepad.is_pressed(Button::DPadDown) || gamepad.value(Axis::DPadY) < -0.5 {
-            buttons |= 0x0002;
-        }
+        buttons |= macos_gamepad_dpad_y_buttons(
+            gamepad.value(Axis::DPadY),
+            gamepad.is_pressed(Button::DPadUp),
+            gamepad.is_pressed(Button::DPadDown),
+        );
         if gamepad.is_pressed(Button::DPadLeft) || gamepad.value(Axis::DPadX) < -0.5 {
             buttons |= 0x0004;
         }
@@ -3348,23 +3388,8 @@ mod macos_native_input {
         }
     }
 
-    fn normalize_stick_axis(value: f32) -> i16 {
-        let value = if value.abs() < GAMEPAD_STICK_DEADZONE {
-            0.0
-        } else {
-            let sign = value.signum();
-            let scaled = (value.abs() - GAMEPAD_STICK_DEADZONE) / (1.0 - GAMEPAD_STICK_DEADZONE);
-            sign * scaled.clamp(0.0, 1.0)
-        };
-        (value.clamp(-1.0, 1.0) * 32767.0).round() as i16
-    }
-
     fn normalize_to_u8(value: f32) -> u8 {
         (value.clamp(0.0, 1.0) * 255.0).round() as u8
-    }
-
-    fn clamp_i64_to_i16(value: i64) -> i16 {
-        value.clamp(i64::from(i16::MIN), i64::from(i16::MAX)) as i16
     }
 
     #[allow(dead_code)]
@@ -8060,6 +8085,28 @@ mod tests {
         assert_eq!(automatic_present_max_fps(240, Some(240)), 0);
         assert_eq!(automatic_present_max_fps(240, Some(1)), 0);
         assert_eq!(automatic_present_max_fps(240, None), 0);
+    }
+
+    #[test]
+    fn macos_native_gamepad_y_axes_match_xinput_direction() {
+        assert!(normalize_macos_gamepad_stick_axis(1.0) > 0);
+        assert!(normalize_macos_gamepad_stick_axis(-1.0) < 0);
+        assert_eq!(normalize_macos_gamepad_stick_axis(0.05), 0);
+    }
+
+    #[test]
+    fn macos_native_mouse_vertical_delta_matches_windows_direction() {
+        assert_eq!(macos_mouse_delta_y_for_native_input(12), -12);
+        assert_eq!(macos_mouse_delta_y_for_native_input(-12), 12);
+        assert_eq!(macos_mouse_delta_y_for_native_input(i64::MIN), i16::MAX);
+    }
+
+    #[test]
+    fn macos_native_dpad_y_axis_maps_up_positive_down_negative() {
+        assert_eq!(macos_gamepad_dpad_y_buttons(0.75, false, false), 0x0001);
+        assert_eq!(macos_gamepad_dpad_y_buttons(-0.75, false, false), 0x0002);
+        assert_eq!(macos_gamepad_dpad_y_buttons(0.0, true, false), 0x0001);
+        assert_eq!(macos_gamepad_dpad_y_buttons(0.0, false, true), 0x0002);
     }
 
     #[test]
