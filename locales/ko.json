@@ -1,14 +1,14 @@
 {
   "app": {
     "name": "OpenNOW",
-    "tagline": "Open-source cloud gaming client",
-    "description": "Cloud gaming, open source.",
+    "tagline": "오픈소스 클라우드 게이밍 클라이언트",
+    "description": "클라우드 게이밍, 오픈 소스로.",
     "actions": {
-      "add": "Add",
-      "back": "Back",
-      "browse": "Browse",
-      "cancel": "Cancel",
-      "close": "Close",
+      "add": "추가",
+      "back": "뒤로가기",
+      "browse": "찾아보기",
+      "cancel": "취소",
+      "close": "닫기",
       "confirm": "confirm",
       "continue": "Continue",
       "delete": "Delete",
@@ -218,8 +218,8 @@
   "queue": {
     "servers": {
       "allServers": "All Servers",
-      "close": "Close",
-      "cancel": "Cancel",
+      "close": "닫기",
+      "cancel": "취소",
       "wait": "{{duration}} wait"
     }
   },

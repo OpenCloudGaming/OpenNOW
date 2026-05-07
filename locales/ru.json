@@ -1,193 +1,193 @@
 {
   "app": {
-    "name": "OpenNOW",
-    "tagline": "Client open-source pentru gaming în cloud",
-    "description": "Gaming în cloud, open source.",
+    "name": "Opennow",
+    "tagline": "Клиент для облачного гейминга с открытым кодом",
+    "description": "Облачный гейминг, открытый код.",
     "actions": {
-      "add": "Adaugă",
-      "back": "Înapoi",
-      "browse": "Răsfoiește",
-      "cancel": "Anulează",
-      "close": "Închide",
-      "confirm": "confirmă",
-      "continue": "Continuă",
-      "delete": "Șterge",
-      "done": "Done",
-      "open": "Deschide",
-      "play": "Joacă",
-      "refresh": "Reîmprospătează",
-      "remove": "Elimină",
-      "reset": "Resetează",
-      "resume": "Continuă",
-      "retry": "Reîncearcă",
-      "save": "Salvează",
-      "search": "Caută",
-      "select": "Selectează",
-      "settings": "Setări",
-      "showInFolder": "Show in folder",
-      "sort": "Sortează",
-      "stop": "Oprește",
-      "switch": "Schimbă"
+      "add": "Добавить",
+      "back": "Назад",
+      "browse": "Обзор",
+      "cancel": "Отклонить",
+      "close": "Закрыть",
+      "confirm": "confirm",
+      "continue": "Продолжить",
+      "delete": "Удалить",
+      "done": "Готово",
+      "open": "Открыть",
+      "play": "Играть",
+      "refresh": "Перезагрузить",
+      "remove": "Удалить",
+      "reset": "Сбросить",
+      "resume": "Продолжить",
+      "retry": "Повторить",
+      "save": "Сохранить",
+      "search": "Поиск",
+      "select": "Выбрать",
+      "settings": "Настройки",
+      "showInFolder": "Показать в папке",
+      "sort": "Сортировать",
+      "stop": "Стоп",
+      "switch": "Сменить"
     },
     "status": {
-      "checking": "Se verifică",
-      "connecting": "Se conectează...",
-      "disabled": "Disabled",
-      "error": "Eroare",
-      "failed": "Eșuat",
-      "idle": "Inactiv",
-      "loading": "Se încarcă...",
-      "ready": "Pregătit",
-      "saved": "Salvat",
-      "testing": "Se testează...",
-      "unknown": "Necunoscut",
-      "upToDate": "Actualizat"
+      "checking": "Проверка",
+      "connecting": "Подключение...",
+      "disabled": "Отключено",
+      "error": "Ошибка",
+      "failed": "Не удалось",
+      "idle": "Неактивно",
+      "loading": "Загрузка...",
+      "ready": "Готово",
+      "saved": "Сохранено",
+      "testing": "Проверка...",
+      "unknown": "Неизвестно",
+      "upToDate": "Актуально"
     },
     "units": {
       "bitrateMbps": "{{value}} Mbps",
-      "gb": "{{value}} GB",
-      "gbLeft": "{{value}} GB rămași",
-      "gbTotal": "{{value}} GB total",
-      "gbUsed": "{{value}} GB folosiți",
-      "hours": "{{value}} ore",
-      "hoursLeft": "{{value}} ore rămase",
-      "hoursUsed": "{{value}} ore folosite",
-      "milliseconds": "{{value}}ms",
-      "minutes": "{{value}} min",
+      "gb": "{{value}} ГБ",
+      "gbLeft": "{{value}} ГБ осталось",
+      "gbTotal": "{{value}} ГБ общее",
+      "gbUsed": "{{value}} ГБ использовано",
+      "hours": "{{value}}ч",
+      "hoursLeft": "{{value}}ч осталось",
+      "hoursUsed": "{{value}}ч использовано",
+      "milliseconds": "{{value}}мс",
+      "minutes": "{{value}} мин",
       "percent": "{{value}}%",
-      "seconds": "{{value}}s"
+      "seconds": "{{value}}с"
     },
     "labels": {
-      "auto": "Auto",
-      "best": "Best",
-      "beta": "Beta",
-      "current": "Curent",
-      "default": "Default",
-      "defaultDevice": "Default Device",
-      "free": "Gratuit",
-      "game": "Joc",
-      "hardware": "Hardware",
-      "other": "Altele",
-      "priority": "Prioritate",
-      "softwareCpu": "Software (CPU)",
+      "auto": "Автоматически",
+      "best": "Лучший",
+      "beta": "Бета",
+      "current": "Текущий",
+      "default": "По умолчанию",
+      "defaultDevice": "Устройство по умолчанию",
+      "free": "Бесплатно",
+      "game": "Игра",
+      "hardware": "Железо",
+      "other": "Другое",
+      "priority": "Приоритет",
+      "softwareCpu": "Процессор",
       "ultimate": "Ultimate",
-      "unlimited": "Unlimited"
+      "unlimited": "Безлимит"
     }
   },
   "auth": {
     "title": {
-      "signIn": "Conectare",
-      "restoringSession": "Restoring session"
+      "signIn": "Логин",
+      "restoringSession": "Восстановление сессии"
     },
     "subtitle": {
       "checkingSavedAccounts": "Checking saved accounts."
     },
     "provider": {
-      "label": "Provider",
-      "select": "Select provider",
-      "loading": "Se încarcă..."
+      "label": "Провайдер",
+      "select": "Выберите вашего провайдера",
+      "loading": "Загрузка..."
     },
     "actions": {
-      "signIn": "Conectează-te",
-      "connecting": "Se conectează...",
-      "restoringSession": "Restoring Session..."
+      "signIn": "Логин",
+      "connecting": "Подключение...",
+      "restoringSession": "Восстановление сессии..."
     },
     "accounts": {
-      "activeAccount": "Active account",
-      "addAccount": "Adaugă cont",
-      "cancelAccountRemoval": "Cancel account removal",
-      "cancelLogOut": "Cancel log out",
-      "guest": "Guest",
-      "logOutAll": "Log out all accounts",
-      "logOutConfirmation": "Log out confirmation",
-      "removeAccount": "Remove account",
-      "removeAccountConfirmation": "Remove account confirmation",
-      "removeAccountTitle": "Remove account?",
-      "removeAccountDescription": "Sunteţi sigur că doriţi să eliminaţi {{name}} din conturile salvate?",
-      "removeAccountSubtext": "Puteți adăuga acest cont din nou conectându-vă la cont.",
-      "removeNamedAccount": "Remove {{name}}",
-      "signOutAllTitle": "Deconectați toate conturile?",
-      "signOutAllDescription": "You're about to remove every saved account from this device and return to guest mode.",
-      "signOutAllSubtext": "Your cloud session data stays on the service. This just clears local OpenNOW account sessions.",
-      "signOutAll": "Sign out all",
-      "signOutAllAccounts": "Sign out all accounts",
-      "staySignedIn": "Stay signed in",
-      "switchAccount": "Schimbă contul",
-      "thisAccount": "acest cont",
-      "kicker": "Conturi"
+      "activeAccount": "Текущий аккаунт",
+      "addAccount": "Добавить аккаунт",
+      "cancelAccountRemoval": "Отклонить удаление аккаунта",
+      "cancelLogOut": "Отклонить выход",
+      "guest": "Гость",
+      "logOutAll": "Выйти из всех аккаунтов",
+      "logOutConfirmation": "Подтверждение выхода",
+      "removeAccount": "Удалить аккаунт",
+      "removeAccountConfirmation": "Подтверждение удаление аккаунта",
+      "removeAccountTitle": "Удалить аккаунт?",
+      "removeAccountDescription": "Вы уверены, что хотите удалить {{name}} из сохраненных аккаунтов?",
+      "removeAccountSubtext": "Вы можете добавить аккаунт снова при повторном входе.",
+      "removeNamedAccount": "Удалить {{name}}",
+      "signOutAllTitle": "Выйти из всех аккаунтов?",
+      "signOutAllDescription": "Вы удаляете каждый сохраненный аккаунт с устройства и возвращаетесь в режим гостя.",
+      "signOutAllSubtext": "Ваши данные из облачных сессий остаются на сервисе, происходит очистка только локальных данных аккаунтов в OpenNOW.",
+      "signOutAll": "Выйти из всех",
+      "signOutAllAccounts": "Выйти из всех аккаунтов",
+      "staySignedIn": "Запомнить меня",
+      "switchAccount": "Сменить аккаунт",
+      "thisAccount": "данный аккаунт",
+      "kicker": "Аккаунты"
     },
     "status": {
-      "restoringSavedSession": "Restoring saved session...",
-      "sessionRestoredTokenRefreshed": "Session restored. Token refreshed.",
-      "tokenRefreshedLoadingAccount": "Token refreshed. Loading your account...",
-      "tokenRefreshFailedUsingSaved": "Token refresh failed. Using saved session token.",
-      "tokenRefreshFailedContinuing": "Token refresh failed. Continuing with saved session...",
-      "missingRefreshTokenContinuing": "Saved session has no refresh token. Continuing...",
-      "sessionRestored": "Session restored.",
+      "restoringSavedSession": "Восстанавливаем сохраненную сессию...",
+      "sessionRestoredTokenRefreshed": "Сессия восстановлена. Токен обновлён.",
+      "tokenRefreshedLoadingAccount": "Токен обновлён. Вход в аккаунт...",
+      "tokenRefreshFailedUsingSaved": "Обновление токена неудачно. Используется сохраненный токен.",
+      "tokenRefreshFailedContinuing": "Обновление токена неудачно. Используется сохраненная сессия...",
+      "missingRefreshTokenContinuing": "Токен обновления отсутствует в сохраненной сессии. Продолжаем...",
+      "sessionRestored": "Сессия восстановлена.",
       "noSavedSessionFound": "No saved session found.",
-      "sessionRestoreFailed": "Session restore failed. Please sign in again."
+      "sessionRestoreFailed": "Восстановление сессии неудачно. Пожалуйста войдите снова."
     }
   },
   "navigation": {
-    "home": "Magazin",
-    "library": "Library",
-    "settings": "Setări"
+    "home": "Магазин",
+    "library": "Библиотека",
+    "settings": "Настройки"
   },
   "home": {
-    "searchPlaceholder": "Caută jocuri...",
-    "filters": "Filtre",
+    "searchPlaceholder": "Найти игры...",
+    "filters": "Фильтры",
     "count": {
-      "loading": "Se încarcă...",
-      "shown": "{{shown}} shown",
-      "shownTotal": "{{shown}} shown · {{total}} total",
-      "shownTotalSupported": "{{shown}} shown · {{total}} total · {{supported}} supported",
-      "shownSupported": "{{shown}} shown · {{supported}} supported"
+      "loading": "Загрузка...",
+      "shown": "{{shown}} показано",
+      "shownTotal": "{{shown}} отображается · {{total}} всего",
+      "shownTotalSupported": "{{shown}} отображается· {{total}} всего · {{supported}} поддерживается",
+      "shownSupported": "{{shown}} отображается · {{supported}} поддерживается"
     },
     "empty": {
-      "loadingGames": "Loading games...",
-      "noGamesFound": "No games found",
-      "tryAdjustingSearch": "Try adjusting your search terms or filters",
-      "checkBackLater": "Check back later for new additions"
+      "loadingGames": "Загрузка игр...",
+      "noGamesFound": "Игры не найдены",
+      "tryAdjustingSearch": "Попробуйте изменить параметры поиска и фильтров",
+      "checkBackLater": "Возвращайтесь позже за новыми дополнениями"
     }
   },
   "library": {
-    "title": "My Library",
-    "searchPlaceholder": "Search your library...",
-    "gameCount": "{{count}} joc",
-    "gameCount_plural": "{{count}} jocuri",
+    "title": "Библиотека",
+    "searchPlaceholder": "Поиск в библиотеке...",
+    "gameCount": "{{count}} игра",
+    "gameCount_plural": "{{count}} игр",
     "lastPlayed": {
-      "never": "Never played",
-      "justNow": "Just now",
-      "minutesAgo": "acum {{count}} min",
-      "hoursAgo": "acum {{count}} ore",
-      "daysAgo": "acum {{count}} zile",
-      "weeksAgo": "acum {{count}} săptămâni"
+      "never": "Никогда не играли",
+      "justNow": "Недавно",
+      "minutesAgo": "{{count}} минут назад",
+      "hoursAgo": "{{count}} часов назад",
+      "daysAgo": "{{count}} дней назад",
+      "weeksAgo": "{{count}} недель назад"
     },
     "empty": {
-      "loadingLibrary": "Loading your library...",
-      "libraryEmpty": "Your library is empty",
-      "ownedGamesAppearHere": "Games you own will appear here. Browse the catalog to find games.",
-      "noGamesFound": "No games found",
-      "noGamesMatch": "Nici un joc se potrivește \"{{query}}\""
+      "loadingLibrary": "Загрузка библиотеки...",
+      "libraryEmpty": "Ваша библиотека пуста",
+      "ownedGamesAppearHere": "Здесь появятся игры которыми вы владеете. Исследуйте каталог для находки игр.",
+      "noGamesFound": "Игры не найдены",
+      "noGamesMatch": "Не найдено игр с названием \"{{query}}\""
     }
   },
   "gameCard": {
-    "selectGame": "Selectează {{title}}",
-    "playGame": "Joacă {{title}}",
-    "store": "{{store}} store",
-    "owned": "Deținut",
-    "available": "Available"
+    "selectGame": "Выбрать {{title}}",
+    "playGame": "Играть в {{title}}",
+    "store": "{{store}} магазин",
+    "owned": "Приобретено",
+    "available": "Доступно"
   },
   "streamLoading": {
     "labels": {
-      "launchError": "Launch Error",
-      "nowLoading": "Now Loading",
+      "launchError": "Ошибка запуска",
+      "nowLoading": "Сейчас загружается",
       "adQueue": "Ad Queue"
     },
     "steps": {
       "queue": "Queue",
       "setup": "Setup",
-      "ready": "Pregătit"
+      "ready": "Готово"
     },
     "status": {
       "gameLaunchFailed": "Game launch failed",
@@ -198,7 +198,7 @@
       "startingStream": "Starting stream...",
       "connectingToServer": "Connecting to server...",
       "settingUpStream": "Setting up stream...",
-      "loading": "Se încarcă..."
+      "loading": "Загрузка..."
     },
     "ads": {
       "resumeToStayInQueue": "Resume ads to stay in queue.",
@@ -208,7 +208,7 @@
       "freeTierQueueAdsBegin": "Free-tier queue ads begin as soon as you enter queue.",
       "advertisementInProgress": "Advertisement in progress",
       "mediaWillAppear": "Ad media will appear here as soon as it is available.",
-      "advertisement": "Reclamă",
+      "advertisement": "Advertisement",
       "titledAdvertisement": "{{title}} advertisement"
     },
     "actions": {
@@ -218,21 +218,21 @@
   "queue": {
     "servers": {
       "allServers": "All Servers",
-      "close": "Închide",
-      "cancel": "Anulează",
+      "close": "Закрыть",
+      "cancel": "Отклонить",
       "wait": "{{duration}} wait"
     }
   },
   "session": {
     "active": "Active Session",
-    "current": "Curent",
+    "current": "Текущий",
     "control": "Session Control",
     "elapsed": "Elapsed",
     "endSession": "End session",
     "exitStream": "Exit Stream?",
     "exitConfirmation": "Exit stream confirmation",
     "cancelExit": "Cancel exit",
-    "resume": "Continuă",
+    "resume": "Продолжить",
     "resumeActiveCloudSession": "Resume active cloud session",
     "resumeActiveCloudSessionTitle": "Resume active cloud session: {{title}}",
     "resumeCurrentStream": "Resume current stream",
@@ -247,47 +247,47 @@
     "terminateActiveCloudSessionTitle": "Terminate active cloud session: {{title}}",
     "terminateConfirmation": "Terminate {{title}}? This will end the active cloud session immediately.",
     "activeSessionMissingServerAddress": "Active session found (missing server address)",
-    "thisGame": "acest joc",
+    "thisGame": "this game",
     "thisSession": "this session",
     "warnings": {
       "sessionTimeLimitApproaching": "Session time limit approaching",
-      "idleTimeoutApproaching": "Idle timeout approaching",
-      "maximumSessionTimeApproaching": "Maximum session time approaching",
-      "freeTier30MinutesRemaining": "30 de minute rămase în această sesiune gratuită",
-      "freeTier15MinutesRemaining": "15 minute rămase în această sesiune gratuită",
-      "freeTierEndsSoon": "Această sesiune gratuită se încheie în curând"
+      "idleTimeoutApproaching": "Приближается тайм - аут бездействия",
+      "maximumSessionTimeApproaching": "Приближается лимит времени в сессии",
+      "freeTier30MinutesRemaining": "30 минут осталось для бесплатной сессии",
+      "freeTier15MinutesRemaining": "15 минут осталось для бесплатной сессии",
+      "freeTierEndsSoon": "Бесплатная сессия скоро заканчивается"
     }
   },
   "stream": {
     "stats": {
-      "connecting": "Se conectează...",
-      "network": "Rețea",
-      "decode": "Decode",
-      "input": "Input",
+      "connecting": "Подключение...",
+      "network": "Сеть",
+      "decode": "Декодинг",
+      "input": "Ввод",
       "render": "Render",
       "stable": "Stable",
-      "roundTripLatency": "Round-trip network latency",
-      "decodeTime": "D = decode time",
-      "renderTime": "R = render time",
+      "roundTripLatency": "Задержка сети",
+      "decodeTime": "В = Время декодинга",
+      "renderTime": "Р - время рендера",
       "jitterBuffer": "JB = jitter buffer delay",
-      "packetLoss": "Packet loss percentage",
-      "packetLossValue": "{{value}}% pierdere",
+      "packetLoss": "Процент потери пакетов",
+      "packetLossValue": "{{value}}% потеря",
       "inputQueuePressure": "Input queue pressure (buffered bytes and delayed flush)",
       "inputChannelState": "Partially reliable input channel state and queued bytes",
       "mouseFlushCadence": "Mouse flush cadence and packet rate"
     },
     "controls": {
-      "antiAfkEnabled": "Anti-AFK is enabled",
-      "muteMicrophone": "Mute microphone",
-      "unmuteMicrophone": "Unmute microphone",
-      "enterFullscreen": "Enter fullscreen",
-      "exitFullscreen": "Exit fullscreen",
-      "controllerConnected": "{{count}} controller connected",
-      "controllerConnected_plural": "{{count}} controllers connected"
+      "antiAfkEnabled": "Анти-АФК включен",
+      "muteMicrophone": "Выключить микрофон",
+      "unmuteMicrophone": "Включить микрофон",
+      "enterFullscreen": "Открыть в полный экран",
+      "exitFullscreen": "Выйти из полного экрана",
+      "controllerConnected": "{{count}} контроллер подключен",
+      "controllerConnected_plural": "{{count}} контроллеров подключено"
     },
     "sidebar": {
-      "title": "Setări",
-      "remainingPlaytime": "Remaining Playtime",
+      "title": "Настройки",
+      "remainingPlaytime": "Остаток времени",
       "sections": "Sidebar sections",
       "microphoneHandling": "Microphone handling",
       "microphoneMode": "Microphone Mode",
@@ -320,8 +320,8 @@
       "clickThenPress": "Click, then press a key",
       "clickHereThenPress": "Click here, then press a key",
       "focusAndPress": "Focus and press the key combination to bind",
-      "examples": "Exemple: F3, Ctrl+Shift+Q, Ctrl+Shift+K",
-      "stats": "Statistici"
+      "examples": "Examples: F3, Ctrl+Shift+Q, Ctrl+Shift+K",
+      "stats": "Stats"
     }
   },
   "sidebar": {
@@ -329,39 +329,39 @@
     "closeSettings": "Close settings"
   },
   "settings": {
-    "title": "Setări",
-    "saved": "Salvat",
-    "searchPlaceholder": "Caută setări...",
-    "noMatches": "Nicio setare nu se potrivește \"{{query}}\".",
+    "title": "Настройки",
+    "saved": "Сохранено",
+    "searchPlaceholder": "Search settings...",
+    "noMatches": "No settings matched \"{{query}}\".",
     "sections": {
       "stream": "Stream",
-      "game": "Joc",
+      "game": "Game",
       "audio": "Audio",
-      "input": "Input",
-      "interface": "Interfață",
-      "about": "Despre",
+      "input": "Ввод",
+      "interface": "Interface",
+      "about": "About",
       "thanks": "Thanks"
     },
     "region": {
-      "title": "Regiune",
+      "title": "Region",
       "autoBest": "Auto (Best)",
-      "searchPlaceholder": "Caută regiuni...",
+      "searchPlaceholder": "Search regions...",
       "refreshPing": "Refresh ping",
-      "noRegionsMatch": "Nicio regiune nu se potrivește \"{{query}}\""
+      "noRegionsMatch": "No regions match \"{{query}}\""
     },
     "video": {
       "title": "Video",
-      "aspectRatio": "Raport de aspect",
-      "resolution": "Rezoluție",
+      "aspectRatio": "Aspect Ratio",
+      "resolution": "Resolution",
       "fps": "FPS",
       "codec": "Codec",
-      "decoder": "Decodor",
-      "encoder": "Codificator",
+      "decoder": "Decoder",
+      "encoder": "Encoder",
       "colorDepth": "Color Depth",
-      "maxBitrate": "Rată de biți maximă",
+      "maxBitrate": "Max Bitrate",
       "appliesAfterRestart": "Applies after app restart.",
       "requiresH265OrAv1": "This mode requires H265 or AV1. Codec will be auto-switched.",
-      "testing": "Se testează...",
+      "testing": "Проверка...",
       "gpu": "GPU",
       "cpu": "CPU"
     },
@@ -370,22 +370,22 @@
       "sharperChroma": "Sharper chroma",
       "higherBitDepth": "Higher bit depth",
       "highestChromaAndBitDepth": "Highest chroma and bit depth",
-      "requiresH265OrAv1Title": "{{description}} - necesită H265/AV1"
+      "requiresH265OrAv1Title": "{{description}} - requires H265/AV1"
     },
     "game": {
-      "title": "Joc",
-      "language": "Limbă",
+      "title": "Game",
+      "language": "Language",
       "keyboardLayout": "Keyboard Layout",
-      "preferredStore": "Magazin preferat",
+      "preferredStore": "Preferred Store",
       "launchBehavior": "Launch Behavior"
     },
     "audio": {
       "title": "Audio",
-      "microphone": "Microfon",
-      "microphoneMode": "Mod microfon",
-      "microphoneDevice": "Dispozitiv microfon",
+      "microphone": "Microphone",
+      "microphoneMode": "Microphone Mode",
+      "microphoneDevice": "Microphone Device",
       "microphoneInputLevel": "Microphone input level",
-      "disabled": "Dezactivat",
+      "disabled": "Отключено",
       "pushToTalk": "Push-to-Talk",
       "voiceActivity": "Voice Activity",
       "permissionDenied": "Microphone access was denied. Enable microphone access for OpenNOW in System Settings > Privacy & Security > Microphone.",
@@ -394,8 +394,8 @@
       "permissionUnavailable": "Microphone access is not available."
     },
     "input": {
-      "title": "Input",
-      "mouseAndKeyboard": "Mouse și tastatură",
+      "title": "Ввод",
+      "mouseAndKeyboard": "Mouse and Keyboard",
       "shortcuts": "Shortcuts",
       "shortcutConflictSidebar": "Shortcut conflicts with the settings sidebar toggle.",
       "shortcutConflictBinding": "Shortcut conflicts with another binding.",
@@ -413,9 +413,9 @@
       "shortcutHint": "Click a field and press the keys to bind, or paste a shortcut ({{examples}}). Escape cancels focus. Full screen: {{fullscreen}}. Stop: {{stop}}. Mic: {{mic}}. Screenshot: {{screenshot}}. Recording: {{recording}}."
     },
     "interface": {
-      "appearance": "Aspect",
-      "appLanguage": "Limbă aplicație",
-      "appLanguageHint": "Schimbă limba interfeței OpenNOW. Limba engleză este folosită pentru text netradus.",
+      "appearance": "Appearance",
+      "appLanguage": "App Language",
+      "appLanguageHint": "Changes OpenNOW's interface language. English is used for untranslated strings.",
       "hideStreamOverlayButtons": "Hide Stream Overlay Buttons",
       "hideStreamOverlayButtonsHint": "Hide microphone, fullscreen, and end-session buttons while streaming.",
       "showStatsOnStreamLaunch": "Show Stats on Stream Launch",
@@ -453,7 +453,7 @@
     "about": {
       "updateStatus": {
         "packagedBuildsOnly": "Packaged builds only",
-        "checking": "Se verifică",
+        "checking": "Проверка",
         "updateAvailable": "Update available",
         "downloading": "Downloading",
         "readyToInstall": "Ready to install"
@@ -476,7 +476,7 @@
     "showPlaytimeDetails": "Show playtime details",
     "showStorageDetails": "Show storage details",
     "time": {
-      "unlimitedTime": "Timp nelimitat",
+      "unlimitedTime": "Unlimited time",
       "timeUsage": "Time Usage",
       "used": "{{percent}} used",
       "tier": "Tier",
@@ -495,8 +495,8 @@
       "notifyAtInSession": "Notify At (In Session)",
       "planState": "Plan State",
       "gameplayAllowed": "Gameplay Allowed",
-      "yes": "Da",
-      "no": "Nu"
+      "yes": "Yes",
+      "no": "No"
     },
     "storage": {
       "storageUsage": "Storage Usage",
@@ -506,7 +506,7 @@
       "storageRegion": "Storage Region",
       "storageRegionCode": "Storage Region Code",
       "serverRegionVpc": "Server Region (VPC)",
-      "notAvailable": "Indisponibil"
+      "notAvailable": "N/A"
     }
   },
   "controllerMode": {
@@ -524,7 +524,7 @@
       "loadingTitle": "Loading your library",
       "loadingSubtitle": "Please wait",
       "gameHub": "Game hub",
-      "games": "Jocuri",
+      "games": "Games",
       "gameLibrary": "Game library",
       "emptySlot": "Empty slot",
       "emptyRecentSlot": "Empty recent slot",
@@ -533,9 +533,9 @@
       "recentlyPlayedEmptyHint": "Recently played · Empty slot - play games to fill your shelf",
       "recentlyPlayedGames": "Recently played games",
       "resumeGame": "Resume {{title}}",
-      "library": "Library",
+      "library": "Библиотека",
       "detailRow": "Detail row",
-      "options": "Opţiuni",
+      "options": "Options",
       "browseLeftRight": "Browse · Left / Right",
       "backToMedia": "Back To Media",
       "libraryFiltersUp": "Library filters · Up",
@@ -548,11 +548,11 @@
       "settingUpRig": "Setting up your gaming rig...",
       "startingStream": "Starting stream...",
       "settingUpStream": "Setting up stream...",
-      "loading": "Se încarcă..."
+      "loading": "Загрузка..."
     }
   },
   "errors": {
-    "launchUnknown": "Jocul nu a putut începe. Vă rugăm să încercați din nou.",
+    "launchUnknown": "The game could not start. Please try again.",
     "launchFailedTitle": "Launch Failed",
     "duplicateSessionTitle": "Duplicate Session Detected",
     "duplicateSessionDescription": "Another session is already running on your account. Close it first or wait for it to timeout, then launch again.",
