@@ -255,39 +255,39 @@
       "maximumSessionTimeApproaching": "Приближается лимит времени в сессии",
       "freeTier30MinutesRemaining": "30 минут осталось для бесплатной сессии",
       "freeTier15MinutesRemaining": "15 минут осталось для бесплатной сессии",
-      "freeTierEndsSoon": "This free-tier session ends soon"
+      "freeTierEndsSoon": "Бесплатная сессия скоро заканчивается"
     }
   },
   "stream": {
     "stats": {
       "connecting": "Подключение...",
-      "network": "Network",
-      "decode": "Decode",
-      "input": "Input",
+      "network": "Сеть",
+      "decode": "Декодинг",
+      "input": "Ввод",
       "render": "Render",
       "stable": "Stable",
-      "roundTripLatency": "Round-trip network latency",
-      "decodeTime": "D = decode time",
-      "renderTime": "R = render time",
+      "roundTripLatency": "Задержка сети",
+      "decodeTime": "В = Время декодинга",
+      "renderTime": "Р - время рендера",
       "jitterBuffer": "JB = jitter buffer delay",
-      "packetLoss": "Packet loss percentage",
-      "packetLossValue": "{{value}}% loss",
+      "packetLoss": "Процент потери пакетов",
+      "packetLossValue": "{{value}}% потеря",
       "inputQueuePressure": "Input queue pressure (buffered bytes and delayed flush)",
       "inputChannelState": "Partially reliable input channel state and queued bytes",
       "mouseFlushCadence": "Mouse flush cadence and packet rate"
     },
     "controls": {
-      "antiAfkEnabled": "Anti-AFK is enabled",
-      "muteMicrophone": "Mute microphone",
-      "unmuteMicrophone": "Unmute microphone",
-      "enterFullscreen": "Enter fullscreen",
-      "exitFullscreen": "Exit fullscreen",
-      "controllerConnected": "{{count}} controller connected",
-      "controllerConnected_plural": "{{count}} controllers connected"
+      "antiAfkEnabled": "Анти-АФК включен",
+      "muteMicrophone": "Выключить микрофон",
+      "unmuteMicrophone": "Включить микрофон",
+      "enterFullscreen": "Открыть в полный экран",
+      "exitFullscreen": "Выйти из полного экрана",
+      "controllerConnected": "{{count}} контроллер подключен",
+      "controllerConnected_plural": "{{count}} контроллеров подключено"
     },
     "sidebar": {
       "title": "Настройки",
-      "remainingPlaytime": "Remaining Playtime",
+      "remainingPlaytime": "Остаток времени",
       "sections": "Sidebar sections",
       "microphoneHandling": "Microphone handling",
       "microphoneMode": "Microphone Mode",
@@ -337,7 +337,7 @@
       "stream": "Stream",
       "game": "Game",
       "audio": "Audio",
-      "input": "Input",
+      "input": "Ввод",
       "interface": "Interface",
       "about": "About",
       "thanks": "Thanks"
@@ -394,7 +394,7 @@
       "permissionUnavailable": "Microphone access is not available."
     },
     "input": {
-      "title": "Input",
+      "title": "Ввод",
       "mouseAndKeyboard": "Mouse and Keyboard",
       "shortcuts": "Shortcuts",
       "shortcutConflictSidebar": "Shortcut conflicts with the settings sidebar toggle.",
