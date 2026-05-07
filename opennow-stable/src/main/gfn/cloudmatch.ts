@@ -32,11 +32,16 @@ import { DEFAULT_MINIMUM_FPS_FOR_REFLEX_WITHOUT_VRR } from "@shared/cloudGsync";
 
 import type { CloudMatchRequest, CloudMatchResponse, GetSessionsResponse } from "./types";
 import { SessionError } from "./errorCodes";
+import {
+  buildGfnCloudMatchClaimHeaders,
+  buildGfnCloudMatchHeaders,
+} from "./clientHeaders";
 import { fetchWithOptionalProxy } from "./proxyFetch";
+import {
+  readCloudMatchJson,
+  throwIfCloudMatchResponseError,
+} from "./request";
 
-const GFN_USER_AGENT =
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36 NVIDIACEFClient/HEAD/debb5919f6 GFN-PC/2.0.80.173";
-const GFN_CLIENT_VERSION = "2.0.80.173";
 const SESSION_MODIFY_ACTION_AD_UPDATE = 6;
 const READY_SESSION_STATUSES = new Set([2, 3]);
 const GFN_DEVICE_ID_FILENAME = "gfn-device-id.json";
@@ -488,41 +493,6 @@ function buildSignalingUrl(
     signalingUrl: `wss://${serverIp}:443/nvst/`,
     signalingHost: null,
   };
-}
-
-interface RequestHeadersOptions {
-  token: string;
-  clientId?: string;
-  deviceId?: string;
-  includeOrigin?: boolean;
-}
-
-function requestHeaders(options: RequestHeadersOptions): Record<string, string> {
-  const clientId = options.clientId ?? crypto.randomUUID();
-  const deviceId = options.deviceId ?? crypto.randomUUID();
-
-  const headers: Record<string, string> = {
-    "User-Agent": GFN_USER_AGENT,
-    Authorization: `GFNJWT ${options.token}`,
-    "Content-Type": "application/json",
-    "nv-browser-type": "CHROME",
-    "nv-client-id": clientId,
-    "nv-client-streamer": "NVIDIA-CLASSIC",
-    "nv-client-type": "NATIVE",
-    "nv-client-version": GFN_CLIENT_VERSION,
-    "nv-device-make": "UNKNOWN",
-    "nv-device-model": "UNKNOWN",
-    "nv-device-os": process.platform === "win32" ? "WINDOWS" : process.platform === "darwin" ? "MACOS" : "LINUX",
-    "nv-device-type": "DESKTOP",
-    "x-device-id": deviceId,
-  };
-
-  if (options.includeOrigin !== false) {
-    headers["Origin"] = "https://play.geforcenow.com";
-    headers["Referer"] = "https://play.geforcenow.com/";
-  }
-
-  return headers;
 }
 
 function parseResolution(input: string): { width: number; height: number } {
@@ -1067,17 +1037,11 @@ export async function createSession(input: SessionCreateRequest): Promise<Sessio
   const url = `${base}/v2/session?${new URLSearchParams({ keyboardLayout, languageCode }).toString()}`;
   const response = await fetchWithOptionalProxy(url, {
     method: "POST",
-    headers: requestHeaders({ token: input.token, clientId, deviceId, includeOrigin: true }),
+    headers: buildGfnCloudMatchHeaders({ token: input.token, clientId, deviceId, includeOrigin: true }),
     body: JSON.stringify(body),
   }, input.proxyUrl);
 
-  const text = await response.text();
-  if (!response.ok) {
-    // Use SessionError to parse and throw detailed error
-    throw SessionError.fromResponse(response.status, text);
-  }
-
-  const payload = JSON.parse(text) as CloudMatchResponse;
+  const { payload } = await readCloudMatchJson<CloudMatchResponse>(response);
   return await toSessionInfo({ zone: input.zone, streamingBaseUrl: base, payload, clientId, deviceId });
 }
 
@@ -1095,18 +1059,13 @@ export async function pollSession(input: SessionPollRequest): Promise<SessionInf
   const pollProxyUrl = isZoneHostname(baseHost) ? input.proxyUrl : undefined;
   const url = `${base}/v2/session/${input.sessionId}`;
   // Polling should NOT include Origin/Referer headers (matches claimSession polling pattern)
-  const headers = requestHeaders({ token: input.token, clientId, deviceId, includeOrigin: false });
+  const headers = buildGfnCloudMatchHeaders({ token: input.token, clientId, deviceId, includeOrigin: false });
   const response = await fetchWithOptionalProxy(url, {
     method: "GET",
     headers,
   }, pollProxyUrl);
 
-  const text = await response.text();
-  if (!response.ok) {
-    throw SessionError.fromResponse(response.status, text);
-  }
-
-  const payload = JSON.parse(text) as CloudMatchResponse;
+  const { payload } = await readCloudMatchJson<CloudMatchResponse>(response);
 
   // Match Rust behavior: if the poll was routed through the zone load balancer
   // and the response now contains a real server IP in connectionInfo, re-poll
@@ -1187,20 +1146,18 @@ export async function reportSessionAd(input: SessionAdReportRequest): Promise<Se
   const response = await fetch(url, {
     method: "PUT",
     // Official browser requests include Origin/Referer on cross-origin ad updates.
-    headers: requestHeaders({ token: input.token, clientId, deviceId, includeOrigin: true }),
+    headers: buildGfnCloudMatchHeaders({ token: input.token, clientId, deviceId, includeOrigin: true }),
     body: JSON.stringify(requestBody),
   });
 
-  const text = await response.text();
-  if (!response.ok) {
-    console.warn(
-      `[CloudMatch] reportSessionAd: backend error status=${response.status}, sessionId=${input.sessionId}, ` +
-        `adId=${input.adId}, action=${input.action}, body=${text.slice(0, 500)}`,
-    );
-    throw SessionError.fromResponse(response.status, text);
-  }
-
-  const payload = JSON.parse(text) as CloudMatchResponse;
+  const { text, payload } = await readCloudMatchJson<CloudMatchResponse>(response, {
+    onErrorText: (text) => {
+      console.warn(
+        `[CloudMatch] reportSessionAd: backend error status=${response.status}, sessionId=${input.sessionId}, ` +
+          `adId=${input.adId}, action=${input.action}, body=${text.slice(0, 500)}`,
+      );
+    },
+  });
   if (payload.requestStatus.statusCode !== 1) {
     console.warn(
       `[CloudMatch] reportSessionAd: API error requestStatus=${payload.requestStatus.statusCode}, ` +
@@ -1232,14 +1189,10 @@ export async function stopSession(input: SessionStopRequest): Promise<void> {
   const url = `${base}/v2/session/${input.sessionId}`;
   const response = await fetch(url, {
     method: "DELETE",
-    headers: requestHeaders({ token: input.token, clientId, deviceId, includeOrigin: false }),
+    headers: buildGfnCloudMatchHeaders({ token: input.token, clientId, deviceId, includeOrigin: false }),
   });
 
-  if (!response.ok) {
-    const text = await response.text();
-    // Use SessionError to parse and throw detailed error
-    throw SessionError.fromResponse(response.status, text);
-  }
+  await throwIfCloudMatchResponseError(response);
 }
 
 /**
@@ -1261,7 +1214,7 @@ export async function getActiveSessions(
 
   const response = await fetch(url, {
     method: "GET",
-    headers: requestHeaders({ token, includeOrigin: false }),
+    headers: buildGfnCloudMatchHeaders({ token, includeOrigin: false }),
   });
 
   const text = await response.text();
@@ -1431,7 +1384,7 @@ export async function claimSession(input: SessionClaimRequest): Promise<SessionI
     const zoneBase = `https://${effectiveServerIp}`;
     const prefetchUrl = `${zoneBase}/v2/session/${input.sessionId}`;
     console.log(`[CloudMatch] claimSession: pre-flight query ${prefetchUrl}`);
-    const prefetchHeaders = requestHeaders({ token: input.token, clientId, deviceId, includeOrigin: false });
+    const prefetchHeaders = buildGfnCloudMatchHeaders({ token: input.token, clientId, deviceId, includeOrigin: false });
     try {
       const prefetchResp = await fetch(prefetchUrl, { method: "GET", headers: prefetchHeaders });
       console.log(`[CloudMatch] claimSession: pre-flight response status=${prefetchResp.status}`);
@@ -1462,7 +1415,7 @@ export async function claimSession(input: SessionClaimRequest): Promise<SessionI
   let shouldSendResumeClaim = true;
   try {
     const validationUrl = `https://${effectiveServerIp}/v2/session/${input.sessionId}`;
-    const validationHeaders = requestHeaders({ token: input.token, clientId, deviceId, includeOrigin: false });
+    const validationHeaders = buildGfnCloudMatchHeaders({ token: input.token, clientId, deviceId, includeOrigin: false });
     const validationResp = await fetch(validationUrl, { method: "GET", headers: validationHeaders });
     if (validationResp.ok) {
       const validationText = await validationResp.text();
@@ -1499,20 +1452,7 @@ export async function claimSession(input: SessionClaimRequest): Promise<SessionI
   if (preClaimStatus !== 1 && shouldSendResumeClaim) {
     const payload = buildClaimRequestBody(input.sessionId, appId, settings);
 
-    const headers: Record<string, string> = {
-      "User-Agent": GFN_USER_AGENT,
-      Authorization: `GFNJWT ${input.token}`,
-      "Content-Type": "application/json",
-      Origin: "https://play.geforcenow.com",
-      Referer: "https://play.geforcenow.com/",
-      "nv-client-id": clientId,
-      "nv-client-streamer": "NVIDIA-CLASSIC",
-      "nv-client-type": "NATIVE",
-      "nv-client-version": GFN_CLIENT_VERSION,
-      "nv-device-os": process.platform === "win32" ? "WINDOWS" : process.platform === "darwin" ? "MACOS" : "LINUX",
-      "nv-device-type": "DESKTOP",
-      "x-device-id": deviceId,
-    };
+    const headers = buildGfnCloudMatchClaimHeaders({ token: input.token, clientId, deviceId });
 
     console.log(`[CloudMatch] claimSession PUT ${claimUrl}`);
     console.log(`[CloudMatch] claimSession body: ${JSON.stringify(payload)}`);
@@ -1522,16 +1462,12 @@ export async function claimSession(input: SessionClaimRequest): Promise<SessionI
       body: JSON.stringify(payload),
     });
 
-    const text = await response.text();
-
-    console.log(`[CloudMatch] claimSession response: HTTP ${response.status}`);
-    console.log(`[CloudMatch] claimSession response body FULL: ${text}`);
-
-    if (!response.ok) {
-      throw SessionError.fromResponse(response.status, text);
-    }
-
-    const apiResponse = JSON.parse(text) as CloudMatchResponse;
+    const { text, payload: apiResponse } = await readCloudMatchJson<CloudMatchResponse>(response, {
+      onText: (text) => {
+        console.log(`[CloudMatch] claimSession response: HTTP ${response.status}`);
+        console.log(`[CloudMatch] claimSession response body FULL: ${text}`);
+      },
+    });
 
     if (apiResponse.requestStatus.statusCode !== 1) {
       throw SessionError.fromResponse(200, text);
@@ -1547,7 +1483,7 @@ export async function claimSession(input: SessionClaimRequest): Promise<SessionI
       await new Promise((resolve) => setTimeout(resolve, 1000));
     }
 
-    const pollHeaders = requestHeaders({ token: input.token, clientId, deviceId, includeOrigin: false });
+    const pollHeaders = buildGfnCloudMatchHeaders({ token: input.token, clientId, deviceId, includeOrigin: false });
 
     const pollResponse = await fetch(getUrl, {
       method: "GET",
