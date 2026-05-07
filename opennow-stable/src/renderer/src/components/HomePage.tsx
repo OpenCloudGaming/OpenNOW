@@ -2,6 +2,7 @@ import { Search, LayoutGrid, Loader2, ArrowUpDown, Filter, ChevronDown } from "l
 import type { JSX } from "react";
 import type { CatalogFilterGroup, CatalogSortOption, GameInfo } from "@shared/gfn";
 import { GameCard } from "./GameCard";
+import { useTranslation } from "../i18n";
 
 export interface HomePageProps {
   games: GameInfo[];
@@ -42,9 +43,19 @@ export function HomePage({
   totalCount,
   supportedCount,
 }: HomePageProps): JSX.Element {
+  const { t } = useTranslation();
   const hasGames = games.length > 0;
   const visibleFilterGroups = filterGroups.filter((group) => ["digital_store", "genre", "subscriptions"].includes(group.id));
   const activeFilterCount = selectedFilterIds.length;
+  const countLabel = isLoading
+    ? t("home.count.loading")
+    : totalCount > games.length && supportedCount > 0
+      ? t("home.count.shownTotalSupported", { shown: games.length, total: totalCount, supported: supportedCount })
+      : totalCount > games.length
+        ? t("home.count.shownTotal", { shown: games.length, total: totalCount })
+        : supportedCount > 0
+          ? t("home.count.shownSupported", { shown: games.length, supported: supportedCount })
+          : t("home.count.shown", { shown: games.length });
 
   return (
     <div className="home-page">
@@ -54,7 +65,7 @@ export function HomePage({
           <input
             type="text"
             className="home-search-input"
-            placeholder="Search games..."
+            placeholder={t("home.searchPlaceholder")}
             value={searchQuery}
             onChange={(e) => onSearchChange(e.target.value)}
           />
@@ -65,7 +76,7 @@ export function HomePage({
             <summary className="home-filter-dropdown-trigger">
               <span className="home-filter-dropdown-label">
                 <Filter size={14} />
-                Filters
+                {t("home.filters")}
               </span>
               {activeFilterCount > 0 && <span className="home-filter-dropdown-count">{activeFilterCount}</span>}
               <ChevronDown size={14} className="home-filter-dropdown-chevron" />
@@ -107,9 +118,7 @@ export function HomePage({
         </label>
 
         <span className="home-count">
-          {isLoading
-            ? "Loading..."
-            : `${games.length} shown${totalCount > games.length ? ` · ${totalCount} total` : ""}${supportedCount > 0 ? ` · ${supportedCount} supported` : ""}`}
+          {countLabel}
         </span>
       </header>
 
@@ -117,16 +126,16 @@ export function HomePage({
         {isLoading ? (
           <div className="home-empty-state">
             <Loader2 className="home-spinner" size={36} />
-            <p>Loading games...</p>
+            <p>{t("home.empty.loadingGames")}</p>
           </div>
         ) : !hasGames ? (
           <div className="home-empty-state">
             <LayoutGrid size={44} className="home-empty-icon" />
-            <h3>No games found</h3>
+            <h3>{t("home.empty.noGamesFound")}</h3>
             <p>
               {searchQuery || selectedFilterIds.length > 0
-                ? "Try adjusting your search terms or filters"
-                : "Check back later for new additions"}
+                ? t("home.empty.tryAdjustingSearch")
+                : t("home.empty.checkBackLater")}
             </p>
           </div>
         ) : (

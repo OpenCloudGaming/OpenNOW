@@ -5,6 +5,7 @@ import { Calendar, Clock3, Clock } from "lucide-react";
 import type { SubscriptionInfo } from "@shared/gfn";
 
 import { formatRemainingPlaytimeFromSubscription } from "../utils/usePlaytime";
+import { useTranslation } from "../i18n";
 
 function formatElapsed(totalSeconds: number): string {
   const safe = Math.max(0, Math.floor(totalSeconds));
@@ -25,13 +26,14 @@ interface SessionElapsedIndicatorProps {
 }
 
 export function SessionElapsedIndicator({ startedAtMs, active, className, iconSize = 14 }: SessionElapsedIndicatorProps): JSX.Element {
+  const { t } = useTranslation();
   const nowMs = useTicker(1000);
   const elapsedSeconds = active && startedAtMs != null ? Math.max(0, Math.floor((nowMs - startedAtMs) / 1000)) : 0;
 
   return (
     <span className={className}>
       <Clock3 size={iconSize} />
-      <span>Session {formatElapsed(elapsedSeconds)}</span>
+      <span>{t("session.elapsedWithValue", { value: formatElapsed(elapsedSeconds) })}</span>
     </span>
   );
 }
@@ -72,6 +74,7 @@ interface RemainingPlaytimeIndicatorProps {
 }
 
 export function RemainingPlaytimeIndicator({ subscriptionInfo, startedAtMs, active, className }: RemainingPlaytimeIndicatorProps): JSX.Element {
+  const { t } = useTranslation();
   const nowMs = useTicker(60_000);
   const elapsedSeconds = active && startedAtMs != null ? Math.max(0, Math.floor((nowMs - startedAtMs) / 1000)) : 0;
   const consumedHours = active ? Math.floor(elapsedSeconds / 60) / 60 : 0;
@@ -80,7 +83,7 @@ export function RemainingPlaytimeIndicator({ subscriptionInfo, startedAtMs, acti
   return (
     <span className={className}>
       <Calendar size={10} />
-      <span>{remainingPlaytimeText} left</span>
+      <span>{t("session.remainingPlaytime", { value: remainingPlaytimeText })}</span>
     </span>
   );
 }
