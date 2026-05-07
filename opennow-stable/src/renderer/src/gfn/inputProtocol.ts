@@ -83,6 +83,13 @@ export interface GamepadInput {
   timestampUs: bigint;
 }
 
+export type GamepadTriggerAxisMode = "direct" | "bipolar";
+
+export interface GamepadTriggerAxisModes {
+  leftTrigger?: GamepadTriggerAxisMode;
+  rightTrigger?: GamepadTriggerAxisMode;
+}
+
 export function partiallyReliableHidMaskForInputType(inputType: number): number {
   if (!Number.isInteger(inputType) || inputType < 0 || inputType > 31) {
     return 0;
@@ -885,6 +892,40 @@ export function normalizeToUint8(value: number): number {
   return Math.max(0, Math.min(255, Math.round(value * 255)));
 }
 
+function normalizeTriggerButtonValue(button: GamepadButton | undefined): number {
+  if (!button || !Number.isFinite(button.value)) {
+    return 0;
+  }
+  return Math.max(0, Math.min(1, button.value));
+}
+
+export function normalizeTriggerAxisValue(
+  value: number | undefined,
+  mode: GamepadTriggerAxisMode = "direct"
+): number {
+  if (value === undefined || !Number.isFinite(value)) {
+    return 0;
+  }
+
+  const clamped = Math.max(-1, Math.min(1, value));
+  if (mode === "bipolar") {
+    return Math.max(0, Math.min(1, (clamped + 1) / 2));
+  }
+
+  return Math.max(0, clamped);
+}
+
+function readTriggerValue(
+  button: GamepadButton | undefined,
+  axis: number | undefined,
+  axisMode: GamepadTriggerAxisMode | undefined
+): number {
+  return Math.max(
+    normalizeTriggerButtonValue(button),
+    normalizeTriggerAxisValue(axis, axisMode ?? "direct"),
+  );
+}
+
 /**
  * Map Standard Gamepad API buttons to XInput button flags.
  * Standard Gamepad: https://w3c.github.io/gamepad/#remapping
@@ -935,7 +976,7 @@ export function mapGamepadButtons(gamepad: Gamepad): number {
  * @param gamepad The Gamepad object from navigator.getGamepads()
  * @returns Object with left/right stick and trigger values
  */
-export function readGamepadAxes(gamepad: Gamepad): {
+export function readGamepadAxes(gamepad: Gamepad, triggerAxisModes: GamepadTriggerAxisModes = {}): {
   leftStickX: number;
   leftStickY: number;
   rightStickX: number;
@@ -953,21 +994,11 @@ export function readGamepadAxes(gamepad: Gamepad): {
   const ry = gamepad.axes[3] ?? 0;
   const rightStick = applyDeadzone(rx, ry);
 
-  // Triggers - can be buttons (6, 7) or axes (4, 5) depending on browser
-  let leftTrigger = 0;
-  let rightTrigger = 0;
-
-  if (gamepad.buttons[6]) {
-    leftTrigger = gamepad.buttons[6].value;
-  } else if (gamepad.axes[4] !== undefined && gamepad.axes[4] > 0) {
-    leftTrigger = gamepad.axes[4];
-  }
-
-  if (gamepad.buttons[7]) {
-    rightTrigger = gamepad.buttons[7].value;
-  } else if (gamepad.axes[5] !== undefined && gamepad.axes[5] > 0) {
-    rightTrigger = gamepad.axes[5];
-  }
+  // Triggers can appear as analog buttons, direct 0..1 axes, or bipolar -1..1 axes.
+  // Some Android/WebView mappings expose inert button entries while the real value
+  // lives on the axis, so read both sources and use the strongest value.
+  const leftTrigger = readTriggerValue(gamepad.buttons[6], gamepad.axes[4], triggerAxisModes.leftTrigger);
+  const rightTrigger = readTriggerValue(gamepad.buttons[7], gamepad.axes[5], triggerAxisModes.rightTrigger);
 
   return {
     leftStickX: leftStick.x,

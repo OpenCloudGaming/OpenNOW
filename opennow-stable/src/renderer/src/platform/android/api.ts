@@ -7,6 +7,7 @@ import { StatusBar, Style } from "@capacitor/status-bar";
 
 import type {
   ActiveSessionInfo,
+  AndroidLaunchIntent,
   AuthLoginRequest,
   AuthSession,
   AuthSessionRequest,
@@ -87,7 +88,7 @@ import {
   userFromJwt,
 } from "@shared/gfnRuntime";
 import { exportLogs as exportCapturedLogs } from "@shared/logger";
-import { DEFAULT_SETTINGS } from "@shared/settings";
+import { DEFAULT_SETTINGS, normalizeSettings } from "@shared/settings";
 import type { OpenNowPlatform } from "../types";
 import { BrowserSignalingClient } from "./browserSignaling";
 import { isNativeHttpError, nativeRequest } from "./http";
@@ -138,9 +139,10 @@ const LocalhostAuth = registerPlugin<LocalhostAuthPlugin>("LocalhostAuth");
 interface OpenNowAndroidPlugin {
   setImmersiveFullscreen(options: { enabled: boolean }): Promise<{ enabled: boolean }>;
   setPointerCapture(options: { enabled: boolean }): Promise<{ supported: boolean; enabled: boolean }>;
+  consumeLaunchIntent(): Promise<{ intent?: AndroidLaunchIntent | null }>;
   addListener(
-    eventName: "nativeMouseMove" | "nativeMouseButton" | "nativeMouseWheel",
-    listener: (event: NativeMouseMoveEvent | NativeMouseButtonEvent | NativeMouseWheelEvent) => void,
+    eventName: "nativeMouseMove" | "nativeMouseButton" | "nativeMouseWheel" | "launchIntent",
+    listener: (event: NativeMouseMoveEvent | NativeMouseButtonEvent | NativeMouseWheelEvent | AndroidLaunchIntent) => void,
   ): Promise<PluginListenerHandle>;
 }
 
@@ -441,8 +443,8 @@ class AndroidAuthService {
 const authStore = new AndroidAuthService();
 const initPromise = authStore.initialize();
 async function ensureInitialized(): Promise<void> { await initPromise; }
-async function getStoredSettings(): Promise<Settings> { return { ...DEFAULT_SETTINGS, ...(await readPreferenceJson<Partial<Settings>>(SETTINGS_KEY, {})) }; }
-async function saveSettings(settings: Settings): Promise<void> { await writePreferenceJson(SETTINGS_KEY, settings); }
+async function getStoredSettings(): Promise<Settings> { return normalizeSettings(await readPreferenceJson<Partial<Settings>>(SETTINGS_KEY, {})); }
+async function saveSettings(settings: Settings): Promise<void> { await writePreferenceJson(SETTINGS_KEY, normalizeSettings(settings)); }
 
 async function getVpcInfo(token: string | undefined, streamingBaseUrl: string): Promise<{ regions: StreamRegion[]; vpcId: string | null }> { const headers: Record<string, string> = { Accept: "application/json", "nv-client-id": LCARS_CLIENT_ID, "nv-client-type": "BROWSER", "nv-client-version": GFN_CLIENT_VERSION, "nv-client-streamer": "WEBRTC", "nv-device-os": "ANDROID", "nv-device-type": "PHONE", "User-Agent": GFN_USER_AGENT }; if (token) headers.Authorization = `GFNJWT ${token}`; const payload = await httpRequest<ServerInfoResponse>(`${normalizeBaseUrl(streamingBaseUrl)}v2/serverInfo`, { headers }); const regions = (payload.metaData ?? []).filter((entry) => entry.value.startsWith("https://") && entry.key !== "gfn-regions" && !entry.key.startsWith("gfn-")).map<StreamRegion>((entry) => ({ name: entry.key, url: normalizeBaseUrl(entry.value) })).sort((a, b) => a.name.localeCompare(b.name)); return { regions, vpcId: payload.requestStatus?.serverId ?? null }; }
 async function getVpcId(token: string, providerStreamingBaseUrl?: string): Promise<string> { try { return (await getVpcInfo(token, providerStreamingBaseUrl ?? authStore.getSession()?.provider.streamingServiceUrl ?? authStore.getSelectedProvider().streamingServiceUrl ?? DEFAULT_PROVIDER_STREAMING_URL)).vpcId ?? "GFN-PC"; } catch { return "GFN-PC"; } }
@@ -1232,8 +1234,12 @@ function onNativeMouseWheel(listener: (event: NativeMouseWheelEvent) => void): (
   return onAndroidPluginEvent("nativeMouseWheel", listener);
 }
 
+function onLaunchIntent(listener: (event: AndroidLaunchIntent) => void): () => void {
+  return onAndroidPluginEvent("launchIntent", listener);
+}
+
 function onAndroidPluginEvent<TEvent>(
-  eventName: "nativeMouseMove" | "nativeMouseButton" | "nativeMouseWheel",
+  eventName: "nativeMouseMove" | "nativeMouseButton" | "nativeMouseWheel" | "launchIntent",
   listener: (event: TEvent) => void,
 ): () => void {
   let active = true;
@@ -1241,7 +1247,7 @@ function onAndroidPluginEvent<TEvent>(
 
   void OpenNowAndroid.addListener(
     eventName,
-    listener as (event: NativeMouseMoveEvent | NativeMouseButtonEvent | NativeMouseWheelEvent) => void,
+    listener as (event: NativeMouseMoveEvent | NativeMouseButtonEvent | NativeMouseWheelEvent | AndroidLaunchIntent) => void,
   )
     .then((nextHandle) => {
       if (!active) {
@@ -1313,9 +1319,14 @@ const api: OpenNowApi = {
   onNativeMouseMove,
   onNativeMouseButton,
   onNativeMouseWheel,
+  consumeLaunchIntent: async (): Promise<AndroidLaunchIntent | null> => {
+    const result = await OpenNowAndroid.consumeLaunchIntent().catch(() => ({ intent: null }));
+    return result.intent ?? null;
+  },
+  onLaunchIntent,
   getSettings: async () => getStoredSettings(),
   setSetting: async (key, value) => { const current = await getStoredSettings(); await saveSettings({ ...current, [key]: value }); },
-  resetSettings: async () => { await saveSettings(DEFAULT_SETTINGS); return { ...DEFAULT_SETTINGS }; },
+  resetSettings: async () => { const settings = normalizeSettings(DEFAULT_SETTINGS); await saveSettings(settings); return settings; },
   getMicrophonePermission: async (): Promise<MicrophonePermissionResult> => ({ platform: "android", isMacOs: false, status: "not-applicable", granted: true, canRequest: true, shouldUseBrowserApi: true }),
   exportLogs: exportAndroidLogs,
   pingRegions: async (regions: StreamRegion[]): Promise<PingResult[]> => Promise.all(regions.map(tcpPingRegion)),

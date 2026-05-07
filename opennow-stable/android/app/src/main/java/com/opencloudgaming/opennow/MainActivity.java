@@ -14,4 +14,20 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(OpenNowAndroidPlugin.class);
         super.onCreate(savedInstanceState);
     }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        if (OpenNowAndroidPlugin.isImmersiveFullscreenRequested()) {
+            OpenNowAndroidPlugin.applyImmersiveFullscreen(this, true);
+        }
+    }
+
+    @Override
+    public void onWindowFocusChanged(boolean hasFocus) {
+        super.onWindowFocusChanged(hasFocus);
+        if (hasFocus && OpenNowAndroidPlugin.isImmersiveFullscreenRequested()) {
+            OpenNowAndroidPlugin.applyImmersiveFullscreen(this, true);
+        }
+    }
 }

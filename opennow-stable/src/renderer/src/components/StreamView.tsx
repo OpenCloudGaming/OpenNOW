@@ -24,7 +24,8 @@ import {
 } from "../gfn/inputProtocol";
 import { getStoreDisplayName, getStoreIconComponent } from "./GameCard";
 import { RemainingPlaytimeIndicator, SessionElapsedIndicator } from "./ElapsedSessionIndicators";
-import type { MicrophoneMode, ScreenshotEntry, RecordingEntry, SubscriptionInfo } from "@shared/gfn";
+import type { AndroidTouchPlacement, AndroidTouchSettings, MicrophoneMode, ScreenshotEntry, RecordingEntry, SubscriptionInfo } from "@shared/gfn";
+import { normalizeAndroidTouchSettings } from "@shared/settings";
 import { formatShortcutForDisplay, isShortcutMatch, normalizeShortcut, shortcutFromKeyboardEvent } from "../shortcuts";
 import { openNow, platformCapabilities } from "../platform";
 import { useElapsedSeconds } from "../utils/useElapsedSeconds";
@@ -88,6 +89,8 @@ interface StreamViewProps {
   onTouchMouseWheel?: (input: { delta: number; timestampMs?: number }) => void;
   onSendText?: (text: string) => number;
   onSendKeyPress?: (key: "Backspace" | "Enter") => void;
+  androidTouchControls: AndroidTouchSettings;
+  onAndroidTouchControlsChange: (settings: AndroidTouchSettings) => void;
   microphoneMode: MicrophoneMode;
   onMicrophoneModeChange: (value: MicrophoneMode) => void;
   onScreenshotShortcutChange: (value: string) => void;
@@ -559,25 +562,6 @@ function VideoFocusOnReady({
 }
 
 type StickValue = { x: number; y: number };
-type TouchPlacement = "default" | "compact" | "lower" | "split";
-type AndroidTouchSettings = {
-  enabled: boolean;
-  size: number;
-  opacity: number;
-  placement: TouchPlacement;
-  mousePad: boolean;
-  mouseCapture: boolean;
-};
-
-const ANDROID_TOUCH_SETTINGS_KEY = "opennow.android.touchControls.v1";
-const DEFAULT_ANDROID_TOUCH_SETTINGS: AndroidTouchSettings = {
-  enabled: true,
-  size: 1,
-  opacity: 0.74,
-  placement: "default",
-  mousePad: true,
-  mouseCapture: true,
-};
 const ANDROID_TOUCH_CONTROLLER_IDLE_DISCONNECT_MS = 3000;
 const ANDROID_TOUCH_CONTROLLER_KEEPALIVE_MS = 250;
 const ANDROID_TOUCH_CONTROLLER_MIN_EMIT_MS = 24;
@@ -598,41 +582,6 @@ function quantizeTouchStickValue(value: StickValue): StickValue {
     return Math.round(axis / ANDROID_TOUCH_STICK_STEP) * ANDROID_TOUCH_STICK_STEP;
   };
   return { x: quantizeAxis(value.x), y: quantizeAxis(value.y) };
-}
-
-function readAndroidTouchSettings(): AndroidTouchSettings {
-  if (typeof window === "undefined") {
-    return DEFAULT_ANDROID_TOUCH_SETTINGS;
-  }
-
-  try {
-    const raw = window.localStorage.getItem(ANDROID_TOUCH_SETTINGS_KEY);
-    if (!raw) {
-      return DEFAULT_ANDROID_TOUCH_SETTINGS;
-    }
-    const parsed = JSON.parse(raw) as Partial<AndroidTouchSettings>;
-    const placements: TouchPlacement[] = ["default", "compact", "lower", "split"];
-    return {
-      enabled: parsed.enabled ?? DEFAULT_ANDROID_TOUCH_SETTINGS.enabled,
-      size: clampNumber(Number(parsed.size ?? DEFAULT_ANDROID_TOUCH_SETTINGS.size), 0.72, 1.35),
-      opacity: clampNumber(Number(parsed.opacity ?? DEFAULT_ANDROID_TOUCH_SETTINGS.opacity), 0.25, 1),
-      placement: placements.includes(parsed.placement as TouchPlacement)
-        ? parsed.placement as TouchPlacement
-        : DEFAULT_ANDROID_TOUCH_SETTINGS.placement,
-      mousePad: parsed.mousePad ?? DEFAULT_ANDROID_TOUCH_SETTINGS.mousePad,
-      mouseCapture: parsed.mouseCapture ?? DEFAULT_ANDROID_TOUCH_SETTINGS.mouseCapture,
-    };
-  } catch {
-    return DEFAULT_ANDROID_TOUCH_SETTINGS;
-  }
-}
-
-function writeAndroidTouchSettings(settings: AndroidTouchSettings): void {
-  try {
-    window.localStorage.setItem(ANDROID_TOUCH_SETTINGS_KEY, JSON.stringify(settings));
-  } catch {
-    // Non-fatal; controls remain usable for the current session.
-  }
 }
 
 function TouchStick({
@@ -1375,7 +1324,7 @@ function AndroidStreamMenu({
           </label>
 
           <div className="sv-android-placement" aria-label="Touch control placement">
-            {(["default", "compact", "lower", "split"] as TouchPlacement[]).map((placement) => (
+            {(["default", "compact", "lower", "split"] as AndroidTouchPlacement[]).map((placement) => (
               <button
                 type="button"
                 key={placement}
@@ -1557,6 +1506,8 @@ export function StreamView({
   onTouchMouseWheel,
   onSendText,
   onSendKeyPress,
+  androidTouchControls,
+  onAndroidTouchControlsChange,
   microphoneMode,
   onMicrophoneModeChange,
   onScreenshotShortcutChange,
@@ -1595,7 +1546,10 @@ export function StreamView({
   const [usedMimeType, setUsedMimeType] = useState<string | null>(null);
   const [recordingShortcutInput, setRecordingShortcutInput] = useState(shortcuts.recording);
   const [recordingShortcutError, setRecordingShortcutError] = useState<string | null>(null);
-  const [androidTouchSettings, setAndroidTouchSettings] = useState<AndroidTouchSettings>(() => readAndroidTouchSettings());
+  const androidTouchSettings = useMemo(
+    () => normalizeAndroidTouchSettings(androidTouchControls),
+    [androidTouchControls],
+  );
   const [androidMenuRevealSignal, setAndroidMenuRevealSignal] = useState(0);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const recordingIdRef = useRef<string | null>(null);
@@ -1612,17 +1566,8 @@ export function StreamView({
     typeof openNow?.deleteRecording === "function";
 
   const handleAndroidTouchSettingsChange = useCallback((next: AndroidTouchSettings) => {
-    const normalized: AndroidTouchSettings = {
-      enabled: next.enabled,
-      size: clampNumber(next.size, 0.72, 1.35),
-      opacity: clampNumber(next.opacity, 0.25, 1),
-      placement: next.placement,
-      mousePad: next.mousePad,
-      mouseCapture: next.mouseCapture,
-    };
-    setAndroidTouchSettings(normalized);
-    writeAndroidTouchSettings(normalized);
-  }, []);
+    onAndroidTouchControlsChange(normalizeAndroidTouchSettings(next));
+  }, [onAndroidTouchControlsChange]);
 
   useEffect(() => {
     if (

@@ -5760,6 +5760,30 @@ button.game-card-store-chip.active:hover {
   transform: scale(0.96);
 }
 
+.android-shell .sv-touch,
+.android-shell .sv-android-mousepad {
+  contain: layout paint;
+}
+
+.android-shell .sv-touch-stick,
+.android-shell .sv-touch-btn {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  box-shadow: none;
+  background: rgba(8, 10, 12, 0.56);
+}
+
+.android-shell .sv-touch-stick-thumb,
+.android-shell .sv-android-cursor {
+  box-shadow: none;
+}
+
+.android-shell .sv-android-menu-toggle,
+.android-shell .sv-android-menu-panel {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
 .sv-touch-btn--shoulder,
 .sv-touch-btn--trigger,
 .sv-touch-btn--menu {

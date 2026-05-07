@@ -1,11 +1,16 @@
 package com.opencloudgaming.opennow;
 
 import android.app.Activity;
+import android.content.Intent;
+import android.net.Uri;
 import android.os.Build;
+import android.os.Bundle;
 import android.view.InputDevice;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.Window;
+
+import java.util.List;
 
 import androidx.core.view.WindowCompat;
 import androidx.core.view.WindowInsetsCompat;
@@ -19,7 +24,59 @@ import com.getcapacitor.annotation.CapacitorPlugin;
 
 @CapacitorPlugin(name = "OpenNowAndroid")
 public class OpenNowAndroidPlugin extends Plugin {
+    private static final String[] APP_ID_KEYS = {
+        "appId",
+        "app_id",
+        "id",
+        "launchAppId",
+        "launch_app_id",
+        "gfnAppId",
+        "gfn_app_id",
+        "nvidiaAppId",
+        "nvidia_app_id",
+        "cloudGameId",
+        "cloud_game_id",
+        "com.opencloudgaming.opennow.APP_ID",
+        "com.opencloudgaming.opennow.LAUNCH_APP_ID",
+        "com.opencloudgaming.opennow.extra.APP_ID",
+        "com.opencloudgaming.opennow.extra.LAUNCH_APP_ID"
+    };
+    private static final String[] TITLE_KEYS = {
+        "title",
+        "name",
+        "game",
+        "gameTitle",
+        "game_title",
+        "romName",
+        "rom_name",
+        "label",
+        "com.opencloudgaming.opennow.TITLE",
+        "com.opencloudgaming.opennow.extra.TITLE",
+        "com.opencloudgaming.opennow.extra.GAME_TITLE"
+    };
+    private static final String[] STORE_KEYS = {
+        "store",
+        "appStore",
+        "app_store",
+        "variantStore",
+        "variant_store",
+        "com.opencloudgaming.opennow.STORE",
+        "com.opencloudgaming.opennow.extra.STORE"
+    };
+    private static final String[] SOURCE_KEYS = {
+        "source",
+        "frontend",
+        "launcher",
+        "caller",
+        "com.opencloudgaming.opennow.SOURCE",
+        "com.opencloudgaming.opennow.extra.SOURCE"
+    };
+
     private View pointerCaptureView;
+    private JSObject pendingLaunchIntent;
+    private int launchIntentSequence = 0;
+    private boolean pointerCaptureRequested = false;
+    private static volatile boolean immersiveFullscreenRequested = false;
 
     @Override
     public void load() {
@@ -54,12 +111,10 @@ public class OpenNowAndroidPlugin extends Plugin {
 
             View view = pointerCaptureView != null ? pointerCaptureView : getBridge().getWebView();
             installPointerCaptureListener(view);
-            view.setFocusable(true);
-            view.setFocusableInTouchMode(true);
-            view.requestFocus();
+            pointerCaptureRequested = enabled;
 
             if (enabled) {
-                view.requestPointerCapture();
+                requestNativePointerCapture(view);
             } else if (view.hasPointerCapture()) {
                 view.releasePointerCapture();
             }
@@ -69,12 +124,43 @@ public class OpenNowAndroidPlugin extends Plugin {
         });
     }
 
+    @PluginMethod
+    public void consumeLaunchIntent(PluginCall call) {
+        JSObject payload = new JSObject();
+        payload.put("intent", pendingLaunchIntent);
+        pendingLaunchIntent = null;
+        call.resolve(payload);
+    }
+
+    @Override
+    protected void handleOnNewIntent(Intent intent) {
+        super.handleOnNewIntent(intent);
+        JSObject payload = parseLaunchIntent(intent);
+        if (payload == null) {
+            return;
+        }
+
+        pendingLaunchIntent = payload;
+        notifyListeners("launchIntent", payload, true);
+    }
+
     private void installPointerCaptureListener(View view) {
         if (view == null || Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
             return;
         }
 
         pointerCaptureView = view;
+        view.setOnPointerCaptureChangeListener((captureView, hasCapture) -> {
+            if (!pointerCaptureRequested || hasCapture) {
+                return;
+            }
+
+            captureView.postDelayed(() -> {
+                if (pointerCaptureRequested && captureView.isAttachedToWindow()) {
+                    requestNativePointerCapture(captureView);
+                }
+            }, 80);
+        });
         view.setOnCapturedPointerListener((capturedView, event) -> {
             if (!isSupportedPointerSource(event.getSource())) {
                 return false;
@@ -157,8 +243,164 @@ public class OpenNowAndroidPlugin extends Plugin {
         return (source & InputDevice.SOURCE_TOUCHPAD) == InputDevice.SOURCE_TOUCHPAD;
     }
 
+    private void requestNativePointerCapture(View view) {
+        if (view == null || Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+            return;
+        }
+
+        view.setFocusable(true);
+        view.setFocusableInTouchMode(true);
+        view.requestFocus();
+        if (!view.hasPointerCapture()) {
+            view.requestPointerCapture();
+        }
+    }
+
+    private JSObject parseLaunchIntent(Intent intent) {
+        if (intent == null) {
+            return null;
+        }
+
+        Uri data = intent.getData();
+        Bundle extras = intent.getExtras();
+        String appId = normalizeAppId(firstNonEmpty(firstExtra(extras, APP_ID_KEYS), firstUriValue(data, APP_ID_KEYS)));
+        if (appId == null) {
+            appId = firstNumericUriPart(data);
+        }
+
+        String title = firstNonEmpty(firstExtra(extras, TITLE_KEYS), firstUriValue(data, TITLE_KEYS));
+        String store = firstNonEmpty(firstExtra(extras, STORE_KEYS), firstUriValue(data, STORE_KEYS));
+        String source = firstNonEmpty(firstExtra(extras, SOURCE_KEYS), firstUriValue(data, SOURCE_KEYS));
+        String action = trimToNull(intent.getAction());
+        String dataString = trimToNull(intent.getDataString());
+
+        if (appId == null && title == null && store == null && source == null && dataString == null) {
+            return null;
+        }
+
+        JSObject payload = new JSObject();
+        payload.put("sequence", ++launchIntentSequence);
+        payload.put("receivedAtMs", System.currentTimeMillis());
+        putIfPresent(payload, "action", action);
+        putIfPresent(payload, "data", dataString);
+        putIfPresent(payload, "appId", appId);
+        putIfPresent(payload, "title", title);
+        putIfPresent(payload, "store", store);
+        putIfPresent(payload, "source", source);
+        return payload;
+    }
+
+    private String firstUriValue(Uri uri, String[] keys) {
+        if (uri == null) {
+            return null;
+        }
+
+        for (String key : keys) {
+            String value = queryParameter(uri, key);
+            if (value != null) {
+                return value;
+            }
+        }
+        return null;
+    }
+
+    private String queryParameter(Uri uri, String key) {
+        try {
+            return trimToNull(uri.getQueryParameter(key));
+        } catch (UnsupportedOperationException ignored) {
+            return null;
+        }
+    }
+
+    private String firstNumericUriPart(Uri uri) {
+        if (uri == null) {
+            return null;
+        }
+
+        String host = normalizeAppId(uri.getHost());
+        if (host != null) {
+            return host;
+        }
+
+        List<String> segments = uri.getPathSegments();
+        for (String segment : segments) {
+            String normalized = normalizeAppId(segment);
+            if (normalized != null) {
+                return normalized;
+            }
+        }
+        return null;
+    }
+
+    private String firstExtra(Bundle extras, String[] keys) {
+        if (extras == null) {
+            return null;
+        }
+
+        for (String key : keys) {
+            if (!extras.containsKey(key)) {
+                continue;
+            }
+            String value = valueToString(extras.get(key));
+            if (value != null) {
+                return value;
+            }
+        }
+        return null;
+    }
+
+    private String valueToString(Object value) {
+        if (value instanceof String || value instanceof Number || value instanceof Boolean) {
+            return trimToNull(String.valueOf(value));
+        }
+        return null;
+    }
+
+    private String firstNonEmpty(String left, String right) {
+        return left != null ? left : right;
+    }
+
+    private String trimToNull(String value) {
+        if (value == null) {
+            return null;
+        }
+        String trimmed = value.trim();
+        return trimmed.isEmpty() ? null : trimmed;
+    }
+
+    private String normalizeAppId(String value) {
+        String trimmed = trimToNull(value);
+        if (trimmed == null || !trimmed.matches("^[0-9]+$")) {
+            return null;
+        }
+        try {
+            return Long.parseLong(trimmed) > 0L ? trimmed : null;
+        } catch (NumberFormatException ignored) {
+            return null;
+        }
+    }
+
+    private void putIfPresent(JSObject payload, String key, String value) {
+        if (value != null) {
+            payload.put(key, value);
+        }
+    }
+
     private void applyImmersiveFullscreen(boolean enabled) {
         Activity activity = getActivity();
+        if (activity == null) {
+            return;
+        }
+
+        immersiveFullscreenRequested = enabled;
+        applyImmersiveFullscreen(activity, enabled);
+    }
+
+    public static boolean isImmersiveFullscreenRequested() {
+        return immersiveFullscreenRequested;
+    }
+
+    public static void applyImmersiveFullscreen(Activity activity, boolean enabled) {
         if (activity == null) {
             return;
         }

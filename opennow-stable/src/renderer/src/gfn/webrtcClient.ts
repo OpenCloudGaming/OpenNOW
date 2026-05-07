@@ -23,6 +23,8 @@ import {
   normalizeToUint8,
   GAMEPAD_MAX_CONTROLLERS,
   type GamepadInput,
+  type GamepadTriggerAxisMode,
+  type GamepadTriggerAxisModes,
   codeMap,
   mapTextCharToKeySpec,
 } from "./inputProtocol";
@@ -38,7 +40,7 @@ import {
   rewriteH265TierFlag,
 } from "./sdp";
 import { MicrophoneManager, type MicState, type MicStateChange } from "./microphoneManager";
-import { openNow } from "../platform";
+import { openNow, platformCapabilities } from "../platform";
 
 interface OfferSettings {
   codec: VideoCodec;
@@ -481,6 +483,7 @@ export class GfnWebRtcClient {
   private lastGamepadSendMs = 0;
   // Gamepad keepalive interval: resend last state every 100ms to keep server controller alive
   private static readonly GAMEPAD_KEEPALIVE_MS = 100;
+  private static readonly GAMEPAD_TRIGGER_ACTIVE_THRESHOLD = 1;
   private static readonly MOUSE_FLUSH_FAST_MS = 4;
   private static readonly MOUSE_FLUSH_NORMAL_MS = 8;
   private static readonly MOUSE_FLUSH_SAFE_MS = 16;
@@ -515,6 +518,7 @@ export class GfnWebRtcClient {
   private renderFpsCounter = { frames: 0, lastUpdate: 0, fps: 0 };
   private connectedGamepads: Set<number> = new Set();
   private previousGamepadStates: Map<number, GamepadInput> = new Map();
+  private gamepadTriggerAxisModes: Map<number, GamepadTriggerAxisModes> = new Map();
   private previousGamepadTouchpadClicks: Set<number> = new Set();
   private virtualGamepadConnected = false;
   private virtualGamepadControllerId: number | null = null;
@@ -1849,6 +1853,10 @@ export class GfnWebRtcClient {
       return 100;
     }
 
+    if (platformCapabilities.isAndroid) {
+      return 16;
+    }
+
     return 4;
   }
 
@@ -1885,6 +1893,7 @@ export class GfnWebRtcClient {
         // Read and encode gamepad state
         const gamepadInput = this.readGamepadState(gamepad, i);
         this.handleGamepadTouchpadClick(gamepad, i);
+        const previousGamepadState = this.previousGamepadStates.get(i);
         const stateChanged = this.hasGamepadStateChanged(i, gamepadInput);
 
         // Send if state changed OR as a keepalive to maintain server controller presence
@@ -1894,7 +1903,7 @@ export class GfnWebRtcClient {
           && (nowMs - this.lastGamepadSendMs) >= GfnWebRtcClient.GAMEPAD_KEEPALIVE_MS;
 
         if (stateChanged || needsKeepalive) {
-          const usePR = this.canSendGamepadPartiallyReliable(i);
+          const usePR = this.shouldSendGamepadPartiallyReliable(i, gamepadInput, previousGamepadState, needsKeepalive);
           const bytes = this.inputEncoder.encodeGamepadState(gamepadInput, this.gamepadBitmap, usePR);
           if (usePR) {
             this.sendGamepad(bytes);
@@ -1919,6 +1928,7 @@ export class GfnWebRtcClient {
         // Gamepad disconnected — clear bit from bitmap
         this.connectedGamepads.delete(i);
         this.previousGamepadStates.delete(i);
+        this.gamepadTriggerAxisModes.delete(i);
         this.previousGamepadTouchpadClicks.delete(i);
         this.gamepadBitmap &= ~(1 << i);
         this.log(`Gamepad ${i} disconnected, bitmap now: 0x${this.gamepadBitmap.toString(16)}`);
@@ -2016,7 +2026,12 @@ export class GfnWebRtcClient {
       return;
     }
 
-    const usePR = this.canSendGamepadPartiallyReliable(controllerId);
+    const usePR = this.shouldSendGamepadPartiallyReliable(
+      controllerId,
+      gamepadInput,
+      this.previousVirtualGamepadState,
+      needsKeepalive,
+    );
     const bytes = this.inputEncoder.encodeGamepadState(gamepadInput, this.gamepadBitmap, usePR);
     if (usePR) {
       this.sendGamepad(bytes);
@@ -2162,7 +2177,7 @@ export class GfnWebRtcClient {
 
   private readGamepadState(gamepad: Gamepad, controllerId: number): GamepadInput {
     const buttons = mapGamepadButtons(gamepad);
-    const axes = readGamepadAxes(gamepad);
+    const axes = readGamepadAxes(gamepad, this.getGamepadTriggerAxisModes(gamepad, controllerId));
 
     return {
       controllerId,
@@ -2176,6 +2191,29 @@ export class GfnWebRtcClient {
       connected: true,
       timestampUs: timestampUs(),
     };
+  }
+
+  private getGamepadTriggerAxisModes(gamepad: Gamepad, controllerId: number): GamepadTriggerAxisModes {
+    const current = this.gamepadTriggerAxisModes.get(controllerId) ?? {};
+    const next: GamepadTriggerAxisModes = {
+      leftTrigger: this.detectTriggerAxisMode(gamepad.axes[4], current.leftTrigger),
+      rightTrigger: this.detectTriggerAxisMode(gamepad.axes[5], current.rightTrigger),
+    };
+
+    this.gamepadTriggerAxisModes.set(controllerId, next);
+    return next;
+  }
+
+  private detectTriggerAxisMode(rawValue: number | undefined, currentMode: GamepadTriggerAxisMode | undefined): GamepadTriggerAxisMode | undefined {
+    if (rawValue === undefined || !Number.isFinite(rawValue)) {
+      return currentMode;
+    }
+
+    if (rawValue <= -0.5) {
+      return "bipolar";
+    }
+
+    return currentMode ?? "direct";
   }
 
   private hasGamepadStateChanged(controllerId: number, newState: GamepadInput): boolean {
@@ -2195,6 +2233,44 @@ export class GfnWebRtcClient {
     );
   }
 
+  private shouldSendGamepadPartiallyReliable(
+    controllerId: number,
+    newState: GamepadInput,
+    prevState: GamepadInput | null | undefined,
+    keepalive: boolean
+  ): boolean {
+    if (!this.canSendGamepadPartiallyReliable(controllerId)) {
+      return false;
+    }
+
+    if (!prevState) {
+      return false;
+    }
+
+    const leftTriggerActiveChanged = this.isTriggerActive(prevState.leftTrigger) !== this.isTriggerActive(newState.leftTrigger);
+    const rightTriggerActiveChanged = this.isTriggerActive(prevState.rightTrigger) !== this.isTriggerActive(newState.rightTrigger);
+    const digitalOrTriggerEdge =
+      prevState.connected !== newState.connected ||
+      prevState.buttons !== newState.buttons ||
+      leftTriggerActiveChanged ||
+      rightTriggerActiveChanged;
+
+    if (digitalOrTriggerEdge) {
+      return false;
+    }
+
+    const hasHeldDigitalInput =
+      newState.buttons !== 0 ||
+      this.isTriggerActive(newState.leftTrigger) ||
+      this.isTriggerActive(newState.rightTrigger);
+
+    return !(keepalive && hasHeldDigitalInput);
+  }
+
+  private isTriggerActive(value: number): boolean {
+    return value > GfnWebRtcClient.GAMEPAD_TRIGGER_ACTIVE_THRESHOLD;
+  }
+
   private onGamepadConnected = (event: GamepadEvent): void => {
     this.log(`Gamepad connected event: ${event.gamepad.id}`);
     // The polling loop will detect and handle the new gamepad
@@ -2210,6 +2286,10 @@ export class GfnWebRtcClient {
   }
 
   private canSendGamepadPartiallyReliable(controllerId: number): boolean {
+    if (platformCapabilities.isAndroid) {
+      return false;
+    }
+
     const mask = 1 << (controllerId & 0x1f);
     return this.isPartiallyReliableChannelOpen()
       && (this.riInputCapabilities.enablePartiallyReliableTransferGamepad & mask) !== 0;

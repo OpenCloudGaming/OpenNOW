@@ -3,7 +3,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { codeMap, mapKeyboardEvent, mapTextCharToKeySpec } from "./inputProtocol";
+import {
+  codeMap,
+  mapKeyboardEvent,
+  mapTextCharToKeySpec,
+  normalizeTriggerAxisValue,
+  readGamepadAxes,
+} from "./inputProtocol";
 
 function keyboardEvent(init: Partial<KeyboardEvent> & Pick<KeyboardEvent, "code" | "key">): KeyboardEvent {
   return {
@@ -17,6 +23,28 @@ function keyboardEvent(init: Partial<KeyboardEvent> & Pick<KeyboardEvent, "code"
     keyCode: init.keyCode ?? 0,
     getModifierState: init.getModifierState ?? (() => false),
   } as KeyboardEvent;
+}
+
+function gamepadButton(value: number): GamepadButton {
+  return {
+    pressed: value > 0,
+    touched: value > 0,
+    value,
+  };
+}
+
+function gamepad(init: { axes?: number[]; buttons?: Array<GamepadButton | undefined> }): Gamepad {
+  return {
+    axes: init.axes ?? [],
+    buttons: init.buttons ?? [],
+    connected: true,
+    hapticActuators: [],
+    id: "test gamepad",
+    index: 0,
+    mapping: "standard",
+    timestamp: 0,
+    vibrationActuator: null,
+  } as unknown as Gamepad;
 }
 
 test("maps representative physical keys to Windows set-1 scancodes", () => {
@@ -71,4 +99,32 @@ test("uses corrected scancodes for synthetic text injection", () => {
   assert.deepEqual(mapTextCharToKeySpec("<"), { ...codeMap.Comma, shift: true });
   assert.deepEqual(mapTextCharToKeySpec("/"), { ...codeMap.Slash });
   assert.deepEqual(mapTextCharToKeySpec("?"), { ...codeMap.Slash, shift: true });
+});
+
+test("reads trigger axes when Android exposes inert trigger buttons", () => {
+  const axes = readGamepadAxes(gamepad({
+    axes: [0, 0, 0, 0, 0.72, 0],
+    buttons: [undefined, undefined, undefined, undefined, undefined, undefined, gamepadButton(0)],
+  }));
+
+  assert.equal(axes.leftTrigger, 0.72);
+});
+
+test("keeps direct trigger axis rest at zero", () => {
+  assert.equal(normalizeTriggerAxisValue(0, "direct"), 0);
+});
+
+test("normalizes bipolar trigger axes after calibration", () => {
+  assert.equal(normalizeTriggerAxisValue(-1, "bipolar"), 0);
+  assert.equal(normalizeTriggerAxisValue(0, "bipolar"), 0.5);
+  assert.equal(normalizeTriggerAxisValue(1, "bipolar"), 1);
+});
+
+test("prefers the strongest trigger source between button and axis", () => {
+  const axes = readGamepadAxes(gamepad({
+    axes: [0, 0, 0, 0, 0.2, 0],
+    buttons: [undefined, undefined, undefined, undefined, undefined, undefined, gamepadButton(0.8)],
+  }));
+
+  assert.equal(axes.leftTrigger, 0.8);
 });

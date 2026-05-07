@@ -1,9 +1,9 @@
 import { app } from "electron";
 import { join } from "node:path";
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
-import type { VideoCodec, ColorQuality, VideoAccelerationPreference, MicrophoneMode, GameLanguage, AspectRatio, KeyboardLayout } from "../shared/gfn";
+import type { AndroidTouchSettings, VideoCodec, ColorQuality, VideoAccelerationPreference, MicrophoneMode, GameLanguage, AspectRatio, KeyboardLayout } from "../shared/gfn";
 import { normalizeStreamPreferences } from "../shared/gfn";
-import { DEFAULT_SETTINGS as SHARED_DEFAULT_SETTINGS } from "../shared/settings";
+import { DEFAULT_SETTINGS as SHARED_DEFAULT_SETTINGS, normalizeSettings } from "../shared/settings";
 
 export interface Settings {
   /** Video resolution (e.g., "1920x1080") */
@@ -91,6 +91,8 @@ export interface Settings {
   discordRichPresence: boolean;
   /** Automatically check GitHub Releases for app updates in the background */
   autoCheckForUpdates: boolean;
+  /** Android in-stream touch controller and mouse overlay preferences */
+  androidTouchControls: AndroidTouchSettings;
 }
 
 const defaultStopShortcut = "Ctrl+Shift+Q";
@@ -124,10 +126,7 @@ export class SettingsManager {
       const parsed = JSON.parse(content) as Partial<Settings>;
 
       // Merge with defaults to ensure all fields exist
-      const merged: Settings = {
-        ...DEFAULT_SETTINGS,
-        ...parsed,
-      };
+      const merged: Settings = normalizeSettings(parsed);
 
       let migrated = this.migrateLegacyShortcutDefaults(merged);
       migrated = this.enforceCompatibility(merged) || migrated;

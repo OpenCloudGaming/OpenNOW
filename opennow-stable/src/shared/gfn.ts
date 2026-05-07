@@ -100,6 +100,15 @@ export function colorQualityIs10Bit(cq: ColorQuality): boolean {
 
 export type MicrophoneMode = "disabled" | "push-to-talk" | "voice-activity";
 export type AspectRatio = "16:9" | "16:10" | "21:9" | "32:9";
+export type AndroidTouchPlacement = "default" | "compact" | "lower" | "split";
+export interface AndroidTouchSettings {
+  enabled: boolean;
+  size: number;
+  opacity: number;
+  placement: AndroidTouchPlacement;
+  mousePad: boolean;
+  mouseCapture: boolean;
+}
 export type RuntimePlatform =
   | "aix"
   | "android"
@@ -177,6 +186,8 @@ export interface Settings {
   discordRichPresence: boolean;
   /** Automatically check GitHub Releases for app updates in the background */
   autoCheckForUpdates: boolean;
+  /** Android in-stream touch controller and mouse overlay preferences */
+  androidTouchControls: AndroidTouchSettings;
 }
 
 export const DEFAULT_STREAM_PREFERENCES: Readonly<Pick<Settings, "codec" | "colorQuality">> = Object.freeze({
@@ -677,6 +688,17 @@ export interface NativeMouseWheelEvent {
   timestampMs?: number;
 }
 
+export interface AndroidLaunchIntent {
+  sequence: number;
+  receivedAtMs: number;
+  action?: string;
+  data?: string;
+  appId?: string;
+  title?: string;
+  store?: string;
+  source?: string;
+}
+
 /** Dialog result for session conflict resolution */
 export type SessionConflictChoice = "resume" | "new" | "cancel";
 
@@ -758,6 +780,8 @@ export interface OpenNowApi {
   onNativeMouseMove(listener: (event: NativeMouseMoveEvent) => void): () => void;
   onNativeMouseButton(listener: (event: NativeMouseButtonEvent) => void): () => void;
   onNativeMouseWheel(listener: (event: NativeMouseWheelEvent) => void): () => void;
+  consumeLaunchIntent(): Promise<AndroidLaunchIntent | null>;
+  onLaunchIntent(listener: (event: AndroidLaunchIntent) => void): () => void;
   getSettings(): Promise<Settings>;
   setSetting<K extends keyof Settings>(key: K, value: Settings[K]): Promise<void>;
   resetSettings(): Promise<Settings>;
