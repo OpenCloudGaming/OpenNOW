@@ -111,77 +111,77 @@
       "signOutAllSubtext": "Ваши данные из облачных сессий остаются на сервисе, происходит очистка только локальных данных аккаунтов в OpenNOW.",
       "signOutAll": "Выйти из всех",
       "signOutAllAccounts": "Выйти из всех аккаунтов",
-      "staySignedIn": "Stay signed in",
-      "switchAccount": "Switch account",
-      "thisAccount": "this account",
-      "kicker": "Accounts"
+      "staySignedIn": "Запомнить меня",
+      "switchAccount": "Сменить аккаунт",
+      "thisAccount": "данный аккаунт",
+      "kicker": "Аккаунты"
     },
     "status": {
-      "restoringSavedSession": "Restoring saved session...",
-      "sessionRestoredTokenRefreshed": "Session restored. Token refreshed.",
-      "tokenRefreshedLoadingAccount": "Token refreshed. Loading your account...",
-      "tokenRefreshFailedUsingSaved": "Token refresh failed. Using saved session token.",
-      "tokenRefreshFailedContinuing": "Token refresh failed. Continuing with saved session...",
-      "missingRefreshTokenContinuing": "Saved session has no refresh token. Continuing...",
-      "sessionRestored": "Session restored.",
+      "restoringSavedSession": "Восстанавливаем сохраненную сессию...",
+      "sessionRestoredTokenRefreshed": "Сессия восстановлена. Токен обновлён.",
+      "tokenRefreshedLoadingAccount": "Токен обновлён. Вход в аккаунт...",
+      "tokenRefreshFailedUsingSaved": "Обновление токена неудачно. Используется сохраненный токен.",
+      "tokenRefreshFailedContinuing": "Обновление токена неудачно. Используется сохраненная сессия...",
+      "missingRefreshTokenContinuing": "Токен обновления отсутствует в сохраненной сессии. Продолжаем...",
+      "sessionRestored": "Сессия восстановлена.",
       "noSavedSessionFound": "No saved session found.",
-      "sessionRestoreFailed": "Session restore failed. Please sign in again."
+      "sessionRestoreFailed": "Восстановление сессии неудачно. Пожалуйста войдите снова."
     }
   },
   "navigation": {
-    "home": "Store",
-    "library": "Library",
+    "home": "Магазин",
+    "library": "Библиотека",
     "settings": "Настройки"
   },
   "home": {
-    "searchPlaceholder": "Search games...",
-    "filters": "Filters",
+    "searchPlaceholder": "Найти игры...",
+    "filters": "Фильтры",
     "count": {
       "loading": "Загрузка...",
-      "shown": "{{shown}} shown",
-      "shownTotal": "{{shown}} shown · {{total}} total",
-      "shownTotalSupported": "{{shown}} shown · {{total}} total · {{supported}} supported",
-      "shownSupported": "{{shown}} shown · {{supported}} supported"
+      "shown": "{{shown}} показано",
+      "shownTotal": "{{shown}} отображается · {{total}} всего",
+      "shownTotalSupported": "{{shown}} отображается· {{total}} всего · {{supported}} поддерживается",
+      "shownSupported": "{{shown}} отображается · {{supported}} поддерживается"
     },
     "empty": {
-      "loadingGames": "Loading games...",
-      "noGamesFound": "No games found",
-      "tryAdjustingSearch": "Try adjusting your search terms or filters",
-      "checkBackLater": "Check back later for new additions"
+      "loadingGames": "Загрузка игр...",
+      "noGamesFound": "Игры не найдены",
+      "tryAdjustingSearch": "Попробуйте изменить параметры поиска и фильтров",
+      "checkBackLater": "Возвращайтесь позже за новыми дополнениями"
     }
   },
   "library": {
-    "title": "My Library",
-    "searchPlaceholder": "Search your library...",
-    "gameCount": "{{count}} game",
-    "gameCount_plural": "{{count}} games",
+    "title": "Библиотека",
+    "searchPlaceholder": "Поиск в библиотеке...",
+    "gameCount": "{{count}} игра",
+    "gameCount_plural": "{{count}} игр",
     "lastPlayed": {
-      "never": "Never played",
-      "justNow": "Just now",
-      "minutesAgo": "{{count}}m ago",
-      "hoursAgo": "{{count}}h ago",
-      "daysAgo": "{{count}}d ago",
-      "weeksAgo": "{{count}}w ago"
+      "never": "Никогда не играли",
+      "justNow": "Недавно",
+      "minutesAgo": "{{count}} минут назад",
+      "hoursAgo": "{{count}} часов назад",
+      "daysAgo": "{{count}} дней назад",
+      "weeksAgo": "{{count}} недель назад"
     },
     "empty": {
-      "loadingLibrary": "Loading your library...",
-      "libraryEmpty": "Your library is empty",
-      "ownedGamesAppearHere": "Games you own will appear here. Browse the catalog to find games.",
-      "noGamesFound": "No games found",
-      "noGamesMatch": "No games match \"{{query}}\""
+      "loadingLibrary": "Загрузка библиотеки...",
+      "libraryEmpty": "Ваша библиотека пуста",
+      "ownedGamesAppearHere": "Здесь появятся игры которыми вы владеете. Исследуйте каталог для находки игр.",
+      "noGamesFound": "Игры не найдены",
+      "noGamesMatch": "Не найдено игр с названием \"{{query}}\""
     }
   },
   "gameCard": {
-    "selectGame": "Select {{title}}",
-    "playGame": "Play {{title}}",
-    "store": "{{store}} store",
-    "owned": "Owned",
-    "available": "Available"
+    "selectGame": "Выбрать {{title}}",
+    "playGame": "Играть в {{title}}",
+    "store": "{{store}} магазин",
+    "owned": "Приобретено",
+    "available": "Доступно"
   },
   "streamLoading": {
     "labels": {
-      "launchError": "Launch Error",
-      "nowLoading": "Now Loading",
+      "launchError": "Ошибка запуска",
+      "nowLoading": "Сейчас загружается",
       "adQueue": "Ad Queue"
     },
     "steps": {
@@ -251,10 +251,10 @@
     "thisSession": "this session",
     "warnings": {
       "sessionTimeLimitApproaching": "Session time limit approaching",
-      "idleTimeoutApproaching": "Idle timeout approaching",
-      "maximumSessionTimeApproaching": "Maximum session time approaching",
-      "freeTier30MinutesRemaining": "30 minutes remaining in this free-tier session",
-      "freeTier15MinutesRemaining": "15 minutes remaining in this free-tier session",
+      "idleTimeoutApproaching": "Приближается тайм - аут бездействия",
+      "maximumSessionTimeApproaching": "Приближается лимит времени в сессии",
+      "freeTier30MinutesRemaining": "30 минут осталось для бесплатной сессии",
+      "freeTier15MinutesRemaining": "15 минут осталось для бесплатной сессии",
       "freeTierEndsSoon": "This free-tier session ends soon"
     }
   },
@@ -533,7 +533,7 @@
       "recentlyPlayedEmptyHint": "Recently played · Empty slot - play games to fill your shelf",
       "recentlyPlayedGames": "Recently played games",
       "resumeGame": "Resume {{title}}",
-      "library": "Library",
+      "library": "Библиотека",
       "detailRow": "Detail row",
       "options": "Options",
       "browseLeftRight": "Browse · Left / Right",
