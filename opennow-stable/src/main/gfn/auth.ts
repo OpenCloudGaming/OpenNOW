@@ -25,6 +25,8 @@ const TOKEN_ENDPOINT = "https://login.nvidia.com/token";
 const CLIENT_TOKEN_ENDPOINT = "https://login.nvidia.com/client_token";
 const USERINFO_ENDPOINT = "https://login.nvidia.com/userinfo";
 const AUTH_ENDPOINT = "https://login.nvidia.com/authorize";
+const PROVIDER_DISCOVERY_REDIRECT_URI = "https://play.geforcenow.com/redirect/starfleet-oauth-redirect.html";
+const PROVIDER_DISCOVERY_CLIENT_ID = "W1Z7DwzG1dcpXFxv0pmeatjnf0uK3ICySganqdMx2nU";
 
 const CLIENT_ID = "ZU7sPN-miLujMD95LfOQ453IB0AtjM8sMyvgJ9wCXEQ";
 const SCOPES = "openid consent email tk_client age";
@@ -179,6 +181,54 @@ function buildAuthUrl(provider: LoginProvider, challenge: string, port: number):
     idp_id: provider.idpId,
   });
   return `${AUTH_ENDPOINT}?${params.toString()}`;
+}
+
+function parseIdpIdsFromLocation(location: string): Set<string> {
+  const parsed = new URL(location);
+  const values = parsed.searchParams.getAll("idp_ids");
+  const ids = new Set<string>();
+  for (const value of values) {
+    for (const token of value.split(/[\s,]+/)) {
+      const id = token.trim();
+      if (id.length > 0) {
+        ids.add(id);
+      }
+    }
+  }
+  return ids;
+}
+
+async function fetchAvailableProviderIdpIds(): Promise<Set<string> | null> {
+  const params = new URLSearchParams({
+    response_type: "code",
+    device_id: crypto.randomUUID(),
+    scope: SCOPES,
+    client_id: PROVIDER_DISCOVERY_CLIENT_ID,
+    redirect_uri: PROVIDER_DISCOVERY_REDIRECT_URI,
+    nonce: crypto.randomUUID(),
+    prompt: "select_account",
+  });
+
+  try {
+    const response = await fetch(`${AUTH_ENDPOINT}?${params.toString()}`, {
+      method: "GET",
+      redirect: "manual",
+      headers: {
+        "User-Agent": GFN_USER_AGENT,
+      },
+    });
+
+    const location = response.headers.get("location");
+    if (!location) {
+      return null;
+    }
+
+    const ids = parseIdpIdsFromLocation(location);
+    return ids.size > 0 ? ids : null;
+  } catch (error) {
+    console.warn("Failed to discover provider idp_ids from authorize redirect:", error);
+    return null;
+  }
 }
 
 async function isPortAvailable(port: number): Promise<boolean> {
@@ -561,6 +611,8 @@ export class AuthService {
       const payload = (await response.json()) as ServiceUrlsResponse;
       const endpoints = payload.gfnServiceInfo?.gfnServiceEndpoints ?? [];
 
+      const availableIdpIds = await fetchAvailableProviderIdpIds();
+
       const providers = endpoints
         .map<LoginProvider>((entry) => ({
           idpId: entry.idpId,
@@ -570,6 +622,7 @@ export class AuthService {
           streamingServiceUrl: entry.streamingServiceUrl,
           priority: entry.loginProviderPriority ?? 0,
         }))
+        .filter((provider) => !availableIdpIds || availableIdpIds.has(provider.idpId))
         .sort((a, b) => a.priority - b.priority)
         .map(normalizeProvider);
 
