@@ -319,7 +319,7 @@
       "conflict": "Skrót klawiszowy sprzeczny z istniejącym skrótem.",
       "clickThenPress": "Kliknij, potem przyciśnij klawisz",
       "clickHereThenPress": "Kliknij tutaj, potem przyciśnij klawisz",
-      "focusAndPress": "Focus and press the key combination to bind",
+      "focusAndPress": "Zaznacz i naciśnij kombinację klawiszy, aby przypisać skrót",
       "examples": "Przykłady: F3, Ctrl+Shift+Q, Ctrl+Shift+K",
       "stats": "Statystyki"
     }
@@ -367,9 +367,9 @@
     },
     "colorQuality": {
       "mostCompatible": "Najbardziej kompatybilne",
-      "sharperChroma": "Sharper chroma",
+      "sharperChroma": "Wyraźniejsza chroma",
       "higherBitDepth": "Wyższa głębokość bitów",
-      "highestChromaAndBitDepth": "Highest chroma and bit depth",
+      "highestChromaAndBitDepth": "Najwyższa jakość chromy i głębi kolorów",
       "requiresH265OrAv1Title": "{{description}} - potrzebuje H265/AV1"
     },
     "game": {
@@ -430,22 +430,22 @@
       "escapeExitsFullscreenHint": "Gdy włączone, naciśnięcie klawisza Escape spowoduje wyjście z trybu pełnoekranowego. Gdy wyłączone (domyślnie), Escape jest przekazywany do gry, gdy kursor myszy jest zablokowany.",
       "discordRichPresence": "Discord Rich Presence",
       "discordRichPresenceHint": "Pokazuj grę, którą streamujesz, jako aktywność na Discordzie, wraz z czasem trwania.",
-      "controllerModeLibrary": "Controller Mode Library",
+      "controllerModeLibrary": "Biblioteka trybu kontrolera",
       "controllerModeLibraryHint": "Zastąp nawigację biblioteki i ustawień na komputerze układem dla kontrolera, gdy włączony jest tryb kontrolera.",
-      "controllerUiSounds": "Controller UI Sounds",
-      "controllerUiSoundsHint": "Play subtle move, open, and back sounds inside controller mode only.",
-      "controllerBackgroundAnimations": "Background Animations (Controller Mode)",
-      "controllerBackgroundAnimationsHint": "Show animated background visuals on controller-mode loading screens only.",
-      "autoLoadControllerLibrary": "Auto-Load Controller Library",
-      "autoLoadControllerLibraryHint": "Automatically open the controller library at startup when controller mode is enabled.",
-      "posterSize": "Poster Size",
-      "posterSizeHint": "Adjusts game posters in real time across the library and controller views.",
+      "controllerUiSounds": "Dźwięki interfejsu kontrolera",
+      "controllerUiSoundsHint": "Odtwarzaj subtelne dźwięki ruchu, otwierania i cofania tylko w trybie kontrolera.",
+      "controllerBackgroundAnimations": "Animacje tła (tryb kontrolera)",
+      "controllerBackgroundAnimationsHint": "Pokazuj animowane tło na ekranach ładowania tylko w trybie kontrolera.",
+      "autoLoadControllerLibrary": "Automatyczne ładowanie biblioteki kontrolera",
+      "autoLoadControllerLibraryHint": "Automatycznie otwieraj bibliotekę kontrolera przy uruchomieniu, gdy włączony jest tryb kontrolera.",
+      "posterSize": "Rozmiar plakatu",
+      "posterSizeHint": "Dostosowuje okładki gier w czasie rzeczywistym w bibliotece i widoku kontrolera.",
       "sessionElapsedCounter": "Session Elapsed Counter",
-      "sessionElapsedCounterHint": "Enable or disable the live session elapsed counter while streaming.",
+      "sessionElapsedCounterHint": "Włącz lub wyłącz licznik czasu trwania sesji podczas streamingu.",
       "sessionTimerReappear": "Session Timer Reappear",
       "sessionTimerVisibleTime": "Session Timer Visible Time",
-      "sessionTimerReappearHint": "How often the session timer pops back up while streaming (0 disables repeats).",
-      "sessionTimerVisibleTimeHint": "How long the session timer stays visible each time it appears.",
+      "sessionTimerReappearHint": "Jak często ponownie wyświetlać odliczanie do końca sesji podczas streamingu (0 wyłącza powtarzanie).",
+      "sessionTimerVisibleTimeHint": "Jak długo wyświetlane jest odliczanie czasu sesji za każdym razem, gdy się pojawia.",
       "sessionTimerDisabledHint": "Disabling the session elapsed counter stops the live elapsed timer from rendering at all. Remaining playtime indicators stay unchanged.",
       "off": "Wył.",
       "everyMinutes": "Co {{count}} minut"
@@ -456,14 +456,14 @@
         "checking": "Sprawdzanie",
         "updateAvailable": "Dostępna Aktualizacja",
         "downloading": "Pobieranie",
-        "readyToInstall": "Ready to install"
+        "readyToInstall": "Gotowe do instalacji"
       }
     },
     "thanks": {
       "title": "Dziękujemy za pomoc w rozwoju OpenNOW",
       "subtitle": "OpenNOW is shaped by contributors building the client and supporters backing the project behind the scenes.",
       "contributorsTitle": "Współtwórcy",
-      "contributorsSubtitle": "People improving OpenNOW in code, fixes, and features.",
+      "contributorsSubtitle": "Osoby rozwijające OpenNOW kodem, poprawkami i nowymi funkcjami.",
       "supportersTitle": "Wspierający",
       "loadingContributors": "Ładowanie współtwórców z GitHub...",
       "loadingSupporters": "Ładowanie zwolenników z GitHub Sponsors..."
@@ -471,10 +471,10 @@
   },
   "navbar": {
     "subscriptionDetails": "Szczegóły subskrypcji",
-    "playtimeDetails": "Playtime Details",
+    "playtimeDetails": "Szczegóły czasu gry",
     "storageDetails": "Szczegóły pamięci",
-    "showPlaytimeDetails": "Show playtime details",
-    "showStorageDetails": "Show storage details",
+    "showPlaytimeDetails": "Pokaż szczegóły czasu gry",
+    "showStorageDetails": "Pokaż szczegóły pamięci",
     "time": {
       "unlimitedTime": "Nieskończony czas",
       "timeUsage": "Zużycie czasu",
@@ -487,7 +487,7 @@
       "usedTime": "Użyty czas",
       "allotted": "Przydzielone",
       "purchased": "Zakupione",
-      "rolledOver": "Rolled Over",
+      "rolledOver": "Przeniesione godziny",
       "firstEntitlement": "First Entitlement",
       "periodStart": "Początek Okresu",
       "periodEnd": "Koniec okresu",
@@ -517,16 +517,16 @@
       "lbRbTabs": "LB/RB Tabs"
     },
     "gameHub": {
-      "ariaLabel": "{{title}} game hub",
+      "ariaLabel": "Centrum gier {{title}}",
       "actions": "Game hub actions"
     },
     "library": {
-      "loadingTitle": "Loading your library",
+      "loadingTitle": "Ładowanie twojej biblioteki",
       "loadingSubtitle": "Proszę czekać",
-      "gameHub": "Game hub",
+      "gameHub": "Centrum gier",
       "games": "Gry",
       "gameLibrary": "Biblioteka gier",
-      "emptySlot": "Empty slot",
+      "emptySlot": "Puste miejsce",
       "emptyRecentSlot": "Empty recent slot",
       "recentlyPlayed": "Ostatnio grane",
       "recentlyPlayedHint": "Recently played · Enter opens this title in your library",
