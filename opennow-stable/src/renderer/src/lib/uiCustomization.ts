@@ -87,10 +87,7 @@ export function getAccentColorOption(accentColor: AppAccentColor): AccentColorOp
 }
 
 export function applyAccentColor(accentColor: AppAccentColor, root: HTMLElement | null = null): void {
-  const target = root ?? document.querySelector<HTMLElement>(".app-container");
-  if (!target) {
-    return;
-  }
+  const target = root ?? document.documentElement;
   const option = getAccentColorOption(accentColor);
   const baseRgb = hexToRgb(option.hex);
   const hoverRgb = mixColors(baseRgb, { r: 255, g: 255, b: 255 }, 0.12);
