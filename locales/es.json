@@ -1,58 +1,58 @@
 {
   "app": {
-    "name": "OpenNOW",
-    "tagline": "Open-source cloud gaming client",
-    "description": "Cloud gaming, open source.",
+    "name": "OpemNOW",
+    "tagline": "Cliente de juegos en la nube de código abierto",
+    "description": "Juego en la nube, código abierto.",
     "actions": {
-      "add": "Add",
-      "back": "Back",
-      "browse": "Browse",
-      "cancel": "Cancel",
-      "close": "Close",
-      "confirm": "confirm",
-      "continue": "Continue",
-      "delete": "Delete",
-      "done": "Done",
-      "open": "Open",
-      "play": "Play",
-      "refresh": "Refresh",
-      "remove": "Remove",
-      "reset": "Reset",
-      "resume": "Resume",
-      "retry": "Retry",
-      "save": "Save",
-      "search": "Search",
-      "select": "Select",
-      "settings": "Settings",
-      "showInFolder": "Show in folder",
-      "sort": "Sort",
-      "stop": "Stop",
-      "switch": "Switch"
+      "add": "Añadir",
+      "back": "Atrás",
+      "browse": "Examinar",
+      "cancel": "Cancelar",
+      "close": "Cerrar",
+      "confirm": "confirmar",
+      "continue": "Continuar",
+      "delete": "Eliminar",
+      "done": "Hecho",
+      "open": "Abrir",
+      "play": "Jugar",
+      "refresh": "Actualizar",
+      "remove": "Quitar",
+      "reset": "Restablecer",
+      "resume": "Reanudar",
+      "retry": "Reintentar",
+      "save": "Guardar",
+      "search": "Buscar",
+      "select": "Seleccionar",
+      "settings": "Ajustes",
+      "showInFolder": "Mostrar en la carpeta",
+      "sort": "Ordenar",
+      "stop": "Parar",
+      "switch": "Cambiar"
     },
     "status": {
-      "checking": "Checking",
-      "connecting": "Connecting...",
+      "checking": "Comprobando",
+      "connecting": "Conectando...",
       "disabled": "Disabled",
       "error": "Error",
       "failed": "Failed",
-      "idle": "Idle",
-      "loading": "Loading...",
-      "ready": "Ready",
-      "saved": "Saved",
+      "idle": "Inactivo",
+      "loading": "Cargando...",
+      "ready": "Listo",
+      "saved": "Guardado",
       "testing": "Testing...",
-      "unknown": "Unknown",
+      "unknown": "Desconocido",
       "upToDate": "Up to date"
     },
     "units": {
       "bitrateMbps": "{{value}} Mbps",
       "gb": "{{value}} GB",
-      "gbLeft": "{{value}} GB left",
-      "gbTotal": "{{value}} GB total",
-      "gbUsed": "{{value}} GB used",
-      "hours": "{{value}}h",
-      "hoursLeft": "{{value}}h left",
-      "hoursUsed": "{{value}}h used",
-      "milliseconds": "{{value}}ms",
+      "gbLeft": "{{value}} GB restantes",
+      "gbTotal": "{{value}} GB en total",
+      "gbUsed": "{{value}} GB usados",
+      "hours": "{{value}}horas",
+      "hoursLeft": "{{value}}horas restantes",
+      "hoursUsed": "{{value}}h usados",
+      "milliseconds": "{{value}} ms",
       "minutes": "{{value}} min",
       "percent": "{{value}}%",
       "seconds": "{{value}}s"
@@ -85,11 +85,11 @@
     "provider": {
       "label": "Provider",
       "select": "Select provider",
-      "loading": "Loading..."
+      "loading": "Cargando..."
     },
     "actions": {
       "signIn": "Sign In",
-      "connecting": "Connecting...",
+      "connecting": "Conectando...",
       "restoringSession": "Restoring Session..."
     },
     "accounts": {
@@ -131,13 +131,13 @@
   "navigation": {
     "home": "Store",
     "library": "Library",
-    "settings": "Settings"
+    "settings": "Ajustes"
   },
   "home": {
     "searchPlaceholder": "Search games...",
     "filters": "Filters",
     "count": {
-      "loading": "Loading...",
+      "loading": "Cargando...",
       "shown": "{{shown}} shown",
       "shownTotal": "{{shown}} shown · {{total}} total",
       "shownTotalSupported": "{{shown}} shown · {{total}} total · {{supported}} supported",
@@ -187,7 +187,7 @@
     "steps": {
       "queue": "Queue",
       "setup": "Setup",
-      "ready": "Ready"
+      "ready": "Listo"
     },
     "status": {
       "gameLaunchFailed": "Game launch failed",
@@ -198,7 +198,7 @@
       "startingStream": "Starting stream...",
       "connectingToServer": "Connecting to server...",
       "settingUpStream": "Setting up stream...",
-      "loading": "Loading..."
+      "loading": "Cargando..."
     },
     "ads": {
       "resumeToStayInQueue": "Resume ads to stay in queue.",
@@ -218,8 +218,8 @@
   "queue": {
     "servers": {
       "allServers": "All Servers",
-      "close": "Close",
-      "cancel": "Cancel",
+      "close": "Cerrar",
+      "cancel": "Cancelar",
       "wait": "{{duration}} wait"
     }
   },
@@ -232,7 +232,7 @@
     "exitStream": "Exit Stream?",
     "exitConfirmation": "Exit stream confirmation",
     "cancelExit": "Cancel exit",
-    "resume": "Resume",
+    "resume": "Reanudar",
     "resumeActiveCloudSession": "Resume active cloud session",
     "resumeActiveCloudSessionTitle": "Resume active cloud session: {{title}}",
     "resumeCurrentStream": "Resume current stream",
@@ -260,7 +260,7 @@
   },
   "stream": {
     "stats": {
-      "connecting": "Connecting...",
+      "connecting": "Conectando...",
       "network": "Network",
       "decode": "Decode",
       "input": "Input",
@@ -286,7 +286,7 @@
       "controllerConnected_plural": "{{count}} controllers connected"
     },
     "sidebar": {
-      "title": "Settings",
+      "title": "Ajustes",
       "remainingPlaytime": "Remaining Playtime",
       "sections": "Sidebar sections",
       "microphoneHandling": "Microphone handling",
@@ -329,8 +329,8 @@
     "closeSettings": "Close settings"
   },
   "settings": {
-    "title": "Settings",
-    "saved": "Saved",
+    "title": "Ajustes",
+    "saved": "Guardado",
     "searchPlaceholder": "Search settings...",
     "noMatches": "No settings matched \"{{query}}\".",
     "sections": {
@@ -453,7 +453,7 @@
     "about": {
       "updateStatus": {
         "packagedBuildsOnly": "Packaged builds only",
-        "checking": "Checking",
+        "checking": "Comprobando",
         "updateAvailable": "Update available",
         "downloading": "Downloading",
         "readyToInstall": "Ready to install"
@@ -548,7 +548,7 @@
       "settingUpRig": "Setting up your gaming rig...",
       "startingStream": "Starting stream...",
       "settingUpStream": "Setting up stream...",
-      "loading": "Loading..."
+      "loading": "Cargando..."
     }
   },
   "errors": {
