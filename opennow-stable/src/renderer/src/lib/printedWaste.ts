@@ -8,7 +8,7 @@ export function isAllianceStreamingBaseUrl(streamingBaseUrl: string): boolean {
   if (!streamingBaseUrl.trim()) return false;
   try {
     const { hostname } = new URL(streamingBaseUrl);
-    return !hostname.endsWith(".nvidiagrid.net");
+    return !hostname.includes("cloudmatchbeta");
   } catch {
     return false;
   }
