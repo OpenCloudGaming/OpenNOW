@@ -16,6 +16,7 @@ import type {
   NativeTransitionDiagnostics,
   ControllerThemeRgb,
   ControllerThemeStyle,
+  AppAccentColor,
 } from "@shared/gfn";
 import { DEFAULT_KEYBOARD_LAYOUT, getDefaultStreamPreferences, normalizeStreamPreferences } from "@shared/gfn";
 
@@ -96,6 +97,8 @@ export interface Settings {
   showStatsOnLaunch: boolean;
   /** Skip the free-tier queue server selection modal and launch with default routing */
   hideServerSelector: boolean;
+  /** Desktop UI accent preset */
+  appAccentColor: AppAccentColor;
   /** Enable controller-first media bar layout for library browsing */
   controllerMode: boolean;
   /** Play subtle sounds in controller library mode */
@@ -146,6 +149,7 @@ const DEFAULT_STREAM_PREFERENCES = getDefaultStreamPreferences();
 
 const CONTROLLER_THEME_STYLES_SET = new Set<ControllerThemeStyle>(["aurora", "nebula", "grid", "minimal", "pulse"]);
 const NATIVE_VIDEO_BACKEND_PREFERENCES = new Set<NativeVideoBackendPreference>(["auto", "d3d11", "d3d12"]);
+const APP_ACCENT_COLORS = new Set<AppAccentColor>(["green", "blue", "violet", "amber", "rose"]);
 
 function clampThemeByte(value: unknown): number {
   const n = typeof value === "number" && Number.isFinite(value) ? Math.round(value) : NaN;
@@ -171,6 +175,10 @@ function normalizeNativeVideoBackendPreference(raw: unknown): NativeVideoBackend
   return NATIVE_VIDEO_BACKEND_PREFERENCES.has(raw as NativeVideoBackendPreference)
     ? (raw as NativeVideoBackendPreference)
     : "auto";
+}
+
+function normalizeAppAccentColor(raw: unknown): AppAccentColor {
+  return APP_ACCENT_COLORS.has(raw as AppAccentColor) ? (raw as AppAccentColor) : "green";
 }
 
 const DEFAULT_SETTINGS: Settings = {
@@ -210,6 +218,7 @@ const DEFAULT_SETTINGS: Settings = {
   showAntiAfkIndicator: true,
   showStatsOnLaunch: false,
   hideServerSelector: false,
+  appAccentColor: "green",
   controllerMode: false,
   controllerUiSounds: false,
   controllerBackgroundAnimations: false,
@@ -270,7 +279,10 @@ export class SettingsManager {
       const themeColorBefore = { ...merged.controllerThemeColor };
       merged.controllerThemeStyle = normalizeControllerThemeStyle(merged.controllerThemeStyle);
       merged.controllerThemeColor = normalizeControllerThemeColor(merged.controllerThemeColor, DEFAULT_SETTINGS.controllerThemeColor);
+      const accentColorBefore = merged.appAccentColor;
+      merged.appAccentColor = normalizeAppAccentColor(merged.appAccentColor);
       if (
+        merged.appAccentColor !== accentColorBefore ||
         merged.controllerThemeStyle !== themeStyleBefore ||
         merged.controllerThemeColor.r !== themeColorBefore.r ||
         merged.controllerThemeColor.g !== themeColorBefore.g ||
@@ -313,6 +325,11 @@ export class SettingsManager {
 
     if (settings.nativeStreamerBackend !== "gstreamer") {
       settings.nativeStreamerBackend = "gstreamer";
+      migrated = true;
+    }
+    const appAccentColor = normalizeAppAccentColor(settings.appAccentColor);
+    if (settings.appAccentColor !== appAccentColor) {
+      settings.appAccentColor = appAccentColor;
       migrated = true;
     }
     if (!settings.nativeExternalRenderer) {

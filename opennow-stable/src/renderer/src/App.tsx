@@ -80,6 +80,7 @@ import {
 } from "./lib/sessionState";
 import { defaultDiagnostics, mergeNativeStreamStats } from "./lib/streamDiagnostics";
 import { aspectRatioOptions, codecOptions, fpsOptions, getResolutionsByAspectRatio } from "./lib/streamOptions";
+import { applyAccentColor } from "./lib/uiCustomization";
 import { useTranslation } from "./i18n";
 
 // UI Components
@@ -241,6 +242,7 @@ export function App(): JSX.Element {
     showAntiAfkIndicator: true,
     showStatsOnLaunch: false,
     hideServerSelector: false,
+    appAccentColor: "green",
     controllerMode: false,
     controllerUiSounds: false,
     controllerBackgroundAnimations: false,
@@ -1466,6 +1468,10 @@ export function App(): JSX.Element {
     }, STREAM_WARNING_VISIBILITY_MS);
     return () => window.clearTimeout(timer);
   }, [remoteStreamWarning]);
+
+  useEffect(() => {
+    applyAccentColor(settings.appAccentColor);
+  }, [settings.appAccentColor]);
 
   // Save settings when changed
   const updateSetting = useCallback(async <K extends keyof Settings>(key: K, value: Settings[K]) => {

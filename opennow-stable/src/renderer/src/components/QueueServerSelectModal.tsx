@@ -424,7 +424,7 @@ export function QueueServerSelectModal({ game, initialQueueData = null, onConfir
                     }
                     zone={autoZone}
                     selected={selected === "auto"}
-                    accent="#58d98a"
+                    accent="var(--accent)"
                     onClick={() => setSelected("auto")}
                   />
 
@@ -440,7 +440,7 @@ export function QueueServerSelectModal({ game, initialQueueData = null, onConfir
                     }
                     zone={closestZone}
                     selected={selected === "closest"}
-                    accent="#58d98a"
+                    accent="var(--accent)"
                     pinging={isPinging}
                     disabled={!closestZone && !isPinging}
                     onClick={() => { if (closestZone) setSelected("closest"); }}
