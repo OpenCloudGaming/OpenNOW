@@ -184,9 +184,18 @@ const nativeVideoBackendOptions: { value: NativeVideoBackendPreference; label: s
 ];
 
 const APP_LANGUAGE_LABELS: Record<string, string> = {
+  de: "Deutsch",
   en: "English",
   es: "Español",
   fr: "Français",
+  ja: "日本語",
+  ko: "한국어",
+  nl: "Nederlands",
+  pl: "Polski",
+  ro: "Română",
+  ru: "Русский",
+  tr: "Türkçe",
+  zh: "简体中文",
 };
 
 function getAppLanguageLabel(locale: string): string {
@@ -868,9 +877,10 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
     void setLocale(nextLocale).catch((error) => {
       console.warn("[Settings] Failed to change app language:", error);
     });
+    onSettingChange("appLocale", nextLocale);
     setSavedIndicator(true);
     setTimeout(() => setSavedIndicator(false), 1500);
-  }, [setLocale]);
+  }, [onSettingChange, setLocale]);
 
   const setNativeFramePacing = useCallback((mode: "low-latency" | "smooth") => {
     if (mode === "low-latency") {

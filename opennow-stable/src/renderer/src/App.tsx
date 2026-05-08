@@ -257,6 +257,7 @@ export function App(): JSX.Element {
     windowHeight: 900,
     keyboardLayout: DEFAULT_KEYBOARD_LAYOUT,
     gameLanguage: "en_US",
+    appLocale: "en",
     enableL4S: false,
     enableCloudGsync: false,
     discordRichPresence: false,
@@ -270,6 +271,7 @@ export function App(): JSX.Element {
   const diagnosticsStoreRef = useRef<ReturnType<typeof createStreamDiagnosticsStore> | null>(null);
   const diagnosticsStore =
     diagnosticsStoreRef.current ?? (diagnosticsStoreRef.current = createStreamDiagnosticsStore(defaultDiagnostics()));
+  const runtimeDataLocaleRef = useRef<string | null>(null);
   const streamMenuMicOn = useStreamDiagnosticsSelector(diagnosticsStore, (d) => d.micEnabled);
 
   // Stream State
@@ -1633,6 +1635,15 @@ export function App(): JSX.Element {
       try {
         // Load settings first
         const loadedSettings = await window.openNow.getSettings();
+        const normalizedUiLocale = locale.trim().toLowerCase();
+        if (loadedSettings.appLocale !== normalizedUiLocale) {
+          try {
+            await window.openNow.setSetting("appLocale", normalizedUiLocale);
+            loadedSettings.appLocale = normalizedUiLocale;
+          } catch (error) {
+            console.warn("Failed to sync app locale setting:", error);
+          }
+        }
         setSettings(loadedSettings);
         setShowStatsOverlay(loadedSettings.showStatsOnLaunch);
         setSettingsLoaded(true);
@@ -1693,6 +1704,7 @@ export function App(): JSX.Element {
         setProviderIdpId(activeProviderId);
 
         if (persistedSession) {
+          runtimeDataLocaleRef.current = loadedSettings.appLocale;
           await loadSessionRuntimeData(persistedSession);
         } else {
           setRegions([]);
@@ -1715,7 +1727,22 @@ export function App(): JSX.Element {
     };
 
     void initialize();
-  }, [loadSessionRuntimeData, t]);
+  }, [loadSessionRuntimeData, locale, t]);
+
+  useEffect(() => {
+    if (!settingsLoaded || !authSession) {
+      return;
+    }
+
+    if (runtimeDataLocaleRef.current === settings.appLocale) {
+      return;
+    }
+
+    runtimeDataLocaleRef.current = settings.appLocale;
+    void loadSessionRuntimeData(authSession).catch((error) => {
+      console.warn("Failed to reload game data after locale change:", error);
+    });
+  }, [authSession, loadSessionRuntimeData, settings.appLocale, settingsLoaded]);
 
   // Login handler
   const handleLogin = useCallback(async () => {

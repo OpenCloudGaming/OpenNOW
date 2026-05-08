@@ -123,6 +123,8 @@ export interface Settings {
   keyboardLayout: KeyboardLayout;
   /** In-game language setting (sent to GFN servers via languageCode parameter) */
   gameLanguage: GameLanguage;
+  /** App UI locale used by renderer i18n and locale-aware public catalog fetches */
+  appLocale: string;
   /** Experimental request for Low Latency, Low Loss, Scalable throughput on new sessions */
   enableL4S: boolean;
   /** Request Cloud G-Sync / Variable Refresh Rate on new sessions */
@@ -226,6 +228,7 @@ const DEFAULT_SETTINGS: Settings = {
   windowHeight: 900,
   keyboardLayout: DEFAULT_KEYBOARD_LAYOUT,
   gameLanguage: "en_US",
+  appLocale: "en",
   enableL4S: false,
   enableCloudGsync: false,
   nativeTransitionDiagnostics: undefined,

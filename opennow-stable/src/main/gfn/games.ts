@@ -8,6 +8,7 @@ import type {
 } from "@shared/gfn";
 import { isOwnedLibraryStatus } from "@shared/gfn";
 import { cacheManager } from "../services/cacheManager";
+import { getSettingsManager } from "../settings";
 import {
   buildGfnGraphQlHeaders,
   buildGfnLcarsHeaders,
@@ -19,6 +20,21 @@ const PANELS_QUERY_HASH = "f8e26265a5db5c20e1334a6872cf04b6e3970507697f6ae55a6dd
 const APP_METADATA_QUERY_HASH = "39187e85b6dcf60b7279a5f233288b0a8b69a8b1dbcfb5b25555afdcb988f0d7";
 const LIBRARY_WITH_TIME_QUERY_HASH = "039e8c0d553972975485fee56e59f2549d2fdb518e247a42ab5022056a74406f";
 const DEFAULT_LOCALE = "en_US";
+const DEFAULT_PUBLIC_GAMES_LOCALE = "en-US";
+const PUBLIC_LOCALE_BY_APP_LOCALE: Readonly<Record<string, string>> = Object.freeze({
+  de: "de-DE",
+  en: "en-US",
+  es: "es-ES",
+  fr: "fr-FR",
+  ja: "ja-JP",
+  ko: "ko-KR",
+  nl: "nl-NL",
+  pl: "pl-PL",
+  ro: "ro-RO",
+  ru: "ru-RU",
+  tr: "tr-TR",
+  zh: "zh-CN",
+});
 const DEFAULT_CATALOG_FETCH_COUNT = 120;
 const MAX_CATALOG_PAGES = 3;
 const DEFAULT_SORT_ID = "relevance";
@@ -172,6 +188,23 @@ function isNumericId(value: string | undefined): value is string {
 
 function randomHuId(): string {
   return `${Date.now().toString(16)}${Math.random().toString(16).slice(2)}`;
+}
+
+function normalizeAppLocale(value: string | undefined): string {
+  if (!value) {
+    return "";
+  }
+
+  return value.trim().toLowerCase().replace("_", "-").split("-")[0] ?? "";
+}
+
+function resolvePublicGamesLocale(appLocale?: string): string {
+  const normalized = normalizeAppLocale(appLocale);
+  return PUBLIC_LOCALE_BY_APP_LOCALE[normalized] ?? DEFAULT_PUBLIC_GAMES_LOCALE;
+}
+
+function resolveGraphQlLocale(appLocale?: string): string {
+  return resolvePublicGamesLocale(appLocale).replace("-", "_");
 }
 
 async function postGraphQl<T>(query: string, variables: Record<string, unknown>, token?: string): Promise<T> {
@@ -432,6 +465,7 @@ async function fetchAppMetaData(
   token: string,
   appIds: string[],
   vpcId: string,
+  locale: string = DEFAULT_LOCALE,
 ): Promise<AppMetaDataResponse> {
   const normalizedIds = [...new Set(appIds.map((id) => id.trim()).filter((id) => id.length > 0))];
   if (normalizedIds.length === 0) {
@@ -440,7 +474,7 @@ async function fetchAppMetaData(
 
   const variables = JSON.stringify({
     vpcId,
-    locale: DEFAULT_LOCALE,
+    locale,
     appIds: normalizedIds,
   });
 
@@ -472,7 +506,12 @@ async function fetchAppMetaData(
   return (await response.json()) as AppMetaDataResponse;
 }
 
-async function enrichGamesWithMetadata(token: string, vpcId: string, games: GameInfo[]): Promise<GameInfo[]> {
+async function enrichGamesWithMetadata(
+  token: string,
+  vpcId: string,
+  games: GameInfo[],
+  locale: string = DEFAULT_LOCALE,
+): Promise<GameInfo[]> {
   const uuids = [...new Set(games.map((game) => game.uuid).filter((uuid): uuid is string => !!uuid))];
 
   if (uuids.length === 0) {
@@ -484,7 +523,7 @@ async function enrichGamesWithMetadata(token: string, vpcId: string, games: Game
 
   for (let index = 0; index < uuids.length; index += chunkSize) {
     const chunk = uuids.slice(index, index + chunkSize);
-    const payload = await fetchAppMetaData(token, chunk, vpcId);
+    const payload = await fetchAppMetaData(token, chunk, vpcId, locale);
     if (payload.errors?.length) {
       throw new Error(payload.errors.map((error) => error.message).join(", "));
     }
@@ -506,11 +545,12 @@ async function fetchPanels(
   token: string,
   panelNames: string[],
   vpcId: string,
+  locale: string,
   options?: { withLibraryTime?: boolean },
 ): Promise<GraphQlResponse> {
   const variables = JSON.stringify({
     vpcId,
-    locale: DEFAULT_LOCALE,
+    locale,
     panelNames,
   });
 
@@ -563,7 +603,7 @@ function flattenPanels(payload: GraphQlResponse): GameInfo[] {
   return dedupeGames(games);
 }
 
-async function fetchFilterAndSortDefinitions(token?: string): Promise<CatalogDefinitions> {
+async function fetchFilterAndSortDefinitions(token: string | undefined, locale: string): Promise<CatalogDefinitions> {
   const query = `query GetFilterGroupAndSortOrderDefinitions($locale: String!) {
     filterGroupDefinitions(language: $locale) {
       id
@@ -581,7 +621,7 @@ async function fetchFilterAndSortDefinitions(token?: string): Promise<CatalogDef
     }
   }`;
 
-  const payload = await postGraphQl<FilterSortDefinitionsResponse>(query, { locale: DEFAULT_LOCALE }, token);
+  const payload = await postGraphQl<FilterSortDefinitionsResponse>(query, { locale }, token);
   if (payload.errors?.length) {
     throw new Error(payload.errors.map((error) => error.message).join(", "));
   }
@@ -647,8 +687,10 @@ async function browseCatalogUncached(input: CatalogBrowseRequest): Promise<Catal
     throw new Error("Catalog browsing requires an authenticated token");
   }
 
+  const appLocale = getSettingsManager().get("appLocale");
+  const locale = resolveGraphQlLocale(appLocale);
   const vpcId = await getVpcId(token, input.providerStreamingBaseUrl);
-  const definitions = await fetchFilterAndSortDefinitions(token);
+  const definitions = await fetchFilterAndSortDefinitions(token, locale);
   const normalizedFilterIds = (input.filterIds ?? []).filter((id) => id in definitions.filterPayloadById);
   const selectedSort = definitions.sortOptions.find((option) => option.id === input.sortId)
     ?? definitions.sortOptions.find((option) => option.id === DEFAULT_SORT_ID)
@@ -740,7 +782,7 @@ ${appFields}
       searchQuery.length > 0
         ? {
             vpcId,
-            locale: DEFAULT_LOCALE,
+            locale,
             sortString: selectedSort.orderBy,
             fetchCount,
             cursor,
@@ -749,7 +791,7 @@ ${appFields}
           }
         : {
             vpcId,
-            locale: DEFAULT_LOCALE,
+            locale,
             sortString: selectedSort.orderBy,
             fetchCount,
             cursor,
@@ -800,68 +842,85 @@ export async function browseCatalog(input: CatalogBrowseRequest): Promise<Catalo
 }
 
 export async function fetchMainGames(token: string, providerStreamingBaseUrl?: string): Promise<GameInfo[]> {
-  const cached = await cacheManager.loadFromCache<GameInfo[]>("games:main");
+  const appLocale = getSettingsManager().get("appLocale");
+  const locale = resolveGraphQlLocale(appLocale);
+  const cacheKey = `games:main:${locale}`;
+
+  const cached = await cacheManager.loadFromCache<GameInfo[]>(cacheKey);
   if (cached) {
     return cached.data;
   }
 
-  const games = await fetchMainGamesUncached(token, providerStreamingBaseUrl);
-  await cacheManager.saveToCache("games:main", games);
+  const games = await fetchMainGamesUncached(token, providerStreamingBaseUrl, locale);
+  await cacheManager.saveToCache(cacheKey, games);
   return games;
 }
 
-async function fetchMainGamesUncached(token: string, providerStreamingBaseUrl?: string): Promise<GameInfo[]> {
+async function fetchMainGamesUncached(
+  token: string,
+  providerStreamingBaseUrl?: string,
+  locale: string = DEFAULT_LOCALE,
+): Promise<GameInfo[]> {
   const vpcId = await getVpcId(token, providerStreamingBaseUrl);
-  const payload = await fetchPanels(token, ["MAIN"], vpcId);
+  const payload = await fetchPanels(token, ["MAIN"], vpcId, locale);
   const games = flattenPanels(payload);
-  return enrichGamesWithMetadata(token, vpcId, games);
+  return enrichGamesWithMetadata(token, vpcId, games, locale);
 }
 
 export async function fetchLibraryGames(
   token: string,
   providerStreamingBaseUrl?: string,
 ): Promise<GameInfo[]> {
-  const cached = await cacheManager.loadFromCache<GameInfo[]>("games:library");
+  const appLocale = getSettingsManager().get("appLocale");
+  const locale = resolveGraphQlLocale(appLocale);
+  const cacheKey = `games:library:${locale}`;
+
+  const cached = await cacheManager.loadFromCache<GameInfo[]>(cacheKey);
   if (cached) {
     return cached.data;
   }
 
-  const games = await fetchLibraryGamesUncached(token, providerStreamingBaseUrl);
-  await cacheManager.saveToCache("games:library", games);
+  const games = await fetchLibraryGamesUncached(token, providerStreamingBaseUrl, locale);
+  await cacheManager.saveToCache(cacheKey, games);
   return games;
 }
 
 async function fetchLibraryGamesUncached(
   token: string,
   providerStreamingBaseUrl?: string,
+  locale: string = DEFAULT_LOCALE,
 ): Promise<GameInfo[]> {
   const vpcId = await getVpcId(token, providerStreamingBaseUrl);
   let payload: GraphQlResponse;
 
   try {
-    payload = await fetchPanels(token, ["LIBRARY"], vpcId, { withLibraryTime: true });
+    payload = await fetchPanels(token, ["LIBRARY"], vpcId, locale, { withLibraryTime: true });
   } catch {
-    payload = await fetchPanels(token, ["LIBRARY"], vpcId);
+    payload = await fetchPanels(token, ["LIBRARY"], vpcId, locale);
   }
 
   const games = flattenPanels(payload);
-  return enrichGamesWithMetadata(token, vpcId, games);
+  return enrichGamesWithMetadata(token, vpcId, games, locale);
 }
 
 export async function fetchPublicGames(): Promise<GameInfo[]> {
-  const cached = await cacheManager.loadFromCache<GameInfo[]>("games:public");
+  const appLocale = getSettingsManager().get("appLocale");
+  const publicLocale = resolvePublicGamesLocale(appLocale);
+  const cacheKey = `games:public:${publicLocale}`;
+
+  const cached = await cacheManager.loadFromCache<GameInfo[]>(cacheKey);
   if (cached) {
     return cached.data;
   }
 
-  const games = await fetchPublicGamesUncached();
-  await cacheManager.saveToCache("games:public", games);
+  const games = await fetchPublicGamesUncached(publicLocale);
+  await cacheManager.saveToCache(cacheKey, games);
   return games;
 }
 
-async function fetchPublicGamesUncached(): Promise<GameInfo[]> {
+async function fetchPublicGamesUncached(publicLocale: string = DEFAULT_PUBLIC_GAMES_LOCALE): Promise<GameInfo[]> {
   const response = await fetch(
-    "https://static.nvidiagrid.net/supported-public-game-list/locales/gfnpc-en-US.json",
+    `https://static.nvidiagrid.net/supported-public-game-list/locales/gfnpc-${publicLocale}.json`,
     {
       headers: {
         "User-Agent": GFN_USER_AGENT,
@@ -908,7 +967,9 @@ export async function resolveLaunchAppId(
   }
 
   const vpcId = await getVpcId(token, providerStreamingBaseUrl);
-  const payload = await fetchAppMetaData(token, [appIdOrUuid], vpcId);
+  const appLocale = getSettingsManager().get("appLocale");
+  const locale = resolveGraphQlLocale(appLocale);
+  const payload = await fetchAppMetaData(token, [appIdOrUuid], vpcId, locale);
 
   if (payload.errors?.length) {
     throw new Error(payload.errors.map((error) => error.message).join(", "));
