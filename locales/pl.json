@@ -314,8 +314,8 @@
       "scrollRight": "Przewiń nagrania w prawo"
     },
     "shortcuts": {
-      "empty": "Skrót klawiszowy nie może być pusty",
-      "invalidFormat": "Niepoprawny format skrótu klawiszowego",
+      "empty": "Skrót klawiszowy nie może być pusty.",
+      "invalidFormat": "Niepoprawny format skrótu klawiszowego.",
       "conflict": "Skrót klawiszowy sprzeczny z istniejącym skrótem.",
       "clickThenPress": "Kliknij, potem przyciśnij klawisz",
       "clickHereThenPress": "Kliknij tutaj, potem przyciśnij klawisz",
@@ -399,8 +399,8 @@
       "shortcuts": "Skróty klawiszowe",
       "shortcutConflictSidebar": "Skrót klawiszowy jest sprzeczny z przełącznikiem panelu bocznego.",
       "shortcutConflictBinding": "Skrót klawiszowy sprzeczny z innym.",
-      "shortcutEmpty": "Skrót klawiszowy nie może być pusty",
-      "shortcutInvalid": "Niepoprawny format skrótu klawiszowego",
+      "shortcutEmpty": "Skrót klawiszowy nie może być pusty.",
+      "shortcutInvalid": "Niepoprawny format skrótu klawiszowego.",
       "toggleStats": "Przełącz statystyki",
       "togglePointerLock": "Przełącz blokadę myszy",
       "toggleFullscreen": "Przełącz tryb pełnoekranowy",
@@ -415,7 +415,7 @@
     "interface": {
       "appearance": "Wygląd",
       "appLanguage": "Język aplikacji",
-      "appLanguageHint": "Changes OpenNOW's interface language. English is used for untranslated strings.",
+      "appLanguageHint": "Zmienia język interfejsu OpenNOW. Nieprzetłumaczone treści wyświetlane są po angielsku.",
       "hideStreamOverlayButtons": "Hide Stream Overlay Buttons",
       "hideStreamOverlayButtonsHint": "Hide microphone, fullscreen, and end-session buttons while streaming.",
       "showStatsOnStreamLaunch": "Show Stats on Stream Launch",
