@@ -4951,7 +4951,7 @@ button.game-card-store-chip.owned.active:hover {
 
 .sv-afk-ack--on .sv-afk-ack-dot {
   background: var(--success);
-  box-shadow: 0 0 8px rgba(var(--accent-rgb), 0.8);
+  box-shadow: 0 0 8px rgba(88, 217, 138, 0.8);
 }
 
 .sv-afk-ack--off {
@@ -5147,7 +5147,7 @@ button.game-card-store-chip.owned.active:hover {
   height: 8px;
   border-radius: 999px;
   background: var(--success);
-  box-shadow: 0 0 8px rgba(var(--accent-rgb), 0.8);
+  box-shadow: 0 0 8px rgba(88, 217, 138, 0.8);
 }
 
 .sv-afk-label {

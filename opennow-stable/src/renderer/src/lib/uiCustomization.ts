@@ -56,9 +56,26 @@ function mixColors(base: RgbColor, target: RgbColor, amount: number): RgbColor {
   };
 }
 
+function getContrastRatio(fg: RgbColor, bg: RgbColor): number {
+  const relativeLuminance = (rgb: RgbColor): number => {
+    const [rs, gs, bs] = [rgb.r / 255, rgb.g / 255, rgb.b / 255].map((channel) =>
+      channel <= 0.03928 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4,
+    );
+    return 0.2126 * rs + 0.7152 * gs + 0.0722 * bs;
+  };
+  const l1 = relativeLuminance(fg);
+  const l2 = relativeLuminance(bg);
+  const lighter = Math.max(l1, l2);
+  const darker = Math.min(l1, l2);
+  return (lighter + 0.05) / (darker + 0.05);
+}
+
 function getContrastColor({ r, g, b }: RgbColor): string {
-  const luminance = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
-  return luminance >= 0.62 ? "#111318" : "#f8fafc";
+  const lightFg = { r: 248, g: 250, b: 252 };
+  const darkFg = { r: 17, g: 19, b: 24 };
+  const lightContrast = getContrastRatio(lightFg, { r, g, b });
+  const darkContrast = getContrastRatio(darkFg, { r, g, b });
+  return lightContrast > darkContrast ? "#f8fafc" : "#111318";
 }
 
 export function getAccentColorOptions(): readonly AccentColorOption[] {
@@ -69,18 +86,22 @@ export function getAccentColorOption(accentColor: AppAccentColor): AccentColorOp
   return ACCENT_COLOR_MAP.get(accentColor) ?? ACCENT_COLOR_OPTIONS[0];
 }
 
-export function applyAccentColor(accentColor: AppAccentColor, root: HTMLElement = document.documentElement): void {
+export function applyAccentColor(accentColor: AppAccentColor, root: HTMLElement | null = null): void {
+  const target = root ?? document.querySelector<HTMLElement>(".app-container");
+  if (!target) {
+    return;
+  }
   const option = getAccentColorOption(accentColor);
   const baseRgb = hexToRgb(option.hex);
   const hoverRgb = mixColors(baseRgb, { r: 255, g: 255, b: 255 }, 0.12);
   const pressRgb = mixColors(baseRgb, { r: 0, g: 0, b: 0 }, 0.12);
 
-  root.style.setProperty("--accent", option.hex);
-  root.style.setProperty("--accent-hover", rgbToHex(hoverRgb));
-  root.style.setProperty("--accent-press", rgbToHex(pressRgb));
-  root.style.setProperty("--accent-rgb", `${baseRgb.r}, ${baseRgb.g}, ${baseRgb.b}`);
-  root.style.setProperty("--accent-glow", `rgba(${baseRgb.r}, ${baseRgb.g}, ${baseRgb.b}, 0.25)`);
-  root.style.setProperty("--accent-surface", `rgba(${baseRgb.r}, ${baseRgb.g}, ${baseRgb.b}, 0.08)`);
-  root.style.setProperty("--accent-surface-strong", `rgba(${baseRgb.r}, ${baseRgb.g}, ${baseRgb.b}, 0.14)`);
-  root.style.setProperty("--accent-on", getContrastColor(baseRgb));
+  target.style.setProperty("--accent", option.hex);
+  target.style.setProperty("--accent-hover", rgbToHex(hoverRgb));
+  target.style.setProperty("--accent-press", rgbToHex(pressRgb));
+  target.style.setProperty("--accent-rgb", `${baseRgb.r}, ${baseRgb.g}, ${baseRgb.b}`);
+  target.style.setProperty("--accent-glow", `rgba(${baseRgb.r}, ${baseRgb.g}, ${baseRgb.b}, 0.25)`);
+  target.style.setProperty("--accent-surface", `rgba(${baseRgb.r}, ${baseRgb.g}, ${baseRgb.b}, 0.08)`);
+  target.style.setProperty("--accent-surface-strong", `rgba(${baseRgb.r}, ${baseRgb.g}, ${baseRgb.b}, 0.14)`);
+  target.style.setProperty("--accent-on", getContrastColor(baseRgb));
 }
