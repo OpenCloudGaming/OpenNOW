@@ -424,7 +424,7 @@ export function QueueServerSelectModal({ game, initialQueueData = null, onConfir
                     }
                     zone={autoZone}
                     selected={selected === "auto"}
-                    accent="#58d98a"
+                    accent="var(--accent)"
                     onClick={() => setSelected("auto")}
                   />
 
@@ -440,7 +440,7 @@ export function QueueServerSelectModal({ game, initialQueueData = null, onConfir
                     }
                     zone={closestZone}
                     selected={selected === "closest"}
-                    accent="#58d98a"
+                    accent="var(--accent)"
                     pinging={isPinging}
                     disabled={!closestZone && !isPinging}
                     onClick={() => { if (closestZone) setSelected("closest"); }}
@@ -602,7 +602,7 @@ function RecommendCard({ label, sublabel, zone, selected, accent, pinging, disab
         {label}
       </div>
       <div style={{ fontSize: 11, color: "var(--ink-dim)", marginBottom: 10, display: "flex", alignItems: "center", gap: 5 }}>
-        {pinging && <MiniSpinner color={accent} />}
+        {pinging && <MiniSpinner color={accent} borderColor="var(--accent-surface-strong)" />}
         {sublabel}
       </div>
 
@@ -746,12 +746,18 @@ function Spinner(): JSX.Element {
   );
 }
 
-function MiniSpinner({ color }: { color: string }): JSX.Element {
+function MiniSpinner({
+  color,
+  borderColor = `${color}33`,
+}: {
+  color: string;
+  borderColor?: string;
+}): JSX.Element {
   return (
     <div style={{
       width: 9,
       height: 9,
-      border: `2px solid ${color}33`,
+      border: `2px solid ${borderColor}`,
       borderTop: `2px solid ${color}`,
       borderRadius: "50%",
       animation: "on-spin 0.75s linear infinite",
