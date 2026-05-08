@@ -123,7 +123,7 @@ export interface Settings {
   keyboardLayout: KeyboardLayout;
   /** In-game language setting (sent to GFN servers via languageCode parameter) */
   gameLanguage: GameLanguage;
-  /** App UI locale used by renderer i18n and locale-aware public catalog fetches */
+  /** Persisted app locale mirrored from the renderer; used by main-process locale-aware public catalog fetches */
   appLocale: string;
   /** Experimental request for Low Latency, Low Loss, Scalable throughput on new sessions */
   enableL4S: boolean;
