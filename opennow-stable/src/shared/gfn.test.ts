@@ -7,10 +7,14 @@ import type { GameInfo, GameVariant } from "./gfn";
 import {
   OWNED_LIBRARY_STATUSES,
   buildNativeStreamerSessionContext,
+  createUnsupportedNativeStreamerStatus,
   isEpicStore,
   isGameInLibrary,
+  isNativeStreamerSupportedPlatform,
   isOwnedLibraryStatus,
   isOwnedVariant,
+  NATIVE_STREAMER_WINDOWS_ONLY_MESSAGE,
+  normalizeStreamClientModeForPlatform,
 } from "./gfn";
 
 function makeVariant(overrides: Partial<GameVariant> = {}): GameVariant {
@@ -154,4 +158,23 @@ test("buildNativeStreamerSessionContext forwards requested/finalized streaming f
   assert.equal(context.session.negotiatedStreamProfile?.codec, "H265");
   assert.equal(context.settings.enableCloudGsync, false);
   assert.equal(context.settings.nativeTransitionDiagnostics?.forceQueueMode, "adaptive");
+});
+
+test("normalizes native stream client mode to web on non-Windows platforms", () => {
+  assert.equal(normalizeStreamClientModeForPlatform("native", "linux"), "web");
+  assert.equal(normalizeStreamClientModeForPlatform("native", "darwin"), "web");
+  assert.equal(normalizeStreamClientModeForPlatform("web", "linux"), "web");
+  assert.equal(normalizeStreamClientModeForPlatform("native", "win32"), "native");
+});
+
+test("uses the exact Windows-only unsupported native streamer status message", () => {
+  assert.equal(isNativeStreamerSupportedPlatform("win32"), true);
+  assert.equal(isNativeStreamerSupportedPlatform("linux"), false);
+
+  const status = createUnsupportedNativeStreamerStatus();
+  assert.equal(status.detected, false);
+  assert.equal(status.gstreamerAvailable, false);
+  assert.equal(status.supportsOfferAnswer, false);
+  assert.equal(status.message, NATIVE_STREAMER_WINDOWS_ONLY_MESSAGE);
+  assert.equal(status.gstreamerRuntime.message, NATIVE_STREAMER_WINDOWS_ONLY_MESSAGE);
 });
