@@ -446,7 +446,7 @@
       "sessionTimerVisibleTime": "Czas pokazywania się licznika sesji",
       "sessionTimerReappearHint": "Jak często ponownie wyświetlać odliczanie do końca sesji podczas streamingu (0 wyłącza powtarzanie).",
       "sessionTimerVisibleTimeHint": "Jak długo wyświetlane jest odliczanie czasu sesji za każdym razem, gdy się pojawia.",
-      "sessionTimerDisabledHint": "Disabling the session elapsed counter stops the live elapsed timer from rendering at all. Remaining playtime indicators stay unchanged.",
+      "sessionTimerDisabledHint": "Wyłączenie licznika czasu sesji całkowicie ukrywa licznik czasu gry na żywo. Pozostałe wskaźniki czasu gry pozostają bez zmian.",
       "off": "Wył.",
       "everyMinutes": "Co {{count}} minut"
     },
@@ -461,7 +461,7 @@
     },
     "thanks": {
       "title": "Dziękujemy za pomoc w rozwoju OpenNOW",
-      "subtitle": "OpenNOW is shaped by contributors building the client and supporters backing the project behind the scenes.",
+      "subtitle": "OpenNOW kształtuje się przez współtwórców budujących klienta i wspierających projekt za scenami.",
       "contributorsTitle": "Współtwórcy",
       "contributorsSubtitle": "Osoby rozwijające OpenNOW kodem, poprawkami i nowymi funkcjami.",
       "supportersTitle": "Wspierający",
@@ -488,13 +488,13 @@
       "allotted": "Przydzielone",
       "purchased": "Zakupione",
       "rolledOver": "Przeniesione godziny",
-      "firstEntitlement": "First Entitlement",
+      "firstEntitlement": "Pierwsze uprawnienie",
       "periodStart": "Początek Okresu",
       "periodEnd": "Koniec okresu",
-      "notifyAtGeneral": "Notify At (General)",
-      "notifyAtInSession": "Notify At (In Session)",
+      "notifyAtGeneral": "Powiadom o (Generalnie)",
+      "notifyAtInSession": "Powiadom w (W Sesji)",
       "planState": "Stan Planu",
-      "gameplayAllowed": "Gameplay Allowed",
+      "gameplayAllowed": "Rozgrywka dozwolona",
       "yes": "Tak",
       "no": "Nie"
     },
@@ -504,21 +504,21 @@
       "storageUsed": "Użyta pamięć",
       "storageTotal": "Całkowita pamięć",
       "storageRegion": "Region pamięci",
-      "storageRegionCode": "Storage Region Code",
-      "serverRegionVpc": "Server Region (VPC)",
+      "storageRegionCode": "Kod regionu przechowywania",
+      "serverRegionVpc": "Region serwera (VPC)",
       "notAvailable": "N/A"
     }
   },
   "controllerMode": {
     "hints": {
-      "dpadNavigate": "D-pad Navigate",
+      "dpadNavigate": "Nawigacja D-pad",
       "aSelect": "A wybierz",
       "bBack": "B wstecz",
       "lbRbTabs": "LB/RB zakładki"
     },
     "gameHub": {
       "ariaLabel": "Centrum gier {{title}}",
-      "actions": "Game hub actions"
+      "actions": "Akcje huba gry"
     },
     "library": {
       "loadingTitle": "Ładowanie twojej biblioteki",
@@ -531,14 +531,14 @@
       "recentlyPlayed": "Ostatnio grane",
       "recentlyPlayedHint": "Niedawno grane · Enter otwiera ten tytuł w twojej bibliotece",
       "recentlyPlayedEmptyHint": "Niedawno grane · Pusty slot — graj w gry, aby uzupełnić półkę",
-      "recentlyPlayedGames": "Recently played games",
+      "recentlyPlayedGames": "Niedawno grane gry",
       "resumeGame": "Wznów {{title}}",
       "library": "Biblioteka",
-      "detailRow": "Detail row",
+      "detailRow": "Rząd szczegółów",
       "options": "Opcje",
-      "browseLeftRight": "Browse · Left / Right",
-      "backToMedia": "Back To Media",
-      "libraryFiltersUp": "Library filters · Up",
+      "browseLeftRight": "Przeglądaj · Lewo/Prawo",
+      "backToMedia": "Powrót do mediów",
+      "libraryFiltersUp": "Filtry biblioteki · W górę",
       "bandwidthLimit": "Limit przepustowości (Mbps)",
       "theme": "Motyw {{label}}"
     },
@@ -554,18 +554,18 @@
   "errors": {
     "launchUnknown": "Gra nie mogła się rozpocząć. Spróbuj ponownie.",
     "launchFailedTitle": "Uruchomienie nie powiodło się",
-    "duplicateSessionTitle": "Duplicate Session Detected",
+    "duplicateSessionTitle": "Wykryto duplikat sesji",
     "duplicateSessionDescription": "Inna sesja jest już uruchomiona na Twoim koncie. Zamknij ją najpierw lub poczekaj aż skończy się, a następnie uruchom ponownie.",
     "loginFailed": "Logowanie nie powiodło się",
     "switchAccountFailed": "Nie udało się zmienić konta",
     "nativeStreamerStoppedTitle": "Natywny Streamer zatrzymany",
-    "nativeStreamerStoppedDescription": "The native streaming process stopped and could not be restored automatically. Try resuming the session again from the app.",
+    "nativeStreamerStoppedDescription": "Natywny proces streamowania został zatrzymany i nie mógł zostać automatycznie przywrócony. Spróbuj wznowić sesję ponownie z poziomu aplikacji.",
     "sessionConnectionLostTitle": "Utracono połączenie sesji",
-    "resumeAttachFailedDescription": "Resume attach failed before media handshake. Try resuming once again.",
+    "resumeAttachFailedDescription": "Ponowne podłączenie nie powiodło się przed uzgodnieniem połączenia multimedialnego. Spróbuj wznowić sesję jeszcze raz.",
     "sessionConnectionLostDescription": "Połączenie z uruchomioną sesją zostało utracone i nie mogło zostać przywrócone automatycznie. Spróbuj wznowić je ponownie z aplikacji.",
     "sessionResumeFailedDescription": "Połączenie z uruchomioną sesją zostało utracone i wznowienie nie powiodło się.",
-    "queueAdPlayTimeout": "Ad play timeout",
-    "queueAdVideoStuck": "Ad video is stuck",
-    "queueAdUrlLoad": "Error loading url"
+    "queueAdPlayTimeout": "Limit czasu odtwarzania reklam",
+    "queueAdVideoStuck": "Film reklamowy utknął",
+    "queueAdUrlLoad": "Błąd ładowania adresu URL"
   }
 }
