@@ -1,4 +1,4 @@
-import { Globe, Check, Search, X, Loader, Zap, Mic, FileDown, Wifi, Trash2, Heart, Users, ExternalLink, Monitor, Keyboard, Download, RefreshCcw, Info, Cpu } from "lucide-react";
+import { Globe, Check, Search, X, Loader, Zap, Mic, FileDown, Wifi, Trash2, Heart, Users, ExternalLink, Monitor, Keyboard, Download, RefreshCcw, Info, Cpu, AlertTriangle } from "lucide-react";
 import { useState, useCallback, useMemo, useEffect, useRef } from "react";
 import type { JSX } from "react";
 
@@ -115,6 +115,9 @@ const SETTINGS_SCOPE_SEARCH_TERMS: Record<SettingsSearchScopeId, readonly string
     "cloud gsync",
     "diagnostics",
     "experimental",
+    "shortcuts",
+    "alt-tab",
+    "exit",
     "issue",
     "github",
     "discord",
@@ -687,6 +690,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
   const [codecAdvancedOpen, setCodecAdvancedOpen] = useState(false);
   const [nativeStreamerStatus, setNativeStreamerStatus] = useState<NativeStreamerStatus | null>(null);
   const [nativeStreamerStatusLoading, setNativeStreamerStatusLoading] = useState(false);
+  const [nativeStreamerEnablePromptOpen, setNativeStreamerEnablePromptOpen] = useState(false);
   const [updaterState, setUpdaterState] = useState<AppUpdaterState>({
     status: "idle",
     currentVersion: "0.0.0",
@@ -881,6 +885,44 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
     },
     [onSettingChange]
   );
+
+  const closeNativeStreamerEnablePrompt = useCallback((): void => {
+    setNativeStreamerEnablePromptOpen(false);
+  }, []);
+
+  const confirmNativeStreamerEnablePrompt = useCallback((): void => {
+    handleChange("streamClientMode", "native");
+    setNativeStreamerEnablePromptOpen(false);
+  }, [handleChange]);
+
+  const handleNativeStreamerToggleChange = useCallback((checked: boolean): void => {
+    if (!checked) {
+      handleChange("streamClientMode", "web");
+      return;
+    }
+
+    if (settings.streamClientMode === "native") {
+      return;
+    }
+
+    setNativeStreamerEnablePromptOpen(true);
+  }, [handleChange, settings.streamClientMode]);
+
+  useEffect(() => {
+    if (!nativeStreamerEnablePromptOpen) {
+      return;
+    }
+
+    const handleKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closeNativeStreamerEnablePrompt();
+      }
+    };
+
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [closeNativeStreamerEnablePrompt, nativeStreamerEnablePromptOpen]);
 
   const handleAppLanguageChange = useCallback((nextLocale: string): void => {
     setAppLanguageDropdownOpen(false);
@@ -1619,6 +1661,71 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
         </div>
       </header>
 
+      {nativeStreamerEnablePromptOpen && (
+        <div
+          className="native-streamer-warning"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="native-streamer-warning-title"
+          aria-describedby="native-streamer-warning-copy"
+        >
+          <button
+            type="button"
+            className="native-streamer-warning-backdrop"
+            aria-label={t("app.actions.cancel")}
+            onClick={closeNativeStreamerEnablePrompt}
+          />
+          <div className="native-streamer-warning-card">
+            <div className="native-streamer-warning-kicker">
+              <AlertTriangle size={14} />
+              {t("settings.nativeStreamer.enablePromptKicker")}
+            </div>
+            <h3 id="native-streamer-warning-title" className="native-streamer-warning-title">
+              {t("settings.nativeStreamer.enablePromptTitle")}
+            </h3>
+            <p id="native-streamer-warning-copy" className="native-streamer-warning-text">
+              {t("settings.nativeStreamer.enablePromptBody")}
+            </p>
+
+            <div className="native-streamer-warning-list">
+              <div className="native-streamer-warning-list-item">
+                <Cpu size={16} />
+                <span>{t("settings.nativeStreamer.enablePromptNewSessions")}</span>
+              </div>
+              <div className="native-streamer-warning-list-item">
+                <Keyboard size={16} />
+                <span>{t("settings.nativeStreamer.enablePromptShortcuts")}</span>
+              </div>
+              <div className="native-streamer-warning-list-item">
+                <Monitor size={16} />
+                <span>{t("settings.nativeStreamer.enablePromptAltTab")}</span>
+              </div>
+            </div>
+
+            <div className="native-streamer-warning-actions">
+              <button
+                type="button"
+                className="native-streamer-warning-btn native-streamer-warning-btn--secondary"
+                onClick={closeNativeStreamerEnablePrompt}
+              >
+                {t("settings.nativeStreamer.enablePromptCancel")}
+              </button>
+              <button
+                type="button"
+                className="native-streamer-warning-btn native-streamer-warning-btn--primary"
+                onClick={confirmNativeStreamerEnablePrompt}
+                autoFocus
+              >
+                {t("settings.nativeStreamer.enablePromptEnable")}
+              </button>
+            </div>
+            <div className="native-streamer-warning-hint">
+              <kbd>Esc</kbd> {t("settings.nativeStreamer.enablePromptEsc")}
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="settings-layout">
 
       {/* ── Sidebar ───────────────────────────────────────── */}
@@ -2218,7 +2325,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                         <input
                           type="checkbox"
                           checked={settings.streamClientMode === "native"}
-                          onChange={(e) => handleChange("streamClientMode", e.target.checked ? "native" : "web")}
+                          onChange={(e) => handleNativeStreamerToggleChange(e.target.checked)}
                         />
                         <span className="settings-toggle-track" />
                       </label>
