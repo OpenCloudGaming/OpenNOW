@@ -135,6 +135,10 @@ struct SettingsView: View {
             Toggle(isOn: $store.settings.streamerPreferences.touchControllerVisible) {
                 Label("Show Touch Controller", systemImage: "circle.grid.cross")
             }
+
+            Toggle(isOn: $store.settings.streamerPreferences.touchscreenModeEnabled) {
+                Label("Touchscreen Mode", systemImage: "hand.draw")
+            }
             #endif
 
             HStack {
@@ -149,7 +153,7 @@ struct SettingsView: View {
             #if os(tvOS)
             Text("Connected controllers are passed through using the native gamepad path. Touch overlays are disabled on Apple TV.")
             #else
-            Text("Bluetooth controllers are detected automatically and passed through using the native gamepad path.")
+            Text("Touchscreen Mode taps and drags directly at the touched stream location. Bluetooth controllers are detected automatically.")
             #endif
         }
     }

@@ -353,6 +353,7 @@ private struct StreamerWebView: UIViewRepresentable {
             showStatsClock: settings.streamerPreferences.showStatsClock,
             showStatsBattery: false,
             touchControllerVisible: false,
+            touchscreenModeEnabled: false,
             physicalControllerPassthrough: true
         )
         #else
@@ -511,6 +512,10 @@ private struct StreamerWebView: UIViewRepresentable {
           <div><strong>Keyboard</strong><span>Open or hide the on-screen keyboard bar.</span></div>
           <span class="toggleValue" id="kbValue">Hidden</span>
         </button>
+        <button id="touchscreenBtn" class="toggleRow" onclick="toggleTouchscreenMode()">
+          <div><strong>Touchscreen Mode</strong><span id="touchscreenDescription">Touch anywhere to left-click there. Drag to hold and move.</span></div>
+          <span class="toggleValue" id="touchscreenValue">Off</span>
+        </button>
         <button id="gpBtn" class="toggleRow" onclick="toggleGamepad()">
           <div><strong>Touch Controller</strong><span id="touchModeDescription">Touchpad is active. Optional touch controls stay hidden until needed.</span></div>
           <span class="toggleValue" id="gpValue">Hidden</span>
@@ -624,6 +629,7 @@ private struct StreamerWebView: UIViewRepresentable {
       showStatsClock: raw?.showStatsClock === true,
       showStatsBattery: IS_TVOS ? false : raw?.showStatsBattery === true,
       touchControllerVisible: IS_TVOS ? false : raw?.touchControllerVisible === true,
+      touchscreenModeEnabled: IS_TVOS ? false : raw?.touchscreenModeEnabled === true,
       physicalControllerPassthrough: true
     };
   }
@@ -680,6 +686,9 @@ private struct StreamerWebView: UIViewRepresentable {
   const batteryValue = document.getElementById('batteryValue');
   const kbBtn = document.getElementById('kbBtn');
   const kbValue = document.getElementById('kbValue');
+  const touchscreenBtn = document.getElementById('touchscreenBtn');
+  const touchscreenValue = document.getElementById('touchscreenValue');
+  const touchscreenDescription = document.getElementById('touchscreenDescription');
   const gpValue = document.getElementById('gpValue');
   const physicalControllerBtn = document.getElementById('physicalControllerBtn');
   const physicalControllerValue = document.getElementById('physicalControllerValue');
@@ -836,7 +845,7 @@ private struct StreamerWebView: UIViewRepresentable {
   }
   function configurePlatformControls() {
     if (!IS_TVOS) return;
-    [kbBtn, gpBtn, batteryBtn].forEach((element) => {
+    [kbBtn, touchscreenBtn, gpBtn, batteryBtn].forEach((element) => {
       if (!element) return;
       element.style.display = 'none';
     });
@@ -865,7 +874,9 @@ private struct StreamerWebView: UIViewRepresentable {
     if (hudInputBadge) {
       hudInputBadge.textContent = IS_TVOS
         ? 'Controller'
-        : (gpPad && gpPad.style.display !== 'none' ? 'Touch Controls' : 'Touchpad');
+        : (streamerPreferences.touchscreenModeEnabled
+          ? 'Touchscreen'
+          : (gpPad && gpPad.style.display !== 'none' ? 'Touch Controls' : 'Touchpad'));
     }
     if (hudAudioBadge) {
       hudAudioBadge.textContent = userMuted || video.muted ? 'Audio Muted' : 'Audio On';
@@ -918,6 +929,11 @@ private struct StreamerWebView: UIViewRepresentable {
     setToggleRowState(physicalControllerBtn, true);
   }
   function updateTouchModeCopy() {
+    if (touchscreenDescription) {
+      touchscreenDescription.textContent = streamerPreferences.touchscreenModeEnabled
+        ? 'Tap to left-click at the touched location. Drag to hold and move.'
+        : 'Off keeps normal touchpad cursor movement active.';
+    }
     if (!touchModeDescription) return;
     if (IS_TVOS) {
       touchModeDescription.textContent = 'Apple TV uses connected controllers on the native gamepad path.';
@@ -933,9 +949,13 @@ private struct StreamerWebView: UIViewRepresentable {
       }
       return;
     }
-    touchModeDescription.textContent = 'Touchpad mode uses drag to move, tap to click, and two-finger tap for right click.';
+    touchModeDescription.textContent = streamerPreferences.touchscreenModeEnabled
+      ? 'Touch controller can still be shown above touchscreen input.'
+      : 'Touchpad mode uses drag to move, tap to click, and two-finger tap for right click.';
     if (touchHint) {
-      touchHint.textContent = 'Drag to move · Tap to click · 2-finger tap for right click';
+      touchHint.textContent = streamerPreferences.touchscreenModeEnabled
+        ? 'Tap where you want to click · Drag to hold left click'
+        : 'Drag to move · Tap to click · 2-finger tap for right click';
     }
   }
   function applyTouchpadMode() {
@@ -982,6 +1002,14 @@ private struct StreamerWebView: UIViewRepresentable {
       [key]: value
     });
     scheduleStreamerPreferencesPersist();
+  }
+  function updateTouchscreenButton() {
+    if (touchscreenValue) {
+      touchscreenValue.textContent = streamerPreferences.touchscreenModeEnabled ? 'On' : 'Off';
+    }
+    setToggleRowState(touchscreenBtn, streamerPreferences.touchscreenModeEnabled, IS_TVOS);
+    updateTouchModeCopy();
+    updateHudSummary();
   }
   function applyTouchLayout() {
     const scale = touchLayout.scale;
@@ -2237,6 +2265,11 @@ private struct StreamerWebView: UIViewRepresentable {
   let tapStartX = 0, tapStartY = 0;
   let tStartTime = 0, tMoved = false, activeTouchId = null;
   let mouseGestureActive = false;
+  let touchscreenLeftDown = false;
+  let simulatedPointerX = Math.round((Number(cfg.width) || window.innerWidth) / 2);
+  let simulatedPointerY = Math.round((Number(cfg.height) || window.innerHeight) / 2);
+  let pendingTouchscreenPoint = null;
+  let touchscreenMoveFrame = null;
   let twoFingerStart = 0;
   let twoFingerTapPending = false;
   const MOVE_CLICK_CANCEL_PX = 8;
@@ -2318,6 +2351,17 @@ private struct StreamerWebView: UIViewRepresentable {
     kbBar.style.display = 'none';
     kbInput.blur();
     updateKeyboardButton();
+  }
+  function toggleTouchscreenMode() {
+    if (IS_TVOS) return;
+    unlockAudio();
+    const enabled = !streamerPreferences.touchscreenModeEnabled;
+    if (!enabled) {
+      releaseTouchscreenLeftButton();
+    }
+    updateStreamerPreference('touchscreenModeEnabled', enabled);
+    applyTouchpadMode();
+    updateTouchscreenButton();
   }
   function toggleGamepad() {
     if (!gpPad) return;
@@ -2465,8 +2509,95 @@ private struct StreamerWebView: UIViewRepresentable {
     const dy = Math.round(clamp(pendingMoveDy, -MAX_MOUSE_DELTA_PER_FRAME, MAX_MOUSE_DELTA_PER_FRAME));
     pendingMoveDx = 0;
     pendingMoveDy = 0;
-    if (dx === 0 && dy === 0) return;
-    sendPartialInput(encodeMouseMove(dx, dy));
+    sendMouseMoveDelta(dx, dy);
+  }
+
+  function streamPixelSize() {
+    const width = Math.max(1, Math.round(Number(cfg.width) || video.videoWidth || window.innerWidth || 1));
+    const height = Math.max(1, Math.round(Number(cfg.height) || video.videoHeight || window.innerHeight || 1));
+    return { width, height };
+  }
+  function videoContentRect() {
+    const rect = video.getBoundingClientRect();
+    const { width: streamWidth, height: streamHeight } = streamPixelSize();
+    const streamAspect = streamWidth / streamHeight;
+    const rectAspect = rect.width > 0 && rect.height > 0 ? rect.width / rect.height : streamAspect;
+    let width = rect.width;
+    let height = rect.height;
+    let left = rect.left;
+    let top = rect.top;
+    if (rectAspect > streamAspect) {
+      width = rect.height * streamAspect;
+      left = rect.left + ((rect.width - width) / 2);
+    } else if (rectAspect < streamAspect) {
+      height = rect.width / streamAspect;
+      top = rect.top + ((rect.height - height) / 2);
+    }
+    return { left, top, width: Math.max(1, width), height: Math.max(1, height) };
+  }
+  function clientPointToStreamPoint(clientX, clientY) {
+    const rect = videoContentRect();
+    const { width: streamWidth, height: streamHeight } = streamPixelSize();
+    const x = clamp((clientX - rect.left) / rect.width, 0, 1);
+    const y = clamp((clientY - rect.top) / rect.height, 0, 1);
+    return {
+      x: Math.round(x * streamWidth),
+      y: Math.round(y * streamHeight)
+    };
+  }
+  function sendMouseMoveDelta(dx, dy, reliable = false) {
+    if (!inputReady) return;
+    const boundedDx = Math.round(clamp(dx, -32768, 32767));
+    const boundedDy = Math.round(clamp(dy, -32768, 32767));
+    if (boundedDx === 0 && boundedDy === 0) return;
+    const payload = encodeMouseMove(boundedDx, boundedDy);
+    if (reliable) sendInput(payload);
+    else sendPartialInput(payload);
+    const size = streamPixelSize();
+    simulatedPointerX = clamp(simulatedPointerX + boundedDx, 0, size.width);
+    simulatedPointerY = clamp(simulatedPointerY + boundedDy, 0, size.height);
+  }
+  function movePointerToStreamPoint(point, reliable = false) {
+    if (!point) return;
+    const size = streamPixelSize();
+    const x = clamp(Math.round(point.x), 0, size.width);
+    const y = clamp(Math.round(point.y), 0, size.height);
+    sendMouseMoveDelta(x - simulatedPointerX, y - simulatedPointerY, reliable);
+  }
+  function movePointerToTouch(touch, reliable = false) {
+    if (!touch) return;
+    movePointerToStreamPoint(clientPointToStreamPoint(touch.clientX, touch.clientY), reliable);
+  }
+  function flushTouchscreenMove() {
+    touchscreenMoveFrame = null;
+    const point = pendingTouchscreenPoint;
+    pendingTouchscreenPoint = null;
+    movePointerToStreamPoint(point, false);
+  }
+  function scheduleTouchscreenMove(touch) {
+    if (!touch) return;
+    pendingTouchscreenPoint = clientPointToStreamPoint(touch.clientX, touch.clientY);
+    if (!touchscreenMoveFrame) {
+      touchscreenMoveFrame = requestAnimationFrame(flushTouchscreenMove);
+    }
+  }
+  function flushScheduledTouchscreenMove() {
+    if (touchscreenMoveFrame) {
+      cancelAnimationFrame(touchscreenMoveFrame);
+      touchscreenMoveFrame = null;
+    }
+    if (pendingTouchscreenPoint) {
+      const point = pendingTouchscreenPoint;
+      pendingTouchscreenPoint = null;
+      movePointerToStreamPoint(point, true);
+    }
+  }
+  function releaseTouchscreenLeftButton() {
+    flushScheduledTouchscreenMove();
+    if (touchscreenLeftDown && inputReady) {
+      sendInput(encodeMouseButton(9, 1));
+    }
+    touchscreenLeftDown = false;
   }
 
   const charKeyMap = {
@@ -2873,6 +3004,7 @@ private struct StreamerWebView: UIViewRepresentable {
     return 0;
   }
   function releaseAllPadKeys() {
+    releaseTouchscreenLeftButton();
     joystickTouchId = null;
     lookTouchId = null;
     if (typeof joystickWindowCleanup === 'function') {
@@ -2919,6 +3051,26 @@ private struct StreamerWebView: UIViewRepresentable {
     e.preventDefault();
     unlockAudio();
     const touches = e.targetTouches;
+    if (streamerPreferences.touchscreenModeEnabled && touches.length === 1) {
+      const t = touches[0];
+      if (!t) return;
+      releaseTouchscreenLeftButton();
+      mouseGestureActive = true;
+      activeTouchId = t.identifier;
+      lastTX = t.clientX;
+      lastTY = t.clientY;
+      tapStartX = t.clientX;
+      tapStartY = t.clientY;
+      tStartTime = Date.now();
+      tMoved = false;
+      twoFingerTapPending = false;
+      movePointerToTouch(t, true);
+      if (inputReady) {
+        sendInput(encodeMouseButton(8, 1));
+        touchscreenLeftDown = true;
+      }
+      return;
+    }
     if (touches.length === 2) {
       const t1 = touches[0];
       const t2 = touches[1];
@@ -2951,6 +3103,17 @@ private struct StreamerWebView: UIViewRepresentable {
   touchpad.addEventListener('touchmove', (e) => {
     e.preventDefault();
     const touches = e.targetTouches;
+    if (streamerPreferences.touchscreenModeEnabled && mouseGestureActive && activeTouchId != null) {
+      const t = Array.from(touches).find((item) => item.identifier === activeTouchId);
+      if (!t) return;
+      if (Math.abs(t.clientX - tapStartX) > MOVE_CLICK_CANCEL_PX || Math.abs(t.clientY - tapStartY) > MOVE_CLICK_CANCEL_PX) {
+        tMoved = true;
+      }
+      lastTX = t.clientX;
+      lastTY = t.clientY;
+      scheduleTouchscreenMove(t);
+      return;
+    }
     if (touches.length === 2) {
       if (mouseGestureActive && zoomScale <= 1.01) {
         twoFingerTapPending = false;
@@ -3004,6 +3167,16 @@ private struct StreamerWebView: UIViewRepresentable {
   touchpad.addEventListener('touchend', (e) => {
     e.preventDefault();
     const remainingTouches = e.targetTouches;
+    if (streamerPreferences.touchscreenModeEnabled && mouseGestureActive) {
+      const endedActiveTouch = Array.from(e.changedTouches).some((item) => item.identifier === activeTouchId);
+      if (endedActiveTouch || remainingTouches.length === 0) {
+        releaseTouchscreenLeftButton();
+        activeTouchId = null;
+        mouseGestureActive = false;
+        twoFingerTapPending = false;
+      }
+      return;
+    }
     if (remainingTouches.length === 0 && zoomScale > 1.01 && pinchGestureMoved) {
       pinchGestureMoved = false;
       activeTouchId = null;
@@ -3237,6 +3410,7 @@ private struct StreamerWebView: UIViewRepresentable {
   updateAudioButton();
   updateStatsButton();
   updateKeyboardButton();
+  updateTouchscreenButton();
   updateTouchControllerButton();
   updatePhysicalControllerButton();
   updateHudSummary();

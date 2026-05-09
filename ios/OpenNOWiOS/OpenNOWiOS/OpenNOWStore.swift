@@ -309,6 +309,7 @@ struct StreamerPreferences: Codable, Equatable {
     var showStatsClock: Bool
     var showStatsBattery: Bool
     var touchControllerVisible: Bool
+    var touchscreenModeEnabled: Bool
     var physicalControllerPassthrough: Bool
 
     enum CodingKeys: String, CodingKey {
@@ -316,6 +317,7 @@ struct StreamerPreferences: Codable, Equatable {
         case showStatsClock
         case showStatsBattery
         case touchControllerVisible
+        case touchscreenModeEnabled
         case physicalControllerPassthrough
     }
 
@@ -324,12 +326,14 @@ struct StreamerPreferences: Codable, Equatable {
         showStatsClock: Bool,
         showStatsBattery: Bool,
         touchControllerVisible: Bool,
+        touchscreenModeEnabled: Bool,
         physicalControllerPassthrough: Bool
     ) {
         self.audioMuted = audioMuted
         self.showStatsClock = showStatsClock
         self.showStatsBattery = showStatsBattery
         self.touchControllerVisible = touchControllerVisible
+        self.touchscreenModeEnabled = touchscreenModeEnabled
         self.physicalControllerPassthrough = physicalControllerPassthrough
     }
 
@@ -339,6 +343,7 @@ struct StreamerPreferences: Codable, Equatable {
         showStatsClock = try container.decodeIfPresent(Bool.self, forKey: .showStatsClock) ?? Self.default.showStatsClock
         showStatsBattery = try container.decodeIfPresent(Bool.self, forKey: .showStatsBattery) ?? Self.default.showStatsBattery
         touchControllerVisible = try container.decodeIfPresent(Bool.self, forKey: .touchControllerVisible) ?? Self.default.touchControllerVisible
+        touchscreenModeEnabled = try container.decodeIfPresent(Bool.self, forKey: .touchscreenModeEnabled) ?? Self.default.touchscreenModeEnabled
         physicalControllerPassthrough = try container.decodeIfPresent(Bool.self, forKey: .physicalControllerPassthrough) ?? Self.default.physicalControllerPassthrough
     }
 
@@ -347,6 +352,7 @@ struct StreamerPreferences: Codable, Equatable {
         showStatsClock: false,
         showStatsBattery: false,
         touchControllerVisible: false,
+        touchscreenModeEnabled: false,
         physicalControllerPassthrough: true
     )
 }
@@ -3305,24 +3311,36 @@ final class OpenNOWStore: ObservableObject {
     var supportsEmbeddedStreamer: Bool { OpenNOWPlatform.supportsEmbeddedStreamer }
 
     func bootstrap() async {
-        defer { isBootstrapping = false }
-        await NotificationManager.shared.requestPermission()
-        providers = await api.fetchProviders()
+        guard isBootstrapping else { return }
+
+        if providers.isEmpty {
+            providers = [GFNConstants.defaultProvider]
+        }
         if settings.selectedProviderIdpId.isEmpty {
             settings.selectedProviderIdpId = providers.first?.idpId ?? GFNConstants.defaultProvider.idpId
             persistSettings()
         }
 
-        if let existing = authSession {
-            if let refreshed = try? await api.refreshSession(existing) {
-                authSession = refreshed
-                user = refreshed.user
-                persistAuthSession(refreshed)
+        syncTrackedSessionSurface()
+        isBootstrapping = false
+
+        Task {
+            await NotificationManager.shared.requestPermission()
+        }
+        Task {
+            let fetchedProviders = await api.fetchProviders()
+            providers = fetchedProviders.isEmpty ? [GFNConstants.defaultProvider] : fetchedProviders
+            if settings.selectedProviderIdpId.isEmpty {
+                settings.selectedProviderIdpId = providers.first?.idpId ?? GFNConstants.defaultProvider.idpId
+                persistSettings()
+            }
+        }
+        if authSession != nil {
+            Task {
                 await refreshCatalog()
                 restoreTrackedSessionIfNeeded()
             }
         }
-        syncTrackedSessionSurface()
     }
 
     func signIn() async {
