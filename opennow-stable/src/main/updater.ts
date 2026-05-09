@@ -67,6 +67,10 @@ function normalizeErrorMessage(error: unknown): string {
   return message || "Update check failed.";
 }
 
+function getUpdateVersion(info: UpdateInfo | UpdateDownloadedEvent | null | undefined): string | undefined {
+  return (info as { version?: string } | null | undefined)?.version;
+}
+
 function createDisabledState(currentVersion: string, message: string): AppUpdaterState {
   return {
     status: "disabled",
@@ -130,7 +134,7 @@ export function createAppUpdaterController(options: AppUpdaterControllerOptions)
   let downloadInFlight = false;
   let automaticChecksEnabled = options.automaticChecksEnabled;
   let availableUpdateInfo: UpdateInfo | null = null;
-  let downloadedUpdateInfo: UpdateDownloadedEvent | null = null;
+  let downloadedUpdateInfo: UpdateInfo | null = null;
 
   const baseState: Pick<AppUpdaterState, "currentVersion" | "updateSource" | "isPackaged"> = {
     currentVersion,
@@ -244,12 +248,13 @@ export function createAppUpdaterController(options: AppUpdaterControllerOptions)
 
   updater.on("update-downloaded", (info: UpdateDownloadedEvent) => {
     downloadedUpdateInfo = info;
+    const downloadedVersion = getUpdateVersion(info) ?? availableUpdateInfo?.version;
     updateState({
       status: "downloaded",
-      availableVersion: info.version,
-      downloadedVersion: info.version,
+      availableVersion: downloadedVersion,
+      downloadedVersion,
       progress: undefined,
-      message: `OpenNOW ${info.version} is ready to install. Restart when convenient.`,
+      message: `OpenNOW ${downloadedVersion ?? "update"} is ready to install. Restart when convenient.`,
     });
   });
 

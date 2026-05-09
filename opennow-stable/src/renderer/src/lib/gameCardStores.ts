@@ -9,6 +9,16 @@ export interface StoreOption {
   isActive: boolean;
 }
 
+function normalizeStoreOptionKey(store: string): string | null {
+  const trimmed = store.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  const key = normalizeGameStore(trimmed);
+  return key === "NONE" ? null : key;
+}
+
 function getResolvedSelectedVariantId(game: GameInfo, selectedVariantId?: string): string | undefined {
   if (selectedVariantId && game.variants.some((variant) => variant.id === selectedVariantId)) {
     return selectedVariantId;
@@ -30,8 +40,8 @@ export function getStoreOptions(game: GameInfo, selectedVariantId?: string): Sto
   const variantsByStore = new Map<string, GameVariant[]>();
 
   for (const variant of game.variants) {
-    const storeKey = normalizeGameStore(variant.store);
-    if (storeKey === "UNKNOWN" || storeKey === "NONE") {
+    const storeKey = normalizeStoreOptionKey(variant.store);
+    if (!storeKey) {
       continue;
     }
 

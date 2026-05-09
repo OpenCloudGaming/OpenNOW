@@ -15,6 +15,9 @@ export interface CloudMatchRequest {
     streamerVersion: number;
     clientPlatformName: string;
     clientRequestMonitorSettings: Array<{
+      monitorId?: number;
+      positionX?: number;
+      positionY?: number;
       widthInPixels: number;
       heightInPixels: number;
       framesPerSecond: number;
@@ -23,7 +26,8 @@ export interface CloudMatchRequest {
         desiredContentMaxLuminance: number;
         desiredContentMinLuminance: number;
         desiredContentMaxFrameAverageLuminance: number;
-      };
+      } | null;
+      hdr10PlusGamingData?: unknown;
       dpi: number;
     }>;
     useOps: boolean;
@@ -50,8 +54,8 @@ export interface CloudMatchRequest {
       bitDepth: number;
       cloudGsync: boolean;
       enabledL4S: boolean;
-      mouseMovementFlags: number;
       trueHdr: boolean;
+      mouseMovementFlags: number;
       supportedHidDevices: number;
       profile: number;
       fallbackToLogicalResolution: boolean;
@@ -155,15 +159,21 @@ export interface CloudMatchResponse {
         framesPerSecond?: number;
       }>;
       requestedStreamingFeatures?: {
+        reflex?: boolean;
         bitDepth?: number;
+        cloudGsync?: boolean;
         chromaFormat?: number;
         enabledL4S?: boolean;
+        trueHdr?: boolean;
       };
     };
     finalizedStreamingFeatures?: {
+      reflex?: boolean;
       bitDepth?: number;
+      cloudGsync?: boolean;
       chromaFormat?: number;
       enabledL4S?: boolean;
+      trueHdr?: boolean;
     };
     monitorSettings?: Array<{
       widthInPixels?: number;
