@@ -112,7 +112,7 @@ test("keeps unknown and third-party stores selectable for default icon fallback"
   );
 });
 
-test("uses default fallback for empty and none store values", () => {
+test("still hides empty and none store placeholders", () => {
   const options = getStoreOptions(
     makeGame([
       makeVariant({ id: "empty", store: "", libraryStatus: "MANUAL" }),
@@ -124,13 +124,11 @@ test("uses default fallback for empty and none store values", () => {
   assert.deepEqual(
     options.map((option) => ({
       storeKey: option.storeKey,
-      store: option.store,
       variantId: option.variantId,
       isOwned: option.isOwned,
     })),
     [
-      { storeKey: "UNKNOWN", store: "UNKNOWN", variantId: "empty", isOwned: true },
-      { storeKey: "STEAM", store: "Steam", variantId: "steam", isOwned: false },
+      { storeKey: "STEAM", variantId: "steam", isOwned: false },
     ],
   );
 });
