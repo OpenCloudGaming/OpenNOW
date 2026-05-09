@@ -181,59 +181,51 @@ body,
 @keyframes native-streamer-warning-backdrop-in {
   from {
     opacity: 0;
-    backdrop-filter: blur(0) saturate(100%);
   }
 
   to {
     opacity: 1;
-    backdrop-filter: blur(24px) saturate(135%);
   }
 }
 
 @keyframes native-streamer-warning-card-in {
   from {
     opacity: 0;
-    filter: blur(6px);
-    transform: translateY(16px) scale(0.96);
+    transform: translateY(8px);
   }
 
   to {
     opacity: 1;
-    filter: blur(0);
-    transform: translateY(0) scale(1);
+    transform: translateY(0);
   }
 }
 
 @keyframes native-streamer-warning-backdrop-out {
   from {
     opacity: 1;
-    backdrop-filter: blur(24px) saturate(135%);
   }
 
   to {
     opacity: 0;
-    backdrop-filter: blur(0) saturate(100%);
   }
 }
 
 @keyframes native-streamer-warning-card-out {
   from {
     opacity: 1;
-    filter: blur(0);
-    transform: translateY(0) scale(1);
+    transform: translateY(0);
   }
 
   to {
     opacity: 0;
-    filter: blur(5px);
-    transform: translateY(10px) scale(0.97);
+    transform: translateY(6px);
   }
 }
 
 @keyframes native-streamer-warning-item-in {
   from {
     opacity: 0;
-    transform: translateY(6px);
+    transform: translateY(4px);
   }
 
   to {
@@ -3588,152 +3580,129 @@ button.game-card-store-chip.owned.active:hover {
   position: absolute;
   inset: 0;
   border: none;
-  background:
-    radial-gradient(circle at 18% 16%, color-mix(in srgb, var(--accent) 14%, transparent), transparent 36%),
-    radial-gradient(circle at 82% 80%, rgba(96, 165, 250, 0.08), transparent 42%),
-    linear-gradient(180deg, rgba(6, 7, 9, 0.68), rgba(4, 5, 7, 0.82));
-  -webkit-backdrop-filter: blur(24px) saturate(135%);
-  backdrop-filter: blur(24px) saturate(135%);
+  background: rgba(8, 9, 11, 0.6);
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
   cursor: pointer;
-  animation: native-streamer-warning-backdrop-in 180ms var(--ease);
+  animation: native-streamer-warning-backdrop-in 150ms var(--ease);
 }
 
 .native-streamer-warning--closing .native-streamer-warning-backdrop {
-  animation: native-streamer-warning-backdrop-out 160ms var(--ease) forwards;
+  animation: native-streamer-warning-backdrop-out 140ms var(--ease) forwards;
 }
 
 .native-streamer-warning-card {
   position: relative;
   z-index: 1;
-  width: min(520px, calc(100vw - 32px));
-  padding: 22px;
-  border-radius: var(--r-lg);
+  width: min(480px, calc(100vw - 32px));
+  padding: 20px;
+  border-radius: var(--r-md);
   border: 1px solid var(--panel-border);
-  background:
-    radial-gradient(circle at 18% 0%, color-mix(in srgb, var(--accent) 10%, transparent), transparent 36%),
-    linear-gradient(180deg, color-mix(in srgb, var(--card) 94%, rgba(255, 255, 255, 0.04)), var(--panel));
-  box-shadow:
-    0 28px 90px rgba(0, 0, 0, 0.58),
-    0 0 0 1px rgba(255, 255, 255, 0.035) inset,
-    0 0 36px color-mix(in srgb, var(--accent) 10%, transparent);
-  -webkit-backdrop-filter: blur(28px) saturate(135%);
-  backdrop-filter: blur(28px) saturate(135%);
+  background: var(--panel);
+  box-shadow: var(--shadow-md);
   overflow: hidden;
-  animation: native-streamer-warning-card-in 220ms var(--ease);
+  animation: native-streamer-warning-card-in 160ms var(--ease);
 }
 
 .native-streamer-warning--closing .native-streamer-warning-card {
-  animation: native-streamer-warning-card-out 160ms var(--ease) forwards;
-}
-
-.native-streamer-warning-card::before {
-  content: "";
-  position: absolute;
-  inset: 0 0 auto;
-  height: 1px;
-  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--accent) 72%, transparent), transparent);
-  opacity: 0.9;
+  animation: native-streamer-warning-card-out 140ms var(--ease) forwards;
 }
 
 .native-streamer-warning-kicker {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  padding: 5px 10px;
+  gap: 6px;
+  padding: 3px 8px;
   border-radius: 999px;
-  border: 1px solid rgba(88, 217, 138, 0.24);
+  border: 1px solid var(--panel-border-solid);
   background: var(--accent-surface);
   color: var(--accent);
   font-size: 0.64rem;
-  font-weight: 800;
+  font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
 
 .native-streamer-warning-title {
-  margin: 15px 0 0;
+  margin: 12px 0 0;
   color: var(--ink);
-  font-size: 1.34rem;
-  line-height: 1.14;
-  font-weight: 750;
+  font-size: 1.18rem;
+  line-height: 1.18;
+  font-weight: 700;
+  letter-spacing: 0.01em;
 }
 
 .native-streamer-warning-text {
-  margin: 10px 0 0;
+  margin: 8px 0 0;
   color: var(--ink-soft);
-  font-size: 0.9rem;
+  font-size: 0.88rem;
   line-height: 1.5;
 }
 
 .native-streamer-warning-list {
   display: grid;
-  gap: 8px;
-  margin-top: 16px;
+  gap: 6px;
+  margin-top: 14px;
 }
 
 .native-streamer-warning-list-item {
   display: flex;
   align-items: flex-start;
   gap: 10px;
-  padding: 11px 12px;
+  padding: 10px 12px;
   border: 1px solid var(--panel-border);
   border-radius: var(--r-sm);
   background: var(--bg-a);
   color: var(--ink-soft);
-  font-size: 0.83rem;
+  font-size: 0.82rem;
   line-height: 1.45;
   opacity: 0;
-  animation: native-streamer-warning-item-in 180ms var(--ease) forwards;
+  animation: native-streamer-warning-item-in 160ms var(--ease) forwards;
 }
 
 .native-streamer-warning-list-item:nth-child(1) {
-  animation-delay: 70ms;
+  animation-delay: 40ms;
 }
 
 .native-streamer-warning-list-item:nth-child(2) {
-  animation-delay: 105ms;
+  animation-delay: 70ms;
 }
 
 .native-streamer-warning-list-item:nth-child(3) {
-  animation-delay: 140ms;
+  animation-delay: 100ms;
 }
 
 .native-streamer-warning-list-item svg {
   flex: 0 0 auto;
   margin-top: 2px;
-  color: var(--accent);
+  color: var(--ink-muted);
 }
 
 .native-streamer-warning-actions {
   display: flex;
-  gap: 10px;
+  gap: 8px;
   margin-top: 18px;
 }
 
 .native-streamer-warning-btn {
   flex: 1;
-  min-height: 42px;
+  min-height: 38px;
   border-radius: var(--r-sm);
   border: 1px solid var(--panel-border);
   font-family: inherit;
   font-size: 0.84rem;
-  font-weight: 700;
+  font-weight: 600;
   letter-spacing: 0.01em;
   cursor: pointer;
   transition:
-    transform var(--t-fast),
     border-color var(--t-fast),
     background var(--t-fast),
-    color var(--t-fast),
-    box-shadow var(--t-fast);
+    color var(--t-fast);
 }
 
-.native-streamer-warning-btn:hover {
-  transform: translateY(-1px);
-}
-
-.native-streamer-warning-btn:active {
-  transform: translateY(0);
+.native-streamer-warning-btn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--accent-surface);
 }
 
 .native-streamer-warning-btn--secondary {
@@ -3747,33 +3716,36 @@ button.game-card-store-chip.owned.active:hover {
 }
 
 .native-streamer-warning-btn--primary {
-  border-color: rgba(88, 217, 138, 0.34);
+  border-color: var(--accent);
   background: var(--accent);
   color: var(--accent-on);
-  box-shadow: 0 14px 32px rgba(88, 217, 138, 0.18);
 }
 
 .native-streamer-warning-btn--primary:hover {
-  border-color: rgba(88, 217, 138, 0.52);
+  border-color: var(--accent-hover);
   background: var(--accent-hover);
-  box-shadow: 0 18px 36px rgba(88, 217, 138, 0.22);
+}
+
+.native-streamer-warning-btn--primary:focus-visible {
+  box-shadow: 0 0 0 2px var(--accent-surface-strong);
 }
 
 .native-streamer-warning-hint {
   margin-top: 12px;
   color: var(--ink-muted);
-  font-size: 0.73rem;
+  font-size: 0.72rem;
 }
 
 .native-streamer-warning-hint kbd {
   display: inline-block;
   margin: 0 2px;
   padding: 2px 6px;
-  border-radius: 5px;
+  border-radius: 4px;
   border: 1px solid var(--panel-border-solid);
-  background: rgba(255, 255, 255, 0.04);
+  background: var(--bg-a);
   color: var(--ink-soft);
-  font-size: 0.69rem;
+  font-size: 0.68rem;
+  font-family: inherit;
 }
 
 @media (max-width: 560px) {
@@ -5563,113 +5535,120 @@ button.game-card-store-chip.owned.active:hover {
   position: absolute;
   inset: 0;
   border: none;
-  background:
-    radial-gradient(circle at 20% 20%, rgba(var(--accent-rgb), 0.08), transparent 42%),
-    radial-gradient(circle at 82% 78%, rgba(239, 68, 68, 0.12), transparent 45%),
-    rgba(5, 6, 7, 0.58);
-  backdrop-filter: blur(14px) saturate(130%);
+  background: rgba(8, 9, 11, 0.6);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
   cursor: pointer;
 }
 
 .sv-exit-card {
   position: relative;
   z-index: 1;
-  width: min(520px, calc(100vw - 40px));
-  border-radius: 16px;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  background: rgba(14, 16, 18, 0.85);
-  backdrop-filter: blur(20px) saturate(140%);
-  box-shadow:
-    0 24px 64px rgba(0, 0, 0, 0.55),
-    0 0 0 1px rgba(var(--accent-rgb), 0.16) inset;
+  width: min(460px, calc(100vw - 40px));
+  border-radius: var(--r-md);
+  border: 1px solid var(--panel-border);
+  background: var(--panel);
+  box-shadow: var(--shadow-md);
   padding: 20px 20px 16px;
-  animation: fade-in 170ms var(--ease);
+  animation: fade-in 130ms var(--ease);
 }
 
 .sv-exit-kicker {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  font-size: 0.67rem;
-  font-weight: 800;
+  padding: 3px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--error-border);
+  background: var(--error-bg);
+  color: var(--error);
+  font-size: 0.64rem;
+  font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: var(--accent);
 }
 
 .sv-exit-title {
-  margin: 6px 0 0;
-  font-size: 1.34rem;
-  font-weight: 800;
+  margin: 12px 0 0;
+  font-size: 1.18rem;
+  font-weight: 700;
   color: var(--ink);
   letter-spacing: 0.01em;
 }
 
 .sv-exit-text {
-  margin: 11px 0 0;
-  font-size: 0.96rem;
+  margin: 8px 0 0;
+  font-size: 0.9rem;
   color: var(--ink-soft);
-  line-height: 1.45;
+  line-height: 1.5;
 }
 
 .sv-exit-text strong {
   color: var(--ink);
+  font-weight: 600;
 }
 
 .sv-exit-subtext {
-  margin: 6px 0 0;
-  font-size: 0.82rem;
+  margin: 4px 0 0;
+  font-size: 0.8rem;
   color: var(--ink-muted);
 }
 
 .sv-exit-actions {
-  margin-top: 15px;
+  margin-top: 18px;
   display: flex;
-  gap: 10px;
+  gap: 8px;
 }
 
 .sv-exit-btn {
   flex: 1;
-  border-radius: 10px;
-  padding: 10px 12px;
+  min-height: 38px;
+  border-radius: var(--r-sm);
+  padding: 8px 12px;
   border: 1px solid var(--panel-border);
-  background: rgba(255, 255, 255, 0.03);
+  background: var(--bg-a);
   color: var(--ink);
-  font-size: 0.83rem;
-  font-weight: 700;
+  font-size: 0.84rem;
+  font-weight: 600;
   font-family: inherit;
   letter-spacing: 0.01em;
   cursor: pointer;
-  transition: transform var(--t-fast), border-color var(--t-fast), background var(--t-fast), color var(--t-fast);
+  transition:
+    border-color var(--t-fast),
+    background var(--t-fast),
+    color var(--t-fast);
 }
 
-.sv-exit-btn:hover {
-  transform: translateY(-1px);
-}
-
-.sv-exit-btn:active {
-  transform: translateY(0);
+.sv-exit-btn:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-surface);
 }
 
 .sv-exit-btn-cancel:hover {
   border-color: var(--panel-border-solid);
-  background: rgba(255, 255, 255, 0.07);
+  background: var(--chip);
 }
 
 .sv-exit-btn-confirm {
-  background: linear-gradient(140deg, rgba(239, 68, 68, 0.26), rgba(239, 68, 68, 0.38));
-  border-color: rgba(239, 68, 68, 0.5);
-  color: #ffeaea;
+  background: var(--error);
+  border-color: var(--error);
+  color: #1a0606;
 }
 
 .sv-exit-btn-confirm:hover {
-  border-color: rgba(239, 68, 68, 0.7);
-  background: linear-gradient(140deg, rgba(239, 68, 68, 0.35), rgba(239, 68, 68, 0.52));
+  background: #fa8a8a;
+  border-color: #fa8a8a;
+}
+
+.sv-exit-btn-confirm:focus-visible {
+  border-color: var(--error);
+  box-shadow: 0 0 0 2px var(--error-bg);
 }
 
 .sv-exit-hint {
   margin-top: 12px;
-  font-size: 0.73rem;
+  font-size: 0.72rem;
   color: var(--ink-muted);
 }
 
@@ -5677,11 +5656,12 @@ button.game-card-store-chip.owned.active:hover {
   display: inline-block;
   margin: 0 2px;
   padding: 2px 6px;
-  border-radius: 5px;
+  border-radius: 4px;
   border: 1px solid var(--panel-border-solid);
-  background: rgba(255, 255, 255, 0.04);
+  background: var(--bg-a);
   color: var(--ink-soft);
-  font-size: 0.69rem;
+  font-size: 0.68rem;
+  font-family: inherit;
 }
 
 /* Fullscreen button */
@@ -5862,12 +5842,12 @@ button.game-card-store-chip.owned.active:hover {
 
   .sv-exit-card {
     width: 100%;
-    border-radius: 14px;
+    border-radius: var(--r-md);
     padding: 16px 16px 14px;
   }
 
   .sv-exit-title {
-    font-size: 1.12rem;
+    font-size: 1.05rem;
   }
 
   .sv-exit-actions {
