@@ -203,6 +203,32 @@ body,
   }
 }
 
+@keyframes native-streamer-warning-backdrop-out {
+  from {
+    opacity: 1;
+    backdrop-filter: blur(24px) saturate(135%);
+  }
+
+  to {
+    opacity: 0;
+    backdrop-filter: blur(0) saturate(100%);
+  }
+}
+
+@keyframes native-streamer-warning-card-out {
+  from {
+    opacity: 1;
+    filter: blur(0);
+    transform: translateY(0) scale(1);
+  }
+
+  to {
+    opacity: 0;
+    filter: blur(5px);
+    transform: translateY(10px) scale(0.97);
+  }
+}
+
 @keyframes native-streamer-warning-item-in {
   from {
     opacity: 0;
@@ -3563,6 +3589,10 @@ button.game-card-store-chip.owned.active:hover {
   animation: native-streamer-warning-backdrop-in 180ms var(--ease);
 }
 
+.native-streamer-warning--closing .native-streamer-warning-backdrop {
+  animation: native-streamer-warning-backdrop-out 160ms var(--ease) forwards;
+}
+
 .native-streamer-warning-card {
   position: relative;
   z-index: 1;
@@ -3581,6 +3611,10 @@ button.game-card-store-chip.owned.active:hover {
   backdrop-filter: blur(28px) saturate(135%);
   overflow: hidden;
   animation: native-streamer-warning-card-in 220ms var(--ease);
+}
+
+.native-streamer-warning--closing .native-streamer-warning-card {
+  animation: native-streamer-warning-card-out 160ms var(--ease) forwards;
 }
 
 .native-streamer-warning-card::before {

@@ -333,6 +333,7 @@ const shortcutDefaults = {
 
 /** Canonical shortcut for toggling the stream sidebar (must match StreamView key handler). */
 const SIDEBAR_TOGGLE_SHORTCUT_RAW = isMac ? "Meta+G" : "Ctrl+Shift+G";
+const NATIVE_STREAMER_ENABLE_PROMPT_EXIT_MS = 160;
 
 type ShortcutSettingKey = keyof typeof shortcutDefaults;
 
@@ -691,9 +692,13 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
   const [nativeStreamerStatus, setNativeStreamerStatus] = useState<NativeStreamerStatus | null>(null);
   const [nativeStreamerStatusLoading, setNativeStreamerStatusLoading] = useState(false);
   const [nativeStreamerEnablePromptOpen, setNativeStreamerEnablePromptOpen] = useState(false);
+  const [nativeStreamerEnablePromptClosing, setNativeStreamerEnablePromptClosing] = useState(false);
   const nativeStreamerEnablePromptRef = useRef<HTMLDivElement | null>(null);
   const nativeStreamerEnablePromptConfirmRef = useRef<HTMLButtonElement | null>(null);
   const nativeStreamerEnablePromptPreviousFocusRef = useRef<HTMLElement | null>(null);
+  const nativeStreamerEnablePromptCloseTimerRef = useRef<number | null>(null);
+  const nativeStreamerEnablePromptVisible =
+    nativeStreamerEnablePromptOpen || nativeStreamerEnablePromptClosing;
   const [updaterState, setUpdaterState] = useState<AppUpdaterState>({
     status: "idle",
     currentVersion: "0.0.0",
@@ -889,14 +894,33 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
     [onSettingChange]
   );
 
+  const openNativeStreamerEnablePrompt = useCallback((): void => {
+    if (nativeStreamerEnablePromptCloseTimerRef.current !== null) {
+      window.clearTimeout(nativeStreamerEnablePromptCloseTimerRef.current);
+      nativeStreamerEnablePromptCloseTimerRef.current = null;
+    }
+
+    setNativeStreamerEnablePromptClosing(false);
+    setNativeStreamerEnablePromptOpen(true);
+  }, []);
+
   const closeNativeStreamerEnablePrompt = useCallback((): void => {
+    if (nativeStreamerEnablePromptCloseTimerRef.current !== null) {
+      return;
+    }
+
     setNativeStreamerEnablePromptOpen(false);
+    setNativeStreamerEnablePromptClosing(true);
+    nativeStreamerEnablePromptCloseTimerRef.current = window.setTimeout(() => {
+      nativeStreamerEnablePromptCloseTimerRef.current = null;
+      setNativeStreamerEnablePromptClosing(false);
+    }, NATIVE_STREAMER_ENABLE_PROMPT_EXIT_MS);
   }, []);
 
   const confirmNativeStreamerEnablePrompt = useCallback((): void => {
     handleChange("streamClientMode", "native");
-    setNativeStreamerEnablePromptOpen(false);
-  }, [handleChange]);
+    closeNativeStreamerEnablePrompt();
+  }, [closeNativeStreamerEnablePrompt, handleChange]);
 
   const handleNativeStreamerToggleChange = useCallback((checked: boolean): void => {
     if (!checked) {
@@ -908,11 +932,20 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
       return;
     }
 
-    setNativeStreamerEnablePromptOpen(true);
-  }, [handleChange, settings.streamClientMode]);
+    openNativeStreamerEnablePrompt();
+  }, [handleChange, openNativeStreamerEnablePrompt, settings.streamClientMode]);
 
   useEffect(() => {
-    if (!nativeStreamerEnablePromptOpen) {
+    return () => {
+      if (nativeStreamerEnablePromptCloseTimerRef.current !== null) {
+        window.clearTimeout(nativeStreamerEnablePromptCloseTimerRef.current);
+        nativeStreamerEnablePromptCloseTimerRef.current = null;
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!nativeStreamerEnablePromptVisible) {
       return;
     }
 
@@ -990,7 +1023,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
         previousFocus.focus({ preventScroll: true });
       }
     };
-  }, [closeNativeStreamerEnablePrompt, nativeStreamerEnablePromptOpen]);
+  }, [closeNativeStreamerEnablePrompt, nativeStreamerEnablePromptVisible]);
 
   const handleAppLanguageChange = useCallback((nextLocale: string): void => {
     setAppLanguageDropdownOpen(false);
@@ -1729,9 +1762,9 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
         </div>
       </header>
 
-      {nativeStreamerEnablePromptOpen && (
+      {nativeStreamerEnablePromptVisible && (
         <div
-          className="native-streamer-warning"
+          className={`native-streamer-warning ${nativeStreamerEnablePromptClosing ? "native-streamer-warning--closing" : ""}`}
           role="dialog"
           aria-modal="true"
           aria-labelledby="native-streamer-warning-title"
