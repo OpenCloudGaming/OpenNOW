@@ -1865,6 +1865,20 @@ export class GfnWebRtcClient {
 
   private gamepadSendCount = 0;
 
+  private syncGamepadBitmap(): number {
+    let bitmap = 0;
+    for (const controllerId of this.connectedGamepads) {
+      bitmap |= (1 << controllerId);
+    }
+
+    if (this.virtualGamepadConnected && this.virtualGamepadControllerId !== null) {
+      bitmap |= (1 << this.virtualGamepadControllerId);
+    }
+
+    this.gamepadBitmap = bitmap;
+    return bitmap;
+  }
+
   private pollGamepads(): void {
     if (this.inputPaused) return;
     const gamepads = navigator.getGamepads();
@@ -1884,11 +1898,10 @@ export class GfnWebRtcClient {
         // Track connected gamepads and update bitmap
         if (!this.connectedGamepads.has(i)) {
           this.connectedGamepads.add(i);
-          // Set bit i in bitmap (matching official client's AA(i) = 1 << i)
-          this.gamepadBitmap |= (1 << i);
+          const bitmap = this.syncGamepadBitmap();
           this.log(`Gamepad ${i} connected: ${gamepad.id}`);
           this.log(`  Buttons: ${gamepad.buttons.length}, Axes: ${gamepad.axes.length}, Mapping: ${gamepad.mapping}`);
-          this.log(`  Bitmap now: 0x${this.gamepadBitmap.toString(16)}`);
+          this.log(`  Bitmap now: 0x${bitmap.toString(16)}`);
           this.diagnostics.physicalGamepads = this.connectedGamepads.size;
           this.diagnostics.connectedGamepads = this.connectedGamepads.size + (this.virtualGamepadConnected ? 1 : 0);
           this.emitStats();
@@ -1908,7 +1921,7 @@ export class GfnWebRtcClient {
 
         if (stateChanged || needsKeepalive) {
           const usePR = this.shouldSendGamepadPartiallyReliable(i, gamepadInput, previousGamepadState, needsKeepalive);
-          const bytes = this.inputEncoder.encodeGamepadState(gamepadInput, this.gamepadBitmap, usePR);
+          const bytes = this.inputEncoder.encodeGamepadState(gamepadInput, this.syncGamepadBitmap(), usePR);
           if (usePR) {
             this.sendGamepad(bytes);
           } else {
@@ -1934,8 +1947,8 @@ export class GfnWebRtcClient {
         this.previousGamepadStates.delete(i);
         this.gamepadTriggerAxisModes.delete(i);
         this.previousGamepadTouchpadClicks.delete(i);
-        this.gamepadBitmap &= ~(1 << i);
-        this.log(`Gamepad ${i} disconnected, bitmap now: 0x${this.gamepadBitmap.toString(16)}`);
+        const bitmap = this.syncGamepadBitmap();
+        this.log(`Gamepad ${i} disconnected, bitmap now: 0x${bitmap.toString(16)}`);
         this.diagnostics.physicalGamepads = this.connectedGamepads.size;
         this.diagnostics.connectedGamepads = this.connectedGamepads.size + (this.virtualGamepadConnected ? 1 : 0);
         this.emitStats();
@@ -1954,7 +1967,7 @@ export class GfnWebRtcClient {
           timestampUs: timestampUs(),
         };
         const usePR = this.canSendGamepadPartiallyReliable(i);
-        const bytes = this.inputEncoder.encodeGamepadState(disconnectState, this.gamepadBitmap, usePR);
+        const bytes = this.inputEncoder.encodeGamepadState(disconnectState, bitmap, usePR);
         if (usePR) {
           this.sendGamepad(bytes);
         } else {
@@ -1995,12 +2008,10 @@ export class GfnWebRtcClient {
     const controllerId = this.resolveVirtualGamepadControllerId(state.connected);
     const wasConnected = this.virtualGamepadConnected;
     this.virtualGamepadConnected = state.connected;
-    if (state.connected) {
-      this.gamepadBitmap |= (1 << controllerId);
-    } else {
-      this.gamepadBitmap &= ~(1 << controllerId);
+    if (!state.connected) {
       this.virtualGamepadControllerId = null;
     }
+    const bitmap = this.syncGamepadBitmap();
 
     const gamepadInput: GamepadInput = {
       controllerId,
@@ -2038,7 +2049,7 @@ export class GfnWebRtcClient {
       this.previousVirtualGamepadState,
       needsKeepalive,
     );
-    const bytes = this.inputEncoder.encodeGamepadState(gamepadInput, this.gamepadBitmap, usePR);
+    const bytes = this.inputEncoder.encodeGamepadState(gamepadInput, bitmap, usePR);
     if (usePR) {
       this.sendGamepad(bytes);
     } else {

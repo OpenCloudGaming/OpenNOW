@@ -75,6 +75,8 @@ export interface Settings {
   favoriteGameIds: string[];
   /** Enable the live elapsed session counter */
   sessionCounterEnabled: boolean;
+  /** Hide warnings before launching free-tier sessions */
+  hideFreeTierSessionWarnings: boolean;
   /** Window width */
   windowWidth: number;
   /** Window height */

@@ -4703,6 +4703,11 @@ button.game-card-store-chip.active:hover {
   pointer-events: none;
 }
 
+.android-shell .sv {
+  display: grid;
+  place-items: center;
+}
+
 .sv-video {
   width: 100%;
   height: 100%;
@@ -4717,6 +4722,9 @@ button.game-card-store-chip.active:hover {
 }
 
 .android-shell .sv-video {
+  width: min(100vw, calc(100vh * 16 / 9));
+  height: min(100vh, calc(100vw * 9 / 16));
+  aspect-ratio: 16 / 9;
   opacity: 1;
   transition: none;
   contain: strict;

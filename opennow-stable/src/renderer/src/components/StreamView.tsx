@@ -2983,7 +2983,7 @@ export function StreamView({
 
       {platformCapabilities.isAndroid && !isConnecting && (
         <>
-          {onVirtualGamepadState && androidTouchSettings.enabled && androidPhysicalGamepads === 0 && (
+          {onVirtualGamepadState && androidTouchSettings.enabled && (
             <TouchControllerOverlay
               onVirtualGamepadState={onVirtualGamepadState}
               settings={androidTouchSettings}

@@ -119,6 +119,22 @@ function getAndroidStreamCompatibilityReason(): string | null {
 }
 
 function capAndroidCompatibilityResolution(resolution: string): string {
+  const normalizedResolution = normalizeAndroidStreamResolution(resolution);
+  const match = /^(\d+)x(\d+)$/.exec(normalizedResolution);
+  if (!match?.[1] || !match[2]) {
+    return "1920x1080";
+  }
+
+  const width = Number.parseInt(match[1], 10);
+  const height = Number.parseInt(match[2], 10);
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+    return "1920x1080";
+  }
+
+  return width * height > 1920 * 1080 ? "1920x1080" : normalizedResolution;
+}
+
+function normalizeAndroidStreamResolution(resolution: string): string {
   const match = /^(\d+)x(\d+)$/.exec(resolution);
   if (!match?.[1] || !match[2]) {
     return "1920x1080";
@@ -130,16 +146,35 @@ function capAndroidCompatibilityResolution(resolution: string): string {
     return "1920x1080";
   }
 
-  return width * height > 1920 * 1080 ? "1920x1080" : resolution;
+  const ratio = width / height;
+  if (Math.abs(ratio - 16 / 9) < 0.01) {
+    return resolution;
+  }
+
+  const pixels = width * height;
+  if (pixels <= 1280 * 720) {
+    return "1280x720";
+  }
+  if (pixels <= 1920 * 1080) {
+    return "1920x1080";
+  }
+  if (pixels <= 2560 * 1440) {
+    return "2560x1440";
+  }
+  return "3840x2160";
 }
 
 function getEffectiveStreamPreferences(
   settings: Settings,
   androidCompatibilityReason: string | null,
 ): EffectiveStreamPreferences {
+  const resolution = platformCapabilities.isAndroid
+    ? normalizeAndroidStreamResolution(settings.resolution)
+    : settings.resolution;
+
   if (!androidCompatibilityReason) {
     return {
-      resolution: settings.resolution,
+      resolution,
       fps: settings.fps,
       maxBitrateMbps: settings.maxBitrateMbps,
       codec: settings.codec,
@@ -148,7 +183,7 @@ function getEffectiveStreamPreferences(
   }
 
   return {
-    resolution: capAndroidCompatibilityResolution(settings.resolution),
+    resolution: capAndroidCompatibilityResolution(resolution),
     fps: Math.min(settings.fps, 60),
     maxBitrateMbps: Math.min(settings.maxBitrateMbps, 35),
     codec: "H264",
@@ -2323,7 +2358,8 @@ export function App(): JSX.Element {
 
   useEffect(() => {
     const isSessionConnecting = streamStatus === "connecting" || streamStatus === "streaming";
-    if (!settings.autoFullScreen || !isSessionConnecting) {
+    const shouldEnterFullscreen = settings.autoFullScreen || platformCapabilities.isAndroid;
+    if (!shouldEnterFullscreen || !isSessionConnecting) {
       autoFullscreenRequestedRef.current = false;
       return;
     }

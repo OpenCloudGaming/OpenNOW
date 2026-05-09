@@ -2,6 +2,7 @@ package com.opencloudgaming.opennow;
 
 import android.app.Activity;
 import android.content.Intent;
+import android.content.pm.ActivityInfo;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -11,6 +12,7 @@ import android.view.InputDevice;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.Window;
+import android.view.WindowManager;
 
 import java.util.List;
 
@@ -94,6 +96,8 @@ public class OpenNowAndroidPlugin extends Plugin {
         }
     };
     private static volatile boolean immersiveFullscreenRequested = false;
+    private static int previousRequestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED;
+    private static boolean previousRequestedOrientationCaptured = false;
 
     @Override
     public void load() {
@@ -431,9 +435,20 @@ public class OpenNowAndroidPlugin extends Plugin {
         Window window = activity.getWindow();
         View decorView = window.getDecorView();
         WindowInsetsControllerCompat controller = WindowCompat.getInsetsController(window, decorView);
+        WindowManager.LayoutParams attributes = window.getAttributes();
 
         WindowCompat.setDecorFitsSystemWindows(window, !enabled);
         if (enabled) {
+            if (!previousRequestedOrientationCaptured) {
+                previousRequestedOrientation = activity.getRequestedOrientation();
+                previousRequestedOrientationCaptured = true;
+            }
+            activity.setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                attributes.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
+                window.setAttributes(attributes);
+            }
+            window.addFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
             controller.setSystemBarsBehavior(
                 WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
             );
@@ -449,6 +464,15 @@ public class OpenNowAndroidPlugin extends Plugin {
             return;
         }
 
+        if (previousRequestedOrientationCaptured) {
+            activity.setRequestedOrientation(previousRequestedOrientation);
+            previousRequestedOrientationCaptured = false;
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            attributes.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_DEFAULT;
+            window.setAttributes(attributes);
+        }
+        window.clearFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
         controller.show(WindowInsetsCompat.Type.statusBars() | WindowInsetsCompat.Type.navigationBars());
         decorView.setSystemUiVisibility(View.SYSTEM_UI_FLAG_LAYOUT_STABLE);
     }

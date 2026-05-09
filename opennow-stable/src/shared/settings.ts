@@ -6,7 +6,7 @@ const ANDROID_TOUCH_PLACEMENTS: readonly AndroidTouchPlacement[] = ["default", "
 
 export const LEGACY_ANDROID_TOUCH_SETTINGS_KEY = "opennow.android.touchControls.v1";
 export const DEFAULT_ANDROID_TOUCH_SETTINGS: AndroidTouchSettings = {
-  enabled: false,
+  enabled: true,
   size: 1,
   opacity: 0.74,
   placement: "default",
