@@ -5,18 +5,8 @@ on:
   pull_request:
     branches:
       - dev
-    paths:
-      - "native/**"
-      - "opennow-stable/**"
-      - ".github/workflows/auto-build.yml"
-  push:
-    branches:
       - main
-      - dev
-    paths:
-      - "native/**"
-      - "opennow-stable/**"
-      - ".github/workflows/auto-build.yml"
+  push: {}
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -91,11 +81,12 @@ jobs:
             },
           ];
 
-          const isPr = process.env.GITHUB_EVENT_NAME === "pull_request";
-          const include = isPr
-            ? builds.filter(
-                ({ label }) => label.startsWith("windows-") || label.startsWith("linux-"),
-              )
+          const eventName = process.env.GITHUB_EVENT_NAME;
+          const baseRef = process.env.GITHUB_BASE_REF;
+          const isPullRequest = eventName === "pull_request";
+          const isDevValidationPullRequest = isPullRequest && baseRef === "dev";
+          const include = isDevValidationPullRequest
+            ? builds.filter(({ label }) => label === "windows-x64" || label === "linux-x64")
             : builds;
 
           fs.appendFileSync(process.env.GITHUB_OUTPUT, `matrix=${JSON.stringify({ include })}\n`);
