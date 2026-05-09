@@ -31,17 +31,17 @@
     },
     "status": {
       "checking": "チェック中",
-      "connecting": "接続中...",
-      "disabled": "障害者",
+      "connecting": "接続中…",
+      "disabled": "無効",
       "error": "エラー",
-      "failed": "失敗しました",
-      "idle": "アイドル状態",
+      "failed": "失敗",
+      "idle": "アイドル",
       "loading": "読み込み中...",
       "ready": "準備完了",
       "saved": "保存されました",
       "testing": "テスト中...",
       "unknown": "不明",
-      "upToDate": "最新の状態"
+      "upToDate": "最新"
     },
     "units": {
       "bitrateMbps": "{{value}} Mbps",
@@ -51,26 +51,28 @@
       "gbUsed": "{{value}} GB が使用されています",
       "hours": "{{value}}h",
       "hoursLeft": "{{value}}h 残り",
-      "hoursUsed": "{{value}}h が使用されました",
+      "hoursUsed": "{{value}}h 使用",
       "milliseconds": "{{value}}ms",
       "minutes": "{{value}}分",
       "percent": "{{value}}%",
-      "seconds": "{{value}}"
+      "seconds": "{{value}}秒"
     },
     "labels": {
       "auto": "自動",
       "best": "ベスト",
-      "beta": "ベータ版",
+      "beta": "ベータ",
       "current": "現在",
       "default": "デフォルト",
-      "defaultDevice": "デフォルトのデバイス",
+      "defaultDevice": "デフォルトデバイス",
+      "experimental": "Experimental",
       "free": "無料",
       "game": "ゲーム",
       "hardware": "ハードウェア",
+      "no": "いいえ",
       "other": "その他",
       "priority": "優先順位",
       "softwareCpu": "ソフトウェア（CPU）",
-      "ultimate": "究極の",
+      "ultimate": "Ultimate",
       "unlimited": "無制限"
     }
   },
@@ -84,8 +86,8 @@
     },
     "provider": {
       "label": "プロバイダー",
-      "select": "プロバイダーの選択",
-      "loading": "読み込み中..."
+      "select": "プロバイダーを選択",
+      "loading": "読み込み中…"
     },
     "actions": {
       "signIn": "サインイン",
@@ -95,23 +97,23 @@
     "accounts": {
       "activeAccount": "アクティブなアカウント",
       "addAccount": "アカウントを追加",
-      "cancelAccountRemoval": "アカウントの削除をキャンセルする",
-      "cancelLogOut": "ログアウトをキャンセルする",
+      "cancelAccountRemoval": "アカウントの削除をキャンセル",
+      "cancelLogOut": "ログアウトをキャンセル",
       "guest": "ゲスト",
-      "logOutAll": "すべてのアカウントをログアウトします",
+      "logOutAll": "すべてのアカウントをログアウト",
       "logOutConfirmation": "ログアウトの確認",
       "removeAccount": "アカウントを削除する",
-      "removeAccountConfirmation": "Remove account confirmation",
+      "removeAccountConfirmation": "アカウントの確認を削除",
       "removeAccountTitle": "アカウントを削除しますか?",
       "removeAccountDescription": "保存されたアカウントから {{name}} を削除してもよろしいですか?",
-      "removeAccountSubtext": "You can add this account again by signing in.",
-      "removeNamedAccount": "{{name}} を削除します",
-      "signOutAllTitle": "すべてのアカウントをサインアウトしますか?",
-      "signOutAllDescription": "このデバイスから保存されているすべてのアカウントを削除し、ゲスト モードに戻ろうとしています。",
-      "signOutAllSubtext": "Your cloud session data stays on the service.これは、ローカルの OpenNOW アカウント セッションをクリアするだけです。",
+      "removeAccountSubtext": "サインインすることで、このアカウントを再度追加することができます。",
+      "removeNamedAccount": "{{name}} を削除",
+      "signOutAllTitle": "すべてのアカウントをサインアウトしてもよろしいですか？",
+      "signOutAllDescription": "このデバイスから保存されているすべてのアカウントを削除し、ゲストモードに戻ろうとしています。",
+      "signOutAllSubtext": "クラウドセッションデータはサービスに残ります。ローカルのOpenNOWアカウントセッションのみクリアします。",
       "signOutAll": "すべてサインアウトする",
       "signOutAllAccounts": "すべてのアカウントからサインアウトする",
-      "staySignedIn": "サインインしたままにする",
+      "staySignedIn": "サインインを保持",
       "switchAccount": "アカウントを切り替える",
       "thisAccount": "このアカウント",
       "kicker": "アカウント"
@@ -122,7 +124,7 @@
       "tokenRefreshedLoadingAccount": "トークンが更新されました。アカウントを読み込んでいます...",
       "tokenRefreshFailedUsingSaved": "トークンの更新に失敗しました。保存されたセッション トークンを使用します。",
       "tokenRefreshFailedContinuing": "トークンの更新に失敗しました。保存されたセッションを続行します...",
-      "missingRefreshTokenContinuing": "保存されたセッションには更新トークンがありません。続きます...",
+      "missingRefreshTokenContinuing": "保存されたセッションには更新トークンがありません。続きます。",
       "sessionRestored": "セッションが復元されました。",
       "noSavedSessionFound": "保存されたセッションが見つかりません。",
       "sessionRestoreFailed": "セッションの復元に失敗しました。再度サインインしてください。"
@@ -130,7 +132,7 @@
   },
   "navigation": {
     "home": "ストア",
-    "library": "図書館",
+    "library": "ライブラリ",
     "settings": "設定"
   },
   "home": {
@@ -138,8 +140,8 @@
     "filters": "フィルター",
     "count": {
       "loading": "読み込み中...",
-      "shown": "{{shown}}を表示",
-      "shownTotal": "{{shown}} を表示 · 合計 {{total}}",
+      "shown": "{{shown}}件を表示中",
+      "shownTotal": "{{shown}} 件を表示中 · 合計 {{total}}",
       "shownTotalSupported": "{{shown}} が表示される · {{total}} 合計 · {{supported}} がサポートされる",
       "shownSupported": "{{shown}} が表示されます · {{supported}} がサポートされています"
     },
@@ -335,6 +337,7 @@
     "noMatches": "「{{query}}」に一致する設定はありませんでした。",
     "sections": {
       "stream": "ストリーム",
+      "nativeStreamer": "Native Streamer",
       "game": "ゲーム",
       "audio": "オーディオ",
       "input": "入力",
@@ -363,7 +366,24 @@
       "requiresH265OrAv1": "このモードには H265 または AV1 が必要です。コーデックは自動で切り替わります。",
       "testing": "テスト中...",
       "gpu": "GPU",
-      "cpu": "CPU"
+      "cpu": "CPU",
+      "softwareCpu": "ソフトウェア（CPU）",
+      "sessionProxy": "Session proxy",
+      "sessionProxyHint": "Used only for Nvidia session creation and queue polling. Streaming/signaling traffic is not proxied. Zortos provides a proxy for GitHub Sponsors/supporters.",
+      "experimentalL4SRequest": "Experimental L4S Request",
+      "experimentalL4SRequestHint": "Request the GeForce NOW L4S streaming feature on newly created sessions. This does not change browser WebRTC behavior by itself and may be ignored by the service or network path."
+    },
+    "codecDiagnostics": {
+      "advanced": "Advanced - Codec Diagnostics",
+      "title": "Codec Diagnostics",
+      "description": "Test which codecs your system can decode/encode and whether they use GPU or CPU",
+      "testCodecs": "Test Codecs",
+      "retest": "Retest",
+      "webrtcReady": "WebRTC Ready",
+      "notInWebrtc": "Not in WebRTC",
+      "decode": "デコード",
+      "encode": "Encode",
+      "profiles": "Profiles:"
     },
     "colorQuality": {
       "mostCompatible": "最も互換性のある",
@@ -375,6 +395,7 @@
     "game": {
       "title": "ゲーム",
       "language": "言語",
+      "inGameLanguageHint": "Language for in-game menus, subtitles, and audio (where supported)",
       "keyboardLayout": "キーボードのレイアウト",
       "preferredStore": "優先ストア",
       "launchBehavior": "起動動作"
@@ -382,9 +403,14 @@
     "audio": {
       "title": "オーディオ",
       "microphone": "マイク",
+      "microphoneHint": "Enable voice chat during streaming",
       "microphoneMode": "マイクモード",
       "microphoneDevice": "マイクデバイス",
+      "microphoneDeviceHint": "Select input device for voice chat",
       "microphoneInputLevel": "マイク入力レベル",
+      "selectedDevice": "Selected Device",
+      "microphoneIndexed": "Microphone {{index}}",
+      "noMicrophoneDevicesFound": "No microphone devices found",
       "disabled": "障害者",
       "pushToTalk": "プッシュツートーク",
       "voiceActivity": "音声アクティビティ",
@@ -396,7 +422,15 @@
     "input": {
       "title": "入力",
       "mouseAndKeyboard": "マウスとキーボード",
+      "clipboardPaste": "Clipboard Paste",
+      "keyboardLayoutHint": "Controls how your physical keyboard is mapped inside the remote session. Separate from the in-game language setting.",
+      "mouseSensitivity": "Mouse Sensitivity",
+      "mouseSensitivityHint": "Multiplier applied to mouse movement (1.00 = default)",
+      "mouseAccelerator": "Mouse Accelerator",
+      "mouseAcceleratorHint": "Dynamic turn boost strength (1% = off-like, 150% = strongest).",
       "shortcuts": "ショートカット",
+      "editable": "Editable",
+      "resetToDefaults": "Reset to defaults",
       "shortcutConflictSidebar": "ショートカットが設定サイドバーの切り替えと競合します。",
       "shortcutConflictBinding": "ショートカットが別のバインディングと競合します。",
       "shortcutEmpty": "ショートカットを空にすることはできません。",
@@ -451,6 +485,28 @@
       "everyMinutes": "{{count}} 分ごと"
     },
     "about": {
+      "applicationUpdates": "Application Updates",
+      "version": "Version {{version}}",
+      "backgroundChecksOn": "Packaged builds check GitHub Releases in the background.",
+      "backgroundChecksOff": "Background update checks are off until you manually check.",
+      "lastChecked": "Last checked: {{value}}",
+      "availableVersion": "Available version: {{version}}",
+      "downloadedVersion": "Downloaded version: {{version}}",
+      "downloadProgress": "Download progress: {{percent}}%",
+      "checkForUpdates": "Check for Updates",
+      "downloadUpdate": "Download Update",
+      "restartToInstall": "Restart to Install",
+      "automaticallyCheckForUpdates": "Automatically Check for Updates",
+      "automaticallyCheckForUpdatesOnHint": "When on, packaged builds check GitHub Releases in the background after startup and periodically while OpenNOW is running.",
+      "automaticallyCheckForUpdatesOffHint": "When off, OpenNOW stays on the current version unless you use the manual update buttons below.",
+      "exportLogs": "Export Logs",
+      "exportLogsHint": "Download debug logs with sensitive data redacted for privacy",
+      "exportLogsFailed": "Failed to export logs. Please try again.",
+      "deleteCache": "Delete Cache",
+      "deleteCacheHint": "Clear all cached game data, images, and metadata",
+      "deleteCacheConfirm": "Are you sure you want to delete all cached data? This will clear all game metadata, images, and library information.",
+      "cacheCleared": "Cache cleared successfully. The app will refresh on next startup.",
+      "deleteCacheFailed": "Failed to delete cache. Please try again.",
       "updateStatus": {
         "packagedBuildsOnly": "パッケージ化されたビルドのみ",
         "checking": "チェック中",
@@ -459,14 +515,46 @@
         "readyToInstall": "インストールの準備ができました"
       }
     },
+    "nativeStreamer": {
+      "title": "Native Streamer",
+      "nativeStreaming": "Native Streaming",
+      "nativeStreamingHint": "Native streaming is experimental and may have platform-specific bugs, glitches, or fallbacks to Chromium/WebRTC. Enable it only if you are comfortable testing the GStreamer-based desktop streamer for new sessions.",
+      "reportOnGithubIssues": "Report on GitHub Issues",
+      "reportOnDiscord": "Report on Discord",
+      "streamerStatus": "Streamer Status",
+      "checkNativeStreamer": "Check native streamer",
+      "gstreamerReady": "GStreamer Ready",
+      "notReady": "Not Ready",
+      "statusDefaultHint": "OpenNOW will check the bundled GStreamer streamer when this tab opens.",
+      "gstreamerRuntime": "GStreamer Runtime",
+      "bundledPathDetected": "Bundled path detected",
+      "runtimeDefaultHint": "Packaged Windows/macOS builds auto-detect a bundled runtime next to the native streamer. Linux uses distro packages.",
+      "linuxRuntimeHint": "Linux AppImage/private GStreamer bundling is intentionally not used by default because VAAPI/V4L2/Vulkan plugins must match the host distro and GPU driver stack. .deb packages declare Debian/Ubuntu dependencies automatically.",
+      "videoPath": "Video Path",
+      "codecSupportUnknown": "Codec support unknown",
+      "memoryPathUnknown": "Memory path unknown",
+      "videoPathDefaultHint": "OpenNOW will show the active hardware decode path after GStreamer is detected.",
+      "directxBackend": "DirectX Backend",
+      "directxBackendHint": "Applies to the next native streamer process. Auto uses the fastest default path; choose DirectX 11 or DirectX 12 to force a specific Windows renderer.",
+      "framePacing": "Frame Pacing",
+      "lowestLatency": "Lowest Latency",
+      "smoothGsync": "Smooth G-Sync",
+      "framePacingHint": "Lowest Latency avoids G-Sync pacing and is best for mouse feel. Smooth G-Sync can reduce tearing, but may cap rendering to the monitor refresh rate."
+    },
     "thanks": {
       "title": "OpenNOW の成長にご協力いただきありがとうございます",
       "subtitle": "OpenNOW は、クライアントを構築する貢献者と、プロジェクトを舞台裏で支援するサポーターによって形成されています。",
+      "contributor": "Contributor",
+      "supporter": "Supporter",
+      "communityDataUnavailable": "Community data unavailable",
       "contributorsTitle": "貢献者",
       "contributorsSubtitle": "OpenNOW のコード、修正、機能を改善する人々。",
       "supportersTitle": "サポーター",
+      "supportersSubtitle": "Public GitHub Sponsors backing the work, plus private supporters when available.",
       "loadingContributors": "GitHub から貢献者を読み込んでいます...",
-      "loadingSupporters": "GitHub スポンサーからサポーターを読み込み中..."
+      "loadingSupporters": "GitHub スポンサーからサポーターを読み込み中...",
+      "noContributors": "No contributors could be shown right now.",
+      "noSupporters": "No supporters could be shown right now."
     }
   },
   "navbar": {
