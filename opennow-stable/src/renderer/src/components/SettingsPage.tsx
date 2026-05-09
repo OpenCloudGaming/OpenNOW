@@ -1,4 +1,4 @@
-import { Globe, Check, Search, X, Loader, Zap, Mic, FileDown, Wifi, Trash2, Heart, Users, ExternalLink, Monitor, Keyboard, Download, RefreshCcw, Info, Cpu } from "lucide-react";
+import { Globe, Check, Search, X, Loader, Zap, Mic, FileDown, Wifi, Trash2, Heart, Users, ExternalLink, Monitor, Keyboard, Download, RefreshCcw, Info, Cpu, AlertTriangle } from "lucide-react";
 import { useState, useCallback, useMemo, useEffect, useRef } from "react";
 import type { JSX } from "react";
 
@@ -116,6 +116,9 @@ const SETTINGS_SCOPE_SEARCH_TERMS: Record<SettingsSearchScopeId, readonly string
     "cloud gsync",
     "diagnostics",
     "experimental",
+    "shortcuts",
+    "alt-tab",
+    "exit",
     "issue",
     "github",
     "discord",
@@ -335,6 +338,7 @@ const shortcutDefaults = {
 
 /** Canonical shortcut for toggling the stream sidebar (must match StreamView key handler). */
 const SIDEBAR_TOGGLE_SHORTCUT_RAW = isMac ? "Meta+G" : "Ctrl+Shift+G";
+const NATIVE_STREAMER_ENABLE_PROMPT_EXIT_MS = 160;
 
 type ShortcutSettingKey = keyof typeof shortcutDefaults;
 
@@ -694,6 +698,14 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
   const [codecAdvancedOpen, setCodecAdvancedOpen] = useState(false);
   const [nativeStreamerStatus, setNativeStreamerStatus] = useState<NativeStreamerStatus | null>(null);
   const [nativeStreamerStatusLoading, setNativeStreamerStatusLoading] = useState(false);
+  const [nativeStreamerEnablePromptOpen, setNativeStreamerEnablePromptOpen] = useState(false);
+  const [nativeStreamerEnablePromptClosing, setNativeStreamerEnablePromptClosing] = useState(false);
+  const nativeStreamerEnablePromptRef = useRef<HTMLDivElement | null>(null);
+  const nativeStreamerEnablePromptConfirmRef = useRef<HTMLButtonElement | null>(null);
+  const nativeStreamerEnablePromptPreviousFocusRef = useRef<HTMLElement | null>(null);
+  const nativeStreamerEnablePromptCloseTimerRef = useRef<number | null>(null);
+  const nativeStreamerEnablePromptVisible =
+    nativeStreamerEnablePromptOpen || nativeStreamerEnablePromptClosing;
   const [updaterState, setUpdaterState] = useState<AppUpdaterState>({
     status: "idle",
     currentVersion: "0.0.0",
@@ -888,6 +900,137 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
     },
     [onSettingChange]
   );
+
+  const openNativeStreamerEnablePrompt = useCallback((): void => {
+    if (nativeStreamerEnablePromptCloseTimerRef.current !== null) {
+      window.clearTimeout(nativeStreamerEnablePromptCloseTimerRef.current);
+      nativeStreamerEnablePromptCloseTimerRef.current = null;
+    }
+
+    setNativeStreamerEnablePromptClosing(false);
+    setNativeStreamerEnablePromptOpen(true);
+  }, []);
+
+  const closeNativeStreamerEnablePrompt = useCallback((): void => {
+    if (nativeStreamerEnablePromptCloseTimerRef.current !== null) {
+      return;
+    }
+
+    setNativeStreamerEnablePromptOpen(false);
+    setNativeStreamerEnablePromptClosing(true);
+    nativeStreamerEnablePromptCloseTimerRef.current = window.setTimeout(() => {
+      nativeStreamerEnablePromptCloseTimerRef.current = null;
+      setNativeStreamerEnablePromptClosing(false);
+    }, NATIVE_STREAMER_ENABLE_PROMPT_EXIT_MS);
+  }, []);
+
+  const confirmNativeStreamerEnablePrompt = useCallback((): void => {
+    handleChange("streamClientMode", "native");
+    closeNativeStreamerEnablePrompt();
+  }, [closeNativeStreamerEnablePrompt, handleChange]);
+
+  const handleNativeStreamerToggleChange = useCallback((checked: boolean): void => {
+    if (!checked) {
+      handleChange("streamClientMode", "web");
+      return;
+    }
+
+    if (settings.streamClientMode === "native") {
+      return;
+    }
+
+    openNativeStreamerEnablePrompt();
+  }, [handleChange, openNativeStreamerEnablePrompt, settings.streamClientMode]);
+
+  useEffect(() => {
+    return () => {
+      if (nativeStreamerEnablePromptCloseTimerRef.current !== null) {
+        window.clearTimeout(nativeStreamerEnablePromptCloseTimerRef.current);
+        nativeStreamerEnablePromptCloseTimerRef.current = null;
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!nativeStreamerEnablePromptVisible) {
+      return;
+    }
+
+    nativeStreamerEnablePromptPreviousFocusRef.current =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+
+    const getFocusableElements = (): HTMLElement[] => {
+      const dialog = nativeStreamerEnablePromptRef.current;
+      if (!dialog) {
+        return [];
+      }
+
+      return Array.from(
+        dialog.querySelectorAll<HTMLElement>(
+          [
+            "a[href]",
+            "button:not([disabled])",
+            "input:not([disabled])",
+            "select:not([disabled])",
+            "textarea:not([disabled])",
+            '[tabindex]:not([tabindex="-1"])',
+          ].join(","),
+        ),
+      ).filter((element) => element.tabIndex >= 0 && element.getAttribute("aria-hidden") !== "true");
+    };
+
+    const handleKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closeNativeStreamerEnablePrompt();
+        return;
+      }
+
+      if (event.key !== "Tab") {
+        return;
+      }
+
+      const dialog = nativeStreamerEnablePromptRef.current;
+      const focusableElements = getFocusableElements();
+      if (!dialog || focusableElements.length === 0) {
+        event.preventDefault();
+        dialog?.focus({ preventScroll: true });
+        return;
+      }
+
+      const activeElement = document.activeElement;
+      const firstElement = focusableElements[0];
+      const lastElement = focusableElements[focusableElements.length - 1];
+      const focusIsOnDialog = activeElement === dialog;
+
+      if (event.shiftKey && (focusIsOnDialog || activeElement === firstElement || !dialog.contains(activeElement))) {
+        event.preventDefault();
+        lastElement.focus({ preventScroll: true });
+        return;
+      }
+
+      if (!event.shiftKey && (focusIsOnDialog || activeElement === lastElement || !dialog.contains(activeElement))) {
+        event.preventDefault();
+        firstElement.focus({ preventScroll: true });
+      }
+    };
+
+    const focusFrame = window.requestAnimationFrame(() => {
+      nativeStreamerEnablePromptConfirmRef.current?.focus({ preventScroll: true });
+    });
+
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.cancelAnimationFrame(focusFrame);
+      document.removeEventListener("keydown", handleKeyDown);
+
+      const previousFocus = nativeStreamerEnablePromptPreviousFocusRef.current;
+      nativeStreamerEnablePromptPreviousFocusRef.current = null;
+      if (previousFocus?.isConnected) {
+        previousFocus.focus({ preventScroll: true });
+      }
+    };
+  }, [closeNativeStreamerEnablePrompt, nativeStreamerEnablePromptVisible]);
 
   const handleAppLanguageChange = useCallback((nextLocale: string): void => {
     setAppLanguageDropdownOpen(false);
@@ -1630,6 +1773,74 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
         </div>
       </header>
 
+      {nativeStreamerEnablePromptVisible && (
+        <div
+          className={`native-streamer-warning ${nativeStreamerEnablePromptClosing ? "native-streamer-warning--closing" : ""}`}
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="native-streamer-warning-title"
+          aria-describedby="native-streamer-warning-copy"
+        >
+          <button
+            type="button"
+            className="native-streamer-warning-backdrop"
+            aria-label={t("app.actions.cancel")}
+            aria-hidden="true"
+            tabIndex={-1}
+            onClick={closeNativeStreamerEnablePrompt}
+          />
+          <div ref={nativeStreamerEnablePromptRef} className="native-streamer-warning-card" tabIndex={-1}>
+            <div className="native-streamer-warning-kicker">
+              <AlertTriangle size={14} />
+              {t("settings.nativeStreamer.enablePromptKicker")}
+            </div>
+            <h3 id="native-streamer-warning-title" className="native-streamer-warning-title">
+              {t("settings.nativeStreamer.enablePromptTitle")}
+            </h3>
+            <p id="native-streamer-warning-copy" className="native-streamer-warning-text">
+              {t("settings.nativeStreamer.enablePromptBody")}
+            </p>
+
+            <div className="native-streamer-warning-list">
+              <div className="native-streamer-warning-list-item">
+                <Cpu size={16} />
+                <span>{t("settings.nativeStreamer.enablePromptNewSessions")}</span>
+              </div>
+              <div className="native-streamer-warning-list-item">
+                <Keyboard size={16} />
+                <span>{t("settings.nativeStreamer.enablePromptShortcuts")}</span>
+              </div>
+              <div className="native-streamer-warning-list-item">
+                <Monitor size={16} />
+                <span>{t("settings.nativeStreamer.enablePromptAltTab")}</span>
+              </div>
+            </div>
+
+            <div className="native-streamer-warning-actions">
+              <button
+                type="button"
+                className="native-streamer-warning-btn native-streamer-warning-btn--secondary"
+                onClick={closeNativeStreamerEnablePrompt}
+              >
+                {t("settings.nativeStreamer.enablePromptCancel")}
+              </button>
+              <button
+                type="button"
+                className="native-streamer-warning-btn native-streamer-warning-btn--primary"
+                onClick={confirmNativeStreamerEnablePrompt}
+                ref={nativeStreamerEnablePromptConfirmRef}
+                autoFocus
+              >
+                {t("settings.nativeStreamer.enablePromptEnable")}
+              </button>
+            </div>
+            <div className="native-streamer-warning-hint">
+              <kbd>Esc</kbd> {t("settings.nativeStreamer.enablePromptEsc")}
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="settings-layout">
 
       {/* ── Sidebar ───────────────────────────────────────── */}
@@ -2229,7 +2440,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                         <input
                           type="checkbox"
                           checked={settings.streamClientMode === "native"}
-                          onChange={(e) => handleChange("streamClientMode", e.target.checked ? "native" : "web")}
+                          onChange={(e) => handleNativeStreamerToggleChange(e.target.checked)}
                         />
                         <span className="settings-toggle-track" />
                       </label>
