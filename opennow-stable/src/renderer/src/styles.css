@@ -86,6 +86,12 @@ body,
   -moz-osx-font-smoothing: grayscale;
 }
 
+body[data-android-fullscreen="true"],
+body[data-android-fullscreen="true"] #root,
+body[data-android-fullscreen="true"] .app-container {
+  background: #000;
+}
+
 /* ---------- Scrollbar ---------- */
 ::-webkit-scrollbar {
   width: 5px;
@@ -4704,8 +4710,9 @@ button.game-card-store-chip.active:hover {
 }
 
 .android-shell .sv {
-  display: grid;
-  place-items: center;
+  display: block;
+  overflow: hidden;
+  background: #000;
 }
 
 .sv-video {
@@ -4722,9 +4729,12 @@ button.game-card-store-chip.active:hover {
 }
 
 .android-shell .sv-video {
-  width: min(100vw, calc(100vh * 16 / 9));
-  height: min(100vh, calc(100vw * 9 / 16));
-  aspect-ratio: 16 / 9;
+  position: absolute;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  height: 100dvh;
+  object-fit: contain;
   opacity: 1;
   transition: none;
   contain: strict;

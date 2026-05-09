@@ -1,6 +1,8 @@
 package com.opencloudgaming.opennow;
 
+import android.graphics.Color;
 import android.os.Bundle;
+import android.webkit.WebView;
 
 import androidx.core.splashscreen.SplashScreen;
 
@@ -13,6 +15,13 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(LocalhostAuthPlugin.class);
         registerPlugin(OpenNowAndroidPlugin.class);
         super.onCreate(savedInstanceState);
+        getWindow().getDecorView().setBackgroundColor(Color.BLACK);
+        getWindow().setStatusBarColor(Color.BLACK);
+        getWindow().setNavigationBarColor(Color.BLACK);
+        WebView webView = getBridge().getWebView();
+        if (webView != null) {
+            webView.setBackgroundColor(Color.BLACK);
+        }
     }
 
     @Override

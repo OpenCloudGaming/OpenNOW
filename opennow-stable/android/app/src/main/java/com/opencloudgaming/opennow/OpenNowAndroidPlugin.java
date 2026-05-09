@@ -3,6 +3,7 @@ package com.opencloudgaming.opennow;
 import android.app.Activity;
 import android.content.Intent;
 import android.content.pm.ActivityInfo;
+import android.graphics.Color;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -436,6 +437,10 @@ public class OpenNowAndroidPlugin extends Plugin {
         View decorView = window.getDecorView();
         WindowInsetsControllerCompat controller = WindowCompat.getInsetsController(window, decorView);
         WindowManager.LayoutParams attributes = window.getAttributes();
+
+        decorView.setBackgroundColor(Color.BLACK);
+        window.setStatusBarColor(Color.BLACK);
+        window.setNavigationBarColor(Color.BLACK);
 
         WindowCompat.setDecorFitsSystemWindows(window, !enabled);
         if (enabled) {
