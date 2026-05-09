@@ -2939,18 +2939,22 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                               setAccentColorDropdownOpen(false);
                             }}
                           >
-                            <span style={{ display: "inline-flex", alignItems: "center", gap: 10 }}>
+                            <span style={{ display: "inline-flex", alignItems: "center", gap: 10, flex: 1 }}>
                               <span
                                 aria-hidden="true"
                                 style={{
-                                  width: 12,
-                                  height: 12,
+                                  width: 20,
+                                  height: 20,
                                   borderRadius: 9999,
+                                  flexShrink: 0,
+                                  flex: "0 0 20px",
                                   background: option.hex,
                                   boxShadow: `0 0 0 1px color-mix(in srgb, ${option.hex} 48%, rgba(255, 255, 255, 0.22))`,
                                 }}
                               />
-                              {t(option.labelKey)}
+                              <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                {t(option.labelKey)}
+                              </span>
                             </span>
                             {settings.appAccentColor === option.value && <Check size={14} className="settings-dropdown-check" />}
                           </button>
