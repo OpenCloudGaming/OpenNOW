@@ -133,6 +133,32 @@ function shouldUseLowPowerAndroidTouchControls(
   return typeof totalMemBytes === "number" && totalMemBytes > 0 && totalMemBytes < 3 * 1024 * 1024 * 1024;
 }
 
+function androidGamePrefersMouseInput(game: GameInfo | null): boolean {
+  if (!platformCapabilities.isAndroid || !game) {
+    return false;
+  }
+
+  if (/runescape|old school rune/i.test(game.title)) {
+    return true;
+  }
+
+  const controls = game.variants.flatMap((variant) => variant.supportedControls ?? []);
+  if (controls.length === 0) {
+    return false;
+  }
+  const normalizedControls = controls.map((control) => control.toLowerCase());
+  const hasMouseKeyboard = normalizedControls.some((control) => (
+    control.includes("mouse") ||
+    control.includes("keyboard") ||
+    control.includes("kbm")
+  ));
+  const hasController = normalizedControls.some((control) => (
+    control.includes("gamepad") ||
+    control.includes("controller")
+  ));
+  return hasMouseKeyboard && !hasController;
+}
+
 function capAndroidCompatibilityResolution(resolution: string): string {
   const normalizedResolution = normalizeAndroidStreamResolution(resolution);
   const match = /^(\d+)x(\d+)$/.exec(normalizedResolution);
@@ -1207,6 +1233,10 @@ export function App(): JSX.Element {
   const lowPowerAndroidTouchControls = useMemo(
     () => shouldUseLowPowerAndroidTouchControls(androidStreamCompatibilityReason, androidPerformanceInfo),
     [androidPerformanceInfo, androidStreamCompatibilityReason],
+  );
+  const preferAndroidMouseInput = useMemo(
+    () => androidGamePrefersMouseInput(streamingGame),
+    [streamingGame],
   );
   const effectiveStreamPreferences = useMemo(
     () => getEffectiveStreamPreferences(settings, androidStreamCompatibilityReason),
@@ -4015,6 +4045,7 @@ export function App(): JSX.Element {
               void updateSetting("androidTouchControls", value);
             }}
             lowPowerTouchControls={lowPowerAndroidTouchControls}
+            preferAndroidMouseInput={preferAndroidMouseInput}
             onSendText={(text) => clientRef.current?.sendText(text) ?? 0}
             onSendKeyPress={(key) => {
               clientRef.current?.sendKeyPress(key);

@@ -63,6 +63,8 @@ import type {
   PrintedWasteQueueData,
   PrintedWasteServerMapping,
   AndroidPerformanceInfo,
+  AndroidNativeTouchControlsOptions,
+  AndroidNativeTouchGamepadEvent,
 } from "@shared/gfn";
 import { DEFAULT_KEYBOARD_LAYOUT, colorQualityBitDepth, colorQualityChromaFormat, resolveGfnKeyboardLayout } from "@shared/gfn";
 import {
@@ -141,10 +143,11 @@ interface OpenNowAndroidPlugin {
   setImmersiveFullscreen(options: { enabled: boolean }): Promise<{ enabled: boolean }>;
   setPointerCapture(options: { enabled: boolean }): Promise<{ supported: boolean; enabled: boolean }>;
   getPerformanceInfo(): Promise<AndroidPerformanceInfo>;
+  setNativeTouchControls(options: AndroidNativeTouchControlsOptions): Promise<{ enabled: boolean }>;
   consumeLaunchIntent(): Promise<{ intent?: AndroidLaunchIntent | null }>;
   addListener(
-    eventName: "nativeMouseMove" | "nativeMouseButton" | "nativeMouseWheel" | "launchIntent",
-    listener: (event: NativeMouseMoveEvent | NativeMouseButtonEvent | NativeMouseWheelEvent | AndroidLaunchIntent) => void,
+    eventName: "nativeMouseMove" | "nativeMouseButton" | "nativeMouseWheel" | "nativeTouchGamepad" | "launchIntent",
+    listener: (event: NativeMouseMoveEvent | NativeMouseButtonEvent | NativeMouseWheelEvent | AndroidNativeTouchGamepadEvent | AndroidLaunchIntent) => void,
   ): Promise<PluginListenerHandle>;
 }
 
@@ -1343,8 +1346,12 @@ function onLaunchIntent(listener: (event: AndroidLaunchIntent) => void): () => v
   return onAndroidPluginEvent("launchIntent", listener);
 }
 
+function onAndroidNativeTouchGamepad(listener: (event: AndroidNativeTouchGamepadEvent) => void): () => void {
+  return onAndroidPluginEvent("nativeTouchGamepad", listener);
+}
+
 function onAndroidPluginEvent<TEvent>(
-  eventName: "nativeMouseMove" | "nativeMouseButton" | "nativeMouseWheel" | "launchIntent",
+  eventName: "nativeMouseMove" | "nativeMouseButton" | "nativeMouseWheel" | "nativeTouchGamepad" | "launchIntent",
   listener: (event: TEvent) => void,
 ): () => void {
   let active = true;
@@ -1352,7 +1359,7 @@ function onAndroidPluginEvent<TEvent>(
 
   void OpenNowAndroid.addListener(
     eventName,
-    listener as (event: NativeMouseMoveEvent | NativeMouseButtonEvent | NativeMouseWheelEvent | AndroidLaunchIntent) => void,
+    listener as (event: NativeMouseMoveEvent | NativeMouseButtonEvent | NativeMouseWheelEvent | AndroidNativeTouchGamepadEvent | AndroidLaunchIntent) => void,
   )
     .then((nextHandle) => {
       if (!active) {
@@ -1425,6 +1432,10 @@ const api: OpenNowApi = {
   onNativeMouseButton,
   onNativeMouseWheel,
   getAndroidPerformanceInfo: async (): Promise<AndroidPerformanceInfo> => OpenNowAndroid.getPerformanceInfo(),
+  setAndroidNativeTouchControls: async (options: AndroidNativeTouchControlsOptions): Promise<void> => {
+    await OpenNowAndroid.setNativeTouchControls(options).catch(() => undefined);
+  },
+  onAndroidNativeTouchGamepad,
   consumeLaunchIntent: async (): Promise<AndroidLaunchIntent | null> => {
     const result = await OpenNowAndroid.consumeLaunchIntent().catch(() => ({ intent: null }));
     return result.intent ?? null;

@@ -746,6 +746,25 @@ export interface AndroidPerformanceInfo {
   liteTouchRecommended?: boolean;
 }
 
+export interface AndroidNativeTouchControlsOptions {
+  enabled: boolean;
+  size?: number;
+  opacity?: number;
+  placement?: AndroidTouchPlacement;
+}
+
+export interface AndroidNativeTouchGamepadEvent {
+  connected: boolean;
+  buttons: number;
+  leftTrigger: number;
+  rightTrigger: number;
+  leftStickX: number;
+  leftStickY: number;
+  rightStickX: number;
+  rightStickY: number;
+  timestampMs?: number;
+}
+
 export interface OpenNowApi {
   getAuthSession(input?: AuthSessionRequest): Promise<AuthSessionResult>;
   getLoginProviders(): Promise<LoginProvider[]>;
@@ -790,6 +809,8 @@ export interface OpenNowApi {
   onNativeMouseButton(listener: (event: NativeMouseButtonEvent) => void): () => void;
   onNativeMouseWheel(listener: (event: NativeMouseWheelEvent) => void): () => void;
   getAndroidPerformanceInfo?(): Promise<AndroidPerformanceInfo>;
+  setAndroidNativeTouchControls?(options: AndroidNativeTouchControlsOptions): Promise<void>;
+  onAndroidNativeTouchGamepad?(listener: (event: AndroidNativeTouchGamepadEvent) => void): () => void;
   consumeLaunchIntent(): Promise<AndroidLaunchIntent | null>;
   onLaunchIntent(listener: (event: AndroidLaunchIntent) => void): () => void;
   getSettings(): Promise<Settings>;

@@ -98,6 +98,7 @@ interface StreamViewProps {
   subscriptionInfo: SubscriptionInfo | null;
   micTrack?: MediaStreamTrack | null;
   lowPowerTouchControls?: boolean;
+  preferAndroidMouseInput?: boolean;
   className?: string;
 }
 
@@ -1240,6 +1241,7 @@ function AndroidStreamMenu({
   onSendText,
   onSendKeyPress,
   physicalGamepads,
+  preferMouseInput,
   revealSignal,
   onTouchControlsReveal,
   streamZoom,
@@ -1257,6 +1259,7 @@ function AndroidStreamMenu({
   onSendText?: (text: string) => number;
   onSendKeyPress?: (key: "Backspace" | "Enter" | "Escape") => void;
   physicalGamepads: number;
+  preferMouseInput: boolean;
   revealSignal?: number;
   onTouchControlsReveal?: () => void;
   streamZoom: number;
@@ -1398,11 +1401,11 @@ function AndroidStreamMenu({
           <label className="sv-android-switch">
             <input
               type="checkbox"
-              checked={touchSettings.mousePad}
-              disabled={touchSettings.enabled}
+              checked={touchSettings.mousePad || preferMouseInput}
+              disabled={touchSettings.enabled && !preferMouseInput}
               onChange={(event) => updateTouchSettings({ mousePad: event.target.checked })}
             />
-            <span><MousePointer2 size={14} /> {touchSettings.enabled ? "Finger mouse paused" : "Finger mouse"}</span>
+            <span><MousePointer2 size={14} /> {preferMouseInput ? "Finger mouse active" : touchSettings.enabled ? "Finger mouse paused" : "Finger mouse"}</span>
           </label>
 
           <label className="sv-android-switch">
@@ -1722,6 +1725,7 @@ export function StreamView({
   subscriptionInfo,
   micTrack,
   lowPowerTouchControls = false,
+  preferAndroidMouseInput = false,
   hideStreamButtons = false,
   className,
 }: StreamViewProps): JSX.Element {
@@ -1759,12 +1763,67 @@ export function StreamView({
     () => normalizeAndroidTouchSettings(androidTouchControls),
     [androidTouchControls],
   );
+  const virtualGamepadStateRef = useRef(onVirtualGamepadState);
+  virtualGamepadStateRef.current = onVirtualGamepadState;
+  useEffect(() => {
+    if (
+      !platformCapabilities.isAndroid ||
+      !lowPowerTouchControls ||
+      preferAndroidMouseInput ||
+      !androidTouchSettings.enabled ||
+      !virtualGamepadStateRef.current ||
+      !openNow.setAndroidNativeTouchControls ||
+      !openNow.onAndroidNativeTouchGamepad
+    ) {
+      return;
+    }
+
+    let lastNativeGamepadState: VirtualGamepadState | null = null;
+    const removeNativeTouchListener = openNow.onAndroidNativeTouchGamepad((event) => {
+      lastNativeGamepadState = {
+        connected: event.connected,
+        buttons: event.buttons,
+        leftTrigger: event.leftTrigger,
+        rightTrigger: event.rightTrigger,
+        leftStickX: event.leftStickX,
+        leftStickY: event.leftStickY,
+        rightStickX: event.rightStickX,
+        rightStickY: event.rightStickY,
+      };
+      virtualGamepadStateRef.current?.(lastNativeGamepadState);
+    });
+    const keepalive = window.setInterval(() => {
+      if (lastNativeGamepadState?.connected) {
+        virtualGamepadStateRef.current?.(lastNativeGamepadState);
+      }
+    }, 500);
+    void openNow.setAndroidNativeTouchControls({
+      enabled: true,
+      size: androidTouchSettings.size,
+      opacity: androidTouchSettings.opacity,
+      placement: androidTouchSettings.placement,
+    });
+
+    return () => {
+      window.clearInterval(keepalive);
+      removeNativeTouchListener();
+      void openNow.setAndroidNativeTouchControls?.({ enabled: false });
+      virtualGamepadStateRef.current?.({ ...EMPTY_VIRTUAL_GAMEPAD_STATE, connected: false });
+    };
+  }, [
+    androidTouchSettings.enabled,
+    androidTouchSettings.opacity,
+    androidTouchSettings.placement,
+    androidTouchSettings.size,
+    lowPowerTouchControls,
+    preferAndroidMouseInput,
+  ]);
   const androidPhysicalGamepads = useStreamDiagnosticsSelector(
     diagnosticsStore,
     (stats) => stats.physicalGamepads,
   );
   const androidNativeMouseCapture = androidTouchSettings.mouseCapture && androidPhysicalGamepads === 0;
-  const androidMousePadEnabled = androidTouchSettings.mousePad;
+  const androidMousePadEnabled = androidTouchSettings.mousePad || preferAndroidMouseInput;
   const [androidMenuRevealSignal, setAndroidMenuRevealSignal] = useState(0);
   const [androidTouchRevealSignal, setAndroidTouchRevealSignal] = useState(0);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
@@ -3095,7 +3154,7 @@ export function StreamView({
 
       {platformCapabilities.isAndroid && !isConnecting && (
         <>
-          {onVirtualGamepadState && androidTouchSettings.enabled && (
+          {onVirtualGamepadState && androidTouchSettings.enabled && !lowPowerTouchControls && !preferAndroidMouseInput && (
             <TouchControllerOverlay
               onVirtualGamepadState={onVirtualGamepadState}
               settings={androidTouchSettings}
@@ -3121,6 +3180,7 @@ export function StreamView({
             onSendText={onSendText}
             onSendKeyPress={onSendKeyPress}
             physicalGamepads={androidPhysicalGamepads}
+            preferMouseInput={preferAndroidMouseInput}
             revealSignal={androidMenuRevealSignal}
             onTouchControlsReveal={() => setAndroidTouchRevealSignal((value) => value + 1)}
             streamZoom={streamZoom}
