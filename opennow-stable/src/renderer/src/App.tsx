@@ -5,92 +5,98 @@ import { createPortal } from "react-dom";
 import type {
   ActiveSessionInfo,
   AuthSession,
-  AuthUser,
   CatalogBrowseResult,
   CatalogFilterGroup,
   CatalogSortOption,
   ExistingSessionStrategy,
   GameInfo,
-  GameVariant,
   LoginProvider,
   MainToRendererSignalingEvent,
-  SessionAdAction,
-  SessionAdInfo,
-  SessionAdState,
   SessionInfo,
   SessionStopRequest,
   SavedAccount,
   Settings,
   SubscriptionInfo,
+  SignalingConnectRequest,
+  StreamSettings,
   StreamRegion,
-  VideoCodec,
   PrintedWasteQueueData,
-  PrintedWasteServerMapping,
 } from "@shared/gfn";
 import {
+  buildNativeStreamerSessionContext,
   DEFAULT_KEYBOARD_LAYOUT,
   getDefaultStreamPreferences,
-  USER_FACING_VIDEO_CODEC_OPTIONS,
-  getPreferredSessionAdMediaUrl,
-  getSessionAdDurationMs,
-  getSessionAdItems,
-  getSessionAdOpportunity,
   isSessionAdsRequired,
-  isSessionQueuePaused,
 } from "@shared/gfn";
-
-import {
-  GfnWebRtcClient,
-  type StreamDiagnostics,
-  type StreamTimeWarning,
-} from "./gfn/webrtcClient";
+import { GfnWebRtcClient } from "./gfn/webrtcClient";
 import { formatShortcutForDisplay, isShortcutMatch, normalizeShortcut } from "./shortcuts";
 import { useControllerNavigation } from "./controllerNavigation";
 import { useElapsedSeconds } from "./utils/useElapsedSeconds";
+import { useQueueAdRuntime } from "./hooks/useQueueAdRuntime";
 import { usePlaytime } from "./utils/usePlaytime";
-import { createStreamDiagnosticsStore } from "./utils/streamDiagnosticsStore";
+import { createStreamDiagnosticsStore, useStreamDiagnosticsSelector } from "./utils/streamDiagnosticsStore";
+import { playControllerUiSound } from "./utils/controllerUiSound";
+import type {
+  LaunchErrorState,
+  LocalSessionTimerWarningState,
+  StreamLoadingStatus,
+  StreamStatus,
+  StreamWarningState,
+} from "./lib/appTypes";
+import { loadCatalogPreferences, saveCatalogPreferences, VARIANT_SELECTION_LOCALSTORAGE_KEY } from "./lib/catalogPreferences";
 import { loadStoredCodecResults, saveStoredCodecResults, testCodecSupport, type CodecTestResult } from "./lib/codecDiagnostics";
+import {
+  areStringArraysEqual,
+  defaultVariantId,
+  findSessionContextForAppId,
+  getSelectedVariant,
+  isNumericId,
+  matchesGameSearch,
+  mergeVariantSelections,
+  parseNumericId,
+  sortLibraryGames,
+} from "./lib/gameCatalog";
 import { chooseAccountLinked, getEpicOwnershipLaunchError } from "./lib/launchOwnership";
+import { hasAnyEligiblePrintedWasteZone, isAllianceStreamingBaseUrl } from "./lib/printedWaste";
+import {
+  mergePolledSessionState,
+  normalizeMembershipTier,
+  shouldUseQueueAdPolling,
+} from "./lib/queueAds";
+import { clearRuntimeSnapshot, loadRuntimeSnapshot, saveRuntimeSnapshot, type RuntimeSnapshot } from "./lib/runtimeSnapshot";
+import {
+  getLocalSessionTimerWarning,
+  hasCrossedWarningThreshold,
+  shouldShowFreeTierSessionWarnings,
+  warningMessage,
+  warningTone,
+} from "./lib/sessionWarnings";
+import {
+  isSessionInQueue,
+  isSessionReadyForConnect,
+  streamStatusToLoadingStage,
+  toLaunchErrorState,
+  toLoadingStatus,
+} from "./lib/sessionState";
+import { defaultDiagnostics, mergeNativeStreamStats } from "./lib/streamDiagnostics";
+import { aspectRatioOptions, codecOptions, fpsOptions, getResolutionsByAspectRatio } from "./lib/streamOptions";
+import { applyAccentColor } from "./lib/uiCustomization";
+import { useTranslation } from "./i18n";
 
 // UI Components
 import { LoginScreen } from "./components/LoginScreen";
 import { Navbar } from "./components/Navbar";
 import { HomePage } from "./components/HomePage";
 import { LibraryPage } from "./components/LibraryPage";
-import { ControllerLibraryPage } from "./components/ControllerLibraryPage";
+import { ControllerLibraryPage } from "./components/controllerMode/ControllerLibraryPage";
+import { ControllerInStreamShell } from "./components/controllerMode/controllerInStream/ControllerInStreamShell";
 import { SettingsPage } from "./components/SettingsPage";
 import { StreamLoading } from "./components/StreamLoading";
-import { ControllerStreamLoading } from "./components/ControllerStreamLoading";
-import type { QueueAdPlaybackEvent, QueueAdPreviewHandle } from "./components/QueueAdPreview";
+import { ControllerStreamLoading } from "./components/controllerMode/ControllerStreamLoading";
 import { StreamView } from "./components/StreamView";
 import { QueueServerSelectModal } from "./components/QueueServerSelectModal";
 
-const codecOptions: VideoCodec[] = [...USER_FACING_VIDEO_CODEC_OPTIONS];
 const DEFAULT_STREAM_PREFERENCES = getDefaultStreamPreferences();
-const allResolutionOptions = ["1280x720", "1280x800", "1440x900", "1680x1050", "1920x1080", "1920x1200", "2560x1080", "2560x1440", "2560x1600", "3440x1440", "3840x2160", "3840x2400"];
-const fpsOptions = [30, 60, 120, 144, 240];
-const aspectRatioOptions = ["16:9", "16:10", "21:9", "32:9"] as const;
-
-const RESOLUTION_TO_ASPECT_RATIO: Record<string, string> = {
-  "1280x720": "16:9",
-  "1280x800": "16:10",
-  "1440x900": "16:10",
-  "1680x1050": "16:10",
-  "1920x1080": "16:9",
-  "1920x1200": "16:10",
-  "2560x1080": "21:9",
-  "2560x1440": "16:9",
-  "2560x1600": "16:10",
-  "3440x1440": "21:9",
-  "3840x2160": "16:9",
-  "3840x2400": "16:10",
-  "5120x1440": "32:9",
-};
-
-const getResolutionsByAspectRatio = (aspectRatio: string): string[] => {
-  return allResolutionOptions.filter(res => RESOLUTION_TO_ASPECT_RATIO[res] === aspectRatio);
-};
-const resolutionOptions = getResolutionsByAspectRatio("16:9");
 
 type AppStyle = CSSProperties & {
   "--game-poster-scale"?: string;
@@ -103,12 +109,6 @@ function getAppStyle(posterSizeScale: number): AppStyle {
 }
 const SESSION_READY_POLL_INTERVAL_MS = 2000;
 const SESSION_AD_POLL_INTERVAL_MS = 30000;
-const SESSION_AD_PROGRESS_CHECK_INTERVAL_MS = 1000;
-const SESSION_AD_START_TIMEOUT_MS = 30000;
-const SESSION_AD_FORCE_PLAY_TIMEOUT_MS = 10000;
-const SESSION_AD_STUCK_TIMEOUT_MS = 30000;
-const VARIANT_SELECTION_LOCALSTORAGE_KEY = "opennow.variantByGameId";
-const CATALOG_PREFERENCES_LOCALSTORAGE_KEY = "opennow.catalogPreferences.v1";
 const PLAYTIME_RESYNC_INTERVAL_MS = 5 * 60 * 1000;
 const FREE_TIER_SESSION_LIMIT_SECONDS = 60 * 60;
 const FREE_TIER_30_MIN_WARNING_SECONDS = 30 * 60;
@@ -116,66 +116,8 @@ const FREE_TIER_15_MIN_WARNING_SECONDS = 15 * 60;
 const FREE_TIER_FINAL_MINUTE_WARNING_SECONDS = 60;
 const STREAM_WARNING_VISIBILITY_MS = 15 * 1000;
 
-interface CatalogPreferences {
-  sortId: string;
-  filterIds: string[];
-}
-
-function loadCatalogPreferences(): CatalogPreferences {
-  try {
-    const raw = localStorage.getItem(CATALOG_PREFERENCES_LOCALSTORAGE_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw) as Partial<CatalogPreferences>;
-      return {
-        sortId: typeof parsed.sortId === "string" ? parsed.sortId : "relevance",
-        filterIds: Array.isArray(parsed.filterIds) ? parsed.filterIds.filter((id): id is string => typeof id === "string") : [],
-      };
-    }
-  } catch {
-    // ignore
-  }
-  return { sortId: "relevance", filterIds: [] };
-}
-
-function saveCatalogPreferences(prefs: CatalogPreferences): void {
-  try {
-    localStorage.setItem(CATALOG_PREFERENCES_LOCALSTORAGE_KEY, JSON.stringify(prefs));
-  } catch {
-    // ignore
-  }
-}
-
 type AppPage = "home" | "library" | "settings";
-type StreamStatus = "idle" | "queue" | "setup" | "starting" | "connecting" | "streaming";
-type StreamLoadingStatus = "queue" | "setup" | "starting" | "connecting";
 type ExitPromptState = { open: boolean; gameTitle: string };
-type StreamWarningState = {
-  code: StreamTimeWarning["code"];
-  message: string;
-  tone: "warn" | "critical";
-  secondsLeft?: number;
-};
-type LocalSessionTimerWarningState = {
-  stage: "free-tier-30m" | "free-tier-15m" | "free-tier-final-minute";
-  shownAtMs: number;
-};
-type LaunchErrorState = {
-  stage: StreamLoadingStatus;
-  title: string;
-  description: string;
-  codeLabel?: string;
-};
-type QueueAdCancelReason = "error" | "other";
-type QueueAdErrorInfo = "Ad play timeout" | "Ad video is stuck" | "Error loading url";
-type QueueAdMetrics = {
-  startedAtMs: number | null;
-  wasPausedAtLeastOnce: boolean;
-};
-type QueueAdReportOptions = {
-  cancelReason?: QueueAdCancelReason;
-  errorInfo?: QueueAdErrorInfo;
-};
-
 type SignalingRecoveryState = {
   attemptCount: number;
   inFlight: Promise<boolean> | null;
@@ -185,33 +127,13 @@ type SignalingRecoveryState = {
 };
 
 const APP_PAGE_ORDER: AppPage[] = ["home", "library", "settings"];
-const RECOVERABLE_STREAM_STATUSES: readonly StreamStatus[] = ["queue", "setup", "starting", "connecting", "streaming"];
+const RECOVERABLE_STREAM_STATUSES: readonly StreamStatus[] = ["streaming"];
 const SIGNALING_RECOVERY_ATTEMPT_DELAYS_MS = [0, 3000] as const;
+const SIGNALING_RECOVERY_STABLE_RESET_DELAY_MS = 15000;
+const SIGNALING_REMOTE_ICE_GRACE_MS = 5000;
+const ICE_DISCONNECTED_RECOVERY_GRACE_MS = 7000;
 
 const isMac = navigator.platform.toLowerCase().includes("mac");
-
-function isStandardPrintedWasteZone(zoneId: string): boolean {
-  return zoneId.startsWith("NP-") && !zoneId.startsWith("NPA-");
-}
-
-function isAllianceStreamingBaseUrl(streamingBaseUrl: string): boolean {
-  if (!streamingBaseUrl.trim()) return false;
-  try {
-    const { hostname } = new URL(streamingBaseUrl);
-    return !hostname.endsWith(".nvidiagrid.net");
-  } catch {
-    return false;
-  }
-}
-
-function hasAnyEligiblePrintedWasteZone(
-  queueData: PrintedWasteQueueData,
-  mapping: PrintedWasteServerMapping,
-): boolean {
-  return Object.keys(queueData).some((zoneId) => (
-    isStandardPrintedWasteZone(zoneId) && mapping[zoneId]?.nuked !== true
-  ));
-}
 
 const DEFAULT_SHORTCUTS = {
   shortcutToggleStats: "F3",
@@ -246,539 +168,8 @@ async function waitFor(
   }
 }
 
-function isSessionReadyForConnect(status: number): boolean {
-  return status === 2 || status === 3;
-}
-
-function isSessionInQueue(session: SessionInfo): boolean {
-  // Official client treats seat setup step 1 as queue state even when queuePosition reaches 1.
-  // Fallback to queuePosition-based inference for payloads that do not expose seatSetupStep.
-  if (session.seatSetupStep === 1) {
-    return true;
-  }
-  return (session.queuePosition ?? 0) > 1;
-}
-
-function isNumericId(value: string | undefined): value is string {
-  if (!value) return false;
-  return /^\d+$/.test(value);
-}
-
-function parseNumericId(value: string | undefined): number | null {
-  if (!isNumericId(value)) return null;
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : null;
-}
-
-function defaultVariantId(game: GameInfo): string {
-  return game.variants[game.selectedVariantIndex]?.id ?? game.variants[0]?.id ?? game.id;
-}
-
-function getSelectedVariant(game: GameInfo, variantId: string): GameVariant | undefined {
-  return game.variants.find((variant) => variant.id === variantId) ?? game.variants[0];
-}
-
-function findSessionContextForAppId(
-  catalog: GameInfo[],
-  variantByGameId: Record<string, string>,
-  appId: number,
-): { game: GameInfo; variant?: GameVariant } | null {
-  for (const game of catalog) {
-    const matchedVariant = game.variants.find((variant) => parseNumericId(variant.id) === appId);
-    if (matchedVariant) {
-      return { game, variant: matchedVariant };
-    }
-
-    if (parseNumericId(game.launchAppId) === appId) {
-      const preferredVariantId = variantByGameId[game.id] ?? defaultVariantId(game);
-      return {
-        game,
-        variant: getSelectedVariant(game, preferredVariantId),
-      };
-    }
-  }
-
-  return null;
-}
-
-function matchesGameSearch(game: GameInfo, query: string): boolean {
-  const normalizedQuery = query.trim().toLowerCase();
-  if (!normalizedQuery) return true;
-  if (game.searchText?.includes(normalizedQuery)) return true;
-  return [
-    game.title,
-    game.description,
-    game.publisherName,
-    ...(game.genres ?? []),
-    ...(game.featureLabels ?? []),
-    ...(game.availableStores ?? []),
-  ]
-    .filter((value): value is string => typeof value === "string" && value.length > 0)
-    .some((value) => value.toLowerCase().includes(normalizedQuery));
-}
-
-function areStringArraysEqual(left: string[], right: string[]): boolean {
-  if (left.length != right.length) {
-    return false;
-  }
-  return left.every((value, index) => value === right[index]);
-}
-
-function sortLibraryGames(games: GameInfo[], sortId: string): GameInfo[] {
-  const copy = [...games];
-  const compareTitle = (left: GameInfo, right: GameInfo) => left.title.localeCompare(right.title);
-  if (sortId === "z_to_a") {
-    return copy.sort((left, right) => right.title.localeCompare(left.title));
-  }
-  if (sortId === "a_to_z") {
-    return copy.sort(compareTitle);
-  }
-  if (sortId === "last_played") {
-    return copy.sort((left, right) => {
-      const leftTime = left.lastPlayed ? new Date(left.lastPlayed).getTime() : 0;
-      const rightTime = right.lastPlayed ? new Date(right.lastPlayed).getTime() : 0;
-      if (leftTime === rightTime) return compareTitle(left, right);
-      return rightTime - leftTime;
-    });
-  }
-  if (sortId === "last_added") {
-    return copy.sort((left, right) => {
-      const leftTime = left.isInLibrary ? new Date(left.lastPlayed ?? 0).getTime() : 0;
-      const rightTime = right.isInLibrary ? new Date(right.lastPlayed ?? 0).getTime() : 0;
-      if (leftTime === rightTime) return compareTitle(left, right);
-      return rightTime - leftTime;
-    });
-  }
-  if (sortId === "most_popular") {
-    return copy.sort((left, right) => (right.membershipTierLabel ? 1 : 0) - (left.membershipTierLabel ? 1 : 0) || compareTitle(left, right));
-  }
-  return copy.sort(compareTitle);
-}
-
-function mergeVariantSelections(
-  current: Record<string, string>,
-  catalog: GameInfo[],
-): Record<string, string> {
-  if (catalog.length === 0) {
-    return current;
-  }
-
-  const next = { ...current };
-  for (const game of catalog) {
-    const selectedVariantId = next[game.id];
-    const hasSelectedVariant = !!selectedVariantId && game.variants.some((variant) => variant.id === selectedVariantId);
-    if (!hasSelectedVariant) {
-      next[game.id] = defaultVariantId(game);
-    }
-  }
-  return next;
-}
-
-function defaultDiagnostics(): StreamDiagnostics {
-  return {
-    connectionState: "closed",
-    inputReady: false,
-    connectedGamepads: 0,
-    resolution: "",
-    codec: "",
-    isHdr: false,
-    bitrateKbps: 0,
-    decodeFps: 0,
-    renderFps: 0,
-    packetsLost: 0,
-    packetsReceived: 0,
-    packetLossPercent: 0,
-    jitterMs: 0,
-    rttMs: 0,
-    framesReceived: 0,
-    framesDecoded: 0,
-    framesDropped: 0,
-    decodeTimeMs: 0,
-    renderTimeMs: 0,
-    jitterBufferDelayMs: 0,
-    inputQueueBufferedBytes: 0,
-    inputQueuePeakBufferedBytes: 0,
-    partiallyReliableInputQueueBufferedBytes: 0,
-    partiallyReliableInputQueuePeakBufferedBytes: 0,
-    inputQueueDropCount: 0,
-    inputQueueMaxSchedulingDelayMs: 0,
-    partiallyReliableInputOpen: false,
-    mouseMoveTransport: "reliable",
-    mouseFlushIntervalMs: 8,
-    mousePacketsPerSecond: 0,
-    mouseResidualMagnitude: 0,
-    mouseAdaptiveFlushActive: false,
-    lagReason: "unknown",
-    lagReasonDetail: "Waiting for stream stats",
-    gpuType: "",
-    serverRegion: "",
-    decoderPressureActive: false,
-    decoderRecoveryAttempts: 0,
-    decoderRecoveryAction: "none",
-    micState: "uninitialized",
-    micEnabled: false,
-  };
-}
-
-function isSessionLimitError(error: unknown): boolean {
-  if (error && typeof error === "object" && "gfnErrorCode" in error) {
-    const candidate = error.gfnErrorCode;
-    if (typeof candidate === "number") {
-      return candidate === 3237093643 || candidate === 3237093718;
-    }
-  }
-  if (error instanceof Error) {
-    const msg = error.message.toUpperCase();
-    return msg.includes("SESSION LIMIT") || msg.includes("INSUFFICIENT_PLAYABILITY") || msg.includes("DUPLICATE SESSION");
-  }
-  return false;
-}
-
-function warningTone(code: StreamTimeWarning["code"]): "warn" | "critical" {
-  if (code === 3) {
-    return "critical";
-  }
-  return "warn";
-}
-
-function warningMessage(code: StreamTimeWarning["code"]): string {
-  if (code === 1) return "Session time limit approaching";
-  if (code === 2) return "Idle timeout approaching";
-  return "Maximum session time approaching";
-}
-
-function formatRemainingPlaytimeFromSubscription(
-  subscription: SubscriptionInfo | null,
-  consumedHours = 0,
-): string {
-  if (!subscription) {
-    return "--";
-  }
-  if (subscription.isUnlimited) {
-    return "Unlimited";
-  }
-
-  const baseHours = Number.isFinite(subscription.remainingHours) ? subscription.remainingHours : 0;
-  const safeHours = Math.max(0, baseHours - Math.max(0, consumedHours));
-  const totalMinutes = Math.round(safeHours * 60);
-  const hours = Math.floor(totalMinutes / 60);
-  const minutes = totalMinutes % 60;
-
-  if (hours > 0) {
-    return `${hours}h ${minutes.toString().padStart(2, "0")}m`;
-  }
-  return `${minutes}m`;
-}
-
-function normalizeMembershipTier(tier: string | null | undefined): string | null {
-  if (!tier) {
-    return null;
-  }
-  const normalized = tier.trim().toUpperCase();
-  return normalized.length > 0 ? normalized : null;
-}
-
-function shouldShowQueueAdsForMembership(
-  subscription: SubscriptionInfo | null,
-  authSession: AuthSession | null,
-): boolean {
-  const effectiveTier = normalizeMembershipTier(subscription?.membershipTier ?? authSession?.user.membershipTier);
-  return effectiveTier === null || effectiveTier === "FREE";
-}
-
-function shouldShowFreeTierSessionWarnings(subscription: SubscriptionInfo | null): boolean {
-  return normalizeMembershipTier(subscription?.membershipTier) === "FREE";
-}
-
-function hasCrossedWarningThreshold(
-  previousSeconds: number | null,
-  currentSeconds: number,
-  thresholdSeconds: number,
-): boolean {
-  if (previousSeconds === null) {
-    return currentSeconds === thresholdSeconds;
-  }
-  return previousSeconds > thresholdSeconds && currentSeconds <= thresholdSeconds;
-}
-
-function getLocalSessionTimerWarning(
-  stage: LocalSessionTimerWarningState["stage"],
-  secondsLeft: number,
-): StreamWarningState {
-  if (stage === "free-tier-30m") {
-    return {
-      code: 1,
-      message: "30 minutes remaining in this free-tier session",
-      tone: "warn",
-    };
-  }
-
-  if (stage === "free-tier-15m") {
-    return {
-      code: 1,
-      message: "15 minutes remaining in this free-tier session",
-      tone: "warn",
-    };
-  }
-
-  return {
-    code: 1,
-    message: "This free-tier session ends soon",
-    tone: "critical",
-    secondsLeft: Math.max(0, secondsLeft),
-  };
-}
-
-function shouldUseQueueAdPolling(session: SessionInfo, subscription: SubscriptionInfo | null, authSession: AuthSession | null): boolean {
-  return (
-    shouldShowQueueAdsForMembership(subscription, authSession) &&
-    isSessionInQueue(session) &&
-    isSessionAdsRequired(session.adState)
-  );
-}
-
-function getEffectiveAdState(
-  session: SessionInfo | null,
-  subscription: SubscriptionInfo | null,
-  authSession: AuthSession | null,
-): SessionAdState | undefined {
-  if (!session) {
-    return undefined;
-  }
-
-  if (session.adState) {
-    return session.adState;
-  }
-
-  if ((session.status === 1 || session.status === 2 || session.status === 3) && session.queuePosition !== undefined) {
-    return {
-      isAdsRequired: true,
-      sessionAdsRequired: true,
-      message: "Free-tier queue ads begin as soon as you enter queue.",
-      opportunity: {
-        message: "Free-tier queue ads begin as soon as you enter queue.",
-      },
-      sessionAds: [],
-      ads: [],
-      serverSentEmptyAds: true,
-    };
-  }
-
-  if (!shouldShowQueueAdsForMembership(subscription, authSession)) {
-    return undefined;
-  }
-
-  if (!isSessionInQueue(session)) {
-    return undefined;
-  }
-
-  return {
-    isAdsRequired: true,
-    sessionAdsRequired: true,
-    message: "Free-tier queue ads begin as soon as you enter queue.",
-    opportunity: {
-      message: "Free-tier queue ads begin as soon as you enter queue.",
-    },
-    sessionAds: [
-      {
-        adId: "queue-ad-placeholder",
-        title: "Advertisement in progress",
-        description: "Ad media will appear here as soon as it is available.",
-      },
-    ],
-    ads: [
-      {
-        adId: "queue-ad-placeholder",
-        title: "Advertisement in progress",
-        description: "Ad media will appear here as soon as it is available.",
-      },
-    ],
-  };
-}
-
-function mergeAdState(
-  previous: SessionAdState | undefined,
-  next: SessionAdState | undefined,
-): SessionAdState | undefined {
-  if (!next) {
-    return previous;
-  }
-  // Server only populates sessionAds in the first poll after session creation.
-  // Later polls return sessionAdsRequired=true but sessionAds=null (serverSentEmptyAds=true),
-  // which produces an empty ads array. Preserve the ad list from the most recent poll that
-  // had URLs so the ad player can continue.
-  // Do NOT restore when serverSentEmptyAds is false — that signals an explicit client-side
-  // clear after a rejected finish action, and we must NOT bring the stale ad back.
-  if (
-    isSessionAdsRequired(next) &&
-    next.serverSentEmptyAds === true &&
-    getSessionAdItems(next).length === 0 &&
-    previous?.sessionAds &&
-    previous.sessionAds.length > 0
-  ) {
-    return { ...next, sessionAds: previous.sessionAds, ads: previous.ads };
-  }
-  return next;
-}
-
-function mergePolledSessionState(previous: SessionInfo, next: SessionInfo): SessionInfo {
-  if (isSessionReadyForConnect(next.status)) {
-    return next;
-  }
-
-  return {
-    ...next,
-    adState: mergeAdState(previous.adState, next.adState),
-    mediaConnectionInfo: next.mediaConnectionInfo ?? previous.mediaConnectionInfo,
-  };
-}
-
-function getNextAdReportAction(
-  lastAction: SessionAdAction | undefined,
-  playbackEvent: "playing" | "paused" | "ended",
-): SessionAdAction | null {
-  switch (playbackEvent) {
-    case "playing":
-      if (!lastAction) {
-        return "start";
-      }
-      return lastAction === "pause" ? "resume" : null;
-    case "paused":
-      return lastAction === "start" || lastAction === "resume" ? "pause" : null;
-    case "ended":
-      return lastAction === "finish" || lastAction === "cancel" ? null : "finish";
-    default:
-      return null;
-  }
-}
-
-function getActiveQueueAd(
-  adState: SessionAdState | undefined,
-  activeAdId: string | null,
-): SessionAdInfo | undefined {
-  const ads = getSessionAdItems(adState);
-  if (!ads.length) {
-    return undefined;
-  }
-
-  if (activeAdId) {
-    const matched = ads.find((ad) => ad.adId === activeAdId);
-    if (matched) {
-      return matched;
-    }
-  }
-
-  return ads[0];
-}
-
-function getNextQueueAd(
-  adState: SessionAdState | undefined,
-  activeAdId: string,
-): SessionAdInfo | undefined {
-  const ads = getSessionAdItems(adState);
-  if (!ads.length) {
-    return undefined;
-  }
-
-  const currentIndex = ads.findIndex((ad) => ad.adId === activeAdId);
-  if (currentIndex < 0) {
-    return ads[0];
-  }
-
-  return ads[currentIndex + 1];
-}
-
-function toLoadingStatus(status: StreamStatus): StreamLoadingStatus {
-  switch (status) {
-    case "queue":
-    case "setup":
-    case "starting":
-    case "connecting":
-      return status;
-    default:
-      return "queue";
-  }
-}
-
-function toCodeLabel(code: number | undefined): string | undefined {
-  if (code === undefined) return undefined;
-  if (code === 3237093643) return `SessionLimitExceeded (${code})`;
-  if (code === 3237093718) return `SessionInsufficientPlayabilityLevel (${code})`;
-  return `GFN Error ${code}`;
-}
-
-function extractLaunchErrorCode(error: unknown): number | undefined {
-  if (error && typeof error === "object") {
-    if ("gfnErrorCode" in error) {
-      const directCode = error.gfnErrorCode;
-      if (typeof directCode === "number") return directCode;
-    }
-    if ("statusCode" in error) {
-      const statusCode = error.statusCode;
-      if (typeof statusCode === "number" && statusCode > 0 && statusCode < 255) {
-        return 3237093632 + statusCode;
-      }
-    }
-  }
-  if (error instanceof Error) {
-    const match = error.message.match(/\b(3237\d{6,})\b/);
-    if (match) {
-      const code = Number(match[1]);
-      if (Number.isFinite(code)) return code;
-    }
-  }
-  return undefined;
-}
-
-function toLaunchErrorState(error: unknown, stage: StreamLoadingStatus): LaunchErrorState {
-  const unknownMessage = "The game could not start. Please try again.";
-
-  const titleFromError =
-    error && typeof error === "object" && "title" in error && typeof error.title === "string"
-      ? error.title.trim()
-      : "";
-  const descriptionFromError =
-    error && typeof error === "object" && "description" in error && typeof error.description === "string"
-      ? error.description.trim()
-      : "";
-  const statusDescription =
-    error && typeof error === "object" && "statusDescription" in error && typeof error.statusDescription === "string"
-      ? error.statusDescription.trim()
-      : "";
-  const messageFromError = error instanceof Error ? error.message.trim() : "";
-  const combined = `${statusDescription} ${messageFromError}`.toUpperCase();
-  const code = extractLaunchErrorCode(error);
-
-  if (
-    isSessionLimitError(error) ||
-    combined.includes("INSUFFICIENT_PLAYABILITY") ||
-    combined.includes("SESSION_LIMIT") ||
-    combined.includes("DUPLICATE SESSION")
-  ) {
-    return {
-      stage,
-      title: "Duplicate Session Detected",
-      description: "Another session is already running on your account. Close it first or wait for it to timeout, then launch again.",
-      codeLabel: toCodeLabel(code),
-    };
-  }
-
-  return {
-    stage,
-    title: titleFromError || "Launch Failed",
-    description: descriptionFromError || messageFromError || statusDescription || unknownMessage,
-    codeLabel: toCodeLabel(code),
-  };
-}
-
-function streamStatusToLoadingStage(status: StreamStatus): StreamLoadingStatus {
-  if (status === "queue" || status === "setup" || status === "starting" || status === "connecting") {
-    return status;
-  }
-  return "connecting";
-}
-
 export function App(): JSX.Element {
+  const { locale, t } = useTranslation();
 
   // Auth State
   const [authSession, setAuthSession] = useState<AuthSession | null>(null);
@@ -788,7 +179,7 @@ export function App(): JSX.Element {
   const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [loginError, setLoginError] = useState<string | null>(null);
   const [isInitializing, setIsInitializing] = useState(true);
-  const [startupStatusMessage, setStartupStatusMessage] = useState("Restoring saved session...");
+  const [startupStatusMessage, setStartupStatusMessage] = useState(() => t("auth.status.restoringSavedSession"));
   const [startupRefreshNotice, setStartupRefreshNotice] = useState<{
     tone: "success" | "warn";
     text: string;
@@ -796,6 +187,7 @@ export function App(): JSX.Element {
 
   // Navigation
   const [currentPage, setCurrentPage] = useState<AppPage>("home");
+  const [sessionFullscreen, setSessionFullscreenState] = useState(false);
 
   // Games State
   const [games, setGames] = useState<GameInfo[]>([]);
@@ -819,11 +211,20 @@ export function App(): JSX.Element {
     posterSizeScale: 1,
     fps: 60,
     maxBitrateMbps: 75,
+    streamClientMode: "web",
+    nativeStreamerBackend: "gstreamer",
+    nativeVideoBackend: "auto",
+    nativeStreamerExecutablePath: "",
+    nativeCloudGsyncMode: "auto",
+    nativeD3dFullscreenMode: "auto",
+    nativeExternalRenderer: true,
     codec: DEFAULT_STREAM_PREFERENCES.codec,
     decoderPreference: "auto",
     encoderPreference: "auto",
     colorQuality: DEFAULT_STREAM_PREFERENCES.colorQuality,
     region: "",
+    sessionProxyEnabled: false,
+    sessionProxyUrl: "",
     clipboardPaste: false,
     mouseSensitivity: 1,
     mouseAcceleration: 1,
@@ -841,9 +242,13 @@ export function App(): JSX.Element {
     showAntiAfkIndicator: true,
     showStatsOnLaunch: false,
     hideServerSelector: false,
+    appAccentColor: "green",
     controllerMode: false,
     controllerUiSounds: false,
     controllerBackgroundAnimations: false,
+    controllerThemeStyle: "aurora",
+    controllerThemeColor: { r: 124, g: 241, b: 177 },
+    controllerLibraryGameBackdrop: true,
     autoLoadControllerLibrary: false,
     autoFullScreen: false,
     favoriteGameIds: [],
@@ -867,13 +272,15 @@ export function App(): JSX.Element {
   const diagnosticsStoreRef = useRef<ReturnType<typeof createStreamDiagnosticsStore> | null>(null);
   const diagnosticsStore =
     diagnosticsStoreRef.current ?? (diagnosticsStoreRef.current = createStreamDiagnosticsStore(defaultDiagnostics()));
+  const streamMenuMicOn = useStreamDiagnosticsSelector(diagnosticsStore, (d) => d.micEnabled);
 
   // Stream State
   const [session, setSession] = useState<SessionInfo | null>(null);
   const [streamStatus, setStreamStatus] = useState<StreamStatus>("idle");
   const [showStatsOverlay, setShowStatsOverlay] = useState(false);
   const [antiAfkEnabled, setAntiAfkEnabled] = useState(false);
-  const [exitPrompt, setExitPrompt] = useState<ExitPromptState>({ open: false, gameTitle: "Game" });
+  const [antiAfkAckNonce, setAntiAfkAckNonce] = useState(0);
+  const [exitPrompt, setExitPrompt] = useState<ExitPromptState>({ open: false, gameTitle: t("app.labels.game") });
   const [streamingGame, setStreamingGame] = useState<GameInfo | null>(null);
   const [streamingStore, setStreamingStore] = useState<string | null>(null);
   const [queuePosition, setQueuePosition] = useState<number | undefined>();
@@ -889,7 +296,6 @@ export function App(): JSX.Element {
   const [sessionStartedAtMs, setSessionStartedAtMs] = useState<number | null>(null);
   const [remoteStreamWarning, setRemoteStreamWarning] = useState<StreamWarningState | null>(null);
   const [localSessionTimerWarning, setLocalSessionTimerWarning] = useState<LocalSessionTimerWarningState | null>(null);
-  const [activeQueueAdId, setActiveQueueAdId] = useState<string | null>(null);
   const previousFreeTierRemainingSecondsRef = useRef<number | null>(null);
 
   const { playtime, startSession: startPlaytimeSession, endSession: endPlaytimeSession } = usePlaytime();
@@ -905,8 +311,8 @@ export function App(): JSX.Element {
       return null;
     }
 
-    return getLocalSessionTimerWarning(localSessionTimerWarning.stage, freeTierSessionRemainingSeconds);
-  }, [freeTierSessionRemainingSeconds, localSessionTimerWarning]);
+    return getLocalSessionTimerWarning(t, localSessionTimerWarning.stage, freeTierSessionRemainingSeconds);
+  }, [freeTierSessionRemainingSeconds, localSessionTimerWarning, locale, t]);
   const streamWarning = useMemo(() => {
     if (visibleLocalSessionTimerWarning?.tone === "critical") {
       return visibleLocalSessionTimerWarning;
@@ -918,6 +324,7 @@ export function App(): JSX.Element {
   const codecTestPromiseRef = useRef<Promise<CodecTestResult[] | null> | null>(null);
   const codecStartupTestAttemptedRef = useRef(false);
   const navbarSessionActionInFlightRef = useRef<"resume" | "terminate" | null>(null);
+  const nativeStreamingRef = useRef(false);
 
   const resetStatsOverlayToPreference = useCallback((): void => {
     setShowStatsOverlay(settings.showStatsOnLaunch);
@@ -1076,6 +483,8 @@ export function App(): JSX.Element {
   }, [authSession, currentPage, settings.controllerMode, streamStatus]);
 
   const [controllerOverlayOpen, setControllerOverlayOpen] = useState(false);
+  const [streamVolume, setStreamVolume] = useState(1);
+  const [streamMicLevel, setStreamMicLevel] = useState(1);
   const [isSwitchingGame, setIsSwitchingGame] = useState(false);
   const [switchingPhase, setSwitchingPhase] = useState<null | "cleaning" | "creating">(null);
   const [pendingSwitchGameTitle, setPendingSwitchGameTitle] = useState<string | null>(null);
@@ -1101,48 +510,62 @@ export function App(): JSX.Element {
     && controllerConnected
     && !(settings.controllerMode && currentPage === "library");
 
-  useEffect(() => {
-    let raf = 0;
-    const prev = { pressed: false };
-    const tick = () => {
-      try {
-        if (streamStatus !== "streaming") {
-          prev.pressed = false;
-          raf = window.requestAnimationFrame(tick);
-          return;
-        }
-        const pads = navigator.getGamepads ? navigator.getGamepads() : [];
-        const pad = Array.from(pads).find((p) => p && p.connected) ?? null;
-        if (!pad) {
-          prev.pressed = false;
-          raf = window.requestAnimationFrame(tick);
-          return;
-        }
-        // Meta/Home button only: button 16 (standard)
-        const metaPressed = Boolean(pad.buttons[16]?.pressed);
-        if (metaPressed && !prev.pressed) {
-          setControllerOverlayOpen((v) => !v);
-        }
-        prev.pressed = metaPressed;
-      } catch {
-        // ignore
-      }
-      raf = window.requestAnimationFrame(tick);
-    };
-    raf = window.requestAnimationFrame(tick);
-    return () => { if (raf) window.cancelAnimationFrame(raf); };
-  }, [streamStatus]);
-
   // Refs
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const clientRef = useRef<GfnWebRtcClient | null>(null);
+  const controllerUiSoundsRef = useRef(settings.controllerUiSounds);
+  const isStreamingRef = useRef(streamStatus === "streaming");
+
+  useEffect(() => {
+    controllerUiSoundsRef.current = settings.controllerUiSounds;
+  }, [settings.controllerUiSounds]);
+  useEffect(() => {
+    isStreamingRef.current = streamStatus === "streaming";
+  }, [streamStatus]);
+
+  const handleControllerMetaToggle = useCallback(() => {
+    if (!isStreamingRef.current) return;
+    setControllerOverlayOpen((currentOpen) => {
+      const opening = !currentOpen;
+      if (controllerUiSoundsRef.current) {
+        playControllerUiSound(opening ? "confirm" : "move", true);
+      }
+      return opening;
+    });
+  }, []);
+
+  useEffect(() => {
+    if (streamStatus === "streaming" && audioRef.current) {
+      setStreamVolume(audioRef.current.volume);
+    }
+  }, [streamStatus]);
+  useEffect(() => {
+    if (audioRef.current) {
+      audioRef.current.volume = streamVolume;
+    }
+    clientRef.current?.setOutputVolume(streamVolume);
+  }, [streamVolume]);
   const sessionRef = useRef<SessionInfo | null>(null);
   const hasInitializedRef = useRef(false);
   const regionsRequestRef = useRef(0);
   const launchInFlightRef = useRef(false);
+  const runtimeSnapshotRef = useRef<RuntimeSnapshot | null>(loadRuntimeSnapshot());
+  /** Joins concurrent claim/resume calls for the same Cloud session id (single CloudMatch RESUME + signaling). */
+  const claimResumePromisesRef = useRef<Map<string, Promise<void>>>(new Map());
   const launchAbortRef = useRef(false);
   const streamStatusRef = useRef<StreamStatus>(streamStatus);
+  const nativeInputProtocolVersionRef = useRef<number | null>(null);
+  const stableRecoveryResetTimerRef = useRef<number | null>(null);
+  const remoteIceGraceTimerRef = useRef<number | null>(null);
+  const remoteIceSeenForSessionRef = useRef<string | null>(null);
+  const remoteIceRecoveryGenerationRef = useRef<number | null>(null);
+  const awaitingRecoveryRemoteIceRef = useRef(false);
+  const appUnloadingRef = useRef(false);
+  const hasConfirmedRemoteIceRef = useRef(false);
+  const latestIceConnectionStateRef = useRef<RTCIceConnectionState>("new");
+  const iceDisconnectedRecoveryTimerRef = useRef<number | null>(null);
+  const pendingControlledDisconnectsRef = useRef(0);
   const signalingRecoveryRef = useRef<SignalingRecoveryState>({
     attemptCount: 0,
     inFlight: null,
@@ -1151,25 +574,10 @@ export function App(): JSX.Element {
     generation: 0,
   });
   const exitPromptResolverRef = useRef<((confirmed: boolean) => void) | null>(null);
-  const adReportQueueRef = useRef<Promise<void>>(Promise.resolve());
-  const adReportStateRef = useRef<Record<string, SessionAdAction>>({});
-  const adMetricsRef = useRef<Record<string, QueueAdMetrics>>({});
-  const adMediaUrlCacheRef = useRef<Record<string, string>>({});
-  const queueAdPlaybackRef = useRef<{ adId: string; phase: "playing" | "finishing" } | null>(null);
-  const queueAdPreviewRef = useRef<QueueAdPreviewHandle | null>(null);
-  const activeQueueAdIdRef = useRef<string | null>(null);
-  const adForcePlayTimeoutRef = useRef<number | null>(null);
-  const adStartTimeoutRef = useRef<number | null>(null);
-  const adProgressIntervalRef = useRef<number | null>(null);
-  const adLastProgressTsRef = useRef<number | null>(null);
-  // Stable ref so timer callbacks can call the latest reportQueueAdAction without
-  // capturing a stale closure (auth state can change between scheduling and firing).
-  const reportQueueAdActionRef = useRef<
-    (adId: string, action: SessionAdAction, options?: QueueAdReportOptions) => void
-  >(() => {});
 
   useEffect(() => {
     controllerOverlayOpenRef.current = controllerOverlayOpen;
+    // Host-only pause: WebRTC client merges this with window blur/hidden (must not be cleared on focus).
     if (clientRef.current) {
       clientRef.current.inputPaused = controllerOverlayOpen;
     }
@@ -1211,163 +619,28 @@ export function App(): JSX.Element {
     setVariantByGameId((prev) => mergeVariantSelections(prev, catalog));
   }, []);
 
-  const clearQueueAdStartWatchdogs = useCallback((): void => {
-    if (adForcePlayTimeoutRef.current) {
-      clearTimeout(adForcePlayTimeoutRef.current);
-      adForcePlayTimeoutRef.current = null;
-    }
-    if (adStartTimeoutRef.current) {
-      clearTimeout(adStartTimeoutRef.current);
-      adStartTimeoutRef.current = null;
-    }
-  }, []);
-
-  const clearQueueAdProgressWatchdog = useCallback((): void => {
-    if (adProgressIntervalRef.current) {
-      clearInterval(adProgressIntervalRef.current);
-      adProgressIntervalRef.current = null;
-    }
-    adLastProgressTsRef.current = null;
-  }, []);
-
-  const clearQueueAdWatchdogs = useCallback((): void => {
-    clearQueueAdStartWatchdogs();
-    clearQueueAdProgressWatchdog();
-  }, [clearQueueAdProgressWatchdog, clearQueueAdStartWatchdogs]);
-
-  const resetQueueAdMetrics = useCallback((adId: string): void => {
-    adMetricsRef.current[adId] = {
-      startedAtMs: null,
-      wasPausedAtLeastOnce: false,
-    };
-  }, []);
-
-  const markQueueAdStarted = useCallback((adId: string): void => {
-    const current = adMetricsRef.current[adId];
-    adMetricsRef.current[adId] = {
-      startedAtMs: current?.startedAtMs ?? Date.now(),
-      wasPausedAtLeastOnce: current?.wasPausedAtLeastOnce ?? false,
-    };
-  }, []);
-
-  const markQueueAdPaused = useCallback((adId: string): void => {
-    const current = adMetricsRef.current[adId];
-    adMetricsRef.current[adId] = {
-      startedAtMs: current?.startedAtMs ?? null,
-      wasPausedAtLeastOnce: true,
-    };
-  }, []);
-
-  const clearQueueAdMetrics = useCallback((adId: string): void => {
-    delete adMetricsRef.current[adId];
-  }, []);
-
-  const getQueueAdReportPayload = useCallback((adId: string, action: SessionAdAction, options?: QueueAdReportOptions) => {
-    const ad = getSessionAdItems(sessionRef.current?.adState).find((candidate) => candidate.adId === adId);
-    const adLengthMs = getSessionAdDurationMs(ad);
-    const snapshot = queueAdPreviewRef.current?.getSnapshot();
-    const watchedTimeInMs =
-      action === "finish" || action === "cancel"
-        ? Math.max(0, Math.round((snapshot?.currentTime ?? 0) * 1000))
-        : undefined;
-
-    const metrics = adMetricsRef.current[adId];
-    let pausedTimeInMs = 0;
-    if (
-      metrics?.startedAtMs &&
-      metrics.wasPausedAtLeastOnce &&
-      typeof adLengthMs === "number" &&
-      Number.isFinite(adLengthMs) &&
-      adLengthMs > 0
-    ) {
-      const elapsedMs = Date.now() - metrics.startedAtMs;
-      if (elapsedMs > adLengthMs) {
-        pausedTimeInMs = Math.round(elapsedMs - adLengthMs);
-      }
-    }
-
-    return {
-      watchedTimeInMs,
-      pausedTimeInMs,
-      cancelReason: action === "cancel" ? options?.cancelReason : undefined,
-      errorInfo: action === "cancel" ? options?.errorInfo : undefined,
-    };
-  }, []);
-
-  const armQueueAdStartWatchdogs = useCallback((adId: string): void => {
-    clearQueueAdStartWatchdogs();
-    adLastProgressTsRef.current = Date.now();
-
-    adForcePlayTimeoutRef.current = window.setTimeout(() => {
-      if (activeQueueAdIdRef.current !== adId) {
-        return;
-      }
-      const lastAction = adReportStateRef.current[adId];
-      if (lastAction === "start" || lastAction === "resume" || lastAction === "finish" || lastAction === "cancel") {
-        return;
-      }
-      void queueAdPreviewRef.current?.attemptPlayback();
-    }, SESSION_AD_FORCE_PLAY_TIMEOUT_MS);
-
-    adStartTimeoutRef.current = window.setTimeout(() => {
-      if (activeQueueAdIdRef.current !== adId) {
-        return;
-      }
-      const lastAction = adReportStateRef.current[adId];
-      if (lastAction === "start" || lastAction === "resume" || lastAction === "finish" || lastAction === "cancel") {
-        return;
-      }
-
-      clearQueueAdWatchdogs();
-      queueAdPlaybackRef.current = null;
-      adReportStateRef.current[adId] = "cancel";
-      reportQueueAdActionRef.current(adId, "cancel", {
-        cancelReason: "error",
-        errorInfo: "Ad play timeout",
-      });
-    }, SESSION_AD_START_TIMEOUT_MS);
-  }, [clearQueueAdStartWatchdogs, clearQueueAdWatchdogs]);
-
-  const ensureQueueAdProgressWatchdog = useCallback((adId: string): void => {
-    adLastProgressTsRef.current = Date.now();
-    if (adProgressIntervalRef.current) {
-      return;
-    }
-
-    adProgressIntervalRef.current = window.setInterval(() => {
-      if (activeQueueAdIdRef.current !== adId) {
-        return;
-      }
-
-      const lastAction = adReportStateRef.current[adId];
-      if (lastAction !== "start" && lastAction !== "resume") {
-        return;
-      }
-
-      const snapshot = queueAdPreviewRef.current?.getSnapshot();
-      if (!snapshot || snapshot.paused || snapshot.ended || isSessionQueuePaused(sessionRef.current?.adState)) {
-        return;
-      }
-
-      const lastProgressTs = adLastProgressTsRef.current;
-      if (!lastProgressTs || Date.now() - lastProgressTs < SESSION_AD_STUCK_TIMEOUT_MS) {
-        return;
-      }
-
-      clearQueueAdWatchdogs();
-      queueAdPlaybackRef.current = null;
-      adReportStateRef.current[adId] = "cancel";
-      reportQueueAdActionRef.current(adId, "cancel", {
-        cancelReason: "error",
-        errorInfo: "Ad video is stuck",
-      });
-    }, SESSION_AD_PROGRESS_CHECK_INTERVAL_MS);
-  }, [clearQueueAdWatchdogs]);
-
   const resetLaunchRuntime = useCallback((options?: {
     keepLaunchError?: boolean;
     keepStreamingContext?: boolean;
   }): void => {
+    if (stableRecoveryResetTimerRef.current !== null) {
+      window.clearTimeout(stableRecoveryResetTimerRef.current);
+      stableRecoveryResetTimerRef.current = null;
+    }
+    if (remoteIceGraceTimerRef.current !== null) {
+      window.clearTimeout(remoteIceGraceTimerRef.current);
+      remoteIceGraceTimerRef.current = null;
+    }
+    if (iceDisconnectedRecoveryTimerRef.current !== null) {
+      window.clearTimeout(iceDisconnectedRecoveryTimerRef.current);
+      iceDisconnectedRecoveryTimerRef.current = null;
+    }
+    remoteIceSeenForSessionRef.current = null;
+    remoteIceRecoveryGenerationRef.current = null;
+    awaitingRecoveryRemoteIceRef.current = false;
+    hasConfirmedRemoteIceRef.current = false;
+    latestIceConnectionStateRef.current = "new";
+    pendingControlledDisconnectsRef.current = 0;
     signalingRecoveryRef.current.attemptCount = 0;
     signalingRecoveryRef.current.inFlight = null;
     signalingRecoveryRef.current.appId = null;
@@ -1378,6 +651,7 @@ export function App(): JSX.Element {
     setRemoteStreamWarning(null);
     setLocalSessionTimerWarning(null);
     resetStatsOverlayToPreference();
+    nativeStreamingRef.current = false;
     diagnosticsStore.set(defaultDiagnostics());
 
     if (!options?.keepStreamingContext) {
@@ -1393,11 +667,88 @@ export function App(): JSX.Element {
     if (settings.discordRichPresence) {
       void window.openNow.clearDiscordActivity();
     }
+    runtimeSnapshotRef.current = null;
+    clearRuntimeSnapshot();
   }, [diagnosticsStore, resetStatsOverlayToPreference, settings.discordRichPresence]);
+
+  const buildCurrentStreamSettings = useCallback((): StreamSettings => ({
+    resolution: settings.resolution,
+    fps: settings.fps,
+    maxBitrateMbps: settings.maxBitrateMbps,
+    codec: settings.codec,
+    colorQuality: settings.colorQuality,
+    keyboardLayout: settings.keyboardLayout,
+    gameLanguage: settings.gameLanguage,
+    enableL4S: settings.enableL4S,
+    enableCloudGsync: settings.enableCloudGsync,
+    clientMode: settings.streamClientMode,
+    nativeStreamerBackend: "gstreamer",
+    nativeCloudGsyncMode: settings.nativeCloudGsyncMode,
+    nativeTransitionDiagnostics: settings.nativeTransitionDiagnostics,
+  }), [
+    settings.codec,
+    settings.colorQuality,
+    settings.enableCloudGsync,
+    settings.enableL4S,
+    settings.fps,
+    settings.gameLanguage,
+    settings.keyboardLayout,
+    settings.maxBitrateMbps,
+    settings.nativeCloudGsyncMode,
+    settings.nativeTransitionDiagnostics,
+    settings.resolution,
+    settings.streamClientMode,
+  ]);
+
+  const buildSignalingConnectRequest = useCallback((activeSession: SessionInfo): SignalingConnectRequest => {
+    const streamSettings = buildCurrentStreamSettings();
+    return {
+      sessionId: activeSession.sessionId,
+      signalingServer: activeSession.signalingServer,
+      signalingUrl: activeSession.signalingUrl,
+      nativeStreamer: buildNativeStreamerSessionContext(activeSession, streamSettings),
+    };
+  }, [buildCurrentStreamSettings]);
+
+  const warmNativeStreamerForLaunch = useCallback((): void => {
+    if (settings.streamClientMode !== "native") {
+      return;
+    }
+
+    void window.openNow.getNativeStreamerStatus()
+      .then((status) => {
+        if (status.detected) {
+          console.log("[NativeStreamer] Launch warm-up ready:", status.message);
+        } else {
+          console.warn("[NativeStreamer] Launch warm-up did not detect native streamer:", status.message);
+        }
+      })
+      .catch((error) => {
+        console.warn("[NativeStreamer] Launch warm-up failed:", error);
+      });
+  }, [settings.streamClientMode]);
 
   const resetSignalingRecoveryState = useCallback((options?: {
     keepExplicitShutdown?: boolean;
   }): void => {
+    if (stableRecoveryResetTimerRef.current !== null) {
+      window.clearTimeout(stableRecoveryResetTimerRef.current);
+      stableRecoveryResetTimerRef.current = null;
+    }
+    if (remoteIceGraceTimerRef.current !== null) {
+      window.clearTimeout(remoteIceGraceTimerRef.current);
+      remoteIceGraceTimerRef.current = null;
+    }
+    if (iceDisconnectedRecoveryTimerRef.current !== null) {
+      window.clearTimeout(iceDisconnectedRecoveryTimerRef.current);
+      iceDisconnectedRecoveryTimerRef.current = null;
+    }
+    remoteIceSeenForSessionRef.current = null;
+    remoteIceRecoveryGenerationRef.current = null;
+    awaitingRecoveryRemoteIceRef.current = false;
+    hasConfirmedRemoteIceRef.current = false;
+    latestIceConnectionStateRef.current = "new";
+    pendingControlledDisconnectsRef.current = 0;
     signalingRecoveryRef.current.generation += 1;
     signalingRecoveryRef.current.attemptCount = 0;
     signalingRecoveryRef.current.inFlight = null;
@@ -1408,6 +759,24 @@ export function App(): JSX.Element {
   }, []);
 
   const markExplicitSignalingShutdown = useCallback((): void => {
+    if (stableRecoveryResetTimerRef.current !== null) {
+      window.clearTimeout(stableRecoveryResetTimerRef.current);
+      stableRecoveryResetTimerRef.current = null;
+    }
+    if (remoteIceGraceTimerRef.current !== null) {
+      window.clearTimeout(remoteIceGraceTimerRef.current);
+      remoteIceGraceTimerRef.current = null;
+    }
+    if (iceDisconnectedRecoveryTimerRef.current !== null) {
+      window.clearTimeout(iceDisconnectedRecoveryTimerRef.current);
+      iceDisconnectedRecoveryTimerRef.current = null;
+    }
+    remoteIceSeenForSessionRef.current = null;
+    remoteIceRecoveryGenerationRef.current = null;
+    awaitingRecoveryRemoteIceRef.current = false;
+    hasConfirmedRemoteIceRef.current = false;
+    latestIceConnectionStateRef.current = "new";
+    pendingControlledDisconnectsRef.current = 0;
     signalingRecoveryRef.current.generation += 1;
     signalingRecoveryRef.current.explicitShutdown = true;
     signalingRecoveryRef.current.inFlight = null;
@@ -1418,21 +787,140 @@ export function App(): JSX.Element {
     return state.generation === generation && !state.explicitShutdown;
   }, []);
 
+  const scheduleStableRecoveryReset = useCallback((sessionId: string): void => {
+    if (stableRecoveryResetTimerRef.current !== null) {
+      window.clearTimeout(stableRecoveryResetTimerRef.current);
+      stableRecoveryResetTimerRef.current = null;
+    }
+
+    stableRecoveryResetTimerRef.current = window.setTimeout(() => {
+      stableRecoveryResetTimerRef.current = null;
+      const activeSessionId = sessionRef.current?.sessionId;
+      if (
+        streamStatusRef.current !== "streaming"
+        || !activeSessionId
+        || activeSessionId !== sessionId
+      ) {
+        return;
+      }
+      console.log(
+        `[Recovery] Stream remained stable for ${SIGNALING_RECOVERY_STABLE_RESET_DELAY_MS}ms; resetting recovery budget`,
+      );
+      resetSignalingRecoveryState({ keepExplicitShutdown: true });
+    }, SIGNALING_RECOVERY_STABLE_RESET_DELAY_MS);
+  }, [resetSignalingRecoveryState]);
+
+  const disconnectSignalingControlled = useCallback(async (): Promise<void> => {
+    pendingControlledDisconnectsRef.current += 1;
+    await window.openNow.disconnectSignaling().catch(() => {});
+  }, []);
+
   // Session ref sync
   useEffect(() => {
     sessionRef.current = session;
   }, [session]);
 
   useEffect(() => {
-    adReportStateRef.current = {};
-    adMetricsRef.current = {};
-    adReportQueueRef.current = Promise.resolve();
-    adMediaUrlCacheRef.current = {};
-    queueAdPlaybackRef.current = null;
-    activeQueueAdIdRef.current = null;
-    setActiveQueueAdId(null);
-    clearQueueAdWatchdogs();
-  }, [clearQueueAdWatchdogs, session?.sessionId]);
+    const streamIsActive = streamStatus !== "idle" || session !== null || navbarActiveSession !== null;
+    if (!streamIsActive) {
+      runtimeSnapshotRef.current = null;
+      clearRuntimeSnapshot();
+      return;
+    }
+
+    const snapshot: RuntimeSnapshot = {
+      version: 1,
+      updatedAt: Date.now(),
+      streamStatus,
+      sessionId: session?.sessionId ?? navbarActiveSession?.sessionId ?? null,
+      sessionAppId:
+        (Number.isFinite(signalingRecoveryRef.current.appId ?? NaN) ? signalingRecoveryRef.current.appId : null) ??
+        (navbarActiveSession ? navbarActiveSession.appId : null),
+      streamingGameId: streamingGame?.id ?? null,
+      streamingStore: streamingStore ?? null,
+      recoveryAppId: signalingRecoveryRef.current.appId,
+      resumeContext: session
+        ? {
+          sessionId: session.sessionId,
+          serverIp: session.serverIp,
+          streamingBaseUrl: session.streamingBaseUrl,
+          signalingServer: session.signalingServer,
+          signalingUrl: session.signalingUrl,
+          appId: Number.isFinite(signalingRecoveryRef.current.appId ?? NaN) ? signalingRecoveryRef.current.appId ?? undefined : undefined,
+          clientId: session.clientId,
+          deviceId: session.deviceId,
+        }
+        : (navbarActiveSession?.sessionId && navbarActiveSession.serverIp)
+          ? {
+            sessionId: navbarActiveSession.sessionId,
+            serverIp: navbarActiveSession.serverIp,
+            streamingBaseUrl: navbarActiveSession.streamingBaseUrl,
+            signalingUrl: navbarActiveSession.signalingUrl,
+            appId: Number.isFinite(navbarActiveSession.appId) ? navbarActiveSession.appId : undefined,
+          }
+          : null,
+    };
+
+    runtimeSnapshotRef.current = snapshot;
+    saveRuntimeSnapshot(snapshot);
+  }, [navbarActiveSession, session, streamStatus, streamingGame?.id, streamingStore]);
+
+  const persistRuntimeSnapshotNow = useCallback((): void => {
+    const latestSession = sessionRef.current;
+    const latestNavbarSession = navbarActiveSession;
+    const hasActiveContext =
+      streamStatusRef.current !== "idle" || latestSession !== null || latestNavbarSession !== null;
+    if (!hasActiveContext) {
+      runtimeSnapshotRef.current = null;
+      clearRuntimeSnapshot();
+      return;
+    }
+
+    const snapshot: RuntimeSnapshot = {
+      version: 1,
+      updatedAt: Date.now(),
+      streamStatus: streamStatusRef.current,
+      sessionId: latestSession?.sessionId ?? latestNavbarSession?.sessionId ?? null,
+      sessionAppId:
+        (Number.isFinite(signalingRecoveryRef.current.appId ?? NaN) ? signalingRecoveryRef.current.appId : null) ??
+        (latestNavbarSession ? latestNavbarSession.appId : null),
+      streamingGameId: streamingGame?.id ?? null,
+      streamingStore: streamingStore ?? null,
+      recoveryAppId: signalingRecoveryRef.current.appId,
+      resumeContext: latestSession
+        ? {
+          sessionId: latestSession.sessionId,
+          serverIp: latestSession.serverIp,
+          streamingBaseUrl: latestSession.streamingBaseUrl,
+          signalingServer: latestSession.signalingServer,
+          signalingUrl: latestSession.signalingUrl,
+          appId: Number.isFinite(signalingRecoveryRef.current.appId ?? NaN) ? signalingRecoveryRef.current.appId ?? undefined : undefined,
+          clientId: latestSession.clientId,
+          deviceId: latestSession.deviceId,
+        }
+        : (latestNavbarSession?.sessionId && latestNavbarSession.serverIp)
+          ? {
+            sessionId: latestNavbarSession.sessionId,
+            serverIp: latestNavbarSession.serverIp,
+            streamingBaseUrl: latestNavbarSession.streamingBaseUrl,
+            signalingUrl: latestNavbarSession.signalingUrl,
+            appId: Number.isFinite(latestNavbarSession.appId) ? latestNavbarSession.appId : undefined,
+          }
+          : null,
+    };
+
+    runtimeSnapshotRef.current = snapshot;
+    saveRuntimeSnapshot(snapshot);
+  }, [navbarActiveSession, streamingGame?.id, streamingStore]);
+
+  useEffect(() => {
+    const onBeforeUnload = (): void => {
+      appUnloadingRef.current = true;
+      persistRuntimeSnapshotNow();
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, [persistRuntimeSnapshotNow]);
 
   // Keep a ref copy of `streamStatus` so async callbacks can observe latest value
   useEffect(() => {
@@ -1462,6 +950,14 @@ export function App(): JSX.Element {
       document.body.classList.remove("controller-mode");
     };
   }, [controllerUiActive]);
+
+  useEffect(() => {
+    const lowFx = streamStatus === "streaming" && controllerOverlayOpen;
+    document.body.classList.toggle("controller-overlay-lowfx", lowFx);
+    return () => {
+      document.body.classList.remove("controller-overlay-lowfx");
+    };
+  }, [controllerOverlayOpen, streamStatus]);
 
   useEffect(() => {
     if (!controllerUiActive || !controllerConnected) {
@@ -1511,201 +1007,23 @@ export function App(): JSX.Element {
     return selectedProvider?.streamingServiceUrl ?? "";
   }, [selectedProvider, settings.region]);
 
-  const reportQueueAdAction = useCallback((adId: string, action: SessionAdAction, options?: QueueAdReportOptions): void => {
-    const currentSession = sessionRef.current;
-    if (!currentSession) {
-      return;
-    }
-
-    const reportPayload = getQueueAdReportPayload(adId, action, options);
-
-    const request = {
-      token: authSession?.tokens.idToken ?? authSession?.tokens.accessToken ?? undefined,
-      streamingBaseUrl: currentSession.streamingBaseUrl ?? effectiveStreamingBaseUrl,
-      serverIp: currentSession.serverIp,
-      zone: currentSession.zone,
-      sessionId: currentSession.sessionId,
-      clientId: currentSession.clientId,
-      deviceId: currentSession.deviceId,
-      adId,
-      action,
-      ...reportPayload,
-    };
-
-    adReportQueueRef.current = adReportQueueRef.current
-      .catch(() => undefined)
-      .then(async () => {
-        if (sessionRef.current?.sessionId !== request.sessionId) {
-          return;
-        }
-
-        try {
-          console.log(
-            `[QueueAds] Sending ad update: action=${action}, adId=${adId}, sessionId=${request.sessionId}, zone=${request.zone}, ` +
-              `serverIp=${request.serverIp}, queuePosition=${sessionRef.current?.queuePosition ?? "n/a"}, ` +
-              `watchedTimeInMs=${request.watchedTimeInMs ?? "n/a"}, pausedTimeInMs=${request.pausedTimeInMs ?? 0}, ` +
-                `cancelReason=${request.cancelReason ?? "n/a"}, errorInfo=${request.errorInfo ?? "n/a"}`,
-          );
-          const updated = await window.openNow.reportSessionAd(request);
-          if (sessionRef.current?.sessionId !== updated.sessionId) {
-            return;
-          }
-
-          console.log(
-            `[QueueAds] Ad update succeeded: action=${action}, adId=${adId}, sessionId=${updated.sessionId}, ` +
-              `status=${updated.status}, queuePosition=${updated.queuePosition ?? "n/a"}`,
-          );
-          console.log(
-            `[QueueAds] Returned ad state: sessionId=${updated.sessionId}, adsRequired=${isSessionAdsRequired(updated.adState)}, ` +
-              `queuePaused=${getSessionAdOpportunity(updated.adState)?.queuePaused ?? false}, gracePeriodSeconds=${getSessionAdOpportunity(updated.adState)?.gracePeriodSeconds ?? "n/a"}, ` +
-              `adCount=${getSessionAdItems(updated.adState).length}`,
-          );
-
-          setSession((previous) => {
-            if (!previous || previous.sessionId !== updated.sessionId) {
-              return previous;
-            }
-            return mergePolledSessionState(previous, updated);
-          });
-          setQueuePosition(updated.queuePosition);
-          const updatedAd = getSessionAdItems(updated.adState).find((candidate) => candidate.adId === adId);
-          const updatedAdMediaUrl = getPreferredSessionAdMediaUrl(updatedAd);
-          if (updatedAdMediaUrl) {
-            adMediaUrlCacheRef.current[adId] = updatedAdMediaUrl;
-          }
-
-          if (action === "finish" || action === "cancel") {
-            clearQueueAdMetrics(adId);
-            if (queueAdPlaybackRef.current?.adId === adId) {
-              queueAdPlaybackRef.current = null;
-            }
-          }
-        } catch (error) {
-          console.warn(`[QueueAds] Failed to report ${action} for ${adId}:`, error);
-
-          if (action === "finish") {
-            // The server rejected the finish (e.g. session was re-queued mid-ad,
-            // invalidating the ad token). Clear the local ad list so the player
-            // falls back to the placeholder card while the server sends fresh
-            // creatives in the next poll. Setting serverSentEmptyAds=false prevents
-            // mergeAdState from restoring the now-stale ad URLs from the previous
-            // state captured in the polling loop's latestSession snapshot.
-            console.log(`[QueueAds] finish rejected — clearing local ad list for adId=${adId}`);
-            delete adReportStateRef.current[adId];
-            clearQueueAdMetrics(adId);
-            if (queueAdPlaybackRef.current?.adId === adId) {
-              queueAdPlaybackRef.current = null;
-            }
-            setSession((previous) => {
-              if (!previous || !previous.adState) {
-                return previous;
-              }
-              return {
-                ...previous,
-                adState: { ...previous.adState, sessionAds: [], ads: [], serverSentEmptyAds: false },
-              };
-            });
-          }
-        }
-      });
-  }, [authSession, clearQueueAdMetrics, effectiveStreamingBaseUrl, getQueueAdReportPayload]);
-
-  const handleQueueAdPlaybackEvent = useCallback((event: QueueAdPlaybackEvent, adId: string): void => {
-    const currentSession = sessionRef.current;
-    const currentAd = getSessionAdItems(currentSession?.adState).find((ad) => ad.adId === adId);
-    if (!currentAd) {
-      return;
-    }
-
-    const lastAction = adReportStateRef.current[adId];
-
-    if (event === "loadstart") {
-      activeQueueAdIdRef.current = adId;
-      setActiveQueueAdId((previous) => (previous === adId ? previous : adId));
-      resetQueueAdMetrics(adId);
-      queueAdPlaybackRef.current = null;
-      clearQueueAdProgressWatchdog();
-      armQueueAdStartWatchdogs(adId);
-      return;
-    }
-
-    if (event === "timeupdate") {
-      adLastProgressTsRef.current = Date.now();
-      return;
-    }
-
-    if (event === "playing") {
-      activeQueueAdIdRef.current = adId;
-      setActiveQueueAdId((previous) => (previous === adId ? previous : adId));
-      clearQueueAdStartWatchdogs();
-      ensureQueueAdProgressWatchdog(adId);
-      queueAdPlaybackRef.current = { adId, phase: "playing" };
-
-      const nextAction = getNextAdReportAction(lastAction, "playing");
-      if (!nextAction) {
-        return;
-      }
-      if (nextAction === "start") {
-        markQueueAdStarted(adId);
-      }
-      adReportStateRef.current[adId] = nextAction;
-      reportQueueAdAction(adId, nextAction);
-      return;
-    }
-
-    if (event === "paused") {
-      if (queueAdPlaybackRef.current?.adId === adId) {
-        queueAdPlaybackRef.current = null;
-      }
-      const nextAction = getNextAdReportAction(lastAction, "paused");
-      if (nextAction) {
-        markQueueAdPaused(adId);
-        adReportStateRef.current[adId] = nextAction;
-        reportQueueAdAction(adId, nextAction);
-      }
-      return;
-    }
-
-    if (event === "ended") {
-      clearQueueAdWatchdogs();
-      if (lastAction === "finish" || lastAction === "cancel") {
-        return;
-      }
-
-      const nextAd = getNextQueueAd(currentSession?.adState, adId);
-      if (nextAd) {
-        activeQueueAdIdRef.current = nextAd.adId;
-        setActiveQueueAdId((previous) => (previous === nextAd.adId ? previous : nextAd.adId));
-      }
-
-      queueAdPlaybackRef.current = { adId, phase: "finishing" };
-      const nextAction = getNextAdReportAction(lastAction, "ended");
-      if (!nextAction) {
-        return;
-      }
-      adReportStateRef.current[adId] = nextAction;
-      reportQueueAdAction(adId, nextAction);
-      return;
-    }
-
-    if (event === "error") {
-      clearQueueAdWatchdogs();
-      if (lastAction === "finish" || lastAction === "cancel") {
-        return;
-      }
-      queueAdPlaybackRef.current = null;
-      adReportStateRef.current[adId] = "cancel";
-      reportQueueAdAction(adId, "cancel", {
-        cancelReason: "error",
-        errorInfo: "Error loading url",
-      });
-    }
-  }, [armQueueAdStartWatchdogs, clearQueueAdProgressWatchdog, clearQueueAdStartWatchdogs, clearQueueAdWatchdogs, ensureQueueAdProgressWatchdog, markQueueAdPaused, markQueueAdStarted, reportQueueAdAction, resetQueueAdMetrics]);
-
-  // Keep the ref in sync so timer callbacks always use the latest auth state.
-  useEffect(() => {
-    reportQueueAdActionRef.current = reportQueueAdAction;
-  }, [reportQueueAdAction]);
+  const {
+    activeQueueAd,
+    activeQueueAdMediaUrl,
+    effectiveAdState,
+    handleQueueAdPlaybackEvent,
+    queueAdPlaybackRef,
+    queueAdPreviewRef,
+  } = useQueueAdRuntime({
+    authSession,
+    effectiveStreamingBaseUrl,
+    session,
+    sessionRef,
+    setQueuePosition,
+    setSession,
+    subscriptionInfo,
+    t,
+  });
 
   const loadSubscriptionInfo = useCallback(
     async (session: AuthSession): Promise<void> => {
@@ -1744,7 +1062,17 @@ export function App(): JSX.Element {
     }
     try {
       const activeSessions = await window.openNow.getActiveSessions(token, streamingBaseUrl);
-      const candidate = activeSessions.find((entry) => entry.status === 3 || entry.status === 2) ?? null;
+      const snapshot = runtimeSnapshotRef.current;
+      const resumableSessions = activeSessions.filter((entry) => entry.status === 3 || entry.status === 2);
+      const candidate =
+        (snapshot?.sessionId
+          ? resumableSessions.find((entry) => entry.sessionId === snapshot.sessionId)
+          : undefined) ??
+        (snapshot?.sessionAppId !== null && snapshot?.sessionAppId !== undefined
+          ? resumableSessions.find((entry) => entry.appId === snapshot.sessionAppId)
+          : undefined) ??
+        resumableSessions[0] ??
+        null;
       setNavbarActiveSession(candidate);
     } catch (error) {
       console.warn("Failed to refresh active sessions:", error);
@@ -1872,6 +1200,30 @@ export function App(): JSX.Element {
   ]);
 
   const setSessionFullscreen = useCallback(async (nextFullscreen: boolean) => {
+    const canUseNativeFullscreen = typeof window.openNow?.setFullscreen === "function";
+
+    if (canUseNativeFullscreen) {
+      try {
+        if (nextFullscreen) {
+          if (!document.fullscreenElement) {
+            await document.documentElement.requestFullscreen();
+          }
+        } else if (document.fullscreenElement) {
+          await document.exitFullscreen();
+        }
+      } catch (error) {
+        console.warn(`Failed to set DOM fullscreen state (${nextFullscreen ? "enter" : "exit"}):`, error);
+      }
+
+      try {
+        await window.openNow.setFullscreen(nextFullscreen);
+        setSessionFullscreenState(nextFullscreen);
+      } catch (error) {
+        console.warn(`Failed to set native fullscreen state (${nextFullscreen ? "enter" : "exit"}):`, error);
+      }
+      return;
+    }
+
     try {
       if (nextFullscreen) {
         if (!document.fullscreenElement) {
@@ -1882,16 +1234,24 @@ export function App(): JSX.Element {
       }
     } catch {}
 
-    try {
-      await window.openNow.setFullscreen(nextFullscreen);
-    } catch (error) {
-      console.warn(`Failed to sync native fullscreen state (${nextFullscreen ? "enter" : "exit"}):`, error);
-    }
+    setSessionFullscreenState(!!document.fullscreenElement);
   }, []);
 
   const toggleSessionFullscreen = useCallback(async () => {
-    await setSessionFullscreen(!document.fullscreenElement);
-  }, [setSessionFullscreen]);
+    await setSessionFullscreen(!(sessionFullscreen || document.fullscreenElement));
+  }, [sessionFullscreen, setSessionFullscreen]);
+
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      if (typeof window.openNow?.setFullscreen === "function") {
+        return;
+      }
+      setSessionFullscreenState(!!document.fullscreenElement);
+    };
+
+    document.addEventListener("fullscreenchange", handleFullscreenChange);
+    return () => document.removeEventListener("fullscreenchange", handleFullscreenChange);
+  }, []);
 
   const requestPointerLockCapture = useCallback(async (target: HTMLVideoElement) => {
     const lockTarget = (target.parentElement as HTMLElement | null) ?? target;
@@ -1904,7 +1264,7 @@ export function App(): JSX.Element {
       }
     };
 
-    if (settings.autoFullScreen && !document.fullscreenElement) {
+    if (settings.autoFullScreen && !(sessionFullscreen || document.fullscreenElement)) {
       await setSessionFullscreen(true);
     }
 
@@ -1916,7 +1276,7 @@ export function App(): JSX.Element {
         throw err;
       })
       .catch(() => {});
-  }, [setSessionFullscreen, settings.autoFullScreen]);
+  }, [sessionFullscreen, setSessionFullscreen, settings.autoFullScreen]);
 
   const handleRequestPointerLock = useCallback(() => {
     if (videoRef.current) {
@@ -1940,10 +1300,10 @@ export function App(): JSX.Element {
       exitPromptResolverRef.current = resolve;
       setExitPrompt({
         open: true,
-        gameTitle: gameTitle || "this game",
+        gameTitle: gameTitle || t("session.thisGame"),
       });
     });
-  }, []);
+  }, [t]);
 
   const handleExitPromptConfirm = useCallback(() => {
     resolveExitPrompt(true);
@@ -1962,7 +1322,7 @@ export function App(): JSX.Element {
     };
   }, []);
 
-  // Listen for F11 fullscreen toggle from main process (uses W3C Fullscreen API)
+  // Listen for fullscreen toggle from main process.
   useEffect(() => {
     const unsubscribe = window.openNow.onToggleFullscreen(() => {
       void toggleSessionFullscreen();
@@ -1974,20 +1334,27 @@ export function App(): JSX.Element {
 
   useEffect(() => {
     const isSessionConnecting = streamStatus === "connecting" || streamStatus === "streaming";
-    if (!settings.autoFullScreen || !isSessionConnecting) {
+    const isNativeStreamerSession = settings.streamClientMode === "native" || nativeStreamingRef.current;
+    if (!settings.autoFullScreen || !isSessionConnecting || isNativeStreamerSession) {
       autoFullscreenRequestedRef.current = false;
       return;
     }
 
-    if (autoFullscreenRequestedRef.current || document.fullscreenElement) {
+    if (autoFullscreenRequestedRef.current || sessionFullscreen || document.fullscreenElement) {
       return;
     }
 
     autoFullscreenRequestedRef.current = true;
     void setSessionFullscreen(true);
-  }, [setSessionFullscreen, settings.autoFullScreen, streamStatus]);
+  }, [sessionFullscreen, setSessionFullscreen, settings.autoFullScreen, settings.streamClientMode, streamStatus]);
 
   // Anti-AFK interval
+  useEffect(() => {
+    if (!isStreaming) {
+      setAntiAfkAckNonce(0);
+    }
+  }, [isStreaming]);
+
   useEffect(() => {
     if (!antiAfkEnabled || streamStatus !== "streaming") return;
 
@@ -2102,6 +1469,10 @@ export function App(): JSX.Element {
     return () => window.clearTimeout(timer);
   }, [remoteStreamWarning]);
 
+  useEffect(() => {
+    applyAccentColor(settings.appAccentColor);
+  }, [settings.appAccentColor]);
+
   // Save settings when changed
   const updateSetting = useCallback(async <K extends keyof Settings>(key: K, value: Settings[K]) => {
     setSettings((prev) => ({ ...prev, [key]: value }));
@@ -2139,6 +1510,21 @@ export function App(): JSX.Element {
     }
   }, [settingsLoaded]);
 
+  const handleStreamVolumeChange = useCallback((v: number) => {
+    const n = Math.max(0, Math.min(1, v));
+    setStreamVolume(n);
+  }, []);
+
+  const handleToggleStreamMicrophone = useCallback(() => {
+    clientRef.current?.toggleMicrophone();
+  }, []);
+
+  const handleStreamMicLevelChange = useCallback((level: number) => {
+    const next = Math.max(0, Math.min(1, Number.isFinite(level) ? level : 1));
+    setStreamMicLevel(next);
+    clientRef.current?.setMicrophoneLevel(next);
+  }, []);
+
   const handleMouseSensitivityChange = useCallback((value: number) => {
     void updateSetting("mouseSensitivity", value);
   }, [updateSetting]);
@@ -2172,10 +1558,12 @@ export function App(): JSX.Element {
   }, [settingsLoaded]);
 
   const handleExitApp = useCallback(() => {
+    appUnloadingRef.current = true;
+    persistRuntimeSnapshotNow();
     void window.openNow.quitApp().catch((error) => {
       console.warn("Failed to quit application:", error);
     });
-  }, []);
+  }, [persistRuntimeSnapshotNow]);
 
   const handleMicrophoneModeChange = useCallback((value: import("@shared/gfn").MicrophoneMode) => {
     // Keep UI responsive while still surfacing persistence failures.
@@ -2256,7 +1644,7 @@ export function App(): JSX.Element {
         setSettingsLoaded(true);
 
         // Load providers and session (refresh only if token is near expiry)
-        setStartupStatusMessage("Restoring saved session...");
+        setStartupStatusMessage(t("auth.status.restoringSavedSession"));
         const [providerList, sessionResult] = await Promise.all([
           window.openNow.getLoginProviders(),
           window.openNow.getAuthSession(),
@@ -2267,21 +1655,21 @@ export function App(): JSX.Element {
         if (sessionResult.refresh.outcome === "refreshed") {
           setStartupRefreshNotice({
             tone: "success",
-            text: "Session restored. Token refreshed.",
+            text: t("auth.status.sessionRestoredTokenRefreshed"),
           });
-          setStartupStatusMessage("Token refreshed. Loading your account...");
+          setStartupStatusMessage(t("auth.status.tokenRefreshedLoadingAccount"));
         } else if (sessionResult.refresh.outcome === "failed") {
           setStartupRefreshNotice({
             tone: "warn",
-            text: "Token refresh failed. Using saved session token.",
+            text: t("auth.status.tokenRefreshFailedUsingSaved"),
           });
-          setStartupStatusMessage("Token refresh failed. Continuing with saved session...");
+          setStartupStatusMessage(t("auth.status.tokenRefreshFailedContinuing"));
         } else if (sessionResult.refresh.outcome === "missing_refresh_token") {
-          setStartupStatusMessage("Saved session has no refresh token. Continuing...");
+          setStartupStatusMessage(t("auth.status.missingRefreshTokenContinuing"));
         } else if (persistedSession) {
-          setStartupStatusMessage("Session restored.");
+          setStartupStatusMessage(t("auth.status.sessionRestored"));
         } else {
-          setStartupStatusMessage("No saved session found.");
+          setStartupStatusMessage(t("auth.status.noSavedSessionFound"));
         }
 
         // Load persisted variant selections from localStorage before applying defaults
@@ -2295,6 +1683,12 @@ export function App(): JSX.Element {
           }
         } catch (e) {
           // ignore parse/storage errors
+        }
+
+        const persistedRuntimeSnapshot = loadRuntimeSnapshot();
+        runtimeSnapshotRef.current = persistedRuntimeSnapshot;
+        if (persistedRuntimeSnapshot?.recoveryAppId !== null && persistedRuntimeSnapshot?.recoveryAppId !== undefined) {
+          signalingRecoveryRef.current.appId = persistedRuntimeSnapshot.recoveryAppId;
         }
 
         setProviders(providerList);
@@ -2320,14 +1714,14 @@ export function App(): JSX.Element {
         setIsInitializing(false);
       } catch (error) {
         console.error("Initialization failed:", error);
-        setStartupStatusMessage("Session restore failed. Please sign in again.");
+        setStartupStatusMessage(t("auth.status.sessionRestoreFailed"));
         // Always set isInitializing to false even on error
         setIsInitializing(false);
       }
     };
 
     void initialize();
-  }, [loadSessionRuntimeData]);
+  }, [loadSessionRuntimeData, t]);
 
   // Login handler
   const handleLogin = useCallback(async () => {
@@ -2340,11 +1734,11 @@ export function App(): JSX.Element {
       await refreshSavedAccounts();
       await loadSessionRuntimeData(session);
     } catch (error) {
-      setLoginError(error instanceof Error ? error.message : "Login failed");
+      setLoginError(error instanceof Error ? error.message : t("errors.loginFailed"));
     } finally {
       setIsLoggingIn(false);
     }
-  }, [loadSessionRuntimeData, providerIdpId, refreshSavedAccounts]);
+  }, [loadSessionRuntimeData, providerIdpId, refreshSavedAccounts, t]);
 
   const handleSwitchAccount = useCallback(async (userId: string) => {
     try {
@@ -2356,7 +1750,7 @@ export function App(): JSX.Element {
       await refreshNavbarActiveSession(session);
     } catch (error) {
       console.warn("Failed to switch account:", error);
-      setLoginError(error instanceof Error ? error.message : "Failed to switch account");
+      setLoginError(error instanceof Error ? error.message : t("errors.switchAccountFailed"));
       try {
         await refreshSavedAccounts();
         const sessionResult = await window.openNow.getAuthSession();
@@ -2380,7 +1774,7 @@ export function App(): JSX.Element {
         console.warn("Failed to recover account state after switch failure:", recoveryError);
       }
     }
-  }, [loadSessionRuntimeData, refreshNavbarActiveSession, refreshSavedAccounts]);
+  }, [loadSessionRuntimeData, refreshNavbarActiveSession, refreshSavedAccounts, t]);
 
   const handleRemoveAccount = useCallback((userId: string) => {
     setAccountToRemove(userId);
@@ -2509,13 +1903,35 @@ export function App(): JSX.Element {
 
   const resolveSessionClaimAppId = useCallback((existingSession: ActiveSessionInfo): string => {
     const trackedAppId = signalingRecoveryRef.current.appId;
+    const persistedAppId = runtimeSnapshotRef.current?.sessionAppId ?? runtimeSnapshotRef.current?.recoveryAppId;
     if (Number.isFinite(existingSession.appId) && existingSession.appId > 0) {
       return String(existingSession.appId);
     }
     if (trackedAppId && Number.isFinite(trackedAppId)) {
       return String(trackedAppId);
     }
+    if (persistedAppId && Number.isFinite(persistedAppId)) {
+      return String(persistedAppId);
+    }
     throw new Error("Active session is missing app metadata required for resume.");
+  }, []);
+
+  const resolveResumeIdentity = useCallback((sessionId: string): { clientId?: string; deviceId?: string } => {
+    const liveSession = sessionRef.current;
+    if (liveSession?.sessionId === sessionId) {
+      return {
+        clientId: liveSession.clientId,
+        deviceId: liveSession.deviceId,
+      };
+    }
+    const persisted = runtimeSnapshotRef.current?.resumeContext;
+    if (persisted?.sessionId === sessionId) {
+      return {
+        clientId: persisted.clientId,
+        deviceId: persisted.deviceId,
+      };
+    }
+    return {};
   }, []);
 
   const applyClaimedSessionAndConnect = useCallback(async (
@@ -2563,56 +1979,88 @@ export function App(): JSX.Element {
       return;
     }
 
-    setSession(claimed);
-    sessionRef.current = claimed;
-    setQueuePosition(undefined);
-    setLaunchError(null);
-    setStreamStatus("connecting");
-    await window.openNow.connectSignaling({
+    // Mirror attemptSessionRecovery: tear down WebRTC + signaling before connecting to a new edge.
+    // Avoids stale PeerConnection/video vs migrated CloudMatch connectionInfo (intermittent black screen on resume).
+    const reconnectSource = expectedRecoveryGeneration !== undefined ? "recovery" : "resume";
+    console.log(`[Stream] ${reconnectSource}: teardown WebRTC + signaling before reconnect`, {
       sessionId: claimed.sessionId,
       signalingServer: claimed.signalingServer,
       signalingUrl: claimed.signalingUrl,
+      mediaConnectionInfo: claimed.mediaConnectionInfo,
     });
-  }, [isRecoveryGenerationCurrent]);
+    clientRef.current?.dispose();
+    clientRef.current = null;
+    await disconnectSignalingControlled();
+    awaitingRecoveryRemoteIceRef.current = expectedRecoveryGeneration !== undefined;
+
+    setSession(claimed);
+    sessionRef.current = claimed;
+    nativeInputProtocolVersionRef.current = null;
+    setQueuePosition(undefined);
+    setLaunchError(null);
+    setStreamStatus("connecting");
+    await window.openNow.connectSignaling(buildSignalingConnectRequest(claimed));
+  }, [buildSignalingConnectRequest, disconnectSignalingControlled, isRecoveryGenerationCurrent]);
 
   const claimAndConnectSession = useCallback(async (existingSession: ActiveSessionInfo): Promise<void> => {
-    const token = authSession?.tokens.idToken ?? authSession?.tokens.accessToken;
-    if (!token) {
-      throw new Error("Missing token for session resume");
-    }
-    if (!existingSession.serverIp) {
-      throw new Error("Active session is missing server address. Start the game again to create a new session.");
-    }
-
-    const matchedContext = findGameContextForSession(existingSession);
-    if (matchedContext) {
-      setStreamingGame(matchedContext.game);
-      setStreamingStore(matchedContext.variant?.store ?? null);
-    } else {
-      setStreamingStore(null);
+    const sid = existingSession.sessionId;
+    const inflight = claimResumePromisesRef.current.get(sid);
+    if (inflight) {
+      console.log("[Resume] claimAndConnectSession: deduped — joining in-flight claim for session", sid);
+      await inflight;
+      return;
     }
 
-    const claimed = await window.openNow.claimSession({
-      token,
-      streamingBaseUrl: effectiveStreamingBaseUrl,
-      serverIp: existingSession.serverIp,
-      sessionId: existingSession.sessionId,
-      appId: resolveSessionClaimAppId(existingSession),
-      settings: {
-        resolution: settings.resolution,
-        fps: settings.fps,
-        maxBitrateMbps: settings.maxBitrateMbps,
-        codec: settings.codec,
-        colorQuality: settings.colorQuality,
-        keyboardLayout: settings.keyboardLayout,
-        gameLanguage: settings.gameLanguage,
-        enableL4S: settings.enableL4S,
-        enableCloudGsync: settings.enableCloudGsync,
-      },
-    });
+    const resumePromiseHolder: { promise?: Promise<void> } = {};
+    resumePromiseHolder.promise = (async (): Promise<void> => {
+      try {
+        const token = authSession?.tokens.idToken ?? authSession?.tokens.accessToken;
+        if (!token) {
+          throw new Error("Missing token for session resume");
+        }
+        if (!existingSession.serverIp) {
+          throw new Error("Active session is missing server address. Start the game again to create a new session.");
+        }
+        warmNativeStreamerForLaunch();
 
-    await applyClaimedSessionAndConnect(claimed);
-  }, [applyClaimedSessionAndConnect, authSession, effectiveStreamingBaseUrl, findGameContextForSession, resolveSessionClaimAppId, settings]);
+        console.log("[Resume] claimAndConnectSession: invoking claimSession", {
+          sessionId: existingSession.sessionId,
+          serverIp: existingSession.serverIp,
+          status: existingSession.status,
+          appId: existingSession.appId,
+        });
+
+        const matchedContext = findGameContextForSession(existingSession);
+        if (matchedContext) {
+          setStreamingGame(matchedContext.game);
+          setStreamingStore(matchedContext.variant?.store ?? null);
+        } else {
+          setStreamingStore(null);
+        }
+
+        const claimed = await window.openNow.claimSession({
+          token,
+          streamingBaseUrl: effectiveStreamingBaseUrl,
+          serverIp: existingSession.serverIp,
+          sessionId: existingSession.sessionId,
+          ...resolveResumeIdentity(existingSession.sessionId),
+          appId: resolveSessionClaimAppId(existingSession),
+          settings: buildCurrentStreamSettings(),
+        });
+
+        await applyClaimedSessionAndConnect(claimed);
+      } finally {
+        const map = claimResumePromisesRef.current;
+        const p = resumePromiseHolder.promise;
+        if (p && map.get(sid) === p) {
+          map.delete(sid);
+        }
+      }
+    })();
+
+    claimResumePromisesRef.current.set(sid, resumePromiseHolder.promise);
+    await resumePromiseHolder.promise;
+  }, [applyClaimedSessionAndConnect, authSession, buildCurrentStreamSettings, effectiveStreamingBaseUrl, findGameContextForSession, resolveResumeIdentity, resolveSessionClaimAppId, warmNativeStreamerForLaunch]);
 
   const attemptSessionRecovery = useCallback(async (reason: string): Promise<boolean> => {
     const recoveryState = signalingRecoveryRef.current;
@@ -2651,7 +2099,7 @@ export function App(): JSX.Element {
       clientRef.current?.dispose();
       clientRef.current = null;
       setStreamStatus("connecting");
-      await window.openNow.disconnectSignaling().catch(() => {});
+      await disconnectSignalingControlled();
 
       let lastError: Error | null = null;
       while (recoveryState.attemptCount < SIGNALING_RECOVERY_ATTEMPT_DELAYS_MS.length) {
@@ -2702,6 +2150,32 @@ export function App(): JSX.Element {
           }
 
           if (!candidate) {
+            const persisted = runtimeSnapshotRef.current?.resumeContext;
+            if (
+              persisted &&
+              persisted.sessionId === currentSessionId &&
+              persisted.serverIp
+            ) {
+              candidate = {
+                sessionId: persisted.sessionId,
+                appId:
+                  Number.isFinite(persisted.appId ?? NaN)
+                    ? (persisted.appId as number)
+                    : (previousAppId ?? 0),
+                status: 2,
+                serverIp: persisted.serverIp,
+                streamingBaseUrl: persisted.streamingBaseUrl,
+                signalingUrl: persisted.signalingUrl,
+              };
+              console.log("[Recovery] Falling back to persisted resume context", {
+                sessionId: persisted.sessionId,
+                serverIp: persisted.serverIp,
+                appId: persisted.appId ?? previousAppId ?? null,
+              });
+            }
+          }
+
+          if (!candidate) {
             const hasQueueOnlyMatch = activeSessions.some((entry) => entry.sessionId === currentSessionId && entry.status === 1);
             if (hasQueueOnlyMatch) {
               throw new Error("The session is still queued and cannot be reclaimed until the server marks it ready again.");
@@ -2718,18 +2192,10 @@ export function App(): JSX.Element {
             streamingBaseUrl: effectiveStreamingBaseUrl,
             serverIp: candidate.serverIp,
             sessionId: candidate.sessionId,
+            ...resolveResumeIdentity(candidate.sessionId),
+            recoveryMode: true,
             appId: resolveSessionClaimAppId(candidate),
-            settings: {
-              resolution: settings.resolution,
-              fps: settings.fps,
-              maxBitrateMbps: settings.maxBitrateMbps,
-              codec: settings.codec,
-              colorQuality: settings.colorQuality,
-              keyboardLayout: settings.keyboardLayout,
-              gameLanguage: settings.gameLanguage,
-              enableL4S: settings.enableL4S,
-              enableCloudGsync: settings.enableCloudGsync,
-            },
+            settings: buildCurrentStreamSettings(),
           });
           if (!isRecoveryGenerationCurrent(recoveryGeneration)) {
             console.log("[Recovery] Discarding claimed session due to stale recovery generation");
@@ -2749,7 +2215,6 @@ export function App(): JSX.Element {
             console.log("[Recovery] Recovery generation changed before connect completed");
             return false;
           }
-          recoveryState.attemptCount = 0;
           return true;
         } catch (error) {
           lastError = error instanceof Error ? error : new Error(String(error));
@@ -2774,23 +2239,163 @@ export function App(): JSX.Element {
   }, [
     applyClaimedSessionAndConnect,
     authSession,
+    disconnectSignalingControlled,
     effectiveStreamingBaseUrl,
     findGameContextForSession,
     isRecoveryGenerationCurrent,
+    resolveResumeIdentity,
     resolveSessionClaimAppId,
-    settings,
+    buildCurrentStreamSettings,
   ]);
 
   // Signaling events
   useEffect(() => {
+    const ensureWebRtcClient = (): GfnWebRtcClient | null => {
+      if (clientRef.current) {
+        return clientRef.current;
+      }
+      if (!videoRef.current || !audioRef.current) {
+        return null;
+      }
+
+      clientRef.current = new GfnWebRtcClient({
+        videoElement: videoRef.current,
+        audioElement: audioRef.current,
+        autoFullScreen: settings.autoFullScreen,
+        microphoneMode: settings.microphoneMode,
+        microphoneDeviceId: settings.microphoneDeviceId || undefined,
+        mouseSensitivity: settings.mouseSensitivity,
+        mouseAcceleration: settings.mouseAcceleration,
+        onLog: (line: string) => console.log(`[WebRTC] ${line}`),
+        onStats: (stats) => diagnosticsStore.set(stats),
+        onTimeWarning: (warning) => {
+          setRemoteStreamWarning({
+            code: warning.code,
+            message: warningMessage(t, warning.code),
+            tone: warningTone(warning.code),
+            secondsLeft: warning.secondsLeft,
+          });
+        },
+        onMicStateChange: (state) => {
+          console.log(`[App] Mic state: ${state.state}${state.deviceLabel ? ` (${state.deviceLabel})` : ""}`);
+        },
+        onIceConnectionStateChange: (iceState) => {
+          latestIceConnectionStateRef.current = iceState;
+          if (iceDisconnectedRecoveryTimerRef.current !== null) {
+            window.clearTimeout(iceDisconnectedRecoveryTimerRef.current);
+            iceDisconnectedRecoveryTimerRef.current = null;
+          }
+          if (appUnloadingRef.current) {
+            return;
+          }
+          if (streamStatusRef.current !== "streaming") {
+            return;
+          }
+          if (iceState === "failed") {
+            console.warn("[Recovery] ICE failed; attempting targeted recovery");
+            void attemptSessionRecovery("ICE failed").catch((error) => {
+              console.error("[Recovery] ICE-failed recovery failed:", error);
+            });
+            return;
+          }
+          if (iceState === "disconnected") {
+            iceDisconnectedRecoveryTimerRef.current = window.setTimeout(() => {
+              iceDisconnectedRecoveryTimerRef.current = null;
+              if (appUnloadingRef.current || streamStatusRef.current !== "streaming") {
+                return;
+              }
+              if (latestIceConnectionStateRef.current !== "disconnected") {
+                return;
+              }
+              console.warn("[Recovery] ICE remained disconnected; attempting targeted recovery");
+              void attemptSessionRecovery("ICE disconnected timeout").catch((error) => {
+                console.error("[Recovery] ICE-disconnected recovery failed:", error);
+              });
+            }, ICE_DISCONNECTED_RECOVERY_GRACE_MS);
+          }
+        },
+        onControllerMetaPress: () => {
+          handleControllerMetaToggle();
+        },
+      });
+      clientRef.current.inputPaused = controllerOverlayOpenRef.current;
+      clientRef.current.setOutputVolume(streamVolume);
+      clientRef.current.setMicrophoneLevel(streamMicLevel);
+      if (settings.microphoneMode !== "disabled") {
+        void clientRef.current.startMicrophone();
+      }
+      return clientRef.current;
+    };
+
+    const activateNativeInputForCurrentSession = (protocolVersion?: number): void => {
+      const activeSession = sessionRef.current;
+      if (!activeSession) {
+        console.warn("[App] Received native stream event but no active session in sessionRef!");
+        return;
+      }
+      const client = ensureWebRtcClient();
+      if (!client) {
+        console.warn("[App] Native stream event received before media elements were ready");
+        return;
+      }
+
+      nativeStreamingRef.current = true;
+      pendingControlledDisconnectsRef.current = 0;
+      client.activateNativeInput(protocolVersion, {
+        codec: settings.codec,
+        colorQuality: settings.colorQuality,
+        resolution: settings.resolution,
+        fps: settings.fps,
+        maxBitrateKbps: settings.maxBitrateMbps * 1000,
+      });
+      setLaunchError(null);
+      setStreamStatus("streaming");
+      scheduleStableRecoveryReset(activeSession.sessionId);
+    };
+
     const unsubscribe = window.openNow.onSignalingEvent(async (event: MainToRendererSignalingEvent) => {
       console.log(`[App] Signaling event: ${event.type}`, event.type === "offer" ? `(SDP ${event.sdp.length} chars)` : "", event.type === "remote-ice" ? event.candidate : "");
       try {
         if (event.type === "offer") {
+          pendingControlledDisconnectsRef.current = 0;
           const activeSession = sessionRef.current;
           if (!activeSession) {
             console.warn("[App] Received offer but no active session in sessionRef!");
             return;
+          }
+          const shouldEnforceRemoteIceGrace = awaitingRecoveryRemoteIceRef.current;
+          remoteIceSeenForSessionRef.current = null;
+          hasConfirmedRemoteIceRef.current = false;
+          if (remoteIceGraceTimerRef.current !== null) {
+            window.clearTimeout(remoteIceGraceTimerRef.current);
+            remoteIceGraceTimerRef.current = null;
+          }
+          const expectedSessionId = activeSession.sessionId;
+          const recoveryGenerationAtOffer = signalingRecoveryRef.current.generation;
+          if (shouldEnforceRemoteIceGrace) {
+            remoteIceGraceTimerRef.current = window.setTimeout(() => {
+              remoteIceGraceTimerRef.current = null;
+              if (sessionRef.current?.sessionId !== expectedSessionId) {
+                return;
+              }
+              if (remoteIceSeenForSessionRef.current === expectedSessionId) {
+                return;
+              }
+              if (remoteIceRecoveryGenerationRef.current === recoveryGenerationAtOffer) {
+                return;
+              }
+              if (!RECOVERABLE_STREAM_STATUSES.includes(streamStatusRef.current)) {
+                return;
+              }
+              awaitingRecoveryRemoteIceRef.current = false;
+              remoteIceRecoveryGenerationRef.current = recoveryGenerationAtOffer;
+              console.warn(
+                `[Recovery] No remote ICE received within ${SIGNALING_REMOTE_ICE_GRACE_MS}ms after offer; forcing targeted recovery`,
+              );
+              void attemptSessionRecovery("No remote ICE received after offer").catch((error) => {
+                console.error("[Recovery] ICE-timeout recovery failed:", error);
+              });
+            }, SIGNALING_REMOTE_ICE_GRACE_MS);
           }
           console.log("[App] Active session for offer:", JSON.stringify({
             sessionId: activeSession.sessionId,
@@ -2800,49 +2405,145 @@ export function App(): JSX.Element {
             iceServersCount: activeSession.iceServers?.length,
           }));
 
-          if (!clientRef.current && videoRef.current && audioRef.current) {
-            clientRef.current = new GfnWebRtcClient({
-              videoElement: videoRef.current,
-              audioElement: audioRef.current,
-              autoFullScreen: settings.autoFullScreen,
-              microphoneMode: settings.microphoneMode,
-              microphoneDeviceId: settings.microphoneDeviceId || undefined,
-              mouseSensitivity: settings.mouseSensitivity,
-              mouseAcceleration: settings.mouseAcceleration,
-              onLog: (line: string) => console.log(`[WebRTC] ${line}`),
-              onStats: (stats) => diagnosticsStore.set(stats),
-              onTimeWarning: (warning) => {
-                setRemoteStreamWarning({
-                  code: warning.code,
-                  message: warningMessage(warning.code),
-                  tone: warningTone(warning.code),
-                  secondsLeft: warning.secondsLeft,
-                });
-              },
-              onMicStateChange: (state) => {
-                console.log(`[App] Mic state: ${state.state}${state.deviceLabel ? ` (${state.deviceLabel})` : ""}`);
-              },
-            });
-            if (settings.microphoneMode !== "disabled") {
-              void clientRef.current.startMicrophone();
-            }
-          }
+          const client = ensureWebRtcClient();
 
-          if (clientRef.current) {
-            await clientRef.current.handleOffer(event.sdp, activeSession, {
+          if (client) {
+            await client.handleOffer(event.sdp, activeSession, {
               codec: settings.codec,
               colorQuality: settings.colorQuality,
               resolution: settings.resolution,
               fps: settings.fps,
               maxBitrateKbps: settings.maxBitrateMbps * 1000,
+              nativeTransitionDiagnostics: settings.nativeTransitionDiagnostics,
             });
             setLaunchError(null);
             setStreamStatus("streaming");
-            resetSignalingRecoveryState({ keepExplicitShutdown: true });
+            scheduleStableRecoveryReset(activeSession.sessionId);
+            console.log(
+              "[Stream] Offer applied; use [WebRTC] logs for ICE/video dimensions. signalingServer=%s media=%s",
+              activeSession.signalingServer,
+              activeSession.mediaConnectionInfo
+                ? `${activeSession.mediaConnectionInfo.ip}:${activeSession.mediaConnectionInfo.port}`
+                : "n/a",
+            );
+          }
+        } else if (event.type === "native-stream-started") {
+          console.log("[App] Native streamer started:", event.message ?? "");
+          activateNativeInputForCurrentSession(nativeInputProtocolVersionRef.current ?? undefined);
+        } else if (event.type === "native-input-ready") {
+          console.log("[App] Native input protocol ready:", event.protocolVersion);
+          nativeInputProtocolVersionRef.current = event.protocolVersion;
+          clientRef.current?.setNativeInputProtocolVersion(event.protocolVersion);
+          if (nativeStreamingRef.current || sessionRef.current) {
+            activateNativeInputForCurrentSession(event.protocolVersion);
+          }
+        } else if (event.type === "native-stream-stats") {
+          diagnosticsStore.set(mergeNativeStreamStats(
+            diagnosticsStore.getSnapshot(),
+            event.stats,
+          ));
+        } else if (event.type === "native-stream-transition") {
+          diagnosticsStore.set({
+            ...diagnosticsStore.getSnapshot(),
+            nativeRendererActive: true,
+            nativeTransitionSummary: event.transition.summary,
+            nativeRequestedFps: event.transition.requestedFps,
+            nativeCapsFramerate: event.transition.capsFramerate,
+            nativeQueueMode: event.transition.queueMode,
+            lagReasonDetail: event.transition.summary ?? "Native video transition detected",
+          });
+        } else if (event.type === "native-stream-stopped") {
+          const reason = event.reason ?? "Native streamer stopped";
+          console.warn("[App] Native streamer stopped:", reason);
+          nativeStreamingRef.current = false;
+          nativeInputProtocolVersionRef.current = null;
+          clientRef.current?.dispose();
+          clientRef.current = null;
+          launchInFlightRef.current = false;
+
+          if (appUnloadingRef.current) {
+            console.log("[Recovery] Ignoring native streamer stop during app shutdown");
+            return;
+          }
+          if (
+            signalingRecoveryRef.current.explicitShutdown
+            || !RECOVERABLE_STREAM_STATUSES.includes(streamStatusRef.current)
+          ) {
+            console.log("[Recovery] Ignoring native streamer stop after explicit shutdown or non-recoverable status");
+            return;
+          }
+
+          const recovered = await attemptSessionRecovery(reason).catch((error) => {
+            console.error("[Recovery] Native streamer recovery failed:", error);
+            return false;
+          });
+          if (!recovered) {
+            if (
+              signalingRecoveryRef.current.explicitShutdown
+              || !RECOVERABLE_STREAM_STATUSES.includes(streamStatusRef.current)
+            ) {
+              console.log("[Recovery] Ignoring native streamer stop after explicit shutdown or non-recoverable status");
+              return;
+            }
+            setLaunchError({
+              stage: streamStatusToLoadingStage(streamStatusRef.current),
+              title: t("errors.nativeStreamerStoppedTitle"),
+              description: t("errors.nativeStreamerStoppedDescription"),
+            });
+            resetLaunchRuntime({ keepLaunchError: true, keepStreamingContext: true });
+            void refreshNavbarActiveSession();
+            launchInFlightRef.current = false;
           }
         } else if (event.type === "remote-ice") {
+          remoteIceSeenForSessionRef.current = sessionRef.current?.sessionId ?? null;
+          hasConfirmedRemoteIceRef.current = true;
+          awaitingRecoveryRemoteIceRef.current = false;
+          if (remoteIceGraceTimerRef.current !== null) {
+            window.clearTimeout(remoteIceGraceTimerRef.current);
+            remoteIceGraceTimerRef.current = null;
+          }
           await clientRef.current?.addRemoteCandidate(event.candidate);
         } else if (event.type === "disconnected") {
+          if (appUnloadingRef.current) {
+            console.log("[Recovery] Ignoring signaling disconnect during app shutdown");
+            return;
+          }
+          const iceState = latestIceConnectionStateRef.current;
+          if (
+            iceState === "connected" ||
+            iceState === "completed" ||
+            iceState === "checking"
+          ) {
+            console.log(`[Recovery] Ignoring signaling disconnect while ICE state is ${iceState}`);
+            return;
+          }
+          // Official-style behavior: if the attach never reached a confirmed remote ICE
+          // handshake, do not auto-recover. Fail this attempt and require explicit resume.
+          if (!hasConfirmedRemoteIceRef.current) {
+            console.warn("[Recovery] Skipping auto-recovery: disconnected before remote ICE handshake");
+            clientRef.current?.dispose();
+            clientRef.current = null;
+            setLaunchError({
+              stage: streamStatusToLoadingStage(streamStatusRef.current),
+              title: t("errors.sessionConnectionLostTitle"),
+              description: t("errors.resumeAttachFailedDescription"),
+            });
+            resetLaunchRuntime({ keepLaunchError: true, keepStreamingContext: true });
+            void refreshNavbarActiveSession();
+            launchInFlightRef.current = false;
+            return;
+          }
+          if (remoteIceGraceTimerRef.current !== null) {
+            window.clearTimeout(remoteIceGraceTimerRef.current);
+            remoteIceGraceTimerRef.current = null;
+          }
+          remoteIceSeenForSessionRef.current = null;
+          awaitingRecoveryRemoteIceRef.current = false;
+          if (pendingControlledDisconnectsRef.current > 0) {
+            pendingControlledDisconnectsRef.current -= 1;
+            console.log("[Recovery] Ignoring controlled signaling disconnect");
+            return;
+          }
           console.warn("Signaling disconnected:", event.reason);
           const recovered = await attemptSessionRecovery(event.reason).catch((error) => {
             console.error("[Recovery] Signaling recovery failed:", error);
@@ -2860,8 +2561,8 @@ export function App(): JSX.Element {
             clientRef.current = null;
             setLaunchError({
               stage: streamStatusToLoadingStage(streamStatusRef.current),
-              title: "Session Connection Lost",
-              description: "The connection to your running session was lost and could not be restored automatically. Try resuming it again from the app.",
+              title: t("errors.sessionConnectionLostTitle"),
+              description: t("errors.sessionConnectionLostDescription"),
             });
             resetLaunchRuntime({ keepLaunchError: true, keepStreamingContext: true });
             void refreshNavbarActiveSession();
@@ -2871,6 +2572,10 @@ export function App(): JSX.Element {
           console.error("Signaling error:", event.message);
         }
       } catch (error) {
+        if (appUnloadingRef.current) {
+          console.log("[Recovery] Suppressing signaling handler errors during app shutdown");
+          return;
+        }
         if (
           signalingRecoveryRef.current.explicitShutdown
           || !RECOVERABLE_STREAM_STATUSES.includes(streamStatusRef.current)
@@ -2881,10 +2586,10 @@ export function App(): JSX.Element {
         console.error("Signaling event error:", error);
         clientRef.current?.dispose();
         clientRef.current = null;
-        const message = error instanceof Error ? error.message : "The connection to the running session was lost and resume failed.";
+        const message = error instanceof Error ? error.message : t("errors.sessionResumeFailedDescription");
         setLaunchError({
           stage: streamStatusToLoadingStage(streamStatusRef.current),
-          title: "Session Connection Lost",
+          title: t("errors.sessionConnectionLostTitle"),
           description: message,
         });
         resetLaunchRuntime({ keepLaunchError: true, keepStreamingContext: true });
@@ -2894,7 +2599,7 @@ export function App(): JSX.Element {
     });
 
     return () => unsubscribe();
-  }, [attemptSessionRecovery, diagnosticsStore, refreshNavbarActiveSession, resetLaunchRuntime, resetSignalingRecoveryState, settings]);
+  }, [attemptSessionRecovery, diagnosticsStore, handleControllerMetaToggle, refreshNavbarActiveSession, resetLaunchRuntime, scheduleStableRecoveryReset, settings, streamMicLevel, streamVolume, t]);
 
   // Play game handler
   const handlePlayGame = useCallback(async (game: GameInfo, options?: { bypassGuards?: boolean; streamingBaseUrl?: string }) => {
@@ -2947,6 +2652,7 @@ export function App(): JSX.Element {
     startPlaytimeSession(game.id);
     updateLoadingStep("queue");
     setQueuePosition(undefined);
+    warmNativeStreamerForLaunch();
 
     try {
       const token = authSession?.tokens.idToken ?? authSession?.tokens.accessToken;
@@ -3029,6 +2735,8 @@ export function App(): JSX.Element {
         }
       }
 
+      const sessionProxyUrl = settings.sessionProxyEnabled ? settings.sessionProxyUrl.trim() : "";
+
       // Create new session
       const newSession = await window.openNow.createSession({
         token: token || undefined,
@@ -3037,18 +2745,9 @@ export function App(): JSX.Element {
         internalTitle: game.title,
         accountLinked: chooseAccountLinked(game, selectedVariant),
         existingSessionStrategy,
+        proxyUrl: sessionProxyUrl || undefined,
         zone: "prod",
-        settings: {
-          resolution: settings.resolution,
-          fps: settings.fps,
-          maxBitrateMbps: settings.maxBitrateMbps,
-          codec: settings.codec,
-          colorQuality: settings.colorQuality,
-          keyboardLayout: settings.keyboardLayout,
-          gameLanguage: settings.gameLanguage,
-          enableL4S: settings.enableL4S,
-          enableCloudGsync: settings.enableCloudGsync,
-        },
+        settings: buildCurrentStreamSettings(),
       });
 
       setSession(newSession);
@@ -3121,6 +2820,7 @@ export function App(): JSX.Element {
           sessionId: newSession.sessionId,
           clientId: newSession.clientId,
           deviceId: newSession.deviceId,
+          proxyUrl: sessionProxyUrl || undefined,
         });
 
         if (launchAbortRef.current) {
@@ -3171,18 +2871,14 @@ export function App(): JSX.Element {
         status: sessionToConnect.status,
       });
 
-      await window.openNow.connectSignaling({
-        sessionId: sessionToConnect.sessionId,
-        signalingServer: sessionToConnect.signalingServer,
-        signalingUrl: sessionToConnect.signalingUrl,
-      });
+      await window.openNow.connectSignaling(buildSignalingConnectRequest(sessionToConnect));
     } catch (error) {
       if (launchAbortRef.current) {
         return;
       }
       console.error("Launch failed:", error);
-      setLaunchError(toLaunchErrorState(error, loadingStep));
-      await window.openNow.disconnectSignaling().catch(() => {});
+      setLaunchError(toLaunchErrorState(t, error, loadingStep));
+      await disconnectSignalingControlled();
       clientRef.current?.dispose();
       clientRef.current = null;
       resetLaunchRuntime({ keepLaunchError: true, keepStreamingContext: true });
@@ -3193,6 +2889,7 @@ export function App(): JSX.Element {
   }, [
     authSession,
     allKnownGames,
+    buildSignalingConnectRequest,
     claimAndConnectSession,
     effectiveStreamingBaseUrl,
     refreshNavbarActiveSession,
@@ -3202,7 +2899,9 @@ export function App(): JSX.Element {
     selectedProvider,
     settings,
     streamStatus,
+    t,
     variantByGameId,
+    warmNativeStreamerForLaunch,
   ]);
 
   // Gate handler: shows queue server modal for FREE-tier users before launching
@@ -3317,26 +3016,26 @@ export function App(): JSX.Element {
   }, [confirmLogout, confirmRemoveAccount, logoutConfirmOpen, removeAccountConfirmOpen]);
 
   const accountToRemoveDisplayName = useMemo(() => (
-    savedAccounts.find((account) => account.userId === accountToRemove)?.displayName ?? "this account"
-  ), [accountToRemove, savedAccounts]);
+    savedAccounts.find((account) => account.userId === accountToRemove)?.displayName ?? t("auth.accounts.thisAccount")
+  ), [accountToRemove, savedAccounts, locale, t]);
 
   const logoutConfirmModal = logoutConfirmOpen && typeof document !== "undefined"
     ? createPortal(
-        <div className="logout-confirm" role="dialog" aria-modal="true" aria-label="Log out confirmation">
+        <div className="logout-confirm" role="dialog" aria-modal="true" aria-label={t("auth.accounts.logOutConfirmation")}>
           <button
             type="button"
             className="logout-confirm-backdrop"
             onClick={() => setLogoutConfirmOpen(false)}
-            aria-label="Cancel log out"
+            aria-label={t("auth.accounts.cancelLogOut")}
           />
           <div className="logout-confirm-card">
-            <div className="logout-confirm-kicker">Accounts</div>
-            <h3 className="logout-confirm-title">Sign out all accounts?</h3>
+            <div className="logout-confirm-kicker">{t("auth.accounts.kicker")}</div>
+            <h3 className="logout-confirm-title">{t("auth.accounts.signOutAllTitle")}</h3>
             <p className="logout-confirm-text">
-              You&apos;re about to remove every saved account from this device and return to guest mode.
+              {t("auth.accounts.signOutAllDescription")}
             </p>
             <p className="logout-confirm-subtext">
-              Your cloud session data stays on the service. This just clears local OpenNOW account sessions.
+              {t("auth.accounts.signOutAllSubtext")}
             </p>
             <div className="logout-confirm-actions">
               <button
@@ -3344,7 +3043,7 @@ export function App(): JSX.Element {
                 className="logout-confirm-btn logout-confirm-btn-cancel"
                 onClick={() => setLogoutConfirmOpen(false)}
               >
-                Stay signed in
+                {t("auth.accounts.staySignedIn")}
               </button>
               <button
                 type="button"
@@ -3353,11 +3052,11 @@ export function App(): JSX.Element {
                   void confirmLogout();
                 }}
               >
-                Sign out all
+                {t("auth.accounts.signOutAll")}
               </button>
             </div>
             <div className="logout-confirm-hint">
-              <kbd>Enter</kbd> confirm · <kbd>Esc</kbd> cancel
+              <kbd>Enter</kbd> {t("app.actions.confirm")} · <kbd>Esc</kbd> {t("app.actions.cancel")}
             </div>
           </div>
         </div>,
@@ -3367,7 +3066,7 @@ export function App(): JSX.Element {
 
   const removeAccountConfirmModal = removeAccountConfirmOpen && typeof document !== "undefined"
     ? createPortal(
-        <div className="logout-confirm" role="dialog" aria-modal="true" aria-label="Remove account confirmation">
+        <div className="logout-confirm" role="dialog" aria-modal="true" aria-label={t("auth.accounts.removeAccountConfirmation")}>
           <button
             type="button"
             className="logout-confirm-backdrop"
@@ -3375,16 +3074,16 @@ export function App(): JSX.Element {
               setRemoveAccountConfirmOpen(false);
               setAccountToRemove(null);
             }}
-            aria-label="Cancel account removal"
+            aria-label={t("auth.accounts.cancelAccountRemoval")}
           />
           <div className="logout-confirm-card">
-            <div className="logout-confirm-kicker">Accounts</div>
-            <h3 className="logout-confirm-title">Remove account?</h3>
+            <div className="logout-confirm-kicker">{t("auth.accounts.kicker")}</div>
+            <h3 className="logout-confirm-title">{t("auth.accounts.removeAccountTitle")}</h3>
             <p className="logout-confirm-text">
-              Are you sure you want to remove {accountToRemoveDisplayName} from saved accounts?
+              {t("auth.accounts.removeAccountDescription", { name: accountToRemoveDisplayName })}
             </p>
             <p className="logout-confirm-subtext">
-              You can add this account again by signing in.
+              {t("auth.accounts.removeAccountSubtext")}
             </p>
             <div className="logout-confirm-actions">
               <button
@@ -3393,22 +3092,22 @@ export function App(): JSX.Element {
                 onClick={() => {
                   setRemoveAccountConfirmOpen(false);
                   setAccountToRemove(null);
-                }}
-              >
-                Cancel
+              }}
+            >
+                {t("app.actions.cancel")}
               </button>
               <button
                 type="button"
                 className="logout-confirm-btn logout-confirm-btn-confirm"
                 onClick={() => {
                   void confirmRemoveAccount();
-                }}
-              >
-                Remove
+              }}
+            >
+                {t("app.actions.remove")}
               </button>
             </div>
             <div className="logout-confirm-hint">
-              <kbd>Enter</kbd> confirm · <kbd>Esc</kbd> cancel
+              <kbd>Enter</kbd> {t("app.actions.confirm")} · <kbd>Esc</kbd> {t("app.actions.cancel")}
             </div>
           </div>
         </div>,
@@ -3461,8 +3160,8 @@ export function App(): JSX.Element {
       setNavbarActiveSession(null);
     } catch (error) {
       console.error("Navbar resume failed:", error);
-      setLaunchError(toLaunchErrorState(error, loadingStep));
-      await window.openNow.disconnectSignaling().catch(() => {});
+      setLaunchError(toLaunchErrorState(t, error, loadingStep));
+      await disconnectSignalingControlled();
       clientRef.current?.dispose();
       clientRef.current = null;
       resetLaunchRuntime({ keepLaunchError: true });
@@ -3484,6 +3183,7 @@ export function App(): JSX.Element {
     resetStatsOverlayToPreference,
     selectedProvider,
     streamStatus,
+    t,
   ]);
 
   const handleTerminateNavbarSession = useCallback(async () => {
@@ -3499,8 +3199,8 @@ export function App(): JSX.Element {
       return;
     }
 
-    const activeSessionTitle = gameTitleByAppId.get(navbarActiveSession.appId)?.trim() || "this session";
-    if (!window.confirm(`Terminate ${activeSessionTitle}? This will end the active cloud session immediately.`)) {
+    const activeSessionTitle = gameTitleByAppId.get(navbarActiveSession.appId)?.trim() || t("session.thisSession");
+    if (!window.confirm(t("session.terminateConfirmation", { title: activeSessionTitle }))) {
       return;
     }
 
@@ -3530,6 +3230,7 @@ export function App(): JSX.Element {
     refreshNavbarActiveSession,
     stopSessionByTarget,
     streamStatus,
+    t,
   ]);
 
   // Stop stream handler
@@ -3541,7 +3242,7 @@ export function App(): JSX.Element {
         launchAbortRef.current = true;
       }
       markExplicitSignalingShutdown();
-      await window.openNow.disconnectSignaling();
+      await disconnectSignalingControlled();
 
       const current = sessionRef.current;
       if (current) {
@@ -3616,7 +3317,7 @@ export function App(): JSX.Element {
 
   const handleDismissLaunchError = useCallback(async () => {
     markExplicitSignalingShutdown();
-    await window.openNow.disconnectSignaling().catch(() => {});
+    await disconnectSignalingControlled();
     clientRef.current?.dispose();
     clientRef.current = null;
     resetLaunchRuntime();
@@ -3651,14 +3352,14 @@ export function App(): JSX.Element {
       return;
     }
 
-    const gameName = (streamingGame?.title || "this game").trim();
+    const gameName = (streamingGame?.title || t("session.thisGame")).trim();
     const shouldExit = await requestExitPrompt(gameName);
     if (!shouldExit) {
       return;
     }
 
     await handleStopStream();
-  }, [handleStopStream, releasePointerLockIfNeeded, requestExitPrompt, streamStatus, streamingGame?.title]);
+  }, [handleStopStream, releasePointerLockIfNeeded, requestExitPrompt, streamStatus, streamingGame?.title, t]);
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -3767,6 +3468,7 @@ export function App(): JSX.Element {
         e.stopImmediatePropagation();
         if (streamStatus === "streaming") {
           setAntiAfkEnabled((prev) => !prev);
+          setAntiAfkAckNonce((n) => n + 1);
         }
         return;
       }
@@ -3801,8 +3503,12 @@ export function App(): JSX.Element {
   const filteredLibraryGames = useMemo(() => {
     const query = searchQuery.trim();
     const searched = query ? libraryGames.filter((game) => matchesGameSearch(game, query)) : libraryGames;
-    return sortLibraryGames(searched, catalogSelectedSortId === "relevance" ? "last_played" : catalogSelectedSortId);
-  }, [libraryGames, searchQuery, catalogSelectedSortId]);
+    return sortLibraryGames(
+      searched,
+      catalogSelectedSortId === "relevance" ? "last_played" : catalogSelectedSortId,
+      playtime,
+    );
+  }, [libraryGames, searchQuery, catalogSelectedSortId, playtime]);
 
   const activeSessionGameTitle = useMemo(() => {
     if (!navbarActiveSession) return null;
@@ -3816,49 +3522,23 @@ export function App(): JSX.Element {
     return null;
   }, [gameTitleByAppId, navbarActiveSession, session?.sessionId, streamingGame?.title]);
 
-  const effectiveAdState = getEffectiveAdState(session, subscriptionInfo, authSession);
-  const activeQueueAd = useMemo(
-    () => getActiveQueueAd(effectiveAdState, activeQueueAdId),
-    [activeQueueAdId, effectiveAdState],
+  const controllerCloudResumeCoverUrl = useMemo(() => {
+    if (!navbarActiveSession) return null;
+    const ctx = findGameContextForSession(navbarActiveSession);
+    return ctx?.game?.imageUrl ?? null;
+  }, [findGameContextForSession, navbarActiveSession]);
+
+  const controllerCloudSessionResumable = useMemo(
+    () =>
+      Boolean(
+        streamStatus === "idle"
+        && selectedProvider
+        && navbarActiveSession?.serverIp
+        && !isResumingNavbarSession
+        && !isTerminatingNavbarSession
+      ),
+    [isResumingNavbarSession, isTerminatingNavbarSession, navbarActiveSession, selectedProvider, streamStatus],
   );
-  const activeQueueAdMediaUrl = getPreferredSessionAdMediaUrl(activeQueueAd) ?? (activeQueueAd ? adMediaUrlCacheRef.current[activeQueueAd.adId] : undefined);
-
-  useEffect(() => {
-    const nextActiveAd = getActiveQueueAd(effectiveAdState, activeQueueAdIdRef.current);
-    const nextActiveAdId = nextActiveAd?.adId ?? null;
-    activeQueueAdIdRef.current = nextActiveAdId;
-    setActiveQueueAdId((previous) => (previous === nextActiveAdId ? previous : nextActiveAdId));
-
-    if (!nextActiveAdId) {
-      clearQueueAdWatchdogs();
-    }
-  }, [clearQueueAdWatchdogs, effectiveAdState]);
-
-  useEffect(() => {
-    if (!activeQueueAd) {
-      return;
-    }
-
-    const syncQueueAdVisibility = (): void => {
-      const preview = queueAdPreviewRef.current;
-      if (!preview) {
-        return;
-      }
-
-      if (document.hidden || isSessionQueuePaused(effectiveAdState)) {
-        preview.pause();
-        return;
-      }
-
-      void preview.resume();
-    };
-
-    syncQueueAdVisibility();
-    document.addEventListener("visibilitychange", syncQueueAdVisibility);
-    return () => {
-      document.removeEventListener("visibilitychange", syncQueueAdVisibility);
-    };
-  }, [activeQueueAd, effectiveAdState]);
 
   // Show login screen if not authenticated
   if (!authSession) {
@@ -3884,17 +3564,11 @@ export function App(): JSX.Element {
   const showControllerLaunchLoading =
     !isSwitchingGame
     && settings.controllerMode
-    && (showLaunchErrorOverlay || (streamStatus !== "idle" && streamStatus !== "streaming" && streamStatus !== "connecting"));
+    && (showLaunchErrorOverlay || (streamStatus !== "idle" && streamStatus !== "streaming"));
   const showDesktopLaunchLoading =
     !isSwitchingGame
     && !settings.controllerMode
     && (showLaunchErrorOverlay || (streamStatus !== "idle" && streamStatus !== "streaming"));
-  const consumedHours =
-    streamStatus === "streaming"
-      ? Math.floor(sessionElapsedSeconds / 60) / 60
-      : 0;
-  const remainingPlaytimeText = formatRemainingPlaytimeFromSubscription(subscriptionInfo, consumedHours);
-
   // Show stream lifecycle (waiting/connecting/streaming/failure)
   if (showLaunchOverlay) {
     const loadingStatus = launchError ? launchError.stage : toLoadingStatus(streamStatus);
@@ -3907,6 +3581,7 @@ export function App(): JSX.Element {
             audioRef={audioRef}
             diagnosticsStore={diagnosticsStore}
             showStats={showStatsOverlay}
+            gstreamerEnabled={settings.streamClientMode === "native"}
             shortcuts={{
               toggleStats: formatShortcutForDisplay(settings.shortcutToggleStats, isMac),
               togglePointerLock: formatShortcutForDisplay(settings.shortcutTogglePointerLock, isMac),
@@ -3920,6 +3595,7 @@ export function App(): JSX.Element {
             hideStreamButtons={settings.hideStreamButtons}
             serverRegion={session?.serverIp}
             antiAfkEnabled={antiAfkEnabled}
+            antiAfkAckNonce={antiAfkAckNonce}
             showAntiAfkIndicator={settings.showAntiAfkIndicator}
             exitPrompt={exitPrompt}
             sessionStartedAtMs={sessionStartedAtMs}
@@ -3927,9 +3603,10 @@ export function App(): JSX.Element {
             sessionClockShowEveryMinutes={settings.sessionClockShowEveryMinutes}
             sessionClockShowDurationSeconds={settings.sessionClockShowDurationSeconds}
             streamWarning={streamWarning}
+            isFullscreen={sessionFullscreen || !!document.fullscreenElement}
             isConnecting={streamStatus === "connecting"}
             isStreaming={isStreaming}
-            gameTitle={streamingGame?.title ?? "Game"}
+            gameTitle={streamingGame?.title ?? t("app.labels.game")}
             platformStore={streamingStore ?? undefined}
             onToggleFullscreen={() => {
               void toggleSessionFullscreen();
@@ -3960,14 +3637,14 @@ export function App(): JSX.Element {
             onReleasePointerLock={() => {
               void releasePointerLockIfNeeded();
             }}
+            allowEscapeToExitFullscreen={settings.allowEscapeToExitFullscreen}
+            hideConnectingOverlay={settings.controllerMode}
           />
         )}
-        {isSwitchingGame && settings.controllerMode && streamStatus !== "connecting" && (
+        {isSwitchingGame && settings.controllerMode && (
           <ControllerStreamLoading
-            gameTitle={pendingSwitchGameTitle ?? streamingGame?.title ?? "Game"}
-            gamePoster={pendingSwitchGameCover ?? streamingGame?.imageUrl}
-            gameDescription={pendingSwitchGameDescription ?? streamingGame?.description}
-            status={switchingPhase === "cleaning" ? "setup" : "starting"}
+            gameTitle={pendingSwitchGameTitle ?? streamingGame?.title ?? t("app.labels.game")}
+            status={loadingStatus}
             queuePosition={queuePosition}
             adState={effectiveAdState}
             activeAd={activeQueueAd}
@@ -3983,14 +3660,11 @@ export function App(): JSX.Element {
             }
             onAdPlaybackEvent={handleQueueAdPlaybackEvent}
             adPreviewRef={queueAdPreviewRef}
-            playtimeData={playtime}
-            gameId={pendingSwitchGameId ?? streamingGame?.id}
-            enableBackgroundAnimations={settings.controllerBackgroundAnimations}
           />
         )}
         {isSwitchingGame && !settings.controllerMode && (
           <StreamLoading
-            gameTitle={pendingSwitchGameTitle ?? streamingGame?.title ?? "Game"}
+            gameTitle={pendingSwitchGameTitle ?? streamingGame?.title ?? t("app.labels.game")}
             gameCover={pendingSwitchGameCover ?? streamingGame?.imageUrl}
             platformStore={streamingStore ?? undefined}
             status={switchingPhase === "cleaning" ? "setup" : "starting"}
@@ -4019,7 +3693,14 @@ export function App(): JSX.Element {
           />
         )}
         {streamStatus === "streaming" && controllerOverlayOpen && (
-          <div className="controller-overlay">
+          <ControllerInStreamShell
+            diagnosticsStore={diagnosticsStore}
+            sessionStartedAtMs={sessionStartedAtMs}
+            sessionCounterEnabled={settings.sessionCounterEnabled}
+            isStreaming={isStreaming}
+            streamWarning={streamWarning ?? undefined}
+            queuePosition={queuePosition}
+          >
             <ControllerLibraryPage
               games={filteredLibraryGames}
               onPlayGame={handleSwitchGame}
@@ -4034,21 +3715,37 @@ export function App(): JSX.Element {
               onOpenSettings={() => setCurrentPage("settings")}
               currentStreamingGame={streamingGame}
               onResumeGame={() => setControllerOverlayOpen(false)}
+              inStreamMenu
+              streamMenuVolume={streamVolume}
+              onStreamMenuVolumeChange={handleStreamVolumeChange}
+              streamMenuMicLevel={streamMicLevel}
+              onStreamMenuMicLevelChange={handleStreamMicLevelChange}
+              streamMicTrack={clientRef.current?.getMicTrack() ?? null}
+              onStreamMenuToggleMicrophone={handleToggleStreamMicrophone}
+              onStreamMenuToggleFullscreen={() => {
+                void toggleSessionFullscreen();
+              }}
+              streamMenuMicOn={streamMenuMicOn}
+              streamMenuIsFullscreen={sessionFullscreen || !!document.fullscreenElement}
+              cloudSessionResumable={controllerCloudSessionResumable}
+              cloudResumeTitle={activeSessionGameTitle}
+              cloudResumeCoverUrl={controllerCloudResumeCoverUrl}
+              onResumeCloudSession={() => {
+                void handleResumeFromNavbar();
+              }}
+              cloudResumeBusy={isResumingNavbarSession}
               onCloseGame={async () => {
                 setControllerOverlayOpen(false);
-                // allow overlay close animation to play
                 await sleep(300);
                 await releasePointerLockIfNeeded();
                 await handleStopStream();
               }}
-              pendingSwitchGameCover={pendingSwitchGameCover}
               userName={authSession?.user.displayName}
               userAvatarUrl={authSession?.user.avatarUrl}
               subscriptionInfo={subscriptionInfo}
               playtimeData={playtime}
               sessionStartedAtMs={sessionStartedAtMs}
               isStreaming={isStreaming}
-              sessionCounterEnabled={settings.sessionCounterEnabled}
               settings={{
                 resolution: settings.resolution,
                 fps: settings.fps,
@@ -4058,6 +3755,9 @@ export function App(): JSX.Element {
                 microphoneDeviceId: settings.microphoneDeviceId,
                 controllerUiSounds: settings.controllerUiSounds,
                 controllerBackgroundAnimations: settings.controllerBackgroundAnimations,
+                controllerThemeStyle: settings.controllerThemeStyle,
+                controllerThemeColor: settings.controllerThemeColor,
+                controllerLibraryGameBackdrop: settings.controllerLibraryGameBackdrop,
                 autoLoadControllerLibrary: settings.autoLoadControllerLibrary,
                 autoFullScreen: settings.autoFullScreen,
                 aspectRatio: settings.aspectRatio,
@@ -4070,13 +3770,11 @@ export function App(): JSX.Element {
               aspectRatioOptions={aspectRatioOptions as unknown as string[]}
               onSettingChange={updateSetting}
             />
-          </div>
+          </ControllerInStreamShell>
         )}
         {showControllerLaunchLoading && (
           <ControllerStreamLoading
-            gameTitle={streamingGame?.title ?? "Game"}
-            gamePoster={streamingGame?.imageUrl}
-            gameDescription={streamingGame?.description}
+            gameTitle={streamingGame?.title ?? t("app.labels.game")}
             status={loadingStatus}
             queuePosition={queuePosition}
             adState={effectiveAdState}
@@ -4093,14 +3791,11 @@ export function App(): JSX.Element {
             }
             onAdPlaybackEvent={handleQueueAdPlaybackEvent}
             adPreviewRef={queueAdPreviewRef}
-            playtimeData={playtime}
-            gameId={streamingGame?.id}
-            enableBackgroundAnimations={settings.controllerBackgroundAnimations}
           />
         )}
         {showDesktopLaunchLoading && (
           <StreamLoading
-            gameTitle={streamingGame?.title ?? "Game"}
+            gameTitle={streamingGame?.title ?? t("app.labels.game")}
             gameCover={streamingGame?.imageUrl}
             platformStore={streamingStore ?? undefined}
             status={loadingStatus}
@@ -4130,9 +3825,9 @@ export function App(): JSX.Element {
         )}
         {showControllerHint && streamStatus !== "streaming" && (
           <div className="controller-hint controller-hint--overlay">
-            <span>D-pad Navigate</span>
-            <span>A Select</span>
-            <span>B Back</span>
+            <span>{t("controllerMode.hints.dpadNavigate")}</span>
+            <span>{t("controllerMode.hints.aSelect")}</span>
+            <span>{t("controllerMode.hints.bBack")}</span>
           </div>
         )}
       </>
@@ -4214,15 +3909,20 @@ export function App(): JSX.Element {
               onOpenSettings={() => setCurrentPage("settings")}
               currentStreamingGame={streamingGame}
               onResumeGame={handlePlayGame}
+              cloudSessionResumable={controllerCloudSessionResumable}
+              cloudResumeTitle={activeSessionGameTitle}
+              cloudResumeCoverUrl={controllerCloudResumeCoverUrl}
+              onResumeCloudSession={() => {
+                void handleResumeFromNavbar();
+              }}
+              cloudResumeBusy={isResumingNavbarSession}
               onCloseGame={handlePromptedStopStream}
-              pendingSwitchGameCover={pendingSwitchGameCover}
               userName={authSession?.user.displayName}
               userAvatarUrl={authSession?.user.avatarUrl}
               subscriptionInfo={subscriptionInfo}
               playtimeData={playtime}
               sessionStartedAtMs={sessionStartedAtMs}
               isStreaming={isStreaming}
-              sessionCounterEnabled={settings.sessionCounterEnabled}
               settings={{
                 resolution: settings.resolution,
                 fps: settings.fps,
@@ -4232,6 +3932,9 @@ export function App(): JSX.Element {
                 microphoneDeviceId: settings.microphoneDeviceId,
                 controllerUiSounds: settings.controllerUiSounds,
                 controllerBackgroundAnimations: settings.controllerBackgroundAnimations,
+                controllerThemeStyle: settings.controllerThemeStyle,
+                controllerThemeColor: settings.controllerThemeColor,
+                controllerLibraryGameBackdrop: settings.controllerLibraryGameBackdrop,
                 autoLoadControllerLibrary: settings.autoLoadControllerLibrary,
                 autoFullScreen: settings.autoFullScreen,
                 aspectRatio: settings.aspectRatio,
@@ -4278,10 +3981,10 @@ export function App(): JSX.Element {
       </main>
       {showControllerHint && (
         <div className="controller-hint">
-          <span>D-pad Navigate</span>
-          <span>A Select</span>
-          <span>B Back</span>
-          <span>LB/RB Tabs</span>
+          <span>{t("controllerMode.hints.dpadNavigate")}</span>
+          <span>{t("controllerMode.hints.aSelect")}</span>
+          <span>{t("controllerMode.hints.bBack")}</span>
+          <span>{t("controllerMode.hints.lbRbTabs")}</span>
         </div>
       )}
 

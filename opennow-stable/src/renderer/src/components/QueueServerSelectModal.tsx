@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { JSX } from "react";
 import type { GameInfo, PrintedWasteQueueData, PrintedWasteZone } from "@shared/gfn";
+import {
+  loadStoredPrintedWastePingResults,
+  saveStoredPrintedWastePingResults,
+} from "../utils/pingResultsStorage";
 
 // ── Constants / helpers ───────────────────────────────────────────────────────
 
@@ -56,43 +60,9 @@ const REGION_META: Record<string, { label: string; flag: string }> = {
   MY:   { label: "Malaysia",       flag: "🇲🇾" },
 };
 const REGION_ORDER = ["US", "CA", "EU", "JP", "KR", "THAI", "MY"];
-const PRINTEDWASTE_PING_CACHE_KEY = "opennow.printedwaste-pings.v1";
 const QUEUE_REFRESH_INTERVAL_MS = 2 * 60 * 1000;
 const AUTO_PING_WEIGHT = 0.75;
 const AUTO_QUEUE_WEIGHT = 0.25;
-
-interface PingCacheEntry {
-  url: string;
-  pingMs: number | null;
-}
-
-function loadStoredPingResults(): Map<string, number | null> {
-  try {
-    const raw = window.sessionStorage.getItem(PRINTEDWASTE_PING_CACHE_KEY);
-    if (!raw) return new Map();
-    const parsed = JSON.parse(raw) as unknown;
-    if (!Array.isArray(parsed)) return new Map();
-    const results = new Map<string, number | null>();
-    for (const entry of parsed as PingCacheEntry[]) {
-      results.set(entry.url, entry.pingMs);
-    }
-    return results;
-  } catch {
-    return new Map();
-  }
-}
-
-function saveStoredPingResults(results: Map<string, number | null>): void {
-  try {
-    const entries: PingCacheEntry[] = [];
-    results.forEach((pingMs, url) => {
-      entries.push({ url, pingMs });
-    });
-    window.sessionStorage.setItem(PRINTEDWASTE_PING_CACHE_KEY, JSON.stringify(entries));
-  } catch {
-    // Ignore storage failures
-  }
-}
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -227,7 +197,7 @@ export function QueueServerSelectModal({ game, initialQueueData = null, onConfir
     }
 
     let cancelled = false;
-    const cachedPings = loadStoredPingResults();
+    const cachedPings = loadStoredPrintedWastePingResults();
     const seedMap = new Map<string, number | null>();
     for (const zone of allStandardZones) {
       if (cachedPings.has(zone.routingUrl)) {
@@ -272,7 +242,7 @@ export function QueueServerSelectModal({ game, initialQueueData = null, onConfir
         const map = new Map(seedMap);
         for (const r of results) map.set(r.url, r.pingMs);
         setZonePings(map);
-        saveStoredPingResults(map);
+        saveStoredPrintedWastePingResults(map);
       } catch {
         // Ping failures are non-fatal
       } finally {
@@ -454,7 +424,7 @@ export function QueueServerSelectModal({ game, initialQueueData = null, onConfir
                     }
                     zone={autoZone}
                     selected={selected === "auto"}
-                    accent="#58d98a"
+                    accent="var(--accent)"
                     onClick={() => setSelected("auto")}
                   />
 
@@ -470,7 +440,7 @@ export function QueueServerSelectModal({ game, initialQueueData = null, onConfir
                     }
                     zone={closestZone}
                     selected={selected === "closest"}
-                    accent="#58d98a"
+                    accent="var(--accent)"
                     pinging={isPinging}
                     disabled={!closestZone && !isPinging}
                     onClick={() => { if (closestZone) setSelected("closest"); }}
@@ -632,7 +602,7 @@ function RecommendCard({ label, sublabel, zone, selected, accent, pinging, disab
         {label}
       </div>
       <div style={{ fontSize: 11, color: "var(--ink-dim)", marginBottom: 10, display: "flex", alignItems: "center", gap: 5 }}>
-        {pinging && <MiniSpinner color={accent} />}
+        {pinging && <MiniSpinner color={accent} borderColor="var(--accent-surface-strong)" />}
         {sublabel}
       </div>
 
@@ -776,12 +746,18 @@ function Spinner(): JSX.Element {
   );
 }
 
-function MiniSpinner({ color }: { color: string }): JSX.Element {
+function MiniSpinner({
+  color,
+  borderColor = `${color}33`,
+}: {
+  color: string;
+  borderColor?: string;
+}): JSX.Element {
   return (
     <div style={{
       width: 9,
       height: 9,
-      border: `2px solid ${color}33`,
+      border: `2px solid ${borderColor}`,
       borderTop: `2px solid ${color}`,
       borderRadius: "50%",
       animation: "on-spin 0.75s linear infinite",

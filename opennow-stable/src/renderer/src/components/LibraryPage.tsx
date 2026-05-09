@@ -2,6 +2,8 @@ import { Library, Search, Clock, Gamepad2, Loader2, ArrowUpDown } from "lucide-r
 import type { JSX } from "react";
 import type { CatalogSortOption, GameInfo } from "@shared/gfn";
 import { GameCard } from "./GameCard";
+import { useTranslation } from "../i18n";
+import { formatCatalogLastPlayed } from "../utils/lastPlayedFormat";
 
 export interface LibraryPageProps {
   games: GameInfo[];
@@ -19,25 +21,6 @@ export interface LibraryPageProps {
   onSortChange: (sortId: string) => void;
 }
 
-function formatLastPlayed(date?: string): string {
-  if (!date) return "Never played";
-
-  const lastPlayed = new Date(date);
-  const now = new Date();
-  const diffMs = now.getTime() - lastPlayed.getTime();
-  const diffMins = Math.floor(diffMs / 60000);
-  const diffHours = Math.floor(diffMs / 3600000);
-  const diffDays = Math.floor(diffMs / 86400000);
-
-  if (diffMins < 1) return "Just now";
-  if (diffMins < 60) return `${diffMins}m ago`;
-  if (diffHours < 24) return `${diffHours}h ago`;
-  if (diffDays < 7) return `${diffDays}d ago`;
-  if (diffDays < 30) return `${Math.floor(diffDays / 7)}w ago`;
-
-  return lastPlayed.toLocaleDateString();
-}
-
 export function LibraryPage({
   games,
   searchQuery,
@@ -53,12 +36,13 @@ export function LibraryPage({
   selectedSortId,
   onSortChange,
 }: LibraryPageProps): JSX.Element {
+  const { t } = useTranslation();
   return (
     <div className="library-page">
       <header className="library-toolbar">
         <div className="library-title">
           <Library className="library-title-icon" size={22} />
-          <h1>My Library</h1>
+          <h1>{t("library.title")}</h1>
         </div>
 
         <div className="library-search">
@@ -67,7 +51,7 @@ export function LibraryPage({
             type="text"
             value={searchQuery}
             onChange={(e) => onSearchChange(e.target.value)}
-            placeholder="Search your library..."
+            placeholder={t("library.searchPlaceholder")}
             className="library-search-input"
           />
         </div>
@@ -83,26 +67,26 @@ export function LibraryPage({
           </select>
         </label>
 
-        <span className="library-count">{libraryCount} game{libraryCount !== 1 ? "s" : ""}</span>
+        <span className="library-count">{t("library.gameCount", { count: libraryCount })}</span>
       </header>
 
       <div className="library-grid-area">
         {isLoading ? (
           <div className="library-empty-state">
             <Loader2 className="library-spinner" size={36} />
-            <p>Loading your library...</p>
+            <p>{t("library.empty.loadingLibrary")}</p>
           </div>
         ) : libraryCount === 0 ? (
           <div className="library-empty-state">
             <Gamepad2 className="library-empty-icon" size={44} />
-            <h3>Your library is empty</h3>
-            <p>Games you own will appear here. Browse the catalog to find games.</p>
+            <h3>{t("library.empty.libraryEmpty")}</h3>
+            <p>{t("library.empty.ownedGamesAppearHere")}</p>
           </div>
         ) : games.length === 0 ? (
           <div className="library-empty-state">
             <Search className="library-empty-icon" size={44} />
-            <h3>No games found</h3>
-            <p>No games match &ldquo;{searchQuery}&rdquo;</p>
+            <h3>{t("library.empty.noGamesFound")}</h3>
+            <p>{t("library.empty.noGamesMatch", { query: searchQuery })}</p>
           </div>
         ) : (
           <div className="game-grid">
@@ -119,7 +103,7 @@ export function LibraryPage({
                 {game.lastPlayed && (
                   <div className="library-last-played">
                     <Clock size={12} />
-                    <span>{formatLastPlayed(game.lastPlayed)}</span>
+                    <span>{formatCatalogLastPlayed(t, game.lastPlayed)}</span>
                   </div>
                 )}
               </div>

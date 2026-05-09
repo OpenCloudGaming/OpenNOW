@@ -86,3 +86,49 @@ test("keeps active and owned states separate for the selected store", () => {
   assert.equal(steamOption.isActive, false);
   assert.equal(steamOption.isOwned, true);
 });
+
+test("keeps unknown and third-party stores selectable for default icon fallback", () => {
+  const options = getStoreOptions(
+    makeGame([
+      makeVariant({ id: "ncsoft", store: "NCSoft", libraryStatus: "MANUAL" }),
+      makeVariant({ id: "steam", store: "Steam", libraryStatus: "NOT_OWNED" }),
+      makeVariant({ id: "native", store: "Unknown", libraryStatus: "PLATFORM_SYNC" }),
+    ]),
+    "steam",
+  );
+
+  assert.deepEqual(
+    options.map((option) => ({
+      storeKey: option.storeKey,
+      variantId: option.variantId,
+      isOwned: option.isOwned,
+      isActive: option.isActive,
+    })),
+    [
+      { storeKey: "NCSOFT", variantId: "ncsoft", isOwned: true, isActive: false },
+      { storeKey: "STEAM", variantId: "steam", isOwned: false, isActive: true },
+      { storeKey: "UNKNOWN", variantId: "native", isOwned: true, isActive: false },
+    ],
+  );
+});
+
+test("still hides empty and none store placeholders", () => {
+  const options = getStoreOptions(
+    makeGame([
+      makeVariant({ id: "empty", store: "", libraryStatus: "MANUAL" }),
+      makeVariant({ id: "none", store: "None", libraryStatus: "NOT_OWNED" }),
+      makeVariant({ id: "steam", store: "Steam" }),
+    ]),
+  );
+
+  assert.deepEqual(
+    options.map((option) => ({
+      storeKey: option.storeKey,
+      variantId: option.variantId,
+      isOwned: option.isOwned,
+    })),
+    [
+      { storeKey: "STEAM", variantId: "steam", isOwned: false },
+    ],
+  );
+});
