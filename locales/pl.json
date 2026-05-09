@@ -410,7 +410,7 @@
       "screenshot": "Zrzut ekranu",
       "recording": "Nagrywanie",
       "toggleStreamSidebar": "Przełącz panel boczny streamu",
-      "shortcutHint": "Click a field and press the keys to bind, or paste a shortcut ({{examples}}). Escape cancels focus. Full screen: {{fullscreen}}. Stop: {{stop}}. Mic: {{mic}}. Screenshot: {{screenshot}}. Recording: {{recording}}."
+      "shortcutHint": "Kliknij pole i naciśnij klawisze, aby powiązać, lub wklej skrót ({{examples}}). Escape anuluje skupienie. Pełny ekran: {{fullscreen}}. Zatrzymaj {{stop}}. Mikrofon: {{mic}}. Zrzut ekranu: {{screenshot}}. Nagranie: {{recording}}."
     },
     "interface": {
       "appearance": "Wygląd",
@@ -421,9 +421,9 @@
       "showStatsOnStreamLaunch": "Pokaż statystyki przy uruchomieniu streamu",
       "showStatsOnStreamLaunchHint": "Automatycznie wyświetlaj nakładkę ze statystykami po rozpoczęciu nowego streamu.",
       "hideServerSelector": "Ukryj wybór serwera",
-      "hideServerSelectorHint": "Skip the free-tier server selection dialog and always launch with OpenNOW's default routing.",
+      "hideServerSelectorHint": "Pomiń dialog wyboru serwera tieru darmowego i zawsze uruchamiaj używając domyślnego wyboru OpenNOW.",
       "showAntiAfkIndicator": "Pokaż wskaźnik Anti-AFK",
-      "showAntiAfkIndicatorHint": "Show the ANTI-AFK ON badge while Anti-AFK is enabled during streaming.",
+      "showAntiAfkIndicatorHint": "Pokaż odznakę \"Anty-AFK włączone\" kiedy Anty-AFK jest włączone podczas streamu.",
       "autoFullScreen": "Automatyczny pełny ekran",
       "autoFullScreenHint": "Automatycznie przechodź w tryb pełnoekranowy po połączeniu lub rozpoczęciu sesji.",
       "escapeExitsFullscreen": "Escape wychodzi z pełnego ekranu",
@@ -440,10 +440,10 @@
       "autoLoadControllerLibraryHint": "Automatycznie otwieraj bibliotekę kontrolera przy uruchomieniu, gdy włączony jest tryb kontrolera.",
       "posterSize": "Rozmiar plakatu",
       "posterSizeHint": "Dostosowuje okładki gier w czasie rzeczywistym w bibliotece i widoku kontrolera.",
-      "sessionElapsedCounter": "Session Elapsed Counter",
+      "sessionElapsedCounter": "Licznik upłynięcia sesji",
       "sessionElapsedCounterHint": "Włącz lub wyłącz licznik czasu trwania sesji podczas streamingu.",
-      "sessionTimerReappear": "Session Timer Reappear",
-      "sessionTimerVisibleTime": "Session Timer Visible Time",
+      "sessionTimerReappear": "Pokazywanie ponowne licznika sesji",
+      "sessionTimerVisibleTime": "Czas pokazywania się licznika sesji",
       "sessionTimerReappearHint": "Jak często ponownie wyświetlać odliczanie do końca sesji podczas streamingu (0 wyłącza powtarzanie).",
       "sessionTimerVisibleTimeHint": "Jak długo wyświetlane jest odliczanie czasu sesji za każdym razem, gdy się pojawia.",
       "sessionTimerDisabledHint": "Disabling the session elapsed counter stops the live elapsed timer from rendering at all. Remaining playtime indicators stay unchanged.",
@@ -512,9 +512,9 @@
   "controllerMode": {
     "hints": {
       "dpadNavigate": "D-pad Navigate",
-      "aSelect": "A Select",
-      "bBack": "B Back",
-      "lbRbTabs": "LB/RB Tabs"
+      "aSelect": "A wybierz",
+      "bBack": "B wstecz",
+      "lbRbTabs": "LB/RB zakładki"
     },
     "gameHub": {
       "ariaLabel": "Centrum gier {{title}}",
@@ -527,10 +527,10 @@
       "games": "Gry",
       "gameLibrary": "Biblioteka gier",
       "emptySlot": "Puste miejsce",
-      "emptyRecentSlot": "Empty recent slot",
+      "emptyRecentSlot": "Opróżnij ostatni slot",
       "recentlyPlayed": "Ostatnio grane",
-      "recentlyPlayedHint": "Recently played · Enter opens this title in your library",
-      "recentlyPlayedEmptyHint": "Recently played · Empty slot - play games to fill your shelf",
+      "recentlyPlayedHint": "Niedawno grane · Enter otwiera ten tytuł w twojej bibliotece",
+      "recentlyPlayedEmptyHint": "Niedawno grane · Pusty slot — graj w gry, aby uzupełnić półkę",
       "recentlyPlayedGames": "Recently played games",
       "resumeGame": "Wznów {{title}}",
       "library": "Biblioteka",
