@@ -543,7 +543,7 @@ jobs:
 
   release:
     name: publish-release
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: self-hosted
     needs:
       - preflight
       - prepare-source
@@ -568,3 +568,53 @@ jobs:
           make_latest: ${{ needs.preflight.outputs.make_latest }}
           generate_release_notes: true
           files: release-artifacts/**/*
+
+  finalize:
+    name: finalize-version-bump
+    runs-on: self-hosted
+    needs:
+      - preflight
+      - release
+    permissions:
+      contents: write
+
+    steps:
+      - name: Resolve release branch
+        id: branch
+        shell: bash
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          if [[ "$REF_TYPE" == "branch" ]]; then
+            branch="$REF_NAME"
+          else
+            branch="dev"
+          fi
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout release branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.branch.outputs.branch }}
+          fetch-depth: 0
+          token: ${{ secrets.RELEASE_PUSH_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - name: Update package version
+        working-directory: opennow-stable
+        env:
+          RELEASE_VERSION: ${{ needs.preflight.outputs.version }}
+        run: node -e "const fs=require('fs'); const path='package.json'; const pkg=JSON.parse(fs.readFileSync(path,'utf8')); pkg.version=process.env.RELEASE_VERSION; fs.writeFileSync(path, JSON.stringify(pkg, null, 2) + '\n');"
+
+      - name: Commit and push
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add opennow-stable/package.json
+          if git diff --cached --quiet; then
+            echo "No version bump changes to commit."
+            exit 0
+          fi
+          git commit -m "chore(release): prepare v${{ needs.preflight.outputs.version }}"
+          git push origin HEAD:${{ steps.branch.outputs.branch }}
