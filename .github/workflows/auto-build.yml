@@ -18,7 +18,7 @@ permissions:
 jobs:
   select-builds:
     name: select-builds
-    runs-on: self-hosted
+    runs-on: ubuntu-24.04
     outputs:
       matrix: ${{ steps.matrix.outputs.matrix }}
     steps:
@@ -37,19 +37,19 @@ jobs:
           const builds = [
             {
               label: "windows-x64",
-              os: "blacksmith-4vcpu-windows-2025",
+              os: "windows-2025",
               builder_args: "--win nsis portable --x64",
               artifact_paths: "opennow-stable/dist-release/*-x64.exe\n",
             },
             {
               label: "windows-arm64",
-              os: "blacksmith-4vcpu-windows-2025",
+              os: "windows-2025",
               builder_args: "--win nsis portable --arm64",
               artifact_paths: "opennow-stable/dist-release/*-arm64.exe\n",
             },
             {
               label: "macos-x64",
-              os: "blacksmith-6vcpu-macos-latest",
+              os: "macos-15-intel",
               builder_args: "--mac dmg zip --x64",
               artifact_paths:
                 "opennow-stable/dist-release/*.dmg\n" +
@@ -57,7 +57,7 @@ jobs:
             },
             {
               label: "macos-arm64",
-              os: "blacksmith-6vcpu-macos-latest",
+              os: "macos-15",
               builder_args: "--mac dmg zip --arm64",
               artifact_paths:
                 "opennow-stable/dist-release/*.dmg\n" +
@@ -65,7 +65,7 @@ jobs:
             },
             {
               label: "linux-x64",
-              os: "blacksmith-4vcpu-ubuntu-2404",
+              os: "ubuntu-24.04",
               builder_args: "--linux AppImage deb --x64",
               artifact_paths:
                 "opennow-stable/dist-release/*-x86_64.AppImage\n" +
@@ -73,7 +73,7 @@ jobs:
             },
             {
               label: "linux-arm64",
-              os: "blacksmith-4vcpu-ubuntu-2404-arm",
+              os: "ubuntu-24.04-arm",
               builder_args: "--linux AppImage deb --arm64",
               artifact_paths:
                 "opennow-stable/dist-release/*-arm64.AppImage\n" +
@@ -137,6 +137,7 @@ jobs:
       - name: CI summary
         if: always()
         working-directory: .
+        shell: bash
         run: |
           status_icon() {
             case "$1" in

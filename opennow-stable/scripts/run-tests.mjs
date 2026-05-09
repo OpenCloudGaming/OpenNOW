@@ -1,7 +1,10 @@
 import { appendFile } from "node:fs/promises";
 import { readdir } from "node:fs/promises";
-import { join, sep } from "node:path";
+import { dirname, join, sep } from "node:path";
 import { spawn } from "node:child_process";
+import { createRequire } from "node:module";
+
+const require = createRequire(import.meta.url);
 
 async function discoverTests(dir) {
   const entries = await readdir(dir, { withFileTypes: true });
@@ -76,8 +79,11 @@ if (tests.length === 0) {
   process.exit(1);
 }
 
+const tsxPackagePath = require.resolve("tsx/package.json");
+const tsxCliPath = join(dirname(tsxPackagePath), "dist", "cli.mjs");
+
 let output = "";
-const child = spawn(process.platform === "win32" ? "npx.cmd" : "npx", ["tsx", "--test", ...tests], {
+const child = spawn(process.execPath, [tsxCliPath, "--test", ...tests], {
   stdio: ["inherit", "pipe", "pipe"],
 });
 
@@ -89,6 +95,19 @@ child.stdout.on("data", (chunk) => {
 child.stderr.on("data", (chunk) => {
   output += chunk.toString();
   process.stderr.write(chunk);
+});
+
+child.on("error", async (error) => {
+  output += `${error.stack || error.message}\n`;
+  console.error("Failed to start test runner:", error);
+
+  try {
+    await appendGitHubSummary({ tests, output, exitCode: 1 });
+  } catch (summaryError) {
+    console.error("Failed to append GitHub test summary:", summaryError);
+  }
+
+  process.exit(1);
 });
 
 child.on("exit", async (code, signal) => {
