@@ -3377,7 +3377,10 @@ button.game-card-store-chip.owned.active:hover {
   font-size: 0.92rem;
   color: var(--ink-soft);
   font-weight: 500;
-  flex-shrink: 0;
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
   cursor: default;
 }
 
@@ -3392,6 +3395,8 @@ button.game-card-store-chip.owned.active:hover {
   align-items: center;
   gap: 6px;
   flex-wrap: wrap;
+  max-width: 100%;
+  min-width: 0;
 }
 
 .settings-inline-badge {
@@ -3476,6 +3481,10 @@ button.game-card-store-chip.owned.active:hover {
   font-size: 0.78rem;
   color: var(--ink-muted);
   font-weight: 500;
+  line-height: 1.35;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .settings-controller-subsettings {
