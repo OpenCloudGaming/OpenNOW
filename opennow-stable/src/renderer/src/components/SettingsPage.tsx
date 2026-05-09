@@ -691,6 +691,9 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
   const [nativeStreamerStatus, setNativeStreamerStatus] = useState<NativeStreamerStatus | null>(null);
   const [nativeStreamerStatusLoading, setNativeStreamerStatusLoading] = useState(false);
   const [nativeStreamerEnablePromptOpen, setNativeStreamerEnablePromptOpen] = useState(false);
+  const nativeStreamerEnablePromptRef = useRef<HTMLDivElement | null>(null);
+  const nativeStreamerEnablePromptConfirmRef = useRef<HTMLButtonElement | null>(null);
+  const nativeStreamerEnablePromptPreviousFocusRef = useRef<HTMLElement | null>(null);
   const [updaterState, setUpdaterState] = useState<AppUpdaterState>({
     status: "idle",
     currentVersion: "0.0.0",
@@ -913,15 +916,80 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
       return;
     }
 
+    nativeStreamerEnablePromptPreviousFocusRef.current =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+
+    const getFocusableElements = (): HTMLElement[] => {
+      const dialog = nativeStreamerEnablePromptRef.current;
+      if (!dialog) {
+        return [];
+      }
+
+      return Array.from(
+        dialog.querySelectorAll<HTMLElement>(
+          [
+            "a[href]",
+            "button:not([disabled])",
+            "input:not([disabled])",
+            "select:not([disabled])",
+            "textarea:not([disabled])",
+            '[tabindex]:not([tabindex="-1"])',
+          ].join(","),
+        ),
+      ).filter((element) => element.tabIndex >= 0 && element.getAttribute("aria-hidden") !== "true");
+    };
+
     const handleKeyDown = (event: KeyboardEvent): void => {
       if (event.key === "Escape") {
         event.preventDefault();
         closeNativeStreamerEnablePrompt();
+        return;
+      }
+
+      if (event.key !== "Tab") {
+        return;
+      }
+
+      const dialog = nativeStreamerEnablePromptRef.current;
+      const focusableElements = getFocusableElements();
+      if (!dialog || focusableElements.length === 0) {
+        event.preventDefault();
+        dialog?.focus({ preventScroll: true });
+        return;
+      }
+
+      const activeElement = document.activeElement;
+      const firstElement = focusableElements[0];
+      const lastElement = focusableElements[focusableElements.length - 1];
+      const focusIsOnDialog = activeElement === dialog;
+
+      if (event.shiftKey && (focusIsOnDialog || activeElement === firstElement || !dialog.contains(activeElement))) {
+        event.preventDefault();
+        lastElement.focus({ preventScroll: true });
+        return;
+      }
+
+      if (!event.shiftKey && (focusIsOnDialog || activeElement === lastElement || !dialog.contains(activeElement))) {
+        event.preventDefault();
+        firstElement.focus({ preventScroll: true });
       }
     };
 
+    const focusFrame = window.requestAnimationFrame(() => {
+      nativeStreamerEnablePromptConfirmRef.current?.focus({ preventScroll: true });
+    });
+
     document.addEventListener("keydown", handleKeyDown);
-    return () => document.removeEventListener("keydown", handleKeyDown);
+    return () => {
+      window.cancelAnimationFrame(focusFrame);
+      document.removeEventListener("keydown", handleKeyDown);
+
+      const previousFocus = nativeStreamerEnablePromptPreviousFocusRef.current;
+      nativeStreamerEnablePromptPreviousFocusRef.current = null;
+      if (previousFocus?.isConnected) {
+        previousFocus.focus({ preventScroll: true });
+      }
+    };
   }, [closeNativeStreamerEnablePrompt, nativeStreamerEnablePromptOpen]);
 
   const handleAppLanguageChange = useCallback((nextLocale: string): void => {
@@ -1673,9 +1741,11 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
             type="button"
             className="native-streamer-warning-backdrop"
             aria-label={t("app.actions.cancel")}
+            aria-hidden="true"
+            tabIndex={-1}
             onClick={closeNativeStreamerEnablePrompt}
           />
-          <div className="native-streamer-warning-card">
+          <div ref={nativeStreamerEnablePromptRef} className="native-streamer-warning-card" tabIndex={-1}>
             <div className="native-streamer-warning-kicker">
               <AlertTriangle size={14} />
               {t("settings.nativeStreamer.enablePromptKicker")}
@@ -1714,6 +1784,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                 type="button"
                 className="native-streamer-warning-btn native-streamer-warning-btn--primary"
                 onClick={confirmNativeStreamerEnablePrompt}
+                ref={nativeStreamerEnablePromptConfirmRef}
                 autoFocus
               >
                 {t("settings.nativeStreamer.enablePromptEnable")}
