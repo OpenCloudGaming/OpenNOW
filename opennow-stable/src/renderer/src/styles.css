@@ -177,6 +177,44 @@ body,
   }
 }
 
+@keyframes native-streamer-warning-backdrop-in {
+  from {
+    opacity: 0;
+    backdrop-filter: blur(0) saturate(100%);
+  }
+
+  to {
+    opacity: 1;
+    backdrop-filter: blur(24px) saturate(135%);
+  }
+}
+
+@keyframes native-streamer-warning-card-in {
+  from {
+    opacity: 0;
+    filter: blur(6px);
+    transform: translateY(16px) scale(0.96);
+  }
+
+  to {
+    opacity: 1;
+    filter: blur(0);
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes native-streamer-warning-item-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 @keyframes pulse-glow {
 
   0%,
@@ -3508,6 +3546,7 @@ button.game-card-store-chip.owned.active:hover {
   align-items: center;
   justify-content: center;
   padding: 24px;
+  isolation: isolate;
 }
 
 .native-streamer-warning-backdrop {
@@ -3515,110 +3554,127 @@ button.game-card-store-chip.owned.active:hover {
   inset: 0;
   border: none;
   background:
-    radial-gradient(circle at 24% 20%, color-mix(in srgb, var(--warning) 22%, transparent), transparent 36%),
-    radial-gradient(circle at 78% 74%, color-mix(in srgb, var(--accent) 16%, transparent), transparent 42%),
-    linear-gradient(180deg, rgba(7, 8, 10, 0.76), rgba(4, 5, 7, 0.88));
-  backdrop-filter: blur(18px) saturate(145%);
+    radial-gradient(circle at 18% 16%, color-mix(in srgb, var(--accent) 14%, transparent), transparent 36%),
+    radial-gradient(circle at 82% 80%, rgba(96, 165, 250, 0.08), transparent 42%),
+    linear-gradient(180deg, rgba(6, 7, 9, 0.68), rgba(4, 5, 7, 0.82));
+  -webkit-backdrop-filter: blur(24px) saturate(135%);
+  backdrop-filter: blur(24px) saturate(135%);
   cursor: pointer;
+  animation: native-streamer-warning-backdrop-in 180ms var(--ease);
 }
 
 .native-streamer-warning-card {
   position: relative;
   z-index: 1;
-  width: min(560px, calc(100vw - 32px));
-  padding: 24px;
-  border-radius: 22px;
-  border: 1px solid color-mix(in srgb, var(--warning) 30%, var(--panel-border-solid));
+  width: min(520px, calc(100vw - 32px));
+  padding: 22px;
+  border-radius: var(--r-lg);
+  border: 1px solid var(--panel-border);
   background:
-    linear-gradient(135deg, color-mix(in srgb, var(--warning) 10%, transparent), transparent 32%),
-    linear-gradient(180deg, rgba(20, 22, 24, 0.96), rgba(9, 10, 12, 0.98));
+    radial-gradient(circle at 18% 0%, color-mix(in srgb, var(--accent) 10%, transparent), transparent 36%),
+    linear-gradient(180deg, color-mix(in srgb, var(--card) 94%, rgba(255, 255, 255, 0.04)), var(--panel));
   box-shadow:
-    0 34px 100px rgba(0, 0, 0, 0.62),
-    0 0 0 1px rgba(255, 255, 255, 0.04) inset,
-    0 0 42px color-mix(in srgb, var(--warning) 14%, transparent);
-  backdrop-filter: blur(24px) saturate(145%);
+    0 28px 90px rgba(0, 0, 0, 0.58),
+    0 0 0 1px rgba(255, 255, 255, 0.035) inset,
+    0 0 36px color-mix(in srgb, var(--accent) 10%, transparent);
+  -webkit-backdrop-filter: blur(28px) saturate(135%);
+  backdrop-filter: blur(28px) saturate(135%);
   overflow: hidden;
-  animation: fade-in 170ms var(--ease);
+  animation: native-streamer-warning-card-in 220ms var(--ease);
 }
 
 .native-streamer-warning-card::before {
   content: "";
   position: absolute;
   inset: 0 0 auto;
-  height: 3px;
-  background: linear-gradient(90deg, var(--warning), var(--accent), #93c5fd);
-  opacity: 0.96;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--accent) 72%, transparent), transparent);
+  opacity: 0.9;
 }
 
 .native-streamer-warning-kicker {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  padding: 6px 10px;
+  padding: 5px 10px;
   border-radius: 999px;
-  border: 1px solid color-mix(in srgb, var(--warning) 34%, transparent);
-  background: color-mix(in srgb, var(--warning) 13%, rgba(255, 255, 255, 0.03));
-  color: #fde68a;
-  font-size: 0.68rem;
-  font-weight: 850;
-  letter-spacing: 0.12em;
+  border: 1px solid rgba(88, 217, 138, 0.24);
+  background: var(--accent-surface);
+  color: var(--accent);
+  font-size: 0.64rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
 }
 
 .native-streamer-warning-title {
-  margin: 16px 0 0;
+  margin: 15px 0 0;
   color: var(--ink);
-  font-size: 1.55rem;
-  line-height: 1.08;
-  font-weight: 850;
+  font-size: 1.34rem;
+  line-height: 1.14;
+  font-weight: 750;
 }
 
 .native-streamer-warning-text {
-  margin: 12px 0 0;
+  margin: 10px 0 0;
   color: var(--ink-soft);
-  font-size: 0.98rem;
-  line-height: 1.55;
+  font-size: 0.9rem;
+  line-height: 1.5;
 }
 
 .native-streamer-warning-list {
   display: grid;
-  gap: 10px;
-  margin-top: 18px;
+  gap: 8px;
+  margin-top: 16px;
 }
 
 .native-streamer-warning-list-item {
   display: flex;
   align-items: flex-start;
   gap: 10px;
-  padding: 12px;
+  padding: 11px 12px;
   border: 1px solid var(--panel-border);
-  border-radius: 14px;
-  background: rgba(255, 255, 255, 0.035);
+  border-radius: var(--r-sm);
+  background: var(--bg-a);
   color: var(--ink-soft);
-  font-size: 0.86rem;
+  font-size: 0.83rem;
   line-height: 1.45;
+  opacity: 0;
+  animation: native-streamer-warning-item-in 180ms var(--ease) forwards;
+}
+
+.native-streamer-warning-list-item:nth-child(1) {
+  animation-delay: 70ms;
+}
+
+.native-streamer-warning-list-item:nth-child(2) {
+  animation-delay: 105ms;
+}
+
+.native-streamer-warning-list-item:nth-child(3) {
+  animation-delay: 140ms;
 }
 
 .native-streamer-warning-list-item svg {
   flex: 0 0 auto;
   margin-top: 2px;
-  color: var(--warning);
+  color: var(--accent);
 }
 
 .native-streamer-warning-actions {
   display: flex;
   gap: 10px;
-  margin-top: 20px;
+  margin-top: 18px;
 }
 
 .native-streamer-warning-btn {
   flex: 1;
-  min-height: 44px;
-  border-radius: 13px;
+  min-height: 42px;
+  border-radius: var(--r-sm);
   border: 1px solid var(--panel-border);
   font-family: inherit;
   font-size: 0.84rem;
-  font-weight: 750;
+  font-weight: 700;
   letter-spacing: 0.01em;
   cursor: pointer;
   transition:
@@ -3638,30 +3694,30 @@ button.game-card-store-chip.owned.active:hover {
 }
 
 .native-streamer-warning-btn--secondary {
-  background: rgba(255, 255, 255, 0.035);
+  background: var(--bg-a);
   color: var(--ink);
 }
 
 .native-streamer-warning-btn--secondary:hover {
   border-color: var(--panel-border-solid);
-  background: rgba(255, 255, 255, 0.075);
+  background: var(--chip);
 }
 
 .native-streamer-warning-btn--primary {
-  border-color: color-mix(in srgb, var(--warning) 58%, transparent);
-  background:
-    linear-gradient(135deg, color-mix(in srgb, var(--warning) 88%, #f97316), color-mix(in srgb, var(--accent) 72%, #15803d));
-  color: #11140a;
-  box-shadow: 0 14px 32px color-mix(in srgb, var(--warning) 24%, transparent);
+  border-color: rgba(88, 217, 138, 0.34);
+  background: var(--accent);
+  color: var(--accent-on);
+  box-shadow: 0 14px 32px rgba(88, 217, 138, 0.18);
 }
 
 .native-streamer-warning-btn--primary:hover {
-  border-color: color-mix(in srgb, var(--warning) 82%, transparent);
-  box-shadow: 0 18px 36px color-mix(in srgb, var(--warning) 30%, transparent);
+  border-color: rgba(88, 217, 138, 0.52);
+  background: var(--accent-hover);
+  box-shadow: 0 18px 36px rgba(88, 217, 138, 0.22);
 }
 
 .native-streamer-warning-hint {
-  margin-top: 14px;
+  margin-top: 12px;
   color: var(--ink-muted);
   font-size: 0.73rem;
 }
