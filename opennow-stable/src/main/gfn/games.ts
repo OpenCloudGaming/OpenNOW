@@ -8,10 +8,10 @@ import type {
 } from "@shared/gfn";
 import { isOwnedLibraryStatus } from "@shared/gfn";
 import { cacheManager } from "../services/cacheManager";
+import { fetchPublicGamesUncached, mergePublicGameVariants } from "./publicGames";
 import {
   buildGfnGraphQlHeaders,
   buildGfnLcarsHeaders,
-  GFN_USER_AGENT,
 } from "./clientHeaders";
 
 const GRAPHQL_URL = "https://games.geforce.com/graphql";
@@ -22,6 +22,7 @@ const DEFAULT_LOCALE = "en_US";
 const DEFAULT_CATALOG_FETCH_COUNT = 120;
 const MAX_CATALOG_PAGES = 3;
 const DEFAULT_SORT_ID = "relevance";
+const PUBLIC_GAMES_CACHE_KEY = "games:public:v2";
 
 interface GraphQlResponse {
   data?: {
@@ -133,13 +134,6 @@ interface ServerInfoResponse {
   requestStatus?: {
     serverId?: string;
   };
-}
-
-interface RawPublicGame {
-  id?: string | number;
-  title?: string;
-  steamUrl?: string;
-  status?: string;
 }
 
 interface AppResolution {
@@ -296,6 +290,22 @@ function buildSearchText(title: string, variants: GameVariant[], genres: string[
     .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
     .join(" ")
     .toLowerCase();
+}
+
+function matchesPublicGameSearch(game: GameInfo, query: string): boolean {
+  const normalizedQuery = query.trim().toLowerCase();
+  if (!normalizedQuery) {
+    return true;
+  }
+
+  return [
+    game.title,
+    game.searchText,
+    ...(game.availableStores ?? []),
+    ...game.variants.map((variant) => variant.store),
+  ]
+    .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+    .some((value) => value.toLowerCase().includes(normalizedQuery));
 }
 
 function resolveAppData(app: AppData): AppResolution {
@@ -778,13 +788,19 @@ ${appFields}
     cursor = endCursor;
   }
 
-  const games = dedupeGames(collectedApps.map(appToGame));
+  let games = dedupeGames(collectedApps.map(appToGame));
+  const publicGames = await fetchPublicGames();
+  if (searchQuery.length > 0) {
+    const publicSearchMatches = publicGames.filter((game) => matchesPublicGameSearch(game, searchQuery));
+    games = dedupeGames([...games, ...publicSearchMatches]);
+  }
+  const gamesWithPublicVariants = mergePublicGameVariants(games, publicGames);
 
   return {
-    games,
+    games: gamesWithPublicVariants,
     numberReturned,
-    numberSupported: Math.max(numberSupported, games.length),
-    totalCount: Math.max(totalCount, games.length),
+    numberSupported: Math.max(numberSupported, gamesWithPublicVariants.length),
+    totalCount: Math.max(totalCount, gamesWithPublicVariants.length),
     hasNextPage,
     endCursor: endCursor || undefined,
     searchQuery,
@@ -802,7 +818,7 @@ export async function browseCatalog(input: CatalogBrowseRequest): Promise<Catalo
 export async function fetchMainGames(token: string, providerStreamingBaseUrl?: string): Promise<GameInfo[]> {
   const cached = await cacheManager.loadFromCache<GameInfo[]>("games:main");
   if (cached) {
-    return cached.data;
+    return mergePublicGameVariants(cached.data, await fetchPublicGames());
   }
 
   const games = await fetchMainGamesUncached(token, providerStreamingBaseUrl);
@@ -814,7 +830,7 @@ async function fetchMainGamesUncached(token: string, providerStreamingBaseUrl?: 
   const vpcId = await getVpcId(token, providerStreamingBaseUrl);
   const payload = await fetchPanels(token, ["MAIN"], vpcId);
   const games = flattenPanels(payload);
-  return enrichGamesWithMetadata(token, vpcId, games);
+  return mergePublicGameVariants(await enrichGamesWithMetadata(token, vpcId, games), await fetchPublicGames());
 }
 
 export async function fetchLibraryGames(
@@ -823,7 +839,7 @@ export async function fetchLibraryGames(
 ): Promise<GameInfo[]> {
   const cached = await cacheManager.loadFromCache<GameInfo[]>("games:library");
   if (cached) {
-    return cached.data;
+    return mergePublicGameVariants(cached.data, await fetchPublicGames());
   }
 
   const games = await fetchLibraryGamesUncached(token, providerStreamingBaseUrl);
@@ -845,57 +861,18 @@ async function fetchLibraryGamesUncached(
   }
 
   const games = flattenPanels(payload);
-  return enrichGamesWithMetadata(token, vpcId, games);
+  return mergePublicGameVariants(await enrichGamesWithMetadata(token, vpcId, games), await fetchPublicGames());
 }
 
 export async function fetchPublicGames(): Promise<GameInfo[]> {
-  const cached = await cacheManager.loadFromCache<GameInfo[]>("games:public");
+  const cached = await cacheManager.loadFromCache<GameInfo[]>(PUBLIC_GAMES_CACHE_KEY);
   if (cached) {
     return cached.data;
   }
 
   const games = await fetchPublicGamesUncached();
-  await cacheManager.saveToCache("games:public", games);
+  await cacheManager.saveToCache(PUBLIC_GAMES_CACHE_KEY, games);
   return games;
-}
-
-async function fetchPublicGamesUncached(): Promise<GameInfo[]> {
-  const response = await fetch(
-    "https://static.nvidiagrid.net/supported-public-game-list/locales/gfnpc-en-US.json",
-    {
-      headers: {
-        "User-Agent": GFN_USER_AGENT,
-      },
-    },
-  );
-
-  if (!response.ok) {
-    throw new Error(`Public games fetch failed (${response.status})`);
-  }
-
-  const payload = (await response.json()) as RawPublicGame[];
-  return payload
-    .filter((item) => item.status === "AVAILABLE" && item.title)
-    .map((item) => {
-      const id = String(item.id ?? item.title ?? "unknown");
-      const steamAppId = item.steamUrl?.split("/app/")[1]?.split("/")[0];
-      const imageUrl = steamAppId
-        ? `https://cdn.cloudflare.steamstatic.com/steam/apps/${steamAppId}/library_600x900.jpg`
-        : undefined;
-
-      return {
-        id,
-        uuid: id,
-        launchAppId: isNumericId(id) ? id : undefined,
-        title: item.title ?? id,
-        searchText: (item.title ?? id).toLowerCase(),
-        selectedVariantIndex: 0,
-        variants: [{ id, store: "Unknown", supportedControls: [] }],
-        imageUrl,
-        availableStores: ["Unknown"],
-        isInLibrary: false,
-      } as GameInfo;
-    });
 }
 
 export async function resolveLaunchAppId(
