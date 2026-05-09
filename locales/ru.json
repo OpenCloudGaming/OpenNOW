@@ -182,22 +182,22 @@
     "labels": {
       "launchError": "Ошибка запуска",
       "nowLoading": "Сейчас загружается",
-      "adQueue": "Ad Queue"
+      "adQueue": "Очередь рекламы"
     },
     "steps": {
-      "queue": "Queue",
-      "setup": "Setup",
+      "queue": "Очередь",
+      "setup": "Установка",
       "ready": "Готово"
     },
     "status": {
-      "gameLaunchFailed": "Game launch failed",
-      "queuePaused": "Session queue paused",
-      "positionInQueue": "Position #{{position}} in queue",
-      "waitingInQueue": "Waiting in queue...",
-      "settingUpRig": "Setting up your gaming rig...",
-      "startingStream": "Starting stream...",
-      "connectingToServer": "Connecting to server...",
-      "settingUpStream": "Setting up stream...",
+      "gameLaunchFailed": "Ошибка при запуске игры",
+      "queuePaused": "Очередь сессии остановлена",
+      "positionInQueue": "Позиция #{{position}} в очереди",
+      "waitingInQueue": "Ожидание в очереди...",
+      "settingUpRig": "Запускаем вашу игровую сборку...",
+      "startingStream": "Начинаем показ...",
+      "connectingToServer": "Подключение к серверу...",
+      "settingUpStream": "Запуск показа...",
       "loading": "Загрузка..."
     },
     "ads": {
@@ -543,11 +543,11 @@
       "theme": "Theme {{label}}"
     },
     "streamLoading": {
-      "adQueue": "Ad Queue",
-      "queuePaused": "Session queue paused",
-      "settingUpRig": "Setting up your gaming rig...",
-      "startingStream": "Starting stream...",
-      "settingUpStream": "Setting up stream...",
+      "adQueue": "Очередь рекламы",
+      "queuePaused": "Очередь сессии остановлена",
+      "settingUpRig": "Запускаем вашу игровую сборку...",
+      "startingStream": "Начинаем показ...",
+      "settingUpStream": "Запуск показа...",
       "loading": "Загрузка..."
     }
   },
