@@ -1,8 +1,9 @@
 import { useState, useRef, useEffect } from "react";
 import type { JSX } from "react";
-import { LogIn, ChevronDown, Zap } from "lucide-react";
+import { LogIn, ChevronDown } from "lucide-react";
 import type { LoginProvider } from "@shared/gfn";
 import { useTranslation } from "../i18n";
+import { OpenNowLogoMark } from "./OpenNowLogoMark";
 
 export interface LoginScreenProps {
   providers: LoginProvider[];
@@ -61,7 +62,7 @@ export function LoginScreen({
         {/* Brand */}
         <div className="login-brand">
           <div className="login-brand-mark">
-            <Zap size={20} strokeWidth={2.5} />
+            <OpenNowLogoMark className="opennow-logo-mark" />
           </div>
           <span className="login-brand-name">OpenNOW</span>
         </div>

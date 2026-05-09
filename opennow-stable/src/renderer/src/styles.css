@@ -343,16 +343,24 @@ body,
 }
 
 .navbar-brand {
-  width: 28px;
-  height: 28px;
-  border-radius: 7px;
-  background: linear-gradient(135deg, var(--accent), var(--accent-press));
+  width: 34px;
+  height: 22px;
   display: flex;
   align-items: center;
   justify-content: center;
-  color: var(--accent-on);
-  box-shadow: 0 2px 12px var(--accent-glow);
   flex-shrink: 0;
+}
+
+.opennow-logo-mark {
+  display: block;
+  width: 100%;
+  height: auto;
+  pointer-events: none;
+  user-select: none;
+}
+
+.navbar-brand .opennow-logo-mark {
+  filter: drop-shadow(0 2px 8px var(--accent-glow));
 }
 
 .navbar-logo-text {
@@ -1829,19 +1837,19 @@ body.controller-overlay-lowfx .controller-overlay--in-stream .xmb-top-bar {
 .login-brand {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
 }
 
 .login-brand-mark {
-  width: 36px;
-  height: 36px;
-  border-radius: 9px;
-  background: linear-gradient(135deg, var(--accent), var(--accent-press));
+  width: 48px;
+  height: 30px;
   display: flex;
   align-items: center;
   justify-content: center;
-  color: var(--accent-on);
-  box-shadow: 0 4px 20px var(--accent-glow);
+}
+
+.login-brand-mark .opennow-logo-mark {
+  filter: drop-shadow(0 4px 14px var(--accent-glow));
 }
 
 .login-brand-name {

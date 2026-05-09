@@ -1,8 +1,9 @@
 import type { ActiveSessionInfo, AuthUser, SavedAccount, SubscriptionInfo } from "@shared/gfn";
-import { House, Library, Settings, User, Zap, Timer, HardDrive, X, Loader2, PlayCircle, Square, ChevronDown, Check, Plus } from "lucide-react";
+import { House, Library, Settings, User, Timer, HardDrive, X, Loader2, PlayCircle, Square, ChevronDown, Check, Plus } from "lucide-react";
 import { useEffect, useRef, useState, type JSX } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "../i18n";
+import { OpenNowLogoMark } from "./OpenNowLogoMark";
 
 interface NavbarProps {
   currentPage: "home" | "library" | "settings";
@@ -276,7 +277,7 @@ export function Navbar({
     <nav className="navbar">
       <div className="navbar-left">
         <div className="navbar-brand">
-          <Zap size={16} strokeWidth={2.5} />
+          <OpenNowLogoMark className="opennow-logo-mark" />
         </div>
         <span className="navbar-logo-text">OpenNOW</span>
       </div>
