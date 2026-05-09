@@ -1379,10 +1379,12 @@ export function App(): JSX.Element {
     && settings.controllerMode
     && (currentPage === "library" || currentPage === "settings");
   const androidTvLoginNavigationActive = platformCapabilities.isAndroid && !authSession && streamStatus === "idle";
+  const androidShellNavigationActive = platformCapabilities.isAndroid && streamStatus === "idle";
+  const controllerNavigationActive = controllerDesktopModeActive || controllerOverlayOpen || androidShellNavigationActive;
   const controllerUiActive = controllerDesktopModeActive || controllerOverlayOpen || androidTvLoginNavigationActive;
 
   const controllerConnected = useControllerNavigation({
-    enabled: controllerUiActive,
+    enabled: controllerNavigationActive,
     onNavigatePage: handleControllerPageNavigate,
     onBackAction: handleControllerBackAction,
     onDirectionInput: handleControllerDirectionInput,
@@ -2271,6 +2273,11 @@ export function App(): JSX.Element {
 
   const requestEscLockedPointerCapture = useCallback(async (target: HTMLVideoElement) => {
     const lockTarget = (target.parentElement as HTMLElement | null) ?? target;
+    if (platformCapabilities.isAndroid || typeof lockTarget.requestPointerLock !== "function") {
+      target.focus();
+      return;
+    }
+
     const requestPointerLockCompat = async (
       options?: { unadjustedMovement?: boolean },
     ): Promise<void> => {

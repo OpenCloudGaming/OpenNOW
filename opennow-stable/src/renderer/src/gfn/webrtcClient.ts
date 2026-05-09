@@ -2525,6 +2525,12 @@ export class GfnWebRtcClient {
 
   private reliableDropLogged = false;
 
+  private shouldUseBrowserPointerLock(): boolean {
+    return !platformCapabilities.isAndroid
+      && typeof document !== "undefined"
+      && typeof document.documentElement.requestPointerLock === "function";
+  }
+
   public sendReliable(payload: Uint8Array): void {
     if (this.reliableInputChannel?.readyState === "open") {
       const safePayload = Uint8Array.from(payload);
@@ -2536,6 +2542,10 @@ export class GfnWebRtcClient {
   }
 
   private async lockEscapeInFullscreen(): Promise<void> {
+    if (platformCapabilities.isAndroid) {
+      return;
+    }
+
     const nav = navigator as any;
     if (!document.fullscreenElement) {
       return;
@@ -2568,6 +2578,10 @@ export class GfnWebRtcClient {
     lockTarget: HTMLElement,
     ensureFullscreen: boolean,
   ): Promise<void> {
+    if (!this.shouldUseBrowserPointerLock()) {
+      return;
+    }
+
     if (ensureFullscreen && !document.fullscreenElement) {
       try {
         await document.documentElement.requestFullscreen();
@@ -2593,6 +2607,10 @@ export class GfnWebRtcClient {
   }
 
   private async attemptAutoPointerLock(ensureFullscreen = true): Promise<void> {
+    if (!this.shouldUseBrowserPointerLock()) {
+      return;
+    }
+
     if (this.autoPointerLockInProgress) return;
     this.autoPointerLockInProgress = true;
     try {
@@ -2961,6 +2979,10 @@ export class GfnWebRtcClient {
     this.mouseFlushTimer = window.setInterval(flushMouse, this.mouseFlushIntervalMs);
 
     const tryAutoLock = (): void => {
+      if (!this.shouldUseBrowserPointerLock()) {
+        return;
+      }
+
       try {
         if (document?.body?.dataset?.sidebarOpen === "1") {
           return;
@@ -3272,11 +3294,15 @@ export class GfnWebRtcClient {
     };
 
     const onClick = () => {
+      videoElement.focus();
+      if (!this.shouldUseBrowserPointerLock()) {
+        return;
+      }
+
       // GFN-style sequence: fullscreen -> keyboard lock (Escape) -> pointer lock.
       void this.requestPointerLockWithEscGuard(pointerLockTarget, this.shouldAutoFullscreen()).catch((err: DOMException) => {
         this.log(`Pointer lock request failed: ${err.name}: ${err.message}`);
       });
-      videoElement.focus();
     };
 
     // Store lock target for pointer lock re-acquisition
@@ -3414,6 +3440,10 @@ export class GfnWebRtcClient {
     // This prevents the browser from processing Escape as pointer lock exit.
     // Only works in fullscreen + secure context + Chromium.
     const onFullscreenChange = () => {
+      if (!this.shouldUseBrowserPointerLock()) {
+        return;
+      }
+
       const nav = navigator as any;
       if (document.fullscreenElement) {
         void this.lockEscapeInFullscreen();

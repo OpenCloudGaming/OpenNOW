@@ -575,6 +575,49 @@ function clampNumber(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }
 
+function shouldUseDomPointerCapture(): boolean {
+  return !platformCapabilities.isAndroid;
+}
+
+function trySetPointerCapture(target: Element, pointerId: number): boolean {
+  if (!shouldUseDomPointerCapture() || typeof target.setPointerCapture !== "function") {
+    return false;
+  }
+
+  try {
+    target.setPointerCapture(pointerId);
+    return typeof target.hasPointerCapture === "function" && target.hasPointerCapture(pointerId);
+  } catch {
+    return false;
+  }
+}
+
+function tryReleasePointerCapture(target: Element, pointerId: number): void {
+  if (!shouldUseDomPointerCapture() || typeof target.releasePointerCapture !== "function") {
+    return;
+  }
+
+  try {
+    if (typeof target.hasPointerCapture !== "function" || target.hasPointerCapture(pointerId)) {
+      target.releasePointerCapture(pointerId);
+    }
+  } catch {
+    // Android WebView can throw InvalidStateError for stale/non-captured pointers.
+  }
+}
+
+function hasActivePointer(target: Element, pointerId: number, activePointerId: number | null): boolean {
+  if (activePointerId === pointerId) {
+    return true;
+  }
+
+  try {
+    return typeof target.hasPointerCapture === "function" && target.hasPointerCapture(pointerId);
+  } catch {
+    return false;
+  }
+}
+
 function quantizeTouchStickValue(value: StickValue): StickValue {
   const quantizeAxis = (axis: number) => {
     if (Math.abs(axis) < ANDROID_TOUCH_STICK_STEP) {
@@ -595,6 +638,7 @@ function TouchStick({
   onChange: (value: StickValue) => void;
 }): JSX.Element {
   const baseRef = useRef<HTMLDivElement | null>(null);
+  const activePointerIdRef = useRef<number | null>(null);
 
   const updateFromPointer = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
     const rect = baseRef.current?.getBoundingClientRect();
@@ -609,31 +653,53 @@ function TouchStick({
     onChange(quantizeTouchStickValue({ x: rawX * scale, y: rawY * scale }));
   }, [onChange]);
 
+  useEffect(() => {
+    const releasePointer = (event: PointerEvent) => {
+      if (activePointerIdRef.current !== event.pointerId) {
+        return;
+      }
+      activePointerIdRef.current = null;
+      onChange({ x: 0, y: 0 });
+    };
+
+    window.addEventListener("pointerup", releasePointer);
+    window.addEventListener("pointercancel", releasePointer);
+    return () => {
+      window.removeEventListener("pointerup", releasePointer);
+      window.removeEventListener("pointercancel", releasePointer);
+    };
+  }, [onChange]);
+
   return (
     <div
       ref={baseRef}
       className="sv-touch-stick"
       onPointerDown={(event) => {
         event.preventDefault();
-        event.currentTarget.setPointerCapture(event.pointerId);
+        activePointerIdRef.current = event.pointerId;
+        trySetPointerCapture(event.currentTarget, event.pointerId);
         updateFromPointer(event);
       }}
       onPointerMove={(event) => {
-        if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+        if (hasActivePointer(event.currentTarget, event.pointerId, activePointerIdRef.current)) {
           event.preventDefault();
           updateFromPointer(event);
         }
       }}
       onPointerUp={(event) => {
-        event.preventDefault();
-        event.currentTarget.releasePointerCapture(event.pointerId);
-        onChange({ x: 0, y: 0 });
+        if (hasActivePointer(event.currentTarget, event.pointerId, activePointerIdRef.current)) {
+          event.preventDefault();
+          tryReleasePointerCapture(event.currentTarget, event.pointerId);
+          activePointerIdRef.current = null;
+          onChange({ x: 0, y: 0 });
+        }
       }}
       onPointerCancel={(event) => {
-        if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-          event.currentTarget.releasePointerCapture(event.pointerId);
+        if (hasActivePointer(event.currentTarget, event.pointerId, activePointerIdRef.current)) {
+          tryReleasePointerCapture(event.currentTarget, event.pointerId);
+          activePointerIdRef.current = null;
+          onChange({ x: 0, y: 0 });
         }
-        onChange({ x: 0, y: 0 });
       }}
       aria-label={label}
       role="application"
@@ -669,6 +735,8 @@ function TouchControllerOverlay({
   const lastEmitMsRef = useRef(0);
   const pendingEmitRef = useRef<number | null>(null);
   const hideControlsTimerRef = useRef<number | null>(null);
+  const activeButtonPointersRef = useRef(new Map<number, number>());
+  const activeTriggerPointersRef = useRef(new Map<number, "left" | "right">());
 
   const isNeutral = useCallback(() => (
     buttonsRef.current === 0 &&
@@ -768,29 +836,33 @@ function TouchControllerOverlay({
     scheduleEmit(true, value.x === 0 && value.y === 0);
   }, [markTouchActivity, scheduleEmit]);
 
-  const setButton = useCallback((mask: number, pressed: boolean) => {
-    const nextButtons = pressed
-      ? buttonsRef.current | mask
-      : buttonsRef.current & ~mask;
+  const setButtonsFromActivePointers = useCallback(() => {
+    let nextButtons = 0;
+    for (const mask of activeButtonPointersRef.current.values()) {
+      nextButtons |= mask;
+    }
     if (nextButtons === buttonsRef.current) {
       return;
     }
-    buttonsRef.current = pressed
-      ? buttonsRef.current | mask
-      : buttonsRef.current & ~mask;
+    buttonsRef.current = nextButtons;
     markTouchActivity();
     emitNow(true);
   }, [emitNow, markTouchActivity]);
 
-  const setTrigger = useCallback((side: "left" | "right", pressed: boolean) => {
-    const nextValue = pressed ? 1 : 0;
-    if (triggersRef.current[side] === nextValue) {
+  const setTriggersFromActivePointers = useCallback(() => {
+    let left = 0;
+    let right = 0;
+    for (const side of activeTriggerPointersRef.current.values()) {
+      if (side === "left") {
+        left = 1;
+      } else {
+        right = 1;
+      }
+    }
+    if (triggersRef.current.left === left && triggersRef.current.right === right) {
       return;
     }
-    triggersRef.current = {
-      ...triggersRef.current,
-      [side]: nextValue,
-    };
+    triggersRef.current = { left, right };
     markTouchActivity();
     emitNow(true);
   }, [emitNow, markTouchActivity]);
@@ -798,19 +870,20 @@ function TouchControllerOverlay({
   const bindButton = (mask: number) => ({
     onPointerDown: (event: React.PointerEvent<HTMLButtonElement>) => {
       event.preventDefault();
-      event.currentTarget.setPointerCapture(event.pointerId);
-      setButton(mask, true);
+      trySetPointerCapture(event.currentTarget, event.pointerId);
+      activeButtonPointersRef.current.set(event.pointerId, mask);
+      setButtonsFromActivePointers();
     },
     onPointerUp: (event: React.PointerEvent<HTMLButtonElement>) => {
       event.preventDefault();
-      event.currentTarget.releasePointerCapture(event.pointerId);
-      setButton(mask, false);
+      tryReleasePointerCapture(event.currentTarget, event.pointerId);
+      activeButtonPointersRef.current.delete(event.pointerId);
+      setButtonsFromActivePointers();
     },
     onPointerCancel: (event: React.PointerEvent<HTMLButtonElement>) => {
-      if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-        event.currentTarget.releasePointerCapture(event.pointerId);
-      }
-      setButton(mask, false);
+      tryReleasePointerCapture(event.currentTarget, event.pointerId);
+      activeButtonPointersRef.current.delete(event.pointerId);
+      setButtonsFromActivePointers();
     },
     onContextMenu: (event: React.MouseEvent<HTMLButtonElement>) => {
       event.preventDefault();
@@ -820,24 +893,49 @@ function TouchControllerOverlay({
   const bindTrigger = (side: "left" | "right") => ({
     onPointerDown: (event: React.PointerEvent<HTMLButtonElement>) => {
       event.preventDefault();
-      event.currentTarget.setPointerCapture(event.pointerId);
-      setTrigger(side, true);
+      trySetPointerCapture(event.currentTarget, event.pointerId);
+      activeTriggerPointersRef.current.set(event.pointerId, side);
+      setTriggersFromActivePointers();
     },
     onPointerUp: (event: React.PointerEvent<HTMLButtonElement>) => {
       event.preventDefault();
-      event.currentTarget.releasePointerCapture(event.pointerId);
-      setTrigger(side, false);
+      tryReleasePointerCapture(event.currentTarget, event.pointerId);
+      activeTriggerPointersRef.current.delete(event.pointerId);
+      setTriggersFromActivePointers();
     },
     onPointerCancel: (event: React.PointerEvent<HTMLButtonElement>) => {
-      if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-        event.currentTarget.releasePointerCapture(event.pointerId);
-      }
-      setTrigger(side, false);
+      tryReleasePointerCapture(event.currentTarget, event.pointerId);
+      activeTriggerPointersRef.current.delete(event.pointerId);
+      setTriggersFromActivePointers();
     },
     onContextMenu: (event: React.MouseEvent<HTMLButtonElement>) => {
       event.preventDefault();
     },
   });
+
+  useEffect(() => {
+    const releasePointer = (event: PointerEvent) => {
+      let changed = false;
+      if (activeButtonPointersRef.current.delete(event.pointerId)) {
+        changed = true;
+      }
+      if (activeTriggerPointersRef.current.delete(event.pointerId)) {
+        changed = true;
+      }
+      if (!changed) {
+        return;
+      }
+      setButtonsFromActivePointers();
+      setTriggersFromActivePointers();
+    };
+
+    window.addEventListener("pointerup", releasePointer);
+    window.addEventListener("pointercancel", releasePointer);
+    return () => {
+      window.removeEventListener("pointerup", releasePointer);
+      window.removeEventListener("pointercancel", releasePointer);
+    };
+  }, [setButtonsFromActivePointers, setTriggersFromActivePointers]);
 
   useEffect(() => {
     revealControls();
@@ -977,7 +1075,7 @@ function AndroidMousePad({
       aria-label="Mouse touch area"
       onPointerDown={(event) => {
         event.preventDefault();
-        event.currentTarget.setPointerCapture(event.pointerId);
+        trySetPointerCapture(event.currentTarget, event.pointerId);
         hoverPointRef.current = { x: event.clientX, y: event.clientY };
         if (event.pointerType === "mouse") {
           setCursorFromClientPoint(event.clientX, event.clientY);
@@ -1030,9 +1128,7 @@ function AndroidMousePad({
           event.preventDefault();
           const movedPx = Math.hypot(event.clientX - last.startX, event.clientY - last.startY);
           const elapsedMs = event.timeStamp - last.startMs;
-          if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-            event.currentTarget.releasePointerCapture(event.pointerId);
-          }
+          tryReleasePointerCapture(event.currentTarget, event.pointerId);
           lastPointRef.current = null;
           hoverPointRef.current = { x: event.clientX, y: event.clientY };
           setCursorFromClientPoint(event.clientX, event.clientY);
@@ -1043,9 +1139,7 @@ function AndroidMousePad({
       }}
       onPointerCancel={(event) => {
         if (lastPointRef.current?.id === event.pointerId) {
-          if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-            event.currentTarget.releasePointerCapture(event.pointerId);
-          }
+          tryReleasePointerCapture(event.currentTarget, event.pointerId);
           lastPointRef.current = null;
         }
       }}
@@ -1652,7 +1746,7 @@ export function StreamView({
     (stats) => stats.physicalGamepads,
   );
   const androidNativeMouseCapture = androidTouchSettings.mouseCapture && androidPhysicalGamepads === 0;
-  const androidMousePadEnabled = androidTouchSettings.mousePad && !androidTouchSettings.enabled;
+  const androidMousePadEnabled = androidTouchSettings.mousePad;
   const [androidMenuRevealSignal, setAndroidMenuRevealSignal] = useState(0);
   const [androidTouchRevealSignal, setAndroidTouchRevealSignal] = useState(0);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
