@@ -296,6 +296,60 @@ export function useControllerNavigation({
   }, [controllerConnected, enabled]);
 
   useEffect(() => {
+    if (!enabled) return;
+
+    const onKeyDown = (event: KeyboardEvent): void => {
+      const target = event.target as HTMLElement | null;
+      const isTyping = !!target && (
+        target.tagName === "INPUT" ||
+        target.tagName === "TEXTAREA" ||
+        target.isContentEditable
+      );
+      if (isTyping && !(target instanceof HTMLInputElement && target.type === "range")) {
+        return;
+      }
+
+      const directionByKey: Record<string, Direction | undefined> = {
+        ArrowUp: "up",
+        Up: "up",
+        ArrowDown: "down",
+        Down: "down",
+        ArrowLeft: "left",
+        Left: "left",
+        ArrowRight: "right",
+        Right: "right",
+      };
+      const direction = directionByKey[event.key];
+      if (direction) {
+        event.preventDefault();
+        event.stopPropagation();
+        if (!onDirectionInput?.(direction)) {
+          moveFocus(direction);
+        }
+        return;
+      }
+
+      if (event.key === "Enter" || event.key === "NumpadEnter" || event.key === " ") {
+        event.preventDefault();
+        event.stopPropagation();
+        if (!onActivateInput?.()) {
+          activateFocusedElement();
+        }
+        return;
+      }
+
+      if (event.key === "Escape" || event.key === "Backspace" || event.key === "BrowserBack") {
+        event.preventDefault();
+        event.stopPropagation();
+        triggerBackAction(onBackAction);
+      }
+    };
+
+    document.addEventListener("keydown", onKeyDown, true);
+    return () => document.removeEventListener("keydown", onKeyDown, true);
+  }, [enabled, onActivateInput, onBackAction, onDirectionInput]);
+
+  useEffect(() => {
     function updateConnected(next: boolean): void {
       if (connectedRef.current !== next) {
         connectedRef.current = next;

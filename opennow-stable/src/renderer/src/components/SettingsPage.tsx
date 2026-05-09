@@ -1735,7 +1735,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                     className="settings-slider"
                     min={5}
                     max={150}
-                    step={5}
+                    step={1}
                     value={settings.maxBitrateMbps}
                     onChange={(e) => handleChange("maxBitrateMbps", parseInt(e.target.value, 10))}
                   />
@@ -2570,6 +2570,21 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                       type="checkbox"
                       checked={settings.sessionCounterEnabled}
                       onChange={(e) => handleChange("sessionCounterEnabled", e.target.checked)}
+                    />
+                    <span className="settings-toggle-track" />
+                  </label>
+                </div>
+
+                <div className="settings-row">
+                  <label className="settings-label">
+                    Hide Free-Tier Time Warnings
+                    <span className="settings-hint">Suppress local free-tier remaining-time messages during a stream.</span>
+                  </label>
+                  <label className="settings-toggle">
+                    <input
+                      type="checkbox"
+                      checked={settings.hideFreeTierSessionWarnings}
+                      onChange={(e) => handleChange("hideFreeTierSessionWarnings", e.target.checked)}
                     />
                     <span className="settings-toggle-track" />
                   </label>

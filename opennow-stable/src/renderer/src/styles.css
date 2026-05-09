@@ -1172,7 +1172,10 @@ body.controller-mode {
 
 .controller-mode .controller-focus,
 .controller-mode .controller-focus:focus,
-.controller-mode .controller-focus:focus-visible {
+.controller-mode .controller-focus:focus-visible,
+.android-shell .controller-focus,
+.android-shell .controller-focus:focus,
+.android-shell .controller-focus:focus-visible {
   outline: none !important;
   border-color: color-mix(in srgb, var(--accent) 82%, var(--panel-border)) !important;
   box-shadow:
@@ -4713,6 +4716,12 @@ button.game-card-store-chip.active:hover {
   transition: opacity 120ms linear;
 }
 
+.android-shell .sv-video {
+  opacity: 1;
+  transition: none;
+  contain: strict;
+}
+
 .sv-video--ready {
   opacity: 1;
 }
@@ -5641,9 +5650,7 @@ button.game-card-store-chip.active:hover {
 }
 
 .sv-touch {
-  position: fixed;
-  inset: 0;
-  z-index: 1001;
+  display: contents;
   pointer-events: none;
   touch-action: none;
   --sv-touch-scale: 1;
@@ -5653,6 +5660,7 @@ button.game-card-store-chip.active:hover {
 .sv-touch-left,
 .sv-touch-right {
   position: fixed;
+  z-index: 1001;
   bottom: max(18px, env(safe-area-inset-bottom));
   display: grid;
   align-items: end;
@@ -5675,6 +5683,7 @@ button.game-card-store-chip.active:hover {
 
 .sv-touch-shoulders {
   position: fixed;
+  z-index: 1001;
   top: max(12px, env(safe-area-inset-top));
   left: 50%;
   display: grid;
@@ -5687,6 +5696,7 @@ button.game-card-store-chip.active:hover {
 
 .sv-touch-center {
   position: fixed;
+  z-index: 1001;
   left: 50%;
   bottom: max(18px, env(safe-area-inset-bottom));
   display: flex;
@@ -5694,6 +5704,14 @@ button.game-card-store-chip.active:hover {
   pointer-events: none;
   transform: translateX(-50%) scale(var(--sv-touch-scale));
   transform-origin: bottom center;
+}
+
+.sv-touch[data-visible="false"] .sv-touch-left,
+.sv-touch[data-visible="false"] .sv-touch-right,
+.sv-touch[data-visible="false"] .sv-touch-shoulders,
+.sv-touch[data-visible="false"] .sv-touch-center {
+  visibility: hidden;
+  pointer-events: none;
 }
 
 .sv-touch-stick {
@@ -5956,6 +5974,7 @@ button.game-card-store-chip.active:hover {
 
 .sv-android-menu-status span,
 .sv-android-switch span,
+.sv-android-action,
 .sv-android-quit {
   display: inline-flex;
   align-items: center;
@@ -6036,7 +6055,7 @@ button.game-card-store-chip.active:hover {
 
 .sv-android-text-actions {
   display: grid;
-  grid-template-columns: repeat(2, 36px);
+  grid-template-columns: repeat(3, 36px);
   gap: 6px;
 }
 
@@ -6069,6 +6088,7 @@ button.game-card-store-chip.active:hover {
 }
 
 .sv-android-placement button,
+.sv-android-action,
 .sv-android-quit {
   min-height: 34px;
   border-radius: 8px;
@@ -6078,6 +6098,14 @@ button.game-card-store-chip.active:hover {
   font: inherit;
   font-size: 0.72rem;
   font-weight: 700;
+}
+
+.sv-android-action {
+  justify-content: center;
+}
+
+.sv-android-action:disabled {
+  opacity: 0.46;
 }
 
 .sv-android-placement button.active {

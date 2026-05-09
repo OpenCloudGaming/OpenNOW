@@ -960,6 +960,22 @@ function toLaunchErrorState(error: unknown, stage: StreamLoadingStatus): LaunchE
     };
   }
 
+  if (
+    combined.includes("PATCHING") ||
+    combined.includes("MAINTENANCE") ||
+    combined.includes("GAME_UNDER_MAINTENANCE") ||
+    combined.includes("APP_UNDER_MAINTENANCE")
+  ) {
+    return {
+      stage,
+      title: "Game Is Patching",
+      description: "This game is currently patching or under maintenance on GeForce NOW. Try again after the patch finishes.",
+      codeLabel: toCodeLabel(code),
+      debugDetails: extractLaunchErrorDebugDetails(error),
+      occurredAtIso,
+    };
+  }
+
   return {
     stage,
     title: titleFromError || "Launch Failed",
@@ -1059,6 +1075,7 @@ export function App(): JSX.Element {
     autoFullScreen: false,
     favoriteGameIds: [],
     sessionCounterEnabled: false,
+    hideFreeTierSessionWarnings: false,
     sessionClockShowEveryMinutes: 60,
     sessionClockShowDurationSeconds: 30,
     windowWidth: 1400,
@@ -1110,7 +1127,10 @@ export function App(): JSX.Element {
   const sessionElapsedSeconds = useElapsedSeconds(sessionStartedAtMs, streamStatus === "streaming");
   const isStreaming = streamStatus === "streaming";
   const freeTierSessionWarningsActive =
-    isStreaming && sessionStartedAtMs !== null && shouldShowFreeTierSessionWarnings(subscriptionInfo);
+    isStreaming &&
+    sessionStartedAtMs !== null &&
+    !settings.hideFreeTierSessionWarnings &&
+    shouldShowFreeTierSessionWarnings(subscriptionInfo);
   const freeTierSessionRemainingSeconds = freeTierSessionWarningsActive
     ? Math.max(0, FREE_TIER_SESSION_LIMIT_SECONDS - sessionElapsedSeconds)
     : null;
@@ -1323,7 +1343,8 @@ export function App(): JSX.Element {
     && streamStatus === "idle"
     && settings.controllerMode
     && (currentPage === "library" || currentPage === "settings");
-  const controllerUiActive = controllerDesktopModeActive || controllerOverlayOpen;
+  const androidTvLoginNavigationActive = platformCapabilities.isAndroid && !authSession && streamStatus === "idle";
+  const controllerUiActive = controllerDesktopModeActive || controllerOverlayOpen || androidTvLoginNavigationActive;
 
   const controllerConnected = useControllerNavigation({
     enabled: controllerUiActive,

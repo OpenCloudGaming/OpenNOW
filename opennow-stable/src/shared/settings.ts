@@ -10,7 +10,7 @@ export const DEFAULT_ANDROID_TOUCH_SETTINGS: AndroidTouchSettings = {
   size: 1,
   opacity: 0.74,
   placement: "default",
-  mousePad: true,
+  mousePad: false,
   mouseCapture: false,
 };
 
@@ -79,6 +79,7 @@ export const DEFAULT_SETTINGS: Settings = {
   autoFullScreen: false,
   favoriteGameIds: [],
   sessionCounterEnabled: false,
+  hideFreeTierSessionWarnings: false,
   sessionClockShowEveryMinutes: 60,
   sessionClockShowDurationSeconds: 30,
   windowWidth: 1400,

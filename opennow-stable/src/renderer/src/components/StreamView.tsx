@@ -88,7 +88,7 @@ interface StreamViewProps {
   onTouchMouseButton?: (input: { button: number; pressed: boolean; timestampMs?: number }) => void;
   onTouchMouseWheel?: (input: { delta: number; timestampMs?: number }) => void;
   onSendText?: (text: string) => number;
-  onSendKeyPress?: (key: "Backspace" | "Enter") => void;
+  onSendKeyPress?: (key: "Backspace" | "Enter" | "Escape") => void;
   androidTouchControls: AndroidTouchSettings;
   onAndroidTouchControlsChange: (settings: AndroidTouchSettings) => void;
   microphoneMode: MicrophoneMode;
@@ -563,6 +563,7 @@ function VideoFocusOnReady({
 
 type StickValue = { x: number; y: number };
 const ANDROID_TOUCH_CONTROLLER_IDLE_DISCONNECT_MS = 3000;
+const ANDROID_TOUCH_CONTROLLER_IDLE_HIDE_MS = 3500;
 const ANDROID_TOUCH_CONTROLLER_KEEPALIVE_MS = 250;
 const ANDROID_TOUCH_CONTROLLER_MIN_EMIT_MS = 24;
 const ANDROID_TOUCH_STICK_STEP = 0.01;
@@ -650,12 +651,15 @@ function TouchStick({
 function TouchControllerOverlay({
   onVirtualGamepadState,
   settings,
+  revealSignal,
 }: {
   onVirtualGamepadState: (state: VirtualGamepadState) => void;
   settings: AndroidTouchSettings;
+  revealSignal?: number;
 }): JSX.Element {
   const [leftStick, setLeftStick] = useState<StickValue>({ x: 0, y: 0 });
   const [rightStick, setRightStick] = useState<StickValue>({ x: 0, y: 0 });
+  const [controlsVisible, setControlsVisible] = useState(true);
   const buttonsRef = useRef(0);
   const triggersRef = useRef({ left: 0, right: 0 });
   const leftStickRef = useRef(leftStick);
@@ -664,6 +668,7 @@ function TouchControllerOverlay({
   const lastTouchActivityMsRef = useRef(0);
   const lastEmitMsRef = useRef(0);
   const pendingEmitRef = useRef<number | null>(null);
+  const hideControlsTimerRef = useRef<number | null>(null);
 
   const isNeutral = useCallback(() => (
     buttonsRef.current === 0 &&
@@ -694,6 +699,24 @@ function TouchControllerOverlay({
     });
   }, [onVirtualGamepadState]);
 
+  const scheduleControlsHide = useCallback(() => {
+    if (hideControlsTimerRef.current !== null) {
+      window.clearTimeout(hideControlsTimerRef.current);
+      hideControlsTimerRef.current = null;
+    }
+    hideControlsTimerRef.current = window.setTimeout(() => {
+      hideControlsTimerRef.current = null;
+      if (isNeutral()) {
+        setControlsVisible(false);
+      }
+    }, ANDROID_TOUCH_CONTROLLER_IDLE_HIDE_MS);
+  }, [isNeutral]);
+
+  const revealControls = useCallback(() => {
+    setControlsVisible(true);
+    scheduleControlsHide();
+  }, [scheduleControlsHide]);
+
   const scheduleEmit = useCallback((connected = virtualConnectedRef.current, immediate = false) => {
     if (immediate) {
       emitNow(connected);
@@ -719,10 +742,11 @@ function TouchControllerOverlay({
 
   const markTouchActivity = useCallback(() => {
     lastTouchActivityMsRef.current = performance.now();
+    revealControls();
     if (!virtualConnectedRef.current) {
       virtualConnectedRef.current = true;
     }
-  }, []);
+  }, [revealControls]);
 
   const updateLeftStick = useCallback((value: StickValue) => {
     if (leftStickRef.current.x === value.x && leftStickRef.current.y === value.y) {
@@ -816,6 +840,10 @@ function TouchControllerOverlay({
   });
 
   useEffect(() => {
+    revealControls();
+  }, [revealControls, revealSignal]);
+
+  useEffect(() => {
     const keepalive = window.setInterval(() => {
       if (!virtualConnectedRef.current) {
         return;
@@ -834,6 +862,10 @@ function TouchControllerOverlay({
         window.clearTimeout(pendingEmitRef.current);
         pendingEmitRef.current = null;
       }
+      if (hideControlsTimerRef.current !== null) {
+        window.clearTimeout(hideControlsTimerRef.current);
+        hideControlsTimerRef.current = null;
+      }
       window.clearInterval(keepalive);
       onVirtualGamepadState({ ...EMPTY_VIRTUAL_GAMEPAD_STATE, connected: false });
     };
@@ -843,6 +875,7 @@ function TouchControllerOverlay({
     <div
       className="sv-touch"
       data-placement={settings.placement}
+      data-visible={controlsVisible ? "true" : "false"}
       aria-label="Touch controller"
       style={{
         "--sv-touch-scale": settings.size,
@@ -1092,10 +1125,16 @@ function AndroidStreamMenu({
   touchSettings,
   onTouchSettingsChange,
   onEndSession,
+  onCaptureScreenshot,
   onSendText,
   onSendKeyPress,
   physicalGamepads,
   revealSignal,
+  onTouchControlsReveal,
+  streamZoom,
+  onStreamZoomChange,
+  screenshotAvailable,
+  isSavingScreenshot,
 }: {
   diagnosticsStore: StreamDiagnosticsStore;
   sessionStartedAtMs: number | null;
@@ -1103,10 +1142,16 @@ function AndroidStreamMenu({
   touchSettings: AndroidTouchSettings;
   onTouchSettingsChange: (settings: AndroidTouchSettings) => void;
   onEndSession: () => void;
+  onCaptureScreenshot: () => void;
   onSendText?: (text: string) => number;
-  onSendKeyPress?: (key: "Backspace" | "Enter") => void;
+  onSendKeyPress?: (key: "Backspace" | "Enter" | "Escape") => void;
   physicalGamepads: number;
   revealSignal?: number;
+  onTouchControlsReveal?: () => void;
+  streamZoom: number;
+  onStreamZoomChange: (value: number) => void;
+  screenshotAvailable: boolean;
+  isSavingScreenshot: boolean;
 }): JSX.Element {
   const [open, setOpen] = useState(false);
   const [visible, setVisible] = useState(true);
@@ -1137,7 +1182,10 @@ function AndroidStreamMenu({
   );
   const updateTouchSettings = useCallback((patch: Partial<AndroidTouchSettings>) => {
     onTouchSettingsChange({ ...touchSettings, ...patch });
-  }, [onTouchSettingsChange, touchSettings]);
+    if (patch.enabled === true) {
+      onTouchControlsReveal?.();
+    }
+  }, [onTouchControlsReveal, onTouchSettingsChange, touchSettings]);
   const batteryText = battery.level === null ? "Battery --" : `Battery ${battery.level}%${battery.charging ? " charging" : ""}`;
   const scheduleHide = useCallback((delayMs = 3500) => {
     if (hideTimerRef.current !== null) {
@@ -1199,6 +1247,7 @@ function AndroidStreamMenu({
         className={`sv-android-menu-toggle${!visible && !open ? " is-hidden" : ""}`}
         onClick={() => {
           reveal();
+          onTouchControlsReveal?.();
           setOpen((value) => !value);
         }}
         aria-label="Open stream menu"
@@ -1239,9 +1288,10 @@ function AndroidStreamMenu({
             <input
               type="checkbox"
               checked={touchSettings.mousePad}
+              disabled={touchSettings.enabled}
               onChange={(event) => updateTouchSettings({ mousePad: event.target.checked })}
             />
-            <span><MousePointer2 size={14} /> Finger mouse</span>
+            <span><MousePointer2 size={14} /> {touchSettings.enabled ? "Finger mouse paused" : "Finger mouse"}</span>
           </label>
 
           <label className="sv-android-switch">
@@ -1310,6 +1360,16 @@ function AndroidStreamMenu({
               >
                 <Delete size={15} />
               </button>
+              <button
+                type="button"
+                onClick={() => {
+                  onSendKeyPress?.("Escape");
+                  textInputRef.current?.focus();
+                }}
+                aria-label="Send Escape"
+              >
+                Esc
+              </button>
             </div>
           </div>
 
@@ -1337,6 +1397,18 @@ function AndroidStreamMenu({
             />
           </label>
 
+          <label className="sv-android-slider">
+            <span>Zoom {streamZoom.toFixed(2)}x</span>
+            <input
+              type="range"
+              min="100"
+              max="180"
+              step="5"
+              value={Math.round(streamZoom * 100)}
+              onChange={(event) => onStreamZoomChange(Number(event.target.value) / 100)}
+            />
+          </label>
+
           <div className="sv-android-placement" aria-label="Touch control placement">
             {(["default", "compact", "lower", "split"] as AndroidTouchPlacement[]).map((placement) => (
               <button
@@ -1349,6 +1421,16 @@ function AndroidStreamMenu({
               </button>
             ))}
           </div>
+
+          <button
+            type="button"
+            className="sv-android-action"
+            onClick={onCaptureScreenshot}
+            disabled={!screenshotAvailable || isSavingScreenshot}
+          >
+            <Camera size={15} />
+            <span>{isSavingScreenshot ? "Capturing..." : "Screenshot"}</span>
+          </button>
 
           <button
             type="button"
@@ -1537,6 +1619,7 @@ export function StreamView({
   const [showSideBar, setShowSideBar] = useState(false);
   const [isPointerLocked, setIsPointerLocked] = useState(false);
   const [hasVideoFrame, setHasVideoFrame] = useState(false);
+  const [streamZoom, setStreamZoom] = useState(1);
   const [screenshots, setScreenshots] = useState<ScreenshotEntry[]>([]);
   const [isSavingScreenshot, setIsSavingScreenshot] = useState(false);
   const [galleryError, setGalleryError] = useState<string | null>(null);
@@ -1569,7 +1652,9 @@ export function StreamView({
     (stats) => stats.physicalGamepads,
   );
   const androidNativeMouseCapture = androidTouchSettings.mouseCapture && androidPhysicalGamepads === 0;
+  const androidMousePadEnabled = androidTouchSettings.mousePad && !androidTouchSettings.enabled;
   const [androidMenuRevealSignal, setAndroidMenuRevealSignal] = useState(0);
+  const [androidTouchRevealSignal, setAndroidTouchRevealSignal] = useState(0);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const recordingIdRef = useRef<string | null>(null);
   const recordingStartTimeRef = useRef<number>(0);
@@ -1654,6 +1739,7 @@ export function StreamView({
       }
       event.preventDefault();
       setAndroidMenuRevealSignal((value) => value + 1);
+      setAndroidTouchRevealSignal((value) => value + 1);
     };
 
     window.addEventListener("opennow:android-back", revealAndroidUi);
@@ -1994,7 +2080,12 @@ export function StreamView({
         throw new Error("Could not acquire 2D context");
       }
 
-      context.drawImage(video, 0, 0, canvas.width, canvas.height);
+      const zoom = clampNumber(streamZoom, 1, 1.8);
+      const sourceWidth = Math.max(1, video.videoWidth / zoom);
+      const sourceHeight = Math.max(1, video.videoHeight / zoom);
+      const sourceX = (video.videoWidth - sourceWidth) / 2;
+      const sourceY = (video.videoHeight - sourceHeight) / 2;
+      context.drawImage(video, sourceX, sourceY, sourceWidth, sourceHeight, 0, 0, canvas.width, canvas.height);
       const dataUrl = canvas.toDataURL("image/png");
       const saved = await openNow.saveScreenshot({ dataUrl, gameTitle });
       setScreenshots((prev) => [saved, ...prev.filter((item) => item.id !== saved.id)].slice(0, 60));
@@ -2004,7 +2095,7 @@ export function StreamView({
     } finally {
       setIsSavingScreenshot(false);
     }
-  }, [gameTitle, isSavingScreenshot, screenshotApiAvailable]);
+  }, [gameTitle, isSavingScreenshot, screenshotApiAvailable, streamZoom]);
 
   const scrollGallery = useCallback((direction: "left" | "right") => {
     const strip = galleryStripRef.current;
@@ -2428,6 +2519,7 @@ export function StreamView({
         muted
         tabIndex={0}
         className={`sv-video${hasVideoFrame ? " sv-video--ready" : ""}`}
+        style={streamZoom > 1 ? { transform: `scale(${streamZoom})` } : undefined}
         onLoadedData={markVideoFrameReady}
         onCanPlay={markVideoFrameReady}
         onResize={markVideoFrameReady}
@@ -2895,10 +2987,11 @@ export function StreamView({
             <TouchControllerOverlay
               onVirtualGamepadState={onVirtualGamepadState}
               settings={androidTouchSettings}
+              revealSignal={androidTouchRevealSignal}
             />
           )}
           <AndroidMousePad
-            enabled={androidTouchSettings.mousePad}
+            enabled={androidMousePadEnabled}
             onTouchMouseMove={onTouchMouseMove}
             onTouchMouseTap={onTouchMouseTap}
           />
@@ -2909,10 +3002,18 @@ export function StreamView({
             touchSettings={androidTouchSettings}
             onTouchSettingsChange={handleAndroidTouchSettingsChange}
             onEndSession={onEndSession}
+            onCaptureScreenshot={() => {
+              void captureScreenshot();
+            }}
             onSendText={onSendText}
             onSendKeyPress={onSendKeyPress}
             physicalGamepads={androidPhysicalGamepads}
             revealSignal={androidMenuRevealSignal}
+            onTouchControlsReveal={() => setAndroidTouchRevealSignal((value) => value + 1)}
+            streamZoom={streamZoom}
+            onStreamZoomChange={(value) => setStreamZoom(clampNumber(value, 1, 1.8))}
+            screenshotAvailable={screenshotApiAvailable}
+            isSavingScreenshot={isSavingScreenshot}
           />
         </>
       )}
