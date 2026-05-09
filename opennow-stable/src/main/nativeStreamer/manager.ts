@@ -16,6 +16,9 @@ import { dirname, resolve, join, delimiter, sep } from "node:path";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 
 import {
+  createUnsupportedNativeStreamerStatus,
+  isNativeStreamerSupportedPlatform,
+  NATIVE_STREAMER_WINDOWS_ONLY_MESSAGE,
   nativeStreamerFeatureModeToEnvValue,
   type IceCandidatePayload,
   type KeyframeRequest,
@@ -588,6 +591,10 @@ export class NativeStreamerManager {
   }
 
   async probeStatus(): Promise<NativeStreamerStatus> {
+    if (!isNativeStreamerSupportedPlatform(process.platform)) {
+      return createUnsupportedNativeStreamerStatus();
+    }
+
     try {
       await this.ensureProcess();
       const backend = this.capabilities?.backend;
@@ -768,6 +775,10 @@ export class NativeStreamerManager {
   }
 
   private async ensureProcess(): Promise<void> {
+    if (!isNativeStreamerSupportedPlatform(process.platform)) {
+      throw new Error(NATIVE_STREAMER_WINDOWS_ONLY_MESSAGE);
+    }
+
     if (this.child && this.capabilities) {
       return;
     }

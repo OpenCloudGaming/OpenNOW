@@ -22,6 +22,9 @@ import type {
     NativeVideoBackendPreference,
   } from "@shared/gfn";
 import {
+  createUnsupportedNativeStreamerStatus,
+  isNativeStreamerSupportedPlatform,
+  NATIVE_STREAMER_WINDOWS_ONLY_MESSAGE,
   colorQualityRequiresHevc,
   keyboardLayoutOptions,
   USER_FACING_COLOR_QUALITY_OPTIONS,
@@ -303,6 +306,7 @@ const STATIC_FPS_PRESETS: FpsPreset[] = [
 ];
 
 const isMac = navigator.platform.toLowerCase().includes("mac");
+const isWindows = isNativeStreamerSupportedPlatform(`${navigator.platform} ${navigator.userAgent}`);
 const shortcutExamples = "Examples: F3, Ctrl+Shift+Q, Ctrl+Shift+K";
 const shortcutDefaults = {
   shortcutToggleStats: "F3",
@@ -744,6 +748,12 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
   }, []);
 
   const refreshNativeStreamerStatus = useCallback(async () => {
+    if (!isWindows) {
+      setNativeStreamerStatus(createUnsupportedNativeStreamerStatus());
+      setNativeStreamerStatusLoading(false);
+      return;
+    }
+
     setNativeStreamerStatusLoading(true);
     try {
       setNativeStreamerStatus(await window.openNow.getNativeStreamerStatus());
@@ -2144,177 +2154,195 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
               <h2>Native Streamer</h2>
             </div>
             <div className="settings-rows">
-              <div className="settings-row settings-row--column">
-                <div className="settings-row-top settings-row-top--compact">
-                  <label className="settings-label settings-label--wrap">
-                    <span className="settings-label-title">
-                      Native Streaming
-                      <span className="settings-inline-badge settings-inline-badge--beta">Experimental</span>
-                    </span>
-                  </label>
-                  <label className="settings-toggle">
-                    <input
-                      type="checkbox"
-                      checked={settings.streamClientMode === "native"}
-                      onChange={(e) => handleChange("streamClientMode", e.target.checked ? "native" : "web")}
-                    />
-                    <span className="settings-toggle-track" />
-                  </label>
-                </div>
-                <span className="settings-subtle-hint">
-                  Native streaming is experimental and may have platform-specific bugs, glitches, or fallbacks to Chromium/WebRTC. Enable it only if you are comfortable testing the GStreamer-based desktop streamer for new sessions.
-                </span>
-                <div className="settings-chip-row">
-                  <a className="settings-chip" href="https://github.com/OpenCloudGaming/OpenNOW/issues" target="_blank" rel="noreferrer">
-                    <span>Report on GitHub Issues</span>
-                    <ExternalLink size={13} />
-                  </a>
-                  <a className="settings-chip" href="https://discord.gg/8EJYaJcNfD" target="_blank" rel="noreferrer">
-                    <span>Report on Discord</span>
-                    <ExternalLink size={13} />
-                  </a>
-                </div>
-              </div>
-
-              <div className="settings-row settings-row--column">
-                <div className="settings-row-top settings-row-top--compact">
-                  <label className="settings-label settings-label--wrap">
-                    <span className="settings-label-title">Streamer Status</span>
-                  </label>
-                  <button
-                    type="button"
-                    className="settings-icon-button"
-                    onClick={() => void refreshNativeStreamerStatus()}
-                    disabled={nativeStreamerStatusLoading}
-                    title="Check native streamer"
-                    aria-label="Check native streamer"
-                  >
-                    {nativeStreamerStatusLoading ? <Loader size={15} className="spin" /> : <RefreshCcw size={15} />}
-                  </button>
-                </div>
-                <div className="settings-chip-row">
-                  <span
-                    className={`settings-inline-badge ${
-                      nativeStreamerStatusLoading
-                        ? "settings-inline-badge--codec-testing"
-                        : nativeStreamerStatus?.gstreamerAvailable
-                          ? "settings-inline-badge--codec-gpu"
-                          : "settings-inline-badge--updater-error"
-                    }`}
-                  >
-                    {nativeStreamerStatusLoading
-                      ? "Checking"
-                      : nativeStreamerStatus?.gstreamerAvailable
-                        ? "GStreamer Ready"
-                        : "Not Ready"}
-                  </span>
-                </div>
-                <span className="settings-subtle-hint">
-                  {nativeStreamerStatus?.message ?? "OpenNOW will check the bundled GStreamer streamer when this tab opens."}
-                </span>
-              </div>
-
-              <div className="settings-row settings-row--column">
-                <label className="settings-label">GStreamer Runtime</label>
-                <div className="settings-chip-row">
-                  <span className={`settings-inline-badge ${getGstreamerRuntimeBadgeClass(nativeStreamerStatus)}`}>
-                    {formatGstreamerRuntimeLabel(nativeStreamerStatus)}
-                  </span>
-                  {nativeStreamerStatus?.gstreamerRuntime.path ? (
-                    <span className="settings-inline-badge settings-inline-badge--codec">
-                      Bundled path detected
-                    </span>
-                  ) : null}
-                </div>
-                <span className="settings-subtle-hint">
-                  {nativeStreamerStatus?.gstreamerRuntime.message ?? "Packaged Windows/macOS builds auto-detect a bundled runtime next to the native streamer. Linux uses distro packages."}
-                </span>
-                {!nativeStreamerStatus?.gstreamerAvailable && nativeStreamerStatus?.gstreamerRuntime.installInstructions?.length ? (
-                  <div className="settings-install-steps">
-                    <span className="settings-subtle-hint">
-                      Linux AppImage/private GStreamer bundling is intentionally not used by default because VAAPI/V4L2/Vulkan plugins must match the host distro and GPU driver stack. .deb packages declare Debian/Ubuntu dependencies automatically.
-                    </span>
-                    {nativeStreamerStatus.gstreamerRuntime.installInstructions.map((instruction) => (
-                      <div key={instruction.distro} className="settings-install-step">
-                        <span className="settings-install-step-title">{instruction.distro}</span>
-                        <code>{instruction.command}</code>
-                        {instruction.note ? <span className="settings-subtle-hint">{instruction.note}</span> : null}
-                      </div>
-                    ))}
+              {!isWindows ? (
+                <div className="settings-row settings-row--column">
+                  <div className="settings-row-top settings-row-top--compact">
+                    <label className="settings-label settings-label--wrap">
+                      <span className="settings-label-title">
+                        Native Streaming
+                        <span className="settings-inline-badge settings-inline-badge--beta">Experimental</span>
+                      </span>
+                    </label>
                   </div>
-                ) : null}
-              </div>
-
-              <div className="settings-row settings-row--column">
-                <label className="settings-label">Video Path</label>
-                <div className="settings-chip-row">
-                  <span
-                    className={`settings-inline-badge ${
-                      nativeStreamerStatus?.activeVideoBackend?.available
-                        ? nativeStreamerStatus.activeVideoBackend.backend === "software"
-                          ? "settings-inline-badge--codec-testing"
-                          : "settings-inline-badge--codec-gpu"
-                        : "settings-inline-badge--updater-error"
-                    }`}
-                  >
-                    {formatNativeVideoBackendName(nativeStreamerStatus?.activeVideoBackend?.backend)}
+                  <span className="settings-input-hint">
+                    {NATIVE_STREAMER_WINDOWS_ONLY_MESSAGE}
                   </span>
-                  {getAvailableNativeCodecLabels(nativeStreamerStatus?.activeVideoBackend).map((codec) => (
-                    <span key={codec} className="settings-inline-badge settings-inline-badge--codec">
-                      {codec}
+                </div>
+              ) : (
+                <>
+                  <div className="settings-row settings-row--column">
+                    <div className="settings-row-top settings-row-top--compact">
+                      <label className="settings-label settings-label--wrap">
+                        <span className="settings-label-title">
+                          Native Streaming
+                          <span className="settings-inline-badge settings-inline-badge--beta">Experimental</span>
+                        </span>
+                      </label>
+                      <label className="settings-toggle">
+                        <input
+                          type="checkbox"
+                          checked={settings.streamClientMode === "native"}
+                          onChange={(e) => handleChange("streamClientMode", e.target.checked ? "native" : "web")}
+                        />
+                        <span className="settings-toggle-track" />
+                      </label>
+                    </div>
+                    <span className="settings-subtle-hint">
+                      Native streaming is experimental and may have platform-specific bugs, glitches, or fallbacks to Chromium/WebRTC. Enable it only if you are comfortable testing the GStreamer-based desktop streamer for new sessions.
                     </span>
-                  ))}
-                </div>
-                <span className="settings-subtle-hint">
-                  {nativeStreamerStatus?.gstreamerAvailable
-                    ? `${nativeStreamerStatus.codecSummary ?? "Codec support unknown"}. ${nativeStreamerStatus.zeroCopySummary ?? "Memory path unknown"}.`
-                    : nativeStreamerStatus?.activeVideoBackend?.reason
-                      ?? "OpenNOW will show the active hardware decode path after GStreamer is detected."}
-                </span>
-              </div>
+                    <div className="settings-chip-row">
+                      <a className="settings-chip" href="https://github.com/OpenCloudGaming/OpenNOW/issues" target="_blank" rel="noreferrer">
+                        <span>Report on GitHub Issues</span>
+                        <ExternalLink size={13} />
+                      </a>
+                      <a className="settings-chip" href="https://discord.gg/8EJYaJcNfD" target="_blank" rel="noreferrer">
+                        <span>Report on Discord</span>
+                        <ExternalLink size={13} />
+                      </a>
+                    </div>
+                  </div>
 
-              <div className="settings-row settings-row--column">
-                <label className="settings-label">DirectX Backend</label>
-                <div className="settings-chip-row">
-                  {nativeVideoBackendOptions.map((option) => (
-                    <button
-                      key={option.value}
-                      type="button"
-                      className={`settings-chip ${settings.nativeVideoBackend === option.value ? "active" : ""}`}
-                      onClick={() => handleChange("nativeVideoBackend", option.value)}
-                      title={option.description}
-                    >
-                      <span>{option.label}</span>
-                    </button>
-                  ))}
-                </div>
-                <span className="settings-subtle-hint">
-                  Applies to the next native streamer process. Auto uses the fastest default path; choose DirectX 11 or DirectX 12 to force a specific Windows renderer.
-                </span>
-              </div>
+                  <div className="settings-row settings-row--column">
+                    <div className="settings-row-top settings-row-top--compact">
+                      <label className="settings-label settings-label--wrap">
+                        <span className="settings-label-title">Streamer Status</span>
+                      </label>
+                      <button
+                        type="button"
+                        className="settings-icon-button"
+                        onClick={() => void refreshNativeStreamerStatus()}
+                        disabled={nativeStreamerStatusLoading}
+                        title="Check native streamer"
+                        aria-label="Check native streamer"
+                      >
+                        {nativeStreamerStatusLoading ? <Loader size={15} className="spin" /> : <RefreshCcw size={15} />}
+                      </button>
+                    </div>
+                    <div className="settings-chip-row">
+                      <span
+                        className={`settings-inline-badge ${
+                          nativeStreamerStatusLoading
+                            ? "settings-inline-badge--codec-testing"
+                            : nativeStreamerStatus?.gstreamerAvailable
+                              ? "settings-inline-badge--codec-gpu"
+                              : "settings-inline-badge--updater-error"
+                        }`}
+                      >
+                        {nativeStreamerStatusLoading
+                          ? "Checking"
+                          : nativeStreamerStatus?.gstreamerAvailable
+                            ? "GStreamer Ready"
+                            : "Not Ready"}
+                      </span>
+                    </div>
+                    <span className="settings-subtle-hint">
+                      {nativeStreamerStatus?.message ?? "OpenNOW will check the bundled GStreamer streamer when this tab opens."}
+                    </span>
+                  </div>
 
-              <div className="settings-row settings-row--column">
-                <label className="settings-label">Frame Pacing</label>
-                <div className="settings-chip-row">
-                  <button
-                    type="button"
-                    className={`settings-chip ${!settings.enableCloudGsync ? "active" : ""}`}
-                    onClick={() => setNativeFramePacing("low-latency")}
-                  >
-                    <span>Lowest Latency</span>
-                  </button>
-                  <button
-                    type="button"
-                    className={`settings-chip ${settings.enableCloudGsync ? "active" : ""}`}
-                    onClick={() => setNativeFramePacing("smooth")}
-                  >
-                    <span>Smooth G-Sync</span>
-                  </button>
-                </div>
-                <span className="settings-subtle-hint">
-                  Lowest Latency avoids G-Sync pacing and is best for mouse feel. Smooth G-Sync can reduce tearing, but may cap rendering to the monitor refresh rate.
-                </span>
-              </div>
+                  <div className="settings-row settings-row--column">
+                    <label className="settings-label">GStreamer Runtime</label>
+                    <div className="settings-chip-row">
+                      <span className={`settings-inline-badge ${getGstreamerRuntimeBadgeClass(nativeStreamerStatus)}`}>
+                        {formatGstreamerRuntimeLabel(nativeStreamerStatus)}
+                      </span>
+                      {nativeStreamerStatus?.gstreamerRuntime.path ? (
+                        <span className="settings-inline-badge settings-inline-badge--codec">
+                          Bundled path detected
+                        </span>
+                      ) : null}
+                    </div>
+                    <span className="settings-subtle-hint">
+                      {nativeStreamerStatus?.gstreamerRuntime.message ?? "Packaged Windows/macOS builds auto-detect a bundled runtime next to the native streamer. Linux uses distro packages."}
+                    </span>
+                    {!nativeStreamerStatus?.gstreamerAvailable && nativeStreamerStatus?.gstreamerRuntime.installInstructions?.length ? (
+                      <div className="settings-install-steps">
+                        <span className="settings-subtle-hint">
+                          Linux AppImage/private GStreamer bundling is intentionally not used by default because VAAPI/V4L2/Vulkan plugins must match the host distro and GPU driver stack. .deb packages declare Debian/Ubuntu dependencies automatically.
+                        </span>
+                        {nativeStreamerStatus.gstreamerRuntime.installInstructions.map((instruction) => (
+                          <div key={instruction.distro} className="settings-install-step">
+                            <span className="settings-install-step-title">{instruction.distro}</span>
+                            <code>{instruction.command}</code>
+                            {instruction.note ? <span className="settings-subtle-hint">{instruction.note}</span> : null}
+                          </div>
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
+
+                  <div className="settings-row settings-row--column">
+                    <label className="settings-label">Video Path</label>
+                    <div className="settings-chip-row">
+                      <span
+                        className={`settings-inline-badge ${
+                          nativeStreamerStatus?.activeVideoBackend?.available
+                            ? nativeStreamerStatus.activeVideoBackend.backend === "software"
+                              ? "settings-inline-badge--codec-testing"
+                              : "settings-inline-badge--codec-gpu"
+                            : "settings-inline-badge--updater-error"
+                        }`}
+                      >
+                        {formatNativeVideoBackendName(nativeStreamerStatus?.activeVideoBackend?.backend)}
+                      </span>
+                      {getAvailableNativeCodecLabels(nativeStreamerStatus?.activeVideoBackend).map((codec) => (
+                        <span key={codec} className="settings-inline-badge settings-inline-badge--codec">
+                          {codec}
+                        </span>
+                      ))}
+                    </div>
+                    <span className="settings-subtle-hint">
+                      {nativeStreamerStatus?.gstreamerAvailable
+                        ? `${nativeStreamerStatus.codecSummary ?? "Codec support unknown"}. ${nativeStreamerStatus.zeroCopySummary ?? "Memory path unknown"}.`
+                        : nativeStreamerStatus?.activeVideoBackend?.reason
+                          ?? "OpenNOW will show the active hardware decode path after GStreamer is detected."}
+                    </span>
+                  </div>
+
+                  <div className="settings-row settings-row--column">
+                    <label className="settings-label">DirectX Backend</label>
+                    <div className="settings-chip-row">
+                      {nativeVideoBackendOptions.map((option) => (
+                        <button
+                          key={option.value}
+                          type="button"
+                          className={`settings-chip ${settings.nativeVideoBackend === option.value ? "active" : ""}`}
+                          onClick={() => handleChange("nativeVideoBackend", option.value)}
+                          title={option.description}
+                        >
+                          <span>{option.label}</span>
+                        </button>
+                      ))}
+                    </div>
+                    <span className="settings-subtle-hint">
+                      Applies to the next native streamer process. Auto uses the fastest default path; choose DirectX 11 or DirectX 12 to force a specific Windows renderer.
+                    </span>
+                  </div>
+
+                  <div className="settings-row settings-row--column">
+                    <label className="settings-label">Frame Pacing</label>
+                    <div className="settings-chip-row">
+                      <button
+                        type="button"
+                        className={`settings-chip ${!settings.enableCloudGsync ? "active" : ""}`}
+                        onClick={() => setNativeFramePacing("low-latency")}
+                      >
+                        <span>Lowest Latency</span>
+                      </button>
+                      <button
+                        type="button"
+                        className={`settings-chip ${settings.enableCloudGsync ? "active" : ""}`}
+                        onClick={() => setNativeFramePacing("smooth")}
+                      >
+                        <span>Smooth G-Sync</span>
+                      </button>
+                    </div>
+                    <span className="settings-subtle-hint">
+                      Lowest Latency avoids G-Sync pacing and is best for mouse feel. Smooth G-Sync can reduce tearing, but may cap rendering to the monitor refresh rate.
+                    </span>
+                  </div>
+                </>
+              )}
             </div>
           </section>
         )}
