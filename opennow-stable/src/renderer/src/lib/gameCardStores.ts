@@ -9,6 +9,17 @@ export interface StoreOption {
   isActive: boolean;
 }
 
+function normalizeStoreOptionKey(store: string): string {
+  const trimmed = store.trim();
+  const key = trimmed ? normalizeGameStore(trimmed) : "UNKNOWN";
+  return key === "NONE" ? "UNKNOWN" : key;
+}
+
+function getStoreValue(store: string | undefined, storeKey: string): string {
+  const trimmed = store?.trim() ?? "";
+  return !trimmed || normalizeGameStore(trimmed) === "NONE" ? storeKey : trimmed;
+}
+
 function getResolvedSelectedVariantId(game: GameInfo, selectedVariantId?: string): string | undefined {
   if (selectedVariantId && game.variants.some((variant) => variant.id === selectedVariantId)) {
     return selectedVariantId;
@@ -30,11 +41,7 @@ export function getStoreOptions(game: GameInfo, selectedVariantId?: string): Sto
   const variantsByStore = new Map<string, GameVariant[]>();
 
   for (const variant of game.variants) {
-    const storeKey = normalizeGameStore(variant.store);
-    if (storeKey === "UNKNOWN" || storeKey === "NONE") {
-      continue;
-    }
-
+    const storeKey = normalizeStoreOptionKey(variant.store);
     const existing = variantsByStore.get(storeKey);
     if (existing) {
       existing.push(variant);
@@ -49,7 +56,7 @@ export function getStoreOptions(game: GameInfo, selectedVariantId?: string): Sto
 
     return {
       storeKey,
-      store: preferredVariant?.store ?? variants[0]?.store ?? storeKey,
+      store: getStoreValue(preferredVariant?.store ?? variants[0]?.store, storeKey),
       variantId: preferredVariant?.id ?? variants[0]?.id ?? storeKey,
       isOwned: variants.some((variant) => isOwnedVariant(variant)),
       isActive: Boolean(activeVariantId),
