@@ -193,6 +193,15 @@ const APP_LANGUAGE_LABELS: Record<string, string> = {
   en: "English",
   es: "Español",
   fr: "Français",
+  de: "Deutsch",
+  ja: "日本語",
+  zh: "中文",
+  pl: "Polski",
+  ru: "Русский",
+  tr: "Türkçe",
+  ko: "한국어",
+  nl: "Nederlands",
+  ro: "Română",
 };
 
 const accentColorOptions = getAccentColorOptions();
@@ -1047,10 +1056,10 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
   }, [regions, regionSearch, pingResults]);
 
   const selectedRegionName = useMemo(() => {
-    if (!settings.region) return "Auto (Best)";
+    if (!settings.region) return t("settings.region.autoBest");
     const found = regions.find((r) => r.url === settings.region);
     return found?.name ?? settings.region;
-  }, [settings.region, regions]);
+  }, [settings.region, regions, locale, t]);
 
   const appLanguageOptions = useMemo(
     () => availableLocales.map((value) => ({ value, label: getAppLanguageLabel(value) })),
@@ -1062,16 +1071,27 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
   }, [appLanguageOptions, locale]);
 
   const selectedAccentColor = useMemo(() => getAccentColorOption(settings.appAccentColor), [settings.appAccentColor]);
+  const getMicrophoneModeLabel = useCallback((mode: MicrophoneMode): string => {
+    switch (mode) {
+      case "push-to-talk":
+        return t("settings.audio.pushToTalk");
+      case "voice-activity":
+        return t("settings.audio.voiceActivity");
+      case "disabled":
+      default:
+        return t("settings.audio.disabled");
+    }
+  }, [locale, t]);
 
   const selectedMicrophoneModeName = useMemo(() => {
-    return microphoneModeOptions.find((option) => option.value === settings.microphoneMode)?.label ?? "Disabled";
-  }, [settings.microphoneMode]);
+    return getMicrophoneModeLabel(settings.microphoneMode);
+  }, [settings.microphoneMode, getMicrophoneModeLabel]);
 
   const selectedMicrophoneDeviceName = useMemo(() => {
-    if (!settings.microphoneDeviceId) return "Default Device";
+    if (!settings.microphoneDeviceId) return t("app.labels.defaultDevice");
     const found = microphoneDevices.find((device) => device.deviceId === settings.microphoneDeviceId);
-    return found?.label || "Selected Device";
-  }, [settings.microphoneDeviceId, microphoneDevices]);
+    return found?.label || t("settings.audio.selectedDevice");
+  }, [settings.microphoneDeviceId, microphoneDevices, locale, t]);
 
   const selectedGameLanguageName = useMemo(() => {
     return gameLanguageOptions.find((option) => option.value === settings.gameLanguage)?.label ?? "English (US)";
@@ -1438,7 +1458,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
         <div className="settings-person-body">
           <div className="settings-person-title-row">
             <span className="settings-person-name">{contributor.login}</span>
-            <span className="settings-person-badge">Contributor</span>
+            <span className="settings-person-badge">{t("settings.thanks.contributor")}</span>
           </div>
           <div className="settings-person-meta">
             <span>{contributor.contributions} contribution{contributor.contributions === 1 ? "" : "s"}</span>
@@ -1463,7 +1483,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
         <div className="settings-person-body">
           <div className="settings-person-title-row">
             <span className="settings-person-name">{supporter.name || "Private"}</span>
-            <span className="settings-person-badge settings-person-badge--supporter">Supporter</span>
+            <span className="settings-person-badge settings-person-badge--supporter">{t("settings.thanks.supporter")}</span>
           </div>
           <div className="settings-person-meta">
             <span>{supporter.isPrivate ? "Private sponsor" : "GitHub Sponsors"}</span>
@@ -1481,18 +1501,18 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
           <Heart size={18} />
         </div>
         <div className="settings-thanks-hero-copy">
-          <h2>Thanks for helping OpenNOW grow</h2>
-          <p>OpenNOW is shaped by contributors building the client and supporters backing the project behind the scenes.</p>
+          <h2>{t("settings.thanks.title")}</h2>
+          <p>{t("settings.thanks.subtitle")}</p>
         </div>
       </section>
 
       {thanksFetchError && (
         <section className="settings-section settings-thanks-status settings-thanks-status--error">
-          <strong>Community data unavailable</strong>
+          <strong>{t("settings.thanks.communityDataUnavailable")}</strong>
           <span>{thanksFetchError}</span>
           <div className="settings-thanks-actions">
             <button type="button" className="settings-chip settings-thanks-retry-btn" onClick={handleRetryThanks}>
-              Retry
+              {t("app.actions.retry")}
             </button>
           </div>
         </section>
@@ -1503,14 +1523,14 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
           <div className="settings-section-header settings-section-header--thanks">
             <Users size={18} />
             <div>
-              <h2>Contributors</h2>
-              <p className="settings-section-subtitle">People improving OpenNOW in code, fixes, and features.</p>
+              <h2>{t("settings.thanks.contributorsTitle")}</h2>
+              <p className="settings-section-subtitle">{t("settings.thanks.contributorsSubtitle")}</p>
             </div>
           </div>
           {thanksLoadState === "loading" && !thanksData ? (
             <div className="settings-thanks-state">
               <Loader size={16} className="settings-loading-icon" />
-              <span>Loading contributors from GitHub…</span>
+              <span>{t("settings.thanks.loadingContributors")}</span>
             </div>
           ) : thanksContributors.length > 0 ? (
             <div className="settings-people-grid">
@@ -1520,7 +1540,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
             </div>
           ) : (
             <div className="settings-thanks-state settings-thanks-state--muted">
-              <span>{thanksData?.contributorsError ?? "No contributors could be shown right now."}</span>
+              <span>{thanksData?.contributorsError ?? t("settings.thanks.noContributors")}</span>
             </div>
           )}
         </section>
@@ -1529,14 +1549,14 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
           <div className="settings-section-header settings-section-header--thanks">
             <Heart size={18} />
             <div>
-              <h2>Supporters</h2>
-              <p className="settings-section-subtitle">Public GitHub Sponsors backing the work, plus private supporters when available.</p>
+              <h2>{t("settings.thanks.supportersTitle")}</h2>
+              <p className="settings-section-subtitle">{t("settings.thanks.supportersSubtitle")}</p>
             </div>
           </div>
           {thanksLoadState === "loading" && !thanksData ? (
             <div className="settings-thanks-state">
               <Loader size={16} className="settings-loading-icon" />
-              <span>Loading supporters from GitHub Sponsors…</span>
+              <span>{t("settings.thanks.loadingSupporters")}</span>
             </div>
           ) : thanksSupporters.length > 0 ? (
             <div className="settings-people-grid">
@@ -1546,7 +1566,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
             </div>
           ) : (
             <div className="settings-thanks-state settings-thanks-state--muted">
-              <span>{thanksData?.supportersError ?? "No supporters could be shown right now."}</span>
+              <span>{thanksData?.supportersError ?? t("settings.thanks.noSupporters")}</span>
             </div>
           )}
         </section>
@@ -1554,8 +1574,8 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
 
       {hasThanksError && thanksData && (
         <section className="settings-section settings-thanks-status">
-          {thanksData.contributorsError && <span>Contributors: {thanksData.contributorsError}</span>}
-          {thanksData.supportersError && <span>Supporters: {thanksData.supportersError}</span>}
+          {thanksData.contributorsError && <span>{t("settings.thanks.contributorsTitle")}: {thanksData.contributorsError}</span>}
+          {thanksData.supportersError && <span>{t("settings.thanks.supportersTitle")}: {thanksData.supportersError}</span>}
         </section>
       )}
     </div>
@@ -1603,10 +1623,10 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
   return (
     <div className="settings-page">
       <header className="settings-header">
-        <h1>Settings</h1>
+        <h1>{t("settings.title")}</h1>
         <div className={`settings-saved ${savedIndicator ? "visible" : ""}`}>
           <Check size={14} />
-          Saved
+          {t("settings.saved")}
         </div>
       </header>
 
@@ -1619,7 +1639,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
           <input
             type="text"
             className="settings-search-input"
-            placeholder="Search settings…"
+            placeholder={t("settings.searchPlaceholder")}
             value={settingsSearch}
             onChange={e => setSettingsSearch(e.target.value)}
           />
@@ -1631,14 +1651,14 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
         </div>
         <nav className="settings-nav">
           {([
-            { id: "stream" as SettingsSectionId, label: "Stream", icon: <Wifi size={15} /> },
-            { id: "native-streamer" as SettingsSectionId, label: "Native Streamer", icon: <Cpu size={15} /> },
-            { id: "game" as SettingsSectionId, label: "Game", icon: <Globe size={15} /> },
-            { id: "audio" as SettingsSectionId, label: "Audio", icon: <Mic size={15} /> },
-            { id: "input" as SettingsSectionId, label: "Input", icon: <Keyboard size={15} /> },
-            { id: "interface" as SettingsSectionId, label: "Interface", icon: <Monitor size={15} /> },
-            { id: "about" as SettingsSectionId, label: "About", icon: <Info size={15} /> },
-            { id: "thanks" as SettingsSectionId, label: "Thanks", icon: <Heart size={15} /> },
+            { id: "stream" as SettingsSectionId, label: t("settings.sections.stream"), icon: <Wifi size={15} /> },
+            { id: "native-streamer" as SettingsSectionId, label: t("settings.sections.nativeStreamer"), icon: <Cpu size={15} /> },
+            { id: "game" as SettingsSectionId, label: t("settings.sections.game"), icon: <Globe size={15} /> },
+            { id: "audio" as SettingsSectionId, label: t("settings.sections.audio"), icon: <Mic size={15} /> },
+            { id: "input" as SettingsSectionId, label: t("settings.sections.input"), icon: <Keyboard size={15} /> },
+            { id: "interface" as SettingsSectionId, label: t("settings.sections.interface"), icon: <Monitor size={15} /> },
+            { id: "about" as SettingsSectionId, label: t("settings.sections.about"), icon: <Info size={15} /> },
+            { id: "thanks" as SettingsSectionId, label: t("settings.sections.thanks"), icon: <Heart size={15} /> },
           ]).map(item => (
             <button
               key={item.id}
@@ -1658,7 +1678,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
         {showAll && !hasAnySearchMatches ? (
           <section className="settings-section">
             <div className="settings-thanks-state settings-thanks-state--muted">
-              <span>No settings matched "{settingsSearch.trim()}".</span>
+              <span>{t("settings.noMatches", { query: settingsSearch.trim() })}</span>
             </div>
           </section>
         ) : (
@@ -1672,9 +1692,9 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                 {/* ── Region ── */}
                 {showStreamRegion && (
                 <section className="settings-section">
-                  {showAll && <div className="settings-section-context">Stream</div>}
+                  {showAll && <div className="settings-section-context">{t("settings.sections.stream")}</div>}
                   <div className="settings-section-header">
-                    <h2>Region</h2>
+                    <h2>{t("settings.region.title")}</h2>
                   </div>
                   <div className="settings-rows">
                     <div className="region-selector">
@@ -1708,9 +1728,9 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                         </span>
                       );
                     } else if (pingValue === null) {
-                      return <span className="region-selected-ping-unavailable">Failed</span>;
+	                      return <span className="region-selected-ping-unavailable">{t("app.status.failed")}</span>;
                     } else if (isPinging) {
-                      return <span className="region-selected-ping-unavailable">Testing...</span>;
+                      return <span className="region-selected-ping-unavailable">{t("app.status.testing")}</span>;
                     }
                     return null;
                   })()
@@ -1728,7 +1748,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                       <input
                         type="text"
                         className="region-dropdown-search-input"
-                        placeholder="Search regions..."
+                        placeholder={t("settings.region.searchPlaceholder")}
                         value={regionSearch}
                         onChange={(e) => setRegionSearch(e.target.value)}
                         autoFocus
@@ -1744,7 +1764,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                       onClick={runPingTest}
                       disabled={isPinging}
                       type="button"
-                      title="Refresh ping"
+                      title={t("settings.region.refreshPing")}
                     >
                       {isPinging ? (
                         <Loader size={14} className="spin" />
@@ -1766,7 +1786,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                     >
                       <Globe size={14} />
                       <div className="region-auto-best-info">
-                        <span>Auto (Best)</span>
+                        <span>{t("settings.region.autoBest")}</span>
                         {bestRegionUrl && (() => {
                           const bestRegion = regions.find(r => r.url === bestRegionUrl);
                           const bestPing = pingResults.get(bestRegionUrl);
@@ -1798,7 +1818,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                         <span className="region-name-with-badge">
                           {region.name}
                           {region.url === bestRegionUrl && (
-                            <span className="region-best-badge">Best</span>
+                            <span className="region-best-badge">{t("app.labels.best")}</span>
                           )}
                         </span>
                         <span className="region-ping">
@@ -1810,7 +1830,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                               if (pingValue === undefined) {
                                 return <span className="region-ping-unavailable">-</span>;
                               } else if (pingValue === null) {
-                                return <span className="region-ping-error">Failed</span>;
+                                return <span className="region-ping-error">{t("app.status.failed")}</span>;
                               } else {
                                 return (
                                   <span className={`region-ping-value ${pingValue <= 50 ? 'good' : pingValue <= 100 ? 'medium' : 'poor'}`}>
@@ -1826,7 +1846,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                     ))}
 
                     {filteredRegions.length === 0 && regions.length > 0 && (
-                      <div className="region-dropdown-empty">No regions match &ldquo;{regionSearch}&rdquo;</div>
+                      <div className="region-dropdown-empty">{t("settings.region.noRegionsMatch", { query: regionSearch })}</div>
                     )}
                   </div>
                 </div>
@@ -1838,14 +1858,14 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                 )}
             {showStreamVideo && (
             <section className="settings-section">
-              {showAll && <div className="settings-section-context">Stream</div>}
+              {showAll && <div className="settings-section-context">{t("settings.sections.stream")}</div>}
               <div className="settings-section-header">
-                <h2>Video</h2>
+                <h2>{t("settings.video.title")}</h2>
               </div>
               <div className="settings-rows">
                 {/* Aspect Ratio — static chips */}
                 <div className="settings-row">
-                  <label className="settings-label">Aspect Ratio</label>
+                  <label className="settings-label">{t("settings.video.aspectRatio")}</label>
                   <div className="settings-chip-row">
                     {STATIC_ASPECT_RATIO_PRESETS.map((preset) => (
                       <button
@@ -1862,7 +1882,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                 {/* Resolution — grouped dropdown */}
                 <div className="settings-row settings-row--column">
                   <label className="settings-label">
-                    Resolution
+                    {t("settings.video.resolution")}
                     {subscriptionLoading && <Loader size={12} className="settings-loading-icon" />}
                   </label>
                   <div className="settings-dropdown settings-resolution-dropdown" ref={resolutionDropdownRef}>
@@ -1901,7 +1921,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
 
                 {/* FPS — dynamic or static chips */}
                 <div className="settings-row">
-                  <label className="settings-label">FPS</label>
+                  <label className="settings-label">{t("settings.video.fps")}</label>
                   <div className="settings-chip-row">
                     {(hasDynamic ? dynamicFpsOptions.map((v) => ({ value: v })) : STATIC_FPS_PRESETS).map((preset) => (
                       <button
@@ -1917,7 +1937,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
 
                 {/* Codec */}
                 <div className="settings-row">
-                  <label className="settings-label">Codec</label>
+                  <label className="settings-label">{t("settings.video.codec")}</label>
                   <div className="settings-chip-row">
                     {codecOptions.map((codec) => {
                       const badgeState = getCodecDecodeBadgeState(codec, codecResults, codecTesting);
@@ -1930,7 +1950,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                           <span>{codec}</span>
                           {badgeState && (
                             <span className={`settings-inline-badge settings-inline-badge--codec settings-inline-badge--codec-${badgeState}`}>
-                              {badgeState === "gpu" ? "GPU" : badgeState === "cpu" ? "CPU" : "Testing…"}
+                              {badgeState === "gpu" ? t("settings.video.gpu") : badgeState === "cpu" ? t("settings.video.cpu") : t("settings.video.testing")}
                             </span>
                           )}
                         </button>
@@ -1940,7 +1960,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                 </div>
 
                 <div className="settings-row settings-row--column">
-                  <label className="settings-label">Decoder</label>
+                  <label className="settings-label">{t("settings.video.decoder")}</label>
                   <div className="settings-chip-row">
                     {accelerationOptions.map((option) => (
                       <button
@@ -1948,15 +1968,19 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                         className={`settings-chip ${settings.decoderPreference === option.value ? "active" : ""}`}
                         onClick={() => handleChange("decoderPreference", option.value)}
                       >
-                        {option.label}
+                        {option.value === "auto"
+                          ? t("app.labels.auto")
+                          : option.value === "hardware"
+                            ? t("app.labels.hardware")
+                            : t("settings.video.softwareCpu")}
                       </button>
                     ))}
                   </div>
-                  <span className="settings-subtle-hint">Applies after app restart.</span>
+                  <span className="settings-subtle-hint">{t("settings.video.appliesAfterRestart")}</span>
                 </div>
 
                 <div className="settings-row settings-row--column">
-                  <label className="settings-label">Encoder</label>
+                  <label className="settings-label">{t("settings.video.encoder")}</label>
                   <div className="settings-chip-row">
                     {accelerationOptions.map((option) => (
                       <button
@@ -1964,25 +1988,36 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                         className={`settings-chip ${settings.encoderPreference === option.value ? "active" : ""}`}
                         onClick={() => handleChange("encoderPreference", option.value)}
                       >
-                        {option.label}
+                        {option.value === "auto"
+                          ? t("app.labels.auto")
+                          : option.value === "hardware"
+                            ? t("app.labels.hardware")
+                            : t("settings.video.softwareCpu")}
                       </button>
                     ))}
                   </div>
-                  <span className="settings-subtle-hint">Applies after app restart.</span>
+                  <span className="settings-subtle-hint">{t("settings.video.appliesAfterRestart")}</span>
                 </div>
 
                 {/* Color Quality */}
                 <div className="settings-row settings-row--column">
-                  <label className="settings-label">Color Depth</label>
+                  <label className="settings-label">{t("settings.video.colorDepth")}</label>
                   <div className="settings-chip-row">
                     {colorQualityOptions.map((opt) => {
                       const needsHevc = colorQualityRequiresHevc(opt.value);
+                      const colorDescription = opt.value === "8bit_420"
+                        ? t("settings.colorQuality.mostCompatible")
+                        : opt.value === "8bit_444"
+                          ? t("settings.colorQuality.sharperChroma")
+                          : opt.value === "10bit_420"
+                            ? t("settings.colorQuality.higherBitDepth")
+                            : t("settings.colorQuality.highestChromaAndBitDepth");
                       return (
                         <button
                           key={opt.value}
                           className={`settings-chip ${settings.colorQuality === opt.value ? "active" : ""}`}
                           onClick={() => handleColorQualityChange(opt.value)}
-                          title={`${opt.description}${needsHevc ? " — requires H265/AV1" : ""}`}
+                          title={needsHevc ? t("settings.colorQuality.requiresH265OrAv1Title", { description: colorDescription }) : colorDescription}
                         >
                           <span>{opt.label}</span>
                         </button>
@@ -1990,14 +2025,14 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                     })}
                   </div>
                   {colorQualityRequiresHevc(settings.colorQuality) && settings.codec === "H264" && (
-                    <span className="settings-input-hint">This mode requires H265 or AV1. Codec will be auto-switched.</span>
+                    <span className="settings-input-hint">{t("settings.video.requiresH265OrAv1")}</span>
                   )}
                 </div>
 
                 {/* Bitrate slider */}
                 <div className="settings-row settings-row--column">
                   <div className="settings-row-top">
-                    <label className="settings-label">Max Bitrate</label>
+                    <label className="settings-label">{t("settings.video.maxBitrate")}</label>
                     <span className="settings-value-badge">{settings.maxBitrateMbps} Mbps</span>
                   </div>
                   <input
@@ -2015,8 +2050,8 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                   <div className="settings-row-top settings-row-top--compact">
                     <label className="settings-label settings-label--wrap">
                       <span className="settings-label-title">
-                        Session proxy
-                        <span className="settings-inline-badge settings-inline-badge--beta">Beta</span>
+                        {t("settings.video.sessionProxy")}
+                        <span className="settings-inline-badge settings-inline-badge--beta">{t("app.labels.beta")}</span>
                       </span>
                     </label>
                     <label className="settings-toggle">
@@ -2029,7 +2064,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                     </label>
                   </div>
                   <span className="settings-subtle-hint">
-                    Used only for Nvidia session creation and queue polling. Streaming/signaling traffic is not proxied. Zortos provides a proxy for GitHub Sponsors/supporters.
+                    {t("settings.video.sessionProxyHint")}
                   </span>
                   {settings.sessionProxyEnabled && (
                     <input
@@ -2046,8 +2081,8 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                   <div className="settings-row-top settings-row-top--compact">
                     <label className="settings-label settings-label--wrap">
                       <span className="settings-label-title">
-                        Experimental L4S Request
-                        <span className="settings-inline-badge settings-inline-badge--beta">Beta</span>
+                        {t("settings.video.experimentalL4SRequest")}
+                        <span className="settings-inline-badge settings-inline-badge--beta">{t("app.labels.beta")}</span>
                       </span>
                     </label>
                     <label className="settings-toggle">
@@ -2060,7 +2095,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                     </label>
                   </div>
                   <span className="settings-subtle-hint">
-                    Request the GeForce NOW L4S streaming feature on newly created sessions. This does not change browser WebRTC behavior by itself and may be ignored by the service or network path.
+                    {t("settings.video.experimentalL4SRequestHint")}
                   </span>
                 </div>
               </div>
@@ -2075,21 +2110,21 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                 onClick={() => setCodecAdvancedOpen(v => !v)}
               >
                 <Zap size={14} />
-                Advanced — Codec Diagnostics
+                {t("settings.codecDiagnostics.advanced")}
                 <svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor" className={`settings-advanced-chevron ${codecAdvancedOpen ? "flipped" : ""}`}>
                   <path d="M4.47 5.97a.75.75 0 0 1 1.06 0L8 8.44l2.47-2.47a.75.75 0 1 1 1.06 1.06l-3 3a.75.75 0 0 1-1.06 0l-3-3a.75.75 0 0 1 0-1.06Z" />
                 </svg>
               </button>
               {codecAdvancedOpen && (
                 <section className="settings-section">
-                  {showAll && <div className="settings-section-context">Stream</div>}
+                  {showAll && <div className="settings-section-context">{t("settings.sections.stream")}</div>}
                   <div className="settings-section-header">
-                    <h2>Codec Diagnostics</h2>
+                    <h2>{t("settings.codecDiagnostics.title")}</h2>
                   </div>
                   <div className="settings-rows">
                     <div className="settings-row codec-test-row">
                       <label className="settings-label codec-test-description">
-                        Test which codecs your system can decode/encode and whether they use GPU or CPU
+                        {t("settings.codecDiagnostics.description")}
                       </label>
                       <button
                         className="codec-test-btn"
@@ -2100,12 +2135,12 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                         {codecTesting ? (
                           <>
                             <Loader size={16} className="settings-loading-icon" />
-                            Testing...
+                            {t("settings.video.testing")}
                           </>
                         ) : (
                           <>
                             <Zap size={16} />
-                            {codecResults ? "Retest" : "Test Codecs"}
+                            {codecResults ? t("settings.codecDiagnostics.retest") : t("settings.codecDiagnostics.testCodecs")}
                           </>
                         )}
                       </button>
@@ -2117,28 +2152,28 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                             <div className="codec-result-header">
                               <span className="codec-result-name">{result.codec}</span>
                               <span className={`codec-result-badge ${result.webrtcSupported ? "supported" : "unsupported"}`}>
-                                {result.webrtcSupported ? "WebRTC Ready" : "Not in WebRTC"}
+                                {result.webrtcSupported ? t("settings.codecDiagnostics.webrtcReady") : t("settings.codecDiagnostics.notInWebrtc")}
                               </span>
                             </div>
                             <div className="codec-result-rows">
                               <div className="codec-result-row">
-                                <span className="codec-result-direction">Decode</span>
+                                <span className="codec-result-direction">{t("settings.codecDiagnostics.decode")}</span>
                                 <span className={`codec-result-status ${result.decodeSupported ? (result.hwAccelerated ? "hw" : "sw") : "none"}`}>
-                                  {result.decodeSupported ? (result.hwAccelerated ? "GPU" : "CPU") : "No"}
+                                  {result.decodeSupported ? (result.hwAccelerated ? t("settings.video.gpu") : t("settings.video.cpu")) : t("app.labels.no")}
                                 </span>
                                 <span className="codec-result-via">{result.decodeVia}</span>
                               </div>
                               <div className="codec-result-row">
-                                <span className="codec-result-direction">Encode</span>
+                                <span className="codec-result-direction">{t("settings.codecDiagnostics.encode")}</span>
                                 <span className={`codec-result-status ${result.encodeSupported ? (result.encodeHwAccelerated ? "hw" : "sw") : "none"}`}>
-                                  {result.encodeSupported ? (result.encodeHwAccelerated ? "GPU" : "CPU") : "No"}
+                                  {result.encodeSupported ? (result.encodeHwAccelerated ? t("settings.video.gpu") : t("settings.video.cpu")) : t("app.labels.no")}
                                 </span>
                                 <span className="codec-result-via">{result.encodeVia}</span>
                               </div>
                             </div>
                             {result.profiles.length > 0 && (
                               <div className="codec-result-profiles">
-                                <span className="codec-result-profiles-label">Profiles:</span>
+                                <span className="codec-result-profiles-label">{t("settings.codecDiagnostics.profiles")}</span>
                                 <div className="codec-result-profiles-list">
                                   {result.profiles.map((p, i) => (
                                     <code key={i} className="codec-result-profile">{p}</code>
@@ -2161,9 +2196,9 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
         {/* ═══ NATIVE STREAMER ═════════════════════════════ */}
         {showNativeStreamer && (
           <section className="settings-section">
-            {showAll && <div className="settings-section-context">Native Streamer</div>}
+            {showAll && <div className="settings-section-context">{t("settings.sections.nativeStreamer")}</div>}
             <div className="settings-section-header">
-              <h2>Native Streamer</h2>
+              <h2>{t("settings.nativeStreamer.title")}</h2>
             </div>
             <div className="settings-rows">
               {!isWindows ? (
@@ -2171,8 +2206,8 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                   <div className="settings-row-top settings-row-top--compact">
                     <label className="settings-label settings-label--wrap">
                       <span className="settings-label-title">
-                        Native Streaming
-                        <span className="settings-inline-badge settings-inline-badge--beta">Experimental</span>
+                        {t("settings.nativeStreamer.nativeStreaming")}
+                        <span className="settings-inline-badge settings-inline-badge--beta">{t("app.labels.experimental")}</span>
                       </span>
                     </label>
                   </div>
@@ -2186,8 +2221,8 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                     <div className="settings-row-top settings-row-top--compact">
                       <label className="settings-label settings-label--wrap">
                         <span className="settings-label-title">
-                          Native Streaming
-                          <span className="settings-inline-badge settings-inline-badge--beta">Experimental</span>
+                          {t("settings.nativeStreamer.nativeStreaming")}
+                          <span className="settings-inline-badge settings-inline-badge--beta">{t("app.labels.experimental")}</span>
                         </span>
                       </label>
                       <label className="settings-toggle">
@@ -2200,15 +2235,15 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                       </label>
                     </div>
                     <span className="settings-subtle-hint">
-                      Native streaming is experimental and may have platform-specific bugs, glitches, or fallbacks to Chromium/WebRTC. Enable it only if you are comfortable testing the GStreamer-based desktop streamer for new sessions.
+                      {t("settings.nativeStreamer.nativeStreamingHint")}
                     </span>
                     <div className="settings-chip-row">
                       <a className="settings-chip" href="https://github.com/OpenCloudGaming/OpenNOW/issues" target="_blank" rel="noreferrer">
-                        <span>Report on GitHub Issues</span>
+                        <span>{t("settings.nativeStreamer.reportOnGithubIssues")}</span>
                         <ExternalLink size={13} />
                       </a>
                       <a className="settings-chip" href="https://discord.gg/8EJYaJcNfD" target="_blank" rel="noreferrer">
-                        <span>Report on Discord</span>
+                        <span>{t("settings.nativeStreamer.reportOnDiscord")}</span>
                         <ExternalLink size={13} />
                       </a>
                     </div>
@@ -2217,15 +2252,15 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                   <div className="settings-row settings-row--column">
                     <div className="settings-row-top settings-row-top--compact">
                       <label className="settings-label settings-label--wrap">
-                        <span className="settings-label-title">Streamer Status</span>
+                        <span className="settings-label-title">{t("settings.nativeStreamer.streamerStatus")}</span>
                       </label>
                       <button
                         type="button"
                         className="settings-icon-button"
                         onClick={() => void refreshNativeStreamerStatus()}
                         disabled={nativeStreamerStatusLoading}
-                        title="Check native streamer"
-                        aria-label="Check native streamer"
+                        title={t("settings.nativeStreamer.checkNativeStreamer")}
+                        aria-label={t("settings.nativeStreamer.checkNativeStreamer")}
                       >
                         {nativeStreamerStatusLoading ? <Loader size={15} className="spin" /> : <RefreshCcw size={15} />}
                       </button>
@@ -2241,36 +2276,36 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                         }`}
                       >
                         {nativeStreamerStatusLoading
-                          ? "Checking"
+                          ? t("app.status.checking")
                           : nativeStreamerStatus?.gstreamerAvailable
-                            ? "GStreamer Ready"
-                            : "Not Ready"}
+                            ? t("settings.nativeStreamer.gstreamerReady")
+                            : t("settings.nativeStreamer.notReady")}
                       </span>
                     </div>
                     <span className="settings-subtle-hint">
-                      {nativeStreamerStatus?.message ?? "OpenNOW will check the bundled GStreamer streamer when this tab opens."}
+                      {nativeStreamerStatus?.message ?? t("settings.nativeStreamer.statusDefaultHint")}
                     </span>
                   </div>
 
                   <div className="settings-row settings-row--column">
-                    <label className="settings-label">GStreamer Runtime</label>
+                    <label className="settings-label">{t("settings.nativeStreamer.gstreamerRuntime")}</label>
                     <div className="settings-chip-row">
                       <span className={`settings-inline-badge ${getGstreamerRuntimeBadgeClass(nativeStreamerStatus)}`}>
                         {formatGstreamerRuntimeLabel(nativeStreamerStatus)}
                       </span>
                       {nativeStreamerStatus?.gstreamerRuntime.path ? (
                         <span className="settings-inline-badge settings-inline-badge--codec">
-                          Bundled path detected
+                          {t("settings.nativeStreamer.bundledPathDetected")}
                         </span>
                       ) : null}
                     </div>
                     <span className="settings-subtle-hint">
-                      {nativeStreamerStatus?.gstreamerRuntime.message ?? "Packaged Windows/macOS builds auto-detect a bundled runtime next to the native streamer. Linux uses distro packages."}
+                      {nativeStreamerStatus?.gstreamerRuntime.message ?? t("settings.nativeStreamer.runtimeDefaultHint")}
                     </span>
                     {!nativeStreamerStatus?.gstreamerAvailable && nativeStreamerStatus?.gstreamerRuntime.installInstructions?.length ? (
                       <div className="settings-install-steps">
                         <span className="settings-subtle-hint">
-                          Linux AppImage/private GStreamer bundling is intentionally not used by default because VAAPI/V4L2/Vulkan plugins must match the host distro and GPU driver stack. .deb packages declare Debian/Ubuntu dependencies automatically.
+                          {t("settings.nativeStreamer.linuxRuntimeHint")}
                         </span>
                         {nativeStreamerStatus.gstreamerRuntime.installInstructions.map((instruction) => (
                           <div key={instruction.distro} className="settings-install-step">
@@ -2284,7 +2319,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                   </div>
 
                   <div className="settings-row settings-row--column">
-                    <label className="settings-label">Video Path</label>
+                    <label className="settings-label">{t("settings.nativeStreamer.videoPath")}</label>
                     <div className="settings-chip-row">
                       <span
                         className={`settings-inline-badge ${
@@ -2305,14 +2340,14 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                     </div>
                     <span className="settings-subtle-hint">
                       {nativeStreamerStatus?.gstreamerAvailable
-                        ? `${nativeStreamerStatus.codecSummary ?? "Codec support unknown"}. ${nativeStreamerStatus.zeroCopySummary ?? "Memory path unknown"}.`
+                        ? `${nativeStreamerStatus.codecSummary ?? t("settings.nativeStreamer.codecSupportUnknown")}. ${nativeStreamerStatus.zeroCopySummary ?? t("settings.nativeStreamer.memoryPathUnknown")}.`
                         : nativeStreamerStatus?.activeVideoBackend?.reason
-                          ?? "OpenNOW will show the active hardware decode path after GStreamer is detected."}
+                          ?? t("settings.nativeStreamer.videoPathDefaultHint")}
                     </span>
                   </div>
 
                   <div className="settings-row settings-row--column">
-                    <label className="settings-label">DirectX Backend</label>
+                    <label className="settings-label">{t("settings.nativeStreamer.directxBackend")}</label>
                     <div className="settings-chip-row">
                       {nativeVideoBackendOptions.map((option) => (
                         <button
@@ -2327,30 +2362,30 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                       ))}
                     </div>
                     <span className="settings-subtle-hint">
-                      Applies to the next native streamer process. Auto uses the fastest default path; choose DirectX 11 or DirectX 12 to force a specific Windows renderer.
+                      {t("settings.nativeStreamer.directxBackendHint")}
                     </span>
                   </div>
 
                   <div className="settings-row settings-row--column">
-                    <label className="settings-label">Frame Pacing</label>
+                    <label className="settings-label">{t("settings.nativeStreamer.framePacing")}</label>
                     <div className="settings-chip-row">
                       <button
                         type="button"
                         className={`settings-chip ${!settings.enableCloudGsync ? "active" : ""}`}
                         onClick={() => setNativeFramePacing("low-latency")}
                       >
-                        <span>Lowest Latency</span>
+                        <span>{t("settings.nativeStreamer.lowestLatency")}</span>
                       </button>
                       <button
                         type="button"
                         className={`settings-chip ${settings.enableCloudGsync ? "active" : ""}`}
                         onClick={() => setNativeFramePacing("smooth")}
                       >
-                        <span>Smooth G-Sync</span>
+                        <span>{t("settings.nativeStreamer.smoothGsync")}</span>
                       </button>
                     </div>
                     <span className="settings-subtle-hint">
-                      Lowest Latency avoids G-Sync pacing and is best for mouse feel. Smooth G-Sync can reduce tearing, but may cap rendering to the monitor refresh rate.
+                      {t("settings.nativeStreamer.framePacingHint")}
                     </span>
                   </div>
                 </>
@@ -2362,15 +2397,15 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
         {/* ═══ GAME ══════════════════════════════════════ */}
         {showGame && (
           <section className="settings-section">
-            {showAll && <div className="settings-section-context">Game</div>}
+            {showAll && <div className="settings-section-context">{t("settings.sections.game")}</div>}
             <div className="settings-section-header">
-              <h2>Game</h2>
+              <h2>{t("settings.game.title")}</h2>
             </div>
             <div className="settings-rows">
               <div className="settings-row">
                 <label className="settings-label">
-                  In-Game Language
-                  <span className="settings-hint">Language for in-game menus, subtitles, and audio (where supported)</span>
+                  {t("settings.game.language")}
+                  <span className="settings-hint">{t("settings.game.inGameLanguageHint")}</span>
                 </label>
                 <div className="settings-dropdown" ref={gameLanguageDropdownRef}>
                   <button
@@ -2410,15 +2445,15 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
         {/* ═══ AUDIO ══════════════════════════════════════ */}
         {showAudio && (
           <section className="settings-section">
-            {showAll && <div className="settings-section-context">Audio</div>}
+            {showAll && <div className="settings-section-context">{t("settings.sections.audio")}</div>}
             <div className="settings-section-header">
-              <h2>Audio</h2>
+              <h2>{t("settings.audio.title")}</h2>
             </div>
               <div className="settings-rows">
                 <div className="settings-row">
                   <label className="settings-label">
-                    Microphone
-                    <span className="settings-hint">Enable voice chat during streaming</span>
+                    {t("settings.audio.microphone")}
+                    <span className="settings-hint">{t("settings.audio.microphoneHint")}</span>
                   </label>
                   <div className="settings-dropdown" ref={microphoneModeDropdownRef}>
                     <button
@@ -2446,7 +2481,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                               setMicrophoneModeDropdownOpen(false);
                             }}
                           >
-                            <span>{option.label}</span>
+                            <span>{getMicrophoneModeLabel(option.value)}</span>
                             {settings.microphoneMode === option.value && <Check size={14} className="settings-dropdown-check" />}
                           </button>
                         ))}
@@ -2460,9 +2495,9 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                     <label className="settings-label">
                       <div className="flex items-center gap-2">
                         <Mic size={14} />
-                        Microphone Device
+                        {t("settings.audio.microphoneDevice")}
                       </div>
-                      <span className="settings-hint">Select input device for voice chat</span>
+                      <span className="settings-hint">{t("settings.audio.microphoneDeviceHint")}</span>
                     </label>
                     <div className="settings-mic-device-wrap">
                       <div className="settings-dropdown" ref={microphoneDeviceDropdownRef}>
@@ -2491,7 +2526,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                                 setMicrophoneDeviceDropdownOpen(false);
                               }}
                             >
-                              <span>Default Device</span>
+                              <span>{t("app.labels.defaultDevice")}</span>
                               {settings.microphoneDeviceId === "" && <Check size={14} className="settings-dropdown-check" />}
                             </button>
                             {microphoneDevices.map((device, index) => (
@@ -2504,7 +2539,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                                   setMicrophoneDeviceDropdownOpen(false);
                                 }}
                               >
-                                <span>{device.label || `Microphone ${index + 1}`}</span>
+                                <span>{device.label || t("settings.audio.microphoneIndexed", { index: index + 1 })}</span>
                                 {settings.microphoneDeviceId === device.deviceId && <Check size={14} className="settings-dropdown-check" />}
                               </button>
                             ))}
@@ -2515,7 +2550,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                         <span className="text-red-400 text-xs mt-1">{microphonePermissionError}</span>
                       )}
                       {microphoneDevices.length === 0 && !microphonePermissionError && (
-                        <span className="text-yellow-400 text-xs mt-1">No microphone devices found</span>
+                        <span className="text-yellow-400 text-xs mt-1">{t("settings.audio.noMicrophoneDevicesFound")}</span>
                       )}
                     </div>
                   </div>
@@ -2527,13 +2562,13 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
         {/* ═══ INPUT ═══════════════════════════════════════ */}
         {showInput && (
             <section className="settings-section">
-              {showAll && <div className="settings-section-context">Input</div>}
+              {showAll && <div className="settings-section-context">{t("settings.sections.input")}</div>}
               <div className="settings-section-header">
-                <h2>Input</h2>
+                <h2>{t("settings.input.title")}</h2>
               </div>
               <div className="settings-rows">
                 <div className="settings-row">
-                  <label className="settings-label">Clipboard Paste</label>
+                  <label className="settings-label">{t("settings.input.clipboardPaste")}</label>
                   <label className="settings-toggle">
                     <input
                       type="checkbox"
@@ -2546,8 +2581,8 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
 
                 <div className="settings-row settings-row--top-aligned">
                   <label className="settings-label settings-label--wrap">
-                    Keyboard Layout
-                    <span className="settings-hint">Controls how your physical keyboard is mapped inside the remote session. Separate from the in-game language setting.</span>
+                    {t("settings.game.keyboardLayout")}
+                    <span className="settings-hint">{t("settings.input.keyboardLayoutHint")}</span>
                   </label>
                   <div className="settings-dropdown settings-dropdown--constrained" ref={keyboardLayoutDropdownRef}>
                     <button
@@ -2584,7 +2619,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                 {/* Mouse Sensitivity */}
                 <div className="settings-row settings-row--column">
                   <div className="settings-row-top">
-                    <label className="settings-label">Mouse Sensitivity</label>
+                    <label className="settings-label">{t("settings.input.mouseSensitivity")}</label>
                     <span className="settings-value-badge">{settings.mouseSensitivity.toFixed(2)}x</span>
                   </div>
                   <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
@@ -2611,12 +2646,12 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                       }}
                     />
                   </div>
-                  <span className="settings-subtle-hint">Multiplier applied to mouse movement (1.00 = default)</span>
+                  <span className="settings-subtle-hint">{t("settings.input.mouseSensitivityHint")}</span>
                 </div>
 
                 <div className="settings-row settings-row--column">
                   <div className="settings-row-top">
-                    <label className="settings-label">Mouse Accelerator</label>
+                    <label className="settings-label">{t("settings.input.mouseAccelerator")}</label>
                     <span className="settings-value-badge">{Math.round(settings.mouseAcceleration)}%</span>
                   </div>
                   <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
@@ -2645,29 +2680,29 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                       }}
                     />
                   </div>
-                  <span className="settings-subtle-hint">Dynamic turn boost strength (1% = off-like, 150% = strongest).</span>
+                  <span className="settings-subtle-hint">{t("settings.input.mouseAcceleratorHint")}</span>
                 </div>
 
                 {/* Shortcuts */}
                 <div className="settings-row settings-row--column">
                   <div className="settings-row-top">
-                    <label className="settings-label">Shortcuts</label>
+                    <label className="settings-label">{t("settings.input.shortcuts")}</label>
                     <div className="settings-shortcut-actions">
-                      <span className="settings-value-badge">Editable</span>
+                      <span className="settings-value-badge">{t("settings.input.editable")}</span>
                       <button
                         type="button"
                         className="settings-shortcut-reset-btn"
                         onClick={handleResetShortcuts}
                         disabled={areShortcutsDefault}
                       >
-                        Reset to defaults
+                        {t("settings.input.resetToDefaults")}
                       </button>
                     </div>
                   </div>
 
                   <div className="settings-shortcut-grid">
                 <div className="settings-shortcut-row">
-                  <span className="settings-shortcut-label" id="shortcut-toggle-stats-label">Toggle Stats</span>
+                  <span className="settings-shortcut-label" id="shortcut-toggle-stats-label">{t("settings.input.toggleStats")}</span>
                   <input
                     type="text"
                     id="shortcut-toggle-stats"
@@ -2679,14 +2714,14 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                     onBlur={() => handleShortcutBlur("shortcutToggleStats", toggleStatsInput)}
                     onPaste={(e) => handleShortcutPaste("shortcutToggleStats", e)}
                     onKeyDown={(e) => handleShortcutCaptureKeyDown("shortcutToggleStats", e)}
-                    placeholder="Click here, then press a key"
-                    title="Focus and press the key combination to bind"
+                    placeholder={t("stream.shortcuts.clickHereThenPress")}
+                    title={t("stream.shortcuts.focusAndPress")}
                     spellCheck={false}
                   />
                 </div>
 
                 <div className="settings-shortcut-row">
-                  <span className="settings-shortcut-label" id="shortcut-pointer-lock-label">Mouse Lock</span>
+                  <span className="settings-shortcut-label" id="shortcut-pointer-lock-label">{t("settings.input.togglePointerLock")}</span>
                   <input
                     type="text"
                     id="shortcut-pointer-lock"
@@ -2698,14 +2733,14 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                     onBlur={() => handleShortcutBlur("shortcutTogglePointerLock", togglePointerLockInput)}
                     onPaste={(e) => handleShortcutPaste("shortcutTogglePointerLock", e)}
                     onKeyDown={(e) => handleShortcutCaptureKeyDown("shortcutTogglePointerLock", e)}
-                    placeholder="Click here, then press a key"
-                    title="Focus and press the key combination to bind"
+                    placeholder={t("stream.shortcuts.clickHereThenPress")}
+                    title={t("stream.shortcuts.focusAndPress")}
                     spellCheck={false}
                   />
                 </div>
 
                 <div className="settings-shortcut-row">
-                  <span className="settings-shortcut-label" id="shortcut-fullscreen-label">Toggle Full Screen</span>
+                  <span className="settings-shortcut-label" id="shortcut-fullscreen-label">{t("settings.input.toggleFullscreen")}</span>
                   <input
                     type="text"
                     id="shortcut-fullscreen"
@@ -2717,14 +2752,14 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                     onBlur={() => handleShortcutBlur("shortcutToggleFullscreen", toggleFullscreenInput)}
                     onPaste={(e) => handleShortcutPaste("shortcutToggleFullscreen", e)}
                     onKeyDown={(e) => handleShortcutCaptureKeyDown("shortcutToggleFullscreen", e)}
-                    placeholder="Click here, then press a key"
-                    title="Focus and press the key combination to bind"
+                    placeholder={t("stream.shortcuts.clickHereThenPress")}
+                    title={t("stream.shortcuts.focusAndPress")}
                     spellCheck={false}
                   />
                 </div>
 
                 <div className="settings-shortcut-row">
-                  <span className="settings-shortcut-label" id="shortcut-stop-stream-label">Stop Stream</span>
+                  <span className="settings-shortcut-label" id="shortcut-stop-stream-label">{t("settings.input.stopStream")}</span>
                   <input
                     type="text"
                     id="shortcut-stop-stream"
@@ -2736,14 +2771,14 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                     onBlur={() => handleShortcutBlur("shortcutStopStream", stopStreamInput)}
                     onPaste={(e) => handleShortcutPaste("shortcutStopStream", e)}
                     onKeyDown={(e) => handleShortcutCaptureKeyDown("shortcutStopStream", e)}
-                    placeholder="Click here, then press a key"
-                    title="Focus and press the key combination to bind"
+                    placeholder={t("stream.shortcuts.clickHereThenPress")}
+                    title={t("stream.shortcuts.focusAndPress")}
                     spellCheck={false}
                   />
                 </div>
 
                 <div className="settings-shortcut-row">
-                  <span className="settings-shortcut-label" id="shortcut-anti-afk-label">Toggle Anti-AFK</span>
+                  <span className="settings-shortcut-label" id="shortcut-anti-afk-label">{t("settings.input.toggleAntiAfk")}</span>
                   <input
                     type="text"
                     id="shortcut-anti-afk"
@@ -2755,14 +2790,14 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                     onBlur={() => handleShortcutBlur("shortcutToggleAntiAfk", toggleAntiAfkInput)}
                     onPaste={(e) => handleShortcutPaste("shortcutToggleAntiAfk", e)}
                     onKeyDown={(e) => handleShortcutCaptureKeyDown("shortcutToggleAntiAfk", e)}
-                    placeholder="Click here, then press a key"
-                    title="Focus and press the key combination to bind"
+                    placeholder={t("stream.shortcuts.clickHereThenPress")}
+                    title={t("stream.shortcuts.focusAndPress")}
                     spellCheck={false}
                   />
                 </div>
 
                 <div className="settings-shortcut-row">
-                  <span className="settings-shortcut-label" id="shortcut-mic-label">Toggle Microphone</span>
+                  <span className="settings-shortcut-label" id="shortcut-mic-label">{t("settings.input.toggleMicrophone")}</span>
                   <input
                     type="text"
                     id="shortcut-mic"
@@ -2774,14 +2809,14 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                     onBlur={() => handleShortcutBlur("shortcutToggleMicrophone", toggleMicrophoneInput)}
                     onPaste={(e) => handleShortcutPaste("shortcutToggleMicrophone", e)}
                     onKeyDown={(e) => handleShortcutCaptureKeyDown("shortcutToggleMicrophone", e)}
-                    placeholder="Click here, then press a key"
-                    title="Focus and press the key combination to bind"
+                    placeholder={t("stream.shortcuts.clickHereThenPress")}
+                    title={t("stream.shortcuts.focusAndPress")}
                     spellCheck={false}
                   />
                 </div>
 
                 <div className="settings-shortcut-row">
-                  <span className="settings-shortcut-label" id="shortcut-screenshot-label">Screenshot</span>
+                  <span className="settings-shortcut-label" id="shortcut-screenshot-label">{t("settings.input.screenshot")}</span>
                   <input
                     type="text"
                     id="shortcut-screenshot"
@@ -2793,14 +2828,14 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                     onBlur={() => handleShortcutBlur("shortcutScreenshot", screenshotInput)}
                     onPaste={(e) => handleShortcutPaste("shortcutScreenshot", e)}
                     onKeyDown={(e) => handleShortcutCaptureKeyDown("shortcutScreenshot", e)}
-                    placeholder="Click here, then press a key"
-                    title="Focus and press the key combination to bind"
+                    placeholder={t("stream.shortcuts.clickHereThenPress")}
+                    title={t("stream.shortcuts.focusAndPress")}
                     spellCheck={false}
                   />
                 </div>
 
                 <div className="settings-shortcut-row">
-                  <span className="settings-shortcut-label" id="shortcut-recording-label">Recording</span>
+                  <span className="settings-shortcut-label" id="shortcut-recording-label">{t("settings.input.recording")}</span>
                   <input
                     type="text"
                     id="shortcut-recording"
@@ -2812,14 +2847,14 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                     onBlur={() => handleShortcutBlur("shortcutToggleRecording", recordingInput)}
                     onPaste={(e) => handleShortcutPaste("shortcutToggleRecording", e)}
                     onKeyDown={(e) => handleShortcutCaptureKeyDown("shortcutToggleRecording", e)}
-                    placeholder="Click here, then press a key"
-                    title="Focus and press the key combination to bind"
+                    placeholder={t("stream.shortcuts.clickHereThenPress")}
+                    title={t("stream.shortcuts.focusAndPress")}
                     spellCheck={false}
                   />
                 </div>
 
                 <div className="settings-shortcut-row">
-                  <span className="settings-shortcut-label" id="shortcut-sidebar-label">Toggle stream sidebar</span>
+                  <span className="settings-shortcut-label" id="shortcut-sidebar-label">{t("settings.input.toggleStreamSidebar")}</span>
                   <input
                     type="text"
                     id="shortcut-sidebar"
@@ -2847,7 +2882,14 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
 
               {!toggleStatsError && !togglePointerLockError && !toggleFullscreenError && !stopStreamError && !toggleAntiAfkError && !toggleMicrophoneError && !screenshotError && !recordingError && (
                 <span className="settings-shortcut-hint">
-                  Click a field and press the keys to bind, or paste a shortcut ({shortcutExamples}). Escape cancels focus. Full screen: {formatShortcutForDisplay(settings.shortcutToggleFullscreen, isMac)}. Stop: {formatShortcutForDisplay(settings.shortcutStopStream, isMac)}. Mic: {formatShortcutForDisplay(settings.shortcutToggleMicrophone, isMac)}. Screenshot: {formatShortcutForDisplay(settings.shortcutScreenshot, isMac)}. Recording: {formatShortcutForDisplay(settings.shortcutToggleRecording, isMac)}.
+                  {t("settings.input.shortcutHint", {
+                    examples: t("stream.shortcuts.examples"),
+                    fullscreen: formatShortcutForDisplay(settings.shortcutToggleFullscreen, isMac),
+                    stop: formatShortcutForDisplay(settings.shortcutStopStream, isMac),
+                    mic: formatShortcutForDisplay(settings.shortcutToggleMicrophone, isMac),
+                    screenshot: formatShortcutForDisplay(settings.shortcutScreenshot, isMac),
+                    recording: formatShortcutForDisplay(settings.shortcutToggleRecording, isMac),
+                  })}
                 </span>
               )}
                 </div>
@@ -2860,9 +2902,9 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
           <>
             {/* ── Appearance ── */}
             <section className="settings-section">
-              {showAll && <div className="settings-section-context">Interface</div>}
+              {showAll && <div className="settings-section-context">{t("settings.sections.interface")}</div>}
               <div className="settings-section-header">
-                <h2>Appearance</h2>
+                <h2>{t("settings.interface.appearance")}</h2>
               </div>
               <div className="settings-rows">
                 <div className="settings-row">
@@ -2968,8 +3010,8 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                 <div className="settings-toggle-grid">
                   <div className="settings-row">
                     <label className="settings-label">
-                      Hide Stream Overlay Buttons
-                      <span className="settings-hint">Hide microphone, fullscreen, and end-session buttons while streaming.</span>
+                      {t("settings.interface.hideStreamOverlayButtons")}
+                      <span className="settings-hint">{t("settings.interface.hideStreamOverlayButtonsHint")}</span>
                     </label>
                     <label className="settings-toggle">
                       <input
@@ -2983,8 +3025,8 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
 
                   <div className="settings-row">
                     <label className="settings-label">
-                      Show Stats on Stream Launch
-                      <span className="settings-hint">Automatically show the stats overlay when a new stream starts.</span>
+                      {t("settings.interface.showStatsOnStreamLaunch")}
+                      <span className="settings-hint">{t("settings.interface.showStatsOnStreamLaunchHint")}</span>
                     </label>
                     <label className="settings-toggle">
                       <input
@@ -2998,8 +3040,8 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
 
                   <div className="settings-row">
                     <label className="settings-label">
-                      Hide Server Selector
-                      <span className="settings-hint">Skip the free-tier server selection dialog and always launch with OpenNOW's default routing.</span>
+                      {t("settings.interface.hideServerSelector")}
+                      <span className="settings-hint">{t("settings.interface.hideServerSelectorHint")}</span>
                     </label>
                     <label className="settings-toggle">
                       <input
@@ -3013,8 +3055,8 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
 
                   <div className="settings-row">
                     <label className="settings-label">
-                      Show Anti-AFK Indicator
-                      <span className="settings-hint">Show the ANTI-AFK ON badge while Anti-AFK is enabled during streaming.</span>
+                      {t("settings.interface.showAntiAfkIndicator")}
+                      <span className="settings-hint">{t("settings.interface.showAntiAfkIndicatorHint")}</span>
                     </label>
                     <label className="settings-toggle">
                       <input
@@ -3028,8 +3070,8 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
 
                   <div className="settings-row">
                     <label className="settings-label">
-                      Auto Full Screen
-                      <span className="settings-hint">Automatically enter fullscreen when connecting to or starting a session.</span>
+                      {t("settings.interface.autoFullScreen")}
+                      <span className="settings-hint">{t("settings.interface.autoFullScreenHint")}</span>
                     </label>
                     <label className="settings-toggle">
                       <input
@@ -3043,8 +3085,8 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
 
                   <div className="settings-row">
                     <label className="settings-label">
-                      Escape Exits Fullscreen
-                      <span className="settings-hint">When enabled, pressing Escape will exit fullscreen. When disabled (default), Escape is forwarded to the game while the mouse is pointer-locked.</span>
+                      {t("settings.interface.escapeExitsFullscreen")}
+                      <span className="settings-hint">{t("settings.interface.escapeExitsFullscreenHint")}</span>
                     </label>
                     <label className="settings-toggle">
                       <input
@@ -3058,8 +3100,8 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
 
                   <div className="settings-row">
                     <label className="settings-label">
-                      Discord Rich Presence
-                      <span className="settings-hint">Show the game you are streaming as your Discord activity, including elapsed time.</span>
+                      {t("settings.interface.discordRichPresence")}
+                      <span className="settings-hint">{t("settings.interface.discordRichPresenceHint")}</span>
                     </label>
                     <label className="settings-toggle">
                       <input
@@ -3076,10 +3118,10 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                 <div className="settings-row">
                   <label className="settings-label">
                     <span className="settings-label-title">
-                      Controller Mode Library
-                      <span className="settings-inline-badge settings-inline-badge--beta">Beta</span>
+                      {t("settings.interface.controllerModeLibrary")}
+                      <span className="settings-inline-badge settings-inline-badge--beta">{t("app.labels.beta")}</span>
                     </span>
-                    <span className="settings-hint">Replace the desktop library/settings navigation with the controller-first layout only when controller mode is enabled.</span>
+                    <span className="settings-hint">{t("settings.interface.controllerModeLibraryHint")}</span>
                   </label>
                   <label className="settings-toggle">
                     <input
@@ -3095,8 +3137,8 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                   <div className="settings-controller-subsettings">
                     <div className="settings-row">
                       <label className="settings-label">
-                        Controller UI Sounds
-                        <span className="settings-hint">Play subtle move, open, and back sounds inside controller mode only.</span>
+                        {t("settings.interface.controllerUiSounds")}
+                        <span className="settings-hint">{t("settings.interface.controllerUiSoundsHint")}</span>
                       </label>
                       <label className="settings-toggle">
                         <input
@@ -3110,8 +3152,8 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
 
                     <div className="settings-row">
                       <label className="settings-label">
-                        Background Animations (Controller Mode)
-                        <span className="settings-hint">Show animated background visuals on controller-mode loading screens only.</span>
+                        {t("settings.interface.controllerBackgroundAnimations")}
+                        <span className="settings-hint">{t("settings.interface.controllerBackgroundAnimationsHint")}</span>
                       </label>
                       <label className="settings-toggle">
                         <input
@@ -3125,8 +3167,8 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
 
                     <div className="settings-row">
                       <label className="settings-label">
-                        Auto-Load Controller Library
-                        <span className="settings-hint">Automatically open the controller library at startup when controller mode is enabled.</span>
+                        {t("settings.interface.autoLoadControllerLibrary")}
+                        <span className="settings-hint">{t("settings.interface.autoLoadControllerLibraryHint")}</span>
                       </label>
                       <label className="settings-toggle">
                         <input
@@ -3142,7 +3184,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
 
                 <div className="settings-row settings-row--column">
                   <div className="settings-row-top">
-                    <label className="settings-label">Poster Size</label>
+                    <label className="settings-label">{t("settings.interface.posterSize")}</label>
                     <span className="settings-value-badge">{posterSizePercent}%</span>
                   </div>
                   <input
@@ -3154,14 +3196,14 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                     value={posterSizePercent}
                     onChange={(e) => handleChange("posterSizeScale", Number(e.target.value) / 100)}
                   />
-                  <span className="settings-subtle-hint">Adjusts game posters in real time across the library and controller views.</span>
+                  <span className="settings-subtle-hint">{t("settings.interface.posterSizeHint")}</span>
                 </div>
 
                 {/* Session Counter */}
                 <div className="settings-row">
                   <label className="settings-label">
-                    Session Elapsed Counter
-                    <span className="settings-hint">Enable or disable the live session elapsed counter while streaming.</span>
+                    {t("settings.interface.sessionElapsedCounter")}
+                    <span className="settings-hint">{t("settings.interface.sessionElapsedCounterHint")}</span>
                   </label>
                   <label className="settings-toggle">
                     <input
@@ -3175,13 +3217,13 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
 
                 <div className="settings-row settings-row--column">
                   <div className="settings-row-top">
-                    <label className="settings-label">Session Timer Reappear</label>
+                    <label className="settings-label">{t("settings.interface.sessionTimerReappear")}</label>
                     <span className="settings-value-badge">
                       {!settings.sessionCounterEnabled
-                        ? "Disabled"
+                        ? t("app.status.disabled")
                         : settings.sessionClockShowEveryMinutes === 0
-                          ? "Off"
-                          : `Every ${settings.sessionClockShowEveryMinutes} min`}
+                          ? t("settings.interface.off")
+                          : t("settings.interface.everyMinutes", { count: settings.sessionClockShowEveryMinutes })}
                     </span>
                   </div>
                   <input
@@ -3194,16 +3236,16 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                     onChange={(e) => handleChange("sessionClockShowEveryMinutes", parseInt(e.target.value, 10))}
                     disabled={!settings.sessionCounterEnabled}
                   />
-                  <span className="settings-subtle-hint">
-                    How often the session timer pops back up while streaming (0 disables repeats).
-                  </span>
+                  <span className="settings-subtle-hint">{t("settings.interface.sessionTimerReappearHint")}</span>
                 </div>
 
                 <div className="settings-row settings-row--column">
                   <div className="settings-row-top">
-                    <label className="settings-label">Session Timer Visible Time</label>
+                    <label className="settings-label">{t("settings.interface.sessionTimerVisibleTime")}</label>
                     <span className="settings-value-badge">
-                      {settings.sessionCounterEnabled ? `${settings.sessionClockShowDurationSeconds}s` : "Disabled"}
+                      {settings.sessionCounterEnabled
+                        ? t("app.units.seconds", { value: settings.sessionClockShowDurationSeconds })
+                        : t("app.status.disabled")}
                     </span>
                   </div>
                   <input
@@ -3216,15 +3258,11 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                     onChange={(e) => handleChange("sessionClockShowDurationSeconds", parseInt(e.target.value, 10))}
                     disabled={!settings.sessionCounterEnabled}
                   />
-                  <span className="settings-subtle-hint">
-                    How long the session timer stays visible each time it appears.
-                  </span>
+                  <span className="settings-subtle-hint">{t("settings.interface.sessionTimerVisibleTimeHint")}</span>
                 </div>
 
                 <div className="settings-row settings-row--column">
-                  <span className="settings-subtle-hint">
-                    Disabling the session elapsed counter stops the live elapsed timer from rendering at all. Remaining playtime indicators stay unchanged.
-                  </span>
+                  <span className="settings-subtle-hint">{t("settings.interface.sessionTimerDisabledHint")}</span>
                 </div>
               </div>
             </section>
@@ -3234,39 +3272,39 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
 
         {showAbout && (
           <section className="settings-section">
-            {showAll && <div className="settings-section-context">About</div>}
+            {showAll && <div className="settings-section-context">{t("settings.sections.about")}</div>}
             <div className="settings-section-header">
-              <h2>About</h2>
+              <h2>{t("settings.sections.about")}</h2>
             </div>
             <div className="settings-rows">
               <div className="settings-row">
                 <label className="settings-label settings-label--wrap">
                   <span className="settings-label-title">
-                    Application Updates
+                    {t("settings.about.applicationUpdates")}
                     <span className={`settings-inline-badge settings-inline-badge--updater settings-inline-badge--updater-${updaterState.status}`}>
                       {updaterBadgeLabel}
                     </span>
                   </span>
                   <span className="settings-hint">
-                    Version {updaterState.currentVersion} · {settings.autoCheckForUpdates
-                      ? "Packaged builds check GitHub Releases in the background."
-                      : "Background update checks are off until you manually check."}
+                    {t("settings.about.version", { version: updaterState.currentVersion })} · {settings.autoCheckForUpdates
+                      ? t("settings.about.backgroundChecksOn")
+                      : t("settings.about.backgroundChecksOff")}
                   </span>
                   {updaterState.message ? (
                     <span className="settings-hint settings-hint--updater-message">{updaterState.message}</span>
                   ) : null}
                   {updaterLastCheckedLabel ? (
-                    <span className="settings-hint">Last checked: {updaterLastCheckedLabel}</span>
+                    <span className="settings-hint">{t("settings.about.lastChecked", { value: updaterLastCheckedLabel })}</span>
                   ) : null}
                   {updaterState.availableVersion && updaterState.status !== "downloaded" ? (
-                    <span className="settings-hint">Available version: {updaterState.availableVersion}</span>
+                    <span className="settings-hint">{t("settings.about.availableVersion", { version: updaterState.availableVersion })}</span>
                   ) : null}
                   {updaterState.downloadedVersion ? (
-                    <span className="settings-hint">Downloaded version: {updaterState.downloadedVersion}</span>
+                    <span className="settings-hint">{t("settings.about.downloadedVersion", { version: updaterState.downloadedVersion })}</span>
                   ) : null}
                   {updaterState.status === "downloading" && updaterState.progress ? (
                     <span className="settings-hint">
-                      Download progress: {updaterProgressPercent}%{updaterProgressLabel ? ` · ${updaterProgressLabel}` : ""}{updaterDownloadRateLabel ? ` · ${updaterDownloadRateLabel}` : ""}
+                      {t("settings.about.downloadProgress", { percent: updaterProgressPercent })}{updaterProgressLabel ? ` · ${updaterProgressLabel}` : ""}{updaterDownloadRateLabel ? ` · ${updaterDownloadRateLabel}` : ""}
                     </span>
                   ) : null}
                 </label>
@@ -3282,7 +3320,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                     }}
                   >
                     {updaterState.status === "checking" ? <Loader size={16} className="spin" /> : <RefreshCcw size={16} />}
-                    Check for Updates
+                    {t("settings.about.checkForUpdates")}
                   </button>
                   {updaterState.status === "available" ? (
                     <button
@@ -3296,7 +3334,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                       }}
                     >
                       <Download size={16} />
-                      Download Update
+                      {t("settings.about.downloadUpdate")}
                     </button>
                   ) : null}
                   {updaterState.status === "downloaded" ? (
@@ -3311,7 +3349,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                       }}
                     >
                       <RefreshCcw size={16} />
-                      Restart to Install
+                      {t("settings.about.restartToInstall")}
                     </button>
                   ) : null}
                 </div>
@@ -3319,12 +3357,12 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
 
               <div className="settings-row">
                 <label className="settings-label settings-label--wrap">
-                  Automatically Check for Updates
+                  {t("settings.about.automaticallyCheckForUpdates")}
                   <span className="settings-hint">
-                    When on, packaged builds check GitHub Releases in the background after startup and periodically while OpenNOW is running.
+                    {t("settings.about.automaticallyCheckForUpdatesOnHint")}
                   </span>
                   <span className="settings-hint">
-                    When off, OpenNOW stays on the current version unless you use the manual update buttons below.
+                    {t("settings.about.automaticallyCheckForUpdatesOffHint")}
                   </span>
                 </label>
                 <label className="settings-toggle">
@@ -3347,8 +3385,8 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
 
               <div className="settings-row">
                 <label className="settings-label">
-                  Export Logs
-                  <span className="settings-hint">Download debug logs with sensitive data redacted for privacy</span>
+                  {t("settings.about.exportLogs")}
+                  <span className="settings-hint">{t("settings.about.exportLogsHint")}</span>
                 </label>
                 <button
                   type="button"
@@ -3367,39 +3405,39 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                       URL.revokeObjectURL(url);
                     } catch (err) {
                       console.error("[Settings] Failed to export logs:", err);
-                      alert("Failed to export logs. Please try again.");
+                      alert(t("settings.about.exportLogsFailed"));
                     }
                   }}
                 >
                   <FileDown size={16} />
-                  Export Logs
+                  {t("settings.about.exportLogs")}
                 </button>
               </div>
 
               <div className="settings-row">
                 <label className="settings-label">
-                  Delete Cache
-                  <span className="settings-hint">Clear all cached game data, images, and metadata</span>
+                  {t("settings.about.deleteCache")}
+                  <span className="settings-hint">{t("settings.about.deleteCacheHint")}</span>
                 </label>
                 <button
                   type="button"
                   className="settings-delete-cache-btn"
                   onClick={async () => {
-                    if (!window.confirm("Are you sure you want to delete all cached data? This will clear all game metadata, images, and library information.")) {
+                    if (!window.confirm(t("settings.about.deleteCacheConfirm"))) {
                       return;
                     }
                     try {
                       await window.openNow.deleteCache();
-                      alert("Cache cleared successfully. The app will refresh on next startup.");
+                      alert(t("settings.about.cacheCleared"));
                     } catch (err) {
                       console.error("[Settings] Failed to delete cache:", err);
-                      alert("Failed to delete cache. Please try again.");
+                      alert(t("settings.about.deleteCacheFailed"));
                     }
                   }}
                 >
-                  <Trash2 size={16} />
-                  Delete Cache
-                </button>
+	                  <Trash2 size={16} />
+	                  {t("settings.about.deleteCache")}
+	                </button>
               </div>
             </div>
           </section>
