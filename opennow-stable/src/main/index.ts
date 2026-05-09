@@ -923,14 +923,15 @@ function registerIpcHandlers(): void {
       value: Settings[K],
     ) => {
       settingsManager.set(key, value);
+      const appliedValue = settingsManager.get(key);
       // React to certain setting changes immediately in main process
       try {
         if (key === "autoCheckForUpdates") {
-          appUpdater?.setAutomaticChecksEnabled(value as boolean);
+          appUpdater?.setAutomaticChecksEnabled(appliedValue as boolean);
         }
-        signalingCoordinator?.applySettingsChange(key, value);
+        signalingCoordinator?.applySettingsChange(key, appliedValue);
         if (key === "discordRichPresence") {
-          if (value) {
+          if (appliedValue) {
             void connectDiscordRpc().then(() => discordMonitor.start());
           } else {
             discordMonitor.stop();

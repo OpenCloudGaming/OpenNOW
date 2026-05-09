@@ -18,7 +18,12 @@ import type {
   ControllerThemeStyle,
   AppAccentColor,
 } from "@shared/gfn";
-import { DEFAULT_KEYBOARD_LAYOUT, getDefaultStreamPreferences, normalizeStreamPreferences } from "@shared/gfn";
+import {
+  DEFAULT_KEYBOARD_LAYOUT,
+  getDefaultStreamPreferences,
+  normalizeStreamClientModeForPlatform,
+  normalizeStreamPreferences,
+} from "@shared/gfn";
 
 export interface Settings {
   /** Video resolution (e.g., "1920x1080") */
@@ -320,6 +325,12 @@ export class SettingsManager {
       );
       settings.codec = normalized.codec;
       settings.colorQuality = normalized.colorQuality;
+      migrated = true;
+    }
+
+    const streamClientMode = normalizeStreamClientModeForPlatform(settings.streamClientMode, process.platform);
+    if (settings.streamClientMode !== streamClientMode) {
+      settings.streamClientMode = streamClientMode;
       migrated = true;
     }
 
