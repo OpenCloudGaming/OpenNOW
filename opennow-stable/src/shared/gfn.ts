@@ -130,6 +130,7 @@ export function colorQualityIs10Bit(cq: ColorQuality): boolean {
 
 /** Controller-mode XMB background visual preset */
 export type ControllerThemeStyle = "aurora" | "nebula" | "grid" | "minimal" | "pulse";
+export type AppAccentColor = "green" | "blue" | "violet" | "amber" | "rose";
 
 /** RGB tint for controller-mode background (0–255 each) */
 export interface ControllerThemeRgb {
@@ -291,6 +292,8 @@ export interface Settings {
   showStatsOnLaunch: boolean;
   /** Skip the free-tier queue server selection modal and launch with default routing */
   hideServerSelector: boolean;
+  /** Desktop UI accent preset */
+  appAccentColor: AppAccentColor;
   controllerMode: boolean;
   controllerUiSounds: boolean;
   autoLoadControllerLibrary: boolean;

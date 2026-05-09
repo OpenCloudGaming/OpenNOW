@@ -23,12 +23,13 @@
   --ink-muted: #5c5c66;
 
   /* Accent — green */
+  --accent-rgb: 88, 217, 138;
   --accent: #58d98a;
   --accent-hover: #6ae89a;
   --accent-press: #44c477;
-  --accent-glow: rgba(88, 217, 138, 0.25);
-  --accent-surface: rgba(88, 217, 138, 0.08);
-  --accent-surface-strong: rgba(88, 217, 138, 0.14);
+  --accent-glow: rgba(var(--accent-rgb), 0.25);
+  --accent-surface: rgba(var(--accent-rgb), 0.08);
+  --accent-surface-strong: rgba(var(--accent-rgb), 0.14);
   --accent-on: #062315;
 
   /* Semantic */
@@ -282,7 +283,7 @@ body,
   display: flex;
   flex-direction: column;
   background:
-    radial-gradient(900px 400px at 80% -5%, rgba(88, 217, 138, 0.03), transparent 70%),
+    radial-gradient(900px 400px at 80% -5%, rgba(var(--accent-rgb), 0.03), transparent 70%),
     linear-gradient(180deg, var(--bg-a), var(--bg-b));
 }
 
@@ -306,8 +307,8 @@ body,
 
 .auth-refresh-notice--success {
   color: var(--accent);
-  border-color: rgba(88, 217, 138, 0.35);
-  background: linear-gradient(180deg, rgba(88, 217, 138, 0.15), rgba(10, 10, 12, 0.95));
+  border-color: rgba(var(--accent-rgb), 0.35);
+  background: linear-gradient(180deg, rgba(var(--accent-rgb), 0.15), rgba(10, 10, 12, 0.95));
 }
 
 .auth-refresh-notice--warn {
@@ -405,7 +406,7 @@ body,
 
 .navbar-subscription-chip:hover {
   border-color: color-mix(in srgb, var(--accent) 35%, var(--panel-border));
-  background: linear-gradient(180deg, rgba(88, 217, 138, 0.12), rgba(88, 217, 138, 0.04));
+  background: linear-gradient(180deg, rgba(var(--accent-rgb), 0.12), rgba(var(--accent-rgb), 0.04));
   color: var(--ink);
 }
 
@@ -422,7 +423,7 @@ body,
 
 .navbar-subscription-chip--good {
   border-color: color-mix(in srgb, var(--accent) 45%, var(--panel-border));
-  background: linear-gradient(180deg, rgba(88, 217, 138, 0.14), rgba(88, 217, 138, 0.05));
+  background: linear-gradient(180deg, rgba(var(--accent-rgb), 0.14), rgba(var(--accent-rgb), 0.05));
 }
 
 .navbar-subscription-chip--warn {
@@ -515,11 +516,11 @@ body,
   min-width: 210px;
   border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--panel-border));
   background:
-    linear-gradient(160deg, rgba(88, 217, 138, 0.26), rgba(88, 217, 138, 0.08)),
+    linear-gradient(160deg, rgba(var(--accent-rgb), 0.26), rgba(var(--accent-rgb), 0.08)),
     linear-gradient(180deg, rgba(15, 24, 19, 0.95), rgba(10, 12, 11, 0.92));
   box-shadow:
-    0 6px 20px rgba(88, 217, 138, 0.16),
-    0 0 0 1px rgba(88, 217, 138, 0.14) inset;
+    0 6px 20px rgba(var(--accent-rgb), 0.16),
+    0 0 0 1px rgba(var(--accent-rgb), 0.14) inset;
   color: #d7ffe8;
 }
 
@@ -531,8 +532,8 @@ body,
 .navbar-session-resume:hover:not(:disabled) {
   border-color: color-mix(in srgb, var(--accent) 75%, var(--panel-border));
   box-shadow:
-    0 10px 28px rgba(88, 217, 138, 0.24),
-    0 0 0 1px rgba(88, 217, 138, 0.24) inset;
+    0 10px 28px rgba(var(--accent-rgb), 0.24),
+    0 0 0 1px rgba(var(--accent-rgb), 0.24) inset;
 }
 
 .navbar-session-resume:focus-visible,
@@ -542,8 +543,8 @@ body,
 
 .navbar-session-resume:focus-visible {
   box-shadow:
-    0 0 0 2px rgba(88, 217, 138, 0.24),
-    0 10px 28px rgba(88, 217, 138, 0.24);
+    0 0 0 2px rgba(var(--accent-rgb), 0.24),
+    0 10px 28px rgba(var(--accent-rgb), 0.24);
 }
 
 .navbar-session-resume:disabled,
@@ -1235,7 +1236,7 @@ body,
 }
 
 .navbar-meter-fill--good {
-  background: linear-gradient(90deg, #44c477, #58d98a);
+  background: linear-gradient(90deg, var(--accent-press), var(--accent));
 }
 
 .navbar-meter-fill--warn {
@@ -1810,7 +1811,7 @@ body.controller-overlay-lowfx .controller-overlay--in-stream .xmb-top-bar {
   height: 300px;
   top: 40%;
   left: 50%;
-  background: radial-gradient(circle, rgba(88, 217, 138, 0.5) 0%, transparent 70%);
+  background: radial-gradient(circle, rgba(var(--accent-rgb), 0.5) 0%, transparent 70%);
   animation: float-c 18s ease-in-out infinite;
 }
 
@@ -2070,7 +2071,7 @@ body.controller-overlay-lowfx .controller-overlay--in-stream .xmb-top-bar {
 
 .login-button:hover:not(:disabled) {
   transform: translateY(-1px);
-  box-shadow: 0 6px 24px rgba(88, 217, 138, 0.35);
+  box-shadow: 0 6px 24px rgba(var(--accent-rgb), 0.35);
 }
 
 .login-button:active:not(:disabled) {
@@ -2855,7 +2856,7 @@ button.game-card-store-chip.owned.active:hover {
   display: flex;
   align-items: flex-start;
   gap: 14px;
-  background: linear-gradient(180deg, rgba(88, 217, 138, 0.08), rgba(88, 217, 138, 0.03));
+  background: linear-gradient(180deg, rgba(var(--accent-rgb), 0.08), rgba(var(--accent-rgb), 0.03));
 }
 
 .settings-thanks-hero-icon {
@@ -2865,7 +2866,7 @@ button.game-card-store-chip.owned.active:hover {
   width: 38px;
   height: 38px;
   border-radius: 10px;
-  background: rgba(88, 217, 138, 0.12);
+  background: rgba(var(--accent-rgb), 0.12);
   color: var(--accent);
   flex-shrink: 0;
 }
@@ -2928,8 +2929,8 @@ button.game-card-store-chip.owned.active:hover {
 }
 
 .settings-person-card--link:hover {
-  border-color: rgba(88, 217, 138, 0.24);
-  background: rgba(88, 217, 138, 0.06);
+  border-color: rgba(var(--accent-rgb), 0.24);
+  background: rgba(var(--accent-rgb), 0.06);
   transform: translateY(-1px);
 }
 
@@ -2951,8 +2952,8 @@ button.game-card-store-chip.owned.active:hover {
 }
 
 .settings-person-avatar--fallback.is-placeholder {
-  border: 1px solid rgba(88, 217, 138, 0.18);
-  background: rgba(88, 217, 138, 0.08);
+  border: 1px solid rgba(var(--accent-rgb), 0.18);
+  background: rgba(var(--accent-rgb), 0.08);
 }
 
 .settings-person-body {
@@ -2991,7 +2992,7 @@ button.game-card-store-chip.owned.active:hover {
 }
 
 .settings-person-badge--supporter {
-  background: rgba(88, 217, 138, 0.12);
+  background: rgba(var(--accent-rgb), 0.12);
   color: var(--accent);
 }
 
@@ -3372,7 +3373,7 @@ button.game-card-store-chip.owned.active:hover {
 
 .settings-shortcut-reset-btn:hover:not(:disabled) {
   color: var(--accent);
-  border-color: rgba(88, 217, 138, 0.35);
+  border-color: rgba(var(--accent-rgb), 0.35);
   background: var(--accent-surface);
 }
 
@@ -3425,7 +3426,7 @@ button.game-card-store-chip.owned.active:hover {
 .settings-inline-badge--beta {
   color: var(--accent);
   background: var(--accent-surface);
-  border-color: rgba(88, 217, 138, 0.24);
+  border-color: rgba(var(--accent-rgb), 0.24);
 }
 
 .settings-inline-badge--codec {
@@ -3435,7 +3436,7 @@ button.game-card-store-chip.owned.active:hover {
 .settings-inline-badge--codec-gpu {
   color: var(--accent);
   background: var(--accent-surface);
-  border-color: rgba(88, 217, 138, 0.24);
+  border-color: rgba(var(--accent-rgb), 0.24);
 }
 
 .settings-inline-badge--codec-cpu {
@@ -3474,7 +3475,7 @@ button.game-card-store-chip.owned.active:hover {
 .settings-inline-badge--updater-downloaded {
   color: var(--accent);
   background: var(--accent-surface);
-  border-color: rgba(88, 217, 138, 0.24);
+  border-color: rgba(var(--accent-rgb), 0.24);
 }
 
 .settings-inline-badge--updater-error {
@@ -3588,7 +3589,7 @@ button.game-card-store-chip.owned.active:hover {
 
 .settings-icon-button:hover {
   color: var(--accent);
-  border-color: rgba(88, 217, 138, 0.35);
+  border-color: rgba(var(--accent-rgb), 0.35);
   background: var(--accent-surface);
 }
 
@@ -3714,7 +3715,7 @@ button.game-card-store-chip.owned.active:hover {
 .settings-chip.active {
   background: var(--accent-surface-strong);
   color: var(--accent);
-  border-color: rgba(88, 217, 138, 0.25);
+  border-color: rgba(var(--accent-rgb), 0.25);
 }
 
 .settings-chip--codec {
@@ -4464,7 +4465,7 @@ button.game-card-store-chip.owned.active:hover {
 .settings-updater-progress-bar {
   height: 100%;
   border-radius: inherit;
-  background: linear-gradient(90deg, rgba(88, 217, 138, 0.75), rgba(59, 130, 246, 0.85));
+  background: linear-gradient(90deg, rgba(var(--accent-rgb), 0.75), rgba(59, 130, 246, 0.85));
   transition: width var(--t-normal);
 }
 
@@ -5252,8 +5253,8 @@ button.game-card-store-chip.owned.active:hover {
 }
 
 .sv-mic[data-enabled="true"] {
-  border-color: rgba(88, 217, 138, 0.3);
-  box-shadow: 0 0 12px rgba(88, 217, 138, 0.15);
+  border-color: rgba(var(--accent-rgb), 0.3);
+  box-shadow: 0 0 12px rgba(var(--accent-rgb), 0.15);
 }
 
 /* Position below controller indicator */
@@ -5290,7 +5291,7 @@ button.game-card-store-chip.owned.active:hover {
   inset: 0;
   border: none;
   background:
-    radial-gradient(circle at 20% 20%, rgba(88, 217, 138, 0.08), transparent 42%),
+    radial-gradient(circle at 20% 20%, rgba(var(--accent-rgb), 0.08), transparent 42%),
     radial-gradient(circle at 82% 78%, rgba(239, 68, 68, 0.12), transparent 45%),
     rgba(5, 6, 7, 0.58);
   backdrop-filter: blur(14px) saturate(130%);
@@ -5307,7 +5308,7 @@ button.game-card-store-chip.owned.active:hover {
   backdrop-filter: blur(20px) saturate(140%);
   box-shadow:
     0 24px 64px rgba(0, 0, 0, 0.55),
-    0 0 0 1px rgba(88, 217, 138, 0.16) inset;
+    0 0 0 1px rgba(var(--accent-rgb), 0.16) inset;
   padding: 20px 20px 16px;
   animation: fade-in 170ms var(--ease);
 }
@@ -5629,7 +5630,7 @@ button.game-card-store-chip.owned.active:hover {
   transform: translate(-50%, -50%);
   width: 400px;
   height: 400px;
-  background: radial-gradient(circle, rgba(88, 217, 138, 0.06) 0%, transparent 70%);
+  background: radial-gradient(circle, rgba(var(--accent-rgb), 0.06) 0%, transparent 70%);
   pointer-events: none;
   animation: float-a 16s ease-in-out infinite;
 }
@@ -5782,7 +5783,7 @@ button.game-card-store-chip.owned.active:hover {
 }
 
 .sload-step.completed .sload-step-dot {
-  background: rgba(88, 217, 138, 0.1);
+  background: rgba(var(--accent-rgb), 0.1);
   border-color: var(--accent);
   color: var(--accent);
 }
@@ -5880,7 +5881,7 @@ button.game-card-store-chip.owned.active:hover {
   width: min(100%, 520px);
   padding: 14px;
   border-radius: var(--r-md);
-  border: 1px solid rgba(88, 217, 138, 0.2);
+  border: 1px solid rgba(var(--accent-rgb), 0.2);
   background: rgba(7, 15, 11, 0.72);
   text-align: left;
 }
@@ -5901,7 +5902,7 @@ button.game-card-store-chip.owned.active:hover {
   width: fit-content;
   padding: 4px 8px;
   border-radius: 999px;
-  background: rgba(88, 217, 138, 0.16);
+  background: rgba(var(--accent-rgb), 0.16);
   color: var(--accent);
   font-size: 0.7rem;
   font-weight: 700;
@@ -6073,7 +6074,7 @@ button.game-card-store-chip.owned.active:hover {
   overflow: hidden;
   border-radius: 12px;
   background:
-    radial-gradient(circle at top, rgba(88, 217, 138, 0.16), transparent 60%),
+    radial-gradient(circle at top, rgba(var(--accent-rgb), 0.16), transparent 60%),
     linear-gradient(180deg, rgba(8, 15, 11, 0.96), rgba(4, 7, 6, 0.98));
   min-height: 180px;
 }
@@ -6106,7 +6107,7 @@ button.game-card-store-chip.owned.active:hover {
 
 .queue-ad-preview-overlay-icon {
   color: var(--accent);
-  filter: drop-shadow(0 0 10px rgba(88, 217, 138, 0.35));
+  filter: drop-shadow(0 0 10px rgba(var(--accent-rgb), 0.35));
 }
 
 .queue-ad-preview--blocked .queue-ad-preview-overlay-icon,
@@ -10155,3 +10156,4 @@ button.game-card-store-chip.owned.active:hover {
   max-height: min(72vh, 760px);
   vertical-align: middle;
 }
+

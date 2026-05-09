@@ -32,6 +32,7 @@ import {
 } from "@shared/gfn";
 import { formatShortcutForDisplay, normalizeShortcut, shortcutFromKeyboardEvent } from "../shortcuts";
 import { getCodecDecodeBadgeState, type CodecTestResult } from "../lib/codecDiagnostics";
+import { getAccentColorOption, getAccentColorOptions } from "../lib/uiCustomization";
 import { useTranslation } from "../i18n";
 import {
   clearStoredRegionPingResults,
@@ -143,6 +144,8 @@ const SETTINGS_SCOPE_SEARCH_TERMS: Record<SettingsSearchScopeId, readonly string
     "locale",
     "translation",
     "app language",
+    "accent color",
+    "theme color",
     "overlay",
     "controller mode",
     "controller mode library",
@@ -200,6 +203,8 @@ const APP_LANGUAGE_LABELS: Record<string, string> = {
   nl: "Nederlands",
   ro: "Română",
 };
+
+const accentColorOptions = getAccentColorOptions();
 
 function getAppLanguageLabel(locale: string): string {
   return APP_LANGUAGE_LABELS[locale] ?? locale.toUpperCase();
@@ -676,6 +681,8 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
 
   const [appLanguageDropdownOpen, setAppLanguageDropdownOpen] = useState(false);
   const appLanguageDropdownRef = useRef<HTMLDivElement | null>(null);
+  const [accentColorDropdownOpen, setAccentColorDropdownOpen] = useState(false);
+  const accentColorDropdownRef = useRef<HTMLDivElement | null>(null);
 
   // Game language dropdown state
   const [gameLanguageDropdownOpen, setGameLanguageDropdownOpen] = useState(false);
@@ -1063,6 +1070,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
     return appLanguageOptions.find((option) => option.value === locale)?.label ?? getAppLanguageLabel(locale);
   }, [appLanguageOptions, locale]);
 
+  const selectedAccentColor = useMemo(() => getAccentColorOption(settings.appAccentColor), [settings.appAccentColor]);
   const getMicrophoneModeLabel = useCallback((mode: MicrophoneMode): string => {
     switch (mode) {
       case "push-to-talk":
@@ -1113,6 +1121,9 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
       }
       if (appLanguageDropdownRef.current && !appLanguageDropdownRef.current.contains(target)) {
         setAppLanguageDropdownOpen(false);
+      }
+      if (accentColorDropdownRef.current && !accentColorDropdownRef.current.contains(target)) {
+        setAccentColorDropdownOpen(false);
       }
       if (gameLanguageDropdownRef.current && !gameLanguageDropdownRef.current.contains(target)) {
         setGameLanguageDropdownOpen(false);
@@ -2923,6 +2934,71 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                           >
                             <span>{option.label}</span>
                             {locale === option.value && <Check size={14} className="settings-dropdown-check" />}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                <div className="settings-row">
+                  <label className="settings-label">
+                    {t("settings.interface.accentColor")}
+                    <span className="settings-hint">{t("settings.interface.accentColorHint")}</span>
+                  </label>
+                  <div className="settings-dropdown" ref={accentColorDropdownRef}>
+                    <button
+                      type="button"
+                      className={`settings-dropdown-selected ${accentColorDropdownOpen ? "open" : ""}`}
+                      onClick={() => setAccentColorDropdownOpen((open) => !open)}
+                    >
+                      <span className="settings-dropdown-selected-name" style={{ display: "inline-flex", alignItems: "center", gap: 10 }}>
+                        <span
+                          aria-hidden="true"
+                          style={{
+                            width: 12,
+                            height: 12,
+                            borderRadius: 9999,
+                            background: selectedAccentColor.hex,
+                            boxShadow: `0 0 0 1px color-mix(in srgb, ${selectedAccentColor.hex} 48%, rgba(255, 255, 255, 0.22))`,
+                          }}
+                        />
+                        {t(selectedAccentColor.labelKey)}
+                      </span>
+                      <svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor" className={`settings-dropdown-chevron ${accentColorDropdownOpen ? "flipped" : ""}`}>
+                        <path d="M4.47 5.97a.75.75 0 0 1 1.06 0L8 8.44l2.47-2.47a.75.75 0 1 1 1.06 1.06l-3 3a.75.75 0 0 1-1.06 0l-3-3a.75.75 0 0 1 0-1.06Z" />
+                      </svg>
+                    </button>
+                    {accentColorDropdownOpen && (
+                      <div className="settings-dropdown-menu">
+                        {accentColorOptions.map((option) => (
+                          <button
+                            key={option.value}
+                            type="button"
+                            className={`settings-dropdown-item ${settings.appAccentColor === option.value ? "active" : ""}`}
+                            onClick={() => {
+                              handleChange("appAccentColor", option.value);
+                              setAccentColorDropdownOpen(false);
+                            }}
+                          >
+                            <span style={{ display: "inline-flex", alignItems: "center", gap: 10, flex: 1 }}>
+                              <span
+                                aria-hidden="true"
+                                style={{
+                                  width: 20,
+                                  height: 20,
+                                  borderRadius: 9999,
+                                  flexShrink: 0,
+                                  flex: "0 0 20px",
+                                  background: option.hex,
+                                  boxShadow: `0 0 0 1px color-mix(in srgb, ${option.hex} 48%, rgba(255, 255, 255, 0.22))`,
+                                }}
+                              />
+                              <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                {t(option.labelKey)}
+                              </span>
+                            </span>
+                            {settings.appAccentColor === option.value && <Check size={14} className="settings-dropdown-check" />}
                           </button>
                         ))}
                       </div>
