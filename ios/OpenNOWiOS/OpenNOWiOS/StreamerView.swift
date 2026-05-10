@@ -2266,6 +2266,7 @@ private struct StreamerWebView: UIViewRepresentable {
   let tStartTime = 0, tMoved = false, activeTouchId = null;
   let mouseGestureActive = false;
   let touchscreenLeftDown = false;
+  let touchscreenPressTimer = null;
   let simulatedPointerX = Math.round((Number(cfg.width) || window.innerWidth) / 2);
   let simulatedPointerY = Math.round((Number(cfg.height) || window.innerHeight) / 2);
   let pendingTouchscreenPoint = null;
@@ -2273,6 +2274,7 @@ private struct StreamerWebView: UIViewRepresentable {
   let twoFingerStart = 0;
   let twoFingerTapPending = false;
   const MOVE_CLICK_CANCEL_PX = 8;
+  const TOUCHSCREEN_PRESS_DELAY_MS = 45;
   const pointerSpeed = 1.05;
   let zoomScale = 1;
   let zoomTx = 0;
@@ -2545,6 +2547,16 @@ private struct StreamerWebView: UIViewRepresentable {
       y: Math.round(y * streamHeight)
     };
   }
+  function clientDeltaToStreamDelta(dx, dy) {
+    const rect = videoContentRect();
+    const { width: streamWidth, height: streamHeight } = streamPixelSize();
+    const scaleX = streamWidth / Math.max(1, rect.width);
+    const scaleY = streamHeight / Math.max(1, rect.height);
+    return {
+      dx: dx * scaleX,
+      dy: dy * scaleY
+    };
+  }
   function sendMouseMoveDelta(dx, dy, reliable = false) {
     if (!inputReady) return;
     const boundedDx = Math.round(clamp(dx, -32768, 32767));
@@ -2592,8 +2604,30 @@ private struct StreamerWebView: UIViewRepresentable {
       movePointerToStreamPoint(point, true);
     }
   }
+  function clearTouchscreenPressTimer() {
+    if (touchscreenPressTimer) {
+      clearTimeout(touchscreenPressTimer);
+      touchscreenPressTimer = null;
+    }
+  }
+  function pressTouchscreenLeftButton() {
+    clearTouchscreenPressTimer();
+    if (touchscreenLeftDown || !inputReady || !mouseGestureActive) return false;
+    flushScheduledTouchscreenMove();
+    sendInput(encodeMouseButton(8, 1));
+    touchscreenLeftDown = true;
+    return true;
+  }
+  function scheduleTouchscreenLeftButton() {
+    clearTouchscreenPressTimer();
+    touchscreenPressTimer = setTimeout(() => {
+      touchscreenPressTimer = null;
+      pressTouchscreenLeftButton();
+    }, TOUCHSCREEN_PRESS_DELAY_MS);
+  }
   function releaseTouchscreenLeftButton() {
     flushScheduledTouchscreenMove();
+    clearTouchscreenPressTimer();
     if (touchscreenLeftDown && inputReady) {
       sendInput(encodeMouseButton(9, 1));
     }
@@ -3065,11 +3099,14 @@ private struct StreamerWebView: UIViewRepresentable {
       tMoved = false;
       twoFingerTapPending = false;
       movePointerToTouch(t, true);
-      if (inputReady) {
-        sendInput(encodeMouseButton(8, 1));
-        touchscreenLeftDown = true;
-      }
+      scheduleTouchscreenLeftButton();
       return;
+    }
+    if (streamerPreferences.touchscreenModeEnabled && mouseGestureActive) {
+      releaseTouchscreenLeftButton();
+      activeTouchId = null;
+      mouseGestureActive = false;
+      tMoved = false;
     }
     if (touches.length === 2) {
       const t1 = touches[0];
@@ -3109,9 +3146,19 @@ private struct StreamerWebView: UIViewRepresentable {
       if (Math.abs(t.clientX - tapStartX) > MOVE_CLICK_CANCEL_PX || Math.abs(t.clientY - tapStartY) > MOVE_CLICK_CANCEL_PX) {
         tMoved = true;
       }
+      const dxRaw = t.clientX - lastTX;
+      const dyRaw = t.clientY - lastTY;
       lastTX = t.clientX;
       lastTY = t.clientY;
-      scheduleTouchscreenMove(t);
+      if (tMoved) {
+        pressTouchscreenLeftButton();
+      }
+      if (touchscreenLeftDown) {
+        const delta = clientDeltaToStreamDelta(dxRaw, dyRaw);
+        sendMouseMoveDelta(delta.dx, delta.dy);
+      } else {
+        scheduleTouchscreenMove(t);
+      }
       return;
     }
     if (touches.length === 2) {
@@ -3170,7 +3217,17 @@ private struct StreamerWebView: UIViewRepresentable {
     if (streamerPreferences.touchscreenModeEnabled && mouseGestureActive) {
       const endedActiveTouch = Array.from(e.changedTouches).some((item) => item.identifier === activeTouchId);
       if (endedActiveTouch || remainingTouches.length === 0) {
-        releaseTouchscreenLeftButton();
+        const shouldTapClick = !tMoved && Date.now() - tStartTime < 500;
+        if (touchscreenLeftDown) {
+          releaseTouchscreenLeftButton();
+        } else {
+          clearTouchscreenPressTimer();
+          flushScheduledTouchscreenMove();
+          if (shouldTapClick && inputReady) {
+            sendInput(encodeMouseButton(8, 1));
+            setTimeout(() => sendInput(encodeMouseButton(9, 1)), 35);
+          }
+        }
         activeTouchId = null;
         mouseGestureActive = false;
         twoFingerTapPending = false;
@@ -3201,6 +3258,27 @@ private struct StreamerWebView: UIViewRepresentable {
       sendInput(encodeMouseButton(8, 3));
       setTimeout(() => sendInput(encodeMouseButton(9, 3)), 35);
     }
+    activeTouchId = null;
+    mouseGestureActive = false;
+    twoFingerTapPending = false;
+  }, { passive: false });
+
+  touchpad.addEventListener('touchcancel', (e) => {
+    e.preventDefault();
+    if (streamerPreferences.touchscreenModeEnabled && mouseGestureActive) {
+      releaseTouchscreenLeftButton();
+      activeTouchId = null;
+      mouseGestureActive = false;
+      twoFingerTapPending = false;
+      tMoved = false;
+      return;
+    }
+    if (moveFrame) {
+      cancelAnimationFrame(moveFrame);
+      moveFrame = null;
+    }
+    pendingMoveDx = 0;
+    pendingMoveDy = 0;
     activeTouchId = null;
     mouseGestureActive = false;
     twoFingerTapPending = false;
