@@ -3,6 +3,7 @@ import type {
   CatalogBrowseResult,
   CatalogFilterGroup,
   CatalogSortOption,
+  GameCatalogSkuStrings,
   GameInfo,
   GameVariant,
 } from "@shared/gfn";
@@ -121,9 +122,7 @@ interface AppData {
     playType?: string;
     playabilityState?: string;
     minimumMembershipTierLabel?: string;
-    catalogSkuStrings?: {
-      SKU_BASED_TAG?: string[];
-    };
+    catalogSkuStrings?: GameCatalogSkuStrings;
   };
   itemMetadata?: {
     campaignIds?: string[];
@@ -363,6 +362,7 @@ function appToGame(app: AppData): GameInfo {
     imageUrl: imageUrl ? optimizeImage(imageUrl) : undefined,
     playType: app.gfn?.playType,
     membershipTierLabel: app.gfn?.minimumMembershipTierLabel,
+    catalogSkuStrings: app.gfn?.catalogSkuStrings,
     publisherName: app.publisherName,
     contentRatings: extractContentRatings(app),
     playabilityState: app.gfn?.playabilityState,
@@ -417,6 +417,7 @@ function dedupeGames(games: GameInfo[]): GameInfo[] {
       imageUrl: existing.imageUrl ?? game.imageUrl,
       playType: existing.playType ?? game.playType,
       membershipTierLabel: existing.membershipTierLabel ?? game.membershipTierLabel,
+      catalogSkuStrings: existing.catalogSkuStrings ?? game.catalogSkuStrings,
       publisherName: existing.publisherName ?? game.publisherName,
       playabilityState: existing.playabilityState ?? game.playabilityState,
       lastPlayed: existing.lastPlayed ?? game.lastPlayed,
@@ -688,7 +689,13 @@ async function browseCatalogUncached(input: CatalogBrowseRequest): Promise<Catal
         gfn {
           playabilityState
           minimumMembershipTierLabel
-          catalogSkuStrings { SKU_BASED_TAG }
+          catalogSkuStrings {
+            SKU_BASED_TAG
+            SKU_BASED_PLAYABILITY_TEXT
+            SKU_BASED_UNPLAYABLE_DIALOG_HEADER
+            SKU_BASED_UNPLAYABLE_DIALOG_BODY_UPGRADE
+            SKU_BASED_UNPLAYABLE_DIALOG_BODY_UPGRADE_ECOMM_RESTRICTED
+          }
         }
         itemMetadata { campaignIds }
       }

@@ -550,6 +550,7 @@ export interface GameInfo {
   screenshotUrl?: string;
   playType?: string;
   membershipTierLabel?: string;
+  catalogSkuStrings?: GameCatalogSkuStrings;
   publisherName?: string;
   contentRatings?: string[];
   playabilityState?: string;
@@ -559,6 +560,14 @@ export interface GameInfo {
   isInLibrary?: boolean;
   selectedVariantIndex: number;
   variants: GameVariant[];
+}
+
+export interface GameCatalogSkuStrings {
+  SKU_BASED_TAG?: string[];
+  SKU_BASED_PLAYABILITY_TEXT?: string;
+  SKU_BASED_UNPLAYABLE_DIALOG_HEADER?: string;
+  SKU_BASED_UNPLAYABLE_DIALOG_BODY_UPGRADE?: string;
+  SKU_BASED_UNPLAYABLE_DIALOG_BODY_UPGRADE_ECOMM_RESTRICTED?: string;
 }
 
 export function isGameInLibrary(game: Pick<GameInfo, "variants">): boolean {

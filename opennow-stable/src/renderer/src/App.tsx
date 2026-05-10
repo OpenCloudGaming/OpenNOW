@@ -2653,6 +2653,7 @@ export function App(): JSX.Element {
     updateLoadingStep("queue");
     setQueuePosition(undefined);
     warmNativeStreamerForLaunch();
+    let launchGameContext: GameInfo = game;
 
     try {
       const token = authSession?.tokens.idToken ?? authSession?.tokens.accessToken;
@@ -2690,6 +2691,7 @@ export function App(): JSX.Element {
         game,
         variant: selectedVariant,
       };
+      launchGameContext = matchedGameContext.game;
       setStreamingGame(matchedGameContext.game);
       setStreamingStore(matchedGameContext.variant?.store ?? null);
 
@@ -2877,7 +2879,7 @@ export function App(): JSX.Element {
         return;
       }
       console.error("Launch failed:", error);
-      setLaunchError(toLaunchErrorState(t, error, loadingStep));
+      setLaunchError(toLaunchErrorState(t, error, loadingStep, launchGameContext));
       await disconnectSignalingControlled();
       clientRef.current?.dispose();
       clientRef.current = null;
@@ -3146,7 +3148,9 @@ export function App(): JSX.Element {
     setLocalSessionTimerWarning(null);
     resetStatsOverlayToPreference();
     const matchedContext = findGameContextForSession(navbarActiveSession);
+    let resumeGameContext: GameInfo | null = null;
     if (matchedContext) {
+      resumeGameContext = matchedContext.game;
       setStreamingGame(matchedContext.game);
       setStreamingStore(matchedContext.variant?.store ?? null);
     } else {
@@ -3160,7 +3164,7 @@ export function App(): JSX.Element {
       setNavbarActiveSession(null);
     } catch (error) {
       console.error("Navbar resume failed:", error);
-      setLaunchError(toLaunchErrorState(t, error, loadingStep));
+      setLaunchError(toLaunchErrorState(t, error, loadingStep, resumeGameContext));
       await disconnectSignalingControlled();
       clientRef.current?.dispose();
       clientRef.current = null;

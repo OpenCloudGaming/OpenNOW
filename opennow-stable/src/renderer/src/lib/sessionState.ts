@@ -1,4 +1,4 @@
-import type { SessionInfo } from "@shared/gfn";
+import type { GameInfo, SessionInfo } from "@shared/gfn";
 
 import type { LaunchErrorState, StreamLoadingStatus, StreamStatus } from "./appTypes";
 
@@ -21,12 +21,25 @@ export function isSessionLimitError(error: unknown): boolean {
   if (error && typeof error === "object" && "gfnErrorCode" in error) {
     const candidate = error.gfnErrorCode;
     if (typeof candidate === "number") {
-      return candidate === 3237093643 || candidate === 3237093718;
+      return candidate === 3237093643;
     }
   }
   if (error instanceof Error) {
     const msg = error.message.toUpperCase();
-    return msg.includes("SESSION LIMIT") || msg.includes("INSUFFICIENT_PLAYABILITY") || msg.includes("DUPLICATE SESSION");
+    return msg.includes("SESSION LIMIT") || msg.includes("DUPLICATE SESSION");
+  }
+  return false;
+}
+
+export function isInsufficientPlayabilityError(error: unknown): boolean {
+  if (error && typeof error === "object" && "gfnErrorCode" in error) {
+    const candidate = error.gfnErrorCode;
+    if (typeof candidate === "number") {
+      return candidate === 3237093718;
+    }
+  }
+  if (error instanceof Error) {
+    return error.message.toUpperCase().includes("INSUFFICIENT_PLAYABILITY");
   }
   return false;
 }
@@ -73,7 +86,48 @@ export function extractLaunchErrorCode(error: unknown): number | undefined {
   return undefined;
 }
 
-export function toLaunchErrorState(t: TranslateFunction, error: unknown, stage: StreamLoadingStatus): LaunchErrorState {
+function firstText(value: string | string[] | undefined): string {
+  if (typeof value === "string") return value.trim();
+  if (Array.isArray(value)) {
+    return value.find((entry) => typeof entry === "string" && entry.trim().length > 0)?.trim() ?? "";
+  }
+  return "";
+}
+
+function formatCatalogSkuString(template: string, sku: string): string {
+  return template.replace(/\{\{\s*SKU\s*\}\}|\{\s*SKU\s*\}/g, sku).trim();
+}
+
+function toInsufficientPlayabilityState(
+  t: TranslateFunction,
+  stage: StreamLoadingStatus,
+  code: number | undefined,
+  game?: Pick<GameInfo, "title" | "membershipTierLabel" | "catalogSkuStrings"> | null,
+): LaunchErrorState {
+  const catalogHeader = firstText(game?.catalogSkuStrings?.SKU_BASED_UNPLAYABLE_DIALOG_HEADER);
+  const catalogBody = firstText(game?.catalogSkuStrings?.SKU_BASED_UNPLAYABLE_DIALOG_BODY_UPGRADE);
+  const tier = game?.membershipTierLabel?.trim();
+  const title = catalogHeader || t("errors.insufficientPlayabilityTitle");
+  const description = catalogBody
+    ? formatCatalogSkuString(catalogBody, catalogHeader || tier || t("errors.insufficientPlayabilityTitle"))
+    : tier
+      ? t("errors.insufficientPlayabilityTierDescription", { tier })
+      : t("errors.insufficientPlayabilityDescription");
+
+  return {
+    stage,
+    title,
+    description,
+    codeLabel: toCodeLabel(code),
+  };
+}
+
+export function toLaunchErrorState(
+  t: TranslateFunction,
+  error: unknown,
+  stage: StreamLoadingStatus,
+  game?: Pick<GameInfo, "title" | "membershipTierLabel" | "catalogSkuStrings"> | null,
+): LaunchErrorState {
   const unknownMessage = t("errors.launchUnknown");
 
   const titleFromError =
@@ -92,9 +146,12 @@ export function toLaunchErrorState(t: TranslateFunction, error: unknown, stage: 
   const combined = `${statusDescription} ${messageFromError}`.toUpperCase();
   const code = extractLaunchErrorCode(error);
 
+  if (isInsufficientPlayabilityError(error) || combined.includes("INSUFFICIENT_PLAYABILITY")) {
+    return toInsufficientPlayabilityState(t, stage, code, game);
+  }
+
   if (
     isSessionLimitError(error) ||
-    combined.includes("INSUFFICIENT_PLAYABILITY") ||
     combined.includes("SESSION_LIMIT") ||
     combined.includes("DUPLICATE SESSION")
   ) {
