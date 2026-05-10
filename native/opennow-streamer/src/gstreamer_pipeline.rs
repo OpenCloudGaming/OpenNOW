@@ -747,7 +747,7 @@ impl GstreamerPipeline {
         self.render_state.set_surface(surface, &self.event_sender);
     }
 
-    pub(crate) fn stop(self) -> Result<(), String> {
+    pub(crate) fn stop(mut self) -> Result<(), String> {
         self.video_liveness.set_stats_overlay_visible(false);
         self.render_state.stop_external_renderer_window_guard();
         #[cfg(target_os = "windows")]
