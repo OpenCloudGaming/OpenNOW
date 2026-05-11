@@ -4,7 +4,7 @@
         {
             "label": "build",
             "type": "shell",
-            "command": "make run",
+            "command": "make",
             "args": [],
             "group": {
                 "kind": "build",
