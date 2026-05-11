@@ -1,54 +1,32 @@
-# AGENTS.md
+---
+description: Apply these instructions to ensure all code generation and reviews align with strict, language-agnostic production standards.
+applyTo: '**'
+---
 
-## Core Priorities
+# Operational Protocol
+Before executing any task, you must strictly follow this sequence:
 
-1. Performance first.
-2. Reliability first.
-3. Keep behavior predictable under load and during failures (session restarts, reconnects, partial streams).
+**Step 1: Acknowledge.** Explicitly confirm your understanding of and adherence to these universal rules.
+**Step 2: Audit.** Identify and list all files, modules, or components required for the task.
+**Step 3: Blueprint.** Outline a concise, high-level architectural plan of action before writing any code.
+**Step 4: Execution.** Deliver complete, production-ready code. You are strictly forbidden from using snippets, placeholders (e.g., `TODO`, `pass`, `...`), or stubs. 
+**Step 5: Autonomy.** If context, imports, or dependencies are missing, autonomously resolve them by defaulting to the language's standard library or canonical implementation practices.
 
-If a tradeoff is required, choose correctness and robustness over short-term convenience.
+# Coding Standards
 
-## Repository Layout
+## 1. General Requirements
+* **Self-Documenting Logic:** Do not rely on inline comments to explain behavior. Variables, functions, and architecture must clearly dictate intent.
+* **Hermetic Code:** Every file must be entirely self-contained. Include all necessary imports, headers, and dependencies. The code must compile or execute immediately as-is.
+* **Total Implementation:** Every function, class, and method must contain final, working logic. Mocks and no-ops are strictly prohibited unless explicitly designing a testing suite.
 
-- `opennow-stable/` is the Electron app. Main-process code lives in `src/main`, preload bridges in `src/preload`, renderer UI in `src/renderer`, and cross-process TypeScript contracts in `src/shared`.
-- `native/` contains the native streamer implementation and build outputs used by the Electron app. Keep native build changes isolated from Electron refactors unless the task explicitly spans both.
-- `locales/` contains localization sources and generated Crowdin output. See Localization before editing.
-- `OpenNOW-Site/` is a separate repository when present; do not modify it from OpenNOW tasks unless explicitly requested.
+## 2. Resource & State Management
+* **Lifecycle Strictness:** Explicitly manage memory, connections, and file handles using the most robust native paradigm available (e.g., RAII, context managers, garbage collection optimization, or strict ownership rules).
+* **Immutability by Default:** Enforce state immutability wherever possible using language-native constraints (e.g., `const`, `readonly`, `final`). Limit mutable state to strictly scoped, necessary components.
 
-## Module Boundaries
+## 3. Error Handling & Safety
+* **Explicit Propagation:** Handle all edge cases and errors natively. Use idiomatic error flow (e.g., Result/Option types, strictly caught exceptions, or multiple return values).
+* **Zero Panics/Crashes:** Never use forceful unwraps, assertions that crash in production, or unhandled panic equivalents. Failures must be gracefully handled or propagated contextually.
 
-- Shared GFN main-process protocol details belong under `opennow-stable/src/main/gfn`. Prefer focused modules with one owner per concern (`clientHeaders.ts` for client identity/header constants, `proxyFetch.ts` for proxy-aware fetches, `proxyUrl.ts` for proxy URL normalization, `request.ts` for common response handling).
-- Do not duplicate NVIDIA/GFN constants, request headers, platform/device ID mapping, auth header construction, proxy behavior, or error parsing across feature files. Add to or extract a focused shared module first, then consume it from features.
-- Keep feature files (`auth.ts`, `games.ts`, `cloudmatch.ts`, `subscription.ts`, etc.) responsible for product flow and payload shape, not for re-declaring shared client identity or transport details.
-- Preserve provider/alliance behavior, stable device IDs, session refresh semantics, and `SessionError.fromResponse()` handling when refactoring GFN code.
-
-## Electron Process Boundaries
-
-- Main process owns filesystem, native process management, GFN network/session orchestration, Electron APIs, and security-sensitive logic.
-- Preload exposes the minimal typed bridge needed by the renderer. Do not pass raw Electron or Node primitives into renderer code.
-- Renderer code should stay UI-focused. Do not duplicate main-process GFN networking or native orchestration in React components.
-
-## Shared Contracts
-
-- `opennow-stable/src/shared` is the contract boundary between main, preload, and renderer. Keep public IPC/shared interfaces stable unless the task explicitly requires a contract change.
-- When changing shared types, update every caller across main, preload, and renderer in the same change and run type checks.
-- Avoid using `any` or renderer-only types in shared contracts. Prefer serializable DTOs and explicit unions.
-
-## Maintainability
-
-Long term maintainability is a core priority. If you add new functionality, first check if there is shared logic that can be extracted to a separate module. Duplicate logic across multiple files is a code smell and should be avoided. Don't be afraid to change existing code. Don't take shortcuts by just adding local logic to solve a problem.
-
-- Refactors should reduce ownership ambiguity: name the new owner module, move duplicated logic there, and keep behavior equivalent unless a behavior change is requested.
-- Prefer small, typed helpers over broad `utils` modules. If a helper needs knowledge of one protocol or product area, keep it beside that area.
-- Keep compatibility with existing persisted auth/session state unless a migration is explicitly part of the task.
-
-## Localization
-
-Crowdin owns generated translations. When changing localized copy, edit only `locales/en.json` as the source language file. Do not manually edit other `locales/*.json` files; they are generated by Crowdin and should only change through Crowdin sync pull requests.
-
-## Checks
-
-- For TypeScript/Electron changes, run the narrowest relevant smoke check first, then `npm --prefix opennow-stable run typecheck` before finishing when practical.
-- For main-process GFN/session changes, also run `npm --prefix opennow-stable test -- --test-name-pattern gfn` or the closest targeted test command available; if scripts do not support filtering, run `npm --prefix opennow-stable test`.
-- For localization changes, run `npm --prefix opennow-stable run locales:check`.
-- Do not claim completion if the relevant acceptance check fails. Report the failing command and failure point.
+## 4. Verification & Quality
+* **Strict Typing:** Utilize strict/static typing tools native to the language or ecosystem. Avoid dynamic or "any" types unless categorically required by the architecture.
+* **Zero Warnings:** Code must be formatted and structured to pass the target language’s strictest standard linter and compiler settings without a single warning or error.
