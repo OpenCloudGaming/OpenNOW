@@ -7,15 +7,9 @@
             "request": "launch",
             "program": "${workspaceFolder}/build/OpenNOW",
             "args": [],
-            "stopAtEntry": false,
             "cwd": "${workspaceFolder}",
-            "environment": [],
-            "externalConsole": false,
-            "MIMode": "lldb",
             "preLaunchTask": "build",
-            "logging": {
-                "engineLogging": false
-            }
+
         }
     ]
 }
