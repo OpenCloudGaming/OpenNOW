@@ -10,6 +10,7 @@
 #include <cmath>
 
 static const CGFloat kSettingsNavHeight = 64.0;
+static const CGFloat kSettingsControllerNavHeight = 136.0;
 static const CGFloat kSettingsTopInset = 72.0;
 static const CGFloat kSettingsSidebarWidth = 300.0;
 static const CGFloat kSettingsColumnGap = 28.0;
@@ -359,7 +360,8 @@ using namespace OPN;
     CGFloat outerMargin = width < 900.0 ? 24.0 : 64.0;
     CGFloat contentWidth = MIN(1560.0, MAX(360.0, width - outerMargin * 2.0));
     CGFloat x = floor((width - contentWidth) / 2.0);
-    CGFloat y = kSettingsNavHeight + kSettingsTopInset;
+    CGFloat navHeight = OpnControllerModeEnabled() ? kSettingsControllerNavHeight : kSettingsNavHeight;
+    CGFloat y = navHeight + kSettingsTopInset;
     self.titleLabel.frame = NSMakeRect(x, y - 48.0, 240.0, 34.0);
     CGFloat shellHeight = MAX(360.0, NSHeight(self.bounds) - y - 34.0);
     self.shellView.frame = NSMakeRect(x, y, contentWidth, shellHeight);
