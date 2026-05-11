@@ -1,0 +1,21 @@
+ {
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Debug",
+            "type": "lldb",
+            "request": "launch",
+            "program": "${workspaceFolder}/build/OpenNOW",
+            "args": [],
+            "stopAtEntry": false,
+            "cwd": "${workspaceFolder}",
+            "environment": [],
+            "externalConsole": false,
+            "MIMode": "lldb",
+            "preLaunchTask": "build",
+            "logging": {
+                "engineLogging": false
+            }
+        }
+    ]
+}

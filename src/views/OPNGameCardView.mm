@@ -1,0 +1,387 @@
+#import "OPNGameCardView.h"
+#import "../common/OPNColorTokens.h"
+#import "../common/OPNUIHelpers.h"
+#include <QuartzCore/QuartzCore.h>
+
+static const CGFloat gCardWidth = 220.0;
+static const CGFloat gImageHeight = gCardWidth;
+static const CGFloat gInfoHeight = 0.0;
+static const CGFloat gCardTotalHeight = gImageHeight + gInfoHeight;
+static const CGFloat gGradientOverlayHeight = 132.0;
+
+static CGFloat OPNScaledCardWidth(void) {
+    return floor(gCardWidth * OpnPosterSizeScale());
+}
+
+static CGFloat OPNScaledCardHeight(void) {
+    return floor(gCardTotalHeight * OpnPosterSizeScale());
+}
+
+static NSString *OPNStorePrettyName(NSString *name) {
+    NSString *upper = name.uppercaseString;
+    if ([upper containsString:@"STEAM"]) return @"Steam";
+    if ([upper containsString:@"EPIC"] || [upper containsString:@"EGS"]) return @"Epic";
+    if ([upper containsString:@"UBISOFT"] || [upper containsString:@"UPLAY"]) return @"Ubisoft";
+    if ([upper containsString:@"BATTLE"]) return @"Battle.net";
+    if ([upper containsString:@"XBOX"] || [upper containsString:@"MICROSOFT"]) return @"Xbox";
+    if ([upper containsString:@"EA"]) return @"EA";
+    if ([upper containsString:@"ORIGIN"]) return @"EA";
+    if ([upper containsString:@"GOG"]) return @"GOG";
+    return name.capitalizedString;
+}
+
+static NSString *OPNStoreIconAssetName(NSString *name) {
+    NSString *upper = name.uppercaseString;
+    if ([upper containsString:@"STEAM"]) return @"steam";
+    if ([upper containsString:@"EPIC"] || [upper containsString:@"EGS"]) return @"epic";
+    if ([upper containsString:@"UBISOFT"] || [upper containsString:@"UPLAY"]) return @"ubisoft";
+    if ([upper containsString:@"BATTLE"]) return @"battlenet";
+    if ([upper containsString:@"XBOX"] || [upper containsString:@"MICROSOFT"]) return @"xbox";
+    if ([upper containsString:@"EA"] || [upper containsString:@"ORIGIN"]) return @"ea";
+    if ([upper containsString:@"GOG"]) return @"gog";
+    return @"default";
+}
+
+static NSString *OPNStoreIconAssetPath(NSString *assetName) {
+    NSString *bundlePath = [[NSBundle mainBundle] pathForResource:assetName ofType:@"svg" inDirectory:@"store-icons"];
+    if (bundlePath.length > 0) return bundlePath;
+
+    NSString *relativePath = [NSString stringWithFormat:@"assets/store-icons/%@.svg", assetName];
+    NSString *workingPath = [[[NSFileManager defaultManager] currentDirectoryPath] stringByAppendingPathComponent:relativePath];
+    if ([[NSFileManager defaultManager] fileExistsAtPath:workingPath]) return workingPath;
+
+    NSString *sourcePath = [@"/Volumes/Projects/OpenNOW-Mac" stringByAppendingPathComponent:relativePath];
+    if ([[NSFileManager defaultManager] fileExistsAtPath:sourcePath]) return sourcePath;
+
+    return nil;
+}
+
+static NSImage *OPNStoreIconImage(NSString *name) {
+    static NSMutableDictionary<NSString *, NSImage *> *cache;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        cache = [NSMutableDictionary dictionary];
+    });
+
+    NSString *assetName = OPNStoreIconAssetName(name ?: @"");
+    NSImage *cached = cache[assetName];
+    if (cached) return cached;
+
+    NSString *path = OPNStoreIconAssetPath(assetName);
+    NSImage *image = path.length > 0 ? [[NSImage alloc] initWithContentsOfFile:path] : nil;
+    if (!image && ![assetName isEqualToString:@"default"]) {
+        path = OPNStoreIconAssetPath(@"default");
+        image = path.length > 0 ? [[NSImage alloc] initWithContentsOfFile:path] : nil;
+    }
+    if (!image) return nil;
+
+    [image setTemplate:YES];
+    cache[assetName] = image;
+    return image;
+}
+
+static NSString *OPNStoreIconGlyph(NSString *name) {
+    NSString *upper = name.uppercaseString;
+    if ([upper containsString:@"STEAM"]) return @"●";
+    if ([upper containsString:@"UBISOFT"] || [upper containsString:@"UPLAY"]) return @"◎";
+    if ([upper containsString:@"BATTLE"]) return @"✦";
+    if ([upper containsString:@"XBOX"] || [upper containsString:@"MICROSOFT"]) return @"X";
+    if ([upper containsString:@"EPIC"] || [upper containsString:@"EGS"]) return @"E";
+    if ([upper containsString:@"EA"] || [upper containsString:@"ORIGIN"]) return @"EA";
+    if ([upper containsString:@"GOG"]) return @"G";
+    return name.length > 0 ? [name substringToIndex:1].uppercaseString : @"?";
+}
+
+static NSColor *OPNStoreIconColor(NSString *name, BOOL selected) {
+    (void)name;
+    CGFloat alpha = selected ? 0.96 : 0.68;
+    return OpnColor(OPN::kBrandGreen, alpha);
+}
+
+static NSFont *OPNStoreIconFont(NSString *glyph) {
+    return glyph.length > 1
+        ? [NSFont systemFontOfSize:8.0 weight:NSFontWeightBlack]
+        : [NSFont systemFontOfSize:13.0 weight:NSFontWeightBlack];
+}
+
+static BOOL OPNIsNumericString(const std::string &value) {
+    return !value.empty() && value.find_first_not_of("0123456789") == std::string::npos;
+}
+
+static NSString *OPNSteamArtworkURLForGame(const OPN::GameInfo &game) {
+    std::string appId;
+    for (const auto &variant : game.variants) {
+        NSString *store = [NSString stringWithUTF8String:variant.appStore.c_str()];
+        if ([store.uppercaseString containsString:@"STEAM"] && OPNIsNumericString(variant.id)) {
+            appId = variant.id;
+            break;
+        }
+    }
+    if (appId.empty() && OPNIsNumericString(game.launchAppId)) appId = game.launchAppId;
+    if (appId.empty()) return nil;
+    return [NSString stringWithFormat:@"https://cdn.cloudflare.steamstatic.com/steam/apps/%s/library_600x900.jpg", appId.c_str()];
+}
+
+@interface OPNGameCardView () <CALayerDelegate>
+@property (nonatomic, assign) OPN::GameInfo gameData;
+@property (nonatomic, strong) NSImageView *imageView;
+@property (nonatomic, strong) NSView *gradientOverlay;
+@property (nonatomic, strong) NSView *storeChipsContainer;
+@property (nonatomic, strong) NSTrackingArea *trackingArea;
+@property (nonatomic, strong) NSButton *playButton;
+@property (nonatomic, strong) NSMutableArray<NSButton *> *storeChipButtons;
+- (void)loadImageFromCandidates:(NSArray<NSString *> *)urlStrings index:(NSUInteger)index;
+@end
+
+@implementation OPNGameCardView
+
+using namespace OPN;
+
++ (NSSize)cardSize { return NSMakeSize(OPNScaledCardWidth(), OPNScaledCardHeight()); }
++ (CGFloat)imageHeight { return OPNScaledCardHeight(); }
++ (CGFloat)infoHeight { return gInfoHeight; }
+
+- (OPN::GameInfo)game { return _gameData; }
+
+- (instancetype)initWithFrame:(NSRect)frame game:(const OPN::GameInfo &)game {
+    self = [super initWithFrame:frame];
+    if (self) {
+        _gameData = game;
+        self.wantsLayer = YES;
+        self.layer.cornerRadius = 18.0;
+        self.layer.masksToBounds = YES;
+        self.layer.backgroundColor = OpnColor(kSurfaceRaised, 0.82).CGColor;
+        self.layer.borderWidth = 1.0;
+        self.layer.borderColor = OpnColor(0xFFFFFF, 0.10).CGColor;
+
+        _imageView = [[NSImageView alloc] initWithFrame:self.bounds];
+        _imageView.imageScaling = NSImageScaleProportionallyUpOrDown;
+        _imageView.wantsLayer = YES;
+        _imageView.layer.backgroundColor = OpnColor(kBackgroundC).CGColor;
+        [self addSubview:_imageView];
+
+        _gradientOverlay = [[NSView alloc] initWithFrame:NSMakeRect(0, NSHeight(self.bounds) - gGradientOverlayHeight, NSWidth(self.bounds), gGradientOverlayHeight)];
+        _gradientOverlay.wantsLayer = YES;
+        CAGradientLayer *gradient = [CAGradientLayer layer];
+        gradient.frame = _gradientOverlay.bounds;
+        gradient.colors = @[(id)OpnColor(kBlack, 0.0).CGColor,
+                            (id)OpnColor(kBlack, 0.0).CGColor,
+                            (id)OpnColor(kBlack, 0.30).CGColor,
+                            (id)OpnColor(kBlack, 0.86).CGColor];
+        gradient.locations = @[@0.0, @0.24, @0.68, @1.0];
+        gradient.startPoint = CGPointMake(0.5, 1.0);
+        gradient.endPoint = CGPointMake(0.5, 0.0);
+        _gradientOverlay.layer = gradient;
+        [self addSubview:_gradientOverlay];
+
+        _playButton = [[NSButton alloc] initWithFrame:
+            NSMakeRect((NSWidth(self.bounds) - 46) / 2, (NSHeight(self.bounds) - 46) / 2, 46, 46)];
+        _playButton.title = @"▶";
+        _playButton.bordered = NO;
+        _playButton.font = [NSFont systemFontOfSize:18 weight:NSFontWeightSemibold];
+        _playButton.contentTintColor = OpnColor(kAccentOn);
+        _playButton.wantsLayer = YES;
+        _playButton.layer.cornerRadius = 23;
+        _playButton.layer.backgroundColor = OpnColor(kBrandGreen, 0.95).CGColor;
+        _playButton.layer.shadowColor = OpnColor(kBrandGreen).CGColor;
+        _playButton.layer.shadowOpacity = 0.22;
+        _playButton.layer.shadowRadius = 12;
+        _playButton.layer.shadowOffset = CGSizeZero;
+        _playButton.hidden = YES;
+        _playButton.target = self;
+        _playButton.action = @selector(playClicked);
+        [self addSubview:_playButton];
+
+        _storeChipButtons = [NSMutableArray array];
+
+        _selectedVariantIndex = -1;
+        int idx = 0;
+        for (auto &v : game.variants) {
+            if (v.librarySelected || v.inLibrary) {
+                _selectedVariantIndex = idx;
+                break;
+            }
+            idx++;
+        }
+        if (_selectedVariantIndex < 0 && !game.variants.empty()) {
+            _selectedVariantIndex = 0;
+        }
+
+        _storeChipsContainer = [[NSView alloc] initWithFrame:
+            NSMakeRect(16, NSHeight(self.bounds) - 37, NSWidth(self.bounds) - 32, 24)];
+        [self addSubview:_storeChipsContainer];
+        [self buildStoreChips];
+
+        [self loadImage];
+
+        _trackingArea = [[NSTrackingArea alloc] initWithRect:self.bounds
+            options:NSTrackingMouseEnteredAndExited | NSTrackingActiveInActiveApp
+            owner:self userInfo:nil];
+        [self addTrackingArea:_trackingArea];
+    }
+    return self;
+}
+
+- (BOOL)isFlipped { return YES; }
+
+- (void)layout {
+    [super layout];
+    CGFloat width = NSWidth(self.bounds);
+    CGFloat height = NSHeight(self.bounds);
+    self.imageView.frame = self.bounds;
+    self.gradientOverlay.frame = NSMakeRect(0, MAX(0.0, height - gGradientOverlayHeight), width, MIN(gGradientOverlayHeight, height));
+    self.playButton.frame = NSMakeRect((width - 46.0) / 2.0, (height - 46.0) / 2.0, 46.0, 46.0);
+    self.storeChipsContainer.frame = NSMakeRect(16.0, MAX(0.0, height - 37.0), MAX(40.0, width - 32.0), 24.0);
+}
+
+- (void)playClicked {
+    if (self.onPlay) self.onPlay();
+}
+
+- (void)buildStoreChips {
+    for (NSView *v in _storeChipsContainer.subviews) { [v removeFromSuperview]; }
+    [_storeChipButtons removeAllObjects];
+    self.storeChipsContainer.hidden = _gameData.variants.size() <= 1;
+    if (_gameData.variants.empty()) return;
+
+    if (_gameData.variants.size() <= 1) return;
+
+    CGFloat x = 0;
+    NSInteger maxChips = 4;
+    NSInteger count = 0;
+    int idx = 0;
+    for (auto &v : _gameData.variants) {
+        if (count >= maxChips) break;
+        NSString *name = [NSString stringWithUTF8String:v.appStore.c_str()];
+        if (!name || name.length == 0) { idx++; continue; }
+        NSString *glyph = OPNStoreIconGlyph(name);
+        BOOL selected = idx == _selectedVariantIndex;
+        NSImage *iconImage = OPNStoreIconImage(name);
+
+        NSButton *chip = [[NSButton alloc] initWithFrame:NSMakeRect(x, 0, 28, 24)];
+        if (iconImage) {
+            chip.title = @"";
+            chip.image = iconImage;
+            chip.imagePosition = NSImageOnly;
+            chip.imageScaling = NSImageScaleProportionallyDown;
+            chip.contentTintColor = OPNStoreIconColor(name, selected);
+        } else {
+            chip.attributedTitle = [[NSAttributedString alloc] initWithString:glyph
+                                                                    attributes:@{
+                NSFontAttributeName: OPNStoreIconFont(glyph),
+                NSForegroundColorAttributeName: OPNStoreIconColor(name, selected),
+            }];
+        }
+        chip.bordered = NO;
+        chip.wantsLayer = YES;
+        chip.layer.cornerRadius = 8;
+        chip.target = self;
+        chip.action = @selector(chipClicked:);
+        chip.tag = idx;
+        chip.toolTip = OPNStorePrettyName(name ?: @"");
+
+        if (selected) {
+            chip.layer.backgroundColor = OpnColor(kBrandGreen, 0.18).CGColor;
+            chip.layer.borderWidth = 1.0;
+            chip.layer.borderColor = OPNStoreIconColor(name, YES).CGColor;
+        } else {
+            chip.layer.backgroundColor = OpnColor(kBrandGreen, 0.08).CGColor;
+            chip.layer.borderColor = OpnColor(kBrandGreen, 0.14).CGColor;
+            chip.layer.borderWidth = 1;
+        }
+
+        [_storeChipsContainer addSubview:chip];
+        [_storeChipButtons addObject:chip];
+        x += 32;
+        count++;
+        idx++;
+    }
+}
+
+- (void)chipClicked:(NSButton *)sender {
+    [self selectVariantAtIndex:(int)sender.tag];
+}
+
+- (void)selectVariantAtIndex:(int)index {
+    if (index < 0 || index >= (int)_gameData.variants.size()) return;
+    _selectedVariantIndex = index;
+    [self buildStoreChips];
+}
+
+- (void)loadImage {
+    NSMutableArray<NSString *> *urlStrings = [NSMutableArray array];
+    NSString *primaryUrl = self.gameData.imageUrl.empty() ? nil : [NSString stringWithUTF8String:self.gameData.imageUrl.c_str()];
+    NSString *heroUrl = self.gameData.heroImageUrl.empty() ? nil : [NSString stringWithUTF8String:self.gameData.heroImageUrl.c_str()];
+    NSString *steamUrl = OPNSteamArtworkURLForGame(self.gameData);
+    for (NSString *candidate in @[primaryUrl ?: @"", heroUrl ?: @"", steamUrl ?: @""]) {
+        if (candidate.length > 0 && ![urlStrings containsObject:candidate]) {
+            [urlStrings addObject:candidate];
+        }
+    }
+    if (urlStrings.count == 0) return;
+
+    [self loadImageFromCandidates:urlStrings index:0];
+}
+
+- (void)loadImageFromCandidates:(NSArray<NSString *> *)urlStrings index:(NSUInteger)index {
+    if (index >= urlStrings.count) return;
+
+    NSString *urlStr = urlStrings[index];
+    NSURL *url = [NSURL URLWithString:urlStr];
+    if (!url) {
+        [self loadImageFromCandidates:urlStrings index:index + 1];
+        return;
+    }
+
+    __weak __typeof__(self) weakSelf = self;
+    NSURLSessionDataTask *task = [[NSURLSession sharedSession]
+        dataTaskWithURL:url
+        completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+            NSHTTPURLResponse *http = [response isKindOfClass:[NSHTTPURLResponse class]] ? (NSHTTPURLResponse *)response : nil;
+            if (error || !data || (http && http.statusCode >= 400)) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    __typeof__(self) strongSelf = weakSelf;
+                    [strongSelf loadImageFromCandidates:urlStrings index:index + 1];
+                });
+                return;
+            }
+            NSImage *img = [[NSImage alloc] initWithData:data];
+            if (!img) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    __typeof__(self) strongSelf = weakSelf;
+                    [strongSelf loadImageFromCandidates:urlStrings index:index + 1];
+                });
+                return;
+            }
+            dispatch_async(dispatch_get_main_queue(), ^{
+                __typeof__(self) strongSelf = weakSelf;
+                if (!strongSelf) return;
+                strongSelf.imageView.image = img;
+            });
+        }];
+    [task resume];
+}
+
+- (void)mouseEntered:(NSEvent *)event {
+    [super mouseEntered:event];
+    self.playButton.hidden = NO;
+    self.layer.borderColor = OpnColor(0xFFFFFF, 0.22).CGColor;
+}
+
+- (void)mouseExited:(NSEvent *)event {
+    [super mouseExited:event];
+    self.playButton.hidden = YES;
+    self.layer.borderColor = OpnColor(0xFFFFFF, 0.10).CGColor;
+}
+
+- (void)updateTrackingAreas {
+    if (self.trackingArea && [self.trackingAreas containsObject:self.trackingArea]) {
+        [self removeTrackingArea:self.trackingArea];
+    }
+    self.trackingArea = [[NSTrackingArea alloc] initWithRect:self.bounds
+        options:NSTrackingMouseEnteredAndExited | NSTrackingActiveInActiveApp
+        owner:self userInfo:nil];
+    [self addTrackingArea:self.trackingArea];
+}
+
+@end
