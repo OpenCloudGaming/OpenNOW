@@ -9,6 +9,7 @@ static NSString *const OPNAccentGreenDefaultsKey = @"OpenNOW.Interface.AccentGre
 static NSString *const OPNAccentBlueDefaultsKey = @"OpenNOW.Interface.AccentBlue";
 static NSString *const OPNPosterSizeScaleDefaultsKey = @"OpenNOW.Interface.PosterSizeScale";
 static NSString *const OPNAutoFullScreenDefaultsKey = @"OpenNOW.Interface.AutoFullScreen";
+static NSString *const OPNControllerModeDefaultsKey = @"OpenNOW.Interface.ControllerMode";
 static const CGFloat OPNMinimumPosterSizeScale = 0.80;
 static const CGFloat OPNMaximumPosterSizeScale = 1.30;
 static const unsigned OPNDefaultAccentRGB = 0x7CF1B1;
@@ -72,6 +73,17 @@ BOOL OpnAutoFullScreenEnabled(void) {
 void OpnSetAutoFullScreenEnabled(BOOL enabled) {
     if (enabled == OpnAutoFullScreenEnabled()) return;
     [NSUserDefaults.standardUserDefaults setBool:enabled forKey:OPNAutoFullScreenDefaultsKey];
+    [NSUserDefaults.standardUserDefaults synchronize];
+    [NSNotificationCenter.defaultCenter postNotificationName:OPNInterfacePreferencesDidChangeNotification object:nil];
+}
+
+BOOL OpnControllerModeEnabled(void) {
+    return [NSUserDefaults.standardUserDefaults boolForKey:OPNControllerModeDefaultsKey];
+}
+
+void OpnSetControllerModeEnabled(BOOL enabled) {
+    if (enabled == OpnControllerModeEnabled()) return;
+    [NSUserDefaults.standardUserDefaults setBool:enabled forKey:OPNControllerModeDefaultsKey];
     [NSUserDefaults.standardUserDefaults synchronize];
     [NSNotificationCenter.defaultCenter postNotificationName:OPNInterfacePreferencesDidChangeNotification object:nil];
 }
