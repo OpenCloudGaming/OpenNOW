@@ -1,109 +1,150 @@
-<h1 align="center">OpenNOW</h1>
+# OpenNOW
 
-<p align="center">
-  <img src="logo.png" alt="OpenNOW logo" width="180" />
-</p>
+OpenNOW is a native macOS client for cloud gaming: a fast, polished desktop app for signing in, browsing your library, tuning stream settings, and launching games into a full-screen stream without fighting the browser.
 
-<p align="center">
-  <strong>An open-source desktop client for GeForce NOW.</strong>
-</p>
+It is built directly on AppKit with Objective-C++ and a native libwebrtc-based streaming stack, so the experience feels like a Mac app first and a workaround second.
 
-<p align="center">
-  Browse the catalog, tune your stream, and launch sessions from a community-built app.
-</p>
+## Why OpenNOW
 
-<p align="center">
-  <a href="https://github.com/OpenCloudGaming/OpenNOW/releases">
-    <img src="https://img.shields.io/github/v/tag/OpenCloudGaming/OpenNOW?style=for-the-badge&label=Download&color=brightgreen" alt="Download">
-  </a>
-  <a href="https://testflight.apple.com/join/u1XPJKH2">
-    <img src="https://img.shields.io/badge/TestFlight-Beta-blue.svg?style=for-the-badge&logo=apple" alt="TestFlight">
-  </a>
-  <a href="https://opennow.zortos.me">
-    <img src="https://img.shields.io/badge/Docs-opennow.zortos.me-blue?style=for-the-badge" alt="Documentation">
-  </a>
-  <a href="https://github.com/OpenCloudGaming/OpenNOW/actions/workflows/auto-build.yml">
-    <img src="https://img.shields.io/github/actions/workflow/status/OpenCloudGaming/OpenNOW/auto-build.yml?style=for-the-badge&label=Auto%20Build" alt="Auto Build">
-  </a>
-  <a href="https://discord.gg/8EJYaJcNfD">
-    <img src="https://img.shields.io/badge/Discord-Join%20Us-7289da?style=for-the-badge&logo=discord&logoColor=white" alt="Discord">
-  </a>
-</p>
+- Native macOS UI instead of a wrapped web view.
+- Persistent sessions and account switching for multi-account users.
+- Fast access to your catalog and library from a desktop app.
+- Stream controls, video/audio/input preferences, and interface settings in one place.
+- Native WebRTC rendering and input delivery for a real streaming client experience.
 
-<p align="center">
-  <a href="https://github.com/OpenCloudGaming/OpenNOW/stargazers">
-    <img src="https://img.shields.io/github/stars/OpenCloudGaming/OpenNOW?style=flat-square" alt="Stars">
-  </a>
-  <a href="https://github.com/OpenCloudGaming/OpenNOW/releases">
-    <img src="https://img.shields.io/github/downloads/OpenCloudGaming/OpenNOW/total?style=flat-square" alt="Downloads">
-  </a>
-  <a href="LICENSE">
-    <img src="https://img.shields.io/github/license/OpenCloudGaming/OpenNOW?style=flat-square" alt="License">
-  </a>
-</p>
+## Features
 
-<p align="center">
-  <img src="img.png" alt="OpenNOW application preview" />
-</p>
+### Sign in once, keep playing
 
-> [!WARNING]
-> OpenNOW is under active development. Expect occasional bugs, rough edges, and platform-specific issues while the client matures.
->
-> Native streamer / native streaming is experimental. It defaults to the web streamer path unless enabled, issues can be platform-specific, and users may see fallback to Chromium/WebRTC. Report native-streamer problems on [GitHub Issues](https://github.com/OpenCloudGaming/OpenNOW/issues) or [Discord](https://discord.gg/8EJYaJcNfD).
+- Browser-based OAuth sign-in using the system browser.
+- Optional local session persistence when stay-logged-in is enabled.
+- Saved account switching from within the app.
+- Automatic session refresh when a token can be renewed.
 
-> [!IMPORTANT]
-> OpenNOW is an independent community project and is not affiliated with, endorsed by, or sponsored by NVIDIA. NVIDIA and GeForce NOW are trademarks of NVIDIA Corporation. You must use your own GeForce NOW account.
+### Browse and launch your library
 
-## Overview
+- Loads catalog and library data from the backend service.
+- Supports browsing, filtering, and sorting games.
+- Shows account status and membership context in the interface.
+- Launches the selected game directly into a cloud session.
 
-OpenNOW is a community-built Electron app for playing GeForce NOW from an open-source desktop client. The active implementation lives in [`opennow-stable/`](opennow-stable), and an iOS SwiftUI prototype lives under [`ios/OpenNOWiOS/`](ios/OpenNOWiOS/).
+### Native streaming
 
-## Downloads
+- Stream playback is rendered in a native macOS view.
+- WebRTC handles negotiation, media rendering, and recovery.
+- Input is delivered through a native input protocol.
+- The app tracks the active display and chooses a sensible stream resolution.
+- Stream lifecycle handling covers teardown, relaunch, and recovery paths.
 
-Grab the latest desktop build from [GitHub Releases](https://github.com/OpenCloudGaming/OpenNOW/releases). The iOS prototype is available through [TestFlight](https://testflight.apple.com/join/u1XPJKH2).
+### Practical streaming controls
 
-## Documentation
+- Stream preferences for region, codec, bitrate, and related toggles.
+- Dedicated settings sections for stream, video, audio, input, interface, about, and thanks.
+- Recovery-aware launch flow when a previous session is still winding down.
 
-Canonical documentation lives at [opennow.zortos.me](https://opennow.zortos.me):
+## What It Feels Like
 
-- [Getting Started](https://opennow.zortos.me/guides/getting-started/)
-- [Development](https://opennow.zortos.me/development/)
-- [Configuration](https://opennow.zortos.me/reference/configuration/)
-- [WebRTC](https://opennow.zortos.me/reference/webrtc/)
-- [Native Streamer](https://opennow.zortos.me/reference/native-streamer/)
-- [Project Website](https://opennow.zortos.me/)
+OpenNOW is designed for users who want the convenience of cloud gaming without the friction of a browser tab. You sign in, pick a game, and stay inside a focused native app that remembers your accounts, respects your stream preferences, and keeps the transition from catalog to gameplay as smooth as possible.
 
-This repository intentionally does not carry duplicate long-form product, setup, development, native streamer, GStreamer packaging, or release workflow documentation.
+## Requirements
+
+- macOS with AppKit/Cocoa support.
+- `clang++` with C++20 and Objective-C ARC support.
+- Apple Command Line Tools or Xcode command line tooling.
+- A macOS `WebRTC.framework` or `WebRTC.xcframework` available at `third_party/webrtc-official`, or a custom path supplied with `WEBRTC_FRAMEWORK_DIR`.
+
+## Build
+
+```sh
+make
+```
+
+The build output is written to `build/OpenNOW`.
+
+## Run
+
+```sh
+make run
+```
+
+This builds the app if needed and launches the binary from the local build directory.
+
+## Clean
+
+```sh
+make clean
+```
+
+Removes the `build/` directory and all compiled artifacts.
+
+## Core Flow
+
+1. The app starts in a native `NSApplication` entry point and installs `AppDelegate`.
+2. The delegate restores window state, including fullscreen preference.
+3. If a valid saved session exists, the app opens directly into the catalog.
+4. If a saved session is present but expired, the app attempts a refresh before falling back to sign-in.
+5. If no usable session exists, the app shows the email entry screen and starts browser-based OAuth.
+6. After sign-in, the catalog loads the library and public game data.
+7. Selecting a game creates a stream session and swaps the main window into the streaming controller.
+8. The stream view can be closed safely, returning the user to the catalog.
+
+## Major Components
+
+- `src/OPNAppDelegate.mm` orchestrates window state, screen transitions, account switching, and catalog loading.
+- `src/auth/OPNAuthService.*` handles OAuth, session refresh, persistence, and logout.
+- `src/games/OPNGameService.*` fetches catalog, library, panel, and subscription data, and launches games.
+- `src/streaming/OPNStreamViewController.*` manages the live stream window, overlays, recovery, and termination flow.
+- `src/streaming/OPNStreamSession.h` defines the stream session interface used by the libwebrtc implementation.
+- `src/streaming/OPNLibWebRTCStreamSession.*` owns WebRTC negotiation, media rendering, stats, and input data channels.
+- `src/streaming/OPNStreamPreferences.*` stores and resolves streaming profiles, region selection, codec, bitrate, and related toggles.
+- `src/views/*` contains the native views for auth, loading, error, catalog, settings, backdrop, and game cards.
+- `src/common/*` defines the shared auth, game, UI, and color types used across the app.
+
+## Authentication
+
+OpenNOW uses a browser-based OAuth flow with native session persistence.
+
+- The email entry view routes users into the browser sign-in flow.
+- Saved sessions are loaded on startup when stay-logged-in is enabled.
+- Access tokens are refreshed when possible before the app drops back to manual sign-in.
+- Multiple saved accounts are surfaced in the account menu.
+
+## Streaming
+
+The streaming stack is native and does not depend on a web UI.
+
+- Game selection resolves the app ID, selected store, and whether the account is linked.
+- The stream controller replaces the catalog view while the game is running.
+- The stream session supports input delivery, stats collection, and recovery handling.
+- The app tracks the display size and tries to select a reasonable streaming resolution for the active screen.
+
+## Settings
+
+The settings UI is organized into these sections:
+
+- Stream
+- Video
+- Audio
+- Input
+- Interface
+- About
+- Thanks
+
+The Stream section is backed by `OPNStreamPreferences` and reacts to stream-region updates posted by the app delegate.
 
 ## Repository Layout
 
-```text
-.
-├── opennow-stable/          Active Electron desktop client
-├── native/opennow-streamer/ Native Rust streaming infrastructure
-├── ios/OpenNOWiOS/          Native iOS SwiftUI app prototype
-├── locales/                 Crowdin-managed localization files
-├── .github/                 Workflows, templates, and contributor metadata
-├── AGENTS.md                Repository instructions for AI agents and contributors
-├── LICENSE                  Project license
-├── logo.png                 Project logo
-└── img.png                  App preview image
-```
+- `src/main.mm` contains the `NSApplication` entry point.
+- `src/OPNAppDelegate.h` and `src/OPNAppDelegate.mm` define the app coordinator.
+- `src/auth/` contains sign-in and session management.
+- `src/games/` contains catalog, panel, and launch orchestration.
+- `src/streaming/` contains the stream session, signaling, view controller, and preference storage.
+- `src/views/` contains the native AppKit views.
+- `src/common/` contains shared data structures and UI helpers.
+- `assets/` contains app artwork and store icons.
 
-## Contributing
+## Notes
 
-Contributions are welcome. Read the [contributing guide](.github/CONTRIBUTING.md), keep changes focused, and explain user-facing impact clearly. When changing localized copy, edit only `locales/en.json`; Crowdin manages the other locale files.
-
-## Star History
-
-<a href="https://www.star-history.com/?repos=OpenCloudGaming%2FOpenNOW&type=date&legend=top-left">
- <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/image?repos=OpenCloudGaming/OpenNOW&type=date&theme=dark&legend=top-left" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/image?repos=OpenCloudGaming/OpenNOW&type=date&legend=top-left" />
-   <img alt="Star History Chart" src="https://api.star-history.com/image?repos=OpenCloudGaming/OpenNOW&type=date&legend=top-left" />
- </picture>
-</a>
-
-## License
-
-OpenNOW is licensed under the [MIT License](LICENSE).
+- The app is built directly against Cocoa/AppKit, not SwiftUI.
+- Logging is left in place for stream and catalog transitions to help with local debugging.
+- The repo does not currently ship a test harness or packaged release workflow.
