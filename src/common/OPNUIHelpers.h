@@ -12,6 +12,8 @@ CGFloat OpnPosterSizeScale(void);
 void OpnSetPosterSizeScale(CGFloat scale);
 BOOL OpnAutoFullScreenEnabled(void);
 void OpnSetAutoFullScreenEnabled(BOOL enabled);
+BOOL OpnControllerModeEnabled(void);
+void OpnSetControllerModeEnabled(BOOL enabled);
 
 NSDictionary<NSAttributedStringKey, id> *OpnTextStyle(CGFloat size, NSColor *color,
                                                         NSFontWeight weight = NSFontWeightRegular);

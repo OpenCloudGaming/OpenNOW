@@ -131,6 +131,7 @@ static NSString *OPNSteamArtworkURLForGame(const OPN::GameInfo &game) {
 @property (nonatomic, strong) NSButton *playButton;
 @property (nonatomic, strong) NSMutableArray<NSButton *> *storeChipButtons;
 - (void)loadImageFromCandidates:(NSArray<NSString *> *)urlStrings index:(NSUInteger)index;
+- (void)applyFocusStyle;
 @end
 
 @implementation OPNGameCardView
@@ -220,6 +221,23 @@ using namespace OPN;
         [self addTrackingArea:_trackingArea];
     }
     return self;
+}
+
+- (void)setControllerFocused:(BOOL)controllerFocused {
+    if (_controllerFocused == controllerFocused) return;
+    _controllerFocused = controllerFocused;
+    [self applyFocusStyle];
+}
+
+- (void)applyFocusStyle {
+    BOOL selected = self.controllerFocused;
+    self.playButton.hidden = !selected;
+    self.layer.borderColor = selected ? OpnColor(kBrandGreen, 0.86).CGColor : OpnColor(0xFFFFFF, 0.10).CGColor;
+    self.layer.borderWidth = selected ? 2.0 : 1.0;
+    self.layer.shadowColor = OpnColor(kBrandGreen).CGColor;
+    self.layer.shadowOpacity = selected ? 0.42 : 0.0;
+    self.layer.shadowRadius = selected ? 26.0 : 0.0;
+    self.layer.shadowOffset = CGSizeZero;
 }
 
 - (BOOL)isFlipped { return YES; }
@@ -364,14 +382,18 @@ using namespace OPN;
 
 - (void)mouseEntered:(NSEvent *)event {
     [super mouseEntered:event];
-    self.playButton.hidden = NO;
-    self.layer.borderColor = OpnColor(0xFFFFFF, 0.22).CGColor;
+    if (!self.controllerFocused) {
+        self.playButton.hidden = NO;
+        self.layer.borderColor = OpnColor(0xFFFFFF, 0.22).CGColor;
+    }
 }
 
 - (void)mouseExited:(NSEvent *)event {
     [super mouseExited:event];
-    self.playButton.hidden = YES;
-    self.layer.borderColor = OpnColor(0xFFFFFF, 0.10).CGColor;
+    if (!self.controllerFocused) {
+        self.playButton.hidden = YES;
+        self.layer.borderColor = OpnColor(0xFFFFFF, 0.10).CGColor;
+    }
 }
 
 - (void)updateTrackingAreas {
