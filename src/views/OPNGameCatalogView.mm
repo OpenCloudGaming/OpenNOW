@@ -87,8 +87,11 @@ static NSString *OPNCatalogString(const std::string &value, NSString *fallback =
 @property (nonatomic, strong) NSTextField *controllerDetailTitleLabel;
 @property (nonatomic, strong) NSTextField *controllerDetailMetaLabel;
 @property (nonatomic, strong) NSTextField *controllerDetailStoreLabel;
+@property (nonatomic, strong) NSTextField *controllerDetailStatsLabel;
 @property (nonatomic, strong) NSTextField *controllerDetailFeaturesLabel;
 @property (nonatomic, strong) NSTextField *controllerDetailHintLabel;
+@property (nonatomic, strong) CAGradientLayer *controllerDetailGradientLayer;
+@property (nonatomic, strong) CALayer *controllerDetailAccentLayer;
 @property (nonatomic, strong) NSMutableArray<OPNGameCardView *> *cardViews;
 @property (nonatomic, assign) std::vector<OPN::GameInfo> allGames;
 @property (nonatomic, assign) CGFloat lastLayoutWidth;
@@ -278,8 +281,30 @@ using namespace OPN;
         _controllerDetailView.wantsLayer = YES;
         _controllerDetailView.layer.cornerRadius = 26.0;
         _controllerDetailView.layer.borderWidth = 1.0;
-        _controllerDetailView.layer.borderColor = OpnColor(kBrandGreen, 0.20).CGColor;
-        _controllerDetailView.layer.backgroundColor = OpnColor(0x07090F, 0.32).CGColor;
+        _controllerDetailView.layer.borderColor = OpnColor(kBrandGreen, 0.30).CGColor;
+        _controllerDetailView.layer.backgroundColor = OpnColor(0x07090F, 0.46).CGColor;
+        _controllerDetailView.layer.shadowColor = OpnColor(kBrandGreen).CGColor;
+        _controllerDetailView.layer.shadowOpacity = 0.34;
+        _controllerDetailView.layer.shadowRadius = 48.0;
+        _controllerDetailView.layer.shadowOffset = CGSizeMake(0.0, 24.0);
+        CATransform3D detailTransform = CATransform3DIdentity;
+        detailTransform.m34 = -1.0 / 1200.0;
+        detailTransform = CATransform3DRotate(detailTransform, 0.012, 1.0, 0.0, 0.0);
+        _controllerDetailView.layer.transform = detailTransform;
+
+        _controllerDetailGradientLayer = [CAGradientLayer layer];
+        _controllerDetailGradientLayer.colors = @[(id)OpnColor(kBrandGreen, 0.24).CGColor,
+                                                  (id)OpnColor(0xFFFFFF, 0.070).CGColor,
+                                                  (id)OpnColor(kBlack, 0.0).CGColor];
+        _controllerDetailGradientLayer.locations = @[@0.0, @0.44, @1.0];
+        _controllerDetailGradientLayer.startPoint = CGPointMake(0.0, 0.0);
+        _controllerDetailGradientLayer.endPoint = CGPointMake(1.0, 1.0);
+        [_controllerDetailView.layer addSublayer:_controllerDetailGradientLayer];
+
+        _controllerDetailAccentLayer = [CALayer layer];
+        _controllerDetailAccentLayer.backgroundColor = OpnColor(kBrandGreen, 0.74).CGColor;
+        _controllerDetailAccentLayer.cornerRadius = 2.0;
+        [_controllerDetailView.layer addSublayer:_controllerDetailAccentLayer];
         [self addSubview:_controllerDetailView];
 
         _controllerDetailTitleLabel = OpnLabel(@"Select a game", NSZeroRect, 42.0, OpnColor(kTextPrimary), NSFontWeightSemibold);
@@ -292,8 +317,11 @@ using namespace OPN;
         _controllerDetailStoreLabel = OpnLabel(@"", NSZeroRect, 16.0, OpnColor(kBrandGreen), NSFontWeightSemibold);
         [_controllerDetailView addSubview:_controllerDetailStoreLabel];
 
+        _controllerDetailStatsLabel = OpnLabel(@"", NSZeroRect, 14.0, OpnColor(kTextSecondary), NSFontWeightMedium);
+        [_controllerDetailView addSubview:_controllerDetailStatsLabel];
+
         _controllerDetailFeaturesLabel = OpnLabel(@"", NSZeroRect, 14.0, OpnColor(kTextMuted), NSFontWeightRegular);
-        _controllerDetailFeaturesLabel.maximumNumberOfLines = 2;
+        _controllerDetailFeaturesLabel.maximumNumberOfLines = 4;
         [_controllerDetailView addSubview:_controllerDetailFeaturesLabel];
 
         _controllerDetailHintLabel = OpnLabel(@"✕ Play     △ Change Store     L1/R1 Menu     Options Account", NSZeroRect, 13.0, OpnColor(kTextMuted), NSFontWeightMedium);
@@ -480,6 +508,7 @@ using namespace OPN;
     if (self.focusedCardIndex < 0 && self.cardViews.count > 0) self.focusedCardIndex = 0;
     [self focusCardAtIndex:self.focusedCardIndex scrollIntoView:NO];
     [self updateControllerDetailContent];
+    [self layoutCatalogSubviews];
 }
 
 - (void)scrollLibraryToTop {
@@ -616,18 +645,38 @@ using namespace OPN;
     self.gameCountLabel.hidden = YES;
     self.signOutButton.frame = NSMakeRect(width - 116, kNavHeight + 13, 92, 30);
     CGFloat cardHeight = [OPNGameCardView cardSize].height;
-    CGFloat carouselHeight = cardHeight + 86.0;
-    CGFloat gridY = controllerMode ? MAX(kNavHeight + 116.0, height - carouselHeight - 88.0) : kNavHeight + (compact ? 116.0 : kToolbarHeight);
-    CGFloat detailY = kNavHeight + 24.0;
-    CGFloat detailHeight = controllerMode ? MAX(150.0, gridY - detailY - 58.0) : 0.0;
+    CGFloat minimumDetailHeight = 176.0;
+    CGFloat desiredCarouselHeight = cardHeight + 86.0;
+    CGFloat controllerNavHeight = 136.0;
+    CGFloat detailY = (controllerMode ? controllerNavHeight : kNavHeight) + 22.0;
+    CGFloat bottomInset = 56.0;
+    CGFloat detailGap = 24.0;
+    CGFloat availableForControllerContent = MAX(0.0, height - detailY - bottomInset);
+    CGFloat carouselHeight = desiredCarouselHeight;
+    CGFloat detailHeight = 0.0;
+    CGFloat gridY = kNavHeight + (compact ? 116.0 : kToolbarHeight);
+    if (controllerMode) {
+        carouselHeight = MIN(desiredCarouselHeight, MAX(168.0, availableForControllerContent - minimumDetailHeight - detailGap));
+        CGFloat naturalDetailHeight = availableForControllerContent - carouselHeight - detailGap;
+        detailHeight = MIN(440.0, MAX(190.0, naturalDetailHeight));
+        gridY = MAX(detailY + detailHeight + detailGap, height - carouselHeight - bottomInset);
+    }
     self.controllerDetailView.hidden = !controllerMode || self.cardViews.count == 0;
     self.controllerDetailView.frame = NSMakeRect(28.0, detailY, MAX(260.0, width - 56.0), detailHeight);
+    self.controllerDetailView.layer.shadowPath = [NSBezierPath bezierPathWithRoundedRect:self.controllerDetailView.bounds xRadius:26.0 yRadius:26.0].CGPath;
     CGFloat detailWidth = NSWidth(self.controllerDetailView.frame);
-    self.controllerDetailTitleLabel.frame = NSMakeRect(28.0, 24.0, MAX(220.0, detailWidth - 56.0), 52.0);
-    self.controllerDetailMetaLabel.frame = NSMakeRect(30.0, 84.0, MAX(220.0, detailWidth - 60.0), 22.0);
-    self.controllerDetailStoreLabel.frame = NSMakeRect(30.0, 118.0, MAX(220.0, detailWidth - 60.0), 24.0);
-    self.controllerDetailFeaturesLabel.frame = NSMakeRect(30.0, 154.0, MAX(220.0, detailWidth - 60.0), 46.0);
-    self.controllerDetailHintLabel.frame = NSMakeRect(30.0, MAX(116.0, detailHeight - 34.0), MAX(220.0, detailWidth - 60.0), 18.0);
+    self.controllerDetailGradientLayer.frame = self.controllerDetailView.bounds;
+    self.controllerDetailAccentLayer.frame = NSMakeRect(32.0, 24.0, 78.0, 4.0);
+    BOOL compactDetail = detailHeight < 210.0;
+    self.controllerDetailTitleLabel.font = [NSFont systemFontOfSize:compactDetail ? 30.0 : 42.0 weight:NSFontWeightSemibold];
+    self.controllerDetailTitleLabel.frame = NSMakeRect(32.0, compactDetail ? 18.0 : 28.0, MAX(220.0, detailWidth - 64.0), compactDetail ? 38.0 : 52.0);
+    self.controllerDetailMetaLabel.frame = NSMakeRect(34.0, compactDetail ? 64.0 : 88.0, MAX(220.0, detailWidth - 68.0), 22.0);
+    self.controllerDetailStoreLabel.frame = NSMakeRect(34.0, compactDetail ? 94.0 : 122.0, MAX(220.0, detailWidth - 68.0), 24.0);
+    self.controllerDetailStatsLabel.frame = NSMakeRect(34.0, compactDetail ? 122.0 : 156.0, MAX(220.0, detailWidth - 68.0), 22.0);
+    CGFloat featuresY = compactDetail ? 0.0 : 192.0;
+    self.controllerDetailFeaturesLabel.hidden = compactDetail;
+    self.controllerDetailFeaturesLabel.frame = NSMakeRect(34.0, featuresY, MAX(220.0, detailWidth - 68.0), MAX(0.0, detailHeight - featuresY - 58.0));
+    self.controllerDetailHintLabel.frame = NSMakeRect(34.0, MAX(146.0, detailHeight - 34.0), MAX(220.0, detailWidth - 68.0), 18.0);
     self.scrollView.frame = controllerMode
         ? NSMakeRect(0, gridY, width, MIN(carouselHeight, MAX(0.0, height - gridY)))
         : NSMakeRect(0, gridY, width, MAX(0.0, height - gridY));
@@ -708,10 +757,16 @@ using namespace OPN;
 - (void)updateControllerDetailContent {
     if (!OpnControllerModeEnabled()) return;
     OPNGameCardView *card = [self focusedCard];
+    CATransition *fade = [CATransition animation];
+    fade.type = kCATransitionFade;
+    fade.duration = 0.18;
+    fade.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
+    [self.controllerDetailView.layer addAnimation:fade forKey:@"opn.detail.fade"];
     if (!card) {
         self.controllerDetailTitleLabel.stringValue = @"Select a game";
         self.controllerDetailMetaLabel.stringValue = @"";
         self.controllerDetailStoreLabel.stringValue = @"";
+        self.controllerDetailStatsLabel.stringValue = @"";
         self.controllerDetailFeaturesLabel.stringValue = @"";
         return;
     }
@@ -736,9 +791,20 @@ using namespace OPN;
     NSString *storePrefix = game.variants.size() > 1 ? @"Selected store" : @"Store";
     self.controllerDetailStoreLabel.stringValue = [NSString stringWithFormat:@"%@: %@", storePrefix, store];
 
+    NSMutableArray<NSString *> *stats = [NSMutableArray array];
+    [stats addObject:game.isInLibrary ? @"In Library" : @"Catalog"];
+    if (!game.playType.empty()) [stats addObject:OPNCatalogString(game.playType, @"").capitalizedString];
+    if (!game.availableStores.empty()) {
+        [stats addObject:[NSString stringWithFormat:@"%lu %@", (unsigned long)game.availableStores.size(), game.availableStores.size() == 1 ? @"store" : @"stores"]];
+    }
+    if (!game.variants.empty()) {
+        [stats addObject:[NSString stringWithFormat:@"%lu %@", (unsigned long)game.variants.size(), game.variants.size() == 1 ? @"launch option" : @"launch options"]];
+    }
+    self.controllerDetailStatsLabel.stringValue = [stats componentsJoinedByString:@"  •  "];
+
     NSString *features = OPNCatalogJoinedStrings(game.featureLabels, @"");
-    if (features.length == 0 && !game.shortName.empty()) features = OPNCatalogString(game.shortName, @"");
-    self.controllerDetailFeaturesLabel.stringValue = features.length > 0 ? features : @"Press Cross / A to launch this game.";
+    if (features.length == 0 && !game.shortName.empty()) features = [NSString stringWithFormat:@"%@ is ready to launch from the carousel.", OPNCatalogString(game.shortName, @"This game")];
+    self.controllerDetailFeaturesLabel.stringValue = features.length > 0 ? features : @"Ready to stream. Press Cross / A to launch this game, or use Triangle / Y when multiple stores are available.";
     self.controllerDetailHintLabel.stringValue = game.variants.size() > 1
         ? @"✕ Play     △ Change Store     L1/R1 Menu     Options Account"
         : @"✕ Play     L1/R1 Menu     Options Account";

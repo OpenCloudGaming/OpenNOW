@@ -4,6 +4,13 @@
 #import "../common/OPNAuthTypes.h"
 #import <GameController/GameController.h>
 
+@interface OPNBackdropControllerMenuView : NSView
+@end
+
+@implementation OPNBackdropControllerMenuView
+- (BOOL)isFlipped { return YES; }
+@end
+
 @implementation OPNBackdropView {
     NSRect _storeNavFrame;
     NSRect _libraryNavFrame;
@@ -13,6 +20,7 @@
     NSButton *_libraryButton;
     NSButton *_settingsButton;
     NSButton *_accountButton;
+    NSView *_controllerAccountMenuView;
     NSTimer *_controllerNavigationTimer;
     uint16_t _previousControllerButtons;
 }
@@ -139,6 +147,7 @@ static NSMenuItem *OPNStyledMenuItem(NSString *title, SEL action, id target, NSC
 
 - (void)setMode:(OPNBackdropMode)mode {
     _mode = mode;
+    [self dismissControllerAccountMenu];
     [self setNeedsDisplay:YES];
 }
 
@@ -169,10 +178,12 @@ static NSMenuItem *OPNStyledMenuItem(NSString *title, SEL action, id target, NSC
 
 - (void)setAccountMenuItems:(NSArray<NSDictionary<NSString *,NSString *> *> *)accountMenuItems {
     _accountMenuItems = [accountMenuItems copy];
+    [self dismissControllerAccountMenu];
 }
 
 - (void)setCurrentAccountIdentifier:(NSString *)currentAccountIdentifier {
     _currentAccountIdentifier = [currentAccountIdentifier copy];
+    [self dismissControllerAccountMenu];
 }
 
 - (void)layout {
@@ -181,9 +192,9 @@ static NSMenuItem *OPNStyledMenuItem(NSString *title, SEL action, id target, NSC
     BOOL controllerMode = OpnControllerModeEnabled();
     if (controllerMode && showNavigation) {
         _storeNavFrame = NSZeroRect;
-        _libraryNavFrame = NSMakeRect(28.0, 90.0, 86.0, 34.0);
-        _settingsNavFrame = NSMakeRect(124.0, 90.0, 90.0, 34.0);
-        _accountFrame = NSMakeRect(NSWidth(self.bounds) - 264.0, 10.0, 244.0, 44.0);
+        _libraryNavFrame = NSMakeRect(28.0, 78.0, 86.0, 34.0);
+        _settingsNavFrame = NSMakeRect(124.0, 78.0, 90.0, 34.0);
+        _accountFrame = NSMakeRect(NSWidth(self.bounds) - 304.0, 10.0, 284.0, 92.0);
     }
     BOOL showStore = showNavigation && !controllerMode;
     _storeButton.frame = showStore && !NSEqualRects(_storeNavFrame, NSZeroRect) ? _storeNavFrame : NSZeroRect;
@@ -194,6 +205,10 @@ static NSMenuItem *OPNStyledMenuItem(NSString *title, SEL action, id target, NSC
     _libraryButton.hidden = !showNavigation;
     _settingsButton.hidden = !showNavigation;
     _accountButton.hidden = !showNavigation;
+    if (_controllerAccountMenuView) {
+        CGFloat menuWidth = 320.0;
+        _controllerAccountMenuView.frame = NSMakeRect(MAX(20.0, NSWidth(self.bounds) - menuWidth - 20.0), 106.0, menuWidth, NSHeight(_controllerAccountMenuView.frame));
+    }
 }
 
 - (void)drawRect:(NSRect)dirtyRect {
@@ -231,6 +246,17 @@ static NSMenuItem *OPNStyledMenuItem(NSString *title, SEL action, id target, NSC
     [controllerMode ? OpnColor(kBrandGreen, 0.10) : OpnColor(kLinkBlue, 0.045) setFill];
     [lowerGlow fill];
 
+    if (controllerMode) {
+        NSGradient *depthGlow = [[NSGradient alloc] initWithStartingColor:OpnColor(kBrandGreen, 0.16)
+                                                            endingColor:OpnColor(kBrandGreen, 0.0)];
+        [depthGlow drawInBezierPath:[NSBezierPath bezierPathWithOvalInRect:NSMakeRect(-260.0, 210.0, 760.0, 560.0)] angle:35.0];
+        [depthGlow drawInBezierPath:[NSBezierPath bezierPathWithOvalInRect:NSMakeRect(NSWidth(bounds) * 0.48, NSHeight(bounds) - 420.0, 980.0, 520.0)] angle:210.0];
+
+        NSBezierPath *horizon = [NSBezierPath bezierPathWithRoundedRect:NSMakeRect(24.0, 137.0, NSWidth(bounds) - 48.0, 1.0) xRadius:0.5 yRadius:0.5];
+        [OpnColor(kBrandGreen, 0.18) setFill];
+        [horizon fill];
+    }
+
     if (self.mode == OPNBackdropModeAuth) {
         return;
     }
@@ -247,22 +273,39 @@ static NSMenuItem *OPNStyledMenuItem(NSString *title, SEL action, id target, NSC
                 withAttributes:OpnTextStyle(16.0, OpnColor(kTextPrimary), NSFontWeightSemibold)];
     }
 
+    if (controllerMode) {
+        NSDateFormatter *timeFormatter = [[NSDateFormatter alloc] init];
+        timeFormatter.dateFormat = @"h:mm a";
+        NSString *timeText = [[timeFormatter stringFromDate:NSDate.date] uppercaseString];
+        NSBezierPath *timeGlow = [NSBezierPath bezierPathWithRoundedRect:NSMakeRect(20.0, 34.0, 128.0, 30.0) xRadius:15.0 yRadius:15.0];
+        [OpnColor(kBrandGreen, 0.075) setFill];
+        [timeGlow fill];
+        [timeText drawInRect:NSMakeRect(32.0, 42.0, 112.0, 18.0)
+              withAttributes:OpnTextStyle(13.0, OpnColor(kTextSecondary), NSFontWeightSemibold)];
+    }
+
     NSArray<NSString *> *items = controllerMode ? @[@"Library", @"Settings"] : @[@"Store", @"Library", @"Settings"];
     CGFloat widths[] = {86.0, 90.0, 78.0};
     CGFloat navWidth = controllerMode ? widths[0] + widths[1] + 10.0 : widths[2] + widths[0] + widths[1] + 8.0;
     CGFloat x = controllerMode ? 28.0 : floor((NSWidth(bounds) - navWidth) / 2.0);
     _storeNavFrame = controllerMode ? NSZeroRect : _storeNavFrame;
-    NSRect segmentedRect = NSMakeRect(x - 8.0, controllerMode ? 86.0 : 15.0, navWidth + 16.0, controllerMode ? 42.0 : 34.0);
+    CGFloat navRowY = controllerMode ? 74.0 : 15.0;
+    NSRect segmentedRect = NSMakeRect(x - 8.0, navRowY, navWidth + 16.0, controllerMode ? 42.0 : 34.0);
     NSBezierPath *segmented = [NSBezierPath bezierPathWithRoundedRect:segmentedRect xRadius:controllerMode ? 21.0 : 10.0 yRadius:controllerMode ? 21.0 : 10.0];
-    [controllerMode ? OpnColor(0xFFFFFF, 0.035) : OpnColor(0xFFFFFF, 0.055) setFill];
+    [controllerMode ? OpnColor(0xFFFFFF, 0.055) : OpnColor(0xFFFFFF, 0.055) setFill];
     [segmented fill];
+    if (controllerMode) {
+        [OpnColor(kBrandGreen, 0.18) setStroke];
+        segmented.lineWidth = 1.0;
+        [segmented stroke];
+    }
     for (NSUInteger i = 0; i < items.count; i++) {
         NSString *item = items[i];
         CGFloat itemWidth = [item isEqualToString:@"Store"] ? widths[2] : ([item isEqualToString:@"Library"] ? widths[0] : widths[1]);
         BOOL active = ([item isEqualToString:@"Store"] && self.mode == OPNBackdropModeStore) ||
                       ([item isEqualToString:@"Library"] && self.mode == OPNBackdropModeLibrary) ||
                       ([item isEqualToString:@"Settings"] && self.mode == OPNBackdropModeSettings);
-        NSRect itemRect = NSMakeRect(x, controllerMode ? 90.0 : 18.0, itemWidth, controllerMode ? 34.0 : 28.0);
+        NSRect itemRect = NSMakeRect(x, controllerMode ? 78.0 : 18.0, itemWidth, controllerMode ? 34.0 : 28.0);
         if ([item isEqualToString:@"Store"]) _storeNavFrame = itemRect;
         if ([item isEqualToString:@"Library"]) _libraryNavFrame = itemRect;
         if ([item isEqualToString:@"Settings"]) _settingsNavFrame = itemRect;
@@ -270,6 +313,11 @@ static NSMenuItem *OPNStyledMenuItem(NSString *title, SEL action, id target, NSC
             NSBezierPath *pill = [NSBezierPath bezierPathWithRoundedRect:itemRect xRadius:controllerMode ? 17.0 : 8.0 yRadius:controllerMode ? 17.0 : 8.0];
             [controllerMode ? OpnColor(kBrandGreen, 0.26) : OpnColor(0xFFFFFF, 0.14) setFill];
             [pill fill];
+            if (controllerMode) {
+                [OpnColor(kBrandGreen, 0.58) setStroke];
+                pill.lineWidth = 1.0;
+                [pill stroke];
+            }
         }
         NSColor *textColor = active ? OpnColor(kTextPrimary) : OpnColor(kTextMuted);
         NSMutableParagraphStyle *style = [[NSMutableParagraphStyle alloc] init];
@@ -281,10 +329,17 @@ static NSMenuItem *OPNStyledMenuItem(NSString *title, SEL action, id target, NSC
     }
 
     NSString *remaining = self.remainingPlayTime.length > 0 ? self.remainingPlayTime : @"--";
-    NSRect planRect = controllerMode ? NSMakeRect(28.0, 52.0, 108.0, 26.0) : NSMakeRect(NSWidth(bounds) - 294, 11.0, 108, 26);
+    CGFloat controllerStatsWidth = 292.0;
+    CGFloat controllerStatsX = MAX(NSMaxX(segmentedRect) + 18.0, NSWidth(bounds) - controllerStatsWidth - 28.0);
+    NSRect planRect = controllerMode ? NSMakeRect(controllerStatsX, 82.0, 132.0, 26.0) : NSMakeRect(NSWidth(bounds) - 294, 11.0, 108, 26);
     NSBezierPath *planPill = [NSBezierPath bezierPathWithRoundedRect:planRect xRadius:14 yRadius:14];
-    [OpnColor(0xFFFFFF, 0.075) setFill];
+    [controllerMode ? OpnColor(kBrandGreen, 0.10) : OpnColor(0xFFFFFF, 0.075) setFill];
     [planPill fill];
+    if (controllerMode) {
+        [OpnColor(kBrandGreen, 0.24) setStroke];
+        planPill.lineWidth = 1.0;
+        [planPill stroke];
+    }
     NSMutableParagraphStyle *remainingStyle = [[NSMutableParagraphStyle alloc] init];
     remainingStyle.alignment = NSTextAlignmentCenter;
     NSMutableDictionary<NSAttributedStringKey, id> *remainingAttrs = [OpnTextStyle(12, OpnColor(kTextSecondary), NSFontWeightSemibold) mutableCopy];
@@ -294,13 +349,13 @@ static NSMenuItem *OPNStyledMenuItem(NSString *title, SEL action, id target, NSC
 
     NSString *gameCount = self.gameCountText.length > 0 ? self.gameCountText : @"";
     NSMutableParagraphStyle *gameCountStyle = [[NSMutableParagraphStyle alloc] init];
-    gameCountStyle.alignment = NSTextAlignmentCenter;
+    gameCountStyle.alignment = controllerMode ? NSTextAlignmentRight : NSTextAlignmentCenter;
     NSMutableDictionary<NSAttributedStringKey, id> *gameCountAttrs = [OpnTextStyle(10, OpnColor(kTextMuted), NSFontWeightMedium) mutableCopy];
     gameCountAttrs[NSParagraphStyleAttributeName] = gameCountStyle;
-    [gameCount drawInRect:controllerMode ? NSMakeRect(NSMaxX(planRect) + 12.0, 58.0, 120.0, 14.0) : NSMakeRect(NSMinX(planRect), 40.0, NSWidth(planRect), 14)
+    [gameCount drawInRect:controllerMode ? NSMakeRect(NSMaxX(planRect) + 14.0, 88.0, 146.0, 14.0) : NSMakeRect(NSMinX(planRect), 40.0, NSWidth(planRect), 14)
           withAttributes:gameCountAttrs];
 
-    NSRect avatarRect = controllerMode ? NSMakeRect(NSWidth(bounds) - 252.0, 18.0, 30.0, 30.0) : NSMakeRect(NSWidth(bounds) - 164, 17.0, 30, 30);
+    NSRect avatarRect = controllerMode ? NSMakeRect(NSWidth(bounds) - 292.0, 18.0, 30.0, 30.0) : NSMakeRect(NSWidth(bounds) - 164, 17.0, 30, 30);
     NSBezierPath *avatar = [NSBezierPath bezierPathWithOvalInRect:avatarRect];
 
     NSString *name = self.accountName.length > 0 ? self.accountName : @"User";
@@ -323,13 +378,29 @@ static NSMenuItem *OPNStyledMenuItem(NSString *title, SEL action, id target, NSC
         [initial drawInRect:NSMakeRect(NSMinX(avatarRect), NSMinY(avatarRect) + 7, 30, 16) withAttributes:avatarAttrs];
     }
 
-    [name drawInRect:controllerMode ? NSMakeRect(NSWidth(bounds) - 212.0, 17.0, 160.0, 17.0) : NSMakeRect(NSWidth(bounds) - 124, 16.0, 72, 17)
-       withAttributes:OpnTextStyle(12, OpnColor(kTextPrimary), NSFontWeightSemibold)];
+    if (controllerMode) {
+        NSMutableParagraphStyle *accountTextStyle = [[NSMutableParagraphStyle alloc] init];
+        accountTextStyle.alignment = NSTextAlignmentCenter;
+        NSMutableDictionary<NSAttributedStringKey, id> *nameAttrs = [OpnTextStyle(12, OpnColor(kTextPrimary), NSFontWeightSemibold) mutableCopy];
+        nameAttrs[NSParagraphStyleAttributeName] = accountTextStyle;
+        [name drawInRect:NSMakeRect(NSWidth(bounds) - 252.0, 17.0, 200.0, 17.0) withAttributes:nameAttrs];
+    } else {
+        [name drawInRect:NSMakeRect(NSWidth(bounds) - 124, 16.0, 72, 17)
+           withAttributes:OpnTextStyle(12, OpnColor(kTextPrimary), NSFontWeightSemibold)];
+    }
     NSString *status = self.accountStatus.length > 0 ? self.accountStatus : @"Signed in";
-    [status drawInRect:controllerMode ? NSMakeRect(NSWidth(bounds) - 212.0, 33.0, 160.0, 14.0) : NSMakeRect(NSWidth(bounds) - 124, 32.0, 72, 14)
-              withAttributes:OpnTextStyle(10, OpnColor(kTextMuted), NSFontWeightRegular)];
+    if (controllerMode) {
+        NSMutableParagraphStyle *statusTextStyle = [[NSMutableParagraphStyle alloc] init];
+        statusTextStyle.alignment = NSTextAlignmentCenter;
+        NSMutableDictionary<NSAttributedStringKey, id> *statusAttrs = [OpnTextStyle(10, OpnColor(kTextMuted), NSFontWeightRegular) mutableCopy];
+        statusAttrs[NSParagraphStyleAttributeName] = statusTextStyle;
+        [status drawInRect:NSMakeRect(NSWidth(bounds) - 252.0, 33.0, 200.0, 14.0) withAttributes:statusAttrs];
+    } else {
+        [status drawInRect:NSMakeRect(NSWidth(bounds) - 124, 32.0, 72, 14)
+                withAttributes:OpnTextStyle(10, OpnColor(kTextMuted), NSFontWeightRegular)];
+    }
 
-    _accountFrame = controllerMode ? NSMakeRect(NSWidth(bounds) - 264.0, 10.0, 244.0, 44.0) : NSMakeRect(NSWidth(bounds) - 174, 9.0, 154, 48);
+    _accountFrame = controllerMode ? NSMakeRect(NSWidth(bounds) - 304.0, 10.0, 284.0, 92.0) : NSMakeRect(NSWidth(bounds) - 174, 9.0, 154, 48);
     NSBezierPath *chevron = [NSBezierPath bezierPath];
     CGFloat chevronX = controllerMode ? NSWidth(bounds) - 36.0 : NSWidth(bounds) - 36.0;
     CGFloat chevronY = controllerMode ? 31.0 : 28.0;
@@ -356,8 +427,119 @@ static NSMenuItem *OPNStyledMenuItem(NSString *title, SEL action, id target, NSC
     if (self.onSettingsSelected) self.onSettingsSelected();
 }
 
+- (void)dismissControllerAccountMenu {
+    [_controllerAccountMenuView removeFromSuperview];
+    _controllerAccountMenuView = nil;
+}
+
+- (NSButton *)controllerAccountMenuButtonWithTitle:(NSString *)title
+                                               y:(CGFloat)y
+                                          height:(CGFloat)height
+                                          action:(SEL)action
+                                      identifier:(NSString *)identifier
+                                        selected:(BOOL)selected
+                                         warning:(BOOL)warning {
+    NSButton *button = [[NSButton alloc] initWithFrame:NSMakeRect(14.0, y, 292.0, height)];
+    button.bordered = NO;
+    button.target = self;
+    button.action = action;
+    button.identifier = identifier ?: @"";
+    button.wantsLayer = YES;
+    button.layer.cornerRadius = 14.0;
+    button.layer.backgroundColor = selected ? OpnColor(OPN::kBrandGreen, 0.22).CGColor : OpnColor(0xFFFFFF, 0.045).CGColor;
+    button.layer.borderWidth = selected ? 1.0 : 0.0;
+    button.layer.borderColor = OpnColor(OPN::kBrandGreen, 0.50).CGColor;
+    NSColor *textColor = warning ? OpnColor(0xFF8A8A) : (selected ? OpnColor(OPN::kTextPrimary) : OpnColor(OPN::kTextSecondary));
+    NSString *displayTitle = selected ? [NSString stringWithFormat:@"%@  Current", title] : title;
+    NSMutableParagraphStyle *style = [[NSMutableParagraphStyle alloc] init];
+    style.alignment = NSTextAlignmentLeft;
+    button.attributedTitle = [[NSAttributedString alloc] initWithString:displayTitle attributes:@{
+        NSFontAttributeName: [NSFont systemFontOfSize:14.0 weight:selected ? NSFontWeightSemibold : NSFontWeightMedium],
+        NSForegroundColorAttributeName: textColor,
+        NSParagraphStyleAttributeName: style,
+    }];
+    return button;
+}
+
+- (void)showControllerAccountMenu {
+    if (_controllerAccountMenuView) {
+        [self dismissControllerAccountMenu];
+        return;
+    }
+
+    CGFloat menuWidth = 320.0;
+    CGFloat rowHeight = 42.0;
+    CGFloat y = 50.0;
+    NSInteger accountCount = 0;
+    for (NSDictionary<NSString *, NSString *> *account in self.accountMenuItems) {
+        NSString *identifier = account[@"identifier"];
+        NSString *title = account[@"label"];
+        if (identifier.length == 0 || title.length == 0) continue;
+        accountCount++;
+        y += rowHeight + 8.0;
+    }
+    CGFloat menuHeight = y + 170.0;
+    CGFloat menuX = MAX(20.0, NSWidth(self.bounds) - menuWidth - 20.0);
+
+    NSView *menu = [[OPNBackdropControllerMenuView alloc] initWithFrame:NSMakeRect(menuX, 106.0, menuWidth, menuHeight)];
+    menu.wantsLayer = YES;
+    menu.layer.cornerRadius = 24.0;
+    menu.layer.borderWidth = 1.0;
+    menu.layer.borderColor = OpnColor(OPN::kBrandGreen, 0.28).CGColor;
+    menu.layer.backgroundColor = OpnColor(0x080A10, 0.94).CGColor;
+    menu.layer.shadowColor = OpnColor(OPN::kBrandGreen).CGColor;
+    menu.layer.shadowOpacity = 0.24;
+    menu.layer.shadowRadius = 30.0;
+    menu.layer.shadowOffset = CGSizeZero;
+
+    NSTextField *titleLabel = OpnLabel(@"Account", NSMakeRect(18.0, 18.0, menuWidth - 36.0, 22.0), 15.0, OpnColor(OPN::kTextPrimary), NSFontWeightSemibold);
+    [menu addSubview:titleLabel];
+
+    y = 52.0;
+    if (accountCount == 0) {
+        NSTextField *emptyLabel = OpnLabel(@"No saved accounts", NSMakeRect(18.0, y, menuWidth - 36.0, 22.0), 13.0, OpnColor(OPN::kTextMuted), NSFontWeightMedium);
+        [menu addSubview:emptyLabel];
+        y += 34.0;
+    } else {
+        for (NSDictionary<NSString *, NSString *> *account in self.accountMenuItems) {
+            NSString *identifier = account[@"identifier"];
+            NSString *title = account[@"label"];
+            if (identifier.length == 0 || title.length == 0) continue;
+            BOOL selected = [identifier isEqualToString:self.currentAccountIdentifier];
+            NSButton *button = [self controllerAccountMenuButtonWithTitle:title
+                                                                        y:y
+                                                                   height:rowHeight
+                                                                   action:@selector(controllerAccountMenuItemPressed:)
+                                                               identifier:identifier
+                                                                 selected:selected
+                                                                  warning:NO];
+            [menu addSubview:button];
+            y += rowHeight + 8.0;
+        }
+    }
+
+    NSView *divider = [[NSView alloc] initWithFrame:NSMakeRect(18.0, y + 8.0, menuWidth - 36.0, 1.0)];
+    divider.wantsLayer = YES;
+    divider.layer.backgroundColor = OpnColor(0xFFFFFF, 0.10).CGColor;
+    [menu addSubview:divider];
+    y += 24.0;
+
+    [menu addSubview:[self controllerAccountMenuButtonWithTitle:@"Add Account" y:y height:rowHeight action:@selector(controllerAddAccountPressed:) identifier:nil selected:NO warning:NO]];
+    y += rowHeight + 8.0;
+    [menu addSubview:[self controllerAccountMenuButtonWithTitle:@"Sign Out" y:y height:rowHeight action:@selector(controllerSignOutPressed:) identifier:nil selected:NO warning:NO]];
+    y += rowHeight + 8.0;
+    [menu addSubview:[self controllerAccountMenuButtonWithTitle:@"Exit OpenNOW" y:y height:rowHeight action:@selector(controllerExitPressed:) identifier:nil selected:NO warning:YES]];
+
+    _controllerAccountMenuView = menu;
+    [self addSubview:menu positioned:NSWindowAbove relativeTo:nil];
+}
+
 - (void)accountButtonPressed:(id)sender {
     (void)sender;
+    if (OpnControllerModeEnabled()) {
+        [self showControllerAccountMenu];
+        return;
+    }
     NSMenu *menu = [[NSMenu alloc] initWithTitle:@"Account"];
     menu.appearance = [NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];
     menu.autoenablesItems = NO;
@@ -406,6 +588,30 @@ static NSMenuItem *OPNStyledMenuItem(NSString *title, SEL action, id target, NSC
                             inView:_accountButton];
 }
 
+- (void)controllerAccountMenuItemPressed:(NSButton *)sender {
+    NSString *identifier = sender.identifier;
+    [self dismissControllerAccountMenu];
+    if (identifier.length > 0 && self.onAccountSelected) self.onAccountSelected(identifier);
+}
+
+- (void)controllerAddAccountPressed:(id)sender {
+    (void)sender;
+    [self dismissControllerAccountMenu];
+    if (self.onAddAccountSelected) self.onAddAccountSelected();
+}
+
+- (void)controllerSignOutPressed:(id)sender {
+    (void)sender;
+    [self dismissControllerAccountMenu];
+    if (self.onSignOutSelected) self.onSignOutSelected();
+}
+
+- (void)controllerExitPressed:(id)sender {
+    (void)sender;
+    [self dismissControllerAccountMenu];
+    if (self.onExitSelected) self.onExitSelected();
+}
+
 - (void)accountMenuItemPressed:(NSMenuItem *)sender {
     NSString *identifier = [sender.representedObject isKindOfClass:NSString.class] ? sender.representedObject : nil;
     if (identifier.length > 0 && self.onAccountSelected) self.onAccountSelected(identifier);
@@ -428,6 +634,10 @@ static NSMenuItem *OPNStyledMenuItem(NSString *title, SEL action, id target, NSC
 
 - (void)mouseDown:(NSEvent *)event {
     NSPoint point = [self convertPoint:event.locationInWindow fromView:nil];
+    if (_controllerAccountMenuView && !NSPointInRect(point, _controllerAccountMenuView.frame) && !NSPointInRect(point, _accountFrame)) {
+        [self dismissControllerAccountMenu];
+        return;
+    }
     if (!OpnControllerModeEnabled() && NSPointInRect(point, _storeNavFrame)) {
         if (self.onStoreSelected) self.onStoreSelected();
         return;
