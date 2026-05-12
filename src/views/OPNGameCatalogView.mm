@@ -108,6 +108,7 @@ static NSString *OPNCatalogString(const std::string &value, NSString *fallback =
 @property (nonatomic, strong) NSTimer *gamepadNavigationTimer;
 @property (nonatomic, assign) uint16_t previousGamepadButtons;
 @property (nonatomic, assign) CFTimeInterval lastGamepadMoveTime;
+- (void)stopGamepadNavigation;
 - (void)scrollLibraryToTop;
 - (void)requestCatalogBrowse;
 - (void)focusCardAtIndex:(NSInteger)index scrollIntoView:(BOOL)scrollIntoView;
@@ -137,6 +138,12 @@ static uint16_t OPNCatalogGamepadButtons(void) {
     if (pad.dpad.left.value > 0.5 || pad.leftThumbstick.xAxis.value < -0.65) buttons |= 1u << 7;
     if (pad.dpad.right.value > 0.5 || pad.leftThumbstick.xAxis.value > 0.65) buttons |= 1u << 8;
     return buttons;
+}
+
+static BOOL OPNCatalogGamepadNavigationActive(NSView *view) {
+    NSWindow *window = view.window;
+    if (!window || window.contentViewController != nil) return NO;
+    return window.contentView == view || [view isDescendantOf:window.contentView];
 }
 
 static NSString *OPNCatalogJoinedStrings(const std::vector<std::string> &values, NSString *fallback) {
@@ -352,7 +359,16 @@ using namespace OPN;
 
 - (void)dealloc {
     [[NSNotificationCenter defaultCenter] removeObserver:self];
-    [self.gamepadNavigationTimer invalidate];
+    [self stopGamepadNavigation];
+}
+
+- (void)viewDidMoveToWindow {
+    [super viewDidMoveToWindow];
+    if (self.window) {
+        [self startGamepadNavigationIfNeeded];
+    } else {
+        [self stopGamepadNavigation];
+    }
 }
 
 - (void)interfacePreferencesChanged:(NSNotification *)notification {
@@ -929,12 +945,18 @@ using namespace OPN;
 }
 
 - (void)startGamepadNavigationIfNeeded {
-    if (!OpnControllerModeEnabled() || self.gamepadNavigationTimer) return;
+    if (!OpnControllerModeEnabled() || self.gamepadNavigationTimer || !OPNCatalogGamepadNavigationActive(self)) return;
     self.gamepadNavigationTimer = [NSTimer scheduledTimerWithTimeInterval:(1.0 / 30.0)
                                                                    target:self
                                                                  selector:@selector(pollGamepadNavigation)
                                                                  userInfo:nil
                                                                   repeats:YES];
+}
+
+- (void)stopGamepadNavigation {
+    [self.gamepadNavigationTimer invalidate];
+    self.gamepadNavigationTimer = nil;
+    self.previousGamepadButtons = 0;
 }
 
 - (void)controllerDidConnect:(NSNotification *)notification {
@@ -948,10 +970,8 @@ using namespace OPN;
 }
 
 - (void)pollGamepadNavigation {
-    if (!OpnControllerModeEnabled()) {
-        [self.gamepadNavigationTimer invalidate];
-        self.gamepadNavigationTimer = nil;
-        self.previousGamepadButtons = 0;
+    if (!OpnControllerModeEnabled() || !OPNCatalogGamepadNavigationActive(self)) {
+        [self stopGamepadNavigation];
         return;
     }
     if (self.window.firstResponder != self.searchField) [self.window makeFirstResponder:self];

@@ -1194,6 +1194,7 @@ void LibWebRTCStreamSession::Stop() {
 #if defined(OPN_HAVE_LIBWEBRTC)
     if (m_impl) {
         OPNLibWebRTCSessionImpl *impl = (__bridge_transfer OPNLibWebRTCSessionImpl *)m_impl;
+        impl.owner = nullptr;
         impl.reliableInputChannel.delegate = nil;
         impl.partialInputChannel.delegate = nil;
         impl.peerConnection.delegate = nil;
