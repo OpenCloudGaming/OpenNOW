@@ -70,6 +70,166 @@ static NSString *OPNCatalogString(const std::string &value, NSString *fallback =
 
 @end
 
+@interface OPNControllerElectricBackgroundView : NSView
+@end
+
+@implementation OPNControllerElectricBackgroundView {
+    NSTimer *_animationTimer;
+    CGFloat _phase;
+}
+
+- (instancetype)initWithFrame:(NSRect)frame {
+    self = [super initWithFrame:frame];
+    if (self) {
+        self.wantsLayer = YES;
+        _animationTimer = [NSTimer scheduledTimerWithTimeInterval:(1.0 / 24.0)
+                                                          target:self
+                                                        selector:@selector(animationTick:)
+                                                        userInfo:nil
+                                                         repeats:YES];
+    }
+    return self;
+}
+
+- (void)dealloc {
+    [_animationTimer invalidate];
+}
+
+- (BOOL)isFlipped { return YES; }
+
+- (void)animationTick:(NSTimer *)timer {
+    (void)timer;
+    _phase = fmod(_phase + (1.0 / 144.0), 1.0);
+    self.needsDisplay = YES;
+}
+
+- (CGFloat)unitHashForSeed:(NSUInteger)seed index:(NSUInteger)index {
+    uint32_t value = (uint32_t)(seed * 1103515245u + index * 12345u + 0x9E3779B9u);
+    value ^= value >> 16;
+    value *= 0x7FEB352Du;
+    value ^= value >> 15;
+    return (CGFloat)(value % 10000u) / 10000.0;
+}
+
+- (NSPoint)pointOnBoltFrom:(NSPoint)start to:(NSPoint)end t:(CGFloat)t seed:(NSUInteger)seed {
+    CGFloat dx = end.x - start.x;
+    CGFloat dy = end.y - start.y;
+    CGFloat normalX = -dy;
+    CGFloat normalY = dx;
+    CGFloat normalLength = MAX(1.0, hypot(normalX, normalY));
+    normalX /= normalLength;
+    normalY /= normalLength;
+    NSUInteger bucket = (NSUInteger)floor(t * 18.0);
+    CGFloat hash = [self unitHashForSeed:seed index:bucket + 3];
+    CGFloat envelope = sin(t * 3.14159);
+    CGFloat offset = (hash - 0.5) * 58.0 * envelope;
+    return NSMakePoint(start.x + dx * t + normalX * offset,
+                       start.y + dy * t + normalY * offset);
+}
+
+- (void)drawBoltFrom:(NSPoint)start to:(NSPoint)end branches:(NSInteger)branches seed:(NSUInteger)seed alpha:(CGFloat)alpha width:(CGFloat)width {
+    CGFloat pulse = 0.72 + 0.28 * sin((_phase + (CGFloat)(seed % 17) / 17.0) * 6.28318530718);
+    CGFloat effectiveAlpha = alpha * pulse;
+    NSUInteger segments = 10 + (seed % 5);
+    NSBezierPath *path = [NSBezierPath bezierPath];
+    [path moveToPoint:start];
+    for (NSUInteger i = 1; i < segments; i++) {
+        CGFloat t = (CGFloat)i / (CGFloat)segments;
+        [path lineToPoint:[self pointOnBoltFrom:start to:end t:t seed:seed]];
+    }
+    [path lineToPoint:end];
+
+    [OpnColor(OPN::kBrandGreen, effectiveAlpha * 0.24) setStroke];
+    path.lineWidth = width + 8.0;
+    [path stroke];
+    [OpnColor(0xFFFFFF, effectiveAlpha * 0.72) setStroke];
+    path.lineWidth = width + 1.2;
+    [path stroke];
+    [OpnColor(OPN::kBrandGreen, effectiveAlpha) setStroke];
+    path.lineWidth = MAX(0.7, width * 0.34);
+    [path stroke];
+
+    for (NSInteger b = 0; b < branches; b++) {
+        CGFloat t = 0.16 + 0.68 * [self unitHashForSeed:seed index:(NSUInteger)b + 41];
+        NSPoint branchStart = [self pointOnBoltFrom:start to:end t:t seed:seed];
+        CGFloat angle = atan2(end.y - start.y, end.x - start.x);
+        CGFloat forkDirection = ([self unitHashForSeed:seed index:(NSUInteger)b + 73] > 0.5) ? 1.0 : -1.0;
+        CGFloat forkAngle = angle + forkDirection * (0.62 + [self unitHashForSeed:seed index:(NSUInteger)b + 97] * 0.55);
+        CGFloat branchLength = 48.0 + [self unitHashForSeed:seed index:(NSUInteger)b + 113] * 86.0;
+        NSPoint branchMid = NSMakePoint(branchStart.x + cos(forkAngle) * branchLength * 0.52,
+                                       branchStart.y + sin(forkAngle) * branchLength * 0.52);
+        NSPoint branchEnd = NSMakePoint(branchStart.x + cos(forkAngle) * branchLength,
+                                       branchStart.y + sin(forkAngle) * branchLength);
+        NSBezierPath *branch = [NSBezierPath bezierPath];
+        [branch moveToPoint:branchStart];
+        [branch lineToPoint:branchMid];
+        [branch lineToPoint:branchEnd];
+        [OpnColor(0xFFFFFF, effectiveAlpha * 0.34) setStroke];
+        branch.lineWidth = MAX(0.7, width * 0.30);
+        [branch stroke];
+        [OpnColor(OPN::kBrandGreen, effectiveAlpha * 0.48) setStroke];
+        branch.lineWidth = MAX(0.6, width * 0.35);
+        [branch stroke];
+    }
+}
+
+- (void)drawRect:(NSRect)dirtyRect {
+    (void)dirtyRect;
+    NSRect bounds = self.bounds;
+    NSGradient *base = [[NSGradient alloc] initWithStartingColor:OpnColor(0x05070D, 0.96)
+                                                    endingColor:OpnColor(0x100817, 0.96)];
+    [base drawInRect:bounds angle:90.0];
+
+    CGFloat width = NSWidth(bounds);
+    CGFloat height = NSHeight(bounds);
+    for (NSInteger i = 0; i < 18; i++) {
+        CGFloat x = fmod((CGFloat)i * 193.0, MAX(1.0, width));
+        CGFloat lineAlpha = (i % 3 == 0) ? 0.055 : 0.028;
+        NSBezierPath *trace = [NSBezierPath bezierPath];
+        [trace moveToPoint:NSMakePoint(x, 0.0)];
+        [trace lineToPoint:NSMakePoint(x + 120.0, height)];
+        [OpnColor(OPN::kBrandGreen, lineAlpha) setStroke];
+        trace.lineWidth = 1.0;
+        [trace stroke];
+    }
+
+    for (NSInteger i = 0; i < 8; i++) {
+        CGFloat y = 34.0 + (CGFloat)i * MAX(46.0, height / 8.5);
+        NSBezierPath *scan = [NSBezierPath bezierPath];
+        [scan moveToPoint:NSMakePoint(0.0, y + sin(_phase * 6.283 + i) * 9.0)];
+        [scan lineToPoint:NSMakePoint(width, y + cos(_phase * 6.283 + i) * 9.0)];
+        [OpnColor(0xFFFFFF, 0.026) setStroke];
+        scan.lineWidth = 1.0;
+        [scan stroke];
+    }
+
+    [self drawBoltFrom:NSMakePoint(width * 0.05, height * 0.78)
+                    to:NSMakePoint(width * 0.42, height * 0.16)
+              branches:10 seed:11 alpha:0.42 width:2.2];
+    [self drawBoltFrom:NSMakePoint(width * 0.52, height * 0.92)
+                    to:NSMakePoint(width * 0.94, height * 0.22)
+              branches:11 seed:47 alpha:0.34 width:1.8];
+    [self drawBoltFrom:NSMakePoint(width * 0.18, height * 0.50)
+                    to:NSMakePoint(width * 0.76, height * 0.58)
+              branches:7 seed:83 alpha:0.24 width:1.4];
+
+    for (NSInteger i = 0; i < 90; i++) {
+        CGFloat x = fmod((CGFloat)(i * 97), MAX(1.0, width));
+        CGFloat y = fmod((CGFloat)(i * 43), MAX(1.0, height));
+        CGFloat radius = 0.8 + (CGFloat)(i % 4) * 0.45;
+        NSBezierPath *spark = [NSBezierPath bezierPathWithOvalInRect:NSMakeRect(x, y, radius, radius)];
+        CGFloat sparkPulse = 0.52 + 0.48 * sin((_phase + (CGFloat)(i % 29) / 29.0) * 6.28318530718);
+        [OpnColor(i % 5 == 0 ? 0xFFFFFF : OPN::kBrandGreen, (i % 5 == 0 ? 0.16 : 0.11) * sparkPulse) setFill];
+        [spark fill];
+    }
+
+    NSGradient *vignette = [[NSGradient alloc] initWithStartingColor:OpnColor(OPN::kBlack, 0.0)
+                                                        endingColor:OpnColor(OPN::kBlack, 0.48)];
+    [vignette drawInRect:bounds angle:-90.0];
+}
+
+@end
+
 @interface OPNGameCatalogView ()
 @property (nonatomic, strong) NSScrollView *scrollView;
 @property (nonatomic, strong) NSView *gridContentView;
@@ -83,12 +243,7 @@ static NSString *OPNCatalogString(const std::string &value, NSString *fallback =
 @property (nonatomic, strong) NSTextField *gameCountLabel;
 @property (nonatomic, strong) NSTextField *statusLabel;
 @property (nonatomic, strong) OPNLoadingView *loadingView;
-@property (nonatomic, strong) NSImageView *controllerAmbientImageView;
-@property (nonatomic, strong) NSVisualEffectView *controllerAmbientBlurView;
-@property (nonatomic, strong) CAGradientLayer *controllerAmbientShadeLayer;
-@property (nonatomic, strong) CALayer *controllerAmbientOrbLayer;
-@property (nonatomic, strong) CALayer *controllerAmbientSecondaryOrbLayer;
-@property (nonatomic, copy) NSString *controllerAmbientImageKey;
+@property (nonatomic, strong) OPNControllerElectricBackgroundView *controllerElectricBackgroundView;
 @property (nonatomic, strong) NSView *controllerDetailView;
 @property (nonatomic, strong) NSTextField *controllerDetailTitleLabel;
 @property (nonatomic, strong) NSTextField *controllerDetailMetaLabel;
@@ -123,8 +278,6 @@ static NSString *OPNCatalogString(const std::string &value, NSString *fallback =
 - (void)launchFocusedGame;
 - (void)cycleFocusedVariant;
 - (void)updateControllerDetailContent;
-- (void)updateControllerAmbientForFocusedGame;
-- (void)loadControllerAmbientImageCandidates:(NSArray<NSString *> *)candidates key:(NSString *)key index:(NSUInteger)index;
 - (void)startGamepadNavigationIfNeeded;
 - (void)controllerDidConnect:(NSNotification *)notification;
 - (void)controllerDidDisconnect:(NSNotification *)notification;
@@ -163,31 +316,6 @@ static NSString *OPNCatalogJoinedStrings(const std::vector<std::string> &values,
     return items.count > 0 ? [items componentsJoinedByString:@"  /  "] : fallback;
 }
 
-static NSArray<NSString *> *OPNCatalogArtworkURLStrings(const OPN::GameInfo &game) {
-    NSMutableArray<NSString *> *candidates = [NSMutableArray array];
-    std::string steamAppId;
-    for (const OPN::GameVariant &variant : game.variants) {
-        NSString *store = [NSString stringWithUTF8String:variant.appStore.c_str()];
-        BOOL steamStore = [store.uppercaseString containsString:@"STEAM"];
-        BOOL numericId = !variant.id.empty() && variant.id.find_first_not_of("0123456789") == std::string::npos;
-        if (steamStore && numericId) {
-            steamAppId = variant.id;
-            break;
-        }
-    }
-    if (steamAppId.empty() && !game.launchAppId.empty() && game.launchAppId.find_first_not_of("0123456789") == std::string::npos) {
-        steamAppId = game.launchAppId;
-    }
-    if (!steamAppId.empty()) {
-        [candidates addObject:[NSString stringWithFormat:@"https://cdn.cloudflare.steamstatic.com/steam/apps/%s/library_hero.jpg", steamAppId.c_str()]];
-        [candidates addObject:[NSString stringWithFormat:@"https://cdn.cloudflare.steamstatic.com/steam/apps/%s/header.jpg", steamAppId.c_str()]];
-        [candidates addObject:[NSString stringWithFormat:@"https://cdn.cloudflare.steamstatic.com/steam/apps/%s/capsule_616x353.jpg", steamAppId.c_str()]];
-    }
-    if (!game.heroImageUrl.empty()) [candidates addObject:[NSString stringWithUTF8String:game.heroImageUrl.c_str()]];
-    if (!game.imageUrl.empty()) [candidates addObject:[NSString stringWithUTF8String:game.imageUrl.c_str()]];
-    return candidates;
-}
-
 @implementation OPNGameCatalogView
 
 using namespace OPN;
@@ -203,51 +331,9 @@ using namespace OPN;
         self.wantsLayer = YES;
         self.layer.backgroundColor = [NSColor clearColor].CGColor;
 
-        _controllerAmbientImageView = [[NSImageView alloc] initWithFrame:self.bounds];
-        _controllerAmbientImageView.imageScaling = NSImageScaleAxesIndependently;
-        _controllerAmbientImageView.alphaValue = 0.0;
-        _controllerAmbientImageView.hidden = YES;
-        _controllerAmbientImageView.wantsLayer = YES;
-        _controllerAmbientImageView.layer.masksToBounds = YES;
-        [self addSubview:_controllerAmbientImageView];
-
-        _controllerAmbientBlurView = [[NSVisualEffectView alloc] initWithFrame:self.bounds];
-        _controllerAmbientBlurView.material = NSVisualEffectMaterialHUDWindow;
-        _controllerAmbientBlurView.blendingMode = NSVisualEffectBlendingModeWithinWindow;
-        _controllerAmbientBlurView.state = NSVisualEffectStateActive;
-        _controllerAmbientBlurView.alphaValue = 0.0;
-        _controllerAmbientBlurView.hidden = YES;
-        [self addSubview:_controllerAmbientBlurView];
-
-        _controllerAmbientShadeLayer = [CAGradientLayer layer];
-        _controllerAmbientShadeLayer.colors = @[(id)OpnColor(kBlack, 0.20).CGColor,
-                                                (id)OpnColor(kBlack, 0.0).CGColor,
-                                                (id)OpnColor(kBlack, 0.38).CGColor];
-        _controllerAmbientShadeLayer.locations = @[@0.0, @0.42, @1.0];
-        _controllerAmbientShadeLayer.startPoint = CGPointMake(0.0, 0.0);
-        _controllerAmbientShadeLayer.endPoint = CGPointMake(1.0, 1.0);
-        _controllerAmbientShadeLayer.hidden = YES;
-        [self.layer addSublayer:_controllerAmbientShadeLayer];
-
-        _controllerAmbientOrbLayer = [CALayer layer];
-        _controllerAmbientOrbLayer.backgroundColor = OpnColor(kBrandGreen, 0.18).CGColor;
-        _controllerAmbientOrbLayer.cornerRadius = 220.0;
-        _controllerAmbientOrbLayer.shadowColor = OpnColor(kBrandGreen).CGColor;
-        _controllerAmbientOrbLayer.shadowOpacity = 0.58;
-        _controllerAmbientOrbLayer.shadowRadius = 92.0;
-        _controllerAmbientOrbLayer.shadowOffset = CGSizeZero;
-        _controllerAmbientOrbLayer.hidden = YES;
-        [self.layer addSublayer:_controllerAmbientOrbLayer];
-
-        _controllerAmbientSecondaryOrbLayer = [CALayer layer];
-        _controllerAmbientSecondaryOrbLayer.backgroundColor = OpnColor(0xFFFFFF, 0.075).CGColor;
-        _controllerAmbientSecondaryOrbLayer.cornerRadius = 160.0;
-        _controllerAmbientSecondaryOrbLayer.shadowColor = OpnColor(0xFFFFFF, 0.38).CGColor;
-        _controllerAmbientSecondaryOrbLayer.shadowOpacity = 0.35;
-        _controllerAmbientSecondaryOrbLayer.shadowRadius = 78.0;
-        _controllerAmbientSecondaryOrbLayer.shadowOffset = CGSizeZero;
-        _controllerAmbientSecondaryOrbLayer.hidden = YES;
-        [self.layer addSublayer:_controllerAmbientSecondaryOrbLayer];
+        _controllerElectricBackgroundView = [[OPNControllerElectricBackgroundView alloc] initWithFrame:self.bounds];
+        _controllerElectricBackgroundView.hidden = YES;
+        [self addSubview:_controllerElectricBackgroundView];
 
         _libraryIconLabel = OpnLabel(@"", NSMakeRect(30, kNavHeight + 36, 0, 0),
                                      1, OpnColor(kBrandGreen), NSFontWeightBold);
@@ -367,8 +453,8 @@ using namespace OPN;
         _controllerDetailView.wantsLayer = YES;
         _controllerDetailView.layer.cornerRadius = 26.0;
         _controllerDetailView.layer.borderWidth = 1.0;
-        _controllerDetailView.layer.borderColor = OpnColor(kBrandGreen, 0.24).CGColor;
-        _controllerDetailView.layer.backgroundColor = OpnColor(0x07090F, 0.20).CGColor;
+        _controllerDetailView.layer.borderColor = OpnColor(kBrandGreen, 0.30).CGColor;
+        _controllerDetailView.layer.backgroundColor = OpnColor(0x07090F, 0.50).CGColor;
         _controllerDetailView.layer.shadowColor = OpnColor(kBrandGreen).CGColor;
         _controllerDetailView.layer.shadowOpacity = 0.34;
         _controllerDetailView.layer.shadowRadius = 48.0;
@@ -379,8 +465,8 @@ using namespace OPN;
         _controllerDetailView.layer.transform = detailTransform;
 
         _controllerDetailGradientLayer = [CAGradientLayer layer];
-        _controllerDetailGradientLayer.colors = @[(id)OpnColor(kBrandGreen, 0.11).CGColor,
-                                                  (id)OpnColor(0xFFFFFF, 0.028).CGColor,
+        _controllerDetailGradientLayer.colors = @[(id)OpnColor(kBrandGreen, 0.18).CGColor,
+                                                  (id)OpnColor(0xFFFFFF, 0.052).CGColor,
                                                   (id)OpnColor(kBlack, 0.0).CGColor];
         _controllerDetailGradientLayer.locations = @[@0.0, @0.44, @1.0];
         _controllerDetailGradientLayer.startPoint = CGPointMake(0.0, 0.0);
@@ -721,21 +807,11 @@ using namespace OPN;
     CGFloat width = NSWidth(self.bounds);
     CGFloat height = NSHeight(self.bounds);
     BOOL controllerMode = OpnControllerModeEnabled();
-    self.controllerAmbientImageView.hidden = !controllerMode || self.cardViews.count == 0;
-    self.controllerAmbientBlurView.hidden = self.controllerAmbientImageView.hidden;
-    self.controllerAmbientShadeLayer.hidden = self.controllerAmbientImageView.hidden;
-    self.controllerAmbientOrbLayer.hidden = YES;
-    self.controllerAmbientSecondaryOrbLayer.hidden = YES;
     CGFloat controllerNavHeight = 136.0;
-    NSRect ambientFrame = controllerMode
+    self.controllerElectricBackgroundView.hidden = !controllerMode || self.cardViews.count == 0;
+    self.controllerElectricBackgroundView.frame = controllerMode
         ? NSMakeRect(0.0, controllerNavHeight, width, MAX(0.0, height - controllerNavHeight))
         : self.bounds;
-    CGFloat ambientBleed = 120.0;
-    self.controllerAmbientImageView.frame = NSInsetRect(ambientFrame, -ambientBleed, -ambientBleed);
-    self.controllerAmbientBlurView.frame = ambientFrame;
-    self.controllerAmbientShadeLayer.frame = ambientFrame;
-    self.controllerAmbientOrbLayer.frame = NSMakeRect(width * 0.58, height * 0.10, 440.0, 440.0);
-    self.controllerAmbientSecondaryOrbLayer.frame = NSMakeRect(-120.0, height * 0.38, 320.0, 320.0);
     self.scrollView.hasVerticalScroller = !controllerMode;
     self.scrollView.hasHorizontalScroller = NO;
     BOOL compact = width < 900.0;
@@ -828,6 +904,7 @@ using namespace OPN;
         self.focusedCardIndex = -1;
         return;
     }
+    NSInteger previousIndex = self.focusedCardIndex;
     NSInteger clamped = MAX(0, MIN(index, (NSInteger)self.cardViews.count - 1));
     self.focusedCardIndex = clamped;
     for (NSUInteger i = 0; i < self.cardViews.count; i++) {
@@ -835,7 +912,9 @@ using namespace OPN;
         self.cardViews[i].controllerFocused = selected;
         self.cardViews[i].alphaValue = OpnControllerModeEnabled() && !selected ? 0.72 : 1.0;
     }
-    [self updateControllerAmbientForFocusedGame];
+    if (OpnControllerModeEnabled() && scrollIntoView && previousIndex >= 0 && previousIndex != clamped) {
+        OpnPlayConsoleTone(OPNConsoleToneMove);
+    }
     [self updateControllerDetailContent];
     if (!scrollIntoView) return;
     OPNGameCardView *card = self.cardViews[(NSUInteger)clamped];
@@ -863,98 +942,8 @@ using namespace OPN;
     if (!card || card.game.variants.size() <= 1) return;
     int next = (card.selectedVariantIndex + 1) % (int)card.game.variants.size();
     [card selectVariantAtIndex:next];
+    if (OpnControllerModeEnabled()) OpnPlayConsoleTone(OPNConsoleToneChange);
     [self updateControllerDetailContent];
-}
-
-- (void)startControllerAmbientMotion {
-    if (!OpnControllerModeEnabled()) return;
-    if (self.controllerAmbientOrbLayer.hidden && self.controllerAmbientSecondaryOrbLayer.hidden) return;
-    if ([self.controllerAmbientOrbLayer animationForKey:@"opn.ambient.drift"]) return;
-
-    CABasicAnimation *primaryDrift = [CABasicAnimation animationWithKeyPath:@"transform.translation.x"];
-    primaryDrift.fromValue = @(-26.0);
-    primaryDrift.toValue = @(30.0);
-    primaryDrift.duration = 7.5;
-    primaryDrift.autoreverses = YES;
-    primaryDrift.repeatCount = HUGE_VALF;
-    primaryDrift.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
-    [self.controllerAmbientOrbLayer addAnimation:primaryDrift forKey:@"opn.ambient.drift"];
-
-    CABasicAnimation *secondaryDrift = [CABasicAnimation animationWithKeyPath:@"transform.translation.y"];
-    secondaryDrift.fromValue = @(20.0);
-    secondaryDrift.toValue = @(-24.0);
-    secondaryDrift.duration = 9.0;
-    secondaryDrift.autoreverses = YES;
-    secondaryDrift.repeatCount = HUGE_VALF;
-    secondaryDrift.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
-    [self.controllerAmbientSecondaryOrbLayer addAnimation:secondaryDrift forKey:@"opn.ambient.secondaryDrift"];
-}
-
-- (void)updateControllerAmbientForFocusedGame {
-    if (!OpnControllerModeEnabled()) {
-        self.controllerAmbientImageKey = nil;
-        self.controllerAmbientImageView.image = nil;
-        self.controllerAmbientImageView.alphaValue = 0.0;
-        return;
-    }
-
-    OPNGameCardView *card = [self focusedCard];
-    if (!card) return;
-
-    NSArray<NSString *> *candidates = OPNCatalogArtworkURLStrings(card.game);
-    NSString *key = [candidates componentsJoinedByString:@"|"];
-    if (key.length == 0 || [key isEqualToString:self.controllerAmbientImageKey]) {
-        [self startControllerAmbientMotion];
-        return;
-    }
-    self.controllerAmbientImageKey = key;
-    self.controllerAmbientImageView.alphaValue = 0.0;
-    [self loadControllerAmbientImageCandidates:candidates key:key index:0];
-}
-
-- (void)loadControllerAmbientImageCandidates:(NSArray<NSString *> *)candidates key:(NSString *)key index:(NSUInteger)index {
-    if (index >= candidates.count || ![key isEqualToString:self.controllerAmbientImageKey]) return;
-
-    NSString *urlString = candidates[index];
-    NSURL *url = [NSURL URLWithString:urlString];
-    if (!url) {
-        [self loadControllerAmbientImageCandidates:candidates key:key index:index + 1];
-        return;
-    }
-
-    __weak __typeof__(self) weakSelf = self;
-    NSURLSessionDataTask *task = [NSURLSession.sharedSession dataTaskWithURL:url completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
-        NSHTTPURLResponse *http = [response isKindOfClass:NSHTTPURLResponse.class] ? (NSHTTPURLResponse *)response : nil;
-        if (error || !data || (http && http.statusCode >= 400)) {
-            dispatch_async(dispatch_get_main_queue(), ^{
-                __typeof__(self) strongSelf = weakSelf;
-                if (!strongSelf) return;
-                [strongSelf loadControllerAmbientImageCandidates:candidates key:key index:index + 1];
-            });
-            return;
-        }
-        NSImage *image = [[NSImage alloc] initWithData:data];
-        if (!image) {
-            dispatch_async(dispatch_get_main_queue(), ^{
-                __typeof__(self) strongSelf = weakSelf;
-                if (!strongSelf) return;
-                [strongSelf loadControllerAmbientImageCandidates:candidates key:key index:index + 1];
-            });
-            return;
-        }
-        dispatch_async(dispatch_get_main_queue(), ^{
-            __typeof__(self) strongSelf = weakSelf;
-            if (!strongSelf || ![strongSelf.controllerAmbientImageKey isEqualToString:key]) return;
-            strongSelf.controllerAmbientImageView.image = image;
-            [NSAnimationContext runAnimationGroup:^(NSAnimationContext *context) {
-                context.duration = 0.28;
-                context.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
-                strongSelf.controllerAmbientImageView.animator.alphaValue = 0.86;
-            } completionHandler:nil];
-            [strongSelf startControllerAmbientMotion];
-        });
-    }];
-    [task resume];
 }
 
 - (void)updateControllerDetailContent {
@@ -1090,6 +1079,7 @@ using namespace OPN;
 - (void)launchFocusedGame {
     OPNGameCardView *card = [self focusedCard];
     if (!card || !self.onSelectGame) return;
+    if (OpnControllerModeEnabled()) OpnPlayConsoleTone(OPNConsoleToneSelect);
     int variantIdx = card.selectedVariantIndex >= 0 ? card.selectedVariantIndex : 0;
     self.onSelectGame(card.game, variantIdx);
 }

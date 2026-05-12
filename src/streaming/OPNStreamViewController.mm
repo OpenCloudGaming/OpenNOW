@@ -569,7 +569,7 @@ static NSTextField *OPNStatsText(NSString *text, CGFloat size, NSFontWeight weig
 static NSAttributedString *OPNStatsOutlinedLine(NSString *text) {
     NSMutableParagraphStyle *style = [[NSMutableParagraphStyle alloc] init];
     style.alignment = NSTextAlignmentCenter;
-    style.lineBreakMode = NSLineBreakByWordWrapping;
+    style.lineBreakMode = NSLineBreakByTruncatingMiddle;
     return [[NSAttributedString alloc] initWithString:text ?: @""
                                            attributes:@{
         NSFontAttributeName: [NSFont monospacedSystemFontOfSize:12.0 weight:NSFontWeightSemibold],
@@ -617,8 +617,8 @@ static NSString *OPNStatsZoneName(NSString *zone) {
         [self.layer addSublayer:_textTintLayer];
 
         _statsLineLabel = OPNStatsText(@"", 12.0, NSFontWeightSemibold, NSColor.clearColor, NSTextAlignmentCenter);
-        _statsLineLabel.lineBreakMode = NSLineBreakByWordWrapping;
-        _statsLineLabel.maximumNumberOfLines = 0;
+        _statsLineLabel.lineBreakMode = NSLineBreakByTruncatingMiddle;
+        _statsLineLabel.maximumNumberOfLines = 1;
         _statsLineLabel.attributedStringValue = OPNStatsOutlinedLine(@"Stats: measuring");
         [self addSubview:_statsLineLabel];
     }
@@ -634,8 +634,8 @@ static NSString *OPNStatsZoneName(NSString *zone) {
 
 - (void)layout {
     [super layout];
-    _textTintLayer.frame = NSInsetRect(self.bounds, 4.0, 2.0);
-    _statsLineLabel.frame = NSInsetRect(self.bounds, 10.0, 5.0);
+    _textTintLayer.frame = NSInsetRect(self.bounds, 4.0, 1.0);
+    _statsLineLabel.frame = NSInsetRect(self.bounds, 10.0, 2.0);
 }
 
 - (void)updateLatencyMs:(NSInteger)latencyMs
@@ -985,7 +985,7 @@ static void OPNReleaseStreamSessionAfterCallbacks(OPN::IStreamSession *session) 
 
 - (NSRect)statsOverlayFrame {
     CGFloat width = MAX(0.0, NSWidth(self.view.bounds) - 32.0);
-    CGFloat height = 56.0;
+    CGFloat height = 26.0;
     return NSMakeRect(16.0,
                       floor(NSHeight(self.view.bounds) - height - 10.0),
                       width,

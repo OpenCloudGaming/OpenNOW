@@ -124,12 +124,14 @@ static NSMenuItem *OPNStyledMenuItem(NSString *title, SEL action, id target, NSC
 
 - (void)selectPreviousControllerTab {
     if (self.mode == OPNBackdropModeSettings) {
+        OpnPlayConsoleTone(OPNConsoleToneMove);
         if (self.onLibrarySelected) self.onLibrarySelected();
     }
 }
 
 - (void)selectNextControllerTab {
     if (self.mode == OPNBackdropModeLibrary) {
+        OpnPlayConsoleTone(OPNConsoleToneMove);
         if (self.onSettingsSelected) self.onSettingsSelected();
     }
 }
@@ -431,16 +433,19 @@ static NSMenuItem *OPNStyledMenuItem(NSString *title, SEL action, id target, NSC
 
 - (void)storeButtonPressed:(id)sender {
     (void)sender;
+    if (OpnControllerModeEnabled()) OpnPlayConsoleTone(OPNConsoleToneSelect);
     if (self.onStoreSelected) self.onStoreSelected();
 }
 
 - (void)libraryButtonPressed:(id)sender {
     (void)sender;
+    if (OpnControllerModeEnabled()) OpnPlayConsoleTone(OPNConsoleToneSelect);
     if (self.onLibrarySelected) self.onLibrarySelected();
 }
 
 - (void)settingsButtonPressed:(id)sender {
     (void)sender;
+    if (OpnControllerModeEnabled()) OpnPlayConsoleTone(OPNConsoleToneSelect);
     if (self.onSettingsSelected) self.onSettingsSelected();
 }
 
@@ -480,9 +485,11 @@ static NSMenuItem *OPNStyledMenuItem(NSString *title, SEL action, id target, NSC
 
 - (void)showControllerAccountMenu {
     if (_controllerAccountMenuView) {
+        OpnPlayConsoleTone(OPNConsoleToneBack);
         [self dismissControllerAccountMenu];
         return;
     }
+    OpnPlayConsoleTone(OPNConsoleToneSelect);
 
     CGFloat menuWidth = 320.0;
     CGFloat rowHeight = 42.0;
@@ -607,24 +614,28 @@ static NSMenuItem *OPNStyledMenuItem(NSString *title, SEL action, id target, NSC
 
 - (void)controllerAccountMenuItemPressed:(NSButton *)sender {
     NSString *identifier = sender.identifier;
+    OpnPlayConsoleTone(OPNConsoleToneSelect);
     [self dismissControllerAccountMenu];
     if (identifier.length > 0 && self.onAccountSelected) self.onAccountSelected(identifier);
 }
 
 - (void)controllerAddAccountPressed:(id)sender {
     (void)sender;
+    OpnPlayConsoleTone(OPNConsoleToneSelect);
     [self dismissControllerAccountMenu];
     if (self.onAddAccountSelected) self.onAddAccountSelected();
 }
 
 - (void)controllerSignOutPressed:(id)sender {
     (void)sender;
+    OpnPlayConsoleTone(OPNConsoleToneBack);
     [self dismissControllerAccountMenu];
     if (self.onSignOutSelected) self.onSignOutSelected();
 }
 
 - (void)controllerExitPressed:(id)sender {
     (void)sender;
+    OpnPlayConsoleTone(OPNConsoleToneBack);
     [self dismissControllerAccountMenu];
     if (self.onExitSelected) self.onExitSelected();
 }

@@ -15,6 +15,15 @@ void OpnSetAutoFullScreenEnabled(BOOL enabled);
 BOOL OpnControllerModeEnabled(void);
 void OpnSetControllerModeEnabled(BOOL enabled);
 
+typedef NS_ENUM(NSInteger, OPNConsoleTone) {
+    OPNConsoleToneMove = 0,
+    OPNConsoleToneSelect = 1,
+    OPNConsoleToneChange = 2,
+    OPNConsoleToneBack = 3,
+};
+
+void OpnPlayConsoleTone(OPNConsoleTone tone);
+
 NSDictionary<NSAttributedStringKey, id> *OpnTextStyle(CGFloat size, NSColor *color,
                                                         NSFontWeight weight = NSFontWeightRegular);
 
