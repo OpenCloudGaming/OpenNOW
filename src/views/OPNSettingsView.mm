@@ -742,7 +742,7 @@ using namespace OPN;
     [panel addSubview:[self rowLabel:@"Controller Mode" y:104.0]];
     NSButton *controllerModeToggle = [[NSButton alloc] initWithFrame:NSMakeRect(controlX, 96.0, controlWidth, 28.0)];
     controllerModeToggle.buttonType = NSButtonTypeSwitch;
-    controllerModeToggle.title = @"Use console-style menus optimized for gamepad navigation";
+    controllerModeToggle.title = @"Use a green glass console home optimized for gamepad navigation";
     controllerModeToggle.font = [NSFont systemFontOfSize:13.0 weight:NSFontWeightMedium];
     controllerModeToggle.contentTintColor = OpnColor(kBrandGreen);
     controllerModeToggle.state = OpnControllerModeEnabled() ? NSControlStateValueOn : NSControlStateValueOff;
@@ -750,8 +750,8 @@ using namespace OPN;
     controllerModeToggle.action = @selector(controllerModeToggleChanged:);
     [panel addSubview:controllerModeToggle];
 
-    NSTextField *controllerHint = OpnLabel(@"Controller Mode keeps mouse and keyboard support, but makes gamepad focus, details, and launch flow primary.",
-                                           NSMakeRect(controlX, 132.0, controlWidth, 38.0),
+    NSTextField *controllerHint = OpnLabel(@"Controller Mode keeps mouse and keyboard support while making the carousel, focus states, details, and launch flow feel like a TV console home.",
+                                            NSMakeRect(controlX, 132.0, controlWidth, 38.0),
                                            12.0,
                                            OpnColor(kTextMuted),
                                            NSFontWeightRegular);

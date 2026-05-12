@@ -17,6 +17,10 @@ static BOOL OPNBackdropControllerNavigationActive(NSView *view) {
     return window.contentView == view || [view isDescendantOf:window.contentView];
 }
 
+static const unsigned kControllerConsoleBlue = 0x34C759;
+static const unsigned kControllerConsoleBlueSoft = 0xA7F3BF;
+static const unsigned kControllerConsoleDeepBlue = 0x06140A;
+
 @implementation OPNBackdropView {
     NSRect _storeNavFrame;
     NSRect _libraryNavFrame;
@@ -211,8 +215,8 @@ static NSMenuItem *OPNStyledMenuItem(NSString *title, SEL action, id target, NSC
     BOOL controllerMode = OpnControllerModeEnabled();
     if (controllerMode && showNavigation) {
         _storeNavFrame = NSZeroRect;
-        _libraryNavFrame = NSMakeRect(28.0, 78.0, 86.0, 34.0);
-        _settingsNavFrame = NSMakeRect(124.0, 78.0, 90.0, 34.0);
+        _libraryNavFrame = NSMakeRect(30.0, 68.0, 82.0, 34.0);
+        _settingsNavFrame = NSMakeRect(124.0, 68.0, 92.0, 34.0);
         _accountFrame = NSMakeRect(NSWidth(self.bounds) - 304.0, 10.0, 284.0, 92.0);
     }
     BOOL showStore = showNavigation && !controllerMode;
@@ -242,9 +246,9 @@ static NSMenuItem *OPNStyledMenuItem(NSString *title, SEL action, id target, NSC
 
     NSGradient *edgeWash = controllerMode
         ? [[NSGradient alloc] initWithColors:@[
-            OpnColor(kBackground, 1.0),
-            OpnColor(kBrandGreen, 0.20),
-            OpnColor(0x06080E, 1.0),
+            OpnColor(0x06140A, 1.0),
+            OpnColor(0x0D3516, 1.0),
+            OpnColor(0x061C0C, 1.0),
         ]]
         : [[NSGradient alloc] initWithColors:@[
             OpnColor(kBackgroundB, 0.94),
@@ -253,26 +257,21 @@ static NSMenuItem *OPNStyledMenuItem(NSString *title, SEL action, id target, NSC
         ]];
     [edgeWash drawInRect:bounds angle:270.0];
 
-    NSGradient *spotlight = [[NSGradient alloc] initWithStartingColor:controllerMode ? OpnColor(kBrandGreen, 0.18) : OpnColor(0xFFFFFF, 0.045)
-                                                          endingColor:OpnColor(0xFFFFFF, 0.0)];
-    NSRect spotlightRect = controllerMode
-        ? NSMakeRect(NSWidth(bounds) * 0.5 - 520.0, -360.0, 1040.0, 760.0)
-        : NSMakeRect(NSWidth(bounds) * 0.5 - 360.0, -300.0, 720.0, 720.0);
-    [spotlight drawInBezierPath:[NSBezierPath bezierPathWithOvalInRect:spotlightRect] angle:90.0];
+    if (!controllerMode) {
+        NSGradient *spotlight = [[NSGradient alloc] initWithStartingColor:OpnColor(0xFFFFFF, 0.045)
+                                                               endingColor:OpnColor(0xFFFFFF, 0.0)];
+        NSRect spotlightRect = NSMakeRect(NSWidth(bounds) * 0.5 - 360.0, -300.0, 720.0, 720.0);
+        [spotlight drawInBezierPath:[NSBezierPath bezierPathWithOvalInRect:spotlightRect] angle:90.0];
 
-    NSBezierPath *lowerGlow = [NSBezierPath bezierPathWithOvalInRect:
-        NSMakeRect(NSWidth(bounds) - 500.0, NSHeight(bounds) - 360.0, 520.0, 520.0)];
-    [controllerMode ? OpnColor(kBrandGreen, 0.10) : OpnColor(kLinkBlue, 0.045) setFill];
-    [lowerGlow fill];
+        NSBezierPath *lowerGlow = [NSBezierPath bezierPathWithOvalInRect:
+            NSMakeRect(NSWidth(bounds) - 500.0, NSHeight(bounds) - 360.0, 520.0, 520.0)];
+        [OpnColor(kLinkBlue, 0.045) setFill];
+        [lowerGlow fill];
+    }
 
     if (controllerMode) {
-        NSGradient *depthGlow = [[NSGradient alloc] initWithStartingColor:OpnColor(kBrandGreen, 0.16)
-                                                            endingColor:OpnColor(kBrandGreen, 0.0)];
-        [depthGlow drawInBezierPath:[NSBezierPath bezierPathWithOvalInRect:NSMakeRect(-260.0, 210.0, 760.0, 560.0)] angle:35.0];
-        [depthGlow drawInBezierPath:[NSBezierPath bezierPathWithOvalInRect:NSMakeRect(NSWidth(bounds) * 0.48, NSHeight(bounds) - 420.0, 980.0, 520.0)] angle:210.0];
-
-        NSBezierPath *horizon = [NSBezierPath bezierPathWithRoundedRect:NSMakeRect(24.0, 137.0, NSWidth(bounds) - 48.0, 1.0) xRadius:0.5 yRadius:0.5];
-        [OpnColor(kBrandGreen, 0.18) setFill];
+        NSBezierPath *horizon = [NSBezierPath bezierPathWithRoundedRect:NSMakeRect(24.0, 117.0, NSWidth(bounds) - 48.0, 1.0) xRadius:0.5 yRadius:0.5];
+        [OpnColor(kControllerConsoleBlueSoft, 0.22) setFill];
         [horizon fill];
     }
 
@@ -280,9 +279,9 @@ static NSMenuItem *OPNStyledMenuItem(NSString *title, SEL action, id target, NSC
         return;
     }
 
-    CGFloat navHeight = controllerMode ? 136.0 : 64.0;
+    CGFloat navHeight = controllerMode ? 118.0 : 64.0;
     NSRect navRect = NSMakeRect(0, 0, NSWidth(bounds), navHeight);
-    [controllerMode ? OpnColor(0x06080D, 0.42) : OpnColor(0x1C1D21, 0.82) setFill];
+    [controllerMode ? OpnColor(0x0B2A12, 0.92) : OpnColor(0x1C1D21, 0.82) setFill];
     NSRectFill(navRect);
     [OpnColor(0xFFFFFF, 0.08) setFill];
     NSRectFill(NSMakeRect(0, navHeight - 1.0, NSWidth(bounds), 1));
@@ -296,44 +295,44 @@ static NSMenuItem *OPNStyledMenuItem(NSString *title, SEL action, id target, NSC
         NSDateFormatter *timeFormatter = [[NSDateFormatter alloc] init];
         timeFormatter.dateFormat = @"h:mm a";
         NSString *timeText = [[timeFormatter stringFromDate:NSDate.date] uppercaseString];
-        NSBezierPath *timeGlow = [NSBezierPath bezierPathWithRoundedRect:NSMakeRect(20.0, 34.0, 128.0, 30.0) xRadius:15.0 yRadius:15.0];
-        [OpnColor(kBrandGreen, 0.075) setFill];
+        NSBezierPath *timeGlow = [NSBezierPath bezierPathWithRoundedRect:NSMakeRect(20.0, 32.0, 128.0, 30.0) xRadius:15.0 yRadius:15.0];
+        [OpnColor(0xFFFFFF, 0.055) setFill];
         [timeGlow fill];
-        [timeText drawInRect:NSMakeRect(32.0, 42.0, 112.0, 18.0)
+        [timeText drawInRect:NSMakeRect(32.0, 40.0, 112.0, 18.0)
               withAttributes:OpnTextStyle(13.0, OpnColor(kTextSecondary), NSFontWeightSemibold)];
     }
 
-    NSArray<NSString *> *items = controllerMode ? @[@"Library", @"Settings"] : @[@"Store", @"Library", @"Settings"];
-    CGFloat widths[] = {86.0, 90.0, 78.0};
+    NSArray<NSString *> *items = controllerMode ? @[@"Games", @"Settings"] : @[@"Store", @"Library", @"Settings"];
+    CGFloat widths[] = {82.0, 92.0, 78.0};
     CGFloat navWidth = controllerMode ? widths[0] + widths[1] + 10.0 : widths[2] + widths[0] + widths[1] + 8.0;
-    CGFloat x = controllerMode ? 28.0 : floor((NSWidth(bounds) - navWidth) / 2.0);
+    CGFloat x = controllerMode ? 30.0 : floor((NSWidth(bounds) - navWidth) / 2.0);
     _storeNavFrame = controllerMode ? NSZeroRect : _storeNavFrame;
-    CGFloat navRowY = controllerMode ? 74.0 : 15.0;
+    CGFloat navRowY = controllerMode ? 64.0 : 15.0;
     NSRect segmentedRect = NSMakeRect(x - 8.0, navRowY, navWidth + 16.0, controllerMode ? 42.0 : 34.0);
     NSBezierPath *segmented = [NSBezierPath bezierPathWithRoundedRect:segmentedRect xRadius:controllerMode ? 21.0 : 10.0 yRadius:controllerMode ? 21.0 : 10.0];
     [controllerMode ? OpnColor(0xFFFFFF, 0.055) : OpnColor(0xFFFFFF, 0.055) setFill];
     [segmented fill];
     if (controllerMode) {
-        [OpnColor(kBrandGreen, 0.18) setStroke];
+        [OpnColor(0xFFFFFF, 0.18) setStroke];
         segmented.lineWidth = 1.0;
         [segmented stroke];
     }
     for (NSUInteger i = 0; i < items.count; i++) {
         NSString *item = items[i];
-        CGFloat itemWidth = [item isEqualToString:@"Store"] ? widths[2] : ([item isEqualToString:@"Library"] ? widths[0] : widths[1]);
+        CGFloat itemWidth = [item isEqualToString:@"Store"] ? widths[2] : (([item isEqualToString:@"Library"] || [item isEqualToString:@"Games"]) ? widths[0] : widths[1]);
         BOOL active = ([item isEqualToString:@"Store"] && self.mode == OPNBackdropModeStore) ||
-                      ([item isEqualToString:@"Library"] && self.mode == OPNBackdropModeLibrary) ||
+                      (([item isEqualToString:@"Library"] || [item isEqualToString:@"Games"]) && self.mode == OPNBackdropModeLibrary) ||
                       ([item isEqualToString:@"Settings"] && self.mode == OPNBackdropModeSettings);
-        NSRect itemRect = NSMakeRect(x, controllerMode ? 78.0 : 18.0, itemWidth, controllerMode ? 34.0 : 28.0);
+        NSRect itemRect = NSMakeRect(x, controllerMode ? 68.0 : 18.0, itemWidth, controllerMode ? 34.0 : 28.0);
         if ([item isEqualToString:@"Store"]) _storeNavFrame = itemRect;
-        if ([item isEqualToString:@"Library"]) _libraryNavFrame = itemRect;
+        if ([item isEqualToString:@"Library"] || [item isEqualToString:@"Games"]) _libraryNavFrame = itemRect;
         if ([item isEqualToString:@"Settings"]) _settingsNavFrame = itemRect;
         if (active) {
             NSBezierPath *pill = [NSBezierPath bezierPathWithRoundedRect:itemRect xRadius:controllerMode ? 17.0 : 8.0 yRadius:controllerMode ? 17.0 : 8.0];
-            [controllerMode ? OpnColor(kBrandGreen, 0.26) : OpnColor(0xFFFFFF, 0.14) setFill];
+            [controllerMode ? OpnColor(0xFFFFFF, 0.20) : OpnColor(0xFFFFFF, 0.14) setFill];
             [pill fill];
             if (controllerMode) {
-                [OpnColor(kBrandGreen, 0.58) setStroke];
+                [OpnColor(kControllerConsoleBlueSoft, 0.66) setStroke];
                 pill.lineWidth = 1.0;
                 [pill stroke];
             }
@@ -350,12 +349,12 @@ static NSMenuItem *OPNStyledMenuItem(NSString *title, SEL action, id target, NSC
     NSString *remaining = self.remainingPlayTime.length > 0 ? self.remainingPlayTime : @"--";
     CGFloat controllerStatsWidth = 292.0;
     CGFloat controllerStatsX = MAX(NSMaxX(segmentedRect) + 18.0, NSWidth(bounds) - controllerStatsWidth - 28.0);
-    NSRect planRect = controllerMode ? NSMakeRect(controllerStatsX, 82.0, 132.0, 26.0) : NSMakeRect(NSWidth(bounds) - 294, 11.0, 108, 26);
+    NSRect planRect = controllerMode ? NSMakeRect(controllerStatsX, 72.0, 132.0, 26.0) : NSMakeRect(NSWidth(bounds) - 294, 11.0, 108, 26);
     NSBezierPath *planPill = [NSBezierPath bezierPathWithRoundedRect:planRect xRadius:14 yRadius:14];
-    [controllerMode ? OpnColor(kBrandGreen, 0.10) : OpnColor(0xFFFFFF, 0.075) setFill];
+    [controllerMode ? OpnColor(0xFFFFFF, 0.075) : OpnColor(0xFFFFFF, 0.075) setFill];
     [planPill fill];
     if (controllerMode) {
-        [OpnColor(kBrandGreen, 0.24) setStroke];
+        [OpnColor(kControllerConsoleBlueSoft, 0.24) setStroke];
         planPill.lineWidth = 1.0;
         [planPill stroke];
     }
@@ -371,7 +370,7 @@ static NSMenuItem *OPNStyledMenuItem(NSString *title, SEL action, id target, NSC
     gameCountStyle.alignment = controllerMode ? NSTextAlignmentRight : NSTextAlignmentCenter;
     NSMutableDictionary<NSAttributedStringKey, id> *gameCountAttrs = [OpnTextStyle(10, OpnColor(kTextMuted), NSFontWeightMedium) mutableCopy];
     gameCountAttrs[NSParagraphStyleAttributeName] = gameCountStyle;
-    [gameCount drawInRect:controllerMode ? NSMakeRect(NSMaxX(planRect) + 14.0, 88.0, 146.0, 14.0) : NSMakeRect(NSMinX(planRect), 40.0, NSWidth(planRect), 14)
+    [gameCount drawInRect:controllerMode ? NSMakeRect(NSMaxX(planRect) + 14.0, 78.0, 146.0, 14.0) : NSMakeRect(NSMinX(planRect), 40.0, NSWidth(planRect), 14)
           withAttributes:gameCountAttrs];
 
     NSRect avatarRect = controllerMode ? NSMakeRect(NSWidth(bounds) - 292.0, 18.0, 30.0, 30.0) : NSMakeRect(NSWidth(bounds) - 164, 17.0, 30, 30);
@@ -389,10 +388,12 @@ static NSMenuItem *OPNStyledMenuItem(NSString *title, SEL action, id target, NSC
                                       hints:@{NSImageHintInterpolation: @(NSImageInterpolationHigh)}];
         [NSGraphicsContext restoreGraphicsState];
     } else {
+        [OpnColor(kControllerConsoleBlueSoft, 0.90) setFill];
+        [avatar fill];
         NSString *initial = name.length > 0 ? [[name substringToIndex:1] uppercaseString] : @"U";
         NSMutableParagraphStyle *avatarStyle = [[NSMutableParagraphStyle alloc] init];
         avatarStyle.alignment = NSTextAlignmentCenter;
-        NSMutableDictionary<NSAttributedStringKey, id> *avatarAttrs = [OpnTextStyle(13, OpnColor(kAccentOn), NSFontWeightBold) mutableCopy];
+        NSMutableDictionary<NSAttributedStringKey, id> *avatarAttrs = [OpnTextStyle(13, OpnColor(kControllerConsoleDeepBlue), NSFontWeightBold) mutableCopy];
         avatarAttrs[NSParagraphStyleAttributeName] = avatarStyle;
         [initial drawInRect:NSMakeRect(NSMinX(avatarRect), NSMinY(avatarRect) + 7, 30, 16) withAttributes:avatarAttrs];
     }
@@ -468,9 +469,9 @@ static NSMenuItem *OPNStyledMenuItem(NSString *title, SEL action, id target, NSC
     button.identifier = identifier ?: @"";
     button.wantsLayer = YES;
     button.layer.cornerRadius = 14.0;
-    button.layer.backgroundColor = selected ? OpnColor(OPN::kBrandGreen, 0.22).CGColor : OpnColor(0xFFFFFF, 0.045).CGColor;
+    button.layer.backgroundColor = selected ? OpnColor(kControllerConsoleBlue, 0.20).CGColor : OpnColor(0xFFFFFF, 0.045).CGColor;
     button.layer.borderWidth = selected ? 1.0 : 0.0;
-    button.layer.borderColor = OpnColor(OPN::kBrandGreen, 0.50).CGColor;
+    button.layer.borderColor = OpnColor(kControllerConsoleBlueSoft, 0.52).CGColor;
     NSColor *textColor = warning ? OpnColor(0xFF8A8A) : (selected ? OpnColor(OPN::kTextPrimary) : OpnColor(OPN::kTextSecondary));
     NSString *displayTitle = selected ? [NSString stringWithFormat:@"%@  Current", title] : title;
     NSMutableParagraphStyle *style = [[NSMutableParagraphStyle alloc] init];
@@ -509,9 +510,9 @@ static NSMenuItem *OPNStyledMenuItem(NSString *title, SEL action, id target, NSC
     menu.wantsLayer = YES;
     menu.layer.cornerRadius = 24.0;
     menu.layer.borderWidth = 1.0;
-    menu.layer.borderColor = OpnColor(OPN::kBrandGreen, 0.28).CGColor;
-    menu.layer.backgroundColor = OpnColor(0x080A10, 0.94).CGColor;
-    menu.layer.shadowColor = OpnColor(OPN::kBrandGreen).CGColor;
+    menu.layer.borderColor = OpnColor(0xFFFFFF, 0.18).CGColor;
+    menu.layer.backgroundColor = OpnColor(kControllerConsoleDeepBlue, 0.96).CGColor;
+    menu.layer.shadowColor = OpnColor(kControllerConsoleBlue).CGColor;
     menu.layer.shadowOpacity = 0.24;
     menu.layer.shadowRadius = 30.0;
     menu.layer.shadowOffset = CGSizeZero;
