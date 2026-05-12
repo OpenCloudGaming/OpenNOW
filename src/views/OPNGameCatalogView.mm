@@ -2,6 +2,7 @@
 #import "OPNGameCardView.h"
 #import "OPNLoadingView.h"
 #import "../common/OPNColorTokens.h"
+#import "../common/OPNCoreAnimationCoordinator.h"
 #import "../common/OPNUIHelpers.h"
 #import <GameController/GameController.h>
 #include <QuartzCore/QuartzCore.h>
@@ -24,6 +25,16 @@ static unsigned OPNControllerAccentSoftRGB(void) {
 
 static unsigned OPNControllerAccentBlackRGB(CGFloat blackMix) {
     return OpnBlendRGB(OpnCurrentAccentRGB(), 0x000000, blackMix);
+}
+
+static unsigned OPNRGBFromColor(NSColor *color, unsigned fallbackRGB) {
+    if (!color) return fallbackRGB;
+    NSColor *rgbColor = [color colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
+    if (!rgbColor) return fallbackRGB;
+    NSInteger red = (NSInteger)lrint(MAX(0.0, MIN(1.0, rgbColor.redComponent)) * 255.0);
+    NSInteger green = (NSInteger)lrint(MAX(0.0, MIN(1.0, rgbColor.greenComponent)) * 255.0);
+    NSInteger blue = (NSInteger)lrint(MAX(0.0, MIN(1.0, rgbColor.blueComponent)) * 255.0);
+    return ((unsigned)red << 16) | ((unsigned)green << 8) | (unsigned)blue;
 }
 
 static NSString *OPNCatalogString(const std::string &value, NSString *fallback = @"") {
@@ -83,9 +94,43 @@ static NSString *OPNCatalogString(const std::string &value, NSString *fallback =
 
 @end
 
+@interface OPNRailEdgeFadeView : NSView
+@end
+
+@implementation OPNRailEdgeFadeView
+
+- (instancetype)initWithFrame:(NSRect)frame {
+    self = [super initWithFrame:frame];
+    if (self) {
+        self.wantsLayer = YES;
+        self.layer.backgroundColor = NSColor.clearColor.CGColor;
+    }
+    return self;
+}
+
+- (BOOL)isFlipped { return YES; }
+
+- (NSView *)hitTest:(NSPoint)point {
+    (void)point;
+    return nil;
+}
+
+- (void)drawRect:(NSRect)dirtyRect {
+    (void)dirtyRect;
+    NSGradient *fade = [[NSGradient alloc] initWithColors:@[
+        OpnColor(0x000000, 0.0),
+        OpnColor(0x000000, 0.18),
+        OpnColor(0x000000, 0.0),
+    ]];
+    [fade drawInRect:self.bounds angle:90.0];
+}
+
+@end
+
 @interface OPNControllerElectricBackgroundView : NSView
 @property (nonatomic, strong) NSTimer *animationTimer;
 @property (nonatomic, assign) CFTimeInterval animationStartTime;
+@property (nonatomic, assign) unsigned accentRGB;
 @end
 
 @implementation OPNControllerElectricBackgroundView
@@ -94,9 +139,25 @@ static NSString *OPNCatalogString(const std::string &value, NSString *fallback =
     self = [super initWithFrame:frame];
     if (self) {
         self.wantsLayer = YES;
+        _accentRGB = OPNControllerAccentRGB();
         _animationStartTime = CACurrentMediaTime();
     }
     return self;
+}
+
+- (void)setAccentRGB:(unsigned)accentRGB {
+    accentRGB &= 0xFFFFFF;
+    if (_accentRGB == accentRGB) return;
+    _accentRGB = accentRGB;
+    [self setNeedsDisplay:YES];
+}
+
+- (unsigned)accentSoftRGB {
+    return OpnBlendRGB(self.accentRGB, 0xFFFFFF, 0.42);
+}
+
+- (unsigned)accentBlackRGB:(CGFloat)blackMix {
+    return OpnBlendRGB(self.accentRGB, 0x000000, blackMix);
 }
 
 - (void)dealloc {
@@ -156,9 +217,9 @@ static NSString *OPNCatalogString(const std::string &value, NSString *fallback =
     NSRect bounds = self.bounds;
     CGFloat phase = (CGFloat)(CACurrentMediaTime() - self.animationStartTime);
     NSGradient *base = [[NSGradient alloc] initWithColors:@[
-        OpnColor(OPNControllerAccentBlackRGB(0.95), 1.0),
-        OpnColor(OPNControllerAccentBlackRGB(0.90), 1.0),
-        OpnColor(OPNControllerAccentBlackRGB(0.97), 1.0),
+        OpnColor([self accentBlackRGB:0.95], 1.0),
+        OpnColor([self accentBlackRGB:0.90], 1.0),
+        OpnColor([self accentBlackRGB:0.97], 1.0),
     ]];
     [base drawInRect:bounds angle:88.0];
 
@@ -178,7 +239,7 @@ static NSString *OPNCatalogString(const std::string &value, NSString *fallback =
                 + sin(t * 13.0 - phase * 0.20 + (CGFloat)band) * 5.0;
             [ribbon lineToPoint:NSMakePoint(x, y)];
         }
-        NSColor *stroke = band % 3 == 0 ? OpnColor(0xFFFFFF, 0.030) : OpnColor(OPNControllerAccentSoftRGB(), 0.038);
+        NSColor *stroke = band % 3 == 0 ? OpnColor(0xFFFFFF, 0.030) : OpnColor([self accentSoftRGB], 0.038);
         [stroke setStroke];
         ribbon.lineWidth = band == 4 ? 2.4 : 1.1;
         [ribbon stroke];
@@ -189,12 +250,12 @@ static NSString *OPNCatalogString(const std::string &value, NSString *fallback =
         CGFloat y = fmod((CGFloat)(i * 43) + sin(phase * 0.24 + (CGFloat)i) * 18.0, MAX(1.0, height));
         CGFloat radius = 0.7 + (CGFloat)(i % 3) * 0.32;
         NSBezierPath *spark = [NSBezierPath bezierPathWithOvalInRect:NSMakeRect(x, y, radius, radius)];
-        [OpnColor(i % 5 == 0 ? 0xFFFFFF : OPNControllerAccentSoftRGB(), i % 5 == 0 ? 0.10 : 0.07) setFill];
+        [OpnColor(i % 5 == 0 ? 0xFFFFFF : [self accentSoftRGB], i % 5 == 0 ? 0.10 : 0.07) setFill];
         [spark fill];
     }
 
-    NSGradient *vignette = [[NSGradient alloc] initWithStartingColor:OpnColor(OPNControllerAccentBlackRGB(0.90), 0.0)
-                                                        endingColor:OpnColor(OPNControllerAccentBlackRGB(0.99), 0.42)];
+    NSGradient *vignette = [[NSGradient alloc] initWithStartingColor:OpnColor([self accentBlackRGB:0.90], 0.0)
+                                                        endingColor:OpnColor([self accentBlackRGB:0.99], 0.42)];
     [vignette drawInRect:bounds angle:-90.0];
 }
 
@@ -228,6 +289,8 @@ static NSString *OPNCatalogString(const std::string &value, NSString *fallback =
 @property (nonatomic, strong) NSTextField *controllerDetailStatsLabel;
 @property (nonatomic, strong) NSTextField *controllerDetailFeaturesLabel;
 @property (nonatomic, strong) OPNControllerPromptBarView *controllerPromptBarView;
+@property (nonatomic, strong) OPNRailEdgeFadeView *railTopFadeView;
+@property (nonatomic, strong) OPNRailEdgeFadeView *railBottomFadeView;
 @property (nonatomic, strong) CAGradientLayer *controllerDetailGradientLayer;
 @property (nonatomic, strong) CALayer *controllerDetailAccentLayer;
 @property (nonatomic, strong) NSMutableArray<OPNGameCardView *> *cardViews;
@@ -521,6 +584,7 @@ using namespace OPN;
         _focusedCardIndex = -1;
         _gridColumnCount = 1;
         self.wantsLayer = YES;
+        self.layer.opaque = NO;
         self.layer.backgroundColor = [NSColor clearColor].CGColor;
 
         _controllerElectricBackgroundView = [[OPNControllerElectricBackgroundView alloc] initWithFrame:self.bounds];
@@ -628,20 +692,25 @@ using namespace OPN;
         CGFloat gridY = kNavHeight + kToolbarHeight;
         NSRect scrollFrame = NSMakeRect(0, gridY, frame.size.width, frame.size.height - gridY);
         _scrollView = [[NSScrollView alloc] initWithFrame:scrollFrame];
+        _scrollView.wantsLayer = YES;
         _scrollView.hasVerticalScroller = YES;
         _scrollView.hasHorizontalScroller = NO;
         _scrollView.autohidesScrollers = YES;
         _scrollView.drawsBackground = NO;
         _scrollView.borderType = NSNoBorder;
+        _scrollView.layer.opaque = NO;
+        _scrollView.layer.backgroundColor = NSColor.clearColor.CGColor;
         _scrollView.contentView.drawsBackground = NO;
         _scrollView.contentView.backgroundColor = NSColor.clearColor;
         _scrollView.contentView.wantsLayer = YES;
+        _scrollView.contentView.layer.opaque = NO;
         _scrollView.contentView.layer.backgroundColor = NSColor.clearColor.CGColor;
         [self addSubview:_scrollView];
 
         // Grid content
         _gridContentView = [[OPNFlippedGridDocumentView alloc] initWithFrame:NSMakeRect(0, 0, frame.size.width, 100)];
         _gridContentView.wantsLayer = YES;
+        _gridContentView.layer.opaque = NO;
         _gridContentView.layer.backgroundColor = NSColor.clearColor.CGColor;
         _scrollView.documentView = _gridContentView;
 
@@ -656,7 +725,7 @@ using namespace OPN;
         _controllerDetailView.layer.cornerRadius = 0.0;
         _controllerDetailView.layer.borderWidth = 0.0;
         _controllerDetailView.layer.borderColor = OpnColor(0xFFFFFF, 0.0).CGColor;
-        _controllerDetailView.layer.backgroundColor = OpnColor(OPNControllerAccentBlackRGB(0.90), 0.10).CGColor;
+        _controllerDetailView.layer.backgroundColor = NSColor.clearColor.CGColor;
         _controllerDetailView.layer.shadowColor = OpnColor(OPNControllerAccentRGB()).CGColor;
         _controllerDetailView.layer.shadowOpacity = 0.0;
         _controllerDetailView.layer.shadowRadius = 0.0;
@@ -667,12 +736,13 @@ using namespace OPN;
         _controllerDetailView.layer.transform = detailTransform;
 
         _controllerDetailGradientLayer = [CAGradientLayer layer];
-        _controllerDetailGradientLayer.colors = @[(id)OpnColor(OPNControllerAccentRGB(), 0.16).CGColor,
-                                                   (id)OpnColor(0xFFFFFF, 0.040).CGColor,
-                                                   (id)OpnColor(OPNControllerAccentBlackRGB(0.96), 0.0).CGColor];
+        _controllerDetailGradientLayer.colors = @[(id)NSColor.clearColor.CGColor,
+                                                   (id)NSColor.clearColor.CGColor,
+                                                   (id)NSColor.clearColor.CGColor];
         _controllerDetailGradientLayer.locations = @[@0.0, @0.46, @1.0];
         _controllerDetailGradientLayer.startPoint = CGPointMake(0.0, 0.0);
         _controllerDetailGradientLayer.endPoint = CGPointMake(1.0, 1.0);
+        _controllerDetailGradientLayer.opacity = 0.0;
         [_controllerDetailView.layer addSublayer:_controllerDetailGradientLayer];
 
         _controllerDetailAccentLayer = [CALayer layer];
@@ -702,8 +772,16 @@ using namespace OPN;
         _controllerPromptBarView.wantsLayer = YES;
         [_controllerDetailView addSubview:_controllerPromptBarView];
 
+        _railTopFadeView = [[OPNRailEdgeFadeView alloc] initWithFrame:NSZeroRect];
+        _railTopFadeView.hidden = YES;
+        [self addSubview:_railTopFadeView];
+
+        _railBottomFadeView = [[OPNRailEdgeFadeView alloc] initWithFrame:NSZeroRect];
+        _railBottomFadeView.hidden = YES;
+        [self addSubview:_railBottomFadeView];
+
         _loadingView = [[OPNLoadingView alloc] initWithFrame:self.bounds
-                                                     message:@"Loading games..."];
+                                                      message:@"Loading games..."];
         _loadingView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
         _loadingView.hidden = YES;
         [self addSubview:_loadingView];
@@ -741,14 +819,15 @@ using namespace OPN;
 
 - (void)applyControllerAccentColors {
     self.searchField.layer.backgroundColor = OpnColor(OPNControllerAccentBlackRGB(0.88), 0.92).CGColor;
-    self.controllerDetailView.layer.backgroundColor = OpnColor(OPNControllerAccentBlackRGB(0.90), 0.10).CGColor;
+    self.controllerDetailView.layer.backgroundColor = NSColor.clearColor.CGColor;
     self.controllerDetailView.layer.shadowColor = OpnColor(OPNControllerAccentRGB()).CGColor;
-    self.controllerDetailGradientLayer.colors = @[(id)OpnColor(OPNControllerAccentRGB(), 0.16).CGColor,
-                                                  (id)OpnColor(0xFFFFFF, 0.040).CGColor,
-                                                  (id)OpnColor(OPNControllerAccentBlackRGB(0.96), 0.0).CGColor];
+    self.controllerDetailGradientLayer.colors = @[(id)NSColor.clearColor.CGColor,
+                                                  (id)NSColor.clearColor.CGColor,
+                                                  (id)NSColor.clearColor.CGColor];
+    self.controllerDetailGradientLayer.opacity = 0.0;
     self.controllerDetailAccentLayer.backgroundColor = OpnColor(OPNControllerAccentSoftRGB(), 0.86).CGColor;
     self.controllerDetailStoreLabel.textColor = OpnColor(OPNControllerAccentSoftRGB());
-    self.layer.backgroundColor = OpnControllerModeEnabled() ? OpnColor(OPNControllerAccentBlackRGB(0.92), 0.20).CGColor : [NSColor clearColor].CGColor;
+    self.layer.backgroundColor = NSColor.clearColor.CGColor;
     [self.controllerElectricBackgroundView setNeedsDisplay:YES];
 }
 
@@ -1058,6 +1137,15 @@ using namespace OPN;
                 s.onSelectGame(gameCopy, variantIdx >= 0 ? variantIdx : 0);
             }
         };
+        card.onArtworkAccentColorChanged = ^(NSColor *color) {
+            (void)color;
+            __typeof__(self) s = weakSelf;
+            OPNGameCardView *c = weakCard;
+            if (!s || !c) return;
+            NSUInteger cardIndex = [s.cardViews indexOfObject:c];
+            if (cardIndex == NSNotFound || (NSInteger)cardIndex != s.focusedCardIndex) return;
+            [s updateControllerDetailContent];
+        };
         [_gridContentView addSubview:card];
         [_cardViews addObject:card];
 
@@ -1204,16 +1292,18 @@ using namespace OPN;
     CGFloat height = NSHeight(self.bounds);
     BOOL controllerMode = OpnControllerModeEnabled();
     CGFloat controllerNavHeight = 118.0;
-    self.controllerElectricBackgroundView.hidden = !controllerMode || self.cardViews.count == 0;
-    self.controllerElectricBackgroundView.frame = controllerMode
-        ? NSMakeRect(0.0, controllerNavHeight, width, MAX(0.0, height - controllerNavHeight))
-        : self.bounds;
+    self.controllerElectricBackgroundView.hidden = YES;
+    self.controllerElectricBackgroundView.frame = self.bounds;
     self.scrollView.hasVerticalScroller = !controllerMode;
     self.scrollView.hasHorizontalScroller = NO;
     self.scrollView.drawsBackground = NO;
+    self.scrollView.layer.opaque = NO;
+    self.scrollView.layer.backgroundColor = NSColor.clearColor.CGColor;
     self.scrollView.contentView.drawsBackground = NO;
     self.scrollView.contentView.backgroundColor = NSColor.clearColor;
+    self.scrollView.contentView.layer.opaque = NO;
     self.scrollView.contentView.layer.backgroundColor = NSColor.clearColor.CGColor;
+    self.gridContentView.layer.opaque = NO;
     self.gridContentView.layer.backgroundColor = NSColor.clearColor.CGColor;
     BOOL compact = width < 900.0;
     self.searchField.hidden = controllerMode;
@@ -1238,7 +1328,7 @@ using namespace OPN;
     CGFloat categoryY = controllerNavHeight + 10.0;
     CGFloat railY = controllerMode && self.categoryButtons.count > 1 ? categoryY + 40.0 : controllerNavHeight + 10.0;
     CGFloat bottomInset = 36.0;
-    CGFloat detailGap = 10.0;
+    CGFloat detailGap = 0.0;
     CGFloat carouselHeight = desiredCarouselHeight;
     CGFloat detailY = railY + carouselHeight + detailGap;
     CGFloat detailHeight = 0.0;
@@ -1285,9 +1375,14 @@ using namespace OPN;
     self.controllerDetailFeaturesLabel.hidden = NO;
     self.controllerDetailFeaturesLabel.frame = NSMakeRect(heroX + 2.0, featuresY, MIN(980.0, heroWidth), MAX(0.0, detailHeight - featuresY - 88.0));
     self.controllerPromptBarView.frame = NSMakeRect(heroX + 2.0, MAX(188.0, detailHeight - 52.0), heroWidth, 36.0);
-    self.scrollView.frame = controllerMode
-        ? NSMakeRect(0, gridY, width, MIN(carouselHeight, MAX(0.0, height - gridY)))
-        : NSMakeRect(0, gridY, width, MAX(0.0, height - gridY));
+    CGFloat railHeight = controllerMode ? MIN(carouselHeight, MAX(0.0, height - gridY)) : MAX(0.0, height - gridY);
+    self.scrollView.frame = NSMakeRect(0, gridY, width, railHeight);
+    BOOL showRailFade = controllerMode && self.cardViews.count > 0;
+    CGFloat railFadeHeight = 56.0;
+    self.railTopFadeView.hidden = !showRailFade;
+    self.railBottomFadeView.hidden = !showRailFade;
+    self.railTopFadeView.frame = showRailFade ? NSMakeRect(0.0, MAX(0.0, gridY - railFadeHeight * 0.50), width, railFadeHeight) : NSZeroRect;
+    self.railBottomFadeView.frame = showRailFade ? NSMakeRect(0.0, MAX(0.0, gridY + railHeight - railFadeHeight * 0.50), width, railFadeHeight) : NSZeroRect;
     self.statusLabel.frame = controllerMode ? NSMakeRect(28.0, MAX(kNavHeight + 30.0, gridY - 42.0), width - 56.0, 24.0) : NSMakeRect(0, gridY + 100, width, 24);
     if (controllerMode && self.cardViews.count > 0) {
         self.statusLabel.stringValue = @"";
@@ -1347,8 +1442,9 @@ using namespace OPN;
         NSSize contentSize = self.gridContentView.frame.size;
         CGFloat targetX = NSMidX(card.frame) - NSWidth(visibleRect) * 0.5;
         targetX = MAX(0.0, MIN(targetX, MAX(0.0, contentSize.width - NSWidth(visibleRect))));
-        [self.scrollView.contentView scrollToPoint:NSMakePoint(targetX, 0.0)];
-        [self.scrollView reflectScrolledClipView:self.scrollView.contentView];
+        [[OPNCoreAnimationCoordinator sharedCoordinator] springScrollClipView:self.scrollView.contentView
+                                                                          toX:targetX
+                                                                     velocity:0.0];
         return;
     }
     if (!NSContainsRect(visibleRect, targetRect)) {
@@ -1383,11 +1479,27 @@ using namespace OPN;
 - (void)updateControllerDetailContent {
     if (!OpnControllerModeEnabled()) return;
     OPNGameCardView *card = [self focusedCard];
+    NSColor *cardAccentColor = card.artworkAccentColor;
+    NSColor *detailAccentColor = cardAccentColor ?: OpnColor(OPNControllerAccentRGB());
+    NSColor *detailAccentSoftColor = cardAccentColor ?: OpnColor(OPNControllerAccentSoftRGB());
+    self.controllerElectricBackgroundView.accentRGB = OPNRGBFromColor(cardAccentColor, OPNControllerAccentRGB());
+    if (self.onFocusedArtworkAccentChanged) self.onFocusedArtworkAccentChanged(self.controllerElectricBackgroundView.accentRGB);
     CATransition *fade = [CATransition animation];
     fade.type = kCATransitionFade;
     fade.duration = 0.18;
-    fade.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
+    fade.timingFunction = [OPNCoreAnimationCoordinator appleQuinticTimingFunction];
     [self.controllerDetailView.layer addAnimation:fade forKey:@"opn.detail.fade"];
+    [CATransaction begin];
+    [CATransaction setAnimationDuration:0.32];
+    [CATransaction setAnimationTimingFunction:[OPNCoreAnimationCoordinator appleQuinticTimingFunction]];
+    self.controllerDetailGradientLayer.colors = @[(id)NSColor.clearColor.CGColor,
+                                                   (id)NSColor.clearColor.CGColor,
+                                                   (id)NSColor.clearColor.CGColor];
+    self.controllerDetailGradientLayer.opacity = 0.0;
+    self.controllerDetailAccentLayer.backgroundColor = [detailAccentSoftColor colorWithAlphaComponent:0.90].CGColor;
+    self.controllerDetailView.layer.shadowColor = detailAccentColor.CGColor;
+    self.controllerDetailStoreLabel.textColor = detailAccentSoftColor;
+    [CATransaction commit];
     if (!card) {
         self.controllerDetailTitleLabel.stringValue = @"Select a game";
         self.controllerDetailMetaLabel.stringValue = @"";
@@ -1497,6 +1609,11 @@ using namespace OPN;
 
     self.detailsOverlayView = overlay;
     [self addSubview:overlay];
+    [[OPNCoreAnimationCoordinator sharedCoordinator] animateCardLayer:panel.layer
+                                                    metadataContainer:self.controllerDetailView
+                                                      backgroundLayer:self.controllerElectricBackgroundView.layer
+                                                             expanded:YES
+                                                          accentColor:card.artworkAccentColor ?: OpnColor(OPNControllerAccentRGB())];
 }
 
 - (void)closeGameDetails {

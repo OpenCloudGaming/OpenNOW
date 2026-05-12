@@ -406,6 +406,7 @@ static std::string OPNGameLibraryFingerprint(const std::vector<OPN::GameInfo> &g
         self.window.contentViewController = nil;
         self.rootView = [[OPNBackdropView alloc] initWithFrame:self.window.contentView.bounds];
         self.rootView.wantsLayer = YES;
+        self.rootView.layer.opaque = NO;
         self.rootView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
         __weak __typeof__(self) weakSelf = self;
         self.rootView.onStoreSelected = ^{
@@ -450,6 +451,8 @@ static std::string OPNGameLibraryFingerprint(const std::vector<OPN::GameInfo> &g
     if (!self.contentContainer || self.contentContainer.superview != self.rootView) {
         self.contentContainer = [[NSView alloc] initWithFrame:self.rootView.bounds];
         self.contentContainer.wantsLayer = YES;
+        self.contentContainer.layer.opaque = NO;
+        self.contentContainer.layer.backgroundColor = NSColor.clearColor.CGColor;
         self.contentContainer.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
         [self.rootView addSubview:self.contentContainer];
     }
@@ -614,6 +617,12 @@ static std::string OPNGameLibraryFingerprint(const std::vector<OPN::GameInfo> &g
                 __typeof__(self) strongSelf = weakSelf;
                 if (!strongSelf || !strongSelf.rootView) return;
                 strongSelf.rootView.gameCountText = [NSString stringWithFormat:@"%ld %@", (long)count, count == 1 ? @"game" : @"games"];
+            };
+
+            catalog.onFocusedArtworkAccentChanged = ^(unsigned accentRGB) {
+                __typeof__(self) strongSelf = weakSelf;
+                if (!strongSelf || !strongSelf.rootView) return;
+                strongSelf.rootView.controllerAccentRGB = accentRGB;
             };
 
             catalog.onSelectGame = ^(const GameInfo &game, int variantIndex) {

@@ -729,7 +729,7 @@ using namespace OPN;
 }
 
 - (void)buildInterfaceContent {
-    NSView *panel = [self panelWithTitle:@"Interface" height:512.0];
+    NSView *panel = [self panelWithTitle:@"Interface" height:596.0];
     CGFloat panelWidth = MAX(320.0, NSWidth(panel.frame));
     CGFloat controlX = [self controlXForPanelWidth:panelWidth];
     CGFloat controlWidth = [self controlWidthForPanelWidth:panelWidth];
@@ -742,7 +742,7 @@ using namespace OPN;
     [panel addSubview:[self rowLabel:@"Controller Mode" y:104.0]];
     NSButton *controllerModeToggle = [[NSButton alloc] initWithFrame:NSMakeRect(controlX, 96.0, controlWidth, 28.0)];
     controllerModeToggle.buttonType = NSButtonTypeSwitch;
-    controllerModeToggle.title = @"Use a green glass console home optimized for gamepad navigation";
+    controllerModeToggle.title = @"Use a console-style library optimized for gamepad navigation";
     controllerModeToggle.font = [NSFont systemFontOfSize:13.0 weight:NSFontWeightMedium];
     controllerModeToggle.contentTintColor = OpnColor(kBrandGreen);
     controllerModeToggle.state = OpnControllerModeEnabled() ? NSControlStateValueOn : NSControlStateValueOff;
@@ -750,7 +750,7 @@ using namespace OPN;
     controllerModeToggle.action = @selector(controllerModeToggleChanged:);
     [panel addSubview:controllerModeToggle];
 
-    NSTextField *controllerHint = OpnLabel(@"Controller Mode keeps mouse and keyboard support while making the carousel, focus states, details, and launch flow feel like a TV console home.",
+    NSTextField *controllerHint = OpnLabel(@"Controller Mode keeps mouse and keyboard support while giving the library larger focus states, smoother carousel navigation, and a lean-back launch flow.",
                                             NSMakeRect(controlX, 132.0, controlWidth, 38.0),
                                            12.0,
                                            OpnColor(kTextMuted),
@@ -758,15 +758,34 @@ using namespace OPN;
     controllerHint.maximumNumberOfLines = 2;
     [panel addSubview:controllerHint];
 
-    [panel addSubview:[self rowLabel:@"Accent Color" y:198.0]];
+    [panel addSubview:[self rowLabel:@"Background" y:198.0]];
+    NSButton *backgroundAnimationToggle = [[NSButton alloc] initWithFrame:NSMakeRect(controlX, 190.0, controlWidth, 28.0)];
+    backgroundAnimationToggle.buttonType = NSButtonTypeSwitch;
+    backgroundAnimationToggle.title = @"Animate the game-accent background";
+    backgroundAnimationToggle.font = [NSFont systemFontOfSize:13.0 weight:NSFontWeightMedium];
+    backgroundAnimationToggle.contentTintColor = OpnColor(kBrandGreen);
+    backgroundAnimationToggle.state = OpnBackgroundAnimationEnabled() ? NSControlStateValueOn : NSControlStateValueOff;
+    backgroundAnimationToggle.target = self;
+    backgroundAnimationToggle.action = @selector(backgroundAnimationToggleChanged:);
+    [panel addSubview:backgroundAnimationToggle];
+
+    NSTextField *backgroundHint = OpnLabel(@"When off, the animated ribbons and sparkles pause while keeping the static artwork-tinted background.",
+                                           NSMakeRect(controlX, 226.0, controlWidth, 38.0),
+                                           12.0,
+                                           OpnColor(kTextMuted),
+                                           NSFontWeightRegular);
+    backgroundHint.maximumNumberOfLines = 2;
+    [panel addSubview:backgroundHint];
+
+    [panel addSubview:[self rowLabel:@"Accent Color" y:282.0]];
     NSTextField *accentSummary = OpnLabel([NSString stringWithFormat:@"RGB %ld, %ld, %ld", (long)red, (long)green, (long)blue],
-                                          NSMakeRect(controlX, 198.0, controlWidth, 20.0),
-                                         13.0,
-                                         OpnColor(kTextPrimary),
-                                         NSFontWeightSemibold);
+                                          NSMakeRect(controlX, 282.0, controlWidth, 20.0),
+                                          13.0,
+                                          OpnColor(kTextPrimary),
+                                          NSFontWeightSemibold);
     [panel addSubview:accentSummary];
 
-    NSView *swatch = [[NSView alloc] initWithFrame:NSMakeRect(controlX + MIN(162.0, controlWidth - 36.0), 195.0, 34.0, 24.0)];
+    NSView *swatch = [[NSView alloc] initWithFrame:NSMakeRect(controlX + MIN(162.0, controlWidth - 36.0), 279.0, 34.0, 24.0)];
     swatch.wantsLayer = YES;
     swatch.layer.cornerRadius = 8.0;
     swatch.layer.backgroundColor = OpnColor(kBrandGreen).CGColor;
@@ -777,7 +796,7 @@ using namespace OPN;
     NSArray<NSString *> *channelNames = @[@"Red", @"Green", @"Blue"];
     NSArray<NSNumber *> *channelValues = @[@(red), @(green), @(blue)];
     for (NSInteger i = 0; i < 3; i++) {
-        CGFloat y = 234.0 + i * 42.0;
+        CGFloat y = 318.0 + i * 42.0;
         NSTextField *label = OpnLabel(channelNames[(NSUInteger)i], NSMakeRect(controlX, y + 3.0, 62.0, 20.0), 12.0, OpnColor(kTextSecondary), NSFontWeightMedium);
         [panel addSubview:label];
 
@@ -803,8 +822,8 @@ using namespace OPN;
         if (i == 2) self.accentBlueValueLabel = valueLabel;
     }
 
-    [panel addSubview:[self rowLabel:@"Poster Size" y:368.0]];
-    NSSlider *posterSlider = [[NSSlider alloc] initWithFrame:NSMakeRect(controlX, 362.0, MIN(300.0, controlWidth - 72.0), 28.0)];
+    [panel addSubview:[self rowLabel:@"Poster Size" y:452.0]];
+    NSSlider *posterSlider = [[NSSlider alloc] initWithFrame:NSMakeRect(controlX, 446.0, MIN(300.0, controlWidth - 72.0), 28.0)];
     posterSlider.minValue = 80.0;
     posterSlider.maxValue = 130.0;
     posterSlider.doubleValue = OpnPosterSizeScale() * 100.0;
@@ -814,15 +833,15 @@ using namespace OPN;
     [panel addSubview:posterSlider];
 
     self.posterSizeValueLabel = OpnLabel([NSString stringWithFormat:@"%.0f%%", posterSlider.doubleValue],
-                                          NSMakeRect(controlX + MIN(312.0, controlWidth - 60.0), 366.0, 60.0, 22.0),
+                                          NSMakeRect(controlX + MIN(312.0, controlWidth - 60.0), 450.0, 60.0, 22.0),
                                          12.0,
                                          OpnColor(kTextSecondary),
                                          NSFontWeightSemibold,
                                          NSTextAlignmentRight);
     [panel addSubview:self.posterSizeValueLabel];
 
-    [panel addSubview:[self rowLabel:@"Auto Full Screen" y:440.0]];
-    NSButton *autoFullScreenToggle = [[NSButton alloc] initWithFrame:NSMakeRect(controlX, 432.0, controlWidth, 28.0)];
+    [panel addSubview:[self rowLabel:@"Auto Full Screen" y:524.0]];
+    NSButton *autoFullScreenToggle = [[NSButton alloc] initWithFrame:NSMakeRect(controlX, 516.0, controlWidth, 28.0)];
     autoFullScreenToggle.buttonType = NSButtonTypeSwitch;
     autoFullScreenToggle.title = @"Enter full screen automatically when a stream starts";
     autoFullScreenToggle.font = [NSFont systemFontOfSize:13.0 weight:NSFontWeightMedium];
@@ -1084,6 +1103,10 @@ using namespace OPN;
 
 - (void)autoFullScreenToggleChanged:(NSButton *)sender {
     OpnSetAutoFullScreenEnabled(sender.state == NSControlStateValueOn);
+}
+
+- (void)backgroundAnimationToggleChanged:(NSButton *)sender {
+    OpnSetBackgroundAnimationEnabled(sender.state == NSControlStateValueOn);
 }
 
 - (void)controllerModeToggleChanged:(NSButton *)sender {

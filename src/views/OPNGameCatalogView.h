@@ -8,6 +8,7 @@
 @property (nonatomic, copy) void (^onSignOut)();
 @property (nonatomic, copy) void (^onGameCountChanged)(NSInteger count);
 @property (nonatomic, copy) void (^onCatalogBrowseRequested)(NSString *searchQuery, NSString *sortId, const std::vector<std::string> &filterIds);
+@property (nonatomic, copy) void (^onFocusedArtworkAccentChanged)(unsigned accentRGB);
 
 - (instancetype)initWithFrame:(NSRect)frame;
 - (void)setGames:(const std::vector<OPN::GameInfo> &)games;

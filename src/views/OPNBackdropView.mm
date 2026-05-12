@@ -3,6 +3,7 @@
 #import "../common/OPNUIHelpers.h"
 #import "../common/OPNAuthTypes.h"
 #import <GameController/GameController.h>
+#include <cmath>
 
 @interface OPNBackdropControllerMenuView : NSView
 @end
@@ -40,6 +41,9 @@ static unsigned OPNControllerAccentBlackRGB(CGFloat blackMix) {
     NSButton *_accountButton;
     NSView *_controllerAccountMenuView;
     NSTimer *_controllerNavigationTimer;
+    NSTimer *_backgroundAnimationTimer;
+    CFTimeInterval _backgroundAnimationStartTime;
+    unsigned _controllerAccentRGB;
     uint16_t _previousControllerButtons;
 }
 
@@ -64,6 +68,8 @@ static NSMenuItem *OPNStyledMenuItem(NSString *title, SEL action, id target, NSC
         _libraryButton = [self navigationHitButtonWithAction:@selector(libraryButtonPressed:)];
         _settingsButton = [self navigationHitButtonWithAction:@selector(settingsButtonPressed:)];
         _accountButton = [self navigationHitButtonWithAction:@selector(accountButtonPressed:)];
+        _controllerAccentRGB = OPNControllerAccentRGB();
+        _backgroundAnimationStartTime = CACurrentMediaTime();
         [self addSubview:_storeButton];
         [self addSubview:_libraryButton];
         [self addSubview:_settingsButton];
@@ -82,23 +88,71 @@ static NSMenuItem *OPNStyledMenuItem(NSString *title, SEL action, id target, NSC
 - (void)dealloc {
     [[NSNotificationCenter defaultCenter] removeObserver:self];
     [_controllerNavigationTimer invalidate];
+    [_backgroundAnimationTimer invalidate];
 }
 
 - (void)viewDidMoveToWindow {
     [super viewDidMoveToWindow];
     if (self.window) {
         [self startControllerNavigationIfNeeded];
+        [self startControllerBackgroundAnimationIfNeeded];
     } else {
         [_controllerNavigationTimer invalidate];
         _controllerNavigationTimer = nil;
+        [_backgroundAnimationTimer invalidate];
+        _backgroundAnimationTimer = nil;
         _previousControllerButtons = 0;
     }
 }
 
 - (void)interfacePreferencesChanged:(NSNotification *)notification {
     (void)notification;
+    if (!OpnBackgroundAnimationEnabled()) {
+        [_backgroundAnimationTimer invalidate];
+        _backgroundAnimationTimer = nil;
+    }
     [self setNeedsDisplay:YES];
     [self startControllerNavigationIfNeeded];
+    [self startControllerBackgroundAnimationIfNeeded];
+}
+
+- (void)setControllerAccentRGB:(unsigned)controllerAccentRGB {
+    controllerAccentRGB &= 0xFFFFFF;
+    if (_controllerAccentRGB == controllerAccentRGB) return;
+    _controllerAccentRGB = controllerAccentRGB;
+    [self setNeedsDisplay:YES];
+}
+
+- (unsigned)resolvedControllerAccentRGB {
+    return _controllerAccentRGB ? _controllerAccentRGB : OPNControllerAccentRGB();
+}
+
+- (unsigned)resolvedControllerAccentSoftRGB {
+    return OpnBlendRGB([self resolvedControllerAccentRGB], 0xFFFFFF, 0.42);
+}
+
+- (unsigned)resolvedControllerAccentBlackRGB:(CGFloat)blackMix {
+    return OpnBlendRGB([self resolvedControllerAccentRGB], 0x000000, blackMix);
+}
+
+- (void)startControllerBackgroundAnimationIfNeeded {
+    if (!OpnControllerModeEnabled() || !OpnBackgroundAnimationEnabled() || _backgroundAnimationTimer || !self.window) return;
+    _backgroundAnimationTimer = [NSTimer timerWithTimeInterval:(1.0 / 60.0)
+                                                        target:self
+                                                      selector:@selector(backgroundAnimationTick:)
+                                                      userInfo:nil
+                                                       repeats:YES];
+    [NSRunLoop.mainRunLoop addTimer:_backgroundAnimationTimer forMode:NSRunLoopCommonModes];
+}
+
+- (void)backgroundAnimationTick:(NSTimer *)timer {
+    (void)timer;
+    if (!OpnControllerModeEnabled() || !OpnBackgroundAnimationEnabled() || !self.window) {
+        [_backgroundAnimationTimer invalidate];
+        _backgroundAnimationTimer = nil;
+        return;
+    }
+    [self setNeedsDisplay:YES];
 }
 
 - (void)startControllerNavigationIfNeeded {
@@ -176,9 +230,95 @@ static NSMenuItem *OPNStyledMenuItem(NSString *title, SEL action, id target, NSC
 
 - (BOOL)isFlipped { return YES; }
 
+- (CGFloat)unitHashForSeed:(NSUInteger)seed index:(NSUInteger)index {
+    uint32_t value = (uint32_t)(seed * 1103515245u + index * 12345u + 0x9E3779B9u);
+    value ^= value >> 16;
+    value *= 0x7FEB352Du;
+    value ^= value >> 15;
+    return (CGFloat)(value % 10000u) / 10000.0;
+}
+
+- (void)drawSparkleAtPoint:(NSPoint)point radius:(CGFloat)radius alpha:(CGFloat)alpha color:(NSColor *)color {
+    NSBezierPath *cross = [NSBezierPath bezierPath];
+    [cross moveToPoint:NSMakePoint(point.x - radius, point.y)];
+    [cross lineToPoint:NSMakePoint(point.x + radius, point.y)];
+    [cross moveToPoint:NSMakePoint(point.x, point.y - radius)];
+    [cross lineToPoint:NSMakePoint(point.x, point.y + radius)];
+    [cross moveToPoint:NSMakePoint(point.x - radius * 0.55, point.y - radius * 0.55)];
+    [cross lineToPoint:NSMakePoint(point.x + radius * 0.55, point.y + radius * 0.55)];
+    [cross moveToPoint:NSMakePoint(point.x - radius * 0.55, point.y + radius * 0.55)];
+    [cross lineToPoint:NSMakePoint(point.x + radius * 0.55, point.y - radius * 0.55)];
+    cross.lineCapStyle = NSLineCapStyleRound;
+    cross.lineWidth = MAX(0.7, radius * 0.16);
+    [[color colorWithAlphaComponent:alpha] setStroke];
+    [cross stroke];
+
+    NSBezierPath *core = [NSBezierPath bezierPathWithOvalInRect:NSMakeRect(point.x - radius * 0.16,
+                                                                            point.y - radius * 0.16,
+                                                                            radius * 0.32,
+                                                                            radius * 0.32)];
+    [[NSColor.whiteColor colorWithAlphaComponent:alpha * 0.72] setFill];
+    [core fill];
+}
+
+- (void)drawControllerElectricBackgroundInRect:(NSRect)bounds {
+    BOOL animationEnabled = OpnBackgroundAnimationEnabled();
+    CGFloat phase = animationEnabled ? (CGFloat)(CACurrentMediaTime() - _backgroundAnimationStartTime) : 0.0;
+    NSGradient *base = [[NSGradient alloc] initWithColors:@[
+        OpnColor([self resolvedControllerAccentBlackRGB:0.89], 1.0),
+        OpnColor([self resolvedControllerAccentBlackRGB:0.81], 1.0),
+        OpnColor([self resolvedControllerAccentBlackRGB:0.92], 1.0),
+    ]];
+    [base drawInRect:bounds angle:88.0];
+
+    CGFloat width = NSWidth(bounds);
+    CGFloat height = NSHeight(bounds);
+    unsigned accentRGB = [self resolvedControllerAccentRGB];
+    unsigned accentSoftRGB = [self resolvedControllerAccentSoftRGB];
+
+    for (NSInteger band = 0; band < 9; band++) {
+        CGFloat yBase = height * (0.12 + (CGFloat)band * 0.092);
+        NSBezierPath *ribbon = [NSBezierPath bezierPath];
+        [ribbon moveToPoint:NSMakePoint(-120.0, yBase)];
+        for (NSInteger point = 0; point <= 28; point++) {
+            CGFloat t = (CGFloat)point / 28.0;
+            CGFloat x = t * (width + 240.0) - 120.0;
+            CGFloat drift = phase * (0.28 + (CGFloat)band * 0.018);
+            CGFloat y = yBase
+                + sin(t * 5.8 + (CGFloat)band * 0.72 + drift) * (20.0 + (CGFloat)band * 1.6)
+                + sin(t * 13.0 - phase * 0.20 + (CGFloat)band) * 5.0;
+            [ribbon lineToPoint:NSMakePoint(x, y)];
+        }
+        NSColor *stroke = band % 3 == 0 ? OpnColor(accentSoftRGB, 0.032) : OpnColor(accentRGB, 0.035);
+        [stroke setStroke];
+        ribbon.lineWidth = band == 4 ? 2.4 : 1.1;
+        [ribbon stroke];
+    }
+
+    CGFloat streamY = height * 0.46;
+    CGFloat travelWidth = width + 180.0;
+    for (NSInteger i = 0; i < 54; i++) {
+        CGFloat seed = (CGFloat)i;
+        CGFloat lane = ((NSInteger)i % 7) - 3.0;
+        CGFloat speed = 38.0 + (CGFloat)(i % 5) * 8.0;
+        CGFloat x = fmod(seed * 131.0 + phase * speed, MAX(1.0, travelWidth)) - 90.0;
+        CGFloat y = streamY + lane * 9.0 + sin(phase * (1.0 + seed * 0.017) + seed * 0.71) * 8.0;
+        CGFloat shimmer = 0.5 + 0.5 * sin(phase * (2.2 + (CGFloat)(i % 4) * 0.28) + seed);
+        CGFloat radius = 2.0 + (CGFloat)(i % 4) * 0.75 + shimmer * 1.6;
+        CGFloat alpha = 0.047 + shimmer * 0.142;
+        NSColor *sparkleColor = i % 6 == 0 ? NSColor.whiteColor : OpnColor(accentSoftRGB);
+        [self drawSparkleAtPoint:NSMakePoint(x, y) radius:radius alpha:alpha color:sparkleColor];
+    }
+
+    NSGradient *vignette = [[NSGradient alloc] initWithStartingColor:OpnColor([self resolvedControllerAccentBlackRGB:0.88], 0.0)
+                                                        endingColor:OpnColor([self resolvedControllerAccentBlackRGB:0.97], 0.30)];
+    [vignette drawInRect:bounds angle:-90.0];
+}
+
 - (void)setMode:(OPNBackdropMode)mode {
     _mode = mode;
     [self dismissControllerAccountMenu];
+    [self startControllerBackgroundAnimationIfNeeded];
     [self setNeedsDisplay:YES];
 }
 
@@ -252,18 +392,16 @@ static NSMenuItem *OPNStyledMenuItem(NSString *title, SEL action, id target, NSC
     [OpnColor(kBackground) setFill];
     NSRectFill(bounds);
 
-    NSGradient *edgeWash = controllerMode
-        ? [[NSGradient alloc] initWithColors:@[
-            OpnColor(OPNControllerAccentBlackRGB(0.95), 1.0),
-            OpnColor(OPNControllerAccentBlackRGB(0.90), 1.0),
-            OpnColor(OPNControllerAccentBlackRGB(0.97), 1.0),
-        ]]
-        : [[NSGradient alloc] initWithColors:@[
+    if (controllerMode) {
+        [self drawControllerElectricBackgroundInRect:bounds];
+    } else {
+        NSGradient *edgeWash = [[NSGradient alloc] initWithColors:@[
             OpnColor(kBackgroundB, 0.94),
             OpnColor(kBackground, 1.0),
             OpnColor(0x0C0D10, 1.0),
         ]];
-    [edgeWash drawInRect:bounds angle:270.0];
+        [edgeWash drawInRect:bounds angle:270.0];
+    }
 
     if (!controllerMode) {
         NSGradient *spotlight = [[NSGradient alloc] initWithStartingColor:OpnColor(0xFFFFFF, 0.045)
@@ -283,9 +421,9 @@ static NSMenuItem *OPNStyledMenuItem(NSString *title, SEL action, id target, NSC
 
     CGFloat navHeight = controllerMode ? 118.0 : 64.0;
     NSRect navRect = NSMakeRect(0, 0, NSWidth(bounds), navHeight);
-    [controllerMode ? OpnColor(OPNControllerAccentBlackRGB(0.88), 0.92) : OpnColor(0x1C1D21, 0.82) setFill];
-    NSRectFill(navRect);
     if (!controllerMode) {
+        [OpnColor(0x1C1D21, 0.82) setFill];
+        NSRectFill(navRect);
         [OpnColor(0xFFFFFF, 0.08) setFill];
         NSRectFill(NSMakeRect(0, navHeight - 1.0, NSWidth(bounds), 1));
     }
@@ -300,7 +438,7 @@ static NSMenuItem *OPNStyledMenuItem(NSString *title, SEL action, id target, NSC
         timeFormatter.dateFormat = @"h:mm a";
         NSString *timeText = [[timeFormatter stringFromDate:NSDate.date] uppercaseString];
         NSBezierPath *timeGlow = [NSBezierPath bezierPathWithRoundedRect:NSMakeRect(20.0, 32.0, 128.0, 30.0) xRadius:15.0 yRadius:15.0];
-        [OpnColor(OPNControllerAccentRGB(), 0.055) setFill];
+        [OpnColor([self resolvedControllerAccentRGB], 0.055) setFill];
         [timeGlow fill];
         [timeText drawInRect:NSMakeRect(32.0, 40.0, 112.0, 18.0)
               withAttributes:OpnTextStyle(13.0, OpnColor(kTextSecondary), NSFontWeightSemibold)];
@@ -314,7 +452,7 @@ static NSMenuItem *OPNStyledMenuItem(NSString *title, SEL action, id target, NSC
     CGFloat navRowY = controllerMode ? 64.0 : 15.0;
     NSRect segmentedRect = NSMakeRect(x - 8.0, navRowY, navWidth + 16.0, controllerMode ? 42.0 : 34.0);
     NSBezierPath *segmented = [NSBezierPath bezierPathWithRoundedRect:segmentedRect xRadius:controllerMode ? 21.0 : 10.0 yRadius:controllerMode ? 21.0 : 10.0];
-    [controllerMode ? OpnColor(OPNControllerAccentRGB(), 0.055) : OpnColor(0xFFFFFF, 0.055) setFill];
+    [controllerMode ? OpnColor([self resolvedControllerAccentRGB], 0.055) : OpnColor(0xFFFFFF, 0.055) setFill];
     [segmented fill];
     if (controllerMode) {
         [OpnColor(0xFFFFFF, 0.18) setStroke];
@@ -333,10 +471,10 @@ static NSMenuItem *OPNStyledMenuItem(NSString *title, SEL action, id target, NSC
         if ([item isEqualToString:@"Settings"]) _settingsNavFrame = itemRect;
         if (active) {
             NSBezierPath *pill = [NSBezierPath bezierPathWithRoundedRect:itemRect xRadius:controllerMode ? 17.0 : 8.0 yRadius:controllerMode ? 17.0 : 8.0];
-            [controllerMode ? OpnColor(OPNControllerAccentRGB(), 0.20) : OpnColor(0xFFFFFF, 0.14) setFill];
+            [controllerMode ? OpnColor([self resolvedControllerAccentRGB], 0.20) : OpnColor(0xFFFFFF, 0.14) setFill];
             [pill fill];
             if (controllerMode) {
-                [OpnColor(OPNControllerAccentSoftRGB(), 0.66) setStroke];
+                [OpnColor([self resolvedControllerAccentSoftRGB], 0.66) setStroke];
                 pill.lineWidth = 1.0;
                 [pill stroke];
             }
@@ -355,10 +493,10 @@ static NSMenuItem *OPNStyledMenuItem(NSString *title, SEL action, id target, NSC
     CGFloat controllerStatsX = MAX(NSMaxX(segmentedRect) + 18.0, NSWidth(bounds) - controllerStatsWidth - 28.0);
     NSRect planRect = controllerMode ? NSMakeRect(controllerStatsX, 72.0, 132.0, 26.0) : NSMakeRect(NSWidth(bounds) - 294, 11.0, 108, 26);
     NSBezierPath *planPill = [NSBezierPath bezierPathWithRoundedRect:planRect xRadius:14 yRadius:14];
-    [controllerMode ? OpnColor(OPNControllerAccentRGB(), 0.075) : OpnColor(0xFFFFFF, 0.075) setFill];
+    [controllerMode ? OpnColor([self resolvedControllerAccentRGB], 0.075) : OpnColor(0xFFFFFF, 0.075) setFill];
     [planPill fill];
     if (controllerMode) {
-        [OpnColor(OPNControllerAccentSoftRGB(), 0.24) setStroke];
+        [OpnColor([self resolvedControllerAccentSoftRGB], 0.24) setStroke];
         planPill.lineWidth = 1.0;
         [planPill stroke];
     }
@@ -392,12 +530,12 @@ static NSMenuItem *OPNStyledMenuItem(NSString *title, SEL action, id target, NSC
                                       hints:@{NSImageHintInterpolation: @(NSImageInterpolationHigh)}];
         [NSGraphicsContext restoreGraphicsState];
     } else {
-        [OpnColor(OPNControllerAccentSoftRGB(), 0.90) setFill];
+        [OpnColor([self resolvedControllerAccentSoftRGB], 0.90) setFill];
         [avatar fill];
         NSString *initial = name.length > 0 ? [[name substringToIndex:1] uppercaseString] : @"U";
         NSMutableParagraphStyle *avatarStyle = [[NSMutableParagraphStyle alloc] init];
         avatarStyle.alignment = NSTextAlignmentCenter;
-        NSMutableDictionary<NSAttributedStringKey, id> *avatarAttrs = [OpnTextStyle(13, OpnColor(OPNControllerAccentBlackRGB(0.88)), NSFontWeightBold) mutableCopy];
+        NSMutableDictionary<NSAttributedStringKey, id> *avatarAttrs = [OpnTextStyle(13, OpnColor([self resolvedControllerAccentBlackRGB:0.88]), NSFontWeightBold) mutableCopy];
         avatarAttrs[NSParagraphStyleAttributeName] = avatarStyle;
         [initial drawInRect:NSMakeRect(NSMinX(avatarRect), NSMinY(avatarRect) + 7, 30, 16) withAttributes:avatarAttrs];
     }

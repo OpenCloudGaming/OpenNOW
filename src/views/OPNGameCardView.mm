@@ -1,5 +1,6 @@
 #import "OPNGameCardView.h"
 #import "../common/OPNColorTokens.h"
+#import "../common/OPNCoreAnimationCoordinator.h"
 #import "../common/OPNUIHelpers.h"
 #include <QuartzCore/QuartzCore.h>
 
@@ -143,6 +144,7 @@ static NSString *OPNSteamArtworkURLForGame(const OPN::GameInfo &game) {
 @property (nonatomic, strong) NSButton *playButton;
 @property (nonatomic, strong) CALayer *reflectionLayer;
 @property (nonatomic, strong) NSMutableArray<NSButton *> *storeChipButtons;
+@property (nonatomic, strong, readwrite) NSColor *artworkAccentColor;
 - (void)loadImageFromCandidates:(NSArray<NSString *> *)urlStrings index:(NSUInteger)index;
 - (void)applyFocusStyle;
 @end
@@ -251,31 +253,24 @@ using namespace OPN;
 
 - (void)applyFocusStyle {
     BOOL selected = self.controllerFocused;
-    BOOL controllerMode = OpnControllerModeEnabled();
+    NSColor *accentColor = self.artworkAccentColor ?: OpnColor(OPNControllerAccentSoftRGB());
     self.playButton.hidden = OpnControllerModeEnabled() || !selected;
     [CATransaction begin];
     [CATransaction setAnimationDuration:0.22];
-    [CATransaction setAnimationTimingFunction:[CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut]];
+    [CATransaction setAnimationTimingFunction:[OPNCoreAnimationCoordinator appleQuinticTimingFunction]];
     self.layer.zPosition = selected ? 20.0 : 0.0;
     self.layer.borderColor = selected ? OpnColor(0xFFFFFF, 0.94).CGColor : OpnColor(0xFFFFFF, 0.13).CGColor;
     self.layer.borderWidth = selected ? 3.0 : 1.0;
-    self.layer.shadowColor = selected ? OpnColor(OPNControllerAccentSoftRGB()).CGColor : NSColor.blackColor.CGColor;
-    self.layer.shadowOpacity = selected ? (controllerMode ? 0.28 : 0.58) : 0.34;
-    self.layer.shadowRadius = selected ? (controllerMode ? 22.0 : 58.0) : 20.0;
-    self.layer.shadowOffset = selected ? (controllerMode ? CGSizeMake(0.0, 12.0) : CGSizeMake(0.0, 28.0)) : CGSizeMake(0.0, 14.0);
-    CATransform3D transform = CATransform3DIdentity;
-    transform.m34 = -1.0 / 760.0;
-    if (selected) {
-        transform = CATransform3DTranslate(transform, 0.0, controllerMode ? -10.0 : -14.0, 42.0);
-        CGFloat selectedScale = controllerMode ? 1.05 : 1.135;
-        transform = CATransform3DScale(transform, selectedScale, selectedScale, 1.0);
-        transform = CATransform3DRotate(transform, -0.034, 1.0, 0.0, 0.0);
-    }
-    self.layer.transform = transform;
-    self.reflectionLayer.opacity = selected && !controllerMode ? 0.74 : 0.0;
     self.playButton.layer.shadowOpacity = selected ? 0.58 : 0.18;
     self.playButton.layer.shadowRadius = selected ? 22.0 : 14.0;
     [CATransaction commit];
+
+    CGFloat prominence = selected ? 1.0 : 0.0;
+    [[OPNCoreAnimationCoordinator sharedCoordinator] animateFocusForCardLayer:self.layer
+                                                                    glowLayer:self.reflectionLayer
+                                                                      focused:selected
+                                                                   prominence:prominence
+                                                                   accentColor:accentColor];
 }
 
 - (BOOL)isFlipped { return YES; }
@@ -417,6 +412,19 @@ using namespace OPN;
                 __typeof__(self) strongSelf = weakSelf;
                 if (!strongSelf) return;
                 strongSelf.imageView.image = img;
+                NSRect imageRect = NSMakeRect(0.0, 0.0, img.size.width, img.size.height);
+                CGImageRef cgImage = [img CGImageForProposedRect:&imageRect context:nil hints:nil];
+                if (cgImage) {
+                    [[OPNCoreAnimationCoordinator sharedCoordinator] extractDominantColorFromImage:cgImage
+                                                                                           cacheKey:urlStr
+                                                                                         completion:^(NSColor *color) {
+                        __typeof__(self) completedSelf = weakSelf;
+                        if (!completedSelf || !color) return;
+                        completedSelf.artworkAccentColor = color;
+                        if (completedSelf.controllerFocused) [completedSelf applyFocusStyle];
+                        if (completedSelf.onArtworkAccentColorChanged) completedSelf.onArtworkAccentColorChanged(color);
+                    }];
+                }
             });
         }];
     [task resume];

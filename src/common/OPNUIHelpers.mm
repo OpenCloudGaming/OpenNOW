@@ -11,6 +11,7 @@ static NSString *const OPNAccentBlueDefaultsKey = @"OpenNOW.Interface.AccentBlue
 static NSString *const OPNPosterSizeScaleDefaultsKey = @"OpenNOW.Interface.PosterSizeScale";
 static NSString *const OPNAutoFullScreenDefaultsKey = @"OpenNOW.Interface.AutoFullScreen";
 static NSString *const OPNControllerModeDefaultsKey = @"OpenNOW.Interface.ControllerMode";
+static NSString *const OPNBackgroundAnimationDefaultsKey = @"OpenNOW.Interface.BackgroundAnimation";
 static const CGFloat OPNMinimumPosterSizeScale = 0.80;
 static const CGFloat OPNMaximumPosterSizeScale = 1.30;
 static const unsigned OPNDefaultAccentRGB = 0x7CF1B1;
@@ -85,6 +86,18 @@ BOOL OpnControllerModeEnabled(void) {
 void OpnSetControllerModeEnabled(BOOL enabled) {
     if (enabled == OpnControllerModeEnabled()) return;
     [NSUserDefaults.standardUserDefaults setBool:enabled forKey:OPNControllerModeDefaultsKey];
+    [NSUserDefaults.standardUserDefaults synchronize];
+    [NSNotificationCenter.defaultCenter postNotificationName:OPNInterfacePreferencesDidChangeNotification object:nil];
+}
+
+BOOL OpnBackgroundAnimationEnabled(void) {
+    id stored = [NSUserDefaults.standardUserDefaults objectForKey:OPNBackgroundAnimationDefaultsKey];
+    return stored ? [NSUserDefaults.standardUserDefaults boolForKey:OPNBackgroundAnimationDefaultsKey] : YES;
+}
+
+void OpnSetBackgroundAnimationEnabled(BOOL enabled) {
+    if (enabled == OpnBackgroundAnimationEnabled()) return;
+    [NSUserDefaults.standardUserDefaults setBool:enabled forKey:OPNBackgroundAnimationDefaultsKey];
     [NSUserDefaults.standardUserDefaults synchronize];
     [NSNotificationCenter.defaultCenter postNotificationName:OPNInterfacePreferencesDidChangeNotification object:nil];
 }
