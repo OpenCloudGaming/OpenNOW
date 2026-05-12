@@ -13,6 +13,8 @@ static const CGFloat kGridPadding = 28.0;
 static const CGFloat kCardSpacing = 18.0;
 static const CGFloat kNavHeight = 62.0;
 static const CGFloat kToolbarHeight = 82.0;
+static const CGFloat kControllerRailSelectorOverlap = 22.0;
+static const CGFloat kControllerRailDetailOverlap = 22.0;
 static NSString *const OPNFavoriteGameIdsDefaultsKey = @"OpenNOW.Library.FavoriteGameIds";
 
 static unsigned OPNControllerAccentRGB(void) {
@@ -90,39 +92,6 @@ static NSString *OPNCatalogString(const std::string &value, NSString *fallback =
                   delegate:delegate
                      start:selStart
                     length:selLength];
-}
-
-@end
-
-@interface OPNRailEdgeFadeView : NSView
-@end
-
-@implementation OPNRailEdgeFadeView
-
-- (instancetype)initWithFrame:(NSRect)frame {
-    self = [super initWithFrame:frame];
-    if (self) {
-        self.wantsLayer = YES;
-        self.layer.backgroundColor = NSColor.clearColor.CGColor;
-    }
-    return self;
-}
-
-- (BOOL)isFlipped { return YES; }
-
-- (NSView *)hitTest:(NSPoint)point {
-    (void)point;
-    return nil;
-}
-
-- (void)drawRect:(NSRect)dirtyRect {
-    (void)dirtyRect;
-    NSGradient *fade = [[NSGradient alloc] initWithColors:@[
-        OpnColor(0x000000, 0.0),
-        OpnColor(0x000000, 0.18),
-        OpnColor(0x000000, 0.0),
-    ]];
-    [fade drawInRect:self.bounds angle:90.0];
 }
 
 @end
@@ -289,8 +258,6 @@ static NSString *OPNCatalogString(const std::string &value, NSString *fallback =
 @property (nonatomic, strong) NSTextField *controllerDetailStatsLabel;
 @property (nonatomic, strong) NSTextField *controllerDetailFeaturesLabel;
 @property (nonatomic, strong) OPNControllerPromptBarView *controllerPromptBarView;
-@property (nonatomic, strong) OPNRailEdgeFadeView *railTopFadeView;
-@property (nonatomic, strong) OPNRailEdgeFadeView *railBottomFadeView;
 @property (nonatomic, strong) CAGradientLayer *controllerDetailGradientLayer;
 @property (nonatomic, strong) CALayer *controllerDetailAccentLayer;
 @property (nonatomic, strong) NSMutableArray<OPNGameCardView *> *cardViews;
@@ -730,10 +697,7 @@ using namespace OPN;
         _controllerDetailView.layer.shadowOpacity = 0.0;
         _controllerDetailView.layer.shadowRadius = 0.0;
         _controllerDetailView.layer.shadowOffset = CGSizeZero;
-        CATransform3D detailTransform = CATransform3DIdentity;
-        detailTransform.m34 = -1.0 / 1200.0;
-        detailTransform = CATransform3DRotate(detailTransform, 0.012, 1.0, 0.0, 0.0);
-        _controllerDetailView.layer.transform = detailTransform;
+        _controllerDetailView.layer.transform = CATransform3DIdentity;
 
         _controllerDetailGradientLayer = [CAGradientLayer layer];
         _controllerDetailGradientLayer.colors = @[(id)NSColor.clearColor.CGColor,
@@ -771,14 +735,6 @@ using namespace OPN;
         _controllerPromptBarView = [[OPNControllerPromptBarView alloc] initWithFrame:NSZeroRect];
         _controllerPromptBarView.wantsLayer = YES;
         [_controllerDetailView addSubview:_controllerPromptBarView];
-
-        _railTopFadeView = [[OPNRailEdgeFadeView alloc] initWithFrame:NSZeroRect];
-        _railTopFadeView.hidden = YES;
-        [self addSubview:_railTopFadeView];
-
-        _railBottomFadeView = [[OPNRailEdgeFadeView alloc] initWithFrame:NSZeroRect];
-        _railBottomFadeView.hidden = YES;
-        [self addSubview:_railBottomFadeView];
 
         _loadingView = [[OPNLoadingView alloc] initWithFrame:self.bounds
                                                       message:@"Loading games..."];
@@ -1107,7 +1063,7 @@ using namespace OPN;
     CGFloat gridSpacing = controllerMode ? 26.0 : (cols > 1 ? floor((availableWidth - cols * cardWidth) / (cols - 1)) : kCardSpacing);
     gridSpacing = MAX(kCardSpacing, gridSpacing);
     CGFloat xStart = controllerMode ? 64.0 : (cols > 1 ? 0.0 : floor(MAX(0.0, (_scrollView.frame.size.width - cardWidth) / 2.0)));
-    CGFloat yPos = controllerMode ? 34.0 : kGridPadding;
+    CGFloat yPos = controllerMode ? 34.0 + kControllerRailSelectorOverlap : kGridPadding;
 
     std::vector<OPN::GameInfo> displayGames;
     for (const OPN::GameInfo &game : _allGames) {
@@ -1328,7 +1284,9 @@ using namespace OPN;
     CGFloat categoryY = controllerNavHeight + 10.0;
     CGFloat railY = controllerMode && self.categoryButtons.count > 1 ? categoryY + 40.0 : controllerNavHeight + 10.0;
     CGFloat bottomInset = 36.0;
-    CGFloat detailGap = 0.0;
+    CGFloat selectorOverlap = controllerMode ? kControllerRailSelectorOverlap : 0.0;
+    CGFloat detailOverlap = controllerMode ? kControllerRailDetailOverlap : 0.0;
+    CGFloat detailGap = -detailOverlap;
     CGFloat carouselHeight = desiredCarouselHeight;
     CGFloat detailY = railY + carouselHeight + detailGap;
     CGFloat detailHeight = 0.0;
@@ -1375,14 +1333,9 @@ using namespace OPN;
     self.controllerDetailFeaturesLabel.hidden = NO;
     self.controllerDetailFeaturesLabel.frame = NSMakeRect(heroX + 2.0, featuresY, MIN(980.0, heroWidth), MAX(0.0, detailHeight - featuresY - 88.0));
     self.controllerPromptBarView.frame = NSMakeRect(heroX + 2.0, MAX(188.0, detailHeight - 52.0), heroWidth, 36.0);
-    CGFloat railHeight = controllerMode ? MIN(carouselHeight, MAX(0.0, height - gridY)) : MAX(0.0, height - gridY);
-    self.scrollView.frame = NSMakeRect(0, gridY, width, railHeight);
-    BOOL showRailFade = controllerMode && self.cardViews.count > 0;
-    CGFloat railFadeHeight = 56.0;
-    self.railTopFadeView.hidden = !showRailFade;
-    self.railBottomFadeView.hidden = !showRailFade;
-    self.railTopFadeView.frame = showRailFade ? NSMakeRect(0.0, MAX(0.0, gridY - railFadeHeight * 0.50), width, railFadeHeight) : NSZeroRect;
-    self.railBottomFadeView.frame = showRailFade ? NSMakeRect(0.0, MAX(0.0, gridY + railHeight - railFadeHeight * 0.50), width, railFadeHeight) : NSZeroRect;
+    CGFloat railFrameY = controllerMode ? MAX(0.0, gridY - selectorOverlap) : gridY;
+    CGFloat railHeight = controllerMode ? MIN(carouselHeight + selectorOverlap, MAX(0.0, height - railFrameY)) : MAX(0.0, height - gridY);
+    self.scrollView.frame = NSMakeRect(0, railFrameY, width, railHeight);
     self.statusLabel.frame = controllerMode ? NSMakeRect(28.0, MAX(kNavHeight + 30.0, gridY - 42.0), width - 56.0, 24.0) : NSMakeRect(0, gridY + 100, width, 24);
     if (controllerMode && self.cardViews.count > 0) {
         self.statusLabel.stringValue = @"";
