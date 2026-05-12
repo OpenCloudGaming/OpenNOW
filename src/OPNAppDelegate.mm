@@ -291,8 +291,8 @@ static std::string OPNGameLibraryFingerprint(const std::vector<OPN::GameInfo> &g
     [self.window saveFrameUsingName:OPNMainWindowFrameAutosaveName];
     [self saveWindowPresentation];
     [self stopGameLibraryRefreshTimer];
-    // Clear streaming controller reference (block will be released with controller)
     if (self.streamingController) {
+        [self.streamingController shutdownForApplicationTermination];
         self.streamingController = nil;
     }
 }
@@ -1188,8 +1188,8 @@ static std::string OPNGameLibraryFingerprint(const std::vector<OPN::GameInfo> &g
 - (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication *)sender {
     (void)sender;
     if (self.streamingController) {
-        [self.streamingController requestQuitGameConfirmation];
-        return NSTerminateCancel;
+        [self.streamingController shutdownForApplicationTermination];
+        self.streamingController = nil;
     }
     return NSTerminateNow;
 }
