@@ -232,11 +232,10 @@ using namespace OPN;
 - (void)applyFocusStyle {
     BOOL selected = self.controllerFocused;
     self.playButton.hidden = !selected;
-    self.layer.borderColor = selected ? OpnColor(kBrandGreen, 0.86).CGColor : OpnColor(0xFFFFFF, 0.10).CGColor;
-    self.layer.borderWidth = selected ? 2.0 : 1.0;
-    self.layer.shadowColor = OpnColor(kBrandGreen).CGColor;
-    self.layer.shadowOpacity = selected ? 0.42 : 0.0;
-    self.layer.shadowRadius = selected ? 26.0 : 0.0;
+    self.layer.borderColor = OpnColor(0xFFFFFF, 0.10).CGColor;
+    self.layer.borderWidth = 1.0;
+    self.layer.shadowOpacity = 0.0;
+    self.layer.shadowRadius = 0.0;
     self.layer.shadowOffset = CGSizeZero;
 }
 

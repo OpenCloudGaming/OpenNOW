@@ -142,6 +142,7 @@ NSButton *OpnButton(NSString *title, NSRect frame, NSColor *background, NSColor 
     button.title = title;
     button.bezelStyle = NSBezelStyleRegularSquare;
     button.bordered = NO;
+    button.focusRingType = NSFocusRingTypeNone;
     button.font = [NSFont systemFontOfSize:14.0 weight:NSFontWeightSemibold];
     button.contentTintColor = textColor;
     button.wantsLayer = YES;
@@ -174,4 +175,12 @@ NSProgressIndicator *OpnSpinner(NSRect frame) {
     spinner.controlSize = NSControlSizeRegular;
     spinner.displayedWhenStopped = NO;
     return spinner;
+}
+
+void OpnDisableFocusHighlights(NSView *view) {
+    if (!view) return;
+    view.focusRingType = NSFocusRingTypeNone;
+    for (NSView *subview in view.subviews) {
+        OpnDisableFocusHighlights(subview);
+    }
 }

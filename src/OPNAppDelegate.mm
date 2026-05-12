@@ -372,6 +372,7 @@ static std::string OPNGameLibraryFingerprint(const std::vector<OPN::GameInfo> &g
     streamVC.view.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
     OPNConfigureStreamWindow(self.window);
     self.window.contentViewController = streamVC;
+    OpnDisableFocusHighlights(streamVC.view);
     if (preserveFrame) {
         [self.window setFrame:preservedFrame display:YES animate:NO];
     }
@@ -435,6 +436,7 @@ static std::string OPNGameLibraryFingerprint(const std::vector<OPN::GameInfo> &g
             [NSApp terminate:strongSelf];
         };
         self.window.contentView = self.rootView;
+        OpnDisableFocusHighlights(self.rootView);
     }
 
     if (!self.contentContainer || self.contentContainer.superview != self.rootView) {
@@ -490,6 +492,7 @@ static std::string OPNGameLibraryFingerprint(const std::vector<OPN::GameInfo> &g
             };
 
             [self.contentContainer addSubview:view];
+            OpnDisableFocusHighlights(view);
             self.window.title = @"OpenNOW";
             break;
         }
@@ -559,6 +562,7 @@ static std::string OPNGameLibraryFingerprint(const std::vector<OPN::GameInfo> &g
             };
 
             [self.contentContainer addSubview:store];
+            OpnDisableFocusHighlights(store);
             self.window.title = @"OpenNOW - Store";
             [self loadStorePanelsWithRetry:YES];
             break;
@@ -617,6 +621,7 @@ static std::string OPNGameLibraryFingerprint(const std::vector<OPN::GameInfo> &g
             };
 
             [self.contentContainer addSubview:catalog];
+            OpnDisableFocusHighlights(catalog);
             self.window.title = @"OpenNOW";
 
             // Fetch user info if displayName not already set (OAuth flow)
@@ -670,6 +675,7 @@ static std::string OPNGameLibraryFingerprint(const std::vector<OPN::GameInfo> &g
             settings.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
             self.settingsView = settings;
             [self.contentContainer addSubview:settings];
+            OpnDisableFocusHighlights(settings);
             self.window.title = @"OpenNOW - Settings";
             break;
         }
