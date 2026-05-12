@@ -272,9 +272,11 @@ using namespace OPN;
     [super layout];
     CGFloat width = NSWidth(self.bounds);
     CGFloat height = NSHeight(self.bounds);
+    BOOL controllerMode = OpnControllerModeEnabled();
     self.contentView.frame = self.bounds;
     self.contentView.layer.cornerRadius = 18.0;
     self.imageView.frame = self.bounds;
+    self.gradientOverlay.hidden = controllerMode;
     self.gradientOverlay.frame = NSMakeRect(0, MAX(0.0, height - gGradientOverlayHeight), width, MIN(gGradientOverlayHeight, height));
     self.playButton.frame = NSMakeRect((width - 46.0) / 2.0, (height - 46.0) / 2.0, 46.0, 46.0);
     self.storeChipsContainer.frame = NSMakeRect(16.0, MAX(0.0, height - 37.0), MAX(40.0, width - 32.0), 24.0);
@@ -288,7 +290,8 @@ using namespace OPN;
 - (void)buildStoreChips {
     for (NSView *v in _storeChipsContainer.subviews) { [v removeFromSuperview]; }
     [_storeChipButtons removeAllObjects];
-    self.storeChipsContainer.hidden = _gameData.variants.size() <= 1;
+    self.storeChipsContainer.hidden = OpnControllerModeEnabled() || _gameData.variants.size() <= 1;
+    if (self.storeChipsContainer.hidden) return;
     if (_gameData.variants.empty()) return;
 
     if (_gameData.variants.size() <= 1) return;

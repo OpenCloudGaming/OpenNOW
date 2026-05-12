@@ -321,6 +321,15 @@ static std::string OPNGameLibraryFingerprint(const std::vector<OPN::GameInfo> &g
 - (void)launchGame:(const OPN::GameInfo &)game variantIndex:(int)variantIndex returnScreen:(OPN::AuthScreen)returnScreen {
     using namespace OPN;
 
+    if (self.streamingController) {
+        NSLog(@"[AppDelegate] Ignoring game launch while stream is active: title=%s, id=%s", game.title.c_str(), game.id.c_str());
+        return;
+    }
+
+    self.catalogView = nil;
+    self.storeView = nil;
+    self.settingsView = nil;
+
     NSLog(@"[AppDelegate] Game selected: title=%s, id=%s, uuid=%s, variantIndex=%d", game.title.c_str(), game.id.c_str(), game.uuid.c_str(), variantIndex);
 
     std::string apiToken = self.currentSession.idToken.empty()

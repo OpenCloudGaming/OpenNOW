@@ -11,6 +11,12 @@
 - (BOOL)isFlipped { return YES; }
 @end
 
+static BOOL OPNBackdropControllerNavigationActive(NSView *view) {
+    NSWindow *window = view.window;
+    if (!window || window.contentViewController != nil) return NO;
+    return window.contentView == view || [view isDescendantOf:window.contentView];
+}
+
 @implementation OPNBackdropView {
     NSRect _storeNavFrame;
     NSRect _libraryNavFrame;
@@ -66,6 +72,17 @@ static NSMenuItem *OPNStyledMenuItem(NSString *title, SEL action, id target, NSC
     [_controllerNavigationTimer invalidate];
 }
 
+- (void)viewDidMoveToWindow {
+    [super viewDidMoveToWindow];
+    if (self.window) {
+        [self startControllerNavigationIfNeeded];
+    } else {
+        [_controllerNavigationTimer invalidate];
+        _controllerNavigationTimer = nil;
+        _previousControllerButtons = 0;
+    }
+}
+
 - (void)interfacePreferencesChanged:(NSNotification *)notification {
     (void)notification;
     [self setNeedsDisplay:YES];
@@ -73,9 +90,9 @@ static NSMenuItem *OPNStyledMenuItem(NSString *title, SEL action, id target, NSC
 }
 
 - (void)startControllerNavigationIfNeeded {
-    if (!OpnControllerModeEnabled() || _controllerNavigationTimer) return;
+    if (!OpnControllerModeEnabled() || _controllerNavigationTimer || !OPNBackdropControllerNavigationActive(self)) return;
     _controllerNavigationTimer = [NSTimer scheduledTimerWithTimeInterval:(1.0 / 30.0)
-                                                                  target:self
+                                                                   target:self
                                                                 selector:@selector(pollControllerNavigation)
                                                                 userInfo:nil
                                                                  repeats:YES];
@@ -118,7 +135,7 @@ static NSMenuItem *OPNStyledMenuItem(NSString *title, SEL action, id target, NSC
 }
 
 - (void)pollControllerNavigation {
-    if (!OpnControllerModeEnabled()) {
+    if (!OpnControllerModeEnabled() || !OPNBackdropControllerNavigationActive(self)) {
         [_controllerNavigationTimer invalidate];
         _controllerNavigationTimer = nil;
         _previousControllerButtons = 0;

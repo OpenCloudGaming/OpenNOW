@@ -548,28 +548,8 @@ static void OPNStyleQuitButton(NSButton *button, NSColor *background, NSColor *t
 @end
 
 @implementation OPNStatsOverlayView {
-    NSTextField *_titleLabel;
-    NSTextField *_shortcutLabel;
-    NSTextField *_latencyLabel;
-    NSTextField *_jitterLabel;
-    NSTextField *_bitrateLabel;
-    NSTextField *_lossLabel;
-    NSTextField *_gpuLabel;
-    NSTextField *_streamLabel;
-    NSTextField *_serverLabel;
-    NSTextField *_webrtcLabel;
-    NSTextField *_decodeLabel;
-    NSTextField *_renderLabel;
-    NSTextField *_latencyValue;
-    NSTextField *_jitterValue;
-    NSTextField *_bitrateValue;
-    NSTextField *_lossValue;
-    NSTextField *_gpuValue;
-    NSTextField *_streamValue;
-    NSTextField *_serverValue;
-    NSTextField *_webrtcValue;
-    NSTextField *_decodeValue;
-    NSTextField *_renderValue;
+    CALayer *_textTintLayer;
+    NSTextField *_statsLineLabel;
 }
 
 static NSTextField *OPNStatsText(NSString *text, CGFloat size, NSFontWeight weight, NSColor *color, NSTextAlignment alignment) {
@@ -586,79 +566,60 @@ static NSTextField *OPNStatsText(NSString *text, CGFloat size, NSFontWeight weig
     return label;
 }
 
+static NSAttributedString *OPNStatsOutlinedLine(NSString *text) {
+    NSMutableParagraphStyle *style = [[NSMutableParagraphStyle alloc] init];
+    style.alignment = NSTextAlignmentCenter;
+    style.lineBreakMode = NSLineBreakByTruncatingMiddle;
+    return [[NSAttributedString alloc] initWithString:text ?: @""
+                                           attributes:@{
+        NSFontAttributeName: [NSFont monospacedSystemFontOfSize:12.0 weight:NSFontWeightSemibold],
+        NSForegroundColorAttributeName: OPNQuitColor(1.0, 1.0, 1.0, 1.0),
+        NSStrokeColorAttributeName: OPNQuitColor(0.0, 0.0, 0.0, 0.95),
+        NSStrokeWidthAttributeName: @-3.0,
+        NSParagraphStyleAttributeName: style,
+    }];
+}
+
+static NSString *OPNStatsZoneName(NSString *zone) {
+    NSString *trimmed = [zone stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    if (trimmed.length == 0) return @"pending";
+
+    NSString *host = [NSURLComponents componentsWithString:trimmed].host;
+    if (host.length == 0) {
+        host = trimmed;
+        NSRange schemeRange = [host rangeOfString:@"://"];
+        if (schemeRange.location != NSNotFound) {
+            host = [host substringFromIndex:NSMaxRange(schemeRange)];
+        }
+        NSRange pathRange = [host rangeOfString:@"/"];
+        if (pathRange.location != NSNotFound) {
+            host = [host substringToIndex:pathRange.location];
+        }
+    }
+
+    NSRange portRange = [host rangeOfString:@":"];
+    if (portRange.location != NSNotFound) {
+        host = [host substringToIndex:portRange.location];
+    }
+    NSArray<NSString *> *labels = [host componentsSeparatedByString:@"."];
+    NSString *zoneName = labels.count > 0 ? labels.firstObject : host;
+    return zoneName.length > 0 ? zoneName : @"pending";
+}
+
 - (instancetype)initWithFrame:(NSRect)frame {
     self = [super initWithFrame:frame];
     if (self) {
         self.wantsLayer = YES;
-        self.autoresizingMask = NSViewMinXMargin | NSViewMaxYMargin;
+        self.autoresizingMask = NSViewWidthSizable | NSViewMinYMargin;
+        _textTintLayer = [CALayer layer];
+        _textTintLayer.backgroundColor = OPNQuitColor(0.0, 0.0, 0.0, 0.42).CGColor;
+        _textTintLayer.cornerRadius = 8.0;
+        [self.layer addSublayer:_textTintLayer];
 
-        _titleLabel = OPNStatsText(@"Stream Stats", 13.0, NSFontWeightSemibold,
-                                   OPNQuitColor(0.96, 0.98, 0.95, 1.0), NSTextAlignmentLeft);
-        _shortcutLabel = OPNStatsText(@"Command-N", 10.0, NSFontWeightMedium,
-                                      OPNQuitColor(0.55, 0.57, 0.62, 1.0), NSTextAlignmentRight);
-        _latencyLabel = OPNStatsText(@"Latency", 11.0, NSFontWeightMedium,
-                                     OPNQuitColor(0.58, 0.62, 0.58, 1.0), NSTextAlignmentLeft);
-        _jitterLabel = OPNStatsText(@"Jitter", 11.0, NSFontWeightMedium,
-                                    OPNQuitColor(0.58, 0.62, 0.58, 1.0), NSTextAlignmentLeft);
-        _bitrateLabel = OPNStatsText(@"Bitrate", 11.0, NSFontWeightMedium,
-                                     OPNQuitColor(0.58, 0.62, 0.58, 1.0), NSTextAlignmentLeft);
-        _lossLabel = OPNStatsText(@"Loss", 11.0, NSFontWeightMedium,
-                                  OPNQuitColor(0.58, 0.62, 0.58, 1.0), NSTextAlignmentLeft);
-        _gpuLabel = OPNStatsText(@"GPU", 11.0, NSFontWeightMedium,
-                                 OPNQuitColor(0.58, 0.62, 0.58, 1.0), NSTextAlignmentLeft);
-        _streamLabel = OPNStatsText(@"Stream", 11.0, NSFontWeightMedium,
-                                      OPNQuitColor(0.58, 0.62, 0.58, 1.0), NSTextAlignmentLeft);
-        _serverLabel = OPNStatsText(@"Server", 11.0, NSFontWeightMedium,
-                                     OPNQuitColor(0.58, 0.62, 0.58, 1.0), NSTextAlignmentLeft);
-        _webrtcLabel = OPNStatsText(@"WebRTC", 11.0, NSFontWeightMedium,
-                                    OPNQuitColor(0.58, 0.62, 0.58, 1.0), NSTextAlignmentLeft);
-        _decodeLabel = OPNStatsText(@"Decode", 11.0, NSFontWeightMedium,
-                                      OPNQuitColor(0.58, 0.62, 0.58, 1.0), NSTextAlignmentLeft);
-        _renderLabel = OPNStatsText(@"Frames", 11.0, NSFontWeightMedium,
-                                    OPNQuitColor(0.58, 0.62, 0.58, 1.0), NSTextAlignmentLeft);
-        _latencyValue = OPNStatsText(@"-- ms", 12.0, NSFontWeightSemibold,
-                                     OPNQuitColor(0.96, 0.98, 0.95, 1.0), NSTextAlignmentRight);
-        _jitterValue = OPNStatsText(@"-- ms", 12.0, NSFontWeightSemibold,
-                                    OPNQuitColor(0.96, 0.98, 0.95, 1.0), NSTextAlignmentRight);
-        _bitrateValue = OPNStatsText(@"-- Mbps", 12.0, NSFontWeightSemibold,
-                                     OPNQuitColor(0.96, 0.98, 0.95, 1.0), NSTextAlignmentRight);
-        _lossValue = OPNStatsText(@"--", 12.0, NSFontWeightSemibold,
-                                  OPNQuitColor(0.96, 0.98, 0.95, 1.0), NSTextAlignmentRight);
-        _gpuValue = OPNStatsText(@"Pending", 12.0, NSFontWeightSemibold,
-                                 OPNQuitColor(0.96, 0.98, 0.95, 1.0), NSTextAlignmentRight);
-        _streamValue = OPNStatsText(@"--", 12.0, NSFontWeightSemibold,
-                                     OPNQuitColor(0.96, 0.98, 0.95, 1.0), NSTextAlignmentRight);
-        _serverValue = OPNStatsText(@"Pending", 12.0, NSFontWeightSemibold,
-                                     OPNQuitColor(0.96, 0.98, 0.95, 1.0), NSTextAlignmentRight);
-        _webrtcValue = OPNStatsText(@"Pending", 12.0, NSFontWeightSemibold,
-                                    OPNQuitColor(0.96, 0.98, 0.95, 1.0), NSTextAlignmentRight);
-        _decodeValue = OPNStatsText(@"Pending", 12.0, NSFontWeightSemibold,
-                                      OPNQuitColor(0.96, 0.98, 0.95, 1.0), NSTextAlignmentRight);
-        _renderValue = OPNStatsText(@"Pending", 12.0, NSFontWeightSemibold,
-                                    OPNQuitColor(0.96, 0.98, 0.95, 1.0), NSTextAlignmentRight);
-
-        [self addSubview:_titleLabel];
-        [self addSubview:_shortcutLabel];
-        [self addSubview:_latencyLabel];
-        [self addSubview:_jitterLabel];
-        [self addSubview:_bitrateLabel];
-        [self addSubview:_lossLabel];
-        [self addSubview:_gpuLabel];
-        [self addSubview:_streamLabel];
-        [self addSubview:_serverLabel];
-        [self addSubview:_webrtcLabel];
-        [self addSubview:_decodeLabel];
-        [self addSubview:_renderLabel];
-        [self addSubview:_latencyValue];
-        [self addSubview:_jitterValue];
-        [self addSubview:_bitrateValue];
-        [self addSubview:_lossValue];
-        [self addSubview:_gpuValue];
-        [self addSubview:_streamValue];
-        [self addSubview:_serverValue];
-        [self addSubview:_webrtcValue];
-        [self addSubview:_decodeValue];
-        [self addSubview:_renderValue];
+        _statsLineLabel = OPNStatsText(@"", 12.0, NSFontWeightSemibold, NSColor.clearColor, NSTextAlignmentCenter);
+        _statsLineLabel.lineBreakMode = NSLineBreakByTruncatingMiddle;
+        _statsLineLabel.attributedStringValue = OPNStatsOutlinedLine(@"Stats: measuring");
+        [self addSubview:_statsLineLabel];
     }
     return self;
 }
@@ -672,36 +633,8 @@ static NSTextField *OPNStatsText(NSString *text, CGFloat size, NSFontWeight weig
 
 - (void)layout {
     [super layout];
-    CGFloat w = NSWidth(self.bounds);
-    _titleLabel.frame = NSMakeRect(16, 13, 180, 20);
-    _shortcutLabel.frame = NSMakeRect(w - 116, 15, 98, 16);
-
-    NSArray<NSTextField *> *labels = @[_latencyLabel, _jitterLabel, _bitrateLabel, _lossLabel, _gpuLabel, _streamLabel, _serverLabel, _webrtcLabel, _decodeLabel, _renderLabel];
-    NSArray<NSTextField *> *values = @[_latencyValue, _jitterValue, _bitrateValue, _lossValue, _gpuValue, _streamValue, _serverValue, _webrtcValue, _decodeValue, _renderValue];
-    CGFloat y = 48.0;
-    for (NSUInteger i = 0; i < labels.count; i++) {
-        labels[i].frame = NSMakeRect(16, y, 88, 18);
-        values[i].frame = NSMakeRect(110, y, w - 126, 18);
-        y += 22.0;
-    }
-}
-
-- (void)drawRect:(NSRect)dirtyRect {
-    (void)dirtyRect;
-    NSBezierPath *panel = [NSBezierPath bezierPathWithRoundedRect:NSInsetRect(self.bounds, 0.5, 0.5)
-                                                          xRadius:16.0
-                                                          yRadius:16.0];
-    NSGradient *gradient = [[NSGradient alloc] initWithStartingColor:OPNQuitColor(0.15, 0.16, 0.18, 0.88)
-                                                         endingColor:OPNQuitColor(0.09, 0.10, 0.12, 0.90)];
-    [gradient drawInBezierPath:panel angle:90.0];
-    [OPNQuitColor(1.0, 1.0, 1.0, 0.12) setStroke];
-    panel.lineWidth = 1.0;
-    [panel stroke];
-
-    NSBezierPath *accent = [NSBezierPath bezierPathWithRoundedRect:NSMakeRect(16, 35, NSWidth(self.bounds) - 32, 1)
-                                                           xRadius:0.5 yRadius:0.5];
-    [OPNQuitColor(1.0, 1.0, 1.0, 0.09) setFill];
-    [accent fill];
+    _textTintLayer.frame = NSInsetRect(self.bounds, 4.0, 1.0);
+    _statsLineLabel.frame = NSInsetRect(self.bounds, 8.0, 2.0);
 }
 
 - (void)updateLatencyMs:(NSInteger)latencyMs
@@ -721,19 +654,18 @@ static NSTextField *OPNStatsText(NSString *text, CGFloat size, NSFontWeight weig
             pipelineMode:(NSString *)pipelineMode
             webrtcBackend:(NSString *)webrtcBackend
            framesReceived:(uint64_t)framesReceived
-            framesDecoded:(uint64_t)framesDecoded
-            framesDropped:(uint64_t)framesDropped {
-    _latencyValue.stringValue = latencyMs >= 0 ? [NSString stringWithFormat:@"%ld ms", (long)latencyMs] : @"Measuring";
-    _jitterValue.stringValue = jitterMs >= 0 ? [NSString stringWithFormat:@"%ld ms", (long)jitterMs] : @"--";
-    _bitrateValue.stringValue = bitrateMbps >= 0.0 ? [NSString stringWithFormat:@"%.1f Mbps", bitrateMbps] : @"--";
+             framesDecoded:(uint64_t)framesDecoded
+             framesDropped:(uint64_t)framesDropped {
+    NSString *latencyText = latencyMs >= 0 ? [NSString stringWithFormat:@"%ld ms", (long)latencyMs] : @"measuring";
+    NSString *jitterText = jitterMs >= 0 ? [NSString stringWithFormat:@"%ld ms", (long)jitterMs] : @"--";
+    NSString *bitrateText = bitrateMbps >= 0.0 ? [NSString stringWithFormat:@"%.1f Mbps", bitrateMbps] : @"--";
+    NSString *lossText = @"--";
     if (packetLossPercent >= 0.0 && packetsLost >= 0) {
-        _lossValue.stringValue = [NSString stringWithFormat:@"%.2f%% (%lld)", packetLossPercent, (long long)packetsLost];
+        lossText = [NSString stringWithFormat:@"%.2f%%/%lld", packetLossPercent, (long long)packetsLost];
     } else if (packetsLost >= 0) {
-        _lossValue.stringValue = [NSString stringWithFormat:@"%lld", (long long)packetsLost];
-    } else {
-        _lossValue.stringValue = @"--";
+        lossText = [NSString stringWithFormat:@"%lld", (long long)packetsLost];
     }
-    _gpuValue.stringValue = gpu.length > 0 ? gpu : @"Unknown";
+    (void)gpu;
 
     NSString *streamText = @"--";
     if (resolution.length > 0 && fps > 0) {
@@ -742,34 +674,58 @@ static NSTextField *OPNStatsText(NSString *text, CGFloat size, NSFontWeight weig
         streamText = resolution;
     }
     if (codec.length > 0) {
-        _streamValue.stringValue = [NSString stringWithFormat:@"%@ / %@", streamText, codec];
-    } else {
-        _streamValue.stringValue = streamText;
+        streamText = [NSString stringWithFormat:@"%@/%@", streamText, codec];
     }
-    _serverValue.stringValue = zone.length > 0 ? zone : @"Pending";
-    _webrtcValue.stringValue = webrtcBackend.length > 0 ? webrtcBackend : @"Unknown";
+    NSString *serverText = OPNStatsZoneName(zone);
+    NSString *webrtcText = webrtcBackend.length > 0 ? webrtcBackend : @"unknown";
+    NSString *decodeText = @"pending";
     if (decoder.length > 0 && decodeTimeMs >= 0.0) {
-        _decodeValue.stringValue = [NSString stringWithFormat:@"%@ • %.1f ms", decoder, decodeTimeMs];
-    } else {
-        _decodeValue.stringValue = decoder.length > 0 ? decoder : @"Pending";
+        decodeText = [NSString stringWithFormat:@"%@ %.1f ms", decoder, decodeTimeMs];
+    } else if (decoder.length > 0) {
+        decodeText = decoder;
     }
+    NSString *renderText = @"pending";
     if (framesReceived > 0 || framesDecoded > 0 || framesDropped > 0) {
-        NSString *fpsText = renderFps >= 0.0 ? [NSString stringWithFormat:@"%.0f fps • ", renderFps] : @"";
-        NSString *sinkText = sink.length > 0 ? [NSString stringWithFormat:@" • %@", sink] : @"";
-        _renderValue.stringValue = [NSString stringWithFormat:@"%@%llu rx, %llu dec, %llu drop%@",
-                                    fpsText,
-                                    (unsigned long long)framesReceived,
-                                    (unsigned long long)framesDecoded,
-                                    (unsigned long long)framesDropped,
-                                    sinkText];
+        NSString *fpsText = renderFps >= 0.0 ? [NSString stringWithFormat:@"%.0f fps ", renderFps] : @"";
+        NSString *sinkText = sink.length > 0 ? [NSString stringWithFormat:@" %@", sink] : @"";
+        renderText = [NSString stringWithFormat:@"%@%llu drop%@",
+                      fpsText,
+                      (unsigned long long)framesDropped,
+                      sinkText];
     } else if (sink.length > 0 && pipelineMode.length > 0) {
-        _renderValue.stringValue = [NSString stringWithFormat:@"%@ / %@", sink, pipelineMode];
-    } else {
-        _renderValue.stringValue = @"Pending";
+        renderText = [NSString stringWithFormat:@"%@/%@", sink, pipelineMode];
     }
+    NSArray<NSString *> *parts = @[
+        [NSString stringWithFormat:@"Latency %@", latencyText],
+        [NSString stringWithFormat:@"Jitter %@", jitterText],
+        [NSString stringWithFormat:@"Bitrate %@", bitrateText],
+        [NSString stringWithFormat:@"Loss %@", lossText],
+        [NSString stringWithFormat:@"Stream %@", streamText],
+        [NSString stringWithFormat:@"Server %@", serverText],
+        [NSString stringWithFormat:@"WebRTC %@", webrtcText],
+        [NSString stringWithFormat:@"Decode %@", decodeText],
+        [NSString stringWithFormat:@"Frames %@", renderText],
+    ];
+    _statsLineLabel.attributedStringValue = OPNStatsOutlinedLine([parts componentsJoinedByString:@"  |  "]);
 }
 
 @end
+
+static void OPNReleaseSignalingClientAfterCallbacks(OPN::SignalingClient *client) {
+    if (!client) return;
+    client->Disconnect();
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        delete client;
+    });
+}
+
+static void OPNReleaseStreamSessionAfterCallbacks(OPN::IStreamSession *session) {
+    if (!session) return;
+    session->Stop();
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        delete session;
+    });
+}
 
 @implementation OPNStreamViewController {
     OPN::SignalingClient *_signaling;
@@ -896,7 +852,6 @@ static NSTextField *OPNStatsText(NSString *text, CGFloat size, NSFontWeight weig
 - (void)viewWillDisappear {
     [super viewWillDisappear];
     [self removeQuitShortcutMonitor];
-    [self endStreamWithSuccess:NO errorMessage:"Stream view removed"];
 }
 
 - (void)setStatus:(NSString *)msg {
@@ -1030,10 +985,10 @@ static NSTextField *OPNStatsText(NSString *text, CGFloat size, NSFontWeight weig
 }
 
 - (NSRect)statsOverlayFrame {
-    CGFloat width = MIN(560.0, MAX(420.0, NSWidth(self.view.bounds) - 36.0));
-    CGFloat height = 280.0;
-    return NSMakeRect(floor(NSWidth(self.view.bounds) - width - 18.0),
-                      floor(NSHeight(self.view.bounds) - height - 18.0),
+    CGFloat width = MAX(0.0, NSWidth(self.view.bounds) - 32.0);
+    CGFloat height = 26.0;
+    return NSMakeRect(16.0,
+                      floor(NSHeight(self.view.bounds) - height - 10.0),
                       width,
                       height);
 }
@@ -1336,13 +1291,12 @@ static NSTextField *OPNStatsText(NSString *text, CGFloat size, NSFontWeight weig
         [self.streamView detachFromPipeline];
     }
     if (_signaling) {
-        _signaling->Disconnect();
-        delete _signaling;
+        OPNReleaseSignalingClientAfterCallbacks(_signaling);
         _signaling = nullptr;
     }
     if (_session) {
-        _session->Stop();
-        delete _session;
+        OPNReleaseStreamSessionAfterCallbacks(_session);
+        _session = nullptr;
     }
     OPN::StreamWebRTCBackend backend = OPN::ResolveStreamWebRTCBackend();
     _session = OPN::CreateStreamSession(backend).release();
@@ -1856,13 +1810,11 @@ static NSTextField *OPNStatsText(NSString *text, CGFloat size, NSFontWeight weig
         self.statusLabel = nil;
     }
     if (_signaling) {
-        _signaling->Disconnect();
-        delete _signaling;
+        OPNReleaseSignalingClientAfterCallbacks(_signaling);
         _signaling = nullptr;
     }
     if (_session) {
-        _session->Stop();
-        delete _session;
+        OPNReleaseStreamSessionAfterCallbacks(_session);
         _session = nullptr;
     }
 }
