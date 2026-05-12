@@ -3,6 +3,7 @@
 #import <Cocoa/Cocoa.h>
 
 NSColor *OpnColor(unsigned rgb, CGFloat alpha = 1.0);
+unsigned OpnBlendRGB(unsigned rgb, unsigned target, CGFloat amount);
 
 extern NSString *const OPNInterfacePreferencesDidChangeNotification;
 

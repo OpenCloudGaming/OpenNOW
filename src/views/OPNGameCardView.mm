@@ -8,9 +8,17 @@ static const CGFloat gControllerCardWidth = 164.0;
 static const CGFloat gImageHeight = gCardWidth;
 static const CGFloat gInfoHeight = 0.0;
 static const CGFloat gCardTotalHeight = gImageHeight + gInfoHeight;
-static const unsigned kConsoleBlue = 0x34C759;
-static const unsigned kConsoleBlueSoft = 0xA7F3BF;
-static const unsigned kConsoleDeepBlue = 0x06140A;
+static unsigned OPNControllerAccentRGB(void) {
+    return OpnCurrentAccentRGB();
+}
+
+static unsigned OPNControllerAccentSoftRGB(void) {
+    return OpnBlendRGB(OpnCurrentAccentRGB(), 0xFFFFFF, 0.42);
+}
+
+static unsigned OPNControllerAccentBlackRGB(CGFloat blackMix) {
+    return OpnBlendRGB(OpnCurrentAccentRGB(), 0x000000, blackMix);
+}
 static CGFloat OPNScaledCardWidth(void) {
     if (OpnControllerModeEnabled()) return gControllerCardWidth;
     return floor(gCardWidth * OpnPosterSizeScale());
@@ -99,7 +107,7 @@ static NSString *OPNStoreIconGlyph(NSString *name) {
 static NSColor *OPNStoreIconColor(NSString *name, BOOL selected) {
     (void)name;
     CGFloat alpha = selected ? 0.96 : 0.68;
-    return OpnColor(kConsoleBlueSoft, alpha);
+    return OpnColor(OPNControllerAccentSoftRGB(), alpha);
 }
 
 static NSFont *OPNStoreIconFont(NSString *glyph) {
@@ -165,10 +173,10 @@ using namespace OPN;
         self.layer.shadowOffset = CGSizeMake(0.0, 16.0);
 
         _reflectionLayer = [CALayer layer];
-        _reflectionLayer.backgroundColor = OpnColor(kConsoleBlueSoft, 0.28).CGColor;
+        _reflectionLayer.backgroundColor = OpnColor(OPNControllerAccentSoftRGB(), 0.28).CGColor;
         _reflectionLayer.cornerRadius = 18.0;
         _reflectionLayer.opacity = 0.0;
-        _reflectionLayer.shadowColor = OpnColor(kConsoleBlueSoft).CGColor;
+        _reflectionLayer.shadowColor = OpnColor(OPNControllerAccentSoftRGB()).CGColor;
         _reflectionLayer.shadowOpacity = 0.68;
         _reflectionLayer.shadowRadius = 24.0;
         _reflectionLayer.shadowOffset = CGSizeZero;
@@ -178,13 +186,13 @@ using namespace OPN;
         _contentView.wantsLayer = YES;
         _contentView.layer.cornerRadius = 20.0;
         _contentView.layer.masksToBounds = YES;
-        _contentView.layer.backgroundColor = OpnColor(kConsoleDeepBlue, 0.84).CGColor;
+        _contentView.layer.backgroundColor = OpnColor(OPNControllerAccentBlackRGB(0.88), 0.84).CGColor;
         [self addSubview:_contentView];
 
         _imageView = [[NSImageView alloc] initWithFrame:self.bounds];
         _imageView.imageScaling = NSImageScaleProportionallyUpOrDown;
         _imageView.wantsLayer = YES;
-        _imageView.layer.backgroundColor = OpnColor(0x101827).CGColor;
+        _imageView.layer.backgroundColor = OpnColor(OPNControllerAccentBlackRGB(0.90)).CGColor;
         [_contentView addSubview:_imageView];
 
         _playButton = [[NSButton alloc] initWithFrame:
@@ -192,11 +200,11 @@ using namespace OPN;
         _playButton.title = @"PLAY";
         _playButton.bordered = NO;
         _playButton.font = [NSFont systemFontOfSize:12 weight:NSFontWeightBold];
-        _playButton.contentTintColor = OpnColor(kConsoleDeepBlue);
+        _playButton.contentTintColor = OpnColor(OPNControllerAccentBlackRGB(0.88));
         _playButton.wantsLayer = YES;
         _playButton.layer.cornerRadius = 17;
-        _playButton.layer.backgroundColor = OpnColor(0xFFFFFF, 0.94).CGColor;
-        _playButton.layer.shadowColor = OpnColor(kConsoleBlueSoft).CGColor;
+        _playButton.layer.backgroundColor = OpnColor(OPNControllerAccentSoftRGB(), 0.94).CGColor;
+        _playButton.layer.shadowColor = OpnColor(OPNControllerAccentSoftRGB()).CGColor;
         _playButton.layer.shadowOpacity = 0.18;
         _playButton.layer.shadowRadius = 14;
         _playButton.layer.shadowOffset = CGSizeZero;
@@ -251,7 +259,7 @@ using namespace OPN;
     self.layer.zPosition = selected ? 20.0 : 0.0;
     self.layer.borderColor = selected ? OpnColor(0xFFFFFF, 0.94).CGColor : OpnColor(0xFFFFFF, 0.13).CGColor;
     self.layer.borderWidth = selected ? 3.0 : 1.0;
-    self.layer.shadowColor = selected ? OpnColor(kConsoleBlueSoft).CGColor : NSColor.blackColor.CGColor;
+    self.layer.shadowColor = selected ? OpnColor(OPNControllerAccentSoftRGB()).CGColor : NSColor.blackColor.CGColor;
     self.layer.shadowOpacity = selected ? (controllerMode ? 0.28 : 0.58) : 0.34;
     self.layer.shadowRadius = selected ? (controllerMode ? 22.0 : 58.0) : 20.0;
     self.layer.shadowOffset = selected ? (controllerMode ? CGSizeMake(0.0, 12.0) : CGSizeMake(0.0, 28.0)) : CGSizeMake(0.0, 14.0);
@@ -333,12 +341,12 @@ using namespace OPN;
         chip.toolTip = OPNStorePrettyName(name ?: @"");
 
         if (selected) {
-            chip.layer.backgroundColor = OpnColor(kConsoleBlue, 0.18).CGColor;
+            chip.layer.backgroundColor = OpnColor(OPNControllerAccentRGB(), 0.18).CGColor;
             chip.layer.borderWidth = 1.0;
             chip.layer.borderColor = OPNStoreIconColor(name, YES).CGColor;
         } else {
-            chip.layer.backgroundColor = OpnColor(kConsoleBlue, 0.08).CGColor;
-            chip.layer.borderColor = OpnColor(kConsoleBlue, 0.14).CGColor;
+            chip.layer.backgroundColor = OpnColor(OPNControllerAccentRGB(), 0.08).CGColor;
+            chip.layer.borderColor = OpnColor(OPNControllerAccentRGB(), 0.14).CGColor;
             chip.layer.borderWidth = 1;
         }
 

@@ -19,7 +19,7 @@ static int OPNClampedColorByte(NSInteger value) {
     return (int)MAX(0, MIN(value, 255));
 }
 
-static unsigned OPNBlendRGB(unsigned rgb, unsigned target, CGFloat amount) {
+unsigned OpnBlendRGB(unsigned rgb, unsigned target, CGFloat amount) {
     amount = MAX(0.0, MIN(amount, 1.0));
     int r = (int)std::round(((rgb >> 16) & 0xFF) * (1.0 - amount) + ((target >> 16) & 0xFF) * amount);
     int g = (int)std::round(((rgb >> 8) & 0xFF) * (1.0 - amount) + ((target >> 8) & 0xFF) * amount);
@@ -204,8 +204,8 @@ static unsigned OpnResolvedInterfaceColor(unsigned rgb) {
     unsigned accent = OpnCurrentAccentRGB();
     switch (rgb) {
         case OPN::kBrandGreen: return accent;
-        case OPN::kBrandGreenHover: return OPNBlendRGB(accent, 0xFFFFFF, 0.16);
-        case OPN::kBrandGreenPress: return OPNBlendRGB(accent, 0x000000, 0.18);
+        case OPN::kBrandGreenHover: return OpnBlendRGB(accent, 0xFFFFFF, 0.16);
+        case OPN::kBrandGreenPress: return OpnBlendRGB(accent, 0x000000, 0.18);
         case OPN::kAccentOn: {
             CGFloat r = ((accent >> 16) & 0xFF) / 255.0;
             CGFloat g = ((accent >> 8) & 0xFF) / 255.0;
