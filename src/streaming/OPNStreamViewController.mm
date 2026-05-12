@@ -678,7 +678,6 @@ static NSString *OPNStatsZoneName(NSString *zone) {
         streamText = [NSString stringWithFormat:@"%@/%@", streamText, codec];
     }
     NSString *serverText = OPNStatsZoneName(zone);
-    NSString *webrtcText = webrtcBackend.length > 0 ? webrtcBackend : @"unknown";
     NSString *decodeText = @"pending";
     if (decoder.length > 0 && decodeTimeMs >= 0.0) {
         decodeText = [NSString stringWithFormat:@"%@ %.1f ms", decoder, decodeTimeMs];
@@ -703,7 +702,6 @@ static NSString *OPNStatsZoneName(NSString *zone) {
         [NSString stringWithFormat:@"Loss %@", lossText],
         [NSString stringWithFormat:@"Stream %@", streamText],
         [NSString stringWithFormat:@"Server %@", serverText],
-        [NSString stringWithFormat:@"WebRTC %@", webrtcText],
         [NSString stringWithFormat:@"Decode %@", decodeText],
         [NSString stringWithFormat:@"Frames %@", renderText],
     ];
@@ -1501,7 +1499,6 @@ static void OPNReleaseStreamSessionAfterCallbacks(OPN::IStreamSession *session) 
     settings.fps = streamProfile.enablePowerSaver ? std::min(streamProfile.fps, 30) : streamProfile.fps;
     settings.codec = OPNEffectiveStreamCodec(streamProfile, OPN::ResolveStreamWebRTCBackend());
     settings.colorQuality = streamProfile.colorQuality.value.empty() ? "8bit_420" : streamProfile.colorQuality.value;
-    settings.decoderBackend = streamProfile.decoderBackend.value.empty() ? "auto" : streamProfile.decoderBackend.value;
     settings.maxBitrateMbps = OPNEffectiveMaxBitrateMbps(streamProfile);
     settings.enableL4S = streamProfile.enableL4S;
     settings.microphoneMode = streamProfile.microphoneMode;
@@ -1565,14 +1562,13 @@ static void OPNReleaseStreamSessionAfterCallbacks(OPN::IStreamSession *session) 
                                settings.codec.c_str(),
                                streamProfile.enablePowerSaver ? "on" : "off");
 
-    NSLog(@"[StreamVC] Selected stream profile display=%dx%d stream=%s fps=%d bitrate=%dMbps codec=%s decoder=%s aspect=%s %.4f l4s=%s powerSaver=%s requested=%s@%dfps/%dMbps/%s",
+    NSLog(@"[StreamVC] Selected stream profile display=%dx%d stream=%s fps=%d bitrate=%dMbps codec=%s aspect=%s %.4f l4s=%s powerSaver=%s requested=%s@%dfps/%dMbps/%s",
           displayProfile.displayWidth,
           displayProfile.displayHeight,
           settings.resolution.c_str(),
           settings.fps,
           settings.maxBitrateMbps,
           settings.codec.c_str(),
-          settings.decoderBackend.c_str(),
           streamProfile.aspect.label.c_str(),
           streamProfile.AspectRatio(),
           settings.enableL4S ? "on" : "off",
