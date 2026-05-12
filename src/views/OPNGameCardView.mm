@@ -130,6 +130,7 @@ static NSString *OPNSteamArtworkURLForGame(const OPN::GameInfo &game) {
 @property (nonatomic, strong) NSView *storeChipsContainer;
 @property (nonatomic, strong) NSTrackingArea *trackingArea;
 @property (nonatomic, strong) NSButton *playButton;
+@property (nonatomic, strong) CALayer *reflectionLayer;
 @property (nonatomic, strong) NSMutableArray<NSButton *> *storeChipButtons;
 - (void)loadImageFromCandidates:(NSArray<NSString *> *)urlStrings index:(NSUInteger)index;
 - (void)applyFocusStyle;
@@ -159,6 +160,16 @@ using namespace OPN;
         self.layer.shadowOpacity = 0.34;
         self.layer.shadowRadius = 18.0;
         self.layer.shadowOffset = CGSizeMake(0.0, 14.0);
+
+        _reflectionLayer = [CALayer layer];
+        _reflectionLayer.backgroundColor = OpnColor(kBrandGreen, 0.22).CGColor;
+        _reflectionLayer.cornerRadius = 16.0;
+        _reflectionLayer.opacity = 0.0;
+        _reflectionLayer.shadowColor = OpnColor(kBrandGreen).CGColor;
+        _reflectionLayer.shadowOpacity = 0.72;
+        _reflectionLayer.shadowRadius = 22.0;
+        _reflectionLayer.shadowOffset = CGSizeZero;
+        [self.layer addSublayer:_reflectionLayer];
 
         _contentView = [[NSView alloc] initWithFrame:self.bounds];
         _contentView.wantsLayer = YES;
@@ -252,15 +263,17 @@ using namespace OPN;
     self.layer.borderWidth = selected ? 2.0 : 1.0;
     self.layer.shadowColor = OpnColor(kBrandGreen).CGColor;
     self.layer.shadowOpacity = selected ? 0.62 : 0.30;
-    self.layer.shadowRadius = selected ? 44.0 : 18.0;
-    self.layer.shadowOffset = selected ? CGSizeMake(0.0, 22.0) : CGSizeMake(0.0, 12.0);
+    self.layer.shadowRadius = selected ? 56.0 : 18.0;
+    self.layer.shadowOffset = selected ? CGSizeMake(0.0, 26.0) : CGSizeMake(0.0, 12.0);
     CATransform3D transform = CATransform3DIdentity;
-    transform.m34 = -1.0 / 900.0;
+    transform.m34 = -1.0 / 760.0;
     if (selected) {
-        transform = CATransform3DScale(transform, 1.075, 1.075, 1.0);
-        transform = CATransform3DRotate(transform, -0.035, 1.0, 0.0, 0.0);
+        transform = CATransform3DTranslate(transform, 0.0, -10.0, 34.0);
+        transform = CATransform3DScale(transform, 1.105, 1.105, 1.0);
+        transform = CATransform3DRotate(transform, -0.052, 1.0, 0.0, 0.0);
     }
     self.layer.transform = transform;
+    self.reflectionLayer.opacity = selected ? 0.82 : 0.0;
     self.playButton.layer.shadowOpacity = selected ? 0.72 : 0.22;
     self.playButton.layer.shadowRadius = selected ? 20.0 : 12.0;
     [CATransaction commit];
@@ -280,6 +293,7 @@ using namespace OPN;
     self.gradientOverlay.frame = NSMakeRect(0, MAX(0.0, height - gGradientOverlayHeight), width, MIN(gGradientOverlayHeight, height));
     self.playButton.frame = NSMakeRect((width - 46.0) / 2.0, (height - 46.0) / 2.0, 46.0, 46.0);
     self.storeChipsContainer.frame = NSMakeRect(16.0, MAX(0.0, height - 37.0), MAX(40.0, width - 32.0), 24.0);
+    self.reflectionLayer.frame = NSMakeRect(18.0, height - 8.0, MAX(24.0, width - 36.0), 16.0);
     self.layer.shadowPath = [NSBezierPath bezierPathWithRoundedRect:self.bounds xRadius:18.0 yRadius:18.0].CGPath;
 }
 
