@@ -20,6 +20,7 @@ class IStreamSession;
 - (void)toggleSidebarHUD;
 - (void)setMicrophoneLevel:(double)level;
 - (void)setSuppressInputWhenWindowInactive:(BOOL)suppress;
+- (void)setInputSuspendedForLibraryOverlay:(BOOL)suspended;
 - (void)attachToPipeline:(void *)pipeline;
 - (void)detachFromPipeline;
 - (void)handleKeyEvent:(NSEvent *)event;
@@ -28,5 +29,7 @@ class IStreamSession;
 - (void)setVideoAspectRatio:(CGFloat)aspectRatio;
 - (void)takeFocus;
 - (void)releasePointerLock;
+
+@property (nonatomic, copy) void (^onGuideButtonPressed)(void);
 
 @end

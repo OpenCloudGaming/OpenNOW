@@ -25,6 +25,9 @@
 @property (nonatomic, strong) OPNSettingsView *settingsView;
 @property (nonatomic, strong) OPNStoreView *storeView;
 @property (nonatomic, strong) OPNStreamViewController *streamingController;
+@property (nonatomic, copy) NSString *currentStreamTitle;
+@property (nonatomic, assign) OPN::AuthScreen activeStreamReturnScreen;
+@property (nonatomic, assign) BOOL streamLibraryOverlayActive;
 @property (nonatomic, strong) NSTimer *gameLibraryRefreshTimer;
 @property (nonatomic, assign) std::vector<OPN::GameInfo> cachedGameLibrary;
 @property (nonatomic, assign) std::string cachedGameLibraryFingerprint;
@@ -44,6 +47,8 @@
 - (void)startGameLibraryRefreshTimer;
 - (void)stopGameLibraryRefreshTimer;
 - (void)launchGame:(const OPN::GameInfo &)game variantIndex:(int)variantIndex returnScreen:(OPN::AuthScreen)returnScreen;
+- (void)showLibraryOverlayForActiveStream;
+- (void)returnToActiveStreamFromLibraryOverlay;
 - (void)loadStorePanelsWithRetry:(BOOL)canRetry;
 - (void)refreshGameLibraryInBackground;
 - (void)fetchGameLibraryWithRetry:(BOOL)canRetry
@@ -242,6 +247,10 @@ static std::string OPNGameLibraryFingerprint(const std::vector<OPN::GameInfo> &g
                                              selector:@selector(windowFullScreenStateChanged:)
                                                  name:NSWindowDidExitFullScreenNotification
                                                object:self.window];
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(interfacePreferencesChanged:)
+                                                 name:OPNInterfacePreferencesDidChangeNotification
+                                               object:nil];
     {
         OPN::AuthCredentials creds = self.pendingCredentials;
         creds.stayLoggedIn = AuthService::Shared().GetStayLoggedIn();
@@ -318,6 +327,12 @@ static std::string OPNGameLibraryFingerprint(const std::vector<OPN::GameInfo> &g
     [self saveWindowPresentation];
 }
 
+- (void)interfacePreferencesChanged:(NSNotification *)notification {
+    (void)notification;
+    if (!self.rootView || OpnDerivedAccentColorsEnabled()) return;
+    self.rootView.controllerAccentRGB = OpnCurrentAccentRGB();
+}
+
 - (void)launchGame:(const OPN::GameInfo &)game variantIndex:(int)variantIndex returnScreen:(OPN::AuthScreen)returnScreen {
     using namespace OPN;
 
@@ -357,7 +372,10 @@ static std::string OPNGameLibraryFingerprint(const std::vector<OPN::GameInfo> &g
                                                      appId:effectiveAppId
                                                   apiToken:apiToken
                                              accountLinked:accountLinked
-                                             selectedStore:selectedStore];
+                                                      selectedStore:selectedStore];
+    self.currentStreamTitle = game.title.empty() ? @"Current Stream" : [NSString stringWithUTF8String:game.title.c_str()];
+    self.activeStreamReturnScreen = returnScreen;
+    self.streamLibraryOverlayActive = NO;
 
     __weak __typeof__(self) weakSelf = self;
     streamVC.onStreamEnd = ^(BOOL success, const std::string &error) {
@@ -366,11 +384,20 @@ static std::string OPNGameLibraryFingerprint(const std::vector<OPN::GameInfo> &g
         std::string errorCopy = error;
         dispatch_async(dispatch_get_main_queue(), ^{
             NSLog(@"[AppDelegate] Stream ended, restoring previous screen. Success=%d", success);
+            strongSelf.streamLibraryOverlayActive = NO;
             [strongSelf transitionToScreen:returnScreen];
             strongSelf.streamingController = nil;
+            strongSelf.currentStreamTitle = nil;
             if (!success && !errorCopy.empty()) {
                 [strongSelf showError:errorCopy canRetry:YES];
             }
+        });
+    };
+    streamVC.onControllerLibraryRequested = ^{
+        __typeof__(self) strongSelf = weakSelf;
+        if (!strongSelf) return;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [strongSelf showLibraryOverlayForActiveStream];
         });
     };
 
@@ -394,6 +421,32 @@ static std::string OPNGameLibraryFingerprint(const std::vector<OPN::GameInfo> &g
         });
     }
     NSLog(@"[AppDelegate] Window setup complete");
+}
+
+- (void)showLibraryOverlayForActiveStream {
+    if (!self.streamingController || self.streamLibraryOverlayActive) return;
+    self.streamLibraryOverlayActive = YES;
+    [self.streamingController prepareForLibraryPictureInPicture];
+    [self transitionToScreen:OPN::AuthScreen::Catalog];
+}
+
+- (void)returnToActiveStreamFromLibraryOverlay {
+    if (!self.streamingController) return;
+    NSRect preservedFrame = self.window.frame;
+    BOOL preserveFrame = !OPNWindowIsFullScreen(self.window);
+    NSView *streamView = [self.streamingController streamPictureInPictureView];
+    [streamView removeFromSuperview];
+    [self.streamingController setInitialViewFrame:self.window.contentView.bounds];
+    self.streamingController.view.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+    OPNConfigureStreamWindow(self.window);
+    self.window.contentViewController = self.streamingController;
+    OpnDisableFocusHighlights(self.streamingController.view);
+    if (preserveFrame) {
+        [self.window setFrame:preservedFrame display:YES animate:NO];
+    }
+    self.streamLibraryOverlayActive = NO;
+    [self.streamingController restoreFromLibraryPictureInPicture];
+    [self.window makeKeyAndOrderFront:nil];
 }
 
 #pragma mark - Screen Transitions
@@ -622,7 +675,7 @@ static std::string OPNGameLibraryFingerprint(const std::vector<OPN::GameInfo> &g
             catalog.onFocusedArtworkAccentChanged = ^(unsigned accentRGB) {
                 __typeof__(self) strongSelf = weakSelf;
                 if (!strongSelf || !strongSelf.rootView) return;
-                strongSelf.rootView.controllerAccentRGB = accentRGB;
+                strongSelf.rootView.controllerAccentRGB = OpnDerivedAccentColorsEnabled() ? accentRGB : OpnCurrentAccentRGB();
             };
 
             catalog.onSelectGame = ^(const GameInfo &game, int variantIndex) {
@@ -636,6 +689,16 @@ static std::string OPNGameLibraryFingerprint(const std::vector<OPN::GameInfo> &g
                 if (!strongSelf) return;
                 [strongSelf browseCatalogWithSearch:searchQuery sortId:sortId filterIds:filterIds canRetry:YES];
             };
+
+            if (self.streamingController && self.streamLibraryOverlayActive) {
+                [catalog setStreamPictureInPictureView:[self.streamingController streamPictureInPictureView]
+                                                title:self.currentStreamTitle ?: @"Current Stream"];
+                catalog.onStreamPictureInPictureSelected = ^{
+                    __typeof__(self) strongSelf = weakSelf;
+                    if (!strongSelf) return;
+                    [strongSelf returnToActiveStreamFromLibraryOverlay];
+                };
+            }
 
             [self.contentContainer addSubview:catalog];
             OpnDisableFocusHighlights(catalog);

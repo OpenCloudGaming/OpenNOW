@@ -1,6 +1,7 @@
 #pragma once
 
 #import <Cocoa/Cocoa.h>
+#include <stdint.h>
 
 NSColor *OpnColor(unsigned rgb, CGFloat alpha = 1.0);
 unsigned OpnBlendRGB(unsigned rgb, unsigned target, CGFloat amount);
@@ -17,6 +18,12 @@ BOOL OpnControllerModeEnabled(void);
 void OpnSetControllerModeEnabled(BOOL enabled);
 BOOL OpnBackgroundAnimationEnabled(void);
 void OpnSetBackgroundAnimationEnabled(BOOL enabled);
+BOOL OpnDerivedAccentColorsEnabled(void);
+void OpnSetDerivedAccentColorsEnabled(BOOL enabled);
+CGFloat OpnBackgroundTintStrength(void);
+void OpnSetBackgroundTintStrength(CGFloat strength);
+uint16_t OpnControllerLibraryShortcutMask(void);
+void OpnSetControllerLibraryShortcutMask(uint16_t mask);
 
 typedef NS_ENUM(NSInteger, OPNConsoleTone) {
     OPNConsoleToneMove = 0,
