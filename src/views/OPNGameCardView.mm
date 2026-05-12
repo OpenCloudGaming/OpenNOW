@@ -7,8 +7,6 @@ static const CGFloat gCardWidth = 220.0;
 static const CGFloat gImageHeight = gCardWidth;
 static const CGFloat gInfoHeight = 0.0;
 static const CGFloat gCardTotalHeight = gImageHeight + gInfoHeight;
-static const CGFloat gGradientOverlayHeight = 132.0;
-
 static CGFloat OPNScaledCardWidth(void) {
     return floor(gCardWidth * OpnPosterSizeScale());
 }
@@ -126,7 +124,6 @@ static NSString *OPNSteamArtworkURLForGame(const OPN::GameInfo &game) {
 @property (nonatomic, assign) OPN::GameInfo gameData;
 @property (nonatomic, strong) NSView *contentView;
 @property (nonatomic, strong) NSImageView *imageView;
-@property (nonatomic, strong) NSView *gradientOverlay;
 @property (nonatomic, strong) NSView *storeChipsContainer;
 @property (nonatomic, strong) NSTrackingArea *trackingArea;
 @property (nonatomic, strong) NSButton *playButton;
@@ -183,20 +180,6 @@ using namespace OPN;
         _imageView.wantsLayer = YES;
         _imageView.layer.backgroundColor = OpnColor(kBackgroundC).CGColor;
         [_contentView addSubview:_imageView];
-
-        _gradientOverlay = [[NSView alloc] initWithFrame:NSMakeRect(0, NSHeight(self.bounds) - gGradientOverlayHeight, NSWidth(self.bounds), gGradientOverlayHeight)];
-        _gradientOverlay.wantsLayer = YES;
-        CAGradientLayer *gradient = [CAGradientLayer layer];
-        gradient.frame = _gradientOverlay.bounds;
-        gradient.colors = @[(id)OpnColor(kBlack, 0.0).CGColor,
-                            (id)OpnColor(kBlack, 0.0).CGColor,
-                            (id)OpnColor(kBlack, 0.30).CGColor,
-                            (id)OpnColor(kBlack, 0.86).CGColor];
-        gradient.locations = @[@0.0, @0.24, @0.68, @1.0];
-        gradient.startPoint = CGPointMake(0.5, 1.0);
-        gradient.endPoint = CGPointMake(0.5, 0.0);
-        _gradientOverlay.layer = gradient;
-        [_contentView addSubview:_gradientOverlay];
 
         _playButton = [[NSButton alloc] initWithFrame:
             NSMakeRect((NSWidth(self.bounds) - 46) / 2, (NSHeight(self.bounds) - 46) / 2, 46, 46)];
@@ -285,12 +268,9 @@ using namespace OPN;
     [super layout];
     CGFloat width = NSWidth(self.bounds);
     CGFloat height = NSHeight(self.bounds);
-    BOOL controllerMode = OpnControllerModeEnabled();
     self.contentView.frame = self.bounds;
     self.contentView.layer.cornerRadius = 18.0;
     self.imageView.frame = self.bounds;
-    self.gradientOverlay.hidden = controllerMode;
-    self.gradientOverlay.frame = NSMakeRect(0, MAX(0.0, height - gGradientOverlayHeight), width, MIN(gGradientOverlayHeight, height));
     self.playButton.frame = NSMakeRect((width - 46.0) / 2.0, (height - 46.0) / 2.0, 46.0, 46.0);
     self.storeChipsContainer.frame = NSMakeRect(16.0, MAX(0.0, height - 37.0), MAX(40.0, width - 32.0), 24.0);
     self.reflectionLayer.frame = NSMakeRect(18.0, height - 8.0, MAX(24.0, width - 36.0), 16.0);
