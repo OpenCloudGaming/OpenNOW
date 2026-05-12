@@ -28,3 +28,5 @@ NSButton *OpnButton(NSString *title, NSRect frame, NSColor *background, NSColor 
 NSTextField *OpnTextField(NSRect frame, NSString *placeholder, bool isSecure = false);
 
 NSProgressIndicator *OpnSpinner(NSRect frame);
+
+void OpnDisableFocusHighlights(NSView *view);
