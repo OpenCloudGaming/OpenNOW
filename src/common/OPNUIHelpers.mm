@@ -12,9 +12,14 @@ static NSString *const OPNPosterSizeScaleDefaultsKey = @"OpenNOW.Interface.Poste
 static NSString *const OPNAutoFullScreenDefaultsKey = @"OpenNOW.Interface.AutoFullScreen";
 static NSString *const OPNControllerModeDefaultsKey = @"OpenNOW.Interface.ControllerMode";
 static NSString *const OPNBackgroundAnimationDefaultsKey = @"OpenNOW.Interface.BackgroundAnimation";
+static NSString *const OPNDerivedAccentColorsDefaultsKey = @"OpenNOW.Interface.DerivedAccentColors";
+static NSString *const OPNBackgroundTintStrengthDefaultsKey = @"OpenNOW.Interface.BackgroundTintStrength";
+static NSString *const OPNControllerLibraryShortcutDefaultsKey = @"OpenNOW.Interface.ControllerLibraryShortcut";
 static const CGFloat OPNMinimumPosterSizeScale = 0.80;
 static const CGFloat OPNMaximumPosterSizeScale = 1.30;
 static const unsigned OPNDefaultAccentRGB = 0x7CF1B1;
+static const CGFloat OPNDefaultBackgroundTintStrength = 0.32;
+static const uint16_t OPNDefaultControllerLibraryShortcutMask = 0x0010 | 0x0020;
 
 static int OPNClampedColorByte(NSInteger value) {
     return (int)MAX(0, MIN(value, 255));
@@ -98,6 +103,48 @@ BOOL OpnBackgroundAnimationEnabled(void) {
 void OpnSetBackgroundAnimationEnabled(BOOL enabled) {
     if (enabled == OpnBackgroundAnimationEnabled()) return;
     [NSUserDefaults.standardUserDefaults setBool:enabled forKey:OPNBackgroundAnimationDefaultsKey];
+    [NSUserDefaults.standardUserDefaults synchronize];
+    [NSNotificationCenter.defaultCenter postNotificationName:OPNInterfacePreferencesDidChangeNotification object:nil];
+}
+
+BOOL OpnDerivedAccentColorsEnabled(void) {
+    id stored = [NSUserDefaults.standardUserDefaults objectForKey:OPNDerivedAccentColorsDefaultsKey];
+    return stored ? [NSUserDefaults.standardUserDefaults boolForKey:OPNDerivedAccentColorsDefaultsKey] : YES;
+}
+
+void OpnSetDerivedAccentColorsEnabled(BOOL enabled) {
+    if (enabled == OpnDerivedAccentColorsEnabled()) return;
+    [NSUserDefaults.standardUserDefaults setBool:enabled forKey:OPNDerivedAccentColorsDefaultsKey];
+    [NSUserDefaults.standardUserDefaults synchronize];
+    [NSNotificationCenter.defaultCenter postNotificationName:OPNInterfacePreferencesDidChangeNotification object:nil];
+}
+
+CGFloat OpnBackgroundTintStrength(void) {
+    id stored = [NSUserDefaults.standardUserDefaults objectForKey:OPNBackgroundTintStrengthDefaultsKey];
+    CGFloat strength = [stored respondsToSelector:@selector(doubleValue)] ? (CGFloat)[stored doubleValue] : OPNDefaultBackgroundTintStrength;
+    if (!std::isfinite(strength)) strength = OPNDefaultBackgroundTintStrength;
+    return MAX(0.0, MIN(strength, 1.0));
+}
+
+void OpnSetBackgroundTintStrength(CGFloat strength) {
+    if (!std::isfinite(strength)) strength = OPNDefaultBackgroundTintStrength;
+    CGFloat clampedStrength = MAX(0.0, MIN(strength, 1.0));
+    if (std::fabs(clampedStrength - OpnBackgroundTintStrength()) < 0.001) return;
+    [NSUserDefaults.standardUserDefaults setDouble:clampedStrength forKey:OPNBackgroundTintStrengthDefaultsKey];
+    [NSUserDefaults.standardUserDefaults synchronize];
+    [NSNotificationCenter.defaultCenter postNotificationName:OPNInterfacePreferencesDidChangeNotification object:nil];
+}
+
+uint16_t OpnControllerLibraryShortcutMask(void) {
+    id stored = [NSUserDefaults.standardUserDefaults objectForKey:OPNControllerLibraryShortcutDefaultsKey];
+    if (![stored respondsToSelector:@selector(integerValue)]) return OPNDefaultControllerLibraryShortcutMask;
+    NSInteger value = [stored integerValue];
+    return (uint16_t)MAX(0, MIN(value, 0xFFFF));
+}
+
+void OpnSetControllerLibraryShortcutMask(uint16_t mask) {
+    if (mask == OpnControllerLibraryShortcutMask()) return;
+    [NSUserDefaults.standardUserDefaults setInteger:(NSInteger)mask forKey:OPNControllerLibraryShortcutDefaultsKey];
     [NSUserDefaults.standardUserDefaults synchronize];
     [NSNotificationCenter.defaultCenter postNotificationName:OPNInterfacePreferencesDidChangeNotification object:nil];
 }

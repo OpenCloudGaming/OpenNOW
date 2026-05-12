@@ -43,6 +43,19 @@ static NSString *OPNCatalogString(const std::string &value, NSString *fallback =
     return value.empty() ? fallback : [NSString stringWithUTF8String:value.c_str()];
 }
 
+static NSAttributedString *OPNOutlinedControllerStoreText(NSString *text) {
+    NSMutableParagraphStyle *style = [[NSMutableParagraphStyle alloc] init];
+    style.lineBreakMode = NSLineBreakByTruncatingTail;
+    return [[NSAttributedString alloc] initWithString:text ?: @""
+                                           attributes:@{
+        NSFontAttributeName: [NSFont systemFontOfSize:16.0 weight:NSFontWeightSemibold],
+        NSForegroundColorAttributeName: NSColor.whiteColor,
+        NSStrokeColorAttributeName: NSColor.blackColor,
+        NSStrokeWidthAttributeName: @-3.0,
+        NSParagraphStyleAttributeName: style,
+    }];
+}
+
 @interface OPNFlippedGridDocumentView : NSView
 @end
 
@@ -258,6 +271,12 @@ static NSString *OPNCatalogString(const std::string &value, NSString *fallback =
 @property (nonatomic, strong) NSTextField *controllerDetailStatsLabel;
 @property (nonatomic, strong) NSTextField *controllerDetailFeaturesLabel;
 @property (nonatomic, strong) OPNControllerPromptBarView *controllerPromptBarView;
+@property (nonatomic, strong) NSView *streamPipContainerView;
+@property (nonatomic, strong) NSView *streamPipHostView;
+@property (nonatomic, strong) NSTextField *streamPipTitleLabel;
+@property (nonatomic, strong) NSTextField *streamPipHintLabel;
+@property (nonatomic, weak) NSView *streamPipContentView;
+@property (nonatomic, assign, getter=isStreamPipFocused) BOOL streamPipFocused;
 @property (nonatomic, strong) CAGradientLayer *controllerDetailGradientLayer;
 @property (nonatomic, strong) CALayer *controllerDetailAccentLayer;
 @property (nonatomic, strong) NSMutableArray<OPNGameCardView *> *cardViews;
@@ -292,6 +311,7 @@ static NSString *OPNCatalogString(const std::string &value, NSString *fallback =
 - (void)launchFocusedGame;
 - (void)cycleFocusedVariant;
 - (void)updateControllerDetailContent;
+- (void)setStreamPipFocused:(BOOL)focused;
 - (void)startGamepadNavigationIfNeeded;
 - (void)controllerDidConnect:(NSNotification *)notification;
 - (void)controllerDidDisconnect:(NSNotification *)notification;
@@ -722,7 +742,7 @@ using namespace OPN;
         _controllerDetailMetaLabel = OpnLabel(@"", NSZeroRect, 15.0, OpnColor(kTextSecondary), NSFontWeightMedium);
         [_controllerDetailView addSubview:_controllerDetailMetaLabel];
 
-        _controllerDetailStoreLabel = OpnLabel(@"", NSZeroRect, 16.0, OpnColor(OPNControllerAccentSoftRGB()), NSFontWeightSemibold);
+        _controllerDetailStoreLabel = OpnLabel(@"", NSZeroRect, 16.0, NSColor.whiteColor, NSFontWeightSemibold);
         [_controllerDetailView addSubview:_controllerDetailStoreLabel];
 
         _controllerDetailStatsLabel = OpnLabel(@"", NSZeroRect, 14.0, OpnColor(kTextSecondary), NSFontWeightMedium);
@@ -735,6 +755,32 @@ using namespace OPN;
         _controllerPromptBarView = [[OPNControllerPromptBarView alloc] initWithFrame:NSZeroRect];
         _controllerPromptBarView.wantsLayer = YES;
         [_controllerDetailView addSubview:_controllerPromptBarView];
+
+        _streamPipContainerView = [[NSView alloc] initWithFrame:NSZeroRect];
+        _streamPipContainerView.hidden = YES;
+        _streamPipContainerView.wantsLayer = YES;
+        _streamPipContainerView.layer.cornerRadius = 22.0;
+        _streamPipContainerView.layer.masksToBounds = NO;
+        _streamPipContainerView.layer.backgroundColor = OpnColor(0x030507, 0.68).CGColor;
+        _streamPipContainerView.layer.borderWidth = 1.0;
+        _streamPipContainerView.layer.borderColor = OpnColor(0xFFFFFF, 0.16).CGColor;
+        _streamPipContainerView.layer.shadowColor = NSColor.blackColor.CGColor;
+        _streamPipContainerView.layer.shadowOpacity = 0.30;
+        _streamPipContainerView.layer.shadowRadius = 24.0;
+        _streamPipContainerView.layer.shadowOffset = CGSizeMake(0.0, 12.0);
+
+        _streamPipHostView = [[NSView alloc] initWithFrame:NSZeroRect];
+        _streamPipHostView.wantsLayer = YES;
+        _streamPipHostView.layer.cornerRadius = 18.0;
+        _streamPipHostView.layer.masksToBounds = YES;
+        _streamPipHostView.layer.backgroundColor = NSColor.blackColor.CGColor;
+        [_streamPipContainerView addSubview:_streamPipHostView];
+
+        _streamPipTitleLabel = OpnLabel(@"Current Stream", NSZeroRect, 14.0, OpnColor(kTextPrimary), NSFontWeightSemibold);
+        [_streamPipContainerView addSubview:_streamPipTitleLabel];
+        _streamPipHintLabel = OpnLabel(@"Press A to return", NSZeroRect, 12.0, OpnColor(kTextSecondary), NSFontWeightMedium, NSTextAlignmentRight);
+        [_streamPipContainerView addSubview:_streamPipHintLabel];
+        [self addSubview:_streamPipContainerView];
 
         _loadingView = [[OPNLoadingView alloc] initWithFrame:self.bounds
                                                       message:@"Loading games..."];
@@ -782,7 +828,7 @@ using namespace OPN;
                                                   (id)NSColor.clearColor.CGColor];
     self.controllerDetailGradientLayer.opacity = 0.0;
     self.controllerDetailAccentLayer.backgroundColor = OpnColor(OPNControllerAccentSoftRGB(), 0.86).CGColor;
-    self.controllerDetailStoreLabel.textColor = OpnColor(OPNControllerAccentSoftRGB());
+    self.controllerDetailStoreLabel.textColor = NSColor.whiteColor;
     self.layer.backgroundColor = NSColor.clearColor.CGColor;
     [self.controllerElectricBackgroundView setNeedsDisplay:YES];
 }
@@ -816,6 +862,30 @@ using namespace OPN;
 
 - (void)setUserName:(NSString *)name {
     _userLabel.stringValue = name ? [NSString stringWithFormat:@"Signed in as %@", name] : @"";
+}
+
+- (void)setStreamPictureInPictureView:(NSView *)view title:(NSString *)title {
+    if (self.streamPipContentView == view) {
+        self.streamPipTitleLabel.stringValue = title.length > 0 ? title : @"Current Stream";
+        [self layoutCatalogSubviews];
+        return;
+    }
+
+    [self.streamPipContentView removeFromSuperview];
+    self.streamPipContentView = nil;
+    self.streamPipTitleLabel.stringValue = title.length > 0 ? title : @"Current Stream";
+    self.streamPipHintLabel.stringValue = @"Press A to return";
+
+    if (view) {
+        view.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+        view.frame = self.streamPipHostView.bounds;
+        [self.streamPipHostView addSubview:view];
+        self.streamPipContentView = view;
+    } else {
+        self.streamPipFocused = NO;
+    }
+    [self setStreamPipFocused:NO];
+    [self layoutCatalogSubviews];
 }
 
 - (void)setLoading:(BOOL)loading {
@@ -1333,6 +1403,21 @@ using namespace OPN;
     self.controllerDetailFeaturesLabel.hidden = NO;
     self.controllerDetailFeaturesLabel.frame = NSMakeRect(heroX + 2.0, featuresY, MIN(980.0, heroWidth), MAX(0.0, detailHeight - featuresY - 88.0));
     self.controllerPromptBarView.frame = NSMakeRect(heroX + 2.0, MAX(188.0, detailHeight - 52.0), heroWidth, 36.0);
+    BOOL showStreamPip = controllerMode && self.streamPipContentView != nil;
+    self.streamPipContainerView.hidden = !showStreamPip;
+    if (showStreamPip) {
+        CGFloat pipWidth = MIN(420.0, MAX(300.0, width * 0.24));
+        CGFloat pipVideoHeight = floor(pipWidth * 9.0 / 16.0);
+        CGFloat pipHeight = pipVideoHeight + 54.0;
+        CGFloat pipX = MAX(heroX + 520.0, width - pipWidth - 64.0);
+        CGFloat pipY = MIN(detailY + detailHeight - pipHeight - 48.0, detailY + MAX(34.0, detailHeight * 0.24));
+        pipY = MAX(detailY + 28.0, pipY);
+        self.streamPipContainerView.frame = NSMakeRect(pipX, pipY, pipWidth, pipHeight);
+        self.streamPipHostView.frame = NSMakeRect(12.0, 12.0, pipWidth - 24.0, pipVideoHeight);
+        self.streamPipContentView.frame = self.streamPipHostView.bounds;
+        self.streamPipTitleLabel.frame = NSMakeRect(16.0, pipVideoHeight + 22.0, pipWidth * 0.50, 22.0);
+        self.streamPipHintLabel.frame = NSMakeRect(pipWidth * 0.50 - 12.0, pipVideoHeight + 24.0, pipWidth * 0.50, 18.0);
+    }
     CGFloat railFrameY = controllerMode ? MAX(0.0, gridY - selectorOverlap) : gridY;
     CGFloat railHeight = controllerMode ? MIN(carouselHeight + selectorOverlap, MAX(0.0, height - railFrameY)) : MAX(0.0, height - gridY);
     self.scrollView.frame = NSMakeRect(0, railFrameY, width, railHeight);
@@ -1375,6 +1460,7 @@ using namespace OPN;
         self.focusedCardIndex = -1;
         return;
     }
+    [self setStreamPipFocused:NO];
     NSInteger previousIndex = self.focusedCardIndex;
     NSInteger clamped = MAX(0, MIN(index, (NSInteger)self.cardViews.count - 1));
     self.focusedCardIndex = clamped;
@@ -1406,6 +1492,24 @@ using namespace OPN;
     }
 }
 
+- (void)setStreamPipFocused:(BOOL)focused {
+    if (focused && self.streamPipContentView == nil) focused = NO;
+    _streamPipFocused = focused;
+    [CATransaction begin];
+    [CATransaction setAnimationDuration:0.20];
+    [CATransaction setAnimationTimingFunction:[OPNCoreAnimationCoordinator appleQuinticTimingFunction]];
+    self.streamPipContainerView.layer.borderWidth = focused ? 3.0 : 1.0;
+    self.streamPipContainerView.layer.borderColor = (focused ? OpnColor(0xFFFFFF, 0.92) : OpnColor(0xFFFFFF, 0.16)).CGColor;
+    self.streamPipContainerView.layer.shadowColor = (focused ? OpnColor(OPNControllerAccentSoftRGB()) : NSColor.blackColor).CGColor;
+    self.streamPipContainerView.layer.shadowOpacity = focused ? 0.48 : 0.30;
+    self.streamPipContainerView.layer.shadowRadius = focused ? 38.0 : 24.0;
+    CATransform3D transform = CATransform3DIdentity;
+    if (focused) transform = CATransform3DScale(transform, 1.035, 1.035, 1.0);
+    self.streamPipContainerView.layer.transform = transform;
+    self.streamPipHintLabel.textColor = focused ? OpnColor(OPNControllerAccentSoftRGB()) : OpnColor(kTextSecondary);
+    [CATransaction commit];
+}
+
 - (OPNGameCardView *)focusedCard {
     if (self.focusedCardIndex < 0 || self.focusedCardIndex >= (NSInteger)self.cardViews.count) return nil;
     return self.cardViews[(NSUInteger)self.focusedCardIndex];
@@ -1413,7 +1517,25 @@ using namespace OPN;
 
 - (void)moveFocusByRows:(NSInteger)rows columns:(NSInteger)columns {
     if (OpnControllerModeEnabled() && rows != 0) {
+        if (self.streamPipContentView) {
+            if (self.isStreamPipFocused && rows < 0) {
+                [self setStreamPipFocused:NO];
+                return;
+            }
+            if (!self.isStreamPipFocused && rows > 0) {
+                [self setStreamPipFocused:YES];
+                OpnPlayConsoleTone(OPNConsoleToneMove);
+                return;
+            }
+        }
         [self cycleCategoryBy:rows > 0 ? 1 : -1];
+        return;
+    }
+    if (OpnControllerModeEnabled() && self.isStreamPipFocused) {
+        if (columns < 0 || columns > 0) {
+            [self setStreamPipFocused:NO];
+            OpnPlayConsoleTone(OPNConsoleToneMove);
+        }
         return;
     }
     NSInteger next = self.focusedCardIndex + rows * MAX(1, self.gridColumnCount) + columns;
@@ -1451,12 +1573,12 @@ using namespace OPN;
     self.controllerDetailGradientLayer.opacity = 0.0;
     self.controllerDetailAccentLayer.backgroundColor = [detailAccentSoftColor colorWithAlphaComponent:0.90].CGColor;
     self.controllerDetailView.layer.shadowColor = detailAccentColor.CGColor;
-    self.controllerDetailStoreLabel.textColor = detailAccentSoftColor;
+    self.controllerDetailStoreLabel.textColor = NSColor.whiteColor;
     [CATransaction commit];
     if (!card) {
         self.controllerDetailTitleLabel.stringValue = @"Select a game";
         self.controllerDetailMetaLabel.stringValue = @"";
-        self.controllerDetailStoreLabel.stringValue = @"";
+        self.controllerDetailStoreLabel.attributedStringValue = OPNOutlinedControllerStoreText(@"");
         self.controllerDetailStatsLabel.stringValue = @"";
         self.controllerDetailFeaturesLabel.stringValue = @"";
         self.controllerPromptBarView.hidden = YES;
@@ -1482,7 +1604,7 @@ using namespace OPN;
         store = OPNCatalogString(game.availableStores.front(), store);
     }
     NSString *storePrefix = game.variants.size() > 1 ? @"Selected Store" : @"Store";
-    self.controllerDetailStoreLabel.stringValue = [NSString stringWithFormat:@"%@: %@", storePrefix, store];
+    self.controllerDetailStoreLabel.attributedStringValue = OPNOutlinedControllerStoreText([NSString stringWithFormat:@"%@: %@", storePrefix, store]);
 
     self.controllerDetailStatsLabel.stringValue = @"";
     NSString *description = OPNCatalogString(game.description, @"");
@@ -1529,11 +1651,12 @@ using namespace OPN;
     if (card.selectedVariantIndex >= 0 && card.selectedVariantIndex < (int)card.game.variants.size()) {
         store = OPNCatalogString(card.game.variants[(size_t)card.selectedVariantIndex].appStore, store);
     }
-    NSTextField *storeLabel = OpnLabel([NSString stringWithFormat:@"Selected Store: %@", store],
+    NSTextField *storeLabel = OpnLabel(@"",
                                        NSMakeRect(38.0, 92.0, panelWidth - 76.0, 24.0),
                                        15.0,
-                                       OpnColor(OPNControllerAccentSoftRGB()),
+                                       NSColor.whiteColor,
                                        NSFontWeightSemibold);
+    storeLabel.attributedStringValue = OPNOutlinedControllerStoreText([NSString stringWithFormat:@"Selected Store: %@", store]);
     [panel addSubview:storeLabel];
 
     NSString *body = card.game.variants.size() > 1
@@ -1576,6 +1699,11 @@ using namespace OPN;
 }
 
 - (void)launchFocusedGame {
+    if (self.isStreamPipFocused && self.onStreamPictureInPictureSelected) {
+        OpnPlayConsoleTone(OPNConsoleToneSelect);
+        self.onStreamPictureInPictureSelected();
+        return;
+    }
     OPNGameCardView *card = [self focusedCard];
     if (!card || !self.onSelectGame) return;
     if (OpnControllerModeEnabled()) OpnPlayConsoleTone(OPNConsoleToneSelect);
@@ -1667,7 +1795,9 @@ using namespace OPN;
     if (pressed & (1u << 0)) {
         [self launchFocusedGame];
     }
-    if (pressed & (1u << 1)) { }
+    if (pressed & (1u << 1)) {
+        if (self.isStreamPipFocused) [self setStreamPipFocused:NO];
+    }
     if (pressed & (1u << 2)) [self toggleFavoriteForFocusedGame];
     if (pressed & (1u << 5)) [self moveFocusByRows:-1 columns:0];
     if (pressed & (1u << 6)) [self moveFocusByRows:1 columns:0];

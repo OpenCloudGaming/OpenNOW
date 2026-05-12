@@ -43,35 +43,11 @@
     card.layer.shadowOffset = CGSizeMake(0, 14);
     [content addSubview:card];
 
-    [card addSubview:OpnLabel(@"Sign in to OpenNOW", NSMakeRect(0, 34, 400, 30),
-                              24, OpnColor(kTextPrimary), NSFontWeightSemibold, NSTextAlignmentCenter)];
-
     [card addSubview:OpnLabel(@"Access your cloud gaming library with your NVIDIA account.",
-                              NSMakeRect(56, 74, 288, 38), 13,
+                              NSMakeRect(56, 48, 288, 38), 13,
                               OpnColor(kTextMuted), NSFontWeightRegular, NSTextAlignmentCenter)];
 
-    NSTextField *providerLabel = OpnLabel(@"Provider", NSMakeRect(56, 128, 288, 18),
-                                          10, OpnColor(kTextMuted), NSFontWeightSemibold);
-    providerLabel.attributedStringValue = [[NSAttributedString alloc] initWithString:@"Provider"
-        attributes:@{
-            NSFontAttributeName: [NSFont systemFontOfSize:10 weight:NSFontWeightSemibold],
-            NSForegroundColorAttributeName: OpnColor(kTextMuted),
-    }];
-    [card addSubview:providerLabel];
-
-    NSView *provider = [[NSView alloc] initWithFrame:NSMakeRect(56, 150, 288, 48)];
-    provider.wantsLayer = YES;
-    provider.layer.backgroundColor = OpnColor(kInputBackground, 0.72).CGColor;
-    provider.layer.cornerRadius = 12;
-    provider.layer.borderWidth = 1;
-    provider.layer.borderColor = OpnColor(kPanelBorder, 0.72).CGColor;
-    [card addSubview:provider];
-    [provider addSubview:OpnLabel(@"NVIDIA Account", NSMakeRect(16, 14, 210, 20),
-                                  13, OpnColor(kTextPrimary), NSFontWeightRegular)];
-    [provider addSubview:OpnLabel(@"Selected", NSMakeRect(210, 15, 62, 18),
-                                  12, OpnColor(kTextMuted), NSFontWeightRegular, NSTextAlignmentRight)];
-
-    self.stayLoggedInToggle = [[NSButton alloc] initWithFrame:NSMakeRect(54, 214, 180, 24)];
+    self.stayLoggedInToggle = [[NSButton alloc] initWithFrame:NSMakeRect(54, 168, 180, 24)];
     self.stayLoggedInToggle.buttonType = NSButtonTypeSwitch;
     self.stayLoggedInToggle.title = @"Keep me signed in";
     self.stayLoggedInToggle.font = [NSFont systemFontOfSize:13 weight:NSFontWeightMedium];
@@ -81,7 +57,7 @@
     [card addSubview:self.stayLoggedInToggle];
 
     NSButton *browserButton = OpnButton(@"Continue with Browser",
-        NSMakeRect(56, 260, 288, 48),
+        NSMakeRect(56, 224, 288, 48),
         OpnColor(kBrandGreen), OpnColor(kAccentOn));
     browserButton.font = [NSFont systemFontOfSize:14 weight:NSFontWeightSemibold];
     browserButton.target = self;

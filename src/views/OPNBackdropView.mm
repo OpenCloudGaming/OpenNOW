@@ -30,6 +30,23 @@ static unsigned OPNControllerAccentBlackRGB(CGFloat blackMix) {
     return OpnBlendRGB(OpnCurrentAccentRGB(), 0x000000, blackMix);
 }
 
+static NSImage *OPNHeaderLogoImage(void) {
+    static NSImage *logo = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        NSString *bundlePath = [NSBundle.mainBundle pathForResource:@"logo" ofType:@"png"];
+        NSString *relativePath = @"assets/logo.png";
+        logo = [[NSImage alloc] initWithContentsOfFile:bundlePath ?: relativePath];
+    });
+    return logo;
+}
+
+static NSString *OPNCurrentHeaderTimeText(void) {
+    NSDateFormatter *timeFormatter = [[NSDateFormatter alloc] init];
+    timeFormatter.dateFormat = @"h:mm a";
+    return [[timeFormatter stringFromDate:NSDate.date] uppercaseString];
+}
+
 @implementation OPNBackdropView {
     NSRect _storeNavFrame;
     NSRect _libraryNavFrame;
@@ -182,9 +199,6 @@ static NSMenuItem *OPNStyledMenuItem(NSString *title, SEL action, id target, NSC
     uint16_t buttons = 0;
     if (pad.leftShoulder.value > 0.5) buttons |= 1u << 0;
     if (pad.rightShoulder.value > 0.5) buttons |= 1u << 1;
-    if (@available(macOS 10.15, *)) {
-        if (pad.buttonMenu.value > 0.5 || pad.buttonOptions.value > 0.5) buttons |= 1u << 2;
-    }
     return buttons;
 }
 
@@ -213,7 +227,6 @@ static NSMenuItem *OPNStyledMenuItem(NSString *title, SEL action, id target, NSC
     uint16_t pressed = buttons & (uint16_t)~_previousControllerButtons;
     if (pressed & (1u << 0)) [self selectPreviousControllerTab];
     if (pressed & (1u << 1)) [self selectNextControllerTab];
-    if (pressed & (1u << 2)) [self accountButtonPressed:self];
     _previousControllerButtons = buttons;
 }
 
@@ -264,10 +277,16 @@ static NSMenuItem *OPNStyledMenuItem(NSString *title, SEL action, id target, NSC
 - (void)drawControllerElectricBackgroundInRect:(NSRect)bounds {
     BOOL animationEnabled = OpnBackgroundAnimationEnabled();
     CGFloat phase = animationEnabled ? (CGFloat)(CACurrentMediaTime() - _backgroundAnimationStartTime) : 0.0;
+    CGFloat tintStrength = OpnBackgroundTintStrength();
+    CGFloat baseBlackA = 0.18 + 0.71 * tintStrength;
+    CGFloat baseBlackB = 0.10 + 0.71 * tintStrength;
+    CGFloat baseBlackC = 0.22 + 0.70 * tintStrength;
+    CGFloat vignetteBlack = 0.30 + 0.67 * tintStrength;
+    CGFloat vignetteAlpha = 0.04 + 0.26 * tintStrength;
     NSGradient *base = [[NSGradient alloc] initWithColors:@[
-        OpnColor([self resolvedControllerAccentBlackRGB:0.89], 1.0),
-        OpnColor([self resolvedControllerAccentBlackRGB:0.81], 1.0),
-        OpnColor([self resolvedControllerAccentBlackRGB:0.92], 1.0),
+        OpnColor([self resolvedControllerAccentBlackRGB:baseBlackA], 1.0),
+        OpnColor([self resolvedControllerAccentBlackRGB:baseBlackB], 1.0),
+        OpnColor([self resolvedControllerAccentBlackRGB:baseBlackC], 1.0),
     ]];
     [base drawInRect:bounds angle:88.0];
 
@@ -310,8 +329,8 @@ static NSMenuItem *OPNStyledMenuItem(NSString *title, SEL action, id target, NSC
         [self drawSparkleAtPoint:NSMakePoint(x, y) radius:radius alpha:alpha color:sparkleColor];
     }
 
-    NSGradient *vignette = [[NSGradient alloc] initWithStartingColor:OpnColor([self resolvedControllerAccentBlackRGB:0.88], 0.0)
-                                                        endingColor:OpnColor([self resolvedControllerAccentBlackRGB:0.97], 0.30)];
+    NSGradient *vignette = [[NSGradient alloc] initWithStartingColor:OpnColor([self resolvedControllerAccentBlackRGB:vignetteBlack], 0.0)
+                                                        endingColor:OpnColor([self resolvedControllerAccentBlackRGB:vignetteBlack], vignetteAlpha)];
     [vignette drawInRect:bounds angle:-90.0];
 }
 
@@ -428,26 +447,27 @@ static NSMenuItem *OPNStyledMenuItem(NSString *title, SEL action, id target, NSC
         NSRectFill(NSMakeRect(0, navHeight - 1.0, NSWidth(bounds), 1));
     }
 
-    if (!controllerMode) {
+    NSImage *logo = OPNHeaderLogoImage();
+    if (logo) {
+        CGFloat logoHeight = controllerMode ? 42.0 : 30.0;
+        CGFloat aspect = logo.size.height > 0 ? logo.size.width / logo.size.height : 1.0;
+        CGFloat logoWidth = MIN(controllerMode ? 180.0 : 132.0, logoHeight * aspect);
+        NSRect logoRect = controllerMode ? NSMakeRect(28.0, 18.0, logoWidth, logoHeight) : NSMakeRect(28.0, 17.0, logoWidth, logoHeight);
+        [logo drawInRect:logoRect
+                fromRect:NSZeroRect
+               operation:NSCompositingOperationSourceOver
+                fraction:1.0
+          respectFlipped:YES
+                   hints:@{NSImageHintInterpolation: @(NSImageInterpolationHigh)}];
+    } else if (!controllerMode) {
         [@"OpenNOW" drawInRect:NSMakeRect(32.0, 21.0, 132, 22)
                 withAttributes:OpnTextStyle(16.0, OpnColor(kTextPrimary), NSFontWeightSemibold)];
-    }
-
-    if (controllerMode) {
-        NSDateFormatter *timeFormatter = [[NSDateFormatter alloc] init];
-        timeFormatter.dateFormat = @"h:mm a";
-        NSString *timeText = [[timeFormatter stringFromDate:NSDate.date] uppercaseString];
-        NSBezierPath *timeGlow = [NSBezierPath bezierPathWithRoundedRect:NSMakeRect(20.0, 32.0, 128.0, 30.0) xRadius:15.0 yRadius:15.0];
-        [OpnColor([self resolvedControllerAccentRGB], 0.055) setFill];
-        [timeGlow fill];
-        [timeText drawInRect:NSMakeRect(32.0, 40.0, 112.0, 18.0)
-              withAttributes:OpnTextStyle(13.0, OpnColor(kTextSecondary), NSFontWeightSemibold)];
     }
 
     NSArray<NSString *> *items = controllerMode ? @[@"Games", @"Settings"] : @[@"Store", @"Library", @"Settings"];
     CGFloat widths[] = {82.0, 92.0, 78.0};
     CGFloat navWidth = controllerMode ? widths[0] + widths[1] + 10.0 : widths[2] + widths[0] + widths[1] + 8.0;
-    CGFloat x = controllerMode ? 30.0 : floor((NSWidth(bounds) - navWidth) / 2.0);
+    CGFloat x = floor((NSWidth(bounds) - navWidth) / 2.0);
     _storeNavFrame = controllerMode ? NSZeroRect : _storeNavFrame;
     CGFloat navRowY = controllerMode ? 64.0 : 15.0;
     NSRect segmentedRect = NSMakeRect(x - 8.0, navRowY, navWidth + 16.0, controllerMode ? 42.0 : 34.0);
@@ -507,7 +527,7 @@ static NSMenuItem *OPNStyledMenuItem(NSString *title, SEL action, id target, NSC
     [remaining drawInRect:NSInsetRect(planRect, 0, 5)
               withAttributes:remainingAttrs];
 
-    NSString *gameCount = self.gameCountText.length > 0 ? self.gameCountText : @"";
+    NSString *gameCount = controllerMode ? OPNCurrentHeaderTimeText() : (self.gameCountText.length > 0 ? self.gameCountText : @"");
     NSMutableParagraphStyle *gameCountStyle = [[NSMutableParagraphStyle alloc] init];
     gameCountStyle.alignment = controllerMode ? NSTextAlignmentRight : NSTextAlignmentCenter;
     NSMutableDictionary<NSAttributedStringKey, id> *gameCountAttrs = [OpnTextStyle(10, OpnColor(kTextMuted), NSFontWeightMedium) mutableCopy];
