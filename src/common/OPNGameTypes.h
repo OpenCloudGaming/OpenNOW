@@ -20,6 +20,7 @@ struct GameInfo {
     std::string launchAppId;
     std::string title;
     std::string shortName;
+    std::string description;
     std::string playType;
     std::string membershipTierLabel;
     std::string playabilityState;

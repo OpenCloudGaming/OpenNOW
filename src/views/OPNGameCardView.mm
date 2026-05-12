@@ -4,14 +4,20 @@
 #include <QuartzCore/QuartzCore.h>
 
 static const CGFloat gCardWidth = 220.0;
+static const CGFloat gControllerCardWidth = 164.0;
 static const CGFloat gImageHeight = gCardWidth;
 static const CGFloat gInfoHeight = 0.0;
 static const CGFloat gCardTotalHeight = gImageHeight + gInfoHeight;
+static const unsigned kConsoleBlue = 0x34C759;
+static const unsigned kConsoleBlueSoft = 0xA7F3BF;
+static const unsigned kConsoleDeepBlue = 0x06140A;
 static CGFloat OPNScaledCardWidth(void) {
+    if (OpnControllerModeEnabled()) return gControllerCardWidth;
     return floor(gCardWidth * OpnPosterSizeScale());
 }
 
 static CGFloat OPNScaledCardHeight(void) {
+    if (OpnControllerModeEnabled()) return gControllerCardWidth;
     return floor(gCardTotalHeight * OpnPosterSizeScale());
 }
 
@@ -93,7 +99,7 @@ static NSString *OPNStoreIconGlyph(NSString *name) {
 static NSColor *OPNStoreIconColor(NSString *name, BOOL selected) {
     (void)name;
     CGFloat alpha = selected ? 0.96 : 0.68;
-    return OpnColor(OPN::kBrandGreen, alpha);
+    return OpnColor(kConsoleBlueSoft, alpha);
 }
 
 static NSFont *OPNStoreIconFont(NSString *glyph) {
@@ -148,51 +154,51 @@ using namespace OPN;
     if (self) {
         _gameData = game;
         self.wantsLayer = YES;
-        self.layer.cornerRadius = 18.0;
+        self.layer.cornerRadius = 20.0;
         self.layer.masksToBounds = NO;
         self.layer.backgroundColor = NSColor.clearColor.CGColor;
         self.layer.borderWidth = 1.0;
-        self.layer.borderColor = OpnColor(0xFFFFFF, 0.10).CGColor;
+        self.layer.borderColor = OpnColor(0xFFFFFF, 0.13).CGColor;
         self.layer.shadowColor = NSColor.blackColor.CGColor;
-        self.layer.shadowOpacity = 0.34;
-        self.layer.shadowRadius = 18.0;
-        self.layer.shadowOffset = CGSizeMake(0.0, 14.0);
+        self.layer.shadowOpacity = 0.38;
+        self.layer.shadowRadius = 20.0;
+        self.layer.shadowOffset = CGSizeMake(0.0, 16.0);
 
         _reflectionLayer = [CALayer layer];
-        _reflectionLayer.backgroundColor = OpnColor(kBrandGreen, 0.22).CGColor;
-        _reflectionLayer.cornerRadius = 16.0;
+        _reflectionLayer.backgroundColor = OpnColor(kConsoleBlueSoft, 0.28).CGColor;
+        _reflectionLayer.cornerRadius = 18.0;
         _reflectionLayer.opacity = 0.0;
-        _reflectionLayer.shadowColor = OpnColor(kBrandGreen).CGColor;
-        _reflectionLayer.shadowOpacity = 0.72;
-        _reflectionLayer.shadowRadius = 22.0;
+        _reflectionLayer.shadowColor = OpnColor(kConsoleBlueSoft).CGColor;
+        _reflectionLayer.shadowOpacity = 0.68;
+        _reflectionLayer.shadowRadius = 24.0;
         _reflectionLayer.shadowOffset = CGSizeZero;
         [self.layer addSublayer:_reflectionLayer];
 
         _contentView = [[NSView alloc] initWithFrame:self.bounds];
         _contentView.wantsLayer = YES;
-        _contentView.layer.cornerRadius = 18.0;
+        _contentView.layer.cornerRadius = 20.0;
         _contentView.layer.masksToBounds = YES;
-        _contentView.layer.backgroundColor = OpnColor(kSurfaceRaised, 0.82).CGColor;
+        _contentView.layer.backgroundColor = OpnColor(kConsoleDeepBlue, 0.84).CGColor;
         [self addSubview:_contentView];
 
         _imageView = [[NSImageView alloc] initWithFrame:self.bounds];
         _imageView.imageScaling = NSImageScaleProportionallyUpOrDown;
         _imageView.wantsLayer = YES;
-        _imageView.layer.backgroundColor = OpnColor(kBackgroundC).CGColor;
+        _imageView.layer.backgroundColor = OpnColor(0x101827).CGColor;
         [_contentView addSubview:_imageView];
 
         _playButton = [[NSButton alloc] initWithFrame:
-            NSMakeRect((NSWidth(self.bounds) - 46) / 2, (NSHeight(self.bounds) - 46) / 2, 46, 46)];
-        _playButton.title = @"▶";
+            NSMakeRect((NSWidth(self.bounds) - 76) / 2, NSHeight(self.bounds) - 52, 76, 34)];
+        _playButton.title = @"PLAY";
         _playButton.bordered = NO;
-        _playButton.font = [NSFont systemFontOfSize:18 weight:NSFontWeightSemibold];
-        _playButton.contentTintColor = OpnColor(kAccentOn);
+        _playButton.font = [NSFont systemFontOfSize:12 weight:NSFontWeightBold];
+        _playButton.contentTintColor = OpnColor(kConsoleDeepBlue);
         _playButton.wantsLayer = YES;
-        _playButton.layer.cornerRadius = 23;
-        _playButton.layer.backgroundColor = OpnColor(kBrandGreen, 0.95).CGColor;
-        _playButton.layer.shadowColor = OpnColor(kBrandGreen).CGColor;
-        _playButton.layer.shadowOpacity = 0.22;
-        _playButton.layer.shadowRadius = 12;
+        _playButton.layer.cornerRadius = 17;
+        _playButton.layer.backgroundColor = OpnColor(0xFFFFFF, 0.94).CGColor;
+        _playButton.layer.shadowColor = OpnColor(kConsoleBlueSoft).CGColor;
+        _playButton.layer.shadowOpacity = 0.18;
+        _playButton.layer.shadowRadius = 14;
         _playButton.layer.shadowOffset = CGSizeZero;
         _playButton.hidden = YES;
         _playButton.target = self;
@@ -237,28 +243,30 @@ using namespace OPN;
 
 - (void)applyFocusStyle {
     BOOL selected = self.controllerFocused;
-    self.playButton.hidden = !selected;
+    BOOL controllerMode = OpnControllerModeEnabled();
+    self.playButton.hidden = OpnControllerModeEnabled() || !selected;
     [CATransaction begin];
     [CATransaction setAnimationDuration:0.22];
     [CATransaction setAnimationTimingFunction:[CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut]];
     self.layer.zPosition = selected ? 20.0 : 0.0;
-    self.layer.borderColor = selected ? OpnColor(kBrandGreen, 0.92).CGColor : OpnColor(0xFFFFFF, 0.10).CGColor;
-    self.layer.borderWidth = selected ? 2.0 : 1.0;
-    self.layer.shadowColor = OpnColor(kBrandGreen).CGColor;
-    self.layer.shadowOpacity = selected ? 0.62 : 0.30;
-    self.layer.shadowRadius = selected ? 56.0 : 18.0;
-    self.layer.shadowOffset = selected ? CGSizeMake(0.0, 26.0) : CGSizeMake(0.0, 12.0);
+    self.layer.borderColor = selected ? OpnColor(0xFFFFFF, 0.94).CGColor : OpnColor(0xFFFFFF, 0.13).CGColor;
+    self.layer.borderWidth = selected ? 3.0 : 1.0;
+    self.layer.shadowColor = selected ? OpnColor(kConsoleBlueSoft).CGColor : NSColor.blackColor.CGColor;
+    self.layer.shadowOpacity = selected ? (controllerMode ? 0.28 : 0.58) : 0.34;
+    self.layer.shadowRadius = selected ? (controllerMode ? 22.0 : 58.0) : 20.0;
+    self.layer.shadowOffset = selected ? (controllerMode ? CGSizeMake(0.0, 12.0) : CGSizeMake(0.0, 28.0)) : CGSizeMake(0.0, 14.0);
     CATransform3D transform = CATransform3DIdentity;
     transform.m34 = -1.0 / 760.0;
     if (selected) {
-        transform = CATransform3DTranslate(transform, 0.0, -10.0, 34.0);
-        transform = CATransform3DScale(transform, 1.105, 1.105, 1.0);
-        transform = CATransform3DRotate(transform, -0.052, 1.0, 0.0, 0.0);
+        transform = CATransform3DTranslate(transform, 0.0, controllerMode ? -10.0 : -14.0, 42.0);
+        CGFloat selectedScale = controllerMode ? 1.05 : 1.135;
+        transform = CATransform3DScale(transform, selectedScale, selectedScale, 1.0);
+        transform = CATransform3DRotate(transform, -0.034, 1.0, 0.0, 0.0);
     }
     self.layer.transform = transform;
-    self.reflectionLayer.opacity = selected ? 0.82 : 0.0;
-    self.playButton.layer.shadowOpacity = selected ? 0.72 : 0.22;
-    self.playButton.layer.shadowRadius = selected ? 20.0 : 12.0;
+    self.reflectionLayer.opacity = selected && !controllerMode ? 0.74 : 0.0;
+    self.playButton.layer.shadowOpacity = selected ? 0.58 : 0.18;
+    self.playButton.layer.shadowRadius = selected ? 22.0 : 14.0;
     [CATransaction commit];
 }
 
@@ -269,12 +277,12 @@ using namespace OPN;
     CGFloat width = NSWidth(self.bounds);
     CGFloat height = NSHeight(self.bounds);
     self.contentView.frame = self.bounds;
-    self.contentView.layer.cornerRadius = 18.0;
+    self.contentView.layer.cornerRadius = 20.0;
     self.imageView.frame = self.bounds;
-    self.playButton.frame = NSMakeRect((width - 46.0) / 2.0, (height - 46.0) / 2.0, 46.0, 46.0);
+    self.playButton.frame = NSMakeRect((width - 76.0) / 2.0, MAX(18.0, height - 52.0), 76.0, 34.0);
     self.storeChipsContainer.frame = NSMakeRect(16.0, MAX(0.0, height - 37.0), MAX(40.0, width - 32.0), 24.0);
-    self.reflectionLayer.frame = NSMakeRect(18.0, height - 8.0, MAX(24.0, width - 36.0), 16.0);
-    self.layer.shadowPath = [NSBezierPath bezierPathWithRoundedRect:self.bounds xRadius:18.0 yRadius:18.0].CGPath;
+    self.reflectionLayer.frame = NSMakeRect(16.0, height - 10.0, MAX(24.0, width - 32.0), 18.0);
+    self.layer.shadowPath = [NSBezierPath bezierPathWithRoundedRect:self.bounds xRadius:20.0 yRadius:20.0].CGPath;
 }
 
 - (void)playClicked {
@@ -325,12 +333,12 @@ using namespace OPN;
         chip.toolTip = OPNStorePrettyName(name ?: @"");
 
         if (selected) {
-            chip.layer.backgroundColor = OpnColor(kBrandGreen, 0.18).CGColor;
+            chip.layer.backgroundColor = OpnColor(kConsoleBlue, 0.18).CGColor;
             chip.layer.borderWidth = 1.0;
             chip.layer.borderColor = OPNStoreIconColor(name, YES).CGColor;
         } else {
-            chip.layer.backgroundColor = OpnColor(kBrandGreen, 0.08).CGColor;
-            chip.layer.borderColor = OpnColor(kBrandGreen, 0.14).CGColor;
+            chip.layer.backgroundColor = OpnColor(kConsoleBlue, 0.08).CGColor;
+            chip.layer.borderColor = OpnColor(kConsoleBlue, 0.14).CGColor;
             chip.layer.borderWidth = 1;
         }
 
@@ -408,14 +416,16 @@ using namespace OPN;
 
 - (void)mouseEntered:(NSEvent *)event {
     [super mouseEntered:event];
+    if (OpnControllerModeEnabled()) return;
     if (!self.controllerFocused) {
         self.playButton.hidden = NO;
-        self.layer.borderColor = OpnColor(0xFFFFFF, 0.22).CGColor;
+        self.layer.borderColor = OpnColor(0xFFFFFF, 0.28).CGColor;
     }
 }
 
 - (void)mouseExited:(NSEvent *)event {
     [super mouseExited:event];
+    if (OpnControllerModeEnabled()) return;
     if (!self.controllerFocused) {
         self.playButton.hidden = YES;
         self.layer.borderColor = OpnColor(0xFFFFFF, 0.10).CGColor;

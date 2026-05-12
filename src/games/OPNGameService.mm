@@ -177,6 +177,15 @@ static NSString *SafeStr(id value) {
     return (NSString *)value;
 }
 
+static NSString *FirstSafeString(NSDictionary *dictionary, NSArray<NSString *> *keys) {
+    if (![dictionary isKindOfClass:[NSDictionary class]]) return nil;
+    for (NSString *key in keys) {
+        NSString *value = SafeStr(dictionary[key]);
+        if (value.length > 0) return value;
+    }
+    return nil;
+}
+
 static double SafeMinutesAsHours(id value) {
     if ([value isKindOfClass:[NSNumber class]]) {
         return [(NSNumber *)value doubleValue] / 60.0;
@@ -199,6 +208,13 @@ GameInfo GameService::parseGameItem(NSDictionary *app) {
     { NSString *v = SafeStr(app[@"id"]); g.id = v ? [v UTF8String] : ""; g.uuid = g.id; }
     { NSString *v = SafeStr(app[@"title"]); g.title = v ? [v UTF8String] : ""; }
     { NSString *v = SafeStr(app[@"shortName"]); g.shortName = v ? [v UTF8String] : ""; }
+    { NSString *v = FirstSafeString(app, @[@"description", @"longDescription", @"shortDescription", @"summary"]); g.description = v ? [v UTF8String] : ""; }
+
+    NSDictionary *itemMetadata = app[@"itemMetadata"];
+    if (g.description.empty() && [itemMetadata isKindOfClass:[NSDictionary class]]) {
+        NSString *v = FirstSafeString(itemMetadata, @[@"description", @"longDescription", @"shortDescription", @"summary"]);
+        if (v) g.description = [v UTF8String];
+    }
 
     NSDictionary *serviceMeta = app[@"gfn"];
     if (serviceMeta && [serviceMeta isKindOfClass:[NSDictionary class]]) {
@@ -665,6 +681,8 @@ void GameService::FetchPublicGames(CatalogCallback completion) {
                     if (![title isKindOfClass:[NSString class]] || title.length == 0) continue;
 
                     GameInfo g;
+                    g.title = [title UTF8String];
+                    { NSString *v = FirstSafeString(item, @[@"description", @"longDescription", @"shortDescription", @"summary"]); g.description = v ? [v UTF8String] : ""; }
                     id rawId = item[@"id"];
                     NSString *sid = [rawId isKindOfClass:[NSNumber class]]
                         ? [(NSNumber *)rawId stringValue]
@@ -937,6 +955,8 @@ void GameService::FetchLibraryGames(CatalogCallback completion) {
                                     GameInfo merged = parseGameItem(meta);
                                     if (merged.imageUrl.empty() && !g.imageUrl.empty())
                                         merged.imageUrl = g.imageUrl;
+                                    if (merged.description.empty() && !g.description.empty())
+                                        merged.description = g.description;
                                     if (merged.variants.empty())
                                         merged.variants = g.variants;
                                     merged.isInLibrary = g.isInLibrary;
@@ -967,6 +987,7 @@ void GameService::FetchLibraryGames(CatalogCallback completion) {
                                     }
                                     if (existing.title.empty()) existing.title = g.title;
                                     if (existing.imageUrl.empty()) existing.imageUrl = g.imageUrl;
+                                    if (existing.description.empty()) existing.description = g.description;
                                 }
                             }
                             std::vector<GameInfo> finalGames;
