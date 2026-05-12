@@ -15,6 +15,8 @@ BOOL OpnAutoFullScreenEnabled(void);
 void OpnSetAutoFullScreenEnabled(BOOL enabled);
 BOOL OpnControllerModeEnabled(void);
 void OpnSetControllerModeEnabled(BOOL enabled);
+BOOL OpnBackgroundAnimationEnabled(void);
+void OpnSetBackgroundAnimationEnabled(BOOL enabled);
 
 typedef NS_ENUM(NSInteger, OPNConsoleTone) {
     OPNConsoleToneMove = 0,
