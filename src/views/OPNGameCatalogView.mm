@@ -12,10 +12,19 @@ static const CGFloat kGridPadding = 28.0;
 static const CGFloat kCardSpacing = 18.0;
 static const CGFloat kNavHeight = 62.0;
 static const CGFloat kToolbarHeight = 82.0;
-static const unsigned kConsoleBlue = 0x34C759;
-static const unsigned kConsoleBlueSoft = 0xA7F3BF;
-static const unsigned kConsoleDeepBlue = 0x06140A;
 static NSString *const OPNFavoriteGameIdsDefaultsKey = @"OpenNOW.Library.FavoriteGameIds";
+
+static unsigned OPNControllerAccentRGB(void) {
+    return OpnCurrentAccentRGB();
+}
+
+static unsigned OPNControllerAccentSoftRGB(void) {
+    return OpnBlendRGB(OpnCurrentAccentRGB(), 0xFFFFFF, 0.42);
+}
+
+static unsigned OPNControllerAccentBlackRGB(CGFloat blackMix) {
+    return OpnBlendRGB(OpnCurrentAccentRGB(), 0x000000, blackMix);
+}
 
 static NSString *OPNCatalogString(const std::string &value, NSString *fallback = @"") {
     return value.empty() ? fallback : [NSString stringWithUTF8String:value.c_str()];
@@ -147,9 +156,9 @@ static NSString *OPNCatalogString(const std::string &value, NSString *fallback =
     NSRect bounds = self.bounds;
     CGFloat phase = (CGFloat)(CACurrentMediaTime() - self.animationStartTime);
     NSGradient *base = [[NSGradient alloc] initWithColors:@[
-        OpnColor(0x041006, 0.99),
-        OpnColor(0x0B2610, 0.99),
-        OpnColor(0x123D1A, 0.98),
+        OpnColor(OPNControllerAccentBlackRGB(0.95), 1.0),
+        OpnColor(OPNControllerAccentBlackRGB(0.90), 1.0),
+        OpnColor(OPNControllerAccentBlackRGB(0.97), 1.0),
     ]];
     [base drawInRect:bounds angle:88.0];
 
@@ -169,7 +178,7 @@ static NSString *OPNCatalogString(const std::string &value, NSString *fallback =
                 + sin(t * 13.0 - phase * 0.20 + (CGFloat)band) * 5.0;
             [ribbon lineToPoint:NSMakePoint(x, y)];
         }
-        NSColor *stroke = band % 3 == 0 ? OpnColor(0xFFFFFF, 0.038) : OpnColor(kConsoleBlueSoft, 0.044);
+        NSColor *stroke = band % 3 == 0 ? OpnColor(0xFFFFFF, 0.030) : OpnColor(OPNControllerAccentSoftRGB(), 0.038);
         [stroke setStroke];
         ribbon.lineWidth = band == 4 ? 2.4 : 1.1;
         [ribbon stroke];
@@ -180,12 +189,12 @@ static NSString *OPNCatalogString(const std::string &value, NSString *fallback =
         CGFloat y = fmod((CGFloat)(i * 43) + sin(phase * 0.24 + (CGFloat)i) * 18.0, MAX(1.0, height));
         CGFloat radius = 0.7 + (CGFloat)(i % 3) * 0.32;
         NSBezierPath *spark = [NSBezierPath bezierPathWithOvalInRect:NSMakeRect(x, y, radius, radius)];
-        [OpnColor(i % 5 == 0 ? 0xFFFFFF : kConsoleBlueSoft, i % 5 == 0 ? 0.10 : 0.07) setFill];
+        [OpnColor(i % 5 == 0 ? 0xFFFFFF : OPNControllerAccentSoftRGB(), i % 5 == 0 ? 0.10 : 0.07) setFill];
         [spark fill];
     }
 
-    NSGradient *vignette = [[NSGradient alloc] initWithStartingColor:OpnColor(0x08220E, 0.0)
-                                                        endingColor:OpnColor(0x041006, 0.42)];
+    NSGradient *vignette = [[NSGradient alloc] initWithStartingColor:OpnColor(OPNControllerAccentBlackRGB(0.90), 0.0)
+                                                        endingColor:OpnColor(OPNControllerAccentBlackRGB(0.99), 0.42)];
     [vignette drawInRect:bounds angle:-90.0];
 }
 
@@ -474,9 +483,9 @@ static NSImage *OPNControllerPromptIcon(NSString *button, OPNControllerPromptSty
         CGFloat chipWidth = MAX(82.0, titleWidth + 50.0);
         NSRect chipRect = NSMakeRect(x, y, chipWidth, 34.0);
         NSBezierPath *chip = [NSBezierPath bezierPathWithRoundedRect:chipRect xRadius:17.0 yRadius:17.0];
-        [OpnColor(0xFFFFFF, 0.070) setFill];
+        [OpnColor(OPNControllerAccentRGB(), 0.070) setFill];
         [chip fill];
-        OPNStrokePath(chip, OpnColor(0xFFFFFF, 0.14), 1.0);
+        OPNStrokePath(chip, OpnColor(OPNControllerAccentSoftRGB(), 0.14), 1.0);
 
         NSImage *icon = OPNControllerPromptIcon(button, style);
         [icon drawInRect:NSMakeRect(NSMinX(chipRect) + 9.0, NSMinY(chipRect) + 5.0, 24.0, 24.0)
@@ -561,7 +570,7 @@ using namespace OPN;
         _searchField.appearance = [NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];
         _searchField.wantsLayer = YES;
         _searchField.layer.cornerRadius = 14;
-        _searchField.layer.backgroundColor = OpnColor(0x15171C, 0.92).CGColor;
+        _searchField.layer.backgroundColor = OpnColor(OPNControllerAccentBlackRGB(0.88), 0.92).CGColor;
         _searchField.layer.borderColor = OpnColor(0xFFFFFF, 0.13).CGColor;
         _searchField.layer.borderWidth = 1;
         if ([_searchField.cell respondsToSelector:@selector(setDrawsBackground:)]) {
@@ -647,8 +656,8 @@ using namespace OPN;
         _controllerDetailView.layer.cornerRadius = 0.0;
         _controllerDetailView.layer.borderWidth = 0.0;
         _controllerDetailView.layer.borderColor = OpnColor(0xFFFFFF, 0.0).CGColor;
-        _controllerDetailView.layer.backgroundColor = OpnColor(0x020611, 0.10).CGColor;
-        _controllerDetailView.layer.shadowColor = OpnColor(kConsoleBlue).CGColor;
+        _controllerDetailView.layer.backgroundColor = OpnColor(OPNControllerAccentBlackRGB(0.90), 0.10).CGColor;
+        _controllerDetailView.layer.shadowColor = OpnColor(OPNControllerAccentRGB()).CGColor;
         _controllerDetailView.layer.shadowOpacity = 0.0;
         _controllerDetailView.layer.shadowRadius = 0.0;
         _controllerDetailView.layer.shadowOffset = CGSizeZero;
@@ -658,16 +667,16 @@ using namespace OPN;
         _controllerDetailView.layer.transform = detailTransform;
 
         _controllerDetailGradientLayer = [CAGradientLayer layer];
-        _controllerDetailGradientLayer.colors = @[(id)OpnColor(kConsoleBlue, 0.16).CGColor,
-                                                  (id)OpnColor(0xFFFFFF, 0.040).CGColor,
-                                                  (id)OpnColor(kBlack, 0.0).CGColor];
+        _controllerDetailGradientLayer.colors = @[(id)OpnColor(OPNControllerAccentRGB(), 0.16).CGColor,
+                                                   (id)OpnColor(0xFFFFFF, 0.040).CGColor,
+                                                   (id)OpnColor(OPNControllerAccentBlackRGB(0.96), 0.0).CGColor];
         _controllerDetailGradientLayer.locations = @[@0.0, @0.46, @1.0];
         _controllerDetailGradientLayer.startPoint = CGPointMake(0.0, 0.0);
         _controllerDetailGradientLayer.endPoint = CGPointMake(1.0, 1.0);
         [_controllerDetailView.layer addSublayer:_controllerDetailGradientLayer];
 
         _controllerDetailAccentLayer = [CALayer layer];
-        _controllerDetailAccentLayer.backgroundColor = OpnColor(kConsoleBlueSoft, 0.86).CGColor;
+        _controllerDetailAccentLayer.backgroundColor = OpnColor(OPNControllerAccentSoftRGB(), 0.86).CGColor;
         _controllerDetailAccentLayer.cornerRadius = 2.0;
         [_controllerDetailView.layer addSublayer:_controllerDetailAccentLayer];
         [self addSubview:_controllerDetailView];
@@ -679,7 +688,7 @@ using namespace OPN;
         _controllerDetailMetaLabel = OpnLabel(@"", NSZeroRect, 15.0, OpnColor(kTextSecondary), NSFontWeightMedium);
         [_controllerDetailView addSubview:_controllerDetailMetaLabel];
 
-        _controllerDetailStoreLabel = OpnLabel(@"", NSZeroRect, 16.0, OpnColor(kConsoleBlueSoft), NSFontWeightSemibold);
+        _controllerDetailStoreLabel = OpnLabel(@"", NSZeroRect, 16.0, OpnColor(OPNControllerAccentSoftRGB()), NSFontWeightSemibold);
         [_controllerDetailView addSubview:_controllerDetailStoreLabel];
 
         _controllerDetailStatsLabel = OpnLabel(@"", NSZeroRect, 14.0, OpnColor(kTextSecondary), NSFontWeightMedium);
@@ -730,9 +739,22 @@ using namespace OPN;
     }
 }
 
+- (void)applyControllerAccentColors {
+    self.searchField.layer.backgroundColor = OpnColor(OPNControllerAccentBlackRGB(0.88), 0.92).CGColor;
+    self.controllerDetailView.layer.backgroundColor = OpnColor(OPNControllerAccentBlackRGB(0.90), 0.10).CGColor;
+    self.controllerDetailView.layer.shadowColor = OpnColor(OPNControllerAccentRGB()).CGColor;
+    self.controllerDetailGradientLayer.colors = @[(id)OpnColor(OPNControllerAccentRGB(), 0.16).CGColor,
+                                                  (id)OpnColor(0xFFFFFF, 0.040).CGColor,
+                                                  (id)OpnColor(OPNControllerAccentBlackRGB(0.96), 0.0).CGColor];
+    self.controllerDetailAccentLayer.backgroundColor = OpnColor(OPNControllerAccentSoftRGB(), 0.86).CGColor;
+    self.controllerDetailStoreLabel.textColor = OpnColor(OPNControllerAccentSoftRGB());
+    self.layer.backgroundColor = OpnControllerModeEnabled() ? OpnColor(OPNControllerAccentBlackRGB(0.92), 0.20).CGColor : [NSColor clearColor].CGColor;
+    [self.controllerElectricBackgroundView setNeedsDisplay:YES];
+}
+
 - (void)interfacePreferencesChanged:(NSNotification *)notification {
     (void)notification;
-    self.layer.backgroundColor = OpnControllerModeEnabled() ? OpnColor(kConsoleDeepBlue, 0.20).CGColor : [NSColor clearColor].CGColor;
+    [self applyControllerAccentColors];
     [self renderGrid];
     [self startGamepadNavigationIfNeeded];
 }
@@ -1235,10 +1257,10 @@ using namespace OPN;
             BOOL selected = [button.identifier isEqualToString:self.selectedCategoryId];
             CGFloat buttonWidth = NSWidth(button.frame);
             button.frame = NSMakeRect(categoryX, 0.0, buttonWidth, 30.0);
-            button.contentTintColor = selected ? OpnColor(0x07101E) : OpnColor(kTextSecondary);
+            button.contentTintColor = selected ? OpnColor(OPNControllerAccentBlackRGB(0.88)) : OpnColor(kTextSecondary);
             button.font = [NSFont systemFontOfSize:12.0 weight:NSFontWeightSemibold];
             button.layer.cornerRadius = 15.0;
-            button.layer.backgroundColor = selected ? OpnColor(0xFFFFFF, 0.88).CGColor : OpnColor(0xFFFFFF, 0.080).CGColor;
+            button.layer.backgroundColor = selected ? OpnColor(OPNControllerAccentSoftRGB(), 0.88).CGColor : OpnColor(OPNControllerAccentRGB(), 0.080).CGColor;
             button.layer.borderWidth = selected ? 0.0 : 1.0;
             button.layer.borderColor = OpnColor(0xFFFFFF, 0.12).CGColor;
             categoryX += buttonWidth + 8.0;
@@ -1414,7 +1436,7 @@ using namespace OPN;
     NSView *overlay = [[NSView alloc] initWithFrame:self.bounds];
     overlay.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
     overlay.wantsLayer = YES;
-    overlay.layer.backgroundColor = OpnColor(kBlack, 0.62).CGColor;
+    overlay.layer.backgroundColor = OpnColor(OPNControllerAccentBlackRGB(0.96), 0.62).CGColor;
 
     CGFloat panelWidth = MIN(760.0, MAX(420.0, NSWidth(self.bounds) - 96.0));
     CGFloat panelHeight = 390.0;
@@ -1426,8 +1448,8 @@ using namespace OPN;
     panel.layer.cornerRadius = 30.0;
     panel.layer.borderWidth = 1.5;
     panel.layer.borderColor = OpnColor(0xFFFFFF, 0.22).CGColor;
-    panel.layer.backgroundColor = OpnColor(0x07101E, 0.96).CGColor;
-    panel.layer.shadowColor = OpnColor(kConsoleBlue).CGColor;
+    panel.layer.backgroundColor = OpnColor(OPNControllerAccentBlackRGB(0.88), 0.96).CGColor;
+    panel.layer.shadowColor = OpnColor(OPNControllerAccentRGB()).CGColor;
     panel.layer.shadowOpacity = 0.28;
     panel.layer.shadowRadius = 48.0;
     panel.layer.shadowOffset = CGSizeZero;
@@ -1445,7 +1467,7 @@ using namespace OPN;
     NSTextField *storeLabel = OpnLabel([NSString stringWithFormat:@"Selected Store: %@", store],
                                        NSMakeRect(38.0, 92.0, panelWidth - 76.0, 24.0),
                                        15.0,
-                                       OpnColor(kConsoleBlueSoft),
+                                       OpnColor(OPNControllerAccentSoftRGB()),
                                        NSFontWeightSemibold);
     [panel addSubview:storeLabel];
 
@@ -1456,7 +1478,7 @@ using namespace OPN;
     bodyLabel.maximumNumberOfLines = 3;
     [panel addSubview:bodyLabel];
 
-    NSButton *playButton = OpnButton(@"Play", NSMakeRect(38.0, panelHeight - 96.0, 180.0, 52.0), OpnColor(kConsoleBlueSoft, 0.96), OpnColor(0x06101F));
+    NSButton *playButton = OpnButton(@"Play", NSMakeRect(38.0, panelHeight - 96.0, 180.0, 52.0), OpnColor(OPNControllerAccentSoftRGB(), 0.96), OpnColor(OPNControllerAccentBlackRGB(0.88)));
     playButton.target = self;
     playButton.action = @selector(detailsPlayClicked:);
     playButton.layer.cornerRadius = 18.0;

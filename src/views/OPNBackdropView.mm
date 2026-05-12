@@ -17,9 +17,17 @@ static BOOL OPNBackdropControllerNavigationActive(NSView *view) {
     return window.contentView == view || [view isDescendantOf:window.contentView];
 }
 
-static const unsigned kControllerConsoleBlue = 0x34C759;
-static const unsigned kControllerConsoleBlueSoft = 0xA7F3BF;
-static const unsigned kControllerConsoleDeepBlue = 0x06140A;
+static unsigned OPNControllerAccentRGB(void) {
+    return OpnCurrentAccentRGB();
+}
+
+static unsigned OPNControllerAccentSoftRGB(void) {
+    return OpnBlendRGB(OpnCurrentAccentRGB(), 0xFFFFFF, 0.42);
+}
+
+static unsigned OPNControllerAccentBlackRGB(CGFloat blackMix) {
+    return OpnBlendRGB(OpnCurrentAccentRGB(), 0x000000, blackMix);
+}
 
 @implementation OPNBackdropView {
     NSRect _storeNavFrame;
@@ -246,9 +254,9 @@ static NSMenuItem *OPNStyledMenuItem(NSString *title, SEL action, id target, NSC
 
     NSGradient *edgeWash = controllerMode
         ? [[NSGradient alloc] initWithColors:@[
-            OpnColor(0x06140A, 1.0),
-            OpnColor(0x0D3516, 1.0),
-            OpnColor(0x061C0C, 1.0),
+            OpnColor(OPNControllerAccentBlackRGB(0.95), 1.0),
+            OpnColor(OPNControllerAccentBlackRGB(0.90), 1.0),
+            OpnColor(OPNControllerAccentBlackRGB(0.97), 1.0),
         ]]
         : [[NSGradient alloc] initWithColors:@[
             OpnColor(kBackgroundB, 0.94),
@@ -265,14 +273,8 @@ static NSMenuItem *OPNStyledMenuItem(NSString *title, SEL action, id target, NSC
 
         NSBezierPath *lowerGlow = [NSBezierPath bezierPathWithOvalInRect:
             NSMakeRect(NSWidth(bounds) - 500.0, NSHeight(bounds) - 360.0, 520.0, 520.0)];
-        [OpnColor(kLinkBlue, 0.045) setFill];
+        [OpnColor(kBrandGreen, 0.045) setFill];
         [lowerGlow fill];
-    }
-
-    if (controllerMode) {
-        NSBezierPath *horizon = [NSBezierPath bezierPathWithRoundedRect:NSMakeRect(24.0, 117.0, NSWidth(bounds) - 48.0, 1.0) xRadius:0.5 yRadius:0.5];
-        [OpnColor(kControllerConsoleBlueSoft, 0.22) setFill];
-        [horizon fill];
     }
 
     if (self.mode == OPNBackdropModeAuth) {
@@ -281,10 +283,12 @@ static NSMenuItem *OPNStyledMenuItem(NSString *title, SEL action, id target, NSC
 
     CGFloat navHeight = controllerMode ? 118.0 : 64.0;
     NSRect navRect = NSMakeRect(0, 0, NSWidth(bounds), navHeight);
-    [controllerMode ? OpnColor(0x0B2A12, 0.92) : OpnColor(0x1C1D21, 0.82) setFill];
+    [controllerMode ? OpnColor(OPNControllerAccentBlackRGB(0.88), 0.92) : OpnColor(0x1C1D21, 0.82) setFill];
     NSRectFill(navRect);
-    [OpnColor(0xFFFFFF, 0.08) setFill];
-    NSRectFill(NSMakeRect(0, navHeight - 1.0, NSWidth(bounds), 1));
+    if (!controllerMode) {
+        [OpnColor(0xFFFFFF, 0.08) setFill];
+        NSRectFill(NSMakeRect(0, navHeight - 1.0, NSWidth(bounds), 1));
+    }
 
     if (!controllerMode) {
         [@"OpenNOW" drawInRect:NSMakeRect(32.0, 21.0, 132, 22)
@@ -296,7 +300,7 @@ static NSMenuItem *OPNStyledMenuItem(NSString *title, SEL action, id target, NSC
         timeFormatter.dateFormat = @"h:mm a";
         NSString *timeText = [[timeFormatter stringFromDate:NSDate.date] uppercaseString];
         NSBezierPath *timeGlow = [NSBezierPath bezierPathWithRoundedRect:NSMakeRect(20.0, 32.0, 128.0, 30.0) xRadius:15.0 yRadius:15.0];
-        [OpnColor(0xFFFFFF, 0.055) setFill];
+        [OpnColor(OPNControllerAccentRGB(), 0.055) setFill];
         [timeGlow fill];
         [timeText drawInRect:NSMakeRect(32.0, 40.0, 112.0, 18.0)
               withAttributes:OpnTextStyle(13.0, OpnColor(kTextSecondary), NSFontWeightSemibold)];
@@ -310,7 +314,7 @@ static NSMenuItem *OPNStyledMenuItem(NSString *title, SEL action, id target, NSC
     CGFloat navRowY = controllerMode ? 64.0 : 15.0;
     NSRect segmentedRect = NSMakeRect(x - 8.0, navRowY, navWidth + 16.0, controllerMode ? 42.0 : 34.0);
     NSBezierPath *segmented = [NSBezierPath bezierPathWithRoundedRect:segmentedRect xRadius:controllerMode ? 21.0 : 10.0 yRadius:controllerMode ? 21.0 : 10.0];
-    [controllerMode ? OpnColor(0xFFFFFF, 0.055) : OpnColor(0xFFFFFF, 0.055) setFill];
+    [controllerMode ? OpnColor(OPNControllerAccentRGB(), 0.055) : OpnColor(0xFFFFFF, 0.055) setFill];
     [segmented fill];
     if (controllerMode) {
         [OpnColor(0xFFFFFF, 0.18) setStroke];
@@ -329,10 +333,10 @@ static NSMenuItem *OPNStyledMenuItem(NSString *title, SEL action, id target, NSC
         if ([item isEqualToString:@"Settings"]) _settingsNavFrame = itemRect;
         if (active) {
             NSBezierPath *pill = [NSBezierPath bezierPathWithRoundedRect:itemRect xRadius:controllerMode ? 17.0 : 8.0 yRadius:controllerMode ? 17.0 : 8.0];
-            [controllerMode ? OpnColor(0xFFFFFF, 0.20) : OpnColor(0xFFFFFF, 0.14) setFill];
+            [controllerMode ? OpnColor(OPNControllerAccentRGB(), 0.20) : OpnColor(0xFFFFFF, 0.14) setFill];
             [pill fill];
             if (controllerMode) {
-                [OpnColor(kControllerConsoleBlueSoft, 0.66) setStroke];
+                [OpnColor(OPNControllerAccentSoftRGB(), 0.66) setStroke];
                 pill.lineWidth = 1.0;
                 [pill stroke];
             }
@@ -351,10 +355,10 @@ static NSMenuItem *OPNStyledMenuItem(NSString *title, SEL action, id target, NSC
     CGFloat controllerStatsX = MAX(NSMaxX(segmentedRect) + 18.0, NSWidth(bounds) - controllerStatsWidth - 28.0);
     NSRect planRect = controllerMode ? NSMakeRect(controllerStatsX, 72.0, 132.0, 26.0) : NSMakeRect(NSWidth(bounds) - 294, 11.0, 108, 26);
     NSBezierPath *planPill = [NSBezierPath bezierPathWithRoundedRect:planRect xRadius:14 yRadius:14];
-    [controllerMode ? OpnColor(0xFFFFFF, 0.075) : OpnColor(0xFFFFFF, 0.075) setFill];
+    [controllerMode ? OpnColor(OPNControllerAccentRGB(), 0.075) : OpnColor(0xFFFFFF, 0.075) setFill];
     [planPill fill];
     if (controllerMode) {
-        [OpnColor(kControllerConsoleBlueSoft, 0.24) setStroke];
+        [OpnColor(OPNControllerAccentSoftRGB(), 0.24) setStroke];
         planPill.lineWidth = 1.0;
         [planPill stroke];
     }
@@ -388,12 +392,12 @@ static NSMenuItem *OPNStyledMenuItem(NSString *title, SEL action, id target, NSC
                                       hints:@{NSImageHintInterpolation: @(NSImageInterpolationHigh)}];
         [NSGraphicsContext restoreGraphicsState];
     } else {
-        [OpnColor(kControllerConsoleBlueSoft, 0.90) setFill];
+        [OpnColor(OPNControllerAccentSoftRGB(), 0.90) setFill];
         [avatar fill];
         NSString *initial = name.length > 0 ? [[name substringToIndex:1] uppercaseString] : @"U";
         NSMutableParagraphStyle *avatarStyle = [[NSMutableParagraphStyle alloc] init];
         avatarStyle.alignment = NSTextAlignmentCenter;
-        NSMutableDictionary<NSAttributedStringKey, id> *avatarAttrs = [OpnTextStyle(13, OpnColor(kControllerConsoleDeepBlue), NSFontWeightBold) mutableCopy];
+        NSMutableDictionary<NSAttributedStringKey, id> *avatarAttrs = [OpnTextStyle(13, OpnColor(OPNControllerAccentBlackRGB(0.88)), NSFontWeightBold) mutableCopy];
         avatarAttrs[NSParagraphStyleAttributeName] = avatarStyle;
         [initial drawInRect:NSMakeRect(NSMinX(avatarRect), NSMinY(avatarRect) + 7, 30, 16) withAttributes:avatarAttrs];
     }
@@ -469,9 +473,9 @@ static NSMenuItem *OPNStyledMenuItem(NSString *title, SEL action, id target, NSC
     button.identifier = identifier ?: @"";
     button.wantsLayer = YES;
     button.layer.cornerRadius = 14.0;
-    button.layer.backgroundColor = selected ? OpnColor(kControllerConsoleBlue, 0.20).CGColor : OpnColor(0xFFFFFF, 0.045).CGColor;
+    button.layer.backgroundColor = selected ? OpnColor(OPNControllerAccentRGB(), 0.20).CGColor : OpnColor(OPNControllerAccentRGB(), 0.045).CGColor;
     button.layer.borderWidth = selected ? 1.0 : 0.0;
-    button.layer.borderColor = OpnColor(kControllerConsoleBlueSoft, 0.52).CGColor;
+    button.layer.borderColor = OpnColor(OPNControllerAccentSoftRGB(), 0.52).CGColor;
     NSColor *textColor = warning ? OpnColor(0xFF8A8A) : (selected ? OpnColor(OPN::kTextPrimary) : OpnColor(OPN::kTextSecondary));
     NSString *displayTitle = selected ? [NSString stringWithFormat:@"%@  Current", title] : title;
     NSMutableParagraphStyle *style = [[NSMutableParagraphStyle alloc] init];
@@ -511,8 +515,8 @@ static NSMenuItem *OPNStyledMenuItem(NSString *title, SEL action, id target, NSC
     menu.layer.cornerRadius = 24.0;
     menu.layer.borderWidth = 1.0;
     menu.layer.borderColor = OpnColor(0xFFFFFF, 0.18).CGColor;
-    menu.layer.backgroundColor = OpnColor(kControllerConsoleDeepBlue, 0.96).CGColor;
-    menu.layer.shadowColor = OpnColor(kControllerConsoleBlue).CGColor;
+    menu.layer.backgroundColor = OpnColor(OPNControllerAccentBlackRGB(0.88), 0.96).CGColor;
+    menu.layer.shadowColor = OpnColor(OPNControllerAccentRGB()).CGColor;
     menu.layer.shadowOpacity = 0.24;
     menu.layer.shadowRadius = 30.0;
     menu.layer.shadowOffset = CGSizeZero;
@@ -545,7 +549,7 @@ static NSMenuItem *OPNStyledMenuItem(NSString *title, SEL action, id target, NSC
 
     NSView *divider = [[NSView alloc] initWithFrame:NSMakeRect(18.0, y + 8.0, menuWidth - 36.0, 1.0)];
     divider.wantsLayer = YES;
-    divider.layer.backgroundColor = OpnColor(0xFFFFFF, 0.10).CGColor;
+    divider.layer.backgroundColor = OpnColor(OPNControllerAccentSoftRGB(), 0.10).CGColor;
     [menu addSubview:divider];
     y += 24.0;
 
