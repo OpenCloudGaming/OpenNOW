@@ -17,6 +17,7 @@ NS_ASSUME_NONNULL_BEGIN
     (BOOL success, const std::string &errorMessage);
 
 - (void)requestQuitGameConfirmation;
+- (void)shutdownForApplicationTermination;
 
 @end
 
