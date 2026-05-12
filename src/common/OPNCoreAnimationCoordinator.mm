@@ -73,6 +73,7 @@ static NSValue *OPNCurrentTransformValue(CALayer *layer) {
     targetTransform = CATransform3DTranslate(targetTransform, 0.0, -10.0 * focusAmount, 42.0 * focusAmount);
     targetTransform = CATransform3DScale(targetTransform, scale, scale, 1.0);
     targetTransform = CATransform3DRotate(targetTransform, -0.030 * focusAmount, 1.0, 0.0, 0.0);
+    NSValue *currentTransform = OPNCurrentTransformValue(cardLayer);
 
     [CATransaction begin];
     [CATransaction setDisableActions:YES];
@@ -85,7 +86,7 @@ static NSValue *OPNCurrentTransformValue(CALayer *layer) {
     cardLayer.shadowOffset = CGSizeMake(0.0, 12.0 + 16.0 * focusAmount);
 
     CASpringAnimation *transformSpring = OPNSpringAnimation(@"transform",
-                                                            OPNCurrentTransformValue(cardLayer),
+                                                            currentTransform,
                                                             [NSValue valueWithCATransform3D:targetTransform],
                                                             0.78,
                                                             560.0,
@@ -132,6 +133,7 @@ static NSValue *OPNCurrentTransformValue(CALayer *layer) {
     targetTransform.m34 = -1.0 / 900.0;
     targetTransform = CATransform3DTranslate(targetTransform, 0.0, expanded ? -18.0 : 0.0, expanded ? 80.0 : 0.0);
     targetTransform = CATransform3DScale(targetTransform, scale, scale, 1.0);
+    NSValue *currentTransform = OPNCurrentTransformValue(cardLayer);
 
     CIFilter *blurFilter = [CIFilter filterWithName:@"CIGaussianBlur"];
     if (!blurFilter) return;
@@ -159,7 +161,7 @@ static NSValue *OPNCurrentTransformValue(CALayer *layer) {
     [backgroundLayer addAnimation:blurAnimation forKey:@"opn.metadata.blur"];
 
     CASpringAnimation *transformSpring = OPNSpringAnimation(@"transform",
-                                                            OPNCurrentTransformValue(cardLayer),
+                                                            currentTransform,
                                                             [NSValue valueWithCATransform3D:targetTransform],
                                                             0.85,
                                                             360.0,
