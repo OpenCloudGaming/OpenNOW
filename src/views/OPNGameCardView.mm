@@ -124,6 +124,7 @@ static NSString *OPNSteamArtworkURLForGame(const OPN::GameInfo &game) {
 
 @interface OPNGameCardView () <CALayerDelegate>
 @property (nonatomic, assign) OPN::GameInfo gameData;
+@property (nonatomic, strong) NSView *contentView;
 @property (nonatomic, strong) NSImageView *imageView;
 @property (nonatomic, strong) NSView *gradientOverlay;
 @property (nonatomic, strong) NSView *storeChipsContainer;
@@ -150,16 +151,27 @@ using namespace OPN;
         _gameData = game;
         self.wantsLayer = YES;
         self.layer.cornerRadius = 18.0;
-        self.layer.masksToBounds = YES;
-        self.layer.backgroundColor = OpnColor(kSurfaceRaised, 0.82).CGColor;
+        self.layer.masksToBounds = NO;
+        self.layer.backgroundColor = NSColor.clearColor.CGColor;
         self.layer.borderWidth = 1.0;
         self.layer.borderColor = OpnColor(0xFFFFFF, 0.10).CGColor;
+        self.layer.shadowColor = NSColor.blackColor.CGColor;
+        self.layer.shadowOpacity = 0.34;
+        self.layer.shadowRadius = 18.0;
+        self.layer.shadowOffset = CGSizeMake(0.0, 14.0);
+
+        _contentView = [[NSView alloc] initWithFrame:self.bounds];
+        _contentView.wantsLayer = YES;
+        _contentView.layer.cornerRadius = 18.0;
+        _contentView.layer.masksToBounds = YES;
+        _contentView.layer.backgroundColor = OpnColor(kSurfaceRaised, 0.82).CGColor;
+        [self addSubview:_contentView];
 
         _imageView = [[NSImageView alloc] initWithFrame:self.bounds];
         _imageView.imageScaling = NSImageScaleProportionallyUpOrDown;
         _imageView.wantsLayer = YES;
         _imageView.layer.backgroundColor = OpnColor(kBackgroundC).CGColor;
-        [self addSubview:_imageView];
+        [_contentView addSubview:_imageView];
 
         _gradientOverlay = [[NSView alloc] initWithFrame:NSMakeRect(0, NSHeight(self.bounds) - gGradientOverlayHeight, NSWidth(self.bounds), gGradientOverlayHeight)];
         _gradientOverlay.wantsLayer = YES;
@@ -173,7 +185,7 @@ using namespace OPN;
         gradient.startPoint = CGPointMake(0.5, 1.0);
         gradient.endPoint = CGPointMake(0.5, 0.0);
         _gradientOverlay.layer = gradient;
-        [self addSubview:_gradientOverlay];
+        [_contentView addSubview:_gradientOverlay];
 
         _playButton = [[NSButton alloc] initWithFrame:
             NSMakeRect((NSWidth(self.bounds) - 46) / 2, (NSHeight(self.bounds) - 46) / 2, 46, 46)];
@@ -210,7 +222,7 @@ using namespace OPN;
 
         _storeChipsContainer = [[NSView alloc] initWithFrame:
             NSMakeRect(16, NSHeight(self.bounds) - 37, NSWidth(self.bounds) - 32, 24)];
-        [self addSubview:_storeChipsContainer];
+        [_contentView addSubview:_storeChipsContainer];
         [self buildStoreChips];
 
         [self loadImage];
@@ -232,11 +244,26 @@ using namespace OPN;
 - (void)applyFocusStyle {
     BOOL selected = self.controllerFocused;
     self.playButton.hidden = !selected;
-    self.layer.borderColor = OpnColor(0xFFFFFF, 0.10).CGColor;
-    self.layer.borderWidth = 1.0;
-    self.layer.shadowOpacity = 0.0;
-    self.layer.shadowRadius = 0.0;
-    self.layer.shadowOffset = CGSizeZero;
+    [CATransaction begin];
+    [CATransaction setAnimationDuration:0.22];
+    [CATransaction setAnimationTimingFunction:[CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut]];
+    self.layer.zPosition = selected ? 20.0 : 0.0;
+    self.layer.borderColor = selected ? OpnColor(kBrandGreen, 0.92).CGColor : OpnColor(0xFFFFFF, 0.10).CGColor;
+    self.layer.borderWidth = selected ? 2.0 : 1.0;
+    self.layer.shadowColor = OpnColor(kBrandGreen).CGColor;
+    self.layer.shadowOpacity = selected ? 0.62 : 0.30;
+    self.layer.shadowRadius = selected ? 44.0 : 18.0;
+    self.layer.shadowOffset = selected ? CGSizeMake(0.0, 22.0) : CGSizeMake(0.0, 12.0);
+    CATransform3D transform = CATransform3DIdentity;
+    transform.m34 = -1.0 / 900.0;
+    if (selected) {
+        transform = CATransform3DScale(transform, 1.075, 1.075, 1.0);
+        transform = CATransform3DRotate(transform, -0.035, 1.0, 0.0, 0.0);
+    }
+    self.layer.transform = transform;
+    self.playButton.layer.shadowOpacity = selected ? 0.72 : 0.22;
+    self.playButton.layer.shadowRadius = selected ? 20.0 : 12.0;
+    [CATransaction commit];
 }
 
 - (BOOL)isFlipped { return YES; }
@@ -245,10 +272,13 @@ using namespace OPN;
     [super layout];
     CGFloat width = NSWidth(self.bounds);
     CGFloat height = NSHeight(self.bounds);
+    self.contentView.frame = self.bounds;
+    self.contentView.layer.cornerRadius = 18.0;
     self.imageView.frame = self.bounds;
     self.gradientOverlay.frame = NSMakeRect(0, MAX(0.0, height - gGradientOverlayHeight), width, MIN(gGradientOverlayHeight, height));
     self.playButton.frame = NSMakeRect((width - 46.0) / 2.0, (height - 46.0) / 2.0, 46.0, 46.0);
     self.storeChipsContainer.frame = NSMakeRect(16.0, MAX(0.0, height - 37.0), MAX(40.0, width - 32.0), 24.0);
+    self.layer.shadowPath = [NSBezierPath bezierPathWithRoundedRect:self.bounds xRadius:18.0 yRadius:18.0].CGPath;
 }
 
 - (void)playClicked {

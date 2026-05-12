@@ -104,11 +104,10 @@ static NSString *OPNDisplayTier(const std::string &tier) {
 
 static NSString *OPNFormatHours(double hours) {
     if (!std::isfinite(hours) || hours < 0) hours = 0;
-    double rounded = hours >= 10.0 ? std::round(hours) : std::round(hours * 10.0) / 10.0;
-    if (std::fabs(rounded - std::round(rounded)) < 0.01) {
-        return [NSString stringWithFormat:@"%.0fh", rounded];
-    }
-    return [NSString stringWithFormat:@"%.1fh", rounded];
+    NSInteger totalMinutes = MAX(0, (NSInteger)llround(hours * 60.0));
+    NSInteger wholeHours = totalMinutes / 60;
+    NSInteger minutes = totalMinutes % 60;
+    return [NSString stringWithFormat:@"%ldh %02ldm", (long)wholeHours, (long)minutes];
 }
 
 static NSString *OPNFormatRemainingPlayTime(const OPN::SubscriptionInfo &subscription) {
