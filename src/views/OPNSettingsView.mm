@@ -170,7 +170,6 @@ static uint16_t OPNShortcutModifierBitForKeyCode(uint16_t keyCode) {
 @property (nonatomic, assign) NSInteger selectedCodec;
 @property (nonatomic, assign) NSInteger selectedBitrate;
 @property (nonatomic, assign) NSInteger selectedColorDepth;
-@property (nonatomic, assign) NSInteger selectedDecoderBackend;
 @property (nonatomic, assign) NSInteger selectedRendererPacing;
 @property (nonatomic, assign) NSInteger selectedMicrophoneMode;
 @property (nonatomic, assign) NSInteger selectedMicrophoneDevice;
@@ -212,7 +211,6 @@ using namespace OPN;
         _selectedCodec = profile.codecIndex;
         _selectedBitrate = profile.bitrateIndex;
         _selectedColorDepth = profile.colorQualityIndex;
-        _selectedDecoderBackend = profile.decoderBackendIndex;
         _selectedRendererPacing = profile.rendererPacingIndex;
         _selectedMicrophoneMode = profile.microphoneMode == "push-to-talk" ? 1 : (profile.microphoneMode == "voice-activity" ? 2 : 0);
         _selectedMicrophoneDevice = 0;
@@ -521,27 +519,21 @@ using namespace OPN;
     }
     [video addSubview:[self rowLabel:@"Codec" y:416.0]];
     [self addOptionGroupTo:video group:4 titles:codecTitles selected:self.selectedCodec y:406.0 widths:@[@142.0, @116.0, @96.0, @70.0]];
-    NSMutableArray<NSString *> *decoderBackendTitles = [NSMutableArray array];
-    for (const OPN::StreamDecoderBackendOption &option : OPN::StreamDecoderBackendOptions()) {
-        [decoderBackendTitles addObject:[NSString stringWithUTF8String:option.label.c_str()]];
-    }
-    [video addSubview:[self rowLabel:@"Decoder Backend" y:492.0]];
-    [self addOptionGroupTo:video group:5 titles:decoderBackendTitles selected:self.selectedDecoderBackend y:482.0 widths:@[@78.0, @126.0, @150.0]];
     NSMutableArray<NSString *> *colorDepthTitles = [NSMutableArray array];
     for (const OPN::StreamColorQualityOption &option : OPN::StreamColorQualityOptions()) {
         [colorDepthTitles addObject:[NSString stringWithUTF8String:option.label.c_str()]];
     }
-    [video addSubview:[self rowLabel:@"Color Depth" y:582.0]];
-    [self addOptionGroupTo:video group:7 titles:colorDepthTitles selected:self.selectedColorDepth y:572.0 widths:@[@112.0, @112.0, @124.0, @124.0]];
+    [video addSubview:[self rowLabel:@"Color Depth" y:492.0]];
+    [self addOptionGroupTo:video group:7 titles:colorDepthTitles selected:self.selectedColorDepth y:482.0 widths:@[@112.0, @112.0, @124.0, @124.0]];
 
     NSMutableArray<NSString *> *rendererPacingTitles = [NSMutableArray array];
     for (int fps : OPN::StreamRendererPacingOptions()) {
         [rendererPacingTitles addObject:[NSString stringWithFormat:@"%d", fps]];
     }
-    [video addSubview:[self rowLabel:@"Advanced: Renderer Pacing" y:672.0]];
-    [self addOptionGroupTo:video group:10 titles:rendererPacingTitles selected:self.selectedRendererPacing y:662.0 widths:@[@62.0, @62.0, @62.0]];
+    [video addSubview:[self rowLabel:@"Advanced: Renderer Pacing" y:582.0]];
+    [self addOptionGroupTo:video group:10 titles:rendererPacingTitles selected:self.selectedRendererPacing y:572.0 widths:@[@62.0, @62.0, @62.0]];
     NSTextField *pacingHint = OpnLabel(@"Advanced experimental renderer timing. Do not change unless you know what it does; incorrect values can make motion look worse.",
-                                       NSMakeRect(controlX, 704.0, controlWidth, 34.0),
+                                       NSMakeRect(controlX, 614.0, controlWidth, 34.0),
                                        12.0,
                                        OpnColor(kTextMuted),
                                        NSFontWeightRegular);
@@ -993,7 +985,6 @@ using namespace OPN;
         case 1: OPN::SaveStreamAspectIndex((int)index); break;
         case 3: OPN::SaveStreamFpsIndex((int)index); break;
         case 4: OPN::SaveStreamCodecIndex((int)index); break;
-        case 5: OPN::SaveStreamDecoderBackendIndex((int)index); break;
         case 7: OPN::SaveStreamColorQualityIndex((int)index); break;
         case 8: OPN::SaveStreamBitrateIndex((int)index); break;
         case 9: [self applyPerformanceProfile:index]; break;
@@ -1007,7 +998,6 @@ using namespace OPN;
     self.selectedCodec = profile.codecIndex;
     self.selectedBitrate = profile.bitrateIndex;
     self.selectedColorDepth = profile.colorQualityIndex;
-    self.selectedDecoderBackend = profile.decoderBackendIndex;
     self.selectedRendererPacing = profile.rendererPacingIndex;
     self.enableL4S = profile.enableL4S;
     [self rebuildContent];

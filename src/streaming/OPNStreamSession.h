@@ -151,7 +151,6 @@ private:
     std::atomic<bool> m_audioDeviceListenerInstalled{false};
     double m_gameVolume = 1.0;
     double m_microphoneVolumeLevel = 1.0;
-    std::string m_decoderBackend = "auto";
     int m_lastIceConnectionState = -1;
     int m_lastPeerConnectionState = -1;
     int m_lastSignalingState = -1;
