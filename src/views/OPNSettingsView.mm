@@ -2,14 +2,17 @@
 #import "../common/OPNColorTokens.h"
 #import "../common/OPNUIHelpers.h"
 #include "../games/OPNGameService.h"
+#include "../streaming/OPNInputProtocol.h"
 #include "../streaming/OPNLibWebRTCStreamSession.h"
 #include "../streaming/OPNStreamBackend.h"
 #include "../streaming/OPNStreamPreferences.h"
+#import <GameController/GameController.h>
 #include <QuartzCore/QuartzCore.h>
 #include <CoreAudio/CoreAudio.h>
 #include <cmath>
 
 static const CGFloat kSettingsNavHeight = 64.0;
+static const CGFloat kSettingsControllerNavHeight = 136.0;
 static const CGFloat kSettingsTopInset = 72.0;
 static const CGFloat kSettingsSidebarWidth = 300.0;
 static const CGFloat kSettingsColumnGap = 28.0;
@@ -71,6 +74,80 @@ static uint16_t OPNShortcutModifierBitForKeyCode(uint16_t keyCode) {
         case 62: return 0x02;
         default: return 0;
     }
+}
+
+static NSString *OPNControllerShortcutNameForButton(uint16_t button) {
+    using namespace OPN::Input;
+    switch (button) {
+        case GAMEPAD_DPAD_UP: return @"D-Pad Up";
+        case GAMEPAD_DPAD_DOWN: return @"D-Pad Down";
+        case GAMEPAD_DPAD_LEFT: return @"D-Pad Left";
+        case GAMEPAD_DPAD_RIGHT: return @"D-Pad Right";
+        case GAMEPAD_START: return @"Menu";
+        case GAMEPAD_BACK: return @"View";
+        case GAMEPAD_LS: return @"L3";
+        case GAMEPAD_RS: return @"R3";
+        case GAMEPAD_LB: return @"LB";
+        case GAMEPAD_RB: return @"RB";
+        case GAMEPAD_GUIDE: return @"Home";
+        case GAMEPAD_A: return @"A / Cross";
+        case GAMEPAD_B: return @"B / Circle";
+        case GAMEPAD_X: return @"X / Square";
+        case GAMEPAD_Y: return @"Y / Triangle";
+        default: return nil;
+    }
+}
+
+static NSString *OPNControllerShortcutLabel(uint16_t mask) {
+    using namespace OPN::Input;
+    if (mask == 0) return @"Disabled";
+    static const uint16_t order[] = {
+        GAMEPAD_BACK, GAMEPAD_START, GAMEPAD_LB, GAMEPAD_RB, GAMEPAD_LS, GAMEPAD_RS,
+        GAMEPAD_DPAD_UP, GAMEPAD_DPAD_DOWN, GAMEPAD_DPAD_LEFT, GAMEPAD_DPAD_RIGHT,
+        GAMEPAD_A, GAMEPAD_B, GAMEPAD_X, GAMEPAD_Y, GAMEPAD_GUIDE,
+    };
+    NSMutableArray<NSString *> *parts = [NSMutableArray array];
+    uint16_t remaining = mask;
+    for (uint16_t button : order) {
+        if ((mask & button) == 0) continue;
+        NSString *name = OPNControllerShortcutNameForButton(button);
+        if (name.length > 0) [parts addObject:name];
+        remaining &= (uint16_t)~button;
+    }
+    if (remaining != 0) {
+        [parts addObject:[NSString stringWithFormat:@"0x%04X", remaining]];
+    }
+    return parts.count > 0 ? [parts componentsJoinedByString:@" + "] : @"Disabled";
+}
+
+static uint16_t OPNPressedControllerShortcutMask(void) {
+    using namespace OPN::Input;
+    uint16_t buttons = 0;
+    for (GCController *controller in GCController.controllers) {
+        GCExtendedGamepad *pad = controller.extendedGamepad;
+        if (!pad) continue;
+        if (pad.buttonA.value > 0) buttons |= GAMEPAD_A;
+        if (pad.buttonB.value > 0) buttons |= GAMEPAD_B;
+        if (pad.buttonX.value > 0) buttons |= GAMEPAD_X;
+        if (pad.buttonY.value > 0) buttons |= GAMEPAD_Y;
+        if (pad.leftShoulder.value > 0) buttons |= GAMEPAD_LB;
+        if (pad.rightShoulder.value > 0) buttons |= GAMEPAD_RB;
+        if (pad.dpad.up.value > 0) buttons |= GAMEPAD_DPAD_UP;
+        if (pad.dpad.down.value > 0) buttons |= GAMEPAD_DPAD_DOWN;
+        if (pad.dpad.left.value > 0) buttons |= GAMEPAD_DPAD_LEFT;
+        if (pad.dpad.right.value > 0) buttons |= GAMEPAD_DPAD_RIGHT;
+        if (@available(macOS 10.15, *)) {
+            if (pad.buttonOptions.value > 0) buttons |= GAMEPAD_BACK;
+            if (pad.buttonMenu.value > 0) buttons |= GAMEPAD_START;
+            if (pad.leftThumbstickButton.value > 0) buttons |= GAMEPAD_LS;
+            if (pad.rightThumbstickButton.value > 0) buttons |= GAMEPAD_RS;
+        }
+        if (@available(macOS 11.0, *)) {
+            if (pad.buttonHome.value > 0) buttons |= GAMEPAD_GUIDE;
+        }
+        if (buttons != 0) break;
+    }
+    return buttons;
 }
 
 @interface OPNPushToTalkShortcutField : NSTextField
@@ -169,16 +246,22 @@ static uint16_t OPNShortcutModifierBitForKeyCode(uint16_t keyCode) {
 @property (nonatomic, assign) NSInteger selectedCodec;
 @property (nonatomic, assign) NSInteger selectedBitrate;
 @property (nonatomic, assign) NSInteger selectedColorDepth;
-@property (nonatomic, assign) NSInteger selectedDecoderBackend;
 @property (nonatomic, assign) NSInteger selectedRendererPacing;
 @property (nonatomic, assign) NSInteger selectedMicrophoneMode;
 @property (nonatomic, assign) NSInteger selectedMicrophoneDevice;
 @property (nonatomic, assign) BOOL enableL4S;
 @property (nonatomic, assign) BOOL suppressInputWhenInactive;
 @property (nonatomic, strong) NSTextField *posterSizeValueLabel;
+@property (nonatomic, strong) NSTextField *backgroundTintValueLabel;
 @property (nonatomic, strong) NSTextField *accentRedValueLabel;
 @property (nonatomic, strong) NSTextField *accentGreenValueLabel;
 @property (nonatomic, strong) NSTextField *accentBlueValueLabel;
+@property (nonatomic, strong) NSButton *controllerShortcutCaptureButton;
+@property (nonatomic, strong) NSTextField *controllerShortcutStatusLabel;
+@property (nonatomic, strong) NSTimer *controllerShortcutCaptureTimer;
+@property (nonatomic, assign) CFTimeInterval controllerShortcutCaptureDeadline;
+@property (nonatomic, assign) CFTimeInterval controllerShortcutPendingSince;
+@property (nonatomic, assign) uint16_t controllerShortcutPendingMask;
 @property (nonatomic, assign) BOOL audioDeviceListenerInstalled;
 @property (nonatomic, assign) CGFloat contentAreaWidth;
 - (void)applyPerformanceProfile:(NSInteger)index;
@@ -211,7 +294,6 @@ using namespace OPN;
         _selectedCodec = profile.codecIndex;
         _selectedBitrate = profile.bitrateIndex;
         _selectedColorDepth = profile.colorQualityIndex;
-        _selectedDecoderBackend = profile.decoderBackendIndex;
         _selectedRendererPacing = profile.rendererPacingIndex;
         _selectedMicrophoneMode = profile.microphoneMode == "push-to-talk" ? 1 : (profile.microphoneMode == "voice-activity" ? 2 : 0);
         _selectedMicrophoneDevice = 0;
@@ -263,6 +345,7 @@ using namespace OPN;
 - (BOOL)isFlipped { return YES; }
 
 - (void)dealloc {
+    [self.controllerShortcutCaptureTimer invalidate];
     [self stopAudioDeviceMonitoring];
     [[NSNotificationCenter defaultCenter] removeObserver:self];
 }
@@ -359,7 +442,8 @@ using namespace OPN;
     CGFloat outerMargin = width < 900.0 ? 24.0 : 64.0;
     CGFloat contentWidth = MIN(1560.0, MAX(360.0, width - outerMargin * 2.0));
     CGFloat x = floor((width - contentWidth) / 2.0);
-    CGFloat y = kSettingsNavHeight + kSettingsTopInset;
+    CGFloat navHeight = OpnControllerModeEnabled() ? kSettingsControllerNavHeight : kSettingsNavHeight;
+    CGFloat y = navHeight + kSettingsTopInset;
     self.titleLabel.frame = NSMakeRect(x, y - 48.0, 240.0, 34.0);
     CGFloat shellHeight = MAX(360.0, NSHeight(self.bounds) - y - 34.0);
     self.shellView.frame = NSMakeRect(x, y, contentWidth, shellHeight);
@@ -519,27 +603,21 @@ using namespace OPN;
     }
     [video addSubview:[self rowLabel:@"Codec" y:416.0]];
     [self addOptionGroupTo:video group:4 titles:codecTitles selected:self.selectedCodec y:406.0 widths:@[@142.0, @116.0, @96.0, @70.0]];
-    NSMutableArray<NSString *> *decoderBackendTitles = [NSMutableArray array];
-    for (const OPN::StreamDecoderBackendOption &option : OPN::StreamDecoderBackendOptions()) {
-        [decoderBackendTitles addObject:[NSString stringWithUTF8String:option.label.c_str()]];
-    }
-    [video addSubview:[self rowLabel:@"Decoder Backend" y:492.0]];
-    [self addOptionGroupTo:video group:5 titles:decoderBackendTitles selected:self.selectedDecoderBackend y:482.0 widths:@[@78.0, @126.0, @150.0]];
     NSMutableArray<NSString *> *colorDepthTitles = [NSMutableArray array];
     for (const OPN::StreamColorQualityOption &option : OPN::StreamColorQualityOptions()) {
         [colorDepthTitles addObject:[NSString stringWithUTF8String:option.label.c_str()]];
     }
-    [video addSubview:[self rowLabel:@"Color Depth" y:582.0]];
-    [self addOptionGroupTo:video group:7 titles:colorDepthTitles selected:self.selectedColorDepth y:572.0 widths:@[@112.0, @112.0, @124.0, @124.0]];
+    [video addSubview:[self rowLabel:@"Color Depth" y:492.0]];
+    [self addOptionGroupTo:video group:7 titles:colorDepthTitles selected:self.selectedColorDepth y:482.0 widths:@[@112.0, @112.0, @124.0, @124.0]];
 
     NSMutableArray<NSString *> *rendererPacingTitles = [NSMutableArray array];
     for (int fps : OPN::StreamRendererPacingOptions()) {
         [rendererPacingTitles addObject:[NSString stringWithFormat:@"%d", fps]];
     }
-    [video addSubview:[self rowLabel:@"Advanced: Renderer Pacing" y:672.0]];
-    [self addOptionGroupTo:video group:10 titles:rendererPacingTitles selected:self.selectedRendererPacing y:662.0 widths:@[@62.0, @62.0, @62.0]];
+    [video addSubview:[self rowLabel:@"Advanced: Renderer Pacing" y:582.0]];
+    [self addOptionGroupTo:video group:10 titles:rendererPacingTitles selected:self.selectedRendererPacing y:572.0 widths:@[@62.0, @62.0, @62.0]];
     NSTextField *pacingHint = OpnLabel(@"Advanced experimental renderer timing. Do not change unless you know what it does; incorrect values can make motion look worse.",
-                                       NSMakeRect(controlX, 704.0, controlWidth, 34.0),
+                                       NSMakeRect(controlX, 614.0, controlWidth, 34.0),
                                        12.0,
                                        OpnColor(kTextMuted),
                                        NSFontWeightRegular);
@@ -735,7 +813,7 @@ using namespace OPN;
 }
 
 - (void)buildInterfaceContent {
-    NSView *panel = [self panelWithTitle:@"Interface" height:408.0];
+    NSView *panel = [self panelWithTitle:@"Interface" height:870.0];
     CGFloat panelWidth = MAX(320.0, NSWidth(panel.frame));
     CGFloat controlX = [self controlXForPanelWidth:panelWidth];
     CGFloat controlWidth = [self controlWidthForPanelWidth:panelWidth];
@@ -745,15 +823,137 @@ using namespace OPN;
     NSInteger green = (NSInteger)((accent >> 8) & 0xFF);
     NSInteger blue = (NSInteger)(accent & 0xFF);
 
-    [panel addSubview:[self rowLabel:@"Accent Color" y:104.0]];
+    [panel addSubview:[self rowLabel:@"Controller Mode" y:104.0]];
+    NSButton *controllerModeToggle = [[NSButton alloc] initWithFrame:NSMakeRect(controlX, 96.0, controlWidth, 28.0)];
+    controllerModeToggle.buttonType = NSButtonTypeSwitch;
+    controllerModeToggle.title = @"Use a console-style library optimized for gamepad navigation";
+    controllerModeToggle.font = [NSFont systemFontOfSize:13.0 weight:NSFontWeightMedium];
+    controllerModeToggle.contentTintColor = OpnColor(kBrandGreen);
+    controllerModeToggle.state = OpnControllerModeEnabled() ? NSControlStateValueOn : NSControlStateValueOff;
+    controllerModeToggle.target = self;
+    controllerModeToggle.action = @selector(controllerModeToggleChanged:);
+    [panel addSubview:controllerModeToggle];
+
+    NSTextField *controllerHint = OpnLabel(@"Controller Mode keeps mouse and keyboard support while giving the library larger focus states, smoother carousel navigation, and a lean-back launch flow.",
+                                            NSMakeRect(controlX, 132.0, controlWidth, 38.0),
+                                           12.0,
+                                           OpnColor(kTextMuted),
+                                           NSFontWeightRegular);
+    controllerHint.maximumNumberOfLines = 2;
+    [panel addSubview:controllerHint];
+
+    [panel addSubview:[self rowLabel:@"Background" y:198.0]];
+    NSButton *backgroundAnimationToggle = [[NSButton alloc] initWithFrame:NSMakeRect(controlX, 190.0, controlWidth, 28.0)];
+    backgroundAnimationToggle.buttonType = NSButtonTypeSwitch;
+    backgroundAnimationToggle.title = @"Animate the game-accent background";
+    backgroundAnimationToggle.font = [NSFont systemFontOfSize:13.0 weight:NSFontWeightMedium];
+    backgroundAnimationToggle.contentTintColor = OpnColor(kBrandGreen);
+    backgroundAnimationToggle.state = OpnBackgroundAnimationEnabled() ? NSControlStateValueOn : NSControlStateValueOff;
+    backgroundAnimationToggle.target = self;
+    backgroundAnimationToggle.action = @selector(backgroundAnimationToggleChanged:);
+    [panel addSubview:backgroundAnimationToggle];
+
+    NSTextField *backgroundHint = OpnLabel(@"When off, the animated ribbons and sparkles pause while keeping the static artwork-tinted background.",
+                                           NSMakeRect(controlX, 226.0, controlWidth, 38.0),
+                                           12.0,
+                                           OpnColor(kTextMuted),
+                                           NSFontWeightRegular);
+    backgroundHint.maximumNumberOfLines = 2;
+    [panel addSubview:backgroundHint];
+
+    [panel addSubview:[self rowLabel:@"Derived Accent" y:292.0]];
+    NSButton *derivedAccentToggle = [[NSButton alloc] initWithFrame:NSMakeRect(controlX, 284.0, controlWidth, 28.0)];
+    derivedAccentToggle.buttonType = NSButtonTypeSwitch;
+    derivedAccentToggle.title = @"Use focused game artwork to tint Controller Mode";
+    derivedAccentToggle.font = [NSFont systemFontOfSize:13.0 weight:NSFontWeightMedium];
+    derivedAccentToggle.contentTintColor = OpnColor(kBrandGreen);
+    derivedAccentToggle.state = OpnDerivedAccentColorsEnabled() ? NSControlStateValueOn : NSControlStateValueOff;
+    derivedAccentToggle.target = self;
+    derivedAccentToggle.action = @selector(derivedAccentToggleChanged:);
+    [panel addSubview:derivedAccentToggle];
+
+    NSTextField *derivedAccentHint = OpnLabel(@"When off, Controller Mode uses your manual accent color instead of per-game artwork colors.",
+                                             NSMakeRect(controlX, 320.0, controlWidth, 38.0),
+                                             12.0,
+                                             OpnColor(kTextMuted),
+                                             NSFontWeightRegular);
+    derivedAccentHint.maximumNumberOfLines = 2;
+    [panel addSubview:derivedAccentHint];
+
+    [panel addSubview:[self rowLabel:@"Background Tint" y:386.0]];
+    NSSlider *backgroundTintSlider = [[NSSlider alloc] initWithFrame:NSMakeRect(controlX, 380.0, MIN(300.0, controlWidth - 72.0), 28.0)];
+    backgroundTintSlider.minValue = 0.0;
+    backgroundTintSlider.maxValue = 100.0;
+    backgroundTintSlider.doubleValue = OpnBackgroundTintStrength() * 100.0;
+    backgroundTintSlider.continuous = YES;
+    backgroundTintSlider.target = self;
+    backgroundTintSlider.action = @selector(backgroundTintSliderChanged:);
+    [panel addSubview:backgroundTintSlider];
+
+    self.backgroundTintValueLabel = OpnLabel([NSString stringWithFormat:@"%.0f%%", backgroundTintSlider.doubleValue],
+                                             NSMakeRect(controlX + MIN(312.0, controlWidth - 60.0), 384.0, 60.0, 22.0),
+                                             12.0,
+                                             OpnColor(kTextSecondary),
+                                             NSFontWeightSemibold,
+                                             NSTextAlignmentRight);
+    [panel addSubview:self.backgroundTintValueLabel];
+
+    NSTextField *tintHint = OpnLabel(@"Lower values keep the animated background brighter. Set to 0% to remove the dark tint.",
+                                     NSMakeRect(controlX, 418.0, controlWidth, 38.0),
+                                     12.0,
+                                     OpnColor(kTextMuted),
+                                     NSFontWeightRegular);
+    tintHint.maximumNumberOfLines = 2;
+    [panel addSubview:tintHint];
+
+    [panel addSubview:[self rowLabel:@"Stream Library Shortcut" y:480.0]];
+    CGFloat shortcutButtonWidth = MIN(300.0, MAX(170.0, controlWidth - 112.0));
+    NSButton *shortcutButton = [[NSButton alloc] initWithFrame:NSMakeRect(controlX, 470.0, shortcutButtonWidth, 38.0)];
+    shortcutButton.title = OPNControllerShortcutLabel(OpnControllerLibraryShortcutMask());
+    shortcutButton.font = [NSFont systemFontOfSize:13.0 weight:NSFontWeightSemibold];
+    shortcutButton.bordered = NO;
+    shortcutButton.contentTintColor = OpnColor(kTextPrimary);
+    shortcutButton.wantsLayer = YES;
+    shortcutButton.layer.cornerRadius = 10.0;
+    shortcutButton.layer.borderWidth = 1.0;
+    shortcutButton.layer.borderColor = OpnColor(kBrandGreen, 0.38).CGColor;
+    shortcutButton.layer.backgroundColor = OpnColor(kInputBackground, 0.72).CGColor;
+    shortcutButton.target = self;
+    shortcutButton.action = @selector(controllerShortcutCaptureClicked:);
+    self.controllerShortcutCaptureButton = shortcutButton;
+    [panel addSubview:shortcutButton];
+
+    NSButton *shortcutReset = [[NSButton alloc] initWithFrame:NSMakeRect(controlX + shortcutButtonWidth + 10.0, 470.0, MIN(96.0, MAX(76.0, controlWidth - shortcutButtonWidth - 10.0)), 38.0)];
+    shortcutReset.title = @"Default";
+    shortcutReset.font = [NSFont systemFontOfSize:13.0 weight:NSFontWeightMedium];
+    shortcutReset.bordered = NO;
+    shortcutReset.contentTintColor = OpnColor(kTextMuted);
+    shortcutReset.wantsLayer = YES;
+    shortcutReset.layer.cornerRadius = 10.0;
+    shortcutReset.layer.borderWidth = 1.0;
+    shortcutReset.layer.borderColor = OpnColor(kPanelBorder, 0.72).CGColor;
+    shortcutReset.layer.backgroundColor = OpnColor(kInputBackground, 0.52).CGColor;
+    shortcutReset.target = self;
+    shortcutReset.action = @selector(controllerShortcutResetClicked:);
+    [panel addSubview:shortcutReset];
+
+    self.controllerShortcutStatusLabel = OpnLabel(@"Click the combo, press and hold any controller button or combo, then release after it saves.",
+                                                  NSMakeRect(controlX, 518.0, controlWidth, 54.0),
+                                                  12.0,
+                                                  OpnColor(kTextMuted),
+                                                  NSFontWeightRegular);
+    self.controllerShortcutStatusLabel.maximumNumberOfLines = 3;
+    [panel addSubview:self.controllerShortcutStatusLabel];
+
+    [panel addSubview:[self rowLabel:@"Accent Color" y:588.0]];
     NSTextField *accentSummary = OpnLabel([NSString stringWithFormat:@"RGB %ld, %ld, %ld", (long)red, (long)green, (long)blue],
-                                          NSMakeRect(controlX, 104.0, controlWidth, 20.0),
-                                         13.0,
-                                         OpnColor(kTextPrimary),
-                                         NSFontWeightSemibold);
+                                          NSMakeRect(controlX, 588.0, controlWidth, 20.0),
+                                          13.0,
+                                          OpnColor(kTextPrimary),
+                                          NSFontWeightSemibold);
     [panel addSubview:accentSummary];
 
-    NSView *swatch = [[NSView alloc] initWithFrame:NSMakeRect(controlX + MIN(162.0, controlWidth - 36.0), 101.0, 34.0, 24.0)];
+    NSView *swatch = [[NSView alloc] initWithFrame:NSMakeRect(controlX + MIN(162.0, controlWidth - 36.0), 585.0, 34.0, 24.0)];
     swatch.wantsLayer = YES;
     swatch.layer.cornerRadius = 8.0;
     swatch.layer.backgroundColor = OpnColor(kBrandGreen).CGColor;
@@ -764,7 +964,7 @@ using namespace OPN;
     NSArray<NSString *> *channelNames = @[@"Red", @"Green", @"Blue"];
     NSArray<NSNumber *> *channelValues = @[@(red), @(green), @(blue)];
     for (NSInteger i = 0; i < 3; i++) {
-        CGFloat y = 140.0 + i * 42.0;
+        CGFloat y = 624.0 + i * 42.0;
         NSTextField *label = OpnLabel(channelNames[(NSUInteger)i], NSMakeRect(controlX, y + 3.0, 62.0, 20.0), 12.0, OpnColor(kTextSecondary), NSFontWeightMedium);
         [panel addSubview:label];
 
@@ -790,8 +990,8 @@ using namespace OPN;
         if (i == 2) self.accentBlueValueLabel = valueLabel;
     }
 
-    [panel addSubview:[self rowLabel:@"Poster Size" y:274.0]];
-    NSSlider *posterSlider = [[NSSlider alloc] initWithFrame:NSMakeRect(controlX, 268.0, MIN(300.0, controlWidth - 72.0), 28.0)];
+    [panel addSubview:[self rowLabel:@"Poster Size" y:758.0]];
+    NSSlider *posterSlider = [[NSSlider alloc] initWithFrame:NSMakeRect(controlX, 752.0, MIN(300.0, controlWidth - 72.0), 28.0)];
     posterSlider.minValue = 80.0;
     posterSlider.maxValue = 130.0;
     posterSlider.doubleValue = OpnPosterSizeScale() * 100.0;
@@ -801,15 +1001,15 @@ using namespace OPN;
     [panel addSubview:posterSlider];
 
     self.posterSizeValueLabel = OpnLabel([NSString stringWithFormat:@"%.0f%%", posterSlider.doubleValue],
-                                          NSMakeRect(controlX + MIN(312.0, controlWidth - 60.0), 272.0, 60.0, 22.0),
+                                          NSMakeRect(controlX + MIN(312.0, controlWidth - 60.0), 756.0, 60.0, 22.0),
                                          12.0,
                                          OpnColor(kTextSecondary),
                                          NSFontWeightSemibold,
                                          NSTextAlignmentRight);
     [panel addSubview:self.posterSizeValueLabel];
 
-    [panel addSubview:[self rowLabel:@"Auto Full Screen" y:346.0]];
-    NSButton *autoFullScreenToggle = [[NSButton alloc] initWithFrame:NSMakeRect(controlX, 338.0, controlWidth, 28.0)];
+    [panel addSubview:[self rowLabel:@"Auto Full Screen" y:830.0]];
+    NSButton *autoFullScreenToggle = [[NSButton alloc] initWithFrame:NSMakeRect(controlX, 822.0, controlWidth, 28.0)];
     autoFullScreenToggle.buttonType = NSButtonTypeSwitch;
     autoFullScreenToggle.title = @"Enter full screen automatically when a stream starts";
     autoFullScreenToggle.font = [NSFont systemFontOfSize:13.0 weight:NSFontWeightMedium];
@@ -972,7 +1172,6 @@ using namespace OPN;
         case 1: OPN::SaveStreamAspectIndex((int)index); break;
         case 3: OPN::SaveStreamFpsIndex((int)index); break;
         case 4: OPN::SaveStreamCodecIndex((int)index); break;
-        case 5: OPN::SaveStreamDecoderBackendIndex((int)index); break;
         case 7: OPN::SaveStreamColorQualityIndex((int)index); break;
         case 8: OPN::SaveStreamBitrateIndex((int)index); break;
         case 9: [self applyPerformanceProfile:index]; break;
@@ -986,7 +1185,6 @@ using namespace OPN;
     self.selectedCodec = profile.codecIndex;
     self.selectedBitrate = profile.bitrateIndex;
     self.selectedColorDepth = profile.colorQualityIndex;
-    self.selectedDecoderBackend = profile.decoderBackendIndex;
     self.selectedRendererPacing = profile.rendererPacingIndex;
     self.enableL4S = profile.enableL4S;
     [self rebuildContent];
@@ -1073,6 +1271,87 @@ using namespace OPN;
 
 - (void)autoFullScreenToggleChanged:(NSButton *)sender {
     OpnSetAutoFullScreenEnabled(sender.state == NSControlStateValueOn);
+}
+
+- (void)backgroundAnimationToggleChanged:(NSButton *)sender {
+    OpnSetBackgroundAnimationEnabled(sender.state == NSControlStateValueOn);
+}
+
+- (void)derivedAccentToggleChanged:(NSButton *)sender {
+    OpnSetDerivedAccentColorsEnabled(sender.state == NSControlStateValueOn);
+}
+
+- (void)backgroundTintSliderChanged:(NSSlider *)sender {
+    OpnSetBackgroundTintStrength((CGFloat)sender.doubleValue / 100.0);
+    self.backgroundTintValueLabel.stringValue = [NSString stringWithFormat:@"%.0f%%", sender.doubleValue];
+}
+
+- (void)controllerModeToggleChanged:(NSButton *)sender {
+    OpnSetControllerModeEnabled(sender.state == NSControlStateValueOn);
+    [self rebuildContent];
+}
+
+- (void)controllerShortcutCaptureClicked:(NSButton *)sender {
+    (void)sender;
+    [self.controllerShortcutCaptureTimer invalidate];
+    self.controllerShortcutPendingMask = 0;
+    self.controllerShortcutPendingSince = 0;
+    self.controllerShortcutCaptureDeadline = CACurrentMediaTime() + 6.0;
+    self.controllerShortcutCaptureButton.title = @"Listening...";
+    self.controllerShortcutCaptureButton.layer.borderColor = OpnColor(kBrandGreen, 0.70).CGColor;
+    self.controllerShortcutStatusLabel.stringValue = @"Press and hold the controller button or combo you want to use for opening the stream library.";
+    self.controllerShortcutCaptureTimer = [NSTimer scheduledTimerWithTimeInterval:(1.0 / 60.0)
+                                                                           target:self
+                                                                         selector:@selector(controllerShortcutCaptureTimerFired:)
+                                                                         userInfo:nil
+                                                                          repeats:YES];
+}
+
+- (void)controllerShortcutResetClicked:(NSButton *)sender {
+    (void)sender;
+    [self.controllerShortcutCaptureTimer invalidate];
+    self.controllerShortcutCaptureTimer = nil;
+    OpnSetControllerLibraryShortcutMask((uint16_t)(OPN::Input::GAMEPAD_BACK | OPN::Input::GAMEPAD_START));
+    self.controllerShortcutCaptureButton.title = OPNControllerShortcutLabel(OpnControllerLibraryShortcutMask());
+    self.controllerShortcutCaptureButton.layer.borderColor = OpnColor(kBrandGreen, 0.38).CGColor;
+    self.controllerShortcutStatusLabel.stringValue = @"Default restored. While streaming, press View + Menu to open the controller library.";
+}
+
+- (void)controllerShortcutCaptureTimerFired:(NSTimer *)timer {
+    if (timer != self.controllerShortcutCaptureTimer) return;
+
+    CFTimeInterval now = CACurrentMediaTime();
+    if (now >= self.controllerShortcutCaptureDeadline) {
+        [self.controllerShortcutCaptureTimer invalidate];
+        self.controllerShortcutCaptureTimer = nil;
+        self.controllerShortcutCaptureButton.title = OPNControllerShortcutLabel(OpnControllerLibraryShortcutMask());
+        self.controllerShortcutCaptureButton.layer.borderColor = OpnColor(kBrandGreen, 0.38).CGColor;
+        self.controllerShortcutStatusLabel.stringValue = @"No controller input detected. Connect a controller and try again.";
+        return;
+    }
+
+    uint16_t mask = OPNPressedControllerShortcutMask();
+    if (mask == 0) {
+        self.controllerShortcutPendingMask = 0;
+        self.controllerShortcutPendingSince = 0;
+        return;
+    }
+
+    if (mask != self.controllerShortcutPendingMask) {
+        self.controllerShortcutPendingMask = mask;
+        self.controllerShortcutPendingSince = now;
+        self.controllerShortcutCaptureButton.title = OPNControllerShortcutLabel(mask);
+        self.controllerShortcutStatusLabel.stringValue = @"Hold briefly to save this combo.";
+        return;
+    }
+
+    if (now - self.controllerShortcutPendingSince < 0.24) return;
+    [self.controllerShortcutCaptureTimer invalidate];
+    self.controllerShortcutCaptureTimer = nil;
+    OpnSetControllerLibraryShortcutMask(mask);
+    self.controllerShortcutCaptureButton.title = OPNControllerShortcutLabel(mask);
+    self.controllerShortcutCaptureButton.layer.borderColor = OpnColor(kBrandGreen, 0.38).CGColor;
+    self.controllerShortcutStatusLabel.stringValue = [NSString stringWithFormat:@"Saved. While streaming, press %@ to open the controller library.", OPNControllerShortcutLabel(mask)];
 }
 
 - (void)microphoneModePopupChanged:(NSPopUpButton *)sender {

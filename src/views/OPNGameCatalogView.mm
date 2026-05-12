@@ -2,7 +2,9 @@
 #import "OPNGameCardView.h"
 #import "OPNLoadingView.h"
 #import "../common/OPNColorTokens.h"
+#import "../common/OPNCoreAnimationCoordinator.h"
 #import "../common/OPNUIHelpers.h"
+#import <GameController/GameController.h>
 #include <QuartzCore/QuartzCore.h>
 #include <algorithm>
 #include <cmath>
@@ -11,9 +13,47 @@ static const CGFloat kGridPadding = 28.0;
 static const CGFloat kCardSpacing = 18.0;
 static const CGFloat kNavHeight = 62.0;
 static const CGFloat kToolbarHeight = 82.0;
+static const CGFloat kControllerRailSelectorOverlap = 22.0;
+static const CGFloat kControllerRailDetailOverlap = 22.0;
+static NSString *const OPNFavoriteGameIdsDefaultsKey = @"OpenNOW.Library.FavoriteGameIds";
+
+static unsigned OPNControllerAccentRGB(void) {
+    return OpnCurrentAccentRGB();
+}
+
+static unsigned OPNControllerAccentSoftRGB(void) {
+    return OpnBlendRGB(OpnCurrentAccentRGB(), 0xFFFFFF, 0.42);
+}
+
+static unsigned OPNControllerAccentBlackRGB(CGFloat blackMix) {
+    return OpnBlendRGB(OpnCurrentAccentRGB(), 0x000000, blackMix);
+}
+
+static unsigned OPNRGBFromColor(NSColor *color, unsigned fallbackRGB) {
+    if (!color) return fallbackRGB;
+    NSColor *rgbColor = [color colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
+    if (!rgbColor) return fallbackRGB;
+    NSInteger red = (NSInteger)lrint(MAX(0.0, MIN(1.0, rgbColor.redComponent)) * 255.0);
+    NSInteger green = (NSInteger)lrint(MAX(0.0, MIN(1.0, rgbColor.greenComponent)) * 255.0);
+    NSInteger blue = (NSInteger)lrint(MAX(0.0, MIN(1.0, rgbColor.blueComponent)) * 255.0);
+    return ((unsigned)red << 16) | ((unsigned)green << 8) | (unsigned)blue;
+}
 
 static NSString *OPNCatalogString(const std::string &value, NSString *fallback = @"") {
     return value.empty() ? fallback : [NSString stringWithUTF8String:value.c_str()];
+}
+
+static NSAttributedString *OPNOutlinedControllerStoreText(NSString *text) {
+    NSMutableParagraphStyle *style = [[NSMutableParagraphStyle alloc] init];
+    style.lineBreakMode = NSLineBreakByTruncatingTail;
+    return [[NSAttributedString alloc] initWithString:text ?: @""
+                                           attributes:@{
+        NSFontAttributeName: [NSFont systemFontOfSize:16.0 weight:NSFontWeightSemibold],
+        NSForegroundColorAttributeName: NSColor.whiteColor,
+        NSStrokeColorAttributeName: NSColor.blackColor,
+        NSStrokeWidthAttributeName: @-3.0,
+        NSParagraphStyleAttributeName: style,
+    }];
 }
 
 @interface OPNFlippedGridDocumentView : NSView
@@ -69,6 +109,142 @@ static NSString *OPNCatalogString(const std::string &value, NSString *fallback =
 
 @end
 
+@interface OPNControllerElectricBackgroundView : NSView
+@property (nonatomic, strong) NSTimer *animationTimer;
+@property (nonatomic, assign) CFTimeInterval animationStartTime;
+@property (nonatomic, assign) unsigned accentRGB;
+@end
+
+@implementation OPNControllerElectricBackgroundView
+
+- (instancetype)initWithFrame:(NSRect)frame {
+    self = [super initWithFrame:frame];
+    if (self) {
+        self.wantsLayer = YES;
+        _accentRGB = OPNControllerAccentRGB();
+        _animationStartTime = CACurrentMediaTime();
+    }
+    return self;
+}
+
+- (void)setAccentRGB:(unsigned)accentRGB {
+    accentRGB &= 0xFFFFFF;
+    if (_accentRGB == accentRGB) return;
+    _accentRGB = accentRGB;
+    [self setNeedsDisplay:YES];
+}
+
+- (unsigned)accentSoftRGB {
+    return OpnBlendRGB(self.accentRGB, 0xFFFFFF, 0.42);
+}
+
+- (unsigned)accentBlackRGB:(CGFloat)blackMix {
+    return OpnBlendRGB(self.accentRGB, 0x000000, blackMix);
+}
+
+- (void)dealloc {
+    [self.animationTimer invalidate];
+}
+
+- (void)viewDidMoveToWindow {
+    [super viewDidMoveToWindow];
+    if (self.window) {
+        if (!self.animationTimer) {
+            self.animationTimer = [NSTimer timerWithTimeInterval:(1.0 / 30.0)
+                                                          target:self
+                                                        selector:@selector(animationTick:)
+                                                        userInfo:nil
+                                                         repeats:YES];
+            [NSRunLoop.mainRunLoop addTimer:self.animationTimer forMode:NSRunLoopCommonModes];
+        }
+    } else {
+        [self.animationTimer invalidate];
+        self.animationTimer = nil;
+    }
+}
+
+- (void)animationTick:(NSTimer *)timer {
+    (void)timer;
+    if (!self.hidden && self.window) [self setNeedsDisplay:YES];
+}
+
+- (BOOL)isFlipped { return YES; }
+
+- (CGFloat)unitHashForSeed:(NSUInteger)seed index:(NSUInteger)index {
+    uint32_t value = (uint32_t)(seed * 1103515245u + index * 12345u + 0x9E3779B9u);
+    value ^= value >> 16;
+    value *= 0x7FEB352Du;
+    value ^= value >> 15;
+    return (CGFloat)(value % 10000u) / 10000.0;
+}
+
+- (NSPoint)pointOnBoltFrom:(NSPoint)start to:(NSPoint)end t:(CGFloat)t seed:(NSUInteger)seed {
+    CGFloat dx = end.x - start.x;
+    CGFloat dy = end.y - start.y;
+    CGFloat normalX = -dy;
+    CGFloat normalY = dx;
+    CGFloat normalLength = MAX(1.0, hypot(normalX, normalY));
+    normalX /= normalLength;
+    normalY /= normalLength;
+    NSUInteger bucket = (NSUInteger)floor(t * 18.0);
+    CGFloat hash = [self unitHashForSeed:seed index:bucket + 3];
+    CGFloat envelope = sin(t * 3.14159);
+    CGFloat offset = (hash - 0.5) * 58.0 * envelope;
+    return NSMakePoint(start.x + dx * t + normalX * offset,
+                       start.y + dy * t + normalY * offset);
+}
+
+- (void)drawRect:(NSRect)dirtyRect {
+    (void)dirtyRect;
+    NSRect bounds = self.bounds;
+    CGFloat phase = (CGFloat)(CACurrentMediaTime() - self.animationStartTime);
+    NSGradient *base = [[NSGradient alloc] initWithColors:@[
+        OpnColor([self accentBlackRGB:0.95], 1.0),
+        OpnColor([self accentBlackRGB:0.90], 1.0),
+        OpnColor([self accentBlackRGB:0.97], 1.0),
+    ]];
+    [base drawInRect:bounds angle:88.0];
+
+    CGFloat width = NSWidth(bounds);
+    CGFloat height = NSHeight(bounds);
+
+    for (NSInteger band = 0; band < 9; band++) {
+        CGFloat yBase = height * (0.12 + (CGFloat)band * 0.092);
+        NSBezierPath *ribbon = [NSBezierPath bezierPath];
+        [ribbon moveToPoint:NSMakePoint(-120.0, yBase)];
+        for (NSInteger point = 0; point <= 28; point++) {
+            CGFloat t = (CGFloat)point / 28.0;
+            CGFloat x = t * (width + 240.0) - 120.0;
+            CGFloat drift = phase * (0.28 + (CGFloat)band * 0.018);
+            CGFloat y = yBase
+                + sin(t * 5.8 + (CGFloat)band * 0.72 + drift) * (20.0 + (CGFloat)band * 1.6)
+                + sin(t * 13.0 - phase * 0.20 + (CGFloat)band) * 5.0;
+            [ribbon lineToPoint:NSMakePoint(x, y)];
+        }
+        NSColor *stroke = band % 3 == 0 ? OpnColor(0xFFFFFF, 0.030) : OpnColor([self accentSoftRGB], 0.038);
+        [stroke setStroke];
+        ribbon.lineWidth = band == 4 ? 2.4 : 1.1;
+        [ribbon stroke];
+    }
+
+    for (NSInteger i = 0; i < 72; i++) {
+        CGFloat x = fmod((CGFloat)(i * 97) + phase * (8.0 + (CGFloat)(i % 5)), MAX(1.0, width));
+        CGFloat y = fmod((CGFloat)(i * 43) + sin(phase * 0.24 + (CGFloat)i) * 18.0, MAX(1.0, height));
+        CGFloat radius = 0.7 + (CGFloat)(i % 3) * 0.32;
+        NSBezierPath *spark = [NSBezierPath bezierPathWithOvalInRect:NSMakeRect(x, y, radius, radius)];
+        [OpnColor(i % 5 == 0 ? 0xFFFFFF : [self accentSoftRGB], i % 5 == 0 ? 0.10 : 0.07) setFill];
+        [spark fill];
+    }
+
+    NSGradient *vignette = [[NSGradient alloc] initWithStartingColor:OpnColor([self accentBlackRGB:0.90], 0.0)
+                                                        endingColor:OpnColor([self accentBlackRGB:0.99], 0.42)];
+    [vignette drawInRect:bounds angle:-90.0];
+}
+
+@end
+
+@class OPNControllerPromptBarView;
+
 @interface OPNGameCatalogView ()
 @property (nonatomic, strong) NSScrollView *scrollView;
 @property (nonatomic, strong) NSView *gridContentView;
@@ -82,6 +258,27 @@ static NSString *OPNCatalogString(const std::string &value, NSString *fallback =
 @property (nonatomic, strong) NSTextField *gameCountLabel;
 @property (nonatomic, strong) NSTextField *statusLabel;
 @property (nonatomic, strong) OPNLoadingView *loadingView;
+@property (nonatomic, strong) NSView *categoryBarView;
+@property (nonatomic, strong) NSMutableArray<NSButton *> *categoryButtons;
+@property (nonatomic, copy) NSArray<NSDictionary<NSString *, NSString *> *> *categoryItems;
+@property (nonatomic, copy) NSString *selectedCategoryId;
+@property (nonatomic, strong) NSMutableSet<NSString *> *favoriteGameIds;
+@property (nonatomic, strong) OPNControllerElectricBackgroundView *controllerElectricBackgroundView;
+@property (nonatomic, strong) NSView *controllerDetailView;
+@property (nonatomic, strong) NSTextField *controllerDetailTitleLabel;
+@property (nonatomic, strong) NSTextField *controllerDetailMetaLabel;
+@property (nonatomic, strong) NSTextField *controllerDetailStoreLabel;
+@property (nonatomic, strong) NSTextField *controllerDetailStatsLabel;
+@property (nonatomic, strong) NSTextField *controllerDetailFeaturesLabel;
+@property (nonatomic, strong) OPNControllerPromptBarView *controllerPromptBarView;
+@property (nonatomic, strong) NSView *streamPipContainerView;
+@property (nonatomic, strong) NSView *streamPipHostView;
+@property (nonatomic, strong) NSTextField *streamPipTitleLabel;
+@property (nonatomic, strong) NSTextField *streamPipHintLabel;
+@property (nonatomic, weak) NSView *streamPipContentView;
+@property (nonatomic, assign, getter=isStreamPipFocused) BOOL streamPipFocused;
+@property (nonatomic, strong) CAGradientLayer *controllerDetailGradientLayer;
+@property (nonatomic, strong) CALayer *controllerDetailAccentLayer;
 @property (nonatomic, strong) NSMutableArray<OPNGameCardView *> *cardViews;
 @property (nonatomic, assign) std::vector<OPN::GameInfo> allGames;
 @property (nonatomic, assign) CGFloat lastLayoutWidth;
@@ -92,8 +289,268 @@ static NSString *OPNCatalogString(const std::string &value, NSString *fallback =
 @property (nonatomic, assign) std::vector<OPN::CatalogSortOption> catalogSortOptions;
 @property (nonatomic, assign) NSInteger catalogTotalCount;
 @property (nonatomic, assign) NSInteger catalogSupportedCount;
+@property (nonatomic, assign) NSInteger focusedCardIndex;
+@property (nonatomic, assign) NSInteger gridColumnCount;
+@property (nonatomic, strong) NSView *detailsOverlayView;
+@property (nonatomic, strong) NSTimer *gamepadNavigationTimer;
+@property (nonatomic, assign) uint16_t previousGamepadButtons;
+@property (nonatomic, assign) CFTimeInterval lastGamepadMoveTime;
+- (void)stopGamepadNavigation;
 - (void)scrollLibraryToTop;
 - (void)requestCatalogBrowse;
+- (void)rebuildCategoryBar;
+- (BOOL)game:(const OPN::GameInfo &)game matchesCategory:(NSString *)categoryId;
+- (void)cycleCategoryBy:(NSInteger)delta;
+- (NSString *)favoriteIdentifierForGame:(const OPN::GameInfo &)game;
+- (BOOL)isFavoriteGame:(const OPN::GameInfo &)game;
+- (void)toggleFavoriteForFocusedGame;
+- (void)persistFavoriteGameIds;
+- (void)focusCardAtIndex:(NSInteger)index scrollIntoView:(BOOL)scrollIntoView;
+- (void)openFocusedGameDetails;
+- (void)closeGameDetails;
+- (void)launchFocusedGame;
+- (void)cycleFocusedVariant;
+- (void)updateControllerDetailContent;
+- (void)setStreamPipFocused:(BOOL)focused;
+- (void)startGamepadNavigationIfNeeded;
+- (void)controllerDidConnect:(NSNotification *)notification;
+- (void)controllerDidDisconnect:(NSNotification *)notification;
+@end
+
+static uint16_t OPNCatalogGamepadButtons(void) {
+    NSArray<GCController *> *controllers = [GCController controllers];
+    if (controllers.count == 0) return 0;
+    GCExtendedGamepad *pad = controllers.firstObject.extendedGamepad;
+    if (!pad) return 0;
+    uint16_t buttons = 0;
+    if (pad.buttonA.value > 0.5) buttons |= 1u << 0;
+    if (pad.buttonB.value > 0.5) buttons |= 1u << 1;
+    if (pad.buttonY.value > 0.5) buttons |= 1u << 2;
+    if (pad.leftShoulder.value > 0.5) buttons |= 1u << 3;
+    if (pad.rightShoulder.value > 0.5) buttons |= 1u << 4;
+    if (pad.dpad.up.value > 0.5 || pad.leftThumbstick.yAxis.value > 0.65) buttons |= 1u << 5;
+    if (pad.dpad.down.value > 0.5 || pad.leftThumbstick.yAxis.value < -0.65) buttons |= 1u << 6;
+    if (pad.dpad.left.value > 0.5 || pad.leftThumbstick.xAxis.value < -0.65) buttons |= 1u << 7;
+    if (pad.dpad.right.value > 0.5 || pad.leftThumbstick.xAxis.value > 0.65) buttons |= 1u << 8;
+    if (pad.buttonX.value > 0.5) buttons |= 1u << 9;
+    return buttons;
+}
+
+static BOOL OPNCatalogGamepadNavigationActive(NSView *view) {
+    NSWindow *window = view.window;
+    if (!window || window.contentViewController != nil) return NO;
+    return window.contentView == view || [view isDescendantOf:window.contentView];
+}
+
+static NSString *OPNCatalogJoinedStrings(const std::vector<std::string> &values, NSString *fallback) {
+    NSMutableArray<NSString *> *items = [NSMutableArray array];
+    for (const std::string &value : values) {
+        if (!value.empty()) [items addObject:[NSString stringWithUTF8String:value.c_str()]];
+        if (items.count >= 4) break;
+    }
+    return items.count > 0 ? [items componentsJoinedByString:@"  /  "] : fallback;
+}
+
+static NSString *OPNCategoryId(NSString *prefix, NSString *value) {
+    NSString *cleanValue = [[value ?: @"" stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet] lowercaseString];
+    if (cleanValue.length == 0) return @"";
+    return [NSString stringWithFormat:@"%@:%@", prefix, cleanValue];
+}
+
+static NSString *OPNStoreCategoryTitle(NSString *store) {
+    NSString *upper = store.uppercaseString;
+    if ([upper containsString:@"STEAM"]) return @"Steam";
+    if ([upper containsString:@"EPIC"] || [upper containsString:@"EGS"]) return @"Epic";
+    if ([upper containsString:@"UBISOFT"] || [upper containsString:@"UPLAY"]) return @"Ubisoft";
+    if ([upper containsString:@"BATTLE"]) return @"Battle.net";
+    if ([upper containsString:@"XBOX"] || [upper containsString:@"MICROSOFT"]) return @"Xbox";
+    if ([upper containsString:@"EA"] || [upper containsString:@"ORIGIN"]) return @"EA";
+    if ([upper containsString:@"GOG"]) return @"GOG";
+    return store.capitalizedString;
+}
+
+typedef NS_ENUM(NSInteger, OPNControllerPromptStyle) {
+    OPNControllerPromptStyleGeneric = 0,
+    OPNControllerPromptStylePlayStation = 1,
+    OPNControllerPromptStyleXbox = 2,
+    OPNControllerPromptStyleNintendo = 3,
+};
+
+static OPNControllerPromptStyle OPNCurrentControllerPromptStyle(void) {
+    GCController *controller = GCController.controllers.firstObject;
+    if (!controller) return OPNControllerPromptStyleGeneric;
+    NSMutableArray<NSString *> *parts = [NSMutableArray array];
+    if (controller.vendorName.length > 0) [parts addObject:controller.vendorName];
+    if ([controller respondsToSelector:@selector(productCategory)] && controller.productCategory.length > 0) {
+        [parts addObject:controller.productCategory];
+    }
+    NSString *descriptor = [[parts componentsJoinedByString:@" "] lowercaseString];
+    if ([descriptor containsString:@"dualsense"] || [descriptor containsString:@"dualshock"] ||
+        [descriptor containsString:@"playstation"] || [descriptor containsString:@"sony"]) {
+        return OPNControllerPromptStylePlayStation;
+    }
+    if ([descriptor containsString:@"xbox"] || [descriptor containsString:@"microsoft"]) return OPNControllerPromptStyleXbox;
+    if ([descriptor containsString:@"nintendo"] || [descriptor containsString:@"switch"] || [descriptor containsString:@"joy-con"]) {
+        return OPNControllerPromptStyleNintendo;
+    }
+    return OPNControllerPromptStyleGeneric;
+}
+
+static NSString *OPNPromptLetter(NSString *button, OPNControllerPromptStyle style) {
+    if ([button isEqualToString:@"primary"]) return style == OPNControllerPromptStyleNintendo ? @"A" : @"A";
+    if ([button isEqualToString:@"favorite"]) return style == OPNControllerPromptStyleNintendo ? @"X" : @"Y";
+    if ([button isEqualToString:@"store"]) return style == OPNControllerPromptStyleNintendo ? @"Y" : @"X";
+    if ([button isEqualToString:@"back"]) return style == OPNControllerPromptStyleNintendo ? @"B" : @"B";
+    return @"";
+}
+
+static void OPNStrokePath(NSBezierPath *path, NSColor *color, CGFloat width) {
+    [color setStroke];
+    path.lineWidth = width;
+    path.lineCapStyle = NSLineCapStyleRound;
+    path.lineJoinStyle = NSLineJoinStyleRound;
+    [path stroke];
+}
+
+static NSImage *OPNControllerPromptIcon(NSString *button, OPNControllerPromptStyle style) {
+    const CGFloat size = 24.0;
+    NSImage *image = [[NSImage alloc] initWithSize:NSMakeSize(size, size)];
+    [image lockFocus];
+
+    NSColor *strokeColor = OpnColor(0xEAFBF0, 0.92);
+    NSColor *fillColor = style == OPNControllerPromptStylePlayStation ? OpnColor(0xFFFFFF, 0.035) : OpnColor(0xEAFBF0, 0.14);
+    NSRect iconRect = NSMakeRect(2.5, 2.5, 19.0, 19.0);
+
+    if ([button isEqualToString:@"category"]) {
+        NSBezierPath *pad = [NSBezierPath bezierPathWithRoundedRect:iconRect xRadius:5.0 yRadius:5.0];
+        [OpnColor(0xEAFBF0, 0.08) setFill];
+        [pad fill];
+        OPNStrokePath(pad, OpnColor(0xEAFBF0, 0.68), 1.4);
+        NSBezierPath *up = [NSBezierPath bezierPath];
+        [up moveToPoint:NSMakePoint(12.0, 6.0)];
+        [up lineToPoint:NSMakePoint(8.5, 10.0)];
+        [up moveToPoint:NSMakePoint(12.0, 6.0)];
+        [up lineToPoint:NSMakePoint(15.5, 10.0)];
+        OPNStrokePath(up, strokeColor, 1.6);
+        NSBezierPath *down = [NSBezierPath bezierPath];
+        [down moveToPoint:NSMakePoint(12.0, 18.0)];
+        [down lineToPoint:NSMakePoint(8.5, 14.0)];
+        [down moveToPoint:NSMakePoint(12.0, 18.0)];
+        [down lineToPoint:NSMakePoint(15.5, 14.0)];
+        OPNStrokePath(down, strokeColor, 1.6);
+    } else if (style == OPNControllerPromptStylePlayStation) {
+        if ([button isEqualToString:@"primary"]) {
+            NSBezierPath *cross = [NSBezierPath bezierPath];
+            [cross moveToPoint:NSMakePoint(7.0, 7.0)];
+            [cross lineToPoint:NSMakePoint(17.0, 17.0)];
+            [cross moveToPoint:NSMakePoint(17.0, 7.0)];
+            [cross lineToPoint:NSMakePoint(7.0, 17.0)];
+            OPNStrokePath(cross, strokeColor, 2.2);
+        } else if ([button isEqualToString:@"favorite"]) {
+            NSBezierPath *triangle = [NSBezierPath bezierPath];
+            [triangle moveToPoint:NSMakePoint(12.0, 4.5)];
+            [triangle lineToPoint:NSMakePoint(20.0, 18.5)];
+            [triangle lineToPoint:NSMakePoint(4.0, 18.5)];
+            [triangle closePath];
+            [fillColor setFill];
+            [triangle fill];
+            OPNStrokePath(triangle, strokeColor, 1.8);
+        } else if ([button isEqualToString:@"store"]) {
+            NSBezierPath *square = [NSBezierPath bezierPathWithRoundedRect:NSMakeRect(5.2, 5.2, 13.6, 13.6) xRadius:1.8 yRadius:1.8];
+            [fillColor setFill];
+            [square fill];
+            OPNStrokePath(square, strokeColor, 1.8);
+        } else if ([button isEqualToString:@"back"]) {
+            NSBezierPath *circle = [NSBezierPath bezierPathWithOvalInRect:NSMakeRect(5.0, 5.0, 14.0, 14.0)];
+            [fillColor setFill];
+            [circle fill];
+            OPNStrokePath(circle, strokeColor, 1.8);
+        }
+    } else {
+        NSBezierPath *circle = [NSBezierPath bezierPathWithOvalInRect:iconRect];
+        [fillColor setFill];
+        [circle fill];
+        OPNStrokePath(circle, strokeColor, 1.4);
+        NSString *letter = OPNPromptLetter(button, style);
+        NSMutableParagraphStyle *styleCenter = [[NSMutableParagraphStyle alloc] init];
+        styleCenter.alignment = NSTextAlignmentCenter;
+        [letter drawInRect:NSMakeRect(2.5, 5.3, 19.0, 14.0) withAttributes:@{
+            NSFontAttributeName: [NSFont systemFontOfSize:11.0 weight:NSFontWeightBold],
+            NSForegroundColorAttributeName: strokeColor,
+            NSParagraphStyleAttributeName: styleCenter,
+        }];
+    }
+
+    [image unlockFocus];
+    return image;
+}
+
+@interface OPNControllerPromptBarView : NSView
+@property (nonatomic, assign) BOOL includeStore;
+@property (nonatomic, assign) BOOL includeBack;
+@end
+
+@implementation OPNControllerPromptBarView
+
+- (BOOL)isFlipped { return YES; }
+
+- (void)setIncludeStore:(BOOL)includeStore {
+    if (_includeStore == includeStore) return;
+    _includeStore = includeStore;
+    [self setNeedsDisplay:YES];
+}
+
+- (void)setIncludeBack:(BOOL)includeBack {
+    if (_includeBack == includeBack) return;
+    _includeBack = includeBack;
+    [self setNeedsDisplay:YES];
+}
+
+- (NSArray<NSDictionary<NSString *, NSString *> *> *)promptItems {
+    NSMutableArray<NSDictionary<NSString *, NSString *> *> *items = [NSMutableArray arrayWithObjects:
+        @{@"button": @"primary", @"title": @"Play"},
+        @{@"button": @"favorite", @"title": @"Favorite"}, nil];
+    if (self.includeStore) [items addObject:@{@"button": @"store", @"title": @"Store"}];
+    [items addObject:@{@"button": @"category", @"title": @"Categories"}];
+    if (self.includeBack) [items addObject:@{@"button": @"back", @"title": @"Back"}];
+    return items;
+}
+
+- (void)drawRect:(NSRect)dirtyRect {
+    (void)dirtyRect;
+    OPNControllerPromptStyle style = OPNCurrentControllerPromptStyle();
+    CGFloat x = 0.0;
+    CGFloat y = 0.0;
+    NSDictionary<NSAttributedStringKey, id> *labelAttributes = @{
+        NSFontAttributeName: [NSFont systemFontOfSize:13.0 weight:NSFontWeightSemibold],
+        NSForegroundColorAttributeName: OpnColor(0xF1FFF5, 0.82),
+    };
+
+    for (NSDictionary<NSString *, NSString *> *item in [self promptItems]) {
+        NSString *title = item[@"title"] ?: @"";
+        NSString *button = item[@"button"] ?: @"";
+        CGFloat titleWidth = ceil([title sizeWithAttributes:labelAttributes].width);
+        CGFloat chipWidth = MAX(82.0, titleWidth + 50.0);
+        NSRect chipRect = NSMakeRect(x, y, chipWidth, 34.0);
+        NSBezierPath *chip = [NSBezierPath bezierPathWithRoundedRect:chipRect xRadius:17.0 yRadius:17.0];
+        [OpnColor(OPNControllerAccentRGB(), 0.070) setFill];
+        [chip fill];
+        OPNStrokePath(chip, OpnColor(OPNControllerAccentSoftRGB(), 0.14), 1.0);
+
+        NSImage *icon = OPNControllerPromptIcon(button, style);
+        [icon drawInRect:NSMakeRect(NSMinX(chipRect) + 9.0, NSMinY(chipRect) + 5.0, 24.0, 24.0)
+                fromRect:NSZeroRect
+               operation:NSCompositingOperationSourceOver
+                fraction:1.0
+          respectFlipped:YES
+                   hints:@{NSImageHintInterpolation: @(NSImageInterpolationHigh)}];
+
+        [title drawInRect:NSMakeRect(NSMinX(chipRect) + 39.0, NSMinY(chipRect) + 8.0, chipWidth - 47.0, 18.0)
+           withAttributes:labelAttributes];
+        x += chipWidth + 12.0;
+    }
+}
+
 @end
 
 @implementation OPNGameCatalogView
@@ -104,10 +561,22 @@ using namespace OPN;
     self = [super initWithFrame:frame];
     if (self) {
         _cardViews = [NSMutableArray array];
+        _categoryButtons = [NSMutableArray array];
+        _categoryItems = @[];
+        _selectedCategoryId = @"all";
+        NSArray<NSString *> *storedFavorites = [NSUserDefaults.standardUserDefaults arrayForKey:OPNFavoriteGameIdsDefaultsKey];
+        _favoriteGameIds = [NSMutableSet setWithArray:[storedFavorites isKindOfClass:NSArray.class] ? storedFavorites : @[]];
         _selectedSortId = @"last_played";
         _selectedFilterIds = [NSMutableSet set];
+        _focusedCardIndex = -1;
+        _gridColumnCount = 1;
         self.wantsLayer = YES;
+        self.layer.opaque = NO;
         self.layer.backgroundColor = [NSColor clearColor].CGColor;
+
+        _controllerElectricBackgroundView = [[OPNControllerElectricBackgroundView alloc] initWithFrame:self.bounds];
+        _controllerElectricBackgroundView.hidden = YES;
+        [self addSubview:_controllerElectricBackgroundView];
 
         _libraryIconLabel = OpnLabel(@"", NSMakeRect(30, kNavHeight + 36, 0, 0),
                                      1, OpnColor(kBrandGreen), NSFontWeightBold);
@@ -152,7 +621,7 @@ using namespace OPN;
         _searchField.appearance = [NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];
         _searchField.wantsLayer = YES;
         _searchField.layer.cornerRadius = 14;
-        _searchField.layer.backgroundColor = OpnColor(0x15171C, 0.92).CGColor;
+        _searchField.layer.backgroundColor = OpnColor(OPNControllerAccentBlackRGB(0.88), 0.92).CGColor;
         _searchField.layer.borderColor = OpnColor(0xFFFFFF, 0.13).CGColor;
         _searchField.layer.borderWidth = 1;
         if ([_searchField.cell respondsToSelector:@selector(setDrawsBackground:)]) {
@@ -202,19 +671,34 @@ using namespace OPN;
         _gameCountLabel.hidden = YES;
         [self addSubview:_gameCountLabel];
 
+        _categoryBarView = [[NSView alloc] initWithFrame:NSZeroRect];
+        _categoryBarView.wantsLayer = YES;
+        _categoryBarView.hidden = YES;
+        [self addSubview:_categoryBarView];
+
         CGFloat gridY = kNavHeight + kToolbarHeight;
         NSRect scrollFrame = NSMakeRect(0, gridY, frame.size.width, frame.size.height - gridY);
         _scrollView = [[NSScrollView alloc] initWithFrame:scrollFrame];
+        _scrollView.wantsLayer = YES;
         _scrollView.hasVerticalScroller = YES;
         _scrollView.hasHorizontalScroller = NO;
         _scrollView.autohidesScrollers = YES;
         _scrollView.drawsBackground = NO;
         _scrollView.borderType = NSNoBorder;
+        _scrollView.layer.opaque = NO;
+        _scrollView.layer.backgroundColor = NSColor.clearColor.CGColor;
+        _scrollView.contentView.drawsBackground = NO;
+        _scrollView.contentView.backgroundColor = NSColor.clearColor;
+        _scrollView.contentView.wantsLayer = YES;
+        _scrollView.contentView.layer.opaque = NO;
+        _scrollView.contentView.layer.backgroundColor = NSColor.clearColor.CGColor;
         [self addSubview:_scrollView];
 
         // Grid content
         _gridContentView = [[OPNFlippedGridDocumentView alloc] initWithFrame:NSMakeRect(0, 0, frame.size.width, 100)];
         _gridContentView.wantsLayer = YES;
+        _gridContentView.layer.opaque = NO;
+        _gridContentView.layer.backgroundColor = NSColor.clearColor.CGColor;
         _scrollView.documentView = _gridContentView;
 
         _statusLabel = OpnLabel(@"", NSMakeRect(0, gridY + 100, frame.size.width, 24),
@@ -222,8 +706,84 @@ using namespace OPN;
         _statusLabel.alignment = NSTextAlignmentCenter;
         [self addSubview:_statusLabel];
 
+        _controllerDetailView = [[OPNFlippedGridDocumentView alloc] initWithFrame:NSZeroRect];
+        _controllerDetailView.hidden = YES;
+        _controllerDetailView.wantsLayer = YES;
+        _controllerDetailView.layer.cornerRadius = 0.0;
+        _controllerDetailView.layer.borderWidth = 0.0;
+        _controllerDetailView.layer.borderColor = OpnColor(0xFFFFFF, 0.0).CGColor;
+        _controllerDetailView.layer.backgroundColor = NSColor.clearColor.CGColor;
+        _controllerDetailView.layer.shadowColor = OpnColor(OPNControllerAccentRGB()).CGColor;
+        _controllerDetailView.layer.shadowOpacity = 0.0;
+        _controllerDetailView.layer.shadowRadius = 0.0;
+        _controllerDetailView.layer.shadowOffset = CGSizeZero;
+        _controllerDetailView.layer.transform = CATransform3DIdentity;
+
+        _controllerDetailGradientLayer = [CAGradientLayer layer];
+        _controllerDetailGradientLayer.colors = @[(id)NSColor.clearColor.CGColor,
+                                                   (id)NSColor.clearColor.CGColor,
+                                                   (id)NSColor.clearColor.CGColor];
+        _controllerDetailGradientLayer.locations = @[@0.0, @0.46, @1.0];
+        _controllerDetailGradientLayer.startPoint = CGPointMake(0.0, 0.0);
+        _controllerDetailGradientLayer.endPoint = CGPointMake(1.0, 1.0);
+        _controllerDetailGradientLayer.opacity = 0.0;
+        [_controllerDetailView.layer addSublayer:_controllerDetailGradientLayer];
+
+        _controllerDetailAccentLayer = [CALayer layer];
+        _controllerDetailAccentLayer.backgroundColor = OpnColor(OPNControllerAccentSoftRGB(), 0.86).CGColor;
+        _controllerDetailAccentLayer.cornerRadius = 2.0;
+        [_controllerDetailView.layer addSublayer:_controllerDetailAccentLayer];
+        [self addSubview:_controllerDetailView];
+
+        _controllerDetailTitleLabel = OpnLabel(@"Select a game", NSZeroRect, 42.0, OpnColor(kTextPrimary), NSFontWeightSemibold);
+        _controllerDetailTitleLabel.lineBreakMode = NSLineBreakByTruncatingTail;
+        [_controllerDetailView addSubview:_controllerDetailTitleLabel];
+
+        _controllerDetailMetaLabel = OpnLabel(@"", NSZeroRect, 15.0, OpnColor(kTextSecondary), NSFontWeightMedium);
+        [_controllerDetailView addSubview:_controllerDetailMetaLabel];
+
+        _controllerDetailStoreLabel = OpnLabel(@"", NSZeroRect, 16.0, NSColor.whiteColor, NSFontWeightSemibold);
+        [_controllerDetailView addSubview:_controllerDetailStoreLabel];
+
+        _controllerDetailStatsLabel = OpnLabel(@"", NSZeroRect, 14.0, OpnColor(kTextSecondary), NSFontWeightMedium);
+        [_controllerDetailView addSubview:_controllerDetailStatsLabel];
+
+        _controllerDetailFeaturesLabel = OpnLabel(@"", NSZeroRect, 14.0, OpnColor(kTextMuted), NSFontWeightRegular);
+        _controllerDetailFeaturesLabel.maximumNumberOfLines = 6;
+        [_controllerDetailView addSubview:_controllerDetailFeaturesLabel];
+
+        _controllerPromptBarView = [[OPNControllerPromptBarView alloc] initWithFrame:NSZeroRect];
+        _controllerPromptBarView.wantsLayer = YES;
+        [_controllerDetailView addSubview:_controllerPromptBarView];
+
+        _streamPipContainerView = [[NSView alloc] initWithFrame:NSZeroRect];
+        _streamPipContainerView.hidden = YES;
+        _streamPipContainerView.wantsLayer = YES;
+        _streamPipContainerView.layer.cornerRadius = 22.0;
+        _streamPipContainerView.layer.masksToBounds = NO;
+        _streamPipContainerView.layer.backgroundColor = OpnColor(0x030507, 0.68).CGColor;
+        _streamPipContainerView.layer.borderWidth = 1.0;
+        _streamPipContainerView.layer.borderColor = OpnColor(0xFFFFFF, 0.16).CGColor;
+        _streamPipContainerView.layer.shadowColor = NSColor.blackColor.CGColor;
+        _streamPipContainerView.layer.shadowOpacity = 0.30;
+        _streamPipContainerView.layer.shadowRadius = 24.0;
+        _streamPipContainerView.layer.shadowOffset = CGSizeMake(0.0, 12.0);
+
+        _streamPipHostView = [[NSView alloc] initWithFrame:NSZeroRect];
+        _streamPipHostView.wantsLayer = YES;
+        _streamPipHostView.layer.cornerRadius = 18.0;
+        _streamPipHostView.layer.masksToBounds = YES;
+        _streamPipHostView.layer.backgroundColor = NSColor.blackColor.CGColor;
+        [_streamPipContainerView addSubview:_streamPipHostView];
+
+        _streamPipTitleLabel = OpnLabel(@"Current Stream", NSZeroRect, 14.0, OpnColor(kTextPrimary), NSFontWeightSemibold);
+        [_streamPipContainerView addSubview:_streamPipTitleLabel];
+        _streamPipHintLabel = OpnLabel(@"Press A to return", NSZeroRect, 12.0, OpnColor(kTextSecondary), NSFontWeightMedium, NSTextAlignmentRight);
+        [_streamPipContainerView addSubview:_streamPipHintLabel];
+        [self addSubview:_streamPipContainerView];
+
         _loadingView = [[OPNLoadingView alloc] initWithFrame:self.bounds
-                                                     message:@"Loading games..."];
+                                                      message:@"Loading games..."];
         _loadingView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
         _loadingView.hidden = YES;
         [self addSubview:_loadingView];
@@ -231,6 +791,15 @@ using namespace OPN;
                                                  selector:@selector(interfacePreferencesChanged:)
                                                      name:OPNInterfacePreferencesDidChangeNotification
                                                    object:nil];
+        [[NSNotificationCenter defaultCenter] addObserver:self
+                                                 selector:@selector(controllerDidConnect:)
+                                                     name:GCControllerDidConnectNotification
+                                                   object:nil];
+        [[NSNotificationCenter defaultCenter] addObserver:self
+                                                 selector:@selector(controllerDidDisconnect:)
+                                                     name:GCControllerDidDisconnectNotification
+                                                   object:nil];
+        [self startGamepadNavigationIfNeeded];
         [self layoutCatalogSubviews];
     }
     return self;
@@ -238,11 +807,45 @@ using namespace OPN;
 
 - (void)dealloc {
     [[NSNotificationCenter defaultCenter] removeObserver:self];
+    [self stopGamepadNavigation];
+}
+
+- (void)viewDidMoveToWindow {
+    [super viewDidMoveToWindow];
+    if (self.window) {
+        [self startGamepadNavigationIfNeeded];
+    } else {
+        [self stopGamepadNavigation];
+    }
+}
+
+- (void)applyControllerAccentColors {
+    self.searchField.layer.backgroundColor = OpnColor(OPNControllerAccentBlackRGB(0.88), 0.92).CGColor;
+    self.controllerDetailView.layer.backgroundColor = NSColor.clearColor.CGColor;
+    self.controllerDetailView.layer.shadowColor = OpnColor(OPNControllerAccentRGB()).CGColor;
+    self.controllerDetailGradientLayer.colors = @[(id)NSColor.clearColor.CGColor,
+                                                  (id)NSColor.clearColor.CGColor,
+                                                  (id)NSColor.clearColor.CGColor];
+    self.controllerDetailGradientLayer.opacity = 0.0;
+    self.controllerDetailAccentLayer.backgroundColor = OpnColor(OPNControllerAccentSoftRGB(), 0.86).CGColor;
+    self.controllerDetailStoreLabel.textColor = NSColor.whiteColor;
+    self.layer.backgroundColor = NSColor.clearColor.CGColor;
+    [self.controllerElectricBackgroundView setNeedsDisplay:YES];
 }
 
 - (void)interfacePreferencesChanged:(NSNotification *)notification {
     (void)notification;
+    [self applyControllerAccentColors];
     [self renderGrid];
+    [self startGamepadNavigationIfNeeded];
+}
+
+- (BOOL)acceptsFirstResponder { return YES; }
+
+- (BOOL)becomeFirstResponder {
+    BOOL result = [super becomeFirstResponder];
+    if (self.focusedCardIndex < 0 && self.cardViews.count > 0) [self focusCardAtIndex:0 scrollIntoView:NO];
+    return result;
 }
 
 - (BOOL)isFlipped { return YES; }
@@ -259,6 +862,30 @@ using namespace OPN;
 
 - (void)setUserName:(NSString *)name {
     _userLabel.stringValue = name ? [NSString stringWithFormat:@"Signed in as %@", name] : @"";
+}
+
+- (void)setStreamPictureInPictureView:(NSView *)view title:(NSString *)title {
+    if (self.streamPipContentView == view) {
+        self.streamPipTitleLabel.stringValue = title.length > 0 ? title : @"Current Stream";
+        [self layoutCatalogSubviews];
+        return;
+    }
+
+    [self.streamPipContentView removeFromSuperview];
+    self.streamPipContentView = nil;
+    self.streamPipTitleLabel.stringValue = title.length > 0 ? title : @"Current Stream";
+    self.streamPipHintLabel.stringValue = @"Press A to return";
+
+    if (view) {
+        view.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+        view.frame = self.streamPipHostView.bounds;
+        [self.streamPipHostView addSubview:view];
+        self.streamPipContentView = view;
+    } else {
+        self.streamPipFocused = NO;
+    }
+    [self setStreamPipFocused:NO];
+    [self layoutCatalogSubviews];
 }
 
 - (void)setLoading:(BOOL)loading {
@@ -282,6 +909,7 @@ using namespace OPN;
     _allGames = games;
     self.catalogTotalCount = (NSInteger)games.size();
     self.catalogSupportedCount = (NSInteger)games.size();
+    [self rebuildCategoryBar];
     [self renderGrid];
     [self scrollLibraryToTop];
     dispatch_async(dispatch_get_main_queue(), ^{
@@ -312,6 +940,182 @@ using namespace OPN;
         ? [NSString stringWithFormat:@"Filters (%lu)", (unsigned long)self.selectedFilterIds.count]
         : @"Filters";
     self.searchField.stringValue = OPNCatalogString(result.searchQuery, @"");
+    [self rebuildCategoryBar];
+    [self renderGrid];
+    [self scrollLibraryToTop];
+}
+
+- (void)rebuildCategoryBar {
+    NSMutableArray<NSDictionary<NSString *, NSString *> *> *items = [NSMutableArray array];
+    [items addObject:@{@"id": @"all", @"title": @"All"}];
+    [items addObject:@{@"id": @"favorites", @"title": @"Favorites"}];
+
+    NSInteger libraryCount = 0;
+    NSMutableDictionary<NSString *, NSNumber *> *storeCounts = [NSMutableDictionary dictionary];
+    NSMutableDictionary<NSString *, NSString *> *storeTitles = [NSMutableDictionary dictionary];
+    NSMutableDictionary<NSString *, NSNumber *> *genreCounts = [NSMutableDictionary dictionary];
+    NSMutableDictionary<NSString *, NSString *> *genreTitles = [NSMutableDictionary dictionary];
+
+    for (const OPN::GameInfo &game : self.allGames) {
+        if (game.isInLibrary) libraryCount++;
+        for (const std::string &storeValue : game.availableStores) {
+            if (storeValue.empty()) continue;
+            NSString *store = [NSString stringWithUTF8String:storeValue.c_str()];
+            NSString *categoryId = OPNCategoryId(@"store", store);
+            if (categoryId.length == 0) continue;
+            storeCounts[categoryId] = @((storeCounts[categoryId] ?: @0).integerValue + 1);
+            if (!storeTitles[categoryId]) storeTitles[categoryId] = OPNStoreCategoryTitle(store);
+        }
+        for (const std::string &genreValue : game.genres) {
+            if (genreValue.empty()) continue;
+            NSString *genre = [NSString stringWithUTF8String:genreValue.c_str()];
+            NSString *categoryId = OPNCategoryId(@"genre", genre);
+            if (categoryId.length == 0) continue;
+            genreCounts[categoryId] = @((genreCounts[categoryId] ?: @0).integerValue + 1);
+            if (!genreTitles[categoryId]) genreTitles[categoryId] = genre.capitalizedString;
+        }
+    }
+
+    if (libraryCount > 0) [items addObject:@{@"id": @"library", @"title": @"Library"}];
+
+    NSArray<NSString *> *sortedStoreIds = [[storeCounts allKeys] sortedArrayUsingComparator:^NSComparisonResult(NSString *a, NSString *b) {
+        NSInteger countA = storeCounts[a].integerValue;
+        NSInteger countB = storeCounts[b].integerValue;
+        if (countA != countB) return countA > countB ? NSOrderedAscending : NSOrderedDescending;
+        return [storeTitles[a] localizedCaseInsensitiveCompare:storeTitles[b]];
+    }];
+    for (NSString *categoryId in sortedStoreIds) {
+        if (items.count >= 9) break;
+        NSString *title = storeTitles[categoryId];
+        if (title.length > 0) [items addObject:@{@"id": categoryId, @"title": title}];
+    }
+
+    NSArray<NSString *> *sortedGenreIds = [[genreCounts allKeys] sortedArrayUsingComparator:^NSComparisonResult(NSString *a, NSString *b) {
+        NSInteger countA = genreCounts[a].integerValue;
+        NSInteger countB = genreCounts[b].integerValue;
+        if (countA != countB) return countA > countB ? NSOrderedAscending : NSOrderedDescending;
+        return [genreTitles[a] localizedCaseInsensitiveCompare:genreTitles[b]];
+    }];
+    for (NSString *categoryId in sortedGenreIds) {
+        if (items.count >= 12) break;
+        NSString *title = genreTitles[categoryId];
+        if (title.length > 0) [items addObject:@{@"id": categoryId, @"title": title}];
+    }
+
+    BOOL selectedStillExists = NO;
+    for (NSDictionary<NSString *, NSString *> *item in items) {
+        if ([item[@"id"] isEqualToString:self.selectedCategoryId]) selectedStillExists = YES;
+    }
+    if (!selectedStillExists) self.selectedCategoryId = @"all";
+
+    self.categoryItems = items;
+    for (NSView *view in self.categoryBarView.subviews) [view removeFromSuperview];
+    [self.categoryButtons removeAllObjects];
+
+    CGFloat x = 0.0;
+    for (NSDictionary<NSString *, NSString *> *item in items) {
+        NSString *title = item[@"title"] ?: @"";
+        CGFloat buttonWidth = MIN(130.0, MAX(60.0, title.length * 8.4 + 28.0));
+        NSButton *button = [[NSButton alloc] initWithFrame:NSMakeRect(x, 0.0, buttonWidth, 30.0)];
+        button.title = title;
+        button.identifier = item[@"id"] ?: @"all";
+        button.bordered = NO;
+        button.font = [NSFont systemFontOfSize:13.0 weight:NSFontWeightSemibold];
+        button.target = self;
+        button.action = @selector(categoryButtonClicked:);
+        button.wantsLayer = YES;
+        button.layer.cornerRadius = 15.0;
+        [self.categoryBarView addSubview:button];
+        [self.categoryButtons addObject:button];
+        x += buttonWidth + 8.0;
+    }
+}
+
+- (void)categoryButtonClicked:(NSButton *)sender {
+    NSString *categoryId = sender.identifier.length > 0 ? sender.identifier : @"all";
+    if ([categoryId isEqualToString:self.selectedCategoryId]) return;
+    self.selectedCategoryId = categoryId;
+    self.focusedCardIndex = 0;
+    if (OpnControllerModeEnabled()) OpnPlayConsoleTone(OPNConsoleToneChange);
+    [self renderGrid];
+    [self scrollLibraryToTop];
+}
+
+- (BOOL)game:(const OPN::GameInfo &)game matchesCategory:(NSString *)categoryId {
+    if (categoryId.length == 0 || [categoryId isEqualToString:@"all"]) return YES;
+    if ([categoryId isEqualToString:@"favorites"]) return [self isFavoriteGame:game];
+    if ([categoryId isEqualToString:@"library"]) return game.isInLibrary;
+    if ([categoryId hasPrefix:@"store:"]) {
+        for (const std::string &storeValue : game.availableStores) {
+            NSString *store = [NSString stringWithUTF8String:storeValue.c_str()];
+            if ([OPNCategoryId(@"store", store) isEqualToString:categoryId]) return YES;
+        }
+        return NO;
+    }
+    if ([categoryId hasPrefix:@"genre:"]) {
+        for (const std::string &genreValue : game.genres) {
+            NSString *genre = [NSString stringWithUTF8String:genreValue.c_str()];
+            if ([OPNCategoryId(@"genre", genre) isEqualToString:categoryId]) return YES;
+        }
+        return NO;
+    }
+    return YES;
+}
+
+- (NSString *)favoriteIdentifierForGame:(const OPN::GameInfo &)game {
+    if (!game.id.empty()) return [NSString stringWithUTF8String:game.id.c_str()];
+    if (!game.uuid.empty()) return [NSString stringWithUTF8String:game.uuid.c_str()];
+    if (!game.launchAppId.empty()) return [NSString stringWithUTF8String:game.launchAppId.c_str()];
+    return OPNCatalogString(game.title, @"");
+}
+
+- (BOOL)isFavoriteGame:(const OPN::GameInfo &)game {
+    NSString *identifier = [self favoriteIdentifierForGame:game];
+    return identifier.length > 0 && [self.favoriteGameIds containsObject:identifier];
+}
+
+- (void)persistFavoriteGameIds {
+    NSArray<NSString *> *sortedIds = [[self.favoriteGameIds allObjects] sortedArrayUsingSelector:@selector(localizedCaseInsensitiveCompare:)];
+    [NSUserDefaults.standardUserDefaults setObject:sortedIds forKey:OPNFavoriteGameIdsDefaultsKey];
+    [NSUserDefaults.standardUserDefaults synchronize];
+}
+
+- (void)toggleFavoriteForFocusedGame {
+    OPNGameCardView *card = [self focusedCard];
+    if (!card) return;
+    NSString *identifier = [self favoriteIdentifierForGame:card.game];
+    if (identifier.length == 0) return;
+    if ([self.favoriteGameIds containsObject:identifier]) {
+        [self.favoriteGameIds removeObject:identifier];
+    } else {
+        [self.favoriteGameIds addObject:identifier];
+    }
+    [self persistFavoriteGameIds];
+    if (OpnControllerModeEnabled()) OpnPlayConsoleTone(OPNConsoleToneChange);
+    [self rebuildCategoryBar];
+    if ([self.selectedCategoryId isEqualToString:@"favorites"] && ![self isFavoriteGame:card.game]) {
+        self.focusedCardIndex = MIN(self.focusedCardIndex, MAX(0, (NSInteger)self.cardViews.count - 2));
+        [self renderGrid];
+    } else {
+        [self updateControllerDetailContent];
+        [self layoutCatalogSubviews];
+    }
+}
+
+- (void)cycleCategoryBy:(NSInteger)delta {
+    if (self.categoryItems.count <= 1 || delta == 0) return;
+    NSInteger currentIndex = 0;
+    for (NSUInteger i = 0; i < self.categoryItems.count; i++) {
+        if ([self.categoryItems[i][@"id"] isEqualToString:self.selectedCategoryId]) {
+            currentIndex = (NSInteger)i;
+            break;
+        }
+    }
+    NSInteger nextIndex = (currentIndex + delta) % (NSInteger)self.categoryItems.count;
+    if (nextIndex < 0) nextIndex += (NSInteger)self.categoryItems.count;
+    self.selectedCategoryId = self.categoryItems[(NSUInteger)nextIndex][@"id"] ?: @"all";
+    self.focusedCardIndex = 0;
+    if (OpnControllerModeEnabled()) OpnPlayConsoleTone(OPNConsoleToneChange);
     [self renderGrid];
     [self scrollLibraryToTop];
 }
@@ -322,20 +1126,25 @@ using namespace OPN;
 
     CGFloat cardWidth = [OPNGameCardView cardSize].width;
     CGFloat cardHeight = [OPNGameCardView cardSize].height;
+    BOOL controllerMode = OpnControllerModeEnabled();
     CGFloat availableWidth = _scrollView.frame.size.width;
-    NSInteger cols = MAX(1, (NSInteger)((availableWidth + kCardSpacing) / (cardWidth + kCardSpacing)));
-    CGFloat gridSpacing = cols > 1 ? floor((availableWidth - cols * cardWidth) / (cols - 1)) : kCardSpacing;
+    NSInteger cols = controllerMode ? 1 : MAX(1, (NSInteger)((availableWidth + kCardSpacing) / (cardWidth + kCardSpacing)));
+    self.gridColumnCount = cols;
+    CGFloat gridSpacing = controllerMode ? 26.0 : (cols > 1 ? floor((availableWidth - cols * cardWidth) / (cols - 1)) : kCardSpacing);
     gridSpacing = MAX(kCardSpacing, gridSpacing);
-    CGFloat xStart = cols > 1 ? 0.0 : floor(MAX(0.0, (_scrollView.frame.size.width - cardWidth) / 2.0));
-    CGFloat yPos = kGridPadding;
+    CGFloat xStart = controllerMode ? 64.0 : (cols > 1 ? 0.0 : floor(MAX(0.0, (_scrollView.frame.size.width - cardWidth) / 2.0)));
+    CGFloat yPos = controllerMode ? 34.0 + kControllerRailSelectorOverlap : kGridPadding;
 
-    std::vector<OPN::GameInfo> displayGames = _allGames;
+    std::vector<OPN::GameInfo> displayGames;
+    for (const OPN::GameInfo &game : _allGames) {
+        if ([self game:game matchesCategory:self.selectedCategoryId]) displayGames.push_back(game);
+    }
 
     NSInteger col = 0;
     NSInteger visibleCount = 0;
     for (auto it = displayGames.begin(); it != displayGames.end(); ++it) {
         auto &game = *it;
-        CGFloat x = xStart + col * (cardWidth + gridSpacing);
+        CGFloat x = controllerMode ? xStart + visibleCount * (cardWidth + gridSpacing) : xStart + col * (cardWidth + gridSpacing);
         NSRect cardFrame = NSMakeRect(x, yPos, cardWidth, cardHeight);
         OPNGameCardView *card = [[OPNGameCardView alloc] initWithFrame:cardFrame game:game];
         GameInfo gameCopy = game;
@@ -344,25 +1153,41 @@ using namespace OPN;
         card.onPlay = ^{
             __typeof__(self) s = weakSelf;
             OPNGameCardView *c = weakCard;
-            if (s && s.onSelectGame && c) {
+            if (!s || !c) return;
+            NSUInteger cardIndex = [s.cardViews indexOfObject:c];
+            if (cardIndex != NSNotFound) [s focusCardAtIndex:(NSInteger)cardIndex scrollIntoView:NO];
+            if (OpnControllerModeEnabled()) {
+                [s launchFocusedGame];
+            } else if (s.onSelectGame) {
                 int variantIdx = c.selectedVariantIndex;
                 s.onSelectGame(gameCopy, variantIdx >= 0 ? variantIdx : 0);
             }
+        };
+        card.onArtworkAccentColorChanged = ^(NSColor *color) {
+            (void)color;
+            __typeof__(self) s = weakSelf;
+            OPNGameCardView *c = weakCard;
+            if (!s || !c) return;
+            NSUInteger cardIndex = [s.cardViews indexOfObject:c];
+            if (cardIndex == NSNotFound || (NSInteger)cardIndex != s.focusedCardIndex) return;
+            [s updateControllerDetailContent];
         };
         [_gridContentView addSubview:card];
         [_cardViews addObject:card];
 
         col++;
         visibleCount++;
-        if (col >= cols) {
+        if (!controllerMode && col >= cols) {
             col = 0;
             yPos += cardHeight + kCardSpacing;
         }
     }
 
-    CGFloat totalHeight = yPos + cardHeight + kGridPadding;
-    if (col == 0 && visibleCount > 0) totalHeight = yPos + kGridPadding;
-    CGFloat totalWidth = _scrollView.frame.size.width;
+    CGFloat totalHeight = controllerMode ? cardHeight + 104.0 : yPos + cardHeight + kGridPadding;
+    if (!controllerMode && col == 0 && visibleCount > 0) totalHeight = yPos + kGridPadding;
+    CGFloat totalWidth = controllerMode
+        ? xStart * 2.0 + visibleCount * cardWidth + MAX(0, visibleCount - 1) * gridSpacing
+        : _scrollView.frame.size.width;
     _gridContentView.frame = NSMakeRect(0, 0,
         MAX(totalWidth, _scrollView.frame.size.width),
         MAX(totalHeight, _scrollView.frame.size.height));
@@ -370,6 +1195,11 @@ using namespace OPN;
     _gameCountLabel.stringValue = [NSString stringWithFormat:@"%ld %@", (long)visibleCount, visibleCount == 1 ? @"game" : @"games"];
     if (self.onGameCountChanged) self.onGameCountChanged(visibleCount);
     _statusLabel.stringValue = visibleCount == 0 ? @"No games found." : @"";
+    if (self.focusedCardIndex >= (NSInteger)self.cardViews.count) self.focusedCardIndex = (NSInteger)self.cardViews.count - 1;
+    if (self.focusedCardIndex < 0 && self.cardViews.count > 0) self.focusedCardIndex = 0;
+    [self focusCardAtIndex:self.focusedCardIndex scrollIntoView:NO];
+    [self updateControllerDetailContent];
+    [self layoutCatalogSubviews];
 }
 
 - (void)scrollLibraryToTop {
@@ -486,11 +1316,24 @@ using namespace OPN;
 - (void)layoutCatalogSubviews {
     CGFloat width = NSWidth(self.bounds);
     CGFloat height = NSHeight(self.bounds);
-    self.scrollView.hasVerticalScroller = YES;
+    BOOL controllerMode = OpnControllerModeEnabled();
+    CGFloat controllerNavHeight = 118.0;
+    self.controllerElectricBackgroundView.hidden = YES;
+    self.controllerElectricBackgroundView.frame = self.bounds;
+    self.scrollView.hasVerticalScroller = !controllerMode;
     self.scrollView.hasHorizontalScroller = NO;
+    self.scrollView.drawsBackground = NO;
+    self.scrollView.layer.opaque = NO;
+    self.scrollView.layer.backgroundColor = NSColor.clearColor.CGColor;
+    self.scrollView.contentView.drawsBackground = NO;
+    self.scrollView.contentView.backgroundColor = NSColor.clearColor;
+    self.scrollView.contentView.layer.opaque = NO;
+    self.scrollView.contentView.layer.backgroundColor = NSColor.clearColor.CGColor;
+    self.gridContentView.layer.opaque = NO;
+    self.gridContentView.layer.backgroundColor = NSColor.clearColor.CGColor;
     BOOL compact = width < 900.0;
-    self.searchField.hidden = NO;
-    self.filterButton.hidden = compact;
+    self.searchField.hidden = controllerMode;
+    self.filterButton.hidden = controllerMode || compact;
     self.signOutButton.hidden = YES;
     CGFloat searchWidth = compact ? MAX(240.0, width - 64.0) : MIN(520.0, MAX(360.0, width * 0.38));
     CGFloat searchX = floor((width - searchWidth) / 2.0);
@@ -498,16 +1341,94 @@ using namespace OPN;
     self.titleLabel.frame = NSMakeRect(0, 0, 0, 0);
     self.userLabel.frame = NSMakeRect(24, kNavHeight + 36, 260, 18);
     self.searchField.frame = NSMakeRect(searchX, compact ? kNavHeight + 62 : kNavHeight + 25, searchWidth, 40);
-    self.sortButton.hidden = compact;
+    self.sortButton.hidden = controllerMode || compact;
     self.filterButton.frame = NSMakeRect(NSMaxX(self.searchField.frame) + 14, kNavHeight + 26, 124, 38);
     self.sortButton.frame = NSMakeRect(NSMaxX(self.filterButton.frame) + 10, kNavHeight + 26, 154, 38);
     self.gameCountLabel.frame = NSMakeRect(0, 0, 0, 0);
     self.gameCountLabel.hidden = YES;
     self.signOutButton.frame = NSMakeRect(width - 116, kNavHeight + 13, 92, 30);
+    self.categoryBarView.hidden = !controllerMode || self.categoryButtons.count <= 1;
+    CGFloat cardHeight = [OPNGameCardView cardSize].height;
+    CGFloat minimumDetailHeight = 220.0;
+    CGFloat desiredCarouselHeight = cardHeight + 96.0;
+    CGFloat categoryY = controllerNavHeight + 10.0;
+    CGFloat railY = controllerMode && self.categoryButtons.count > 1 ? categoryY + 40.0 : controllerNavHeight + 10.0;
+    CGFloat bottomInset = 36.0;
+    CGFloat selectorOverlap = controllerMode ? kControllerRailSelectorOverlap : 0.0;
+    CGFloat detailOverlap = controllerMode ? kControllerRailDetailOverlap : 0.0;
+    CGFloat detailGap = -detailOverlap;
+    CGFloat carouselHeight = desiredCarouselHeight;
+    CGFloat detailY = railY + carouselHeight + detailGap;
+    CGFloat detailHeight = 0.0;
     CGFloat gridY = kNavHeight + (compact ? 116.0 : kToolbarHeight);
-    self.scrollView.frame = NSMakeRect(0, gridY, width, MAX(0.0, height - gridY));
-    self.statusLabel.frame = NSMakeRect(0, gridY + 100, width, 24);
+    if (controllerMode) {
+        CGFloat availableContentHeight = MAX(0.0, height - railY - bottomInset);
+        carouselHeight = MIN(desiredCarouselHeight, MAX(cardHeight + 62.0, availableContentHeight * 0.32));
+        detailY = railY + carouselHeight + detailGap;
+        detailHeight = MAX(minimumDetailHeight, height - detailY - bottomInset);
+        gridY = railY;
+    }
+    if (controllerMode && !self.categoryBarView.hidden) {
+        self.categoryBarView.frame = NSMakeRect(64.0, categoryY, MAX(240.0, width - 128.0), 30.0);
+        CGFloat categoryX = 0.0;
+        for (NSButton *button in self.categoryButtons) {
+            BOOL selected = [button.identifier isEqualToString:self.selectedCategoryId];
+            CGFloat buttonWidth = NSWidth(button.frame);
+            button.frame = NSMakeRect(categoryX, 0.0, buttonWidth, 30.0);
+            button.contentTintColor = selected ? OpnColor(OPNControllerAccentBlackRGB(0.88)) : OpnColor(kTextSecondary);
+            button.font = [NSFont systemFontOfSize:12.0 weight:NSFontWeightSemibold];
+            button.layer.cornerRadius = 15.0;
+            button.layer.backgroundColor = selected ? OpnColor(OPNControllerAccentSoftRGB(), 0.88).CGColor : OpnColor(OPNControllerAccentRGB(), 0.080).CGColor;
+            button.layer.borderWidth = selected ? 0.0 : 1.0;
+            button.layer.borderColor = OpnColor(0xFFFFFF, 0.12).CGColor;
+            categoryX += buttonWidth + 8.0;
+        }
+    }
+    self.controllerDetailView.hidden = !controllerMode || self.cardViews.count == 0;
+    self.controllerDetailView.frame = NSMakeRect(0.0, detailY, width, detailHeight);
+    self.controllerDetailView.layer.shadowPath = [NSBezierPath bezierPathWithRoundedRect:self.controllerDetailView.bounds xRadius:30.0 yRadius:30.0].CGPath;
+    CGFloat detailWidth = NSWidth(self.controllerDetailView.frame);
+    self.controllerDetailGradientLayer.frame = self.controllerDetailView.bounds;
+    self.controllerDetailAccentLayer.frame = NSMakeRect(64.0, 18.0, 74.0, 3.0);
+    BOOL compactDetail = detailHeight < 260.0;
+    CGFloat heroX = 64.0;
+    CGFloat heroWidth = MAX(260.0, detailWidth - 128.0);
+    self.controllerDetailTitleLabel.font = [NSFont systemFontOfSize:compactDetail ? 40.0 : 58.0 weight:NSFontWeightSemibold];
+    self.controllerDetailTitleLabel.frame = NSMakeRect(heroX, compactDetail ? 20.0 : 26.0, heroWidth, compactDetail ? 50.0 : 70.0);
+    self.controllerDetailMetaLabel.frame = NSMakeRect(heroX + 2.0, compactDetail ? 82.0 : 108.0, heroWidth, 24.0);
+    self.controllerDetailStoreLabel.frame = NSMakeRect(heroX + 2.0, compactDetail ? 114.0 : 142.0, heroWidth, 26.0);
+    self.controllerDetailStatsLabel.hidden = YES;
+    self.controllerDetailStatsLabel.frame = NSZeroRect;
+    CGFloat featuresY = compactDetail ? 146.0 : 184.0;
+    self.controllerDetailFeaturesLabel.hidden = NO;
+    self.controllerDetailFeaturesLabel.frame = NSMakeRect(heroX + 2.0, featuresY, MIN(980.0, heroWidth), MAX(0.0, detailHeight - featuresY - 88.0));
+    self.controllerPromptBarView.frame = NSMakeRect(heroX + 2.0, MAX(188.0, detailHeight - 52.0), heroWidth, 36.0);
+    BOOL showStreamPip = controllerMode && self.streamPipContentView != nil;
+    self.streamPipContainerView.hidden = !showStreamPip;
+    if (showStreamPip) {
+        CGFloat pipWidth = MIN(420.0, MAX(300.0, width * 0.24));
+        CGFloat pipVideoHeight = floor(pipWidth * 9.0 / 16.0);
+        CGFloat pipHeight = pipVideoHeight + 54.0;
+        CGFloat pipX = MAX(heroX + 520.0, width - pipWidth - 64.0);
+        CGFloat pipY = MIN(detailY + detailHeight - pipHeight - 48.0, detailY + MAX(34.0, detailHeight * 0.24));
+        pipY = MAX(detailY + 28.0, pipY);
+        self.streamPipContainerView.frame = NSMakeRect(pipX, pipY, pipWidth, pipHeight);
+        self.streamPipHostView.frame = NSMakeRect(12.0, 12.0, pipWidth - 24.0, pipVideoHeight);
+        self.streamPipContentView.frame = self.streamPipHostView.bounds;
+        self.streamPipTitleLabel.frame = NSMakeRect(16.0, pipVideoHeight + 22.0, pipWidth * 0.50, 22.0);
+        self.streamPipHintLabel.frame = NSMakeRect(pipWidth * 0.50 - 12.0, pipVideoHeight + 24.0, pipWidth * 0.50, 18.0);
+    }
+    CGFloat railFrameY = controllerMode ? MAX(0.0, gridY - selectorOverlap) : gridY;
+    CGFloat railHeight = controllerMode ? MIN(carouselHeight + selectorOverlap, MAX(0.0, height - railFrameY)) : MAX(0.0, height - gridY);
+    self.scrollView.frame = NSMakeRect(0, railFrameY, width, railHeight);
+    self.statusLabel.frame = controllerMode ? NSMakeRect(28.0, MAX(kNavHeight + 30.0, gridY - 42.0), width - 56.0, 24.0) : NSMakeRect(0, gridY + 100, width, 24);
+    if (controllerMode && self.cardViews.count > 0) {
+        self.statusLabel.stringValue = @"";
+        self.statusLabel.textColor = OpnColor(kTextSecondary);
+        self.statusLabel.alignment = NSTextAlignmentCenter;
+    }
     self.loadingView.frame = self.bounds;
+    self.detailsOverlayView.frame = self.bounds;
 }
 
 - (void)searchChanged {
@@ -532,6 +1453,358 @@ using namespace OPN;
         filters.push_back([filterId UTF8String]);
     }
     self.onCatalogBrowseRequested(self.searchField.stringValue ?: @"", self.selectedSortId ?: @"last_played", filters);
+}
+
+- (void)focusCardAtIndex:(NSInteger)index scrollIntoView:(BOOL)scrollIntoView {
+    if (self.cardViews.count == 0) {
+        self.focusedCardIndex = -1;
+        return;
+    }
+    [self setStreamPipFocused:NO];
+    NSInteger previousIndex = self.focusedCardIndex;
+    NSInteger clamped = MAX(0, MIN(index, (NSInteger)self.cardViews.count - 1));
+    self.focusedCardIndex = clamped;
+    for (NSUInteger i = 0; i < self.cardViews.count; i++) {
+        BOOL selected = OpnControllerModeEnabled() && (NSInteger)i == clamped;
+        self.cardViews[i].controllerFocused = selected;
+        self.cardViews[i].alphaValue = 1.0;
+    }
+    if (OpnControllerModeEnabled() && scrollIntoView && previousIndex >= 0 && previousIndex != clamped) {
+        OpnPlayConsoleTone(OPNConsoleToneMove);
+    }
+    [self updateControllerDetailContent];
+    if (!scrollIntoView) return;
+    OPNGameCardView *card = self.cardViews[(NSUInteger)clamped];
+    NSRect visibleRect = self.scrollView.contentView.bounds;
+    NSRect targetRect = NSInsetRect(card.frame, -24.0, -24.0);
+    if (OpnControllerModeEnabled()) {
+        NSSize contentSize = self.gridContentView.frame.size;
+        CGFloat targetX = NSMidX(card.frame) - NSWidth(visibleRect) * 0.5;
+        targetX = MAX(0.0, MIN(targetX, MAX(0.0, contentSize.width - NSWidth(visibleRect))));
+        [[OPNCoreAnimationCoordinator sharedCoordinator] springScrollClipView:self.scrollView.contentView
+                                                                          toX:targetX
+                                                                     velocity:0.0];
+        return;
+    }
+    if (!NSContainsRect(visibleRect, targetRect)) {
+        [self.gridContentView scrollRectToVisible:targetRect];
+        [self.scrollView reflectScrolledClipView:self.scrollView.contentView];
+    }
+}
+
+- (void)setStreamPipFocused:(BOOL)focused {
+    if (focused && self.streamPipContentView == nil) focused = NO;
+    _streamPipFocused = focused;
+    [CATransaction begin];
+    [CATransaction setAnimationDuration:0.20];
+    [CATransaction setAnimationTimingFunction:[OPNCoreAnimationCoordinator appleQuinticTimingFunction]];
+    self.streamPipContainerView.layer.borderWidth = focused ? 3.0 : 1.0;
+    self.streamPipContainerView.layer.borderColor = (focused ? OpnColor(0xFFFFFF, 0.92) : OpnColor(0xFFFFFF, 0.16)).CGColor;
+    self.streamPipContainerView.layer.shadowColor = (focused ? OpnColor(OPNControllerAccentSoftRGB()) : NSColor.blackColor).CGColor;
+    self.streamPipContainerView.layer.shadowOpacity = focused ? 0.48 : 0.30;
+    self.streamPipContainerView.layer.shadowRadius = focused ? 38.0 : 24.0;
+    CATransform3D transform = CATransform3DIdentity;
+    if (focused) transform = CATransform3DScale(transform, 1.035, 1.035, 1.0);
+    self.streamPipContainerView.layer.transform = transform;
+    self.streamPipHintLabel.textColor = focused ? OpnColor(OPNControllerAccentSoftRGB()) : OpnColor(kTextSecondary);
+    [CATransaction commit];
+}
+
+- (OPNGameCardView *)focusedCard {
+    if (self.focusedCardIndex < 0 || self.focusedCardIndex >= (NSInteger)self.cardViews.count) return nil;
+    return self.cardViews[(NSUInteger)self.focusedCardIndex];
+}
+
+- (void)moveFocusByRows:(NSInteger)rows columns:(NSInteger)columns {
+    if (OpnControllerModeEnabled() && rows != 0) {
+        if (self.streamPipContentView) {
+            if (self.isStreamPipFocused && rows < 0) {
+                [self setStreamPipFocused:NO];
+                return;
+            }
+            if (!self.isStreamPipFocused && rows > 0) {
+                [self setStreamPipFocused:YES];
+                OpnPlayConsoleTone(OPNConsoleToneMove);
+                return;
+            }
+        }
+        [self cycleCategoryBy:rows > 0 ? 1 : -1];
+        return;
+    }
+    if (OpnControllerModeEnabled() && self.isStreamPipFocused) {
+        if (columns < 0 || columns > 0) {
+            [self setStreamPipFocused:NO];
+            OpnPlayConsoleTone(OPNConsoleToneMove);
+        }
+        return;
+    }
+    NSInteger next = self.focusedCardIndex + rows * MAX(1, self.gridColumnCount) + columns;
+    [self focusCardAtIndex:next scrollIntoView:YES];
+}
+
+- (void)cycleFocusedVariant {
+    OPNGameCardView *card = [self focusedCard];
+    if (!card || card.game.variants.size() <= 1) return;
+    int next = (card.selectedVariantIndex + 1) % (int)card.game.variants.size();
+    [card selectVariantAtIndex:next];
+    if (OpnControllerModeEnabled()) OpnPlayConsoleTone(OPNConsoleToneChange);
+    [self updateControllerDetailContent];
+}
+
+- (void)updateControllerDetailContent {
+    if (!OpnControllerModeEnabled()) return;
+    OPNGameCardView *card = [self focusedCard];
+    NSColor *cardAccentColor = card.artworkAccentColor;
+    NSColor *detailAccentColor = cardAccentColor ?: OpnColor(OPNControllerAccentRGB());
+    NSColor *detailAccentSoftColor = cardAccentColor ?: OpnColor(OPNControllerAccentSoftRGB());
+    self.controllerElectricBackgroundView.accentRGB = OPNRGBFromColor(cardAccentColor, OPNControllerAccentRGB());
+    if (self.onFocusedArtworkAccentChanged) self.onFocusedArtworkAccentChanged(self.controllerElectricBackgroundView.accentRGB);
+    CATransition *fade = [CATransition animation];
+    fade.type = kCATransitionFade;
+    fade.duration = 0.18;
+    fade.timingFunction = [OPNCoreAnimationCoordinator appleQuinticTimingFunction];
+    [self.controllerDetailView.layer addAnimation:fade forKey:@"opn.detail.fade"];
+    [CATransaction begin];
+    [CATransaction setAnimationDuration:0.32];
+    [CATransaction setAnimationTimingFunction:[OPNCoreAnimationCoordinator appleQuinticTimingFunction]];
+    self.controllerDetailGradientLayer.colors = @[(id)NSColor.clearColor.CGColor,
+                                                   (id)NSColor.clearColor.CGColor,
+                                                   (id)NSColor.clearColor.CGColor];
+    self.controllerDetailGradientLayer.opacity = 0.0;
+    self.controllerDetailAccentLayer.backgroundColor = [detailAccentSoftColor colorWithAlphaComponent:0.90].CGColor;
+    self.controllerDetailView.layer.shadowColor = detailAccentColor.CGColor;
+    self.controllerDetailStoreLabel.textColor = NSColor.whiteColor;
+    [CATransaction commit];
+    if (!card) {
+        self.controllerDetailTitleLabel.stringValue = @"Select a game";
+        self.controllerDetailMetaLabel.stringValue = @"";
+        self.controllerDetailStoreLabel.attributedStringValue = OPNOutlinedControllerStoreText(@"");
+        self.controllerDetailStatsLabel.stringValue = @"";
+        self.controllerDetailFeaturesLabel.stringValue = @"";
+        self.controllerPromptBarView.hidden = YES;
+        return;
+    }
+
+    const OPN::GameInfo game = card.game;
+    self.controllerDetailTitleLabel.stringValue = OPNCatalogString(game.title, @"Untitled Game");
+
+    NSString *genres = OPNCatalogJoinedStrings(game.genres, @"Cloud game");
+    NSString *tier = OPNCatalogString(game.membershipTierLabel, @"");
+    NSString *playability = OPNCatalogString(game.playabilityState, @"");
+    NSMutableArray<NSString *> *meta = [NSMutableArray arrayWithObject:genres];
+    if ([self isFavoriteGame:game]) [meta addObject:@"Favorite"];
+    if (tier.length > 0) [meta addObject:tier];
+    if (playability.length > 0) [meta addObject:playability.capitalizedString];
+    self.controllerDetailMetaLabel.stringValue = [meta componentsJoinedByString:@"  •  "];
+
+    NSString *store = @"Default store";
+    if (card.selectedVariantIndex >= 0 && card.selectedVariantIndex < (int)game.variants.size()) {
+        store = OPNCatalogString(game.variants[(size_t)card.selectedVariantIndex].appStore, store);
+    } else if (!game.availableStores.empty()) {
+        store = OPNCatalogString(game.availableStores.front(), store);
+    }
+    NSString *storePrefix = game.variants.size() > 1 ? @"Selected Store" : @"Store";
+    self.controllerDetailStoreLabel.attributedStringValue = OPNOutlinedControllerStoreText([NSString stringWithFormat:@"%@: %@", storePrefix, store]);
+
+    self.controllerDetailStatsLabel.stringValue = @"";
+    NSString *description = OPNCatalogString(game.description, @"");
+    if (description.length == 0) description = OPNCatalogJoinedStrings(game.featureLabels, @"");
+    if (description.length == 0) description = @"No description available.";
+    self.controllerDetailFeaturesLabel.stringValue = description;
+    self.controllerPromptBarView.hidden = NO;
+    self.controllerPromptBarView.includeStore = game.variants.size() > 1;
+    self.controllerPromptBarView.includeBack = NO;
+}
+
+- (void)openFocusedGameDetails {
+    OPNGameCardView *card = [self focusedCard];
+    if (!card) return;
+    [self.detailsOverlayView removeFromSuperview];
+    NSView *overlay = [[NSView alloc] initWithFrame:self.bounds];
+    overlay.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+    overlay.wantsLayer = YES;
+    overlay.layer.backgroundColor = OpnColor(OPNControllerAccentBlackRGB(0.96), 0.62).CGColor;
+
+    CGFloat panelWidth = MIN(760.0, MAX(420.0, NSWidth(self.bounds) - 96.0));
+    CGFloat panelHeight = 390.0;
+    NSView *panel = [[OPNFlippedGridDocumentView alloc] initWithFrame:NSMakeRect(floor((NSWidth(self.bounds) - panelWidth) / 2.0),
+                                                                                   floor((NSHeight(self.bounds) - panelHeight) / 2.0),
+                                                                                   panelWidth,
+                                                                                   panelHeight)];
+    panel.wantsLayer = YES;
+    panel.layer.cornerRadius = 30.0;
+    panel.layer.borderWidth = 1.5;
+    panel.layer.borderColor = OpnColor(0xFFFFFF, 0.22).CGColor;
+    panel.layer.backgroundColor = OpnColor(OPNControllerAccentBlackRGB(0.88), 0.96).CGColor;
+    panel.layer.shadowColor = OpnColor(OPNControllerAccentRGB()).CGColor;
+    panel.layer.shadowOpacity = 0.28;
+    panel.layer.shadowRadius = 48.0;
+    panel.layer.shadowOffset = CGSizeZero;
+    [overlay addSubview:panel];
+
+    NSString *title = OPNCatalogString(card.game.title, @"Game Details");
+    NSTextField *titleLabel = OpnLabel(title, NSMakeRect(36.0, 34.0, panelWidth - 72.0, 42.0), 30.0, OpnColor(kTextPrimary), NSFontWeightSemibold);
+    titleLabel.lineBreakMode = NSLineBreakByTruncatingTail;
+    [panel addSubview:titleLabel];
+
+    NSString *store = @"Default store";
+    if (card.selectedVariantIndex >= 0 && card.selectedVariantIndex < (int)card.game.variants.size()) {
+        store = OPNCatalogString(card.game.variants[(size_t)card.selectedVariantIndex].appStore, store);
+    }
+    NSTextField *storeLabel = OpnLabel(@"",
+                                       NSMakeRect(38.0, 92.0, panelWidth - 76.0, 24.0),
+                                       15.0,
+                                       NSColor.whiteColor,
+                                       NSFontWeightSemibold);
+    storeLabel.attributedStringValue = OPNOutlinedControllerStoreText([NSString stringWithFormat:@"Selected Store: %@", store]);
+    [panel addSubview:storeLabel];
+
+    NSString *body = card.game.variants.size() > 1
+        ? @"Use Favorite to save this game. Use Store to cycle available stores, Play to launch, or Back to return to the library."
+        : @"Use Favorite to save this game, Play to launch, or Back to return to the library.";
+    NSTextField *bodyLabel = OpnLabel(body, NSMakeRect(38.0, 136.0, panelWidth - 76.0, 58.0), 14.0, OpnColor(kTextSecondary), NSFontWeightRegular);
+    bodyLabel.maximumNumberOfLines = 3;
+    [panel addSubview:bodyLabel];
+
+    NSButton *playButton = OpnButton(@"Play", NSMakeRect(38.0, panelHeight - 96.0, 180.0, 52.0), OpnColor(OPNControllerAccentSoftRGB(), 0.96), OpnColor(OPNControllerAccentBlackRGB(0.88)));
+    playButton.target = self;
+    playButton.action = @selector(detailsPlayClicked:);
+    playButton.layer.cornerRadius = 18.0;
+    [panel addSubview:playButton];
+
+    NSButton *closeButton = OpnButton(@"Back", NSMakeRect(232.0, panelHeight - 96.0, 132.0, 52.0), OpnColor(0xFFFFFF, 0.08), OpnColor(kTextPrimary), true, OpnColor(0xFFFFFF, 0.16));
+    closeButton.target = self;
+    closeButton.action = @selector(detailsCloseClicked:);
+    closeButton.layer.cornerRadius = 18.0;
+    [panel addSubview:closeButton];
+
+    OPNControllerPromptBarView *hints = [[OPNControllerPromptBarView alloc] initWithFrame:NSMakeRect(38.0, panelHeight - 44.0, panelWidth - 76.0, 36.0)];
+    hints.includeStore = card.game.variants.size() > 1;
+    hints.includeBack = YES;
+    [panel addSubview:hints];
+
+    self.detailsOverlayView = overlay;
+    [self addSubview:overlay];
+    [[OPNCoreAnimationCoordinator sharedCoordinator] animateCardLayer:panel.layer
+                                                    metadataContainer:self.controllerDetailView
+                                                      backgroundLayer:self.controllerElectricBackgroundView.layer
+                                                             expanded:YES
+                                                          accentColor:card.artworkAccentColor ?: OpnColor(OPNControllerAccentRGB())];
+}
+
+- (void)closeGameDetails {
+    [self.detailsOverlayView removeFromSuperview];
+    self.detailsOverlayView = nil;
+    [self.window makeFirstResponder:self];
+}
+
+- (void)launchFocusedGame {
+    if (self.isStreamPipFocused && self.onStreamPictureInPictureSelected) {
+        OpnPlayConsoleTone(OPNConsoleToneSelect);
+        self.onStreamPictureInPictureSelected();
+        return;
+    }
+    OPNGameCardView *card = [self focusedCard];
+    if (!card || !self.onSelectGame) return;
+    if (OpnControllerModeEnabled()) OpnPlayConsoleTone(OPNConsoleToneSelect);
+    int variantIdx = card.selectedVariantIndex >= 0 ? card.selectedVariantIndex : 0;
+    self.onSelectGame(card.game, variantIdx);
+}
+
+- (void)detailsPlayClicked:(id)sender {
+    (void)sender;
+    [self launchFocusedGame];
+}
+
+- (void)detailsCloseClicked:(id)sender {
+    (void)sender;
+    [self closeGameDetails];
+}
+
+- (void)keyDown:(NSEvent *)event {
+    if (!OpnControllerModeEnabled()) {
+        [super keyDown:event];
+        return;
+    }
+    NSString *chars = event.charactersIgnoringModifiers.lowercaseString ?: @"";
+    switch (event.keyCode) {
+        case 123: [self moveFocusByRows:0 columns:-1]; return;
+        case 124: [self moveFocusByRows:0 columns:1]; return;
+        case 125: [self moveFocusByRows:1 columns:0]; return;
+        case 126: [self moveFocusByRows:-1 columns:0]; return;
+        case 36:
+        case 49:
+            [self launchFocusedGame];
+            return;
+        case 53:
+            return;
+        default:
+            break;
+    }
+    if ([chars isEqualToString:@"y"] || [chars isEqualToString:@"f"]) {
+        [self toggleFavoriteForFocusedGame];
+        return;
+    }
+    if ([chars isEqualToString:@"x"] || [chars isEqualToString:@"s"] || [chars isEqualToString:@"v"]) {
+        [self cycleFocusedVariant];
+        return;
+    }
+    [super keyDown:event];
+}
+
+- (void)startGamepadNavigationIfNeeded {
+    if (!OpnControllerModeEnabled() || self.gamepadNavigationTimer || !OPNCatalogGamepadNavigationActive(self)) return;
+    self.gamepadNavigationTimer = [NSTimer scheduledTimerWithTimeInterval:(1.0 / 30.0)
+                                                                   target:self
+                                                                 selector:@selector(pollGamepadNavigation)
+                                                                 userInfo:nil
+                                                                  repeats:YES];
+}
+
+- (void)stopGamepadNavigation {
+    [self.gamepadNavigationTimer invalidate];
+    self.gamepadNavigationTimer = nil;
+    self.previousGamepadButtons = 0;
+}
+
+- (void)controllerDidConnect:(NSNotification *)notification {
+    (void)notification;
+    [self startGamepadNavigationIfNeeded];
+}
+
+- (void)controllerDidDisconnect:(NSNotification *)notification {
+    (void)notification;
+    self.previousGamepadButtons = 0;
+}
+
+- (void)pollGamepadNavigation {
+    if (!OpnControllerModeEnabled() || !OPNCatalogGamepadNavigationActive(self)) {
+        [self stopGamepadNavigation];
+        return;
+    }
+    if (self.window.firstResponder != self.searchField) [self.window makeFirstResponder:self];
+    uint16_t buttons = OPNCatalogGamepadButtons();
+    uint16_t pressed = buttons & (uint16_t)~self.previousGamepadButtons;
+    CFTimeInterval now = CACurrentMediaTime();
+    BOOL repeatMove = (now - self.lastGamepadMoveTime) > 0.22;
+    uint16_t moves = buttons & ((1u << 5) | (1u << 6) | (1u << 7) | (1u << 8));
+    if (moves && repeatMove) {
+        pressed |= moves;
+        self.lastGamepadMoveTime = now;
+    }
+    if (pressed & (1u << 0)) {
+        [self launchFocusedGame];
+    }
+    if (pressed & (1u << 1)) {
+        if (self.isStreamPipFocused) [self setStreamPipFocused:NO];
+    }
+    if (pressed & (1u << 2)) [self toggleFavoriteForFocusedGame];
+    if (pressed & (1u << 5)) [self moveFocusByRows:-1 columns:0];
+    if (pressed & (1u << 6)) [self moveFocusByRows:1 columns:0];
+    if (pressed & (1u << 7)) [self moveFocusByRows:0 columns:-1];
+    if (pressed & (1u << 8)) [self moveFocusByRows:0 columns:1];
+    if (pressed & (1u << 9)) [self cycleFocusedVariant];
+    self.previousGamepadButtons = buttons;
 }
 
 - (void)signOutClicked {

@@ -25,6 +25,9 @@
 @property (nonatomic, strong) OPNSettingsView *settingsView;
 @property (nonatomic, strong) OPNStoreView *storeView;
 @property (nonatomic, strong) OPNStreamViewController *streamingController;
+@property (nonatomic, copy) NSString *currentStreamTitle;
+@property (nonatomic, assign) OPN::AuthScreen activeStreamReturnScreen;
+@property (nonatomic, assign) BOOL streamLibraryOverlayActive;
 @property (nonatomic, strong) NSTimer *gameLibraryRefreshTimer;
 @property (nonatomic, assign) std::vector<OPN::GameInfo> cachedGameLibrary;
 @property (nonatomic, assign) std::string cachedGameLibraryFingerprint;
@@ -44,6 +47,8 @@
 - (void)startGameLibraryRefreshTimer;
 - (void)stopGameLibraryRefreshTimer;
 - (void)launchGame:(const OPN::GameInfo &)game variantIndex:(int)variantIndex returnScreen:(OPN::AuthScreen)returnScreen;
+- (void)showLibraryOverlayForActiveStream;
+- (void)returnToActiveStreamFromLibraryOverlay;
 - (void)loadStorePanelsWithRetry:(BOOL)canRetry;
 - (void)refreshGameLibraryInBackground;
 - (void)fetchGameLibraryWithRetry:(BOOL)canRetry
@@ -104,11 +109,10 @@ static NSString *OPNDisplayTier(const std::string &tier) {
 
 static NSString *OPNFormatHours(double hours) {
     if (!std::isfinite(hours) || hours < 0) hours = 0;
-    double rounded = hours >= 10.0 ? std::round(hours) : std::round(hours * 10.0) / 10.0;
-    if (std::fabs(rounded - std::round(rounded)) < 0.01) {
-        return [NSString stringWithFormat:@"%.0fh", rounded];
-    }
-    return [NSString stringWithFormat:@"%.1fh", rounded];
+    NSInteger totalMinutes = MAX(0, (NSInteger)llround(hours * 60.0));
+    NSInteger wholeHours = totalMinutes / 60;
+    NSInteger minutes = totalMinutes % 60;
+    return [NSString stringWithFormat:@"%ldh %02ldm", (long)wholeHours, (long)minutes];
 }
 
 static NSString *OPNFormatRemainingPlayTime(const OPN::SubscriptionInfo &subscription) {
@@ -243,6 +247,10 @@ static std::string OPNGameLibraryFingerprint(const std::vector<OPN::GameInfo> &g
                                              selector:@selector(windowFullScreenStateChanged:)
                                                  name:NSWindowDidExitFullScreenNotification
                                                object:self.window];
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(interfacePreferencesChanged:)
+                                                 name:OPNInterfacePreferencesDidChangeNotification
+                                               object:nil];
     {
         OPN::AuthCredentials creds = self.pendingCredentials;
         creds.stayLoggedIn = AuthService::Shared().GetStayLoggedIn();
@@ -292,8 +300,8 @@ static std::string OPNGameLibraryFingerprint(const std::vector<OPN::GameInfo> &g
     [self.window saveFrameUsingName:OPNMainWindowFrameAutosaveName];
     [self saveWindowPresentation];
     [self stopGameLibraryRefreshTimer];
-    // Clear streaming controller reference (block will be released with controller)
     if (self.streamingController) {
+        [self.streamingController shutdownForApplicationTermination];
         self.streamingController = nil;
     }
 }
@@ -319,8 +327,23 @@ static std::string OPNGameLibraryFingerprint(const std::vector<OPN::GameInfo> &g
     [self saveWindowPresentation];
 }
 
+- (void)interfacePreferencesChanged:(NSNotification *)notification {
+    (void)notification;
+    if (!self.rootView || OpnDerivedAccentColorsEnabled()) return;
+    self.rootView.controllerAccentRGB = OpnCurrentAccentRGB();
+}
+
 - (void)launchGame:(const OPN::GameInfo &)game variantIndex:(int)variantIndex returnScreen:(OPN::AuthScreen)returnScreen {
     using namespace OPN;
+
+    if (self.streamingController) {
+        NSLog(@"[AppDelegate] Ignoring game launch while stream is active: title=%s, id=%s", game.title.c_str(), game.id.c_str());
+        return;
+    }
+
+    self.catalogView = nil;
+    self.storeView = nil;
+    self.settingsView = nil;
 
     NSLog(@"[AppDelegate] Game selected: title=%s, id=%s, uuid=%s, variantIndex=%d", game.title.c_str(), game.id.c_str(), game.uuid.c_str(), variantIndex);
 
@@ -349,7 +372,10 @@ static std::string OPNGameLibraryFingerprint(const std::vector<OPN::GameInfo> &g
                                                      appId:effectiveAppId
                                                   apiToken:apiToken
                                              accountLinked:accountLinked
-                                             selectedStore:selectedStore];
+                                                      selectedStore:selectedStore];
+    self.currentStreamTitle = game.title.empty() ? @"Current Stream" : [NSString stringWithUTF8String:game.title.c_str()];
+    self.activeStreamReturnScreen = returnScreen;
+    self.streamLibraryOverlayActive = NO;
 
     __weak __typeof__(self) weakSelf = self;
     streamVC.onStreamEnd = ^(BOOL success, const std::string &error) {
@@ -358,11 +384,20 @@ static std::string OPNGameLibraryFingerprint(const std::vector<OPN::GameInfo> &g
         std::string errorCopy = error;
         dispatch_async(dispatch_get_main_queue(), ^{
             NSLog(@"[AppDelegate] Stream ended, restoring previous screen. Success=%d", success);
+            strongSelf.streamLibraryOverlayActive = NO;
             [strongSelf transitionToScreen:returnScreen];
             strongSelf.streamingController = nil;
+            strongSelf.currentStreamTitle = nil;
             if (!success && !errorCopy.empty()) {
                 [strongSelf showError:errorCopy canRetry:YES];
             }
+        });
+    };
+    streamVC.onControllerLibraryRequested = ^{
+        __typeof__(self) strongSelf = weakSelf;
+        if (!strongSelf) return;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [strongSelf showLibraryOverlayForActiveStream];
         });
     };
 
@@ -372,6 +407,7 @@ static std::string OPNGameLibraryFingerprint(const std::vector<OPN::GameInfo> &g
     streamVC.view.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
     OPNConfigureStreamWindow(self.window);
     self.window.contentViewController = streamVC;
+    OpnDisableFocusHighlights(streamVC.view);
     if (preserveFrame) {
         [self.window setFrame:preservedFrame display:YES animate:NO];
     }
@@ -387,6 +423,32 @@ static std::string OPNGameLibraryFingerprint(const std::vector<OPN::GameInfo> &g
     NSLog(@"[AppDelegate] Window setup complete");
 }
 
+- (void)showLibraryOverlayForActiveStream {
+    if (!self.streamingController || self.streamLibraryOverlayActive) return;
+    self.streamLibraryOverlayActive = YES;
+    [self.streamingController prepareForLibraryPictureInPicture];
+    [self transitionToScreen:OPN::AuthScreen::Catalog];
+}
+
+- (void)returnToActiveStreamFromLibraryOverlay {
+    if (!self.streamingController) return;
+    NSRect preservedFrame = self.window.frame;
+    BOOL preserveFrame = !OPNWindowIsFullScreen(self.window);
+    NSView *streamView = [self.streamingController streamPictureInPictureView];
+    [streamView removeFromSuperview];
+    [self.streamingController setInitialViewFrame:self.window.contentView.bounds];
+    self.streamingController.view.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+    OPNConfigureStreamWindow(self.window);
+    self.window.contentViewController = self.streamingController;
+    OpnDisableFocusHighlights(self.streamingController.view);
+    if (preserveFrame) {
+        [self.window setFrame:preservedFrame display:YES animate:NO];
+    }
+    self.streamLibraryOverlayActive = NO;
+    [self.streamingController restoreFromLibraryPictureInPicture];
+    [self.window makeKeyAndOrderFront:nil];
+}
+
 #pragma mark - Screen Transitions
 
 - (void)installLibraryRootIfNeeded {
@@ -397,6 +459,7 @@ static std::string OPNGameLibraryFingerprint(const std::vector<OPN::GameInfo> &g
         self.window.contentViewController = nil;
         self.rootView = [[OPNBackdropView alloc] initWithFrame:self.window.contentView.bounds];
         self.rootView.wantsLayer = YES;
+        self.rootView.layer.opaque = NO;
         self.rootView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
         __weak __typeof__(self) weakSelf = self;
         self.rootView.onStoreSelected = ^{
@@ -435,11 +498,14 @@ static std::string OPNGameLibraryFingerprint(const std::vector<OPN::GameInfo> &g
             [NSApp terminate:strongSelf];
         };
         self.window.contentView = self.rootView;
+        OpnDisableFocusHighlights(self.rootView);
     }
 
     if (!self.contentContainer || self.contentContainer.superview != self.rootView) {
         self.contentContainer = [[NSView alloc] initWithFrame:self.rootView.bounds];
         self.contentContainer.wantsLayer = YES;
+        self.contentContainer.layer.opaque = NO;
+        self.contentContainer.layer.backgroundColor = NSColor.clearColor.CGColor;
         self.contentContainer.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
         [self.rootView addSubview:self.contentContainer];
     }
@@ -490,6 +556,7 @@ static std::string OPNGameLibraryFingerprint(const std::vector<OPN::GameInfo> &g
             };
 
             [self.contentContainer addSubview:view];
+            OpnDisableFocusHighlights(view);
             self.window.title = @"OpenNOW";
             break;
         }
@@ -559,6 +626,7 @@ static std::string OPNGameLibraryFingerprint(const std::vector<OPN::GameInfo> &g
             };
 
             [self.contentContainer addSubview:store];
+            OpnDisableFocusHighlights(store);
             self.window.title = @"OpenNOW - Store";
             [self loadStorePanelsWithRetry:YES];
             break;
@@ -604,6 +672,12 @@ static std::string OPNGameLibraryFingerprint(const std::vector<OPN::GameInfo> &g
                 strongSelf.rootView.gameCountText = [NSString stringWithFormat:@"%ld %@", (long)count, count == 1 ? @"game" : @"games"];
             };
 
+            catalog.onFocusedArtworkAccentChanged = ^(unsigned accentRGB) {
+                __typeof__(self) strongSelf = weakSelf;
+                if (!strongSelf || !strongSelf.rootView) return;
+                strongSelf.rootView.controllerAccentRGB = OpnDerivedAccentColorsEnabled() ? accentRGB : OpnCurrentAccentRGB();
+            };
+
             catalog.onSelectGame = ^(const GameInfo &game, int variantIndex) {
                 __typeof__(self) strongSelf = weakSelf;
                 if (!strongSelf) return;
@@ -616,7 +690,18 @@ static std::string OPNGameLibraryFingerprint(const std::vector<OPN::GameInfo> &g
                 [strongSelf browseCatalogWithSearch:searchQuery sortId:sortId filterIds:filterIds canRetry:YES];
             };
 
+            if (self.streamingController && self.streamLibraryOverlayActive) {
+                [catalog setStreamPictureInPictureView:[self.streamingController streamPictureInPictureView]
+                                                title:self.currentStreamTitle ?: @"Current Stream"];
+                catalog.onStreamPictureInPictureSelected = ^{
+                    __typeof__(self) strongSelf = weakSelf;
+                    if (!strongSelf) return;
+                    [strongSelf returnToActiveStreamFromLibraryOverlay];
+                };
+            }
+
             [self.contentContainer addSubview:catalog];
+            OpnDisableFocusHighlights(catalog);
             self.window.title = @"OpenNOW";
 
             // Fetch user info if displayName not already set (OAuth flow)
@@ -670,6 +755,7 @@ static std::string OPNGameLibraryFingerprint(const std::vector<OPN::GameInfo> &g
             settings.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
             self.settingsView = settings;
             [self.contentContainer addSubview:settings];
+            OpnDisableFocusHighlights(settings);
             self.window.title = @"OpenNOW - Settings";
             break;
         }
@@ -1174,8 +1260,8 @@ static std::string OPNGameLibraryFingerprint(const std::vector<OPN::GameInfo> &g
 - (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication *)sender {
     (void)sender;
     if (self.streamingController) {
-        [self.streamingController requestQuitGameConfirmation];
-        return NSTerminateCancel;
+        [self.streamingController shutdownForApplicationTermination];
+        self.streamingController = nil;
     }
     return NSTerminateNow;
 }

@@ -15,8 +15,13 @@ NS_ASSUME_NONNULL_BEGIN
 
 @property(nonatomic, copy) void (^onStreamEnd)
     (BOOL success, const std::string &errorMessage);
+@property(nonatomic, copy) void (^onControllerLibraryRequested)(void);
 
 - (void)requestQuitGameConfirmation;
+- (void)shutdownForApplicationTermination;
+- (void)prepareForLibraryPictureInPicture;
+- (void)restoreFromLibraryPictureInPicture;
+- (NSView *)streamPictureInPictureView;
 
 @end
 

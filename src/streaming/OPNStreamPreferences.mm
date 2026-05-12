@@ -13,7 +13,6 @@ static NSString *const kFpsIndexKey = @"OpenNOW.Stream.FpsIndex";
 static NSString *const kCodecIndexKey = @"OpenNOW.Stream.CodecIndex";
 static NSString *const kBitrateIndexKey = @"OpenNOW.Stream.BitrateIndex";
 static NSString *const kColorQualityIndexKey = @"OpenNOW.Stream.ColorQualityIndex";
-static NSString *const kDecoderBackendIndexKey = @"OpenNOW.Stream.DecoderBackendIndex";
 static NSString *const kRendererPacingIndexKey = @"OpenNOW.Stream.RendererPacingIndex";
 static NSString *const kL4SEnabledKey = @"OpenNOW.Stream.L4SEnabled";
 static NSString *const kPowerSaverEnabledKey = @"OpenNOW.Stream.PowerSaverEnabled";
@@ -90,15 +89,6 @@ const std::vector<StreamColorQualityOption> &StreamColorQualityOptions() {
         {"8-bit 4:4:4", "8bit_444"},
         {"10-bit 4:2:0", "10bit_420"},
         {"10-bit 4:4:4", "10bit_444"},
-    };
-    return options;
-}
-
-const std::vector<StreamDecoderBackendOption> &StreamDecoderBackendOptions() {
-    static const std::vector<StreamDecoderBackendOption> options = {
-        {"Auto", "auto"},
-        {"VideoToolbox", "videotoolbox"},
-        {"FFmpeg / Software", "ffmpeg"},
     };
     return options;
 }
@@ -363,10 +353,6 @@ StreamPreferenceProfile LoadStreamPreferenceProfile() {
     profile.colorQualityIndex = ClampedStoredInteger(kColorQualityIndexKey, 0, (int)colorQualityOptions.size());
     profile.colorQuality = colorQualityOptions[(size_t)profile.colorQualityIndex];
 
-    const auto &decoderBackendOptions = StreamDecoderBackendOptions();
-    profile.decoderBackendIndex = ClampedStoredInteger(kDecoderBackendIndexKey, 0, (int)decoderBackendOptions.size());
-    profile.decoderBackend = decoderBackendOptions[(size_t)profile.decoderBackendIndex];
-
     const auto &rendererPacingOptions = StreamRendererPacingOptions();
     profile.rendererPacingIndex = ClampedStoredInteger(kRendererPacingIndexKey, 1, (int)rendererPacingOptions.size());
     profile.rendererPacingFps = rendererPacingOptions[(size_t)profile.rendererPacingIndex];
@@ -593,11 +579,6 @@ void SaveStreamBitrateIndex(int bitrateIndex) {
 void SaveStreamColorQualityIndex(int colorQualityIndex) {
     int clamped = std::max(0, std::min(colorQualityIndex, (int)StreamColorQualityOptions().size() - 1));
     [NSUserDefaults.standardUserDefaults setInteger:clamped forKey:kColorQualityIndexKey];
-}
-
-void SaveStreamDecoderBackendIndex(int decoderBackendIndex) {
-    int clamped = std::max(0, std::min(decoderBackendIndex, (int)StreamDecoderBackendOptions().size() - 1));
-    [NSUserDefaults.standardUserDefaults setInteger:clamped forKey:kDecoderBackendIndexKey];
 }
 
 void SaveStreamRendererPacingIndex(int rendererPacingIndex) {

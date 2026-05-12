@@ -44,11 +44,6 @@ struct StreamColorQualityOption {
     std::string value;
 };
 
-struct StreamDecoderBackendOption {
-    std::string label;
-    std::string value;
-};
-
 struct StreamMicrophoneModeOption {
     std::string label;
     std::string value;
@@ -67,7 +62,6 @@ struct StreamPreferenceProfile {
     int codecIndex = 0;
     int bitrateIndex = 2;
     int colorQualityIndex = 0;
-    int decoderBackendIndex = 0;
     int rendererPacingIndex = 1;
     int fps = 60;
     int rendererPacingFps = 60;
@@ -88,7 +82,6 @@ struct StreamPreferenceProfile {
     StreamCodecOption codec;
     StreamBitrateOption bitrate;
     StreamColorQualityOption colorQuality;
-    StreamDecoderBackendOption decoderBackend;
 
     double AspectRatio() const;
 };
@@ -98,7 +91,6 @@ const std::vector<int> &StreamFpsOptions();
 const std::vector<StreamCodecOption> &StreamCodecOptions();
 const std::vector<StreamBitrateOption> &StreamBitrateOptions();
 const std::vector<StreamColorQualityOption> &StreamColorQualityOptions();
-const std::vector<StreamDecoderBackendOption> &StreamDecoderBackendOptions();
 const std::vector<int> &StreamRendererPacingOptions();
 const std::vector<StreamMicrophoneModeOption> &StreamMicrophoneModeOptions();
 std::vector<StreamMicrophoneDeviceOption> LoadMicrophoneDeviceOptions();
@@ -120,7 +112,6 @@ void SaveStreamFpsIndex(int fpsIndex);
 void SaveStreamCodecIndex(int codecIndex);
 void SaveStreamBitrateIndex(int bitrateIndex);
 void SaveStreamColorQualityIndex(int colorQualityIndex);
-void SaveStreamDecoderBackendIndex(int decoderBackendIndex);
 void SaveStreamRendererPacingIndex(int rendererPacingIndex);
 void SaveStreamL4SEnabled(bool enabled);
 void SaveStreamPowerSaverEnabled(bool enabled);

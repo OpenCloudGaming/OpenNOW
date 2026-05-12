@@ -11,7 +11,6 @@ struct StreamSettings {
     int fps = 60;
     std::string codec = "H264";
     std::string colorQuality = "8bit_420";
-    std::string decoderBackend = "auto";
     int maxBitrateMbps = 50;
     bool enableCloudGsync = false;
     bool enableL4S = false;

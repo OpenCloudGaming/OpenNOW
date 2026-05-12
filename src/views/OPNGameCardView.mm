@@ -1,19 +1,32 @@
 #import "OPNGameCardView.h"
 #import "../common/OPNColorTokens.h"
+#import "../common/OPNCoreAnimationCoordinator.h"
 #import "../common/OPNUIHelpers.h"
 #include <QuartzCore/QuartzCore.h>
 
 static const CGFloat gCardWidth = 220.0;
+static const CGFloat gControllerCardWidth = 164.0;
 static const CGFloat gImageHeight = gCardWidth;
 static const CGFloat gInfoHeight = 0.0;
 static const CGFloat gCardTotalHeight = gImageHeight + gInfoHeight;
-static const CGFloat gGradientOverlayHeight = 132.0;
+static unsigned OPNControllerAccentRGB(void) {
+    return OpnCurrentAccentRGB();
+}
 
+static unsigned OPNControllerAccentSoftRGB(void) {
+    return OpnBlendRGB(OpnCurrentAccentRGB(), 0xFFFFFF, 0.42);
+}
+
+static unsigned OPNControllerAccentBlackRGB(CGFloat blackMix) {
+    return OpnBlendRGB(OpnCurrentAccentRGB(), 0x000000, blackMix);
+}
 static CGFloat OPNScaledCardWidth(void) {
+    if (OpnControllerModeEnabled()) return gControllerCardWidth;
     return floor(gCardWidth * OpnPosterSizeScale());
 }
 
 static CGFloat OPNScaledCardHeight(void) {
+    if (OpnControllerModeEnabled()) return gControllerCardWidth;
     return floor(gCardTotalHeight * OpnPosterSizeScale());
 }
 
@@ -95,7 +108,7 @@ static NSString *OPNStoreIconGlyph(NSString *name) {
 static NSColor *OPNStoreIconColor(NSString *name, BOOL selected) {
     (void)name;
     CGFloat alpha = selected ? 0.96 : 0.68;
-    return OpnColor(OPN::kBrandGreen, alpha);
+    return OpnColor(OPNControllerAccentSoftRGB(), alpha);
 }
 
 static NSFont *OPNStoreIconFont(NSString *glyph) {
@@ -124,13 +137,16 @@ static NSString *OPNSteamArtworkURLForGame(const OPN::GameInfo &game) {
 
 @interface OPNGameCardView () <CALayerDelegate>
 @property (nonatomic, assign) OPN::GameInfo gameData;
+@property (nonatomic, strong) NSView *contentView;
 @property (nonatomic, strong) NSImageView *imageView;
-@property (nonatomic, strong) NSView *gradientOverlay;
 @property (nonatomic, strong) NSView *storeChipsContainer;
 @property (nonatomic, strong) NSTrackingArea *trackingArea;
 @property (nonatomic, strong) NSButton *playButton;
+@property (nonatomic, strong) CALayer *reflectionLayer;
 @property (nonatomic, strong) NSMutableArray<NSButton *> *storeChipButtons;
+@property (nonatomic, strong, readwrite) NSColor *artworkAccentColor;
 - (void)loadImageFromCandidates:(NSArray<NSString *> *)urlStrings index:(NSUInteger)index;
+- (void)applyFocusStyle;
 @end
 
 @implementation OPNGameCardView
@@ -148,44 +164,51 @@ using namespace OPN;
     if (self) {
         _gameData = game;
         self.wantsLayer = YES;
-        self.layer.cornerRadius = 18.0;
-        self.layer.masksToBounds = YES;
-        self.layer.backgroundColor = OpnColor(kSurfaceRaised, 0.82).CGColor;
+        self.layer.cornerRadius = 20.0;
+        self.layer.masksToBounds = NO;
+        self.layer.backgroundColor = NSColor.clearColor.CGColor;
         self.layer.borderWidth = 1.0;
-        self.layer.borderColor = OpnColor(0xFFFFFF, 0.10).CGColor;
+        self.layer.borderColor = OpnColor(0xFFFFFF, 0.13).CGColor;
+        self.layer.shadowColor = NSColor.blackColor.CGColor;
+        self.layer.shadowOpacity = 0.38;
+        self.layer.shadowRadius = 20.0;
+        self.layer.shadowOffset = CGSizeMake(0.0, 16.0);
+
+        _reflectionLayer = [CALayer layer];
+        _reflectionLayer.backgroundColor = OpnColor(OPNControllerAccentSoftRGB(), 0.28).CGColor;
+        _reflectionLayer.cornerRadius = 18.0;
+        _reflectionLayer.opacity = 0.0;
+        _reflectionLayer.shadowColor = OpnColor(OPNControllerAccentSoftRGB()).CGColor;
+        _reflectionLayer.shadowOpacity = 0.68;
+        _reflectionLayer.shadowRadius = 24.0;
+        _reflectionLayer.shadowOffset = CGSizeZero;
+        [self.layer addSublayer:_reflectionLayer];
+
+        _contentView = [[NSView alloc] initWithFrame:self.bounds];
+        _contentView.wantsLayer = YES;
+        _contentView.layer.cornerRadius = 20.0;
+        _contentView.layer.masksToBounds = YES;
+        _contentView.layer.backgroundColor = OpnColor(OPNControllerAccentBlackRGB(0.88), 0.84).CGColor;
+        [self addSubview:_contentView];
 
         _imageView = [[NSImageView alloc] initWithFrame:self.bounds];
         _imageView.imageScaling = NSImageScaleProportionallyUpOrDown;
         _imageView.wantsLayer = YES;
-        _imageView.layer.backgroundColor = OpnColor(kBackgroundC).CGColor;
-        [self addSubview:_imageView];
-
-        _gradientOverlay = [[NSView alloc] initWithFrame:NSMakeRect(0, NSHeight(self.bounds) - gGradientOverlayHeight, NSWidth(self.bounds), gGradientOverlayHeight)];
-        _gradientOverlay.wantsLayer = YES;
-        CAGradientLayer *gradient = [CAGradientLayer layer];
-        gradient.frame = _gradientOverlay.bounds;
-        gradient.colors = @[(id)OpnColor(kBlack, 0.0).CGColor,
-                            (id)OpnColor(kBlack, 0.0).CGColor,
-                            (id)OpnColor(kBlack, 0.30).CGColor,
-                            (id)OpnColor(kBlack, 0.86).CGColor];
-        gradient.locations = @[@0.0, @0.24, @0.68, @1.0];
-        gradient.startPoint = CGPointMake(0.5, 1.0);
-        gradient.endPoint = CGPointMake(0.5, 0.0);
-        _gradientOverlay.layer = gradient;
-        [self addSubview:_gradientOverlay];
+        _imageView.layer.backgroundColor = OpnColor(OPNControllerAccentBlackRGB(0.90)).CGColor;
+        [_contentView addSubview:_imageView];
 
         _playButton = [[NSButton alloc] initWithFrame:
-            NSMakeRect((NSWidth(self.bounds) - 46) / 2, (NSHeight(self.bounds) - 46) / 2, 46, 46)];
-        _playButton.title = @"▶";
+            NSMakeRect((NSWidth(self.bounds) - 76) / 2, NSHeight(self.bounds) - 52, 76, 34)];
+        _playButton.title = @"PLAY";
         _playButton.bordered = NO;
-        _playButton.font = [NSFont systemFontOfSize:18 weight:NSFontWeightSemibold];
-        _playButton.contentTintColor = OpnColor(kAccentOn);
+        _playButton.font = [NSFont systemFontOfSize:12 weight:NSFontWeightBold];
+        _playButton.contentTintColor = OpnColor(OPNControllerAccentBlackRGB(0.88));
         _playButton.wantsLayer = YES;
-        _playButton.layer.cornerRadius = 23;
-        _playButton.layer.backgroundColor = OpnColor(kBrandGreen, 0.95).CGColor;
-        _playButton.layer.shadowColor = OpnColor(kBrandGreen).CGColor;
-        _playButton.layer.shadowOpacity = 0.22;
-        _playButton.layer.shadowRadius = 12;
+        _playButton.layer.cornerRadius = 17;
+        _playButton.layer.backgroundColor = OpnColor(OPNControllerAccentSoftRGB(), 0.94).CGColor;
+        _playButton.layer.shadowColor = OpnColor(OPNControllerAccentSoftRGB()).CGColor;
+        _playButton.layer.shadowOpacity = 0.18;
+        _playButton.layer.shadowRadius = 14;
         _playButton.layer.shadowOffset = CGSizeZero;
         _playButton.hidden = YES;
         _playButton.target = self;
@@ -209,7 +232,7 @@ using namespace OPN;
 
         _storeChipsContainer = [[NSView alloc] initWithFrame:
             NSMakeRect(16, NSHeight(self.bounds) - 37, NSWidth(self.bounds) - 32, 24)];
-        [self addSubview:_storeChipsContainer];
+        [_contentView addSubview:_storeChipsContainer];
         [self buildStoreChips];
 
         [self loadImage];
@@ -222,16 +245,47 @@ using namespace OPN;
     return self;
 }
 
+- (void)setControllerFocused:(BOOL)controllerFocused {
+    if (_controllerFocused == controllerFocused) return;
+    _controllerFocused = controllerFocused;
+    [self applyFocusStyle];
+}
+
+- (void)applyFocusStyle {
+    BOOL selected = self.controllerFocused;
+    NSColor *accentColor = self.artworkAccentColor ?: OpnColor(OPNControllerAccentSoftRGB());
+    self.playButton.hidden = OpnControllerModeEnabled() || !selected;
+    [CATransaction begin];
+    [CATransaction setAnimationDuration:0.22];
+    [CATransaction setAnimationTimingFunction:[OPNCoreAnimationCoordinator appleQuinticTimingFunction]];
+    self.layer.zPosition = selected ? 20.0 : 0.0;
+    self.layer.borderColor = selected ? OpnColor(0xFFFFFF, 0.94).CGColor : OpnColor(0xFFFFFF, 0.13).CGColor;
+    self.layer.borderWidth = selected ? 3.0 : 1.0;
+    self.playButton.layer.shadowOpacity = selected ? 0.58 : 0.18;
+    self.playButton.layer.shadowRadius = selected ? 22.0 : 14.0;
+    [CATransaction commit];
+
+    CGFloat prominence = selected ? 1.0 : 0.0;
+    [[OPNCoreAnimationCoordinator sharedCoordinator] animateFocusForCardLayer:self.layer
+                                                                    glowLayer:self.reflectionLayer
+                                                                      focused:selected
+                                                                   prominence:prominence
+                                                                   accentColor:accentColor];
+}
+
 - (BOOL)isFlipped { return YES; }
 
 - (void)layout {
     [super layout];
     CGFloat width = NSWidth(self.bounds);
     CGFloat height = NSHeight(self.bounds);
+    self.contentView.frame = self.bounds;
+    self.contentView.layer.cornerRadius = 20.0;
     self.imageView.frame = self.bounds;
-    self.gradientOverlay.frame = NSMakeRect(0, MAX(0.0, height - gGradientOverlayHeight), width, MIN(gGradientOverlayHeight, height));
-    self.playButton.frame = NSMakeRect((width - 46.0) / 2.0, (height - 46.0) / 2.0, 46.0, 46.0);
+    self.playButton.frame = NSMakeRect((width - 76.0) / 2.0, MAX(18.0, height - 52.0), 76.0, 34.0);
     self.storeChipsContainer.frame = NSMakeRect(16.0, MAX(0.0, height - 37.0), MAX(40.0, width - 32.0), 24.0);
+    self.reflectionLayer.frame = NSMakeRect(16.0, height - 10.0, MAX(24.0, width - 32.0), 18.0);
+    self.layer.shadowPath = [NSBezierPath bezierPathWithRoundedRect:self.bounds xRadius:20.0 yRadius:20.0].CGPath;
 }
 
 - (void)playClicked {
@@ -241,7 +295,8 @@ using namespace OPN;
 - (void)buildStoreChips {
     for (NSView *v in _storeChipsContainer.subviews) { [v removeFromSuperview]; }
     [_storeChipButtons removeAllObjects];
-    self.storeChipsContainer.hidden = _gameData.variants.size() <= 1;
+    self.storeChipsContainer.hidden = OpnControllerModeEnabled() || _gameData.variants.size() <= 1;
+    if (self.storeChipsContainer.hidden) return;
     if (_gameData.variants.empty()) return;
 
     if (_gameData.variants.size() <= 1) return;
@@ -281,12 +336,12 @@ using namespace OPN;
         chip.toolTip = OPNStorePrettyName(name ?: @"");
 
         if (selected) {
-            chip.layer.backgroundColor = OpnColor(kBrandGreen, 0.18).CGColor;
+            chip.layer.backgroundColor = OpnColor(OPNControllerAccentRGB(), 0.18).CGColor;
             chip.layer.borderWidth = 1.0;
             chip.layer.borderColor = OPNStoreIconColor(name, YES).CGColor;
         } else {
-            chip.layer.backgroundColor = OpnColor(kBrandGreen, 0.08).CGColor;
-            chip.layer.borderColor = OpnColor(kBrandGreen, 0.14).CGColor;
+            chip.layer.backgroundColor = OpnColor(OPNControllerAccentRGB(), 0.08).CGColor;
+            chip.layer.borderColor = OpnColor(OPNControllerAccentRGB(), 0.14).CGColor;
             chip.layer.borderWidth = 1;
         }
 
@@ -357,6 +412,19 @@ using namespace OPN;
                 __typeof__(self) strongSelf = weakSelf;
                 if (!strongSelf) return;
                 strongSelf.imageView.image = img;
+                NSRect imageRect = NSMakeRect(0.0, 0.0, img.size.width, img.size.height);
+                CGImageRef cgImage = [img CGImageForProposedRect:&imageRect context:nil hints:nil];
+                if (cgImage) {
+                    [[OPNCoreAnimationCoordinator sharedCoordinator] extractDominantColorFromImage:cgImage
+                                                                                           cacheKey:urlStr
+                                                                                         completion:^(NSColor *color) {
+                        __typeof__(self) completedSelf = weakSelf;
+                        if (!completedSelf || !color) return;
+                        completedSelf.artworkAccentColor = color;
+                        if (completedSelf.controllerFocused) [completedSelf applyFocusStyle];
+                        if (completedSelf.onArtworkAccentColorChanged) completedSelf.onArtworkAccentColorChanged(color);
+                    }];
+                }
             });
         }];
     [task resume];
@@ -364,14 +432,20 @@ using namespace OPN;
 
 - (void)mouseEntered:(NSEvent *)event {
     [super mouseEntered:event];
-    self.playButton.hidden = NO;
-    self.layer.borderColor = OpnColor(0xFFFFFF, 0.22).CGColor;
+    if (OpnControllerModeEnabled()) return;
+    if (!self.controllerFocused) {
+        self.playButton.hidden = NO;
+        self.layer.borderColor = OpnColor(0xFFFFFF, 0.28).CGColor;
+    }
 }
 
 - (void)mouseExited:(NSEvent *)event {
     [super mouseExited:event];
-    self.playButton.hidden = YES;
-    self.layer.borderColor = OpnColor(0xFFFFFF, 0.10).CGColor;
+    if (OpnControllerModeEnabled()) return;
+    if (!self.controllerFocused) {
+        self.playButton.hidden = YES;
+        self.layer.borderColor = OpnColor(0xFFFFFF, 0.10).CGColor;
+    }
 }
 
 - (void)updateTrackingAreas {

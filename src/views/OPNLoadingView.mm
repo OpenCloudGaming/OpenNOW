@@ -31,6 +31,7 @@
 @property (nonatomic, assign) BOOL adVisible;
 @property (nonatomic, assign) BOOL adStartReported;
 @property (nonatomic, assign) BOOL adFinishReported;
+- (void)applyAccentColors;
 @end
 
 @implementation OPNLoadingView
@@ -61,10 +62,6 @@
         [self.layer addSublayer:_panelLayer];
 
         _sweepLayer = [CAGradientLayer layer];
-        _sweepLayer.colors = @[(id)OpnColor(0x6EB6FF, 0.0).CGColor,
-                               (id)OpnColor(0x6EB6FF, 0.28).CGColor,
-                               (id)OpnColor(0xE8F4FF, 0.42).CGColor,
-                               (id)OpnColor(0x6EB6FF, 0.0).CGColor];
         _sweepLayer.locations = @[@0.0, @0.42, @0.50, @1.0];
         _sweepLayer.startPoint = CGPointMake(0.0, 0.5);
         _sweepLayer.endPoint = CGPointMake(1.0, 0.5);
@@ -72,7 +69,6 @@
 
         _orbitLayer = [CAShapeLayer layer];
         _orbitLayer.fillColor = NSColor.clearColor.CGColor;
-        _orbitLayer.strokeColor = OpnColor(0x8EC8FF, 0.78).CGColor;
         _orbitLayer.lineWidth = 2.0;
         _orbitLayer.lineCap = kCALineCapRound;
         _orbitLayer.strokeStart = 0.04;
@@ -87,16 +83,12 @@
         [self.layer addSublayer:_innerOrbitLayer];
 
         _coreLayer = [CALayer layer];
-        _coreLayer.backgroundColor = OpnColor(0xDDF0FF, 0.92).CGColor;
-        _coreLayer.shadowColor = OpnColor(0x69B7FF, 1.0).CGColor;
         _coreLayer.shadowOpacity = 0.86;
         _coreLayer.shadowRadius = 14.0;
         _coreLayer.shadowOffset = CGSizeZero;
         [self.layer addSublayer:_coreLayer];
 
         _sparkLayer = [CALayer layer];
-        _sparkLayer.backgroundColor = OpnColor(0x8EC8FF, 0.92).CGColor;
-        _sparkLayer.shadowColor = OpnColor(0x8EC8FF, 1.0).CGColor;
         _sparkLayer.shadowOpacity = 0.9;
         _sparkLayer.shadowRadius = 10.0;
         _sparkLayer.shadowOffset = CGSizeZero;
@@ -104,7 +96,6 @@
 
         for (NSUInteger i = 0; i < 4; i++) {
             CALayer *bar = [CALayer layer];
-            bar.backgroundColor = OpnColor(0x77BAFF, 0.54).CGColor;
             bar.cornerRadius = 2.0;
             [self.layer addSublayer:bar];
             [_barLayers addObject:bar];
@@ -112,9 +103,7 @@
 
         for (NSUInteger i = 0; i < 5; i++) {
             CALayer *dot = [CALayer layer];
-            dot.backgroundColor = OpnColor(0xCFEAFF, 0.74).CGColor;
             dot.cornerRadius = 2.5;
-            dot.shadowColor = OpnColor(0x8EC8FF, 1.0).CGColor;
             dot.shadowOpacity = 0.36;
             dot.shadowRadius = 5.0;
             dot.shadowOffset = CGSizeZero;
@@ -126,13 +115,13 @@
         _messageLabel.maximumNumberOfLines = 2;
         [self addSubview:_messageLabel];
 
-        _queuePositionLabel = OpnLabel(@"", NSZeroRect, 13.0, OpnColor(0x9FD3FF), NSFontWeightSemibold, NSTextAlignmentCenter);
+        _queuePositionLabel = OpnLabel(@"", NSZeroRect, 13.0, OpnColor(OPN::kBrandGreen), NSFontWeightSemibold, NSTextAlignmentCenter);
         _queuePositionLabel.hidden = YES;
         _queuePositionLabel.wantsLayer = YES;
         _queuePositionLabel.layer.backgroundColor = OpnColor(0x0A1624, 0.72).CGColor;
         _queuePositionLabel.layer.cornerRadius = 12.0;
         _queuePositionLabel.layer.borderWidth = 1.0;
-        _queuePositionLabel.layer.borderColor = OpnColor(0x79C2FF, 0.22).CGColor;
+        _queuePositionLabel.layer.borderColor = OpnColor(OPN::kBrandGreen, 0.22).CGColor;
         [self addSubview:_queuePositionLabel];
 
         _adContainerView = [[NSView alloc] initWithFrame:NSZeroRect];
@@ -144,7 +133,7 @@
         _adContainerView.hidden = YES;
         [self addSubview:_adContainerView];
 
-        _adChipLabel = OpnLabel(@"Ad Queue", NSZeroRect, 12.0, OpnColor(0x9FD3FF), NSFontWeightSemibold, NSTextAlignmentLeft);
+        _adChipLabel = OpnLabel(@"Ad Queue", NSZeroRect, 12.0, OpnColor(OPN::kBrandGreen), NSFontWeightSemibold, NSTextAlignmentLeft);
         [_adContainerView addSubview:_adChipLabel];
         _adTitleLabel = OpnLabel(@"Ad playback required", NSZeroRect, 20.0, OpnColor(OPN::kTextPrimary), NSFontWeightBold, NSTextAlignmentLeft);
         _adTitleLabel.maximumNumberOfLines = 2;
@@ -157,8 +146,41 @@
         _adPlayerView.videoGravity = AVLayerVideoGravityResizeAspect;
         _adPlayerView.hidden = YES;
         [_adContainerView addSubview:_adPlayerView];
+        [self applyAccentColors];
+        [[NSNotificationCenter defaultCenter] addObserver:self
+                                                 selector:@selector(interfacePreferencesChanged:)
+                                                     name:OPNInterfacePreferencesDidChangeNotification
+                                                   object:nil];
     }
     return self;
+}
+
+- (void)interfacePreferencesChanged:(NSNotification *)notification {
+    (void)notification;
+    [self applyAccentColors];
+}
+
+- (void)applyAccentColors {
+    self.sweepLayer.colors = @[(id)OpnColor(OPN::kBrandGreen, 0.0).CGColor,
+                               (id)OpnColor(OPN::kBrandGreen, 0.28).CGColor,
+                               (id)OpnColor(OPN::kBrandGreenHover, 0.42).CGColor,
+                               (id)OpnColor(OPN::kBrandGreen, 0.0).CGColor];
+    self.orbitLayer.strokeColor = OpnColor(OPN::kBrandGreen, 0.78).CGColor;
+    self.coreLayer.backgroundColor = OpnColor(OPN::kBrandGreenHover, 0.92).CGColor;
+    self.coreLayer.shadowColor = OpnColor(OPN::kBrandGreen, 1.0).CGColor;
+    self.sparkLayer.backgroundColor = OpnColor(OPN::kBrandGreen, 0.92).CGColor;
+    self.sparkLayer.shadowColor = OpnColor(OPN::kBrandGreen, 1.0).CGColor;
+    for (CALayer *bar in self.barLayers) {
+        bar.backgroundColor = OpnColor(OPN::kBrandGreen, 0.54).CGColor;
+    }
+    for (CALayer *dot in self.dotLayers) {
+        dot.backgroundColor = OpnColor(OPN::kBrandGreenHover, 0.74).CGColor;
+        dot.shadowColor = OpnColor(OPN::kBrandGreen, 1.0).CGColor;
+    }
+    self.queuePositionLabel.textColor = OpnColor(OPN::kBrandGreen);
+    self.queuePositionLabel.layer.borderColor = OpnColor(OPN::kBrandGreen, 0.22).CGColor;
+    self.adChipLabel.textColor = OpnColor(OPN::kBrandGreen);
+    [self restyleStepIndicators];
 }
 
 - (BOOL)isFlipped { return YES; }
@@ -366,8 +388,8 @@
         BOOL completed = (NSInteger)i < self.currentStepIndex;
         BOOL current = (NSInteger)i == self.currentStepIndex;
         indicator.backgroundColor = current
-            ? OpnColor(0xDDF0FF, 0.96).CGColor
-            : (completed ? OpnColor(0x7ED6A5, 0.54).CGColor : OpnColor(0xFFFFFF, 0.16).CGColor);
+            ? OpnColor(OPN::kBrandGreenHover, 0.96).CGColor
+            : (completed ? OpnColor(OPN::kBrandGreen, 0.54).CGColor : OpnColor(0xFFFFFF, 0.16).CGColor);
     }
 }
 

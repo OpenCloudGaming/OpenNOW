@@ -8,6 +8,8 @@
 @property (nonatomic, copy) void (^onSignOut)();
 @property (nonatomic, copy) void (^onGameCountChanged)(NSInteger count);
 @property (nonatomic, copy) void (^onCatalogBrowseRequested)(NSString *searchQuery, NSString *sortId, const std::vector<std::string> &filterIds);
+@property (nonatomic, copy) void (^onFocusedArtworkAccentChanged)(unsigned accentRGB);
+@property (nonatomic, copy) void (^onStreamPictureInPictureSelected)(void);
 
 - (instancetype)initWithFrame:(NSRect)frame;
 - (void)setGames:(const std::vector<OPN::GameInfo> &)games;
@@ -15,5 +17,6 @@
 - (void)setLoading:(BOOL)loading;
 - (void)setError:(NSString *)message;
 - (void)setUserName:(NSString *)name;
+- (void)setStreamPictureInPictureView:(NSView *)view title:(NSString *)title;
 
 @end
