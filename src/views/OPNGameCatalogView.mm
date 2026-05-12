@@ -73,35 +73,17 @@ static NSString *OPNCatalogString(const std::string &value, NSString *fallback =
 @interface OPNControllerElectricBackgroundView : NSView
 @end
 
-@implementation OPNControllerElectricBackgroundView {
-    NSTimer *_animationTimer;
-    CGFloat _phase;
-}
+@implementation OPNControllerElectricBackgroundView
 
 - (instancetype)initWithFrame:(NSRect)frame {
     self = [super initWithFrame:frame];
     if (self) {
         self.wantsLayer = YES;
-        _animationTimer = [NSTimer scheduledTimerWithTimeInterval:(1.0 / 24.0)
-                                                          target:self
-                                                        selector:@selector(animationTick:)
-                                                        userInfo:nil
-                                                         repeats:YES];
     }
     return self;
 }
 
-- (void)dealloc {
-    [_animationTimer invalidate];
-}
-
 - (BOOL)isFlipped { return YES; }
-
-- (void)animationTick:(NSTimer *)timer {
-    (void)timer;
-    _phase = fmod(_phase + (1.0 / 144.0), 1.0);
-    self.needsDisplay = YES;
-}
 
 - (CGFloat)unitHashForSeed:(NSUInteger)seed index:(NSUInteger)index {
     uint32_t value = (uint32_t)(seed * 1103515245u + index * 12345u + 0x9E3779B9u);
@@ -127,9 +109,16 @@ static NSString *OPNCatalogString(const std::string &value, NSString *fallback =
                        start.y + dy * t + normalY * offset);
 }
 
+- (void)drawStrikeBloomAt:(NSPoint)point radius:(CGFloat)radius intensity:(CGFloat)intensity {
+    if (intensity <= 0.001) return;
+    NSRect bloomRect = NSMakeRect(point.x - radius, point.y - radius, radius * 2.0, radius * 2.0);
+    NSGradient *bloom = [[NSGradient alloc] initWithStartingColor:OpnColor(0xFFFFFF, 0.20 * intensity)
+                                                     endingColor:OpnColor(OPN::kBrandGreen, 0.0)];
+    [bloom drawInBezierPath:[NSBezierPath bezierPathWithOvalInRect:bloomRect] relativeCenterPosition:NSZeroPoint];
+}
+
 - (void)drawBoltFrom:(NSPoint)start to:(NSPoint)end branches:(NSInteger)branches seed:(NSUInteger)seed alpha:(CGFloat)alpha width:(CGFloat)width {
-    CGFloat pulse = 0.72 + 0.28 * sin((_phase + (CGFloat)(seed % 17) / 17.0) * 6.28318530718);
-    CGFloat effectiveAlpha = alpha * pulse;
+    CGFloat effectiveAlpha = alpha;
     NSUInteger segments = 10 + (seed % 5);
     NSBezierPath *path = [NSBezierPath bezierPath];
     [path moveToPoint:start];
@@ -196,30 +185,42 @@ static NSString *OPNCatalogString(const std::string &value, NSString *fallback =
     for (NSInteger i = 0; i < 8; i++) {
         CGFloat y = 34.0 + (CGFloat)i * MAX(46.0, height / 8.5);
         NSBezierPath *scan = [NSBezierPath bezierPath];
-        [scan moveToPoint:NSMakePoint(0.0, y + sin(_phase * 6.283 + i) * 9.0)];
-        [scan lineToPoint:NSMakePoint(width, y + cos(_phase * 6.283 + i) * 9.0)];
+        [scan moveToPoint:NSMakePoint(0.0, y)];
+        [scan lineToPoint:NSMakePoint(width, y + ((i % 2 == 0) ? 6.0 : -6.0))];
         [OpnColor(0xFFFFFF, 0.026) setStroke];
         scan.lineWidth = 1.0;
         [scan stroke];
     }
 
+    CGFloat strikeOne = 0.22;
+    CGFloat strikeTwo = 0.16;
+    CGFloat strikeThree = 0.12;
+    CGFloat strikeFour = 0.18;
+
     [self drawBoltFrom:NSMakePoint(width * 0.05, height * 0.78)
                     to:NSMakePoint(width * 0.42, height * 0.16)
-              branches:10 seed:11 alpha:0.42 width:2.2];
+              branches:10 seed:11 alpha:0.055 + strikeOne * 0.88 width:2.2 + strikeOne * 2.8];
     [self drawBoltFrom:NSMakePoint(width * 0.52, height * 0.92)
                     to:NSMakePoint(width * 0.94, height * 0.22)
-              branches:11 seed:47 alpha:0.34 width:1.8];
+              branches:11 seed:47 alpha:0.040 + strikeTwo * 0.78 width:1.8 + strikeTwo * 2.6];
     [self drawBoltFrom:NSMakePoint(width * 0.18, height * 0.50)
                     to:NSMakePoint(width * 0.76, height * 0.58)
-              branches:7 seed:83 alpha:0.24 width:1.4];
+              branches:7 seed:83 alpha:0.030 + strikeThree * 0.66 width:1.4 + strikeThree * 2.2];
+    [self drawBoltFrom:NSMakePoint(width * 0.80, height * 0.12)
+                    to:NSMakePoint(width * 0.34, height * 0.88)
+              branches:12 seed:131 alpha:0.035 + strikeFour * 0.86 width:1.8 + strikeFour * 2.9];
+
+    [self drawStrikeBloomAt:NSMakePoint(width * 0.42, height * 0.16) radius:190.0 intensity:strikeOne];
+    [self drawStrikeBloomAt:NSMakePoint(width * 0.94, height * 0.22) radius:220.0 intensity:strikeTwo];
+    [self drawStrikeBloomAt:NSMakePoint(width * 0.76, height * 0.58) radius:180.0 intensity:strikeThree];
+    [self drawStrikeBloomAt:NSMakePoint(width * 0.34, height * 0.88) radius:240.0 intensity:strikeFour];
 
     for (NSInteger i = 0; i < 90; i++) {
         CGFloat x = fmod((CGFloat)(i * 97), MAX(1.0, width));
         CGFloat y = fmod((CGFloat)(i * 43), MAX(1.0, height));
         CGFloat radius = 0.8 + (CGFloat)(i % 4) * 0.45;
         NSBezierPath *spark = [NSBezierPath bezierPathWithOvalInRect:NSMakeRect(x, y, radius, radius)];
-        CGFloat sparkPulse = 0.52 + 0.48 * sin((_phase + (CGFloat)(i % 29) / 29.0) * 6.28318530718);
-        [OpnColor(i % 5 == 0 ? 0xFFFFFF : OPN::kBrandGreen, (i % 5 == 0 ? 0.16 : 0.11) * sparkPulse) setFill];
+        [OpnColor(i % 5 == 0 ? 0xFFFFFF : OPN::kBrandGreen, i % 5 == 0 ? 0.12 : 0.08) setFill];
         [spark fill];
     }
 
@@ -910,7 +911,7 @@ using namespace OPN;
     for (NSUInteger i = 0; i < self.cardViews.count; i++) {
         BOOL selected = OpnControllerModeEnabled() && (NSInteger)i == clamped;
         self.cardViews[i].controllerFocused = selected;
-        self.cardViews[i].alphaValue = OpnControllerModeEnabled() && !selected ? 0.72 : 1.0;
+        self.cardViews[i].alphaValue = 1.0;
     }
     if (OpnControllerModeEnabled() && scrollIntoView && previousIndex >= 0 && previousIndex != clamped) {
         OpnPlayConsoleTone(OPNConsoleToneMove);
