@@ -1,5 +1,6 @@
 #import "OPNUIHelpers.h"
 #import "OPNColorTokens.h"
+#import <AVFoundation/AVFoundation.h>
 #include <cmath>
 
 NSString *const OPNInterfacePreferencesDidChangeNotification = @"OpenNOW.InterfacePreferencesDidChange";
@@ -86,6 +87,117 @@ void OpnSetControllerModeEnabled(BOOL enabled) {
     [NSUserDefaults.standardUserDefaults setBool:enabled forKey:OPNControllerModeDefaultsKey];
     [NSUserDefaults.standardUserDefaults synchronize];
     [NSNotificationCenter.defaultCenter postNotificationName:OPNInterfacePreferencesDidChangeNotification object:nil];
+}
+
+static void OPNAppendLittleEndianUInt16(NSMutableData *data, uint16_t value) {
+    uint16_t little = CFSwapInt16HostToLittle(value);
+    [data appendBytes:&little length:sizeof(little)];
+}
+
+static void OPNAppendLittleEndianUInt32(NSMutableData *data, uint32_t value) {
+    uint32_t little = CFSwapInt32HostToLittle(value);
+    [data appendBytes:&little length:sizeof(little)];
+}
+
+static NSData *OPNConsoleToneWAVData(OPNConsoleTone tone) {
+    static NSMutableDictionary<NSNumber *, NSData *> *cache;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        cache = [NSMutableDictionary dictionary];
+    });
+
+    NSNumber *key = @(tone);
+    NSData *cached = cache[key];
+    if (cached) return cached;
+
+    const uint32_t sampleRate = 44100;
+    double duration = 0.070;
+    double primaryFrequency = 660.0;
+    double secondaryFrequency = 990.0;
+    double volume = 0.22;
+    switch (tone) {
+        case OPNConsoleToneMove:
+            duration = 0.052;
+            primaryFrequency = 720.0;
+            secondaryFrequency = 1080.0;
+            volume = 0.17;
+            break;
+        case OPNConsoleToneSelect:
+            duration = 0.105;
+            primaryFrequency = 620.0;
+            secondaryFrequency = 1240.0;
+            volume = 0.23;
+            break;
+        case OPNConsoleToneChange:
+            duration = 0.090;
+            primaryFrequency = 880.0;
+            secondaryFrequency = 1320.0;
+            volume = 0.20;
+            break;
+        case OPNConsoleToneBack:
+            duration = 0.080;
+            primaryFrequency = 440.0;
+            secondaryFrequency = 330.0;
+            volume = 0.18;
+            break;
+    }
+
+    const uint16_t channels = 1;
+    const uint16_t bitsPerSample = 16;
+    const uint32_t frameCount = (uint32_t)std::round(duration * sampleRate);
+    const uint32_t dataByteCount = frameCount * channels * (bitsPerSample / 8);
+    NSMutableData *data = [NSMutableData dataWithCapacity:44 + dataByteCount];
+
+    [data appendBytes:"RIFF" length:4];
+    OPNAppendLittleEndianUInt32(data, 36 + dataByteCount);
+    [data appendBytes:"WAVE" length:4];
+    [data appendBytes:"fmt " length:4];
+    OPNAppendLittleEndianUInt32(data, 16);
+    OPNAppendLittleEndianUInt16(data, 1);
+    OPNAppendLittleEndianUInt16(data, channels);
+    OPNAppendLittleEndianUInt32(data, sampleRate);
+    OPNAppendLittleEndianUInt32(data, sampleRate * channels * (bitsPerSample / 8));
+    OPNAppendLittleEndianUInt16(data, channels * (bitsPerSample / 8));
+    OPNAppendLittleEndianUInt16(data, bitsPerSample);
+    [data appendBytes:"data" length:4];
+    OPNAppendLittleEndianUInt32(data, dataByteCount);
+
+    for (uint32_t frame = 0; frame < frameCount; frame++) {
+        double t = (double)frame / (double)sampleRate;
+        double progress = (double)frame / (double)MAX(1u, frameCount - 1);
+        double attack = MIN(1.0, progress / 0.10);
+        double release = MIN(1.0, (1.0 - progress) / 0.42);
+        double envelope = attack * release;
+        double bend = 1.0 + (tone == OPNConsoleToneBack ? -0.18 : 0.10) * (1.0 - progress);
+        double sample = sin(2.0 * M_PI * primaryFrequency * bend * t) * 0.68;
+        sample += sin(2.0 * M_PI * secondaryFrequency * t) * 0.24;
+        sample += sin(2.0 * M_PI * primaryFrequency * 2.0 * t) * 0.08;
+        int16_t pcm = (int16_t)std::round(MAX(-1.0, MIN(1.0, sample * envelope * volume)) * 32767.0);
+        OPNAppendLittleEndianUInt16(data, (uint16_t)pcm);
+    }
+
+    NSData *immutableData = [data copy];
+    cache[key] = immutableData;
+    return immutableData;
+}
+
+void OpnPlayConsoleTone(OPNConsoleTone tone) {
+    static NSMutableArray<AVAudioPlayer *> *activePlayers;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        activePlayers = [NSMutableArray array];
+    });
+
+    NSError *error = nil;
+    AVAudioPlayer *player = [[AVAudioPlayer alloc] initWithData:OPNConsoleToneWAVData(tone) error:&error];
+    if (!player || error) return;
+    player.volume = 0.85;
+    [player prepareToPlay];
+    [activePlayers addObject:player];
+    [player play];
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)((player.duration + 0.25) * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        [activePlayers removeObject:player];
+    });
 }
 
 static unsigned OpnResolvedInterfaceColor(unsigned rgb) {
