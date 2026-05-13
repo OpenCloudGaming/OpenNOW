@@ -197,6 +197,35 @@ static double SafeMinutesAsHours(id value) {
     return 0.0;
 }
 
+static int SafeInt(id value) {
+    if ([value isKindOfClass:[NSNumber class]]) return [(NSNumber *)value intValue];
+    if ([value isKindOfClass:[NSString class]]) return [(NSString *)value intValue];
+    return 0;
+}
+
+static void AppendUniqueString(std::vector<std::string> &values, NSString *value) {
+    if (value.length == 0) return;
+    std::string text = [value UTF8String];
+    if (std::find(values.begin(), values.end(), text) == values.end()) values.push_back(text);
+}
+
+static void AppendStringValues(std::vector<std::string> &values, id rawValue) {
+    if ([rawValue isKindOfClass:[NSString class]]) {
+        AppendUniqueString(values, rawValue);
+        return;
+    }
+    if (![rawValue isKindOfClass:[NSArray class]]) return;
+    for (id item in (NSArray *)rawValue) {
+        if ([item isKindOfClass:[NSString class]]) {
+            AppendUniqueString(values, item);
+        } else if ([item isKindOfClass:[NSDictionary class]]) {
+            NSDictionary *dictionary = (NSDictionary *)item;
+            NSString *text = FirstSafeString(dictionary, @[@"name", @"label", @"value", @"rating", @"control", @"type"]);
+            AppendUniqueString(values, text);
+        }
+    }
+}
+
 static bool HasVisibleVariants(const GameInfo &game) {
     return !game.variants.empty();
 }
@@ -209,13 +238,19 @@ GameInfo GameService::parseGameItem(NSDictionary *app) {
     { NSString *v = SafeStr(app[@"title"]); g.title = v ? [v UTF8String] : ""; }
     { NSString *v = SafeStr(app[@"shortName"]); g.shortName = v ? [v UTF8String] : ""; }
     { NSString *v = FirstSafeString(app, @[@"description", @"longDescription", @"shortDescription", @"summary"]); g.description = v ? [v UTF8String] : ""; }
+    { NSString *v = SafeStr(app[@"developerName"]); g.developerName = v ? [v UTF8String] : ""; }
+    { NSString *v = SafeStr(app[@"publisherName"]); g.publisherName = v ? [v UTF8String] : ""; }
+    g.maxLocalPlayers = SafeInt(app[@"maxLocalPlayers"]);
+    g.maxOnlinePlayers = SafeInt(app[@"maxOnlinePlayers"]);
+    AppendStringValues(g.supportedControls, app[@"supportedControls"]);
+    AppendStringValues(g.contentRatings, app[@"contentRatings"]);
+    AppendStringValues(g.nvidiaTech, app[@"nvidiaTech"]);
 
     NSDictionary *itemMetadata = app[@"itemMetadata"];
     if (g.description.empty() && [itemMetadata isKindOfClass:[NSDictionary class]]) {
         NSString *v = FirstSafeString(itemMetadata, @[@"description", @"longDescription", @"shortDescription", @"summary"]);
         if (v) g.description = [v UTF8String];
     }
-
     NSDictionary *serviceMeta = app[@"gfn"];
     if (serviceMeta && [serviceMeta isKindOfClass:[NSDictionary class]]) {
         { NSString *v = SafeStr(serviceMeta[@"playabilityState"]); g.playabilityState = v ? [v UTF8String] : ""; }
@@ -292,10 +327,10 @@ GameInfo GameService::parseGameItem(NSDictionary *app) {
     if (genres && [genres isKindOfClass:[NSArray class]]) {
         for (id item in genres) {
             if ([item isKindOfClass:[NSString class]]) {
-                g.genres.push_back([(NSString *)item UTF8String]);
+                AppendUniqueString(g.genres, item);
             } else if ([item isKindOfClass:[NSDictionary class]]) {
                 NSString *name = SafeStr(((NSDictionary *)item)[@"name"]);
-                if (name) g.genres.push_back([name UTF8String]);
+                AppendUniqueString(g.genres, name);
             }
         }
     }
@@ -305,7 +340,7 @@ GameInfo GameService::parseGameItem(NSDictionary *app) {
     if (features && [features isKindOfClass:[NSArray class]]) {
         for (id item in features) {
             if ([item isKindOfClass:[NSString class]]) {
-                g.featureLabels.push_back([(NSString *)item UTF8String]);
+                AppendUniqueString(g.featureLabels, item);
             }
         }
     }
@@ -377,12 +412,6 @@ void GameService::postGraphQlJson(const std::string &query,
 // ═══════════════════════════════════════════════════════════════
 // Catalog Browsing (POST GraphQL apps query)
 // ═══════════════════════════════════════════════════════════════
-
-static int SafeInt(id value) {
-    if ([value isKindOfClass:[NSNumber class]]) return [(NSNumber *)value intValue];
-    if ([value isKindOfClass:[NSString class]]) return [(NSString *)value intValue];
-    return 0;
-}
 
 void GameService::BrowseCatalogGames(const std::string &searchQuery,
                                      const std::string &sortId,
@@ -516,10 +545,6 @@ void GameService::BrowseCatalogGames(const std::string &searchQuery,
                 items {
                     id
                     title
-                    description
-                    longDescription
-                    shortDescription
-                    summary
                     images { KEY_ART GAME_BOX_ART TV_BANNER HERO_IMAGE }
                     variants {
                         id
@@ -528,7 +553,7 @@ void GameService::BrowseCatalogGames(const std::string &searchQuery,
                         gfn { status library { status selected } }
                     }
                     gfn { playabilityState minimumMembershipTierLabel catalogSkuStrings { SKU_BASED_TAG } }
-                    itemMetadata { campaignIds description longDescription shortDescription summary }
+                    itemMetadata { campaignIds }
                 }
             }
         }
@@ -559,10 +584,6 @@ void GameService::BrowseCatalogGames(const std::string &searchQuery,
                 items {
                     id
                     title
-                    description
-                    longDescription
-                    shortDescription
-                    summary
                     images { KEY_ART GAME_BOX_ART TV_BANNER HERO_IMAGE }
                     variants {
                         id
@@ -571,7 +592,7 @@ void GameService::BrowseCatalogGames(const std::string &searchQuery,
                         gfn { status library { status selected } }
                     }
                     gfn { playabilityState minimumMembershipTierLabel catalogSkuStrings { SKU_BASED_TAG } }
-                    itemMetadata { campaignIds description longDescription shortDescription summary }
+                    itemMetadata { campaignIds }
                 }
             }
         }
@@ -630,16 +651,91 @@ void GameService::BrowseCatalogGames(const std::string &searchQuery,
                             }
                         }
 
+                        NSMutableArray<NSString *> *appIdsNeedingMetadata = [NSMutableArray array];
+                        NSMutableSet<NSString *> *seenMetadataIds = [NSMutableSet set];
                         for (NSDictionary *app in collectedApps) {
                             if (![app isKindOfClass:[NSDictionary class]]) continue;
                             GameInfo g = service->parseGameItem(app);
                             if (!g.id.empty() && !g.title.empty() && HasVisibleVariants(g)) {
+                                if (!g.uuid.empty()) {
+                                    NSString *uuid = [NSString stringWithUTF8String:g.uuid.c_str()];
+                                    if (![seenMetadataIds containsObject:uuid]) {
+                                        [seenMetadataIds addObject:uuid];
+                                        [appIdsNeedingMetadata addObject:uuid];
+                                    }
+                                }
                                 blockResult->games.push_back(g);
                             }
                         }
                         blockResult->numberSupported = std::max(blockResult->numberSupported, (int)blockResult->games.size());
                         blockResult->totalCount = std::max(blockResult->totalCount, (int)blockResult->games.size());
-                        callback(true, *blockResult, "");
+                        if (appIdsNeedingMetadata.count == 0) {
+                            callback(true, *blockResult, "");
+                            return;
+                        }
+
+                        NSMutableDictionary<NSString *, NSDictionary *> *metadataById = [NSMutableDictionary dictionary];
+                        NSUInteger chunkSize = 40;
+                        NSUInteger totalChunks = (appIdsNeedingMetadata.count + chunkSize - 1) / chunkSize;
+                        __block NSUInteger completedChunks = 0;
+                        auto mergeAndFinish = ^{
+                                for (OPN::GameInfo &game : blockResult->games) {
+                                    if (game.uuid.empty()) continue;
+                                    NSString *uuid = [NSString stringWithUTF8String:game.uuid.c_str()];
+                                    NSDictionary *metadataApp = metadataById[uuid];
+                                    if (!metadataApp) continue;
+                                    GameInfo metadataGame = service->parseGameItem(metadataApp);
+                                    if (!metadataGame.description.empty()) {
+                                        game.description = metadataGame.description;
+                                    }
+                                    if (game.genres.empty() && !metadataGame.genres.empty()) {
+                                        game.genres = metadataGame.genres;
+                                    }
+                                    if (game.featureLabels.empty() && !metadataGame.featureLabels.empty()) {
+                                        game.featureLabels = metadataGame.featureLabels;
+                                    }
+                                    if (game.developerName.empty()) game.developerName = metadataGame.developerName;
+                                    if (game.publisherName.empty()) game.publisherName = metadataGame.publisherName;
+                                    if (game.maxLocalPlayers <= 0) game.maxLocalPlayers = metadataGame.maxLocalPlayers;
+                                    if (game.maxOnlinePlayers <= 0) game.maxOnlinePlayers = metadataGame.maxOnlinePlayers;
+                                    if (game.supportedControls.empty()) game.supportedControls = metadataGame.supportedControls;
+                                    if (game.contentRatings.empty()) game.contentRatings = metadataGame.contentRatings;
+                                    if (game.nvidiaTech.empty()) game.nvidiaTech = metadataGame.nvidiaTech;
+                                }
+                                callback(true, *blockResult, "");
+                        };
+
+                        for (NSUInteger start = 0; start < appIdsNeedingMetadata.count; start += chunkSize) {
+                            NSUInteger length = MIN(chunkSize, appIdsNeedingMetadata.count - start);
+                            NSArray<NSString *> *chunk = [appIdsNeedingMetadata subarrayWithRange:NSMakeRange(start, length)];
+                            NSDictionary *metaVars = @{
+                                @"vpcId": vpcIdObj,
+                                @"locale": @"en_US",
+                                @"appIds": chunk,
+                            };
+                            service->postGraphQL("appMetaData", [kAppMetaDataHash UTF8String], metaVars,
+                                ^(NSDictionary *metaData, NSString *metaError) {
+                                    if (metaError.length > 0) {
+                                        NSLog(@"[GameService] appMetaData enrichment failed: %@", metaError);
+                                    }
+                                    NSDictionary *apps = metaData[@"apps"];
+                                    NSArray *metadataItems = [apps isKindOfClass:[NSDictionary class]] ? apps[@"items"] : nil;
+                                    if ([metadataItems isKindOfClass:[NSArray class]]) {
+                                        static BOOL loggedMetadataShape = NO;
+                                        for (NSDictionary *metadataApp in metadataItems) {
+                                            if (![metadataApp isKindOfClass:[NSDictionary class]]) continue;
+                                            if (!loggedMetadataShape) {
+                                                loggedMetadataShape = YES;
+                                                NSLog(@"[GameService] appMetaData sample keys=%@ itemMetadata=%@", metadataApp.allKeys, [metadataApp[@"itemMetadata"] isKindOfClass:[NSDictionary class]] ? [(NSDictionary *)metadataApp[@"itemMetadata"] allKeys] : @[]);
+                                            }
+                                            NSString *appId = SafeStr(metadataApp[@"id"]);
+                                            if (appId.length > 0) metadataById[appId] = metadataApp;
+                                        }
+                                    }
+                                    completedChunks++;
+                                    if (completedChunks >= totalChunks) mergeAndFinish();
+                                });
+                        }
                     });
                 };
                 (*fetchPage)();

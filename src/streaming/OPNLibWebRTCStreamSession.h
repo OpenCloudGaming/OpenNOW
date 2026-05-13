@@ -39,6 +39,7 @@ public:
     void SetMicrophoneVolume(double volume) override;
     void SetMaxBitrateMbps(int mbps) override;
     void OnMicrophoneLevel(MicrophoneLevelCallback cb) override;
+    void OnVideoFrame(VideoFrameCallback cb) override;
     void RefreshAudioDevices() override;
     void RequestStats() override;
     StreamStats GetLatestStats() const override;
@@ -50,6 +51,7 @@ public:
     void HandleDataChannelState(const std::string &label, bool open);
     void HandleDataChannelMessage(const std::string &label, const uint8_t *data, size_t len);
     void HandleAudioDeviceChange();
+    void HandleVideoFrame(void *frame);
     double GameVolume() const;
     int TargetFps() const;
     void SetVideoRendererState(const std::string &sink, const std::string &pipelineMode);
@@ -95,6 +97,7 @@ private:
     std::function<void(const IceCandidatePayload &)> m_onIceCandidate;
     StreamStateCallback m_onState;
     MicrophoneLevelCallback m_onMicrophoneLevel;
+    VideoFrameCallback m_onVideoFrame;
 };
 
 } // namespace OPN

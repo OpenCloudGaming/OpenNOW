@@ -57,6 +57,19 @@ static NSAttributedString *OPNOutlinedControllerStoreText(NSString *text) {
     }];
 }
 
+static NSAttributedString *OPNOutlinedControllerDescriptionText(NSString *text) {
+    NSMutableParagraphStyle *style = [[NSMutableParagraphStyle alloc] init];
+    style.lineBreakMode = NSLineBreakByWordWrapping;
+    return [[NSAttributedString alloc] initWithString:text ?: @""
+                                           attributes:@{
+        NSFontAttributeName: [NSFont systemFontOfSize:16.0 weight:NSFontWeightMedium],
+        NSForegroundColorAttributeName: NSColor.whiteColor,
+        NSStrokeColorAttributeName: NSColor.blackColor,
+        NSStrokeWidthAttributeName: @-2.5,
+        NSParagraphStyleAttributeName: style,
+    }];
+}
+
 @interface OPNFlippedGridDocumentView : NSView
 @end
 
@@ -352,6 +365,21 @@ static NSString *OPNCatalogJoinedStrings(const std::vector<std::string> &values,
         if (items.count >= 4) break;
     }
     return items.count > 0 ? [items componentsJoinedByString:@"  /  "] : fallback;
+}
+
+static NSString *OPNCatalogCommaJoinedStrings(const std::vector<std::string> &values) {
+    NSMutableArray<NSString *> *items = [NSMutableArray array];
+    for (const std::string &value : values) {
+        if (!value.empty()) [items addObject:[NSString stringWithUTF8String:value.c_str()]];
+    }
+    return [items componentsJoinedByString:@", "];
+}
+
+static NSString *OPNCatalogPlayerCountText(int localPlayers, int onlinePlayers) {
+    NSMutableArray<NSString *> *items = [NSMutableArray array];
+    if (localPlayers > 0) [items addObject:[NSString stringWithFormat:@"%d local", localPlayers]];
+    if (onlinePlayers > 0) [items addObject:[NSString stringWithFormat:@"%d online", onlinePlayers]];
+    return [items componentsJoinedByString:@", "];
 }
 
 static NSString *OPNCategoryId(NSString *prefix, NSString *value) {
@@ -1075,6 +1103,15 @@ using namespace OPN;
 
 - (void)setCatalogBrowseResult:(const OPN::CatalogBrowseResult &)result {
     _allGames = result.games;
+    for (OPNGameCardView *card in self.cardViews) {
+        NSString *identifier = [self favoriteIdentifierForGame:card.game];
+        for (const OPN::GameInfo &game : _allGames) {
+            NSString *candidate = [self favoriteIdentifierForGame:game];
+            if (identifier.length == 0 || ![identifier isEqualToString:candidate]) continue;
+            [card updateGame:game];
+            break;
+        }
+    }
     self.catalogFilterGroups = result.filterGroups;
     self.catalogSortOptions = result.sortOptions;
     self.catalogTotalCount = result.totalCount;
@@ -1096,6 +1133,7 @@ using namespace OPN;
         ? [NSString stringWithFormat:@"Filters (%lu)", (unsigned long)self.selectedFilterIds.count]
         : @"Filters";
     self.searchField.stringValue = OPNCatalogString(result.searchQuery, @"");
+    [self updateControllerDetailContent];
     [self rebuildCategoryBar];
     [self renderGrid];
     [self scrollLibraryToTop];
@@ -1779,8 +1817,8 @@ using namespace OPN;
     self.controllerDetailStatsLabel.stringValue = @"";
     NSString *description = OPNCatalogString(game.description, @"");
     if (description.length == 0) description = OPNCatalogJoinedStrings(game.featureLabels, @"");
-    if (description.length == 0) description = @"No description available.";
-    self.controllerDetailFeaturesLabel.stringValue = description;
+    if (description.length == 0) description = @"Loading game details...";
+    self.controllerDetailFeaturesLabel.attributedStringValue = OPNOutlinedControllerDescriptionText(description);
     StreamPreferenceProfile streamProfile = LoadStreamPreferenceProfile();
     BOOL controllerConnected = GCController.controllers.count > 0;
     NSString *launchStatus = game.playabilityState.empty()
@@ -1850,10 +1888,32 @@ using namespace OPN;
 
     NSString *body = OPNCatalogString(card.game.description, @"");
     if (body.length == 0) body = OPNCatalogJoinedStrings(card.game.featureLabels, @"");
-    if (body.length == 0) body = @"No description available.";
+    if (body.length == 0) body = @"Loading game details...";
     NSTextField *bodyLabel = OpnLabel(body, NSMakeRect(38.0, 136.0, panelWidth - 76.0, 112.0), 14.0, OpnColor(kTextSecondary), NSFontWeightRegular);
+    bodyLabel.attributedStringValue = OPNOutlinedControllerDescriptionText(body);
     bodyLabel.maximumNumberOfLines = 6;
     [panel addSubview:bodyLabel];
+
+    NSMutableArray<NSString *> *metadata = [NSMutableArray array];
+    NSString *developer = OPNCatalogString(card.game.developerName, @"");
+    NSString *publisher = OPNCatalogString(card.game.publisherName, @"");
+    NSString *players = OPNCatalogPlayerCountText(card.game.maxLocalPlayers, card.game.maxOnlinePlayers);
+    NSString *controls = OPNCatalogCommaJoinedStrings(card.game.supportedControls);
+    NSString *ratings = OPNCatalogCommaJoinedStrings(card.game.contentRatings);
+    NSString *nvidiaTech = OPNCatalogCommaJoinedStrings(card.game.nvidiaTech);
+    if (developer.length > 0) [metadata addObject:[@"Developer: " stringByAppendingString:developer]];
+    if (publisher.length > 0) [metadata addObject:[@"Publisher: " stringByAppendingString:publisher]];
+    if (players.length > 0) [metadata addObject:[@"Players: " stringByAppendingString:players]];
+    if (controls.length > 0) [metadata addObject:[@"Controls: " stringByAppendingString:controls]];
+    if (ratings.length > 0) [metadata addObject:[@"Rating: " stringByAppendingString:ratings]];
+    if (nvidiaTech.length > 0) [metadata addObject:[@"NVIDIA: " stringByAppendingString:nvidiaTech]];
+    NSTextField *metadataLabel = OpnLabel([metadata componentsJoinedByString:@"\n"],
+                                          NSMakeRect(38.0, 256.0, panelWidth - 76.0, 72.0),
+                                          12.0,
+                                          OpnColor(kTextMuted),
+                                          NSFontWeightMedium);
+    metadataLabel.maximumNumberOfLines = 4;
+    [panel addSubview:metadataLabel];
 
     NSButton *playButton = OpnButton(@"Play", NSMakeRect(38.0, panelHeight - 96.0, 180.0, 52.0), OpnColor(OPNControllerAccentSoftRGB(), 0.96), OpnColor(OPNControllerAccentBlackRGB(0.88)));
     playButton.target = self;
