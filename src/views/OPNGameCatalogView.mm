@@ -16,6 +16,7 @@ static const CGFloat kNavHeight = 62.0;
 static const CGFloat kToolbarHeight = 82.0;
 static const CGFloat kControllerRailSelectorOverlap = 22.0;
 static const CGFloat kControllerRailDetailOverlap = 22.0;
+static const CGFloat kControllerGameHubMinimumHeight = 374.0;
 static NSString *const OPNFavoriteGameIdsDefaultsKey = @"OpenNOW.Library.FavoriteGameIds";
 
 static unsigned OPNControllerAccentRGB(void) {
@@ -1587,9 +1588,9 @@ using namespace OPN;
     BOOL compactDetail = detailHeight < 260.0;
     CGFloat heroX = 64.0;
     BOOL showStreamPip = controllerMode && self.streamPipContentView != nil;
-    BOOL showGameHub = controllerMode && !showStreamPip && self.cardViews.count > 0 && detailWidth >= 1040.0 && detailHeight >= 300.0;
+    BOOL showGameHub = controllerMode && !showStreamPip && self.cardViews.count > 0 && detailWidth >= 1040.0 && detailHeight >= kControllerGameHubMinimumHeight + 96.0;
     CGFloat gameHubWidth = showGameHub ? MIN(460.0, MAX(340.0, detailWidth * 0.27)) : 0.0;
-    CGFloat gameHubHeight = showGameHub ? MIN(390.0, MAX(280.0, detailHeight - 96.0)) : 0.0;
+    CGFloat gameHubHeight = showGameHub ? MIN(390.0, MAX(kControllerGameHubMinimumHeight, detailHeight - 96.0)) : 0.0;
     CGFloat gameHubX = detailWidth - gameHubWidth - 64.0;
     CGFloat gameHubY = showGameHub ? MAX(32.0, floor((detailHeight - gameHubHeight) * 0.42)) : 0.0;
     CGFloat rightContextInset = showGameHub ? gameHubWidth + 104.0 : 0.0;
