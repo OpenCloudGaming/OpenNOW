@@ -17,6 +17,7 @@ struct StreamStatsState;
 
 using StreamStateCallback = std::function<void(bool connected, const std::string &error)>;
 using MicrophoneLevelCallback = std::function<void(double level)>;
+using VideoFrameCallback = std::function<void(void *frame)>;
 
 struct StreamStats {
     bool available = false;
@@ -69,6 +70,7 @@ public:
     virtual void SetMicrophoneVolume(double volume) = 0;
     virtual void SetMaxBitrateMbps(int mbps) = 0;
     virtual void OnMicrophoneLevel(MicrophoneLevelCallback cb) = 0;
+    virtual void OnVideoFrame(VideoFrameCallback cb) = 0;
     virtual void RefreshAudioDevices() = 0;
     virtual void RequestStats() = 0;
     virtual StreamStats GetLatestStats() const = 0;
@@ -107,6 +109,7 @@ public:
     void SetMicrophoneVolume(double volume) override;
     void SetMaxBitrateMbps(int mbps) override;
     void OnMicrophoneLevel(MicrophoneLevelCallback cb) override;
+    void OnVideoFrame(VideoFrameCallback cb) override;
     void RefreshAudioDevices() override;
     void RequestStats() override;
     StreamStats GetLatestStats() const override;
@@ -163,6 +166,7 @@ private:
     std::function<void(const SendAnswerRequest &)> m_onAnswer;
     std::function<void(const IceCandidatePayload &)> m_onIceCandidate;
     MicrophoneLevelCallback m_onMicrophoneLevel;
+    VideoFrameCallback m_onVideoFrame;
     StreamStateCallback m_onState;
     Input::Encoder m_inputEncoder;
     std::shared_ptr<StreamStatsState> m_statsState;

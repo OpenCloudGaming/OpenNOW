@@ -120,7 +120,9 @@ cat > "${CONTENTS_DIR}/Info.plist" <<PLIST
     <key>NSPrincipalClass</key>
     <string>NSApplication</string>
     <key>NSMicrophoneUsageDescription</key>
-    <string>OpenNOW uses the microphone for in-game voice chat when microphone support is enabled in Audio settings.</string>
+    <string>OpenNOW uses the microphone for in-game voice chat and stream recordings when microphone support is enabled.</string>
+    <key>NSScreenCaptureUsageDescription</key>
+    <string>OpenNOW captures stream audio for MP4 recordings saved to your Movies folder.</string>
 </dict>
 </plist>
 PLIST
