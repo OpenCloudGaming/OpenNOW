@@ -292,6 +292,17 @@ using namespace OPN;
     if (self.onPlay) self.onPlay();
 }
 
+- (void)updateGame:(const OPN::GameInfo &)game {
+    int selectedVariant = _selectedVariantIndex;
+    _gameData = game;
+    if (selectedVariant >= 0 && selectedVariant < (int)_gameData.variants.size()) {
+        _selectedVariantIndex = selectedVariant;
+    } else {
+        _selectedVariantIndex = _gameData.variants.empty() ? -1 : 0;
+    }
+    [self buildStoreChips];
+}
+
 - (void)buildStoreChips {
     for (NSView *v in _storeChipsContainer.subviews) { [v removeFromSuperview]; }
     [_storeChipButtons removeAllObjects];
