@@ -21,6 +21,10 @@ struct GameInfo {
     std::string title;
     std::string shortName;
     std::string description;
+    std::string developerName;
+    std::string publisherName;
+    int maxLocalPlayers = 0;
+    int maxOnlinePlayers = 0;
     std::string playType;
     std::string membershipTierLabel;
     std::string playabilityState;
@@ -28,6 +32,9 @@ struct GameInfo {
     std::string heroImageUrl;
     std::vector<std::string> genres;
     std::vector<std::string> featureLabels;
+    std::vector<std::string> supportedControls;
+    std::vector<std::string> contentRatings;
+    std::vector<std::string> nvidiaTech;
     std::vector<std::string> availableStores;
     bool isInLibrary = false;
     std::vector<GameVariant> variants;
