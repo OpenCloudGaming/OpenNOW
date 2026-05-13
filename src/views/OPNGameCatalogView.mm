@@ -1799,6 +1799,8 @@ using namespace OPN;
         if (self.isStreamPipFocused) [self setStreamPipFocused:NO];
     }
     if (pressed & (1u << 2)) [self toggleFavoriteForFocusedGame];
+    if (pressed & (1u << 3)) [self cycleCategoryBy:-1];
+    if (pressed & (1u << 4)) [self cycleCategoryBy:1];
     if (pressed & (1u << 5)) [self moveFocusByRows:-1 columns:0];
     if (pressed & (1u << 6)) [self moveFocusByRows:1 columns:0];
     if (pressed & (1u << 7)) [self moveFocusByRows:0 columns:-1];
