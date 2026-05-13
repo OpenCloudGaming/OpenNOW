@@ -68,6 +68,7 @@ import { ControllerStreamLoading } from "./components/ControllerStreamLoading";
 import type { QueueAdPlaybackEvent, QueueAdPreviewHandle } from "./components/QueueAdPreview";
 import { StreamView } from "./components/StreamView";
 import { QueueServerSelectModal } from "./components/QueueServerSelectModal";
+import { LaunchStorePickerModal, hasMultipleLaunchStoreOptions } from "./components/LaunchStorePickerModal";
 
 const codecOptions: VideoCodec[] = [...USER_FACING_VIDEO_CODEC_OPTIONS];
 const DEFAULT_STREAM_PREFERENCES = getDefaultStreamPreferences();
@@ -82,6 +83,12 @@ type EffectiveStreamPreferences = {
   codec: VideoCodec;
   colorQuality: ColorQuality;
   compatibilityReason?: string;
+};
+
+type PlayGameOptions = {
+  bypassGuards?: boolean;
+  streamingBaseUrl?: string;
+  variantId?: string;
 };
 
 function readWebGlRendererLabel(): string {
@@ -1113,6 +1120,7 @@ export function App(): JSX.Element {
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedGameId, setSelectedGameId] = useState("");
   const [variantByGameId, setVariantByGameId] = useState<Record<string, string>>({});
+  const [launchStorePickerGame, setLaunchStorePickerGame] = useState<GameInfo | null>(null);
   const [pendingLaunchIntent, setPendingLaunchIntent] = useState<AndroidLaunchIntent | null>(null);
   const [isLoadingGames, setIsLoadingGames] = useState(false);
   const [catalogFilterGroups, setCatalogFilterGroups] = useState<CatalogFilterGroup[]>([]);
@@ -1200,6 +1208,7 @@ export function App(): JSX.Element {
   const [logoutConfirmOpen, setLogoutConfirmOpen] = useState(false);
   const [launchError, setLaunchError] = useState<LaunchErrorState | null>(null);
   const [queueModalGame, setQueueModalGame] = useState<GameInfo | null>(null);
+  const [queueModalVariantId, setQueueModalVariantId] = useState<string | null>(null);
   const [queueModalData, setQueueModalData] = useState<PrintedWasteQueueData | null>(null);
   const [sessionStartedAtMs, setSessionStartedAtMs] = useState<number | null>(null);
   const [remoteStreamWarning, setRemoteStreamWarning] = useState<StreamWarningState | null>(null);
@@ -2948,7 +2957,7 @@ export function App(): JSX.Element {
   }, [authSession, effectiveStreamPreferences, effectiveStreamingBaseUrl, findGameContextForSession, resetStatsOverlayToPreference, settings]);
 
   // Play game handler
-  const handlePlayGame = useCallback(async (game: GameInfo, options?: { bypassGuards?: boolean; streamingBaseUrl?: string }) => {
+  const handlePlayGame = useCallback(async (game: GameInfo, options?: PlayGameOptions) => {
     if (!selectedProvider) return;
 
     console.log("handlePlayGame entry", {
@@ -2980,7 +2989,7 @@ export function App(): JSX.Element {
   setLocalSessionTimerWarning(null);
     setLaunchError(null);
     resetStatsOverlayToPreference();
-    const selectedVariantId = variantByGameId[game.id] ?? defaultVariantId(game);
+    const selectedVariantId = options?.variantId ?? variantByGameId[game.id] ?? defaultVariantId(game);
     const selectedVariant = getSelectedVariant(game, selectedVariantId);
     let appId: string | null = null;
     startPlaytimeSession(game.id);
@@ -3268,13 +3277,13 @@ export function App(): JSX.Element {
     variantByGameId,
   ]);
 
-  // Gate handler: shows queue server modal for FREE-tier users before launching
-  const handleInitiatePlay = useCallback(async (game: GameInfo) => {
+  const handleLaunchAfterStoreSelection = useCallback(async (game: GameInfo, variantId?: string) => {
     const shouldUsePrintedWasteGate = shouldShowQueueAdsForMembership(subscriptionInfo, authSession);
     const isAllianceServer = isAllianceStreamingBaseUrl(effectiveStreamingBaseUrl);
     if (isAllianceServer) {
       setQueueModalData(null);
-      void handlePlayGame(game);
+      setQueueModalVariantId(null);
+      void handlePlayGame(game, { variantId });
       return;
     }
     if (shouldUsePrintedWasteGate && streamStatus === "idle" && !launchInFlightRef.current) {
@@ -3293,14 +3302,16 @@ export function App(): JSX.Element {
             },
           );
           setQueueModalData(null);
-          void handlePlayGame(game);
+          setQueueModalVariantId(null);
+          void handlePlayGame(game, { variantId });
           return;
         }
 
         const queueData = queueResult.value;
         if (!queueData || Object.keys(queueData).length === 0) {
           setQueueModalData(null);
-          void handlePlayGame(game);
+          setQueueModalVariantId(null);
+          void handlePlayGame(game, { variantId });
           return;
         }
 
@@ -3309,33 +3320,48 @@ export function App(): JSX.Element {
             "[QueueServerSelect] No eligible non-nuked PrintedWaste zones available, skipping queue checks.",
           );
           setQueueModalData(null);
-          void handlePlayGame(game);
+          setQueueModalVariantId(null);
+          void handlePlayGame(game, { variantId });
           return;
         }
 
         setQueueModalData(queueData);
         setQueueModalGame(game);
+        setQueueModalVariantId(variantId ?? null);
       } catch (error) {
         console.warn("[QueueServerSelect] PrintedWaste queue checks failed, launching without modal.", error);
         setQueueModalData(null);
-        void handlePlayGame(game);
+        setQueueModalVariantId(null);
+        void handlePlayGame(game, { variantId });
       }
       return;
     }
-    void handlePlayGame(game);
+    void handlePlayGame(game, { variantId });
   }, [subscriptionInfo, authSession, streamStatus, handlePlayGame, effectiveStreamingBaseUrl]);
+
+  // Gate handler: asks for a store on multi-store games, then shows queue server modal for FREE-tier users before launching.
+  const handleInitiatePlay = useCallback(async (game: GameInfo) => {
+    if (streamStatus === "idle" && !launchInFlightRef.current && hasMultipleLaunchStoreOptions(game)) {
+      setLaunchStorePickerGame(game);
+      return;
+    }
+    await handleLaunchAfterStoreSelection(game);
+  }, [handleLaunchAfterStoreSelection, streamStatus]);
 
   const handleQueueModalConfirm = useCallback((zoneUrl: string | null) => {
     const game = queueModalGame;
+    const variantId = queueModalVariantId ?? undefined;
     setQueueModalGame(null);
+    setQueueModalVariantId(null);
     setQueueModalData(null);
     if (game) {
-      void handlePlayGame(game, { streamingBaseUrl: zoneUrl ?? undefined });
+      void handlePlayGame(game, { streamingBaseUrl: zoneUrl ?? undefined, variantId });
     }
-  }, [queueModalGame, handlePlayGame]);
+  }, [queueModalGame, queueModalVariantId, handlePlayGame]);
 
   const handleQueueModalCancel = useCallback(() => {
     setQueueModalGame(null);
+    setQueueModalVariantId(null);
     setQueueModalData(null);
   }, []);
 
@@ -3456,6 +3482,20 @@ export function App(): JSX.Element {
       document.body.style.overflow = previousOverflow;
     };
   }, [confirmLogout, logoutConfirmOpen]);
+
+  const handleLaunchStorePickerCancel = useCallback(() => {
+    setLaunchStorePickerGame(null);
+  }, []);
+
+  const handleLaunchStorePickerConfirm = useCallback((variantId: string) => {
+    const game = launchStorePickerGame;
+    if (!game) {
+      return;
+    }
+    handleSelectGameVariant(game.id, variantId);
+    setLaunchStorePickerGame(null);
+    void handleLaunchAfterStoreSelection(game, variantId);
+  }, [handleLaunchAfterStoreSelection, handleSelectGameVariant, launchStorePickerGame]);
 
   const logoutConfirmModal = logoutConfirmOpen && typeof document !== "undefined"
     ? createPortal(
@@ -4409,6 +4449,15 @@ export function App(): JSX.Element {
       )}
 
       {logoutConfirmModal}
+      {launchStorePickerGame && streamStatus === "idle" && (
+        <LaunchStorePickerModal
+          game={launchStorePickerGame}
+          selectedVariantId={variantByGameId[launchStorePickerGame.id] ?? defaultVariantId(launchStorePickerGame)}
+          onSelectVariant={(variantId) => handleSelectGameVariant(launchStorePickerGame.id, variantId)}
+          onConfirm={handleLaunchStorePickerConfirm}
+          onCancel={handleLaunchStorePickerCancel}
+        />
+      )}
       {queueModalGame && streamStatus === "idle" && (
         <QueueServerSelectModal
           game={queueModalGame}

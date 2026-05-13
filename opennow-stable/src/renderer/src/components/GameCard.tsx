@@ -13,7 +13,7 @@ interface GameCardProps {
   onSelectStore?: (variantId: string) => void;
 }
 
-interface StoreOption {
+export interface StoreOption {
   storeKey: string;
   variantId: string;
   displayName: string;
@@ -152,7 +152,7 @@ export function getStoreIconComponent(store: string): () => JSX.Element {
   return STORE_ICON_MAP[key] ?? DefaultStoreIcon;
 }
 
-function getStoreOptions(game: GameInfo): StoreOption[] {
+export function getStoreOptions(game: GameInfo): StoreOption[] {
   const seen = new Set<string>();
   const options: StoreOption[] = [];
   for (const variant of game.variants) {

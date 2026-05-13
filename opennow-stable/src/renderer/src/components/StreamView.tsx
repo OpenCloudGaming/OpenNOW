@@ -1806,12 +1806,12 @@ export function StreamView({
   const [androidNativeTouchAvailable, setAndroidNativeTouchAvailable] = useState(true);
   const hasVirtualGamepadHandler = Boolean(onVirtualGamepadState);
   const androidTouchSurfaceAvailable = !isAndroidTvLikeSurface() && androidPhysicalGamepads === 0;
+  const androidMousePadEnabled = androidTouchSettings.mousePad || preferAndroidMouseInput;
   const shouldAttemptAndroidNativeTouchControls =
     platformCapabilities.isAndroid &&
     lowPowerTouchControls &&
     androidNativeTouchAvailable &&
     androidTouchSurfaceAvailable &&
-    !preferAndroidMouseInput &&
     androidTouchSettings.enabled &&
     hasVirtualGamepadHandler;
   const shouldRenderReactAndroidTouchControls =
@@ -1819,7 +1819,6 @@ export function StreamView({
     hasVirtualGamepadHandler &&
     androidTouchSurfaceAvailable &&
     androidTouchSettings.enabled &&
-    !preferAndroidMouseInput &&
     (!lowPowerTouchControls || !androidNativeTouchAvailable);
   const virtualGamepadStateRef = useRef(onVirtualGamepadState);
   virtualGamepadStateRef.current = onVirtualGamepadState;
@@ -1840,6 +1839,7 @@ export function StreamView({
       hasNativeTouchListener: Boolean(openNow.onAndroidNativeTouchGamepad),
       reactOverlayWillRender: shouldRenderReactAndroidTouchControls,
       nativeOverlayWillAttempt: shouldAttemptAndroidNativeTouchControls,
+      mousePadWillRender: androidMousePadEnabled,
       viewport: `${window.innerWidth}x${window.innerHeight}`,
       devicePixelRatio: window.devicePixelRatio,
     });
@@ -1848,6 +1848,7 @@ export function StreamView({
     androidPhysicalGamepads,
     androidTouchSettings.enabled,
     androidTouchSurfaceAvailable,
+    androidMousePadEnabled,
     hasVirtualGamepadHandler,
     lowPowerTouchControls,
     preferAndroidMouseInput,
@@ -1858,7 +1859,6 @@ export function StreamView({
     if (
       !platformCapabilities.isAndroid ||
       !lowPowerTouchControls ||
-      preferAndroidMouseInput ||
       !androidTouchSurfaceAvailable ||
       !androidTouchSettings.enabled ||
       !virtualGamepadStateRef.current
@@ -1936,10 +1936,8 @@ export function StreamView({
     androidNativeTouchAvailable,
     androidTouchSurfaceAvailable,
     lowPowerTouchControls,
-    preferAndroidMouseInput,
   ]);
   const androidNativeMouseCapture = androidTouchSettings.mouseCapture && androidPhysicalGamepads === 0;
-  const androidMousePadEnabled = androidTouchSettings.mousePad || preferAndroidMouseInput;
   const [androidMenuRevealSignal, setAndroidMenuRevealSignal] = useState(0);
   const [androidTouchRevealSignal, setAndroidTouchRevealSignal] = useState(0);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);

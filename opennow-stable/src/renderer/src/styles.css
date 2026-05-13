@@ -962,6 +962,229 @@ body[data-android-fullscreen="true"] .app-container {
   text-align: right;
 }
 
+.launch-store-picker {
+  position: fixed;
+  inset: 0;
+  z-index: 3600;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 18px;
+}
+
+.launch-store-picker-backdrop {
+  position: absolute;
+  inset: 0;
+  border: 0;
+  background: rgba(5, 7, 9, 0.72);
+  backdrop-filter: blur(8px);
+  cursor: pointer;
+}
+
+.launch-store-picker-panel {
+  position: relative;
+  width: min(460px, calc(100vw - 36px));
+  max-height: calc(100vh - 42px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 12px;
+  background:
+    linear-gradient(180deg, rgba(27, 31, 34, 0.98), rgba(13, 16, 18, 0.98));
+  box-shadow: 0 28px 80px rgba(0, 0, 0, 0.48);
+  animation: fade-in 130ms var(--ease);
+}
+
+.launch-store-picker-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 18px 18px 14px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.launch-store-picker-title {
+  min-width: 0;
+}
+
+.launch-store-picker-title span {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.launch-store-picker-title h3 {
+  margin: 0;
+  color: #fff;
+  font-size: 1.04rem;
+  line-height: 1.22;
+  letter-spacing: 0;
+  overflow-wrap: anywhere;
+}
+
+.launch-store-picker-close {
+  width: 32px;
+  height: 32px;
+  flex: 0 0 auto;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--ink-muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background var(--t-fast), color var(--t-fast), border-color var(--t-fast);
+}
+
+.launch-store-picker-close:hover,
+.launch-store-picker-close:focus-visible {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.12);
+  color: var(--ink);
+}
+
+.launch-store-picker-options {
+  display: grid;
+  gap: 8px;
+  padding: 14px;
+  overflow: auto;
+}
+
+.launch-store-option {
+  min-height: 60px;
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr) 28px;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.035);
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--t-fast), border-color var(--t-fast), transform var(--t-fast);
+}
+
+.launch-store-option:hover,
+.launch-store-option:focus-visible {
+  background: rgba(255, 255, 255, 0.07);
+  border-color: rgba(255, 255, 255, 0.16);
+  transform: translateY(-1px);
+}
+
+.launch-store-option.is-selected {
+  background: color-mix(in srgb, var(--accent) 18%, rgba(255, 255, 255, 0.05));
+  border-color: color-mix(in srgb, var(--accent) 70%, rgba(255, 255, 255, 0.16));
+}
+
+.launch-store-option-icon {
+  width: 38px;
+  height: 38px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9px;
+  background: rgba(0, 0, 0, 0.22);
+  color: var(--ink-soft);
+}
+
+.launch-store-option-icon .store-svg {
+  width: 18px;
+  height: 18px;
+}
+
+.launch-store-option-copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.launch-store-option-copy strong {
+  color: #fff;
+  font-size: 0.92rem;
+  font-weight: 800;
+  letter-spacing: 0;
+}
+
+.launch-store-option-copy span {
+  color: var(--ink-muted);
+  font-size: 0.75rem;
+  font-weight: 650;
+}
+
+.launch-store-option-check {
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  color: var(--accent-on);
+  background: transparent;
+}
+
+.launch-store-option.is-selected .launch-store-option-check {
+  background: var(--accent);
+}
+
+.launch-store-picker-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 14px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.launch-store-picker-cancel,
+.launch-store-picker-confirm {
+  height: 38px;
+  border-radius: 8px;
+  padding: 0 14px;
+  font: inherit;
+  font-size: 0.86rem;
+  font-weight: 800;
+  letter-spacing: 0;
+  cursor: pointer;
+  transition: background var(--t-fast), border-color var(--t-fast), transform var(--t-fast);
+}
+
+.launch-store-picker-cancel {
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--ink-soft);
+}
+
+.launch-store-picker-confirm {
+  border: 1px solid color-mix(in srgb, var(--accent) 76%, transparent);
+  background: var(--accent);
+  color: var(--accent-on);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.launch-store-picker-cancel:hover,
+.launch-store-picker-cancel:focus-visible {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.16);
+}
+
+.launch-store-picker-confirm:hover,
+.launch-store-picker-confirm:focus-visible {
+  background: var(--accent-press);
+  transform: translateY(-1px);
+}
+
 .navbar-meter {
   border: 1px solid var(--panel-border);
   border-radius: 9px;
@@ -1146,6 +1369,45 @@ body[data-android-fullscreen="true"] .app-container {
 .android-shell .navbar-modal {
   width: calc(100vw - 20px);
   max-height: calc(100dvh - 96px);
+}
+
+.android-shell .launch-store-picker {
+  padding: max(10px, env(safe-area-inset-top)) max(10px, env(safe-area-inset-right)) max(10px, env(safe-area-inset-bottom)) max(10px, env(safe-area-inset-left));
+}
+
+.android-shell .launch-store-picker-panel {
+  width: min(520px, calc(100vw - 20px));
+  max-height: calc(100dvh - 20px);
+  border-radius: 10px;
+}
+
+.android-shell .launch-store-picker-head {
+  padding: 14px 14px 10px;
+}
+
+.android-shell .launch-store-picker-title h3 {
+  font-size: 0.96rem;
+}
+
+.android-shell .launch-store-picker-options {
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  padding: 10px;
+}
+
+.android-shell .launch-store-option {
+  min-height: 56px;
+  grid-template-columns: 34px minmax(0, 1fr) 24px;
+  gap: 10px;
+  border-radius: 9px;
+}
+
+.android-shell .launch-store-option-icon {
+  width: 34px;
+  height: 34px;
+}
+
+.android-shell .launch-store-picker-actions {
+  padding: 10px;
 }
 
 
