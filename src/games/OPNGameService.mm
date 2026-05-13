@@ -516,6 +516,10 @@ void GameService::BrowseCatalogGames(const std::string &searchQuery,
                 items {
                     id
                     title
+                    description
+                    longDescription
+                    shortDescription
+                    summary
                     images { KEY_ART GAME_BOX_ART TV_BANNER HERO_IMAGE }
                     variants {
                         id
@@ -524,7 +528,7 @@ void GameService::BrowseCatalogGames(const std::string &searchQuery,
                         gfn { status library { status selected } }
                     }
                     gfn { playabilityState minimumMembershipTierLabel catalogSkuStrings { SKU_BASED_TAG } }
-                    itemMetadata { campaignIds }
+                    itemMetadata { campaignIds description longDescription shortDescription summary }
                 }
             }
         }
@@ -555,6 +559,10 @@ void GameService::BrowseCatalogGames(const std::string &searchQuery,
                 items {
                     id
                     title
+                    description
+                    longDescription
+                    shortDescription
+                    summary
                     images { KEY_ART GAME_BOX_ART TV_BANNER HERO_IMAGE }
                     variants {
                         id
@@ -563,7 +571,7 @@ void GameService::BrowseCatalogGames(const std::string &searchQuery,
                         gfn { status library { status selected } }
                     }
                     gfn { playabilityState minimumMembershipTierLabel catalogSkuStrings { SKU_BASED_TAG } }
-                    itemMetadata { campaignIds }
+                    itemMetadata { campaignIds description longDescription shortDescription summary }
                 }
             }
         }

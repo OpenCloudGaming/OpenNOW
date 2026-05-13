@@ -1659,11 +1659,11 @@ using namespace OPN;
     storeLabel.attributedStringValue = OPNOutlinedControllerStoreText([NSString stringWithFormat:@"Selected Store: %@", store]);
     [panel addSubview:storeLabel];
 
-    NSString *body = card.game.variants.size() > 1
-        ? @"Use Favorite to save this game. Use Store to cycle available stores, Play to launch, or Back to return to the library."
-        : @"Use Favorite to save this game, Play to launch, or Back to return to the library.";
-    NSTextField *bodyLabel = OpnLabel(body, NSMakeRect(38.0, 136.0, panelWidth - 76.0, 58.0), 14.0, OpnColor(kTextSecondary), NSFontWeightRegular);
-    bodyLabel.maximumNumberOfLines = 3;
+    NSString *body = OPNCatalogString(card.game.description, @"");
+    if (body.length == 0) body = OPNCatalogJoinedStrings(card.game.featureLabels, @"");
+    if (body.length == 0) body = @"No description available.";
+    NSTextField *bodyLabel = OpnLabel(body, NSMakeRect(38.0, 136.0, panelWidth - 76.0, 112.0), 14.0, OpnColor(kTextSecondary), NSFontWeightRegular);
+    bodyLabel.maximumNumberOfLines = 6;
     [panel addSubview:bodyLabel];
 
     NSButton *playButton = OpnButton(@"Play", NSMakeRect(38.0, panelHeight - 96.0, 180.0, 52.0), OpnColor(OPNControllerAccentSoftRGB(), 0.96), OpnColor(OPNControllerAccentBlackRGB(0.88)));
