@@ -173,12 +173,9 @@ static NSMenuItem *OPNStyledMenuItem(NSString *title, SEL action, id target, NSC
 }
 
 - (void)startControllerNavigationIfNeeded {
-    if (!OpnControllerModeEnabled() || _controllerNavigationTimer || !OPNBackdropControllerNavigationActive(self)) return;
-    _controllerNavigationTimer = [NSTimer scheduledTimerWithTimeInterval:(1.0 / 30.0)
-                                                                   target:self
-                                                                selector:@selector(pollControllerNavigation)
-                                                                userInfo:nil
-                                                                 repeats:YES];
+    [_controllerNavigationTimer invalidate];
+    _controllerNavigationTimer = nil;
+    _previousControllerButtons = 0;
 }
 
 - (void)controllerDidConnect:(NSNotification *)notification {
