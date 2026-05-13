@@ -292,6 +292,12 @@ static BOOL OPNIsCommandGEvent(NSEvent *event) {
     return (event.modifierFlags & NSEventModifierFlagCommand) && [key isEqualToString:@"g"];
 }
 
+static BOOL OPNIsCommandREvent(NSEvent *event) {
+    if (!event || event.type != NSEventTypeKeyDown) return NO;
+    NSString *key = event.charactersIgnoringModifiers.lowercaseString ?: @"";
+    return (event.modifierFlags & NSEventModifierFlagCommand) && [key isEqualToString:@"r"];
+}
+
 static BOOL OPNIsCommandHEvent(NSEvent *event) {
     if (!event || event.type != NSEventTypeKeyDown) return NO;
     NSString *key = event.charactersIgnoringModifiers.lowercaseString ?: @"";
@@ -514,8 +520,8 @@ static void OPNStyleQuitButton(NSButton *button, NSColor *background, NSColor *t
         _titleLabel = OPNQuitLabel(@"Shortcuts", 18.0, NSFontWeightSemibold, OPNQuitColor(0.96, 0.97, 0.99, 1.0), NSTextAlignmentLeft);
         [self addSubview:_titleLabel];
 
-        NSArray<NSString *> *shortcuts = @[@"Command-H", @"Command-G", @"Command-N", @"Command-M", @"Command-L", @"Command-Q", @"Hold Esc"];
-        NSArray<NSString *> *descriptions = @[@"Toggle this legend", @"Audio HUD", @"Stats HUD", @"Toggle microphone", @"Copy logs", @"Quit stream", @"Release pointer"];
+        NSArray<NSString *> *shortcuts = @[@"Command-H", @"Command-G", @"Command-R", @"Command-N", @"Command-M", @"Command-L", @"Command-Q", @"Hold Esc"];
+        NSArray<NSString *> *descriptions = @[@"Toggle this legend", @"Audio HUD", @"Record stream", @"Stats HUD", @"Toggle microphone", @"Copy logs", @"Quit stream", @"Release pointer"];
         NSMutableArray<NSTextField *> *shortcutLabels = [NSMutableArray arrayWithCapacity:shortcuts.count];
         NSMutableArray<NSTextField *> *descriptionLabels = [NSMutableArray arrayWithCapacity:descriptions.count];
         for (NSUInteger i = 0; i < shortcuts.count; i++) {
@@ -800,6 +806,7 @@ static void OPNReleaseStreamSessionAfterCallbacks(OPN::IStreamSession *session) 
         if (strongSelf.onControllerLibraryRequested) strongSelf.onControllerLibraryRequested();
     };
     [self.streamView setStreamSession:_session];
+    [self.streamView setRecordingGameTitle:[NSString stringWithUTF8String:_gameTitle.c_str()]];
     NSLog(@"[StreamVC] loadView called, view=%p", (__bridge void *)view);
 }
 
@@ -995,6 +1002,10 @@ static void OPNReleaseStreamSessionAfterCallbacks(OPN::IStreamSession *session) 
 	        [strongSelf.streamView toggleSidebarHUD];
 	        return (NSEvent *)nil;
 	    }
+	    if (OPNIsCommandREvent(event)) {
+	        [strongSelf.streamView toggleRecordingShortcut];
+	        return (NSEvent *)nil;
+	    }
 	    if (OPNIsCommandHEvent(event)) {
 	        [strongSelf toggleShortcutLegendOverlay];
 	        return (NSEvent *)nil;
@@ -1071,7 +1082,7 @@ static void OPNReleaseStreamSessionAfterCallbacks(OPN::IStreamSession *session) 
 
 - (NSRect)shortcutLegendFrame {
     CGFloat width = MIN(328.0, MAX(276.0, NSWidth(self.view.bounds) - 36.0));
-    CGFloat height = 254.0;
+    CGFloat height = 282.0;
     return NSMakeRect(floor(NSWidth(self.view.bounds) - width - 18.0),
                       floor((NSHeight(self.view.bounds) - height) / 2.0),
                       width,
@@ -1474,6 +1485,7 @@ static void OPNReleaseStreamSessionAfterCallbacks(OPN::IStreamSession *session) 
 
     [self finishLaunchMeasurementWithSuccess:NO reason:@"recovering"];
     [self ensureLoadingViewWithMessage:message];
+    [self.streamView stopRecordingIfNeeded];
     [self resetTransportForRecovery];
     [self setStatus:message];
 
@@ -1828,6 +1840,7 @@ static void OPNReleaseStreamSessionAfterCallbacks(OPN::IStreamSession *session) 
     [self removeQuitShortcutMonitor];
     [self dismissQuitGameOverlayAndRefocus:NO];
     [self stopStatsRefreshTimer];
+    [self.streamView stopRecordingIfNeeded];
     if (self.statsOverlay) {
         [self.statsOverlay removeFromSuperview];
         self.statsOverlay = nil;

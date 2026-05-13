@@ -712,7 +712,7 @@ class LibWebRTCStreamSession;
 @end
 
 @interface OPNPacedVideoRenderer : NSView <RTCVideoRenderer>
-- (instancetype)initWithFrame:(NSRect)frame targetFps:(int)targetFps;
+- (instancetype)initWithFrame:(NSRect)frame targetFps:(int)targetFps owner:(OPN::LibWebRTCStreamSession *)owner;
 @end
 
 @interface OPNPacedVideoRenderer ()
@@ -721,14 +721,16 @@ class LibWebRTCStreamSession;
 @property(nonatomic, strong) RTCVideoFrame *pendingFrame;
 @property(nonatomic, assign) BOOL hasPendingFrame;
 @property(nonatomic, assign) int targetFps;
+@property(nonatomic, assign) OPN::LibWebRTCStreamSession *owner;
 @end
 
 @implementation OPNPacedVideoRenderer
 
-- (instancetype)initWithFrame:(NSRect)frame targetFps:(int)targetFps {
+- (instancetype)initWithFrame:(NSRect)frame targetFps:(int)targetFps owner:(OPN::LibWebRTCStreamSession *)owner {
     self = [super initWithFrame:frame];
     if (self) {
         _targetFps = MAX(30, MIN(targetFps, 120));
+        _owner = owner;
         self.wantsLayer = YES;
         self.layer.backgroundColor = NSColor.blackColor.CGColor;
         _videoView = [[RTCMTLNSVideoView alloc] initWithFrame:self.bounds];
@@ -760,6 +762,9 @@ class LibWebRTCStreamSession;
 }
 
 - (void)renderFrame:(RTCVideoFrame *)frame {
+    if (frame && self.owner) {
+        self.owner->HandleVideoFrame((__bridge void *)frame);
+    }
     @synchronized (self) {
         self.pendingFrame = frame;
         self.hasPendingFrame = frame != nil;
@@ -1421,6 +1426,14 @@ void LibWebRTCStreamSession::OnMicrophoneLevel(MicrophoneLevelCallback cb) {
     m_onMicrophoneLevel = std::move(cb);
 }
 
+void LibWebRTCStreamSession::OnVideoFrame(VideoFrameCallback cb) {
+    m_onVideoFrame = std::move(cb);
+}
+
+void LibWebRTCStreamSession::HandleVideoFrame(void *frame) {
+    if (m_onVideoFrame) m_onVideoFrame(frame);
+}
+
 void LibWebRTCStreamSession::RefreshAudioDevices() {
 #if defined(OPN_HAVE_LIBWEBRTC)
     OPNLibWebRTCSessionImpl *impl = OPNImplFromOpaque(m_impl);
@@ -2008,7 +2021,7 @@ void LibWebRTCStreamSession::StopInputHeartbeat() {
             NSView *videoView = nil;
             id<RTCVideoRenderer> videoRenderer = nil;
             if (usePacedRenderer) {
-                OPNPacedVideoRenderer *pacedRenderer = [[OPNPacedVideoRenderer alloc] initWithFrame:parentView.bounds targetFps:_owner->TargetFps()];
+                OPNPacedVideoRenderer *pacedRenderer = [[OPNPacedVideoRenderer alloc] initWithFrame:parentView.bounds targetFps:_owner->TargetFps() owner:_owner];
                 videoView = pacedRenderer;
                 videoRenderer = pacedRenderer;
                 _owner->SetVideoRendererState("OPNPacedVideoRenderer", "libwebrtc paced renderer");

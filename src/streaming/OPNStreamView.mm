@@ -3,6 +3,7 @@
 #include "OPNInputProtocol.h"
 #include "OPNStreamPreferences.h"
 #include "../common/OPNUIHelpers.h"
+#import "OPNStreamRecordingManager.h"
 
 #import <GameController/GameController.h>
 #import <ApplicationServices/ApplicationServices.h>
@@ -95,11 +96,16 @@ static uint16_t OPNPushToTalkModifierFlags(NSEvent *event);
 @property (nonatomic, strong) NSView *sidebarHUD;
 @property (nonatomic, strong) NSTextField *sidebarMicStatusValue;
 @property (nonatomic, strong) NSTextField *sidebarBitrateValue;
+@property (nonatomic, strong) NSTextField *sidebarRecordingStatusValue;
 @property (nonatomic, strong) NSSlider *bitrateSlider;
 @property (nonatomic, strong) NSSlider *gameVolumeSlider;
 @property (nonatomic, strong) NSSlider *microphoneVolumeSlider;
 @property (nonatomic, strong) NSView *microphoneMeterTrack;
 @property (nonatomic, strong) CALayer *microphoneMeterFill;
+@property (nonatomic, strong) NSButton *recordingButton;
+@property (nonatomic, strong) NSView *recentRecordingsContainer;
+@property (nonatomic, strong) OPNStreamRecordingManager *recordingManager;
+@property (nonatomic, copy) NSString *recordingGameTitle;
 @property (nonatomic, assign) CGFloat videoAspectRatio;
 @end
 
@@ -134,6 +140,14 @@ static uint16_t OPNPushToTalkModifierFlags(NSEvent *event);
         _pendingMouseDx = 0;
         _pendingMouseDy = 0;
         _videoAspectRatio = 16.0 / 9.0;
+        _recordingGameTitle = @"Stream";
+        _recordingManager = [[OPNStreamRecordingManager alloc] init];
+        __weak OPNStreamView *weakSelf = self;
+        _recordingManager.onStateChanged = ^{
+            OPNStreamView *strongSelf = weakSelf;
+            if (!strongSelf) return;
+            [strongSelf updateRecordingControls];
+        };
         self.wantsLayer = YES;
         self.layer.backgroundColor = [NSColor blackColor].CGColor;
         _videoSurface = [[OPNVideoSurfaceView alloc] initWithFrame:self.bounds];
@@ -187,7 +201,7 @@ static NSColor *OPNSidebarColor(CGFloat white, CGFloat alpha) {
 }
 
 - (void)createSidebarHUDWithProfile:(const OPN::StreamPreferenceProfile &)profile {
-    NSView *panel = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 332.0, 450.0)];
+    NSView *panel = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 332.0, 650.0)];
     panel.wantsLayer = YES;
     panel.layer.cornerRadius = 18.0;
     panel.layer.backgroundColor = [NSColor colorWithCalibratedWhite:0.03 alpha:0.88].CGColor;
@@ -248,10 +262,35 @@ static NSColor *OPNSidebarColor(CGFloat white, CGFloat alpha) {
     self.microphoneMeterFill = meterFill;
     [panel addSubview:meterTrack];
 
+    NSTextField *recordingTitle = OPNSidebarLabel(@"Recording", 14.0, NSFontWeightSemibold, NSColor.whiteColor, NSTextAlignmentLeft);
+    recordingTitle.frame = NSMakeRect(20.0, 466.0, 180.0, 20.0);
+    [panel addSubview:recordingTitle];
+
+    self.sidebarRecordingStatusValue = OPNSidebarLabel(@"Ready", 12.0, NSFontWeightMedium, OPNSidebarColor(0.82, 1.0), NSTextAlignmentLeft);
+    self.sidebarRecordingStatusValue.frame = NSMakeRect(20.0, 496.0, NSWidth(panel.frame) - 40.0, 18.0);
+    [panel addSubview:self.sidebarRecordingStatusValue];
+
+    NSButton *recordingButton = [NSButton buttonWithTitle:@"Start Recording" target:self action:@selector(recordingButtonClicked:)];
+    recordingButton.frame = NSMakeRect(20.0, 526.0, NSWidth(panel.frame) - 40.0, 38.0);
+    recordingButton.bezelStyle = NSBezelStyleRegularSquare;
+    recordingButton.bordered = NO;
+    recordingButton.wantsLayer = YES;
+    recordingButton.layer.cornerRadius = 12.0;
+    recordingButton.layer.backgroundColor = [NSColor colorWithCalibratedRed:0.0 green:0.48 blue:1.0 alpha:1.0].CGColor;
+    [panel addSubview:recordingButton];
+    self.recordingButton = recordingButton;
+
+    NSTextField *recentTitle = OPNSidebarLabel(@"Recent", 12.0, NSFontWeightMedium, OPNSidebarColor(0.82, 1.0), NSTextAlignmentLeft);
+    recentTitle.frame = NSMakeRect(20.0, 584.0, 180.0, 18.0);
+    [panel addSubview:recentTitle];
+    self.recentRecordingsContainer = [[NSView alloc] initWithFrame:NSMakeRect(20.0, 610.0, NSWidth(panel.frame) - 40.0, 30.0)];
+    [panel addSubview:self.recentRecordingsContainer];
+
     self.sidebarHUD = panel;
     [self addSubview:panel positioned:NSWindowAbove relativeTo:self.microphoneActiveOverlay];
     [self updateSidebarMicStatus];
     [self updateSidebarBitrateStatus];
+    [self updateRecordingControls];
 }
 
 - (void)createMicrophoneActiveOverlay {
@@ -287,6 +326,7 @@ static NSColor *OPNSidebarColor(CGFloat white, CGFloat alpha) {
 }
 
 - (void)dealloc {
+    [self stopRecordingIfNeeded];
     [self stopGamepadPolling];
     [self cancelEscapeHoldTimer];
     [self releaseCursorCapture];
@@ -294,6 +334,10 @@ static NSColor *OPNSidebarColor(CGFloat white, CGFloat alpha) {
 }
 
 - (void)setStreamSession:(OPN::IStreamSession *)session {
+    OPN::IStreamSession *previousSession = _streamSession;
+    if (previousSession && previousSession != session) {
+        previousSession->OnVideoFrame(OPN::VideoFrameCallback{});
+    }
     _streamSession = session;
     if (session) {
         session->SetGameVolume(_gameVolume);
@@ -306,6 +350,11 @@ static NSColor *OPNSidebarColor(CGFloat white, CGFloat alpha) {
                 if (!strongSelf) return;
                 [strongSelf setMicrophoneLevel:level];
             });
+        });
+        session->OnVideoFrame([weakSelf](void *frame) {
+            OPNStreamView *strongSelf = weakSelf;
+            if (!strongSelf) return;
+            [strongSelf.recordingManager appendWebRTCVideoFrame:frame];
         });
         [self startGamepadPolling];
         [self applyMicrophoneShortcutState];
@@ -378,6 +427,20 @@ static NSColor *OPNSidebarColor(CGFloat white, CGFloat alpha) {
     return YES;
 }
 
+- (void)setRecordingGameTitle:(NSString *)gameTitle {
+    _recordingGameTitle = [gameTitle.length > 0 ? gameTitle : @"Stream" copy];
+}
+
+- (BOOL)toggleRecordingShortcut {
+    [self.recordingManager toggleRecordingForGameTitle:_recordingGameTitle window:self.window];
+    [self updateRecordingControls];
+    return YES;
+}
+
+- (void)stopRecordingIfNeeded {
+    [self.recordingManager stopRecording];
+}
+
 - (void)attachToPipeline:(void *)pipeline {
     _attachedPipeline = pipeline;
 }
@@ -422,7 +485,7 @@ static NSColor *OPNSidebarColor(CGFloat white, CGFloat alpha) {
                                                    overlaySize);
     if (self.sidebarHUD) {
         CGFloat panelWidth = NSWidth(self.sidebarHUD.frame);
-        CGFloat panelHeight = MIN(450.0, MAX(360.0, height - 36.0));
+        CGFloat panelHeight = MIN(650.0, MAX(450.0, height - 36.0));
         self.sidebarHUD.frame = NSMakeRect(18.0, floor((height - panelHeight) / 2.0), panelWidth, panelHeight);
     }
 }
@@ -483,6 +546,11 @@ static NSColor *OPNSidebarColor(CGFloat white, CGFloat alpha) {
     [self toggleSidebarHUD];
 }
 
+- (void)recordingButtonClicked:(id)sender {
+    (void)sender;
+    [self toggleRecordingShortcut];
+}
+
 - (void)gameVolumeSliderChanged:(NSSlider *)slider {
     _gameVolume = std::max(0.0, std::min(slider.doubleValue / 100.0, 1.0));
     if (_streamSession) _streamSession->SetGameVolume(_gameVolume);
@@ -526,6 +594,50 @@ static NSColor *OPNSidebarColor(CGFloat white, CGFloat alpha) {
         mode = self.microphoneActiveOverlay.hidden ? @"Open mic muted" : @"Open mic live";
     }
     self.sidebarMicStatusValue.stringValue = mode;
+}
+
+- (void)updateRecordingControls {
+    NSString *title = @"Start Recording";
+    NSColor *buttonColor = [NSColor colorWithCalibratedRed:0.0 green:0.48 blue:1.0 alpha:1.0];
+    if (self.recordingManager.isRecording) {
+        title = @"Stop Recording";
+        buttonColor = [NSColor colorWithCalibratedRed:0.92 green:0.18 blue:0.22 alpha:1.0];
+    } else if (self.recordingManager.isStarting) {
+        title = @"Starting...";
+        buttonColor = [NSColor colorWithCalibratedRed:0.56 green:0.42 blue:0.12 alpha:1.0];
+    }
+    self.recordingButton.title = title;
+    self.recordingButton.layer.backgroundColor = buttonColor.CGColor;
+    self.sidebarRecordingStatusValue.stringValue = self.recordingManager.statusText ?: @"Ready";
+    [self rebuildRecentRecordingThumbnails];
+}
+
+- (void)rebuildRecentRecordingThumbnails {
+    if (!self.recentRecordingsContainer) return;
+    for (NSView *view in self.recentRecordingsContainer.subviews.copy) {
+        [view removeFromSuperview];
+    }
+    NSArray<NSURL *> *urls = self.recordingManager.recentRecordingURLs;
+    if (urls.count == 0) {
+        NSTextField *empty = OPNSidebarLabel(@"No recordings yet", 11.0, NSFontWeightRegular, OPNSidebarColor(0.58, 1.0), NSTextAlignmentLeft);
+        empty.frame = self.recentRecordingsContainer.bounds;
+        [self.recentRecordingsContainer addSubview:empty];
+        return;
+    }
+    CGFloat thumbWidth = 66.0;
+    CGFloat gap = 8.0;
+    NSUInteger count = MIN((NSUInteger)4, urls.count);
+    for (NSUInteger i = 0; i < count; i++) {
+        NSRect frame = NSMakeRect((thumbWidth + gap) * (CGFloat)i, 0.0, thumbWidth, 30.0);
+        NSImageView *imageView = [[NSImageView alloc] initWithFrame:frame];
+        imageView.wantsLayer = YES;
+        imageView.layer.cornerRadius = 7.0;
+        imageView.layer.masksToBounds = YES;
+        imageView.layer.backgroundColor = [NSColor colorWithCalibratedWhite:1.0 alpha:0.10].CGColor;
+        imageView.imageScaling = NSImageScaleAxesIndependently;
+        imageView.image = [self.recordingManager thumbnailForRecordingURL:urls[i] size:frame.size];
+        [self.recentRecordingsContainer addSubview:imageView];
+    }
 }
 
 - (void)setMicrophoneLevel:(double)level {

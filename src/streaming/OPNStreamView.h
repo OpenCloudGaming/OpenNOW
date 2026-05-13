@@ -17,7 +17,10 @@ class IStreamSession;
 #endif
 - (void)setMaxBitrateMbps:(NSInteger)mbps;
 - (BOOL)toggleMicrophoneEnabledShortcut;
+- (BOOL)toggleRecordingShortcut;
 - (void)toggleSidebarHUD;
+- (void)setRecordingGameTitle:(NSString *)gameTitle;
+- (void)stopRecordingIfNeeded;
 - (void)setMicrophoneLevel:(double)level;
 - (void)setSuppressInputWhenWindowInactive:(BOOL)suppress;
 - (void)setInputSuspendedForLibraryOverlay:(BOOL)suspended;
