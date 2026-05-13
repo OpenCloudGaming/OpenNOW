@@ -42,8 +42,12 @@ static NSImage *OPNHeaderLogoImage(void) {
 }
 
 static NSString *OPNCurrentHeaderTimeText(void) {
-    NSDateFormatter *timeFormatter = [[NSDateFormatter alloc] init];
-    timeFormatter.dateFormat = @"h:mm a";
+    static NSDateFormatter *timeFormatter = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        timeFormatter = [[NSDateFormatter alloc] init];
+        timeFormatter.dateFormat = @"h:mm a";
+    });
     return [[timeFormatter stringFromDate:NSDate.date] uppercaseString];
 }
 
