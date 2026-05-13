@@ -1,6 +1,7 @@
 #include "OPNLibWebRTCStreamSession.h"
 #include "OPNStreamPreferences.h"
 
+#import <CoreAudio/CoreAudio.h>
 #import <Foundation/Foundation.h>
 
 #include <algorithm>
@@ -14,6 +15,7 @@
 #include <unordered_set>
 #include <utility>
 #include <vector>
+#include <objc/message.h>
 
 #if defined(OPN_HAVE_LIBWEBRTC)
 #import <WebRTC/WebRTC.h>
@@ -22,6 +24,32 @@
 namespace OPN {
 
 static constexpr int OPNPartialReliableInputLifetimeMs = 8;
+
+static AudioDeviceID OPNDefaultAudioDevice(AudioObjectPropertySelector selector) {
+    AudioDeviceID device = kAudioObjectUnknown;
+    UInt32 size = sizeof(device);
+    AudioObjectPropertyAddress address = {
+        selector,
+        kAudioObjectPropertyScopeGlobal,
+        kAudioObjectPropertyElementMain,
+    };
+    if (AudioObjectGetPropertyData(kAudioObjectSystemObject, &address, 0, nullptr, &size, &device) != noErr) {
+        return kAudioObjectUnknown;
+    }
+    return device;
+}
+
+static OSStatus OPNAudioDevicesChanged(AudioObjectID,
+                                       UInt32,
+                                       const AudioObjectPropertyAddress *,
+                                       void *clientData) {
+    auto *session = static_cast<LibWebRTCStreamSession *>(clientData);
+    if (!session) return noErr;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        session->HandleAudioDeviceChange();
+    });
+    return noErr;
+}
 
 [[maybe_unused]] static NSString *OPNStringToNSString(const std::string &value) {
     return [[NSString alloc] initWithBytes:value.data() length:value.size() encoding:NSUTF8StringEncoding] ?: @"";
@@ -1045,6 +1073,7 @@ void LibWebRTCStreamSession::Start(const SessionInfo &session,
     }
 
     m_impl = (__bridge_retained void *)impl;
+    StartAudioDeviceMonitoring();
     CreateInputChannel();
 
     std::string processedOfferSdp = offerSdp;
@@ -1185,6 +1214,7 @@ void LibWebRTCStreamSession::Start(const SessionInfo &session,
 }
 
 void LibWebRTCStreamSession::Stop() {
+    StopAudioDeviceMonitoring();
     StopStatsPolling();
     StopMicrophoneLevelPolling();
     {
@@ -1392,6 +1422,131 @@ void LibWebRTCStreamSession::OnMicrophoneLevel(MicrophoneLevelCallback cb) {
 }
 
 void LibWebRTCStreamSession::RefreshAudioDevices() {
+#if defined(OPN_HAVE_LIBWEBRTC)
+    OPNLibWebRTCSessionImpl *impl = OPNImplFromOpaque(m_impl);
+    if (!impl.peerConnection) return;
+
+    Class audioSessionClass = NSClassFromString(@"RTCAudioSession");
+    id audioSession = audioSessionClass ? [audioSessionClass performSelector:@selector(sharedInstance)] : nil;
+    if (!audioSession) return;
+
+    const BOOL wasManualAudio = [audioSession respondsToSelector:@selector(useManualAudio)] ? ((BOOL (*)(id, SEL))objc_msgSend)(audioSession, @selector(useManualAudio)) : NO;
+    const BOOL wasAudioEnabled = [audioSession respondsToSelector:@selector(isAudioEnabled)] ? ((BOOL (*)(id, SEL))objc_msgSend)(audioSession, @selector(isAudioEnabled)) : YES;
+
+    if ([audioSession respondsToSelector:@selector(setUseManualAudio:)]) {
+        ((void (*)(id, SEL, BOOL))objc_msgSend)(audioSession, @selector(setUseManualAudio:), YES);
+    }
+    if ([audioSession respondsToSelector:@selector(setIsAudioEnabled:)]) {
+        ((void (*)(id, SEL, BOOL))objc_msgSend)(audioSession, @selector(setIsAudioEnabled:), NO);
+    }
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 80 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
+        if (!this->m_impl) return;
+        id activeAudioSession = audioSessionClass ? [audioSessionClass performSelector:@selector(sharedInstance)] : nil;
+        if (!activeAudioSession) return;
+        if ([activeAudioSession respondsToSelector:@selector(setIsAudioEnabled:)]) {
+            ((void (*)(id, SEL, BOOL))objc_msgSend)(activeAudioSession, @selector(setIsAudioEnabled:), YES);
+        }
+        if ([activeAudioSession respondsToSelector:@selector(setUseManualAudio:)]) {
+            ((void (*)(id, SEL, BOOL))objc_msgSend)(activeAudioSession, @selector(setUseManualAudio:), wasManualAudio);
+        }
+        if (wasManualAudio && !wasAudioEnabled) {
+            ((void (*)(id, SEL, BOOL))objc_msgSend)(activeAudioSession, @selector(setIsAudioEnabled:), NO);
+        }
+        OPNLibWebRTCSessionImpl *activeImpl = OPNImplFromOpaque(this->m_impl);
+        if (activeImpl.remoteAudioTrack) {
+            activeImpl.remoteAudioTrack.isEnabled = YES;
+            activeImpl.remoteAudioTrack.source.volume = this->m_gameVolume;
+        }
+        if (activeImpl.localMicrophoneTrack) {
+            activeImpl.localMicrophoneTrack.isEnabled = this->m_microphoneEnabled ? YES : NO;
+            activeImpl.localMicrophoneTrack.source.volume = this->m_microphoneVolumeLevel;
+        }
+        NSLog(@"[LibWebRTC] audio device refresh applied input=%u output=%u",
+              this->m_defaultInputDevice,
+              this->m_defaultOutputDevice);
+    });
+#endif
+}
+
+void LibWebRTCStreamSession::StartAudioDeviceMonitoring() {
+    bool expected = false;
+    if (!m_audioDeviceMonitoringActive.compare_exchange_strong(expected, true)) return;
+
+    m_defaultInputDevice = OPNDefaultAudioDevice(kAudioHardwarePropertyDefaultInputDevice);
+    m_defaultOutputDevice = OPNDefaultAudioDevice(kAudioHardwarePropertyDefaultOutputDevice);
+
+    AudioObjectPropertyAddress devicesAddress = {
+        kAudioHardwarePropertyDevices,
+        kAudioObjectPropertyScopeGlobal,
+        kAudioObjectPropertyElementMain,
+    };
+    AudioObjectPropertyAddress defaultInputAddress = {
+        kAudioHardwarePropertyDefaultInputDevice,
+        kAudioObjectPropertyScopeGlobal,
+        kAudioObjectPropertyElementMain,
+    };
+    AudioObjectPropertyAddress defaultOutputAddress = {
+        kAudioHardwarePropertyDefaultOutputDevice,
+        kAudioObjectPropertyScopeGlobal,
+        kAudioObjectPropertyElementMain,
+    };
+
+    OSStatus devicesStatus = AudioObjectAddPropertyListener(kAudioObjectSystemObject, &devicesAddress, OPNAudioDevicesChanged, this);
+    OSStatus inputStatus = AudioObjectAddPropertyListener(kAudioObjectSystemObject, &defaultInputAddress, OPNAudioDevicesChanged, this);
+    OSStatus outputStatus = AudioObjectAddPropertyListener(kAudioObjectSystemObject, &defaultOutputAddress, OPNAudioDevicesChanged, this);
+    NSLog(@"[LibWebRTC] audio device monitoring started devices=%d input=%d output=%d currentInput=%u currentOutput=%u",
+          devicesStatus,
+          inputStatus,
+          outputStatus,
+          m_defaultInputDevice,
+          m_defaultOutputDevice);
+}
+
+void LibWebRTCStreamSession::StopAudioDeviceMonitoring() {
+    bool expected = true;
+    if (!m_audioDeviceMonitoringActive.compare_exchange_strong(expected, false)) return;
+
+    AudioObjectPropertyAddress devicesAddress = {
+        kAudioHardwarePropertyDevices,
+        kAudioObjectPropertyScopeGlobal,
+        kAudioObjectPropertyElementMain,
+    };
+    AudioObjectPropertyAddress defaultInputAddress = {
+        kAudioHardwarePropertyDefaultInputDevice,
+        kAudioObjectPropertyScopeGlobal,
+        kAudioObjectPropertyElementMain,
+    };
+    AudioObjectPropertyAddress defaultOutputAddress = {
+        kAudioHardwarePropertyDefaultOutputDevice,
+        kAudioObjectPropertyScopeGlobal,
+        kAudioObjectPropertyElementMain,
+    };
+
+    AudioObjectRemovePropertyListener(kAudioObjectSystemObject, &devicesAddress, OPNAudioDevicesChanged, this);
+    AudioObjectRemovePropertyListener(kAudioObjectSystemObject, &defaultInputAddress, OPNAudioDevicesChanged, this);
+    AudioObjectRemovePropertyListener(kAudioObjectSystemObject, &defaultOutputAddress, OPNAudioDevicesChanged, this);
+    m_defaultInputDevice = kAudioObjectUnknown;
+    m_defaultOutputDevice = kAudioObjectUnknown;
+    NSLog(@"[LibWebRTC] audio device monitoring stopped");
+}
+
+void LibWebRTCStreamSession::HandleAudioDeviceChange() {
+    if (!m_audioDeviceMonitoringActive.load()) return;
+
+    const AudioDeviceID inputDevice = OPNDefaultAudioDevice(kAudioHardwarePropertyDefaultInputDevice);
+    const AudioDeviceID outputDevice = OPNDefaultAudioDevice(kAudioHardwarePropertyDefaultOutputDevice);
+    const bool inputChanged = inputDevice != m_defaultInputDevice;
+    const bool outputChanged = outputDevice != m_defaultOutputDevice;
+    if (!inputChanged && !outputChanged) return;
+
+    NSLog(@"[LibWebRTC] default audio device changed input=%u->%u output=%u->%u",
+          m_defaultInputDevice,
+          inputDevice,
+          m_defaultOutputDevice,
+          outputDevice);
+    m_defaultInputDevice = inputDevice;
+    m_defaultOutputDevice = outputDevice;
+    RefreshAudioDevices();
 }
 
 void LibWebRTCStreamSession::StartMicrophoneLevelPolling() {

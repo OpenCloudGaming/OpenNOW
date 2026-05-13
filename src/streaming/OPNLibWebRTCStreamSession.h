@@ -5,6 +5,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <atomic>
 
 namespace OPN {
 
@@ -48,6 +49,7 @@ public:
     void HandleConnectionState(bool connected, const std::string &error);
     void HandleDataChannelState(const std::string &label, bool open);
     void HandleDataChannelMessage(const std::string &label, const uint8_t *data, size_t len);
+    void HandleAudioDeviceChange();
     double GameVolume() const;
     int TargetFps() const;
     void SetVideoRendererState(const std::string &sink, const std::string &pipelineMode);
@@ -61,18 +63,23 @@ private:
     void StopInputHeartbeat();
     void StartMicrophoneLevelPolling();
     void StopMicrophoneLevelPolling();
+    void StartAudioDeviceMonitoring();
+    void StopAudioDeviceMonitoring();
 
     void *m_impl = nullptr;
     void *m_nativeWindow = nullptr;
     void *m_inputHeartbeat = nullptr;
     void *m_statsTimer = nullptr;
     void *m_microphoneLevelTimer = nullptr;
+    std::atomic<bool> m_audioDeviceMonitoringActive{false};
     bool m_inputReady = false;
     bool m_reliableOpen = false;
     bool m_partialOpen = false;
     bool m_statsRequestInFlight = false;
     bool m_microphoneLevelRequestInFlight = false;
     bool m_microphoneEnabled = false;
+    uint32_t m_defaultInputDevice = 0;
+    uint32_t m_defaultOutputDevice = 0;
     double m_gameVolume = 1.0;
     double m_microphoneVolumeLevel = 1.0;
     StreamStats m_latestStats;
