@@ -17,6 +17,7 @@ static const CGFloat kToolbarHeight = 82.0;
 static const CGFloat kControllerRailSelectorOverlap = 22.0;
 static const CGFloat kControllerRailDetailOverlap = 22.0;
 static const CGFloat kControllerGameHubMinimumHeight = 374.0;
+static const CGFloat kControllerGameHubVerticalReserve = 96.0;
 static NSString *const OPNFavoriteGameIdsDefaultsKey = @"OpenNOW.Library.FavoriteGameIds";
 
 static unsigned OPNControllerAccentRGB(void) {
@@ -647,7 +648,7 @@ static NSImage *OPNControllerPromptIcon(NSString *button, OPNControllerPromptSty
     [@"GAME HUB" drawInRect:NSMakeRect(22.0, 34.0, NSWidth(bounds) - 44.0, 18.0)
              withAttributes:[self attributesWithSize:11.0 weight:NSFontWeightBold color:OpnColor(0xFFFFFF, 0.55) alignment:NSTextAlignmentLeft]];
     [self.gameTitle drawInRect:NSMakeRect(22.0, 56.0, NSWidth(bounds) - 44.0, 31.0)
-                withAttributes:[self attributesWithSize:23.0 weight:NSFontWeightSemibold color:OpnColor(kTextPrimary) alignment:NSTextAlignmentLeft]];
+                withAttributes:[self attributesWithSize:23.0 weight:NSFontWeightSemibold color:OpnColor(OPN::kTextPrimary) alignment:NSTextAlignmentLeft]];
     [self.storeTitle drawInRect:NSMakeRect(22.0, 88.0, NSWidth(bounds) - 44.0, 20.0)
                  withAttributes:[self attributesWithSize:12.0 weight:NSFontWeightMedium color:OpnColor(0xF4FFF7, 0.68) alignment:NSTextAlignmentLeft]];
 
@@ -1588,9 +1589,10 @@ using namespace OPN;
     BOOL compactDetail = detailHeight < 260.0;
     CGFloat heroX = 64.0;
     BOOL showStreamPip = controllerMode && self.streamPipContentView != nil;
-    BOOL showGameHub = controllerMode && !showStreamPip && self.cardViews.count > 0 && detailWidth >= 1040.0 && detailHeight >= kControllerGameHubMinimumHeight + 96.0;
+    CGFloat availableGameHubHeight = MAX(0.0, detailHeight - kControllerGameHubVerticalReserve);
+    BOOL showGameHub = controllerMode && !showStreamPip && self.cardViews.count > 0 && detailWidth >= 1040.0 && availableGameHubHeight >= kControllerGameHubMinimumHeight;
     CGFloat gameHubWidth = showGameHub ? MIN(460.0, MAX(340.0, detailWidth * 0.27)) : 0.0;
-    CGFloat gameHubHeight = showGameHub ? MIN(390.0, MAX(kControllerGameHubMinimumHeight, detailHeight - 96.0)) : 0.0;
+    CGFloat gameHubHeight = showGameHub ? MIN(390.0, availableGameHubHeight) : 0.0;
     CGFloat gameHubX = detailWidth - gameHubWidth - 64.0;
     CGFloat gameHubY = showGameHub ? MAX(32.0, floor((detailHeight - gameHubHeight) * 0.42)) : 0.0;
     CGFloat rightContextInset = showGameHub ? gameHubWidth + 104.0 : 0.0;
