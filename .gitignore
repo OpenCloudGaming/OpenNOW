@@ -56,3 +56,5 @@ release-notes.md
 result
 .deriveddata/
 .deriveddata-device/
+
+/android/app/.cxx
