@@ -241,9 +241,12 @@ static CGFloat OPNControllerAccountMenuWidth(NSRect bounds) {
 }
 
 - (void)startControllerNavigationIfNeeded {
-    [_controllerNavigationTimer invalidate];
-    _controllerNavigationTimer = nil;
-    _previousControllerButtons = 0;
+    if (!OpnControllerModeEnabled() || _controllerNavigationTimer || !self.window || !OPNBackdropControllerNavigationActive(self)) return;
+    _controllerNavigationTimer = [NSTimer scheduledTimerWithTimeInterval:(1.0 / 30.0)
+                                                                  target:self
+                                                                selector:@selector(pollControllerNavigation)
+                                                                userInfo:nil
+                                                                 repeats:YES];
 }
 
 - (void)controllerDidConnect:(NSNotification *)notification {
@@ -268,16 +271,40 @@ static CGFloat OPNControllerAccountMenuWidth(NSRect bounds) {
 }
 
 - (void)selectPreviousControllerTab {
-    if (self.mode == OPNBackdropModeSettings) {
-        OpnPlayConsoleTone(OPNConsoleToneMove);
-        if (self.onLibrarySelected) self.onLibrarySelected();
+    switch (self.mode) {
+        case OPNBackdropModeStore:
+            OpnPlayConsoleTone(OPNConsoleToneMove);
+            if (self.onSettingsSelected) self.onSettingsSelected();
+            break;
+        case OPNBackdropModeLibrary:
+            OpnPlayConsoleTone(OPNConsoleToneMove);
+            if (self.onStoreSelected) self.onStoreSelected();
+            break;
+        case OPNBackdropModeSettings:
+            OpnPlayConsoleTone(OPNConsoleToneMove);
+            if (self.onLibrarySelected) self.onLibrarySelected();
+            break;
+        default:
+            break;
     }
 }
 
 - (void)selectNextControllerTab {
-    if (self.mode == OPNBackdropModeLibrary) {
-        OpnPlayConsoleTone(OPNConsoleToneMove);
-        if (self.onSettingsSelected) self.onSettingsSelected();
+    switch (self.mode) {
+        case OPNBackdropModeStore:
+            OpnPlayConsoleTone(OPNConsoleToneMove);
+            if (self.onLibrarySelected) self.onLibrarySelected();
+            break;
+        case OPNBackdropModeLibrary:
+            OpnPlayConsoleTone(OPNConsoleToneMove);
+            if (self.onSettingsSelected) self.onSettingsSelected();
+            break;
+        case OPNBackdropModeSettings:
+            OpnPlayConsoleTone(OPNConsoleToneMove);
+            if (self.onStoreSelected) self.onStoreSelected();
+            break;
+        default:
+            break;
     }
 }
 
