@@ -12,6 +12,66 @@
 - (BOOL)isFlipped { return YES; }
 @end
 
+static unsigned OPNControllerAccentRGB(void);
+static unsigned OPNControllerAccentSoftRGB(void);
+
+@interface OPNBackdropControllerAccountButton : NSButton
+@property (nonatomic, copy) NSString *opnTitle;
+@property (nonatomic, assign) BOOL opnSelected;
+@property (nonatomic, assign) BOOL opnWarning;
+@end
+
+@implementation OPNBackdropControllerAccountButton
+
+- (void)setOpnTitle:(NSString *)opnTitle {
+    _opnTitle = [opnTitle copy];
+    [self setNeedsDisplay:YES];
+}
+
+- (void)setOpnSelected:(BOOL)opnSelected {
+    _opnSelected = opnSelected;
+    [self setNeedsDisplay:YES];
+}
+
+- (void)setOpnWarning:(BOOL)opnWarning {
+    _opnWarning = opnWarning;
+    [self setNeedsDisplay:YES];
+}
+
+- (void)drawRect:(NSRect)dirtyRect {
+    (void)dirtyRect;
+    NSString *title = self.opnTitle ?: @"";
+    CGFloat chipWidth = self.opnSelected ? 72.0 : 0.0;
+    CGFloat titleRightInset = self.opnSelected ? chipWidth + 22.0 : 18.0;
+    NSRect titleRect = NSMakeRect(18.0, floor((NSHeight(self.bounds) - 18.0) / 2.0) + 1.0, MAX(0.0, NSWidth(self.bounds) - 18.0 - titleRightInset), 19.0);
+    NSMutableParagraphStyle *titleStyle = [[NSMutableParagraphStyle alloc] init];
+    titleStyle.lineBreakMode = NSLineBreakByTruncatingMiddle;
+    titleStyle.alignment = NSTextAlignmentLeft;
+    NSColor *titleColor = self.opnWarning ? OpnColor(0xFF9B9B) : (self.opnSelected ? OpnColor(OPN::kTextPrimary) : OpnColor(OPN::kTextSecondary));
+    [title drawInRect:titleRect withAttributes:@{
+        NSFontAttributeName: [NSFont systemFontOfSize:self.opnSelected ? 14.0 : 13.5 weight:self.opnSelected ? NSFontWeightSemibold : NSFontWeightMedium],
+        NSForegroundColorAttributeName: titleColor,
+        NSParagraphStyleAttributeName: titleStyle,
+    }];
+    if (!self.opnSelected) return;
+    NSRect chipRect = NSMakeRect(NSWidth(self.bounds) - chipWidth - 14.0, floor((NSHeight(self.bounds) - 24.0) / 2.0), chipWidth, 24.0);
+    NSBezierPath *chip = [NSBezierPath bezierPathWithRoundedRect:chipRect xRadius:12.0 yRadius:12.0];
+    [OpnColor(OPNControllerAccentSoftRGB(), 0.18) setFill];
+    [chip fill];
+    [OpnColor(OPNControllerAccentSoftRGB(), 0.42) setStroke];
+    chip.lineWidth = 1.0;
+    [chip stroke];
+    NSMutableParagraphStyle *chipStyle = [[NSMutableParagraphStyle alloc] init];
+    chipStyle.alignment = NSTextAlignmentCenter;
+    [@"Current" drawInRect:NSMakeRect(NSMinX(chipRect), NSMinY(chipRect) + 5.0, NSWidth(chipRect), 14.0) withAttributes:@{
+        NSFontAttributeName: [NSFont systemFontOfSize:10.5 weight:NSFontWeightSemibold],
+        NSForegroundColorAttributeName: OpnColor(OPN::kTextPrimary),
+        NSParagraphStyleAttributeName: chipStyle,
+    }];
+}
+
+@end
+
 static BOOL OPNBackdropControllerNavigationActive(NSView *view) {
     NSWindow *window = view.window;
     if (!window || window.contentViewController != nil) return NO;
@@ -80,6 +140,10 @@ static NSMenuItem *OPNStyledMenuItem(NSString *title, SEL action, id target, NSC
     item.target = target;
     item.attributedTitle = OPNMenuTitle(title, color, weight);
     return item;
+}
+
+static CGFloat OPNControllerAccountMenuWidth(NSRect bounds) {
+    return MIN(420.0, MAX(320.0, NSWidth(bounds) - 40.0));
 }
 
 - (instancetype)initWithFrame:(NSRect)frame {
@@ -397,7 +461,7 @@ static NSMenuItem *OPNStyledMenuItem(NSString *title, SEL action, id target, NSC
     _settingsButton.hidden = !showNavigation;
     _accountButton.hidden = !showNavigation;
     if (_controllerAccountMenuView) {
-        CGFloat menuWidth = 320.0;
+        CGFloat menuWidth = OPNControllerAccountMenuWidth(self.bounds);
         _controllerAccountMenuView.frame = NSMakeRect(MAX(20.0, NSWidth(self.bounds) - menuWidth - 20.0), 106.0, menuWidth, NSHeight(_controllerAccountMenuView.frame));
     }
 }
@@ -619,31 +683,27 @@ static NSMenuItem *OPNStyledMenuItem(NSString *title, SEL action, id target, NSC
 }
 
 - (NSButton *)controllerAccountMenuButtonWithTitle:(NSString *)title
-                                               y:(CGFloat)y
-                                          height:(CGFloat)height
-                                          action:(SEL)action
-                                      identifier:(NSString *)identifier
-                                        selected:(BOOL)selected
-                                         warning:(BOOL)warning {
-    NSButton *button = [[NSButton alloc] initWithFrame:NSMakeRect(14.0, y, 292.0, height)];
+                                                y:(CGFloat)y
+                                            width:(CGFloat)width
+                                           height:(CGFloat)height
+                                           action:(SEL)action
+                                       identifier:(NSString *)identifier
+                                         selected:(BOOL)selected
+                                          warning:(BOOL)warning {
+    OPNBackdropControllerAccountButton *button = [[OPNBackdropControllerAccountButton alloc] initWithFrame:NSMakeRect(16.0, y, width - 32.0, height)];
     button.bordered = NO;
     button.target = self;
     button.action = action;
     button.identifier = identifier ?: @"";
+    button.title = @"";
+    button.opnTitle = title;
+    button.opnSelected = selected;
+    button.opnWarning = warning;
     button.wantsLayer = YES;
-    button.layer.cornerRadius = 14.0;
-    button.layer.backgroundColor = selected ? OpnColor(OPNControllerAccentRGB(), 0.20).CGColor : OpnColor(OPNControllerAccentRGB(), 0.045).CGColor;
+    button.layer.cornerRadius = height / 2.0;
+    button.layer.backgroundColor = selected ? OpnColor(OPNControllerAccentRGB(), 0.18).CGColor : OpnColor(OPNControllerAccentBlackRGB(0.72), warning ? 0.32 : 0.24).CGColor;
     button.layer.borderWidth = selected ? 1.0 : 0.0;
     button.layer.borderColor = OpnColor(OPNControllerAccentSoftRGB(), 0.52).CGColor;
-    NSColor *textColor = warning ? OpnColor(0xFF8A8A) : (selected ? OpnColor(OPN::kTextPrimary) : OpnColor(OPN::kTextSecondary));
-    NSString *displayTitle = selected ? [NSString stringWithFormat:@"%@  Current", title] : title;
-    NSMutableParagraphStyle *style = [[NSMutableParagraphStyle alloc] init];
-    style.alignment = NSTextAlignmentLeft;
-    button.attributedTitle = [[NSAttributedString alloc] initWithString:displayTitle attributes:@{
-        NSFontAttributeName: [NSFont systemFontOfSize:14.0 weight:selected ? NSFontWeightSemibold : NSFontWeightMedium],
-        NSForegroundColorAttributeName: textColor,
-        NSParagraphStyleAttributeName: style,
-    }];
     return button;
 }
 
@@ -655,37 +715,40 @@ static NSMenuItem *OPNStyledMenuItem(NSString *title, SEL action, id target, NSC
     }
     OpnPlayConsoleTone(OPNConsoleToneSelect);
 
-    CGFloat menuWidth = 320.0;
-    CGFloat rowHeight = 42.0;
-    CGFloat y = 50.0;
+    CGFloat menuWidth = OPNControllerAccountMenuWidth(self.bounds);
+    CGFloat accountRowHeight = 52.0;
+    CGFloat actionRowHeight = 44.0;
+    CGFloat y = 66.0;
     NSInteger accountCount = 0;
     for (NSDictionary<NSString *, NSString *> *account in self.accountMenuItems) {
         NSString *identifier = account[@"identifier"];
         NSString *title = account[@"label"];
         if (identifier.length == 0 || title.length == 0) continue;
         accountCount++;
-        y += rowHeight + 8.0;
+        y += accountRowHeight + 10.0;
     }
-    CGFloat menuHeight = y + 170.0;
+    CGFloat menuHeight = y + 178.0;
     CGFloat menuX = MAX(20.0, NSWidth(self.bounds) - menuWidth - 20.0);
 
     NSView *menu = [[OPNBackdropControllerMenuView alloc] initWithFrame:NSMakeRect(menuX, 106.0, menuWidth, menuHeight)];
     menu.wantsLayer = YES;
-    menu.layer.cornerRadius = 24.0;
+    menu.layer.cornerRadius = 26.0;
     menu.layer.borderWidth = 1.0;
-    menu.layer.borderColor = OpnColor(0xFFFFFF, 0.18).CGColor;
-    menu.layer.backgroundColor = OpnColor(OPNControllerAccentBlackRGB(0.88), 0.96).CGColor;
+    menu.layer.borderColor = OpnColor(OPNControllerAccentSoftRGB(), 0.30).CGColor;
+    menu.layer.backgroundColor = OpnColor(OPNControllerAccentBlackRGB(0.90), 0.97).CGColor;
     menu.layer.shadowColor = OpnColor(OPNControllerAccentRGB()).CGColor;
-    menu.layer.shadowOpacity = 0.24;
-    menu.layer.shadowRadius = 30.0;
+    menu.layer.shadowOpacity = 0.30;
+    menu.layer.shadowRadius = 38.0;
     menu.layer.shadowOffset = CGSizeZero;
 
-    NSTextField *titleLabel = OpnLabel(@"Account", NSMakeRect(18.0, 18.0, menuWidth - 36.0, 22.0), 15.0, OpnColor(OPN::kTextPrimary), NSFontWeightSemibold);
+    NSTextField *titleLabel = OpnLabel(@"Account", NSMakeRect(20.0, 18.0, menuWidth - 40.0, 24.0), 16.0, OpnColor(OPN::kTextPrimary), NSFontWeightSemibold);
     [menu addSubview:titleLabel];
+    NSTextField *subtitleLabel = OpnLabel(@"Profiles and session", NSMakeRect(20.0, 42.0, menuWidth - 40.0, 16.0), 11.0, OpnColor(OPN::kTextMuted), NSFontWeightMedium);
+    [menu addSubview:subtitleLabel];
 
-    y = 52.0;
+    y = 72.0;
     if (accountCount == 0) {
-        NSTextField *emptyLabel = OpnLabel(@"No saved accounts", NSMakeRect(18.0, y, menuWidth - 36.0, 22.0), 13.0, OpnColor(OPN::kTextMuted), NSFontWeightMedium);
+        NSTextField *emptyLabel = OpnLabel(@"No saved accounts", NSMakeRect(20.0, y, menuWidth - 40.0, 22.0), 13.0, OpnColor(OPN::kTextMuted), NSFontWeightMedium);
         [menu addSubview:emptyLabel];
         y += 34.0;
     } else {
@@ -696,27 +759,28 @@ static NSMenuItem *OPNStyledMenuItem(NSString *title, SEL action, id target, NSC
             BOOL selected = [identifier isEqualToString:self.currentAccountIdentifier];
             NSButton *button = [self controllerAccountMenuButtonWithTitle:title
                                                                         y:y
-                                                                   height:rowHeight
+                                                                    width:menuWidth
+                                                                   height:accountRowHeight
                                                                    action:@selector(controllerAccountMenuItemPressed:)
                                                                identifier:identifier
                                                                  selected:selected
-                                                                  warning:NO];
+                                                                   warning:NO];
             [menu addSubview:button];
-            y += rowHeight + 8.0;
+            y += accountRowHeight + 10.0;
         }
     }
 
-    NSView *divider = [[NSView alloc] initWithFrame:NSMakeRect(18.0, y + 8.0, menuWidth - 36.0, 1.0)];
+    NSView *divider = [[NSView alloc] initWithFrame:NSMakeRect(20.0, y + 8.0, menuWidth - 40.0, 1.0)];
     divider.wantsLayer = YES;
     divider.layer.backgroundColor = OpnColor(OPNControllerAccentSoftRGB(), 0.10).CGColor;
     [menu addSubview:divider];
     y += 24.0;
 
-    [menu addSubview:[self controllerAccountMenuButtonWithTitle:@"Add Account" y:y height:rowHeight action:@selector(controllerAddAccountPressed:) identifier:nil selected:NO warning:NO]];
-    y += rowHeight + 8.0;
-    [menu addSubview:[self controllerAccountMenuButtonWithTitle:@"Sign Out" y:y height:rowHeight action:@selector(controllerSignOutPressed:) identifier:nil selected:NO warning:NO]];
-    y += rowHeight + 8.0;
-    [menu addSubview:[self controllerAccountMenuButtonWithTitle:@"Exit OpenNOW" y:y height:rowHeight action:@selector(controllerExitPressed:) identifier:nil selected:NO warning:YES]];
+    [menu addSubview:[self controllerAccountMenuButtonWithTitle:@"Add Account" y:y width:menuWidth height:actionRowHeight action:@selector(controllerAddAccountPressed:) identifier:nil selected:NO warning:NO]];
+    y += actionRowHeight + 8.0;
+    [menu addSubview:[self controllerAccountMenuButtonWithTitle:@"Sign Out" y:y width:menuWidth height:actionRowHeight action:@selector(controllerSignOutPressed:) identifier:nil selected:NO warning:NO]];
+    y += actionRowHeight + 8.0;
+    [menu addSubview:[self controllerAccountMenuButtonWithTitle:@"Exit OpenNOW" y:y width:menuWidth height:actionRowHeight action:@selector(controllerExitPressed:) identifier:nil selected:NO warning:YES]];
 
     _controllerAccountMenuView = menu;
     [self addSubview:menu positioned:NSWindowAbove relativeTo:nil];
