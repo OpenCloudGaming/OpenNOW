@@ -2,6 +2,7 @@
 #import "OPNLoadingView.h"
 #import "../common/OPNColorTokens.h"
 #import "../common/OPNUIHelpers.h"
+#import <GameController/GameController.h>
 #include <QuartzCore/QuartzCore.h>
 #include <cctype>
 #include <cmath>
@@ -13,6 +14,9 @@ static const CGFloat kStoreRowHeight = 246.0;
 static const CGFloat kStoreCardSpacing = 18.0;
 static const CGFloat kStoreTileWidth = 256.0;
 static const CGFloat kStoreTileHeight = 154.0;
+static const CGFloat kControllerStoreContentX = 66.0;
+static const CGFloat kControllerStoreHeroTop = 92.0;
+static const CGFloat kControllerStoreRailHeight = 244.0;
 
 @interface OPNStoreDocumentView : NSView
 @end
@@ -70,6 +74,27 @@ static bool OPNStoreGameMatchesLibraryGame(const OPN::GameInfo &storeGame, const
     if (!storeGame.launchAppId.empty() && storeGame.launchAppId == libraryGame.launchAppId) return true;
     if (!storeGame.title.empty() && OPNStoreStringEqualsCaseInsensitive(storeGame.title, libraryGame.title)) return true;
     return false;
+}
+
+static uint16_t OPNStoreGamepadButtons(void) {
+    NSArray<GCController *> *controllers = [GCController controllers];
+    if (controllers.count == 0) return 0;
+    GCExtendedGamepad *pad = controllers.firstObject.extendedGamepad;
+    if (!pad) return 0;
+    uint16_t buttons = 0;
+    if (pad.buttonA.value > 0.5) buttons |= 1u << 0;
+    if (pad.buttonB.value > 0.5) buttons |= 1u << 1;
+    if (pad.dpad.up.value > 0.5 || pad.leftThumbstick.yAxis.value > 0.65) buttons |= 1u << 2;
+    if (pad.dpad.down.value > 0.5 || pad.leftThumbstick.yAxis.value < -0.65) buttons |= 1u << 3;
+    if (pad.dpad.left.value > 0.5 || pad.leftThumbstick.xAxis.value < -0.65) buttons |= 1u << 4;
+    if (pad.dpad.right.value > 0.5 || pad.leftThumbstick.xAxis.value > 0.65) buttons |= 1u << 5;
+    return buttons;
+}
+
+static BOOL OPNStoreGamepadNavigationActive(NSView *view) {
+    NSWindow *window = view.window;
+    if (!window || window.contentViewController != nil) return NO;
+    return window.contentView == view || [view isDescendantOf:window.contentView];
 }
 
 static bool OPNStoreVariantIsLibrarySelected(const OPN::GameVariant &variant) {
@@ -214,12 +239,19 @@ static int OPNStoreSelectedLibraryVariantIndex(const OPN::GameInfo &libraryGame)
 - (void)setStoreFocused:(BOOL)focused {
     _storeFocused = focused;
     self.alphaValue = 1.0;
+    [CATransaction begin];
+    [CATransaction setAnimationDuration:0.18];
     self.layer.borderWidth = focused ? 2.5 : 1.0;
     self.layer.borderColor = (focused ? OpnColor(0xF4D3FF, 0.98) : OpnColor(0xFFFFFF, self.prominent ? 0.16 : 0.10)).CGColor;
     self.layer.shadowColor = OpnColor(0xDFAAFF, 1.0).CGColor;
     self.layer.shadowOpacity = focused ? 0.34 : 0.0;
     self.layer.shadowRadius = focused ? 22.0 : 0.0;
     self.layer.shadowOffset = CGSizeZero;
+    self.layer.zPosition = focused ? 10.0 : 0.0;
+    CATransform3D transform = CATransform3DIdentity;
+    if (focused) transform = CATransform3DScale(transform, self.prominent ? 1.020 : 1.055, self.prominent ? 1.020 : 1.055, 1.0);
+    self.layer.transform = transform;
+    [CATransaction commit];
     self.playButton.hidden = !(self.prominent || focused);
 }
 
@@ -306,6 +338,7 @@ static int OPNStoreSelectedLibraryVariantIndex(const OPN::GameInfo &libraryGame)
 @property (nonatomic, assign) std::vector<OPN::GameInfo> libraryGames;
 @property (nonatomic, strong) NSMutableArray<NSMutableArray<OPNStoreGameTile *> *> *rowCards;
 @property (nonatomic, strong) NSTimer *heroRotationTimer;
+@property (nonatomic, strong) NSTimer *gamepadNavigationTimer;
 @property (nonatomic, strong) NSView *streamPipContainerView;
 @property (nonatomic, strong) NSView *streamPipHostView;
 @property (nonatomic, strong) NSTextField *streamPipTitleLabel;
@@ -313,7 +346,16 @@ static int OPNStoreSelectedLibraryVariantIndex(const OPN::GameInfo &libraryGame)
 @property (nonatomic, strong) NSButton *streamPipButton;
 @property (nonatomic, weak) NSView *streamPipContentView;
 @property (nonatomic, assign) NSInteger currentHeroIndex;
+@property (nonatomic, assign) NSInteger focusedRowIndex;
+@property (nonatomic, assign) NSInteger focusedColumnIndex;
+@property (nonatomic, assign, getter=isStreamPipFocused) BOOL streamPipFocused;
+@property (nonatomic, assign) uint16_t previousGamepadButtons;
+@property (nonatomic, assign) CFTimeInterval lastGamepadMoveTime;
 @property (nonatomic, assign) CGFloat lastLayoutWidth;
+- (void)startGamepadNavigationIfNeeded;
+- (void)stopGamepadNavigation;
+- (void)controllerDidConnect:(NSNotification *)notification;
+- (void)controllerDidDisconnect:(NSNotification *)notification;
 @end
 
 @implementation OPNStoreView
@@ -326,6 +368,8 @@ using namespace OPN;
         self.wantsLayer = YES;
         self.layer.backgroundColor = [NSColor clearColor].CGColor;
         _rowCards = [NSMutableArray array];
+        _focusedRowIndex = 0;
+        _focusedColumnIndex = 0;
         _scrollView = [[NSScrollView alloc] initWithFrame:self.bounds];
         _scrollView.drawsBackground = NO;
         _scrollView.borderType = NSNoBorder;
@@ -379,14 +423,45 @@ using namespace OPN;
         _streamPipButton.action = @selector(streamPictureInPicturePressed:);
         [_streamPipContainerView addSubview:_streamPipButton];
         [self addSubview:_streamPipContainerView];
+        [[NSNotificationCenter defaultCenter] addObserver:self
+                                                 selector:@selector(interfacePreferencesChanged:)
+                                                     name:OPNInterfacePreferencesDidChangeNotification
+                                                   object:nil];
+        [[NSNotificationCenter defaultCenter] addObserver:self
+                                                 selector:@selector(controllerDidConnect:)
+                                                     name:GCControllerDidConnectNotification
+                                                   object:nil];
+        [[NSNotificationCenter defaultCenter] addObserver:self
+                                                 selector:@selector(controllerDidDisconnect:)
+                                                     name:GCControllerDidDisconnectNotification
+                                                   object:nil];
+        [self startGamepadNavigationIfNeeded];
     }
     return self;
 }
 
 - (BOOL)isFlipped { return YES; }
+- (BOOL)acceptsFirstResponder { return YES; }
 
 - (void)dealloc {
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
     [self.heroRotationTimer invalidate];
+    [self stopGamepadNavigation];
+}
+
+- (void)viewDidMoveToWindow {
+    [super viewDidMoveToWindow];
+    if (self.window) {
+        [self startGamepadNavigationIfNeeded];
+    } else {
+        [self stopGamepadNavigation];
+    }
+}
+
+- (void)interfacePreferencesChanged:(NSNotification *)notification {
+    (void)notification;
+    [self renderStore];
+    [self startGamepadNavigationIfNeeded];
 }
 
 - (void)setLoading:(BOOL)loading {
@@ -435,6 +510,8 @@ using namespace OPN;
         view.frame = self.streamPipHostView.bounds;
         [self.streamPipHostView addSubview:view];
         self.streamPipContentView = view;
+    } else {
+        [self setStreamPipFocused:NO];
     }
     [self setNeedsLayout:YES];
 }
@@ -517,6 +594,7 @@ using namespace OPN;
     self.statusLabel.frame = NSMakeRect(0, NSHeight(self.bounds) * 0.5, NSWidth(self.bounds), 26.0);
     BOOL showStreamPip = OpnControllerModeEnabled() && self.streamPipContentView != nil;
     self.streamPipContainerView.hidden = !showStreamPip;
+    if (!showStreamPip) _streamPipFocused = NO;
     if (showStreamPip) {
         CGFloat pipWidth = MIN(420.0, MAX(300.0, NSWidth(self.bounds) * 0.24));
         CGFloat pipVideoHeight = floor(pipWidth * 9.0 / 16.0);
@@ -529,6 +607,7 @@ using namespace OPN;
         self.streamPipTitleLabel.frame = NSMakeRect(16.0, pipVideoHeight + 22.0, pipWidth * 0.50, 22.0);
         self.streamPipHintLabel.frame = NSMakeRect(pipWidth * 0.50 - 12.0, pipVideoHeight + 24.0, pipWidth * 0.50, 18.0);
         self.streamPipButton.frame = self.streamPipContainerView.bounds;
+        [self applyStreamPipFocusStyle];
     }
     if (std::fabs(self.lastLayoutWidth - NSWidth(self.bounds)) > 1.0) {
         self.lastLayoutWidth = NSWidth(self.bounds);
@@ -541,6 +620,11 @@ using namespace OPN;
         [view removeFromSuperview];
     }
     [self.rowCards removeAllObjects];
+
+    if (OpnControllerModeEnabled()) {
+        [self renderControllerStore];
+        return;
+    }
 
     CGFloat width = MAX(960.0, NSWidth(self.bounds));
     CGFloat contentX = 78.0;
@@ -587,6 +671,63 @@ using namespace OPN;
     self.documentView.frame = NSMakeRect(0, 0, width, MAX(NSHeight(self.bounds), rowY + 80.0));
 }
 
+- (void)renderControllerStore {
+    CGFloat width = MAX(980.0, NSWidth(self.bounds));
+    CGFloat contentX = MIN(kControllerStoreContentX, MAX(30.0, width * 0.055));
+    CGFloat contentWidth = MAX(640.0, width - contentX * 2.0);
+    CGFloat y = kControllerStoreHeroTop;
+
+    NSView *ambientPanel = [[NSView alloc] initWithFrame:NSMakeRect(contentX - 30.0, 34.0, contentWidth + 60.0, 600.0)];
+    ambientPanel.wantsLayer = YES;
+    CAGradientLayer *ambientGradient = [CAGradientLayer layer];
+    ambientGradient.colors = @[(id)OpnColor(0x0D1517, 0.84).CGColor,
+                               (id)OpnColor(0x111018, 0.58).CGColor,
+                               (id)OpnColor(0x030507, 0.0).CGColor];
+    ambientGradient.startPoint = CGPointMake(0.0, 0.0);
+    ambientGradient.endPoint = CGPointMake(1.0, 1.0);
+    ambientGradient.frame = ambientPanel.bounds;
+    ambientPanel.layer = ambientGradient;
+    ambientPanel.layer.cornerRadius = 38.0;
+    [self.documentView addSubview:ambientPanel];
+
+    NSTextField *eyebrow = OpnLabel(@"CONTROLLER STORE", NSMakeRect(contentX, 30.0, 220.0, 18.0), 12.0, OpnColor(kBrandGreen), NSFontWeightBold);
+    [self.documentView addSubview:eyebrow];
+    NSTextField *title = OpnLabel(@"Pick Up Where The Cloud Drops You", NSMakeRect(contentX, 52.0, MIN(760.0, contentWidth - 260.0), 44.0), 34.0, OpnColor(kTextPrimary), NSFontWeightBold);
+    title.lineBreakMode = NSLineBreakByTruncatingTail;
+    [self.documentView addSubview:title];
+    NSTextField *hints = OpnLabel(self.streamPipContentView ? @"D-pad browse / A launch / Up to stream" : @"D-pad browse / A launch", NSMakeRect(width - contentX - 360.0, 54.0, 360.0, 26.0), 13.0, OpnColor(kTextSecondary), NSFontWeightSemibold, NSTextAlignmentRight);
+    [self.documentView addSubview:hints];
+
+    const GameInfo *heroGame = [self currentHeroGame];
+    CGFloat heroHeight = 0.0;
+    if (heroGame) {
+        heroHeight = MIN(460.0, MAX(330.0, floor(contentWidth * 0.38)));
+        [self addHeroGame:*heroGame y:y contentX:contentX width:contentWidth height:heroHeight];
+    }
+
+    CGFloat rowY = heroGame ? y + heroHeight + 60.0 : y + 32.0;
+    NSInteger renderedRows = heroGame ? 1 : 0;
+    for (const PanelResult &panel : _panels) {
+        for (const PanelSection &section : panel.sections) {
+            if (section.games.empty()) continue;
+            [self addSection:section index:renderedRows y:rowY contentX:contentX width:width];
+            rowY += kControllerStoreRailHeight;
+            renderedRows++;
+        }
+    }
+
+    if (renderedRows == 0 && !self.loadingView.hidden) {
+        self.statusLabel.stringValue = @"";
+    } else if (renderedRows == 0) {
+        self.statusLabel.stringValue = @"No Store collections found.";
+    } else {
+        self.statusLabel.stringValue = @"";
+    }
+
+    self.documentView.frame = NSMakeRect(0, 0, width, MAX(NSHeight(self.bounds), rowY + 80.0));
+    [self updateFocusedTiles];
+}
+
 - (void)addHeroGame:(const GameInfo &)game y:(CGFloat)y contentX:(CGFloat)contentX width:(CGFloat)width height:(CGFloat)height {
     NSRect heroRect = NSMakeRect(contentX, y, width, height);
     OPNStoreGameTile *hero = [[OPNStoreGameTile alloc] initWithFrame:heroRect game:game prominent:YES];
@@ -600,6 +741,7 @@ using namespace OPN;
         strongSelf.onSelectGame(strongHero.game, strongHero.selectedVariantIndex);
     };
     [self.documentView addSubview:hero];
+    if (OpnControllerModeEnabled()) [self.rowCards addObject:[NSMutableArray arrayWithObject:hero]];
 }
 
 - (void)addSection:(const PanelSection &)section index:(NSInteger)sectionIndex y:(CGFloat)y contentX:(CGFloat)contentX width:(CGFloat)width {
@@ -649,6 +791,206 @@ using namespace OPN;
     }
     rowDocument.frame = NSMakeRect(0, 0, MAX(x + contentX, NSWidth(rowScroll.frame)), kStoreTileHeight + 24.0);
     [self.rowCards addObject:cards];
+}
+
+- (void)normalizeFocusedPosition {
+    if (self.rowCards.count == 0) {
+        self.focusedRowIndex = 0;
+        self.focusedColumnIndex = 0;
+        return;
+    }
+    self.focusedRowIndex = MAX(0, MIN(self.focusedRowIndex, (NSInteger)self.rowCards.count - 1));
+    NSMutableArray<OPNStoreGameTile *> *row = self.rowCards[(NSUInteger)self.focusedRowIndex];
+    if (row.count == 0) {
+        self.focusedColumnIndex = 0;
+        return;
+    }
+    self.focusedColumnIndex = MAX(0, MIN(self.focusedColumnIndex, (NSInteger)row.count - 1));
+}
+
+- (OPNStoreGameTile *)focusedTile {
+    [self normalizeFocusedPosition];
+    if (self.rowCards.count == 0) return nil;
+    NSMutableArray<OPNStoreGameTile *> *row = self.rowCards[(NSUInteger)self.focusedRowIndex];
+    if (row.count == 0 || self.focusedColumnIndex >= (NSInteger)row.count) return nil;
+    return row[(NSUInteger)self.focusedColumnIndex];
+}
+
+- (void)updateFocusedTiles {
+    [self normalizeFocusedPosition];
+    BOOL controllerMode = OpnControllerModeEnabled();
+    for (NSUInteger rowIndex = 0; rowIndex < self.rowCards.count; rowIndex++) {
+        NSMutableArray<OPNStoreGameTile *> *row = self.rowCards[rowIndex];
+        for (NSUInteger columnIndex = 0; columnIndex < row.count; columnIndex++) {
+            BOOL focused = controllerMode && !self.isStreamPipFocused && (NSInteger)rowIndex == self.focusedRowIndex && (NSInteger)columnIndex == self.focusedColumnIndex;
+            [row[columnIndex] setStoreFocused:focused];
+        }
+    }
+}
+
+- (void)scrollFocusedTileIntoView {
+    OPNStoreGameTile *tile = [self focusedTile];
+    if (!tile) return;
+    NSScrollView *railScroll = tile.enclosingScrollView;
+    if ([railScroll isKindOfClass:OPNStoreRailScrollView.class]) {
+        NSClipView *clipView = railScroll.contentView;
+        CGFloat targetX = NSMidX(tile.frame) - NSWidth(clipView.bounds) * 0.5;
+        targetX = MAX(0.0, MIN(targetX, MAX(0.0, NSWidth(railScroll.documentView.frame) - NSWidth(clipView.bounds))));
+        [clipView scrollToPoint:NSMakePoint(targetX, 0.0)];
+        [railScroll reflectScrolledClipView:clipView];
+        [self.documentView scrollRectToVisible:NSInsetRect(railScroll.frame, -20.0, -24.0)];
+        [self.scrollView reflectScrolledClipView:self.scrollView.contentView];
+        return;
+    }
+    [self.documentView scrollRectToVisible:NSInsetRect(tile.frame, -28.0, -28.0)];
+    [self.scrollView reflectScrolledClipView:self.scrollView.contentView];
+}
+
+- (void)focusRow:(NSInteger)row column:(NSInteger)column scrollIntoView:(BOOL)scrollIntoView {
+    if (self.rowCards.count == 0) return;
+    NSInteger previousRow = self.focusedRowIndex;
+    NSInteger previousColumn = self.focusedColumnIndex;
+    self.streamPipFocused = NO;
+    self.focusedRowIndex = row;
+    self.focusedColumnIndex = column;
+    [self normalizeFocusedPosition];
+    [self updateFocusedTiles];
+    [self applyStreamPipFocusStyle];
+    if (scrollIntoView) [self scrollFocusedTileIntoView];
+    if (OpnControllerModeEnabled() && (previousRow != self.focusedRowIndex || previousColumn != self.focusedColumnIndex)) {
+        OpnPlayConsoleTone(OPNConsoleToneMove);
+    }
+}
+
+- (void)setStreamPipFocused:(BOOL)focused {
+    if (focused && self.streamPipContentView == nil) focused = NO;
+    _streamPipFocused = focused;
+    if (focused) [self updateFocusedTiles];
+    [self applyStreamPipFocusStyle];
+}
+
+- (void)applyStreamPipFocusStyle {
+    BOOL focused = self.isStreamPipFocused && self.streamPipContentView != nil && OpnControllerModeEnabled();
+    self.streamPipContainerView.layer.borderWidth = focused ? 3.0 : 1.0;
+    self.streamPipContainerView.layer.borderColor = (focused ? OpnColor(0xFFFFFF, 0.92) : OpnColor(0xFFFFFF, 0.18)).CGColor;
+    self.streamPipContainerView.layer.shadowColor = (focused ? OpnColor(kBrandGreen) : NSColor.blackColor).CGColor;
+    self.streamPipContainerView.layer.shadowOpacity = focused ? 0.48 : 0.32;
+    self.streamPipContainerView.layer.shadowRadius = focused ? 38.0 : 24.0;
+    CATransform3D transform = CATransform3DIdentity;
+    if (focused) transform = CATransform3DScale(transform, 1.035, 1.035, 1.0);
+    self.streamPipContainerView.layer.transform = transform;
+    self.streamPipHintLabel.textColor = focused ? OpnColor(kBrandGreen) : OpnColor(kTextSecondary);
+}
+
+- (void)moveFocusByRows:(NSInteger)rows columns:(NSInteger)columns {
+    if (!OpnControllerModeEnabled()) return;
+    if (rows != 0 && self.streamPipContentView) {
+        if (self.isStreamPipFocused && rows > 0) {
+            [self focusRow:0 column:self.focusedColumnIndex scrollIntoView:YES];
+            return;
+        }
+        if (!self.isStreamPipFocused && self.focusedRowIndex == 0 && rows < 0) {
+            [self setStreamPipFocused:YES];
+            [self scrollFocusedTileIntoView];
+            OpnPlayConsoleTone(OPNConsoleToneMove);
+            return;
+        }
+    }
+    if (self.isStreamPipFocused) {
+        if (columns != 0 || rows != 0) [self focusRow:0 column:self.focusedColumnIndex scrollIntoView:YES];
+        return;
+    }
+    [self focusRow:self.focusedRowIndex + rows column:self.focusedColumnIndex + columns scrollIntoView:YES];
+}
+
+- (void)launchFocusedGame {
+    if (self.isStreamPipFocused && self.onStreamPictureInPictureSelected) {
+        OpnPlayConsoleTone(OPNConsoleToneSelect);
+        self.onStreamPictureInPictureSelected();
+        return;
+    }
+    OPNStoreGameTile *tile = [self focusedTile];
+    if (!tile || !self.onSelectGame) return;
+    if (OpnControllerModeEnabled()) OpnPlayConsoleTone(OPNConsoleToneSelect);
+    int variantIndex = tile.selectedVariantIndex >= 0 ? tile.selectedVariantIndex : 0;
+    self.onSelectGame(tile.game, variantIndex);
+}
+
+- (void)keyDown:(NSEvent *)event {
+    if (!OpnControllerModeEnabled()) {
+        [super keyDown:event];
+        return;
+    }
+    switch (event.keyCode) {
+        case 123: [self moveFocusByRows:0 columns:-1]; return;
+        case 124: [self moveFocusByRows:0 columns:1]; return;
+        case 125: [self moveFocusByRows:1 columns:0]; return;
+        case 126: [self moveFocusByRows:-1 columns:0]; return;
+        case 36:
+        case 49:
+            [self launchFocusedGame];
+            return;
+        case 53:
+            if (self.isStreamPipFocused) [self setStreamPipFocused:NO];
+            return;
+        default:
+            break;
+    }
+    [super keyDown:event];
+}
+
+- (void)startGamepadNavigationIfNeeded {
+    if (!OpnControllerModeEnabled() || self.gamepadNavigationTimer || !OPNStoreGamepadNavigationActive(self)) return;
+    self.gamepadNavigationTimer = [NSTimer scheduledTimerWithTimeInterval:(1.0 / 30.0)
+                                                                   target:self
+                                                                 selector:@selector(pollGamepadNavigation)
+                                                                 userInfo:nil
+                                                                  repeats:YES];
+}
+
+- (void)stopGamepadNavigation {
+    [self.gamepadNavigationTimer invalidate];
+    self.gamepadNavigationTimer = nil;
+    self.previousGamepadButtons = 0;
+}
+
+- (void)controllerDidConnect:(NSNotification *)notification {
+    (void)notification;
+    [self startGamepadNavigationIfNeeded];
+}
+
+- (void)controllerDidDisconnect:(NSNotification *)notification {
+    (void)notification;
+    self.previousGamepadButtons = 0;
+}
+
+- (void)pollGamepadNavigation {
+    if (!OpnControllerModeEnabled() || !OPNStoreGamepadNavigationActive(self)) {
+        [self stopGamepadNavigation];
+        return;
+    }
+    [self.window makeFirstResponder:self];
+    uint16_t buttons = OPNStoreGamepadButtons();
+    uint16_t pressed = buttons & (uint16_t)~self.previousGamepadButtons;
+    CFTimeInterval now = CACurrentMediaTime();
+    BOOL repeatMove = (now - self.lastGamepadMoveTime) > 0.22;
+    uint16_t moves = buttons & ((1u << 2) | (1u << 3) | (1u << 4) | (1u << 5));
+    if (moves && repeatMove) {
+        pressed |= moves;
+        self.lastGamepadMoveTime = now;
+    }
+    if (pressed & (1u << 0)) [self launchFocusedGame];
+    if (pressed & (1u << 1)) {
+        if (self.isStreamPipFocused) {
+            [self setStreamPipFocused:NO];
+            OpnPlayConsoleTone(OPNConsoleToneBack);
+        }
+    }
+    if (pressed & (1u << 2)) [self moveFocusByRows:-1 columns:0];
+    if (pressed & (1u << 3)) [self moveFocusByRows:1 columns:0];
+    if (pressed & (1u << 4)) [self moveFocusByRows:0 columns:-1];
+    if (pressed & (1u << 5)) [self moveFocusByRows:0 columns:1];
+    self.previousGamepadButtons = buttons;
 }
 
 @end
