@@ -4,6 +4,7 @@
 #import "../common/OPNColorTokens.h"
 #import "../common/OPNCoreAnimationCoordinator.h"
 #import "../common/OPNUIHelpers.h"
+#import "../streaming/OPNStreamPreferences.h"
 #import <GameController/GameController.h>
 #include <QuartzCore/QuartzCore.h>
 #include <algorithm>
@@ -15,6 +16,8 @@ static const CGFloat kNavHeight = 62.0;
 static const CGFloat kToolbarHeight = 82.0;
 static const CGFloat kControllerRailSelectorOverlap = 22.0;
 static const CGFloat kControllerRailDetailOverlap = 22.0;
+static const CGFloat kControllerGameHubMinimumHeight = 374.0;
+static const CGFloat kControllerGameHubVerticalReserve = 96.0;
 static NSString *const OPNFavoriteGameIdsDefaultsKey = @"OpenNOW.Library.FavoriteGameIds";
 
 static unsigned OPNControllerAccentRGB(void) {
@@ -257,6 +260,7 @@ static NSAttributedString *OPNOutlinedControllerDescriptionText(NSString *text) 
 @end
 
 @class OPNControllerPromptBarView;
+@class OPNControllerGameHubView;
 
 @interface OPNGameCatalogView ()
 @property (nonatomic, strong) NSScrollView *scrollView;
@@ -283,6 +287,7 @@ static NSAttributedString *OPNOutlinedControllerDescriptionText(NSString *text) 
 @property (nonatomic, strong) NSTextField *controllerDetailStoreLabel;
 @property (nonatomic, strong) NSTextField *controllerDetailStatsLabel;
 @property (nonatomic, strong) NSTextField *controllerDetailFeaturesLabel;
+@property (nonatomic, strong) OPNControllerGameHubView *controllerGameHubView;
 @property (nonatomic, strong) OPNControllerPromptBarView *controllerPromptBarView;
 @property (nonatomic, strong) NSView *streamPipContainerView;
 @property (nonatomic, strong) NSView *streamPipHostView;
@@ -516,6 +521,155 @@ static NSImage *OPNControllerPromptIcon(NSString *button, OPNControllerPromptSty
 @interface OPNControllerPromptBarView : NSView
 @property (nonatomic, assign) BOOL includeStore;
 @property (nonatomic, assign) BOOL includeBack;
+@end
+
+@interface OPNControllerGameHubView : NSView
+@property (nonatomic, copy) NSString *gameTitle;
+@property (nonatomic, copy) NSString *storeTitle;
+@property (nonatomic, copy) NSString *launchStatus;
+@property (nonatomic, copy) NSString *sessionStatus;
+@property (nonatomic, copy) NSString *streamStatus;
+@property (nonatomic, copy) NSString *controllerStatus;
+@property (nonatomic, copy) NSString *favoriteStatus;
+@property (nonatomic, assign) unsigned accentRGB;
+@end
+
+@implementation OPNControllerGameHubView
+
+- (instancetype)initWithFrame:(NSRect)frame {
+    self = [super initWithFrame:frame];
+    if (self) {
+        self.wantsLayer = YES;
+        _accentRGB = OPNControllerAccentRGB();
+        _gameTitle = @"";
+        _storeTitle = @"";
+        _launchStatus = @"";
+        _sessionStatus = @"";
+        _streamStatus = @"";
+        _controllerStatus = @"";
+        _favoriteStatus = @"";
+    }
+    return self;
+}
+
+- (BOOL)isFlipped { return YES; }
+
+- (void)setAccentRGB:(unsigned)accentRGB {
+    accentRGB &= 0xFFFFFF;
+    if (_accentRGB == accentRGB) return;
+    _accentRGB = accentRGB;
+    [self setNeedsDisplay:YES];
+}
+
+- (void)setGameTitle:(NSString *)gameTitle {
+    _gameTitle = [gameTitle copy] ?: @"";
+    [self setNeedsDisplay:YES];
+}
+
+- (void)setStoreTitle:(NSString *)storeTitle {
+    _storeTitle = [storeTitle copy] ?: @"";
+    [self setNeedsDisplay:YES];
+}
+
+- (void)setLaunchStatus:(NSString *)launchStatus {
+    _launchStatus = [launchStatus copy] ?: @"";
+    [self setNeedsDisplay:YES];
+}
+
+- (void)setSessionStatus:(NSString *)sessionStatus {
+    _sessionStatus = [sessionStatus copy] ?: @"";
+    [self setNeedsDisplay:YES];
+}
+
+- (void)setStreamStatus:(NSString *)streamStatus {
+    _streamStatus = [streamStatus copy] ?: @"";
+    [self setNeedsDisplay:YES];
+}
+
+- (void)setControllerStatus:(NSString *)controllerStatus {
+    _controllerStatus = [controllerStatus copy] ?: @"";
+    [self setNeedsDisplay:YES];
+}
+
+- (void)setFavoriteStatus:(NSString *)favoriteStatus {
+    _favoriteStatus = [favoriteStatus copy] ?: @"";
+    [self setNeedsDisplay:YES];
+}
+
+- (NSDictionary<NSAttributedStringKey, id> *)attributesWithSize:(CGFloat)size
+                                                         weight:(NSFontWeight)weight
+                                                          color:(NSColor *)color
+                                                      alignment:(NSTextAlignment)alignment {
+    NSMutableParagraphStyle *paragraph = [[NSMutableParagraphStyle alloc] init];
+    paragraph.lineBreakMode = NSLineBreakByTruncatingTail;
+    paragraph.alignment = alignment;
+    return @{
+        NSFontAttributeName: [NSFont systemFontOfSize:size weight:weight],
+        NSForegroundColorAttributeName: color,
+        NSParagraphStyleAttributeName: paragraph,
+    };
+}
+
+- (void)drawStatusRowWithTitle:(NSString *)title value:(NSString *)value y:(CGFloat)y {
+    NSRect bounds = self.bounds;
+    CGFloat x = 22.0;
+    CGFloat width = MAX(0.0, NSWidth(bounds) - 44.0);
+    NSRect rowRect = NSMakeRect(x, y, width, 38.0);
+    NSBezierPath *row = [NSBezierPath bezierPathWithRoundedRect:rowRect xRadius:13.0 yRadius:13.0];
+    [OpnColor(0xFFFFFF, 0.045) setFill];
+    [row fill];
+    OPNStrokePath(row, OpnColor(0xFFFFFF, 0.070), 1.0);
+
+    [title drawInRect:NSMakeRect(NSMinX(rowRect) + 14.0, NSMinY(rowRect) + 11.0, width * 0.35, 18.0)
+       withAttributes:[self attributesWithSize:11.0 weight:NSFontWeightSemibold color:OpnColor(0xF4FFF7, 0.58) alignment:NSTextAlignmentLeft]];
+    [value drawInRect:NSMakeRect(NSMinX(rowRect) + width * 0.34, NSMinY(rowRect) + 10.0, width * 0.62, 18.0)
+       withAttributes:[self attributesWithSize:12.0 weight:NSFontWeightSemibold color:OpnColor(0xFFFFFF, 0.88) alignment:NSTextAlignmentRight]];
+}
+
+- (void)drawRect:(NSRect)dirtyRect {
+    (void)dirtyRect;
+    NSRect bounds = self.bounds;
+    if (NSWidth(bounds) < 80.0 || NSHeight(bounds) < 80.0) return;
+
+    NSBezierPath *panel = [NSBezierPath bezierPathWithRoundedRect:NSInsetRect(bounds, 0.5, 0.5) xRadius:24.0 yRadius:24.0];
+    NSGradient *panelGradient = [[NSGradient alloc] initWithColors:@[
+        OpnColor(OPNControllerAccentBlackRGB(0.93), 0.80),
+        OpnColor(OPNControllerAccentBlackRGB(0.88), 0.64),
+        OpnColor(0x05070A, 0.70),
+    ]];
+    [panelGradient drawInBezierPath:panel angle:-18.0];
+    OPNStrokePath(panel, OpnColor(0xFFFFFF, 0.15), 1.0);
+
+    NSRect glowRect = NSMakeRect(22.0, 20.0, 72.0, 4.0);
+    NSBezierPath *glow = [NSBezierPath bezierPathWithRoundedRect:glowRect xRadius:2.0 yRadius:2.0];
+    [OpnColor(self.accentRGB, 0.86) setFill];
+    [glow fill];
+
+    [@"GAME HUB" drawInRect:NSMakeRect(22.0, 34.0, NSWidth(bounds) - 44.0, 18.0)
+             withAttributes:[self attributesWithSize:11.0 weight:NSFontWeightBold color:OpnColor(0xFFFFFF, 0.55) alignment:NSTextAlignmentLeft]];
+    [self.gameTitle drawInRect:NSMakeRect(22.0, 56.0, NSWidth(bounds) - 44.0, 31.0)
+                withAttributes:[self attributesWithSize:23.0 weight:NSFontWeightSemibold color:OpnColor(OPN::kTextPrimary) alignment:NSTextAlignmentLeft]];
+    [self.storeTitle drawInRect:NSMakeRect(22.0, 88.0, NSWidth(bounds) - 44.0, 20.0)
+                 withAttributes:[self attributesWithSize:12.0 weight:NSFontWeightMedium color:OpnColor(0xF4FFF7, 0.68) alignment:NSTextAlignmentLeft]];
+
+    CGFloat playY = 126.0;
+    NSRect playRect = NSMakeRect(22.0, playY, NSWidth(bounds) - 44.0, 54.0);
+    NSBezierPath *play = [NSBezierPath bezierPathWithRoundedRect:playRect xRadius:20.0 yRadius:20.0];
+    NSGradient *playGradient = [[NSGradient alloc] initWithStartingColor:OpnColor(self.accentRGB, 0.92)
+                                                             endingColor:OpnColor(OPNControllerAccentSoftRGB(), 0.92)];
+    [playGradient drawInBezierPath:play angle:0.0];
+    [@"Play Now" drawInRect:NSMakeRect(NSMinX(playRect) + 18.0, NSMinY(playRect) + 15.0, NSWidth(playRect) * 0.48, 24.0)
+             withAttributes:[self attributesWithSize:17.0 weight:NSFontWeightBold color:OpnColor(OPNControllerAccentBlackRGB(0.92)) alignment:NSTextAlignmentLeft]];
+    [self.launchStatus drawInRect:NSMakeRect(NSMinX(playRect) + NSWidth(playRect) * 0.46, NSMinY(playRect) + 17.0, NSWidth(playRect) * 0.46, 20.0)
+                   withAttributes:[self attributesWithSize:12.0 weight:NSFontWeightSemibold color:OpnColor(OPNControllerAccentBlackRGB(0.88), 0.74) alignment:NSTextAlignmentRight]];
+
+    CGFloat rowY = playY + 72.0;
+    [self drawStatusRowWithTitle:@"SESSION" value:self.sessionStatus y:rowY];
+    [self drawStatusRowWithTitle:@"STREAM" value:self.streamStatus y:rowY + 46.0];
+    [self drawStatusRowWithTitle:@"INPUT" value:self.controllerStatus y:rowY + 92.0];
+    [self drawStatusRowWithTitle:@"LIBRARY" value:self.favoriteStatus y:rowY + 138.0];
+}
+
 @end
 
 @implementation OPNControllerPromptBarView
@@ -779,6 +933,10 @@ using namespace OPN;
         _controllerDetailFeaturesLabel = OpnLabel(@"", NSZeroRect, 14.0, OpnColor(kTextMuted), NSFontWeightRegular);
         _controllerDetailFeaturesLabel.maximumNumberOfLines = 6;
         [_controllerDetailView addSubview:_controllerDetailFeaturesLabel];
+
+        _controllerGameHubView = [[OPNControllerGameHubView alloc] initWithFrame:NSZeroRect];
+        _controllerGameHubView.hidden = YES;
+        [_controllerDetailView addSubview:_controllerGameHubView];
 
         _controllerPromptBarView = [[OPNControllerPromptBarView alloc] initWithFrame:NSZeroRect];
         _controllerPromptBarView.wantsLayer = YES;
@@ -1430,7 +1588,15 @@ using namespace OPN;
     self.controllerDetailAccentLayer.frame = NSMakeRect(64.0, 18.0, 74.0, 3.0);
     BOOL compactDetail = detailHeight < 260.0;
     CGFloat heroX = 64.0;
-    CGFloat heroWidth = MAX(260.0, detailWidth - 128.0);
+    BOOL showStreamPip = controllerMode && self.streamPipContentView != nil;
+    CGFloat availableGameHubHeight = MAX(0.0, detailHeight - kControllerGameHubVerticalReserve);
+    BOOL showGameHub = controllerMode && !showStreamPip && self.cardViews.count > 0 && detailWidth >= 1040.0 && availableGameHubHeight >= kControllerGameHubMinimumHeight;
+    CGFloat gameHubWidth = showGameHub ? MIN(460.0, MAX(340.0, detailWidth * 0.27)) : 0.0;
+    CGFloat gameHubHeight = showGameHub ? MIN(390.0, availableGameHubHeight) : 0.0;
+    CGFloat gameHubX = detailWidth - gameHubWidth - 64.0;
+    CGFloat gameHubY = showGameHub ? MAX(32.0, floor((detailHeight - gameHubHeight) * 0.42)) : 0.0;
+    CGFloat rightContextInset = showGameHub ? gameHubWidth + 104.0 : 0.0;
+    CGFloat heroWidth = MAX(260.0, detailWidth - 128.0 - rightContextInset);
     self.controllerDetailTitleLabel.font = [NSFont systemFontOfSize:compactDetail ? 40.0 : 58.0 weight:NSFontWeightSemibold];
     self.controllerDetailTitleLabel.frame = NSMakeRect(heroX, compactDetail ? 20.0 : 26.0, heroWidth, compactDetail ? 50.0 : 70.0);
     self.controllerDetailMetaLabel.frame = NSMakeRect(heroX + 2.0, compactDetail ? 82.0 : 108.0, heroWidth, 24.0);
@@ -1441,7 +1607,12 @@ using namespace OPN;
     self.controllerDetailFeaturesLabel.hidden = NO;
     self.controllerDetailFeaturesLabel.frame = NSMakeRect(heroX + 2.0, featuresY, MIN(980.0, heroWidth), MAX(0.0, detailHeight - featuresY - 88.0));
     self.controllerPromptBarView.frame = NSMakeRect(heroX + 2.0, MAX(188.0, detailHeight - 52.0), heroWidth, 36.0);
-    BOOL showStreamPip = controllerMode && self.streamPipContentView != nil;
+    self.controllerGameHubView.hidden = !showGameHub;
+    if (showGameHub) {
+        self.controllerGameHubView.frame = NSMakeRect(gameHubX, gameHubY, gameHubWidth, gameHubHeight);
+    } else {
+        self.controllerGameHubView.frame = NSZeroRect;
+    }
     self.streamPipContainerView.hidden = !showStreamPip;
     if (showStreamPip) {
         CGFloat pipWidth = MIN(420.0, MAX(300.0, width * 0.24));
@@ -1612,6 +1783,7 @@ using namespace OPN;
     self.controllerDetailAccentLayer.backgroundColor = [detailAccentSoftColor colorWithAlphaComponent:0.90].CGColor;
     self.controllerDetailView.layer.shadowColor = detailAccentColor.CGColor;
     self.controllerDetailStoreLabel.textColor = NSColor.whiteColor;
+    self.controllerGameHubView.accentRGB = self.controllerElectricBackgroundView.accentRGB;
     [CATransaction commit];
     if (!card) {
         self.controllerDetailTitleLabel.stringValue = @"Select a game";
@@ -1619,6 +1791,7 @@ using namespace OPN;
         self.controllerDetailStoreLabel.attributedStringValue = OPNOutlinedControllerStoreText(@"");
         self.controllerDetailStatsLabel.stringValue = @"";
         self.controllerDetailFeaturesLabel.stringValue = @"";
+        self.controllerGameHubView.hidden = YES;
         self.controllerPromptBarView.hidden = YES;
         return;
     }
@@ -1649,6 +1822,25 @@ using namespace OPN;
     if (description.length == 0) description = OPNCatalogJoinedStrings(game.featureLabels, @"");
     if (description.length == 0) description = @"Loading game details...";
     self.controllerDetailFeaturesLabel.attributedStringValue = OPNOutlinedControllerDescriptionText(description);
+    StreamPreferenceProfile streamProfile = LoadStreamPreferenceProfile();
+    BOOL controllerConnected = GCController.controllers.count > 0;
+    NSString *launchStatus = game.playabilityState.empty()
+        ? @"Ready"
+        : OPNCatalogString(game.playabilityState, @"Ready").capitalizedString;
+    NSString *sessionStatus = self.streamPipContentView ? @"Stream active" : @"Ready to launch";
+    NSString *streamStatus = [NSString stringWithFormat:@"%@ • %d FPS • %d Mbps",
+        OPNCatalogString(streamProfile.resolution.Label(), @"Auto"),
+        streamProfile.fps,
+        streamProfile.maxBitrateMbps];
+    NSString *controllerStatus = controllerConnected ? @"Controller connected" : @"Connect controller";
+    NSString *favoriteStatus = [self isFavoriteGame:game] ? @"Favorite saved" : @"Not favorited";
+    self.controllerGameHubView.gameTitle = OPNCatalogString(game.title, @"Untitled Game");
+    self.controllerGameHubView.storeTitle = [NSString stringWithFormat:@"%@ • %@", storePrefix, store];
+    self.controllerGameHubView.launchStatus = launchStatus;
+    self.controllerGameHubView.sessionStatus = sessionStatus;
+    self.controllerGameHubView.streamStatus = streamStatus;
+    self.controllerGameHubView.controllerStatus = controllerStatus;
+    self.controllerGameHubView.favoriteStatus = favoriteStatus;
     self.controllerPromptBarView.hidden = NO;
     self.controllerPromptBarView.includeStore = game.variants.size() > 1;
     self.controllerPromptBarView.includeBack = NO;
