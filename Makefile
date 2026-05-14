@@ -2,6 +2,7 @@ APP_NAME := OpenNOW
 BUILD_DIR := build
 SRC := $(shell find src -name '*.mm')
 BIN := $(BUILD_DIR)/$(APP_NAME)
+INFO_PLIST := OpenNOW-Info.plist
 
 CXX := clang++
 WEBRTC_FRAMEWORK_DIR ?= third_party/webrtc-official
@@ -25,7 +26,7 @@ WEBRTC_LIBS :=
 endif
 
 CXXFLAGS := -std=c++20 -Wall -Wextra -Wpedantic -Wno-deprecated-declarations -Wno-gnu-conditional-omitted-operand -fobjc-arc -Isrc $(WEBRTC_CFLAGS)
-LDFLAGS := -framework Cocoa -framework QuartzCore -framework Metal -framework MetalKit -framework CoreImage -framework AuthenticationServices -framework AVFoundation -framework AVKit -framework CoreMedia -framework OpenGL -framework GameController -framework ApplicationServices -framework CoreAudio -framework ScreenCaptureKit $(WEBRTC_LIBS)
+LDFLAGS := -framework Cocoa -framework QuartzCore -framework Metal -framework MetalKit -framework CoreImage -framework AuthenticationServices -framework AVFoundation -framework AVKit -framework CoreMedia -framework OpenGL -framework GameController -framework ApplicationServices -framework CoreAudio -framework ScreenCaptureKit -Wl,-sectcreate,__TEXT,__info_plist,$(INFO_PLIST) $(WEBRTC_LIBS)
 
 .PHONY: all run clean
 

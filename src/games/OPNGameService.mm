@@ -721,13 +721,8 @@ void GameService::BrowseCatalogGames(const std::string &searchQuery,
                                     NSDictionary *apps = metaData[@"apps"];
                                     NSArray *metadataItems = [apps isKindOfClass:[NSDictionary class]] ? apps[@"items"] : nil;
                                     if ([metadataItems isKindOfClass:[NSArray class]]) {
-                                        static BOOL loggedMetadataShape = NO;
                                         for (NSDictionary *metadataApp in metadataItems) {
                                             if (![metadataApp isKindOfClass:[NSDictionary class]]) continue;
-                                            if (!loggedMetadataShape) {
-                                                loggedMetadataShape = YES;
-                                                NSLog(@"[GameService] appMetaData sample keys=%@ itemMetadata=%@", metadataApp.allKeys, [metadataApp[@"itemMetadata"] isKindOfClass:[NSDictionary class]] ? [(NSDictionary *)metadataApp[@"itemMetadata"] allKeys] : @[]);
-                                            }
                                             NSString *appId = SafeStr(metadataApp[@"id"]);
                                             if (appId.length > 0) metadataById[appId] = metadataApp;
                                         }

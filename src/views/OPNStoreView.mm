@@ -306,6 +306,12 @@ static int OPNStoreSelectedLibraryVariantIndex(const OPN::GameInfo &libraryGame)
 @property (nonatomic, assign) std::vector<OPN::GameInfo> libraryGames;
 @property (nonatomic, strong) NSMutableArray<NSMutableArray<OPNStoreGameTile *> *> *rowCards;
 @property (nonatomic, strong) NSTimer *heroRotationTimer;
+@property (nonatomic, strong) NSView *streamPipContainerView;
+@property (nonatomic, strong) NSView *streamPipHostView;
+@property (nonatomic, strong) NSTextField *streamPipTitleLabel;
+@property (nonatomic, strong) NSTextField *streamPipHintLabel;
+@property (nonatomic, strong) NSButton *streamPipButton;
+@property (nonatomic, weak) NSView *streamPipContentView;
 @property (nonatomic, assign) NSInteger currentHeroIndex;
 @property (nonatomic, assign) CGFloat lastLayoutWidth;
 @end
@@ -340,6 +346,39 @@ using namespace OPN;
         _loadingView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
         _loadingView.hidden = YES;
         [self addSubview:_loadingView];
+
+        _streamPipContainerView = [[NSView alloc] initWithFrame:NSZeroRect];
+        _streamPipContainerView.hidden = YES;
+        _streamPipContainerView.wantsLayer = YES;
+        _streamPipContainerView.layer.cornerRadius = 22.0;
+        _streamPipContainerView.layer.masksToBounds = NO;
+        _streamPipContainerView.layer.backgroundColor = OpnColor(0x030507, 0.72).CGColor;
+        _streamPipContainerView.layer.borderWidth = 1.0;
+        _streamPipContainerView.layer.borderColor = OpnColor(0xFFFFFF, 0.18).CGColor;
+        _streamPipContainerView.layer.shadowColor = NSColor.blackColor.CGColor;
+        _streamPipContainerView.layer.shadowOpacity = 0.32;
+        _streamPipContainerView.layer.shadowRadius = 24.0;
+        _streamPipContainerView.layer.shadowOffset = CGSizeMake(0.0, 12.0);
+
+        _streamPipHostView = [[NSView alloc] initWithFrame:NSZeroRect];
+        _streamPipHostView.wantsLayer = YES;
+        _streamPipHostView.layer.cornerRadius = 18.0;
+        _streamPipHostView.layer.masksToBounds = YES;
+        _streamPipHostView.layer.backgroundColor = NSColor.blackColor.CGColor;
+        [_streamPipContainerView addSubview:_streamPipHostView];
+
+        _streamPipTitleLabel = OpnLabel(@"Current Stream", NSZeroRect, 14.0, OpnColor(kTextPrimary), NSFontWeightSemibold);
+        [_streamPipContainerView addSubview:_streamPipTitleLabel];
+        _streamPipHintLabel = OpnLabel(@"Press A to return", NSZeroRect, 12.0, OpnColor(kTextSecondary), NSFontWeightMedium, NSTextAlignmentRight);
+        [_streamPipContainerView addSubview:_streamPipHintLabel];
+
+        _streamPipButton = [[NSButton alloc] initWithFrame:NSZeroRect];
+        _streamPipButton.bordered = NO;
+        _streamPipButton.title = @"";
+        _streamPipButton.target = self;
+        _streamPipButton.action = @selector(streamPictureInPicturePressed:);
+        [_streamPipContainerView addSubview:_streamPipButton];
+        [self addSubview:_streamPipContainerView];
     }
     return self;
 }
@@ -377,6 +416,32 @@ using namespace OPN;
 - (void)setLibraryGames:(const std::vector<OPN::GameInfo> &)games {
     _libraryGames = games;
     [self renderStore];
+}
+
+- (void)setStreamPictureInPictureView:(NSView *)view title:(NSString *)title {
+    if (self.streamPipContentView == view) {
+        self.streamPipTitleLabel.stringValue = title.length > 0 ? title : @"Current Stream";
+        [self setNeedsLayout:YES];
+        return;
+    }
+
+    [self.streamPipContentView removeFromSuperview];
+    self.streamPipContentView = nil;
+    self.streamPipTitleLabel.stringValue = title.length > 0 ? title : @"Current Stream";
+    self.streamPipHintLabel.stringValue = @"Press A to return";
+
+    if (view) {
+        view.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+        view.frame = self.streamPipHostView.bounds;
+        [self.streamPipHostView addSubview:view];
+        self.streamPipContentView = view;
+    }
+    [self setNeedsLayout:YES];
+}
+
+- (void)streamPictureInPicturePressed:(id)sender {
+    (void)sender;
+    if (self.onStreamPictureInPictureSelected) self.onStreamPictureInPictureSelected();
 }
 
 - (int)selectedVariantIndexForStoreGame:(const GameInfo &)storeGame {
@@ -450,6 +515,21 @@ using namespace OPN;
     self.scrollView.frame = NSMakeRect(0.0, navClearance, NSWidth(self.bounds), MAX(0.0, NSHeight(self.bounds) - navClearance));
     self.loadingView.frame = self.bounds;
     self.statusLabel.frame = NSMakeRect(0, NSHeight(self.bounds) * 0.5, NSWidth(self.bounds), 26.0);
+    BOOL showStreamPip = OpnControllerModeEnabled() && self.streamPipContentView != nil;
+    self.streamPipContainerView.hidden = !showStreamPip;
+    if (showStreamPip) {
+        CGFloat pipWidth = MIN(420.0, MAX(300.0, NSWidth(self.bounds) * 0.24));
+        CGFloat pipVideoHeight = floor(pipWidth * 9.0 / 16.0);
+        CGFloat pipHeight = pipVideoHeight + 54.0;
+        CGFloat pipX = MAX(28.0, NSWidth(self.bounds) - pipWidth - 42.0);
+        CGFloat pipY = MAX(116.0, MIN(NSHeight(self.bounds) - pipHeight - 34.0, 144.0));
+        self.streamPipContainerView.frame = NSMakeRect(pipX, pipY, pipWidth, pipHeight);
+        self.streamPipHostView.frame = NSMakeRect(12.0, 12.0, pipWidth - 24.0, pipVideoHeight);
+        self.streamPipContentView.frame = self.streamPipHostView.bounds;
+        self.streamPipTitleLabel.frame = NSMakeRect(16.0, pipVideoHeight + 22.0, pipWidth * 0.50, 22.0);
+        self.streamPipHintLabel.frame = NSMakeRect(pipWidth * 0.50 - 12.0, pipVideoHeight + 24.0, pipWidth * 0.50, 18.0);
+        self.streamPipButton.frame = self.streamPipContainerView.bounds;
+    }
     if (std::fabs(self.lastLayoutWidth - NSWidth(self.bounds)) > 1.0) {
         self.lastLayoutWidth = NSWidth(self.bounds);
         [self renderStore];

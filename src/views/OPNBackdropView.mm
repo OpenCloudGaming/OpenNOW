@@ -446,12 +446,18 @@ static CGFloat OPNControllerAccountMenuWidth(NSRect bounds) {
     BOOL showNavigation = self.mode != OPNBackdropModeAuth;
     BOOL controllerMode = OpnControllerModeEnabled();
     if (controllerMode && showNavigation) {
-        _storeNavFrame = NSZeroRect;
-        _libraryNavFrame = NSMakeRect(30.0, 68.0, 82.0, 34.0);
-        _settingsNavFrame = NSMakeRect(124.0, 68.0, 92.0, 34.0);
+        CGFloat storeWidth = 78.0;
+        CGFloat gamesWidth = 82.0;
+        CGFloat settingsWidth = 92.0;
+        CGFloat spacing = 10.0;
+        CGFloat navWidth = storeWidth + gamesWidth + settingsWidth + spacing * 2.0;
+        CGFloat x = floor((NSWidth(self.bounds) - navWidth) / 2.0);
+        _storeNavFrame = NSMakeRect(x, 68.0, storeWidth, 34.0);
+        _libraryNavFrame = NSMakeRect(NSMaxX(_storeNavFrame) + spacing, 68.0, gamesWidth, 34.0);
+        _settingsNavFrame = NSMakeRect(NSMaxX(_libraryNavFrame) + spacing, 68.0, settingsWidth, 34.0);
         _accountFrame = NSMakeRect(NSWidth(self.bounds) - 304.0, 10.0, 284.0, 92.0);
     }
-    BOOL showStore = showNavigation && !controllerMode;
+    BOOL showStore = showNavigation;
     _storeButton.frame = showStore && !NSEqualRects(_storeNavFrame, NSZeroRect) ? _storeNavFrame : NSZeroRect;
     _libraryButton.frame = showNavigation && !NSEqualRects(_libraryNavFrame, NSZeroRect) ? _libraryNavFrame : NSZeroRect;
     _settingsButton.frame = showNavigation && !NSEqualRects(_settingsNavFrame, NSZeroRect) ? _settingsNavFrame : NSZeroRect;
@@ -529,11 +535,10 @@ static CGFloat OPNControllerAccountMenuWidth(NSRect bounds) {
                 withAttributes:OpnTextStyle(16.0, OpnColor(kTextPrimary), NSFontWeightSemibold)];
     }
 
-    NSArray<NSString *> *items = controllerMode ? @[@"Games", @"Settings"] : @[@"Store", @"Library", @"Settings"];
+    NSArray<NSString *> *items = controllerMode ? @[@"Store", @"Games", @"Settings"] : @[@"Store", @"Library", @"Settings"];
     CGFloat widths[] = {82.0, 92.0, 78.0};
-    CGFloat navWidth = controllerMode ? widths[0] + widths[1] + 10.0 : widths[2] + widths[0] + widths[1] + 8.0;
+    CGFloat navWidth = controllerMode ? widths[2] + widths[0] + widths[1] + 20.0 : widths[2] + widths[0] + widths[1] + 8.0;
     CGFloat x = floor((NSWidth(bounds) - navWidth) / 2.0);
-    _storeNavFrame = controllerMode ? NSZeroRect : _storeNavFrame;
     CGFloat navRowY = controllerMode ? 64.0 : 15.0;
     NSRect segmentedRect = NSMakeRect(x - 8.0, navRowY, navWidth + 16.0, controllerMode ? 42.0 : 34.0);
     NSBezierPath *segmented = [NSBezierPath bezierPathWithRoundedRect:segmentedRect xRadius:controllerMode ? 21.0 : 10.0 yRadius:controllerMode ? 21.0 : 10.0];
@@ -894,7 +899,7 @@ static CGFloat OPNControllerAccountMenuWidth(NSRect bounds) {
         [self dismissControllerAccountMenu];
         return;
     }
-    if (!OpnControllerModeEnabled() && NSPointInRect(point, _storeNavFrame)) {
+    if (NSPointInRect(point, _storeNavFrame)) {
         if (self.onStoreSelected) self.onStoreSelected();
         return;
     }

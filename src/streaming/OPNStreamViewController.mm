@@ -67,12 +67,18 @@ static constexpr NSTimeInterval OPNSignalingRemoteIceGraceInterval = 5.0;
 @property (nonatomic, assign) std::string appId;
 @property (nonatomic, assign) std::string apiToken;
 @property (nonatomic, assign) std::string selectedStore;
+@property (nonatomic, assign) std::string resumeSessionId;
+@property (nonatomic, assign) std::string resumeServer;
 @property (nonatomic, assign) BOOL accountLinked;
+@property (nonatomic, assign) BOOL resumeExistingSession;
 @property (nonatomic, assign) BOOL streamStarted;
 @property (nonatomic, assign) BOOL launchSignpostActive;
 @property (nonatomic, assign) CFTimeInterval launchStartTime;
 @property (nonatomic, assign) os_signpost_id_t launchSignpostId;
 - (void)finishLaunchMeasurementWithSuccess:(BOOL)success reason:(NSString *)reason;
+- (void)connectWithSessionInfo:(const OPN::SessionInfo &)sessionInfo
+                       settings:(const OPN::StreamSettings &)settings
+               launchGeneration:(NSUInteger)launchGeneration;
 @end
 
 static os_log_t OPNStreamPerformanceLog() {
@@ -753,10 +759,26 @@ static void OPNReleaseStreamSessionAfterCallbacks(OPN::IStreamSession *session) 
 }
 
 - (instancetype)initWithGameTitle:(const std::string &)title
-                            appId:(const std::string &)appId
-                         apiToken:(const std::string &)token
-                    accountLinked:(bool)accountLinked
-                     selectedStore:(const std::string &)selectedStore {
+                             appId:(const std::string &)appId
+                          apiToken:(const std::string &)token
+                     accountLinked:(bool)accountLinked
+                      selectedStore:(const std::string &)selectedStore {
+    return [self initWithGameTitle:title
+                             appId:appId
+                          apiToken:token
+                     accountLinked:accountLinked
+                     selectedStore:selectedStore
+                   resumeSessionId:""
+                       resumeServer:""];
+}
+
+- (instancetype)initWithGameTitle:(const std::string &)title
+                             appId:(const std::string &)appId
+                          apiToken:(const std::string &)token
+                     accountLinked:(bool)accountLinked
+                     selectedStore:(const std::string &)selectedStore
+                   resumeSessionId:(const std::string &)resumeSessionId
+                       resumeServer:(const std::string &)resumeServer {
     self = [super init];
     if (self) {
         _gameTitle = title;
@@ -764,6 +786,9 @@ static void OPNReleaseStreamSessionAfterCallbacks(OPN::IStreamSession *session) 
         _apiToken = token;
         _accountLinked = accountLinked;
         _selectedStore = selectedStore;
+        _resumeSessionId = resumeSessionId;
+        _resumeServer = resumeServer;
+        _resumeExistingSession = !_resumeSessionId.empty() && !_resumeServer.empty();
         OPN::StreamWebRTCBackend backend = OPN::ResolveStreamWebRTCBackend();
         _session = OPN::CreateStreamSession(backend).release();
         _webRTCBackendName = OPN::StreamWebRTCBackendName(backend);
@@ -784,6 +809,12 @@ static void OPNReleaseStreamSessionAfterCallbacks(OPN::IStreamSession *session) 
         _connectedToast = nil;
     }
     return self;
+}
+
+- (void)startStreamIfNeeded {
+    if (_streamStarted || _streamEnded) return;
+    _streamStarted = YES;
+    [self startStreamLaunchFlow];
 }
 
 - (void)setInitialViewFrame:(NSRect)frame {
@@ -873,9 +904,8 @@ static void OPNReleaseStreamSessionAfterCallbacks(OPN::IStreamSession *session) 
     NSLog(@"[StreamVC] viewDidAppear called, streamStarted=%d, streamEnded=%d", _streamStarted, _streamEnded);
     [self installQuitShortcutMonitor];
     if (!_streamStarted && !_streamEnded) {
-        _streamStarted = YES;
         NSLog(@"[StreamVC] Triggering startStreamLaunchFlow");
-        [self startStreamLaunchFlow];
+        [self startStreamIfNeeded];
     }
 }
 
@@ -1499,6 +1529,160 @@ static void OPNReleaseStreamSessionAfterCallbacks(OPN::IStreamSession *session) 
     return YES;
 }
 
+- (void)connectWithSessionInfo:(const OPN::SessionInfo &)sessionInfo
+                       settings:(const OPN::StreamSettings &)settings
+               launchGeneration:(NSUInteger)launchGeneration {
+    if (![NSThread isMainThread]) {
+        OPN::SessionInfo sessionInfoCopy = sessionInfo;
+        OPN::StreamSettings settingsCopy = settings;
+        __weak __typeof__(self) weakSelf = self;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            __typeof__(self) strongSelf = weakSelf;
+            if (!strongSelf) return;
+            [strongSelf connectWithSessionInfo:sessionInfoCopy settings:settingsCopy launchGeneration:launchGeneration];
+        });
+        return;
+    }
+
+    if (_streamEnded || _launchGeneration != launchGeneration) return;
+
+    [self setLaunchStep:1 message:@"Connecting to game server..."];
+
+    OPN::SessionInfo activeSessionInfo = sessionInfo;
+    OPN::StreamSettings negotiatedSettings = OPNSettingsWithNegotiatedProfile(settings, activeSessionInfo);
+    if (negotiatedSettings.resolution != settings.resolution
+        || negotiatedSettings.fps != settings.fps
+        || negotiatedSettings.codec != settings.codec
+        || negotiatedSettings.colorQuality != settings.colorQuality) {
+        NSLog(@"[StreamVC] Using finalized stream profile %s@%dfps codec=%s color=%s (requested %s@%dfps codec=%s color=%s)",
+              negotiatedSettings.resolution.c_str(),
+              negotiatedSettings.fps,
+              negotiatedSettings.codec.c_str(),
+              negotiatedSettings.colorQuality.c_str(),
+              settings.resolution.c_str(),
+              settings.fps,
+              settings.codec.c_str(),
+              settings.colorQuality.c_str());
+    }
+    _activeSessionInfo = activeSessionInfo;
+    _hasActiveSessionInfo = YES;
+
+    _signaling = new OPN::SignalingClient(
+        activeSessionInfo.signalingServer, activeSessionInfo.sessionId, activeSessionInfo.signalingUrl
+    );
+    _signaling->SetPeerResolution(negotiatedSettings.resolution);
+
+    NSLog(@"[StreamVC] Signaling client created, server=%s, url=%s", activeSessionInfo.signalingServer.c_str(), activeSessionInfo.signalingUrl.c_str());
+
+    __weak __typeof__(self) weakSelf = self;
+    _signaling->OnOffer([weakSelf, activeSessionInfo, negotiatedSettings, launchGeneration](const std::string &sdp) {
+        __typeof__(self) s = weakSelf;
+        if (!s || s->_streamEnded || s->_launchGeneration != launchGeneration) return;
+        if (!s->_session) {
+            [s endStreamWithSuccess:NO errorMessage:"libwebrtc stream session is unavailable"];
+            return;
+        }
+        std::string serverIceUfrag = ExtractIceUfragFromOffer(sdp);
+        s->_remoteIceReceived = NO;
+        [s startRemoteIceGraceTimerForLaunchGeneration:launchGeneration];
+
+        [s setLaunchStep:3 message:@"Negotiating stream..."];
+        s->_session->SetNativeWindow((__bridge void *)[s.streamView nativeVideoView]);
+
+        s->_session->OnAnswerReady([weakSelf, activeSessionInfo, serverIceUfrag, launchGeneration](const OPN::SendAnswerRequest &answer) {
+            __typeof__(self) s2 = weakSelf;
+            if (!s2 || !s2->_signaling || s2->_streamEnded || s2->_launchGeneration != launchGeneration) return;
+            NSLog(@"[StreamVC] Sending WebRTC answer (sdp=%zu, nvstSdp=%zu)",
+                  answer.sdp.size(), answer.nvstSdp.size());
+            s2->_signaling->SendAnswer(answer);
+            dispatch_async(dispatch_get_main_queue(), ^{
+                __typeof__(self) s3 = weakSelf;
+                if (!s3 || !s3->_session || s3->_streamEnded || s3->_launchGeneration != launchGeneration) return;
+                InjectManualIceCandidate(s3->_session, activeSessionInfo, serverIceUfrag);
+            });
+        });
+
+        s->_session->OnIceCandidateReady([weakSelf, launchGeneration](const OPN::IceCandidatePayload &candidate) {
+            __typeof__(self) s2 = weakSelf;
+            if (!s2 || !s2->_signaling || s2->_streamEnded || s2->_launchGeneration != launchGeneration) return;
+            s2->_signaling->SendIceCandidate(candidate);
+        });
+
+        [s setLaunchStep:4 message:@"Starting video pipeline..."];
+        s->_session->Start(activeSessionInfo, sdp, negotiatedSettings, [weakSelf, activeSessionInfo, negotiatedSettings, launchGeneration](bool connected, const std::string &streamError) {
+            __typeof__(self) s2 = weakSelf;
+            if (!s2 || s2->_streamEnded || s2->_launchGeneration != launchGeneration) return;
+            std::string streamErrorCopy = streamError;
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if (!s2 || s2->_streamEnded || s2->_launchGeneration != launchGeneration) return;
+                if (connected) {
+                    [s2 cancelRemoteIceGraceTimer];
+                    s2->_connectedOnce = YES;
+                    s2->_recovering = NO;
+                    [s2 setLaunchStep:5 message:@"Connected!"];
+                    [s2 finishLaunchMeasurementWithSuccess:YES reason:@"connected"];
+                    [s2.streamView setStreamSession:s2->_session];
+                    [s2.streamView takeFocus];
+                    [s2 showConnectedToastWithResolution:negotiatedSettings.resolution fps:negotiatedSettings.fps bitrate:negotiatedSettings.maxBitrateMbps codec:negotiatedSettings.codec];
+                    [s2 updateStatsOverlay];
+                    [s2 scheduleRecoveryAttemptResetForLaunchGeneration:launchGeneration];
+                    __weak __typeof__(s2) weakConnectedSelf = s2;
+                    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 700 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
+                        __typeof__(s2) connectedSelf = weakConnectedSelf;
+                        if (!connectedSelf || connectedSelf->_streamEnded || connectedSelf->_launchGeneration != launchGeneration) return;
+                        [connectedSelf.loadingView clearAdPresentation];
+                        [connectedSelf.loadingView stopAnimating];
+                        [connectedSelf.loadingView removeFromSuperview];
+                        connectedSelf.loadingView = nil;
+                        connectedSelf.statusLabel = nil;
+                    });
+                } else {
+                    if (streamErrorCopy.empty()) {
+                        [s2 endStreamWithSuccess:YES errorMessage:""];
+                    } else {
+                        [s2 setStatus:[NSString stringWithFormat:@"Stream error: %s", streamErrorCopy.c_str()]];
+                        if ([s2 beginAutomaticRecoveryForError:streamErrorCopy]) return;
+                        [s2 endStreamWithSuccess:NO errorMessage:streamErrorCopy];
+                    }
+                }
+            });
+        });
+
+        s->_signaling->OnIceCandidate([weakSelf, launchGeneration](const OPN::IceCandidatePayload &candidate) {
+            __typeof__(self) s2 = weakSelf;
+            if (!s2 || !s2->_session || s2->_streamEnded || s2->_launchGeneration != launchGeneration) return;
+            s2->_remoteIceReceived = YES;
+            [s2 cancelRemoteIceGraceTimer];
+            s2->_session->AddRemoteIceCandidate(candidate);
+        });
+    });
+
+    _signaling->Connect([weakSelf, launchGeneration](bool ok, const std::string &err) {
+        __typeof__(self) s = weakSelf;
+        if (!s) {
+            NSLog(@"[StreamVC] Signaling Connect callback: self is nil");
+            return;
+        }
+        if (s->_launchGeneration != launchGeneration) {
+            NSLog(@"[StreamVC] Signaling Connect callback ignored for stale generation %lu", (unsigned long)launchGeneration);
+            return;
+        }
+        NSLog(@"[StreamVC] Signaling Connect result: ok=%d, error=%s", ok, err.c_str());
+        if (ok) {
+            [s setLaunchStep:2 message:@"Waiting for stream offer..."];
+        }
+        if (!ok) {
+            std::string errCopy = err;
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if (!s || s->_streamEnded || s->_launchGeneration != launchGeneration) return;
+                [s setStatus:[NSString stringWithFormat:@"Signaling error: %s", errCopy.c_str()]];
+                if ([s beginAutomaticRecoveryForError:errCopy]) return;
+                [s endStreamWithSuccess:NO errorMessage:errCopy];
+            });
+        }
+    });
+}
+
 - (void)startStreamLaunchFlow {
     NSUInteger launchGeneration = ++_launchGeneration;
     BOOL recoveringLaunch = _recovering;
@@ -1616,6 +1800,28 @@ static void OPNReleaseStreamSessionAfterCallbacks(OPN::IStreamSession *session) 
 
     __weak __typeof__(self) weakSelf = self;
 
+    if (_resumeExistingSession) {
+        NSLog(@"[StreamVC] Claiming active session for silent resume: sessionId=%s", _resumeSessionId.c_str());
+        OPN::SessionManager::Shared().SetAccessToken(_apiToken);
+        OPN::SessionManager::Shared().SetStreamingBaseUrl(OPN::LoadSelectedStreamingBaseUrl());
+        [self setLaunchStep:0 message:@"Resuming active session..."];
+        OPN::SessionManager::Shared().ClaimSession(_resumeSessionId, _resumeServer, _appId, settings, recoveringLaunch,
+            [weakSelf, settings, launchGeneration](bool success, const OPN::SessionInfo &info, const std::string &error) {
+                __typeof__(self) strongSelf = weakSelf;
+                if (!strongSelf || strongSelf->_streamEnded || strongSelf->_launchGeneration != launchGeneration) return;
+                NSLog(@"[StreamVC] Active session claim result: success=%d", success);
+                if (!success) {
+                    NSString *errMsg = [NSString stringWithFormat:@"Resume failed: %s", error.c_str()];
+                    [strongSelf setStatus:errMsg];
+                    if ([strongSelf beginAutomaticRecoveryForError:error]) return;
+                    [strongSelf endStreamWithSuccess:NO errorMessage:error];
+                    return;
+                }
+                [strongSelf connectWithSessionInfo:info settings:settings launchGeneration:launchGeneration];
+            });
+        return;
+    }
+
     NSLog(@"[StreamVC] Calling GameService::LaunchGame...");
     OPN::GameService::Shared().SetAccessToken(_apiToken);
     OPN::GameService::Shared().SetStreamingBaseUrl(OPN::LoadSelectedStreamingBaseUrl());
@@ -1654,142 +1860,7 @@ static void OPNReleaseStreamSessionAfterCallbacks(OPN::IStreamSession *session) 
                 [strongSelf endStreamWithSuccess:NO errorMessage:error];
                 return;
             }
-
-            [strongSelf setLaunchStep:1 message:@"Connecting to game server..."];
-
-
-            OPN::SessionInfo sessionInfo = info;
-            OPN::StreamSettings negotiatedSettings = OPNSettingsWithNegotiatedProfile(settings, sessionInfo);
-            if (negotiatedSettings.resolution != settings.resolution
-                || negotiatedSettings.fps != settings.fps
-                || negotiatedSettings.codec != settings.codec
-                || negotiatedSettings.colorQuality != settings.colorQuality) {
-                NSLog(@"[StreamVC] Using finalized stream profile %s@%dfps codec=%s color=%s (requested %s@%dfps codec=%s color=%s)",
-                      negotiatedSettings.resolution.c_str(),
-                      negotiatedSettings.fps,
-                      negotiatedSettings.codec.c_str(),
-                      negotiatedSettings.colorQuality.c_str(),
-                      settings.resolution.c_str(),
-                      settings.fps,
-                      settings.codec.c_str(),
-                      settings.colorQuality.c_str());
-            }
-            strongSelf->_activeSessionInfo = sessionInfo;
-            strongSelf->_hasActiveSessionInfo = YES;
-
-            strongSelf->_signaling = new OPN::SignalingClient(
-                sessionInfo.signalingServer, sessionInfo.sessionId, sessionInfo.signalingUrl
-            );
-            strongSelf->_signaling->SetPeerResolution(negotiatedSettings.resolution);
-
-            NSLog(@"[StreamVC] Signaling client created, server=%s, url=%s", sessionInfo.signalingServer.c_str(), sessionInfo.signalingUrl.c_str());
-
-            strongSelf->_signaling->OnOffer([weakSelf, sessionInfo, negotiatedSettings, launchGeneration](const std::string &sdp) {
-                __typeof__(self) s = weakSelf;
-                if (!s || s->_streamEnded || s->_launchGeneration != launchGeneration) return;
-                if (!s->_session) {
-                    [s endStreamWithSuccess:NO errorMessage:"libwebrtc stream session is unavailable"];
-                    return;
-                }
-                std::string serverIceUfrag = ExtractIceUfragFromOffer(sdp);
-                s->_remoteIceReceived = NO;
-                [s startRemoteIceGraceTimerForLaunchGeneration:launchGeneration];
-
-                [s setLaunchStep:3 message:@"Negotiating stream..."];
-                s->_session->SetNativeWindow((__bridge void *)[s.streamView nativeVideoView]);
-
-                s->_session->OnAnswerReady([weakSelf, sessionInfo, serverIceUfrag, launchGeneration](const OPN::SendAnswerRequest &answer) {
-                    __typeof__(self) s2 = weakSelf;
-                    if (!s2 || !s2->_signaling || s2->_streamEnded || s2->_launchGeneration != launchGeneration) return;
-                    NSLog(@"[StreamVC] Sending WebRTC answer (sdp=%zu, nvstSdp=%zu)",
-                          answer.sdp.size(), answer.nvstSdp.size());
-                    s2->_signaling->SendAnswer(answer);
-                    dispatch_async(dispatch_get_main_queue(), ^{
-                        __typeof__(self) s3 = weakSelf;
-                        if (!s3 || !s3->_session || s3->_streamEnded || s3->_launchGeneration != launchGeneration) return;
-                        InjectManualIceCandidate(s3->_session, sessionInfo, serverIceUfrag);
-                    });
-                });
-
-                s->_session->OnIceCandidateReady([weakSelf, launchGeneration](const OPN::IceCandidatePayload &candidate) {
-                    __typeof__(self) s2 = weakSelf;
-                    if (!s2 || !s2->_signaling || s2->_streamEnded || s2->_launchGeneration != launchGeneration) return;
-                    s2->_signaling->SendIceCandidate(candidate);
-                });
-
-                [s setLaunchStep:4 message:@"Starting video pipeline..."];
-                s->_session->Start(sessionInfo, sdp, negotiatedSettings, [weakSelf, sessionInfo, negotiatedSettings, launchGeneration](bool connected, const std::string &streamError) {
-                    __typeof__(self) s2 = weakSelf;
-                    if (!s2 || s2->_streamEnded || s2->_launchGeneration != launchGeneration) return;
-                    std::string streamErrorCopy = streamError;
-                    dispatch_async(dispatch_get_main_queue(), ^{
-                        if (!s2 || s2->_streamEnded || s2->_launchGeneration != launchGeneration) return;
-                        if (connected) {
-                            [s2 cancelRemoteIceGraceTimer];
-                            s2->_connectedOnce = YES;
-                            s2->_recovering = NO;
-                            [s2 setLaunchStep:5 message:@"Connected!"];
-                            [s2 finishLaunchMeasurementWithSuccess:YES reason:@"connected"];
-                            [s2.streamView setStreamSession:s2->_session];
-                            [s2.streamView takeFocus];
-                            [s2 showConnectedToastWithResolution:negotiatedSettings.resolution fps:negotiatedSettings.fps bitrate:negotiatedSettings.maxBitrateMbps codec:negotiatedSettings.codec];
-                            [s2 updateStatsOverlay];
-                            [s2 scheduleRecoveryAttemptResetForLaunchGeneration:launchGeneration];
-                            __weak __typeof__(s2) weakConnectedSelf = s2;
-                            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 700 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
-                                __typeof__(s2) connectedSelf = weakConnectedSelf;
-                                if (!connectedSelf || connectedSelf->_streamEnded || connectedSelf->_launchGeneration != launchGeneration) return;
-                                [connectedSelf.loadingView clearAdPresentation];
-                                [connectedSelf.loadingView stopAnimating];
-                                [connectedSelf.loadingView removeFromSuperview];
-                                connectedSelf.loadingView = nil;
-                                connectedSelf.statusLabel = nil;
-                            });
-                        } else {
-                            if (streamErrorCopy.empty()) {
-                                [s2 endStreamWithSuccess:YES errorMessage:""];
-                            } else {
-                                [s2 setStatus:[NSString stringWithFormat:@"Stream error: %s", streamErrorCopy.c_str()]];
-                                if ([s2 beginAutomaticRecoveryForError:streamErrorCopy]) return;
-                                [s2 endStreamWithSuccess:NO errorMessage:streamErrorCopy];
-                            }
-                        }
-                    });
-                });
-
-                s->_signaling->OnIceCandidate([weakSelf, launchGeneration](const OPN::IceCandidatePayload &candidate) {
-                    __typeof__(self) s2 = weakSelf;
-                    if (!s2 || !s2->_session || s2->_streamEnded || s2->_launchGeneration != launchGeneration) return;
-                    s2->_remoteIceReceived = YES;
-                    [s2 cancelRemoteIceGraceTimer];
-                    s2->_session->AddRemoteIceCandidate(candidate);
-                });
-            });
-
-            strongSelf->_signaling->Connect([weakSelf, launchGeneration](bool ok, const std::string &err) {
-                __typeof__(self) s = weakSelf;
-                if (!s) {
-                    NSLog(@"[StreamVC] Signaling Connect callback: self is nil");
-                    return;
-                }
-                if (s->_launchGeneration != launchGeneration) {
-                    NSLog(@"[StreamVC] Signaling Connect callback ignored for stale generation %lu", (unsigned long)launchGeneration);
-                    return;
-                }
-                NSLog(@"[StreamVC] Signaling Connect result: ok=%d, error=%s", ok, err.c_str());
-                if (ok) {
-                    [s setLaunchStep:2 message:@"Waiting for stream offer..."];
-                }
-                if (!ok) {
-                    std::string errCopy = err;
-                    dispatch_async(dispatch_get_main_queue(), ^{
-                        if (!s || s->_streamEnded || s->_launchGeneration != launchGeneration) return;
-                        [s setStatus:[NSString stringWithFormat:@"Signaling error: %s", errCopy.c_str()]];
-                        if ([s beginAutomaticRecoveryForError:errCopy]) return;
-                        [s endStreamWithSuccess:NO errorMessage:errCopy];
-                    });
-                }
-            });
+            [strongSelf connectWithSessionInfo:info settings:settings launchGeneration:launchGeneration];
         });
 }
 
