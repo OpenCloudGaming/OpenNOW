@@ -5,3 +5,4 @@ build/
 opennow/
 openNOW-mac.zip
 third_party/webrtc/
+opennow-stable/node_modules/
