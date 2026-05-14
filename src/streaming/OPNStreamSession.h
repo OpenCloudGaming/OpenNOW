@@ -94,7 +94,7 @@ public:
     void OnAnswerReady(std::function<void(const SendAnswerRequest &)> cb) override;
     void OnIceCandidateReady(std::function<void(const IceCandidatePayload &)> cb) override;
 
-    // Input
+
     void SendInput(const uint8_t *data, size_t len) override;
     void SendInputPartiallyReliable(const uint8_t *data, size_t len) override;
     void CreateInputChannel() override;
@@ -205,4 +205,4 @@ private:
     static void FailStartContext(void *ctx, const std::string &error);
 };
 
-} // namespace OPN
+}

@@ -109,4 +109,4 @@ struct SendAnswerRequest {
 using SessionCreateCallback = std::function<void(bool success, const SessionInfo &info, const std::string &error)>;
 using SessionPollCallback = std::function<void(bool success, const SessionInfo &info, const std::string &error)>;
 
-} // namespace OPN
+}

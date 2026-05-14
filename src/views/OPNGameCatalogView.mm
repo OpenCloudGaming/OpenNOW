@@ -46,6 +46,54 @@ static NSString *OPNCatalogString(const std::string &value, NSString *fallback =
     return value.empty() ? fallback : [NSString stringWithUTF8String:value.c_str()];
 }
 
+static NSString *OPNCatalogDisplayLabel(NSString *value) {
+    NSString *trimmed = [value ?: @"" stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    if (trimmed.length == 0) return @"";
+
+    NSString *specialKey = [[trimmed stringByReplacingOccurrencesOfString:@"-" withString:@"_"] uppercaseString];
+    NSDictionary<NSString *, NSString *> *specialLabels = @{
+        @"FREE_TO_PLAY": @"Free to Play",
+        @"MASSIVELY_MULTIPLAYER_ONLINE": @"Massively Multiplayer Online",
+        @"MASSIVELY_MULTIPLAYER": @"Massively Multiplayer",
+        @"MMO": @"MMO",
+    };
+    NSString *specialLabel = specialLabels[specialKey];
+    if (specialLabel.length > 0) return specialLabel;
+
+    NSString *spaced = [[trimmed stringByReplacingOccurrencesOfString:@"_" withString:@" "] stringByReplacingOccurrencesOfString:@"-" withString:@" "];
+    NSArray<NSString *> *tokens = [spaced componentsSeparatedByCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    NSSet<NSString *> *acronyms = [NSSet setWithArray:@[@"AI", @"DLC", @"EA", @"ESRB", @"FPS", @"GOG", @"HDR", @"MMO", @"MOBA", @"NVIDIA", @"PC", @"PVE", @"PVP", @"RTX", @"VR"]];
+    NSSet<NSString *> *lowercaseWords = [NSSet setWithArray:@[@"and", @"of", @"or", @"to"]];
+    NSMutableArray<NSString *> *labels = [NSMutableArray array];
+
+    for (NSString *token in tokens) {
+        if (token.length == 0) continue;
+        NSString *upper = token.uppercaseString;
+        if ([acronyms containsObject:upper]) {
+            [labels addObject:upper];
+            continue;
+        }
+
+        NSString *lower = token.lowercaseString;
+        if (labels.count > 0 && [lowercaseWords containsObject:lower]) {
+            [labels addObject:lower];
+            continue;
+        }
+
+        NSString *first = [lower substringToIndex:1].uppercaseString;
+        NSString *rest = lower.length > 1 ? [lower substringFromIndex:1] : @"";
+        [labels addObject:[first stringByAppendingString:rest]];
+    }
+
+    return labels.count > 0 ? [labels componentsJoinedByString:@" "] : trimmed;
+}
+
+static NSString *OPNCatalogDisplayString(const std::string &value, NSString *fallback = @"") {
+    NSString *raw = OPNCatalogString(value, @"");
+    NSString *label = OPNCatalogDisplayLabel(raw);
+    return label.length > 0 ? label : fallback;
+}
+
 static NSAttributedString *OPNOutlinedControllerStoreText(NSString *text) {
     NSMutableParagraphStyle *style = [[NSMutableParagraphStyle alloc] init];
     style.lineBreakMode = NSLineBreakByTruncatingTail;
@@ -363,7 +411,10 @@ static BOOL OPNCatalogGamepadNavigationActive(NSView *view) {
 static NSString *OPNCatalogJoinedStrings(const std::vector<std::string> &values, NSString *fallback) {
     NSMutableArray<NSString *> *items = [NSMutableArray array];
     for (const std::string &value : values) {
-        if (!value.empty()) [items addObject:[NSString stringWithUTF8String:value.c_str()]];
+        if (!value.empty()) {
+            NSString *label = OPNCatalogDisplayString(value, @"");
+            if (label.length > 0) [items addObject:label];
+        }
         if (items.count >= 4) break;
     }
     return items.count > 0 ? [items componentsJoinedByString:@"  /  "] : fallback;
@@ -372,7 +423,10 @@ static NSString *OPNCatalogJoinedStrings(const std::vector<std::string> &values,
 static NSString *OPNCatalogCommaJoinedStrings(const std::vector<std::string> &values) {
     NSMutableArray<NSString *> *items = [NSMutableArray array];
     for (const std::string &value : values) {
-        if (!value.empty()) [items addObject:[NSString stringWithUTF8String:value.c_str()]];
+        if (!value.empty()) {
+            NSString *label = OPNCatalogDisplayString(value, @"");
+            if (label.length > 0) [items addObject:label];
+        }
     }
     return [items componentsJoinedByString:@", "];
 }
@@ -399,7 +453,7 @@ static NSString *OPNStoreCategoryTitle(NSString *store) {
     if ([upper containsString:@"XBOX"] || [upper containsString:@"MICROSOFT"]) return @"Xbox";
     if ([upper containsString:@"EA"] || [upper containsString:@"ORIGIN"]) return @"EA";
     if ([upper containsString:@"GOG"]) return @"GOG";
-    return store.capitalizedString;
+    return OPNCatalogDisplayLabel(store);
 }
 
 typedef NS_ENUM(NSInteger, OPNControllerPromptStyle) {
@@ -876,7 +930,7 @@ using namespace OPN;
         _scrollView.contentView.layer.backgroundColor = NSColor.clearColor.CGColor;
         [self addSubview:_scrollView];
 
-        // Grid content
+
         _gridContentView = [[OPNFlippedGridDocumentView alloc] initWithFrame:NSMakeRect(0, 0, frame.size.width, 100)];
         _gridContentView.wantsLayer = YES;
         _gridContentView.layer.opaque = NO;
@@ -1168,7 +1222,7 @@ using namespace OPN;
             NSString *categoryId = OPNCategoryId(@"genre", genre);
             if (categoryId.length == 0) continue;
             genreCounts[categoryId] = @((genreCounts[categoryId] ?: @0).integerValue + 1);
-            if (!genreTitles[categoryId]) genreTitles[categoryId] = genre.capitalizedString;
+            if (!genreTitles[categoryId]) genreTitles[categoryId] = OPNCatalogDisplayLabel(genre);
         }
     }
 
@@ -1801,19 +1855,20 @@ using namespace OPN;
 
     NSString *genres = OPNCatalogJoinedStrings(game.genres, @"Cloud game");
     NSString *tier = OPNCatalogString(game.membershipTierLabel, @"");
-    NSString *playability = OPNCatalogString(game.playabilityState, @"");
+    NSString *playability = OPNCatalogDisplayString(game.playabilityState, @"");
     NSMutableArray<NSString *> *meta = [NSMutableArray arrayWithObject:genres];
     if ([self isFavoriteGame:game]) [meta addObject:@"Favorite"];
     if (tier.length > 0) [meta addObject:tier];
-    if (playability.length > 0) [meta addObject:playability.capitalizedString];
+    if (playability.length > 0) [meta addObject:playability];
     self.controllerDetailMetaLabel.stringValue = [meta componentsJoinedByString:@"  •  "];
 
-    NSString *store = @"Default store";
+    NSString *store = @"";
     if (card.selectedVariantIndex >= 0 && card.selectedVariantIndex < (int)game.variants.size()) {
-        store = OPNCatalogString(game.variants[(size_t)card.selectedVariantIndex].appStore, store);
+        store = OPNCatalogString(game.variants[(size_t)card.selectedVariantIndex].appStore, @"");
     } else if (!game.availableStores.empty()) {
-        store = OPNCatalogString(game.availableStores.front(), store);
+        store = OPNCatalogString(game.availableStores.front(), @"");
     }
+    store = store.length > 0 ? OPNStoreCategoryTitle(store) : @"Default store";
     NSString *storePrefix = game.variants.size() > 1 ? @"Selected Store" : @"Store";
     self.controllerDetailStoreLabel.attributedStringValue = OPNOutlinedControllerStoreText([NSString stringWithFormat:@"%@: %@", storePrefix, store]);
 
@@ -1826,7 +1881,7 @@ using namespace OPN;
     BOOL controllerConnected = GCController.controllers.count > 0;
     NSString *launchStatus = game.playabilityState.empty()
         ? @"Ready"
-        : OPNCatalogString(game.playabilityState, @"Ready").capitalizedString;
+        : OPNCatalogDisplayString(game.playabilityState, @"Ready");
     NSString *sessionStatus = self.streamPipContentView ? @"Stream active" : @"Ready to launch";
     NSString *streamStatus = [NSString stringWithFormat:@"%@ • %d FPS • %d Mbps",
         OPNCatalogString(streamProfile.resolution.Label(), @"Auto"),
@@ -1877,10 +1932,13 @@ using namespace OPN;
     titleLabel.lineBreakMode = NSLineBreakByTruncatingTail;
     [panel addSubview:titleLabel];
 
-    NSString *store = @"Default store";
+    NSString *store = @"";
     if (card.selectedVariantIndex >= 0 && card.selectedVariantIndex < (int)card.game.variants.size()) {
-        store = OPNCatalogString(card.game.variants[(size_t)card.selectedVariantIndex].appStore, store);
+        store = OPNCatalogString(card.game.variants[(size_t)card.selectedVariantIndex].appStore, @"");
+    } else if (!card.game.availableStores.empty()) {
+        store = OPNCatalogString(card.game.availableStores.front(), @"");
     }
+    store = store.length > 0 ? OPNStoreCategoryTitle(store) : @"Default store";
     NSTextField *storeLabel = OpnLabel(@"",
                                        NSMakeRect(38.0, 92.0, panelWidth - 76.0, 24.0),
                                        15.0,

@@ -642,7 +642,7 @@ static std::string OPNGameLibraryFingerprint(const std::vector<OPN::GameInfo> &g
             catalog.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
             self.catalogView = catalog;
 
-            // Set display name (may be empty for OAuth — will be filled below)
+
             NSString *displayName = [NSString stringWithUTF8String:
                 self.currentSession.displayName.c_str()];
             if (displayName.length > 0) {
@@ -705,7 +705,7 @@ static std::string OPNGameLibraryFingerprint(const std::vector<OPN::GameInfo> &g
             OpnDisableFocusHighlights(catalog);
             self.window.title = @"OpenNOW";
 
-            // Fetch user info if displayName not already set (OAuth flow)
+
             if (displayName.length == 0 && !self.currentSession.accessToken.empty()) {
                 [catalog setLoading:YES];
                 AuthService::Shared().FetchStarFleetUserInfo(
@@ -1119,7 +1119,7 @@ static std::string OPNGameLibraryFingerprint(const std::vector<OPN::GameInfo> &g
         }
     };
 
-    // Load library games
+
     GameService::Shared().FetchLibraryGames(
         ^(bool ok, const std::vector<OPN::GameInfo> &games, const std::string &err) {
             if (!ok && canRetry && err.find("401") != std::string::npos) {
@@ -1150,7 +1150,7 @@ static std::string OPNGameLibraryFingerprint(const std::vector<OPN::GameInfo> &g
             finalize(games);
         });
 
-    // Load catalog games
+
     GameService::Shared().FetchCatalogGames(
         ^(bool ok, const std::vector<GameInfo> &games, const std::string &) {
             finalize(ok ? games : std::vector<GameInfo>());

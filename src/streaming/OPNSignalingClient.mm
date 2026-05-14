@@ -2,10 +2,10 @@
 
 #import <Foundation/Foundation.h>
 
-// ---------------------------------------------------------------------------
-// Private delegate that fires on WebSocket open/close/error, mirroring the
-// raw WebSocket "open" / "close" / "error" events in OpenNow's signaling.ts.
-// ---------------------------------------------------------------------------
+
+
+
+
 @interface _OPNWebSocketDelegate : NSObject <NSURLSessionDelegate, NSURLSessionWebSocketDelegate>
 @property (nonatomic, copy) void (^onOpen)(NSString *protocol);
 @property (nonatomic, copy) void (^onError)(NSError *error);
@@ -27,9 +27,9 @@
 
 namespace OPN {
 
-// ---------------------------------------------------------------------------
-// Helper to build the sign-in URL (mirrors buildSignInUrl in signaling.ts).
-// ---------------------------------------------------------------------------
+
+
+
 static NSURL *BuildSignInUrl(const std::string &signalingServer,
                               const std::string &sessionId,
                               const std::string &signalingUrl,
@@ -37,7 +37,7 @@ static NSURL *BuildSignInUrl(const std::string &signalingServer,
     NSString *host = [NSString stringWithUTF8String:signalingServer.c_str()];
     NSString *sessionIdObj = [NSString stringWithUTF8String:sessionId.c_str()];
 
-    // Determine base URL — signaling.ts uses signalingUrl if set, otherwise wss://host:443/nvst/
+
     NSString *baseUrlStr;
     if (!signalingUrl.empty()) {
         baseUrlStr = [NSString stringWithUTF8String:signalingUrl.c_str()];
@@ -57,13 +57,13 @@ static NSURL *BuildSignInUrl(const std::string &signalingServer,
 
     comp.scheme = @"wss";
 
-    // Ensure path ends with "sign_in" (matching signaling.ts logic)
+
     NSString *path = comp.path ?: @"/nvst/";
     if (![path hasSuffix:@"/"]) path = [path stringByAppendingString:@"/"];
     path = [path stringByAppendingString:@"sign_in"];
     comp.path = path;
 
-    // Query params (matching signaling.ts)
+
     NSMutableArray *items = [NSMutableArray arrayWithArray:comp.queryItems ?: @[]];
     [items addObject:[NSURLQueryItem queryItemWithName:@"peer_id" value:[NSString stringWithUTF8String:peerName.c_str()]]];
     [items addObject:[NSURLQueryItem queryItemWithName:@"version" value:@"2"]];
@@ -74,9 +74,9 @@ static NSURL *BuildSignInUrl(const std::string &signalingServer,
     return comp.URL;
 }
 
-// ---------------------------------------------------------------------------
-// SignalingClient implementation
-// ---------------------------------------------------------------------------
+
+
+
 
 SignalingClient::SignalingClient(const std::string &signalingServer,
                                   const std::string &sessionId,
@@ -100,7 +100,7 @@ bool SignalingClient::IsCurrentGeneration(int generation) const {
     return generation == m_connectionGeneration;
 }
 
-// ------ Connect (mirrors signaling.ts connect) ------
+
 void SignalingClient::Connect(SignalingConnectCallback onConnect) {
     if (m_webSocketTask) {
         onConnect(true, "");
@@ -121,28 +121,28 @@ void SignalingClient::Connect(SignalingConnectCallback onConnect) {
     NSURLSession *session = nil;
     _OPNWebSocketDelegate *delegate = nil;
 
-    // --- completion handler for open (mirrors ws.once("open")) ---
+
     void (^onOpen)(NSString *) = ^(NSString *proto) {
         (void)proto;
         if (!IsCurrentGeneration(generation)) return;
 
-        m_didOpen = true;  // <-- mark connected so onError skips the callback
+        m_didOpen = true;
 
-        // Connection is open — now send peer_info and set up heartbeat
-        // (mirrors signaling.ts: this.sendPeerInfo(); this.setupHeartbeat();)
+
+
         SendPeerInfo();
         SetupHeartbeat();
 
-        // Signal connected (mirrors resolve() + emit("connected"))
+
         onConnect(true, "");
     };
 
-    // --- completion handler for error (mirrors ws.once("error")) ---
+
     void (^onError)(NSError *) = ^(NSError *error) {
         if (!IsCurrentGeneration(generation)) return;
-        // In OpenNow, ws.once("error") uses "once" — it only fires *instead* of
-        // "open", never after.  If we already opened, this is a post-connection
-        // transport error (e.g. socket reset), not a connection failure.
+
+
+
         if (m_didOpen) {
             NSLog(@"[Signaling] Post-connection error: %@", error);
             return;
@@ -151,7 +151,7 @@ void SignalingClient::Connect(SignalingConnectCallback onConnect) {
         onConnect(false, msg);
     };
 
-    // --- completion handler for close (mirrors ws.on("close")) ---
+
     void (^onClose)(NSURLSessionWebSocketCloseCode, NSString *) = ^(NSURLSessionWebSocketCloseCode code, NSString *reason) {
         if (!IsCurrentGeneration(generation)) return;
         NSLog(@"[Signaling] WebSocket closed: code=%ld, reason=%@", (long)code, reason);
@@ -159,7 +159,7 @@ void SignalingClient::Connect(SignalingConnectCallback onConnect) {
         m_webSocketTask = nullptr;
     };
 
-    // Delegate object receives URLSession callbacks and forwards to blocks
+
     delegate = [[_OPNWebSocketDelegate alloc] init];
     delegate.onOpen = onOpen;
     delegate.onError = onError;
@@ -185,7 +185,7 @@ void SignalingClient::Connect(SignalingConnectCallback onConnect) {
 
     [task resume];
 
-    // Timeout (mirrors signaling.ts's implicit WS timeout — 15s is reasonable)
+
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(15 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         if (!IsCurrentGeneration(generation)) return;
         if (m_webSocketTask) {
@@ -198,7 +198,7 @@ void SignalingClient::Connect(SignalingConnectCallback onConnect) {
     });
 }
 
-// ------ Disconnect (mirrors signaling.ts disconnect) ------
+
 void SignalingClient::Disconnect() {
     m_connectionGeneration += 1;
     ClearHeartbeat();
@@ -222,14 +222,14 @@ void SignalingClient::Disconnect() {
     }
 }
 
-// ------ Heartbeat (mirrors signaling.ts setupHeartbeat / clearHeartbeat) ------
+
 void SignalingClient::SetupHeartbeat() {
     ClearHeartbeat();
 
-    // Start receive handler re-arm loop (mirrors message listener in signaling.ts)
+
     RearmReceiveHandler();
 
-    // Proactive heartbeat timer — send {"hb":1} every 5s (mirrors setInterval in signaling.ts)
+
     dispatch_source_t timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
     if (timer) {
         dispatch_source_set_timer(timer, dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC),
@@ -256,7 +256,7 @@ void SignalingClient::ClearHeartbeat() {
     }
 }
 
-// ------ Rearm: receive next message (mirrors the rearm pattern in signaling.ts) ------
+
 void SignalingClient::RearmReceiveHandler() {
     if (!m_webSocketTask) return;
     NSURLSessionWebSocketTask *task = (__bridge NSURLSessionWebSocketTask *)m_webSocketTask;
@@ -277,12 +277,12 @@ void SignalingClient::RearmReceiveHandler() {
             blockSelf->HandleMessage([text UTF8String]);
         }
 
-        // Re-arm (mirrors signaling.ts: message handler stays registered)
+
         blockSelf->RearmReceiveHandler();
     }];
 }
 
-// ------ Send a JSON string over the WebSocket (mirrors signaling.ts sendJson) ------
+
 void SignalingClient::SendJson(const std::string &json) {
     if (!m_webSocketTask) return;
     NSURLSessionWebSocketTask *task = (__bridge NSURLSessionWebSocketTask *)m_webSocketTask;
@@ -290,7 +290,7 @@ void SignalingClient::SendJson(const std::string &json) {
     completionHandler:^(NSError *){}];
 }
 
-// ------ Send peer_info (mirrors signaling.ts sendPeerInfo) ------
+
 void SignalingClient::SendPeerInfo() {
     NSDictionary *info = @{
         @"ackid": @(++m_ackCounter),
@@ -310,13 +310,13 @@ void SignalingClient::SendPeerInfo() {
     SendJson([[NSString alloc] initWithData:jsonData encoding:NSUTF8StringEncoding].UTF8String);
 }
 
-// ------ Handle incoming message (mirrors signaling.ts handleMessage) ------
+
 void SignalingClient::HandleMessage(const std::string &text) {
     NSData *data = [[NSString stringWithUTF8String:text.c_str()] dataUsingEncoding:NSUTF8StringEncoding];
     NSDictionary *json = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
     if (![json isKindOfClass:[NSDictionary class]]) return;
 
-    // --- peer_info (mirrors signaling.ts peer_info handling) ---
+
     NSDictionary *peerInfo = json[@"peer_info"];
     if ([peerInfo isKindOfClass:[NSDictionary class]]) {
         NSNumber *pid = peerInfo[@"id"];
@@ -327,8 +327,8 @@ void SignalingClient::HandleMessage(const std::string &text) {
         }
     }
 
-    // --- ack (mirrors signaling.ts ack handling) ---
-    // OpenNow sends an ack for any ackid, unless the ackid is from our own peer_info
+
+
     if (json[@"ackid"]) {
         NSNumber *ourPid = peerInfo[@"id"];
         BOOL shouldAck = !ourPid || ourPid.intValue != m_peerId;
@@ -337,35 +337,35 @@ void SignalingClient::HandleMessage(const std::string &text) {
         }
     }
 
-    // --- ack response (just ignore) ---
+
     if (json[@"ack"]) return;
 
-    // --- heartbeat (mirrors signaling.ts hb handling) ---
+
     if (json[@"hb"]) {
         SendJson("{\"hb\":1}");
         return;
     }
 
-    // --- peer_msg (mirrors signaling.ts peer_msg handling) ---
+
     NSDictionary *peerMsg = json[@"peer_msg"];
     if (![peerMsg isKindOfClass:[NSDictionary class]]) return;
 
     NSString *msgStr = peerMsg[@"msg"];
     if (![msgStr isKindOfClass:[NSString class]]) return;
 
-    // Set remote peer id from the from field (mirrors signaling.ts)
+
     NSNumber *fromId = peerMsg[@"from"];
     if (fromId) {
         m_remotePeerId = fromId.intValue;
         NSLog(@"[Signaling] Remote peer id: %d", m_remotePeerId);
     }
 
-    // Parse inner payload
+
     NSData *msgData = [msgStr dataUsingEncoding:NSUTF8StringEncoding];
     NSDictionary *payload = [NSJSONSerialization JSONObjectWithData:msgData options:0 error:nil];
     if (![payload isKindOfClass:[NSDictionary class]]) return;
 
-    // --- offer (mirrors signaling.ts offer handling) ---
+
     NSString *type = payload[@"type"];
     if ([type isEqualToString:@"offer"]) {
         NSString *sdp = payload[@"sdp"];
@@ -377,7 +377,7 @@ void SignalingClient::HandleMessage(const std::string &text) {
         return;
     }
 
-    // --- ICE candidate (mirrors signaling.ts remote-ice handling) ---
+
     NSString *candidate = payload[@"candidate"];
     if (candidate) {
         IceCandidatePayload ice;
@@ -396,7 +396,7 @@ void SignalingClient::HandleMessage(const std::string &text) {
     }
 }
 
-// ------ OnOffer / OnIceCandidate (mirrors signaling.ts onEvent registration) ------
+
 void SignalingClient::OnOffer(SignalingOfferCallback cb) {
     m_onOffer = cb;
 }
@@ -405,7 +405,7 @@ void SignalingClient::OnIceCandidate(SignalingIceCallback cb) {
     m_onIceCandidate = cb;
 }
 
-// ------ SendAnswer (mirrors signaling.ts sendAnswer) ------
+
 void SignalingClient::SendAnswer(const SendAnswerRequest &answer) {
     if (!m_webSocketTask) return;
     NSLog(@"[Signaling] Sending answer SDP length=%zu nvstSdp length=%zu", answer.sdp.size(), answer.nvstSdp.size());
@@ -431,7 +431,7 @@ void SignalingClient::SendAnswer(const SendAnswerRequest &answer) {
     SendJson([[NSString alloc] initWithData:jsonData encoding:NSUTF8StringEncoding].UTF8String);
 }
 
-// ------ SendIceCandidate (mirrors signaling.ts sendIceCandidate) ------
+
 void SignalingClient::SendIceCandidate(const IceCandidatePayload &candidate) {
     if (!m_webSocketTask) return;
 
@@ -462,11 +462,11 @@ void SignalingClient::SendIceCandidate(const IceCandidatePayload &candidate) {
     SendJson([[NSString alloc] initWithData:jsonData encoding:NSUTF8StringEncoding].UTF8String);
 }
 
-// ------ IsConnected (matches signaling.ts ws state check) ------
+
 bool SignalingClient::IsConnected() const {
     if (!m_webSocketTask) return false;
     NSURLSessionWebSocketTask *task = (__bridge NSURLSessionWebSocketTask *)m_webSocketTask;
     return task.state == NSURLSessionTaskStateRunning;
 }
 
-} // namespace OPN
+}

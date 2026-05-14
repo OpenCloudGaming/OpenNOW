@@ -636,4 +636,4 @@ void SaveStreamMicrophonePushToTalkModifierMask(int modifierMask) {
                                              forKey:kMicrophonePushToTalkModifierMaskKey];
 }
 
-} // namespace OPN
+}

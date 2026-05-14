@@ -35,4 +35,4 @@ constexpr CGFloat kCardHeight = 620.0;
 constexpr CGFloat kContentX = 298.0;
 constexpr CGFloat kContentWidth = 412.0;
 
-} // namespace OPN
+}

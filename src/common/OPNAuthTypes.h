@@ -92,4 +92,4 @@ private:
     static std::string s_cachedUUID;
 };
 
-} // namespace OPN
+}

@@ -9,12 +9,12 @@
 
 namespace OPN {
 
-// ── Persisted Query Hashes (from OpenNOW) ──
+
 static NSString *kPanelsHash = @"f8e26265a5db5c20e1334a6872cf04b6e3970507697f6ae55a6ddefa5420daf0";
 static NSString *kLibraryWithTimeHash = @"039e8c0d553972975485fee56e59f2549d2fdb518e247a42ab5022056a74406f";
 static NSString *kAppMetaDataHash = @"39187e85b6dcf60b7279a5f233288b0a8b69a8b1dbcfb5b25555afdcb988f0d7";
 
-// ── Shared Headers ──
+
 static NSString *kNvClientId = @"ec7e38d4-03af-4b58-b131-cfb0495903ab";
 static NSString *kNvClientVersion = @"2.0.80.173";
 static constexpr const char *kDefaultSubscriptionVpcId = "NP-AMS-08";
@@ -49,9 +49,9 @@ void GameService::SetStreamingBaseUrl(const std::string &url) {
     SessionManager::Shared().SetStreamingBaseUrl(url);
 }
 
-// ═══════════════════════════════════════════════════════════════
-// Base Headers (matches OpenNOW)
-// ═══════════════════════════════════════════════════════════════
+
+
+
 
 NSDictionary *GameService::baseHeaders() {
     NSMutableDictionary *h = [NSMutableDictionary dictionary];
@@ -75,15 +75,15 @@ NSDictionary *GameService::baseHeaders() {
     return h;
 }
 
-// ═══════════════════════════════════════════════════════════════
-// Persisted Query (GET request with URL params)
-// ═══════════════════════════════════════════════════════════════
+
+
+
 
 void GameService::postGraphQL(const std::string &operationName,
                                const std::string &queryHash,
                                NSDictionary *variables,
                                std::function<void(NSDictionary *, NSString *)> completion) {
-    // Persisted queries use GET with URLSearchParams
+
     NSString *varStr = @"{}";
     if (variables) {
         NSData *jsonData = [NSJSONSerialization dataWithJSONObject:variables options:0 error:nil];
@@ -98,12 +98,12 @@ void GameService::postGraphQL(const std::string &operationName,
     NSData *extData = [NSJSONSerialization dataWithJSONObject:extDict options:0 error:nil];
     NSString *extStr = [[NSString alloc] initWithData:extData encoding:NSUTF8StringEncoding];
 
-    // Use random huId (matching OpenNOW's randomHuId())
+
     NSString *huId = [NSString stringWithFormat:@"%lx%@",
         (unsigned long)[[NSDate date] timeIntervalSince1970] * 1000,
         [[[[NSUUID UUID] UUIDString] stringByReplacingOccurrencesOfString:@"-" withString:@""] substringToIndex:8]];
 
-    // URL-encode each param
+
     NSString *encodedRequestType = [[NSString stringWithUTF8String:operationName.c_str()]
         stringByAddingPercentEncodingWithAllowedCharacters:NSCharacterSet.URLQueryAllowedCharacterSet];
     NSString *encodedExtensions = [extStr stringByAddingPercentEncodingWithAllowedCharacters:
@@ -123,7 +123,7 @@ void GameService::postGraphQL(const std::string &operationName,
     req.HTTPMethod = @"GET";
     req.timeoutInterval = 20.0;
 
-    // Persisted queries use application/graphql content type
+
     NSDictionary *hdrs = baseHeaders();
     NSMutableDictionary *allHeaders = [hdrs mutableCopy];
     allHeaders[@"Content-Type"] = @"application/graphql";
@@ -147,7 +147,7 @@ void GameService::postGraphQL(const std::string &operationName,
                     return;
                 }
 
-                // Check for GraphQL errors
+
                 NSArray *errors = json[@"errors"];
                 if (errors && [errors isKindOfClass:[NSArray class]] && errors.count > 0) {
                     NSDictionary *err = errors[0];
@@ -167,9 +167,9 @@ void GameService::postGraphQL(const std::string &operationName,
     [task resume];
 }
 
-// ═══════════════════════════════════════════════════════════════
-// Game Item Parser (matches OpenNOW appToGame)
-// ═══════════════════════════════════════════════════════════════
+
+
+
 
 static NSString *SafeStr(id value) {
     if (!value || [value isKindOfClass:[NSNull class]]) return nil;
@@ -301,7 +301,7 @@ GameInfo GameService::parseGameItem(NSDictionary *app) {
         }
     }
 
-    // Determine in-library status & resolve numeric launchAppId
+
     {
         std::string firstNumericVariant;
         for (auto &v : g.variants) {
@@ -322,7 +322,7 @@ GameInfo GameService::parseGameItem(NSDictionary *app) {
         }
     }
 
-    // Genres
+
     NSArray *genres = app[@"genres"];
     if (genres && [genres isKindOfClass:[NSArray class]]) {
         for (id item in genres) {
@@ -335,7 +335,7 @@ GameInfo GameService::parseGameItem(NSDictionary *app) {
         }
     }
 
-    // Feature labels
+
     NSArray *features = app[@"featureLabels"] ? app[@"featureLabels"] : app[@"features"];
     if (features && [features isKindOfClass:[NSArray class]]) {
         for (id item in features) {
@@ -348,9 +348,9 @@ GameInfo GameService::parseGameItem(NSDictionary *app) {
     return g;
 }
 
-// ═══════════════════════════════════════════════════════════════
-// JSON POST-based GraphQL (used for apps queries)
-// ═══════════════════════════════════════════════════════════════
+
+
+
 
 void GameService::postGraphQlJson(const std::string &query,
                                    NSDictionary *variables,
@@ -409,9 +409,9 @@ void GameService::postGraphQlJson(const std::string &query,
     [task resume];
 }
 
-// ═══════════════════════════════════════════════════════════════
-// Catalog Browsing (POST GraphQL apps query)
-// ═══════════════════════════════════════════════════════════════
+
+
+
 
 void GameService::BrowseCatalogGames(const std::string &searchQuery,
                                      const std::string &sortId,
@@ -750,9 +750,9 @@ void GameService::FetchCatalogGames(CatalogCallback completion) {
         });
 }
 
-// ═══════════════════════════════════════════════════════════════
-// Public Games (unauthenticated static JSON)
-// ═══════════════════════════════════════════════════════════════
+
+
+
 
 void GameService::FetchPublicGames(CatalogCallback completion) {
     NSURL *url = [NSURL URLWithString:
@@ -791,7 +791,7 @@ void GameService::FetchPublicGames(CatalogCallback completion) {
                     NSString *sid = [rawId isKindOfClass:[NSNumber class]]
                         ? [(NSNumber *)rawId stringValue]
                         : ([rawId isKindOfClass:[NSString class]] ? (NSString *)rawId : title);
-                    // Use numeric Steam App ID as game.id (server expects numeric ID)
+
                     NSString *steamAppId = nil;
                     NSString *steamUrl = item[@"steamUrl"];
                     if ([steamUrl isKindOfClass:[NSString class]]) {
@@ -804,7 +804,7 @@ void GameService::FetchPublicGames(CatalogCallback completion) {
                         ? steamAppId
                         : ([sid length] > 0 ? sid : title);
                     g.id = [finalAppId UTF8String];
-                    g.uuid = [sid UTF8String]; // Keep original ID in uuid field
+                    g.uuid = [sid UTF8String];
                     if ([steamUrl isKindOfClass:[NSString class]]) {
                         NSString *steamAppId = nil;
                         NSArray *parts = [steamUrl componentsSeparatedByString:@"/app/"];
@@ -910,9 +910,9 @@ void GameService::FetchSubscriptionInfo(const std::string &userId, SubscriptionC
     });
 }
 
-// ═══════════════════════════════════════════════════════════════
-// getVpcId (matches OpenNOW getVpcId)
-// ═══════════════════════════════════════════════════════════════
+
+
+
 
 static void GetServerVpcId(const std::string &token,
                             std::function<void(const std::string &vpcId)> completion) {
@@ -948,9 +948,9 @@ static void GetServerVpcId(const std::string &token,
     }] resume];
 }
 
-// ═══════════════════════════════════════════════════════════════
-// Library Games (matches OpenNOW fetchLibraryGamesUncached)
-// ═══════════════════════════════════════════════════════════════
+
+
+
 
 void GameService::FetchLibraryGames(CatalogCallback completion) {
     std::string token = m_accessToken;
@@ -1003,7 +1003,7 @@ void GameService::FetchLibraryGames(CatalogCallback completion) {
                 return;
             }
 
-            // enrichGamesWithMetadata — fetch app metadata per UUID in chunks of 40
+
             NSMutableArray<NSString *> *uuids = [NSMutableArray array];
             NSMutableSet *seen = [NSMutableSet set];
             for (auto &g : games) {
@@ -1050,7 +1050,7 @@ void GameService::FetchLibraryGames(CatalogCallback completion) {
                         }
                         chunksCompleted++;
                         if (chunksCompleted >= totalChunks) {
-                            // mergeAppMetaIntoGame: merge metadata into games
+
                             std::vector<GameInfo> enriched;
                             for (auto &g : games) {
                                 NSString *uuidStr = [NSString stringWithUTF8String:g.uuid.c_str()];
@@ -1072,7 +1072,7 @@ void GameService::FetchLibraryGames(CatalogCallback completion) {
                                 }
                             }
 
-                            // dedupeGames: deduplicate by merging variants
+
                             std::unordered_map<std::string, GameInfo> byId;
                             for (auto &g : enriched) {
                                 auto it = byId.find(g.id);
@@ -1117,9 +1117,9 @@ void GameService::FetchLibraryGames(CatalogCallback completion) {
     });
 }
 
-// ═══════════════════════════════════════════════════════════════
-// Image Optimization
-// ═══════════════════════════════════════════════════════════════
+
+
+
 
 std::string GameService::OptimizeImageURL(const std::string &url, int width) {
     if (url.empty()) return url;
@@ -1129,9 +1129,9 @@ std::string GameService::OptimizeImageURL(const std::string &url, int width) {
     return url;
 }
 
-// ═══════════════════════════════════════════════════════════════
-// Main Panels (GET persisted query)
-// ═══════════════════════════════════════════════════════════════
+
+
+
 
 void GameService::FetchMainPanels(PanelCallback completion) {
     std::string token = m_accessToken;
@@ -1276,7 +1276,7 @@ static void PollSessionReady(std::string sessionId,
 
     void (^poller)(bool, const SessionInfo &, const std::string &) = ^(bool ok, const SessionInfo &pollInfo, const std::string &pollErr) {
         (void)pollErr;
-        // Match OpenNOW claimSession polling: ok && status 2/3 -> ready.
+
         if (ok && IsSessionReadyStatus(pollInfo.status) && !pollInfo.serverIp.empty()) {
             ReportLaunchProgress(progress, pollInfo);
             DispatchLaunchCompletion(completion, true, pollInfo, "", "");
@@ -1291,12 +1291,12 @@ static void PollSessionReady(std::string sessionId,
         if (ok && pollInfo.status == 6) {
             ReportLaunchProgress(progress, "Previous session is ending. Waiting for GeForce NOW to finish cleanup...");
         }
-        // Match OpenNOW: only break on terminal status (>3 and !=6)
+
         if (ok && pollInfo.status > 3 && pollInfo.status != 6) {
             DispatchLaunchCompletion(completion, false, SessionInfo{}, "", "Session in terminal error state");
             return;
         }
-        // Transient errors, status 1, status 6 → keep polling
+
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1 * NSEC_PER_SEC)), dispatch_get_main_queue(), pollBlock);
     };
 
@@ -1523,4 +1523,4 @@ void GameService::LaunchGame(const std::string &appId,
     });
 }
 
-} // namespace OPN
+}

@@ -98,4 +98,4 @@ struct CatalogBrowseResult {
     std::vector<CatalogSortOption> sortOptions;
 };
 
-} // namespace OPN
+}

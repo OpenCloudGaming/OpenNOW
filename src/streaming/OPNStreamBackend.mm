@@ -22,4 +22,4 @@ std::unique_ptr<IStreamSession> CreateStreamSession(StreamWebRTCBackend backend)
     return nullptr;
 }
 
-} // namespace OPN
+}

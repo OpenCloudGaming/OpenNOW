@@ -10,9 +10,9 @@
 
 namespace OPN {
 
-// ═══════════════════════════════════════════════════════════════
-// Persistent Device UUID
-// ═══════════════════════════════════════════════════════════════
+
+
+
 
 std::string PersistentDeviceUUID::s_cachedUUID;
 
@@ -40,9 +40,9 @@ std::string PersistentDeviceUUID::GetUUID() {
     return s_cachedUUID;
 }
 
-// ═══════════════════════════════════════════════════════════════
-// OAuth PKCE Helpers
-// ═══════════════════════════════════════════════════════════════
+
+
+
 
 struct OAuthState {
     std::string codeVerifier;
@@ -97,9 +97,9 @@ static OAuthState GeneratePKCEState() {
     return s;
 }
 
-// ═══════════════════════════════════════════════════════════════
-// AuthService Singleton
-// ═══════════════════════════════════════════════════════════════
+
+
+
 
 AuthService &AuthService::Shared() {
     static AuthService instance;
@@ -128,9 +128,9 @@ std::string AuthService::GetPersistentDeviceUUID() {
     return PersistentDeviceUUID::GetUUID();
 }
 
-// ═══════════════════════════════════════════════════════════════
-// StarFleet User Info (login.nvidia.com/userinfo)
-// ═══════════════════════════════════════════════════════════════
+
+
+
 
 void AuthService::FetchStarFleetUserInfo(const std::string &accessToken,
                                           std::function<void(bool, NSDictionary *, const std::string &)> completion) {
@@ -163,9 +163,9 @@ void AuthService::FetchStarFleetUserInfo(const std::string &accessToken,
     [task resume];
 }
 
-// ═══════════════════════════════════════════════════════════════
-// Client Token Fetch (login.nvidia.com/client_token)
-// ═══════════════════════════════════════════════════════════════
+
+
+
 
 void AuthService::FetchClientToken(const std::string &accessToken,
     std::function<void(bool, const std::string &, const std::string &)> completion) {
@@ -205,9 +205,9 @@ void AuthService::FetchClientToken(const std::string &accessToken,
     [task resume];
 }
 
-// ═══════════════════════════════════════════════════════════════
-// Token Refresh
-// ═══════════════════════════════════════════════════════════════
+
+
+
 
 static constexpr int64_t kClientTokenRefreshWindowMs = 5 * 60 * 1000;
 static constexpr int64_t kClientTokenRefreshWindowPercent = 20;
@@ -380,9 +380,9 @@ void AuthService::RefreshSession(AuthCallback completion, bool forceRefresh) {
     [task resume];
 }
 
-// ═══════════════════════════════════════════════════════════════
-// Server Logout
-// ═══════════════════════════════════════════════════════════════
+
+
+
 
 void AuthService::ServerLogout(const std::string &idToken,
                                 const std::string &locale,
@@ -417,9 +417,9 @@ void AuthService::ServerLogout(const std::string &idToken,
     [task resume];
 }
 
-// ═══════════════════════════════════════════════════════════════
-// OAuth 2.0 PKCE Flow (local HTTP server callback)
-// ═══════════════════════════════════════════════════════════════
+
+
+
 
 static int FindAvailablePort() {
     static const int candidatePorts[] = {2259, 6460, 7119, 8870, 9096};
@@ -894,9 +894,9 @@ NSDictionary *AuthService::parseQueryString(NSString *query) {
     return params;
 }
 
-// ═══════════════════════════════════════════════════════════════
-// Token / Session Persistence (File-Based Plist)
-// ═══════════════════════════════════════════════════════════════
+
+
+
 
 static NSString *SessionStorageDirectory() {
     NSFileManager *fm = [NSFileManager defaultManager];
@@ -1230,9 +1230,9 @@ void AuthService::SetStayLoggedIn(bool value) {
     [[NSUserDefaults standardUserDefaults] synchronize];
 }
 
-// ═══════════════════════════════════════════════════════════════
-// OAuth Session Parser
-// ═══════════════════════════════════════════════════════════════
+
+
+
 
 AuthSession AuthService::ParseOAuthSession(NSDictionary *json) {
     AuthSession s;
@@ -1308,4 +1308,4 @@ AuthSession AuthService::ParseOAuthSession(NSDictionary *json) {
     return s;
 }
 
-} // namespace OPN
+}

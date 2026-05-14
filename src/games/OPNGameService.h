@@ -74,4 +74,4 @@ private:
     std::string m_streamingBaseUrl;
 };
 
-} // namespace OPN
+}

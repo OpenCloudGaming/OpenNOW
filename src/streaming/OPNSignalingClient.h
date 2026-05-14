@@ -58,4 +58,4 @@ private:
     bool IsCurrentGeneration(int generation) const;
 };
 
-} // namespace OPN
+}

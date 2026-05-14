@@ -51,75 +51,75 @@ uint64_t TimestampUs() {
 
 std::optional<KeyMapping> MapMacKeyCode(uint16_t key) {
     switch (key) {
-        case 0: return KeyMapping{0x41, 0x001e}; // A
-        case 1: return KeyMapping{0x53, 0x001f}; // S
-        case 2: return KeyMapping{0x44, 0x0020}; // D
-        case 3: return KeyMapping{0x46, 0x0021}; // F
-        case 4: return KeyMapping{0x48, 0x0023}; // H
-        case 5: return KeyMapping{0x47, 0x0022}; // G
-        case 6: return KeyMapping{0x5a, 0x002c}; // Z
-        case 7: return KeyMapping{0x58, 0x002d}; // X
-        case 8: return KeyMapping{0x43, 0x002e}; // C
-        case 9: return KeyMapping{0x56, 0x002f}; // V
-        case 11: return KeyMapping{0x42, 0x0030}; // B
-        case 12: return KeyMapping{0x51, 0x0010}; // Q
-        case 13: return KeyMapping{0x57, 0x0011}; // W
-        case 14: return KeyMapping{0x45, 0x0012}; // E
-        case 15: return KeyMapping{0x52, 0x0013}; // R
-        case 16: return KeyMapping{0x59, 0x0015}; // Y
-        case 17: return KeyMapping{0x54, 0x0014}; // T
-        case 18: return KeyMapping{0x31, 0x0002}; // 1
-        case 19: return KeyMapping{0x32, 0x0003}; // 2
-        case 20: return KeyMapping{0x33, 0x0004}; // 3
-        case 21: return KeyMapping{0x34, 0x0005}; // 4
-        case 22: return KeyMapping{0x36, 0x0007}; // 6
-        case 23: return KeyMapping{0x35, 0x0006}; // 5
-        case 24: return KeyMapping{0xbb, 0x000d}; // =
-        case 25: return KeyMapping{0x39, 0x000a}; // 9
-        case 26: return KeyMapping{0x37, 0x0008}; // 7
-        case 27: return KeyMapping{0xbd, 0x000c}; // -
-        case 28: return KeyMapping{0x38, 0x0009}; // 8
-        case 29: return KeyMapping{0x30, 0x000b}; // 0
-        case 30: return KeyMapping{0xdd, 0x001b}; // ]
-        case 31: return KeyMapping{0x4f, 0x0018}; // O
-        case 32: return KeyMapping{0x55, 0x0016}; // U
-        case 33: return KeyMapping{0xdb, 0x001a}; // [
-        case 34: return KeyMapping{0x49, 0x0017}; // I
-        case 35: return KeyMapping{0x50, 0x0019}; // P
-        case 36: return KeyMapping{0x0d, 0x001c}; // Return
-        case 37: return KeyMapping{0x4c, 0x0026}; // L
-        case 38: return KeyMapping{0x4a, 0x0024}; // J
-        case 39: return KeyMapping{0xde, 0x0028}; // '
-        case 40: return KeyMapping{0x4b, 0x0025}; // K
-        case 41: return KeyMapping{0xba, 0x0027}; // ;
-        case 42: return KeyMapping{0xdc, 0x002b}; // backslash
-        case 43: return KeyMapping{0xbc, 0x0033}; // ,
-        case 44: return KeyMapping{0xbf, 0x0035}; // /
-        case 45: return KeyMapping{0x4e, 0x0031}; // N
-        case 46: return KeyMapping{0x4d, 0x0032}; // M
-        case 47: return KeyMapping{0xbe, 0x0034}; // .
-        case 48: return KeyMapping{0x09, 0x000f}; // Tab
-        case 49: return KeyMapping{0x20, 0x0039}; // Space
-        case 50: return KeyMapping{0xc0, 0x0029}; // `
-        case 51: return KeyMapping{0x08, 0x000e}; // Backspace
-        case 53: return KeyMapping{0x1b, 0x0001}; // Escape
-        case 55: return KeyMapping{0x5b, 0xe05b}; // Command left
-        case 56: return KeyMapping{0xa0, 0x002a}; // Shift left
-        case 57: return KeyMapping{0x14, 0x003a}; // Caps
-        case 58: return KeyMapping{0xa4, 0x0038}; // Option left
-        case 59: return KeyMapping{0xa2, 0x001d}; // Control left
-        case 60: return KeyMapping{0xa1, 0x0036}; // Shift right
-        case 61: return KeyMapping{0xa5, 0xe038}; // Option right
-        case 62: return KeyMapping{0xa3, 0xe01d}; // Control right
-        case 65: return KeyMapping{0x6e, 0x0053}; // numpad decimal
-        case 67: return KeyMapping{0x6a, 0x0037}; // numpad multiply
-        case 69: return KeyMapping{0x6b, 0x004e}; // numpad plus
-        case 71: return KeyMapping{0x90, 0xe045}; // num lock/clear
-        case 75: return KeyMapping{0x6f, 0xe035}; // numpad divide
-        case 76: return KeyMapping{0x0d, 0xe01c}; // numpad enter
-        case 78: return KeyMapping{0x6d, 0x004a}; // numpad minus
-        case 81: return KeyMapping{0xbb, 0x0059}; // numpad equals
-        case 82: return KeyMapping{0x60, 0x0052}; // numpad 0
+        case 0: return KeyMapping{0x41, 0x001e};
+        case 1: return KeyMapping{0x53, 0x001f};
+        case 2: return KeyMapping{0x44, 0x0020};
+        case 3: return KeyMapping{0x46, 0x0021};
+        case 4: return KeyMapping{0x48, 0x0023};
+        case 5: return KeyMapping{0x47, 0x0022};
+        case 6: return KeyMapping{0x5a, 0x002c};
+        case 7: return KeyMapping{0x58, 0x002d};
+        case 8: return KeyMapping{0x43, 0x002e};
+        case 9: return KeyMapping{0x56, 0x002f};
+        case 11: return KeyMapping{0x42, 0x0030};
+        case 12: return KeyMapping{0x51, 0x0010};
+        case 13: return KeyMapping{0x57, 0x0011};
+        case 14: return KeyMapping{0x45, 0x0012};
+        case 15: return KeyMapping{0x52, 0x0013};
+        case 16: return KeyMapping{0x59, 0x0015};
+        case 17: return KeyMapping{0x54, 0x0014};
+        case 18: return KeyMapping{0x31, 0x0002};
+        case 19: return KeyMapping{0x32, 0x0003};
+        case 20: return KeyMapping{0x33, 0x0004};
+        case 21: return KeyMapping{0x34, 0x0005};
+        case 22: return KeyMapping{0x36, 0x0007};
+        case 23: return KeyMapping{0x35, 0x0006};
+        case 24: return KeyMapping{0xbb, 0x000d};
+        case 25: return KeyMapping{0x39, 0x000a};
+        case 26: return KeyMapping{0x37, 0x0008};
+        case 27: return KeyMapping{0xbd, 0x000c};
+        case 28: return KeyMapping{0x38, 0x0009};
+        case 29: return KeyMapping{0x30, 0x000b};
+        case 30: return KeyMapping{0xdd, 0x001b};
+        case 31: return KeyMapping{0x4f, 0x0018};
+        case 32: return KeyMapping{0x55, 0x0016};
+        case 33: return KeyMapping{0xdb, 0x001a};
+        case 34: return KeyMapping{0x49, 0x0017};
+        case 35: return KeyMapping{0x50, 0x0019};
+        case 36: return KeyMapping{0x0d, 0x001c};
+        case 37: return KeyMapping{0x4c, 0x0026};
+        case 38: return KeyMapping{0x4a, 0x0024};
+        case 39: return KeyMapping{0xde, 0x0028};
+        case 40: return KeyMapping{0x4b, 0x0025};
+        case 41: return KeyMapping{0xba, 0x0027};
+        case 42: return KeyMapping{0xdc, 0x002b};
+        case 43: return KeyMapping{0xbc, 0x0033};
+        case 44: return KeyMapping{0xbf, 0x0035};
+        case 45: return KeyMapping{0x4e, 0x0031};
+        case 46: return KeyMapping{0x4d, 0x0032};
+        case 47: return KeyMapping{0xbe, 0x0034};
+        case 48: return KeyMapping{0x09, 0x000f};
+        case 49: return KeyMapping{0x20, 0x0039};
+        case 50: return KeyMapping{0xc0, 0x0029};
+        case 51: return KeyMapping{0x08, 0x000e};
+        case 53: return KeyMapping{0x1b, 0x0001};
+        case 55: return KeyMapping{0x5b, 0xe05b};
+        case 56: return KeyMapping{0xa0, 0x002a};
+        case 57: return KeyMapping{0x14, 0x003a};
+        case 58: return KeyMapping{0xa4, 0x0038};
+        case 59: return KeyMapping{0xa2, 0x001d};
+        case 60: return KeyMapping{0xa1, 0x0036};
+        case 61: return KeyMapping{0xa5, 0xe038};
+        case 62: return KeyMapping{0xa3, 0xe01d};
+        case 65: return KeyMapping{0x6e, 0x0053};
+        case 67: return KeyMapping{0x6a, 0x0037};
+        case 69: return KeyMapping{0x6b, 0x004e};
+        case 71: return KeyMapping{0x90, 0xe045};
+        case 75: return KeyMapping{0x6f, 0xe035};
+        case 76: return KeyMapping{0x0d, 0xe01c};
+        case 78: return KeyMapping{0x6d, 0x004a};
+        case 81: return KeyMapping{0xbb, 0x0059};
+        case 82: return KeyMapping{0x60, 0x0052};
         case 83: return KeyMapping{0x61, 0x004f};
         case 84: return KeyMapping{0x62, 0x0050};
         case 85: return KeyMapping{0x63, 0x0051};
@@ -129,32 +129,32 @@ std::optional<KeyMapping> MapMacKeyCode(uint16_t key) {
         case 89: return KeyMapping{0x67, 0x0047};
         case 91: return KeyMapping{0x68, 0x0048};
         case 92: return KeyMapping{0x69, 0x0049};
-        case 96: return KeyMapping{0x74, 0x003f}; // F5
+        case 96: return KeyMapping{0x74, 0x003f};
         case 97: return KeyMapping{0x75, 0x0040};
         case 98: return KeyMapping{0x76, 0x0041};
-        case 99: return KeyMapping{0x72, 0x003d}; // F3
+        case 99: return KeyMapping{0x72, 0x003d};
         case 100: return KeyMapping{0x77, 0x0042};
         case 101: return KeyMapping{0x78, 0x0043};
-        case 103: return KeyMapping{0x7a, 0x0057}; // F11
-        case 105: return KeyMapping{0x7c, 0x0064}; // F13
-        case 106: return KeyMapping{0x7f, 0x0067}; // F16
-        case 107: return KeyMapping{0x7d, 0x0065}; // F14
-        case 109: return KeyMapping{0x79, 0x0044}; // F10
-        case 111: return KeyMapping{0x7b, 0x0058}; // F12
-        case 113: return KeyMapping{0x7e, 0x0066}; // F15
-        case 114: return KeyMapping{0x2d, 0xe052}; // Insert/Help
-        case 115: return KeyMapping{0x24, 0xe047}; // Home
-        case 116: return KeyMapping{0x21, 0xe049}; // PageUp
-        case 117: return KeyMapping{0x2e, 0xe053}; // Delete
-        case 118: return KeyMapping{0x73, 0x003e}; // F4
-        case 119: return KeyMapping{0x23, 0xe04f}; // End
-        case 120: return KeyMapping{0x71, 0x003c}; // F2
-        case 121: return KeyMapping{0x22, 0xe051}; // PageDown
-        case 122: return KeyMapping{0x70, 0x003b}; // F1
-        case 123: return KeyMapping{0x25, 0xe04b}; // Left
-        case 124: return KeyMapping{0x27, 0xe04d}; // Right
-        case 125: return KeyMapping{0x28, 0xe050}; // Down
-        case 126: return KeyMapping{0x26, 0xe048}; // Up
+        case 103: return KeyMapping{0x7a, 0x0057};
+        case 105: return KeyMapping{0x7c, 0x0064};
+        case 106: return KeyMapping{0x7f, 0x0067};
+        case 107: return KeyMapping{0x7d, 0x0065};
+        case 109: return KeyMapping{0x79, 0x0044};
+        case 111: return KeyMapping{0x7b, 0x0058};
+        case 113: return KeyMapping{0x7e, 0x0066};
+        case 114: return KeyMapping{0x2d, 0xe052};
+        case 115: return KeyMapping{0x24, 0xe047};
+        case 116: return KeyMapping{0x21, 0xe049};
+        case 117: return KeyMapping{0x2e, 0xe053};
+        case 118: return KeyMapping{0x73, 0x003e};
+        case 119: return KeyMapping{0x23, 0xe04f};
+        case 120: return KeyMapping{0x71, 0x003c};
+        case 121: return KeyMapping{0x22, 0xe051};
+        case 122: return KeyMapping{0x70, 0x003b};
+        case 123: return KeyMapping{0x25, 0xe04b};
+        case 124: return KeyMapping{0x27, 0xe04d};
+        case 125: return KeyMapping{0x28, 0xe050};
+        case 126: return KeyMapping{0x26, 0xe048};
         default: return std::nullopt;
     }
 }
@@ -324,4 +324,4 @@ uint16_t Encoder::NextGamepadSequence(uint8_t gamepadIndex) {
     return current;
 }
 
-} // namespace OPN::Input
+}

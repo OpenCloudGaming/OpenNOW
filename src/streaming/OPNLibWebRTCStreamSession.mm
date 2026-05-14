@@ -1915,7 +1915,7 @@ void LibWebRTCStreamSession::StopInputHeartbeat() {
     m_inputHeartbeat = nullptr;
 }
 
-} // namespace OPN
+}
 
 #if defined(OPN_HAVE_LIBWEBRTC)
 @implementation OPNLibWebRTCSessionImpl

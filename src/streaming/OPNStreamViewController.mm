@@ -1657,7 +1657,7 @@ static void OPNReleaseStreamSessionAfterCallbacks(OPN::IStreamSession *session) 
 
             [strongSelf setLaunchStep:1 message:@"Connecting to game server..."];
 
-            // Copy info to a variable that can be captured by value
+
             OPN::SessionInfo sessionInfo = info;
             OPN::StreamSettings negotiatedSettings = OPNSettingsWithNegotiatedProfile(settings, sessionInfo);
             if (negotiatedSettings.resolution != settings.resolution

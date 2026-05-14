@@ -125,4 +125,4 @@ void SaveStreamMicrophonePushToTalkModifierMask(int modifierMask);
 std::string StreamMicrophonePushToTalkKeyLabel(int keyCode);
 std::string StreamMicrophonePushToTalkComboLabel(int keyCode, int modifierMask);
 
-} // namespace OPN
+}

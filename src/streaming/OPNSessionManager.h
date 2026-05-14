@@ -65,4 +65,4 @@ private:
     std::unordered_map<std::string, SessionAdState> m_adStatesBySessionId;
 };
 
-} // namespace OPN
+}

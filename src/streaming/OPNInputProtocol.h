@@ -117,4 +117,4 @@ private:
     uint16_t m_gamepadSequences[GAMEPAD_MAX_CONTROLLERS] = {1, 1, 1, 1};
 };
 
-} // namespace OPN::Input
+}

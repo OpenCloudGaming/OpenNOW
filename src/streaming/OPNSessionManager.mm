@@ -1,4 +1,4 @@
-// SessionManager implementation
+
 #include "OPNSessionManager.h"
 #include "OPNStreamTypes.h"
 #import <Foundation/Foundation.h>
@@ -13,7 +13,7 @@ static NSString *GetUserAgent() {
     return @"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36 NVIDIACEFClient/HEAD/debb5919f6 GFN-PC/2.0.80.173";
 }
 
-// Matches OpenNOW isZoneHostname: zone LB hostnames cannot be used as direct serverIp for polling
+
 static bool IsZoneHostname(const std::string &host) {
     return host.find("cloudmatchbeta.nvidiagrid.net") != std::string::npos
         || host.find("cloudmatch.nvidiagrid.net") != std::string::npos;
@@ -315,8 +315,8 @@ static void ApplyCommonCloudMatchHeaders(NSMutableURLRequest *req, const std::st
     }
 }
 
-// Matches OpenNOW extractHostFromUrl: extracts host from rtsps://host:port, wss://host, etc.
-// Returns empty string if no valid host found.
+
+
 static std::string ExtractHostFromUrl(const std::string &url) {
     if (url.empty()) return "";
     const char *prefixes[] = {"rtsps://", "rtsp://", "wss://", "https://"};
@@ -328,7 +328,7 @@ static std::string ExtractHostFromUrl(const std::string &url) {
         }
     }
     if (afterProto.empty()) return "";
-    // Get host (before port or path)
+
     size_t colon = afterProto.find(':');
     size_t slash = afterProto.find('/');
     size_t end = std::min(colon, slash);
@@ -437,7 +437,7 @@ void SessionManager::CreateSession(const std::string &appId,
     NSString *internalTitleStr = internalTitle.empty() ? @"" : [NSString stringWithUTF8String:internalTitle.c_str()];
     if (!internalTitleStr) internalTitleStr = @"";
 
-    // Create sessionRequestData dictionary
+
     NSDictionary *sessionRequestData = @{
         @"appId": appIdStr,
         @"internalTitle": internalTitleStr,
@@ -489,7 +489,7 @@ void SessionManager::CreateSession(const std::string &appId,
         @"requestedStreamingFeatures": RequestedStreamingFeatures(settings),
     };
 
-    // Create the full request body with sessionRequestData as a nested dictionary
+
     NSDictionary *body = @{
         @"sessionRequestData": sessionRequestData,
     };
@@ -575,10 +575,10 @@ void SessionManager::CreateSession(const std::string &appId,
 
         ParseQueueProgress(session, info);
 
-        // Match OpenNOW streamingServerIp priority chain:
-        // 1. connectionInfo[usage=14].ip (direct IP)
-        // 2. host extracted from connectionInfo[usage=14].resourcePath (Alliance rtsps:// URL)
-        // 3. sessionControlInfo.ip (zone hostname as last resort)
+
+
+
+
         NSArray *connections = ArrayValue(session[@"connectionInfo"]);
         for (NSDictionary *conn in connections) {
             if (![conn isKindOfClass:[NSDictionary class]]) continue;
@@ -588,12 +588,12 @@ void SessionManager::CreateSession(const std::string &appId,
             NSString *resourcePath = [conn[@"resourcePath"] isKindOfClass:[NSString class]] ? conn[@"resourcePath"] : nil;
 
             if (usage == 14) {
-                // Priority 1: Direct IP field
+
                 NSString *serverIp = nil;
                 if (IsUsableEndpointHost(ip)) {
                     serverIp = ip;
                 }
-                // Priority 2: Extract host from resourcePath (Alliance format)
+
                 if (!serverIp && resourcePath.length > 0) {
                     std::string host = ExtractHostFromUrl([resourcePath UTF8String]);
                     if (!host.empty()) {
@@ -622,7 +622,7 @@ void SessionManager::CreateSession(const std::string &appId,
                 }
             }
 
-            // usage=2 is primary media path
+
             if (usage == 2) {
                 NSString *mediaIp = nil;
                 if (IsUsableEndpointHost(ip)) {
@@ -640,7 +640,7 @@ void SessionManager::CreateSession(const std::string &appId,
             }
         }
 
-        // Parse ICE servers
+
         NSArray *iceServers = ArrayValue(session[@"iceServers"]);
         for (NSDictionary *ice in iceServers) {
             if (![ice isKindOfClass:[NSDictionary class]]) continue;
@@ -661,7 +661,7 @@ void SessionManager::CreateSession(const std::string &appId,
         ParseSessionAds(session, info.adState);
         MergeAndStoreAdState(info);
 
-        // Fallback to sessionControlInfo for zone hostname
+
         NSDictionary *ctrlInfo = DictionaryValue(session[@"sessionControlInfo"]);
         NSString *ctrlIp = [ctrlInfo[@"ip"] isKindOfClass:[NSString class]] ? ctrlInfo[@"ip"] : nil;
         if (ctrlIp.length > 0 && info.serverIp.empty()) {
@@ -684,7 +684,7 @@ void SessionManager::PollSession(const std::string &sessionId,
         return;
     }
 
-    // Match OpenNOW resolvePollStopBase: only use serverIp as base if it's a real IP (not zone hostname)
+
     std::string base = ResolveSessionBaseUrl(m_streamingBaseUrl, serverIp);
     NSString *urlStr = [NSString stringWithFormat:@"%@/v2/session/%s",
                         [NSString stringWithUTF8String:base.c_str()],
@@ -742,10 +742,10 @@ void SessionManager::PollSession(const std::string &sessionId,
 
         ParseQueueProgress(session, info);
 
-        // Match OpenNOW streamingServerIp priority chain:
-        // 1. connectionInfo[usage=14].ip (direct IP)
-        // 2. host extracted from connectionInfo[usage=14].resourcePath (Alliance rtsps:// URL)
-        // 3. sessionControlInfo.ip (zone hostname as last resort)
+
+
+
+
         NSArray *connections = ArrayValue(session[@"connectionInfo"]);
         for (NSDictionary *conn in connections) {
             if (![conn isKindOfClass:[NSDictionary class]]) continue;
@@ -755,12 +755,12 @@ void SessionManager::PollSession(const std::string &sessionId,
             NSString *resourcePath = [conn[@"resourcePath"] isKindOfClass:[NSString class]] ? conn[@"resourcePath"] : nil;
 
             if (usage == 14) {
-                // Priority 1: Direct IP field
+
                 NSString *serverIp = nil;
                 if (IsUsableEndpointHost(ip)) {
                     serverIp = ip;
                 }
-                // Priority 2: Extract host from resourcePath (Alliance format)
+
                 if (!serverIp && resourcePath.length > 0) {
                     std::string host = ExtractHostFromUrl([resourcePath UTF8String]);
                     if (!host.empty()) {
@@ -789,7 +789,7 @@ void SessionManager::PollSession(const std::string &sessionId,
                 }
             }
 
-            // Media connection info (usage=2 primary media path)
+
             if (usage == 2) {
                 NSString *mediaIp = nil;
                 if (IsUsableEndpointHost(ip)) {
@@ -811,7 +811,7 @@ void SessionManager::PollSession(const std::string &sessionId,
             NSDictionary *ctrlInfo = DictionaryValue(session[@"sessionControlInfo"]);
             NSString *ctrlIp = [ctrlInfo[@"ip"] isKindOfClass:[NSString class]] ? ctrlInfo[@"ip"] : nil;
             if (ctrlIp.length > 0) {
-                // Priority 3: sessionControlInfo.ip (zone hostname fallback)
+
                 info.serverIp = [ctrlIp UTF8String];
             }
         }
@@ -1021,7 +1021,7 @@ void SessionManager::GetActiveSessions(std::function<void(bool, const std::vecto
             if (sid) entry.sessionId = [sid UTF8String];
             entry.status = status;
 
-            // Extract appId from sessionRequestData
+
             NSDictionary *reqData = DictionaryValue(s[@"sessionRequestData"]);
             if (reqData) {
                 id appIdVal = reqData[@"appId"];
@@ -1032,7 +1032,7 @@ void SessionManager::GetActiveSessions(std::function<void(bool, const std::vecto
                 }
             }
 
-            // Prefer real server IP from connectionInfo[usage=14]
+
             NSString *gpu = [s[@"gpuType"] isKindOfClass:[NSString class]] ? s[@"gpuType"] : nil;
             if (gpu) entry.gpuType = [gpu UTF8String];
 
@@ -1049,7 +1049,7 @@ void SessionManager::GetActiveSessions(std::function<void(bool, const std::vecto
                         connIp = ip;
                         break;
                     }
-                    // Priority 2: extract host from resourcePath (Alliance format)
+
                     if (!connIp && resourcePath.length > 0) {
                         std::string host = ExtractHostFromUrl([resourcePath UTF8String]);
                         if (!host.empty()) {
@@ -1090,7 +1090,7 @@ void SessionManager::pollClaimSession(std::string sessionId,
     __block int retryCount = 0;
     const int maxRetries = 60;
 
-    // Match OpenNOW: use global endpoint when serverIp is a zone hostname
+
     NSString *baseUrl;
     if (IsZoneHostname(serverIp)) {
         baseUrl = [NSString stringWithUTF8String:(m_streamingBaseUrl.empty() ? "https://prod.cloudmatchbeta.nvidiagrid.net" : m_streamingBaseUrl.c_str())];
@@ -1125,7 +1125,7 @@ void SessionManager::pollClaimSession(std::string sessionId,
             NSString *gpu = [session[@"gpuType"] isKindOfClass:[NSString class]] ? session[@"gpuType"] : nil;
             info.gpuType = [gpu UTF8String] ?: "";
 
-            // Match OpenNOW streamingServerIp priority chain
+
             NSArray *connections = ArrayValue(session[@"connectionInfo"]);
             for (NSDictionary *conn in connections) {
                 if (![conn isKindOfClass:[NSDictionary class]]) continue;
@@ -1206,10 +1206,10 @@ void SessionManager::pollClaimSession(std::string sessionId,
 
             completion(true, info, "");
         } else if (status == 1 || status == 6) {
-            // Status 1 (setup/launching), 6 (cleaning up) — keep polling
+
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1 * NSEC_PER_SEC)), dispatch_get_main_queue(), pollBlock);
         } else {
-            // Status 4, 5, etc. — terminal error (matches OpenNOW)
+
             completion(false, SessionInfo{}, "Session in terminal error state");
         }
     };
@@ -1257,7 +1257,7 @@ void SessionManager::ClaimSession(const std::string &sessionId,
     std::string deviceId = GetStableDeviceId();
     std::string clientId = RandomUUID();
 
-    // Copy to NSString for safe async block capture (OpenNOW passes by value)
+
     NSString *sid = [NSString stringWithUTF8String:sessionId.c_str()];
     NSString *sip = [NSString stringWithUTF8String:serverIp.c_str()];
     if (!sid) sid = @"";
