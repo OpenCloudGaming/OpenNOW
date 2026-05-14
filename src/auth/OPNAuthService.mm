@@ -80,6 +80,14 @@ static std::string URLEncode(const std::string &value) {
     return encoded ? std::string([encoded UTF8String]) : value;
 }
 
+static std::string FormURLEncode(const std::string &value) {
+    NSString *str = [NSString stringWithUTF8String:value.c_str()];
+    NSMutableCharacterSet *allowed = [NSMutableCharacterSet alphanumericCharacterSet];
+    [allowed addCharactersInString:@"-._~"];
+    NSString *encoded = [str stringByAddingPercentEncodingWithAllowedCharacters:allowed];
+    return encoded ? std::string([encoded UTF8String]) : value;
+}
+
 static OAuthState GeneratePKCEState() {
     OAuthState s;
     s.codeVerifier = GenerateRandomString(64);
@@ -201,14 +209,35 @@ void AuthService::FetchClientToken(const std::string &accessToken,
 // Token Refresh
 // ═══════════════════════════════════════════════════════════════
 
-void AuthService::RefreshSession(AuthCallback completion) {
-    AuthSession session = LoadSavedSession();
-    if (!session.isAuthenticated || session.refreshToken.empty()) {
-        completion(false, AuthSession{}, "No refresh token available");
-        return;
-    }
+static constexpr int64_t kClientTokenRefreshWindowMs = 5 * 60 * 1000;
+static constexpr int64_t kClientTokenRefreshWindowPercent = 20;
 
-    NSString *tokenURLStr = [NSString stringWithUTF8String:kOAuthTokenURL];
+static bool ShouldRefreshClientToken(const AuthSession &session) {
+    if (session.clientToken.empty() || session.clientTokenExpiry == 0) return true;
+    int64_t remainingMs = session.clientTokenExpiry - AuthSession::CurrentEpochMs();
+    if (session.clientTokenExpiryLength > 0) {
+        return remainingMs < (session.clientTokenExpiryLength * kClientTokenRefreshWindowPercent) / 100;
+    }
+    return remainingMs < kClientTokenRefreshWindowMs;
+}
+
+static AuthSession MergeRefreshedSession(const AuthSession &saved, const AuthSession &refreshed) {
+    AuthSession merged = refreshed;
+    if (merged.refreshToken.empty()) merged.refreshToken = saved.refreshToken;
+    if (merged.clientToken.empty()) {
+        merged.clientToken = saved.clientToken;
+        merged.clientTokenExpiry = saved.clientTokenExpiry;
+        merged.clientTokenExpiryLength = saved.clientTokenExpiryLength;
+    }
+    if (merged.email.empty()) merged.email = saved.email;
+    if (merged.displayName.empty()) merged.displayName = saved.displayName;
+    if (merged.membershipTier.empty()) merged.membershipTier = saved.membershipTier;
+    if (merged.userId.empty()) merged.userId = saved.userId;
+    return merged;
+}
+
+static NSMutableURLRequest *CreateTokenRequest(NSString *body) {
+    NSString *tokenURLStr = [NSString stringWithUTF8String:AuthService::kOAuthTokenURL];
     NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:tokenURLStr]];
     req.HTTPMethod = @"POST";
     req.timeoutInterval = 15.0;
@@ -216,41 +245,136 @@ void AuthService::RefreshSession(AuthCallback completion) {
     [req setValue:@"application/json, text/plain, */*" forHTTPHeaderField:@"Accept"];
     [req setValue:@"https://nvfile" forHTTPHeaderField:@"Origin"];
     [req setValue:@"https://nvfile/" forHTTPHeaderField:@"Referer"];
-    [req setValue:[NSString stringWithUTF8String:kDefaultUserAgent] forHTTPHeaderField:@"User-Agent"];
+    [req setValue:[NSString stringWithUTF8String:AuthService::kDefaultUserAgent] forHTTPHeaderField:@"User-Agent"];
+    req.HTTPBody = [body dataUsingEncoding:NSUTF8StringEncoding];
+    return req;
+}
+
+static NSString *TokenRefreshErrorMessage(NSHTTPURLResponse *http, NSDictionary *json, NSString *fallback) {
+    if (json) {
+        NSString *description = [json[@"error_description"] isKindOfClass:NSString.class] ? json[@"error_description"] : nil;
+        if (description.length > 0) return description;
+        NSString *message = [json[@"message"] isKindOfClass:NSString.class] ? json[@"message"] : nil;
+        if (message.length > 0) return message;
+        NSString *error = [json[@"error"] isKindOfClass:NSString.class] ? json[@"error"] : nil;
+        if (error.length > 0) return error;
+    }
+    if (http) return [NSString stringWithFormat:@"%@ (HTTP %ld)", fallback, (long)http.statusCode];
+    return fallback;
+}
+
+static void EnsureClientToken(AuthSession session, std::function<void(AuthSession)> completion) {
+    if (!session.isAuthenticated || !session.IsAccessTokenValid() || !ShouldRefreshClientToken(session)) {
+        completion(session);
+        return;
+    }
+
+    AuthService::Shared().FetchClientToken(session.accessToken,
+        [session, completion](bool success, const std::string &clientToken, const std::string &expiresInText) mutable {
+            if (success && !clientToken.empty()) {
+                session.clientToken = clientToken;
+                int64_t expiresIn = 86400;
+                if (!expiresInText.empty()) {
+                    NSString *rawExpires = [NSString stringWithUTF8String:expiresInText.c_str()];
+                    int64_t parsedExpires = [rawExpires longLongValue];
+                    if (parsedExpires > 0) expiresIn = parsedExpires;
+                }
+                session.clientTokenExpiry = AuthSession::CurrentEpochMs() + (expiresIn * 1000);
+                session.clientTokenExpiryLength = expiresIn * 1000;
+            }
+            completion(session);
+        });
+}
+
+static void CompleteRefreshWithSession(AuthSession session, AuthCallback completion) {
+    EnsureClientToken(session, [completion](AuthSession enriched) {
+        AuthService::Shared().SaveSession(enriched);
+        completion(true, enriched, "");
+    });
+}
+
+void AuthService::RefreshSession(AuthCallback completion, bool forceRefresh) {
+    AuthSession session = LoadSavedSession();
+    if (!session.isAuthenticated) {
+        completion(false, AuthSession{}, "No saved session available");
+        return;
+    }
+
+    if (!forceRefresh && session.IsAccessTokenValid() && ShouldRefreshClientToken(session)) {
+        CompleteRefreshWithSession(session, completion);
+        return;
+    }
+
+    AuthCallback completionCopy = completion;
+    AuthSession savedSession = session;
+
+    auto refreshWithOAuthToken = [completionCopy, savedSession]() {
+        if (savedSession.refreshToken.empty()) {
+            if (savedSession.IsAccessTokenValid()) {
+                CompleteRefreshWithSession(savedSession, completionCopy);
+            } else {
+                completionCopy(false, savedSession, "No refresh mechanism available");
+            }
+            return;
+        }
+
+        NSString *bodyStr = [NSString stringWithFormat:
+            @"grant_type=refresh_token"
+            @"&refresh_token=%s"
+            @"&client_id=%s",
+            FormURLEncode(savedSession.refreshToken).c_str(),
+            FormURLEncode(kOAuthClientId).c_str()];
+        NSMutableURLRequest *req = CreateTokenRequest(bodyStr);
+        NSURLSessionDataTask *task = [[NSURLSession sharedSession]
+            dataTaskWithRequest:req
+            completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    if (error) {
+                        completionCopy(false, savedSession, [[error localizedDescription] UTF8String]);
+                        return;
+                    }
+                    NSHTTPURLResponse *http = (NSHTTPURLResponse *)response;
+                    NSDictionary *json = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
+                    if (http.statusCode != 200 || !json) {
+                        NSString *msg = TokenRefreshErrorMessage(http, json, @"Token refresh failed");
+                        completionCopy(false, savedSession, [msg UTF8String]);
+                        return;
+                    }
+
+                    AuthSession refreshed = MergeRefreshedSession(savedSession, AuthService::ParseOAuthSession(json));
+                    CompleteRefreshWithSession(refreshed, completionCopy);
+                });
+            }];
+        [task resume];
+    };
+
+    if (session.clientToken.empty()) {
+        refreshWithOAuthToken();
+        return;
+    }
 
     NSString *bodyStr = [NSString stringWithFormat:
-        @"grant_type=refresh_token"
-        @"&refresh_token=%@"
-        @"&client_id=%s",
-        [NSString stringWithUTF8String:session.refreshToken.c_str()],
-        kOAuthClientId];
-    req.HTTPBody = [bodyStr dataUsingEncoding:NSUTF8StringEncoding];
-
+        @"grant_type=urn%%3Aietf%%3Aparams%%3Aoauth%%3Agrant-type%%3Aclient_token"
+        @"&client_token=%s"
+        @"&client_id=%s"
+        @"&sub=%s",
+        FormURLEncode(session.clientToken).c_str(),
+        FormURLEncode(kOAuthClientId).c_str(),
+        FormURLEncode(session.userId).c_str()];
+    NSMutableURLRequest *req = CreateTokenRequest(bodyStr);
     NSURLSessionDataTask *task = [[NSURLSession sharedSession]
         dataTaskWithRequest:req
         completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
             dispatch_async(dispatch_get_main_queue(), ^{
-                if (error) {
-                    completion(false, session, [[error localizedDescription] UTF8String]);
-                    return;
-                }
                 NSHTTPURLResponse *http = (NSHTTPURLResponse *)response;
                 NSDictionary *json = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
-                if (http.statusCode != 200 || !json) {
-                    NSString *msg = json ? (json[@"error_description"] ? json[@"error_description"] : @"Token refresh failed")
-                                         : @"Token refresh failed";
-                    completion(false, session, [msg UTF8String]);
+                if (error || http.statusCode != 200 || !json) {
+                    refreshWithOAuthToken();
                     return;
                 }
 
-                AuthSession refreshed = ParseOAuthSession(json);
-                if (refreshed.refreshToken.empty()) refreshed.refreshToken = session.refreshToken;
-                refreshed.email = session.email;
-                refreshed.displayName = session.displayName;
-                refreshed.membershipTier = session.membershipTier;
-                refreshed.userId = session.userId;
-                if (GetStayLoggedIn()) SaveSession(refreshed);
-                completion(true, refreshed, "");
+                AuthSession refreshed = MergeRefreshedSession(savedSession, AuthService::ParseOAuthSession(json));
+                CompleteRefreshWithSession(refreshed, completionCopy);
             });
         }];
     [task resume];
@@ -411,8 +535,223 @@ void AuthService::StartOAuthLogin(AuthCallback completion) {
             "Content-Type: text/html; charset=utf-8\r\n"
             "Connection: close\r\n"
             "\r\n"
-            "<html><body><h1>Sign in complete</h1><p>Return to the app.</p>"
-            "<script>setTimeout(function(){window.close()}, 500)</script></body></html>";
+            R"HTML(<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OpenNOW Sign In Complete</title>
+<style>
+:root {
+  color-scheme: dark;
+  --bg: #050807;
+  --panel: rgba(11, 20, 16, 0.78);
+  --panel-line: rgba(173, 255, 202, 0.24);
+  --text: #f1fff7;
+  --muted: #a8c3b4;
+  --green: #79f2a7;
+  --green-deep: #1dd46e;
+  --cyan: #79e9ff;
+}
+
+* { box-sizing: border-box; }
+
+html,
+body {
+  width: 100%;
+  min-height: 100%;
+  margin: 0;
+}
+
+body {
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  padding: 32px;
+  color: var(--text);
+  background:
+    radial-gradient(circle at 22% 18%, rgba(121, 242, 167, 0.22), transparent 28%),
+    radial-gradient(circle at 78% 80%, rgba(121, 233, 255, 0.16), transparent 30%),
+    linear-gradient(135deg, #030504 0%, #07110d 48%, #020403 100%);
+  font-family: "Avenir Next", ui-rounded, "SF Pro Rounded", "Segoe UI", sans-serif;
+}
+
+body::before {
+  position: fixed;
+  inset: -20%;
+  content: "";
+  background-image:
+    linear-gradient(rgba(121, 242, 167, 0.055) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(121, 242, 167, 0.055) 1px, transparent 1px);
+  background-size: 42px 42px;
+  mask-image: radial-gradient(circle at center, black 0%, transparent 68%);
+  transform: perspective(700px) rotateX(58deg) translateY(12%);
+}
+
+.card {
+  position: relative;
+  width: min(520px, 100%);
+  padding: 38px;
+  overflow: hidden;
+  background: var(--panel);
+  border: 1px solid var(--panel-line);
+  border-radius: 30px;
+  box-shadow:
+    0 36px 110px rgba(0, 0, 0, 0.56),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(24px) saturate(1.28);
+}
+
+.card::before {
+  position: absolute;
+  inset: 0;
+  content: "";
+  background: linear-gradient(115deg, rgba(255, 255, 255, 0.16), transparent 28%, transparent 62%, rgba(121, 242, 167, 0.12));
+  pointer-events: none;
+}
+
+.mark {
+  position: relative;
+  display: grid;
+  width: 76px;
+  height: 76px;
+  place-items: center;
+  margin-bottom: 28px;
+  border-radius: 24px;
+  background: linear-gradient(145deg, var(--green), var(--green-deep));
+  box-shadow: 0 0 0 10px rgba(121, 242, 167, 0.08), 0 22px 48px rgba(29, 212, 110, 0.32);
+}
+
+.mark svg {
+  width: 42px;
+  height: 42px;
+  fill: none;
+  stroke: #031008;
+  stroke-width: 4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.eyebrow {
+  position: relative;
+  margin: 0 0 12px;
+  color: var(--green);
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.28em;
+  text-transform: uppercase;
+}
+
+h1 {
+  position: relative;
+  max-width: 10ch;
+  margin: 0;
+  font-size: clamp(42px, 8vw, 68px);
+  line-height: 0.92;
+  letter-spacing: -0.065em;
+}
+
+.copy {
+  position: relative;
+  max-width: 34rem;
+  margin: 22px 0 0;
+  color: var(--muted);
+  font-size: 17px;
+  line-height: 1.58;
+}
+
+.status {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 30px;
+  padding: 14px 16px;
+  color: #d9ffe8;
+  background: rgba(121, 242, 167, 0.10);
+  border: 1px solid rgba(121, 242, 167, 0.18);
+  border-radius: 16px;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.pulse {
+  width: 10px;
+  height: 10px;
+  flex: 0 0 auto;
+  border-radius: 999px;
+  background: var(--green);
+  box-shadow: 0 0 0 0 rgba(121, 242, 167, 0.6);
+  animation: pulse 1.45s ease-out infinite;
+}
+
+.actions {
+  position: relative;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 24px;
+}
+
+button {
+  min-height: 44px;
+  padding: 0 18px;
+  color: #031008;
+  background: var(--green);
+  border: 0;
+  border-radius: 999px;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.hint {
+  align-self: center;
+  color: rgba(168, 195, 180, 0.78);
+  font-size: 13px;
+}
+
+@keyframes pulse {
+  70% { box-shadow: 0 0 0 14px rgba(121, 242, 167, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(121, 242, 167, 0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pulse { animation: none; }
+}
+
+@media (max-width: 520px) {
+  body { padding: 18px; }
+  .card { padding: 28px; border-radius: 24px; }
+  .mark { width: 64px; height: 64px; border-radius: 20px; }
+}
+</style>
+</head>
+<body>
+<main class="card" aria-labelledby="title">
+  <div class="mark" aria-hidden="true">
+    <svg viewBox="0 0 48 48"><path d="M12 25.5 20.5 34 37 15"/></svg>
+  </div>
+  <p class="eyebrow">OpenNOW</p>
+  <h1 id="title">Sign in complete</h1>
+  <p class="copy">Your NVIDIA account is connected. OpenNOW is receiving the secure token now, so you can return to the app and continue to your cloud gaming library.</p>
+  <div class="status" role="status" aria-live="polite"><span class="pulse" aria-hidden="true"></span><span id="statusText">Returning you to OpenNOW...</span></div>
+  <div class="actions">
+    <button type="button" onclick="window.close()">Close this window</button>
+    <span class="hint">If it stays open, switch back to OpenNOW.</span>
+  </div>
+  <noscript><p class="copy">JavaScript is disabled. You can safely close this window and return to OpenNOW.</p></noscript>
+</main>
+<script>
+setTimeout(function () {
+  var statusText = document.getElementById('statusText');
+  if (statusText) statusText.textContent = 'You can safely close this window.';
+  window.close();
+}, 1200);
+</script>
+</body>
+</html>)HTML";
         send(clientSock, response, strlen(response), 0);
         close(clientSock);
 
@@ -529,9 +868,11 @@ void AuthService::doOAuthTokenExchange(NSString *authCode, NSString *codeVerifie
                 return;
             }
 
-            AuthSession session = ParseOAuthSession(json);
             dispatch_async(dispatch_get_main_queue(), ^{
-                completion(true, session, "");
+                AuthSession session = ParseOAuthSession(json);
+                EnsureClientToken(session, [completion](AuthSession enriched) {
+                    completion(true, enriched, "");
+                });
             });
         }];
     [task resume];

@@ -259,10 +259,12 @@ static std::string OPNGameLibraryFingerprint(const std::vector<OPN::GameInfo> &g
 
     AuthSession saved = AuthService::Shared().LoadSavedSession();
     BOOL shouldAutoSignIn = saved.isAuthenticated && AuthService::Shared().GetStayLoggedIn();
-    if (shouldAutoSignIn && saved.IsAccessTokenValid()) {
+    BOOL canUseSavedSessionAsIs = saved.IsAccessTokenValid() && saved.IsClientTokenValid();
+    BOOL canRefreshSavedSession = saved.IsAccessTokenValid() || !saved.refreshToken.empty() || !saved.clientToken.empty();
+    if (shouldAutoSignIn && canUseSavedSessionAsIs) {
         self.currentSession = saved;
         [self transitionToScreen:AuthScreen::Catalog];
-    } else if (shouldAutoSignIn && !saved.refreshToken.empty()) {
+    } else if (shouldAutoSignIn && canRefreshSavedSession) {
         [self showAuthenticatingWithMessage:@"Refreshing session..."];
         __weak __typeof__(self) weakSelf = self;
         AuthService::Shared().RefreshSession(^(bool success, const AuthSession &fresh,
@@ -275,7 +277,6 @@ static std::string OPNGameLibraryFingerprint(const std::vector<OPN::GameInfo> &g
                 [s refreshAccountMenu];
                 [s transitionToScreen:AuthScreen::Catalog];
             } else {
-                AuthService::Shared().ClearSession();
                 OPN::AuthSession fallback = AuthService::Shared().LoadSavedSession();
                 if (fallback.isAuthenticated && fallback.IsAccessTokenValid()) {
                     s.currentSession = fallback;
@@ -888,7 +889,6 @@ static std::string OPNGameLibraryFingerprint(const std::vector<OPN::GameInfo> &g
             return;
         }
 
-        AuthService::Shared().RemoveSavedSession(accountId);
         AuthSession fallback = AuthService::Shared().LoadSavedSession();
         if (fallback.isAuthenticated && fallback.IsAccessTokenValid()) {
             strongSelf.currentSession = fallback;
@@ -935,7 +935,6 @@ static std::string OPNGameLibraryFingerprint(const std::vector<OPN::GameInfo> &g
                         return;
                     }
 
-                    AuthService::Shared().ClearSession();
                     AuthSession fallback = AuthService::Shared().LoadSavedSession();
                     if (fallback.isAuthenticated && fallback.IsAccessTokenValid()) {
                         retrySelf.currentSession = fallback;
@@ -943,7 +942,7 @@ static std::string OPNGameLibraryFingerprint(const std::vector<OPN::GameInfo> &g
                     } else {
                         [retrySelf transitionToScreen:AuthScreen::EmailEntry];
                     }
-                });
+                }, true);
                 return;
             }
 
@@ -1064,9 +1063,8 @@ static std::string OPNGameLibraryFingerprint(const std::vector<OPN::GameInfo> &g
                         return;
                     }
                     [retrySelf.catalogView setLoading:NO];
-                    AuthService::Shared().ClearSession();
                     [retrySelf transitionToScreen:AuthScreen::EmailEntry];
-                });
+                }, true);
                 return;
             }
 
@@ -1137,7 +1135,6 @@ static std::string OPNGameLibraryFingerprint(const std::vector<OPN::GameInfo> &g
                         [s2 fetchGameLibraryWithRetry:NO completion:completion];
                     } else {
                         completed = YES;
-                        AuthService::Shared().ClearSession();
                         AuthSession fallback = AuthService::Shared().LoadSavedSession();
                         if (fallback.isAuthenticated && fallback.IsAccessTokenValid()) {
                             s2.currentSession = fallback;
@@ -1147,7 +1144,7 @@ static std::string OPNGameLibraryFingerprint(const std::vector<OPN::GameInfo> &g
                         }
                         completion(false, std::vector<GameInfo>());
                     }
-                });
+                }, true);
                 return;
             }
             finalize(games);

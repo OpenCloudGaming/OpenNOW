@@ -21,7 +21,7 @@ public:
     void StartOAuthLogin(AuthCallback completion);
 
     // ── Token Management ──
-    void RefreshSession(AuthCallback completion);
+    void RefreshSession(AuthCallback completion, bool forceRefresh = false);
 
     // ── User Info ──
     void FetchStarFleetUserInfo(const std::string &accessToken,

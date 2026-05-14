@@ -450,10 +450,10 @@ static NSMenuItem *OPNStyledMenuItem(NSString *title, SEL action, id target, NSC
 
     NSImage *logo = OPNHeaderLogoImage();
     if (logo) {
-        CGFloat logoHeight = controllerMode ? 42.0 : 30.0;
+        CGFloat logoHeight = controllerMode ? 69.3 : 49.5;
         CGFloat aspect = logo.size.height > 0 ? logo.size.width / logo.size.height : 1.0;
-        CGFloat logoWidth = MIN(controllerMode ? 180.0 : 132.0, logoHeight * aspect);
-        NSRect logoRect = controllerMode ? NSMakeRect(28.0, 18.0, logoWidth, logoHeight) : NSMakeRect(28.0, 17.0, logoWidth, logoHeight);
+        CGFloat logoWidth = MIN(controllerMode ? 297.0 : 217.8, logoHeight * aspect);
+        NSRect logoRect = controllerMode ? NSMakeRect(28.0, 18.0, logoWidth, logoHeight) : NSMakeRect(28.0, 7.25, logoWidth, logoHeight);
         [logo drawInRect:logoRect
                 fromRect:NSZeroRect
                operation:NSCompositingOperationSourceOver
