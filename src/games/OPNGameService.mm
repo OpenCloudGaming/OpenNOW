@@ -186,6 +186,27 @@ static NSString *FirstSafeString(NSDictionary *dictionary, NSArray<NSString *> *
     return nil;
 }
 
+static NSString *FirstLandscapeImageString(NSDictionary *images) {
+    return FirstSafeString(images, @[
+        @"TV_BANNER",
+        @"HERO_IMAGE",
+        @"WIDE_ART",
+        @"LANDSCAPE_IMAGE",
+        @"MARQUEE_IMAGE",
+        @"KEY_ART"
+    ]);
+}
+
+static NSString *FirstPosterImageString(NSDictionary *images) {
+    return FirstSafeString(images, @[
+        @"GAME_BOX_ART",
+        @"BOX_ART",
+        @"POSTER_IMAGE",
+        @"POSTER",
+        @"KEY_ART"
+    ]);
+}
+
 static double SafeMinutesAsHours(id value) {
     if ([value isKindOfClass:[NSNumber class]]) {
         return [(NSNumber *)value doubleValue] / 60.0;
@@ -260,13 +281,14 @@ GameInfo GameService::parseGameItem(NSDictionary *app) {
 
     NSDictionary *images = app[@"images"];
     if (images && [images isKindOfClass:[NSDictionary class]]) {
-        NSString *img = SafeStr(images[@"KEY_ART"]);
-        if (!img) img = SafeStr(images[@"GAME_BOX_ART"]);
-        if (!img) img = SafeStr(images[@"TV_BANNER"]);
-        if (!img) img = SafeStr(images[@"HERO_IMAGE"]);
-        if (img) {
-            g.heroImageUrl = [img UTF8String];
-            g.imageUrl = OptimizeImageURL([img UTF8String]);
+        NSString *landscape = FirstLandscapeImageString(images);
+        NSString *poster = FirstPosterImageString(images);
+        NSString *primary = landscape ?: poster;
+        if (landscape) {
+            g.heroImageUrl = OptimizeImageURL([landscape UTF8String], 1200);
+        }
+        if (primary) {
+            g.imageUrl = OptimizeImageURL([primary UTF8String], 900);
         }
     }
 
@@ -807,9 +829,13 @@ void GameService::FetchPublicGames(CatalogCallback completion) {
                             steamAppId = [parts[1] componentsSeparatedByString:@"/"][0];
                         }
                         if (steamAppId && steamAppId.length > 0) {
-                            NSString *imgUrl = [NSString stringWithFormat:
-                                @"https://cdn.cloudflare.steamstatic.com/steam/apps/%@/library_600x900.jpg",
+                            NSString *heroUrl = [NSString stringWithFormat:
+                                @"https://cdn.cloudflare.steamstatic.com/steam/apps/%@/library_hero.jpg",
                                 steamAppId];
+                            NSString *imgUrl = [NSString stringWithFormat:
+                                @"https://cdn.cloudflare.steamstatic.com/steam/apps/%@/header.jpg",
+                                steamAppId];
+                            g.heroImageUrl = [heroUrl UTF8String];
                             g.imageUrl = [imgUrl UTF8String];
                         }
                     }
@@ -1054,6 +1080,8 @@ void GameService::FetchLibraryGames(CatalogCallback completion) {
                                     GameInfo merged = parseGameItem(meta);
                                     if (merged.imageUrl.empty() && !g.imageUrl.empty())
                                         merged.imageUrl = g.imageUrl;
+                                    if (merged.heroImageUrl.empty() && !g.heroImageUrl.empty())
+                                        merged.heroImageUrl = g.heroImageUrl;
                                     if (merged.description.empty() && !g.description.empty())
                                         merged.description = g.description;
                                     if (merged.variants.empty())
@@ -1086,6 +1114,7 @@ void GameService::FetchLibraryGames(CatalogCallback completion) {
                                     }
                                     if (existing.title.empty()) existing.title = g.title;
                                     if (existing.imageUrl.empty()) existing.imageUrl = g.imageUrl;
+                                    if (existing.heroImageUrl.empty()) existing.heroImageUrl = g.heroImageUrl;
                                     if (existing.description.empty()) existing.description = g.description;
                                 }
                             }

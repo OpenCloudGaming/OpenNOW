@@ -13,6 +13,7 @@
 
 - (instancetype)initWithFrame:(NSRect)frame;
 - (void)setGames:(const std::vector<OPN::GameInfo> &)games;
+- (void)setFeaturedStoreGames:(const std::vector<OPN::GameInfo> &)games metadata:(const std::vector<std::string> &)metadata;
 - (void)setCatalogBrowseResult:(const OPN::CatalogBrowseResult &)result;
 - (void)setLoading:(BOOL)loading;
 - (void)setError:(NSString *)message;

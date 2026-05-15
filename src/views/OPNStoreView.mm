@@ -13,7 +13,7 @@ static const CGFloat kStoreHeroTopOffset = 116.0;
 static const CGFloat kStoreRowHeight = 246.0;
 static const CGFloat kStoreCardSpacing = 18.0;
 static const CGFloat kStoreTileWidth = 256.0;
-static const CGFloat kStoreTileHeight = 154.0;
+static const CGFloat kStoreTileHeight = 144.0;
 static const CGFloat kControllerStoreContentX = 66.0;
 static const CGFloat kControllerStoreHeroTop = 92.0;
 static const CGFloat kControllerStoreRailHeight = 244.0;
@@ -290,7 +290,7 @@ static int OPNStoreSelectedLibraryVariantIndex(const OPN::GameInfo &libraryGame)
 - (void)loadImage {
     NSString *hero = _gameData.heroImageUrl.empty() ? nil : [NSString stringWithUTF8String:_gameData.heroImageUrl.c_str()];
     NSString *poster = _gameData.imageUrl.empty() ? nil : [NSString stringWithUTF8String:_gameData.imageUrl.c_str()];
-    NSArray<NSString *> *candidates = self.prominent ? @[hero ?: @"", poster ?: @""] : @[poster ?: @"", hero ?: @""];
+    NSArray<NSString *> *candidates = @[hero ?: @"", poster ?: @""];
     [self loadImageFromCandidates:candidates index:0];
 }
 

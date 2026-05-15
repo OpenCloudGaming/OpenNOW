@@ -6,9 +6,8 @@
 
 static const CGFloat gCardWidth = 220.0;
 static const CGFloat gControllerCardWidth = 164.0;
-static const CGFloat gImageHeight = gCardWidth;
+static const CGFloat gImageHeight = gCardWidth * 9.0 / 16.0;
 static const CGFloat gInfoHeight = 0.0;
-static const CGFloat gCardTotalHeight = gImageHeight + gInfoHeight;
 static unsigned OPNControllerAccentRGB(void) {
     return OpnCurrentAccentRGB();
 }
@@ -26,8 +25,8 @@ static CGFloat OPNScaledCardWidth(void) {
 }
 
 static CGFloat OPNScaledCardHeight(void) {
-    if (OpnControllerModeEnabled()) return gControllerCardWidth;
-    return floor(gCardTotalHeight * OpnPosterSizeScale());
+    if (OpnControllerModeEnabled()) return floor(gControllerCardWidth * 9.0 / 16.0);
+    return floor(gImageHeight * OpnPosterSizeScale());
 }
 
 static NSString *OPNStorePrettyName(NSString *name) {
@@ -132,7 +131,7 @@ static NSString *OPNSteamArtworkURLForGame(const OPN::GameInfo &game) {
     }
     if (appId.empty() && OPNIsNumericString(game.launchAppId)) appId = game.launchAppId;
     if (appId.empty()) return nil;
-    return [NSString stringWithFormat:@"https://cdn.cloudflare.steamstatic.com/steam/apps/%s/library_600x900.jpg", appId.c_str()];
+    return [NSString stringWithFormat:@"https://cdn.cloudflare.steamstatic.com/steam/apps/%s/header.jpg", appId.c_str()];
 }
 
 @interface OPNGameCardView () <CALayerDelegate>
@@ -379,7 +378,7 @@ using namespace OPN;
     NSString *primaryUrl = self.gameData.imageUrl.empty() ? nil : [NSString stringWithUTF8String:self.gameData.imageUrl.c_str()];
     NSString *heroUrl = self.gameData.heroImageUrl.empty() ? nil : [NSString stringWithUTF8String:self.gameData.heroImageUrl.c_str()];
     NSString *steamUrl = OPNSteamArtworkURLForGame(self.gameData);
-    for (NSString *candidate in @[primaryUrl ?: @"", heroUrl ?: @"", steamUrl ?: @""]) {
+    for (NSString *candidate in @[heroUrl ?: @"", primaryUrl ?: @"", steamUrl ?: @""]) {
         if (candidate.length > 0 && ![urlStrings containsObject:candidate]) {
             [urlStrings addObject:candidate];
         }

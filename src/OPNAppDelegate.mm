@@ -19,6 +19,7 @@
 #import <CommonCrypto/CommonDigest.h>
 #include <algorithm>
 #include <cstring>
+#include <unordered_set>
 
 @interface AppDelegate ()
 @property (nonatomic, strong) OPNBackdropView *rootView;
@@ -55,6 +56,7 @@
 - (void)checkForActiveSessionResumeIfNeededForScreen:(OPN::AuthScreen)screen;
 - (void)attachActiveStreamPictureInPictureIfNeeded;
 - (void)loadStorePanelsWithRetry:(BOOL)canRetry;
+- (void)loadFeaturedStoreGamesForCatalogWithRetry:(BOOL)canRetry;
 - (void)refreshGameLibraryInBackground;
 - (void)fetchGameLibraryWithRetry:(BOOL)canRetry
                         completion:(void (^)(BOOL success, const std::vector<OPN::GameInfo> &games))completion;
@@ -236,6 +238,43 @@ static std::string OPNGameLibraryFingerprint(const std::vector<OPN::GameInfo> &g
         OPNAppendFingerprintField(fingerprint, entry);
     }
     return fingerprint;
+}
+
+static std::string OPNFeaturedStoreGameKey(const OPN::GameInfo &game) {
+    if (!game.id.empty()) return game.id;
+    if (!game.uuid.empty()) return game.uuid;
+    if (!game.launchAppId.empty()) return game.launchAppId;
+    return game.title;
+}
+
+static std::string OPNFeaturedStoreMetadata(const OPN::PanelResult &panel, const OPN::PanelSection &section) {
+    if (!section.title.empty() && !panel.title.empty() && section.title != panel.title) {
+        return panel.title + " / " + section.title;
+    }
+    if (!section.title.empty()) return section.title;
+    if (!panel.title.empty()) return panel.title;
+    return "Featured Store";
+}
+
+static void OPNFeaturedStoreGamesFromPanels(const std::vector<OPN::PanelResult> &panels,
+                                           std::vector<OPN::GameInfo> &games,
+                                           std::vector<std::string> &metadata) {
+    games.clear();
+    metadata.clear();
+    std::unordered_set<std::string> seen;
+    for (const OPN::PanelResult &panel : panels) {
+        for (const OPN::PanelSection &section : panel.sections) {
+            for (const OPN::GameInfo &game : section.games) {
+                if (game.title.empty() || (game.heroImageUrl.empty() && game.imageUrl.empty())) continue;
+                std::string key = OPNFeaturedStoreGameKey(game);
+                if (key.empty() || seen.find(key) != seen.end()) continue;
+                seen.insert(key);
+                games.push_back(game);
+                metadata.push_back(OPNFeaturedStoreMetadata(panel, section));
+                if (games.size() >= 18) return;
+            }
+        }
+    }
 }
 
 - (void)applicationDidFinishLaunching:(NSNotification *)notification {
@@ -834,6 +873,7 @@ static std::string OPNGameLibraryFingerprint(const std::vector<OPN::GameInfo> &g
             self.window.title = @"OpenNOW";
             [self attachActiveStreamPictureInPictureIfNeeded];
             [self checkForActiveSessionResumeIfNeededForScreen:AuthScreen::Catalog];
+            [self loadFeaturedStoreGamesForCatalogWithRetry:YES];
 
 
             if (displayName.length == 0 && !self.currentSession.accessToken.empty()) {
@@ -1087,6 +1127,47 @@ static std::string OPNGameLibraryFingerprint(const std::vector<OPN::GameInfo> &g
 
             [strongSelf.storeView setPanels:panels];
             [strongSelf.storeView setLoading:NO];
+        });
+}
+
+- (void)loadFeaturedStoreGamesForCatalogWithRetry:(BOOL)canRetry {
+    using namespace OPN;
+
+    if (!self.catalogView) return;
+
+    std::string accountIdentifier = OPNAuthSessionIdentifier(self.currentSession);
+    std::string apiToken = self.currentSession.idToken.empty()
+        ? self.currentSession.accessToken : self.currentSession.idToken;
+    GameService::Shared().SetAccessToken(apiToken);
+    GameService::Shared().SetVpcId("GFN-PC");
+
+    __weak __typeof__(self) weakSelf = self;
+    GameService::Shared().FetchMainPanels(
+        [weakSelf, accountIdentifier, canRetry](bool success, const std::vector<PanelResult> &panels, const std::string &error) {
+            __typeof__(self) strongSelf = weakSelf;
+            if (!strongSelf) return;
+            if (accountIdentifier != OPNAuthSessionIdentifier(strongSelf.currentSession)) return;
+
+            if (!success && canRetry && error.find("401") != std::string::npos) {
+                AuthService::Shared().RefreshSession(^(bool refreshSuccess, const AuthSession &fresh, const std::string &) {
+                    __typeof__(self) retrySelf = weakSelf;
+                    if (!retrySelf) return;
+                    if (!refreshSuccess) return;
+                    retrySelf.currentSession = fresh;
+                    if (retrySelf.pendingCredentials.stayLoggedIn) {
+                        AuthService::Shared().SaveSession(fresh);
+                    }
+                    [retrySelf refreshAccountMenu];
+                    [retrySelf loadFeaturedStoreGamesForCatalogWithRetry:NO];
+                }, true);
+                return;
+            }
+
+            if (!success || !strongSelf.catalogView || strongSelf.currentScreen != AuthScreen::Catalog) return;
+            std::vector<GameInfo> featuredGames;
+            std::vector<std::string> featuredMetadata;
+            OPNFeaturedStoreGamesFromPanels(panels, featuredGames, featuredMetadata);
+            [strongSelf.catalogView setFeaturedStoreGames:featuredGames metadata:featuredMetadata];
         });
 }
 
