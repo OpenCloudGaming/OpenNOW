@@ -30,6 +30,7 @@ struct GameInfo {
     std::string playabilityState;
     std::string imageUrl;
     std::string heroImageUrl;
+    std::vector<std::string> screenshotUrls;
     std::vector<std::string> genres;
     std::vector<std::string> featureLabels;
     std::vector<std::string> supportedControls;

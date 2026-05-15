@@ -12,7 +12,7 @@ namespace OPN {
 
 static NSString *kPanelsHash = @"f8e26265a5db5c20e1334a6872cf04b6e3970507697f6ae55a6ddefa5420daf0";
 static NSString *kLibraryWithTimeHash = @"039e8c0d553972975485fee56e59f2549d2fdb518e247a42ab5022056a74406f";
-static NSString *kAppMetaDataHash = @"39187e85b6dcf60b7279a5f233288b0a8b69a8b1dbcfb5b25555afdcb988f0d7";
+static NSString *kAppMetaDataHash = @"cf8b620dfd03617017ba7c858cee65197e1ace5180e41be194b39227227ced63";
 
 
 static NSString *kNvClientId = @"ec7e38d4-03af-4b58-b131-cfb0495903ab";
@@ -289,6 +289,20 @@ GameInfo GameService::parseGameItem(NSDictionary *app) {
         }
         if (primary) {
             g.imageUrl = OptimizeImageURL([primary UTF8String], 900);
+        }
+        id screenshots = images[@"SCREENSHOTS"];
+        if ([screenshots isKindOfClass:[NSArray class]]) {
+            for (id screenshot in (NSArray *)screenshots) {
+                NSString *url = SafeStr(screenshot);
+                if (url.length == 0) continue;
+                std::string optimizedUrl = OptimizeImageURL([url UTF8String], 720);
+                if (std::find(g.screenshotUrls.begin(), g.screenshotUrls.end(), optimizedUrl) == g.screenshotUrls.end()) {
+                    g.screenshotUrls.push_back(optimizedUrl);
+                }
+            }
+        } else if ([screenshots isKindOfClass:[NSString class]]) {
+            NSString *url = SafeStr(screenshots);
+            if (url.length > 0) g.screenshotUrls.push_back(OptimizeImageURL([url UTF8String], 720));
         }
     }
 
@@ -567,7 +581,7 @@ void GameService::BrowseCatalogGames(const std::string &searchQuery,
                 items {
                     id
                     title
-                    images { KEY_ART GAME_BOX_ART TV_BANNER HERO_IMAGE }
+                    images { KEY_ART GAME_BOX_ART TV_BANNER HERO_IMAGE SCREENSHOTS }
                     variants {
                         id
                         appStore
@@ -606,7 +620,7 @@ void GameService::BrowseCatalogGames(const std::string &searchQuery,
                 items {
                     id
                     title
-                    images { KEY_ART GAME_BOX_ART TV_BANNER HERO_IMAGE }
+                    images { KEY_ART GAME_BOX_ART TV_BANNER HERO_IMAGE SCREENSHOTS }
                     variants {
                         id
                         appStore
@@ -718,6 +732,7 @@ void GameService::BrowseCatalogGames(const std::string &searchQuery,
                                     }
                                     if (game.developerName.empty()) game.developerName = metadataGame.developerName;
                                     if (game.publisherName.empty()) game.publisherName = metadataGame.publisherName;
+                                    if (!metadataGame.screenshotUrls.empty()) game.screenshotUrls = metadataGame.screenshotUrls;
                                     if (game.maxLocalPlayers <= 0) game.maxLocalPlayers = metadataGame.maxLocalPlayers;
                                     if (game.maxOnlinePlayers <= 0) game.maxOnlinePlayers = metadataGame.maxOnlinePlayers;
                                     if (game.supportedControls.empty()) game.supportedControls = metadataGame.supportedControls;
@@ -1082,6 +1097,8 @@ void GameService::FetchLibraryGames(CatalogCallback completion) {
                                         merged.imageUrl = g.imageUrl;
                                     if (merged.heroImageUrl.empty() && !g.heroImageUrl.empty())
                                         merged.heroImageUrl = g.heroImageUrl;
+                                    if (merged.screenshotUrls.empty() && !g.screenshotUrls.empty())
+                                        merged.screenshotUrls = g.screenshotUrls;
                                     if (merged.description.empty() && !g.description.empty())
                                         merged.description = g.description;
                                     if (merged.variants.empty())
@@ -1115,6 +1132,7 @@ void GameService::FetchLibraryGames(CatalogCallback completion) {
                                     if (existing.title.empty()) existing.title = g.title;
                                     if (existing.imageUrl.empty()) existing.imageUrl = g.imageUrl;
                                     if (existing.heroImageUrl.empty()) existing.heroImageUrl = g.heroImageUrl;
+                                    if (!g.screenshotUrls.empty()) existing.screenshotUrls = g.screenshotUrls;
                                     if (existing.description.empty()) existing.description = g.description;
                                 }
                             }

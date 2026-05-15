@@ -5,6 +5,7 @@
 #import "../common/OPNCoreAnimationCoordinator.h"
 #import "../common/OPNUIHelpers.h"
 #import "../streaming/OPNStreamPreferences.h"
+#import <CoreImage/CoreImage.h>
 #import <GameController/GameController.h>
 #include <QuartzCore/QuartzCore.h>
 #include <algorithm>
@@ -97,12 +98,15 @@ static NSString *OPNCatalogDisplayString(const std::string &value, NSString *fal
 static NSAttributedString *OPNOutlinedControllerStoreText(NSString *text) {
     NSMutableParagraphStyle *style = [[NSMutableParagraphStyle alloc] init];
     style.lineBreakMode = NSLineBreakByTruncatingTail;
+    NSShadow *shadow = [[NSShadow alloc] init];
+    shadow.shadowColor = OpnColor(0x000000, 0.78);
+    shadow.shadowBlurRadius = 8.0;
+    shadow.shadowOffset = NSMakeSize(0.0, 1.0);
     return [[NSAttributedString alloc] initWithString:text ?: @""
                                            attributes:@{
-        NSFontAttributeName: [NSFont systemFontOfSize:16.0 weight:NSFontWeightSemibold],
+        NSFontAttributeName: [NSFont systemFontOfSize:17.0 weight:NSFontWeightMedium],
         NSForegroundColorAttributeName: NSColor.whiteColor,
-        NSStrokeColorAttributeName: NSColor.blackColor,
-        NSStrokeWidthAttributeName: @-3.0,
+        NSShadowAttributeName: shadow,
         NSParagraphStyleAttributeName: style,
     }];
 }
@@ -110,12 +114,16 @@ static NSAttributedString *OPNOutlinedControllerStoreText(NSString *text) {
 static NSAttributedString *OPNOutlinedControllerDescriptionText(NSString *text) {
     NSMutableParagraphStyle *style = [[NSMutableParagraphStyle alloc] init];
     style.lineBreakMode = NSLineBreakByWordWrapping;
+    style.lineSpacing = 5.0;
+    NSShadow *shadow = [[NSShadow alloc] init];
+    shadow.shadowColor = OpnColor(0x000000, 0.82);
+    shadow.shadowBlurRadius = 9.0;
+    shadow.shadowOffset = NSMakeSize(0.0, 1.0);
     return [[NSAttributedString alloc] initWithString:text ?: @""
                                            attributes:@{
-        NSFontAttributeName: [NSFont systemFontOfSize:16.0 weight:NSFontWeightMedium],
+        NSFontAttributeName: [NSFont systemFontOfSize:17.0 weight:NSFontWeightRegular],
         NSForegroundColorAttributeName: NSColor.whiteColor,
-        NSStrokeColorAttributeName: NSColor.blackColor,
-        NSStrokeWidthAttributeName: @-2.5,
+        NSShadowAttributeName: shadow,
         NSParagraphStyleAttributeName: style,
     }];
 }
@@ -125,6 +133,70 @@ static NSAttributedString *OPNOutlinedControllerDescriptionText(NSString *text) 
 
 @implementation OPNFlippedGridDocumentView
 - (BOOL)isFlipped { return YES; }
+@end
+
+@interface OPNControllerPreviewBackgroundView : NSView
+@property (nonatomic, strong) NSImage *image;
+@property (nonatomic, assign) CGFloat cornerRadius;
+@end
+
+@implementation OPNControllerPreviewBackgroundView
+
+- (BOOL)isFlipped { return YES; }
+
+- (instancetype)initWithFrame:(NSRect)frame {
+    self = [super initWithFrame:frame];
+    if (self) {
+        _cornerRadius = 0.0;
+    }
+    return self;
+}
+
+- (void)setImage:(NSImage *)image {
+    _image = image;
+    self.needsDisplay = YES;
+}
+
+- (void)drawRect:(NSRect)dirtyRect {
+    (void)dirtyRect;
+    NSRect bounds = self.bounds;
+    if (NSIsEmptyRect(bounds)) return;
+
+    if (self.cornerRadius > 0.0) {
+        NSBezierPath *clipPath = [NSBezierPath bezierPathWithRoundedRect:bounds xRadius:self.cornerRadius yRadius:self.cornerRadius];
+        [clipPath addClip];
+    }
+    [OpnColor(OPNControllerAccentBlackRGB(0.96), 0.98) setFill];
+    NSRectFill(bounds);
+
+    if (self.image && self.image.size.width > 0.0 && self.image.size.height > 0.0) {
+        CGFloat imageAspect = self.image.size.width / self.image.size.height;
+        CGFloat boundsAspect = NSWidth(bounds) / MAX(1.0, NSHeight(bounds));
+        NSRect sourceRect = NSMakeRect(0.0, 0.0, self.image.size.width, self.image.size.height);
+        if (imageAspect > boundsAspect) {
+            CGFloat sourceWidth = self.image.size.height * boundsAspect;
+            sourceRect.origin.x = floor((self.image.size.width - sourceWidth) * 0.5);
+            sourceRect.size.width = sourceWidth;
+        } else {
+            CGFloat sourceHeight = self.image.size.width / boundsAspect;
+            sourceRect.origin.y = floor((self.image.size.height - sourceHeight) * 0.5);
+            sourceRect.size.height = sourceHeight;
+        }
+        [self.image drawInRect:bounds fromRect:sourceRect operation:NSCompositingOperationSourceOver fraction:1.0 respectFlipped:YES hints:@{NSImageHintInterpolation: @(NSImageInterpolationHigh)}];
+    }
+
+    [OpnColor(0x020406, 0.23) setFill];
+    NSRectFillUsingOperation(bounds, NSCompositingOperationSourceOver);
+
+    NSRect fadeRect = bounds;
+    NSGradient *rightFade = [[NSGradient alloc] initWithColorsAndLocations:
+        OpnColor(0x020406, 0.44), 0.0,
+        OpnColor(0x020406, 0.34), 0.42,
+        OpnColor(0x020406, 0.47), 1.0,
+        nil];
+    [rightFade drawInRect:fadeRect angle:0.0];
+}
+
 @end
 
 @interface OPNCenteredSearchFieldCell : NSSearchFieldCell
@@ -331,20 +403,11 @@ static NSAttributedString *OPNOutlinedControllerDescriptionText(NSString *text) 
 @property (nonatomic, strong) NSMutableSet<NSString *> *favoriteGameIds;
 @property (nonatomic, strong) OPNControllerElectricBackgroundView *controllerElectricBackgroundView;
 @property (nonatomic, strong) NSView *controllerDetailView;
-@property (nonatomic, strong) NSTextField *controllerDetailTitleLabel;
-@property (nonatomic, strong) NSTextField *controllerDetailMetaLabel;
-@property (nonatomic, strong) NSTextField *controllerDetailStoreLabel;
+@property (nonatomic, strong) OPNControllerPreviewBackgroundView *controllerDetailBackgroundView;
 @property (nonatomic, strong) NSTextField *controllerDetailStatsLabel;
 @property (nonatomic, strong) NSTextField *controllerDetailFeaturesLabel;
 @property (nonatomic, strong) OPNControllerGameHubView *controllerGameHubView;
 @property (nonatomic, strong) OPNControllerPromptBarView *controllerPromptBarView;
-@property (nonatomic, strong) NSView *controllerCategoryPreviewView;
-@property (nonatomic, strong) NSTextField *controllerCategoryPreviewEyebrowLabel;
-@property (nonatomic, strong) NSTextField *controllerCategoryPreviewTitleLabel;
-@property (nonatomic, strong) NSTextField *controllerCategoryPreviewMetaLabel;
-@property (nonatomic, strong) NSTextField *controllerCategoryPreviewDescriptionLabel;
-@property (nonatomic, strong) NSImageView *controllerCategoryPreviewImageView;
-@property (nonatomic, copy) NSString *controllerCategoryPreviewImageURL;
 @property (nonatomic, strong) NSView *streamPipContainerView;
 @property (nonatomic, strong) NSView *streamPipHostView;
 @property (nonatomic, strong) NSTextField *streamPipTitleLabel;
@@ -371,18 +434,19 @@ static NSAttributedString *OPNOutlinedControllerDescriptionText(NSString *text) 
 @property (nonatomic, strong) NSMutableSet<NSString *> *selectedFilterIds;
 @property (nonatomic, assign) std::vector<OPN::CatalogFilterGroup> catalogFilterGroups;
 @property (nonatomic, assign) std::vector<OPN::CatalogSortOption> catalogSortOptions;
-@property (nonatomic, assign) std::vector<OPN::GameInfo> featuredStoreGames;
-@property (nonatomic, assign) std::vector<std::string> featuredStoreMetadata;
 @property (nonatomic, assign) NSInteger catalogTotalCount;
 @property (nonatomic, assign) NSInteger catalogSupportedCount;
 @property (nonatomic, assign) NSInteger focusedCardIndex;
 @property (nonatomic, assign) NSInteger focusedCategoryIndex;
-@property (nonatomic, assign) NSInteger featuredStoreGameIndex;
 @property (nonatomic, assign) BOOL controllerCategoryOverviewVisible;
 @property (nonatomic, assign) NSInteger gridColumnCount;
 @property (nonatomic, strong) NSView *detailsOverlayView;
 @property (nonatomic, strong) NSTimer *gamepadNavigationTimer;
-@property (nonatomic, strong) NSTimer *featuredStoreRotationTimer;
+@property (nonatomic, strong) NSTimer *controllerDetailBackgroundTimer;
+@property (nonatomic, copy) NSArray<NSString *> *controllerDetailBackgroundURLs;
+@property (nonatomic, copy) NSString *controllerDetailBackgroundURL;
+@property (nonatomic, copy) NSString *controllerDetailBackgroundGameId;
+@property (nonatomic, assign) NSInteger controllerDetailBackgroundIndex;
 @property (nonatomic, assign) uint16_t previousGamepadButtons;
 @property (nonatomic, assign) CFTimeInterval lastGamepadMoveTime;
 - (void)stopGamepadNavigation;
@@ -393,16 +457,9 @@ static NSAttributedString *OPNOutlinedControllerDescriptionText(NSString *text) 
 - (void)cycleCategoryBy:(NSInteger)delta;
 - (NSInteger)gameCountForCategory:(NSString *)categoryId;
 - (std::vector<OPN::GameInfo>)gamesForCategory:(NSString *)categoryId limit:(NSInteger)limit;
-- (const OPN::GameInfo *)currentFeaturedStoreGame;
-- (NSString *)currentFeaturedStoreMetadata;
 - (const OPN::GameInfo *)currentLastPlayedGame;
 - (int)preferredVariantIndexForGame:(const OPN::GameInfo &)game;
-- (void)startFeaturedStoreRotationIfNeeded;
-- (void)stopFeaturedStoreRotation;
-- (void)featuredStoreRotationTimerFired:(NSTimer *)timer;
 - (void)renderControllerCategoryOverview;
-- (void)updateControllerCategoryPreview;
-- (void)loadControllerCategoryPreviewImageFromCandidates:(NSArray<NSString *> *)candidates index:(NSUInteger)index expectedURL:(NSString *)expectedURL;
 - (void)updateLastPlayedPanel;
 - (void)loadLastPlayedImageFromCandidates:(NSArray<NSString *> *)candidates index:(NSUInteger)index expectedURL:(NSString *)expectedURL;
 - (void)focusCategoryAtIndex:(NSInteger)index scrollIntoView:(BOOL)scrollIntoView;
@@ -420,6 +477,11 @@ static NSAttributedString *OPNOutlinedControllerDescriptionText(NSString *text) 
 - (void)launchLastPlayedGame;
 - (void)cycleFocusedVariant;
 - (void)updateControllerDetailContent;
+- (void)configureControllerDetailBackgroundForGame:(const OPN::GameInfo &)game;
+- (void)startControllerDetailBackgroundRotationIfNeeded;
+- (void)stopControllerDetailBackgroundRotation;
+- (void)controllerDetailBackgroundTimerFired:(NSTimer *)timer;
+- (void)loadControllerDetailBackgroundFromCandidates:(NSArray<NSString *> *)candidates index:(NSUInteger)index expectedURL:(NSString *)expectedURL;
 - (void)setStreamPipFocused:(BOOL)focused;
 - (void)setLastPlayedFocused:(BOOL)focused;
 - (void)startGamepadNavigationIfNeeded;
@@ -473,6 +535,19 @@ static NSArray<NSString *> *OPNControllerCategoryArtworkCandidates(const OPN::Ga
     return urls;
 }
 
+static NSArray<NSString *> *OPNControllerCategoryBackgroundCandidates(const OPN::GameInfo &game) {
+    NSMutableArray<NSString *> *urls = [NSMutableArray array];
+    for (const std::string &screenshotUrl : game.screenshotUrls) {
+        NSString *url = OPNCatalogString(screenshotUrl, @"");
+        if (url.length > 0 && ![urls containsObject:url]) [urls addObject:url];
+    }
+    if (urls.count > 0) return urls;
+    for (NSString *fallback in OPNControllerCategoryArtworkCandidates(game)) {
+        if (fallback.length > 0 && ![urls containsObject:fallback]) [urls addObject:fallback];
+    }
+    return urls;
+}
+
 static NSString *OPNCatalogCommaJoinedStrings(const std::vector<std::string> &values) {
     NSMutableArray<NSString *> *items = [NSMutableArray array];
     for (const std::string &value : values) {
@@ -480,6 +555,18 @@ static NSString *OPNCatalogCommaJoinedStrings(const std::vector<std::string> &va
             NSString *label = OPNCatalogDisplayString(value, @"");
             if (label.length > 0) [items addObject:label];
         }
+    }
+    return [items componentsJoinedByString:@", "];
+}
+
+static NSString *OPNCatalogCommaJoinedStrings(const std::vector<std::string> &values, NSUInteger limit) {
+    NSMutableArray<NSString *> *items = [NSMutableArray array];
+    for (const std::string &value : values) {
+        if (!value.empty()) {
+            NSString *label = OPNCatalogDisplayString(value, @"");
+            if (label.length > 0 && ![items containsObject:label]) [items addObject:label];
+        }
+        if (items.count >= limit) break;
     }
     return [items componentsJoinedByString:@", "];
 }
@@ -507,6 +594,20 @@ static NSString *OPNStoreCategoryTitle(NSString *store) {
     if ([upper containsString:@"EA"] || [upper containsString:@"ORIGIN"]) return @"EA";
     if ([upper containsString:@"GOG"]) return @"GOG";
     return OPNCatalogDisplayLabel(store);
+}
+
+static NSString *OPNCatalogStoreSummary(const std::vector<std::string> &stores, NSString *fallback) {
+    NSMutableArray<NSString *> *uniqueItems = [NSMutableArray array];
+    for (const std::string &storeValue : stores) {
+        NSString *label = OPNStoreCategoryTitle(OPNCatalogString(storeValue, @""));
+        if (label.length > 0 && ![uniqueItems containsObject:label]) [uniqueItems addObject:label];
+    }
+    if (uniqueItems.count == 0) return fallback ?: @"Store not listed";
+    NSUInteger visibleCount = MIN((NSUInteger)3, uniqueItems.count);
+    NSArray<NSString *> *visibleItems = [uniqueItems subarrayWithRange:NSMakeRange(0, visibleCount)];
+    NSString *summary = [visibleItems componentsJoinedByString:@", "];
+    NSUInteger remainingCount = uniqueItems.count > visibleCount ? uniqueItems.count - visibleCount : 0;
+    return remainingCount > 0 ? [summary stringByAppendingFormat:@" +%lu", (unsigned long)remainingCount] : summary;
 }
 
 typedef NS_ENUM(NSInteger, OPNControllerPromptStyle) {
@@ -632,12 +733,12 @@ static NSImage *OPNControllerPromptIcon(NSString *button, OPNControllerPromptSty
 
 @interface OPNControllerGameHubView : NSView
 @property (nonatomic, copy) NSString *gameTitle;
-@property (nonatomic, copy) NSString *storeTitle;
+@property (nonatomic, copy) NSString *genreSummary;
 @property (nonatomic, copy) NSString *launchStatus;
-@property (nonatomic, copy) NSString *sessionStatus;
-@property (nonatomic, copy) NSString *streamStatus;
-@property (nonatomic, copy) NSString *controllerStatus;
-@property (nonatomic, copy) NSString *favoriteStatus;
+@property (nonatomic, copy) NSString *studioInfo;
+@property (nonatomic, copy) NSString *playerInfo;
+@property (nonatomic, copy) NSString *controlInfo;
+@property (nonatomic, copy) NSString *storeInfo;
 @property (nonatomic, assign) unsigned accentRGB;
 @end
 
@@ -826,12 +927,12 @@ static NSImage *OPNControllerPromptIcon(NSString *button, OPNControllerPromptSty
         self.wantsLayer = YES;
         _accentRGB = OPNControllerAccentRGB();
         _gameTitle = @"";
-        _storeTitle = @"";
+        _genreSummary = @"";
         _launchStatus = @"";
-        _sessionStatus = @"";
-        _streamStatus = @"";
-        _controllerStatus = @"";
-        _favoriteStatus = @"";
+        _studioInfo = @"";
+        _playerInfo = @"";
+        _controlInfo = @"";
+        _storeInfo = @"";
     }
     return self;
 }
@@ -850,8 +951,8 @@ static NSImage *OPNControllerPromptIcon(NSString *button, OPNControllerPromptSty
     [self setNeedsDisplay:YES];
 }
 
-- (void)setStoreTitle:(NSString *)storeTitle {
-    _storeTitle = [storeTitle copy] ?: @"";
+- (void)setGenreSummary:(NSString *)genreSummary {
+    _genreSummary = [genreSummary copy] ?: @"";
     [self setNeedsDisplay:YES];
 }
 
@@ -860,23 +961,23 @@ static NSImage *OPNControllerPromptIcon(NSString *button, OPNControllerPromptSty
     [self setNeedsDisplay:YES];
 }
 
-- (void)setSessionStatus:(NSString *)sessionStatus {
-    _sessionStatus = [sessionStatus copy] ?: @"";
+- (void)setStudioInfo:(NSString *)studioInfo {
+    _studioInfo = [studioInfo copy] ?: @"";
     [self setNeedsDisplay:YES];
 }
 
-- (void)setStreamStatus:(NSString *)streamStatus {
-    _streamStatus = [streamStatus copy] ?: @"";
+- (void)setPlayerInfo:(NSString *)playerInfo {
+    _playerInfo = [playerInfo copy] ?: @"";
     [self setNeedsDisplay:YES];
 }
 
-- (void)setControllerStatus:(NSString *)controllerStatus {
-    _controllerStatus = [controllerStatus copy] ?: @"";
+- (void)setControlInfo:(NSString *)controlInfo {
+    _controlInfo = [controlInfo copy] ?: @"";
     [self setNeedsDisplay:YES];
 }
 
-- (void)setFavoriteStatus:(NSString *)favoriteStatus {
-    _favoriteStatus = [favoriteStatus copy] ?: @"";
+- (void)setStoreInfo:(NSString *)storeInfo {
+    _storeInfo = [storeInfo copy] ?: @"";
     [self setNeedsDisplay:YES];
 }
 
@@ -933,8 +1034,8 @@ static NSImage *OPNControllerPromptIcon(NSString *button, OPNControllerPromptSty
              withAttributes:[self attributesWithSize:11.0 weight:NSFontWeightBold color:OpnColor(0xFFFFFF, 0.55) alignment:NSTextAlignmentLeft]];
     [self.gameTitle drawInRect:NSMakeRect(22.0, 56.0, NSWidth(bounds) - 44.0, 31.0)
                 withAttributes:[self attributesWithSize:23.0 weight:NSFontWeightSemibold color:OpnColor(OPN::kTextPrimary) alignment:NSTextAlignmentLeft]];
-    [self.storeTitle drawInRect:NSMakeRect(22.0, 88.0, NSWidth(bounds) - 44.0, 20.0)
-                 withAttributes:[self attributesWithSize:12.0 weight:NSFontWeightMedium color:OpnColor(0xF4FFF7, 0.68) alignment:NSTextAlignmentLeft]];
+    [self.genreSummary drawInRect:NSMakeRect(22.0, 88.0, NSWidth(bounds) - 44.0, 20.0)
+                  withAttributes:[self attributesWithSize:12.0 weight:NSFontWeightMedium color:OpnColor(0xF4FFF7, 0.68) alignment:NSTextAlignmentLeft]];
 
     CGFloat playY = 126.0;
     NSRect playRect = NSMakeRect(22.0, playY, NSWidth(bounds) - 44.0, 54.0);
@@ -948,10 +1049,10 @@ static NSImage *OPNControllerPromptIcon(NSString *button, OPNControllerPromptSty
                    withAttributes:[self attributesWithSize:12.0 weight:NSFontWeightSemibold color:OpnColor(OPNControllerAccentBlackRGB(0.88), 0.74) alignment:NSTextAlignmentRight]];
 
     CGFloat rowY = playY + 72.0;
-    [self drawStatusRowWithTitle:@"SESSION" value:self.sessionStatus y:rowY];
-    [self drawStatusRowWithTitle:@"STREAM" value:self.streamStatus y:rowY + 46.0];
-    [self drawStatusRowWithTitle:@"INPUT" value:self.controllerStatus y:rowY + 92.0];
-    [self drawStatusRowWithTitle:@"LIBRARY" value:self.favoriteStatus y:rowY + 138.0];
+    [self drawStatusRowWithTitle:@"STUDIO" value:self.studioInfo y:rowY];
+    [self drawStatusRowWithTitle:@"PLAYERS" value:self.playerInfo y:rowY + 46.0];
+    [self drawStatusRowWithTitle:@"CONTROLS" value:self.controlInfo y:rowY + 92.0];
+    [self drawStatusRowWithTitle:@"STORES" value:self.storeInfo y:rowY + 138.0];
 }
 
 @end
@@ -1047,6 +1148,15 @@ using namespace OPN;
         _controllerElectricBackgroundView = [[OPNControllerElectricBackgroundView alloc] initWithFrame:self.bounds];
         _controllerElectricBackgroundView.hidden = YES;
         [self addSubview:_controllerElectricBackgroundView];
+
+        _controllerDetailBackgroundView = [[OPNControllerPreviewBackgroundView alloc] initWithFrame:self.bounds];
+        _controllerDetailBackgroundView.hidden = YES;
+        _controllerDetailBackgroundView.wantsLayer = YES;
+        _controllerDetailBackgroundView.layer.masksToBounds = YES;
+        CIFilter *detailBackgroundBlur = [CIFilter filterWithName:@"CIGaussianBlur"];
+        [detailBackgroundBlur setValue:@8.4 forKey:kCIInputRadiusKey];
+        _controllerDetailBackgroundView.layer.filters = @[detailBackgroundBlur];
+        [self addSubview:_controllerDetailBackgroundView];
 
         _libraryIconLabel = OpnLabel(@"", NSMakeRect(30, kNavHeight + 36, 0, 0),
                                      1, OpnColor(kBrandGreen), NSFontWeightBold);
@@ -1205,16 +1315,6 @@ using namespace OPN;
         [_controllerDetailView.layer addSublayer:_controllerDetailAccentLayer];
         [self addSubview:_controllerDetailView];
 
-        _controllerDetailTitleLabel = OpnLabel(@"Select a game", NSZeroRect, 42.0, OpnColor(kTextPrimary), NSFontWeightSemibold);
-        _controllerDetailTitleLabel.lineBreakMode = NSLineBreakByTruncatingTail;
-        [_controllerDetailView addSubview:_controllerDetailTitleLabel];
-
-        _controllerDetailMetaLabel = OpnLabel(@"", NSZeroRect, 15.0, OpnColor(kTextSecondary), NSFontWeightMedium);
-        [_controllerDetailView addSubview:_controllerDetailMetaLabel];
-
-        _controllerDetailStoreLabel = OpnLabel(@"", NSZeroRect, 16.0, NSColor.whiteColor, NSFontWeightSemibold);
-        [_controllerDetailView addSubview:_controllerDetailStoreLabel];
-
         _controllerDetailStatsLabel = OpnLabel(@"", NSZeroRect, 14.0, OpnColor(kTextSecondary), NSFontWeightMedium);
         [_controllerDetailView addSubview:_controllerDetailStatsLabel];
 
@@ -1229,43 +1329,6 @@ using namespace OPN;
         _controllerPromptBarView = [[OPNControllerPromptBarView alloc] initWithFrame:NSZeroRect];
         _controllerPromptBarView.wantsLayer = YES;
         [_controllerDetailView addSubview:_controllerPromptBarView];
-
-        _controllerCategoryPreviewView = [[NSView alloc] initWithFrame:NSZeroRect];
-        _controllerCategoryPreviewView.hidden = YES;
-        _controllerCategoryPreviewView.wantsLayer = YES;
-        _controllerCategoryPreviewView.layer.cornerRadius = 24.0;
-        _controllerCategoryPreviewView.layer.masksToBounds = NO;
-        _controllerCategoryPreviewView.layer.backgroundColor = OpnColor(OPNControllerAccentBlackRGB(0.91), 0.72).CGColor;
-        _controllerCategoryPreviewView.layer.borderWidth = 1.0;
-        _controllerCategoryPreviewView.layer.borderColor = OpnColor(0xFFFFFF, 0.13).CGColor;
-        _controllerCategoryPreviewView.layer.shadowColor = NSColor.blackColor.CGColor;
-        _controllerCategoryPreviewView.layer.shadowOpacity = 0.26;
-        _controllerCategoryPreviewView.layer.shadowRadius = 24.0;
-        _controllerCategoryPreviewView.layer.shadowOffset = CGSizeMake(0.0, 14.0);
-        [self addSubview:_controllerCategoryPreviewView];
-
-        _controllerCategoryPreviewImageView = [[NSImageView alloc] initWithFrame:NSZeroRect];
-        _controllerCategoryPreviewImageView.imageScaling = NSImageScaleProportionallyUpOrDown;
-        _controllerCategoryPreviewImageView.wantsLayer = YES;
-        _controllerCategoryPreviewImageView.layer.cornerRadius = 18.0;
-        _controllerCategoryPreviewImageView.layer.masksToBounds = YES;
-        _controllerCategoryPreviewImageView.layer.backgroundColor = OpnColor(OPNControllerAccentBlackRGB(0.82), 0.84).CGColor;
-        [_controllerCategoryPreviewView addSubview:_controllerCategoryPreviewImageView];
-
-        _controllerCategoryPreviewEyebrowLabel = OpnLabel(@"CATEGORY PREVIEW", NSZeroRect, 11.0, OpnColor(kBrandGreen), NSFontWeightBold);
-        [_controllerCategoryPreviewView addSubview:_controllerCategoryPreviewEyebrowLabel];
-
-        _controllerCategoryPreviewTitleLabel = OpnLabel(@"Select a category", NSZeroRect, 28.0, OpnColor(kTextPrimary), NSFontWeightBold);
-        _controllerCategoryPreviewTitleLabel.lineBreakMode = NSLineBreakByTruncatingTail;
-        [_controllerCategoryPreviewView addSubview:_controllerCategoryPreviewTitleLabel];
-
-        _controllerCategoryPreviewMetaLabel = OpnLabel(@"", NSZeroRect, 13.0, OpnColor(kTextSecondary), NSFontWeightSemibold);
-        _controllerCategoryPreviewMetaLabel.lineBreakMode = NSLineBreakByTruncatingTail;
-        [_controllerCategoryPreviewView addSubview:_controllerCategoryPreviewMetaLabel];
-
-        _controllerCategoryPreviewDescriptionLabel = OpnLabel(@"", NSZeroRect, 13.0, OpnColor(kTextMuted), NSFontWeightRegular);
-        _controllerCategoryPreviewDescriptionLabel.maximumNumberOfLines = 4;
-        [_controllerCategoryPreviewView addSubview:_controllerCategoryPreviewDescriptionLabel];
 
         _streamPipContainerView = [[NSView alloc] initWithFrame:NSZeroRect];
         _streamPipContainerView.hidden = YES;
@@ -1356,17 +1419,17 @@ using namespace OPN;
 - (void)dealloc {
     [[NSNotificationCenter defaultCenter] removeObserver:self];
     [self stopGamepadNavigation];
-    [self stopFeaturedStoreRotation];
+    [self stopControllerDetailBackgroundRotation];
 }
 
 - (void)viewDidMoveToWindow {
     [super viewDidMoveToWindow];
     if (self.window) {
         [self startGamepadNavigationIfNeeded];
-        [self startFeaturedStoreRotationIfNeeded];
+        [self startControllerDetailBackgroundRotationIfNeeded];
     } else {
         [self stopGamepadNavigation];
-        [self stopFeaturedStoreRotation];
+        [self stopControllerDetailBackgroundRotation];
     }
 }
 
@@ -1379,7 +1442,6 @@ using namespace OPN;
                                                   (id)NSColor.clearColor.CGColor];
     self.controllerDetailGradientLayer.opacity = 0.0;
     self.controllerDetailAccentLayer.backgroundColor = OpnColor(OPNControllerAccentSoftRGB(), 0.86).CGColor;
-    self.controllerDetailStoreLabel.textColor = NSColor.whiteColor;
     self.layer.backgroundColor = NSColor.clearColor.CGColor;
     [self.controllerElectricBackgroundView setNeedsDisplay:YES];
 }
@@ -1468,27 +1530,6 @@ using namespace OPN;
     });
 }
 
-- (void)setFeaturedStoreGames:(const std::vector<OPN::GameInfo> &)games metadata:(const std::vector<std::string> &)metadata {
-    _featuredStoreGames = games;
-    _featuredStoreMetadata = metadata.size() == games.size() ? metadata : std::vector<std::string>();
-    self.featuredStoreGameIndex = 0;
-    [self startFeaturedStoreRotationIfNeeded];
-    [self updateControllerCategoryPreview];
-}
-
-- (const OPN::GameInfo *)currentFeaturedStoreGame {
-    if (_featuredStoreGames.empty()) return nullptr;
-    NSInteger clamped = MAX(0, MIN(self.featuredStoreGameIndex, (NSInteger)_featuredStoreGames.size() - 1));
-    return &_featuredStoreGames[(size_t)clamped];
-}
-
-- (NSString *)currentFeaturedStoreMetadata {
-    if (_featuredStoreMetadata.empty()) return @"";
-    NSInteger clamped = MAX(0, MIN(self.featuredStoreGameIndex, (NSInteger)_featuredStoreMetadata.size() - 1));
-    const std::string &metadata = _featuredStoreMetadata[(size_t)clamped];
-    return metadata.empty() ? @"" : [NSString stringWithUTF8String:metadata.c_str()];
-}
-
 - (const OPN::GameInfo *)currentLastPlayedGame {
     if (_allGames.empty() || ![self.selectedSortId isEqualToString:@"last_played"]) return nullptr;
     return &_allGames.front();
@@ -1499,28 +1540,6 @@ using namespace OPN;
         if (game.variants[index].librarySelected) return (int)index;
     }
     return 0;
-}
-
-- (void)startFeaturedStoreRotationIfNeeded {
-    [self stopFeaturedStoreRotation];
-    if (_featuredStoreGames.size() < 2) return;
-    self.featuredStoreRotationTimer = [NSTimer scheduledTimerWithTimeInterval:15.0
-                                                                       target:self
-                                                                     selector:@selector(featuredStoreRotationTimerFired:)
-                                                                     userInfo:nil
-                                                                      repeats:YES];
-}
-
-- (void)stopFeaturedStoreRotation {
-    [self.featuredStoreRotationTimer invalidate];
-    self.featuredStoreRotationTimer = nil;
-}
-
-- (void)featuredStoreRotationTimerFired:(NSTimer *)timer {
-    (void)timer;
-    if (_featuredStoreGames.empty()) return;
-    self.featuredStoreGameIndex = (self.featuredStoreGameIndex + 1) % (NSInteger)_featuredStoreGames.size();
-    [self updateControllerCategoryPreview];
 }
 
 - (void)setCatalogBrowseResult:(const OPN::CatalogBrowseResult &)result {
@@ -2051,9 +2070,10 @@ using namespace OPN;
     if (categoryOverview) {
         self.categoryBarView.hidden = YES;
         self.controllerDetailView.hidden = YES;
+        self.controllerDetailBackgroundView.hidden = YES;
+        [self stopControllerDetailBackgroundRotation];
         self.controllerGameHubView.hidden = YES;
         self.controllerPromptBarView.hidden = YES;
-        self.controllerCategoryPreviewView.hidden = NO;
         [self updateLastPlayedPanel];
         BOOL showStreamPip = self.streamPipContentView != nil;
         BOOL showLastPlayed = !showStreamPip && !self.lastPlayedPanelView.hidden;
@@ -2066,35 +2086,26 @@ using namespace OPN;
         CGFloat rightPanelWidth = showRightPanel ? MIN(420.0, MAX(300.0, width * 0.24)) : 0.0;
         CGFloat rightPanelX = showRightPanel ? MAX(64.0, width - rightPanelWidth - 64.0) : width;
         self.scrollView.frame = NSMakeRect(0.0, railY, width, railHeight);
-        CGFloat detailY = railY + railHeight + 28.0;
-        CGFloat availableDetailHeight = MAX(180.0, height - detailY - 48.0);
-        CGFloat previewHeight = MIN(270.0, availableDetailHeight);
-        CGFloat previewX = 64.0;
-        CGFloat previewWidth = showRightPanel ? MAX(520.0, rightPanelX - previewX - 36.0) : MIN(980.0, width - previewX * 2.0);
-        self.controllerCategoryPreviewView.frame = NSMakeRect(previewX, detailY, previewWidth, previewHeight);
-        CGFloat imageWidth = MIN(360.0, MAX(220.0, previewWidth * 0.34));
-        CGFloat imageHeight = floor(imageWidth * 9.0 / 16.0);
-        CGFloat imageY = floor((previewHeight - imageHeight) * 0.5);
-        self.controllerCategoryPreviewImageView.frame = NSMakeRect(16.0, imageY, imageWidth, imageHeight);
-        CGFloat textX = imageWidth + 36.0;
-        CGFloat textWidth = MAX(180.0, previewWidth - textX - 24.0);
-        self.controllerCategoryPreviewEyebrowLabel.frame = NSMakeRect(textX, 28.0, textWidth, 18.0);
-        self.controllerCategoryPreviewTitleLabel.frame = NSMakeRect(textX, 52.0, textWidth, 36.0);
-        self.controllerCategoryPreviewMetaLabel.frame = NSMakeRect(textX, 96.0, textWidth, 20.0);
-        self.controllerCategoryPreviewDescriptionLabel.frame = NSMakeRect(textX, 126.0, textWidth, MAX(44.0, previewHeight - 154.0));
-        self.statusLabel.frame = NSMakeRect(28.0, detailY + previewHeight + 14.0, width - 56.0, 24.0);
+        CGFloat panelY = railY + railHeight + 28.0;
+        CGFloat availablePanelHeight = MAX(180.0, height - panelY - 48.0);
+        CGFloat panelHeight = MIN(250.0, availablePanelHeight);
+        CGFloat lastPlayedPanelY = floor(panelY + MAX(0.0, availablePanelHeight - panelHeight) * 0.5);
+        CGFloat rightPanelBottomY = showLastPlayed ? lastPlayedPanelY + panelHeight : panelY + panelHeight;
+        self.statusLabel.frame = NSMakeRect(28.0, showRightPanel ? rightPanelBottomY + 14.0 : panelY, width - 56.0, 24.0);
         if (showStreamPip) {
-            CGFloat pipVideoHeight = floor(rightPanelWidth * 9.0 / 16.0);
-            CGFloat pipHeight = pipVideoHeight + 54.0;
-            CGFloat pipY = detailY;
+            CGFloat pipHeight = panelHeight;
+            CGFloat maxPipVideoHeight = MAX(96.0, pipHeight - 54.0);
+            CGFloat maxPipVideoWidth = MAX(120.0, rightPanelWidth - 24.0);
+            CGFloat pipVideoWidth = MIN(maxPipVideoWidth, floor(maxPipVideoHeight * 16.0 / 9.0));
+            CGFloat pipVideoHeight = floor(pipVideoWidth * 9.0 / 16.0);
+            CGFloat pipY = panelY;
             self.streamPipContainerView.frame = NSMakeRect(rightPanelX, pipY, rightPanelWidth, pipHeight);
-            self.streamPipHostView.frame = NSMakeRect(12.0, 12.0, rightPanelWidth - 24.0, pipVideoHeight);
+            self.streamPipHostView.frame = NSMakeRect(floor((rightPanelWidth - pipVideoWidth) * 0.5), 12.0, pipVideoWidth, pipVideoHeight);
             self.streamPipContentView.frame = self.streamPipHostView.bounds;
             self.streamPipTitleLabel.frame = NSMakeRect(16.0, pipVideoHeight + 22.0, rightPanelWidth * 0.50, 22.0);
             self.streamPipHintLabel.frame = NSMakeRect(rightPanelWidth * 0.50 - 12.0, pipVideoHeight + 24.0, rightPanelWidth * 0.50, 18.0);
         } else if (showLastPlayed) {
-            CGFloat panelHeight = previewHeight;
-            self.lastPlayedPanelView.frame = NSMakeRect(rightPanelX, detailY, rightPanelWidth, panelHeight);
+            self.lastPlayedPanelView.frame = NSMakeRect(rightPanelX, lastPlayedPanelY, rightPanelWidth, panelHeight);
             CGFloat contentWidth = rightPanelWidth - 32.0;
             CGFloat imageMaxHeight = MAX(70.0, MIN(132.0, panelHeight - 138.0));
             CGFloat aspectRatio = self.lastPlayedImageAspectRatio > 0.1 ? self.lastPlayedImageAspectRatio : 16.0 / 9.0;
@@ -2122,7 +2133,6 @@ using namespace OPN;
         self.detailsOverlayView.frame = self.bounds;
         return;
     }
-    self.controllerCategoryPreviewView.hidden = YES;
     self.lastPlayedPanelView.hidden = YES;
     [self setLastPlayedFocused:NO];
     self.categoryBarView.hidden = controllerMode || self.categoryButtons.count <= 1;
@@ -2143,7 +2153,7 @@ using namespace OPN;
         CGFloat availableContentHeight = MAX(0.0, height - railY - bottomInset);
         carouselHeight = MIN(desiredCarouselHeight, MAX(cardHeight + 62.0, availableContentHeight * 0.32));
         detailY = railY + carouselHeight + detailGap;
-        detailHeight = MAX(minimumDetailHeight, height - detailY - bottomInset);
+        detailHeight = MAX(minimumDetailHeight, height - detailY);
         gridY = railY;
     }
     if (controllerMode && !self.categoryBarView.hidden) {
@@ -2163,12 +2173,13 @@ using namespace OPN;
         }
     }
     self.controllerDetailView.hidden = !controllerMode || self.cardViews.count == 0;
+    self.controllerDetailBackgroundView.hidden = self.controllerDetailView.hidden;
+    self.controllerDetailBackgroundView.frame = self.bounds;
     self.controllerDetailView.frame = NSMakeRect(0.0, detailY, width, detailHeight);
     self.controllerDetailView.layer.shadowPath = [NSBezierPath bezierPathWithRoundedRect:self.controllerDetailView.bounds xRadius:30.0 yRadius:30.0].CGPath;
     CGFloat detailWidth = NSWidth(self.controllerDetailView.frame);
     self.controllerDetailGradientLayer.frame = self.controllerDetailView.bounds;
     self.controllerDetailAccentLayer.frame = NSMakeRect(64.0, 18.0, 74.0, 3.0);
-    BOOL compactDetail = detailHeight < 260.0;
     CGFloat heroX = 64.0;
     BOOL showStreamPip = controllerMode && self.streamPipContentView != nil;
     CGFloat availableGameHubHeight = MAX(0.0, detailHeight - kControllerGameHubVerticalReserve);
@@ -2179,13 +2190,9 @@ using namespace OPN;
     CGFloat gameHubY = showGameHub ? MAX(32.0, floor((detailHeight - gameHubHeight) * 0.42)) : 0.0;
     CGFloat rightContextInset = showGameHub ? gameHubWidth + 104.0 : 0.0;
     CGFloat heroWidth = MAX(260.0, detailWidth - 128.0 - rightContextInset);
-    self.controllerDetailTitleLabel.font = [NSFont systemFontOfSize:compactDetail ? 40.0 : 58.0 weight:NSFontWeightSemibold];
-    self.controllerDetailTitleLabel.frame = NSMakeRect(heroX, compactDetail ? 20.0 : 26.0, heroWidth, compactDetail ? 50.0 : 70.0);
-    self.controllerDetailMetaLabel.frame = NSMakeRect(heroX + 2.0, compactDetail ? 82.0 : 108.0, heroWidth, 24.0);
-    self.controllerDetailStoreLabel.frame = NSMakeRect(heroX + 2.0, compactDetail ? 114.0 : 142.0, heroWidth, 26.0);
     self.controllerDetailStatsLabel.hidden = YES;
     self.controllerDetailStatsLabel.frame = NSZeroRect;
-    CGFloat featuresY = compactDetail ? 146.0 : 184.0;
+    CGFloat featuresY = 38.0;
     self.controllerDetailFeaturesLabel.hidden = NO;
     self.controllerDetailFeaturesLabel.frame = NSMakeRect(heroX + 2.0, featuresY, MIN(980.0, heroWidth), MAX(0.0, detailHeight - featuresY - 88.0));
     self.controllerPromptBarView.frame = NSMakeRect(heroX + 2.0, MAX(188.0, detailHeight - 52.0), heroWidth, 36.0);
@@ -2299,7 +2306,6 @@ using namespace OPN;
     if (OpnControllerModeEnabled() && scrollIntoView && previousIndex >= 0 && previousIndex != clamped) {
         OpnPlayConsoleTone(OPNConsoleToneMove);
     }
-    [self updateControllerCategoryPreview];
     if (!scrollIntoView) return;
     OPNControllerCategoryCardView *card = self.categoryCardViews[(NSUInteger)clamped];
     NSRect visibleRect = self.scrollView.contentView.bounds;
@@ -2308,98 +2314,6 @@ using namespace OPN;
     [[OPNCoreAnimationCoordinator sharedCoordinator] springScrollClipView:self.scrollView.contentView
                                                                       toX:targetX
                                                                  velocity:0.0];
-}
-
-- (void)updateControllerCategoryPreview {
-    if (!self.controllerCategoryOverviewVisible || self.focusedCategoryIndex < 0 || self.focusedCategoryIndex >= (NSInteger)self.categoryCardViews.count) {
-        self.controllerCategoryPreviewTitleLabel.stringValue = @"Select a category";
-        self.controllerCategoryPreviewMetaLabel.stringValue = @"";
-        self.controllerCategoryPreviewDescriptionLabel.stringValue = @"";
-        self.controllerCategoryPreviewImageView.image = nil;
-        return;
-    }
-
-    const OPN::GameInfo *featuredGame = [self currentFeaturedStoreGame];
-    OPN::GameInfo fallbackGame;
-    if (!featuredGame) {
-        OPNControllerCategoryCardView *categoryCard = self.categoryCardViews[(NSUInteger)self.focusedCategoryIndex];
-        for (const OPN::GameInfo &game : self.allGames) {
-            if (![self game:game matchesCategory:categoryCard.categoryId]) continue;
-            fallbackGame = game;
-            featuredGame = &fallbackGame;
-            break;
-        }
-    }
-    if (!featuredGame) {
-        self.controllerCategoryPreviewEyebrowLabel.stringValue = @"FEATURED STORE";
-        self.controllerCategoryPreviewTitleLabel.stringValue = @"No featured games available";
-        self.controllerCategoryPreviewMetaLabel.stringValue = @"";
-        self.controllerCategoryPreviewDescriptionLabel.stringValue = @"";
-        self.controllerCategoryPreviewImageView.image = nil;
-        self.controllerCategoryPreviewImageURL = @"";
-        return;
-    }
-
-    const OPN::GameInfo &game = *featuredGame;
-    NSString *featuredMetadata = [self currentFeaturedStoreMetadata];
-    self.controllerCategoryPreviewEyebrowLabel.stringValue = featuredMetadata.length > 0 ? featuredMetadata.uppercaseString : @"FEATURED STORE GAME";
-    self.controllerCategoryPreviewTitleLabel.stringValue = OPNCatalogString(game.title, @"Untitled Game");
-    NSString *genres = OPNCatalogJoinedStrings(game.genres, @"Cloud game");
-    NSString *store = @"";
-    if (!game.availableStores.empty()) store = OPNStoreCategoryTitle(OPNCatalogString(game.availableStores.front(), @""));
-    NSMutableArray<NSString *> *meta = [NSMutableArray array];
-    if (featuredMetadata.length > 0) [meta addObject:featuredMetadata];
-    if (genres.length > 0) [meta addObject:genres];
-    if (store.length > 0) [meta addObject:store];
-    if (game.playabilityState.length() > 0) [meta addObject:OPNCatalogDisplayString(game.playabilityState, @"")];
-    self.controllerCategoryPreviewMetaLabel.stringValue = [meta componentsJoinedByString:@"  /  "];
-    NSString *description = OPNCatalogString(game.description, @"");
-    if (description.length == 0) {
-        NSString *identifier = [self favoriteIdentifierForGame:game];
-        for (const OPN::GameInfo &catalogGame : _allGames) {
-            NSString *candidate = [self favoriteIdentifierForGame:catalogGame];
-            if (identifier.length == 0 || ![identifier isEqualToString:candidate]) continue;
-            description = OPNCatalogString(catalogGame.description, @"");
-            break;
-        }
-    }
-    if (description.length == 0) description = OPNCatalogJoinedStrings(game.featureLabels, @"");
-    self.controllerCategoryPreviewDescriptionLabel.stringValue = description;
-
-    NSArray<NSString *> *candidates = OPNControllerCategoryArtworkCandidates(game);
-    NSString *expectedURL = candidates.count > 0 ? candidates.firstObject : @"";
-    self.controllerCategoryPreviewImageURL = expectedURL;
-    self.controllerCategoryPreviewImageView.image = nil;
-    [self loadControllerCategoryPreviewImageFromCandidates:candidates index:0 expectedURL:expectedURL];
-}
-
-- (void)loadControllerCategoryPreviewImageFromCandidates:(NSArray<NSString *> *)candidates index:(NSUInteger)index expectedURL:(NSString *)expectedURL {
-    if (index >= candidates.count || expectedURL.length == 0) return;
-    NSURL *url = [NSURL URLWithString:candidates[index]];
-    if (!url) {
-        [self loadControllerCategoryPreviewImageFromCandidates:candidates index:index + 1 expectedURL:expectedURL];
-        return;
-    }
-    __weak __typeof__(self) weakSelf = self;
-    [[[NSURLSession sharedSession] dataTaskWithURL:url completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
-        NSHTTPURLResponse *http = [response isKindOfClass:NSHTTPURLResponse.class] ? (NSHTTPURLResponse *)response : nil;
-        if (error || !data || (http && http.statusCode >= 400)) {
-            dispatch_async(dispatch_get_main_queue(), ^{
-                __typeof__(self) strongSelf = weakSelf;
-                if (strongSelf && [strongSelf.controllerCategoryPreviewImageURL isEqualToString:expectedURL]) {
-                    [strongSelf loadControllerCategoryPreviewImageFromCandidates:candidates index:index + 1 expectedURL:expectedURL];
-                }
-            });
-            return;
-        }
-        NSImage *image = [[NSImage alloc] initWithData:data];
-        if (!image) return;
-        dispatch_async(dispatch_get_main_queue(), ^{
-            __typeof__(self) strongSelf = weakSelf;
-            if (!strongSelf || ![strongSelf.controllerCategoryPreviewImageURL isEqualToString:expectedURL]) return;
-            strongSelf.controllerCategoryPreviewImageView.image = image;
-        });
-    }] resume];
 }
 
 - (void)updateLastPlayedPanel {
@@ -2638,13 +2552,14 @@ using namespace OPN;
     self.controllerDetailGradientLayer.opacity = 0.0;
     self.controllerDetailAccentLayer.backgroundColor = [detailAccentSoftColor colorWithAlphaComponent:0.90].CGColor;
     self.controllerDetailView.layer.shadowColor = detailAccentColor.CGColor;
-    self.controllerDetailStoreLabel.textColor = NSColor.whiteColor;
     self.controllerGameHubView.accentRGB = self.controllerElectricBackgroundView.accentRGB;
     [CATransaction commit];
     if (!card) {
-        self.controllerDetailTitleLabel.stringValue = @"Select a game";
-        self.controllerDetailMetaLabel.stringValue = @"";
-        self.controllerDetailStoreLabel.attributedStringValue = OPNOutlinedControllerStoreText(@"");
+        self.controllerDetailBackgroundView.image = nil;
+        self.controllerDetailBackgroundURL = @"";
+        self.controllerDetailBackgroundURLs = @[];
+        self.controllerDetailBackgroundGameId = @"";
+        [self stopControllerDetailBackgroundRotation];
         self.controllerDetailStatsLabel.stringValue = @"";
         self.controllerDetailFeaturesLabel.stringValue = @"";
         self.controllerGameHubView.hidden = YES;
@@ -2653,16 +2568,10 @@ using namespace OPN;
     }
 
     const OPN::GameInfo game = card.game;
-    self.controllerDetailTitleLabel.stringValue = OPNCatalogString(game.title, @"Untitled Game");
+    [self configureControllerDetailBackgroundForGame:game];
 
     NSString *genres = OPNCatalogJoinedStrings(game.genres, @"Cloud game");
     NSString *tier = OPNCatalogString(game.membershipTierLabel, @"");
-    NSString *playability = OPNCatalogDisplayString(game.playabilityState, @"");
-    NSMutableArray<NSString *> *meta = [NSMutableArray arrayWithObject:genres];
-    if ([self isFavoriteGame:game]) [meta addObject:@"Favorite"];
-    if (tier.length > 0) [meta addObject:tier];
-    if (playability.length > 0) [meta addObject:playability];
-    self.controllerDetailMetaLabel.stringValue = [meta componentsJoinedByString:@"  •  "];
 
     NSString *store = @"";
     if (card.selectedVariantIndex >= 0 && card.selectedVariantIndex < (int)game.variants.size()) {
@@ -2671,36 +2580,151 @@ using namespace OPN;
         store = OPNCatalogString(game.availableStores.front(), @"");
     }
     store = store.length > 0 ? OPNStoreCategoryTitle(store) : @"Default store";
-    NSString *storePrefix = game.variants.size() > 1 ? @"Selected Store" : @"Store";
-    self.controllerDetailStoreLabel.attributedStringValue = OPNOutlinedControllerStoreText([NSString stringWithFormat:@"%@: %@", storePrefix, store]);
 
     self.controllerDetailStatsLabel.stringValue = @"";
     NSString *description = OPNCatalogString(game.description, @"");
     if (description.length == 0) description = OPNCatalogJoinedStrings(game.featureLabels, @"");
     if (description.length == 0) description = @"Loading game details...";
     self.controllerDetailFeaturesLabel.attributedStringValue = OPNOutlinedControllerDescriptionText(description);
-    StreamPreferenceProfile streamProfile = LoadStreamPreferenceProfile();
-    BOOL controllerConnected = GCController.controllers.count > 0;
     NSString *launchStatus = game.playabilityState.empty()
         ? @"Ready"
         : OPNCatalogDisplayString(game.playabilityState, @"Ready");
-    NSString *sessionStatus = self.streamPipContentView ? @"Stream active" : @"Ready to launch";
-    NSString *streamStatus = [NSString stringWithFormat:@"%@ • %d FPS • %d Mbps",
-        OPNCatalogString(streamProfile.resolution.Label(), @"Auto"),
-        streamProfile.fps,
-        streamProfile.maxBitrateMbps];
-    NSString *controllerStatus = controllerConnected ? @"Controller connected" : @"Connect controller";
-    NSString *favoriteStatus = [self isFavoriteGame:game] ? @"Favorite saved" : @"Not favorited";
+    NSString *genreSummary = genres;
+    if (tier.length > 0) genreSummary = [genreSummary stringByAppendingFormat:@"  /  %@", tier];
+    NSString *developer = OPNCatalogString(game.developerName, @"");
+    NSString *publisher = OPNCatalogString(game.publisherName, @"");
+    NSString *studioInfo = @"Studio not listed";
+    if (developer.length > 0 && publisher.length > 0 && ![developer isEqualToString:publisher]) {
+        studioInfo = [NSString stringWithFormat:@"%@ / %@", developer, publisher];
+    } else if (developer.length > 0) {
+        studioInfo = developer;
+    } else if (publisher.length > 0) {
+        studioInfo = publisher;
+    }
+    NSString *playerInfo = OPNCatalogPlayerCountText(game.maxLocalPlayers, game.maxOnlinePlayers);
+    if (playerInfo.length == 0) playerInfo = @"Player count not listed";
+    NSString *controlInfo = OPNCatalogCommaJoinedStrings(game.supportedControls, 3);
+    if (controlInfo.length == 0) controlInfo = OPNCatalogCommaJoinedStrings(game.featureLabels, 2);
+    if (controlInfo.length == 0) controlInfo = @"Controls vary by store";
+    NSString *storeInfo = OPNCatalogStoreSummary(game.availableStores, store);
     self.controllerGameHubView.gameTitle = OPNCatalogString(game.title, @"Untitled Game");
-    self.controllerGameHubView.storeTitle = [NSString stringWithFormat:@"%@ • %@", storePrefix, store];
+    self.controllerGameHubView.genreSummary = genreSummary;
     self.controllerGameHubView.launchStatus = launchStatus;
-    self.controllerGameHubView.sessionStatus = sessionStatus;
-    self.controllerGameHubView.streamStatus = streamStatus;
-    self.controllerGameHubView.controllerStatus = controllerStatus;
-    self.controllerGameHubView.favoriteStatus = favoriteStatus;
+    self.controllerGameHubView.studioInfo = studioInfo;
+    self.controllerGameHubView.playerInfo = playerInfo;
+    self.controllerGameHubView.controlInfo = controlInfo;
+    self.controllerGameHubView.storeInfo = storeInfo;
     self.controllerPromptBarView.hidden = NO;
     self.controllerPromptBarView.includeStore = game.variants.size() > 1;
     self.controllerPromptBarView.includeBack = NO;
+}
+
+- (void)configureControllerDetailBackgroundForGame:(const OPN::GameInfo &)game {
+    NSArray<NSString *> *candidates = OPNControllerCategoryBackgroundCandidates(game);
+    NSString *gameId = OPNCatalogString(game.id, @"");
+    if (candidates.count == 0) {
+        self.controllerDetailBackgroundView.image = nil;
+        self.controllerDetailBackgroundURL = @"";
+        self.controllerDetailBackgroundURLs = @[];
+        self.controllerDetailBackgroundGameId = gameId;
+        [self stopControllerDetailBackgroundRotation];
+        return;
+    }
+
+    BOOL sameGame = [self.controllerDetailBackgroundGameId isEqualToString:gameId];
+    BOOL sameCandidates = [self.controllerDetailBackgroundURLs isEqualToArray:candidates];
+    if (!sameGame || !sameCandidates) {
+        self.controllerDetailBackgroundGameId = gameId;
+        self.controllerDetailBackgroundURLs = candidates;
+        self.controllerDetailBackgroundIndex = arc4random_uniform((uint32_t)candidates.count);
+        NSString *expectedURL = candidates[(NSUInteger)self.controllerDetailBackgroundIndex];
+        self.controllerDetailBackgroundURL = expectedURL;
+        [self loadControllerDetailBackgroundFromCandidates:candidates
+                                                     index:(NSUInteger)self.controllerDetailBackgroundIndex
+                                               expectedURL:expectedURL];
+    }
+
+    [self startControllerDetailBackgroundRotationIfNeeded];
+}
+
+- (void)startControllerDetailBackgroundRotationIfNeeded {
+    if (!self.window || self.controllerDetailView.hidden || self.controllerDetailBackgroundURLs.count <= 1) {
+        [self stopControllerDetailBackgroundRotation];
+        return;
+    }
+    if (self.controllerDetailBackgroundTimer) return;
+    self.controllerDetailBackgroundTimer = [NSTimer timerWithTimeInterval:3.0
+                                                                    target:self
+                                                                  selector:@selector(controllerDetailBackgroundTimerFired:)
+                                                                  userInfo:nil
+                                                                   repeats:YES];
+    [[NSRunLoop mainRunLoop] addTimer:self.controllerDetailBackgroundTimer forMode:NSRunLoopCommonModes];
+}
+
+- (void)stopControllerDetailBackgroundRotation {
+    [self.controllerDetailBackgroundTimer invalidate];
+    self.controllerDetailBackgroundTimer = nil;
+}
+
+- (void)controllerDetailBackgroundTimerFired:(NSTimer *)timer {
+    (void)timer;
+    NSArray<NSString *> *candidates = self.controllerDetailBackgroundURLs;
+    if (!self.window || self.controllerDetailView.hidden || candidates.count <= 1) {
+        [self stopControllerDetailBackgroundRotation];
+        return;
+    }
+
+    self.controllerDetailBackgroundIndex = (self.controllerDetailBackgroundIndex + 1) % (NSInteger)candidates.count;
+    NSString *expectedURL = candidates[(NSUInteger)self.controllerDetailBackgroundIndex];
+    self.controllerDetailBackgroundURL = expectedURL;
+    [self loadControllerDetailBackgroundFromCandidates:candidates
+                                                 index:(NSUInteger)self.controllerDetailBackgroundIndex
+                                           expectedURL:expectedURL];
+}
+
+- (void)loadControllerDetailBackgroundFromCandidates:(NSArray<NSString *> *)candidates index:(NSUInteger)index expectedURL:(NSString *)expectedURL {
+    if (index >= candidates.count || expectedURL.length == 0) return;
+    NSURL *url = [NSURL URLWithString:candidates[index]];
+    if (!url) {
+        [self loadControllerDetailBackgroundFromCandidates:candidates index:index + 1 expectedURL:expectedURL];
+        return;
+    }
+
+    __weak __typeof__(self) weakSelf = self;
+    [[[NSURLSession sharedSession] dataTaskWithURL:url completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+        NSHTTPURLResponse *http = [response isKindOfClass:NSHTTPURLResponse.class] ? (NSHTTPURLResponse *)response : nil;
+        if (error || !data || (http && http.statusCode >= 400)) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                __typeof__(self) strongSelf = weakSelf;
+                if (strongSelf && [strongSelf.controllerDetailBackgroundURL isEqualToString:expectedURL]) {
+                    [strongSelf loadControllerDetailBackgroundFromCandidates:candidates index:index + 1 expectedURL:expectedURL];
+                }
+            });
+            return;
+        }
+
+        NSImage *image = [[NSImage alloc] initWithData:data];
+        if (!image) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                __typeof__(self) strongSelf = weakSelf;
+                if (strongSelf && [strongSelf.controllerDetailBackgroundURL isEqualToString:expectedURL]) {
+                    [strongSelf loadControllerDetailBackgroundFromCandidates:candidates index:index + 1 expectedURL:expectedURL];
+                }
+            });
+            return;
+        }
+
+        dispatch_async(dispatch_get_main_queue(), ^{
+            __typeof__(self) strongSelf = weakSelf;
+            if (!strongSelf || ![strongSelf.controllerDetailBackgroundURL isEqualToString:expectedURL]) return;
+            CATransition *fade = [CATransition animation];
+            fade.type = kCATransitionFade;
+            fade.duration = 0.42;
+            fade.timingFunction = [OPNCoreAnimationCoordinator appleQuinticTimingFunction];
+            [strongSelf.controllerDetailBackgroundView.layer addAnimation:fade forKey:@"opn.detail.background.fade"];
+            strongSelf.controllerDetailBackgroundView.image = image;
+        });
+    }] resume];
 }
 
 - (void)openFocusedGameDetails {
