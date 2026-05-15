@@ -9,6 +9,7 @@ static NSString *const OPNAccentRedDefaultsKey = @"OpenNOW.Interface.AccentRed";
 static NSString *const OPNAccentGreenDefaultsKey = @"OpenNOW.Interface.AccentGreen";
 static NSString *const OPNAccentBlueDefaultsKey = @"OpenNOW.Interface.AccentBlue";
 static NSString *const OPNPosterSizeScaleDefaultsKey = @"OpenNOW.Interface.PosterSizeScale";
+static NSString *const OPNControllerGridItemScaleDefaultsKey = @"OpenNOW.Interface.ControllerGridItemScale";
 static NSString *const OPNAutoFullScreenDefaultsKey = @"OpenNOW.Interface.AutoFullScreen";
 static NSString *const OPNControllerModeDefaultsKey = @"OpenNOW.Interface.ControllerMode";
 static NSString *const OPNBackgroundAnimationDefaultsKey = @"OpenNOW.Interface.BackgroundAnimation";
@@ -17,6 +18,8 @@ static NSString *const OPNBackgroundTintStrengthDefaultsKey = @"OpenNOW.Interfac
 static NSString *const OPNControllerLibraryShortcutDefaultsKey = @"OpenNOW.Interface.ControllerLibraryShortcut";
 static const CGFloat OPNMinimumPosterSizeScale = 0.80;
 static const CGFloat OPNMaximumPosterSizeScale = 1.30;
+static const CGFloat OPNMinimumControllerGridItemScale = 0.80;
+static const CGFloat OPNMaximumControllerGridItemScale = 1.40;
 static const unsigned OPNDefaultAccentRGB = 0x7CF1B1;
 static const CGFloat OPNDefaultBackgroundTintStrength = 0.32;
 static const uint16_t OPNDefaultControllerLibraryShortcutMask = 0x0010 | 0x0020;
@@ -69,6 +72,22 @@ void OpnSetPosterSizeScale(CGFloat scale) {
     CGFloat clampedScale = MAX(OPNMinimumPosterSizeScale, MIN(scale, OPNMaximumPosterSizeScale));
     if (std::fabs(clampedScale - OpnPosterSizeScale()) < 0.001) return;
     [NSUserDefaults.standardUserDefaults setDouble:clampedScale forKey:OPNPosterSizeScaleDefaultsKey];
+    [NSUserDefaults.standardUserDefaults synchronize];
+    [NSNotificationCenter.defaultCenter postNotificationName:OPNInterfacePreferencesDidChangeNotification object:nil];
+}
+
+CGFloat OpnControllerGridItemScale(void) {
+    id stored = [NSUserDefaults.standardUserDefaults objectForKey:OPNControllerGridItemScaleDefaultsKey];
+    CGFloat scale = [stored respondsToSelector:@selector(doubleValue)] ? (CGFloat)[stored doubleValue] : 1.0;
+    if (!std::isfinite(scale)) scale = 1.0;
+    return MAX(OPNMinimumControllerGridItemScale, MIN(scale, OPNMaximumControllerGridItemScale));
+}
+
+void OpnSetControllerGridItemScale(CGFloat scale) {
+    if (!std::isfinite(scale)) scale = 1.0;
+    CGFloat clampedScale = MAX(OPNMinimumControllerGridItemScale, MIN(scale, OPNMaximumControllerGridItemScale));
+    if (std::fabs(clampedScale - OpnControllerGridItemScale()) < 0.001) return;
+    [NSUserDefaults.standardUserDefaults setDouble:clampedScale forKey:OPNControllerGridItemScaleDefaultsKey];
     [NSUserDefaults.standardUserDefaults synchronize];
     [NSNotificationCenter.defaultCenter postNotificationName:OPNInterfacePreferencesDidChangeNotification object:nil];
 }

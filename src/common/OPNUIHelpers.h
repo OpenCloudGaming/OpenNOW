@@ -12,6 +12,8 @@ unsigned OpnCurrentAccentRGB(void);
 void OpnSetCurrentAccentRGB(unsigned rgb);
 CGFloat OpnPosterSizeScale(void);
 void OpnSetPosterSizeScale(CGFloat scale);
+CGFloat OpnControllerGridItemScale(void);
+void OpnSetControllerGridItemScale(CGFloat scale);
 BOOL OpnAutoFullScreenEnabled(void);
 void OpnSetAutoFullScreenEnabled(BOOL enabled);
 BOOL OpnControllerModeEnabled(void);

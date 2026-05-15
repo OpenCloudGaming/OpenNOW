@@ -150,6 +150,27 @@ static uint16_t OPNPressedControllerShortcutMask(void) {
     return buttons;
 }
 
+static uint16_t OPNSettingsGamepadButtons(void) {
+    NSArray<GCController *> *controllers = [GCController controllers];
+    if (controllers.count == 0) return 0;
+    GCExtendedGamepad *pad = controllers.firstObject.extendedGamepad;
+    if (!pad) return 0;
+    uint16_t buttons = 0;
+    if (pad.buttonA.value > 0.5) buttons |= 1u << 0;
+    if (pad.buttonB.value > 0.5) buttons |= 1u << 1;
+    if (pad.dpad.up.value > 0.5 || pad.leftThumbstick.yAxis.value > 0.65) buttons |= 1u << 2;
+    if (pad.dpad.down.value > 0.5 || pad.leftThumbstick.yAxis.value < -0.65) buttons |= 1u << 3;
+    if (pad.dpad.left.value > 0.5 || pad.leftThumbstick.xAxis.value < -0.65) buttons |= 1u << 4;
+    if (pad.dpad.right.value > 0.5 || pad.leftThumbstick.xAxis.value > 0.65) buttons |= 1u << 5;
+    return buttons;
+}
+
+static BOOL OPNSettingsGamepadNavigationActive(NSView *view) {
+    NSWindow *window = view.window;
+    if (!window || window.contentViewController != nil) return NO;
+    return window.contentView == view || [view isDescendantOf:window.contentView];
+}
+
 @interface OPNPushToTalkShortcutField : NSTextField
 @property (nonatomic, assign) uint16_t shortcutKeyCode;
 @property (nonatomic, assign) uint16_t shortcutModifierMask;
@@ -252,6 +273,7 @@ static uint16_t OPNPressedControllerShortcutMask(void) {
 @property (nonatomic, assign) BOOL enableL4S;
 @property (nonatomic, assign) BOOL suppressInputWhenInactive;
 @property (nonatomic, strong) NSTextField *posterSizeValueLabel;
+@property (nonatomic, strong) NSTextField *controllerGridSizeValueLabel;
 @property (nonatomic, strong) NSTextField *backgroundTintValueLabel;
 @property (nonatomic, strong) NSTextField *accentRedValueLabel;
 @property (nonatomic, strong) NSTextField *accentGreenValueLabel;
@@ -264,8 +286,16 @@ static uint16_t OPNPressedControllerShortcutMask(void) {
 @property (nonatomic, assign) uint16_t controllerShortcutPendingMask;
 @property (nonatomic, assign) BOOL audioDeviceListenerInstalled;
 @property (nonatomic, assign) CGFloat contentAreaWidth;
+@property (nonatomic, strong) NSMutableArray<NSControl *> *controllerFocusableControls;
+@property (nonatomic, assign) NSInteger controllerFocusedControlIndex;
+@property (nonatomic, strong) NSTimer *gamepadNavigationTimer;
+@property (nonatomic, assign) uint16_t previousGamepadButtons;
+@property (nonatomic, assign) CFTimeInterval lastGamepadMoveTime;
 - (void)applyPerformanceProfile:(NSInteger)index;
 - (void)audioDevicesChanged;
+- (void)startGamepadNavigationIfNeeded;
+- (void)stopGamepadNavigation;
+- (void)pollGamepadNavigation;
 @end
 
 static OSStatus OPNSettingsAudioDevicesChanged(AudioObjectID, UInt32, const AudioObjectPropertyAddress *, void *clientData) {
@@ -281,6 +311,10 @@ static OSStatus OPNSettingsAudioDevicesChanged(AudioObjectID, UInt32, const Audi
 using namespace OPN;
 
 - (instancetype)initWithFrame:(NSRect)frame {
+    return [self initWithFrame:frame selectedSectionName:nil];
+}
+
+- (instancetype)initWithFrame:(NSRect)frame selectedSectionName:(NSString *)selectedSectionName {
     self = [super initWithFrame:frame];
     if (self) {
         self.wantsLayer = YES;
@@ -301,6 +335,10 @@ using namespace OPN;
         _suppressInputWhenInactive = profile.suppressInputWhenInactive;
         _sectionNames = @[@"Stream", @"Video", @"Audio", @"Input", @"Interface", @"About", @"Thanks"];
         _sidebarButtons = [NSMutableArray array];
+        _controllerFocusableControls = [NSMutableArray array];
+        _controllerFocusedControlIndex = -1;
+        NSUInteger requestedSection = selectedSectionName.length > 0 ? [_sectionNames indexOfObject:selectedSectionName] : NSNotFound;
+        if (requestedSection != NSNotFound) _selectedSection = (NSInteger)requestedSection;
 
         _titleLabel = OpnLabel(@"Settings", NSZeroRect, 28.0, OpnColor(kTextPrimary), NSFontWeightSemibold);
         [self addSubview:_titleLabel];
@@ -344,10 +382,22 @@ using namespace OPN;
 
 - (BOOL)isFlipped { return YES; }
 
+- (BOOL)acceptsFirstResponder { return YES; }
+
 - (void)dealloc {
     [self.controllerShortcutCaptureTimer invalidate];
+    [self stopGamepadNavigation];
     [self stopAudioDeviceMonitoring];
     [[NSNotificationCenter defaultCenter] removeObserver:self];
+}
+
+- (void)viewDidMoveToWindow {
+    [super viewDidMoveToWindow];
+    if (self.window) {
+        [self startGamepadNavigationIfNeeded];
+    } else {
+        [self stopGamepadNavigation];
+    }
 }
 
 - (void)startAudioDeviceMonitoring {
@@ -434,6 +484,69 @@ using namespace OPN;
     [self rebuildContent];
 }
 
+- (void)registerControllerFocusableControl:(NSControl *)control {
+    if (!control || !OpnControllerModeEnabled()) return;
+    control.wantsLayer = YES;
+    control.layer.masksToBounds = NO;
+    [self.controllerFocusableControls addObject:control];
+}
+
+- (void)updateControllerFocusedControl {
+    if (!OpnControllerModeEnabled() || self.controllerFocusableControls.count == 0) {
+        self.controllerFocusedControlIndex = -1;
+    } else {
+        self.controllerFocusedControlIndex = MAX(0, MIN(self.controllerFocusedControlIndex, (NSInteger)self.controllerFocusableControls.count - 1));
+    }
+    for (NSUInteger index = 0; index < self.controllerFocusableControls.count; index++) {
+        NSControl *control = self.controllerFocusableControls[index];
+        BOOL focused = (NSInteger)index == self.controllerFocusedControlIndex;
+        control.layer.shadowColor = OpnColor(kBrandGreen).CGColor;
+        control.layer.shadowOpacity = focused ? 0.56 : 0.0;
+        control.layer.shadowRadius = focused ? 18.0 : 0.0;
+        control.layer.shadowOffset = CGSizeZero;
+        if (focused) {
+            [control.window makeFirstResponder:self];
+            [control scrollRectToVisible:NSInsetRect(control.bounds, -28.0, -18.0)];
+        }
+    }
+}
+
+- (void)moveControllerFocusBy:(NSInteger)delta {
+    if (self.controllerFocusableControls.count == 0) return;
+    NSInteger next = self.controllerFocusedControlIndex < 0 ? 0 : self.controllerFocusedControlIndex + delta;
+    next = MAX(0, MIN(next, (NSInteger)self.controllerFocusableControls.count - 1));
+    if (next == self.controllerFocusedControlIndex) return;
+    self.controllerFocusedControlIndex = next;
+    [self updateControllerFocusedControl];
+    OpnPlayConsoleTone(OPNConsoleToneMove);
+}
+
+- (NSControl *)controllerFocusedControl {
+    if (self.controllerFocusedControlIndex < 0 || self.controllerFocusedControlIndex >= (NSInteger)self.controllerFocusableControls.count) return nil;
+    return self.controllerFocusableControls[(NSUInteger)self.controllerFocusedControlIndex];
+}
+
+- (void)activateControllerFocusedControl {
+    NSControl *control = [self controllerFocusedControl];
+    if (!control) return;
+    OpnPlayConsoleTone(OPNConsoleToneSelect);
+    if ([control isKindOfClass:NSButton.class]) {
+        [(NSButton *)control performClick:self];
+    }
+}
+
+- (void)adjustControllerFocusedSliderBy:(NSInteger)direction {
+    NSControl *control = [self controllerFocusedControl];
+    if (![control isKindOfClass:NSSlider.class]) return;
+    NSSlider *slider = (NSSlider *)control;
+    CGFloat step = slider.maxValue > 200.0 ? 8.0 : 5.0;
+    CGFloat value = MAX(slider.minValue, MIN(slider.maxValue, slider.doubleValue + (CGFloat)direction * step));
+    if (std::fabs(value - slider.doubleValue) < 0.001) return;
+    slider.doubleValue = value;
+    [NSApp sendAction:slider.action to:slider.target from:slider];
+    OpnPlayConsoleTone(OPNConsoleToneChange);
+}
+
 - (void)layout {
     [super layout];
     CGFloat width = NSWidth(self.bounds);
@@ -485,6 +598,8 @@ using namespace OPN;
     for (NSView *view in [self.documentView.subviews copy]) {
         [view removeFromSuperview];
     }
+    [self.controllerFocusableControls removeAllObjects];
+    self.controllerFocusedControlIndex = -1;
     NSString *section = self.sectionNames[self.selectedSection];
     self.titleLabel.stringValue = @"Settings";
     if ([section isEqualToString:@"Stream"]) {
@@ -501,6 +616,10 @@ using namespace OPN;
         [self buildSimpleSectionContent:section];
     }
     [self setNeedsLayout:YES];
+    if (OpnControllerModeEnabled() && self.controllerFocusableControls.count > 0) {
+        self.controllerFocusedControlIndex = 0;
+        [self updateControllerFocusedControl];
+    }
 }
 
 - (NSView *)panelWithTitle:(NSString *)title height:(CGFloat)height {
@@ -813,7 +932,7 @@ using namespace OPN;
 }
 
 - (void)buildInterfaceContent {
-    NSView *panel = [self panelWithTitle:@"Interface" height:870.0];
+    NSView *panel = [self panelWithTitle:@"Interface" height:936.0];
     CGFloat panelWidth = MAX(320.0, NSWidth(panel.frame));
     CGFloat controlX = [self controlXForPanelWidth:panelWidth];
     CGFloat controlWidth = [self controlWidthForPanelWidth:panelWidth];
@@ -833,6 +952,7 @@ using namespace OPN;
     controllerModeToggle.target = self;
     controllerModeToggle.action = @selector(controllerModeToggleChanged:);
     [panel addSubview:controllerModeToggle];
+    [self registerControllerFocusableControl:controllerModeToggle];
 
     NSTextField *controllerHint = OpnLabel(@"Controller Mode keeps mouse and keyboard support while giving the library larger focus states, smoother carousel navigation, and a lean-back launch flow.",
                                             NSMakeRect(controlX, 132.0, controlWidth, 38.0),
@@ -852,6 +972,7 @@ using namespace OPN;
     backgroundAnimationToggle.target = self;
     backgroundAnimationToggle.action = @selector(backgroundAnimationToggleChanged:);
     [panel addSubview:backgroundAnimationToggle];
+    [self registerControllerFocusableControl:backgroundAnimationToggle];
 
     NSTextField *backgroundHint = OpnLabel(@"When off, the animated ribbons and sparkles pause while keeping the static artwork-tinted background.",
                                            NSMakeRect(controlX, 226.0, controlWidth, 38.0),
@@ -871,6 +992,7 @@ using namespace OPN;
     derivedAccentToggle.target = self;
     derivedAccentToggle.action = @selector(derivedAccentToggleChanged:);
     [panel addSubview:derivedAccentToggle];
+    [self registerControllerFocusableControl:derivedAccentToggle];
 
     NSTextField *derivedAccentHint = OpnLabel(@"When off, Controller Mode uses your manual accent color instead of per-game artwork colors.",
                                              NSMakeRect(controlX, 320.0, controlWidth, 38.0),
@@ -889,6 +1011,7 @@ using namespace OPN;
     backgroundTintSlider.target = self;
     backgroundTintSlider.action = @selector(backgroundTintSliderChanged:);
     [panel addSubview:backgroundTintSlider];
+    [self registerControllerFocusableControl:backgroundTintSlider];
 
     self.backgroundTintValueLabel = OpnLabel([NSString stringWithFormat:@"%.0f%%", backgroundTintSlider.doubleValue],
                                              NSMakeRect(controlX + MIN(312.0, controlWidth - 60.0), 384.0, 60.0, 22.0),
@@ -922,6 +1045,7 @@ using namespace OPN;
     shortcutButton.action = @selector(controllerShortcutCaptureClicked:);
     self.controllerShortcutCaptureButton = shortcutButton;
     [panel addSubview:shortcutButton];
+    [self registerControllerFocusableControl:shortcutButton];
 
     NSButton *shortcutReset = [[NSButton alloc] initWithFrame:NSMakeRect(controlX + shortcutButtonWidth + 10.0, 470.0, MIN(96.0, MAX(76.0, controlWidth - shortcutButtonWidth - 10.0)), 38.0)];
     shortcutReset.title = @"Default";
@@ -936,6 +1060,7 @@ using namespace OPN;
     shortcutReset.target = self;
     shortcutReset.action = @selector(controllerShortcutResetClicked:);
     [panel addSubview:shortcutReset];
+    [self registerControllerFocusableControl:shortcutReset];
 
     self.controllerShortcutStatusLabel = OpnLabel(@"Click the combo, press and hold any controller button or combo, then release after it saves.",
                                                   NSMakeRect(controlX, 518.0, controlWidth, 54.0),
@@ -977,6 +1102,7 @@ using namespace OPN;
         slider.target = self;
         slider.action = @selector(accentColorSliderChanged:);
         [panel addSubview:slider];
+        [self registerControllerFocusableControl:slider];
 
         NSTextField *valueLabel = OpnLabel([NSString stringWithFormat:@"%ld", (long)slider.integerValue],
                                            NSMakeRect(controlX + MIN(338.0, controlWidth - 54.0), y + 3.0, 54.0, 20.0),
@@ -999,6 +1125,7 @@ using namespace OPN;
     posterSlider.target = self;
     posterSlider.action = @selector(posterSizeSliderChanged:);
     [panel addSubview:posterSlider];
+    [self registerControllerFocusableControl:posterSlider];
 
     self.posterSizeValueLabel = OpnLabel([NSString stringWithFormat:@"%.0f%%", posterSlider.doubleValue],
                                           NSMakeRect(controlX + MIN(312.0, controlWidth - 60.0), 756.0, 60.0, 22.0),
@@ -1008,8 +1135,27 @@ using namespace OPN;
                                          NSTextAlignmentRight);
     [panel addSubview:self.posterSizeValueLabel];
 
-    [panel addSubview:[self rowLabel:@"Auto Full Screen" y:830.0]];
-    NSButton *autoFullScreenToggle = [[NSButton alloc] initWithFrame:NSMakeRect(controlX, 822.0, controlWidth, 28.0)];
+    [panel addSubview:[self rowLabel:@"Controller Grid Size" y:830.0]];
+    NSSlider *controllerGridSlider = [[NSSlider alloc] initWithFrame:NSMakeRect(controlX, 824.0, MIN(300.0, controlWidth - 72.0), 28.0)];
+    controllerGridSlider.minValue = 80.0;
+    controllerGridSlider.maxValue = 140.0;
+    controllerGridSlider.doubleValue = OpnControllerGridItemScale() * 100.0;
+    controllerGridSlider.continuous = YES;
+    controllerGridSlider.target = self;
+    controllerGridSlider.action = @selector(controllerGridSizeSliderChanged:);
+    [panel addSubview:controllerGridSlider];
+    [self registerControllerFocusableControl:controllerGridSlider];
+
+    self.controllerGridSizeValueLabel = OpnLabel([NSString stringWithFormat:@"%.0f%%", controllerGridSlider.doubleValue],
+                                                 NSMakeRect(controlX + MIN(312.0, controlWidth - 60.0), 828.0, 60.0, 22.0),
+                                                 12.0,
+                                                 OpnColor(kTextSecondary),
+                                                 NSFontWeightSemibold,
+                                                 NSTextAlignmentRight);
+    [panel addSubview:self.controllerGridSizeValueLabel];
+
+    [panel addSubview:[self rowLabel:@"Auto Full Screen" y:896.0]];
+    NSButton *autoFullScreenToggle = [[NSButton alloc] initWithFrame:NSMakeRect(controlX, 888.0, controlWidth, 28.0)];
     autoFullScreenToggle.buttonType = NSButtonTypeSwitch;
     autoFullScreenToggle.title = @"Enter full screen automatically when a stream starts";
     autoFullScreenToggle.font = [NSFont systemFontOfSize:13.0 weight:NSFontWeightMedium];
@@ -1018,6 +1164,7 @@ using namespace OPN;
     autoFullScreenToggle.target = self;
     autoFullScreenToggle.action = @selector(autoFullScreenToggleChanged:);
     [panel addSubview:autoFullScreenToggle];
+    [self registerControllerFocusableControl:autoFullScreenToggle];
 
     [self.documentView addSubview:panel];
 }
@@ -1253,6 +1400,11 @@ using namespace OPN;
     self.posterSizeValueLabel.stringValue = [NSString stringWithFormat:@"%.0f%%", sender.doubleValue];
 }
 
+- (void)controllerGridSizeSliderChanged:(NSSlider *)sender {
+    OpnSetControllerGridItemScale((CGFloat)sender.doubleValue / 100.0);
+    self.controllerGridSizeValueLabel.stringValue = [NSString stringWithFormat:@"%.0f%%", sender.doubleValue];
+}
+
 - (void)accentColorSliderChanged:(NSSlider *)sender {
     unsigned accent = OpnCurrentAccentRGB();
     NSInteger red = (NSInteger)((accent >> 16) & 0xFF);
@@ -1289,6 +1441,77 @@ using namespace OPN;
 - (void)controllerModeToggleChanged:(NSButton *)sender {
     OpnSetControllerModeEnabled(sender.state == NSControlStateValueOn);
     [self rebuildContent];
+}
+
+- (void)keyDown:(NSEvent *)event {
+    if (!OpnControllerModeEnabled()) {
+        [super keyDown:event];
+        return;
+    }
+    switch (event.keyCode) {
+        case 123: [self adjustControllerFocusedSliderBy:-1]; return;
+        case 124: [self adjustControllerFocusedSliderBy:1]; return;
+        case 125: [self moveControllerFocusBy:1]; return;
+        case 126: [self moveControllerFocusBy:-1]; return;
+        case 36:
+        case 49:
+            [self activateControllerFocusedControl];
+            return;
+        case 53:
+            if (self.onBackRequested) {
+                OpnPlayConsoleTone(OPNConsoleToneBack);
+                self.onBackRequested();
+                return;
+            }
+            break;
+        default:
+            break;
+    }
+    [super keyDown:event];
+}
+
+- (void)startGamepadNavigationIfNeeded {
+    if (!OpnControllerModeEnabled() || self.gamepadNavigationTimer || !OPNSettingsGamepadNavigationActive(self)) return;
+    self.gamepadNavigationTimer = [NSTimer scheduledTimerWithTimeInterval:(1.0 / 30.0)
+                                                                   target:self
+                                                                 selector:@selector(pollGamepadNavigation)
+                                                                 userInfo:nil
+                                                                  repeats:YES];
+}
+
+- (void)stopGamepadNavigation {
+    [self.gamepadNavigationTimer invalidate];
+    self.gamepadNavigationTimer = nil;
+    self.previousGamepadButtons = 0;
+}
+
+- (void)pollGamepadNavigation {
+    if (!OpnControllerModeEnabled() || !OPNSettingsGamepadNavigationActive(self)) {
+        [self stopGamepadNavigation];
+        return;
+    }
+    [self.window makeFirstResponder:self];
+    uint16_t buttons = OPNSettingsGamepadButtons();
+    uint16_t pressed = buttons & (uint16_t)~self.previousGamepadButtons;
+    CFTimeInterval now = CACurrentMediaTime();
+    BOOL repeatMove = (now - self.lastGamepadMoveTime) > 0.22;
+    uint16_t moves = buttons & ((1u << 2) | (1u << 3) | (1u << 4) | (1u << 5));
+    if (moves && repeatMove) {
+        pressed |= moves;
+        self.lastGamepadMoveTime = now;
+    }
+    if (pressed & (1u << 0)) [self activateControllerFocusedControl];
+    if (pressed & (1u << 1)) {
+        if (self.onBackRequested) {
+            OpnPlayConsoleTone(OPNConsoleToneBack);
+            self.onBackRequested();
+        }
+    }
+    if (pressed & (1u << 2)) [self moveControllerFocusBy:-1];
+    if (pressed & (1u << 3)) [self moveControllerFocusBy:1];
+    if (pressed & (1u << 4)) [self adjustControllerFocusedSliderBy:-1];
+    if (pressed & (1u << 5)) [self adjustControllerFocusedSliderBy:1];
+    self.previousGamepadButtons = buttons;
 }
 
 - (void)controllerShortcutCaptureClicked:(NSButton *)sender {

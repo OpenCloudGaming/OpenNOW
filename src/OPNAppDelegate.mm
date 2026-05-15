@@ -351,6 +351,10 @@ static std::string OPNGameLibraryFingerprint(const std::vector<OPN::GameInfo> &g
 
 - (void)interfacePreferencesChanged:(NSNotification *)notification {
     (void)notification;
+    if (OpnControllerModeEnabled() && self.currentScreen == OPN::AuthScreen::Store) {
+        [self transitionToScreen:OPN::AuthScreen::Catalog];
+        return;
+    }
     if (!self.rootView || OpnDerivedAccentColorsEnabled()) return;
     self.rootView.controllerAccentRGB = OpnCurrentAccentRGB();
 }
@@ -601,6 +605,7 @@ static std::string OPNGameLibraryFingerprint(const std::vector<OPN::GameInfo> &g
         __weak __typeof__(self) weakSelf = self;
         self.rootView.onStoreSelected = ^{
             __typeof__(self) strongSelf = weakSelf;
+            if (OpnControllerModeEnabled()) return;
             if (!strongSelf || strongSelf.currentScreen == OPN::AuthScreen::Store) return;
             [strongSelf transitionToScreen:OPN::AuthScreen::Store];
         };
@@ -666,6 +671,10 @@ static std::string OPNGameLibraryFingerprint(const std::vector<OPN::GameInfo> &g
 
 - (void)transitionToScreen:(OPN::AuthScreen)screen {
     using namespace OPN;
+
+    if (OpnControllerModeEnabled() && screen == AuthScreen::Store) {
+        screen = AuthScreen::Catalog;
+    }
 
     [self installLibraryRootIfNeeded];
     [self configureContentContainerForScreen:screen];
@@ -817,6 +826,12 @@ static std::string OPNGameLibraryFingerprint(const std::vector<OPN::GameInfo> &g
                 strongSelf.rootView.controllerAccentRGB = OpnDerivedAccentColorsEnabled() ? accentRGB : OpnCurrentAccentRGB();
             };
 
+            catalog.onInterfaceSettingsRequested = ^{
+                __typeof__(self) strongSelf = weakSelf;
+                if (!strongSelf) return;
+                [strongSelf transitionToScreen:AuthScreen::Settings];
+            };
+
             catalog.onSelectGame = ^(const GameInfo &game, int variantIndex) {
                 __typeof__(self) strongSelf = weakSelf;
                 if (!strongSelf) return;
@@ -882,8 +897,15 @@ static std::string OPNGameLibraryFingerprint(const std::vector<OPN::GameInfo> &g
             [self refreshAccountMenu];
             [self refreshAccountSummary];
             [self refreshStreamRegions];
-            OPNSettingsView *settings = [[OPNSettingsView alloc] initWithFrame:bounds];
+            NSString *initialSectionName = OpnControllerModeEnabled() ? @"Interface" : nil;
+            OPNSettingsView *settings = [[OPNSettingsView alloc] initWithFrame:bounds selectedSectionName:initialSectionName];
             settings.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+            __weak __typeof__(self) weakSelf = self;
+            settings.onBackRequested = ^{
+                __typeof__(self) strongSelf = weakSelf;
+                if (!strongSelf) return;
+                [strongSelf transitionToScreen:AuthScreen::Catalog];
+            };
             self.settingsView = settings;
             [self.contentContainer addSubview:settings];
             OpnDisableFocusHighlights(settings);

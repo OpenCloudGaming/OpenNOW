@@ -10,6 +10,7 @@
 @property (nonatomic, copy) void (^onCatalogBrowseRequested)(NSString *searchQuery, NSString *sortId, const std::vector<std::string> &filterIds);
 @property (nonatomic, copy) void (^onFocusedArtworkAccentChanged)(unsigned accentRGB);
 @property (nonatomic, copy) void (^onStreamPictureInPictureSelected)(void);
+@property (nonatomic, copy) void (^onInterfaceSettingsRequested)(void);
 
 - (instancetype)initWithFrame:(NSRect)frame;
 - (void)setGames:(const std::vector<OPN::GameInfo> &)games;
