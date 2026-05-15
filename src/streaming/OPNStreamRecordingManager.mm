@@ -60,6 +60,9 @@ typedef NS_ENUM(NSInteger, OPNRecordingAudioKind) {
     CMTime _microphoneAudioSourceStartTime;
     CMTime _systemAudioTimelineOffset;
     CMTime _microphoneAudioTimelineOffset;
+    BOOL _videoFrameAppendInFlight;
+    uint64_t _droppedVideoFrames;
+    CFTimeInterval _lastDroppedVideoFrameLogTime;
     AVCaptureSession *_microphoneCaptureSession;
 #if OPN_HAVE_SCREENCAPTUREKIT
     SCStream *_audioStream;
@@ -80,6 +83,9 @@ typedef NS_ENUM(NSInteger, OPNRecordingAudioKind) {
         _microphoneAudioSourceStartTime = kCMTimeInvalid;
         _systemAudioTimelineOffset = kCMTimeInvalid;
         _microphoneAudioTimelineOffset = kCMTimeInvalid;
+        _videoFrameAppendInFlight = NO;
+        _droppedVideoFrames = 0;
+        _lastDroppedVideoFrameLogTime = 0.0;
         [self refreshRecentRecordings];
     }
     return self;
@@ -135,6 +141,9 @@ typedef NS_ENUM(NSInteger, OPNRecordingAudioKind) {
         self->_microphoneAudioSourceStartTime = kCMTimeInvalid;
         self->_systemAudioTimelineOffset = kCMTimeInvalid;
         self->_microphoneAudioTimelineOffset = kCMTimeInvalid;
+        self->_videoFrameAppendInFlight = NO;
+        self->_droppedVideoFrames = 0;
+        self->_lastDroppedVideoFrameLogTime = 0.0;
     });
 
     [self startAudioCaptureForWindow:window];
@@ -150,6 +159,7 @@ typedef NS_ENUM(NSInteger, OPNRecordingAudioKind) {
     dispatch_async(_writerQueue, ^{
         self->_acceptingSamples = NO;
         self->_finishRequested = YES;
+        self->_videoFrameAppendInFlight = NO;
         AVAssetWriter *writer = self->_writer;
         NSURL *outputURL = self.currentRecordingURL;
         if (!writer) {
@@ -193,31 +203,72 @@ typedef NS_ENUM(NSInteger, OPNRecordingAudioKind) {
 #if defined(OPN_HAVE_LIBWEBRTC)
     if (!frame || (!self.recording && !self.starting)) return;
     RTCVideoFrame *videoFrame = (__bridge RTCVideoFrame *)frame;
+    @synchronized (self) {
+        if (_videoFrameAppendInFlight) {
+            [self recordDroppedVideoFrame];
+            return;
+        }
+        _videoFrameAppendInFlight = YES;
+    }
     dispatch_async(_writerQueue, ^{
-        if (!self->_acceptingSamples || !self.currentRecordingURL) return;
+        @autoreleasepool {
+            RTCVideoFrame *retainedFrame = videoFrame;
+            if (!retainedFrame || !self->_acceptingSamples || !self.currentRecordingURL) {
+                [self finishVideoFrameAppend];
+                return;
+            }
 
-        CGSize size = OPNRecordingFrameSize(videoFrame);
-        if (size.width < 2.0 || size.height < 2.0) return;
-        if (!self->_writer && ![self createWriterWithVideoSize:size]) return;
-        if (self->_writer.status != AVAssetWriterStatusWriting || !self->_videoInput.readyForMoreMediaData) return;
+            CGSize size = OPNRecordingFrameSize(retainedFrame);
+            if (size.width < 2.0 || size.height < 2.0) {
+                [self finishVideoFrameAppend];
+                return;
+            }
+            if (!self->_writer && ![self createWriterWithVideoSize:size]) {
+                [self finishVideoFrameAppend];
+                return;
+            }
+            if (self->_writer.status != AVAssetWriterStatusWriting || !self->_videoInput.readyForMoreMediaData) {
+                [self finishVideoFrameAppend];
+                return;
+            }
 
-        CVPixelBufferRef pixelBuffer = [self copyPixelBufferFromVideoFrame:videoFrame];
-        if (!pixelBuffer) return;
+            CVPixelBufferRef pixelBuffer = [self copyPixelBufferFromVideoFrame:retainedFrame];
+            if (!pixelBuffer) {
+                [self finishVideoFrameAppend];
+                return;
+            }
 
-        CMTime presentationTime = [self nextVideoPresentationTime];
-        BOOL appended = [self->_pixelBufferAdaptor appendPixelBuffer:pixelBuffer withPresentationTime:presentationTime];
-        CVPixelBufferRelease(pixelBuffer);
-        if (!appended) {
-            NSLog(@"[Recording] Video append failed: %@", self->_writer.error.localizedDescription ?: @"unknown");
-        } else if (self.starting) {
-            dispatch_async(dispatch_get_main_queue(), ^{
-                [self updateStatus:@"Recording" starting:NO recording:YES notify:YES];
-            });
+            CMTime presentationTime = [self nextVideoPresentationTime];
+            BOOL appended = [self->_pixelBufferAdaptor appendPixelBuffer:pixelBuffer withPresentationTime:presentationTime];
+            CVPixelBufferRelease(pixelBuffer);
+            if (!appended) {
+                NSLog(@"[Recording] Video append failed: %@", self->_writer.error.localizedDescription ?: @"unknown");
+            } else if (self.starting) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    [self updateStatus:@"Recording" starting:NO recording:YES notify:YES];
+                });
+            }
+            [self finishVideoFrameAppend];
         }
     });
 #else
     (void)frame;
 #endif
+}
+
+- (void)finishVideoFrameAppend {
+    @synchronized (self) {
+        _videoFrameAppendInFlight = NO;
+    }
+}
+
+- (void)recordDroppedVideoFrame {
+    _droppedVideoFrames++;
+    CFTimeInterval now = CACurrentMediaTime();
+    if (now - _lastDroppedVideoFrameLogTime >= 5.0) {
+        NSLog(@"[Recording] Dropping video frames while writer is busy (total=%llu)", (unsigned long long)_droppedVideoFrames);
+        _lastDroppedVideoFrameLogTime = now;
+    }
 }
 
 - (NSImage *)thumbnailForRecordingURL:(NSURL *)url size:(NSSize)size {
@@ -463,6 +514,10 @@ typedef NS_ENUM(NSInteger, OPNRecordingAudioKind) {
             OPNRecordingScreenCaptureOutput *output = [[OPNRecordingScreenCaptureOutput alloc] init];
             output.manager = strongSelf;
             SCStream *stream = [[SCStream alloc] initWithFilter:filter configuration:configuration delegate:output];
+            NSError *screenOutputError = nil;
+            if (![stream addStreamOutput:output type:SCStreamOutputTypeScreen sampleHandlerQueue:strongSelf->_audioQueue error:&screenOutputError]) {
+                NSLog(@"[Recording] Screen output sink failed: %@", screenOutputError.localizedDescription ?: @"unknown");
+            }
             NSError *outputError = nil;
             if (![stream addStreamOutput:output type:SCStreamOutputTypeAudio sampleHandlerQueue:strongSelf->_audioQueue error:&outputError]) {
                 NSLog(@"[Recording] System audio output failed: %@", outputError.localizedDescription ?: @"unknown");
@@ -644,6 +699,9 @@ static CGSize OPNRecordingFrameSize(RTCVideoFrame *frame) {
     (void)stream;
     if (!sampleBuffer || !CMSampleBufferIsValid(sampleBuffer)) return;
     if (@available(macOS 13.0, *)) {
+        if (type == SCStreamOutputTypeScreen) {
+            return;
+        }
         if (type == SCStreamOutputTypeAudio) {
             [self.manager appendAudioSampleBuffer:sampleBuffer kind:OPNRecordingAudioKindSystem];
         }
