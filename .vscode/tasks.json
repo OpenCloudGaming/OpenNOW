@@ -15,6 +15,20 @@
                 "reveal": "always",
                 "panel": "shared"
             }
+        },
+        {
+            "label": "qt-build",
+            "type": "shell",
+            "command": "make",
+            "args": [
+                "qt-build"
+            ],
+            "group": "build",
+            "problemMatcher": [],
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared"
+            }
         }
     ]
 }

@@ -28,7 +28,7 @@ endif
 CXXFLAGS := -std=c++20 -Wall -Wextra -Wpedantic -Wno-deprecated-declarations -Wno-gnu-conditional-omitted-operand -fobjc-arc -Isrc $(WEBRTC_CFLAGS)
 LDFLAGS := -framework Cocoa -framework QuartzCore -framework Metal -framework MetalKit -framework CoreImage -framework AuthenticationServices -framework AVFoundation -framework AVKit -framework CoreMedia -framework OpenGL -framework GameController -framework ApplicationServices -framework CoreAudio -framework ScreenCaptureKit -Wl,-sectcreate,__TEXT,__info_plist,$(INFO_PLIST) $(WEBRTC_LIBS)
 
-.PHONY: all run clean
+.PHONY: all run clean qt-configure qt-build qt-run qt-clean
 
 all: $(BIN)
 
@@ -41,3 +41,15 @@ run: $(BIN)
 
 clean:
 	rm -rf $(BUILD_DIR)
+
+qt-configure:
+	cmake -S qt -B $(BUILD_DIR)/qt -DCMAKE_BUILD_TYPE=RelWithDebInfo
+
+qt-build: qt-configure
+	cmake --build $(BUILD_DIR)/qt
+
+qt-run: qt-build
+	cmake --build $(BUILD_DIR)/qt --target run
+
+qt-clean:
+	rm -rf $(BUILD_DIR)/qt

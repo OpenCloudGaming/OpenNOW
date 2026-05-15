@@ -52,6 +52,7 @@ OpenNOW is designed for users who want the convenience of cloud gaming without t
 - `clang++` with C++20 and Objective-C ARC support.
 - Apple Command Line Tools or Xcode command line tooling.
 - A macOS `WebRTC.framework` or `WebRTC.xcframework` available at `third_party/webrtc-official`, or a custom path supplied with `WEBRTC_FRAMEWORK_DIR`.
+- Optional Qt migration track: Qt 6.5 or newer with Widgets, Network, and WebSockets modules plus CMake 3.21 or newer.
 
 ## Build
 
@@ -76,6 +77,24 @@ make clean
 ```
 
 Removes the `build/` directory and all compiled artifacts.
+
+## Qt 6 Migration Track
+
+The Qt port lives side-by-side under `qt/` while the AppKit app remains the shipping build.
+
+Configure and build the Qt app:
+
+```sh
+make qt-build
+```
+
+Run the Qt app:
+
+```sh
+make qt-run
+```
+
+The Qt target currently provides the cross-platform application shell, persistent window state, and the primary navigation surfaces that match the existing authentication, library, store, settings, and streaming flow. Service and WebRTC parity can be ported into this target incrementally without disrupting the native macOS build.
 
 ## Core Flow
 

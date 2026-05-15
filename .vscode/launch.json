@@ -1,15 +1,23 @@
- {
+{
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Debug",
+            "name": "Debug AppKit",
             "type": "lldb",
             "request": "launch",
             "program": "${workspaceFolder}/build/OpenNOW",
             "args": [],
             "cwd": "${workspaceFolder}",
-            "preLaunchTask": "build",
-
+            "preLaunchTask": "build"
+        },
+        {
+            "name": "Debug Qt",
+            "type": "lldb",
+            "request": "launch",
+            "program": "${workspaceFolder}/build/qt/OpenNOW-Qt.app/Contents/MacOS/OpenNOW-Qt",
+            "args": [],
+            "cwd": "${workspaceFolder}",
+            "preLaunchTask": "qt-build"
         }
     ]
 }
