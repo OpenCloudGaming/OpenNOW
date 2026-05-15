@@ -3,6 +3,7 @@ import type {
   NativeStreamerBackend,
   NativeStreamStats,
   NativeRenderSurface,
+  NativeStreamerShortcutAction,
   NativeStreamerSessionContext,
   NativeVideoTransition,
   NativeVideoBackendCapability,
@@ -113,6 +114,10 @@ export type NativeStreamerEvent =
   | {
       type: "input-ready";
       protocolVersion: number;
+    }
+  | {
+      type: "shortcut";
+      action: NativeStreamerShortcutAction;
     }
   | {
       type: "video-stall";

@@ -17,6 +17,7 @@ mod gstreamer_platform;
 mod gstreamer_transitions;
 mod input;
 mod protocol;
+mod shortcuts;
 mod sdp;
 
 use serde::Serialize;

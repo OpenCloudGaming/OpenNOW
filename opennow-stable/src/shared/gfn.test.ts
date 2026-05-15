@@ -139,6 +139,16 @@ test("buildNativeStreamerSessionContext forwards requested/finalized streaming f
         forceQueueMode: "adaptive",
       },
     },
+    {
+      toggleStats: "F3",
+      togglePointerLock: "F8",
+      toggleFullscreen: "F10",
+      stopStream: "Ctrl+Shift+Q",
+      toggleAntiAfk: "Ctrl+Shift+K",
+      toggleMicrophone: "Ctrl+Shift+M",
+      screenshot: "F11",
+      toggleRecording: "F12",
+    },
   );
 
   assert.deepEqual(context.session.requestedStreamingFeatures, {
@@ -158,6 +168,7 @@ test("buildNativeStreamerSessionContext forwards requested/finalized streaming f
   assert.equal(context.session.negotiatedStreamProfile?.codec, "H265");
   assert.equal(context.settings.enableCloudGsync, false);
   assert.equal(context.settings.nativeTransitionDiagnostics?.forceQueueMode, "adaptive");
+  assert.equal(context.shortcuts.toggleRecording, "F12");
 });
 
 test("normalizes native stream client mode to web on non-Windows platforms", () => {

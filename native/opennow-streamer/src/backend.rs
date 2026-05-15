@@ -492,7 +492,7 @@ fn preferred_hevc_profile_id(color_quality: ColorQuality) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::{ColorQuality, SessionInfo, StreamSettings};
+    use crate::protocol::{ColorQuality, NativeStreamerShortcutBindings, SessionInfo, StreamSettings};
 
     fn context(resolution: &str) -> NativeStreamerSessionContext {
         NativeStreamerSessionContext {
@@ -516,6 +516,7 @@ mod tests {
                 enable_cloud_gsync: false,
                 native_transition_diagnostics: None,
             },
+            shortcuts: NativeStreamerShortcutBindings::default(),
         }
     }
 

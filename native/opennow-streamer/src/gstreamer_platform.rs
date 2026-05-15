@@ -1,7 +1,7 @@
 #[cfg(target_os = "windows")]
 use crate::gstreamer_backend::send_log;
 #[cfg(target_os = "windows")]
-use crate::protocol::NativeRenderRect;
+use crate::protocol::{NativeRenderRect, NativeStreamerShortcutBindings};
 use crate::protocol::{Event, NativeRenderSurface};
 #[cfg(target_os = "windows")]
 use gst_video::prelude::*;
@@ -98,8 +98,32 @@ pub(crate) fn start_external_renderer_window_guard(
 }
 
 #[cfg(target_os = "windows")]
+pub(crate) fn set_native_shortcut_bindings(bindings: &NativeStreamerShortcutBindings) {
+    unsafe {
+        win32_renderer_window::set_shortcut_bindings(bindings.clone());
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+pub(crate) fn set_native_shortcut_bindings(_bindings: &NativeStreamerShortcutBindings) {
+}
+
+#[cfg(target_os = "windows")]
+pub(crate) fn clear_native_shortcut_bindings() {
+    unsafe {
+        win32_renderer_window::clear_shortcut_bindings();
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+pub(crate) fn clear_native_shortcut_bindings() {
+}
+
+#[cfg(target_os = "windows")]
 pub(crate) mod win32_renderer_window {
     use crate::gstreamer_input::NativeWindowInputEvent;
+    use crate::protocol::{NativeStreamerShortcutAction, NativeStreamerShortcutBindings};
+    use crate::shortcuts::NativeShortcutMatcher;
     use std::collections::HashMap;
     use std::ffi::c_void;
     use std::ptr::{null, null_mut};
@@ -270,6 +294,7 @@ pub(crate) mod win32_renderer_window {
     struct PressedKey {
         keycode: u16,
         scancode: u16,
+        suppressed: bool,
     }
 
     #[derive(Clone, Copy)]
@@ -282,11 +307,13 @@ pub(crate) mod win32_renderer_window {
         OnceLock::new();
     static ORIGINAL_WNDPROCS: OnceLock<Mutex<HashMap<isize, isize>>> = OnceLock::new();
     static CAPTURED_HWND: OnceLock<Mutex<Option<isize>>> = OnceLock::new();
+    static PROTECTED_HWND: OnceLock<Mutex<Option<isize>>> = OnceLock::new();
     static PRESSED_KEYS: OnceLock<Mutex<HashMap<u16, PressedKey>>> = OnceLock::new();
     static STARTED_AT: OnceLock<Instant> = OnceLock::new();
     static ESCAPE_HOLD_HWND: OnceLock<Mutex<Option<isize>>> = OnceLock::new();
     static ESCAPE_HOLD_TOKEN: OnceLock<AtomicU64> = OnceLock::new();
     static ESCAPE_KEY_PRESS: OnceLock<Mutex<Option<EscapeKeyPress>>> = OnceLock::new();
+    static SHORTCUT_MATCHER: OnceLock<Mutex<NativeShortcutMatcher>> = OnceLock::new();
 
     #[link(name = "user32")]
     unsafe extern "system" {
@@ -348,6 +375,20 @@ pub(crate) mod win32_renderer_window {
         let slot = INPUT_EVENT_SENDER.get_or_init(|| Mutex::new(None));
         if let Ok(mut current) = slot.lock() {
             *current = sender;
+        }
+    }
+
+    pub unsafe fn set_shortcut_bindings(bindings: NativeStreamerShortcutBindings) {
+        let matcher = SHORTCUT_MATCHER.get_or_init(|| Mutex::new(NativeShortcutMatcher::default()));
+        if let Ok(mut current) = matcher.lock() {
+            *current = NativeShortcutMatcher::from_bindings(&bindings);
+        }
+    }
+
+    pub unsafe fn clear_shortcut_bindings() {
+        let matcher = SHORTCUT_MATCHER.get_or_init(|| Mutex::new(NativeShortcutMatcher::default()));
+        if let Ok(mut current) = matcher.lock() {
+            *current = NativeShortcutMatcher::default();
         }
     }
 
@@ -427,6 +468,11 @@ pub(crate) mod win32_renderer_window {
     }
 
     unsafe fn protect_renderer_window(hwnd: Hwnd) -> bool {
+        let protected_slot = PROTECTED_HWND.get_or_init(|| Mutex::new(None));
+        if let Ok(mut protected) = protected_slot.lock() {
+            *protected = Some(hwnd as isize);
+        }
+
         let mut configured = false;
         let current = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
         let desired = current & !(WS_EX_NOACTIVATE | WS_EX_TRANSPARENT);
@@ -633,6 +679,12 @@ pub(crate) mod win32_renderer_window {
 
     fn captured_hwnd() -> Option<isize> {
         CAPTURED_HWND
+            .get()
+            .and_then(|captured| captured.lock().ok().and_then(|captured| *captured))
+    }
+
+    fn protected_hwnd() -> Option<isize> {
+        PROTECTED_HWND
             .get()
             .and_then(|captured| captured.lock().ok().and_then(|captured| *captured))
     }
@@ -883,17 +935,34 @@ pub(crate) mod win32_renderer_window {
             handle_escape_keyboard_state(scancode, pressed);
             return;
         }
-        let was_present = keys.contains_key(&scancode);
+        let previous = keys.get(&scancode).copied();
         if pressed {
-            if was_present {
+            if previous.is_some() {
                 return;
             }
-            keys.insert(scancode, PressedKey { keycode, scancode });
+            let modifiers = current_modifier_flags(&keys);
+            if let Some(action) = shortcut_action_for_keypress(keycode, modifiers) {
+                keys.insert(scancode, PressedKey {
+                    keycode,
+                    scancode,
+                    suppressed: true,
+                });
+                drop(keys);
+                handle_shortcut_action(action);
+                return;
+            }
+            keys.insert(scancode, PressedKey {
+                keycode,
+                scancode,
+                suppressed: false,
+            });
         } else {
-            if !was_present {
+            let Some(previous) = keys.remove(&scancode) else {
+                return;
+            };
+            if previous.suppressed {
                 return;
             }
-            keys.remove(&scancode);
         }
         let modifiers = current_modifier_flags(&keys);
         drop(keys);
@@ -981,6 +1050,9 @@ pub(crate) mod win32_renderer_window {
 
         let timestamp_us = timestamp_us();
         for key in pressed {
+            if key.suppressed {
+                continue;
+            }
             emit_input_event(NativeWindowInputEvent::Key {
                 pressed: false,
                 keycode: key.keycode,
@@ -1067,6 +1139,32 @@ pub(crate) mod win32_renderer_window {
         keys.values()
             .any(|key| matches!(key.keycode, VK_LMENU | VK_RMENU | VK_MENU))
             || ((GetKeyState(VK_MENU as i32) as u16) & 0x8000) != 0
+    }
+
+    fn shortcut_action_for_keypress(
+        keycode: u16,
+        modifiers: u16,
+    ) -> Option<NativeStreamerShortcutAction> {
+        SHORTCUT_MATCHER
+            .get()
+            .and_then(|matcher| matcher.lock().ok())
+            .and_then(|matcher| matcher.match_keydown(keycode, modifiers))
+    }
+
+    unsafe fn handle_shortcut_action(action: NativeStreamerShortcutAction) {
+        match action {
+            NativeStreamerShortcutAction::TogglePointerLock => {
+                if let Some(hwnd) = captured_hwnd().or_else(protected_hwnd) {
+                    let hwnd = hwnd as Hwnd;
+                    if is_input_captured(hwnd) {
+                        release_input_capture(hwnd);
+                    } else {
+                        begin_input_capture(hwnd);
+                    }
+                }
+            }
+            _ => emit_input_event(NativeWindowInputEvent::Shortcut { action }),
+        }
     }
 
     fn legacy_mouse_button(message: Uint, wparam: Wparam) -> Option<(u8, bool)> {
