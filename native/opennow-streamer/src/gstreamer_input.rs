@@ -7,6 +7,8 @@ use crate::input::{
     GamepadInput, KeyboardPayload, MouseButtonPayload, MouseMovePayload, MouseWheelPayload,
     GAMEPAD_MAX_CONTROLLERS, PARTIALLY_RELIABLE_GAMEPAD_MASK_ALL,
 };
+#[cfg(target_os = "windows")]
+use crate::protocol::NativeStreamerShortcutAction;
 use crate::protocol::Event;
 use gst::glib;
 use gst::prelude::*;
@@ -98,6 +100,9 @@ impl GstreamerInputState {
 #[cfg(target_os = "windows")]
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum NativeWindowInputEvent {
+    Shortcut {
+        action: NativeStreamerShortcutAction,
+    },
     Key {
         pressed: bool,
         keycode: u16,
@@ -321,6 +326,7 @@ impl NativeWindowInputBridge {
                         send_native_window_input_events(
                             &input_thread_state,
                             &input_thread_channels,
+                            &thread_sender,
                             &pending_events,
                         );
                         if disconnected {
@@ -377,6 +383,7 @@ impl Drop for NativeWindowInputBridge {
 fn send_native_window_input_events(
     input_state: &GstreamerInputState,
     input_channels: &GstreamerInputChannels,
+    event_sender: &Option<Sender<Event>>,
     events: &[NativeWindowInputEvent],
 ) {
     if events.is_empty() || !input_state.ready.load(Ordering::SeqCst) {
@@ -404,7 +411,7 @@ fn send_native_window_input_events(
         }
 
         flush_pending_mouse_move(&encoder, input_channels, &mut pending_mouse_move);
-        send_encoded_native_window_input_event(&encoder, input_channels, event);
+        send_encoded_native_window_input_event(&encoder, input_channels, event_sender, event);
     }
     flush_pending_mouse_move(&encoder, input_channels, &mut pending_mouse_move);
 }
@@ -437,9 +444,16 @@ fn flush_pending_mouse_move(
 fn send_encoded_native_window_input_event(
     encoder: &InputEncoder,
     input_channels: &GstreamerInputChannels,
+    event_sender: &Option<Sender<Event>>,
     event: NativeWindowInputEvent,
 ) {
     let (payload, partially_reliable) = match event {
+        NativeWindowInputEvent::Shortcut { action } => {
+            if let Some(sender) = event_sender.as_ref() {
+                let _ = sender.send(Event::Shortcut { action });
+            }
+            return;
+        }
         NativeWindowInputEvent::Key {
             pressed,
             keycode,

@@ -1172,6 +1172,11 @@ export class NativeStreamerManager {
       return;
     }
 
+    if (message.type === "shortcut") {
+      this.options.emit({ type: "native-shortcut", action: message.action });
+      return;
+    }
+
     if (message.type === "video-stall") {
       const formatAge = (value: number | undefined): string => value === undefined ? "n/a" : `${value}ms`;
       const stats = [

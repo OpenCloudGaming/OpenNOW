@@ -33,6 +33,8 @@ pub struct CommandEnvelope {
 pub struct NativeStreamerSessionContext {
     pub session: SessionInfo,
     pub settings: StreamSettings,
+    #[serde(default)]
+    pub shortcuts: NativeStreamerShortcutBindings,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -266,6 +268,40 @@ pub struct NativeRenderRect {
     pub height: i32,
 }
 
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeStreamerShortcutBindings {
+    #[serde(default)]
+    pub toggle_stats: String,
+    #[serde(default)]
+    pub toggle_pointer_lock: String,
+    #[serde(default)]
+    pub toggle_fullscreen: String,
+    #[serde(default)]
+    pub stop_stream: String,
+    #[serde(default)]
+    pub toggle_anti_afk: String,
+    #[serde(default)]
+    pub toggle_microphone: String,
+    #[serde(default)]
+    pub screenshot: String,
+    #[serde(default)]
+    pub toggle_recording: String,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum NativeStreamerShortcutAction {
+    ToggleStats,
+    TogglePointerLock,
+    ToggleFullscreen,
+    StopStream,
+    ToggleAntiAfk,
+    ToggleMicrophone,
+    Screenshot,
+    ToggleRecording,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct NativeStreamerCapabilities {
     #[serde(rename = "protocolVersion")]
@@ -483,6 +519,10 @@ pub enum Event {
     InputReady {
         #[serde(rename = "protocolVersion")]
         protocol_version: u16,
+    },
+    #[serde(rename = "shortcut")]
+    Shortcut {
+        action: NativeStreamerShortcutAction,
     },
     #[serde(rename = "video-stall")]
     VideoStall(VideoStallEvent),
