@@ -1504,7 +1504,7 @@ using namespace OPN;
 - (void)startFeaturedStoreRotationIfNeeded {
     [self stopFeaturedStoreRotation];
     if (_featuredStoreGames.size() < 2) return;
-    self.featuredStoreRotationTimer = [NSTimer scheduledTimerWithTimeInterval:7.0
+    self.featuredStoreRotationTimer = [NSTimer scheduledTimerWithTimeInterval:15.0
                                                                        target:self
                                                                      selector:@selector(featuredStoreRotationTimerFired:)
                                                                      userInfo:nil
@@ -2354,8 +2354,17 @@ using namespace OPN;
     if (game.playabilityState.length() > 0) [meta addObject:OPNCatalogDisplayString(game.playabilityState, @"")];
     self.controllerCategoryPreviewMetaLabel.stringValue = [meta componentsJoinedByString:@"  /  "];
     NSString *description = OPNCatalogString(game.description, @"");
+    if (description.length == 0) {
+        NSString *identifier = [self favoriteIdentifierForGame:game];
+        for (const OPN::GameInfo &catalogGame : _allGames) {
+            NSString *candidate = [self favoriteIdentifierForGame:catalogGame];
+            if (identifier.length == 0 || ![identifier isEqualToString:candidate]) continue;
+            description = OPNCatalogString(catalogGame.description, @"");
+            break;
+        }
+    }
     if (description.length == 0) description = OPNCatalogJoinedStrings(game.featureLabels, @"");
-    self.controllerCategoryPreviewDescriptionLabel.stringValue = description.length > 0 ? description : @"Featured from the Store rotation.";
+    self.controllerCategoryPreviewDescriptionLabel.stringValue = description;
 
     NSArray<NSString *> *candidates = OPNControllerCategoryArtworkCandidates(game);
     NSString *expectedURL = candidates.count > 0 ? candidates.firstObject : @"";
