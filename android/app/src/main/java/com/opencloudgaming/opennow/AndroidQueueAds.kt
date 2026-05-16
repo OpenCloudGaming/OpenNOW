@@ -45,3 +45,15 @@ internal fun mergeQueueSessionState(
         mediaConnectionInfo = next.mediaConnectionInfo ?: previous.mediaConnectionInfo,
     )
 }
+
+internal fun removeSessionAdItem(adState: SessionAdState?, adId: String): SessionAdState? {
+    if (adState == null) return null
+    return adState.copy(
+        sessionAds = adState.sessionAds.filterNot { it.adId == adId },
+        ads = adState.ads.filterNot { it.adId == adId },
+        serverSentEmptyAds = false,
+    )
+}
+
+internal fun removeSessionAdItem(session: SessionInfo, adId: String): SessionInfo =
+    session.copy(adState = removeSessionAdItem(session.adState, adId))

@@ -104,6 +104,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.focus.FocusDirection
 import androidx.compose.ui.focus.FocusManager
 import androidx.compose.ui.focus.FocusRequester
@@ -127,6 +128,8 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
@@ -1733,36 +1736,11 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
         } else if (!streamReady) {
             QueueLoadingScreen(state, viewModel)
         } else {
-            AndroidView(
-                modifier = Modifier.fillMaxSize(),
-                factory = { ctx ->
-                    client.createRenderer(ctx).apply {
-                        isFocusable = true
-                        isFocusableInTouchMode = true
-                        requestFocus()
-                    }
-                },
-                update = { renderer ->
-                    renderer.isFocusable = true
-                    renderer.isFocusableInTouchMode = true
-                    renderer.setOnKeyListener { _, _, event -> client.dispatchKey(event) }
-                    renderer.setOnGenericMotionListener { _, event -> client.dispatchMotion(event) }
-                    renderer.setOnTouchListener { view, event ->
-                        NativeStreamInputRouter.dispatchTouch(event, view.width, view.height)
-                    }
-                    if (Build.VERSION.SDK_INT >= 26) {
-                        if (state.settings.mouseCapture) {
-                            renderer.requestPointerCapture()
-                        } else if (renderer.hasPointerCapture()) {
-                            renderer.releasePointerCapture()
-                        }
-                    }
-                    renderer.requestFocus()
-                },
-            )
-            FingerMouseInputLayer(
-                enabled = state.settings.androidTouch.mousePad,
-                modifier = Modifier.matchParentSize(),
+            StreamVideoSurface(
+                client = client,
+                settings = streamSettings,
+                mouseCapture = state.settings.mouseCapture,
+                touchMouseEnabled = state.settings.androidTouch.mousePad,
             )
             if (statsVisible) {
                 StreamStatsPill(
@@ -1880,6 +1858,72 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
 }
 
 @Composable
+private fun StreamVideoSurface(
+    client: NativeStreamClient,
+    settings: StreamSettings,
+    mouseCapture: Boolean,
+    touchMouseEnabled: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    val (streamWidth, streamHeight) = streamResolutionPixels(settings)
+    val streamAspect = (streamWidth.toFloat() / streamHeight.toFloat()).takeIf { it.isFinite() && it > 0f } ?: (16f / 9f)
+    BoxWithConstraints(
+        modifier
+            .fillMaxSize()
+            .background(Color.Black),
+        contentAlignment = Alignment.Center,
+    ) {
+        val containerAspect = if (maxHeight.value > 0f) maxWidth.value / maxHeight.value else streamAspect
+        val viewportModifier = if (containerAspect > streamAspect) {
+            Modifier
+                .fillMaxHeight()
+                .aspectRatio(streamAspect)
+        } else {
+            Modifier
+                .fillMaxWidth()
+                .aspectRatio(streamAspect)
+        }
+        Box(
+            viewportModifier
+                .clipToBounds()
+                .background(Color.Black),
+        ) {
+            AndroidView(
+                modifier = Modifier.fillMaxSize(),
+                factory = { ctx ->
+                    client.createRenderer(ctx).apply {
+                        isFocusable = true
+                        isFocusableInTouchMode = true
+                        requestFocus()
+                    }
+                },
+                update = { renderer ->
+                    renderer.isFocusable = true
+                    renderer.isFocusableInTouchMode = true
+                    renderer.setOnKeyListener { _, _, event -> client.dispatchKey(event) }
+                    renderer.setOnGenericMotionListener { _, event -> client.dispatchMotion(event) }
+                    renderer.setOnTouchListener { view, event ->
+                        NativeStreamInputRouter.dispatchTouch(event, view.width, view.height)
+                    }
+                    if (Build.VERSION.SDK_INT >= 26) {
+                        if (mouseCapture) {
+                            renderer.requestPointerCapture()
+                        } else if (renderer.hasPointerCapture()) {
+                            renderer.releasePointerCapture()
+                        }
+                    }
+                    renderer.requestFocus()
+                },
+            )
+            FingerMouseInputLayer(
+                enabled = touchMouseEnabled,
+                modifier = Modifier.matchParentSize(),
+            )
+        }
+    }
+}
+
+@Composable
 private fun FingerMouseInputLayer(enabled: Boolean, modifier: Modifier = Modifier) {
     if (!enabled) return
     var width by remember { mutableStateOf(0) }
@@ -1938,7 +1982,17 @@ private fun StreamControlLauncher(
     modifier: Modifier = Modifier,
 ) {
     Row(
-        modifier.padding(top = 10.dp, end = 10.dp),
+        modifier
+            .padding(top = 10.dp, end = 10.dp)
+            .onGloballyPositioned { coordinates ->
+                val bounds = coordinates.boundsInRoot()
+                NativeStreamInputRouter.setUiTouchPassthroughBounds(
+                    bounds.left.roundToInt(),
+                    bounds.top.roundToInt(),
+                    bounds.right.roundToInt(),
+                    bounds.bottom.roundToInt(),
+                )
+            },
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -1963,6 +2017,12 @@ private fun StreamControlLauncher(
         }
         OutlinedButton(onClick = onExit, contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)) {
             Text("Exit")
+        }
+    }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            NativeStreamInputRouter.clearUiTouchPassthroughBounds()
         }
     }
 }
@@ -2260,61 +2320,168 @@ private fun QueueLoadingScreen(state: OpenNowUiState, viewModel: OpenNowViewMode
         ?: ad?.adUrl
         ?: ad?.mediaUrl
     val queueCopy = queueLaunchStatusText(state)
-    Column(
+    val hasPlayableAd = ad != null && mediaUrl != null
+
+    BoxWithConstraints(
         Modifier
             .fillMaxSize()
             .padding(18.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        val useLandscapeAdLayout = hasPlayableAd && maxWidth > maxHeight
+
+        if (useLandscapeAdLayout) {
+            Row(
+                Modifier.fillMaxSize(),
+                horizontalArrangement = Arrangement.spacedBy(18.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                QueueStatusPanel(
+                    game = game,
+                    queueCopy = queueCopy,
+                    error = state.error,
+                    compact = true,
+                    onMinimize = viewModel::minimizeStreamLaunch,
+                    onCancel = viewModel::stopStream,
+                    modifier = Modifier.weight(1f),
+                )
+                QueueAdPanel(
+                    ad = ad,
+                    mediaUrl = mediaUrl,
+                    viewModel = viewModel,
+                    modifier = Modifier.weight(1f),
+                    playerModifier = Modifier
+                        .fillMaxWidth()
+                        .aspectRatio(16f / 9f),
+                )
+            }
+        } else {
+            Column(
+                Modifier.fillMaxSize(),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center,
+            ) {
+                QueueStatusPanel(
+                    game = game,
+                    queueCopy = queueCopy,
+                    error = state.error,
+                    compact = false,
+                    onMinimize = viewModel::minimizeStreamLaunch,
+                    onCancel = viewModel::stopStream,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                if (hasPlayableAd) {
+                    Spacer(Modifier.height(18.dp))
+                    QueueAdPanel(
+                        ad = ad,
+                        mediaUrl = mediaUrl,
+                        viewModel = viewModel,
+                        modifier = Modifier.fillMaxWidth(),
+                        playerModifier = Modifier
+                            .fillMaxWidth(0.8f)
+                            .height(220.dp),
+                    )
+                } else if (isSessionAdsRequired(session?.adState)) {
+                    Spacer(Modifier.height(12.dp))
+                    Text(session?.adState?.message ?: "Ad is required before the queue can continue.", color = TextMuted)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun QueueStatusPanel(
+    game: GameInfo?,
+    queueCopy: String,
+    error: String?,
+    compact: Boolean,
+    onMinimize: () -> Unit,
+    onCancel: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        modifier,
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
+        val imageWidth = if (compact) 76.dp else 96.dp
+        val imageHeight = if (compact) 102.dp else 128.dp
         UrlImage(
             game?.imageUrl,
             Modifier
-                .width(96.dp)
-                .height(128.dp)
+                .width(imageWidth)
+                .height(imageHeight)
                 .clip(RoundedCornerShape(14.dp)),
         )
-        Spacer(Modifier.height(16.dp))
-        Text(game?.title ?: "Starting stream", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+        Spacer(Modifier.height(if (compact) 12.dp else 16.dp))
+        Text(
+            game?.title ?: "Starting stream",
+            style = if (compact) MaterialTheme.typography.titleLarge else MaterialTheme.typography.headlineSmall,
+            fontWeight = FontWeight.Bold,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            textAlign = TextAlign.Center,
+        )
         Text(
             queueCopy,
             color = TextMuted,
+            textAlign = TextAlign.Center,
         )
-        Spacer(Modifier.height(18.dp))
-        LinearProgressIndicator(Modifier.fillMaxWidth(0.7f))
+        Spacer(Modifier.height(if (compact) 14.dp else 18.dp))
+        LinearProgressIndicator(Modifier.fillMaxWidth(if (compact) 0.9f else 0.7f))
         Spacer(Modifier.height(12.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            OutlinedButton(onClick = viewModel::minimizeStreamLaunch) { Text("Minimize") }
-            OutlinedButton(onClick = viewModel::stopStream) { Text("Cancel launch") }
+        Row(
+            Modifier.fillMaxWidth(if (compact) 0.92f else 0.7f),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            OutlinedButton(onClick = onMinimize, modifier = Modifier.weight(1f)) {
+                Text("Minimize", maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+            OutlinedButton(onClick = onCancel, modifier = Modifier.weight(1f)) {
+                Text("Cancel launch", maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
         }
-        if (ad != null && mediaUrl != null) {
-            Spacer(Modifier.height(18.dp))
-            QueueAdPlayer(
-                url = mediaUrl,
-                onStarted = { viewModel.reportQueueAd(ad.adId, "start") },
-                onPaused = { viewModel.reportQueueAd(ad.adId, "pause") },
-                onResumed = { viewModel.reportQueueAd(ad.adId, "resume") },
-                onFinished = { watchedTimeInMs ->
-                    viewModel.reportQueueAd(ad.adId, "finish", watchedTimeInMs = watchedTimeInMs)
-                },
-                onError = { watchedTimeInMs ->
-                    viewModel.reportQueueAd(
-                        ad.adId,
-                        "cancel",
-                        watchedTimeInMs = watchedTimeInMs,
-                        cancelReason = "error",
-                        errorInfo = "Error loading url",
-                    )
-                },
-            )
-        } else if (isSessionAdsRequired(session?.adState)) {
+        error?.let {
             Spacer(Modifier.height(12.dp))
-            Text(session?.adState?.message ?: "Ad is required before the queue can continue.", color = TextMuted)
+            Text(it, color = Color(0xffff9f9f), textAlign = TextAlign.Center)
         }
-        state.error?.let {
-            Spacer(Modifier.height(12.dp))
-            Text(it, color = Color(0xffff9f9f))
-        }
+    }
+}
+
+@Composable
+private fun QueueAdPanel(
+    ad: SessionAdInfo,
+    mediaUrl: String,
+    viewModel: OpenNowViewModel,
+    modifier: Modifier = Modifier,
+    playerModifier: Modifier = Modifier,
+) {
+    Column(
+        modifier,
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+    ) {
+        QueueAdPlayer(
+            adId = ad.adId,
+            url = mediaUrl,
+            modifier = playerModifier,
+            onStarted = { viewModel.reportQueueAd(ad.adId, "start") },
+            onPaused = { viewModel.reportQueueAd(ad.adId, "pause") },
+            onResumed = { viewModel.reportQueueAd(ad.adId, "resume") },
+            onFinished = { watchedTimeInMs ->
+                viewModel.reportQueueAd(ad.adId, "finish", watchedTimeInMs = watchedTimeInMs)
+            },
+            onError = { watchedTimeInMs ->
+                viewModel.reportQueueAd(
+                    ad.adId,
+                    "cancel",
+                    watchedTimeInMs = watchedTimeInMs,
+                    cancelReason = "error",
+                    errorInfo = "Error loading url",
+                )
+            },
+        )
     }
 }
 
@@ -2358,7 +2525,9 @@ private fun MinimizedQueuePill(
 
 @Composable
 private fun QueueAdPlayer(
+    adId: String,
     url: String,
+    modifier: Modifier = Modifier,
     onStarted: () -> Unit,
     onPaused: () -> Unit,
     onResumed: () -> Unit,
@@ -2367,7 +2536,7 @@ private fun QueueAdPlayer(
 ) {
     val context = LocalContext.current
     var muted by remember { mutableStateOf(false) }
-    val player = remember(url) {
+    val player = remember(adId, url) {
         ExoPlayer.Builder(context).build().apply {
             setMediaItem(MediaItem.fromUri(url))
             volume = if (muted) 0f else 1f
@@ -2375,11 +2544,11 @@ private fun QueueAdPlayer(
             playWhenReady = true
         }
     }
-    var reportedStart by remember(url) { mutableStateOf(false) }
-    var reportedFinish by remember(url) { mutableStateOf(false) }
-    var reportedPause by remember(url) { mutableStateOf(false) }
-    var playing by remember(url) { mutableStateOf(player.playWhenReady) }
-    var controlsVisible by remember(url) { mutableStateOf(false) }
+    var reportedStart by remember(adId, url) { mutableStateOf(false) }
+    var reportedFinish by remember(adId, url) { mutableStateOf(false) }
+    var reportedPause by remember(adId, url) { mutableStateOf(false) }
+    var playing by remember(adId, url) { mutableStateOf(player.playWhenReady) }
+    var controlsVisible by remember(adId, url) { mutableStateOf(false) }
     LaunchedEffect(controlsVisible, playing) {
         if (controlsVisible && playing) {
             delay(2400L)
@@ -2423,15 +2592,15 @@ private fun QueueAdPlayer(
             }
         }
         player.addListener(listener)
+        listener.onIsPlayingChanged(player.isPlaying)
+        listener.onPlaybackStateChanged(player.playbackState)
         onDispose {
             player.removeListener(listener)
             player.release()
         }
     }
     Box(
-        modifier = Modifier
-            .fillMaxWidth(0.8f)
-            .height(220.dp)
+        modifier = modifier
             .clip(RoundedCornerShape(8.dp))
             .clickable { controlsVisible = true },
     ) {

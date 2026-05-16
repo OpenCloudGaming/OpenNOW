@@ -14,8 +14,9 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import okhttp3.OkHttpClient
-import kotlin.math.roundToInt
 
 enum class AppPage {
     Home,
@@ -74,6 +75,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     private val subscriptionRepository = GfnSubscriptionRepository(http)
     private val printedWasteRepository = PrintedWasteRepository(http)
     private val sessionRepository = GfnSessionRepository(authStore, http)
+    private val queueAdReportMutex = Mutex()
 
     private val _state = MutableStateFlow(OpenNowUiState(settings = settingsStore.settings.value))
     val state: StateFlow<OpenNowUiState> = _state.asStateFlow()
@@ -635,35 +637,47 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             val auth = state.value.authSession ?: return@launch
             val session = state.value.streamSession ?: return@launch
             val normalizedAction = action.lowercase()
-            if (normalizedAction == "finish" || normalizedAction == "cancel") {
-                _state.update {
-                    it.copy(queueAdActiveId = nextQueueAdId(session, adId))
-                }
-            } else {
+            val isTerminalAction = normalizedAction == "finish" || normalizedAction == "cancel"
+            if (!isTerminalAction) {
                 _state.update {
                     it.copy(queueAdActiveId = adId)
                 }
             }
             runCatching {
-                sessionRepository.reportSessionAd(
-                    token = auth.tokens.idToken ?: auth.tokens.accessToken,
-                    session = session,
-                    adId = adId,
-                    action = normalizedAction,
-                    settings = state.value.settings.stream,
-                    watchedTimeInMs = watchedTimeInMs,
-                    pausedTimeInMs = pausedTimeInMs ?: 0L,
-                    cancelReason = cancelReason,
-                    errorInfo = errorInfo,
-                )
+                queueAdReportMutex.withLock {
+                    val reportSession = state.value.streamSession
+                        ?.takeIf { it.sessionId == session.sessionId }
+                        ?: session
+                    val nextAdId = nextQueueAdId(reportSession, adId)
+                    if (isTerminalAction) {
+                        _state.update { current ->
+                            val currentSession = current.streamSession
+                            if (currentSession?.sessionId == reportSession.sessionId) {
+                                current.copy(
+                                    streamSession = removeSessionAdItem(currentSession, adId),
+                                    queueAdActiveId = nextAdId,
+                                )
+                            } else {
+                                current.copy(queueAdActiveId = nextAdId)
+                            }
+                        }
+                    }
+                    sessionRepository.reportSessionAd(
+                        token = auth.tokens.idToken ?: auth.tokens.accessToken,
+                        session = reportSession,
+                        adId = adId,
+                        action = normalizedAction,
+                        settings = state.value.settings.stream,
+                        watchedTimeInMs = watchedTimeInMs,
+                        pausedTimeInMs = pausedTimeInMs ?: 0L,
+                        cancelReason = cancelReason,
+                        errorInfo = errorInfo,
+                    )
+                }
             }.onSuccess { updated ->
                 _state.update { current ->
                     val previous = current.streamSession?.takeIf { it.sessionId == updated.sessionId } ?: session
-                    val merged = mergeQueueSessionState(
-                        previous,
-                        updated,
-                        preserveMissingAdState = normalizedAction != "finish" && normalizedAction != "cancel",
-                    )
+                    val merged = mergeQueueSessionState(previous, updated)
                     current.copy(
                         streamSession = merged,
                         queuePosition = merged.queuePosition?.takeIf { position -> position > 0 },
@@ -1112,38 +1126,19 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     }
 
     private fun StreamSettings.adjustedForDevice(report: RuntimeCodecReport?): StreamSettings {
-        val aspectMatched = fitToDisplayAspect()
         if (report?.lowPowerGpuProfile == true) {
-            return aspectMatched.copy(codec = VideoCodec.H264, colorQuality = ColorQuality.EightBit420, maxBitrateMbps = minOf(maxBitrateMbps, 25), fps = minOf(fps, 60))
+            return copy(codec = VideoCodec.H264, colorQuality = ColorQuality.EightBit420, maxBitrateMbps = minOf(maxBitrateMbps, 25), fps = minOf(fps, 60))
         }
         if (report?.androidTvProfile == true) {
-            return aspectMatched.copy(codec = VideoCodec.H264, colorQuality = ColorQuality.EightBit420, resolution = capResolution(aspectMatched.resolution, 1920, 1080), maxBitrateMbps = minOf(maxBitrateMbps, 35), fps = minOf(fps, 60))
+            return copy(codec = VideoCodec.H264, colorQuality = ColorQuality.EightBit420, resolution = capResolution(resolution, 1920, 1080), maxBitrateMbps = minOf(maxBitrateMbps, 35), fps = minOf(fps, 60))
         }
         val capability = report?.capabilities?.firstOrNull { it.codec == codec }
         val codecSafe = capability?.let { it.decoderAvailable && it.realtimeSafe } ?: (codec == VideoCodec.H264)
         return if (codec == VideoCodec.H264 && codecSafe) {
-            aspectMatched.copy(colorQuality = ColorQuality.EightBit420, maxBitrateMbps = minOf(maxBitrateMbps, 45), fps = minOf(fps, 60))
+            copy(colorQuality = ColorQuality.EightBit420, maxBitrateMbps = minOf(maxBitrateMbps, 45), fps = minOf(fps, 60))
         } else {
-            aspectMatched.copy(codec = VideoCodec.H264, colorQuality = ColorQuality.EightBit420, maxBitrateMbps = minOf(maxBitrateMbps, 35), fps = minOf(fps, 60))
+            copy(codec = VideoCodec.H264, colorQuality = ColorQuality.EightBit420, maxBitrateMbps = minOf(maxBitrateMbps, 35), fps = minOf(fps, 60))
         }
-    }
-
-    private fun StreamSettings.fitToDisplayAspect(): StreamSettings {
-        val displayMetrics = getApplication<Application>().resources.displayMetrics
-        val longSide = maxOf(displayMetrics.widthPixels, displayMetrics.heightPixels).coerceAtLeast(1)
-        val shortSide = minOf(displayMetrics.widthPixels, displayMetrics.heightPixels).coerceAtLeast(1)
-        val displayAspect = longSide.toFloat() / shortSide.toFloat()
-        if (displayAspect < 1.25f || displayAspect > 2.5f) return this
-
-        val baseWidth = resolution.substringBefore("x").toIntOrNull() ?: return this
-        val baseHeight = resolution.substringAfter("x").toIntOrNull() ?: return this
-        val fittedHeight = makeEven((baseWidth / displayAspect).roundToInt()).coerceAtLeast(360)
-        val (width, height) = if (fittedHeight <= baseHeight) {
-            baseWidth to fittedHeight
-        } else {
-            makeEven((baseHeight * displayAspect).roundToInt()).coerceAtLeast(640) to baseHeight
-        }
-        return copy(resolution = "${width}x$height", aspectRatio = "$width:$height")
     }
 
     private fun capResolution(value: String, maxWidth: Int, maxHeight: Int): String {
@@ -1151,8 +1146,6 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         val height = value.substringAfter("x").toIntOrNull() ?: return "${maxWidth}x$maxHeight"
         return if (width <= maxWidth && height <= maxHeight) value else "${maxWidth}x$maxHeight"
     }
-
-    private fun makeEven(value: Int): Int = if (value % 2 == 0) value else value + 1
 
     private fun shouldSendAccountLinked(game: GameInfo, variant: GameVariant?): Boolean {
         val store = variant?.store?.lowercase().orEmpty()

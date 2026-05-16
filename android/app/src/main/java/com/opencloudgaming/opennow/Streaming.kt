@@ -323,6 +323,10 @@ object NativeStreamInputRouter {
     private var captureAllTouch = false
     @Volatile
     private var systemMenuHandler: (() -> Unit)? = null
+    @Volatile
+    private var uiTouchPassthroughBounds: TouchPassthroughBounds? = null
+    @Volatile
+    private var uiTouchPassthroughActive = false
     private val touchMouseState = TouchMouseState()
 
     fun attach(next: NativeStreamClient) {
@@ -348,12 +352,22 @@ object NativeStreamInputRouter {
         systemMenuHandler = handler
     }
 
+    fun setUiTouchPassthroughBounds(left: Int, top: Int, right: Int, bottom: Int) {
+        uiTouchPassthroughBounds = TouchPassthroughBounds(left, top, right, bottom)
+    }
+
+    fun clearUiTouchPassthroughBounds() {
+        uiTouchPassthroughBounds = null
+        uiTouchPassthroughActive = false
+    }
+
     fun shouldForwardTouchBeforeViews(event: MotionEvent, width: Int, height: Int): Boolean =
         client != null &&
             touchMouseEnabled &&
             width > 0 &&
             height > 0 &&
-            event.pointerCount == 1
+            event.pointerCount == 1 &&
+            !shouldPassTouchToNativeUi(event)
 
     fun shouldCaptureTouchBeforeViews(event: MotionEvent, width: Int, height: Int): Boolean =
         shouldForwardTouchBeforeViews(event, width, height) &&
@@ -377,6 +391,41 @@ object NativeStreamInputRouter {
     private fun KeyEvent.isStreamSystemMenuKey(): Boolean =
         keyCode == KeyEvent.KEYCODE_BUTTON_MODE ||
             keyCode == KeyEvent.KEYCODE_MENU
+
+    private fun shouldPassTouchToNativeUi(event: MotionEvent): Boolean {
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                uiTouchPassthroughActive = uiTouchPassthroughBounds?.contains(event.x, event.y) == true
+                return uiTouchPassthroughActive
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                val wasActive = uiTouchPassthroughActive
+                uiTouchPassthroughActive = false
+                return wasActive
+            }
+            else -> if (uiTouchPassthroughActive) {
+                return true
+            }
+        }
+        return false
+    }
+
+    private data class TouchPassthroughBounds(
+        val left: Int,
+        val top: Int,
+        val right: Int,
+        val bottom: Int,
+    ) {
+        fun contains(x: Float, y: Float): Boolean =
+            x >= left - EDGE_SLOP_PX &&
+                x <= right + EDGE_SLOP_PX &&
+                y >= top - EDGE_SLOP_PX &&
+                y <= bottom + EDGE_SLOP_PX
+
+        companion object {
+            private const val EDGE_SLOP_PX = 24
+        }
+    }
 }
 
 object NativeInputDiagnostics {

@@ -147,6 +147,72 @@ class AndroidQueueAdsTest {
     }
 
     @Test
+    fun removeSessionAdItemDropsOnlyCompletedAd() {
+        val state = SessionAdState(
+            isAdsRequired = true,
+            sessionAdsRequired = true,
+            sessionAds = listOf(ad("ad-1"), ad("ad-2")),
+            ads = listOf(ad("ad-1"), ad("ad-2")),
+        )
+
+        val updated = removeSessionAdItem(state, "ad-1")
+
+        assertEquals(listOf("ad-2"), sessionAdItems(updated).map { it.adId })
+    }
+
+    @Test
+    fun mergeQueueSessionStatePreservesRemainingAdsAfterCompletedAdIsRemoved() {
+        val previous = session(
+            adState = SessionAdState(
+                isAdsRequired = true,
+                sessionAdsRequired = true,
+                sessionAds = listOf(ad("ad-1"), ad("ad-2")),
+                ads = listOf(ad("ad-1"), ad("ad-2")),
+            ),
+        )
+        val locallyAdvanced = removeSessionAdItem(previous, "ad-1")
+        val serverOmittedAds = session(
+            queuePosition = 5,
+            adState = SessionAdState(
+                isAdsRequired = true,
+                sessionAdsRequired = true,
+                serverSentEmptyAds = true,
+            ),
+        )
+
+        val merged = mergeQueueSessionState(locallyAdvanced, serverOmittedAds)
+
+        assertEquals(5, merged.queuePosition)
+        assertEquals(listOf("ad-2"), sessionAdItems(merged.adState).map { it.adId })
+    }
+
+    @Test
+    fun mergeQueueSessionStateDoesNotRestoreLastCompletedAdAfterLocalRemoval() {
+        val previous = session(
+            adState = SessionAdState(
+                isAdsRequired = true,
+                sessionAdsRequired = true,
+                sessionAds = listOf(ad("ad-1")),
+                ads = listOf(ad("ad-1")),
+            ),
+        )
+        val locallyCompleted = removeSessionAdItem(previous, "ad-1")
+        val serverOmittedAds = session(
+            queuePosition = 5,
+            adState = SessionAdState(
+                isAdsRequired = true,
+                sessionAdsRequired = true,
+                serverSentEmptyAds = true,
+            ),
+        )
+
+        val merged = mergeQueueSessionState(locallyCompleted, serverOmittedAds)
+
+        assertEquals(5, merged.queuePosition)
+        assertEquals(emptyList<SessionAdInfo>(), sessionAdItems(merged.adState))
+    }
+
+    @Test
     fun mergeQueueAdStateReturnsNullWhenNoPriorAdStateExists() {
         assertNull(mergeQueueAdState(null, null))
     }
