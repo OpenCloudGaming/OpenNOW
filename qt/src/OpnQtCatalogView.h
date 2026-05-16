@@ -5,6 +5,7 @@
 #include <QtCore/QString>
 #include <QtCore/QStringList>
 #include <QtCore/QSet>
+#include <QtCore/QTimer>
 #include <QtGui/QColor>
 #include <QtGui/QImage>
 #include <QtGui/QPixmap>
@@ -80,6 +81,9 @@ private:
     void drawFooter(QPainter &painter);
     void requestImage(const QString &url);
     const QPixmap *cachedImage(const QString &url) const;
+    void activatePointerLock();
+    void releasePointerLock();
+    QPointF pointerLockCenter() const;
 
     QList<CatalogFolder> m_folders;
     QString m_accountName = QStringLiteral("Player");
@@ -95,6 +99,9 @@ private:
     QSet<QString> m_pendingImages;
     QImage m_streamFrame;
     QPointF m_lastMousePosition;
+    bool m_pointerLocked = false;
+    bool m_ignoringPointerWarp = false;
+    QTimer m_pointerUnlockTimer;
     qreal m_backgroundPhase = 0.0;
     std::function<void(const CatalogGame &)> m_onLaunchRequested;
     std::function<void(quint16 keycode, quint16 scancode, quint16 modifiers, bool down)> m_onStreamKey;

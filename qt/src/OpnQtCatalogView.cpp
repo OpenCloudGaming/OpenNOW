@@ -185,6 +185,16 @@ CatalogView::CatalogView(QWidget *parent) : QWidget(parent), m_network(new QNetw
     setFocusPolicy(Qt::StrongFocus);
     setMouseTracking(true);
 
+    m_pointerUnlockTimer.setSingleShot(true);
+    m_pointerUnlockTimer.setInterval(500);
+    m_pointerUnlockTimer.setTimerType(Qt::PreciseTimer);
+    connect(&m_pointerUnlockTimer, &QTimer::timeout, this, [this]() {
+        if (!m_pointerLocked) return;
+        releasePointerLock();
+        m_statusText = QStringLiteral("Pointer lock disabled");
+        update();
+    });
+
     auto *animationTimer = new QTimer(this);
     animationTimer->setTimerType(Qt::CoarseTimer);
     connect(animationTimer, &QTimer::timeout, this, [this]() {
@@ -297,12 +307,13 @@ void CatalogView::setStreamFrame(const QImage &frame) {
     m_error = false;
     m_overlayTitle.clear();
     m_overlayMessage.clear();
-    m_statusText = QStringLiteral("Streaming");
+        m_statusText = QStringLiteral("Streaming");
     if (enteringStream) {
         setFocus(Qt::OtherFocusReason);
         grabKeyboard();
         m_lastMousePosition = mapFromGlobal(QCursor::pos());
-        qInfo() << "[Input] Stream input capture active";
+        m_statusText = QStringLiteral("Streaming: click to lock pointer, Esc to release");
+        qInfo() << "[Input] Stream keyboard capture active";
     }
     update();
 }
@@ -419,12 +430,22 @@ void CatalogView::showEvent(QShowEvent *event) {
 }
 
 void CatalogView::hideEvent(QHideEvent *event) {
+    releasePointerLock();
     releaseKeyboard();
     QWidget::hideEvent(event);
 }
 
 void CatalogView::keyPressEvent(QKeyEvent *event) {
     if (!m_streamFrame.isNull()) {
+        if (event->key() == Qt::Key_Escape && m_pointerLocked) {
+            if (!event->isAutoRepeat() && !m_pointerUnlockTimer.isActive()) {
+                m_statusText = QStringLiteral("Hold Esc to release pointer lock...");
+                m_pointerUnlockTimer.start();
+                update();
+            }
+            event->accept();
+            return;
+        }
         const std::optional<KeyMapping> mapping = streamKeyMapping(event->key());
         if (mapping && m_onStreamKey && !event->isAutoRepeat()) m_onStreamKey(mapping->vk, mapping->scancode, streamModifiers(event->modifiers()), true);
         event->accept();
@@ -476,6 +497,13 @@ void CatalogView::keyPressEvent(QKeyEvent *event) {
 
 void CatalogView::keyReleaseEvent(QKeyEvent *event) {
     if (!m_streamFrame.isNull()) {
+        if (event->key() == Qt::Key_Escape && m_pointerUnlockTimer.isActive()) {
+            m_pointerUnlockTimer.stop();
+            if (m_pointerLocked) m_statusText = QStringLiteral("Pointer locked: Esc releases");
+            update();
+            event->accept();
+            return;
+        }
         const std::optional<KeyMapping> mapping = streamKeyMapping(event->key());
         if (mapping && m_onStreamKey && !event->isAutoRepeat()) m_onStreamKey(mapping->vk, mapping->scancode, streamModifiers(event->modifiers()), false);
         event->accept();
@@ -486,7 +514,7 @@ void CatalogView::keyReleaseEvent(QKeyEvent *event) {
 
 void CatalogView::mousePressEvent(QMouseEvent *event) {
     if (!m_streamFrame.isNull()) {
-        m_lastMousePosition = event->position();
+        if (!m_pointerLocked) activatePointerLock();
         const quint8 button = streamMouseButton(event->button());
         if (button != 0 && m_onStreamMouseButton) m_onStreamMouseButton(button, true);
         event->accept();
@@ -507,13 +535,26 @@ void CatalogView::mouseReleaseEvent(QMouseEvent *event) {
 
 void CatalogView::mouseMoveEvent(QMouseEvent *event) {
     if (!m_streamFrame.isNull()) {
-        if (!m_lastMousePosition.isNull()) {
+        if (m_ignoringPointerWarp) {
+            m_ignoringPointerWarp = false;
+            event->accept();
+            return;
+        }
+        if (m_pointerLocked) {
+            const QPointF center = pointerLockCenter();
+            const QPointF delta = event->position() - center;
+            const qint16 dx = clampI16(delta.x());
+            const qint16 dy = clampI16(delta.y());
+            if ((dx != 0 || dy != 0) && m_onStreamMouseMove) m_onStreamMouseMove(dx, dy);
+            m_ignoringPointerWarp = true;
+            QCursor::setPos(mapToGlobal(center.toPoint()));
+        } else if (!m_lastMousePosition.isNull()) {
             const QPointF delta = event->position() - m_lastMousePosition;
             const qint16 dx = clampI16(delta.x());
             const qint16 dy = clampI16(delta.y());
             if ((dx != 0 || dy != 0) && m_onStreamMouseMove) m_onStreamMouseMove(dx, dy);
+            m_lastMousePosition = event->position();
         }
-        m_lastMousePosition = event->position();
         event->accept();
         return;
     }
@@ -528,6 +569,37 @@ void CatalogView::wheelEvent(QWheelEvent *event) {
         return;
     }
     QWidget::wheelEvent(event);
+}
+
+void CatalogView::activatePointerLock() {
+    if (m_streamFrame.isNull() || m_pointerLocked) return;
+    setFocus(Qt::MouseFocusReason);
+    grabKeyboard();
+    grabMouse(Qt::BlankCursor);
+    m_pointerLocked = true;
+    m_ignoringPointerWarp = true;
+    const QPointF center = pointerLockCenter();
+    m_lastMousePosition = center;
+    QCursor::setPos(mapToGlobal(center.toPoint()));
+    m_statusText = QStringLiteral("Pointer locked: Esc releases");
+    qInfo() << "[Input] Pointer lock active";
+    update();
+}
+
+void CatalogView::releasePointerLock() {
+    if (!m_pointerLocked) return;
+    m_pointerUnlockTimer.stop();
+    releaseMouse();
+    m_pointerLocked = false;
+    m_ignoringPointerWarp = false;
+    m_lastMousePosition = mapFromGlobal(QCursor::pos());
+    if (!m_streamFrame.isNull()) m_statusText = QStringLiteral("Streaming: click to lock pointer, Esc to release");
+    qInfo() << "[Input] Pointer lock released";
+    update();
+}
+
+QPointF CatalogView::pointerLockCenter() const {
+    return QPointF(width() * 0.5, height() * 0.5);
 }
 
 void CatalogView::moveFolder(int delta) {
