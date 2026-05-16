@@ -8,6 +8,10 @@ import android.os.Bundle
 import android.view.InputDevice
 import android.view.KeyEvent
 import android.view.MotionEvent
+import android.view.View
+import android.view.WindowInsets
+import android.view.WindowInsetsController
+import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.viewModels
@@ -20,6 +24,7 @@ class MainActivity : ComponentActivity() {
     private var notificationPermissionRequested = false
     private var lastHatXKeyCode: Int? = null
     private var lastHatYKeyCode: Int? = null
+    private var streamSystemUiActive = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -30,6 +35,7 @@ class MainActivity : ComponentActivity() {
             viewModel.state.collect { state ->
                 requestQueueNotificationPermissionIfNeeded(state)
                 queueStatusNotifier.update(state)
+                applyStreamSystemUi(state.page == AppPage.Stream && state.streamStatus != "idle")
             }
         }
         viewModel.handleExternalLaunchIntent(intent)
@@ -84,6 +90,52 @@ class MainActivity : ComponentActivity() {
             queueStatusNotifier.cancel()
         }
         super.onDestroy()
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus && streamSystemUiActive) {
+            applyStreamSystemUi(true, force = true)
+        }
+    }
+
+    private fun applyStreamSystemUi(active: Boolean, force: Boolean = false) {
+        if (!force && streamSystemUiActive == active) return
+        streamSystemUiActive = active
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            window.attributes = window.attributes.apply {
+                layoutInDisplayCutoutMode = if (active) {
+                    WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+                } else {
+                    WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_DEFAULT
+                }
+            }
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            window.setDecorFitsSystemWindows(!active)
+            window.insetsController?.let { controller ->
+                if (active) {
+                    controller.systemBarsBehavior = WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                    controller.hide(WindowInsets.Type.statusBars() or WindowInsets.Type.navigationBars())
+                } else {
+                    controller.show(WindowInsets.Type.statusBars() or WindowInsets.Type.navigationBars())
+                }
+            }
+        } else {
+            @Suppress("DEPRECATION")
+            window.decorView.systemUiVisibility = if (active) {
+                View.SYSTEM_UI_FLAG_FULLSCREEN or
+                    View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
+                    View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or
+                    View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or
+                    View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION or
+                    View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+            } else {
+                0
+            }
+        }
     }
 
     @Suppress("DEPRECATION", "OVERRIDE_DEPRECATION")

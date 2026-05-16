@@ -546,6 +546,7 @@ data class CodecCapability(
     val hardwareEncoder: Boolean,
     val decoderName: String? = null,
     val encoderName: String? = null,
+    val realtimeSafe: Boolean = hardwareDecoder,
 )
 
 data class RuntimeCodecReport(
@@ -553,4 +554,11 @@ data class RuntimeCodecReport(
     val nativeRuntimeSummary: String,
     val androidTvProfile: Boolean,
     val lowPowerGpuProfile: Boolean,
+)
+
+data class StreamRuntimeStats(
+    val bitrateKbps: Int? = null,
+    val pingMs: Int? = null,
+    val fps: Int? = null,
+    val resolution: String? = null,
 )

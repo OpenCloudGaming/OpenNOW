@@ -23,6 +23,7 @@ export function StatsOverlay({
   const rttColor = getRttColor(stats.rttMs);
   const showPacketLoss = stats.packetLossPercent > 0;
   const hasData = stats.resolution !== "" || stats.bitrateKbps > 0;
+  const currentFps = stats.decodeFps > 0 ? `${stats.decodeFps} FPS` : "-- FPS";
 
   if (!hasData) {
     return (
@@ -40,7 +41,7 @@ export function StatsOverlay({
         {/* Resolution & FPS */}
         <div className="sovl-pill">
           <Monitor size={13} className="sovl-icon" />
-          <span className="sovl-val">{stats.resolution} @ {stats.decodeFps} FPS</span>
+          <span className="sovl-val">{stats.resolution || "--"} @ {currentFps}</span>
         </div>
 
         {/* Bitrate */}

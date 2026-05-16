@@ -3,10 +3,12 @@ package com.opencloudgaming.opennow
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
 import android.util.Base64
 import androidx.browser.customtabs.CustomTabsIntent
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -75,17 +77,16 @@ private const val TOKEN_ENDPOINT = "https://login.nvidia.com/token"
 private const val CLIENT_TOKEN_ENDPOINT = "https://login.nvidia.com/client_token"
 private const val USERINFO_ENDPOINT = "https://login.nvidia.com/userinfo"
 private const val AUTH_ENDPOINT = "https://login.nvidia.com/authorize"
-private const val DEVICE_AUTHORIZATION_ENDPOINT = "https://login.nvidia.com/oauth/device_authorization"
+private const val DEVICE_AUTHORIZATION_ENDPOINT = "https://login.nvidia.com/device/authorize"
 private const val GAMES_GRAPHQL_URL = "https://games.geforce.com/graphql"
 private const val MES_URL = "https://mes.geforcenow.com/v4/subscriptions"
 private const val PRINTEDWASTE_QUEUE_URL = "https://api.printedwaste.com/gfn/queue/"
 private const val PRINTEDWASTE_SERVER_MAPPING_URL = "https://remote.printedwaste.com/config/GFN_SERVERID_TO_REGION_MAPPING"
 private const val DEFAULT_STREAMING_SERVICE_URL = "https://prod.cloudmatchbeta.nvidiagrid.net/"
 private const val CLIENT_ID = "ZU7sPN-miLujMD95LfOQ453IB0AtjM8sMyvgJ9wCXEQ"
-private const val DEVICE_CODE_CLIENT_ID = "mCvS6jg8jQbGoOJcK_64uvt1WqXrDK2u6CvoPUDy7IM"
+private const val DEVICE_CODE_CLIENT_ID = "q61ddeJrVt7O90Nl-P-N7I36yctih4Ml6FyXLrb6j-U"
 private const val DEFAULT_IDP_ID = "PDiAhv2kJTFeQ7WOPqiQ2tRZ7lGhR2X11dXvM4TZSxg"
 private const val SCOPES = "openid consent email tk_client age"
-private const val DEVICE_CODE_SCOPES = "openid offline_access email profile"
 private const val PANELS_QUERY_HASH = "f8e26265a5db5c20e1334a6872cf04b6e3970507697f6ae55a6ddefa5420daf0"
 private const val APP_METADATA_QUERY_HASH = "39187e85b6dcf60b7279a5f233288b0a8b69a8b1dbcfb5b25555afdcb988f0d7"
 private const val LIBRARY_WITH_TIME_QUERY_HASH = "039e8c0d553972975485fee56e59f2549d2fdb518e247a42ab5022056a74406f"
@@ -355,6 +356,8 @@ class GfnAuthRepository(
     private val authStore: AuthStore,
     private val http: OkHttpClient = defaultHttpClient(),
 ) {
+    private val externalOAuthRedirects = Channel<Map<String, String>>(capacity = 4)
+
     suspend fun loginProviders(): List<LoginProvider> {
         val request = Request.Builder()
             .url(SERVICE_URLS_ENDPOINT)
@@ -406,15 +409,22 @@ class GfnAuthRepository(
     }
 
     suspend fun login(provider: LoginProvider): AuthSession {
-        val port = findAvailablePort()
+        drainExternalOAuthRedirects()
+        val server = openAvailableCallbackServer()
+        val port = server.localPort
         val verifier = randomBase64Url(64).take(86)
         val challenge = sha256Base64Url(verifier)
         val authUrl = buildAuthUrl(provider, challenge, port)
         val code = coroutineScope {
-            val codeDeferred = async(Dispatchers.IO) { waitForAuthorizationCode(port) }
+            val codeDeferred = async(Dispatchers.IO) { waitForAuthorizationCode(server) }
             val customTabs = CustomTabsIntent.Builder().build()
             customTabs.intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            customTabs.launchUrl(context, Uri.parse(authUrl))
+            runCatching {
+                customTabs.launchUrl(context, Uri.parse(authUrl))
+            }.onFailure {
+                server.close()
+                throw it
+            }
             codeDeferred.await()
         }
         val tokens = exchangeAuthorizationCode(code, verifier, port)
@@ -423,8 +433,18 @@ class GfnAuthRepository(
         return session
     }
 
+    fun handleOAuthRedirect(uri: Uri?): Boolean {
+        if (uri == null || !isLoopbackOAuthRedirect(uri)) return false
+        val params = uri.queryParameterNames
+            .associateWith { name -> uri.getQueryParameter(name).orEmpty() }
+            .filterValues { it.isNotBlank() }
+        if (!params.containsKey("code") && !params.containsKey("error")) return false
+        externalOAuthRedirects.trySend(params)
+        return true
+    }
+
     suspend fun loginWithDeviceCode(provider: LoginProvider, onPrompt: suspend (DeviceLoginPrompt) -> Unit): AuthSession {
-        val deviceCode = requestDeviceCode()
+        val deviceCode = requestDeviceCode(provider)
         onPrompt(deviceCode.prompt)
         val tokens = pollDeviceCodeToken(deviceCode)
         val session = buildSession(provider, tokens)
@@ -495,14 +515,17 @@ class GfnAuthRepository(
         val intervalSeconds: Int,
     )
 
-    private suspend fun requestDeviceCode(): DeviceCodeChallenge {
+    private suspend fun requestDeviceCode(provider: LoginProvider): DeviceCodeChallenge {
         val body = FormBody.Builder()
             .add("client_id", DEVICE_CODE_CLIENT_ID)
-            .add("scope", DEVICE_CODE_SCOPES)
+            .add("scope", SCOPES)
+            .add("device_id", authStore.stableDeviceId())
+            .add("display_name", androidDeviceDisplayName())
+            .add("idp_id", provider.idpId)
             .build()
         val request = Request.Builder()
             .url(DEVICE_AUTHORIZATION_ENDPOINT)
-            .headers(nvidiaFileHeaders(includeReferer = true))
+            .headers(starfleetFormHeaders())
             .post(body)
             .build()
         val (status, text) = http.awaitText(request)
@@ -539,7 +562,7 @@ class GfnAuthRepository(
                 .build()
             val request = Request.Builder()
                 .url(TOKEN_ENDPOINT)
-                .headers(nvidiaFileHeaders(includeReferer = true))
+                .headers(starfleetFormHeaders())
                 .post(body)
                 .build()
             val (status, text) = http.awaitText(request)
@@ -612,6 +635,21 @@ class GfnAuthRepository(
             }
             .build()
 
+    private fun starfleetFormHeaders(): Headers =
+        Headers.Builder()
+            .add("Accept", "application/json, text/plain, */*")
+            .add("User-Agent", GFN_USER_AGENT)
+            .build()
+
+    private fun androidDeviceDisplayName(): String {
+        val model = listOf(Build.MANUFACTURER, Build.MODEL)
+            .map { it.trim() }
+            .filter { it.isNotBlank() && !it.equals("unknown", ignoreCase = true) }
+            .distinctBy { it.lowercase(Locale.US) }
+            .joinToString(" ")
+        return model.ifBlank { "OpenNOW Android" }
+    }
+
     private fun buildAuthUrl(provider: LoginProvider, challenge: String, port: Int): String {
         val deviceId = authStore.stableDeviceId()
         val nonce = randomBase64Url(16)
@@ -631,18 +669,21 @@ class GfnAuthRepository(
         return "$AUTH_ENDPOINT?$params"
     }
 
-    private suspend fun findAvailablePort(): Int = withContext(Dispatchers.IO) {
-        REDIRECT_PORTS.firstOrNull { port ->
-            runCatching {
-                openCallbackServerSocket(port).use { true }
-            }.getOrDefault(false)
-        } ?: error("No available OAuth callback ports")
+    private suspend fun openAvailableCallbackServer(): ServerSocket = withContext(Dispatchers.IO) {
+        for (port in REDIRECT_PORTS) {
+            val server = runCatching { openCallbackServerSocket(port) }.getOrNull()
+            if (server != null) return@withContext server
+        }
+        error("No available OAuth callback ports")
     }
 
-    private suspend fun waitForAuthorizationCode(port: Int): String = withContext(Dispatchers.IO) {
-        openCallbackServerSocket(port).use { server ->
+    private suspend fun waitForAuthorizationCode(server: ServerSocket): String = withContext(Dispatchers.IO) {
+        server.use {
             val deadline = System.currentTimeMillis() + OAUTH_CALLBACK_TIMEOUT_MS
             while (System.currentTimeMillis() < deadline) {
+                externalOAuthRedirects.tryReceive().getOrNull()?.let { params ->
+                    authorizationCodeFromParams(params)?.let { code -> return@withContext code }
+                }
                 server.soTimeout = minOf(5_000, (deadline - System.currentTimeMillis()).coerceAtLeast(1)).toInt()
                 val socket = try {
                     server.accept()
@@ -651,11 +692,12 @@ class GfnAuthRepository(
                 }
                 socket.use { callbackSocket ->
                     val params = runCatching { readCallbackQueryParams(callbackSocket) }.getOrDefault(emptyMap())
-                    params["error"]?.let { error ->
+                    params["error"]?.takeIf { it.isNotBlank() }?.let { error ->
                         writeCallbackResponse(callbackSocket, "Login failed or was cancelled.")
                         throw IllegalStateException(error)
                     }
-                    params["code"]?.takeIf { code -> code.isNotBlank() }?.let { code ->
+                    val code = authorizationCodeFromParams(params)
+                    if (code != null) {
                         writeCallbackResponse(callbackSocket, "Login complete. Return to OpenNOW.")
                         return@withContext code
                     }
@@ -663,6 +705,26 @@ class GfnAuthRepository(
                 }
             }
             throw IllegalStateException("Timed out waiting for OAuth callback")
+        }
+    }
+
+    private fun authorizationCodeFromParams(params: Map<String, String>): String? {
+        params["error"]?.takeIf { it.isNotBlank() }?.let { error ->
+            throw IllegalStateException(error)
+        }
+        return params["code"]?.takeIf { code -> code.isNotBlank() }
+    }
+
+    private fun isLoopbackOAuthRedirect(uri: Uri): Boolean {
+        if (uri.scheme != "http") return false
+        val host = uri.host?.lowercase(Locale.US) ?: return false
+        if (host != "localhost" && host != "127.0.0.1" && host != "::1") return false
+        return uri.port in REDIRECT_PORTS
+    }
+
+    private fun drainExternalOAuthRedirects() {
+        while (externalOAuthRedirects.tryReceive().isSuccess) {
+            // discard stale browser callbacks from earlier attempts
         }
     }
 

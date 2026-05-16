@@ -21,6 +21,7 @@
     <string name="action_save">Save</string>
     <string name="action_saved">Saved</string>
     <string name="action_cancel">Cancel</string>
+    <string name="action_scroll_top">Back to top</string>
     <string name="option_auto">Auto</string>
     <string name="settings_section_stream">Stream</string>
     <string name="settings_section_interface">Interface</string>

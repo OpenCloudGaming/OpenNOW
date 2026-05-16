@@ -1149,8 +1149,8 @@ export class GfnWebRtcClient {
     this.diagnostics.colorCodec = describeColorQuality(settings.colorQuality);
     this.diagnostics.isHdr = this.isHdr;
     this.diagnostics.targetBitrateKbps = this.negotiatedMaxBitrateKbps;
-    this.diagnostics.decodeFps = settings.fps;
-    this.diagnostics.renderFps = settings.fps;
+    this.diagnostics.decodeFps = 0;
+    this.diagnostics.renderFps = 0;
   }
 
   private closeDataChannels(): void {

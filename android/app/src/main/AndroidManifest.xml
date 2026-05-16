@@ -53,6 +53,26 @@
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="opennow" android:host="launch" />
             </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="http" android:host="localhost" android:port="2259" />
+                <data android:scheme="http" android:host="localhost" android:port="6460" />
+                <data android:scheme="http" android:host="localhost" android:port="7119" />
+                <data android:scheme="http" android:host="localhost" android:port="8870" />
+                <data android:scheme="http" android:host="localhost" android:port="9096" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="http" android:host="127.0.0.1" android:port="2259" />
+                <data android:scheme="http" android:host="127.0.0.1" android:port="6460" />
+                <data android:scheme="http" android:host="127.0.0.1" android:port="7119" />
+                <data android:scheme="http" android:host="127.0.0.1" android:port="8870" />
+                <data android:scheme="http" android:host="127.0.0.1" android:port="9096" />
+            </intent-filter>
         </activity>
     </application>
 </manifest>

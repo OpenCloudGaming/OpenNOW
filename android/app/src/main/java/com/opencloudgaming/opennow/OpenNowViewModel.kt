@@ -15,6 +15,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import okhttp3.OkHttpClient
+import kotlin.math.roundToInt
 
 enum class AppPage {
     Home,
@@ -45,6 +46,7 @@ data class OpenNowUiState(
     val selectedGame: GameInfo? = null,
     val activeSession: ActiveSessionInfo? = null,
     val streamSession: SessionInfo? = null,
+    val activeStreamSettings: StreamSettings? = null,
     val streamGame: GameInfo? = null,
     val streamLaunchMinimized: Boolean = false,
     val launchPhase: String = "",
@@ -154,6 +156,39 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    fun loginWithCode(provider: LoginProvider = state.value.selectedProvider) {
+        loginJob?.cancel()
+        loginJob = viewModelScope.launch {
+            _state.update {
+                it.copy(
+                    error = null,
+                    launchPhase = "Requesting sign-in code",
+                    deviceLoginPrompt = null,
+                )
+            }
+            runCatching {
+                loginWithDeviceCode(provider)
+            }
+                .onSuccess { session ->
+                    _state.update {
+                        it.copy(
+                            authSession = session,
+                            selectedProvider = session.provider,
+                            savedAccounts = authStore.state.value.sessions.map { saved -> saved.toSavedAccount() },
+                            launchPhase = "",
+                            deviceLoginPrompt = null,
+                            error = null,
+                        )
+                    }
+                    refreshAfterAuth(session)
+                }
+                .onFailure { error ->
+                    if (error is CancellationException) return@onFailure
+                    _state.update { it.copy(error = error.message ?: "Code sign-in failed", launchPhase = "", deviceLoginPrompt = null) }
+                }
+        }
+    }
+
     private suspend fun loginWithBestAvailableMethod(provider: LoginProvider, useDeviceCode: Boolean): AuthSession {
         if (useDeviceCode) {
             return loginWithDeviceCode(provider)
@@ -214,6 +249,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                     games = emptyList(),
                     libraryGames = emptyList(),
                     streamSession = null,
+                    activeStreamSettings = null,
                     activeSession = null,
                     deviceLoginPrompt = null,
                     pendingStoreChoiceGame = null,
@@ -232,6 +268,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 games = emptyList(),
                 libraryGames = emptyList(),
                 streamSession = null,
+                activeStreamSettings = null,
                 activeSession = null,
                 deviceLoginPrompt = null,
                 pendingStoreChoiceGame = null,
@@ -324,6 +361,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                     streamStatus = "queue",
                     launchPhase = "Resolving game",
                     streamGame = game,
+                    activeStreamSettings = settings,
                     selectedGame = null,
                     page = AppPage.Stream,
                     streamLaunchMinimized = false,
@@ -365,6 +403,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                                 launchPhase = loadingPhaseFor(pending),
                                 activeSession = launchingCandidate,
                                 streamSession = pending,
+                                activeStreamSettings = settings,
                                 queuePosition = pending.queuePosition?.takeIf { position -> position > 0 },
                                 queueAdActiveId = null,
                             )
@@ -400,6 +439,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 _state.update {
                     it.copy(
                         streamSession = readySession,
+                        activeStreamSettings = settings,
                         streamStatus = "connecting",
                         launchPhase = "Connecting stream",
                         streamLaunchMinimized = false,
@@ -414,6 +454,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                     it.copy(
                         error = normalizeLaunchError(error),
                         streamStatus = "idle",
+                        activeStreamSettings = null,
                         launchPhase = "",
                         streamLaunchMinimized = false,
                         queuePosition = null,
@@ -432,22 +473,24 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             val auth = state.value.authSession
             val snapshot = state.value
             val session = snapshot.streamSession
+            val streamSettings = snapshot.activeStreamSettings ?: state.value.settings.stream.adjustedForDevice(state.value.codecReport)
             if (auth != null && session != null) {
-                runCatching { sessionRepository.stopSession(auth.tokens.idToken ?: auth.tokens.accessToken, session, state.value.settings.stream) }
+                runCatching { sessionRepository.stopSession(auth.tokens.idToken ?: auth.tokens.accessToken, session, streamSettings) }
             } else if (auth != null) {
                 val token = auth.tokens.idToken ?: auth.tokens.accessToken
                 val active = snapshot.activeSession
                     ?: runCatching {
-                        sessionRepository.getActiveSessions(token, effectiveStreamingBaseUrl(auth), state.value.settings.stream)
+                        sessionRepository.getActiveSessions(token, effectiveStreamingBaseUrl(auth), streamSettings)
                             .firstOrNull { it.status in setOf(1, 2, 3) }
                     }.getOrNull()
                 if (active != null) {
-                    runCatching { sessionRepository.stopActiveSession(token, active, state.value.settings.stream) }
+                    runCatching { sessionRepository.stopActiveSession(token, active, streamSettings) }
                 }
             }
             _state.update {
                 it.copy(
                     streamSession = null,
+                    activeStreamSettings = null,
                     streamGame = null,
                     streamStatus = "idle",
                     streamLaunchMinimized = false,
@@ -482,6 +525,77 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     fun restoreStreamLaunch() {
         _state.update { current ->
             if (current.streamStatus == "idle") current else current.copy(streamLaunchMinimized = false, page = AppPage.Stream)
+        }
+    }
+
+    fun resumeActiveSession() {
+        if (launchJob?.isActive == true) return
+        launchJob = viewModelScope.launch {
+            val auth = state.value.authSession ?: return@launch
+            val settings = state.value.settings.stream.adjustedForDevice(state.value.codecReport)
+            val token = auth.tokens.idToken ?: auth.tokens.accessToken
+            val baseUrl = effectiveStreamingBaseUrl(auth)
+            val cachedActive = state.value.activeSession
+            _state.update {
+                it.copy(
+                    streamStatus = "queue",
+                    launchPhase = "Checking active sessions",
+                    activeStreamSettings = settings,
+                    page = AppPage.Stream,
+                    streamLaunchMinimized = false,
+                    selectedGame = null,
+                    pendingStoreChoiceGame = null,
+                    pendingPrintedWasteGame = null,
+                    error = null,
+                    queuePosition = null,
+                    queueAdActiveId = null,
+                )
+            }
+            runCatching {
+                val active = cachedActive ?: sessionRepository.getActiveSessions(token, baseUrl, settings)
+                    .firstOrNull { it.status in setOf(1, 2, 3) }
+                    ?: error("No active session to resume.")
+                val matchingGame = (state.value.games + state.value.libraryGames)
+                    .firstOrNull { it.launchAppId == active.appId.toString() || it.variants.any { variant -> variant.id == active.appId.toString() } }
+                _state.update {
+                    it.copy(
+                        activeSession = active,
+                        streamGame = matchingGame,
+                        streamSession = active.toPendingSession(zone = "prod"),
+                        activeStreamSettings = settings,
+                        launchPhase = if (active.status in setOf(2, 3) && active.serverIp != null) "Resuming session" else loadingPhaseFor(active.toPendingSession(zone = "prod")),
+                    )
+                }
+                resumeKnownActiveSession(token, active, settings, baseUrl)
+            }.onSuccess { readySession ->
+                _state.update {
+                    it.copy(
+                        streamSession = readySession,
+                        activeStreamSettings = settings,
+                        streamStatus = "connecting",
+                        launchPhase = "Connecting stream",
+                        streamLaunchMinimized = false,
+                        queuePosition = null,
+                        queueAdActiveId = null,
+                        page = AppPage.Stream,
+                    )
+                }
+            }.onFailure { error ->
+                if (error is CancellationException) return@onFailure
+                _state.update {
+                    it.copy(
+                        error = normalizeLaunchError(error),
+                        streamStatus = "idle",
+                        activeStreamSettings = null,
+                        launchPhase = "",
+                        streamLaunchMinimized = false,
+                        queuePosition = null,
+                        queueAdActiveId = null,
+                        pendingStoreChoiceGame = null,
+                        pendingPrintedWasteGame = null,
+                    )
+                }
+            }
         }
     }
 
@@ -583,12 +697,16 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun markStreamError(message: String) {
-        _state.update { it.copy(error = message, streamStatus = "idle", launchPhase = "") }
+        _state.update { it.copy(error = message, streamStatus = "idle", activeStreamSettings = null, launchPhase = "") }
     }
 
     fun handleExternalLaunchIntent(intent: Intent?) {
         if (intent == null) return
         val uri = intent.data
+        if (authRepository.handleOAuthRedirect(uri)) {
+            _state.update { it.copy(launchPhase = "Finishing NVIDIA login", error = null) }
+            return
+        }
         val id = intent.getStringExtra("id")
             ?: intent.getStringExtra("appId")
             ?: intent.getStringExtra("launchAppId")
@@ -818,8 +936,56 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         val token = auth.tokens.idToken ?: auth.tokens.accessToken
         val active = runCatching { sessionRepository.getActiveSessions(token, effectiveStreamingBaseUrl(auth), state.value.settings.stream) }
             .getOrDefault(emptyList())
-            .firstOrNull { it.status in setOf(2, 3) }
+            .firstOrNull { it.status in setOf(1, 2, 3) }
         _state.update { it.copy(activeSession = active) }
+    }
+
+    private suspend fun resumeKnownActiveSession(
+        token: String,
+        active: ActiveSessionInfo,
+        settings: StreamSettings,
+        baseUrl: String,
+    ): SessionInfo {
+        if (active.status in setOf(2, 3) && active.serverIp != null) {
+            _state.update { it.copy(launchPhase = "Resuming session") }
+            return sessionRepository.claimSession(token, active, settings)
+        }
+
+        val pending = active.toPendingSession(zone = "prod")
+        val hydrated = runCatching {
+            sessionRepository.pollSession(
+                token = token,
+                streamingBaseUrl = active.streamingBaseUrl ?: baseUrl,
+                serverIp = active.serverIp,
+                zone = "prod",
+                sessionId = active.sessionId,
+                clientId = null,
+                deviceId = null,
+                settings = settings,
+            )
+        }.getOrElse { pending }
+        val latest = mergeQueueSessionState(pending, hydrated)
+        _state.update {
+            it.copy(
+                streamSession = latest,
+                launchPhase = loadingPhaseFor(latest),
+                queuePosition = latest.queuePosition?.takeIf { position -> position > 0 },
+                queueAdActiveId = chooseQueueAdActiveId(it.queueAdActiveId, latest),
+            )
+        }
+        if (latest.status in setOf(2, 3) && latest.serverIp.isNotBlank()) {
+            val hydratedActive = active.copy(
+                status = latest.status,
+                queuePosition = latest.queuePosition,
+                seatSetupStep = latest.seatSetupStep,
+                streamingBaseUrl = latest.streamingBaseUrl ?: active.streamingBaseUrl,
+                serverIp = latest.serverIp,
+                signalingUrl = latest.signalingUrl,
+            )
+            _state.update { it.copy(launchPhase = "Resuming session") }
+            return sessionRepository.claimSession(token, hydratedActive, settings)
+        }
+        return pollUntilReady(token, latest, settings)
     }
 
     private suspend fun pollUntilReady(token: String, created: SessionInfo, settings: StreamSettings): SessionInfo {
@@ -946,14 +1112,38 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     }
 
     private fun StreamSettings.adjustedForDevice(report: RuntimeCodecReport?): StreamSettings {
+        val aspectMatched = fitToDisplayAspect()
         if (report?.lowPowerGpuProfile == true) {
-            return copy(codec = VideoCodec.H264, colorQuality = ColorQuality.EightBit420, maxBitrateMbps = minOf(maxBitrateMbps, 25), fps = minOf(fps, 60))
+            return aspectMatched.copy(codec = VideoCodec.H264, colorQuality = ColorQuality.EightBit420, maxBitrateMbps = minOf(maxBitrateMbps, 25), fps = minOf(fps, 60))
         }
         if (report?.androidTvProfile == true) {
-            return copy(codec = VideoCodec.H264, colorQuality = ColorQuality.EightBit420, resolution = capResolution(resolution, 1920, 1080), maxBitrateMbps = minOf(maxBitrateMbps, 35), fps = minOf(fps, 60))
+            return aspectMatched.copy(codec = VideoCodec.H264, colorQuality = ColorQuality.EightBit420, resolution = capResolution(aspectMatched.resolution, 1920, 1080), maxBitrateMbps = minOf(maxBitrateMbps, 35), fps = minOf(fps, 60))
         }
-        val codecSupported = report?.capabilities?.firstOrNull { it.codec == codec }?.decoderAvailable ?: true
-        return if (codecSupported) this else copy(codec = VideoCodec.H264, colorQuality = ColorQuality.EightBit420)
+        val capability = report?.capabilities?.firstOrNull { it.codec == codec }
+        val codecSafe = capability?.let { it.decoderAvailable && it.realtimeSafe } ?: (codec == VideoCodec.H264)
+        return if (codec == VideoCodec.H264 && codecSafe) {
+            aspectMatched.copy(colorQuality = ColorQuality.EightBit420, maxBitrateMbps = minOf(maxBitrateMbps, 45), fps = minOf(fps, 60))
+        } else {
+            aspectMatched.copy(codec = VideoCodec.H264, colorQuality = ColorQuality.EightBit420, maxBitrateMbps = minOf(maxBitrateMbps, 35), fps = minOf(fps, 60))
+        }
+    }
+
+    private fun StreamSettings.fitToDisplayAspect(): StreamSettings {
+        val displayMetrics = getApplication<Application>().resources.displayMetrics
+        val longSide = maxOf(displayMetrics.widthPixels, displayMetrics.heightPixels).coerceAtLeast(1)
+        val shortSide = minOf(displayMetrics.widthPixels, displayMetrics.heightPixels).coerceAtLeast(1)
+        val displayAspect = longSide.toFloat() / shortSide.toFloat()
+        if (displayAspect < 1.25f || displayAspect > 2.5f) return this
+
+        val baseWidth = resolution.substringBefore("x").toIntOrNull() ?: return this
+        val baseHeight = resolution.substringAfter("x").toIntOrNull() ?: return this
+        val fittedHeight = makeEven((baseWidth / displayAspect).roundToInt()).coerceAtLeast(360)
+        val (width, height) = if (fittedHeight <= baseHeight) {
+            baseWidth to fittedHeight
+        } else {
+            makeEven((baseHeight * displayAspect).roundToInt()).coerceAtLeast(640) to baseHeight
+        }
+        return copy(resolution = "${width}x$height", aspectRatio = "$width:$height")
     }
 
     private fun capResolution(value: String, maxWidth: Int, maxHeight: Int): String {
@@ -961,6 +1151,8 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         val height = value.substringAfter("x").toIntOrNull() ?: return "${maxWidth}x$maxHeight"
         return if (width <= maxWidth && height <= maxHeight) value else "${maxWidth}x$maxHeight"
     }
+
+    private fun makeEven(value: Int): Int = if (value % 2 == 0) value else value + 1
 
     private fun shouldSendAccountLinked(game: GameInfo, variant: GameVariant?): Boolean {
         val store = variant?.store?.lowercase().orEmpty()
