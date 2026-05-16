@@ -5,3 +5,4 @@ local.properties
 captures/
 *.iml
 app/build/
+app/release/

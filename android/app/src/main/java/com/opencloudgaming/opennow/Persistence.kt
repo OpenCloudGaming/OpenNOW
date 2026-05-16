@@ -52,6 +52,7 @@ class SettingsStore(context: Context) {
         )
         return copy(
             stream = lowPowerSafe,
+            posterSizeScale = posterSizeScale.coerceIn(0.82f, 1.08f),
             androidTouch = androidTouch.copy(
                 opacity = androidTouch.opacity.coerceIn(0.15f, 1f),
                 scale = androidTouch.scale.coerceIn(0.6f, 1.4f),

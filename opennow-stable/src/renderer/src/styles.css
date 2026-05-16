@@ -6381,87 +6381,73 @@ button.game-card-store-chip.owned.active:hover {
   font-weight: 700;
 }
 
-.queue-ad-preview-status {
-  display: flex;
+.queue-ad-preview-overlay-action,
+.queue-ad-preview-control {
+  display: inline-flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 10px 12px;
-  border-radius: 12px;
-  background: rgba(0, 0, 0, 0.28);
+  justify-content: center;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(0, 0, 0, 0.52);
+  color: #fff;
+  font: inherit;
+  cursor: pointer;
+  backdrop-filter: blur(12px);
+  transition: background var(--t-normal), border-color var(--t-normal), transform var(--t-normal), opacity var(--t-normal);
 }
 
-.queue-ad-preview-status-main {
-  display: flex;
-  align-items: flex-start;
-  gap: 10px;
-  min-width: 0;
-}
-
-.queue-ad-preview-copy {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-}
-
-.queue-ad-preview-label {
-  color: var(--ink);
-  font-size: 0.78rem;
+.queue-ad-preview-overlay-action {
+  gap: 6px;
+  padding: 8px 11px;
+  border-radius: 999px;
+  font-size: 0.76rem;
   font-weight: 700;
 }
 
-.queue-ad-preview-message {
-  color: var(--ink-soft);
-  font-size: 0.74rem;
-  line-height: 1.4;
+.queue-ad-preview-controls {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  display: flex;
+  gap: 8px;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(4px);
+  transition: opacity var(--t-normal), transform var(--t-normal);
 }
 
-.queue-ad-preview-icon {
-  flex: 0 0 auto;
-  color: var(--accent);
-  margin-top: 1px;
+.queue-ad-preview:hover .queue-ad-preview-controls,
+.queue-ad-preview:focus-within .queue-ad-preview-controls,
+.queue-ad-preview--controls-visible .queue-ad-preview-controls,
+.queue-ad-preview--paused .queue-ad-preview-controls,
+.queue-ad-preview--blocked .queue-ad-preview-controls,
+.queue-ad-preview--stalled .queue-ad-preview-controls,
+.queue-ad-preview--timeout .queue-ad-preview-controls,
+.queue-ad-preview--error .queue-ad-preview-controls {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0);
+}
+
+.queue-ad-preview-control {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+}
+
+.queue-ad-preview-overlay-action:hover,
+.queue-ad-preview-control:hover {
+  background: rgba(255, 255, 255, 0.16);
+  border-color: rgba(255, 255, 255, 0.3);
+  transform: translateY(-1px);
+}
+
+.queue-ad-preview-overlay-action:active,
+.queue-ad-preview-control:active {
+  transform: translateY(0);
 }
 
 .queue-ad-preview-icon--spinning {
   animation: spin 1s linear infinite;
-}
-
-.queue-ad-preview--blocked .queue-ad-preview-icon,
-.queue-ad-preview--stalled .queue-ad-preview-icon,
-.queue-ad-preview--timeout .queue-ad-preview-icon {
-  color: #ffd166;
-}
-
-.queue-ad-preview--error .queue-ad-preview-icon {
-  color: #f87171;
-}
-
-.queue-ad-preview-retry {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  flex: 0 0 auto;
-  padding: 7px 10px;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.06);
-  color: var(--ink);
-  font: inherit;
-  font-size: 0.74rem;
-  font-weight: 600;
-  cursor: pointer;
-  transition: background var(--t-normal), border-color var(--t-normal), transform var(--t-normal);
-}
-
-.queue-ad-preview-retry:hover {
-  background: rgba(255, 255, 255, 0.1);
-  border-color: rgba(255, 255, 255, 0.2);
-  transform: translateY(-1px);
-}
-
-.queue-ad-preview-retry:active {
-  transform: translateY(0);
 }
 
 .sload-message {
@@ -10278,22 +10264,6 @@ button.game-card-store-chip.owned.active:hover {
   object-fit: cover;
 }
 
-.csl-ad-media .queue-ad-preview-status {
-  background: rgba(0, 0, 0, 0.32);
-}
-
-.csl-ad-media .queue-ad-preview-label {
-  font-size: 0.82rem;
-}
-
-.csl-ad-media .queue-ad-preview-message {
-  font-size: 0.78rem;
-}
-
-.csl-ad-media .queue-ad-preview-retry {
-  background: rgba(255, 255, 255, 0.08);
-}
-
 .csl-error-panel {
   display: flex;
   flex-direction: column;
@@ -10409,4 +10379,3 @@ button.game-card-store-chip.owned.active:hover {
   max-height: min(72vh, 760px);
   vertical-align: middle;
 }
-

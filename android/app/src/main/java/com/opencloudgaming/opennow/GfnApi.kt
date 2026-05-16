@@ -666,7 +666,7 @@ class GfnCatalogRepository(
                     searchText = listOf(title, store, obj.string("publisher")).filterNotNull().joinToString(" ").lowercase(),
                     selectedVariantIndex = 0,
                     variants = listOf(GameVariant(id = id, store = store)),
-                    availableStores = listOf(store),
+                    availableStores = displayStoresForVariants(listOf(GameVariant(id = id, store = store))),
                 )
             }
     }
@@ -799,7 +799,7 @@ class GfnCatalogRepository(
         val genres = extractLabels(app.arr("genres"))
         val featureLabels = (extractLabels(app.arr("features")) + extractLabels(app.arr("gameFeatures")) + extractLabels(app.arr("appFeatures")) + genres).distinct()
         val title = app.string("title") ?: app.string("id") ?: "Unknown Game"
-        val stores = variants.map { it.store }.filter { it.isNotBlank() }.distinct()
+        val stores = displayStoresForVariants(variants)
         return GameInfo(
             id = app.string("id") ?: title,
             uuid = app.string("id"),
@@ -920,20 +920,25 @@ class GfnCatalogRepository(
     }
 
     private fun dedupeGames(games: List<GameInfo>): List<GameInfo> =
-        games.groupBy { it.id }.map { (_, bucket) ->
+        games.groupBy { game -> game.title.normalizedTitleKey().ifBlank { game.id } }.map { (_, bucket) ->
             bucket.reduce { left, right ->
                 val variants = (left.variants + right.variants).distinctBy { it.id }
+                val selectedVariantId = left.variants.getOrNull(left.selectedVariantIndex)?.id
+                    ?: right.variants.getOrNull(right.selectedVariantIndex)?.id
+                val selectedIndex = selectedVariantId?.let { id -> variants.indexOfFirst { it.id == id } } ?: -1
                 left.copy(
                     launchAppId = left.launchAppId ?: right.launchAppId,
+                    uuid = left.uuid ?: right.uuid,
                     description = left.description ?: right.description,
                     longDescription = left.longDescription ?: right.longDescription,
                     imageUrl = left.imageUrl ?: right.imageUrl,
                     variants = variants,
-                    availableStores = (left.availableStores + right.availableStores).distinct(),
+                    availableStores = displayStoresForVariants(variants),
                     genres = (left.genres + right.genres).distinct(),
                     featureLabels = (left.featureLabels + right.featureLabels).distinct(),
                     isInLibrary = left.isInLibrary || right.isInLibrary,
                     searchText = listOfNotNull(left.searchText, right.searchText).joinToString(" ").ifBlank { null },
+                    selectedVariantIndex = if (selectedIndex >= 0) selectedIndex else left.selectedVariantIndex.coerceAtMost(max(variants.size - 1, 0)),
                 )
             }
         }
@@ -943,12 +948,12 @@ class GfnCatalogRepository(
         return games.map { game ->
             val publicGame = publicByTitle[game.title.normalizedTitleKey()] ?: return@map game
             val existingStores = game.variants.map { normalizeGameStore(it.store) }.toSet()
-            val supplemental = publicGame.variants.filter { normalizeGameStore(it.store) !in existingStores && normalizeGameStore(it.store) !in primaryStores }
+            val supplemental = publicGame.variants.filter { !isPrimaryCatalogStoreValue(it.store) && normalizeGameStore(it.store) !in existingStores }
             if (supplemental.isEmpty()) game else game.copy(
                 launchAppId = game.launchAppId ?: publicGame.launchAppId,
                 imageUrl = game.imageUrl ?: publicGame.imageUrl,
                 variants = game.variants + supplemental,
-                availableStores = (game.availableStores + supplemental.map { it.store } + publicGame.availableStores).distinct(),
+                availableStores = displayStoresForVariants(game.variants + supplemental),
                 searchText = listOfNotNull(game.searchText, publicGame.searchText).joinToString(" "),
             )
         }
@@ -1299,7 +1304,7 @@ class GfnSessionRepository(
         accountLinked: Boolean,
         deviceId: String,
     ): JsonObject {
-        val (width, height) = parseResolution(settings.resolution)
+        val (width, height) = streamResolutionPixels(settings)
         val bitDepth = if (settings.colorQuality.name.startsWith("TenBit")) 10 else 0
         val chroma = if (settings.colorQuality == ColorQuality.EightBit444 || settings.colorQuality == ColorQuality.TenBit444) 2 else 0
         return buildJsonObject {
@@ -1344,31 +1349,16 @@ class GfnSessionRepository(
                 put("accountLinked", accountLinked)
                 put("enablePersistingInGameSettings", true)
                 put("userAge", 26)
-                putJsonObject("requestedStreamingFeatures") {
-                    put("reflex", settings.enableCloudGsync || settings.fps >= 60)
-                    put("bitDepth", bitDepth)
-                    put("cloudGsync", settings.enableCloudGsync)
-                    put("enabledL4S", settings.enableL4S)
-                    put("trueHdr", false)
-                    put("mouseMovementFlags", 0)
-                    put("supportedHidDevices", 0)
-                    put("profile", 0)
-                    put("fallbackToLogicalResolution", false)
-                    put("hidDevices", JsonNull)
-                    put("chromaFormat", chroma)
-                    put("prefilterMode", 0)
-                    put("prefilterSharpness", 0)
-                    put("prefilterNoiseReduction", 0)
-                    put("hudStreamingMode", 0)
-                    put("sdrColorSpace", 2)
-                    put("hdrColorSpace", 0)
-                }
+                put("requestedStreamingFeatures", requestedStreamingFeatures(settings, bitDepth, chroma))
             }
         }
     }
 
-    private fun buildClaimRequestBody(sessionId: String, appId: String, settings: StreamSettings, deviceId: String): JsonObject =
-        buildJsonObject {
+    private fun buildClaimRequestBody(sessionId: String, appId: String, settings: StreamSettings, deviceId: String): JsonObject {
+        val (width, height) = streamResolutionPixels(settings)
+        val bitDepth = if (settings.colorQuality.name.startsWith("TenBit")) 10 else 0
+        val chroma = if (settings.colorQuality == ColorQuality.EightBit444 || settings.colorQuality == ColorQuality.TenBit444) 2 else 0
+        return buildJsonObject {
             put("action", 2)
             put("data", "RESUME")
             putJsonObject("sessionRequestData") {
@@ -1381,7 +1371,21 @@ class GfnSessionRepository(
                 put("deviceHashId", deviceId)
                 put("internalTitle", JsonNull)
                 put("clientPlatformName", "windows")
-                put("metaData", webRtcSessionMetadata(0, 0))
+                putJsonArray("clientRequestMonitorSettings") {
+                    add(buildJsonObject {
+                        put("monitorId", 0)
+                        put("positionX", 0)
+                        put("positionY", 0)
+                        put("widthInPixels", width)
+                        put("heightInPixels", height)
+                        put("framesPerSecond", settings.fps)
+                        put("sdrHdrMode", 0)
+                        put("displayData", JsonNull)
+                        put("hdr10PlusGamingData", JsonNull)
+                        put("dpi", 100)
+                    })
+                }
+                put("metaData", webRtcSessionMetadata(width, height))
                 put("surroundAudioInfo", 0)
                 put("clientTimezoneOffset", java.util.TimeZone.getDefault().getOffset(System.currentTimeMillis()))
                 put("clientIdentification", "GFN-PC")
@@ -1398,8 +1402,31 @@ class GfnSessionRepository(
                 put("enablePersistingInGameSettings", true)
                 put("secureRTSPSupported", false)
                 put("userAge", 26)
+                put("requestedStreamingFeatures", requestedStreamingFeatures(settings, bitDepth, chroma))
             }
             putJsonArray("metaData") {}
+        }
+    }
+
+    private fun requestedStreamingFeatures(settings: StreamSettings, bitDepth: Int, chroma: Int): JsonObject =
+        buildJsonObject {
+            put("reflex", settings.enableCloudGsync || settings.fps >= 60)
+            put("bitDepth", bitDepth)
+            put("cloudGsync", settings.enableCloudGsync)
+            put("enabledL4S", settings.enableL4S)
+            put("trueHdr", false)
+            put("mouseMovementFlags", 0)
+            put("supportedHidDevices", 0)
+            put("profile", 0)
+            put("fallbackToLogicalResolution", false)
+            put("hidDevices", JsonNull)
+            put("chromaFormat", chroma)
+            put("prefilterMode", 0)
+            put("prefilterSharpness", 0)
+            put("prefilterNoiseReduction", 0)
+            put("hudStreamingMode", 0)
+            put("sdrColorSpace", 2)
+            put("hdrColorSpace", 0)
         }
 
     private fun webRtcSessionMetadata(width: Int, height: Int): JsonArray = buildJsonArray {
@@ -1423,21 +1450,27 @@ class GfnSessionRepository(
         val status = payload.obj("requestStatus")?.int("statusCode")
         check(status == 1) { "CloudMatch returned status $status: ${payload.obj("requestStatus")?.string("statusDescription")}" }
         val session = payload.obj("session") ?: error("CloudMatch response missing session")
-        val signaling = resolveSignaling(payload)
+        val sessionStatus = session.int("status") ?: 0
+        val signaling = runCatching { resolveSignaling(payload) }.getOrElse { error ->
+            if (sessionStatus in READY_SESSION_STATUSES) {
+                throw error
+            }
+            null
+        }
         return SessionInfo(
             sessionId = session.string("sessionId") ?: error("Missing session id"),
-            status = session.int("status") ?: 0,
+            status = sessionStatus,
             queuePosition = extractQueuePosition(session),
             seatSetupStep = session.obj("seatSetupInfo")?.int("seatSetupStep"),
             adState = extractAdState(session),
             zone = zone,
             streamingBaseUrl = base,
-            serverIp = signaling.serverIp,
-            signalingServer = signaling.signalingServer,
-            signalingUrl = signaling.signalingUrl,
+            serverIp = signaling?.serverIp.orEmpty(),
+            signalingServer = signaling?.signalingServer.orEmpty(),
+            signalingUrl = signaling?.signalingUrl.orEmpty(),
             gpuType = session.string("gpuType"),
             iceServers = normalizeIceServers(payload),
-            mediaConnectionInfo = signaling.mediaConnectionInfo,
+            mediaConnectionInfo = signaling?.mediaConnectionInfo,
             negotiatedStreamProfile = extractNegotiatedStreamProfile(session),
             requestedStreamingFeatures = normalizeStreamingFeatures(session.obj("sessionRequestData")?.obj("requestedStreamingFeatures")),
             finalizedStreamingFeatures = normalizeStreamingFeatures(session.obj("finalizedStreamingFeatures")),
@@ -1658,15 +1691,10 @@ class GfnSessionRepository(
 
     private fun resolvePollStopBase(zone: String, provided: String?, serverIp: String?): String {
         val base = resolveStreamingBaseUrl(zone, provided)
-        return if (serverIp != null && base.contains("cloudmatchbeta.nvidiagrid.net") && !isZoneHostname(serverIp)) "https://$serverIp" else base
+        val host = serverIp?.takeIf { it.isNotBlank() }
+        return if (host != null && base.contains("cloudmatchbeta.nvidiagrid.net") && !isZoneHostname(host)) "https://$host" else base
     }
 
-    private fun parseResolution(value: String): Pair<Int, Int> {
-        val parts = value.split("x")
-        val width = parts.getOrNull(0)?.toIntOrNull()
-        val height = parts.getOrNull(1)?.toIntOrNull()
-        return if (width != null && height != null && width > 0 && height > 0) width to height else 1920 to 1080
-    }
 }
 
 suspend fun fetchDynamicRegions(
@@ -1699,7 +1727,5 @@ suspend fun fetchDynamicRegions(
     }.getOrDefault(emptyList<StreamRegion>() to null)
 }
 
-private val primaryStores = setOf("STEAM", "EPIC", "EPIC_GAMES_STORE", "EGS", "XBOX", "XBOX_GAME_PASS", "MICROSOFT", "MICROSOFT_STORE")
-private fun normalizeGameStore(store: String): String = store.uppercase(Locale.US).replace(Regex("[\\s-]+"), "_")
 private fun String.normalizedTitleKey(): String = trim().lowercase(Locale.US).replace(Regex("[^a-z0-9]+"), " ").trim()
 private fun String.isNumeric(): Boolean = all(Char::isDigit)

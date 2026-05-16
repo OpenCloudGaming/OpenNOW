@@ -58,3 +58,4 @@ result
 .deriveddata-device/
 
 /android/app/.cxx
+/android/app/release/

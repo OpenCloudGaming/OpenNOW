@@ -145,3 +145,31 @@ test("does not duplicate primary catalog store variants from public data", () =>
 
   assert.deepEqual(game?.variants.map((variant) => variant.store), ["Steam"]);
 });
+
+test("does not add combined primary public store strings as launcher variants", () => {
+  const [game] = mergePublicGameVariants(
+    [
+      {
+        id: "m1",
+        title: "M1",
+        selectedVariantIndex: 0,
+        variants: [
+          { id: "steam", store: "Steam", supportedControls: [] },
+          { id: "epic", store: "Epic", supportedControls: [] },
+        ],
+        availableStores: ["Steam", "Epic"],
+      },
+    ],
+    [
+      publicGameToGameInfo({
+        id: 123,
+        title: "M1",
+        store: "EPIC,STEAM",
+        status: "AVAILABLE",
+      }),
+    ],
+  );
+
+  assert.deepEqual(game?.variants.map((variant) => variant.store), ["Steam", "Epic"]);
+  assert.deepEqual(game?.availableStores, ["Steam", "Epic"]);
+});

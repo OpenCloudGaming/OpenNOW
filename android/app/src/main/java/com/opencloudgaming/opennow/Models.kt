@@ -1,6 +1,8 @@
 package com.opencloudgaming.opennow
 
 import kotlinx.serialization.Serializable
+import java.util.Locale
+import kotlin.math.roundToInt
 
 @Serializable
 enum class VideoCodec {
@@ -37,6 +39,15 @@ enum class MicrophoneMode {
 }
 
 @Serializable
+enum class UiAccent {
+    OpenNow,
+    Pixel,
+    Lime,
+    Coral,
+    Violet,
+}
+
+@Serializable
 data class StreamSettings(
     val resolution: String = "1920x1080",
     val aspectRatio: String = "16:9",
@@ -58,7 +69,7 @@ data class StreamSettings(
 @Serializable
 data class AndroidTouchSettings(
     val enabled: Boolean = false,
-    val mousePad: Boolean = false,
+    val mousePad: Boolean = true,
     val opacity: Float = 0.82f,
     val scale: Float = 1f,
     val buttonScale: Float = 1f,
@@ -69,6 +80,11 @@ data class AndroidTouchSettings(
 data class AppSettings(
     val stream: StreamSettings = StreamSettings(),
     val posterSizeScale: Float = 1f,
+    val compactGameCards: Boolean = true,
+    val showGameStoreLabels: Boolean = true,
+    val expressiveUi: Boolean = true,
+    val dynamicColor: Boolean = true,
+    val uiAccent: UiAccent = UiAccent.OpenNow,
     val hideStreamButtons: Boolean = false,
     val showAntiAfkIndicator: Boolean = true,
     val showStatsOnLaunch: Boolean = false,
@@ -92,6 +108,32 @@ data class AppSettings(
     val autoCheckForUpdates: Boolean = true,
     val allowEscapeToExitFullscreen: Boolean = false,
 )
+
+internal fun streamResolutionPixels(settings: StreamSettings): Pair<Int, Int> {
+    val (baseWidth, baseHeight) = parseResolutionPixels(settings.resolution)
+    val ratio = parseAspectRatio(settings.aspectRatio) ?: return baseWidth to baseHeight
+    val fittedHeight = makeEven((baseWidth / ratio).roundToInt())
+    if (fittedHeight <= baseHeight) {
+        return baseWidth to fittedHeight.coerceAtLeast(360)
+    }
+    val fittedWidth = makeEven((baseHeight * ratio).roundToInt())
+    return fittedWidth.coerceAtLeast(640) to baseHeight
+}
+
+private fun parseResolutionPixels(value: String): Pair<Int, Int> {
+    val parts = value.split("x")
+    val width = parts.getOrNull(0)?.toIntOrNull()
+    val height = parts.getOrNull(1)?.toIntOrNull()
+    return if (width != null && height != null && width > 0 && height > 0) width to height else 1920 to 1080
+}
+
+private fun parseAspectRatio(value: String): Float? {
+    val width = value.substringBefore(":").toFloatOrNull()
+    val height = value.substringAfter(":", "").toFloatOrNull()
+    return if (width != null && height != null && width > 0f && height > 0f) width / height else null
+}
+
+private fun makeEven(value: Int): Int = if (value % 2 == 0) value else value + 1
 
 @Serializable
 data class ControllerThemeRgb(
@@ -228,6 +270,87 @@ data class GameInfo(
     val selectedVariantIndex: Int = 0,
     val variants: List<GameVariant> = emptyList(),
 )
+
+private val primaryCatalogStoreKeys = setOf(
+    "STEAM",
+    "EPIC",
+    "EPIC_GAMES_STORE",
+    "EGS",
+    "XBOX",
+    "XBOX_GAME_PASS",
+    "MICROSOFT",
+    "MICROSOFT_STORE",
+)
+
+internal fun normalizeGameStore(store: String): String =
+    store.uppercase(Locale.US).replace(Regex("[\\s-]+"), "_")
+
+internal fun splitGameStoreKeys(store: String): List<String> =
+    store.split(",")
+        .map { normalizeGameStore(it.trim()) }
+        .filter { it.isNotBlank() }
+
+internal fun isPrimaryCatalogStoreValue(store: String): Boolean {
+    val storeKeys = splitGameStoreKeys(store)
+    return storeKeys.isNotEmpty() && storeKeys.all { it in primaryCatalogStoreKeys }
+}
+
+internal fun gameStoreDisplayName(store: String): String {
+    val parts = store.split(",")
+        .map { it.trim() }
+        .filter { it.isNotBlank() }
+        .ifEmpty { listOf(store.trim()) }
+    return parts.map { part ->
+        when (normalizeGameStore(part)) {
+            "EPIC", "EGS", "EPIC_GAMES_STORE" -> "Epic"
+            "STEAM" -> "Steam"
+            "XBOX", "XBOX_GAME_PASS" -> "Xbox"
+            "MICROSOFT", "MICROSOFT_STORE" -> "Microsoft Store"
+            else -> part.replace('_', ' ').lowercase(Locale.US)
+                .split(Regex("\\s+"))
+                .filter { it.isNotBlank() }
+                .joinToString(" ") { word -> word.replaceFirstChar { char -> char.titlecase(Locale.US) } }
+                .ifBlank { "Unknown" }
+        }
+    }.distinct().joinToString(" / ")
+}
+
+internal fun launchableGameVariants(variants: List<GameVariant>): List<GameVariant> {
+    val uniqueVariants = variants.distinctBy { it.id }
+    val individualPrimaryStores = uniqueVariants
+        .map { splitGameStoreKeys(it.store) }
+        .filter { it.size == 1 && it.first() in primaryCatalogStoreKeys }
+        .flatten()
+        .toSet()
+    val filtered = uniqueVariants.filterNot { variant ->
+        val storeKeys = splitGameStoreKeys(variant.store)
+        storeKeys.size > 1 && storeKeys.all { it in individualPrimaryStores }
+    }
+    val byStore = linkedMapOf<String, GameVariant>()
+    for (variant in filtered) {
+        val storeKey = splitGameStoreKeys(variant.store).joinToString(",").ifBlank { normalizeGameStore(variant.store) }
+        val existing = byStore[storeKey]
+        if (existing == null || variantLaunchRank(variant) > variantLaunchRank(existing)) {
+            byStore[storeKey] = variant
+        }
+    }
+    return byStore.values.toList()
+}
+
+internal fun displayStoresForVariants(variants: List<GameVariant>): List<String> =
+    launchableGameVariants(variants)
+        .flatMap { variant -> gameStoreDisplayName(variant.store).split(" / ") }
+        .map { it.trim() }
+        .filter { it.isNotBlank() }
+        .distinctBy { normalizeGameStore(it) }
+
+private fun variantLaunchRank(variant: GameVariant): Int =
+    when {
+        variant.librarySelected == true -> 4
+        variant.libraryStatus in setOf("MANUAL", "PLATFORM_SYNC", "IN_LIBRARY") -> 3
+        variant.id.all(Char::isDigit) -> 2
+        else -> 1
+    }
 
 @Serializable
 data class CatalogFilterOption(

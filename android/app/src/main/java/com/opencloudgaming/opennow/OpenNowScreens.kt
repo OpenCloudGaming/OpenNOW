@@ -1,17 +1,30 @@
 package com.opencloudgaming.opennow
 
 import android.app.Activity
+import android.content.Intent
 import android.graphics.BitmapFactory
+import android.os.Build
+import android.speech.RecognizerIntent
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.View
-import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.core.MutableTransitionState
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -50,6 +63,7 @@ import androidx.compose.material3.ElevatedButton
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
@@ -63,6 +77,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -78,13 +93,15 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -97,6 +114,7 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import java.util.Locale
 import java.net.URL
 import kotlin.math.abs
 import kotlin.math.min
@@ -109,7 +127,31 @@ private val Panel = Color(0xff0d1a12)
 private val PanelAlt = Color(0xff13251a)
 private val TextPrimary = Color(0xffe5fff0)
 private val TextMuted = Color(0xff9fbea9)
+private val SettingsBackground = Color(0xff090b0d)
+private val SettingsPanel = Color(0xff11161a)
+private val SettingsPanelAlt = Color(0xff171d22)
+private val SettingsText = Color(0xffeef3f5)
+private val SettingsTextMuted = Color(0xff98a4aa)
 private const val TOUCH_MOUSE_TAP_SLOP_PX = 18f
+private const val TOUCH_MOUSE_DOUBLE_TAP_TIMEOUT_MS = 320L
+private const val TOUCH_MOUSE_DOUBLE_TAP_SLOP_PX = 36f
+private val UiAccent.color: Color
+    get() = when (this) {
+        UiAccent.OpenNow -> Green
+        UiAccent.Pixel -> Color(0xff8ab4f8)
+        UiAccent.Lime -> Color(0xffc7ef6b)
+        UiAccent.Coral -> Color(0xffff8d7a)
+        UiAccent.Violet -> Color(0xffc7a4ff)
+    }
+
+@Composable
+private fun uiAccentLabel(accent: UiAccent): String = when (accent) {
+    UiAccent.OpenNow -> stringResource(R.string.accent_opennow)
+    UiAccent.Pixel -> stringResource(R.string.accent_pixel)
+    UiAccent.Lime -> stringResource(R.string.accent_lime)
+    UiAccent.Coral -> stringResource(R.string.accent_coral)
+    UiAccent.Violet -> stringResource(R.string.accent_violet)
+}
 
 private class TouchMouseState {
     private var activePointerId = -1
@@ -117,13 +159,17 @@ private class TouchMouseState {
     private var downY = 0f
     private var lastX = 0f
     private var lastY = 0f
-    private var cursorX = Float.NaN
-    private var cursorY = Float.NaN
     private var moved = false
+    private var selecting = false
+    private var lastTapTimeMs = Long.MIN_VALUE
+    private var lastTapX = Float.NaN
+    private var lastTapY = Float.NaN
 
     fun handle(view: View, event: MotionEvent, enabled: Boolean, client: NativeStreamClient): Boolean {
         if (!enabled) {
+            if (selecting) client.setTouchMouseButton(false)
             activePointerId = -1
+            selecting = false
             return false
         }
 
@@ -135,12 +181,18 @@ private class TouchMouseState {
                 lastX = event.x
                 lastY = event.y
                 moved = false
-                moveCursorTo(event.x, event.y, view.width, view.height, client)
+                selecting = isDoubleTap(event)
+                if (selecting) {
+                    client.setTouchMouseButton(true)
+                    lastTapTimeMs = Long.MIN_VALUE
+                }
                 return true
             }
             MotionEvent.ACTION_POINTER_DOWN -> {
+                if (selecting) client.setTouchMouseButton(false)
                 activePointerId = -1
                 moved = true
+                selecting = false
                 return true
             }
             MotionEvent.ACTION_MOVE -> {
@@ -154,8 +206,6 @@ private class TouchMouseState {
                     moved = true
                 }
                 sendMouseDelta(dx, dy, client)
-                cursorX = (cursorX + dx).coerceIn(0f, view.width.toFloat())
-                cursorY = (cursorY + dy).coerceIn(0f, view.height.toFloat())
                 lastX = x
                 lastY = y
                 return true
@@ -163,29 +213,35 @@ private class TouchMouseState {
             MotionEvent.ACTION_UP -> {
                 val wasTap = activePointerId >= 0 && !moved
                 activePointerId = -1
+                if (selecting) {
+                    client.setTouchMouseButton(false)
+                    selecting = false
+                    return true
+                }
                 if (wasTap) {
                     client.sendTouchMouseClick()
+                    lastTapTimeMs = event.eventTime
+                    lastTapX = event.x
+                    lastTapY = event.y
                 }
                 return true
             }
             MotionEvent.ACTION_CANCEL -> {
+                if (selecting) client.setTouchMouseButton(false)
                 activePointerId = -1
+                selecting = false
                 return true
             }
         }
         return true
     }
 
-    private fun moveCursorTo(x: Float, y: Float, width: Int, height: Int, client: NativeStreamClient) {
-        if (!cursorX.isFinite() || !cursorY.isFinite()) {
-            cursorX = width / 2f
-            cursorY = height / 2f
-        }
-        val targetX = x.coerceIn(0f, width.toFloat())
-        val targetY = y.coerceIn(0f, height.toFloat())
-        sendMouseDelta(targetX - cursorX, targetY - cursorY, client)
-        cursorX = targetX
-        cursorY = targetY
+    private fun isDoubleTap(event: MotionEvent): Boolean {
+        if (lastTapTimeMs == Long.MIN_VALUE) return false
+        if (event.eventTime - lastTapTimeMs > TOUCH_MOUSE_DOUBLE_TAP_TIMEOUT_MS) return false
+        if (!lastTapX.isFinite() || !lastTapY.isFinite()) return false
+        return abs(event.x - lastTapX) <= TOUCH_MOUSE_DOUBLE_TAP_SLOP_PX &&
+            abs(event.y - lastTapY) <= TOUCH_MOUSE_DOUBLE_TAP_SLOP_PX
     }
 
     private fun sendMouseDelta(dx: Float, dy: Float, client: NativeStreamClient) {
@@ -198,18 +254,26 @@ private class TouchMouseState {
 }
 
 @Composable
-fun OpenNowTheme(content: @Composable () -> Unit) {
+fun OpenNowTheme(settings: AppSettings, content: @Composable () -> Unit) {
+    val context = LocalContext.current
+    val accent = settings.uiAccent.color
+    val fallbackScheme = darkColorScheme(
+        primary = accent,
+        onPrimary = Color(0xff031008),
+        background = Background,
+        surface = Panel,
+        surfaceVariant = PanelAlt,
+        onBackground = TextPrimary,
+        onSurface = TextPrimary,
+        onSurfaceVariant = TextMuted,
+    )
+    val colorScheme = if (settings.dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        dynamicDarkColorScheme(context)
+    } else {
+        fallbackScheme
+    }
     MaterialTheme(
-        colorScheme = darkColorScheme(
-            primary = Green,
-            onPrimary = Color(0xff031008),
-            background = Background,
-            surface = Panel,
-            surfaceVariant = PanelAlt,
-            onBackground = TextPrimary,
-            onSurface = TextPrimary,
-            onSurfaceVariant = TextMuted,
-        ),
+        colorScheme = colorScheme,
         content = content,
     )
 }
@@ -218,11 +282,14 @@ fun OpenNowTheme(content: @Composable () -> Unit) {
 fun OpenNowApp(viewModel: OpenNowViewModel) {
     val state by viewModel.state.collectAsStateWithLifecycle()
 
-    Surface(Modifier.fillMaxSize(), color = Background) {
-        when {
-            state.initializing -> LoadingScreen(state.launchPhase.ifBlank { "Starting OpenNOW" })
-            state.authSession == null -> LoginScreen(state, viewModel)
-            else -> MainShell(state, viewModel)
+    OpenNowTheme(state.settings) {
+        Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+            val startingText = stringResource(R.string.status_starting_opennow)
+            when {
+                state.initializing -> LoadingScreen(state.launchPhase.ifBlank { startingText })
+                state.authSession == null -> LoginScreen(state, viewModel)
+                else -> MainShell(state, viewModel)
+            }
         }
     }
 }
@@ -267,27 +334,34 @@ private fun LoginScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
 @Composable
 private fun MainShell(state: OpenNowUiState, viewModel: OpenNowViewModel) {
     val inStream = state.page == AppPage.Stream
+    val modalPickerOpen = state.pendingPrintedWasteGame != null || state.pendingStoreChoiceGame != null
+    BackHandler(enabled = state.selectedGame != null && !inStream) {
+        viewModel.clearSelectedGame()
+    }
     Scaffold(
         bottomBar = {
             if (!inStream) {
-                NavigationBar(containerColor = Color(0xff08150d), tonalElevation = 3.dp) {
+                NavigationBar(
+                    containerColor = if (state.page == AppPage.Settings) SettingsBackground else MaterialTheme.colorScheme.background,
+                    tonalElevation = 0.dp,
+                ) {
                     BottomNavItem(
                         selected = state.page == AppPage.Home,
                         onClick = { viewModel.setPage(AppPage.Home) },
                         iconRes = R.drawable.ic_tab_store,
-                        label = "Store",
+                        label = stringResource(R.string.nav_store),
                     )
                     BottomNavItem(
                         selected = state.page == AppPage.Library,
                         onClick = { viewModel.setPage(AppPage.Library) },
                         iconRes = R.drawable.ic_tab_library,
-                        label = "Library",
+                        label = stringResource(R.string.nav_library),
                     )
                     BottomNavItem(
                         selected = state.page == AppPage.Settings,
                         onClick = { viewModel.setPage(AppPage.Settings) },
                         iconRes = R.drawable.ic_tab_settings,
-                        label = "Settings",
+                        label = stringResource(R.string.nav_settings),
                     )
                 }
             }
@@ -307,8 +381,43 @@ private fun MainShell(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                     }
                 }
             }
+            AnimatedVisibility(
+                visible = state.selectedGame != null && !inStream && !modalPickerOpen,
+                enter = fadeIn() + slideInVertically(initialOffsetY = { it / 3 }) + scaleIn(initialScale = 0.96f),
+                exit = fadeOut() + slideOutVertically(targetOffsetY = { it / 3 }) + scaleOut(targetScale = 0.96f),
+                modifier = Modifier.align(Alignment.Center),
+            ) {
+                state.selectedGame?.let { game ->
+                    GameDetailsSheet(
+                        game = game,
+                        favorite = game.id in state.settings.favoriteGameIds,
+                        onPlay = viewModel::play,
+                        onFavorite = viewModel::updateFavorites,
+                        onDismiss = viewModel::clearSelectedGame,
+                    )
+                }
+            }
             state.pendingPrintedWasteGame?.let { game ->
-                PrintedWasteSelector(state, game, viewModel, Modifier.align(Alignment.Center))
+                AnimatedLaunchOverlay(Modifier.align(Alignment.Center)) {
+                    PrintedWasteSelector(state, game, viewModel)
+                }
+            }
+            state.pendingStoreChoiceGame?.let { game ->
+                AnimatedLaunchOverlay(Modifier.align(Alignment.Center)) {
+                    StoreLaunchSelector(
+                        game = game,
+                        onLaunch = viewModel::playVariant,
+                        onDismiss = viewModel::dismissStoreChoice,
+                    )
+                }
+            }
+            if (state.streamLaunchMinimized && shouldShowQueueLaunchStatus(state)) {
+                MinimizedQueuePill(
+                    state = state,
+                    onRestore = viewModel::restoreStreamLaunch,
+                    onCancel = viewModel::stopStream,
+                    modifier = Modifier.align(Alignment.BottomCenter),
+                )
             }
         }
     }
@@ -332,87 +441,214 @@ private fun RowScope.BottomNavItem(selected: Boolean, onClick: () -> Unit, iconR
 
 @Composable
 private fun TopStatusBar(state: OpenNowUiState) {
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .background(Color(0xff061009))
-            .padding(horizontal = 14.dp, vertical = 10.dp),
-        verticalAlignment = Alignment.CenterVertically,
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        color = MaterialTheme.colorScheme.background,
+        tonalElevation = 0.dp,
+        shadowElevation = 0.dp,
     ) {
-        OpenNowMark(34.dp)
-        Spacer(Modifier.width(10.dp))
-        Column(Modifier.weight(1f)) {
-            Text(state.authSession?.user?.displayName ?: "OpenNOW", fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            val tier = state.subscriptionInfo?.membershipTier ?: state.authSession?.user?.membershipTier ?: "GFN"
-            Text("$tier ${state.activeSession?.let { "  Active session ${it.sessionId.take(8)}" } ?: ""}", color = TextMuted, style = MaterialTheme.typography.bodySmall)
+        Row(
+            Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            OpenNowMark(34.dp)
+            Spacer(Modifier.width(10.dp))
+            Column(Modifier.weight(1f)) {
+                Text(state.authSession?.user?.displayName ?: "OpenNOW", fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                val tier = state.subscriptionInfo?.membershipTier ?: state.authSession?.user?.membershipTier ?: "GFN"
+                Text("$tier ${state.activeSession?.let { "  Active session ${it.sessionId.take(8)}" } ?: ""}", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
+            }
         }
-        if (state.loadingGames) {
-            CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp)
+    }
+}
+
+@Composable
+private fun NativeSearchField(
+    query: String,
+    onQueryChange: (String) -> Unit,
+    placeholder: String,
+    searching: Boolean = false,
+    modifier: Modifier = Modifier,
+) {
+    val speechLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            val spoken = result.data
+                ?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
+                ?.firstOrNull()
+            if (!spoken.isNullOrBlank()) onQueryChange(spoken)
+        }
+    }
+    val voiceSearchIntent = remember(placeholder) {
+        Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
+            .putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            .putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault())
+            .putExtra(RecognizerIntent.EXTRA_PROMPT, placeholder)
+    }
+    Surface(
+        modifier = modifier.height(56.dp),
+        shape = RoundedCornerShape(28.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.72f),
+        tonalElevation = 2.dp,
+    ) {
+        Row(
+            Modifier
+                .fillMaxSize()
+                .padding(start = 18.dp, end = if (query.isBlank()) 18.dp else 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Icon(
+                painter = painterResource(R.drawable.ic_search),
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(22.dp),
+            )
+            BasicTextField(
+                value = query,
+                onValueChange = onQueryChange,
+                singleLine = true,
+                textStyle = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.onSurface),
+                cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                modifier = Modifier.weight(1f),
+                decorationBox = { innerTextField ->
+                    Box(Modifier.fillMaxWidth()) {
+                        if (query.isBlank()) {
+                            Text(
+                                placeholder,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                        innerTextField()
+                    }
+                },
+            )
+            if (query.isNotBlank()) {
+                if (searching) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(18.dp),
+                        strokeWidth = 2.dp,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                }
+                IconButton(onClick = { onQueryChange("") }) {
+                    Icon(
+                        painter = painterResource(R.drawable.ic_clear),
+                        contentDescription = stringResource(R.string.search_clear),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(26.dp),
+                    )
+                }
+            } else {
+                if (searching) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(18.dp),
+                        strokeWidth = 2.dp,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                }
+                IconButton(onClick = { runCatching { speechLauncher.launch(voiceSearchIntent) } }) {
+                    Icon(
+                        painter = painterResource(R.drawable.ic_mic),
+                        contentDescription = stringResource(R.string.search_voice),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(22.dp),
+                    )
+                }
+            }
         }
     }
 }
 
 @Composable
 private fun HomeScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
+    val visibleGames = state.games.ifEmpty { state.catalogResult.games }
+    val searchingCatalog = state.loadingGames && state.catalogSearch.isNotBlank()
     SwipeToRefreshContainer(
         refreshing = state.loadingGames,
+        showRefreshIndicator = !searchingCatalog,
         onRefresh = viewModel::refreshGames,
         modifier = Modifier.fillMaxSize(),
     ) {
-    Column(Modifier.fillMaxSize().padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        OutlinedTextField(
-            modifier = Modifier.fillMaxWidth(),
-            value = state.catalogSearch,
-            onValueChange = viewModel::setCatalogSearch,
-            singleLine = true,
-            placeholder = { Text("Search games", maxLines = 1, overflow = TextOverflow.Ellipsis) },
-        )
-        SortPicker(state.catalogResult.sortOptions, state.catalogSortId, viewModel::setCatalogSort)
-        FilterRow(state.catalogResult.filterGroups, state.catalogFilterIds, viewModel::toggleCatalogFilter)
-        AnimatedVisibility(state.error != null) {
-            Text(state.error.orEmpty(), color = Color(0xffff9f9f), modifier = Modifier.padding(horizontal = 4.dp))
-        }
-        if (state.loadingGames && state.games.isEmpty()) {
-            LoadingScreen("Loading games")
-        } else {
-            GameGrid(
-                games = state.games.ifEmpty { state.catalogResult.games },
-                favoriteIds = state.settings.favoriteGameIds,
-                onSelect = viewModel::selectGame,
-                onFavorite = viewModel::updateFavorites,
-                onPlay = viewModel::play,
+        Column(Modifier.fillMaxSize().padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            NativeSearchField(
+                modifier = Modifier.fillMaxWidth(),
+                query = state.catalogSearch,
+                onQueryChange = viewModel::setCatalogSearch,
+                placeholder = stringResource(R.string.search_games),
+                searching = searchingCatalog,
             )
+            SortPicker(state.catalogResult.sortOptions, state.catalogSortId, viewModel::setCatalogSort)
+            FilterRow(state.catalogResult.filterGroups, state.catalogFilterIds, viewModel::toggleCatalogFilter)
+            AnimatedVisibility(state.error != null) {
+                Text(state.error.orEmpty(), color = Color(0xffff9f9f), modifier = Modifier.padding(horizontal = 4.dp))
+            }
+            if (state.loadingGames && visibleGames.isEmpty()) {
+                RefreshingGamesPlaceholder(Modifier.weight(1f))
+            } else {
+                GameGrid(
+                    games = visibleGames,
+                    favoriteIds = state.settings.favoriteGameIds,
+                    settings = state.settings,
+                    onSelect = viewModel::selectGame,
+                    onFavorite = viewModel::updateFavorites,
+                    onPlay = viewModel::play,
+                    modifier = Modifier.weight(1f),
+                )
+            }
         }
-    }
     }
 }
 
 @Composable
 private fun LibraryScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
     val favorites = state.libraryGames.filter { it.id in state.settings.favoriteGameIds }
-    val games = if (favorites.isNotEmpty()) favorites + state.libraryGames.filterNot { it.id in state.settings.favoriteGameIds } else state.libraryGames
+    val orderedGames = if (favorites.isNotEmpty()) favorites + state.libraryGames.filterNot { it.id in state.settings.favoriteGameIds } else state.libraryGames
+    val games = orderedGames.filter { gameMatchesSearch(it, state.librarySearch) }
     SwipeToRefreshContainer(
         refreshing = state.loadingGames,
         onRefresh = viewModel::refreshGames,
         modifier = Modifier.fillMaxSize(),
     ) {
-    Column(Modifier.fillMaxSize().padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f)) {
-                Text("Library", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-                Text("${state.libraryGames.size} games", color = TextMuted)
+        Column(Modifier.fillMaxSize().padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(stringResource(R.string.nav_library), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                    Text(stringResource(R.string.library_count, state.libraryGames.size), color = TextMuted)
+                }
+                state.activeSession?.let { active ->
+                    ElevatedButton(
+                        onClick = {
+                            val game = (state.games + state.libraryGames).firstOrNull { it.launchAppId == active.appId.toString() }
+                            if (game != null) viewModel.play(game)
+                        },
+                    ) { Text(stringResource(R.string.action_resume)) }
+                }
             }
-            state.activeSession?.let { active ->
-                ElevatedButton(
-                    onClick = {
-                        val game = (state.games + state.libraryGames).firstOrNull { it.launchAppId == active.appId.toString() }
-                        if (game != null) viewModel.play(game)
-                    },
-                ) { Text("Resume") }
-            }
+            NativeSearchField(
+                modifier = Modifier.fillMaxWidth(),
+                query = state.librarySearch,
+                onQueryChange = viewModel::setLibrarySearch,
+                placeholder = "Search library",
+            )
+            GameGrid(
+                games,
+                state.settings.favoriteGameIds,
+                state.settings,
+                viewModel::selectGame,
+                viewModel::updateFavorites,
+                viewModel::play,
+                modifier = Modifier.weight(1f),
+            )
         }
-        GameGrid(games, state.settings.favoriteGameIds, viewModel::selectGame, viewModel::updateFavorites, viewModel::play)
     }
+}
+
+@Composable
+private fun RefreshingGamesPlaceholder(modifier: Modifier = Modifier) {
+    Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        Text("Loading games", color = TextMuted)
     }
 }
 
@@ -421,6 +657,7 @@ private fun SwipeToRefreshContainer(
     refreshing: Boolean,
     onRefresh: () -> Unit,
     modifier: Modifier = Modifier,
+    showRefreshIndicator: Boolean = true,
     content: @Composable () -> Unit,
 ) {
     var dragDistance by remember { mutableFloatStateOf(0f) }
@@ -443,7 +680,7 @@ private fun SwipeToRefreshContainer(
     ) {
         content()
         AnimatedVisibility(
-            visible = refreshing || dragDistance > 40f,
+            visible = showRefreshIndicator && (refreshing || dragDistance > 40f),
             modifier = Modifier.align(Alignment.TopCenter).padding(top = 8.dp),
         ) {
             Surface(
@@ -469,24 +706,30 @@ private fun SwipeToRefreshContainer(
 private fun GameGrid(
     games: List<GameInfo>,
     favoriteIds: List<String>,
+    settings: AppSettings,
     onSelect: (GameInfo) -> Unit,
     onFavorite: (String) -> Unit,
     onPlay: (GameInfo) -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     if (games.isEmpty()) {
-        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Text("No games loaded", color = TextMuted)
+        Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Text(stringResource(R.string.no_games_loaded), color = TextMuted)
         }
         return
     }
+    val scale = settings.posterSizeScale.coerceIn(0.82f, 1.08f)
+    val compact = settings.compactGameCards
+    val cardHeight = if (compact) 252.dp else 286.dp
     LazyVerticalGrid(
-        columns = GridCells.Adaptive(136.dp),
+        modifier = modifier.fillMaxSize(),
+        columns = GridCells.Fixed(2),
         contentPadding = PaddingValues(4.dp),
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
+        horizontalArrangement = Arrangement.spacedBy(if (compact) 8.dp else 10.dp),
+        verticalArrangement = Arrangement.spacedBy(if (compact) 10.dp else 12.dp),
     ) {
         gridItems(games, key = { it.id }) { game ->
-            GameCard(game, game.id in favoriteIds, onSelect, onFavorite, onPlay)
+            GameCard(game, game.id in favoriteIds, settings, cardHeight * scale, onSelect, onFavorite, onPlay)
         }
     }
 }
@@ -495,6 +738,8 @@ private fun GameGrid(
 private fun GameCard(
     game: GameInfo,
     favorite: Boolean,
+    settings: AppSettings,
+    cardHeight: androidx.compose.ui.unit.Dp,
     onSelect: (GameInfo) -> Unit,
     onFavorite: (String) -> Unit,
     onPlay: (GameInfo) -> Unit,
@@ -502,21 +747,357 @@ private fun GameCard(
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable { onSelect(game) },
-        colors = CardDefaults.cardColors(containerColor = Panel),
-        shape = RoundedCornerShape(8.dp),
+            .height(cardHeight),
+        colors = CardDefaults.cardColors(
+            containerColor = if (settings.expressiveUi) MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.72f) else Panel,
+        ),
+        shape = RoundedCornerShape(if (settings.expressiveUi) 12.dp else 8.dp),
     ) {
-        Box {
-            UrlImage(game.imageUrl, Modifier.fillMaxWidth().aspectRatio(0.66f))
+        Box(
+            Modifier
+                .weight(1f)
+                .clickable { onSelect(game) },
+        ) {
+            UrlImage(game.imageUrl, Modifier.fillMaxSize())
             TextButton(
                 onClick = { onFavorite(game.id) },
                 modifier = Modifier.align(Alignment.TopEnd),
-            ) { Text(if (favorite) "Saved" else "Save") }
+            ) { Text(if (favorite) stringResource(R.string.action_saved) else stringResource(R.string.action_save)) }
         }
-        Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text(game.title, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis)
-            Text(game.availableStores.joinToString(", ").ifBlank { "GeForce NOW" }, color = TextMuted, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Button(onClick = { onPlay(game) }, modifier = Modifier.fillMaxWidth()) { Text("Play") }
+        Column(
+            Modifier
+                .clickable { onSelect(game) }
+                .padding(9.dp),
+            verticalArrangement = Arrangement.spacedBy(5.dp),
+        ) {
+            Text(
+                game.title,
+                fontWeight = FontWeight.Bold,
+                minLines = 2,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            if (settings.showGameStoreLabels) {
+                Text(displayStoresForGame(game), color = TextMuted, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelMedium)
+            }
+        }
+        Box(Modifier.padding(start = 9.dp, end = 9.dp, bottom = 9.dp)) {
+            Button(onClick = { onPlay(game) }, modifier = Modifier.fillMaxWidth(), contentPadding = PaddingValues(vertical = 6.dp)) {
+                Text(stringResource(R.string.action_play), maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+        }
+    }
+}
+
+private fun displayStoresForGame(game: GameInfo): String {
+    val stores = displayStoresForVariants(game.variants).ifEmpty {
+        game.availableStores.map(::gameStoreDisplayName)
+    }.distinctBy { normalizeGameStore(it) }
+    return stores.joinToString(", ").ifBlank { "GeForce NOW" }
+}
+
+@Composable
+private fun AnimatedLaunchOverlay(modifier: Modifier = Modifier, content: @Composable () -> Unit) {
+    val visibleState = remember {
+        MutableTransitionState(false).apply {
+            targetState = true
+        }
+    }
+    AnimatedVisibility(
+        visibleState = visibleState,
+        enter = fadeIn() + slideInVertically(initialOffsetY = { it / 4 }) + scaleIn(initialScale = 0.94f),
+        exit = fadeOut() + slideOutVertically(targetOffsetY = { it / 4 }) + scaleOut(targetScale = 0.94f),
+        modifier = modifier,
+    ) {
+        content()
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun GameDetailsSheet(
+    game: GameInfo,
+    favorite: Boolean,
+    onPlay: (GameInfo) -> Unit,
+    onFavorite: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    Box(
+        Modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.72f))
+            .clickable(onClick = onDismiss),
+        contentAlignment = Alignment.BottomCenter,
+    ) {
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .fillMaxHeight(0.92f)
+                .clickable(onClick = {}),
+            shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
+            color = Panel,
+            tonalElevation = 8.dp,
+        ) {
+            Column(Modifier.fillMaxSize()) {
+                LazyColumn(
+                    modifier = Modifier.weight(1f),
+                    contentPadding = PaddingValues(bottom = 18.dp),
+                    verticalArrangement = Arrangement.spacedBy(14.dp),
+                ) {
+                    item {
+                        Box(
+                            Modifier
+                                .fillMaxWidth()
+                                .height(220.dp),
+                        ) {
+                            UrlImage(
+                                game.screenshotUrl ?: game.imageUrl,
+                                Modifier.fillMaxSize(),
+                            )
+                            Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.28f)))
+                            FavoriteIconButton(
+                                favorite = favorite,
+                                onClick = { onFavorite(game.id) },
+                                modifier = Modifier
+                                    .align(Alignment.TopEnd)
+                                    .padding(10.dp),
+                            )
+                            Column(
+                                Modifier
+                                    .align(Alignment.BottomStart)
+                                    .padding(18.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp),
+                            ) {
+                                Text(
+                                    game.title,
+                                    style = MaterialTheme.typography.headlineSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                                Text(displayStoresForGame(game), color = TextMuted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            }
+                        }
+                    }
+                    item {
+                        Column(Modifier.padding(horizontal = 18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                            val description = game.longDescription?.takeIf { it.isNotBlank() }
+                                ?: game.description?.takeIf { it.isNotBlank() }
+                            if (description != null) {
+                                Text(description, color = TextPrimary, style = MaterialTheme.typography.bodyMedium)
+                            } else {
+                                Text("No description is available for this game yet.", color = TextMuted)
+                            }
+                            val chips = (game.featureLabels + game.genres + listOfNotNull(game.playType, game.membershipTierLabel))
+                                .map { it.trim() }
+                                .filter { it.isNotBlank() }
+                                .distinct()
+                            if (chips.isNotEmpty()) {
+                                FlowRow(horizontalArrangement = Arrangement.spacedBy(7.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                                    chips.take(12).forEach { label ->
+                                        AssistChip(onClick = {}, label = { Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis) })
+                                    }
+                                }
+                            }
+                            DetailRows(game)
+                            if (game.variants.isNotEmpty()) {
+                                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Text("Launch options", color = TextMuted, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+                                    launchableGameVariants(game.variants).forEach { variant ->
+                                        Surface(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            shape = RoundedCornerShape(14.dp),
+                                            color = PanelAlt,
+                                        ) {
+                                            Row(
+                                                Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                            ) {
+                                                Column(Modifier.weight(1f)) {
+                                                    Text(gameStoreDisplayName(variant.store), fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                                    val details = listOfNotNull(
+                                                        variant.libraryStatus?.takeIf { it.isNotBlank() },
+                                                        variant.supportedControls.takeIf { it.isNotEmpty() }?.joinToString(", "),
+                                                        variant.lastPlayedDate?.takeIf { it.isNotBlank() }?.let { "Last played $it" },
+                                                    ).joinToString(" · ")
+                                                    if (details.isNotBlank()) {
+                                                        Text(details, color = TextMuted, style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                Surface(color = Panel.copy(alpha = 0.98f), tonalElevation = 8.dp) {
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 14.dp, vertical = 12.dp),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        OutlinedButton(onClick = onDismiss, modifier = Modifier.weight(0.8f)) {
+                            Text("Dismiss", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        }
+                        Button(
+                            onClick = {
+                                onDismiss()
+                                onPlay(game)
+                            },
+                            modifier = Modifier.weight(1.2f),
+                        ) {
+                            Text(stringResource(R.string.action_play), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun FavoriteIconButton(favorite: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
+    Surface(
+        modifier = modifier.size(44.dp),
+        shape = CircleShape,
+        color = Color.Black.copy(alpha = 0.52f),
+        tonalElevation = 3.dp,
+    ) {
+        IconButton(onClick = onClick) {
+            Text(
+                if (favorite) "★" else "☆",
+                color = if (favorite) Green else TextPrimary,
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold,
+            )
+        }
+    }
+}
+
+@Composable
+private fun DetailRows(game: GameInfo) {
+    val rows = listOfNotNull(
+        game.publisherName?.takeIf { it.isNotBlank() }?.let { "Publisher" to it },
+        game.playabilityState?.takeIf { it.isNotBlank() }?.let { "Status" to it },
+        game.contentRatings.takeIf { it.isNotEmpty() }?.joinToString(", ")?.let { "Rating" to it },
+        game.lastPlayed?.takeIf { it.isNotBlank() }?.let { "Last played" to it },
+        game.availableStores.takeIf { it.isNotEmpty() }?.map(::gameStoreDisplayName)?.distinct()?.joinToString(", ")?.let { "Stores" to it },
+    )
+    if (rows.isEmpty()) return
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        rows.forEach { (label, value) ->
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(PanelAlt)
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.Top,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Text(label, color = TextMuted, style = MaterialTheme.typography.bodySmall, modifier = Modifier.width(92.dp))
+                Text(value, color = TextPrimary, style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
+            }
+        }
+    }
+}
+
+private fun gameMatchesSearch(game: GameInfo, query: String): Boolean {
+    val normalized = query.trim().lowercase()
+    if (normalized.isBlank()) return true
+    val haystack = buildString {
+        append(game.title).append(' ')
+        append(game.description.orEmpty()).append(' ')
+        append(game.longDescription.orEmpty()).append(' ')
+        append(game.publisherName.orEmpty()).append(' ')
+        append(game.genres.joinToString(" ")).append(' ')
+        append(game.featureLabels.joinToString(" ")).append(' ')
+        append(displayStoresForGame(game))
+    }.lowercase()
+    return normalized.split(Regex("\\s+")).all { it in haystack }
+}
+
+@Composable
+private fun StoreLaunchSelector(
+    game: GameInfo,
+    onLaunch: (GameInfo, GameVariant) -> Unit,
+    onDismiss: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val variants = remember(game) { launchableGameVariants(game.variants) }
+    Box(
+        Modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.72f))
+            .clickable(enabled = false) {},
+        contentAlignment = Alignment.Center,
+    ) {
+        Card(
+            modifier = modifier
+                .fillMaxWidth(0.92f)
+                .fillMaxHeight(0.58f),
+            colors = CardDefaults.cardColors(containerColor = Panel),
+            shape = RoundedCornerShape(22.dp),
+        ) {
+            Column(Modifier.fillMaxSize().padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    UrlImage(
+                        game.imageUrl,
+                        Modifier
+                            .width(58.dp)
+                            .height(76.dp)
+                            .clip(RoundedCornerShape(12.dp)),
+                    )
+                    Spacer(Modifier.width(12.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(game.title, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text("Choose launcher", color = TextMuted, style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+
+                LazyColumn(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    items(variants, key = { it.id }) { variant ->
+                        Surface(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { onLaunch(game, variant) },
+                            shape = RoundedCornerShape(14.dp),
+                            color = PanelAlt,
+                        ) {
+                            Row(
+                                Modifier.padding(14.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            ) {
+                                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                    Text(gameStoreDisplayName(variant.store), fontWeight = FontWeight.Bold)
+                                    val details = listOfNotNull(
+                                        variant.libraryStatus?.takeIf { it.isNotBlank() },
+                                        variant.supportedControls.takeIf { it.isNotEmpty() }?.joinToString(", "),
+                                    ).joinToString(" · ")
+                                    if (details.isNotBlank()) {
+                                        Text(details, color = TextMuted, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                    }
+                                }
+                                Button(onClick = { onLaunch(game, variant) }) { Text("Launch") }
+                            }
+                        }
+                    }
+                }
+
+                TextButton(onClick = onDismiss, modifier = Modifier.align(Alignment.End)) {
+                    Text("Cancel")
+                }
+            }
         }
     }
 }
@@ -526,36 +1107,38 @@ private fun GameCard(
 private fun SettingsScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
     val settings = state.settings
     LazyColumn(
-        Modifier.fillMaxSize(),
+        Modifier
+            .fillMaxSize()
+            .background(SettingsBackground),
         contentPadding = PaddingValues(14.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         item {
-            SettingsSection("Stream") {
-                ChoiceRow("Resolution", listOf("1280x720", "1920x1080", "2560x1440", "3840x2160"), settings.stream.resolution) {
+            SettingsSection(stringResource(R.string.settings_section_stream)) {
+                ChoiceRow(stringResource(R.string.settings_resolution), listOf("1280x720", "1920x1080", "2560x1440", "3840x2160"), settings.stream.resolution) {
                     viewModel.updateStreamSettings { s -> s.copy(resolution = it) }
                 }
-                ChoiceRow("Aspect ratio", listOf("16:9", "16:10", "21:9", "32:9"), settings.stream.aspectRatio) {
+                ChoiceRow(stringResource(R.string.settings_aspect_ratio), listOf("16:9", "16:10", "21:9", "32:9"), settings.stream.aspectRatio) {
                     viewModel.updateStreamSettings { s -> s.copy(aspectRatio = it) }
                 }
-                NumberSlider("FPS", settings.stream.fps.toFloat(), 30f, 240f, 30f) {
+                NumberSlider(stringResource(R.string.settings_fps), settings.stream.fps.toFloat(), 30f, 240f, 30f) {
                     viewModel.updateStreamSettings { s -> s.copy(fps = it.roundToInt()) }
                 }
-                NumberSlider("Bitrate Mbps", settings.stream.maxBitrateMbps.toFloat(), 1f, 150f, 1f) {
+                NumberSlider(stringResource(R.string.settings_bitrate), settings.stream.maxBitrateMbps.toFloat(), 1f, 150f, 1f) {
                     viewModel.updateStreamSettings { s -> s.copy(maxBitrateMbps = it.roundToInt()) }
                 }
-                ChoiceRow("Codec", VideoCodec.entries.map { it.name }, settings.stream.codec.name) {
+                ChoiceRow(stringResource(R.string.settings_codec), VideoCodec.entries.map { it.name }, settings.stream.codec.name) {
                     viewModel.updateStreamSettings { s -> s.copy(codec = VideoCodec.valueOf(it)) }
                 }
-                ChoiceRow("Color", ColorQuality.entries.map { it.label }, settings.stream.colorQuality.label) { label ->
+                ChoiceRow(stringResource(R.string.settings_color), ColorQuality.entries.map { it.label }, settings.stream.colorQuality.label) { label ->
                     viewModel.updateStreamSettings { s -> s.copy(colorQuality = ColorQuality.entries.first { it.label == label }) }
                 }
-                ChoiceRow("Region", listOf("Auto") + state.regions.map { it.name }, state.regions.firstOrNull { it.url == settings.stream.region }?.name ?: "Auto") { label ->
+                ChoiceRow(stringResource(R.string.settings_region), listOf(stringResource(R.string.option_auto)) + state.regions.map { it.name }, state.regions.firstOrNull { it.url == settings.stream.region }?.name ?: stringResource(R.string.option_auto)) { label ->
                     val url = state.regions.firstOrNull { it.name == label }?.url.orEmpty()
                     viewModel.updateStreamSettings { s -> s.copy(region = url) }
                 }
-                SettingSwitch("L4S", settings.stream.enableL4S) { viewModel.updateStreamSettings { s -> s.copy(enableL4S = it) } }
-                SettingSwitch("Cloud G-Sync / VRR request", settings.stream.enableCloudGsync) { viewModel.updateStreamSettings { s -> s.copy(enableCloudGsync = it) } }
+                SettingSwitch(stringResource(R.string.settings_l4s), settings.stream.enableL4S) { viewModel.updateStreamSettings { s -> s.copy(enableL4S = it) } }
+                SettingSwitch(stringResource(R.string.settings_cloud_gsync), settings.stream.enableCloudGsync) { viewModel.updateStreamSettings { s -> s.copy(enableCloudGsync = it) } }
             }
         }
         item {
@@ -575,7 +1158,7 @@ private fun SettingsScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                 SettingSwitch("Clipboard paste", settings.clipboardPaste) { enabled -> viewModel.updateSettings(settings.copy(clipboardPaste = enabled)) }
                 SettingSwitch("Native mouse capture", settings.mouseCapture) { enabled -> viewModel.updateSettings(settings.copy(mouseCapture = enabled)) }
                 SettingSwitch("Touch controls", settings.androidTouch.enabled) { enabled -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(enabled = enabled))) }
-                SettingSwitch("Finger mouse pad", settings.androidTouch.mousePad) { enabled -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(mousePad = enabled))) }
+                SettingSwitch("Finger mouse", settings.androidTouch.mousePad) { enabled -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(mousePad = enabled))) }
                 NumberSlider("Touch layout scale", settings.androidTouch.scale, 0.6f, 1.4f, 0.05f) { value -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(scale = value))) }
                 NumberSlider("Touch button size", settings.androidTouch.buttonScale, 0.65f, 1.5f, 0.05f) { value -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(buttonScale = value))) }
                 NumberSlider("Touch stick size", settings.androidTouch.stickScale, 0.65f, 1.5f, 0.05f) { value -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(stickScale = value))) }
@@ -583,22 +1166,33 @@ private fun SettingsScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
             }
         }
         item {
-            SettingsSection("Interface") {
-                SettingSwitch("Hide stream buttons", settings.hideStreamButtons) { viewModel.updateSettings(settings.copy(hideStreamButtons = it)) }
-                SettingSwitch("Show stats on launch", settings.showStatsOnLaunch) { viewModel.updateSettings(settings.copy(showStatsOnLaunch = it)) }
-                SettingSwitch("Hide server selector", settings.hideServerSelector) { viewModel.updateSettings(settings.copy(hideServerSelector = it)) }
-                SettingSwitch("Controller mode", settings.controllerMode) { viewModel.updateSettings(settings.copy(controllerMode = it)) }
-                SettingSwitch("Controller UI sounds", settings.controllerUiSounds) { viewModel.updateSettings(settings.copy(controllerUiSounds = it)) }
-                SettingSwitch("Controller background animations", settings.controllerBackgroundAnimations) { viewModel.updateSettings(settings.copy(controllerBackgroundAnimations = it)) }
-                SettingSwitch("Controller library game backdrop", settings.controllerLibraryGameBackdrop) { viewModel.updateSettings(settings.copy(controllerLibraryGameBackdrop = it)) }
-                SettingSwitch("Auto-load controller library", settings.autoLoadControllerLibrary) { viewModel.updateSettings(settings.copy(autoLoadControllerLibrary = it)) }
-                SettingSwitch("Auto fullscreen", settings.autoFullScreen) { viewModel.updateSettings(settings.copy(autoFullScreen = it)) }
-                SettingSwitch("Session counter", settings.sessionCounterEnabled) { viewModel.updateSettings(settings.copy(sessionCounterEnabled = it)) }
+            SettingsSection(stringResource(R.string.settings_section_interface)) {
+                val accentOptions = UiAccent.entries.map { it to uiAccentLabel(it) }
+                SettingSwitch(stringResource(R.string.settings_dynamic_color), settings.dynamicColor) { viewModel.updateSettings(settings.copy(dynamicColor = it)) }
+                ChoiceRow(stringResource(R.string.settings_accent), accentOptions.map { it.second }, accentOptions.firstOrNull { it.first == settings.uiAccent }?.second ?: accentOptions.first().second) { label ->
+                    accentOptions.firstOrNull { it.second == label }?.first?.let { accent ->
+                        viewModel.updateSettings(settings.copy(uiAccent = accent))
+                    }
+                }
+                SettingSwitch(stringResource(R.string.settings_expressive_ui), settings.expressiveUi) { viewModel.updateSettings(settings.copy(expressiveUi = it)) }
+                SettingSwitch(stringResource(R.string.settings_compact_cards), settings.compactGameCards) { viewModel.updateSettings(settings.copy(compactGameCards = it)) }
+                SettingSwitch(stringResource(R.string.settings_show_store_labels), settings.showGameStoreLabels) { viewModel.updateSettings(settings.copy(showGameStoreLabels = it)) }
+                NumberSlider(stringResource(R.string.settings_card_size), settings.posterSizeScale, 0.82f, 1.08f, 0.02f) { value -> viewModel.updateSettings(settings.copy(posterSizeScale = value)) }
+                SettingSwitch(stringResource(R.string.settings_hide_stream_buttons), settings.hideStreamButtons) { viewModel.updateSettings(settings.copy(hideStreamButtons = it)) }
+                SettingSwitch(stringResource(R.string.settings_show_stats), settings.showStatsOnLaunch) { viewModel.updateSettings(settings.copy(showStatsOnLaunch = it)) }
+                SettingSwitch(stringResource(R.string.settings_hide_server_selector), settings.hideServerSelector) { viewModel.updateSettings(settings.copy(hideServerSelector = it)) }
+                SettingSwitch(stringResource(R.string.settings_controller_mode), settings.controllerMode) { viewModel.updateSettings(settings.copy(controllerMode = it)) }
+                SettingSwitch(stringResource(R.string.settings_controller_sounds), settings.controllerUiSounds) { viewModel.updateSettings(settings.copy(controllerUiSounds = it)) }
+                SettingSwitch(stringResource(R.string.settings_controller_animations), settings.controllerBackgroundAnimations) { viewModel.updateSettings(settings.copy(controllerBackgroundAnimations = it)) }
+                SettingSwitch(stringResource(R.string.settings_controller_backdrop), settings.controllerLibraryGameBackdrop) { viewModel.updateSettings(settings.copy(controllerLibraryGameBackdrop = it)) }
+                SettingSwitch(stringResource(R.string.settings_auto_load_library), settings.autoLoadControllerLibrary) { viewModel.updateSettings(settings.copy(autoLoadControllerLibrary = it)) }
+                SettingSwitch(stringResource(R.string.settings_auto_fullscreen), settings.autoFullScreen) { viewModel.updateSettings(settings.copy(autoFullScreen = it)) }
+                SettingSwitch(stringResource(R.string.settings_session_counter), settings.sessionCounterEnabled) { viewModel.updateSettings(settings.copy(sessionCounterEnabled = it)) }
             }
         }
         item {
             SettingsSection("Account") {
-                Text(state.authSession?.user?.email ?: state.authSession?.user?.displayName.orEmpty(), color = TextMuted)
+                Text(state.authSession?.user?.email ?: state.authSession?.user?.displayName.orEmpty(), color = SettingsTextMuted)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedButton(onClick = viewModel::logout) { Text("Sign out") }
                     OutlinedButton(onClick = viewModel::logoutAll) { Text("Sign out all") }
@@ -608,16 +1202,16 @@ private fun SettingsScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
         item {
             SettingsSection("Codec Diagnostics") {
                 state.codecReport?.capabilities?.forEach { cap ->
-                    Text("${cap.codec.name}: decode=${cap.decoderName ?: "no"} encode=${cap.encoderName ?: "no"}", color = TextMuted)
+                    Text("${cap.codec.name}: decode=${cap.decoderName ?: "no"} encode=${cap.encoderName ?: "no"}", color = SettingsTextMuted)
                 }
-                Text("Native: ${state.codecReport?.nativeRuntimeSummary ?: "unknown"}", color = TextMuted)
+                Text("Native: ${state.codecReport?.nativeRuntimeSummary ?: "unknown"}", color = SettingsTextMuted)
             }
         }
         item {
             SettingsSection("Debug Logs") {
                 val clipboard = LocalClipboardManager.current
                 var copied by remember { mutableStateOf(false) }
-                Text("Includes launch state, queue state, ads, stream settings, input settings, and codec capabilities.", color = TextMuted)
+                Text("Includes launch state, queue state, ads, stream settings, input settings, and codec capabilities.", color = SettingsTextMuted)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(onClick = {
                         clipboard.setText(AnnotatedString(viewModel.debugLogText()))
@@ -721,7 +1315,7 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                     modifier = Modifier.align(Alignment.TopStart),
                 )
             }
-            if (state.settings.androidTouch.enabled || state.settings.androidTouch.mousePad) {
+            if (state.settings.androidTouch.enabled) {
                 TouchOverlay(
                     client = client,
                     touch = state.settings.androidTouch,
@@ -731,18 +1325,20 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
             if (!state.settings.hideStreamButtons) {
                 StreamControlLauncher(
                     controlsOpen = controlsOpen,
-                    status = state.queuePosition?.let { "Queue $it" } ?: streamState,
+                    status = (state.queuePosition?.let { "Queue $it" } ?: streamState).takeUnless(::shouldHideStreamStatusText),
                     onToggle = { controlsOpen = !controlsOpen },
                     onExit = { exitConfirmOpen = true },
                     modifier = Modifier.align(Alignment.TopEnd),
                 )
                 AnimatedVisibility(
                     visible = controlsOpen,
+                    enter = fadeIn() + slideInVertically(initialOffsetY = { it / 4 }) + scaleIn(initialScale = 0.96f),
+                    exit = fadeOut() + slideOutVertically(targetOffsetY = { it / 4 }) + scaleOut(targetScale = 0.96f),
                     modifier = Modifier.align(Alignment.BottomEnd),
                 ) {
                     StreamControlsPanel(
                         gameTitle = game?.title ?: "Stream",
-                        status = state.queuePosition?.let { "Queue $it" } ?: streamState,
+                        status = (state.queuePosition?.let { "Queue $it" } ?: streamState).takeUnless(::shouldHideStreamStatusText),
                         settings = state.settings,
                         audioMuted = audioMuted,
                         statsVisible = statsVisible,
@@ -789,30 +1385,32 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                     )
                 }
                 if (keyboardOpen) {
-                    StreamKeyboardBar(
-                        text = keyboardText,
-                        onTextChange = { keyboardText = it },
-                        onSend = {
-                            client.sendText(keyboardText)
-                            keyboardText = ""
-                        },
-                        onBackspace = { client.sendKeyCode(KeyEvent.KEYCODE_DEL) },
-                        onEnter = { client.sendKeyCode(KeyEvent.KEYCODE_ENTER) },
-                        onEsc = { client.sendKeyCode(KeyEvent.KEYCODE_ESCAPE) },
-                        onDone = { keyboardOpen = false },
-                        modifier = Modifier.align(Alignment.BottomCenter),
-                    )
+                    AnimatedLaunchOverlay(Modifier.align(Alignment.BottomCenter)) {
+                        StreamKeyboardBar(
+                            text = keyboardText,
+                            onTextChange = { keyboardText = it },
+                            onSend = {
+                                client.sendText(keyboardText)
+                                keyboardText = ""
+                            },
+                            onBackspace = { client.sendKeyCode(KeyEvent.KEYCODE_DEL) },
+                            onEnter = { client.sendKeyCode(KeyEvent.KEYCODE_ENTER) },
+                            onEsc = { client.sendKeyCode(KeyEvent.KEYCODE_ESCAPE) },
+                            onDone = { keyboardOpen = false },
+                        )
+                    }
                 }
                 if (exitConfirmOpen) {
-                    StreamExitConfirmation(
-                        gameTitle = game?.title ?: "this game",
-                        onKeepPlaying = { exitConfirmOpen = false },
-                        onExit = {
-                            exitConfirmOpen = false
-                            viewModel.stopStream()
-                        },
-                        modifier = Modifier.align(Alignment.Center),
-                    )
+                    AnimatedLaunchOverlay(Modifier.align(Alignment.Center)) {
+                        StreamExitConfirmation(
+                            gameTitle = game?.title ?: "this game",
+                            onKeepPlaying = { exitConfirmOpen = false },
+                            onExit = {
+                                exitConfirmOpen = false
+                                viewModel.stopStream()
+                            },
+                        )
+                    }
                 }
             }
         }
@@ -822,7 +1420,7 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
 @Composable
 private fun StreamControlLauncher(
     controlsOpen: Boolean,
-    status: String,
+    status: String?,
     onToggle: () -> Unit,
     onExit: () -> Unit,
     modifier: Modifier = Modifier,
@@ -832,19 +1430,21 @@ private fun StreamControlLauncher(
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Surface(
-            shape = RoundedCornerShape(999.dp),
-            color = Color(0xcc061009),
-            tonalElevation = 3.dp,
-        ) {
-            Text(
-                status,
-                color = TextMuted,
-                style = MaterialTheme.typography.labelMedium,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
-            )
+        if (status != null) {
+            Surface(
+                shape = RoundedCornerShape(999.dp),
+                color = Color(0xcc061009),
+                tonalElevation = 3.dp,
+            ) {
+                Text(
+                    status,
+                    color = TextMuted,
+                    style = MaterialTheme.typography.labelMedium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                )
+            }
         }
         Button(onClick = onToggle, contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)) {
             Text(if (controlsOpen) "Close" else "Controls")
@@ -858,7 +1458,7 @@ private fun StreamControlLauncher(
 @Composable
 private fun StreamControlsPanel(
     gameTitle: String,
-    status: String,
+    status: String?,
     settings: AppSettings,
     audioMuted: Boolean,
     statsVisible: Boolean,
@@ -896,7 +1496,9 @@ private fun StreamControlsPanel(
                         Text("Stream Controls", fontWeight = FontWeight.Bold)
                         Text(gameTitle, color = TextMuted, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
-                    Text(status, color = TextMuted, style = MaterialTheme.typography.labelMedium)
+                    if (status != null) {
+                        Text(status, color = TextMuted, style = MaterialTheme.typography.labelMedium)
+                    }
                     OutlinedButton(onClick = onClose, contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) {
                         Text("Done")
                     }
@@ -916,7 +1518,7 @@ private fun StreamControlsPanel(
                         OutlinedButton(onClick = onEnter, modifier = Modifier.weight(1f)) { Text("Enter") }
                         OutlinedButton(onClick = onBackspace, modifier = Modifier.weight(1f)) { Text("⌫") }
                     }
-                    StreamControlSwitch("Finger mouse pad", if (settings.androidTouch.mousePad) "On" else "Off", settings.androidTouch.mousePad, onMousePadToggle)
+                    StreamControlSwitch("Finger mouse", if (settings.androidTouch.mousePad) "On" else "Off", settings.androidTouch.mousePad, onMousePadToggle)
                     StreamControlSwitch("Touch controller", if (settings.androidTouch.enabled) "Visible" else "Hidden", settings.androidTouch.enabled, onTouchControlsToggle)
                 }
             }
@@ -1028,6 +1630,10 @@ private fun StreamStatsPill(
         tonalElevation = 4.dp,
     ) {
         Column(Modifier.padding(horizontal = 12.dp, vertical = 9.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            val statusParts = listOfNotNull(
+                status.takeUnless(::shouldHideStreamStatusText),
+                if (audioMuted) "audio muted" else "audio on",
+            )
             Text(gameTitle, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
             Text(
                 "${settings.stream.resolution} · ${settings.stream.fps}fps · ${settings.stream.maxBitrateMbps} Mbps",
@@ -1035,7 +1641,7 @@ private fun StreamStatsPill(
                 style = MaterialTheme.typography.labelSmall,
             )
             Text(
-                listOf(status, if (audioMuted) "audio muted" else "audio on").joinToString(" · "),
+                statusParts.joinToString(" · "),
                 color = TextMuted,
                 style = MaterialTheme.typography.labelSmall,
                 maxLines = 1,
@@ -1044,6 +1650,9 @@ private fun StreamStatsPill(
         }
     }
 }
+
+private fun shouldHideStreamStatusText(status: String): Boolean =
+    status.trim().equals("ICE CONNECTED", ignoreCase = true)
 
 @Composable
 private fun StreamExitConfirmation(
@@ -1089,12 +1698,7 @@ private fun QueueLoadingScreen(state: OpenNowUiState, viewModel: OpenNowViewMode
     val mediaUrl = ad?.adMediaFiles?.firstOrNull { !it.mediaFileUrl.isNullOrBlank() }?.mediaFileUrl
         ?: ad?.adUrl
         ?: ad?.mediaUrl
-    val queueCopy = when {
-        state.queuePosition != null -> "Queue position ${state.queuePosition}"
-        state.launchPhase.equals("Queue", ignoreCase = true) || state.launchPhase.equals("Checking queue", ignoreCase = true) -> "Checking live queue"
-        session?.seatSetupStep == 1 -> "Waiting for a rig"
-        else -> state.launchPhase.ifBlank { "Preparing rig" }
-    }
+    val queueCopy = queueLaunchStatusText(state)
     Column(
         Modifier
             .fillMaxSize()
@@ -1118,7 +1722,10 @@ private fun QueueLoadingScreen(state: OpenNowUiState, viewModel: OpenNowViewMode
         Spacer(Modifier.height(18.dp))
         LinearProgressIndicator(Modifier.fillMaxWidth(0.7f))
         Spacer(Modifier.height(12.dp))
-        OutlinedButton(onClick = viewModel::stopStream) { Text("Cancel launch") }
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            OutlinedButton(onClick = viewModel::minimizeStreamLaunch) { Text("Minimize") }
+            OutlinedButton(onClick = viewModel::stopStream) { Text("Cancel launch") }
+        }
         if (ad != null && mediaUrl != null) {
             Spacer(Modifier.height(18.dp))
             QueueAdPlayer(
@@ -1133,6 +1740,44 @@ private fun QueueLoadingScreen(state: OpenNowUiState, viewModel: OpenNowViewMode
         state.error?.let {
             Spacer(Modifier.height(12.dp))
             Text(it, color = Color(0xffff9f9f))
+        }
+    }
+}
+
+@Composable
+private fun MinimizedQueuePill(
+    state: OpenNowUiState,
+    onRestore: () -> Unit,
+    onCancel: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Surface(
+        modifier = modifier
+            .padding(horizontal = 12.dp, vertical = 86.dp)
+            .fillMaxWidth(),
+        shape = RoundedCornerShape(18.dp),
+        color = Color(0xf20a160f),
+        tonalElevation = 8.dp,
+    ) {
+        Row(
+            Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp, color = Green)
+            Column(Modifier.weight(1f)) {
+                Text(
+                    state.streamGame?.title ?: "Starting stream",
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(queueLaunchStatusText(state), color = TextMuted, style = MaterialTheme.typography.bodySmall)
+            }
+            TextButton(onClick = onRestore) { Text("View") }
+            OutlinedButton(onClick = onCancel, contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) {
+                Text("Cancel")
+            }
         }
     }
 }
@@ -1226,24 +1871,6 @@ private fun TouchOverlay(client: NativeStreamClient, touch: AndroidTouchSettings
                 }
                 VirtualLeftStick(client, opacity, 116.dp * stickScale * layoutScale)
                 DpadCluster(client, opacity, buttonScale * layoutScale)
-            }
-            if (touch.mousePad) {
-                Box(
-                    Modifier
-                        .size(142.dp * stickScale * layoutScale)
-                        .clip(CircleShape)
-                        .background(Color(0xff16331f).copy(alpha = opacity))
-                        .border(1.dp, Green.copy(alpha = opacity), CircleShape)
-                        .pointerInput(client) {
-                            detectDragGestures { change, drag ->
-                                change.consume()
-                                client.sendTouchMouseMove(drag.x.roundToInt(), drag.y.roundToInt())
-                            }
-                        },
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Text("Mouse", color = TextMuted, style = MaterialTheme.typography.labelMedium)
-                }
             }
         }
         if (touch.enabled) {
@@ -1406,9 +2033,14 @@ private fun GamepadButton(label: String, mask: Int, client: NativeStreamClient, 
 
 @Composable
 private fun SettingsSection(title: String, content: @Composable ColumnScope.() -> Unit) {
-    Card(colors = CardDefaults.cardColors(containerColor = Panel), shape = RoundedCornerShape(8.dp)) {
+    val sectionShape = RoundedCornerShape(14.dp)
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = SettingsPanel),
+        shape = sectionShape,
+    ) {
         Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            Text(title, color = SettingsText, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
             content()
         }
     }
@@ -1416,8 +2048,15 @@ private fun SettingsSection(title: String, content: @Composable ColumnScope.() -
 
 @Composable
 private fun SettingSwitch(label: String, checked: Boolean, onCheckedChange: (Boolean) -> Unit) {
-    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-        Text(label, Modifier.weight(1f))
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .background(SettingsPanelAlt)
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(label, Modifier.weight(1f), color = SettingsText, maxLines = 2, overflow = TextOverflow.Ellipsis)
         Switch(checked = checked, onCheckedChange = onCheckedChange)
     }
 }
@@ -1425,10 +2064,16 @@ private fun SettingSwitch(label: String, checked: Boolean, onCheckedChange: (Boo
 @Composable
 private fun NumberSlider(label: String, value: Float, min: Float, max: Float, step: Float, onChange: (Float) -> Unit) {
     var local by remember(value) { mutableFloatStateOf(value) }
-    Column {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .background(SettingsPanelAlt)
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+    ) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Text(label, Modifier.weight(1f))
-            Text(if (step < 1f) "%.2f".format(local) else local.roundToInt().toString(), color = TextMuted)
+            Text(label, Modifier.weight(1f), color = SettingsText, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            Text(if (step < 1f) "%.2f".format(local) else local.roundToInt().toString(), color = SettingsTextMuted)
         }
         Slider(
             value = local,
@@ -1442,10 +2087,18 @@ private fun NumberSlider(label: String, value: Float, min: Float, max: Float, st
 @Composable
 private fun ChoiceRow(label: String, options: List<String>, selected: String, onSelect: (String) -> Unit) {
     var expanded by remember { mutableStateOf(false) }
-    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-        Text(label, Modifier.weight(1f))
+    val autoLabel = stringResource(R.string.option_auto)
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .background(SettingsPanelAlt)
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(label, Modifier.weight(1f), color = SettingsText, maxLines = 2, overflow = TextOverflow.Ellipsis)
         Box {
-            OutlinedButton(onClick = { expanded = true }) { Text(selected.ifBlank { "Auto" }) }
+            OutlinedButton(onClick = { expanded = true }) { Text(selected.ifBlank { autoLabel }, maxLines = 1, overflow = TextOverflow.Ellipsis) }
             DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
                 options.forEach { option ->
                     DropdownMenuItem(
@@ -1652,7 +2305,7 @@ private fun PrintedWasteSelector(
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
                     TextButton(onClick = viewModel::dismissPrintedWasteSelector) { Text("Cancel") }
                     OutlinedButton(onClick = { viewModel.launchWithPrintedWaste(null) }, modifier = Modifier.weight(1f)) {
-                        Text("Default routing")
+                        Text("Default")
                     }
                     Button(
                         onClick = { viewModel.launchWithPrintedWaste(selectedZone?.routingUrl) },

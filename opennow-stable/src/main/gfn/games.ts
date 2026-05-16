@@ -8,7 +8,7 @@ import type {
 } from "@shared/gfn";
 import { isOwnedLibraryStatus } from "@shared/gfn";
 import { cacheManager } from "../services/cacheManager";
-import { fetchPublicGamesUncached, mergePublicGameVariants } from "./publicGames";
+import { fetchPublicGamesUncached, hasSamePublicGameTitle, mergePublicGameVariants } from "./publicGames";
 import {
   buildGfnGraphQlHeaders,
   buildGfnLcarsHeaders,
@@ -788,19 +788,22 @@ ${appFields}
     cursor = endCursor;
   }
 
-  let games = dedupeGames(collectedApps.map(appToGame));
+  const catalogGames = dedupeGames(collectedApps.map(appToGame));
   const publicGames = await fetchPublicGames();
+  let games = mergePublicGameVariants(catalogGames, publicGames);
   if (searchQuery.length > 0) {
     const publicSearchMatches = publicGames.filter((game) => matchesPublicGameSearch(game, searchQuery));
-    games = dedupeGames([...games, ...publicSearchMatches]);
+    const publicOnlySearchMatches = publicSearchMatches.filter(
+      (publicGame) => !catalogGames.some((catalogGame) => hasSamePublicGameTitle(catalogGame, publicGame)),
+    );
+    games = dedupeGames([...games, ...publicOnlySearchMatches]);
   }
-  const gamesWithPublicVariants = mergePublicGameVariants(games, publicGames);
 
   return {
-    games: gamesWithPublicVariants,
+    games,
     numberReturned,
-    numberSupported: Math.max(numberSupported, gamesWithPublicVariants.length),
-    totalCount: Math.max(totalCount, gamesWithPublicVariants.length),
+    numberSupported: Math.max(numberSupported, games.length),
+    totalCount: Math.max(totalCount, games.length),
     hasNextPage,
     endCursor: endCursor || undefined,
     searchQuery,

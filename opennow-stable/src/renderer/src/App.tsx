@@ -95,6 +95,8 @@ import { StreamLoading } from "./components/StreamLoading";
 import { ControllerStreamLoading } from "./components/controllerMode/ControllerStreamLoading";
 import { StreamView } from "./components/StreamView";
 import { QueueServerSelectModal } from "./components/QueueServerSelectModal";
+import { getStoreDisplayName, getStoreIconComponent } from "./components/GameCard";
+import { getStoreOptions as getLaunchStoreOptions } from "./lib/gameCardStores";
 
 const DEFAULT_STREAM_PREFERENCES = getDefaultStreamPreferences();
 
@@ -291,7 +293,9 @@ export function App(): JSX.Element {
   const [removeAccountConfirmOpen, setRemoveAccountConfirmOpen] = useState(false);
   const [logoutConfirmOpen, setLogoutConfirmOpen] = useState(false);
   const [launchError, setLaunchError] = useState<LaunchErrorState | null>(null);
+  const [launchStorePickerGame, setLaunchStorePickerGame] = useState<GameInfo | null>(null);
   const [queueModalGame, setQueueModalGame] = useState<GameInfo | null>(null);
+  const [queueModalVariantId, setQueueModalVariantId] = useState<string | null>(null);
   const [queueModalData, setQueueModalData] = useState<PrintedWasteQueueData | null>(null);
   const [sessionStartedAtMs, setSessionStartedAtMs] = useState<number | null>(null);
   const [remoteStreamWarning, setRemoteStreamWarning] = useState<StreamWarningState | null>(null);
@@ -2602,7 +2606,7 @@ export function App(): JSX.Element {
   }, [attemptSessionRecovery, diagnosticsStore, handleControllerMetaToggle, refreshNavbarActiveSession, resetLaunchRuntime, scheduleStableRecoveryReset, settings, streamMicLevel, streamVolume, t]);
 
   // Play game handler
-  const handlePlayGame = useCallback(async (game: GameInfo, options?: { bypassGuards?: boolean; streamingBaseUrl?: string }) => {
+  const handlePlayGame = useCallback(async (game: GameInfo, options?: { bypassGuards?: boolean; streamingBaseUrl?: string; variantId?: string }) => {
     if (!selectedProvider) return;
 
     console.log("handlePlayGame entry", {
@@ -2621,7 +2625,7 @@ export function App(): JSX.Element {
       return;
     }
 
-    const selectedVariantId = variantByGameId[game.id] ?? defaultVariantId(game);
+    const selectedVariantId = options?.variantId ?? variantByGameId[game.id] ?? defaultVariantId(game);
     const selectedVariant = getSelectedVariant(game, selectedVariantId);
     const epicOwnershipError = getEpicOwnershipLaunchError(selectedVariant);
     if (epicOwnershipError) {
@@ -2905,7 +2909,7 @@ export function App(): JSX.Element {
   ]);
 
   // Gate handler: shows queue server modal for FREE-tier users before launching
-  const handleInitiatePlay = useCallback(async (game: GameInfo) => {
+  const continueLaunchWithVariant = useCallback(async (game: GameInfo, variantId?: string) => {
     const effectiveTier = normalizeMembershipTier(
       subscriptionInfo?.membershipTier ?? authSession?.user.membershipTier,
     );
@@ -2913,12 +2917,12 @@ export function App(): JSX.Element {
     const isAllianceServer = isAllianceStreamingBaseUrl(effectiveStreamingBaseUrl);
     if (isAllianceServer) {
       setQueueModalData(null);
-      void handlePlayGame(game);
+      void handlePlayGame(game, { variantId });
       return;
     }
     if (settings.hideServerSelector) {
       setQueueModalData(null);
-      void handlePlayGame(game);
+      void handlePlayGame(game, { variantId });
       return;
     }
     if (isFreeUser && streamStatus === "idle" && !launchInFlightRef.current) {
@@ -2937,14 +2941,14 @@ export function App(): JSX.Element {
             },
           );
           setQueueModalData(null);
-          void handlePlayGame(game);
+          void handlePlayGame(game, { variantId });
           return;
         }
 
         const queueData = queueResult.value;
         if (!queueData || Object.keys(queueData).length === 0) {
           setQueueModalData(null);
-          void handlePlayGame(game);
+          void handlePlayGame(game, { variantId });
           return;
         }
 
@@ -2953,35 +2957,95 @@ export function App(): JSX.Element {
             "[QueueServerSelect] No eligible non-nuked PrintedWaste zones available, skipping queue checks.",
           );
           setQueueModalData(null);
-          void handlePlayGame(game);
+          void handlePlayGame(game, { variantId });
           return;
         }
 
         setQueueModalData(queueData);
         setQueueModalGame(game);
+        setQueueModalVariantId(variantId ?? null);
       } catch (error) {
         console.warn("[QueueServerSelect] PrintedWaste queue checks failed, launching without modal.", error);
         setQueueModalData(null);
-        void handlePlayGame(game);
+        void handlePlayGame(game, { variantId });
       }
       return;
     }
-    void handlePlayGame(game);
-  }, [subscriptionInfo, authSession, streamStatus, handlePlayGame, effectiveStreamingBaseUrl]);
+    void handlePlayGame(game, { variantId });
+  }, [subscriptionInfo, authSession, streamStatus, handlePlayGame, effectiveStreamingBaseUrl, settings.hideServerSelector]);
+
+  const handleInitiatePlay = useCallback(async (game: GameInfo) => {
+    const storeOptions = getLaunchStoreOptions(game, variantByGameId[game.id]);
+    if (storeOptions.length > 1) {
+      setLaunchStorePickerGame(game);
+      return;
+    }
+
+    await continueLaunchWithVariant(game, storeOptions[0]?.variantId);
+  }, [continueLaunchWithVariant, variantByGameId]);
 
   const handleQueueModalConfirm = useCallback((zoneUrl: string | null) => {
     const game = queueModalGame;
+    const variantId = queueModalVariantId ?? undefined;
     setQueueModalGame(null);
+    setQueueModalVariantId(null);
     setQueueModalData(null);
     if (game) {
-      void handlePlayGame(game, { streamingBaseUrl: zoneUrl ?? undefined });
+      void handlePlayGame(game, { streamingBaseUrl: zoneUrl ?? undefined, variantId });
     }
-  }, [queueModalGame, handlePlayGame]);
+  }, [queueModalGame, queueModalVariantId, handlePlayGame]);
 
   const handleQueueModalCancel = useCallback(() => {
     setQueueModalGame(null);
+    setQueueModalVariantId(null);
     setQueueModalData(null);
   }, []);
+
+  const launchStoreOptions = useMemo(() => (
+    launchStorePickerGame
+      ? getLaunchStoreOptions(launchStorePickerGame, variantByGameId[launchStorePickerGame.id]).map((option) => ({
+          ...option,
+          displayName: getStoreDisplayName(option.store),
+          IconComponent: getStoreIconComponent(option.store),
+        }))
+      : []
+  ), [launchStorePickerGame, variantByGameId]);
+
+  const handleLaunchStoreCancel = useCallback(() => {
+    setLaunchStorePickerGame(null);
+  }, []);
+
+  const handleLaunchStoreSelect = useCallback((variantId: string) => {
+    const game = launchStorePickerGame;
+    if (!game) {
+      return;
+    }
+
+    setLaunchStorePickerGame(null);
+    handleSelectGameVariant(game.id, variantId);
+    void continueLaunchWithVariant(game, variantId);
+  }, [continueLaunchWithVariant, handleSelectGameVariant, launchStorePickerGame]);
+
+  useEffect(() => {
+    if (!launchStorePickerGame) {
+      return;
+    }
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setLaunchStorePickerGame(null);
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [launchStorePickerGame]);
 
   useEffect(() => {
     if (!logoutConfirmOpen && !removeAccountConfirmOpen) return;

@@ -22,6 +22,18 @@ const PRIMARY_CATALOG_STORE_KEYS = new Set([
   "MICROSOFT_STORE",
 ]);
 
+function splitPublicStoreKeys(store: string): string[] {
+  return store
+    .split(",")
+    .map((part) => normalizeGameStore(part.trim()))
+    .filter((part) => part.length > 0);
+}
+
+function isPrimaryCatalogStoreValue(store: string): boolean {
+  const storeKeys = splitPublicStoreKeys(store);
+  return storeKeys.length > 0 && storeKeys.every((storeKey) => PRIMARY_CATALOG_STORE_KEYS.has(storeKey));
+}
+
 export function inferPublicGameStore(item: RawPublicGame): string {
   const explicitStore = item.store?.trim();
   if (explicitStore) {
@@ -79,6 +91,11 @@ function normalizeTitleKey(title: string): string {
     .trim();
 }
 
+export function hasSamePublicGameTitle(left: GameInfo, right: GameInfo): boolean {
+  const leftKey = normalizeTitleKey(left.title);
+  return leftKey.length > 0 && leftKey === normalizeTitleKey(right.title);
+}
+
 function mergeSearchText(left?: string, right?: string): string | undefined {
   const merged = [left, right]
     .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
@@ -92,7 +109,7 @@ function getSupplementalPublicVariants(game: GameInfo, publicGame: GameInfo): Ga
 
   return publicGame.variants.filter((variant) => {
     const storeKey = normalizeGameStore(variant.store);
-    return !PRIMARY_CATALOG_STORE_KEYS.has(storeKey) && !existingStores.has(storeKey);
+    return !isPrimaryCatalogStoreValue(variant.store) && !existingStores.has(storeKey);
   });
 }
 

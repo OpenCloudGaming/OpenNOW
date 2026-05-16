@@ -1,6 +1,7 @@
 package com.opencloudgaming.opennow
 
 import android.content.Context
+import android.media.AudioAttributes
 import android.media.MediaCodecInfo
 import android.media.MediaCodecList
 import android.os.Build
@@ -38,12 +39,15 @@ import org.webrtc.MediaConstraints
 import org.webrtc.MediaStream
 import org.webrtc.PeerConnection
 import org.webrtc.PeerConnectionFactory
+import org.webrtc.RendererCommon
 import org.webrtc.RtpReceiver
 import org.webrtc.RtpTransceiver
 import org.webrtc.SdpObserver
 import org.webrtc.SessionDescription
 import org.webrtc.SurfaceViewRenderer
 import org.webrtc.VideoTrack
+import org.webrtc.audio.AudioDeviceModule
+import org.webrtc.audio.JavaAudioDeviceModule
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.security.SecureRandom
@@ -52,6 +56,7 @@ import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
+import kotlin.math.sqrt
 
 object NativeCodecProbe {
     init {
@@ -129,6 +134,7 @@ sealed interface SignalingEvent {
 
 class GfnSignalingClient(
     private val session: SessionInfo,
+    private val settings: StreamSettings,
     private val http: OkHttpClient = defaultHttpClient(),
     private val onEvent: (SignalingEvent) -> Unit,
 ) {
@@ -268,9 +274,10 @@ class GfnSignalingClient(
     }
 
     private fun sendPeerInfo() {
+        val (width, height) = streamResolutionPixels(settings)
         sendJson(
             """
-            {"ackid":${nextAckId()},"peer_info":{"browser":"Chrome","browserVersion":"131","connected":true,"id":$peerId,"name":"$peerName","peerRole":0,"resolution":"1920x1080","version":2}}
+            {"ackid":${nextAckId()},"peer_info":{"browser":"Chrome","browserVersion":"131","connected":true,"id":$peerId,"name":"$peerName","peerRole":0,"resolution":"${width}x$height","version":2}}
             """.trimIndent(),
         )
     }
@@ -316,6 +323,17 @@ class NativeStreamClient(
     private val eglBase: EglBase = EglBase.create()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val inputEncoder = InputEncoder()
+    private val audioDeviceModule: AudioDeviceModule =
+        JavaAudioDeviceModule.builder(appContext)
+            .setUseLowLatency(true)
+            .setUseStereoOutput(true)
+            .setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_GAME)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                    .build(),
+            )
+            .createAudioDeviceModule()
     private var factory: PeerConnectionFactory? = null
     private var peerConnection: PeerConnection? = null
     private var signaling: GfnSignalingClient? = null
@@ -350,6 +368,7 @@ class NativeStreamClient(
         )
         factory = PeerConnectionFactory.builder()
             .setOptions(PeerConnectionFactory.Options())
+            .setAudioDeviceModule(audioDeviceModule)
             .setVideoDecoderFactory(DefaultVideoDecoderFactory(eglBase.eglBaseContext))
             .setVideoEncoderFactory(DefaultVideoEncoderFactory(eglBase.eglBaseContext, true, true))
             .createPeerConnectionFactory()
@@ -360,6 +379,7 @@ class NativeStreamClient(
             it.init(eglBase.eglBaseContext, null)
             it.setEnableHardwareScaler(true)
             it.setMirror(false)
+            it.setScalingType(RendererCommon.ScalingType.SCALE_ASPECT_FIT)
             renderer = it
             videoTrack?.addSink(it)
         }
@@ -367,8 +387,9 @@ class NativeStreamClient(
     fun start(session: SessionInfo, settings: StreamSettings) {
         this.session = session
         this.settings = settings
+        audioDeviceModule.setSpeakerMute(audioMuted)
         onState("Connecting signaling")
-        signaling = GfnSignalingClient(session, onEvent = ::handleSignaling).also { it.connect() }
+        signaling = GfnSignalingClient(session, settings = settings, onEvent = ::handleSignaling).also { it.connect() }
     }
 
     fun stop() {
@@ -392,6 +413,7 @@ class NativeStreamClient(
         renderer = null
         factory?.dispose()
         factory = null
+        audioDeviceModule.release()
         eglBase.release()
     }
 
@@ -412,7 +434,10 @@ class NativeStreamClient(
         if (event.isFromSource(InputDevice.SOURCE_MOUSE)) {
             val dx = if (Build.VERSION.SDK_INT >= 26) event.getAxisValue(MotionEvent.AXIS_RELATIVE_X).roundToInt() else 0
             val dy = if (Build.VERSION.SDK_INT >= 26) event.getAxisValue(MotionEvent.AXIS_RELATIVE_Y).roundToInt() else 0
-            if (dx != 0 || dy != 0) sendInput(inputEncoder.encodeMouseMove(dx, dy), partiallyReliable = true)
+            if (dx != 0 || dy != 0) {
+                val adjusted = adjustedMouseDelta(dx, dy)
+                sendInput(inputEncoder.encodeMouseMove(adjusted.first, adjusted.second), partiallyReliable = true)
+            }
             when (event.actionMasked) {
                 MotionEvent.ACTION_BUTTON_PRESS -> sendInput(inputEncoder.encodeMouseButton(InputEncoder.INPUT_MOUSE_BUTTON_DOWN, event.actionButton.toGfnMouseButton()), false)
                 MotionEvent.ACTION_BUTTON_RELEASE -> sendInput(inputEncoder.encodeMouseButton(InputEncoder.INPUT_MOUSE_BUTTON_UP, event.actionButton.toGfnMouseButton()), false)
@@ -424,12 +449,26 @@ class NativeStreamClient(
     }
 
     fun sendTouchMouseMove(dx: Int, dy: Int) {
-        sendInput(inputEncoder.encodeMouseMove((dx * settings.mouseSensitivity).roundToInt(), (dy * settings.mouseSensitivity).roundToInt()), partiallyReliable = true)
+        val adjusted = adjustedMouseDelta(dx, dy)
+        sendInput(inputEncoder.encodeMouseMove(adjusted.first, adjusted.second), partiallyReliable = true)
+    }
+
+    private fun adjustedMouseDelta(dx: Int, dy: Int): Pair<Int, Int> {
+        var adjustedDx = dx * settings.mouseSensitivity
+        var adjustedDy = dy * settings.mouseSensitivity
+        if (settings.mouseAcceleration > 1) {
+            val speed = sqrt(adjustedDx * adjustedDx + adjustedDy * adjustedDy)
+            val strength = (settings.mouseAcceleration - 1f) / 149f
+            val accelFactor = 1f + min(0.6f * strength, (speed / 50f) * strength)
+            adjustedDx *= accelFactor
+            adjustedDy *= accelFactor
+        }
+        return adjustedDx.roundToInt() to adjustedDy.roundToInt()
     }
 
     fun sendTouchMouseClick() {
-        sendInput(inputEncoder.encodeMouseButton(InputEncoder.INPUT_MOUSE_BUTTON_DOWN, 1), false)
-        sendInput(inputEncoder.encodeMouseButton(InputEncoder.INPUT_MOUSE_BUTTON_UP, 1), false)
+        setTouchMouseButton(true)
+        setTouchMouseButton(false)
     }
 
     fun sendKeyCode(keyCode: Int) {
@@ -448,7 +487,18 @@ class NativeStreamClient(
 
     fun setAudioMuted(muted: Boolean) {
         audioMuted = muted
+        audioDeviceModule.setSpeakerMute(muted)
         audioTrack?.setEnabled(!muted)
+    }
+
+    fun setTouchMouseButton(pressed: Boolean) {
+        sendInput(
+            inputEncoder.encodeMouseButton(
+                if (pressed) InputEncoder.INPUT_MOUSE_BUTTON_DOWN else InputEncoder.INPUT_MOUSE_BUTTON_UP,
+                1,
+            ),
+            false,
+        )
     }
 
     fun setVirtualButton(buttonMask: Int, pressed: Boolean) {
@@ -851,9 +901,7 @@ object SdpTools {
         Regex("a=ri\\.version:(\\d+)").find(sdp)?.groupValues?.getOrNull(1)?.toIntOrNull() ?: 3
 
     fun buildNvstSdp(offerSdp: String, settings: StreamSettings, localAnswer: String): String {
-        val (width, height) = settings.resolution.split("x").let {
-            (it.getOrNull(0)?.toIntOrNull() ?: 1920) to (it.getOrNull(1)?.toIntOrNull() ?: 1080)
-        }
+        val (width, height) = streamResolutionPixels(settings)
         val ufrag = Regex("a=ice-ufrag:([^\\r\\n]+)").find(localAnswer)?.groupValues?.getOrNull(1)?.trim().orEmpty()
         val pwd = Regex("a=ice-pwd:([^\\r\\n]+)").find(localAnswer)?.groupValues?.getOrNull(1)?.trim().orEmpty()
         val fingerprint = Regex("a=fingerprint:sha-256 ([^\\r\\n]+)").find(localAnswer)?.groupValues?.getOrNull(1)?.trim().orEmpty()
