@@ -1906,8 +1906,8 @@ using namespace OPN;
         : (showLastPlayedTile ? OPNControllerOverviewSpecialTileLastPlayed : OPNControllerOverviewSpecialTileNone);
 
     CGFloat scale = OpnControllerGridItemScale();
-    CGFloat spacing = floor(26.0 * scale);
-    CGFloat cardWidth = floor(294.0 * scale);
+    CGFloat spacing = floor(34.0 * scale);
+    CGFloat cardWidth = floor(164.0 * scale);
     CGFloat cardHeight = floor(cardWidth * 178.0 / 220.0);
     CGFloat railInset = floor(34.0 * scale);
     CGFloat railY = floor(42.0 * scale);
