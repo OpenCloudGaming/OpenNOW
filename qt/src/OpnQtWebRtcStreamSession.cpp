@@ -3,6 +3,8 @@
 #include <QtCore/QDebug>
 
 #if defined(OPNQT_HAVE_LIBWEBRTC)
+#include <QtCore/QStringList>
+
 #include <api/create_peerconnection_factory.h>
 #include <api/audio_codecs/builtin_audio_decoder_factory.h>
 #include <api/audio_codecs/builtin_audio_encoder_factory.h>
@@ -50,6 +52,206 @@ QString fromStdString(const std::string &value) {
 QString rtcErrorMessage(const webrtc::RTCError &error) {
     const std::string message = error.message();
     return message.empty() ? QStringLiteral("unknown WebRTC error") : fromStdString(message);
+}
+
+struct IceCredentials {
+    QString ufrag;
+    QString pwd;
+    QString fingerprint;
+};
+
+bool startsWith(const QString &value, QStringView prefix) {
+    return value.startsWith(prefix);
+}
+
+IceCredentials extractIceCredentials(const QString &sdp) {
+    IceCredentials credentials;
+    const QStringList lines = sdp.split(QLatin1Char('\n'));
+    for (QString line : lines) {
+        if (line.endsWith(QLatin1Char('\r'))) line.chop(1);
+        if (startsWith(line, u"a=ice-ufrag:")) {
+            credentials.ufrag = line.mid(12);
+        } else if (startsWith(line, u"a=ice-pwd:")) {
+            credentials.pwd = line.mid(10);
+        } else if (startsWith(line, u"a=fingerprint:")) {
+            credentials.fingerprint = line.mid(14);
+        }
+    }
+    return credentials;
+}
+
+QStringList splitResolution(const QString &resolution) {
+    const int separator = resolution.indexOf(QLatin1Char('x'));
+    if (separator <= 0 || separator + 1 >= resolution.size()) return {QStringLiteral("1920"), QStringLiteral("1080")};
+    return {resolution.left(separator), resolution.mid(separator + 1)};
+}
+
+int stringToPositiveInt(const QString &value, int fallback) {
+    bool ok = false;
+    const int parsed = value.toInt(&ok);
+    return ok && parsed > 0 ? parsed : fallback;
+}
+
+QString normalizeCodec(QString codec) {
+    codec = codec.toUpper();
+    if (codec == QLatin1String("AUTO")) return QStringLiteral("H264");
+    if (codec == QLatin1String("HEVC")) return QStringLiteral("H265");
+    return codec;
+}
+
+QString buildNvstSdp(const StreamSettings &settings, const IceCredentials &credentials) {
+    static constexpr int partialReliableInputLifetimeMs = 8;
+
+    const QStringList resolution = splitResolution(settings.resolution);
+    const int width = stringToPositiveInt(resolution.value(0), 1920);
+    const int height = stringToPositiveInt(resolution.value(1), 1080);
+    const int maxBitrateKbps = std::max(1000, settings.maxBitrateMbps * 1000);
+    const int minBitrateKbps = std::max(5000, maxBitrateKbps * 35 / 100);
+    const int initialBitrateKbps = std::max(minBitrateKbps, maxBitrateKbps * 70 / 100);
+    const int bitDepth = settings.colorQuality.startsWith(QStringLiteral("10bit")) ? 10 : 8;
+    const QString codec = normalizeCodec(settings.codec);
+    const bool isAv1 = codec == QLatin1String("AV1");
+    const bool isHighFps = settings.fps >= 90;
+    const bool is120Fps = settings.fps == 120;
+    const bool is240Fps = settings.fps >= 240;
+
+    QStringList lines = {
+        QStringLiteral("v=0"),
+        QStringLiteral("o=SdpTest test_id_13 14 IN IPv4 127.0.0.1"),
+        QStringLiteral("s=-"),
+        QStringLiteral("t=0 0"),
+        QStringLiteral("a=general.icePassword:%1").arg(credentials.pwd),
+        QStringLiteral("a=general.iceUserNameFragment:%1").arg(credentials.ufrag),
+        QStringLiteral("a=general.dtlsFingerprint:%1").arg(credentials.fingerprint),
+        QStringLiteral("m=video 0 RTP/AVP"),
+        QStringLiteral("a=msid:fbc-video-0"),
+        QStringLiteral("a=vqos.fec.rateDropWindow:10"),
+        QStringLiteral("a=vqos.fec.minRequiredFecPackets:2"),
+        QStringLiteral("a=vqos.fec.repairMinPercent:5"),
+        QStringLiteral("a=vqos.fec.repairPercent:5"),
+        QStringLiteral("a=vqos.fec.repairMaxPercent:35"),
+        QStringLiteral("a=vqos.dynamicStreamingMode:0"),
+        QStringLiteral("a=vqos.drc.enable:0"),
+        QStringLiteral("a=vqos.dfc.enable:0"),
+        QStringLiteral("a=vqos.dfc.adjustResAndFps:0"),
+        QStringLiteral("a=video.dx9EnableNv12:1"),
+        QStringLiteral("a=video.dx9EnableHdr:1"),
+        QStringLiteral("a=vqos.qpg.enable:1"),
+        QStringLiteral("a=vqos.resControl.qp.qpg.featureSetting:7"),
+        QStringLiteral("a=bwe.useOwdCongestionControl:1"),
+        QStringLiteral("a=video.enableRtpNack:1"),
+        QStringLiteral("a=vqos.bw.txRxLag.minFeedbackTxDeltaMs:200"),
+        QStringLiteral("a=vqos.drc.bitrateIirFilterFactor:18"),
+        QStringLiteral("a=video.packetSize:1140"),
+        QStringLiteral("a=packetPacing.minNumPacketsPerGroup:15"),
+    };
+
+    if (isHighFps) {
+        lines.append({
+            QStringLiteral("a=bwe.iirFilterFactor:8"),
+            QStringLiteral("a=video.encoderFeatureSetting:47"),
+            QStringLiteral("a=video.encoderPreset:6"),
+            QStringLiteral("a=vqos.resControl.cpmRtc.badNwSkipFramesCount:600"),
+            QStringLiteral("a=vqos.resControl.cpmRtc.decodeTimeThresholdMs:9"),
+            QStringLiteral("a=video.fbcDynamicFpsGrabTimeoutMs:%1").arg(is120Fps ? 6 : 18),
+            QStringLiteral("a=vqos.resControl.cpmRtc.serverResolutionUpdateCoolDownCount:%1").arg(is120Fps ? 6000 : 12000),
+        });
+    }
+
+    if (is240Fps) {
+        lines.append({
+            QStringLiteral("a=video.enableNextCaptureMode:1"),
+            QStringLiteral("a=vqos.maxStreamFpsEstimate:240"),
+            QStringLiteral("a=video.videoSplitEncodeStripsPerFrame:3"),
+            QStringLiteral("a=video.updateSplitEncodeStateDynamically:1"),
+        });
+    }
+
+    lines.append({
+        QStringLiteral("a=vqos.adjustStreamingFpsDuringOutOfFocus:1"),
+        QStringLiteral("a=vqos.resControl.cpmRtc.ignoreOutOfFocusWindowState:1"),
+        QStringLiteral("a=vqos.resControl.perfHistory.rtcIgnoreOutOfFocusWindowState:1"),
+        QStringLiteral("a=vqos.resControl.cpmRtc.featureMask:0"),
+        QStringLiteral("a=vqos.resControl.cpmRtc.enable:0"),
+        QStringLiteral("a=vqos.resControl.cpmRtc.minResolutionPercent:100"),
+        QStringLiteral("a=vqos.resControl.cpmRtc.resolutionChangeHoldonMs:999999"),
+        QStringLiteral("a=packetPacing.numGroups:%1").arg(is120Fps ? 3 : 5),
+        QStringLiteral("a=packetPacing.maxDelayUs:1000"),
+        QStringLiteral("a=packetPacing.minNumPacketsFrame:10"),
+        QStringLiteral("a=video.rtpNackQueueLength:1024"),
+        QStringLiteral("a=video.rtpNackQueueMaxPackets:512"),
+        QStringLiteral("a=video.rtpNackMaxPacketCount:25"),
+        QStringLiteral("a=vqos.drc.qpMaxResThresholdAdj:4"),
+        QStringLiteral("a=vqos.grc.qpMaxResThresholdAdj:4"),
+        QStringLiteral("a=vqos.drc.iirFilterFactor:100"),
+    });
+
+    if (isAv1) {
+        lines.append({
+            QStringLiteral("a=vqos.drc.minQpHeadroom:20"),
+            QStringLiteral("a=vqos.drc.lowerQpThreshold:100"),
+            QStringLiteral("a=vqos.drc.upperQpThreshold:200"),
+            QStringLiteral("a=vqos.drc.minAdaptiveQpThreshold:180"),
+            QStringLiteral("a=vqos.drc.qpCodecThresholdAdj:0"),
+            QStringLiteral("a=vqos.drc.qpMaxResThresholdAdj:20"),
+            QStringLiteral("a=vqos.dfc.minQpHeadroom:20"),
+            QStringLiteral("a=vqos.dfc.qpLowerLimit:100"),
+            QStringLiteral("a=vqos.dfc.qpMaxUpperLimit:200"),
+            QStringLiteral("a=vqos.dfc.qpMinUpperLimit:180"),
+            QStringLiteral("a=vqos.dfc.qpMaxResThresholdAdj:20"),
+            QStringLiteral("a=vqos.dfc.qpCodecThresholdAdj:0"),
+            QStringLiteral("a=vqos.grc.minQpHeadroom:20"),
+            QStringLiteral("a=vqos.grc.lowerQpThreshold:100"),
+            QStringLiteral("a=vqos.grc.upperQpThreshold:200"),
+            QStringLiteral("a=vqos.grc.minAdaptiveQpThreshold:180"),
+            QStringLiteral("a=vqos.grc.qpMaxResThresholdAdj:20"),
+            QStringLiteral("a=vqos.grc.qpCodecThresholdAdj:0"),
+            QStringLiteral("a=video.minQp:25"),
+            QStringLiteral("a=video.enableAv1RcPrecisionFactor:1"),
+        });
+    }
+
+    lines.append({
+        QStringLiteral("a=video.clientViewportWd:%1").arg(width),
+        QStringLiteral("a=video.clientViewportHt:%1").arg(height),
+        QStringLiteral("a=video.maxFPS:%1").arg(settings.fps),
+        QStringLiteral("a=video.initialBitrateKbps:%1").arg(initialBitrateKbps),
+        QStringLiteral("a=video.initialPeakBitrateKbps:%1").arg(maxBitrateKbps),
+        QStringLiteral("a=vqos.bw.maximumBitrateKbps:%1").arg(maxBitrateKbps),
+        QStringLiteral("a=vqos.bw.minimumBitrateKbps:%1").arg(minBitrateKbps),
+        QStringLiteral("a=vqos.bw.peakBitrateKbps:%1").arg(maxBitrateKbps),
+        QStringLiteral("a=vqos.bw.serverPeakBitrateKbps:%1").arg(maxBitrateKbps),
+        QStringLiteral("a=vqos.bw.enableBandwidthEstimation:1"),
+        QStringLiteral("a=vqos.bw.disableBitrateLimit:0"),
+        QStringLiteral("a=vqos.grc.maximumBitrateKbps:%1").arg(maxBitrateKbps),
+        QStringLiteral("a=vqos.grc.enable:0"),
+        QStringLiteral("a=video.maxNumReferenceFrames:4"),
+        QStringLiteral("a=video.mapRtpTimestampsToFrames:1"),
+        QStringLiteral("a=video.encoderCscMode:3"),
+        QStringLiteral("a=video.dynamicRangeMode:0"),
+        QStringLiteral("a=video.bitDepth:%1").arg(bitDepth),
+        QStringLiteral("a=video.scalingFeature1:%1").arg(isAv1 ? 1 : 0),
+        QStringLiteral("a=video.prefilterParams.prefilterModel:0"),
+        QStringLiteral("m=audio 0 RTP/AVP"),
+        QStringLiteral("a=msid:audio"),
+        QStringLiteral("m=mic 0 RTP/AVP"),
+        QStringLiteral("a=msid:mic"),
+        QStringLiteral("a=rtpmap:0 PCMU/8000"),
+        QStringLiteral("m=application 0 RTP/AVP"),
+        QStringLiteral("a=msid:input_1"),
+        QStringLiteral("a=ri.partialReliableThresholdMs:%1").arg(partialReliableInputLifetimeMs),
+        QStringLiteral("a=ri.hidDeviceMask:4294967295"),
+        QStringLiteral("a=ri.enablePartiallyReliableTransferGamepad:15"),
+        QStringLiteral("a=ri.enablePartiallyReliableTransferHid:4294967295"),
+        QString(),
+    });
+
+    QString result;
+    for (const QString &line : lines) {
+        result += line;
+        result += QLatin1Char('\n');
+    }
+    return result;
 }
 
 class SetDescriptionObserver : public webrtc::SetSessionDescriptionObserver {
@@ -260,7 +462,7 @@ void WebRtcStreamSession::start(const SessionInfo &session,
                 }
                 SendAnswerRequest request;
                 request.sdp = answerSdp;
-                request.nvstSdp = answerSdp;
+                request.nvstSdp = buildNvstSdp(m_settings, extractIceCredentials(answerSdp));
                 if (m_onAnswer) m_onAnswer(request);
             }).get(), answer.release());
         }).get(), options);
