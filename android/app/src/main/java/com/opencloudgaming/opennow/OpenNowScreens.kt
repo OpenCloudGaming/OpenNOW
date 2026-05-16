@@ -254,13 +254,15 @@ private fun LoadingScreen(text: String) {
 private fun LoginScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
     val signInFocusRequester = remember { FocusRequester() }
     val tvLogin = state.codecReport?.androidTvProfile == true
-    val deviceLoginPrompt = state.deviceLoginPrompt
-    LaunchedEffect(tvLogin, state.deviceLoginPrompt == null) {
-        if (tvLogin && state.deviceLoginPrompt == null) {
+    val deviceCodeLoginAvailable = state.selectedProvider.supportsDeviceCodeLogin
+    val preferTvDeviceLogin = tvLogin && deviceCodeLoginAvailable
+    val deviceLoginPrompt = state.deviceLoginPrompt.takeIf { deviceCodeLoginAvailable }
+    LaunchedEffect(preferTvDeviceLogin, deviceLoginPrompt == null) {
+        if (preferTvDeviceLogin && deviceLoginPrompt == null) {
             runCatching { signInFocusRequester.requestFocus() }
         }
     }
-    if (tvLogin && deviceLoginPrompt != null) {
+    if (preferTvDeviceLogin && deviceLoginPrompt != null) {
         TvDeviceLoginScreen(
             prompt = deviceLoginPrompt,
             phase = state.launchPhase,
@@ -293,12 +295,12 @@ private fun LoginScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                 Text(
                     when {
                         state.launchPhase.isNotBlank() -> state.launchPhase
-                        tvLogin -> stringResource(R.string.login_tv_start, state.selectedProvider.displayName)
+                        preferTvDeviceLogin -> stringResource(R.string.login_tv_start, state.selectedProvider.displayName)
                         else -> stringResource(R.string.login_with_provider, state.selectedProvider.displayName)
                     },
                 )
             }
-            if (!tvLogin) {
+            if (!tvLogin && deviceCodeLoginAvailable) {
                 TextButton(onClick = { viewModel.loginWithCode() }) {
                     Text("Use TV code sign-in")
                 }
@@ -1220,10 +1222,13 @@ private fun GameCard(
                 .clickable { onSelect(game) },
         ) {
             UrlImage(game.imageUrl, Modifier.fillMaxSize())
-            TextButton(
+            FavoriteIconButton(
+                favorite = favorite,
                 onClick = { onFavorite(game.id) },
-                modifier = Modifier.align(Alignment.TopEnd),
-            ) { Text(if (favorite) stringResource(R.string.action_saved) else stringResource(R.string.action_save)) }
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(8.dp),
+            )
         }
         Column(
             Modifier
@@ -1304,93 +1309,234 @@ private fun GameDetailsSheet(
             color = Panel,
             tonalElevation = 8.dp,
         ) {
-            Column(Modifier.fillMaxSize()) {
-                LazyColumn(
-                    modifier = Modifier.weight(1f),
-                    contentPadding = PaddingValues(bottom = 18.dp),
-                    verticalArrangement = Arrangement.spacedBy(14.dp),
+            BoxWithConstraints(Modifier.fillMaxSize()) {
+                val aspect = if (maxHeight.value > 0f) maxWidth.value / maxHeight.value else 1f
+                val landscapeTvLayout = maxWidth >= 720.dp && aspect >= 1.35f
+                if (landscapeTvLayout) {
+                    GameDetailsLandscapeContent(
+                        game = game,
+                        favorite = favorite,
+                        onPlay = onPlay,
+                        onFavorite = onFavorite,
+                        onDismiss = onDismiss,
+                        playFocusRequester = playFocusRequester,
+                        shortHeight = maxHeight <= 620.dp,
+                    )
+                } else {
+                    GameDetailsScrollableContent(
+                        game = game,
+                        favorite = favorite,
+                        onPlay = onPlay,
+                        onFavorite = onFavorite,
+                        onDismiss = onDismiss,
+                        playFocusRequester = playFocusRequester,
+                    )
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun GameDetailsLandscapeContent(
+    game: GameInfo,
+    favorite: Boolean,
+    onPlay: (GameInfo) -> Unit,
+    onFavorite: (String) -> Unit,
+    onDismiss: () -> Unit,
+    playFocusRequester: FocusRequester,
+    shortHeight: Boolean,
+) {
+    val description = gameDescriptionForDetails(game)
+    val chips = gameDetailChips(game)
+    val launchStores = displayStoresForVariants(game.variants).ifEmpty { game.availableStores }.map(::gameStoreDisplayName).distinct()
+    Row(
+        Modifier
+            .fillMaxSize()
+            .padding(horizontal = if (shortHeight) 18.dp else 24.dp, vertical = if (shortHeight) 16.dp else 22.dp),
+        horizontalArrangement = Arrangement.spacedBy(if (shortHeight) 16.dp else 22.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            Modifier
+                .weight(0.92f)
+                .fillMaxHeight()
+                .clip(RoundedCornerShape(20.dp)),
+        ) {
+            UrlImage(game.screenshotUrl ?: game.imageUrl, Modifier.fillMaxSize())
+            Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.3f)))
+            FavoriteIconButton(
+                favorite = favorite,
+                onClick = { onFavorite(game.id) },
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(10.dp),
+            )
+            Column(
+                Modifier
+                    .align(Alignment.BottomStart)
+                    .padding(if (shortHeight) 16.dp else 20.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Text(
+                    game.title,
+                    style = if (shortHeight) MaterialTheme.typography.titleLarge else MaterialTheme.typography.headlineSmall,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(displayStoresForGame(game), color = TextMuted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+        }
+
+        Column(
+            Modifier
+                .weight(1.08f)
+                .fillMaxHeight(),
+            verticalArrangement = Arrangement.spacedBy(if (shortHeight) 8.dp else 10.dp),
+        ) {
+            Text(
+                description ?: "No description is available for this game yet.",
+                color = if (description == null) TextMuted else TextPrimary,
+                style = MaterialTheme.typography.bodyMedium,
+                lineHeight = if (shortHeight) MaterialTheme.typography.bodyMedium.lineHeight * 0.92f else MaterialTheme.typography.bodyMedium.lineHeight,
+                maxLines = if (shortHeight) 6 else 8,
+                overflow = TextOverflow.Ellipsis,
+            )
+            if (chips.isNotEmpty()) {
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    chips.take(if (shortHeight) 8 else 12).forEach { label ->
+                        AssistChip(onClick = {}, label = { Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis) })
+                    }
+                }
+            }
+            CompactDetailRows(game)
+            if (launchStores.isNotEmpty()) {
+                Text(
+                    "Launchers: ${launchStores.joinToString(", ")}",
+                    color = TextMuted,
+                    style = MaterialTheme.typography.bodySmall,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            Spacer(Modifier.weight(1f))
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                OutlinedButton(onClick = onDismiss, modifier = Modifier.weight(0.8f)) {
+                    Text("Dismiss", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+                Button(
+                    onClick = {
+                        onDismiss()
+                        onPlay(game)
+                    },
+                    modifier = Modifier
+                        .weight(1.2f)
+                        .focusRequester(playFocusRequester),
                 ) {
-                    item {
-                        Box(
-                            Modifier
-                                .fillMaxWidth()
-                                .height(220.dp),
-                        ) {
-                            UrlImage(
-                                game.screenshotUrl ?: game.imageUrl,
-                                Modifier.fillMaxSize(),
-                            )
-                            Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.28f)))
-                            FavoriteIconButton(
-                                favorite = favorite,
-                                onClick = { onFavorite(game.id) },
-                                modifier = Modifier
-                                    .align(Alignment.TopEnd)
-                                    .padding(10.dp),
-                            )
-                            Column(
-                                Modifier
-                                    .align(Alignment.BottomStart)
-                                    .padding(18.dp),
-                                verticalArrangement = Arrangement.spacedBy(6.dp),
-                            ) {
-                                Text(
-                                    game.title,
-                                    style = MaterialTheme.typography.headlineSmall,
-                                    fontWeight = FontWeight.Bold,
-                                    maxLines = 2,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
-                                Text(displayStoresForGame(game), color = TextMuted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(stringResource(R.string.action_play), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun GameDetailsScrollableContent(
+    game: GameInfo,
+    favorite: Boolean,
+    onPlay: (GameInfo) -> Unit,
+    onFavorite: (String) -> Unit,
+    onDismiss: () -> Unit,
+    playFocusRequester: FocusRequester,
+) {
+    Column(Modifier.fillMaxSize()) {
+        LazyColumn(
+            modifier = Modifier.weight(1f),
+            contentPadding = PaddingValues(bottom = 18.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            item {
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .height(220.dp),
+                ) {
+                    UrlImage(
+                        game.screenshotUrl ?: game.imageUrl,
+                        Modifier.fillMaxSize(),
+                    )
+                    Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.28f)))
+                    FavoriteIconButton(
+                        favorite = favorite,
+                        onClick = { onFavorite(game.id) },
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(10.dp),
+                    )
+                    Column(
+                        Modifier
+                            .align(Alignment.BottomStart)
+                            .padding(18.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        Text(
+                            game.title,
+                            style = MaterialTheme.typography.headlineSmall,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        Text(displayStoresForGame(game), color = TextMuted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
+                }
+            }
+            item {
+                Column(Modifier.padding(horizontal = 18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    val description = gameDescriptionForDetails(game)
+                    if (description != null) {
+                        Text(description, color = TextPrimary, style = MaterialTheme.typography.bodyMedium)
+                    } else {
+                        Text("No description is available for this game yet.", color = TextMuted)
+                    }
+                    val chips = gameDetailChips(game)
+                    if (chips.isNotEmpty()) {
+                        FlowRow(horizontalArrangement = Arrangement.spacedBy(7.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                            chips.take(12).forEach { label ->
+                                AssistChip(onClick = {}, label = { Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis) })
                             }
                         }
                     }
-                    item {
-                        Column(Modifier.padding(horizontal = 18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                            val description = game.longDescription?.takeIf { it.isNotBlank() }
-                                ?: game.description?.takeIf { it.isNotBlank() }
-                            if (description != null) {
-                                Text(description, color = TextPrimary, style = MaterialTheme.typography.bodyMedium)
-                            } else {
-                                Text("No description is available for this game yet.", color = TextMuted)
-                            }
-                            val chips = (game.featureLabels + game.genres + listOfNotNull(game.playType, game.membershipTierLabel))
-                                .map { it.trim() }
-                                .filter { it.isNotBlank() }
-                                .distinct()
-                            if (chips.isNotEmpty()) {
-                                FlowRow(horizontalArrangement = Arrangement.spacedBy(7.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
-                                    chips.take(12).forEach { label ->
-                                        AssistChip(onClick = {}, label = { Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis) })
-                                    }
-                                }
-                            }
-                            DetailRows(game)
-                            if (game.variants.isNotEmpty()) {
-                                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    Text("Launch options", color = TextMuted, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
-                                    launchableGameVariants(game.variants).forEach { variant ->
-                                        Surface(
-                                            modifier = Modifier.fillMaxWidth(),
-                                            shape = RoundedCornerShape(14.dp),
-                                            color = PanelAlt,
-                                        ) {
-                                            Row(
-                                                Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
-                                                verticalAlignment = Alignment.CenterVertically,
-                                                horizontalArrangement = Arrangement.spacedBy(10.dp),
-                                            ) {
-                                                Column(Modifier.weight(1f)) {
-                                                    Text(gameStoreDisplayName(variant.store), fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                                    val details = listOfNotNull(
-                                                        variant.libraryStatus?.takeIf { it.isNotBlank() },
-                                                        variant.supportedControls.takeIf { it.isNotEmpty() }?.joinToString(", "),
-                                                        variant.lastPlayedDate?.takeIf { it.isNotBlank() }?.let { "Last played $it" },
-                                                    ).joinToString(" · ")
-                                                    if (details.isNotBlank()) {
-                                                        Text(details, color = TextMuted, style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                                                    }
-                                                }
+                    DetailRows(game)
+                    if (game.variants.isNotEmpty()) {
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text("Launch options", color = TextMuted, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+                            launchableGameVariants(game.variants).forEach { variant ->
+                                Surface(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    shape = RoundedCornerShape(14.dp),
+                                    color = PanelAlt,
+                                ) {
+                                    Row(
+                                        Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                    ) {
+                                        Column(Modifier.weight(1f)) {
+                                            Text(gameStoreDisplayName(variant.store), fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                            val details = listOfNotNull(
+                                                variant.libraryStatus?.takeIf { it.isNotBlank() },
+                                                variant.supportedControls.takeIf { it.isNotEmpty() }?.joinToString(", "),
+                                                variant.lastPlayedDate?.takeIf { it.isNotBlank() }?.let { "Last played $it" },
+                                            ).joinToString(" · ")
+                                            if (details.isNotBlank()) {
+                                                Text(details, color = TextMuted, style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
                                             }
                                         }
                                     }
@@ -1399,29 +1545,29 @@ private fun GameDetailsSheet(
                         }
                     }
                 }
-                Surface(color = Panel.copy(alpha = 0.98f), tonalElevation = 8.dp) {
-                    Row(
-                        Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 14.dp, vertical = 12.dp),
-                        horizontalArrangement = Arrangement.spacedBy(10.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        OutlinedButton(onClick = onDismiss, modifier = Modifier.weight(0.8f)) {
-                            Text("Dismiss", maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        }
-                        Button(
-                            onClick = {
-                                onDismiss()
-                                onPlay(game)
-                            },
-                            modifier = Modifier
-                                .weight(1.2f)
-                                .focusRequester(playFocusRequester),
-                        ) {
-                            Text(stringResource(R.string.action_play), maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        }
-                    }
+            }
+        }
+        Surface(color = Panel.copy(alpha = 0.98f), tonalElevation = 8.dp) {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 14.dp, vertical = 12.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                OutlinedButton(onClick = onDismiss, modifier = Modifier.weight(0.8f)) {
+                    Text("Dismiss", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+                Button(
+                    onClick = {
+                        onDismiss()
+                        onPlay(game)
+                    },
+                    modifier = Modifier
+                        .weight(1.2f)
+                        .focusRequester(playFocusRequester),
+                ) {
+                    Text(stringResource(R.string.action_play), maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
             }
         }
@@ -1430,6 +1576,7 @@ private fun GameDetailsSheet(
 
 @Composable
 private fun FavoriteIconButton(favorite: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
+    val label = stringResource(if (favorite) R.string.action_saved else R.string.action_save)
     Surface(
         modifier = modifier.size(44.dp),
         shape = CircleShape,
@@ -1437,12 +1584,50 @@ private fun FavoriteIconButton(favorite: Boolean, onClick: () -> Unit, modifier:
         tonalElevation = 3.dp,
     ) {
         IconButton(onClick = onClick) {
-            Text(
-                if (favorite) "★" else "☆",
-                color = if (favorite) MaterialTheme.colorScheme.primary else TextPrimary,
-                style = MaterialTheme.typography.titleLarge,
-                fontWeight = FontWeight.Bold,
+            Icon(
+                painter = painterResource(if (favorite) R.drawable.ic_save_filled else R.drawable.ic_save),
+                contentDescription = label,
+                tint = if (favorite) MaterialTheme.colorScheme.primary else TextPrimary,
+                modifier = Modifier.size(22.dp),
             )
+        }
+    }
+}
+
+private fun gameDescriptionForDetails(game: GameInfo): String? =
+    game.longDescription?.takeIf { it.isNotBlank() }
+        ?: game.description?.takeIf { it.isNotBlank() }
+
+private fun gameDetailChips(game: GameInfo): List<String> =
+    (game.featureLabels + game.genres + listOfNotNull(game.playType, game.membershipTierLabel))
+        .map { it.trim() }
+        .filter { it.isNotBlank() }
+        .distinct()
+
+@Composable
+private fun CompactDetailRows(game: GameInfo) {
+    val rows = listOfNotNull(
+        game.publisherName?.takeIf { it.isNotBlank() }?.let { "Publisher" to it },
+        game.playabilityState?.takeIf { it.isNotBlank() }?.let { "Status" to it },
+        game.contentRatings.takeIf { it.isNotEmpty() }?.joinToString(", ")?.let { "Rating" to it },
+        game.lastPlayed?.takeIf { it.isNotBlank() }?.let { "Last played" to it },
+        game.availableStores.takeIf { it.isNotEmpty() }?.map(::gameStoreDisplayName)?.distinct()?.joinToString(", ")?.let { "Stores" to it },
+    ).take(3)
+    if (rows.isEmpty()) return
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        rows.forEach { (label, value) ->
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(PanelAlt)
+                    .padding(horizontal = 10.dp, vertical = 7.dp),
+                verticalAlignment = Alignment.Top,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Text(label, color = TextMuted, style = MaterialTheme.typography.bodySmall, modifier = Modifier.width(82.dp), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(value, color = TextPrimary, style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
         }
     }
 }
@@ -2855,10 +3040,12 @@ private fun TouchOverlay(client: NativeStreamClient, touch: AndroidTouchSettings
 
     LaunchedEffect(client, touch.enabled) {
         client.setVirtualControllerVisible(touch.enabled)
+        NativeStreamInputRouter.setTouchControllerVisible(touch.enabled)
     }
     DisposableEffect(client) {
         onDispose {
             client.setVirtualControllerVisible(false)
+            NativeStreamInputRouter.setTouchControllerVisible(false)
             NativeStreamInputRouter.clearTouchControllerPassthroughBounds()
         }
     }

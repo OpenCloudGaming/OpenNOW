@@ -71,7 +71,7 @@ data class StreamSettings(
 
 @Serializable
 data class AndroidTouchSettings(
-    val enabled: Boolean = false,
+    val enabled: Boolean = true,
     val mousePad: Boolean = true,
     val opacity: Float = 0.82f,
     val scale: Float = 1f,
@@ -207,6 +207,9 @@ data class LoginProvider(
     val streamingServiceUrl: String,
     val priority: Int = 0,
 )
+
+val LoginProvider.supportsDeviceCodeLogin: Boolean
+    get() = code.equals("NVIDIA", ignoreCase = true)
 
 @Serializable
 data class AuthTokens(

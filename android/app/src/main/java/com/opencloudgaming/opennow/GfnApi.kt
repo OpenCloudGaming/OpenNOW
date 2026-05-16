@@ -444,6 +444,7 @@ class GfnAuthRepository(
     }
 
     suspend fun loginWithDeviceCode(provider: LoginProvider, onPrompt: suspend (DeviceLoginPrompt) -> Unit): AuthSession {
+        check(provider.supportsDeviceCodeLogin) { "Code sign-in is only available for NVIDIA accounts." }
         val deviceCode = requestDeviceCode(provider)
         onPrompt(deviceCode.prompt)
         val tokens = pollDeviceCodeToken(deviceCode)
@@ -1350,7 +1351,8 @@ class GfnSessionRepository(
         val base = resolveStreamingBaseUrl(zone, streamingBaseUrl)
         val body = buildSessionRequestBody(appId, internalTitle, settings, accountLinked, deviceId)
         val url = "$base/v2/session?keyboardLayout=${encoded(settings.keyboardLayout)}&languageCode=${encoded(settings.gameLanguage)}"
-        val requestHttp = sessionProxyHttpClient(settings, http)
+        val host = Uri.parse(base).host.orEmpty()
+        val requestHttp = if (isZoneHostname(host)) sessionProxyHttpClient(settings, http) else http
         val request = Request.Builder()
             .url(url)
             .headers(cloudMatchHeaders(token, clientId, deviceId, includeOrigin = true))
@@ -1430,7 +1432,7 @@ class GfnSessionRepository(
             val s = raw.asObject() ?: return@mapNotNull null
             val status = s.int("status") ?: return@mapNotNull null
             if (status !in setOf(1, 2, 3)) return@mapNotNull null
-            val connIp = s.arr("connectionInfo")?.mapNotNull { it.asObject() }?.firstOrNull { it.int("usage") == 14 && it.string("ip") != null }?.string("ip")
+            val connIp = streamingServerIpFromSession(s)
             val controlIp = s.obj("sessionControlInfo")?.string("ip")
             val monitor = s.arr("monitorSettings")?.firstOrNull()?.asObject()
             ActiveSessionInfo(
@@ -1442,7 +1444,14 @@ class GfnSessionRepository(
                 seatSetupStep = s.obj("seatSetupInfo")?.int("seatSetupStep"),
                 streamingBaseUrl = base,
                 serverIp = connIp ?: controlIp,
-                signalingUrl = (connIp ?: controlIp)?.let { "wss://$it:443/nvst/" },
+                signalingUrl = s.arr("connectionInfo")
+                    ?.mapNotNull { it.asObject() }
+                    ?.firstOrNull { it.int("usage") == 14 }
+                    ?.let { connection ->
+                        val serverIp = connIp ?: controlIp
+                        serverIp?.let { buildSignalingUrl(connection.string("resourcePath") ?: "/nvst/", it).first }
+                    }
+                    ?: (connIp ?: controlIp)?.let { "wss://$it:443/nvst/" },
                 resolution = monitor?.let { "${it.int("widthInPixels") ?: 0}x${it.int("heightInPixels") ?: 0}" },
                 fps = monitor?.int("framesPerSecond"),
             )
@@ -1452,8 +1461,14 @@ class GfnSessionRepository(
     suspend fun claimSession(token: String, active: ActiveSessionInfo, settings: StreamSettings): SessionInfo {
         val deviceId = authStore.stableDeviceId()
         val clientId = UUID.randomUUID().toString()
-        var effectiveServerIp = active.serverIp ?: error("Missing server IP for session claim")
-        if (isZoneHostname(effectiveServerIp)) {
+        val providerBase = normalizeStreamingServiceUrl(active.streamingBaseUrl.orEmpty())?.trimEnd('/')
+        val providerHost = providerBase?.let { Uri.parse(it).host.orEmpty() }.orEmpty()
+        val useProviderBaseForSessionOps = providerBase != null && !isZoneHostname(providerHost)
+        var effectiveServerIp = active.serverIp.orEmpty()
+        if (!useProviderBaseForSessionOps && effectiveServerIp.isBlank()) {
+            error("Missing server IP for session claim")
+        }
+        if (!useProviderBaseForSessionOps && isZoneHostname(effectiveServerIp)) {
             val requestHttp = sessionProxyHttpClient(settings, http)
             val prefetch = Request.Builder()
                 .url("https://$effectiveServerIp/v2/session/${active.sessionId}")
@@ -1464,7 +1479,8 @@ class GfnSessionRepository(
                 streamingServerIp(OpenNowJson.parseToJsonElement(text).jsonObject)?.let { effectiveServerIp = it }
             }
         }
-        val validationUrl = "https://$effectiveServerIp/v2/session/${active.sessionId}"
+        val sessionBase = if (useProviderBaseForSessionOps) providerBase else "https://$effectiveServerIp"
+        val validationUrl = "$sessionBase/v2/session/${active.sessionId}"
         val validationRequest = Request.Builder()
             .url(validationUrl)
             .headers(cloudMatchHeaders(token, clientId, deviceId, includeOrigin = false))
@@ -1475,7 +1491,7 @@ class GfnSessionRepository(
         if (status != 1) {
             val claimBody = buildClaimRequestBody(active.sessionId, active.appId.toString(), settings, deviceId)
             val claimRequest = Request.Builder()
-                .url("https://$effectiveServerIp/v2/session/${active.sessionId}?keyboardLayout=${encoded(settings.keyboardLayout)}&languageCode=${encoded(settings.gameLanguage)}")
+                .url("$sessionBase/v2/session/${active.sessionId}?keyboardLayout=${encoded(settings.keyboardLayout)}&languageCode=${encoded(settings.gameLanguage)}")
                 .headers(cloudMatchHeaders(token, clientId, deviceId, includeOrigin = true))
                 .put(claimBody.toString().toRequestBody(JSON_MEDIA_TYPE))
                 .build()
@@ -1492,7 +1508,7 @@ class GfnSessionRepository(
                 val payload = OpenNowJson.parseToJsonElement(text).jsonObject
                 val pollStatus = payload.obj("session")?.int("status")
                 if (pollStatus in READY_SESSION_STATUSES) {
-                    return toSessionInfo("", "https://$effectiveServerIp", payload, clientId, deviceId)
+                    return toSessionInfo("", sessionBase, payload, clientId, deviceId)
                 }
             }
         }
@@ -1928,6 +1944,10 @@ class GfnSessionRepository(
 
     private fun streamingServerIp(payload: JsonObject): String? {
         val session = payload.obj("session") ?: return null
+        return streamingServerIpFromSession(session)
+    }
+
+    private fun streamingServerIpFromSession(session: JsonObject): String? {
         val conn = session.arr("connectionInfo")?.mapNotNull { it.asObject() }?.firstOrNull { it.int("usage") == 14 }
         conn?.string("ip")?.takeIf { it.isNotBlank() }?.let { return it }
         conn?.string("resourcePath")?.let(::extractHostFromUrl)?.let { return it }

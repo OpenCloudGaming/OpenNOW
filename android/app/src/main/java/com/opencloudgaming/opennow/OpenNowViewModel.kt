@@ -121,17 +121,27 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun selectProvider(provider: LoginProvider) {
-        _state.update { it.copy(selectedProvider = provider) }
+        if (!provider.supportsDeviceCodeLogin && state.value.deviceLoginPrompt != null) {
+            loginJob?.cancel()
+            loginJob = null
+        }
+        _state.update {
+            it.copy(
+                selectedProvider = provider,
+                deviceLoginPrompt = if (provider.supportsDeviceCodeLogin) it.deviceLoginPrompt else null,
+                launchPhase = if (provider.supportsDeviceCodeLogin) it.launchPhase else "",
+            )
+        }
     }
 
     fun login(provider: LoginProvider = state.value.selectedProvider) {
         loginJob?.cancel()
         loginJob = viewModelScope.launch {
-            val useDeviceCode = state.value.codecReport?.androidTvProfile == true
+            val useDeviceCode = state.value.codecReport?.androidTvProfile == true && provider.supportsDeviceCodeLogin
             _state.update {
                 it.copy(
                     error = null,
-                    launchPhase = if (useDeviceCode) "Requesting TV sign-in code" else "Opening NVIDIA login",
+                    launchPhase = if (useDeviceCode) "Requesting TV sign-in code" else "Opening ${provider.displayName} login",
                     deviceLoginPrompt = null,
                 )
             }
@@ -159,6 +169,10 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun loginWithCode(provider: LoginProvider = state.value.selectedProvider) {
+        if (!provider.supportsDeviceCodeLogin) {
+            login(provider)
+            return
+        }
         loginJob?.cancel()
         loginJob = viewModelScope.launch {
             _state.update {
@@ -200,6 +214,9 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             authRepository.login(provider)
         } catch (error: Throwable) {
             if (error is CancellationException || !isLoopbackLoginFailure(error)) {
+                throw error
+            }
+            if (!provider.supportsDeviceCodeLogin) {
                 throw error
             }
             _state.update {
@@ -718,7 +735,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         if (intent == null) return
         val uri = intent.data
         if (authRepository.handleOAuthRedirect(uri)) {
-            _state.update { it.copy(launchPhase = "Finishing NVIDIA login", error = null) }
+            _state.update { it.copy(launchPhase = "Finishing login", error = null) }
             return
         }
         val id = intent.getStringExtra("id")

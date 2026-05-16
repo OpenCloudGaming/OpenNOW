@@ -328,6 +328,8 @@ object NativeStreamInputRouter {
     @Volatile
     private var touchControllerPassthroughBounds: TouchPassthroughBounds? = null
     @Volatile
+    private var touchControllerVisible = false
+    @Volatile
     private var uiTouchPassthroughActive = false
     private val touchMouseState = TouchMouseState()
 
@@ -367,8 +369,17 @@ object NativeStreamInputRouter {
         touchControllerPassthroughBounds = TouchPassthroughBounds(left, top, right, bottom)
     }
 
+    fun setTouchControllerVisible(visible: Boolean) {
+        touchControllerVisible = visible
+        if (!visible) {
+            touchControllerPassthroughBounds = null
+            uiTouchPassthroughActive = false
+        }
+    }
+
     fun clearTouchControllerPassthroughBounds() {
         touchControllerPassthroughBounds = null
+        touchControllerVisible = false
         uiTouchPassthroughActive = false
     }
 
@@ -378,7 +389,7 @@ object NativeStreamInputRouter {
             width > 0 &&
             height > 0 &&
             event.pointerCount == 1 &&
-            !shouldPassTouchToNativeUi(event)
+            !shouldPassTouchToNativeUi(event, width, height)
 
     fun shouldCaptureTouchBeforeViews(event: MotionEvent, width: Int, height: Int): Boolean =
         shouldForwardTouchBeforeViews(event, width, height) &&
@@ -403,12 +414,12 @@ object NativeStreamInputRouter {
         keyCode == KeyEvent.KEYCODE_BUTTON_MODE ||
             keyCode == KeyEvent.KEYCODE_MENU
 
-    private fun shouldPassTouchToNativeUi(event: MotionEvent): Boolean {
+    private fun shouldPassTouchToNativeUi(event: MotionEvent, width: Int, height: Int): Boolean {
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 uiTouchPassthroughActive =
                     streamChromePassthroughBounds?.contains(event.x, event.y) == true ||
-                    touchControllerPassthroughBounds?.contains(event.x, event.y) == true
+                    touchControllerContains(event, width, height)
                 return uiTouchPassthroughActive
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
@@ -421,6 +432,15 @@ object NativeStreamInputRouter {
             }
         }
         return false
+    }
+
+    private fun touchControllerContains(event: MotionEvent, width: Int, height: Int): Boolean {
+        val bounds = touchControllerPassthroughBounds
+        if (bounds != null) return bounds.contains(event.x, event.y)
+        return touchControllerVisible &&
+            width > 0 &&
+            height > 0 &&
+            event.y >= height * TOUCH_CONTROLLER_FALLBACK_TOP_RATIO
     }
 
     private data class TouchPassthroughBounds(
@@ -439,6 +459,8 @@ object NativeStreamInputRouter {
             private const val EDGE_SLOP_PX = 24
         }
     }
+
+    private const val TOUCH_CONTROLLER_FALLBACK_TOP_RATIO = 0.52f
 }
 
 object NativeInputDiagnostics {
@@ -650,6 +672,7 @@ class NativeStreamClient(
     private var signaling: GfnSignalingClient? = null
     private var reliableInput: DataChannel? = null
     private var partiallyReliableInput: DataChannel? = null
+    private var partiallyReliableGamepadMask = 0
     private var videoTrack: VideoTrack? = null
     private var audioTrack: AudioTrack? = null
     private var renderer: SurfaceViewRenderer? = null
@@ -740,6 +763,7 @@ class NativeStreamClient(
         signaling = null
         reliableInput = null
         partiallyReliableInput = null
+        partiallyReliableGamepadMask = 0
         resetInputState()
         videoTrack?.removeSink(renderer)
         videoTrack = null
@@ -925,7 +949,7 @@ class NativeStreamClient(
 
     fun setVirtualButton(buttonMask: Int, pressed: Boolean) {
         virtualButtons = if (pressed) virtualButtons or buttonMask else virtualButtons and buttonMask.inv()
-        sendCurrentGamepadState(partiallyReliable = false)
+        sendCurrentGamepadState()
     }
 
     fun setVirtualTrigger(left: Boolean, pressed: Boolean) {
@@ -934,7 +958,7 @@ class NativeStreamClient(
         } else {
             virtualRightTrigger = if (pressed) 255 else 0
         }
-        sendCurrentGamepadState(partiallyReliable = false)
+        sendCurrentGamepadState()
     }
 
     fun setVirtualLeftStick(x: Float, y: Float) {
@@ -942,7 +966,7 @@ class NativeStreamClient(
         virtualLeftStickActive = normalized.first != 0f || normalized.second != 0f
         virtualLeftStickX = normalizeToInt16(normalized.first)
         virtualLeftStickY = normalizeToInt16(-normalized.second)
-        sendCurrentGamepadState(partiallyReliable = false)
+        sendCurrentGamepadState()
     }
 
     fun setVirtualRightStick(x: Float, y: Float) {
@@ -950,13 +974,13 @@ class NativeStreamClient(
         virtualRightStickActive = normalized.first != 0f || normalized.second != 0f
         virtualRightStickX = normalizeToInt16(normalized.first)
         virtualRightStickY = normalizeToInt16(-normalized.second)
-        sendCurrentGamepadState(partiallyReliable = false)
+        sendCurrentGamepadState()
     }
 
     fun setVirtualControllerVisible(visible: Boolean) {
         if (virtualControllerVisible == visible) return
         virtualControllerVisible = visible
-        sendCurrentGamepadState(partiallyReliable = false)
+        sendCurrentGamepadState()
     }
 
     private fun handleSignaling(event: SignalingEvent) {
@@ -977,6 +1001,7 @@ class NativeStreamClient(
         val pc = ensurePeerConnection(currentSession)
         ensureInputDataChannels(pc, preferred)
         inputEncoder.setProtocolVersion(SdpTools.parseInputProtocolVersion(preferred))
+        partiallyReliableGamepadMask = SdpTools.parsePartiallyReliableGamepadMask(preferred)
         pc.setRemoteDescription(
             object : SimpleSdpObserver() {
                 override fun onSetSuccess() {
@@ -1179,7 +1204,7 @@ class NativeStreamClient(
             while (true) {
                 delay(100L)
                 if (hasAnyControllerState()) {
-                    sendCurrentGamepadState(partiallyReliable = false)
+                    sendCurrentGamepadState()
                 }
             }
         }
@@ -1288,19 +1313,7 @@ class NativeStreamClient(
         lastLeftStickY = normalizeToInt16(-left.second)
         lastRightStickX = normalizeToInt16(right.first)
         lastRightStickY = normalizeToInt16(-right.second)
-        val packet = inputEncoder.encodeGamepadState(
-            controllerId = controllerId,
-            buttons = physicalButtons or physicalHatButtons or virtualButtons,
-            leftTrigger = max(lastLeftTrigger, virtualLeftTrigger),
-            rightTrigger = max(lastRightTrigger, virtualRightTrigger),
-            leftStickX = effectiveLeftStickX(),
-            leftStickY = effectiveLeftStickY(),
-            rightStickX = effectiveRightStickX(),
-            rightStickY = effectiveRightStickY(),
-            bitmap = currentGamepadBitmap(controllerId),
-            partiallyReliable = false,
-        )
-        return sendInput(packet, partiallyReliable = false)
+        return sendCurrentGamepadState(controllerId = controllerId)
     }
 
     private fun dispatchGamepadKey(event: KeyEvent): Boolean {
@@ -1311,7 +1324,7 @@ class NativeStreamClient(
             activeControllerId = controllerIdFor(event)
             physicalControllerActive = true
             physicalButtons = if (pressed) physicalButtons or mask else physicalButtons and mask.inv()
-            return sendCurrentGamepadState(partiallyReliable = false, controllerId = activeControllerId)
+            return sendCurrentGamepadState(controllerId = activeControllerId)
         }
         when (event.keyCode) {
             KeyEvent.KEYCODE_BUTTON_L2 -> {
@@ -1319,35 +1332,35 @@ class NativeStreamClient(
                 physicalControllerActive = true
                 physicalLeftTriggerButtonPressed = pressed
                 lastLeftTrigger = if (pressed) 255 else 0
-                return sendCurrentGamepadState(partiallyReliable = false, controllerId = activeControllerId)
+                return sendCurrentGamepadState(controllerId = activeControllerId)
             }
             KeyEvent.KEYCODE_BUTTON_R2 -> {
                 activeControllerId = controllerIdFor(event)
                 physicalControllerActive = true
                 physicalRightTriggerButtonPressed = pressed
                 lastRightTrigger = if (pressed) 255 else 0
-                return sendCurrentGamepadState(partiallyReliable = false, controllerId = activeControllerId)
+                return sendCurrentGamepadState(controllerId = activeControllerId)
             }
         }
         return false
     }
 
-    private fun sendCurrentGamepadState(partiallyReliable: Boolean, controllerId: Int = activeControllerId): Boolean =
-        sendInput(
-            inputEncoder.encodeGamepadState(
-                controllerId = controllerId,
-                buttons = physicalButtons or physicalHatButtons or virtualButtons,
-                leftTrigger = max(lastLeftTrigger, virtualLeftTrigger),
-                rightTrigger = max(lastRightTrigger, virtualRightTrigger),
-                leftStickX = effectiveLeftStickX(),
-                leftStickY = effectiveLeftStickY(),
-                rightStickX = effectiveRightStickX(),
-                rightStickY = effectiveRightStickY(),
-                bitmap = currentGamepadBitmap(controllerId),
-                partiallyReliable = partiallyReliable,
-            ),
+    private fun sendCurrentGamepadState(controllerId: Int = activeControllerId): Boolean {
+        val partiallyReliable = canSendGamepadPartiallyReliable(controllerId)
+        val packet = inputEncoder.encodeGamepadState(
+            controllerId = controllerId,
+            buttons = physicalButtons or physicalHatButtons or virtualButtons,
+            leftTrigger = max(lastLeftTrigger, virtualLeftTrigger),
+            rightTrigger = max(lastRightTrigger, virtualRightTrigger),
+            leftStickX = effectiveLeftStickX(),
+            leftStickY = effectiveLeftStickY(),
+            rightStickX = effectiveRightStickX(),
+            rightStickY = effectiveRightStickY(),
+            bitmap = currentGamepadBitmap(controllerId),
             partiallyReliable = partiallyReliable,
         )
+        return sendInput(packet, partiallyReliable = partiallyReliable, fallbackToReliable = !partiallyReliable)
+    }
 
     private fun effectiveLeftStickX(): Int = if (virtualLeftStickActive) virtualLeftStickX else lastLeftStickX
     private fun effectiveLeftStickY(): Int = if (virtualLeftStickActive) virtualLeftStickY else lastLeftStickY
@@ -1371,9 +1384,14 @@ class NativeStreamClient(
             virtualLeftStickActive ||
             virtualRightStickActive
 
-    private fun sendInput(bytes: ByteArray, partiallyReliable: Boolean): Boolean {
+    private fun sendInput(bytes: ByteArray, partiallyReliable: Boolean): Boolean =
+        sendInput(bytes, partiallyReliable, fallbackToReliable = true)
+
+    private fun sendInput(bytes: ByteArray, partiallyReliable: Boolean, fallbackToReliable: Boolean): Boolean {
         val channel = if (partiallyReliable && partiallyReliableInput?.state() == DataChannel.State.OPEN) {
             partiallyReliableInput
+        } else if (partiallyReliable && !fallbackToReliable) {
+            null
         } else {
             reliableInput
         }
@@ -1412,6 +1430,12 @@ class NativeStreamClient(
         if (!connected) return 0
         val id = controllerId.coerceIn(0, 3)
         return (1 shl id) or (1 shl (id + 8))
+    }
+
+    private fun canSendGamepadPartiallyReliable(controllerId: Int): Boolean {
+        if (partiallyReliableInput?.state() != DataChannel.State.OPEN) return false
+        val mask = 1 shl (controllerId and 0x1f)
+        return (partiallyReliableGamepadMask and mask) != 0
     }
 
     private fun MotionEvent.isFromSource(source: Int): Boolean = (this.source and source) == source
@@ -1594,6 +1618,13 @@ object SdpTools {
             ?.coerceIn(1, 5000)
             ?: 30
 
+    fun parsePartiallyReliableGamepadMask(sdp: String): Int =
+        parseRiIntegerAttribute(
+            sdp,
+            "ri.enablePartiallyReliableTransferGamepad",
+            PARTIALLY_RELIABLE_GAMEPAD_MASK_ALL,
+        )
+
     fun buildNvstSdp(offerSdp: String, settings: StreamSettings, localAnswer: String): String {
         val (width, height) = streamResolutionPixels(settings)
         val ufrag = Regex("a=ice-ufrag:([^\\r\\n]+)").find(localAnswer)?.groupValues?.getOrNull(1)?.trim().orEmpty()
@@ -1654,6 +1685,24 @@ object SdpTools {
         val parts = first.split("-")
         return if (parts.size == 4 && parts.all { it.all(Char::isDigit) }) parts.joinToString(".") else null
     }
+
+    private fun parseRiIntegerAttribute(sdp: String, attribute: String, fallback: Int): Int {
+        val escaped = Regex.escape(attribute)
+        val raw = Regex("a=$escaped:([^\\r\\n]+)", RegexOption.IGNORE_CASE)
+            .find(sdp)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.trim()
+            ?: return fallback
+        val parsed = if (raw.startsWith("0x", ignoreCase = true)) {
+            raw.drop(2).toIntOrNull(16)
+        } else {
+            raw.toIntOrNull()
+        }
+        return parsed ?: fallback
+    }
+
+    private const val PARTIALLY_RELIABLE_GAMEPAD_MASK_ALL = 0x0f
 }
 
 class InputEncoder {
