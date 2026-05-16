@@ -324,7 +324,9 @@ object NativeStreamInputRouter {
     @Volatile
     private var systemMenuHandler: (() -> Unit)? = null
     @Volatile
-    private var uiTouchPassthroughBounds: TouchPassthroughBounds? = null
+    private var streamChromePassthroughBounds: TouchPassthroughBounds? = null
+    @Volatile
+    private var touchControllerPassthroughBounds: TouchPassthroughBounds? = null
     @Volatile
     private var uiTouchPassthroughActive = false
     private val touchMouseState = TouchMouseState()
@@ -353,11 +355,20 @@ object NativeStreamInputRouter {
     }
 
     fun setUiTouchPassthroughBounds(left: Int, top: Int, right: Int, bottom: Int) {
-        uiTouchPassthroughBounds = TouchPassthroughBounds(left, top, right, bottom)
+        streamChromePassthroughBounds = TouchPassthroughBounds(left, top, right, bottom)
     }
 
     fun clearUiTouchPassthroughBounds() {
-        uiTouchPassthroughBounds = null
+        streamChromePassthroughBounds = null
+        uiTouchPassthroughActive = false
+    }
+
+    fun setTouchControllerPassthroughBounds(left: Int, top: Int, right: Int, bottom: Int) {
+        touchControllerPassthroughBounds = TouchPassthroughBounds(left, top, right, bottom)
+    }
+
+    fun clearTouchControllerPassthroughBounds() {
+        touchControllerPassthroughBounds = null
         uiTouchPassthroughActive = false
     }
 
@@ -375,7 +386,7 @@ object NativeStreamInputRouter {
 
     fun dispatchTouch(event: MotionEvent, width: Int, height: Int): Boolean {
         val current = client ?: return false
-        return touchMouseState.handle(event, touchMouseEnabled && width > 0 && height > 0, current)
+        return touchMouseState.handle(event, touchMouseEnabled && width > 0 && height > 0, current, width, height)
     }
 
     fun dispatchKey(event: KeyEvent): Boolean {
@@ -395,7 +406,9 @@ object NativeStreamInputRouter {
     private fun shouldPassTouchToNativeUi(event: MotionEvent): Boolean {
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
-                uiTouchPassthroughActive = uiTouchPassthroughBounds?.contains(event.x, event.y) == true
+                uiTouchPassthroughActive =
+                    streamChromePassthroughBounds?.contains(event.x, event.y) == true ||
+                    touchControllerPassthroughBounds?.contains(event.x, event.y) == true
                 return uiTouchPassthroughActive
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
@@ -459,8 +472,11 @@ private class TouchMouseState {
     private var downTimeMs = 0L
     private var lastX = 0f
     private var lastY = 0f
-    private var moved = false
     private var selecting = false
+    private var doubleTapDragCandidate = false
+    private var cursorEstimateValid = false
+    private var cursorX = 0f
+    private var cursorY = 0f
     private var lastTapTimeMs = Long.MIN_VALUE
     private var lastTapX = Float.NaN
     private var lastTapY = Float.NaN
@@ -469,10 +485,10 @@ private class TouchMouseState {
         if (selecting) client?.setTouchMouseButton(false)
         activePointerId = -1
         selecting = false
-        moved = false
+        doubleTapDragCandidate = false
     }
 
-    fun handle(event: MotionEvent, enabled: Boolean, client: NativeStreamClient): Boolean {
+    fun handle(event: MotionEvent, enabled: Boolean, client: NativeStreamClient, width: Int, height: Int): Boolean {
         if (!enabled) {
             reset(client)
             return false
@@ -486,17 +502,15 @@ private class TouchMouseState {
                 downTimeMs = event.eventTime
                 lastX = event.x
                 lastY = event.y
-                moved = false
-                selecting = isDoubleTap(event)
-                if (selecting) {
-                    client.setTouchMouseButton(true)
+                selecting = false
+                doubleTapDragCandidate = isDoubleTap(event)
+                if (doubleTapDragCandidate) {
                     lastTapTimeMs = Long.MIN_VALUE
                 }
                 return true
             }
             MotionEvent.ACTION_POINTER_DOWN -> {
                 reset(client)
-                moved = true
                 return true
             }
             MotionEvent.ACTION_MOVE -> {
@@ -506,10 +520,20 @@ private class TouchMouseState {
                 val y = event.getY(index)
                 val dx = x - lastX
                 val dy = y - lastY
-                if (abs(x - downX) > TOUCH_MOUSE_TAP_SLOP_PX || abs(y - downY) > TOUCH_MOUSE_TAP_SLOP_PX) {
-                    moved = true
+                if (
+                    doubleTapDragCandidate &&
+                    !selecting &&
+                    (abs(x - downX) > TOUCH_MOUSE_DRAG_START_SLOP_PX || abs(y - downY) > TOUCH_MOUSE_DRAG_START_SLOP_PX)
+                ) {
+                    alignCursorTo(downX, downY, width, height, client)
+                    selecting = client.setTouchMouseButton(true)
+                    doubleTapDragCandidate = false
+                    if (selecting) {
+                        NativeInputDiagnostics.add("touch double tap drag start")
+                    }
                 }
                 sendMouseDelta(dx, dy, client)
+                updateCursorEstimateBy(dx, dy, width, height)
                 lastX = x
                 lastY = y
                 return true
@@ -522,14 +546,16 @@ private class TouchMouseState {
                     tapDistanceX <= TOUCH_MOUSE_TAP_SLOP_PX &&
                     tapDistanceY <= TOUCH_MOUSE_TAP_SLOP_PX
                 activePointerId = -1
+                doubleTapDragCandidate = false
                 if (selecting) {
                     client.setTouchMouseButton(false)
                     selecting = false
                     return true
                 }
                 if (wasTap) {
+                    alignCursorTo(event.x, event.y, width, height, client)
                     NativeInputDiagnostics.add("touch tap click dx=${tapDistanceX.roundToInt()} dy=${tapDistanceY.roundToInt()}")
-                    client.sendTouchMouseClick()
+                    client.sendTouchMouseClick(delayBeforeDownMs = TOUCH_MOUSE_CLICK_ALIGN_DELAY_MS)
                     lastTapTimeMs = event.eventTime
                     lastTapX = event.x
                     lastTapY = event.y
@@ -552,17 +578,47 @@ private class TouchMouseState {
             abs(event.y - lastTapY) <= TOUCH_MOUSE_DOUBLE_TAP_SLOP_PX
     }
 
-    private fun sendMouseDelta(dx: Float, dy: Float, client: NativeStreamClient) {
+    private fun sendMouseDelta(
+        dx: Float,
+        dy: Float,
+        client: NativeStreamClient,
+        partiallyReliable: Boolean = true,
+    ) {
         val ix = dx.roundToInt()
         val iy = dy.roundToInt()
         if (ix != 0 || iy != 0) {
-            client.sendTouchMouseMove(ix, iy)
+            client.sendTouchMouseMove(ix, iy, partiallyReliable)
         }
     }
 
+    private fun alignCursorTo(x: Float, y: Float, width: Int, height: Int, client: NativeStreamClient) {
+        ensureCursorEstimate(width, height)
+        val dx = x - cursorX
+        val dy = y - cursorY
+        sendMouseDelta(dx, dy, client, partiallyReliable = false)
+        cursorX = x.coerceIn(0f, width.toFloat())
+        cursorY = y.coerceIn(0f, height.toFloat())
+        NativeInputDiagnostics.add("touch tap align dx=${dx.roundToInt()} dy=${dy.roundToInt()}")
+    }
+
+    private fun updateCursorEstimateBy(dx: Float, dy: Float, width: Int, height: Int) {
+        ensureCursorEstimate(width, height)
+        cursorX = (cursorX + dx).coerceIn(0f, width.toFloat())
+        cursorY = (cursorY + dy).coerceIn(0f, height.toFloat())
+    }
+
+    private fun ensureCursorEstimate(width: Int, height: Int) {
+        if (cursorEstimateValid) return
+        cursorX = width / 2f
+        cursorY = height / 2f
+        cursorEstimateValid = true
+    }
+
     companion object {
+        private const val TOUCH_MOUSE_DRAG_START_SLOP_PX = 10f
         private const val TOUCH_MOUSE_TAP_SLOP_PX = 42f
         private const val TOUCH_MOUSE_TAP_TIMEOUT_MS = 450L
+        private const val TOUCH_MOUSE_CLICK_ALIGN_DELAY_MS = 48L
         private const val TOUCH_MOUSE_DOUBLE_TAP_TIMEOUT_MS = 320L
         private const val TOUCH_MOUSE_DOUBLE_TAP_SLOP_PX = 36f
     }
@@ -744,7 +800,7 @@ class NativeStreamClient(
     }
 
     fun dispatchMotion(event: MotionEvent): Boolean {
-        if (event.isFromSource(InputDevice.SOURCE_JOYSTICK)) {
+        if (event.isGamepadMotionEvent()) {
             return dispatchJoystick(event)
         }
         if (event.isMouseLikePointer()) {
@@ -753,9 +809,9 @@ class NativeStreamClient(
         return false
     }
 
-    fun sendTouchMouseMove(dx: Int, dy: Int) {
+    fun sendTouchMouseMove(dx: Int, dy: Int, partiallyReliable: Boolean = true) {
         val adjusted = adjustedMouseDelta(dx, dy)
-        sendInput(inputEncoder.encodeMouseMove(adjusted.first, adjusted.second), partiallyReliable = true)
+        sendInput(inputEncoder.encodeMouseMove(adjusted.first, adjusted.second), partiallyReliable = partiallyReliable)
     }
 
     private fun dispatchMouseLikePointer(event: MotionEvent): Boolean {
@@ -823,10 +879,13 @@ class NativeStreamClient(
         return adjustedDx.roundToInt() to adjustedDy.roundToInt()
     }
 
-    fun sendTouchMouseClick() {
-        if (!setTouchMouseButton(true)) return
+    fun sendTouchMouseClick(delayBeforeDownMs: Long = 0L) {
         scope.launch {
-            delay(48L)
+            if (delayBeforeDownMs > 0) {
+                delay(delayBeforeDownMs)
+            }
+            if (!setTouchMouseButton(true)) return@launch
+            delay(160L)
             setTouchMouseButton(false)
         }
     }
@@ -851,14 +910,18 @@ class NativeStreamClient(
         audioTrack?.setEnabled(!muted)
     }
 
-    fun setTouchMouseButton(pressed: Boolean): Boolean =
-        sendInput(
-            inputEncoder.encodeMouseButton(
-                if (pressed) InputEncoder.INPUT_MOUSE_BUTTON_DOWN else InputEncoder.INPUT_MOUSE_BUTTON_UP,
-                1,
-            ),
-            false,
+    fun setTouchMouseButton(pressed: Boolean): Boolean {
+        val packet = inputEncoder.encodeMouseButton(
+            if (pressed) InputEncoder.INPUT_MOUSE_BUTTON_DOWN else InputEncoder.INPUT_MOUSE_BUTTON_UP,
+            1,
         )
+        val reliableSent = sendInput(packet, partiallyReliable = false)
+        val partialSent = sendInput(packet, partiallyReliable = true)
+        NativeInputDiagnostics.add(
+            "touch mouse button ${if (pressed) "down" else "up"} reliableSent=$reliableSent partialSent=$partialSent reliable=${reliableInput?.state()} partial=${partiallyReliableInput?.state()}",
+        )
+        return reliableSent || partialSent
+    }
 
     fun setVirtualButton(buttonMask: Int, pressed: Boolean) {
         virtualButtons = if (pressed) virtualButtons or buttonMask else virtualButtons and buttonMask.inv()
@@ -1066,8 +1129,38 @@ class NativeStreamClient(
                     sendInput(inputEncoder.encodeHapticsEnabled(true), partiallyReliable = false)
                 }
             }
-            override fun onMessage(buffer: DataChannel.Buffer) = Unit
+            override fun onMessage(buffer: DataChannel.Buffer) {
+                handleInputChannelMessage(buffer)
+            }
         })
+    }
+
+    private fun handleInputChannelMessage(buffer: DataChannel.Buffer) {
+        val bytes = buffer.data.duplicate().let { data ->
+            ByteArray(data.remaining()).also(data::get)
+        }
+        if (bytes.isEmpty()) return
+
+        val firstWord = if (bytes.size >= 2) {
+            ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN).short.toInt() and 0xffff
+        } else {
+            bytes[0].toInt() and 0xff
+        }
+        val version = when {
+            firstWord == INPUT_HANDSHAKE_MAGIC_WORD -> {
+                if (bytes.size >= 4) {
+                    ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN).getShort(2).toInt() and 0xffff
+                } else {
+                    DEFAULT_INPUT_PROTOCOL_VERSION
+                }
+            }
+            (bytes[0].toInt() and 0xff) == INPUT_HANDSHAKE_MARKER -> firstWord
+            else -> return
+        }.coerceAtLeast(1)
+
+        inputEncoder.setProtocolVersion(version)
+        inputEncoder.resetGamepadSequences()
+        NativeInputDiagnostics.add("input handshake protocol=$version bytes=${bytes.size}")
     }
 
     private fun startHeartbeat() {
@@ -1279,7 +1372,11 @@ class NativeStreamClient(
             virtualRightStickActive
 
     private fun sendInput(bytes: ByteArray, partiallyReliable: Boolean): Boolean {
-        val channel = if (partiallyReliable) partiallyReliableInput ?: reliableInput else reliableInput ?: partiallyReliableInput
+        val channel = if (partiallyReliable && partiallyReliableInput?.state() == DataChannel.State.OPEN) {
+            partiallyReliableInput
+        } else {
+            reliableInput
+        }
         if (channel?.state() != DataChannel.State.OPEN) {
             if (!inputDropLogged) {
                 inputDropLogged = true
@@ -1342,8 +1439,16 @@ class NativeStreamClient(
     }
 
     private fun KeyEvent.isGamepadEvent(): Boolean =
+        keyCode.toGamepadButtonMask() != null ||
+            keyCode == KeyEvent.KEYCODE_BUTTON_L2 ||
+            keyCode == KeyEvent.KEYCODE_BUTTON_R2 ||
+            keyCode == KeyEvent.KEYCODE_BUTTON_MODE ||
         (source and InputDevice.SOURCE_GAMEPAD) == InputDevice.SOURCE_GAMEPAD ||
             (source and InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK
+
+    private fun MotionEvent.isGamepadMotionEvent(): Boolean =
+        isFromSource(InputDevice.SOURCE_JOYSTICK) ||
+            isFromSource(InputDevice.SOURCE_GAMEPAD)
 
     private fun Int.toGamepadButtonMask(): Int? = when (this) {
         KeyEvent.KEYCODE_DPAD_UP -> 0x0001
@@ -1477,7 +1582,8 @@ object SdpTools {
     }
 
     fun parseInputProtocolVersion(sdp: String): Int =
-        Regex("a=ri\\.version:(\\d+)").find(sdp)?.groupValues?.getOrNull(1)?.toIntOrNull() ?: 3
+        Regex("a=ri\\.version:(\\d+)").find(sdp)?.groupValues?.getOrNull(1)?.toIntOrNull()
+            ?: DEFAULT_INPUT_PROTOCOL_VERSION
 
     fun parsePartialReliableThresholdMs(sdp: String): Int =
         Regex("a=ri\\.partialReliableThresholdMs:(\\d+)")
@@ -1790,6 +1896,10 @@ class InputEncoder {
 }
 
 private fun timestampUs(): Long = SystemClock.elapsedRealtimeNanos() / 1000L
+
+private const val DEFAULT_INPUT_PROTOCOL_VERSION = 2
+private const val INPUT_HANDSHAKE_MARKER = 0x0e
+private const val INPUT_HANDSHAKE_MAGIC_WORD = 526
 
 private fun Any?.statsDouble(): Double? =
     when (this) {

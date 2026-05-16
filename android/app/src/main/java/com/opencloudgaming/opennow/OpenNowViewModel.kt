@@ -1130,7 +1130,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             return copy(codec = VideoCodec.H264, colorQuality = ColorQuality.EightBit420, maxBitrateMbps = minOf(maxBitrateMbps, 25), fps = minOf(fps, 60))
         }
         if (report?.androidTvProfile == true) {
-            return copy(codec = VideoCodec.H264, colorQuality = ColorQuality.EightBit420, resolution = capResolution(resolution, 1920, 1080), maxBitrateMbps = minOf(maxBitrateMbps, 35), fps = minOf(fps, 60))
+            return copy(codec = VideoCodec.H264, colorQuality = ColorQuality.EightBit420, maxBitrateMbps = minOf(maxBitrateMbps, 35), fps = minOf(fps, 60))
         }
         val capability = report?.capabilities?.firstOrNull { it.codec == codec }
         val codecSafe = capability?.let { it.decoderAvailable && it.realtimeSafe } ?: (codec == VideoCodec.H264)
@@ -1139,12 +1139,6 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         } else {
             copy(codec = VideoCodec.H264, colorQuality = ColorQuality.EightBit420, maxBitrateMbps = minOf(maxBitrateMbps, 35), fps = minOf(fps, 60))
         }
-    }
-
-    private fun capResolution(value: String, maxWidth: Int, maxHeight: Int): String {
-        val width = value.substringBefore("x").toIntOrNull() ?: return "${maxWidth}x$maxHeight"
-        val height = value.substringAfter("x").toIntOrNull() ?: return "${maxWidth}x$maxHeight"
-        return if (width <= maxWidth && height <= maxHeight) value else "${maxWidth}x$maxHeight"
     }
 
     private fun shouldSendAccountLinked(game: GameInfo, variant: GameVariant?): Boolean {

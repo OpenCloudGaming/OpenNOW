@@ -162,11 +162,11 @@ import kotlin.math.roundToInt
 import kotlin.math.sqrt
 
 private val Green = Color(0xff6af0a0)
-private val Background = Color(0xff07100b)
-private val Panel = Color(0xff0d1a12)
-private val PanelAlt = Color(0xff13251a)
-private val TextPrimary = Color(0xffe5fff0)
-private val TextMuted = Color(0xff9fbea9)
+private val Background = Color(0xff090b0d)
+private val Panel = Color(0xff11161a)
+private val PanelAlt = Color(0xff171d22)
+private val TextPrimary = Color(0xffeef3f5)
+private val TextMuted = Color(0xff98a4aa)
 private val SettingsBackground = Color(0xff090b0d)
 private val SettingsPanel = Color(0xff11161a)
 private val SettingsPanelAlt = Color(0xff171d22)
@@ -176,6 +176,7 @@ private val UiAccent.color: Color
     get() = when (this) {
         UiAccent.OpenNow -> Green
         UiAccent.Pixel -> Color(0xff8ab4f8)
+        UiAccent.HotPink -> Color(0xffff4fb8)
         UiAccent.Lime -> Color(0xffc7ef6b)
         UiAccent.Coral -> Color(0xffff8d7a)
         UiAccent.Violet -> Color(0xffc7a4ff)
@@ -185,6 +186,7 @@ private val UiAccent.color: Color
 private fun uiAccentLabel(accent: UiAccent): String = when (accent) {
     UiAccent.OpenNow -> stringResource(R.string.accent_opennow)
     UiAccent.Pixel -> stringResource(R.string.accent_pixel)
+    UiAccent.HotPink -> stringResource(R.string.accent_hot_pink)
     UiAccent.Lime -> stringResource(R.string.accent_lime)
     UiAccent.Coral -> stringResource(R.string.accent_coral)
     UiAccent.Violet -> stringResource(R.string.accent_violet)
@@ -196,7 +198,7 @@ fun OpenNowTheme(settings: AppSettings, content: @Composable () -> Unit) {
     val accent = settings.uiAccent.color
     val fallbackScheme = darkColorScheme(
         primary = accent,
-        onPrimary = Color(0xff031008),
+        onPrimary = Color(0xff08090c),
         background = Background,
         surface = Panel,
         surfaceVariant = PanelAlt,
@@ -205,7 +207,13 @@ fun OpenNowTheme(settings: AppSettings, content: @Composable () -> Unit) {
         onSurfaceVariant = TextMuted,
     )
     val colorScheme = if (settings.dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-        dynamicDarkColorScheme(context)
+        dynamicDarkColorScheme(context).copy(
+            primary = accent,
+            onPrimary = Color(0xff08090c),
+            secondary = accent,
+            tertiary = accent,
+            surfaceTint = accent,
+        )
     } else {
         fallbackScheme
     }
@@ -236,7 +244,7 @@ private fun LoadingScreen(text: String) {
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(16.dp)) {
             OpenNowMark(72.dp)
-            CircularProgressIndicator(color = Green)
+            CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
             Text(text, color = TextMuted)
         }
     }
@@ -246,10 +254,19 @@ private fun LoadingScreen(text: String) {
 private fun LoginScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
     val signInFocusRequester = remember { FocusRequester() }
     val tvLogin = state.codecReport?.androidTvProfile == true
+    val deviceLoginPrompt = state.deviceLoginPrompt
     LaunchedEffect(tvLogin, state.deviceLoginPrompt == null) {
         if (tvLogin && state.deviceLoginPrompt == null) {
             runCatching { signInFocusRequester.requestFocus() }
         }
+    }
+    if (tvLogin && deviceLoginPrompt != null) {
+        TvDeviceLoginScreen(
+            prompt = deviceLoginPrompt,
+            phase = state.launchPhase,
+            onCancel = viewModel::cancelLogin,
+        )
+        return
     }
     Column(
         Modifier
@@ -266,7 +283,7 @@ private fun LoginScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
         Spacer(Modifier.height(28.dp))
         ProviderPicker(state.providers, state.selectedProvider, viewModel::selectProvider)
         Spacer(Modifier.height(16.dp))
-        state.deviceLoginPrompt?.let { prompt ->
+        deviceLoginPrompt?.let { prompt ->
             DeviceLoginPanel(prompt = prompt, phase = state.launchPhase, onCancel = viewModel::cancelLogin)
         } ?: Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Button(
@@ -295,10 +312,42 @@ private fun LoginScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
 }
 
 @Composable
-private fun DeviceLoginPanel(prompt: DeviceLoginPrompt, phase: String, onCancel: () -> Unit) {
+private fun TvDeviceLoginScreen(prompt: DeviceLoginPrompt, phase: String, onCancel: () -> Unit) {
+    BoxWithConstraints(
+        modifier = Modifier.fillMaxSize().padding(horizontal = 48.dp, vertical = 36.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        val landscape = maxWidth >= 720.dp
+        val qrMaxSize = minOf(
+            maxWidth * if (landscape) 0.28f else 0.68f,
+            maxHeight * if (landscape) 0.58f else 0.38f,
+            340.dp,
+        )
+        DeviceLoginPanel(
+            prompt = prompt,
+            phase = phase,
+            onCancel = onCancel,
+            modifier = Modifier.fillMaxWidth(if (landscape) 0.86f else 1f),
+            qrMaxSize = qrMaxSize,
+            preferLandscapeLayout = landscape,
+            focusCancelOnPrompt = false,
+        )
+    }
+}
+
+@Composable
+private fun DeviceLoginPanel(
+    prompt: DeviceLoginPrompt,
+    phase: String,
+    onCancel: () -> Unit,
+    modifier: Modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
+    qrMaxSize: androidx.compose.ui.unit.Dp = 360.dp,
+    preferLandscapeLayout: Boolean = false,
+    focusCancelOnPrompt: Boolean = true,
+) {
     val context = LocalContext.current
     val clipboardManager = LocalClipboardManager.current
-    val cancelFocusRequester = remember { FocusRequester() }
+    val initialFocusRequester = remember { FocusRequester() }
     val launchUrl = remember(prompt.verificationUriComplete, prompt.verificationUri) {
         prompt.verificationUriComplete ?: prompt.verificationUri
     }
@@ -313,58 +362,137 @@ private fun DeviceLoginPanel(prompt: DeviceLoginPrompt, phase: String, onCancel:
             value = secondsUntil(prompt.expiresAt)
         }
     }
-    LaunchedEffect(prompt.userCode) {
-        runCatching { cancelFocusRequester.requestFocus() }
+    LaunchedEffect(prompt.userCode, focusCancelOnPrompt) {
+        runCatching { initialFocusRequester.requestFocus() }
     }
     Card(
         colors = CardDefaults.cardColors(containerColor = PanelAlt, contentColor = TextPrimary),
         shape = RoundedCornerShape(14.dp),
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
+        modifier = modifier,
     ) {
-        Column(
-            Modifier.padding(20.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            Text(stringResource(R.string.login_tv_title), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-            qrCode?.let {
-                BoxWithConstraints(
-                    modifier = Modifier.fillMaxWidth(),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    val qrDisplaySize = minOf(maxWidth * 0.92f, 360.dp)
-                    QrCodeView(it, Modifier.size(qrDisplaySize))
-                }
-            }
-            TextButton(
-                onClick = {
-                    val opened = openExternalUrl(context, launchUrl)
-                    if (opened) {
-                        urlActionMessage = "Opening sign-in URL"
-                    } else {
-                        clipboardManager.setText(AnnotatedString(launchUrl))
-                        urlActionMessage = "URL copied"
-                    }
-                },
+        if (preferLandscapeLayout) {
+            Row(
+                Modifier.fillMaxWidth().padding(24.dp),
+                horizontalArrangement = Arrangement.spacedBy(24.dp),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text(
-                    launchUrl,
-                    color = Green,
-                    style = MaterialTheme.typography.titleSmall,
-                    textAlign = TextAlign.Center,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
+                DeviceLoginQr(
+                    qrCode = qrCode,
+                    qrMaxSize = qrMaxSize,
+                    modifier = Modifier.weight(0.9f),
+                )
+                DeviceLoginControls(
+                    launchUrl = launchUrl,
+                    prompt = prompt,
+                    phase = phase,
+                    remainingSeconds = remainingSeconds,
+                    urlActionMessage = urlActionMessage,
+                    onUrlActionMessage = { urlActionMessage = it },
+                    onCancel = onCancel,
+                    focusRequester = initialFocusRequester,
+                    focusCancel = focusCancelOnPrompt,
+                    context = context,
+                    clipboardManager = clipboardManager,
+                    modifier = Modifier.weight(1.1f),
+                    showTitle = true,
                 )
             }
-            Text(prompt.userCode, style = MaterialTheme.typography.displaySmall, fontWeight = FontWeight.Bold, color = Color.White)
-            Text(stringResource(R.string.login_tv_status, phase.ifBlank { stringResource(R.string.login_tv_waiting) }), color = TextMuted)
-            urlActionMessage?.let {
-                Text(it, color = TextMuted, style = MaterialTheme.typography.bodySmall)
+        } else {
+            Column(
+                Modifier.padding(20.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Text(stringResource(R.string.login_tv_title), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                DeviceLoginQr(qrCode = qrCode, qrMaxSize = qrMaxSize)
+                DeviceLoginControls(
+                    launchUrl = launchUrl,
+                    prompt = prompt,
+                    phase = phase,
+                    remainingSeconds = remainingSeconds,
+                    urlActionMessage = urlActionMessage,
+                    onUrlActionMessage = { urlActionMessage = it },
+                    onCancel = onCancel,
+                    focusRequester = initialFocusRequester,
+                    focusCancel = focusCancelOnPrompt,
+                    context = context,
+                    clipboardManager = clipboardManager,
+                    showTitle = false,
+                )
             }
-            Text(stringResource(R.string.login_tv_expires, remainingSeconds / 60, remainingSeconds % 60), color = TextMuted)
-            OutlinedButton(onClick = onCancel, modifier = Modifier.focusRequester(cancelFocusRequester)) {
-                Text(stringResource(R.string.action_cancel))
-            }
+        }
+    }
+}
+
+@Composable
+private fun DeviceLoginQr(qrCode: QrCode?, qrMaxSize: androidx.compose.ui.unit.Dp, modifier: Modifier = Modifier) {
+    qrCode?.let {
+        BoxWithConstraints(
+            modifier = modifier.fillMaxWidth(),
+            contentAlignment = Alignment.Center,
+        ) {
+            val qrDisplaySize = minOf(maxWidth * 0.92f, qrMaxSize)
+            QrCodeView(it, Modifier.size(qrDisplaySize))
+        }
+    }
+}
+
+@Composable
+private fun DeviceLoginControls(
+    launchUrl: String,
+    prompt: DeviceLoginPrompt,
+    phase: String,
+    remainingSeconds: Int,
+    urlActionMessage: String?,
+    onUrlActionMessage: (String) -> Unit,
+    onCancel: () -> Unit,
+    focusRequester: FocusRequester,
+    focusCancel: Boolean,
+    context: android.content.Context,
+    clipboardManager: androidx.compose.ui.platform.ClipboardManager,
+    modifier: Modifier = Modifier,
+    showTitle: Boolean = true,
+) {
+    Column(
+        modifier = modifier,
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        if (showTitle) {
+            Text(stringResource(R.string.login_tv_title), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+        }
+        TextButton(
+            onClick = {
+                val opened = openExternalUrl(context, launchUrl)
+                if (opened) {
+                    onUrlActionMessage("Opening sign-in URL")
+                } else {
+                    clipboardManager.setText(AnnotatedString(launchUrl))
+                    onUrlActionMessage("URL copied")
+                }
+            },
+            modifier = if (focusCancel) Modifier else Modifier.focusRequester(focusRequester),
+        ) {
+            Text(
+                launchUrl,
+                color = MaterialTheme.colorScheme.primary,
+                style = MaterialTheme.typography.titleSmall,
+                textAlign = TextAlign.Center,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        Text(prompt.userCode, style = MaterialTheme.typography.displaySmall, fontWeight = FontWeight.Bold, color = Color.White)
+        Text(stringResource(R.string.login_tv_status, phase.ifBlank { stringResource(R.string.login_tv_waiting) }), color = TextMuted)
+        urlActionMessage?.let {
+            Text(it, color = TextMuted, style = MaterialTheme.typography.bodySmall)
+        }
+        Text(stringResource(R.string.login_tv_expires, remainingSeconds / 60, remainingSeconds % 60), color = TextMuted)
+        OutlinedButton(
+            onClick = onCancel,
+            modifier = if (focusCancel) Modifier.focusRequester(focusRequester) else Modifier,
+        ) {
+            Text(stringResource(R.string.action_cancel))
         }
     }
 }
@@ -1311,7 +1439,7 @@ private fun FavoriteIconButton(favorite: Boolean, onClick: () -> Unit, modifier:
         IconButton(onClick = onClick) {
             Text(
                 if (favorite) "★" else "☆",
-                color = if (favorite) Green else TextPrimary,
+                color = if (favorite) MaterialTheme.colorScheme.primary else TextPrimary,
                 style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.Bold,
             )
@@ -1507,11 +1635,20 @@ private fun SettingsContent(
     val settings = state.settings
     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
     SettingsSection(stringResource(R.string.settings_section_stream)) {
-                ChoiceRow(stringResource(R.string.settings_resolution), listOf("1280x720", "1920x1080", "2560x1440", "3840x2160"), settings.stream.resolution) {
+                val resolutionOptions = streamResolutionOptionsForAspect(settings.stream.aspectRatio).ifEmpty {
+                    listOf("1280x720", "1920x1080", "2560x1440", "3840x2160")
+                }
+                val selectedResolution = normalizeStreamResolutionForAspect(settings.stream.resolution, settings.stream.aspectRatio)
+                ChoiceRow(stringResource(R.string.settings_resolution), resolutionOptions, selectedResolution) {
                     viewModel.updateStreamSettings { s -> s.copy(resolution = it) }
                 }
                 ChoiceRow(stringResource(R.string.settings_aspect_ratio), listOf("16:9", "16:10", "21:9", "32:9"), settings.stream.aspectRatio) {
-                    viewModel.updateStreamSettings { s -> s.copy(aspectRatio = it) }
+                    viewModel.updateStreamSettings { s ->
+                        s.copy(
+                            aspectRatio = it,
+                            resolution = normalizeStreamResolutionForAspect(s.resolution, it),
+                        )
+                    }
                 }
                 NumberSlider(stringResource(R.string.settings_fps), settings.stream.fps.toFloat(), 30f, 240f, 30f) {
                     viewModel.updateStreamSettings { s -> s.copy(fps = it.roundToInt()) }
@@ -1999,7 +2136,7 @@ private fun StreamControlLauncher(
         if (status != null) {
             Surface(
                 shape = RoundedCornerShape(999.dp),
-                color = Color(0xcc061009),
+                color = Panel.copy(alpha = 0.8f),
                 tonalElevation = 3.dp,
             ) {
                 Text(
@@ -2060,7 +2197,7 @@ private fun StreamControlsPanel(
             .fillMaxWidth(0.94f)
             .fillMaxHeight(0.72f),
         shape = RoundedCornerShape(18.dp),
-        color = Color(0xee08150d),
+        color = Panel.copy(alpha = 0.93f),
         tonalElevation = 6.dp,
     ) {
         LazyColumn(
@@ -2182,7 +2319,7 @@ private fun StreamKeyboardBar(
 ) {
     Surface(
         modifier = modifier.fillMaxWidth(),
-        color = Color(0xf207100b),
+        color = Panel.copy(alpha = 0.95f),
         tonalElevation = 8.dp,
     ) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -2215,7 +2352,7 @@ private fun StreamStatsPill(
     Surface(
         modifier = modifier.padding(10.dp),
         shape = RoundedCornerShape(12.dp),
-        color = Color(0xcc061009),
+        color = Panel.copy(alpha = 0.8f),
         tonalElevation = 4.dp,
     ) {
         Column(Modifier.padding(horizontal = 12.dp, vertical = 9.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
@@ -2288,7 +2425,7 @@ private fun StreamExitConfirmation(
                 .padding(24.dp)
                 .fillMaxWidth(),
             shape = RoundedCornerShape(20.dp),
-            color = Color(0xf20d1a12),
+            color = Panel.copy(alpha = 0.95f),
             tonalElevation = 8.dp,
         ) {
             Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -2497,7 +2634,7 @@ private fun MinimizedQueuePill(
             .padding(horizontal = 12.dp, vertical = 86.dp)
             .fillMaxWidth(),
         shape = RoundedCornerShape(18.dp),
-        color = Color(0xf20a160f),
+        color = Panel.copy(alpha = 0.95f),
         tonalElevation = 8.dp,
     ) {
         Row(
@@ -2505,7 +2642,7 @@ private fun MinimizedQueuePill(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp, color = Green)
+            CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp, color = MaterialTheme.colorScheme.primary)
             Column(Modifier.weight(1f)) {
                 Text(
                     state.streamGame?.title ?: "Starting stream",
@@ -2722,22 +2859,33 @@ private fun TouchOverlay(client: NativeStreamClient, touch: AndroidTouchSettings
     DisposableEffect(client) {
         onDispose {
             client.setVirtualControllerVisible(false)
+            NativeStreamInputRouter.clearTouchControllerPassthroughBounds()
         }
     }
 
     Row(
         modifier
             .fillMaxWidth()
-            .padding(18.dp),
+            .padding(18.dp)
+            .onGloballyPositioned { coordinates ->
+                val bounds = coordinates.boundsInRoot()
+                NativeStreamInputRouter.setTouchControllerPassthroughBounds(
+                    bounds.left.roundToInt(),
+                    bounds.top.roundToInt(),
+                    bounds.right.roundToInt(),
+                    bounds.bottom.roundToInt(),
+                )
+            },
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.Bottom,
     ) {
-        Column(verticalArrangement = Arrangement.spacedBy(10.dp), horizontalAlignment = Alignment.Start) {
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp), horizontalAlignment = Alignment.Start) {
             if (touch.enabled) {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     GamepadButton("LB", 0x0100, client, opacity, 48.dp * buttonScale * layoutScale)
                     GamepadTriggerButton("LT", left = true, client = client, opacity = opacity, size = 48.dp * buttonScale * layoutScale)
                 }
+                Spacer(Modifier.height(44.dp * buttonScale * layoutScale))
                 Row(
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                     verticalAlignment = Alignment.Bottom,
@@ -2797,6 +2945,8 @@ private fun VirtualStick(
     onChange: (Float, Float) -> Unit,
 ) {
     var knobOffset by remember { mutableStateOf(Offset.Zero) }
+    val accent = MaterialTheme.colorScheme.primary
+    val idleSurface = MaterialTheme.colorScheme.surfaceVariant
 
     DisposableEffect(client, onChange) {
         onDispose {
@@ -2808,8 +2958,8 @@ private fun VirtualStick(
         Modifier
             .size(diameter)
             .clip(CircleShape)
-            .background(Color(0xff102918).copy(alpha = opacity))
-            .border(1.dp, Green.copy(alpha = opacity), CircleShape)
+            .background(idleSurface.copy(alpha = opacity * 0.72f))
+            .border(1.dp, accent.copy(alpha = opacity), CircleShape)
             .pointerInput(client, onChange) {
                 awaitPointerEventScope {
                     while (true) {
@@ -2844,11 +2994,11 @@ private fun VirtualStick(
                     translationY = knobOffset.y
                 }
                 .clip(CircleShape)
-                .background(Green.copy(alpha = opacity))
+                .background(accent.copy(alpha = opacity))
                 .border(1.dp, Color.White.copy(alpha = opacity * 0.65f), CircleShape),
             contentAlignment = Alignment.Center,
         ) {
-            Text(label, fontWeight = FontWeight.Bold, color = Color.Black)
+            Text(label, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onPrimary)
         }
     }
 }
@@ -2883,13 +3033,15 @@ private fun DpadCluster(client: NativeStreamClient, opacity: Float, scale: Float
 @Composable
 private fun GamepadTriggerButton(label: String, left: Boolean, client: NativeStreamClient, opacity: Float, size: androidx.compose.ui.unit.Dp) {
     var pressed by remember { mutableStateOf(false) }
+    val accent = MaterialTheme.colorScheme.primary
+    val idleSurface = MaterialTheme.colorScheme.surfaceVariant
     Box(
         Modifier
             .width(size * 1.24f)
             .height(size * 0.78f)
             .clip(RoundedCornerShape(999.dp))
-            .background((if (pressed) Green else Color(0xff16331f)).copy(alpha = opacity))
-            .border(1.dp, Green.copy(alpha = opacity), RoundedCornerShape(999.dp))
+            .background((if (pressed) accent else idleSurface).copy(alpha = opacity))
+            .border(1.dp, accent.copy(alpha = opacity), RoundedCornerShape(999.dp))
             .pointerInput(left) {
                 awaitPointerEventScope {
                     while (true) {
@@ -2899,24 +3051,27 @@ private fun GamepadTriggerButton(label: String, left: Boolean, client: NativeStr
                             pressed = down
                             client.setVirtualTrigger(left, down)
                         }
+                        event.changes.forEach { it.consume() }
                     }
                 }
             },
         contentAlignment = Alignment.Center,
     ) {
-        Text(label, fontWeight = FontWeight.Bold, color = if (pressed) Color.Black else TextPrimary)
+        Text(label, fontWeight = FontWeight.Bold, color = if (pressed) MaterialTheme.colorScheme.onPrimary else TextPrimary)
     }
 }
 
 @Composable
 private fun GamepadButton(label: String, mask: Int, client: NativeStreamClient, opacity: Float, size: androidx.compose.ui.unit.Dp) {
     var pressed by remember { mutableStateOf(false) }
+    val accent = MaterialTheme.colorScheme.primary
+    val idleSurface = MaterialTheme.colorScheme.surfaceVariant
     Box(
         Modifier
             .size(size)
             .clip(CircleShape)
-            .background((if (pressed) Green else Color(0xff16331f)).copy(alpha = opacity))
-            .border(1.dp, Green.copy(alpha = opacity), CircleShape)
+            .background((if (pressed) accent else idleSurface).copy(alpha = opacity))
+            .border(1.dp, accent.copy(alpha = opacity), CircleShape)
             .pointerInput(mask) {
                 awaitPointerEventScope {
                     while (true) {
@@ -2926,12 +3081,13 @@ private fun GamepadButton(label: String, mask: Int, client: NativeStreamClient, 
                             pressed = down
                             client.setVirtualButton(mask, down)
                         }
+                        event.changes.forEach { it.consume() }
                     }
                 }
             },
         contentAlignment = Alignment.Center,
     ) {
-        Text(label, fontWeight = FontWeight.Bold, color = if (pressed) Color.Black else TextPrimary)
+        Text(label, fontWeight = FontWeight.Bold, color = if (pressed) MaterialTheme.colorScheme.onPrimary else TextPrimary)
     }
 }
 
@@ -3211,7 +3367,7 @@ private fun PrintedWasteSelector(
                 if (state.printedWasteLoading) {
                     Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
                         Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                            CircularProgressIndicator(color = Green)
+                            CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
                             Text("Checking PrintedWaste queues and latency", color = TextMuted)
                         }
                     }
@@ -3227,10 +3383,10 @@ private fun PrintedWasteSelector(
                         Surface(
                             modifier = Modifier.fillMaxWidth(),
                             shape = RoundedCornerShape(16.dp),
-                            color = Green.copy(alpha = 0.12f),
+                            color = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
                         ) {
                             Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                Text("Recommended: ${zoneOption.zoneId}", color = Green, fontWeight = FontWeight.Bold)
+                                Text("Recommended: ${zoneOption.zoneId}", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
                                 Text(
                                     listOfNotNull(
                                         zoneOption.pingMs?.let { "${it}ms" },
@@ -3256,12 +3412,12 @@ private fun PrintedWasteSelector(
                                     .clip(RoundedCornerShape(12.dp))
                                     .clickable { selectedZoneId = zoneId },
                                 shape = RoundedCornerShape(12.dp),
-                                color = if (selected) Green.copy(alpha = 0.16f) else PanelAlt,
+                                color = if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.16f) else PanelAlt,
                                 tonalElevation = if (selected) 2.dp else 0.dp,
                             ) {
                                 Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
                                     Column(Modifier.weight(1f)) {
-                                        Text(zoneId, fontWeight = FontWeight.Bold, color = if (selected) Green else TextPrimary)
+                                        Text(zoneId, fontWeight = FontWeight.Bold, color = if (selected) MaterialTheme.colorScheme.primary else TextPrimary)
                                         Text(regionLabel(zone.Region), color = TextMuted, style = MaterialTheme.typography.bodySmall)
                                     }
                                     Text(zoneOption.pingMs?.let { "${it}ms" } ?: "--", color = zoneOption.pingMs?.let(::pingColor) ?: TextMuted, fontWeight = FontWeight.Bold)

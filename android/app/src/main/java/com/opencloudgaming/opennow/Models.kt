@@ -2,7 +2,7 @@ package com.opencloudgaming.opennow
 
 import kotlinx.serialization.Serializable
 import java.util.Locale
-import kotlin.math.roundToInt
+import kotlin.math.abs
 
 @Serializable
 enum class VideoCodec {
@@ -42,6 +42,7 @@ enum class MicrophoneMode {
 enum class UiAccent {
     OpenNow,
     Pixel,
+    HotPink,
     Lime,
     Coral,
     Violet,
@@ -112,30 +113,84 @@ data class AppSettings(
 )
 
 internal fun streamResolutionPixels(settings: StreamSettings): Pair<Int, Int> {
-    val (baseWidth, baseHeight) = parseResolutionPixels(settings.resolution)
-    val ratio = parseAspectRatio(settings.aspectRatio) ?: return baseWidth to baseHeight
-    val fittedHeight = makeEven((baseWidth / ratio).roundToInt())
-    if (fittedHeight <= baseHeight) {
-        return baseWidth to fittedHeight.coerceAtLeast(360)
-    }
-    val fittedWidth = makeEven((baseHeight * ratio).roundToInt())
-    return fittedWidth.coerceAtLeast(640) to baseHeight
+    return parseResolutionPixels(normalizeStreamResolutionForAspect(settings.resolution, settings.aspectRatio))
 }
 
-private fun parseResolutionPixels(value: String): Pair<Int, Int> {
+internal fun streamResolutionOptionsForAspect(aspectRatio: String): List<String> =
+    STREAM_RESOLUTION_OPTIONS.filter { it.aspectRatio == aspectRatio }.map { it.value }
+
+internal fun normalizeStreamResolutionForAspect(resolution: String, aspectRatio: String): String {
+    val normalizedAspect = aspectRatio.trim()
+    val options = streamResolutionOptionsForAspect(normalizedAspect)
+    if (options.isEmpty()) return resolution
+    if (STREAM_RESOLUTION_OPTIONS.any { it.value == resolution && it.aspectRatio == normalizedAspect }) {
+        return resolution
+    }
+
+    val tier = STREAM_RESOLUTION_OPTIONS.firstOrNull { it.value == resolution }?.tier
+        ?: resolutionTierForHeight(parseResolutionPixels(resolution).second)
+    PREFERRED_RESOLUTION_BY_TIER_AND_ASPECT[tier]?.get(normalizedAspect)?.let { preferred ->
+        if (preferred in options) return preferred
+    }
+
+    val requestedPixels = parseResolutionPixels(resolution).let { it.first * it.second }
+    return options.minWithOrNull(
+        compareBy<String> { option ->
+            val pixels = parseResolutionPixels(option).let { it.first * it.second }
+            abs(pixels - requestedPixels)
+        }.thenBy { option ->
+            parseResolutionPixels(option).first * parseResolutionPixels(option).second
+        },
+    ) ?: options.first()
+}
+
+internal fun parseResolutionPixels(value: String): Pair<Int, Int> {
     val parts = value.split("x")
     val width = parts.getOrNull(0)?.toIntOrNull()
     val height = parts.getOrNull(1)?.toIntOrNull()
     return if (width != null && height != null && width > 0 && height > 0) width to height else 1920 to 1080
 }
 
-private fun parseAspectRatio(value: String): Float? {
-    val width = value.substringBefore(":").toFloatOrNull()
-    val height = value.substringAfter(":", "").toFloatOrNull()
-    return if (width != null && height != null && width > 0f && height > 0f) width / height else null
-}
+private data class StreamResolutionOption(
+    val value: String,
+    val aspectRatio: String,
+    val tier: String,
+)
 
-private fun makeEven(value: Int): Int = if (value % 2 == 0) value else value + 1
+private val STREAM_RESOLUTION_OPTIONS = listOf(
+    StreamResolutionOption("1280x720", "16:9", "720"),
+    StreamResolutionOption("1280x800", "16:10", "720"),
+    StreamResolutionOption("1440x900", "16:10", "900"),
+    StreamResolutionOption("1680x1050", "16:10", "1050"),
+    StreamResolutionOption("1920x1080", "16:9", "1080"),
+    StreamResolutionOption("1920x1200", "16:10", "1080"),
+    StreamResolutionOption("2560x1080", "21:9", "1080"),
+    StreamResolutionOption("2560x1440", "16:9", "1440"),
+    StreamResolutionOption("2560x1600", "16:10", "1440"),
+    StreamResolutionOption("3440x1440", "21:9", "1440"),
+    StreamResolutionOption("3840x2160", "16:9", "2160"),
+    StreamResolutionOption("3840x2400", "16:10", "2160"),
+    StreamResolutionOption("5120x1440", "32:9", "1440"),
+)
+
+private val PREFERRED_RESOLUTION_BY_TIER_AND_ASPECT = mapOf(
+    "720" to mapOf("16:9" to "1280x720", "16:10" to "1280x800"),
+    "900" to mapOf("16:10" to "1440x900"),
+    "1050" to mapOf("16:10" to "1680x1050"),
+    "1080" to mapOf("16:9" to "1920x1080", "16:10" to "1920x1200", "21:9" to "2560x1080"),
+    "1440" to mapOf("16:9" to "2560x1440", "16:10" to "2560x1600", "21:9" to "3440x1440", "32:9" to "5120x1440"),
+    "2160" to mapOf("16:9" to "3840x2160", "16:10" to "3840x2400"),
+)
+
+private fun resolutionTierForHeight(height: Int): String =
+    when {
+        height >= 2000 -> "2160"
+        height >= 1320 -> "1440"
+        height >= 1120 -> "1080"
+        height >= 975 -> "1050"
+        height >= 850 -> "900"
+        else -> "720"
+    }
 
 @Serializable
 data class ControllerThemeRgb(
