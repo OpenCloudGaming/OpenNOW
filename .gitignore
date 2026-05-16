@@ -7,3 +7,5 @@ openNOW-mac.zip
 third_party/webrtc/
 opennow-stable/node_modules/
 vendor-analysis/
+# Ignore built macOS WebRTC archive
+third_party/libwebrtc/lib/macos/libwebrtc.a
