@@ -327,6 +327,7 @@ export function App(): JSX.Element {
   const codecStartupTestAttemptedRef = useRef(false);
   const navbarSessionActionInFlightRef = useRef<"resume" | "terminate" | null>(null);
   const nativeStreamingRef = useRef(false);
+  const handleStreamShortcutActionRef = useRef<((action: NativeStreamerShortcutAction) => void) | null>(null);
 
   const resetStatsOverlayToPreference = useCallback((): void => {
     setShowStatsOverlay(settings.showStatsOnLaunch);
@@ -2451,7 +2452,7 @@ export function App(): JSX.Element {
             activateNativeInputForCurrentSession(event.protocolVersion);
           }
         } else if (event.type === "native-shortcut") {
-          handleStreamShortcutAction(event.action);
+          handleStreamShortcutActionRef.current?.(event.action);
         } else if (event.type === "native-stream-stats") {
           diagnosticsStore.set(mergeNativeStreamStats(
             diagnosticsStore.getSnapshot(),
@@ -3428,6 +3429,10 @@ export function App(): JSX.Element {
         return;
     }
   }, [handlePromptedStopStream, requestPointerLockCapture, streamStatus, toggleSessionFullscreen]);
+
+  useEffect(() => {
+    handleStreamShortcutActionRef.current = handleStreamShortcutAction;
+  }, [handleStreamShortcutAction]);
 
   // Keyboard shortcuts
   useEffect(() => {

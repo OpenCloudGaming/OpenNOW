@@ -1481,6 +1481,40 @@ export function StreamView({
   }, [captureScreenshot, toggleRecording]);
 
   useEffect(() => {
+    const screenshotShortcut = normalizeShortcut(shortcuts.screenshot);
+    const recordingShortcut = normalizeShortcut(shortcuts.recording);
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      const isTyping = !!target && (
+        target.tagName === "INPUT" ||
+        target.tagName === "TEXTAREA" ||
+        target.isContentEditable
+      );
+      if (isTyping) {
+        return;
+      }
+
+      if (isShortcutMatch(event, screenshotShortcut)) {
+        event.preventDefault();
+        event.stopPropagation();
+        void captureScreenshot();
+        return;
+      }
+
+      if (isShortcutMatch(event, recordingShortcut)) {
+        event.preventDefault();
+        event.stopPropagation();
+        void toggleRecording();
+        return;
+      }
+    };
+
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
+  }, [captureScreenshot, shortcuts.screenshot, shortcuts.recording, toggleRecording]);
+
+  useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
       const isTyping = !!target && (
