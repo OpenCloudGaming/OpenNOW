@@ -101,39 +101,60 @@ std::vector<uint8_t> encodeHeartbeat() {
     return bytes;
 }
 
-std::vector<uint8_t> encodeKey(quint32 type, quint16 keycode, quint16 scancode, quint16 modifiers) {
+std::vector<uint8_t> wrapSingleEvent(std::vector<uint8_t> payload, quint16 protocolVersion) {
+    if (protocolVersion <= 2) return payload;
+    std::vector<uint8_t> wrapped(10 + payload.size(), 0);
+    wrapped[0] = 0x23;
+    writeU64BE(wrapped, 1, timestampUs());
+    wrapped[9] = 0x22;
+    std::copy(payload.begin(), payload.end(), wrapped.begin() + 10);
+    return wrapped;
+}
+
+std::vector<uint8_t> wrapMouseMoveEvent(std::vector<uint8_t> payload, quint16 protocolVersion) {
+    if (protocolVersion <= 2) return payload;
+    std::vector<uint8_t> wrapped(12 + payload.size(), 0);
+    wrapped[0] = 0x23;
+    writeU64BE(wrapped, 1, timestampUs());
+    wrapped[9] = 0x21;
+    writeU16BE(wrapped, 10, static_cast<quint16>(payload.size()));
+    std::copy(payload.begin(), payload.end(), wrapped.begin() + 12);
+    return wrapped;
+}
+
+std::vector<uint8_t> encodeKey(quint32 type, quint16 keycode, quint16 scancode, quint16 modifiers, quint16 protocolVersion) {
     std::vector<uint8_t> bytes(18, 0);
     writeU32LE(bytes, 0, type);
     writeU16BE(bytes, 4, keycode);
     writeU16BE(bytes, 6, modifiers);
     writeU16BE(bytes, 8, scancode);
     writeU64BE(bytes, 10, timestampUs());
-    return bytes;
+    return wrapSingleEvent(std::move(bytes), protocolVersion);
 }
 
-std::vector<uint8_t> encodeMouseMove(qint16 dx, qint16 dy) {
+std::vector<uint8_t> encodeMouseMove(qint16 dx, qint16 dy, quint16 protocolVersion) {
     std::vector<uint8_t> bytes(22, 0);
     writeU32LE(bytes, 0, kInputMouseRel);
     writeI16BE(bytes, 4, dx);
     writeI16BE(bytes, 6, dy);
     writeU64BE(bytes, 14, timestampUs());
-    return bytes;
+    return wrapMouseMoveEvent(std::move(bytes), protocolVersion);
 }
 
-std::vector<uint8_t> encodeMouseButton(quint32 type, quint8 button) {
+std::vector<uint8_t> encodeMouseButton(quint32 type, quint8 button, quint16 protocolVersion) {
     std::vector<uint8_t> bytes(18, 0);
     writeU32LE(bytes, 0, type);
     bytes[4] = button;
     writeU64BE(bytes, 10, timestampUs());
-    return bytes;
+    return wrapSingleEvent(std::move(bytes), protocolVersion);
 }
 
-std::vector<uint8_t> encodeMouseWheel(qint16 delta) {
+std::vector<uint8_t> encodeMouseWheel(qint16 delta, quint16 protocolVersion) {
     std::vector<uint8_t> bytes(22, 0);
     writeU32LE(bytes, 0, kInputMouseWheel);
     writeI16BE(bytes, 6, delta);
     writeU64BE(bytes, 14, timestampUs());
-    return bytes;
+    return wrapSingleEvent(std::move(bytes), protocolVersion);
 }
 
 struct IceCredentials {
@@ -497,7 +518,7 @@ struct WebRtcStreamSession::Impl final : public webrtc::PeerConnectionObserver {
     }
 
     void updateInputReady() {
-        inputReady = reliableOpen() && partialOpen();
+        if (!reliableOpen() || !partialOpen()) inputReady = false;
         qInfo() << "[WebRTC] Input channels" << "reliable" << reliableOpen() << "partial" << partialOpen() << "ready" << inputReady;
     }
 
@@ -551,18 +572,26 @@ struct WebRtcStreamSession::Impl final : public webrtc::PeerConnectionObserver {
 
 void InputDataChannelObserver::OnStateChange() {
     Q_UNUSED(m_label);
-    if (m_owner) m_owner->handleInputDataChannelStateChanged();
+    if (m_owner) QMetaObject::invokeMethod(m_owner, [owner = m_owner]() { owner->handleInputDataChannelStateChanged(); }, Qt::QueuedConnection);
 }
 
 void InputDataChannelObserver::OnMessage(const webrtc::DataBuffer &buffer) {
-    if (m_owner) m_owner->handleInputDataChannelMessage(m_label, static_cast<qsizetype>(buffer.data.size()));
+    if (!m_owner) return;
+    QByteArray data(reinterpret_cast<const char *>(buffer.data.data()), static_cast<qsizetype>(buffer.data.size()));
+    QMetaObject::invokeMethod(m_owner, [owner = m_owner, label = m_label, data = std::move(data)]() { owner->handleInputDataChannelMessage(label, data); }, Qt::QueuedConnection);
 }
 #else
 struct WebRtcStreamSession::Impl final {
 };
 #endif
 
-WebRtcStreamSession::WebRtcStreamSession(QObject *parent) : QObject(parent) {}
+WebRtcStreamSession::WebRtcStreamSession(QObject *parent) : QObject(parent) {
+    m_inputHeartbeatTimer.setInterval(2000);
+    m_inputHeartbeatTimer.setTimerType(Qt::CoarseTimer);
+    connect(&m_inputHeartbeatTimer, &QTimer::timeout, this, [this]() {
+        if (m_impl && m_impl->inputReady) m_impl->sendInput(encodeHeartbeat(), false);
+    });
+}
 
 WebRtcStreamSession::~WebRtcStreamSession() {
     stop();
@@ -711,6 +740,8 @@ void WebRtcStreamSession::stop() {
     if (m_impl && m_impl->partialInputChannel) m_impl->partialInputChannel->UnregisterObserver();
     if (m_impl && m_impl->reliableObserver) m_impl->reliableObserver->setOwner(nullptr);
     if (m_impl && m_impl->partialObserver) m_impl->partialObserver->setOwner(nullptr);
+    m_inputHeartbeatTimer.stop();
+    m_inputProtocolVersion = 2;
     if (m_impl && m_impl->peerConnection) {
         m_impl->peerConnection->Close();
     }
@@ -747,7 +778,7 @@ bool WebRtcStreamSession::inputReady() const {
 void WebRtcStreamSession::sendKeyEvent(quint16 keycode, quint16 scancode, quint16 modifiers, bool down) {
 #if defined(OPNQT_HAVE_LIBWEBRTC)
     if (!m_impl || !m_impl->inputReady) return;
-    m_impl->sendInput(encodeKey(down ? kInputKeyDown : kInputKeyUp, keycode, scancode, modifiers), false);
+    m_impl->sendInput(encodeKey(down ? kInputKeyDown : kInputKeyUp, keycode, scancode, modifiers, m_inputProtocolVersion), false);
 #else
     Q_UNUSED(keycode);
     Q_UNUSED(scancode);
@@ -759,7 +790,7 @@ void WebRtcStreamSession::sendKeyEvent(quint16 keycode, quint16 scancode, quint1
 void WebRtcStreamSession::sendMouseMove(qint16 dx, qint16 dy) {
 #if defined(OPNQT_HAVE_LIBWEBRTC)
     if (!m_impl || !m_impl->inputReady) return;
-    m_impl->sendInput(encodeMouseMove(dx, dy), true);
+    m_impl->sendInput(encodeMouseMove(dx, dy, m_inputProtocolVersion), true);
 #else
     Q_UNUSED(dx);
     Q_UNUSED(dy);
@@ -769,7 +800,7 @@ void WebRtcStreamSession::sendMouseMove(qint16 dx, qint16 dy) {
 void WebRtcStreamSession::sendMouseButton(quint8 button, bool down) {
 #if defined(OPNQT_HAVE_LIBWEBRTC)
     if (!m_impl || !m_impl->inputReady) return;
-    m_impl->sendInput(encodeMouseButton(down ? kInputMouseButtonDown : kInputMouseButtonUp, button), false);
+    m_impl->sendInput(encodeMouseButton(down ? kInputMouseButtonDown : kInputMouseButtonUp, button, m_inputProtocolVersion), false);
 #else
     Q_UNUSED(button);
     Q_UNUSED(down);
@@ -779,7 +810,7 @@ void WebRtcStreamSession::sendMouseButton(quint8 button, bool down) {
 void WebRtcStreamSession::sendMouseWheel(qint16 delta) {
 #if defined(OPNQT_HAVE_LIBWEBRTC)
     if (!m_impl || !m_impl->inputReady) return;
-    m_impl->sendInput(encodeMouseWheel(delta), false);
+    m_impl->sendInput(encodeMouseWheel(delta, m_inputProtocolVersion), false);
 #else
     Q_UNUSED(delta);
 #endif
@@ -807,14 +838,30 @@ void WebRtcStreamSession::handleInputDataChannelStateChanged() {
 #endif
 }
 
-void WebRtcStreamSession::handleInputDataChannelMessage(const QString &label, qsizetype size) {
+void WebRtcStreamSession::handleInputDataChannelMessage(const QString &label, const QByteArray &data) {
 #if defined(OPNQT_HAVE_LIBWEBRTC)
-    if (!m_impl || label != QLatin1String("input_channel_v1") || size < 2) return;
-    m_impl->sendInput(encodeHeartbeat(), false);
+    if (!m_impl || label != QLatin1String("input_channel_v1") || data.size() < 2 || m_impl->inputReady) return;
+    const quint16 firstWord = static_cast<quint8>(data[0]) | (static_cast<quint16>(static_cast<quint8>(data[1])) << 8);
+    quint16 version = 2;
+    if (firstWord == 526) {
+        if (data.size() >= 4) version = static_cast<quint8>(data[2]) | (static_cast<quint16>(static_cast<quint8>(data[3])) << 8);
+    } else if (static_cast<quint8>(data[0]) == 0x0e) {
+        version = firstWord;
+    } else {
+        qInfo() << "[WebRTC] input channel message before handshake" << "len" << data.size() << "firstWord" << firstWord;
+        return;
+    }
+    m_inputProtocolVersion = version == 0 ? 2 : version;
+    m_impl->inputReady = m_impl->reliableOpen() && m_impl->partialOpen();
+    std::vector<uint8_t> echo(static_cast<size_t>(data.size()));
+    std::copy(data.begin(), data.end(), echo.begin());
+    m_impl->sendInput(echo, false);
+    if (m_impl->inputReady && !m_inputHeartbeatTimer.isActive()) m_inputHeartbeatTimer.start();
     m_impl->updateInputReady();
+    qInfo() << "[WebRTC] input handshake complete" << "protocol" << m_inputProtocolVersion << "ready" << m_impl->inputReady;
 #else
     Q_UNUSED(label);
-    Q_UNUSED(size);
+    Q_UNUSED(data);
 #endif
 }
 

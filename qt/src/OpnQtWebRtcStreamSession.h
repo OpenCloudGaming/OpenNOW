@@ -4,6 +4,7 @@
 
 #include <QtGui/QImage>
 #include <QtCore/QObject>
+#include <QtCore/QTimer>
 #include <functional>
 #include <memory>
 
@@ -38,7 +39,7 @@ public:
     void onVideoFrameReady(StreamVideoFrameCallback callback);
     void deliverVideoFrame(const QImage &frame);
     void handleInputDataChannelStateChanged();
-    void handleInputDataChannelMessage(const QString &label, qsizetype size);
+    void handleInputDataChannelMessage(const QString &label, const QByteArray &data);
 
 private:
     struct Impl;
@@ -48,6 +49,8 @@ private:
     StreamLocalIceCallback m_onIceCandidate;
     StreamVideoFrameCallback m_onVideoFrame;
     StreamStateCallback m_onState;
+    QTimer m_inputHeartbeatTimer;
+    quint16 m_inputProtocolVersion = 2;
 };
 
 } // namespace OpnQt

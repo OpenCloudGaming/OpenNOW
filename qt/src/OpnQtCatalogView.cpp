@@ -10,6 +10,7 @@
 #include <QtGui/QPainterPath>
 #include <QtGui/QRadialGradient>
 #include <QtGui/QWheelEvent>
+#include <QtGui/QCursor>
 #include <QtWidgets/QApplication>
 #include <QtNetwork/QNetworkAccessManager>
 #include <QtNetwork/QNetworkReply>
@@ -182,7 +183,7 @@ qreal gameColumnFirstY(int height) {
 
 CatalogView::CatalogView(QWidget *parent) : QWidget(parent), m_network(new QNetworkAccessManager(this)) {
     setFocusPolicy(Qt::StrongFocus);
-    setMouseTracking(false);
+    setMouseTracking(true);
 
     auto *animationTimer = new QTimer(this);
     animationTimer->setTimerType(Qt::CoarseTimer);
@@ -290,12 +291,19 @@ void CatalogView::setError(const QString &title, const QString &message) {
 
 void CatalogView::setStreamFrame(const QImage &frame) {
     if (frame.isNull()) return;
+    const bool enteringStream = m_streamFrame.isNull();
     m_streamFrame = frame.copy();
     m_loading = false;
     m_error = false;
     m_overlayTitle.clear();
     m_overlayMessage.clear();
     m_statusText = QStringLiteral("Streaming");
+    if (enteringStream) {
+        setFocus(Qt::OtherFocusReason);
+        grabKeyboard();
+        m_lastMousePosition = mapFromGlobal(QCursor::pos());
+        qInfo() << "[Input] Stream input capture active";
+    }
     update();
 }
 
@@ -411,6 +419,7 @@ void CatalogView::showEvent(QShowEvent *event) {
 }
 
 void CatalogView::hideEvent(QHideEvent *event) {
+    releaseKeyboard();
     QWidget::hideEvent(event);
 }
 
