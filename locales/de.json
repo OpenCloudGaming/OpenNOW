@@ -2,7 +2,7 @@
   "app": {
     "name": "OpenNOW",
     "tagline": "Open-source cloud gaming client",
-    "description": "Cloud gaming, open source.",
+    "description": "Cloud Gaming, Open-Source.",
     "actions": {
       "add": "Add",
       "back": "Back",
@@ -52,7 +52,7 @@
       "hours": "{{value}}h",
       "hoursLeft": "{{value}}h left",
       "hoursUsed": "{{value}}h used",
-      "milliseconds": "{{value}}ms",
+      "milliseconds": "{{value}}Ms",
       "minutes": "{{value}} min",
       "percent": "{{value}}%",
       "seconds": "{{value}}s"
