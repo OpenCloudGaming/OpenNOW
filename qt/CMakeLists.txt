@@ -8,7 +8,8 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 find_package(Qt6 6.5 REQUIRED COMPONENTS Widgets Network WebSockets)
 
-option(OPNQT_ENABLE_LIBWEBRTC "Build Qt native libwebrtc streaming backend" OFF)
+option(OPNQT_ENABLE_LIBWEBRTC "Build Qt native C++ libwebrtc streaming backend" OFF)
+set(OPNQT_LIBWEBRTC_ROOT "${CMAKE_SOURCE_DIR}/../third_party/libwebrtc" CACHE PATH "Root of the native C++ libwebrtc SDK")
 
 qt_standard_project_setup()
 
@@ -43,8 +44,16 @@ target_link_libraries(OpenNOWQt
 target_compile_features(OpenNOWQt PRIVATE cxx_std_20)
 
 if(OPNQT_ENABLE_LIBWEBRTC)
-    find_path(LIBWEBRTC_INCLUDE_DIR api/peer_connection_interface.h REQUIRED)
-    find_library(LIBWEBRTC_LIBRARY webrtc REQUIRED)
+    if(APPLE)
+        set(OPNQT_LIBWEBRTC_PLATFORM_DIR "${OPNQT_LIBWEBRTC_ROOT}/lib/macos")
+    elseif(WIN32)
+        set(OPNQT_LIBWEBRTC_PLATFORM_DIR "${OPNQT_LIBWEBRTC_ROOT}/lib/windows")
+    else()
+        set(OPNQT_LIBWEBRTC_PLATFORM_DIR "${OPNQT_LIBWEBRTC_ROOT}/lib/linux")
+    endif()
+
+    find_path(LIBWEBRTC_INCLUDE_DIR api/peer_connection_interface.h PATHS "${OPNQT_LIBWEBRTC_ROOT}/include" NO_DEFAULT_PATH REQUIRED)
+    find_library(LIBWEBRTC_LIBRARY NAMES webrtc libwebrtc PATHS "${OPNQT_LIBWEBRTC_PLATFORM_DIR}" NO_DEFAULT_PATH REQUIRED)
     target_compile_definitions(OpenNOWQt PRIVATE OPNQT_HAVE_LIBWEBRTC=1)
     target_include_directories(OpenNOWQt PRIVATE ${LIBWEBRTC_INCLUDE_DIR})
     target_link_libraries(OpenNOWQt PRIVATE ${LIBWEBRTC_LIBRARY})

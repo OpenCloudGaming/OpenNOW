@@ -4,6 +4,7 @@
 
 #include <QtCore/QObject>
 #include <functional>
+#include <memory>
 
 namespace OpnQt {
 
@@ -29,7 +30,8 @@ public:
     void onIceCandidateReady(StreamLocalIceCallback callback);
 
 private:
-    void *m_impl = nullptr;
+    struct Impl;
+    std::unique_ptr<Impl> m_impl;
     StreamSettings m_settings;
     StreamAnswerCallback m_onAnswer;
     StreamLocalIceCallback m_onIceCandidate;

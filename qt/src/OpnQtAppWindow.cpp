@@ -502,7 +502,7 @@ void AppWindow::probeLaunchSignaling(const CatalogGame &game) {
             if (!m_catalogView) return;
             m_catalogView->setLoading(QStringLiteral("%1 %2...").arg(message, game.title));
         },
-        [this, game](bool success, const SessionInfo &session, const QString &error) {
+        [this, game, settings](bool success, const SessionInfo &session, const QString &error) {
             if (!m_catalogView) return;
             if (!success) {
                 m_catalogView->setError(QStringLiteral("Launch Failed"), error.isEmpty()
@@ -525,17 +525,37 @@ void AppWindow::probeLaunchSignaling(const CatalogGame &game) {
                 ? QStringLiteral("1920x1080")
                 : session.negotiatedStreamProfile.resolution;
             signaling->setPeerResolution(resolution);
-            signaling->onOffer([this, signaling, game](const QString &sdp) {
-                qInfo() << "[StreamProbe] Offer received" << "length" << sdp.size();
-                if (m_catalogView) {
-                    m_catalogView->setError(QStringLiteral("Streaming Probe Ready"), QStringLiteral("Streaming probe reached offer SDP for %1. Media backend is next.").arg(game.title));
-                }
-                qInfo() << "[WebRTC] Backend availability" << WebRtcStreamSession::availabilityDescription();
-                signaling->disconnectFromServer();
-                signaling->deleteLater();
+            auto *webRtcSession = new WebRtcStreamSession(this);
+            webRtcSession->onAnswerReady([signaling](const SendAnswerRequest &answer) {
+                qInfo() << "[WebRTC] Answer ready" << "length" << answer.sdp.size();
+                signaling->sendAnswer(answer);
             });
-            signaling->onIceCandidate([](const IceCandidatePayload &candidate) {
+            webRtcSession->onIceCandidateReady([signaling](const IceCandidatePayload &candidate) {
+                qInfo() << "[WebRTC] Local ICE candidate" << candidate.sdpMid << candidate.sdpMLineIndex;
+                signaling->sendIceCandidate(candidate);
+            });
+            signaling->onOffer([this, signaling, webRtcSession, session, settings, game](const QString &sdp) {
+                qInfo() << "[StreamProbe] Offer received" << "length" << sdp.size();
+                qInfo() << "[WebRTC] Backend availability" << WebRtcStreamSession::availabilityDescription();
+                webRtcSession->start(session, sdp, settings, [this, signaling, webRtcSession, game](bool connected, const QString &streamError) {
+                    if (connected) {
+                        if (m_catalogView) m_catalogView->setError(QStringLiteral("Streaming Connected"), QStringLiteral("WebRTC connected for %1. Rendering is next.").arg(game.title));
+                        return;
+                    }
+                    if (m_catalogView) {
+                        const QString message = streamError.isEmpty()
+                            ? QStringLiteral("Streaming probe reached offer SDP for %1. Media backend is next.").arg(game.title)
+                            : QStringLiteral("Streaming probe reached offer SDP for %1. %2").arg(game.title, streamError);
+                        m_catalogView->setError(QStringLiteral("Streaming Probe Ready"), message);
+                    }
+                    signaling->disconnectFromServer();
+                    signaling->deleteLater();
+                    webRtcSession->deleteLater();
+                });
+            });
+            signaling->onIceCandidate([webRtcSession](const IceCandidatePayload &candidate) {
                 qInfo() << "[StreamProbe] Remote ICE candidate" << candidate.sdpMid << candidate.sdpMLineIndex;
+                webRtcSession->addRemoteIceCandidate(candidate);
             });
             signaling->connectToServer([this, signaling, game](bool connected, const QString &connectError) {
                 if (!m_catalogView) return;
