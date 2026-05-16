@@ -20,6 +20,11 @@ import androidx.compose.animation.scaleOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.core.MutableTransitionState
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -3745,7 +3750,7 @@ private fun UrlImage(url: String?, modifier: Modifier = Modifier) {
     }
     Box(modifier.background(Color(0xff102015)), contentAlignment = Alignment.Center) {
         when (val state = imageState) {
-            UrlImageState.Loading -> GameImageSkeleton(Modifier.fillMaxSize())
+            UrlImageState.Loading -> GameImagePulse(Modifier.fillMaxSize())
             is UrlImageState.Loaded -> Image(
                 bitmap = state.bitmap,
                 contentDescription = null,
@@ -3760,27 +3765,22 @@ private fun UrlImage(url: String?, modifier: Modifier = Modifier) {
 }
 
 @Composable
-private fun GameImageSkeleton(modifier: Modifier = Modifier) {
-    Canvas(modifier.background(Color(0xff111923))) {
-        drawRoundRect(
-            color = Color.White.copy(alpha = 0.07f),
-            topLeft = Offset(size.width * 0.10f, size.height * 0.12f),
-            size = Size(size.width * 0.80f, size.height * 0.54f),
-            cornerRadius = CornerRadius(16f, 16f),
-        )
-        drawRoundRect(
-            color = Color.White.copy(alpha = 0.11f),
-            topLeft = Offset(size.width * 0.12f, size.height * 0.73f),
-            size = Size(size.width * 0.64f, size.height * 0.055f),
-            cornerRadius = CornerRadius(10f, 10f),
-        )
-        drawRoundRect(
-            color = Color.White.copy(alpha = 0.07f),
-            topLeft = Offset(size.width * 0.12f, size.height * 0.82f),
-            size = Size(size.width * 0.42f, size.height * 0.045f),
-            cornerRadius = CornerRadius(10f, 10f),
-        )
-    }
+private fun GameImagePulse(modifier: Modifier = Modifier) {
+    val transition = rememberInfiniteTransition(label = "game-image-loading")
+    val pulse by transition.animateFloat(
+        initialValue = 0.86f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 950),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "game-image-loading-alpha",
+    )
+    Box(
+        modifier
+            .background(Color(0xff0d1216))
+            .background(Color(0xff1a2329).copy(alpha = pulse)),
+    )
 }
 
 @Composable
