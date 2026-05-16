@@ -92,20 +92,31 @@ export PATH="$(cd "$depot_tools_dir" && pwd):$PATH"
 checkout_parent="$(dirname "$work_dir")"
 checkout_name="$(basename "$work_dir")"
 mkdir -p "$checkout_parent"
+src_dir="$work_dir/src"
 
 if [[ "$fetch_sources" -eq 1 ]]; then
-  if [[ ! -d "$work_dir/src" ]]; then
+  if [[ ! -d "$src_dir" ]]; then
     (cd "$checkout_parent" && fetch --nohooks webrtc)
     if [[ "$checkout_name" != "src" ]]; then
-      mv "$checkout_parent/src" "$work_dir"
+      mkdir -p "$work_dir"
+      if [[ -d "$work_dir/.git" ]]; then
+        mv "$work_dir" "$src_dir"
+      else
+        mv "$checkout_parent/src" "$src_dir"
+      fi
     else
-      work_dir="$checkout_parent/src"
+      src_dir="$checkout_parent/src"
     fi
   fi
-  (cd "$work_dir/src" && gclient sync --nohooks)
-  (cd "$work_dir/src" && gclient runhooks)
-elif [[ ! -d "$work_dir/src" ]]; then
-  printf 'Missing checkout at %s/src and --no-fetch was provided.\n' "$work_dir" >&2
+  (cd "$src_dir" && gclient sync --nohooks)
+  (cd "$src_dir" && gclient runhooks)
+elif [[ -d "$work_dir/.git" && ! -d "$src_dir" ]]; then
+  mkdir -p "$work_dir.migrating"
+  mv "$work_dir" "$work_dir.migrating/src"
+  mv "$work_dir.migrating" "$work_dir"
+  src_dir="$work_dir/src"
+elif [[ ! -d "$src_dir" ]]; then
+  printf 'Missing checkout at %s and --no-fetch was provided.\n' "$src_dir" >&2
   exit 1
 fi
 
@@ -130,22 +141,23 @@ gn_args=(
   "rtc_use_h264=true"
   "proprietary_codecs=true"
   "use_custom_libcxx=false"
+  "treat_warnings_as_errors=false"
 )
 
-(cd "$work_dir/src" && gn gen "$out_dir" --args="${gn_args[*]}")
-(cd "$work_dir/src" && autoninja -C "$out_dir" webrtc)
+(cd "$src_dir" && gn gen "$out_dir" --args="${gn_args[*]}")
+(cd "$src_dir" && autoninja -C "$out_dir" webrtc)
 
 lib_name="libwebrtc.a"
 if [[ "$platform" == "windows" ]]; then
   lib_name="webrtc.lib"
 fi
 
-built_lib="$work_dir/src/$out_dir/obj/$lib_name"
+built_lib="$src_dir/$out_dir/obj/$lib_name"
 if [[ ! -f "$built_lib" ]]; then
-  built_lib="$work_dir/src/$out_dir/$lib_name"
+  built_lib="$src_dir/$out_dir/$lib_name"
 fi
 if [[ ! -f "$built_lib" ]]; then
-  printf 'Could not find built libwebrtc library in %s.\n' "$work_dir/src/$out_dir" >&2
+  printf 'Could not find built libwebrtc library in %s.\n' "$src_dir/$out_dir" >&2
   exit 1
 fi
 
@@ -153,11 +165,11 @@ include_dir="$sdk_dir/include"
 lib_dir="$sdk_dir/lib/$platform"
 mkdir -p "$include_dir" "$lib_dir"
 
-rsync -a --delete --include='*/' --include='*.h' --include='*.hpp' --exclude='*' "$work_dir/src/api" "$include_dir/"
-rsync -a --delete --include='*/' --include='*.h' --include='*.hpp' --exclude='*' "$work_dir/src/rtc_base" "$include_dir/"
-rsync -a --delete --include='*/' --include='*.h' --include='*.hpp' --exclude='*' "$work_dir/src/media" "$include_dir/"
-rsync -a --delete --include='*/' --include='*.h' --include='*.hpp' --exclude='*' "$work_dir/src/modules" "$include_dir/"
-rsync -a --delete --include='*/' --include='*.h' --include='*.hpp' --exclude='*' "$work_dir/src/pc" "$include_dir/"
+rsync -a --delete --include='*/' --include='*.h' --include='*.hpp' --exclude='*' "$src_dir/api" "$include_dir/"
+rsync -a --delete --include='*/' --include='*.h' --include='*.hpp' --exclude='*' "$src_dir/rtc_base" "$include_dir/"
+rsync -a --delete --include='*/' --include='*.h' --include='*.hpp' --exclude='*' "$src_dir/media" "$include_dir/"
+rsync -a --delete --include='*/' --include='*.h' --include='*.hpp' --exclude='*' "$src_dir/modules" "$include_dir/"
+rsync -a --delete --include='*/' --include='*.h' --include='*.hpp' --exclude='*' "$src_dir/pc" "$include_dir/"
 cp "$built_lib" "$lib_dir/$lib_name"
 
 printf 'Native C++ libwebrtc SDK packaged at %s\n' "$sdk_dir"
