@@ -191,20 +191,34 @@ void CatalogView::setGames(const QList<CatalogGame> &games) {
 void CatalogView::setLoading(const QString &message) {
     m_loading = true;
     m_error = false;
+    m_overlayTitle = QStringLiteral("Loading Library");
     m_overlayMessage = message;
     update();
 }
 
 void CatalogView::setError(const QString &message) {
+    setError(QStringLiteral("Library Load Failed"), message);
+}
+
+void CatalogView::setError(const QString &title, const QString &message) {
     m_loading = false;
     m_error = true;
+    m_overlayTitle = title;
     m_overlayMessage = message;
     update();
 }
 
 void CatalogView::populatePreviewData() {
     const auto game = [](const QString &title, const QString &store, const QString &subtitle, QStringList tags) {
-        return CatalogGame{title, store, subtitle, tags, colorForTitle(title), QString(), QString(), QString()};
+        CatalogGame catalogGame;
+        catalogGame.title = title;
+        catalogGame.store = store;
+        catalogGame.subtitle = subtitle;
+        catalogGame.tags = tags;
+        catalogGame.accent = colorForTitle(title);
+        catalogGame.internalTitle = title;
+        catalogGame.selectedStore = store;
+        return catalogGame;
     };
 
     const QList<CatalogGame> allGames = {
@@ -234,6 +248,10 @@ void CatalogView::populatePreviewData() {
     };
 }
 
+void CatalogView::setLaunchRequestedCallback(std::function<void(const CatalogGame &)> callback) {
+    m_onLaunchRequested = std::move(callback);
+}
+
 void CatalogView::paintEvent(QPaintEvent *) {
     QPainter painter(this);
     painter.setRenderHint(QPainter::Antialiasing, true);
@@ -251,7 +269,10 @@ void CatalogView::paintEvent(QPaintEvent *) {
         painter.drawPath(path);
         painter.setPen(m_error ? QColor(0xFF, 0xC9, 0xC5) : kTextPrimary);
         painter.setFont(uiFont(18, QFont::Bold));
-        painter.drawText(panel.adjusted(24, 18, -24, -58), Qt::AlignCenter, m_error ? QStringLiteral("Library Load Failed") : QStringLiteral("Loading Library"));
+        const QString title = m_overlayTitle.isEmpty()
+            ? (m_error ? QStringLiteral("Library Load Failed") : QStringLiteral("Loading Library"))
+            : m_overlayTitle;
+        painter.drawText(panel.adjusted(24, 18, -24, -58), Qt::AlignCenter, title);
         painter.setPen(kTextSecondary);
         painter.setFont(uiFont(12, QFont::Medium));
         painter.drawText(panel.adjusted(24, 58, -24, -18), Qt::AlignCenter | Qt::TextWordWrap, m_overlayMessage);
@@ -292,7 +313,9 @@ void CatalogView::keyPressEvent(QKeyEvent *event) {
         case Qt::Key_Enter:
         case Qt::Key_Space:
             if (!m_folders.isEmpty() && !m_folders[m_selectedFolder].games.isEmpty()) {
-                m_statusText = QStringLiteral("Launch placeholder: %1").arg(m_folders[m_selectedFolder].games[m_selectedGame].title);
+                const CatalogGame &game = m_folders[m_selectedFolder].games[m_selectedGame];
+                m_statusText = QStringLiteral("Launching: %1").arg(game.title);
+                if (m_onLaunchRequested) m_onLaunchRequested(game);
                 update();
             }
             event->accept();

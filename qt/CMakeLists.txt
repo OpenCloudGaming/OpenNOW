@@ -8,6 +8,8 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 find_package(Qt6 6.5 REQUIRED COMPONENTS Widgets Network WebSockets)
 
+option(OPNQT_ENABLE_LIBWEBRTC "Build Qt native libwebrtc streaming backend" OFF)
+
 qt_standard_project_setup()
 
 qt_add_executable(OpenNOWQt
@@ -20,6 +22,15 @@ qt_add_executable(OpenNOWQt
     src/OpnQtCatalogView.h
     src/OpnQtGameService.cpp
     src/OpnQtGameService.h
+    src/OpnQtSessionManager.cpp
+    src/OpnQtSessionManager.h
+    src/OpnQtSignalingClient.cpp
+    src/OpnQtSignalingClient.h
+    src/OpnQtStreamPreferences.cpp
+    src/OpnQtStreamPreferences.h
+    src/OpnQtStreamTypes.h
+    src/OpnQtWebRtcStreamSession.cpp
+    src/OpnQtWebRtcStreamSession.h
 )
 
 target_link_libraries(OpenNOWQt
@@ -30,6 +41,14 @@ target_link_libraries(OpenNOWQt
 )
 
 target_compile_features(OpenNOWQt PRIVATE cxx_std_20)
+
+if(OPNQT_ENABLE_LIBWEBRTC)
+    find_path(LIBWEBRTC_INCLUDE_DIR api/peer_connection_interface.h REQUIRED)
+    find_library(LIBWEBRTC_LIBRARY webrtc REQUIRED)
+    target_compile_definitions(OpenNOWQt PRIVATE OPNQT_HAVE_LIBWEBRTC=1)
+    target_include_directories(OpenNOWQt PRIVATE ${LIBWEBRTC_INCLUDE_DIR})
+    target_link_libraries(OpenNOWQt PRIVATE ${LIBWEBRTC_LIBRARY})
+endif()
 
 if(MSVC)
     target_compile_options(OpenNOWQt PRIVATE /W4 /permissive-)

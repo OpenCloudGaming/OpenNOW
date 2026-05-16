@@ -1,6 +1,7 @@
 #pragma once
 
 #include "OpnQtCatalogView.h"
+#include "OpnQtStreamTypes.h"
 
 #include <QtCore/QList>
 #include <QtCore/QObject>
@@ -40,6 +41,8 @@ struct GameInfo {
 };
 
 using LibraryCallback = std::function<void(bool success, const QList<CatalogGame> &games, const QString &error)>;
+using LaunchProgressCallback = std::function<void(const QString &message, const SessionInfo &session)>;
+using LaunchCallback = std::function<void(bool success, const SessionInfo &session, const QString &error)>;
 
 class GameService final : public QObject {
 public:
@@ -48,6 +51,12 @@ public:
     void setAccessToken(const QString &token);
     void fetchCatalogGames(LibraryCallback completion);
     void fetchLibraryGames(LibraryCallback completion);
+    void setStreamingBaseUrl(const QString &url);
+    void launchGame(const QString &appId,
+                    const QString &internalTitle,
+                    const StreamSettings &settings,
+                    LaunchProgressCallback progress,
+                    LaunchCallback completion);
 
 private:
     explicit GameService(QObject *parent = nullptr);
@@ -63,9 +72,15 @@ private:
     void fetchMetadata(const QList<GameInfo> &games, const QString &vpcId, LibraryCallback completion);
     GameInfo parseGameItem(const QVariantMap &app) const;
     CatalogGame toCatalogGame(const GameInfo &game) const;
+    void pollSessionReady(const QString &sessionId,
+                          const QString &serverIp,
+                          int retries,
+                          LaunchProgressCallback progress,
+                          LaunchCallback completion);
 
     QNetworkAccessManager *m_network = nullptr;
     QString m_accessToken;
+    QString m_streamingBaseUrl;
 };
 
 } // namespace OpnQt

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "OpnQtAuthService.h"
+#include "OpnQtCatalogView.h"
 
 #include <QtWidgets/QMainWindow>
 
@@ -14,7 +15,6 @@ class QStackedWidget;
 namespace OpnQt {
 
 struct AuthSession;
-class CatalogView;
 
 class AppWindow final : public QMainWindow {
 public:
@@ -30,6 +30,7 @@ private:
     void showCatalog(const AuthSession &session);
     void showCatalogPreview();
     void loadGamesIntoCatalog(bool allowAuthRefresh);
+    void probeLaunchSignaling(const CatalogGame &game);
     void forceLoginAfterAuthFailure(const QString &message);
     void wireAuthUi();
     void checkSavedSessionOnStartup();

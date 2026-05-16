@@ -9,6 +9,8 @@
 #include <QtGui/QPixmap>
 #include <QtWidgets/QWidget>
 
+#include <functional>
+
 class QNetworkAccessManager;
 class QNetworkReply;
 
@@ -23,6 +25,9 @@ struct CatalogGame {
     QString imageUrl;
     QString heroImageUrl;
     QString description;
+    QString launchAppId;
+    QString internalTitle;
+    QString selectedStore;
 };
 
 struct CatalogFolder {
@@ -39,7 +44,9 @@ public:
     void setGames(const QList<CatalogGame> &games);
     void setLoading(const QString &message);
     void setError(const QString &message);
+    void setError(const QString &title, const QString &message);
     void setPreviewData();
+    void setLaunchRequestedCallback(std::function<void(const CatalogGame &)> callback);
 
 protected:
     void showEvent(QShowEvent *event) override;
@@ -67,6 +74,7 @@ private:
     QList<CatalogFolder> m_folders;
     QString m_accountName = QStringLiteral("Player");
     QString m_overlayMessage;
+    QString m_overlayTitle;
     bool m_loading = false;
     bool m_error = false;
     int m_selectedFolder = 0;
@@ -76,6 +84,7 @@ private:
     QHash<QString, QPixmap> m_imageCache;
     QSet<QString> m_pendingImages;
     qreal m_backgroundPhase = 0.0;
+    std::function<void(const CatalogGame &)> m_onLaunchRequested;
 };
 
 } // namespace OpnQt

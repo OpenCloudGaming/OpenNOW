@@ -3,10 +3,16 @@
 #include "OpnQtAuthService.h"
 #include "OpnQtCatalogView.h"
 #include "OpnQtGameService.h"
+#include "OpnQtSessionManager.h"
+#include "OpnQtSignalingClient.h"
+#include "OpnQtStreamPreferences.h"
+#include "OpnQtStreamTypes.h"
+#include "OpnQtWebRtcStreamSession.h"
 
 #include <QtCore/QCoreApplication>
 #include <QtCore/QDir>
 #include <QtCore/QFileInfo>
+#include <QtCore/QDebug>
 #include <QtCore/QSettings>
 #include <QtGui/QCloseEvent>
 #include <QtGui/QFont>
@@ -145,6 +151,9 @@ AppWindow::AppWindow(QWidget *parent)
     m_stack = new QStackedWidget();
     m_stack->addWidget(buildLoginWindow());
     m_catalogView = new CatalogView();
+    m_catalogView->setLaunchRequestedCallback([this](const CatalogGame &game) {
+        probeLaunchSignaling(game);
+    });
     m_stack->addWidget(m_catalogView);
     setCentralWidget(m_stack);
     wireAuthUi();
@@ -463,6 +472,82 @@ void AppWindow::forceLoginAfterAuthFailure(const QString &message) {
         m_stayLoggedIn->setChecked(AuthService::shared().stayLoggedIn());
     }
     setAuthError(message.isEmpty() ? QStringLiteral("Authentication expired. Sign in again.") : message);
+}
+
+void AppWindow::probeLaunchSignaling(const CatalogGame &game) {
+    if (!m_catalogView) return;
+    const QString appId = !game.launchAppId.isEmpty() ? game.launchAppId : game.title;
+    if (m_currentSession.accessToken.isEmpty() && m_currentSession.idToken.isEmpty()) {
+        m_catalogView->setError(QStringLiteral("Sign in before launching %1.").arg(game.title));
+        return;
+    }
+    if (appId.isEmpty() || appId == game.title) {
+        m_catalogView->setError(QStringLiteral("%1 does not have a launchable app id yet.").arg(game.title));
+        return;
+    }
+
+    const QString apiToken = !m_currentSession.idToken.isEmpty() ? m_currentSession.idToken : m_currentSession.accessToken;
+    StreamSettings settings;
+    settings.selectedStore = game.selectedStore;
+    settings.accountLinked = true;
+    const QString streamingBaseUrl = loadSelectedStreamingBaseUrl();
+    GameService::shared().setAccessToken(apiToken);
+    GameService::shared().setStreamingBaseUrl(streamingBaseUrl);
+    qInfo() << "[StreamProbe] Using streaming base URL" << streamingBaseUrl;
+    m_catalogView->setLoading(QStringLiteral("Creating cloud session for %1...").arg(game.title));
+
+    GameService::shared().launchGame(appId, game.internalTitle, settings,
+        [this, game](const QString &message, const SessionInfo &progressSession) {
+            Q_UNUSED(progressSession);
+            if (!m_catalogView) return;
+            m_catalogView->setLoading(QStringLiteral("%1 %2...").arg(message, game.title));
+        },
+        [this, game](bool success, const SessionInfo &session, const QString &error) {
+            if (!m_catalogView) return;
+            if (!success) {
+                m_catalogView->setError(QStringLiteral("Launch Failed"), error.isEmpty()
+                    ? QStringLiteral("Launch session creation failed")
+                    : QStringLiteral("Launch session creation failed: %1").arg(error));
+                return;
+            }
+            qInfo() << "[StreamProbe] Session created"
+                    << "id" << session.sessionId
+                    << "status" << session.status
+                    << "server" << session.serverIp
+                    << "signaling" << session.signalingUrl;
+            if (session.signalingServer.isEmpty() && session.signalingUrl.isEmpty()) {
+                m_catalogView->setError(QStringLiteral("Launch Failed"), QStringLiteral("Session created, but no signaling endpoint was returned."));
+                return;
+            }
+            m_catalogView->setLoading(QStringLiteral("Connecting signaling for %1...").arg(game.title));
+            auto *signaling = new SignalingClient(session.signalingServer, session.sessionId, session.signalingUrl, this);
+            const QString resolution = session.negotiatedStreamProfile.resolution.isEmpty()
+                ? QStringLiteral("1920x1080")
+                : session.negotiatedStreamProfile.resolution;
+            signaling->setPeerResolution(resolution);
+            signaling->onOffer([this, signaling, game](const QString &sdp) {
+                qInfo() << "[StreamProbe] Offer received" << "length" << sdp.size();
+                if (m_catalogView) {
+                    m_catalogView->setError(QStringLiteral("Streaming Probe Ready"), QStringLiteral("Streaming probe reached offer SDP for %1. Media backend is next.").arg(game.title));
+                }
+                qInfo() << "[WebRTC] Backend availability" << WebRtcStreamSession::availabilityDescription();
+                signaling->disconnectFromServer();
+                signaling->deleteLater();
+            });
+            signaling->onIceCandidate([](const IceCandidatePayload &candidate) {
+                qInfo() << "[StreamProbe] Remote ICE candidate" << candidate.sdpMid << candidate.sdpMLineIndex;
+            });
+            signaling->connectToServer([this, signaling, game](bool connected, const QString &connectError) {
+                if (!m_catalogView) return;
+                if (!connected) {
+                    m_catalogView->setError(QStringLiteral("Launch Failed"), connectError.isEmpty() ? QStringLiteral("Signaling connection failed") : connectError);
+                    signaling->deleteLater();
+                    return;
+                }
+                qInfo() << "[StreamProbe] Signaling connected";
+                m_catalogView->setLoading(QStringLiteral("Waiting for stream offer for %1...").arg(game.title));
+            });
+        });
 }
 
 void AppWindow::showCatalogPreview() {

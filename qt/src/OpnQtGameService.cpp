@@ -1,11 +1,14 @@
 #include "OpnQtGameService.h"
 
+#include "OpnQtSessionManager.h"
+
 #include <QtCore/QJsonArray>
 #include <QtCore/QJsonDocument>
 #include <QtCore/QJsonObject>
 #include <QtCore/QDateTime>
 #include <QtCore/QSet>
 #include <QtCore/QSharedPointer>
+#include <QtCore/QTimer>
 #include <QtCore/QUrl>
 #include <QtCore/QUrlQuery>
 #include <QtCore/QUuid>
@@ -155,6 +158,68 @@ GameService::GameService(QObject *parent) : QObject(parent), m_network(new QNetw
 
 void GameService::setAccessToken(const QString &token) {
     m_accessToken = token;
+}
+
+void GameService::setStreamingBaseUrl(const QString &url) {
+    m_streamingBaseUrl = url;
+    SessionManager::shared().setStreamingBaseUrl(url);
+}
+
+void GameService::launchGame(const QString &appId,
+                             const QString &internalTitle,
+                             const StreamSettings &settings,
+                             LaunchProgressCallback progress,
+                             LaunchCallback completion) {
+    SessionManager::shared().setAccessToken(m_accessToken);
+    if (!m_streamingBaseUrl.isEmpty()) SessionManager::shared().setStreamingBaseUrl(m_streamingBaseUrl);
+    SessionManager::shared().createSession(appId, internalTitle, settings,
+        [this, progress = std::move(progress), completion = std::move(completion)](bool success, const SessionInfo &info, const QString &error) mutable {
+            if (!success) {
+                completion(false, {}, error);
+                return;
+            }
+            if (progress) progress(QStringLiteral("Waiting for cloud session..."), info);
+            if ((info.status == 2 || info.status == 3) && !info.serverIp.isEmpty()) {
+                completion(true, info, QString());
+                return;
+            }
+            if (info.sessionId.isEmpty()) {
+                completion(false, {}, QStringLiteral("Session response did not include a session id"));
+                return;
+            }
+            pollSessionReady(info.sessionId, info.serverIp, 0, std::move(progress), std::move(completion));
+        });
+}
+
+void GameService::pollSessionReady(const QString &sessionId,
+                                   const QString &serverIp,
+                                   int retries,
+                                   LaunchProgressCallback progress,
+                                   LaunchCallback completion) {
+    constexpr int kMaxRetries = 60;
+    if (retries >= kMaxRetries) {
+        completion(false, {}, QStringLiteral("Session poll timeout"));
+        return;
+    }
+    QTimer::singleShot(retries == 0 ? 0 : 1000, this, [this, sessionId, serverIp, retries, progress = std::move(progress), completion = std::move(completion)]() mutable {
+        SessionManager::shared().pollSession(sessionId, serverIp,
+            [this, sessionId, serverIp, retries, progress = std::move(progress), completion = std::move(completion)](bool ok, const SessionInfo &info, const QString &error) mutable {
+                if (ok && progress) progress(QStringLiteral("Waiting for cloud session..."), info);
+                if (ok && (info.status == 2 || info.status == 3) && !info.serverIp.isEmpty()) {
+                    completion(true, info, QString());
+                    return;
+                }
+                if (ok && info.status > 3 && info.status != 6) {
+                    completion(false, {}, QStringLiteral("Session entered terminal state %1").arg(info.status));
+                    return;
+                }
+                if (!ok && retries + 1 >= kMaxRetries) {
+                    completion(false, {}, error.isEmpty() ? QStringLiteral("Session poll failed") : error);
+                    return;
+                }
+                pollSessionReady(sessionId, ok && !info.serverIp.isEmpty() ? info.serverIp : serverIp, retries + 1, std::move(progress), std::move(completion));
+            });
+    });
 }
 
 void GameService::fetchServerVpcId(std::function<void(const QString &vpcId)> completion) {
@@ -566,6 +631,9 @@ CatalogGame GameService::toCatalogGame(const GameInfo &game) const {
     catalog.imageUrl = game.imageUrl;
     catalog.heroImageUrl = !game.heroImageUrl.isEmpty() ? game.heroImageUrl : (!game.screenshotUrls.isEmpty() ? game.screenshotUrls.first() : game.imageUrl);
     catalog.description = game.description;
+    catalog.launchAppId = !game.launchAppId.isEmpty() ? game.launchAppId : game.id;
+    catalog.internalTitle = !game.shortName.isEmpty() ? game.shortName : game.title;
+    catalog.selectedStore = game.availableStores.isEmpty() ? QString() : game.availableStores.first();
     return catalog;
 }
 
