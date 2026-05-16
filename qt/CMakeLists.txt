@@ -8,8 +8,20 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 find_package(Qt6 6.5 REQUIRED COMPONENTS Widgets Network WebSockets)
 
-option(OPNQT_ENABLE_LIBWEBRTC "Build Qt native C++ libwebrtc streaming backend" OFF)
 set(OPNQT_LIBWEBRTC_ROOT "${CMAKE_SOURCE_DIR}/../third_party/libwebrtc" CACHE PATH "Root of the native C++ libwebrtc SDK")
+if(APPLE)
+    set(OPNQT_DEFAULT_LIBWEBRTC_PLATFORM_DIR "${OPNQT_LIBWEBRTC_ROOT}/lib/macos")
+elseif(WIN32)
+    set(OPNQT_DEFAULT_LIBWEBRTC_PLATFORM_DIR "${OPNQT_LIBWEBRTC_ROOT}/lib/windows")
+else()
+    set(OPNQT_DEFAULT_LIBWEBRTC_PLATFORM_DIR "${OPNQT_LIBWEBRTC_ROOT}/lib/linux")
+endif()
+if(EXISTS "${OPNQT_LIBWEBRTC_ROOT}/include/api/peer_connection_interface.h" AND EXISTS "${OPNQT_DEFAULT_LIBWEBRTC_PLATFORM_DIR}")
+    set(OPNQT_ENABLE_LIBWEBRTC_DEFAULT ON)
+else()
+    set(OPNQT_ENABLE_LIBWEBRTC_DEFAULT OFF)
+endif()
+option(OPNQT_ENABLE_LIBWEBRTC "Build Qt native C++ libwebrtc streaming backend" ${OPNQT_ENABLE_LIBWEBRTC_DEFAULT})
 
 qt_standard_project_setup()
 
@@ -54,8 +66,31 @@ if(OPNQT_ENABLE_LIBWEBRTC)
 
     find_path(LIBWEBRTC_INCLUDE_DIR api/peer_connection_interface.h PATHS "${OPNQT_LIBWEBRTC_ROOT}/include" NO_DEFAULT_PATH REQUIRED)
     find_library(LIBWEBRTC_LIBRARY NAMES webrtc libwebrtc PATHS "${OPNQT_LIBWEBRTC_PLATFORM_DIR}" NO_DEFAULT_PATH REQUIRED)
-    target_compile_definitions(OpenNOWQt PRIVATE OPNQT_HAVE_LIBWEBRTC=1)
-    target_include_directories(OpenNOWQt PRIVATE ${LIBWEBRTC_INCLUDE_DIR})
+    target_compile_definitions(OpenNOWQt PRIVATE OPNQT_HAVE_LIBWEBRTC=1 WEBRTC_POSIX=1)
+    if(APPLE)
+        target_compile_definitions(OpenNOWQt PRIVATE WEBRTC_MAC=1)
+        target_link_libraries(OpenNOWQt PRIVATE
+            "-framework AudioToolbox"
+            "-framework CoreAudio"
+            "-framework CoreFoundation"
+            "-framework CoreMedia"
+            "-framework CoreVideo"
+            "-framework VideoToolbox"
+        )
+    elseif(WIN32)
+        target_compile_definitions(OpenNOWQt PRIVATE WEBRTC_WIN=1)
+    else()
+        target_compile_definitions(OpenNOWQt PRIVATE WEBRTC_LINUX=1)
+    endif()
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64")
+        target_compile_definitions(OpenNOWQt PRIVATE WEBRTC_ARCH_ARM64=1 WEBRTC_HAS_NEON=1)
+    elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|amd64")
+        target_compile_definitions(OpenNOWQt PRIVATE WEBRTC_ARCH_X86_64=1)
+    endif()
+    target_include_directories(OpenNOWQt BEFORE PRIVATE ${LIBWEBRTC_INCLUDE_DIR})
+    if(NOT MSVC)
+        target_compile_options(OpenNOWQt PRIVATE -fno-rtti)
+    endif()
     target_link_libraries(OpenNOWQt PRIVATE ${LIBWEBRTC_LIBRARY})
 endif()
 
