@@ -9,6 +9,7 @@
 #include <QtGui/QPainter>
 #include <QtGui/QPainterPath>
 #include <QtGui/QRadialGradient>
+#include <QtGui/QWheelEvent>
 #include <QtWidgets/QApplication>
 #include <QtNetwork/QNetworkAccessManager>
 #include <QtNetwork/QNetworkReply>
@@ -16,6 +17,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <optional>
 
 namespace OpnQt {
 namespace {
@@ -88,6 +90,56 @@ QSizeF fittedImageSize(const QSize &imageSize, qreal maxWidth, qreal maxHeight) 
         width = height * imageRatio;
     }
     return QSizeF(width, height);
+}
+
+struct KeyMapping {
+    quint16 vk = 0;
+    quint16 scancode = 0;
+};
+
+std::optional<KeyMapping> streamKeyMapping(int key) {
+    if (key >= Qt::Key_A && key <= Qt::Key_Z) return KeyMapping{static_cast<quint16>(0x41 + key - Qt::Key_A), static_cast<quint16>(0x001e + ((key - Qt::Key_A) % 26))};
+    if (key >= Qt::Key_0 && key <= Qt::Key_9) return KeyMapping{static_cast<quint16>(0x30 + key - Qt::Key_0), static_cast<quint16>(key == Qt::Key_0 ? 0x000b : 0x0001 + key - Qt::Key_0)};
+    switch (key) {
+        case Qt::Key_Escape: return KeyMapping{0x1b, 0x0001};
+        case Qt::Key_Backspace: return KeyMapping{0x08, 0x000e};
+        case Qt::Key_Tab: return KeyMapping{0x09, 0x000f};
+        case Qt::Key_Return:
+        case Qt::Key_Enter: return KeyMapping{0x0d, 0x001c};
+        case Qt::Key_Space: return KeyMapping{0x20, 0x0039};
+        case Qt::Key_Left: return KeyMapping{0x25, 0xe04b};
+        case Qt::Key_Up: return KeyMapping{0x26, 0xe048};
+        case Qt::Key_Right: return KeyMapping{0x27, 0xe04d};
+        case Qt::Key_Down: return KeyMapping{0x28, 0xe050};
+        case Qt::Key_Shift: return KeyMapping{0xa0, 0x002a};
+        case Qt::Key_Control: return KeyMapping{0xa2, 0x001d};
+        case Qt::Key_Alt: return KeyMapping{0xa4, 0x0038};
+        default: return std::nullopt;
+    }
+}
+
+quint16 streamModifiers(Qt::KeyboardModifiers modifiers) {
+    quint16 out = 0;
+    if (modifiers.testFlag(Qt::ShiftModifier)) out |= 0x0001;
+    if (modifiers.testFlag(Qt::ControlModifier)) out |= 0x0002;
+    if (modifiers.testFlag(Qt::AltModifier)) out |= 0x0004;
+    if (modifiers.testFlag(Qt::MetaModifier)) out |= 0x0008;
+    return out;
+}
+
+qint16 clampI16(qreal value) {
+    return static_cast<qint16>(std::clamp<int>(static_cast<int>(std::round(value)), -32768, 32767));
+}
+
+quint8 streamMouseButton(Qt::MouseButton button) {
+    switch (button) {
+        case Qt::LeftButton: return 1;
+        case Qt::MiddleButton: return 2;
+        case Qt::RightButton: return 3;
+        case Qt::BackButton: return 4;
+        case Qt::ForwardButton: return 5;
+        default: return 0;
+    }
 }
 
 qreal folderRailY(int height) {
@@ -208,6 +260,17 @@ void CatalogView::setError(const QString &title, const QString &message) {
     update();
 }
 
+void CatalogView::setStreamFrame(const QImage &frame) {
+    if (frame.isNull()) return;
+    m_streamFrame = frame.copy();
+    m_loading = false;
+    m_error = false;
+    m_overlayTitle.clear();
+    m_overlayMessage.clear();
+    m_statusText = QStringLiteral("Streaming");
+    update();
+}
+
 void CatalogView::populatePreviewData() {
     const auto game = [](const QString &title, const QString &store, const QString &subtitle, QStringList tags) {
         CatalogGame catalogGame;
@@ -252,6 +315,16 @@ void CatalogView::setLaunchRequestedCallback(std::function<void(const CatalogGam
     m_onLaunchRequested = std::move(callback);
 }
 
+void CatalogView::setStreamInputCallbacks(std::function<void(quint16, quint16, quint16, bool)> keyCallback,
+                                          std::function<void(qint16, qint16)> mouseMoveCallback,
+                                          std::function<void(quint8, bool)> mouseButtonCallback,
+                                          std::function<void(qint16)> mouseWheelCallback) {
+    m_onStreamKey = std::move(keyCallback);
+    m_onStreamMouseMove = std::move(mouseMoveCallback);
+    m_onStreamMouseButton = std::move(mouseButtonCallback);
+    m_onStreamMouseWheel = std::move(mouseWheelCallback);
+}
+
 void CatalogView::paintEvent(QPaintEvent *) {
     QPainter painter(this);
     painter.setRenderHint(QPainter::Antialiasing, true);
@@ -260,6 +333,7 @@ void CatalogView::paintEvent(QPaintEvent *) {
     drawFolderRail(painter);
     drawGameColumn(painter);
     drawDetailPanel(painter);
+    drawStreamFrame(painter);
     drawFooter(painter);
     if (m_loading || m_error) {
         const QRectF panel(width() * 0.5 - 250.0, height() * 0.5 - 58.0, 500.0, 116.0);
@@ -279,6 +353,31 @@ void CatalogView::paintEvent(QPaintEvent *) {
     }
 }
 
+void CatalogView::drawStreamFrame(QPainter &painter) {
+    if (m_streamFrame.isNull()) return;
+    const QRectF target = rect();
+    const QSize frameSize = m_streamFrame.size();
+    if (frameSize.isEmpty()) return;
+
+    const qreal frameRatio = static_cast<qreal>(frameSize.width()) / static_cast<qreal>(frameSize.height());
+    const qreal targetRatio = target.width() / target.height();
+    QRectF source(0.0, 0.0, frameSize.width(), frameSize.height());
+    if (frameRatio > targetRatio) {
+        const qreal sourceWidth = frameSize.height() * targetRatio;
+        source.setLeft((frameSize.width() - sourceWidth) * 0.5);
+        source.setWidth(sourceWidth);
+    } else if (frameRatio < targetRatio) {
+        const qreal sourceHeight = frameSize.width() / targetRatio;
+        source.setTop((frameSize.height() - sourceHeight) * 0.5);
+        source.setHeight(sourceHeight);
+    }
+
+    painter.save();
+    painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
+    painter.drawImage(target, m_streamFrame, source);
+    painter.restore();
+}
+
 void CatalogView::showEvent(QShowEvent *event) {
     QWidget::showEvent(event);
 }
@@ -288,6 +387,12 @@ void CatalogView::hideEvent(QHideEvent *event) {
 }
 
 void CatalogView::keyPressEvent(QKeyEvent *event) {
+    if (!m_streamFrame.isNull()) {
+        const std::optional<KeyMapping> mapping = streamKeyMapping(event->key());
+        if (mapping && m_onStreamKey && !event->isAutoRepeat()) m_onStreamKey(mapping->vk, mapping->scancode, streamModifiers(event->modifiers()), true);
+        event->accept();
+        return;
+    }
     switch (event->key()) {
         case Qt::Key_Left:
         case Qt::Key_A:
@@ -332,12 +437,60 @@ void CatalogView::keyPressEvent(QKeyEvent *event) {
     }
 }
 
+void CatalogView::keyReleaseEvent(QKeyEvent *event) {
+    if (!m_streamFrame.isNull()) {
+        const std::optional<KeyMapping> mapping = streamKeyMapping(event->key());
+        if (mapping && m_onStreamKey && !event->isAutoRepeat()) m_onStreamKey(mapping->vk, mapping->scancode, streamModifiers(event->modifiers()), false);
+        event->accept();
+        return;
+    }
+    QWidget::keyReleaseEvent(event);
+}
+
 void CatalogView::mousePressEvent(QMouseEvent *event) {
+    if (!m_streamFrame.isNull()) {
+        m_lastMousePosition = event->position();
+        const quint8 button = streamMouseButton(event->button());
+        if (button != 0 && m_onStreamMouseButton) m_onStreamMouseButton(button, true);
+        event->accept();
+        return;
+    }
+    event->ignore();
+}
+
+void CatalogView::mouseReleaseEvent(QMouseEvent *event) {
+    if (!m_streamFrame.isNull()) {
+        const quint8 button = streamMouseButton(event->button());
+        if (button != 0 && m_onStreamMouseButton) m_onStreamMouseButton(button, false);
+        event->accept();
+        return;
+    }
     event->ignore();
 }
 
 void CatalogView::mouseMoveEvent(QMouseEvent *event) {
+    if (!m_streamFrame.isNull()) {
+        if (!m_lastMousePosition.isNull()) {
+            const QPointF delta = event->position() - m_lastMousePosition;
+            const qint16 dx = clampI16(delta.x());
+            const qint16 dy = clampI16(delta.y());
+            if ((dx != 0 || dy != 0) && m_onStreamMouseMove) m_onStreamMouseMove(dx, dy);
+        }
+        m_lastMousePosition = event->position();
+        event->accept();
+        return;
+    }
     event->ignore();
+}
+
+void CatalogView::wheelEvent(QWheelEvent *event) {
+    if (!m_streamFrame.isNull()) {
+        const QPoint delta = event->angleDelta();
+        if (delta.y() != 0 && m_onStreamMouseWheel) m_onStreamMouseWheel(clampI16(-delta.y()));
+        event->accept();
+        return;
+    }
+    QWidget::wheelEvent(event);
 }
 
 void CatalogView::moveFolder(int delta) {

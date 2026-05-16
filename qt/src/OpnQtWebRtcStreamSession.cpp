@@ -3,16 +3,22 @@
 #include <QtCore/QDebug>
 
 #if defined(OPNQT_HAVE_LIBWEBRTC)
+#include <QtCore/QMetaObject>
 #include <QtCore/QStringList>
 
 #include <api/create_peerconnection_factory.h>
 #include <api/audio_codecs/builtin_audio_decoder_factory.h>
 #include <api/audio_codecs/builtin_audio_encoder_factory.h>
+#include <api/data_channel_interface.h>
 #include <api/jsep.h>
 #include <api/make_ref_counted.h>
+#include <api/media_stream_interface.h>
 #include <api/peer_connection_interface.h>
 #include <api/scoped_refptr.h>
 #include <api/task_queue/default_task_queue_factory.h>
+#include <api/video/video_frame.h>
+#include <api/video/video_frame_buffer.h>
+#include <api/video/video_sink_interface.h>
 #include <api/video_codecs/video_decoder_factory_template.h>
 #include <api/video_codecs/video_decoder_factory_template_dav1d_adapter.h>
 #include <api/video_codecs/video_decoder_factory_template_libvpx_vp8_adapter.h>
@@ -34,6 +40,7 @@
 #include <string>
 #include <utility>
 #include <vector>
+#include <chrono>
 #endif
 
 namespace OpnQt {
@@ -52,6 +59,81 @@ QString fromStdString(const std::string &value) {
 QString rtcErrorMessage(const webrtc::RTCError &error) {
     const std::string message = error.message();
     return message.empty() ? QStringLiteral("unknown WebRTC error") : fromStdString(message);
+}
+
+constexpr quint32 kInputHeartbeat = 2;
+constexpr quint32 kInputKeyDown = 3;
+constexpr quint32 kInputKeyUp = 4;
+constexpr quint32 kInputMouseRel = 7;
+constexpr quint32 kInputMouseButtonDown = 8;
+constexpr quint32 kInputMouseButtonUp = 9;
+constexpr quint32 kInputMouseWheel = 10;
+constexpr int kPartialReliableInputLifetimeMs = 8;
+
+quint64 timestampUs() {
+    static const auto start = std::chrono::steady_clock::now();
+    return static_cast<quint64>(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - start).count());
+}
+
+void writeU16BE(std::vector<uint8_t> &out, size_t offset, quint16 value) {
+    out[offset] = static_cast<uint8_t>((value >> 8) & 0xffu);
+    out[offset + 1] = static_cast<uint8_t>(value & 0xffu);
+}
+
+void writeI16BE(std::vector<uint8_t> &out, size_t offset, qint16 value) {
+    writeU16BE(out, offset, static_cast<quint16>(value));
+}
+
+void writeU32LE(std::vector<uint8_t> &out, size_t offset, quint32 value) {
+    out[offset] = static_cast<uint8_t>(value & 0xffu);
+    out[offset + 1] = static_cast<uint8_t>((value >> 8) & 0xffu);
+    out[offset + 2] = static_cast<uint8_t>((value >> 16) & 0xffu);
+    out[offset + 3] = static_cast<uint8_t>((value >> 24) & 0xffu);
+}
+
+void writeU64BE(std::vector<uint8_t> &out, size_t offset, quint64 value) {
+    for (int i = 7; i >= 0; --i) out[offset + static_cast<size_t>(7 - i)] = static_cast<uint8_t>((value >> (i * 8)) & 0xffu);
+}
+
+std::vector<uint8_t> encodeHeartbeat() {
+    std::vector<uint8_t> bytes(4, 0);
+    writeU32LE(bytes, 0, kInputHeartbeat);
+    return bytes;
+}
+
+std::vector<uint8_t> encodeKey(quint32 type, quint16 keycode, quint16 scancode, quint16 modifiers) {
+    std::vector<uint8_t> bytes(18, 0);
+    writeU32LE(bytes, 0, type);
+    writeU16BE(bytes, 4, keycode);
+    writeU16BE(bytes, 6, modifiers);
+    writeU16BE(bytes, 8, scancode);
+    writeU64BE(bytes, 10, timestampUs());
+    return bytes;
+}
+
+std::vector<uint8_t> encodeMouseMove(qint16 dx, qint16 dy) {
+    std::vector<uint8_t> bytes(22, 0);
+    writeU32LE(bytes, 0, kInputMouseRel);
+    writeI16BE(bytes, 4, dx);
+    writeI16BE(bytes, 6, dy);
+    writeU64BE(bytes, 14, timestampUs());
+    return bytes;
+}
+
+std::vector<uint8_t> encodeMouseButton(quint32 type, quint8 button) {
+    std::vector<uint8_t> bytes(18, 0);
+    writeU32LE(bytes, 0, type);
+    bytes[4] = button;
+    writeU64BE(bytes, 10, timestampUs());
+    return bytes;
+}
+
+std::vector<uint8_t> encodeMouseWheel(qint16 delta) {
+    std::vector<uint8_t> bytes(22, 0);
+    writeU32LE(bytes, 0, kInputMouseWheel);
+    writeI16BE(bytes, 6, delta);
+    writeU64BE(bytes, 14, timestampUs());
+    return bytes;
 }
 
 struct IceCredentials {
@@ -254,6 +336,77 @@ QString buildNvstSdp(const StreamSettings &settings, const IceCredentials &crede
     return result;
 }
 
+int clampColor(int value) {
+    return std::clamp(value, 0, 255);
+}
+
+QImage i420ToImage(const webrtc::I420BufferInterface &buffer) {
+    const int width = buffer.width();
+    const int height = buffer.height();
+    if (width <= 0 || height <= 0) return {};
+
+    QImage image(width, height, QImage::Format_RGB888);
+    if (image.isNull()) return {};
+
+    const uint8_t *yPlane = buffer.DataY();
+    const uint8_t *uPlane = buffer.DataU();
+    const uint8_t *vPlane = buffer.DataV();
+    const int yStride = buffer.StrideY();
+    const int uStride = buffer.StrideU();
+    const int vStride = buffer.StrideV();
+
+    for (int y = 0; y < height; ++y) {
+        uchar *dst = image.scanLine(y);
+        const uint8_t *yRow = yPlane + y * yStride;
+        const uint8_t *uRow = uPlane + (y / 2) * uStride;
+        const uint8_t *vRow = vPlane + (y / 2) * vStride;
+        for (int x = 0; x < width; ++x) {
+            const int c = static_cast<int>(yRow[x]) - 16;
+            const int d = static_cast<int>(uRow[x / 2]) - 128;
+            const int e = static_cast<int>(vRow[x / 2]) - 128;
+            dst[x * 3 + 0] = static_cast<uchar>(clampColor((298 * c + 409 * e + 128) >> 8));
+            dst[x * 3 + 1] = static_cast<uchar>(clampColor((298 * c - 100 * d - 208 * e + 128) >> 8));
+            dst[x * 3 + 2] = static_cast<uchar>(clampColor((298 * c + 516 * d + 128) >> 8));
+        }
+    }
+    return image;
+}
+
+class RemoteVideoSink final : public webrtc::VideoSinkInterface<webrtc::VideoFrame> {
+public:
+    explicit RemoteVideoSink(WebRtcStreamSession *owner) : m_owner(owner) {}
+
+    void setOwner(WebRtcStreamSession *owner) { m_owner = owner; }
+
+    void OnFrame(const webrtc::VideoFrame &frame) override {
+        WebRtcStreamSession *owner = m_owner;
+        if (!owner) return;
+        webrtc::scoped_refptr<webrtc::I420BufferInterface> i420 = frame.video_frame_buffer() ? frame.video_frame_buffer()->ToI420() : nullptr;
+        if (!i420) return;
+        QImage image = i420ToImage(*i420);
+        if (image.isNull()) return;
+        QMetaObject::invokeMethod(owner, [owner, image = std::move(image)]() {
+            owner->deliverVideoFrame(image);
+        }, Qt::QueuedConnection);
+    }
+
+private:
+    WebRtcStreamSession *m_owner = nullptr;
+};
+
+class InputDataChannelObserver final : public webrtc::DataChannelObserver {
+public:
+    InputDataChannelObserver(WebRtcStreamSession *owner, QString label) : m_owner(owner), m_label(std::move(label)) {}
+
+    void setOwner(WebRtcStreamSession *owner) { m_owner = owner; }
+    void OnStateChange() override;
+    void OnMessage(const webrtc::DataBuffer &buffer) override;
+
+private:
+    WebRtcStreamSession *m_owner = nullptr;
+    QString m_label;
+};
+
 class SetDescriptionObserver : public webrtc::SetSessionDescriptionObserver {
 public:
     using Callback = std::function<void(const QString &)>;
@@ -302,7 +455,16 @@ struct WebRtcStreamSession::Impl final : public webrtc::PeerConnectionObserver {
     void OnIceConnectionReceivingChange(bool) override {}
     void OnAddStream(webrtc::scoped_refptr<webrtc::MediaStreamInterface>) override {}
     void OnRemoveStream(webrtc::scoped_refptr<webrtc::MediaStreamInterface>) override {}
-    void OnTrack(webrtc::scoped_refptr<webrtc::RtpTransceiverInterface>) override {}
+    void OnTrack(webrtc::scoped_refptr<webrtc::RtpTransceiverInterface> transceiver) override {
+        if (!owner || !transceiver || !transceiver->receiver()) return;
+        webrtc::scoped_refptr<webrtc::MediaStreamTrackInterface> track = transceiver->receiver()->track();
+        if (!track || track->kind() != webrtc::MediaStreamTrackInterface::kVideoKind) return;
+        remoteVideoTrack = webrtc::scoped_refptr<webrtc::VideoTrackInterface>(static_cast<webrtc::VideoTrackInterface *>(track.get()));
+        if (!remoteVideoSink) remoteVideoSink = std::make_unique<RemoteVideoSink>(owner);
+        webrtc::VideoSinkWants wants;
+        remoteVideoTrack->AddOrUpdateSink(remoteVideoSink.get(), wants);
+        qInfo() << "[WebRTC] Remote video track attached";
+    }
     void OnRemoveTrack(webrtc::scoped_refptr<webrtc::RtpReceiverInterface>) override {}
     void OnAddTrack(webrtc::scoped_refptr<webrtc::RtpReceiverInterface>, const std::vector<webrtc::scoped_refptr<webrtc::MediaStreamInterface>> &) override {}
 
@@ -326,13 +488,71 @@ struct WebRtcStreamSession::Impl final : public webrtc::PeerConnectionObserver {
         owner->m_onIceCandidate(payload);
     }
 
+    bool reliableOpen() const {
+        return reliableInputChannel && reliableInputChannel->state() == webrtc::DataChannelInterface::kOpen;
+    }
+
+    bool partialOpen() const {
+        return partialInputChannel && partialInputChannel->state() == webrtc::DataChannelInterface::kOpen;
+    }
+
+    void updateInputReady() {
+        inputReady = reliableOpen() && partialOpen();
+        qInfo() << "[WebRTC] Input channels" << "reliable" << reliableOpen() << "partial" << partialOpen() << "ready" << inputReady;
+    }
+
+    void createInputChannels() {
+        if (!peerConnection || reliableInputChannel || partialInputChannel) return;
+
+        webrtc::DataChannelInit reliableConfig;
+        reliableConfig.ordered = true;
+        reliableInputChannel = peerConnection->CreateDataChannelOrError("input_channel_v1", &reliableConfig).MoveValue();
+        if (reliableInputChannel) {
+            reliableObserver = std::make_unique<InputDataChannelObserver>(owner, QStringLiteral("input_channel_v1"));
+            reliableInputChannel->RegisterObserver(reliableObserver.get());
+        }
+
+        webrtc::DataChannelInit partialConfig;
+        partialConfig.ordered = false;
+        partialConfig.maxRetransmits = absl::nullopt;
+        partialConfig.maxRetransmitTime = kPartialReliableInputLifetimeMs;
+        partialInputChannel = peerConnection->CreateDataChannelOrError("input_channel_partially_reliable", &partialConfig).MoveValue();
+        if (partialInputChannel) {
+            partialObserver = std::make_unique<InputDataChannelObserver>(owner, QStringLiteral("input_channel_partially_reliable"));
+            partialInputChannel->RegisterObserver(partialObserver.get());
+        }
+    }
+
+    void sendInput(const std::vector<uint8_t> &payload, bool partial) {
+        webrtc::scoped_refptr<webrtc::DataChannelInterface> channel = partial ? partialInputChannel : reliableInputChannel;
+        if (!channel || channel->state() != webrtc::DataChannelInterface::kOpen || payload.empty()) return;
+        webrtc::CopyOnWriteBuffer buffer(payload.data(), payload.size());
+        channel->Send(webrtc::DataBuffer(buffer, true));
+    }
+
     WebRtcStreamSession *owner = nullptr;
     std::unique_ptr<webrtc::Thread> networkThread;
     std::unique_ptr<webrtc::Thread> workerThread;
     std::unique_ptr<webrtc::Thread> signalingThread;
     webrtc::scoped_refptr<webrtc::PeerConnectionFactoryInterface> factory;
     webrtc::scoped_refptr<webrtc::PeerConnectionInterface> peerConnection;
+    webrtc::scoped_refptr<webrtc::VideoTrackInterface> remoteVideoTrack;
+    webrtc::scoped_refptr<webrtc::DataChannelInterface> reliableInputChannel;
+    webrtc::scoped_refptr<webrtc::DataChannelInterface> partialInputChannel;
+    std::unique_ptr<RemoteVideoSink> remoteVideoSink;
+    std::unique_ptr<InputDataChannelObserver> reliableObserver;
+    std::unique_ptr<InputDataChannelObserver> partialObserver;
+    bool inputReady = false;
 };
+
+void InputDataChannelObserver::OnStateChange() {
+    Q_UNUSED(m_label);
+    if (m_owner) m_owner->handleInputDataChannelStateChanged();
+}
+
+void InputDataChannelObserver::OnMessage(const webrtc::DataBuffer &buffer) {
+    if (m_owner) m_owner->handleInputDataChannelMessage(m_label, static_cast<qsizetype>(buffer.data.size()));
+}
 #else
 struct WebRtcStreamSession::Impl final {
 };
@@ -429,6 +649,7 @@ void WebRtcStreamSession::start(const SessionInfo &session,
         return;
     }
     m_impl->peerConnection = peerResult.MoveValue();
+    m_impl->createInputChannels();
 
     webrtc::SdpParseError parseError;
     std::unique_ptr<webrtc::SessionDescriptionInterface> offer = webrtc::CreateSessionDescription(webrtc::SdpType::kOffer, toStdString(offerSdp), &parseError);
@@ -478,6 +699,10 @@ void WebRtcStreamSession::start(const SessionInfo &session,
 
 void WebRtcStreamSession::stop() {
 #if defined(OPNQT_HAVE_LIBWEBRTC)
+    if (m_impl && m_impl->remoteVideoTrack && m_impl->remoteVideoSink) {
+        m_impl->remoteVideoTrack->RemoveSink(m_impl->remoteVideoSink.get());
+        m_impl->remoteVideoSink->setOwner(nullptr);
+    }
     if (m_impl && m_impl->peerConnection) {
         m_impl->peerConnection->Close();
     }
@@ -503,12 +728,86 @@ void WebRtcStreamSession::addRemoteIceCandidate(const IceCandidatePayload &candi
 #endif
 }
 
+bool WebRtcStreamSession::inputReady() const {
+#if defined(OPNQT_HAVE_LIBWEBRTC)
+    return m_impl && m_impl->inputReady;
+#else
+    return false;
+#endif
+}
+
+void WebRtcStreamSession::sendKeyEvent(quint16 keycode, quint16 scancode, quint16 modifiers, bool down) {
+#if defined(OPNQT_HAVE_LIBWEBRTC)
+    if (!m_impl || !m_impl->inputReady) return;
+    m_impl->sendInput(encodeKey(down ? kInputKeyDown : kInputKeyUp, keycode, scancode, modifiers), false);
+#else
+    Q_UNUSED(keycode);
+    Q_UNUSED(scancode);
+    Q_UNUSED(modifiers);
+    Q_UNUSED(down);
+#endif
+}
+
+void WebRtcStreamSession::sendMouseMove(qint16 dx, qint16 dy) {
+#if defined(OPNQT_HAVE_LIBWEBRTC)
+    if (!m_impl || !m_impl->inputReady) return;
+    m_impl->sendInput(encodeMouseMove(dx, dy), true);
+#else
+    Q_UNUSED(dx);
+    Q_UNUSED(dy);
+#endif
+}
+
+void WebRtcStreamSession::sendMouseButton(quint8 button, bool down) {
+#if defined(OPNQT_HAVE_LIBWEBRTC)
+    if (!m_impl || !m_impl->inputReady) return;
+    m_impl->sendInput(encodeMouseButton(down ? kInputMouseButtonDown : kInputMouseButtonUp, button), false);
+#else
+    Q_UNUSED(button);
+    Q_UNUSED(down);
+#endif
+}
+
+void WebRtcStreamSession::sendMouseWheel(qint16 delta) {
+#if defined(OPNQT_HAVE_LIBWEBRTC)
+    if (!m_impl || !m_impl->inputReady) return;
+    m_impl->sendInput(encodeMouseWheel(delta), false);
+#else
+    Q_UNUSED(delta);
+#endif
+}
+
 void WebRtcStreamSession::onAnswerReady(StreamAnswerCallback callback) {
     m_onAnswer = std::move(callback);
 }
 
 void WebRtcStreamSession::onIceCandidateReady(StreamLocalIceCallback callback) {
     m_onIceCandidate = std::move(callback);
+}
+
+void WebRtcStreamSession::onVideoFrameReady(StreamVideoFrameCallback callback) {
+    m_onVideoFrame = std::move(callback);
+}
+
+void WebRtcStreamSession::deliverVideoFrame(const QImage &frame) {
+    if (m_onVideoFrame) m_onVideoFrame(frame);
+}
+
+void WebRtcStreamSession::handleInputDataChannelStateChanged() {
+#if defined(OPNQT_HAVE_LIBWEBRTC)
+    if (m_impl) m_impl->updateInputReady();
+#endif
+}
+
+void WebRtcStreamSession::handleInputDataChannelMessage(const QString &label, qsizetype size) {
+#if defined(OPNQT_HAVE_LIBWEBRTC)
+    if (!m_impl || label != QLatin1String("input_channel_v1") || size < 2) return;
+    m_impl->sendInput(encodeHeartbeat(), false);
+    m_impl->updateInputReady();
+#else
+    Q_UNUSED(label);
+    Q_UNUSED(size);
+#endif
 }
 
 } // namespace OpnQt

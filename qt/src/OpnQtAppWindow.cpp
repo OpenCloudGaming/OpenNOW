@@ -534,12 +534,28 @@ void AppWindow::probeLaunchSignaling(const CatalogGame &game) {
                 qInfo() << "[WebRTC] Local ICE candidate" << candidate.sdpMid << candidate.sdpMLineIndex;
                 signaling->sendIceCandidate(candidate);
             });
+            webRtcSession->onVideoFrameReady([this](const QImage &frame) {
+                if (m_catalogView) m_catalogView->setStreamFrame(frame);
+            });
+            m_catalogView->setStreamInputCallbacks(
+                [webRtcSession](quint16 keycode, quint16 scancode, quint16 modifiers, bool down) {
+                    webRtcSession->sendKeyEvent(keycode, scancode, modifiers, down);
+                },
+                [webRtcSession](qint16 dx, qint16 dy) {
+                    webRtcSession->sendMouseMove(dx, dy);
+                },
+                [webRtcSession](quint8 button, bool down) {
+                    webRtcSession->sendMouseButton(button, down);
+                },
+                [webRtcSession](qint16 delta) {
+                    webRtcSession->sendMouseWheel(delta);
+                });
             signaling->onOffer([this, signaling, webRtcSession, session, settings, game](const QString &sdp) {
                 qInfo() << "[StreamProbe] Offer received" << "length" << sdp.size();
                 qInfo() << "[WebRTC] Backend availability" << WebRtcStreamSession::availabilityDescription();
                 webRtcSession->start(session, sdp, settings, [this, signaling, webRtcSession, game](bool connected, const QString &streamError) {
                     if (connected) {
-                        if (m_catalogView) m_catalogView->setError(QStringLiteral("Streaming Connected"), QStringLiteral("WebRTC connected for %1. Rendering is next.").arg(game.title));
+                        if (m_catalogView) m_catalogView->setLoading(QStringLiteral("Streaming connected for %1. Waiting for video frames...").arg(game.title));
                         return;
                     }
                     if (m_catalogView) {

@@ -46,6 +46,12 @@ qt_add_executable(OpenNOWQt
     src/OpnQtWebRtcStreamSession.h
 )
 
+if(APPLE)
+    set(OPENNOW_QT_ICON "${CMAKE_SOURCE_DIR}/../assets/OpenNOW.icns")
+    target_sources(OpenNOWQt PRIVATE "${OPENNOW_QT_ICON}")
+    set_source_files_properties("${OPENNOW_QT_ICON}" PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
+endif()
+
 target_link_libraries(OpenNOWQt
     PRIVATE
         Qt6::Network
@@ -107,6 +113,12 @@ set_target_properties(OpenNOWQt PROPERTIES
     MACOSX_BUNDLE_GUI_IDENTIFIER com.opennow.qt
     MACOSX_BUNDLE_BUNDLE_NAME OpenNOW-Qt
 )
+
+if(APPLE)
+    set_target_properties(OpenNOWQt PROPERTIES
+        MACOSX_BUNDLE_ICON_FILE OpenNOW.icns
+    )
+endif()
 
 add_custom_target(run
     COMMAND $<TARGET_FILE:OpenNOWQt>
