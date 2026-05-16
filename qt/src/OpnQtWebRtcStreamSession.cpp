@@ -506,7 +506,9 @@ struct WebRtcStreamSession::Impl final : public webrtc::PeerConnectionObserver {
 
         webrtc::DataChannelInit reliableConfig;
         reliableConfig.ordered = true;
-        reliableInputChannel = peerConnection->CreateDataChannelOrError("input_channel_v1", &reliableConfig).MoveValue();
+        auto reliableResult = peerConnection->CreateDataChannelOrError("input_channel_v1", &reliableConfig);
+        if (!reliableResult.ok()) qWarning() << "[WebRTC] reliable input data channel failed" << rtcErrorMessage(reliableResult.error());
+        reliableInputChannel = reliableResult.ok() ? reliableResult.MoveValue() : nullptr;
         if (reliableInputChannel) {
             reliableObserver = std::make_unique<InputDataChannelObserver>(owner, QStringLiteral("input_channel_v1"));
             reliableInputChannel->RegisterObserver(reliableObserver.get());
@@ -516,7 +518,9 @@ struct WebRtcStreamSession::Impl final : public webrtc::PeerConnectionObserver {
         partialConfig.ordered = false;
         partialConfig.maxRetransmits = absl::nullopt;
         partialConfig.maxRetransmitTime = kPartialReliableInputLifetimeMs;
-        partialInputChannel = peerConnection->CreateDataChannelOrError("input_channel_partially_reliable", &partialConfig).MoveValue();
+        auto partialResult = peerConnection->CreateDataChannelOrError("input_channel_partially_reliable", &partialConfig);
+        if (!partialResult.ok()) qWarning() << "[WebRTC] partial input data channel failed" << rtcErrorMessage(partialResult.error());
+        partialInputChannel = partialResult.ok() ? partialResult.MoveValue() : nullptr;
         if (partialInputChannel) {
             partialObserver = std::make_unique<InputDataChannelObserver>(owner, QStringLiteral("input_channel_partially_reliable"));
             partialInputChannel->RegisterObserver(partialObserver.get());
@@ -703,6 +707,10 @@ void WebRtcStreamSession::stop() {
         m_impl->remoteVideoTrack->RemoveSink(m_impl->remoteVideoSink.get());
         m_impl->remoteVideoSink->setOwner(nullptr);
     }
+    if (m_impl && m_impl->reliableInputChannel) m_impl->reliableInputChannel->UnregisterObserver();
+    if (m_impl && m_impl->partialInputChannel) m_impl->partialInputChannel->UnregisterObserver();
+    if (m_impl && m_impl->reliableObserver) m_impl->reliableObserver->setOwner(nullptr);
+    if (m_impl && m_impl->partialObserver) m_impl->partialObserver->setOwner(nullptr);
     if (m_impl && m_impl->peerConnection) {
         m_impl->peerConnection->Close();
     }

@@ -98,7 +98,35 @@ struct KeyMapping {
 };
 
 std::optional<KeyMapping> streamKeyMapping(int key) {
-    if (key >= Qt::Key_A && key <= Qt::Key_Z) return KeyMapping{static_cast<quint16>(0x41 + key - Qt::Key_A), static_cast<quint16>(0x001e + ((key - Qt::Key_A) % 26))};
+    switch (key) {
+        case Qt::Key_A: return KeyMapping{0x41, 0x001e};
+        case Qt::Key_B: return KeyMapping{0x42, 0x0030};
+        case Qt::Key_C: return KeyMapping{0x43, 0x002e};
+        case Qt::Key_D: return KeyMapping{0x44, 0x0020};
+        case Qt::Key_E: return KeyMapping{0x45, 0x0012};
+        case Qt::Key_F: return KeyMapping{0x46, 0x0021};
+        case Qt::Key_G: return KeyMapping{0x47, 0x0022};
+        case Qt::Key_H: return KeyMapping{0x48, 0x0023};
+        case Qt::Key_I: return KeyMapping{0x49, 0x0017};
+        case Qt::Key_J: return KeyMapping{0x4a, 0x0024};
+        case Qt::Key_K: return KeyMapping{0x4b, 0x0025};
+        case Qt::Key_L: return KeyMapping{0x4c, 0x0026};
+        case Qt::Key_M: return KeyMapping{0x4d, 0x0032};
+        case Qt::Key_N: return KeyMapping{0x4e, 0x0031};
+        case Qt::Key_O: return KeyMapping{0x4f, 0x0018};
+        case Qt::Key_P: return KeyMapping{0x50, 0x0019};
+        case Qt::Key_Q: return KeyMapping{0x51, 0x0010};
+        case Qt::Key_R: return KeyMapping{0x52, 0x0013};
+        case Qt::Key_S: return KeyMapping{0x53, 0x001f};
+        case Qt::Key_T: return KeyMapping{0x54, 0x0014};
+        case Qt::Key_U: return KeyMapping{0x55, 0x0016};
+        case Qt::Key_V: return KeyMapping{0x56, 0x002f};
+        case Qt::Key_W: return KeyMapping{0x57, 0x0011};
+        case Qt::Key_X: return KeyMapping{0x58, 0x002d};
+        case Qt::Key_Y: return KeyMapping{0x59, 0x0015};
+        case Qt::Key_Z: return KeyMapping{0x5a, 0x002c};
+        default: break;
+    }
     if (key >= Qt::Key_0 && key <= Qt::Key_9) return KeyMapping{static_cast<quint16>(0x30 + key - Qt::Key_0), static_cast<quint16>(key == Qt::Key_0 ? 0x000b : 0x0001 + key - Qt::Key_0)};
     switch (key) {
         case Qt::Key_Escape: return KeyMapping{0x1b, 0x0001};
