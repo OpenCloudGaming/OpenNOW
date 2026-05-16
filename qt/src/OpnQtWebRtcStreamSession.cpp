@@ -4,6 +4,7 @@
 
 #if defined(OPNQT_HAVE_LIBWEBRTC)
 #include <QtCore/QMetaObject>
+#include <QtCore/QPointer>
 #include <QtCore/QStringList>
 
 #include <api/create_peerconnection_factory.h>
@@ -406,8 +407,9 @@ public:
         if (!i420) return;
         QImage image = i420ToImage(*i420);
         if (image.isNull()) return;
-        QMetaObject::invokeMethod(owner, [owner, image = std::move(image)]() {
-            owner->deliverVideoFrame(image);
+        QPointer<WebRtcStreamSession> guardedOwner(owner);
+        QMetaObject::invokeMethod(owner, [guardedOwner, image = std::move(image)]() {
+            if (guardedOwner) guardedOwner->deliverVideoFrame(image);
         }, Qt::QueuedConnection);
     }
 
@@ -525,6 +527,8 @@ struct WebRtcStreamSession::Impl final : public webrtc::PeerConnectionObserver {
     void createInputChannels() {
         if (!peerConnection || reliableInputChannel || partialInputChannel) return;
 
+        qInfo() << "[WebRTC] Creating input data channels";
+
         webrtc::DataChannelInit reliableConfig;
         reliableConfig.ordered = true;
         auto reliableResult = peerConnection->CreateDataChannelOrError("input_channel_v1", &reliableConfig);
@@ -533,6 +537,7 @@ struct WebRtcStreamSession::Impl final : public webrtc::PeerConnectionObserver {
         if (reliableInputChannel) {
             reliableObserver = std::make_unique<InputDataChannelObserver>(owner, QStringLiteral("input_channel_v1"));
             reliableInputChannel->RegisterObserver(reliableObserver.get());
+            qInfo() << "[WebRTC] reliable input data channel created";
         }
 
         webrtc::DataChannelInit partialConfig;
@@ -545,6 +550,7 @@ struct WebRtcStreamSession::Impl final : public webrtc::PeerConnectionObserver {
         if (partialInputChannel) {
             partialObserver = std::make_unique<InputDataChannelObserver>(owner, QStringLiteral("input_channel_partially_reliable"));
             partialInputChannel->RegisterObserver(partialObserver.get());
+            qInfo() << "[WebRTC] partial input data channel created";
         }
     }
 
@@ -572,13 +578,22 @@ struct WebRtcStreamSession::Impl final : public webrtc::PeerConnectionObserver {
 
 void InputDataChannelObserver::OnStateChange() {
     Q_UNUSED(m_label);
-    if (m_owner) QMetaObject::invokeMethod(m_owner, [owner = m_owner]() { owner->handleInputDataChannelStateChanged(); }, Qt::QueuedConnection);
+    WebRtcStreamSession *owner = m_owner;
+    if (!owner) return;
+    QPointer<WebRtcStreamSession> guardedOwner(owner);
+    QMetaObject::invokeMethod(owner, [guardedOwner]() {
+        if (guardedOwner) guardedOwner->handleInputDataChannelStateChanged();
+    }, Qt::QueuedConnection);
 }
 
 void InputDataChannelObserver::OnMessage(const webrtc::DataBuffer &buffer) {
-    if (!m_owner) return;
+    WebRtcStreamSession *owner = m_owner;
+    if (!owner) return;
     QByteArray data(reinterpret_cast<const char *>(buffer.data.data()), static_cast<qsizetype>(buffer.data.size()));
-    QMetaObject::invokeMethod(m_owner, [owner = m_owner, label = m_label, data = std::move(data)]() { owner->handleInputDataChannelMessage(label, data); }, Qt::QueuedConnection);
+    QPointer<WebRtcStreamSession> guardedOwner(owner);
+    QMetaObject::invokeMethod(owner, [guardedOwner, label = m_label, data = std::move(data)]() {
+        if (guardedOwner) guardedOwner->handleInputDataChannelMessage(label, data);
+    }, Qt::QueuedConnection);
 }
 #else
 struct WebRtcStreamSession::Impl final {
