@@ -6,9 +6,9 @@
 
 int main(int argc, char *argv[]) {
     QApplication app(argc, argv);
-    QCoreApplication::setOrganizationName(QStringLiteral("OpenNOW"));
-    QCoreApplication::setOrganizationDomain(QStringLiteral("opennow.local"));
-    QCoreApplication::setApplicationName(QStringLiteral("OpenNOW Qt"));
+    QCoreApplication::setOrganizationName(QStringLiteral("OpenNOW Pi"));
+    QCoreApplication::setOrganizationDomain(QStringLiteral("opennow.zortos.me"));
+    QCoreApplication::setApplicationName(QStringLiteral("OpenNOW Pi"));
     QCoreApplication::setApplicationVersion(QStringLiteral("0.1.0"));
 
     OpnQt::AppWindow window;

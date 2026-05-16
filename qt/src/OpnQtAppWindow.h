@@ -1,25 +1,20 @@
 #pragma once
 
-#include <QtCore/QHash>
-#include <QtCore/QString>
+#include "OpnQtAuthService.h"
+
 #include <QtWidgets/QMainWindow>
 
-class QButtonGroup;
+class QWidget;
 class QLabel;
 class QPushButton;
+class QCheckBox;
+class QKeyEvent;
 class QStackedWidget;
-class QVBoxLayout;
-class QWidget;
 
 namespace OpnQt {
 
-enum class Page {
-    SignIn = 0,
-    Library,
-    Store,
-    Settings,
-    Stream,
-};
+struct AuthSession;
+class CatalogView;
 
 class AppWindow final : public QMainWindow {
 public:
@@ -28,30 +23,32 @@ public:
 
 protected:
     void closeEvent(QCloseEvent *event) override;
+    void keyPressEvent(QKeyEvent *event) override;
 
 private:
-    QWidget *buildRoot();
-    QWidget *buildNavigation();
-    QWidget *buildPageHost();
-    QWidget *buildSignInPage();
-    QWidget *buildLibraryPage();
-    QWidget *buildStorePage();
-    QWidget *buildSettingsPage();
-    QWidget *buildStreamPage();
-
-    void addNavigationButton(Page page, const QString &title, const QString &description);
-    void selectPage(Page page);
+    QWidget *buildLoginWindow();
+    void showCatalog(const AuthSession &session);
+    void showCatalogPreview();
+    void loadGamesIntoCatalog(bool allowAuthRefresh);
+    void forceLoginAfterAuthFailure(const QString &message);
+    void wireAuthUi();
+    void checkSavedSessionOnStartup();
+    void beginBrowserSignIn();
+    void setAuthBusy(const QString &message);
+    void setAuthReady(const QString &message = QString());
+    void setAuthError(const QString &message);
+    void setAuthenticated(const AuthSession &session);
     void restoreWindowState();
     void persistWindowState() const;
     void applyTheme();
 
-    QLabel *m_sectionTitle = nullptr;
-    QLabel *m_sectionDescription = nullptr;
-    QButtonGroup *m_navigationButtons = nullptr;
-    QVBoxLayout *m_navigationLayout = nullptr;
-    QStackedWidget *m_pages = nullptr;
-    QHash<int, QString> m_pageTitles;
-    QHash<int, QString> m_pageDescriptions;
+    QLabel *m_messageLabel = nullptr;
+    QLabel *m_statusLabel = nullptr;
+    QCheckBox *m_stayLoggedIn = nullptr;
+    QPushButton *m_browserButton = nullptr;
+    QStackedWidget *m_stack = nullptr;
+    CatalogView *m_catalogView = nullptr;
+    AuthSession m_currentSession;
 };
 
 } // namespace OpnQt

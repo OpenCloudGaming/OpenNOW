@@ -14,6 +14,12 @@ qt_add_executable(OpenNOWQt
     src/main.cpp
     src/OpnQtAppWindow.cpp
     src/OpnQtAppWindow.h
+    src/OpnQtAuthService.cpp
+    src/OpnQtAuthService.h
+    src/OpnQtCatalogView.cpp
+    src/OpnQtCatalogView.h
+    src/OpnQtGameService.cpp
+    src/OpnQtGameService.h
 )
 
 target_link_libraries(OpenNOWQt

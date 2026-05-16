@@ -1,123 +1,155 @@
 #include "OpnQtAppWindow.h"
 
+#include "OpnQtAuthService.h"
+#include "OpnQtCatalogView.h"
+#include "OpnQtGameService.h"
+
+#include <QtCore/QCoreApplication>
+#include <QtCore/QDir>
+#include <QtCore/QFileInfo>
 #include <QtCore/QSettings>
-#include <QtCore/QStringList>
 #include <QtGui/QCloseEvent>
 #include <QtGui/QFont>
+#include <QtGui/QKeyEvent>
+#include <QtGui/QLinearGradient>
+#include <QtGui/QPainter>
+#include <QtGui/QPainterPath>
+#include <QtGui/QPixmap>
+#include <QtGui/QRadialGradient>
 #include <QtWidgets/QApplication>
-#include <QtWidgets/QButtonGroup>
+#include <QtWidgets/QCheckBox>
 #include <QtWidgets/QFrame>
-#include <QtWidgets/QGridLayout>
-#include <QtWidgets/QHBoxLayout>
+#include <QtWidgets/QGraphicsDropShadowEffect>
 #include <QtWidgets/QLabel>
 #include <QtWidgets/QPushButton>
-#include <QtWidgets/QScrollArea>
-#include <QtWidgets/QSizePolicy>
 #include <QtWidgets/QStackedWidget>
+#include <QtWidgets/QStyle>
 #include <QtWidgets/QVBoxLayout>
+#include <QtWidgets/QWidget>
 
 namespace OpnQt {
 namespace {
 
-constexpr int kDefaultWindowWidth = 1180;
-constexpr int kDefaultWindowHeight = 760;
+constexpr int kDefaultWindowWidth = 1024;
+constexpr int kDefaultWindowHeight = 768;
+constexpr int kLoginContentWidth = 480;
+constexpr int kLoginContentHeight = 460;
+constexpr int kLogoHeight = 88;
 
-QString pageKey(Page page) {
-    switch (page) {
-        case Page::SignIn: return QStringLiteral("signin");
-        case Page::Library: return QStringLiteral("library");
-        case Page::Store: return QStringLiteral("store");
-        case Page::Settings: return QStringLiteral("settings");
-        case Page::Stream: return QStringLiteral("stream");
-    }
-    return QStringLiteral("signin");
+const QColor kBackground(0x10, 0x11, 0x13);
+const QColor kBackgroundB(0x17, 0x18, 0x1B);
+const QColor kBrandGreen(0x34, 0xC7, 0x59);
+
+QColor withAlpha(QColor color, int alpha) {
+    color.setAlpha(alpha);
+    return color;
 }
 
-QLabel *label(const QString &text, int pointSize, QFont::Weight weight, const QString &objectName = QString()) {
-    auto *view = new QLabel(text);
-    QFont font = view->font();
+QFont uiFont(int pointSize, QFont::Weight weight) {
+    QFont font(QStringLiteral("Inter"));
     font.setPointSize(pointSize);
     font.setWeight(weight);
-    view->setFont(font);
+    font.setStyleStrategy(QFont::PreferAntialias);
+    return font;
+}
+
+QLabel *label(const QString &text, int pointSize, QFont::Weight weight, const QString &objectName) {
+    auto *view = new QLabel(text);
+    view->setObjectName(objectName);
+    view->setFont(uiFont(pointSize, weight));
     view->setWordWrap(true);
-    if (!objectName.isEmpty()) {
-        view->setObjectName(objectName);
-    }
     return view;
 }
 
-QFrame *card(const QString &title, const QString &body) {
-    auto *frame = new QFrame();
-    frame->setObjectName(QStringLiteral("card"));
-    frame->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Minimum);
-
-    auto *layout = new QVBoxLayout(frame);
-    layout->setContentsMargins(22, 20, 22, 20);
-    layout->setSpacing(8);
-    layout->addWidget(label(title, 15, QFont::DemiBold, QStringLiteral("cardTitle")));
-    layout->addWidget(label(body, 11, QFont::Normal, QStringLiteral("mutedText")));
-    layout->addStretch(1);
-    return frame;
-}
-
-QFrame *pill(const QString &title, const QString &value) {
-    auto *frame = new QFrame();
-    frame->setObjectName(QStringLiteral("pill"));
-    auto *layout = new QVBoxLayout(frame);
-    layout->setContentsMargins(16, 12, 16, 12);
-    layout->setSpacing(3);
-    layout->addWidget(label(title, 10, QFont::DemiBold, QStringLiteral("mutedText")));
-    layout->addWidget(label(value, 16, QFont::Bold, QStringLiteral("pillValue")));
-    return frame;
-}
-
-QWidget *pageSurface(const QString &eyebrow,
-                     const QString &title,
-                     const QString &body,
-                     const QList<QWidget *> &content) {
-    auto *surface = new QWidget();
-    auto *layout = new QVBoxLayout(surface);
-    layout->setContentsMargins(34, 30, 34, 34);
-    layout->setSpacing(20);
-
-    layout->addWidget(label(eyebrow.toUpper(), 10, QFont::DemiBold, QStringLiteral("eyebrow")));
-    layout->addWidget(label(title, 26, QFont::Bold, QStringLiteral("pageTitle")));
-    layout->addWidget(label(body, 12, QFont::Normal, QStringLiteral("pageBody")));
-
-    for (QWidget *widget : content) {
-        layout->addWidget(widget);
+QString assetPath(const QString &relativePath) {
+    QDir dir(QCoreApplication::applicationDirPath());
+    for (int depth = 0; depth < 8; ++depth) {
+        const QString candidate = dir.absoluteFilePath(relativePath);
+        if (QFileInfo::exists(candidate)) {
+            return candidate;
+        }
+        dir.cdUp();
     }
-    layout->addStretch(1);
-    return surface;
+    return QString();
 }
 
-QWidget *twoColumnCards(const QList<QWidget *> &cards) {
-    auto *container = new QWidget();
-    auto *grid = new QGridLayout(container);
-    grid->setContentsMargins(0, 0, 0, 0);
-    grid->setHorizontalSpacing(16);
-    grid->setVerticalSpacing(16);
-
-    for (int i = 0; i < cards.size(); ++i) {
-        grid->addWidget(cards[i], i / 2, i % 2);
+class LoginBackdrop final : public QWidget {
+public:
+    explicit LoginBackdrop(QWidget *parent = nullptr) : QWidget(parent) {
+        setAutoFillBackground(false);
     }
-    grid->setColumnStretch(0, 1);
-    grid->setColumnStretch(1, 1);
-    return container;
-}
+
+protected:
+    void paintEvent(QPaintEvent *) override {
+        QPainter painter(this);
+        painter.setRenderHint(QPainter::Antialiasing, true);
+
+        QLinearGradient base(rect().topLeft(), rect().bottomLeft());
+        base.setColorAt(0.0, kBackgroundB);
+        base.setColorAt(0.48, kBackground);
+        base.setColorAt(1.0, QColor(0x0C, 0x0D, 0x10));
+        painter.fillRect(rect(), base);
+
+        QRadialGradient topGlow(QPointF(width() * 0.5, -285.0), 720.0);
+        topGlow.setColorAt(0.0, withAlpha(Qt::white, 12));
+        topGlow.setColorAt(1.0, withAlpha(Qt::white, 0));
+        painter.fillRect(rect(), topGlow);
+
+        QRadialGradient lowerGlow(QPointF(width() - 245.0, height() - 126.0), 330.0);
+        lowerGlow.setColorAt(0.0, withAlpha(kBrandGreen, 13));
+        lowerGlow.setColorAt(1.0, withAlpha(kBrandGreen, 0));
+        painter.fillRect(rect(), lowerGlow);
+    }
+};
+
+class LoginCard final : public QFrame {
+public:
+    explicit LoginCard(QWidget *parent = nullptr) : QFrame(parent) {
+        setObjectName(QStringLiteral("loginCard"));
+        setFixedSize(400, 332);
+
+        auto *shadow = new QGraphicsDropShadowEffect(this);
+        shadow->setBlurRadius(24.0);
+        shadow->setColor(withAlpha(Qt::black, 66));
+        shadow->setOffset(0.0, 14.0);
+        setGraphicsEffect(shadow);
+    }
+
+protected:
+    void paintEvent(QPaintEvent *event) override {
+        QFrame::paintEvent(event);
+
+        QPainter painter(this);
+        painter.setRenderHint(QPainter::Antialiasing, true);
+        const QRectF bounds = QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5);
+        QPainterPath cardPath;
+        cardPath.addRoundedRect(bounds, 22.0, 22.0);
+
+        painter.setPen(Qt::NoPen);
+        QRadialGradient highlight(QPointF(bounds.center().x(), bounds.top() - 16.0), 260.0);
+        highlight.setColorAt(0.0, withAlpha(Qt::white, 16));
+        highlight.setColorAt(1.0, withAlpha(Qt::white, 0));
+        painter.fillPath(cardPath, highlight);
+    }
+};
 
 } // namespace
 
 AppWindow::AppWindow(QWidget *parent)
     : QMainWindow(parent) {
-    setWindowTitle(QStringLiteral("OpenNOW Qt"));
-    setMinimumSize(920, 560);
+    setWindowTitle(QStringLiteral("OpenNOW"));
+    setMinimumSize(720, 560);
     resize(kDefaultWindowWidth, kDefaultWindowHeight);
 
     applyTheme();
-    setCentralWidget(buildRoot());
+    m_stack = new QStackedWidget();
+    m_stack->addWidget(buildLoginWindow());
+    m_catalogView = new CatalogView();
+    m_stack->addWidget(m_catalogView);
+    setCentralWidget(m_stack);
+    wireAuthUi();
     restoreWindowState();
-    selectPage(Page::SignIn);
+    checkSavedSessionOnStartup();
 }
 
 void AppWindow::closeEvent(QCloseEvent *event) {
@@ -125,209 +157,325 @@ void AppWindow::closeEvent(QCloseEvent *event) {
     QMainWindow::closeEvent(event);
 }
 
-QWidget *AppWindow::buildRoot() {
-    auto *root = new QWidget();
-    auto *layout = new QHBoxLayout(root);
-    layout->setContentsMargins(0, 0, 0, 0);
-    layout->setSpacing(0);
-    layout->addWidget(buildNavigation());
-    layout->addWidget(buildPageHost(), 1);
+void AppWindow::keyPressEvent(QKeyEvent *event) {
+    if (event->key() == Qt::Key_F6) {
+        showCatalogPreview();
+        event->accept();
+        return;
+    }
+    QMainWindow::keyPressEvent(event);
+}
+
+QWidget *AppWindow::buildLoginWindow() {
+    auto *root = new LoginBackdrop();
+    auto *rootLayout = new QVBoxLayout(root);
+    rootLayout->setContentsMargins(0, 0, 0, 0);
+    rootLayout->setAlignment(Qt::AlignCenter);
+
+    auto *content = new QWidget();
+    content->setFixedSize(kLoginContentWidth, kLoginContentHeight);
+
+    auto *contentLayout = new QVBoxLayout(content);
+    contentLayout->setContentsMargins(40, 12, 40, 32);
+    contentLayout->setSpacing(18);
+
+    auto *brand = new QLabel();
+    brand->setObjectName(QStringLiteral("brandLogo"));
+    brand->setAlignment(Qt::AlignCenter);
+    const QString logoPath = assetPath(QStringLiteral("assets/logo.png"));
+    const QPixmap logo(logoPath);
+    if (!logo.isNull()) {
+        brand->setPixmap(logo.scaledToHeight(kLogoHeight, Qt::SmoothTransformation));
+    } else {
+        brand->setText(QStringLiteral("OpenNOW"));
+        brand->setFont(uiFont(20, QFont::DemiBold));
+    }
+    brand->setFixedHeight(kLogoHeight);
+    contentLayout->addWidget(brand);
+
+    auto *card = new LoginCard();
+    auto *cardLayout = new QVBoxLayout(card);
+    cardLayout->setContentsMargins(56, 48, 56, 60);
+    cardLayout->setSpacing(0);
+
+    m_messageLabel = label(QStringLiteral("Access your cloud gaming library with your NVIDIA account."),
+                           13,
+                           QFont::Normal,
+                           QStringLiteral("mutedText"));
+    m_messageLabel->setAlignment(Qt::AlignCenter);
+    m_messageLabel->setFixedHeight(42);
+    cardLayout->addWidget(m_messageLabel);
+    cardLayout->addStretch(1);
+
+    m_statusLabel = label(QString(), 12, QFont::Medium, QStringLiteral("statusText"));
+    m_statusLabel->setAlignment(Qt::AlignCenter);
+    m_statusLabel->setFixedHeight(28);
+    m_statusLabel->hide();
+    cardLayout->addWidget(m_statusLabel);
+    cardLayout->addSpacing(12);
+
+    m_stayLoggedIn = new QCheckBox(QStringLiteral("Keep me signed in"));
+    m_stayLoggedIn->setObjectName(QStringLiteral("stayLoggedIn"));
+    m_stayLoggedIn->setChecked(AuthService::shared().stayLoggedIn());
+    m_stayLoggedIn->setFixedHeight(24);
+    cardLayout->addWidget(m_stayLoggedIn);
+    cardLayout->addSpacing(32);
+
+    m_browserButton = new QPushButton(QStringLiteral("Continue with Browser"));
+    m_browserButton->setObjectName(QStringLiteral("browserButton"));
+    m_browserButton->setCursor(Qt::PointingHandCursor);
+    m_browserButton->setFixedHeight(48);
+    cardLayout->addWidget(m_browserButton);
+
+    contentLayout->addWidget(card, 0, Qt::AlignCenter);
+
+    auto *footer = label(QStringLiteral("Open-source cloud gaming client for macOS"),
+                         12,
+                         QFont::Normal,
+                         QStringLiteral("mutedText"));
+    footer->setAlignment(Qt::AlignCenter);
+    footer->setFixedHeight(20);
+    contentLayout->addWidget(footer);
+
+    rootLayout->addWidget(content, 0, Qt::AlignCenter);
     return root;
 }
 
-QWidget *AppWindow::buildNavigation() {
-    auto *nav = new QFrame();
-    nav->setObjectName(QStringLiteral("navigation"));
-    nav->setFixedWidth(286);
-
-    auto *layout = new QVBoxLayout(nav);
-    m_navigationLayout = layout;
-    layout->setContentsMargins(24, 26, 24, 24);
-    layout->setSpacing(16);
-
-    layout->addWidget(label(QStringLiteral("OpenNOW"), 24, QFont::Black, QStringLiteral("brand")));
-    layout->addWidget(label(QStringLiteral("Qt migration track"), 11, QFont::DemiBold, QStringLiteral("mutedText")));
-
-    auto *divider = new QFrame();
-    divider->setObjectName(QStringLiteral("divider"));
-    divider->setFrameShape(QFrame::HLine);
-    layout->addWidget(divider);
-
-    m_navigationButtons = new QButtonGroup(this);
-    m_navigationButtons->setExclusive(true);
-
-    addNavigationButton(Page::SignIn, QStringLiteral("Sign In"), QStringLiteral("OAuth and saved accounts"));
-    addNavigationButton(Page::Library, QStringLiteral("Library"), QStringLiteral("Catalog and game launch"));
-    addNavigationButton(Page::Store, QStringLiteral("Store"), QStringLiteral("Curated browse surfaces"));
-    addNavigationButton(Page::Settings, QStringLiteral("Settings"), QStringLiteral("Stream and app preferences"));
-    addNavigationButton(Page::Stream, QStringLiteral("Stream"), QStringLiteral("WebRTC session surface"));
-
-    layout->addStretch(1);
-    layout->addWidget(card(QStringLiteral("Side-by-side"),
-                           QStringLiteral("The AppKit build remains the shipping path while Qt reaches feature parity.")));
-
-    return nav;
-}
-
-void AppWindow::addNavigationButton(Page page, const QString &title, const QString &description) {
-    auto *button = new QPushButton(title + QStringLiteral("\n") + description);
-    button->setObjectName(QStringLiteral("navButton"));
-    button->setCheckable(true);
-    button->setCursor(Qt::PointingHandCursor);
-    button->setMinimumHeight(62);
-    button->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-
-    const int id = static_cast<int>(page);
-    m_navigationButtons->addButton(button, id);
-    m_pageTitles.insert(id, title);
-    m_pageDescriptions.insert(id, description);
-
-    if (m_navigationLayout) {
-        m_navigationLayout->addWidget(button);
+void AppWindow::wireAuthUi() {
+    if (m_stayLoggedIn) {
+        connect(m_stayLoggedIn, &QCheckBox::toggled, this, [](bool checked) {
+            AuthService::shared().setStayLoggedIn(checked);
+        });
     }
-
-    connect(button, &QPushButton::clicked, this, [this, page]() {
-        selectPage(page);
-    });
-}
-
-QWidget *AppWindow::buildPageHost() {
-    auto *host = new QWidget();
-    auto *layout = new QVBoxLayout(host);
-    layout->setContentsMargins(0, 0, 0, 0);
-    layout->setSpacing(0);
-
-    auto *header = new QFrame();
-    header->setObjectName(QStringLiteral("header"));
-    auto *headerLayout = new QVBoxLayout(header);
-    headerLayout->setContentsMargins(34, 24, 34, 20);
-    headerLayout->setSpacing(6);
-    m_sectionTitle = label(QStringLiteral("Sign In"), 22, QFont::Bold, QStringLiteral("sectionTitle"));
-    m_sectionDescription = label(QStringLiteral("OAuth and saved accounts"), 11, QFont::DemiBold, QStringLiteral("mutedText"));
-    headerLayout->addWidget(m_sectionTitle);
-    headerLayout->addWidget(m_sectionDescription);
-
-    m_pages = new QStackedWidget();
-    m_pages->addWidget(buildSignInPage());
-    m_pages->addWidget(buildLibraryPage());
-    m_pages->addWidget(buildStorePage());
-    m_pages->addWidget(buildSettingsPage());
-    m_pages->addWidget(buildStreamPage());
-
-    layout->addWidget(header);
-    layout->addWidget(m_pages, 1);
-    return host;
-}
-
-QWidget *AppWindow::buildSignInPage() {
-    return pageSurface(
-        QStringLiteral("Authentication"),
-        QStringLiteral("Browser OAuth becomes a Qt service boundary"),
-        QStringLiteral("This surface maps the current email entry, authenticating, session refresh, and account switching flow into the Qt shell. The next port step is moving OPNAuthService onto Qt network, desktop-services, settings, and cryptographic primitives."),
-        {
-            twoColumnCards({
-                card(QStringLiteral("OAuth launch"), QStringLiteral("Use QDesktopServices for system-browser sign-in and a local callback listener for PKCE completion.")),
-                card(QStringLiteral("Saved sessions"), QStringLiteral("Use QSettings first, then move secrets to platform secure storage before this path ships.")),
-                card(QStringLiteral("Account switching"), QStringLiteral("Preserve the current multi-account model and refresh behavior from the AppKit coordinator.")),
-                card(QStringLiteral("Token refresh"), QStringLiteral("Port the refresh windows and client-token lifecycle without coupling it to UI widgets.")),
-            }),
+    if (m_browserButton) {
+        connect(m_browserButton, &QPushButton::clicked, this, [this]() {
+            beginBrowserSignIn();
         });
+    }
 }
 
-QWidget *AppWindow::buildLibraryPage() {
-    auto *stats = new QWidget();
-    auto *statsLayout = new QHBoxLayout(stats);
-    statsLayout->setContentsMargins(0, 0, 0, 0);
-    statsLayout->setSpacing(12);
-    statsLayout->addWidget(pill(QStringLiteral("Catalog"), QStringLiteral("GraphQL")));
-    statsLayout->addWidget(pill(QStringLiteral("Launch"), QStringLiteral("Session API")));
-    statsLayout->addWidget(pill(QStringLiteral("Input"), QStringLiteral("Controller aware")));
-
-    return pageSurface(
-        QStringLiteral("Library"),
-        QStringLiteral("Game catalog and launch flow"),
-        QStringLiteral("The AppKit catalog is the largest UI surface. This Qt shell reserves the same flow: library refresh, search/filter/sort, selected variant resolution, account-link checks, and launch handoff into streaming."),
-        {
-            stats,
-            twoColumnCards({
-                card(QStringLiteral("Catalog data"), QStringLiteral("Move OPNGameService parsing to Qt JSON while keeping the existing GameInfo data shape.")),
-                card(QStringLiteral("Lean-back navigation"), QStringLiteral("Map the current controller-focused catalog behavior onto Qt key and gamepad adapters.")),
-                card(QStringLiteral("Artwork loading"), QStringLiteral("Use QNetworkAccessManager with a bounded image cache for hero and poster art.")),
-                card(QStringLiteral("Launch continuity"), QStringLiteral("Preserve active-session resume, library overlay, and stream return behavior.")),
-            }),
-        });
-}
-
-QWidget *AppWindow::buildStorePage() {
-    return pageSurface(
-        QStringLiteral("Store"),
-        QStringLiteral("Curated panels and storefront browsing"),
-        QStringLiteral("The store page mirrors the current panel loader and controller rail model so service logic can land before visual parity work begins."),
-        {
-            twoColumnCards({
-                card(QStringLiteral("Panels"), QStringLiteral("Port persisted GraphQL panel fetches and retry behavior into a platform-neutral service.")),
-                card(QStringLiteral("Rails"), QStringLiteral("Use Qt layouts first, then tune animation and focus states once data is live.")),
-                card(QStringLiteral("Variants"), QStringLiteral("Keep store, launch app id, and linked-account selection explicit in the model.")),
-                card(QStringLiteral("Picture-in-picture"), QStringLiteral("Carry over the active-stream return path as a Qt widget composition problem.")),
-            }),
-        });
-}
-
-QWidget *AppWindow::buildSettingsPage() {
-    return pageSurface(
-        QStringLiteral("Settings"),
-        QStringLiteral("Cross-platform preferences"),
-        QStringLiteral("Stream, video, audio, input, interface, about, and thanks sections should move behind typed settings models before individual controls are rebuilt."),
-        {
-            twoColumnCards({
-                card(QStringLiteral("Stream profile"), QStringLiteral("Region, codec, resolution, frame rate, bitrate, and power-saver choices stay in one typed model.")),
-                card(QStringLiteral("Audio devices"), QStringLiteral("Replace CoreAudio enumeration with Qt Multimedia or platform adapters depending on WebRTC requirements.")),
-                card(QStringLiteral("Input"), QStringLiteral("Keep protocol encoding portable and isolate native keyboard/controller discovery.")),
-                card(QStringLiteral("Interface"), QStringLiteral("Persist theme, fullscreen, and window presentation through QSettings.")),
-            }),
-        });
-}
-
-QWidget *AppWindow::buildStreamPage() {
-    return pageSurface(
-        QStringLiteral("Streaming"),
-        QStringLiteral("WebRTC session host"),
-        QStringLiteral("This is the riskiest parity area: native libwebrtc, platform video surfaces, input data channel delivery, stats overlays, recovery, and recording all need small adapters rather than direct AppKit dependencies."),
-        {
-            twoColumnCards({
-                card(QStringLiteral("Signaling"), QStringLiteral("Move OPNSignalingClient to QWebSocket while preserving heartbeat and message sequencing.")),
-                card(QStringLiteral("WebRTC"), QStringLiteral("Replace Objective-C WebRTC framework calls with the native C++ libwebrtc API behind IStreamSession.")),
-                card(QStringLiteral("Rendering"), QStringLiteral("Host decoded frames in a Qt-compatible hardware surface on each OS.")),
-                card(QStringLiteral("Recovery"), QStringLiteral("Keep the current launch generation, ICE grace period, and automatic recovery rules.")),
-            }),
-        });
-}
-
-void AppWindow::selectPage(Page page) {
-    const int id = static_cast<int>(page);
-    if (!m_pages || id < 0 || id >= m_pages->count()) {
+void AppWindow::checkSavedSessionOnStartup() {
+    AuthService &auth = AuthService::shared();
+    const AuthSession saved = auth.loadSavedSession();
+    if (!saved.isAuthenticated || !auth.stayLoggedIn()) {
+        setAuthReady();
         return;
     }
 
-    m_pages->setCurrentIndex(id);
-    if (QPushButton *button = qobject_cast<QPushButton *>(m_navigationButtons->button(id))) {
-        button->setChecked(true);
-    }
-    if (m_sectionTitle) {
-        m_sectionTitle->setText(m_pageTitles.value(id));
-    }
-    if (m_sectionDescription) {
-        m_sectionDescription->setText(m_pageDescriptions.value(id));
+    if (saved.isAccessTokenValid() && saved.isClientTokenValid()) {
+        setAuthenticated(saved);
+        return;
     }
 
-    QSettings settings;
-    settings.setValue(QStringLiteral("qt/activePage"), pageKey(page));
+    const bool canRefresh = saved.isAccessTokenValid() || !saved.refreshToken.isEmpty() || !saved.clientToken.isEmpty();
+    if (!canRefresh) {
+        setAuthReady();
+        return;
+    }
+
+    setAuthBusy(QStringLiteral("Refreshing saved session..."));
+    auth.refreshSession([this, saved](bool success, const AuthSession &fresh, const QString &error) {
+        if (success) {
+            setAuthenticated(fresh);
+            return;
+        }
+        if (saved.isAuthenticated && saved.isAccessTokenValid()) {
+            setAuthenticated(saved);
+            return;
+        }
+        setAuthError(error.isEmpty() ? QStringLiteral("Saved session refresh failed") : error);
+    });
+}
+
+void AppWindow::beginBrowserSignIn() {
+    AuthService &auth = AuthService::shared();
+    const bool shouldPersist = m_stayLoggedIn ? m_stayLoggedIn->isChecked() : auth.stayLoggedIn();
+    auth.setStayLoggedIn(shouldPersist);
+
+    setAuthBusy(QStringLiteral("Opening browser for sign in..."));
+    auth.startOAuthLogin([this, shouldPersist](bool success, const AuthSession &session, const QString &error) {
+        if (!success) {
+            setAuthError(error.isEmpty() ? QStringLiteral("Sign in failed") : error);
+            return;
+        }
+        if (shouldPersist) {
+            AuthService::shared().saveSession(session);
+        }
+        setAuthenticated(session);
+    });
+}
+
+void AppWindow::setAuthBusy(const QString &message) {
+    if (m_statusLabel) {
+        m_statusLabel->setProperty("state", QStringLiteral("busy"));
+        m_statusLabel->setText(message);
+        m_statusLabel->show();
+        m_statusLabel->style()->unpolish(m_statusLabel);
+        m_statusLabel->style()->polish(m_statusLabel);
+    }
+    if (m_browserButton) {
+        m_browserButton->setEnabled(false);
+        m_browserButton->setText(QStringLiteral("Waiting for Browser..."));
+    }
+}
+
+void AppWindow::setAuthReady(const QString &message) {
+    if (m_statusLabel) {
+        if (message.isEmpty()) {
+            m_statusLabel->hide();
+        } else {
+            m_statusLabel->setProperty("state", QStringLiteral("ready"));
+            m_statusLabel->setText(message);
+            m_statusLabel->show();
+            m_statusLabel->style()->unpolish(m_statusLabel);
+            m_statusLabel->style()->polish(m_statusLabel);
+        }
+    }
+    if (m_browserButton) {
+        m_browserButton->setEnabled(true);
+        m_browserButton->setText(QStringLiteral("Continue with Browser"));
+    }
+}
+
+void AppWindow::setAuthError(const QString &message) {
+    if (m_statusLabel) {
+        m_statusLabel->setProperty("state", QStringLiteral("error"));
+        m_statusLabel->setText(message);
+        m_statusLabel->show();
+        m_statusLabel->style()->unpolish(m_statusLabel);
+        m_statusLabel->style()->polish(m_statusLabel);
+    }
+    if (m_browserButton) {
+        m_browserButton->setEnabled(true);
+        m_browserButton->setText(QStringLiteral("Try Again"));
+    }
+}
+
+void AppWindow::setAuthenticated(const AuthSession &session) {
+    m_currentSession = session;
+    const QString name = !session.displayName.isEmpty()
+        ? session.displayName
+        : (!session.email.isEmpty() ? session.email : QStringLiteral("Account"));
+    if (m_messageLabel) {
+        m_messageLabel->setText(QStringLiteral("Signed in as %1.").arg(name));
+    }
+    if (m_statusLabel) {
+        m_statusLabel->setProperty("state", QStringLiteral("success"));
+        m_statusLabel->setText(QStringLiteral("Authenticated. Catalog UI is next."));
+        m_statusLabel->show();
+        m_statusLabel->style()->unpolish(m_statusLabel);
+        m_statusLabel->style()->polish(m_statusLabel);
+    }
+    if (m_browserButton) {
+        m_browserButton->setEnabled(true);
+        m_browserButton->setText(QStringLiteral("Signed In"));
+    }
+    showCatalog(session);
+}
+
+void AppWindow::showCatalog(const AuthSession &session) {
+    if (!m_stack || !m_catalogView) return;
+    m_currentSession = session;
+    const QString name = !session.displayName.isEmpty()
+        ? session.displayName
+        : (!session.email.isEmpty() ? session.email : QStringLiteral("Player"));
+    m_catalogView->setAccountName(name);
+    m_stack->setCurrentWidget(m_catalogView);
+    m_catalogView->setFocus(Qt::OtherFocusReason);
+    if (!session.accessToken.isEmpty()) {
+        if (session.displayName.isEmpty()) {
+            m_catalogView->setLoading(QStringLiteral("Fetching account details..."));
+            AuthService::shared().fetchUserInfo(session.accessToken, [this](bool success, const QVariantMap &info, const QString &) {
+                if (success) {
+                    const QString preferred = info.value(QStringLiteral("preferred_username")).toString();
+                    const QString email = info.value(QStringLiteral("email")).toString();
+                    const QString name = !preferred.isEmpty()
+                        ? preferred
+                        : (!email.isEmpty() ? email.section(QLatin1Char('@'), 0, 0) : QString());
+                    if (!name.isEmpty()) {
+                        m_currentSession.displayName = name;
+                        if (!email.isEmpty()) m_currentSession.email = email;
+                        if (AuthService::shared().stayLoggedIn()) AuthService::shared().saveSession(m_currentSession);
+                        if (m_catalogView) m_catalogView->setAccountName(name);
+                    }
+                }
+                loadGamesIntoCatalog(true);
+            });
+        } else {
+            loadGamesIntoCatalog(true);
+        }
+    }
+}
+
+void AppWindow::loadGamesIntoCatalog(bool allowAuthRefresh) {
+    if (!m_catalogView) return;
+    m_catalogView->setLoading(QStringLiteral("Fetching your GeForce NOW library..."));
+    const QString apiToken = !m_currentSession.idToken.isEmpty() ? m_currentSession.idToken : m_currentSession.accessToken;
+    GameService::shared().setAccessToken(apiToken);
+    GameService::shared().fetchLibraryGames([this, allowAuthRefresh](bool success, const QList<CatalogGame> &games, const QString &error) {
+        if (!m_catalogView) return;
+        if (success) {
+            m_catalogView->setGames(games);
+            return;
+        }
+
+        const QString normalizedError = error.toCaseFolded();
+        const bool authenticationFailed = normalizedError.contains(QStringLiteral("authentication")) ||
+            normalizedError.contains(QStringLiteral("unauthorized")) ||
+            normalizedError.contains(QStringLiteral("401"));
+        if (allowAuthRefresh && authenticationFailed) {
+            m_catalogView->setLoading(QStringLiteral("Refreshing session and retrying library..."));
+            AuthService::shared().refreshSession([this](bool refreshSuccess, const AuthSession &fresh, const QString &refreshError) {
+                if (!m_catalogView) return;
+                if (refreshSuccess) {
+                    AuthService::shared().saveSession(fresh);
+                    m_currentSession = fresh;
+                    loadGamesIntoCatalog(false);
+                    return;
+                }
+                forceLoginAfterAuthFailure(refreshError.isEmpty()
+                    ? QStringLiteral("Authentication expired. Sign in again to load your library.")
+                    : refreshError);
+            }, true);
+            return;
+        }
+
+        if (authenticationFailed) {
+            forceLoginAfterAuthFailure(QStringLiteral("Authentication expired. Sign in again to load your library."));
+            return;
+        }
+
+        m_catalogView->setError(error.isEmpty() ? QStringLiteral("Unable to fetch library games") : error);
+    });
+}
+
+void AppWindow::forceLoginAfterAuthFailure(const QString &message) {
+    AuthService::shared().clearSession();
+    GameService::shared().setAccessToken(QString());
+    m_currentSession = AuthSession{};
+    if (m_stack) {
+        m_stack->setCurrentIndex(0);
+    }
+    if (m_messageLabel) {
+        m_messageLabel->setText(QStringLiteral("Access your cloud gaming library with your NVIDIA account."));
+    }
+    if (m_stayLoggedIn) {
+        m_stayLoggedIn->setChecked(AuthService::shared().stayLoggedIn());
+    }
+    setAuthError(message.isEmpty() ? QStringLiteral("Authentication expired. Sign in again.") : message);
+}
+
+void AppWindow::showCatalogPreview() {
+    AuthSession preview;
+    preview.displayName = QStringLiteral("Preview Player");
+    showCatalog(preview);
+    if (m_catalogView) m_catalogView->setPreviewData();
 }
 
 void AppWindow::restoreWindowState() {
     QSettings settings;
-    const QSize size = settings.value(QStringLiteral("qt/windowSize"), QSize(kDefaultWindowWidth, kDefaultWindowHeight)).toSize();
-    const QPoint position = settings.value(QStringLiteral("qt/windowPosition")).toPoint();
+    const QSize size = settings.value(QStringLiteral("qt/loginWindowSize"), QSize(kDefaultWindowWidth, kDefaultWindowHeight)).toSize();
+    const QPoint position = settings.value(QStringLiteral("qt/loginWindowPosition")).toPoint();
     resize(size.expandedTo(minimumSize()));
     if (!position.isNull()) {
         move(position);
@@ -336,70 +484,96 @@ void AppWindow::restoreWindowState() {
 
 void AppWindow::persistWindowState() const {
     QSettings settings;
-    settings.setValue(QStringLiteral("qt/windowSize"), size());
-    settings.setValue(QStringLiteral("qt/windowPosition"), pos());
+    settings.setValue(QStringLiteral("qt/loginWindowSize"), size());
+    settings.setValue(QStringLiteral("qt/loginWindowPosition"), pos());
 }
 
 void AppWindow::applyTheme() {
     qApp->setStyleSheet(QStringLiteral(R"(
         QMainWindow, QWidget {
-            background: #070a10;
-            color: #f6f8ff;
-            font-family: Inter, Segoe UI, SF Pro Display, Arial, sans-serif;
+            background: transparent;
+            color: #F5F5F7;
+            font-family: Inter, "SF Pro Display", "Segoe UI", Arial, sans-serif;
         }
-        QFrame#navigation {
-            background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #111827, stop:1 #090d16);
-            border-right: 1px solid rgba(255,255,255,0.08);
+
+        QLabel#brandLogo {
+            color: #F5F5F7;
+            font-weight: 600;
         }
-        QFrame#header {
-            background: #090d15;
-            border-bottom: 1px solid rgba(255,255,255,0.08);
+
+        QLabel#mutedText {
+            color: #787A82;
+            line-height: 140%;
         }
-        QLabel#brand {
-            color: #ffffff;
-            letter-spacing: 1px;
+
+        QLabel#statusText {
+            padding: 5px 10px;
+            border-radius: 10px;
+            font-size: 12px;
         }
-        QLabel#sectionTitle, QLabel#pageTitle, QLabel#cardTitle, QLabel#pillValue {
-            color: #ffffff;
+
+        QLabel#statusText[state="busy"] {
+            color: #B7B8BE;
+            background: rgba(255, 255, 255, 0.06);
         }
-        QLabel#mutedText, QLabel#pageBody {
-            color: #a9b4c7;
+
+        QLabel#statusText[state="success"] {
+            color: #D9FFE8;
+            background: rgba(52, 199, 89, 0.14);
         }
-        QLabel#eyebrow {
-            color: #67f0a0;
-            letter-spacing: 1.4px;
+
+        QLabel#statusText[state="error"] {
+            color: #FFB1AA;
+            background: rgba(255, 69, 58, 0.14);
         }
-        QFrame#divider {
-            color: rgba(255,255,255,0.08);
-            background: rgba(255,255,255,0.08);
-            max-height: 1px;
+
+        QFrame#loginCard {
+            background: rgba(29, 30, 34, 0.86);
+            border: 1px solid rgba(255, 255, 255, 0.10);
+            border-radius: 22px;
         }
-        QPushButton#navButton {
-            background: rgba(255,255,255,0.045);
-            border: 1px solid rgba(255,255,255,0.08);
-            border-radius: 14px;
-            color: #cbd5e1;
-            padding: 10px 14px;
-            text-align: left;
-            line-height: 150%;
+
+        QCheckBox#stayLoggedIn {
+            color: #B7B8BE;
+            font-size: 13px;
+            font-weight: 500;
+            spacing: 9px;
         }
-        QPushButton#navButton:hover {
-            background: rgba(103,240,160,0.10);
-            border-color: rgba(103,240,160,0.36);
-            color: #ffffff;
+
+        QCheckBox#stayLoggedIn::indicator {
+            width: 17px;
+            height: 17px;
+            border-radius: 4px;
+            border: 1px solid rgba(255, 255, 255, 0.22);
+            background: #24262B;
         }
-        QPushButton#navButton:checked {
-            background: rgba(103,240,160,0.18);
-            border-color: rgba(103,240,160,0.70);
-            color: #ffffff;
+
+        QCheckBox#stayLoggedIn::indicator:checked {
+            border: 1px solid #34C759;
+            background: #34C759;
+            image: none;
         }
-        QFrame#card, QFrame#pill {
-            background: rgba(255,255,255,0.055);
-            border: 1px solid rgba(255,255,255,0.10);
-            border-radius: 18px;
+
+        QPushButton#browserButton {
+            background: #34C759;
+            color: #06140A;
+            border: none;
+            border-radius: 10px;
+            font-size: 14px;
+            font-weight: 600;
         }
-        QStackedWidget {
-            background: qradialgradient(cx:0.15, cy:0.08, radius:1.1, fx:0.1, fy:0.0, stop:0 rgba(43,122,84,0.26), stop:0.48 #090d15, stop:1 #070a10);
+
+        QPushButton#browserButton:hover {
+            background: #49D56B;
+        }
+
+        QPushButton#browserButton:pressed {
+            background: #2FB14F;
+        }
+
+        QPushButton#browserButton:disabled {
+            background: #34363C;
+            color: #787A82;
         }
     )"));
 }
