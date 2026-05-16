@@ -300,6 +300,13 @@ class GfnSignalingClient(
 object NativeStreamInputRouter {
     @Volatile
     private var client: NativeStreamClient? = null
+    @Volatile
+    private var touchMouseEnabled = false
+    @Volatile
+    private var captureAllTouch = false
+    @Volatile
+    private var systemMenuHandler: (() -> Unit)? = null
+    private val touchMouseState = TouchMouseState()
 
     fun attach(next: NativeStreamClient) {
         client = next
@@ -309,9 +316,181 @@ object NativeStreamInputRouter {
         if (client === next) client = null
     }
 
-    fun dispatchKey(event: KeyEvent): Boolean = client?.dispatchKey(event) == true
+    fun setTouchMouseEnabled(enabled: Boolean) {
+        touchMouseEnabled = enabled
+        if (!enabled) {
+            touchMouseState.reset(client)
+        }
+    }
+
+    fun setCaptureAllTouch(enabled: Boolean) {
+        captureAllTouch = enabled
+    }
+
+    fun setSystemMenuHandler(handler: (() -> Unit)?) {
+        systemMenuHandler = handler
+    }
+
+    fun shouldForwardTouchBeforeViews(event: MotionEvent, width: Int, height: Int): Boolean =
+        client != null &&
+            touchMouseEnabled &&
+            width > 0 &&
+            height > 0 &&
+            event.pointerCount == 1
+
+    fun shouldCaptureTouchBeforeViews(event: MotionEvent, width: Int, height: Int): Boolean =
+        shouldForwardTouchBeforeViews(event, width, height) &&
+            captureAllTouch
+
+    fun dispatchTouch(event: MotionEvent, width: Int, height: Int): Boolean {
+        val current = client ?: return false
+        return touchMouseState.handle(event, touchMouseEnabled && width > 0 && height > 0, current)
+    }
+
+    fun dispatchKey(event: KeyEvent): Boolean {
+        if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0 && event.isStreamSystemMenuKey()) {
+            systemMenuHandler?.invoke()
+            return systemMenuHandler != null
+        }
+        return client?.dispatchKey(event) == true
+    }
 
     fun dispatchMotion(event: MotionEvent): Boolean = client?.dispatchMotion(event) == true
+
+    private fun KeyEvent.isStreamSystemMenuKey(): Boolean =
+        keyCode == KeyEvent.KEYCODE_BUTTON_MODE ||
+            keyCode == KeyEvent.KEYCODE_MENU
+}
+
+object NativeInputDiagnostics {
+    private const val MAX_LINES = 80
+    private val lines = ArrayDeque<String>()
+
+    @Synchronized
+    fun add(message: String) {
+        if (lines.size >= MAX_LINES) {
+            lines.removeFirst()
+        }
+        lines.addLast("${SystemClock.elapsedRealtime()} $message")
+    }
+
+    @Synchronized
+    fun snapshot(): String =
+        if (lines.isEmpty()) {
+            "input.diagnostics=empty"
+        } else {
+            buildString {
+                appendLine("input.diagnostics:")
+                lines.forEach { appendLine(it) }
+            }.trimEnd()
+        }
+}
+
+private class TouchMouseState {
+    private var activePointerId = -1
+    private var downX = 0f
+    private var downY = 0f
+    private var lastX = 0f
+    private var lastY = 0f
+    private var moved = false
+    private var selecting = false
+    private var lastTapTimeMs = Long.MIN_VALUE
+    private var lastTapX = Float.NaN
+    private var lastTapY = Float.NaN
+
+    fun reset(client: NativeStreamClient?) {
+        if (selecting) client?.setTouchMouseButton(false)
+        activePointerId = -1
+        selecting = false
+        moved = false
+    }
+
+    fun handle(event: MotionEvent, enabled: Boolean, client: NativeStreamClient): Boolean {
+        if (!enabled) {
+            reset(client)
+            return false
+        }
+
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                activePointerId = event.getPointerId(0)
+                downX = event.x
+                downY = event.y
+                lastX = event.x
+                lastY = event.y
+                moved = false
+                selecting = isDoubleTap(event)
+                if (selecting) {
+                    client.setTouchMouseButton(true)
+                    lastTapTimeMs = Long.MIN_VALUE
+                }
+                return true
+            }
+            MotionEvent.ACTION_POINTER_DOWN -> {
+                reset(client)
+                moved = true
+                return true
+            }
+            MotionEvent.ACTION_MOVE -> {
+                val index = event.findPointerIndex(activePointerId)
+                if (index < 0) return true
+                val x = event.getX(index)
+                val y = event.getY(index)
+                val dx = x - lastX
+                val dy = y - lastY
+                if (abs(x - downX) > TOUCH_MOUSE_TAP_SLOP_PX || abs(y - downY) > TOUCH_MOUSE_TAP_SLOP_PX) {
+                    moved = true
+                }
+                sendMouseDelta(dx, dy, client)
+                lastX = x
+                lastY = y
+                return true
+            }
+            MotionEvent.ACTION_UP -> {
+                val wasTap = activePointerId >= 0 && !moved
+                activePointerId = -1
+                if (selecting) {
+                    client.setTouchMouseButton(false)
+                    selecting = false
+                    return true
+                }
+                if (wasTap) {
+                    client.sendTouchMouseClick()
+                    lastTapTimeMs = event.eventTime
+                    lastTapX = event.x
+                    lastTapY = event.y
+                }
+                return true
+            }
+            MotionEvent.ACTION_CANCEL -> {
+                reset(client)
+                return true
+            }
+        }
+        return true
+    }
+
+    private fun isDoubleTap(event: MotionEvent): Boolean {
+        if (lastTapTimeMs == Long.MIN_VALUE) return false
+        if (event.eventTime - lastTapTimeMs > TOUCH_MOUSE_DOUBLE_TAP_TIMEOUT_MS) return false
+        if (!lastTapX.isFinite() || !lastTapY.isFinite()) return false
+        return abs(event.x - lastTapX) <= TOUCH_MOUSE_DOUBLE_TAP_SLOP_PX &&
+            abs(event.y - lastTapY) <= TOUCH_MOUSE_DOUBLE_TAP_SLOP_PX
+    }
+
+    private fun sendMouseDelta(dx: Float, dy: Float, client: NativeStreamClient) {
+        val ix = dx.roundToInt()
+        val iy = dy.roundToInt()
+        if (ix != 0 || iy != 0) {
+            client.sendTouchMouseMove(ix, iy)
+        }
+    }
+
+    companion object {
+        private const val TOUCH_MOUSE_TAP_SLOP_PX = 18f
+        private const val TOUCH_MOUSE_DOUBLE_TAP_TIMEOUT_MS = 320L
+        private const val TOUCH_MOUSE_DOUBLE_TAP_SLOP_PX = 36f
+    }
 }
 
 class NativeStreamClient(
@@ -352,13 +531,26 @@ class NativeStreamClient(
     private var virtualLeftStickActive = false
     private var virtualLeftStickX = 0
     private var virtualLeftStickY = 0
+    private var virtualRightStickActive = false
+    private var virtualRightStickX = 0
+    private var virtualRightStickY = 0
+    private var virtualControllerVisible = false
+    private var physicalControllerActive = false
+    private var activeControllerId = 0
+    private val controllerSlots = linkedMapOf<Int, Int>()
     private var physicalButtons = 0
+    private var physicalHatButtons = 0
     private var lastLeftTrigger = 0
     private var lastRightTrigger = 0
     private var lastLeftStickX = 0
     private var lastLeftStickY = 0
     private var lastRightStickX = 0
     private var lastRightStickY = 0
+    private var mouseLastDeviceId = Int.MIN_VALUE
+    private var mouseLastX = 0f
+    private var mouseLastY = 0f
+    private var mousePositionValid = false
+    private var inputDropLogged = false
 
     init {
         PeerConnectionFactory.initialize(
@@ -398,6 +590,7 @@ class NativeStreamClient(
         signaling = null
         reliableInput = null
         partiallyReliableInput = null
+        resetInputState()
         videoTrack?.removeSink(renderer)
         videoTrack = null
         audioTrack = null
@@ -417,6 +610,33 @@ class NativeStreamClient(
         eglBase.release()
     }
 
+    private fun resetInputState() {
+        virtualButtons = 0
+        virtualLeftTrigger = 0
+        virtualRightTrigger = 0
+        virtualLeftStickActive = false
+        virtualLeftStickX = 0
+        virtualLeftStickY = 0
+        virtualRightStickActive = false
+        virtualRightStickX = 0
+        virtualRightStickY = 0
+        virtualControllerVisible = false
+        physicalControllerActive = false
+        physicalButtons = 0
+        physicalHatButtons = 0
+        lastLeftTrigger = 0
+        lastRightTrigger = 0
+        lastLeftStickX = 0
+        lastLeftStickY = 0
+        lastRightStickX = 0
+        lastRightStickY = 0
+        activeControllerId = 0
+        controllerSlots.clear()
+        mousePositionValid = false
+        inputDropLogged = false
+        inputEncoder.resetGamepadSequences()
+    }
+
     fun dispatchKey(event: KeyEvent): Boolean {
         if (event.isGamepadEvent() && dispatchGamepadKey(event)) {
             return true
@@ -431,19 +651,8 @@ class NativeStreamClient(
         if (event.isFromSource(InputDevice.SOURCE_JOYSTICK)) {
             return dispatchJoystick(event)
         }
-        if (event.isFromSource(InputDevice.SOURCE_MOUSE)) {
-            val dx = if (Build.VERSION.SDK_INT >= 26) event.getAxisValue(MotionEvent.AXIS_RELATIVE_X).roundToInt() else 0
-            val dy = if (Build.VERSION.SDK_INT >= 26) event.getAxisValue(MotionEvent.AXIS_RELATIVE_Y).roundToInt() else 0
-            if (dx != 0 || dy != 0) {
-                val adjusted = adjustedMouseDelta(dx, dy)
-                sendInput(inputEncoder.encodeMouseMove(adjusted.first, adjusted.second), partiallyReliable = true)
-            }
-            when (event.actionMasked) {
-                MotionEvent.ACTION_BUTTON_PRESS -> sendInput(inputEncoder.encodeMouseButton(InputEncoder.INPUT_MOUSE_BUTTON_DOWN, event.actionButton.toGfnMouseButton()), false)
-                MotionEvent.ACTION_BUTTON_RELEASE -> sendInput(inputEncoder.encodeMouseButton(InputEncoder.INPUT_MOUSE_BUTTON_UP, event.actionButton.toGfnMouseButton()), false)
-                MotionEvent.ACTION_SCROLL -> sendInput(inputEncoder.encodeMouseWheel((event.getAxisValue(MotionEvent.AXIS_VSCROLL) * 120).roundToInt()), false)
-            }
-            return true
+        if (event.isMouseLikePointer()) {
+            return dispatchMouseLikePointer(event)
         }
         return false
     }
@@ -451,6 +660,58 @@ class NativeStreamClient(
     fun sendTouchMouseMove(dx: Int, dy: Int) {
         val adjusted = adjustedMouseDelta(dx, dy)
         sendInput(inputEncoder.encodeMouseMove(adjusted.first, adjusted.second), partiallyReliable = true)
+    }
+
+    private fun dispatchMouseLikePointer(event: MotionEvent): Boolean {
+        when (event.actionMasked) {
+            MotionEvent.ACTION_HOVER_MOVE,
+            MotionEvent.ACTION_MOVE,
+            -> {
+                val relativeDx = if (Build.VERSION.SDK_INT >= 26) event.getAxisValue(MotionEvent.AXIS_RELATIVE_X) else 0f
+                val relativeDy = if (Build.VERSION.SDK_INT >= 26) event.getAxisValue(MotionEvent.AXIS_RELATIVE_Y) else 0f
+                if (abs(relativeDx) >= 0.5f || abs(relativeDy) >= 0.5f) {
+                    sendTouchMouseMove(relativeDx.roundToInt(), relativeDy.roundToInt())
+                } else if (mousePositionValid && mouseLastDeviceId == event.deviceId) {
+                    val dx = event.x - mouseLastX
+                    val dy = event.y - mouseLastY
+                    if (abs(dx) >= 0.5f || abs(dy) >= 0.5f) {
+                        sendTouchMouseMove(dx.roundToInt(), dy.roundToInt())
+                    }
+                }
+                mouseLastDeviceId = event.deviceId
+                mouseLastX = event.x
+                mouseLastY = event.y
+                mousePositionValid = true
+            }
+            MotionEvent.ACTION_DOWN -> {
+                mousePositionValid = true
+                mouseLastDeviceId = event.deviceId
+                mouseLastX = event.x
+                mouseLastY = event.y
+                sendInput(inputEncoder.encodeMouseButton(InputEncoder.INPUT_MOUSE_BUTTON_DOWN, event.primaryMouseButton()), false)
+            }
+            MotionEvent.ACTION_UP,
+            MotionEvent.ACTION_CANCEL,
+            -> {
+                mousePositionValid = false
+                sendInput(inputEncoder.encodeMouseButton(InputEncoder.INPUT_MOUSE_BUTTON_UP, event.primaryMouseButton()), false)
+            }
+            MotionEvent.ACTION_BUTTON_PRESS -> {
+                val handled = sendInput(inputEncoder.encodeMouseButton(InputEncoder.INPUT_MOUSE_BUTTON_DOWN, event.actionButton.toGfnMouseButton()), false)
+                return handled
+            }
+            MotionEvent.ACTION_BUTTON_RELEASE -> {
+                val handled = sendInput(inputEncoder.encodeMouseButton(InputEncoder.INPUT_MOUSE_BUTTON_UP, event.actionButton.toGfnMouseButton()), false)
+                return handled
+            }
+            MotionEvent.ACTION_SCROLL -> {
+                val vertical = event.getAxisValue(MotionEvent.AXIS_VSCROLL)
+                if (abs(vertical) >= 0.01f) {
+                    sendInput(inputEncoder.encodeMouseWheel((vertical * 120).roundToInt()), false)
+                }
+            }
+        }
+        return true
     }
 
     private fun adjustedMouseDelta(dx: Int, dy: Int): Pair<Int, Int> {
@@ -523,6 +784,20 @@ class NativeStreamClient(
         sendCurrentGamepadState(partiallyReliable = true)
     }
 
+    fun setVirtualRightStick(x: Float, y: Float) {
+        val normalized = applyDeadzone(x, y, deadzone = 0.08f)
+        virtualRightStickActive = normalized.first != 0f || normalized.second != 0f
+        virtualRightStickX = normalizeToInt16(normalized.first)
+        virtualRightStickY = normalizeToInt16(-normalized.second)
+        sendCurrentGamepadState(partiallyReliable = true)
+    }
+
+    fun setVirtualControllerVisible(visible: Boolean) {
+        if (virtualControllerVisible == visible) return
+        virtualControllerVisible = visible
+        sendCurrentGamepadState(partiallyReliable = false)
+    }
+
     private fun handleSignaling(event: SignalingEvent) {
         when (event) {
             SignalingEvent.Connected -> onState("Waiting for offer")
@@ -536,9 +811,10 @@ class NativeStreamClient(
 
     private fun handleOffer(rawOffer: String) {
         val currentSession = session ?: return
-        val pc = ensurePeerConnection(currentSession)
         val fixed = SdpTools.fixServerIp(rawOffer, currentSession.serverIp)
         val preferred = SdpTools.preferCodec(fixed, settings.codec)
+        val pc = ensurePeerConnection(currentSession)
+        ensureInputDataChannels(pc, preferred)
         inputEncoder.setProtocolVersion(SdpTools.parseInputProtocolVersion(preferred))
         pc.setRemoteDescription(
             object : SimpleSdpObserver() {
@@ -648,6 +924,24 @@ class NativeStreamClient(
         return pc
     }
 
+    private fun ensureInputDataChannels(pc: PeerConnection, offerSdp: String) {
+        if (reliableInput == null) {
+            val reliableInit = DataChannel.Init().apply {
+                ordered = true
+            }
+            pc.createDataChannel("input_channel_v1", reliableInit)?.let(::attachDataChannel)
+        }
+
+        if (partiallyReliableInput == null) {
+            val thresholdMs = SdpTools.parsePartialReliableThresholdMs(offerSdp)
+            val partialInit = DataChannel.Init().apply {
+                ordered = false
+                maxRetransmitTimeMs = thresholdMs
+            }
+            pc.createDataChannel("input_channel_partially_reliable", partialInit)?.let(::attachDataChannel)
+        }
+    }
+
     private fun attachVideo(track: VideoTrack) {
         videoTrack?.removeSink(renderer)
         videoTrack = track
@@ -657,6 +951,7 @@ class NativeStreamClient(
 
     private fun attachDataChannel(channel: DataChannel) {
         val label = channel.label().lowercase(Locale.US)
+        NativeInputDiagnostics.add("input channel attached label=$label state=${channel.state()}")
         if (label.contains("partial") || label.contains("pr")) {
             partiallyReliableInput = channel
         } else {
@@ -666,6 +961,8 @@ class NativeStreamClient(
             override fun onBufferedAmountChange(previousAmount: Long) = Unit
             override fun onStateChange() {
                 if (channel.state() == DataChannel.State.OPEN) {
+                    inputDropLogged = false
+                    NativeInputDiagnostics.add("input channel open label=$label")
                     sendInput(inputEncoder.encodeHapticsEnabled(true), partiallyReliable = false)
                 }
             }
@@ -684,7 +981,9 @@ class NativeStreamClient(
     }
 
     private fun dispatchJoystick(event: MotionEvent): Boolean {
-        val controllerId = max(0, min(event.device?.controllerNumber ?: 0, 3))
+        val controllerId = controllerIdFor(event)
+        activeControllerId = controllerId
+        physicalControllerActive = true
         val lx = event.getAxisValue(MotionEvent.AXIS_X)
         val ly = event.getAxisValue(MotionEvent.AXIS_Y)
         val rx = event.getAxisValue(MotionEvent.AXIS_Z).takeIf { abs(it) > 0.001f } ?: event.getAxisValue(MotionEvent.AXIS_RX)
@@ -693,6 +992,7 @@ class NativeStreamClient(
         val rt = max(event.getAxisValue(MotionEvent.AXIS_RTRIGGER), normalizeTriggerAxis(event.getAxisValue(MotionEvent.AXIS_GAS)))
         val left = applyDeadzone(lx, ly)
         val right = applyDeadzone(rx, ry)
+        physicalHatButtons = event.hatDpadButtons()
         lastLeftTrigger = normalizeToUint8(lt)
         lastRightTrigger = normalizeToUint8(rt)
         lastLeftStickX = normalizeToInt16(left.first)
@@ -701,14 +1001,14 @@ class NativeStreamClient(
         lastRightStickY = normalizeToInt16(-right.second)
         val packet = inputEncoder.encodeGamepadState(
             controllerId = controllerId,
-            buttons = physicalButtons or virtualButtons,
+            buttons = physicalButtons or physicalHatButtons or virtualButtons,
             leftTrigger = max(lastLeftTrigger, virtualLeftTrigger),
             rightTrigger = max(lastRightTrigger, virtualRightTrigger),
             leftStickX = effectiveLeftStickX(),
             leftStickY = effectiveLeftStickY(),
-            rightStickX = lastRightStickX,
-            rightStickY = lastRightStickY,
-            bitmap = 1 shl controllerId,
+            rightStickX = effectiveRightStickX(),
+            rightStickY = effectiveRightStickY(),
+            bitmap = currentGamepadBitmap(controllerId),
             partiallyReliable = true,
         )
         return sendInput(packet, partiallyReliable = true)
@@ -719,34 +1019,40 @@ class NativeStreamClient(
         val pressed = event.action == KeyEvent.ACTION_DOWN
         val mask = event.keyCode.toGamepadButtonMask()
         if (mask != null) {
+            activeControllerId = controllerIdFor(event)
+            physicalControllerActive = true
             physicalButtons = if (pressed) physicalButtons or mask else physicalButtons and mask.inv()
-            return sendCurrentGamepadState(partiallyReliable = false)
+            return sendCurrentGamepadState(partiallyReliable = false, controllerId = activeControllerId)
         }
         when (event.keyCode) {
             KeyEvent.KEYCODE_BUTTON_L2 -> {
+                activeControllerId = controllerIdFor(event)
+                physicalControllerActive = true
                 lastLeftTrigger = if (pressed) 255 else 0
-                return sendCurrentGamepadState(partiallyReliable = false)
+                return sendCurrentGamepadState(partiallyReliable = false, controllerId = activeControllerId)
             }
             KeyEvent.KEYCODE_BUTTON_R2 -> {
+                activeControllerId = controllerIdFor(event)
+                physicalControllerActive = true
                 lastRightTrigger = if (pressed) 255 else 0
-                return sendCurrentGamepadState(partiallyReliable = false)
+                return sendCurrentGamepadState(partiallyReliable = false, controllerId = activeControllerId)
             }
         }
         return false
     }
 
-    private fun sendCurrentGamepadState(partiallyReliable: Boolean): Boolean =
+    private fun sendCurrentGamepadState(partiallyReliable: Boolean, controllerId: Int = activeControllerId): Boolean =
         sendInput(
             inputEncoder.encodeGamepadState(
-                controllerId = 0,
-                buttons = physicalButtons or virtualButtons,
+                controllerId = controllerId,
+                buttons = physicalButtons or physicalHatButtons or virtualButtons,
                 leftTrigger = max(lastLeftTrigger, virtualLeftTrigger),
                 rightTrigger = max(lastRightTrigger, virtualRightTrigger),
                 leftStickX = effectiveLeftStickX(),
                 leftStickY = effectiveLeftStickY(),
-                rightStickX = lastRightStickX,
-                rightStickY = lastRightStickY,
-                bitmap = 1,
+                rightStickX = effectiveRightStickX(),
+                rightStickY = effectiveRightStickY(),
+                bitmap = currentGamepadBitmap(controllerId),
                 partiallyReliable = partiallyReliable,
             ),
             partiallyReliable = partiallyReliable,
@@ -754,14 +1060,72 @@ class NativeStreamClient(
 
     private fun effectiveLeftStickX(): Int = if (virtualLeftStickActive) virtualLeftStickX else lastLeftStickX
     private fun effectiveLeftStickY(): Int = if (virtualLeftStickActive) virtualLeftStickY else lastLeftStickY
+    private fun effectiveRightStickX(): Int = if (virtualRightStickActive) virtualRightStickX else lastRightStickX
+    private fun effectiveRightStickY(): Int = if (virtualRightStickActive) virtualRightStickY else lastRightStickY
 
     private fun sendInput(bytes: ByteArray, partiallyReliable: Boolean): Boolean {
         val channel = if (partiallyReliable) partiallyReliableInput ?: reliableInput else reliableInput ?: partiallyReliableInput
-        if (channel?.state() != DataChannel.State.OPEN) return false
+        if (channel?.state() != DataChannel.State.OPEN) {
+            if (!inputDropLogged) {
+                inputDropLogged = true
+                NativeInputDiagnostics.add(
+                    "input dropped noOpenChannel requestedPartial=$partiallyReliable reliable=${reliableInput?.state()} partial=${partiallyReliableInput?.state()} bytes=${bytes.size}",
+                )
+            }
+            return false
+        }
         return channel.send(DataChannel.Buffer(ByteBuffer.wrap(bytes), true))
     }
 
+    private fun controllerIdFor(event: KeyEvent): Int = controllerIdFor(event.deviceId)
+    private fun controllerIdFor(event: MotionEvent): Int = controllerIdFor(event.deviceId)
+
+    private fun controllerIdFor(deviceId: Int): Int {
+        val stableDeviceId = if (deviceId >= 0) deviceId else 0
+        controllerSlots[stableDeviceId]?.let { return it }
+        val used = controllerSlots.values.toSet()
+        val slot = (0 until 4).firstOrNull { it !in used } ?: 0
+        controllerSlots[stableDeviceId] = slot
+        return slot
+    }
+
+    private fun currentGamepadBitmap(controllerId: Int): Int {
+        val connected = physicalControllerActive ||
+            virtualControllerVisible ||
+            virtualButtons != 0 ||
+            virtualLeftTrigger != 0 ||
+            virtualRightTrigger != 0 ||
+            virtualLeftStickActive ||
+            virtualRightStickActive
+        if (!connected) return 0
+        val id = controllerId.coerceIn(0, 3)
+        return (1 shl id) or (1 shl (id + 8))
+    }
+
     private fun MotionEvent.isFromSource(source: Int): Boolean = (this.source and source) == source
+    private fun MotionEvent.isMouseLikePointer(): Boolean =
+        isFromSource(InputDevice.SOURCE_MOUSE) ||
+            isFromSource(InputDevice.SOURCE_TOUCHPAD) ||
+            isFromSource(InputDevice.SOURCE_MOUSE_RELATIVE)
+
+    private fun MotionEvent.primaryMouseButton(): Int =
+        when {
+            actionButton != 0 -> actionButton.toGfnMouseButton()
+            buttonState != 0 -> buttonState.toGfnMouseButton()
+            else -> 1
+        }
+
+    private fun MotionEvent.hatDpadButtons(): Int {
+        var mask = 0
+        val hatX = getAxisValue(MotionEvent.AXIS_HAT_X)
+        val hatY = getAxisValue(MotionEvent.AXIS_HAT_Y)
+        if (hatY <= -0.5f) mask = mask or 0x0001
+        if (hatY >= 0.5f) mask = mask or 0x0002
+        if (hatX <= -0.5f) mask = mask or 0x0004
+        if (hatX >= 0.5f) mask = mask or 0x0008
+        return mask
+    }
+
     private fun KeyEvent.isGamepadEvent(): Boolean =
         (source and InputDevice.SOURCE_GAMEPAD) == InputDevice.SOURCE_GAMEPAD ||
             (source and InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK
@@ -900,6 +1264,15 @@ object SdpTools {
     fun parseInputProtocolVersion(sdp: String): Int =
         Regex("a=ri\\.version:(\\d+)").find(sdp)?.groupValues?.getOrNull(1)?.toIntOrNull() ?: 3
 
+    fun parsePartialReliableThresholdMs(sdp: String): Int =
+        Regex("a=ri\\.partialReliableThresholdMs:(\\d+)")
+            .find(sdp)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.toIntOrNull()
+            ?.coerceIn(1, 5000)
+            ?: 30
+
     fun buildNvstSdp(offerSdp: String, settings: StreamSettings, localAnswer: String): String {
         val (width, height) = streamResolutionPixels(settings)
         val ufrag = Regex("a=ice-ufrag:([^\\r\\n]+)").find(localAnswer)?.groupValues?.getOrNull(1)?.trim().orEmpty()
@@ -968,6 +1341,10 @@ class InputEncoder {
 
     fun setProtocolVersion(version: Int) {
         protocolVersion = version.coerceAtLeast(1)
+    }
+
+    fun resetGamepadSequences() {
+        gamepadSequences.clear()
     }
 
     fun encodeHeartbeat(): ByteArray = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(INPUT_HEARTBEAT).array()

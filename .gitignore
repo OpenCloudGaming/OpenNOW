@@ -44,6 +44,8 @@ gfn_tokens.json
 
 # Test files
 test/
+!android/app/src/test/
+!android/app/src/test/**
 
 package-lock.json
 opennow-stable/package-lock.json

@@ -2,6 +2,12 @@
 <resources>
     <string name="app_name">OpenNOW</string>
     <string name="status_starting_opennow">Starting OpenNOW</string>
+    <string name="login_with_provider">Sign in with %1$s</string>
+    <string name="login_tv_start">Sign in on another device with %1$s</string>
+    <string name="login_tv_title">Use this code to sign in</string>
+    <string name="login_tv_status">%1$s</string>
+    <string name="login_tv_waiting">Waiting for sign-in</string>
+    <string name="login_tv_expires">Code expires in %1$d:%2$02d</string>
     <string name="nav_store">Store</string>
     <string name="nav_library">Library</string>
     <string name="nav_settings">Settings</string>
@@ -14,6 +20,7 @@
     <string name="action_resume">Resume</string>
     <string name="action_save">Save</string>
     <string name="action_saved">Saved</string>
+    <string name="action_cancel">Cancel</string>
     <string name="option_auto">Auto</string>
     <string name="settings_section_stream">Stream</string>
     <string name="settings_section_interface">Interface</string>
@@ -24,6 +31,14 @@
     <string name="settings_codec">Codec</string>
     <string name="settings_color">Color</string>
     <string name="settings_region">Region</string>
+    <string name="settings_session_proxy">Session proxy</string>
+    <string name="settings_session_proxy_hint">Routes GFN session creation and queue polling through this proxy. Leave off for direct requests.</string>
+    <string name="settings_session_proxy_url">Proxy URL</string>
+    <string name="settings_session_proxy_warning_title">Enable session proxy?</string>
+    <string name="settings_session_proxy_warning_traffic">GFN session creation, queue polling, resume, stop, and queue ad update requests will be routed through the proxy you enter.</string>
+    <string name="settings_session_proxy_warning_breakage">A bad or blocked proxy can break launch, queue progress, active session resume, or session cleanup.</string>
+    <string name="settings_session_proxy_warning_trust">Only use a proxy you trust. The proxy operator may be able to observe request timing, destination hosts, and sensitive session traffic metadata.</string>
+    <string name="settings_session_proxy_warning_enable">Enable proxy</string>
     <string name="settings_l4s">L4S</string>
     <string name="settings_cloud_gsync">Cloud G-Sync / VRR request</string>
     <string name="settings_dynamic_color">Use Material You colors</string>

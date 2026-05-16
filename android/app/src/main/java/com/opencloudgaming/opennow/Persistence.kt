@@ -47,6 +47,7 @@ class SettingsStore(context: Context) {
         val lowPowerSafe = stream.copy(
             codec = stream.codec,
             colorQuality = stream.colorQuality,
+            sessionProxyUrl = stream.sessionProxyUrl.trim(),
             maxBitrateMbps = stream.maxBitrateMbps.coerceIn(1, 150),
             fps = stream.fps.coerceIn(30, 240),
         )

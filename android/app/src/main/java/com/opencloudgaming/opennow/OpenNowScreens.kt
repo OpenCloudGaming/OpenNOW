@@ -19,6 +19,7 @@ import androidx.compose.animation.scaleOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.core.MutableTransitionState
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.Image
@@ -52,6 +53,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -90,20 +92,38 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusDirection
+import androidx.compose.ui.focus.FocusManager
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.pointerInteropFilter
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -113,10 +133,10 @@ import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import java.util.Locale
 import java.net.URL
-import kotlin.math.abs
 import kotlin.math.min
 import kotlin.math.roundToInt
 import kotlin.math.sqrt
@@ -132,9 +152,6 @@ private val SettingsPanel = Color(0xff11161a)
 private val SettingsPanelAlt = Color(0xff171d22)
 private val SettingsText = Color(0xffeef3f5)
 private val SettingsTextMuted = Color(0xff98a4aa)
-private const val TOUCH_MOUSE_TAP_SLOP_PX = 18f
-private const val TOUCH_MOUSE_DOUBLE_TAP_TIMEOUT_MS = 320L
-private const val TOUCH_MOUSE_DOUBLE_TAP_SLOP_PX = 36f
 private val UiAccent.color: Color
     get() = when (this) {
         UiAccent.OpenNow -> Green
@@ -151,106 +168,6 @@ private fun uiAccentLabel(accent: UiAccent): String = when (accent) {
     UiAccent.Lime -> stringResource(R.string.accent_lime)
     UiAccent.Coral -> stringResource(R.string.accent_coral)
     UiAccent.Violet -> stringResource(R.string.accent_violet)
-}
-
-private class TouchMouseState {
-    private var activePointerId = -1
-    private var downX = 0f
-    private var downY = 0f
-    private var lastX = 0f
-    private var lastY = 0f
-    private var moved = false
-    private var selecting = false
-    private var lastTapTimeMs = Long.MIN_VALUE
-    private var lastTapX = Float.NaN
-    private var lastTapY = Float.NaN
-
-    fun handle(view: View, event: MotionEvent, enabled: Boolean, client: NativeStreamClient): Boolean {
-        if (!enabled) {
-            if (selecting) client.setTouchMouseButton(false)
-            activePointerId = -1
-            selecting = false
-            return false
-        }
-
-        when (event.actionMasked) {
-            MotionEvent.ACTION_DOWN -> {
-                activePointerId = event.getPointerId(0)
-                downX = event.x
-                downY = event.y
-                lastX = event.x
-                lastY = event.y
-                moved = false
-                selecting = isDoubleTap(event)
-                if (selecting) {
-                    client.setTouchMouseButton(true)
-                    lastTapTimeMs = Long.MIN_VALUE
-                }
-                return true
-            }
-            MotionEvent.ACTION_POINTER_DOWN -> {
-                if (selecting) client.setTouchMouseButton(false)
-                activePointerId = -1
-                moved = true
-                selecting = false
-                return true
-            }
-            MotionEvent.ACTION_MOVE -> {
-                val index = event.findPointerIndex(activePointerId)
-                if (index < 0) return true
-                val x = event.getX(index)
-                val y = event.getY(index)
-                val dx = x - lastX
-                val dy = y - lastY
-                if (abs(x - downX) > TOUCH_MOUSE_TAP_SLOP_PX || abs(y - downY) > TOUCH_MOUSE_TAP_SLOP_PX) {
-                    moved = true
-                }
-                sendMouseDelta(dx, dy, client)
-                lastX = x
-                lastY = y
-                return true
-            }
-            MotionEvent.ACTION_UP -> {
-                val wasTap = activePointerId >= 0 && !moved
-                activePointerId = -1
-                if (selecting) {
-                    client.setTouchMouseButton(false)
-                    selecting = false
-                    return true
-                }
-                if (wasTap) {
-                    client.sendTouchMouseClick()
-                    lastTapTimeMs = event.eventTime
-                    lastTapX = event.x
-                    lastTapY = event.y
-                }
-                return true
-            }
-            MotionEvent.ACTION_CANCEL -> {
-                if (selecting) client.setTouchMouseButton(false)
-                activePointerId = -1
-                selecting = false
-                return true
-            }
-        }
-        return true
-    }
-
-    private fun isDoubleTap(event: MotionEvent): Boolean {
-        if (lastTapTimeMs == Long.MIN_VALUE) return false
-        if (event.eventTime - lastTapTimeMs > TOUCH_MOUSE_DOUBLE_TAP_TIMEOUT_MS) return false
-        if (!lastTapX.isFinite() || !lastTapY.isFinite()) return false
-        return abs(event.x - lastTapX) <= TOUCH_MOUSE_DOUBLE_TAP_SLOP_PX &&
-            abs(event.y - lastTapY) <= TOUCH_MOUSE_DOUBLE_TAP_SLOP_PX
-    }
-
-    private fun sendMouseDelta(dx: Float, dy: Float, client: NativeStreamClient) {
-        val ix = dx.roundToInt()
-        val iy = dy.roundToInt()
-        if (ix != 0 || iy != 0) {
-            client.sendTouchMouseMove(ix, iy)
-        }
-    }
 }
 
 @Composable
@@ -307,6 +224,13 @@ private fun LoadingScreen(text: String) {
 
 @Composable
 private fun LoginScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
+    val signInFocusRequester = remember { FocusRequester() }
+    val tvLogin = state.codecReport?.androidTvProfile == true
+    LaunchedEffect(tvLogin, state.deviceLoginPrompt == null) {
+        if (tvLogin && state.deviceLoginPrompt == null) {
+            runCatching { signInFocusRequester.requestFocus() }
+        }
+    }
     Column(
         Modifier
             .fillMaxSize()
@@ -321,8 +245,19 @@ private fun LoginScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
         Spacer(Modifier.height(28.dp))
         ProviderPicker(state.providers, state.selectedProvider, viewModel::selectProvider)
         Spacer(Modifier.height(16.dp))
-        Button(onClick = { viewModel.login() }) {
-            Text(if (state.launchPhase.isBlank()) "Sign in with ${state.selectedProvider.displayName}" else state.launchPhase)
+        state.deviceLoginPrompt?.let { prompt ->
+            DeviceLoginPanel(prompt = prompt, phase = state.launchPhase, onCancel = viewModel::cancelLogin)
+        } ?: Button(
+            onClick = { viewModel.login() },
+            modifier = Modifier.focusRequester(signInFocusRequester),
+        ) {
+            Text(
+                when {
+                    state.launchPhase.isNotBlank() -> state.launchPhase
+                    tvLogin -> stringResource(R.string.login_tv_start, state.selectedProvider.displayName)
+                    else -> stringResource(R.string.login_with_provider, state.selectedProvider.displayName)
+                },
+            )
         }
         if (state.error != null) {
             Spacer(Modifier.height(14.dp))
@@ -330,6 +265,43 @@ private fun LoginScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
         }
     }
 }
+
+@Composable
+private fun DeviceLoginPanel(prompt: DeviceLoginPrompt, phase: String, onCancel: () -> Unit) {
+    val cancelFocusRequester = remember { FocusRequester() }
+    val remainingSeconds by produceState(initialValue = secondsUntil(prompt.expiresAt), prompt.expiresAt) {
+        while (value > 0) {
+            delay(1000L)
+            value = secondsUntil(prompt.expiresAt)
+        }
+    }
+    LaunchedEffect(prompt.userCode) {
+        runCatching { cancelFocusRequester.requestFocus() }
+    }
+    Card(
+        colors = CardDefaults.cardColors(containerColor = PanelAlt, contentColor = TextPrimary),
+        shape = RoundedCornerShape(14.dp),
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
+    ) {
+        Column(
+            Modifier.padding(20.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Text(stringResource(R.string.login_tv_title), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            Text(prompt.verificationUri, color = Green, style = MaterialTheme.typography.titleSmall)
+            Text(prompt.userCode, style = MaterialTheme.typography.displaySmall, fontWeight = FontWeight.Bold, color = Color.White)
+            Text(stringResource(R.string.login_tv_status, phase.ifBlank { stringResource(R.string.login_tv_waiting) }), color = TextMuted)
+            Text(stringResource(R.string.login_tv_expires, remainingSeconds / 60, remainingSeconds % 60), color = TextMuted)
+            OutlinedButton(onClick = onCancel, modifier = Modifier.focusRequester(cancelFocusRequester)) {
+                Text(stringResource(R.string.action_cancel))
+            }
+        }
+    }
+}
+
+private fun secondsUntil(deadlineMs: Long): Int =
+    ((deadlineMs - System.currentTimeMillis()).coerceAtLeast(0L) / 1000L).toInt()
 
 @Composable
 private fun MainShell(state: OpenNowUiState, viewModel: OpenNowViewModel) {
@@ -470,6 +442,7 @@ private fun NativeSearchField(
     searching: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
+    val focusManager = LocalFocusManager.current
     val speechLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         if (result.resultCode == Activity.RESULT_OK) {
             val spoken = result.data
@@ -509,7 +482,9 @@ private fun NativeSearchField(
                 singleLine = true,
                 textStyle = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.onSurface),
                 cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
-                modifier = Modifier.weight(1f),
+                modifier = Modifier
+                    .weight(1f)
+                    .onPreviewKeyEvent { handleDpadFocusMove(it, focusManager) },
                 decorationBox = { innerTextField ->
                     Box(Modifier.fillMaxWidth()) {
                         if (query.isBlank()) {
@@ -559,6 +534,29 @@ private fun NativeSearchField(
             }
         }
     }
+}
+
+private fun handleDpadFocusMove(event: androidx.compose.ui.input.key.KeyEvent, focusManager: FocusManager): Boolean {
+    if (event.type != KeyEventType.KeyDown) return false
+    val direction = when (event.key) {
+        Key.DirectionUp -> FocusDirection.Up
+        Key.DirectionDown -> FocusDirection.Down
+        Key.DirectionLeft -> FocusDirection.Left
+        Key.DirectionRight -> FocusDirection.Right
+        else -> return false
+    }
+    return focusManager.moveFocus(direction)
+}
+
+private fun handleVerticalDpadFocusMove(event: androidx.compose.ui.input.key.KeyEvent, focusManager: FocusManager): Boolean {
+    if (event.type != KeyEventType.KeyDown) return false
+    val direction = when (event.key) {
+        Key.DirectionUp -> FocusDirection.Up
+        Key.DirectionDown -> FocusDirection.Down
+        else -> return false
+    }
+    focusManager.moveFocus(direction)
+    return true
 }
 
 @Composable
@@ -1031,6 +1029,13 @@ private fun StoreLaunchSelector(
     modifier: Modifier = Modifier,
 ) {
     val variants = remember(game) { launchableGameVariants(game.variants) }
+    val firstLaunchFocusRequester = remember(game.id) { FocusRequester() }
+    BackHandler(onBack = onDismiss)
+    LaunchedEffect(game.id, variants.size) {
+        if (variants.isNotEmpty()) {
+            runCatching { firstLaunchFocusRequester.requestFocus() }
+        }
+    }
     Box(
         Modifier
             .fillMaxSize()
@@ -1088,7 +1093,14 @@ private fun StoreLaunchSelector(
                                         Text(details, color = TextMuted, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                     }
                                 }
-                                Button(onClick = { onLaunch(game, variant) }) { Text("Launch") }
+                                Button(
+                                    onClick = { onLaunch(game, variant) },
+                                    modifier = if (variant.id == variants.firstOrNull()?.id) {
+                                        Modifier.focusRequester(firstLaunchFocusRequester)
+                                    } else {
+                                        Modifier
+                                    },
+                                ) { Text("Launch") }
                             }
                         }
                     }
@@ -1106,6 +1118,16 @@ private fun StoreLaunchSelector(
 @Composable
 private fun SettingsScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
     val settings = state.settings
+    var showSessionProxyWarning by remember { mutableStateOf(false) }
+    if (showSessionProxyWarning) {
+        SessionProxyWarningDialog(
+            onCancel = { showSessionProxyWarning = false },
+            onEnable = {
+                viewModel.updateStreamSettings { s -> s.copy(sessionProxyEnabled = true) }
+                showSessionProxyWarning = false
+            },
+        )
+    }
     LazyColumn(
         Modifier
             .fillMaxSize()
@@ -1136,6 +1158,28 @@ private fun SettingsScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                 ChoiceRow(stringResource(R.string.settings_region), listOf(stringResource(R.string.option_auto)) + state.regions.map { it.name }, state.regions.firstOrNull { it.url == settings.stream.region }?.name ?: stringResource(R.string.option_auto)) { label ->
                     val url = state.regions.firstOrNull { it.name == label }?.url.orEmpty()
                     viewModel.updateStreamSettings { s -> s.copy(region = url) }
+                }
+                SettingSwitch(stringResource(R.string.settings_session_proxy), settings.stream.sessionProxyEnabled) { enabled ->
+                    if (enabled) {
+                        showSessionProxyWarning = true
+                    } else {
+                        viewModel.updateStreamSettings { s -> s.copy(sessionProxyEnabled = false) }
+                    }
+                }
+                Text(
+                    stringResource(R.string.settings_session_proxy_hint),
+                    color = SettingsTextMuted,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                if (settings.stream.sessionProxyEnabled) {
+                    OutlinedTextField(
+                        value = settings.stream.sessionProxyUrl,
+                        onValueChange = { value -> viewModel.updateStreamSettings { s -> s.copy(sessionProxyUrl = value) } },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                        label = { Text(stringResource(R.string.settings_session_proxy_url)) },
+                        placeholder = { Text("http://127.0.0.1:8080") },
+                    )
                 }
                 SettingSwitch(stringResource(R.string.settings_l4s), settings.stream.enableL4S) { viewModel.updateStreamSettings { s -> s.copy(enableL4S = it) } }
                 SettingSwitch(stringResource(R.string.settings_cloud_gsync), settings.stream.enableCloudGsync) { viewModel.updateStreamSettings { s -> s.copy(enableCloudGsync = it) } }
@@ -1246,7 +1290,15 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
     var keyboardText by remember { mutableStateOf("") }
     var audioMuted by remember { mutableStateOf(false) }
     var statsVisible by remember(state.settings.showStatsOnLaunch) { mutableStateOf(state.settings.showStatsOnLaunch) }
-    val touchMouseState = remember { TouchMouseState() }
+    val streamReady = session?.status in setOf(2, 3)
+    BackHandler(enabled = streamReady) {
+        when {
+            exitConfirmOpen -> exitConfirmOpen = false
+            keyboardOpen -> keyboardOpen = false
+            controlsOpen -> controlsOpen = false
+            else -> controlsOpen = true
+        }
+    }
     val client = remember {
         NativeStreamClient(
             context = context.applicationContext,
@@ -1265,15 +1317,41 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
         val decor = activity?.window?.decorView
         val oldFlags = decor?.systemUiVisibility ?: 0
         NativeStreamInputRouter.attach(client)
+        NativeStreamInputRouter.setSystemMenuHandler {
+            keyboardOpen = false
+            exitConfirmOpen = false
+            controlsOpen = true
+        }
         decor?.systemUiVisibility = View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or View.SYSTEM_UI_FLAG_FULLSCREEN or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION or View.SYSTEM_UI_FLAG_LAYOUT_STABLE
         onDispose {
             decor?.systemUiVisibility = oldFlags
+            if (Build.VERSION.SDK_INT >= 26) {
+                decor?.releasePointerCapture()
+            }
+            NativeStreamInputRouter.setSystemMenuHandler(null)
             NativeStreamInputRouter.detach(client)
             client.release()
         }
     }
 
-    val streamReady = session?.status in setOf(2, 3)
+    LaunchedEffect(streamReady, state.settings.androidTouch.mousePad) {
+        NativeStreamInputRouter.setTouchMouseEnabled(streamReady && state.settings.androidTouch.mousePad)
+    }
+    LaunchedEffect(streamReady, state.settings.androidTouch.mousePad, controlsOpen, exitConfirmOpen, keyboardOpen, state.settings.androidTouch.enabled) {
+        NativeStreamInputRouter.setCaptureAllTouch(
+            streamReady &&
+                state.settings.androidTouch.mousePad &&
+                !controlsOpen &&
+                !exitConfirmOpen &&
+                !keyboardOpen &&
+                !state.settings.androidTouch.enabled,
+        )
+    }
+    DisposableEffect(Unit) {
+        onDispose {
+            NativeStreamInputRouter.setCaptureAllTouch(false)
+        }
+    }
     LaunchedEffect(session?.sessionId, session?.status) {
         if (session != null && streamReady) {
             client.start(session, state.settings.stream)
@@ -1281,8 +1359,14 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
     }
 
     Box(Modifier.fillMaxSize().background(Color.Black)) {
-        if (session == null) {
-            LoadingScreen(state.launchPhase.ifBlank { "No active stream" })
+        if (session == null && state.streamStatus != "idle") {
+            QueueLoadingScreen(state, viewModel)
+        } else if (session == null) {
+            NoActiveStreamScreen(
+                canEndSession = state.authSession != null,
+                onBack = { viewModel.setPage(AppPage.Home) },
+                onEndSession = viewModel::stopStream,
+            )
         } else if (!streamReady) {
             QueueLoadingScreen(state, viewModel)
         } else {
@@ -1301,10 +1385,21 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                     renderer.setOnKeyListener { _, _, event -> client.dispatchKey(event) }
                     renderer.setOnGenericMotionListener { _, event -> client.dispatchMotion(event) }
                     renderer.setOnTouchListener { view, event ->
-                        touchMouseState.handle(view, event, state.settings.androidTouch.mousePad, client)
+                        NativeStreamInputRouter.dispatchTouch(event, view.width, view.height)
+                    }
+                    if (Build.VERSION.SDK_INT >= 26) {
+                        if (state.settings.mouseCapture) {
+                            renderer.requestPointerCapture()
+                        } else if (renderer.hasPointerCapture()) {
+                            renderer.releasePointerCapture()
+                        }
                     }
                     renderer.requestFocus()
                 },
+            )
+            FingerMouseInputLayer(
+                enabled = state.settings.androidTouch.mousePad,
+                modifier = Modifier.matchParentSize(),
             )
             if (statsVisible) {
                 StreamStatsPill(
@@ -1355,6 +1450,10 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                         onEsc = { client.sendKeyCode(KeyEvent.KEYCODE_ESCAPE) },
                         onEnter = { client.sendKeyCode(KeyEvent.KEYCODE_ENTER) },
                         onBackspace = { client.sendKeyCode(KeyEvent.KEYCODE_DEL) },
+                        onExit = {
+                            controlsOpen = false
+                            exitConfirmOpen = true
+                        },
                         onTouchControlsToggle = {
                             viewModel.updateSettings(
                                 state.settings.copy(
@@ -1418,6 +1517,56 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
 }
 
 @Composable
+private fun FingerMouseInputLayer(enabled: Boolean, modifier: Modifier = Modifier) {
+    if (!enabled) return
+    var width by remember { mutableStateOf(0) }
+    var height by remember { mutableStateOf(0) }
+    Box(
+        modifier
+            .onSizeChanged {
+                width = it.width
+                height = it.height
+            }
+            .pointerInteropFilter { event ->
+                if (event.actionMasked == MotionEvent.ACTION_DOWN) {
+                    NativeInputDiagnostics.add("compose finger layer down size=${width}x$height")
+                }
+                NativeStreamInputRouter.dispatchTouch(event, width, height)
+            },
+    )
+}
+
+@Composable
+private fun NoActiveStreamScreen(
+    canEndSession: Boolean,
+    onBack: () -> Unit,
+    onEndSession: () -> Unit,
+) {
+    Column(
+        Modifier
+            .fillMaxSize()
+            .padding(24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+    ) {
+        Text("No active stream", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+        Spacer(Modifier.height(8.dp))
+        Text(
+            "OpenNOW does not have a local stream attached right now.",
+            color = TextMuted,
+            textAlign = TextAlign.Center,
+        )
+        Spacer(Modifier.height(18.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            OutlinedButton(onClick = onBack) { Text("Back to library") }
+            if (canEndSession) {
+                Button(onClick = onEndSession) { Text("End cloud session") }
+            }
+        }
+    }
+}
+
+@Composable
 private fun StreamControlLauncher(
     controlsOpen: Boolean,
     status: String?,
@@ -1469,6 +1618,7 @@ private fun StreamControlsPanel(
     onEsc: () -> Unit,
     onEnter: () -> Unit,
     onBackspace: () -> Unit,
+    onExit: () -> Unit,
     onTouchControlsToggle: () -> Unit,
     onMousePadToggle: () -> Unit,
     onTouchScaleChange: (Float) -> Unit,
@@ -1477,6 +1627,10 @@ private fun StreamControlsPanel(
     onOpacityChange: (Float) -> Unit,
     onClose: () -> Unit,
 ) {
+    val doneFocusRequester = remember { FocusRequester() }
+    LaunchedEffect(Unit) {
+        runCatching { doneFocusRequester.requestFocus() }
+    }
     Surface(
         modifier = Modifier
             .padding(14.dp)
@@ -1499,7 +1653,17 @@ private fun StreamControlsPanel(
                     if (status != null) {
                         Text(status, color = TextMuted, style = MaterialTheme.typography.labelMedium)
                     }
-                    OutlinedButton(onClick = onClose, contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) {
+                    OutlinedButton(
+                        onClick = onExit,
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                    ) {
+                        Text("Exit")
+                    }
+                    OutlinedButton(
+                        onClick = onClose,
+                        modifier = Modifier.focusRequester(doneFocusRequester),
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                    ) {
                         Text("Done")
                     }
                 }
@@ -1564,12 +1728,14 @@ private fun StreamControlSwitch(label: String, value: String, checked: Boolean, 
 @Composable
 private fun CompactSlider(label: String, value: Float, min: Float, max: Float, onChange: (Float) -> Unit) {
     var local by remember(value) { mutableFloatStateOf(value) }
+    val focusManager = LocalFocusManager.current
     Column {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Text(label, Modifier.weight(1f))
             Text("${(local * 100).roundToInt()}%", color = TextMuted)
         }
         Slider(
+            modifier = Modifier.onPreviewKeyEvent { handleVerticalDpadFocusMove(it, focusManager) },
             value = local,
             onValueChange = {
                 local = it.coerceIn(min, max)
@@ -1661,6 +1827,10 @@ private fun StreamExitConfirmation(
     onExit: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val keepPlayingFocusRequester = remember { FocusRequester() }
+    LaunchedEffect(Unit) {
+        runCatching { keepPlayingFocusRequester.requestFocus() }
+    }
     Box(
         Modifier
             .fillMaxSize()
@@ -1682,7 +1852,12 @@ private fun StreamExitConfirmation(
                 Text("Do you really want to exit $gameTitle?", color = TextMuted)
                 Text("Your current cloud gaming session will be closed.", color = TextMuted, style = MaterialTheme.typography.bodySmall)
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
-                    OutlinedButton(onClick = onKeepPlaying, modifier = Modifier.weight(1f)) { Text("Keep Playing") }
+                    OutlinedButton(
+                        onClick = onKeepPlaying,
+                        modifier = Modifier
+                            .weight(1f)
+                            .focusRequester(keepPlayingFocusRequester),
+                    ) { Text("Keep Playing") }
                     Button(onClick = onExit, modifier = Modifier.weight(1f)) { Text("Exit Stream") }
                 }
             }
@@ -1694,7 +1869,8 @@ private fun StreamExitConfirmation(
 private fun QueueLoadingScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
     val session = state.streamSession
     val game = state.streamGame
-    val ad = session?.adState?.sessionAds?.firstOrNull()
+    val ads = sessionAdItems(session?.adState)
+    val ad = ads.firstOrNull { it.adId == state.queueAdActiveId } ?: ads.firstOrNull()
     val mediaUrl = ad?.adMediaFiles?.firstOrNull { !it.mediaFileUrl.isNullOrBlank() }?.mediaFileUrl
         ?: ad?.adUrl
         ?: ad?.mediaUrl
@@ -1731,11 +1907,24 @@ private fun QueueLoadingScreen(state: OpenNowUiState, viewModel: OpenNowViewMode
             QueueAdPlayer(
                 url = mediaUrl,
                 onStarted = { viewModel.reportQueueAd(ad.adId, "start") },
-                onFinished = { viewModel.reportQueueAd(ad.adId, "finish") },
+                onPaused = { viewModel.reportQueueAd(ad.adId, "pause") },
+                onResumed = { viewModel.reportQueueAd(ad.adId, "resume") },
+                onFinished = { watchedTimeInMs ->
+                    viewModel.reportQueueAd(ad.adId, "finish", watchedTimeInMs = watchedTimeInMs)
+                },
+                onError = { watchedTimeInMs ->
+                    viewModel.reportQueueAd(
+                        ad.adId,
+                        "cancel",
+                        watchedTimeInMs = watchedTimeInMs,
+                        cancelReason = "error",
+                        errorInfo = "Error loading url",
+                    )
+                },
             )
-        } else if (session?.adState?.isAdsRequired == true) {
+        } else if (isSessionAdsRequired(session?.adState)) {
             Spacer(Modifier.height(12.dp))
-            Text(session.adState.message ?: "Ad is required before the queue can continue.", color = TextMuted)
+            Text(session?.adState?.message ?: "Ad is required before the queue can continue.", color = TextMuted)
         }
         state.error?.let {
             Spacer(Modifier.height(12.dp))
@@ -1783,33 +1972,68 @@ private fun MinimizedQueuePill(
 }
 
 @Composable
-private fun QueueAdPlayer(url: String, onStarted: () -> Unit, onFinished: () -> Unit) {
+private fun QueueAdPlayer(
+    url: String,
+    onStarted: () -> Unit,
+    onPaused: () -> Unit,
+    onResumed: () -> Unit,
+    onFinished: (watchedTimeInMs: Long) -> Unit,
+    onError: (watchedTimeInMs: Long) -> Unit,
+) {
     val context = LocalContext.current
+    var muted by remember { mutableStateOf(false) }
     val player = remember(url) {
         ExoPlayer.Builder(context).build().apply {
             setMediaItem(MediaItem.fromUri(url))
+            volume = if (muted) 0f else 1f
             prepare()
             playWhenReady = true
         }
     }
     var reportedStart by remember(url) { mutableStateOf(false) }
     var reportedFinish by remember(url) { mutableStateOf(false) }
+    var reportedPause by remember(url) { mutableStateOf(false) }
     var playing by remember(url) { mutableStateOf(player.playWhenReady) }
-    var muted by remember(url) { mutableStateOf(false) }
+    var controlsVisible by remember(url) { mutableStateOf(false) }
+    LaunchedEffect(controlsVisible, playing) {
+        if (controlsVisible && playing) {
+            delay(2400L)
+            controlsVisible = false
+        }
+    }
     DisposableEffect(player) {
         val listener = object : Player.Listener {
             override fun onIsPlayingChanged(isPlaying: Boolean) {
                 playing = isPlaying
+                if (!isPlaying) controlsVisible = true
+            }
+
+            override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+                if (!reportedStart || reportedFinish) return
+                if (playWhenReady && reportedPause) {
+                    reportedPause = false
+                    onResumed()
+                } else if (!playWhenReady && player.playbackState != Player.STATE_ENDED && !reportedPause) {
+                    reportedPause = true
+                    onPaused()
+                }
             }
 
             override fun onPlaybackStateChanged(playbackState: Int) {
-                if (playbackState == Player.STATE_READY && !reportedStart) {
+                if (playbackState == Player.STATE_READY && player.playWhenReady && !reportedStart) {
                     reportedStart = true
                     onStarted()
                 }
                 if (playbackState == Player.STATE_ENDED && !reportedFinish) {
                     reportedFinish = true
-                    onFinished()
+                    onFinished(player.currentPosition.coerceAtLeast(0L))
+                }
+            }
+
+            override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
+                if (!reportedFinish) {
+                    reportedFinish = true
+                    onError(player.currentPosition.coerceAtLeast(0L))
                 }
             }
         }
@@ -1819,32 +2043,113 @@ private fun QueueAdPlayer(url: String, onStarted: () -> Unit, onFinished: () -> 
             player.release()
         }
     }
-    Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(10.dp)) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth(0.8f)
+            .height(220.dp)
+            .clip(RoundedCornerShape(8.dp))
+            .clickable { controlsVisible = true },
+    ) {
         AndroidView(
             modifier = Modifier
-                .fillMaxWidth(0.8f)
-                .height(220.dp)
-                .clip(RoundedCornerShape(8.dp)),
+                .fillMaxSize(),
             factory = { ctx -> PlayerView(ctx).apply { this.player = player; useController = false } },
             update = { it.player = player; it.useController = false },
         )
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            Button(onClick = {
-                if (playing) {
-                    player.pause()
-                    playing = false
-                } else {
-                    player.play()
-                    playing = true
-                }
-            }) {
-                Text(if (playing) "Pause" else "Play")
+        AnimatedVisibility(
+            visible = controlsVisible || !playing,
+            enter = fadeIn(),
+            exit = fadeOut(),
+            modifier = Modifier.align(Alignment.BottomCenter),
+        ) {
+            Row(
+                modifier = Modifier
+                    .padding(bottom = 12.dp)
+                    .clip(RoundedCornerShape(999.dp))
+                    .background(Color.Black.copy(alpha = 0.58f))
+                    .padding(horizontal = 8.dp, vertical = 6.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                QueueAdIconButton(
+                    label = if (playing) "Pause ad" else "Play ad",
+                    icon = if (playing) QueueAdControlIcon.Pause else QueueAdControlIcon.Play,
+                    onClick = {
+                        controlsVisible = true
+                        if (playing) {
+                            player.pause()
+                            playing = false
+                        } else {
+                            player.play()
+                            playing = true
+                        }
+                    },
+                )
+                QueueAdIconButton(
+                    label = if (muted) "Unmute ad" else "Mute ad",
+                    icon = if (muted) QueueAdControlIcon.Muted else QueueAdControlIcon.Volume,
+                    onClick = {
+                        controlsVisible = true
+                        muted = !muted
+                        player.volume = if (muted) 0f else 1f
+                    },
+                )
             }
-            OutlinedButton(onClick = {
-                muted = !muted
-                player.volume = if (muted) 0f else 1f
-            }) {
-                Text(if (muted) "Unmute" else "Mute")
+        }
+    }
+}
+
+private enum class QueueAdControlIcon { Play, Pause, Volume, Muted }
+
+@Composable
+private fun QueueAdIconButton(label: String, icon: QueueAdControlIcon, onClick: () -> Unit) {
+    IconButton(
+        onClick = onClick,
+        modifier = Modifier
+            .size(42.dp)
+            .semantics { contentDescription = label },
+    ) {
+        QueueAdControlIconView(icon = icon, modifier = Modifier.size(22.dp))
+    }
+}
+
+@Composable
+private fun QueueAdControlIconView(icon: QueueAdControlIcon, modifier: Modifier = Modifier) {
+    Canvas(modifier) {
+        val w = size.width
+        val h = size.height
+        when (icon) {
+            QueueAdControlIcon.Play -> {
+                val path = Path().apply {
+                    moveTo(w * 0.35f, h * 0.24f)
+                    lineTo(w * 0.35f, h * 0.76f)
+                    lineTo(w * 0.76f, h * 0.5f)
+                    close()
+                }
+                drawPath(path, Color.White)
+            }
+            QueueAdControlIcon.Pause -> {
+                drawRoundRect(Color.White, Offset(w * 0.28f, h * 0.24f), Size(w * 0.14f, h * 0.52f), CornerRadius(w * 0.04f, w * 0.04f))
+                drawRoundRect(Color.White, Offset(w * 0.58f, h * 0.24f), Size(w * 0.14f, h * 0.52f), CornerRadius(w * 0.04f, w * 0.04f))
+            }
+            QueueAdControlIcon.Volume, QueueAdControlIcon.Muted -> {
+                val body = Path().apply {
+                    moveTo(w * 0.18f, h * 0.42f)
+                    lineTo(w * 0.34f, h * 0.42f)
+                    lineTo(w * 0.52f, h * 0.26f)
+                    lineTo(w * 0.52f, h * 0.74f)
+                    lineTo(w * 0.34f, h * 0.58f)
+                    lineTo(w * 0.18f, h * 0.58f)
+                    close()
+                }
+                drawPath(body, Color.White)
+                if (icon == QueueAdControlIcon.Volume) {
+                    drawLine(Color.White, Offset(w * 0.62f, h * 0.38f), Offset(w * 0.72f, h * 0.5f), strokeWidth = w * 0.08f)
+                    drawLine(Color.White, Offset(w * 0.72f, h * 0.5f), Offset(w * 0.62f, h * 0.62f), strokeWidth = w * 0.08f)
+                } else {
+                    drawLine(Color.White, Offset(w * 0.64f, h * 0.36f), Offset(w * 0.84f, h * 0.64f), strokeWidth = w * 0.08f)
+                    drawLine(Color.White, Offset(w * 0.84f, h * 0.36f), Offset(w * 0.64f, h * 0.64f), strokeWidth = w * 0.08f)
+                }
             }
         }
     }
@@ -1856,6 +2161,16 @@ private fun TouchOverlay(client: NativeStreamClient, touch: AndroidTouchSettings
     val layoutScale = touch.scale
     val buttonScale = touch.buttonScale
     val stickScale = touch.stickScale
+
+    LaunchedEffect(client, touch.enabled) {
+        client.setVirtualControllerVisible(touch.enabled)
+    }
+    DisposableEffect(client) {
+        onDispose {
+            client.setVirtualControllerVisible(false)
+        }
+    }
+
     Row(
         modifier
             .fillMaxWidth()
@@ -1869,7 +2184,13 @@ private fun TouchOverlay(client: NativeStreamClient, touch: AndroidTouchSettings
                     GamepadButton("LB", 0x0100, client, opacity, 48.dp * buttonScale * layoutScale)
                     GamepadTriggerButton("LT", left = true, client = client, opacity = opacity, size = 48.dp * buttonScale * layoutScale)
                 }
-                VirtualLeftStick(client, opacity, 116.dp * stickScale * layoutScale)
+                VirtualStick(
+                    label = "L",
+                    client = client,
+                    opacity = opacity,
+                    diameter = 116.dp * stickScale * layoutScale,
+                    onChange = client::setVirtualLeftStick,
+                )
                 DpadCluster(client, opacity, buttonScale * layoutScale)
             }
         }
@@ -1883,15 +2204,18 @@ private fun TouchOverlay(client: NativeStreamClient, touch: AndroidTouchSettings
                     GamepadButton("View", 0x0020, client, opacity, 44.dp * buttonScale * layoutScale)
                     GamepadButton("Menu", 0x0010, client, opacity, 44.dp * buttonScale * layoutScale)
                 }
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    GamepadButton("Y", 0x8000, client, opacity, 58.dp * buttonScale * layoutScale)
-                }
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    GamepadButton("X", 0x4000, client, opacity, 58.dp * buttonScale * layoutScale)
-                    GamepadButton("B", 0x2000, client, opacity, 58.dp * buttonScale * layoutScale)
-                }
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    GamepadButton("A", 0x1000, client, opacity, 58.dp * buttonScale * layoutScale)
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalAlignment = Alignment.Bottom,
+                ) {
+                    VirtualStick(
+                        label = "R",
+                        client = client,
+                        opacity = opacity,
+                        diameter = 104.dp * stickScale * layoutScale,
+                        onChange = client::setVirtualRightStick,
+                    )
+                    FaceButtonCluster(client, opacity, buttonScale * layoutScale)
                 }
             }
         }
@@ -1906,12 +2230,18 @@ private fun clampStickOffset(offset: Offset, maxRadius: Float): Offset {
 }
 
 @Composable
-private fun VirtualLeftStick(client: NativeStreamClient, opacity: Float, diameter: androidx.compose.ui.unit.Dp) {
+private fun VirtualStick(
+    label: String,
+    client: NativeStreamClient,
+    opacity: Float,
+    diameter: androidx.compose.ui.unit.Dp,
+    onChange: (Float, Float) -> Unit,
+) {
     var knobOffset by remember { mutableStateOf(Offset.Zero) }
 
-    DisposableEffect(client) {
+    DisposableEffect(client, onChange) {
         onDispose {
-            client.setVirtualLeftStick(0f, 0f)
+            onChange(0f, 0f)
         }
     }
 
@@ -1921,7 +2251,7 @@ private fun VirtualLeftStick(client: NativeStreamClient, opacity: Float, diamete
             .clip(CircleShape)
             .background(Color(0xff102918).copy(alpha = opacity))
             .border(1.dp, Green.copy(alpha = opacity), CircleShape)
-            .pointerInput(client) {
+            .pointerInput(client, onChange) {
                 awaitPointerEventScope {
                     while (true) {
                         val event = awaitPointerEvent()
@@ -1930,16 +2260,16 @@ private fun VirtualLeftStick(client: NativeStreamClient, opacity: Float, diamete
                         if (change == null) {
                             if (knobOffset != Offset.Zero) {
                                 knobOffset = Offset.Zero
-                                client.setVirtualLeftStick(0f, 0f)
+                                onChange(0f, 0f)
                             }
                             continue
                         }
                         val center = Offset(size.width / 2f, size.height / 2f)
                         val clamped = clampStickOffset(change.position - center, maxRadius)
                         knobOffset = clamped
-                        client.setVirtualLeftStick(
-                            x = (clamped.x / maxRadius).coerceIn(-1f, 1f),
-                            y = (clamped.y / maxRadius).coerceIn(-1f, 1f),
+                        onChange(
+                            (clamped.x / maxRadius).coerceIn(-1f, 1f),
+                            (clamped.y / maxRadius).coerceIn(-1f, 1f),
                         )
                         change.consume()
                     }
@@ -1959,8 +2289,21 @@ private fun VirtualLeftStick(client: NativeStreamClient, opacity: Float, diamete
                 .border(1.dp, Color.White.copy(alpha = opacity * 0.65f), CircleShape),
             contentAlignment = Alignment.Center,
         ) {
-            Text("L", fontWeight = FontWeight.Bold, color = Color.Black)
+            Text(label, fontWeight = FontWeight.Bold, color = Color.Black)
         }
+    }
+}
+
+@Composable
+private fun FaceButtonCluster(client: NativeStreamClient, opacity: Float, scale: Float) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        GamepadButton("Y", 0x8000, client, opacity, 54.dp * scale)
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            GamepadButton("X", 0x4000, client, opacity, 54.dp * scale)
+            Spacer(Modifier.size(54.dp * scale))
+            GamepadButton("B", 0x2000, client, opacity, 54.dp * scale)
+        }
+        GamepadButton("A", 0x1000, client, opacity, 54.dp * scale)
     }
 }
 
@@ -2062,8 +2405,37 @@ private fun SettingSwitch(label: String, checked: Boolean, onCheckedChange: (Boo
 }
 
 @Composable
+private fun SessionProxyWarningDialog(onCancel: () -> Unit, onEnable: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onCancel,
+        title = { Text(stringResource(R.string.settings_session_proxy_warning_title), fontWeight = FontWeight.Bold) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(stringResource(R.string.settings_session_proxy_warning_traffic), style = MaterialTheme.typography.bodySmall)
+                Text(stringResource(R.string.settings_session_proxy_warning_breakage), style = MaterialTheme.typography.bodySmall)
+                Text(stringResource(R.string.settings_session_proxy_warning_trust), style = MaterialTheme.typography.bodySmall)
+            }
+        },
+        confirmButton = {
+            Button(onClick = onEnable) {
+                Text(stringResource(R.string.settings_session_proxy_warning_enable))
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onCancel) {
+                Text(stringResource(R.string.action_cancel))
+            }
+        },
+        containerColor = SettingsPanel,
+        titleContentColor = SettingsText,
+        textContentColor = SettingsTextMuted,
+    )
+}
+
+@Composable
 private fun NumberSlider(label: String, value: Float, min: Float, max: Float, step: Float, onChange: (Float) -> Unit) {
     var local by remember(value) { mutableFloatStateOf(value) }
+    val focusManager = LocalFocusManager.current
     Column(
         Modifier
             .fillMaxWidth()
@@ -2076,6 +2448,7 @@ private fun NumberSlider(label: String, value: Float, min: Float, max: Float, st
             Text(if (step < 1f) "%.2f".format(local) else local.roundToInt().toString(), color = SettingsTextMuted)
         }
         Slider(
+            modifier = Modifier.onPreviewKeyEvent { handleVerticalDpadFocusMove(it, focusManager) },
             value = local,
             onValueChange = { local = ((it / step).roundToInt() * step).coerceIn(min, max) },
             onValueChangeFinished = { onChange(local) },
@@ -2400,21 +2773,68 @@ private fun ProviderPicker(providers: List<LoginProvider>, selected: LoginProvid
     }
 }
 
+private sealed interface UrlImageState {
+    data object Empty : UrlImageState
+    data object Loading : UrlImageState
+    data object Failed : UrlImageState
+    data class Loaded(val bitmap: ImageBitmap) : UrlImageState
+}
+
 @Composable
 private fun UrlImage(url: String?, modifier: Modifier = Modifier) {
-    val image by produceState<ImageBitmap?>(initialValue = null, key1 = url) {
-        value = withContext(Dispatchers.IO) {
-            runCatching {
-                if (url.isNullOrBlank()) null else URL(url).openStream().use { BitmapFactory.decodeStream(it)?.asImageBitmap() }
-            }.getOrNull()
+    val imageState by produceState<UrlImageState>(
+        initialValue = if (url.isNullOrBlank()) UrlImageState.Empty else UrlImageState.Loading,
+        key1 = url,
+    ) {
+        value = if (url.isNullOrBlank()) {
+            UrlImageState.Empty
+        } else {
+            withContext(Dispatchers.IO) {
+                runCatching {
+                    URL(url).openStream().use { stream ->
+                        BitmapFactory.decodeStream(stream)?.asImageBitmap()
+                    }
+                }.getOrNull()?.let(UrlImageState::Loaded) ?: UrlImageState.Failed
+            }
         }
     }
     Box(modifier.background(Color(0xff102015)), contentAlignment = Alignment.Center) {
-        if (image != null) {
-            Image(bitmap = image!!, contentDescription = null, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
-        } else {
-            OpenNowMark(42.dp)
+        when (val state = imageState) {
+            UrlImageState.Loading -> GameImageSkeleton(Modifier.fillMaxSize())
+            is UrlImageState.Loaded -> Image(
+                bitmap = state.bitmap,
+                contentDescription = null,
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Crop,
+            )
+            UrlImageState.Empty,
+            UrlImageState.Failed,
+            -> OpenNowMark(42.dp)
         }
+    }
+}
+
+@Composable
+private fun GameImageSkeleton(modifier: Modifier = Modifier) {
+    Canvas(modifier.background(Color(0xff111923))) {
+        drawRoundRect(
+            color = Color.White.copy(alpha = 0.07f),
+            topLeft = Offset(size.width * 0.10f, size.height * 0.12f),
+            size = Size(size.width * 0.80f, size.height * 0.54f),
+            cornerRadius = CornerRadius(16f, 16f),
+        )
+        drawRoundRect(
+            color = Color.White.copy(alpha = 0.11f),
+            topLeft = Offset(size.width * 0.12f, size.height * 0.73f),
+            size = Size(size.width * 0.64f, size.height * 0.055f),
+            cornerRadius = CornerRadius(10f, 10f),
+        )
+        drawRoundRect(
+            color = Color.White.copy(alpha = 0.07f),
+            topLeft = Offset(size.width * 0.12f, size.height * 0.82f),
+            size = Size(size.width * 0.42f, size.height * 0.045f),
+            cornerRadius = CornerRadius(10f, 10f),
+        )
     }
 }
 

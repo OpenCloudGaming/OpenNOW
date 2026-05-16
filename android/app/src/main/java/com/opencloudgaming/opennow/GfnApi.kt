@@ -38,16 +38,20 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.Credentials
 import okhttp3.dnsoverhttps.DnsOverHttps
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.io.OutputStreamWriter
 import java.net.InetSocketAddress
 import java.net.InetAddress
+import java.net.Proxy
 import java.net.ServerSocket
 import java.net.Socket
 import java.net.SocketTimeoutException
+import java.net.URI
 import java.net.UnknownHostException
+import java.net.URLDecoder
 import java.net.URLEncoder
 import java.security.MessageDigest
 import java.security.SecureRandom
@@ -71,14 +75,17 @@ private const val TOKEN_ENDPOINT = "https://login.nvidia.com/token"
 private const val CLIENT_TOKEN_ENDPOINT = "https://login.nvidia.com/client_token"
 private const val USERINFO_ENDPOINT = "https://login.nvidia.com/userinfo"
 private const val AUTH_ENDPOINT = "https://login.nvidia.com/authorize"
+private const val DEVICE_AUTHORIZATION_ENDPOINT = "https://login.nvidia.com/oauth/device_authorization"
 private const val GAMES_GRAPHQL_URL = "https://games.geforce.com/graphql"
 private const val MES_URL = "https://mes.geforcenow.com/v4/subscriptions"
 private const val PRINTEDWASTE_QUEUE_URL = "https://api.printedwaste.com/gfn/queue/"
 private const val PRINTEDWASTE_SERVER_MAPPING_URL = "https://remote.printedwaste.com/config/GFN_SERVERID_TO_REGION_MAPPING"
 private const val DEFAULT_STREAMING_SERVICE_URL = "https://prod.cloudmatchbeta.nvidiagrid.net/"
 private const val CLIENT_ID = "ZU7sPN-miLujMD95LfOQ453IB0AtjM8sMyvgJ9wCXEQ"
+private const val DEVICE_CODE_CLIENT_ID = "mCvS6jg8jQbGoOJcK_64uvt1WqXrDK2u6CvoPUDy7IM"
 private const val DEFAULT_IDP_ID = "PDiAhv2kJTFeQ7WOPqiQ2tRZ7lGhR2X11dXvM4TZSxg"
 private const val SCOPES = "openid consent email tk_client age"
+private const val DEVICE_CODE_SCOPES = "openid offline_access email profile"
 private const val PANELS_QUERY_HASH = "f8e26265a5db5c20e1334a6872cf04b6e3970507697f6ae55a6ddefa5420daf0"
 private const val APP_METADATA_QUERY_HASH = "39187e85b6dcf60b7279a5f233288b0a8b69a8b1dbcfb5b25555afdcb988f0d7"
 private const val LIBRARY_WITH_TIME_QUERY_HASH = "039e8c0d553972975485fee56e59f2549d2fdb518e247a42ab5022056a74406f"
@@ -92,7 +99,10 @@ private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
 private val GRAPHQL_MEDIA_TYPE = "application/graphql".toMediaType()
 private val REDIRECT_PORTS = intArrayOf(2259, 6460, 7119, 8870, 9096)
 private const val OAUTH_CALLBACK_TIMEOUT_MS = 120_000L
+private const val DEVICE_CODE_MIN_POLL_INTERVAL_SECONDS = 5
 private val READY_SESSION_STATUSES = setOf(2, 3)
+private const val INVALID_SESSION_PROXY_MESSAGE =
+    "Invalid session proxy URL. Use http://host:port, https://host:port, socks4://host:port, or socks5://host:port."
 
 val OpenNowJson: Json = Json {
     ignoreUnknownKeys = true
@@ -109,6 +119,63 @@ fun defaultHttpClient(): OkHttpClient =
         .writeTimeout(30, TimeUnit.SECONDS)
         .pingInterval(15, TimeUnit.SECONDS)
         .build()
+
+private data class SessionProxyConfig(
+    val normalizedUrl: String,
+    val proxy: Proxy,
+    val username: String,
+    val password: String,
+)
+
+private val sessionProxyClients = mutableMapOf<String, OkHttpClient>()
+
+private fun sessionProxyHttpClient(settings: StreamSettings, fallback: OkHttpClient): OkHttpClient {
+    val proxyConfig = resolveSessionProxyConfig(settings) ?: return fallback
+    return synchronized(sessionProxyClients) {
+        sessionProxyClients.getOrPut(proxyConfig.normalizedUrl) {
+            fallback.newBuilder()
+                .proxy(proxyConfig.proxy)
+                .apply {
+                    if (proxyConfig.username.isNotBlank()) {
+                        proxyAuthenticator { _, response ->
+                            if (response.request.header("Proxy-Authorization") != null) {
+                                return@proxyAuthenticator null
+                            }
+                            response.request.newBuilder()
+                                .header("Proxy-Authorization", Credentials.basic(proxyConfig.username, proxyConfig.password))
+                                .build()
+                        }
+                    }
+                }
+                .build()
+        }
+    }
+}
+
+private fun resolveSessionProxyConfig(settings: StreamSettings): SessionProxyConfig? {
+    if (!settings.sessionProxyEnabled) return null
+    val raw = settings.sessionProxyUrl.trim()
+    if (raw.isBlank()) return null
+    val candidate = if (Regex("^[a-z][a-z0-9+.-]*://", RegexOption.IGNORE_CASE).containsMatchIn(raw)) raw else "http://$raw"
+    val uri = runCatching { URI(candidate) }.getOrNull() ?: error(INVALID_SESSION_PROXY_MESSAGE)
+    val scheme = uri.scheme?.lowercase(Locale.US) ?: error(INVALID_SESSION_PROXY_MESSAGE)
+    val host = uri.host?.takeIf { it.isNotBlank() } ?: error(INVALID_SESSION_PROXY_MESSAGE)
+    val port = uri.port.takeIf { it in 1..65535 } ?: error(INVALID_SESSION_PROXY_MESSAGE)
+    val proxyType = when (scheme) {
+        "http", "https" -> Proxy.Type.HTTP
+        "socks4", "socks5" -> Proxy.Type.SOCKS
+        else -> error(INVALID_SESSION_PROXY_MESSAGE)
+    }
+    val username = uri.userInfo?.substringBefore(":")?.let(::urlDecode).orEmpty()
+    val password = uri.userInfo?.substringAfter(":", "")?.let(::urlDecode).orEmpty()
+    val credentials = if (username.isBlank()) "" else "${urlEncode(username)}${if (password.isNotEmpty()) ":${urlEncode(password)}" else ""}@"
+    return SessionProxyConfig(
+        normalizedUrl = "$scheme://$credentials$host:$port",
+        proxy = Proxy(proxyType, InetSocketAddress.createUnresolved(host, port)),
+        username = username,
+        password = password,
+    )
+}
 
 private object OpenNowDns : Dns {
     private val doh: Dns by lazy {
@@ -280,6 +347,8 @@ private fun decodeJwtPayload(token: String): JsonObject? {
 }
 
 private fun encoded(value: String): String = URLEncoder.encode(value, Charsets.UTF_8.name())
+private fun urlEncode(value: String): String = URLEncoder.encode(value, Charsets.UTF_8.name())
+private fun urlDecode(value: String): String = URLDecoder.decode(value, Charsets.UTF_8.name())
 
 class GfnAuthRepository(
     private val context: Context,
@@ -354,6 +423,15 @@ class GfnAuthRepository(
         return session
     }
 
+    suspend fun loginWithDeviceCode(provider: LoginProvider, onPrompt: suspend (DeviceLoginPrompt) -> Unit): AuthSession {
+        val deviceCode = requestDeviceCode()
+        onPrompt(deviceCode.prompt)
+        val tokens = pollDeviceCodeToken(deviceCode)
+        val session = buildSession(provider, tokens)
+        authStore.upsertSession(session)
+        return session
+    }
+
     suspend fun logout(userId: String? = null) {
         val activeId = userId ?: authStore.activeSession()?.user?.userId
         if (activeId != null) authStore.removeSession(activeId)
@@ -409,6 +487,82 @@ class GfnAuthRepository(
             expiresAt = expiresAt(root.int("expires_in")),
             clientToken = root.string("client_token"),
         )
+    }
+
+    private data class DeviceCodeChallenge(
+        val deviceCode: String,
+        val prompt: DeviceLoginPrompt,
+        val intervalSeconds: Int,
+    )
+
+    private suspend fun requestDeviceCode(): DeviceCodeChallenge {
+        val body = FormBody.Builder()
+            .add("client_id", DEVICE_CODE_CLIENT_ID)
+            .add("scope", DEVICE_CODE_SCOPES)
+            .build()
+        val request = Request.Builder()
+            .url(DEVICE_AUTHORIZATION_ENDPOINT)
+            .headers(nvidiaFileHeaders(includeReferer = true))
+            .post(body)
+            .build()
+        val (status, text) = http.awaitText(request)
+        check(status in 200..299) { "Device sign-in failed ($status): ${text.take(400)}" }
+        val root = OpenNowJson.parseToJsonElement(text).jsonObject
+        val deviceCode = requireNotNull(root.string("device_code")) { "Missing device code" }
+        val userCode = requireNotNull(root.string("user_code")) { "Missing user code" }
+        val verificationUri = root.string("verification_uri")
+            ?: root.string("verification_url")
+            ?: "https://login.nvidia.com"
+        val expiresIn = root.int("expires_in") ?: 600
+        val interval = (root.int("interval") ?: DEVICE_CODE_MIN_POLL_INTERVAL_SECONDS)
+            .coerceAtLeast(DEVICE_CODE_MIN_POLL_INTERVAL_SECONDS)
+        return DeviceCodeChallenge(
+            deviceCode = deviceCode,
+            intervalSeconds = interval,
+            prompt = DeviceLoginPrompt(
+                userCode = userCode,
+                verificationUri = verificationUri,
+                verificationUriComplete = root.string("verification_uri_complete"),
+                expiresAt = nowMs() + expiresIn * 1000L,
+            ),
+        )
+    }
+
+    private suspend fun pollDeviceCodeToken(challenge: DeviceCodeChallenge): AuthTokens {
+        var intervalSeconds = challenge.intervalSeconds
+        while (nowMs() < challenge.prompt.expiresAt) {
+            delay(intervalSeconds * 1000L)
+            val body = FormBody.Builder()
+                .add("grant_type", "urn:ietf:params:oauth:grant-type:device_code")
+                .add("device_code", challenge.deviceCode)
+                .add("client_id", DEVICE_CODE_CLIENT_ID)
+                .build()
+            val request = Request.Builder()
+                .url(TOKEN_ENDPOINT)
+                .headers(nvidiaFileHeaders(includeReferer = true))
+                .post(body)
+                .build()
+            val (status, text) = http.awaitText(request)
+            val root = runCatching { OpenNowJson.parseToJsonElement(text).jsonObject }.getOrNull()
+            if (status in 200..299 && root != null) {
+                return AuthTokens(
+                    accessToken = requireNotNull(root.string("access_token")) { "Missing access token" },
+                    refreshToken = root.string("refresh_token"),
+                    idToken = root.string("id_token"),
+                    expiresAt = expiresAt(root.int("expires_in")),
+                    clientToken = root.string("client_token"),
+                )
+            }
+            val error = root?.string("error").orEmpty()
+            when (error) {
+                "authorization_pending" -> Unit
+                "slow_down" -> intervalSeconds += 5
+                "access_denied" -> error("Device sign-in was cancelled.")
+                "expired_token" -> error("Device sign-in code expired.")
+                else -> check(status in 200..299) { "Device token exchange failed ($status): ${text.take(400)}" }
+            }
+        }
+        error("Device sign-in code expired.")
     }
 
     private suspend fun buildSession(provider: LoginProvider, tokens: AuthTokens): AuthSession {
@@ -1134,12 +1288,13 @@ class GfnSessionRepository(
         val base = resolveStreamingBaseUrl(zone, streamingBaseUrl)
         val body = buildSessionRequestBody(appId, internalTitle, settings, accountLinked, deviceId)
         val url = "$base/v2/session?keyboardLayout=${encoded(settings.keyboardLayout)}&languageCode=${encoded(settings.gameLanguage)}"
+        val requestHttp = sessionProxyHttpClient(settings, http)
         val request = Request.Builder()
             .url(url)
             .headers(cloudMatchHeaders(token, clientId, deviceId, includeOrigin = true))
             .post(body.toString().toRequestBody(JSON_MEDIA_TYPE))
             .build()
-        val (_, text) = http.awaitText(request)
+        val (_, text) = requestHttp.awaitText(request)
         val payload = OpenNowJson.parseToJsonElement(text).jsonObject
         return toSessionInfo(zone, base, payload, clientId, deviceId)
     }
@@ -1152,16 +1307,18 @@ class GfnSessionRepository(
         sessionId: String,
         clientId: String?,
         deviceId: String?,
+        settings: StreamSettings,
     ): SessionInfo {
         val cid = clientId ?: UUID.randomUUID().toString()
         val did = deviceId ?: authStore.stableDeviceId()
         val base = resolvePollStopBase(zone, streamingBaseUrl, serverIp)
         val host = Uri.parse(base).host.orEmpty()
+        val requestHttp = if (isZoneHostname(host)) sessionProxyHttpClient(settings, http) else http
         val request = Request.Builder()
             .url("$base/v2/session/$sessionId")
             .headers(cloudMatchHeaders(token, cid, did, includeOrigin = false))
             .build()
-        val (_, text) = http.awaitText(request)
+        val (_, text) = requestHttp.awaitText(request)
         val payload = OpenNowJson.parseToJsonElement(text).jsonObject
         val realServer = streamingServerIp(payload)
         if (isZoneHostname(host) && realServer != null && !isZoneHostname(realServer) && READY_SESSION_STATUSES.contains(payload.obj("session")?.int("status"))) {
@@ -1181,8 +1338,10 @@ class GfnSessionRepository(
         return toSessionInfo(zone, base, payload, cid, did)
     }
 
-    suspend fun stopSession(token: String, input: SessionInfo) {
+    suspend fun stopSession(token: String, input: SessionInfo, settings: StreamSettings) {
         val base = resolvePollStopBase(input.zone, input.streamingBaseUrl, input.serverIp)
+        val host = Uri.parse(base).host.orEmpty()
+        val requestHttp = if (isZoneHostname(host)) sessionProxyHttpClient(settings, http) else http
         val cid = input.clientId ?: UUID.randomUUID().toString()
         val did = input.deviceId ?: authStore.stableDeviceId()
         val request = Request.Builder()
@@ -1190,16 +1349,18 @@ class GfnSessionRepository(
             .headers(cloudMatchHeaders(token, cid, did, includeOrigin = false))
             .delete()
             .build()
-        http.awaitText(request)
+        requestHttp.awaitText(request)
     }
 
-    suspend fun getActiveSessions(token: String, streamingBaseUrl: String): List<ActiveSessionInfo> {
+    suspend fun getActiveSessions(token: String, streamingBaseUrl: String, settings: StreamSettings): List<ActiveSessionInfo> {
         val base = streamingBaseUrl.trim().trimEnd('/')
+        val host = Uri.parse(base).host.orEmpty()
+        val requestHttp = if (isZoneHostname(host)) sessionProxyHttpClient(settings, http) else http
         val request = Request.Builder()
             .url("$base/v2/session")
             .headers(cloudMatchHeaders(token, UUID.randomUUID().toString(), authStore.stableDeviceId(), includeOrigin = false))
             .build()
-        val (code, text) = http.awaitText(request)
+        val (code, text) = requestHttp.awaitText(request)
         if (code !in 200..299) return emptyList()
         val payload = runCatching { OpenNowJson.parseToJsonElement(text).jsonObject }.getOrNull() ?: return emptyList()
         if (payload.obj("requestStatus")?.int("statusCode") != 1) return emptyList()
@@ -1215,6 +1376,8 @@ class GfnSessionRepository(
                 appId = s.obj("sessionRequestData")?.string("appId")?.toIntOrNull() ?: 0,
                 gpuType = s.string("gpuType"),
                 status = status,
+                queuePosition = extractQueuePosition(s),
+                seatSetupStep = s.obj("seatSetupInfo")?.int("seatSetupStep"),
                 streamingBaseUrl = base,
                 serverIp = connIp ?: controlIp,
                 signalingUrl = (connIp ?: controlIp)?.let { "wss://$it:443/nvst/" },
@@ -1229,11 +1392,12 @@ class GfnSessionRepository(
         val clientId = UUID.randomUUID().toString()
         var effectiveServerIp = active.serverIp ?: error("Missing server IP for session claim")
         if (isZoneHostname(effectiveServerIp)) {
+            val requestHttp = sessionProxyHttpClient(settings, http)
             val prefetch = Request.Builder()
                 .url("https://$effectiveServerIp/v2/session/${active.sessionId}")
                 .headers(cloudMatchHeaders(token, clientId, deviceId, includeOrigin = false))
                 .build()
-            val (code, text) = http.awaitText(prefetch)
+            val (code, text) = requestHttp.awaitText(prefetch)
             if (code in 200..299) {
                 streamingServerIp(OpenNowJson.parseToJsonElement(text).jsonObject)?.let { effectiveServerIp = it }
             }
@@ -1273,8 +1437,40 @@ class GfnSessionRepository(
         error("Session did not become ready after claiming.")
     }
 
-    suspend fun reportSessionAd(token: String, session: SessionInfo, adId: String, action: String): SessionInfo {
+    suspend fun stopActiveSession(token: String, active: ActiveSessionInfo, settings: StreamSettings) {
+        stopSession(
+            token = token,
+            input = SessionInfo(
+                sessionId = active.sessionId,
+                status = active.status,
+                queuePosition = active.queuePosition,
+                seatSetupStep = active.seatSetupStep,
+                streamingBaseUrl = active.streamingBaseUrl,
+                serverIp = active.serverIp.orEmpty(),
+                signalingServer = active.serverIp.orEmpty(),
+                signalingUrl = active.signalingUrl.orEmpty(),
+                gpuType = active.gpuType,
+                clientId = UUID.randomUUID().toString(),
+                deviceId = authStore.stableDeviceId(),
+            ),
+            settings = settings,
+        )
+    }
+
+    suspend fun reportSessionAd(
+        token: String,
+        session: SessionInfo,
+        adId: String,
+        action: String,
+        settings: StreamSettings,
+        watchedTimeInMs: Long? = null,
+        pausedTimeInMs: Long? = null,
+        cancelReason: String? = null,
+        errorInfo: String? = null,
+    ): SessionInfo {
         val base = resolvePollStopBase(session.zone, session.streamingBaseUrl, session.serverIp)
+        val host = Uri.parse(base).host.orEmpty()
+        val requestHttp = if (isZoneHostname(host)) sessionProxyHttpClient(settings, http) else http
         val cid = session.clientId ?: UUID.randomUUID().toString()
         val did = session.deviceId ?: authStore.stableDeviceId()
         val actionCode = mapOf("start" to 1, "pause" to 2, "resume" to 3, "finish" to 4, "cancel" to 5)[action] ?: 5
@@ -1285,6 +1481,18 @@ class GfnSessionRepository(
                     put("adId", adId)
                     put("adAction", actionCode)
                     put("clientTimestamp", System.currentTimeMillis() / 1000)
+                    if (watchedTimeInMs != null) {
+                        put("watchedTimeInMs", max(0L, watchedTimeInMs))
+                    }
+                    if (pausedTimeInMs != null) {
+                        put("pausedTimeInMs", max(0L, pausedTimeInMs))
+                    }
+                    if (!cancelReason.isNullOrBlank()) {
+                        put("cancelReason", cancelReason)
+                    }
+                    if (!errorInfo.isNullOrBlank()) {
+                        put("errorInfo", errorInfo)
+                    }
                 })
             }
         }
@@ -1293,7 +1501,8 @@ class GfnSessionRepository(
             .headers(cloudMatchHeaders(token, cid, did, includeOrigin = true))
             .put(body.toString().toRequestBody(JSON_MEDIA_TYPE))
             .build()
-        val (_, text) = http.awaitText(request)
+        val (code, text) = requestHttp.awaitText(request)
+        check(code in 200..299) { "Queue ad update failed ($code): ${text.take(400)}" }
         return toSessionInfo(session.zone, base, OpenNowJson.parseToJsonElement(text).jsonObject, cid, did)
     }
 

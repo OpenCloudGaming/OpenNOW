@@ -58,6 +58,8 @@ data class StreamSettings(
     val region: String = "",
     val keyboardLayout: String = "en-US",
     val gameLanguage: String = "en_US",
+    val sessionProxyEnabled: Boolean = false,
+    val sessionProxyUrl: String = "",
     val enableL4S: Boolean = false,
     val enableCloudGsync: Boolean = false,
     val mouseSensitivity: Float = 1f,
@@ -175,6 +177,13 @@ data class AuthSession(
     val provider: LoginProvider,
     val tokens: AuthTokens,
     val user: AuthUser,
+)
+
+data class DeviceLoginPrompt(
+    val userCode: String,
+    val verificationUri: String,
+    val verificationUriComplete: String? = null,
+    val expiresAt: Long,
 )
 
 @Serializable
@@ -520,6 +529,8 @@ data class ActiveSessionInfo(
     val appId: Int,
     val gpuType: String? = null,
     val status: Int,
+    val queuePosition: Int? = null,
+    val seatSetupStep: Int? = null,
     val streamingBaseUrl: String? = null,
     val serverIp: String? = null,
     val signalingUrl: String? = null,
