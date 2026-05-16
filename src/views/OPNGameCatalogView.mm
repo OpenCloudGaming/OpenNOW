@@ -1906,19 +1906,13 @@ using namespace OPN;
         : (showLastPlayedTile ? OPNControllerOverviewSpecialTileLastPlayed : OPNControllerOverviewSpecialTileNone);
 
     CGFloat scale = OpnControllerGridItemScale();
-    CGFloat spacing = floor(18.0 * scale);
-    CGFloat targetCardWidth = 220.0 * scale;
-    CGFloat availableWidth = MAX(1.0, NSWidth(self.scrollView.frame));
-    NSInteger columns = MAX(1, (NSInteger)floor((availableWidth + spacing) / (targetCardWidth + spacing)));
-    CGFloat cardWidth = floor((availableWidth - (CGFloat)(columns - 1) * spacing) / columns);
+    CGFloat spacing = floor(26.0 * scale);
+    CGFloat cardWidth = floor(294.0 * scale);
     CGFloat cardHeight = floor(cardWidth * 178.0 / 220.0);
-    self.gridColumnCount = columns;
+    CGFloat railInset = floor(34.0 * scale);
+    CGFloat railY = floor(42.0 * scale);
+    self.gridColumnCount = 1;
 
-    NSMutableSet<NSString *> *occupiedCells = [NSMutableSet set];
-    NSInteger occupiedRows = 0;
-    NSString *(^cellKey)(NSInteger, NSInteger) = ^NSString *(NSInteger row, NSInteger column) {
-        return [NSString stringWithFormat:@"%ld:%ld", (long)row, (long)column];
-    };
     NSView *specialTileView = nil;
     if (self.controllerOverviewSpecialTileKind == OPNControllerOverviewSpecialTileStream) {
         specialTileView = self.streamPipContainerView;
@@ -1933,20 +1927,16 @@ using namespace OPN;
         self.lastPlayedPanelView.hidden = YES;
     }
 
+    CGFloat nextX = railInset;
+    CGFloat railHeight = cardHeight;
     if (specialTileView) {
         [self.gridContentView addSubview:specialTileView];
-        NSInteger specialColumns = MIN((NSInteger)2, columns);
-        NSInteger specialRows = 2;
-        CGFloat tileWidth = specialColumns * cardWidth + MAX(0, specialColumns - 1) * spacing;
-        CGFloat tileHeight = specialRows * cardHeight + MAX(0, specialRows - 1) * spacing;
-        NSRect tileFrame = NSMakeRect(0.0, 0.0, tileWidth, tileHeight);
+        CGFloat tileWidth = floor(cardWidth * 1.92);
+        CGFloat tileHeight = floor(cardHeight * 1.74);
+        NSRect tileFrame = NSMakeRect(nextX, 0.0, tileWidth, tileHeight);
         specialTileView.frame = tileFrame;
-        for (NSInteger row = 0; row < specialRows; row++) {
-            for (NSInteger column = 0; column < specialColumns; column++) {
-                [occupiedCells addObject:cellKey(row, column)];
-            }
-        }
-        occupiedRows = specialRows;
+        railHeight = MAX(railHeight, tileHeight);
+        nextX = NSMaxX(tileFrame) + spacing;
         if (self.controllerOverviewSpecialTileKind == OPNControllerOverviewSpecialTileStream) {
             CGFloat videoWidth = MAX(120.0, tileWidth - 24.0);
             CGFloat maxVideoHeight = MAX(70.0, tileHeight - 54.0);
@@ -1982,28 +1972,13 @@ using namespace OPN;
         }
     }
 
-    NSInteger nextCellIndex = 0;
+    CGFloat cardY = floor((railHeight - cardHeight) * 0.5);
     {
-        NSInteger row = 0;
-        NSInteger column = 0;
-        while (YES) {
-            row = nextCellIndex / columns;
-            column = nextCellIndex % columns;
-            nextCellIndex++;
-            NSString *key = cellKey(row, column);
-            if (![occupiedCells containsObject:key]) {
-                [occupiedCells addObject:key];
-                break;
-            }
-        }
-        occupiedRows = MAX(occupiedRows, row + 1);
-        CGFloat x = (CGFloat)column * (cardWidth + spacing);
-        CGFloat y = (CGFloat)row * (cardHeight + spacing);
         std::vector<OPN::GameInfo> emptyGames;
-        OPNControllerCategoryCardView *settingsCard = [[OPNControllerCategoryCardView alloc] initWithFrame:NSMakeRect(x, y, cardWidth, cardHeight)
-                                                                                                      title:@"Interface Settings"
-                                                                                                 categoryId:@"system:interface-settings"
-                                                                                                  gameCount:1
+        OPNControllerCategoryCardView *settingsCard = [[OPNControllerCategoryCardView alloc] initWithFrame:NSMakeRect(nextX, cardY, cardWidth, cardHeight)
+                                                                                                       title:@"Interface Settings"
+                                                                                                  categoryId:@"system:interface-settings"
+                                                                                                   gameCount:1
                                                                                                       games:emptyGames];
         __weak __typeof__(self) weakSelf = self;
         __weak OPNControllerCategoryCardView *weakCard = settingsCard;
@@ -2017,6 +1992,7 @@ using namespace OPN;
         };
         [self.gridContentView addSubview:settingsCard];
         [self.categoryCardViews addObject:settingsCard];
+        nextX = NSMaxX(settingsCard.frame) + spacing;
     }
 
     for (NSDictionary<NSString *, NSString *> *item in self.categoryItems) {
@@ -2027,22 +2003,7 @@ using namespace OPN;
         NSInteger gameCount = [self gameCountForCategory:categoryId];
         if (gameCount <= 0 && ![categoryId isEqualToString:@"favorites"]) continue;
         std::vector<OPN::GameInfo> thumbnailGames = [self gamesForCategory:categoryId limit:6];
-        NSInteger row = 0;
-        NSInteger column = 0;
-        while (YES) {
-            row = nextCellIndex / columns;
-            column = nextCellIndex % columns;
-            nextCellIndex++;
-            NSString *key = cellKey(row, column);
-            if (![occupiedCells containsObject:key]) {
-                [occupiedCells addObject:key];
-                break;
-            }
-        }
-        occupiedRows = MAX(occupiedRows, row + 1);
-        CGFloat x = (CGFloat)column * (cardWidth + spacing);
-        CGFloat y = (CGFloat)row * (cardHeight + spacing);
-        OPNControllerCategoryCardView *card = [[OPNControllerCategoryCardView alloc] initWithFrame:NSMakeRect(x, y, cardWidth, cardHeight)
+        OPNControllerCategoryCardView *card = [[OPNControllerCategoryCardView alloc] initWithFrame:NSMakeRect(nextX, cardY, cardWidth, cardHeight)
                                                                                                title:title
                                                                                           categoryId:categoryId
                                                                                            gameCount:gameCount
@@ -2059,13 +2020,13 @@ using namespace OPN;
         };
         [self.gridContentView addSubview:card];
         [self.categoryCardViews addObject:card];
+        nextX = NSMaxX(card.frame) + spacing;
     }
 
-    NSInteger rows = occupiedRows;
     self.gridContentView.frame = NSMakeRect(0.0,
-                                            0.0,
-                                            self.scrollView.frame.size.width,
-                                            MAX(self.scrollView.frame.size.height, rows * cardHeight + MAX(0, rows - 1) * spacing));
+                                             0.0,
+                                             MAX(self.scrollView.frame.size.width, nextX + railInset),
+                                             MAX(self.scrollView.frame.size.height, railHeight + railY));
     NSInteger itemCount = [self controllerOverviewItemCount];
     if (self.focusedCategoryIndex >= itemCount) self.focusedCategoryIndex = itemCount - 1;
     if (self.focusedCategoryIndex < 0 && itemCount > 0) self.focusedCategoryIndex = 0;
@@ -2230,8 +2191,8 @@ using namespace OPN;
         [self stopControllerDetailBackgroundRotation];
         self.controllerGameHubView.hidden = YES;
         self.controllerPromptBarView.hidden = YES;
-        self.scrollView.hasVerticalScroller = YES;
-        self.scrollView.hasHorizontalScroller = NO;
+        self.scrollView.hasVerticalScroller = NO;
+        self.scrollView.hasHorizontalScroller = YES;
         CGFloat gridY = controllerNavHeight + 28.0;
         self.scrollView.frame = NSMakeRect(0.0, gridY, width, MAX(0.0, height - gridY - 36.0));
         self.statusLabel.frame = NSMakeRect(28.0, gridY + NSHeight(self.scrollView.frame) + 10.0, width - 56.0, 24.0);
