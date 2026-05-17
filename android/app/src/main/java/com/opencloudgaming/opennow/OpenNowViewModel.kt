@@ -3,6 +3,7 @@ package com.opencloudgaming.opennow
 import android.app.Application
 import android.content.Intent
 import android.net.Uri
+import android.widget.Toast
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Job
@@ -415,6 +416,14 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             val defaultVariantId = state.value.settings.defaultGameVariantIds[game.id]
             val defaultVariant = launchVariants.firstOrNull { it.id == defaultVariantId }
             if (defaultVariant != null) {
+                Toast.makeText(
+                    getApplication(),
+                    getApplication<Application>().getString(
+                        R.string.store_selector_default_launch_notice,
+                        gameStoreDisplayName(defaultVariant.store),
+                    ),
+                    Toast.LENGTH_SHORT,
+                ).show()
                 play(game.withSelectedVariant(defaultVariant.id), streamingBaseUrlOverride, skipPrintedWaste, skipStoreChoice = true)
                 return
             }

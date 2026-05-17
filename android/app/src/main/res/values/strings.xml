@@ -30,6 +30,7 @@
     <string name="store_selector_selected">Selected</string>
     <string name="store_selector_available_launcher">Available launcher</string>
     <string name="store_selector_default_checkbox">Don\'t ask me again - make this the default store</string>
+    <string name="store_selector_default_launch_notice">Proceeding with default store: %1$s</string>
     <string name="store_selector_long_press_tip">Tip: long press Play to choose a different store later.</string>
     <string name="store_selector_play_long_press">Long press Play to choose a store</string>
     <string name="settings_section_stream">Stream</string>
@@ -44,6 +45,9 @@
     <string name="settings_session_proxy">Session proxy</string>
     <string name="settings_session_proxy_hint">Routes GFN session creation and queue polling through this proxy. Leave off for direct requests.</string>
     <string name="settings_session_proxy_url">Proxy URL</string>
+    <string name="settings_codec_diagnostics_copy">Copy codec diagnostic</string>
+    <string name="settings_codec_diagnostics_copied">Copied codec diagnostic</string>
+    <string name="settings_codec_diagnostics_unavailable">Codec probe has not run yet.</string>
     <string name="settings_session_proxy_warning_title">Enable session proxy?</string>
     <string name="settings_session_proxy_warning_traffic">GFN session creation, queue polling, resume, stop, and queue ad update requests will be routed through the proxy you enter.</string>
     <string name="settings_session_proxy_warning_breakage">A bad or blocked proxy can break launch, queue progress, active session resume, or session cleanup.</string>

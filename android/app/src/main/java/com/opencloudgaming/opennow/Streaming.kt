@@ -455,13 +455,14 @@ object NativeStreamInputRouter {
     private fun KeyEvent.isStreamControlsShortcutKey(): Boolean =
         !streamUiActive &&
             !isControllerSource() &&
+            !isHardwareKeyboardSource() &&
             (keyCode == KeyEvent.KEYCODE_ENTER ||
                 keyCode == KeyEvent.KEYCODE_NUMPAD_ENTER ||
                 keyCode == KeyEvent.KEYCODE_DPAD_CENTER)
 
     private fun KeyEvent.isStreamExitShortcutKey(): Boolean =
         keyCode == KeyEvent.KEYCODE_BACK ||
-            keyCode == KeyEvent.KEYCODE_ESCAPE
+            (keyCode == KeyEvent.KEYCODE_ESCAPE && !isHardwareKeyboardSource())
 
     private fun KeyEvent.isNativeUiNavigationKey(): Boolean =
         keyCode == KeyEvent.KEYCODE_DPAD_UP ||
@@ -484,6 +485,10 @@ object NativeStreamInputRouter {
     private fun KeyEvent.isControllerSource(): Boolean =
         (source and InputDevice.SOURCE_GAMEPAD) == InputDevice.SOURCE_GAMEPAD ||
             (source and InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK
+
+    private fun KeyEvent.isHardwareKeyboardSource(): Boolean =
+        (source and InputDevice.SOURCE_KEYBOARD) == InputDevice.SOURCE_KEYBOARD &&
+            !isControllerSource()
 
     private fun MotionEvent.isNativeUiNavigationMotion(): Boolean =
         isFromSource(InputDevice.SOURCE_JOYSTICK) ||
@@ -1705,7 +1710,6 @@ class NativeStreamClient(
     private fun MotionEvent.isFromSource(source: Int): Boolean = (this.source and source) == source
     private fun MotionEvent.isMouseLikePointer(): Boolean =
         isFromSource(InputDevice.SOURCE_MOUSE) ||
-            isFromSource(InputDevice.SOURCE_TOUCHPAD) ||
             isFromSource(InputDevice.SOURCE_MOUSE_RELATIVE)
 
     private fun MotionEvent.primaryMouseButton(): Int =
@@ -1726,13 +1730,16 @@ class NativeStreamClient(
         return mask
     }
 
-    private fun KeyEvent.isGamepadEvent(): Boolean =
-        keyCode.toGamepadButtonMask() != null ||
+    private fun KeyEvent.isGamepadEvent(): Boolean {
+        val controllerSource =
+            (source and InputDevice.SOURCE_GAMEPAD) == InputDevice.SOURCE_GAMEPAD ||
+                (source and InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK
+        if (!controllerSource) return false
+        return keyCode.toGamepadButtonMask() != null ||
             keyCode == KeyEvent.KEYCODE_BUTTON_L2 ||
             keyCode == KeyEvent.KEYCODE_BUTTON_R2 ||
-            keyCode == KeyEvent.KEYCODE_BUTTON_MODE ||
-        (source and InputDevice.SOURCE_GAMEPAD) == InputDevice.SOURCE_GAMEPAD ||
-            (source and InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK
+            keyCode == KeyEvent.KEYCODE_BUTTON_MODE
+    }
 
     private fun MotionEvent.isGamepadMotionEvent(): Boolean =
         isFromSource(InputDevice.SOURCE_JOYSTICK) ||
@@ -2164,10 +2171,35 @@ class InputEncoder {
                 KeyEvent.KEYCODE_DPAD_UP -> 0x26
                 KeyEvent.KEYCODE_DPAD_RIGHT -> 0x27
                 KeyEvent.KEYCODE_DPAD_DOWN -> 0x28
+                KeyEvent.KEYCODE_PAGE_UP -> 0x21
+                KeyEvent.KEYCODE_PAGE_DOWN -> 0x22
                 KeyEvent.KEYCODE_FORWARD_DEL -> 0x2e
                 KeyEvent.KEYCODE_INSERT -> 0x2d
                 KeyEvent.KEYCODE_MOVE_HOME -> 0x24
                 KeyEvent.KEYCODE_MOVE_END -> 0x23
+                KeyEvent.KEYCODE_SHIFT_LEFT,
+                KeyEvent.KEYCODE_SHIFT_RIGHT,
+                -> 0x10
+                KeyEvent.KEYCODE_CTRL_LEFT,
+                KeyEvent.KEYCODE_CTRL_RIGHT,
+                -> 0x11
+                KeyEvent.KEYCODE_ALT_LEFT,
+                KeyEvent.KEYCODE_ALT_RIGHT,
+                -> 0x12
+                KeyEvent.KEYCODE_CAPS_LOCK -> 0x14
+                KeyEvent.KEYCODE_NUM_LOCK -> 0x90
+                KeyEvent.KEYCODE_SCROLL_LOCK -> 0x91
+                KeyEvent.KEYCODE_MINUS -> 0xbd
+                KeyEvent.KEYCODE_EQUALS -> 0xbb
+                KeyEvent.KEYCODE_LEFT_BRACKET -> 0xdb
+                KeyEvent.KEYCODE_RIGHT_BRACKET -> 0xdd
+                KeyEvent.KEYCODE_BACKSLASH -> 0xdc
+                KeyEvent.KEYCODE_SEMICOLON -> 0xba
+                KeyEvent.KEYCODE_APOSTROPHE -> 0xde
+                KeyEvent.KEYCODE_COMMA -> 0xbc
+                KeyEvent.KEYCODE_PERIOD -> 0xbe
+                KeyEvent.KEYCODE_SLASH -> 0xbf
+                KeyEvent.KEYCODE_GRAVE -> 0xc0
                 in KeyEvent.KEYCODE_A..KeyEvent.KEYCODE_Z -> 0x41 + (keyCode - KeyEvent.KEYCODE_A)
                 in KeyEvent.KEYCODE_0..KeyEvent.KEYCODE_9 -> 0x30 + (keyCode - KeyEvent.KEYCODE_0)
                 in KeyEvent.KEYCODE_F1..KeyEvent.KEYCODE_F12 -> 0x70 + (keyCode - KeyEvent.KEYCODE_F1)
@@ -2205,6 +2237,38 @@ class InputEncoder {
                 KeyEvent.KEYCODE_ENTER -> 0x001c
                 KeyEvent.KEYCODE_ESCAPE -> 0x0001
                 KeyEvent.KEYCODE_SPACE -> 0x0039
+                KeyEvent.KEYCODE_TAB -> 0x000f
+                KeyEvent.KEYCODE_DEL -> 0x000e
+                KeyEvent.KEYCODE_DPAD_LEFT -> 0x014b
+                KeyEvent.KEYCODE_DPAD_UP -> 0x0148
+                KeyEvent.KEYCODE_DPAD_RIGHT -> 0x014d
+                KeyEvent.KEYCODE_DPAD_DOWN -> 0x0150
+                KeyEvent.KEYCODE_PAGE_UP -> 0x0149
+                KeyEvent.KEYCODE_PAGE_DOWN -> 0x0151
+                KeyEvent.KEYCODE_FORWARD_DEL -> 0x0153
+                KeyEvent.KEYCODE_INSERT -> 0x0152
+                KeyEvent.KEYCODE_MOVE_HOME -> 0x0147
+                KeyEvent.KEYCODE_MOVE_END -> 0x014f
+                KeyEvent.KEYCODE_SHIFT_LEFT -> 0x002a
+                KeyEvent.KEYCODE_SHIFT_RIGHT -> 0x0036
+                KeyEvent.KEYCODE_CTRL_LEFT -> 0x001d
+                KeyEvent.KEYCODE_CTRL_RIGHT -> 0x011d
+                KeyEvent.KEYCODE_ALT_LEFT -> 0x0038
+                KeyEvent.KEYCODE_ALT_RIGHT -> 0x0138
+                KeyEvent.KEYCODE_CAPS_LOCK -> 0x003a
+                KeyEvent.KEYCODE_NUM_LOCK -> 0x0145
+                KeyEvent.KEYCODE_SCROLL_LOCK -> 0x0046
+                KeyEvent.KEYCODE_MINUS -> 0x000c
+                KeyEvent.KEYCODE_EQUALS -> 0x000d
+                KeyEvent.KEYCODE_LEFT_BRACKET -> 0x001a
+                KeyEvent.KEYCODE_RIGHT_BRACKET -> 0x001b
+                KeyEvent.KEYCODE_BACKSLASH -> 0x002b
+                KeyEvent.KEYCODE_SEMICOLON -> 0x0027
+                KeyEvent.KEYCODE_APOSTROPHE -> 0x0028
+                KeyEvent.KEYCODE_COMMA -> 0x0033
+                KeyEvent.KEYCODE_PERIOD -> 0x0034
+                KeyEvent.KEYCODE_SLASH -> 0x0035
+                KeyEvent.KEYCODE_GRAVE -> 0x0029
                 else -> null
             }
     }

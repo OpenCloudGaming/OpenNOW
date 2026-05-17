@@ -8,6 +8,7 @@ import android.os.Bundle
 import android.view.InputDevice
 import android.view.KeyEvent
 import android.view.MotionEvent
+import android.view.PointerIcon
 import android.view.View
 import android.view.WindowInsets
 import android.view.WindowInsetsController
@@ -109,6 +110,7 @@ class MainActivity : ComponentActivity() {
     private fun applyStreamSystemUi(active: Boolean, force: Boolean = false) {
         if (!force && streamSystemUiActive == active) return
         streamSystemUiActive = active
+        applyStreamPointerIcon(active)
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
             window.attributes = window.attributes.apply {
@@ -143,6 +145,12 @@ class MainActivity : ComponentActivity() {
                 0
             }
         }
+    }
+
+    private fun applyStreamPointerIcon(active: Boolean) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) return
+        val iconType = if (active) PointerIcon.TYPE_NULL else PointerIcon.TYPE_DEFAULT
+        window.decorView.pointerIcon = PointerIcon.getSystemIcon(this, iconType)
     }
 
     @Suppress("DEPRECATION", "OVERRIDE_DEPRECATION")

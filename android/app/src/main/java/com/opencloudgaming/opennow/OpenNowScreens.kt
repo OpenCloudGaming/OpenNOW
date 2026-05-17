@@ -7,8 +7,10 @@ import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Build
 import android.speech.RecognizerIntent
+import android.view.InputDevice
 import android.view.KeyEvent
 import android.view.MotionEvent
+import android.view.PointerIcon
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -183,6 +185,12 @@ private val SettingsText = Color(0xffeef3f5)
 private val SettingsTextMuted = Color(0xff98a4aa)
 
 private data class SettingsChoiceOption(val value: String, val label: String)
+private data class ChoiceMenuOption(
+    val value: String,
+    val label: String,
+    val enabled: Boolean = true,
+    val badge: String? = null,
+)
 
 private val keyboardLayoutOptions = listOf(
     SettingsChoiceOption("en-US", "English (US)"),
@@ -999,6 +1007,7 @@ private fun HomeScreen(state: OpenNowUiState, viewModel: OpenNowViewModel, tvPro
                         onSelect = viewModel::selectGame,
                         onFavorite = viewModel::updateFavorites,
                         onPlay = viewModel::play,
+                        onChooseStore = viewModel::chooseStore,
                         onSortChange = viewModel::setCatalogSort,
                         onFilterToggle = viewModel::toggleCatalogFilter,
                         gridState = gridState,
@@ -1093,6 +1102,7 @@ private fun LibraryScreen(state: OpenNowUiState, viewModel: OpenNowViewModel, tv
                 viewModel::selectGame,
                 viewModel::updateFavorites,
                 viewModel::play,
+                viewModel::chooseStore,
                 modifier = Modifier.weight(1f),
             )
         }
@@ -1165,6 +1175,7 @@ private fun GameGrid(
     onSelect: (GameInfo) -> Unit,
     onFavorite: (String) -> Unit,
     onPlay: (GameInfo) -> Unit,
+    onChooseStore: (GameInfo) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     if (games.isEmpty()) {
@@ -1176,15 +1187,18 @@ private fun GameGrid(
     val scale = settings.posterSizeScale.coerceIn(0.82f, 1.08f)
     val compact = settings.compactGameCards
     val cardHeight = if (compact) 252.dp else 286.dp
-    LazyVerticalGrid(
-        modifier = modifier.fillMaxSize(),
-        columns = GridCells.Fixed(2),
-        contentPadding = PaddingValues(4.dp),
-        horizontalArrangement = Arrangement.spacedBy(if (compact) 8.dp else 10.dp),
-        verticalArrangement = Arrangement.spacedBy(if (compact) 10.dp else 12.dp),
-    ) {
-        gridItems(games, key = { it.id }) { game ->
-            GameCard(game, game.id in favoriteIds, settings, tvProfile, cardHeight * scale, onSelect, onFavorite, onPlay)
+    BoxWithConstraints(modifier.fillMaxSize()) {
+        val columns = gameGridColumnCount(maxWidth)
+        LazyVerticalGrid(
+            modifier = Modifier.fillMaxSize(),
+            columns = GridCells.Fixed(columns),
+            contentPadding = PaddingValues(4.dp),
+            horizontalArrangement = Arrangement.spacedBy(if (compact) 8.dp else 10.dp),
+            verticalArrangement = Arrangement.spacedBy(if (compact) 10.dp else 12.dp),
+        ) {
+            gridItems(games, key = { it.id }) { game ->
+                GameCard(game, game.id in favoriteIds, settings, tvProfile, cardHeight * scale, onSelect, onFavorite, onPlay, onChooseStore)
+            }
         }
     }
 }
@@ -1199,6 +1213,7 @@ private fun StoreGameGrid(
     onSelect: (GameInfo) -> Unit,
     onFavorite: (String) -> Unit,
     onPlay: (GameInfo) -> Unit,
+    onChooseStore: (GameInfo) -> Unit,
     onSortChange: (String) -> Unit,
     onFilterToggle: (String) -> Unit,
     gridState: androidx.compose.foundation.lazy.grid.LazyGridState,
@@ -1216,22 +1231,33 @@ private fun StoreGameGrid(
     val scale = settings.posterSizeScale.coerceIn(0.82f, 1.08f)
     val compact = settings.compactGameCards
     val cardHeight = if (compact) 252.dp else 286.dp
-    LazyVerticalGrid(
-        modifier = modifier.fillMaxSize(),
-        state = gridState,
-        columns = GridCells.Fixed(2),
-        contentPadding = PaddingValues(0.dp),
-        horizontalArrangement = Arrangement.spacedBy(if (compact) 8.dp else 10.dp),
-        verticalArrangement = Arrangement.spacedBy(if (compact) 10.dp else 12.dp),
-    ) {
-        item(span = { GridItemSpan(maxLineSpan) }) {
-            StoreScrollableControls(state, onSortChange, onFilterToggle)
-        }
-        gridItems(games, key = { it.id }) { game ->
-            GameCard(game, game.id in favoriteIds, settings, tvProfile, cardHeight * scale, onSelect, onFavorite, onPlay)
+    BoxWithConstraints(modifier.fillMaxSize()) {
+        val columns = gameGridColumnCount(maxWidth)
+        LazyVerticalGrid(
+            modifier = Modifier.fillMaxSize(),
+            state = gridState,
+            columns = GridCells.Fixed(columns),
+            contentPadding = PaddingValues(0.dp),
+            horizontalArrangement = Arrangement.spacedBy(if (compact) 8.dp else 10.dp),
+            verticalArrangement = Arrangement.spacedBy(if (compact) 10.dp else 12.dp),
+        ) {
+            item(span = { GridItemSpan(maxLineSpan) }) {
+                StoreScrollableControls(state, onSortChange, onFilterToggle)
+            }
+            gridItems(games, key = { it.id }) { game ->
+                GameCard(game, game.id in favoriteIds, settings, tvProfile, cardHeight * scale, onSelect, onFavorite, onPlay, onChooseStore)
+            }
         }
     }
 }
+
+private fun gameGridColumnCount(maxWidth: androidx.compose.ui.unit.Dp): Int =
+    when {
+        maxWidth >= 1100.dp -> 5
+        maxWidth >= 840.dp -> 4
+        maxWidth >= 600.dp -> 3
+        else -> 2
+    }
 
 @Composable
 private fun GameCard(
@@ -1243,6 +1269,7 @@ private fun GameCard(
     onSelect: (GameInfo) -> Unit,
     onFavorite: (String) -> Unit,
     onPlay: (GameInfo) -> Unit,
+    onChooseStore: (GameInfo) -> Unit,
 ) {
     var focused by remember { mutableStateOf(false) }
     val cardShape = RoundedCornerShape(if (settings.expressiveUi) 12.dp else 8.dp)
@@ -1310,9 +1337,11 @@ private fun GameCard(
             }
         }
         Box(Modifier.padding(start = 9.dp, end = 9.dp, bottom = 9.dp)) {
-            Button(onClick = { onPlay(game) }, modifier = Modifier.fillMaxWidth(), contentPadding = PaddingValues(vertical = 6.dp)) {
-                Text(stringResource(R.string.action_play), maxLines = 1, overflow = TextOverflow.Ellipsis)
-            }
+            LongPressPlayButton(
+                onClick = { onPlay(game) },
+                onLongClick = { onChooseStore(game) },
+                modifier = Modifier.fillMaxWidth(),
+            )
         }
     }
 }
@@ -2066,14 +2095,40 @@ private fun SettingsContent(
     val settings = state.settings
     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
     SettingsSection(stringResource(R.string.settings_section_stream)) {
-                val resolutionOptions = streamResolutionOptionsForAspect(settings.stream.aspectRatio).ifEmpty {
-                    listOf("1280x720", "1920x1080", "2560x1440", "3840x2160")
+                val fallbackMembershipTier = state.authSession?.user?.membershipTier
+                val resolutionChoices = streamResolutionChoicesForAspect(settings.stream.aspectRatio).ifEmpty {
+                    streamResolutionChoicesForAspect("16:9")
                 }
                 val selectedResolution = normalizeStreamResolutionForAspect(settings.stream.resolution, settings.stream.aspectRatio)
-                ChoiceRow(stringResource(R.string.settings_resolution), resolutionOptions, selectedResolution) {
+                ChoiceMenuRow(
+                    label = stringResource(R.string.settings_resolution),
+                    options = resolutionChoices.map { choice ->
+                        val available = choice.isAvailableFor(state.subscriptionInfo, fallbackMembershipTier)
+                        ChoiceMenuOption(
+                            value = choice.value,
+                            label = choice.label,
+                            enabled = available,
+                            badge = if (available) null else choice.requiredPlanLabel,
+                        )
+                    },
+                    selectedLabel = resolutionChoices.firstOrNull { it.value == selectedResolution }?.label ?: selectedResolution,
+                ) {
                     viewModel.updateStreamSettings { s -> s.copy(resolution = it) }
                 }
-                ChoiceRow(stringResource(R.string.settings_aspect_ratio), listOf("16:9", "16:10", "21:9", "32:9"), settings.stream.aspectRatio) {
+                ChoiceMenuRow(
+                    label = stringResource(R.string.settings_aspect_ratio),
+                    options = streamAspectRatioOptions().map { aspectRatio ->
+                        val choices = streamResolutionChoicesForAspect(aspectRatio)
+                        val available = choices.any { it.isAvailableFor(state.subscriptionInfo, fallbackMembershipTier) }
+                        ChoiceMenuOption(
+                            value = aspectRatio,
+                            label = aspectRatio,
+                            enabled = available,
+                            badge = if (available) null else choices.firstNotNullOfOrNull { it.requiredPlanLabel },
+                        )
+                    },
+                    selectedLabel = settings.stream.aspectRatio,
+                ) {
                     viewModel.updateStreamSettings { s ->
                         s.copy(
                             aspectRatio = it,
@@ -2238,11 +2293,30 @@ private fun AuthSession.toSavedAccount(): SavedAccount =
 @Composable
 private fun CodecDiagnosticsPanel(report: RuntimeCodecReport?) {
     if (report == null) {
-        Text("Codec probe has not run yet.", color = SettingsTextMuted)
+        Text(stringResource(R.string.settings_codec_diagnostics_unavailable), color = SettingsTextMuted)
         return
     }
+    val clipboard = LocalClipboardManager.current
+    var copied by remember(report) { mutableStateOf(false) }
     val safeDecoders = report.capabilities.count { it.realtimeSafe }
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Button(
+            onClick = {
+                clipboard.setText(AnnotatedString(formatCodecDiagnosticReport(report)))
+                copied = true
+            },
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text(
+                if (copied) {
+                    stringResource(R.string.settings_codec_diagnostics_copied)
+                } else {
+                    stringResource(R.string.settings_codec_diagnostics_copy)
+                },
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
             CodecSummaryChip("${safeDecoders}/${report.capabilities.size}", "real-time decoders")
             CodecSummaryChip(if (report.lowPowerGpuProfile) "Low power" else "Standard", "device profile")
@@ -2258,6 +2332,24 @@ private fun CodecDiagnosticsPanel(report: RuntimeCodecReport?) {
             maxLines = 3,
             overflow = TextOverflow.Ellipsis,
         )
+    }
+}
+
+private fun formatCodecDiagnosticReport(report: RuntimeCodecReport): String = buildString {
+    appendLine("OpenNOW Android codec diagnostics")
+    appendLine("nativeRuntimeSummary=${report.nativeRuntimeSummary}")
+    appendLine("androidTvProfile=${report.androidTvProfile}")
+    appendLine("lowPowerGpuProfile=${report.lowPowerGpuProfile}")
+    report.capabilities.forEach { capability ->
+        appendLine()
+        appendLine("codec=${capability.codec}")
+        appendLine("decoderAvailable=${capability.decoderAvailable}")
+        appendLine("decoderName=${capability.decoderName ?: "none"}")
+        appendLine("hardwareDecoder=${capability.hardwareDecoder}")
+        appendLine("realtimeSafe=${capability.realtimeSafe}")
+        appendLine("encoderAvailable=${capability.encoderAvailable}")
+        appendLine("encoderName=${capability.encoderName ?: "none"}")
+        appendLine("hardwareEncoder=${capability.hardwareEncoder}")
     }
 }
 
@@ -2647,22 +2739,25 @@ private fun StreamVideoSurface(
                     client.createRenderer(ctx).apply {
                         isFocusable = true
                         isFocusableInTouchMode = true
+                        hideAndroidPointer()
                         requestFocus()
                     }
                 },
                 update = { renderer ->
                     renderer.isFocusable = true
                     renderer.isFocusableInTouchMode = true
+                    renderer.hideAndroidPointer()
                     renderer.setOnKeyListener { _, _, event -> client.dispatchKey(event) }
-                    renderer.setOnGenericMotionListener { _, event -> client.dispatchMotion(event) }
+                    renderer.setOnGenericMotionListener { view, event ->
+                        view.captureExternalMousePointer(mouseCapture || event.isExternalMousePointerEvent())
+                        client.dispatchMotion(event)
+                    }
                     renderer.setOnTouchListener { view, event ->
                         NativeStreamInputRouter.dispatchTouch(event, view.width, view.height)
                     }
                     if (Build.VERSION.SDK_INT >= 26) {
                         if (mouseCapture) {
                             renderer.requestPointerCapture()
-                        } else if (renderer.hasPointerCapture()) {
-                            renderer.releasePointerCapture()
                         }
                     }
                     renderer.requestFocus()
@@ -2673,6 +2768,32 @@ private fun StreamVideoSurface(
                 modifier = Modifier.matchParentSize(),
             )
         }
+    }
+}
+
+private fun MotionEvent.isExternalMousePointerEvent(): Boolean =
+    (source and InputDevice.SOURCE_MOUSE) == InputDevice.SOURCE_MOUSE ||
+        (source and InputDevice.SOURCE_MOUSE_RELATIVE) == InputDevice.SOURCE_MOUSE_RELATIVE
+
+private fun androidNullPointerIcon(view: android.view.View): PointerIcon? =
+    if (Build.VERSION.SDK_INT >= 24) {
+        PointerIcon.getSystemIcon(view.context, PointerIcon.TYPE_NULL)
+    } else {
+        null
+    }
+
+private fun android.view.View.hideAndroidPointer() {
+    if (Build.VERSION.SDK_INT >= 24) {
+        pointerIcon = androidNullPointerIcon(this)
+    }
+}
+
+private fun android.view.View.captureExternalMousePointer(enabled: Boolean) {
+    if (Build.VERSION.SDK_INT < 26) return
+    if (enabled && !hasPointerCapture()) {
+        requestPointerCapture()
+    } else if (!enabled && hasPointerCapture()) {
+        releasePointerCapture()
     }
 }
 
@@ -3820,6 +3941,21 @@ private fun NumberSlider(label: String, value: Float, min: Float, max: Float, st
 
 @Composable
 private fun ChoiceRow(label: String, options: List<String>, selected: String, onSelect: (String) -> Unit) {
+    ChoiceMenuRow(
+        label = label,
+        options = options.map { ChoiceMenuOption(value = it, label = it) },
+        selectedLabel = selected,
+        onSelect = onSelect,
+    )
+}
+
+@Composable
+private fun ChoiceMenuRow(
+    label: String,
+    options: List<ChoiceMenuOption>,
+    selectedLabel: String,
+    onSelect: (String) -> Unit,
+) {
     var expanded by remember { mutableStateOf(false) }
     var focused by remember { mutableStateOf(false) }
     val focusManager = LocalFocusManager.current
@@ -3852,14 +3988,36 @@ private fun ChoiceRow(label: String, options: List<String>, selected: String, on
     ) {
         Text(label, Modifier.weight(1f), color = MaterialTheme.colorScheme.onSurface, maxLines = 2, overflow = TextOverflow.Ellipsis)
         Box {
-            OutlinedButton(onClick = { expanded = true }) { Text(selected.ifBlank { autoLabel }, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+            OutlinedButton(onClick = { expanded = true }) { Text(selectedLabel.ifBlank { autoLabel }, maxLines = 1, overflow = TextOverflow.Ellipsis) }
             DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
                 options.forEach { option ->
                     DropdownMenuItem(
-                        text = { Text(option) },
+                        text = {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                Text(
+                                    option.label,
+                                    color = if (option.enabled) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.48f),
+                                )
+                                option.badge?.let { badge ->
+                                    Text(
+                                        badge,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontWeight = FontWeight.Bold,
+                                        modifier = Modifier
+                                            .border(1.dp, MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.3f), RoundedCornerShape(3.dp))
+                                            .padding(horizontal = 4.dp, vertical = 1.dp),
+                                    )
+                                }
+                            }
+                        },
+                        enabled = option.enabled,
                         onClick = {
                             expanded = false
-                            onSelect(option)
+                            onSelect(option.value)
                         },
                     )
                 }

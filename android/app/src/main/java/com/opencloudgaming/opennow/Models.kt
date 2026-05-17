@@ -120,6 +120,12 @@ internal fun streamResolutionPixels(settings: StreamSettings): Pair<Int, Int> {
 internal fun streamResolutionOptionsForAspect(aspectRatio: String): List<String> =
     STREAM_RESOLUTION_OPTIONS.filter { it.aspectRatio == aspectRatio }.map { it.value }
 
+internal fun streamResolutionChoicesForAspect(aspectRatio: String): List<StreamResolutionChoice> =
+    STREAM_RESOLUTION_OPTIONS.filter { it.aspectRatio == aspectRatio }.map { it.toChoice() }
+
+internal fun streamAspectRatioOptions(): List<String> =
+    STREAM_RESOLUTION_OPTIONS.map { it.aspectRatio }.distinct()
+
 internal fun normalizeStreamResolutionForAspect(resolution: String, aspectRatio: String): String {
     val normalizedAspect = aspectRatio.trim()
     val options = streamResolutionOptionsForAspect(normalizedAspect)
@@ -156,41 +162,115 @@ private data class StreamResolutionOption(
     val value: String,
     val aspectRatio: String,
     val tier: String,
-)
+    val requiredPlan: StreamResolutionPlan = StreamResolutionPlan.Free,
+) {
+    fun toChoice(): StreamResolutionChoice {
+        val (width, height) = parseResolutionPixels(value)
+        return StreamResolutionChoice(
+            value = value,
+            width = width,
+            height = height,
+            aspectRatio = aspectRatio,
+            requiredPlan = requiredPlan,
+        )
+    }
+}
+
+internal enum class StreamResolutionPlan {
+    Free,
+    Priority,
+    Ultimate,
+}
+
+internal data class StreamResolutionChoice(
+    val value: String,
+    val width: Int,
+    val height: Int,
+    val aspectRatio: String,
+    val requiredPlan: StreamResolutionPlan,
+) {
+    val label: String
+        get() = "$width x $height"
+
+    val requiredPlanLabel: String?
+        get() = when (requiredPlan) {
+            StreamResolutionPlan.Free -> null
+            StreamResolutionPlan.Priority -> "Priority"
+            StreamResolutionPlan.Ultimate -> "Ultimate"
+        }
+
+    fun isAvailableFor(subscriptionInfo: SubscriptionInfo?, fallbackMembershipTier: String?): Boolean {
+        if (requiredPlan == StreamResolutionPlan.Free) return true
+        return streamResolutionPlanRank(planForMembershipTier(subscriptionInfo?.membershipTier ?: fallbackMembershipTier)) >= streamResolutionPlanRank(requiredPlan)
+    }
+}
 
 private val STREAM_RESOLUTION_OPTIONS = listOf(
     StreamResolutionOption("1280x720", "16:9", "720"),
+    StreamResolutionOption("1366x768", "16:9", "768"),
+    StreamResolutionOption("1600x900", "16:9", "900"),
     StreamResolutionOption("1280x800", "16:10", "720"),
     StreamResolutionOption("1440x900", "16:10", "900"),
     StreamResolutionOption("1680x1050", "16:10", "1050"),
     StreamResolutionOption("1920x1080", "16:9", "1080"),
     StreamResolutionOption("1920x1200", "16:10", "1080"),
-    StreamResolutionOption("2560x1080", "21:9", "1080"),
-    StreamResolutionOption("2560x1440", "16:9", "1440"),
-    StreamResolutionOption("2560x1600", "16:10", "1440"),
-    StreamResolutionOption("3440x1440", "21:9", "1440"),
-    StreamResolutionOption("3840x2160", "16:9", "2160"),
-    StreamResolutionOption("3840x2400", "16:10", "2160"),
-    StreamResolutionOption("5120x1440", "32:9", "1440"),
+    StreamResolutionOption("1024x768", "4:3", "768"),
+    StreamResolutionOption("1112x834", "4:3", "834"),
+    StreamResolutionOption("1600x1200", "4:3", "1080"),
+    StreamResolutionOption("1280x1024", "5:4", "1050"),
+    StreamResolutionOption("1680x720", "21:9", "720", StreamResolutionPlan.Priority),
+    StreamResolutionOption("2560x1080", "21:9", "1080", StreamResolutionPlan.Priority),
+    StreamResolutionOption("3840x1080", "32:9", "1080", StreamResolutionPlan.Priority),
+    StreamResolutionOption("2560x1440", "16:9", "1440", StreamResolutionPlan.Priority),
+    StreamResolutionOption("2560x1600", "16:10", "1440", StreamResolutionPlan.Priority),
+    StreamResolutionOption("3440x1440", "21:9", "1440", StreamResolutionPlan.Priority),
+    StreamResolutionOption("5120x1440", "32:9", "1440", StreamResolutionPlan.Priority),
+    StreamResolutionOption("3840x1600", "24:10", "1440", StreamResolutionPlan.Priority),
+    StreamResolutionOption("3840x2160", "16:9", "2160", StreamResolutionPlan.Ultimate),
+    StreamResolutionOption("3456x2160", "16:10", "2160", StreamResolutionPlan.Ultimate),
+    StreamResolutionOption("5120x2160", "21:9", "2160", StreamResolutionPlan.Ultimate),
+    StreamResolutionOption("5120x2880", "16:9", "2880", StreamResolutionPlan.Ultimate),
 )
 
 private val PREFERRED_RESOLUTION_BY_TIER_AND_ASPECT = mapOf(
-    "720" to mapOf("16:9" to "1280x720", "16:10" to "1280x800"),
-    "900" to mapOf("16:10" to "1440x900"),
-    "1050" to mapOf("16:10" to "1680x1050"),
-    "1080" to mapOf("16:9" to "1920x1080", "16:10" to "1920x1200", "21:9" to "2560x1080"),
-    "1440" to mapOf("16:9" to "2560x1440", "16:10" to "2560x1600", "21:9" to "3440x1440", "32:9" to "5120x1440"),
-    "2160" to mapOf("16:9" to "3840x2160", "16:10" to "3840x2400"),
+    "720" to mapOf("16:9" to "1280x720", "16:10" to "1280x800", "4:3" to "1024x768", "21:9" to "1680x720"),
+    "768" to mapOf("16:9" to "1366x768", "4:3" to "1024x768"),
+    "834" to mapOf("4:3" to "1112x834"),
+    "900" to mapOf("16:9" to "1600x900", "16:10" to "1440x900"),
+    "1050" to mapOf("16:10" to "1680x1050", "5:4" to "1280x1024"),
+    "1080" to mapOf("16:9" to "1920x1080", "16:10" to "1920x1200", "4:3" to "1600x1200", "21:9" to "2560x1080", "32:9" to "3840x1080"),
+    "1440" to mapOf("16:9" to "2560x1440", "16:10" to "2560x1600", "21:9" to "3440x1440", "24:10" to "3840x1600", "32:9" to "5120x1440"),
+    "2160" to mapOf("16:9" to "3840x2160", "16:10" to "3456x2160", "21:9" to "5120x2160"),
+    "2880" to mapOf("16:9" to "5120x2880"),
 )
 
 private fun resolutionTierForHeight(height: Int): String =
     when {
+        height >= 2600 -> "2880"
         height >= 2000 -> "2160"
         height >= 1320 -> "1440"
         height >= 1120 -> "1080"
         height >= 975 -> "1050"
         height >= 850 -> "900"
+        height >= 800 -> "834"
+        height >= 740 -> "768"
         else -> "720"
+    }
+
+private fun planForMembershipTier(membershipTier: String?): StreamResolutionPlan {
+    val normalized = membershipTier.orEmpty().uppercase(Locale.US).replace(Regex("[^A-Z0-9]+"), "")
+    return when {
+        normalized.contains("ULTIMATE") || normalized.contains("RTX3080") -> StreamResolutionPlan.Ultimate
+        normalized.contains("PRIORITY") || normalized.contains("PERFORMANCE") || normalized.contains("FOUNDERS") -> StreamResolutionPlan.Priority
+        else -> StreamResolutionPlan.Free
+    }
+}
+
+private fun streamResolutionPlanRank(plan: StreamResolutionPlan): Int =
+    when (plan) {
+        StreamResolutionPlan.Free -> 0
+        StreamResolutionPlan.Priority -> 1
+        StreamResolutionPlan.Ultimate -> 2
     }
 
 @Serializable
