@@ -25,7 +25,7 @@
         android:required="false" />
 
     <application
-        android:allowBackup="true"
+        android:allowBackup="false"
         android:banner="@drawable/opennow_banner"
         android:hardwareAccelerated="true"
         android:icon="@drawable/opennow_icon"
