@@ -101,6 +101,8 @@ private val GRAPHQL_MEDIA_TYPE = "application/graphql".toMediaType()
 private val REDIRECT_PORTS = intArrayOf(2259, 6460, 7119, 8870, 9096)
 private const val OAUTH_CALLBACK_TIMEOUT_MS = 120_000L
 private const val DEVICE_CODE_MIN_POLL_INTERVAL_SECONDS = 5
+private val TOKEN_REFRESH_WINDOW = Duration.ofMinutes(10)
+private val CLIENT_TOKEN_REFRESH_WINDOW = Duration.ofMinutes(5)
 private val READY_SESSION_STATUSES = setOf(2, 3)
 private const val INVALID_SESSION_PROXY_MESSAGE =
     "Invalid session proxy URL. Use http://host:port, https://host:port, socks4://host:port, or socks5://host:port."
@@ -326,6 +328,7 @@ fun defaultProvider(): LoginProvider =
 
 private fun nowMs(): Long = System.currentTimeMillis()
 private fun expiresAt(seconds: Int?, defaultSeconds: Int = 86400): Long = nowMs() + ((seconds ?: defaultSeconds) * 1000L)
+private fun isExpired(expiresAt: Long?): Boolean = expiresAt == null || expiresAt <= nowMs()
 private fun isNearExpiry(expiresAt: Long?, window: Duration): Boolean = expiresAt == null || expiresAt - nowMs() < window.toMillis()
 
 private fun randomBase64Url(byteCount: Int): String {
@@ -398,12 +401,22 @@ class GfnAuthRepository(
     }
 
     suspend fun restore(forceRefresh: Boolean = false): AuthSession? {
-        val session = authStore.activeSession() ?: return null
-        val refreshed = if (forceRefresh || isNearExpiry(session.tokens.expiresAt, Duration.ofMinutes(10))) {
-            refreshSession(session)
+        val restored = authStore.activeSession() ?: return null
+        var session = restored
+        if (session.tokens.clientToken.isNullOrBlank() || isNearExpiry(session.tokens.clientTokenExpiresAt, CLIENT_TOKEN_REFRESH_WINDOW)) {
+            val withClientToken = runCatching { ensureClientToken(session.tokens) }.getOrElse { session.tokens }
+            if (withClientToken != session.tokens) {
+                session = session.copy(tokens = withClientToken)
+                authStore.upsertSession(session)
+            }
+        }
+
+        val refreshed = if (forceRefresh || isNearExpiry(session.tokens.expiresAt, TOKEN_REFRESH_WINDOW)) {
+            refreshSession(session, forceRefresh)
         } else {
             session
         }
+
         authStore.upsertSession(refreshed)
         return refreshed
     }
@@ -427,7 +440,7 @@ class GfnAuthRepository(
             }
             codeDeferred.await()
         }
-        val tokens = exchangeAuthorizationCode(code, verifier, port)
+        val tokens = ensureClientTokenBestEffort(exchangeAuthorizationCode(code, verifier, port))
         val session = buildSession(provider, tokens)
         authStore.upsertSession(session)
         return session
@@ -447,7 +460,7 @@ class GfnAuthRepository(
         check(provider.supportsDeviceCodeLogin) { "Code sign-in is only available for NVIDIA accounts." }
         val deviceCode = requestDeviceCode(provider)
         onPrompt(deviceCode.prompt)
-        val tokens = pollDeviceCodeToken(deviceCode)
+        val tokens = ensureClientTokenBestEffort(pollDeviceCodeToken(deviceCode))
         val session = buildSession(provider, tokens)
         authStore.upsertSession(session)
         return session
@@ -460,8 +473,100 @@ class GfnAuthRepository(
 
     fun logoutAll() = authStore.clear()
 
-    private suspend fun refreshSession(session: AuthSession): AuthSession {
-        val refresh = session.tokens.refreshToken ?: return session
+    private data class ClientTokenResponse(val token: String, val expiresAt: Long)
+
+    private suspend fun ensureClientTokenBestEffort(tokens: AuthTokens): AuthTokens =
+        runCatching { ensureClientToken(tokens) }.getOrElse { tokens }
+
+    private suspend fun ensureClientToken(tokens: AuthTokens): AuthTokens {
+        val hasUsableClientToken =
+            !tokens.clientToken.isNullOrBlank() &&
+                !isNearExpiry(tokens.clientTokenExpiresAt, CLIENT_TOKEN_REFRESH_WINDOW)
+        if (hasUsableClientToken || isExpired(tokens.expiresAt)) return tokens
+
+        val clientToken = requestClientToken(tokens.accessToken)
+        return tokens.copy(
+            clientToken = clientToken.token,
+            clientTokenExpiresAt = clientToken.expiresAt,
+        )
+    }
+
+    private suspend fun requestClientToken(accessToken: String): ClientTokenResponse {
+        val request = Request.Builder()
+            .url(CLIENT_TOKEN_ENDPOINT)
+            .headers(nvidiaFileHeaders(bearerToken = accessToken, includeReferer = false))
+            .build()
+        val (code, text) = http.awaitText(request)
+        check(code in 200..299) { "Client token request failed ($code): ${text.take(400)}" }
+        val root = OpenNowJson.parseToJsonElement(text).jsonObject
+        return ClientTokenResponse(
+            token = requireNotNull(root.string("client_token")) { "Missing client token" },
+            expiresAt = expiresAt(root.int("expires_in")),
+        )
+    }
+
+    private suspend fun refreshSession(session: AuthSession, forceRefresh: Boolean): AuthSession {
+        val tokens = session.tokens
+        val refreshErrors = mutableListOf<String>()
+
+        if (!tokens.clientToken.isNullOrBlank()) {
+            runCatching {
+                val refreshed = mergeTokenSnapshot(tokens, refreshWithClientToken(tokens.clientToken, session.user.userId))
+                return buildRefreshedSession(session, ensureClientTokenBestEffort(refreshed), source = "client token")
+            }.onFailure { error ->
+                refreshErrors += "client_token: ${error.message ?: "Unknown refresh error"}"
+            }
+        }
+
+        val refresh = tokens.refreshToken
+        if (!refresh.isNullOrBlank()) {
+            runCatching {
+                val refreshed = refreshAuthTokens(refresh, tokens)
+                return buildRefreshedSession(session, ensureClientTokenBestEffort(refreshed), source = "refresh token")
+            }.onFailure { error ->
+                refreshErrors += "refresh_token: ${error.message ?: "Unknown refresh error"}"
+            }
+        }
+
+        val hasRefreshMechanism = !tokens.clientToken.isNullOrBlank() || !tokens.refreshToken.isNullOrBlank()
+        if (!hasRefreshMechanism) {
+            if (isExpired(tokens.expiresAt)) {
+                authStore.removeSession(session.user.userId)
+                error("Saved session expired and has no refresh mechanism. Please log in again.")
+            }
+            return session
+        }
+
+        if (isExpired(tokens.expiresAt)) {
+            authStore.removeSession(session.user.userId)
+            val detail = refreshErrors.takeIf { it.isNotEmpty() }?.joinToString(" | ")
+            error("Token refresh failed and the saved session expired. Please log in again.${detail?.let { " $it" }.orEmpty()}")
+        }
+
+        if (forceRefresh && refreshErrors.isNotEmpty()) {
+            error("Token refresh failed. Using saved session token. ${refreshErrors.joinToString(" | ")}")
+        }
+        return session
+    }
+
+    private suspend fun refreshWithClientToken(clientToken: String, userId: String): JsonObject {
+        val body = FormBody.Builder()
+            .add("grant_type", "urn:ietf:params:oauth:grant-type:client_token")
+            .add("client_token", clientToken)
+            .add("client_id", CLIENT_ID)
+            .add("sub", userId)
+            .build()
+        val request = Request.Builder()
+            .url(TOKEN_ENDPOINT)
+            .headers(nvidiaFileHeaders(includeReferer = false))
+            .post(body)
+            .build()
+        val (code, text) = http.awaitText(request)
+        check(code in 200..299) { "Client-token refresh failed ($code): ${text.take(400)}" }
+        return OpenNowJson.parseToJsonElement(text).jsonObject
+    }
+
+    private suspend fun refreshAuthTokens(refresh: String, base: AuthTokens): AuthTokens {
         val body = FormBody.Builder()
             .add("grant_type", "refresh_token")
             .add("refresh_token", refresh)
@@ -469,21 +574,38 @@ class GfnAuthRepository(
             .build()
         val request = Request.Builder()
             .url(TOKEN_ENDPOINT)
-            .headers(nvidiaFileHeaders(includeReferer = true))
+            .headers(nvidiaFileHeaders(includeReferer = false))
             .post(body)
             .build()
         val (code, text) = http.awaitText(request)
-        if (code !in 200..299) return session
+        check(code in 200..299) { "Token refresh failed ($code): ${text.take(400)}" }
         val root = OpenNowJson.parseToJsonElement(text).jsonObject
-        val refreshed = AuthTokens(
-            accessToken = root.string("access_token") ?: session.tokens.accessToken,
+        return AuthTokens(
+            accessToken = requireNotNull(root.string("access_token")) { "Missing access token" },
             refreshToken = root.string("refresh_token") ?: refresh,
-            idToken = root.string("id_token") ?: session.tokens.idToken,
+            idToken = root.string("id_token") ?: base.idToken,
             expiresAt = expiresAt(root.int("expires_in")),
-            clientToken = session.tokens.clientToken,
-            clientTokenExpiresAt = session.tokens.clientTokenExpiresAt,
+            clientToken = base.clientToken,
+            clientTokenExpiresAt = base.clientTokenExpiresAt,
         )
-        return buildSession(session.provider, refreshed)
+    }
+
+    private fun mergeTokenSnapshot(base: AuthTokens, root: JsonObject): AuthTokens =
+        AuthTokens(
+            accessToken = requireNotNull(root.string("access_token")) { "Missing access token" },
+            refreshToken = root.string("refresh_token") ?: base.refreshToken,
+            idToken = root.string("id_token") ?: base.idToken,
+            expiresAt = expiresAt(root.int("expires_in")),
+            clientToken = root.string("client_token") ?: base.clientToken,
+            clientTokenExpiresAt = base.clientTokenExpiresAt,
+        )
+
+    private suspend fun buildRefreshedSession(session: AuthSession, tokens: AuthTokens, source: String): AuthSession {
+        val refreshed = buildSession(session.provider, tokens, fallbackUser = session.user)
+        check(refreshed.user.userId == session.user.userId) {
+            "Token refresh via $source returned a different account than expected."
+        }
+        return refreshed
     }
 
     private suspend fun exchangeAuthorizationCode(code: String, verifier: String, port: Int): AuthTokens {
@@ -589,16 +711,17 @@ class GfnAuthRepository(
         error("Device sign-in code expired.")
     }
 
-    private suspend fun buildSession(provider: LoginProvider, tokens: AuthTokens): AuthSession {
-        val userInfo = fetchUserInfo(tokens.accessToken)
+    private suspend fun buildSession(provider: LoginProvider, tokens: AuthTokens, fallbackUser: AuthUser? = null): AuthSession {
+        val userInfo = runCatching { fetchUserInfo(tokens.accessToken) }.getOrDefault(JsonObject(emptyMap()))
         val jwt = tokens.idToken?.let(::decodeJwtPayload)
-        val userId = userInfo.string("sub") ?: jwt?.string("sub") ?: userInfo.string("id") ?: "nvidia-user"
-        val email = userInfo.string("email") ?: jwt?.string("email")
+        val userId = userInfo.string("sub") ?: jwt?.string("sub") ?: fallbackUser?.userId ?: userInfo.string("id") ?: "nvidia-user"
+        val email = userInfo.string("email") ?: jwt?.string("email") ?: fallbackUser?.email
         val displayName = userInfo.string("name")
             ?: userInfo.string("preferred_username")
             ?: email
+            ?: fallbackUser?.displayName
             ?: "NVIDIA Account"
-        val tier = userInfo.string("membershipTier") ?: jwt?.string("membershipTier") ?: "FREE"
+        val tier = userInfo.string("membershipTier") ?: jwt?.string("membershipTier") ?: fallbackUser?.membershipTier ?: "FREE"
         return AuthSession(
             provider = normalizeProvider(provider),
             tokens = tokens,
@@ -606,7 +729,7 @@ class GfnAuthRepository(
                 userId = userId,
                 displayName = displayName,
                 email = email,
-                avatarUrl = userInfo.string("picture"),
+                avatarUrl = userInfo.string("picture") ?: fallbackUser?.avatarUrl,
                 membershipTier = tier,
             ),
         )

@@ -410,15 +410,17 @@ object NativeStreamInputRouter {
             touchMouseEnabled &&
             width > 0 &&
             height > 0 &&
+            event.isFingerTouchEvent() &&
             event.pointerCount == 1 &&
             !shouldPassTouchToNativeUi(event, width, height)
 
     fun shouldCaptureTouchBeforeViews(event: MotionEvent, width: Int, height: Int): Boolean =
         shouldForwardTouchBeforeViews(event, width, height) &&
-            captureAllTouch
+            (captureAllTouch || event.isFingerTouchEvent())
 
     fun dispatchTouch(event: MotionEvent, width: Int, height: Int): Boolean {
         val current = client ?: return false
+        if (!event.isFingerTouchEvent()) return false
         return touchMouseState.handle(event, touchMouseEnabled && width > 0 && height > 0, current, width, height)
     }
 
@@ -495,6 +497,11 @@ object NativeStreamInputRouter {
             isFromSource(InputDevice.SOURCE_GAMEPAD)
 
     private fun MotionEvent.isFromSource(source: Int): Boolean = (this.source and source) == source
+
+    private fun MotionEvent.isFingerTouchEvent(): Boolean =
+        isFromSource(InputDevice.SOURCE_TOUCHSCREEN) &&
+            !isFromSource(InputDevice.SOURCE_MOUSE) &&
+            !isFromSource(InputDevice.SOURCE_MOUSE_RELATIVE)
 
     private fun shouldPassTouchToNativeUi(event: MotionEvent, width: Int, height: Int): Boolean {
         when (event.actionMasked) {
@@ -578,9 +585,6 @@ private class TouchMouseState {
     private var lastY = 0f
     private var selecting = false
     private var doubleTapDragCandidate = false
-    private var cursorEstimateValid = false
-    private var cursorX = 0f
-    private var cursorY = 0f
     private var lastTapTimeMs = Long.MIN_VALUE
     private var lastTapX = Float.NaN
     private var lastTapY = Float.NaN
@@ -629,7 +633,6 @@ private class TouchMouseState {
                     !selecting &&
                     (abs(x - downX) > TOUCH_MOUSE_DRAG_START_SLOP_PX || abs(y - downY) > TOUCH_MOUSE_DRAG_START_SLOP_PX)
                 ) {
-                    alignCursorTo(downX, downY, width, height, client)
                     selecting = client.setTouchMouseButton(true)
                     doubleTapDragCandidate = false
                     if (selecting) {
@@ -637,7 +640,6 @@ private class TouchMouseState {
                     }
                 }
                 sendMouseDelta(dx, dy, client)
-                updateCursorEstimateBy(dx, dy, width, height)
                 lastX = x
                 lastY = y
                 return true
@@ -657,9 +659,8 @@ private class TouchMouseState {
                     return true
                 }
                 if (wasTap) {
-                    alignCursorTo(event.x, event.y, width, height, client)
                     NativeInputDiagnostics.add("touch tap click dx=${tapDistanceX.roundToInt()} dy=${tapDistanceY.roundToInt()}")
-                    client.sendTouchMouseClick(delayBeforeDownMs = TOUCH_MOUSE_CLICK_ALIGN_DELAY_MS)
+                    client.sendTouchMouseClick()
                     lastTapTimeMs = event.eventTime
                     lastTapX = event.x
                     lastTapY = event.y
@@ -695,34 +696,10 @@ private class TouchMouseState {
         }
     }
 
-    private fun alignCursorTo(x: Float, y: Float, width: Int, height: Int, client: NativeStreamClient) {
-        ensureCursorEstimate(width, height)
-        val dx = x - cursorX
-        val dy = y - cursorY
-        sendMouseDelta(dx, dy, client, partiallyReliable = false)
-        cursorX = x.coerceIn(0f, width.toFloat())
-        cursorY = y.coerceIn(0f, height.toFloat())
-        NativeInputDiagnostics.add("touch tap align dx=${dx.roundToInt()} dy=${dy.roundToInt()}")
-    }
-
-    private fun updateCursorEstimateBy(dx: Float, dy: Float, width: Int, height: Int) {
-        ensureCursorEstimate(width, height)
-        cursorX = (cursorX + dx).coerceIn(0f, width.toFloat())
-        cursorY = (cursorY + dy).coerceIn(0f, height.toFloat())
-    }
-
-    private fun ensureCursorEstimate(width: Int, height: Int) {
-        if (cursorEstimateValid) return
-        cursorX = width / 2f
-        cursorY = height / 2f
-        cursorEstimateValid = true
-    }
-
     companion object {
         private const val TOUCH_MOUSE_DRAG_START_SLOP_PX = 10f
         private const val TOUCH_MOUSE_TAP_SLOP_PX = 42f
         private const val TOUCH_MOUSE_TAP_TIMEOUT_MS = 450L
-        private const val TOUCH_MOUSE_CLICK_ALIGN_DELAY_MS = 48L
         private const val TOUCH_MOUSE_DOUBLE_TAP_TIMEOUT_MS = 320L
         private const val TOUCH_MOUSE_DOUBLE_TAP_SLOP_PX = 36f
     }

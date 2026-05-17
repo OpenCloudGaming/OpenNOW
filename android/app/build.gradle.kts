@@ -11,9 +11,9 @@ android {
 
     defaultConfig {
         applicationId = "com.opencloudgaming.opennow"
-        minSdk = 26
+        minSdk = 25
         targetSdk = 36
-        versionCode = 2
+        versionCode = 3
         versionName = "0.3.9-native"
 
         ndk {
