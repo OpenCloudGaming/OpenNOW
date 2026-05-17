@@ -324,6 +324,10 @@ object NativeStreamInputRouter {
     @Volatile
     private var systemMenuHandler: (() -> Unit)? = null
     @Volatile
+    private var systemBackHandler: (() -> Unit)? = null
+    @Volatile
+    private var streamUiActive = false
+    @Volatile
     private var streamChromePassthroughBounds: TouchPassthroughBounds? = null
     @Volatile
     private var touchControllerPassthroughBounds: TouchPassthroughBounds? = null
@@ -354,6 +358,24 @@ object NativeStreamInputRouter {
 
     fun setSystemMenuHandler(handler: (() -> Unit)?) {
         systemMenuHandler = handler
+    }
+
+    fun setSystemBackHandler(handler: (() -> Unit)?) {
+        systemBackHandler = handler
+    }
+
+    fun setStreamUiActive(active: Boolean) {
+        streamUiActive = active
+    }
+
+    fun normalizedStreamUiKeyCode(event: KeyEvent): Int? {
+        if (!streamUiActive) return null
+        return when (event.keyCode) {
+            KeyEvent.KEYCODE_BUTTON_A -> KeyEvent.KEYCODE_DPAD_CENTER
+            KeyEvent.KEYCODE_BUTTON_B,
+            KeyEvent.KEYCODE_BUTTON_SELECT -> KeyEvent.KEYCODE_BACK
+            else -> null
+        }
     }
 
     fun setUiTouchPassthroughBounds(left: Int, top: Int, right: Int, bottom: Int) {
@@ -405,14 +427,69 @@ object NativeStreamInputRouter {
             systemMenuHandler?.invoke()
             return systemMenuHandler != null
         }
+        if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0 && event.isStreamControlsShortcutKey()) {
+            systemMenuHandler?.invoke()
+            return systemMenuHandler != null
+        }
+        if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0 && event.isStreamExitShortcutKey()) {
+            systemBackHandler?.invoke()
+            return systemBackHandler != null
+        }
+        if (streamUiActive && event.isNativeUiNavigationKey()) {
+            return false
+        }
         return client?.dispatchKey(event) == true
     }
 
-    fun dispatchMotion(event: MotionEvent): Boolean = client?.dispatchMotion(event) == true
+    fun dispatchMotion(event: MotionEvent): Boolean {
+        if (streamUiActive && event.isNativeUiNavigationMotion()) {
+            return false
+        }
+        return client?.dispatchMotion(event) == true
+    }
 
     private fun KeyEvent.isStreamSystemMenuKey(): Boolean =
         keyCode == KeyEvent.KEYCODE_BUTTON_MODE ||
             keyCode == KeyEvent.KEYCODE_MENU
+
+    private fun KeyEvent.isStreamControlsShortcutKey(): Boolean =
+        !streamUiActive &&
+            !isControllerSource() &&
+            (keyCode == KeyEvent.KEYCODE_ENTER ||
+                keyCode == KeyEvent.KEYCODE_NUMPAD_ENTER ||
+                keyCode == KeyEvent.KEYCODE_DPAD_CENTER)
+
+    private fun KeyEvent.isStreamExitShortcutKey(): Boolean =
+        keyCode == KeyEvent.KEYCODE_BACK ||
+            keyCode == KeyEvent.KEYCODE_ESCAPE
+
+    private fun KeyEvent.isNativeUiNavigationKey(): Boolean =
+        keyCode == KeyEvent.KEYCODE_DPAD_UP ||
+            keyCode == KeyEvent.KEYCODE_DPAD_DOWN ||
+            keyCode == KeyEvent.KEYCODE_DPAD_LEFT ||
+            keyCode == KeyEvent.KEYCODE_DPAD_RIGHT ||
+            keyCode == KeyEvent.KEYCODE_DPAD_CENTER ||
+            keyCode == KeyEvent.KEYCODE_ENTER ||
+            keyCode == KeyEvent.KEYCODE_NUMPAD_ENTER ||
+            keyCode == KeyEvent.KEYCODE_SPACE ||
+            keyCode == KeyEvent.KEYCODE_TAB ||
+            keyCode == KeyEvent.KEYCODE_BACK ||
+            keyCode == KeyEvent.KEYCODE_ESCAPE ||
+            keyCode == KeyEvent.KEYCODE_DEL ||
+            keyCode == KeyEvent.KEYCODE_BUTTON_A ||
+            keyCode == KeyEvent.KEYCODE_BUTTON_B ||
+            keyCode == KeyEvent.KEYCODE_BUTTON_SELECT ||
+            keyCode == KeyEvent.KEYCODE_BUTTON_START
+
+    private fun KeyEvent.isControllerSource(): Boolean =
+        (source and InputDevice.SOURCE_GAMEPAD) == InputDevice.SOURCE_GAMEPAD ||
+            (source and InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK
+
+    private fun MotionEvent.isNativeUiNavigationMotion(): Boolean =
+        isFromSource(InputDevice.SOURCE_JOYSTICK) ||
+            isFromSource(InputDevice.SOURCE_GAMEPAD)
+
+    private fun MotionEvent.isFromSource(source: Int): Boolean = (this.source and source) == source
 
     private fun shouldPassTouchToNativeUi(event: MotionEvent, width: Int, height: Int): Boolean {
         when (event.actionMasked) {
@@ -679,8 +756,12 @@ class NativeStreamClient(
     private var heartbeatJob: Job? = null
     private var gamepadKeepaliveJob: Job? = null
     private var statsJob: Job? = null
+    private var iceRecoveryJob: Job? = null
     private var settings: StreamSettings = StreamSettings()
     private var session: SessionInfo? = null
+    private var transportGeneration = 0
+    private var reconnectAttempts = 0
+    private var lastIceState: PeerConnection.IceConnectionState? = null
     private var audioMuted = false
     private var virtualButtons = 0
     private var virtualLeftTrigger = 0
@@ -692,6 +773,7 @@ class NativeStreamClient(
     private var virtualRightStickX = 0
     private var virtualRightStickY = 0
     private var virtualControllerVisible = false
+    private var physicalControllerConnected = false
     private var physicalControllerActive = false
     private var activeControllerId = 0
     private val controllerSlots = linkedMapOf<Int, Int>()
@@ -745,33 +827,20 @@ class NativeStreamClient(
     fun start(session: SessionInfo, settings: StreamSettings) {
         this.session = session
         this.settings = settings
+        transportGeneration += 1
+        reconnectAttempts = 0
         lastStatsSample = null
         onStats(StreamRuntimeStats())
         audioDeviceModule.setSpeakerMute(audioMuted)
-        onState("Connecting signaling")
-        signaling = GfnSignalingClient(session, settings = settings, onEvent = ::handleSignaling).also { it.connect() }
+        closeTransport(clearInputState = false)
+        startTransport(session, settings, transportGeneration)
     }
 
     fun stop() {
-        heartbeatJob?.cancel()
-        gamepadKeepaliveJob?.cancel()
-        statsJob?.cancel()
-        gamepadKeepaliveJob = null
-        statsJob = null
-        lastStatsSample = null
-        signaling?.disconnect()
-        signaling = null
-        reliableInput = null
-        partiallyReliableInput = null
-        partiallyReliableGamepadMask = 0
-        resetInputState()
-        videoTrack?.removeSink(renderer)
-        videoTrack = null
-        audioTrack = null
-        peerConnection?.close()
-        peerConnection?.dispose()
-        peerConnection = null
-        onState("Stopped")
+        transportGeneration += 1
+        reconnectAttempts = 0
+        closeTransport(clearInputState = true)
+        emitState("Stopped")
     }
 
     fun release() {
@@ -795,6 +864,7 @@ class NativeStreamClient(
         virtualRightStickX = 0
         virtualRightStickY = 0
         virtualControllerVisible = false
+        physicalControllerConnected = false
         physicalControllerActive = false
         physicalButtons = 0
         physicalHatButtons = 0
@@ -983,22 +1053,62 @@ class NativeStreamClient(
         sendCurrentGamepadState()
     }
 
-    private fun handleSignaling(event: SignalingEvent) {
+    private fun startTransport(session: SessionInfo, settings: StreamSettings, generation: Int) {
+        inputDropLogged = false
+        lastIceState = null
+        lastStatsSample = null
+        emitStats(StreamRuntimeStats())
+        audioDeviceModule.setSpeakerMute(audioMuted)
+        emitState(if (reconnectAttempts > 0) "Reconnecting signaling" else "Connecting signaling")
+        signaling = GfnSignalingClient(session, settings = settings) { event ->
+            handleSignaling(event, generation)
+        }.also { it.connect() }
+    }
+
+    private fun closeTransport(clearInputState: Boolean, cancelRecovery: Boolean = true) {
+        if (cancelRecovery) {
+            iceRecoveryJob?.cancel()
+            iceRecoveryJob = null
+        }
+        heartbeatJob?.cancel()
+        gamepadKeepaliveJob?.cancel()
+        statsJob?.cancel()
+        heartbeatJob = null
+        gamepadKeepaliveJob = null
+        statsJob = null
+        lastStatsSample = null
+        lastIceState = null
+        signaling?.disconnect()
+        signaling = null
+        reliableInput = null
+        partiallyReliableInput = null
+        partiallyReliableGamepadMask = 0
+        if (clearInputState) resetInputState()
+        videoTrack?.removeSink(renderer)
+        videoTrack = null
+        audioTrack = null
+        peerConnection?.close()
+        peerConnection?.dispose()
+        peerConnection = null
+    }
+
+    private fun handleSignaling(event: SignalingEvent, generation: Int) {
+        if (generation != transportGeneration) return
         when (event) {
-            SignalingEvent.Connected -> onState("Waiting for offer")
-            is SignalingEvent.Disconnected -> onState("Disconnected: ${event.reason}")
-            is SignalingEvent.Error -> onError(event.message)
-            is SignalingEvent.Log -> onState(event.message)
+            SignalingEvent.Connected -> emitState("Waiting for offer")
+            is SignalingEvent.Disconnected -> scheduleTransportReconnect("Signaling disconnected: ${event.reason}", SIGNALING_RECONNECT_DELAY_MS, generation)
+            is SignalingEvent.Error -> scheduleTransportReconnect("Signaling failed: ${event.message}", SIGNALING_RECONNECT_DELAY_MS, generation)
+            is SignalingEvent.Log -> emitState(event.message)
             is SignalingEvent.RemoteIce -> peerConnection?.addIceCandidate(event.candidate)
-            is SignalingEvent.Offer -> handleOffer(event.sdp)
+            is SignalingEvent.Offer -> handleOffer(event.sdp, generation)
         }
     }
 
-    private fun handleOffer(rawOffer: String) {
+    private fun handleOffer(rawOffer: String, generation: Int) {
         val currentSession = session ?: return
         val fixed = SdpTools.fixServerIp(rawOffer, currentSession.serverIp)
         val preferred = SdpTools.preferCodec(fixed, settings.codec)
-        val pc = ensurePeerConnection(currentSession)
+        val pc = ensurePeerConnection(currentSession, generation)
         ensureInputDataChannels(pc, preferred)
         inputEncoder.setProtocolVersion(SdpTools.parseInputProtocolVersion(preferred))
         partiallyReliableGamepadMask = SdpTools.parsePartiallyReliableGamepadMask(preferred)
@@ -1008,8 +1118,9 @@ class NativeStreamClient(
                     pc.createAnswer(
                         object : SimpleSdpObserver() {
                             override fun onCreateSuccess(description: SessionDescription?) {
+                                if (generation != transportGeneration) return
                                 val rawDescription = description ?: run {
-                                    onError("WebRTC returned an empty answer")
+                                    failStream("WebRTC returned an empty answer", generation)
                                     return
                                 }
                                 val munged = SdpTools.mungeAnswerSdp(rawDescription.description, settings.maxBitrateMbps * 1000)
@@ -1017,20 +1128,21 @@ class NativeStreamClient(
                                 pc.setLocalDescription(
                                     object : SimpleSdpObserver() {
                                         override fun onSetSuccess() {
+                                            if (generation != transportGeneration) return
                                             val nvst = SdpTools.buildNvstSdp(
                                                 offerSdp = preferred,
                                                 settings = settings,
                                                 localAnswer = munged,
                                             )
                                             signaling?.sendAnswer(munged, nvst)
-                                            onState("Streaming")
+                                            emitState("Streaming")
                                             startHeartbeat()
                                             startGamepadKeepalive()
                                             startStatsPolling()
                                         }
 
                                         override fun onSetFailure(error: String?) {
-                                            onError(error ?: "Failed to set local description")
+                                            failStream(error ?: "Failed to set local description", generation)
                                         }
                                     },
                                     answer,
@@ -1038,7 +1150,7 @@ class NativeStreamClient(
                             }
 
                             override fun onCreateFailure(error: String?) {
-                                onError(error ?: "Failed to create WebRTC answer")
+                                failStream(error ?: "Failed to create WebRTC answer", generation)
                             }
                         },
                         MediaConstraints(),
@@ -1046,14 +1158,14 @@ class NativeStreamClient(
                 }
 
                 override fun onSetFailure(error: String?) {
-                    onError(error ?: "Failed to apply server offer")
+                    failStream(error ?: "Failed to apply server offer", generation)
                 }
             },
             SessionDescription(SessionDescription.Type.OFFER, preferred),
         )
     }
 
-    private fun ensurePeerConnection(session: SessionInfo): PeerConnection {
+    private fun ensurePeerConnection(session: SessionInfo, generation: Int): PeerConnection {
         peerConnection?.let { return it }
         val ice = session.iceServers.map {
             PeerConnection.IceServer.builder(it.urls).apply {
@@ -1071,7 +1183,7 @@ class NativeStreamClient(
         val pc = requireNotNull(factory).createPeerConnection(config, object : PeerConnection.Observer {
             override fun onSignalingChange(state: PeerConnection.SignalingState?) = Unit
             override fun onIceConnectionChange(state: PeerConnection.IceConnectionState?) {
-                onState("ICE ${state?.name ?: "unknown"}")
+                handleIceConnectionChange(state, generation)
             }
             override fun onIceConnectionReceivingChange(receiving: Boolean) = Unit
             override fun onIceGatheringChange(state: PeerConnection.IceGatheringState?) = Unit
@@ -1110,6 +1222,81 @@ class NativeStreamClient(
         }) ?: error("Failed to create PeerConnection")
         peerConnection = pc
         return pc
+    }
+
+    private fun handleIceConnectionChange(state: PeerConnection.IceConnectionState?, generation: Int) {
+        scope.launch {
+            if (generation != transportGeneration) return@launch
+            lastIceState = state
+            when (state) {
+                PeerConnection.IceConnectionState.CONNECTED,
+                PeerConnection.IceConnectionState.COMPLETED,
+                -> {
+                    iceRecoveryJob?.cancel()
+                    iceRecoveryJob = null
+                    reconnectAttempts = 0
+                    emitState("Streaming")
+                }
+                PeerConnection.IceConnectionState.DISCONNECTED -> {
+                    emitState("Connection interrupted")
+                    scheduleTransportReconnect("ICE disconnected", ICE_DISCONNECTED_GRACE_MS, generation)
+                }
+                PeerConnection.IceConnectionState.FAILED -> {
+                    emitState("Reconnecting stream")
+                    scheduleTransportReconnect("ICE failed", ICE_FAILED_RECONNECT_DELAY_MS, generation)
+                }
+                PeerConnection.IceConnectionState.CHECKING,
+                PeerConnection.IceConnectionState.NEW,
+                -> emitState("Connecting media")
+                PeerConnection.IceConnectionState.CLOSED -> Unit
+                null -> Unit
+            }
+        }
+    }
+
+    private fun scheduleTransportReconnect(reason: String, delayMs: Long, generation: Int) {
+        if (generation != transportGeneration || iceRecoveryJob?.isActive == true) return
+        iceRecoveryJob = scope.launch {
+            if (delayMs > 0) delay(delayMs)
+            if (generation != transportGeneration) return@launch
+            if (reason == "ICE disconnected" && lastIceState != PeerConnection.IceConnectionState.DISCONNECTED) return@launch
+            restartTransport(reason)
+        }
+    }
+
+    private fun restartTransport(reason: String) {
+        val currentSession = session ?: return
+        val currentSettings = settings
+        if (reconnectAttempts >= MAX_TRANSPORT_RECONNECT_ATTEMPTS) {
+            failStream("$reason. Stream reconnect failed after $MAX_TRANSPORT_RECONNECT_ATTEMPTS attempts.")
+            return
+        }
+        reconnectAttempts += 1
+        transportGeneration += 1
+        val generation = transportGeneration
+        emitState("Reconnecting stream ($reconnectAttempts/$MAX_TRANSPORT_RECONNECT_ATTEMPTS)")
+        closeTransport(clearInputState = false, cancelRecovery = false)
+        iceRecoveryJob = null
+        startTransport(currentSession, currentSettings, generation)
+    }
+
+    private fun failStream(message: String, generation: Int? = null) {
+        if (generation != null && generation != transportGeneration) return
+        transportGeneration += 1
+        closeTransport(clearInputState = true)
+        emitError(message)
+    }
+
+    private fun emitState(message: String) {
+        scope.launch { onState(message) }
+    }
+
+    private fun emitError(message: String) {
+        scope.launch { onError(message) }
+    }
+
+    private fun emitStats(stats: StreamRuntimeStats) {
+        scope.launch { onStats(stats) }
     }
 
     private fun ensureInputDataChannels(pc: PeerConnection, offerSdp: String) {
@@ -1201,8 +1388,14 @@ class NativeStreamClient(
     private fun startGamepadKeepalive() {
         gamepadKeepaliveJob?.cancel()
         gamepadKeepaliveJob = scope.launch {
+            var connectedScanCountdown = 0
             while (true) {
                 delay(100L)
+                connectedScanCountdown -= 1
+                if (connectedScanCountdown <= 0) {
+                    connectedScanCountdown = 10
+                    refreshConnectedPhysicalControllers()
+                }
                 if (hasAnyControllerState()) {
                     sendCurrentGamepadState()
                 }
@@ -1242,6 +1435,12 @@ class NativeStreamClient(
                 members["state"] == "succeeded" &&
                 members["nominated"] == true
         }
+        val codecId = inboundVideo?.members?.get("codecId") as? String
+        val codec = codecId
+            ?.let { id -> stats.firstOrNull { stat -> stat.id == id } }
+            ?.members
+            ?.get("mimeType")
+            ?.let(::formatStatsCodec)
 
         val members = inboundVideo?.members.orEmpty()
         val bytesReceived = members["bytesReceived"].statsLong()
@@ -1285,12 +1484,27 @@ class NativeStreamClient(
             pingMs = pingMs,
             fps = explicitFps?.roundToInt()?.takeIf { it > 0 } ?: derivedFps?.takeIf { it > 0 },
             resolution = resolution,
+            codec = codec,
         )
+    }
+
+    private fun formatStatsCodec(value: Any?): String? {
+        val raw = value?.toString()?.substringAfter("/", value.toString())?.trim()?.uppercase(Locale.US) ?: return null
+        return when (raw) {
+            "AVC", "H264", "H.264" -> "H264"
+            "HEVC", "H265", "H.265" -> "H265"
+            "AV01", "AV1" -> "AV1"
+            else -> raw.takeIf { it.isNotBlank() }
+        }
     }
 
     private fun dispatchJoystick(event: MotionEvent): Boolean {
         val controllerId = controllerIdFor(event)
         activeControllerId = controllerId
+        if (!physicalControllerActive) {
+            NativeInputDiagnostics.add("physical gamepad motion source=${event.source} device=${event.deviceId} slot=$controllerId")
+        }
+        physicalControllerConnected = true
         physicalControllerActive = true
         val lx = event.getAxisValue(MotionEvent.AXIS_X)
         val ly = event.getAxisValue(MotionEvent.AXIS_Y)
@@ -1322,6 +1536,10 @@ class NativeStreamClient(
         val mask = event.keyCode.toGamepadButtonMask()
         if (mask != null) {
             activeControllerId = controllerIdFor(event)
+            if (!physicalControllerActive) {
+                NativeInputDiagnostics.add("physical gamepad key source=${event.source} device=${event.deviceId} slot=$activeControllerId key=${event.keyCode}")
+            }
+            physicalControllerConnected = true
             physicalControllerActive = true
             physicalButtons = if (pressed) physicalButtons or mask else physicalButtons and mask.inv()
             return sendCurrentGamepadState(controllerId = activeControllerId)
@@ -1329,6 +1547,10 @@ class NativeStreamClient(
         when (event.keyCode) {
             KeyEvent.KEYCODE_BUTTON_L2 -> {
                 activeControllerId = controllerIdFor(event)
+                if (!physicalControllerActive) {
+                    NativeInputDiagnostics.add("physical gamepad key source=${event.source} device=${event.deviceId} slot=$activeControllerId key=${event.keyCode}")
+                }
+                physicalControllerConnected = true
                 physicalControllerActive = true
                 physicalLeftTriggerButtonPressed = pressed
                 lastLeftTrigger = if (pressed) 255 else 0
@@ -1336,6 +1558,10 @@ class NativeStreamClient(
             }
             KeyEvent.KEYCODE_BUTTON_R2 -> {
                 activeControllerId = controllerIdFor(event)
+                if (!physicalControllerActive) {
+                    NativeInputDiagnostics.add("physical gamepad key source=${event.source} device=${event.deviceId} slot=$activeControllerId key=${event.keyCode}")
+                }
+                physicalControllerConnected = true
                 physicalControllerActive = true
                 physicalRightTriggerButtonPressed = pressed
                 lastRightTrigger = if (pressed) 255 else 0
@@ -1368,7 +1594,8 @@ class NativeStreamClient(
     private fun effectiveRightStickY(): Int = if (virtualRightStickActive) virtualRightStickY else lastRightStickY
 
     private fun hasAnyControllerState(): Boolean =
-        physicalControllerActive ||
+        physicalControllerConnected ||
+            physicalControllerActive ||
             virtualControllerVisible ||
             physicalButtons != 0 ||
             physicalHatButtons != 0 ||
@@ -1407,6 +1634,42 @@ class NativeStreamClient(
         return channel.send(DataChannel.Buffer(ByteBuffer.wrap(bytes), true))
     }
 
+    private fun refreshConnectedPhysicalControllers() {
+        val connectedDevices = mutableListOf<InputDevice>()
+        InputDevice.getDeviceIds().forEach { deviceId ->
+            val device = InputDevice.getDevice(deviceId) ?: return@forEach
+            if (device.sources.hasSource(InputDevice.SOURCE_GAMEPAD) ||
+                device.sources.hasSource(InputDevice.SOURCE_JOYSTICK)
+            ) {
+                connectedDevices += device
+            }
+        }
+        val connected = connectedDevices.isNotEmpty()
+        if (connected != physicalControllerConnected) {
+            NativeInputDiagnostics.add(
+                "physical gamepad connected=$connected devices=${connectedDevices.joinToString { "${it.id}:${it.name}" }}",
+            )
+        }
+        physicalControllerConnected = connected
+        if (connected && !physicalControllerActive && controllerSlots.isEmpty()) {
+            activeControllerId = controllerIdFor(connectedDevices.first().id)
+        }
+        if (!connected && physicalControllerActive) {
+            physicalControllerActive = false
+            physicalButtons = 0
+            physicalHatButtons = 0
+            physicalLeftTriggerButtonPressed = false
+            physicalRightTriggerButtonPressed = false
+            lastLeftTrigger = 0
+            lastRightTrigger = 0
+            lastLeftStickX = 0
+            lastLeftStickY = 0
+            lastRightStickX = 0
+            lastRightStickY = 0
+            sendCurrentGamepadState()
+        }
+    }
+
     private fun controllerIdFor(event: KeyEvent): Int = controllerIdFor(event.deviceId)
     private fun controllerIdFor(event: MotionEvent): Int = controllerIdFor(event.deviceId)
 
@@ -1420,7 +1683,8 @@ class NativeStreamClient(
     }
 
     private fun currentGamepadBitmap(controllerId: Int): Int {
-        val connected = physicalControllerActive ||
+        val connected = physicalControllerConnected ||
+            physicalControllerActive ||
             virtualControllerVisible ||
             virtualButtons != 0 ||
             virtualLeftTrigger != 0 ||
@@ -1473,6 +1737,8 @@ class NativeStreamClient(
     private fun MotionEvent.isGamepadMotionEvent(): Boolean =
         isFromSource(InputDevice.SOURCE_JOYSTICK) ||
             isFromSource(InputDevice.SOURCE_GAMEPAD)
+
+    private fun Int.hasSource(source: Int): Boolean = (this and source) == source
 
     private fun Int.toGamepadButtonMask(): Int? = when (this) {
         KeyEvent.KEYCODE_DPAD_UP -> 0x0001
@@ -1949,6 +2215,10 @@ private fun timestampUs(): Long = SystemClock.elapsedRealtimeNanos() / 1000L
 private const val DEFAULT_INPUT_PROTOCOL_VERSION = 2
 private const val INPUT_HANDSHAKE_MARKER = 0x0e
 private const val INPUT_HANDSHAKE_MAGIC_WORD = 526
+private const val ICE_DISCONNECTED_GRACE_MS = 3500L
+private const val ICE_FAILED_RECONNECT_DELAY_MS = 250L
+private const val SIGNALING_RECONNECT_DELAY_MS = 1000L
+private const val MAX_TRANSPORT_RECONNECT_ATTEMPTS = 3
 
 private fun Any?.statsDouble(): Double? =
     when (this) {

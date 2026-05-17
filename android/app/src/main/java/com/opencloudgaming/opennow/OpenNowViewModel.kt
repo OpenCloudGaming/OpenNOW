@@ -50,6 +50,7 @@ data class OpenNowUiState(
     val activeStreamSettings: StreamSettings? = null,
     val streamGame: GameInfo? = null,
     val streamLaunchMinimized: Boolean = false,
+    val streamReturnPage: AppPage? = null,
     val launchPhase: String = "",
     val queuePosition: Int? = null,
     val queueAdActiveId: String? = null,
@@ -261,9 +262,11 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     fun logout() {
         viewModelScope.launch {
             authRepository.logout()
+            val nextSession = authStore.activeSession()
             _state.update {
                 it.copy(
-                    authSession = authStore.activeSession(),
+                    authSession = nextSession,
+                    selectedProvider = nextSession?.provider ?: it.selectedProvider,
                     savedAccounts = authStore.state.value.sessions.map { saved -> saved.toSavedAccount() },
                     games = emptyList(),
                     libraryGames = emptyList(),
@@ -275,6 +278,33 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                     page = AppPage.Home,
                 )
             }
+            if (nextSession != null) {
+                refreshAfterAuth(nextSession)
+            }
+        }
+    }
+
+    fun switchAccount(userId: String) {
+        viewModelScope.launch {
+            authStore.setActiveSession(userId)
+            val session = authRepository.restore(forceRefresh = false) ?: return@launch
+            gamesJob?.cancel()
+            _state.update {
+                it.copy(
+                    authSession = session,
+                    selectedProvider = session.provider,
+                    savedAccounts = authStore.state.value.sessions.map { saved -> saved.toSavedAccount() },
+                    subscriptionInfo = null,
+                    games = emptyList(),
+                    libraryGames = emptyList(),
+                    catalogResult = CatalogBrowseResult(emptyList()),
+                    selectedGame = null,
+                    activeSession = null,
+                    error = null,
+                    page = AppPage.Home,
+                )
+            }
+            refreshAfterAuth(session)
         }
     }
 
@@ -348,8 +378,29 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    fun setDefaultGameVariant(gameId: String, variantId: String?) {
+        settingsStore.update {
+            val next = it.defaultGameVariantIds.toMutableMap()
+            if (variantId.isNullOrBlank()) {
+                next.remove(gameId)
+            } else {
+                next[gameId] = variantId
+            }
+            it.copy(defaultGameVariantIds = next)
+        }
+    }
+
     fun dismissStoreChoice() {
         _state.update { it.copy(pendingStoreChoiceGame = null) }
+    }
+
+    fun chooseStore(game: GameInfo) {
+        val launchVariants = launchableGameVariants(game.variants)
+        if (launchVariants.size > 1) {
+            _state.update { it.copy(pendingStoreChoiceGame = game, selectedGame = null, error = null) }
+        } else {
+            play(game, skipStoreChoice = true)
+        }
     }
 
     fun playVariant(game: GameInfo, variant: GameVariant) {
@@ -361,6 +412,12 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         if (launchJob?.isActive == true) return
         if (!skipStoreChoice) {
             val launchVariants = launchableGameVariants(game.variants)
+            val defaultVariantId = state.value.settings.defaultGameVariantIds[game.id]
+            val defaultVariant = launchVariants.firstOrNull { it.id == defaultVariantId }
+            if (defaultVariant != null) {
+                play(game.withSelectedVariant(defaultVariant.id), streamingBaseUrlOverride, skipPrintedWaste, skipStoreChoice = true)
+                return
+            }
             if (launchVariants.size > 1) {
                 _state.update { it.copy(pendingStoreChoiceGame = game, selectedGame = null, error = null) }
                 return
@@ -368,6 +425,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         }
         launchJob = viewModelScope.launch {
             val auth = state.value.authSession ?: return@launch
+            val returnPage = state.value.page.takeUnless { it == AppPage.Stream } ?: state.value.streamReturnPage ?: AppPage.Home
             if (!skipPrintedWaste && streamingBaseUrlOverride == null && shouldUsePrintedWasteQueue(auth)) {
                 showPrintedWasteSelector(game)
                 return@launch
@@ -383,6 +441,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                     activeStreamSettings = settings,
                     selectedGame = null,
                     page = AppPage.Stream,
+                    streamReturnPage = returnPage,
                     streamLaunchMinimized = false,
                     error = null,
                     queuePosition = null,
@@ -469,16 +528,19 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 }
             }.onFailure { error ->
                 if (error is CancellationException) return@onFailure
+                val returnPage = state.value.streamReturnPage ?: AppPage.Home
                 _state.update {
                     it.copy(
                         error = normalizeLaunchError(error),
                         streamStatus = "idle",
                         activeStreamSettings = null,
+                        streamReturnPage = null,
                         launchPhase = "",
                         streamLaunchMinimized = false,
                         queuePosition = null,
                         queueAdActiveId = null,
                         pendingStoreChoiceGame = null,
+                        page = returnPage,
                     )
                 }
             }
@@ -491,6 +553,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         viewModelScope.launch {
             val auth = state.value.authSession
             val snapshot = state.value
+            val returnPage = snapshot.streamReturnPage ?: AppPage.Home
             val session = snapshot.streamSession
             val streamSettings = snapshot.activeStreamSettings ?: state.value.settings.stream.adjustedForDevice(state.value.codecReport)
             if (auth != null && session != null) {
@@ -513,11 +576,12 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                     streamGame = null,
                     streamStatus = "idle",
                     streamLaunchMinimized = false,
+                    streamReturnPage = null,
                     launchPhase = "",
                     queuePosition = null,
                     queueAdActiveId = null,
                     pendingStoreChoiceGame = null,
-                    page = AppPage.Home,
+                    page = returnPage,
                 )
             }
             refreshActiveSession()
@@ -536,7 +600,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             if (current.streamStatus == "idle" || current.streamSession?.status in setOf(2, 3)) {
                 current
             } else {
-                current.copy(streamLaunchMinimized = true, page = AppPage.Home)
+                current.copy(streamLaunchMinimized = true, page = current.streamReturnPage ?: AppPage.Home)
             }
         }
     }
@@ -555,12 +619,14 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             val token = auth.tokens.idToken ?: auth.tokens.accessToken
             val baseUrl = effectiveStreamingBaseUrl(auth)
             val cachedActive = state.value.activeSession
+            val returnPage = state.value.page.takeUnless { it == AppPage.Stream } ?: state.value.streamReturnPage ?: AppPage.Home
             _state.update {
                 it.copy(
                     streamStatus = "queue",
                     launchPhase = "Checking active sessions",
                     activeStreamSettings = settings,
                     page = AppPage.Stream,
+                    streamReturnPage = returnPage,
                     streamLaunchMinimized = false,
                     selectedGame = null,
                     pendingStoreChoiceGame = null,
@@ -601,17 +667,20 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 }
             }.onFailure { error ->
                 if (error is CancellationException) return@onFailure
+                val returnPage = state.value.streamReturnPage ?: AppPage.Home
                 _state.update {
                     it.copy(
                         error = normalizeLaunchError(error),
                         streamStatus = "idle",
                         activeStreamSettings = null,
+                        streamReturnPage = null,
                         launchPhase = "",
                         streamLaunchMinimized = false,
                         queuePosition = null,
                         queueAdActiveId = null,
                         pendingStoreChoiceGame = null,
                         pendingPrintedWasteGame = null,
+                        page = returnPage,
                     )
                 }
             }

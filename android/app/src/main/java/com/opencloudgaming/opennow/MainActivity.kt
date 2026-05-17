@@ -48,7 +48,14 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
-        return NativeStreamInputRouter.dispatchKey(event) || super.dispatchKeyEvent(event)
+        if (NativeStreamInputRouter.dispatchKey(event)) {
+            return true
+        }
+        val normalizedStreamUiKeyCode = NativeStreamInputRouter.normalizedStreamUiKeyCode(event)
+        if (normalizedStreamUiKeyCode != null && normalizedStreamUiKeyCode != event.keyCode) {
+            return dispatchSyntheticStreamUiKey(normalizedStreamUiKeyCode, event)
+        }
+        return super.dispatchKeyEvent(event)
     }
 
     override fun dispatchGenericMotionEvent(event: MotionEvent): Boolean {
@@ -199,6 +206,22 @@ class MainActivity : ComponentActivity() {
             sourceEvent.deviceId,
             0,
             0,
+            InputDevice.SOURCE_DPAD,
+        )
+        return super.dispatchKeyEvent(event)
+    }
+
+    private fun dispatchSyntheticStreamUiKey(keyCode: Int, sourceEvent: KeyEvent): Boolean {
+        val event = KeyEvent(
+            sourceEvent.downTime,
+            sourceEvent.eventTime,
+            sourceEvent.action,
+            keyCode,
+            sourceEvent.repeatCount,
+            sourceEvent.metaState,
+            sourceEvent.deviceId,
+            sourceEvent.scanCode,
+            sourceEvent.flags,
             InputDevice.SOURCE_DPAD,
         )
         return super.dispatchKeyEvent(event)

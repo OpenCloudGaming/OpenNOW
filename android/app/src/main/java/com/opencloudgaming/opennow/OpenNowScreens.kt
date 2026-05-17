@@ -9,6 +9,7 @@ import android.os.Build
 import android.speech.RecognizerIntent
 import android.view.KeyEvent
 import android.view.MotionEvent
+import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -25,6 +26,7 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -34,6 +36,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -71,6 +74,7 @@ import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -177,6 +181,60 @@ private val SettingsPanel = Color(0xff11161a)
 private val SettingsPanelAlt = Color(0xff171d22)
 private val SettingsText = Color(0xffeef3f5)
 private val SettingsTextMuted = Color(0xff98a4aa)
+
+private data class SettingsChoiceOption(val value: String, val label: String)
+
+private val keyboardLayoutOptions = listOf(
+    SettingsChoiceOption("en-US", "English (US)"),
+    SettingsChoiceOption("en-GB", "English (UK)"),
+    SettingsChoiceOption("tr-TR", "Turkish Q"),
+    SettingsChoiceOption("de-DE", "German"),
+    SettingsChoiceOption("fr-FR", "French"),
+    SettingsChoiceOption("es-ES", "Spanish"),
+    SettingsChoiceOption("es-MX", "Spanish (Latin America)"),
+    SettingsChoiceOption("it-IT", "Italian"),
+    SettingsChoiceOption("pt-PT", "Portuguese (Portugal)"),
+    SettingsChoiceOption("pt-BR", "Portuguese (Brazil)"),
+    SettingsChoiceOption("pl-PL", "Polish"),
+    SettingsChoiceOption("ru-RU", "Russian"),
+    SettingsChoiceOption("ja-JP", "Japanese"),
+    SettingsChoiceOption("ko-KR", "Korean"),
+    SettingsChoiceOption("zh-CN", "Chinese (Simplified)"),
+    SettingsChoiceOption("zh-TW", "Chinese (Traditional)"),
+)
+
+private val gameLanguageOptions = listOf(
+    SettingsChoiceOption("en_US", "English (US)"),
+    SettingsChoiceOption("en_GB", "English (UK)"),
+    SettingsChoiceOption("de_DE", "Deutsch"),
+    SettingsChoiceOption("fr_FR", "Francais"),
+    SettingsChoiceOption("es_ES", "Espanol (ES)"),
+    SettingsChoiceOption("es_MX", "Espanol (MX)"),
+    SettingsChoiceOption("it_IT", "Italiano"),
+    SettingsChoiceOption("pt_PT", "Portugues (PT)"),
+    SettingsChoiceOption("pt_BR", "Portugues (BR)"),
+    SettingsChoiceOption("ru_RU", "Russian"),
+    SettingsChoiceOption("pl_PL", "Polish"),
+    SettingsChoiceOption("tr_TR", "Turkish"),
+    SettingsChoiceOption("ar_SA", "Arabic"),
+    SettingsChoiceOption("ja_JP", "Japanese"),
+    SettingsChoiceOption("ko_KR", "Korean"),
+    SettingsChoiceOption("zh_CN", "Chinese (Simplified)"),
+    SettingsChoiceOption("zh_TW", "Chinese (Traditional)"),
+    SettingsChoiceOption("th_TH", "Thai"),
+    SettingsChoiceOption("vi_VN", "Vietnamese"),
+    SettingsChoiceOption("id_ID", "Indonesian"),
+    SettingsChoiceOption("cs_CZ", "Czech"),
+    SettingsChoiceOption("el_GR", "Greek"),
+    SettingsChoiceOption("hu_HU", "Hungarian"),
+    SettingsChoiceOption("ro_RO", "Romanian"),
+    SettingsChoiceOption("uk_UA", "Ukrainian"),
+    SettingsChoiceOption("nl_NL", "Dutch"),
+    SettingsChoiceOption("sv_SE", "Swedish"),
+    SettingsChoiceOption("da_DK", "Danish"),
+    SettingsChoiceOption("fi_FI", "Finnish"),
+    SettingsChoiceOption("no_NO", "Norwegian"),
+)
 private val UiAccent.color: Color
     get() = when (this) {
         UiAccent.OpenNow -> Green
@@ -212,13 +270,7 @@ fun OpenNowTheme(settings: AppSettings, content: @Composable () -> Unit) {
         onSurfaceVariant = TextMuted,
     )
     val colorScheme = if (settings.dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-        dynamicDarkColorScheme(context).copy(
-            primary = accent,
-            onPrimary = Color(0xff08090c),
-            secondary = accent,
-            tertiary = accent,
-            surfaceTint = accent,
-        )
+        dynamicDarkColorScheme(context)
     } else {
         fallbackScheme
     }
@@ -616,7 +668,9 @@ private fun MainShell(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                     GameDetailsSheet(
                         game = game,
                         favorite = game.id in state.settings.favoriteGameIds,
+                        defaultVariantId = state.settings.defaultGameVariantIds[game.id],
                         onPlay = viewModel::play,
+                        onChooseStore = viewModel::chooseStore,
                         onFavorite = viewModel::updateFavorites,
                         onDismiss = viewModel::clearSelectedGame,
                     )
@@ -631,7 +685,9 @@ private fun MainShell(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                 AnimatedLaunchOverlay(Modifier.align(Alignment.Center)) {
                     StoreLaunchSelector(
                         game = game,
+                        defaultVariantId = state.settings.defaultGameVariantIds[game.id],
                         onLaunch = viewModel::playVariant,
+                        onSetDefaultStore = viewModel::setDefaultGameVariant,
                         onDismiss = viewModel::dismissStoreChoice,
                     )
                 }
@@ -1290,7 +1346,9 @@ private fun AnimatedLaunchOverlay(modifier: Modifier = Modifier, content: @Compo
 private fun GameDetailsSheet(
     game: GameInfo,
     favorite: Boolean,
+    defaultVariantId: String?,
     onPlay: (GameInfo) -> Unit,
+    onChooseStore: (GameInfo) -> Unit,
     onFavorite: (String) -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -1321,7 +1379,9 @@ private fun GameDetailsSheet(
                     GameDetailsLandscapeContent(
                         game = game,
                         favorite = favorite,
+                        defaultVariantId = defaultVariantId,
                         onPlay = onPlay,
+                        onChooseStore = onChooseStore,
                         onFavorite = onFavorite,
                         onDismiss = onDismiss,
                         playFocusRequester = playFocusRequester,
@@ -1331,7 +1391,9 @@ private fun GameDetailsSheet(
                     GameDetailsScrollableContent(
                         game = game,
                         favorite = favorite,
+                        defaultVariantId = defaultVariantId,
                         onPlay = onPlay,
+                        onChooseStore = onChooseStore,
                         onFavorite = onFavorite,
                         onDismiss = onDismiss,
                         playFocusRequester = playFocusRequester,
@@ -1347,7 +1409,9 @@ private fun GameDetailsSheet(
 private fun GameDetailsLandscapeContent(
     game: GameInfo,
     favorite: Boolean,
+    defaultVariantId: String?,
     onPlay: (GameInfo) -> Unit,
+    onChooseStore: (GameInfo) -> Unit,
     onFavorite: (String) -> Unit,
     onDismiss: () -> Unit,
     playFocusRequester: FocusRequester,
@@ -1426,6 +1490,11 @@ private fun GameDetailsLandscapeContent(
                     overflow = TextOverflow.Ellipsis,
                 )
             }
+            LaunchOptionsList(
+                game = game,
+                defaultVariantId = defaultVariantId,
+                compact = true,
+            )
             Spacer(Modifier.weight(1f))
             Row(
                 Modifier.fillMaxWidth(),
@@ -1435,17 +1504,19 @@ private fun GameDetailsLandscapeContent(
                 OutlinedButton(onClick = onDismiss, modifier = Modifier.weight(0.8f)) {
                     Text("Dismiss", maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
-                Button(
+                LongPressPlayButton(
                     onClick = {
                         onDismiss()
                         onPlay(game)
                     },
+                    onLongClick = {
+                        onDismiss()
+                        onChooseStore(game)
+                    },
                     modifier = Modifier
                         .weight(1.2f)
                         .focusRequester(playFocusRequester),
-                ) {
-                    Text(stringResource(R.string.action_play), maxLines = 1, overflow = TextOverflow.Ellipsis)
-                }
+                )
             }
         }
     }
@@ -1456,7 +1527,9 @@ private fun GameDetailsLandscapeContent(
 private fun GameDetailsScrollableContent(
     game: GameInfo,
     favorite: Boolean,
+    defaultVariantId: String?,
     onPlay: (GameInfo) -> Unit,
+    onChooseStore: (GameInfo) -> Unit,
     onFavorite: (String) -> Unit,
     onDismiss: () -> Unit,
     playFocusRequester: FocusRequester,
@@ -1519,36 +1592,11 @@ private fun GameDetailsScrollableContent(
                         }
                     }
                     DetailRows(game)
-                    if (game.variants.isNotEmpty()) {
-                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Text("Launch options", color = TextMuted, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
-                            launchableGameVariants(game.variants).forEach { variant ->
-                                Surface(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    shape = RoundedCornerShape(14.dp),
-                                    color = PanelAlt,
-                                ) {
-                                    Row(
-                                        Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(10.dp),
-                                    ) {
-                                        Column(Modifier.weight(1f)) {
-                                            Text(gameStoreDisplayName(variant.store), fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                            val details = listOfNotNull(
-                                                variant.libraryStatus?.takeIf { it.isNotBlank() },
-                                                variant.supportedControls.takeIf { it.isNotEmpty() }?.joinToString(", "),
-                                                variant.lastPlayedDate?.takeIf { it.isNotBlank() }?.let { "Last played $it" },
-                                            ).joinToString(" · ")
-                                            if (details.isNotBlank()) {
-                                                Text(details, color = TextMuted, style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
+                    LaunchOptionsList(
+                        game = game,
+                        defaultVariantId = defaultVariantId,
+                        compact = false,
+                    )
                 }
             }
         }
@@ -1563,21 +1611,118 @@ private fun GameDetailsScrollableContent(
                 OutlinedButton(onClick = onDismiss, modifier = Modifier.weight(0.8f)) {
                     Text("Dismiss", maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
-                Button(
+                LongPressPlayButton(
                     onClick = {
                         onDismiss()
                         onPlay(game)
                     },
+                    onLongClick = {
+                        onDismiss()
+                        onChooseStore(game)
+                    },
                     modifier = Modifier
                         .weight(1.2f)
                         .focusRequester(playFocusRequester),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun LaunchOptionsList(
+    game: GameInfo,
+    defaultVariantId: String?,
+    compact: Boolean,
+) {
+    val variants = launchableGameVariants(game.variants)
+    if (variants.size <= 1) return
+    Column(verticalArrangement = Arrangement.spacedBy(if (compact) 6.dp else 8.dp)) {
+        Text(
+            stringResource(R.string.store_selector_launchers),
+            color = TextMuted,
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.Bold,
+        )
+        variants.take(if (compact) 3 else variants.size).forEach { variant ->
+            val isDefault = variant.id == defaultVariantId
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(if (compact) 12.dp else 14.dp),
+                color = if (isDefault) MaterialTheme.colorScheme.primary.copy(alpha = 0.18f) else PanelAlt,
+            ) {
+                Row(
+                    Modifier.padding(horizontal = if (compact) 10.dp else 12.dp, vertical = if (compact) 8.dp else 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
-                    Text(stringResource(R.string.action_play), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Column(Modifier.weight(1f)) {
+                        Text(gameStoreDisplayName(variant.store), fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        val details = variantDetailsText(variant)
+                        Text(
+                            if (isDefault) {
+                                listOf(stringResource(R.string.store_selector_default), details).filter { it.isNotBlank() }.joinToString(" - ")
+                            } else {
+                                details.ifBlank { stringResource(R.string.store_selector_available_launcher) }
+                            },
+                            color = TextMuted,
+                            style = MaterialTheme.typography.bodySmall,
+                            maxLines = if (compact) 1 else 2,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
                 }
             }
         }
     }
 }
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun LongPressPlayButton(
+    onClick: () -> Unit,
+    onLongClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    var focused by remember { mutableStateOf(false) }
+    val shape = RoundedCornerShape(999.dp)
+    Surface(
+        modifier = modifier
+            .height(48.dp)
+            .onFocusChanged { focused = it.isFocused }
+            .focusable()
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = onLongClick,
+                onLongClickLabel = stringResource(R.string.store_selector_play_long_press),
+            )
+            .border(
+                width = if (focused) 2.dp else 0.dp,
+                color = if (focused) TextPrimary else Color.Transparent,
+                shape = shape,
+            ),
+        shape = shape,
+        color = MaterialTheme.colorScheme.primary,
+        tonalElevation = 2.dp,
+    ) {
+        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Text(
+                stringResource(R.string.action_play),
+                color = MaterialTheme.colorScheme.onPrimary,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+    }
+}
+
+private fun variantDetailsText(variant: GameVariant): String =
+    listOfNotNull(
+        variant.libraryStatus?.takeIf { it.isNotBlank() }?.let(::formatGameMetadataLabel),
+        variant.supportedControls.takeIf { it.isNotEmpty() }?.joinToString(", ") { formatGameMetadataLabel(it) },
+        variant.lastPlayedDate?.takeIf { it.isNotBlank() }?.let { "Last played $it" },
+    ).joinToString(" - ")
 
 @Composable
 private fun FavoriteIconButton(favorite: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
@@ -1607,7 +1752,45 @@ private fun gameDetailChips(game: GameInfo): List<String> =
     (game.featureLabels + game.genres + listOfNotNull(game.playType, game.membershipTierLabel))
         .map { it.trim() }
         .filter { it.isNotBlank() }
-        .distinct()
+        .map(::formatGameMetadataLabel)
+        .filterNot(::isNoisyGameTag)
+        .distinctBy { it.lowercase(Locale.US) }
+        .take(10)
+
+private fun formatGameMetadataLabel(raw: String): String {
+    val compact = raw.trim()
+        .removePrefix("GFN_")
+        .removePrefix("GAME_")
+        .replace(Regex("[_-]+"), " ")
+        .replace(Regex("\\s+"), " ")
+        .trim()
+    if (compact.isBlank()) return ""
+    val lower = compact.lowercase(Locale.US)
+    return when (lower) {
+        "full game" -> "Full game"
+        "single player" -> "Single-player"
+        "multi player", "multiplayer" -> "Multiplayer"
+        "controller", "gamepad" -> "Controller"
+        "keyboard mouse", "mouse keyboard" -> "Mouse and keyboard"
+        else -> compact.split(" ").joinToString(" ") { word ->
+            if (word.length <= 3 && word.all { it.isUpperCase() || it.isDigit() }) {
+                word
+            } else {
+                word.lowercase(Locale.US).replaceFirstChar { char -> char.titlecase(Locale.US) }
+            }
+        }
+    }
+}
+
+private fun isNoisyGameTag(label: String): Boolean {
+    val normalized = label.trim().lowercase(Locale.US)
+    return normalized.isBlank() ||
+        normalized == "unknown" ||
+        normalized == "gfn" ||
+        normalized == "nvidia" ||
+        normalized.contains("sku based tag") ||
+        normalized.contains("catalog")
+}
 
 @Composable
 private fun CompactDetailRows(game: GameInfo) {
@@ -1684,16 +1867,26 @@ private fun gameMatchesSearch(game: GameInfo, query: String): Boolean {
 @OptIn(ExperimentalLayoutApi::class)
 private fun StoreLaunchSelector(
     game: GameInfo,
+    defaultVariantId: String?,
     onLaunch: (GameInfo, GameVariant) -> Unit,
+    onSetDefaultStore: (String, String?) -> Unit,
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val variants = remember(game) { launchableGameVariants(game.variants) }
-    val firstLaunchFocusRequester = remember(game.id) { FocusRequester() }
+    val context = LocalContext.current
+    val initialVariantId = remember(game.id, defaultVariantId, variants) {
+        defaultVariantId?.takeIf { savedId -> variants.any { it.id == savedId } }
+            ?: variants.firstOrNull()?.id
+    }
+    var selectedVariantId by remember(game.id, initialVariantId) { mutableStateOf(initialVariantId) }
+    var rememberDefaultStore by remember(game.id, defaultVariantId) { mutableStateOf(defaultVariantId != null) }
+    val selectedVariant = variants.firstOrNull { it.id == selectedVariantId }
+    val continueFocusRequester = remember(game.id) { FocusRequester() }
     BackHandler(onBack = onDismiss)
     LaunchedEffect(game.id, variants.size) {
         if (variants.isNotEmpty()) {
-            runCatching { firstLaunchFocusRequester.requestFocus() }
+            runCatching { continueFocusRequester.requestFocus() }
         }
     }
     BoxWithConstraints(
@@ -1723,7 +1916,7 @@ private fun StoreLaunchSelector(
                     Spacer(Modifier.width(12.dp))
                     Column(Modifier.weight(1f)) {
                         Text(game.title, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        Text("Choose launcher", color = TextMuted, style = MaterialTheme.typography.bodySmall)
+                        Text(stringResource(R.string.store_selector_choose_launcher), color = TextMuted, style = MaterialTheme.typography.bodySmall)
                     }
                 }
 
@@ -1732,12 +1925,14 @@ private fun StoreLaunchSelector(
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     items(variants, key = { it.id }) { variant ->
+                        val isSelected = variant.id == selectedVariantId
+                        val isSavedDefault = variant.id == defaultVariantId
                         Surface(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .clickable { onLaunch(game, variant) },
+                                .clickable { selectedVariantId = variant.id },
                             shape = RoundedCornerShape(14.dp),
-                            color = PanelAlt,
+                            color = if (isSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.18f) else PanelAlt,
                         ) {
                             Row(
                                 Modifier.padding(14.dp),
@@ -1746,29 +1941,75 @@ private fun StoreLaunchSelector(
                             ) {
                                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                                     Text(gameStoreDisplayName(variant.store), fontWeight = FontWeight.Bold)
-                                    val details = listOfNotNull(
-                                        variant.libraryStatus?.takeIf { it.isNotBlank() },
-                                        variant.supportedControls.takeIf { it.isNotEmpty() }?.joinToString(", "),
-                                    ).joinToString(" · ")
+                                    val details = listOf(
+                                        if (isSavedDefault) stringResource(R.string.store_selector_default) else "",
+                                        variantDetailsText(variant),
+                                    ).filter { it.isNotBlank() }.joinToString(" - ")
                                     if (details.isNotBlank()) {
                                         Text(details, color = TextMuted, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                     }
                                 }
-                                Button(
-                                    onClick = { onLaunch(game, variant) },
-                                    modifier = if (variant.id == variants.firstOrNull()?.id) {
-                                        Modifier.focusRequester(firstLaunchFocusRequester)
-                                    } else {
-                                        Modifier
-                                    },
-                                ) { Text("Launch") }
+                                if (isSelected) {
+                                    Text(
+                                        stringResource(R.string.store_selector_selected),
+                                        color = MaterialTheme.colorScheme.primary,
+                                        style = MaterialTheme.typography.labelLarge,
+                                        fontWeight = FontWeight.Bold,
+                                        maxLines = 1,
+                                    )
+                                }
                             }
                         }
                     }
                 }
 
-                TextButton(onClick = onDismiss, modifier = Modifier.align(Alignment.End)) {
-                    Text("Cancel")
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(14.dp))
+                        .clickable { rememberDefaultStore = !rememberDefaultStore }
+                        .padding(vertical = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Checkbox(
+                        checked = rememberDefaultStore,
+                        onCheckedChange = { rememberDefaultStore = it },
+                    )
+                    Text(
+                        stringResource(R.string.store_selector_default_checkbox),
+                        color = TextPrimary,
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    TextButton(onClick = onDismiss, modifier = Modifier.weight(0.85f)) {
+                        Text(stringResource(R.string.action_cancel))
+                    }
+                    Button(
+                        onClick = {
+                            val variant = selectedVariant ?: return@Button
+                            if (rememberDefaultStore || defaultVariantId != null) {
+                                onSetDefaultStore(game.id, if (rememberDefaultStore) variant.id else null)
+                            }
+                            if (rememberDefaultStore) {
+                                Toast.makeText(context, context.getString(R.string.store_selector_long_press_tip), Toast.LENGTH_LONG).show()
+                            }
+                            onLaunch(game, variant)
+                        },
+                        enabled = selectedVariant != null,
+                        modifier = Modifier
+                            .weight(1.15f)
+                            .focusRequester(continueFocusRequester),
+                    ) {
+                        Text(stringResource(R.string.action_continue), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
                 }
             }
         }
@@ -1888,10 +2129,10 @@ private fun SettingsContent(
                 NumberSlider("Mouse acceleration", settings.stream.mouseAcceleration.toFloat(), 1f, 150f, 1f) {
                     viewModel.updateStreamSettings { s -> s.copy(mouseAcceleration = it.roundToInt()) }
                 }
-                ChoiceRow("Keyboard layout", listOf("en-US", "en-GB", "de-DE", "fr-FR", "es-ES", "pt-BR", "ja-JP", "ko-KR", "zh-CN"), settings.stream.keyboardLayout) {
+                ChoiceOptionRow("Keyboard layout", keyboardLayoutOptions, settings.stream.keyboardLayout) {
                     viewModel.updateStreamSettings { s -> s.copy(keyboardLayout = it) }
                 }
-                ChoiceRow("Game language", listOf("en_US", "en_GB", "de_DE", "fr_FR", "es_ES", "pt_BR", "ja_JP", "ko_KR", "zh_CN"), settings.stream.gameLanguage) {
+                ChoiceOptionRow("Game language", gameLanguageOptions, settings.stream.gameLanguage) {
                     viewModel.updateStreamSettings { s -> s.copy(gameLanguage = it) }
                 }
                 SettingSwitch("Clipboard paste", settings.clipboardPaste) { enabled -> viewModel.updateSettings(settings.copy(clipboardPaste = enabled)) }
@@ -1927,39 +2168,210 @@ private fun SettingsContent(
                 SettingSwitch(stringResource(R.string.settings_session_counter), settings.sessionCounterEnabled) { viewModel.updateSettings(settings.copy(sessionCounterEnabled = it)) }
             }
     SettingsSection("Account") {
-                Text(state.authSession?.user?.email ?: state.authSession?.user?.displayName.orEmpty(), color = SettingsTextMuted)
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(onClick = viewModel::logout) { Text("Sign out") }
-                    OutlinedButton(onClick = viewModel::logoutAll) { Text("Sign out all") }
-                }
+                AccountSettingsPanel(state = state, viewModel = viewModel)
             }
     SettingsSection("Codec Diagnostics") {
-                state.codecReport?.capabilities?.forEach { cap ->
-                    Text("${cap.codec.name}: decode=${cap.decoderName ?: "no"} encode=${cap.encoderName ?: "no"}", color = SettingsTextMuted)
-                }
-                Text("Native: ${state.codecReport?.nativeRuntimeSummary ?: "unknown"}", color = SettingsTextMuted)
+                CodecDiagnosticsPanel(state.codecReport)
             }
     SettingsSection("Debug Logs") {
-                val clipboard = LocalClipboardManager.current
-                var copied by remember { mutableStateOf(false) }
-                Text("Includes launch state, queue state, ads, stream settings, input settings, and codec capabilities.", color = SettingsTextMuted)
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = {
-                        clipboard.setText(AnnotatedString(viewModel.debugLogText()))
-                        copied = true
-                    }) {
-                        Text(if (copied) "Copied logs" else "Copy logs")
+                DebugLogsPanel(state = state, viewModel = viewModel)
+            }
+    }
+}
+
+@Composable
+private fun AccountSettingsPanel(state: OpenNowUiState, viewModel: OpenNowViewModel) {
+    val currentUserId = state.authSession?.user?.userId
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        state.savedAccounts.ifEmpty {
+            state.authSession?.toSavedAccount()?.let { listOf(it) } ?: emptyList()
+        }.forEach { account ->
+            val selected = account.userId == currentUserId
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(14.dp),
+                color = if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.16f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.76f),
+            ) {
+                Row(
+                    Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text(account.displayName.ifBlank { "NVIDIA Account" }, color = SettingsText, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(
+                            listOfNotNull(account.email?.takeIf { it.isNotBlank() }, account.providerCode, account.membershipTier).joinToString(" - "),
+                            color = SettingsTextMuted,
+                            style = MaterialTheme.typography.bodySmall,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
                     }
-                    state.error?.let { error ->
-                        OutlinedButton(onClick = {
-                            clipboard.setText(AnnotatedString(error))
-                            copied = true
-                        }) {
-                            Text("Copy error")
+                    if (selected) {
+                        Text("Active", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+                    } else {
+                        OutlinedButton(onClick = { viewModel.switchAccount(account.userId) }, contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) {
+                            Text("Switch")
                         }
                     }
                 }
             }
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+            Button(onClick = { viewModel.login() }, modifier = Modifier.weight(1f)) { Text("Add account") }
+            OutlinedButton(onClick = viewModel::logout, modifier = Modifier.weight(1f)) { Text("Sign out") }
+        }
+        OutlinedButton(onClick = viewModel::logoutAll, modifier = Modifier.fillMaxWidth()) { Text("Sign out all accounts") }
+    }
+}
+
+private fun AuthSession.toSavedAccount(): SavedAccount =
+    SavedAccount(
+        userId = user.userId,
+        displayName = user.displayName,
+        email = user.email,
+        avatarUrl = user.avatarUrl,
+        membershipTier = user.membershipTier,
+        providerCode = provider.code,
+    )
+
+@Composable
+private fun CodecDiagnosticsPanel(report: RuntimeCodecReport?) {
+    if (report == null) {
+        Text("Codec probe has not run yet.", color = SettingsTextMuted)
+        return
+    }
+    val safeDecoders = report.capabilities.count { it.realtimeSafe }
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+            CodecSummaryChip("${safeDecoders}/${report.capabilities.size}", "real-time decoders")
+            CodecSummaryChip(if (report.lowPowerGpuProfile) "Low power" else "Standard", "device profile")
+            CodecSummaryChip(if (report.androidTvProfile) "TV" else "Mobile", "shell")
+        }
+        report.capabilities.forEach { capability ->
+            CodecCapabilityRow(capability)
+        }
+        Text(
+            report.nativeRuntimeSummary.replace("{", "").replace("}", "").replace("\"", ""),
+            color = SettingsTextMuted,
+            style = MaterialTheme.typography.bodySmall,
+            maxLines = 3,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
+@Composable
+private fun RowScope.CodecSummaryChip(value: String, label: String) {
+    Surface(
+        modifier = Modifier.weight(1f),
+        shape = RoundedCornerShape(14.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.76f),
+    ) {
+        Column(Modifier.padding(horizontal = 10.dp, vertical = 8.dp)) {
+            Text(value, color = SettingsText, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(label, color = SettingsTextMuted, style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+    }
+}
+
+@Composable
+private fun CodecCapabilityRow(capability: CodecCapability) {
+    val healthy = capability.decoderAvailable && capability.realtimeSafe
+    val status = when {
+        healthy -> "Ready"
+        capability.decoderAvailable -> "Decoder risky"
+        else -> "Unavailable"
+    }
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(14.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.76f),
+    ) {
+        Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(capability.codec.name, color = SettingsText, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                Text(
+                    status,
+                    color = if (healthy) MaterialTheme.colorScheme.primary else Color(0xffffc266),
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.Bold,
+                )
+            }
+            Text(
+                "Decoder: ${capability.decoderName ?: "none"}",
+                color = SettingsTextMuted,
+                style = MaterialTheme.typography.bodySmall,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                "Hardware decode ${yesNo(capability.hardwareDecoder)} - encoder ${capability.encoderName ?: "none"}",
+                color = SettingsTextMuted,
+                style = MaterialTheme.typography.bodySmall,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+    }
+}
+
+private fun yesNo(value: Boolean): String = if (value) "yes" else "no"
+
+@Composable
+private fun DebugLogsPanel(state: OpenNowUiState, viewModel: OpenNowViewModel) {
+    val context = LocalContext.current
+    val clipboard = LocalClipboardManager.current
+    var copied by remember { mutableStateOf(false) }
+    var saved by remember { mutableStateOf(false) }
+    var saveError by remember { mutableStateOf<String?>(null) }
+    var pendingLogText by remember { mutableStateOf("") }
+    val saveLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/plain")) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        runCatching {
+            context.contentResolver.openOutputStream(uri)?.use { output ->
+                output.write(pendingLogText.toByteArray(Charsets.UTF_8))
+            } ?: error("Could not open log file")
+        }.onSuccess {
+            saved = true
+            saveError = null
+        }.onFailure { error ->
+            saveError = error.message ?: "Could not save logs"
+        }
+    }
+    Text("Includes launch state, queue state, ads, stream settings, input settings, and codec capabilities.", color = SettingsTextMuted)
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+        Button(
+            onClick = {
+                clipboard.setText(AnnotatedString(viewModel.debugLogText()))
+                copied = true
+            },
+            modifier = Modifier.weight(1f),
+        ) {
+            Text(if (copied) "Copied logs" else "Copy logs", maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+        OutlinedButton(
+            onClick = {
+                pendingLogText = viewModel.debugLogText()
+                saved = false
+                saveError = null
+                saveLauncher.launch("opennow-android-logs.txt")
+            },
+            modifier = Modifier.weight(1f),
+        ) {
+            Text(if (saved) "Saved .txt" else "Save .txt", maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+    }
+    state.error?.let { error ->
+        OutlinedButton(onClick = {
+            clipboard.setText(AnnotatedString(error))
+            copied = true
+        }) {
+            Text("Copy error")
+        }
+    }
+    saveError?.let {
+        Text(it, color = Color(0xffff9f9f), style = MaterialTheme.typography.bodySmall)
     }
 }
 
@@ -1984,7 +2396,7 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
             exitConfirmOpen -> exitConfirmOpen = false
             keyboardOpen -> keyboardOpen = false
             controlsOpen -> controlsOpen = false
-            else -> controlsOpen = true
+            else -> exitConfirmOpen = true
         }
     }
     val client = remember {
@@ -2010,11 +2422,6 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
         window?.statusBarColor = AndroidColor.BLACK
         window?.navigationBarColor = AndroidColor.BLACK
         NativeStreamInputRouter.attach(client)
-        NativeStreamInputRouter.setSystemMenuHandler {
-            keyboardOpen = false
-            exitConfirmOpen = false
-            controlsOpen = true
-        }
         onDispose {
             if (oldStatusBarColor != null) window.statusBarColor = oldStatusBarColor
             if (oldNavigationBarColor != null) window.navigationBarColor = oldNavigationBarColor
@@ -2022,8 +2429,27 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                 decor?.releasePointerCapture()
             }
             NativeStreamInputRouter.setSystemMenuHandler(null)
+            NativeStreamInputRouter.setSystemBackHandler(null)
+            NativeStreamInputRouter.setStreamUiActive(false)
             NativeStreamInputRouter.detach(client)
             client.release()
+        }
+    }
+
+    LaunchedEffect(streamReady, controlsOpen, exitConfirmOpen, keyboardOpen) {
+        NativeStreamInputRouter.setStreamUiActive(streamReady && (controlsOpen || exitConfirmOpen || keyboardOpen))
+        NativeStreamInputRouter.setSystemMenuHandler {
+            keyboardOpen = false
+            exitConfirmOpen = false
+            controlsOpen = true
+        }
+        NativeStreamInputRouter.setSystemBackHandler {
+            when {
+                exitConfirmOpen -> exitConfirmOpen = false
+                keyboardOpen -> keyboardOpen = false
+                controlsOpen -> controlsOpen = false
+                else -> exitConfirmOpen = true
+            }
         }
     }
 
@@ -2378,7 +2804,9 @@ private fun StreamControlsPanel(
     onClose: () -> Unit,
 ) {
     val doneFocusRequester = remember { FocusRequester() }
+    val focusManager = LocalFocusManager.current
     LaunchedEffect(Unit) {
+        delay(80)
         runCatching { doneFocusRequester.requestFocus() }
     }
     Surface(
@@ -2391,6 +2819,7 @@ private fun StreamControlsPanel(
         tonalElevation = 6.dp,
     ) {
         LazyColumn(
+            modifier = Modifier.onPreviewKeyEvent { handleVerticalDpadFocusMove(it, focusManager) },
             contentPadding = PaddingValues(14.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
@@ -2556,6 +2985,7 @@ private fun StreamStatsPill(
                     "FPS ${streamStats.fps?.toString() ?: "--"}",
                     "Bitrate ${formatRuntimeBitrate(streamStats.bitrateKbps)}",
                     "Ping ${streamStats.pingMs?.let { "${it}ms" } ?: "--"}",
+                    "Codec ${streamStats.codec ?: "--"}",
                 ).joinToString(" · "),
                 color = TextMuted,
                 style = MaterialTheme.typography.labelSmall,
@@ -2601,6 +3031,7 @@ private fun StreamExitConfirmation(
 ) {
     val keepPlayingFocusRequester = remember { FocusRequester() }
     LaunchedEffect(Unit) {
+        delay(80)
         runCatching { keepPlayingFocusRequester.requestFocus() }
     }
     Box(
@@ -2766,7 +3197,7 @@ private fun QueueStatusPanel(
                 Text("Minimize", maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
             OutlinedButton(onClick = onCancel, modifier = Modifier.weight(1f)) {
-                Text("Cancel launch", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text("Cancel", maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
         }
         error?.let {
@@ -3288,7 +3719,7 @@ private fun SettingsSection(title: String, content: @Composable ColumnScope.() -
     val sectionShape = RoundedCornerShape(14.dp)
     Card(
         modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = SettingsPanel),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         shape = sectionShape,
     ) {
         Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -3314,7 +3745,7 @@ private fun SettingSwitch(label: String, checked: Boolean, onCheckedChange: (Boo
                 shape = shape,
             )
             .clip(shape)
-            .background(SettingsPanelAlt)
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.76f))
             .clickable(onClick = toggle)
             .onPreviewKeyEvent { event ->
                 when {
@@ -3329,7 +3760,7 @@ private fun SettingSwitch(label: String, checked: Boolean, onCheckedChange: (Boo
             .padding(horizontal = 12.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(label, Modifier.weight(1f), color = SettingsText, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        Text(label, Modifier.weight(1f), color = MaterialTheme.colorScheme.onSurface, maxLines = 2, overflow = TextOverflow.Ellipsis)
         Switch(checked = checked, onCheckedChange = onCheckedChange)
     }
 }
@@ -3370,12 +3801,12 @@ private fun NumberSlider(label: String, value: Float, min: Float, max: Float, st
         Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(14.dp))
-            .background(SettingsPanelAlt)
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.76f))
             .padding(horizontal = 12.dp, vertical = 10.dp),
     ) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Text(label, Modifier.weight(1f), color = SettingsText, maxLines = 2, overflow = TextOverflow.Ellipsis)
-            Text(if (step < 1f) "%.2f".format(local) else local.roundToInt().toString(), color = SettingsTextMuted)
+            Text(label, Modifier.weight(1f), color = MaterialTheme.colorScheme.onSurface, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            Text(if (step < 1f) "%.2f".format(local) else local.roundToInt().toString(), color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         Slider(
             modifier = Modifier.onPreviewKeyEvent { handleVerticalDpadFocusMove(it, focusManager) },
@@ -3404,7 +3835,7 @@ private fun ChoiceRow(label: String, options: List<String>, selected: String, on
                 shape = shape,
             )
             .clip(shape)
-            .background(SettingsPanelAlt)
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.76f))
             .clickable { expanded = true }
             .onPreviewKeyEvent { event ->
                 when {
@@ -3419,7 +3850,7 @@ private fun ChoiceRow(label: String, options: List<String>, selected: String, on
             .padding(horizontal = 12.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(label, Modifier.weight(1f), color = SettingsText, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        Text(label, Modifier.weight(1f), color = MaterialTheme.colorScheme.onSurface, maxLines = 2, overflow = TextOverflow.Ellipsis)
         Box {
             OutlinedButton(onClick = { expanded = true }) { Text(selected.ifBlank { autoLabel }, maxLines = 1, overflow = TextOverflow.Ellipsis) }
             DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
@@ -3434,6 +3865,14 @@ private fun ChoiceRow(label: String, options: List<String>, selected: String, on
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun ChoiceOptionRow(label: String, options: List<SettingsChoiceOption>, selectedValue: String, onSelect: (String) -> Unit) {
+    val selectedLabel = options.firstOrNull { it.value == selectedValue }?.label ?: selectedValue
+    ChoiceRow(label, options.map { it.label }, selectedLabel) { selected ->
+        options.firstOrNull { it.label == selected }?.value?.let(onSelect)
     }
 }
 

@@ -84,6 +84,12 @@ class AuthStore(context: Context) {
         return state.sessions.firstOrNull { it.user.userId == state.activeUserId } ?: state.sessions.firstOrNull()
     }
 
+    fun setActiveSession(userId: String) {
+        val current = _state.value
+        val session = current.sessions.firstOrNull { it.user.userId == userId } ?: return
+        save(current.copy(activeUserId = session.user.userId, selectedProvider = session.provider))
+    }
+
     fun upsertSession(session: AuthSession) {
         val current = _state.value
         val sessions = buildList {

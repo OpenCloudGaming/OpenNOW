@@ -101,6 +101,7 @@ data class AppSettings(
     val autoLoadControllerLibrary: Boolean = false,
     val autoFullScreen: Boolean = false,
     val favoriteGameIds: List<String> = emptyList(),
+    val defaultGameVariantIds: Map<String, String> = emptyMap(),
     val sessionCounterEnabled: Boolean = false,
     val sessionClockShowEveryMinutes: Int = 60,
     val sessionClockShowDurationSeconds: Int = 30,
@@ -619,4 +620,5 @@ data class StreamRuntimeStats(
     val pingMs: Int? = null,
     val fps: Int? = null,
     val resolution: String? = null,
+    val codec: String? = null,
 )
