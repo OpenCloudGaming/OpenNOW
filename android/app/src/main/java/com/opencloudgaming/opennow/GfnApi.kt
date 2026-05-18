@@ -57,7 +57,6 @@ import java.net.URLDecoder
 import java.net.URLEncoder
 import java.security.MessageDigest
 import java.security.SecureRandom
-import java.time.Duration
 import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.TimeUnit
@@ -101,8 +100,8 @@ private val GRAPHQL_MEDIA_TYPE = "application/graphql".toMediaType()
 private val REDIRECT_PORTS = intArrayOf(2259, 6460, 7119, 8870, 9096)
 private const val OAUTH_CALLBACK_TIMEOUT_MS = 120_000L
 private const val DEVICE_CODE_MIN_POLL_INTERVAL_SECONDS = 5
-private val TOKEN_REFRESH_WINDOW = Duration.ofMinutes(10)
-private val CLIENT_TOKEN_REFRESH_WINDOW = Duration.ofMinutes(5)
+private const val TOKEN_REFRESH_WINDOW_MS = 10 * 60 * 1000L
+private const val CLIENT_TOKEN_REFRESH_WINDOW_MS = 5 * 60 * 1000L
 private val READY_SESSION_STATUSES = setOf(2, 3)
 private const val INVALID_SESSION_PROXY_MESSAGE =
     "Invalid session proxy URL. Use http://host:port, https://host:port, socks4://host:port, or socks5://host:port."
@@ -329,7 +328,7 @@ fun defaultProvider(): LoginProvider =
 private fun nowMs(): Long = System.currentTimeMillis()
 private fun expiresAt(seconds: Int?, defaultSeconds: Int = 86400): Long = nowMs() + ((seconds ?: defaultSeconds) * 1000L)
 private fun isExpired(expiresAt: Long?): Boolean = expiresAt == null || expiresAt <= nowMs()
-private fun isNearExpiry(expiresAt: Long?, window: Duration): Boolean = expiresAt == null || expiresAt - nowMs() < window.toMillis()
+private fun isNearExpiry(expiresAt: Long?, windowMs: Long): Boolean = expiresAt == null || expiresAt - nowMs() < windowMs
 
 private fun randomBase64Url(byteCount: Int): String {
     val bytes = ByteArray(byteCount)
@@ -403,7 +402,7 @@ class GfnAuthRepository(
     suspend fun restore(forceRefresh: Boolean = false): AuthSession? {
         val restored = authStore.activeSession() ?: return null
         var session = restored
-        if (session.tokens.clientToken.isNullOrBlank() || isNearExpiry(session.tokens.clientTokenExpiresAt, CLIENT_TOKEN_REFRESH_WINDOW)) {
+        if (session.tokens.clientToken.isNullOrBlank() || isNearExpiry(session.tokens.clientTokenExpiresAt, CLIENT_TOKEN_REFRESH_WINDOW_MS)) {
             val withClientToken = runCatching { ensureClientToken(session.tokens) }.getOrElse { session.tokens }
             if (withClientToken != session.tokens) {
                 session = session.copy(tokens = withClientToken)
@@ -411,7 +410,7 @@ class GfnAuthRepository(
             }
         }
 
-        val refreshed = if (forceRefresh || isNearExpiry(session.tokens.expiresAt, TOKEN_REFRESH_WINDOW)) {
+        val refreshed = if (forceRefresh || isNearExpiry(session.tokens.expiresAt, TOKEN_REFRESH_WINDOW_MS)) {
             refreshSession(session, forceRefresh)
         } else {
             session
@@ -481,7 +480,7 @@ class GfnAuthRepository(
     private suspend fun ensureClientToken(tokens: AuthTokens): AuthTokens {
         val hasUsableClientToken =
             !tokens.clientToken.isNullOrBlank() &&
-                !isNearExpiry(tokens.clientTokenExpiresAt, CLIENT_TOKEN_REFRESH_WINDOW)
+                !isNearExpiry(tokens.clientTokenExpiresAt, CLIENT_TOKEN_REFRESH_WINDOW_MS)
         if (hasUsableClientToken || isExpired(tokens.expiresAt)) return tokens
 
         val clientToken = requestClientToken(tokens.accessToken)

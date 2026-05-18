@@ -6,6 +6,7 @@ import android.media.MediaCodecInfo
 import android.media.MediaCodecList
 import android.os.Build
 import android.os.SystemClock
+import android.util.Log
 import android.view.InputDevice
 import android.view.KeyEvent
 import android.view.KeyCharacterMap
@@ -330,6 +331,8 @@ object NativeStreamInputRouter {
     @Volatile
     private var streamChromePassthroughBounds: TouchPassthroughBounds? = null
     @Volatile
+    private var streamPanelPassthroughBounds: TouchPassthroughBounds? = null
+    @Volatile
     private var touchControllerPassthroughBounds: TouchPassthroughBounds? = null
     @Volatile
     private var touchControllerVisible = false
@@ -387,6 +390,15 @@ object NativeStreamInputRouter {
         uiTouchPassthroughActive = false
     }
 
+    fun setStreamPanelTouchPassthroughBounds(left: Int, top: Int, right: Int, bottom: Int) {
+        streamPanelPassthroughBounds = TouchPassthroughBounds(left, top, right, bottom)
+    }
+
+    fun clearStreamPanelTouchPassthroughBounds() {
+        streamPanelPassthroughBounds = null
+        uiTouchPassthroughActive = false
+    }
+
     fun setTouchControllerPassthroughBounds(left: Int, top: Int, right: Int, bottom: Int) {
         touchControllerPassthroughBounds = TouchPassthroughBounds(left, top, right, bottom)
     }
@@ -424,6 +436,19 @@ object NativeStreamInputRouter {
         return touchMouseState.handle(event, touchMouseEnabled && width > 0 && height > 0, current, width, height)
     }
 
+    fun dispatchExternalMouseTouch(event: MotionEvent, width: Int, height: Int): Boolean {
+        if (streamUiActive) return false
+        if (!event.isExternalMousePointerEvent()) return false
+        if (shouldPassTouchToNativeUi(event, width, height)) return false
+        return client?.dispatchMotion(event) == true
+    }
+
+    fun dispatchCapturedExternalMouse(event: MotionEvent): Boolean {
+        if (streamUiActive) return false
+        if (!event.isExternalMousePointerEvent()) return false
+        return client?.dispatchMotion(event) == true
+    }
+
     fun dispatchKey(event: KeyEvent): Boolean {
         if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0 && event.isStreamSystemMenuKey()) {
             systemMenuHandler?.invoke()
@@ -437,13 +462,21 @@ object NativeStreamInputRouter {
             systemBackHandler?.invoke()
             return systemBackHandler != null
         }
+        val current = client ?: return false
+        if (event.shouldConsumeAsStreamKeyboard()) {
+            current.dispatchKey(event)
+            return true
+        }
         if (streamUiActive && event.isNativeUiNavigationKey()) {
             return false
         }
-        return client?.dispatchKey(event) == true
+        return current.dispatchKey(event)
     }
 
     fun dispatchMotion(event: MotionEvent): Boolean {
+        if (streamUiActive && event.isExternalMousePointerEvent()) {
+            return false
+        }
         if (streamUiActive && event.isNativeUiNavigationMotion()) {
             return false
         }
@@ -456,8 +489,8 @@ object NativeStreamInputRouter {
 
     private fun KeyEvent.isStreamControlsShortcutKey(): Boolean =
         !streamUiActive &&
-            !isControllerSource() &&
             !isHardwareKeyboardSource() &&
+            isDpadSource() &&
             (keyCode == KeyEvent.KEYCODE_ENTER ||
                 keyCode == KeyEvent.KEYCODE_NUMPAD_ENTER ||
                 keyCode == KeyEvent.KEYCODE_DPAD_CENTER)
@@ -488,9 +521,97 @@ object NativeStreamInputRouter {
         (source and InputDevice.SOURCE_GAMEPAD) == InputDevice.SOURCE_GAMEPAD ||
             (source and InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK
 
+    private fun KeyEvent.isDpadSource(): Boolean =
+        (source and InputDevice.SOURCE_DPAD) == InputDevice.SOURCE_DPAD
+
     private fun KeyEvent.isHardwareKeyboardSource(): Boolean =
-        (source and InputDevice.SOURCE_KEYBOARD) == InputDevice.SOURCE_KEYBOARD &&
-            !isControllerSource()
+        !isControllerSource() &&
+            ((source and InputDevice.SOURCE_KEYBOARD) == InputDevice.SOURCE_KEYBOARD ||
+                InputDevice.getDevice(deviceId)?.keyboardType == InputDevice.KEYBOARD_TYPE_ALPHABETIC)
+
+    private fun KeyEvent.shouldConsumeAsStreamKeyboard(): Boolean =
+        (action == KeyEvent.ACTION_DOWN || action == KeyEvent.ACTION_UP) &&
+            !isControllerSource() &&
+            !isAndroidSystemKey() &&
+            (isHardwareKeyboardSource() || keyCode.isTextEntryKeyCode())
+
+    private fun KeyEvent.isAndroidSystemKey(): Boolean =
+        keyCode == KeyEvent.KEYCODE_VOLUME_UP ||
+            keyCode == KeyEvent.KEYCODE_VOLUME_DOWN ||
+            keyCode == KeyEvent.KEYCODE_VOLUME_MUTE ||
+            keyCode == KeyEvent.KEYCODE_POWER ||
+            keyCode == KeyEvent.KEYCODE_HOME
+
+    private fun Int.isKeyboardLikeKeyCode(): Boolean =
+        this == KeyEvent.KEYCODE_ENTER ||
+            this == KeyEvent.KEYCODE_NUMPAD_ENTER ||
+            this == KeyEvent.KEYCODE_ESCAPE ||
+            this == KeyEvent.KEYCODE_DEL ||
+            this == KeyEvent.KEYCODE_TAB ||
+            this == KeyEvent.KEYCODE_SPACE ||
+            this == KeyEvent.KEYCODE_DPAD_LEFT ||
+            this == KeyEvent.KEYCODE_DPAD_UP ||
+            this == KeyEvent.KEYCODE_DPAD_RIGHT ||
+            this == KeyEvent.KEYCODE_DPAD_DOWN ||
+            this == KeyEvent.KEYCODE_PAGE_UP ||
+            this == KeyEvent.KEYCODE_PAGE_DOWN ||
+            this == KeyEvent.KEYCODE_FORWARD_DEL ||
+            this == KeyEvent.KEYCODE_INSERT ||
+            this == KeyEvent.KEYCODE_MOVE_HOME ||
+            this == KeyEvent.KEYCODE_MOVE_END ||
+            this == KeyEvent.KEYCODE_SHIFT_LEFT ||
+            this == KeyEvent.KEYCODE_SHIFT_RIGHT ||
+            this == KeyEvent.KEYCODE_CTRL_LEFT ||
+            this == KeyEvent.KEYCODE_CTRL_RIGHT ||
+            this == KeyEvent.KEYCODE_ALT_LEFT ||
+            this == KeyEvent.KEYCODE_ALT_RIGHT ||
+            this == KeyEvent.KEYCODE_CAPS_LOCK ||
+            this == KeyEvent.KEYCODE_NUM_LOCK ||
+            this == KeyEvent.KEYCODE_SCROLL_LOCK ||
+            this == KeyEvent.KEYCODE_MINUS ||
+            this == KeyEvent.KEYCODE_EQUALS ||
+            this == KeyEvent.KEYCODE_LEFT_BRACKET ||
+            this == KeyEvent.KEYCODE_RIGHT_BRACKET ||
+            this == KeyEvent.KEYCODE_BACKSLASH ||
+            this == KeyEvent.KEYCODE_SEMICOLON ||
+            this == KeyEvent.KEYCODE_APOSTROPHE ||
+            this == KeyEvent.KEYCODE_COMMA ||
+            this == KeyEvent.KEYCODE_PERIOD ||
+            this == KeyEvent.KEYCODE_SLASH ||
+            this == KeyEvent.KEYCODE_GRAVE ||
+            this in KeyEvent.KEYCODE_A..KeyEvent.KEYCODE_Z ||
+            this in KeyEvent.KEYCODE_0..KeyEvent.KEYCODE_9 ||
+            this in KeyEvent.KEYCODE_F1..KeyEvent.KEYCODE_F12
+
+    private fun Int.isTextEntryKeyCode(): Boolean =
+        this == KeyEvent.KEYCODE_ENTER ||
+            this == KeyEvent.KEYCODE_NUMPAD_ENTER ||
+            this == KeyEvent.KEYCODE_ESCAPE ||
+            this == KeyEvent.KEYCODE_DEL ||
+            this == KeyEvent.KEYCODE_TAB ||
+            this == KeyEvent.KEYCODE_SPACE ||
+            this == KeyEvent.KEYCODE_FORWARD_DEL ||
+            this == KeyEvent.KEYCODE_SHIFT_LEFT ||
+            this == KeyEvent.KEYCODE_SHIFT_RIGHT ||
+            this == KeyEvent.KEYCODE_CTRL_LEFT ||
+            this == KeyEvent.KEYCODE_CTRL_RIGHT ||
+            this == KeyEvent.KEYCODE_ALT_LEFT ||
+            this == KeyEvent.KEYCODE_ALT_RIGHT ||
+            this == KeyEvent.KEYCODE_CAPS_LOCK ||
+            this == KeyEvent.KEYCODE_MINUS ||
+            this == KeyEvent.KEYCODE_EQUALS ||
+            this == KeyEvent.KEYCODE_LEFT_BRACKET ||
+            this == KeyEvent.KEYCODE_RIGHT_BRACKET ||
+            this == KeyEvent.KEYCODE_BACKSLASH ||
+            this == KeyEvent.KEYCODE_SEMICOLON ||
+            this == KeyEvent.KEYCODE_APOSTROPHE ||
+            this == KeyEvent.KEYCODE_COMMA ||
+            this == KeyEvent.KEYCODE_PERIOD ||
+            this == KeyEvent.KEYCODE_SLASH ||
+            this == KeyEvent.KEYCODE_GRAVE ||
+            this in KeyEvent.KEYCODE_A..KeyEvent.KEYCODE_Z ||
+            this in KeyEvent.KEYCODE_0..KeyEvent.KEYCODE_9 ||
+            this in KeyEvent.KEYCODE_F1..KeyEvent.KEYCODE_F12
 
     private fun MotionEvent.isNativeUiNavigationMotion(): Boolean =
         isFromSource(InputDevice.SOURCE_JOYSTICK) ||
@@ -503,11 +624,16 @@ object NativeStreamInputRouter {
             !isFromSource(InputDevice.SOURCE_MOUSE) &&
             !isFromSource(InputDevice.SOURCE_MOUSE_RELATIVE)
 
+    private fun MotionEvent.isExternalMousePointerEvent(): Boolean =
+        isFromSource(InputDevice.SOURCE_MOUSE) ||
+            isFromSource(InputDevice.SOURCE_MOUSE_RELATIVE)
+
     private fun shouldPassTouchToNativeUi(event: MotionEvent, width: Int, height: Int): Boolean {
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 uiTouchPassthroughActive =
                     streamChromePassthroughBounds?.contains(event.x, event.y) == true ||
+                    streamPanelPassthroughBounds?.contains(event.x, event.y) == true ||
                     touchControllerContains(event, width, height)
                 return uiTouchPassthroughActive
             }
@@ -562,6 +688,7 @@ object NativeInputDiagnostics {
             lines.removeFirst()
         }
         lines.addLast("${SystemClock.elapsedRealtime()} $message")
+        Log.d("OpenNOWInput", message)
     }
 
     @Synchronized
@@ -774,6 +901,9 @@ class NativeStreamClient(
     private var mouseLastY = 0f
     private var mousePositionValid = false
     private var inputDropLogged = false
+    private var externalMouseEventLogged = false
+    private var externalMouseMoveSentLogged = false
+    private var hardwareKeyboardEventLogged = false
     private var lastStatsSample: StreamStatsSample? = null
 
     private data class StreamStatsSample(
@@ -862,6 +992,9 @@ class NativeStreamClient(
         controllerSlots.clear()
         mousePositionValid = false
         inputDropLogged = false
+        externalMouseEventLogged = false
+        externalMouseMoveSentLogged = false
+        hardwareKeyboardEventLogged = false
         inputEncoder.resetGamepadSequences()
     }
 
@@ -869,10 +1002,25 @@ class NativeStreamClient(
         if (event.isGamepadEvent() && dispatchGamepadKey(event)) {
             return true
         }
-        val packet = InputEncoder.mapKeyEvent(event)?.let { key ->
-            if (event.action == KeyEvent.ACTION_DOWN) inputEncoder.encodeKeyDown(key) else inputEncoder.encodeKeyUp(key)
-        } ?: return false
-        return sendInput(packet, partiallyReliable = false)
+        val key = InputEncoder.mapKeyEvent(event)
+        val hardwareKeyboard = event.isHardwareKeyboardSource()
+        if (hardwareKeyboard && !hardwareKeyboardEventLogged) {
+            hardwareKeyboardEventLogged = true
+            NativeInputDiagnostics.add("hardware keyboard event action=${event.action} key=${event.keyCode} scan=${event.scanCode} source=${event.source} device=${event.deviceId} mapped=${key != null}")
+        }
+        val packet = key?.let { if (event.action == KeyEvent.ACTION_DOWN) inputEncoder.encodeKeyDown(it) else inputEncoder.encodeKeyUp(it) }
+        if (packet == null) {
+            if (hardwareKeyboard && (event.action == KeyEvent.ACTION_DOWN || event.action == KeyEvent.ACTION_UP)) {
+                NativeInputDiagnostics.add("hardware keyboard consumed unmapped key=${event.keyCode} action=${event.action}")
+                return true
+            }
+            return false
+        }
+        val sent = sendInput(packet, partiallyReliable = false)
+        if (hardwareKeyboard && !sent) {
+            NativeInputDiagnostics.add("hardware keyboard consumed without send key=${event.keyCode} reliable=${reliableInput?.state()} partial=${partiallyReliableInput?.state()}")
+        }
+        return sent || hardwareKeyboard
     }
 
     fun dispatchMotion(event: MotionEvent): Boolean {
@@ -885,12 +1033,20 @@ class NativeStreamClient(
         return false
     }
 
-    fun sendTouchMouseMove(dx: Int, dy: Int, partiallyReliable: Boolean = true) {
+    fun sendTouchMouseMove(dx: Int, dy: Int, partiallyReliable: Boolean = true): Boolean {
         val adjusted = adjustedMouseDelta(dx, dy)
-        sendInput(inputEncoder.encodeMouseMove(adjusted.first, adjusted.second), partiallyReliable = partiallyReliable)
+        return sendInput(inputEncoder.encodeMouseMove(adjusted.first, adjusted.second), partiallyReliable = partiallyReliable)
     }
 
     private fun dispatchMouseLikePointer(event: MotionEvent): Boolean {
+        if (!externalMouseEventLogged) {
+            externalMouseEventLogged = true
+            val relativeDx = if (Build.VERSION.SDK_INT >= 26) event.getAxisValue(MotionEvent.AXIS_RELATIVE_X) else 0f
+            val relativeDy = if (Build.VERSION.SDK_INT >= 26) event.getAxisValue(MotionEvent.AXIS_RELATIVE_Y) else 0f
+            NativeInputDiagnostics.add(
+                "external mouse event action=${event.actionMasked} source=${event.source} device=${event.deviceId} buttons=${event.buttonState} relativeDx=$relativeDx relativeDy=$relativeDy",
+            )
+        }
         when (event.actionMasked) {
             MotionEvent.ACTION_HOVER_MOVE,
             MotionEvent.ACTION_MOVE,
@@ -898,12 +1054,20 @@ class NativeStreamClient(
                 val relativeDx = if (Build.VERSION.SDK_INT >= 26) event.getAxisValue(MotionEvent.AXIS_RELATIVE_X) else 0f
                 val relativeDy = if (Build.VERSION.SDK_INT >= 26) event.getAxisValue(MotionEvent.AXIS_RELATIVE_Y) else 0f
                 if (abs(relativeDx) >= 0.5f || abs(relativeDy) >= 0.5f) {
-                    sendTouchMouseMove(relativeDx.roundToInt(), relativeDy.roundToInt())
+                    val sent = sendTouchMouseMove(relativeDx.roundToInt(), relativeDy.roundToInt())
+                    if (sent && !externalMouseMoveSentLogged) {
+                        externalMouseMoveSentLogged = true
+                        NativeInputDiagnostics.add("external mouse move sent source=${event.source} device=${event.deviceId} mode=relative")
+                    }
                 } else if (mousePositionValid && mouseLastDeviceId == event.deviceId) {
                     val dx = event.x - mouseLastX
                     val dy = event.y - mouseLastY
                     if (abs(dx) >= 0.5f || abs(dy) >= 0.5f) {
-                        sendTouchMouseMove(dx.roundToInt(), dy.roundToInt())
+                        val sent = sendTouchMouseMove(dx.roundToInt(), dy.roundToInt())
+                        if (sent && !externalMouseMoveSentLogged) {
+                            externalMouseMoveSentLogged = true
+                            NativeInputDiagnostics.add("external mouse move sent source=${event.source} device=${event.deviceId} mode=absoluteDelta")
+                        }
                     }
                 }
                 mouseLastDeviceId = event.deviceId
@@ -926,11 +1090,17 @@ class NativeStreamClient(
             }
             MotionEvent.ACTION_BUTTON_PRESS -> {
                 val handled = sendInput(inputEncoder.encodeMouseButton(InputEncoder.INPUT_MOUSE_BUTTON_DOWN, event.actionButton.toGfnMouseButton()), false)
-                return handled
+                if (!handled) {
+                    NativeInputDiagnostics.add("external mouse button consumed without send action=press button=${event.actionButton} reliable=${reliableInput?.state()} partial=${partiallyReliableInput?.state()}")
+                }
+                return true
             }
             MotionEvent.ACTION_BUTTON_RELEASE -> {
                 val handled = sendInput(inputEncoder.encodeMouseButton(InputEncoder.INPUT_MOUSE_BUTTON_UP, event.actionButton.toGfnMouseButton()), false)
-                return handled
+                if (!handled) {
+                    NativeInputDiagnostics.add("external mouse button consumed without send action=release button=${event.actionButton} reliable=${reliableInput?.state()} partial=${partiallyReliableInput?.state()}")
+                }
+                return true
             }
             MotionEvent.ACTION_SCROLL -> {
                 val vertical = event.getAxisValue(MotionEvent.AXIS_VSCROLL)
@@ -1717,6 +1887,11 @@ class NativeStreamClient(
             keyCode == KeyEvent.KEYCODE_BUTTON_R2 ||
             keyCode == KeyEvent.KEYCODE_BUTTON_MODE
     }
+
+    private fun KeyEvent.isHardwareKeyboardSource(): Boolean =
+        !isGamepadEvent() &&
+            ((source and InputDevice.SOURCE_KEYBOARD) == InputDevice.SOURCE_KEYBOARD ||
+                InputDevice.getDevice(deviceId)?.keyboardType == InputDevice.KEYBOARD_TYPE_ALPHABETIC)
 
     private fun MotionEvent.isGamepadMotionEvent(): Boolean =
         isFromSource(InputDevice.SOURCE_JOYSTICK) ||

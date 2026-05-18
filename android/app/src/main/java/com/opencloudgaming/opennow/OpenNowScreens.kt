@@ -11,6 +11,7 @@ import android.view.InputDevice
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.PointerIcon
+import android.view.ViewGroup
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -146,6 +147,7 @@ import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
@@ -2584,7 +2586,7 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
             StreamVideoSurface(
                 client = client,
                 settings = streamSettings,
-                mouseCapture = state.settings.mouseCapture,
+                captureExternalMouse = streamReady && !controlsOpen && !exitConfirmOpen && !keyboardOpen,
                 touchMouseEnabled = state.settings.androidTouch.mousePad,
             )
             if (statsVisible) {
@@ -2706,12 +2708,25 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
 private fun StreamVideoSurface(
     client: NativeStreamClient,
     settings: StreamSettings,
-    mouseCapture: Boolean,
+    captureExternalMouse: Boolean,
     touchMouseEnabled: Boolean,
     modifier: Modifier = Modifier,
 ) {
+    val rootView = LocalView.current
     val (streamWidth, streamHeight) = streamResolutionPixels(settings)
     val streamAspect = (streamWidth.toFloat() / streamHeight.toFloat()).takeIf { it.isFinite() && it > 0f } ?: (16f / 9f)
+    DisposableEffect(rootView, captureExternalMouse) {
+        rootView.captureExternalMousePointer(false)
+        if (captureExternalMouse) {
+            rootView.hideAndroidPointerTree()
+        } else {
+            rootView.showAndroidPointerTree()
+        }
+        onDispose {
+            rootView.captureExternalMousePointer(false)
+            rootView.showAndroidPointerTree()
+        }
+    }
     BoxWithConstraints(
         modifier
             .fillMaxSize()
@@ -2737,30 +2752,29 @@ private fun StreamVideoSurface(
                 modifier = Modifier.fillMaxSize(),
                 factory = { ctx ->
                     client.createRenderer(ctx).apply {
-                        isFocusable = true
-                        isFocusableInTouchMode = true
-                        hideAndroidPointer()
-                        requestFocus()
+                        isFocusable = false
+                        isFocusableInTouchMode = false
+                        hideAndroidPointerTree()
                     }
                 },
                 update = { renderer ->
-                    renderer.isFocusable = true
-                    renderer.isFocusableInTouchMode = true
-                    renderer.hideAndroidPointer()
-                    renderer.setOnKeyListener { _, _, event -> client.dispatchKey(event) }
-                    renderer.setOnGenericMotionListener { view, event ->
-                        view.captureExternalMousePointer(mouseCapture || event.isExternalMousePointerEvent())
+                    renderer.isFocusable = false
+                    renderer.isFocusableInTouchMode = false
+                    if (captureExternalMouse) {
+                        rootView.hideAndroidPointerTree()
+                        renderer.hideAndroidPointerTree()
+                    } else {
+                        rootView.showAndroidPointerTree()
+                        renderer.showAndroidPointerTree()
+                    }
+                    renderer.setOnKeyListener(null)
+                    renderer.setOnGenericMotionListener { _, event ->
+                        if (captureExternalMouse) rootView.hideAndroidPointerTree()
                         client.dispatchMotion(event)
                     }
                     renderer.setOnTouchListener { view, event ->
                         NativeStreamInputRouter.dispatchTouch(event, view.width, view.height)
                     }
-                    if (Build.VERSION.SDK_INT >= 26) {
-                        if (mouseCapture) {
-                            renderer.requestPointerCapture()
-                        }
-                    }
-                    renderer.requestFocus()
                 },
             )
             FingerMouseInputLayer(
@@ -2782,18 +2796,50 @@ private fun androidNullPointerIcon(view: android.view.View): PointerIcon? =
         null
     }
 
-private fun android.view.View.hideAndroidPointer() {
-    if (Build.VERSION.SDK_INT >= 24) {
-        pointerIcon = androidNullPointerIcon(this)
+private fun android.view.View.hideAndroidPointerTree() {
+    if (Build.VERSION.SDK_INT < 24) return
+    val icon = androidNullPointerIcon(this)
+    applyAndroidPointerIconTree(icon)
+}
+
+private fun android.view.View.showAndroidPointerTree() {
+    if (Build.VERSION.SDK_INT < 24) return
+    applyAndroidPointerIconTree(null)
+}
+
+private fun android.view.View.applyAndroidPointerIconTree(icon: PointerIcon?) {
+    if (Build.VERSION.SDK_INT < 24) return
+    pointerIcon = icon
+    if (this is ViewGroup) {
+        for (index in 0 until childCount) {
+            getChildAt(index).applyAndroidPointerIconTree(icon)
+        }
     }
 }
 
 private fun android.view.View.captureExternalMousePointer(enabled: Boolean) {
     if (Build.VERSION.SDK_INT < 26) return
-    if (enabled && !hasPointerCapture()) {
-        requestPointerCapture()
-    } else if (!enabled && hasPointerCapture()) {
-        releasePointerCapture()
+    setOnCapturedPointerListener(
+        if (enabled) {
+            android.view.View.OnCapturedPointerListener { _, event ->
+                NativeStreamInputRouter.dispatchCapturedExternalMouse(event)
+            }
+        } else {
+            null
+        },
+    )
+    if (enabled) {
+        if (!isFocusableInTouchMode) {
+            isFocusableInTouchMode = true
+        }
+        if (!hasFocus()) {
+            requestFocus()
+        }
+        if (!hasPointerCapture()) {
+            runCatching { requestPointerCapture() }
+        }
+    } else if (hasPointerCapture()) {
+        runCatching { releasePointerCapture() }
     }
 }
 
@@ -2934,7 +2980,16 @@ private fun StreamControlsPanel(
         modifier = Modifier
             .padding(14.dp)
             .fillMaxWidth(0.94f)
-            .fillMaxHeight(0.72f),
+            .fillMaxHeight(0.72f)
+            .onGloballyPositioned { coordinates ->
+                val bounds = coordinates.boundsInRoot()
+                NativeStreamInputRouter.setStreamPanelTouchPassthroughBounds(
+                    bounds.left.roundToInt(),
+                    bounds.top.roundToInt(),
+                    bounds.right.roundToInt(),
+                    bounds.bottom.roundToInt(),
+                )
+            },
         shape = RoundedCornerShape(18.dp),
         color = Panel.copy(alpha = 0.93f),
         tonalElevation = 6.dp,
@@ -2994,6 +3049,11 @@ private fun StreamControlsPanel(
                     CompactSlider("Opacity", settings.androidTouch.opacity, 0.15f, 1f, onOpacityChange)
                 }
             }
+        }
+    }
+    DisposableEffect(Unit) {
+        onDispose {
+            NativeStreamInputRouter.clearStreamPanelTouchPassthroughBounds()
         }
     }
 }

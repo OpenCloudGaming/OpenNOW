@@ -855,6 +855,9 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             appendLine("sessionId=${session?.sessionId.orEmpty()} sessionStatus=${session?.status} seatSetupStep=${session?.seatSetupStep} serverIp=${session?.serverIp.orEmpty()} base=${session?.streamingBaseUrl.orEmpty()}")
             appendLine("adsRequired=${isSessionAdsRequired(session?.adState)} ads=${sessionAdItems(session?.adState).size} activeAd=${snapshot.queueAdActiveId.orEmpty()} queuePaused=${session?.adState?.isQueuePaused}")
             appendLine("settings.resolution=${snapshot.settings.stream.resolution} fps=${snapshot.settings.stream.fps} codec=${snapshot.settings.stream.codec} bitrate=${snapshot.settings.stream.maxBitrateMbps}")
+            snapshot.activeStreamSettings?.let { active ->
+                appendLine("active.resolution=${active.resolution} fps=${active.fps} codec=${active.codec} bitrate=${active.maxBitrateMbps}")
+            }
             appendLine("input.keyboardLayout=${snapshot.settings.stream.keyboardLayout} mouseCapture=${snapshot.settings.mouseCapture} touch=${snapshot.settings.androidTouch}")
             appendLine("codec.native=${codecReport?.nativeRuntimeSummary.orEmpty()} lowPower=${codecReport?.lowPowerGpuProfile} tv=${codecReport?.androidTvProfile}")
             codecReport?.capabilities?.forEach { cap ->
@@ -1218,22 +1221,6 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             gpuType = gpuType,
             deviceId = authStore.stableDeviceId(),
         )
-    }
-
-    private fun StreamSettings.adjustedForDevice(report: RuntimeCodecReport?): StreamSettings {
-        if (report?.lowPowerGpuProfile == true) {
-            return copy(codec = VideoCodec.H264, colorQuality = ColorQuality.EightBit420, maxBitrateMbps = minOf(maxBitrateMbps, 25), fps = minOf(fps, 60))
-        }
-        if (report?.androidTvProfile == true) {
-            return copy(codec = VideoCodec.H264, colorQuality = ColorQuality.EightBit420, maxBitrateMbps = minOf(maxBitrateMbps, 35), fps = minOf(fps, 60))
-        }
-        val capability = report?.capabilities?.firstOrNull { it.codec == codec }
-        val codecSafe = capability?.let { it.decoderAvailable && it.realtimeSafe } ?: (codec == VideoCodec.H264)
-        return if (codec == VideoCodec.H264 && codecSafe) {
-            copy(colorQuality = ColorQuality.EightBit420, maxBitrateMbps = minOf(maxBitrateMbps, 45), fps = minOf(fps, 60))
-        } else {
-            copy(codec = VideoCodec.H264, colorQuality = ColorQuality.EightBit420, maxBitrateMbps = minOf(maxBitrateMbps, 35), fps = minOf(fps, 60))
-        }
     }
 
     private fun shouldSendAccountLinked(game: GameInfo, variant: GameVariant?): Boolean {

@@ -702,3 +702,24 @@ data class StreamRuntimeStats(
     val resolution: String? = null,
     val codec: String? = null,
 )
+
+internal fun StreamSettings.adjustedForDevice(report: RuntimeCodecReport?): StreamSettings {
+    val capability = report?.capabilities?.firstOrNull { it.codec == codec }
+    val codecSupported = capability?.let { it.decoderAvailable && (codec == VideoCodec.H264 || it.hardwareDecoder) } ?: true
+    if (!codecSupported) {
+        return copy(codec = VideoCodec.H264, colorQuality = ColorQuality.EightBit420, maxBitrateMbps = minOf(maxBitrateMbps, 35), fps = minOf(fps, 60))
+    }
+
+    val profileBitrateCap = when {
+        report?.lowPowerGpuProfile == true -> 25
+        report?.androidTvProfile == true -> 35
+        codec == VideoCodec.H264 -> 45
+        else -> 75
+    }
+
+    return when (codec) {
+        VideoCodec.H264 -> copy(colorQuality = ColorQuality.EightBit420, maxBitrateMbps = minOf(maxBitrateMbps, profileBitrateCap), fps = minOf(fps, 60))
+        VideoCodec.H265,
+        VideoCodec.AV1 -> copy(maxBitrateMbps = minOf(maxBitrateMbps, profileBitrateCap), fps = minOf(fps, 60))
+    }
+}

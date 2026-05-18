@@ -10,6 +10,7 @@ import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.PointerIcon
 import android.view.View
+import android.view.ViewGroup
 import android.view.WindowInsets
 import android.view.WindowInsetsController
 import android.view.WindowManager
@@ -67,6 +68,7 @@ class MainActivity : ComponentActivity() {
 
     override fun dispatchTouchEvent(event: MotionEvent): Boolean {
         val decorView = window?.decorView
+        if (decorView != null && NativeStreamInputRouter.dispatchExternalMouseTouch(event, decorView.width, decorView.height)) return true
         if (decorView != null && NativeStreamInputRouter.shouldForwardTouchBeforeViews(event, decorView.width, decorView.height)) {
             if (event.actionMasked == MotionEvent.ACTION_DOWN) {
                 NativeInputDiagnostics.add("activity touch forwardBeforeViews size=${decorView.width}x${decorView.height}")
@@ -149,8 +151,8 @@ class MainActivity : ComponentActivity() {
 
     private fun applyStreamPointerIcon(active: Boolean) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) return
-        val iconType = if (active) PointerIcon.TYPE_NULL else PointerIcon.TYPE_DEFAULT
-        window.decorView.pointerIcon = PointerIcon.getSystemIcon(this, iconType)
+        val icon = if (active) PointerIcon.getSystemIcon(this, PointerIcon.TYPE_NULL) else null
+        window.decorView.applyPointerIconRecursive(icon)
     }
 
     @Suppress("DEPRECATION", "OVERRIDE_DEPRECATION")
@@ -233,5 +235,15 @@ class MainActivity : ComponentActivity() {
             InputDevice.SOURCE_DPAD,
         )
         return super.dispatchKeyEvent(event)
+    }
+
+    private fun View.applyPointerIconRecursive(icon: PointerIcon?) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) return
+        pointerIcon = icon
+        if (this is ViewGroup) {
+            for (index in 0 until childCount) {
+                getChildAt(index).applyPointerIconRecursive(icon)
+            }
+        }
     }
 }
