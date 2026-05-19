@@ -43,6 +43,7 @@ import {
   type NativeStreamerMessage,
   type NativeStreamerResponse,
 } from "@shared/nativeStreamer";
+import type { NativeStreamerShortcutBindings } from "@shared/gfn";
 
 type NativeStreamerCommandInput = NativeStreamerCommand extends infer T
   ? T extends NativeStreamerCommand
@@ -744,6 +745,19 @@ export class NativeStreamerManager {
       maxBitrateKbps: normalizeBitrateKbps(maxBitrateKbps),
     }, CONTROL_TIMEOUT_MS).catch((error) => {
       console.warn("[NativeStreamer] Failed to update native bitrate limit:", error);
+    });
+  }
+
+  updateShortcuts(shortcuts: NativeStreamerShortcutBindings): void {
+    if (!this.child || !this.activeSessionId) {
+      return;
+    }
+
+    void this.request({
+      type: "update-shortcuts",
+      shortcuts,
+    }, CONTROL_TIMEOUT_MS).catch((error) => {
+      console.warn("[NativeStreamer] Failed to update native shortcut bindings:", error);
     });
   }
 

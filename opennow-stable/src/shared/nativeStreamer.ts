@@ -72,6 +72,11 @@ export type NativeStreamerCommand =
       id: string;
       type: "stop";
       reason?: string;
+    }
+  | {
+      id: string;
+      type: "update-shortcuts";
+      shortcuts: import("./gfn").NativeStreamerShortcutBindings;
     };
 
 export type NativeStreamerResponse =

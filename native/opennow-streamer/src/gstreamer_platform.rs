@@ -753,7 +753,7 @@ pub(crate) mod win32_renderer_window {
             RawInputDevice {
                 us_usage_page: 0x01,
                 us_usage: 0x06,
-                dw_flags: 0,
+                dw_flags: RIDEV_NOLEGACY,
                 hwnd_target: hwnd,
             },
         ];

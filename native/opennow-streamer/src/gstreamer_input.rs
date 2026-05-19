@@ -386,7 +386,28 @@ fn send_native_window_input_events(
     event_sender: &Option<Sender<Event>>,
     events: &[NativeWindowInputEvent],
 ) {
-    if events.is_empty() || !input_state.ready.load(Ordering::SeqCst) {
+    if events.is_empty() {
+        return;
+    }
+
+    // Forward shortcuts immediately (before input readiness check)
+    // Shortcuts are local control and don't need the stream channel
+    let mut other_events = Vec::new();
+    for event in events.iter().copied() {
+        match event {
+            NativeWindowInputEvent::Shortcut { action } => {
+                if let Some(sender) = event_sender.as_ref() {
+                    let _ = sender.send(Event::Shortcut { action });
+                }
+            }
+            _ => {
+                other_events.push(event);
+            }
+        }
+    }
+
+    // Only process non-shortcut events if input is ready
+    if other_events.is_empty() || !input_state.ready.load(Ordering::SeqCst) {
         return;
     }
 
@@ -395,7 +416,7 @@ fn send_native_window_input_events(
     };
 
     let mut pending_mouse_move: Option<(i32, i32, u64)> = None;
-    for event in events.iter().copied() {
+    for event in other_events.iter().copied() {
         if let NativeWindowInputEvent::MouseMove {
             dx,
             dy,
