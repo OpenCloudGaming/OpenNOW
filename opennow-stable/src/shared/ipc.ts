@@ -28,6 +28,7 @@ export const IPC_CHANNELS = {
   SEND_ICE_CANDIDATE: "gfn:send-ice-candidate",
   NATIVE_INPUT: "gfn:native-input",
   NATIVE_RENDER_SURFACE: "gfn:native-render-surface",
+  NATIVE_UPDATE_SHORTCUTS: "gfn:native-update-shortcuts",
   REQUEST_KEYFRAME: "gfn:request-keyframe",
   SIGNALING_EVENT: "gfn:signaling-event",
   TOGGLE_FULLSCREEN: "window:toggle-fullscreen",

@@ -101,6 +101,9 @@ const api: OpenNowApi = {
   updateNativeRenderSurface: (input: NativeRenderSurfaceUpdate) => {
     ipcRenderer.send(IPC_CHANNELS.NATIVE_RENDER_SURFACE, input);
   },
+  updateNativeShortcuts: (shortcuts) => {
+    ipcRenderer.send(IPC_CHANNELS.NATIVE_UPDATE_SHORTCUTS, shortcuts);
+  },
   requestKeyframe: (input: KeyframeRequest) =>
     ipcRenderer.invoke(IPC_CHANNELS.REQUEST_KEYFRAME, input),
   onSignalingEvent: (listener: (event: MainToRendererSignalingEvent) => void) => {

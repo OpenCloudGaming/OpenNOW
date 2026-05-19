@@ -1085,6 +1085,7 @@ export interface OpenNowApi {
   sendIceCandidate(input: IceCandidatePayload): Promise<void>;
   sendNativeInput(input: NativeInputPacket): void;
   updateNativeRenderSurface(input: NativeRenderSurfaceUpdate): void;
+  updateNativeShortcuts(shortcuts: NativeStreamerShortcutBindings): void;
   requestKeyframe(input: KeyframeRequest): Promise<void>;
   onSignalingEvent(listener: (event: MainToRendererSignalingEvent) => void): () => void;
   /** Listen for F11 fullscreen toggle from main process */

@@ -1213,6 +1213,14 @@ export function App(): JSX.Element {
     };
   }, [buildCurrentStreamSettings, nativeStreamerShortcuts]);
 
+  // Propagate shortcut binding changes to native process during active session
+  useEffect(() => {
+    if (streamStatus !== "streaming" || !session || !nativeStreamingRef.current) {
+      return;
+    }
+    window.openNow.updateNativeShortcuts(nativeStreamerShortcuts);
+  }, [nativeStreamerShortcuts, session, streamStatus]);
+
   const setSessionFullscreen = useCallback(async (nextFullscreen: boolean) => {
     const canUseNativeFullscreen = typeof window.openNow?.setFullscreen === "function";
 
