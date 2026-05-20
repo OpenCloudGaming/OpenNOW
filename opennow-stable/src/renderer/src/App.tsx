@@ -30,12 +30,10 @@ import {
 } from "@shared/gfn";
 import { GfnWebRtcClient } from "./gfn/webrtcClient";
 import { formatShortcutForDisplay, isShortcutMatch, normalizeShortcut } from "./shortcuts";
-import { useControllerNavigation } from "./controllerNavigation";
 import { useElapsedSeconds } from "./utils/useElapsedSeconds";
 import { useQueueAdRuntime } from "./hooks/useQueueAdRuntime";
 import { usePlaytime } from "./utils/usePlaytime";
-import { createStreamDiagnosticsStore, useStreamDiagnosticsSelector } from "./utils/streamDiagnosticsStore";
-import { playControllerUiSound } from "./utils/controllerUiSound";
+import { createStreamDiagnosticsStore } from "./utils/streamDiagnosticsStore";
 import type {
   LaunchErrorState,
   LocalSessionTimerWarningState,
@@ -79,7 +77,6 @@ import {
   toLoadingStatus,
 } from "./lib/sessionState";
 import { defaultDiagnostics, mergeNativeStreamStats } from "./lib/streamDiagnostics";
-import { aspectRatioOptions, codecOptions, fpsOptions, getResolutionsByAspectRatio } from "./lib/streamOptions";
 import { applyAccentColor } from "./lib/uiCustomization";
 import { useTranslation } from "./i18n";
 
@@ -88,11 +85,8 @@ import { LoginScreen } from "./components/LoginScreen";
 import { Navbar } from "./components/Navbar";
 import { HomePage } from "./components/HomePage";
 import { LibraryPage } from "./components/LibraryPage";
-import { ControllerLibraryPage } from "./components/controllerMode/ControllerLibraryPage";
-import { ControllerInStreamShell } from "./components/controllerMode/controllerInStream/ControllerInStreamShell";
 import { SettingsPage } from "./components/SettingsPage";
 import { StreamLoading } from "./components/StreamLoading";
-import { ControllerStreamLoading } from "./components/controllerMode/ControllerStreamLoading";
 import { StreamView } from "./components/StreamView";
 import { QueueServerSelectModal } from "./components/QueueServerSelectModal";
 
@@ -126,7 +120,6 @@ type SignalingRecoveryState = {
   generation: number;
 };
 
-const APP_PAGE_ORDER: AppPage[] = ["home", "library", "settings"];
 const RECOVERABLE_STREAM_STATUSES: readonly StreamStatus[] = ["streaming"];
 const SIGNALING_RECOVERY_ATTEMPT_DELAYS_MS = [0, 3000] as const;
 const SIGNALING_RECOVERY_STABLE_RESET_DELAY_MS = 15000;
@@ -149,23 +142,6 @@ const DEFAULT_SHORTCUTS = {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
-}
-
-async function waitFor(
-  predicate: () => boolean,
-  { timeout = 1000, interval = 50 }: { timeout?: number; interval?: number } = {},
-): Promise<boolean> {
-  const start = Date.now();
-  while (true) {
-    try {
-      if (predicate()) return true;
-    } catch {
-      // ignore predicate errors
-    }
-    if (Date.now() - start >= timeout) return false;
-    // eslint-disable-next-line no-await-in-loop
-    await sleep(interval);
-  }
 }
 
 export function App(): JSX.Element {
@@ -243,13 +219,6 @@ export function App(): JSX.Element {
     showStatsOnLaunch: false,
     hideServerSelector: false,
     appAccentColor: "green",
-    controllerMode: false,
-    controllerUiSounds: false,
-    controllerBackgroundAnimations: false,
-    controllerThemeStyle: "aurora",
-    controllerThemeColor: { r: 124, g: 241, b: 177 },
-    controllerLibraryGameBackdrop: true,
-    autoLoadControllerLibrary: false,
     autoFullScreen: false,
     favoriteGameIds: [],
     sessionCounterEnabled: false,
@@ -272,7 +241,6 @@ export function App(): JSX.Element {
   const diagnosticsStoreRef = useRef<ReturnType<typeof createStreamDiagnosticsStore> | null>(null);
   const diagnosticsStore =
     diagnosticsStoreRef.current ?? (diagnosticsStoreRef.current = createStreamDiagnosticsStore(defaultDiagnostics()));
-  const streamMenuMicOn = useStreamDiagnosticsSelector(diagnosticsStore, (d) => d.micEnabled);
 
   // Stream State
   const [session, setSession] = useState<SessionInfo | null>(null);
@@ -320,7 +288,6 @@ export function App(): JSX.Element {
     return remoteStreamWarning ?? visibleLocalSessionTimerWarning;
   }, [remoteStreamWarning, visibleLocalSessionTimerWarning]);
 
-  const controllerOverlayOpenRef = useRef(false);
   const codecTestPromiseRef = useRef<Promise<CodecTestResult[] | null> | null>(null);
   const codecStartupTestAttemptedRef = useRef(false);
   const navbarSessionActionInFlightRef = useRef<"resume" | "terminate" | null>(null);
@@ -356,184 +323,17 @@ export function App(): JSX.Element {
     await testPromise;
   }, []);
 
-  const handleControllerPageNavigate = useCallback((direction: "prev" | "next"): void => {
-    if (controllerOverlayOpenRef.current) {
-      window.dispatchEvent(new CustomEvent("opennow:controller-shoulder", { detail: { direction } }));
-      return;
-    }
-    if (!authSession || streamStatus !== "idle") {
-      return;
-    }
-
-    if (settings.controllerMode && currentPage === "library") {
-      window.dispatchEvent(new CustomEvent("opennow:controller-shoulder", { detail: { direction } }));
-      return;
-    }
-
-    const currentIndex = APP_PAGE_ORDER.indexOf(currentPage);
-    const step = direction === "next" ? 1 : -1;
-    const nextIndex = (currentIndex + step + APP_PAGE_ORDER.length) % APP_PAGE_ORDER.length;
-    setCurrentPage(APP_PAGE_ORDER[nextIndex]);
-  }, [authSession, currentPage, settings.controllerMode, streamStatus]);
-
-  const handleControllerBackAction = useCallback((): boolean => {
-    // Prefer to let the controller library handle Back (e.g. closing submenus
-    // inside the XMB) before falling back to global navigation.
-    const cancelEvent = new CustomEvent("opennow:controller-cancel", { cancelable: true });
-    window.dispatchEvent(cancelEvent);
-    if (cancelEvent.defaultPrevented) {
-      return true;
-    }
-
-    if (controllerOverlayOpenRef.current) {
-      setControllerOverlayOpen(false);
-      return true;
-    }
-
-    if (!authSession || streamStatus !== "idle") {
-      return false;
-    }
-
-    if (settings.controllerMode && currentPage === "settings") {
-      setCurrentPage("library");
-      return true;
-    }
-
-    if (currentPage !== "home") {
-      setCurrentPage("home");
-      return true;
-    }
-    return false;
-  }, [authSession, currentPage, settings.controllerMode, streamStatus]);
-
-  const handleControllerDirectionInput = useCallback((direction: "up" | "down" | "left" | "right"): boolean => {
-    if (controllerOverlayOpenRef.current) {
-      window.dispatchEvent(new CustomEvent("opennow:controller-direction", { detail: { direction } }));
-      return true;
-    }
-    if (!authSession || streamStatus !== "idle") {
-      return false;
-    }
-    if (settings.controllerMode && currentPage === "library") {
-      window.dispatchEvent(new CustomEvent("opennow:controller-direction", { detail: { direction } }));
-      return true;
-    }
-    if (settings.controllerMode && currentPage === "settings") {
-      window.dispatchEvent(new CustomEvent("opennow:controller-direction", { detail: { direction } }));
-      return true;
-    }
-    return false;
-  }, [authSession, currentPage, settings.controllerMode, streamStatus]);
-
-  const handleControllerActivateInput = useCallback((): boolean => {
-    if (controllerOverlayOpenRef.current) {
-      window.dispatchEvent(new CustomEvent("opennow:controller-activate"));
-      return true;
-    }
-    if (!authSession || streamStatus !== "idle") {
-      return false;
-    }
-    if (settings.controllerMode && currentPage === "library") {
-      window.dispatchEvent(new CustomEvent("opennow:controller-activate"));
-      return true;
-    }
-    if (settings.controllerMode && currentPage === "settings") {
-      window.dispatchEvent(new CustomEvent("opennow:controller-activate"));
-      return true;
-    }
-    return false;
-  }, [authSession, currentPage, settings.controllerMode, streamStatus]);
-
-  const handleControllerSecondaryActivateInput = useCallback((): boolean => {
-    if (controllerOverlayOpenRef.current) {
-      window.dispatchEvent(new CustomEvent("opennow:controller-secondary-activate"));
-      return true;
-    }
-    if (!authSession || streamStatus !== "idle") {
-      return false;
-    }
-    if (settings.controllerMode && currentPage === "library") {
-      window.dispatchEvent(new CustomEvent("opennow:controller-secondary-activate"));
-      return true;
-    }
-    if (settings.controllerMode && currentPage === "settings") {
-      window.dispatchEvent(new CustomEvent("opennow:controller-secondary-activate"));
-      return true;
-    }
-    return false;
-  }, [authSession, currentPage, settings.controllerMode, streamStatus]);
-
-  const handleControllerTertiaryActivateInput = useCallback((): boolean => {
-    if (controllerOverlayOpenRef.current) {
-      window.dispatchEvent(new CustomEvent("opennow:controller-tertiary-activate"));
-      return true;
-    }
-    if (!authSession || streamStatus !== "idle") {
-      return false;
-    }
-    if (settings.controllerMode && currentPage === "library") {
-      window.dispatchEvent(new CustomEvent("opennow:controller-tertiary-activate"));
-      return true;
-    }
-    if (settings.controllerMode && currentPage === "settings") {
-      window.dispatchEvent(new CustomEvent("opennow:controller-tertiary-activate"));
-      return true;
-    }
-    return false;
-  }, [authSession, currentPage, settings.controllerMode, streamStatus]);
-
-  const [controllerOverlayOpen, setControllerOverlayOpen] = useState(false);
   const [streamVolume, setStreamVolume] = useState(1);
   const [streamMicLevel, setStreamMicLevel] = useState(1);
-  const [isSwitchingGame, setIsSwitchingGame] = useState(false);
-  const [switchingPhase, setSwitchingPhase] = useState<null | "cleaning" | "creating">(null);
-  const [pendingSwitchGameTitle, setPendingSwitchGameTitle] = useState<string | null>(null);
-  const [pendingSwitchGameCover, setPendingSwitchGameCover] = useState<string | null>(null);
-  const [pendingSwitchGameDescription, setPendingSwitchGameDescription] = useState<string | null>(null);
-  const [pendingSwitchGameId, setPendingSwitchGameId] = useState<string | null>(null);
-  const controllerDesktopModeActive = Boolean(authSession)
-    && streamStatus === "idle"
-    && settings.controllerMode
-    && (currentPage === "library" || currentPage === "settings");
-  const controllerUiActive = controllerDesktopModeActive || controllerOverlayOpen;
-
-  const controllerConnected = useControllerNavigation({
-    enabled: controllerUiActive,
-    onNavigatePage: handleControllerPageNavigate,
-    onBackAction: handleControllerBackAction,
-    onDirectionInput: handleControllerDirectionInput,
-    onActivateInput: handleControllerActivateInput,
-    onSecondaryActivateInput: handleControllerSecondaryActivateInput,
-    onTertiaryActivateInput: handleControllerTertiaryActivateInput,
-  });
-  const showControllerHint = controllerUiActive
-    && controllerConnected
-    && !(settings.controllerMode && currentPage === "library");
-
   // Refs
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const clientRef = useRef<GfnWebRtcClient | null>(null);
-  const controllerUiSoundsRef = useRef(settings.controllerUiSounds);
   const isStreamingRef = useRef(streamStatus === "streaming");
 
   useEffect(() => {
-    controllerUiSoundsRef.current = settings.controllerUiSounds;
-  }, [settings.controllerUiSounds]);
-  useEffect(() => {
     isStreamingRef.current = streamStatus === "streaming";
   }, [streamStatus]);
-
-  const handleControllerMetaToggle = useCallback(() => {
-    if (!isStreamingRef.current) return;
-    setControllerOverlayOpen((currentOpen) => {
-      const opening = !currentOpen;
-      if (controllerUiSoundsRef.current) {
-        playControllerUiSound(opening ? "confirm" : "move", true);
-      }
-      return opening;
-    });
-  }, []);
 
   useEffect(() => {
     if (streamStatus === "streaming" && audioRef.current) {
@@ -575,45 +375,6 @@ export function App(): JSX.Element {
   });
   const exitPromptResolverRef = useRef<((confirmed: boolean) => void) | null>(null);
 
-  useEffect(() => {
-    controllerOverlayOpenRef.current = controllerOverlayOpen;
-    // Host-only pause: WebRTC client merges this with window blur/hidden (must not be cleared on focus).
-    if (clientRef.current) {
-      clientRef.current.inputPaused = controllerOverlayOpen;
-    }
-  }, [controllerOverlayOpen]);
-
-  useEffect(() => {
-    if (!controllerOverlayOpen) return;
-    const overlay = document.querySelector(".controller-overlay");
-    if (!overlay) return;
-    const selector = [
-      "button",
-      "a[href]",
-      "input:not([type='hidden'])",
-      "select",
-      "textarea",
-      "[role='button']",
-      "[tabindex]:not([tabindex='-1'])",
-    ].join(",");
-    const candidates = Array.from(overlay.querySelectorAll(selector)) as HTMLElement[];
-    const first = candidates.find((el) => {
-      const style = window.getComputedStyle(el);
-      if (style.visibility === "hidden" || style.display === "none") return false;
-      if ((el as HTMLButtonElement | HTMLInputElement | any).disabled) return false;
-      return el.tabIndex >= 0;
-    });
-    if (first) {
-      document.querySelectorAll<HTMLElement>(".controller-focus").forEach((n) => n.classList.remove("controller-focus"));
-      first.classList.add("controller-focus");
-      try {
-        first.focus({ preventScroll: true });
-      } catch {
-        /* ignore */
-      }
-      first.scrollIntoView({ block: "nearest", inline: "nearest" });
-    }
-  }, [controllerOverlayOpen]);
 
   const applyVariantSelections = useCallback((catalog: GameInfo[]): void => {
     setVariantByGameId((prev) => mergeVariantSelections(prev, catalog));
@@ -927,7 +688,7 @@ export function App(): JSX.Element {
     streamStatusRef.current = streamStatus;
   }, [streamStatus]);
 
-  // Broadcast minimal session/loading state for UI overlays (controller + other listeners)
+  // Broadcast minimal session/loading state for UI listeners.
   useEffect(() => {
     const detail = {
       status: streamStatus,
@@ -943,57 +704,6 @@ export function App(): JSX.Element {
       // ignore
     }
   }, [streamStatus, queuePosition, launchError, streamingGame, streamingStore]);
-
-  useEffect(() => {
-    document.body.classList.toggle("controller-mode", controllerUiActive);
-    return () => {
-      document.body.classList.remove("controller-mode");
-    };
-  }, [controllerUiActive]);
-
-  useEffect(() => {
-    const lowFx = streamStatus === "streaming" && controllerOverlayOpen;
-    document.body.classList.toggle("controller-overlay-lowfx", lowFx);
-    return () => {
-      document.body.classList.remove("controller-overlay-lowfx");
-    };
-  }, [controllerOverlayOpen, streamStatus]);
-
-  useEffect(() => {
-    if (!controllerUiActive || !controllerConnected) {
-      document.body.classList.remove("controller-hide-cursor");
-      return;
-    }
-
-    const IDLE_MS = 1300;
-    let timeoutId: number | null = null;
-
-    const hideCursor = () => {
-      document.body.classList.add("controller-hide-cursor");
-    };
-
-    const showCursor = () => {
-      document.body.classList.remove("controller-hide-cursor");
-      if (timeoutId != null) {
-        window.clearTimeout(timeoutId);
-      }
-      timeoutId = window.setTimeout(hideCursor, IDLE_MS) as unknown as number;
-    };
-
-    const onMouseMove = (): void => showCursor();
-
-    // Start visible then hide after timeout
-    showCursor();
-    document.addEventListener("mousemove", onMouseMove, { passive: true });
-
-    return () => {
-      if (timeoutId != null) {
-        window.clearTimeout(timeoutId);
-      }
-      document.removeEventListener("mousemove", onMouseMove);
-      document.body.classList.remove("controller-hide-cursor");
-    };
-  }, [controllerConnected, controllerUiActive]);
 
   // Derived state
   const selectedProvider = useMemo(() => {
@@ -1165,14 +875,6 @@ export function App(): JSX.Element {
     codecStartupTestAttemptedRef.current = true;
     void runCodecTest();
   }, [codecResults, codecTesting, runCodecTest]);
-
-  // Auto-load controller library at startup if enabled
-  useEffect(() => {
-    if (isInitializing || !authSession || !settings.controllerMode || !settings.autoLoadControllerLibrary || currentPage !== "home") {
-      return;
-    }
-    setCurrentPage("library");
-  }, [isInitializing, authSession, settings.controllerMode, settings.autoLoadControllerLibrary, currentPage]);
 
   const shortcuts = useMemo(() => {
     const parseWithFallback = (value: string, fallback: string) => {
@@ -1510,21 +1212,6 @@ export function App(): JSX.Element {
     }
   }, [settingsLoaded]);
 
-  const handleStreamVolumeChange = useCallback((v: number) => {
-    const n = Math.max(0, Math.min(1, v));
-    setStreamVolume(n);
-  }, []);
-
-  const handleToggleStreamMicrophone = useCallback(() => {
-    clientRef.current?.toggleMicrophone();
-  }, []);
-
-  const handleStreamMicLevelChange = useCallback((level: number) => {
-    const next = Math.max(0, Math.min(1, Number.isFinite(level) ? level : 1));
-    setStreamMicLevel(next);
-    clientRef.current?.setMicrophoneLevel(next);
-  }, []);
-
   const handleMouseSensitivityChange = useCallback((value: number) => {
     void updateSetting("mouseSensitivity", value);
   }, [updateSetting]);
@@ -1539,23 +1226,6 @@ export function App(): JSX.Element {
   const handleMouseAccelerationChange = useCallback((value: number) => {
     void updateSetting("mouseAcceleration", value);
   }, [updateSetting]);
-
-  const handleExitControllerMode = useCallback(() => {
-    setSettings((prev) => ({
-      ...prev,
-      controllerMode: false,
-      autoLoadControllerLibrary: false,
-    }));
-
-    if (settingsLoaded) {
-      void Promise.all([
-        window.openNow.setSetting("controllerMode", false),
-        window.openNow.setSetting("autoLoadControllerLibrary", false),
-      ]).catch((error) => {
-        console.warn("Failed to persist controller mode exit settings:", error);
-      });
-    }
-  }, [settingsLoaded]);
 
   const handleExitApp = useCallback(() => {
     appUnloadingRef.current = true;
@@ -2314,11 +1984,7 @@ export function App(): JSX.Element {
             }, ICE_DISCONNECTED_RECOVERY_GRACE_MS);
           }
         },
-        onControllerMetaPress: () => {
-          handleControllerMetaToggle();
-        },
       });
-      clientRef.current.inputPaused = controllerOverlayOpenRef.current;
       clientRef.current.setOutputVolume(streamVolume);
       clientRef.current.setMicrophoneLevel(streamMicLevel);
       if (settings.microphoneMode !== "disabled") {
@@ -2599,7 +2265,7 @@ export function App(): JSX.Element {
     });
 
     return () => unsubscribe();
-  }, [attemptSessionRecovery, diagnosticsStore, handleControllerMetaToggle, refreshNavbarActiveSession, resetLaunchRuntime, scheduleStableRecoveryReset, settings, streamMicLevel, streamVolume, t]);
+  }, [attemptSessionRecovery, diagnosticsStore, refreshNavbarActiveSession, resetLaunchRuntime, scheduleStableRecoveryReset, settings, streamMicLevel, streamVolume, t]);
 
   // Play game handler
   const handlePlayGame = useCallback(async (game: GameInfo, options?: { bypassGuards?: boolean; streamingBaseUrl?: string }) => {
@@ -3271,54 +2937,6 @@ export function App(): JSX.Element {
     }
   }, [endPlaytimeSession, markExplicitSignalingShutdown, refreshNavbarActiveSession, resetLaunchRuntime, resolveExitPrompt, stopSessionByTarget, streamingGame]);
 
-  const handleSwitchGame = useCallback(async (game: GameInfo) => {
-    setControllerOverlayOpen(false);
-    setPendingSwitchGameTitle(game.title ?? null);
-    setPendingSwitchGameCover(game.imageUrl ?? null);
-    setPendingSwitchGameDescription(game.description ?? null);
-    setPendingSwitchGameId(game.id ?? null);
-    setIsSwitchingGame(true);
-    setSwitchingPhase("cleaning");
-    // allow overlay to paint
-    await new Promise<void>((resolve) => window.setTimeout(resolve, 140));
-    try {
-      await handleStopStream();
-    } catch (e) {
-      console.error("Error while cleaning up stream during switch:", e);
-    }
-    setSwitchingPhase("creating");
-    // ensure runtime flags/state reflect the stopped session before launching again
-    launchInFlightRef.current = false;
-    setStreamStatus("idle");
-    // give the render loop a frame so React state updates propagate
-    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
-    // small pause so user sees transition
-    await new Promise<void>((resolve) => window.setTimeout(resolve, 120));
-
-    // Wait until the play guard conditions are satisfied (defensive against races)
-    const ready = await waitFor(() => !launchInFlightRef.current && streamStatusRef.current === "idle", { timeout: 1000, interval: 50 });
-    if (!ready) {
-      console.warn("Switch flow: runtime not ready for new launch after cleanup", {
-        launchInFlight: launchInFlightRef.current,
-        streamStatus: streamStatusRef.current,
-      });
-      // Do a small additional delay before aborting the automatic start to avoid nav-to-dashboard
-      await sleep(250);
-    }
-
-    try {
-      await handlePlayGame(game, { bypassGuards: true });
-    } catch (e) {
-      console.error("Error while starting new stream during switch:", e);
-    }
-    setIsSwitchingGame(false);
-    setSwitchingPhase(null);
-    setPendingSwitchGameTitle(null);
-    setPendingSwitchGameCover(null);
-    setPendingSwitchGameDescription(null);
-    setPendingSwitchGameId(null);
-  }, [handleStopStream, handlePlayGame]);
-
   const handleDismissLaunchError = useCallback(async () => {
     markExplicitSignalingShutdown();
     await disconnectSignalingControlled();
@@ -3526,24 +3144,6 @@ export function App(): JSX.Element {
     return null;
   }, [gameTitleByAppId, navbarActiveSession, session?.sessionId, streamingGame?.title]);
 
-  const controllerCloudResumeCoverUrl = useMemo(() => {
-    if (!navbarActiveSession) return null;
-    const ctx = findGameContextForSession(navbarActiveSession);
-    return ctx?.game?.imageUrl ?? null;
-  }, [findGameContextForSession, navbarActiveSession]);
-
-  const controllerCloudSessionResumable = useMemo(
-    () =>
-      Boolean(
-        streamStatus === "idle"
-        && selectedProvider
-        && navbarActiveSession?.serverIp
-        && !isResumingNavbarSession
-        && !isTerminatingNavbarSession
-      ),
-    [isResumingNavbarSession, isTerminatingNavbarSession, navbarActiveSession, selectedProvider, streamStatus],
-  );
-
   // Show login screen if not authenticated
   if (!authSession) {
     return (
@@ -3562,17 +3162,10 @@ export function App(): JSX.Element {
     );
   }
 
-  const showLaunchOverlay = streamStatus !== "idle" || launchError !== null || isSwitchingGame;
+  const showLaunchOverlay = streamStatus !== "idle" || launchError !== null;
   const hasActiveStreamView = streamStatus !== "idle";
   const showLaunchErrorOverlay = launchError !== null;
-  const showControllerLaunchLoading =
-    !isSwitchingGame
-    && settings.controllerMode
-    && (showLaunchErrorOverlay || (streamStatus !== "idle" && streamStatus !== "streaming"));
-  const showDesktopLaunchLoading =
-    !isSwitchingGame
-    && !settings.controllerMode
-    && (showLaunchErrorOverlay || (streamStatus !== "idle" && streamStatus !== "streaming"));
+  const showDesktopLaunchLoading = showLaunchErrorOverlay || (streamStatus !== "idle" && streamStatus !== "streaming");
   // Show stream lifecycle (waiting/connecting/streaming/failure)
   if (showLaunchOverlay) {
     const loadingStatus = launchError ? launchError.stage : toLoadingStatus(streamStatus);
@@ -3580,7 +3173,6 @@ export function App(): JSX.Element {
       <>
         {hasActiveStreamView && (
           <StreamView
-            className={isSwitchingGame ? "sv--switching" : undefined}
             videoRef={videoRef}
             audioRef={audioRef}
             diagnosticsStore={diagnosticsStore}
@@ -3642,159 +3234,6 @@ export function App(): JSX.Element {
               void releasePointerLockIfNeeded();
             }}
             allowEscapeToExitFullscreen={settings.allowEscapeToExitFullscreen}
-            hideConnectingOverlay={settings.controllerMode}
-          />
-        )}
-        {isSwitchingGame && settings.controllerMode && (
-          <ControllerStreamLoading
-            gameTitle={pendingSwitchGameTitle ?? streamingGame?.title ?? t("app.labels.game")}
-            status={loadingStatus}
-            queuePosition={queuePosition}
-            adState={effectiveAdState}
-            activeAd={activeQueueAd}
-            activeAdMediaUrl={activeQueueAdMediaUrl}
-            error={
-              launchError
-                ? {
-                    title: launchError.title,
-                    description: launchError.description,
-                    code: launchError.codeLabel,
-                  }
-                : undefined
-            }
-            onAdPlaybackEvent={handleQueueAdPlaybackEvent}
-            adPreviewRef={queueAdPreviewRef}
-          />
-        )}
-        {isSwitchingGame && !settings.controllerMode && (
-          <StreamLoading
-            gameTitle={pendingSwitchGameTitle ?? streamingGame?.title ?? t("app.labels.game")}
-            gameCover={pendingSwitchGameCover ?? streamingGame?.imageUrl}
-            platformStore={streamingStore ?? undefined}
-            status={switchingPhase === "cleaning" ? "setup" : "starting"}
-            queuePosition={queuePosition}
-            adState={effectiveAdState}
-            activeAd={activeQueueAd}
-            activeAdMediaUrl={activeQueueAdMediaUrl}
-            onAdPlaybackEvent={handleQueueAdPlaybackEvent}
-            adPreviewRef={queueAdPreviewRef}
-            error={
-              launchError
-                ? {
-                    title: launchError.title,
-                    description: launchError.description,
-                    code: launchError.codeLabel,
-                  }
-                : undefined
-            }
-            onCancel={() => {
-              if (launchError) {
-                void handleDismissLaunchError();
-                return;
-              }
-              void handlePromptedStopStream();
-            }}
-          />
-        )}
-        {streamStatus === "streaming" && controllerOverlayOpen && (
-          <ControllerInStreamShell
-            diagnosticsStore={diagnosticsStore}
-            sessionStartedAtMs={sessionStartedAtMs}
-            sessionCounterEnabled={settings.sessionCounterEnabled}
-            isStreaming={isStreaming}
-            streamWarning={streamWarning ?? undefined}
-            queuePosition={queuePosition}
-          >
-            <ControllerLibraryPage
-              games={filteredLibraryGames}
-              onPlayGame={handleSwitchGame}
-              isLoading={isLoadingGames}
-              selectedGameId={selectedGameId}
-              onSelectGame={setSelectedGameId}
-              uiSoundsEnabled={settings.controllerUiSounds}
-              selectedVariantByGameId={variantByGameId}
-              onSelectGameVariant={handleSelectGameVariant}
-              favoriteGameIds={settings.favoriteGameIds}
-              onToggleFavoriteGame={handleToggleFavoriteGame}
-              onOpenSettings={() => setCurrentPage("settings")}
-              currentStreamingGame={streamingGame}
-              onResumeGame={() => setControllerOverlayOpen(false)}
-              inStreamMenu
-              streamMenuVolume={streamVolume}
-              onStreamMenuVolumeChange={handleStreamVolumeChange}
-              streamMenuMicLevel={streamMicLevel}
-              onStreamMenuMicLevelChange={handleStreamMicLevelChange}
-              streamMicTrack={clientRef.current?.getMicTrack() ?? null}
-              onStreamMenuToggleMicrophone={handleToggleStreamMicrophone}
-              onStreamMenuToggleFullscreen={() => {
-                void toggleSessionFullscreen();
-              }}
-              streamMenuMicOn={streamMenuMicOn}
-              streamMenuIsFullscreen={sessionFullscreen || !!document.fullscreenElement}
-              cloudSessionResumable={controllerCloudSessionResumable}
-              cloudResumeTitle={activeSessionGameTitle}
-              cloudResumeCoverUrl={controllerCloudResumeCoverUrl}
-              onResumeCloudSession={() => {
-                void handleResumeFromNavbar();
-              }}
-              cloudResumeBusy={isResumingNavbarSession}
-              onCloseGame={async () => {
-                setControllerOverlayOpen(false);
-                await sleep(300);
-                await releasePointerLockIfNeeded();
-                await handleStopStream();
-              }}
-              userName={authSession?.user.displayName}
-              userAvatarUrl={authSession?.user.avatarUrl}
-              subscriptionInfo={subscriptionInfo}
-              playtimeData={playtime}
-              sessionStartedAtMs={sessionStartedAtMs}
-              isStreaming={isStreaming}
-              settings={{
-                resolution: settings.resolution,
-                fps: settings.fps,
-                codec: settings.codec,
-                enableL4S: settings.enableL4S,
-                enableCloudGsync: settings.enableCloudGsync,
-                microphoneDeviceId: settings.microphoneDeviceId,
-                controllerUiSounds: settings.controllerUiSounds,
-                controllerBackgroundAnimations: settings.controllerBackgroundAnimations,
-                controllerThemeStyle: settings.controllerThemeStyle,
-                controllerThemeColor: settings.controllerThemeColor,
-                controllerLibraryGameBackdrop: settings.controllerLibraryGameBackdrop,
-                autoLoadControllerLibrary: settings.autoLoadControllerLibrary,
-                autoFullScreen: settings.autoFullScreen,
-                aspectRatio: settings.aspectRatio,
-                posterSizeScale: settings.posterSizeScale,
-                maxBitrateMbps: settings.maxBitrateMbps,
-              }}
-              resolutionOptions={getResolutionsByAspectRatio(settings.aspectRatio)}
-              fpsOptions={fpsOptions}
-              codecOptions={codecOptions}
-              aspectRatioOptions={aspectRatioOptions as unknown as string[]}
-              onSettingChange={updateSetting}
-            />
-          </ControllerInStreamShell>
-        )}
-        {showControllerLaunchLoading && (
-          <ControllerStreamLoading
-            gameTitle={streamingGame?.title ?? t("app.labels.game")}
-            status={loadingStatus}
-            queuePosition={queuePosition}
-            adState={effectiveAdState}
-            activeAd={activeQueueAd}
-            activeAdMediaUrl={activeQueueAdMediaUrl}
-            error={
-              launchError
-                ? {
-                    title: launchError.title,
-                    description: launchError.description,
-                    code: launchError.codeLabel,
-                  }
-                : undefined
-            }
-            onAdPlaybackEvent={handleQueueAdPlaybackEvent}
-            adPreviewRef={queueAdPreviewRef}
           />
         )}
         {showDesktopLaunchLoading && (
@@ -3827,13 +3266,6 @@ export function App(): JSX.Element {
             }}
           />
         )}
-        {showControllerHint && streamStatus !== "streaming" && (
-          <div className="controller-hint controller-hint--overlay">
-            <span>{t("controllerMode.hints.dpadNavigate")}</span>
-            <span>{t("controllerMode.hints.aSelect")}</span>
-            <span>{t("controllerMode.hints.bBack")}</span>
-          </div>
-        )}
       </>
     );
   }
@@ -3846,31 +3278,29 @@ export function App(): JSX.Element {
           {startupRefreshNotice.text}
         </div>
       )}
-      {!(settings.controllerMode && currentPage === "library") && (
-        <Navbar
-          currentPage={currentPage}
-          onNavigate={setCurrentPage}
-          user={authSession.user}
-          subscription={subscriptionInfo}
-          activeSession={navbarActiveSession}
-          activeSessionGameTitle={activeSessionGameTitle}
-          isResumingSession={isResumingNavbarSession}
-          isTerminatingSession={isTerminatingNavbarSession}
-          onResumeSession={() => {
-            void handleResumeFromNavbar();
-          }}
-          onTerminateSession={() => {
-            void handleTerminateNavbarSession();
-          }}
-          savedAccounts={savedAccounts}
-          onSwitchAccount={handleSwitchAccount}
-          onRemoveAccount={(userId) => {
-            void handleRemoveAccount(userId);
-          }}
-          onAddAccount={handleAddAccount}
-          onLogoutAll={handleLogout}
-        />
-      )}
+      <Navbar
+        currentPage={currentPage}
+        onNavigate={setCurrentPage}
+        user={authSession.user}
+        subscription={subscriptionInfo}
+        activeSession={navbarActiveSession}
+        activeSessionGameTitle={activeSessionGameTitle}
+        isResumingSession={isResumingNavbarSession}
+        isTerminatingSession={isTerminatingNavbarSession}
+        onResumeSession={() => {
+          void handleResumeFromNavbar();
+        }}
+        onTerminateSession={() => {
+          void handleTerminateNavbarSession();
+        }}
+        savedAccounts={savedAccounts}
+        onSwitchAccount={handleSwitchAccount}
+        onRemoveAccount={(userId) => {
+          void handleRemoveAccount(userId);
+        }}
+        onAddAccount={handleAddAccount}
+        onLogoutAll={handleLogout}
+      />
 
       <main className="main-content">
         {currentPage === "home" && (
@@ -3898,78 +3328,21 @@ export function App(): JSX.Element {
         )}
 
         {currentPage === "library" && (
-          settings.controllerMode ? (
-            <ControllerLibraryPage
-              games={filteredLibraryGames}
-              onPlayGame={handleInitiatePlay}
-              isLoading={isLoadingGames}
-              selectedGameId={selectedGameId}
-              onSelectGame={setSelectedGameId}
-              uiSoundsEnabled={settings.controllerUiSounds}
-              selectedVariantByGameId={variantByGameId}
-              onSelectGameVariant={handleSelectGameVariant}
-              favoriteGameIds={settings.favoriteGameIds}
-              onToggleFavoriteGame={handleToggleFavoriteGame}
-              onOpenSettings={() => setCurrentPage("settings")}
-              currentStreamingGame={streamingGame}
-              onResumeGame={handlePlayGame}
-              cloudSessionResumable={controllerCloudSessionResumable}
-              cloudResumeTitle={activeSessionGameTitle}
-              cloudResumeCoverUrl={controllerCloudResumeCoverUrl}
-              onResumeCloudSession={() => {
-                void handleResumeFromNavbar();
-              }}
-              cloudResumeBusy={isResumingNavbarSession}
-              onCloseGame={handlePromptedStopStream}
-              userName={authSession?.user.displayName}
-              userAvatarUrl={authSession?.user.avatarUrl}
-              subscriptionInfo={subscriptionInfo}
-              playtimeData={playtime}
-              sessionStartedAtMs={sessionStartedAtMs}
-              isStreaming={isStreaming}
-              settings={{
-                resolution: settings.resolution,
-                fps: settings.fps,
-                codec: settings.codec,
-                enableL4S: settings.enableL4S,
-                enableCloudGsync: settings.enableCloudGsync,
-                microphoneDeviceId: settings.microphoneDeviceId,
-                controllerUiSounds: settings.controllerUiSounds,
-                controllerBackgroundAnimations: settings.controllerBackgroundAnimations,
-                controllerThemeStyle: settings.controllerThemeStyle,
-                controllerThemeColor: settings.controllerThemeColor,
-                controllerLibraryGameBackdrop: settings.controllerLibraryGameBackdrop,
-                autoLoadControllerLibrary: settings.autoLoadControllerLibrary,
-                autoFullScreen: settings.autoFullScreen,
-                aspectRatio: settings.aspectRatio,
-                posterSizeScale: settings.posterSizeScale,
-                maxBitrateMbps: settings.maxBitrateMbps,
-              }}
-              resolutionOptions={getResolutionsByAspectRatio(settings.aspectRatio)}
-              fpsOptions={fpsOptions}
-              codecOptions={codecOptions}
-              aspectRatioOptions={aspectRatioOptions as unknown as string[]}
-              onSettingChange={updateSetting}
-              onExitControllerMode={handleExitControllerMode}
-              onExitApp={handleExitApp}
-            />
-          ) : (
-            <LibraryPage
-              games={filteredLibraryGames}
-              searchQuery={searchQuery}
-              onSearchChange={setSearchQuery}
-              onPlayGame={handleInitiatePlay}
-              isLoading={isLoadingGames}
-              selectedGameId={selectedGameId}
-              onSelectGame={setSelectedGameId}
-              selectedVariantByGameId={variantByGameId}
-              onSelectGameVariant={handleSelectGameVariant}
-              libraryCount={libraryGames.length}
-              sortOptions={catalogSortOptions.filter((option) => option.id !== "relevance")}
-              selectedSortId={catalogSelectedSortId === "relevance" ? "last_played" : catalogSelectedSortId}
-              onSortChange={setCatalogSelectedSortId}
-            />
-          )
+          <LibraryPage
+            games={filteredLibraryGames}
+            searchQuery={searchQuery}
+            onSearchChange={setSearchQuery}
+            onPlayGame={handleInitiatePlay}
+            isLoading={isLoadingGames}
+            selectedGameId={selectedGameId}
+            onSelectGame={setSelectedGameId}
+            selectedVariantByGameId={variantByGameId}
+            onSelectGameVariant={handleSelectGameVariant}
+            libraryCount={libraryGames.length}
+            sortOptions={catalogSortOptions.filter((option) => option.id !== "relevance")}
+            selectedSortId={catalogSelectedSortId === "relevance" ? "last_played" : catalogSelectedSortId}
+            onSortChange={setCatalogSelectedSortId}
+          />
         )}
 
         {currentPage === "settings" && (
@@ -3983,15 +3356,6 @@ export function App(): JSX.Element {
           />
         )}
       </main>
-      {showControllerHint && (
-        <div className="controller-hint">
-          <span>{t("controllerMode.hints.dpadNavigate")}</span>
-          <span>{t("controllerMode.hints.aSelect")}</span>
-          <span>{t("controllerMode.hints.bBack")}</span>
-          <span>{t("controllerMode.hints.lbRbTabs")}</span>
-        </div>
-      )}
-
       {logoutConfirmModal}
       {removeAccountConfirmModal}
       {queueModalGame && streamStatus === "idle" && (

@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { createPortal } from "react-dom";
 import type { JSX } from "react";
-import { Maximize, Minimize, Gamepad2, Loader2, LogOut, Clock3, AlertTriangle, Mic, MicOff, Camera, ChevronLeft, ChevronRight, Save, Trash2, X, Circle, Square, Video, FolderOpen } from "lucide-react";
+import { Maximize, Minimize, Loader2, LogOut, Clock3, AlertTriangle, Mic, MicOff, Camera, ChevronLeft, ChevronRight, Save, Trash2, X, Circle, Square, Video, FolderOpen } from "lucide-react";
 import SideBar from "./SideBar";
 import type { StreamDiagnosticsStore } from "../utils/streamDiagnosticsStore";
 import { useStreamDiagnosticsSelector, useStreamDiagnosticsStore } from "../utils/streamDiagnosticsStore";
@@ -82,8 +82,6 @@ interface StreamViewProps {
   micTrack?: MediaStreamTrack | null;
   className?: string;
   allowEscapeToExitFullscreen?: boolean;
-  /** When true, omit the in-player connecting overlay (controller mode uses ControllerStreamLoading instead). */
-  hideConnectingOverlay?: boolean;
 }
 
 
@@ -310,58 +308,6 @@ function StreamStatsHud({
   );
 }
 
-function ControllerIndicator({
-  diagnosticsStore,
-  isConnecting,
-}: {
-  diagnosticsStore: StreamDiagnosticsStore;
-  isConnecting: boolean;
-}): JSX.Element | null {
-  const connectedGamepads = useStreamDiagnosticsSelector(
-    diagnosticsStore,
-    (stats) => stats.connectedGamepads,
-  );
-  const [badgeVisible, setBadgeVisible] = useState(true);
-  const hideTimerRef = useRef<number | null>(null);
-
-  useEffect(() => {
-    if (hideTimerRef.current !== null) {
-      window.clearTimeout(hideTimerRef.current);
-      hideTimerRef.current = null;
-    }
-    if (connectedGamepads > 0) {
-      setBadgeVisible(true);
-      hideTimerRef.current = window.setTimeout(() => {
-        setBadgeVisible(false);
-        hideTimerRef.current = null;
-      }, 5000);
-    } else {
-      setBadgeVisible(true);
-    }
-    return () => {
-      if (hideTimerRef.current !== null) {
-        window.clearTimeout(hideTimerRef.current);
-        hideTimerRef.current = null;
-      }
-    };
-  }, [connectedGamepads]);
-
-  if (isConnecting || connectedGamepads <= 0) {
-    return null;
-  }
-
-  return (
-    <div
-      className={`sv-ctrl${badgeVisible ? "" : " sv-ctrl--hidden"}`}
-      title={`${connectedGamepads} controller(s) connected`}
-      aria-hidden={!badgeVisible}
-    >
-      <Gamepad2 size={18} />
-      {connectedGamepads > 1 && <span className="sv-ctrl-n">{connectedGamepads}</span>}
-    </div>
-  );
-}
-
 function MicrophoneIndicator({
   diagnosticsStore,
   showAntiAfkIndicator,
@@ -417,7 +363,7 @@ function AntiAfkIndicator({
   showAntiAfkIndicator: boolean;
   isConnecting: boolean;
 }): JSX.Element | null {
-  const hasController = useStreamDiagnosticsSelector(
+  const hasGamepad = useStreamDiagnosticsSelector(
     diagnosticsStore,
     (stats) => stats.connectedGamepads > 0,
   );
@@ -427,7 +373,7 @@ function AntiAfkIndicator({
   }
 
   return (
-    <div className={`sv-afk${hasController ? " sv-afk--stacked" : ""}`} title="Anti-AFK is enabled">
+    <div className={`sv-afk${hasGamepad ? " sv-afk--stacked" : ""}`} title="Anti-AFK is enabled">
       <span className="sv-afk-dot" />
       <span className="sv-afk-label">ANTI-AFK ON</span>
     </div>
@@ -626,7 +572,6 @@ export function StreamView({
   micTrack,
   hideStreamButtons = false,
   allowEscapeToExitFullscreen,
-  hideConnectingOverlay = false,
   className,
 }: StreamViewProps): JSX.Element {
   const [showHints, setShowHints] = useState(true);
@@ -1985,8 +1930,8 @@ export function StreamView({
       {/* Gradient background when no video */}
       <StreamEmptyState diagnosticsStore={diagnosticsStore} />
 
-      {/* Connecting overlay (desktop / non-controller; controller uses ControllerStreamLoading) */}
-      {isConnecting && !hideConnectingOverlay && (
+      {/* Connecting overlay */}
+      {isConnecting && (
         <div className="sv-connect">
           <div className="sv-connect-inner">
             <Loader2 className="sv-connect-spin" size={44} />
@@ -2043,10 +1988,7 @@ export function StreamView({
         />
       )}
 
-      {/* Controller indicator (top-left) */}
-      <ControllerIndicator diagnosticsStore={diagnosticsStore} isConnecting={isConnecting} />
-
-      {/* Microphone toggle button (top-left, below controller badge when present) */}
+      {/* Microphone toggle button */}
       <MicrophoneIndicator
         diagnosticsStore={diagnosticsStore}
         showAntiAfkIndicator={antiAfkEnabled && showAntiAfkIndicator}
@@ -2055,7 +1997,7 @@ export function StreamView({
         onToggleMicrophone={onToggleMicrophone}
       />
 
-      {/* Anti-AFK indicator (top-left, below controller badge when present) */}
+      {/* Anti-AFK indicator */}
       <AntiAfkIndicator
         diagnosticsStore={diagnosticsStore}
         antiAfkEnabled={antiAfkEnabled}

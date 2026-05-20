@@ -128,16 +128,7 @@ export function colorQualityIs10Bit(cq: ColorQuality): boolean {
   return cq.startsWith("10bit");
 }
 
-/** Controller-mode XMB background visual preset */
-export type ControllerThemeStyle = "aurora" | "nebula" | "grid" | "minimal" | "pulse";
 export type AppAccentColor = "green" | "blue" | "violet" | "amber" | "rose";
-
-/** RGB tint for controller-mode background (0–255 each) */
-export interface ControllerThemeRgb {
-  r: number;
-  g: number;
-  b: number;
-}
 
 export type MicrophoneMode = "disabled" | "push-to-talk" | "voice-activity";
 export type AspectRatio = "16:9" | "16:10" | "21:9" | "32:9";
@@ -294,21 +285,6 @@ export interface Settings {
   hideServerSelector: boolean;
   /** Desktop UI accent preset */
   appAccentColor: AppAccentColor;
-  controllerMode: boolean;
-  controllerUiSounds: boolean;
-  autoLoadControllerLibrary: boolean;
-  /** When true, controller-mode overlays will show animated background orbs */
-  controllerBackgroundAnimations: boolean;
-  /** Controller-mode library background visual preset */
-  controllerThemeStyle: ControllerThemeStyle;
-  /** Controller-mode library background tint (applied per style preset) */
-  controllerThemeColor: ControllerThemeRgb;
-  /**
-   * When true, controller library/hub/loading layers may show art from the focused game or shelf.
-   * Theme color/style presets still apply when false.
-   */
-  controllerLibraryGameBackdrop: boolean;
-  /** When true, the app will automatically enter fullscreen when controller mode triggers it */
   autoFullScreen: boolean;
   favoriteGameIds: string[];
   sessionCounterEnabled: boolean;

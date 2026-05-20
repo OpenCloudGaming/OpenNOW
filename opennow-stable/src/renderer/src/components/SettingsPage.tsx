@@ -150,9 +150,6 @@ const SETTINGS_SCOPE_SEARCH_TERMS: Record<SettingsSearchScopeId, readonly string
     "accent color",
     "theme color",
     "overlay",
-    "controller mode",
-    "controller mode library",
-    "auto-load controller library",
     "library",
     "fullscreen",
     "discord",
@@ -893,9 +890,6 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
   const handleChange = useCallback(
     <K extends keyof Settings>(key: K, value: Settings[K]) => {
       onSettingChange(key, value);
-      if (key === "controllerMode" && value === false) {
-        onSettingChange("autoLoadControllerLibrary", false);
-      }
       setSavedIndicator(true);
       setTimeout(() => setSavedIndicator(false), 1500);
     },
@@ -3325,74 +3319,6 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                     </label>
                   </div>
                 </div>
-
-                {/* Controller Mode */}
-                <div className="settings-row">
-                  <label className="settings-label">
-                    <span className="settings-label-title">
-                      {t("settings.interface.controllerModeLibrary")}
-                      <span className="settings-inline-badge settings-inline-badge--beta">{t("app.labels.beta")}</span>
-                    </span>
-                    <span className="settings-hint">{t("settings.interface.controllerModeLibraryHint")}</span>
-                  </label>
-                  <label className="settings-toggle">
-                    <input
-                      type="checkbox"
-                      checked={settings.controllerMode}
-                      onChange={(e) => handleChange("controllerMode", e.target.checked)}
-                    />
-                    <span className="settings-toggle-track" />
-                  </label>
-                </div>
-
-                {settings.controllerMode && (
-                  <div className="settings-controller-subsettings">
-                    <div className="settings-row">
-                      <label className="settings-label">
-                        {t("settings.interface.controllerUiSounds")}
-                        <span className="settings-hint">{t("settings.interface.controllerUiSoundsHint")}</span>
-                      </label>
-                      <label className="settings-toggle">
-                        <input
-                          type="checkbox"
-                          checked={settings.controllerUiSounds}
-                          onChange={(e) => handleChange("controllerUiSounds", e.target.checked)}
-                        />
-                        <span className="settings-toggle-track" />
-                      </label>
-                    </div>
-
-                    <div className="settings-row">
-                      <label className="settings-label">
-                        {t("settings.interface.controllerBackgroundAnimations")}
-                        <span className="settings-hint">{t("settings.interface.controllerBackgroundAnimationsHint")}</span>
-                      </label>
-                      <label className="settings-toggle">
-                        <input
-                          type="checkbox"
-                          checked={settings.controllerBackgroundAnimations}
-                          onChange={(e) => handleChange("controllerBackgroundAnimations", e.target.checked)}
-                        />
-                        <span className="settings-toggle-track" />
-                      </label>
-                    </div>
-
-                    <div className="settings-row">
-                      <label className="settings-label">
-                        {t("settings.interface.autoLoadControllerLibrary")}
-                        <span className="settings-hint">{t("settings.interface.autoLoadControllerLibraryHint")}</span>
-                      </label>
-                      <label className="settings-toggle">
-                        <input
-                          type="checkbox"
-                          checked={settings.autoLoadControllerLibrary}
-                          onChange={(e) => handleChange("autoLoadControllerLibrary", e.target.checked)}
-                        />
-                        <span className="settings-toggle-track" />
-                      </label>
-                    </div>
-                  </div>
-                )}
 
                 <div className="settings-row settings-row--column">
                   <div className="settings-row-top">

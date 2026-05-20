@@ -471,16 +471,8 @@
       "escapeExitsFullscreenHint": "When enabled, pressing Escape will exit fullscreen. When disabled (default), Escape is forwarded to the game while the mouse is pointer-locked.",
       "discordRichPresence": "Discord Rich Presence",
       "discordRichPresenceHint": "Show the game you are streaming as your Discord activity, including elapsed time.",
-      "controllerModeLibrary": "Controller Mode Library",
-      "controllerModeLibraryHint": "Replace the desktop library/settings navigation with the controller-first layout only when controller mode is enabled.",
-      "controllerUiSounds": "Controller UI Sounds",
-      "controllerUiSoundsHint": "Play subtle move, open, and back sounds inside controller mode only.",
-      "controllerBackgroundAnimations": "Background Animations (Controller Mode)",
-      "controllerBackgroundAnimationsHint": "Show animated background visuals on controller-mode loading screens only.",
-      "autoLoadControllerLibrary": "Auto-Load Controller Library",
-      "autoLoadControllerLibraryHint": "Automatically open the controller library at startup when controller mode is enabled.",
       "posterSize": "Poster Size",
-      "posterSizeHint": "Adjusts game posters in real time across the library and controller views.",
+      "posterSizeHint": "Adjusts game posters in real time across the library.",
       "sessionElapsedCounter": "Session Elapsed Counter",
       "sessionElapsedCounterHint": "Enable or disable the live session elapsed counter while streaming.",
       "sessionTimerReappear": "Session Timer Reappear",
@@ -611,48 +603,6 @@
       "storageRegionCode": "Storage Region Code",
       "serverRegionVpc": "Server Region (VPC)",
       "notAvailable": "N/A"
-    }
-  },
-  "controllerMode": {
-    "hints": {
-      "dpadNavigate": "D-pad Navigate",
-      "aSelect": "A Select",
-      "bBack": "B Back",
-      "lbRbTabs": "LB/RB Tabs"
-    },
-    "gameHub": {
-      "ariaLabel": "{{title}} game hub",
-      "actions": "Game hub actions"
-    },
-    "library": {
-      "loadingTitle": "Loading your library",
-      "loadingSubtitle": "Please wait",
-      "gameHub": "Game hub",
-      "games": "Games",
-      "gameLibrary": "Game library",
-      "emptySlot": "Empty slot",
-      "emptyRecentSlot": "Empty recent slot",
-      "recentlyPlayed": "Recently played",
-      "recentlyPlayedHint": "Recently played · Enter opens this title in your library",
-      "recentlyPlayedEmptyHint": "Recently played · Empty slot - play games to fill your shelf",
-      "recentlyPlayedGames": "Recently played games",
-      "resumeGame": "Resume {{title}}",
-      "library": "Library",
-      "detailRow": "Detail row",
-      "options": "Options",
-      "browseLeftRight": "Browse · Left / Right",
-      "backToMedia": "Back To Media",
-      "libraryFiltersUp": "Library filters · Up",
-      "bandwidthLimit": "Bandwidth Limit (Mbps)",
-      "theme": "Theme {{label}}"
-    },
-    "streamLoading": {
-      "adQueue": "Ad Queue",
-      "queuePaused": "Session queue paused",
-      "settingUpRig": "Setting up your gaming rig...",
-      "startingStream": "Starting stream...",
-      "settingUpStream": "Setting up stream...",
-      "loading": "Loading..."
     }
   },
   "errors": {
