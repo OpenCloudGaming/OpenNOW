@@ -75,6 +75,7 @@ const api: OpenNowApi = {
   fetchSubscription: (input: SubscriptionFetchRequest) =>
     ipcRenderer.invoke(IPC_CHANNELS.SUBSCRIPTION_FETCH, input),
   fetchMainGames: (input: GamesFetchRequest) => ipcRenderer.invoke(IPC_CHANNELS.GAMES_FETCH_MAIN, input),
+  fetchFeaturedGames: (input: GamesFetchRequest) => ipcRenderer.invoke(IPC_CHANNELS.GAMES_FETCH_FEATURED, input),
   fetchLibraryGames: (input: GamesFetchRequest) =>
     ipcRenderer.invoke(IPC_CHANNELS.GAMES_FETCH_LIBRARY, input),
   browseCatalog: (input: CatalogBrowseRequest) => ipcRenderer.invoke(IPC_CHANNELS.GAMES_BROWSE_CATALOG, input),

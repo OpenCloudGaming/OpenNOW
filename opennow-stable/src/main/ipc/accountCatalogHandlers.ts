@@ -12,6 +12,7 @@ import type {
 import type { AuthService } from "../gfn/auth";
 import {
   browseCatalog,
+  fetchFeaturedGames,
   fetchLibraryGames,
   fetchMainGames,
   fetchPublicGames,
@@ -112,6 +113,18 @@ export function registerAccountCatalogIpcHandlers(
         authService.getSelectedProvider().streamingServiceUrl;
       refreshScheduler.updateAuthContext(token, streamingBaseUrl);
       return fetchMainGames(token, streamingBaseUrl);
+    },
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.GAMES_FETCH_FEATURED,
+    async (_event, payload: GamesFetchRequest) => {
+      const token = await resolveJwt(payload?.token);
+      const streamingBaseUrl =
+        payload?.providerStreamingBaseUrl ??
+        authService.getSelectedProvider().streamingServiceUrl;
+      refreshScheduler.updateAuthContext(token, streamingBaseUrl);
+      return fetchFeaturedGames(token, streamingBaseUrl);
     },
   );
 

@@ -167,6 +167,7 @@ export function App(): JSX.Element {
 
   // Games State
   const [games, setGames] = useState<GameInfo[]>([]);
+  const [featuredGames, setFeaturedGames] = useState<GameInfo[]>([]);
   const [libraryGames, setLibraryGames] = useState<GameInfo[]>([]);
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedGameId, setSelectedGameId] = useState("");
@@ -219,6 +220,7 @@ export function App(): JSX.Element {
     showStatsOnLaunch: false,
     hideServerSelector: false,
     appAccentColor: "green",
+    controllerMode: false,
     autoFullScreen: false,
     favoriteGameIds: [],
     sessionCounterEnabled: false,
@@ -1267,7 +1269,7 @@ export function App(): JSX.Element {
     }
 
     try {
-      const [catalogResult, libGames] = await Promise.all([
+      const [catalogResult, libGames, featured] = await Promise.all([
         window.openNow.browseCatalog({
           token,
           providerStreamingBaseUrl: session.provider.streamingServiceUrl,
@@ -1279,13 +1281,22 @@ export function App(): JSX.Element {
           token,
           providerStreamingBaseUrl: session.provider.streamingServiceUrl,
         }),
+        window.openNow.fetchFeaturedGames({
+          token,
+          providerStreamingBaseUrl: session.provider.streamingServiceUrl,
+        }).catch((error) => {
+          console.warn("Featured games load failed:", error);
+          return [] as GameInfo[];
+        }),
       ]);
       applyCatalogBrowseResult(catalogResult);
       setLibraryGames(libGames);
+      setFeaturedGames(featured);
       applyVariantSelections(libGames);
     } catch (catalogError) {
       console.error("Initialization games load failed:", catalogError);
       setGames([]);
+      setFeaturedGames([]);
       setLibraryGames([]);
       setCatalogFilterGroups([]);
       setCatalogSortOptions([]);
@@ -1472,6 +1483,7 @@ export function App(): JSX.Element {
     }
     setRegions([]);
     setGames([]);
+    setFeaturedGames([]);
     setLibraryGames([]);
     setSubscriptionInfo(null);
     setNavbarActiveSession(null);
@@ -1524,14 +1536,23 @@ export function App(): JSX.Element {
       }
 
       if (targetSource === "main") {
-        const catalogResult = await window.openNow.browseCatalog({
-          token,
-          providerStreamingBaseUrl: baseUrl,
-          searchQuery,
-          sortId: catalogSelectedSortId,
-          filterIds: catalogSelectedFilterIds,
-        });
+        const [catalogResult, featured] = await Promise.all([
+          window.openNow.browseCatalog({
+            token,
+            providerStreamingBaseUrl: baseUrl,
+            searchQuery,
+            sortId: catalogSelectedSortId,
+            filterIds: catalogSelectedFilterIds,
+          }),
+          featuredGames.length === 0
+            ? window.openNow.fetchFeaturedGames({ token, providerStreamingBaseUrl: baseUrl }).catch((error) => {
+                console.warn("Featured games refresh failed:", error);
+                return [] as GameInfo[];
+              })
+            : Promise.resolve(featuredGames),
+        ]);
         applyCatalogBrowseResult(catalogResult);
+        if (featured.length > 0) setFeaturedGames(featured);
         return;
       }
 
@@ -1544,7 +1565,7 @@ export function App(): JSX.Element {
     } finally {
       setIsLoadingGames(false);
     }
-  }, [applyCatalogBrowseResult, applyVariantSelections, authSession, effectiveStreamingBaseUrl, searchQuery, catalogFilterKey, catalogSelectedSortId]);
+  }, [applyCatalogBrowseResult, applyVariantSelections, authSession, effectiveStreamingBaseUrl, featuredGames, searchQuery, catalogFilterKey, catalogSelectedSortId]);
 
   useEffect(() => {
     if (!authSession || currentPage !== "home") {
@@ -3272,7 +3293,7 @@ export function App(): JSX.Element {
 
   // Main app layout
   return (
-    <div className="app-container" style={getAppStyle(settings.posterSizeScale)}>
+    <div className={`app-container${settings.controllerMode ? " app-container--controller" : ""}`} style={getAppStyle(settings.posterSizeScale)}>
       {startupRefreshNotice && (
         <div className={`auth-refresh-notice auth-refresh-notice--${startupRefreshNotice.tone}`}>
           {startupRefreshNotice.text}
@@ -3300,6 +3321,7 @@ export function App(): JSX.Element {
         }}
         onAddAccount={handleAddAccount}
         onLogoutAll={handleLogout}
+        controllerMode={settings.controllerMode}
       />
 
       <main className="main-content">
@@ -3342,6 +3364,8 @@ export function App(): JSX.Element {
             sortOptions={catalogSortOptions.filter((option) => option.id !== "relevance")}
             selectedSortId={catalogSelectedSortId === "relevance" ? "last_played" : catalogSelectedSortId}
             onSortChange={setCatalogSelectedSortId}
+            controllerMode={settings.controllerMode}
+            featuredGames={featuredGames.length > 0 ? featuredGames : games}
           />
         )}
 

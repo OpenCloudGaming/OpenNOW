@@ -52,6 +52,9 @@ export function publicGameToGameInfo(item: RawPublicGame): GameInfo {
   const imageUrl = steamAppId
     ? `https://cdn.cloudflare.steamstatic.com/steam/apps/${steamAppId}/library_600x900.jpg`
     : undefined;
+  const heroImageUrl = steamAppId
+    ? `https://cdn.cloudflare.steamstatic.com/steam/apps/${steamAppId}/header.jpg`
+    : undefined;
   const store = inferPublicGameStore(item);
 
   return {
@@ -66,6 +69,7 @@ export function publicGameToGameInfo(item: RawPublicGame): GameInfo {
     selectedVariantIndex: 0,
     variants: [{ id, store, supportedControls: [] }],
     imageUrl,
+    heroImageUrl,
     availableStores: [store],
     isInLibrary: false,
   };
@@ -111,16 +115,21 @@ export function mergePublicGameVariants(games: GameInfo[], publicGames: GameInfo
       return game;
     }
 
+    const gameWithPublicFallbacks: GameInfo = {
+      ...game,
+      imageUrl: game.imageUrl ?? publicGame.imageUrl,
+      heroImageUrl: game.heroImageUrl ?? publicGame.heroImageUrl,
+      searchText: mergeSearchText(game.searchText, publicGame.searchText),
+    };
     const supplementalVariants = getSupplementalPublicVariants(game, publicGame);
     if (supplementalVariants.length === 0) {
-      return game;
+      return gameWithPublicFallbacks;
     }
 
     return {
-      ...game,
-      uuid: game.uuid ?? publicGame.uuid,
-      launchAppId: game.launchAppId ?? publicGame.launchAppId,
-      imageUrl: game.imageUrl ?? publicGame.imageUrl,
+      ...gameWithPublicFallbacks,
+      uuid: gameWithPublicFallbacks.uuid ?? publicGame.uuid,
+      launchAppId: gameWithPublicFallbacks.launchAppId ?? publicGame.launchAppId,
       variants: [...game.variants, ...supplementalVariants],
       availableStores: [
         ...new Set([
@@ -129,7 +138,6 @@ export function mergePublicGameVariants(games: GameInfo[], publicGames: GameInfo
           ...(publicGame.availableStores ?? []),
         ].filter((value): value is string => typeof value === "string" && value.trim().length > 0)),
       ],
-      searchText: mergeSearchText(game.searchText, publicGame.searchText),
     };
   });
 }

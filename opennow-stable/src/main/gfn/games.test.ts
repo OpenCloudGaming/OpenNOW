@@ -89,6 +89,31 @@ test("merges supplemental public launcher variants into catalog games by title",
   assert.deepEqual(game?.availableStores, ["Steam", "NCSoft"]);
 });
 
+test("preserves public Steam hero fallback when merging supplemental variants", () => {
+  const [game] = mergePublicGameVariants(
+    [
+      {
+        id: "third-party-steam-game",
+        title: "Third Party Steam Game",
+        selectedVariantIndex: 0,
+        variants: [{ id: "third-party", store: "GOG", supportedControls: [] }],
+        availableStores: ["GOG"],
+      },
+    ],
+    [
+      publicGameToGameInfo({
+        id: 456,
+        title: "Third Party Steam Game",
+        steamUrl: "https://store.steampowered.com/app/456",
+        store: "Steam",
+        status: "AVAILABLE",
+      }),
+    ],
+  );
+
+  assert.equal(game?.heroImageUrl, "https://cdn.cloudflare.steamstatic.com/steam/apps/456/header.jpg");
+});
+
 test("merges same-id public launcher variants when the store is missing from catalog data", () => {
   const [game] = mergePublicGameVariants(
     [

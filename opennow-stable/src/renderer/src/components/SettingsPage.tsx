@@ -157,6 +157,9 @@ const SETTINGS_SCOPE_SEARCH_TERMS: Record<SettingsSearchScopeId, readonly string
     "poster",
     "session timer",
     "counter",
+    "controller",
+    "gamepad",
+    "big picture",
   ],
   about: ["about", "update", "version", "logs", "cache", "download"],
   thanks: ["thanks", "contributors", "supporters", "sponsors", "community"],
@@ -3284,6 +3287,21 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                         type="checkbox"
                         checked={settings.autoFullScreen}
                         onChange={(e) => handleChange("autoFullScreen", e.target.checked)}
+                      />
+                      <span className="settings-toggle-track" />
+                    </label>
+                  </div>
+
+                  <div className="settings-row">
+                    <label className="settings-label">
+                      {t("settings.interface.controllerMode")}
+                      <span className="settings-hint">{t("settings.interface.controllerModeHint")}</span>
+                    </label>
+                    <label className="settings-toggle">
+                      <input
+                        type="checkbox"
+                        checked={settings.controllerMode}
+                        onChange={(e) => handleChange("controllerMode", e.target.checked)}
                       />
                       <span className="settings-toggle-track" />
                     </label>

@@ -102,6 +102,8 @@ export interface Settings {
   hideServerSelector: boolean;
   /** Desktop UI accent preset */
   appAccentColor: AppAccentColor;
+  /** Use the large-screen controller-oriented shell and library layout */
+  controllerMode: boolean;
   /** Automatically enter fullscreen when launching a stream */
   autoFullScreen: boolean;
   favoriteGameIds: string[];
@@ -187,6 +189,7 @@ const DEFAULT_SETTINGS: Settings = {
   showStatsOnLaunch: false,
   hideServerSelector: false,
   appAccentColor: "green",
+  controllerMode: false,
   autoFullScreen: false,
   favoriteGameIds: [],
   sessionCounterEnabled: false,

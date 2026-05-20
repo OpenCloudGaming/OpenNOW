@@ -285,6 +285,8 @@ export interface Settings {
   hideServerSelector: boolean;
   /** Desktop UI accent preset */
   appAccentColor: AppAccentColor;
+  /** Use the large-screen controller-oriented shell and library layout */
+  controllerMode: boolean;
   autoFullScreen: boolean;
   favoriteGameIds: string[];
   sessionCounterEnabled: boolean;
@@ -523,7 +525,10 @@ export interface GameInfo {
   featureLabels?: string[];
   genres?: string[];
   imageUrl?: string;
+  heroImageUrl?: string;
   screenshotUrl?: string;
+  screenshotUrls?: string[];
+  imageUrlsByType?: Record<string, string[]>;
   playType?: string;
   membershipTierLabel?: string;
   catalogSkuStrings?: GameCatalogSkuStrings;
@@ -1014,6 +1019,7 @@ export interface OpenNowApi {
   removeAccount(userId: string): Promise<void>;
   fetchSubscription(input: SubscriptionFetchRequest): Promise<SubscriptionInfo>;
   fetchMainGames(input: GamesFetchRequest): Promise<GameInfo[]>;
+  fetchFeaturedGames(input: GamesFetchRequest): Promise<GameInfo[]>;
   fetchLibraryGames(input: GamesFetchRequest): Promise<GameInfo[]>;
   browseCatalog(input: CatalogBrowseRequest): Promise<CatalogBrowseResult>;
   fetchPublicGames(): Promise<GameInfo[]>;
