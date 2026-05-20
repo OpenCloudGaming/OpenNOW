@@ -376,6 +376,17 @@ impl NativeStreamerBackend for GstreamerBackend {
         }
     }
 
+    fn update_shortcuts(&mut self, command: CommandEnvelope) -> BackendReply {
+        let Some(shortcuts) = command.shortcuts else {
+            return BackendReply::response(missing_field(&command.id, "shortcuts"));
+        };
+        set_native_shortcut_bindings(&shortcuts);
+        if let Some(context) = self.active_context.as_mut() {
+            context.shortcuts = shortcuts;
+        }
+        BackendReply::response(Response::Ok { id: command.id })
+    }
+
     fn stop(&mut self, command: CommandEnvelope) -> BackendReply {
         self.active_context = None;
         self.pending_remote_ice.clear();

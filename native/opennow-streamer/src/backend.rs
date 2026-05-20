@@ -20,6 +20,7 @@ pub trait NativeStreamerBackend {
     fn send_input(&mut self, command: CommandEnvelope) -> BackendReply;
     fn update_render_surface(&mut self, command: CommandEnvelope) -> BackendReply;
     fn update_bitrate_limit(&mut self, command: CommandEnvelope) -> BackendReply;
+    fn update_shortcuts(&mut self, command: CommandEnvelope) -> BackendReply;
     fn stop(&mut self, command: CommandEnvelope) -> BackendReply;
 }
 
@@ -458,6 +459,11 @@ impl NativeStreamerBackend for StubBackend {
             response: Some(Response::Ok { id: command.id }),
             should_continue: true,
         }
+    }
+
+    fn update_shortcuts(&mut self, command: CommandEnvelope) -> BackendReply {
+        // Stub backend has no native window; accept the command without applying it.
+        BackendReply::response(Response::Ok { id: command.id })
     }
 
     fn stop(&mut self, command: CommandEnvelope) -> BackendReply {

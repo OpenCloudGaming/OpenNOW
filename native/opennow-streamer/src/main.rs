@@ -101,6 +101,9 @@ fn handle_command(
         "bitrate" => {
             return write_reply(backend.update_bitrate_limit(command));
         }
+        "update-shortcuts" => {
+            return write_reply(backend.update_shortcuts(command));
+        }
         "stop" => {
             return write_reply(backend.stop(command));
         }

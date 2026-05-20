@@ -27,6 +27,8 @@ pub struct CommandEnvelope {
     pub max_bitrate_kbps: Option<u32>,
     #[serde(default)]
     pub reason: Option<String>,
+    #[serde(default)]
+    pub shortcuts: Option<NativeStreamerShortcutBindings>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
