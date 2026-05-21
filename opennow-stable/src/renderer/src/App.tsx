@@ -199,7 +199,9 @@ export function App(): JSX.Element {
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedGameId, setSelectedGameId] = useState("");
   const [variantByGameId, setVariantByGameId] = useState<Record<string, string>>({});
-  const [isLoadingGames, setIsLoadingGames] = useState(false);
+  const [isLoadingCatalog, setIsLoadingCatalog] = useState(false);
+  const [isLoadingLibrary, setIsLoadingLibrary] = useState(false);
+  const [isLoadingStorePanels, setIsLoadingStorePanels] = useState(false);
   const [catalogFilterGroups, setCatalogFilterGroups] = useState<CatalogFilterGroup[]>([]);
   const [catalogSortOptions, setCatalogSortOptions] = useState<CatalogSortOption[]>([]);
   const [catalogSelectedSortId, setCatalogSelectedSortId] = useState(() => loadCatalogPreferences().sortId);
@@ -396,6 +398,8 @@ export function App(): JSX.Element {
   const iceDisconnectedRecoveryTimerRef = useRef<number | null>(null);
   const pendingControlledDisconnectsRef = useRef(0);
   const storePanelsLoadedContextRef = useRef("");
+  const storePanelsLoadIdRef = useRef(0);
+  const runtimeDataLoadIdRef = useRef(0);
   const signalingRecoveryRef = useRef<SignalingRecoveryState>({
     attemptCount: 0,
     inFlight: null,
@@ -1287,58 +1291,81 @@ export function App(): JSX.Element {
 
   const loadSessionRuntimeData = useCallback(async (session: AuthSession): Promise<void> => {
     const token = session.tokens.idToken ?? session.tokens.accessToken;
-    const discovered = await window.openNow.getRegions({ token });
-    setRegions(discovered);
+    const streamingBaseUrl = session.provider.streamingServiceUrl;
+    const loadId = ++runtimeDataLoadIdRef.current;
+    const isCurrentLoad = (): boolean => runtimeDataLoadIdRef.current === loadId;
 
-    try {
-      await loadSubscriptionInfo(session);
-    } catch (error) {
+    setIsLoadingCatalog(true);
+    setIsLoadingLibrary(true);
+
+    void window.openNow.getRegions({ token }).then((discovered) => {
+      if (isCurrentLoad()) setRegions(discovered);
+    }).catch((error) => {
+      console.warn("Failed to load regions:", error);
+      if (isCurrentLoad()) setRegions([]);
+    });
+
+    void window.openNow.fetchSubscription({
+      token,
+      providerStreamingBaseUrl: streamingBaseUrl,
+      userId: session.user.userId,
+    }).then((subscription) => {
+      if (isCurrentLoad()) setSubscriptionInfo(subscription);
+    }).catch((error) => {
       console.warn("Failed to load subscription info:", error);
-      setSubscriptionInfo(null);
-    }
+      if (isCurrentLoad()) setSubscriptionInfo(null);
+    });
 
-    try {
-      const [catalogResult, libGames, featured] = await Promise.all([
-        window.openNow.browseCatalog({
-          token,
-          providerStreamingBaseUrl: session.provider.streamingServiceUrl,
-          searchQuery: "",
-          sortId: catalogSelectedSortId,
-          filterIds: catalogSelectedFilterIds,
-        }),
-        window.openNow.fetchLibraryGames({
-          token,
-          providerStreamingBaseUrl: session.provider.streamingServiceUrl,
-        }),
-        window.openNow.fetchFeaturedGames({
-          token,
-          providerStreamingBaseUrl: session.provider.streamingServiceUrl,
-        }).catch((error) => {
-          console.warn("Featured games load failed:", error);
-          return [] as GameInfo[];
-        }),
-      ]);
+    void window.openNow.browseCatalog({
+      token,
+      providerStreamingBaseUrl: streamingBaseUrl,
+      searchQuery: "",
+      sortId: catalogSelectedSortId,
+      filterIds: catalogSelectedFilterIds,
+    }).then((catalogResult) => {
+      if (!isCurrentLoad()) return;
       applyCatalogBrowseResult(catalogResult);
-      setLibraryGames(libGames);
-      setFeaturedGames(featured);
-      applyVariantSelections(libGames);
-    } catch (catalogError) {
-      console.error("Initialization games load failed:", catalogError);
+    }).catch((error) => {
+      console.error("Catalog load failed:", error);
+      if (!isCurrentLoad()) return;
       setGames([]);
-      setFeaturedGames([]);
-      setStorePanels([]);
-      setLibraryGames([]);
       setCatalogFilterGroups([]);
       setCatalogSortOptions([]);
       setCatalogTotalCount(0);
       setCatalogSupportedCount(0);
-    }
+    }).finally(() => {
+      if (isCurrentLoad()) setIsLoadingCatalog(false);
+    });
+
+    void window.openNow.fetchLibraryGames({
+      token,
+      providerStreamingBaseUrl: streamingBaseUrl,
+    }).then((libGames) => {
+      if (!isCurrentLoad()) return;
+      setLibraryGames(libGames);
+      applyVariantSelections(libGames);
+    }).catch((error) => {
+      console.error("Library load failed:", error);
+      if (!isCurrentLoad()) return;
+      setLibraryGames([]);
+    }).finally(() => {
+      if (isCurrentLoad()) setIsLoadingLibrary(false);
+    });
+
+    void window.openNow.fetchFeaturedGames({
+      token,
+      providerStreamingBaseUrl: streamingBaseUrl,
+    }).then((featured) => {
+      if (isCurrentLoad()) setFeaturedGames(featured);
+    }).catch((error) => {
+      console.warn("Featured games load failed:", error);
+      if (isCurrentLoad()) setFeaturedGames([]);
+    });
   }, [
     applyCatalogBrowseResult,
     applyVariantSelections,
     catalogSelectedFilterIds,
     catalogSelectedSortId,
-    loadSubscriptionInfo,
   ]);
 
   // Initialize app
@@ -1412,6 +1439,8 @@ export function App(): JSX.Element {
         if (persistedSession) {
           await loadSessionRuntimeData(persistedSession);
         } else {
+          runtimeDataLoadIdRef.current += 1;
+          storePanelsLoadIdRef.current += 1;
           setRegions([]);
           setGames([]);
           setLibraryGames([]);
@@ -1420,6 +1449,9 @@ export function App(): JSX.Element {
           setCatalogSortOptions([]);
           setCatalogTotalCount(0);
           setCatalogSupportedCount(0);
+          setIsLoadingCatalog(false);
+          setIsLoadingLibrary(false);
+          setIsLoadingStorePanels(false);
         }
 
         setIsInitializing(false);
@@ -1471,6 +1503,8 @@ export function App(): JSX.Element {
           await loadSessionRuntimeData(sessionResult.session);
           await refreshNavbarActiveSession(sessionResult.session);
         } else {
+          runtimeDataLoadIdRef.current += 1;
+          storePanelsLoadIdRef.current += 1;
           setRegions([]);
           setGames([]);
           setLibraryGames([]);
@@ -1480,6 +1514,9 @@ export function App(): JSX.Element {
           setCatalogSortOptions([]);
           setCatalogTotalCount(0);
           setCatalogSupportedCount(0);
+          setIsLoadingCatalog(false);
+          setIsLoadingLibrary(false);
+          setIsLoadingStorePanels(false);
         }
       } catch (recoveryError) {
         console.warn("Failed to recover account state after switch failure:", recoveryError);
@@ -1511,6 +1548,8 @@ export function App(): JSX.Element {
       await refreshNavbarActiveSession(sessionResult.session);
       return;
     }
+    runtimeDataLoadIdRef.current += 1;
+    storePanelsLoadIdRef.current += 1;
     setRegions([]);
     setGames([]);
     setFeaturedGames([]);
@@ -1522,6 +1561,9 @@ export function App(): JSX.Element {
     setCatalogSortOptions([]);
     setCatalogTotalCount(0);
     setCatalogSupportedCount(0);
+    setIsLoadingCatalog(false);
+    setIsLoadingLibrary(false);
+    setIsLoadingStorePanels(false);
   }, [accountToRemove, loadSessionRuntimeData, refreshNavbarActiveSession]);
 
   const handleAddAccount = useCallback(() => {
@@ -1531,6 +1573,8 @@ export function App(): JSX.Element {
 
   const confirmLogout = useCallback(async () => {
     setLogoutConfirmOpen(false);
+    runtimeDataLoadIdRef.current += 1;
+    storePanelsLoadIdRef.current += 1;
     await window.openNow.logoutAll();
     setAuthSession(null);
     setSavedAccounts([]);
@@ -1550,6 +1594,9 @@ export function App(): JSX.Element {
     setCatalogTotalCount(0);
     setCatalogSupportedCount(0);
     setSelectedGameId("");
+    setIsLoadingCatalog(false);
+    setIsLoadingLibrary(false);
+    setIsLoadingStorePanels(false);
   }, [resetLaunchRuntime]);
 
   // Logout handler
@@ -1559,7 +1606,8 @@ export function App(): JSX.Element {
 
   // Load games handler
   const loadGames = useCallback(async (targetSource: "main" | "library") => {
-    setIsLoadingGames(true);
+    const setLoading = targetSource === "main" ? setIsLoadingCatalog : setIsLoadingLibrary;
+    setLoading(true);
     try {
       const token = authSession?.tokens.idToken ?? authSession?.tokens.accessToken;
       const baseUrl = effectiveStreamingBaseUrl;
@@ -1568,23 +1616,21 @@ export function App(): JSX.Element {
       }
 
       if (targetSource === "main") {
-        const [catalogResult, featured] = await Promise.all([
-          window.openNow.browseCatalog({
-            token,
-            providerStreamingBaseUrl: baseUrl,
-            searchQuery,
-            sortId: catalogSelectedSortId,
-            filterIds: catalogSelectedFilterIds,
-          }),
-          featuredGames.length === 0
-            ? window.openNow.fetchFeaturedGames({ token, providerStreamingBaseUrl: baseUrl }).catch((error) => {
-                console.warn("Featured games refresh failed:", error);
-                return [] as GameInfo[];
-              })
-            : Promise.resolve(featuredGames),
-        ]);
+        const catalogResult = await window.openNow.browseCatalog({
+          token,
+          providerStreamingBaseUrl: baseUrl,
+          searchQuery,
+          sortId: catalogSelectedSortId,
+          filterIds: catalogSelectedFilterIds,
+        });
         applyCatalogBrowseResult(catalogResult);
-        if (featured.length > 0) setFeaturedGames(featured);
+        if (featuredGames.length === 0) {
+          void window.openNow.fetchFeaturedGames({ token, providerStreamingBaseUrl: baseUrl }).then((featured) => {
+            if (featured.length > 0) setFeaturedGames(featured);
+          }).catch((error) => {
+            console.warn("Featured games refresh failed:", error);
+          });
+        }
         return;
       }
 
@@ -1595,7 +1641,7 @@ export function App(): JSX.Element {
     } catch (error) {
       console.error("Failed to load games:", error);
     } finally {
-      setIsLoadingGames(false);
+      setLoading(false);
     }
   }, [applyCatalogBrowseResult, applyVariantSelections, authSession, effectiveStreamingBaseUrl, featuredGames, searchQuery, catalogFilterKey, catalogSelectedSortId]);
 
@@ -1609,12 +1655,15 @@ export function App(): JSX.Element {
     const contextKey = `${session.user.userId}\0${effectiveStreamingBaseUrl}`;
     if (storePanelsLoadedContextRef.current === contextKey) return;
 
-    setIsLoadingGames(true);
+    const loadId = ++storePanelsLoadIdRef.current;
+    const isCurrentLoad = (): boolean => storePanelsLoadIdRef.current === loadId;
+    setIsLoadingStorePanels(true);
     try {
       const panels = await window.openNow.fetchStorePanels({
         token,
         providerStreamingBaseUrl: effectiveStreamingBaseUrl,
       });
+      if (!isCurrentLoad()) return;
       const panelGames = flattenStorePanelGames(panels);
       storePanelsLoadedContextRef.current = contextKey;
       setStorePanels(panels);
@@ -1627,11 +1676,12 @@ export function App(): JSX.Element {
         return next;
       });
     } catch (error) {
+      if (!isCurrentLoad()) return;
       console.error("Failed to load Store panels:", error);
       storePanelsLoadedContextRef.current = "";
       setStorePanels([]);
     } finally {
-      setIsLoadingGames(false);
+      if (isCurrentLoad()) setIsLoadingStorePanels(false);
     }
   }, [authSession, effectiveStreamingBaseUrl]);
 
@@ -3460,7 +3510,7 @@ export function App(): JSX.Element {
             searchQuery={searchQuery}
             onSearchChange={setSearchQuery}
             onPlayGame={handleInitiatePlay}
-            isLoading={isLoadingGames}
+            isLoading={settings.controllerMode ? isLoadingStorePanels : isLoadingCatalog}
             selectedGameId={selectedGameId}
             onSelectGame={setSelectedGameId}
             selectedVariantByGameId={variantByGameId}
@@ -3491,7 +3541,7 @@ export function App(): JSX.Element {
             searchQuery={searchQuery}
             onSearchChange={setSearchQuery}
             onPlayGame={handleInitiatePlay}
-            isLoading={isLoadingGames}
+            isLoading={isLoadingLibrary}
             selectedGameId={selectedGameId}
             onSelectGame={setSelectedGameId}
             selectedVariantByGameId={variantByGameId}
