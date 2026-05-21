@@ -2769,6 +2769,31 @@ export function App(): JSX.Element {
     });
   }, []);
 
+  const handleBuyGame = useCallback((game: GameInfo, selectedVariantId?: string): void => {
+    const selectedVariant = getSelectedVariant(game, selectedVariantId ?? defaultVariantId(game));
+    const localStoreUrl = selectedVariant?.storeUrl
+      ?? game.variants.find((variant) => variant.storeUrl)?.storeUrl;
+    if (localStoreUrl) {
+      handleOpenStoreUrl(localStoreUrl);
+      return;
+    }
+
+    const token = authSession?.tokens.idToken ?? authSession?.tokens.accessToken;
+    if (!token) return;
+
+    void window.openNow.resolveStoreUrl({
+      token,
+      providerStreamingBaseUrl: effectiveStreamingBaseUrl,
+      appIdOrUuid: game.uuid ?? game.id,
+      variantId: selectedVariant?.id ?? selectedVariantId,
+      store: selectedVariant?.store,
+    }).then((storeUrl) => {
+      if (storeUrl) handleOpenStoreUrl(storeUrl);
+    }).catch((error) => {
+      console.error("Failed to resolve Store URL:", error);
+    });
+  }, [authSession, effectiveStreamingBaseUrl, handleOpenStoreUrl]);
+
   useEffect(() => {
     if (!logoutConfirmOpen && !removeAccountConfirmOpen) return;
 
@@ -3454,7 +3479,7 @@ export function App(): JSX.Element {
             storePanels={storePanels}
             storeHeroGames={featuredGames}
             activeSessionAppIds={navbarActiveSession ? [navbarActiveSession.appId] : []}
-            onBuyGame={handleOpenStoreUrl}
+            onBuyGame={handleBuyGame}
             onPreviousControllerPage={() => navigateControllerPage(-1)}
             onNextControllerPage={() => navigateControllerPage(1)}
           />

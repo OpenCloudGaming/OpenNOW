@@ -49,7 +49,7 @@ export interface HomePageProps {
   storePanels?: GamePanelResult[];
   storeHeroGames?: GameInfo[];
   activeSessionAppIds?: number[];
-  onBuyGame?: (url: string) => void;
+  onBuyGame?: (game: GameInfo, selectedVariantId?: string) => void;
   onPreviousControllerPage?: () => void;
   onNextControllerPage?: () => void;
 }
@@ -168,7 +168,6 @@ function ControllerStoreTile({
   const storeName = getPrimaryStoreName(game, selectedVariantId);
   const StoreIcon = getStoreIconComponent(selectedVariant?.store ?? storeName);
   const needsPurchase = gameNeedsPurchase(game, selectedVariantId);
-  const purchaseUrl = getPurchaseUrl(game, selectedVariantId);
 
   return (
     <div
@@ -200,7 +199,6 @@ function ControllerStoreTile({
       <button
         type="button"
         className="controller-store-tile-action"
-        disabled={needsPurchase && !purchaseUrl}
         onClick={(event) => {
           event.stopPropagation();
           onFocus();
@@ -286,8 +284,7 @@ export function HomePage({
   const launchGame = (game: GameInfo): void => {
     const selectedVariantId = selectedVariantByGameId[game.id];
     if (gameNeedsPurchase(game, selectedVariantId)) {
-      const purchaseUrl = getPurchaseUrl(game, selectedVariantId);
-      if (purchaseUrl) onBuyGame?.(purchaseUrl);
+      onBuyGame?.(game, selectedVariantId);
       return;
     }
     onPlayGame(game);
@@ -461,7 +458,6 @@ export function HomePage({
     const heroImageUrl = heroGame ? getControllerStoreImageCandidates(heroGame, true)[0] : undefined;
     const heroLogoUrl = heroGame ? getControllerStoreLogoUrl(heroGame) : undefined;
     const heroSelectedVariantId = heroGame ? selectedVariantByGameId[heroGame.id] : undefined;
-    const heroPurchaseUrl = heroGame ? getPurchaseUrl(heroGame, heroSelectedVariantId) : undefined;
     const heroDotCount = Math.min(Math.max(controllerHeroGames.length, 1), 6);
     const activeHeroDotIndex = controllerHeroGames.length > 0 ? Math.min(controllerHeroIndex % heroDotCount, heroDotCount - 1) : 0;
 
@@ -488,7 +484,7 @@ export function HomePage({
                   {heroLogoUrl ? <img src={heroLogoUrl} alt={heroGame.title} className="controller-hero-logo" /> : <h1>{heroGame.title}</h1>}
                   <p className="controller-store-hero-meta">{getPrimaryStoreName(heroGame, heroSelectedVariantId)} / {getPrimaryGenre(heroGame)}</p>
                   <div className="controller-hero-actions">
-                    <button type="button" className="controller-primary-action" disabled={!heroPurchaseUrl} onClick={() => { if (heroPurchaseUrl) onBuyGame?.(heroPurchaseUrl); }}>
+                    <button type="button" className="controller-primary-action" onClick={() => onBuyGame?.(heroGame, heroSelectedVariantId)}>
                       {t("app.actions.buy")}
                     </button>
                     <span className="controller-store-hero-pill">{getPrimaryStoreName(heroGame, heroSelectedVariantId)}</span>

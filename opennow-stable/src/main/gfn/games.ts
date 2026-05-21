@@ -9,7 +9,7 @@ import type {
   GameVariant,
 } from "@shared/gfn";
 import { createHash } from "node:crypto";
-import { isOwnedLibraryStatus } from "@shared/gfn";
+import { isOwnedLibraryStatus, normalizeGameStore } from "@shared/gfn";
 import { cacheManager } from "../services/cacheManager";
 import { fetchPublicGamesUncached, mergePublicGameVariants } from "./publicGames";
 import {
@@ -1068,6 +1068,35 @@ export async function resolveLaunchAppId(
   }
 
   return resolveAppData(app).numericAppId ?? null;
+}
+
+export async function resolveStoreUrl(
+  token: string,
+  appIdOrUuid: string,
+  providerStreamingBaseUrl?: string,
+  options: { variantId?: string; store?: string } = {},
+): Promise<string | null> {
+  const vpcId = await getVpcId(token, providerStreamingBaseUrl);
+  const payload = await fetchAppMetaData(token, [appIdOrUuid], vpcId);
+
+  if (payload.errors?.length) {
+    throw new Error(payload.errors.map((error) => error.message).join(", "));
+  }
+
+  const app = payload.data?.apps.items?.[0];
+  const variants = app?.variants ?? [];
+  const selectedVariant = options.variantId
+    ? variants.find((variant) => variant.id === options.variantId)
+    : undefined;
+  if (selectedVariant?.storeUrl) return selectedVariant.storeUrl;
+
+  const storeKey = options.store ? normalizeGameStore(options.store) : undefined;
+  const matchingStoreVariant = storeKey
+    ? variants.find((variant) => normalizeGameStore(variant.appStore) === storeKey && variant.storeUrl)
+    : undefined;
+  if (matchingStoreVariant?.storeUrl) return matchingStoreVariant.storeUrl;
+
+  return variants.find((variant) => variant.storeUrl)?.storeUrl ?? null;
 }
 
 export {

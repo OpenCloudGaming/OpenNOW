@@ -17,6 +17,7 @@ export const IPC_CHANNELS = {
   GAMES_BROWSE_CATALOG: "games:browse-catalog",
   GAMES_FETCH_PUBLIC: "games:fetch-public",
   GAMES_RESOLVE_LAUNCH_ID: "games:resolve-launch-id",
+  GAMES_RESOLVE_STORE_URL: "games:resolve-store-url",
   CREATE_SESSION: "gfn:create-session",
   POLL_SESSION: "gfn:poll-session",
   REPORT_SESSION_AD: "gfn:report-session-ad",

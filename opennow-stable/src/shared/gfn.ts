@@ -484,6 +484,14 @@ export interface ResolveLaunchIdRequest {
   appIdOrUuid: string;
 }
 
+export interface ResolveStoreUrlRequest {
+  token?: string;
+  providerStreamingBaseUrl?: string;
+  appIdOrUuid: string;
+  variantId?: string;
+  store?: string;
+}
+
 export interface SubscriptionFetchRequest {
   token?: string;
   providerStreamingBaseUrl?: string;
@@ -1045,6 +1053,7 @@ export interface OpenNowApi {
   browseCatalog(input: CatalogBrowseRequest): Promise<CatalogBrowseResult>;
   fetchPublicGames(): Promise<GameInfo[]>;
   resolveLaunchAppId(input: ResolveLaunchIdRequest): Promise<string | null>;
+  resolveStoreUrl(input: ResolveStoreUrlRequest): Promise<string | null>;
   createSession(input: SessionCreateRequest): Promise<SessionInfo>;
   pollSession(input: SessionPollRequest): Promise<SessionInfo>;
   reportSessionAd(input: SessionAdReportRequest): Promise<SessionInfo>;

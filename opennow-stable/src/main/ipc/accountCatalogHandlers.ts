@@ -7,6 +7,7 @@ import type {
   GamesFetchRequest,
   RegionsFetchRequest,
   ResolveLaunchIdRequest,
+  ResolveStoreUrlRequest,
   SubscriptionFetchRequest,
 } from "@shared/gfn";
 import type { AuthService } from "../gfn/auth";
@@ -18,6 +19,7 @@ import {
   fetchPublicGames,
   fetchStorePanels,
   resolveLaunchAppId,
+  resolveStoreUrl,
 } from "../gfn/games";
 import { fetchSubscription, fetchDynamicRegions } from "../gfn/subscription";
 
@@ -181,6 +183,21 @@ export function registerAccountCatalogIpcHandlers(
         payload?.providerStreamingBaseUrl ??
         authService.getSelectedProvider().streamingServiceUrl;
       return resolveLaunchAppId(token, payload.appIdOrUuid, streamingBaseUrl);
+    },
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.GAMES_RESOLVE_STORE_URL,
+    async (_event, payload: ResolveStoreUrlRequest) => {
+      const token = await resolveJwt(payload?.token);
+      const streamingBaseUrl =
+        payload?.providerStreamingBaseUrl ??
+        authService.getSelectedProvider().streamingServiceUrl;
+      refreshScheduler.updateAuthContext(token, streamingBaseUrl);
+      return resolveStoreUrl(token, payload.appIdOrUuid, streamingBaseUrl, {
+        variantId: payload.variantId,
+        store: payload.store,
+      });
     },
   );
 }

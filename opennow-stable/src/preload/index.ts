@@ -8,6 +8,7 @@ import type {
   GamesFetchRequest,
   CatalogBrowseRequest,
   ResolveLaunchIdRequest,
+  ResolveStoreUrlRequest,
   RegionsFetchRequest,
   MainToRendererSignalingEvent,
   OpenNowApi,
@@ -83,6 +84,8 @@ const api: OpenNowApi = {
   fetchPublicGames: () => ipcRenderer.invoke(IPC_CHANNELS.GAMES_FETCH_PUBLIC),
   resolveLaunchAppId: (input: ResolveLaunchIdRequest) =>
     ipcRenderer.invoke(IPC_CHANNELS.GAMES_RESOLVE_LAUNCH_ID, input),
+  resolveStoreUrl: (input: ResolveStoreUrlRequest) =>
+    ipcRenderer.invoke(IPC_CHANNELS.GAMES_RESOLVE_STORE_URL, input),
   createSession: (input: SessionCreateRequest) => invokeSessionChannel(IPC_CHANNELS.CREATE_SESSION, input),
   pollSession: (input: SessionPollRequest) => invokeSessionChannel(IPC_CHANNELS.POLL_SESSION, input),
   reportSessionAd: (input: SessionAdReportRequest) => invokeSessionChannel(IPC_CHANNELS.REPORT_SESSION_AD, input),
