@@ -1,4 +1,4 @@
-import { Library, Search, Clock, Gamepad2, Loader2, ArrowUpDown, Info, MoreHorizontal, Menu } from "lucide-react";
+import { Library, Search, Clock, Gamepad2, Loader2, ArrowUpDown, MoreHorizontal, Menu } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { JSX } from "react";
 import type { CatalogSortOption, GameInfo } from "@shared/gfn";
@@ -29,6 +29,7 @@ export interface LibraryPageProps {
   searchQuery: string;
   onSearchChange: (query: string) => void;
   onPlayGame: (game: GameInfo) => void;
+  onBuyGame?: (game: GameInfo, selectedVariantId?: string) => void;
   isLoading: boolean;
   selectedGameId: string;
   onSelectGame: (id: string) => void;
@@ -86,6 +87,13 @@ function getGameStoreSummary(game: GameInfo, fallback: string): string {
   if (stores.length === 0) return fallback;
   const visible = stores.slice(0, 3).join(", ");
   return stores.length > 3 ? `${visible} +${stores.length - 3}` : visible;
+}
+
+function getSelectedVariantStoreLabel(game: GameInfo, selectedVariantId: string | undefined, fallback: string): string {
+  const selectedVariant = game.variants.find((variant) => variant.id === selectedVariantId)
+    ?? game.variants[game.selectedVariantIndex]
+    ?? game.variants[0];
+  return selectedVariant?.store ? getStoreDisplayName(selectedVariant.store) : fallback;
 }
 
 function getPlayerSummary(game: GameInfo): string | null {
@@ -172,6 +180,7 @@ export function LibraryPage({
   searchQuery,
   onSearchChange,
   onPlayGame,
+  onBuyGame,
   isLoading,
   selectedGameId,
   onSelectGame,
@@ -276,12 +285,16 @@ export function LibraryPage({
     });
   };
 
+  const cycleGameVariant = (game: GameInfo | undefined): void => {
+    if (!game || game.variants.length <= 1) return;
+    const activeVariantId = selectedVariantByGameId[game.id];
+    const activeIndex = Math.max(0, game.variants.findIndex((variant) => variant.id === activeVariantId));
+    const nextVariant = game.variants[(activeIndex + 1) % game.variants.length];
+    if (nextVariant) onSelectGameVariant(game.id, nextVariant.id);
+  };
+
   const cycleSelectedVariant = (): void => {
-    if (!selectedControllerGame || selectedControllerGame.variants.length <= 1) return;
-    const activeVariantId = selectedVariantByGameId[selectedControllerGame.id];
-    const activeIndex = Math.max(0, selectedControllerGame.variants.findIndex((variant) => variant.id === activeVariantId));
-    const nextVariant = selectedControllerGame.variants[(activeIndex + 1) % selectedControllerGame.variants.length];
-    if (nextVariant) onSelectGameVariant(selectedControllerGame.id, nextVariant.id);
+    cycleGameVariant(selectedControllerGame);
   };
 
   const cycleControllerStoreFilter = (): void => {
@@ -506,7 +519,10 @@ export function LibraryPage({
     const featuredGame = controllerFeaturedGames[controllerHeroIndex] ?? selectedControllerGame;
     const heroImageUrl = featuredGame ? getControllerHeroBackgroundCandidates(featuredGame)[0] : undefined;
     const heroLogoUrl = featuredGame ? getControllerHeroLogoUrl(featuredGame) : undefined;
+    const heroSelectedVariantId = featuredGame ? selectedVariantByGameId[featuredGame.id] : undefined;
+    const heroStoreLabel = featuredGame ? getSelectedVariantStoreLabel(featuredGame, selectedVariantByGameId[featuredGame.id], t("library.storeNotListed")) : "";
     const featuredGameHasActiveSession = featuredGame ? gameMatchesActiveSession(featuredGame, activeSessionAppIds) : false;
+    const heroShouldBuy = Boolean(featuredGame && !featuredGameHasActiveSession && !featuredGame.isInLibrary);
     const dotCount = Math.min(Math.max(controllerFeaturedGames.length, 1), 6);
     const activeDotIndex = dotCount > 0 && controllerFeaturedGames.length > 0 ? Math.min(controllerHeroIndex, dotCount - 1) : 0;
 
@@ -539,14 +555,21 @@ export function LibraryPage({
                   <h1>{featuredGame.title}</h1>
                 )}
                 <div className="controller-hero-actions">
-                  <button type="button" className="controller-primary-action" onClick={() => onPlayGame(featuredGame)}>
-                    {featuredGameHasActiveSession ? t("app.actions.resume") : featuredGame.isInLibrary ? t("app.actions.play") : t("app.actions.buy")}
+                  <button
+                    type="button"
+                    className="controller-primary-action"
+                    onClick={() => {
+                      if (heroShouldBuy) {
+                        onBuyGame?.(featuredGame, heroSelectedVariantId);
+                        return;
+                      }
+                      onPlayGame(featuredGame);
+                    }}
+                  >
+                    {featuredGameHasActiveSession ? t("app.actions.resume") : heroShouldBuy ? t("app.actions.buy") : t("app.actions.play")}
                   </button>
-                  <button type="button" className="controller-secondary-action" onClick={() => setDetailsGame(featuredGame)}>
-                    <Info size={22} />
-                    <span>{t("library.moreInfo")}</span>
-                  </button>
-                  <button type="button" className="controller-icon-action" aria-label={t("library.moreOptions")} onClick={cycleSelectedVariant}>
+                  {heroStoreLabel && <span className="controller-hero-variant-pill">{heroStoreLabel}</span>}
+                  <button type="button" className="controller-icon-action" aria-label={t("library.moreOptions")} onClick={() => cycleGameVariant(featuredGame)}>
                     <MoreHorizontal size={30} />
                   </button>
                 </div>

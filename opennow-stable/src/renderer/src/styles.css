@@ -2725,6 +2725,22 @@ body,
   height: clamp(18px, 1.08vw, 24px);
 }
 
+.controller-hero-variant-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: clamp(38px, 3.2vh, 56px);
+  min-width: clamp(104px, 6.2vw, 156px);
+  padding: 0 18px;
+  border-radius: clamp(10px, 0.72vw, 16px);
+  border: 2px solid rgba(255, 255, 255, 0.08);
+  background: rgba(29, 35, 39, 0.92);
+  color: rgba(255, 255, 255, 0.82);
+  font-size: clamp(0.82rem, 0.68vw, 1.02rem);
+  font-weight: 850;
+  white-space: nowrap;
+}
+
 .controller-primary-action:hover,
 .controller-secondary-action:hover,
 .controller-icon-action:hover {
@@ -2758,6 +2774,7 @@ body,
   flex: 1;
   display: flex;
   flex-direction: column;
+  margin-top: clamp(28px, 3.4vh, 64px);
 }
 
 .controller-library-heading {
@@ -2794,6 +2811,7 @@ body,
 
 .controller-library-strip {
   overflow: visible;
+  margin-top: clamp(28px, 3.4vh, 64px);
 }
 
 .controller-game-row::-webkit-scrollbar {

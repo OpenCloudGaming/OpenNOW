@@ -3503,6 +3503,7 @@ export function App(): JSX.Element {
             controllerMode={settings.controllerMode}
             featuredGames={featuredGames.length > 0 ? featuredGames : games}
             activeSessionAppIds={navbarActiveSession ? [navbarActiveSession.appId] : []}
+            onBuyGame={handleBuyGame}
             onPreviousControllerPage={() => navigateControllerPage(-1)}
             onNextControllerPage={() => navigateControllerPage(1)}
           />

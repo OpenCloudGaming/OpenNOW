@@ -1,6 +1,7 @@
 import { Search, LayoutGrid, Loader2, ArrowUpDown, Filter, ChevronDown, Gamepad2, Menu } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { JSX } from "react";
+import { isOwnedLibraryStatus } from "@shared/gfn";
 import type { CatalogFilterGroup, CatalogSortOption, GameInfo, GamePanelResult, GameVariant } from "@shared/gfn";
 import { GameCard, getStoreDisplayName, getStoreIconComponent } from "./GameCard";
 import { useTranslation } from "../i18n";
@@ -98,8 +99,8 @@ function getSelectedVariant(game: GameInfo, selectedVariantId?: string): GameVar
     ?? game.variants[0];
 }
 
-function storeVariantNeedsPurchase(variant: GameVariant | undefined): boolean {
-  return variant?.libraryStatus === "NOT_OWNED";
+function storeVariantIsOwned(variant: GameVariant | undefined): boolean {
+  return Boolean(variant?.inLibrary || variant?.librarySelected || isOwnedLibraryStatus(variant?.libraryStatus));
 }
 
 function getVariantDisplayName(variant: GameVariant | undefined, fallback: string): string {
@@ -109,14 +110,13 @@ function getVariantDisplayName(variant: GameVariant | undefined, fallback: strin
 function getPurchaseUrl(game: GameInfo, selectedVariantId?: string): string | undefined {
   const selectedVariant = getSelectedVariant(game, selectedVariantId);
   if (selectedVariant?.storeUrl) return selectedVariant.storeUrl;
-  return game.variants.find((variant) => storeVariantNeedsPurchase(variant) && variant.storeUrl)?.storeUrl
+  return game.variants.find((variant) => !storeVariantIsOwned(variant) && variant.storeUrl)?.storeUrl
     ?? game.variants.find((variant) => variant.storeUrl)?.storeUrl;
 }
 
 function gameNeedsPurchase(game: GameInfo, selectedVariantId?: string): boolean {
   const selectedVariant = getSelectedVariant(game, selectedVariantId);
-  if (selectedVariant) return storeVariantNeedsPurchase(selectedVariant);
-  return game.variants.some(storeVariantNeedsPurchase);
+  return !storeVariantIsOwned(selectedVariant);
 }
 
 function getNextVariantId(game: GameInfo, selectedVariantId?: string): string | undefined {
@@ -154,13 +154,15 @@ function ControllerStoreTile({
   selectedVariantId,
   focused,
   onFocus,
-  onAction,
+  onBuy,
+  onPlay,
 }: {
   game: GameInfo;
   selectedVariantId?: string;
   focused: boolean;
   onFocus: () => void;
-  onAction: () => void;
+  onBuy: () => void;
+  onPlay: () => void;
 }): JSX.Element {
   const { t } = useTranslation();
   const imageUrl = getControllerStoreImageCandidates(game, false)[0];
@@ -175,7 +177,13 @@ function ControllerStoreTile({
       tabIndex={0}
       className={`controller-store-tile${focused ? " focused" : ""}`}
       onClick={onFocus}
-      onDoubleClick={onAction}
+      onDoubleClick={() => {
+        if (needsPurchase) {
+          onBuy();
+          return;
+        }
+        onPlay();
+      }}
       aria-label={game.title}
     >
       <span className="controller-store-tile-art">
@@ -202,7 +210,11 @@ function ControllerStoreTile({
         onClick={(event) => {
           event.stopPropagation();
           onFocus();
-          onAction();
+          if (needsPurchase) {
+            onBuy();
+            return;
+          }
+          onPlay();
         }}
       >
         {needsPurchase ? t("app.actions.buy") : t("app.actions.play")}
@@ -526,7 +538,8 @@ export function HomePage({
                               focusTile(rowIndex, columnIndex);
                               if (game.variants.length > 0) onSelectGameVariant(game.id, selectedVariantByGameId[game.id] ?? game.variants[game.selectedVariantIndex]?.id ?? game.variants[0].id);
                             }}
-                            onAction={() => launchGame(game)}
+                            onBuy={() => onBuyGame?.(game, selectedVariantByGameId[game.id])}
+                            onPlay={() => onPlayGame(game)}
                           />
                         </div>
                       );
