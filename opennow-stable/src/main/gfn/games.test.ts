@@ -111,7 +111,7 @@ test("preserves public Steam hero fallback when merging supplemental variants", 
     ],
   );
 
-  assert.equal(game?.heroImageUrl, "https://cdn.cloudflare.steamstatic.com/steam/apps/456/header.jpg");
+  assert.equal(game?.heroImageUrl, "https://cdn.cloudflare.steamstatic.com/steam/apps/456/library_hero.jpg");
 });
 
 test("merges same-id public launcher variants when the store is missing from catalog data", () => {

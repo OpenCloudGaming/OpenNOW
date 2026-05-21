@@ -16,6 +16,7 @@ import {
   fetchLibraryGames,
   fetchMainGames,
   fetchPublicGames,
+  fetchStorePanels,
   resolveLaunchAppId,
 } from "../gfn/games";
 import { fetchSubscription, fetchDynamicRegions } from "../gfn/subscription";
@@ -125,6 +126,18 @@ export function registerAccountCatalogIpcHandlers(
         authService.getSelectedProvider().streamingServiceUrl;
       refreshScheduler.updateAuthContext(token, streamingBaseUrl);
       return fetchFeaturedGames(token, streamingBaseUrl);
+    },
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.GAMES_FETCH_STORE_PANELS,
+    async (_event, payload: GamesFetchRequest) => {
+      const token = await resolveJwt(payload?.token);
+      const streamingBaseUrl =
+        payload?.providerStreamingBaseUrl ??
+        authService.getSelectedProvider().streamingServiceUrl;
+      refreshScheduler.updateAuthContext(token, streamingBaseUrl);
+      return fetchStorePanels(token, streamingBaseUrl);
     },
   );
 

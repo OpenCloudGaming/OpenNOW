@@ -47,19 +47,20 @@ function isNumericId(value: string | undefined): value is string {
 }
 
 export function publicGameToGameInfo(item: RawPublicGame): GameInfo {
-  const id = String(item.id ?? item.title ?? "unknown");
+  const sourceId = String(item.id ?? item.title ?? "unknown");
   const steamAppId = item.steamUrl?.split("/app/")[1]?.split("/")[0];
+  const id = steamAppId || sourceId;
   const imageUrl = steamAppId
-    ? `https://cdn.cloudflare.steamstatic.com/steam/apps/${steamAppId}/library_600x900.jpg`
+    ? `https://cdn.cloudflare.steamstatic.com/steam/apps/${steamAppId}/header.jpg`
     : undefined;
   const heroImageUrl = steamAppId
-    ? `https://cdn.cloudflare.steamstatic.com/steam/apps/${steamAppId}/header.jpg`
+    ? `https://cdn.cloudflare.steamstatic.com/steam/apps/${steamAppId}/library_hero.jpg`
     : undefined;
   const store = inferPublicGameStore(item);
 
   return {
     id,
-    uuid: id,
+    uuid: sourceId,
     launchAppId: isNumericId(id) ? id : undefined,
     title: item.title ?? id,
     searchText: [item.title ?? id, item.store, item.publisher]

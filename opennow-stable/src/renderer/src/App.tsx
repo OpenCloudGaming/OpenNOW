@@ -10,6 +10,7 @@ import type {
   CatalogSortOption,
   ExistingSessionStrategy,
   GameInfo,
+  GamePanelResult,
   LoginProvider,
   MainToRendererSignalingEvent,
   SessionInfo,
@@ -128,6 +129,31 @@ const ICE_DISCONNECTED_RECOVERY_GRACE_MS = 7000;
 
 const isMac = navigator.platform.toLowerCase().includes("mac");
 
+function gameIdentityMatches(left: GameInfo, right: GameInfo): boolean {
+  if (left.uuid && right.uuid && left.uuid === right.uuid) return true;
+  if (left.id && right.id && left.id === right.id) return true;
+  if (left.launchAppId && right.launchAppId && left.launchAppId === right.launchAppId) return true;
+  return left.title.trim().length > 0 && left.title.localeCompare(right.title, undefined, { sensitivity: "accent" }) === 0;
+}
+
+function getLibrarySelectedVariantId(storeGame: GameInfo, libraryGames: GameInfo[]): string | undefined {
+  const libraryGame = libraryGames.find((candidate) => gameIdentityMatches(storeGame, candidate));
+  const libraryVariant = libraryGame?.variants.find((variant) => variant.librarySelected)
+    ?? libraryGame?.variants.find((variant) => variant.inLibrary)
+    ?? libraryGame?.variants[0];
+  if (!libraryVariant) return undefined;
+
+  const sameIdVariant = storeGame.variants.find((variant) => variant.id === libraryVariant.id);
+  if (sameIdVariant) return sameIdVariant.id;
+
+  const sameStoreVariant = storeGame.variants.find((variant) => variant.store.localeCompare(libraryVariant.store, undefined, { sensitivity: "accent" }) === 0);
+  return sameStoreVariant?.id;
+}
+
+function flattenStorePanelGames(panels: GamePanelResult[]): GameInfo[] {
+  return panels.flatMap((panel) => panel.sections.flatMap((section) => section.games));
+}
+
 const DEFAULT_SHORTCUTS = {
   shortcutToggleStats: "F3",
   shortcutTogglePointerLock: "F8",
@@ -168,6 +194,7 @@ export function App(): JSX.Element {
   // Games State
   const [games, setGames] = useState<GameInfo[]>([]);
   const [featuredGames, setFeaturedGames] = useState<GameInfo[]>([]);
+  const [storePanels, setStorePanels] = useState<GamePanelResult[]>([]);
   const [libraryGames, setLibraryGames] = useState<GameInfo[]>([]);
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedGameId, setSelectedGameId] = useState("");
@@ -368,6 +395,7 @@ export function App(): JSX.Element {
   const latestIceConnectionStateRef = useRef<RTCIceConnectionState>("new");
   const iceDisconnectedRecoveryTimerRef = useRef<number | null>(null);
   const pendingControlledDisconnectsRef = useRef(0);
+  const storePanelsLoadedContextRef = useRef("");
   const signalingRecoveryRef = useRef<SignalingRecoveryState>({
     attemptCount: 0,
     inFlight: null,
@@ -791,7 +819,8 @@ export function App(): JSX.Element {
     }
   }, [authSession, effectiveStreamingBaseUrl, settings.region]);
 
-  const allKnownGames = useMemo(() => [...games, ...libraryGames], [games, libraryGames]);
+  const storePanelGames = useMemo(() => flattenStorePanelGames(storePanels), [storePanels]);
+  const allKnownGames = useMemo(() => [...games, ...libraryGames, ...storePanelGames], [games, libraryGames, storePanelGames]);
 
   const gameTitleByAppId = useMemo(() => {
     const titles = new Map<number, string>();
@@ -1297,6 +1326,7 @@ export function App(): JSX.Element {
       console.error("Initialization games load failed:", catalogError);
       setGames([]);
       setFeaturedGames([]);
+      setStorePanels([]);
       setLibraryGames([]);
       setCatalogFilterGroups([]);
       setCatalogSortOptions([]);
@@ -1484,6 +1514,7 @@ export function App(): JSX.Element {
     setRegions([]);
     setGames([]);
     setFeaturedGames([]);
+    setStorePanels([]);
     setLibraryGames([]);
     setSubscriptionInfo(null);
     setNavbarActiveSession(null);
@@ -1504,6 +1535,7 @@ export function App(): JSX.Element {
     setAuthSession(null);
     setSavedAccounts([]);
     setGames([]);
+    setStorePanels([]);
     setLibraryGames([]);
     setVariantByGameId({});
     resetLaunchRuntime();
@@ -1567,15 +1599,74 @@ export function App(): JSX.Element {
     }
   }, [applyCatalogBrowseResult, applyVariantSelections, authSession, effectiveStreamingBaseUrl, featuredGames, searchQuery, catalogFilterKey, catalogSelectedSortId]);
 
+  const loadStorePanels = useCallback(async () => {
+    const session = authSession;
+    if (!session) return;
+
+    const token = session.tokens.idToken ?? session.tokens.accessToken;
+    if (!token) return;
+
+    const contextKey = `${session.user.userId}\0${effectiveStreamingBaseUrl}`;
+    if (storePanelsLoadedContextRef.current === contextKey) return;
+
+    setIsLoadingGames(true);
+    try {
+      const panels = await window.openNow.fetchStorePanels({
+        token,
+        providerStreamingBaseUrl: effectiveStreamingBaseUrl,
+      });
+      const panelGames = flattenStorePanelGames(panels);
+      storePanelsLoadedContextRef.current = contextKey;
+      setStorePanels(panels);
+      setSelectedGameId((previous) => panelGames.some((game) => game.id === previous) ? previous : (panelGames[0]?.id ?? ""));
+      setVariantByGameId((previous) => {
+        const next = { ...previous };
+        for (const game of panelGames) {
+          next[game.id] = defaultVariantId(game);
+        }
+        return next;
+      });
+    } catch (error) {
+      console.error("Failed to load Store panels:", error);
+      storePanelsLoadedContextRef.current = "";
+      setStorePanels([]);
+    } finally {
+      setIsLoadingGames(false);
+    }
+  }, [authSession, effectiveStreamingBaseUrl]);
+
   useEffect(() => {
-    if (!authSession || currentPage !== "home") {
+    if (storePanelGames.length === 0 || libraryGames.length === 0) return;
+    setVariantByGameId((previous) => {
+      let changed = false;
+      const next = { ...previous };
+      for (const game of storePanelGames) {
+        const libraryVariantId = getLibrarySelectedVariantId(game, libraryGames);
+        if (libraryVariantId && next[game.id] !== libraryVariantId) {
+          next[game.id] = libraryVariantId;
+          changed = true;
+        }
+      }
+      return changed ? next : previous;
+    });
+  }, [libraryGames, storePanelGames]);
+
+  useEffect(() => {
+    if (!authSession || currentPage !== "home" || settings.controllerMode) {
       return;
     }
     const handle = window.setTimeout(() => {
       void loadGames("main");
     }, searchQuery.trim() ? 220 : 0);
     return () => window.clearTimeout(handle);
-  }, [authSession, currentPage, loadGames, searchQuery, catalogFilterKey, catalogSelectedSortId]);
+  }, [authSession, currentPage, loadGames, searchQuery, catalogFilterKey, catalogSelectedSortId, settings.controllerMode]);
+
+  useEffect(() => {
+    if (!authSession || currentPage !== "home" || !settings.controllerMode) {
+      return;
+    }
+    void loadStorePanels();
+  }, [authSession, currentPage, loadStorePanels, settings.controllerMode]);
 
   const handleSelectGameVariant = useCallback((gameId: string, variantId: string): void => {
     setVariantByGameId((prev) => {
@@ -2672,6 +2763,10 @@ export function App(): JSX.Element {
     setQueueModalData(null);
   }, []);
 
+  const handleOpenStoreUrl = useCallback((url: string): void => {
+    window.open(url, "_blank", "noopener,noreferrer");
+  }, []);
+
   useEffect(() => {
     if (!logoutConfirmOpen && !removeAccountConfirmOpen) return;
 
@@ -3165,6 +3260,13 @@ export function App(): JSX.Element {
     return null;
   }, [gameTitleByAppId, navbarActiveSession, session?.sessionId, streamingGame?.title]);
 
+  const navigateControllerPage = useCallback((direction: -1 | 1): void => {
+    const pages: AppPage[] = ["library", "home", "settings"];
+    const currentIndex = Math.max(0, pages.indexOf(currentPage));
+    const nextIndex = (currentIndex + direction + pages.length) % pages.length;
+    setCurrentPage(pages[nextIndex]);
+  }, [currentPage]);
+
   // Show login screen if not authenticated
   if (!authSession) {
     return (
@@ -3346,6 +3448,13 @@ export function App(): JSX.Element {
             onSortChange={setCatalogSelectedSortId}
             totalCount={catalogTotalCount}
             supportedCount={catalogSupportedCount}
+            controllerMode={settings.controllerMode}
+            storePanels={storePanels}
+            storeHeroGames={featuredGames}
+            activeSessionAppIds={navbarActiveSession ? [navbarActiveSession.appId] : []}
+            onBuyGame={handleOpenStoreUrl}
+            onPreviousControllerPage={() => navigateControllerPage(-1)}
+            onNextControllerPage={() => navigateControllerPage(1)}
           />
         )}
 
@@ -3366,6 +3475,9 @@ export function App(): JSX.Element {
             onSortChange={setCatalogSelectedSortId}
             controllerMode={settings.controllerMode}
             featuredGames={featuredGames.length > 0 ? featuredGames : games}
+            activeSessionAppIds={navbarActiveSession ? [navbarActiveSession.appId] : []}
+            onPreviousControllerPage={() => navigateControllerPage(-1)}
+            onNextControllerPage={() => navigateControllerPage(1)}
           />
         )}
 

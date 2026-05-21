@@ -493,8 +493,10 @@ export interface SubscriptionFetchRequest {
 export interface GameVariant {
   id: string;
   store: string;
+  storeUrl?: string;
   supportedControls: string[];
   librarySelected?: boolean;
+  inLibrary?: boolean;
   libraryStatus?: string;
   lastPlayedDate?: string;
   gfnStatus?: string;
@@ -520,10 +522,16 @@ export interface GameInfo {
   uuid?: string;
   launchAppId?: string;
   title: string;
+  shortName?: string;
   description?: string;
   longDescription?: string;
+  developerName?: string;
+  maxLocalPlayers?: number;
+  maxOnlinePlayers?: number;
   featureLabels?: string[];
   genres?: string[];
+  supportedControls?: string[];
+  nvidiaTech?: string[];
   imageUrl?: string;
   heroImageUrl?: string;
   screenshotUrl?: string;
@@ -578,6 +586,18 @@ export interface CatalogSortOption {
   id: string;
   label: string;
   orderBy: string;
+}
+
+export interface GamePanelSection {
+  id: string;
+  title: string;
+  games: GameInfo[];
+}
+
+export interface GamePanelResult {
+  id: string;
+  title: string;
+  sections: GamePanelSection[];
 }
 
 export interface CatalogBrowseResult {
@@ -1019,6 +1039,7 @@ export interface OpenNowApi {
   removeAccount(userId: string): Promise<void>;
   fetchSubscription(input: SubscriptionFetchRequest): Promise<SubscriptionInfo>;
   fetchMainGames(input: GamesFetchRequest): Promise<GameInfo[]>;
+  fetchStorePanels(input: GamesFetchRequest): Promise<GamePanelResult[]>;
   fetchFeaturedGames(input: GamesFetchRequest): Promise<GameInfo[]>;
   fetchLibraryGames(input: GamesFetchRequest): Promise<GameInfo[]>;
   browseCatalog(input: CatalogBrowseRequest): Promise<CatalogBrowseResult>;

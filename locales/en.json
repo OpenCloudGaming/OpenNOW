@@ -152,6 +152,22 @@
       "noGamesFound": "No games found",
       "tryAdjustingSearch": "Try adjusting your search terms or filters",
       "checkBackLater": "Check back later for new additions"
+    },
+    "controller": {
+      "eyebrow": "CONTROLLER STORE",
+      "title": "Store Theater",
+      "hints": "D-pad browse / A launch / Space select",
+      "featured": "Featured",
+      "emptyTitle": "No Store collections found",
+      "emptyBody": "The cloud storefront returned empty panels. Try again after the catalog service refreshes.",
+      "readyToStream": "Ready to stream",
+      "cloudReady": "Cloud ready",
+      "owned": "Owned",
+      "notOwned": "Not owned",
+      "purchaseUnavailable": "Purchase unavailable",
+      "playNow": "Play Now",
+      "variant": "{{variant}}",
+      "storeCount": "{{count}} stores"
     }
   },
   "library": {
@@ -161,12 +177,20 @@
     "gameCount": "{{count}} game",
     "gameCount_plural": "{{count}} games",
     "filter": "Filter",
+    "allStores": "All Stores",
+    "storeFilter": "Store Filter",
+    "chooseStore": "Choose a Store",
+    "storeFilterHint": "Hold Y, use up/down, release Y to apply",
     "moreInfo": "More Info",
     "moreOptions": "More Options",
     "storeNotListed": "Store not listed",
     "selectedStore": "Selected Store: {{store}}",
     "loadingGameDetails": "Loading game details...",
+    "developer": "Developer: {{developer}}",
     "publisher": "Publisher: {{publisher}}",
+    "players": "Players: {{players}}",
+    "controls": "Controls: {{controls}}",
+    "nvidiaTech": "NVIDIA Tech: {{tech}}",
     "genres": "Genres: {{genres}}",
     "rating": "Rating: {{rating}}",
     "lastPlayed": {

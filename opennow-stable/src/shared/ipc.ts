@@ -11,6 +11,7 @@ export const IPC_CHANNELS = {
   PING_REGIONS: "gfn:ping-regions",
   SUBSCRIPTION_FETCH: "subscription:fetch",
   GAMES_FETCH_MAIN: "games:fetch-main",
+  GAMES_FETCH_STORE_PANELS: "games:fetch-store-panels",
   GAMES_FETCH_FEATURED: "games:fetch-featured",
   GAMES_FETCH_LIBRARY: "games:fetch-library",
   GAMES_BROWSE_CATALOG: "games:browse-catalog",

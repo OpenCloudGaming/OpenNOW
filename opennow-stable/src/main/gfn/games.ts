@@ -5,8 +5,10 @@ import type {
   CatalogSortOption,
   GameCatalogSkuStrings,
   GameInfo,
+  GamePanelResult,
   GameVariant,
 } from "@shared/gfn";
+import { createHash } from "node:crypto";
 import { isOwnedLibraryStatus } from "@shared/gfn";
 import { cacheManager } from "../services/cacheManager";
 import { fetchPublicGamesUncached, mergePublicGameVariants } from "./publicGames";
@@ -25,6 +27,16 @@ const DEFAULT_CATALOG_FETCH_COUNT = 120;
 const MAX_CATALOG_PAGES = 3;
 const DEFAULT_SORT_ID = "relevance";
 const PUBLIC_GAMES_CACHE_KEY = "games:public:v2";
+
+function accountScopedGamesCacheKey(scope: string, token: string, providerStreamingBaseUrl?: string): string {
+  const digest = createHash("sha256")
+    .update(token)
+    .update("\0")
+    .update(providerStreamingBaseUrl ?? "")
+    .digest("hex")
+    .slice(0, 16);
+  return `games:${scope}:${digest}`;
+}
 
 interface GraphQlResponse {
   data?: {
@@ -94,19 +106,26 @@ interface GraphQlFilterGroup {
 interface AppData {
   id: string;
   title: string;
+  shortName?: string;
   description?: string;
   longDescription?: string;
+  developerName?: string;
   features?: unknown[];
   gameFeatures?: unknown[];
   appFeatures?: unknown[];
   genres?: unknown[];
   tags?: unknown[];
+  supportedControls?: unknown[];
+  nvidiaTech?: unknown[];
+  maxLocalPlayers?: number;
+  maxOnlinePlayers?: number;
   images?: Record<string, string | string[] | undefined>;
   publisherName?: string;
   contentRatings?: unknown[];
   variants?: Array<{
     id: string;
     appStore: string;
+    storeUrl?: string;
     supportedControls?: string[];
     gfn?: {
       status?: string;
@@ -307,28 +326,19 @@ function extractContentRatings(app: AppData): string[] {
   return [...new Set(labels)];
 }
 
-function buildSearchText(title: string, variants: GameVariant[], genres: string[], featureLabels: string[], publisherName?: string): string {
+function extractStringValues(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value
+    .map((entry) => typeof entry === "string" ? entry.trim() : parseFeatureLabel(entry))
+    .filter((entry): entry is string => typeof entry === "string" && entry.length > 0))];
+}
+
+function buildSearchText(title: string, variants: GameVariant[], genres: string[], featureLabels: string[], publisherName?: string, developerName?: string): string {
   const stores = variants.map((variant) => variant.store);
-  return [title, publisherName, ...stores, ...genres, ...featureLabels]
+  return [title, publisherName, developerName, ...stores, ...genres, ...featureLabels]
     .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
     .join(" ")
     .toLowerCase();
-}
-
-function matchesPublicGameSearch(game: GameInfo, query: string): boolean {
-  const normalizedQuery = query.trim().toLowerCase();
-  if (!normalizedQuery) {
-    return true;
-  }
-
-  return [
-    game.title,
-    game.searchText,
-    ...(game.availableStores ?? []),
-    ...game.variants.map((variant) => variant.store),
-  ]
-    .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
-    .some((value) => value.toLowerCase().includes(normalizedQuery));
 }
 
 function resolveAppData(app: AppData): AppResolution {
@@ -358,8 +368,10 @@ function appToVariants(app: AppData): GameVariant[] {
   return app.variants?.map((variant) => ({
     id: variant.id,
     store: variant.appStore,
+    storeUrl: variant.storeUrl,
     supportedControls: variant.supportedControls ?? [],
     librarySelected: variant.gfn?.library?.selected,
+    inLibrary: variant.gfn?.library?.selected === true,
     libraryStatus: variant.gfn?.library?.status,
     lastPlayedDate: variant.gfn?.library?.lastPlayedDate,
     gfnStatus: variant.gfn?.status,
@@ -375,16 +387,24 @@ function appToGame(app: AppData): GameInfo {
   const screenshotUrls = normalizeImageValues(app.images?.SCREENSHOTS, 720);
   const genres = extractGenres(app);
   const featureLabels = extractFeatureLabels(app);
+  const supportedControls = extractStringValues(app.supportedControls);
+  const nvidiaTech = extractStringValues(app.nvidiaTech);
 
   return {
     id: app.id,
     uuid: app.id,
     launchAppId: resolution.numericAppId,
     title: app.title,
+    shortName: app.shortName,
     description: app.description,
     longDescription: app.longDescription,
+    developerName: app.developerName,
+    maxLocalPlayers: app.maxLocalPlayers,
+    maxOnlinePlayers: app.maxOnlinePlayers,
     featureLabels,
     genres,
+    supportedControls: supportedControls.length > 0 ? supportedControls : undefined,
+    nvidiaTech: nvidiaTech.length > 0 ? nvidiaTech : undefined,
     imageUrl,
     heroImageUrl,
     screenshotUrl: screenshotUrls[0],
@@ -397,7 +417,7 @@ function appToGame(app: AppData): GameInfo {
     contentRatings: extractContentRatings(app),
     playabilityState: app.gfn?.playabilityState,
     availableStores: [...new Set(variants.map((variant) => variant.store).filter(Boolean))],
-    searchText: buildSearchText(app.title, variants, genres, featureLabels, app.publisherName),
+    searchText: buildSearchText(app.title, variants, genres, featureLabels, app.publisherName, app.developerName),
     lastPlayed: resolution.lastPlayed,
     isInLibrary: resolution.isInLibrary,
     selectedVariantIndex: Math.max(0, Math.min(resolution.selectedVariantIndex, Math.max(variants.length - 1, 0))),
@@ -442,8 +462,12 @@ function dedupeGames(games: GameInfo[]): GameInfo[] {
       uuid: existing.uuid ?? game.uuid,
       launchAppId: existing.launchAppId ?? game.launchAppId,
       title: existing.title || game.title,
+      shortName: existing.shortName ?? game.shortName,
       description: existing.description ?? game.description,
       longDescription: existing.longDescription ?? game.longDescription,
+      developerName: existing.developerName ?? game.developerName,
+      maxLocalPlayers: existing.maxLocalPlayers ?? game.maxLocalPlayers,
+      maxOnlinePlayers: existing.maxOnlinePlayers ?? game.maxOnlinePlayers,
       imageUrl: existing.imageUrl ?? game.imageUrl,
       heroImageUrl: existing.heroImageUrl ?? game.heroImageUrl,
       screenshotUrl: existing.screenshotUrl ?? game.screenshotUrl,
@@ -462,6 +486,8 @@ function dedupeGames(games: GameInfo[]): GameInfo[] {
       variants: [...mergedVariants.values()],
       genres: [...new Set([...(existing.genres ?? []), ...(game.genres ?? [])])],
       featureLabels: [...new Set([...(existing.featureLabels ?? []), ...(game.featureLabels ?? [])])],
+      supportedControls: [...new Set([...(existing.supportedControls ?? []), ...(game.supportedControls ?? [])])],
+      nvidiaTech: [...new Set([...(existing.nvidiaTech ?? []), ...(game.nvidiaTech ?? [])])],
       contentRatings: [...new Set([...(existing.contentRatings ?? []), ...(game.contentRatings ?? [])])],
       availableStores: [...new Set([...(existing.availableStores ?? []), ...(game.availableStores ?? [])])],
       searchText: [existing.searchText, game.searchText].filter(Boolean).join(" ").trim() || undefined,
@@ -661,6 +687,35 @@ function flattenPanels(payload: GraphQlResponse): GameInfo[] {
   return dedupeGames(games);
 }
 
+function parsePanelResults(payload: GraphQlResponse): GamePanelResult[] {
+  if (payload.errors?.length) {
+    throw new Error(payload.errors.map((error) => error.message).join(", "));
+  }
+
+  const panels: GamePanelResult[] = [];
+  for (const panel of payload.data?.panels ?? []) {
+    const sections = (panel.sections ?? [])
+      .map((section) => ({
+        id: section.id ?? section.title ?? "",
+        title: section.title ?? "",
+        games: (section.items ?? [])
+          .filter((item) => item.__typename === "GameItem" && item.app)
+          .map((item) => appToGame(item.app as AppData))
+          .filter((game) => game.id && game.title && game.variants.length > 0),
+      }))
+      .filter((section) => section.games.length > 0);
+
+    if (sections.length > 0) {
+      panels.push({
+        id: panel.id ?? panel.name,
+        title: panel.name,
+        sections,
+      });
+    }
+  }
+  return panels;
+}
+
 async function fetchFilterAndSortDefinitions(token?: string): Promise<CatalogDefinitions> {
   const query = `query GetFilterGroupAndSortOrderDefinitions($locale: String!) {
     filterGroupDefinitions(language: $locale) {
@@ -767,6 +822,7 @@ async function browseCatalogUncached(input: CatalogBrowseRequest): Promise<Catal
         variants {
           id
           appStore
+          storeUrl
           supportedControls
           gfn {
             status
@@ -884,10 +940,6 @@ ${appFields}
 
   let games = dedupeGames(await enrichGamesWithMetadata(token, vpcId, collectedApps.map(appToGame)));
   const publicGames = await fetchPublicGames();
-  if (searchQuery.length > 0) {
-    const publicSearchMatches = publicGames.filter((game) => matchesPublicGameSearch(game, searchQuery));
-    games = dedupeGames([...games, ...publicSearchMatches]);
-  }
   const gamesWithPublicVariants = mergePublicGameVariants(games, publicGames);
 
   return {
@@ -910,27 +962,38 @@ export async function browseCatalog(input: CatalogBrowseRequest): Promise<Catalo
 }
 
 export async function fetchMainGames(token: string, providerStreamingBaseUrl?: string): Promise<GameInfo[]> {
-  const cached = await cacheManager.loadFromCache<GameInfo[]>("games:main");
+  const cacheKey = accountScopedGamesCacheKey("main", token, providerStreamingBaseUrl);
+  const cached = await cacheManager.loadFromCache<GameInfo[]>(cacheKey);
   if (cached) {
     return mergePublicGameVariants(cached.data, await fetchPublicGames());
   }
 
   const games = await fetchMainGamesUncached(token, providerStreamingBaseUrl);
-  await cacheManager.saveToCache("games:main", games);
+  await cacheManager.saveToCache(cacheKey, games);
   return games;
 }
 
 export async function fetchFeaturedGames(token: string, providerStreamingBaseUrl?: string): Promise<GameInfo[]> {
+  const cacheKey = accountScopedGamesCacheKey("featured", token, providerStreamingBaseUrl);
+  const cached = await cacheManager.loadFromCache<GameInfo[]>(cacheKey);
+  if (cached) return cached.data;
+
   const vpcId = await getVpcId(token, providerStreamingBaseUrl);
+  const games = featuredGamesFromPanels(await fetchPanels(token, ["MARQUEE"], vpcId)).slice(0, 6);
 
-  try {
-    const marquee = featuredGamesFromPanels(await fetchPanels(token, ["MARQUEE"], vpcId));
-    if (marquee.length > 0) return marquee;
-  } catch {
-    // The native app falls back to MAIN when MARQUEE is unavailable or empty.
-  }
+  await cacheManager.saveToCache(cacheKey, games);
+  return games;
+}
 
-  return featuredGamesFromPanels(await fetchPanels(token, ["MAIN"], vpcId));
+export async function fetchStorePanels(token: string, providerStreamingBaseUrl?: string): Promise<GamePanelResult[]> {
+  const cacheKey = accountScopedGamesCacheKey("store-panels", token, providerStreamingBaseUrl);
+  const cached = await cacheManager.loadFromCache<GamePanelResult[]>(cacheKey);
+  if (cached) return cached.data;
+
+  const vpcId = await getVpcId(token, providerStreamingBaseUrl);
+  const panels = parsePanelResults(await fetchPanels(token, ["MAIN"], vpcId));
+  await cacheManager.saveToCache(cacheKey, panels);
+  return panels;
 }
 
 async function fetchMainGamesUncached(token: string, providerStreamingBaseUrl?: string): Promise<GameInfo[]> {
@@ -944,13 +1007,14 @@ export async function fetchLibraryGames(
   token: string,
   providerStreamingBaseUrl?: string,
 ): Promise<GameInfo[]> {
-  const cached = await cacheManager.loadFromCache<GameInfo[]>("games:library");
+  const cacheKey = accountScopedGamesCacheKey("library", token, providerStreamingBaseUrl);
+  const cached = await cacheManager.loadFromCache<GameInfo[]>(cacheKey);
   if (cached) {
     return mergePublicGameVariants(cached.data, await fetchPublicGames());
   }
 
   const games = await fetchLibraryGamesUncached(token, providerStreamingBaseUrl);
-  await cacheManager.saveToCache("games:library", games);
+  await cacheManager.saveToCache(cacheKey, games);
   return games;
 }
 

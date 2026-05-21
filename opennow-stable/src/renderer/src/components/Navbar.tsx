@@ -1,5 +1,5 @@
 import type { ActiveSessionInfo, AuthUser, SavedAccount, SubscriptionInfo } from "@shared/gfn";
-import { House, Library, Settings, User, Timer, HardDrive, X, Loader2, PlayCircle, Square, ChevronDown, Check, Plus, Store as StoreIcon, Search as SearchIcon } from "lucide-react";
+import { House, Library, Settings, User, Timer, HardDrive, X, Loader2, PlayCircle, Square, ChevronDown, Check, Plus, Store as StoreIcon } from "lucide-react";
 import { useEffect, useRef, useState, type JSX } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "../i18n";
@@ -58,10 +58,8 @@ export function Navbar({
 
   const navItems = controllerMode
     ? [
-        { id: "home", page: "home" as const, label: "Home", icon: House },
-        { id: "library", page: "library" as const, label: t("navigation.library"), icon: Library },
         { id: "store", page: "home" as const, label: "Store", icon: StoreIcon },
-        { id: "search", page: "home" as const, label: t("app.actions.search"), icon: SearchIcon },
+        { id: "library", page: "library" as const, label: t("navigation.library"), icon: Library },
         { id: "settings", page: "settings" as const, label: t("navigation.settings"), icon: Settings },
       ]
     : [
@@ -321,7 +319,7 @@ export function Navbar({
       </div>
 
       <div className="navbar-right">
-        {activeSession && (
+        {activeSession && !controllerMode && (
           <div className="navbar-session-actions">
             <button
               type="button"
