@@ -1106,6 +1106,9 @@ export interface OpenNowApi {
   /** Listen for external Escape events forwarded by the main process */
   onExternalEscape(listener: () => void): () => void;
 
+  /** Open a trusted external URL in the OS default browser */
+  openExternalUrl(url: string): Promise<void>;
+
   /** Begin a new recording session; returns a recordingId to use for subsequent calls */
   beginRecording(input: RecordingBeginRequest): Promise<RecordingBeginResult>;
 

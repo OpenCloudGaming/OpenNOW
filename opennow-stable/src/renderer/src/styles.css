@@ -1939,28 +1939,6 @@ body,
   font-weight: 850;
 }
 
-.controller-store-hero-ownership {
-  display: inline-flex;
-  align-items: center;
-  min-height: clamp(34px, 2.6vh, 44px);
-  padding: 0 16px;
-  border-radius: 999px;
-  background: rgba(0, 0, 0, 0.38);
-  color: rgba(255, 255, 255, 0.86);
-  font-size: 0.78rem;
-  font-weight: 950;
-  letter-spacing: 0.02em;
-  text-transform: uppercase;
-}
-
-.controller-store-hero-ownership.is-owned {
-  color: #4ee887;
-}
-
-.controller-store-hero-ownership.is-not-owned {
-  color: #f7d944;
-}
-
 .controller-store-sections {
   display: flex;
   flex-direction: column;

@@ -2764,7 +2764,9 @@ export function App(): JSX.Element {
   }, []);
 
   const handleOpenStoreUrl = useCallback((url: string): void => {
-    window.open(url, "_blank", "noopener,noreferrer");
+    void window.openNow.openExternalUrl(url).catch((error) => {
+      console.error("Failed to open Store URL:", error);
+    });
   }, []);
 
   useEffect(() => {

@@ -839,6 +839,14 @@ function registerIpcHandlers(): void {
     });
   });
 
+  ipcMain.handle(IPC_CHANNELS.OPEN_EXTERNAL_URL, async (_event, url: string): Promise<void> => {
+    const parsed = new URL(url);
+    if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+      throw new Error("Only HTTP(S) external URLs can be opened.");
+    }
+    await shell.openExternal(parsed.toString());
+  });
+
   ipcMain.handle(
     IPC_CHANNELS.APP_UPDATER_GET_STATE,
     async (): Promise<AppUpdaterState> => {

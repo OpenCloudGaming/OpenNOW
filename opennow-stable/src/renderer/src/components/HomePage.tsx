@@ -461,9 +461,7 @@ export function HomePage({
     const heroImageUrl = heroGame ? getControllerStoreImageCandidates(heroGame, true)[0] : undefined;
     const heroLogoUrl = heroGame ? getControllerStoreLogoUrl(heroGame) : undefined;
     const heroSelectedVariantId = heroGame ? selectedVariantByGameId[heroGame.id] : undefined;
-    const heroNeedsPurchase = heroGame ? gameNeedsPurchase(heroGame, heroSelectedVariantId) : false;
     const heroPurchaseUrl = heroGame ? getPurchaseUrl(heroGame, heroSelectedVariantId) : undefined;
-    const heroHasActiveSession = heroGame ? gameMatchesActiveSession(heroGame, activeSessionAppIds) : false;
     const heroDotCount = Math.min(Math.max(controllerHeroGames.length, 1), 6);
     const activeHeroDotIndex = controllerHeroGames.length > 0 ? Math.min(controllerHeroIndex % heroDotCount, heroDotCount - 1) : 0;
 
@@ -490,13 +488,10 @@ export function HomePage({
                   {heroLogoUrl ? <img src={heroLogoUrl} alt={heroGame.title} className="controller-hero-logo" /> : <h1>{heroGame.title}</h1>}
                   <p className="controller-store-hero-meta">{getPrimaryStoreName(heroGame, heroSelectedVariantId)} / {getPrimaryGenre(heroGame)}</p>
                   <div className="controller-hero-actions">
-                    <button type="button" className="controller-primary-action" disabled={heroNeedsPurchase && !heroPurchaseUrl} onClick={() => launchGame(heroGame)}>
-                      {heroNeedsPurchase ? t("app.actions.buy") : heroHasActiveSession ? t("app.actions.resume") : t("home.controller.playNow")}
+                    <button type="button" className="controller-primary-action" disabled={!heroPurchaseUrl} onClick={() => { if (heroPurchaseUrl) onBuyGame?.(heroPurchaseUrl); }}>
+                      {t("app.actions.buy")}
                     </button>
                     <span className="controller-store-hero-pill">{getPrimaryStoreName(heroGame, heroSelectedVariantId)}</span>
-                    <span className={`controller-store-hero-ownership${heroNeedsPurchase ? " is-not-owned" : " is-owned"}`}>
-                      {heroNeedsPurchase ? t("home.controller.notOwned") : t("home.controller.owned")}
-                    </span>
                   </div>
                 </div>
               </section>
