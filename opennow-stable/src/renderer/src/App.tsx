@@ -178,6 +178,44 @@ const DEFAULT_SHORTCUTS = {
   shortcutToggleRecording: "F12",
 } as const;
 
+const DEBUG_NO_LOGIN_STORAGE_KEY = "opennow.debugNoLogin";
+const DEBUG_NO_LOGIN_PROVIDER: LoginProvider = {
+  idpId: "debug-no-login",
+  code: "DEBUG",
+  displayName: "Debug (no account)",
+  streamingServiceUrl: "",
+  priority: 999,
+};
+
+function isDebugNoLoginEnabled(): boolean {
+  const queryValue = new URLSearchParams(window.location.search).get("debugNoLogin")?.toLowerCase();
+  if (queryValue === "1" || queryValue === "true" || queryValue === "yes" || queryValue === "on") {
+    return true;
+  }
+
+  try {
+    const stored = localStorage.getItem(DEBUG_NO_LOGIN_STORAGE_KEY)?.toLowerCase();
+    return stored === "1" || stored === "true" || stored === "yes" || stored === "on";
+  } catch {
+    return false;
+  }
+}
+
+function createDebugNoLoginSession(): AuthSession {
+  return {
+    provider: DEBUG_NO_LOGIN_PROVIDER,
+    tokens: {
+      accessToken: "",
+      expiresAt: Number.MAX_SAFE_INTEGER,
+    },
+    user: {
+      userId: "debug-no-login",
+      displayName: "Debug Mode",
+      membershipTier: "DEBUG",
+    },
+  };
+}
+
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
@@ -201,6 +239,7 @@ async function readStreamClipboardText(): Promise<string> {
 
 export function App(): JSX.Element {
   const { locale, t } = useTranslation();
+  const debugNoLoginMode = useMemo(() => isDebugNoLoginEnabled(), []);
 
   // Auth State
   const [authSession, setAuthSession] = useState<AuthSession | null>(null);
@@ -1441,6 +1480,34 @@ export function App(): JSX.Element {
     catalogSelectedSortId,
   ]);
 
+  const loadDebugNoLoginRuntimeData = useCallback(async (): Promise<void> => {
+    setRegions([]);
+    setLibraryGames([]);
+    setSubscriptionInfo(null);
+    setNavbarActiveSession(null);
+    try {
+      const publicGames = await window.openNow.fetchPublicGames();
+      const query = searchQuery.trim();
+      const visibleGames = query
+        ? publicGames.filter((game) => matchesGameSearch(game, query))
+        : publicGames;
+      setGames(visibleGames);
+      setCatalogFilterGroups([]);
+      setCatalogSortOptions([]);
+      setCatalogTotalCount(publicGames.length);
+      setCatalogSupportedCount(publicGames.length);
+      setSelectedGameId((previous) => visibleGames.some((game) => game.id === previous) ? previous : (visibleGames[0]?.id ?? ""));
+      applyVariantSelections(visibleGames);
+    } catch (error) {
+      console.warn("Debug no-login public catalog load failed:", error);
+      setGames([]);
+      setCatalogFilterGroups([]);
+      setCatalogSortOptions([]);
+      setCatalogTotalCount(0);
+      setCatalogSupportedCount(0);
+    }
+  }, [applyVariantSelections, searchQuery]);
+
   // Initialize app
   useEffect(() => {
     if (hasInitializedRef.current) return;
@@ -1453,6 +1520,17 @@ export function App(): JSX.Element {
         setSettings(loadedSettings);
         setShowStatsOverlay(loadedSettings.showStatsOnLaunch);
         setSettingsLoaded(true);
+
+        if (debugNoLoginMode) {
+          setStartupStatusMessage("Debug no-login mode");
+          setProviders([DEBUG_NO_LOGIN_PROVIDER]);
+          setProviderIdpId(DEBUG_NO_LOGIN_PROVIDER.idpId);
+          setAuthSession(createDebugNoLoginSession());
+          setSavedAccounts([]);
+          await loadDebugNoLoginRuntimeData();
+          setIsInitializing(false);
+          return;
+        }
 
         // Load providers and session (refresh only if token is near expiry)
         setStartupStatusMessage(t("auth.status.restoringSavedSession"));
@@ -1536,10 +1614,13 @@ export function App(): JSX.Element {
     };
 
     void initialize();
-  }, [loadSessionRuntimeData, resetStorePanels, t]);
+  }, [debugNoLoginMode, loadDebugNoLoginRuntimeData, loadSessionRuntimeData, resetStorePanels, t]);
 
   // Login handler
   const handleLogin = useCallback(async () => {
+    if (debugNoLoginMode) {
+      return;
+    }
     setIsLoggingIn(true);
     setLoginError(null);
     try {
@@ -1553,9 +1634,12 @@ export function App(): JSX.Element {
     } finally {
       setIsLoggingIn(false);
     }
-  }, [loadSessionRuntimeData, providerIdpId, refreshSavedAccounts, t]);
+  }, [debugNoLoginMode, loadSessionRuntimeData, providerIdpId, refreshSavedAccounts, t]);
 
   const handleSwitchAccount = useCallback(async (userId: string) => {
+    if (debugNoLoginMode) {
+      return;
+    }
     try {
       const session = await window.openNow.switchAccount(userId);
       setAuthSession(session);
@@ -1593,14 +1677,22 @@ export function App(): JSX.Element {
         console.warn("Failed to recover account state after switch failure:", recoveryError);
       }
     }
-  }, [loadSessionRuntimeData, refreshNavbarActiveSession, refreshSavedAccounts, resetStorePanels, t]);
+  }, [debugNoLoginMode, loadSessionRuntimeData, refreshNavbarActiveSession, refreshSavedAccounts, resetStorePanels, t]);
 
   const handleRemoveAccount = useCallback((userId: string) => {
+    if (debugNoLoginMode) {
+      return;
+    }
     setAccountToRemove(userId);
     setRemoveAccountConfirmOpen(true);
-  }, []);
+  }, [debugNoLoginMode]);
 
   const confirmRemoveAccount = useCallback(async () => {
+    if (debugNoLoginMode) {
+      setRemoveAccountConfirmOpen(false);
+      setAccountToRemove(null);
+      return;
+    }
     if (!accountToRemove) return;
     const targetUserId = accountToRemove;
     setRemoveAccountConfirmOpen(false);
@@ -1633,15 +1725,22 @@ export function App(): JSX.Element {
     setCatalogSupportedCount(0);
     setIsLoadingCatalog(false);
     setIsLoadingLibrary(false);
-  }, [accountToRemove, loadSessionRuntimeData, refreshNavbarActiveSession, resetStorePanels]);
+  }, [accountToRemove, debugNoLoginMode, loadSessionRuntimeData, refreshNavbarActiveSession, resetStorePanels]);
 
   const handleAddAccount = useCallback(() => {
+    if (debugNoLoginMode) {
+      return;
+    }
     setAuthSession(null);
     setLoginError(null);
-  }, []);
+  }, [debugNoLoginMode]);
 
   const confirmLogout = useCallback(async () => {
     setLogoutConfirmOpen(false);
+    if (debugNoLoginMode) {
+      setAuthSession(createDebugNoLoginSession());
+      return;
+    }
     runtimeDataLoadIdRef.current += 1;
     resetStorePanels();
     await window.openNow.logoutAll();
@@ -1664,7 +1763,7 @@ export function App(): JSX.Element {
     setSelectedGameId("");
     setIsLoadingCatalog(false);
     setIsLoadingLibrary(false);
-  }, [resetLaunchRuntime, resetStorePanels]);
+  }, [debugNoLoginMode, resetLaunchRuntime, resetStorePanels]);
 
   // Logout handler
   const handleLogout = useCallback(() => {
@@ -1676,6 +1775,15 @@ export function App(): JSX.Element {
     const setLoading = targetSource === "main" ? setIsLoadingCatalog : setIsLoadingLibrary;
     setLoading(true);
     try {
+      if (debugNoLoginMode) {
+        if (targetSource === "library") {
+          setLibraryGames([]);
+          return;
+        }
+        await loadDebugNoLoginRuntimeData();
+        return;
+      }
+
       const token = authSession?.tokens.idToken ?? authSession?.tokens.accessToken;
       const baseUrl = effectiveStreamingBaseUrl;
       if (!token) {
@@ -1710,7 +1818,7 @@ export function App(): JSX.Element {
     } finally {
       setLoading(false);
     }
-  }, [applyCatalogBrowseResult, applyVariantSelections, authSession, effectiveStreamingBaseUrl, featuredGames, searchQuery, catalogFilterKey, catalogSelectedSortId]);
+  }, [applyCatalogBrowseResult, applyVariantSelections, authSession, debugNoLoginMode, effectiveStreamingBaseUrl, featuredGames, loadDebugNoLoginRuntimeData, searchQuery, catalogFilterKey, catalogSelectedSortId]);
 
   const loadStorePanels = useCallback(async () => {
     const session = authSession;
@@ -1779,11 +1887,11 @@ export function App(): JSX.Element {
   }, [authSession, currentPage, loadGames, searchQuery, catalogFilterKey, catalogSelectedSortId, settings.controllerMode]);
 
   useEffect(() => {
-    if (!authSession || currentPage !== "home" || !settings.controllerMode) {
+    if (debugNoLoginMode || !authSession || currentPage !== "home" || !settings.controllerMode) {
       return;
     }
     void loadStorePanels();
-  }, [authSession, currentPage, loadStorePanels, settings.controllerMode]);
+  }, [authSession, currentPage, debugNoLoginMode, loadStorePanels, settings.controllerMode]);
 
   const handleSelectGameVariant = useCallback((gameId: string, variantId: string): void => {
     setVariantByGameId((prev) => {
@@ -2545,6 +2653,19 @@ export function App(): JSX.Element {
       return;
     }
 
+    if (debugNoLoginMode) {
+      const selectedVariantId = variantByGameId[game.id] ?? defaultVariantId(game);
+      const selectedVariant = getSelectedVariant(game, selectedVariantId);
+      setStreamingGame(game);
+      setStreamingStore(selectedVariant?.store ?? null);
+      setLaunchError({
+        stage: "queue",
+        title: "Debug no-login mode",
+        description: "Launching is disabled because this mode never calls account, session, or entitlement APIs.",
+      });
+      return;
+    }
+
     const selectedVariantId = variantByGameId[game.id] ?? defaultVariantId(game);
     const selectedVariant = getSelectedVariant(game, selectedVariantId);
     const epicOwnershipError = getEpicOwnershipLaunchError(selectedVariant);
@@ -2817,6 +2938,7 @@ export function App(): JSX.Element {
     allKnownGames,
     buildSignalingConnectRequest,
     claimAndConnectSession,
+    debugNoLoginMode,
     effectiveStreamingBaseUrl,
     refreshNavbarActiveSession,
     resetSignalingRecoveryState,
@@ -2832,6 +2954,11 @@ export function App(): JSX.Element {
 
   // Gate handler: shows queue server modal for FREE-tier users before launching
   const handleInitiatePlay = useCallback(async (game: GameInfo) => {
+    if (debugNoLoginMode) {
+      void handlePlayGame(game);
+      return;
+    }
+
     const effectiveTier = normalizeMembershipTier(
       subscriptionInfo?.membershipTier ?? authSession?.user.membershipTier,
     );
@@ -2895,7 +3022,7 @@ export function App(): JSX.Element {
       return;
     }
     void handlePlayGame(game);
-  }, [subscriptionInfo, authSession, selectedProvider, settings.hideServerSelector, streamStatus, handlePlayGame, effectiveStreamingBaseUrl]);
+  }, [debugNoLoginMode, subscriptionInfo, authSession, selectedProvider, settings.hideServerSelector, streamStatus, handlePlayGame, effectiveStreamingBaseUrl]);
 
   const handleQueueModalConfirm = useCallback((zoneUrl: string | null) => {
     const game = queueModalGame;
@@ -3398,19 +3525,6 @@ export function App(): JSX.Element {
         e.stopImmediatePropagation();
         handleStreamShortcutAction("togglePointerLock");
         return;
-        if (streamStatus === "streaming" && videoRef.current) {
-          if (document.pointerLockElement === videoRef.current) {
-            try {
-              (clientRef.current as any).suppressNextSyntheticEscape = true;
-            } catch {
-              // best-effort — client may not be initialised
-            }
-            document.exitPointerLock();
-          } else {
-            void requestPointerLockCapture(videoRef.current!);
-          }
-        }
-        return;
       }
 
       if (isShortcutMatch(e, shortcuts.toggleFullscreen)) {
@@ -3638,30 +3752,37 @@ export function App(): JSX.Element {
           {startupRefreshNotice.text}
         </div>
       )}
-      <Navbar
-        currentPage={currentPage}
-        onNavigate={setCurrentPage}
-        user={authSession.user}
-        subscription={subscriptionInfo}
-        activeSession={navbarActiveSession}
-        activeSessionGameTitle={activeSessionGameTitle}
-        isResumingSession={isResumingNavbarSession}
-        isTerminatingSession={isTerminatingNavbarSession}
-        onResumeSession={() => {
-          void handleResumeFromNavbar();
-        }}
-        onTerminateSession={() => {
-          void handleTerminateNavbarSession();
-        }}
-        savedAccounts={savedAccounts}
-        onSwitchAccount={handleSwitchAccount}
-        onRemoveAccount={(userId) => {
-          void handleRemoveAccount(userId);
-        }}
-        onAddAccount={handleAddAccount}
-        onLogoutAll={handleLogout}
-        controllerMode={settings.controllerMode}
-      />
+      {debugNoLoginMode && (
+        <div className="auth-refresh-notice auth-refresh-notice--warn">
+          Debug no-login mode: account and launch features are disabled.
+        </div>
+      )}
+      {!(settings.controllerMode && currentPage === "library") && (
+        <Navbar
+          currentPage={currentPage}
+          onNavigate={setCurrentPage}
+          user={authSession.user}
+          subscription={subscriptionInfo}
+          activeSession={navbarActiveSession}
+          activeSessionGameTitle={activeSessionGameTitle}
+          isResumingSession={isResumingNavbarSession}
+          isTerminatingSession={isTerminatingNavbarSession}
+          onResumeSession={() => {
+            void handleResumeFromNavbar();
+          }}
+          onTerminateSession={() => {
+            void handleTerminateNavbarSession();
+          }}
+          savedAccounts={savedAccounts}
+          onSwitchAccount={handleSwitchAccount}
+          onRemoveAccount={(userId) => {
+            void handleRemoveAccount(userId);
+          }}
+          onAddAccount={handleAddAccount}
+          onLogoutAll={handleLogout}
+          controllerMode={settings.controllerMode}
+        />
+      )}
 
       <main className="main-content">
         {currentPage === "home" && (

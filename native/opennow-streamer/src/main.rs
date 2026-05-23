@@ -17,6 +17,7 @@ mod gstreamer_platform;
 mod gstreamer_transitions;
 mod input;
 mod protocol;
+#[cfg(all(feature = "gstreamer", target_os = "windows"))]
 mod shortcuts;
 mod sdp;
 

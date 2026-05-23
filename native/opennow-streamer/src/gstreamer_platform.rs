@@ -1,8 +1,8 @@
 #[cfg(target_os = "windows")]
 use crate::gstreamer_backend::send_log;
 #[cfg(target_os = "windows")]
-use crate::protocol::{NativeRenderRect, NativeStreamerShortcutBindings};
-use crate::protocol::{Event, NativeRenderSurface};
+use crate::protocol::NativeRenderRect;
+use crate::protocol::{Event, NativeRenderSurface, NativeStreamerShortcutBindings};
 #[cfg(target_os = "windows")]
 use gst_video::prelude::*;
 use gstreamer as gst;

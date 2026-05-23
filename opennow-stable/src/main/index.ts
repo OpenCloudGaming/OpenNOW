@@ -80,6 +80,7 @@ import { pingRegions } from "./services/regionPing";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
+const DEBUG_NO_LOGIN_ENV = "OPENNOW_DEBUG_NO_LOGIN";
 
 // Configure Chromium video and WebRTC behavior before app.whenReady().
 
@@ -118,6 +119,20 @@ function loadBootstrapVideoPreferences(): BootstrapVideoPreferences {
   } catch {
     return defaults;
   }
+}
+
+function isDebugNoLoginEnabled(): boolean {
+  const value = process.env[DEBUG_NO_LOGIN_ENV]?.trim().toLowerCase();
+  return value === "1" || value === "true" || value === "yes" || value === "on";
+}
+
+function withDebugNoLoginParam(rawUrl: string): string {
+  if (!isDebugNoLoginEnabled()) {
+    return rawUrl;
+  }
+  const url = new URL(rawUrl);
+  url.searchParams.set("debugNoLogin", "1");
+  return url.toString();
 }
 
 const bootstrapVideoPrefs = loadBootstrapVideoPreferences();
@@ -519,7 +534,11 @@ async function createMainWindow(): Promise<void> {
   });
 
   if (process.env.ELECTRON_RENDERER_URL) {
-    await mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL);
+    await mainWindow.loadURL(withDebugNoLoginParam(process.env.ELECTRON_RENDERER_URL));
+  } else if (isDebugNoLoginEnabled()) {
+    await mainWindow.loadFile(join(__dirname, "../../dist/index.html"), {
+      query: { debugNoLogin: "1" },
+    });
   } else {
     await mainWindow.loadFile(join(__dirname, "../../dist/index.html"));
   }
