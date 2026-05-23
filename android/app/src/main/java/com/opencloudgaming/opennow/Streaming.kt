@@ -35,6 +35,7 @@ import org.webrtc.DataChannel
 import org.webrtc.DefaultVideoDecoderFactory
 import org.webrtc.DefaultVideoEncoderFactory
 import org.webrtc.EglBase
+import org.webrtc.HardwareVideoDecoderFactory
 import org.webrtc.IceCandidate
 import org.webrtc.MediaConstraints
 import org.webrtc.MediaStream
@@ -48,6 +49,8 @@ import org.webrtc.RtpTransceiver
 import org.webrtc.SdpObserver
 import org.webrtc.SessionDescription
 import org.webrtc.SurfaceViewRenderer
+import org.webrtc.VideoCodecInfo
+import org.webrtc.VideoDecoderFactory
 import org.webrtc.VideoTrack
 import org.webrtc.audio.AudioDeviceModule
 import org.webrtc.audio.JavaAudioDeviceModule
@@ -77,10 +80,12 @@ object CodecProbe {
             .joinToString(" ")
             .lowercase(Locale.US)
         val lowPower = renderer.contains("powervr") || renderer.contains("ge8320") || renderer.contains("ge83")
+        val webRtcDecoders = probeWebRtcDecoders()
         val capabilities = VideoCodec.entries.map { codec ->
             val mime = codec.mimeType()
             val decoders = codecInfos(mime, encoder = false)
             val encoders = codecInfos(mime, encoder = true)
+            val webRtc = webRtcDecoders[codec]
             CodecCapability(
                 codec = codec,
                 decoderAvailable = decoders.isNotEmpty(),
@@ -90,6 +95,10 @@ object CodecProbe {
                 decoderName = decoders.firstOrNull()?.name,
                 encoderName = encoders.firstOrNull()?.name,
                 realtimeSafe = decoders.any { isRealtimeSafeDecoder(codec, it) },
+                webRtcDecoderAvailable = webRtc?.decoderAvailable,
+                webRtcHardwareDecoderAvailable = webRtc?.hardwareDecoderAvailable,
+                webRtcDecoderName = webRtc?.decoderName,
+                webRtcCodecProfiles = webRtc?.profiles.orEmpty(),
             )
         }
         return RuntimeCodecReport(
@@ -109,6 +118,71 @@ object CodecProbe {
         return list.filter { info ->
             info.isEncoder == encoder && info.supportedTypes.any { it.equals(mime, ignoreCase = true) }
         }
+    }
+
+    private data class WebRtcCodecProbe(
+        val decoderAvailable: Boolean,
+        val hardwareDecoderAvailable: Boolean,
+        val decoderName: String?,
+        val profiles: List<String>,
+    )
+
+    private fun probeWebRtcDecoders(): Map<VideoCodec, WebRtcCodecProbe> {
+        val eglBase = runCatching { EglBase.create() }.getOrNull() ?: return emptyMap()
+        return try {
+            val defaultFactory = DefaultVideoDecoderFactory(eglBase.eglBaseContext)
+            val hardwareFactory = HardwareVideoDecoderFactory(eglBase.eglBaseContext)
+            val defaultSupported = defaultFactory.supportedCodecsByVideoCodec()
+            val hardwareSupported = hardwareFactory.supportedCodecsByVideoCodec()
+            VideoCodec.entries.associateWith { codec ->
+                val defaultInfos = defaultSupported[codec].orEmpty()
+                val hardwareInfos = hardwareSupported[codec].orEmpty()
+                val decoderName = defaultFactory.firstDecoderName(defaultInfos)
+                WebRtcCodecProbe(
+                    decoderAvailable = decoderName != null,
+                    hardwareDecoderAvailable = hardwareFactory.firstDecoderName(hardwareInfos) != null,
+                    decoderName = decoderName,
+                    profiles = defaultInfos.map(::formatWebRtcCodecInfo).distinct(),
+                )
+            }
+        } catch (_: Throwable) {
+            emptyMap()
+        } finally {
+            eglBase.release()
+        }
+    }
+
+    private fun VideoDecoderFactory.supportedCodecsByVideoCodec(): Map<VideoCodec, List<VideoCodecInfo>> =
+        getSupportedCodecs()
+            .groupBy { info -> info.name.toVideoCodec() }
+            .mapNotNull { (codec, infos) -> codec?.let { it to infos } }
+            .toMap()
+
+    private fun VideoDecoderFactory.firstDecoderName(infos: List<VideoCodecInfo>): String? {
+        for (info in infos) {
+            val decoder = runCatching { createDecoder(info) }.getOrNull() ?: continue
+            return try {
+                decoder.getImplementationName()
+            } finally {
+                runCatching { decoder.release() }
+            }
+        }
+        return null
+    }
+
+    private fun String.toVideoCodec(): VideoCodec? =
+        when (uppercase(Locale.US)) {
+            "AVC", "H264", "H.264" -> VideoCodec.H264
+            "HEVC", "H265", "H.265" -> VideoCodec.H265
+            "AV01", "AV1" -> VideoCodec.AV1
+            else -> null
+        }
+
+    private fun formatWebRtcCodecInfo(info: VideoCodecInfo): String {
+        val profile = info.params["profile-level-id"]
+        val packetization = info.params["packetization-mode"]
+        return listOfNotNull(info.name.toVideoCodec()?.name ?: info.name, profile?.let { "profile=$it" }, packetization?.let { "packet=$it" })
+            .joinToString(" ")
     }
 
     private fun isHardwareCodec(info: MediaCodecInfo): Boolean {
@@ -419,6 +493,7 @@ object NativeStreamInputRouter {
 
     fun shouldForwardTouchBeforeViews(event: MotionEvent, width: Int, height: Int): Boolean =
         client != null &&
+            !streamUiActive &&
             touchMouseEnabled &&
             width > 0 &&
             height > 0 &&
@@ -432,6 +507,7 @@ object NativeStreamInputRouter {
 
     fun dispatchTouch(event: MotionEvent, width: Int, height: Int): Boolean {
         val current = client ?: return false
+        if (streamUiActive) return false
         if (!event.isFingerTouchEvent()) return false
         return touchMouseState.handle(event, touchMouseEnabled && width > 0 && height > 0, current, width, height)
     }
@@ -448,6 +524,11 @@ object NativeStreamInputRouter {
         if (!event.isExternalMousePointerEvent()) return false
         return client?.dispatchMotion(event) == true
     }
+
+    fun shouldCaptureExternalMouse(event: MotionEvent): Boolean =
+        client != null &&
+            !streamUiActive &&
+            event.isExternalMousePointerEvent()
 
     fun dispatchKey(event: KeyEvent): Boolean {
         if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0 && event.isStreamSystemMenuKey()) {
@@ -581,6 +662,7 @@ object NativeStreamInputRouter {
             this == KeyEvent.KEYCODE_GRAVE ||
             this in KeyEvent.KEYCODE_A..KeyEvent.KEYCODE_Z ||
             this in KeyEvent.KEYCODE_0..KeyEvent.KEYCODE_9 ||
+            this in KeyEvent.KEYCODE_NUMPAD_0..KeyEvent.KEYCODE_NUMPAD_9 ||
             this in KeyEvent.KEYCODE_F1..KeyEvent.KEYCODE_F12
 
     private fun Int.isTextEntryKeyCode(): Boolean =
@@ -611,6 +693,7 @@ object NativeStreamInputRouter {
             this == KeyEvent.KEYCODE_GRAVE ||
             this in KeyEvent.KEYCODE_A..KeyEvent.KEYCODE_Z ||
             this in KeyEvent.KEYCODE_0..KeyEvent.KEYCODE_9 ||
+            this in KeyEvent.KEYCODE_NUMPAD_0..KeyEvent.KEYCODE_NUMPAD_9 ||
             this in KeyEvent.KEYCODE_F1..KeyEvent.KEYCODE_F12
 
     private fun MotionEvent.isNativeUiNavigationMotion(): Boolean =
@@ -700,6 +783,25 @@ object NativeInputDiagnostics {
                 appendLine("input.diagnostics:")
                 lines.forEach { appendLine(it) }
             }.trimEnd()
+    }
+}
+
+enum class InputDataChannelRole {
+    Reliable,
+    PartiallyReliable,
+    Other,
+}
+
+object InputDataChannelLabels {
+    fun classify(label: String): InputDataChannelRole =
+        when (label.lowercase(Locale.US)) {
+            "input_channel_v1",
+            "input_channel",
+            -> InputDataChannelRole.Reliable
+            "input_channel_partially_reliable",
+            "input_channel_pr",
+            -> InputDataChannelRole.PartiallyReliable
+            else -> InputDataChannelRole.Other
         }
 }
 
@@ -1016,7 +1118,7 @@ class NativeStreamClient(
             }
             return false
         }
-        val sent = sendInput(packet, partiallyReliable = false)
+        val sent = sendReliableInput(packet)
         if (hardwareKeyboard && !sent) {
             NativeInputDiagnostics.add("hardware keyboard consumed without send key=${event.keyCode} reliable=${reliableInput?.state()} partial=${partiallyReliableInput?.state()}")
         }
@@ -1080,23 +1182,23 @@ class NativeStreamClient(
                 mouseLastDeviceId = event.deviceId
                 mouseLastX = event.x
                 mouseLastY = event.y
-                sendInput(inputEncoder.encodeMouseButton(InputEncoder.INPUT_MOUSE_BUTTON_DOWN, event.primaryMouseButton()), false)
+                sendReliableInput(inputEncoder.encodeMouseButton(InputEncoder.INPUT_MOUSE_BUTTON_DOWN, event.primaryMouseButton()))
             }
             MotionEvent.ACTION_UP,
             MotionEvent.ACTION_CANCEL,
             -> {
                 mousePositionValid = false
-                sendInput(inputEncoder.encodeMouseButton(InputEncoder.INPUT_MOUSE_BUTTON_UP, event.primaryMouseButton()), false)
+                sendReliableInput(inputEncoder.encodeMouseButton(InputEncoder.INPUT_MOUSE_BUTTON_UP, event.primaryMouseButton()))
             }
             MotionEvent.ACTION_BUTTON_PRESS -> {
-                val handled = sendInput(inputEncoder.encodeMouseButton(InputEncoder.INPUT_MOUSE_BUTTON_DOWN, event.actionButton.toGfnMouseButton()), false)
+                val handled = sendReliableInput(inputEncoder.encodeMouseButton(InputEncoder.INPUT_MOUSE_BUTTON_DOWN, event.actionButton.toGfnMouseButton()))
                 if (!handled) {
                     NativeInputDiagnostics.add("external mouse button consumed without send action=press button=${event.actionButton} reliable=${reliableInput?.state()} partial=${partiallyReliableInput?.state()}")
                 }
                 return true
             }
             MotionEvent.ACTION_BUTTON_RELEASE -> {
-                val handled = sendInput(inputEncoder.encodeMouseButton(InputEncoder.INPUT_MOUSE_BUTTON_UP, event.actionButton.toGfnMouseButton()), false)
+                val handled = sendReliableInput(inputEncoder.encodeMouseButton(InputEncoder.INPUT_MOUSE_BUTTON_UP, event.actionButton.toGfnMouseButton()))
                 if (!handled) {
                     NativeInputDiagnostics.add("external mouse button consumed without send action=release button=${event.actionButton} reliable=${reliableInput?.state()} partial=${partiallyReliableInput?.state()}")
                 }
@@ -1105,7 +1207,7 @@ class NativeStreamClient(
             MotionEvent.ACTION_SCROLL -> {
                 val vertical = event.getAxisValue(MotionEvent.AXIS_VSCROLL)
                 if (abs(vertical) >= 0.01f) {
-                    sendInput(inputEncoder.encodeMouseWheel((vertical * 120).roundToInt()), false)
+                    sendReliableInput(inputEncoder.encodeMouseWheel((vertical * 120).roundToInt()))
                 }
             }
         }
@@ -1390,16 +1492,16 @@ class NativeStreamClient(
                     emitState("Streaming")
                 }
                 PeerConnection.IceConnectionState.DISCONNECTED -> {
-                    emitState("Connection interrupted")
+                    emitState("ICE_DISCONNECTED")
                     scheduleTransportReconnect("ICE disconnected", ICE_DISCONNECTED_GRACE_MS, generation)
                 }
                 PeerConnection.IceConnectionState.FAILED -> {
-                    emitState("Reconnecting stream")
+                    emitState("ICE_FAILED")
                     scheduleTransportReconnect("ICE failed", ICE_FAILED_RECONNECT_DELAY_MS, generation)
                 }
                 PeerConnection.IceConnectionState.CHECKING,
                 PeerConnection.IceConnectionState.NEW,
-                -> emitState("Connecting media")
+                -> emitState(state.toIceStatusLabel())
                 PeerConnection.IceConnectionState.CLOSED -> Unit
                 null -> Unit
             }
@@ -1447,6 +1549,8 @@ class NativeStreamClient(
         scope.launch { onError(message) }
     }
 
+    private fun PeerConnection.IceConnectionState.toIceStatusLabel(): String = "ICE_${name}"
+
     private fun emitStats(stats: StreamRuntimeStats) {
         scope.launch { onStats(stats) }
     }
@@ -1477,20 +1581,22 @@ class NativeStreamClient(
     }
 
     private fun attachDataChannel(channel: DataChannel) {
-        val label = channel.label().lowercase(Locale.US)
-        NativeInputDiagnostics.add("input channel attached label=$label state=${channel.state()}")
-        if (label.contains("partial") || label.contains("pr")) {
-            partiallyReliableInput = channel
-        } else {
-            reliableInput = channel
+        val label = channel.label()
+        val normalizedLabel = label.lowercase(Locale.US)
+        val role = InputDataChannelLabels.classify(label)
+        NativeInputDiagnostics.add("data channel attached label=$normalizedLabel role=$role state=${channel.state()}")
+        when (role) {
+            InputDataChannelRole.Reliable -> reliableInput = channel
+            InputDataChannelRole.PartiallyReliable -> partiallyReliableInput = channel
+            InputDataChannelRole.Other -> return
         }
         channel.registerObserver(object : DataChannel.Observer {
             override fun onBufferedAmountChange(previousAmount: Long) = Unit
             override fun onStateChange() {
                 if (channel.state() == DataChannel.State.OPEN) {
                     inputDropLogged = false
-                    NativeInputDiagnostics.add("input channel open label=$label")
-                    sendInput(inputEncoder.encodeHapticsEnabled(true), partiallyReliable = false)
+                    NativeInputDiagnostics.add("input channel open label=$normalizedLabel")
+                    sendReliableInput(inputEncoder.encodeHapticsEnabled(true))
                 }
             }
             override fun onMessage(buffer: DataChannel.Buffer) {
@@ -1532,7 +1638,7 @@ class NativeStreamClient(
         heartbeatJob = scope.launch {
             while (true) {
                 delay(1000)
-                sendInput(inputEncoder.encodeHeartbeat(), partiallyReliable = false)
+                sendReliableInput(inputEncoder.encodeHeartbeat())
             }
         }
     }
@@ -1765,6 +1871,15 @@ class NativeStreamClient(
 
     private fun sendInput(bytes: ByteArray, partiallyReliable: Boolean): Boolean =
         sendInput(bytes, partiallyReliable, fallbackToReliable = true)
+
+    private fun sendReliableInput(bytes: ByteArray): Boolean {
+        if (sendInput(bytes, partiallyReliable = false)) return true
+        val sentPartial = sendInput(bytes, partiallyReliable = true, fallbackToReliable = false)
+        if (sentPartial) {
+            NativeInputDiagnostics.add("reliable input used partial fallback reliable=${reliableInput?.state()} partial=${partiallyReliableInput?.state()} bytes=${bytes.size}")
+        }
+        return sentPartial
+    }
 
     private fun sendInput(bytes: ByteArray, partiallyReliable: Boolean, fallbackToReliable: Boolean): Boolean {
         val channel = if (partiallyReliable && partiallyReliableInput?.state() == DataChannel.State.OPEN) {
@@ -2299,17 +2414,42 @@ class InputEncoder {
 
         fun mapKeyEvent(event: KeyEvent): KeyboardPayload? {
             if (event.action != KeyEvent.ACTION_DOWN && event.action != KeyEvent.ACTION_UP) return null
-            val vk = virtualKey(event.keyCode, event.unicodeChar)
-            val scancode = if (event.scanCode > 0) event.scanCode else fallbackScanCode(event.keyCode)
-            if (vk == null || scancode == null) return null
+            return mapKeyboardPayload(
+                keyCode = event.keyCode,
+                unicode = event.unicodeChar,
+                scanCode = event.scanCode,
+                shift = event.isShiftPressed,
+                ctrl = event.isCtrlPressed,
+                alt = event.isAltPressed,
+                meta = event.isMetaPressed,
+                capsLock = event.isCapsLockOn,
+                numLock = event.isNumLockOn,
+            )
+        }
+
+        internal fun mapKeyboardPayload(
+            keyCode: Int,
+            unicode: Int,
+            scanCode: Int,
+            shift: Boolean = false,
+            ctrl: Boolean = false,
+            alt: Boolean = false,
+            meta: Boolean = false,
+            capsLock: Boolean = false,
+            numLock: Boolean = false,
+            timestampUs: Long = timestampUs(),
+        ): KeyboardPayload? {
+            val vk = virtualKey(keyCode, unicode)
+            val resolvedScanCode = if (scanCode > 0) scanCode else fallbackScanCode(keyCode)
+            if (vk == null || resolvedScanCode == null) return null
             var modifiers = 0
-            if (event.isShiftPressed) modifiers = modifiers or 0x01
-            if (event.isCtrlPressed) modifiers = modifiers or 0x02
-            if (event.isAltPressed) modifiers = modifiers or 0x04
-            if (event.isMetaPressed) modifiers = modifiers or 0x08
-            if (event.isCapsLockOn) modifiers = modifiers or 0x10
-            if (event.isNumLockOn) modifiers = modifiers or 0x20
-            return KeyboardPayload(vk, scancode, modifiers)
+            if (shift) modifiers = modifiers or 0x01
+            if (ctrl) modifiers = modifiers or 0x02
+            if (alt) modifiers = modifiers or 0x04
+            if (meta) modifiers = modifiers or 0x08
+            if (capsLock) modifiers = modifiers or 0x10
+            if (numLock) modifiers = modifiers or 0x20
+            return KeyboardPayload(vk, resolvedScanCode, modifiers, timestampUs)
         }
 
         private fun virtualKey(keyCode: Int, unicode: Int): Int? =
@@ -2354,6 +2494,7 @@ class InputEncoder {
                 KeyEvent.KEYCODE_GRAVE -> 0xc0
                 in KeyEvent.KEYCODE_A..KeyEvent.KEYCODE_Z -> 0x41 + (keyCode - KeyEvent.KEYCODE_A)
                 in KeyEvent.KEYCODE_0..KeyEvent.KEYCODE_9 -> 0x30 + (keyCode - KeyEvent.KEYCODE_0)
+                in KeyEvent.KEYCODE_NUMPAD_0..KeyEvent.KEYCODE_NUMPAD_9 -> 0x60 + (keyCode - KeyEvent.KEYCODE_NUMPAD_0)
                 in KeyEvent.KEYCODE_F1..KeyEvent.KEYCODE_F12 -> 0x70 + (keyCode - KeyEvent.KEYCODE_F1)
                 else -> unicode.takeIf { it in 1..255 }?.let { Character.toUpperCase(it.toChar()).code }
             }
@@ -2386,7 +2527,28 @@ class InputEncoder {
                 KeyEvent.KEYCODE_X -> 0x002d
                 KeyEvent.KEYCODE_Y -> 0x0015
                 KeyEvent.KEYCODE_Z -> 0x002c
+                KeyEvent.KEYCODE_1 -> 0x0002
+                KeyEvent.KEYCODE_2 -> 0x0003
+                KeyEvent.KEYCODE_3 -> 0x0004
+                KeyEvent.KEYCODE_4 -> 0x0005
+                KeyEvent.KEYCODE_5 -> 0x0006
+                KeyEvent.KEYCODE_6 -> 0x0007
+                KeyEvent.KEYCODE_7 -> 0x0008
+                KeyEvent.KEYCODE_8 -> 0x0009
+                KeyEvent.KEYCODE_9 -> 0x000a
+                KeyEvent.KEYCODE_0 -> 0x000b
+                KeyEvent.KEYCODE_NUMPAD_7 -> 0x0047
+                KeyEvent.KEYCODE_NUMPAD_8 -> 0x0048
+                KeyEvent.KEYCODE_NUMPAD_9 -> 0x0049
+                KeyEvent.KEYCODE_NUMPAD_4 -> 0x004b
+                KeyEvent.KEYCODE_NUMPAD_5 -> 0x004c
+                KeyEvent.KEYCODE_NUMPAD_6 -> 0x004d
+                KeyEvent.KEYCODE_NUMPAD_1 -> 0x004f
+                KeyEvent.KEYCODE_NUMPAD_2 -> 0x0050
+                KeyEvent.KEYCODE_NUMPAD_3 -> 0x0051
+                KeyEvent.KEYCODE_NUMPAD_0 -> 0x0052
                 KeyEvent.KEYCODE_ENTER -> 0x001c
+                KeyEvent.KEYCODE_NUMPAD_ENTER -> 0x011c
                 KeyEvent.KEYCODE_ESCAPE -> 0x0001
                 KeyEvent.KEYCODE_SPACE -> 0x0039
                 KeyEvent.KEYCODE_TAB -> 0x000f

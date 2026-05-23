@@ -3,6 +3,7 @@ package com.opencloudgaming.opennow
 import kotlinx.serialization.Serializable
 import java.util.Locale
 import kotlin.math.abs
+import kotlin.math.max
 
 @Serializable
 enum class VideoCodec {
@@ -430,6 +431,34 @@ private val primaryCatalogStoreKeys = setOf(
     "MICROSOFT_STORE",
 )
 
+private val ownedLibraryStatuses = setOf("MANUAL", "PLATFORM_SYNC", "IN_LIBRARY")
+
+internal fun isOwnedLibraryStatus(status: String?): Boolean =
+    status in ownedLibraryStatuses
+
+internal fun isOwnedGameVariant(variant: GameVariant): Boolean =
+    isOwnedLibraryStatus(variant.libraryStatus)
+
+internal fun isGameInLibrary(game: GameInfo): Boolean =
+    game.isInLibrary || game.variants.any(::isOwnedGameVariant)
+
+internal fun shouldLaunchWithAccountLinked(game: GameInfo, selectedVariant: GameVariant?): Boolean {
+    if (game.playType == "INSTALL_TO_PLAY") return false
+    if (selectedVariant?.let(::isOwnedGameVariant) == true) return true
+    return isGameInLibrary(game)
+}
+
+internal fun mergeKnownLibraryGames(vararg groups: List<GameInfo>): List<GameInfo> {
+    val byKey = linkedMapOf<String, GameInfo>()
+    for (game in groups.flatMap { it }) {
+        if (!isGameInLibrary(game)) continue
+        val key = game.uuid ?: game.id
+        val existing = byKey[key]
+        byKey[key] = if (existing == null) game.copy(isInLibrary = true) else mergeGameInfo(existing, game).copy(isInLibrary = true)
+    }
+    return byKey.values.toList()
+}
+
 internal fun normalizeGameStore(store: String): String =
     store.uppercase(Locale.US).replace(Regex("[\\s-]+"), "_")
 
@@ -492,10 +521,38 @@ internal fun displayStoresForVariants(variants: List<GameVariant>): List<String>
         .filter { it.isNotBlank() }
         .distinctBy { normalizeGameStore(it) }
 
+private fun mergeGameInfo(left: GameInfo, right: GameInfo): GameInfo {
+    val variants = (left.variants + right.variants).distinctBy { it.id }
+    val selectedVariantId = left.variants.getOrNull(left.selectedVariantIndex)?.id
+        ?: right.variants.getOrNull(right.selectedVariantIndex)?.id
+    val selectedIndex = selectedVariantId?.let { id -> variants.indexOfFirst { it.id == id } } ?: -1
+    return left.copy(
+        uuid = left.uuid ?: right.uuid,
+        launchAppId = left.launchAppId ?: right.launchAppId,
+        description = left.description ?: right.description,
+        longDescription = left.longDescription ?: right.longDescription,
+        imageUrl = left.imageUrl ?: right.imageUrl,
+        screenshotUrl = left.screenshotUrl ?: right.screenshotUrl,
+        playType = left.playType ?: right.playType,
+        membershipTierLabel = left.membershipTierLabel ?: right.membershipTierLabel,
+        publisherName = left.publisherName ?: right.publisherName,
+        contentRatings = (left.contentRatings + right.contentRatings).distinct(),
+        playabilityState = left.playabilityState ?: right.playabilityState,
+        variants = variants,
+        availableStores = displayStoresForVariants(variants),
+        genres = (left.genres + right.genres).distinct(),
+        featureLabels = (left.featureLabels + right.featureLabels).distinct(),
+        searchText = listOfNotNull(left.searchText, right.searchText).joinToString(" ").ifBlank { null },
+        lastPlayed = left.lastPlayed ?: right.lastPlayed,
+        isInLibrary = left.isInLibrary || right.isInLibrary,
+        selectedVariantIndex = if (selectedIndex >= 0) selectedIndex else left.selectedVariantIndex.coerceAtMost(max(variants.size - 1, 0)),
+    )
+}
+
 private fun variantLaunchRank(variant: GameVariant): Int =
     when {
-        variant.librarySelected == true -> 4
-        variant.libraryStatus in setOf("MANUAL", "PLATFORM_SYNC", "IN_LIBRARY") -> 3
+        variant.librarySelected == true && isOwnedGameVariant(variant) -> 4
+        isOwnedGameVariant(variant) -> 3
         variant.id.all(Char::isDigit) -> 2
         else -> 1
     }
@@ -686,6 +743,10 @@ data class CodecCapability(
     val decoderName: String? = null,
     val encoderName: String? = null,
     val realtimeSafe: Boolean = hardwareDecoder,
+    val webRtcDecoderAvailable: Boolean? = null,
+    val webRtcHardwareDecoderAvailable: Boolean? = null,
+    val webRtcDecoderName: String? = null,
+    val webRtcCodecProfiles: List<String> = emptyList(),
 )
 
 data class RuntimeCodecReport(
@@ -703,23 +764,43 @@ data class StreamRuntimeStats(
     val codec: String? = null,
 )
 
+internal fun CodecCapability.streamingDecoderAvailable(): Boolean =
+    webRtcDecoderAvailable ?: decoderAvailable
+
+internal fun CodecCapability.streamingHardwareDecoderAvailable(): Boolean =
+    webRtcHardwareDecoderAvailable ?: hardwareDecoder
+
+internal fun CodecCapability.streamingDecoderName(): String? =
+    webRtcDecoderName ?: decoderName
+
+internal fun CodecCapability.streamingRealtimeSafe(): Boolean =
+    streamingDecoderAvailable() && (codec == VideoCodec.H264 || streamingHardwareDecoderAvailable() || webRtcDecoderAvailable == true)
+
+internal fun CodecCapability.streamingDecoderUsableForLaunch(): Boolean =
+    webRtcDecoderAvailable ?: (decoderAvailable && (codec == VideoCodec.H264 || hardwareDecoder))
+
+private fun RuntimeCodecReport.bestStreamingFallbackCodec(): VideoCodec =
+    listOf(VideoCodec.AV1, VideoCodec.H265, VideoCodec.H264)
+        .firstOrNull { codec -> capabilities.firstOrNull { it.codec == codec }?.streamingDecoderUsableForLaunch() == true }
+        ?: VideoCodec.H264
+
 internal fun StreamSettings.adjustedForDevice(report: RuntimeCodecReport?): StreamSettings {
     val capability = report?.capabilities?.firstOrNull { it.codec == codec }
-    val codecSupported = capability?.let { it.decoderAvailable && (codec == VideoCodec.H264 || it.hardwareDecoder) } ?: true
-    if (!codecSupported) {
-        return copy(codec = VideoCodec.H264, colorQuality = ColorQuality.EightBit420, maxBitrateMbps = minOf(maxBitrateMbps, 35), fps = minOf(fps, 60))
-    }
+    val codecSupported = capability?.streamingDecoderUsableForLaunch() ?: true
+    val effectiveCodec = if (codecSupported) codec else report?.bestStreamingFallbackCodec() ?: VideoCodec.H264
 
     val profileBitrateCap = when {
+        !codecSupported -> 35
         report?.lowPowerGpuProfile == true -> 25
         report?.androidTvProfile == true -> 35
-        codec == VideoCodec.H264 -> 45
+        effectiveCodec == VideoCodec.H264 -> 45
         else -> 75
     }
 
-    return when (codec) {
-        VideoCodec.H264 -> copy(colorQuality = ColorQuality.EightBit420, maxBitrateMbps = minOf(maxBitrateMbps, profileBitrateCap), fps = minOf(fps, 60))
+    val adjusted = if (effectiveCodec == codec) this else copy(codec = effectiveCodec)
+    return when (effectiveCodec) {
+        VideoCodec.H264 -> adjusted.copy(colorQuality = ColorQuality.EightBit420, maxBitrateMbps = minOf(adjusted.maxBitrateMbps, profileBitrateCap), fps = minOf(adjusted.fps, 60))
         VideoCodec.H265,
-        VideoCodec.AV1 -> copy(maxBitrateMbps = minOf(maxBitrateMbps, profileBitrateCap), fps = minOf(fps, 60))
+        VideoCodec.AV1 -> adjusted.copy(maxBitrateMbps = minOf(adjusted.maxBitrateMbps, profileBitrateCap), fps = minOf(adjusted.fps, 60))
     }
 }

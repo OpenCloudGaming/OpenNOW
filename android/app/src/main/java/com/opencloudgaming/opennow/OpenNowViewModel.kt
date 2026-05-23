@@ -861,7 +861,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             appendLine("input.keyboardLayout=${snapshot.settings.stream.keyboardLayout} mouseCapture=${snapshot.settings.mouseCapture} touch=${snapshot.settings.androidTouch}")
             appendLine("codec.native=${codecReport?.nativeRuntimeSummary.orEmpty()} lowPower=${codecReport?.lowPowerGpuProfile} tv=${codecReport?.androidTvProfile}")
             codecReport?.capabilities?.forEach { cap ->
-                appendLine("codec.${cap.codec}: decoder=${cap.decoderName ?: "none"} hardware=${cap.hardwareDecoder} encoder=${cap.encoderName ?: "none"}")
+                appendLine("codec.${cap.codec}: decoder=${cap.decoderName ?: "none"} hardware=${cap.hardwareDecoder} webRtc=${cap.webRtcDecoderName ?: "none"} webRtcAvailable=${cap.webRtcDecoderAvailable ?: "unknown"} webRtcHardware=${cap.webRtcHardwareDecoderAvailable ?: "unknown"} encoder=${cap.encoderName ?: "none"}")
             }
             appendLine(NativeInputDiagnostics.snapshot())
             snapshot.error?.let { appendLine("error=$it") }
@@ -882,10 +882,15 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             filterIds = state.value.catalogFilterIds,
         )
         if (cachedMain != null || cachedLibrary != null || cachedCatalog != null) {
+            val cachedMergedLibrary = mergeKnownLibraryGames(
+                cachedLibrary.orEmpty(),
+                cachedMain.orEmpty(),
+                cachedCatalog?.games.orEmpty(),
+            )
             _state.update {
                 it.copy(
                     games = cachedMain ?: it.games,
-                    libraryGames = cachedLibrary ?: it.libraryGames,
+                    libraryGames = cachedMergedLibrary.ifEmpty { cachedLibrary ?: it.libraryGames },
                     catalogResult = cachedCatalog ?: it.catalogResult,
                     loadingGames = false,
                     error = null,
@@ -909,8 +914,9 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 val main = catalogRepository.fetchMainGames(token, baseUrl)
                 val library = catalogRepository.fetchLibraryGames(token, baseUrl)
                 val catalog = catalogRepository.browseCatalog(token, baseUrl, state.value.catalogSearch, state.value.catalogSortId, state.value.catalogFilterIds)
+                val mergedLibrary = mergeKnownLibraryGames(library, main, catalog.games)
                 catalogCacheStore.saveMainGames(session.user.userId, baseUrl, main)
-                catalogCacheStore.saveLibraryGames(session.user.userId, baseUrl, library)
+                catalogCacheStore.saveLibraryGames(session.user.userId, baseUrl, mergedLibrary)
                 catalogCacheStore.saveCatalog(
                     userId = session.user.userId,
                     providerStreamingBaseUrl = baseUrl,
@@ -919,7 +925,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                     filterIds = state.value.catalogFilterIds,
                     result = catalog,
                 )
-                Triple(main, library, catalog)
+                Triple(main, mergedLibrary, catalog)
             }.onSuccess { (main, library, catalog) ->
                 _state.update {
                     it.copy(
@@ -969,6 +975,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                     filterIds = state.value.catalogFilterIds,
                 )
             }.onSuccess { result ->
+                val mergedLibrary = mergeKnownLibraryGames(state.value.libraryGames, result.games)
                 catalogCacheStore.saveCatalog(
                     userId = auth.user.userId,
                     providerStreamingBaseUrl = baseUrl,
@@ -977,7 +984,14 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                     filterIds = state.value.catalogFilterIds,
                     result = result,
                 )
-                _state.update { it.copy(catalogResult = result, loadingGames = false, games = result.games) }
+                _state.update {
+                    it.copy(
+                        catalogResult = result,
+                        loadingGames = false,
+                        games = result.games,
+                        libraryGames = mergedLibrary.ifEmpty { it.libraryGames },
+                    )
+                }
             }.onFailure { error ->
                 if (error is CancellationException) return@onFailure
                 _state.update { it.copy(error = if (cachedCatalog != null) null else error.message ?: "Catalog refresh failed", loadingGames = false) }
@@ -1224,8 +1238,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     }
 
     private fun shouldSendAccountLinked(game: GameInfo, variant: GameVariant?): Boolean {
-        val store = variant?.store?.lowercase().orEmpty()
-        return !store.contains("epic") || game.isInLibrary || variant?.libraryStatus in setOf("MANUAL", "PLATFORM_SYNC", "IN_LIBRARY")
+        return shouldLaunchWithAccountLinked(game, variant)
     }
 
     private fun normalizeLaunchError(error: Throwable): String {

@@ -42,22 +42,76 @@ class StreamSettingsDeviceAdjustmentTest {
         assertEquals(25, adjusted.maxBitrateMbps)
     }
 
+    @Test
+    fun preservesSelectedAv1WhenWebRtcDecoderExistsEvenIfPlatformProbeMissesIt() {
+        val adjusted = StreamSettings(codec = VideoCodec.AV1, colorQuality = ColorQuality.TenBit420)
+            .adjustedForDevice(
+                codecReport(
+                    VideoCodec.AV1,
+                    decoderAvailable = false,
+                    hardwareDecoder = false,
+                    realtimeSafe = false,
+                    webRtcDecoderAvailable = true,
+                ),
+            )
+
+        assertEquals(VideoCodec.AV1, adjusted.codec)
+        assertEquals(ColorQuality.TenBit420, adjusted.colorQuality)
+    }
+
+    @Test
+    fun avoidsH264WhenPlatformAdvertisesItButWebRtcCannotCreateDecoder() {
+        val report = RuntimeCodecReport(
+            capabilities = listOf(
+                CodecCapability(
+                    codec = VideoCodec.H264,
+                    decoderAvailable = true,
+                    encoderAvailable = false,
+                    hardwareDecoder = true,
+                    hardwareEncoder = false,
+                    realtimeSafe = true,
+                    webRtcDecoderAvailable = false,
+                ),
+                CodecCapability(
+                    codec = VideoCodec.AV1,
+                    decoderAvailable = false,
+                    encoderAvailable = false,
+                    hardwareDecoder = false,
+                    hardwareEncoder = false,
+                    realtimeSafe = false,
+                    webRtcDecoderAvailable = true,
+                ),
+            ),
+            nativeRuntimeSummary = "{}",
+            androidTvProfile = false,
+            lowPowerGpuProfile = false,
+        )
+
+        val adjusted = StreamSettings(codec = VideoCodec.H264, colorQuality = ColorQuality.EightBit420)
+            .adjustedForDevice(report)
+
+        assertEquals(VideoCodec.AV1, adjusted.codec)
+    }
+
     private fun codecReport(
         codec: VideoCodec,
+        decoderAvailable: Boolean = true,
         hardwareDecoder: Boolean,
         realtimeSafe: Boolean,
         lowPower: Boolean = false,
         tv: Boolean = false,
+        webRtcDecoderAvailable: Boolean? = null,
     ): RuntimeCodecReport =
         RuntimeCodecReport(
             capabilities = listOf(
                 CodecCapability(
                     codec = codec,
-                    decoderAvailable = true,
+                    decoderAvailable = decoderAvailable,
                     encoderAvailable = false,
                     hardwareDecoder = hardwareDecoder,
                     hardwareEncoder = false,
                     realtimeSafe = realtimeSafe,
+                    webRtcDecoderAvailable = webRtcDecoderAvailable,
                 ),
             ),
             nativeRuntimeSummary = "{}",

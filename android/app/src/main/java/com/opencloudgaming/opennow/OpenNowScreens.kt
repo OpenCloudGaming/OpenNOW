@@ -168,6 +168,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.Locale
+import java.util.WeakHashMap
 import java.net.URL
 import kotlin.math.min
 import kotlin.math.floor
@@ -185,6 +186,7 @@ private val SettingsPanel = Color(0xff11161a)
 private val SettingsPanelAlt = Color(0xff171d22)
 private val SettingsText = Color(0xffeef3f5)
 private val SettingsTextMuted = Color(0xff98a4aa)
+private val externalMouseCaptureRetries = WeakHashMap<android.view.View, Runnable>()
 
 private data class SettingsChoiceOption(val value: String, val label: String)
 private data class ChoiceMenuOption(
@@ -2233,6 +2235,9 @@ private fun SettingsContent(
     SettingsSection("Debug Logs") {
                 DebugLogsPanel(state = state, viewModel = viewModel)
             }
+    SettingsSection("About") {
+                AppVersionPanel()
+            }
     }
 }
 
@@ -2300,7 +2305,7 @@ private fun CodecDiagnosticsPanel(report: RuntimeCodecReport?) {
     }
     val clipboard = LocalClipboardManager.current
     var copied by remember(report) { mutableStateOf(false) }
-    val safeDecoders = report.capabilities.count { it.realtimeSafe }
+    val safeDecoders = report.capabilities.count { it.streamingRealtimeSafe() }
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Button(
             onClick = {
@@ -2349,6 +2354,10 @@ private fun formatCodecDiagnosticReport(report: RuntimeCodecReport): String = bu
         appendLine("decoderName=${capability.decoderName ?: "none"}")
         appendLine("hardwareDecoder=${capability.hardwareDecoder}")
         appendLine("realtimeSafe=${capability.realtimeSafe}")
+        appendLine("webRtcDecoderAvailable=${capability.webRtcDecoderAvailable ?: "unknown"}")
+        appendLine("webRtcDecoderName=${capability.webRtcDecoderName ?: "none"}")
+        appendLine("webRtcHardwareDecoderAvailable=${capability.webRtcHardwareDecoderAvailable ?: "unknown"}")
+        appendLine("webRtcProfiles=${capability.webRtcCodecProfiles.joinToString(", ").ifBlank { "none" }}")
         appendLine("encoderAvailable=${capability.encoderAvailable}")
         appendLine("encoderName=${capability.encoderName ?: "none"}")
         appendLine("hardwareEncoder=${capability.hardwareEncoder}")
@@ -2371,10 +2380,12 @@ private fun RowScope.CodecSummaryChip(value: String, label: String) {
 
 @Composable
 private fun CodecCapabilityRow(capability: CodecCapability) {
-    val healthy = capability.decoderAvailable && capability.realtimeSafe
+    val streamingReady = capability.streamingDecoderAvailable()
+    val healthy = capability.streamingRealtimeSafe()
     val status = when {
         healthy -> "Ready"
-        capability.decoderAvailable -> "Decoder risky"
+        streamingReady -> "WebRTC ready"
+        capability.decoderAvailable -> "Platform only"
         else -> "Unavailable"
     }
     Surface(
@@ -2393,14 +2404,14 @@ private fun CodecCapabilityRow(capability: CodecCapability) {
                 )
             }
             Text(
-                "Decoder: ${capability.decoderName ?: "none"}",
+                "WebRTC: ${capability.streamingDecoderName() ?: "none"}",
                 color = SettingsTextMuted,
                 style = MaterialTheme.typography.bodySmall,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
             Text(
-                "Hardware decode ${yesNo(capability.hardwareDecoder)} - encoder ${capability.encoderName ?: "none"}",
+                "Hardware decode ${yesNo(capability.streamingHardwareDecoderAvailable())} - platform ${capability.decoderName ?: "none"}",
                 color = SettingsTextMuted,
                 style = MaterialTheme.typography.bodySmall,
                 maxLines = 1,
@@ -2411,6 +2422,25 @@ private fun CodecCapabilityRow(capability: CodecCapability) {
 }
 
 private fun yesNo(value: Boolean): String = if (value) "yes" else "no"
+
+@Composable
+private fun AppVersionPanel() {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .background(SettingsPanelAlt)
+            .padding(horizontal = 14.dp, vertical = 12.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text("OpenNOW Android", color = SettingsText, fontWeight = FontWeight.SemiBold)
+            Text("Version ${BuildConfig.VERSION_NAME}", color = SettingsTextMuted, style = MaterialTheme.typography.bodySmall)
+        }
+        Text("Build ${BuildConfig.VERSION_CODE}", color = SettingsTextMuted, style = MaterialTheme.typography.labelMedium)
+    }
+}
 
 @Composable
 private fun DebugLogsPanel(state: OpenNowUiState, viewModel: OpenNowViewModel) {
@@ -2588,6 +2618,7 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                 settings = streamSettings,
                 captureExternalMouse = streamReady && !controlsOpen && !exitConfirmOpen && !keyboardOpen,
                 touchMouseEnabled = state.settings.androidTouch.mousePad,
+                externalMouseCaptureRoot = activity?.window?.decorView,
             )
             if (statsVisible) {
                 StreamStatsPill(
@@ -2710,21 +2741,23 @@ private fun StreamVideoSurface(
     settings: StreamSettings,
     captureExternalMouse: Boolean,
     touchMouseEnabled: Boolean,
+    externalMouseCaptureRoot: android.view.View?,
     modifier: Modifier = Modifier,
 ) {
     val rootView = LocalView.current
+    val captureRootView = externalMouseCaptureRoot ?: rootView
     val (streamWidth, streamHeight) = streamResolutionPixels(settings)
     val streamAspect = (streamWidth.toFloat() / streamHeight.toFloat()).takeIf { it.isFinite() && it > 0f } ?: (16f / 9f)
-    DisposableEffect(rootView, captureExternalMouse) {
-        rootView.captureExternalMousePointer(false)
+    DisposableEffect(rootView, captureRootView, captureExternalMouse) {
+        captureRootView.captureExternalMousePointer(captureExternalMouse)
         if (captureExternalMouse) {
-            rootView.hideAndroidPointerTree()
+            captureRootView.hideAndroidPointerTree()
         } else {
-            rootView.showAndroidPointerTree()
+            captureRootView.showAndroidPointerTree()
         }
         onDispose {
-            rootView.captureExternalMousePointer(false)
-            rootView.showAndroidPointerTree()
+            captureRootView.captureExternalMousePointer(false)
+            captureRootView.showAndroidPointerTree()
         }
     }
     BoxWithConstraints(
@@ -2761,15 +2794,15 @@ private fun StreamVideoSurface(
                     renderer.isFocusable = false
                     renderer.isFocusableInTouchMode = false
                     if (captureExternalMouse) {
-                        rootView.hideAndroidPointerTree()
+                        captureRootView.hideAndroidPointerTree()
                         renderer.hideAndroidPointerTree()
                     } else {
-                        rootView.showAndroidPointerTree()
+                        captureRootView.showAndroidPointerTree()
                         renderer.showAndroidPointerTree()
                     }
                     renderer.setOnKeyListener(null)
                     renderer.setOnGenericMotionListener { _, event ->
-                        if (captureExternalMouse) rootView.hideAndroidPointerTree()
+                        if (captureExternalMouse) captureRootView.hideAndroidPointerTree()
                         client.dispatchMotion(event)
                     }
                     renderer.setOnTouchListener { view, event ->
@@ -2819,6 +2852,19 @@ private fun android.view.View.applyAndroidPointerIconTree(icon: PointerIcon?) {
 
 private fun android.view.View.captureExternalMousePointer(enabled: Boolean) {
     if (Build.VERSION.SDK_INT < 26) return
+    val view = this
+    val requestCapture = {
+        if (!view.isFocusableInTouchMode) {
+            view.isFocusableInTouchMode = true
+        }
+        if (!view.hasFocus()) {
+            view.requestFocus()
+        }
+        if (!view.hasPointerCapture() && view.isAttachedToWindow && view.hasWindowFocus()) {
+            runCatching { view.requestPointerCapture() }
+        }
+    }
+    externalMouseCaptureRetries.remove(view)?.let(view::removeCallbacks)
     setOnCapturedPointerListener(
         if (enabled) {
             android.view.View.OnCapturedPointerListener { _, event ->
@@ -2829,17 +2875,25 @@ private fun android.view.View.captureExternalMousePointer(enabled: Boolean) {
         },
     )
     if (enabled) {
-        if (!isFocusableInTouchMode) {
-            isFocusableInTouchMode = true
+        setOnFocusChangeListener { _, hasFocus ->
+            if (hasFocus) post { requestCapture() }
         }
-        if (!hasFocus()) {
-            requestFocus()
+        lateinit var retryCapture: Runnable
+        retryCapture = Runnable {
+            requestCapture()
+            if (externalMouseCaptureRetries[view] === retryCapture) {
+                view.postDelayed(retryCapture, 350L)
+            }
         }
-        if (!hasPointerCapture()) {
-            runCatching { requestPointerCapture() }
-        }
+        externalMouseCaptureRetries[view] = retryCapture
+        post(retryCapture)
     } else if (hasPointerCapture()) {
         runCatching { releasePointerCapture() }
+        setOnFocusChangeListener(null)
+        externalMouseCaptureRetries.remove(view)?.let(view::removeCallbacks)
+    } else {
+        setOnFocusChangeListener(null)
+        externalMouseCaptureRetries.remove(view)?.let(view::removeCallbacks)
     }
 }
 
@@ -3201,7 +3255,11 @@ private fun formatRuntimeBitrate(bitrateKbps: Int?): String {
 }
 
 private fun shouldHideStreamStatusText(status: String): Boolean =
-    status.trim().equals("ICE CONNECTED", ignoreCase = true)
+    status.trim().replace('_', ' ').let {
+        it.equals("Streaming", ignoreCase = true) ||
+            it.equals("ICE CONNECTED", ignoreCase = true) ||
+            it.equals("ICE COMPLETED", ignoreCase = true)
+    }
 
 @Composable
 private fun StreamExitConfirmation(

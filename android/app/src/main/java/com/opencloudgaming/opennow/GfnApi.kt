@@ -1157,7 +1157,7 @@ class GfnCatalogRepository(
             availableStores = stores,
             searchText = (listOf(title, app.string("publisherName")) + stores + genres + featureLabels).filterNotNull().joinToString(" ").lowercase(),
             lastPlayed = variants.firstNotNullOfOrNull { it.lastPlayedDate },
-            isInLibrary = variants.any { it.libraryStatus in setOf("MANUAL", "PLATFORM_SYNC", "IN_LIBRARY") },
+            isInLibrary = variants.any(::isOwnedGameVariant),
             selectedVariantIndex = min(selectedIndex, max(variants.size - 1, 0)),
             variants = variants,
         )
