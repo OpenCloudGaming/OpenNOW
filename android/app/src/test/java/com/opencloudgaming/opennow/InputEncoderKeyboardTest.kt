@@ -32,4 +32,28 @@ class InputEncoderKeyboardTest {
         assertEquals(0x0052, numpadZero?.scancode)
     }
 
+    @Test
+    fun mapsOverlayTextCharactersLikeDesktopTextInput() {
+        val upperD = InputEncoder.mapTextCharToKeySpec('D')
+        val lowerA = InputEncoder.mapTextCharToKeySpec('a')
+        val space = InputEncoder.mapTextCharToKeySpec(' ')
+        val colon = InputEncoder.mapTextCharToKeySpec(':')
+
+        assertNotNull(upperD)
+        assertEquals(0x44, upperD?.keycode)
+        assertEquals(0x0020, upperD?.scancode)
+        assertEquals(true, upperD?.shift)
+        assertNotNull(lowerA)
+        assertEquals(0x41, lowerA?.keycode)
+        assertEquals(0x001e, lowerA?.scancode)
+        assertEquals(false, lowerA?.shift)
+        assertNotNull(space)
+        assertEquals(0x20, space?.keycode)
+        assertEquals(0x0039, space?.scancode)
+        assertNotNull(colon)
+        assertEquals(0xba, colon?.keycode)
+        assertEquals(0x0027, colon?.scancode)
+        assertEquals(true, colon?.shift)
+    }
+
 }

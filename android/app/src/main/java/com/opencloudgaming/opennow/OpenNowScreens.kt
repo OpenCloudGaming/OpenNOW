@@ -7,7 +7,6 @@ import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Build
 import android.speech.RecognizerIntent
-import android.view.InputDevice
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.PointerIcon
@@ -168,7 +167,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.Locale
-import java.util.WeakHashMap
 import java.net.URL
 import kotlin.math.min
 import kotlin.math.floor
@@ -186,7 +184,6 @@ private val SettingsPanel = Color(0xff11161a)
 private val SettingsPanelAlt = Color(0xff171d22)
 private val SettingsText = Color(0xffeef3f5)
 private val SettingsTextMuted = Color(0xff98a4aa)
-private val externalMouseCaptureRetries = WeakHashMap<android.view.View, Runnable>()
 
 private data class SettingsChoiceOption(val value: String, val label: String)
 private data class ChoiceMenuOption(
@@ -2195,7 +2192,6 @@ private fun SettingsContent(
                     viewModel.updateStreamSettings { s -> s.copy(gameLanguage = it) }
                 }
                 SettingSwitch("Clipboard paste", settings.clipboardPaste) { enabled -> viewModel.updateSettings(settings.copy(clipboardPaste = enabled)) }
-                SettingSwitch("Native mouse capture", settings.mouseCapture) { enabled -> viewModel.updateSettings(settings.copy(mouseCapture = enabled)) }
                 SettingSwitch("Touch controls", settings.androidTouch.enabled) { enabled -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(enabled = enabled))) }
                 SettingSwitch("Finger mouse", settings.androidTouch.mousePad) { enabled -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(mousePad = enabled))) }
                 NumberSlider("Touch layout scale", settings.androidTouch.scale, 0.6f, 1.4f, 0.05f) { value -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(scale = value))) }
@@ -2515,6 +2511,8 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
     var streamStats by remember { mutableStateOf(StreamRuntimeStats()) }
     val streamReady = session?.status in setOf(2, 3)
     val streamSettings = state.activeStreamSettings ?: state.settings.stream
+    val streamOverlayOpen = controlsOpen || exitConfirmOpen || keyboardOpen
+    val externalMousePassthroughActive = streamReady && !streamOverlayOpen
     BackHandler(enabled = streamReady) {
         when {
             exitConfirmOpen -> exitConfirmOpen = false
@@ -2560,8 +2558,8 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
         }
     }
 
-    LaunchedEffect(streamReady, controlsOpen, exitConfirmOpen, keyboardOpen) {
-        NativeStreamInputRouter.setStreamUiActive(streamReady && (controlsOpen || exitConfirmOpen || keyboardOpen))
+    LaunchedEffect(streamReady, streamOverlayOpen) {
+        NativeStreamInputRouter.setStreamUiActive(streamReady && streamOverlayOpen)
         NativeStreamInputRouter.setSystemMenuHandler {
             keyboardOpen = false
             exitConfirmOpen = false
@@ -2616,9 +2614,9 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
             StreamVideoSurface(
                 client = client,
                 settings = streamSettings,
-                captureExternalMouse = streamReady && !controlsOpen && !exitConfirmOpen && !keyboardOpen,
+                hideExternalMousePointer = externalMousePassthroughActive,
                 touchMouseEnabled = state.settings.androidTouch.mousePad,
-                externalMouseCaptureRoot = activity?.window?.decorView,
+                externalMouseRoot = activity?.window?.decorView,
             )
             if (statsVisible) {
                 StreamStatsPill(
@@ -2739,25 +2737,26 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
 private fun StreamVideoSurface(
     client: NativeStreamClient,
     settings: StreamSettings,
-    captureExternalMouse: Boolean,
+    hideExternalMousePointer: Boolean,
     touchMouseEnabled: Boolean,
-    externalMouseCaptureRoot: android.view.View?,
+    externalMouseRoot: android.view.View?,
     modifier: Modifier = Modifier,
 ) {
     val rootView = LocalView.current
-    val captureRootView = externalMouseCaptureRoot ?: rootView
+    val pointerRootView = externalMouseRoot ?: rootView
     val (streamWidth, streamHeight) = streamResolutionPixels(settings)
     val streamAspect = (streamWidth.toFloat() / streamHeight.toFloat()).takeIf { it.isFinite() && it > 0f } ?: (16f / 9f)
-    DisposableEffect(rootView, captureRootView, captureExternalMouse) {
-        captureRootView.captureExternalMousePointer(captureExternalMouse)
-        if (captureExternalMouse) {
-            captureRootView.hideAndroidPointerTree()
+    DisposableEffect(rootView, pointerRootView, hideExternalMousePointer) {
+        if (hideExternalMousePointer) {
+            pointerRootView.hideAndroidPointerTree()
         } else {
-            captureRootView.showAndroidPointerTree()
+            pointerRootView.showAndroidPointerTree()
         }
         onDispose {
-            captureRootView.captureExternalMousePointer(false)
-            captureRootView.showAndroidPointerTree()
+            if (Build.VERSION.SDK_INT >= 26) {
+                pointerRootView.releasePointerCapture()
+            }
+            pointerRootView.showAndroidPointerTree()
         }
     }
     BoxWithConstraints(
@@ -2793,16 +2792,16 @@ private fun StreamVideoSurface(
                 update = { renderer ->
                     renderer.isFocusable = false
                     renderer.isFocusableInTouchMode = false
-                    if (captureExternalMouse) {
-                        captureRootView.hideAndroidPointerTree()
+                    if (hideExternalMousePointer) {
+                        pointerRootView.hideAndroidPointerTree()
                         renderer.hideAndroidPointerTree()
                     } else {
-                        captureRootView.showAndroidPointerTree()
+                        pointerRootView.showAndroidPointerTree()
                         renderer.showAndroidPointerTree()
                     }
                     renderer.setOnKeyListener(null)
                     renderer.setOnGenericMotionListener { _, event ->
-                        if (captureExternalMouse) captureRootView.hideAndroidPointerTree()
+                        if (hideExternalMousePointer) pointerRootView.hideAndroidPointerTree()
                         client.dispatchMotion(event)
                     }
                     renderer.setOnTouchListener { view, event ->
@@ -2817,10 +2816,6 @@ private fun StreamVideoSurface(
         }
     }
 }
-
-private fun MotionEvent.isExternalMousePointerEvent(): Boolean =
-    (source and InputDevice.SOURCE_MOUSE) == InputDevice.SOURCE_MOUSE ||
-        (source and InputDevice.SOURCE_MOUSE_RELATIVE) == InputDevice.SOURCE_MOUSE_RELATIVE
 
 private fun androidNullPointerIcon(view: android.view.View): PointerIcon? =
     if (Build.VERSION.SDK_INT >= 24) {
@@ -2847,53 +2842,6 @@ private fun android.view.View.applyAndroidPointerIconTree(icon: PointerIcon?) {
         for (index in 0 until childCount) {
             getChildAt(index).applyAndroidPointerIconTree(icon)
         }
-    }
-}
-
-private fun android.view.View.captureExternalMousePointer(enabled: Boolean) {
-    if (Build.VERSION.SDK_INT < 26) return
-    val view = this
-    val requestCapture = {
-        if (!view.isFocusableInTouchMode) {
-            view.isFocusableInTouchMode = true
-        }
-        if (!view.hasFocus()) {
-            view.requestFocus()
-        }
-        if (!view.hasPointerCapture() && view.isAttachedToWindow && view.hasWindowFocus()) {
-            runCatching { view.requestPointerCapture() }
-        }
-    }
-    externalMouseCaptureRetries.remove(view)?.let(view::removeCallbacks)
-    setOnCapturedPointerListener(
-        if (enabled) {
-            android.view.View.OnCapturedPointerListener { _, event ->
-                NativeStreamInputRouter.dispatchCapturedExternalMouse(event)
-            }
-        } else {
-            null
-        },
-    )
-    if (enabled) {
-        setOnFocusChangeListener { _, hasFocus ->
-            if (hasFocus) post { requestCapture() }
-        }
-        lateinit var retryCapture: Runnable
-        retryCapture = Runnable {
-            requestCapture()
-            if (externalMouseCaptureRetries[view] === retryCapture) {
-                view.postDelayed(retryCapture, 350L)
-            }
-        }
-        externalMouseCaptureRetries[view] = retryCapture
-        post(retryCapture)
-    } else if (hasPointerCapture()) {
-        runCatching { releasePointerCapture() }
-        setOnFocusChangeListener(null)
-        externalMouseCaptureRetries.remove(view)?.let(view::removeCallbacks)
-    } else {
-        setOnFocusChangeListener(null)
-        externalMouseCaptureRetries.remove(view)?.let(view::removeCallbacks)
     }
 }
 

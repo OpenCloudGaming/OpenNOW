@@ -43,6 +43,40 @@ class StreamSettingsDeviceAdjustmentTest {
     }
 
     @Test
+    fun usesSafeH264ProfileForLowPowerAndroidTv() {
+        val adjusted = StreamSettings(
+            resolution = "3840x2160",
+            aspectRatio = "16:9",
+            fps = 120,
+            maxBitrateMbps = 90,
+            codec = VideoCodec.H265,
+            colorQuality = ColorQuality.TenBit420,
+        ).adjustedForDevice(codecReport(VideoCodec.H265, hardwareDecoder = true, realtimeSafe = true, lowPower = true, tv = true))
+
+        assertEquals(VideoCodec.H264, adjusted.codec)
+        assertEquals(ColorQuality.EightBit420, adjusted.colorQuality)
+        assertEquals("1920x1080", adjusted.resolution)
+        assertEquals("16:9", adjusted.aspectRatio)
+        assertEquals(60, adjusted.fps)
+        assertEquals(25, adjusted.maxBitrateMbps)
+    }
+
+    @Test
+    fun keepsLowPowerAndroidTvUltrawideWithinDecoderBounds() {
+        val adjusted = StreamSettings(
+            resolution = "3440x1440",
+            aspectRatio = "21:9",
+            codec = VideoCodec.H265,
+            colorQuality = ColorQuality.TenBit420,
+        ).adjustedForDevice(codecReport(VideoCodec.H265, hardwareDecoder = true, realtimeSafe = true, lowPower = true, tv = true))
+
+        assertEquals(VideoCodec.H264, adjusted.codec)
+        assertEquals(ColorQuality.EightBit420, adjusted.colorQuality)
+        assertEquals("1680x720", adjusted.resolution)
+        assertEquals("21:9", adjusted.aspectRatio)
+    }
+
+    @Test
     fun preservesSelectedAv1WhenWebRtcDecoderExistsEvenIfPlatformProbeMissesIt() {
         val adjusted = StreamSettings(codec = VideoCodec.AV1, colorQuality = ColorQuality.TenBit420)
             .adjustedForDevice(

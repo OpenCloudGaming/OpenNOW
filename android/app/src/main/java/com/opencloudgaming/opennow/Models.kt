@@ -107,7 +107,6 @@ data class AppSettings(
     val sessionClockShowEveryMinutes: Int = 60,
     val sessionClockShowDurationSeconds: Int = 30,
     val clipboardPaste: Boolean = false,
-    val mouseCapture: Boolean = false,
     val androidTouch: AndroidTouchSettings = AndroidTouchSettings(),
     val discordRichPresence: Boolean = false,
     val autoCheckForUpdates: Boolean = true,
@@ -785,6 +784,15 @@ private fun RuntimeCodecReport.bestStreamingFallbackCodec(): VideoCodec =
         ?: VideoCodec.H264
 
 internal fun StreamSettings.adjustedForDevice(report: RuntimeCodecReport?): StreamSettings {
+    if (report?.androidTvProfile == true && report.lowPowerGpuProfile) {
+        return copy(
+            codec = VideoCodec.H264,
+            colorQuality = ColorQuality.EightBit420,
+            maxBitrateMbps = minOf(maxBitrateMbps, LOW_POWER_TV_BITRATE_CAP_MBPS),
+            fps = minOf(fps, LOW_POWER_TV_FPS_CAP),
+        ).cappedResolution(LOW_POWER_TV_MAX_WIDTH, LOW_POWER_TV_MAX_HEIGHT)
+    }
+
     val capability = report?.capabilities?.firstOrNull { it.codec == codec }
     val codecSupported = capability?.streamingDecoderUsableForLaunch() ?: true
     val effectiveCodec = if (codecSupported) codec else report?.bestStreamingFallbackCodec() ?: VideoCodec.H264
@@ -804,3 +812,33 @@ internal fun StreamSettings.adjustedForDevice(report: RuntimeCodecReport?): Stre
         VideoCodec.AV1 -> adjusted.copy(maxBitrateMbps = minOf(adjusted.maxBitrateMbps, profileBitrateCap), fps = minOf(adjusted.fps, 60))
     }
 }
+
+private fun StreamSettings.cappedResolution(maxWidth: Int, maxHeight: Int): StreamSettings {
+    val normalized = normalizeStreamResolutionForAspect(resolution, aspectRatio)
+    val (width, height) = parseResolutionPixels(normalized)
+    if (width <= maxWidth && height <= maxHeight) return copy(resolution = normalized)
+
+    val sameAspect = STREAM_RESOLUTION_OPTIONS
+        .filter { it.aspectRatio == aspectRatio && it.fitsWithin(maxWidth, maxHeight) }
+        .maxByOrNull { it.pixelCount() }
+    val fallback = STREAM_RESOLUTION_OPTIONS
+        .filter { it.fitsWithin(maxWidth, maxHeight) }
+        .maxWithOrNull(compareBy<StreamResolutionOption> { it.pixelCount() }.thenBy { if (it.aspectRatio == "16:9") 1 else 0 })
+    val capped = sameAspect ?: fallback ?: StreamResolutionOption("1280x720", "16:9", "720")
+    return copy(resolution = capped.value, aspectRatio = capped.aspectRatio)
+}
+
+private fun StreamResolutionOption.fitsWithin(maxWidth: Int, maxHeight: Int): Boolean {
+    val (width, height) = parseResolutionPixels(value)
+    return width <= maxWidth && height <= maxHeight
+}
+
+private fun StreamResolutionOption.pixelCount(): Int {
+    val (width, height) = parseResolutionPixels(value)
+    return width * height
+}
+
+private const val LOW_POWER_TV_MAX_WIDTH = 1920
+private const val LOW_POWER_TV_MAX_HEIGHT = 1080
+private const val LOW_POWER_TV_BITRATE_CAP_MBPS = 25
+private const val LOW_POWER_TV_FPS_CAP = 60

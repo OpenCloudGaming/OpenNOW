@@ -61,7 +61,6 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun dispatchGenericMotionEvent(event: MotionEvent): Boolean {
-        refreshStreamMouseCaptureIfNeeded(event)
         return NativeStreamInputRouter.dispatchMotion(event) ||
             dispatchGamepadHatNavigation(event) ||
             super.dispatchGenericMotionEvent(event)
@@ -69,9 +68,6 @@ class MainActivity : ComponentActivity() {
 
     override fun dispatchTouchEvent(event: MotionEvent): Boolean {
         val decorView = window?.decorView
-        if (decorView != null && NativeStreamInputRouter.shouldCaptureExternalMouse(event)) {
-            refreshStreamMouseCapture(decorView)
-        }
         if (decorView != null && NativeStreamInputRouter.dispatchExternalMouseTouch(event, decorView.width, decorView.height)) return true
         if (decorView != null && NativeStreamInputRouter.shouldForwardTouchBeforeViews(event, decorView.width, decorView.height)) {
             if (event.actionMasked == MotionEvent.ACTION_DOWN) {
@@ -157,26 +153,6 @@ class MainActivity : ComponentActivity() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) return
         val icon = if (active) PointerIcon.getSystemIcon(this, PointerIcon.TYPE_NULL) else null
         window.decorView.applyPointerIconRecursive(icon)
-    }
-
-    private fun refreshStreamMouseCaptureIfNeeded(event: MotionEvent) {
-        if (!NativeStreamInputRouter.shouldCaptureExternalMouse(event)) return
-        val decorView = window?.decorView ?: return
-        refreshStreamMouseCapture(decorView)
-    }
-
-    private fun refreshStreamMouseCapture(view: View) {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
-        if (!view.isFocusableInTouchMode) {
-            view.isFocusableInTouchMode = true
-        }
-        if (!view.hasFocus()) {
-            view.requestFocus()
-        }
-        if (!view.hasPointerCapture() && view.isAttachedToWindow && view.hasWindowFocus()) {
-            runCatching { view.requestPointerCapture() }
-        }
-        applyStreamPointerIcon(true)
     }
 
     @Suppress("DEPRECATION", "OVERRIDE_DEPRECATION")

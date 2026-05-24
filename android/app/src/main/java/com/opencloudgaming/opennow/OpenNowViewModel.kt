@@ -858,7 +858,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             snapshot.activeStreamSettings?.let { active ->
                 appendLine("active.resolution=${active.resolution} fps=${active.fps} codec=${active.codec} bitrate=${active.maxBitrateMbps}")
             }
-            appendLine("input.keyboardLayout=${snapshot.settings.stream.keyboardLayout} mouseCapture=${snapshot.settings.mouseCapture} touch=${snapshot.settings.androidTouch}")
+            appendLine("input.keyboardLayout=${snapshot.settings.stream.keyboardLayout} touch=${snapshot.settings.androidTouch}")
             appendLine("codec.native=${codecReport?.nativeRuntimeSummary.orEmpty()} lowPower=${codecReport?.lowPowerGpuProfile} tv=${codecReport?.androidTvProfile}")
             codecReport?.capabilities?.forEach { cap ->
                 appendLine("codec.${cap.codec}: decoder=${cap.decoderName ?: "none"} hardware=${cap.hardwareDecoder} webRtc=${cap.webRtcDecoderName ?: "none"} webRtcAvailable=${cap.webRtcDecoderAvailable ?: "unknown"} webRtcHardware=${cap.webRtcHardwareDecoderAvailable ?: "unknown"} encoder=${cap.encoderName ?: "none"}")

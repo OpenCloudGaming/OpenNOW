@@ -9,7 +9,6 @@ import android.os.SystemClock
 import android.util.Log
 import android.view.InputDevice
 import android.view.KeyEvent
-import android.view.KeyCharacterMap
 import android.view.MotionEvent
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -17,6 +16,8 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
@@ -419,7 +420,9 @@ object NativeStreamInputRouter {
     }
 
     fun detach(next: NativeStreamClient) {
-        if (client === next) client = null
+        if (client === next) {
+            client = null
+        }
     }
 
     fun setTouchMouseEnabled(enabled: Boolean) {
@@ -519,17 +522,6 @@ object NativeStreamInputRouter {
         return client?.dispatchMotion(event) == true
     }
 
-    fun dispatchCapturedExternalMouse(event: MotionEvent): Boolean {
-        if (streamUiActive) return false
-        if (!event.isExternalMousePointerEvent()) return false
-        return client?.dispatchMotion(event) == true
-    }
-
-    fun shouldCaptureExternalMouse(event: MotionEvent): Boolean =
-        client != null &&
-            !streamUiActive &&
-            event.isExternalMousePointerEvent()
-
     fun dispatchKey(event: KeyEvent): Boolean {
         if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0 && event.isStreamSystemMenuKey()) {
             systemMenuHandler?.invoke()
@@ -543,13 +535,11 @@ object NativeStreamInputRouter {
             systemBackHandler?.invoke()
             return systemBackHandler != null
         }
+        if (streamUiActive) return false
         val current = client ?: return false
         if (event.shouldConsumeAsStreamKeyboard()) {
             current.dispatchKey(event)
             return true
-        }
-        if (streamUiActive && event.isNativeUiNavigationKey()) {
-            return false
         }
         return current.dispatchKey(event)
     }
@@ -579,24 +569,6 @@ object NativeStreamInputRouter {
     private fun KeyEvent.isStreamExitShortcutKey(): Boolean =
         keyCode == KeyEvent.KEYCODE_BACK ||
             (keyCode == KeyEvent.KEYCODE_ESCAPE && !isHardwareKeyboardSource())
-
-    private fun KeyEvent.isNativeUiNavigationKey(): Boolean =
-        keyCode == KeyEvent.KEYCODE_DPAD_UP ||
-            keyCode == KeyEvent.KEYCODE_DPAD_DOWN ||
-            keyCode == KeyEvent.KEYCODE_DPAD_LEFT ||
-            keyCode == KeyEvent.KEYCODE_DPAD_RIGHT ||
-            keyCode == KeyEvent.KEYCODE_DPAD_CENTER ||
-            keyCode == KeyEvent.KEYCODE_ENTER ||
-            keyCode == KeyEvent.KEYCODE_NUMPAD_ENTER ||
-            keyCode == KeyEvent.KEYCODE_SPACE ||
-            keyCode == KeyEvent.KEYCODE_TAB ||
-            keyCode == KeyEvent.KEYCODE_BACK ||
-            keyCode == KeyEvent.KEYCODE_ESCAPE ||
-            keyCode == KeyEvent.KEYCODE_DEL ||
-            keyCode == KeyEvent.KEYCODE_BUTTON_A ||
-            keyCode == KeyEvent.KEYCODE_BUTTON_B ||
-            keyCode == KeyEvent.KEYCODE_BUTTON_SELECT ||
-            keyCode == KeyEvent.KEYCODE_BUTTON_START
 
     private fun KeyEvent.isControllerSource(): Boolean =
         (source and InputDevice.SOURCE_GAMEPAD) == InputDevice.SOURCE_GAMEPAD ||
@@ -707,9 +679,12 @@ object NativeStreamInputRouter {
             !isFromSource(InputDevice.SOURCE_MOUSE) &&
             !isFromSource(InputDevice.SOURCE_MOUSE_RELATIVE)
 
-    private fun MotionEvent.isExternalMousePointerEvent(): Boolean =
-        isFromSource(InputDevice.SOURCE_MOUSE) ||
-            isFromSource(InputDevice.SOURCE_MOUSE_RELATIVE)
+    private fun MotionEvent.isExternalMousePointerEvent(): Boolean {
+        val controllerSource = isFromSource(InputDevice.SOURCE_JOYSTICK) || isFromSource(InputDevice.SOURCE_GAMEPAD)
+        return isFromSource(InputDevice.SOURCE_MOUSE) ||
+            isFromSource(InputDevice.SOURCE_MOUSE_RELATIVE) ||
+            (isFromSource(InputDevice.SOURCE_TOUCHPAD) && !controllerSource)
+    }
 
     private fun shouldPassTouchToNativeUi(event: MotionEvent, width: Int, height: Int): Boolean {
         when (event.actionMasked) {
@@ -1007,6 +982,7 @@ class NativeStreamClient(
     private var externalMouseMoveSentLogged = false
     private var hardwareKeyboardEventLogged = false
     private var lastStatsSample: StreamStatsSample? = null
+    private val textSendMutex = Mutex()
 
     private data class StreamStatsSample(
         val atMs: Double,
@@ -1247,9 +1223,47 @@ class NativeStreamClient(
 
     fun sendText(text: String) {
         if (text.isEmpty()) return
-        val keyMap = KeyCharacterMap.load(KeyCharacterMap.VIRTUAL_KEYBOARD)
-        val events = keyMap.getEvents(text.toCharArray()) ?: return
-        events.forEach(::dispatchKey)
+        val textToSend = text.take(STREAM_TEXT_SEND_MAX_CHARS)
+        scope.launch {
+            textSendMutex.withLock {
+                textToSend.forEach { char ->
+                    sendTextChar(char)
+                }
+            }
+        }
+    }
+
+    private fun sendKeyboardPayload(payload: InputEncoder.KeyboardPayload, isDown: Boolean): Boolean =
+        sendReliableInput(if (isDown) inputEncoder.encodeKeyDown(payload) else inputEncoder.encodeKeyUp(payload))
+
+    private suspend fun sendTextChar(char: Char) {
+        val spec = InputEncoder.mapTextCharToKeySpec(char) ?: return
+        if (spec.shift) {
+            sendKeyboardPayloadWithRetry(InputEncoder.shiftLeftPayload(modifiers = 0x01), isDown = true)
+        }
+        val modifiers = if (spec.shift) 0x01 else 0
+        sendKeyboardPayloadWithRetry(spec.toKeyboardPayload(modifiers), isDown = true)
+        sendKeyboardPayloadWithRetry(spec.toKeyboardPayload(modifiers), isDown = false)
+        if (spec.shift) {
+            sendKeyboardPayloadWithRetry(InputEncoder.shiftLeftPayload(modifiers = 0), isDown = false)
+        }
+        delay(STREAM_TEXT_KEY_DELAY_MS)
+    }
+
+    private suspend fun sendKeyboardPayloadWithRetry(payload: InputEncoder.KeyboardPayload, isDown: Boolean): Boolean {
+        repeat(STREAM_TEXT_SEND_ATTEMPTS) { attempt ->
+            if (sendKeyboardPayload(payload, isDown)) {
+                delay(STREAM_TEXT_PACKET_DELAY_MS)
+                return true
+            }
+            if (attempt < STREAM_TEXT_SEND_ATTEMPTS - 1) {
+                delay(STREAM_TEXT_RETRY_DELAY_MS)
+            }
+        }
+        NativeInputDiagnostics.add(
+            "overlay keyboard dropped key=${payload.keycode} action=${if (isDown) "down" else "up"} reliable=${reliableInput?.state()} partial=${partiallyReliableInput?.state()}",
+        )
+        return false
     }
 
     fun setAudioMuted(muted: Boolean) {
@@ -1970,9 +1984,12 @@ class NativeStreamClient(
     }
 
     private fun MotionEvent.isFromSource(source: Int): Boolean = (this.source and source) == source
-    private fun MotionEvent.isMouseLikePointer(): Boolean =
-        isFromSource(InputDevice.SOURCE_MOUSE) ||
-            isFromSource(InputDevice.SOURCE_MOUSE_RELATIVE)
+    private fun MotionEvent.isMouseLikePointer(): Boolean {
+        val controllerSource = isFromSource(InputDevice.SOURCE_JOYSTICK) || isFromSource(InputDevice.SOURCE_GAMEPAD)
+        return isFromSource(InputDevice.SOURCE_MOUSE) ||
+            isFromSource(InputDevice.SOURCE_MOUSE_RELATIVE) ||
+            (isFromSource(InputDevice.SOURCE_TOUCHPAD) && !controllerSource)
+    }
 
     private fun MotionEvent.primaryMouseButton(): Int =
         when {
@@ -2401,6 +2418,15 @@ class InputEncoder {
         val timestampUs: Long = timestampUs(),
     )
 
+    data class TextKeySpec(
+        val keycode: Int,
+        val scancode: Int,
+        val shift: Boolean = false,
+    ) {
+        fun toKeyboardPayload(modifiers: Int): KeyboardPayload =
+            KeyboardPayload(keycode, scancode, modifiers)
+    }
+
     companion object {
         const val INPUT_HEARTBEAT = 2
         const val INPUT_KEY_DOWN = 3
@@ -2451,6 +2477,71 @@ class InputEncoder {
             if (numLock) modifiers = modifiers or 0x20
             return KeyboardPayload(vk, resolvedScanCode, modifiers, timestampUs)
         }
+
+        internal fun mapTextCharToKeySpec(char: Char): TextKeySpec? {
+            val mapped = when (char) {
+                in 'a'..'z' -> textKeySpecFromAndroidKeyCode(KeyEvent.KEYCODE_A + (char - 'a'))
+                in 'A'..'Z' -> textKeySpecFromAndroidKeyCode(KeyEvent.KEYCODE_A + (char - 'A'), shift = true)
+                in '0'..'9' -> textKeySpecFromAndroidKeyCode(KeyEvent.KEYCODE_0 + (char - '0'))
+                '\n', '\r' -> textKeySpecFromAndroidKeyCode(KeyEvent.KEYCODE_ENTER)
+                else -> textBaseKeyCodes[char]?.let(::textKeySpecFromAndroidKeyCode)
+                    ?: textShiftedKeyCodes[char]?.let { textKeySpecFromAndroidKeyCode(it, shift = true) }
+            }
+            return mapped
+        }
+
+        internal fun shiftLeftPayload(modifiers: Int): KeyboardPayload =
+            KeyboardPayload(0xa0, fallbackScanCode(KeyEvent.KEYCODE_SHIFT_LEFT) ?: 0x002a, modifiers)
+
+        private fun textKeySpecFromAndroidKeyCode(keyCode: Int, shift: Boolean = false): TextKeySpec? {
+            val payload = mapKeyboardPayload(
+                keyCode = keyCode,
+                unicode = 0,
+                scanCode = 0,
+                shift = shift,
+                timestampUs = 0L,
+            ) ?: return null
+            return TextKeySpec(payload.keycode, payload.scancode, shift)
+        }
+
+        private val textBaseKeyCodes = mapOf(
+            ' ' to KeyEvent.KEYCODE_SPACE,
+            '-' to KeyEvent.KEYCODE_MINUS,
+            '=' to KeyEvent.KEYCODE_EQUALS,
+            '[' to KeyEvent.KEYCODE_LEFT_BRACKET,
+            ']' to KeyEvent.KEYCODE_RIGHT_BRACKET,
+            '\\' to KeyEvent.KEYCODE_BACKSLASH,
+            ';' to KeyEvent.KEYCODE_SEMICOLON,
+            '\'' to KeyEvent.KEYCODE_APOSTROPHE,
+            ',' to KeyEvent.KEYCODE_COMMA,
+            '.' to KeyEvent.KEYCODE_PERIOD,
+            '/' to KeyEvent.KEYCODE_SLASH,
+            '`' to KeyEvent.KEYCODE_GRAVE,
+        )
+
+        private val textShiftedKeyCodes = mapOf(
+            '!' to KeyEvent.KEYCODE_1,
+            '@' to KeyEvent.KEYCODE_2,
+            '#' to KeyEvent.KEYCODE_3,
+            '$' to KeyEvent.KEYCODE_4,
+            '%' to KeyEvent.KEYCODE_5,
+            '^' to KeyEvent.KEYCODE_6,
+            '&' to KeyEvent.KEYCODE_7,
+            '*' to KeyEvent.KEYCODE_8,
+            '(' to KeyEvent.KEYCODE_9,
+            ')' to KeyEvent.KEYCODE_0,
+            '_' to KeyEvent.KEYCODE_MINUS,
+            '+' to KeyEvent.KEYCODE_EQUALS,
+            '{' to KeyEvent.KEYCODE_LEFT_BRACKET,
+            '}' to KeyEvent.KEYCODE_RIGHT_BRACKET,
+            '|' to KeyEvent.KEYCODE_BACKSLASH,
+            ':' to KeyEvent.KEYCODE_SEMICOLON,
+            '"' to KeyEvent.KEYCODE_APOSTROPHE,
+            '<' to KeyEvent.KEYCODE_COMMA,
+            '>' to KeyEvent.KEYCODE_PERIOD,
+            '?' to KeyEvent.KEYCODE_SLASH,
+            '~' to KeyEvent.KEYCODE_GRAVE,
+        )
 
         private fun virtualKey(keyCode: Int, unicode: Int): Int? =
             when (keyCode) {
@@ -2597,6 +2688,11 @@ private const val ICE_DISCONNECTED_GRACE_MS = 3500L
 private const val ICE_FAILED_RECONNECT_DELAY_MS = 250L
 private const val SIGNALING_RECONNECT_DELAY_MS = 1000L
 private const val MAX_TRANSPORT_RECONNECT_ATTEMPTS = 3
+private const val STREAM_TEXT_SEND_MAX_CHARS = 4096
+private const val STREAM_TEXT_SEND_ATTEMPTS = 3
+private const val STREAM_TEXT_PACKET_DELAY_MS = 4L
+private const val STREAM_TEXT_KEY_DELAY_MS = 10L
+private const val STREAM_TEXT_RETRY_DELAY_MS = 16L
 
 private fun Any?.statsDouble(): Double? =
     when (this) {
