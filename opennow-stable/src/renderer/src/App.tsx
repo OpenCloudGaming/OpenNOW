@@ -410,6 +410,14 @@ export function App(): JSX.Element {
   const exitPromptResolverRef = useRef<((confirmed: boolean) => void) | null>(null);
 
 
+  const resetStorePanels = useCallback((): void => {
+    storePanelsLoadIdRef.current += 1;
+    storePanelsLoadedContextRef.current = "";
+    setStorePanels([]);
+    setIsLoadingStorePanels(false);
+  }, []);
+
+
   const applyVariantSelections = useCallback((catalog: GameInfo[]): void => {
     setVariantByGameId((prev) => mergeVariantSelections(prev, catalog));
   }, []);
@@ -1440,7 +1448,7 @@ export function App(): JSX.Element {
           await loadSessionRuntimeData(persistedSession);
         } else {
           runtimeDataLoadIdRef.current += 1;
-          storePanelsLoadIdRef.current += 1;
+          resetStorePanels();
           setRegions([]);
           setGames([]);
           setLibraryGames([]);
@@ -1451,7 +1459,6 @@ export function App(): JSX.Element {
           setCatalogSupportedCount(0);
           setIsLoadingCatalog(false);
           setIsLoadingLibrary(false);
-          setIsLoadingStorePanels(false);
         }
 
         setIsInitializing(false);
@@ -1464,7 +1471,7 @@ export function App(): JSX.Element {
     };
 
     void initialize();
-  }, [loadSessionRuntimeData, t]);
+  }, [loadSessionRuntimeData, resetStorePanels, t]);
 
   // Login handler
   const handleLogin = useCallback(async () => {
@@ -1504,7 +1511,7 @@ export function App(): JSX.Element {
           await refreshNavbarActiveSession(sessionResult.session);
         } else {
           runtimeDataLoadIdRef.current += 1;
-          storePanelsLoadIdRef.current += 1;
+          resetStorePanels();
           setRegions([]);
           setGames([]);
           setLibraryGames([]);
@@ -1516,13 +1523,12 @@ export function App(): JSX.Element {
           setCatalogSupportedCount(0);
           setIsLoadingCatalog(false);
           setIsLoadingLibrary(false);
-          setIsLoadingStorePanels(false);
         }
       } catch (recoveryError) {
         console.warn("Failed to recover account state after switch failure:", recoveryError);
       }
     }
-  }, [loadSessionRuntimeData, refreshNavbarActiveSession, refreshSavedAccounts, t]);
+  }, [loadSessionRuntimeData, refreshNavbarActiveSession, refreshSavedAccounts, resetStorePanels, t]);
 
   const handleRemoveAccount = useCallback((userId: string) => {
     setAccountToRemove(userId);
@@ -1549,11 +1555,10 @@ export function App(): JSX.Element {
       return;
     }
     runtimeDataLoadIdRef.current += 1;
-    storePanelsLoadIdRef.current += 1;
+    resetStorePanels();
     setRegions([]);
     setGames([]);
     setFeaturedGames([]);
-    setStorePanels([]);
     setLibraryGames([]);
     setSubscriptionInfo(null);
     setNavbarActiveSession(null);
@@ -1563,8 +1568,7 @@ export function App(): JSX.Element {
     setCatalogSupportedCount(0);
     setIsLoadingCatalog(false);
     setIsLoadingLibrary(false);
-    setIsLoadingStorePanels(false);
-  }, [accountToRemove, loadSessionRuntimeData, refreshNavbarActiveSession]);
+  }, [accountToRemove, loadSessionRuntimeData, refreshNavbarActiveSession, resetStorePanels]);
 
   const handleAddAccount = useCallback(() => {
     setAuthSession(null);
@@ -1574,12 +1578,11 @@ export function App(): JSX.Element {
   const confirmLogout = useCallback(async () => {
     setLogoutConfirmOpen(false);
     runtimeDataLoadIdRef.current += 1;
-    storePanelsLoadIdRef.current += 1;
+    resetStorePanels();
     await window.openNow.logoutAll();
     setAuthSession(null);
     setSavedAccounts([]);
     setGames([]);
-    setStorePanels([]);
     setLibraryGames([]);
     setVariantByGameId({});
     resetLaunchRuntime();
@@ -1596,8 +1599,7 @@ export function App(): JSX.Element {
     setSelectedGameId("");
     setIsLoadingCatalog(false);
     setIsLoadingLibrary(false);
-    setIsLoadingStorePanels(false);
-  }, [resetLaunchRuntime]);
+  }, [resetLaunchRuntime, resetStorePanels]);
 
   // Logout handler
   const handleLogout = useCallback(() => {
