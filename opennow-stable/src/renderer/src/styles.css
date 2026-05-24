@@ -2801,7 +2801,7 @@ body,
 
 .controller-game-row {
   display: flex;
-  gap: clamp(20px, 1.45vw, 48px);
+  gap: clamp(22px, 1.7vw, 56px);
   min-height: 0;
   overflow-x: auto;
   overflow-y: visible;
@@ -2819,7 +2819,7 @@ body,
 }
 
 .controller-library-card {
-  flex: 0 0 clamp(168px, 9.25vw, 360px);
+  flex: 0 0 clamp(200px, min(14.5vw, 26vh), 440px);
   scroll-snap-align: start;
 }
 
@@ -2899,7 +2899,7 @@ body,
   transform: translateY(-50%);
   overflow: hidden;
   color: rgba(255, 255, 255, 0.94);
-  font-size: clamp(0.78rem, 0.64vw, 1rem);
+  font-size: clamp(0.88rem, 0.72vw, 1.18rem);
   font-weight: 850;
   line-height: 1.12;
   text-align: center;
@@ -2910,8 +2910,8 @@ body,
 
 .controller-native-card-title img {
   display: block;
-  max-width: min(78%, 220px);
-  max-height: clamp(44px, 4.2vw, 92px);
+  max-width: min(80%, 280px);
+  max-height: clamp(56px, 5.2vw, 118px);
   object-fit: contain;
   object-position: center;
   filter: drop-shadow(0 4px 12px rgba(0, 0, 0, 0.9));
