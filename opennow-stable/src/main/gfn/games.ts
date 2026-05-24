@@ -11,7 +11,7 @@ import type {
 import { createHash } from "node:crypto";
 import { isOwnedLibraryStatus, normalizeGameStore } from "@shared/gfn";
 import { cacheManager } from "../services/cacheManager";
-import { fetchPublicGamesUncached, mergePublicGameVariants } from "./publicGames";
+import { appendPublicGameSearchMatches, fetchPublicGamesUncached, mergePublicGameVariants } from "./publicGames";
 import {
   buildGfnGraphQlHeaders,
   buildGfnLcarsHeaders,
@@ -940,7 +940,11 @@ ${appFields}
 
   let games = dedupeGames(await enrichGamesWithMetadata(token, vpcId, collectedApps.map(appToGame)));
   const publicGames = await fetchPublicGames();
-  const gamesWithPublicVariants = mergePublicGameVariants(games, publicGames);
+  const gamesWithPublicVariants = appendPublicGameSearchMatches(
+    mergePublicGameVariants(games, publicGames),
+    publicGames,
+    searchQuery,
+  );
 
   return {
     games: gamesWithPublicVariants,

@@ -143,6 +143,47 @@ export function mergePublicGameVariants(games: GameInfo[], publicGames: GameInfo
   });
 }
 
+function matchesPublicGameSearch(game: GameInfo, searchQuery: string): boolean {
+  const normalizedQuery = searchQuery.trim().toLowerCase();
+  if (!normalizedQuery) {
+    return false;
+  }
+
+  if (game.searchText?.includes(normalizedQuery)) {
+    return true;
+  }
+
+  return [game.title, ...(game.availableStores ?? [])]
+    .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+    .some((value) => value.toLowerCase().includes(normalizedQuery));
+}
+
+export function appendPublicGameSearchMatches(
+  games: GameInfo[],
+  publicGames: GameInfo[],
+  searchQuery: string,
+): GameInfo[] {
+  const normalizedQuery = searchQuery.trim();
+  if (!normalizedQuery) {
+    return games;
+  }
+
+  const existingIds = new Set(games.map((game) => game.id));
+  const existingTitles = new Set(games.map((game) => normalizeTitleKey(game.title)).filter(Boolean));
+  const matches = publicGames.filter((game) => {
+    const titleKey = normalizeTitleKey(game.title);
+    return !existingIds.has(game.id)
+      && (!titleKey || !existingTitles.has(titleKey))
+      && matchesPublicGameSearch(game, normalizedQuery);
+  });
+
+  if (matches.length === 0) {
+    return games;
+  }
+
+  return [...games, ...matches];
+}
+
 export async function fetchPublicGamesUncached(): Promise<GameInfo[]> {
   const response = await fetch(
     "https://static.nvidiagrid.net/supported-public-game-list/locales/gfnpc-en-US.json",
