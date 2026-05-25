@@ -550,6 +550,8 @@
       "codecSupportUnknown": "Codec support unknown",
       "memoryPathUnknown": "Memory path unknown",
       "videoPathDefaultHint": "OpenNOW will show the active hardware decode path after GStreamer is detected.",
+      "videoBackend": "Video Backend",
+      "videoBackendHint": "Applies to the next native streamer process. Auto uses the default path for the current platform. Windows supports D3D11/D3D12; Linux supports VAAPI, Vulkan, V4L2, and software.",
       "directxBackend": "DirectX Backend",
       "directxBackendHint": "Applies to the next native streamer process. Auto uses the fastest default path; choose DirectX 11 or DirectX 12 to force a specific Windows renderer.",
       "framePacing": "Frame Pacing",

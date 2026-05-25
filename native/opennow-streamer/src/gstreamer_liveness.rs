@@ -291,7 +291,12 @@ impl VideoLivenessState {
     }
 
     pub(crate) fn set_stats_overlay(&self, overlay: Option<gst::Element>) {
+        let visible = self.stats_overlay_visible.load(Ordering::Relaxed);
         if let Ok(mut current) = self.stats_overlay.lock() {
+            if let Some(overlay) = overlay.as_ref() {
+                set_property_if_supported(overlay, "visible", visible);
+                set_property_if_supported(overlay, "silent", !visible);
+            }
             *current = overlay;
         }
     }
@@ -301,6 +306,7 @@ impl VideoLivenessState {
         if let Ok(current) = self.stats_overlay.lock() {
             if let Some(overlay) = current.as_ref() {
                 set_property_if_supported(overlay, "visible", visible);
+                set_property_if_supported(overlay, "silent", !visible);
             }
         }
     }
@@ -308,12 +314,11 @@ impl VideoLivenessState {
     fn update_stats_overlay_text(&self, text: &str) {
         if let Ok(current) = self.stats_overlay.lock() {
             if let Some(overlay) = current.as_ref() {
+                let visible =
+                    self.stats_overlay_visible.load(Ordering::Relaxed) && !text.is_empty();
                 overlay.set_property("text", text);
-                set_property_if_supported(
-                    overlay,
-                    "visible",
-                    self.stats_overlay_visible.load(Ordering::Relaxed) && !text.is_empty(),
-                );
+                set_property_if_supported(overlay, "visible", visible);
+                set_property_if_supported(overlay, "silent", !visible);
             }
         }
     }

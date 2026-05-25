@@ -1,20 +1,24 @@
 #[cfg(target_os = "windows")]
 use crate::gstreamer_backend::send_log;
+#[cfg(target_os = "linux")]
+use crate::gstreamer_backend::send_log;
 #[cfg(target_os = "windows")]
 use crate::protocol::NativeRenderRect;
 use crate::protocol::{Event, NativeRenderSurface};
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 use gst_video::prelude::*;
 use gstreamer as gst;
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 use gstreamer_video as gst_video;
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 use std::ffi::c_void;
 use std::sync::atomic::AtomicBool;
 #[cfg(target_os = "windows")]
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
+#[cfg(target_os = "linux")]
+use std::sync::{Mutex, OnceLock};
 #[cfg(target_os = "windows")]
 use std::thread;
 #[cfg(target_os = "windows")]
@@ -1159,6 +1163,518 @@ pub(crate) fn apply_render_surface_to_video_sink(
     _surface: &NativeRenderSurface,
 ) -> Result<(), String> {
     Ok(())
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn apply_linux_fullscreen_to_video_sink(
+    sink: &gst::Element,
+    event_sender: &Option<Sender<Event>>,
+) -> Result<(), String> {
+    linux_x11_renderer_window::apply_fullscreen_video_overlay(sink, event_sender)
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn linux_fullscreen_renderer_window_focused() -> bool {
+    linux_x11_renderer_window::fullscreen_window_focused()
+}
+
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn apply_linux_fullscreen_to_video_sink(
+    _sink: &gst::Element,
+    _event_sender: &Option<Sender<Event>>,
+) -> Result<(), String> {
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn linux_fullscreen_renderer_window_focused() -> bool {
+    false
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn close_linux_fullscreen_renderer_window() {
+    linux_x11_renderer_window::close_fullscreen_window();
+}
+
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn close_linux_fullscreen_renderer_window() {}
+
+#[cfg(target_os = "linux")]
+mod linux_x11_renderer_window {
+    use super::*;
+    use std::os::raw::{c_char, c_int, c_long, c_uint, c_ulong};
+
+    type Display = c_void;
+    type Window = c_ulong;
+    type Atom = c_ulong;
+
+    const FALSE: c_int = 0;
+    const PROP_MODE_REPLACE: c_int = 0;
+    const CURRENT_TIME: c_ulong = 0;
+    const REVERT_TO_PARENT: c_int = 2;
+    const XA_ATOM: Atom = 4;
+    const MOTIF_HINTS_DECORATIONS: c_ulong = 1 << 1;
+
+    static FULLSCREEN_WINDOW: OnceLock<Mutex<Option<X11FullscreenWindow>>> = OnceLock::new();
+
+    #[derive(Debug)]
+    struct X11FullscreenWindow {
+        display: usize,
+        window: Window,
+        x: i32,
+        y: i32,
+        width: i32,
+        height: i32,
+    }
+
+    #[derive(Clone, Copy)]
+    struct X11FullscreenWindowHandle {
+        window: Window,
+        x: i32,
+        y: i32,
+        width: i32,
+        height: i32,
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    struct X11MonitorGeometry {
+        x: i32,
+        y: i32,
+        width: i32,
+        height: i32,
+    }
+
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct XineramaScreenInfo {
+        screen_number: c_int,
+        x_org: i16,
+        y_org: i16,
+        width: i16,
+        height: i16,
+    }
+
+    #[repr(C)]
+    struct MotifWmHints {
+        flags: c_ulong,
+        functions: c_ulong,
+        decorations: c_ulong,
+        input_mode: c_long,
+        status: c_ulong,
+    }
+
+    impl Drop for X11FullscreenWindow {
+        fn drop(&mut self) {
+            unsafe {
+                let display = self.display as *mut Display;
+                if !display.is_null() && self.window != 0 {
+                    XDestroyWindow(display, self.window);
+                    XFlush(display);
+                    XCloseDisplay(display);
+                }
+            }
+        }
+    }
+
+    #[link(name = "X11")]
+    unsafe extern "C" {
+        fn XOpenDisplay(display_name: *const c_char) -> *mut Display;
+        fn XCloseDisplay(display: *mut Display) -> c_int;
+        fn XDefaultScreen(display: *mut Display) -> c_int;
+        fn XRootWindow(display: *mut Display, screen_number: c_int) -> Window;
+        fn XDisplayWidth(display: *mut Display, screen_number: c_int) -> c_int;
+        fn XDisplayHeight(display: *mut Display, screen_number: c_int) -> c_int;
+        fn XFree(data: *mut c_void) -> c_int;
+        fn XQueryPointer(
+            display: *mut Display,
+            window: Window,
+            root_return: *mut Window,
+            child_return: *mut Window,
+            root_x_return: *mut c_int,
+            root_y_return: *mut c_int,
+            win_x_return: *mut c_int,
+            win_y_return: *mut c_int,
+            mask_return: *mut c_uint,
+        ) -> c_int;
+        fn XGetInputFocus(
+            display: *mut Display,
+            focus_return: *mut Window,
+            revert_to_return: *mut c_int,
+        ) -> c_int;
+        fn XSetInputFocus(
+            display: *mut Display,
+            focus: Window,
+            revert_to: c_int,
+            time: c_ulong,
+        ) -> c_int;
+        fn XCreateSimpleWindow(
+            display: *mut Display,
+            parent: Window,
+            x: c_int,
+            y: c_int,
+            width: c_uint,
+            height: c_uint,
+            border_width: c_uint,
+            border: c_ulong,
+            background: c_ulong,
+        ) -> Window;
+        fn XStoreName(display: *mut Display, window: Window, name: *const c_char) -> c_int;
+        fn XInternAtom(
+            display: *mut Display,
+            atom_name: *const c_char,
+            only_if_exists: c_int,
+        ) -> Atom;
+        fn XChangeProperty(
+            display: *mut Display,
+            window: Window,
+            property: Atom,
+            type_: Atom,
+            format: c_int,
+            mode: c_int,
+            data: *const u8,
+            nelements: c_int,
+        ) -> c_int;
+        fn XMoveResizeWindow(
+            display: *mut Display,
+            window: Window,
+            x: c_int,
+            y: c_int,
+            width: c_uint,
+            height: c_uint,
+        ) -> c_int;
+        fn XMapRaised(display: *mut Display, window: Window) -> c_int;
+        fn XRaiseWindow(display: *mut Display, window: Window) -> c_int;
+        fn XFlush(display: *mut Display) -> c_int;
+        fn XDestroyWindow(display: *mut Display, window: Window) -> c_int;
+    }
+
+    pub(super) fn apply_fullscreen_video_overlay(
+        sink: &gst::Element,
+        event_sender: &Option<Sender<Event>>,
+    ) -> Result<(), String> {
+        if std::env::var("DISPLAY")
+            .ok()
+            .filter(|value| !value.is_empty())
+            .is_none()
+        {
+            return Ok(());
+        }
+
+        let overlay = sink
+            .clone()
+            .dynamic_cast::<gst_video::VideoOverlay>()
+            .map_err(|_| {
+                format!(
+                    "Native Linux render sink {} does not implement GstVideoOverlay.",
+                    sink.name()
+                )
+            })?;
+        let window = ensure_fullscreen_window()?;
+        unsafe {
+            overlay.set_window_handle(window.window as usize);
+        }
+        overlay.handle_events(false);
+        if let Err(error) =
+            overlay.set_render_rectangle(0, 0, window.width.max(2), window.height.max(2))
+        {
+            send_log(
+                event_sender,
+                "debug",
+                format!(
+                    "Linux fullscreen sink ignored render rectangle request: {error}; X11 window geometry remains {}x{}.",
+                    window.width, window.height
+                ),
+            );
+        }
+        overlay.expose();
+        send_log(
+            event_sender,
+            "info",
+            format!(
+                "Attached native Linux fallback renderer to fullscreen X11 window {}x{} at {},{}.",
+                window.width, window.height, window.x, window.y
+            ),
+        );
+        Ok(())
+    }
+
+    pub(super) fn fullscreen_window_focused() -> bool {
+        let Some(state) = FULLSCREEN_WINDOW.get() else {
+            return false;
+        };
+        let Ok(guard) = state.lock() else {
+            return false;
+        };
+        let Some(window) = guard.as_ref() else {
+            return false;
+        };
+        unsafe {
+            let display = window.display as *mut Display;
+            if display.is_null() || window.window == 0 {
+                return false;
+            }
+            let mut focus = 0;
+            let mut revert_to = 0;
+            XGetInputFocus(display, &mut focus, &mut revert_to) != 0 && focus == window.window
+        }
+    }
+
+    pub(super) fn close_fullscreen_window() {
+        let Some(state) = FULLSCREEN_WINDOW.get() else {
+            return;
+        };
+        let Ok(mut guard) = state.lock() else {
+            return;
+        };
+        *guard = None;
+    }
+
+    fn ensure_fullscreen_window() -> Result<X11FullscreenWindowHandle, String> {
+        let state = FULLSCREEN_WINDOW.get_or_init(|| Mutex::new(None));
+        let mut guard = state
+            .lock()
+            .map_err(|_| "Linux fullscreen renderer window lock is poisoned.".to_owned())?;
+        if let Some(window) = guard.as_ref() {
+            unsafe {
+                show_fullscreen_window(window);
+            }
+            return Ok(X11FullscreenWindowHandle {
+                window: window.window,
+                x: window.x,
+                y: window.y,
+                width: window.width,
+                height: window.height,
+            });
+        }
+
+        let window = create_fullscreen_window()?;
+        let returned = X11FullscreenWindowHandle {
+            window: window.window,
+            x: window.x,
+            y: window.y,
+            width: window.width,
+            height: window.height,
+        };
+        *guard = Some(window);
+        Ok(returned)
+    }
+
+    fn create_fullscreen_window() -> Result<X11FullscreenWindow, String> {
+        unsafe {
+            let display = XOpenDisplay(std::ptr::null());
+            if display.is_null() {
+                return Err("Failed to open X11 display for native fullscreen renderer.".to_owned());
+            }
+
+            let screen = XDefaultScreen(display);
+            let root = XRootWindow(display, screen);
+            let geometry = active_monitor_geometry(display, screen, root);
+            let window = XCreateSimpleWindow(
+                display,
+                root,
+                geometry.x,
+                geometry.y,
+                geometry.width as c_uint,
+                geometry.height as c_uint,
+                0,
+                0,
+                0,
+            );
+            if window == 0 {
+                XCloseDisplay(display);
+                return Err("Failed to create X11 fullscreen renderer window.".to_owned());
+            }
+
+            XStoreName(display, window, c"OpenNOW Native Stream".as_ptr());
+            make_window_borderless(display, window);
+            request_fullscreen(display, window);
+            show_fullscreen_window_raw(display, window, geometry);
+
+            Ok(X11FullscreenWindow {
+                display: display as usize,
+                window,
+                x: geometry.x,
+                y: geometry.y,
+                width: geometry.width,
+                height: geometry.height,
+            })
+        }
+    }
+
+    unsafe fn active_monitor_geometry(
+        display: *mut Display,
+        screen: c_int,
+        root: Window,
+    ) -> X11MonitorGeometry {
+        let fallback = X11MonitorGeometry {
+            x: 0,
+            y: 0,
+            width: XDisplayWidth(display, screen).max(2),
+            height: XDisplayHeight(display, screen).max(2),
+        };
+
+        let Some(screens) = xinerama_screens(display) else {
+            return fallback;
+        };
+
+        let mut pointer_x = 0;
+        let mut pointer_y = 0;
+        let mut root_return = 0;
+        let mut child_return = 0;
+        let mut win_x = 0;
+        let mut win_y = 0;
+        let mut mask = 0;
+        let has_pointer = XQueryPointer(
+            display,
+            root,
+            &mut root_return,
+            &mut child_return,
+            &mut pointer_x,
+            &mut pointer_y,
+            &mut win_x,
+            &mut win_y,
+            &mut mask,
+        ) != 0;
+
+        let selected = if has_pointer {
+            screens
+                .iter()
+                .find(|screen| {
+                    let x = i32::from(screen.x_org);
+                    let y = i32::from(screen.y_org);
+                    let width = i32::from(screen.width).max(2);
+                    let height = i32::from(screen.height).max(2);
+                    pointer_x >= x
+                        && pointer_x < x.saturating_add(width)
+                        && pointer_y >= y
+                        && pointer_y < y.saturating_add(height)
+                })
+                .copied()
+        } else {
+            None
+        }
+        .or_else(|| screens.first().copied());
+
+        selected
+            .map(|screen| X11MonitorGeometry {
+                x: i32::from(screen.x_org),
+                y: i32::from(screen.y_org),
+                width: i32::from(screen.width).max(2),
+                height: i32::from(screen.height).max(2),
+            })
+            .unwrap_or(fallback)
+    }
+
+    unsafe fn xinerama_screens(display: *mut Display) -> Option<Vec<XineramaScreenInfo>> {
+        type XineramaIsActiveFn = unsafe extern "C" fn(*mut Display) -> c_int;
+        type XineramaQueryScreensFn =
+            unsafe extern "C" fn(*mut Display, *mut c_int) -> *mut XineramaScreenInfo;
+
+        let library = libc::dlopen(c"libXinerama.so.1".as_ptr(), libc::RTLD_LAZY);
+        if library.is_null() {
+            return None;
+        }
+
+        let is_active_symbol = libc::dlsym(library, c"XineramaIsActive".as_ptr());
+        let query_screens_symbol = libc::dlsym(library, c"XineramaQueryScreens".as_ptr());
+        if is_active_symbol.is_null() || query_screens_symbol.is_null() {
+            libc::dlclose(library);
+            return None;
+        }
+
+        let is_active: XineramaIsActiveFn = std::mem::transmute(is_active_symbol);
+        let query_screens: XineramaQueryScreensFn = std::mem::transmute(query_screens_symbol);
+        if is_active(display) == 0 {
+            libc::dlclose(library);
+            return None;
+        }
+
+        let mut count = 0;
+        let screens = query_screens(display, &mut count);
+        if screens.is_null() || count <= 0 {
+            libc::dlclose(library);
+            return None;
+        }
+
+        let result = std::slice::from_raw_parts(screens, count as usize).to_vec();
+        XFree(screens.cast::<c_void>());
+        libc::dlclose(library);
+        Some(result)
+    }
+
+    unsafe fn request_fullscreen(display: *mut Display, window: Window) {
+        let state = XInternAtom(display, c"_NET_WM_STATE".as_ptr(), FALSE);
+        let fullscreen = XInternAtom(display, c"_NET_WM_STATE_FULLSCREEN".as_ptr(), FALSE);
+        if state == 0 || fullscreen == 0 {
+            return;
+        }
+        let data = [fullscreen as c_ulong];
+        XChangeProperty(
+            display,
+            window,
+            state,
+            XA_ATOM,
+            32,
+            PROP_MODE_REPLACE,
+            data.as_ptr() as *const u8,
+            1,
+        );
+    }
+
+    unsafe fn make_window_borderless(display: *mut Display, window: Window) {
+        let motif_hints = XInternAtom(display, c"_MOTIF_WM_HINTS".as_ptr(), FALSE);
+        if motif_hints != 0 {
+            let hints = MotifWmHints {
+                flags: MOTIF_HINTS_DECORATIONS,
+                functions: 0,
+                decorations: 0,
+                input_mode: 0,
+                status: 0,
+            };
+            XChangeProperty(
+                display,
+                window,
+                motif_hints,
+                motif_hints,
+                32,
+                PROP_MODE_REPLACE,
+                (&hints as *const MotifWmHints).cast::<u8>(),
+                5,
+            );
+        }
+    }
+
+    unsafe fn show_fullscreen_window(window: &X11FullscreenWindow) {
+        show_fullscreen_window_raw(
+            window.display as *mut Display,
+            window.window,
+            X11MonitorGeometry {
+                x: window.x,
+                y: window.y,
+                width: window.width,
+                height: window.height,
+            },
+        );
+    }
+
+    unsafe fn show_fullscreen_window_raw(
+        display: *mut Display,
+        window: Window,
+        geometry: X11MonitorGeometry,
+    ) {
+        XMoveResizeWindow(
+            display,
+            window,
+            geometry.x,
+            geometry.y,
+            geometry.width.max(2) as c_uint,
+            geometry.height.max(2) as c_uint,
+        );
+        XMapRaised(display, window);
+        XRaiseWindow(display, window);
+        XSetInputFocus(display, window, REVERT_TO_PARENT, CURRENT_TIME);
+        XFlush(display);
+    }
 }
 
 #[cfg(target_os = "windows")]

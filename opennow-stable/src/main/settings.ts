@@ -153,7 +153,23 @@ const LEGACY_ANTI_AFK_SHORTCUTS = new Set(["META+SHIFT+F10", "CMD+SHIFT+F10", "C
 const DEFAULT_STREAM_PREFERENCES = getDefaultStreamPreferences();
 
 const CONTROLLER_THEME_STYLES_SET = new Set<ControllerThemeStyle>(["aurora", "nebula", "grid", "minimal", "pulse"]);
-const NATIVE_VIDEO_BACKEND_PREFERENCES = new Set<NativeVideoBackendPreference>(["auto", "d3d11", "d3d12"]);
+const NATIVE_VIDEO_BACKEND_PREFERENCES = new Set<NativeVideoBackendPreference>([
+  "auto",
+  "d3d11",
+  "d3d12",
+  "vaapi",
+  "vulkan",
+  "v4l2",
+  "software",
+]);
+const WINDOWS_NATIVE_VIDEO_BACKEND_PREFERENCES = new Set<NativeVideoBackendPreference>(["auto", "d3d11", "d3d12"]);
+const LINUX_NATIVE_VIDEO_BACKEND_PREFERENCES = new Set<NativeVideoBackendPreference>([
+  "auto",
+  "vaapi",
+  "vulkan",
+  "v4l2",
+  "software",
+]);
 const APP_ACCENT_COLORS = new Set<AppAccentColor>(["green", "blue", "violet", "amber", "rose"]);
 
 function clampThemeByte(value: unknown): number {
@@ -177,9 +193,13 @@ function normalizeControllerThemeStyle(raw: unknown): ControllerThemeStyle {
 }
 
 function normalizeNativeVideoBackendPreference(raw: unknown): NativeVideoBackendPreference {
-  return NATIVE_VIDEO_BACKEND_PREFERENCES.has(raw as NativeVideoBackendPreference)
+  const value = NATIVE_VIDEO_BACKEND_PREFERENCES.has(raw as NativeVideoBackendPreference)
     ? (raw as NativeVideoBackendPreference)
     : "auto";
+  if (process.platform === "linux") {
+    return LINUX_NATIVE_VIDEO_BACKEND_PREFERENCES.has(value) ? value : "auto";
+  }
+  return WINDOWS_NATIVE_VIDEO_BACKEND_PREFERENCES.has(value) ? value : "auto";
 }
 
 function normalizeAppAccentColor(raw: unknown): AppAccentColor {

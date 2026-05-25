@@ -2,6 +2,9 @@
   "name": "opennow-workspace",
   "private": true,
   "description": "OpenNOW Electron workspace",
+  "engines": {
+    "node": "^20.19.0 || >=22.12.0"
+  },
   "scripts": {
     "dev": "npm --prefix opennow-stable run dev",
     "build": "npm --prefix opennow-stable run build",

@@ -134,6 +134,7 @@ const SIGNALING_REMOTE_ICE_GRACE_MS = 5000;
 const ICE_DISCONNECTED_RECOVERY_GRACE_MS = 7000;
 
 const isMac = navigator.platform.toLowerCase().includes("mac");
+const isLinux = `${navigator.platform} ${navigator.userAgent}`.toLowerCase().includes("linux");
 
 const DEFAULT_SHORTCUTS = {
   shortcutToggleStats: "F3",
@@ -2347,6 +2348,8 @@ export function App(): JSX.Element {
         resolution: settings.resolution,
         fps: settings.fps,
         maxBitrateKbps: settings.maxBitrateMbps * 1000,
+      }, {
+        forwardElectronInput: !isLinux,
       });
       setLaunchError(null);
       setStreamStatus("streaming");

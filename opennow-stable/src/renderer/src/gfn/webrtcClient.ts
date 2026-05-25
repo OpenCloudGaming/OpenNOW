@@ -583,6 +583,7 @@ export class GfnWebRtcClient {
   private partiallyReliableInputChannel: RTCDataChannel | null = null;
   private controlChannel: RTCDataChannel | null = null;
   private nativeInputActive = false;
+  private nativeInputForwardingEnabled = true;
   private audioContext: AudioContext | null = null;
   private audioSourceNode: MediaStreamAudioSourceNode | null = null;
   private audioGainNode: GainNode | null = null;
@@ -1117,6 +1118,7 @@ export class GfnWebRtcClient {
   private resetInputState(): void {
     this.inputReady = false;
     this.nativeInputActive = false;
+    this.nativeInputForwardingEnabled = true;
     this.inputProtocolVersion = 2;
     this.hapticsAdvertised = false;
     this.inputEncoder.setProtocolVersion(2);
@@ -1862,9 +1864,14 @@ export class GfnWebRtcClient {
     this.inputEncoder.resetGamepadSequences();
   }
 
-  public activateNativeInput(protocolVersion?: number, settings?: OfferSettings): void {
+  public activateNativeInput(
+    protocolVersion?: number,
+    settings?: OfferSettings,
+    options: { forwardElectronInput?: boolean } = {},
+  ): void {
     this.cleanupPeerConnection();
     this.nativeInputActive = true;
+    this.nativeInputForwardingEnabled = options.forwardElectronInput !== false;
     this.inputReady = true;
     const nativeProtocolVersion = GfnWebRtcClient.normalizeInputProtocolVersion(
       protocolVersion
@@ -1896,7 +1903,11 @@ export class GfnWebRtcClient {
     // state forwarding is suppressed inside pollGamepads() when nativeInputActive
     // is true so the native renderer remains the sole source for controller input.
     this.setupGamepadPolling();
-    this.log(`Native DX11 input forwarding active (protocol v${nativeProtocolVersion}); controller meta detection active, gamepad forwarding handled by native renderer.`);
+    this.log(
+      this.nativeInputForwardingEnabled
+        ? `Native input forwarding active (protocol v${nativeProtocolVersion}); controller meta detection active, gamepad forwarding handled by native renderer.`
+        : `Native OS input capture active (protocol v${nativeProtocolVersion}); Electron input forwarding suppressed.`,
+    );
   }
 
   public setNativeInputProtocolVersion(protocolVersion: number): void {
@@ -2782,6 +2793,9 @@ export class GfnWebRtcClient {
   private reliableDropLogged = false;
 
   private sendNativeInput(payload: Uint8Array, partiallyReliable: boolean): void {
+    if (!this.nativeInputForwardingEnabled) {
+      return;
+    }
     const safePayload = Uint8Array.from(payload);
     window.openNow.sendNativeInput({
       payload: safePayload,

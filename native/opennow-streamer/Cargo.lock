@@ -431,6 +431,7 @@ dependencies = [
  "gstreamer-sdp",
  "gstreamer-video",
  "gstreamer-webrtc",
+ "libc",
  "regex",
  "serde",
  "serde_json",

@@ -6,7 +6,7 @@ use crate::protocol::{
 };
 use crate::sdp::{
     duplicate_session_webrtc_attributes_to_media, extract_ice_credentials, fix_server_ip,
-    parse_resolution, prefer_codec, sanitize_ice_pwd_for_gstreamer,
+    parse_resolution, prefer_codec, prefer_plain_opus_audio, sanitize_ice_pwd_for_gstreamer,
     summarize_media_transport_attributes, NvstParams, PreferCodecOptions,
 };
 use std::env;
@@ -112,6 +112,7 @@ impl BackendReply {
 pub struct PreparedNativeOffer {
     pub original_sdp_len: usize,
     pub fixed_offer_sdp: String,
+    #[cfg(any(feature = "gstreamer", test))]
     pub gstreamer_offer_sdp: String,
     pub gstreamer_ice_pwd_replacements: usize,
     pub gstreamer_framerate_adjusted: bool,
@@ -158,10 +159,13 @@ pub fn prepare_native_offer(
             prefer_hevc_profile_id: Some(preferred_hevc_profile_id(context.settings.color_quality)),
         },
     );
+    let fixed_offer_sdp = prefer_plain_opus_audio(&fixed_offer_sdp);
     let (gstreamer_framerate_offer_sdp, gstreamer_framerate_adjusted) =
         align_video_sdp_framerate_for_gstreamer(&fixed_offer_sdp, context.settings.fps);
     let (gstreamer_offer_sdp, gstreamer_ice_pwd_replacements) =
         sanitize_ice_pwd_for_gstreamer(&gstreamer_framerate_offer_sdp);
+    #[cfg(not(any(feature = "gstreamer", test)))]
+    let _ = &gstreamer_offer_sdp;
     let credentials = extract_ice_credentials(&fixed_offer_sdp);
     let nvst_params = NvstParams {
         width,
@@ -180,6 +184,7 @@ pub fn prepare_native_offer(
     Ok(PreparedNativeOffer {
         original_sdp_len: offer_sdp.len(),
         fixed_offer_sdp,
+        #[cfg(any(feature = "gstreamer", test))]
         gstreamer_offer_sdp,
         gstreamer_ice_pwd_replacements,
         gstreamer_framerate_adjusted,

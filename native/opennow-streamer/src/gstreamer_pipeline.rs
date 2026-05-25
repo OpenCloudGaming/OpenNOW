@@ -1,11 +1,9 @@
 use crate::gstreamer_backend::send_log;
 use crate::gstreamer_config::{
     automatic_present_max_fps, requested_video_backend, use_external_renderer_window,
-    zero_copy_requested, EXTERNAL_RENDERER_ENV, NATIVE_D3D_FULLSCREEN_ENV,
-    NATIVE_PRESENT_MAX_FPS_ENV, NATIVE_VIDEO_API_ENV, NATIVE_VIDEO_BACKEND_ENV,
-    PRESENT_LIMITER_AUTO_SENTINEL,
+    zero_copy_requested, EXTERNAL_RENDERER_ENV, NATIVE_FULLSCREEN_ENV, NATIVE_PRESENT_MAX_FPS_ENV,
+    NATIVE_VIDEO_API_ENV, NATIVE_VIDEO_BACKEND_ENV, PRESENT_LIMITER_AUTO_SENTINEL,
 };
-#[cfg(target_os = "windows")]
 use crate::gstreamer_input::NativeWindowInputBridge;
 use crate::gstreamer_input::{
     create_input_data_channels, wire_remote_data_channels, GstreamerInputChannels,
@@ -17,7 +15,8 @@ use crate::gstreamer_liveness::{
     watch_video_sink_caps_transitions, watch_video_sink_rate, VideoLivenessMonitor,
 };
 use crate::gstreamer_platform::{
-    apply_render_surface_to_video_sink, primary_display_refresh_hz,
+    apply_linux_fullscreen_to_video_sink, apply_render_surface_to_video_sink,
+    close_linux_fullscreen_renderer_window, primary_display_refresh_hz,
     start_external_renderer_window_guard,
 };
 use crate::gstreamer_transitions::DEFAULT_VIDEO_QUEUE_DEPTH;
@@ -153,7 +152,7 @@ impl RtpVideoApi {
     fn stats_overlay_factory(self) -> Option<&'static str> {
         match self {
             Self::D3D11 | Self::D3D12 => Some("dwritetextoverlay"),
-            _ => None,
+            _ => Some("textoverlay"),
         }
     }
 
@@ -323,11 +322,10 @@ pub(crate) struct GstreamerPipeline {
     pub(crate) webrtc: gst::Element,
     input_state: GstreamerInputState,
     input_channels: Option<GstreamerInputChannels>,
-    #[cfg(target_os = "windows")]
     native_window_input_bridge: Option<NativeWindowInputBridge>,
     render_state: GstreamerRenderState,
     present_max_fps: Arc<AtomicU32>,
-    d3d_fullscreen_sink: Arc<AtomicBool>,
+    native_fullscreen_sink: Arc<AtomicBool>,
     video_liveness: VideoLivenessMonitor,
     event_sender: Option<Sender<Event>>,
     pub(crate) original_remote_ice_credentials: Option<IceCredentials>,
@@ -359,14 +357,14 @@ impl GstreamerPipeline {
             video_liveness.clone(),
         );
         let present_max_fps = Arc::new(AtomicU32::new(0));
-        let d3d_fullscreen_sink = Arc::new(AtomicBool::new(false));
+        let native_fullscreen_sink = Arc::new(AtomicBool::new(false));
         wire_incoming_media_sink(
             &pipeline,
             &webrtc,
             event_sender.clone(),
             render_state.clone(),
             present_max_fps.clone(),
-            d3d_fullscreen_sink.clone(),
+            native_fullscreen_sink.clone(),
             video_liveness.clone(),
         );
 
@@ -382,11 +380,10 @@ impl GstreamerPipeline {
             webrtc,
             input_state,
             input_channels: None,
-            #[cfg(target_os = "windows")]
             native_window_input_bridge: None,
             render_state,
             present_max_fps,
-            d3d_fullscreen_sink,
+            native_fullscreen_sink,
             video_liveness,
             event_sender,
             original_remote_ice_credentials: None,
@@ -409,7 +406,7 @@ impl GstreamerPipeline {
     }
 
     pub(crate) fn set_d3d_fullscreen_sink(&self, enabled: bool) {
-        self.d3d_fullscreen_sink.store(enabled, Ordering::SeqCst);
+        self.native_fullscreen_sink.store(enabled, Ordering::SeqCst);
     }
 
     pub(crate) fn configure_stats(
@@ -441,7 +438,6 @@ impl GstreamerPipeline {
         Ok(())
     }
 
-    #[cfg(target_os = "windows")]
     fn ensure_native_window_input_bridge(&mut self) {
         if self.native_window_input_bridge.is_some() {
             return;
@@ -455,18 +451,6 @@ impl GstreamerPipeline {
             input_channels,
             self.event_sender.clone(),
         ));
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    fn ensure_native_window_input_bridge(&mut self) {
-        send_log(
-            &self.event_sender,
-            "warn",
-            format!(
-                "Native OS-level input capture is not implemented for {}; Electron input forwarding remains active.",
-                std::env::consts::OS
-            ),
-        );
     }
 
     pub(crate) fn negotiate_answer(
@@ -742,15 +726,16 @@ impl GstreamerPipeline {
     }
 
     pub(crate) fn update_render_surface(&self, surface: NativeRenderSurface) {
-        self.video_liveness
-            .set_stats_overlay_visible(surface.visible && surface.show_stats);
+        let stats_visible =
+            surface.show_stats && (surface.visible || use_external_renderer_window());
+        self.video_liveness.set_stats_overlay_visible(stats_visible);
         self.render_state.set_surface(surface, &self.event_sender);
     }
 
     pub(crate) fn stop(mut self) -> Result<(), String> {
         self.video_liveness.set_stats_overlay_visible(false);
         self.render_state.stop_external_renderer_window_guard();
-        #[cfg(target_os = "windows")]
+        close_linux_fullscreen_renderer_window();
         if let Some(mut bridge) = self.native_window_input_bridge.take() {
             bridge.stop();
         }
@@ -858,7 +843,10 @@ pub(crate) fn configure_sink_for_low_latency(element: &gst::Element) {
 
 pub(crate) fn configure_stats_overlay_element(element: &gst::Element) {
     set_property_if_supported(element, "visible", false);
+    set_property_if_supported(element, "silent", true);
     set_property_if_supported(element, "text", "");
+    set_property_if_supported(element, "shaded-background", true);
+    set_property_if_supported(element, "draw-shadow", true);
     set_property_if_supported(element, "auto-resize", true);
     set_property_if_supported(element, "layout-x", 0.018f64);
     set_property_if_supported(element, "layout-y", 0.018f64);
@@ -866,6 +854,9 @@ pub(crate) fn configure_stats_overlay_element(element: &gst::Element) {
     set_property_if_supported(element, "layout-height", 0.18f64);
     set_property_if_supported(element, "font-family", "Cascadia Mono");
     set_property_if_supported(element, "font-size", 18f32);
+    set_property_if_supported(element, "font-desc", "monospace 18");
+    set_property_from_str_if_supported(element, "halignment", "left");
+    set_property_from_str_if_supported(element, "valignment", "top");
     set_property_from_str_if_supported(element, "text-alignment", "leading");
     set_property_from_str_if_supported(element, "paragraph-alignment", "near");
     set_property_if_supported(element, "foreground-color", 0xF2FF_FFFFu32);
@@ -1142,7 +1133,7 @@ fn wire_incoming_media_sink(
     event_sender: Option<Sender<Event>>,
     render_state: GstreamerRenderState,
     present_max_fps: Arc<AtomicU32>,
-    d3d_fullscreen_sink: Arc<AtomicBool>,
+    native_fullscreen_sink: Arc<AtomicBool>,
     video_liveness: VideoLivenessMonitor,
 ) {
     let pipeline = pipeline.downgrade();
@@ -1174,7 +1165,7 @@ fn wire_incoming_media_sink(
                 &event_sender,
                 &streaming_reported,
                 present_max_fps.clone(),
-                d3d_fullscreen_sink.load(Ordering::SeqCst),
+                native_fullscreen_sink.load(Ordering::SeqCst),
                 video_liveness.clone(),
             ) {
                 Ok(()) => return,
@@ -1199,6 +1190,7 @@ fn wire_incoming_media_sink(
         let decode_render_state = render_state.clone();
         let decode_streaming_reported = streaming_reported.clone();
         let decode_video_liveness = video_liveness.clone();
+        let decode_native_fullscreen_sink = native_fullscreen_sink.clone();
         decodebin.connect_pad_added(move |_decodebin, decoded_pad| {
             let Some(pipeline) = decode_pipeline.upgrade() else {
                 return;
@@ -1211,6 +1203,7 @@ fn wire_incoming_media_sink(
                 &decode_sender,
                 &decode_streaming_reported,
                 &decode_video_liveness,
+                decode_native_fullscreen_sink.load(Ordering::SeqCst),
             ) {
                 send_log(&decode_sender, "warn", error);
                 if let Err(fallback_error) =
@@ -1715,7 +1708,7 @@ fn configure_rtp_video_chain_element(
     element: &gst::Element,
     spec: RtpVideoChainSpec,
     _video_api: RtpVideoApi,
-    d3d_fullscreen_sink: bool,
+    native_fullscreen_sink: bool,
 ) {
     match spec.role {
         RtpVideoChainRole::Depayloader => {
@@ -1771,7 +1764,9 @@ fn configure_rtp_video_chain_element(
             // Direct swapchain can turn a window/present stall into upstream decode backpressure.
             set_property_if_supported(element, "direct-swapchain", false);
             set_property_if_supported(element, "error-on-closed", false);
-            set_property_if_supported(element, "fullscreen", d3d_fullscreen_sink);
+            set_property_if_supported(element, "fullscreen", native_fullscreen_sink);
+            set_property_if_supported(element, "show-cursor", false);
+            set_property_if_supported(element, "cursor-visible", false);
             set_property_if_supported(element, "fullscreen-on-alt-enter", false);
             set_property_from_str_if_supported(element, "fullscreen-toggle-mode", "none");
         }
@@ -1786,7 +1781,7 @@ fn link_rtp_video_pad(
     event_sender: &Option<Sender<Event>>,
     streaming_reported: &Arc<AtomicBool>,
     present_max_fps: Arc<AtomicU32>,
-    d3d_fullscreen_sink: bool,
+    native_fullscreen_sink: bool,
     video_liveness: VideoLivenessMonitor,
 ) -> Result<(), String> {
     if src_pad.is_linked() {
@@ -1840,12 +1835,12 @@ fn link_rtp_video_pad(
                 ),
             );
         }
-        if d3d_fullscreen_sink {
+        if native_fullscreen_sink {
             send_log(
                 event_sender,
                 "info",
                 format!(
-                    "Native D3D sink fullscreen presentation enabled for Cloud G-Sync/VRR; set {NATIVE_D3D_FULLSCREEN_ENV}=0 to disable."
+                    "Native sink fullscreen presentation enabled; set {NATIVE_FULLSCREEN_ENV}=0 to disable."
                 ),
             );
         }
@@ -1855,7 +1850,7 @@ fn link_rtp_video_pad(
                 &element,
                 spec.clone(),
                 video_api,
-                d3d_fullscreen_sink,
+                native_fullscreen_sink,
             );
             if spec.role == RtpVideoChainRole::StatsOverlay {
                 video_liveness.set_stats_overlay(Some(element.clone()));
@@ -1931,6 +1926,11 @@ fn link_rtp_video_pad(
         {
             video_liveness.set_decoder(decoder.clone());
             watch_video_caps_transitions(decoder, "decoder", event_sender, video_liveness.clone());
+        }
+        if native_fullscreen_sink {
+            if let Err(error) = apply_linux_fullscreen_to_video_sink(sink, event_sender) {
+                send_log(event_sender, "warn", error);
+            }
         }
         render_state.set_video_sink(sink.clone(), event_sender);
         install_present_limiter(
@@ -2061,6 +2061,7 @@ fn link_decoded_media_pad(
     event_sender: &Option<Sender<Event>>,
     streaming_reported: &Arc<AtomicBool>,
     video_liveness: &VideoLivenessMonitor,
+    native_fullscreen_sink: bool,
 ) -> Result<(), String> {
     if src_pad.is_linked() {
         return Ok(());
@@ -2070,27 +2071,24 @@ fn link_decoded_media_pad(
         DecodedMediaKind::Video => link_media_chain(
             pipeline,
             src_pad,
-            &video_sink_factories(),
+            &video_sink_factories(native_fullscreen_sink),
             "video",
             Some(render_state),
             event_sender,
             streaming_reported,
             Some(video_liveness),
+            native_fullscreen_sink,
         ),
         DecodedMediaKind::Audio => link_media_chain(
             pipeline,
             src_pad,
-            &[
-                ("queue", None),
-                ("audioconvert", None),
-                ("audioresample", None),
-                ("autoaudiosink", Some(false)),
-            ],
+            &audio_sink_factories(),
             "audio",
             None,
             event_sender,
             streaming_reported,
             None,
+            false,
         ),
         DecodedMediaKind::Unknown => Err(format!(
             "Unsupported decoded media caps {:?}; routing to fallback sink.",
@@ -2099,7 +2097,7 @@ fn link_decoded_media_pad(
     }
 }
 
-fn video_sink_factories() -> Vec<(&'static str, Option<bool>)> {
+fn video_sink_factories(native_fullscreen_sink: bool) -> Vec<(&'static str, Option<bool>)> {
     #[cfg(target_os = "windows")]
     {
         if gst::ElementFactory::find("d3d11videosink").is_some() {
@@ -2115,8 +2113,40 @@ fn video_sink_factories() -> Vec<(&'static str, Option<bool>)> {
     let mut factories = vec![("queue", None), ("videoconvert", None)];
     if gst::ElementFactory::find("dwritetextoverlay").is_some() {
         factories.push(("dwritetextoverlay", None));
+    } else if gst::ElementFactory::find("textoverlay").is_some() {
+        factories.push(("textoverlay", None));
+    }
+    #[cfg(target_os = "linux")]
+    if native_fullscreen_sink {
+        if gst::ElementFactory::find("ximagesink").is_some() {
+            factories.push(("ximagesink", Some(false)));
+            return factories;
+        }
+        if gst::ElementFactory::find("waylandsink").is_some() {
+            factories.push(("waylandsink", Some(false)));
+            return factories;
+        }
     }
     factories.push(("autovideosink", Some(false)));
+    factories
+}
+
+fn audio_sink_factories() -> Vec<(&'static str, Option<bool>)> {
+    let mut factories = vec![
+        ("queue", None),
+        ("audioconvert", None),
+        ("audioresample", None),
+    ];
+    #[cfg(target_os = "linux")]
+    {
+        for sink in ["pipewiresink", "pulsesink"] {
+            if gst::ElementFactory::find(sink).is_some() {
+                factories.push((sink, Some(false)));
+                return factories;
+            }
+        }
+    }
+    factories.push(("autoaudiosink", Some(false)));
     factories
 }
 
@@ -2129,6 +2159,7 @@ fn link_media_chain(
     event_sender: &Option<Sender<Event>>,
     streaming_reported: &Arc<AtomicBool>,
     video_liveness: Option<&VideoLivenessMonitor>,
+    native_fullscreen_sink: bool,
 ) -> Result<(), String> {
     if media_label == "video" {
         if let Some(video_liveness) = video_liveness {
@@ -2143,7 +2174,7 @@ fn link_media_chain(
         if factory == "queue" {
             configure_queue_for_low_latency(&element, media_label);
         }
-        if factory == "dwritetextoverlay" {
+        if factory == "dwritetextoverlay" || factory == "textoverlay" {
             configure_stats_overlay_element(&element);
             if media_label == "video" {
                 if let Some(video_liveness) = video_liveness {
@@ -2153,6 +2184,11 @@ fn link_media_chain(
         }
         if sync_property.is_some() || factory.ends_with("sink") {
             configure_sink_for_low_latency(&element);
+            if media_label == "video" && native_fullscreen_sink {
+                set_property_if_supported(&element, "fullscreen", true);
+                set_property_if_supported(&element, "show-cursor", false);
+                set_property_if_supported(&element, "cursor-visible", false);
+            }
         }
         pipeline
             .add(&element)
@@ -2190,6 +2226,11 @@ fn link_media_chain(
 
     if let Some(sink) = elements.last() {
         if media_label == "video" {
+            if native_fullscreen_sink {
+                if let Err(error) = apply_linux_fullscreen_to_video_sink(sink, event_sender) {
+                    send_log(event_sender, "warn", error);
+                }
+            }
             if let Some(render_state) = render_state {
                 render_state.set_video_sink(sink.clone(), event_sender);
             }

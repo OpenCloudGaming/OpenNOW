@@ -190,6 +190,10 @@ const nativeVideoBackendOptions: { value: NativeVideoBackendPreference; label: s
   { value: "auto", label: "Auto", description: "Pick the default native path for the session" },
   { value: "d3d12", label: "DirectX 12", description: "Use the D3D12 decoder and renderer" },
   { value: "d3d11", label: "DirectX 11", description: "Use the D3D11 decoder and renderer" },
+  { value: "vaapi", label: "VAAPI", description: "Use Linux VAAPI hardware decode" },
+  { value: "vulkan", label: "Vulkan", description: "Use Linux Vulkan Video decode and render" },
+  { value: "v4l2", label: "V4L2", description: "Use Linux V4L2 stateless hardware decode" },
+  { value: "software", label: "Software", description: "Use CPU decode with the native renderer" },
 ];
 
 const APP_LANGUAGE_LABELS: Record<string, string> = {
@@ -323,7 +327,8 @@ const STATIC_FPS_PRESETS: FpsPreset[] = [
 ];
 
 const isMac = navigator.platform.toLowerCase().includes("mac");
-const isWindows = isNativeStreamerSupportedPlatform(`${navigator.platform} ${navigator.userAgent}`);
+const isLinux = `${navigator.platform} ${navigator.userAgent}`.toLowerCase().includes("linux");
+const isNativeStreamerPlatform = isNativeStreamerSupportedPlatform(`${navigator.platform} ${navigator.userAgent}`);
 const shortcutExamples = "Examples: F3, Ctrl+Shift+Q, Ctrl+Shift+K";
 const shortcutDefaults = {
   shortcutToggleStats: "F3",
@@ -777,7 +782,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
   }, []);
 
   const refreshNativeStreamerStatus = useCallback(async () => {
-    if (!isWindows) {
+    if (!isNativeStreamerPlatform) {
       setNativeStreamerStatus(createUnsupportedNativeStreamerStatus());
       setNativeStreamerStatusLoading(false);
       return;
@@ -790,7 +795,9 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
       console.warn("[Settings] Failed to detect native streamer:", error);
       setNativeStreamerStatus({
         detected: false,
+        ready: false,
         gstreamerAvailable: false,
+        inputReady: false,
         supportsOfferAnswer: false,
         gstreamerRuntime: {
           source: "unknown",
@@ -2413,7 +2420,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
               <h2>{t("settings.nativeStreamer.title")}</h2>
             </div>
             <div className="settings-rows">
-              {!isWindows ? (
+              {!isNativeStreamerPlatform ? (
                 <div className="settings-row settings-row--column">
                   <div className="settings-row-top settings-row-top--compact">
                     <label className="settings-label settings-label--wrap">
@@ -2482,14 +2489,14 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                         className={`settings-inline-badge ${
                           nativeStreamerStatusLoading
                             ? "settings-inline-badge--codec-testing"
-                            : nativeStreamerStatus?.gstreamerAvailable
+                            : nativeStreamerStatus?.ready
                               ? "settings-inline-badge--codec-gpu"
                               : "settings-inline-badge--updater-error"
                         }`}
                       >
                         {nativeStreamerStatusLoading
                           ? t("app.status.checking")
-                          : nativeStreamerStatus?.gstreamerAvailable
+                          : nativeStreamerStatus?.ready
                             ? t("settings.nativeStreamer.gstreamerReady")
                             : t("settings.nativeStreamer.notReady")}
                       </span>
@@ -2559,22 +2566,28 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                   </div>
 
                   <div className="settings-row settings-row--column">
-                    <label className="settings-label">{t("settings.nativeStreamer.directxBackend")}</label>
+                    <label className="settings-label">{t("settings.nativeStreamer.videoBackend")}</label>
                     <div className="settings-chip-row">
-                      {nativeVideoBackendOptions.map((option) => (
-                        <button
-                          key={option.value}
-                          type="button"
-                          className={`settings-chip ${settings.nativeVideoBackend === option.value ? "active" : ""}`}
-                          onClick={() => handleChange("nativeVideoBackend", option.value)}
-                          title={option.description}
-                        >
-                          <span>{option.label}</span>
-                        </button>
-                      ))}
+                      {nativeVideoBackendOptions
+                        .filter((option) =>
+                          isLinux
+                            ? ["auto", "vaapi", "vulkan", "v4l2", "software"].includes(option.value)
+                            : ["auto", "d3d12", "d3d11"].includes(option.value),
+                        )
+                        .map((option) => (
+                          <button
+                            key={option.value}
+                            type="button"
+                            className={`settings-chip ${settings.nativeVideoBackend === option.value ? "active" : ""}`}
+                            onClick={() => handleChange("nativeVideoBackend", option.value)}
+                            title={option.description}
+                          >
+                            <span>{option.label}</span>
+                          </button>
+                        ))}
                     </div>
                     <span className="settings-subtle-hint">
-                      {t("settings.nativeStreamer.directxBackendHint")}
+                      {t("settings.nativeStreamer.videoBackendHint")}
                     </span>
                   </div>
 

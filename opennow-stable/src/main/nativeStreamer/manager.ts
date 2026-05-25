@@ -3,8 +3,11 @@ import { createHash, randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import {
   cpSync,
+  accessSync,
+  constants as fsConstants,
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   realpathSync,
   renameSync,
@@ -171,6 +174,52 @@ function linuxInstallInstructions(): NativeGstreamerInstallInstruction[] | undef
   return process.platform === "linux" ? LINUX_GSTREAMER_INSTALL_INSTRUCTIONS : undefined;
 }
 
+function linuxNativeInputReadiness(): { ready: boolean; message?: string } {
+  if (process.platform !== "linux") {
+    return { ready: true };
+  }
+
+  const candidates: string[] = [];
+  for (const directory of ["/dev/input/by-id", "/dev/input/by-path"]) {
+    try {
+      for (const entry of readdirSync(directory)) {
+        if (
+          (entry.includes("event-kbd") || entry.includes("event-mouse")) &&
+          !entry.includes("event-joystick")
+        ) {
+          candidates.push(join(directory, entry));
+        }
+      }
+    } catch {
+      // Missing by-id/by-path is handled below.
+    }
+  }
+
+  const keyboard = candidates.find((candidate) => candidate.includes("event-kbd"));
+  const mouse = candidates.find((candidate) => candidate.includes("event-mouse"));
+  if (!keyboard || !mouse) {
+    return {
+      ready: false,
+      message:
+        "Linux native input requires readable evdev keyboard and mouse devices under /dev/input/by-id or /dev/input/by-path.",
+    };
+  }
+
+  for (const candidate of [keyboard, mouse]) {
+    try {
+      accessSync(candidate, fsConstants.R_OK);
+    } catch {
+      return {
+        ready: false,
+        message:
+          "Linux native input devices are present but not readable. Add your user to the input group with sudo usermod -aG input \"$USER\", then log out and back in before restarting OpenNOW.",
+      };
+    }
+  }
+
+  return { ready: true };
+}
+
 function configureBundledGstreamerRuntime(
   env: NodeJS.ProcessEnv,
   executablePath: string,
@@ -318,7 +367,7 @@ function resolveActiveVideoBackend(
         : "other";
 
   if (preferredBackend !== "auto") {
-    const preferred = videoBackends.find((candidate) => candidate.available && candidate.backend === preferredBackend);
+    const preferred = videoBackends.find((candidate) => candidate.backend === preferredBackend);
     if (preferred) return preferred;
   }
 
@@ -511,6 +560,11 @@ export class NativeStreamerManager {
   }
 
   async prepareForSession(context: NativeStreamerSessionContext): Promise<void> {
+    const linuxInput = linuxNativeInputReadiness();
+    if (!linuxInput.ready) {
+      throw new Error(linuxInput.message ?? "Linux native input is not ready.");
+    }
+
     if (this.activeSessionId && this.activeSessionId !== context.session.sessionId) {
       await this.stop("new native streamer session");
     }
@@ -598,12 +652,17 @@ export class NativeStreamerManager {
     try {
       await this.ensureProcess();
       const backend = this.capabilities?.backend;
-      const gstreamerAvailable = backend === "gstreamer" && this.capabilities?.supportsOfferAnswer === true;
       const videoBackends = this.capabilities?.videoBackends ?? [];
       const activeVideoBackend = resolveActiveVideoBackend(
         videoBackends,
         this.options.getVideoBackendPreference(),
       );
+      const linuxInput = linuxNativeInputReadiness();
+      const gstreamerAvailable =
+        backend === "gstreamer" &&
+        this.capabilities?.supportsOfferAnswer === true &&
+        activeVideoBackend?.available === true;
+      const ready = gstreamerAvailable && linuxInput.ready;
       const codecSummary = summarizeCodecs(activeVideoBackend);
       const zeroCopySummary = summarizeZeroCopy(activeVideoBackend);
       const runtime = this.gstreamerRuntime ?? {
@@ -632,7 +691,10 @@ export class NativeStreamerManager {
         };
       return {
         detected: true,
+        ready,
         gstreamerAvailable,
+        inputReady: linuxInput.ready,
+        inputStatusMessage: linuxInput.message,
         supportsOfferAnswer: this.capabilities?.supportsOfferAnswer === true,
         backend,
         fallbackReason: this.capabilities?.fallbackReason,
@@ -641,9 +703,11 @@ export class NativeStreamerManager {
         codecSummary,
         zeroCopySummary,
         gstreamerRuntime: effectiveRuntime,
-        message: gstreamerAvailable
+        message: ready
           ? `${effectiveRuntime.message} Video path: ${formatVideoBackendName(activeVideoBackend?.backend)}.`
-          : this.capabilities?.fallbackReason ?? effectiveRuntime.message,
+          : !linuxInput.ready
+            ? linuxInput.message ?? "Linux native input is not ready."
+            : this.capabilities?.fallbackReason ?? effectiveRuntime.message,
       };
     } catch (error) {
       const runtime = this.gstreamerRuntime ?? {
@@ -656,7 +720,9 @@ export class NativeStreamerManager {
       } satisfies NativeGstreamerRuntimeStatus;
       return {
         detected: false,
+        ready: false,
         gstreamerAvailable: false,
+        inputReady: process.platform === "linux" ? linuxNativeInputReadiness().ready : undefined,
         supportsOfferAnswer: false,
         gstreamerRuntime: runtime,
         message: formatNativeStreamerDetectionFailure(error, runtime),
@@ -848,11 +914,12 @@ export class NativeStreamerManager {
     if (videoBackendPreference !== "auto") {
       childEnv.OPENNOW_NATIVE_VIDEO_BACKEND = videoBackendPreference;
     }
-    if (process.platform === "win32") {
+    if (process.platform === "win32" || process.platform === "linux") {
       childEnv.OPENNOW_NATIVE_EXTERNAL_RENDERER = this.options.getExternalRendererEnabled() ? "1" : "0";
     }
     childEnv.OPENNOW_NATIVE_CLOUD_GSYNC = nativeStreamerFeatureModeToEnvValue(this.options.getCloudGsyncMode());
-    childEnv.OPENNOW_NATIVE_D3D_FULLSCREEN = nativeStreamerFeatureModeToEnvValue(this.options.getD3dFullscreenMode());
+    childEnv.OPENNOW_NATIVE_FULLSCREEN = nativeStreamerFeatureModeToEnvValue(this.options.getD3dFullscreenMode());
+    childEnv.OPENNOW_NATIVE_D3D_FULLSCREEN = childEnv.OPENNOW_NATIVE_FULLSCREEN;
     if (backendPreference !== "auto") {
       childEnv.OPENNOW_NATIVE_STREAMER_BACKEND = backendPreference;
     }

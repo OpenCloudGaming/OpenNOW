@@ -560,6 +560,97 @@ pub fn prefer_codec(sdp: &str, codec: VideoCodec, options: PreferCodecOptions) -
     filtered.join(ending)
 }
 
+pub fn prefer_plain_opus_audio(sdp: &str) -> String {
+    let ending = line_ending(sdp);
+    let lines = split_lines_lossless(sdp);
+    let mut in_audio_section = false;
+    let mut audio_payloads = Vec::<String>::new();
+    let mut opus_payloads = HashSet::<String>::new();
+
+    for line in &lines {
+        if line.starts_with("m=audio") {
+            in_audio_section = true;
+            audio_payloads = line.split_whitespace().skip(3).map(str::to_owned).collect();
+            continue;
+        }
+        if line.starts_with("m=") && in_audio_section {
+            in_audio_section = false;
+        }
+        if !in_audio_section || !line.starts_with("a=rtpmap:") {
+            continue;
+        }
+
+        let Some(rest) = line.split_once(':').map(|(_, rest)| rest) else {
+            continue;
+        };
+        let mut parts = rest.split_whitespace();
+        let Some(payload_type) = parts.next() else {
+            continue;
+        };
+        let Some(codec) = parts.next() else {
+            continue;
+        };
+        if codec
+            .split('/')
+            .next()
+            .is_some_and(|name| name.eq_ignore_ascii_case("OPUS"))
+        {
+            opus_payloads.insert(payload_type.to_owned());
+        }
+    }
+
+    if opus_payloads.is_empty() {
+        return sdp.to_owned();
+    }
+
+    let ordered_opus_payloads = audio_payloads
+        .iter()
+        .filter(|payload| opus_payloads.contains(payload.as_str()))
+        .cloned()
+        .collect::<Vec<_>>();
+    if ordered_opus_payloads.is_empty() {
+        return sdp.to_owned();
+    }
+
+    let mut filtered = Vec::with_capacity(lines.len());
+    in_audio_section = false;
+    for line in &lines {
+        if line.starts_with("m=audio") {
+            in_audio_section = true;
+            let header = line.split_whitespace().take(3).collect::<Vec<_>>();
+            let mut rewritten = header.join(" ");
+            for payload in &ordered_opus_payloads {
+                rewritten.push(' ');
+                rewritten.push_str(payload);
+            }
+            filtered.push(rewritten);
+            continue;
+        }
+        if line.starts_with("m=") && in_audio_section {
+            in_audio_section = false;
+        }
+
+        if in_audio_section
+            && (line.starts_with("a=rtpmap:")
+                || line.starts_with("a=fmtp:")
+                || line.starts_with("a=rtcp-fb:"))
+        {
+            let rest = line
+                .split_once(':')
+                .map(|(_, rest)| rest)
+                .unwrap_or_default();
+            let payload_type = rest.split_whitespace().next().unwrap_or_default();
+            if !payload_type.is_empty() && !opus_payloads.contains(payload_type) {
+                continue;
+            }
+        }
+
+        filtered.push((*line).to_owned());
+    }
+
+    filtered.join(ending)
+}
+
 fn capture_numeric_param(params: &str, key: &str) -> Option<u32> {
     for part in params.split(';') {
         let trimmed = part.trim();
@@ -1107,6 +1198,30 @@ mod tests {
         assert!(munged.contains("m=video 9 UDP/TLS/RTP/SAVPF 96\nb=AS:75000"));
         assert!(munged.contains("m=audio 9 UDP/TLS/RTP/SAVPF 111\nb=AS:128"));
         assert!(munged.contains("a=fmtp:111 minptime=10;useinbandfec=1;stereo=1"));
+    }
+
+    #[test]
+    fn prefers_plain_opus_audio_over_red() {
+        let sdp = [
+            "v=0",
+            "m=audio 9 UDP/TLS/RTP/SAVPF 63 111",
+            "a=rtpmap:63 RED/48000/2",
+            "a=fmtp:63 111/111",
+            "a=rtcp-fb:63 transport-cc",
+            "a=rtpmap:111 OPUS/48000/2",
+            "a=fmtp:111 minptime=10;useinbandfec=1",
+            "m=video 9 UDP/TLS/RTP/SAVPF 96",
+            "a=rtpmap:96 H264/90000",
+        ]
+        .join("\n");
+
+        let filtered = prefer_plain_opus_audio(&sdp);
+
+        assert!(filtered.contains("m=audio 9 UDP/TLS/RTP/SAVPF 111"));
+        assert!(!filtered.contains("RED/48000"));
+        assert!(!filtered.contains("a=fmtp:63"));
+        assert!(filtered.contains("a=rtpmap:111 OPUS/48000/2"));
+        assert!(filtered.contains("m=video 9 UDP/TLS/RTP/SAVPF 96"));
     }
 
     #[test]

@@ -3,7 +3,7 @@ use crate::backend::{
     update_context_bitrate_limit, BackendReply, NativeStreamerBackend,
 };
 use crate::gstreamer_config::{
-    resolve_d3d_fullscreen_sink, resolve_present_max_fps, NATIVE_D3D_FULLSCREEN_ENV,
+    resolve_native_fullscreen_sink, resolve_present_max_fps, NATIVE_FULLSCREEN_ENV,
     NATIVE_PRESENT_MAX_FPS_ENV, PRESENT_LIMITER_AUTO_SENTINEL,
 };
 use crate::gstreamer_pipeline::{
@@ -191,9 +191,10 @@ impl NativeStreamerBackend for GstreamerBackend {
         };
 
         let present_max_fps = resolve_present_max_fps(context.settings.fps);
-        let d3d_fullscreen_sink = resolve_d3d_fullscreen_sink(context.settings.enable_cloud_gsync);
+        let native_fullscreen_sink =
+            resolve_native_fullscreen_sink(context.settings.enable_cloud_gsync);
         pipeline.set_present_max_fps(present_max_fps);
-        pipeline.set_d3d_fullscreen_sink(d3d_fullscreen_sink);
+        pipeline.set_d3d_fullscreen_sink(native_fullscreen_sink);
         pipeline.configure_stats(&context, prepared.nvst_params.max_bitrate_kbps);
         if present_max_fps > 0 && present_max_fps != PRESENT_LIMITER_AUTO_SENTINEL {
             events.push(Event::Log {
@@ -204,11 +205,11 @@ impl NativeStreamerBackend for GstreamerBackend {
                 ),
             });
         }
-        if d3d_fullscreen_sink {
+        if native_fullscreen_sink {
             events.push(Event::Log {
                 level: "info",
                 message: format!(
-                    "Native D3D fullscreen presentation is enabled for Cloud G-Sync/VRR; set {NATIVE_D3D_FULLSCREEN_ENV}=0 to disable."
+                    "Native fullscreen presentation is enabled; set {NATIVE_FULLSCREEN_ENV}=0 to disable."
                 ),
             });
         }
@@ -606,6 +607,7 @@ mod tests {
         let vaapi = rtp_video_chain_definition("AV1", RtpVideoApi::Vaapi).expect("VAAPI AV1");
         assert_eq!(vaapi[3].factory, "vaav1dec");
         assert!(vaapi.iter().any(|spec| spec.factory == "videoconvert"));
+        assert!(vaapi.iter().any(|spec| spec.factory == "textoverlay"));
         assert_eq!(vaapi.last().map(|spec| spec.factory), Some("glimagesink"));
 
         let v4l2 = rtp_video_chain_definition("H265", RtpVideoApi::V4L2).expect("V4L2 H265");
@@ -617,6 +619,7 @@ mod tests {
         assert!(vulkan
             .iter()
             .any(|spec| spec.factory == "vulkancolorconvert"));
+        assert!(vulkan.iter().any(|spec| spec.factory == "textoverlay"));
         assert_eq!(vulkan.last().map(|spec| spec.factory), Some("vulkansink"));
         assert!(rtp_video_chain_definition("AV1", RtpVideoApi::Vulkan).is_none());
 

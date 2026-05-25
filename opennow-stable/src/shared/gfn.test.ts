@@ -160,16 +160,17 @@ test("buildNativeStreamerSessionContext forwards requested/finalized streaming f
   assert.equal(context.settings.nativeTransitionDiagnostics?.forceQueueMode, "adaptive");
 });
 
-test("normalizes native stream client mode to web on non-Windows platforms", () => {
-  assert.equal(normalizeStreamClientModeForPlatform("native", "linux"), "web");
+test("normalizes native stream client mode only on unsupported platforms", () => {
+  assert.equal(normalizeStreamClientModeForPlatform("native", "linux"), "native");
   assert.equal(normalizeStreamClientModeForPlatform("native", "darwin"), "web");
   assert.equal(normalizeStreamClientModeForPlatform("web", "linux"), "web");
   assert.equal(normalizeStreamClientModeForPlatform("native", "win32"), "native");
 });
 
-test("uses the exact Windows-only unsupported native streamer status message", () => {
+test("supports Linux and Windows for native streamer platform checks", () => {
   assert.equal(isNativeStreamerSupportedPlatform("win32"), true);
-  assert.equal(isNativeStreamerSupportedPlatform("linux"), false);
+  assert.equal(isNativeStreamerSupportedPlatform("linux"), true);
+  assert.equal(isNativeStreamerSupportedPlatform("darwin"), false);
 
   const status = createUnsupportedNativeStreamerStatus();
   assert.equal(status.detected, false);

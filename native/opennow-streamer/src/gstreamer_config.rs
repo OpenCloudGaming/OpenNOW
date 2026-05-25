@@ -3,6 +3,7 @@ pub(crate) const NATIVE_VIDEO_API_ENV: &str = "OPENNOW_NATIVE_VIDEO_API";
 pub(crate) const NATIVE_VIDEO_BACKEND_ENV: &str = "OPENNOW_NATIVE_VIDEO_BACKEND";
 pub(crate) const NATIVE_ZERO_COPY_ENV: &str = "OPENNOW_NATIVE_ZERO_COPY";
 pub(crate) const NATIVE_PRESENT_MAX_FPS_ENV: &str = "OPENNOW_NATIVE_PRESENT_MAX_FPS";
+pub(crate) const NATIVE_FULLSCREEN_ENV: &str = "OPENNOW_NATIVE_FULLSCREEN";
 pub(crate) const NATIVE_D3D_FULLSCREEN_ENV: &str = "OPENNOW_NATIVE_D3D_FULLSCREEN";
 pub(crate) const PRESENT_LIMITER_AUTO_SENTINEL: u32 = u32::MAX;
 
@@ -57,7 +58,17 @@ pub(crate) fn automatic_present_max_fps(requested_fps: u32, display_hz: Option<u
         .unwrap_or(0)
 }
 
-pub(crate) fn resolve_d3d_fullscreen_sink(cloud_gsync_enabled: bool) -> bool {
+pub(crate) fn resolve_native_fullscreen_sink(cloud_gsync_enabled: bool) -> bool {
+    if let Ok(value) = std::env::var(NATIVE_FULLSCREEN_ENV) {
+        let value = value.trim().to_ascii_lowercase();
+        if value == "1" || value == "on" || value == "true" || value == "yes" {
+            return true;
+        }
+        if value == "0" || value == "off" || value == "false" || value == "no" {
+            return false;
+        }
+    }
+
     if let Ok(value) = std::env::var(NATIVE_D3D_FULLSCREEN_ENV) {
         let value = value.trim().to_ascii_lowercase();
         if value == "1" || value == "on" || value == "true" || value == "yes" {
@@ -68,5 +79,9 @@ pub(crate) fn resolve_d3d_fullscreen_sink(cloud_gsync_enabled: bool) -> bool {
         }
     }
 
-    cloud_gsync_enabled
+    if cfg!(target_os = "linux") {
+        true
+    } else {
+        cloud_gsync_enabled
+    }
 }

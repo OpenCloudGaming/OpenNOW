@@ -6,14 +6,28 @@ export type StreamClientMode = "web" | "native";
 export type NativeStreamerBackend = "stub" | "gstreamer";
 export type NativeStreamerBackendPreference = "auto" | NativeStreamerBackend;
 export type NativeStreamerFeatureMode = "auto" | "disabled" | "forced";
-export type NativeVideoBackendPreference = "auto" | "d3d11" | "d3d12";
+export type NativeVideoBackendPreference =
+  | "auto"
+  | "d3d11"
+  | "d3d12"
+  | "vaapi"
+  | "vulkan"
+  | "v4l2"
+  | "software";
 export type NativeQueueMode = "auto" | "fixed" | "adaptive" | "vrr";
 
-export const NATIVE_STREAMER_WINDOWS_ONLY_MESSAGE = "experimental feature: Windows only. Mac and Linux support is being worked on";
+export const NATIVE_STREAMER_UNSUPPORTED_PLATFORM_MESSAGE = "experimental feature: Windows and Linux only. macOS support is being worked on";
+export const NATIVE_STREAMER_WINDOWS_ONLY_MESSAGE = NATIVE_STREAMER_UNSUPPORTED_PLATFORM_MESSAGE;
 
 export function isNativeStreamerSupportedPlatform(platform: string): boolean {
   const normalized = platform.toLowerCase();
-  return normalized === "win32" || normalized.startsWith("win") || normalized.includes("windows");
+  return (
+    normalized === "linux" ||
+    normalized.includes("linux") ||
+    normalized === "win32" ||
+    normalized.startsWith("win") ||
+    normalized.includes("windows")
+  );
 }
 
 export function normalizeStreamClientModeForPlatform(mode: StreamClientMode, platform: string): StreamClientMode {
@@ -184,7 +198,10 @@ export interface NativeGstreamerRuntimeStatus {
 
 export interface NativeStreamerStatus {
   detected: boolean;
+  ready: boolean;
   gstreamerAvailable: boolean;
+  inputReady?: boolean;
+  inputStatusMessage?: string;
   supportsOfferAnswer: boolean;
   backend?: NativeStreamerBackend;
   fallbackReason?: string;
@@ -199,7 +216,9 @@ export interface NativeStreamerStatus {
 export function createUnsupportedNativeStreamerStatus(): NativeStreamerStatus {
   return {
     detected: false,
+    ready: false,
     gstreamerAvailable: false,
+    inputReady: false,
     supportsOfferAnswer: false,
     gstreamerRuntime: {
       source: "unknown",

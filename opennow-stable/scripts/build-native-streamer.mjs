@@ -1,4 +1,4 @@
-import { copyFileSync, chmodSync, existsSync, mkdirSync, statSync } from "node:fs";
+import { copyFileSync, chmodSync, existsSync, mkdirSync, renameSync, statSync } from "node:fs";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
@@ -218,6 +218,44 @@ function isExistingDirectory(path) {
   }
 }
 
+function findExecutableOnPath(command, env) {
+  const pathValue = env.PATH || env.Path || env.path || "";
+  return pathValue
+    .split(delimiter)
+    .filter(Boolean)
+    .map((directory) => join(directory, command))
+    .find((candidate) => isExistingFile(candidate));
+}
+
+function resolveCargoCommand(env) {
+  const cargoCommand = process.platform === "win32" ? "cargo.exe" : "cargo";
+  const pathCargo = findExecutableOnPath(cargoCommand, env);
+  if (pathCargo) {
+    return pathCargo;
+  }
+
+  if (process.platform !== "win32" && env.HOME) {
+    const rustupCargo = join(env.HOME, ".cargo", "bin", "cargo");
+    if (isExistingFile(rustupCargo)) {
+      return rustupCargo;
+    }
+  }
+
+  return cargoCommand;
+}
+
+function copyPackagedBinary(source, destination) {
+  if (process.platform === "win32") {
+    copyFileSync(source, destination);
+    return;
+  }
+
+  const temporaryDestination = `${destination}.${process.pid}.tmp`;
+  copyFileSync(source, temporaryDestination);
+  chmodSync(temporaryDestination, 0o755);
+  renameSync(temporaryDestination, destination);
+}
+
 function buildBundledGstreamerEnv(baseEnv, binaryPath) {
   const env = { SystemRoot: baseEnv.SystemRoot, WINDIR: baseEnv.WINDIR };
   const runtimeRoot = join(dirname(binaryPath), "gstreamer");
@@ -355,12 +393,17 @@ if (hasFeature(nativeFeatures, "gstreamer")) {
 }
 configureDarwinLinkerPadding(buildEnv, nativeFeatures);
 
-const cargoCommand = process.platform === "win32" ? "cargo.exe" : "cargo";
+const cargoCommand = resolveCargoCommand(buildEnv);
 const result = spawnSync(cargoCommand, cargoArgs, {
   cwd: repoRoot,
   stdio: "inherit",
   env: buildEnv,
 });
+
+if (result.error) {
+  console.error(`Failed to start Cargo at ${cargoCommand}: ${result.error.message}`);
+  process.exit(1);
+}
 
 if (result.status !== 0) {
   process.exit(result.status ?? 1);
@@ -373,8 +416,8 @@ if (!existsSync(builtBinary)) {
 
 mkdirSync(packageBinaryDir, { recursive: true });
 mkdirSync(packagePlatformBinaryDir, { recursive: true });
-copyFileSync(builtBinary, packageBinary);
-copyFileSync(builtBinary, packagePlatformBinary);
+copyPackagedBinary(builtBinary, packageBinary);
+copyPackagedBinary(builtBinary, packagePlatformBinary);
 
 if (process.platform !== "win32") {
   chmodSync(packageBinary, 0o755);
