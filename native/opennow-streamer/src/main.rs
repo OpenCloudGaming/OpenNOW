@@ -5,6 +5,12 @@ mod backend;
 mod gstreamer_backend;
 #[cfg(feature = "gstreamer")]
 mod gstreamer_config;
+#[cfg(all(feature = "gstreamer", target_os = "linux"))]
+mod linux_cursor;
+#[cfg(all(feature = "gstreamer", target_os = "linux"))]
+mod linux_display_session;
+#[cfg(all(feature = "gstreamer", target_os = "linux"))]
+mod linux_wayland_renderer;
 #[cfg(feature = "gstreamer")]
 mod gstreamer_input;
 #[cfg(feature = "gstreamer")]

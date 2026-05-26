@@ -1,8 +1,9 @@
 use crate::gstreamer_backend::send_log;
 use crate::gstreamer_config::{
     automatic_present_max_fps, requested_video_backend, use_external_renderer_window,
-    zero_copy_requested, EXTERNAL_RENDERER_ENV, NATIVE_FULLSCREEN_ENV, NATIVE_PRESENT_MAX_FPS_ENV,
-    NATIVE_VIDEO_API_ENV, NATIVE_VIDEO_BACKEND_ENV, PRESENT_LIMITER_AUTO_SENTINEL,
+    use_wayland_owned_renderer, zero_copy_requested, EXTERNAL_RENDERER_ENV, NATIVE_FULLSCREEN_ENV,
+    NATIVE_PRESENT_MAX_FPS_ENV, NATIVE_VIDEO_API_ENV, NATIVE_VIDEO_BACKEND_ENV,
+    PRESENT_LIMITER_AUTO_SENTINEL,
 };
 use crate::gstreamer_input::NativeWindowInputBridge;
 use crate::gstreamer_input::{
@@ -16,8 +17,15 @@ use crate::gstreamer_liveness::{
 };
 use crate::gstreamer_platform::{
     apply_linux_fullscreen_to_video_sink, apply_render_surface_to_video_sink,
-    close_linux_fullscreen_renderer_window, primary_display_refresh_hz,
-    start_external_renderer_window_guard,
+    close_linux_fullscreen_renderer_window, install_linux_wayland_pipeline_bus_sync_handler,
+    primary_display_refresh_hz, start_external_renderer_window_guard,
+};
+#[cfg(all(feature = "gstreamer", target_os = "linux"))]
+use crate::linux_wayland_renderer;
+#[cfg(target_os = "linux")]
+use crate::linux_display_session::{
+    detect_linux_display_session, linux_native_video_sink_preference, linux_sink_uses_x11_fullscreen_overlay,
+    LinuxDisplaySession,
 };
 use crate::gstreamer_transitions::DEFAULT_VIDEO_QUEUE_DEPTH;
 use crate::protocol::{
@@ -37,7 +45,7 @@ use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 use std::thread;
 
-const WEBRTC_LATENCY_MS: u32 = 2;
+const WEBRTC_LATENCY_MS: u32 = 0;
 const VIDEO_COMPRESSED_QUEUE_MAX_BUFFERS: u32 = 6;
 pub(crate) const VIDEO_QUEUE_MAX_BUFFERS: u32 = DEFAULT_VIDEO_QUEUE_DEPTH;
 const AUDIO_QUEUE_MAX_BUFFERS: u32 = 2;
@@ -275,6 +283,15 @@ impl GstreamerRenderState {
         };
 
         if use_external_renderer_window() {
+            #[cfg(all(feature = "gstreamer", target_os = "linux"))]
+            if detect_linux_display_session() == LinuxDisplaySession::Wayland
+                && use_wayland_owned_renderer()
+            {
+                linux_wayland_renderer::linux_wayland_renderer_retry_video_sink_attach(
+                    &sink,
+                    event_sender,
+                );
+            }
             if !self
                 .external_window_guard_started
                 .swap(true, Ordering::SeqCst)
@@ -337,6 +354,8 @@ impl GstreamerPipeline {
         init_gstreamer()?;
 
         let pipeline = gst::Pipeline::new();
+        configure_pipeline_for_low_latency(&pipeline);
+        install_linux_wayland_pipeline_bus_sync_handler(&pipeline);
         let webrtc = gst::ElementFactory::make("webrtcbin")
             .name("opennow-webrtcbin")
             .property_from_str("bundle-policy", "max-bundle")
@@ -802,8 +821,62 @@ pub(crate) fn set_property_from_str_if_supported(element: &gst::Element, name: &
     }
 }
 
+pub(crate) fn configure_pipeline_for_low_latency(pipeline: &gst::Pipeline) {
+    pipeline.set_latency(gst::ClockTime::ZERO);
+}
+
 pub(crate) fn configure_webrtc_low_latency(webrtc: &gst::Element) {
     set_property_if_supported(webrtc, "latency", WEBRTC_LATENCY_MS);
+}
+
+pub(crate) fn configure_decoder_for_low_latency(element: &gst::Element) {
+    set_property_if_supported(element, "automatic-request-sync-points", true);
+    set_property_if_supported(element, "discard-corrupted-frames", true);
+    set_property_if_supported(element, "min-force-key-unit-interval", 100_000_000u64);
+    set_property_if_supported(element, "qos", false);
+    set_property_if_supported(element, "max-display-delay", 0u32);
+    set_property_if_supported(element, "output-corrupt", false);
+}
+
+pub(crate) fn configure_parser_for_low_latency(element: &gst::Element) {
+    set_property_if_supported(element, "disable-passthrough", true);
+    set_property_if_supported(element, "config-interval", -1i32);
+}
+
+pub(crate) fn configure_video_processing_for_low_latency(element: &gst::Element, factory: &str) {
+    set_property_if_supported(element, "qos", false);
+    if factory == "videoconvert" {
+        set_property_if_supported(element, "dither", false);
+    }
+}
+
+fn configure_autoplugged_element_for_low_latency(element: &gst::Element) {
+    let Some(factory) = element.factory().map(|factory| factory.name()) else {
+        return;
+    };
+    match factory.as_str() {
+        "h264parse" | "h265parse" | "av1parse" => configure_parser_for_low_latency(element),
+        "queue" => configure_queue_for_low_latency(element, "video"),
+        factory if is_video_decoder_factory(factory) => configure_decoder_for_low_latency(element),
+        "videoconvert" | "videoscale" | "capsfilter" => {
+            configure_video_processing_for_low_latency(element, factory.as_str());
+        }
+        _ => {}
+    }
+}
+
+fn is_video_decoder_factory(factory: &str) -> bool {
+    factory.ends_with("dec") && !factory.starts_with("rtp")
+}
+
+fn configure_decodebin_for_low_latency(decodebin: &gst::Element) {
+    decodebin.connect("element-added", false, move |values| {
+        let Some(element) = values.get(1).and_then(|value| value.get::<gst::Element>().ok()) else {
+            return None;
+        };
+        configure_autoplugged_element_for_low_latency(&element);
+        None
+    });
 }
 
 pub(crate) fn configure_queue_for_low_latency(element: &gst::Element, media_label: &str) {
@@ -841,11 +914,41 @@ pub(crate) fn configure_sink_for_low_latency(element: &gst::Element) {
     set_property_if_supported(element, "force-aspect-ratio", true);
 }
 
+pub(crate) fn configure_native_fullscreen_video_sink(element: &gst::Element) {
+    configure_sink_for_low_latency(element);
+    set_property_if_supported(element, "direct-swapchain", false);
+    set_property_if_supported(element, "error-on-closed", false);
+    #[cfg(target_os = "linux")]
+    {
+        let sink_factory = element
+            .factory()
+            .map(|factory| factory.name().to_string())
+            .unwrap_or_default();
+        if detect_linux_display_session() == LinuxDisplaySession::Wayland
+            && sink_factory == "waylandsink"
+            && use_wayland_owned_renderer()
+        {
+            set_property_if_supported(element, "fullscreen", false);
+            set_property_if_supported(element, "show-cursor", false);
+            set_property_if_supported(element, "cursor-visible", false);
+            set_property_if_supported(element, "force-aspect-ratio", false);
+            return;
+        }
+    }
+    set_property_if_supported(element, "fullscreen", true);
+    set_property_if_supported(element, "show-cursor", false);
+    set_property_if_supported(element, "cursor-visible", false);
+    set_property_if_supported(element, "force-aspect-ratio", false);
+    set_property_if_supported(element, "fullscreen-on-alt-enter", false);
+    set_property_from_str_if_supported(element, "fullscreen-toggle-mode", "none");
+}
+
 pub(crate) fn configure_stats_overlay_element(element: &gst::Element) {
+    set_property_if_supported(element, "qos", false);
     set_property_if_supported(element, "visible", false);
     set_property_if_supported(element, "silent", true);
     set_property_if_supported(element, "text", "");
-    set_property_if_supported(element, "shaded-background", true);
+    set_property_if_supported(element, "shaded-background", false);
     set_property_if_supported(element, "draw-shadow", true);
     set_property_if_supported(element, "auto-resize", true);
     set_property_if_supported(element, "layout-x", 0.018f64);
@@ -1184,6 +1287,7 @@ fn wire_incoming_media_sink(
                 return;
             }
         };
+        configure_decodebin_for_low_latency(&decodebin);
 
         let decode_pipeline = pipeline.downgrade();
         let decode_sender = event_sender.clone();
@@ -1483,6 +1587,7 @@ fn rtp_video_chain_specs(
                     spec.factory = sink;
                 }
             }
+            customize_linux_x11_overlay_rtp_chain(&mut specs, sink);
             insert_requested_fps_capssetter(&mut specs, requested_fps);
             specs.retain(|spec| {
                 spec.role != RtpVideoChainRole::StatsOverlay
@@ -1491,6 +1596,40 @@ fn rtp_video_chain_specs(
             required_video_chain_elements_available(&specs).then_some((video_api, specs))
         })
 }
+
+#[cfg(target_os = "linux")]
+fn customize_linux_x11_overlay_rtp_chain(specs: &mut Vec<RtpVideoChainSpec>, sink: &str) {
+    if !linux_sink_uses_x11_fullscreen_overlay(sink) {
+        return;
+    }
+
+    specs.retain(|spec| spec.role != RtpVideoChainRole::PostDecodeConverter);
+
+    let Some(queue_index) = specs
+        .iter()
+        .position(|spec| spec.role == RtpVideoChainRole::PostDecodeQueue)
+    else {
+        return;
+    };
+
+    let mut insert_index = queue_index;
+    if gst::ElementFactory::find("capsfilter").is_some() {
+        specs.insert(
+            insert_index,
+            RtpVideoChainSpec::new("capsfilter", RtpVideoChainRole::PostDecodeCapsFilter),
+        );
+        insert_index = queue_index;
+    }
+    if gst::ElementFactory::find("videoscale").is_some() {
+        specs.insert(
+            insert_index,
+            RtpVideoChainSpec::new("videoscale", RtpVideoChainRole::PostDecodeConverter),
+        );
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn customize_linux_x11_overlay_rtp_chain(_specs: &mut Vec<RtpVideoChainSpec>, _sink: &str) {}
 
 fn insert_requested_fps_capssetter(specs: &mut Vec<RtpVideoChainSpec>, requested_fps: Option<u32>) {
     let Some(fps) = requested_fps.filter(|fps| *fps > 0) else {
@@ -1524,9 +1663,31 @@ fn select_decoder_factory(video_api: RtpVideoApi, codec: &str) -> Option<&'stati
 }
 
 fn select_sink_factory(video_api: RtpVideoApi) -> Option<&'static str> {
-    std::iter::once(video_api.sink_factory())
-        .chain(video_api.sink_fallback_factories().iter().copied())
-        .find(|factory| gst::ElementFactory::find(factory).is_some())
+    let primary = video_api.sink_factory();
+    if gst::ElementFactory::find(primary).is_some() {
+        return Some(primary);
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        for factory in linux_native_video_sink_preference()
+            .iter()
+            .copied()
+            .chain(video_api.sink_fallback_factories().iter().copied())
+        {
+            if gst::ElementFactory::find(factory).is_some() {
+                return Some(factory);
+            }
+        }
+        return None;
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        std::iter::once(primary)
+            .chain(video_api.sink_fallback_factories().iter().copied())
+            .find(|factory| gst::ElementFactory::find(factory).is_some())
+    }
 }
 
 fn required_video_chain_elements_available(specs: &[RtpVideoChainSpec]) -> bool {
@@ -1717,17 +1878,13 @@ fn configure_rtp_video_chain_element(
             set_property_if_supported(element, "wait-for-keyframe", false);
         }
         RtpVideoChainRole::Parser => {
-            set_property_if_supported(element, "disable-passthrough", true);
-            set_property_if_supported(element, "config-interval", -1i32);
+            configure_parser_for_low_latency(element);
         }
         RtpVideoChainRole::PreDecodeQueue => {
             configure_queue(element, VIDEO_COMPRESSED_QUEUE_MAX_BUFFERS, false);
         }
         RtpVideoChainRole::Decoder => {
-            set_property_if_supported(element, "automatic-request-sync-points", true);
-            set_property_if_supported(element, "discard-corrupted-frames", true);
-            set_property_if_supported(element, "min-force-key-unit-interval", 100_000_000u64);
-            set_property_if_supported(element, "qos", false);
+            configure_decoder_for_low_latency(element);
         }
         RtpVideoChainRole::PostDecodeRateSetter => {
             if let Some(caps) = spec
@@ -1749,9 +1906,18 @@ fn configure_rtp_video_chain_element(
             {
                 element.set_property("caps", &caps);
             }
+            configure_video_processing_for_low_latency(element, spec.factory);
+            #[cfg(target_os = "linux")]
+            if spec.caps.is_none() {
+                crate::gstreamer_platform::linux_x11_register_video_scale_capsfilter(element);
+            }
         }
         RtpVideoChainRole::PostDecodeConverter => {
-            set_property_if_supported(element, "qos", false);
+            configure_video_processing_for_low_latency(element, spec.factory);
+            #[cfg(target_os = "linux")]
+            if spec.factory == "videoscale" {
+                crate::gstreamer_platform::linux_x11_configure_videoscale_for_fullscreen(element);
+            }
         }
         RtpVideoChainRole::StatsOverlay => {
             configure_stats_overlay_element(element);
@@ -1760,15 +1926,13 @@ fn configure_rtp_video_chain_element(
             configure_queue_for_low_latency(element, "video");
         }
         RtpVideoChainRole::Sink => {
-            configure_sink_for_low_latency(element);
-            // Direct swapchain can turn a window/present stall into upstream decode backpressure.
-            set_property_if_supported(element, "direct-swapchain", false);
-            set_property_if_supported(element, "error-on-closed", false);
-            set_property_if_supported(element, "fullscreen", native_fullscreen_sink);
-            set_property_if_supported(element, "show-cursor", false);
-            set_property_if_supported(element, "cursor-visible", false);
-            set_property_if_supported(element, "fullscreen-on-alt-enter", false);
-            set_property_from_str_if_supported(element, "fullscreen-toggle-mode", "none");
+            if native_fullscreen_sink {
+                configure_native_fullscreen_video_sink(element);
+            } else {
+                configure_sink_for_low_latency(element);
+                set_property_if_supported(element, "direct-swapchain", false);
+                set_property_if_supported(element, "error-on-closed", false);
+            }
         }
     }
 }
@@ -1932,6 +2096,10 @@ fn link_rtp_video_pad(
                 send_log(event_sender, "warn", error);
             }
         }
+        if use_external_renderer_window() {
+            video_liveness.set_stats_overlay_visible(true);
+        }
+        video_liveness.update_render_sink(element_factory_name(sink));
         render_state.set_video_sink(sink.clone(), event_sender);
         install_present_limiter(
             sink,
@@ -2110,25 +2278,49 @@ fn video_sink_factories(native_fullscreen_sink: bool) -> Vec<(&'static str, Opti
         }
     }
 
+    #[cfg(target_os = "linux")]
+    if native_fullscreen_sink {
+        if let Some(factories) = linux_low_latency_video_sink_factories() {
+            return factories;
+        }
+    }
+
     let mut factories = vec![("queue", None), ("videoconvert", None)];
     if gst::ElementFactory::find("dwritetextoverlay").is_some() {
         factories.push(("dwritetextoverlay", None));
     } else if gst::ElementFactory::find("textoverlay").is_some() {
         factories.push(("textoverlay", None));
     }
-    #[cfg(target_os = "linux")]
-    if native_fullscreen_sink {
-        if gst::ElementFactory::find("ximagesink").is_some() {
-            factories.push(("ximagesink", Some(false)));
-            return factories;
-        }
-        if gst::ElementFactory::find("waylandsink").is_some() {
-            factories.push(("waylandsink", Some(false)));
-            return factories;
-        }
-    }
     factories.push(("autovideosink", Some(false)));
     factories
+}
+
+#[cfg(target_os = "linux")]
+fn linux_low_latency_video_sink_factories() -> Option<Vec<(&'static str, Option<bool>)>> {
+    for sink in linux_native_video_sink_preference() {
+        if gst::ElementFactory::find(sink).is_none() {
+            continue;
+        }
+
+        let mut factories = Vec::new();
+        if gst::ElementFactory::find("textoverlay").is_some() {
+            factories.push(("textoverlay", None));
+        }
+        if linux_sink_uses_x11_fullscreen_overlay(sink) {
+            if gst::ElementFactory::find("videoscale").is_some() {
+                factories.push(("videoscale", None));
+            }
+            if gst::ElementFactory::find("capsfilter").is_some() {
+                factories.push(("capsfilter", None));
+            }
+        } else {
+            factories.push(("videoconvert", None));
+        }
+        factories.push(("queue", None));
+        factories.push((sink, Some(false)));
+        return Some(factories);
+    }
+    None
 }
 
 fn audio_sink_factories() -> Vec<(&'static str, Option<bool>)> {
@@ -2174,6 +2366,12 @@ fn link_media_chain(
         if factory == "queue" {
             configure_queue_for_low_latency(&element, media_label);
         }
+        if matches!(
+            factory,
+            "videoconvert" | "videoscale" | "capsfilter" | "textoverlay" | "dwritetextoverlay"
+        ) {
+            configure_video_processing_for_low_latency(&element, factory);
+        }
         if factory == "dwritetextoverlay" || factory == "textoverlay" {
             configure_stats_overlay_element(&element);
             if media_label == "video" {
@@ -2182,12 +2380,19 @@ fn link_media_chain(
                 }
             }
         }
+        #[cfg(target_os = "linux")]
+        if factory == "videoscale" {
+            crate::gstreamer_platform::linux_x11_configure_videoscale_for_fullscreen(&element);
+        }
+        #[cfg(target_os = "linux")]
+        if factory == "capsfilter" && media_label == "video" {
+            crate::gstreamer_platform::linux_x11_register_video_scale_capsfilter(&element);
+        }
         if sync_property.is_some() || factory.ends_with("sink") {
-            configure_sink_for_low_latency(&element);
             if media_label == "video" && native_fullscreen_sink {
-                set_property_if_supported(&element, "fullscreen", true);
-                set_property_if_supported(&element, "show-cursor", false);
-                set_property_if_supported(&element, "cursor-visible", false);
+                configure_native_fullscreen_video_sink(&element);
+            } else {
+                configure_sink_for_low_latency(&element);
             }
         }
         pipeline
@@ -2230,6 +2435,16 @@ fn link_media_chain(
                 if let Err(error) = apply_linux_fullscreen_to_video_sink(sink, event_sender) {
                     send_log(event_sender, "warn", error);
                 }
+            }
+            if let Some(video_liveness) = video_liveness {
+                if use_external_renderer_window() {
+                    video_liveness.set_stats_overlay_visible(true);
+                }
+                let sink_label = sink
+                    .factory()
+                    .map(|factory| factory.name().to_string())
+                    .unwrap_or_else(|| sink.name().to_string());
+                video_liveness.update_render_sink(sink_label);
             }
             if let Some(render_state) = render_state {
                 render_state.set_video_sink(sink.clone(), event_sender);

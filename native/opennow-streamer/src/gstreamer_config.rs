@@ -5,7 +5,21 @@ pub(crate) const NATIVE_ZERO_COPY_ENV: &str = "OPENNOW_NATIVE_ZERO_COPY";
 pub(crate) const NATIVE_PRESENT_MAX_FPS_ENV: &str = "OPENNOW_NATIVE_PRESENT_MAX_FPS";
 pub(crate) const NATIVE_FULLSCREEN_ENV: &str = "OPENNOW_NATIVE_FULLSCREEN";
 pub(crate) const NATIVE_D3D_FULLSCREEN_ENV: &str = "OPENNOW_NATIVE_D3D_FULLSCREEN";
+pub(crate) const NATIVE_WAYLAND_RENDERER_ENV: &str = "OPENNOW_NATIVE_WAYLAND_RENDERER";
 pub(crate) const PRESENT_LIMITER_AUTO_SENTINEL: u32 = u32::MAX;
+
+/// Experimental owned Wayland toplevel that embeds waylandsink. Disabled by default
+/// because sharing wl_surface/display across threads drops almost all frames.
+pub(crate) fn use_wayland_owned_renderer() -> bool {
+    std::env::var(NATIVE_WAYLAND_RENDERER_ENV)
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
+}
 
 pub(crate) fn use_external_renderer_window() -> bool {
     std::env::var(EXTERNAL_RENDERER_ENV)

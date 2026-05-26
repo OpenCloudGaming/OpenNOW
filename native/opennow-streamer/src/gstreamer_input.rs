@@ -1,6 +1,18 @@
 use crate::gstreamer_backend::send_log;
 #[cfg(target_os = "linux")]
-use crate::gstreamer_platform::linux_fullscreen_renderer_window_focused;
+use crate::gstreamer_platform::{
+    linux_fullscreen_renderer_window_focused, linux_renderer_capture_focus_lost,
+    linux_x11_fullscreen_overlay_active,
+};
+#[cfg(all(feature = "gstreamer", target_os = "linux"))]
+use crate::linux_wayland_renderer;
+#[cfg(target_os = "linux")]
+use crate::linux_cursor::{linux_hide_stream_cursor, linux_show_stream_cursor};
+#[cfg(target_os = "linux")]
+use crate::linux_display_session::{
+    detect_linux_display_session, linux_display_session_label, linux_uses_evdev_mouse_grab,
+    linux_uses_wayland_native_input_refocus, LinuxDisplaySession,
+};
 #[cfg(target_os = "windows")]
 use crate::gstreamer_platform::win32_renderer_window;
 use crate::input::InputEncoder;
@@ -25,7 +37,7 @@ use std::os::fd::AsRawFd;
 #[cfg(target_os = "linux")]
 use std::os::unix::fs::OpenOptionsExt;
 #[cfg(target_os = "linux")]
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
 #[cfg(target_os = "windows")]
@@ -759,6 +771,7 @@ fn native_input_timestamp_us() -> u64 {
 #[cfg(target_os = "linux")]
 #[derive(Debug)]
 struct LinuxInputDevice {
+    path: PathBuf,
     file: File,
     grabbed: bool,
 }
@@ -802,25 +815,47 @@ fn spawn_linux_keyboard_mouse_thread(
             return;
         }
 
+        let uses_evdev_grab = linux_uses_evdev_mouse_grab();
         send_log(
             &event_sender,
             "info",
             format!(
-                "Native Linux keyboard/mouse evdev capture armed with {} grabbed device(s).",
-                devices.len()
+                "Native Linux evdev capture armed with {} device(s); {} keyboard stays compositor-aware until forwarded.",
+                devices.len(),
+                if uses_evdev_grab {
+                    "mouse uses exclusive kernel grab and"
+                } else {
+                    "Wayland session uses compositor-aware mouse forwarding without kernel grab and"
+                }
             ),
         );
 
         let mut pending_events = Vec::with_capacity(512);
         let mut pressed_keys = HashSet::<(u16, u16, u16)>::new();
         let mut pressed_buttons = HashSet::<u8>::new();
-        let mut captured = true;
+        let mut forwarded_keys = HashSet::<(u16, u16, u16)>::new();
+        let mut captured = !linux_uses_wayland_native_input_refocus();
+        if captured {
+            linux_begin_local_capture(&mut devices, &event_sender);
+        } else {
+            send_log(
+                &event_sender,
+                "info",
+                "Native Linux capture waiting for renderer focus; click the stream to capture mouse and keyboard like a fullscreen game.".to_owned(),
+            );
+        }
         while !stop.load(Ordering::SeqCst) {
             pending_events.clear();
             poll_linux_keyboard_mouse_devices(&mut devices, &mut pending_events);
             if !captured {
-                if linux_fullscreen_renderer_window_focused() {
-                    grab_linux_keyboard_mouse_devices(&mut devices);
+                let wayland_refocus = linux_wayland_renderer_refocus_signal(&pending_events);
+                let renderer_refocused =
+                    linux_fullscreen_renderer_window_focused() || wayland_refocus;
+                if renderer_refocused {
+                    if wayland_refocus {
+                        pending_events.clear();
+                    }
+                    linux_begin_local_capture(&mut devices, &event_sender);
                     captured = true;
                     send_log(
                         &event_sender,
@@ -833,65 +868,156 @@ fn spawn_linux_keyboard_mouse_thread(
                 continue;
             }
 
-            if !pending_events.is_empty() {
-                record_linux_pressed_input(
-                    &pending_events,
-                    &mut pressed_keys,
-                    &mut pressed_buttons,
-                );
-                if linux_capture_release_shortcut(&pressed_keys).is_some() {
-                    let release_events =
-                        linux_pressed_input_release_events(&pressed_keys, &pressed_buttons);
-                    send_native_window_input_events(&input_state, &input_channels, &release_events);
-                    release_linux_keyboard_mouse_devices(&mut devices);
-                    pressed_keys.clear();
-                    pressed_buttons.clear();
-                    captured = false;
-                    send_log(
+            if captured {
+                if linux_renderer_capture_focus_lost() {
+                    linux_release_local_capture(
+                        &input_state,
+                        &input_channels,
+                        &mut devices,
+                        &mut pressed_keys,
+                        &mut pressed_buttons,
+                        &mut forwarded_keys,
+                        LinuxCaptureReleaseReason::FocusLoss,
                         &event_sender,
-                        "info",
-                        "Native Linux keyboard/mouse capture released by Alt+Tab or Ctrl+Alt+Esc. Alt+Tab can now return to the stream window and restore capture.".to_owned(),
                     );
+                    captured = false;
                     thread::sleep(NATIVE_GAMEPAD_POLL_INTERVAL);
                     continue;
                 }
-                send_native_window_input_events(&input_state, &input_channels, &pending_events);
+            }
+
+            if pending_events.is_empty() {
+                thread::sleep(NATIVE_GAMEPAD_POLL_INTERVAL);
+                continue;
+            }
+
+            let mut shortcut_released = false;
+            for event in &pending_events {
+                record_linux_pressed_input(
+                    std::slice::from_ref(event),
+                    &mut pressed_keys,
+                    &mut pressed_buttons,
+                );
+
+                if let Some(reason) = linux_capture_release_reason(&pressed_keys) {
+                    linux_release_local_capture(
+                        &input_state,
+                        &input_channels,
+                        &mut devices,
+                        &mut pressed_keys,
+                        &mut pressed_buttons,
+                        &mut forwarded_keys,
+                        reason,
+                        &event_sender,
+                    );
+                    captured = false;
+                    shortcut_released = true;
+                    break;
+                }
+
+                if linux_should_block_stream_keyboard_event(event, &pressed_keys) {
+                    continue;
+                }
+
+                if let NativeWindowInputEvent::Key {
+                    pressed: true,
+                    keycode,
+                    scancode,
+                    modifiers,
+                    ..
+                } = event
+                {
+                    forwarded_keys.insert((*keycode, *scancode, *modifiers));
+                } else if let NativeWindowInputEvent::Key {
+                    pressed: false,
+                    keycode,
+                    scancode,
+                    modifiers,
+                    ..
+                } = event
+                {
+                    forwarded_keys.remove(&(*keycode, *scancode, *modifiers));
+                }
+
+                send_native_window_input_events(
+                    &input_state,
+                    &input_channels,
+                    std::slice::from_ref(event),
+                );
+            }
+
+            if shortcut_released {
+                thread::sleep(NATIVE_GAMEPAD_POLL_INTERVAL);
+                continue;
             }
             thread::sleep(NATIVE_GAMEPAD_POLL_INTERVAL);
         }
 
-        let release_events = linux_pressed_input_release_events(&pressed_keys, &pressed_buttons);
-        send_native_window_input_events(&input_state, &input_channels, &release_events);
+        linux_show_stream_cursor();
+        linux_send_stream_release_for_forwarded_keys(
+            &input_state,
+            &input_channels,
+            &forwarded_keys,
+        );
     })
 }
 
 #[cfg(target_os = "linux")]
 fn log_linux_native_input_status(event_sender: &Option<Sender<Event>>) {
-    let session_type = std::env::var("XDG_SESSION_TYPE")
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    let has_wayland = std::env::var("WAYLAND_DISPLAY").is_ok();
-    let has_x11 = std::env::var("DISPLAY").is_ok();
-    if session_type == "wayland" || has_wayland {
-        send_log(
-            event_sender,
-            "info",
-            "Linux Wayland session detected; native keyboard/mouse input uses evdev device grabs because compositor relative-pointer support is not consistently available.".to_owned(),
-        );
-    } else if session_type == "x11" || has_x11 {
-        send_log(
-            event_sender,
-            "info",
-            "Linux X11 session detected; native keyboard/mouse input uses evdev device grabs."
-                .to_owned(),
-        );
-    } else {
-        send_log(
-            event_sender,
-            "warn",
-            "Linux display server could not be identified; native keyboard/mouse input will still attempt evdev device grabs.".to_owned(),
-        );
+    let session = detect_linux_display_session();
+    match session {
+        LinuxDisplaySession::Wayland => {
+            send_log(
+                event_sender,
+                "info",
+                "Linux Wayland session detected; native video uses Wayland sinks/fullscreen and compositor-aware click-to-capture input without kernel mouse grab.".to_owned(),
+            );
+        }
+        LinuxDisplaySession::X11 => {
+            send_log(
+                event_sender,
+                "info",
+                "Linux X11 session detected; native video uses X11 fullscreen overlay when available and game-style mouse grab with compositor-aware keyboard forwarding.".to_owned(),
+            );
+        }
+        LinuxDisplaySession::Unknown => {
+            send_log(
+                event_sender,
+                "warn",
+                format!(
+                    "Linux display server could not be identified (session={}); native input will still attempt evdev device grabs.",
+                    linux_display_session_label(session)
+                ),
+            );
+        }
     }
+}
+
+#[cfg(target_os = "linux")]
+fn linux_wayland_renderer_refocus_signal(
+    pending_events: &[NativeWindowInputEvent],
+) -> bool {
+    if !linux_uses_wayland_native_input_refocus() || linux_x11_fullscreen_overlay_active() {
+        return false;
+    }
+
+    if linux_wayland_renderer::linux_wayland_renderer_consume_capture_click() {
+        return true;
+    }
+
+    if !linux_wayland_renderer::linux_wayland_renderer_video_sink_attached() {
+        return pending_events.iter().any(|event| {
+            matches!(
+                event,
+                NativeWindowInputEvent::MouseButton {
+                    pressed: true,
+                    ..
+                }
+            )
+        });
+    }
+
+    false
 }
 
 #[cfg(target_os = "linux")]
@@ -906,15 +1032,15 @@ fn discover_linux_keyboard_mouse_devices(
             .open(&path)
         {
             Ok(file) => {
-                linux_evdev_grab(&file, true);
                 send_log(
                     event_sender,
                     "info",
                     format!("Native Linux evdev capture opened {}.", path.display()),
                 );
                 devices.push(LinuxInputDevice {
+                    path,
                     file,
-                    grabbed: true,
+                    grabbed: false,
                 });
             }
             Err(error) if error.kind() == ErrorKind::PermissionDenied => {
@@ -944,6 +1070,10 @@ fn discover_linux_keyboard_mouse_devices(
 
 #[cfg(target_os = "linux")]
 fn release_linux_keyboard_mouse_devices(devices: &mut [LinuxInputDevice]) {
+    if !linux_uses_evdev_mouse_grab() {
+        return;
+    }
+
     for device in devices {
         if device.grabbed {
             linux_evdev_grab(&device.file, false);
@@ -953,12 +1083,56 @@ fn release_linux_keyboard_mouse_devices(devices: &mut [LinuxInputDevice]) {
 }
 
 #[cfg(target_os = "linux")]
-fn grab_linux_keyboard_mouse_devices(devices: &mut [LinuxInputDevice]) {
-    for device in devices {
-        if !device.grabbed {
-            linux_evdev_grab(&device.file, true);
-            device.grabbed = true;
+fn linux_begin_local_capture(
+    devices: &mut [LinuxInputDevice],
+    event_sender: &Option<Sender<Event>>,
+) {
+    if linux_uses_evdev_mouse_grab() {
+        grab_linux_mouse_devices(devices);
+    } else if crate::gstreamer_config::use_wayland_owned_renderer()
+        && linux_wayland_renderer::linux_wayland_renderer_is_active()
+    {
+        if let Err(error) = linux_wayland_renderer::linux_wayland_renderer_lock_pointer() {
+            send_log(
+                event_sender,
+                "warn",
+                format!(
+                    "Native Wayland compositor pointer lock could not be activated yet: {error}"
+                ),
+            );
         }
+        linux_wayland_renderer::linux_wayland_renderer_set_capture_active(true);
+    }
+    if linux_should_hide_stream_cursor() {
+        linux_hide_stream_cursor();
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn linux_should_hide_stream_cursor() -> bool {
+    linux_uses_evdev_mouse_grab()
+        || linux_x11_fullscreen_overlay_active()
+        || (linux_wayland_renderer::linux_wayland_renderer_is_active()
+            && linux_uses_wayland_native_input_refocus())
+}
+
+#[cfg(target_os = "linux")]
+fn linux_input_device_is_mouse(path: &Path) -> bool {
+    path.to_string_lossy().contains("event-mouse")
+}
+
+#[cfg(target_os = "linux")]
+fn grab_linux_mouse_devices(devices: &mut [LinuxInputDevice]) {
+    if !linux_uses_evdev_mouse_grab() {
+        return;
+    }
+
+    for device in devices {
+        if device.grabbed || !linux_input_device_is_mouse(&device.path) {
+            continue;
+        }
+        linux_evdev_grab(&device.file, true);
+        device.grabbed = true;
     }
 }
 
@@ -1196,39 +1370,155 @@ fn record_linux_pressed_input(
 
 #[cfg(target_os = "linux")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum LinuxCaptureReleaseShortcut {
+enum LinuxCaptureReleaseReason {
     AltTab,
     CtrlAltEsc,
+    FocusLoss,
+    WindowSwitch,
 }
 
 #[cfg(target_os = "linux")]
-fn linux_capture_release_shortcut(
+fn linux_capture_release_reason(
     pressed_keys: &HashSet<(u16, u16, u16)>,
-) -> Option<LinuxCaptureReleaseShortcut> {
-    let alt = pressed_keys
-        .iter()
-        .any(|(_, scancode, _)| *scancode == 56 || *scancode == 100);
+) -> Option<LinuxCaptureReleaseReason> {
+    let alt = linux_alt_modifier_pressed(pressed_keys);
     let ctrl = pressed_keys
         .iter()
         .any(|(_, scancode, _)| *scancode == 29 || *scancode == 97);
     let tab = pressed_keys.iter().any(|(_, scancode, _)| *scancode == 15);
     let escape = pressed_keys.iter().any(|(_, scancode, _)| *scancode == 1);
     if alt && tab {
-        Some(LinuxCaptureReleaseShortcut::AltTab)
+        Some(LinuxCaptureReleaseReason::AltTab)
     } else if ctrl && alt && escape {
-        Some(LinuxCaptureReleaseShortcut::CtrlAltEsc)
+        Some(LinuxCaptureReleaseReason::CtrlAltEsc)
+    } else if linux_window_switch_modifier_pressed(pressed_keys) {
+        Some(LinuxCaptureReleaseReason::WindowSwitch)
     } else {
         None
     }
 }
 
 #[cfg(target_os = "linux")]
-fn linux_pressed_input_release_events(
-    pressed_keys: &HashSet<(u16, u16, u16)>,
-    pressed_buttons: &HashSet<u8>,
-) -> Vec<NativeWindowInputEvent> {
-    let timestamp_us = native_input_timestamp_us();
+fn linux_window_switch_modifier_pressed(pressed_keys: &HashSet<(u16, u16, u16)>) -> bool {
+    pressed_keys.iter().any(|(_, scancode, _)| {
+        matches!(*scancode, 125 | 126 | 367 | 368)
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn linux_alt_modifier_pressed(pressed_keys: &HashSet<(u16, u16, u16)>) -> bool {
     pressed_keys
+        .iter()
+        .any(|(_, scancode, _)| *scancode == 56 || *scancode == 100)
+}
+
+#[cfg(target_os = "linux")]
+fn linux_should_block_stream_keyboard_event(
+    event: &NativeWindowInputEvent,
+    pressed_keys: &HashSet<(u16, u16, u16)>,
+) -> bool {
+    let NativeWindowInputEvent::Key {
+        pressed: true,
+        scancode,
+        ..
+    } = event
+    else {
+        return false;
+    };
+
+    if matches!(*scancode, 56 | 100) {
+        return true;
+    }
+
+    if linux_window_switch_modifier_pressed(pressed_keys) {
+        return true;
+    }
+
+    if *scancode == 15 && linux_alt_modifier_pressed(pressed_keys) {
+        return true;
+    }
+
+    if linux_ctrl_alt_esc_shortcut_forming(pressed_keys, *scancode) {
+        return true;
+    }
+
+    false
+}
+
+#[cfg(target_os = "linux")]
+fn linux_ctrl_alt_esc_shortcut_forming(
+    pressed_keys: &HashSet<(u16, u16, u16)>,
+    scancode: u16,
+) -> bool {
+    let ctrl = pressed_keys
+        .iter()
+        .any(|(_, pressed_scancode, _)| *pressed_scancode == 29 || *pressed_scancode == 97)
+        || matches!(scancode, 29 | 97);
+    let alt =
+        linux_alt_modifier_pressed(pressed_keys) || matches!(scancode, 56 | 100);
+    let escape = pressed_keys
+        .iter()
+        .any(|(_, pressed_scancode, _)| *pressed_scancode == 1)
+        || scancode == 1;
+    ctrl
+        && alt
+        && escape
+        && matches!(scancode, 1 | 29 | 97 | 56 | 100)
+}
+
+#[cfg(target_os = "linux")]
+fn linux_release_local_capture(
+    input_state: &GstreamerInputState,
+    input_channels: &GstreamerInputChannels,
+    devices: &mut [LinuxInputDevice],
+    pressed_keys: &mut HashSet<(u16, u16, u16)>,
+    pressed_buttons: &mut HashSet<u8>,
+    forwarded_keys: &mut HashSet<(u16, u16, u16)>,
+    reason: LinuxCaptureReleaseReason,
+    event_sender: &Option<Sender<Event>>,
+) {
+    linux_send_stream_release_for_forwarded_keys(input_state, input_channels, forwarded_keys);
+    forwarded_keys.clear();
+    release_linux_keyboard_mouse_devices(devices);
+    if crate::gstreamer_config::use_wayland_owned_renderer()
+        && linux_wayland_renderer::linux_wayland_renderer_is_active()
+    {
+        linux_wayland_renderer::linux_wayland_renderer_set_capture_active(false);
+        linux_wayland_renderer::linux_wayland_renderer_unlock_pointer();
+    }
+    linux_show_stream_cursor();
+    pressed_keys.clear();
+    pressed_buttons.clear();
+
+    let message = match reason {
+        LinuxCaptureReleaseReason::AltTab => {
+            "Native Linux capture released by Alt+Tab; mouse and keyboard returned to the desktop while streaming continues."
+        }
+        LinuxCaptureReleaseReason::CtrlAltEsc => {
+            "Native Linux capture released by Ctrl+Alt+Esc; mouse and keyboard returned to the desktop while streaming continues."
+        }
+        LinuxCaptureReleaseReason::FocusLoss => {
+            "Native Linux capture released because the renderer lost focus; mouse and keyboard returned to the desktop while streaming continues."
+        }
+        LinuxCaptureReleaseReason::WindowSwitch => {
+            "Native Linux capture released by a desktop window-switch key; mouse and keyboard returned to the desktop while streaming continues."
+        }
+    };
+    send_log(event_sender, "info", message.to_owned());
+}
+
+#[cfg(target_os = "linux")]
+fn linux_send_stream_release_for_forwarded_keys(
+    input_state: &GstreamerInputState,
+    input_channels: &GstreamerInputChannels,
+    forwarded_keys: &HashSet<(u16, u16, u16)>,
+) {
+    if forwarded_keys.is_empty() {
+        return;
+    }
+
+    let timestamp_us = native_input_timestamp_us();
+    let release_events = forwarded_keys
         .iter()
         .map(
             |(keycode, scancode, modifiers)| NativeWindowInputEvent::Key {
@@ -1239,16 +1529,8 @@ fn linux_pressed_input_release_events(
                 timestamp_us,
             },
         )
-        .chain(
-            pressed_buttons
-                .iter()
-                .map(|button| NativeWindowInputEvent::MouseButton {
-                    pressed: false,
-                    button: *button,
-                    timestamp_us,
-                }),
-        )
-        .collect()
+        .collect::<Vec<_>>();
+    send_native_window_input_events(input_state, input_channels, &release_events);
 }
 
 #[cfg(target_os = "linux")]
@@ -1551,16 +1833,16 @@ mod linux_tests {
     }
 
     #[test]
-    fn detects_linux_capture_release_shortcuts() {
+    fn detects_linux_capture_release_reasons() {
         let mut pressed = HashSet::<(u16, u16, u16)>::new();
 
         pressed.insert((0x12, 56, 0x0004));
-        assert_eq!(linux_capture_release_shortcut(&pressed), None);
+        assert_eq!(linux_capture_release_reason(&pressed), None);
 
         pressed.insert((0x09, 15, 0));
         assert_eq!(
-            linux_capture_release_shortcut(&pressed),
-            Some(LinuxCaptureReleaseShortcut::AltTab)
+            linux_capture_release_reason(&pressed),
+            Some(LinuxCaptureReleaseReason::AltTab)
         );
 
         pressed.clear();
@@ -1568,9 +1850,46 @@ mod linux_tests {
         pressed.insert((0x12, 56, 0x0004));
         pressed.insert((0x1b, 1, 0));
         assert_eq!(
-            linux_capture_release_shortcut(&pressed),
-            Some(LinuxCaptureReleaseShortcut::CtrlAltEsc)
+            linux_capture_release_reason(&pressed),
+            Some(LinuxCaptureReleaseReason::CtrlAltEsc)
         );
+
+        pressed.clear();
+        pressed.insert((0x7d, 125, 0x0040));
+        assert_eq!(
+            linux_capture_release_reason(&pressed),
+            Some(LinuxCaptureReleaseReason::WindowSwitch)
+        );
+    }
+
+    #[test]
+    fn wayland_sessions_skip_kernel_mouse_grab() {
+        if detect_linux_display_session() == LinuxDisplaySession::Wayland {
+            assert!(!linux_uses_evdev_mouse_grab());
+        }
+    }
+
+    #[test]
+    fn blocks_local_shortcut_keys_from_stream() {
+        let mut pressed = HashSet::<(u16, u16, u16)>::new();
+        let alt_down = NativeWindowInputEvent::Key {
+            pressed: true,
+            keycode: 0x12,
+            scancode: 56,
+            modifiers: 0x0004,
+            timestamp_us: 0,
+        };
+        assert!(linux_should_block_stream_keyboard_event(&alt_down, &pressed));
+        record_linux_pressed_input(&[alt_down], &mut pressed, &mut HashSet::new());
+
+        let tab_down = NativeWindowInputEvent::Key {
+            pressed: true,
+            keycode: 0x09,
+            scancode: 15,
+            modifiers: 0,
+            timestamp_us: 0,
+        };
+        assert!(linux_should_block_stream_keyboard_event(&tab_down, &pressed));
     }
 }
 

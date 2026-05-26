@@ -122,6 +122,7 @@ pub(crate) struct VideoLivenessState {
     codec: Mutex<String>,
     resolution: Mutex<String>,
     hardware_acceleration: Mutex<String>,
+    render_sink: Mutex<String>,
     memory_mode: Mutex<String>,
     caps_framerate: Mutex<Option<String>>,
     requested_streaming_features_summary: Mutex<String>,
@@ -160,6 +161,7 @@ impl VideoLivenessState {
             codec: Mutex::new(String::new()),
             resolution: Mutex::new(String::new()),
             hardware_acceleration: Mutex::new(String::new()),
+            render_sink: Mutex::new(String::new()),
             memory_mode: Mutex::new("system-memory".to_owned()),
             caps_framerate: Mutex::new(None),
             requested_streaming_features_summary: Mutex::new("none".to_owned()),
@@ -264,6 +266,12 @@ impl VideoLivenessState {
     pub(crate) fn update_hardware_acceleration(&self, value: impl Into<String>) {
         if let Ok(mut hardware_acceleration) = self.hardware_acceleration.lock() {
             *hardware_acceleration = value.into();
+        }
+    }
+
+    pub(crate) fn update_render_sink(&self, value: impl Into<String>) {
+        if let Ok(mut render_sink) = self.render_sink.lock() {
+            *render_sink = value.into();
         }
     }
 
@@ -606,6 +614,10 @@ impl VideoLivenessMonitor {
 
     pub(crate) fn update_hardware_acceleration(&self, value: impl Into<String>) {
         self.state.update_hardware_acceleration(value);
+    }
+
+    pub(crate) fn update_render_sink(&self, value: impl Into<String>) {
+        self.state.update_render_sink(value);
     }
 
     pub(crate) fn record_encoded_buffer(&self, size: usize) {
@@ -1221,6 +1233,11 @@ fn update_native_stats_overlay(
         .lock()
         .map(|value| value.clone())
         .unwrap_or_default();
+    let render_sink = state
+        .render_sink
+        .lock()
+        .map(|value| value.clone())
+        .unwrap_or_default();
     let sink_stats = read_sink_stats(sink);
     let sink_dropped = sink_stats.dropped.unwrap_or(0);
     let sink_rendered = sink_stats.rendered.unwrap_or(frames_rendered);
@@ -1238,21 +1255,25 @@ fn update_native_stats_overlay(
     } else {
         memory_mode
     };
+    let render_path = if render_sink.is_empty() {
+        if hardware_acceleration.is_empty() {
+            memory_path.clone()
+        } else {
+            format!("{hardware_acceleration} {memory_path}")
+        }
+    } else if hardware_acceleration.is_empty() {
+        format!("{render_sink} {memory_path}")
+    } else {
+        format!("{render_sink} ({hardware_acceleration}) {memory_path}")
+    };
     let text = format!(
-        "{} {}  {:.1}/{:.1} Mbps  Bit {:.0}%\nDecode {:.0}fps  Render {:.0}fps  Drop {:.2}%  {}",
-        codec,
-        resolution,
+        "{codec} {resolution}  Render: {render_path}\n{:.1}/{:.1} Mbps  Bit {:.0}%  Decode {:.0}fps  Present {:.0}fps  Drop {:.2}%",
         bitrate_mbps,
         target_mbps,
         bitrate_performance_percent,
         rates.decoded_fps,
         rates.sink_fps,
         drop_percent,
-        if hardware_acceleration.is_empty() {
-            memory_path
-        } else {
-            format!("{hardware_acceleration} {memory_path}")
-        },
     );
     state.update_stats_overlay_text(&text);
 }
@@ -1414,6 +1435,8 @@ pub(crate) fn watch_first_sink_buffer(
     let sender = event_sender.clone();
     let label = media_label.to_owned();
     let reported = streaming_reported.clone();
+    #[cfg(target_os = "linux")]
+    let sink_for_refresh = sink.clone();
     sink_pad.add_probe(gst::PadProbeType::BUFFER, move |pad, _info| {
         let caps = pad
             .current_caps()
@@ -1432,6 +1455,8 @@ pub(crate) fn watch_first_sink_buffer(
         );
 
         if label == "video" && !reported.swap(true, Ordering::SeqCst) {
+            #[cfg(target_os = "linux")]
+            crate::gstreamer_platform::linux_x11_refresh_video_overlay(&sink_for_refresh);
             if let Some(event_sender) = &sender {
                 let message = if use_external_renderer_window() {
                     "Native video frames reached the external low-latency GStreamer renderer window."

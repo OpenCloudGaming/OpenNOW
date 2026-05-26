@@ -2,6 +2,16 @@
 use crate::gstreamer_backend::send_log;
 #[cfg(target_os = "linux")]
 use crate::gstreamer_backend::send_log;
+#[cfg(all(feature = "gstreamer", target_os = "linux"))]
+use crate::gstreamer_config::use_wayland_owned_renderer;
+#[cfg(all(feature = "gstreamer", target_os = "linux"))]
+use crate::linux_wayland_renderer;
+#[cfg(target_os = "linux")]
+use crate::linux_display_session::{
+    detect_linux_display_session, linux_display_session_label,
+    linux_sink_uses_wayland_native_fullscreen, linux_sink_uses_x11_fullscreen_overlay,
+    linux_uses_wayland_native_input_refocus, LinuxDisplaySession,
+};
 #[cfg(target_os = "windows")]
 use crate::protocol::NativeRenderRect;
 use crate::protocol::{Event, NativeRenderSurface};
@@ -10,6 +20,8 @@ use gst_video::prelude::*;
 use gstreamer as gst;
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 use gstreamer_video as gst_video;
+#[cfg(all(feature = "gstreamer", target_os = "linux"))]
+use gstreamer_video::VideoOverlay;
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 use std::ffi::c_void;
 use std::sync::atomic::AtomicBool;
@@ -1165,17 +1177,128 @@ pub(crate) fn apply_render_surface_to_video_sink(
     Ok(())
 }
 
+#[cfg(all(feature = "gstreamer", target_os = "linux"))]
+pub(crate) fn install_linux_wayland_pipeline_bus_sync_handler(pipeline: &gst::Pipeline) {
+    if detect_linux_display_session() != LinuxDisplaySession::Wayland
+        || !use_wayland_owned_renderer()
+    {
+        return;
+    }
+
+    let Some(bus) = pipeline.bus() else {
+        return;
+    };
+
+    bus.set_sync_handler(move |_, msg| {
+        linux_wayland_renderer::handle_pipeline_bus_sync_message(msg)
+    });
+}
+
+#[cfg(not(all(feature = "gstreamer", target_os = "linux")))]
+pub(crate) fn install_linux_wayland_pipeline_bus_sync_handler(_pipeline: &gst::Pipeline) {}
+
 #[cfg(target_os = "linux")]
 pub(crate) fn apply_linux_fullscreen_to_video_sink(
     sink: &gst::Element,
     event_sender: &Option<Sender<Event>>,
 ) -> Result<(), String> {
-    linux_x11_renderer_window::apply_fullscreen_video_overlay(sink, event_sender)
+    let sink_factory = sink
+        .factory()
+        .map(|factory| factory.name().to_string())
+        .unwrap_or_else(|| sink.name().to_string());
+    let session = detect_linux_display_session();
+
+    if linux_sink_uses_x11_fullscreen_overlay(&sink_factory) {
+        return linux_x11_renderer_window::apply_fullscreen_video_overlay(
+            sink,
+            event_sender,
+            session,
+        );
+    }
+
+    let uses_wayland_renderer = session == LinuxDisplaySession::Wayland
+        && use_wayland_owned_renderer()
+        && (linux_sink_uses_wayland_native_fullscreen(&sink_factory)
+            || sink.clone().dynamic_cast::<VideoOverlay>().is_ok());
+    if uses_wayland_renderer {
+        linux_wayland_renderer::linux_wayland_renderer_register_video_sink(sink, event_sender);
+        linux_wayland_renderer::linux_wayland_renderer_provision_display_context(
+            sink,
+            event_sender,
+        )?;
+        linux_wayland_renderer::linux_wayland_renderer_attach_video_sink(sink, event_sender)?;
+        let attach_state = if linux_wayland_renderer::linux_wayland_renderer_video_sink_attached() {
+            "embedded in owned Wayland renderer surface"
+        } else {
+            "pending embed into owned Wayland renderer surface"
+        };
+        send_log(
+            event_sender,
+            "info",
+            format!(
+                "Native {} fullscreen presentation {attach_state} with compositor pointer lock ({sink_factory}).",
+                linux_display_session_label(session)
+            ),
+        );
+        return Ok(());
+    }
+
+    send_log(
+        event_sender,
+        "info",
+        format!(
+            "Native {} fullscreen presentation enabled via {sink_factory} sink properties.",
+            linux_display_session_label(session)
+        ),
+    );
+    Ok(())
 }
 
 #[cfg(target_os = "linux")]
 pub(crate) fn linux_fullscreen_renderer_window_focused() -> bool {
+    if detect_linux_display_session() == LinuxDisplaySession::Wayland
+        && !linux_x11_fullscreen_overlay_active()
+    {
+        if use_wayland_owned_renderer() {
+            return linux_wayland_renderer::linux_wayland_renderer_surface_focused();
+        }
+        return false;
+    }
     linux_x11_renderer_window::fullscreen_window_focused()
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn linux_renderer_capture_focus_lost() -> bool {
+    if linux_x11_fullscreen_overlay_active() {
+        return !linux_x11_renderer_window::fullscreen_window_focused();
+    }
+
+    if detect_linux_display_session() == LinuxDisplaySession::Wayland
+        && linux_uses_wayland_native_input_refocus()
+    {
+        if use_wayland_owned_renderer()
+            && linux_wayland_renderer::linux_wayland_renderer_is_active()
+        {
+            return linux_wayland_renderer::linux_wayland_renderer_pointer_lock_lost();
+        }
+        if linux_x11_renderer_window::x11_net_active_window_id()
+            .is_some_and(|active| active != 0)
+        {
+            return true;
+        }
+    }
+
+    false
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn linux_x11_fullscreen_overlay_active() -> bool {
+    linux_x11_renderer_window::fullscreen_window_exists()
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn linux_x11_fullscreen_overlay_window() -> u64 {
+    linux_x11_renderer_window::fullscreen_window_id()
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -1187,13 +1310,53 @@ pub(crate) fn apply_linux_fullscreen_to_video_sink(
 }
 
 #[cfg(not(target_os = "linux"))]
+pub(crate) fn linux_renderer_capture_focus_lost() -> bool {
+    false
+}
+
+#[cfg(not(target_os = "linux"))]
 pub(crate) fn linux_fullscreen_renderer_window_focused() -> bool {
     false
 }
 
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn linux_x11_fullscreen_overlay_active() -> bool {
+    false
+}
+
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn linux_x11_fullscreen_overlay_window() -> u64 {
+    0
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn linux_x11_register_video_scale_capsfilter(element: &gst::Element) {
+    linux_x11_renderer_window::register_video_scale_capsfilter(element);
+}
+
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn linux_x11_register_video_scale_capsfilter(_element: &gst::Element) {}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn linux_x11_configure_videoscale_for_fullscreen(element: &gst::Element) {
+    linux_x11_renderer_window::configure_videoscale_for_fullscreen(element);
+}
+
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn linux_x11_configure_videoscale_for_fullscreen(_element: &gst::Element) {}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn linux_x11_refresh_video_overlay(sink: &gst::Element) {
+    linux_x11_renderer_window::refresh_video_overlay(sink);
+}
+
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn linux_x11_refresh_video_overlay(_sink: &gst::Element) {}
+
 #[cfg(target_os = "linux")]
 pub(crate) fn close_linux_fullscreen_renderer_window() {
     linux_x11_renderer_window::close_fullscreen_window();
+    linux_wayland_renderer::linux_wayland_renderer_close();
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -1202,6 +1365,7 @@ pub(crate) fn close_linux_fullscreen_renderer_window() {}
 #[cfg(target_os = "linux")]
 mod linux_x11_renderer_window {
     use super::*;
+    use crate::gstreamer_pipeline::{set_property_from_str_if_supported, set_property_if_supported};
     use std::os::raw::{c_char, c_int, c_long, c_uint, c_ulong};
 
     type Display = c_void;
@@ -1210,12 +1374,11 @@ mod linux_x11_renderer_window {
 
     const FALSE: c_int = 0;
     const PROP_MODE_REPLACE: c_int = 0;
-    const CURRENT_TIME: c_ulong = 0;
-    const REVERT_TO_PARENT: c_int = 2;
     const XA_ATOM: Atom = 4;
     const MOTIF_HINTS_DECORATIONS: c_ulong = 1 << 1;
 
     static FULLSCREEN_WINDOW: OnceLock<Mutex<Option<X11FullscreenWindow>>> = OnceLock::new();
+    static VIDEO_SCALE_CAPSFILTER: OnceLock<Mutex<Option<gst::Element>>> = OnceLock::new();
 
     #[derive(Debug)]
     struct X11FullscreenWindow {
@@ -1301,11 +1464,19 @@ mod linux_x11_renderer_window {
             focus_return: *mut Window,
             revert_to_return: *mut c_int,
         ) -> c_int;
-        fn XSetInputFocus(
+        fn XGetWindowProperty(
             display: *mut Display,
-            focus: Window,
-            revert_to: c_int,
-            time: c_ulong,
+            window: Window,
+            property: Atom,
+            long_offset: c_long,
+            long_length: c_long,
+            delete: c_int,
+            req_type: Atom,
+            actual_type_return: *mut Atom,
+            actual_format_return: *mut c_int,
+            nitems_return: *mut c_ulong,
+            bytes_after_return: *mut c_ulong,
+            prop_return: *mut *mut u8,
         ) -> c_int;
         fn XCreateSimpleWindow(
             display: *mut Display,
@@ -1351,12 +1522,21 @@ mod linux_x11_renderer_window {
     pub(super) fn apply_fullscreen_video_overlay(
         sink: &gst::Element,
         event_sender: &Option<Sender<Event>>,
+        session: LinuxDisplaySession,
     ) -> Result<(), String> {
         if std::env::var("DISPLAY")
             .ok()
             .filter(|value| !value.is_empty())
             .is_none()
         {
+            send_log(
+                event_sender,
+                "warn",
+                format!(
+                    "Native {} fullscreen requested an X11 overlay window, but DISPLAY is unset; relying on sink fullscreen properties instead.",
+                    linux_display_session_label(session)
+                ),
+            );
             return Ok(());
         }
 
@@ -1374,6 +1554,8 @@ mod linux_x11_renderer_window {
             overlay.set_window_handle(window.window as usize);
         }
         overlay.handle_events(false);
+        set_property_if_supported(sink, "force-aspect-ratio", false);
+        update_video_scale_capsfilter(window.width, window.height);
         if let Err(error) =
             overlay.set_render_rectangle(0, 0, window.width.max(2), window.height.max(2))
         {
@@ -1398,6 +1580,86 @@ mod linux_x11_renderer_window {
         Ok(())
     }
 
+    pub(super) fn register_video_scale_capsfilter(element: &gst::Element) {
+        if let Ok(mut slot) = VIDEO_SCALE_CAPSFILTER.get_or_init(|| Mutex::new(None)).lock() {
+            *slot = Some(element.clone());
+        }
+    }
+
+    pub(super) fn configure_videoscale_for_fullscreen(element: &gst::Element) {
+        set_property_from_str_if_supported(element, "method", "0");
+        set_property_if_supported(element, "add-borders", false);
+        set_property_if_supported(element, "qos", false);
+    }
+
+    fn update_video_scale_capsfilter(width: i32, height: i32) {
+        let width = width.max(2);
+        let height = height.max(2);
+        let Ok(slot) = VIDEO_SCALE_CAPSFILTER.get_or_init(|| Mutex::new(None)).lock() else {
+            return;
+        };
+        let Some(capsfilter) = slot.as_ref() else {
+            return;
+        };
+        let caps = gst::Caps::builder("video/x-raw")
+            .field("width", width)
+            .field("height", height)
+            .field("pixel-aspect-ratio", gst::Fraction::new(1, 1))
+            .build();
+        capsfilter.set_property("caps", caps);
+    }
+
+    pub(super) fn refresh_video_overlay(sink: &gst::Element) {
+        let geometry = FULLSCREEN_WINDOW
+            .get()
+            .and_then(|state| state.lock().ok())
+            .and_then(|guard| {
+                guard.as_ref().map(|window| X11FullscreenWindowHandle {
+                    window: window.window,
+                    x: window.x,
+                    y: window.y,
+                    width: window.width,
+                    height: window.height,
+                })
+            });
+        let Some(window) = geometry else {
+            return;
+        };
+        let Ok(overlay) = sink.clone().dynamic_cast::<gst_video::VideoOverlay>() else {
+            return;
+        };
+        set_property_if_supported(sink, "force-aspect-ratio", false);
+        update_video_scale_capsfilter(window.width, window.height);
+        let _ = overlay.set_render_rectangle(0, 0, window.width.max(2), window.height.max(2));
+        overlay.expose();
+    }
+
+    pub(super) fn clear_video_scale_capsfilter() {
+        if let Ok(mut slot) = VIDEO_SCALE_CAPSFILTER.get_or_init(|| Mutex::new(None)).lock() {
+            *slot = None;
+        }
+    }
+
+    pub(super) fn fullscreen_window_exists() -> bool {
+        let Some(state) = FULLSCREEN_WINDOW.get() else {
+            return false;
+        };
+        state
+            .lock()
+            .ok()
+            .is_some_and(|guard| guard.is_some())
+    }
+
+    pub(super) fn fullscreen_window_id() -> u64 {
+        let Some(state) = FULLSCREEN_WINDOW.get() else {
+            return 0;
+        };
+        let Ok(guard) = state.lock() else {
+            return 0;
+        };
+        guard.as_ref().map(|window| window.window).unwrap_or(0)
+    }
+
     pub(super) fn fullscreen_window_focused() -> bool {
         let Some(state) = FULLSCREEN_WINDOW.get() else {
             return false;
@@ -1415,7 +1677,78 @@ mod linux_x11_renderer_window {
             }
             let mut focus = 0;
             let mut revert_to = 0;
-            XGetInputFocus(display, &mut focus, &mut revert_to) != 0 && focus == window.window
+            if XGetInputFocus(display, &mut focus, &mut revert_to) == 0 {
+                return false;
+            }
+            focus == window.window
+        }
+    }
+
+    pub(super) fn x11_net_active_window_id() -> Option<u64> {
+        let display = open_x11_display()?;
+        unsafe {
+            let screen = XDefaultScreen(display);
+            let root = XRootWindow(display, screen);
+            let active_atom = XInternAtom(
+                display,
+                c"_NET_ACTIVE_WINDOW".as_ptr(),
+                FALSE,
+            );
+            if active_atom == 0 {
+                XCloseDisplay(display);
+                return None;
+            }
+
+            let mut actual_type = 0;
+            let mut actual_format = 0;
+            let mut item_count = 0;
+            let mut bytes_after = 0;
+            let mut property = std::ptr::null_mut();
+            let status = XGetWindowProperty(
+                display,
+                root,
+                active_atom,
+                0,
+                1,
+                FALSE,
+                0,
+                &mut actual_type,
+                &mut actual_format,
+                &mut item_count,
+                &mut bytes_after,
+                &mut property,
+            );
+            if status != 0 || property.is_null() || item_count == 0 {
+                if !property.is_null() {
+                    XFree(property as *mut c_void);
+                }
+                XCloseDisplay(display);
+                return None;
+            }
+
+            let active = *(property as *const u64);
+            XFree(property as *mut c_void);
+            XCloseDisplay(display);
+            Some(active)
+        }
+    }
+
+    fn open_x11_display() -> Option<*mut Display> {
+        if std::env::var("DISPLAY")
+            .ok()
+            .filter(|value| !value.is_empty())
+            .is_none()
+        {
+            return None;
+        }
+
+        unsafe {
+            let display = XOpenDisplay(std::ptr::null());
+            if display.is_null() {
+                None
+            } else {
+                Some(display)
+            }
         }
     }
 
@@ -1427,6 +1760,7 @@ mod linux_x11_renderer_window {
             return;
         };
         *guard = None;
+        clear_video_scale_capsfilter();
     }
 
     fn ensure_fullscreen_window() -> Result<X11FullscreenWindowHandle, String> {
@@ -1672,7 +2006,6 @@ mod linux_x11_renderer_window {
         );
         XMapRaised(display, window);
         XRaiseWindow(display, window);
-        XSetInputFocus(display, window, REVERT_TO_PARENT, CURRENT_TIME);
         XFlush(display);
     }
 }
