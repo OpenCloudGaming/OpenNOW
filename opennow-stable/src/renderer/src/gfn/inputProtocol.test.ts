@@ -19,12 +19,14 @@ import {
   INPUT_GAMEPAD,
   INPUT_KEY_DOWN,
   INPUT_KEY_UP,
+  INPUT_LOCK_KEYS_SYNC,
   INPUT_MOUSE_BUTTON_DOWN,
   INPUT_MOUSE_REL,
   INPUT_MOUSE_WHEEL,
   InputEncoder,
   codeMap,
   isPartiallyReliableHidTransferEligible,
+  lockKeysStateFromEvent,
   mapGamepadButtons,
   mapKeyboardEvent,
   mapTextCharToKeySpec,
@@ -78,53 +80,39 @@ function assertV3BatchWrapper(bytes: Uint8Array, marker: number, lengthOffset: n
   return new DataView(bytes.buffer, bytes.byteOffset + payloadOffset, payloadSize);
 }
 
-test("maps representative physical keys to Windows set-1 scancodes", () => {
-  assert.deepEqual(mapKeyboardEvent(keyboardEvent({ code: "KeyA", key: "a" })), codeMap.KeyA);
-  assert.deepEqual(mapKeyboardEvent(keyboardEvent({ code: "KeyN", key: "n" })), codeMap.KeyN);
-  assert.deepEqual(mapKeyboardEvent(keyboardEvent({ code: "KeyT", key: "t" })), codeMap.KeyT);
-  assert.deepEqual(mapKeyboardEvent(keyboardEvent({ code: "KeyZ", key: "z" })), codeMap.KeyZ);
-  assert.deepEqual(mapKeyboardEvent(keyboardEvent({ code: "Comma", key: "," })), codeMap.Comma);
-  assert.deepEqual(mapKeyboardEvent(keyboardEvent({ code: "Slash", key: "/" })), codeMap.Slash);
+test("maps keyboard events using layout-aware keyCode and zero scancode", () => {
+  assert.deepEqual(mapKeyboardEvent(keyboardEvent({ code: "KeyA", key: "a", keyCode: 65 })), { vk: 65, scancode: 0 });
+  assert.deepEqual(mapKeyboardEvent(keyboardEvent({ code: "KeyN", key: "n", keyCode: 78 })), { vk: 78, scancode: 0 });
+  assert.deepEqual(mapKeyboardEvent(keyboardEvent({ code: "KeyT", key: "t", keyCode: 84 })), { vk: 84, scancode: 0 });
 });
 
-test("maps escape and left/right modifiers with correct scancodes", () => {
-  assert.deepEqual(mapKeyboardEvent(keyboardEvent({ code: "Escape", key: "Escape", keyCode: 27 })), codeMap.Escape);
-  assert.deepEqual(mapKeyboardEvent(keyboardEvent({ code: "ShiftLeft", key: "Shift", keyCode: 16 })), codeMap.ShiftLeft);
-  assert.deepEqual(mapKeyboardEvent(keyboardEvent({ code: "ShiftRight", key: "Shift", keyCode: 16 })), codeMap.ShiftRight);
-});
-
-test("maps non-US and numpad physical keys", () => {
-  assert.deepEqual(
-    mapKeyboardEvent(keyboardEvent({ code: "IntlBackslash", key: "<" })),
-    codeMap.IntlBackslash,
-  );
-  assert.deepEqual(mapKeyboardEvent(keyboardEvent({ code: "NumLock", key: "NumLock", keyCode: 144 })), codeMap.NumLock);
-  assert.deepEqual(
-    mapKeyboardEvent(keyboardEvent({ code: "Numpad0", key: "0", keyCode: 96, location: 3 })),
-    codeMap.Numpad0,
-  );
-  assert.deepEqual(
-    mapKeyboardEvent(keyboardEvent({ code: "NumpadEnter", key: "Enter", keyCode: 13, location: 3 })),
-    codeMap.NumpadEnter,
-  );
-});
-
-test("prefers physical code over layout-dependent key value", () => {
+test("prefers layout keyCode over physical code (German QWERTZ)", () => {
   const event = keyboardEvent({ code: "KeyZ", key: "y", keyCode: 89 });
-  assert.deepEqual(mapKeyboardEvent(event), codeMap.KeyZ);
+  assert.deepEqual(mapKeyboardEvent(event), { vk: 89, scancode: 0 });
+});
+
+test("maps punctuation using platform keyCode on non-US layouts", () => {
+  const event = keyboardEvent({ code: "Slash", key: "ö", keyCode: 191 });
+  assert.deepEqual(mapKeyboardEvent(event), { vk: 191, scancode: 0 });
 });
 
 test("falls back to key-based escape detection when code is unavailable", () => {
   const event = keyboardEvent({ code: "", key: "Escape", keyCode: 27 });
-  assert.deepEqual(mapKeyboardEvent(event), codeMap.Escape);
+  assert.deepEqual(mapKeyboardEvent(event), { vk: 27, scancode: 0 });
 });
 
-test("prefers platform keyCode for virtual-key derivation when available", () => {
-  const event = keyboardEvent({ code: "Slash", key: "ö", keyCode: 191 });
-  assert.deepEqual(mapKeyboardEvent(event), codeMap.Slash);
+test("maps left/right modifiers from keyCode when provided", () => {
+  assert.deepEqual(
+    mapKeyboardEvent(keyboardEvent({ code: "ShiftLeft", key: "Shift", keyCode: 160 })),
+    { vk: 160, scancode: 0 },
+  );
+  assert.deepEqual(
+    mapKeyboardEvent(keyboardEvent({ code: "ShiftRight", key: "Shift", keyCode: 161 })),
+    { vk: 161, scancode: 0 },
+  );
 });
 
-test("uses corrected scancodes for synthetic text injection", () => {
+test("uses physical scancodes for synthetic text injection", () => {
   assert.deepEqual(mapTextCharToKeySpec("a"), { ...codeMap.KeyA });
   assert.deepEqual(mapTextCharToKeySpec("N"), { ...codeMap.KeyN, shift: true });
   assert.deepEqual(mapTextCharToKeySpec("<"), { ...codeMap.Comma, shift: true });
@@ -132,10 +120,11 @@ test("uses corrected scancodes for synthetic text injection", () => {
   assert.deepEqual(mapTextCharToKeySpec("?"), { ...codeMap.Slash, shift: true });
 });
 
-test("modifierFlags includes keyboard modifiers and lock bits", () => {
+test("modifierFlags matches official yS() (no lock keys in per-key byte)", () => {
   const event = keyboardEvent({
     code: "KeyA",
     key: "a",
+    keyCode: 65,
     shiftKey: true,
     ctrlKey: true,
     altKey: true,
@@ -143,22 +132,60 @@ test("modifierFlags includes keyboard modifiers and lock bits", () => {
     getModifierState: (key) => key === "CapsLock" || key === "NumLock",
   });
 
-  assert.equal(modifierFlags(event), 0x3f);
+  assert.equal(modifierFlags(event), 0x0f);
+});
+
+test("lockKeysStateFromEvent encodes caps/num/scroll for sync packet", () => {
+  const event = keyboardEvent({
+    code: "KeyA",
+    key: "a",
+    keyCode: 65,
+    getModifierState: (key) => key === "CapsLock" || key === "NumLock",
+  });
+  assert.equal(lockKeysStateFromEvent(event), 0x10 | 0x01 | 0x20 | 0x40 | 0x02);
+});
+
+test("encodes lock keys sync payload", () => {
+  const encoder = new InputEncoder();
+  encoder.setProtocolVersion(2);
+  const payload = encoder.encodeLockKeysSync(0x73);
+  assert.equal(payload.length, 5);
+  assert.equal(view(payload).getUint32(0, true), INPUT_LOCK_KEYS_SYNC);
+  assert.equal(payload[4], 0x73);
 });
 
 test("encodes raw v2 key down and key up payload layout", () => {
   const encoder = new InputEncoder();
-  const payload = { keycode: 0x41, modifiers: 0x13, scancode: 0x1e, timestampUs: 0x0102030405060708n };
+  const payload = { keycode: 0x41, modifiers: 0x02, scancode: 0, timestampUs: 0x0102030405060708n };
 
   for (const [bytes, type] of [[encoder.encodeKeyDown(payload), INPUT_KEY_DOWN], [encoder.encodeKeyUp(payload), INPUT_KEY_UP]] as const) {
     const data = view(bytes);
     assert.equal(bytes.byteLength, 18);
     assert.equal(data.getUint32(0, true), type);
     assert.equal(data.getUint16(4, false), 0x41);
-    assert.equal(data.getUint16(6, false), 0x13);
-    assert.equal(data.getUint16(8, false), 0x1e);
+    assert.equal(data.getUint16(6, false), 0x02);
+    assert.equal(data.getUint16(8, false), 0);
     assert.equal(data.getBigUint64(10, false), payload.timestampUs);
   }
+});
+
+test("wraps protocol v3 keyboard as single input", () => {
+  const encoder = new InputEncoder();
+  encoder.setProtocolVersion(3);
+  const payload = encoder.encodeKeyUp({
+    keycode: 0x0041,
+    scancode: 0,
+    modifiers: 0,
+    timestampUs: 7n,
+  });
+
+  assert.equal(payload.length, 28);
+  assert.equal(payload[0], 0x23);
+  assert.equal(payload[9], 0x22);
+  assert.equal(view(payload).getUint32(10, true), INPUT_KEY_UP);
+  assert.equal(view(payload).getUint16(14, false), 0x41);
+  assert.equal(view(payload).getUint16(16, false), 0);
+  assert.equal(view(payload).getUint16(18, false), 0);
 });
 
 test("maps browser mouse buttons to GFN buttons", () => {

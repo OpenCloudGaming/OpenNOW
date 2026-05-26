@@ -16,6 +16,7 @@ import {
   PARTIALLY_RELIABLE_HID_DEVICE_MASK_ALL,
   partiallyReliableHidMaskForInputType,
   isPartiallyReliableHidTransferEligible,
+  lockKeysStateFromEvent,
   mapKeyboardEvent,
   modifierFlags,
   toMouseButton,
@@ -28,6 +29,7 @@ import {
   codeMap,
   mapTextCharToKeySpec,
 } from "./inputProtocol";
+import { FULLSCREEN_KEYBOARD_LOCK_CODES } from "./keyboardLock";
 import {
   buildNvstSdp,
   extractIceCredentials,
@@ -681,6 +683,7 @@ export class GfnWebRtcClient {
   // Skip one synthetic Escape on pointer loss when lock was released intentionally (e.g. F8).
   private suppressNextSyntheticEscape = false;
   private keyboardLockState: "unknown" | "unsupported" | "locked" | "failed" = "unknown";
+  private lastLockKeysState = -1;
   private mouseBackpressureLoggedAtMs = 0;
   private mouseFlushBaseIntervalMs = GfnWebRtcClient.MOUSE_FLUSH_NORMAL_MS;
   private mouseAdaptiveFlushActive = false;
@@ -1116,6 +1119,7 @@ export class GfnWebRtcClient {
 
   private resetInputState(): void {
     this.inputReady = false;
+    this.lastLockKeysState = -1;
     this.nativeInputActive = false;
     this.inputProtocolVersion = 2;
     this.hapticsAdvertised = false;
@@ -2816,6 +2820,18 @@ export class GfnWebRtcClient {
     }
   }
 
+  private syncLockKeysState(event: KeyboardEvent): void {
+    const state = lockKeysStateFromEvent(event);
+    if (state === this.lastLockKeysState) {
+      return;
+    }
+    this.lastLockKeysState = state;
+    if (!this.inputReady) {
+      return;
+    }
+    this.sendReliable(this.inputEncoder.encodeLockKeysSync(state));
+  }
+
   private requestEscapeKeyboardLock(): void {
     if (!document.fullscreenElement) {
       if (this.keyboardLockState === "locked") {
@@ -2833,7 +2849,7 @@ export class GfnWebRtcClient {
       return;
     }
 
-    void Promise.resolve(nav.keyboard.lock())
+    void Promise.resolve(nav.keyboard.lock(FULLSCREEN_KEYBOARD_LOCK_CODES))
       .then(() => {
         if (this.keyboardLockState !== "locked") {
           this.keyboardLockState = "locked";
@@ -3403,6 +3419,8 @@ export class GfnWebRtcClient {
       if (!this.inputReady) {
         return;
       }
+
+      this.syncLockKeysState(event);
 
       const isEscapeEvent =
         event.key === "Escape"
