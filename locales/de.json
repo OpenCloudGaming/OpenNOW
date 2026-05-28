@@ -537,6 +537,8 @@
       "enablePromptEsc": "abbrechen",
       "reportOnGithubIssues": "Bericht über GitHub-Probleme",
       "reportOnDiscord": "Bericht über Discord",
+      "showNativeStreamerStats": "Show Native Streamer Stats",
+      "showNativeStreamerStatsHint": "Display the native streamer's own diagnostics overlay during native sessions.",
       "streamerStatus": "Streamer-Status",
       "checkNativeStreamer": "Überprüfen Sie den nativen Streamer",
       "gstreamerReady": "GStreamer bereit",
