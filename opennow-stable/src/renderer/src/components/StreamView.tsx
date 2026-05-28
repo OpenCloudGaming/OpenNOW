@@ -655,7 +655,6 @@ export function StreamView({
     (stats) => stats.nativeRendererActive,
   );
   const showStatsHud = showStats && !nativeRendererActive && !isConnecting;
-  const showNativeStatsOverlay = showStats || showNativeStats;
 
   // Recording state
   const [isRecording, setIsRecording] = useState(false);
@@ -1333,7 +1332,7 @@ export function StreamView({
       updateSurface({
         deviceScaleFactor: dpr,
         visible,
-        showStats: showNativeStatsOverlay,
+        showStats: showNativeStats,
         rect: visible
           ? {
               x: Math.round(rect.left * dpr),
@@ -1384,7 +1383,7 @@ export function StreamView({
         showStats: false,
       });
     };
-  }, [showNativeStatsOverlay]);
+  }, [showNativeStats]);
 
   useEffect(() => {
     const handlePointerLockChange = () => {
