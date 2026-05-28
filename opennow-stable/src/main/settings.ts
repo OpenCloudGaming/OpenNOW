@@ -50,6 +50,8 @@ export interface Settings {
   nativeD3dFullscreenMode: NativeStreamerFeatureMode;
   /** Use the native GStreamer renderer window instead of Electron HWND embedding */
   nativeExternalRenderer: boolean;
+  /** Show the native streamer's own stats overlay while native streaming */
+  showNativeStreamerStats: boolean;
   /** Preferred video codec */
   codec: VideoCodec;
   /** Preferred video decode acceleration mode */
@@ -199,6 +201,7 @@ const DEFAULT_SETTINGS: Settings = {
   nativeCloudGsyncMode: "auto",
   nativeD3dFullscreenMode: "auto",
   nativeExternalRenderer: true,
+  showNativeStreamerStats: false,
   codec: DEFAULT_STREAM_PREFERENCES.codec,
   decoderPreference: "auto",
   encoderPreference: "auto",

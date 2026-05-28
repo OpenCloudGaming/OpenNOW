@@ -267,6 +267,7 @@ export interface Settings {
   nativeCloudGsyncMode: NativeStreamerFeatureMode;
   nativeD3dFullscreenMode: NativeStreamerFeatureMode;
   nativeExternalRenderer: boolean;
+  showNativeStreamerStats: boolean;
   codec: VideoCodec;
   decoderPreference: VideoAccelerationPreference;
   encoderPreference: VideoAccelerationPreference;

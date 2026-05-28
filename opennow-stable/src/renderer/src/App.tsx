@@ -218,6 +218,7 @@ export function App(): JSX.Element {
     nativeCloudGsyncMode: "auto",
     nativeD3dFullscreenMode: "auto",
     nativeExternalRenderer: true,
+    showNativeStreamerStats: false,
     codec: DEFAULT_STREAM_PREFERENCES.codec,
     decoderPreference: "auto",
     encoderPreference: "auto",
@@ -3585,6 +3586,7 @@ export function App(): JSX.Element {
             audioRef={audioRef}
             diagnosticsStore={diagnosticsStore}
             showStats={showStatsOverlay}
+            showNativeStats={settings.showNativeStreamerStats}
             gstreamerEnabled={settings.streamClientMode === "native"}
             shortcuts={{
               toggleStats: formatShortcutForDisplay(settings.shortcutToggleStats, isMac),

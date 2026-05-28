@@ -28,6 +28,7 @@ interface StreamViewProps {
   audioRef: React.Ref<HTMLAudioElement>;
   diagnosticsStore: StreamDiagnosticsStore;
   showStats: boolean;
+  showNativeStats?: boolean;
   gstreamerEnabled: boolean;
   shortcuts: {
     toggleStats: string;
@@ -590,6 +591,7 @@ export function StreamView({
   audioRef,
   diagnosticsStore,
   showStats,
+  showNativeStats = false,
   gstreamerEnabled,
   shortcuts,
   serverRegion,
@@ -653,6 +655,7 @@ export function StreamView({
     (stats) => stats.nativeRendererActive,
   );
   const showStatsHud = showStats && !nativeRendererActive && !isConnecting;
+  const showNativeStatsOverlay = showStats || showNativeStats;
 
   // Recording state
   const [isRecording, setIsRecording] = useState(false);
@@ -1330,7 +1333,7 @@ export function StreamView({
       updateSurface({
         deviceScaleFactor: dpr,
         visible,
-        showStats,
+        showStats: showNativeStatsOverlay,
         rect: visible
           ? {
               x: Math.round(rect.left * dpr),
@@ -1381,7 +1384,7 @@ export function StreamView({
         showStats: false,
       });
     };
-  }, [showStats]);
+  }, [showNativeStatsOverlay]);
 
   useEffect(() => {
     const handlePointerLockChange = () => {

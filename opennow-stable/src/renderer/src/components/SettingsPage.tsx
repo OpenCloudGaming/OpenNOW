@@ -115,6 +115,8 @@ const SETTINGS_SCOPE_SEARCH_TERMS: Record<SettingsSearchScopeId, readonly string
     "dx12",
     "cloud gsync",
     "diagnostics",
+    "stats",
+    "overlay",
     "experimental",
     "shortcuts",
     "alt-tab",
@@ -2459,6 +2461,21 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                         <ExternalLink size={13} />
                       </a>
                     </div>
+                  </div>
+
+                  <div className="settings-row">
+                    <label className="settings-label">
+                      {t("settings.nativeStreamer.showNativeStreamerStats")}
+                      <span className="settings-hint">{t("settings.nativeStreamer.showNativeStreamerStatsHint")}</span>
+                    </label>
+                    <label className="settings-toggle">
+                      <input
+                        type="checkbox"
+                        checked={settings.showNativeStreamerStats}
+                        onChange={(e) => handleChange("showNativeStreamerStats", e.target.checked)}
+                      />
+                      <span className="settings-toggle-track" />
+                    </label>
                   </div>
 
                   <div className="settings-row settings-row--column">
