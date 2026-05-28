@@ -30,10 +30,10 @@
   "dependencies": {
     "discord-rpc": "^4.0.1",
     "electron-updater": "^6.8.3",
-    "lucide-react": "^1.7.0",
-    "react": "^19.2.4",
-    "react-dom": "^19.2.4",
-    "ws": "^8.20.0"
+    "lucide-react": "^1.17.0",
+    "react": "^19.2.6",
+    "react-dom": "^19.2.6",
+    "ws": "^8.21.0"
   },
   "devDependencies": {
     "@types/discord-rpc": "^4.0.10",
@@ -46,10 +46,10 @@
     "electron": "^41.1.1",
     "electron-builder": "^26.8.1",
     "electron-vite": "^5.0.0",
-    "oxlint": "^1.62.0",
+    "oxlint": "^1.67.0",
     "react-scan": "^0.5.3",
-    "tsx": "^4.20.6",
-    "typescript": "^6.0.2",
+    "tsx": "^4.22.3",
+    "typescript": "^6.0.3",
     "vite": "^7.3.1"
   },
   "build": {
