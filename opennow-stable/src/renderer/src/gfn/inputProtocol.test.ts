@@ -112,6 +112,21 @@ test("maps left/right modifiers from keyCode when provided", () => {
   );
 });
 
+test("maps side-specific modifiers from code when Chromium reports generic keyCode", () => {
+  assert.deepEqual(
+    mapKeyboardEvent(keyboardEvent({ code: "ShiftRight", key: "Shift", keyCode: 16 })),
+    { vk: 161, scancode: 0 },
+  );
+  assert.deepEqual(
+    mapKeyboardEvent(keyboardEvent({ code: "ControlRight", key: "Control", keyCode: 17 })),
+    { vk: 163, scancode: 0 },
+  );
+  assert.deepEqual(
+    mapKeyboardEvent(keyboardEvent({ code: "AltRight", key: "Alt", keyCode: 18 })),
+    { vk: 165, scancode: 0 },
+  );
+});
+
 test("uses physical scancodes for synthetic text injection", () => {
   assert.deepEqual(mapTextCharToKeySpec("a"), { ...codeMap.KeyA });
   assert.deepEqual(mapTextCharToKeySpec("N"), { ...codeMap.KeyN, shift: true });

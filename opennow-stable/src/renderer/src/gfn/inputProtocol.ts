@@ -465,12 +465,6 @@ function virtualKeyFromKeyValue(key: string): number | null {
 }
 
 function virtualKeyFromEvent(event: KeyLike): number | null {
-  // Official GFN web client nS() returns event.keyCode for layout-aware VKs.
-  const keyCode = event.keyCode;
-  if (Number.isInteger(keyCode) && keyCode > 0 && keyCode !== 229) {
-    return keyCode;
-  }
-
   return (
     virtualKeyFromKeyCode(event)
     ?? virtualKeyFromKeyValue(event.key)
