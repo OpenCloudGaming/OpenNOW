@@ -246,8 +246,6 @@ export function HomePage({
   storeHeroGames = [],
   activeSessionAppIds = [],
   onBuyGame,
-  onPreviousControllerPage,
-  onNextControllerPage,
 }: HomePageProps): JSX.Element {
   const { t } = useTranslation();
   const [controllerHeroIndex, setControllerHeroIndex] = useState(0);
@@ -263,8 +261,6 @@ export function HomePage({
     cycleFocusedVariant: (): boolean => false,
     focusedRowIndex: 0,
     focusedColumnIndex: 0,
-    onPreviousControllerPage: undefined as (() => void) | undefined,
-    onNextControllerPage: undefined as (() => void) | undefined,
   });
 
   const controllerSections = useMemo(
@@ -323,10 +319,8 @@ export function HomePage({
       cycleFocusedVariant,
       focusedRowIndex,
       focusedColumnIndex,
-      onPreviousControllerPage,
-      onNextControllerPage,
     };
-  }, [cycleFocusedVariant, focusedColumnIndex, focusedRowIndex, focusTile, launchFocusedTile, onNextControllerPage, onPreviousControllerPage]);
+  }, [cycleFocusedVariant, focusedColumnIndex, focusedRowIndex, focusTile, launchFocusedTile]);
 
   useEffect(() => {
     if (!controllerMode) return;
@@ -362,7 +356,10 @@ export function HomePage({
         focusTile(focusedRowIndex - 1, focusedColumnIndex);
       } else if (event.key === "ArrowDown") {
         event.preventDefault();
-        if (!cycleFocusedVariant()) focusTile(focusedRowIndex + 1, focusedColumnIndex);
+        focusTile(focusedRowIndex + 1, focusedColumnIndex);
+      } else if (event.key.toLowerCase() === "y") {
+        event.preventDefault();
+        cycleFocusedVariant();
       } else if (event.key === "Enter" || event.key === " ") {
         event.preventDefault();
         launchFocusedTile();
@@ -379,12 +376,11 @@ export function HomePage({
       if (!pad) return 0;
       let buttons = 0;
       if (pad.buttons[0]?.pressed) buttons |= 1 << 0;
+      if (pad.buttons[3]?.pressed) buttons |= 1 << 1;
       if (pad.buttons[12]?.pressed || (pad.axes[1] ?? 0) < -0.65) buttons |= 1 << 2;
       if (pad.buttons[13]?.pressed || (pad.axes[1] ?? 0) > 0.65) buttons |= 1 << 3;
       if (pad.buttons[14]?.pressed || (pad.axes[0] ?? 0) < -0.65) buttons |= 1 << 4;
       if (pad.buttons[15]?.pressed || (pad.axes[0] ?? 0) > 0.65) buttons |= 1 << 5;
-      if (pad.buttons[4]?.pressed) buttons |= 1 << 6;
-      if (pad.buttons[5]?.pressed) buttons |= 1 << 7;
       return buttons;
     };
 
@@ -408,25 +404,12 @@ export function HomePage({
         cycleFocusedVariant: cycleControllerVariant,
         focusedRowIndex: rowIndex,
         focusedColumnIndex: columnIndex,
-        onPreviousControllerPage: previousControllerPage,
-        onNextControllerPage: nextControllerPage,
       } = controllerInputStateRef.current;
 
       if (pressed & (1 << 0)) launchControllerTile();
-      if (pressed & (1 << 6)) {
-        previousControllerPage?.();
-        gamepadPreviousButtonsRef.current = buttons;
-        gamepadFrameRef.current = window.requestAnimationFrame(handleGamepadFrame);
-        return;
-      }
-      if (pressed & (1 << 7)) {
-        nextControllerPage?.();
-        gamepadPreviousButtonsRef.current = buttons;
-        gamepadFrameRef.current = window.requestAnimationFrame(handleGamepadFrame);
-        return;
-      }
+      if (pressed & (1 << 1)) cycleControllerVariant();
       if (pressed & (1 << 2)) focusControllerTile(rowIndex - 1, columnIndex);
-      if ((pressed & (1 << 3)) && !cycleControllerVariant()) focusControllerTile(rowIndex + 1, columnIndex);
+      if (pressed & (1 << 3)) focusControllerTile(rowIndex + 1, columnIndex);
       if (pressed & (1 << 4)) focusControllerTile(rowIndex, columnIndex - 1);
       if (pressed & (1 << 5)) focusControllerTile(rowIndex, columnIndex + 1);
       gamepadPreviousButtonsRef.current = buttons;
