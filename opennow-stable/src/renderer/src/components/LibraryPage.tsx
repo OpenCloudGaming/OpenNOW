@@ -193,8 +193,6 @@ export function LibraryPage({
   controllerMode = false,
   featuredGames = [],
   activeSessionAppIds = [],
-  onPreviousControllerPage,
-  onNextControllerPage,
 }: LibraryPageProps): JSX.Element {
   const { t } = useTranslation();
   const [controllerHeroIndex, setControllerHeroIndex] = useState(0);
@@ -221,8 +219,6 @@ export function LibraryPage({
     moveControllerStoreFilterFocusBy: (_delta: number): void => {},
     hideControllerStoreFilterOverlay: (_applySelection: boolean): void => {},
     showControllerStoreFilterOverlay: (): void => {},
-    onPreviousControllerPage: undefined as (() => void) | undefined,
-    onNextControllerPage: undefined as (() => void) | undefined,
     onPlayGame: (_game: GameInfo): void => {},
   });
 
@@ -342,11 +338,9 @@ export function LibraryPage({
       moveControllerStoreFilterFocusBy,
       hideControllerStoreFilterOverlay,
       showControllerStoreFilterOverlay,
-      onPreviousControllerPage,
-      onNextControllerPage,
       onPlayGame,
     };
-  }, [controllerStoreFilterItems, controllerStoreFilterOpen, detailsGame, focusedControllerStoreFilterIndex, focusControllerGame, cycleSelectedVariant, cycleControllerStoreFilter, moveControllerStoreFilterFocusBy, hideControllerStoreFilterOverlay, showControllerStoreFilterOverlay, onNextControllerPage, onPlayGame, onPreviousControllerPage, selectedControllerGame, selectedControllerGameIndex]);
+  }, [controllerStoreFilterItems, controllerStoreFilterOpen, detailsGame, focusedControllerStoreFilterIndex, focusControllerGame, cycleSelectedVariant, cycleControllerStoreFilter, moveControllerStoreFilterFocusBy, hideControllerStoreFilterOverlay, showControllerStoreFilterOverlay, onPlayGame, selectedControllerGame, selectedControllerGameIndex]);
 
   useEffect(() => {
     if (!controllerMode) return;
@@ -392,8 +386,6 @@ export function LibraryPage({
       if (pad.buttons[0]?.pressed) buttons |= 1 << 0;
       if (pad.buttons[1]?.pressed) buttons |= 1 << 1;
       if (pad.buttons[3]?.pressed) buttons |= 1 << 2;
-      if (pad.buttons[4]?.pressed) buttons |= 1 << 3;
-      if (pad.buttons[5]?.pressed) buttons |= 1 << 4;
       if (pad.buttons[12]?.pressed || (pad.axes[1] ?? 0) < -0.65) buttons |= 1 << 5;
       if (pad.buttons[13]?.pressed || (pad.axes[1] ?? 0) > 0.65) buttons |= 1 << 6;
       if (pad.buttons[14]?.pressed || (pad.axes[0] ?? 0) < -0.65) buttons |= 1 << 7;
@@ -429,8 +421,6 @@ export function LibraryPage({
         moveControllerStoreFilterFocusBy: moveStoreFilter,
         hideControllerStoreFilterOverlay: hideStoreFilter,
         showControllerStoreFilterOverlay: showStoreFilter,
-        onPreviousControllerPage: previousControllerPage,
-        onNextControllerPage: nextControllerPage,
         onPlayGame: playGame,
       } = controllerInputStateRef.current;
 
@@ -458,18 +448,6 @@ export function LibraryPage({
         if (pressed & (1 << 0)) playGame(currentDetailsGame);
         if (pressed & (1 << 1)) setDetailsGame(null);
       } else {
-        if (pressed & (1 << 3)) {
-          previousControllerPage?.();
-          gamepadPreviousButtonsRef.current = buttons;
-          gamepadFrameRef.current = window.requestAnimationFrame(handleGamepadFrame);
-          return;
-        }
-        if (pressed & (1 << 4)) {
-          nextControllerPage?.();
-          gamepadPreviousButtonsRef.current = buttons;
-          gamepadFrameRef.current = window.requestAnimationFrame(handleGamepadFrame);
-          return;
-        }
         if ((released & yButton) && !controllerYConsumedByHoldRef.current) cycleStoreFilter();
         if (pressed & (1 << 0)) {
           if (currentSelectedGame) playGame(currentSelectedGame);
