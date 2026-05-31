@@ -124,7 +124,7 @@ pub(crate) mod win32_renderer_window {
     use crate::gstreamer_input::NativeWindowInputEvent;
     use crate::protocol::{NativeStreamerShortcutAction, NativeStreamerShortcutBindings};
     use crate::shortcuts::NativeShortcutMatcher;
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
     use std::ffi::c_void;
     use std::ptr::{null, null_mut};
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -309,6 +309,7 @@ pub(crate) mod win32_renderer_window {
     static CAPTURED_HWND: OnceLock<Mutex<Option<isize>>> = OnceLock::new();
     static PROTECTED_HWND: OnceLock<Mutex<Option<isize>>> = OnceLock::new();
     static PRESSED_KEYS: OnceLock<Mutex<HashMap<u16, PressedKey>>> = OnceLock::new();
+    static LEGACY_SUPPRESSED_KEYS: OnceLock<Mutex<HashSet<u16>>> = OnceLock::new();
     static STARTED_AT: OnceLock<Instant> = OnceLock::new();
     static ESCAPE_HOLD_HWND: OnceLock<Mutex<Option<isize>>> = OnceLock::new();
     static ESCAPE_HOLD_TOKEN: OnceLock<AtomicU64> = OnceLock::new();
@@ -558,6 +559,11 @@ pub(crate) mod win32_renderer_window {
         }
         if message == WM_INPUT {
             handle_raw_input(lparam as Hrawinput);
+            return 0;
+        }
+        let handled_legacy_shortcut =
+            is_keyboard_message(message) && handle_legacy_shortcut_keyboard(message, wparam, lparam);
+        if handled_legacy_shortcut {
             return 0;
         }
         if is_escape_keyboard_message(message, wparam) {
@@ -908,6 +914,10 @@ pub(crate) mod win32_renderer_window {
             && (wparam as u16) == VK_ESCAPE
     }
 
+    fn is_keyboard_message(message: Uint) -> bool {
+        matches!(message, WM_KEYDOWN | WM_KEYUP | WM_SYSKEYDOWN | WM_SYSKEYUP)
+    }
+
     fn legacy_keyboard_scancode(lparam: Lparam) -> u16 {
         let scancode = ((lparam >> 16) & 0xff) as u16;
         if scancode == 0 {
@@ -918,6 +928,43 @@ pub(crate) mod win32_renderer_window {
         } else {
             scancode
         }
+    }
+
+    unsafe fn handle_legacy_shortcut_keyboard(
+        message: Uint,
+        wparam: Wparam,
+        lparam: Lparam,
+    ) -> bool {
+        let keycode = wparam as u16;
+        if keycode == VK_ESCAPE {
+            return false;
+        }
+
+        let pressed = matches!(message, WM_KEYDOWN | WM_SYSKEYDOWN);
+        let scancode = legacy_keyboard_scancode(lparam);
+        let key_id = if scancode == 0 { keycode } else { scancode };
+        let suppressed_keys = LEGACY_SUPPRESSED_KEYS.get_or_init(|| Mutex::new(HashSet::new()));
+        let Ok(mut suppressed_keys) = suppressed_keys.lock() else {
+            return false;
+        };
+
+        if !pressed {
+            return suppressed_keys.remove(&key_id);
+        }
+
+        if suppressed_keys.contains(&key_id) {
+            return true;
+        }
+
+        let modifiers = current_legacy_modifier_flags();
+        let Some(action) = shortcut_action_for_keypress(keycode, modifiers) else {
+            return false;
+        };
+
+        suppressed_keys.insert(key_id);
+        drop(suppressed_keys);
+        handle_shortcut_action(action);
+        true
     }
 
     unsafe fn handle_keyboard_state(keycode: u16, scancode: u16, pressed: bool) {
@@ -1135,6 +1182,33 @@ pub(crate) mod win32_renderer_window {
         modifiers
     }
 
+    unsafe fn current_legacy_modifier_flags() -> u16 {
+        let mut modifiers = 0u16;
+        if is_key_down(VK_SHIFT) || is_key_down(VK_LSHIFT) || is_key_down(VK_RSHIFT) {
+            modifiers |= 0x01;
+        }
+        if is_key_down(VK_CONTROL) || is_key_down(VK_LCONTROL) || is_key_down(VK_RCONTROL) {
+            modifiers |= 0x02;
+        }
+        if is_key_down(VK_MENU) || is_key_down(VK_LMENU) || is_key_down(VK_RMENU) {
+            modifiers |= 0x04;
+        }
+        if is_key_down(VK_LWIN) || is_key_down(VK_RWIN) {
+            modifiers |= 0x08;
+        }
+        if (GetKeyState(VK_CAPITAL) & 0x0001) != 0 {
+            modifiers |= 0x10;
+        }
+        if (GetKeyState(VK_NUMLOCK) & 0x0001) != 0 {
+            modifiers |= 0x20;
+        }
+        modifiers
+    }
+
+    unsafe fn is_key_down(keycode: u16) -> bool {
+        ((GetKeyState(keycode as i32) as u16) & 0x8000) != 0
+    }
+
     unsafe fn is_alt_modifier_down(keys: &HashMap<u16, PressedKey>) -> bool {
         keys.values()
             .any(|key| matches!(key.keycode, VK_LMENU | VK_RMENU | VK_MENU))
@@ -1163,7 +1237,10 @@ pub(crate) mod win32_renderer_window {
                     }
                 }
             }
-            _ => emit_input_event(NativeWindowInputEvent::Shortcut { action }),
+            _ => {
+                release_current_input_capture();
+                emit_input_event(NativeWindowInputEvent::Shortcut { action });
+            }
         }
     }
 

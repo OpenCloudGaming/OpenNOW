@@ -121,6 +121,12 @@ export class SignalingCoordinator {
         if (!this.isNativeStreamerSelected()) {
           return;
         }
+        if (this.nativeStreamerContext) {
+          this.nativeStreamerContext = {
+            ...this.nativeStreamerContext,
+            shortcuts,
+          };
+        }
         this.getNativeStreamerManager().updateShortcuts(shortcuts);
       },
     );
