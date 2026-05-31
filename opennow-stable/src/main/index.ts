@@ -1,6 +1,7 @@
 import {
   app,
   BrowserWindow,
+  clipboard,
   ipcMain,
   dialog,
   shell,
@@ -58,6 +59,7 @@ import {
   createAppUpdaterController,
   type AppUpdaterController,
 } from "./updater";
+import { getAppBuildInfo } from "./appBuildInfo";
 import { registerAccountCatalogIpcHandlers } from "./ipc/accountCatalogHandlers";
 import { registerMediaIpcHandlers } from "./ipc/mediaHandlers";
 import { registerSessionIpcHandlers } from "./ipc/sessionHandlers";
@@ -838,13 +840,24 @@ function registerIpcHandlers(): void {
     });
   });
 
+  ipcMain.handle(IPC_CHANNELS.OPEN_EXTERNAL_URL, async (_event, url: string): Promise<void> => {
+    const parsed = new URL(url);
+    if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+      throw new Error("Only HTTP(S) external URLs can be opened.");
+    }
+    await shell.openExternal(parsed.toString());
+  });
+
   ipcMain.handle(
     IPC_CHANNELS.APP_UPDATER_GET_STATE,
     async (): Promise<AppUpdaterState> => {
+      const buildInfo = getAppBuildInfo();
       return (
         appUpdater?.getState() ?? {
           status: "disabled",
-          currentVersion: app.getVersion(),
+          currentVersion: buildInfo.version,
+          currentDisplayVersion: buildInfo.displayVersion,
+          currentBuildNumber: buildInfo.buildNumber,
           updateSource: "github-releases",
           canCheck: false,
           canDownload: false,
@@ -859,10 +872,13 @@ function registerIpcHandlers(): void {
   ipcMain.handle(
     IPC_CHANNELS.APP_UPDATER_CHECK,
     async (): Promise<AppUpdaterState> => {
+      const buildInfo = getAppBuildInfo();
       return (
         appUpdater?.checkForUpdates("manual") ?? {
           status: "disabled",
-          currentVersion: app.getVersion(),
+          currentVersion: buildInfo.version,
+          currentDisplayVersion: buildInfo.displayVersion,
+          currentBuildNumber: buildInfo.buildNumber,
           updateSource: "github-releases",
           canCheck: false,
           canDownload: false,
@@ -877,10 +893,13 @@ function registerIpcHandlers(): void {
   ipcMain.handle(
     IPC_CHANNELS.APP_UPDATER_DOWNLOAD,
     async (): Promise<AppUpdaterState> => {
+      const buildInfo = getAppBuildInfo();
       return (
         appUpdater?.downloadUpdate() ?? {
           status: "disabled",
-          currentVersion: app.getVersion(),
+          currentVersion: buildInfo.version,
+          currentDisplayVersion: buildInfo.displayVersion,
+          currentBuildNumber: buildInfo.buildNumber,
           updateSource: "github-releases",
           canCheck: false,
           canDownload: false,
@@ -895,10 +914,13 @@ function registerIpcHandlers(): void {
   ipcMain.handle(
     IPC_CHANNELS.APP_UPDATER_INSTALL,
     async (): Promise<AppUpdaterState> => {
+      const buildInfo = getAppBuildInfo();
       return (
         appUpdater?.quitAndInstall() ?? {
           status: "disabled",
-          currentVersion: app.getVersion(),
+          currentVersion: buildInfo.version,
+          currentDisplayVersion: buildInfo.displayVersion,
+          currentBuildNumber: buildInfo.buildNumber,
           updateSource: "github-releases",
           canCheck: false,
           canDownload: false,
@@ -913,6 +935,10 @@ function registerIpcHandlers(): void {
   // Settings IPC handlers
   ipcMain.handle(IPC_CHANNELS.SETTINGS_GET, async (): Promise<Settings> => {
     return settingsManager.getAll();
+  });
+
+  ipcMain.handle(IPC_CHANNELS.CLIPBOARD_READ_TEXT, async (): Promise<string> => {
+    return clipboard.readText();
   });
 
   ipcMain.handle(

@@ -10,17 +10,17 @@ import type {
   EntitledResolution,
   VideoAccelerationPreference,
   MicrophoneMode,
-    PingResult,
-    GameLanguage,
-    MicrophonePermissionResult,
-    ThankYouDataResult,
-    ThankYouContributor,
-    ThankYouSupporter,
-    AppUpdaterState,
-    NativeStreamerStatus,
-    NativeVideoBackendCapability,
-    NativeVideoBackendPreference,
-  } from "@shared/gfn";
+  PingResult,
+  GameLanguage,
+  MicrophonePermissionResult,
+  ThankYouDataResult,
+  ThankYouContributor,
+  ThankYouSupporter,
+  AppUpdaterState,
+  NativeStreamerStatus,
+  NativeVideoBackendCapability,
+  NativeVideoBackendPreference,
+} from "@shared/gfn";
 import {
   createUnsupportedNativeStreamerStatus,
   isNativeStreamerSupportedPlatform,
@@ -115,6 +115,8 @@ const SETTINGS_SCOPE_SEARCH_TERMS: Record<SettingsSearchScopeId, readonly string
     "dx12",
     "cloud gsync",
     "diagnostics",
+    "stats",
+    "overlay",
     "experimental",
     "shortcuts",
     "alt-tab",
@@ -150,16 +152,21 @@ const SETTINGS_SCOPE_SEARCH_TERMS: Record<SettingsSearchScopeId, readonly string
     "accent color",
     "theme color",
     "overlay",
-    "controller mode",
-    "controller mode library",
-    "auto-load controller library",
     "library",
     "fullscreen",
     "discord",
     "rich presence",
     "poster",
     "session timer",
+    "session time left",
+    "session countdown",
+    "free tier time",
+    "priority time",
+    "ultimate time",
     "counter",
+    "controller",
+    "gamepad",
+    "big picture",
   ],
   about: ["about", "update", "version", "logs", "cache", "download"],
   thanks: ["thanks", "contributors", "supporters", "sponsors", "community"],
@@ -709,6 +716,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
   const [updaterState, setUpdaterState] = useState<AppUpdaterState>({
     status: "idle",
     currentVersion: "0.0.0",
+    currentDisplayVersion: "0.0.0",
     updateSource: "github-releases",
     canCheck: false,
     canDownload: false,
@@ -892,9 +900,6 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
   const handleChange = useCallback(
     <K extends keyof Settings>(key: K, value: Settings[K]) => {
       onSettingChange(key, value);
-      if (key === "controllerMode" && value === false) {
-        onSettingChange("autoLoadControllerLibrary", false);
-      }
       setSavedIndicator(true);
       setTimeout(() => setSavedIndicator(false), 1500);
     },
@@ -2460,6 +2465,21 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                     </div>
                   </div>
 
+                  <div className="settings-row">
+                    <label className="settings-label">
+                      {t("settings.nativeStreamer.showNativeStreamerStats")}
+                      <span className="settings-hint">{t("settings.nativeStreamer.showNativeStreamerStatsHint")}</span>
+                    </label>
+                    <label className="settings-toggle">
+                      <input
+                        type="checkbox"
+                        checked={settings.showNativeStreamerStats}
+                        onChange={(e) => handleChange("showNativeStreamerStats", e.target.checked)}
+                      />
+                      <span className="settings-toggle-track" />
+                    </label>
+                  </div>
+
                   <div className="settings-row settings-row--column">
                     <div className="settings-row-top settings-row-top--compact">
                       <label className="settings-label settings-label--wrap">
@@ -3296,6 +3316,21 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
 
                   <div className="settings-row">
                     <label className="settings-label">
+                      {t("settings.interface.controllerMode")}
+                      <span className="settings-hint">{t("settings.interface.controllerModeHint")}</span>
+                    </label>
+                    <label className="settings-toggle">
+                      <input
+                        type="checkbox"
+                        checked={settings.controllerMode}
+                        onChange={(e) => handleChange("controllerMode", e.target.checked)}
+                      />
+                      <span className="settings-toggle-track" />
+                    </label>
+                  </div>
+
+                  <div className="settings-row">
+                    <label className="settings-label">
                       {t("settings.interface.escapeExitsFullscreen")}
                       <span className="settings-hint">{t("settings.interface.escapeExitsFullscreenHint")}</span>
                     </label>
@@ -3325,74 +3360,6 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                   </div>
                 </div>
 
-                {/* Controller Mode */}
-                <div className="settings-row">
-                  <label className="settings-label">
-                    <span className="settings-label-title">
-                      {t("settings.interface.controllerModeLibrary")}
-                      <span className="settings-inline-badge settings-inline-badge--beta">{t("app.labels.beta")}</span>
-                    </span>
-                    <span className="settings-hint">{t("settings.interface.controllerModeLibraryHint")}</span>
-                  </label>
-                  <label className="settings-toggle">
-                    <input
-                      type="checkbox"
-                      checked={settings.controllerMode}
-                      onChange={(e) => handleChange("controllerMode", e.target.checked)}
-                    />
-                    <span className="settings-toggle-track" />
-                  </label>
-                </div>
-
-                {settings.controllerMode && (
-                  <div className="settings-controller-subsettings">
-                    <div className="settings-row">
-                      <label className="settings-label">
-                        {t("settings.interface.controllerUiSounds")}
-                        <span className="settings-hint">{t("settings.interface.controllerUiSoundsHint")}</span>
-                      </label>
-                      <label className="settings-toggle">
-                        <input
-                          type="checkbox"
-                          checked={settings.controllerUiSounds}
-                          onChange={(e) => handleChange("controllerUiSounds", e.target.checked)}
-                        />
-                        <span className="settings-toggle-track" />
-                      </label>
-                    </div>
-
-                    <div className="settings-row">
-                      <label className="settings-label">
-                        {t("settings.interface.controllerBackgroundAnimations")}
-                        <span className="settings-hint">{t("settings.interface.controllerBackgroundAnimationsHint")}</span>
-                      </label>
-                      <label className="settings-toggle">
-                        <input
-                          type="checkbox"
-                          checked={settings.controllerBackgroundAnimations}
-                          onChange={(e) => handleChange("controllerBackgroundAnimations", e.target.checked)}
-                        />
-                        <span className="settings-toggle-track" />
-                      </label>
-                    </div>
-
-                    <div className="settings-row">
-                      <label className="settings-label">
-                        {t("settings.interface.autoLoadControllerLibrary")}
-                        <span className="settings-hint">{t("settings.interface.autoLoadControllerLibraryHint")}</span>
-                      </label>
-                      <label className="settings-toggle">
-                        <input
-                          type="checkbox"
-                          checked={settings.autoLoadControllerLibrary}
-                          onChange={(e) => handleChange("autoLoadControllerLibrary", e.target.checked)}
-                        />
-                        <span className="settings-toggle-track" />
-                      </label>
-                    </div>
-                  </div>
-                )}
-
                 <div className="settings-row settings-row--column">
                   <div className="settings-row-top">
                     <label className="settings-label">{t("settings.interface.posterSize")}</label>
@@ -3408,6 +3375,21 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                     onChange={(e) => handleChange("posterSizeScale", Number(e.target.value) / 100)}
                   />
                   <span className="settings-subtle-hint">{t("settings.interface.posterSizeHint")}</span>
+                </div>
+
+                <div className="settings-row">
+                  <label className="settings-label">
+                    {t("settings.interface.showSessionTimeRemainingInStatsOverlay")}
+                    <span className="settings-hint">{t("settings.interface.showSessionTimeRemainingInStatsOverlayHint")}</span>
+                  </label>
+                  <label className="settings-toggle">
+                    <input
+                      type="checkbox"
+                      checked={settings.showSessionTimeRemainingInStatsOverlay}
+                      onChange={(e) => handleChange("showSessionTimeRemainingInStatsOverlay", e.target.checked)}
+                    />
+                    <span className="settings-toggle-track" />
+                  </label>
                 </div>
 
                 {/* Session Counter */}
@@ -3497,7 +3479,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                     </span>
                   </span>
                   <span className="settings-hint">
-                    {t("settings.about.version", { version: updaterState.currentVersion })} · {settings.autoCheckForUpdates
+                    {t("settings.about.version", { version: updaterState.currentDisplayVersion ?? updaterState.currentVersion })} · {settings.autoCheckForUpdates
                       ? t("settings.about.backgroundChecksOn")
                       : t("settings.about.backgroundChecksOff")}
                   </span>

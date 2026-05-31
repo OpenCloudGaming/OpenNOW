@@ -1,7 +1,11 @@
 import crypto from "node:crypto";
 
-export const GFN_USER_AGENT =
+const GFN_WINDOWS_USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36 NVIDIACEFClient/HEAD/debb5919f6 GFN-PC/2.0.80.173";
+const GFN_MACOS_USER_AGENT =
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 GFN-PC/2.0.80.173";
+
+export const GFN_USER_AGENT = process.platform === "darwin" ? GFN_MACOS_USER_AGENT : GFN_WINDOWS_USER_AGENT;
 export const GFN_CLIENT_VERSION = "2.0.80.173";
 export const LCARS_CLIENT_ID = "ec7e38d4-03af-4b58-b131-cfb0495903ab";
 
@@ -104,7 +108,7 @@ export function buildGfnGraphQlHeaders(token?: string): Record<string, string> {
     "nv-client-type": "NATIVE",
     "nv-client-version": GFN_CLIENT_VERSION,
     "nv-client-streamer": "NVIDIA-CLASSIC",
-    "nv-device-os": "WINDOWS",
+    "nv-device-os": platformToGfnDeviceOs(),
     "nv-device-type": "DESKTOP",
     "nv-device-make": "UNKNOWN",
     "nv-device-model": "UNKNOWN",

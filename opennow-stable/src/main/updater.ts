@@ -2,6 +2,7 @@ import { app } from "electron";
 import electronUpdater from "electron-updater";
 import type { AppUpdater, ProgressInfo, UpdateDownloadedEvent, UpdateInfo } from "electron-updater";
 
+import { getAppBuildInfo } from "./appBuildInfo";
 import type { AppUpdaterState } from "@shared/gfn";
 
 const { autoUpdater } = electronUpdater;
@@ -71,10 +72,12 @@ function getUpdateVersion(info: UpdateInfo | UpdateDownloadedEvent | null | unde
   return (info as { version?: string } | null | undefined)?.version;
 }
 
-function createDisabledState(currentVersion: string, message: string): AppUpdaterState {
+function createDisabledState(buildInfo: ReturnType<typeof getAppBuildInfo>, message: string): AppUpdaterState {
   return {
     status: "disabled",
-    currentVersion,
+    currentVersion: buildInfo.version,
+    currentDisplayVersion: buildInfo.displayVersion,
+    currentBuildNumber: buildInfo.buildNumber,
     updateSource: "github-releases",
     message,
     canCheck: false,
@@ -85,9 +88,10 @@ function createDisabledState(currentVersion: string, message: string): AppUpdate
 }
 
 export function createAppUpdaterController(options: AppUpdaterControllerOptions): AppUpdaterController {
-  const currentVersion = app.getVersion();
+  const buildInfo = getAppBuildInfo();
+  const currentVersion = buildInfo.version;
   if (!app.isPackaged) {
-    const disabledState = createDisabledState(currentVersion, "Auto-updates are only available in packaged builds.");
+    const disabledState = createDisabledState(buildInfo, "Auto-updates are only available in packaged builds.");
     return {
       initialize() {
         options.onStateChanged(disabledState);
@@ -136,8 +140,10 @@ export function createAppUpdaterController(options: AppUpdaterControllerOptions)
   let availableUpdateInfo: UpdateInfo | null = null;
   let downloadedUpdateInfo: UpdateInfo | null = null;
 
-  const baseState: Pick<AppUpdaterState, "currentVersion" | "updateSource" | "isPackaged"> = {
+  const baseState: Pick<AppUpdaterState, "currentVersion" | "currentDisplayVersion" | "currentBuildNumber" | "updateSource" | "isPackaged"> = {
     currentVersion,
+    currentDisplayVersion: buildInfo.displayVersion,
+    currentBuildNumber: buildInfo.buildNumber,
     updateSource: "github-releases",
     isPackaged: true,
   };

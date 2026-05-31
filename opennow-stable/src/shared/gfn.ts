@@ -128,17 +128,7 @@ export function colorQualityIs10Bit(cq: ColorQuality): boolean {
   return cq.startsWith("10bit");
 }
 
-/** Controller-mode XMB background visual preset */
-export type ControllerThemeStyle = "aurora" | "nebula" | "grid" | "minimal" | "pulse";
 export type AppAccentColor = "green" | "blue" | "violet" | "amber" | "rose";
-
-/** RGB tint for controller-mode background (0–255 each) */
-export interface ControllerThemeRgb {
-  r: number;
-  g: number;
-  b: number;
-}
-
 export type MicrophoneMode = "disabled" | "push-to-talk" | "voice-activity";
 export type AspectRatio = "16:9" | "16:10" | "21:9" | "32:9";
 export type RuntimePlatform =
@@ -267,6 +257,7 @@ export interface Settings {
   nativeCloudGsyncMode: NativeStreamerFeatureMode;
   nativeD3dFullscreenMode: NativeStreamerFeatureMode;
   nativeExternalRenderer: boolean;
+  showNativeStreamerStats: boolean;
   codec: VideoCodec;
   decoderPreference: VideoAccelerationPreference;
   encoderPreference: VideoAccelerationPreference;
@@ -294,24 +285,13 @@ export interface Settings {
   hideServerSelector: boolean;
   /** Desktop UI accent preset */
   appAccentColor: AppAccentColor;
+  /** Use the large-screen controller-oriented shell and library layout */
   controllerMode: boolean;
-  controllerUiSounds: boolean;
-  autoLoadControllerLibrary: boolean;
-  /** When true, controller-mode overlays will show animated background orbs */
-  controllerBackgroundAnimations: boolean;
-  /** Controller-mode library background visual preset */
-  controllerThemeStyle: ControllerThemeStyle;
-  /** Controller-mode library background tint (applied per style preset) */
-  controllerThemeColor: ControllerThemeRgb;
-  /**
-   * When true, controller library/hub/loading layers may show art from the focused game or shelf.
-   * Theme color/style presets still apply when false.
-   */
-  controllerLibraryGameBackdrop: boolean;
-  /** When true, the app will automatically enter fullscreen when controller mode triggers it */
   autoFullScreen: boolean;
   favoriteGameIds: string[];
   sessionCounterEnabled: boolean;
+  /** Also show the session-limit countdown in the stats overlay while streaming */
+  showSessionTimeRemainingInStatsOverlay: boolean;
   sessionClockShowEveryMinutes: number;
   sessionClockShowDurationSeconds: number;
   windowWidth: number;
@@ -506,6 +486,14 @@ export interface ResolveLaunchIdRequest {
   appIdOrUuid: string;
 }
 
+export interface ResolveStoreUrlRequest {
+  token?: string;
+  providerStreamingBaseUrl?: string;
+  appIdOrUuid: string;
+  variantId?: string;
+  store?: string;
+}
+
 export interface SubscriptionFetchRequest {
   token?: string;
   providerStreamingBaseUrl?: string;
@@ -515,8 +503,10 @@ export interface SubscriptionFetchRequest {
 export interface GameVariant {
   id: string;
   store: string;
+  storeUrl?: string;
   supportedControls: string[];
   librarySelected?: boolean;
+  inLibrary?: boolean;
   libraryStatus?: string;
   lastPlayedDate?: string;
   gfnStatus?: string;
@@ -542,14 +532,24 @@ export interface GameInfo {
   uuid?: string;
   launchAppId?: string;
   title: string;
+  shortName?: string;
   description?: string;
   longDescription?: string;
+  developerName?: string;
+  maxLocalPlayers?: number;
+  maxOnlinePlayers?: number;
   featureLabels?: string[];
   genres?: string[];
+  supportedControls?: string[];
+  nvidiaTech?: string[];
   imageUrl?: string;
+  heroImageUrl?: string;
   screenshotUrl?: string;
+  screenshotUrls?: string[];
+  imageUrlsByType?: Record<string, string[]>;
   playType?: string;
   membershipTierLabel?: string;
+  catalogSkuStrings?: GameCatalogSkuStrings;
   publisherName?: string;
   contentRatings?: string[];
   playabilityState?: string;
@@ -559,6 +559,14 @@ export interface GameInfo {
   isInLibrary?: boolean;
   selectedVariantIndex: number;
   variants: GameVariant[];
+}
+
+export interface GameCatalogSkuStrings {
+  SKU_BASED_TAG?: string[];
+  SKU_BASED_PLAYABILITY_TEXT?: string;
+  SKU_BASED_UNPLAYABLE_DIALOG_HEADER?: string;
+  SKU_BASED_UNPLAYABLE_DIALOG_BODY_UPGRADE?: string;
+  SKU_BASED_UNPLAYABLE_DIALOG_BODY_UPGRADE_ECOMM_RESTRICTED?: string;
 }
 
 export function isGameInLibrary(game: Pick<GameInfo, "variants">): boolean {
@@ -588,6 +596,18 @@ export interface CatalogSortOption {
   id: string;
   label: string;
   orderBy: string;
+}
+
+export interface GamePanelSection {
+  id: string;
+  title: string;
+  games: GameInfo[];
+}
+
+export interface GamePanelResult {
+  id: string;
+  title: string;
+  sections: GamePanelSection[];
 }
 
 export interface CatalogBrowseResult {
@@ -1002,6 +1022,8 @@ export interface AppUpdaterProgress {
 export interface AppUpdaterState {
   status: AppUpdaterStatus;
   currentVersion: string;
+  currentDisplayVersion?: string;
+  currentBuildNumber?: string;
   availableVersion?: string;
   downloadedVersion?: string;
   progress?: AppUpdaterProgress;
@@ -1027,10 +1049,13 @@ export interface OpenNowApi {
   removeAccount(userId: string): Promise<void>;
   fetchSubscription(input: SubscriptionFetchRequest): Promise<SubscriptionInfo>;
   fetchMainGames(input: GamesFetchRequest): Promise<GameInfo[]>;
+  fetchStorePanels(input: GamesFetchRequest): Promise<GamePanelResult[]>;
+  fetchFeaturedGames(input: GamesFetchRequest): Promise<GameInfo[]>;
   fetchLibraryGames(input: GamesFetchRequest): Promise<GameInfo[]>;
   browseCatalog(input: CatalogBrowseRequest): Promise<CatalogBrowseResult>;
   fetchPublicGames(): Promise<GameInfo[]>;
   resolveLaunchAppId(input: ResolveLaunchIdRequest): Promise<string | null>;
+  resolveStoreUrl(input: ResolveStoreUrlRequest): Promise<string | null>;
   createSession(input: SessionCreateRequest): Promise<SessionInfo>;
   pollSession(input: SessionPollRequest): Promise<SessionInfo>;
   reportSessionAd(input: SessionAdReportRequest): Promise<SessionInfo>;
@@ -1064,6 +1089,8 @@ export interface OpenNowApi {
   togglePointerLock(): Promise<void>;
   /** Notify main process that pointer lock state changed (active = true/false) */
   notifyPointerLockChange(active: boolean): void;
+  /** Read plain text from the OS clipboard through Electron main process */
+  readClipboardText(): Promise<string>;
   getSettings(): Promise<Settings>;
   setSetting<K extends keyof Settings>(key: K, value: Settings[K]): Promise<void>;
   resetSettings(): Promise<Settings>;
@@ -1091,6 +1118,9 @@ export interface OpenNowApi {
 
   /** Listen for external Escape events forwarded by the main process */
   onExternalEscape(listener: () => void): () => void;
+
+  /** Open a trusted external URL in the OS default browser */
+  openExternalUrl(url: string): Promise<void>;
 
   /** Begin a new recording session; returns a recordingId to use for subsequent calls */
   beginRecording(input: RecordingBeginRequest): Promise<RecordingBeginResult>;

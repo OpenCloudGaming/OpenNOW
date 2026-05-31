@@ -22,6 +22,20 @@ export function shouldShowFreeTierSessionWarnings(subscription: SubscriptionInfo
   return normalizeMembershipTier(subscription?.membershipTier) === "FREE";
 }
 
+export function getSessionLimitSecondsForTier(tier: string | null | undefined): number | null {
+  switch (normalizeMembershipTier(tier)) {
+    case "FREE":
+      return 60 * 60;
+    case "PRIORITY":
+    case "PERFORMANCE":
+      return 6 * 60 * 60;
+    case "ULTIMATE":
+      return 8 * 60 * 60;
+    default:
+      return null;
+  }
+}
+
 export function hasCrossedWarningThreshold(
   previousSeconds: number | null,
   currentSeconds: number,

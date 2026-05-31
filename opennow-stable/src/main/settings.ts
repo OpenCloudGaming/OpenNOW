@@ -14,8 +14,6 @@ import type {
   NativeVideoBackendPreference,
   NativeStreamerFeatureMode,
   NativeTransitionDiagnostics,
-  ControllerThemeRgb,
-  ControllerThemeStyle,
   AppAccentColor,
 } from "@shared/gfn";
 import {
@@ -50,6 +48,8 @@ export interface Settings {
   nativeD3dFullscreenMode: NativeStreamerFeatureMode;
   /** Use the native GStreamer renderer window instead of Electron HWND embedding */
   nativeExternalRenderer: boolean;
+  /** Show the native streamer's own stats overlay while native streaming */
+  showNativeStreamerStats: boolean;
   /** Preferred video codec */
   codec: VideoCodec;
   /** Preferred video decode acceleration mode */
@@ -104,25 +104,15 @@ export interface Settings {
   hideServerSelector: boolean;
   /** Desktop UI accent preset */
   appAccentColor: AppAccentColor;
-  /** Enable controller-first media bar layout for library browsing */
+  /** Use the large-screen controller-oriented shell and library layout */
   controllerMode: boolean;
-  /** Play subtle sounds in controller library mode */
-  controllerUiSounds: boolean;
-  /** Enable animated background visuals for controller-mode loading screens */
-  controllerBackgroundAnimations: boolean;
-  /** Controller-mode library background visual preset */
-  controllerThemeStyle: ControllerThemeStyle;
-  /** Controller-mode library background tint */
-  controllerThemeColor: ControllerThemeRgb;
-  /** When true, library/hub/loading may show game- or shelf-driven backdrop art */
-  controllerLibraryGameBackdrop: boolean;
-  /** Auto-load controller library at startup when controller mode is enabled */
-  autoLoadControllerLibrary: boolean;
-  /** Automatically enter fullscreen when controller-mode triggers it */
+  /** Automatically enter fullscreen when launching a stream */
   autoFullScreen: boolean;
   favoriteGameIds: string[];
   /** Enable the live elapsed session counter */
   sessionCounterEnabled: boolean;
+  /** Also show the session-limit countdown in the stats overlay while streaming */
+  showSessionTimeRemainingInStatsOverlay: boolean;
   /** Window width */
   windowWidth: number;
   /** Window height */
@@ -152,29 +142,8 @@ const LEGACY_STOP_SHORTCUTS = new Set(["META+SHIFT+Q", "CMD+SHIFT+Q"]);
 const LEGACY_ANTI_AFK_SHORTCUTS = new Set(["META+SHIFT+F10", "CMD+SHIFT+F10", "CTRL+SHIFT+F10"]);
 const DEFAULT_STREAM_PREFERENCES = getDefaultStreamPreferences();
 
-const CONTROLLER_THEME_STYLES_SET = new Set<ControllerThemeStyle>(["aurora", "nebula", "grid", "minimal", "pulse"]);
 const NATIVE_VIDEO_BACKEND_PREFERENCES = new Set<NativeVideoBackendPreference>(["auto", "d3d11", "d3d12"]);
 const APP_ACCENT_COLORS = new Set<AppAccentColor>(["green", "blue", "violet", "amber", "rose"]);
-
-function clampThemeByte(value: unknown): number {
-  const n = typeof value === "number" && Number.isFinite(value) ? Math.round(value) : NaN;
-  if (!Number.isFinite(n)) return 0;
-  return Math.max(0, Math.min(255, n));
-}
-
-function normalizeControllerThemeColor(raw: unknown, fallback: ControllerThemeRgb): ControllerThemeRgb {
-  if (!raw || typeof raw !== "object") return { ...fallback };
-  const o = raw as Record<string, unknown>;
-  return {
-    r: clampThemeByte(o.r),
-    g: clampThemeByte(o.g),
-    b: clampThemeByte(o.b),
-  };
-}
-
-function normalizeControllerThemeStyle(raw: unknown): ControllerThemeStyle {
-  return CONTROLLER_THEME_STYLES_SET.has(raw as ControllerThemeStyle) ? (raw as ControllerThemeStyle) : "aurora";
-}
 
 function normalizeNativeVideoBackendPreference(raw: unknown): NativeVideoBackendPreference {
   return NATIVE_VIDEO_BACKEND_PREFERENCES.has(raw as NativeVideoBackendPreference)
@@ -199,6 +168,7 @@ const DEFAULT_SETTINGS: Settings = {
   nativeCloudGsyncMode: "auto",
   nativeD3dFullscreenMode: "auto",
   nativeExternalRenderer: true,
+  showNativeStreamerStats: false,
   codec: DEFAULT_STREAM_PREFERENCES.codec,
   decoderPreference: "auto",
   encoderPreference: "auto",
@@ -225,15 +195,10 @@ const DEFAULT_SETTINGS: Settings = {
   hideServerSelector: false,
   appAccentColor: "green",
   controllerMode: false,
-  controllerUiSounds: false,
-  controllerBackgroundAnimations: false,
-  controllerThemeStyle: "aurora",
-  controllerThemeColor: { r: 124, g: 241, b: 177 },
-  controllerLibraryGameBackdrop: true,
-  autoLoadControllerLibrary: false,
   autoFullScreen: false,
   favoriteGameIds: [],
   sessionCounterEnabled: false,
+  showSessionTimeRemainingInStatsOverlay: false,
   sessionClockShowEveryMinutes: 60,
   sessionClockShowDurationSeconds: 30,
   windowWidth: 1400,
@@ -269,36 +234,39 @@ export class SettingsManager {
       }
 
       const content = readFileSync(this.settingsPath, "utf-8");
-      const parsed = JSON.parse(content) as Partial<Settings>;
+      type PersistedSettings = Partial<Settings> & {
+        sessionTimeRemainingDisplay?: unknown;
+      };
+      const parsed = JSON.parse(content) as PersistedSettings;
+      const {
+        sessionTimeRemainingDisplay: legacySessionTimeDisplay,
+        ...parsedSettings
+      } = parsed;
 
       // Merge with defaults to ensure all fields exist
       const merged: Settings = {
         ...DEFAULT_SETTINGS,
-        ...parsed,
+        ...parsedSettings,
       };
 
       let migrated = this.migrateLegacyShortcutDefaults(merged);
       migrated = this.enforceCompatibility(merged) || migrated;
 
-      const themeStyleBefore = merged.controllerThemeStyle;
-      const themeColorBefore = { ...merged.controllerThemeColor };
-      merged.controllerThemeStyle = normalizeControllerThemeStyle(merged.controllerThemeStyle);
-      merged.controllerThemeColor = normalizeControllerThemeColor(merged.controllerThemeColor, DEFAULT_SETTINGS.controllerThemeColor);
       const accentColorBefore = merged.appAccentColor;
       merged.appAccentColor = normalizeAppAccentColor(merged.appAccentColor);
-      if (
-        merged.appAccentColor !== accentColorBefore ||
-        merged.controllerThemeStyle !== themeStyleBefore ||
-        merged.controllerThemeColor.r !== themeColorBefore.r ||
-        merged.controllerThemeColor.g !== themeColorBefore.g ||
-        merged.controllerThemeColor.b !== themeColorBefore.b
-      ) {
+      if (merged.appAccentColor !== accentColorBefore) {
         migrated = true;
       }
 
       // Migrate legacy boolean accelerator setting to percentage slider.
       if (typeof (parsed as { mouseAcceleration?: unknown }).mouseAcceleration === "boolean") {
         merged.mouseAcceleration = (parsed as { mouseAcceleration?: boolean }).mouseAcceleration ? 100 : 1;
+        migrated = true;
+      }
+
+      // Migrate a short-lived prerelease display enum while keeping the old key out of saved settings.
+      if (legacySessionTimeDisplay === "stats" || legacySessionTimeDisplay === "both") {
+        merged.showSessionTimeRemainingInStatsOverlay = true;
         migrated = true;
       }
 

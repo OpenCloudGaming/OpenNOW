@@ -8,6 +8,7 @@ import type {
   GamesFetchRequest,
   CatalogBrowseRequest,
   ResolveLaunchIdRequest,
+  ResolveStoreUrlRequest,
   RegionsFetchRequest,
   MainToRendererSignalingEvent,
   OpenNowApi,
@@ -75,12 +76,16 @@ const api: OpenNowApi = {
   fetchSubscription: (input: SubscriptionFetchRequest) =>
     ipcRenderer.invoke(IPC_CHANNELS.SUBSCRIPTION_FETCH, input),
   fetchMainGames: (input: GamesFetchRequest) => ipcRenderer.invoke(IPC_CHANNELS.GAMES_FETCH_MAIN, input),
+  fetchStorePanels: (input: GamesFetchRequest) => ipcRenderer.invoke(IPC_CHANNELS.GAMES_FETCH_STORE_PANELS, input),
+  fetchFeaturedGames: (input: GamesFetchRequest) => ipcRenderer.invoke(IPC_CHANNELS.GAMES_FETCH_FEATURED, input),
   fetchLibraryGames: (input: GamesFetchRequest) =>
     ipcRenderer.invoke(IPC_CHANNELS.GAMES_FETCH_LIBRARY, input),
   browseCatalog: (input: CatalogBrowseRequest) => ipcRenderer.invoke(IPC_CHANNELS.GAMES_BROWSE_CATALOG, input),
   fetchPublicGames: () => ipcRenderer.invoke(IPC_CHANNELS.GAMES_FETCH_PUBLIC),
   resolveLaunchAppId: (input: ResolveLaunchIdRequest) =>
     ipcRenderer.invoke(IPC_CHANNELS.GAMES_RESOLVE_LAUNCH_ID, input),
+  resolveStoreUrl: (input: ResolveStoreUrlRequest) =>
+    ipcRenderer.invoke(IPC_CHANNELS.GAMES_RESOLVE_STORE_URL, input),
   createSession: (input: SessionCreateRequest) => invokeSessionChannel(IPC_CHANNELS.CREATE_SESSION, input),
   pollSession: (input: SessionPollRequest) => invokeSessionChannel(IPC_CHANNELS.POLL_SESSION, input),
   reportSessionAd: (input: SessionAdReportRequest) => invokeSessionChannel(IPC_CHANNELS.REPORT_SESSION_AD, input),
@@ -151,7 +156,9 @@ const api: OpenNowApi = {
     ipcRenderer.on(IPC_CHANNELS.EXTERNAL_ESCAPE, wrapped);
     return () => ipcRenderer.off(IPC_CHANNELS.EXTERNAL_ESCAPE, wrapped);
   },
+  openExternalUrl: (url: string): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.OPEN_EXTERNAL_URL, url),
   getMicrophonePermission: () => ipcRenderer.invoke(IPC_CHANNELS.MICROPHONE_PERMISSION_GET),
+  readClipboardText: (): Promise<string> => ipcRenderer.invoke(IPC_CHANNELS.CLIPBOARD_READ_TEXT),
   exportLogs: (format?: "text" | "json") => ipcRenderer.invoke(IPC_CHANNELS.LOGS_EXPORT, format),
   pingRegions: (regions: StreamRegion[]) => ipcRenderer.invoke(IPC_CHANNELS.PING_REGIONS, regions),
   saveScreenshot: (input: ScreenshotSaveRequest) => ipcRenderer.invoke(IPC_CHANNELS.SCREENSHOT_SAVE, input),

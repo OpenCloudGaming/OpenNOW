@@ -47,16 +47,20 @@ function isNumericId(value: string | undefined): value is string {
 }
 
 export function publicGameToGameInfo(item: RawPublicGame): GameInfo {
-  const id = String(item.id ?? item.title ?? "unknown");
+  const sourceId = String(item.id ?? item.title ?? "unknown");
   const steamAppId = item.steamUrl?.split("/app/")[1]?.split("/")[0];
+  const id = steamAppId || sourceId;
   const imageUrl = steamAppId
-    ? `https://cdn.cloudflare.steamstatic.com/steam/apps/${steamAppId}/library_600x900.jpg`
+    ? `https://cdn.cloudflare.steamstatic.com/steam/apps/${steamAppId}/header.jpg`
+    : undefined;
+  const heroImageUrl = steamAppId
+    ? `https://cdn.cloudflare.steamstatic.com/steam/apps/${steamAppId}/library_hero.jpg`
     : undefined;
   const store = inferPublicGameStore(item);
 
   return {
     id,
-    uuid: id,
+    uuid: sourceId,
     launchAppId: isNumericId(id) ? id : undefined,
     title: item.title ?? id,
     searchText: [item.title ?? id, item.store, item.publisher]
@@ -66,6 +70,7 @@ export function publicGameToGameInfo(item: RawPublicGame): GameInfo {
     selectedVariantIndex: 0,
     variants: [{ id, store, supportedControls: [] }],
     imageUrl,
+    heroImageUrl,
     availableStores: [store],
     isInLibrary: false,
   };
@@ -111,16 +116,21 @@ export function mergePublicGameVariants(games: GameInfo[], publicGames: GameInfo
       return game;
     }
 
+    const gameWithPublicFallbacks: GameInfo = {
+      ...game,
+      imageUrl: game.imageUrl ?? publicGame.imageUrl,
+      heroImageUrl: game.heroImageUrl ?? publicGame.heroImageUrl,
+      searchText: mergeSearchText(game.searchText, publicGame.searchText),
+    };
     const supplementalVariants = getSupplementalPublicVariants(game, publicGame);
     if (supplementalVariants.length === 0) {
-      return game;
+      return gameWithPublicFallbacks;
     }
 
     return {
-      ...game,
-      uuid: game.uuid ?? publicGame.uuid,
-      launchAppId: game.launchAppId ?? publicGame.launchAppId,
-      imageUrl: game.imageUrl ?? publicGame.imageUrl,
+      ...gameWithPublicFallbacks,
+      uuid: gameWithPublicFallbacks.uuid ?? publicGame.uuid,
+      launchAppId: gameWithPublicFallbacks.launchAppId ?? publicGame.launchAppId,
       variants: [...game.variants, ...supplementalVariants],
       availableStores: [
         ...new Set([
@@ -129,9 +139,49 @@ export function mergePublicGameVariants(games: GameInfo[], publicGames: GameInfo
           ...(publicGame.availableStores ?? []),
         ].filter((value): value is string => typeof value === "string" && value.trim().length > 0)),
       ],
-      searchText: mergeSearchText(game.searchText, publicGame.searchText),
     };
   });
+}
+
+function matchesPublicGameSearch(game: GameInfo, searchQuery: string): boolean {
+  const normalizedQuery = searchQuery.trim().toLowerCase();
+  if (!normalizedQuery) {
+    return false;
+  }
+
+  if (game.searchText?.includes(normalizedQuery)) {
+    return true;
+  }
+
+  return [game.title, ...(game.availableStores ?? [])]
+    .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+    .some((value) => value.toLowerCase().includes(normalizedQuery));
+}
+
+export function appendPublicGameSearchMatches(
+  games: GameInfo[],
+  publicGames: GameInfo[],
+  searchQuery: string,
+): GameInfo[] {
+  const normalizedQuery = searchQuery.trim();
+  if (!normalizedQuery) {
+    return games;
+  }
+
+  const existingIds = new Set(games.map((game) => game.id));
+  const existingTitles = new Set(games.map((game) => normalizeTitleKey(game.title)).filter(Boolean));
+  const matches = publicGames.filter((game) => {
+    const titleKey = normalizeTitleKey(game.title);
+    return !existingIds.has(game.id)
+      && (!titleKey || !existingTitles.has(titleKey))
+      && matchesPublicGameSearch(game, normalizedQuery);
+  });
+
+  if (matches.length === 0) {
+    return games;
+  }
+
+  return [...games, ...matches];
 }
 
 export async function fetchPublicGamesUncached(): Promise<GameInfo[]> {

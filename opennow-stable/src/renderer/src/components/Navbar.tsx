@@ -1,5 +1,5 @@
 import type { ActiveSessionInfo, AuthUser, SavedAccount, SubscriptionInfo } from "@shared/gfn";
-import { House, Library, Settings, User, Timer, HardDrive, X, Loader2, PlayCircle, Square, ChevronDown, Check, Plus } from "lucide-react";
+import { House, Library, Settings, User, Timer, HardDrive, X, Loader2, PlayCircle, Square, ChevronDown, Check, Plus, Store as StoreIcon } from "lucide-react";
 import { useEffect, useRef, useState, type JSX } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "../i18n";
@@ -21,6 +21,7 @@ interface NavbarProps {
   onRemoveAccount: (userId: string) => void;
   onAddAccount: () => void;
   onLogoutAll: () => void;
+  controllerMode?: boolean;
 }
 
 type NavbarModalType = "time" | "storage" | null;
@@ -48,23 +49,38 @@ export function Navbar({
   onRemoveAccount,
   onAddAccount,
   onLogoutAll,
+  controllerMode = false,
 }: NavbarProps): JSX.Element {
   const { t } = useTranslation();
   const [modalType, setModalType] = useState<NavbarModalType>(null);
   const [accountDropdownOpen, setAccountDropdownOpen] = useState(false);
   const accountContainerRef = useRef<HTMLDivElement | null>(null);
 
-  const navItems = [
-    { id: "home" as const, label: t("navigation.home"), icon: House },
-    { id: "library" as const, label: t("navigation.library"), icon: Library },
-    { id: "settings" as const, label: t("navigation.settings"), icon: Settings },
-  ];
+  const navItems = controllerMode
+    ? [
+        { id: "store", page: "home" as const, label: "Store", icon: StoreIcon },
+        { id: "library", page: "library" as const, label: t("navigation.library"), icon: Library },
+        { id: "settings", page: "settings" as const, label: t("navigation.settings"), icon: Settings },
+      ]
+    : [
+        { id: "home", page: "home" as const, label: t("navigation.home"), icon: House },
+        { id: "library", page: "library" as const, label: t("navigation.library"), icon: Library },
+        { id: "settings", page: "settings" as const, label: t("navigation.settings"), icon: Settings },
+      ];
 
   const tierInfo = user ? getTierDisplay(user.membershipTier) : null;
   const formatHours = (value: number): string => {
     if (!Number.isFinite(value)) return "0";
     const rounded = value >= 10 ? Math.round(value) : Math.round(value * 10) / 10;
     return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1);
+  };
+  const formatHoursAndMinutes = (value: number): string => {
+    if (!Number.isFinite(value)) return "0m";
+    const totalMinutes = Math.max(0, Math.round(value * 60));
+    const hours = Math.floor(totalMinutes / 60);
+    const minutes = totalMinutes % 60;
+    if (hours === 0) return `${minutes}m`;
+    return minutes === 0 ? `${hours}h` : `${hours}h ${minutes}m`;
   };
   const formatGb = (value: number): string => {
     if (!Number.isFinite(value)) return "0";
@@ -104,7 +120,7 @@ export function Navbar({
   const timeLabel = subscription
     ? subscription.isUnlimited
       ? t("navbar.time.unlimitedTime")
-      : t("app.units.hoursLeft", { value: formatHours(timeLeft) })
+      : t("app.units.durationLeft", { value: formatHoursAndMinutes(timeLeft) })
     : null;
 
   const storageTotal = subscription?.storageAddon?.sizeGb;
@@ -198,7 +214,7 @@ export function Navbar({
                     </div>
                     <div className="navbar-meter-legend">
                       <span>{t("app.units.hoursUsed", { value: formatHours(timeUsed) })}</span>
-                      <span>{t("app.units.hoursLeft", { value: formatHours(timeLeft) })}</span>
+                      <span>{t("app.units.durationLeft", { value: formatHoursAndMinutes(timeLeft) })}</span>
                     </div>
                   </div>
                 )}
@@ -209,7 +225,7 @@ export function Navbar({
                 {subscription.subscriptionSubType && (
                   <div className="navbar-modal-row"><span>{t("navbar.time.subType")}</span><strong>{subscription.subscriptionSubType}</strong></div>
                 )}
-                <div className="navbar-modal-row"><span>{t("navbar.time.timeLeft")}</span><strong>{subscription.isUnlimited ? t("app.labels.unlimited") : t("app.units.hours", { value: formatHours(timeLeft) })}</strong></div>
+                <div className="navbar-modal-row"><span>{t("navbar.time.timeLeft")}</span><strong>{subscription.isUnlimited ? t("app.labels.unlimited") : formatHoursAndMinutes(timeLeft)}</strong></div>
                 <div className="navbar-modal-row"><span>{t("navbar.time.totalTime")}</span><strong>{subscription.isUnlimited ? t("app.labels.unlimited") : t("app.units.hours", { value: formatHours(timeTotal) })}</strong></div>
                 <div className="navbar-modal-row"><span>{t("navbar.time.usedTime")}</span><strong>{t("app.units.hours", { value: formatHours(timeUsed) })}</strong></div>
                 <div className="navbar-modal-row"><span>{t("navbar.time.allotted")}</span><strong>{t("app.units.hours", { value: formatHours(allottedHours) })}</strong></div>
@@ -274,7 +290,7 @@ export function Navbar({
     : null;
 
   return (
-    <nav className="navbar">
+    <nav className={`navbar${controllerMode ? " navbar--controller" : ""}`}>
       <div className="navbar-left">
         <div className="navbar-brand">
           <OpenNowLogoMark className="opennow-logo-mark" />
@@ -285,12 +301,14 @@ export function Navbar({
       <div className="navbar-nav">
         {navItems.map((item) => {
           const Icon = item.icon;
-          const isActive = currentPage === item.id;
+          const isActive = controllerMode
+            ? item.id === (currentPage === "home" ? "store" : currentPage)
+            : currentPage === item.page;
 
           return (
             <button
               key={item.id}
-              onClick={() => onNavigate(item.id)}
+              onClick={() => onNavigate(item.page)}
               className={`navbar-link ${isActive ? "active" : ""}`}
             >
               <Icon size={16} />
@@ -301,7 +319,7 @@ export function Navbar({
       </div>
 
       <div className="navbar-right">
-        {activeSession && (
+        {activeSession && !controllerMode && (
           <div className="navbar-session-actions">
             <button
               type="button"

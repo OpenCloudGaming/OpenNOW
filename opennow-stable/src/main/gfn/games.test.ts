@@ -3,7 +3,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { inferPublicGameStore, mergePublicGameVariants, publicGameToGameInfo } from "./publicGames";
+import {
+  appendPublicGameSearchMatches,
+  inferPublicGameStore,
+  mergePublicGameVariants,
+  publicGameToGameInfo,
+} from "./publicGames";
 
 test("infers NCSoft as the public catalog store for Guild Wars 2", () => {
   assert.equal(
@@ -89,6 +94,31 @@ test("merges supplemental public launcher variants into catalog games by title",
   assert.deepEqual(game?.availableStores, ["Steam", "NCSoft"]);
 });
 
+test("preserves public Steam hero fallback when merging supplemental variants", () => {
+  const [game] = mergePublicGameVariants(
+    [
+      {
+        id: "third-party-steam-game",
+        title: "Third Party Steam Game",
+        selectedVariantIndex: 0,
+        variants: [{ id: "third-party", store: "GOG", supportedControls: [] }],
+        availableStores: ["GOG"],
+      },
+    ],
+    [
+      publicGameToGameInfo({
+        id: 456,
+        title: "Third Party Steam Game",
+        steamUrl: "https://store.steampowered.com/app/456",
+        store: "Steam",
+        status: "AVAILABLE",
+      }),
+    ],
+  );
+
+  assert.equal(game?.heroImageUrl, "https://cdn.cloudflare.steamstatic.com/steam/apps/456/library_hero.jpg");
+});
+
 test("merges same-id public launcher variants when the store is missing from catalog data", () => {
   const [game] = mergePublicGameVariants(
     [
@@ -144,4 +174,63 @@ test("does not duplicate primary catalog store variants from public data", () =>
   );
 
   assert.deepEqual(game?.variants.map((variant) => variant.store), ["Steam"]);
+});
+
+test("appends public-only games that match catalog search", () => {
+  const games = appendPublicGameSearchMatches(
+    [
+      {
+        id: "catalog-game",
+        title: "Catalog Game",
+        selectedVariantIndex: 0,
+        variants: [{ id: "catalog-game", store: "Steam", supportedControls: [] }],
+      },
+    ],
+    [
+      publicGameToGameInfo({
+        id: 17940711,
+        title: "Guild Wars 2",
+        steamUrl: "",
+        publisher: "NCsoft Corp.",
+        store: "",
+        status: "AVAILABLE",
+      }),
+      publicGameToGameInfo({
+        id: 123,
+        title: "Unrelated Game",
+        steamUrl: "",
+        store: "Unknown",
+        status: "AVAILABLE",
+      }),
+    ],
+    "guild wars",
+  );
+
+  assert.deepEqual(games.map((game) => game.title), ["Catalog Game", "Guild Wars 2"]);
+});
+
+test("does not append public search matches already represented by catalog results", () => {
+  const games = appendPublicGameSearchMatches(
+    [
+      {
+        id: "guild-wars-2-catalog",
+        title: "Guild Wars 2",
+        selectedVariantIndex: 0,
+        variants: [{ id: "steam", store: "Steam", supportedControls: [] }],
+      },
+    ],
+    [
+      publicGameToGameInfo({
+        id: 17940711,
+        title: "Guild Wars 2",
+        steamUrl: "",
+        publisher: "NCsoft Corp.",
+        store: "",
+        status: "AVAILABLE",
+      }),
+    ],
+    "guild wars",
+  );
+
+  assert.deepEqual(games.map((game) => game.title), ["Guild Wars 2"]);
 });

@@ -1,6 +1,10 @@
+import type { KeyboardLayout } from "@shared/gfn";
+
 export const INPUT_HEARTBEAT = 2;
 export const INPUT_KEY_DOWN = 3;
 export const INPUT_KEY_UP = 4;
+/** Lock-key state sync (Caps/Num/Scroll), matches official GFN Cc()/Ic() type 19. */
+export const INPUT_LOCK_KEYS_SYNC = 19;
 export const INPUT_MOUSE_REL = 7;
 export const INPUT_MOUSE_BUTTON_DOWN = 8;
 export const INPUT_MOUSE_BUTTON_UP = 9;
@@ -278,6 +282,30 @@ const specialVirtualKeyByCode: Record<string, number> = {
   NumpadComma: 0xbc,
 };
 
+const physicalOemVirtualKeyCodes = new Set([
+  "Minus",
+  "Equal",
+  "BracketLeft",
+  "BracketRight",
+  "Backslash",
+  "IntlBackslash",
+  "IntlRo",
+  "IntlYen",
+  "Semicolon",
+  "Quote",
+  "Backquote",
+  "Comma",
+  "Period",
+  "Slash",
+]);
+
+function shouldUsePhysicalOemVirtualKey(event: KeyLike, layout?: KeyboardLayout): boolean {
+  if (!layout || layout === "en-US" || layout === "en-GB") {
+    return false;
+  }
+  return physicalOemVirtualKeyCodes.has(event.code);
+}
+
 const keyFallbackMap: Record<string, KeyMapping> = {
   Escape: { vk: 0x1b, scancode: 0x0001 },
   Esc: { vk: 0x1b, scancode: 0x0001 },
@@ -333,6 +361,64 @@ const shiftedCharCodeMap: Record<string, string> = {
   "<": "Comma",
   ">": "Period",
   "?": "Slash",
+};
+
+const germanBaseCharCodeMap: Record<string, string> = {
+  " ": "Space",
+  "\n": "Enter",
+  "\r": "Enter",
+  "\t": "Tab",
+  "0": "Digit0",
+  "1": "Digit1",
+  "2": "Digit2",
+  "3": "Digit3",
+  "4": "Digit4",
+  "5": "Digit5",
+  "6": "Digit6",
+  "7": "Digit7",
+  "8": "Digit8",
+  "9": "Digit9",
+  "y": "KeyZ",
+  "z": "KeyY",
+  "ß": "Minus",
+  "´": "Equal",
+  "ü": "BracketLeft",
+  "+": "BracketRight",
+  "#": "Backslash",
+  "ö": "Semicolon",
+  "ä": "Quote",
+  ",": "Comma",
+  ".": "Period",
+  "^": "Backquote",
+  "-": "Slash",
+  "<": "IntlBackslash",
+};
+
+const germanShiftedCharCodeMap: Record<string, string> = {
+  "!": "Digit1",
+  '"': "Digit2",
+  "§": "Digit3",
+  "$": "Digit4",
+  "%": "Digit5",
+  "&": "Digit6",
+  "/": "Digit7",
+  "(": "Digit8",
+  ")": "Digit9",
+  "=": "Digit0",
+  "Y": "KeyZ",
+  "Z": "KeyY",
+  "?": "Minus",
+  "`": "Equal",
+  "Ü": "BracketLeft",
+  "*": "BracketRight",
+  "'": "Backslash",
+  "Ö": "Semicolon",
+  "Ä": "Quote",
+  "°": "Backquote",
+  ";": "Comma",
+  ":": "Period",
+  "_": "Slash",
+  ">": "IntlBackslash",
 };
 
 function defaultVirtualKeyFromCode(code: string): number | null {
@@ -462,12 +548,19 @@ function virtualKeyFromKeyValue(key: string): number | null {
   return null;
 }
 
-function virtualKeyFromEvent(event: KeyLike): number | null {
-  if (event.code.startsWith("Key") || event.code.startsWith("Digit")) {
-    return defaultVirtualKeyFromCode(event.code);
+function virtualKeyFromEvent(event: KeyLike, layout?: KeyboardLayout): number | null {
+  if (shouldUsePhysicalOemVirtualKey(event, layout)) {
+    const physicalVk = defaultVirtualKeyFromCode(event.code);
+    if (physicalVk !== null) {
+      return physicalVk;
+    }
   }
 
-  return virtualKeyFromKeyCode(event) ?? virtualKeyFromKeyValue(event.key) ?? defaultVirtualKeyFromCode(event.code);
+  return (
+    virtualKeyFromKeyCode(event)
+    ?? virtualKeyFromKeyValue(event.key)
+    ?? defaultVirtualKeyFromCode(event.code)
+  );
 }
 
 function textKeySpecFromCode(code: string, shift: boolean = false): TextKeySpec | null {
@@ -478,13 +571,16 @@ function textKeySpecFromCode(code: string, shift: boolean = false): TextKeySpec 
   return shift ? { ...mapped, shift: true } : mapped;
 }
 
-export function mapTextCharToKeySpec(char: string): TextKeySpec | null {
-  const baseCode = baseCharCodeMap[char];
+export function mapTextCharToKeySpec(char: string, layout?: KeyboardLayout): TextKeySpec | null {
+  const baseMap = layout === "de-DE" ? germanBaseCharCodeMap : baseCharCodeMap;
+  const shiftedMap = layout === "de-DE" ? germanShiftedCharCodeMap : shiftedCharCodeMap;
+
+  const baseCode = baseMap[char];
   if (baseCode) {
     return textKeySpecFromCode(baseCode);
   }
 
-  const shiftedCode = shiftedCharCodeMap[char];
+  const shiftedCode = shiftedMap[char];
   if (shiftedCode) {
     return textKeySpecFromCode(shiftedCode, true);
   }
@@ -640,6 +736,14 @@ export class InputEncoder {
     this.gamepadSequence.clear();
   }
 
+  encodeLockKeysSync(state: number): Uint8Array {
+    const bytes = new Uint8Array(5);
+    const view = new DataView(bytes.buffer);
+    view.setUint32(0, INPUT_LOCK_KEYS_SYNC, true);
+    view.setUint8(4, state & 0xff);
+    return wrapSingleEvent(bytes, this.protocolVersion);
+  }
+
   encodeHeartbeat(): Uint8Array {
     // Heartbeat is sent RAW — no v3 wrapper.
     // Official GFN client's Jc() sends [u32 LE = 2] directly, no 0x23/0x22 prefix.
@@ -793,42 +897,38 @@ export class InputEncoder {
   }
 }
 
+/** Per-key modifier byte (official GFN yS()). Lock keys sync separately via INPUT_LOCK_KEYS_SYNC. */
 export function modifierFlags(event: KeyboardEvent): number {
   let flags = 0;
-  // Basic modifiers (match Rust implementation)
-  if (event.shiftKey) flags |= 0x01; // SHIFT
-  if (event.ctrlKey) flags |= 0x02;  // CTRL
-  if (event.altKey) flags |= 0x04;   // ALT
-  if (event.metaKey) flags |= 0x08;  // META
-  // Lock keys (match Rust modifier flags)
-  if (event.getModifierState("CapsLock")) flags |= 0x10; // CAPS_LOCK
-  if (event.getModifierState("NumLock")) flags |= 0x20;  // NUM_LOCK
+  if (event.shiftKey && !event.code.startsWith("Shift")) flags |= 0x01;
+  if (event.ctrlKey && !event.code.startsWith("Control")) flags |= 0x02;
+  if (event.altKey && !event.code.startsWith("Alt")) flags |= 0x04;
+  if (event.metaKey && !event.code.startsWith("Meta")) flags |= 0x08;
   return flags;
 }
 
-export function mapKeyboardEvent(event: KeyboardEvent): KeyMapping | null {
-  // The official GFN web client appears to forward the raw DOM key event into a lower-level
-  // virtual input controller instead of keeping a large JS `{ code -> { vk, scancode } }` table.
-  // Electron does not expose that downstream native translation layer to this renderer, so the
-  // closest behavior we can reproduce here is:
-  // 1. derive the Windows virtual-key from the DOM event itself (`keyCode`, `key`, `location`)
-  // 2. keep only a DOM `code -> scancode` lookup for the protocol field that Chromium does not expose
-  // This preserves physical-key behavior across layouts while minimizing JS-side policy.
-  const scancode =
-    (event.code ? scancodeByCode[event.code] : undefined)
-    ?? keyFallbackMap[event.key]?.scancode
-    ?? (event.key.length === 1 ? mapTextCharToKeySpec(event.key)?.scancode : undefined);
+/**
+ * Lock-key bitmask for INPUT_LOCK_KEYS_SYNC (official GFN iS() on Windows/desktop).
+ * Caps/Num/Scroll are not stuffed into per-key modifier bytes.
+ */
+export function lockKeysStateFromEvent(event: KeyboardEvent): number {
+  let state = 0x10;
+  if (event.getModifierState("CapsLock")) state |= 0x01;
+  state |= 0x20;
+  state |= 0x40;
+  if (event.getModifierState("NumLock")) state |= 0x02;
+  if (event.getModifierState("ScrollLock")) state |= 0x04;
+  return state;
+}
 
-  if (scancode === undefined) {
+export function mapKeyboardEvent(event: KeyboardEvent, layout?: KeyboardLayout): KeyMapping | null {
+  const vk = virtualKeyFromEvent(event, layout);
+  if (vk === null || vk === 0) {
     return null;
   }
 
-  const vk = virtualKeyFromEvent(event);
-  if (vk === null) {
-    return null;
-  }
-
-  return { vk, scancode };
+  // Official GFN Zc() always sends scancode 0; the server uses layout + VK instead.
+  return { vk, scancode: 0 };
 }
 
 /**

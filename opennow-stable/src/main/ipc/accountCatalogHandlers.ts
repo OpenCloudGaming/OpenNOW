@@ -7,15 +7,19 @@ import type {
   GamesFetchRequest,
   RegionsFetchRequest,
   ResolveLaunchIdRequest,
+  ResolveStoreUrlRequest,
   SubscriptionFetchRequest,
 } from "@shared/gfn";
 import type { AuthService } from "../gfn/auth";
 import {
   browseCatalog,
+  fetchFeaturedGames,
   fetchLibraryGames,
   fetchMainGames,
   fetchPublicGames,
+  fetchStorePanels,
   resolveLaunchAppId,
+  resolveStoreUrl,
 } from "../gfn/games";
 import { fetchSubscription, fetchDynamicRegions } from "../gfn/subscription";
 
@@ -116,6 +120,30 @@ export function registerAccountCatalogIpcHandlers(
   );
 
   ipcMain.handle(
+    IPC_CHANNELS.GAMES_FETCH_FEATURED,
+    async (_event, payload: GamesFetchRequest) => {
+      const token = await resolveJwt(payload?.token);
+      const streamingBaseUrl =
+        payload?.providerStreamingBaseUrl ??
+        authService.getSelectedProvider().streamingServiceUrl;
+      refreshScheduler.updateAuthContext(token, streamingBaseUrl);
+      return fetchFeaturedGames(token, streamingBaseUrl);
+    },
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.GAMES_FETCH_STORE_PANELS,
+    async (_event, payload: GamesFetchRequest) => {
+      const token = await resolveJwt(payload?.token);
+      const streamingBaseUrl =
+        payload?.providerStreamingBaseUrl ??
+        authService.getSelectedProvider().streamingServiceUrl;
+      refreshScheduler.updateAuthContext(token, streamingBaseUrl);
+      return fetchStorePanels(token, streamingBaseUrl);
+    },
+  );
+
+  ipcMain.handle(
     IPC_CHANNELS.GAMES_FETCH_LIBRARY,
     async (_event, payload: GamesFetchRequest) => {
       const token = await resolveJwt(payload?.token);
@@ -155,6 +183,21 @@ export function registerAccountCatalogIpcHandlers(
         payload?.providerStreamingBaseUrl ??
         authService.getSelectedProvider().streamingServiceUrl;
       return resolveLaunchAppId(token, payload.appIdOrUuid, streamingBaseUrl);
+    },
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.GAMES_RESOLVE_STORE_URL,
+    async (_event, payload: ResolveStoreUrlRequest) => {
+      const token = await resolveJwt(payload?.token);
+      const streamingBaseUrl =
+        payload?.providerStreamingBaseUrl ??
+        authService.getSelectedProvider().streamingServiceUrl;
+      refreshScheduler.updateAuthContext(token, streamingBaseUrl);
+      return resolveStoreUrl(token, payload.appIdOrUuid, streamingBaseUrl, {
+        variantId: payload.variantId,
+        store: payload.store,
+      });
     },
   );
 }
