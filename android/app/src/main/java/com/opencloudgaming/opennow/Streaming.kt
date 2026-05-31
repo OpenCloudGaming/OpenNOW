@@ -498,6 +498,7 @@ object NativeStreamInputRouter {
         client != null &&
             !streamUiActive &&
             touchMouseEnabled &&
+            captureAllTouch &&
             width > 0 &&
             height > 0 &&
             event.isFingerTouchEvent() &&
@@ -974,12 +975,15 @@ class NativeStreamClient(
     private var lastRightStickX = 0
     private var lastRightStickY = 0
     private var mouseLastDeviceId = Int.MIN_VALUE
+    private var mouseLastSource = 0
     private var mouseLastX = 0f
     private var mouseLastY = 0f
     private var mousePositionValid = false
+    private var mouseSuppressNextAbsoluteDelta = false
     private var inputDropLogged = false
     private var externalMouseEventLogged = false
     private var externalMouseMoveSentLogged = false
+    private var externalMouseAbsoluteJumpLogged = false
     private var hardwareKeyboardEventLogged = false
     private var lastStatsSample: StreamStatsSample? = null
     private val textSendMutex = Mutex()
@@ -1069,9 +1073,11 @@ class NativeStreamClient(
         activeControllerId = 0
         controllerSlots.clear()
         mousePositionValid = false
+        mouseSuppressNextAbsoluteDelta = false
         inputDropLogged = false
         externalMouseEventLogged = false
         externalMouseMoveSentLogged = false
+        externalMouseAbsoluteJumpLogged = false
         hardwareKeyboardEventLogged = false
         inputEncoder.resetGamepadSequences()
     }
@@ -1137,36 +1143,47 @@ class NativeStreamClient(
                         externalMouseMoveSentLogged = true
                         NativeInputDiagnostics.add("external mouse move sent source=${event.source} device=${event.deviceId} mode=relative")
                     }
-                } else if (mousePositionValid && mouseLastDeviceId == event.deviceId) {
+                } else if (mousePositionValid && mouseLastDeviceId == event.deviceId && mouseLastSource == event.source) {
                     val dx = event.x - mouseLastX
                     val dy = event.y - mouseLastY
                     if (abs(dx) >= 0.5f || abs(dy) >= 0.5f) {
-                        val sent = sendTouchMouseMove(dx.roundToInt(), dy.roundToInt())
-                        if (sent && !externalMouseMoveSentLogged) {
-                            externalMouseMoveSentLogged = true
-                            NativeInputDiagnostics.add("external mouse move sent source=${event.source} device=${event.deviceId} mode=absoluteDelta")
+                        val discontinuous = mouseSuppressNextAbsoluteDelta ||
+                            abs(dx) > EXTERNAL_MOUSE_ABSOLUTE_DELTA_LIMIT_PX ||
+                            abs(dy) > EXTERNAL_MOUSE_ABSOLUTE_DELTA_LIMIT_PX
+                        if (discontinuous) {
+                            if (!externalMouseAbsoluteJumpLogged) {
+                                externalMouseAbsoluteJumpLogged = true
+                                NativeInputDiagnostics.add("external mouse absolute delta rebased source=${event.source} device=${event.deviceId} dx=${dx.roundToInt()} dy=${dy.roundToInt()}")
+                            }
+                        } else {
+                            val sent = sendTouchMouseMove(dx.roundToInt(), dy.roundToInt())
+                            if (sent && !externalMouseMoveSentLogged) {
+                                externalMouseMoveSentLogged = true
+                                NativeInputDiagnostics.add("external mouse move sent source=${event.source} device=${event.deviceId} mode=absoluteDelta")
+                            }
                         }
+                        mouseSuppressNextAbsoluteDelta = false
                     }
+                } else {
+                    mouseSuppressNextAbsoluteDelta = false
                 }
-                mouseLastDeviceId = event.deviceId
-                mouseLastX = event.x
-                mouseLastY = event.y
-                mousePositionValid = true
+                rememberMousePosition(event)
             }
             MotionEvent.ACTION_DOWN -> {
-                mousePositionValid = true
-                mouseLastDeviceId = event.deviceId
-                mouseLastX = event.x
-                mouseLastY = event.y
+                mouseSuppressNextAbsoluteDelta = true
+                rememberMousePosition(event)
                 sendReliableInput(inputEncoder.encodeMouseButton(InputEncoder.INPUT_MOUSE_BUTTON_DOWN, event.primaryMouseButton()))
             }
             MotionEvent.ACTION_UP,
             MotionEvent.ACTION_CANCEL,
             -> {
                 mousePositionValid = false
+                mouseSuppressNextAbsoluteDelta = true
                 sendReliableInput(inputEncoder.encodeMouseButton(InputEncoder.INPUT_MOUSE_BUTTON_UP, event.primaryMouseButton()))
             }
             MotionEvent.ACTION_BUTTON_PRESS -> {
+                mouseSuppressNextAbsoluteDelta = true
+                rememberMousePosition(event)
                 val handled = sendReliableInput(inputEncoder.encodeMouseButton(InputEncoder.INPUT_MOUSE_BUTTON_DOWN, event.actionButton.toGfnMouseButton()))
                 if (!handled) {
                     NativeInputDiagnostics.add("external mouse button consumed without send action=press button=${event.actionButton} reliable=${reliableInput?.state()} partial=${partiallyReliableInput?.state()}")
@@ -1174,6 +1191,8 @@ class NativeStreamClient(
                 return true
             }
             MotionEvent.ACTION_BUTTON_RELEASE -> {
+                mousePositionValid = false
+                mouseSuppressNextAbsoluteDelta = true
                 val handled = sendReliableInput(inputEncoder.encodeMouseButton(InputEncoder.INPUT_MOUSE_BUTTON_UP, event.actionButton.toGfnMouseButton()))
                 if (!handled) {
                     NativeInputDiagnostics.add("external mouse button consumed without send action=release button=${event.actionButton} reliable=${reliableInput?.state()} partial=${partiallyReliableInput?.state()}")
@@ -1188,6 +1207,14 @@ class NativeStreamClient(
             }
         }
         return true
+    }
+
+    private fun rememberMousePosition(event: MotionEvent) {
+        mouseLastDeviceId = event.deviceId
+        mouseLastSource = event.source
+        mouseLastX = event.x
+        mouseLastY = event.y
+        mousePositionValid = true
     }
 
     private fun adjustedMouseDelta(dx: Int, dy: Int): Pair<Int, Int> {
@@ -2056,6 +2083,10 @@ class NativeStreamClient(
         this and MotionEvent.BUTTON_BACK != 0 -> 4
         this and MotionEvent.BUTTON_FORWARD != 0 -> 5
         else -> 1
+    }
+
+    private companion object {
+        private const val EXTERNAL_MOUSE_ABSOLUTE_DELTA_LIMIT_PX = 240f
     }
 
     private fun applyDeadzone(x: Float, y: Float, deadzone: Float = 0.15f): Pair<Float, Float> {

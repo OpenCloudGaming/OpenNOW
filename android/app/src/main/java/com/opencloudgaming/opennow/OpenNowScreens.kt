@@ -10,6 +10,10 @@ import android.speech.RecognizerIntent
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.PointerIcon
+import android.view.Surface
+import android.view.SurfaceHolder
+import android.view.SurfaceView
+import android.view.View
 import android.view.ViewGroup
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
@@ -109,6 +113,7 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -2746,16 +2751,18 @@ private fun StreamVideoSurface(
     val pointerRootView = externalMouseRoot ?: rootView
     val (streamWidth, streamHeight) = streamResolutionPixels(settings)
     val streamAspect = (streamWidth.toFloat() / streamHeight.toFloat()).takeIf { it.isFinite() && it > 0f } ?: (16f / 9f)
-    DisposableEffect(rootView, pointerRootView, hideExternalMousePointer) {
+    val currentStreamFps by rememberUpdatedState(settings.fps)
+    DisposableEffect(client, rootView, pointerRootView, hideExternalMousePointer) {
+        pointerRootView.configureAndroidMousePointerCapture(hideExternalMousePointer) { event ->
+            client.dispatchMotion(event)
+        }
         if (hideExternalMousePointer) {
             pointerRootView.hideAndroidPointerTree()
         } else {
             pointerRootView.showAndroidPointerTree()
         }
         onDispose {
-            if (Build.VERSION.SDK_INT >= 26) {
-                pointerRootView.releasePointerCapture()
-            }
+            pointerRootView.clearAndroidMousePointerCapture()
             pointerRootView.showAndroidPointerTree()
         }
     }
@@ -2787,11 +2794,29 @@ private fun StreamVideoSurface(
                         isFocusable = false
                         isFocusableInTouchMode = false
                         hideAndroidPointerTree()
+                        setPreferredStreamFrameRate(settings.fps)
+                        holder.addCallback(
+                            object : SurfaceHolder.Callback {
+                                override fun surfaceCreated(holder: SurfaceHolder) {
+                                    holder.surface.setPreferredStreamFrameRate(currentStreamFps)
+                                }
+
+                                override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
+                                    holder.surface.setPreferredStreamFrameRate(currentStreamFps)
+                                }
+
+                                override fun surfaceDestroyed(holder: SurfaceHolder) = Unit
+                            },
+                        )
                     }
                 },
                 update = { renderer ->
                     renderer.isFocusable = false
                     renderer.isFocusableInTouchMode = false
+                    renderer.setPreferredStreamFrameRate(settings.fps)
+                    pointerRootView.configureAndroidMousePointerCapture(hideExternalMousePointer) { event ->
+                        client.dispatchMotion(event)
+                    }
                     if (hideExternalMousePointer) {
                         pointerRootView.hideAndroidPointerTree()
                         renderer.hideAndroidPointerTree()
@@ -2817,12 +2842,44 @@ private fun StreamVideoSurface(
     }
 }
 
+private fun SurfaceView.setPreferredStreamFrameRate(fps: Int) {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return
+    holder.surface.setPreferredStreamFrameRate(fps)
+}
+
+private fun Surface.setPreferredStreamFrameRate(fps: Int) {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R || !isValid) return
+    setFrameRate(normalizedStreamDisplayFps(fps), Surface.FRAME_RATE_COMPATIBILITY_FIXED_SOURCE)
+}
+
 private fun androidNullPointerIcon(view: android.view.View): PointerIcon? =
     if (Build.VERSION.SDK_INT >= 24) {
         PointerIcon.getSystemIcon(view.context, PointerIcon.TYPE_NULL)
     } else {
         null
     }
+
+private fun View.configureAndroidMousePointerCapture(enabled: Boolean, onMotion: (MotionEvent) -> Boolean) {
+    if (Build.VERSION.SDK_INT < 26) return
+    if (!enabled) {
+        clearAndroidMousePointerCapture()
+        return
+    }
+    setOnCapturedPointerListener { _, event ->
+        onMotion(event)
+    }
+    post {
+        if (isAttachedToWindow && hasWindowFocus() && !hasPointerCapture()) {
+            requestPointerCapture()
+        }
+    }
+}
+
+private fun View.clearAndroidMousePointerCapture() {
+    if (Build.VERSION.SDK_INT < 26) return
+    setOnCapturedPointerListener(null)
+    releasePointerCapture()
+}
 
 private fun android.view.View.hideAndroidPointerTree() {
     if (Build.VERSION.SDK_INT < 24) return

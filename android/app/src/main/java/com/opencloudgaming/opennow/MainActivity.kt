@@ -5,6 +5,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.view.Display
 import android.view.InputDevice
 import android.view.KeyEvent
 import android.view.MotionEvent
@@ -27,6 +28,8 @@ class MainActivity : ComponentActivity() {
     private var lastHatXKeyCode: Int? = null
     private var lastHatYKeyCode: Int? = null
     private var streamSystemUiActive = false
+    private var streamDisplayRefreshActive = false
+    private var streamDisplayRefreshFps = 60
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -37,7 +40,9 @@ class MainActivity : ComponentActivity() {
             viewModel.state.collect { state ->
                 requestQueueNotificationPermissionIfNeeded(state)
                 queueStatusNotifier.update(state)
-                applyStreamSystemUi(state.page == AppPage.Stream && state.streamStatus != "idle")
+                val streamActive = state.page == AppPage.Stream && state.streamStatus != "idle"
+                applyStreamSystemUi(streamActive)
+                applyStreamDisplayRefreshRate(streamActive, state.activeStreamSettings?.fps ?: state.settings.stream.fps)
             }
         }
         viewModel.handleExternalLaunchIntent(intent)
@@ -106,6 +111,7 @@ class MainActivity : ComponentActivity() {
         super.onWindowFocusChanged(hasFocus)
         if (hasFocus && streamSystemUiActive) {
             applyStreamSystemUi(true, force = true)
+            applyStreamDisplayRefreshRate(streamDisplayRefreshActive, streamDisplayRefreshFps, force = true)
         }
     }
 
@@ -154,6 +160,44 @@ class MainActivity : ComponentActivity() {
         val icon = if (active) PointerIcon.getSystemIcon(this, PointerIcon.TYPE_NULL) else null
         window.decorView.applyPointerIconRecursive(icon)
     }
+
+    private fun applyStreamDisplayRefreshRate(active: Boolean, requestedFps: Int, force: Boolean = false) {
+        streamDisplayRefreshActive = active
+        streamDisplayRefreshFps = requestedFps
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return
+
+        val display = window.decorView.display
+        val selectedMode = if (active) {
+            selectStreamDisplayMode(
+                supportedModes = display?.supportedModes.orEmpty().map { it.toDisplayRefreshMode() },
+                currentMode = display?.mode?.toDisplayRefreshMode(),
+                requestedFps = requestedFps,
+            )
+        } else {
+            null
+        }
+        val preferredModeId = selectedMode?.id ?: 0
+        val preferredRefreshRate = selectedMode?.refreshRate ?: if (active) normalizedStreamDisplayFps(requestedFps) else 0f
+        val attributes = window.attributes
+        if (!force &&
+            attributes.preferredDisplayModeId == preferredModeId &&
+            kotlin.math.abs(attributes.preferredRefreshRate - preferredRefreshRate) < 0.01f
+        ) {
+            return
+        }
+        window.attributes = attributes.apply {
+            preferredDisplayModeId = preferredModeId
+            this.preferredRefreshRate = preferredRefreshRate
+        }
+    }
+
+    private fun Display.Mode.toDisplayRefreshMode(): DisplayRefreshMode =
+        DisplayRefreshMode(
+            id = modeId,
+            refreshRate = refreshRate,
+            physicalWidth = physicalWidth,
+            physicalHeight = physicalHeight,
+        )
 
     @Suppress("DEPRECATION", "OVERRIDE_DEPRECATION")
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<String>, grantResults: IntArray) {

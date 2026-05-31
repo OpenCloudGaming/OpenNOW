@@ -807,9 +807,9 @@ internal fun StreamSettings.adjustedForDevice(report: RuntimeCodecReport?): Stre
 
     val adjusted = if (effectiveCodec == codec) this else copy(codec = effectiveCodec)
     return when (effectiveCodec) {
-        VideoCodec.H264 -> adjusted.copy(colorQuality = ColorQuality.EightBit420, maxBitrateMbps = minOf(adjusted.maxBitrateMbps, profileBitrateCap), fps = minOf(adjusted.fps, 60))
+        VideoCodec.H264 -> adjusted.copy(colorQuality = ColorQuality.EightBit420, maxBitrateMbps = minOf(adjusted.maxBitrateMbps, profileBitrateCap))
         VideoCodec.H265,
-        VideoCodec.AV1 -> adjusted.copy(maxBitrateMbps = minOf(adjusted.maxBitrateMbps, profileBitrateCap), fps = minOf(adjusted.fps, 60))
+        VideoCodec.AV1 -> adjusted.copy(maxBitrateMbps = minOf(adjusted.maxBitrateMbps, profileBitrateCap))
     }
 }
 

@@ -43,6 +43,16 @@ class StreamSettingsDeviceAdjustmentTest {
     }
 
     @Test
+    fun preservesHighRefreshRateForSupportedAndroidStreams() {
+        val adjusted = StreamSettings(codec = VideoCodec.AV1, fps = 120, maxBitrateMbps = 90)
+            .adjustedForDevice(codecReport(VideoCodec.AV1, hardwareDecoder = true, realtimeSafe = true))
+
+        assertEquals(VideoCodec.AV1, adjusted.codec)
+        assertEquals(120, adjusted.fps)
+        assertEquals(75, adjusted.maxBitrateMbps)
+    }
+
+    @Test
     fun usesSafeH264ProfileForLowPowerAndroidTv() {
         val adjusted = StreamSettings(
             resolution = "3840x2160",
