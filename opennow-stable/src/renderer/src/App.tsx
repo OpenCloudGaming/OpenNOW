@@ -102,6 +102,11 @@ function getAppStyle(posterSizeScale: number): AppStyle {
     "--game-poster-scale": String(posterSizeScale),
   };
 }
+
+function isNvidiaProvider(provider: LoginProvider | null | undefined): boolean {
+  return (provider?.code ?? "").trim().toUpperCase() === "NVIDIA";
+}
+
 const SESSION_READY_POLL_INTERVAL_MS = 2000;
 const SESSION_AD_POLL_INTERVAL_MS = 30000;
 const PLAYTIME_RESYNC_INTERVAL_MS = 5 * 60 * 1000;
@@ -2743,8 +2748,10 @@ export function App(): JSX.Element {
       subscriptionInfo?.membershipTier ?? authSession?.user.membershipTier,
     );
     const isFreeUser = effectiveTier === "FREE";
+    const activeProvider = authSession?.provider ?? selectedProvider;
+    const isNvidiaAccount = isNvidiaProvider(activeProvider);
     const isAllianceServer = isAllianceStreamingBaseUrl(effectiveStreamingBaseUrl);
-    if (isAllianceServer) {
+    if (!isNvidiaAccount || isAllianceServer) {
       setQueueModalData(null);
       void handlePlayGame(game);
       return;
@@ -2800,7 +2807,7 @@ export function App(): JSX.Element {
       return;
     }
     void handlePlayGame(game);
-  }, [subscriptionInfo, authSession, streamStatus, handlePlayGame, effectiveStreamingBaseUrl]);
+  }, [subscriptionInfo, authSession, selectedProvider, settings.hideServerSelector, streamStatus, handlePlayGame, effectiveStreamingBaseUrl]);
 
   const handleQueueModalConfirm = useCallback((zoneUrl: string | null) => {
     const game = queueModalGame;
