@@ -317,7 +317,7 @@ export function App(): JSX.Element {
   const sessionLimitTier = useMemo(() => {
     const subscriptionTier = normalizeMembershipTier(subscriptionInfo?.membershipTier);
     const authTier = normalizeMembershipTier(authSession?.user.membershipTier);
-    return subscriptionTier ?? (authTier !== "FREE" ? authTier : null);
+    return subscriptionTier ?? authTier;
   }, [authSession?.user.membershipTier, subscriptionInfo?.membershipTier]);
   const sessionLimitSeconds = getSessionLimitSecondsForTier(sessionLimitTier);
   const sessionTimeRemainingSeconds = isStreaming && sessionStartedAtMs !== null && sessionLimitSeconds !== null

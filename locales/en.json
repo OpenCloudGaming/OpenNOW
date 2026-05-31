@@ -310,6 +310,7 @@
       "jitterBuffer": "JB = jitter buffer delay",
       "packetLoss": "Packet loss percentage",
       "packetLossValue": "{{value}}% loss",
+      "timeRemainingShort": "Left",
       "inputQueuePressure": "Input queue pressure (buffered bytes and delayed flush)",
       "inputChannelState": "Partially reliable input channel state and queued bytes",
       "mouseFlushCadence": "Mouse flush cadence and packet rate"
@@ -364,7 +365,11 @@
   },
   "sidebar": {
     "title": "Sidebar",
-    "closeSettings": "Close settings"
+    "closeSettings": "Close settings",
+    "sessionTimeRemaining": "Session Time Left",
+    "sessionTimeRemainingTitle": "Session time remaining",
+    "showSessionTimeRemainingInStatsOverlay": "Show session time remaining in stats overlay",
+    "statsOverlay": "Stats overlay"
   },
   "settings": {
     "title": "Settings",

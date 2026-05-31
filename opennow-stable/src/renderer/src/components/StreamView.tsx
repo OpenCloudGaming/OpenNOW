@@ -20,6 +20,7 @@ import {
   getTimingColor,
 } from "../utils/streamDiagnosticsFormat";
 import { formatElapsed } from "../utils/timeFormat";
+import { useTranslation } from "../i18n";
 
 const ANTI_AFK_TOGGLE_ACK_MS = 5000;
 
@@ -173,6 +174,7 @@ function StreamStatsHud({
   serverRegion?: string;
   sessionTimeRemainingText: string | null;
 }): JSX.Element {
+  const { t } = useTranslation();
   const stats = useStreamDiagnosticsStore(diagnosticsStore);
   const hasLiveBitrate = stats.bitrateKbps > 0;
   const bitrateKbps = hasLiveBitrate ? stats.bitrateKbps : stats.targetBitrateKbps;
@@ -240,8 +242,8 @@ function StreamStatsHud({
           RTT <span className="sv-stats-chip-val" style={{ color: getRttColor(stats.rttMs) }}>{stats.rttMs > 0 ? `${stats.rttMs.toFixed(0)}ms` : "--"}</span>
         </span>
         {sessionTimeRemainingText && (
-          <span className="sv-stats-chip sv-stats-chip--time" title="Session time remaining">
-            Left <span className="sv-stats-chip-val">{sessionTimeRemainingText}</span>
+          <span className="sv-stats-chip sv-stats-chip--time" title={t("sidebar.sessionTimeRemainingTitle")}>
+            {t("stream.stats.timeRemainingShort")} <span className="sv-stats-chip-val">{sessionTimeRemainingText}</span>
           </span>
         )}
         <span className="sv-stats-chip" title="D = decode time">
@@ -596,6 +598,7 @@ export function StreamView({
   allowEscapeToExitFullscreen,
   className,
 }: StreamViewProps): JSX.Element {
+  const { t } = useTranslation();
   const [showHints, setShowHints] = useState(true);
   const [showSessionClock, setShowSessionClock] = useState(false);
   const [antiAfkToggleAck, setAntiAfkToggleAck] = useState<"on" | "off" | null>(null);
@@ -1527,21 +1530,25 @@ export function StreamView({
               <RemainingPlaytimeIndicator subscriptionInfo={subscriptionInfo} startedAtMs={sessionStartedAtMs} active={isStreaming} className="settings-value-badge" />
             </div>
             {sessionTimeRemainingText !== null && (
-              <div className="sidebar-stat-line sidebar-stat-line--stacked" title="Session time remaining">
-                <span className="sidebar-stat-label">Session Time Left</span>
+              <div className="sidebar-stat-line sidebar-stat-line--stacked" title={t("sidebar.sessionTimeRemainingTitle")}>
+                <span className="sidebar-stat-label">{t("sidebar.sessionTimeRemaining")}</span>
                 <div className="sidebar-session-time-controls">
                   <span className="settings-value-badge sidebar-session-time-left">
                     <Clock3 size={10} />
                     <span>{sessionTimeRemainingText}</span>
                   </span>
-                  <label className="sidebar-mini-toggle">
+                  <label
+                    className="sidebar-mini-toggle"
+                    title={t("sidebar.showSessionTimeRemainingInStatsOverlay")}
+                  >
                     <input
                       type="checkbox"
                       checked={showSessionTimeRemainingInStatsOverlay}
+                      aria-label={t("sidebar.showSessionTimeRemainingInStatsOverlay")}
                       onChange={(event) => onShowSessionTimeRemainingInStatsOverlayChange(event.target.checked)}
                     />
                     <span className="sidebar-mini-toggle-track" />
-                    <span>Stats overlay</span>
+                    <span>{t("sidebar.statsOverlay")}</span>
                   </label>
                 </div>
               </div>
