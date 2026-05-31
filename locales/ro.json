@@ -310,6 +310,7 @@
       "jitterBuffer": "JB = întârziere tampon jitter",
       "packetLoss": "Procentul de pierdere a pachetelor",
       "packetLossValue": "{{value}}% pierdere",
+      "timeRemainingShort": "Left",
       "inputQueuePressure": "Presiunea cozii de intrare (octeți tamponați și spălare întârziată)",
       "inputChannelState": "Starea canalului de intrare parțial fiabilă și octeții în coadă",
       "mouseFlushCadence": "Cadena de spălare a mouse-ului și rata de pachete"
@@ -364,7 +365,11 @@
   },
   "sidebar": {
     "title": "Bara laterală",
-    "closeSettings": "Închideți setările"
+    "closeSettings": "Închideți setările",
+    "sessionTimeRemaining": "Session Time Left",
+    "sessionTimeRemainingTitle": "Session time remaining",
+    "showSessionTimeRemainingInStatsOverlay": "Show session time remaining in stats overlay",
+    "statsOverlay": "Stats overlay"
   },
   "settings": {
     "title": "Setări",
@@ -511,6 +516,8 @@
       "discordRichPresenceHint": "Afișați jocul pe care îl transmiteți ca activitate Discord, inclusiv timpul scurs.",
       "posterSize": "Dimensiune poster",
       "posterSizeHint": "Adjusts game posters in real time across the library.",
+      "showSessionTimeRemainingInStatsOverlay": "Session Time in Stats Overlay",
+      "showSessionTimeRemainingInStatsOverlayHint": "The session countdown appears in the in-stream sidebar by default. Enable this to also show it in the stats overlay.",
       "sessionElapsedCounter": "Contor sesiuni scurse",
       "sessionElapsedCounterHint": "Activați sau dezactivați contorul scurgerii sesiunii live în timpul transmiterii în flux.",
       "sessionTimerReappear": "Cronometrul de sesiune reapare",
