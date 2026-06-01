@@ -66,6 +66,7 @@ interface StreamViewProps {
   isFullscreen: boolean;
   isConnecting: boolean;
   gameTitle: string;
+  recordingBitrateMbps: number | null;
   platformStore?: string;
   onToggleFullscreen: () => void;
   onConfirmExit: () => void;
@@ -575,6 +576,7 @@ export function StreamView({
   isFullscreen,
   isConnecting,
   gameTitle,
+  recordingBitrateMbps,
   platformStore,
   onToggleFullscreen,
   onConfirmExit,
@@ -1149,7 +1151,11 @@ export function StreamView({
     }, 500);
 
     let isFirstChunk = true;
-    const recorder = new MediaRecorder(composed, { mimeType });
+    const recorderOptions: MediaRecorderOptions = { mimeType };
+    if (recordingBitrateMbps !== null) {
+      recorderOptions.videoBitsPerSecond = Math.max(1, Math.min(200, Math.round(recordingBitrateMbps))) * 1_000_000;
+    }
+    const recorder = new MediaRecorder(composed, recorderOptions);
 
     recorder.ondataavailable = (e: BlobEvent) => {
       if (!e.data || e.data.size === 0) return;
@@ -1243,7 +1249,7 @@ export function StreamView({
 
     mediaRecorderRef.current = recorder;
     recorder.start(2000);
-  }, [gameTitle, isRecording, micTrack, recordingApiAvailable]);
+  }, [gameTitle, isRecording, micTrack, recordingApiAvailable, recordingBitrateMbps]);
 
   // Cleanup: abort any active recording on unmount
   useEffect(() => {
@@ -1734,6 +1740,9 @@ export function StreamView({
                   {usedMimeType && (
                     <span className="sidebar-hint sidebar-hint--codec">Codec: {usedMimeType}</span>
                   )}
+                  <span className="sidebar-hint sidebar-hint--codec">
+                    Recording bitrate: {recordingBitrateMbps === null ? "Auto" : `${recordingBitrateMbps} Mbps`}
+                  </span>
                   <div className="sidebar-row sidebar-row--aligned">
                     <span className="sidebar-label">
                       {isRecording ? `Recording ${formatElapsed(Math.round(recordingDurationMs / 1000))}` : "Record"}

@@ -243,6 +243,7 @@ export function App(): JSX.Element {
     posterSizeScale: 1,
     fps: 60,
     maxBitrateMbps: 75,
+    recordingBitrateMbps: null,
     streamClientMode: "web",
     nativeStreamerBackend: "gstreamer",
     nativeVideoBackend: "auto",
@@ -3479,6 +3480,7 @@ export function App(): JSX.Element {
             isFullscreen={sessionFullscreen || !!document.fullscreenElement}
             isConnecting={streamStatus === "connecting"}
             isStreaming={isStreaming}
+            recordingBitrateMbps={settings.recordingBitrateMbps}
             gameTitle={streamingGame?.title ?? t("app.labels.game")}
             platformStore={streamingStore ?? undefined}
             onToggleFullscreen={() => {

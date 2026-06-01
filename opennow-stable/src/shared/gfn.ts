@@ -250,6 +250,8 @@ export interface Settings {
   posterSizeScale: number;
   fps: number;
   maxBitrateMbps: number;
+  /** Recording video bitrate in Mbps; null means let MediaRecorder choose automatically */
+  recordingBitrateMbps: number | null;
   streamClientMode: StreamClientMode;
   nativeStreamerBackend: NativeStreamerBackendPreference;
   nativeVideoBackend: NativeVideoBackendPreference;

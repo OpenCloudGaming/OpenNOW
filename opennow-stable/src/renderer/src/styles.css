@@ -1501,6 +1501,7 @@ body,
    ====================================================== */
 .main-content {
   flex: 1;
+  min-height: 0;
   overflow: auto;
   padding: 20px;
   margin-top: var(--navbar-h);
@@ -3469,6 +3470,8 @@ button.game-card-store-chip.owned.active:hover {
    ====================================================== */
 .settings-page {
   max-width: 980px;
+  height: 100%;
+  min-height: 0;
   margin: 0 auto;
   display: flex;
   flex-direction: column;
@@ -3747,7 +3750,7 @@ button.game-card-store-chip.owned.active:hover {
   display: flex;
   gap: 0;
   min-height: 0;
-  flex: 1;
+  flex: 1 1 auto;
   border: 1px solid var(--panel-border);
   border-radius: var(--r-md);
   overflow: hidden;
@@ -3864,7 +3867,9 @@ button.game-card-store-chip.owned.active:hover {
 .settings-content {
   flex: 1;
   min-width: 0;
+  min-height: 0;
   overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 16px 18px;
   display: flex;
   flex-direction: column;
