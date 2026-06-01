@@ -48,12 +48,21 @@ const VK_OEM_4: u16 = 0xDB;
 const VK_OEM_5: u16 = 0xDC;
 const VK_OEM_6: u16 = 0xDD;
 const VK_OEM_7: u16 = 0xDE;
+const SCANCODE_ENTER: u16 = 0x001C;
+const SCANCODE_NUMPAD_ENTER: u16 = 0xE01C;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ShortcutBinding {
     action: NativeStreamerShortcutAction,
     keycode: u16,
+    scancode: Option<u16>,
     modifiers: u16,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ParsedKey {
+    keycode: u16,
+    scancode: Option<u16>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -110,12 +119,17 @@ impl NativeShortcutMatcher {
     pub(crate) fn match_keydown(
         &self,
         keycode: u16,
+        scancode: u16,
         modifiers: u16,
     ) -> Option<NativeStreamerShortcutAction> {
         let modifiers = modifiers & SHORTCUT_MODIFIER_MASK;
         self.bindings
             .iter()
-            .find(|binding| binding.keycode == keycode && binding.modifiers == modifiers)
+            .find(|binding| {
+                binding.keycode == keycode
+                    && binding.modifiers == modifiers
+                    && binding.scancode.map_or(true, |expected| expected == scancode)
+            })
             .map(|binding| binding.action)
     }
 }
@@ -132,7 +146,7 @@ fn append_binding(
 
 fn parse_binding(action: NativeStreamerShortcutAction, raw: &str) -> Option<ShortcutBinding> {
     let mut modifiers = 0u16;
-    let mut keycode = None;
+    let mut key = None;
 
     for token in raw.split('+').map(str::trim).filter(|token| !token.is_empty()) {
         match token.to_ascii_uppercase().as_str() {
@@ -141,38 +155,54 @@ fn parse_binding(action: NativeStreamerShortcutAction, raw: &str) -> Option<Shor
             "SHIFT" => modifiers |= MODIFIER_SHIFT,
             "META" | "CMD" | "COMMAND" => modifiers |= MODIFIER_META,
             _ => {
-                if keycode.is_some() {
+                if key.is_some() {
                     return None;
                 }
-                keycode = parse_key_token(token);
+                key = parse_key_token(token);
             }
         }
     }
 
+    let key = key?;
     Some(ShortcutBinding {
         action,
-        keycode: keycode?,
+        keycode: key.keycode,
+        scancode: key.scancode,
         modifiers,
     })
 }
 
-fn parse_key_token(token: &str) -> Option<u16> {
+fn parsed_key(keycode: u16) -> Option<ParsedKey> {
+    Some(ParsedKey {
+        keycode,
+        scancode: None,
+    })
+}
+
+fn parsed_scancode_key(keycode: u16, scancode: u16) -> Option<ParsedKey> {
+    Some(ParsedKey {
+        keycode,
+        scancode: Some(scancode),
+    })
+}
+
+fn parse_key_token(token: &str) -> Option<ParsedKey> {
     let upper = token.trim().to_ascii_uppercase();
     if upper.len() == 1 {
         let byte = upper.as_bytes()[0];
         return match byte {
-            b'A'..=b'Z' | b'0'..=b'9' => Some(u16::from(byte)),
-            b',' => Some(VK_OEM_COMMA),
-            b'.' => Some(VK_OEM_PERIOD),
-            b'/' => Some(VK_OEM_2),
-            b';' => Some(VK_OEM_1),
-            b'\'' => Some(VK_OEM_7),
-            b'[' => Some(VK_OEM_4),
-            b']' => Some(VK_OEM_6),
-            b'\\' => Some(VK_OEM_5),
-            b'-' => Some(VK_OEM_MINUS),
-            b'=' => Some(VK_OEM_PLUS),
-            b'`' => Some(VK_OEM_3),
+            b'A'..=b'Z' | b'0'..=b'9' => parsed_key(u16::from(byte)),
+            b',' => parsed_key(VK_OEM_COMMA),
+            b'.' => parsed_key(VK_OEM_PERIOD),
+            b'/' => parsed_key(VK_OEM_2),
+            b';' => parsed_key(VK_OEM_1),
+            b'\'' => parsed_key(VK_OEM_7),
+            b'[' => parsed_key(VK_OEM_4),
+            b']' => parsed_key(VK_OEM_6),
+            b'\\' => parsed_key(VK_OEM_5),
+            b'-' => parsed_key(VK_OEM_MINUS),
+            b'=' => parsed_key(VK_OEM_PLUS),
+            b'`' => parsed_key(VK_OEM_3),
             _ => None,
         };
     }
@@ -182,7 +212,7 @@ fn parse_key_token(token: &str) -> Option<u16> {
         .and_then(|value| value.parse::<u16>().ok())
     {
         if (1..=24).contains(&function_index) {
-            return Some(VK_F1 + function_index - 1);
+            return parsed_key(VK_F1 + function_index - 1);
         }
     }
 
@@ -191,51 +221,52 @@ fn parse_key_token(token: &str) -> Option<u16> {
         .and_then(|value| value.parse::<u16>().ok())
     {
         if numpad_index <= 9 {
-            return Some(VK_NUMPAD0 + numpad_index);
+            return parsed_key(VK_NUMPAD0 + numpad_index);
         }
     }
 
     match upper.as_str() {
-        "BACKSPACE" => Some(VK_BACK),
-        "TAB" => Some(VK_TAB),
-        "ENTER" | "NUMPADENTER" => Some(VK_RETURN),
-        "PAUSE" => Some(VK_PAUSE),
-        "CAPSLOCK" => Some(VK_CAPITAL),
-        "ESCAPE" => Some(VK_ESCAPE),
-        "SPACE" => Some(VK_SPACE),
-        "PAGEUP" => Some(VK_PRIOR),
-        "PAGEDOWN" => Some(VK_NEXT),
-        "END" => Some(VK_END),
-        "HOME" => Some(VK_HOME),
-        "ARROWLEFT" => Some(VK_LEFT),
-        "ARROWUP" => Some(VK_UP),
-        "ARROWRIGHT" => Some(VK_RIGHT),
-        "ARROWDOWN" => Some(VK_DOWN),
-        "INSERT" => Some(VK_INSERT),
-        "DELETE" => Some(VK_DELETE),
-        "PRINTSCREEN" => Some(VK_PRINT),
-        "APPS" | "MENU" => Some(VK_APPS),
-        "METALEFT" => Some(VK_LWIN),
-        "METARIGHT" => Some(VK_RWIN),
-        "NUMPADMULTIPLY" => Some(VK_MULTIPLY),
-        "NUMPADADD" => Some(VK_ADD),
-        "NUMPADSEPARATOR" => Some(VK_SEPARATOR),
-        "NUMPADSUBTRACT" => Some(VK_SUBTRACT),
-        "NUMPADDECIMAL" => Some(VK_DECIMAL),
-        "NUMPADDIVIDE" => Some(VK_DIVIDE),
-        "NUMLOCK" => Some(VK_NUMLOCK),
-        "SCROLLLOCK" => Some(VK_SCROLL),
-        "SEMICOLON" => Some(VK_OEM_1),
-        "EQUAL" => Some(VK_OEM_PLUS),
-        "COMMA" => Some(VK_OEM_COMMA),
-        "MINUS" => Some(VK_OEM_MINUS),
-        "PERIOD" => Some(VK_OEM_PERIOD),
-        "SLASH" => Some(VK_OEM_2),
-        "BACKQUOTE" => Some(VK_OEM_3),
-        "BRACKETLEFT" => Some(VK_OEM_4),
-        "BACKSLASH" => Some(VK_OEM_5),
-        "BRACKETRIGHT" => Some(VK_OEM_6),
-        "QUOTE" => Some(VK_OEM_7),
+        "BACKSPACE" => parsed_key(VK_BACK),
+        "TAB" => parsed_key(VK_TAB),
+        "ENTER" => parsed_scancode_key(VK_RETURN, SCANCODE_ENTER),
+        "NUMPADENTER" => parsed_scancode_key(VK_RETURN, SCANCODE_NUMPAD_ENTER),
+        "PAUSE" => parsed_key(VK_PAUSE),
+        "CAPSLOCK" => parsed_key(VK_CAPITAL),
+        "ESCAPE" => parsed_key(VK_ESCAPE),
+        "SPACE" => parsed_key(VK_SPACE),
+        "PAGEUP" => parsed_key(VK_PRIOR),
+        "PAGEDOWN" => parsed_key(VK_NEXT),
+        "END" => parsed_key(VK_END),
+        "HOME" => parsed_key(VK_HOME),
+        "ARROWLEFT" => parsed_key(VK_LEFT),
+        "ARROWUP" => parsed_key(VK_UP),
+        "ARROWRIGHT" => parsed_key(VK_RIGHT),
+        "ARROWDOWN" => parsed_key(VK_DOWN),
+        "INSERT" => parsed_key(VK_INSERT),
+        "DELETE" => parsed_key(VK_DELETE),
+        "PRINTSCREEN" => parsed_key(VK_PRINT),
+        "APPS" | "MENU" => parsed_key(VK_APPS),
+        "METALEFT" => parsed_key(VK_LWIN),
+        "METARIGHT" => parsed_key(VK_RWIN),
+        "NUMPADMULTIPLY" => parsed_key(VK_MULTIPLY),
+        "NUMPADADD" => parsed_key(VK_ADD),
+        "NUMPADSEPARATOR" => parsed_key(VK_SEPARATOR),
+        "NUMPADSUBTRACT" => parsed_key(VK_SUBTRACT),
+        "NUMPADDECIMAL" => parsed_key(VK_DECIMAL),
+        "NUMPADDIVIDE" => parsed_key(VK_DIVIDE),
+        "NUMLOCK" => parsed_key(VK_NUMLOCK),
+        "SCROLLLOCK" => parsed_key(VK_SCROLL),
+        "SEMICOLON" => parsed_key(VK_OEM_1),
+        "EQUAL" => parsed_key(VK_OEM_PLUS),
+        "COMMA" => parsed_key(VK_OEM_COMMA),
+        "MINUS" => parsed_key(VK_OEM_MINUS),
+        "PERIOD" => parsed_key(VK_OEM_PERIOD),
+        "SLASH" => parsed_key(VK_OEM_2),
+        "BACKQUOTE" => parsed_key(VK_OEM_3),
+        "BRACKETLEFT" => parsed_key(VK_OEM_4),
+        "BACKSLASH" => parsed_key(VK_OEM_5),
+        "BRACKETRIGHT" => parsed_key(VK_OEM_6),
+        "QUOTE" => parsed_key(VK_OEM_7),
         _ => None,
     }
 }
@@ -262,11 +293,11 @@ mod tests {
         let matcher = NativeShortcutMatcher::from_bindings(&bindings());
 
         assert_eq!(
-            matcher.match_keydown(VK_F1 + 2, 0),
+            matcher.match_keydown(VK_F1 + 2, 0, 0),
             Some(NativeStreamerShortcutAction::ToggleStats)
         );
         assert_eq!(
-            matcher.match_keydown(VK_F1 + 10, 0),
+            matcher.match_keydown(VK_F1 + 10, 0, 0),
             Some(NativeStreamerShortcutAction::Screenshot)
         );
     }
@@ -276,13 +307,14 @@ mod tests {
         let matcher = NativeShortcutMatcher::from_bindings(&bindings());
 
         assert_eq!(
-            matcher.match_keydown(u16::from(b'Q'), MODIFIER_CTRL | MODIFIER_SHIFT),
+            matcher.match_keydown(u16::from(b'Q'), 0, MODIFIER_CTRL | MODIFIER_SHIFT),
             Some(NativeStreamerShortcutAction::StopStream)
         );
-        assert_eq!(matcher.match_keydown(u16::from(b'Q'), MODIFIER_CTRL), None);
+        assert_eq!(matcher.match_keydown(u16::from(b'Q'), 0, MODIFIER_CTRL), None);
         assert_eq!(
             matcher.match_keydown(
                 u16::from(b'Q'),
+                0,
                 MODIFIER_CTRL | MODIFIER_SHIFT | MODIFIER_ALT
             ),
             None
@@ -296,9 +328,27 @@ mod tests {
             ..bindings()
         });
 
-        assert_eq!(matcher.match_keydown(VK_F1 + 2, 0), None);
+        assert_eq!(matcher.match_keydown(VK_F1 + 2, 0, 0), None);
         assert_eq!(
-            matcher.match_keydown(VK_F1 + 7, 0),
+            matcher.match_keydown(VK_F1 + 7, 0, 0),
+            Some(NativeStreamerShortcutAction::TogglePointerLock)
+        );
+    }
+
+    #[test]
+    fn keeps_regular_enter_and_numpad_enter_distinct() {
+        let matcher = NativeShortcutMatcher::from_bindings(&NativeStreamerShortcutBindings {
+            toggle_stats: "Enter".to_owned(),
+            toggle_pointer_lock: "NumpadEnter".to_owned(),
+            ..bindings()
+        });
+
+        assert_eq!(
+            matcher.match_keydown(VK_RETURN, SCANCODE_ENTER, 0),
+            Some(NativeStreamerShortcutAction::ToggleStats)
+        );
+        assert_eq!(
+            matcher.match_keydown(VK_RETURN, SCANCODE_NUMPAD_ENTER, 0),
             Some(NativeStreamerShortcutAction::TogglePointerLock)
         );
     }

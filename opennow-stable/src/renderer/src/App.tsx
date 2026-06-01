@@ -986,8 +986,8 @@ export function App(): JSX.Element {
     stopStream: shortcuts.stopStream.canonical,
     toggleAntiAfk: shortcuts.toggleAntiAfk.canonical,
     toggleMicrophone: shortcuts.toggleMicrophone.canonical,
-    screenshot: shortcuts.screenshot.canonical,
-    toggleRecording: shortcuts.recording.canonical,
+    screenshot: "",
+    toggleRecording: "",
   }), [shortcuts]);
 
   const buildSignalingConnectRequest = useCallback((activeSession: SessionInfo): SignalingConnectRequest => {
@@ -3315,7 +3315,7 @@ export function App(): JSX.Element {
         return;
       case "screenshot":
       case "toggleRecording":
-        if (streamStatus === "streaming") {
+        if (streamStatus === "streaming" && !nativeStreamingRef.current) {
           dispatchStreamShortcutAction(action);
         }
         return;
@@ -3396,19 +3396,6 @@ export function App(): JSX.Element {
         e.stopPropagation();
         e.stopImmediatePropagation();
         handleStreamShortcutAction("togglePointerLock");
-        return;
-        if (streamStatus === "streaming" && videoRef.current) {
-          if (document.pointerLockElement === videoRef.current) {
-            try {
-              (clientRef.current as any).suppressNextSyntheticEscape = true;
-            } catch {
-              // best-effort — client may not be initialised
-            }
-            document.exitPointerLock();
-          } else {
-            void requestPointerLockCapture(videoRef.current!);
-          }
-        }
         return;
       }
 

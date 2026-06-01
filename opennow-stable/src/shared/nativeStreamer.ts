@@ -10,7 +10,7 @@ import type {
   SendAnswerRequest,
 } from "./gfn";
 
-export const NATIVE_STREAMER_PROTOCOL_VERSION = 2;
+export const NATIVE_STREAMER_PROTOCOL_VERSION = 3;
 
 export type { NativeStreamerBackend };
 

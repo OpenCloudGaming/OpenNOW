@@ -1,8 +1,8 @@
 #[cfg(target_os = "windows")]
 use crate::gstreamer_backend::send_log;
 #[cfg(target_os = "windows")]
-use crate::protocol::{NativeRenderRect, NativeStreamerShortcutBindings};
-use crate::protocol::{Event, NativeRenderSurface};
+use crate::protocol::NativeRenderRect;
+use crate::protocol::{Event, NativeRenderSurface, NativeStreamerShortcutBindings};
 #[cfg(target_os = "windows")]
 use gst_video::prelude::*;
 use gstreamer as gst;
@@ -957,7 +957,7 @@ pub(crate) mod win32_renderer_window {
         }
 
         let modifiers = current_legacy_modifier_flags();
-        let Some(action) = shortcut_action_for_keypress(keycode, modifiers) else {
+        let Some(action) = shortcut_action_for_keypress(keycode, scancode, modifiers) else {
             return false;
         };
 
@@ -988,7 +988,7 @@ pub(crate) mod win32_renderer_window {
                 return;
             }
             let modifiers = current_modifier_flags(&keys);
-            if let Some(action) = shortcut_action_for_keypress(keycode, modifiers) {
+            if let Some(action) = shortcut_action_for_keypress(keycode, scancode, modifiers) {
                 keys.insert(scancode, PressedKey {
                     keycode,
                     scancode,
@@ -1217,12 +1217,13 @@ pub(crate) mod win32_renderer_window {
 
     fn shortcut_action_for_keypress(
         keycode: u16,
+        scancode: u16,
         modifiers: u16,
     ) -> Option<NativeStreamerShortcutAction> {
         SHORTCUT_MATCHER
             .get()
             .and_then(|matcher| matcher.lock().ok())
-            .and_then(|matcher| matcher.match_keydown(keycode, modifiers))
+            .and_then(|matcher| matcher.match_keydown(keycode, scancode, modifiers))
     }
 
     unsafe fn handle_shortcut_action(action: NativeStreamerShortcutAction) {
@@ -1238,10 +1239,19 @@ pub(crate) mod win32_renderer_window {
                 }
             }
             _ => {
-                release_current_input_capture();
+                if shortcut_action_releases_input_capture(action) {
+                    release_current_input_capture();
+                }
                 emit_input_event(NativeWindowInputEvent::Shortcut { action });
             }
         }
+    }
+
+    fn shortcut_action_releases_input_capture(action: NativeStreamerShortcutAction) -> bool {
+        matches!(
+            action,
+            NativeStreamerShortcutAction::ToggleFullscreen | NativeStreamerShortcutAction::StopStream
+        )
     }
 
     fn legacy_mouse_button(message: Uint, wparam: Wparam) -> Option<(u8, bool)> {
