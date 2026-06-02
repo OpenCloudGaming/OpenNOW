@@ -5,6 +5,8 @@ export const IPC_CHANNELS = {
   AUTH_LOGIN: "auth:login",
   AUTH_DEVICE_LOGIN_START: "auth:device-login-start",
   AUTH_DEVICE_LOGIN_POLL: "auth:device-login-poll",
+  AUTH_DEVICE_LOGIN_COMPLETE: "auth:device-login-complete",
+  AUTH_DEVICE_LOGIN_CANCEL: "auth:device-login-cancel",
   AUTH_LOGOUT: "auth:logout",
   AUTH_LOGOUT_ALL: "auth:logout-all",
   AUTH_GET_SAVED_ACCOUNTS: "auth:get-saved-accounts",

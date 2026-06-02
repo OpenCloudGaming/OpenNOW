@@ -439,6 +439,7 @@ export interface AuthDeviceLoginStartRequest {
 }
 
 export interface AuthDeviceLoginChallenge {
+  attemptId: string;
   deviceCode: string;
   userCode: string;
   verificationUri: string;
@@ -448,8 +449,12 @@ export interface AuthDeviceLoginChallenge {
 }
 
 export interface AuthDeviceLoginPollRequest {
+  attemptId: string;
   deviceCode: string;
-  providerIdpId?: string;
+}
+
+export interface AuthDeviceLoginAttemptRequest {
+  attemptId: string;
 }
 
 export type AuthDeviceLoginPollStatus =
@@ -1078,6 +1083,8 @@ export interface OpenNowApi {
   login(input: AuthLoginRequest): Promise<AuthSession>;
   startDeviceLogin(input: AuthDeviceLoginStartRequest): Promise<AuthDeviceLoginChallenge>;
   pollDeviceLogin(input: AuthDeviceLoginPollRequest): Promise<AuthDeviceLoginPollResult>;
+  completeDeviceLogin(input: AuthDeviceLoginAttemptRequest): Promise<AuthSession>;
+  cancelDeviceLogin(input: AuthDeviceLoginAttemptRequest): Promise<void>;
   logout(): Promise<void>;
   logoutAll(): Promise<void>;
   getSavedAccounts(): Promise<SavedAccount[]>;

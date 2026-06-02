@@ -1521,6 +1521,9 @@ export function App(): JSX.Element {
   const handleLogin = useCallback(async () => {
     setIsLoggingIn(true);
     setLoginError(null);
+    if (qrLoginChallenge) {
+      void window.openNow.cancelDeviceLogin({ attemptId: qrLoginChallenge.attemptId });
+    }
     setQrLoginChallenge(null);
     try {
       const session = await window.openNow.login({ providerIdpId: providerIdpId || undefined });
@@ -1533,22 +1536,28 @@ export function App(): JSX.Element {
     } finally {
       setIsLoggingIn(false);
     }
-  }, [loadSessionRuntimeData, providerIdpId, refreshSavedAccounts, t]);
+  }, [loadSessionRuntimeData, providerIdpId, qrLoginChallenge, refreshSavedAccounts, t]);
 
   const qrLoginAttemptRef = useRef(0);
 
   const handleCancelQrLogin = useCallback(() => {
     qrLoginAttemptRef.current += 1;
+    if (qrLoginChallenge) {
+      void window.openNow.cancelDeviceLogin({ attemptId: qrLoginChallenge.attemptId });
+    }
     setQrLoginChallenge(null);
     setIsLoggingIn(false);
     setLoginError(null);
-  }, []);
+  }, [qrLoginChallenge]);
 
   const handleQrLogin = useCallback(async () => {
     const attemptId = qrLoginAttemptRef.current + 1;
     qrLoginAttemptRef.current = attemptId;
     setIsLoggingIn(true);
     setLoginError(null);
+    if (qrLoginChallenge) {
+      void window.openNow.cancelDeviceLogin({ attemptId: qrLoginChallenge.attemptId });
+    }
     setQrLoginChallenge(null);
 
     try {
@@ -1567,19 +1576,23 @@ export function App(): JSX.Element {
         }
 
         const result = await window.openNow.pollDeviceLogin({
+          attemptId: challenge.attemptId,
           deviceCode: challenge.deviceCode,
-          providerIdpId: providerIdpId || undefined,
         });
         if (qrLoginAttemptRef.current !== attemptId) {
           return;
         }
 
-        if (result.status === "authorized" && result.session) {
+        if (result.status === "authorized") {
+          const session = await window.openNow.completeDeviceLogin({ attemptId: challenge.attemptId });
+          if (qrLoginAttemptRef.current !== attemptId) {
+            return;
+          }
           setQrLoginChallenge(null);
-          setAuthSession(result.session);
-          setProviderIdpId(result.session.provider.idpId);
+          setAuthSession(session);
+          setProviderIdpId(session.provider.idpId);
           await refreshSavedAccounts();
-          await loadSessionRuntimeData(result.session);
+          await loadSessionRuntimeData(session);
           return;
         }
 
@@ -1606,7 +1619,7 @@ export function App(): JSX.Element {
         setIsLoggingIn(false);
       }
     }
-  }, [loadSessionRuntimeData, providerIdpId, refreshSavedAccounts, t]);
+  }, [loadSessionRuntimeData, providerIdpId, qrLoginChallenge, refreshSavedAccounts, t]);
 
   const handleSwitchAccount = useCallback(async (userId: string) => {
     try {

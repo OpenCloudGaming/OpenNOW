@@ -3,6 +3,7 @@ import electron from "electron";
 import { IPC_CHANNELS } from "@shared/ipc";
 import type {
   AuthLoginRequest,
+  AuthDeviceLoginAttemptRequest,
   AuthDeviceLoginPollRequest,
   AuthDeviceLoginStartRequest,
   AuthSession,
@@ -73,6 +74,10 @@ const api: OpenNowApi = {
     ipcRenderer.invoke(IPC_CHANNELS.AUTH_DEVICE_LOGIN_START, input),
   pollDeviceLogin: (input: AuthDeviceLoginPollRequest) =>
     ipcRenderer.invoke(IPC_CHANNELS.AUTH_DEVICE_LOGIN_POLL, input),
+  completeDeviceLogin: (input: AuthDeviceLoginAttemptRequest) =>
+    ipcRenderer.invoke(IPC_CHANNELS.AUTH_DEVICE_LOGIN_COMPLETE, input),
+  cancelDeviceLogin: (input: AuthDeviceLoginAttemptRequest) =>
+    ipcRenderer.invoke(IPC_CHANNELS.AUTH_DEVICE_LOGIN_CANCEL, input),
   logout: () => ipcRenderer.invoke(IPC_CHANNELS.AUTH_LOGOUT),
   logoutAll: () => ipcRenderer.invoke(IPC_CHANNELS.AUTH_LOGOUT_ALL),
   getSavedAccounts: (): Promise<SavedAccount[]> => ipcRenderer.invoke(IPC_CHANNELS.AUTH_GET_SAVED_ACCOUNTS),

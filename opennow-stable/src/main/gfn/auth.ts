@@ -9,6 +9,7 @@ import { shell } from "electron";
 
 import type {
   AuthLoginRequest,
+  AuthDeviceLoginAttemptRequest,
   AuthDeviceLoginChallenge,
   AuthDeviceLoginPollRequest,
   AuthDeviceLoginPollResult,
@@ -103,6 +104,12 @@ interface ServerInfoResponse {
     key: string;
     value: string;
   }>;
+}
+
+interface DeviceLoginAttempt {
+  provider: LoginProvider;
+  deviceCode: string;
+  expiresAt: number;
 }
 
 function defaultProvider(): LoginProvider {
@@ -326,7 +333,7 @@ async function exchangeAuthorizationCode(code: string, verifier: string, port: n
 
 async function requestDeviceAuthorization(
   provider: LoginProvider,
-): Promise<AuthDeviceLoginChallenge> {
+): Promise<Omit<AuthDeviceLoginChallenge, "attemptId">> {
   const deviceId = generateDeviceId();
   const body = new URLSearchParams({
     client_id: STEAM_DECK_CLIENT_ID,
@@ -576,6 +583,8 @@ export class AuthService {
   private selectedProvider: LoginProvider = defaultProvider();
   private cachedSubscription: SubscriptionInfo | null = null;
   private cachedVpcId: string | null = null;
+  private deviceLoginAttempts = new Map<string, DeviceLoginAttempt>();
+  private pendingDeviceLoginSessions = new Map<string, AuthSession>();
 
   constructor(private readonly statePath: string) {}
 
@@ -848,7 +857,7 @@ export class AuthService {
     return this.selectedProvider;
   }
 
-  private async saveLoginSession(initialTokens: AuthTokens, provider: LoginProvider): Promise<AuthSession> {
+  private async buildLoginSession(initialTokens: AuthTokens, provider: LoginProvider): Promise<AuthSession> {
     const user = await fetchUserInfo(initialTokens);
     console.debug("auth: fetched user info during login", { userId: user.userId, email: user.email, avatarUrl: user.avatarUrl });
     let tokens = initialTokens;
@@ -858,14 +867,17 @@ export class AuthService {
       console.warn("Unable to fetch client token after login. Falling back to OAuth token only:", error);
     }
 
-    const nextSession: AuthSession = {
+    return {
       provider: normalizeProvider(provider),
       tokens,
       user,
     };
-    this.sessions.set(user.userId, nextSession);
-    this.activeUserId = user.userId;
-    this.selectedProvider = nextSession.provider;
+  }
+
+  private async saveLoginSession(session: AuthSession): Promise<AuthSession> {
+    this.sessions.set(session.user.userId, session);
+    this.activeUserId = session.user.userId;
+    this.selectedProvider = session.provider;
     this.clearSubscriptionCache();
     this.clearVpcCache();
 
@@ -934,24 +946,48 @@ export class AuthService {
     const code = await codePromise;
 
     const initialTokens = await exchangeAuthorizationCode(code, verifier, port);
-    return this.saveLoginSession(initialTokens, provider);
+    const session = await this.buildLoginSession(initialTokens, provider);
+    return this.saveLoginSession(session);
   }
 
   async startDeviceLogin(input: AuthDeviceLoginStartRequest): Promise<AuthDeviceLoginChallenge> {
     const provider = await this.selectLoginProvider(input.providerIdpId);
-    return requestDeviceAuthorization(provider);
+    const challenge = await requestDeviceAuthorization(provider);
+    const attemptId = randomBytes(16).toString("hex");
+    this.deviceLoginAttempts.set(attemptId, {
+      provider,
+      deviceCode: challenge.deviceCode,
+      expiresAt: challenge.expiresAt,
+    });
+    return { ...challenge, attemptId };
   }
 
   async pollDeviceLogin(input: AuthDeviceLoginPollRequest): Promise<AuthDeviceLoginPollResult> {
-    if (!input.deviceCode) {
+    if (!input.attemptId || !input.deviceCode) {
       return { status: "error", error: "Missing device code" };
     }
 
-    const provider = await this.selectLoginProvider(input.providerIdpId);
+    const attempt = this.deviceLoginAttempts.get(input.attemptId);
+    if (!attempt || attempt.deviceCode !== input.deviceCode) {
+      return { status: "expired", error: "QR login was cancelled or expired" };
+    }
+    if (Date.now() >= attempt.expiresAt) {
+      this.cancelDeviceLogin(input);
+      return { status: "expired", error: "QR login expired" };
+    }
+
     const result = await exchangeDeviceCode(input.deviceCode);
+    if (!this.deviceLoginAttempts.has(input.attemptId)) {
+      return { status: "expired", error: "QR login was cancelled" };
+    }
+
     if ("accessToken" in result) {
-      const session = await this.saveLoginSession(result, provider);
-      return { status: "authorized", session };
+      const session = await this.buildLoginSession(result, attempt.provider);
+      if (!this.deviceLoginAttempts.has(input.attemptId)) {
+        return { status: "expired", error: "QR login was cancelled" };
+      }
+      this.pendingDeviceLoginSessions.set(input.attemptId, session);
+      return { status: "authorized" };
     }
 
     switch (result.error) {
@@ -960,12 +996,30 @@ export class AuthService {
       case "slow_down":
         return { status: "slow_down", error: result.error_description };
       case "expired_token":
+        this.cancelDeviceLogin(input);
         return { status: "expired", error: result.error_description ?? "QR login expired" };
       case "access_denied":
+        this.cancelDeviceLogin(input);
         return { status: "access_denied", error: result.error_description ?? "QR login was denied" };
       default:
+        this.cancelDeviceLogin(input);
         return { status: "error", error: result.error_description ?? result.error ?? "QR login failed" };
     }
+  }
+
+  async completeDeviceLogin(input: AuthDeviceLoginAttemptRequest): Promise<AuthSession> {
+    const session = this.pendingDeviceLoginSessions.get(input.attemptId);
+    if (!session || !this.deviceLoginAttempts.has(input.attemptId)) {
+      throw new Error("QR login is no longer active");
+    }
+
+    this.cancelDeviceLogin(input);
+    return this.saveLoginSession(session);
+  }
+
+  cancelDeviceLogin(input: AuthDeviceLoginAttemptRequest): void {
+    this.deviceLoginAttempts.delete(input.attemptId);
+    this.pendingDeviceLoginSessions.delete(input.attemptId);
   }
 
   async logout(): Promise<void> {
