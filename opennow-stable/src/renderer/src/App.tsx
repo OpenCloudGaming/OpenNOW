@@ -1573,6 +1573,7 @@ export function App(): JSX.Element {
     try {
       const challenge = await window.openNow.startDeviceLogin({ providerIdpId: providerIdpId || undefined });
       if (qrLoginAttemptRef.current !== attemptId) {
+        void window.openNow.cancelDeviceLogin({ attemptId: challenge.attemptId });
         return;
       }
 

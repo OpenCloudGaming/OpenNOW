@@ -889,8 +889,11 @@ export class AuthService {
     return this.getSession() as AuthSession;
   }
 
-  private pruneExpiredDeviceLogins(now = Date.now()): void {
+  private pruneExpiredDeviceLogins(now = Date.now(), skipAttemptId?: string): void {
     for (const [attemptId, attempt] of this.deviceLoginAttempts) {
+      if (attemptId === skipAttemptId) {
+        continue;
+      }
       if (attempt.expiresAt <= now) {
         this.deviceLoginAttempts.delete(attemptId);
         this.pendingDeviceLoginSessions.delete(attemptId);
@@ -1019,7 +1022,7 @@ export class AuthService {
   }
 
   async completeDeviceLogin(input: AuthDeviceLoginAttemptRequest): Promise<AuthSession> {
-    this.pruneExpiredDeviceLogins();
+    this.pruneExpiredDeviceLogins(Date.now(), input.attemptId);
     const session = this.pendingDeviceLoginSessions.get(input.attemptId);
     if (!session || !this.deviceLoginAttempts.has(input.attemptId)) {
       throw new Error("QR login is no longer active");
