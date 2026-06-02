@@ -343,6 +343,7 @@ export interface AuthTokens {
   refreshToken?: string;
   idToken?: string;
   expiresAt: number;
+  authClientId?: string;
   clientToken?: string;
   clientTokenExpiresAt?: number;
   clientTokenLifetimeMs?: number;
@@ -431,6 +432,39 @@ export interface ThankYouDataResult {
 
 export interface AuthLoginRequest {
   providerIdpId?: string;
+}
+
+export interface AuthDeviceLoginStartRequest {
+  providerIdpId?: string;
+}
+
+export interface AuthDeviceLoginChallenge {
+  deviceCode: string;
+  userCode: string;
+  verificationUri: string;
+  verificationUriComplete: string;
+  expiresAt: number;
+  intervalSeconds: number;
+}
+
+export interface AuthDeviceLoginPollRequest {
+  deviceCode: string;
+  providerIdpId?: string;
+}
+
+export type AuthDeviceLoginPollStatus =
+  | "pending"
+  | "slow_down"
+  | "expired"
+  | "access_denied"
+  | "authorized"
+  | "error";
+
+export interface AuthDeviceLoginPollResult {
+  status: AuthDeviceLoginPollStatus;
+  session?: AuthSession;
+  error?: string;
+  intervalSeconds?: number;
 }
 
 export interface AuthSessionRequest {
@@ -1042,6 +1076,8 @@ export interface OpenNowApi {
   getLoginProviders(): Promise<LoginProvider[]>;
   getRegions(input?: RegionsFetchRequest): Promise<StreamRegion[]>;
   login(input: AuthLoginRequest): Promise<AuthSession>;
+  startDeviceLogin(input: AuthDeviceLoginStartRequest): Promise<AuthDeviceLoginChallenge>;
+  pollDeviceLogin(input: AuthDeviceLoginPollRequest): Promise<AuthDeviceLoginPollResult>;
   logout(): Promise<void>;
   logoutAll(): Promise<void>;
   getSavedAccounts(): Promise<SavedAccount[]>;

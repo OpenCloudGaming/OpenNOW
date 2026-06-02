@@ -93,8 +93,16 @@
     },
     "actions": {
       "signIn": "Sign In",
+      "signInWithQr": "Sign in with QR code",
+      "cancelQrLogin": "Cancel QR login",
       "connecting": "Connecting...",
       "restoringSession": "Restoring Session..."
+    },
+    "qr": {
+      "title": "Scan to sign in",
+      "description": "Scan with your phone, then approve the NVIDIA login. OpenNOW will continue automatically.",
+      "alt": "NVIDIA login QR code",
+      "expired": "QR login expired. Start a new QR login to try again."
     },
     "accounts": {
       "activeAccount": "Active account",

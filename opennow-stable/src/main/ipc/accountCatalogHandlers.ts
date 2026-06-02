@@ -2,6 +2,8 @@ import type { IpcMain } from "electron";
 import { IPC_CHANNELS } from "@shared/ipc";
 import type {
   AuthLoginRequest,
+  AuthDeviceLoginPollRequest,
+  AuthDeviceLoginStartRequest,
   AuthSessionRequest,
   CatalogBrowseRequest,
   GamesFetchRequest,
@@ -63,6 +65,20 @@ export function registerAccountCatalogIpcHandlers(
     IPC_CHANNELS.AUTH_LOGIN,
     async (_event, payload: AuthLoginRequest) => {
       return authService.login(payload);
+    },
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.AUTH_DEVICE_LOGIN_START,
+    async (_event, payload: AuthDeviceLoginStartRequest) => {
+      return authService.startDeviceLogin(payload);
+    },
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.AUTH_DEVICE_LOGIN_POLL,
+    async (_event, payload: AuthDeviceLoginPollRequest) => {
+      return authService.pollDeviceLogin(payload);
     },
   );
 

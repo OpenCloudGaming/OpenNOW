@@ -3,6 +3,8 @@ export const IPC_CHANNELS = {
   AUTH_GET_PROVIDERS: "auth:get-providers",
   AUTH_GET_REGIONS: "auth:get-regions",
   AUTH_LOGIN: "auth:login",
+  AUTH_DEVICE_LOGIN_START: "auth:device-login-start",
+  AUTH_DEVICE_LOGIN_POLL: "auth:device-login-poll",
   AUTH_LOGOUT: "auth:logout",
   AUTH_LOGOUT_ALL: "auth:logout-all",
   AUTH_GET_SAVED_ACCOUNTS: "auth:get-saved-accounts",

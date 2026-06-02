@@ -9,6 +9,10 @@ import { shell } from "electron";
 
 import type {
   AuthLoginRequest,
+  AuthDeviceLoginChallenge,
+  AuthDeviceLoginPollRequest,
+  AuthDeviceLoginPollResult,
+  AuthDeviceLoginStartRequest,
   AuthSession,
   AuthSessionResult,
   AuthTokens,
@@ -30,10 +34,14 @@ const TOKEN_ENDPOINT = "https://login.nvidia.com/token";
 const CLIENT_TOKEN_ENDPOINT = "https://login.nvidia.com/client_token";
 const USERINFO_ENDPOINT = "https://login.nvidia.com/userinfo";
 const AUTH_ENDPOINT = "https://login.nvidia.com/authorize";
+const DEVICE_AUTHORIZE_ENDPOINT = "https://login.nvidia.com/device/authorize";
 
 const CLIENT_ID = "ZU7sPN-miLujMD95LfOQ453IB0AtjM8sMyvgJ9wCXEQ";
+const STEAM_DECK_CLIENT_ID = "q61ddeJrVt7O90Nl-P-N7I36yctih4Ml6FyXLrb6j-U";
 const SCOPES = "openid consent email tk_client age";
 const DEFAULT_IDP_ID = "PDiAhv2kJTFeQ7WOPqiQ2tRZ7lGhR2X11dXvM4TZSxg";
+const STEAM_DECK_USER_AGENT =
+  "Mozilla/5.0 (X11; Linux x86_64; Steam Deck) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36";
 
 const REDIRECT_PORTS = [2259, 6460, 7119, 8870, 9096];
 const TOKEN_REFRESH_WINDOW_MS = 10 * 60 * 1000;
@@ -71,6 +79,20 @@ interface TokenResponse {
 interface ClientTokenResponse {
   client_token: string;
   expires_in?: number;
+}
+
+interface DeviceAuthorizationResponse {
+  device_code?: string;
+  user_code?: string;
+  verification_uri?: string;
+  verification_uri_complete?: string;
+  expires_in?: number;
+  interval?: number;
+}
+
+interface DeviceTokenErrorResponse {
+  error?: string;
+  error_description?: string;
 }
 
 interface ServerInfoResponse {
@@ -164,6 +186,36 @@ function generatePkce(): { verifier: string; challenge: string } {
   return { verifier, challenge };
 }
 
+function buildAuthHeadersForClient(
+  authClientId = CLIENT_ID,
+  options: {
+    bearerToken?: string;
+    accept?: string;
+    contentType?: string;
+    includeReferer?: boolean;
+  } = {},
+): Record<string, string> {
+  if (authClientId !== STEAM_DECK_CLIENT_ID) {
+    return buildNvidiaAuthHeaders(options);
+  }
+
+  const headers: Record<string, string> = {
+    Accept: options.accept ?? "application/json, text/plain, */*",
+    Origin: "https://play.geforcenow.com",
+    Referer: "https://play.geforcenow.com/",
+    "User-Agent": STEAM_DECK_USER_AGENT,
+  };
+
+  if (options.bearerToken !== undefined) {
+    headers.Authorization = `Bearer ${options.bearerToken}`;
+  }
+  if (options.contentType) {
+    headers["Content-Type"] = options.contentType;
+  }
+
+  return headers;
+}
+
 function buildAuthUrl(provider: LoginProvider, challenge: string, port: number): string {
   const redirectUri = `http://localhost:${port}`;
   const nonce = randomBytes(16).toString("hex");
@@ -250,7 +302,7 @@ async function exchangeAuthorizationCode(code: string, verifier: string, port: n
 
   const response = await fetch(TOKEN_ENDPOINT, {
     method: "POST",
-    headers: buildNvidiaAuthHeaders({
+    headers: buildAuthHeadersForClient(CLIENT_ID, {
       contentType: "application/x-www-form-urlencoded; charset=UTF-8",
       includeReferer: true,
     }),
@@ -268,19 +320,114 @@ async function exchangeAuthorizationCode(code: string, verifier: string, port: n
     refreshToken: payload.refresh_token,
     idToken: payload.id_token,
     expiresAt: toExpiresAt(payload.expires_in),
+    authClientId: CLIENT_ID,
   };
 }
 
-async function refreshAuthTokens(refreshToken: string): Promise<AuthTokens> {
+async function requestDeviceAuthorization(
+  provider: LoginProvider,
+): Promise<AuthDeviceLoginChallenge> {
+  const deviceId = generateDeviceId();
   const body = new URLSearchParams({
-    grant_type: "refresh_token",
-    refresh_token: refreshToken,
-    client_id: CLIENT_ID,
+    client_id: STEAM_DECK_CLIENT_ID,
+    scope: SCOPES,
+    device_id: deviceId,
+    display_name: "OpenNOW",
+    idp_id: provider.idpId,
+  });
+
+  const response = await fetch(DEVICE_AUTHORIZE_ENDPOINT, {
+    method: "POST",
+    headers: {
+      ...buildAuthHeadersForClient(STEAM_DECK_CLIENT_ID, {
+        contentType: "application/x-www-form-urlencoded; charset=UTF-8",
+      }),
+      "x-device-id": deviceId,
+      "nv-client-id": STEAM_DECK_CLIENT_ID,
+      "nv-client-streamer": "WEBRTC",
+      "nv-client-type": "BROWSER",
+      "nv-client-platform-name": "browser",
+      "nv-browser-type": "CHROME",
+      "nv-device-os": "STEAMOS",
+      "nv-device-type": "CONSOLE",
+      "nv-device-model": "STEAMDECK",
+      "nv-device-make": "VALVE",
+    },
+    body,
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`Device authorization failed (${response.status}): ${text.slice(0, 400)}`);
+  }
+
+  const payload = (await response.json()) as DeviceAuthorizationResponse;
+  if (
+    !payload.device_code ||
+    !payload.user_code ||
+    !payload.verification_uri ||
+    !payload.verification_uri_complete
+  ) {
+    throw new Error("Device authorization response did not include QR login data");
+  }
+
+  return {
+    deviceCode: payload.device_code,
+    userCode: payload.user_code,
+    verificationUri: payload.verification_uri,
+    verificationUriComplete: payload.verification_uri_complete,
+    expiresAt: toExpiresAt(payload.expires_in, 600),
+    intervalSeconds: Math.max(1, payload.interval ?? 5),
+  };
+}
+
+async function exchangeDeviceCode(deviceCode: string): Promise<AuthTokens | DeviceTokenErrorResponse> {
+  const body = new URLSearchParams({
+    grant_type: "urn:ietf:params:oauth:grant-type:device_code",
+    device_code: deviceCode,
+    client_id: STEAM_DECK_CLIENT_ID,
   });
 
   const response = await fetch(TOKEN_ENDPOINT, {
     method: "POST",
-    headers: buildNvidiaAuthHeaders({
+    headers: buildAuthHeadersForClient(STEAM_DECK_CLIENT_ID, {
+      contentType: "application/x-www-form-urlencoded; charset=UTF-8",
+    }),
+    body,
+  });
+
+  const payload = (await response.json().catch(() => null)) as TokenResponse | DeviceTokenErrorResponse | null;
+  if (!response.ok) {
+    return payload && typeof payload === "object"
+      ? payload as DeviceTokenErrorResponse
+      : { error: "device_token_exchange_failed", error_description: `Device token exchange failed (${response.status})` };
+  }
+
+  const tokenPayload = payload as TokenResponse | null;
+  if (!tokenPayload?.access_token) {
+    return { error: "invalid_token_response", error_description: "Device token response did not include access_token" };
+  }
+
+  return {
+    accessToken: tokenPayload.access_token,
+    refreshToken: tokenPayload.refresh_token,
+    idToken: tokenPayload.id_token,
+    expiresAt: toExpiresAt(tokenPayload.expires_in),
+    authClientId: STEAM_DECK_CLIENT_ID,
+    clientToken: tokenPayload.client_token,
+  };
+}
+
+async function refreshAuthTokens(refreshToken: string, authClientId = CLIENT_ID): Promise<AuthTokens> {
+  const body = new URLSearchParams({
+    grant_type: "refresh_token",
+    refresh_token: refreshToken,
+    client_id: authClientId,
+  });
+
+  const response = await fetch(TOKEN_ENDPOINT, {
+    method: "POST",
+    headers: buildAuthHeadersForClient(authClientId, {
       contentType: "application/x-www-form-urlencoded; charset=UTF-8",
     }),
     body,
@@ -297,16 +444,17 @@ async function refreshAuthTokens(refreshToken: string): Promise<AuthTokens> {
     refreshToken: payload.refresh_token ?? refreshToken,
     idToken: payload.id_token,
     expiresAt: toExpiresAt(payload.expires_in),
+    authClientId,
   };
 }
 
-async function requestClientToken(accessToken: string): Promise<{
+async function requestClientToken(accessToken: string, authClientId = CLIENT_ID): Promise<{
   token: string;
   expiresAt: number;
   lifetimeMs: number;
 }> {
   const response = await fetch(CLIENT_TOKEN_ENDPOINT, {
-    headers: buildNvidiaAuthHeaders({ bearerToken: accessToken }),
+    headers: buildAuthHeadersForClient(authClientId, { bearerToken: accessToken }),
   });
 
   if (!response.ok) {
@@ -323,17 +471,17 @@ async function requestClientToken(accessToken: string): Promise<{
   };
 }
 
-async function refreshWithClientToken(clientToken: string, userId: string): Promise<TokenResponse> {
+async function refreshWithClientToken(clientToken: string, userId: string, authClientId = CLIENT_ID): Promise<TokenResponse> {
   const body = new URLSearchParams({
     grant_type: "urn:ietf:params:oauth:grant-type:client_token",
     client_token: clientToken,
-    client_id: CLIENT_ID,
+    client_id: authClientId,
     sub: userId,
   });
 
   const response = await fetch(TOKEN_ENDPOINT, {
     method: "POST",
-    headers: buildNvidiaAuthHeaders({
+    headers: buildAuthHeadersForClient(authClientId, {
       contentType: "application/x-www-form-urlencoded; charset=UTF-8",
     }),
     body,
@@ -353,6 +501,7 @@ function mergeTokenSnapshot(base: AuthTokens, refreshed: TokenResponse): AuthTok
     refreshToken: refreshed.refresh_token ?? base.refreshToken,
     idToken: refreshed.id_token,
     expiresAt: toExpiresAt(refreshed.expires_in),
+    authClientId: base.authClientId ?? CLIENT_ID,
     clientToken: refreshed.client_token ?? base.clientToken,
     clientTokenExpiresAt: base.clientTokenExpiresAt,
     clientTokenLifetimeMs: base.clientTokenLifetimeMs,
@@ -391,7 +540,7 @@ async function fetchUserInfo(tokens: AuthTokens): Promise<AuthUser> {
   }
 
   const response = await fetch(USERINFO_ENDPOINT, {
-    headers: buildNvidiaAuthHeaders({
+    headers: buildAuthHeadersForClient(tokens.authClientId, {
       bearerToken: tokens.accessToken,
       accept: "application/json",
     }),
@@ -509,7 +658,7 @@ export class AuthService {
       return tokens;
     }
 
-    const clientToken = await requestClientToken(tokens.accessToken);
+    const clientToken = await requestClientToken(tokens.accessToken, tokens.authClientId);
     return {
       ...tokens,
       clientToken: clientToken.token,
@@ -688,6 +837,46 @@ export class AuthService {
     return this.getSession()?.provider ?? this.selectedProvider;
   }
 
+  private async selectLoginProvider(providerIdpId?: string): Promise<LoginProvider> {
+    const providers = await this.getProviders();
+    const selected =
+      providers.find((provider) => provider.idpId === providerIdpId) ??
+      this.selectedProvider ??
+      providers[0] ??
+      defaultProvider();
+    this.selectedProvider = normalizeProvider(selected);
+    return this.selectedProvider;
+  }
+
+  private async saveLoginSession(initialTokens: AuthTokens, provider: LoginProvider): Promise<AuthSession> {
+    const user = await fetchUserInfo(initialTokens);
+    console.debug("auth: fetched user info during login", { userId: user.userId, email: user.email, avatarUrl: user.avatarUrl });
+    let tokens = initialTokens;
+    try {
+      tokens = await this.ensureClientToken(initialTokens, user.userId);
+    } catch (error) {
+      console.warn("Unable to fetch client token after login. Falling back to OAuth token only:", error);
+    }
+
+    const nextSession: AuthSession = {
+      provider: normalizeProvider(provider),
+      tokens,
+      user,
+    };
+    this.sessions.set(user.userId, nextSession);
+    this.activeUserId = user.userId;
+    this.selectedProvider = nextSession.provider;
+    this.clearSubscriptionCache();
+    this.clearVpcCache();
+
+    // Fetch real membership tier from MES subscription API
+    // (JWT does not contain gfn_tier, so fetchUserInfo always falls back to "FREE")
+    await this.enrichUserTier();
+
+    await this.persist();
+    return this.getSession() as AuthSession;
+  }
+
   async getRegions(explicitToken?: string): Promise<StreamRegion[]> {
     const provider = this.getSelectedProvider();
     const base = provider.streamingServiceUrl.endsWith("/")
@@ -734,50 +923,49 @@ export class AuthService {
   }
 
   async login(input: AuthLoginRequest): Promise<AuthSession> {
-    const providers = await this.getProviders();
-    const selected =
-      providers.find((provider) => provider.idpId === input.providerIdpId) ??
-      this.selectedProvider ??
-      providers[0] ??
-      defaultProvider();
-
-    this.selectedProvider = normalizeProvider(selected);
+    const provider = await this.selectLoginProvider(input.providerIdpId);
 
     const { verifier, challenge } = generatePkce();
     const port = await findAvailablePort();
-    const authUrl = buildAuthUrl(this.selectedProvider, challenge, port);
+    const authUrl = buildAuthUrl(provider, challenge, port);
 
     const codePromise = waitForAuthorizationCode(port, 120000);
     await shell.openExternal(authUrl);
     const code = await codePromise;
 
     const initialTokens = await exchangeAuthorizationCode(code, verifier, port);
-    const user = await fetchUserInfo(initialTokens);
-    console.debug("auth: fetched user info during login", { userId: user.userId, email: user.email, avatarUrl: user.avatarUrl });
-    let tokens = initialTokens;
-    try {
-      tokens = await this.ensureClientToken(initialTokens, user.userId);
-    } catch (error) {
-      console.warn("Unable to fetch client token after login. Falling back to OAuth token only:", error);
+    return this.saveLoginSession(initialTokens, provider);
+  }
+
+  async startDeviceLogin(input: AuthDeviceLoginStartRequest): Promise<AuthDeviceLoginChallenge> {
+    const provider = await this.selectLoginProvider(input.providerIdpId);
+    return requestDeviceAuthorization(provider);
+  }
+
+  async pollDeviceLogin(input: AuthDeviceLoginPollRequest): Promise<AuthDeviceLoginPollResult> {
+    if (!input.deviceCode) {
+      return { status: "error", error: "Missing device code" };
     }
 
-    const nextSession: AuthSession = {
-      provider: this.selectedProvider,
-      tokens,
-      user,
-    };
-    this.sessions.set(user.userId, nextSession);
-    this.activeUserId = user.userId;
-    this.selectedProvider = nextSession.provider;
-    this.clearSubscriptionCache();
-    this.clearVpcCache();
+    const provider = await this.selectLoginProvider(input.providerIdpId);
+    const result = await exchangeDeviceCode(input.deviceCode);
+    if ("accessToken" in result) {
+      const session = await this.saveLoginSession(result, provider);
+      return { status: "authorized", session };
+    }
 
-    // Fetch real membership tier from MES subscription API
-    // (JWT does not contain gfn_tier, so fetchUserInfo always falls back to "FREE")
-    await this.enrichUserTier();
-
-    await this.persist();
-    return this.getSession() as AuthSession;
+    switch (result.error) {
+      case "authorization_pending":
+        return { status: "pending", error: result.error_description };
+      case "slow_down":
+        return { status: "slow_down", error: result.error_description };
+      case "expired_token":
+        return { status: "expired", error: result.error_description ?? "QR login expired" };
+      case "access_denied":
+        return { status: "access_denied", error: result.error_description ?? "QR login was denied" };
+      default:
+        return { status: "error", error: result.error_description ?? result.error ?? "QR login failed" };
+    }
   }
 
   async logout(): Promise<void> {
@@ -1053,7 +1241,7 @@ export class AuthService {
 
     if (tokens.clientToken) {
       try {
-        const refreshedFromClientToken = await refreshWithClientToken(tokens.clientToken, userId);
+        const refreshedFromClientToken = await refreshWithClientToken(tokens.clientToken, userId, tokens.authClientId);
         let refreshedTokens = mergeTokenSnapshot(tokens, refreshedFromClientToken);
         refreshedTokens = await this.ensureClientToken(refreshedTokens, userId);
         return applyRefreshedTokens(refreshedTokens, "client_token");
@@ -1066,7 +1254,7 @@ export class AuthService {
 
     if (tokens.refreshToken) {
       try {
-        const refreshedOAuth = await refreshAuthTokens(tokens.refreshToken);
+        const refreshedOAuth = await refreshAuthTokens(tokens.refreshToken, tokens.authClientId);
         let refreshedTokens: AuthTokens = {
           ...tokens,
           ...refreshedOAuth,
@@ -1074,6 +1262,7 @@ export class AuthService {
           clientToken: tokens.clientToken,
           clientTokenExpiresAt: tokens.clientTokenExpiresAt,
           clientTokenLifetimeMs: tokens.clientTokenLifetimeMs,
+          authClientId: refreshedOAuth.authClientId ?? tokens.authClientId,
         };
         refreshedTokens = await this.ensureClientToken(refreshedTokens, userId);
         return applyRefreshedTokens(refreshedTokens, "refresh_token");

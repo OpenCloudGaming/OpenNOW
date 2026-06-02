@@ -3,6 +3,8 @@ import electron from "electron";
 import { IPC_CHANNELS } from "@shared/ipc";
 import type {
   AuthLoginRequest,
+  AuthDeviceLoginPollRequest,
+  AuthDeviceLoginStartRequest,
   AuthSession,
   AuthSessionRequest,
   GamesFetchRequest,
@@ -67,6 +69,10 @@ const api: OpenNowApi = {
   getLoginProviders: () => ipcRenderer.invoke(IPC_CHANNELS.AUTH_GET_PROVIDERS),
   getRegions: (input: RegionsFetchRequest = {}) => ipcRenderer.invoke(IPC_CHANNELS.AUTH_GET_REGIONS, input),
   login: (input: AuthLoginRequest) => ipcRenderer.invoke(IPC_CHANNELS.AUTH_LOGIN, input),
+  startDeviceLogin: (input: AuthDeviceLoginStartRequest) =>
+    ipcRenderer.invoke(IPC_CHANNELS.AUTH_DEVICE_LOGIN_START, input),
+  pollDeviceLogin: (input: AuthDeviceLoginPollRequest) =>
+    ipcRenderer.invoke(IPC_CHANNELS.AUTH_DEVICE_LOGIN_POLL, input),
   logout: () => ipcRenderer.invoke(IPC_CHANNELS.AUTH_LOGOUT),
   logoutAll: () => ipcRenderer.invoke(IPC_CHANNELS.AUTH_LOGOUT_ALL),
   getSavedAccounts: (): Promise<SavedAccount[]> => ipcRenderer.invoke(IPC_CHANNELS.AUTH_GET_SAVED_ACCOUNTS),

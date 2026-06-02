@@ -1796,6 +1796,74 @@ body,
   color: var(--accent);
 }
 
+.login-qr-panel {
+  display: grid;
+  grid-template-columns: 118px 1fr;
+  gap: 14px;
+  align-items: center;
+  margin: 0 0 18px;
+  padding: 14px;
+  background: rgba(10, 17, 30, 0.72);
+  border: 1px solid var(--panel-border-solid);
+  border-radius: var(--r-md);
+}
+
+.login-qr-code {
+  width: 118px;
+  height: 118px;
+  display: grid;
+  place-items: center;
+  padding: 8px;
+  background: #fff;
+  border-radius: 14px;
+}
+
+.login-qr-code img {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.login-qr-copy {
+  min-width: 0;
+}
+
+.login-qr-title {
+  margin-bottom: 5px;
+  color: var(--ink);
+  font-size: 0.9rem;
+  font-weight: 700;
+}
+
+.login-qr-copy p {
+  margin: 0 0 9px;
+  color: var(--ink-muted);
+  font-size: 0.78rem;
+  line-height: 1.4;
+}
+
+.login-qr-copy code {
+  display: inline-block;
+  padding: 5px 8px;
+  background: rgba(var(--accent-rgb), 0.12);
+  border: 1px solid rgba(var(--accent-rgb), 0.28);
+  border-radius: 8px;
+  color: var(--accent);
+  font-size: 0.84rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+
+.login-qr-panel .login-secondary-button {
+  grid-column: 1 / -1;
+}
+
+.login-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
 /* Login button */
 .login-button {
   width: 100%;
@@ -1838,6 +1906,40 @@ body,
 
 .login-button.loading {
   cursor: wait;
+}
+
+.login-secondary-button {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 12px 18px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--panel-border-solid);
+  border-radius: var(--r-sm);
+  color: var(--ink);
+  font-size: 0.9rem;
+  font-weight: 700;
+  font-family: inherit;
+  cursor: pointer;
+  transition: border-color var(--t-normal), background var(--t-normal), opacity var(--t-normal);
+}
+
+.login-secondary-button:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.07);
+  border-color: rgba(var(--accent-rgb), 0.35);
+}
+
+.login-secondary-button:focus {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--accent-surface);
+}
+
+.login-secondary-button:disabled,
+.login-secondary-button.disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .login-spinner {
