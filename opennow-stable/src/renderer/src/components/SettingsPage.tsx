@@ -3237,7 +3237,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                   </div>
                 </div>
 
-                {/* 4-toggle grid */}
+                {/* Appearance toggles */}
                 <div className="settings-toggle-grid">
                   <div className="settings-row">
                     <label className="settings-label">
@@ -3408,55 +3408,49 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                   </label>
                 </div>
 
-                <div className="settings-row settings-row--column">
-                  <div className="settings-row-top">
-                    <label className="settings-label">{t("settings.interface.sessionTimerReappear")}</label>
-                    <span className="settings-value-badge">
-                      {!settings.sessionCounterEnabled
-                        ? t("app.status.disabled")
-                        : settings.sessionClockShowEveryMinutes === 0
-                          ? t("settings.interface.off")
-                          : t("settings.interface.everyMinutes", { count: settings.sessionClockShowEveryMinutes })}
-                    </span>
-                  </div>
-                  <input
-                    type="range"
-                    className="settings-slider"
-                    min={0}
-                    max={120}
-                    step={5}
-                    value={settings.sessionClockShowEveryMinutes}
-                    onChange={(e) => handleChange("sessionClockShowEveryMinutes", parseInt(e.target.value, 10))}
-                    disabled={!settings.sessionCounterEnabled}
-                  />
-                  <span className="settings-subtle-hint">{t("settings.interface.sessionTimerReappearHint")}</span>
-                </div>
+                {settings.sessionCounterEnabled && (
+                  <>
+                    <div className="settings-row settings-row--column">
+                      <div className="settings-row-top">
+                        <label className="settings-label">{t("settings.interface.sessionTimerReappear")}</label>
+                        <span className="settings-value-badge">
+                          {settings.sessionClockShowEveryMinutes === 0
+                            ? t("settings.interface.off")
+                            : t("settings.interface.everyMinutes", { count: settings.sessionClockShowEveryMinutes })}
+                        </span>
+                      </div>
+                      <input
+                        type="range"
+                        className="settings-slider"
+                        min={0}
+                        max={120}
+                        step={5}
+                        value={settings.sessionClockShowEveryMinutes}
+                        onChange={(e) => handleChange("sessionClockShowEveryMinutes", parseInt(e.target.value, 10))}
+                      />
+                      <span className="settings-subtle-hint">{t("settings.interface.sessionTimerReappearHint")}</span>
+                    </div>
 
-                <div className="settings-row settings-row--column">
-                  <div className="settings-row-top">
-                    <label className="settings-label">{t("settings.interface.sessionTimerVisibleTime")}</label>
-                    <span className="settings-value-badge">
-                      {settings.sessionCounterEnabled
-                        ? t("app.units.seconds", { value: settings.sessionClockShowDurationSeconds })
-                        : t("app.status.disabled")}
-                    </span>
-                  </div>
-                  <input
-                    type="range"
-                    className="settings-slider"
-                    min={5}
-                    max={120}
-                    step={5}
-                    value={settings.sessionClockShowDurationSeconds}
-                    onChange={(e) => handleChange("sessionClockShowDurationSeconds", parseInt(e.target.value, 10))}
-                    disabled={!settings.sessionCounterEnabled}
-                  />
-                  <span className="settings-subtle-hint">{t("settings.interface.sessionTimerVisibleTimeHint")}</span>
-                </div>
-
-                <div className="settings-row settings-row--column">
-                  <span className="settings-subtle-hint">{t("settings.interface.sessionTimerDisabledHint")}</span>
-                </div>
+                    <div className="settings-row settings-row--column">
+                      <div className="settings-row-top">
+                        <label className="settings-label">{t("settings.interface.sessionTimerVisibleTime")}</label>
+                        <span className="settings-value-badge">
+                          {t("app.units.seconds", { value: settings.sessionClockShowDurationSeconds })}
+                        </span>
+                      </div>
+                      <input
+                        type="range"
+                        className="settings-slider"
+                        min={5}
+                        max={120}
+                        step={5}
+                        value={settings.sessionClockShowDurationSeconds}
+                        onChange={(e) => handleChange("sessionClockShowDurationSeconds", parseInt(e.target.value, 10))}
+                      />
+                      <span className="settings-subtle-hint">{t("settings.interface.sessionTimerVisibleTimeHint")}</span>
+                    </div>
+                  </>
+                )}
               </div>
             </section>
 
