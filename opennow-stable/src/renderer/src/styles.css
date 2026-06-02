@@ -1803,7 +1803,7 @@ body,
   align-items: center;
   margin: 0 0 18px;
   padding: 14px;
-  background: rgba(10, 17, 30, 0.72);
+  background: rgba(21, 21, 24, 0.92);
   border: 1px solid var(--panel-border-solid);
   border-radius: var(--r-md);
 }
