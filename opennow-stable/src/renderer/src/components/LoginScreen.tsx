@@ -18,6 +18,7 @@ export interface LoginScreenProps {
   isInitializing?: boolean;
   statusMessage?: string;
   qrLoginChallenge?: AuthDeviceLoginChallenge | null;
+  isQrLoginPending?: boolean;
 }
 
 export function LoginScreen({
@@ -32,6 +33,7 @@ export function LoginScreen({
   isInitializing = false,
   statusMessage,
   qrLoginChallenge,
+  isQrLoginPending = false,
 }: LoginScreenProps): JSX.Element {
   const { t } = useTranslation();
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
@@ -41,7 +43,7 @@ export function LoginScreen({
   const selectedProvider = providers.find((p) => p.idpId === selectedProviderId);
   const title = isInitializing ? t("auth.title.restoringSession") : t("auth.title.signIn");
   const subtitle = isInitializing ? t("auth.subtitle.checkingSavedAccounts") : t("app.description");
-  const isQrLoginActive = Boolean(qrLoginChallenge);
+  const isQrLoginActive = Boolean(qrLoginChallenge) || isQrLoginPending;
 
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
@@ -170,19 +172,23 @@ export function LoginScreen({
             )}
           </div>
 
-          {qrLoginChallenge && (
+          {isQrLoginActive && (
             <div className="login-qr-panel" role="status" aria-live="polite">
               <div className="login-qr-code">
-                {qrCodeDataUrl ? (
+                {qrLoginChallenge && qrCodeDataUrl ? (
                   <img src={qrCodeDataUrl} alt={t("auth.qr.alt")} />
                 ) : (
                   <span className="login-spinner" />
                 )}
               </div>
               <div className="login-qr-copy">
-                <div className="login-qr-title">{t("auth.qr.title")}</div>
-                <p>{t("auth.qr.description")}</p>
-                <code>{qrLoginChallenge.userCode}</code>
+                <div className="login-qr-title">
+                  {qrLoginChallenge ? t("auth.qr.title") : t("auth.qr.preparing")}
+                </div>
+                <p>
+                  {qrLoginChallenge ? t("auth.qr.description") : t("auth.qr.preparingDescription")}
+                </p>
+                {qrLoginChallenge && <code>{qrLoginChallenge.userCode}</code>}
               </div>
               <button
                 className="login-secondary-button"

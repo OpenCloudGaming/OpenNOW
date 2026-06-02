@@ -100,8 +100,10 @@
     },
     "qr": {
       "title": "Scan to sign in",
-      "description": "Scan with your phone, then approve the NVIDIA login. OpenNOW will continue automatically.",
-      "alt": "NVIDIA login QR code",
+      "preparing": "Preparing QR login",
+      "preparingDescription": "Requesting a sign-in code...",
+      "description": "Scan with your phone, then approve the sign-in request. OpenNOW will continue automatically.",
+      "alt": "Login QR code",
       "expired": "QR login expired. Start a new QR login to try again."
     },
     "accounts": {

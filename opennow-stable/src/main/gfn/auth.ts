@@ -889,6 +889,15 @@ export class AuthService {
     return this.getSession() as AuthSession;
   }
 
+  private pruneExpiredDeviceLogins(now = Date.now()): void {
+    for (const [attemptId, attempt] of this.deviceLoginAttempts) {
+      if (attempt.expiresAt <= now) {
+        this.deviceLoginAttempts.delete(attemptId);
+        this.pendingDeviceLoginSessions.delete(attemptId);
+      }
+    }
+  }
+
   async getRegions(explicitToken?: string): Promise<StreamRegion[]> {
     const provider = this.getSelectedProvider();
     const base = provider.streamingServiceUrl.endsWith("/")
@@ -951,6 +960,7 @@ export class AuthService {
   }
 
   async startDeviceLogin(input: AuthDeviceLoginStartRequest): Promise<AuthDeviceLoginChallenge> {
+    this.pruneExpiredDeviceLogins();
     const provider = await this.selectLoginProvider(input.providerIdpId);
     const challenge = await requestDeviceAuthorization(provider);
     const attemptId = randomBytes(16).toString("hex");
@@ -963,6 +973,7 @@ export class AuthService {
   }
 
   async pollDeviceLogin(input: AuthDeviceLoginPollRequest): Promise<AuthDeviceLoginPollResult> {
+    this.pruneExpiredDeviceLogins();
     if (!input.attemptId || !input.deviceCode) {
       return { status: "error", error: "Missing device code" };
     }
@@ -1008,6 +1019,7 @@ export class AuthService {
   }
 
   async completeDeviceLogin(input: AuthDeviceLoginAttemptRequest): Promise<AuthSession> {
+    this.pruneExpiredDeviceLogins();
     const session = this.pendingDeviceLoginSessions.get(input.attemptId);
     if (!session || !this.deviceLoginAttempts.has(input.attemptId)) {
       throw new Error("QR login is no longer active");
