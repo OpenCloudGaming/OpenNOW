@@ -8,6 +8,54 @@ export interface ParsedShortcut {
   canonical: string;
 }
 
+const SUPPORTED_NAMED_KEYS = new Set([
+  "BACKSPACE",
+  "TAB",
+  "ENTER",
+  "NUMPADENTER",
+  "PAUSE",
+  "CAPSLOCK",
+  "ESCAPE",
+  "SPACE",
+  "PAGEUP",
+  "PAGEDOWN",
+  "END",
+  "HOME",
+  "ARROWLEFT",
+  "ARROWUP",
+  "ARROWRIGHT",
+  "ARROWDOWN",
+  "INSERT",
+  "DELETE",
+  "PRINTSCREEN",
+  "APPS",
+  "MENU",
+  "CONTEXTMENU",
+  "METALEFT",
+  "METARIGHT",
+  "OSLEFT",
+  "OSRIGHT",
+  "NUMPADMULTIPLY",
+  "NUMPADADD",
+  "NUMPADSEPARATOR",
+  "NUMPADSUBTRACT",
+  "NUMPADDECIMAL",
+  "NUMPADDIVIDE",
+  "NUMLOCK",
+  "SCROLLLOCK",
+  "SEMICOLON",
+  "EQUAL",
+  "COMMA",
+  "MINUS",
+  "PERIOD",
+  "SLASH",
+  "BACKQUOTE",
+  "BRACKETLEFT",
+  "BACKSLASH",
+  "BRACKETRIGHT",
+  "QUOTE",
+]);
+
 function normalizeKeyToken(token: string): string | null {
   const upper = token.toUpperCase();
   const alias: Record<string, string> = {
@@ -28,12 +76,13 @@ function normalizeKeyToken(token: string): string | null {
     return upper;
   }
   if (/^F\d{1,2}$/.test(upper)) {
+    const index = Number.parseInt(upper.slice(1), 10);
+    return index >= 1 && index <= 24 ? upper : null;
+  }
+  if (/^NUMPAD\d$/.test(upper)) {
     return upper;
   }
-  if (upper.startsWith("ARROW")) {
-    return upper;
-  }
-  if (/^[A-Z0-9_]+$/.test(upper)) {
+  if (SUPPORTED_NAMED_KEYS.has(upper)) {
     return upper;
   }
   return null;

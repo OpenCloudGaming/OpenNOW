@@ -3756,32 +3756,30 @@ export function App(): JSX.Element {
           Debug no-login mode: account and launch features are disabled.
         </div>
       )}
-      {!(settings.controllerMode && currentPage === "library") && (
-        <Navbar
-          currentPage={currentPage}
-          onNavigate={setCurrentPage}
-          user={authSession.user}
-          subscription={subscriptionInfo}
-          activeSession={navbarActiveSession}
-          activeSessionGameTitle={activeSessionGameTitle}
-          isResumingSession={isResumingNavbarSession}
-          isTerminatingSession={isTerminatingNavbarSession}
-          onResumeSession={() => {
-            void handleResumeFromNavbar();
-          }}
-          onTerminateSession={() => {
-            void handleTerminateNavbarSession();
-          }}
-          savedAccounts={savedAccounts}
-          onSwitchAccount={handleSwitchAccount}
-          onRemoveAccount={(userId) => {
-            void handleRemoveAccount(userId);
-          }}
-          onAddAccount={handleAddAccount}
-          onLogoutAll={handleLogout}
-          controllerMode={settings.controllerMode}
-        />
-      )}
+      <Navbar
+        currentPage={currentPage}
+        onNavigate={setCurrentPage}
+        user={authSession.user}
+        subscription={subscriptionInfo}
+        activeSession={navbarActiveSession}
+        activeSessionGameTitle={activeSessionGameTitle}
+        isResumingSession={isResumingNavbarSession}
+        isTerminatingSession={isTerminatingNavbarSession}
+        onResumeSession={() => {
+          void handleResumeFromNavbar();
+        }}
+        onTerminateSession={() => {
+          void handleTerminateNavbarSession();
+        }}
+        savedAccounts={savedAccounts}
+        onSwitchAccount={handleSwitchAccount}
+        onRemoveAccount={(userId) => {
+          void handleRemoveAccount(userId);
+        }}
+        onAddAccount={handleAddAccount}
+        onLogoutAll={handleLogout}
+        controllerMode={settings.controllerMode}
+      />
 
       <main className="main-content">
         {currentPage === "home" && (

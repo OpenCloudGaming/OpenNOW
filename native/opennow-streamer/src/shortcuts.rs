@@ -134,7 +134,11 @@ fn parse_binding(action: NativeStreamerShortcutAction, raw: &str) -> Option<Shor
     let mut modifiers = 0u16;
     let mut keycode = None;
 
-    for token in raw.split('+').map(str::trim).filter(|token| !token.is_empty()) {
+    for token in raw
+        .split('+')
+        .map(str::trim)
+        .filter(|token| !token.is_empty())
+    {
         match token.to_ascii_uppercase().as_str() {
             "CTRL" | "CONTROL" => modifiers |= MODIFIER_CTRL,
             "ALT" | "OPTION" => modifiers |= MODIFIER_ALT,
@@ -214,9 +218,9 @@ fn parse_key_token(token: &str) -> Option<u16> {
         "INSERT" => Some(VK_INSERT),
         "DELETE" => Some(VK_DELETE),
         "PRINTSCREEN" => Some(VK_PRINT),
-        "APPS" | "MENU" => Some(VK_APPS),
-        "METALEFT" => Some(VK_LWIN),
-        "METARIGHT" => Some(VK_RWIN),
+        "APPS" | "MENU" | "CONTEXTMENU" => Some(VK_APPS),
+        "METALEFT" | "OSLEFT" => Some(VK_LWIN),
+        "METARIGHT" | "OSRIGHT" => Some(VK_RWIN),
         "NUMPADMULTIPLY" => Some(VK_MULTIPLY),
         "NUMPADADD" => Some(VK_ADD),
         "NUMPADSEPARATOR" => Some(VK_SEPARATOR),
@@ -300,6 +304,29 @@ mod tests {
         assert_eq!(
             matcher.match_keydown(VK_F1 + 7, 0),
             Some(NativeStreamerShortcutAction::TogglePointerLock)
+        );
+    }
+
+    #[test]
+    fn matches_renderer_supported_named_keys() {
+        let matcher = NativeShortcutMatcher::from_bindings(&NativeStreamerShortcutBindings {
+            toggle_stats: "ContextMenu".to_owned(),
+            toggle_pointer_lock: "OSLeft".to_owned(),
+            toggle_fullscreen: "OSRight".to_owned(),
+            ..bindings()
+        });
+
+        assert_eq!(
+            matcher.match_keydown(VK_APPS, 0),
+            Some(NativeStreamerShortcutAction::ToggleStats)
+        );
+        assert_eq!(
+            matcher.match_keydown(VK_LWIN, 0),
+            Some(NativeStreamerShortcutAction::TogglePointerLock)
+        );
+        assert_eq!(
+            matcher.match_keydown(VK_RWIN, 0),
+            Some(NativeStreamerShortcutAction::ToggleFullscreen)
         );
     }
 }
