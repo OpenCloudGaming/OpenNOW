@@ -204,6 +204,12 @@ pub fn is_partially_reliable_hid_transfer_eligible(input_type: u32) -> bool {
     input_type == INPUT_MOUSE_REL
 }
 
+pub(crate) fn layout_mapped_keyboard_scancode(_physical_scancode: u16) -> u16 {
+    // GFN keyboard events use the selected remote layout plus VK; sending the local physical
+    // scancode makes QWERTZ-only keys such as Y/Z resolve as their US physical positions.
+    0
+}
+
 fn encode_gamepad_payload(bitmap: u16, input: GamepadInput) -> Vec<u8> {
     let mut payload = Vec::with_capacity(GAMEPAD_PACKET_SIZE);
     put_u32_le(&mut payload, INPUT_GAMEPAD);
@@ -453,5 +459,11 @@ mod tests {
         assert_eq!(partially_reliable_hid_mask_for_input_type(32), 0);
         assert!(is_partially_reliable_hid_transfer_eligible(INPUT_MOUSE_REL));
         assert!(!is_partially_reliable_hid_transfer_eligible(INPUT_KEY_DOWN));
+    }
+
+    #[test]
+    fn layout_mapped_keyboard_input_omits_physical_scancodes() {
+        assert_eq!(layout_mapped_keyboard_scancode(0x0015), 0);
+        assert_eq!(layout_mapped_keyboard_scancode(0x002c), 0);
     }
 }
