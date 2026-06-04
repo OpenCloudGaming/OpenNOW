@@ -442,7 +442,7 @@ export function HomePage({
       if (pressed & controllerButton.west) setControllerSearchOpen(true);
       if (pressed & controllerButton.leftShoulder) onPreviousControllerPage?.();
       if (pressed & controllerButton.rightShoulder) onNextControllerPage?.();
-      if (pressed & controllerButton.guide) cycleControllerVariant();
+      if (pressed & controllerButton.menu) cycleControllerVariant();
       if (pressed & controllerButton.up) focusControllerTile(rowIndex - 1, columnIndex);
       if (pressed & controllerButton.down) focusControllerTile(rowIndex + 1, columnIndex);
       if (pressed & controllerButton.left) focusControllerTile(rowIndex, columnIndex - 1);

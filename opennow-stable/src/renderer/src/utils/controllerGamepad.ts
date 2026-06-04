@@ -9,7 +9,7 @@ export const controllerButton = {
   down: 1 << 7,
   left: 1 << 8,
   right: 1 << 9,
-  guide: 1 << 10,
+  menu: 1 << 10,
 } as const;
 
 export function readControllerGamepadButtons(pad: Gamepad | undefined): number {
@@ -25,6 +25,6 @@ export function readControllerGamepadButtons(pad: Gamepad | undefined): number {
   if (pad.buttons[13]?.pressed || (pad.axes[1] ?? 0) > 0.65) buttons |= controllerButton.down;
   if (pad.buttons[14]?.pressed || (pad.axes[0] ?? 0) < -0.65) buttons |= controllerButton.left;
   if (pad.buttons[15]?.pressed || (pad.axes[0] ?? 0) > 0.65) buttons |= controllerButton.right;
-  if (pad.buttons[16]?.pressed) buttons |= controllerButton.guide;
+  if (pad.buttons[9]?.pressed || pad.buttons[16]?.pressed) buttons |= controllerButton.menu;
   return buttons;
 }

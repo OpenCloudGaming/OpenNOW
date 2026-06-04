@@ -482,7 +482,7 @@ export function LibraryPage({
         if (pressed & controllerButton.west) setControllerSearchOpen(true);
         if (pressed & controllerButton.leftShoulder) onPreviousControllerPage?.();
         if (pressed & controllerButton.rightShoulder) onNextControllerPage?.();
-        if (pressed & controllerButton.guide) {
+        if (pressed & controllerButton.menu) {
           if (currentSelectedGame) setDetailsGame(currentSelectedGame);
         }
         if (pressed & controllerButton.left) focusGame(currentSelectedIndex - 1);

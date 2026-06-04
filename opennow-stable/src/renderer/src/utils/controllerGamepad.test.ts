@@ -13,7 +13,8 @@ function makePad(pressedButtonIndexes: number[], axes = [0, 0]): Gamepad {
 }
 
 test("maps standard gamepad action buttons used by controller mode", () => {
-  const buttons = readControllerGamepadButtons(makePad([0, 1, 2, 3, 4, 5, 16]));
+  const buttons = readControllerGamepadButtons(makePad([0, 1, 2, 3, 4, 5, 9]));
+  const guideAliasButtons = readControllerGamepadButtons(makePad([16]));
 
   assert.equal(buttons & controllerButton.south, controllerButton.south);
   assert.equal(buttons & controllerButton.east, controllerButton.east);
@@ -21,7 +22,8 @@ test("maps standard gamepad action buttons used by controller mode", () => {
   assert.equal(buttons & controllerButton.north, controllerButton.north);
   assert.equal(buttons & controllerButton.leftShoulder, controllerButton.leftShoulder);
   assert.equal(buttons & controllerButton.rightShoulder, controllerButton.rightShoulder);
-  assert.equal(buttons & controllerButton.guide, controllerButton.guide);
+  assert.equal(buttons & controllerButton.menu, controllerButton.menu);
+  assert.equal(guideAliasButtons & controllerButton.menu, controllerButton.menu);
 });
 
 test("maps standard d-pad buttons and left-stick fallback axes", () => {
