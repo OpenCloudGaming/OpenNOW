@@ -1,0 +1,155 @@
+name: windows-portable-build
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows-portable:
+    name: Build Windows portable
+    runs-on: blacksmith-2vcpu-windows-2025
+    defaults:
+      run:
+        working-directory: opennow-stable
+
+    env:
+      npm_config_audit: "false"
+      npm_config_fund: "false"
+      GSTREAMER_WINDOWS_VERSION: "1.26.1"
+      CARGO_NET_RETRY: "10"
+      CARGO_HTTP_MULTIPLEXING: "false"
+      CARGO_REGISTRIES_CRATES_IO_PROTOCOL: sparse
+      CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+      OPENNOW_NATIVE_STREAMER_FEATURES: gstreamer
+      OPENNOW_BUNDLE_GSTREAMER_RUNTIME: "1"
+      OPENNOW_NATIVE_STREAMER_PLATFORM_KEY: "win32-x64"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Windows GStreamer SDK
+        shell: pwsh
+        run: |
+          $installBase = "C:\gstreamer"
+          $roots = @(
+            "C:\gstreamer\1.0\msvc_x86_64",
+            "C:\Program Files\gstreamer\1.0\msvc_x86_64"
+          )
+          $searchBases = @("C:\gstreamer", "C:\Program Files\gstreamer")
+          function Test-GStreamerRoot([string] $candidate) {
+            return [bool]($candidate -and
+              (Test-Path (Join-Path $candidate "lib\pkgconfig\gstreamer-1.0.pc")) -and
+              ((Test-Path (Join-Path $candidate "bin\pkg-config.exe")) -or (Test-Path (Join-Path $candidate "bin\pkgconf.exe"))))
+          }
+          function Find-GStreamerRoot {
+            foreach ($candidate in $roots) {
+              if (Test-GStreamerRoot $candidate) { return $candidate }
+            }
+            foreach ($base in $searchBases) {
+              if (-not (Test-Path $base)) { continue }
+              $pcFiles = Get-ChildItem -Path $base -Filter "gstreamer-1.0.pc" -Recurse -ErrorAction SilentlyContinue | Where-Object { $_.FullName -like "*\lib\pkgconfig\gstreamer-1.0.pc" }
+              foreach ($pc in $pcFiles) {
+                $root = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $pc.FullName))
+                if (Test-GStreamerRoot $root) { return $root }
+              }
+            }
+            return $null
+          }
+          function Get-GStreamerMsi([string] $fileName, [string] $downloadDir, [string[]] $urlBases) {
+            New-Item -ItemType Directory -Force -Path $downloadDir | Out-Null
+            $output = Join-Path $downloadDir $fileName
+            $partial = "$output.part"
+            if ((Test-Path $output) -and ((Get-Item $output).Length -gt 0)) {
+              Write-Host "Using cached GStreamer MSI: $output"
+              return $output
+            }
+            foreach ($base in $urlBases) {
+              $url = "$base/$fileName"
+              Write-Host "Downloading GStreamer MSI from $url"
+              if ((Test-Path $partial) -and ((Get-Item $partial).Length -eq 0)) { Remove-Item -Force $partial }
+              $process = Start-Process -FilePath "curl.exe" -ArgumentList @(
+                "--fail",
+                "--location",
+                "--retry", "8",
+                "--retry-all-errors",
+                "--retry-delay", "5",
+                "--connect-timeout", "30",
+                "--continue-at", "-",
+                "--output", $partial,
+                $url
+              ) -Wait -PassThru -NoNewWindow
+              if ($process.ExitCode -eq 0 -and (Test-Path $partial) -and ((Get-Item $partial).Length -gt 0)) {
+                Move-Item -Force $partial $output
+                return $output
+              }
+              if ((Test-Path $partial) -and ((Get-Item $partial).Length -eq 0)) { Remove-Item -Force $partial }
+            }
+            return $null
+          }
+          function Install-GStreamerMsiSdk([string] $version) {
+            $urlBases = @(
+              "https://gstreamer.freedesktop.org/data/pkg/windows/$version/msvc",
+              "https://gstreamer.freedesktop.org/pkg/windows/$version/msvc"
+            )
+            $downloadDir = Join-Path $env:GITHUB_WORKSPACE ".cache\gstreamer-windows\$version"
+            $runtime = Get-GStreamerMsi "gstreamer-1.0-msvc-x86_64-$version.msi" $downloadDir $urlBases
+            if (-not $runtime) { return $false }
+            $devel = Get-GStreamerMsi "gstreamer-1.0-devel-msvc-x86_64-$version.msi" $downloadDir $urlBases
+            if (-not $devel) { return $false }
+            $runtimeInstall = Start-Process msiexec.exe -ArgumentList @("/i", $runtime, "/qn", "/norestart", "INSTALLDIR=$installBase", "ADDLOCAL=ALL") -Wait -PassThru
+            if ($runtimeInstall.ExitCode -ne 0) { return $false }
+            $develInstall = Start-Process msiexec.exe -ArgumentList @("/i", $devel, "/qn", "/norestart", "INSTALLDIR=$installBase", "ADDLOCAL=ALL") -Wait -PassThru
+            return $develInstall.ExitCode -eq 0
+          }
+          $root = Find-GStreamerRoot
+          if ($root) {
+            Write-Host "Using cached GStreamer Windows SDK: $root"
+          } elseif (-not (Install-GStreamerMsiSdk $env:GSTREAMER_WINDOWS_VERSION)) {
+            $root = Find-GStreamerRoot
+            Write-Error "Failed to install/discover GStreamer Windows SDK version $env:GSTREAMER_WINDOWS_VERSION."
+            exit 1
+          }
+          $root = Find-GStreamerRoot
+          if (-not $root) {
+            Write-Error "GStreamer SDK root not found. Checked expected paths and download install locations."
+            exit 1
+          }
+          Write-Host "GStreamer SDK found at: $root"
+          Write-Host "PKG_CONFIG_PATH=$root\lib\pkgconfig"
+          Write-Output "GSTREAMER_1_0_ROOT_MSVC_X86_64=$root" | Out-File -FilePath $env:GITHUB_ENV -Append
+          Write-Output "PKG_CONFIG_PATH=$root\lib\pkgconfig;$env:PKG_CONFIG_PATH" | Out-File -FilePath $env:GITHUB_ENV -Append
+          Write-Output "PATH=$root\bin;$env:PATH" | Out-File -FilePath $env:GITHUB_PATH -Append
+
+      - name: Install dependencies
+        run: npm ci --prefer-offline --no-audit --progress=false
+
+      - name: Build native streamer
+        env:
+          OPENNOW_NATIVE_STREAMER_TARGET: ""
+        run: npm run native:build
+
+      - name: Build app files
+        run: npm run build
+
+      - name: Package portable installer
+        run: npx electron-builder --publish never --win portable --x64
+
+      - name: Upload portable artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenNOW-windows-portable-x64
+          path: dist-release/*portable-x64.exe
+          if-no-files-found: error
