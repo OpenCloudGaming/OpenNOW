@@ -18,7 +18,7 @@ use crate::gstreamer_liveness::{
 };
 use crate::gstreamer_platform::{
     apply_render_surface_to_video_sink, primary_display_refresh_hz,
-    start_external_renderer_window_guard,
+    start_external_renderer_window_guard, update_external_renderer_surface,
 };
 use crate::gstreamer_transitions::DEFAULT_VIDEO_QUEUE_DEPTH;
 use crate::protocol::{
@@ -276,6 +276,9 @@ impl GstreamerRenderState {
         };
 
         if use_external_renderer_window() {
+            if let Some(surface) = self.surface.lock().ok().and_then(|surface| surface.clone()) {
+                update_external_renderer_surface(&surface);
+            }
             if !self
                 .external_window_guard_started
                 .swap(true, Ordering::SeqCst)
