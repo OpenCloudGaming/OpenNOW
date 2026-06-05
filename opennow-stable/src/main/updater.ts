@@ -3,6 +3,7 @@ import electronUpdater from "electron-updater";
 import type { AppUpdater, ProgressInfo, UpdateDownloadedEvent, UpdateInfo } from "electron-updater";
 
 import { getAppBuildInfo } from "./appBuildInfo";
+import { getLinuxUpdaterSupport } from "./linuxUpdaterSupport";
 import type { AppUpdaterState } from "@shared/gfn";
 
 const { autoUpdater } = electronUpdater;
@@ -92,6 +93,35 @@ export function createAppUpdaterController(options: AppUpdaterControllerOptions)
   const currentVersion = buildInfo.version;
   if (!app.isPackaged) {
     const disabledState = createDisabledState(buildInfo, "Auto-updates are only available in packaged builds.");
+    return {
+      initialize() {
+        options.onStateChanged(disabledState);
+      },
+      dispose() {},
+      getState() {
+        return disabledState;
+      },
+      setAutomaticChecksEnabled() {
+        return disabledState;
+      },
+      async checkForUpdates() {
+        return disabledState;
+      },
+      async downloadUpdate() {
+        return disabledState;
+      },
+      async quitAndInstall() {
+        return disabledState;
+      },
+    };
+  }
+
+  const linuxUpdaterSupport = getLinuxUpdaterSupport();
+  if (!linuxUpdaterSupport.supported) {
+    const disabledState = createDisabledState(
+      buildInfo,
+      linuxUpdaterSupport.message ?? "Auto-updates are not available for this Linux install.",
+    );
     return {
       initialize() {
         options.onStateChanged(disabledState);
