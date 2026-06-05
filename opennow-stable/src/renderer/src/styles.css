@@ -3139,7 +3139,8 @@ body,
   background: #e7e7e7;
 }
 
-.controller-store-filter-overlay {
+.controller-store-filter-overlay,
+.controller-search-overlay {
   position: fixed;
   inset: 0;
   z-index: 2190;
@@ -3151,7 +3152,8 @@ body,
   backdrop-filter: blur(8px);
 }
 
-.controller-store-filter-panel {
+.controller-store-filter-panel,
+.controller-search-panel {
   width: min(520px, calc(100vw - 96px));
   padding: 30px 34px 34px;
   border-radius: 26px;
@@ -3160,7 +3162,8 @@ body,
   box-shadow: 0 0 42px rgba(var(--accent-rgb), 0.32), 0 32px 90px rgba(0, 0, 0, 0.58);
 }
 
-.controller-store-filter-eyebrow {
+.controller-store-filter-eyebrow,
+.controller-search-eyebrow {
   color: #4ee887;
   font-size: 0.78rem;
   font-weight: 900;
@@ -3175,11 +3178,31 @@ body,
   line-height: 1.05;
 }
 
-.controller-store-filter-panel p {
+.controller-store-filter-panel p,
+.controller-search-panel p {
   margin: 8px 0 22px;
   color: rgba(255, 255, 255, 0.58);
   font-size: 0.88rem;
   font-weight: 650;
+}
+
+.controller-search-input {
+  width: 100%;
+  min-height: 56px;
+  margin-top: 14px;
+  padding: 0 18px;
+  border-radius: 16px;
+  border: 1.5px solid rgba(var(--accent-rgb), 0.62);
+  outline: none;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--ink);
+  font: inherit;
+  font-size: 1.1rem;
+  font-weight: 750;
+}
+
+.controller-search-input:focus {
+  box-shadow: 0 0 0 3px rgba(var(--accent-rgb), 0.2);
 }
 
 .controller-store-filter-options {

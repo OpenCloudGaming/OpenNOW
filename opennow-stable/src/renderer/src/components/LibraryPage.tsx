@@ -5,9 +5,10 @@ import type { CatalogSortOption, GameInfo } from "@shared/gfn";
 import { GameCard, getStoreDisplayName, getStoreIconComponent } from "./GameCard";
 import { useTranslation } from "../i18n";
 import { formatCatalogLastPlayed } from "../utils/lastPlayedFormat";
+import { controllerButton, readControllerGamepadButtons } from "../utils/controllerGamepad";
 
 const CONTROLLER_HERO_ROTATION_MS = 8000;
-const CONTROLLER_MOVE_REPEAT_MS = 220;
+const CONTROLLER_MOVE_REPEAT_MS = 140;
 const CONTROLLER_Y_HOLD_MS = 350;
 
 const CONTROLLER_HERO_BACKGROUND_KEYS = [
@@ -193,13 +194,17 @@ export function LibraryPage({
   controllerMode = false,
   featuredGames = [],
   activeSessionAppIds = [],
+  onPreviousControllerPage,
+  onNextControllerPage,
 }: LibraryPageProps): JSX.Element {
   const { t } = useTranslation();
   const [controllerHeroIndex, setControllerHeroIndex] = useState(0);
   const [detailsGame, setDetailsGame] = useState<GameInfo | null>(null);
   const [controllerStoreFilterId, setControllerStoreFilterId] = useState("library");
   const [controllerStoreFilterOpen, setControllerStoreFilterOpen] = useState(false);
+  const [controllerSearchOpen, setControllerSearchOpen] = useState(false);
   const [focusedControllerStoreFilterIndex, setFocusedControllerStoreFilterIndex] = useState(0);
+  const controllerSearchInputRef = useRef<HTMLInputElement | null>(null);
   const gamepadPreviousButtonsRef = useRef(0);
   const gamepadLastMoveAtRef = useRef(0);
   const gamepadFrameRef = useRef<number | null>(null);
@@ -221,6 +226,11 @@ export function LibraryPage({
     showControllerStoreFilterOverlay: (): void => {},
     onPlayGame: (_game: GameInfo): void => {},
   });
+
+  useEffect(() => {
+    if (!controllerMode || !controllerSearchOpen) return;
+    controllerSearchInputRef.current?.focus();
+  }, [controllerMode, controllerSearchOpen]);
 
   const controllerStoreFilterItems = useMemo(
     () => getControllerStoreFilterItems(games, t("library.allStores")),
@@ -356,50 +366,59 @@ export function LibraryPage({
         }
         return;
       }
+      if (controllerSearchOpen) {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          setControllerSearchOpen(false);
+        }
+        return;
+      }
       if (event.key === "ArrowLeft") {
         event.preventDefault();
         focusControllerGame(selectedControllerGameIndex - 1);
       } else if (event.key === "ArrowRight") {
         event.preventDefault();
         focusControllerGame(selectedControllerGameIndex + 1);
-      } else if (event.key === "ArrowDown" || event.key.toLowerCase() === "x") {
+      } else if (event.key === "ArrowDown") {
         event.preventDefault();
         cycleSelectedVariant();
       } else if (event.key === "Enter" || event.key === " ") {
         event.preventDefault();
         if (selectedControllerGame) onPlayGame(selectedControllerGame);
-      } else if (event.key.toLowerCase() === "i") {
+      } else if (event.key.toLowerCase() === "x") {
+        event.preventDefault();
+        setControllerSearchOpen(true);
+      } else if (event.key.toLowerCase() === "b" || event.key === "Escape") {
+        event.preventDefault();
+        onPreviousControllerPage?.();
+      } else if (event.key === "[") {
+        event.preventDefault();
+        onPreviousControllerPage?.();
+      } else if (event.key === "]") {
+        event.preventDefault();
+        onNextControllerPage?.();
+      } else if (event.key.toLowerCase() === "i" || event.key.toLowerCase() === "m") {
         event.preventDefault();
         if (selectedControllerGame) setDetailsGame(selectedControllerGame);
       }
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [controllerMode, detailsGame, games, onPlayGame, selectedControllerGame, selectedControllerGameIndex]);
+  }, [controllerMode, controllerSearchOpen, detailsGame, onNextControllerPage, onPlayGame, onPreviousControllerPage, selectedControllerGame, selectedControllerGameIndex]);
 
   useEffect(() => {
     if (!controllerMode) return;
     const readButtons = (): number => {
       const pad = navigator.getGamepads?.().find((gamepad): gamepad is Gamepad => Boolean(gamepad));
-      if (!pad) return 0;
-      let buttons = 0;
-      if (pad.buttons[0]?.pressed) buttons |= 1 << 0;
-      if (pad.buttons[1]?.pressed) buttons |= 1 << 1;
-      if (pad.buttons[3]?.pressed) buttons |= 1 << 2;
-      if (pad.buttons[12]?.pressed || (pad.axes[1] ?? 0) < -0.65) buttons |= 1 << 5;
-      if (pad.buttons[13]?.pressed || (pad.axes[1] ?? 0) > 0.65) buttons |= 1 << 6;
-      if (pad.buttons[14]?.pressed || (pad.axes[0] ?? 0) < -0.65) buttons |= 1 << 7;
-      if (pad.buttons[15]?.pressed || (pad.axes[0] ?? 0) > 0.65) buttons |= 1 << 8;
-      if (pad.buttons[2]?.pressed) buttons |= 1 << 9;
-      return buttons;
+      return readControllerGamepadButtons(pad);
     };
 
     const handleGamepadFrame = () => {
       const buttons = readButtons();
       let pressed = buttons & ~gamepadPreviousButtonsRef.current;
       const released = gamepadPreviousButtonsRef.current & ~buttons;
-      const moveMask = (1 << 5) | (1 << 6) | (1 << 7) | (1 << 8);
-      const yButton = 1 << 2;
+      const moveMask = controllerButton.up | controllerButton.down | controllerButton.left | controllerButton.right;
+      const yButton = controllerButton.north;
       const now = performance.now();
       const activeMoves = buttons & moveMask;
       const pressedMoves = pressed & moveMask;
@@ -434,10 +453,17 @@ export function LibraryPage({
         showStoreFilter();
       }
 
+      if (controllerSearchOpen) {
+        if (pressed & controllerButton.east) setControllerSearchOpen(false);
+        gamepadPreviousButtonsRef.current = buttons;
+        gamepadFrameRef.current = window.requestAnimationFrame(handleGamepadFrame);
+        return;
+      }
+
       if (storeFilterOpen) {
-        if (pressed & (1 << 5)) moveStoreFilter(-1);
-        if (pressed & (1 << 6)) moveStoreFilter(1);
-        if (pressed & (1 << 1)) hideStoreFilter(false);
+        if (pressed & controllerButton.up) moveStoreFilter(-1);
+        if (pressed & controllerButton.down) moveStoreFilter(1);
+        if (pressed & controllerButton.east) hideStoreFilter(false);
         if (released & yButton) hideStoreFilter(true);
         gamepadPreviousButtonsRef.current = buttons;
         gamepadFrameRef.current = window.requestAnimationFrame(handleGamepadFrame);
@@ -445,16 +471,23 @@ export function LibraryPage({
       }
 
       if (currentDetailsGame) {
-        if (pressed & (1 << 0)) playGame(currentDetailsGame);
-        if (pressed & (1 << 1)) setDetailsGame(null);
+        if (pressed & controllerButton.south) playGame(currentDetailsGame);
+        if (pressed & controllerButton.east) setDetailsGame(null);
       } else {
         if ((released & yButton) && !controllerYConsumedByHoldRef.current) cycleStoreFilter();
-        if (pressed & (1 << 0)) {
+        if (pressed & controllerButton.south) {
           if (currentSelectedGame) playGame(currentSelectedGame);
         }
-        if (pressed & (1 << 7)) focusGame(currentSelectedIndex - 1);
-        if (pressed & (1 << 8)) focusGame(currentSelectedIndex + 1);
-        if ((pressed & (1 << 6)) || (pressed & (1 << 9))) cycleVariant();
+        if (pressed & controllerButton.east) onPreviousControllerPage?.();
+        if (pressed & controllerButton.west) setControllerSearchOpen(true);
+        if (pressed & controllerButton.leftShoulder) onPreviousControllerPage?.();
+        if (pressed & controllerButton.rightShoulder) onNextControllerPage?.();
+        if (pressed & controllerButton.menu) {
+          if (currentSelectedGame) setDetailsGame(currentSelectedGame);
+        }
+        if (pressed & controllerButton.left) focusGame(currentSelectedIndex - 1);
+        if (pressed & controllerButton.right) focusGame(currentSelectedIndex + 1);
+        if (pressed & controllerButton.down) cycleVariant();
       }
       gamepadPreviousButtonsRef.current = buttons;
 
@@ -491,7 +524,7 @@ export function LibraryPage({
       window.removeEventListener("gamepaddisconnected", handleDisconnect);
       stopGamepadNavigation();
     };
-  }, [controllerMode]);
+  }, [controllerMode, controllerSearchOpen, onNextControllerPage, onPreviousControllerPage]);
 
   if (controllerMode) {
     const featuredGame = controllerFeaturedGames[controllerHeroIndex] ?? selectedControllerGame;
@@ -618,6 +651,23 @@ export function LibraryPage({
                       </button>
                     ))}
                   </div>
+                </div>
+              </div>
+            )}
+
+            {controllerSearchOpen && (
+              <div className="controller-search-overlay" role="dialog" aria-modal="true" aria-label={t("app.actions.search")}>
+                <div className="controller-search-panel">
+                  <span className="controller-search-eyebrow">{t("app.actions.search")}</span>
+                  <input
+                    ref={controllerSearchInputRef}
+                    type="text"
+                    value={searchQuery}
+                    onChange={(event) => onSearchChange(event.target.value)}
+                    placeholder={t("library.searchPlaceholder")}
+                    className="controller-search-input"
+                  />
+                  <p>{t("app.actions.back")}</p>
                 </div>
               </div>
             )}
