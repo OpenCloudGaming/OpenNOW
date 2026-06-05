@@ -256,6 +256,12 @@ pub(crate) mod win32_renderer_window {
         area: i64,
     }
 
+    #[derive(Clone, Copy)]
+    struct RenderTargetSurface {
+        hwnd: isize,
+        client_rect: Rect,
+    }
+
     #[repr(C)]
     #[derive(Clone, Copy)]
     struct Rect {
@@ -343,7 +349,7 @@ pub(crate) mod win32_renderer_window {
     static ESCAPE_HOLD_TOKEN: OnceLock<AtomicU64> = OnceLock::new();
     static ESCAPE_KEY_PRESS: OnceLock<Mutex<Option<EscapeKeyPress>>> = OnceLock::new();
     static SHORTCUT_MATCHER: OnceLock<Mutex<NativeShortcutMatcher>> = OnceLock::new();
-    static RENDER_TARGET_RECT: OnceLock<Mutex<Option<Rect>>> = OnceLock::new();
+    static RENDER_TARGET_SURFACE: OnceLock<Mutex<Option<RenderTargetSurface>>> = OnceLock::new();
 
     #[link(name = "user32")]
     unsafe extern "system" {
@@ -403,13 +409,18 @@ pub(crate) mod win32_renderer_window {
     }
 
     pub unsafe fn set_render_target_surface(target: Option<(usize, NativeRenderRect)>) {
-        let target_rect = target.and_then(|(window_handle, rect)| {
-            render_rect_to_screen_rect(window_handle as Hwnd, rect)
-                .or_else(|| monitor_rect_for_window(window_handle as Hwnd))
+        let target_surface = target.map(|(window_handle, rect)| RenderTargetSurface {
+            hwnd: window_handle as isize,
+            client_rect: Rect {
+                left: rect.x,
+                top: rect.y,
+                right: rect.x.saturating_add(rect.width.max(2)),
+                bottom: rect.y.saturating_add(rect.height.max(2)),
+            },
         });
-        let slot = RENDER_TARGET_RECT.get_or_init(|| Mutex::new(None));
+        let slot = RENDER_TARGET_SURFACE.get_or_init(|| Mutex::new(None));
         if let Ok(mut current) = slot.lock() {
-            *current = target_rect;
+            *current = target_surface;
         }
     }
 
@@ -563,23 +574,25 @@ pub(crate) mod win32_renderer_window {
         configured
     }
 
-    unsafe fn render_rect_to_screen_rect(hwnd: Hwnd, rect: NativeRenderRect) -> Option<Rect> {
+    unsafe fn render_rect_to_screen_rect(hwnd: Hwnd, rect: Rect) -> Option<Rect> {
         if hwnd.is_null() {
             return None;
         }
         let mut origin = Point {
-            x: rect.x,
-            y: rect.y,
+            x: rect.left,
+            y: rect.top,
         };
         if ClientToScreen(hwnd, &mut origin) == 0 {
             return None;
         }
+        let width = rect.right.saturating_sub(rect.left).max(2);
+        let height = rect.bottom.saturating_sub(rect.top).max(2);
 
         Some(Rect {
             left: origin.x,
             top: origin.y,
-            right: origin.x.saturating_add(rect.width.max(2)),
-            bottom: origin.y.saturating_add(rect.height.max(2)),
+            right: origin.x.saturating_add(width),
+            bottom: origin.y.saturating_add(height),
         })
     }
 
@@ -689,10 +702,13 @@ pub(crate) mod win32_renderer_window {
         Some(info.rc_monitor)
     }
 
-    fn target_renderer_rect() -> Option<Rect> {
-        RENDER_TARGET_RECT
+    unsafe fn target_renderer_rect() -> Option<Rect> {
+        let target = RENDER_TARGET_SURFACE
             .get()
-            .and_then(|rect| rect.lock().ok().and_then(|rect| *rect))
+            .and_then(|surface| surface.lock().ok().and_then(|surface| *surface))?;
+        let hwnd = target.hwnd as Hwnd;
+        render_rect_to_screen_rect(hwnd, target.client_rect)
+            .or_else(|| monitor_rect_for_window(hwnd))
     }
 
     unsafe fn begin_input_capture(hwnd: Hwnd) {
