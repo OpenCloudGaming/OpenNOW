@@ -203,6 +203,22 @@ export async function testCodecSupport(): Promise<CodecTestResult[]> {
 
 export type CodecDecodeBadgeState = "gpu" | "cpu" | "testing" | null;
 
+function isLinuxClient(): boolean {
+  const platform = navigator.platform?.toLowerCase() ?? "";
+  const ua = navigator.userAgent?.toLowerCase() ?? "";
+  return platform.includes("linux") || ua.includes("linux");
+}
+
+export function shouldShowLinuxHardwareCodecHint(results: CodecTestResult[] | null): boolean {
+  if (!results || results.length === 0 || !isLinuxClient()) {
+    return false;
+  }
+
+  return results.some((result) => result.decodeSupported && !result.hwAccelerated)
+    || results.some((result) => result.encodeSupported && !result.encodeHwAccelerated)
+    || results.some((result) => result.codec === "H265" && !result.decodeSupported);
+}
+
 export function getCodecDecodeBadgeState(
   codec: VideoCodec,
   codecResults: CodecTestResult[] | null,
