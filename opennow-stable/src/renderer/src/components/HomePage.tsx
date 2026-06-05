@@ -5,9 +5,10 @@ import { isOwnedLibraryStatus } from "@shared/gfn";
 import type { CatalogFilterGroup, CatalogSortOption, GameInfo, GamePanelResult, GameVariant } from "@shared/gfn";
 import { GameCard, getStoreDisplayName, getStoreIconComponent } from "./GameCard";
 import { useTranslation } from "../i18n";
+import { controllerButton, readControllerGamepadButtons } from "../utils/controllerGamepad";
 
 const CONTROLLER_STORE_HERO_ROTATION_MS = 7000;
-const CONTROLLER_MOVE_REPEAT_MS = 220;
+const CONTROLLER_MOVE_REPEAT_MS = 140;
 
 const CONTROLLER_STORE_PROMINENT_IMAGE_KEYS = [
   "MARQUEE_HERO_IMAGE",
@@ -246,12 +247,16 @@ export function HomePage({
   storeHeroGames = [],
   activeSessionAppIds = [],
   onBuyGame,
+  onPreviousControllerPage,
+  onNextControllerPage,
 }: HomePageProps): JSX.Element {
   const { t } = useTranslation();
   const [controllerHeroIndex, setControllerHeroIndex] = useState(0);
   const [focusedRowIndex, setFocusedRowIndex] = useState(0);
   const [focusedColumnIndex, setFocusedColumnIndex] = useState(0);
+  const [controllerSearchOpen, setControllerSearchOpen] = useState(false);
   const rowRefs = useRef<Array<HTMLDivElement | null>>([]);
+  const controllerSearchInputRef = useRef<HTMLInputElement | null>(null);
   const gamepadPreviousButtonsRef = useRef(0);
   const gamepadLastMoveAtRef = useRef(0);
   const gamepadFrameRef = useRef<number | null>(null);
@@ -323,6 +328,11 @@ export function HomePage({
   }, [cycleFocusedVariant, focusedColumnIndex, focusedRowIndex, focusTile, launchFocusedTile]);
 
   useEffect(() => {
+    if (!controllerMode || !controllerSearchOpen) return;
+    controllerSearchInputRef.current?.focus();
+  }, [controllerMode, controllerSearchOpen]);
+
+  useEffect(() => {
     if (!controllerMode) return;
     setControllerHeroIndex(0);
   }, [controllerHeroGames, controllerMode]);
@@ -345,6 +355,13 @@ export function HomePage({
   useEffect(() => {
     if (!controllerMode) return;
     const handleKeyDown = (event: KeyboardEvent) => {
+      if (controllerSearchOpen) {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          setControllerSearchOpen(false);
+        }
+        return;
+      }
       if (event.key === "ArrowLeft") {
         event.preventDefault();
         focusTile(focusedRowIndex, focusedColumnIndex - 1);
@@ -357,7 +374,22 @@ export function HomePage({
       } else if (event.key === "ArrowDown") {
         event.preventDefault();
         focusTile(focusedRowIndex + 1, focusedColumnIndex);
-      } else if (event.key.toLowerCase() === "y") {
+      } else if (event.key.toLowerCase() === "x") {
+        event.preventDefault();
+        setControllerSearchOpen(true);
+      } else if (event.key === "Escape") {
+        event.preventDefault();
+        onPreviousControllerPage?.();
+      } else if (event.key.toLowerCase() === "b") {
+        event.preventDefault();
+        onPreviousControllerPage?.();
+      } else if (event.key === "[") {
+        event.preventDefault();
+        onPreviousControllerPage?.();
+      } else if (event.key === "]") {
+        event.preventDefault();
+        onNextControllerPage?.();
+      } else if (event.key.toLowerCase() === "m" || event.key.toLowerCase() === "y") {
         event.preventDefault();
         cycleFocusedVariant();
       } else if (event.key === "Enter" || event.key === " ") {
@@ -367,27 +399,19 @@ export function HomePage({
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [controllerMode, cycleFocusedVariant, focusedColumnIndex, focusedRowIndex, focusTile, launchFocusedTile]);
+  }, [controllerMode, controllerSearchOpen, cycleFocusedVariant, focusedColumnIndex, focusedRowIndex, focusTile, launchFocusedTile, onNextControllerPage, onPreviousControllerPage]);
 
   useEffect(() => {
     if (!controllerMode) return;
     const readButtons = (): number => {
       const pad = navigator.getGamepads?.().find((gamepad): gamepad is Gamepad => Boolean(gamepad));
-      if (!pad) return 0;
-      let buttons = 0;
-      if (pad.buttons[0]?.pressed) buttons |= 1 << 0;
-      if (pad.buttons[3]?.pressed) buttons |= 1 << 1;
-      if (pad.buttons[12]?.pressed || (pad.axes[1] ?? 0) < -0.65) buttons |= 1 << 2;
-      if (pad.buttons[13]?.pressed || (pad.axes[1] ?? 0) > 0.65) buttons |= 1 << 3;
-      if (pad.buttons[14]?.pressed || (pad.axes[0] ?? 0) < -0.65) buttons |= 1 << 4;
-      if (pad.buttons[15]?.pressed || (pad.axes[0] ?? 0) > 0.65) buttons |= 1 << 5;
-      return buttons;
+      return readControllerGamepadButtons(pad);
     };
 
     const handleGamepadFrame = () => {
       const buttons = readButtons();
       let pressed = buttons & ~gamepadPreviousButtonsRef.current;
-      const moveMask = (1 << 2) | (1 << 3) | (1 << 4) | (1 << 5);
+      const moveMask = controllerButton.up | controllerButton.down | controllerButton.left | controllerButton.right;
       const now = performance.now();
       const activeMoves = buttons & moveMask;
       const pressedMoves = pressed & moveMask;
@@ -406,12 +430,23 @@ export function HomePage({
         focusedColumnIndex: columnIndex,
       } = controllerInputStateRef.current;
 
-      if (pressed & (1 << 0)) launchControllerTile();
-      if (pressed & (1 << 1)) cycleControllerVariant();
-      if (pressed & (1 << 2)) focusControllerTile(rowIndex - 1, columnIndex);
-      if (pressed & (1 << 3)) focusControllerTile(rowIndex + 1, columnIndex);
-      if (pressed & (1 << 4)) focusControllerTile(rowIndex, columnIndex - 1);
-      if (pressed & (1 << 5)) focusControllerTile(rowIndex, columnIndex + 1);
+      if (controllerSearchOpen) {
+        if (pressed & controllerButton.east) setControllerSearchOpen(false);
+        gamepadPreviousButtonsRef.current = buttons;
+        gamepadFrameRef.current = window.requestAnimationFrame(handleGamepadFrame);
+        return;
+      }
+
+      if (pressed & controllerButton.south) launchControllerTile();
+      if (pressed & controllerButton.east) onPreviousControllerPage?.();
+      if (pressed & controllerButton.west) setControllerSearchOpen(true);
+      if (pressed & controllerButton.leftShoulder) onPreviousControllerPage?.();
+      if (pressed & controllerButton.rightShoulder) onNextControllerPage?.();
+      if (pressed & controllerButton.menu) cycleControllerVariant();
+      if (pressed & controllerButton.up) focusControllerTile(rowIndex - 1, columnIndex);
+      if (pressed & controllerButton.down) focusControllerTile(rowIndex + 1, columnIndex);
+      if (pressed & controllerButton.left) focusControllerTile(rowIndex, columnIndex - 1);
+      if (pressed & controllerButton.right) focusControllerTile(rowIndex, columnIndex + 1);
       gamepadPreviousButtonsRef.current = buttons;
       gamepadFrameRef.current = window.requestAnimationFrame(handleGamepadFrame);
     };
@@ -446,7 +481,7 @@ export function HomePage({
       window.removeEventListener("gamepaddisconnected", handleDisconnect);
       stopGamepadNavigation();
     };
-  }, [controllerMode]);
+  }, [controllerMode, controllerSearchOpen, onNextControllerPage, onPreviousControllerPage]);
 
   if (controllerMode) {
     const showInitialLoading = isLoading && controllerSections.length === 0;
@@ -539,6 +574,23 @@ export function HomePage({
               <div className="controller-hint"><span className="controller-button controller-button--x">X</span><span>{t("app.actions.search")}</span></div>
               <div className="controller-hint controller-hint--more"><span className="controller-menu-button"><Menu size={22} /></span><span>{t("library.moreOptions")}</span></div>
             </div>
+
+            {controllerSearchOpen && (
+              <div className="controller-search-overlay" role="dialog" aria-modal="true" aria-label={t("app.actions.search")}>
+                <div className="controller-search-panel">
+                  <span className="controller-search-eyebrow">{t("app.actions.search")}</span>
+                  <input
+                    ref={controllerSearchInputRef}
+                    type="text"
+                    value={searchQuery}
+                    onChange={(event) => onSearchChange(event.target.value)}
+                    placeholder={t("home.searchPlaceholder")}
+                    className="controller-search-input"
+                  />
+                  <p>{t("app.actions.back")}</p>
+                </div>
+              </div>
+            )}
           </>
         )}
       </div>

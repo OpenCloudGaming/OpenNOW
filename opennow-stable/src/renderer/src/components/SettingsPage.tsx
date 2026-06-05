@@ -31,7 +31,7 @@ import {
   USER_FACING_VIDEO_CODEC_OPTIONS,
 } from "@shared/gfn";
 import { formatShortcutForDisplay, normalizeShortcut, shortcutFromKeyboardEvent } from "../shortcuts";
-import { getCodecDecodeBadgeState, type CodecTestResult } from "../lib/codecDiagnostics";
+import { getCodecDecodeBadgeState, shouldShowLinuxHardwareCodecHint, type CodecTestResult } from "../lib/codecDiagnostics";
 import { getAccentColorOption, getAccentColorOptions } from "../lib/uiCustomization";
 import { useTranslation } from "../i18n";
 import {
@@ -2363,6 +2363,11 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                     </div>
                     {codecTestOpen && codecResults && (
                       <div className="codec-results">
+                        {shouldShowLinuxHardwareCodecHint(codecResults) ? (
+                          <div className="codec-result-hint">
+                            {t("settings.codecDiagnostics.linuxHardwareHint")}
+                          </div>
+                        ) : null}
                         {codecResults.map((result) => (
                           <div key={result.codec} className="codec-result-card">
                             <div className="codec-result-header">
