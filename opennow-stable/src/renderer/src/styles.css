@@ -5533,6 +5533,17 @@ button.game-card-store-chip.owned.active:hover {
   gap: 12px;
 }
 
+.codec-result-hint {
+  grid-column: 1 / -1;
+  color: var(--text-secondary);
+  font-size: 0.82rem;
+  line-height: 1.45;
+  background: rgba(245, 158, 11, 0.08);
+  border: 1px solid rgba(245, 158, 11, 0.22);
+  border-radius: 12px;
+  padding: 0.7rem 0.8rem;
+}
+
 .codec-result-card {
   background: var(--bg-a);
   border: 1px solid var(--panel-border);
