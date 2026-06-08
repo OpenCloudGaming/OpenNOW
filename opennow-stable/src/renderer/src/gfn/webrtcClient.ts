@@ -685,6 +685,7 @@ export class GfnWebRtcClient {
   private pointerLockRelockTimer: number | null = null;
   // Skip one synthetic Escape on pointer loss when lock was released intentionally (e.g. F8).
   private suppressNextSyntheticEscape = false;
+  private syntheticEscapeSuppressionTimer: number | null = null;
   private keyboardLockState: "unknown" | "unsupported" | "locked" | "failed" = "unknown";
   private lastLockKeysState = -1;
   private mouseBackpressureLoggedAtMs = 0;
@@ -879,6 +880,32 @@ export class GfnWebRtcClient {
   public setAutoFullScreen(value: boolean): void {
     this.autoFullScreenEnabled = Boolean(value);
     this.log(`Auto fullscreen ${this.autoFullScreenEnabled ? "enabled" : "disabled"}`);
+  }
+
+  public suppressNextSyntheticEscapeOnPointerLockLoss(durationMs = 1000): void {
+    this.suppressNextSyntheticEscape = true;
+    if (this.syntheticEscapeSuppressionTimer !== null) {
+      window.clearTimeout(this.syntheticEscapeSuppressionTimer);
+    }
+    this.syntheticEscapeSuppressionTimer = window.setTimeout(() => {
+      this.clearSyntheticEscapeSuppression();
+    }, Math.max(0, durationMs));
+  }
+
+  private clearSyntheticEscapeSuppression(): void {
+    this.suppressNextSyntheticEscape = false;
+    if (this.syntheticEscapeSuppressionTimer !== null) {
+      window.clearTimeout(this.syntheticEscapeSuppressionTimer);
+      this.syntheticEscapeSuppressionTimer = null;
+    }
+  }
+
+  private consumeSyntheticEscapeSuppression(): boolean {
+    if (!this.suppressNextSyntheticEscape) {
+      return false;
+    }
+    this.clearSyntheticEscapeSuppression();
+    return true;
   }
 
   /**
@@ -1193,6 +1220,7 @@ export class GfnWebRtcClient {
       window.clearTimeout(this.gamepadPollTimer);
       this.gamepadPollTimer = null;
     }
+    this.clearSyntheticEscapeSuppression();
   }
 
   private setupStatsPolling(): void {
@@ -3601,7 +3629,7 @@ export class GfnWebRtcClient {
           window.clearTimeout(this.pointerLockRelockTimer);
           this.pointerLockRelockTimer = null;
         }
-        this.suppressNextSyntheticEscape = false;
+        this.clearSyntheticEscapeSuppression();
         // Try to acquire keyboard lock for low-level key capture (best-effort).
         try {
           this.requestEscapeKeyboardLock();
@@ -3627,8 +3655,7 @@ export class GfnWebRtcClient {
       // Pointer lock was lost
       if (!this.inputReady) return;
 
-      if (this.suppressNextSyntheticEscape) {
-        this.suppressNextSyntheticEscape = false;
+      if (this.consumeSyntheticEscapeSuppression()) {
         this.releasePressedKeys("pointer lock intentionally released");
         return;
       }
@@ -3914,6 +3941,7 @@ export class GfnWebRtcClient {
         window.clearTimeout(this.pointerLockRelockTimer);
         this.pointerLockRelockTimer = null;
       }
+      this.clearSyntheticEscapeSuppression();
       this.releasePressedKeys("input cleanup");
       this.pendingMouseDxFloat = 0;
       this.pendingMouseDyFloat = 0;
