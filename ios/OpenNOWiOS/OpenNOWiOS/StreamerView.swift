@@ -3907,9 +3907,9 @@ private final class NativeControllerBridge {
 
         let axes: [Double] = [
             clampAxis(gamepad.leftThumbstick.xAxis.value),
-            clampAxis(gamepad.leftThumbstick.yAxis.value),
+            clampAxis(-gamepad.leftThumbstick.yAxis.value),
             clampAxis(gamepad.rightThumbstick.xAxis.value),
-            clampAxis(gamepad.rightThumbstick.yAxis.value)
+            clampAxis(-gamepad.rightThumbstick.yAxis.value)
         ]
 
         return [
