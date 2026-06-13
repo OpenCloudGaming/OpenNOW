@@ -66,7 +66,7 @@ pub(crate) fn start_external_renderer_window_guard(
 ) {
     thread::spawn(move || {
         let mut logged = false;
-        for _ in 0..200 {
+        while !stop.load(Ordering::SeqCst) {
             if stop.load(Ordering::SeqCst) {
                 break;
             }
@@ -105,8 +105,7 @@ pub(crate) fn set_native_shortcut_bindings(bindings: &NativeStreamerShortcutBind
 }
 
 #[cfg(not(target_os = "windows"))]
-pub(crate) fn set_native_shortcut_bindings(_bindings: &NativeStreamerShortcutBindings) {
-}
+pub(crate) fn set_native_shortcut_bindings(_bindings: &NativeStreamerShortcutBindings) {}
 
 #[cfg(target_os = "windows")]
 pub(crate) fn clear_native_shortcut_bindings() {
@@ -116,12 +115,34 @@ pub(crate) fn clear_native_shortcut_bindings() {
 }
 
 #[cfg(not(target_os = "windows"))]
-pub(crate) fn clear_native_shortcut_bindings() {
+pub(crate) fn clear_native_shortcut_bindings() {}
+
+#[cfg(target_os = "windows")]
+pub(crate) fn update_external_renderer_surface(surface: &NativeRenderSurface) {
+    let target = surface
+        .window_handle
+        .as_deref()
+        .and_then(|window_handle| parse_window_handle(window_handle).ok())
+        .and_then(|window_handle| {
+            surface
+                .visible
+                .then_some(())
+                .and(surface.rect.as_ref())
+                .map(|rect| (window_handle, normalized_render_rect(Some(rect))))
+        });
+
+    unsafe {
+        win32_renderer_window::set_render_target_surface(target);
+    }
 }
+
+#[cfg(not(target_os = "windows"))]
+pub(crate) fn update_external_renderer_surface(_surface: &NativeRenderSurface) {}
 
 #[cfg(target_os = "windows")]
 pub(crate) mod win32_renderer_window {
     use crate::gstreamer_input::NativeWindowInputEvent;
+    use crate::protocol::NativeRenderRect;
     use crate::protocol::{NativeStreamerShortcutAction, NativeStreamerShortcutBindings};
     use crate::shortcuts::NativeShortcutMatcher;
     use std::collections::{HashMap, HashSet};
@@ -235,6 +256,12 @@ pub(crate) mod win32_renderer_window {
         area: i64,
     }
 
+    #[derive(Clone, Copy)]
+    struct RenderTargetSurface {
+        hwnd: isize,
+        client_rect: Rect,
+    }
+
     #[repr(C)]
     #[derive(Clone, Copy)]
     struct Rect {
@@ -242,6 +269,13 @@ pub(crate) mod win32_renderer_window {
         top: i32,
         right: i32,
         bottom: i32,
+    }
+
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct Point {
+        x: i32,
+        y: i32,
     }
 
     #[repr(C)]
@@ -315,6 +349,7 @@ pub(crate) mod win32_renderer_window {
     static ESCAPE_HOLD_TOKEN: OnceLock<AtomicU64> = OnceLock::new();
     static ESCAPE_KEY_PRESS: OnceLock<Mutex<Option<EscapeKeyPress>>> = OnceLock::new();
     static SHORTCUT_MATCHER: OnceLock<Mutex<NativeShortcutMatcher>> = OnceLock::new();
+    static RENDER_TARGET_SURFACE: OnceLock<Mutex<Option<RenderTargetSurface>>> = OnceLock::new();
 
     #[link(name = "user32")]
     unsafe extern "system" {
@@ -325,6 +360,7 @@ pub(crate) mod win32_renderer_window {
             wparam: Wparam,
             lparam: Lparam,
         ) -> Lresult;
+        fn ClientToScreen(hwnd: Hwnd, point: *mut Point) -> Bool;
         fn ClipCursor(rect: *const Rect) -> Bool;
         fn DefWindowProcW(hwnd: Hwnd, message: Uint, wparam: Wparam, lparam: Lparam) -> Lresult;
         fn EnumWindows(
@@ -370,6 +406,22 @@ pub(crate) mod win32_renderer_window {
     #[link(name = "kernel32")]
     unsafe extern "system" {
         fn GetCurrentProcessId() -> u32;
+    }
+
+    pub unsafe fn set_render_target_surface(target: Option<(usize, NativeRenderRect)>) {
+        let target_surface = target.map(|(window_handle, rect)| RenderTargetSurface {
+            hwnd: window_handle as isize,
+            client_rect: Rect {
+                left: rect.x,
+                top: rect.y,
+                right: rect.x.saturating_add(rect.width.max(2)),
+                bottom: rect.y.saturating_add(rect.height.max(2)),
+            },
+        });
+        let slot = RENDER_TARGET_SURFACE.get_or_init(|| Mutex::new(None));
+        if let Ok(mut current) = slot.lock() {
+            *current = target_surface;
+        }
     }
 
     pub unsafe fn set_input_event_sender(sender: Option<Sender<NativeWindowInputEvent>>) {
@@ -496,7 +548,7 @@ pub(crate) mod win32_renderer_window {
             configured = true;
         }
 
-        if let Some(rect) = monitor_rect_for_window(hwnd) {
+        if let Some(rect) = target_renderer_rect().or_else(|| monitor_rect_for_window(hwnd)) {
             SetWindowPos(
                 hwnd,
                 HWND_NOTOPMOST,
@@ -520,6 +572,28 @@ pub(crate) mod win32_renderer_window {
         }
 
         configured
+    }
+
+    unsafe fn render_rect_to_screen_rect(hwnd: Hwnd, rect: Rect) -> Option<Rect> {
+        if hwnd.is_null() {
+            return None;
+        }
+        let mut origin = Point {
+            x: rect.left,
+            y: rect.top,
+        };
+        if ClientToScreen(hwnd, &mut origin) == 0 {
+            return None;
+        }
+        let width = rect.right.saturating_sub(rect.left).max(2);
+        let height = rect.bottom.saturating_sub(rect.top).max(2);
+
+        Some(Rect {
+            left: origin.x,
+            top: origin.y,
+            right: origin.x.saturating_add(width),
+            bottom: origin.y.saturating_add(height),
+        })
     }
 
     unsafe fn install_input_wndproc(hwnd: Hwnd) -> bool {
@@ -561,8 +635,8 @@ pub(crate) mod win32_renderer_window {
             handle_raw_input(lparam as Hrawinput);
             return 0;
         }
-        let handled_legacy_shortcut =
-            is_keyboard_message(message) && handle_legacy_shortcut_keyboard(message, wparam, lparam);
+        let handled_legacy_shortcut = is_keyboard_message(message)
+            && handle_legacy_shortcut_keyboard(message, wparam, lparam);
         if handled_legacy_shortcut {
             return 0;
         }
@@ -628,12 +702,21 @@ pub(crate) mod win32_renderer_window {
         Some(info.rc_monitor)
     }
 
+    unsafe fn target_renderer_rect() -> Option<Rect> {
+        let target = RENDER_TARGET_SURFACE
+            .get()
+            .and_then(|surface| surface.lock().ok().and_then(|surface| *surface))?;
+        let hwnd = target.hwnd as Hwnd;
+        render_rect_to_screen_rect(hwnd, target.client_rect)
+            .or_else(|| monitor_rect_for_window(hwnd))
+    }
+
     unsafe fn begin_input_capture(hwnd: Hwnd) {
         SetForegroundWindow(hwnd);
         SetFocus(hwnd);
         SetCapture(hwnd);
         register_raw_input_devices(hwnd);
-        if let Some(rect) = monitor_rect_for_window(hwnd) {
+        if let Some(rect) = target_renderer_rect().or_else(|| monitor_rect_for_window(hwnd)) {
             ClipCursor(&rect);
         }
         hide_cursor();
@@ -989,20 +1072,26 @@ pub(crate) mod win32_renderer_window {
             }
             let modifiers = current_modifier_flags(&keys);
             if let Some(action) = shortcut_action_for_keypress(keycode, scancode, modifiers) {
-                keys.insert(scancode, PressedKey {
-                    keycode,
+                keys.insert(
                     scancode,
-                    suppressed: true,
-                });
+                    PressedKey {
+                        keycode,
+                        scancode,
+                        suppressed: true,
+                    },
+                );
                 drop(keys);
                 handle_shortcut_action(action);
                 return;
             }
-            keys.insert(scancode, PressedKey {
-                keycode,
+            keys.insert(
                 scancode,
-                suppressed: false,
-            });
+                PressedKey {
+                    keycode,
+                    scancode,
+                    suppressed: false,
+                },
+            );
         } else {
             let Some(previous) = keys.remove(&scancode) else {
                 return;
@@ -1250,7 +1339,8 @@ pub(crate) mod win32_renderer_window {
     fn shortcut_action_releases_input_capture(action: NativeStreamerShortcutAction) -> bool {
         matches!(
             action,
-            NativeStreamerShortcutAction::ToggleFullscreen | NativeStreamerShortcutAction::StopStream
+            NativeStreamerShortcutAction::ToggleFullscreen
+                | NativeStreamerShortcutAction::StopStream
         )
     }
 
