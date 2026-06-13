@@ -248,6 +248,7 @@ export function App(): JSX.Element {
     posterSizeScale: 1,
     fps: 60,
     maxBitrateMbps: 75,
+    recordingBitrateMbps: null,
     streamClientMode: "web",
     nativeStreamerBackend: "gstreamer",
     nativeVideoBackend: "auto",
@@ -1013,6 +1014,9 @@ export function App(): JSX.Element {
 
   const setSessionFullscreen = useCallback(async (nextFullscreen: boolean) => {
     const canUseNativeFullscreen = typeof window.openNow?.setFullscreen === "function";
+    if (document.pointerLockElement) {
+      clientRef.current?.suppressNextSyntheticEscapeOnPointerLockLoss();
+    }
 
     if (canUseNativeFullscreen) {
       try {
@@ -3342,13 +3346,7 @@ export function App(): JSX.Element {
 
   const releasePointerLockIfNeeded = useCallback(async () => {
     if (document.pointerLockElement) {
-      // Tell the client to suppress synthetic Escape/reactive re-acquisition
-      try {
-        // clientRef is a mutable ref to the GfnWebRtcClient instance; access runtime property
-        (clientRef.current as any).suppressNextSyntheticEscape = true;
-      } catch (e) {
-        // ignore
-      }
+      clientRef.current?.suppressNextSyntheticEscapeOnPointerLockLoss();
       document.exitPointerLock();
       await sleep(75);
     }
@@ -3387,10 +3385,7 @@ export function App(): JSX.Element {
           const targetVideo = videoRef.current;
           if (streamStatus === "streaming" && targetVideo) {
             if (document.pointerLockElement === targetVideo) {
-              const client = clientRef.current as { suppressNextSyntheticEscape?: boolean } | null;
-              if (client) {
-                client.suppressNextSyntheticEscape = true;
-              }
+              clientRef.current?.suppressNextSyntheticEscapeOnPointerLockLoss();
               document.exitPointerLock();
             } else {
               void requestPointerLockCapture(targetVideo);
@@ -3653,6 +3648,7 @@ export function App(): JSX.Element {
             isFullscreen={sessionFullscreen || !!document.fullscreenElement}
             isConnecting={streamStatus === "connecting"}
             isStreaming={isStreaming}
+            recordingBitrateMbps={settings.recordingBitrateMbps}
             gameTitle={streamingGame?.title ?? t("app.labels.game")}
             platformStore={streamingStore ?? undefined}
             onToggleFullscreen={() => {

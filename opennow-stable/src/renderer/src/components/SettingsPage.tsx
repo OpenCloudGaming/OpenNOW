@@ -2263,6 +2263,44 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                 </div>
 
                 <div className="settings-row settings-row--column">
+                  <div className="settings-row-top">
+                    <label className="settings-label">{t("settings.video.recordingBitrate")}</label>
+                    <span className="settings-value-badge">
+                      {settings.recordingBitrateMbps === null
+                        ? t("app.labels.auto")
+                        : `${settings.recordingBitrateMbps} Mbps`}
+                    </span>
+                  </div>
+                  <div className="settings-chip-row">
+                    <button
+                      type="button"
+                      className={`settings-chip ${settings.recordingBitrateMbps === null ? "active" : ""}`}
+                      onClick={() => handleChange("recordingBitrateMbps", null)}
+                    >
+                      <span>{t("app.labels.auto")}</span>
+                    </button>
+                    <button
+                      type="button"
+                      className={`settings-chip ${settings.recordingBitrateMbps !== null ? "active" : ""}`}
+                      onClick={() => handleChange("recordingBitrateMbps", settings.recordingBitrateMbps ?? 75)}
+                    >
+                      <span>{t("settings.video.customBitrate")}</span>
+                    </button>
+                  </div>
+                  <input
+                    type="range"
+                    className="settings-slider"
+                    min={5}
+                    max={200}
+                    step={5}
+                    value={settings.recordingBitrateMbps ?? 75}
+                    disabled={settings.recordingBitrateMbps === null}
+                    onChange={(e) => handleChange("recordingBitrateMbps", parseInt(e.target.value, 10))}
+                  />
+                  <span className="settings-subtle-hint">{t("settings.video.recordingBitrateHint")}</span>
+                </div>
+
+                <div className="settings-row settings-row--column">
                   <div className="settings-row-top settings-row-top--compact">
                     <label className="settings-label settings-label--wrap">
                       <span className="settings-label-title">
