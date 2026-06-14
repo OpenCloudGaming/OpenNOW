@@ -5,6 +5,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.os.SystemClock
 import android.view.Display
 import android.view.InputDevice
 import android.view.KeyEvent
@@ -19,6 +20,8 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.viewModels
 import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
@@ -30,6 +33,8 @@ class MainActivity : ComponentActivity() {
     private var streamSystemUiActive = false
     private var streamDisplayRefreshActive = false
     private var streamDisplayRefreshFps = 60
+    private var streamSystemUiEnforcerJob: Job? = null
+    private var lastStreamSystemUiInputReapplyMs = 0L
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -66,6 +71,9 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun dispatchGenericMotionEvent(event: MotionEvent): Boolean {
+        if (streamSystemUiActive && event.isMouseLikePointerEvent()) {
+            enforceStreamSystemUiFromInput()
+        }
         return NativeStreamInputRouter.dispatchMotion(event) ||
             dispatchGamepadHatNavigation(event) ||
             super.dispatchGenericMotionEvent(event)
@@ -115,10 +123,22 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    fun enforceStreamSystemUiFromInput() {
+        if (!streamSystemUiActive) return
+        val now = SystemClock.uptimeMillis()
+        if (now - lastStreamSystemUiInputReapplyMs < STREAM_SYSTEM_UI_INPUT_REAPPLY_MS) return
+        lastStreamSystemUiInputReapplyMs = now
+        applyStreamSystemUi(true, force = true)
+    }
+
     private fun applyStreamSystemUi(active: Boolean, force: Boolean = false) {
-        if (!force && streamSystemUiActive == active) return
+        if (!force && streamSystemUiActive == active) {
+            updateStreamSystemUiEnforcer(active)
+            return
+        }
         streamSystemUiActive = active
         applyStreamPointerIcon(active)
+        updateStreamSystemUiEnforcer(active)
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
             window.attributes = window.attributes.apply {
@@ -151,6 +171,23 @@ class MainActivity : ComponentActivity() {
                     View.SYSTEM_UI_FLAG_LAYOUT_STABLE
             } else {
                 0
+            }
+        }
+    }
+
+    private fun updateStreamSystemUiEnforcer(active: Boolean) {
+        if (!active) {
+            streamSystemUiEnforcerJob?.cancel()
+            streamSystemUiEnforcerJob = null
+            return
+        }
+        if (streamSystemUiEnforcerJob?.isActive == true) return
+        streamSystemUiEnforcerJob = lifecycleScope.launch {
+            while (streamSystemUiActive) {
+                delay(STREAM_SYSTEM_UI_ENFORCE_INTERVAL_MS)
+                if (streamSystemUiActive) {
+                    applyStreamSystemUi(true, force = true)
+                }
             }
         }
     }
@@ -289,5 +326,19 @@ class MainActivity : ComponentActivity() {
                 getChildAt(index).applyPointerIconRecursive(icon)
             }
         }
+    }
+
+    private fun MotionEvent.isMouseLikePointerEvent(): Boolean {
+        val controllerSource =
+            (source and InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK ||
+                (source and InputDevice.SOURCE_GAMEPAD) == InputDevice.SOURCE_GAMEPAD
+        return (source and InputDevice.SOURCE_MOUSE) == InputDevice.SOURCE_MOUSE ||
+            (source and InputDevice.SOURCE_MOUSE_RELATIVE) == InputDevice.SOURCE_MOUSE_RELATIVE ||
+            ((source and InputDevice.SOURCE_TOUCHPAD) == InputDevice.SOURCE_TOUCHPAD && !controllerSource)
+    }
+
+    private companion object {
+        private const val STREAM_SYSTEM_UI_ENFORCE_INTERVAL_MS = 750L
+        private const val STREAM_SYSTEM_UI_INPUT_REAPPLY_MS = 350L
     }
 }

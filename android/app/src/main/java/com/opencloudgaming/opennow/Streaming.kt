@@ -556,8 +556,7 @@ object NativeStreamInputRouter {
     }
 
     private fun KeyEvent.isStreamSystemMenuKey(): Boolean =
-        keyCode == KeyEvent.KEYCODE_BUTTON_MODE ||
-            keyCode == KeyEvent.KEYCODE_MENU
+        keyCode == KeyEvent.KEYCODE_MENU
 
     private fun KeyEvent.isStreamControlsShortcutKey(): Boolean =
         !streamUiActive &&
@@ -781,6 +780,113 @@ object InputDataChannelLabels {
         }
 }
 
+internal object GamepadButtonMapping {
+    const val DPAD_UP = 0x0001
+    const val DPAD_DOWN = 0x0002
+    const val DPAD_LEFT = 0x0004
+    const val DPAD_RIGHT = 0x0008
+    const val START = 0x0010
+    const val BACK = 0x0020
+    const val LEFT_THUMB = 0x0040
+    const val RIGHT_THUMB = 0x0080
+    const val LEFT_SHOULDER = 0x0100
+    const val RIGHT_SHOULDER = 0x0200
+    const val GUIDE = 0x0400
+    const val A = 0x1000
+    const val B = 0x2000
+    const val X = 0x4000
+    const val Y = 0x8000
+
+    fun maskForKeyCode(keyCode: Int): Int? = when (keyCode) {
+        KeyEvent.KEYCODE_DPAD_UP -> DPAD_UP
+        KeyEvent.KEYCODE_DPAD_DOWN -> DPAD_DOWN
+        KeyEvent.KEYCODE_DPAD_LEFT -> DPAD_LEFT
+        KeyEvent.KEYCODE_DPAD_RIGHT -> DPAD_RIGHT
+        KeyEvent.KEYCODE_BUTTON_START -> START
+        KeyEvent.KEYCODE_BUTTON_SELECT -> BACK
+        KeyEvent.KEYCODE_BUTTON_THUMBL -> LEFT_THUMB
+        KeyEvent.KEYCODE_BUTTON_THUMBR -> RIGHT_THUMB
+        KeyEvent.KEYCODE_BUTTON_L1 -> LEFT_SHOULDER
+        KeyEvent.KEYCODE_BUTTON_R1 -> RIGHT_SHOULDER
+        KeyEvent.KEYCODE_BUTTON_MODE -> GUIDE
+        KeyEvent.KEYCODE_BUTTON_A -> A
+        KeyEvent.KEYCODE_BUTTON_B -> B
+        KeyEvent.KEYCODE_BUTTON_X -> X
+        KeyEvent.KEYCODE_BUTTON_Y -> Y
+        else -> null
+    }
+
+    fun isControllerButtonKeyCode(keyCode: Int): Boolean =
+        keyCode == KeyEvent.KEYCODE_BUTTON_L2 ||
+            keyCode == KeyEvent.KEYCODE_BUTTON_R2 ||
+            keyCode in KeyEvent.KEYCODE_BUTTON_A..KeyEvent.KEYCODE_BUTTON_MODE
+}
+
+internal sealed interface StreamLivenessAction {
+    data object None : StreamLivenessAction
+    data class RequestKeyframe(val stalledMs: Long, val attempt: Int) : StreamLivenessAction
+    data class RestartTransport(val stalledMs: Long) : StreamLivenessAction
+}
+
+internal class StreamLivenessWatchdog(
+    private val keyframeAfterMs: Long = MEDIA_STALL_KEYFRAME_AFTER_MS,
+    private val keyframeIntervalMs: Long = MEDIA_STALL_KEYFRAME_INTERVAL_MS,
+    private val restartAfterMs: Long = MEDIA_STALL_RESTART_AFTER_MS,
+) {
+    private var lastProgressAtMs: Long? = null
+    private var lastBytesReceived: Long? = null
+    private var lastFramesDecoded: Long? = null
+    private var lastKeyframeRequestAtMs = Long.MIN_VALUE
+    private var keyframeAttempts = 0
+
+    fun reset() {
+        lastProgressAtMs = null
+        lastBytesReceived = null
+        lastFramesDecoded = null
+        lastKeyframeRequestAtMs = Long.MIN_VALUE
+        keyframeAttempts = 0
+    }
+
+    fun markConnected(nowMs: Long) {
+        lastProgressAtMs = nowMs
+        lastKeyframeRequestAtMs = Long.MIN_VALUE
+        keyframeAttempts = 0
+    }
+
+    fun observe(nowMs: Long, bytesReceived: Long?, framesDecoded: Long?, connected: Boolean): StreamLivenessAction {
+        if (!connected) {
+            reset()
+            return StreamLivenessAction.None
+        }
+
+        val progressed =
+            (bytesReceived != null && lastBytesReceived != null && bytesReceived > lastBytesReceived!!) ||
+                (framesDecoded != null && lastFramesDecoded != null && framesDecoded > lastFramesDecoded!!)
+        if (bytesReceived != null) lastBytesReceived = bytesReceived
+        if (framesDecoded != null) lastFramesDecoded = framesDecoded
+        if (progressed) {
+            lastProgressAtMs = nowMs
+            lastKeyframeRequestAtMs = Long.MIN_VALUE
+            keyframeAttempts = 0
+            return StreamLivenessAction.None
+        }
+
+        val stalledMs = nowMs - (lastProgressAtMs ?: nowMs.also { lastProgressAtMs = it })
+        if (stalledMs >= restartAfterMs) {
+            reset()
+            return StreamLivenessAction.RestartTransport(stalledMs)
+        }
+        val keyframeDue = lastKeyframeRequestAtMs == Long.MIN_VALUE ||
+            nowMs - lastKeyframeRequestAtMs >= keyframeIntervalMs
+        if (stalledMs >= keyframeAfterMs && keyframeDue) {
+            lastKeyframeRequestAtMs = nowMs
+            keyframeAttempts += 1
+            return StreamLivenessAction.RequestKeyframe(stalledMs, keyframeAttempts)
+        }
+        return StreamLivenessAction.None
+    }
+}
+
 private class TouchMouseState {
     private var activePointerId = -1
     private var downX = 0f
@@ -986,12 +1092,20 @@ class NativeStreamClient(
     private var externalMouseAbsoluteJumpLogged = false
     private var hardwareKeyboardEventLogged = false
     private var lastStatsSample: StreamStatsSample? = null
+    private val livenessWatchdog = StreamLivenessWatchdog()
     private val textSendMutex = Mutex()
+    private var guideAutoReleaseJob: Job? = null
 
     private data class StreamStatsSample(
         val atMs: Double,
         val bytesReceived: Long,
         val framesDecoded: Long,
+    )
+
+    private data class RuntimeStatsSnapshot(
+        val stats: StreamRuntimeStats,
+        val bytesReceived: Long?,
+        val framesDecoded: Long?,
     )
 
     init {
@@ -1024,6 +1138,7 @@ class NativeStreamClient(
         transportGeneration += 1
         reconnectAttempts = 0
         lastStatsSample = null
+        livenessWatchdog.reset()
         onStats(StreamRuntimeStats())
         audioDeviceModule.setSpeakerMute(audioMuted)
         closeTransport(clearInputState = false)
@@ -1033,6 +1148,7 @@ class NativeStreamClient(
     fun stop() {
         transportGeneration += 1
         reconnectAttempts = 0
+        livenessWatchdog.reset()
         closeTransport(clearInputState = true)
         emitState("Stopped")
     }
@@ -1064,6 +1180,8 @@ class NativeStreamClient(
         physicalHatButtons = 0
         physicalLeftTriggerButtonPressed = false
         physicalRightTriggerButtonPressed = false
+        guideAutoReleaseJob?.cancel()
+        guideAutoReleaseJob = null
         lastLeftTrigger = 0
         lastRightTrigger = 0
         lastLeftStickX = 0
@@ -1143,6 +1261,18 @@ class NativeStreamClient(
                         externalMouseMoveSentLogged = true
                         NativeInputDiagnostics.add("external mouse move sent source=${event.source} device=${event.deviceId} mode=relative")
                     }
+                    mousePositionValid = false
+                } else if (event.isRelativeMousePointer()) {
+                    val positionDx = event.x
+                    val positionDy = event.y
+                    if (abs(positionDx) >= 0.5f || abs(positionDy) >= 0.5f) {
+                        val sent = sendTouchMouseMove(positionDx.roundToInt(), positionDy.roundToInt())
+                        if (sent && !externalMouseMoveSentLogged) {
+                            externalMouseMoveSentLogged = true
+                            NativeInputDiagnostics.add("external mouse move sent source=${event.source} device=${event.deviceId} mode=relativePosition")
+                        }
+                    }
+                    mousePositionValid = false
                 } else if (mousePositionValid && mouseLastDeviceId == event.deviceId && mouseLastSource == event.source) {
                     val dx = event.x - mouseLastX
                     val dy = event.y - mouseLastY
@@ -1167,7 +1297,9 @@ class NativeStreamClient(
                 } else {
                     mouseSuppressNextAbsoluteDelta = false
                 }
-                rememberMousePosition(event)
+                if (!event.isRelativeMousePointer()) {
+                    rememberMousePosition(event)
+                }
             }
             MotionEvent.ACTION_DOWN -> {
                 mouseSuppressNextAbsoluteDelta = true
@@ -1373,6 +1505,7 @@ class NativeStreamClient(
         statsJob = null
         lastStatsSample = null
         lastIceState = null
+        livenessWatchdog.reset()
         signaling?.disconnect()
         signaling = null
         reliableInput = null
@@ -1530,6 +1663,7 @@ class NativeStreamClient(
                     iceRecoveryJob?.cancel()
                     iceRecoveryJob = null
                     reconnectAttempts = 0
+                    livenessWatchdog.markConnected(SystemClock.elapsedRealtime())
                     emitState("Streaming")
                 }
                 PeerConnection.IceConnectionState.DISCONNECTED -> {
@@ -1714,15 +1848,18 @@ class NativeStreamClient(
 
     private fun pollRuntimeStats() {
         val pc = peerConnection ?: return
+        val generation = transportGeneration
         pc.getStats(RTCStatsCollectorCallback { report ->
-            val stats = buildRuntimeStats(report.timestampUs / 1000.0, report.statsMap.values)
+            val snapshot = buildRuntimeStatsSnapshot(report.timestampUs / 1000.0, report.statsMap.values)
             scope.launch {
-                onStats(stats)
+                if (generation != transportGeneration) return@launch
+                handleMediaLiveness(snapshot)
+                onStats(snapshot.stats)
             }
         })
     }
 
-    private fun buildRuntimeStats(timestampMs: Double, stats: Collection<RTCStats>): StreamRuntimeStats {
+    private fun buildRuntimeStatsSnapshot(timestampMs: Double, stats: Collection<RTCStats>): RuntimeStatsSnapshot {
         val inboundVideo = stats.firstOrNull { stat ->
             val members = stat.members
             stat.type == "inbound-rtp" &&
@@ -1778,13 +1915,38 @@ class NativeStreamClient(
             null
         }
 
-        return StreamRuntimeStats(
-            bitrateKbps = bitrateKbps,
-            pingMs = pingMs,
-            fps = explicitFps?.roundToInt()?.takeIf { it > 0 } ?: derivedFps?.takeIf { it > 0 },
-            resolution = resolution,
-            codec = codec,
+        return RuntimeStatsSnapshot(
+            stats = StreamRuntimeStats(
+                bitrateKbps = bitrateKbps,
+                pingMs = pingMs,
+                fps = explicitFps?.roundToInt()?.takeIf { it > 0 } ?: derivedFps?.takeIf { it > 0 },
+                resolution = resolution,
+                codec = codec,
+            ),
+            bytesReceived = bytesReceived,
+            framesDecoded = framesDecoded,
         )
+    }
+
+    private fun handleMediaLiveness(snapshot: RuntimeStatsSnapshot) {
+        val connected = lastIceState == PeerConnection.IceConnectionState.CONNECTED ||
+            lastIceState == PeerConnection.IceConnectionState.COMPLETED
+        when (val action = livenessWatchdog.observe(SystemClock.elapsedRealtime(), snapshot.bytesReceived, snapshot.framesDecoded, connected)) {
+            StreamLivenessAction.None -> Unit
+            is StreamLivenessAction.RequestKeyframe -> {
+                signaling?.requestKeyframe(
+                    reason = "media_stall",
+                    backlogFrames = 0,
+                    attempt = action.attempt,
+                )
+                emitState("Recovering video")
+                NativeInputDiagnostics.add("media stall keyframe requested stalledMs=${action.stalledMs} attempt=${action.attempt}")
+            }
+            is StreamLivenessAction.RestartTransport -> {
+                NativeInputDiagnostics.add("media stall transport restart stalledMs=${action.stalledMs}")
+                restartTransport("Media stalled for ${action.stalledMs / 1000}s")
+            }
+        }
     }
 
     private fun formatStatsCodec(value: Any?): String? {
@@ -1832,7 +1994,7 @@ class NativeStreamClient(
     private fun dispatchGamepadKey(event: KeyEvent): Boolean {
         if (event.action != KeyEvent.ACTION_DOWN && event.action != KeyEvent.ACTION_UP) return false
         val pressed = event.action == KeyEvent.ACTION_DOWN
-        val mask = event.keyCode.toGamepadButtonMask()
+        val mask = GamepadButtonMapping.maskForKeyCode(event.keyCode)
         if (mask != null) {
             activeControllerId = controllerIdFor(event)
             if (!physicalControllerActive) {
@@ -1841,7 +2003,9 @@ class NativeStreamClient(
             physicalControllerConnected = true
             physicalControllerActive = true
             physicalButtons = if (pressed) physicalButtons or mask else physicalButtons and mask.inv()
-            return sendCurrentGamepadState(controllerId = activeControllerId)
+            val sent = sendCurrentGamepadState(controllerId = activeControllerId)
+            updateGuideAutoRelease(mask, pressed, activeControllerId)
+            return sent
         }
         when (event.keyCode) {
             KeyEvent.KEYCODE_BUTTON_L2 -> {
@@ -1885,6 +2049,22 @@ class NativeStreamClient(
             partiallyReliable = partiallyReliable,
         )
         return sendInput(packet, partiallyReliable = partiallyReliable, fallbackToReliable = !partiallyReliable)
+    }
+
+    private fun updateGuideAutoRelease(mask: Int, pressed: Boolean, controllerId: Int) {
+        if (mask != GamepadButtonMapping.GUIDE) return
+        guideAutoReleaseJob?.cancel()
+        if (!pressed) {
+            guideAutoReleaseJob = null
+            return
+        }
+        guideAutoReleaseJob = scope.launch {
+            delay(GAMEPAD_GUIDE_AUTO_RELEASE_MS)
+            if ((physicalButtons and GamepadButtonMapping.GUIDE) == 0) return@launch
+            physicalButtons = physicalButtons and GamepadButtonMapping.GUIDE.inv()
+            sendCurrentGamepadState(controllerId = controllerId)
+            NativeInputDiagnostics.add("physical gamepad guide auto-release slot=$controllerId")
+        }
     }
 
     private fun effectiveLeftStickX(): Int = if (virtualLeftStickActive) virtualLeftStickX else lastLeftStickX
@@ -2018,6 +2198,9 @@ class NativeStreamClient(
             (isFromSource(InputDevice.SOURCE_TOUCHPAD) && !controllerSource)
     }
 
+    private fun MotionEvent.isRelativeMousePointer(): Boolean =
+        isFromSource(InputDevice.SOURCE_MOUSE_RELATIVE)
+
     private fun MotionEvent.primaryMouseButton(): Int =
         when {
             actionButton != 0 -> actionButton.toGfnMouseButton()
@@ -2029,10 +2212,10 @@ class NativeStreamClient(
         var mask = 0
         val hatX = getAxisValue(MotionEvent.AXIS_HAT_X)
         val hatY = getAxisValue(MotionEvent.AXIS_HAT_Y)
-        if (hatY <= -0.5f) mask = mask or 0x0001
-        if (hatY >= 0.5f) mask = mask or 0x0002
-        if (hatX <= -0.5f) mask = mask or 0x0004
-        if (hatX >= 0.5f) mask = mask or 0x0008
+        if (hatY <= -0.5f) mask = mask or GamepadButtonMapping.DPAD_UP
+        if (hatY >= 0.5f) mask = mask or GamepadButtonMapping.DPAD_DOWN
+        if (hatX <= -0.5f) mask = mask or GamepadButtonMapping.DPAD_LEFT
+        if (hatX >= 0.5f) mask = mask or GamepadButtonMapping.DPAD_RIGHT
         return mask
     }
 
@@ -2040,11 +2223,11 @@ class NativeStreamClient(
         val controllerSource =
             (source and InputDevice.SOURCE_GAMEPAD) == InputDevice.SOURCE_GAMEPAD ||
                 (source and InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK
-        if (!controllerSource) return false
-        return keyCode.toGamepadButtonMask() != null ||
-            keyCode == KeyEvent.KEYCODE_BUTTON_L2 ||
-            keyCode == KeyEvent.KEYCODE_BUTTON_R2 ||
-            keyCode == KeyEvent.KEYCODE_BUTTON_MODE
+        return (controllerSource &&
+            (GamepadButtonMapping.maskForKeyCode(keyCode) != null ||
+                keyCode == KeyEvent.KEYCODE_BUTTON_L2 ||
+                keyCode == KeyEvent.KEYCODE_BUTTON_R2)) ||
+            GamepadButtonMapping.isControllerButtonKeyCode(keyCode)
     }
 
     private fun KeyEvent.isHardwareKeyboardSource(): Boolean =
@@ -2058,24 +2241,6 @@ class NativeStreamClient(
 
     private fun Int.hasSource(source: Int): Boolean = (this and source) == source
 
-    private fun Int.toGamepadButtonMask(): Int? = when (this) {
-        KeyEvent.KEYCODE_DPAD_UP -> 0x0001
-        KeyEvent.KEYCODE_DPAD_DOWN -> 0x0002
-        KeyEvent.KEYCODE_DPAD_LEFT -> 0x0004
-        KeyEvent.KEYCODE_DPAD_RIGHT -> 0x0008
-        KeyEvent.KEYCODE_BUTTON_START -> 0x0010
-        KeyEvent.KEYCODE_BUTTON_SELECT -> 0x0020
-        KeyEvent.KEYCODE_BUTTON_THUMBL -> 0x0040
-        KeyEvent.KEYCODE_BUTTON_THUMBR -> 0x0080
-        KeyEvent.KEYCODE_BUTTON_L1 -> 0x0100
-        KeyEvent.KEYCODE_BUTTON_R1 -> 0x0200
-        KeyEvent.KEYCODE_BUTTON_MODE -> 0x0400
-        KeyEvent.KEYCODE_BUTTON_A -> 0x1000
-        KeyEvent.KEYCODE_BUTTON_B -> 0x2000
-        KeyEvent.KEYCODE_BUTTON_X -> 0x4000
-        KeyEvent.KEYCODE_BUTTON_Y -> 0x8000
-        else -> null
-    }
     private fun Int.toGfnMouseButton(): Int = when {
         this and MotionEvent.BUTTON_PRIMARY != 0 -> 1
         this and MotionEvent.BUTTON_TERTIARY != 0 -> 2
@@ -2361,6 +2526,7 @@ class InputEncoder {
         rightStickY: Int,
         bitmap: Int,
         partiallyReliable: Boolean,
+        timestampUs: Long = timestampUs(),
     ): ByteArray {
         val bytes = ByteArray(38)
         val le = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
@@ -2378,7 +2544,7 @@ class InputEncoder {
         le.putShort(24, 0.toShort())
         le.putShort(26, 85.toShort())
         le.putShort(28, 0.toShort())
-        le.putLong(30, timestampUs())
+        le.putLong(30, timestampUs)
         return if (partiallyReliable) wrapGamepadPartiallyReliable(bytes, controllerId) else wrapGamepadReliable(bytes)
     }
 
@@ -2719,6 +2885,10 @@ private const val ICE_DISCONNECTED_GRACE_MS = 3500L
 private const val ICE_FAILED_RECONNECT_DELAY_MS = 250L
 private const val SIGNALING_RECONNECT_DELAY_MS = 1000L
 private const val MAX_TRANSPORT_RECONNECT_ATTEMPTS = 3
+private const val MEDIA_STALL_KEYFRAME_AFTER_MS = 5_000L
+private const val MEDIA_STALL_KEYFRAME_INTERVAL_MS = 2_500L
+private const val MEDIA_STALL_RESTART_AFTER_MS = 14_000L
+private const val GAMEPAD_GUIDE_AUTO_RELEASE_MS = 160L
 private const val STREAM_TEXT_SEND_MAX_CHARS = 4096
 private const val STREAM_TEXT_SEND_ATTEMPTS = 3
 private const val STREAM_TEXT_PACKET_DELAY_MS = 4L

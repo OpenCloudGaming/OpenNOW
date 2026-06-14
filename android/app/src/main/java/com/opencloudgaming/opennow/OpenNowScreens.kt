@@ -46,6 +46,7 @@ import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
@@ -78,6 +79,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
@@ -189,6 +191,7 @@ private val SettingsPanel = Color(0xff11161a)
 private val SettingsPanelAlt = Color(0xff171d22)
 private val SettingsText = Color(0xffeef3f5)
 private val SettingsTextMuted = Color(0xff98a4aa)
+private val PHONE_NAV_RAIL_MAX_SMALLEST_WIDTH = 600.dp
 
 private data class SettingsChoiceOption(val value: String, val label: String)
 private data class ChoiceMenuOption(
@@ -196,6 +199,13 @@ private data class ChoiceMenuOption(
     val label: String,
     val enabled: Boolean = true,
     val badge: String? = null,
+)
+
+private data class LauncherBadge(
+    val iconRes: Int,
+    val name: String,
+    val background: Color,
+    val foreground: Color = TextPrimary,
 )
 
 private val keyboardLayoutOptions = listOf(
@@ -608,6 +618,12 @@ private fun QrCodeView(qrCode: QrCode, modifier: Modifier = Modifier) {
 private fun secondsUntil(deadlineMs: Long): Int =
     ((deadlineMs - System.currentTimeMillis()).coerceAtLeast(0L) / 1000L).toInt()
 
+private fun isPhoneLandscape(width: androidx.compose.ui.unit.Dp, height: androidx.compose.ui.unit.Dp): Boolean =
+    width > height && minOf(width, height) < PHONE_NAV_RAIL_MAX_SMALLEST_WIDTH
+
+private fun isPhonePortrait(width: androidx.compose.ui.unit.Dp, height: androidx.compose.ui.unit.Dp): Boolean =
+    height >= width && minOf(width, height) < PHONE_NAV_RAIL_MAX_SMALLEST_WIDTH
+
 @Composable
 private fun MainShell(state: OpenNowUiState, viewModel: OpenNowViewModel) {
     val inStream = state.page == AppPage.Stream
@@ -620,124 +636,150 @@ private fun MainShell(state: OpenNowUiState, viewModel: OpenNowViewModel) {
     BackHandler(enabled = tvProfile && !inStream && state.selectedGame == null && state.page != AppPage.Home) {
         viewModel.setPage(AppPage.Home)
     }
-    Scaffold(
-        contentWindowInsets = if (streamingActive) WindowInsets(0, 0, 0, 0) else ScaffoldDefaults.contentWindowInsets,
-        bottomBar = {
-            if (!inStream && !tvProfile) {
-                NavigationBar(
-                    containerColor = if (state.page == AppPage.Settings) SettingsBackground else MaterialTheme.colorScheme.background,
-                    tonalElevation = 0.dp,
-                ) {
-                    BottomNavItem(
-                        selected = state.page == AppPage.Home,
-                        onClick = { viewModel.setPage(AppPage.Home) },
-                        iconRes = R.drawable.ic_tab_store,
-                        label = stringResource(R.string.nav_store),
-                    )
-                    BottomNavItem(
-                        selected = state.page == AppPage.Library,
-                        onClick = { viewModel.setPage(AppPage.Library) },
-                        iconRes = R.drawable.ic_tab_library,
-                        label = stringResource(R.string.nav_library),
-                    )
-                    BottomNavItem(
-                        selected = state.page == AppPage.Settings,
-                        onClick = { viewModel.setPage(AppPage.Settings) },
-                        iconRes = R.drawable.ic_tab_settings,
-                        label = stringResource(R.string.nav_settings),
-                    )
-                }
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+        var phoneLandscapeScrollChromeHidden by remember { mutableStateOf(false) }
+        val phoneLandscapeChrome = !tvProfile && !inStream && isPhoneLandscape(maxWidth, maxHeight)
+        val showNavigationRail = !inStream && (tvProfile || phoneLandscapeChrome)
+        val scrollChromePage = state.page == AppPage.Home || state.page == AppPage.Library
+        LaunchedEffect(phoneLandscapeChrome, scrollChromePage) {
+            if (!phoneLandscapeChrome || !scrollChromePage) {
+                phoneLandscapeScrollChromeHidden = false
             }
-        },
-    ) { padding ->
-        Box(Modifier.fillMaxSize().padding(padding)) {
-            Row(Modifier.fillMaxSize()) {
-                if (tvProfile && !inStream) {
-                    TvNavigationRail(state = state, viewModel = viewModel)
-                }
-                Column(Modifier.fillMaxSize()) {
-                    if (!inStream) {
-                        TopStatusBar(
-                            state = state,
-                            onResumeActiveSession = viewModel::resumeActiveSession,
+        }
+
+        Scaffold(
+            contentWindowInsets = if (streamingActive) WindowInsets(0, 0, 0, 0) else ScaffoldDefaults.contentWindowInsets,
+            bottomBar = {
+                if (!inStream && !showNavigationRail) {
+                    NavigationBar(
+                        containerColor = if (state.page == AppPage.Settings) SettingsBackground else MaterialTheme.colorScheme.background,
+                        tonalElevation = 0.dp,
+                    ) {
+                        BottomNavItem(
+                            selected = state.page == AppPage.Home,
+                            onClick = { viewModel.setPage(AppPage.Home) },
+                            iconRes = R.drawable.ic_tab_store,
+                            label = stringResource(R.string.nav_store),
+                        )
+                        BottomNavItem(
+                            selected = state.page == AppPage.Library,
+                            onClick = { viewModel.setPage(AppPage.Library) },
+                            iconRes = R.drawable.ic_tab_library,
+                            label = stringResource(R.string.nav_library),
+                        )
+                        BottomNavItem(
+                            selected = state.page == AppPage.Settings,
+                            onClick = { viewModel.setPage(AppPage.Settings) },
+                            iconRes = R.drawable.ic_tab_settings,
+                            label = stringResource(R.string.nav_settings),
                         )
                     }
-                    Box(Modifier.fillMaxSize()) {
-                        when (state.page) {
-                            AppPage.Home -> HomeScreen(state, viewModel, tvProfile)
-                            AppPage.Library -> LibraryScreen(state, viewModel, tvProfile)
-                            AppPage.Settings -> SettingsScreen(state, viewModel, tvProfile)
-                            AppPage.Stream -> StreamScreen(state, viewModel)
+                }
+            },
+        ) { padding ->
+            Box(Modifier.fillMaxSize().padding(padding)) {
+                Row(Modifier.fillMaxSize()) {
+                    if (showNavigationRail) {
+                        AppNavigationRail(state = state, viewModel = viewModel)
+                    }
+                    Column(Modifier.fillMaxSize()) {
+                        AnimatedVisibility(visible = !inStream && !(phoneLandscapeChrome && scrollChromePage && phoneLandscapeScrollChromeHidden)) {
+                            if (!inStream) {
+                                TopStatusBar(
+                                    state = state,
+                                    onResumeActiveSession = viewModel::resumeActiveSession,
+                                )
+                            }
+                        }
+                        Box(Modifier.fillMaxSize()) {
+                            when (state.page) {
+                                AppPage.Home -> HomeScreen(
+                                    state = state,
+                                    viewModel = viewModel,
+                                    tvProfile = tvProfile,
+                                    hideChromeWhenScrolled = phoneLandscapeChrome,
+                                    onScrollChromeHiddenChange = { phoneLandscapeScrollChromeHidden = it },
+                                )
+                                AppPage.Library -> LibraryScreen(
+                                    state = state,
+                                    viewModel = viewModel,
+                                    tvProfile = tvProfile,
+                                    hideChromeWhenScrolled = phoneLandscapeChrome,
+                                    onScrollChromeHiddenChange = { phoneLandscapeScrollChromeHidden = it },
+                                )
+                                AppPage.Settings -> SettingsScreen(state, viewModel, tvProfile)
+                                AppPage.Stream -> StreamScreen(state, viewModel)
+                            }
                         }
                     }
                 }
-            }
-            AnimatedVisibility(
-                visible = state.selectedGame != null && !inStream && !modalPickerOpen,
-                enter = fadeIn() + slideInVertically(initialOffsetY = { it / 3 }) + scaleIn(initialScale = 0.96f),
-                exit = fadeOut() + slideOutVertically(targetOffsetY = { it / 3 }) + scaleOut(targetScale = 0.96f),
-                modifier = Modifier.align(Alignment.Center),
-            ) {
-                state.selectedGame?.let { game ->
-                    GameDetailsSheet(
-                        game = game,
-                        favorite = game.id in state.settings.favoriteGameIds,
-                        defaultVariantId = state.settings.defaultGameVariantIds[game.id],
-                        onPlay = viewModel::play,
-                        onChooseStore = viewModel::chooseStore,
-                        onFavorite = viewModel::updateFavorites,
-                        onDismiss = viewModel::clearSelectedGame,
+                AnimatedVisibility(
+                    visible = state.selectedGame != null && !inStream && !modalPickerOpen,
+                    enter = fadeIn() + slideInVertically(initialOffsetY = { it / 3 }) + scaleIn(initialScale = 0.96f),
+                    exit = fadeOut() + slideOutVertically(targetOffsetY = { it / 3 }) + scaleOut(targetScale = 0.96f),
+                    modifier = Modifier.align(Alignment.Center),
+                ) {
+                    state.selectedGame?.let { game ->
+                        GameDetailsSheet(
+                            game = game,
+                            favorite = game.id in state.settings.favoriteGameIds,
+                            defaultVariantId = state.settings.defaultGameVariantIds[game.id],
+                            onPlay = viewModel::play,
+                            onChooseStore = viewModel::chooseStore,
+                            onFavorite = viewModel::updateFavorites,
+                            onDismiss = viewModel::clearSelectedGame,
+                        )
+                    }
+                }
+                state.pendingPrintedWasteGame?.let { game ->
+                    AnimatedLaunchOverlay(Modifier.align(Alignment.Center)) {
+                        PrintedWasteSelector(state, game, viewModel)
+                    }
+                }
+                state.pendingStoreChoiceGame?.let { game ->
+                    AnimatedLaunchOverlay(Modifier.align(Alignment.Center)) {
+                        StoreLaunchSelector(
+                            game = game,
+                            defaultVariantId = state.settings.defaultGameVariantIds[game.id],
+                            onLaunch = viewModel::playVariant,
+                            onSetDefaultStore = viewModel::setDefaultGameVariant,
+                            onDismiss = viewModel::dismissStoreChoice,
+                        )
+                    }
+                }
+                if (state.streamLaunchMinimized && shouldShowQueueLaunchStatus(state)) {
+                    MinimizedQueuePill(
+                        state = state,
+                        onRestore = viewModel::restoreStreamLaunch,
+                        onCancel = viewModel::stopStream,
+                        modifier = Modifier.align(Alignment.BottomCenter),
                     )
                 }
-            }
-            state.pendingPrintedWasteGame?.let { game ->
-                AnimatedLaunchOverlay(Modifier.align(Alignment.Center)) {
-                    PrintedWasteSelector(state, game, viewModel)
-                }
-            }
-            state.pendingStoreChoiceGame?.let { game ->
-                AnimatedLaunchOverlay(Modifier.align(Alignment.Center)) {
-                    StoreLaunchSelector(
-                        game = game,
-                        defaultVariantId = state.settings.defaultGameVariantIds[game.id],
-                        onLaunch = viewModel::playVariant,
-                        onSetDefaultStore = viewModel::setDefaultGameVariant,
-                        onDismiss = viewModel::dismissStoreChoice,
-                    )
-                }
-            }
-            if (state.streamLaunchMinimized && shouldShowQueueLaunchStatus(state)) {
-                MinimizedQueuePill(
-                    state = state,
-                    onRestore = viewModel::restoreStreamLaunch,
-                    onCancel = viewModel::stopStream,
-                    modifier = Modifier.align(Alignment.BottomCenter),
-                )
             }
         }
     }
 }
 
 @Composable
-private fun TvNavigationRail(state: OpenNowUiState, viewModel: OpenNowViewModel) {
+private fun AppNavigationRail(state: OpenNowUiState, viewModel: OpenNowViewModel) {
     NavigationRail(
         modifier = Modifier.fillMaxHeight(),
         containerColor = if (state.page == AppPage.Settings) SettingsBackground else MaterialTheme.colorScheme.background,
     ) {
         Spacer(Modifier.height(8.dp))
-        TvNavigationRailItem(
+        AppNavigationRailItem(
             selected = state.page == AppPage.Home,
             onClick = { viewModel.setPage(AppPage.Home) },
             iconRes = R.drawable.ic_tab_store,
             label = stringResource(R.string.nav_store),
         )
-        TvNavigationRailItem(
+        AppNavigationRailItem(
             selected = state.page == AppPage.Library,
             onClick = { viewModel.setPage(AppPage.Library) },
             iconRes = R.drawable.ic_tab_library,
             label = stringResource(R.string.nav_library),
         )
-        TvNavigationRailItem(
+        AppNavigationRailItem(
             selected = state.page == AppPage.Settings,
             onClick = { viewModel.setPage(AppPage.Settings) },
             iconRes = R.drawable.ic_tab_settings,
@@ -747,7 +789,7 @@ private fun TvNavigationRail(state: OpenNowUiState, viewModel: OpenNowViewModel)
 }
 
 @Composable
-private fun TvNavigationRailItem(selected: Boolean, onClick: () -> Unit, iconRes: Int, label: String) {
+private fun AppNavigationRailItem(selected: Boolean, onClick: () -> Unit, iconRes: Int, label: String) {
     NavigationRailItem(
         selected = selected,
         onClick = onClick,
@@ -949,7 +991,13 @@ private fun isTvActivateKey(event: androidx.compose.ui.input.key.KeyEvent): Bool
 
 @OptIn(ExperimentalComposeUiApi::class)
 @Composable
-private fun HomeScreen(state: OpenNowUiState, viewModel: OpenNowViewModel, tvProfile: Boolean) {
+private fun HomeScreen(
+    state: OpenNowUiState,
+    viewModel: OpenNowViewModel,
+    tvProfile: Boolean,
+    hideChromeWhenScrolled: Boolean,
+    onScrollChromeHiddenChange: (Boolean) -> Unit,
+) {
     val visibleGames = state.games.ifEmpty { state.catalogResult.games }
     val searchingCatalog = state.loadingGames && state.catalogSearch.isNotBlank()
     val gridState = rememberLazyGridState()
@@ -958,75 +1006,87 @@ private fun HomeScreen(state: OpenNowUiState, viewModel: OpenNowViewModel, tvPro
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
     val showScrollActions = gridState.firstVisibleItemIndex > 0 || gridState.firstVisibleItemScrollOffset > 80
+    val scrolledAwayFromTop = gridState.firstVisibleItemIndex > 0 || gridState.firstVisibleItemScrollOffset > 0
+    val hideScrollChrome = hideChromeWhenScrolled && scrolledAwayFromTop
+    LaunchedEffect(hideScrollChrome) {
+        onScrollChromeHiddenChange(hideScrollChrome)
+    }
+    DisposableEffect(Unit) {
+        onDispose { onScrollChromeHiddenChange(false) }
+    }
     SwipeToRefreshContainer(
         refreshing = state.loadingGames,
         showRefreshIndicator = !searchingCatalog,
         onRefresh = viewModel::refreshGames,
         modifier = Modifier.fillMaxSize(),
     ) {
-        Column(
-            Modifier
-                .fillMaxSize()
-                .padding(12.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-            NativeSearchField(
-                modifier = Modifier.fillMaxWidth(),
-                query = state.catalogSearch,
-                onQueryChange = viewModel::setCatalogSearch,
-                placeholder = stringResource(R.string.search_games),
-                searching = searchingCatalog,
-                focusRequester = searchFocusRequester,
-                onOpen = {
-                    if (gridState.firstVisibleItemIndex > 0 || gridState.firstVisibleItemScrollOffset > 0) {
-                        scope.launch { gridState.animateScrollToItem(0) }
-                    }
-                },
-            )
-            Box(
+        BoxWithConstraints(Modifier.fillMaxSize()) {
+            Column(
                 Modifier
-                    .weight(1f)
-                    .pointerInput(Unit) {
-                        awaitEachGesture {
-                            awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
-                            focusManager.clearFocus()
-                            keyboardController?.hide()
-                        }
-                    },
+                    .fillMaxSize()
+                    .padding(12.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                if (state.loadingGames && visibleGames.isEmpty()) {
-                    Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                        StoreScrollableControls(
-                            state = state,
-                            onSortChange = viewModel::setCatalogSort,
-                            onFilterToggle = viewModel::toggleCatalogFilter,
-                        )
-                        RefreshingGamesPlaceholder(Modifier.weight(1f))
-                    }
-                } else {
-                    StoreGameGrid(
-                        games = visibleGames,
-                        favoriteIds = state.settings.favoriteGameIds,
-                        settings = state.settings,
-                        tvProfile = tvProfile,
-                        state = state,
-                        onSelect = viewModel::selectGame,
-                        onFavorite = viewModel::updateFavorites,
-                        onPlay = viewModel::play,
-                        onChooseStore = viewModel::chooseStore,
-                        onSortChange = viewModel::setCatalogSort,
-                        onFilterToggle = viewModel::toggleCatalogFilter,
-                        gridState = gridState,
-                        modifier = Modifier.fillMaxSize(),
+                AnimatedVisibility(visible = !hideScrollChrome) {
+                    NativeSearchField(
+                        modifier = Modifier.fillMaxWidth(),
+                        query = state.catalogSearch,
+                        onQueryChange = viewModel::setCatalogSearch,
+                        placeholder = stringResource(R.string.search_games),
+                        searching = searchingCatalog,
+                        focusRequester = searchFocusRequester,
+                        onOpen = {
+                            if (gridState.firstVisibleItemIndex > 0 || gridState.firstVisibleItemScrollOffset > 0) {
+                                scope.launch { gridState.animateScrollToItem(0) }
+                            }
+                        },
                     )
                 }
-                if (showScrollActions) {
-                    Box(Modifier.align(Alignment.BottomEnd).padding(2.dp)) {
-                        StoreScrollActionButton(
-                            iconRes = R.drawable.ic_arrow_up,
-                            contentDescription = stringResource(R.string.action_scroll_top),
-                        ) {
-                            scope.launch { gridState.animateScrollToItem(0) }
+                Box(
+                    Modifier
+                        .weight(1f)
+                        .pointerInput(Unit) {
+                            awaitEachGesture {
+                                awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                                focusManager.clearFocus()
+                                keyboardController?.hide()
+                            }
+                        },
+                ) {
+                    if (state.loadingGames && visibleGames.isEmpty()) {
+                        Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                            StoreScrollableControls(
+                                state = state,
+                                onSortChange = viewModel::setCatalogSort,
+                                onFilterToggle = viewModel::toggleCatalogFilter,
+                            )
+                            RefreshingGamesPlaceholder(Modifier.weight(1f))
+                        }
+                    } else {
+                        StoreGameGrid(
+                            games = visibleGames,
+                            favoriteIds = state.settings.favoriteGameIds,
+                            settings = state.settings,
+                            tvProfile = tvProfile,
+                            state = state,
+                            onSelect = viewModel::selectGame,
+                            onFavorite = viewModel::updateFavorites,
+                            onPlay = viewModel::play,
+                            onChooseStore = viewModel::chooseStore,
+                            onSortChange = viewModel::setCatalogSort,
+                            onFilterToggle = viewModel::toggleCatalogFilter,
+                            gridState = gridState,
+                            modifier = Modifier.fillMaxSize(),
+                        )
+                    }
+                    if (showScrollActions) {
+                        Box(Modifier.align(Alignment.BottomEnd).padding(2.dp)) {
+                            StoreScrollActionButton(
+                                iconRes = R.drawable.ic_arrow_up,
+                                contentDescription = stringResource(R.string.action_scroll_top),
+                            ) {
+                                scope.launch { gridState.animateScrollToItem(0) }
+                            }
                         }
                     }
                 }
@@ -1070,47 +1130,67 @@ private fun StoreScrollActionButton(iconRes: Int, contentDescription: String, on
 }
 
 @Composable
-private fun LibraryScreen(state: OpenNowUiState, viewModel: OpenNowViewModel, tvProfile: Boolean) {
+private fun LibraryScreen(
+    state: OpenNowUiState,
+    viewModel: OpenNowViewModel,
+    tvProfile: Boolean,
+    hideChromeWhenScrolled: Boolean,
+    onScrollChromeHiddenChange: (Boolean) -> Unit,
+) {
     val favorites = state.libraryGames.filter { it.id in state.settings.favoriteGameIds }
     val orderedGames = if (favorites.isNotEmpty()) favorites + state.libraryGames.filterNot { it.id in state.settings.favoriteGameIds } else state.libraryGames
     val games = orderedGames.filter { gameMatchesSearch(it, state.librarySearch) }
+    val gridState = rememberLazyGridState()
+    val scrolledAwayFromTop = gridState.firstVisibleItemIndex > 0 || gridState.firstVisibleItemScrollOffset > 0
+    val hideScrollChrome = hideChromeWhenScrolled && scrolledAwayFromTop
+    LaunchedEffect(hideScrollChrome) {
+        onScrollChromeHiddenChange(hideScrollChrome)
+    }
+    DisposableEffect(Unit) {
+        onDispose { onScrollChromeHiddenChange(false) }
+    }
     SwipeToRefreshContainer(
         refreshing = state.loadingGames,
         onRefresh = viewModel::refreshGames,
         modifier = Modifier.fillMaxSize(),
     ) {
-        Column(Modifier.fillMaxSize().padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text(stringResource(R.string.nav_library), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-                    Text(stringResource(R.string.library_count, state.libraryGames.size), color = TextMuted)
+        BoxWithConstraints(Modifier.fillMaxSize()) {
+            Column(Modifier.fillMaxSize().padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text(stringResource(R.string.nav_library), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                        Text(stringResource(R.string.library_count, state.libraryGames.size), color = TextMuted)
+                    }
+                    state.activeSession?.let { active ->
+                        ElevatedButton(
+                            onClick = {
+                                val game = (state.games + state.libraryGames).firstOrNull { it.launchAppId == active.appId.toString() }
+                                if (game != null) viewModel.play(game)
+                            },
+                        ) { Text(stringResource(R.string.action_resume)) }
+                    }
                 }
-                state.activeSession?.let { active ->
-                    ElevatedButton(
-                        onClick = {
-                            val game = (state.games + state.libraryGames).firstOrNull { it.launchAppId == active.appId.toString() }
-                            if (game != null) viewModel.play(game)
-                        },
-                    ) { Text(stringResource(R.string.action_resume)) }
+                AnimatedVisibility(visible = !hideScrollChrome) {
+                    NativeSearchField(
+                        modifier = Modifier.fillMaxWidth(),
+                        query = state.librarySearch,
+                        onQueryChange = viewModel::setLibrarySearch,
+                        placeholder = "Search library",
+                    )
                 }
+                GameGrid(
+                    games,
+                    state.settings.favoriteGameIds,
+                    state.settings,
+                    tvProfile,
+                    viewModel::selectGame,
+                    viewModel::updateFavorites,
+                    viewModel::play,
+                    viewModel::chooseStore,
+                    modifier = Modifier.weight(1f),
+                    gridState = gridState,
+                )
             }
-            NativeSearchField(
-                modifier = Modifier.fillMaxWidth(),
-                query = state.librarySearch,
-                onQueryChange = viewModel::setLibrarySearch,
-                placeholder = "Search library",
-            )
-            GameGrid(
-                games,
-                state.settings.favoriteGameIds,
-                state.settings,
-                tvProfile,
-                viewModel::selectGame,
-                viewModel::updateFavorites,
-                viewModel::play,
-                viewModel::chooseStore,
-                modifier = Modifier.weight(1f),
-            )
         }
     }
 }
@@ -1183,6 +1263,7 @@ private fun GameGrid(
     onPlay: (GameInfo) -> Unit,
     onChooseStore: (GameInfo) -> Unit,
     modifier: Modifier = Modifier,
+    gridState: androidx.compose.foundation.lazy.grid.LazyGridState = rememberLazyGridState(),
 ) {
     if (games.isEmpty()) {
         Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -1192,18 +1273,39 @@ private fun GameGrid(
     }
     val scale = settings.posterSizeScale.coerceIn(0.82f, 1.08f)
     val compact = settings.compactGameCards
-    val cardHeight = if (compact) 252.dp else 286.dp
     BoxWithConstraints(modifier.fillMaxSize()) {
         val columns = gameGridColumnCount(maxWidth)
+        val phonePortrait = isPhonePortrait(maxWidth, maxHeight)
+        val phoneLandscape = isPhoneLandscape(maxWidth, maxHeight)
+        val cardHeight = when {
+            phoneLandscape && compact -> 158.dp
+            phoneLandscape -> 178.dp
+            phonePortrait && compact -> 218.dp
+            phonePortrait -> 246.dp
+            compact -> 252.dp
+            else -> 286.dp
+        }
         LazyVerticalGrid(
             modifier = Modifier.fillMaxSize(),
+            state = gridState,
             columns = GridCells.Fixed(columns),
             contentPadding = PaddingValues(4.dp),
             horizontalArrangement = Arrangement.spacedBy(if (compact) 8.dp else 10.dp),
             verticalArrangement = Arrangement.spacedBy(if (compact) 10.dp else 12.dp),
         ) {
             gridItems(games, key = { it.id }) { game ->
-                GameCard(game, game.id in favoriteIds, settings, tvProfile, cardHeight * scale, onSelect, onFavorite, onPlay, onChooseStore)
+                GameCard(
+                    game = game,
+                    favorite = game.id in favoriteIds,
+                    settings = settings,
+                    tvProfile = tvProfile,
+                    cardHeight = cardHeight * scale,
+                    thumbnailPlayOverlay = !tvProfile,
+                    onSelect = onSelect,
+                    onFavorite = onFavorite,
+                    onPlay = onPlay,
+                    onChooseStore = onChooseStore,
+                )
             }
         }
     }
@@ -1236,9 +1338,18 @@ private fun StoreGameGrid(
     }
     val scale = settings.posterSizeScale.coerceIn(0.82f, 1.08f)
     val compact = settings.compactGameCards
-    val cardHeight = if (compact) 252.dp else 286.dp
     BoxWithConstraints(modifier.fillMaxSize()) {
         val columns = gameGridColumnCount(maxWidth)
+        val phonePortrait = isPhonePortrait(maxWidth, maxHeight)
+        val phoneLandscape = isPhoneLandscape(maxWidth, maxHeight)
+        val cardHeight = when {
+            phoneLandscape && compact -> 158.dp
+            phoneLandscape -> 178.dp
+            phonePortrait && compact -> 218.dp
+            phonePortrait -> 246.dp
+            compact -> 252.dp
+            else -> 286.dp
+        }
         LazyVerticalGrid(
             modifier = Modifier.fillMaxSize(),
             state = gridState,
@@ -1251,7 +1362,18 @@ private fun StoreGameGrid(
                 StoreScrollableControls(state, onSortChange, onFilterToggle)
             }
             gridItems(games, key = { it.id }) { game ->
-                GameCard(game, game.id in favoriteIds, settings, tvProfile, cardHeight * scale, onSelect, onFavorite, onPlay, onChooseStore)
+                GameCard(
+                    game = game,
+                    favorite = game.id in favoriteIds,
+                    settings = settings,
+                    tvProfile = tvProfile,
+                    cardHeight = cardHeight * scale,
+                    thumbnailPlayOverlay = !tvProfile,
+                    onSelect = onSelect,
+                    onFavorite = onFavorite,
+                    onPlay = onPlay,
+                    onChooseStore = onChooseStore,
+                )
             }
         }
     }
@@ -1272,6 +1394,7 @@ private fun GameCard(
     settings: AppSettings,
     tvProfile: Boolean,
     cardHeight: androidx.compose.ui.unit.Dp,
+    thumbnailPlayOverlay: Boolean,
     onSelect: (GameInfo) -> Unit,
     onFavorite: (String) -> Unit,
     onPlay: (GameInfo) -> Unit,
@@ -1323,40 +1446,151 @@ private fun GameCard(
                     .align(Alignment.TopEnd)
                     .padding(8.dp),
             )
-        }
-        Column(
-            Modifier
-                .clickable { onSelect(game) }
-                .padding(9.dp),
-            verticalArrangement = Arrangement.spacedBy(5.dp),
-        ) {
-            Text(
-                game.title,
-                fontWeight = FontWeight.Bold,
-                minLines = 2,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-                style = MaterialTheme.typography.bodyMedium,
-            )
-            if (settings.showGameStoreLabels) {
-                Text(displayStoresForGame(game), color = TextMuted, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelMedium)
+            if (thumbnailPlayOverlay) {
+                ThumbnailStoreButton(
+                    badge = launcherBadgeForGame(game),
+                    onClick = { onChooseStore(game) },
+                    modifier = Modifier
+                        .align(Alignment.BottomStart)
+                        .padding(8.dp),
+                )
+                ThumbnailPlayButton(
+                    onClick = { onPlay(game) },
+                    onLongClick = { onChooseStore(game) },
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(8.dp),
+                )
             }
         }
-        Box(Modifier.padding(start = 9.dp, end = 9.dp, bottom = 9.dp)) {
-            LongPressPlayButton(
-                onClick = { onPlay(game) },
-                onLongClick = { onChooseStore(game) },
-                modifier = Modifier.fillMaxWidth(),
+        if (!thumbnailPlayOverlay) {
+            Column(
+                Modifier
+                    .clickable { onSelect(game) }
+                    .padding(9.dp),
+                verticalArrangement = Arrangement.spacedBy(5.dp),
+            ) {
+                /*
+                Text(
+                    game.title,
+                    fontWeight = FontWeight.Bold,
+                    minLines = 2,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                */
+                if (settings.showGameStoreLabels) {
+                    Text(displayStoresForGame(game), color = TextMuted, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelMedium)
+                }
+            }
+        }
+        if (!thumbnailPlayOverlay) {
+            Box(Modifier.padding(start = 9.dp, end = 9.dp, bottom = 9.dp)) {
+                LongPressPlayButton(
+                    onClick = { onPlay(game) },
+                    onLongClick = { onChooseStore(game) },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ThumbnailStoreButton(badge: LauncherBadge, onClick: () -> Unit, modifier: Modifier = Modifier) {
+    val chooseLauncherLabel = stringResource(R.string.store_selector_choose_launcher)
+    Surface(
+        modifier = modifier.size(44.dp),
+        shape = RoundedCornerShape(12.dp),
+        color = badge.background.copy(alpha = 0.94f),
+        tonalElevation = 3.dp,
+        shadowElevation = 3.dp,
+    ) {
+        IconButton(
+            onClick = onClick,
+            modifier = Modifier.semantics {
+                contentDescription = "${badge.name} $chooseLauncherLabel"
+            },
+        ) {
+            Icon(
+                painter = painterResource(badge.iconRes),
+                contentDescription = null,
+                tint = badge.foreground,
+                modifier = Modifier.size(24.dp),
             )
         }
     }
 }
+
+private fun launcherBadgeForGame(game: GameInfo): LauncherBadge {
+    val candidateStores = mutableListOf<String>()
+    game.variants.getOrNull(game.selectedVariantIndex)?.let { selectedVariant ->
+        candidateStores += splitGameStoreKeys(selectedVariant.store)
+    }
+    game.variants.forEach { variant ->
+        candidateStores += splitGameStoreKeys(variant.store)
+    }
+    game.availableStores.forEach { store ->
+        candidateStores += splitGameStoreKeys(store)
+    }
+    val key = candidateStores.firstOrNull { it.isNotBlank() }
+    return launcherBadgeForStoreKey(key)
+}
+
+private fun launcherBadgeForStoreKey(storeKey: String?): LauncherBadge =
+    when (storeKey) {
+        "STEAM" -> LauncherBadge(R.drawable.ic_store_steam, "Steam", Color(0xff17324d))
+        "EPIC", "EGS", "EPIC_GAMES_STORE" -> LauncherBadge(R.drawable.ic_store_epic, "Epic", Color(0xff111111))
+        "HOYO", "HOYOVERSE", "HOYOPLAY", "HOYO_PLAY", "MIHOYO" -> LauncherBadge(R.drawable.ic_store_hoyo, "HoYo", Color(0xff2b62d9))
+        "XBOX", "XBOX_GAME_PASS", "GAME_PASS" -> LauncherBadge(R.drawable.ic_store_xbox, "Xbox", Color(0xff107c10))
+        "MICROSOFT", "MICROSOFT_STORE" -> LauncherBadge(R.drawable.ic_store_microsoft, "Microsoft Store", Color(0xff0067b8))
+        "UBISOFT", "UBISOFT_CONNECT" -> LauncherBadge(R.drawable.ic_store_ubisoft, "Ubisoft Connect", Color(0xff006efc))
+        "EA", "EA_APP", "ORIGIN" -> LauncherBadge(R.drawable.ic_store_ea, "EA app", Color(0xffff4747))
+        "GOG", "GOG.COM", "GOG_COM" -> LauncherBadge(R.drawable.ic_store_gog, "GOG", Color(0xff6a35a8))
+        "BATTLENET", "BATTLE.NET", "BATTLE_NET", "BLIZZARD" -> LauncherBadge(R.drawable.ic_store_battlenet, "Battle.net", Color(0xff148eff))
+        "RIOT", "RIOT_CLIENT", "RIOT_GAMES" -> LauncherBadge(R.drawable.ic_store_riot, "Riot", Color(0xffd13639))
+        "ROCKSTAR", "ROCKSTAR_GAMES", "ROCKSTAR_GAMES_LAUNCHER" -> LauncherBadge(R.drawable.ic_store_rockstar, "Rockstar", Color(0xffffc400), Color(0xff111111))
+        "NCSOFT", "NC_SOFT", "PURPLE" -> LauncherBadge(R.drawable.ic_tab_store, "NCSOFT", Color(0xffb4822d), Color(0xff111111))
+        "GOOGLE_PLAY", "PLAY_STORE", "ANDROID" -> LauncherBadge(R.drawable.ic_store_google_play, "Google Play", Color(0xff0f9d58))
+        "AMAZON", "AMAZON_GAMES" -> LauncherBadge(R.drawable.ic_store_amazon, "Amazon Games", Color(0xffff9900), Color(0xff111111))
+        else -> LauncherBadge(R.drawable.ic_tab_store, "GeForce NOW", Color.Black.copy(alpha = 0.72f))
+    }
 
 private fun displayStoresForGame(game: GameInfo): String {
     val stores = displayStoresForVariants(game.variants).ifEmpty {
         game.availableStores.map(::gameStoreDisplayName)
     }.distinctBy { normalizeGameStore(it) }
     return stores.joinToString(", ").ifBlank { "GeForce NOW" }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun ThumbnailPlayButton(onClick: () -> Unit, onLongClick: () -> Unit, modifier: Modifier = Modifier) {
+    val playColor = MaterialTheme.colorScheme.onPrimary
+    Surface(
+        modifier = modifier
+            .size(44.dp)
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = onLongClick,
+                onLongClickLabel = stringResource(R.string.store_selector_play_long_press),
+            ),
+        shape = CircleShape,
+        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.94f),
+        tonalElevation = 3.dp,
+        shadowElevation = 3.dp,
+    ) {
+        Canvas(Modifier.fillMaxSize().padding(14.dp)) {
+            val path = Path().apply {
+                moveTo(size.width * 0.32f, size.height * 0.18f)
+                lineTo(size.width * 0.32f, size.height * 0.82f)
+                lineTo(size.width * 0.84f, size.height * 0.5f)
+                close()
+            }
+            drawPath(path, playColor)
+        }
+    }
 }
 
 @Composable
@@ -1410,6 +1644,7 @@ private fun GameDetailsSheet(
             BoxWithConstraints(Modifier.fillMaxSize()) {
                 val aspect = if (maxHeight.value > 0f) maxWidth.value / maxHeight.value else 1f
                 val landscapeTvLayout = maxWidth >= 720.dp && aspect >= 1.35f
+                val phoneLandscapeLayout = landscapeTvLayout && minOf(maxWidth, maxHeight) < PHONE_NAV_RAIL_MAX_SMALLEST_WIDTH
                 if (landscapeTvLayout) {
                     GameDetailsLandscapeContent(
                         game = game,
@@ -1421,6 +1656,7 @@ private fun GameDetailsSheet(
                         onDismiss = onDismiss,
                         playFocusRequester = playFocusRequester,
                         shortHeight = maxHeight <= 620.dp,
+                        imageActionsOverlay = phoneLandscapeLayout,
                     )
                 } else {
                     GameDetailsScrollableContent(
@@ -1451,10 +1687,12 @@ private fun GameDetailsLandscapeContent(
     onDismiss: () -> Unit,
     playFocusRequester: FocusRequester,
     shortHeight: Boolean,
+    imageActionsOverlay: Boolean,
 ) {
     val description = gameDescriptionForDetails(game)
     val chips = gameDetailChips(game)
     val launchStores = displayStoresForVariants(game.variants).ifEmpty { game.availableStores }.map(::gameStoreDisplayName).distinct()
+    val sideScrollState = rememberScrollState()
     Row(
         Modifier
             .fillMaxSize()
@@ -1470,6 +1708,14 @@ private fun GameDetailsLandscapeContent(
         ) {
             UrlImage(game.screenshotUrl ?: game.imageUrl, Modifier.fillMaxSize())
             Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.3f)))
+            if (imageActionsOverlay) {
+                ImageCloseButton(
+                    onClick = onDismiss,
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .padding(10.dp),
+                )
+            }
             FavoriteIconButton(
                 favorite = favorite,
                 onClick = { onFavorite(game.id) },
@@ -1480,7 +1726,13 @@ private fun GameDetailsLandscapeContent(
             Column(
                 Modifier
                     .align(Alignment.BottomStart)
-                    .padding(if (shortHeight) 16.dp else 20.dp),
+                    .fillMaxWidth()
+                    .padding(
+                        start = if (shortHeight) 16.dp else 20.dp,
+                        top = if (shortHeight) 16.dp else 20.dp,
+                        end = if (imageActionsOverlay) 152.dp else if (shortHeight) 16.dp else 20.dp,
+                        bottom = if (shortHeight) 16.dp else 20.dp,
+                    ),
                 verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
                 Text(
@@ -1492,12 +1744,30 @@ private fun GameDetailsLandscapeContent(
                 )
                 Text(displayStoresForGame(game), color = TextMuted, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
+            if (imageActionsOverlay) {
+                LongPressPlayButton(
+                    onClick = {
+                        onDismiss()
+                        onPlay(game)
+                    },
+                    onLongClick = {
+                        onDismiss()
+                        onChooseStore(game)
+                    },
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(14.dp)
+                        .width(126.dp)
+                        .focusRequester(playFocusRequester),
+                )
+            }
         }
 
         Column(
             Modifier
                 .weight(1.08f)
-                .fillMaxHeight(),
+                .fillMaxHeight()
+                .then(if (imageActionsOverlay) Modifier.verticalScroll(sideScrollState) else Modifier),
             verticalArrangement = Arrangement.spacedBy(if (shortHeight) 8.dp else 10.dp),
         ) {
             Text(
@@ -1530,28 +1800,30 @@ private fun GameDetailsLandscapeContent(
                 defaultVariantId = defaultVariantId,
                 compact = true,
             )
-            Spacer(Modifier.weight(1f))
-            Row(
-                Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                OutlinedButton(onClick = onDismiss, modifier = Modifier.weight(0.8f)) {
-                    Text("Dismiss", maxLines = 1, overflow = TextOverflow.Ellipsis)
+            if (!imageActionsOverlay) {
+                Spacer(Modifier.weight(1f))
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    OutlinedButton(onClick = onDismiss, modifier = Modifier.weight(0.8f)) {
+                        Text("Dismiss", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
+                    LongPressPlayButton(
+                        onClick = {
+                            onDismiss()
+                            onPlay(game)
+                        },
+                        onLongClick = {
+                            onDismiss()
+                            onChooseStore(game)
+                        },
+                        modifier = Modifier
+                            .weight(1.2f)
+                            .focusRequester(playFocusRequester),
+                    )
                 }
-                LongPressPlayButton(
-                    onClick = {
-                        onDismiss()
-                        onPlay(game)
-                    },
-                    onLongClick = {
-                        onDismiss()
-                        onChooseStore(game)
-                    },
-                    modifier = Modifier
-                        .weight(1.2f)
-                        .focusRequester(playFocusRequester),
-                )
             }
         }
     }
@@ -1758,6 +2030,25 @@ private fun variantDetailsText(variant: GameVariant): String =
         variant.supportedControls.takeIf { it.isNotEmpty() }?.joinToString(", ") { formatGameMetadataLabel(it) },
         variant.lastPlayedDate?.takeIf { it.isNotBlank() }?.let { "Last played $it" },
     ).joinToString(" - ")
+
+@Composable
+private fun ImageCloseButton(onClick: () -> Unit, modifier: Modifier = Modifier) {
+    Surface(
+        modifier = modifier.size(44.dp),
+        shape = CircleShape,
+        color = Color.Black.copy(alpha = 0.58f),
+        tonalElevation = 3.dp,
+    ) {
+        IconButton(onClick = onClick) {
+            Icon(
+                painter = painterResource(R.drawable.ic_clear),
+                contentDescription = stringResource(R.string.action_cancel),
+                tint = TextPrimary,
+                modifier = Modifier.size(20.dp),
+            )
+        }
+    }
+}
 
 @Composable
 private fun FavoriteIconButton(favorite: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
@@ -2622,6 +2913,7 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                 hideExternalMousePointer = externalMousePassthroughActive,
                 touchMouseEnabled = state.settings.androidTouch.mousePad,
                 externalMouseRoot = activity?.window?.decorView,
+                onMouseCaptureInput = { (activity as? MainActivity)?.enforceStreamSystemUiFromInput() },
             )
             if (statsVisible) {
                 StreamStatsPill(
@@ -2745,6 +3037,7 @@ private fun StreamVideoSurface(
     hideExternalMousePointer: Boolean,
     touchMouseEnabled: Boolean,
     externalMouseRoot: android.view.View?,
+    onMouseCaptureInput: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val rootView = LocalView.current
@@ -2752,8 +3045,9 @@ private fun StreamVideoSurface(
     val (streamWidth, streamHeight) = streamResolutionPixels(settings)
     val streamAspect = (streamWidth.toFloat() / streamHeight.toFloat()).takeIf { it.isFinite() && it > 0f } ?: (16f / 9f)
     val currentStreamFps by rememberUpdatedState(settings.fps)
+    val currentOnMouseCaptureInput by rememberUpdatedState(onMouseCaptureInput)
     DisposableEffect(client, rootView, pointerRootView, hideExternalMousePointer) {
-        pointerRootView.configureAndroidMousePointerCapture(hideExternalMousePointer) { event ->
+        pointerRootView.configureAndroidMousePointerCapture(hideExternalMousePointer, { currentOnMouseCaptureInput() }) { event ->
             client.dispatchMotion(event)
         }
         if (hideExternalMousePointer) {
@@ -2814,7 +3108,7 @@ private fun StreamVideoSurface(
                     renderer.isFocusable = false
                     renderer.isFocusableInTouchMode = false
                     renderer.setPreferredStreamFrameRate(settings.fps)
-                    pointerRootView.configureAndroidMousePointerCapture(hideExternalMousePointer) { event ->
+                    pointerRootView.configureAndroidMousePointerCapture(hideExternalMousePointer, { currentOnMouseCaptureInput() }) { event ->
                         client.dispatchMotion(event)
                     }
                     if (hideExternalMousePointer) {
@@ -2859,17 +3153,22 @@ private fun androidNullPointerIcon(view: android.view.View): PointerIcon? =
         null
     }
 
-private fun View.configureAndroidMousePointerCapture(enabled: Boolean, onMotion: (MotionEvent) -> Boolean) {
+private fun View.configureAndroidMousePointerCapture(enabled: Boolean, onCaptureInput: () -> Unit = {}, onMotion: (MotionEvent) -> Boolean) {
     if (Build.VERSION.SDK_INT < 26) return
     if (!enabled) {
         clearAndroidMousePointerCapture()
         return
     }
     setOnCapturedPointerListener { _, event ->
+        onCaptureInput()
         onMotion(event)
     }
     post {
         if (isAttachedToWindow && hasWindowFocus() && !hasPointerCapture()) {
+            isFocusable = true
+            isFocusableInTouchMode = true
+            requestFocus()
+            onCaptureInput()
             requestPointerCapture()
         }
     }
@@ -3730,10 +4029,10 @@ private fun TouchOverlay(client: NativeStreamClient, touch: AndroidTouchSettings
         }
     }
 
-    Row(
+    BoxWithConstraints(
         modifier
-            .fillMaxWidth()
-            .padding(18.dp)
+            .fillMaxSize()
+            .padding(horizontal = 14.dp, vertical = 10.dp)
             .onGloballyPositioned { coordinates ->
                 val bounds = coordinates.boundsInRoot()
                 NativeStreamInputRouter.setTouchControllerPassthroughBounds(
@@ -3743,56 +4042,146 @@ private fun TouchOverlay(client: NativeStreamClient, touch: AndroidTouchSettings
                     bounds.bottom.roundToInt(),
                 )
             },
+    ) {
+        if (touch.enabled) {
+            val landscape = maxWidth > maxHeight
+            if (landscape) {
+                LandscapeTouchControls(
+                    client = client,
+                    opacity = opacity,
+                    layoutScale = layoutScale,
+                    buttonScale = buttonScale,
+                    stickScale = stickScale,
+                )
+            } else {
+                PortraitTouchControls(
+                    client = client,
+                    opacity = opacity,
+                    layoutScale = layoutScale,
+                    buttonScale = buttonScale,
+                    stickScale = stickScale,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun PortraitTouchControls(
+    client: NativeStreamClient,
+    opacity: Float,
+    layoutScale: Float,
+    buttonScale: Float,
+    stickScale: Float,
+) {
+    Row(
+        Modifier.fillMaxSize(),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.Bottom,
     ) {
         Column(verticalArrangement = Arrangement.spacedBy(8.dp), horizontalAlignment = Alignment.Start) {
-            if (touch.enabled) {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    GamepadButton("LB", 0x0100, client, opacity, 48.dp * buttonScale * layoutScale)
-                    GamepadTriggerButton("LT", left = true, client = client, opacity = opacity, size = 48.dp * buttonScale * layoutScale)
-                }
-                Spacer(Modifier.height(44.dp * buttonScale * layoutScale))
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    verticalAlignment = Alignment.Bottom,
-                ) {
-                    VirtualStick(
-                        label = "L",
-                        client = client,
-                        opacity = opacity,
-                        diameter = 116.dp * stickScale * layoutScale,
-                        onChange = client::setVirtualLeftStick,
-                    )
-                    DpadCluster(client, opacity, buttonScale * layoutScale)
-                }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                GamepadButton("LB", 0x0100, client, opacity, 48.dp * buttonScale * layoutScale)
+                GamepadTriggerButton("LT", left = true, client = client, opacity = opacity, size = 48.dp * buttonScale * layoutScale)
+            }
+            Spacer(Modifier.height(44.dp * buttonScale * layoutScale))
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalAlignment = Alignment.Bottom,
+            ) {
+                VirtualStick(
+                    label = "L",
+                    client = client,
+                    opacity = opacity,
+                    diameter = 116.dp * stickScale * layoutScale,
+                    onChange = client::setVirtualLeftStick,
+                )
+                DpadCluster(client, opacity, buttonScale * layoutScale)
             }
         }
-        if (touch.enabled) {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp), horizontalAlignment = Alignment.End) {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    GamepadTriggerButton("RT", left = false, client = client, opacity = opacity, size = 48.dp * buttonScale * layoutScale)
-                    GamepadButton("RB", 0x0200, client, opacity, 48.dp * buttonScale * layoutScale)
-                }
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    GamepadButton("View", 0x0020, client, opacity, 44.dp * buttonScale * layoutScale)
-                    GamepadButton("Menu", 0x0010, client, opacity, 44.dp * buttonScale * layoutScale)
-                }
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    verticalAlignment = Alignment.Bottom,
-                ) {
-                    VirtualStick(
-                        label = "R",
-                        client = client,
-                        opacity = opacity,
-                        diameter = 104.dp * stickScale * layoutScale,
-                        onChange = client::setVirtualRightStick,
-                    )
-                    FaceButtonCluster(client, opacity, buttonScale * layoutScale)
-                }
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp), horizontalAlignment = Alignment.End) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                GamepadTriggerButton("RT", left = false, client = client, opacity = opacity, size = 48.dp * buttonScale * layoutScale)
+                GamepadButton("RB", 0x0200, client, opacity, 48.dp * buttonScale * layoutScale)
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                GamepadButton("View", 0x0020, client, opacity, 44.dp * buttonScale * layoutScale)
+                GamepadButton("Menu", 0x0010, client, opacity, 44.dp * buttonScale * layoutScale)
+            }
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalAlignment = Alignment.Bottom,
+            ) {
+                VirtualStick(
+                    label = "R",
+                    client = client,
+                    opacity = opacity,
+                    diameter = 104.dp * stickScale * layoutScale,
+                    onChange = client::setVirtualRightStick,
+                )
+                FaceButtonCluster(client, opacity, buttonScale * layoutScale)
             }
         }
+    }
+}
+
+@Composable
+private fun BoxScope.LandscapeTouchControls(
+    client: NativeStreamClient,
+    opacity: Float,
+    layoutScale: Float,
+    buttonScale: Float,
+    stickScale: Float,
+) {
+    val controlScale = buttonScale * layoutScale
+    Row(
+        Modifier.align(Alignment.TopStart),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        GamepadButton("LB", 0x0100, client, opacity, 46.dp * controlScale)
+        GamepadTriggerButton("LT", left = true, client = client, opacity = opacity, size = 50.dp * controlScale)
+    }
+    Row(
+        Modifier.align(Alignment.TopCenter),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        GamepadPillButton("View", 0x0020, client, opacity, width = 76.dp * controlScale, height = 42.dp * controlScale)
+        GamepadPillButton("Start", 0x0010, client, opacity, width = 84.dp * controlScale, height = 42.dp * controlScale)
+    }
+    Row(
+        Modifier.align(Alignment.TopEnd),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        GamepadTriggerButton("RT", left = false, client = client, opacity = opacity, size = 50.dp * controlScale)
+        GamepadButton("RB", 0x0200, client, opacity, 46.dp * controlScale)
+    }
+    Row(
+        Modifier.align(Alignment.BottomStart),
+        horizontalArrangement = Arrangement.spacedBy(14.dp),
+        verticalAlignment = Alignment.Bottom,
+    ) {
+        VirtualStick(
+            label = "L",
+            client = client,
+            opacity = opacity,
+            diameter = 112.dp * stickScale * layoutScale,
+            onChange = client::setVirtualLeftStick,
+        )
+        DpadCluster(client, opacity, controlScale * 0.88f)
+    }
+    Row(
+        Modifier.align(Alignment.BottomEnd),
+        horizontalArrangement = Arrangement.spacedBy(14.dp),
+        verticalAlignment = Alignment.Bottom,
+    ) {
+        FaceButtonCluster(client, opacity, controlScale * 0.9f)
+        VirtualStick(
+            label = "R",
+            client = client,
+            opacity = opacity,
+            diameter = 98.dp * stickScale * layoutScale,
+            onChange = client::setVirtualRightStick,
+        )
     }
 }
 
@@ -3955,6 +4344,50 @@ private fun GamepadButton(label: String, mask: Int, client: NativeStreamClient, 
         contentAlignment = Alignment.Center,
     ) {
         Text(label, fontWeight = FontWeight.Bold, color = if (pressed) MaterialTheme.colorScheme.onPrimary else TextPrimary)
+    }
+}
+
+@Composable
+private fun GamepadPillButton(
+    label: String,
+    mask: Int,
+    client: NativeStreamClient,
+    opacity: Float,
+    width: androidx.compose.ui.unit.Dp,
+    height: androidx.compose.ui.unit.Dp,
+) {
+    var pressed by remember { mutableStateOf(false) }
+    val accent = MaterialTheme.colorScheme.primary
+    val idleSurface = MaterialTheme.colorScheme.surfaceVariant
+    Box(
+        Modifier
+            .width(width)
+            .height(height)
+            .clip(RoundedCornerShape(999.dp))
+            .background((if (pressed) accent else idleSurface).copy(alpha = opacity))
+            .border(1.dp, accent.copy(alpha = opacity), RoundedCornerShape(999.dp))
+            .pointerInput(mask) {
+                awaitPointerEventScope {
+                    while (true) {
+                        val event = awaitPointerEvent()
+                        val down = event.changes.any { it.pressed }
+                        if (down != pressed) {
+                            pressed = down
+                            client.setVirtualButton(mask, down)
+                        }
+                        event.changes.forEach { it.consume() }
+                    }
+                }
+            },
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            label,
+            fontWeight = FontWeight.Bold,
+            color = if (pressed) MaterialTheme.colorScheme.onPrimary else TextPrimary,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
     }
 }
 
@@ -4172,10 +4605,23 @@ private fun FilterRow(groups: List<CatalogFilterGroup>, selectedIds: List<String
     if (visible.isEmpty()) return
     var expanded by remember { mutableStateOf(false) }
     val options = visible.flatMap { group -> group.options.take(if (group.id == "genre") 10 else group.options.size) }
+    val filterControlShape = RoundedCornerShape(999.dp)
+    val filterControlColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.46f)
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
             Box {
-                OutlinedButton(onClick = { expanded = true }) {
+                OutlinedButton(
+                    onClick = { expanded = true },
+                    shape = filterControlShape,
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        containerColor = filterControlColor,
+                        contentColor = TextPrimary,
+                    ),
+                ) {
                     Text(if (selectedIds.isEmpty()) "Filters" else "Filters (${selectedIds.size})")
                 }
                 DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
@@ -4192,12 +4638,21 @@ private fun FilterRow(groups: List<CatalogFilterGroup>, selectedIds: List<String
                     }
                 }
             }
-            Spacer(Modifier.width(10.dp))
-            Text(
-                "${options.size} available",
-                color = TextMuted,
-                style = MaterialTheme.typography.bodySmall,
-            )
+            Box(
+                Modifier
+                    .height(40.dp)
+                    .clip(filterControlShape)
+                    .background(filterControlColor)
+                    .padding(horizontal = 12.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    "${options.size} available",
+                    color = TextMuted,
+                    style = MaterialTheme.typography.bodySmall,
+                    maxLines = 1,
+                )
+            }
         }
         val selectedOptions = options.filter { it.id in selectedIds }
         if (selectedOptions.isNotEmpty()) {
