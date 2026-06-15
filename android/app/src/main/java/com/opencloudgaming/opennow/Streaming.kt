@@ -6,6 +6,7 @@ import android.media.MediaCodecInfo
 import android.media.MediaCodecList
 import android.os.Build
 import android.os.SystemClock
+import android.os.VibrationEffect
 import android.util.Log
 import android.view.InputDevice
 import android.view.KeyEvent
@@ -780,6 +781,81 @@ object InputDataChannelLabels {
         }
 }
 
+internal data class GamepadRumbleCommand(
+    val controllerId: Int,
+    val weakMagnitude: Int,
+    val strongMagnitude: Int,
+)
+
+internal object HapticsPacketParser {
+    fun parse(bytes: ByteArray): GamepadRumbleCommand? {
+        if (bytes.size < 2) return null
+        val view = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
+        val firstWord = view.getShort(0).toInt() and 0xffff
+        if (firstWord == LEGACY_HAPTIC_SUBMESSAGE_TYPE) {
+            return parseLegacy(bytes, 2)
+        }
+
+        return when (firstWord and 0xff) {
+            WRAPPER_SINGLE_EVENT -> parseSubMessage(bytes, 1)
+            WRAPPER_BATCHED_EVENT,
+            WRAPPER_LEGACY_INPUT,
+            WRAPPER_TIMESTAMPED_SINGLE,
+            WRAPPER_TIMESTAMPED_BATCHED,
+            WRAPPER_RESERVED,
+            -> null
+            else -> parseLegacy(bytes, 0)
+        }
+    }
+
+    private fun parseSubMessage(bytes: ByteArray, offset: Int): GamepadRumbleCommand? {
+        if (offset < 0 || offset + 4 > bytes.size) return null
+        val type = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN).getInt(offset)
+        return when (type) {
+            LEGACY_HAPTIC_SUBMESSAGE_TYPE -> parseLegacy(bytes, offset + 4)
+            OC_HAPTIC_SUBMESSAGE_TYPE -> parseOc(bytes, offset + 4)
+            else -> null
+        }
+    }
+
+    private fun parseLegacy(bytes: ByteArray, offset: Int): GamepadRumbleCommand? {
+        if (offset < 0 || offset + 10 > bytes.size) return null
+        val view = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
+        val kind = view.getShort(offset).toInt() and 0xffff
+        if (kind != 1) return null
+        val length = view.getShort(offset + 2).toInt() and 0xffff
+        if (length < 6) return null
+        return GamepadRumbleCommand(
+            controllerId = view.getShort(offset + 4).toInt() and 0xffff,
+            weakMagnitude = view.getShort(offset + 6).toInt() and 0xffff,
+            strongMagnitude = view.getShort(offset + 8).toInt() and 0xffff,
+        )
+    }
+
+    private fun parseOc(bytes: ByteArray, offset: Int): GamepadRumbleCommand? {
+        if (offset < 0 || offset + 9 > bytes.size) return null
+        val controllerByte = bytes[offset].toInt() and 0xff
+        if (controllerByte !in 6 until 10) return null
+        val reportKind = bytes[offset + 3].toInt() and 0xff
+        val flags = bytes[offset + 4].toInt() and 0xff
+        if (reportKind != 5 || (flags and 0xfe) != 0) return null
+        return GamepadRumbleCommand(
+            controllerId = controllerByte - 6,
+            weakMagnitude = (bytes[offset + 7].toInt() and 0xff) shl 8,
+            strongMagnitude = (bytes[offset + 8].toInt() and 0xff) shl 8,
+        )
+    }
+
+    private const val LEGACY_HAPTIC_SUBMESSAGE_TYPE = 267
+    private const val OC_HAPTIC_SUBMESSAGE_TYPE = 17
+    private const val WRAPPER_BATCHED_EVENT = 32
+    private const val WRAPPER_LEGACY_INPUT = 33
+    private const val WRAPPER_SINGLE_EVENT = 34
+    private const val WRAPPER_TIMESTAMPED_SINGLE = 35
+    private const val WRAPPER_TIMESTAMPED_BATCHED = 36
+    private const val WRAPPER_RESERVED = 255
+}
+
 internal object GamepadButtonMapping {
     const val DPAD_UP = 0x0001
     const val DPAD_DOWN = 0x0002
@@ -1043,6 +1119,7 @@ class NativeStreamClient(
     private var reliableInput: DataChannel? = null
     private var partiallyReliableInput: DataChannel? = null
     private var partiallyReliableGamepadMask = 0
+    private var hapticsAdvertised: Boolean? = null
     private var videoTrack: VideoTrack? = null
     private var audioTrack: AudioTrack? = null
     private var renderer: SurfaceViewRenderer? = null
@@ -1095,6 +1172,9 @@ class NativeStreamClient(
     private val livenessWatchdog = StreamLivenessWatchdog()
     private val textSendMutex = Mutex()
     private var guideAutoReleaseJob: Job? = null
+    private val lastRumbleEffectAtMs = LongArray(GAMEPAD_MAX_CONTROLLERS)
+    private val hapticsSupportLogged = BooleanArray(GAMEPAD_MAX_CONTROLLERS)
+    private var lastHapticsWarningAtMs = 0L
 
     private data class StreamStatsSample(
         val atMs: Double,
@@ -1182,6 +1262,7 @@ class NativeStreamClient(
         physicalRightTriggerButtonPressed = false
         guideAutoReleaseJob?.cancel()
         guideAutoReleaseJob = null
+        stopAllGamepadRumble()
         lastLeftTrigger = 0
         lastRightTrigger = 0
         lastLeftStickX = 0
@@ -1511,6 +1592,7 @@ class NativeStreamClient(
         reliableInput = null
         partiallyReliableInput = null
         partiallyReliableGamepadMask = 0
+        hapticsAdvertised = null
         if (clearInputState) resetInputState()
         videoTrack?.removeSink(renderer)
         videoTrack = null
@@ -1771,7 +1853,7 @@ class NativeStreamClient(
                 if (channel.state() == DataChannel.State.OPEN) {
                     inputDropLogged = false
                     NativeInputDiagnostics.add("input channel open label=$normalizedLabel")
-                    sendReliableInput(inputEncoder.encodeHapticsEnabled(true))
+                    updateHapticsAdvertisement()
                 }
             }
             override fun onMessage(buffer: DataChannel.Buffer) {
@@ -1785,7 +1867,13 @@ class NativeStreamClient(
             ByteArray(data.remaining()).also(data::get)
         }
         if (bytes.isEmpty()) return
+        if (handleInputHandshakeMessage(bytes)) return
+        HapticsPacketParser.parse(bytes)?.let { command ->
+            applyGamepadRumble(command.controllerId, command.weakMagnitude, command.strongMagnitude)
+        }
+    }
 
+    private fun handleInputHandshakeMessage(bytes: ByteArray): Boolean {
         val firstWord = if (bytes.size >= 2) {
             ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN).short.toInt() and 0xffff
         } else {
@@ -1800,12 +1888,14 @@ class NativeStreamClient(
                 }
             }
             (bytes[0].toInt() and 0xff) == INPUT_HANDSHAKE_MARKER -> firstWord
-            else -> return
+            else -> return false
         }.coerceAtLeast(1)
 
         inputEncoder.setProtocolVersion(version)
         inputEncoder.resetGamepadSequences()
         NativeInputDiagnostics.add("input handshake protocol=$version bytes=${bytes.size}")
+        updateHapticsAdvertisement()
+        return true
     }
 
     private fun startHeartbeat() {
@@ -2156,6 +2246,95 @@ class NativeStreamClient(
             lastRightStickY = 0
             sendCurrentGamepadState()
         }
+        updateHapticsAdvertisement()
+    }
+
+    private fun updateHapticsAdvertisement() {
+        if (reliableInput?.state() != DataChannel.State.OPEN) return
+        val enabled = hasConnectedHapticController()
+        if (hapticsAdvertised == enabled) return
+        sendReliableInput(inputEncoder.encodeHapticsEnabled(enabled))
+        hapticsAdvertised = enabled
+        NativeInputDiagnostics.add("gamepad haptics advertised enabled=$enabled")
+    }
+
+    private fun hasConnectedHapticController(): Boolean =
+        hapticControllerDevices().isNotEmpty()
+
+    private fun hapticControllerDevices(): List<InputDevice> =
+        buildList {
+            InputDevice.getDeviceIds().forEach { deviceId ->
+                val device = InputDevice.getDevice(deviceId) ?: return@forEach
+                if (!device.isControllerDevice()) return@forEach
+                @Suppress("DEPRECATION")
+                val vibrator = device.vibrator
+                if (vibrator.hasVibrator()) add(device)
+            }
+        }
+
+    private fun findHapticControllerDevice(controllerId: Int): InputDevice? {
+        val devices = hapticControllerDevices()
+        if (devices.isEmpty()) return null
+        devices.firstOrNull { controllerSlots[it.id] == controllerId }?.let { return it }
+        if (controllerId in 0 until GAMEPAD_MAX_CONTROLLERS) {
+            devices.getOrNull(controllerId)?.let { return it }
+        }
+        return devices.singleOrNull()
+    }
+
+    @Suppress("DEPRECATION")
+    private fun applyGamepadRumble(controllerId: Int, weakMagnitude16: Int, strongMagnitude16: Int) {
+        val slot = controllerId.coerceIn(0, GAMEPAD_MAX_CONTROLLERS - 1)
+        val device = findHapticControllerDevice(slot) ?: run {
+            logHapticsWarning("input haptics no vibrator controller=$controllerId")
+            return
+        }
+        val vibrator = device.vibrator
+        if (!vibrator.hasVibrator()) return
+
+        val weak = (weakMagnitude16.coerceIn(0, 65535) / 65535f)
+        val strong = (strongMagnitude16.coerceIn(0, 65535) / 65535f)
+        val magnitude = max(weak, strong)
+        val isStop = magnitude <= 0f
+        val now = SystemClock.elapsedRealtime()
+        if (!isStop && lastRumbleEffectAtMs[slot] != 0L && now - lastRumbleEffectAtMs[slot] <= RUMBLE_THROTTLE_MS) {
+            return
+        }
+        lastRumbleEffectAtMs[slot] = if (isStop) 0L else now
+
+        if (isStop) {
+            vibrator.cancel()
+            return
+        }
+        if (!hapticsSupportLogged[slot]) {
+            hapticsSupportLogged[slot] = true
+            NativeInputDiagnostics.add("gamepad haptics available controller=$slot device=${device.id}:${device.name}")
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val amplitude = (magnitude * 255f).roundToInt().coerceIn(1, 255)
+            vibrator.vibrate(VibrationEffect.createOneShot(RUMBLE_EFFECT_MS, amplitude))
+        } else {
+            vibrator.vibrate(RUMBLE_EFFECT_MS)
+        }
+    }
+
+    private fun stopAllGamepadRumble() {
+        hapticControllerDevices().forEach { device ->
+            @Suppress("DEPRECATION")
+            device.vibrator.cancel()
+        }
+        for (index in 0 until GAMEPAD_MAX_CONTROLLERS) {
+            lastRumbleEffectAtMs[index] = 0L
+            hapticsSupportLogged[index] = false
+        }
+        lastHapticsWarningAtMs = 0L
+    }
+
+    private fun logHapticsWarning(message: String) {
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastHapticsWarningAtMs < HAPTICS_LOG_INTERVAL_MS) return
+        lastHapticsWarningAtMs = now
+        NativeInputDiagnostics.add(message)
     }
 
     private fun controllerIdFor(event: KeyEvent): Int = controllerIdFor(event.deviceId)
@@ -2241,6 +2420,10 @@ class NativeStreamClient(
 
     private fun Int.hasSource(source: Int): Boolean = (this and source) == source
 
+    private fun InputDevice.isControllerDevice(): Boolean =
+        sources.hasSource(InputDevice.SOURCE_GAMEPAD) ||
+            sources.hasSource(InputDevice.SOURCE_JOYSTICK)
+
     private fun Int.toGfnMouseButton(): Int = when {
         this and MotionEvent.BUTTON_PRIMARY != 0 -> 1
         this and MotionEvent.BUTTON_TERTIARY != 0 -> 2
@@ -2252,6 +2435,10 @@ class NativeStreamClient(
 
     private companion object {
         private const val EXTERNAL_MOUSE_ABSOLUTE_DELTA_LIMIT_PX = 240f
+        private const val GAMEPAD_MAX_CONTROLLERS = 4
+        private const val RUMBLE_EFFECT_MS = 500L
+        private const val RUMBLE_THROTTLE_MS = 500L
+        private const val HAPTICS_LOG_INTERVAL_MS = 5000L
     }
 
     private fun applyDeadzone(x: Float, y: Float, deadzone: Float = 0.15f): Pair<Float, Float> {
@@ -2384,7 +2571,7 @@ object SdpTools {
         val pwd = Regex("a=ice-pwd:([^\\r\\n]+)").find(localAnswer)?.groupValues?.getOrNull(1)?.trim().orEmpty()
         val fingerprint = Regex("a=fingerprint:sha-256 ([^\\r\\n]+)").find(localAnswer)?.groupValues?.getOrNull(1)?.trim().orEmpty()
         val threshold = Regex("a=ri\\.partialReliableThresholdMs:(\\d+)").find(offerSdp)?.groupValues?.getOrNull(1)?.toIntOrNull() ?: 30
-        val bitDepth = if (settings.colorQuality == ColorQuality.TenBit420 || settings.colorQuality == ColorQuality.TenBit444) 10 else 8
+        val bitDepth = if (settings.hdrEnabled || settings.colorQuality == ColorQuality.TenBit420 || settings.colorQuality == ColorQuality.TenBit444) 10 else 8
         val maxBitrate = settings.maxBitrateMbps * 1000
         val minBitrate = max(5000, (maxBitrate * 0.35f).roundToInt())
         val initialBitrate = max(minBitrate, (maxBitrate * 0.7f).roundToInt())

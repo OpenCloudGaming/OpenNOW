@@ -41,6 +41,7 @@
     <string name="settings_bitrate">Bitrate Mbps</string>
     <string name="settings_codec">Codec</string>
     <string name="settings_color">Color</string>
+    <string name="settings_hdr">HDR (Ultimate)</string>
     <string name="settings_region">Region</string>
     <string name="settings_session_proxy">Session proxy</string>
     <string name="settings_session_proxy_hint">Routes GFN session creation and queue polling through this proxy. Leave off for direct requests.</string>
@@ -69,7 +70,6 @@
     <string name="settings_controller_animations">Controller background animations</string>
     <string name="settings_controller_backdrop">Controller library game backdrop</string>
     <string name="settings_auto_load_library">Auto-load controller library</string>
-    <string name="settings_auto_fullscreen">Auto fullscreen</string>
     <string name="settings_session_counter">Session counter</string>
     <string name="accent_opennow">OpenNOW</string>
     <string name="accent_pixel">Pixel blue</string>

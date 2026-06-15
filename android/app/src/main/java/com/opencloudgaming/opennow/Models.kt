@@ -57,6 +57,7 @@ data class StreamSettings(
     val maxBitrateMbps: Int = 75,
     val codec: VideoCodec = VideoCodec.H264,
     val colorQuality: ColorQuality = ColorQuality.TenBit420,
+    val hdrEnabled: Boolean = false,
     val region: String = "",
     val keyboardLayout: String = "en-US",
     val gameLanguage: String = "en_US",
@@ -100,7 +101,7 @@ data class AppSettings(
     val controllerThemeColor: ControllerThemeRgb = ControllerThemeRgb(),
     val controllerLibraryGameBackdrop: Boolean = true,
     val autoLoadControllerLibrary: Boolean = false,
-    val autoFullScreen: Boolean = false,
+    val autoFullScreen: Boolean = true,
     val favoriteGameIds: List<String> = emptyList(),
     val defaultGameVariantIds: Map<String, String> = emptyMap(),
     val sessionCounterEnabled: Boolean = false,
@@ -204,6 +205,13 @@ internal data class StreamResolutionChoice(
         return streamResolutionPlanRank(planForMembershipTier(subscriptionInfo?.membershipTier ?: fallbackMembershipTier)) >= streamResolutionPlanRank(requiredPlan)
     }
 }
+
+internal fun hasUltimateStreamingPlan(subscriptionInfo: SubscriptionInfo?, fallbackMembershipTier: String?): Boolean =
+    streamResolutionPlanRank(planForMembershipTier(subscriptionInfo?.membershipTier?.takeIf { it.isNotBlank() } ?: fallbackMembershipTier)) >=
+        streamResolutionPlanRank(StreamResolutionPlan.Ultimate)
+
+internal fun StreamSettings.withHdrAllowed(subscriptionInfo: SubscriptionInfo?, fallbackMembershipTier: String?): StreamSettings =
+    if (hdrEnabled && !hasUltimateStreamingPlan(subscriptionInfo, fallbackMembershipTier)) copy(hdrEnabled = false) else this
 
 private val STREAM_RESOLUTION_OPTIONS = listOf(
     StreamResolutionOption("1280x720", "16:9", "720"),

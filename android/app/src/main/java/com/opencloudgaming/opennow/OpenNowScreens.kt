@@ -1997,6 +1997,14 @@ private fun LongPressPlayButton(
         modifier = modifier
             .height(48.dp)
             .onFocusChanged { focused = it.isFocused }
+            .onPreviewKeyEvent { event ->
+                if (isTvActivateKey(event)) {
+                    onClick()
+                    true
+                } else {
+                    false
+                }
+            }
             .focusable()
             .combinedClickable(
                 onClick = onClick,
@@ -2445,6 +2453,19 @@ private fun SettingsContent(
                 ChoiceRow(stringResource(R.string.settings_color), ColorQuality.entries.map { it.label }, settings.stream.colorQuality.label) { label ->
                     viewModel.updateStreamSettings { s -> s.copy(colorQuality = ColorQuality.entries.first { it.label == label }) }
                 }
+                val hdrAvailable = hasUltimateStreamingPlan(state.subscriptionInfo, fallbackMembershipTier)
+                SettingSwitch(
+                    stringResource(R.string.settings_hdr),
+                    settings.stream.hdrEnabled && hdrAvailable,
+                    enabled = hdrAvailable,
+                ) { enabled ->
+                    viewModel.updateStreamSettings { s ->
+                        s.copy(
+                            hdrEnabled = enabled,
+                            colorQuality = if (enabled && !s.colorQuality.name.startsWith("TenBit")) ColorQuality.TenBit420 else s.colorQuality,
+                        )
+                    }
+                }
                 ChoiceRow(stringResource(R.string.settings_region), listOf(stringResource(R.string.option_auto)) + state.regions.map { it.name }, state.regions.firstOrNull { it.url == settings.stream.region }?.name ?: stringResource(R.string.option_auto)) { label ->
                     val url = state.regions.firstOrNull { it.name == label }?.url.orEmpty()
                     viewModel.updateStreamSettings { s -> s.copy(region = url) }
@@ -2515,7 +2536,6 @@ private fun SettingsContent(
                 SettingSwitch(stringResource(R.string.settings_controller_animations), settings.controllerBackgroundAnimations) { viewModel.updateSettings(settings.copy(controllerBackgroundAnimations = it)) }
                 SettingSwitch(stringResource(R.string.settings_controller_backdrop), settings.controllerLibraryGameBackdrop) { viewModel.updateSettings(settings.copy(controllerLibraryGameBackdrop = it)) }
                 SettingSwitch(stringResource(R.string.settings_auto_load_library), settings.autoLoadControllerLibrary) { viewModel.updateSettings(settings.copy(autoLoadControllerLibrary = it)) }
-                SettingSwitch(stringResource(R.string.settings_auto_fullscreen), settings.autoFullScreen) { viewModel.updateSettings(settings.copy(autoFullScreen = it)) }
                 SettingSwitch(stringResource(R.string.settings_session_counter), settings.sessionCounterEnabled) { viewModel.updateSettings(settings.copy(sessionCounterEnabled = it)) }
             }
     SettingsSection("Account") {
@@ -4407,11 +4427,15 @@ private fun SettingsSection(title: String, content: @Composable ColumnScope.() -
 }
 
 @Composable
-private fun SettingSwitch(label: String, checked: Boolean, onCheckedChange: (Boolean) -> Unit) {
+private fun SettingSwitch(label: String, checked: Boolean, enabled: Boolean = true, onCheckedChange: (Boolean) -> Unit) {
     val focusManager = LocalFocusManager.current
     var focused by remember { mutableStateOf(false) }
     val shape = RoundedCornerShape(14.dp)
-    val toggle = { onCheckedChange(!checked) }
+    val toggle = {
+        if (enabled) {
+            onCheckedChange(!checked)
+        }
+    }
     Row(
         Modifier
             .fillMaxWidth()
@@ -4423,10 +4447,10 @@ private fun SettingSwitch(label: String, checked: Boolean, onCheckedChange: (Boo
             )
             .clip(shape)
             .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.76f))
-            .clickable(onClick = toggle)
+            .clickable(enabled = enabled, onClick = toggle)
             .onPreviewKeyEvent { event ->
                 when {
-                    isTvActivateKey(event) -> {
+                    enabled && isTvActivateKey(event) -> {
                         toggle()
                         true
                     }
@@ -4437,8 +4461,9 @@ private fun SettingSwitch(label: String, checked: Boolean, onCheckedChange: (Boo
             .padding(horizontal = 12.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(label, Modifier.weight(1f), color = MaterialTheme.colorScheme.onSurface, maxLines = 2, overflow = TextOverflow.Ellipsis)
-        Switch(checked = checked, onCheckedChange = onCheckedChange)
+        val contentColor = MaterialTheme.colorScheme.onSurface.copy(alpha = if (enabled) 1f else 0.45f)
+        Text(label, Modifier.weight(1f), color = contentColor, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        Switch(checked = checked, enabled = enabled, onCheckedChange = onCheckedChange)
     }
 }
 

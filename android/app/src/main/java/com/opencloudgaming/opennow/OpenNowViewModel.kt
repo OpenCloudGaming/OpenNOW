@@ -439,7 +439,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 showPrintedWasteSelector(game)
                 return@launch
             }
-            val settings = state.value.settings.stream.adjustedForDevice(state.value.codecReport)
+            val settings = effectiveStreamSettings()
             val token = auth.tokens.idToken ?: auth.tokens.accessToken
             val baseUrl = streamingBaseUrlOverride ?: effectiveStreamingBaseUrl()
             _state.update {
@@ -564,7 +564,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             val snapshot = state.value
             val returnPage = snapshot.streamReturnPage ?: AppPage.Home
             val session = snapshot.streamSession
-            val streamSettings = snapshot.activeStreamSettings ?: state.value.settings.stream.adjustedForDevice(state.value.codecReport)
+            val streamSettings = snapshot.activeStreamSettings ?: effectiveStreamSettings()
             if (auth != null && session != null) {
                 runCatching { sessionRepository.stopSession(auth.tokens.idToken ?: auth.tokens.accessToken, session, streamSettings) }
             } else if (auth != null) {
@@ -624,7 +624,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         if (launchJob?.isActive == true) return
         launchJob = viewModelScope.launch {
             val auth = state.value.authSession ?: return@launch
-            val settings = state.value.settings.stream.adjustedForDevice(state.value.codecReport)
+            val settings = effectiveStreamSettings()
             val token = auth.tokens.idToken ?: auth.tokens.accessToken
             val baseUrl = effectiveStreamingBaseUrl(auth)
             val cachedActive = state.value.activeSession
@@ -708,6 +708,13 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             )
         }
         play(game, streamingBaseUrlOverride = zoneUrl, skipPrintedWaste = true, skipStoreChoice = true)
+    }
+
+    private fun effectiveStreamSettings(): StreamSettings {
+        val snapshot = state.value
+        return snapshot.settings.stream
+            .withHdrAllowed(snapshot.subscriptionInfo, snapshot.authSession?.user?.membershipTier)
+            .adjustedForDevice(snapshot.codecReport)
     }
 
     fun dismissPrintedWasteSelector() {

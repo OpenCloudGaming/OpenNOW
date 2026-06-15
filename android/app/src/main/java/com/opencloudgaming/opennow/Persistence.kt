@@ -46,7 +46,11 @@ class SettingsStore(context: Context) {
     private fun AppSettings.normalizedForAndroid(): AppSettings {
         val lowPowerSafe = stream.copy(
             codec = stream.codec,
-            colorQuality = stream.colorQuality,
+            colorQuality = if (stream.hdrEnabled && !stream.colorQuality.name.startsWith("TenBit")) {
+                ColorQuality.TenBit420
+            } else {
+                stream.colorQuality
+            },
             sessionProxyUrl = stream.sessionProxyUrl.trim(),
             maxBitrateMbps = stream.maxBitrateMbps.coerceIn(1, 150),
             fps = stream.fps.coerceIn(30, 240),
@@ -60,6 +64,7 @@ class SettingsStore(context: Context) {
                 buttonScale = androidTouch.buttonScale.coerceIn(0.65f, 1.5f),
                 stickScale = androidTouch.stickScale.coerceIn(0.65f, 1.5f),
             ),
+            autoFullScreen = true,
         )
     }
 }

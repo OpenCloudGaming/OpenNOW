@@ -1714,7 +1714,8 @@ class GfnSessionRepository(
         deviceId: String,
     ): JsonObject {
         val (width, height) = streamResolutionPixels(settings)
-        val bitDepth = if (settings.colorQuality.name.startsWith("TenBit")) 10 else 0
+        val hdrEnabled = settings.hdrEnabled
+        val bitDepth = if (hdrEnabled || settings.colorQuality.name.startsWith("TenBit")) 10 else 0
         val chroma = if (settings.colorQuality == ColorQuality.EightBit444 || settings.colorQuality == ColorQuality.TenBit444) 2 else 0
         return buildJsonObject {
             putJsonObject("sessionRequestData") {
@@ -1737,8 +1738,8 @@ class GfnSessionRepository(
                         put("widthInPixels", width)
                         put("heightInPixels", height)
                         put("framesPerSecond", settings.fps)
-                        put("sdrHdrMode", 0)
-                        put("displayData", JsonNull)
+                        put("sdrHdrMode", if (hdrEnabled) 1 else 0)
+                        put("displayData", if (hdrEnabled) hdrDisplayData() else JsonNull)
                         put("hdr10PlusGamingData", JsonNull)
                         put("dpi", 100)
                     })
@@ -1746,8 +1747,8 @@ class GfnSessionRepository(
                 put("useOps", true)
                 put("audioMode", 2)
                 put("metaData", webRtcSessionMetadata(width, height))
-                put("sdrHdrMode", 0)
-                put("clientDisplayHdrCapabilities", JsonNull)
+                put("sdrHdrMode", if (hdrEnabled) 1 else 0)
+                put("clientDisplayHdrCapabilities", if (hdrEnabled) hdrCapabilities() else JsonNull)
                 put("surroundAudioInfo", 0)
                 put("remoteControllersBitmap", 0)
                 put("clientTimezoneOffset", java.util.TimeZone.getDefault().getOffset(System.currentTimeMillis()))
@@ -1758,14 +1759,15 @@ class GfnSessionRepository(
                 put("accountLinked", accountLinked)
                 put("enablePersistingInGameSettings", true)
                 put("userAge", 26)
-                put("requestedStreamingFeatures", requestedStreamingFeatures(settings, bitDepth, chroma))
+                put("requestedStreamingFeatures", requestedStreamingFeatures(settings, bitDepth, chroma, hdrEnabled))
             }
         }
     }
 
     private fun buildClaimRequestBody(sessionId: String, appId: String, settings: StreamSettings, deviceId: String): JsonObject {
         val (width, height) = streamResolutionPixels(settings)
-        val bitDepth = if (settings.colorQuality.name.startsWith("TenBit")) 10 else 0
+        val hdrEnabled = settings.hdrEnabled
+        val bitDepth = if (hdrEnabled || settings.colorQuality.name.startsWith("TenBit")) 10 else 0
         val chroma = if (settings.colorQuality == ColorQuality.EightBit444 || settings.colorQuality == ColorQuality.TenBit444) 2 else 0
         return buildJsonObject {
             put("action", 2)
@@ -1773,7 +1775,7 @@ class GfnSessionRepository(
             putJsonObject("sessionRequestData") {
                 put("audioMode", 2)
                 put("remoteControllersBitmap", 0)
-                put("sdrHdrMode", 0)
+                put("sdrHdrMode", if (hdrEnabled) 1 else 0)
                 put("networkTestSessionId", JsonNull)
                 putJsonArray("availableSupportedControllers") {}
                 put("clientVersion", "30.0")
@@ -1788,8 +1790,8 @@ class GfnSessionRepository(
                         put("widthInPixels", width)
                         put("heightInPixels", height)
                         put("framesPerSecond", settings.fps)
-                        put("sdrHdrMode", 0)
-                        put("displayData", JsonNull)
+                        put("sdrHdrMode", if (hdrEnabled) 1 else 0)
+                        put("displayData", if (hdrEnabled) hdrDisplayData() else JsonNull)
                         put("hdr10PlusGamingData", JsonNull)
                         put("dpi", 100)
                     })
@@ -1805,25 +1807,25 @@ class GfnSessionRepository(
                 put("sdkVersion", "1.0")
                 put("enhancedStreamMode", 1)
                 put("useOps", true)
-                put("clientDisplayHdrCapabilities", JsonNull)
+                put("clientDisplayHdrCapabilities", if (hdrEnabled) hdrCapabilities() else JsonNull)
                 put("accountLinked", true)
                 put("partnerCustomData", "")
                 put("enablePersistingInGameSettings", true)
                 put("secureRTSPSupported", false)
                 put("userAge", 26)
-                put("requestedStreamingFeatures", requestedStreamingFeatures(settings, bitDepth, chroma))
+                put("requestedStreamingFeatures", requestedStreamingFeatures(settings, bitDepth, chroma, hdrEnabled))
             }
             putJsonArray("metaData") {}
         }
     }
 
-    private fun requestedStreamingFeatures(settings: StreamSettings, bitDepth: Int, chroma: Int): JsonObject =
+    private fun requestedStreamingFeatures(settings: StreamSettings, bitDepth: Int, chroma: Int, hdrEnabled: Boolean): JsonObject =
         buildJsonObject {
             put("reflex", settings.enableCloudGsync || settings.fps >= 60)
             put("bitDepth", bitDepth)
             put("cloudGsync", settings.enableCloudGsync)
             put("enabledL4S", settings.enableL4S)
-            put("trueHdr", false)
+            put("trueHdr", hdrEnabled)
             put("mouseMovementFlags", 0)
             put("supportedHidDevices", 0)
             put("profile", 0)
@@ -1835,7 +1837,21 @@ class GfnSessionRepository(
             put("prefilterNoiseReduction", 0)
             put("hudStreamingMode", 0)
             put("sdrColorSpace", 2)
-            put("hdrColorSpace", 0)
+            put("hdrColorSpace", if (hdrEnabled) 4 else 0)
+        }
+
+    private fun hdrDisplayData(): JsonObject =
+        buildJsonObject {
+            put("desiredContentMaxLuminance", 1000)
+            put("desiredContentMinLuminance", 0)
+            put("desiredContentMaxFrameAverageLuminance", 500)
+        }
+
+    private fun hdrCapabilities(): JsonObject =
+        buildJsonObject {
+            put("version", 1)
+            put("hdrEdrSupportedFlagsInUint32", 1)
+            put("staticMetadataDescriptorId", 0)
         }
 
     private fun webRtcSessionMetadata(width: Int, height: Int): JsonArray = buildJsonArray {
