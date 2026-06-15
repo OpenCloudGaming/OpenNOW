@@ -1101,9 +1101,25 @@ private fun StoreScrollableControls(
     onSortChange: (String) -> Unit,
     onFilterToggle: (String) -> Unit,
 ) {
+    val filterGroups = catalogVisibleFilterGroups(state.catalogResult.filterGroups)
+    val filterOptions = catalogFilterOptions(filterGroups)
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        SortPicker(state.catalogResult.sortOptions, state.catalogSortId, onSortChange)
-        FilterRow(state.catalogResult.filterGroups, state.catalogFilterIds, onFilterToggle)
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            SortPicker(
+                options = state.catalogResult.sortOptions,
+                selected = state.catalogSortId,
+                onSelect = onSortChange,
+                modifier = Modifier.weight(1f),
+            )
+            if (filterOptions.isNotEmpty()) {
+                FilterMenu(options = filterOptions, selectedIds = state.catalogFilterIds, onToggle = onFilterToggle)
+            }
+        }
+        SelectedFilterChips(options = filterOptions, selectedIds = state.catalogFilterIds, onToggle = onFilterToggle)
         if (state.error != null) {
             Text(state.error.orEmpty(), color = Color(0xffff9f9f), modifier = Modifier.padding(horizontal = 4.dp))
         }
@@ -4616,79 +4632,115 @@ private fun ChoiceOptionRow(label: String, options: List<SettingsChoiceOption>, 
 }
 
 @Composable
-private fun SortPicker(options: List<CatalogSortOption>, selected: String, onSelect: (String) -> Unit) {
+private fun SortPicker(options: List<CatalogSortOption>, selected: String, onSelect: (String) -> Unit, modifier: Modifier = Modifier) {
     val labels = options.ifEmpty { listOf(CatalogSortOption("relevance", "Relevance", "")) }
-    ChoiceRow("Sort", labels.map { it.label }, labels.firstOrNull { it.id == selected }?.label ?: labels.first().label) { label ->
-        labels.firstOrNull { it.label == label }?.id?.let(onSelect)
+    val selectedLabel = labels.firstOrNull { it.id == selected }?.label ?: labels.first().label
+    var expanded by remember { mutableStateOf(false) }
+    val controlShape = RoundedCornerShape(999.dp)
+    val controlColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.46f)
+    Box(modifier) {
+        OutlinedButton(
+            onClick = { expanded = true },
+            modifier = Modifier.fillMaxWidth().height(40.dp),
+            shape = controlShape,
+            colors = ButtonDefaults.outlinedButtonColors(
+                containerColor = controlColor,
+                contentColor = TextPrimary,
+            ),
+            contentPadding = PaddingValues(horizontal = 12.dp),
+        ) {
+            Text("Sort: $selectedLabel", maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            labels.forEach { option ->
+                DropdownMenuItem(
+                    text = {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(if (option.id == selected) "✓" else "", modifier = Modifier.width(24.dp))
+                            Text(option.label)
+                        }
+                    },
+                    onClick = {
+                        expanded = false
+                        onSelect(option.id)
+                    },
+                )
+            }
+        }
     }
 }
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun FilterRow(groups: List<CatalogFilterGroup>, selectedIds: List<String>, onToggle: (String) -> Unit) {
-    val visible = groups.filter { it.id in setOf("digital_store", "genre", "subscriptions") }
-    if (visible.isEmpty()) return
+private fun SelectedFilterChips(options: List<CatalogFilterOption>, selectedIds: List<String>, onToggle: (String) -> Unit) {
+    val selectedOptions = options.filter { it.id in selectedIds }
+    if (selectedOptions.isEmpty()) return
+    FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        selectedOptions.take(4).forEach { option ->
+            AssistChip(onClick = { onToggle(option.id) }, label = { Text(option.label, maxLines = 1, overflow = TextOverflow.Ellipsis) })
+        }
+        if (selectedOptions.size > 4) {
+            AssistChip(onClick = {}, label = { Text("+${selectedOptions.size - 4}") })
+        }
+    }
+}
+
+private fun catalogVisibleFilterGroups(groups: List<CatalogFilterGroup>): List<CatalogFilterGroup> =
+    groups.filter { it.id in setOf("digital_store", "genre", "subscriptions") }
+
+private fun catalogFilterOptions(groups: List<CatalogFilterGroup>): List<CatalogFilterOption> =
+    groups.flatMap { group -> group.options.take(if (group.id == "genre") 10 else group.options.size) }
+
+@Composable
+private fun FilterMenu(options: List<CatalogFilterOption>, selectedIds: List<String>, onToggle: (String) -> Unit) {
     var expanded by remember { mutableStateOf(false) }
-    val options = visible.flatMap { group -> group.options.take(if (group.id == "genre") 10 else group.options.size) }
     val filterControlShape = RoundedCornerShape(999.dp)
     val filterControlColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.46f)
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Row(
-            Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Box {
-                OutlinedButton(
-                    onClick = { expanded = true },
-                    shape = filterControlShape,
-                    colors = ButtonDefaults.outlinedButtonColors(
-                        containerColor = filterControlColor,
-                        contentColor = TextPrimary,
-                    ),
-                ) {
-                    Text(if (selectedIds.isEmpty()) "Filters" else "Filters (${selectedIds.size})")
-                }
-                DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
-                    options.forEach { option ->
-                        DropdownMenuItem(
-                            text = {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Text(if (option.id in selectedIds) "✓" else "", modifier = Modifier.width(24.dp))
-                                    Text(option.label)
-                                }
-                            },
-                            onClick = { onToggle(option.id) },
-                        )
-                    }
-                }
-            }
-            Box(
-                Modifier
-                    .height(40.dp)
-                    .clip(filterControlShape)
-                    .background(filterControlColor)
-                    .padding(horizontal = 12.dp),
-                contentAlignment = Alignment.Center,
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box {
+            OutlinedButton(
+                onClick = { expanded = true },
+                modifier = Modifier.height(40.dp),
+                shape = filterControlShape,
+                colors = ButtonDefaults.outlinedButtonColors(
+                    containerColor = filterControlColor,
+                    contentColor = TextPrimary,
+                ),
+                contentPadding = PaddingValues(horizontal = 12.dp),
             ) {
-                Text(
-                    "${options.size} available",
-                    color = TextMuted,
-                    style = MaterialTheme.typography.bodySmall,
-                    maxLines = 1,
-                )
+                Text(if (selectedIds.isEmpty()) "Filters" else "Filters (${selectedIds.size})", maxLines = 1)
+            }
+            DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+                options.forEach { option ->
+                    DropdownMenuItem(
+                        text = {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(if (option.id in selectedIds) "✓" else "", modifier = Modifier.width(24.dp))
+                                Text(option.label)
+                            }
+                        },
+                        onClick = { onToggle(option.id) },
+                    )
+                }
             }
         }
-        val selectedOptions = options.filter { it.id in selectedIds }
-        if (selectedOptions.isNotEmpty()) {
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                selectedOptions.take(4).forEach { option ->
-                    AssistChip(onClick = { onToggle(option.id) }, label = { Text(option.label, maxLines = 1, overflow = TextOverflow.Ellipsis) })
-                }
-                if (selectedOptions.size > 4) {
-                    AssistChip(onClick = { expanded = true }, label = { Text("+${selectedOptions.size - 4}") })
-                }
-            }
+        Box(
+            Modifier
+                .height(40.dp)
+                .clip(filterControlShape)
+                .background(filterControlColor)
+                .padding(horizontal = 12.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                "${options.size} available",
+                color = TextMuted,
+                style = MaterialTheme.typography.bodySmall,
+                maxLines = 1,
+            )
         }
     }
 }
