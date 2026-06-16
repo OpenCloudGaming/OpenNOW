@@ -43,6 +43,10 @@ class SettingsStore(context: Context) {
         _settings.value = normalized
     }
 
+    fun reset() {
+        replace(AppSettings())
+    }
+
     private fun AppSettings.normalizedForAndroid(): AppSettings {
         val lowPowerSafe = stream.copy(
             codec = stream.codec,
@@ -164,6 +168,15 @@ class CatalogCacheStore(context: Context) {
         result: CatalogBrowseResult,
     ) {
         save(key("catalog", userId, providerStreamingBaseUrl, searchQuery, sortId, filterIds.sorted().joinToString(",")), result)
+    }
+
+    fun clear(): Int {
+        val keys = prefs.all.keys.filter { it.startsWith(KEY_CATALOG_CACHE_PREFIX) }
+        if (keys.isEmpty()) return 0
+        prefs.edit().apply {
+            keys.forEach(::remove)
+        }.apply()
+        return keys.size
     }
 
     private fun loadGameList(key: String): List<GameInfo>? =

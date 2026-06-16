@@ -529,6 +529,11 @@ object NativeStreamInputRouter {
             systemMenuHandler?.invoke()
             return systemMenuHandler != null
         }
+        if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 1 && event.isStreamLongStartShortcutKey()) {
+            client?.releaseGamepadButtonForShortcut(event)
+            systemMenuHandler?.invoke()
+            return systemMenuHandler != null
+        }
         if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0 && event.isStreamControlsShortcutKey()) {
             systemMenuHandler?.invoke()
             return systemMenuHandler != null
@@ -558,6 +563,11 @@ object NativeStreamInputRouter {
 
     private fun KeyEvent.isStreamSystemMenuKey(): Boolean =
         keyCode == KeyEvent.KEYCODE_MENU
+
+    private fun KeyEvent.isStreamLongStartShortcutKey(): Boolean =
+        !streamUiActive &&
+            keyCode == KeyEvent.KEYCODE_BUTTON_START &&
+            (isControllerSource() || GamepadButtonMapping.isControllerButtonKeyCode(keyCode))
 
     private fun KeyEvent.isStreamControlsShortcutKey(): Boolean =
         !streamUiActive &&
@@ -1175,6 +1185,7 @@ class NativeStreamClient(
     private val lastRumbleEffectAtMs = LongArray(GAMEPAD_MAX_CONTROLLERS)
     private val hapticsSupportLogged = BooleanArray(GAMEPAD_MAX_CONTROLLERS)
     private var lastHapticsWarningAtMs = 0L
+    private var lastHapticsAdvertisementAtMs = 0L
 
     private data class StreamStatsSample(
         val atMs: Double,
@@ -1561,6 +1572,22 @@ class NativeStreamClient(
         sendCurrentGamepadState()
     }
 
+    fun releaseGamepadButtonForShortcut(sourceEvent: KeyEvent): Boolean {
+        val upEvent = KeyEvent(
+            sourceEvent.downTime,
+            SystemClock.uptimeMillis(),
+            KeyEvent.ACTION_UP,
+            sourceEvent.keyCode,
+            0,
+            sourceEvent.metaState,
+            sourceEvent.deviceId,
+            sourceEvent.scanCode,
+            sourceEvent.flags,
+            sourceEvent.source,
+        )
+        return dispatchKey(upEvent)
+    }
+
     private fun startTransport(session: SessionInfo, settings: StreamSettings, generation: Int) {
         inputDropLogged = false
         lastIceState = null
@@ -1593,6 +1620,7 @@ class NativeStreamClient(
         partiallyReliableInput = null
         partiallyReliableGamepadMask = 0
         hapticsAdvertised = null
+        lastHapticsAdvertisementAtMs = 0L
         if (clearInputState) resetInputState()
         videoTrack?.removeSink(renderer)
         videoTrack = null
@@ -1853,7 +1881,7 @@ class NativeStreamClient(
                 if (channel.state() == DataChannel.State.OPEN) {
                     inputDropLogged = false
                     NativeInputDiagnostics.add("input channel open label=$normalizedLabel")
-                    updateHapticsAdvertisement()
+                    updateHapticsAdvertisement(force = true)
                 }
             }
             override fun onMessage(buffer: DataChannel.Buffer) {
@@ -1894,7 +1922,7 @@ class NativeStreamClient(
         inputEncoder.setProtocolVersion(version)
         inputEncoder.resetGamepadSequences()
         NativeInputDiagnostics.add("input handshake protocol=$version bytes=${bytes.size}")
-        updateHapticsAdvertisement()
+        updateHapticsAdvertisement(force = true)
         return true
     }
 
@@ -1922,6 +1950,7 @@ class NativeStreamClient(
                 if (hasAnyControllerState()) {
                     sendCurrentGamepadState()
                 }
+                updateHapticsAdvertisement()
             }
         }
     }
@@ -2223,7 +2252,8 @@ class NativeStreamClient(
             }
         }
         val connected = connectedDevices.isNotEmpty()
-        if (connected != physicalControllerConnected) {
+        val connectionChanged = connected != physicalControllerConnected
+        if (connectionChanged) {
             NativeInputDiagnostics.add(
                 "physical gamepad connected=$connected devices=${connectedDevices.joinToString { "${it.id}:${it.name}" }}",
             )
@@ -2246,16 +2276,19 @@ class NativeStreamClient(
             lastRightStickY = 0
             sendCurrentGamepadState()
         }
-        updateHapticsAdvertisement()
+        updateHapticsAdvertisement(force = connectionChanged)
     }
 
-    private fun updateHapticsAdvertisement() {
+    private fun updateHapticsAdvertisement(force: Boolean = false) {
         if (reliableInput?.state() != DataChannel.State.OPEN) return
         val enabled = hasConnectedHapticController()
-        if (hapticsAdvertised == enabled) return
-        sendReliableInput(inputEncoder.encodeHapticsEnabled(enabled))
-        hapticsAdvertised = enabled
-        NativeInputDiagnostics.add("gamepad haptics advertised enabled=$enabled")
+        val now = SystemClock.elapsedRealtime()
+        if (!force && hapticsAdvertised == enabled && now - lastHapticsAdvertisementAtMs < HAPTICS_ADVERTISEMENT_REFRESH_MS) return
+        if (sendReliableInput(inputEncoder.encodeHapticsEnabled(enabled))) {
+            hapticsAdvertised = enabled
+            lastHapticsAdvertisementAtMs = now
+            NativeInputDiagnostics.add("gamepad haptics advertised enabled=$enabled force=$force")
+        }
     }
 
     private fun hasConnectedHapticController(): Boolean =
@@ -2438,6 +2471,7 @@ class NativeStreamClient(
         private const val GAMEPAD_MAX_CONTROLLERS = 4
         private const val RUMBLE_EFFECT_MS = 500L
         private const val RUMBLE_THROTTLE_MS = 500L
+        private const val HAPTICS_ADVERTISEMENT_REFRESH_MS = 5000L
         private const val HAPTICS_LOG_INTERVAL_MS = 5000L
     }
 

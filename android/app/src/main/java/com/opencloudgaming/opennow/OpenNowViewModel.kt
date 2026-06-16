@@ -368,6 +368,24 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         settingsStore.replace(next)
     }
 
+    fun resetSettings() {
+        settingsStore.reset()
+        Toast.makeText(getApplication(), "Settings reset to recommended defaults", Toast.LENGTH_SHORT).show()
+    }
+
+    fun clearCatalogCache() {
+        val removed = catalogCacheStore.clear()
+        Toast.makeText(
+            getApplication(),
+            if (removed == 0) "Game cache was already clear" else "Cleared game cache",
+            Toast.LENGTH_SHORT,
+        ).show()
+        val session = state.value.authSession ?: return
+        viewModelScope.launch {
+            refreshAfterAuth(session)
+        }
+    }
+
     fun updateStreamSettings(transform: (StreamSettings) -> StreamSettings) {
         settingsStore.update { it.copy(stream = transform(it.stream)) }
     }

@@ -59,7 +59,18 @@ class MainActivity : ComponentActivity() {
         viewModel.handleExternalLaunchIntent(intent)
     }
 
+    override fun onResume() {
+        super.onResume()
+        if (streamSystemUiActive) {
+            applyStreamSystemUi(true, force = true)
+            applyStreamDisplayRefreshRate(streamDisplayRefreshActive, streamDisplayRefreshFps, force = true)
+        }
+    }
+
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (streamSystemUiActive && event.action == KeyEvent.ACTION_DOWN && event.shouldReapplyStreamSystemUi()) {
+            enforceStreamSystemUiFromInput()
+        }
         if (NativeStreamInputRouter.dispatchKey(event)) {
             return true
         }
@@ -71,7 +82,7 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun dispatchGenericMotionEvent(event: MotionEvent): Boolean {
-        if (streamSystemUiActive && event.isMouseLikePointerEvent()) {
+        if (streamSystemUiActive && (event.isMouseLikePointerEvent() || event.isControllerMotionEvent())) {
             enforceStreamSystemUiFromInput()
         }
         return NativeStreamInputRouter.dispatchMotion(event) ||
@@ -337,8 +348,20 @@ class MainActivity : ComponentActivity() {
             ((source and InputDevice.SOURCE_TOUCHPAD) == InputDevice.SOURCE_TOUCHPAD && !controllerSource)
     }
 
+    private fun MotionEvent.isControllerMotionEvent(): Boolean =
+        (source and InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK ||
+            (source and InputDevice.SOURCE_GAMEPAD) == InputDevice.SOURCE_GAMEPAD
+
+    private fun KeyEvent.shouldReapplyStreamSystemUi(): Boolean =
+        keyCode == KeyEvent.KEYCODE_BACK ||
+            keyCode == KeyEvent.KEYCODE_MENU ||
+            (source and InputDevice.SOURCE_GAMEPAD) == InputDevice.SOURCE_GAMEPAD ||
+            (source and InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK ||
+            (source and InputDevice.SOURCE_DPAD) == InputDevice.SOURCE_DPAD ||
+            keyCode in KeyEvent.KEYCODE_BUTTON_A..KeyEvent.KEYCODE_BUTTON_MODE
+
     private companion object {
-        private const val STREAM_SYSTEM_UI_ENFORCE_INTERVAL_MS = 750L
-        private const val STREAM_SYSTEM_UI_INPUT_REAPPLY_MS = 350L
+        private const val STREAM_SYSTEM_UI_ENFORCE_INTERVAL_MS = 500L
+        private const val STREAM_SYSTEM_UI_INPUT_REAPPLY_MS = 250L
     }
 }

@@ -688,6 +688,21 @@ private fun MainShell(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                                 TopStatusBar(
                                     state = state,
                                     onResumeActiveSession = viewModel::resumeActiveSession,
+                                    landscapeSearchQuery = when {
+                                        phoneLandscapeChrome && state.page == AppPage.Home -> state.catalogSearch
+                                        phoneLandscapeChrome && state.page == AppPage.Library -> state.librarySearch
+                                        else -> null
+                                    },
+                                    onLandscapeSearchChange = when {
+                                        phoneLandscapeChrome && state.page == AppPage.Home -> viewModel::setCatalogSearch
+                                        phoneLandscapeChrome && state.page == AppPage.Library -> viewModel::setLibrarySearch
+                                        else -> null
+                                    },
+                                    landscapeSearchPlaceholder = when (state.page) {
+                                        AppPage.Library -> "Search library"
+                                        else -> stringResource(R.string.search_games)
+                                    },
+                                    landscapeSearchBusy = state.page == AppPage.Home && state.loadingGames && state.catalogSearch.isNotBlank(),
                                 )
                             }
                         }
@@ -698,6 +713,7 @@ private fun MainShell(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                                     viewModel = viewModel,
                                     tvProfile = tvProfile,
                                     hideChromeWhenScrolled = phoneLandscapeChrome,
+                                    searchInTopBar = phoneLandscapeChrome,
                                     onScrollChromeHiddenChange = { phoneLandscapeScrollChromeHidden = it },
                                 )
                                 AppPage.Library -> LibraryScreen(
@@ -705,6 +721,7 @@ private fun MainShell(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                                     viewModel = viewModel,
                                     tvProfile = tvProfile,
                                     hideChromeWhenScrolled = phoneLandscapeChrome,
+                                    searchInTopBar = phoneLandscapeChrome,
                                     onScrollChromeHiddenChange = { phoneLandscapeScrollChromeHidden = it },
                                 )
                                 AppPage.Settings -> SettingsScreen(state, viewModel, tvProfile)
@@ -824,6 +841,10 @@ private fun RowScope.BottomNavItem(selected: Boolean, onClick: () -> Unit, iconR
 private fun TopStatusBar(
     state: OpenNowUiState,
     onResumeActiveSession: () -> Unit,
+    landscapeSearchQuery: String? = null,
+    onLandscapeSearchChange: ((String) -> Unit)? = null,
+    landscapeSearchPlaceholder: String = "",
+    landscapeSearchBusy: Boolean = false,
 ) {
     Surface(
         modifier = Modifier.fillMaxWidth(),
@@ -841,6 +862,16 @@ private fun TopStatusBar(
                 Text(state.authSession?.user?.displayName ?: "OpenNOW", fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 val tier = state.subscriptionInfo?.membershipTier ?: state.authSession?.user?.membershipTier ?: "GFN"
                 Text("$tier ${state.activeSession?.let { "  Active session ${it.sessionId.take(8)}" } ?: ""}", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
+            }
+            if (landscapeSearchQuery != null && onLandscapeSearchChange != null) {
+                Spacer(Modifier.width(10.dp))
+                NativeSearchField(
+                    query = landscapeSearchQuery,
+                    onQueryChange = onLandscapeSearchChange,
+                    placeholder = landscapeSearchPlaceholder,
+                    searching = landscapeSearchBusy,
+                    modifier = Modifier.width(300.dp),
+                )
             }
             if (state.activeSession != null) {
                 Spacer(Modifier.width(6.dp))
@@ -996,6 +1027,7 @@ private fun HomeScreen(
     viewModel: OpenNowViewModel,
     tvProfile: Boolean,
     hideChromeWhenScrolled: Boolean,
+    searchInTopBar: Boolean,
     onScrollChromeHiddenChange: (Boolean) -> Unit,
 ) {
     val visibleGames = state.games.ifEmpty { state.catalogResult.games }
@@ -1027,7 +1059,7 @@ private fun HomeScreen(
                     .padding(12.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                AnimatedVisibility(visible = !hideScrollChrome) {
+                AnimatedVisibility(visible = !searchInTopBar && !hideScrollChrome) {
                     NativeSearchField(
                         modifier = Modifier.fillMaxWidth(),
                         query = state.catalogSearch,
@@ -1151,6 +1183,7 @@ private fun LibraryScreen(
     viewModel: OpenNowViewModel,
     tvProfile: Boolean,
     hideChromeWhenScrolled: Boolean,
+    searchInTopBar: Boolean,
     onScrollChromeHiddenChange: (Boolean) -> Unit,
 ) {
     val favorites = state.libraryGames.filter { it.id in state.settings.favoriteGameIds }
@@ -1186,7 +1219,7 @@ private fun LibraryScreen(
                         ) { Text(stringResource(R.string.action_resume)) }
                     }
                 }
-                AnimatedVisibility(visible = !hideScrollChrome) {
+                AnimatedVisibility(visible = !searchInTopBar && !hideScrollChrome) {
                     NativeSearchField(
                         modifier = Modifier.fillMaxWidth(),
                         query = state.librarySearch,
@@ -2554,6 +2587,9 @@ private fun SettingsContent(
                 SettingSwitch(stringResource(R.string.settings_auto_load_library), settings.autoLoadControllerLibrary) { viewModel.updateSettings(settings.copy(autoLoadControllerLibrary = it)) }
                 SettingSwitch(stringResource(R.string.settings_session_counter), settings.sessionCounterEnabled) { viewModel.updateSettings(settings.copy(sessionCounterEnabled = it)) }
             }
+    SettingsSection("App Data") {
+                AppDataSettingsPanel(viewModel = viewModel)
+            }
     SettingsSection("Account") {
                 AccountSettingsPanel(state = state, viewModel = viewModel)
             }
@@ -2566,6 +2602,71 @@ private fun SettingsContent(
     SettingsSection("About") {
                 AppVersionPanel()
             }
+    }
+}
+
+@Composable
+private fun AppDataSettingsPanel(viewModel: OpenNowViewModel) {
+    var clearCacheConfirmOpen by remember { mutableStateOf(false) }
+    var resetSettingsConfirmOpen by remember { mutableStateOf(false) }
+    if (clearCacheConfirmOpen) {
+        AlertDialog(
+            onDismissRequest = { clearCacheConfirmOpen = false },
+            title = { Text("Clear game cache?") },
+            text = { Text("Cached store, library, and search results will be removed. Your account and settings stay unchanged.") },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        clearCacheConfirmOpen = false
+                        viewModel.clearCatalogCache()
+                    },
+                ) {
+                    Text("Clear cache")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { clearCacheConfirmOpen = false }) {
+                    Text(stringResource(R.string.action_cancel))
+                }
+            },
+        )
+    }
+    if (resetSettingsConfirmOpen) {
+        AlertDialog(
+            onDismissRequest = { resetSettingsConfirmOpen = false },
+            title = { Text("Reset settings?") },
+            text = { Text("Stream, input, interface, and controller preferences will return to recommended defaults. Accounts stay signed in.") },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        resetSettingsConfirmOpen = false
+                        viewModel.resetSettings()
+                    },
+                ) {
+                    Text("Reset settings")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { resetSettingsConfirmOpen = false }) {
+                    Text(stringResource(R.string.action_cancel))
+                }
+            },
+        )
+    }
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Text(
+            "Recommended defaults keep touch controls, fullscreen recovery, dynamic color, compact cards, and controller polish on. Riskier debugging, proxy, stats, clipboard, and auto-load options stay off.",
+            color = SettingsTextMuted,
+            style = MaterialTheme.typography.bodySmall,
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+            OutlinedButton(onClick = { clearCacheConfirmOpen = true }, modifier = Modifier.weight(1f)) {
+                Text("Clear cache", maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+            OutlinedButton(onClick = { resetSettingsConfirmOpen = true }, modifier = Modifier.weight(1f)) {
+                Text("Reset settings", maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+        }
     }
 }
 
@@ -2845,13 +2946,17 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
     val streamSettings = state.activeStreamSettings ?: state.settings.stream
     val streamOverlayOpen = controlsOpen || exitConfirmOpen || keyboardOpen
     val externalMousePassthroughActive = streamReady && !streamOverlayOpen
-    BackHandler(enabled = streamReady) {
+    val handleStreamBack = {
         when {
             exitConfirmOpen -> exitConfirmOpen = false
             keyboardOpen -> keyboardOpen = false
             controlsOpen -> controlsOpen = false
+            state.settings.hideStreamButtons -> controlsOpen = true
             else -> exitConfirmOpen = true
         }
+    }
+    BackHandler(enabled = streamReady) {
+        handleStreamBack()
     }
     val client = remember {
         NativeStreamClient(
@@ -2890,7 +2995,7 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
         }
     }
 
-    LaunchedEffect(streamReady, streamOverlayOpen) {
+    LaunchedEffect(streamReady, streamOverlayOpen, state.settings.hideStreamButtons) {
         NativeStreamInputRouter.setStreamUiActive(streamReady && streamOverlayOpen)
         NativeStreamInputRouter.setSystemMenuHandler {
             keyboardOpen = false
@@ -2898,12 +3003,7 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
             controlsOpen = true
         }
         NativeStreamInputRouter.setSystemBackHandler {
-            when {
-                exitConfirmOpen -> exitConfirmOpen = false
-                keyboardOpen -> keyboardOpen = false
-                controlsOpen -> controlsOpen = false
-                else -> exitConfirmOpen = true
-            }
+            handleStreamBack()
         }
     }
 
@@ -2975,91 +3075,91 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                     onExit = { exitConfirmOpen = true },
                     modifier = Modifier.align(Alignment.TopEnd),
                 )
-                AnimatedVisibility(
-                    visible = controlsOpen,
-                    enter = fadeIn() + slideInVertically(initialOffsetY = { it / 4 }) + scaleIn(initialScale = 0.96f),
-                    exit = fadeOut() + slideOutVertically(targetOffsetY = { it / 4 }) + scaleOut(targetScale = 0.96f),
-                    modifier = Modifier.align(Alignment.BottomEnd),
-                ) {
-                    StreamControlsPanel(
-                        gameTitle = game?.title ?: "Stream",
-                        status = (state.queuePosition?.let { "Queue $it" } ?: streamState).takeUnless(::shouldHideStreamStatusText),
-                        settings = state.settings,
-                        audioMuted = audioMuted,
-                        statsVisible = statsVisible,
-                        keyboardOpen = keyboardOpen,
-                        onAudioToggle = {
-                            audioMuted = !audioMuted
-                            client.setAudioMuted(audioMuted)
+            }
+            AnimatedVisibility(
+                visible = controlsOpen,
+                enter = fadeIn() + slideInVertically(initialOffsetY = { it / 4 }) + scaleIn(initialScale = 0.96f),
+                exit = fadeOut() + slideOutVertically(targetOffsetY = { it / 4 }) + scaleOut(targetScale = 0.96f),
+                modifier = Modifier.align(Alignment.BottomEnd),
+            ) {
+                StreamControlsPanel(
+                    gameTitle = game?.title ?: "Stream",
+                    status = (state.queuePosition?.let { "Queue $it" } ?: streamState).takeUnless(::shouldHideStreamStatusText),
+                    settings = state.settings,
+                    audioMuted = audioMuted,
+                    statsVisible = statsVisible,
+                    keyboardOpen = keyboardOpen,
+                    onAudioToggle = {
+                        audioMuted = !audioMuted
+                        client.setAudioMuted(audioMuted)
+                    },
+                    onStatsToggle = {
+                        statsVisible = !statsVisible
+                        viewModel.updateSettings(state.settings.copy(showStatsOnLaunch = statsVisible))
+                    },
+                    onKeyboardToggle = { keyboardOpen = !keyboardOpen },
+                    onEsc = { client.sendKeyCode(KeyEvent.KEYCODE_ESCAPE) },
+                    onEnter = { client.sendKeyCode(KeyEvent.KEYCODE_ENTER) },
+                    onBackspace = { client.sendKeyCode(KeyEvent.KEYCODE_DEL) },
+                    onExit = {
+                        controlsOpen = false
+                        exitConfirmOpen = true
+                    },
+                    onTouchControlsToggle = {
+                        viewModel.updateSettings(
+                            state.settings.copy(
+                                androidTouch = state.settings.androidTouch.copy(enabled = !state.settings.androidTouch.enabled),
+                            ),
+                        )
+                    },
+                    onMousePadToggle = {
+                        viewModel.updateSettings(
+                            state.settings.copy(
+                                androidTouch = state.settings.androidTouch.copy(mousePad = !state.settings.androidTouch.mousePad),
+                            ),
+                        )
+                    },
+                    onTouchScaleChange = { value ->
+                        viewModel.updateSettings(state.settings.copy(androidTouch = state.settings.androidTouch.copy(scale = value)))
+                    },
+                    onButtonScaleChange = { value ->
+                        viewModel.updateSettings(state.settings.copy(androidTouch = state.settings.androidTouch.copy(buttonScale = value)))
+                    },
+                    onStickScaleChange = { value ->
+                        viewModel.updateSettings(state.settings.copy(androidTouch = state.settings.androidTouch.copy(stickScale = value)))
+                    },
+                    onOpacityChange = { value ->
+                        viewModel.updateSettings(state.settings.copy(androidTouch = state.settings.androidTouch.copy(opacity = value)))
+                    },
+                    onClose = { controlsOpen = false },
+                )
+            }
+            if (keyboardOpen) {
+                AnimatedLaunchOverlay(Modifier.align(Alignment.BottomCenter)) {
+                    StreamKeyboardBar(
+                        text = keyboardText,
+                        onTextChange = { keyboardText = it },
+                        onSend = {
+                            client.sendText(keyboardText)
+                            keyboardText = ""
                         },
-                        onStatsToggle = {
-                            statsVisible = !statsVisible
-                            viewModel.updateSettings(state.settings.copy(showStatsOnLaunch = statsVisible))
-                        },
-                        onKeyboardToggle = { keyboardOpen = !keyboardOpen },
-                        onEsc = { client.sendKeyCode(KeyEvent.KEYCODE_ESCAPE) },
-                        onEnter = { client.sendKeyCode(KeyEvent.KEYCODE_ENTER) },
                         onBackspace = { client.sendKeyCode(KeyEvent.KEYCODE_DEL) },
-                        onExit = {
-                            controlsOpen = false
-                            exitConfirmOpen = true
-                        },
-                        onTouchControlsToggle = {
-                            viewModel.updateSettings(
-                                state.settings.copy(
-                                    androidTouch = state.settings.androidTouch.copy(enabled = !state.settings.androidTouch.enabled),
-                                ),
-                            )
-                        },
-                        onMousePadToggle = {
-                            viewModel.updateSettings(
-                                state.settings.copy(
-                                    androidTouch = state.settings.androidTouch.copy(mousePad = !state.settings.androidTouch.mousePad),
-                                ),
-                            )
-                        },
-                        onTouchScaleChange = { value ->
-                            viewModel.updateSettings(state.settings.copy(androidTouch = state.settings.androidTouch.copy(scale = value)))
-                        },
-                        onButtonScaleChange = { value ->
-                            viewModel.updateSettings(state.settings.copy(androidTouch = state.settings.androidTouch.copy(buttonScale = value)))
-                        },
-                        onStickScaleChange = { value ->
-                            viewModel.updateSettings(state.settings.copy(androidTouch = state.settings.androidTouch.copy(stickScale = value)))
-                        },
-                        onOpacityChange = { value ->
-                            viewModel.updateSettings(state.settings.copy(androidTouch = state.settings.androidTouch.copy(opacity = value)))
-                        },
-                        onClose = { controlsOpen = false },
+                        onEnter = { client.sendKeyCode(KeyEvent.KEYCODE_ENTER) },
+                        onEsc = { client.sendKeyCode(KeyEvent.KEYCODE_ESCAPE) },
+                        onDone = { keyboardOpen = false },
                     )
                 }
-                if (keyboardOpen) {
-                    AnimatedLaunchOverlay(Modifier.align(Alignment.BottomCenter)) {
-                        StreamKeyboardBar(
-                            text = keyboardText,
-                            onTextChange = { keyboardText = it },
-                            onSend = {
-                                client.sendText(keyboardText)
-                                keyboardText = ""
-                            },
-                            onBackspace = { client.sendKeyCode(KeyEvent.KEYCODE_DEL) },
-                            onEnter = { client.sendKeyCode(KeyEvent.KEYCODE_ENTER) },
-                            onEsc = { client.sendKeyCode(KeyEvent.KEYCODE_ESCAPE) },
-                            onDone = { keyboardOpen = false },
-                        )
-                    }
-                }
-                if (exitConfirmOpen) {
-                    AnimatedLaunchOverlay(Modifier.align(Alignment.Center)) {
-                        StreamExitConfirmation(
-                            gameTitle = game?.title ?: "this game",
-                            onKeepPlaying = { exitConfirmOpen = false },
-                            onExit = {
-                                exitConfirmOpen = false
-                                viewModel.stopStream()
-                            },
-                        )
-                    }
+            }
+            if (exitConfirmOpen) {
+                AnimatedLaunchOverlay(Modifier.align(Alignment.Center)) {
+                    StreamExitConfirmation(
+                        gameTitle = game?.title ?: "this game",
+                        onKeepPlaying = { exitConfirmOpen = false },
+                        onExit = {
+                            exitConfirmOpen = false
+                            viewModel.stopStream()
+                        },
+                    )
                 }
             }
         }
