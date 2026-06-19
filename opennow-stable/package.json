@@ -50,7 +50,7 @@
     "react-scan": "^0.5.3",
     "tsx": "^4.22.3",
     "typescript": "^6.0.3",
-    "vite": "^7.3.1"
+    "vite": "^7.3.5"
   },
   "build": {
     "appId": "com.zortos.opennow.stable",
