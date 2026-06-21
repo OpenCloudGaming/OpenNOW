@@ -52,3 +52,12 @@ Crowdin owns generated translations. When changing localized copy, edit only `lo
 - For main-process GFN/session changes, also run `npm --prefix opennow-stable test -- --test-name-pattern gfn` or the closest targeted test command available; if scripts do not support filtering, run `npm --prefix opennow-stable test`.
 - For localization changes, run `npm --prefix opennow-stable run locales:check`.
 - Do not claim completion if the relevant acceptance check fails. Report the failing command and failure point.
+
+## Cursor Cloud specific instructions
+
+- All commands run from `opennow-stable/` (or use the root `npm run <script>` wrappers). Dependencies are managed with npm (`package-lock.json`); the `bun.lock` is secondary — do not use bun. Node 22 is required.
+- Standard scripts are defined in `opennow-stable/package.json`: `dev`, `build`, `lint`, `typecheck`, `test`, `locales:check`. Don't duplicate them; use those.
+- Running the app: `npm run dev` (root) launches `electron-vite dev` and opens the Electron window on the desktop `DISPLAY` (`:1`). It is a long-running process — start it in a background/tmux session, not a blocking foreground call.
+- Benign startup noise: in this container Electron logs `Failed to connect to the bus` (dbus) and `vkCreateInstance() failed: -9` / `Failed to create and initialize Vulkan` (GPU). These are expected with no real GPU/dbus and do not indicate failure — the UI still renders and networks fine.
+- OpenNOW is a bring-your-own-account GeForce NOW client: there is no local backend. Full end-to-end gameplay/login requires a real NVIDIA/GFN account. Clicking "Sign in" opens NVIDIA's OAuth page (`login.nvgs.nvidia.com`); the auth/networking path can be exercised up to that external login without credentials.
+- The native Rust streamer in `native/opennow-streamer` is optional and Windows-focused (`npm run native:check` / `native:build` need the Cargo toolchain). It is not required to run or develop the Electron client; the default stream path uses embedded Chromium WebRTC.
