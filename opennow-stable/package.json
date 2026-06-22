@@ -15,6 +15,8 @@
   "type": "module",
   "main": "dist-electron/main/index.js",
   "scripts": {
+    "postinstall": "node scripts/ensure-electron-installed.mjs",
+    "electron:install": "node scripts/ensure-electron-installed.mjs",
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "preview": "electron-vite preview",

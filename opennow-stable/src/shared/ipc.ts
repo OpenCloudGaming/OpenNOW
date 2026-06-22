@@ -14,6 +14,7 @@ export const IPC_CHANNELS = {
   AUTH_REMOVE_ACCOUNT: "auth:remove-account",
   PING_REGIONS: "gfn:ping-regions",
   SUBSCRIPTION_FETCH: "subscription:fetch",
+  PERSISTENT_STORAGE_LOCATIONS_FETCH: "persistent-storage:locations:fetch",
   PERSISTENT_STORAGE_RESET: "persistent-storage:reset",
   GAMES_FETCH_MAIN: "games:fetch-main",
   GAMES_FETCH_STORE_PANELS: "games:fetch-store-panels",

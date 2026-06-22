@@ -12,6 +12,7 @@ import type {
   ResolveLaunchIdRequest,
   ResolveStoreUrlRequest,
   SubscriptionFetchRequest,
+  PersistentStorageLocationsFetchRequest,
   PersistentStorageResetRequest,
 } from "@shared/gfn";
 import type { AuthService } from "../gfn/auth";
@@ -26,10 +27,23 @@ import {
   resolveStoreUrl,
 } from "../gfn/games";
 import { fetchSubscription, fetchDynamicRegions } from "../gfn/subscription";
-import { resetPersistentStorage } from "../gfn/persistentStorage";
+import { fetchPersistentStorageLocations, resetPersistentStorage } from "../gfn/persistentStorage";
 
 interface RefreshSchedulerAuthContextUpdater {
   updateAuthContext(token: string, providerStreamingBaseUrl?: string): void;
+}
+
+function sessionTokenCandidates(
+  session: NonNullable<Awaited<ReturnType<AuthService["ensureValidSession"]>>>,
+): [string, ...string[]] {
+  const candidates = [
+    session.tokens.idToken,
+    session.tokens.accessToken,
+  ].filter((token): token is string => Boolean(token));
+  if (!candidates[0]) {
+    throw new Error("No authenticated token available");
+  }
+  return candidates as [string, ...string[]];
 }
 
 export interface AccountCatalogIpcHandlerDeps {
@@ -141,6 +155,33 @@ export function registerAccountCatalogIpcHandlers(
   );
 
   ipcMain.handle(
+    IPC_CHANNELS.PERSISTENT_STORAGE_LOCATIONS_FETCH,
+    async (_event, payload: PersistentStorageLocationsFetchRequest = {}) => {
+      const session = await authService.ensureValidSession();
+      if (!session) {
+        throw new Error("No authenticated session available");
+      }
+
+      let vpcId = payload.serverRegionId ?? undefined;
+      if (!vpcId) {
+        const streamingBaseUrl = authService.getSelectedProvider().streamingServiceUrl;
+        const dynamicRegions = await fetchDynamicRegions(session.tokens.accessToken, streamingBaseUrl);
+        vpcId = dynamicRegions.vpcId ?? undefined;
+      }
+
+      const [idToken, ...idTokenAlternates] = sessionTokenCandidates(session);
+      return fetchPersistentStorageLocations({
+        idToken,
+        idTokenAlternates,
+        vpcId,
+        locale: payload.locale,
+        currentRegionCode: payload.currentRegionCode,
+        currentRegionName: payload.currentRegionName,
+      });
+    },
+  );
+
+  ipcMain.handle(
     IPC_CHANNELS.PERSISTENT_STORAGE_RESET,
     async (_event, payload: PersistentStorageResetRequest = {}) => {
       const session = await authService.ensureValidSession();
@@ -148,9 +189,10 @@ export function registerAccountCatalogIpcHandlers(
         throw new Error("No authenticated session available");
       }
 
-      const idToken = session.tokens.idToken ?? session.tokens.accessToken;
+      const [idToken, ...idTokenAlternates] = sessionTokenCandidates(session);
       const result = await resetPersistentStorage({
         idToken,
+        idTokenAlternates,
         storageRegion: payload.storageRegion ?? null,
       });
       authService.clearSubscriptionCache();
