@@ -12,6 +12,7 @@ import type {
   ResolveLaunchIdRequest,
   ResolveStoreUrlRequest,
   SubscriptionFetchRequest,
+  PersistentStorageResetRequest,
 } from "@shared/gfn";
 import type { AuthService } from "../gfn/auth";
 import {
@@ -25,6 +26,7 @@ import {
   resolveStoreUrl,
 } from "../gfn/games";
 import { fetchSubscription, fetchDynamicRegions } from "../gfn/subscription";
+import { resetPersistentStorage } from "../gfn/persistentStorage";
 
 interface RefreshSchedulerAuthContextUpdater {
   updateAuthContext(token: string, providerStreamingBaseUrl?: string): void;
@@ -135,6 +137,24 @@ export function registerAccountCatalogIpcHandlers(
       const { vpcId } = await fetchDynamicRegions(token, streamingBaseUrl);
 
       return fetchSubscription(token, userId, vpcId ?? undefined);
+    },
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.PERSISTENT_STORAGE_RESET,
+    async (_event, payload: PersistentStorageResetRequest = {}) => {
+      const session = await authService.ensureValidSession();
+      if (!session) {
+        throw new Error("No authenticated session available");
+      }
+
+      const idToken = session.tokens.idToken ?? session.tokens.accessToken;
+      const result = await resetPersistentStorage({
+        idToken,
+        storageRegion: payload.storageRegion ?? null,
+      });
+      authService.clearSubscriptionCache();
+      return result;
     },
   );
 

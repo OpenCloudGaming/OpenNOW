@@ -541,6 +541,17 @@ export interface SubscriptionFetchRequest {
   userId: string;
 }
 
+export interface PersistentStorageResetRequest {
+  /** Null or omitted keeps the current storage region, matching NVIDIA's storage reset flow. */
+  storageRegion?: string | null;
+}
+
+export interface PersistentStorageResetResult {
+  ok: true;
+  storageRegion: string | null;
+  message?: string;
+}
+
 export interface GameVariant {
   id: string;
   store: string;
@@ -1118,6 +1129,7 @@ export interface OpenNowApi {
   switchAccount(userId: string): Promise<AuthSession>;
   removeAccount(userId: string): Promise<void>;
   fetchSubscription(input: SubscriptionFetchRequest): Promise<SubscriptionInfo>;
+  resetPersistentStorage(input?: PersistentStorageResetRequest): Promise<PersistentStorageResetResult>;
   fetchMainGames(input: GamesFetchRequest): Promise<GameInfo[]>;
   fetchStorePanels(input: GamesFetchRequest): Promise<GamePanelResult[]>;
   fetchFeaturedGames(input: GamesFetchRequest): Promise<GameInfo[]>;

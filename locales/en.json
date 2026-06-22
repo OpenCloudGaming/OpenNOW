@@ -403,6 +403,23 @@
       "refreshPing": "Refresh ping",
       "noRegionsMatch": "No regions match \"{{query}}\""
     },
+    "persistentStorage": {
+      "title": "Persistent Storage",
+      "resetTitle": "Storage Reset",
+      "detected": "Detected",
+      "usage": "{{used}} used of {{total}}",
+      "usageUnavailable": "Persistent storage is active, but usage is unavailable.",
+      "notDetected": "No Persistent Storage add-on was found for the active account.",
+      "region": "Region: {{region}}",
+      "remaining": "{{value}} available",
+      "regionUnavailable": "Region unavailable",
+      "resetHint": "Deletes all installed games and persistent data from NVIDIA cloud storage. The current storage location is kept.",
+      "resetConfirm": "Reset Persistent Storage? This will delete all installed games and persistent data from NVIDIA cloud storage. This action cannot be undone.",
+      "resetStorage": "Reset Storage",
+      "resetting": "Resetting...",
+      "resetSuccess": "Persistent Storage reset complete.",
+      "resetFailed": "Failed to reset Persistent Storage. Please try again."
+    },
     "video": {
       "title": "Video",
       "aspectRatio": "Aspect Ratio",

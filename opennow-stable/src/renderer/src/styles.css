@@ -5642,15 +5642,21 @@ button.game-card-store-chip.owned.active:hover {
   white-space: nowrap;
 }
 
-.settings-delete-cache-btn:hover {
+.settings-delete-cache-btn:hover:not(:disabled) {
   color: #f87171;
   background: rgba(248, 113, 113, 0.08);
   border-color: rgba(248, 113, 113, 0.5);
   transform: translateY(-1px);
 }
 
-.settings-delete-cache-btn:active {
+.settings-delete-cache-btn:active:not(:disabled) {
   transform: translateY(0);
+}
+
+.settings-delete-cache-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  transform: none;
 }
 
 /* Codec Diagnostics */

@@ -45,6 +45,7 @@ import type {
   PrintedWasteServerMapping,
   ThankYouDataResult,
   AppUpdaterState,
+  PersistentStorageResetRequest,
 } from "@shared/gfn";
 import { parseSerializedSessionErrorTransport } from "@shared/sessionError";
 
@@ -86,6 +87,8 @@ const api: OpenNowApi = {
   removeAccount: (userId: string): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.AUTH_REMOVE_ACCOUNT, userId),
   fetchSubscription: (input: SubscriptionFetchRequest) =>
     ipcRenderer.invoke(IPC_CHANNELS.SUBSCRIPTION_FETCH, input),
+  resetPersistentStorage: (input: PersistentStorageResetRequest = {}) =>
+    ipcRenderer.invoke(IPC_CHANNELS.PERSISTENT_STORAGE_RESET, input),
   fetchMainGames: (input: GamesFetchRequest) => ipcRenderer.invoke(IPC_CHANNELS.GAMES_FETCH_MAIN, input),
   fetchStorePanels: (input: GamesFetchRequest) => ipcRenderer.invoke(IPC_CHANNELS.GAMES_FETCH_STORE_PANELS, input),
   fetchFeaturedGames: (input: GamesFetchRequest) => ipcRenderer.invoke(IPC_CHANNELS.GAMES_FETCH_FEATURED, input),
