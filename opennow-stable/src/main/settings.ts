@@ -34,6 +34,8 @@ export interface Settings {
   fps: number;
   /** Maximum bitrate in Mbps (cap at 150) */
   maxBitrateMbps: number;
+  /** Recording video bitrate in Mbps (null = MediaRecorder auto, cap at 200) */
+  recordingBitrateMbps: number | null;
   /** Stream client implementation to use for new sessions */
   streamClientMode: StreamClientMode;
   /** Native streamer backend preference for new native sessions */
@@ -155,12 +157,24 @@ function normalizeAppAccentColor(raw: unknown): AppAccentColor {
   return APP_ACCENT_COLORS.has(raw as AppAccentColor) ? (raw as AppAccentColor) : "green";
 }
 
+function normalizeRecordingBitrateMbps(raw: unknown): number | null {
+  if (raw === null || raw === undefined) {
+    return null;
+  }
+  const value = Number(raw);
+  if (!Number.isFinite(value)) {
+    return null;
+  }
+  return Math.max(1, Math.min(200, Math.round(value)));
+}
+
 const DEFAULT_SETTINGS: Settings = {
   resolution: "1920x1080",
   aspectRatio: "16:9",
   posterSizeScale: 1,
   fps: 60,
   maxBitrateMbps: 75,
+  recordingBitrateMbps: null,
   streamClientMode: "web",
   nativeStreamerBackend: "gstreamer",
   nativeVideoBackend: "auto",
@@ -271,6 +285,11 @@ export class SettingsManager {
       }
 
       merged.mouseAcceleration = Math.max(1, Math.min(150, Math.round(merged.mouseAcceleration)));
+      const recordingBitrateBefore = merged.recordingBitrateMbps;
+      merged.recordingBitrateMbps = normalizeRecordingBitrateMbps(merged.recordingBitrateMbps);
+      if (merged.recordingBitrateMbps !== recordingBitrateBefore) {
+        migrated = true;
+      }
       if (migrated) {
         writeFileSync(this.settingsPath, JSON.stringify(merged, null, 2), "utf-8");
       }
@@ -318,6 +337,12 @@ export class SettingsManager {
     const nativeVideoBackend = normalizeNativeVideoBackendPreference(settings.nativeVideoBackend);
     if (settings.nativeVideoBackend !== nativeVideoBackend) {
       settings.nativeVideoBackend = nativeVideoBackend;
+      migrated = true;
+    }
+
+    const recordingBitrate = normalizeRecordingBitrateMbps(settings.recordingBitrateMbps);
+    if (settings.recordingBitrateMbps !== recordingBitrate) {
+      settings.recordingBitrateMbps = recordingBitrate;
       migrated = true;
     }
 
