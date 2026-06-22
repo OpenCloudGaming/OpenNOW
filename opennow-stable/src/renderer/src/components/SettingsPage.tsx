@@ -1,5 +1,6 @@
-import { Globe, Check, Search, X, Loader, Zap, Mic, FileDown, Wifi, Trash2, Heart, Users, ExternalLink, Monitor, Keyboard, Download, RefreshCcw, Info, Cpu, AlertTriangle } from "lucide-react";
+import { Globe, Check, Search, X, Loader, Zap, Mic, FileDown, Wifi, Trash2, Heart, Users, ExternalLink, Monitor, Keyboard, Download, RefreshCcw, Info, Cpu, AlertTriangle, MapPin, ScanLine, Gauge, Film, SlidersHorizontal, HardDrive } from "lucide-react";
 import { useState, useCallback, useMemo, useEffect, useRef } from "react";
+import { createPortal } from "react-dom";
 import type { JSX } from "react";
 
 import type {
@@ -7,6 +8,7 @@ import type {
   StreamRegion,
   VideoCodec,
   ColorQuality,
+  AspectRatio,
   EntitledResolution,
   VideoAccelerationPreference,
   MicrophoneMode,
@@ -47,7 +49,19 @@ interface SettingsPageProps {
   codecTesting: boolean;
   onRunCodecTest: () => Promise<void>;
   onSettingChange: <K extends keyof Settings>(key: K, value: Settings[K]) => void;
+  onClose: () => void;
 }
+
+type SettingsNavItem = {
+  id: SettingsSectionId;
+  label: string;
+  icon: JSX.Element;
+};
+
+type SettingsNavGroup = {
+  label: string;
+  items: SettingsNavItem[];
+};
 
 type ThanksLoadState = "idle" | "loading" | "loaded" | "error";
 
@@ -290,17 +304,20 @@ interface FpsPreset {
   value: number;
 }
 
-interface AspectRatioPreset {
-  value: string;
-  label: string;
-}
+function inferAspectRatioFromResolution(resolution: string): AspectRatio {
+  const parts = resolution.split("x");
+  const width = parseInt(parts[0] ?? "", 10);
+  const height = parseInt(parts[1] ?? "", 10);
+  if (!Number.isFinite(width) || !Number.isFinite(height) || height === 0) {
+    return "16:9";
+  }
 
-const STATIC_ASPECT_RATIO_PRESETS: AspectRatioPreset[] = [
-  { value: "16:9", label: "16:9 (Widescreen)" },
-  { value: "16:10", label: "16:10 (Widescreen)" },
-  { value: "21:9", label: "21:9 (Ultrawide)" },
-  { value: "32:9", label: "32:9 (Super Ultrawide)" },
-];
+  const ratio = width / height;
+  if (Math.abs(ratio - 32 / 9) < 0.08) return "32:9";
+  if (Math.abs(ratio - 21 / 9) < 0.08) return "21:9";
+  if (Math.abs(ratio - 16 / 10) < 0.05) return "16:10";
+  return "16:9";
+}
 
 const STATIC_RESOLUTION_PRESETS: ResolutionPreset[] = [
   { value: "1280x720", label: "720p (16:9)" },
@@ -591,7 +608,7 @@ function saveCachedEntitledResolutions(cache: EntitledResolutionsCache): void {
 
 /* ── Component ────────────────────────────────────────────────────── */
 
-export function SettingsPage({ settings, regions, onSettingChange, codecResults, codecTesting, onRunCodecTest }: SettingsPageProps): JSX.Element {
+export function SettingsPage({ settings, regions, onSettingChange, codecResults, codecTesting, onRunCodecTest, onClose }: SettingsPageProps): JSX.Element {
   const { locale, availableLocales, setLocale, t } = useTranslation();
   const [savedIndicator, setSavedIndicator] = useState(false);
   const [activeSection, setActiveSection] = useState<SettingsSectionId>("stream");
@@ -905,6 +922,14 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
     },
     [onSettingChange]
   );
+
+  const handleResolutionChange = useCallback((resolution: string) => {
+    handleChange("resolution", resolution);
+    const aspectRatio = inferAspectRatioFromResolution(resolution);
+    if (settings.aspectRatio !== aspectRatio) {
+      handleChange("aspectRatio", aspectRatio);
+    }
+  }, [handleChange, settings.aspectRatio]);
 
   const openNativeStreamerEnablePrompt = useCallback((): void => {
     if (nativeStreamerEnablePromptCloseTimerRef.current !== null) {
@@ -1768,85 +1793,92 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
   const hasAnySearchMatches = showStream || showNativeStreamer || showGame || showAudio || showInput || showInterface || showAbout || showThanks;
   const shouldRenderSettingsSections = showAll || activeSection !== "thanks";
 
-  return (
-    <div className="settings-page">
-      <header className="settings-header">
-        <h1>{t("settings.title")}</h1>
-        <div className={`settings-saved ${savedIndicator ? "visible" : ""}`}>
-          <Check size={14} />
-          {t("settings.saved")}
-        </div>
-      </header>
+  const settingsNavGroups = useMemo<SettingsNavGroup[]>(() => [
+    {
+      label: "Streaming",
+      items: [
+        { id: "stream", label: t("settings.sections.stream"), icon: <Wifi size={15} /> },
+        { id: "native-streamer", label: t("settings.sections.nativeStreamer"), icon: <Cpu size={15} /> },
+      ],
+    },
+    {
+      label: "Controls",
+      items: [
+        { id: "game", label: t("settings.sections.game"), icon: <Globe size={15} /> },
+        { id: "audio", label: t("settings.sections.audio"), icon: <Mic size={15} /> },
+        { id: "input", label: t("settings.sections.input"), icon: <Keyboard size={15} /> },
+      ],
+    },
+    {
+      label: "App",
+      items: [
+        { id: "interface", label: t("settings.sections.interface"), icon: <Monitor size={15} /> },
+        { id: "about", label: t("settings.sections.about"), icon: <Info size={15} /> },
+        { id: "thanks", label: t("settings.sections.thanks"), icon: <Heart size={15} /> },
+      ],
+    },
+  ], [t, locale]);
 
-      {nativeStreamerEnablePromptVisible && (
-        <div
-          className={`native-streamer-warning ${nativeStreamerEnablePromptClosing ? "native-streamer-warning--closing" : ""}`}
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="native-streamer-warning-title"
-          aria-describedby="native-streamer-warning-copy"
-        >
-          <button
-            type="button"
-            className="native-streamer-warning-backdrop"
-            aria-label={t("app.actions.cancel")}
-            aria-hidden="true"
-            tabIndex={-1}
-            onClick={closeNativeStreamerEnablePrompt}
-          />
-          <div ref={nativeStreamerEnablePromptRef} className="native-streamer-warning-card" tabIndex={-1}>
-            <div className="native-streamer-warning-kicker">
-              <AlertTriangle size={14} />
-              {t("settings.nativeStreamer.enablePromptKicker")}
-            </div>
-            <h3 id="native-streamer-warning-title" className="native-streamer-warning-title">
-              {t("settings.nativeStreamer.enablePromptTitle")}
-            </h3>
-            <p id="native-streamer-warning-copy" className="native-streamer-warning-text">
-              {t("settings.nativeStreamer.enablePromptBody")}
-            </p>
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === "Escape" && !nativeStreamerEnablePromptVisible) {
+        event.preventDefault();
+        onClose();
+      }
+    };
 
-            <div className="native-streamer-warning-list">
-              <div className="native-streamer-warning-list-item">
-                <Cpu size={16} />
-                <span>{t("settings.nativeStreamer.enablePromptNewSessions")}</span>
-              </div>
-              <div className="native-streamer-warning-list-item">
-                <Keyboard size={16} />
-                <span>{t("settings.nativeStreamer.enablePromptShortcuts")}</span>
-              </div>
-              <div className="native-streamer-warning-list-item">
-                <Monitor size={16} />
-                <span>{t("settings.nativeStreamer.enablePromptAltTab")}</span>
-              </div>
-            </div>
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    window.addEventListener("keydown", handleKeyDown);
 
-            <div className="native-streamer-warning-actions">
-              <button
-                type="button"
-                className="native-streamer-warning-btn native-streamer-warning-btn--secondary"
-                onClick={closeNativeStreamerEnablePrompt}
-              >
-                {t("settings.nativeStreamer.enablePromptCancel")}
-              </button>
-              <button
-                type="button"
-                className="native-streamer-warning-btn native-streamer-warning-btn--primary"
-                onClick={confirmNativeStreamerEnablePrompt}
-                ref={nativeStreamerEnablePromptConfirmRef}
-                autoFocus
-              >
-                {t("settings.nativeStreamer.enablePromptEnable")}
-              </button>
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [nativeStreamerEnablePromptVisible, onClose]);
+
+  if (typeof document === "undefined") {
+    return <></>;
+  }
+
+  return createPortal(
+    <div
+      className="settings-overlay"
+      role="dialog"
+      aria-modal="true"
+      aria-label={t("settings.title")}
+    >
+      <button
+        type="button"
+        className="settings-overlay-backdrop"
+        onClick={onClose}
+        aria-label={t("app.actions.close")}
+      />
+
+      <div
+        className="settings-modal"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <header className="settings-modal-header">
+          <h1>{t("settings.title")}</h1>
+          <div className="settings-modal-header-actions">
+            <div className={`settings-saved ${savedIndicator ? "visible" : ""}`}>
+              <Check size={14} />
+              {t("settings.saved")}
             </div>
-            <div className="native-streamer-warning-hint">
-              <kbd>Esc</kbd> {t("settings.nativeStreamer.enablePromptEsc")}
-            </div>
+            <button
+              type="button"
+              className="settings-modal-close"
+              onClick={onClose}
+              title={t("app.actions.close")}
+              aria-label={t("app.actions.close")}
+            >
+              <X size={18} />
+            </button>
           </div>
-        </div>
-      )}
+        </header>
 
-      <div className="settings-layout">
+        <div className="settings-layout">
 
       {/* ── Sidebar ───────────────────────────────────────── */}
       <nav className="settings-sidebar">
@@ -1865,28 +1897,24 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
             </button>
           )}
         </div>
-        <nav className="settings-nav">
-          {([
-            { id: "stream" as SettingsSectionId, label: t("settings.sections.stream"), icon: <Wifi size={15} /> },
-            { id: "native-streamer" as SettingsSectionId, label: t("settings.sections.nativeStreamer"), icon: <Cpu size={15} /> },
-            { id: "game" as SettingsSectionId, label: t("settings.sections.game"), icon: <Globe size={15} /> },
-            { id: "audio" as SettingsSectionId, label: t("settings.sections.audio"), icon: <Mic size={15} /> },
-            { id: "input" as SettingsSectionId, label: t("settings.sections.input"), icon: <Keyboard size={15} /> },
-            { id: "interface" as SettingsSectionId, label: t("settings.sections.interface"), icon: <Monitor size={15} /> },
-            { id: "about" as SettingsSectionId, label: t("settings.sections.about"), icon: <Info size={15} /> },
-            { id: "thanks" as SettingsSectionId, label: t("settings.sections.thanks"), icon: <Heart size={15} /> },
-          ]).map(item => (
-            <button
-              key={item.id}
-              type="button"
-              className={`settings-nav-item ${!showAll && activeSection === item.id ? "active" : ""}`}
-              onClick={() => { setActiveSection(item.id); setSettingsSearch(""); }}
-            >
-              {item.icon}
-              {item.label}
-            </button>
+        <div className="settings-nav">
+          {settingsNavGroups.map((group) => (
+            <div key={group.label} className="settings-nav-group">
+              <div className="settings-nav-group-label">{group.label}</div>
+              {group.items.map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  className={`settings-nav-item ${!showAll && activeSection === item.id ? "active" : ""}`}
+                  onClick={() => { setActiveSection(item.id); setSettingsSearch(""); }}
+                >
+                  {item.icon}
+                  {item.label}
+                </button>
+              ))}
+            </div>
           ))}
-        </nav>
+        </div>
       </nav>
 
       {/* ── Content ───────────────────────────────────────── */}
@@ -1907,19 +1935,24 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
               <>
                 {/* ── Region ── */}
                 {showStreamRegion && (
-                <section className="settings-section">
+                <section className="settings-section settings-section--dropdown">
                   {showAll && <div className="settings-section-context">{t("settings.sections.stream")}</div>}
                   <div className="settings-section-header">
+                    <MapPin size={18} />
                     <h2>{t("settings.region.title")}</h2>
                   </div>
                   <div className="settings-rows">
+                    <div className="settings-row settings-row--column settings-row--region">
                     <div className="region-selector">
               <button
                 className={`region-selected ${regionDropdownOpen ? "open" : ""}`}
                 onClick={() => setRegionDropdownOpen(!regionDropdownOpen)}
                 type="button"
               >
-                <span className="region-selected-name">{selectedRegionName}</span>
+                <span className="region-selected-leading">
+                  <Globe size={15} className="region-selected-icon" />
+                  <span className="region-selected-name">{selectedRegionName || t("settings.region.autoBest")}</span>
+                </span>
                 {!settings.region && bestRegionUrl && (
                   (() => {
                     const bestRegion = regions.find(r => r.url === bestRegionUrl);
@@ -2067,7 +2100,8 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                   </div>
                 </div>
               )}
-                </div>
+                    </div>
+                    </div>
               </div>
             </section>
 
@@ -2076,28 +2110,14 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
             <section className="settings-section">
               {showAll && <div className="settings-section-context">{t("settings.sections.stream")}</div>}
               <div className="settings-section-header">
+                <Monitor size={18} />
                 <h2>{t("settings.video.title")}</h2>
               </div>
               <div className="settings-rows">
-                {/* Aspect Ratio — static chips */}
-                <div className="settings-row">
-                  <label className="settings-label">{t("settings.video.aspectRatio")}</label>
-                  <div className="settings-chip-row">
-                    {STATIC_ASPECT_RATIO_PRESETS.map((preset) => (
-                      <button
-                        key={preset.value}
-                        className={`settings-chip ${settings.aspectRatio === preset.value ? "active" : ""}`}
-                        onClick={() => { handleChange("aspectRatio", preset.value as any); }}
-                      >
-                        <span>{preset.label}</span>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
                 {/* Resolution — grouped dropdown */}
                 <div className="settings-row settings-row--column">
-                  <label className="settings-label">
+                  <label className="settings-label settings-label--with-icon">
+                    <ScanLine size={15} className="settings-label-icon" />
                     {t("settings.video.resolution")}
                     {subscriptionLoading && <Loader size={12} className="settings-loading-icon" />}
                   </label>
@@ -2122,7 +2142,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                                 key={res.value}
                                 type="button"
                                 className={`settings-dropdown-item ${settings.resolution === res.value ? "active" : ""}`}
-                                onClick={() => { handleChange("resolution", res.value); setResolutionDropdownOpen(false); }}
+                                onClick={() => { handleResolutionChange(res.value); setResolutionDropdownOpen(false); }}
                               >
                                 <span>{res.label}</span>
                                 {settings.resolution === res.value && <Check size={14} className="settings-dropdown-check" />}
@@ -2137,7 +2157,10 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
 
                 {/* FPS — dynamic or static chips */}
                 <div className="settings-row">
-                  <label className="settings-label">{t("settings.video.fps")}</label>
+                  <label className="settings-label settings-label--with-icon">
+                    <Gauge size={15} className="settings-label-icon" />
+                    {t("settings.video.fps")}
+                  </label>
                   <div className="settings-chip-row">
                     {(hasDynamic ? dynamicFpsOptions.map((v) => ({ value: v })) : STATIC_FPS_PRESETS).map((preset) => (
                       <button
@@ -2153,7 +2176,10 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
 
                 {/* Codec */}
                 <div className="settings-row">
-                  <label className="settings-label">{t("settings.video.codec")}</label>
+                  <label className="settings-label settings-label--with-icon">
+                    <Film size={15} className="settings-label-icon" />
+                    {t("settings.video.codec")}
+                  </label>
                   <div className="settings-chip-row">
                     {codecOptions.map((codec) => {
                       const badgeState = getCodecDecodeBadgeState(codec, codecResults, codecTesting);
@@ -2175,49 +2201,12 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                   </div>
                 </div>
 
-                <div className="settings-row settings-row--column">
-                  <label className="settings-label">{t("settings.video.decoder")}</label>
-                  <div className="settings-chip-row">
-                    {accelerationOptions.map((option) => (
-                      <button
-                        key={`decoder-${option.value}`}
-                        className={`settings-chip ${settings.decoderPreference === option.value ? "active" : ""}`}
-                        onClick={() => handleChange("decoderPreference", option.value)}
-                      >
-                        {option.value === "auto"
-                          ? t("app.labels.auto")
-                          : option.value === "hardware"
-                            ? t("app.labels.hardware")
-                            : t("settings.video.softwareCpu")}
-                      </button>
-                    ))}
-                  </div>
-                  <span className="settings-subtle-hint">{t("settings.video.appliesAfterRestart")}</span>
-                </div>
-
-                <div className="settings-row settings-row--column">
-                  <label className="settings-label">{t("settings.video.encoder")}</label>
-                  <div className="settings-chip-row">
-                    {accelerationOptions.map((option) => (
-                      <button
-                        key={`encoder-${option.value}`}
-                        className={`settings-chip ${settings.encoderPreference === option.value ? "active" : ""}`}
-                        onClick={() => handleChange("encoderPreference", option.value)}
-                      >
-                        {option.value === "auto"
-                          ? t("app.labels.auto")
-                          : option.value === "hardware"
-                            ? t("app.labels.hardware")
-                            : t("settings.video.softwareCpu")}
-                      </button>
-                    ))}
-                  </div>
-                  <span className="settings-subtle-hint">{t("settings.video.appliesAfterRestart")}</span>
-                </div>
-
                 {/* Color Quality */}
                 <div className="settings-row settings-row--column">
-                  <label className="settings-label">{t("settings.video.colorDepth")}</label>
+                  <label className="settings-label settings-label--with-icon">
+                    <SlidersHorizontal size={15} className="settings-label-icon" />
+                    {t("settings.video.colorDepth")}
+                  </label>
                   <div className="settings-chip-row">
                     {colorQualityOptions.map((opt) => {
                       const needsHevc = colorQualityRequiresHevc(opt.value);
@@ -2248,7 +2237,10 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                 {/* Bitrate slider */}
                 <div className="settings-row settings-row--column">
                   <div className="settings-row-top">
-                    <label className="settings-label">{t("settings.video.maxBitrate")}</label>
+                    <label className="settings-label settings-label--with-icon">
+                      <HardDrive size={15} className="settings-label-icon" />
+                      {t("settings.video.maxBitrate")}
+                    </label>
                     <span className="settings-value-badge">{settings.maxBitrateMbps} Mbps</span>
                   </div>
                   <input
@@ -2318,15 +2310,15 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
             </section>
 
             )}
-            {showStreamCodecDiagnostics && (
+            {(showStreamVideo || showStreamCodecDiagnostics) && (
             <div className="settings-advanced-wrap">
               <button
                 type="button"
                 className="settings-advanced-toggle"
                 onClick={() => setCodecAdvancedOpen(v => !v)}
               >
-                <Zap size={14} />
-                {t("settings.codecDiagnostics.advanced")}
+                <SlidersHorizontal size={14} />
+                Advanced
                 <svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor" className={`settings-advanced-chevron ${codecAdvancedOpen ? "flipped" : ""}`}>
                   <path d="M4.47 5.97a.75.75 0 0 1 1.06 0L8 8.44l2.47-2.47a.75.75 0 1 1 1.06 1.06l-3 3a.75.75 0 0 1-1.06 0l-3-3a.75.75 0 0 1 0-1.06Z" />
                 </svg>
@@ -2335,11 +2327,65 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                 <section className="settings-section">
                   {showAll && <div className="settings-section-context">{t("settings.sections.stream")}</div>}
                   <div className="settings-section-header">
-                    <h2>{t("settings.codecDiagnostics.title")}</h2>
+                    <Cpu size={18} />
+                    <h2>Advanced</h2>
                   </div>
                   <div className="settings-rows">
+                    {showStreamVideo && (
+                      <>
+                        <div className="settings-row settings-row--column">
+                          <label className="settings-label settings-label--with-icon">
+                            <Cpu size={15} className="settings-label-icon" />
+                            {t("settings.video.decoder")}
+                          </label>
+                          <div className="settings-chip-row">
+                            {accelerationOptions.map((option) => (
+                              <button
+                                key={`decoder-${option.value}`}
+                                className={`settings-chip ${settings.decoderPreference === option.value ? "active" : ""}`}
+                                onClick={() => handleChange("decoderPreference", option.value)}
+                              >
+                                {option.value === "auto"
+                                  ? t("app.labels.auto")
+                                  : option.value === "hardware"
+                                    ? t("app.labels.hardware")
+                                    : t("settings.video.softwareCpu")}
+                              </button>
+                            ))}
+                          </div>
+                          <span className="settings-subtle-hint">{t("settings.video.appliesAfterRestart")}</span>
+                        </div>
+
+                        <div className="settings-row settings-row--column">
+                          <label className="settings-label settings-label--with-icon">
+                            <Film size={15} className="settings-label-icon" />
+                            {t("settings.video.encoder")}
+                          </label>
+                          <div className="settings-chip-row">
+                            {accelerationOptions.map((option) => (
+                              <button
+                                key={`encoder-${option.value}`}
+                                className={`settings-chip ${settings.encoderPreference === option.value ? "active" : ""}`}
+                                onClick={() => handleChange("encoderPreference", option.value)}
+                              >
+                                {option.value === "auto"
+                                  ? t("app.labels.auto")
+                                  : option.value === "hardware"
+                                    ? t("app.labels.hardware")
+                                    : t("settings.video.softwareCpu")}
+                              </button>
+                            ))}
+                          </div>
+                          <span className="settings-subtle-hint">{t("settings.video.appliesAfterRestart")}</span>
+                        </div>
+                      </>
+                    )}
+
+                    {showStreamCodecDiagnostics && (
+                      <>
                     <div className="settings-row codec-test-row">
-                      <label className="settings-label codec-test-description">
+                      <label className="settings-label codec-test-description settings-label--with-icon">
+                        <Zap size={15} className="settings-label-icon" />
                         {t("settings.codecDiagnostics.description")}
                       </label>
                       <button
@@ -2405,6 +2451,8 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                           </div>
                         ))}
                       </div>
+                    )}
+                      </>
                     )}
                   </div>
                 </section>
@@ -3645,7 +3693,77 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
           </>
         )}
       </div>
+        </div>
       </div>
-    </div>
+
+      {nativeStreamerEnablePromptVisible && (
+        <div
+          className={`native-streamer-warning ${nativeStreamerEnablePromptClosing ? "native-streamer-warning--closing" : ""}`}
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="native-streamer-warning-title"
+          aria-describedby="native-streamer-warning-copy"
+        >
+          <button
+            type="button"
+            className="native-streamer-warning-backdrop"
+            aria-label={t("app.actions.cancel")}
+            aria-hidden="true"
+            tabIndex={-1}
+            onClick={closeNativeStreamerEnablePrompt}
+          />
+          <div ref={nativeStreamerEnablePromptRef} className="native-streamer-warning-card" tabIndex={-1}>
+            <div className="native-streamer-warning-kicker">
+              <AlertTriangle size={14} />
+              {t("settings.nativeStreamer.enablePromptKicker")}
+            </div>
+            <h3 id="native-streamer-warning-title" className="native-streamer-warning-title">
+              {t("settings.nativeStreamer.enablePromptTitle")}
+            </h3>
+            <p id="native-streamer-warning-copy" className="native-streamer-warning-text">
+              {t("settings.nativeStreamer.enablePromptBody")}
+            </p>
+
+            <div className="native-streamer-warning-list">
+              <div className="native-streamer-warning-list-item">
+                <Cpu size={16} />
+                <span>{t("settings.nativeStreamer.enablePromptNewSessions")}</span>
+              </div>
+              <div className="native-streamer-warning-list-item">
+                <Keyboard size={16} />
+                <span>{t("settings.nativeStreamer.enablePromptShortcuts")}</span>
+              </div>
+              <div className="native-streamer-warning-list-item">
+                <Monitor size={16} />
+                <span>{t("settings.nativeStreamer.enablePromptAltTab")}</span>
+              </div>
+            </div>
+
+            <div className="native-streamer-warning-actions">
+              <button
+                type="button"
+                className="native-streamer-warning-btn native-streamer-warning-btn--secondary"
+                onClick={closeNativeStreamerEnablePrompt}
+              >
+                {t("settings.nativeStreamer.enablePromptCancel")}
+              </button>
+              <button
+                type="button"
+                className="native-streamer-warning-btn native-streamer-warning-btn--primary"
+                onClick={confirmNativeStreamerEnablePrompt}
+                ref={nativeStreamerEnablePromptConfirmRef}
+                autoFocus
+              >
+                {t("settings.nativeStreamer.enablePromptEnable")}
+              </button>
+            </div>
+            <div className="native-streamer-warning-hint">
+              <kbd>Esc</kbd> {t("settings.nativeStreamer.enablePromptEsc")}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>,
+    document.body,
   );
 }

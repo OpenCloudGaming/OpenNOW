@@ -3590,33 +3590,108 @@ button.game-card-store-chip.owned.active:hover {
 
 
 /* ======================================================
-   SETTINGS PAGE
+   SETTINGS PAGE — modal preferences panel
    ====================================================== */
-.settings-page {
-  max-width: 980px;
-  margin: 0 auto;
-  display: flex;
-  flex-direction: column;
-  gap: 18px;
+@keyframes settings-overlay-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
 }
 
-.settings-header {
+@keyframes settings-modal-in {
+  from {
+    opacity: 0;
+    transform: translateY(12px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.settings-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 3100;
   display: flex;
   align-items: center;
-  gap: 12px;
-  color: var(--ink);
+  justify-content: center;
+  padding: 28px 36px;
+  animation: settings-overlay-in 180ms var(--ease);
 }
 
-.settings-header svg {
-  width: 24px;
-  height: 24px;
+.settings-overlay-backdrop {
+  position: absolute;
+  inset: 0;
+  border: none;
+  background: rgba(6, 7, 9, 0.72);
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+  cursor: pointer;
 }
 
-.settings-header h1 {
-  font-size: 1.35rem;
+.settings-modal {
+  position: relative;
+  z-index: 1;
+  width: min(940px, calc(100vw - 48px));
+  height: min(720px, calc(100vh - 72px));
+  max-height: calc(100vh - 72px);
+  display: flex;
+  flex-direction: column;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: linear-gradient(180deg, #141418 0%, #101014 100%);
+  box-shadow:
+    var(--shadow-lg),
+    0 0 0 1px rgba(255, 255, 255, 0.03) inset;
+  overflow: hidden;
+  animation: settings-modal-in 220ms var(--ease);
+}
+
+.settings-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 18px 22px;
+  border-bottom: 1px solid var(--panel-border);
+  flex-shrink: 0;
+}
+
+.settings-modal-header h1 {
+  font-size: 1.05rem;
   font-weight: 700;
   margin: 0;
-  flex: 1;
+  color: var(--ink);
+  letter-spacing: -0.01em;
+}
+
+.settings-modal-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.settings-modal-close {
+  width: 32px;
+  height: 32px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink-muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background var(--t-fast), color var(--t-fast);
+}
+
+.settings-modal-close:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--ink);
 }
 
 .settings-saved {
@@ -3873,31 +3948,31 @@ button.game-card-store-chip.owned.active:hover {
   gap: 0;
   min-height: 0;
   flex: 1;
-  border: 1px solid var(--panel-border);
-  border-radius: var(--r-md);
   overflow: hidden;
 }
 
 .settings-sidebar {
-  width: 188px;
+  width: 220px;
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
   gap: 0;
-  background: var(--bg-a);
+  background: rgba(255, 255, 255, 0.015);
   border-right: 1px solid var(--panel-border);
-  padding: 10px 8px;
+  padding: 14px 12px;
+  overflow-y: auto;
 }
 
 .settings-search-wrap {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 7px 10px;
-  background: var(--chip);
+  gap: 8px;
+  padding: 8px 11px;
+  background: rgba(255, 255, 255, 0.04);
   border: 1px solid var(--panel-border);
   border-radius: 6px;
-  margin-bottom: 8px;
+  margin-bottom: 12px;
+  flex-shrink: 0;
 }
 
 .settings-search-icon {
@@ -3929,30 +4004,47 @@ button.game-card-store-chip.owned.active:hover {
   color: var(--ink-muted);
   cursor: pointer;
   padding: 2px;
-  border-radius: 3px;
-  transition: color var(--t-fast);
+  border-radius: 4px;
+  transition: color var(--t-fast), background var(--t-fast);
 }
 
 .settings-search-clear:hover {
   color: var(--ink);
+  background: rgba(255, 255, 255, 0.06);
 }
 
 .settings-nav {
   display: flex;
   flex-direction: column;
+  gap: 14px;
+}
+
+.settings-nav-group {
+  display: flex;
+  flex-direction: column;
   gap: 2px;
 }
 
+.settings-nav-group-label {
+  padding: 0 10px 6px;
+  font-size: 0.64rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
+}
+
 .settings-nav-item {
+  position: relative;
   display: flex;
   align-items: center;
-  gap: 9px;
-  padding: 9px 12px;
+  gap: 10px;
+  padding: 9px 12px 9px 14px;
   border-radius: 6px;
   border: none;
   background: transparent;
   color: var(--ink-soft);
-  font-size: 0.88rem;
+  font-size: 0.86rem;
   font-weight: 500;
   font-family: inherit;
   cursor: pointer;
@@ -3968,7 +4060,7 @@ button.game-card-store-chip.owned.active:hover {
 }
 
 .settings-nav-item:hover {
-  background: var(--chip);
+  background: rgba(255, 255, 255, 0.04);
   color: var(--ink);
 }
 
@@ -3977,9 +4069,20 @@ button.game-card-store-chip.owned.active:hover {
 }
 
 .settings-nav-item.active {
-  background: var(--accent-surface);
-  color: var(--accent);
+  background: rgba(var(--accent-rgb), 0.1);
+  color: var(--ink);
   font-weight: 600;
+}
+
+.settings-nav-item.active::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 8px;
+  bottom: 8px;
+  width: 2px;
+  border-radius: 999px;
+  background: var(--accent);
 }
 
 .settings-nav-item.active svg {
@@ -3989,11 +4092,13 @@ button.game-card-store-chip.owned.active:hover {
 .settings-content {
   flex: 1;
   min-width: 0;
+  min-height: 0;
   overflow-y: auto;
-  padding: 16px 18px;
+  overscroll-behavior: contain;
+  padding: 20px 22px;
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 16px;
 }
 
 /* Advanced disclosure */
@@ -4010,7 +4115,7 @@ button.game-card-store-chip.owned.active:hover {
   padding: 9px 14px;
   background: var(--bg-a);
   border: 1px solid var(--panel-border);
-  border-radius: var(--r-sm);
+  border-radius: 6px;
   color: var(--ink-soft);
   font-size: 0.83rem;
   font-weight: 600;
@@ -4075,7 +4180,7 @@ button.game-card-store-chip.owned.active:hover {
   padding: 12px;
   background: var(--chip);
   border: 1px solid var(--panel-border);
-  border-radius: 8px;
+  border-radius: 6px;
 }
 
 .settings-toggle-grid .settings-label {
@@ -4090,27 +4195,34 @@ button.game-card-store-chip.owned.active:hover {
   letter-spacing: 0.07em;
   color: var(--accent);
   margin-bottom: 4px;
+  padding: 14px 18px 0;
 }
 
 .settings-section {
-  background: var(--card);
+  background: rgba(255, 255, 255, 0.02);
   border: 1px solid var(--panel-border);
-  border-radius: var(--r-md);
-  padding: 18px 20px;
+  border-radius: 6px;
+  padding: 0;
   transition: border-color var(--t-normal);
+  overflow: visible;
+}
+
+.settings-section--dropdown {
+  overflow: visible;
+  z-index: 2;
 }
 
 .settings-section:hover {
-  border-color: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.09);
 }
 
 .settings-section-header {
   display: flex;
   align-items: center;
   gap: 10px;
-  margin-bottom: 16px;
-  padding-bottom: 12px;
-  border-bottom: 1px solid var(--panel-border);
+  margin-bottom: 0;
+  padding: 16px 18px 12px;
+  border-bottom: none;
   color: var(--accent);
 }
 
@@ -4120,17 +4232,19 @@ button.game-card-store-chip.owned.active:hover {
 }
 
 .settings-section-header h2 {
-  font-size: 1rem;
+  font-size: 0.95rem;
   font-weight: 600;
   color: var(--ink);
   margin: 0;
+  letter-spacing: -0.01em;
 }
 
 /* Rows */
 .settings-rows {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 0;
+  padding: 0 18px 6px;
 }
 
 .settings-row {
@@ -4138,6 +4252,12 @@ button.game-card-store-chip.owned.active:hover {
   align-items: center;
   justify-content: space-between;
   gap: 14px;
+  padding: 14px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.settings-row:last-child {
+  border-bottom: none;
 }
 
 .settings-row--column {
@@ -4199,6 +4319,26 @@ button.game-card-store-chip.owned.active:hover {
   max-width: 100%;
   overflow-wrap: anywhere;
   cursor: default;
+}
+
+.settings-label--with-icon {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.settings-label-icon {
+  color: var(--ink-muted);
+  flex-shrink: 0;
+}
+
+.settings-row--region {
+  border-bottom: none;
+  padding-bottom: 4px;
+}
+
+.settings-row--region .region-selector {
+  width: 100%;
 }
 
 .settings-label--wrap {
@@ -4827,8 +4967,8 @@ button.game-card-store-chip.owned.active:hover {
 .settings-toggle-track {
   position: absolute;
   inset: 0;
-  background: var(--chip);
-  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 12px;
   transition: background var(--t-normal);
 }
 
@@ -4839,8 +4979,9 @@ button.game-card-store-chip.owned.active:hover {
   left: 3px;
   width: 18px;
   height: 18px;
-  background: white;
+  background: #fff;
   border-radius: 50%;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
   transition: transform var(--t-normal);
 }
 
@@ -4998,10 +5139,11 @@ button.game-card-store-chip.owned.active:hover {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 10px;
   padding: 11px 14px;
-  background: var(--bg-a);
+  background: rgba(255, 255, 255, 0.03);
   border: 1px solid var(--panel-border-solid);
-  border-radius: var(--r-sm);
+  border-radius: 6px;
   color: var(--ink);
   font-size: 0.92rem;
   font-weight: 500;
@@ -5009,6 +5151,20 @@ button.game-card-store-chip.owned.active:hover {
   cursor: pointer;
   transition: border-color var(--t-fast), box-shadow var(--t-fast);
   outline: none;
+  min-height: 42px;
+}
+
+.region-selected-leading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+  min-width: 0;
+}
+
+.region-selected-icon {
+  color: var(--accent);
+  flex-shrink: 0;
 }
 
 .region-selected:hover {
@@ -5017,13 +5173,16 @@ button.game-card-store-chip.owned.active:hover {
 
 .region-selected.open {
   border-color: var(--accent);
-  border-radius: var(--r-sm) var(--r-sm) 0 0;
+  border-radius: 6px 6px 0 0;
 }
 
 .region-selected-name {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+  color: var(--ink);
 }
 
 .region-chevron {
@@ -5106,7 +5265,7 @@ button.game-card-store-chip.owned.active:hover {
   background: var(--bg-a);
   border: 1px solid var(--accent);
   border-top: none;
-  border-radius: 0 0 var(--r-sm) var(--r-sm);
+  border-radius: 0 0 6px 6px;
   z-index: 20;
   box-shadow: 0 12px 36px rgba(0, 0, 0, 0.5);
   animation: fade-in-down 120ms var(--ease);
