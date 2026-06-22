@@ -36,6 +36,7 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.Image
@@ -62,6 +63,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -117,6 +119,7 @@ import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.key
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.ExperimentalComposeUiApi
@@ -151,6 +154,7 @@ import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.LocalView
@@ -163,6 +167,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.media3.common.MediaItem
@@ -1074,6 +1080,10 @@ private fun HomeScreen(
                         },
                     )
                 }
+                ActiveSessionResumeCard(
+                    state = state,
+                    onResumeActiveSession = viewModel::resumeActiveSession,
+                )
                 Box(
                     Modifier
                         .weight(1f)
@@ -1107,6 +1117,8 @@ private fun HomeScreen(
                             onChooseStore = viewModel::chooseStore,
                             onSortChange = viewModel::setCatalogSort,
                             onFilterToggle = viewModel::toggleCatalogFilter,
+                            onClearSearch = { viewModel.setCatalogSearch("") },
+                            onClearFilters = viewModel::clearCatalogFilters,
                             gridState = gridState,
                             modifier = Modifier.fillMaxSize(),
                         )
@@ -1210,15 +1222,16 @@ private fun LibraryScreen(
                         Text(stringResource(R.string.nav_library), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
                         Text(stringResource(R.string.library_count, state.libraryGames.size), color = TextMuted)
                     }
-                    state.activeSession?.let { active ->
+                    if (state.activeSession != null) {
                         ElevatedButton(
-                            onClick = {
-                                val game = (state.games + state.libraryGames).firstOrNull { it.launchAppId == active.appId.toString() }
-                                if (game != null) viewModel.play(game)
-                            },
+                            onClick = viewModel::resumeActiveSession,
                         ) { Text(stringResource(R.string.action_resume)) }
                     }
                 }
+                ActiveSessionResumeCard(
+                    state = state,
+                    onResumeActiveSession = viewModel::resumeActiveSession,
+                )
                 AnimatedVisibility(visible = !searchInTopBar && !hideScrollChrome) {
                     NativeSearchField(
                         modifier = Modifier.fillMaxWidth(),
@@ -1238,7 +1251,131 @@ private fun LibraryScreen(
                     viewModel::chooseStore,
                     modifier = Modifier.weight(1f),
                     gridState = gridState,
+                    emptyContent = {
+                        if (state.librarySearch.isNotBlank() && state.libraryGames.isNotEmpty()) {
+                            SearchEmptyState(
+                                title = stringResource(R.string.library_empty_search_title),
+                                message = stringResource(R.string.library_empty_search_body),
+                                onClearSearch = { viewModel.setLibrarySearch("") },
+                            )
+                        } else {
+                            Text(stringResource(R.string.no_games_loaded), color = TextMuted)
+                        }
+                    },
                 )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ActiveSessionResumeCard(
+    state: OpenNowUiState,
+    onResumeActiveSession: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val active = state.activeSession ?: return
+    val game = activeSessionGame(state, active)
+    Surface(
+        modifier = modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(18.dp),
+        color = PanelAlt.copy(alpha = 0.92f),
+        tonalElevation = 3.dp,
+    ) {
+        Row(
+            Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            UrlImage(
+                game?.imageUrl,
+                Modifier
+                    .width(44.dp)
+                    .height(58.dp)
+                    .clip(RoundedCornerShape(10.dp)),
+            )
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text("Resume cloud session", fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(
+                    game?.title ?: "App ${active.appId}",
+                    color = TextMuted,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    activeSessionSummary(active),
+                    color = TextMuted,
+                    style = MaterialTheme.typography.labelSmall,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            Button(onClick = onResumeActiveSession, contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp)) {
+                Text(stringResource(R.string.action_resume), maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+        }
+    }
+}
+
+private fun activeSessionGame(state: OpenNowUiState, active: ActiveSessionInfo): GameInfo? =
+    (state.games + state.libraryGames).firstOrNull { game ->
+        game.launchAppId == active.appId.toString() ||
+            game.variants.any { variant -> variant.id == active.appId.toString() }
+    }
+
+private fun activeSessionSummary(active: ActiveSessionInfo): String =
+    listOfNotNull(
+        when (active.status) {
+            1 -> active.queuePosition?.takeIf { it > 0 }?.let { "Queue $it" } ?: "Starting"
+            2, 3 -> "Ready"
+            else -> "Active"
+        },
+        active.resolution,
+        active.fps?.let { "${it} FPS" },
+        active.gpuType,
+        active.sessionId.take(8).takeIf { it.isNotBlank() }?.let { "Session $it" },
+    ).joinToString(" - ")
+
+@Composable
+private fun SearchEmptyState(
+    title: String,
+    message: String,
+    onClearSearch: (() -> Unit)? = null,
+    onClearFilters: (() -> Unit)? = null,
+) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 28.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Text(
+            title,
+            color = TextPrimary,
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.Bold,
+            textAlign = TextAlign.Center,
+        )
+        Text(
+            message,
+            color = TextMuted,
+            style = MaterialTheme.typography.bodyMedium,
+            textAlign = TextAlign.Center,
+        )
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            onClearSearch?.let { clearSearch ->
+                OutlinedButton(onClick = clearSearch) {
+                    Text(stringResource(R.string.search_clear), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+            }
+            onClearFilters?.let { clearFilters ->
+                OutlinedButton(onClick = clearFilters) {
+                    Text(stringResource(R.string.action_clear_filters), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
             }
         }
     }
@@ -1313,10 +1450,15 @@ private fun GameGrid(
     onChooseStore: (GameInfo) -> Unit,
     modifier: Modifier = Modifier,
     gridState: androidx.compose.foundation.lazy.grid.LazyGridState = rememberLazyGridState(),
+    emptyContent: (@Composable () -> Unit)? = null,
 ) {
     if (games.isEmpty()) {
         Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Text(stringResource(R.string.no_games_loaded), color = TextMuted)
+            if (emptyContent != null) {
+                emptyContent()
+            } else {
+                Text(stringResource(R.string.no_games_loaded), color = TextMuted)
+            }
         }
         return
     }
@@ -1373,6 +1515,8 @@ private fun StoreGameGrid(
     onChooseStore: (GameInfo) -> Unit,
     onSortChange: (String) -> Unit,
     onFilterToggle: (String) -> Unit,
+    onClearSearch: () -> Unit,
+    onClearFilters: () -> Unit,
     gridState: androidx.compose.foundation.lazy.grid.LazyGridState,
     modifier: Modifier = Modifier,
 ) {
@@ -1380,7 +1524,22 @@ private fun StoreGameGrid(
         Column(modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             StoreScrollableControls(state, onSortChange, onFilterToggle)
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Text(stringResource(R.string.no_games_loaded), color = TextMuted)
+                val hasSearch = state.catalogSearch.isNotBlank()
+                val hasFilters = state.catalogFilterIds.isNotEmpty()
+                if (hasSearch || hasFilters) {
+                    SearchEmptyState(
+                        title = stringResource(R.string.store_empty_search_title),
+                        message = when {
+                            hasSearch && hasFilters -> stringResource(R.string.store_empty_search_filters_body)
+                            hasSearch -> stringResource(R.string.store_empty_search_body)
+                            else -> stringResource(R.string.store_empty_filters_body)
+                        },
+                        onClearSearch = if (hasSearch) onClearSearch else null,
+                        onClearFilters = if (hasFilters) onClearFilters else null,
+                    )
+                } else {
+                    Text(stringResource(R.string.no_games_loaded), color = TextMuted)
+                }
             }
         }
         return
@@ -2515,6 +2674,14 @@ private fun SettingsContent(
                         )
                     }
                 }
+                SettingSwitch("Stream sharpening", settings.stream.streamSharpeningEnabled) {
+                    viewModel.updateStreamSettings { s -> s.copy(streamSharpeningEnabled = it) }
+                }
+                if (settings.stream.streamSharpeningEnabled) {
+                    NumberSlider("Sharpness amount", settings.stream.streamSharpeningAmount, 0f, 1f, 0.05f) {
+                        viewModel.updateStreamSettings { s -> s.copy(streamSharpeningAmount = it) }
+                    }
+                }
                 ChoiceRow(stringResource(R.string.settings_region), listOf(stringResource(R.string.option_auto)) + state.regions.map { it.name }, state.regions.firstOrNull { it.url == settings.stream.region }?.name ?: stringResource(R.string.option_auto)) { label ->
                     val url = state.regions.firstOrNull { it.name == label }?.url.orEmpty()
                     viewModel.updateStreamSettings { s -> s.copy(region = url) }
@@ -2558,12 +2725,19 @@ private fun SettingsContent(
                     viewModel.updateStreamSettings { s -> s.copy(gameLanguage = it) }
                 }
                 SettingSwitch("Clipboard paste", settings.clipboardPaste) { enabled -> viewModel.updateSettings(settings.copy(clipboardPaste = enabled)) }
+                SettingSwitch("Phone rumble fallback", settings.phoneRumbleFallback) { enabled -> viewModel.updateSettings(settings.copy(phoneRumbleFallback = enabled)) }
                 SettingSwitch("Touch controls", settings.androidTouch.enabled) { enabled -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(enabled = enabled))) }
                 SettingSwitch("Finger mouse", settings.androidTouch.mousePad) { enabled -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(mousePad = enabled))) }
                 NumberSlider("Touch layout scale", settings.androidTouch.scale, 0.6f, 1.4f, 0.05f) { value -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(scale = value))) }
                 NumberSlider("Touch button size", settings.androidTouch.buttonScale, 0.65f, 1.5f, 0.05f) { value -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(buttonScale = value))) }
                 NumberSlider("Touch stick size", settings.androidTouch.stickScale, 0.65f, 1.5f, 0.05f) { value -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(stickScale = value))) }
                 NumberSlider("Touch opacity", settings.androidTouch.opacity, 0.15f, 1f, 0.05f) { value -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(opacity = value))) }
+                NumberSlider("Touch edge padding", settings.androidTouch.edgePaddingDp, 0f, 72f, 1f) { value -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(edgePaddingDp = value))) }
+                NumberSlider("Touch bottom padding", settings.androidTouch.bottomPaddingDp, 0f, 120f, 1f) { value -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(bottomPaddingDp = value))) }
+                NumberSlider("Left controls horizontal offset", settings.androidTouch.leftOffsetXDp, -220f, 220f, 2f) { value -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(leftOffsetXDp = value))) }
+                NumberSlider("Left controls vertical offset", settings.androidTouch.leftOffsetYDp, -160f, 160f, 2f) { value -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(leftOffsetYDp = value))) }
+                NumberSlider("Right controls horizontal offset", settings.androidTouch.rightOffsetXDp, -220f, 220f, 2f) { value -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(rightOffsetXDp = value))) }
+                NumberSlider("Right controls vertical offset", settings.androidTouch.rightOffsetYDp, -160f, 160f, 2f) { value -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(rightOffsetYDp = value))) }
             }
     SettingsSection(stringResource(R.string.settings_section_interface)) {
                 val accentOptions = UiAccent.entries.map { it to uiAccentLabel(it) }
@@ -2577,8 +2751,12 @@ private fun SettingsContent(
                 SettingSwitch(stringResource(R.string.settings_compact_cards), settings.compactGameCards) { viewModel.updateSettings(settings.copy(compactGameCards = it)) }
                 SettingSwitch(stringResource(R.string.settings_show_store_labels), settings.showGameStoreLabels) { viewModel.updateSettings(settings.copy(showGameStoreLabels = it)) }
                 NumberSlider(stringResource(R.string.settings_card_size), settings.posterSizeScale, 0.82f, 1.08f, 0.02f) { value -> viewModel.updateSettings(settings.copy(posterSizeScale = value)) }
-                SettingSwitch(stringResource(R.string.settings_hide_stream_buttons), settings.hideStreamButtons) { viewModel.updateSettings(settings.copy(hideStreamButtons = it)) }
                 SettingSwitch(stringResource(R.string.settings_show_stats), settings.showStatsOnLaunch) { viewModel.updateSettings(settings.copy(showStatsOnLaunch = it)) }
+                ChoiceRow("Stats overlay style", StreamStatsStyle.entries.map { it.label }, settings.streamStatsStyle.label) { label ->
+                    StreamStatsStyle.entries.firstOrNull { it.label == label }?.let { style ->
+                        viewModel.updateSettings(settings.copy(streamStatsStyle = style))
+                    }
+                }
                 SettingSwitch(stringResource(R.string.settings_hide_server_selector), settings.hideServerSelector) { viewModel.updateSettings(settings.copy(hideServerSelector = it)) }
                 SettingSwitch(stringResource(R.string.settings_controller_mode), settings.controllerMode) { viewModel.updateSettings(settings.copy(controllerMode = it)) }
                 SettingSwitch(stringResource(R.string.settings_controller_sounds), settings.controllerUiSounds) { viewModel.updateSettings(settings.copy(controllerUiSounds = it)) }
@@ -2852,6 +3030,18 @@ private fun CodecCapabilityRow(capability: CodecCapability) {
 
 private fun yesNo(value: Boolean): String = if (value) "yes" else "no"
 
+private val StreamStatsStyle.label: String
+    get() = when (this) {
+        StreamStatsStyle.Compact -> "Compact line"
+        StreamStatsStyle.Detailed -> "Detailed card"
+    }
+
+private fun StreamStatsStyle.next(): StreamStatsStyle =
+    when (this) {
+        StreamStatsStyle.Compact -> StreamStatsStyle.Detailed
+        StreamStatsStyle.Detailed -> StreamStatsStyle.Compact
+    }
+
 @Composable
 private fun AppVersionPanel() {
     Row(
@@ -2940,10 +3130,17 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
     var keyboardOpen by remember { mutableStateOf(false) }
     var keyboardText by remember { mutableStateOf("") }
     var audioMuted by remember { mutableStateOf(false) }
+    var touchLayoutEditing by remember { mutableStateOf(false) }
     var statsVisible by remember(state.settings.showStatsOnLaunch) { mutableStateOf(state.settings.showStatsOnLaunch) }
     var streamStats by remember { mutableStateOf(StreamRuntimeStats()) }
     val streamReady = session?.status in setOf(2, 3)
-    val streamSettings = state.activeStreamSettings ?: state.settings.stream
+    val launchStreamSettings = state.activeStreamSettings ?: state.settings.stream
+    val streamSettings = launchStreamSettings.copy(
+        mouseSensitivity = state.settings.stream.mouseSensitivity,
+        mouseAcceleration = state.settings.stream.mouseAcceleration,
+        streamSharpeningEnabled = state.settings.stream.streamSharpeningEnabled,
+        streamSharpeningAmount = state.settings.stream.streamSharpeningAmount,
+    )
     val streamOverlayOpen = controlsOpen || exitConfirmOpen || keyboardOpen
     val externalMousePassthroughActive = streamReady && !streamOverlayOpen
     val handleStreamBack = {
@@ -2951,8 +3148,7 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
             exitConfirmOpen -> exitConfirmOpen = false
             keyboardOpen -> keyboardOpen = false
             controlsOpen -> controlsOpen = false
-            state.settings.hideStreamButtons -> controlsOpen = true
-            else -> exitConfirmOpen = true
+            else -> controlsOpen = true
         }
     }
     BackHandler(enabled = streamReady) {
@@ -2968,6 +3164,10 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
             onError = {
                 streamState = it
                 viewModel.markStreamError(it)
+            },
+            onSafeVideoFallbackRequired = {
+                streamState = it
+                viewModel.restartStreamWithSafeVideoProfile(it)
             },
             onStats = { streamStats = it },
         )
@@ -2987,6 +3187,8 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
             if (Build.VERSION.SDK_INT >= 26) {
                 decor?.releasePointerCapture()
             }
+            NativeStreamInputRouter.clearUiTouchPassthroughBounds()
+            NativeStreamInputRouter.clearStreamPanelTouchPassthroughBounds()
             NativeStreamInputRouter.setSystemMenuHandler(null)
             NativeStreamInputRouter.setSystemBackHandler(null)
             NativeStreamInputRouter.setStreamUiActive(false)
@@ -2995,7 +3197,7 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
         }
     }
 
-    LaunchedEffect(streamReady, streamOverlayOpen, state.settings.hideStreamButtons) {
+    LaunchedEffect(streamReady, streamOverlayOpen) {
         NativeStreamInputRouter.setStreamUiActive(streamReady && streamOverlayOpen)
         NativeStreamInputRouter.setSystemMenuHandler {
             keyboardOpen = false
@@ -3016,8 +3218,7 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                 state.settings.androidTouch.mousePad &&
                 !controlsOpen &&
                 !exitConfirmOpen &&
-                !keyboardOpen &&
-                !state.settings.androidTouch.enabled,
+                !keyboardOpen,
         )
     }
     DisposableEffect(Unit) {
@@ -3025,9 +3226,12 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
             NativeStreamInputRouter.setCaptureAllTouch(false)
         }
     }
-    LaunchedEffect(session?.sessionId, session?.status, streamSettings) {
+    LaunchedEffect(state.settings.phoneRumbleFallback) {
+        client.updateHapticsSettings(state.settings.phoneRumbleFallback)
+    }
+    LaunchedEffect(session?.sessionId, session?.status, launchStreamSettings) {
         if (session != null && streamReady) {
-            client.start(session, streamSettings)
+            client.start(session, launchStreamSettings)
         }
     }
 
@@ -3036,8 +3240,10 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
             QueueLoadingScreen(state, viewModel)
         } else if (session == null) {
             NoActiveStreamScreen(
+                canResumeSession = state.activeSession != null,
                 canEndSession = state.authSession != null,
                 onBack = { viewModel.setPage(AppPage.Home) },
+                onResumeSession = viewModel::resumeActiveSession,
                 onEndSession = viewModel::stopStream,
             )
         } else if (!streamReady) {
@@ -3057,6 +3263,7 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                     status = streamState,
                     streamStats = streamStats,
                     audioMuted = audioMuted,
+                    style = state.settings.streamStatsStyle,
                     modifier = Modifier.align(Alignment.TopStart),
                 )
             }
@@ -3064,16 +3271,22 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                 TouchOverlay(
                     client = client,
                     touch = state.settings.androidTouch,
+                    layoutEditing = touchLayoutEditing,
+                    onLeftOffsetChange = { x, y ->
+                        viewModel.updateSettings(
+                            state.settings.copy(
+                                androidTouch = state.settings.androidTouch.copy(leftOffsetXDp = x, leftOffsetYDp = y),
+                            ),
+                        )
+                    },
+                    onRightOffsetChange = { x, y ->
+                        viewModel.updateSettings(
+                            state.settings.copy(
+                                androidTouch = state.settings.androidTouch.copy(rightOffsetXDp = x, rightOffsetYDp = y),
+                            ),
+                        )
+                    },
                     modifier = Modifier.align(Alignment.BottomCenter),
-                )
-            }
-            if (!state.settings.hideStreamButtons) {
-                StreamControlLauncher(
-                    controlsOpen = controlsOpen,
-                    status = (state.queuePosition?.let { "Queue $it" } ?: streamState).takeUnless(::shouldHideStreamStatusText),
-                    onToggle = { controlsOpen = !controlsOpen },
-                    onExit = { exitConfirmOpen = true },
-                    modifier = Modifier.align(Alignment.TopEnd),
                 )
             }
             AnimatedVisibility(
@@ -3088,6 +3301,7 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                     settings = state.settings,
                     audioMuted = audioMuted,
                     statsVisible = statsVisible,
+                    touchLayoutEditing = touchLayoutEditing,
                     keyboardOpen = keyboardOpen,
                     onAudioToggle = {
                         audioMuted = !audioMuted
@@ -3096,6 +3310,15 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                     onStatsToggle = {
                         statsVisible = !statsVisible
                         viewModel.updateSettings(state.settings.copy(showStatsOnLaunch = statsVisible))
+                    },
+                    onStatsStyleCycle = {
+                        viewModel.updateSettings(state.settings.copy(streamStatsStyle = state.settings.streamStatsStyle.next()))
+                    },
+                    onPhoneRumbleFallbackToggle = {
+                        viewModel.updateSettings(state.settings.copy(phoneRumbleFallback = !state.settings.phoneRumbleFallback))
+                    },
+                    onTouchLayoutEditingToggle = {
+                        touchLayoutEditing = !touchLayoutEditing
                     },
                     onKeyboardToggle = { keyboardOpen = !keyboardOpen },
                     onEsc = { client.sendKeyCode(KeyEvent.KEYCODE_ESCAPE) },
@@ -3119,6 +3342,16 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                             ),
                         )
                     },
+                    onSharpeningToggle = {
+                        viewModel.updateStreamSettings { settings ->
+                            settings.copy(streamSharpeningEnabled = !settings.streamSharpeningEnabled)
+                        }
+                    },
+                    onSharpeningAmountChange = { value ->
+                        viewModel.updateStreamSettings { settings ->
+                            settings.copy(streamSharpeningAmount = value)
+                        }
+                    },
                     onTouchScaleChange = { value ->
                         viewModel.updateSettings(state.settings.copy(androidTouch = state.settings.androidTouch.copy(scale = value)))
                     },
@@ -3130,6 +3363,18 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                     },
                     onOpacityChange = { value ->
                         viewModel.updateSettings(state.settings.copy(androidTouch = state.settings.androidTouch.copy(opacity = value)))
+                    },
+                    onTouchEdgePaddingChange = { value ->
+                        viewModel.updateSettings(state.settings.copy(androidTouch = state.settings.androidTouch.copy(edgePaddingDp = value)))
+                    },
+                    onTouchBottomPaddingChange = { value ->
+                        viewModel.updateSettings(state.settings.copy(androidTouch = state.settings.androidTouch.copy(bottomPaddingDp = value)))
+                    },
+                    onTouchLeftOffsetChange = { value ->
+                        viewModel.updateSettings(state.settings.copy(androidTouch = state.settings.androidTouch.copy(leftOffsetYDp = value)))
+                    },
+                    onTouchRightOffsetChange = { value ->
+                        viewModel.updateSettings(state.settings.copy(androidTouch = state.settings.androidTouch.copy(rightOffsetYDp = value)))
                     },
                     onClose = { controlsOpen = false },
                 )
@@ -3182,6 +3427,9 @@ private fun StreamVideoSurface(
     val streamAspect = (streamWidth.toFloat() / streamHeight.toFloat()).takeIf { it.isFinite() && it > 0f } ?: (16f / 9f)
     val currentStreamFps by rememberUpdatedState(settings.fps)
     val currentOnMouseCaptureInput by rememberUpdatedState(onMouseCaptureInput)
+    var zoomScale by remember { mutableFloatStateOf(1f) }
+    var zoomOffset by remember { mutableStateOf(Offset.Zero) }
+    var viewportSize by remember { mutableStateOf(IntSize.Zero) }
     DisposableEffect(client, rootView, pointerRootView, hideExternalMousePointer) {
         pointerRootView.configureAndroidMousePointerCapture(hideExternalMousePointer, { currentOnMouseCaptureInput() }) { event ->
             client.dispatchMotion(event)
@@ -3214,62 +3462,99 @@ private fun StreamVideoSurface(
         }
         Box(
             viewportModifier
+                .onSizeChanged {
+                    viewportSize = it
+                    zoomOffset = clampStreamZoomOffset(zoomOffset, zoomScale, it)
+                }
                 .clipToBounds()
                 .background(Color.Black),
         ) {
-            AndroidView(
-                modifier = Modifier.fillMaxSize(),
-                factory = { ctx ->
-                    client.createRenderer(ctx).apply {
-                        isFocusable = false
-                        isFocusableInTouchMode = false
-                        hideAndroidPointerTree()
-                        setPreferredStreamFrameRate(settings.fps)
-                        holder.addCallback(
-                            object : SurfaceHolder.Callback {
-                                override fun surfaceCreated(holder: SurfaceHolder) {
-                                    holder.surface.setPreferredStreamFrameRate(currentStreamFps)
-                                }
+            Box(
+                Modifier
+                    .matchParentSize()
+                    .graphicsLayer {
+                        scaleX = zoomScale
+                        scaleY = zoomScale
+                        translationX = zoomOffset.x
+                        translationY = zoomOffset.y
+                    },
+            ) {
+                key(settings.streamSharpeningEnabled) {
+                    AndroidView(
+                        modifier = Modifier.fillMaxSize(),
+                        factory = { ctx ->
+                            client.createRenderer(ctx, settings).apply {
+                                isFocusable = false
+                                isFocusableInTouchMode = false
+                                hideAndroidPointerTree()
+                                setPreferredStreamFrameRate(settings.fps)
+                                holder.addCallback(
+                                    object : SurfaceHolder.Callback {
+                                        override fun surfaceCreated(holder: SurfaceHolder) {
+                                            holder.surface.setPreferredStreamFrameRate(currentStreamFps)
+                                        }
 
-                                override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
-                                    holder.surface.setPreferredStreamFrameRate(currentStreamFps)
-                                }
+                                        override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
+                                            holder.surface.setPreferredStreamFrameRate(currentStreamFps)
+                                        }
 
-                                override fun surfaceDestroyed(holder: SurfaceHolder) = Unit
-                            },
-                        )
-                    }
-                },
-                update = { renderer ->
-                    renderer.isFocusable = false
-                    renderer.isFocusableInTouchMode = false
-                    renderer.setPreferredStreamFrameRate(settings.fps)
-                    pointerRootView.configureAndroidMousePointerCapture(hideExternalMousePointer, { currentOnMouseCaptureInput() }) { event ->
-                        client.dispatchMotion(event)
-                    }
-                    if (hideExternalMousePointer) {
-                        pointerRootView.hideAndroidPointerTree()
-                        renderer.hideAndroidPointerTree()
-                    } else {
-                        pointerRootView.showAndroidPointerTree()
-                        renderer.showAndroidPointerTree()
-                    }
-                    renderer.setOnKeyListener(null)
-                    renderer.setOnGenericMotionListener { _, event ->
-                        if (hideExternalMousePointer) pointerRootView.hideAndroidPointerTree()
-                        client.dispatchMotion(event)
-                    }
-                    renderer.setOnTouchListener { view, event ->
-                        NativeStreamInputRouter.dispatchTouch(event, view.width, view.height)
-                    }
-                },
-            )
+                                        override fun surfaceDestroyed(holder: SurfaceHolder) = Unit
+                                    },
+                                )
+                            }
+                        },
+                        update = { renderer ->
+                            client.updateRendererSettings(settings)
+                            renderer.isFocusable = false
+                            renderer.isFocusableInTouchMode = false
+                            renderer.setPreferredStreamFrameRate(settings.fps)
+                            pointerRootView.configureAndroidMousePointerCapture(hideExternalMousePointer, { currentOnMouseCaptureInput() }) { event ->
+                                client.dispatchMotion(event)
+                            }
+                            if (hideExternalMousePointer) {
+                                pointerRootView.hideAndroidPointerTree()
+                                renderer.hideAndroidPointerTree()
+                            } else {
+                                pointerRootView.showAndroidPointerTree()
+                                renderer.showAndroidPointerTree()
+                            }
+                            renderer.setOnKeyListener(null)
+                            renderer.setOnGenericMotionListener { _, event ->
+                                if (hideExternalMousePointer) pointerRootView.hideAndroidPointerTree()
+                                client.dispatchMotion(event)
+                            }
+                            renderer.setOnTouchListener { view, event ->
+                                NativeStreamInputRouter.dispatchTouch(event, view.width, view.height)
+                            }
+                        },
+                    )
+                }
+            }
             FingerMouseInputLayer(
                 enabled = touchMouseEnabled,
+                onZoomGesture = { scaleChange, pan ->
+                    val nextScale = (zoomScale * scaleChange).coerceIn(1f, 3f)
+                    zoomScale = nextScale
+                    zoomOffset = if (nextScale <= 1.001f) {
+                        Offset.Zero
+                    } else {
+                        clampStreamZoomOffset(zoomOffset + pan, nextScale, viewportSize)
+                    }
+                },
                 modifier = Modifier.matchParentSize(),
             )
         }
     }
+}
+
+private fun clampStreamZoomOffset(offset: Offset, zoomScale: Float, viewportSize: IntSize): Offset {
+    if (zoomScale <= 1.001f || viewportSize.width <= 0 || viewportSize.height <= 0) return Offset.Zero
+    val maxX = viewportSize.width * (zoomScale - 1f) / 2f
+    val maxY = viewportSize.height * (zoomScale - 1f) / 2f
+    return Offset(
+        x = offset.x.coerceIn(-maxX, maxX),
+        y = offset.y.coerceIn(-maxY, maxY),
+    )
 }
 
 private fun SurfaceView.setPreferredStreamFrameRate(fps: Int) {
@@ -3338,10 +3623,17 @@ private fun android.view.View.applyAndroidPointerIconTree(icon: PointerIcon?) {
 }
 
 @Composable
-private fun FingerMouseInputLayer(enabled: Boolean, modifier: Modifier = Modifier) {
+private fun FingerMouseInputLayer(
+    enabled: Boolean,
+    onZoomGesture: (scaleChange: Float, pan: Offset) -> Unit,
+    modifier: Modifier = Modifier,
+) {
     if (!enabled) return
     var width by remember { mutableStateOf(0) }
     var height by remember { mutableStateOf(0) }
+    var pinchActive by remember { mutableStateOf(false) }
+    var lastPinchDistance by remember { mutableFloatStateOf(0f) }
+    var lastPinchCentroid by remember { mutableStateOf(Offset.Zero) }
     Box(
         modifier
             .onSizeChanged {
@@ -3349,6 +3641,35 @@ private fun FingerMouseInputLayer(enabled: Boolean, modifier: Modifier = Modifie
                 height = it.height
             }
             .pointerInteropFilter { event ->
+                if (NativeStreamInputRouter.isNativeUiTouchGestureActive()) {
+                    pinchActive = false
+                    lastPinchDistance = 0f
+                    lastPinchCentroid = Offset.Zero
+                    return@pointerInteropFilter true
+                }
+                if (event.pointerCount >= 2) {
+                    NativeStreamInputRouter.cancelTouchMouse()
+                    val distance = event.firstTwoPointerDistance()
+                    val centroid = event.firstTwoPointerCentroid()
+                    if (pinchActive && lastPinchDistance > 0f && distance > 0f) {
+                        onZoomGesture(
+                            (distance / lastPinchDistance).coerceIn(0.82f, 1.22f),
+                            centroid - lastPinchCentroid,
+                        )
+                    }
+                    pinchActive = true
+                    lastPinchDistance = distance
+                    lastPinchCentroid = centroid
+                    return@pointerInteropFilter true
+                }
+                if (pinchActive) {
+                    if (event.actionMasked == MotionEvent.ACTION_UP || event.actionMasked == MotionEvent.ACTION_CANCEL) {
+                        pinchActive = false
+                        lastPinchDistance = 0f
+                        lastPinchCentroid = Offset.Zero
+                    }
+                    return@pointerInteropFilter true
+                }
                 if (event.actionMasked == MotionEvent.ACTION_DOWN) {
                     NativeInputDiagnostics.add("compose finger layer down size=${width}x$height")
                 }
@@ -3357,10 +3678,26 @@ private fun FingerMouseInputLayer(enabled: Boolean, modifier: Modifier = Modifie
     )
 }
 
+private fun MotionEvent.firstTwoPointerDistance(): Float {
+    if (pointerCount < 2) return 0f
+    val dx = getX(1) - getX(0)
+    val dy = getY(1) - getY(0)
+    return sqrt(dx * dx + dy * dy)
+}
+
+private fun MotionEvent.firstTwoPointerCentroid(): Offset =
+    if (pointerCount >= 2) {
+        Offset((getX(0) + getX(1)) / 2f, (getY(0) + getY(1)) / 2f)
+    } else {
+        Offset.Zero
+    }
+
 @Composable
 private fun NoActiveStreamScreen(
+    canResumeSession: Boolean,
     canEndSession: Boolean,
     onBack: () -> Unit,
+    onResumeSession: () -> Unit,
     onEndSession: () -> Unit,
 ) {
     Column(
@@ -3380,6 +3717,9 @@ private fun NoActiveStreamScreen(
         Spacer(Modifier.height(18.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             OutlinedButton(onClick = onBack) { Text("Back to library") }
+            if (canResumeSession) {
+                Button(onClick = onResumeSession) { Text(stringResource(R.string.action_resume)) }
+            }
             if (canEndSession) {
                 Button(onClick = onEndSession) { Text("End cloud session") }
             }
@@ -3448,9 +3788,13 @@ private fun StreamControlsPanel(
     settings: AppSettings,
     audioMuted: Boolean,
     statsVisible: Boolean,
+    touchLayoutEditing: Boolean,
     keyboardOpen: Boolean,
     onAudioToggle: () -> Unit,
     onStatsToggle: () -> Unit,
+    onStatsStyleCycle: () -> Unit,
+    onPhoneRumbleFallbackToggle: () -> Unit,
+    onTouchLayoutEditingToggle: () -> Unit,
     onKeyboardToggle: () -> Unit,
     onEsc: () -> Unit,
     onEnter: () -> Unit,
@@ -3458,10 +3802,16 @@ private fun StreamControlsPanel(
     onExit: () -> Unit,
     onTouchControlsToggle: () -> Unit,
     onMousePadToggle: () -> Unit,
+    onSharpeningToggle: () -> Unit,
+    onSharpeningAmountChange: (Float) -> Unit,
     onTouchScaleChange: (Float) -> Unit,
     onButtonScaleChange: (Float) -> Unit,
     onStickScaleChange: (Float) -> Unit,
     onOpacityChange: (Float) -> Unit,
+    onTouchEdgePaddingChange: (Float) -> Unit,
+    onTouchBottomPaddingChange: (Float) -> Unit,
+    onTouchLeftOffsetChange: (Float) -> Unit,
+    onTouchRightOffsetChange: (Float) -> Unit,
     onClose: () -> Unit,
 ) {
     val doneFocusRequester = remember { FocusRequester() }
@@ -3521,6 +3871,11 @@ private fun StreamControlsPanel(
                 StreamPanelSection("Display") {
                     StreamControlSwitch("Audio", if (audioMuted) "Muted" else "On", !audioMuted, onAudioToggle)
                     StreamControlSwitch("Stream stats", if (statsVisible) "On" else "Off", statsVisible, onStatsToggle)
+                    StreamControlAction("Stats style", settings.streamStatsStyle.label, onStatsStyleCycle)
+                    StreamControlSwitch("Stream sharpening", if (settings.stream.streamSharpeningEnabled) "On" else "Off", settings.stream.streamSharpeningEnabled, onSharpeningToggle)
+                    if (settings.stream.streamSharpeningEnabled) {
+                        CompactSlider("Sharpness amount", settings.stream.streamSharpeningAmount, 0f, 1f, onSharpeningAmountChange)
+                    }
                 }
             }
             item {
@@ -3533,14 +3888,20 @@ private fun StreamControlsPanel(
                     }
                     StreamControlSwitch("Finger mouse", if (settings.androidTouch.mousePad) "On" else "Off", settings.androidTouch.mousePad, onMousePadToggle)
                     StreamControlSwitch("Touch controller", if (settings.androidTouch.enabled) "Visible" else "Hidden", settings.androidTouch.enabled, onTouchControlsToggle)
+                    StreamControlSwitch("Phone rumble fallback", if (settings.phoneRumbleFallback) "On" else "Off", settings.phoneRumbleFallback, onPhoneRumbleFallbackToggle)
                 }
             }
             item {
                 StreamPanelSection("Touch Layout") {
+                    StreamControlSwitch("Drag edit mode", if (touchLayoutEditing) "On" else "Off", touchLayoutEditing, onTouchLayoutEditingToggle)
                     CompactSlider("Layout scale", settings.androidTouch.scale, 0.6f, 1.4f, onTouchScaleChange)
                     CompactSlider("Button size", settings.androidTouch.buttonScale, 0.65f, 1.5f, onButtonScaleChange)
                     CompactSlider("Stick size", settings.androidTouch.stickScale, 0.65f, 1.5f, onStickScaleChange)
                     CompactSlider("Opacity", settings.androidTouch.opacity, 0.15f, 1f, onOpacityChange)
+                    CompactDpSlider("Edge padding", settings.androidTouch.edgePaddingDp, 0f, 72f, onTouchEdgePaddingChange)
+                    CompactDpSlider("Bottom padding", settings.androidTouch.bottomPaddingDp, 0f, 120f, onTouchBottomPaddingChange)
+                    CompactDpSlider("Left position", settings.androidTouch.leftOffsetYDp, -160f, 160f, onTouchLeftOffsetChange)
+                    CompactDpSlider("Right position", settings.androidTouch.rightOffsetYDp, -160f, 160f, onTouchRightOffsetChange)
                 }
             }
         }
@@ -3580,6 +3941,25 @@ private fun StreamControlSwitch(label: String, value: String, checked: Boolean, 
 }
 
 @Composable
+private fun StreamControlAction(label: String, value: String, onClick: () -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(Color.White.copy(alpha = 0.06f))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(label, fontWeight = FontWeight.SemiBold)
+            Text(value, color = TextMuted, style = MaterialTheme.typography.labelSmall)
+        }
+        Text("Change", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelMedium)
+    }
+}
+
+@Composable
 private fun CompactSlider(label: String, value: Float, min: Float, max: Float, onChange: (Float) -> Unit) {
     var local by remember(value) { mutableFloatStateOf(value) }
     val focusManager = LocalFocusManager.current
@@ -3587,6 +3967,27 @@ private fun CompactSlider(label: String, value: Float, min: Float, max: Float, o
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Text(label, Modifier.weight(1f))
             Text("${(local * 100).roundToInt()}%", color = TextMuted)
+        }
+        Slider(
+            modifier = Modifier.onPreviewKeyEvent { handleVerticalDpadFocusMove(it, focusManager) },
+            value = local,
+            onValueChange = {
+                local = it.coerceIn(min, max)
+                onChange(local)
+            },
+            valueRange = min..max,
+        )
+    }
+}
+
+@Composable
+private fun CompactDpSlider(label: String, value: Float, min: Float, max: Float, onChange: (Float) -> Unit) {
+    var local by remember(value) { mutableFloatStateOf(value) }
+    val focusManager = LocalFocusManager.current
+    Column {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text(label, Modifier.weight(1f))
+            Text("${local.roundToInt()} dp", color = TextMuted)
         }
         Slider(
             modifier = Modifier.onPreviewKeyEvent { handleVerticalDpadFocusMove(it, focusManager) },
@@ -3641,8 +4042,28 @@ private fun StreamStatsPill(
     status: String,
     streamStats: StreamRuntimeStats,
     audioMuted: Boolean,
+    style: StreamStatsStyle,
     modifier: Modifier = Modifier,
 ) {
+    if (style == StreamStatsStyle.Compact) {
+        Surface(
+            modifier = modifier.padding(8.dp),
+            shape = RoundedCornerShape(999.dp),
+            color = Panel.copy(alpha = 0.48f),
+            tonalElevation = 0.dp,
+        ) {
+            Row(
+                Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("FPS ${streamStats.fps?.toString() ?: "--"}", color = TextPrimary, style = MaterialTheme.typography.labelSmall, maxLines = 1)
+                Text("Ping ${streamStats.pingMs?.let { "${it}ms" } ?: "--"}", color = TextPrimary, style = MaterialTheme.typography.labelSmall, maxLines = 1)
+                Text("BW ${formatRuntimeBitrate(streamStats.bitrateKbps)}", color = TextPrimary, style = MaterialTheme.typography.labelSmall, maxLines = 1)
+            }
+        }
+        return
+    }
     Surface(
         modifier = modifier.padding(10.dp),
         shape = RoundedCornerShape(12.dp),
@@ -4147,11 +4568,22 @@ private fun QueueAdControlIconView(icon: QueueAdControlIcon, modifier: Modifier 
 }
 
 @Composable
-private fun TouchOverlay(client: NativeStreamClient, touch: AndroidTouchSettings, modifier: Modifier = Modifier) {
+private fun TouchOverlay(
+    client: NativeStreamClient,
+    touch: AndroidTouchSettings,
+    layoutEditing: Boolean,
+    onLeftOffsetChange: (Float, Float) -> Unit,
+    onRightOffsetChange: (Float, Float) -> Unit,
+    modifier: Modifier = Modifier,
+) {
     val opacity = touch.opacity
     val layoutScale = touch.scale
     val buttonScale = touch.buttonScale
     val stickScale = touch.stickScale
+    val leftOffsetX = touch.leftOffsetXDp.dp
+    val leftOffsetY = touch.leftOffsetYDp.dp
+    val rightOffsetX = touch.rightOffsetXDp.dp
+    val rightOffsetY = touch.rightOffsetYDp.dp
 
     LaunchedEffect(client, touch.enabled) {
         client.setVirtualControllerVisible(touch.enabled)
@@ -4168,16 +4600,12 @@ private fun TouchOverlay(client: NativeStreamClient, touch: AndroidTouchSettings
     BoxWithConstraints(
         modifier
             .fillMaxSize()
-            .padding(horizontal = 14.dp, vertical = 10.dp)
-            .onGloballyPositioned { coordinates ->
-                val bounds = coordinates.boundsInRoot()
-                NativeStreamInputRouter.setTouchControllerPassthroughBounds(
-                    bounds.left.roundToInt(),
-                    bounds.top.roundToInt(),
-                    bounds.right.roundToInt(),
-                    bounds.bottom.roundToInt(),
-                )
-            },
+            .padding(
+                start = touch.edgePaddingDp.dp,
+                top = 10.dp,
+                end = touch.edgePaddingDp.dp,
+                bottom = touch.bottomPaddingDp.dp,
+            ),
     ) {
         if (touch.enabled) {
             val landscape = maxWidth > maxHeight
@@ -4188,6 +4616,13 @@ private fun TouchOverlay(client: NativeStreamClient, touch: AndroidTouchSettings
                     layoutScale = layoutScale,
                     buttonScale = buttonScale,
                     stickScale = stickScale,
+                    layoutEditing = layoutEditing,
+                    leftOffsetX = leftOffsetX,
+                    leftOffsetY = leftOffsetY,
+                    rightOffsetX = rightOffsetX,
+                    rightOffsetY = rightOffsetY,
+                    onLeftOffsetChange = onLeftOffsetChange,
+                    onRightOffsetChange = onRightOffsetChange,
                 )
             } else {
                 PortraitTouchControls(
@@ -4196,6 +4631,13 @@ private fun TouchOverlay(client: NativeStreamClient, touch: AndroidTouchSettings
                     layoutScale = layoutScale,
                     buttonScale = buttonScale,
                     stickScale = stickScale,
+                    layoutEditing = layoutEditing,
+                    leftOffsetX = leftOffsetX,
+                    leftOffsetY = leftOffsetY,
+                    rightOffsetX = rightOffsetX,
+                    rightOffsetY = rightOffsetY,
+                    onLeftOffsetChange = onLeftOffsetChange,
+                    onRightOffsetChange = onRightOffsetChange,
                 )
             }
         }
@@ -4209,53 +4651,82 @@ private fun PortraitTouchControls(
     layoutScale: Float,
     buttonScale: Float,
     stickScale: Float,
+    layoutEditing: Boolean,
+    leftOffsetX: Dp,
+    leftOffsetY: Dp,
+    rightOffsetX: Dp,
+    rightOffsetY: Dp,
+    onLeftOffsetChange: (Float, Float) -> Unit,
+    onRightOffsetChange: (Float, Float) -> Unit,
 ) {
     Row(
         Modifier.fillMaxSize(),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.Bottom,
     ) {
-        Column(verticalArrangement = Arrangement.spacedBy(8.dp), horizontalAlignment = Alignment.Start) {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                GamepadButton("LB", 0x0100, client, opacity, 48.dp * buttonScale * layoutScale)
-                GamepadTriggerButton("LT", left = true, client = client, opacity = opacity, size = 48.dp * buttonScale * layoutScale)
-            }
-            Spacer(Modifier.height(44.dp * buttonScale * layoutScale))
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                verticalAlignment = Alignment.Bottom,
+        TouchControlGroup(
+            id = "portrait-left",
+            layoutEditing = layoutEditing,
+            offsetX = leftOffsetX,
+            offsetY = leftOffsetY,
+            onOffsetChange = onLeftOffsetChange,
+        ) {
+            Column(
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+                horizontalAlignment = Alignment.Start,
             ) {
-                VirtualStick(
-                    label = "L",
-                    client = client,
-                    opacity = opacity,
-                    diameter = 116.dp * stickScale * layoutScale,
-                    onChange = client::setVirtualLeftStick,
-                )
-                DpadCluster(client, opacity, buttonScale * layoutScale)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    GamepadButton("LB", 0x0100, client, opacity, 48.dp * buttonScale * layoutScale)
+                    GamepadTriggerButton("LT", left = true, client = client, opacity = opacity, size = 48.dp * buttonScale * layoutScale)
+                }
+                Spacer(Modifier.height(44.dp * buttonScale * layoutScale))
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalAlignment = Alignment.Bottom,
+                ) {
+                    VirtualStick(
+                        label = "L",
+                        client = client,
+                        opacity = opacity,
+                        diameter = 116.dp * stickScale * layoutScale,
+                        onChange = client::setVirtualLeftStick,
+                    )
+                    DpadCluster(client, opacity, buttonScale * layoutScale)
+                }
             }
         }
-        Column(verticalArrangement = Arrangement.spacedBy(8.dp), horizontalAlignment = Alignment.End) {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                GamepadTriggerButton("RT", left = false, client = client, opacity = opacity, size = 48.dp * buttonScale * layoutScale)
-                GamepadButton("RB", 0x0200, client, opacity, 48.dp * buttonScale * layoutScale)
-            }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                GamepadButton("View", 0x0020, client, opacity, 44.dp * buttonScale * layoutScale)
-                GamepadButton("Menu", 0x0010, client, opacity, 44.dp * buttonScale * layoutScale)
-            }
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                verticalAlignment = Alignment.Bottom,
+        TouchControlGroup(
+            id = "portrait-right",
+            layoutEditing = layoutEditing,
+            offsetX = rightOffsetX,
+            offsetY = rightOffsetY,
+            onOffsetChange = onRightOffsetChange,
+        ) {
+            Column(
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+                horizontalAlignment = Alignment.End,
             ) {
-                VirtualStick(
-                    label = "R",
-                    client = client,
-                    opacity = opacity,
-                    diameter = 104.dp * stickScale * layoutScale,
-                    onChange = client::setVirtualRightStick,
-                )
-                FaceButtonCluster(client, opacity, buttonScale * layoutScale)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    GamepadTriggerButton("RT", left = false, client = client, opacity = opacity, size = 48.dp * buttonScale * layoutScale)
+                    GamepadButton("RB", 0x0200, client, opacity, 48.dp * buttonScale * layoutScale)
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    GamepadButton("View", 0x0020, client, opacity, 44.dp * buttonScale * layoutScale)
+                    GamepadButton("Menu", 0x0010, client, opacity, 44.dp * buttonScale * layoutScale)
+                }
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalAlignment = Alignment.Bottom,
+                ) {
+                    VirtualStick(
+                        label = "R",
+                        client = client,
+                        opacity = opacity,
+                        diameter = 104.dp * stickScale * layoutScale,
+                        onChange = client::setVirtualRightStick,
+                    )
+                    FaceButtonCluster(client, opacity, buttonScale * layoutScale)
+                }
             }
         }
     }
@@ -4268,56 +4739,166 @@ private fun BoxScope.LandscapeTouchControls(
     layoutScale: Float,
     buttonScale: Float,
     stickScale: Float,
+    layoutEditing: Boolean,
+    leftOffsetX: Dp,
+    leftOffsetY: Dp,
+    rightOffsetX: Dp,
+    rightOffsetY: Dp,
+    onLeftOffsetChange: (Float, Float) -> Unit,
+    onRightOffsetChange: (Float, Float) -> Unit,
 ) {
     val controlScale = buttonScale * layoutScale
-    Row(
-        Modifier.align(Alignment.TopStart),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    TouchControlGroup(
+        id = "landscape-top-left",
+        layoutEditing = layoutEditing,
+        offsetX = leftOffsetX,
+        offsetY = leftOffsetY,
+        onOffsetChange = onLeftOffsetChange,
+        modifier = Modifier.align(Alignment.TopStart),
     ) {
-        GamepadButton("LB", 0x0100, client, opacity, 46.dp * controlScale)
-        GamepadTriggerButton("LT", left = true, client = client, opacity = opacity, size = 50.dp * controlScale)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            GamepadButton("LB", 0x0100, client, opacity, 46.dp * controlScale)
+            GamepadTriggerButton("LT", left = true, client = client, opacity = opacity, size = 50.dp * controlScale)
+        }
     }
-    Row(
-        Modifier.align(Alignment.TopCenter),
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    TouchControlGroup(
+        id = "landscape-top-center",
+        layoutEditing = false,
+        offsetX = 0.dp,
+        offsetY = 0.dp,
+        onOffsetChange = { _, _ -> },
+        modifier = Modifier.align(Alignment.TopCenter),
     ) {
-        GamepadPillButton("View", 0x0020, client, opacity, width = 76.dp * controlScale, height = 42.dp * controlScale)
-        GamepadPillButton("Start", 0x0010, client, opacity, width = 84.dp * controlScale, height = 42.dp * controlScale)
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            GamepadPillButton("View", 0x0020, client, opacity, width = 76.dp * controlScale, height = 42.dp * controlScale)
+            GamepadPillButton("Start", 0x0010, client, opacity, width = 84.dp * controlScale, height = 42.dp * controlScale)
+        }
     }
-    Row(
-        Modifier.align(Alignment.TopEnd),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    TouchControlGroup(
+        id = "landscape-top-right",
+        layoutEditing = layoutEditing,
+        offsetX = rightOffsetX,
+        offsetY = rightOffsetY,
+        onOffsetChange = onRightOffsetChange,
+        modifier = Modifier.align(Alignment.TopEnd),
     ) {
-        GamepadTriggerButton("RT", left = false, client = client, opacity = opacity, size = 50.dp * controlScale)
-        GamepadButton("RB", 0x0200, client, opacity, 46.dp * controlScale)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            GamepadTriggerButton("RT", left = false, client = client, opacity = opacity, size = 50.dp * controlScale)
+            GamepadButton("RB", 0x0200, client, opacity, 46.dp * controlScale)
+        }
     }
-    Row(
-        Modifier.align(Alignment.BottomStart),
-        horizontalArrangement = Arrangement.spacedBy(14.dp),
-        verticalAlignment = Alignment.Bottom,
+    TouchControlGroup(
+        id = "landscape-bottom-left",
+        layoutEditing = layoutEditing,
+        offsetX = leftOffsetX,
+        offsetY = leftOffsetY,
+        onOffsetChange = onLeftOffsetChange,
+        modifier = Modifier.align(Alignment.BottomStart),
     ) {
-        VirtualStick(
-            label = "L",
-            client = client,
-            opacity = opacity,
-            diameter = 112.dp * stickScale * layoutScale,
-            onChange = client::setVirtualLeftStick,
-        )
-        DpadCluster(client, opacity, controlScale * 0.88f)
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
+            verticalAlignment = Alignment.Bottom,
+        ) {
+            VirtualStick(
+                label = "L",
+                client = client,
+                opacity = opacity,
+                diameter = 112.dp * stickScale * layoutScale,
+                onChange = client::setVirtualLeftStick,
+            )
+            DpadCluster(client, opacity, controlScale * 0.88f)
+        }
     }
-    Row(
-        Modifier.align(Alignment.BottomEnd),
-        horizontalArrangement = Arrangement.spacedBy(14.dp),
-        verticalAlignment = Alignment.Bottom,
+    TouchControlGroup(
+        id = "landscape-bottom-right",
+        layoutEditing = layoutEditing,
+        offsetX = rightOffsetX,
+        offsetY = rightOffsetY,
+        onOffsetChange = onRightOffsetChange,
+        modifier = Modifier.align(Alignment.BottomEnd),
     ) {
-        FaceButtonCluster(client, opacity, controlScale * 0.9f)
-        VirtualStick(
-            label = "R",
-            client = client,
-            opacity = opacity,
-            diameter = 98.dp * stickScale * layoutScale,
-            onChange = client::setVirtualRightStick,
-        )
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
+            verticalAlignment = Alignment.Bottom,
+        ) {
+            FaceButtonCluster(client, opacity, controlScale * 0.9f)
+            VirtualStick(
+                label = "R",
+                client = client,
+                opacity = opacity,
+                diameter = 98.dp * stickScale * layoutScale,
+                onChange = client::setVirtualRightStick,
+            )
+        }
+    }
+}
+
+@Composable
+private fun TouchControlGroup(
+    id: String,
+    layoutEditing: Boolean,
+    offsetX: Dp,
+    offsetY: Dp,
+    onOffsetChange: (Float, Float) -> Unit,
+    modifier: Modifier = Modifier,
+    content: @Composable BoxScope.() -> Unit,
+) {
+    val density = LocalDensity.current
+    Box(
+        modifier
+            .offset(x = offsetX, y = offsetY)
+            .onGloballyPositioned { coordinates ->
+                val bounds = coordinates.boundsInRoot()
+                NativeStreamInputRouter.setTouchControllerPassthroughBound(
+                    id,
+                    bounds.left.roundToInt(),
+                    bounds.top.roundToInt(),
+                    bounds.right.roundToInt(),
+                    bounds.bottom.roundToInt(),
+                )
+            },
+        contentAlignment = Alignment.Center,
+    ) {
+        content()
+        if (layoutEditing) {
+            Box(
+                Modifier
+                    .matchParentSize()
+                    .clip(RoundedCornerShape(18.dp))
+                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.16f))
+                    .border(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.72f), RoundedCornerShape(18.dp))
+                    .pointerInput(offsetX, offsetY) {
+                        detectDragGestures { change, dragAmount ->
+                            change.consume()
+                            val deltaXDp = with(density) { dragAmount.x.toDp().value }
+                            val deltaYDp = with(density) { dragAmount.y.toDp().value }
+                            onOffsetChange(
+                                (offsetX.value + deltaXDp).coerceIn(-220f, 220f),
+                                (offsetY.value + deltaYDp).coerceIn(-160f, 160f),
+                            )
+                        }
+                    },
+                contentAlignment = Alignment.TopCenter,
+            ) {
+                Surface(
+                    color = MaterialTheme.colorScheme.primary.copy(alpha = 0.9f),
+                    shape = RoundedCornerShape(999.dp),
+                    modifier = Modifier.padding(top = 4.dp),
+                ) {
+                    Text(
+                        "Drag",
+                        color = MaterialTheme.colorScheme.onPrimary,
+                        style = MaterialTheme.typography.labelSmall,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+                    )
+                }
+            }
+        }
+    }
+    DisposableEffect(id) {
+        onDispose {
+            NativeStreamInputRouter.clearTouchControllerPassthroughBound(id)
+        }
     }
 }
 

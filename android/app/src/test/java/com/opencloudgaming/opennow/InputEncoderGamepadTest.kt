@@ -50,4 +50,30 @@ class InputEncoderGamepadTest {
         assertFalse(GamepadButtonMapping.isControllerButtonKeyCode(KeyEvent.KEYCODE_DPAD_CENTER))
         assertFalse(GamepadButtonMapping.isControllerButtonKeyCode(KeyEvent.KEYCODE_ENTER))
     }
+
+    @Test
+    fun normalizesControllerAForNativeUiActivation() {
+        assertEquals(
+            KeyEvent.KEYCODE_DPAD_CENTER,
+            NativeStreamInputRouter.normalizedAppUiKeyCode(KeyEvent.KEYCODE_BUTTON_A, streamUiActive = false),
+        )
+    }
+
+    @Test
+    fun consumesControllerBAsNativeUiBackNavigation() {
+        assertTrue(
+            NativeStreamInputRouter.isControllerAppBackKey(
+                keyCode = KeyEvent.KEYCODE_BUTTON_B,
+                controllerSource = false,
+                streamUiActive = false,
+            ),
+        )
+    }
+
+    @Test
+    fun clampsStreamSharpnessShaderStrength() {
+        assertEquals(0f, streamSharpnessShaderStrength(enabled = false, amount = 1f), 0.0001f)
+        assertEquals(0f, streamSharpnessShaderStrength(enabled = true, amount = -1f), 0.0001f)
+        assertEquals(0.28f, streamSharpnessShaderStrength(enabled = true, amount = 2f), 0.0001f)
+    }
 }

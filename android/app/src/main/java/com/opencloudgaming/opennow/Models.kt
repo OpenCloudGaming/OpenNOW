@@ -50,6 +50,12 @@ enum class UiAccent {
 }
 
 @Serializable
+enum class StreamStatsStyle {
+    Compact,
+    Detailed,
+}
+
+@Serializable
 data class StreamSettings(
     val resolution: String = "1920x1080",
     val aspectRatio: String = "16:9",
@@ -67,6 +73,8 @@ data class StreamSettings(
     val enableCloudGsync: Boolean = false,
     val mouseSensitivity: Float = 1f,
     val mouseAcceleration: Int = 1,
+    val streamSharpeningEnabled: Boolean = false,
+    val streamSharpeningAmount: Float = 0.25f,
     val microphoneMode: MicrophoneMode = MicrophoneMode.Disabled,
     val microphoneDeviceId: String = "",
 )
@@ -79,6 +87,12 @@ data class AndroidTouchSettings(
     val scale: Float = 1f,
     val buttonScale: Float = 1f,
     val stickScale: Float = 1f,
+    val edgePaddingDp: Float = 14f,
+    val bottomPaddingDp: Float = 10f,
+    val leftOffsetXDp: Float = 0f,
+    val leftOffsetYDp: Float = 0f,
+    val rightOffsetXDp: Float = 0f,
+    val rightOffsetYDp: Float = 0f,
 )
 
 @Serializable
@@ -93,6 +107,8 @@ data class AppSettings(
     val hideStreamButtons: Boolean = false,
     val showAntiAfkIndicator: Boolean = true,
     val showStatsOnLaunch: Boolean = false,
+    val streamStatsStyle: StreamStatsStyle = StreamStatsStyle.Compact,
+    val phoneRumbleFallback: Boolean = true,
     val hideServerSelector: Boolean = false,
     val controllerMode: Boolean = false,
     val controllerUiSounds: Boolean = true,
@@ -809,7 +825,7 @@ internal fun StreamSettings.adjustedForDevice(report: RuntimeCodecReport?): Stre
         !codecSupported -> 35
         report?.lowPowerGpuProfile == true -> 25
         report?.androidTvProfile == true -> 35
-        effectiveCodec == VideoCodec.H264 -> 45
+        effectiveCodec == VideoCodec.H264 -> 75
         else -> 75
     }
 
@@ -817,7 +833,37 @@ internal fun StreamSettings.adjustedForDevice(report: RuntimeCodecReport?): Stre
     return when (effectiveCodec) {
         VideoCodec.H264 -> adjusted.copy(colorQuality = ColorQuality.EightBit420, maxBitrateMbps = minOf(adjusted.maxBitrateMbps, profileBitrateCap))
         VideoCodec.H265,
-        VideoCodec.AV1 -> adjusted.copy(maxBitrateMbps = minOf(adjusted.maxBitrateMbps, profileBitrateCap))
+        VideoCodec.AV1 -> adjusted.copy(
+            colorQuality = adjusted.androidWebRtcColorQuality(),
+            maxBitrateMbps = minOf(adjusted.maxBitrateMbps, profileBitrateCap),
+        )
+    }
+}
+
+internal fun StreamSettings.androidSafeVideoFallback(): StreamSettings =
+    copy(
+        resolution = "1920x1080",
+        aspectRatio = "16:9",
+        fps = minOf(fps, 60),
+        maxBitrateMbps = minOf(maxBitrateMbps, 75),
+        codec = VideoCodec.H264,
+        colorQuality = ColorQuality.EightBit420,
+        hdrEnabled = false,
+        enableCloudGsync = false,
+    )
+
+private fun StreamSettings.androidWebRtcColorQuality(): ColorQuality {
+    if (hdrEnabled) return when (colorQuality) {
+        ColorQuality.TenBit420,
+        ColorQuality.TenBit444,
+        -> colorQuality
+        else -> ColorQuality.TenBit420
+    }
+    return when (colorQuality) {
+        ColorQuality.EightBit420,
+        ColorQuality.EightBit444,
+        -> colorQuality
+        else -> ColorQuality.EightBit420
     }
 }
 

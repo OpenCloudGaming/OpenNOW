@@ -78,6 +78,16 @@ class MainActivity : ComponentActivity() {
         if (normalizedStreamUiKeyCode != null && normalizedStreamUiKeyCode != event.keyCode) {
             return dispatchSyntheticStreamUiKey(normalizedStreamUiKeyCode, event)
         }
+        if (NativeStreamInputRouter.isControllerAppBackKey(event)) {
+            if (event.action == KeyEvent.ACTION_UP) {
+                viewModel.handleControllerBackNavigation()
+            }
+            return true
+        }
+        val normalizedAppUiKeyCode = NativeStreamInputRouter.normalizedAppUiKeyCode(event)
+        if (normalizedAppUiKeyCode != null && normalizedAppUiKeyCode != event.keyCode) {
+            return dispatchSyntheticStreamUiKey(normalizedAppUiKeyCode, event)
+        }
         return super.dispatchKeyEvent(event)
     }
 
@@ -144,11 +154,13 @@ class MainActivity : ComponentActivity() {
 
     private fun applyStreamSystemUi(active: Boolean, force: Boolean = false) {
         if (!force && streamSystemUiActive == active) {
+            applyStreamKeepAwake(active)
             updateStreamSystemUiEnforcer(active)
             return
         }
         streamSystemUiActive = active
         applyStreamPointerIcon(active)
+        applyStreamKeepAwake(active)
         updateStreamSystemUiEnforcer(active)
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
@@ -183,6 +195,14 @@ class MainActivity : ComponentActivity() {
             } else {
                 0
             }
+        }
+    }
+
+    private fun applyStreamKeepAwake(active: Boolean) {
+        if (active) {
+            window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        } else {
+            window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         }
     }
 

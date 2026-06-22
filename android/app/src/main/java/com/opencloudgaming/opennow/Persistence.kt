@@ -58,6 +58,7 @@ class SettingsStore(context: Context) {
             sessionProxyUrl = stream.sessionProxyUrl.trim(),
             maxBitrateMbps = stream.maxBitrateMbps.coerceIn(1, 150),
             fps = stream.fps.coerceIn(30, 240),
+            streamSharpeningAmount = stream.streamSharpeningAmount.coerceIn(0f, 1f),
         )
         return copy(
             stream = lowPowerSafe,
@@ -67,6 +68,12 @@ class SettingsStore(context: Context) {
                 scale = androidTouch.scale.coerceIn(0.6f, 1.4f),
                 buttonScale = androidTouch.buttonScale.coerceIn(0.65f, 1.5f),
                 stickScale = androidTouch.stickScale.coerceIn(0.65f, 1.5f),
+                edgePaddingDp = androidTouch.edgePaddingDp.coerceIn(0f, 72f),
+                bottomPaddingDp = androidTouch.bottomPaddingDp.coerceIn(0f, 120f),
+                leftOffsetXDp = androidTouch.leftOffsetXDp.coerceIn(-220f, 220f),
+                leftOffsetYDp = androidTouch.leftOffsetYDp.coerceIn(-160f, 160f),
+                rightOffsetXDp = androidTouch.rightOffsetXDp.coerceIn(-220f, 220f),
+                rightOffsetYDp = androidTouch.rightOffsetYDp.coerceIn(-160f, 160f),
             ),
             autoFullScreen = true,
         )

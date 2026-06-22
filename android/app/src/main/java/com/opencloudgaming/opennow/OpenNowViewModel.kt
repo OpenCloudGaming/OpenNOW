@@ -122,6 +122,22 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         _state.update { it.copy(page = page, selectedGame = null) }
     }
 
+    fun handleControllerBackNavigation() {
+        _state.update { current ->
+            when {
+                current.pendingStoreChoiceGame != null -> current.copy(pendingStoreChoiceGame = null)
+                current.pendingPrintedWasteGame != null -> current.copy(
+                    pendingPrintedWasteGame = null,
+                    printedWasteLoading = false,
+                    printedWasteError = null,
+                )
+                current.selectedGame != null -> current.copy(selectedGame = null)
+                current.page != AppPage.Home -> current.copy(page = AppPage.Home, selectedGame = null)
+                else -> current
+            }
+        }
+    }
+
     fun selectProvider(provider: LoginProvider) {
         if (!provider.supportsDeviceCodeLogin && state.value.deviceLoginPrompt != null) {
             loginJob?.cancel()
@@ -353,6 +369,11 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             val filters = if (filterId in it.catalogFilterIds) it.catalogFilterIds - filterId else it.catalogFilterIds + filterId
             it.copy(catalogFilterIds = filters)
         }
+        refreshCatalogDebounced()
+    }
+
+    fun clearCatalogFilters() {
+        _state.update { it.copy(catalogFilterIds = emptyList()) }
         refreshCatalogDebounced()
     }
 
@@ -735,6 +756,30 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             .adjustedForDevice(snapshot.codecReport)
     }
 
+    private suspend fun resolveFallbackLaunchAppId(
+        token: String,
+        game: GameInfo?,
+        active: ActiveSessionInfo?,
+        baseUrl: String,
+    ): String {
+        if (game == null) {
+            return active?.appId?.takeIf { it > 0 }?.toString()
+                ?: error("Could not resolve appId for safe H264 retry.")
+        }
+        val selectedVariant = game.variants.getOrNull(game.selectedVariantIndex) ?: game.variants.firstOrNull()
+        val candidateId = selectedVariant?.id ?: game.launchAppId ?: game.uuid ?: game.id
+        return candidateId.takeIf { it.all(Char::isDigit) }
+            ?: game.launchAppId?.takeIf { it.all(Char::isDigit) }
+            ?: active?.appId?.takeIf { it > 0 }?.toString()
+            ?: catalogRepository.resolveLaunchAppId(token, candidateId, baseUrl)
+            ?: error("Could not resolve numeric appId for ${game.title}")
+    }
+
+    private fun String.isLikelyDirectServerUrl(): Boolean {
+        val host = runCatching { Uri.parse(this).host.orEmpty() }.getOrDefault("")
+        return Regex("^\\d{1,3}(\\.\\d{1,3}){3}$").matches(host)
+    }
+
     fun dismissPrintedWasteSelector() {
         _state.update {
             it.copy(
@@ -832,6 +877,111 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
 
     fun markStreamError(message: String) {
         _state.update { it.copy(error = message, streamStatus = "idle", activeStreamSettings = null, launchPhase = "") }
+    }
+
+    fun restartStreamWithSafeVideoProfile(reason: String) {
+        if (launchJob?.isActive == true) return
+        val initial = state.value
+        val auth = initial.authSession ?: return
+        val currentSettings = initial.activeStreamSettings ?: effectiveStreamSettings()
+        val safeSettings = currentSettings.androidSafeVideoFallback()
+        if (currentSettings == safeSettings) {
+            _state.update {
+                it.copy(
+                    error = "$reason. Safe H264 profile also stalled.",
+                    streamStatus = "idle",
+                    activeStreamSettings = null,
+                    launchPhase = "",
+                )
+            }
+            return
+        }
+        launchJob = viewModelScope.launch {
+            val token = auth.tokens.idToken ?: auth.tokens.accessToken
+            val snapshot = state.value
+            val previousSession = snapshot.streamSession
+            val previousSettings = snapshot.activeStreamSettings ?: currentSettings
+            val game = snapshot.streamGame
+            val active = snapshot.activeSession
+            val baseUrl = listOfNotNull(
+                previousSession?.streamingBaseUrl,
+                active?.streamingBaseUrl,
+                effectiveStreamingBaseUrl(auth),
+            ).firstOrNull { !it.isLikelyDirectServerUrl() } ?: effectiveStreamingBaseUrl(auth)
+            val returnPage = snapshot.streamReturnPage ?: snapshot.page.takeUnless { it == AppPage.Stream } ?: AppPage.Home
+
+            _state.update {
+                it.copy(
+                    streamSession = null,
+                    activeSession = null,
+                    activeStreamSettings = safeSettings,
+                    streamStatus = "queue",
+                    launchPhase = "Restarting with safe H264 profile",
+                    page = AppPage.Stream,
+                    streamReturnPage = returnPage,
+                    streamLaunchMinimized = false,
+                    error = null,
+                    queuePosition = null,
+                    queueAdActiveId = null,
+                )
+            }
+
+            runCatching {
+                previousSession?.let { session ->
+                    runCatching { sessionRepository.stopSession(token, session, previousSettings) }
+                }
+                active?.takeIf { it.sessionId != previousSession?.sessionId }?.let { activeSession ->
+                    runCatching { sessionRepository.stopActiveSession(token, activeSession, previousSettings) }
+                }
+
+                val selectedVariant = game?.variants?.getOrNull(game.selectedVariantIndex) ?: game?.variants?.firstOrNull()
+                val launchAppId = resolveFallbackLaunchAppId(
+                    token = token,
+                    game = game,
+                    active = active,
+                    baseUrl = baseUrl,
+                )
+                _state.update { it.copy(launchPhase = "Creating safe H264 session") }
+                val created = sessionRepository.createSession(
+                    token = token,
+                    streamingBaseUrl = baseUrl,
+                    appId = launchAppId,
+                    internalTitle = game?.title ?: "Cloud session",
+                    zone = previousSession?.zone?.takeIf { it.isNotBlank() } ?: "prod",
+                    settings = safeSettings,
+                    accountLinked = game?.let { shouldSendAccountLinked(it, selectedVariant) } ?: true,
+                )
+                pollUntilReady(token, created, safeSettings)
+            }.onSuccess { readySession ->
+                _state.update {
+                    it.copy(
+                        streamSession = readySession,
+                        activeStreamSettings = safeSettings,
+                        streamStatus = "connecting",
+                        launchPhase = "Connecting safe H264 stream",
+                        streamLaunchMinimized = false,
+                        queuePosition = null,
+                        queueAdActiveId = null,
+                        page = AppPage.Stream,
+                    )
+                }
+            }.onFailure { error ->
+                if (error is CancellationException) return@onFailure
+                _state.update {
+                    it.copy(
+                        error = normalizeLaunchError(error),
+                        streamStatus = "idle",
+                        activeStreamSettings = null,
+                        streamReturnPage = null,
+                        launchPhase = "",
+                        streamLaunchMinimized = false,
+                        queuePosition = null,
+                        queueAdActiveId = null,
+                        page = returnPage,
+                    )
+                }
+            }
+        }
     }
 
     fun handleExternalLaunchIntent(intent: Intent?) {

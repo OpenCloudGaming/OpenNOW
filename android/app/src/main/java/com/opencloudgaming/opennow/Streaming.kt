@@ -4,9 +4,14 @@ import android.content.Context
 import android.media.AudioAttributes
 import android.media.MediaCodecInfo
 import android.media.MediaCodecList
+import android.opengl.GLES11Ext
+import android.opengl.GLES20
 import android.os.Build
+import android.os.CombinedVibration
 import android.os.SystemClock
 import android.os.VibrationEffect
+import android.os.Vibrator
+import android.os.VibratorManager
 import android.util.Log
 import android.view.InputDevice
 import android.view.KeyEvent
@@ -37,6 +42,8 @@ import org.webrtc.DataChannel
 import org.webrtc.DefaultVideoDecoderFactory
 import org.webrtc.DefaultVideoEncoderFactory
 import org.webrtc.EglBase
+import org.webrtc.GlShader
+import org.webrtc.GlUtil
 import org.webrtc.HardwareVideoDecoderFactory
 import org.webrtc.IceCandidate
 import org.webrtc.MediaConstraints
@@ -58,6 +65,7 @@ import org.webrtc.audio.AudioDeviceModule
 import org.webrtc.audio.JavaAudioDeviceModule
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.nio.FloatBuffer
 import java.security.SecureRandom
 import java.util.Locale
 import kotlin.math.abs
@@ -409,11 +417,12 @@ object NativeStreamInputRouter {
     @Volatile
     private var streamPanelPassthroughBounds: TouchPassthroughBounds? = null
     @Volatile
-    private var touchControllerPassthroughBounds: TouchPassthroughBounds? = null
+    private var touchControllerPassthroughBounds: Map<String, TouchPassthroughBounds> = emptyMap()
     @Volatile
     private var touchControllerVisible = false
     @Volatile
     private var uiTouchPassthroughActive = false
+    private val nativeUiTouchPointerIds = mutableSetOf<Int>()
     private val touchMouseState = TouchMouseState()
 
     fun attach(next: NativeStreamClient) {
@@ -459,6 +468,30 @@ object NativeStreamInputRouter {
         }
     }
 
+    fun normalizedAppUiKeyCode(event: KeyEvent): Int? {
+        return normalizedAppUiKeyCode(event.keyCode, streamUiActive)
+    }
+
+    fun normalizedAppUiKeyCode(keyCode: Int, streamUiActive: Boolean): Int? {
+        if (streamUiActive) return null
+        return when (keyCode) {
+            KeyEvent.KEYCODE_BUTTON_A -> KeyEvent.KEYCODE_DPAD_CENTER
+            else -> null
+        }
+    }
+
+    fun isControllerAppBackKey(event: KeyEvent): Boolean =
+        isControllerAppBackKey(
+            keyCode = event.keyCode,
+            controllerSource = event.isControllerSource(),
+            streamUiActive = streamUiActive,
+        )
+
+    fun isControllerAppBackKey(keyCode: Int, controllerSource: Boolean, streamUiActive: Boolean): Boolean =
+        !streamUiActive &&
+            (keyCode == KeyEvent.KEYCODE_BUTTON_B ||
+                (keyCode == KeyEvent.KEYCODE_BACK && controllerSource))
+
     fun setUiTouchPassthroughBounds(left: Int, top: Int, right: Int, bottom: Int) {
         streamChromePassthroughBounds = TouchPassthroughBounds(left, top, right, bottom)
     }
@@ -466,6 +499,7 @@ object NativeStreamInputRouter {
     fun clearUiTouchPassthroughBounds() {
         streamChromePassthroughBounds = null
         uiTouchPassthroughActive = false
+        nativeUiTouchPointerIds.clear()
     }
 
     fun setStreamPanelTouchPassthroughBounds(left: Int, top: Int, right: Int, bottom: Int) {
@@ -475,46 +509,79 @@ object NativeStreamInputRouter {
     fun clearStreamPanelTouchPassthroughBounds() {
         streamPanelPassthroughBounds = null
         uiTouchPassthroughActive = false
+        nativeUiTouchPointerIds.clear()
     }
 
     fun setTouchControllerPassthroughBounds(left: Int, top: Int, right: Int, bottom: Int) {
-        touchControllerPassthroughBounds = TouchPassthroughBounds(left, top, right, bottom)
+        touchControllerPassthroughBounds = mapOf("default" to TouchPassthroughBounds(left, top, right, bottom))
+    }
+
+    fun setTouchControllerPassthroughBound(id: String, left: Int, top: Int, right: Int, bottom: Int) {
+        touchControllerPassthroughBounds = touchControllerPassthroughBounds.toMutableMap().also {
+            it[id] = TouchPassthroughBounds(left, top, right, bottom)
+        }
+    }
+
+    fun clearTouchControllerPassthroughBound(id: String) {
+        if (id !in touchControllerPassthroughBounds) return
+        touchControllerPassthroughBounds = touchControllerPassthroughBounds.toMutableMap().also { it.remove(id) }
     }
 
     fun setTouchControllerVisible(visible: Boolean) {
         touchControllerVisible = visible
         if (!visible) {
-            touchControllerPassthroughBounds = null
+            touchControllerPassthroughBounds = emptyMap()
             uiTouchPassthroughActive = false
+            nativeUiTouchPointerIds.clear()
         }
     }
 
     fun clearTouchControllerPassthroughBounds() {
-        touchControllerPassthroughBounds = null
+        touchControllerPassthroughBounds = emptyMap()
         touchControllerVisible = false
         uiTouchPassthroughActive = false
+        nativeUiTouchPointerIds.clear()
     }
 
-    fun shouldForwardTouchBeforeViews(event: MotionEvent, width: Int, height: Int): Boolean =
-        client != null &&
-            !streamUiActive &&
-            touchMouseEnabled &&
-            captureAllTouch &&
-            width > 0 &&
-            height > 0 &&
-            event.isFingerTouchEvent() &&
-            event.pointerCount == 1 &&
-            !shouldPassTouchToNativeUi(event, width, height)
+    fun cancelTouchMouse() {
+        touchMouseState.reset(client)
+    }
+
+    fun isNativeUiTouchGestureActive(): Boolean =
+        nativeUiTouchPointerIds.isNotEmpty()
+
+    fun shouldForwardTouchBeforeViews(event: MotionEvent, width: Int, height: Int): Boolean {
+        if (
+            client == null ||
+            streamUiActive ||
+            !touchMouseEnabled ||
+            !captureAllTouch ||
+            width <= 0 ||
+            height <= 0 ||
+            !event.isFingerTouchEvent()
+        ) {
+            return false
+        }
+        updateNativeUiTouchPointers(event, width, height)
+        if (!eventHasStreamTouchPointer(event, width, height)) return false
+        return event.pointerCount == 1 || nativeUiTouchPointerIds.isNotEmpty()
+    }
 
     fun shouldCaptureTouchBeforeViews(event: MotionEvent, width: Int, height: Int): Boolean =
         shouldForwardTouchBeforeViews(event, width, height) &&
-            (captureAllTouch || event.isFingerTouchEvent())
+            nativeUiTouchPointerIds.isEmpty()
 
     fun dispatchTouch(event: MotionEvent, width: Int, height: Int): Boolean {
         val current = client ?: return false
         if (streamUiActive) return false
         if (!event.isFingerTouchEvent()) return false
-        return touchMouseState.handle(event, touchMouseEnabled && width > 0 && height > 0, current, width, height)
+        updateNativeUiTouchPointers(event, width, height)
+        return touchMouseState.handle(
+            event = event,
+            enabled = touchMouseEnabled && width > 0 && height > 0,
+            client = current,
+            ignoredPointerIds = nativeUiTouchPointerIds,
+        )
     }
 
     fun dispatchExternalMouseTouch(event: MotionEvent, width: Int, height: Int): Boolean {
@@ -698,12 +765,15 @@ object NativeStreamInputRouter {
     }
 
     private fun shouldPassTouchToNativeUi(event: MotionEvent, width: Int, height: Int): Boolean {
+        if (event.isFingerTouchEvent()) {
+            updateNativeUiTouchPointers(event, width, height)
+            return eventHasNativeUiTouchPointer(event, width, height) &&
+                !eventHasStreamTouchPointer(event, width, height)
+        }
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 uiTouchPassthroughActive =
-                    streamChromePassthroughBounds?.contains(event.x, event.y) == true ||
-                    streamPanelPassthroughBounds?.contains(event.x, event.y) == true ||
-                    touchControllerContains(event, width, height)
+                    pointerTouchesNativeUi(event, 0, width, height)
                 return uiTouchPassthroughActive
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
@@ -718,13 +788,58 @@ object NativeStreamInputRouter {
         return false
     }
 
-    private fun touchControllerContains(event: MotionEvent, width: Int, height: Int): Boolean {
+    private fun updateNativeUiTouchPointers(event: MotionEvent, width: Int, height: Int) {
+        if (!event.isFingerTouchEvent()) return
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                nativeUiTouchPointerIds.clear()
+                if (pointerTouchesNativeUi(event, 0, width, height)) {
+                    nativeUiTouchPointerIds += event.getPointerId(0)
+                }
+            }
+            MotionEvent.ACTION_POINTER_DOWN -> {
+                val index = event.actionIndex
+                if (index in 0 until event.pointerCount && pointerTouchesNativeUi(event, index, width, height)) {
+                    nativeUiTouchPointerIds += event.getPointerId(index)
+                }
+            }
+            MotionEvent.ACTION_UP,
+            MotionEvent.ACTION_CANCEL,
+            -> nativeUiTouchPointerIds.clear()
+        }
+        uiTouchPassthroughActive = nativeUiTouchPointerIds.isNotEmpty()
+    }
+
+    private fun eventHasNativeUiTouchPointer(event: MotionEvent, width: Int, height: Int): Boolean =
+        (0 until event.pointerCount).any { index ->
+            isNativeUiTouchPointer(event, index, width, height)
+        }
+
+    private fun eventHasStreamTouchPointer(event: MotionEvent, width: Int, height: Int): Boolean =
+        (0 until event.pointerCount).any { index ->
+            !isNativeUiTouchPointer(event, index, width, height)
+        }
+
+    private fun isNativeUiTouchPointer(event: MotionEvent, index: Int, width: Int, height: Int): Boolean =
+        event.getPointerId(index) in nativeUiTouchPointerIds ||
+            pointerTouchesNativeUi(event, index, width, height)
+
+    private fun pointerTouchesNativeUi(event: MotionEvent, index: Int, width: Int, height: Int): Boolean {
+        if (index !in 0 until event.pointerCount) return false
+        val x = event.getX(index)
+        val y = event.getY(index)
+        return streamChromePassthroughBounds?.contains(x, y) == true ||
+            streamPanelPassthroughBounds?.contains(x, y) == true ||
+            touchControllerContains(x, y, width, height)
+    }
+
+    private fun touchControllerContains(x: Float, y: Float, width: Int, height: Int): Boolean {
         val bounds = touchControllerPassthroughBounds
-        if (bounds != null) return bounds.contains(event.x, event.y)
+        if (bounds.isNotEmpty()) return bounds.values.any { it.contains(x, y) }
         return touchControllerVisible &&
             width > 0 &&
             height > 0 &&
-            event.y >= height * TOUCH_CONTROLLER_FALLBACK_TOP_RATIO
+            y >= height * TOUCH_CONTROLLER_FALLBACK_TOP_RATIO
     }
 
     private data class TouchPassthroughBounds(
@@ -908,6 +1023,261 @@ internal object GamepadButtonMapping {
             keyCode in KeyEvent.KEYCODE_BUTTON_A..KeyEvent.KEYCODE_BUTTON_MODE
 }
 
+internal fun streamSharpnessShaderStrength(enabled: Boolean, amount: Float): Float =
+    if (enabled) amount.coerceIn(0f, 1f) * STREAM_SHARPNESS_MAX_SHADER_STRENGTH else 0f
+
+private const val STREAM_SHARPNESS_MAX_SHADER_STRENGTH = 0.28f
+
+private class StreamSharpnessGlDrawer : RendererCommon.GlDrawer {
+    @Volatile
+    var amount: Float = 0f
+
+    private val vertexBuffer: FloatBuffer = GlUtil.createFloatBuffer(
+        floatArrayOf(
+            -1f, -1f,
+            1f, -1f,
+            -1f, 1f,
+            1f, 1f,
+        ),
+    )
+    private val textureBuffer: FloatBuffer = GlUtil.createFloatBuffer(
+        floatArrayOf(
+            0f, 0f,
+            1f, 0f,
+            0f, 1f,
+            1f, 1f,
+        ),
+    )
+
+    private var oesProgram: SharpnessProgram? = null
+    private var rgbProgram: SharpnessProgram? = null
+    private var yuvProgram: SharpnessProgram? = null
+
+    override fun drawOes(
+        oesTextureId: Int,
+        texMatrix: FloatArray,
+        frameWidth: Int,
+        frameHeight: Int,
+        viewportX: Int,
+        viewportY: Int,
+        viewportWidth: Int,
+        viewportHeight: Int,
+    ) {
+        val program = oesProgram ?: SharpnessProgram(SHARPEN_OES_FRAGMENT_SHADER, TextureMode.Oes).also { oesProgram = it }
+        program.draw(
+            textureIds = intArrayOf(oesTextureId),
+            textureTarget = GLES11Ext.GL_TEXTURE_EXTERNAL_OES,
+            texMatrix = texMatrix,
+            frameWidth = frameWidth,
+            frameHeight = frameHeight,
+            viewportX = viewportX,
+            viewportY = viewportY,
+            viewportWidth = viewportWidth,
+            viewportHeight = viewportHeight,
+            amount = amount,
+            vertexBuffer = vertexBuffer,
+            textureBuffer = textureBuffer,
+        )
+    }
+
+    override fun drawRgb(
+        textureId: Int,
+        texMatrix: FloatArray,
+        frameWidth: Int,
+        frameHeight: Int,
+        viewportX: Int,
+        viewportY: Int,
+        viewportWidth: Int,
+        viewportHeight: Int,
+    ) {
+        val program = rgbProgram ?: SharpnessProgram(SHARPEN_RGB_FRAGMENT_SHADER, TextureMode.Rgb).also { rgbProgram = it }
+        program.draw(
+            textureIds = intArrayOf(textureId),
+            textureTarget = GLES20.GL_TEXTURE_2D,
+            texMatrix = texMatrix,
+            frameWidth = frameWidth,
+            frameHeight = frameHeight,
+            viewportX = viewportX,
+            viewportY = viewportY,
+            viewportWidth = viewportWidth,
+            viewportHeight = viewportHeight,
+            amount = amount,
+            vertexBuffer = vertexBuffer,
+            textureBuffer = textureBuffer,
+        )
+    }
+
+    override fun drawYuv(
+        yuvTextures: IntArray,
+        texMatrix: FloatArray,
+        frameWidth: Int,
+        frameHeight: Int,
+        viewportX: Int,
+        viewportY: Int,
+        viewportWidth: Int,
+        viewportHeight: Int,
+    ) {
+        val program = yuvProgram ?: SharpnessProgram(SHARPEN_YUV_FRAGMENT_SHADER, TextureMode.Yuv).also { yuvProgram = it }
+        program.draw(
+            textureIds = yuvTextures,
+            textureTarget = GLES20.GL_TEXTURE_2D,
+            texMatrix = texMatrix,
+            frameWidth = frameWidth,
+            frameHeight = frameHeight,
+            viewportX = viewportX,
+            viewportY = viewportY,
+            viewportWidth = viewportWidth,
+            viewportHeight = viewportHeight,
+            amount = amount,
+            vertexBuffer = vertexBuffer,
+            textureBuffer = textureBuffer,
+        )
+    }
+
+    override fun release() {
+        oesProgram?.release()
+        rgbProgram?.release()
+        yuvProgram?.release()
+        oesProgram = null
+        rgbProgram = null
+        yuvProgram = null
+    }
+
+    private class SharpnessProgram(fragmentShader: String, private val mode: TextureMode) {
+        private val shader = GlShader(SHARPEN_VERTEX_SHADER, fragmentShader)
+        private val texMatrixLocation = shader.getUniformLocation("tex_mat")
+        private val sharpnessLocation = shader.getUniformLocation("sharpness")
+        private val texelSizeLocation = shader.getUniformLocation("texel_size")
+        private val textureLocations: IntArray = when (mode) {
+            TextureMode.Oes,
+            TextureMode.Rgb,
+            -> intArrayOf(shader.getUniformLocation("tex"))
+            TextureMode.Yuv -> intArrayOf(
+                shader.getUniformLocation("y_tex"),
+                shader.getUniformLocation("u_tex"),
+                shader.getUniformLocation("v_tex"),
+            )
+        }
+
+        fun draw(
+            textureIds: IntArray,
+            textureTarget: Int,
+            texMatrix: FloatArray,
+            frameWidth: Int,
+            frameHeight: Int,
+            viewportX: Int,
+            viewportY: Int,
+            viewportWidth: Int,
+            viewportHeight: Int,
+            amount: Float,
+            vertexBuffer: FloatBuffer,
+            textureBuffer: FloatBuffer,
+        ) {
+            shader.useProgram()
+            GLES20.glViewport(viewportX, viewportY, viewportWidth, viewportHeight)
+            shader.setVertexAttribArray("in_pos", 2, vertexBuffer)
+            shader.setVertexAttribArray("in_tc", 2, textureBuffer)
+            GLES20.glUniformMatrix4fv(texMatrixLocation, 1, false, texMatrix, 0)
+            GLES20.glUniform1f(sharpnessLocation, amount.coerceIn(0f, STREAM_SHARPNESS_MAX_SHADER_STRENGTH))
+            GLES20.glUniform2f(
+                texelSizeLocation,
+                1f / frameWidth.coerceAtLeast(1).toFloat(),
+                1f / frameHeight.coerceAtLeast(1).toFloat(),
+            )
+            textureLocations.forEachIndexed { index, location ->
+                GLES20.glActiveTexture(GLES20.GL_TEXTURE0 + index)
+                GLES20.glBindTexture(textureTarget, textureIds.getOrElse(index) { 0 })
+                GLES20.glUniform1i(location, index)
+            }
+            GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
+            textureLocations.indices.forEach { index ->
+                GLES20.glActiveTexture(GLES20.GL_TEXTURE0 + index)
+                GLES20.glBindTexture(textureTarget, 0)
+            }
+            GlUtil.checkNoGLES2Error("StreamSharpnessGlDrawer.draw")
+        }
+
+        fun release() {
+            shader.release()
+        }
+    }
+
+    private enum class TextureMode {
+        Oes,
+        Rgb,
+        Yuv,
+    }
+
+    private companion object {
+        private const val SHARPEN_VERTEX_SHADER = """
+            attribute vec4 in_pos;
+            attribute vec2 in_tc;
+            uniform mat4 tex_mat;
+            varying vec2 tc;
+
+            void main() {
+              gl_Position = in_pos;
+              tc = (tex_mat * vec4(in_tc, 0.0, 1.0)).xy;
+            }
+        """
+
+        private const val SHARPEN_BODY = """
+            uniform float sharpness;
+            uniform vec2 texel_size;
+            varying vec2 tc;
+
+            void main() {
+              vec4 center = sampleColor(tc);
+              if (sharpness <= 0.001) {
+                gl_FragColor = center;
+                return;
+              }
+              vec3 north = sampleColor(tc + vec2(0.0, -texel_size.y)).rgb;
+              vec3 south = sampleColor(tc + vec2(0.0, texel_size.y)).rgb;
+              vec3 west = sampleColor(tc + vec2(-texel_size.x, 0.0)).rgb;
+              vec3 east = sampleColor(tc + vec2(texel_size.x, 0.0)).rgb;
+              vec3 sharpened = center.rgb * (1.0 + 4.0 * sharpness) - (north + south + west + east) * sharpness;
+              gl_FragColor = vec4(clamp(sharpened, 0.0, 1.0), center.a);
+            }
+        """
+
+        private const val SHARPEN_OES_FRAGMENT_SHADER = """
+            #extension GL_OES_EGL_image_external : require
+            precision mediump float;
+            uniform samplerExternalOES tex;
+            vec4 sampleColor(vec2 pos) {
+              return texture2D(tex, pos);
+            }
+        """ + SHARPEN_BODY
+
+        private const val SHARPEN_RGB_FRAGMENT_SHADER = """
+            precision mediump float;
+            uniform sampler2D tex;
+            vec4 sampleColor(vec2 pos) {
+              return texture2D(tex, pos);
+            }
+        """ + SHARPEN_BODY
+
+        private const val SHARPEN_YUV_FRAGMENT_SHADER = """
+            precision mediump float;
+            uniform sampler2D y_tex;
+            uniform sampler2D u_tex;
+            uniform sampler2D v_tex;
+            vec4 sampleColor(vec2 pos) {
+              float y = texture2D(y_tex, pos).r;
+              float u = texture2D(u_tex, pos).r - 0.5;
+              float v = texture2D(v_tex, pos).r - 0.5;
+              return vec4(
+                y + 1.403 * v,
+                y - 0.344 * u - 0.714 * v,
+                y + 1.770 * u,
+                1.0
+              );
+            }
+        """ + SHARPEN_BODY
+    }
+}
+
 internal sealed interface StreamLivenessAction {
     data object None : StreamLivenessAction
     data class RequestKeyframe(val stalledMs: Long, val attempt: Int) : StreamLivenessAction
@@ -945,9 +1315,11 @@ internal class StreamLivenessWatchdog(
             return StreamLivenessAction.None
         }
 
-        val progressed =
-            (bytesReceived != null && lastBytesReceived != null && bytesReceived > lastBytesReceived!!) ||
-                (framesDecoded != null && lastFramesDecoded != null && framesDecoded > lastFramesDecoded!!)
+        val progressed = if (framesDecoded != null) {
+            lastFramesDecoded?.let { framesDecoded > it } ?: (framesDecoded > 0)
+        } else {
+            bytesReceived != null && (lastBytesReceived?.let { bytesReceived > it } ?: (bytesReceived > 0))
+        }
         if (bytesReceived != null) lastBytesReceived = bytesReceived
         if (framesDecoded != null) lastFramesDecoded = framesDecoded
         if (progressed) {
@@ -993,7 +1365,7 @@ private class TouchMouseState {
         doubleTapDragCandidate = false
     }
 
-    fun handle(event: MotionEvent, enabled: Boolean, client: NativeStreamClient, width: Int, height: Int): Boolean {
+    fun handle(event: MotionEvent, enabled: Boolean, client: NativeStreamClient, ignoredPointerIds: Set<Int>): Boolean {
         if (!enabled) {
             reset(client)
             return false
@@ -1001,24 +1373,28 @@ private class TouchMouseState {
 
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
-                activePointerId = event.getPointerId(0)
-                downX = event.x
-                downY = event.y
-                downTimeMs = event.eventTime
-                lastX = event.x
-                lastY = event.y
-                selecting = false
-                doubleTapDragCandidate = isDoubleTap(event)
-                if (doubleTapDragCandidate) {
-                    lastTapTimeMs = Long.MIN_VALUE
+                if (event.getPointerId(0) in ignoredPointerIds) {
+                    reset(client)
+                    return false
                 }
+                beginPointer(event, 0)
                 return true
             }
             MotionEvent.ACTION_POINTER_DOWN -> {
-                reset(client)
+                if (activePointerId < 0) {
+                    val index = event.actionIndex
+                    if (index in 0 until event.pointerCount && event.getPointerId(index) !in ignoredPointerIds) {
+                        beginPointer(event, index)
+                    }
+                }
                 return true
             }
             MotionEvent.ACTION_MOVE -> {
+                if (activePointerId < 0) {
+                    val index = event.firstPointerIndexNotIn(ignoredPointerIds)
+                    if (index >= 0) beginPointer(event, index)
+                    return index >= 0
+                }
                 val index = event.findPointerIndex(activePointerId)
                 if (index < 0) return true
                 val x = event.getX(index)
@@ -1041,27 +1417,17 @@ private class TouchMouseState {
                 lastY = y
                 return true
             }
+            MotionEvent.ACTION_POINTER_UP -> {
+                val index = event.actionIndex
+                if (index in 0 until event.pointerCount && event.getPointerId(index) == activePointerId) {
+                    finishPointer(event, index, client)
+                }
+                return true
+            }
             MotionEvent.ACTION_UP -> {
-                val tapDistanceX = abs(event.x - downX)
-                val tapDistanceY = abs(event.y - downY)
-                val wasTap = activePointerId >= 0 &&
-                    event.eventTime - downTimeMs <= TOUCH_MOUSE_TAP_TIMEOUT_MS &&
-                    tapDistanceX <= TOUCH_MOUSE_TAP_SLOP_PX &&
-                    tapDistanceY <= TOUCH_MOUSE_TAP_SLOP_PX
-                activePointerId = -1
-                doubleTapDragCandidate = false
-                if (selecting) {
-                    client.setTouchMouseButton(false)
-                    selecting = false
-                    return true
-                }
-                if (wasTap) {
-                    NativeInputDiagnostics.add("touch tap click dx=${tapDistanceX.roundToInt()} dy=${tapDistanceY.roundToInt()}")
-                    client.sendTouchMouseClick()
-                    lastTapTimeMs = event.eventTime
-                    lastTapX = event.x
-                    lastTapY = event.y
-                }
+                val index = event.findPointerIndex(activePointerId).takeIf { it >= 0 } ?: event.firstPointerIndexNotIn(ignoredPointerIds)
+                if (index < 0) return false
+                finishPointer(event, index, client)
                 return true
             }
             MotionEvent.ACTION_CANCEL -> {
@@ -1072,12 +1438,58 @@ private class TouchMouseState {
         return true
     }
 
-    private fun isDoubleTap(event: MotionEvent): Boolean {
+    private fun beginPointer(event: MotionEvent, index: Int) {
+        activePointerId = event.getPointerId(index)
+        downX = event.getX(index)
+        downY = event.getY(index)
+        downTimeMs = event.eventTime
+        lastX = downX
+        lastY = downY
+        selecting = false
+        doubleTapDragCandidate = isDoubleTap(event, index)
+        if (doubleTapDragCandidate) {
+            lastTapTimeMs = Long.MIN_VALUE
+        }
+    }
+
+    private fun finishPointer(event: MotionEvent, index: Int, client: NativeStreamClient) {
+        val x = event.getX(index)
+        val y = event.getY(index)
+        val tapDistanceX = abs(x - downX)
+        val tapDistanceY = abs(y - downY)
+        val wasTap = activePointerId >= 0 &&
+            event.eventTime - downTimeMs <= TOUCH_MOUSE_TAP_TIMEOUT_MS &&
+            tapDistanceX <= TOUCH_MOUSE_TAP_SLOP_PX &&
+            tapDistanceY <= TOUCH_MOUSE_TAP_SLOP_PX
+        activePointerId = -1
+        doubleTapDragCandidate = false
+        if (selecting) {
+            client.setTouchMouseButton(false)
+            selecting = false
+            return
+        }
+        if (wasTap) {
+            NativeInputDiagnostics.add("touch tap click dx=${tapDistanceX.roundToInt()} dy=${tapDistanceY.roundToInt()}")
+            client.sendTouchMouseClick()
+            lastTapTimeMs = event.eventTime
+            lastTapX = x
+            lastTapY = y
+        }
+    }
+
+    private fun MotionEvent.firstPointerIndexNotIn(ignoredPointerIds: Set<Int>): Int {
+        for (index in 0 until pointerCount) {
+            if (getPointerId(index) !in ignoredPointerIds) return index
+        }
+        return -1
+    }
+
+    private fun isDoubleTap(event: MotionEvent, index: Int): Boolean {
         if (lastTapTimeMs == Long.MIN_VALUE) return false
         if (event.eventTime - lastTapTimeMs > TOUCH_MOUSE_DOUBLE_TAP_TIMEOUT_MS) return false
         if (!lastTapX.isFinite() || !lastTapY.isFinite()) return false
-        return abs(event.x - lastTapX) <= TOUCH_MOUSE_DOUBLE_TAP_SLOP_PX &&
-            abs(event.y - lastTapY) <= TOUCH_MOUSE_DOUBLE_TAP_SLOP_PX
+        return abs(event.getX(index) - lastTapX) <= TOUCH_MOUSE_DOUBLE_TAP_SLOP_PX &&
+            abs(event.getY(index) - lastTapY) <= TOUCH_MOUSE_DOUBLE_TAP_SLOP_PX
     }
 
     private fun sendMouseDelta(
@@ -1106,6 +1518,7 @@ class NativeStreamClient(
     context: Context,
     private val onState: (String) -> Unit,
     private val onError: (String) -> Unit,
+    private val onSafeVideoFallbackRequired: (String) -> Unit = {},
     private val onStats: (StreamRuntimeStats) -> Unit = {},
 ) {
     private val appContext = context.applicationContext
@@ -1133,14 +1546,17 @@ class NativeStreamClient(
     private var videoTrack: VideoTrack? = null
     private var audioTrack: AudioTrack? = null
     private var renderer: SurfaceViewRenderer? = null
+    private var rendererSharpnessDrawer: StreamSharpnessGlDrawer? = null
     private var heartbeatJob: Job? = null
     private var gamepadKeepaliveJob: Job? = null
     private var statsJob: Job? = null
     private var iceRecoveryJob: Job? = null
+    private var offerTimeoutJob: Job? = null
     private var settings: StreamSettings = StreamSettings()
     private var session: SessionInfo? = null
     private var transportGeneration = 0
     private var reconnectAttempts = 0
+    private var videoSafeFallbackApplied = false
     private var lastIceState: PeerConnection.IceConnectionState? = null
     private var audioMuted = false
     private var virtualButtons = 0
@@ -1186,6 +1602,17 @@ class NativeStreamClient(
     private val hapticsSupportLogged = BooleanArray(GAMEPAD_MAX_CONTROLLERS)
     private var lastHapticsWarningAtMs = 0L
     private var lastHapticsAdvertisementAtMs = 0L
+    private var phoneRumbleFallbackEnabled = true
+    private var phoneRumbleSupportLogged = false
+
+    private data class RumbleEffectProfile(
+        val weakAmplitude: Int,
+        val strongAmplitude: Int,
+        val combinedAmplitude: Int,
+    ) {
+        val isStop: Boolean
+            get() = weakAmplitude <= 0 && strongAmplitude <= 0 && combinedAmplitude <= 0
+    }
 
     private data class StreamStatsSample(
         val atMs: Double,
@@ -1213,9 +1640,25 @@ class NativeStreamClient(
             .createPeerConnectionFactory()
     }
 
-    fun createRenderer(context: Context): SurfaceViewRenderer =
+    fun createRenderer(context: Context, settings: StreamSettings): SurfaceViewRenderer =
         SurfaceViewRenderer(context).also {
-            it.init(eglBase.eglBaseContext, null)
+            renderer?.let { oldRenderer ->
+                videoTrack?.removeSink(oldRenderer)
+                oldRenderer.release()
+            }
+            val sharpnessDrawer = if (settings.streamSharpeningEnabled) {
+                StreamSharpnessGlDrawer().also { drawer ->
+                    drawer.amount = streamSharpnessShaderStrength(true, settings.streamSharpeningAmount)
+                }
+            } else {
+                null
+            }
+            rendererSharpnessDrawer = sharpnessDrawer
+            if (sharpnessDrawer != null) {
+                it.init(eglBase.eglBaseContext, null, EglBase.CONFIG_PLAIN, sharpnessDrawer)
+            } else {
+                it.init(eglBase.eglBaseContext, null)
+            }
             it.setEnableHardwareScaler(true)
             it.setMirror(false)
             it.setScalingType(RendererCommon.ScalingType.SCALE_ASPECT_FIT)
@@ -1223,11 +1666,31 @@ class NativeStreamClient(
             videoTrack?.addSink(it)
         }
 
+    fun updateRendererSettings(settings: StreamSettings) {
+        this.settings = this.settings.copy(
+            mouseSensitivity = settings.mouseSensitivity,
+            mouseAcceleration = settings.mouseAcceleration,
+            streamSharpeningEnabled = settings.streamSharpeningEnabled,
+            streamSharpeningAmount = settings.streamSharpeningAmount,
+        )
+        rendererSharpnessDrawer?.amount = streamSharpnessShaderStrength(settings.streamSharpeningEnabled, settings.streamSharpeningAmount)
+    }
+
+    fun updateHapticsSettings(phoneFallbackEnabled: Boolean) {
+        if (phoneRumbleFallbackEnabled == phoneFallbackEnabled) return
+        phoneRumbleFallbackEnabled = phoneFallbackEnabled
+        if (!phoneFallbackEnabled) {
+            cancelPhoneRumble()
+        }
+        updateHapticsAdvertisement(force = true)
+    }
+
     fun start(session: SessionInfo, settings: StreamSettings) {
         this.session = session
         this.settings = settings
         transportGeneration += 1
         reconnectAttempts = 0
+        videoSafeFallbackApplied = false
         lastStatsSample = null
         livenessWatchdog.reset()
         onStats(StreamRuntimeStats())
@@ -1248,6 +1711,7 @@ class NativeStreamClient(
         stop()
         renderer?.release()
         renderer = null
+        rendererSharpnessDrawer = null
         factory?.dispose()
         factory = null
         audioDeviceModule.release()
@@ -1608,9 +2072,11 @@ class NativeStreamClient(
         heartbeatJob?.cancel()
         gamepadKeepaliveJob?.cancel()
         statsJob?.cancel()
+        offerTimeoutJob?.cancel()
         heartbeatJob = null
         gamepadKeepaliveJob = null
         statsJob = null
+        offerTimeoutJob = null
         lastStatsSample = null
         lastIceState = null
         livenessWatchdog.reset()
@@ -1633,7 +2099,10 @@ class NativeStreamClient(
     private fun handleSignaling(event: SignalingEvent, generation: Int) {
         if (generation != transportGeneration) return
         when (event) {
-            SignalingEvent.Connected -> emitState("Waiting for offer")
+            SignalingEvent.Connected -> {
+                emitState("Waiting for offer")
+                startOfferTimeout(generation)
+            }
             is SignalingEvent.Disconnected -> scheduleTransportReconnect("Signaling disconnected: ${event.reason}", SIGNALING_RECONNECT_DELAY_MS, generation)
             is SignalingEvent.Error -> scheduleTransportReconnect("Signaling failed: ${event.message}", SIGNALING_RECONNECT_DELAY_MS, generation)
             is SignalingEvent.Log -> emitState(event.message)
@@ -1644,8 +2113,10 @@ class NativeStreamClient(
 
     private fun handleOffer(rawOffer: String, generation: Int) {
         val currentSession = session ?: return
+        offerTimeoutJob?.cancel()
+        offerTimeoutJob = null
         val fixed = SdpTools.fixServerIp(rawOffer, currentSession.serverIp)
-        val preferred = SdpTools.preferCodec(fixed, settings.codec)
+        val preferred = SdpTools.preferCodec(fixed, settings)
         val pc = ensurePeerConnection(currentSession, generation)
         ensureInputDataChannels(pc, preferred)
         inputEncoder.setProtocolVersion(SdpTools.parseInputProtocolVersion(preferred))
@@ -1701,6 +2172,25 @@ class NativeStreamClient(
             },
             SessionDescription(SessionDescription.Type.OFFER, preferred),
         )
+    }
+
+    private fun startOfferTimeout(generation: Int) {
+        offerTimeoutJob?.cancel()
+        offerTimeoutJob = scope.launch {
+            delay(OFFER_TIMEOUT_MS)
+            if (generation != transportGeneration || peerConnection != null) return@launch
+            offerTimeoutJob = null
+            NativeInputDiagnostics.add("video offer timeout codec=${settings.codec} resolution=${settings.resolution} bitrate=${settings.maxBitrateMbps}")
+            if (
+                requestSafeVideoFallback(
+                    message = "Timed out waiting for video offer; restarting with safe H264 1080p profile",
+                    diagnosticReason = "offer timeout",
+                )
+            ) {
+                return@launch
+            }
+            restartTransport("Timed out waiting for video offer")
+        }
     }
 
     private fun ensurePeerConnection(session: SessionInfo, generation: Int): PeerConnection {
@@ -1832,6 +2322,10 @@ class NativeStreamClient(
 
     private fun emitError(message: String) {
         scope.launch { onError(message) }
+    }
+
+    private fun emitSafeVideoFallbackRequired(message: String) {
+        scope.launch { onSafeVideoFallbackRequired(message) }
     }
 
     private fun PeerConnection.IceConnectionState.toIceStatusLabel(): String = "ICE_${name}"
@@ -2062,10 +2556,33 @@ class NativeStreamClient(
                 NativeInputDiagnostics.add("media stall keyframe requested stalledMs=${action.stalledMs} attempt=${action.attempt}")
             }
             is StreamLivenessAction.RestartTransport -> {
+                if (
+                    requestSafeVideoFallback(
+                        message = "Decoder stalled; restarting with safe H264 1080p profile",
+                        diagnosticReason = "media stall",
+                    )
+                ) {
+                    return
+                }
                 NativeInputDiagnostics.add("media stall transport restart stalledMs=${action.stalledMs}")
                 restartTransport("Media stalled for ${action.stalledMs / 1000}s")
             }
         }
+    }
+
+    private fun requestSafeVideoFallback(message: String, diagnosticReason: String): Boolean {
+        val fallback = settings.androidSafeVideoFallback()
+        if (videoSafeFallbackApplied || settings == fallback) return false
+        videoSafeFallbackApplied = true
+        settings = fallback
+        NativeInputDiagnostics.add(
+            "$diagnosticReason safe video fallback codec=${fallback.codec} resolution=${fallback.resolution} fps=${fallback.fps} bitrate=${fallback.maxBitrateMbps}",
+        )
+        transportGeneration += 1
+        closeTransport(clearInputState = false)
+        emitState("Restarting cloud session with safe H264 profile")
+        emitSafeVideoFallbackRequired(message)
+        return true
     }
 
     private fun formatStatsCodec(value: Any?): String? {
@@ -2281,7 +2798,7 @@ class NativeStreamClient(
 
     private fun updateHapticsAdvertisement(force: Boolean = false) {
         if (reliableInput?.state() != DataChannel.State.OPEN) return
-        val enabled = hasConnectedHapticController()
+        val enabled = hapticsOutputAvailable()
         val now = SystemClock.elapsedRealtime()
         if (!force && hapticsAdvertised == enabled && now - lastHapticsAdvertisementAtMs < HAPTICS_ADVERTISEMENT_REFRESH_MS) return
         if (sendReliableInput(inputEncoder.encodeHapticsEnabled(enabled))) {
@@ -2291,17 +2808,15 @@ class NativeStreamClient(
         }
     }
 
-    private fun hasConnectedHapticController(): Boolean =
-        hapticControllerDevices().isNotEmpty()
+    private fun hapticsOutputAvailable(): Boolean =
+        hapticControllerDevices().isNotEmpty() || hasPhoneRumbleFallback()
 
     private fun hapticControllerDevices(): List<InputDevice> =
         buildList {
             InputDevice.getDeviceIds().forEach { deviceId ->
                 val device = InputDevice.getDevice(deviceId) ?: return@forEach
                 if (!device.isControllerDevice()) return@forEach
-                @Suppress("DEPRECATION")
-                val vibrator = device.vibrator
-                if (vibrator.hasVibrator()) add(device)
+                if (device.hasControllerRumble()) add(device)
             }
         }
 
@@ -2318,17 +2833,14 @@ class NativeStreamClient(
     @Suppress("DEPRECATION")
     private fun applyGamepadRumble(controllerId: Int, weakMagnitude16: Int, strongMagnitude16: Int) {
         val slot = controllerId.coerceIn(0, GAMEPAD_MAX_CONTROLLERS - 1)
-        val device = findHapticControllerDevice(slot) ?: run {
-            logHapticsWarning("input haptics no vibrator controller=$controllerId")
+        val profile = buildRumbleEffectProfile(weakMagnitude16, strongMagnitude16)
+        val isStop = profile.isStop
+        val device = findHapticControllerDevice(slot)
+        val usePhoneFallback = device == null && hasPhoneRumbleFallback()
+        if (device == null && !usePhoneFallback) {
+            logHapticsWarning("input haptics no vibrator controller=$controllerId phoneFallback=$phoneRumbleFallbackEnabled")
             return
         }
-        val vibrator = device.vibrator
-        if (!vibrator.hasVibrator()) return
-
-        val weak = (weakMagnitude16.coerceIn(0, 65535) / 65535f)
-        val strong = (strongMagnitude16.coerceIn(0, 65535) / 65535f)
-        val magnitude = max(weak, strong)
-        val isStop = magnitude <= 0f
         val now = SystemClock.elapsedRealtime()
         if (!isStop && lastRumbleEffectAtMs[slot] != 0L && now - lastRumbleEffectAtMs[slot] <= RUMBLE_THROTTLE_MS) {
             return
@@ -2336,30 +2848,40 @@ class NativeStreamClient(
         lastRumbleEffectAtMs[slot] = if (isStop) 0L else now
 
         if (isStop) {
-            vibrator.cancel()
+            device?.let(::cancelControllerRumble)
+            cancelPhoneRumble()
             return
         }
-        if (!hapticsSupportLogged[slot]) {
+        if (device != null && !hapticsSupportLogged[slot]) {
             hapticsSupportLogged[slot] = true
             NativeInputDiagnostics.add("gamepad haptics available controller=$slot device=${device.id}:${device.name}")
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val amplitude = (magnitude * 255f).roundToInt().coerceIn(1, 255)
-            vibrator.vibrate(VibrationEffect.createOneShot(RUMBLE_EFFECT_MS, amplitude))
+            if (device != null) {
+                vibrateController(device, profile)
+            } else {
+                vibratePhoneRumble(profile)
+            }
         } else {
-            vibrator.vibrate(RUMBLE_EFFECT_MS)
+            @Suppress("DEPRECATION")
+            if (device != null) {
+                device.vibrator.vibrate(RUMBLE_EFFECT_MS)
+            } else {
+                vibratePhoneRumbleLegacy()
+            }
         }
     }
 
     private fun stopAllGamepadRumble() {
         hapticControllerDevices().forEach { device ->
-            @Suppress("DEPRECATION")
-            device.vibrator.cancel()
+            cancelControllerRumble(device)
         }
+        cancelPhoneRumble()
         for (index in 0 until GAMEPAD_MAX_CONTROLLERS) {
             lastRumbleEffectAtMs[index] = 0L
             hapticsSupportLogged[index] = false
         }
+        phoneRumbleSupportLogged = false
         lastHapticsWarningAtMs = 0L
     }
 
@@ -2368,6 +2890,120 @@ class NativeStreamClient(
         if (now - lastHapticsWarningAtMs < HAPTICS_LOG_INTERVAL_MS) return
         lastHapticsWarningAtMs = now
         NativeInputDiagnostics.add(message)
+    }
+
+    private fun buildRumbleEffectProfile(weakMagnitude16: Int, strongMagnitude16: Int): RumbleEffectProfile {
+        val weak = weakMagnitude16.coerceIn(0, 65535) / 65535f
+        val strong = strongMagnitude16.coerceIn(0, 65535) / 65535f
+        val combined = (strong * 0.78f + weak * 0.48f).coerceIn(0f, 1f)
+        return RumbleEffectProfile(
+            weakAmplitude = rumbleAmplitude(weak, weight = 0.72f),
+            strongAmplitude = rumbleAmplitude(strong, weight = 1f),
+            combinedAmplitude = rumbleAmplitude(combined, weight = 1f),
+        )
+    }
+
+    private fun rumbleAmplitude(value: Float, weight: Float): Int {
+        val scaled = (value.coerceIn(0f, 1f) * weight.coerceIn(0f, 1f) * 255f).roundToInt()
+        return if (scaled <= 0) 0 else scaled.coerceIn(1, 255)
+    }
+
+    @Suppress("DEPRECATION")
+    private fun InputDevice.hasControllerRumble(): Boolean {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            val manager = vibratorManager
+            if (manager.vibratorIds.any { manager.getVibrator(it).hasVibrator() }) return true
+        }
+        return vibrator.hasVibrator()
+    }
+
+    private fun vibrateController(device: InputDevice, profile: RumbleEffectProfile) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            val manager = device.vibratorManager
+            val vibratorIds = manager.vibratorIds.filter { manager.getVibrator(it).hasVibrator() }
+            if (vibratorIds.size >= 2) {
+                val combination = CombinedVibration.startParallel()
+                var addedEffect = false
+                if (profile.strongAmplitude > 0) {
+                    combination.addVibrator(vibratorIds[0], createRumbleEffect(profile.strongAmplitude))
+                    addedEffect = true
+                }
+                if (profile.weakAmplitude > 0) {
+                    combination.addVibrator(vibratorIds[1], createRumbleEffect(profile.weakAmplitude))
+                    addedEffect = true
+                }
+                if (addedEffect) {
+                    manager.vibrate(combination.combine())
+                    return
+                }
+            }
+            if (vibratorIds.isNotEmpty() && profile.combinedAmplitude > 0) {
+                manager.vibrate(CombinedVibration.createParallel(createRumbleEffect(profile.combinedAmplitude)))
+                return
+            }
+        }
+        @Suppress("DEPRECATION")
+        device.vibrator.vibrate(createRumbleEffect(profile.combinedAmplitude))
+    }
+
+    @Suppress("DEPRECATION")
+    private fun cancelControllerRumble(device: InputDevice) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            val manager = device.vibratorManager
+            if (manager.vibratorIds.isNotEmpty()) {
+                manager.cancel()
+                return
+            }
+        }
+        device.vibrator.cancel()
+    }
+
+    private fun hasPhoneRumbleFallback(): Boolean {
+        if (!phoneRumbleFallbackEnabled) return false
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            val manager = appContext.getSystemService(VibratorManager::class.java) ?: return false
+            manager.vibratorIds.any { manager.getVibrator(it).hasVibrator() }
+        } else {
+            @Suppress("DEPRECATION")
+            (appContext.getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator)?.hasVibrator() == true
+        }
+    }
+
+    private fun createRumbleEffect(amplitude: Int): VibrationEffect =
+        VibrationEffect.createOneShot(RUMBLE_EFFECT_MS, amplitude.coerceIn(1, 255))
+
+    private fun vibratePhoneRumble(profile: RumbleEffectProfile) {
+        if (!phoneRumbleSupportLogged) {
+            phoneRumbleSupportLogged = true
+            NativeInputDiagnostics.add("gamepad haptics using phone fallback")
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            val manager = appContext.getSystemService(VibratorManager::class.java)
+            if (manager != null && manager.vibratorIds.any { manager.getVibrator(it).hasVibrator() }) {
+                manager.vibrate(CombinedVibration.createParallel(createRumbleEffect(profile.combinedAmplitude)))
+                return
+            }
+        }
+        @Suppress("DEPRECATION")
+        (appContext.getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator)?.vibrate(createRumbleEffect(profile.combinedAmplitude))
+    }
+
+    @Suppress("DEPRECATION")
+    private fun vibratePhoneRumbleLegacy() {
+        if (!phoneRumbleSupportLogged) {
+            phoneRumbleSupportLogged = true
+            NativeInputDiagnostics.add("gamepad haptics using phone fallback")
+        }
+        (appContext.getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator)?.vibrate(RUMBLE_EFFECT_MS)
+    }
+
+    private fun cancelPhoneRumble() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            appContext.getSystemService(VibratorManager::class.java)?.cancel()
+            return
+        }
+        @Suppress("DEPRECATION")
+        (appContext.getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator)?.cancel()
     }
 
     private fun controllerIdFor(event: KeyEvent): Int = controllerIdFor(event.deviceId)
@@ -2469,8 +3105,8 @@ class NativeStreamClient(
     private companion object {
         private const val EXTERNAL_MOUSE_ABSOLUTE_DELTA_LIMIT_PX = 240f
         private const val GAMEPAD_MAX_CONTROLLERS = 4
-        private const val RUMBLE_EFFECT_MS = 500L
-        private const val RUMBLE_THROTTLE_MS = 500L
+        private const val RUMBLE_EFFECT_MS = 90L
+        private const val RUMBLE_THROTTLE_MS = 35L
         private const val HAPTICS_ADVERTISEMENT_REFRESH_MS = 5000L
         private const val HAPTICS_LOG_INTERVAL_MS = 5000L
     }
@@ -2502,7 +3138,13 @@ object SdpTools {
             .replace(Regex("(a=candidate:\\S+\\s+\\d+\\s+\\w+\\s+\\d+\\s+)0\\.0\\.0\\.0(\\s+)"), "$1$ip$2")
     }
 
-    fun preferCodec(sdp: String, codec: VideoCodec): String {
+    fun preferCodec(sdp: String, settings: StreamSettings): String =
+        preferCodec(sdp, settings.codec, settings.prefersTenBitVideo())
+
+    fun preferCodec(sdp: String, codec: VideoCodec): String =
+        preferCodec(sdp, codec, preferTenBit = codec != VideoCodec.H265)
+
+    private fun preferCodec(sdp: String, codec: VideoCodec, preferTenBit: Boolean): String {
         val target = when (codec) {
             VideoCodec.H264 -> "H264"
             VideoCodec.H265 -> "H265"
@@ -2533,13 +3175,7 @@ object SdpTools {
         val preferred = codecByPt.filterValues { it == target }.keys.toMutableList()
         if (preferred.isEmpty()) return sdp
         if (codec == VideoCodec.H265) {
-            preferred.sortBy { pt ->
-                when (Regex("(?:^|;)\\s*profile-id=(\\d+)").find(fmtpByPt[pt].orEmpty())?.groupValues?.getOrNull(1)) {
-                    "2" -> 0
-                    "1" -> 1
-                    else -> 2
-                }
-            }
+            preferred.sortBy { pt -> h265ProfilePriority(fmtpByPt[pt], preferTenBit) }
         }
         val allowed = preferred.toMutableSet()
         rtxApt.forEach { (rtx, apt) ->
@@ -2564,6 +3200,32 @@ object SdpTools {
         }
         return output.joinToString(lineEnding)
     }
+
+    private fun h265ProfilePriority(fmtp: String?, preferTenBit: Boolean): Int {
+        val profileId = Regex("(?:^|;)\\s*profile-id=(\\d+)")
+            .find(fmtp.orEmpty())
+            ?.groupValues
+            ?.getOrNull(1)
+        return if (preferTenBit) {
+            when (profileId) {
+                "2" -> 0
+                "1" -> 1
+                else -> 2
+            }
+        } else {
+            when (profileId) {
+                "1" -> 0
+                null -> 1
+                "2" -> 2
+                else -> 3
+            }
+        }
+    }
+
+    private fun StreamSettings.prefersTenBitVideo(): Boolean =
+        hdrEnabled ||
+            colorQuality == ColorQuality.TenBit420 ||
+            colorQuality == ColorQuality.TenBit444
 
     fun mungeAnswerSdp(sdp: String, maxBitrateKbps: Int): String {
         val lineEnding = if (sdp.contains("\r\n")) "\r\n" else "\n"
@@ -3106,6 +3768,7 @@ private const val ICE_DISCONNECTED_GRACE_MS = 3500L
 private const val ICE_FAILED_RECONNECT_DELAY_MS = 250L
 private const val SIGNALING_RECONNECT_DELAY_MS = 1000L
 private const val MAX_TRANSPORT_RECONNECT_ATTEMPTS = 3
+private const val OFFER_TIMEOUT_MS = 12_000L
 private const val MEDIA_STALL_KEYFRAME_AFTER_MS = 5_000L
 private const val MEDIA_STALL_KEYFRAME_INTERVAL_MS = 2_500L
 private const val MEDIA_STALL_RESTART_AFTER_MS = 14_000L
