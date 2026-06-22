@@ -97,6 +97,10 @@ struct ActiveSession: Identifiable, Codable, Equatable {
     let clientId: String
     let deviceId: String
     var adState: SessionAdState?
+    var gpuType: String? = nil
+    var negotiatedStreamProfile: NegotiatedStreamProfile? = nil
+    var requestedStreamingFeatures: StreamingFeatures? = nil
+    var finalizedStreamingFeatures: StreamingFeatures? = nil
 }
 
 struct RemoteSessionCandidate: Identifiable, Codable, Equatable {
@@ -112,6 +116,57 @@ struct SubscriptionSnapshot: Codable, Equatable {
     let isUnlimited: Bool
     let remainingHours: Double
     let totalHours: Double
+}
+
+enum StreamColorQuality: String, Codable, CaseIterable, Identifiable {
+    case eightBit420 = "8bit_420"
+    case eightBit444 = "8bit_444"
+    case tenBit420 = "10bit_420"
+    case tenBit444 = "10bit_444"
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .eightBit420: return "8-bit 4:2:0"
+        case .eightBit444: return "8-bit 4:4:4"
+        case .tenBit420: return "10-bit 4:2:0"
+        case .tenBit444: return "10-bit 4:4:4"
+        }
+    }
+
+    var bitDepth: Int {
+        switch self {
+        case .tenBit420, .tenBit444: return 10
+        case .eightBit420, .eightBit444: return 0
+        }
+    }
+
+    var chromaFormat: Int {
+        switch self {
+        case .eightBit444, .tenBit444: return 2
+        case .eightBit420, .tenBit420: return 0
+        }
+    }
+}
+
+struct StreamingFeatures: Codable, Equatable {
+    var reflex: Bool?
+    var bitDepth: Int?
+    var cloudGsync: Bool?
+    var chromaFormat: Int?
+    var enabledL4S: Bool?
+    var trueHdr: Bool?
+}
+
+struct NegotiatedStreamProfile: Codable, Equatable {
+    var resolution: String?
+    var fps: Int?
+    var codec: String?
+    var colorQuality: StreamColorQuality?
+    var enableL4S: Bool?
+    var enableCloudGsync: Bool?
+    var enableReflex: Bool?
 }
 
 struct SessionAdMediaFile: Codable, Equatable {
@@ -156,17 +211,111 @@ struct SessionAdState: Codable, Equatable {
     let serverSentEmptyAds: Bool?
 }
 
+func isSessionAdsRequired(_ adState: SessionAdState?) -> Bool {
+    adState?.sessionAdsRequired ?? (adState?.isAdsRequired == true)
+}
+
+func sessionAdItems(_ adState: SessionAdState?) -> [SessionAdInfo] {
+    if let sessionAds = adState?.sessionAds, !sessionAds.isEmpty {
+        return sessionAds
+    }
+    return adState?.ads ?? []
+}
+
+func shouldWaitForQueueAdPlayback(_ adState: SessionAdState?) -> Bool {
+    isSessionAdsRequired(adState) && !sessionAdItems(adState).isEmpty
+}
+
+func mergeQueueAdState(
+    previous: SessionAdState?,
+    next: SessionAdState?,
+    preserveMissingAdState: Bool = true
+) -> SessionAdState? {
+    guard let next else {
+        return preserveMissingAdState ? previous : nil
+    }
+
+    let shouldRestorePreviousAds =
+        preserveMissingAdState &&
+        isSessionAdsRequired(next) &&
+        (next.serverSentEmptyAds ?? false) &&
+        sessionAdItems(next).isEmpty &&
+        !sessionAdItems(previous).isEmpty
+
+    guard shouldRestorePreviousAds else {
+        return next
+    }
+
+    let restored = sessionAdItems(previous)
+    return SessionAdState(
+        isAdsRequired: next.isAdsRequired,
+        sessionAdsRequired: next.sessionAdsRequired,
+        isQueuePaused: next.isQueuePaused,
+        gracePeriodSeconds: next.gracePeriodSeconds,
+        message: next.message,
+        sessionAds: restored,
+        ads: previous?.ads.isEmpty == false ? (previous?.ads ?? restored) : restored,
+        opportunity: next.opportunity,
+        serverSentEmptyAds: next.serverSentEmptyAds
+    )
+}
+
+func mergeQueueSessionState(
+    previous: ActiveSession,
+    next: ActiveSession,
+    preserveMissingAdState: Bool = true
+) -> ActiveSession {
+    guard next.status != 2 && next.status != 3 else {
+        return next
+    }
+    var merged = next
+    merged.adState = mergeQueueAdState(
+        previous: previous.adState,
+        next: next.adState,
+        preserveMissingAdState: preserveMissingAdState
+    )
+    if merged.mediaIp == nil {
+        merged.mediaIp = previous.mediaIp
+    }
+    if merged.mediaPort <= 0 {
+        merged.mediaPort = previous.mediaPort
+    }
+    return merged
+}
+
+func removeSessionAdItem(_ adState: SessionAdState?, adId: String) -> SessionAdState? {
+    guard let adState else { return nil }
+    return SessionAdState(
+        isAdsRequired: adState.isAdsRequired,
+        sessionAdsRequired: adState.sessionAdsRequired,
+        isQueuePaused: adState.isQueuePaused,
+        gracePeriodSeconds: adState.gracePeriodSeconds,
+        message: adState.message,
+        sessionAds: adState.sessionAds.filter { $0.adId != adId },
+        ads: adState.ads.filter { $0.adId != adId },
+        opportunity: adState.opportunity,
+        serverSentEmptyAds: false
+    )
+}
+
 struct AppSettings: Codable, Equatable {
     var preferredRegion: String
+    var preferredAspectRatio: String = "16:9"
     var preferredResolution: String
     var preferredFPS: Int
     var preferredQuality: String
     var preferredCodec: String
+    var preferredColorQuality: String = StreamColorQuality.eightBit420.rawValue
+    var hdrEnabled: Bool = false
     var maxBitrateMbps: Int
     var keyboardLayout: String
     var gameLanguage: String
+    var sessionProxyEnabled: Bool = false
+    var sessionProxyUrl: String = ""
     var enableL4S: Bool
     var enableCloudGsync: Bool
+    var streamSharpeningEnabled: Bool = false
+    var streamSharpeningAmount: Double = 0.25
     var keepMicEnabled: Bool
     var showStatsOverlay: Bool
     var hideServerSelector: Bool
@@ -176,18 +325,26 @@ struct AppSettings: Codable, Equatable {
     var touchControlLayouts: [String: TouchControlLayout]
     var streamerPreferences: StreamerPreferences
     var favoriteGameIds: [String]
+    var defaultGameVariantIds: [String: String] = [:]
 
     enum CodingKeys: String, CodingKey {
         case preferredRegion
+        case preferredAspectRatio
         case preferredResolution
         case preferredFPS
         case preferredQuality
         case preferredCodec
+        case preferredColorQuality
+        case hdrEnabled
         case maxBitrateMbps
         case keyboardLayout
         case gameLanguage
+        case sessionProxyEnabled
+        case sessionProxyUrl
         case enableL4S
         case enableCloudGsync
+        case streamSharpeningEnabled
+        case streamSharpeningAmount
         case keepMicEnabled
         case showStatsOverlay
         case hideServerSelector
@@ -197,6 +354,7 @@ struct AppSettings: Codable, Equatable {
         case touchControlLayouts
         case streamerPreferences
         case favoriteGameIds
+        case defaultGameVariantIds
     }
 
     init(
@@ -244,15 +402,22 @@ struct AppSettings: Codable, Equatable {
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         preferredRegion = try container.decodeIfPresent(String.self, forKey: .preferredRegion) ?? "Auto"
+        preferredAspectRatio = try container.decodeIfPresent(String.self, forKey: .preferredAspectRatio) ?? "16:9"
         preferredResolution = try container.decodeIfPresent(String.self, forKey: .preferredResolution) ?? "Auto"
         preferredFPS = try container.decodeIfPresent(Int.self, forKey: .preferredFPS) ?? 60
         preferredQuality = try container.decodeIfPresent(String.self, forKey: .preferredQuality) ?? "Balanced"
         preferredCodec = try container.decodeIfPresent(String.self, forKey: .preferredCodec) ?? "Auto"
+        preferredColorQuality = try container.decodeIfPresent(String.self, forKey: .preferredColorQuality) ?? StreamColorQuality.eightBit420.rawValue
+        hdrEnabled = try container.decodeIfPresent(Bool.self, forKey: .hdrEnabled) ?? false
         maxBitrateMbps = try container.decodeIfPresent(Int.self, forKey: .maxBitrateMbps) ?? 0
         keyboardLayout = try container.decodeIfPresent(String.self, forKey: .keyboardLayout) ?? "en-US"
         gameLanguage = try container.decodeIfPresent(String.self, forKey: .gameLanguage) ?? "en_US"
+        sessionProxyEnabled = try container.decodeIfPresent(Bool.self, forKey: .sessionProxyEnabled) ?? false
+        sessionProxyUrl = try container.decodeIfPresent(String.self, forKey: .sessionProxyUrl) ?? ""
         enableL4S = try container.decodeIfPresent(Bool.self, forKey: .enableL4S) ?? false
         enableCloudGsync = try container.decodeIfPresent(Bool.self, forKey: .enableCloudGsync) ?? false
+        streamSharpeningEnabled = try container.decodeIfPresent(Bool.self, forKey: .streamSharpeningEnabled) ?? false
+        streamSharpeningAmount = try container.decodeIfPresent(Double.self, forKey: .streamSharpeningAmount) ?? 0.25
         keepMicEnabled = try container.decodeIfPresent(Bool.self, forKey: .keepMicEnabled) ?? false
         showStatsOverlay = try container.decodeIfPresent(Bool.self, forKey: .showStatsOverlay) ?? true
         hideServerSelector = try container.decodeIfPresent(Bool.self, forKey: .hideServerSelector) ?? false
@@ -265,7 +430,9 @@ struct AppSettings: Codable, Equatable {
         streamerPreferences = try container.decodeIfPresent(StreamerPreferences.self, forKey: .streamerPreferences)
             ?? .default
         favoriteGameIds = try container.decodeIfPresent([String].self, forKey: .favoriteGameIds) ?? []
+        defaultGameVariantIds = try container.decodeIfPresent([String: String].self, forKey: .defaultGameVariantIds) ?? [:]
         migrateLegacyTouchControlDefaults()
+        normalizeStreamDefaults()
     }
 
     static let `default` = AppSettings(
@@ -301,6 +468,21 @@ struct AppSettings: Codable, Equatable {
         if touchControlLayouts["fortnite-mobile"] == .legacyFortniteMobile || touchControlLayouts["fortnite-mobile"] == .legacyShrunkFortniteMobile {
             touchControlLayouts["fortnite-mobile"] = .fortniteMobile
         }
+    }
+
+    mutating func normalizeStreamDefaults() {
+        if !StreamSettingsResolver.aspectRatioOptions.contains(preferredAspectRatio) {
+            preferredAspectRatio = "16:9"
+        }
+        preferredResolution = StreamSettingsResolver.normalizedResolution(
+            preferredResolution,
+            aspectRatio: preferredAspectRatio
+        )
+        if StreamColorQuality(rawValue: preferredColorQuality) == nil {
+            preferredColorQuality = StreamColorQuality.eightBit420.rawValue
+        }
+        streamSharpeningAmount = min(max(streamSharpeningAmount, 0), 1)
+        sessionProxyUrl = sessionProxyUrl.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
 
@@ -542,15 +724,94 @@ struct StreamVideoProfile: Equatable {
 }
 
 enum StreamSettingsResolver {
-    static let resolutionOptions: [(value: String, label: String)] = [
-        ("Auto", "Auto"),
-        ("1280x720", "720p"),
-        ("1920x1080", "1080p"),
-        ("2560x1440", "1440p"),
-        ("3840x2160", "4K")
+    enum StreamResolutionPlan: Int, Comparable {
+        case free = 0
+        case priority = 1
+        case ultimate = 2
+
+        static func < (lhs: StreamResolutionPlan, rhs: StreamResolutionPlan) -> Bool {
+            lhs.rawValue < rhs.rawValue
+        }
+
+        var label: String? {
+            switch self {
+            case .free: return nil
+            case .priority: return "Priority"
+            case .ultimate: return "Ultimate"
+            }
+        }
+    }
+
+    struct StreamResolutionChoice: Identifiable, Equatable {
+        let value: String
+        let aspectRatio: String
+        let tier: String
+        let requiredPlan: StreamResolutionPlan
+
+        var id: String { value }
+
+        var label: String {
+            value.replacingOccurrences(of: "x", with: " x ")
+        }
+    }
+
+    static let aspectRatioOptions = ["16:9", "16:10", "4:3", "5:4", "21:9", "24:10", "32:9"]
+
+    static let resolutionChoices: [StreamResolutionChoice] = [
+        .init(value: "1280x720", aspectRatio: "16:9", tier: "720", requiredPlan: .free),
+        .init(value: "1366x768", aspectRatio: "16:9", tier: "768", requiredPlan: .free),
+        .init(value: "1600x900", aspectRatio: "16:9", tier: "900", requiredPlan: .free),
+        .init(value: "1280x800", aspectRatio: "16:10", tier: "720", requiredPlan: .free),
+        .init(value: "1440x900", aspectRatio: "16:10", tier: "900", requiredPlan: .free),
+        .init(value: "1680x1050", aspectRatio: "16:10", tier: "1050", requiredPlan: .free),
+        .init(value: "1920x1080", aspectRatio: "16:9", tier: "1080", requiredPlan: .free),
+        .init(value: "1920x1200", aspectRatio: "16:10", tier: "1080", requiredPlan: .free),
+        .init(value: "1024x768", aspectRatio: "4:3", tier: "768", requiredPlan: .free),
+        .init(value: "1112x834", aspectRatio: "4:3", tier: "834", requiredPlan: .free),
+        .init(value: "1600x1200", aspectRatio: "4:3", tier: "1080", requiredPlan: .free),
+        .init(value: "1280x1024", aspectRatio: "5:4", tier: "1050", requiredPlan: .free),
+        .init(value: "1680x720", aspectRatio: "21:9", tier: "720", requiredPlan: .priority),
+        .init(value: "2560x1080", aspectRatio: "21:9", tier: "1080", requiredPlan: .priority),
+        .init(value: "3840x1080", aspectRatio: "32:9", tier: "1080", requiredPlan: .priority),
+        .init(value: "2560x1440", aspectRatio: "16:9", tier: "1440", requiredPlan: .priority),
+        .init(value: "2560x1600", aspectRatio: "16:10", tier: "1440", requiredPlan: .priority),
+        .init(value: "3440x1440", aspectRatio: "21:9", tier: "1440", requiredPlan: .priority),
+        .init(value: "5120x1440", aspectRatio: "32:9", tier: "1440", requiredPlan: .priority),
+        .init(value: "3840x1600", aspectRatio: "24:10", tier: "1440", requiredPlan: .priority),
+        .init(value: "3840x2160", aspectRatio: "16:9", tier: "2160", requiredPlan: .ultimate),
+        .init(value: "3456x2160", aspectRatio: "16:10", tier: "2160", requiredPlan: .ultimate),
+        .init(value: "5120x2160", aspectRatio: "21:9", tier: "2160", requiredPlan: .ultimate),
+        .init(value: "5120x2880", aspectRatio: "16:9", tier: "2880", requiredPlan: .ultimate)
     ]
 
     static let bitrateOptionsMbps: [Int] = [0, 10, 15, 25, 35, 50, 75, 100]
+
+    static var resolutionOptions: [(value: String, label: String)] {
+        resolutionOptions(for: "16:9")
+    }
+
+    static func choices(forAspectRatio aspectRatio: String) -> [StreamResolutionChoice] {
+        let normalizedAspect = normalizedAspectRatio(aspectRatio)
+        return resolutionChoices.filter { $0.aspectRatio == normalizedAspect }
+    }
+
+    static func resolutionChoice(value: String, aspectRatio: String) -> StreamResolutionChoice? {
+        let normalizedAspect = normalizedAspectRatio(aspectRatio)
+        return resolutionChoices.first { $0.value == value && $0.aspectRatio == normalizedAspect }
+    }
+
+    static func isResolutionAvailable(_ choice: StreamResolutionChoice, membershipTier: String?) -> Bool {
+        plan(for: membershipTier) >= choice.requiredPlan
+    }
+
+    static func resolutionOptions(for aspectRatio: String) -> [(value: String, label: String)] {
+        let choices = choices(forAspectRatio: aspectRatio)
+            .map { choice in
+                let suffix = choice.requiredPlan.label.map { " (\($0))" } ?? ""
+                return (choice.value, "\(choice.label)\(suffix)")
+            }
+        return [("Auto", "Auto")] + choices
+    }
 
     static let keyboardLayoutOptions: [(value: String, label: String)] = [
         ("en-US", "English (US)"),
@@ -585,19 +846,25 @@ enum StreamSettingsResolver {
     ]
 
     static func profile(for settings: AppSettings) -> StreamVideoProfile {
+        profile(for: settings, membershipTier: nil)
+    }
+
+    static func profile(for settings: AppSettings, membershipTier: String?) -> StreamVideoProfile {
         #if os(tvOS)
         return profile(
             for: settings,
             nativeBounds: .zero,
             nativeScale: 1,
-            userInterfaceIdiom: .tv
+            userInterfaceIdiom: .tv,
+            membershipTier: membershipTier
         )
         #else
         return profile(
             for: settings,
             nativeBounds: UIScreen.main.nativeBounds,
             nativeScale: UIScreen.main.nativeScale,
-            userInterfaceIdiom: UIDevice.current.userInterfaceIdiom
+            userInterfaceIdiom: UIDevice.current.userInterfaceIdiom,
+            membershipTier: membershipTier
         )
         #endif
     }
@@ -606,15 +873,25 @@ enum StreamSettingsResolver {
         for settings: AppSettings,
         nativeBounds: CGRect,
         nativeScale: CGFloat,
-        userInterfaceIdiom: UIUserInterfaceIdiom
+        userInterfaceIdiom: UIUserInterfaceIdiom,
+        membershipTier: String? = nil
     ) -> StreamVideoProfile {
         let fps = normalizedFPS(settings.preferredFPS)
-        let requestedResolution = parseResolution(settings.preferredResolution)
+        let aspectRatio = normalizedAspectRatio(settings.preferredAspectRatio)
+        let maxPlan = profilePlanLimit(for: membershipTier)
+        let normalizedResolution = normalizedResolution(
+            settings.preferredResolution,
+            aspectRatio: aspectRatio,
+            maxPlan: maxPlan
+        )
+        let requestedResolution = parseResolution(normalizedResolution)
         let base = requestedResolution ?? automaticResolution(
             settings: settings,
+            aspectRatio: aspectRatio,
             nativeBounds: nativeBounds,
             nativeScale: nativeScale,
-            userInterfaceIdiom: userInterfaceIdiom
+            userInterfaceIdiom: userInterfaceIdiom,
+            maxPlan: maxPlan
         )
         let bitrateMbps = normalizedMaxBitrateMbps(settings.maxBitrateMbps)
             ?? automaticBitrateMbps(width: base.width, height: base.height, fps: fps, quality: settings.preferredQuality)
@@ -632,6 +909,74 @@ enum StreamSettingsResolver {
 
     static func normalizedGameLanguage(_ value: String) -> String {
         gameLanguageOptions.contains(where: { $0.value == value }) ? value : "en_US"
+    }
+
+    static func normalizedAspectRatio(_ value: String) -> String {
+        aspectRatioOptions.contains(value) ? value : "16:9"
+    }
+
+    static func normalizedResolution(_ value: String, aspectRatio: String) -> String {
+        normalizedResolution(value, aspectRatio: aspectRatio, maxPlan: .ultimate)
+    }
+
+    static func normalizedResolution(
+        _ value: String,
+        aspectRatio: String,
+        maxPlan: StreamResolutionPlan
+    ) -> String {
+        guard value != "Auto" else { return "Auto" }
+        let normalizedAspect = normalizedAspectRatio(aspectRatio)
+        if let exact = resolutionChoices.first(where: { $0.value == value && $0.aspectRatio == normalizedAspect }),
+           exact.requiredPlan <= maxPlan {
+            return value
+        }
+        let requestedTier = resolutionChoices.first(where: { $0.value == value })?.tier
+            ?? resolutionTier(forHeight: parseResolution(value)?.height ?? 1080)
+        if let preferred = preferredResolutionByTierAndAspect[requestedTier]?[normalizedAspect],
+           resolutionChoices.contains(where: { $0.value == preferred && $0.requiredPlan <= maxPlan }) {
+            return preferred
+        }
+        let requestedPixels = parseResolution(value).map { $0.width * $0.height } ?? (1920 * 1080)
+        return resolutionChoices
+            .filter { $0.aspectRatio == normalizedAspect && $0.requiredPlan <= maxPlan }
+            .min { lhs, rhs in
+                let lhsPixels = parseResolution(lhs.value).map { $0.width * $0.height } ?? 0
+                let rhsPixels = parseResolution(rhs.value).map { $0.width * $0.height } ?? 0
+                let lhsDistance = abs(lhsPixels - requestedPixels)
+                let rhsDistance = abs(rhsPixels - requestedPixels)
+                return lhsDistance == rhsDistance ? lhsPixels < rhsPixels : lhsDistance < rhsDistance
+            }?
+            .value ?? "1920x1080"
+    }
+
+    static func plan(for membershipTier: String?) -> StreamResolutionPlan {
+        let normalized = (membershipTier ?? "")
+            .uppercased()
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .joined()
+        if normalized.contains("ULTIMATE") || normalized.contains("RTX3080") {
+            return .ultimate
+        }
+        if normalized.contains("PRIORITY") || normalized.contains("PERFORMANCE") || normalized.contains("FOUNDERS") {
+            return .priority
+        }
+        return .free
+    }
+
+    static func isHDRAvailable(subscription: SubscriptionSnapshot?, fallbackMembershipTier: String?) -> Bool {
+        plan(for: subscription?.membershipTier ?? fallbackMembershipTier) >= .ultimate
+    }
+
+    static func colorQuality(for settings: AppSettings) -> StreamColorQuality {
+        StreamColorQuality(rawValue: settings.preferredColorQuality) ?? .eightBit420
+    }
+
+    private static func profilePlanLimit(for membershipTier: String?) -> StreamResolutionPlan {
+        guard let membershipTier,
+              !membershipTier.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return .ultimate
+        }
+        return plan(for: membershipTier)
     }
 
     private static func normalizedFPS(_ value: Int) -> Int {
@@ -653,22 +998,33 @@ enum StreamSettingsResolver {
 
     private static func automaticResolution(
         settings: AppSettings,
+        aspectRatio: String,
         nativeBounds: CGRect,
         nativeScale: CGFloat,
-        userInterfaceIdiom: UIUserInterfaceIdiom
+        userInterfaceIdiom: UIUserInterfaceIdiom,
+        maxPlan: StreamResolutionPlan
     ) -> (width: Int, height: Int) {
         let longSide = max(nativeBounds.width, nativeBounds.height)
         let shortSide = min(nativeBounds.width, nativeBounds.height)
         let supports1440 = longSide >= 2500 || shortSide >= 1400 || nativeScale >= 3.0
         let prefersQuality = settings.preferredQuality.caseInsensitiveCompare("Quality") == .orderedSame
 
-        if userInterfaceIdiom == .pad, prefersQuality, supports1440 {
-            return (2560, 1440)
+        let tier: String
+        if maxPlan >= .priority, userInterfaceIdiom == .pad, prefersQuality, supports1440 {
+            tier = "1440"
+        } else if userInterfaceIdiom == .pad || userInterfaceIdiom == .tv {
+            tier = "1080"
+        } else {
+            tier = "720"
         }
-        if userInterfaceIdiom == .pad || userInterfaceIdiom == .tv {
-            return (1920, 1080)
-        }
-        return (1280, 720)
+        let value = [tier, "1080", "900", "720"]
+            .compactMap { preferredResolutionByTierAndAspect[$0]?[aspectRatio] }
+            .first { candidate in
+                resolutionChoices.contains { $0.value == candidate && $0.requiredPlan <= maxPlan }
+            }
+            ?? preferredResolutionByTierAndAspect["1080"]?["16:9"]
+            ?? "1920x1080"
+        return parseResolution(value) ?? (1920, 1080)
     }
 
     private static func automaticBitrateMbps(width: Int, height: Int, fps: Int, quality: String) -> Int {
@@ -694,6 +1050,32 @@ enum StreamSettingsResolver {
         guard value > 0 else { return nil }
         return min(max(value, 5), 150)
     }
+
+    private static func resolutionTier(forHeight height: Int) -> String {
+        switch height {
+        case 2600...: return "2880"
+        case 2000...: return "2160"
+        case 1320...: return "1440"
+        case 1120...: return "1080"
+        case 975...: return "1050"
+        case 850...: return "900"
+        case 800...: return "834"
+        case 740...: return "768"
+        default: return "720"
+        }
+    }
+
+    private static let preferredResolutionByTierAndAspect: [String: [String: String]] = [
+        "720": ["16:9": "1280x720", "16:10": "1280x800", "4:3": "1024x768", "21:9": "1680x720"],
+        "768": ["16:9": "1366x768", "4:3": "1024x768"],
+        "834": ["4:3": "1112x834"],
+        "900": ["16:9": "1600x900", "16:10": "1440x900"],
+        "1050": ["16:10": "1680x1050", "5:4": "1280x1024"],
+        "1080": ["16:9": "1920x1080", "16:10": "1920x1200", "4:3": "1600x1200", "21:9": "2560x1080", "32:9": "3840x1080"],
+        "1440": ["16:9": "2560x1440", "16:10": "2560x1600", "21:9": "3440x1440", "24:10": "3840x1600", "32:9": "5120x1440"],
+        "2160": ["16:9": "3840x2160", "16:10": "3456x2160", "21:9": "5120x2160"],
+        "2880": ["16:9": "5120x2880"]
+    ]
 }
 
 enum OpenNOWPlatform {
@@ -980,7 +1362,18 @@ private final class OAuthLoopbackServer: @unchecked Sendable {
 
     func waitForCallback(port: UInt16, timeoutSeconds: TimeInterval = 120) async throws -> URL {
         try await withCheckedThrowingContinuation { continuation in
-            queue.async {
+            queue.async { [weak self] in
+                guard let self else {
+                    continuation.resume(
+                        throwing: NSError(
+                            domain: "OpenNOW.Auth",
+                            code: 10,
+                            userInfo: [NSLocalizedDescriptionKey: "OAuth callback listener was released."]
+                        )
+                    )
+                    return
+                }
+
                 guard !self.didComplete else {
                     continuation.resume(
                         throwing: NSError(
@@ -1224,7 +1617,8 @@ private actor GFNAPIClient {
         url: URL,
         method: String = "GET",
         headers: [String: String],
-        body: Data? = nil
+        body: Data? = nil,
+        sessionSettings: AppSettings? = nil
     ) async throws -> (Data, HTTPURLResponse) {
         var req = URLRequest(url: url)
         req.httpMethod = method
@@ -1232,11 +1626,45 @@ private actor GFNAPIClient {
         for (k, v) in headers {
             req.setValue(v, forHTTPHeaderField: k)
         }
-        let (data, response) = try await self.session.data(for: req)
+        let urlSession = Self.shouldUseSessionProxy(for: url, settings: sessionSettings)
+            ? proxiedSession(settings: sessionSettings)
+            : self.session
+        let (data, response) = try await urlSession.data(for: req)
         guard let http = response as? HTTPURLResponse else {
             throw NSError(domain: "OpenNOW.Network", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid response"])
         }
         return (data, http)
+    }
+
+    private static func shouldUseSessionProxy(for url: URL, settings: AppSettings?) -> Bool {
+        guard let settings,
+              settings.sessionProxyEnabled,
+              !settings.sessionProxyUrl.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              let host = url.host else {
+            return false
+        }
+        return isZoneHostname(host)
+    }
+
+    private func proxiedSession(settings: AppSettings?) -> URLSession {
+        guard let settings,
+              let proxyURL = URL(string: settings.sessionProxyUrl.trimmingCharacters(in: .whitespacesAndNewlines)),
+              let proxyHost = proxyURL.host else {
+            return session
+        }
+        let config = URLSessionConfiguration.default
+        config.timeoutIntervalForRequest = 30
+        let scheme = (proxyURL.scheme ?? "http").lowercased()
+        let port = proxyURL.port ?? (scheme == "https" ? 443 : 80)
+        config.connectionProxyDictionary = [
+            "HTTPEnable": true,
+            "HTTPProxy": proxyHost,
+            "HTTPPort": port,
+            "HTTPSEnable": true,
+            "HTTPSProxy": proxyHost,
+            "HTTPSPort": port
+        ]
+        return URLSession(configuration: config, delegate: GFNTLSDelegate(), delegateQueue: nil)
     }
 
     private func parseJSON(_ data: Data) throws -> [String: Any] {
@@ -1725,7 +2153,9 @@ private actor GFNAPIClient {
         streamProfile: StreamVideoProfile,
         streamingBaseUrl: String? = nil,
         launchAppIdOverride: String? = nil,
-        launcherName: String = "Auto"
+        launcherName: String = "Auto",
+        deviceId: String,
+        accountLinked: Bool = true
     ) async throws -> ActiveSession {
         let resolvedLaunchAppId = launchAppIdOverride ?? game.launchAppId
         guard let launchAppId = resolvedLaunchAppId, !launchAppId.isEmpty else {
@@ -1746,10 +2176,11 @@ private actor GFNAPIClient {
             settings: settings,
             profile: streamProfile,
             launcherName: launcherName,
-            deviceProfile: deviceProfile
+            deviceProfile: deviceProfile,
+            deviceHashId: deviceId,
+            accountLinked: accountLinked
         )
         let clientId = UUID().uuidString
-        let deviceId = UUID().uuidString
         let (data, response) = try await request(
             url: url,
             method: "POST",
@@ -1760,7 +2191,8 @@ private actor GFNAPIClient {
                 includeOrigin: true,
                 deviceProfile: deviceProfile
             ),
-            body: body
+            body: body,
+            sessionSettings: settings
         )
         guard response.statusCode == 200 else {
             let text = String(data: data, encoding: .utf8) ?? "unknown"
@@ -1776,7 +2208,7 @@ private actor GFNAPIClient {
         let sessionObj = json["session"] as? [String: Any] ?? [:]
         let sessionId = sessionObj["sessionId"] as? String ?? UUID().uuidString
         let status = sessionObj["status"] as? Int ?? 1
-        let queue = sessionObj["queuePosition"] as? Int
+        let queue = Self.extractQueuePosition(sessionObj: sessionObj)
         let seatSetupStep = Self.extractSeatSetupStep(sessionObj: sessionObj)
         let control = sessionObj["sessionControlInfo"] as? [String: Any]
         let serverIp = Self.extractServerIp(sessionObj: sessionObj) ?? normalizedEndpointHost(from: control?["ip"])
@@ -1801,25 +2233,40 @@ private actor GFNAPIClient {
             streamingBaseUrl: base,
             clientId: clientId,
             deviceId: deviceId,
-            adState: adState
+            adState: adState,
+            gpuType: sessionObj["gpuType"] as? String,
+            negotiatedStreamProfile: Self.extractNegotiatedStreamProfile(sessionObj: sessionObj),
+            requestedStreamingFeatures: Self.extractStreamingFeatures(
+                (sessionObj["sessionRequestData"] as? [String: Any])?["requestedStreamingFeatures"] as? [String: Any]
+            ),
+            finalizedStreamingFeatures: Self.extractStreamingFeatures(sessionObj["finalizedStreamingFeatures"] as? [String: Any])
         )
     }
 
-    func pollSession(session: AuthSession, activeSession: ActiveSession) async throws -> ActiveSession {
+    func pollSession(
+        session: AuthSession,
+        activeSession: ActiveSession,
+        settings: AppSettings? = nil
+    ) async throws -> ActiveSession {
         let primaryBase = Self.resolvePollBase(streamingBaseUrl: activeSession.streamingBaseUrl, serverIp: activeSession.serverIp)
         do {
-            return try await pollSession(session: session, activeSession: activeSession, base: primaryBase)
+            return try await pollSession(session: session, activeSession: activeSession, base: primaryBase, settings: settings)
         } catch {
             // Some zones intermittently fail when polling through the resolved host (e.g. direct IP).
             // Retry once through the canonical zone base before surfacing the failure.
             guard primaryBase != activeSession.streamingBaseUrl else {
                 throw error
             }
-            return try await pollSession(session: session, activeSession: activeSession, base: activeSession.streamingBaseUrl)
+            return try await pollSession(session: session, activeSession: activeSession, base: activeSession.streamingBaseUrl, settings: settings)
         }
     }
 
-    private func pollSession(session: AuthSession, activeSession: ActiveSession, base: String) async throws -> ActiveSession {
+    private func pollSession(
+        session: AuthSession,
+        activeSession: ActiveSession,
+        base: String,
+        settings: AppSettings?
+    ) async throws -> ActiveSession {
         let token = session.tokens.idToken ?? session.tokens.accessToken
         let url = URL(string: "\(base)/v2/session/\(activeSession.id)")!
         let (data, response) = try await request(
@@ -1830,7 +2277,8 @@ private actor GFNAPIClient {
                 clientId: activeSession.clientId,
                 deviceId: activeSession.deviceId,
                 includeOrigin: false
-            )
+            ),
+            sessionSettings: settings
         )
         guard response.statusCode == 200 else {
             let text = String(data: data, encoding: .utf8) ?? "unknown"
@@ -1847,8 +2295,7 @@ private actor GFNAPIClient {
 
         let sessionObj = json["session"] as? [String: Any] ?? [:]
         let status = sessionObj["status"] as? Int ?? activeSession.status
-        let queue = (sessionObj["queuePosition"] as? Int) ??
-            ((sessionObj["seatSetupInfo"] as? [String: Any])?["queuePosition"] as? Int)
+        let queue = Self.extractQueuePosition(sessionObj: sessionObj)
         let seatSetupStep = Self.extractSeatSetupStep(sessionObj: sessionObj)
         let serverIp = Self.extractServerIp(sessionObj: sessionObj) ?? activeSession.serverIp
         if (status == 2 || status == 3),
@@ -1857,7 +2304,7 @@ private actor GFNAPIClient {
            let baseHost = URL(string: base)?.host,
            Self.isZoneHostname(baseHost) {
             do {
-                return try await pollSession(session: session, activeSession: activeSession, base: "https://\(serverIp)")
+                return try await pollSession(session: session, activeSession: activeSession, base: "https://\(serverIp)", settings: settings)
             } catch {
                 // Zone polling still contains usable queue/session state. If direct
                 // server hydration fails, keep the current response instead of
@@ -1881,11 +2328,14 @@ private actor GFNAPIClient {
         if !iceServers.isEmpty {
             updated.iceServers = iceServers
         }
-        // Always replace ad state with the latest poll value. When the backend omits
-        // ad fields after queue/setup, we must clear stale ad requirements so the
-        // streamer handoff can proceed.
         updated.adState = adState
-        return updated
+        updated.gpuType = sessionObj["gpuType"] as? String ?? updated.gpuType
+        updated.negotiatedStreamProfile = Self.extractNegotiatedStreamProfile(sessionObj: sessionObj) ?? updated.negotiatedStreamProfile
+        updated.requestedStreamingFeatures = Self.extractStreamingFeatures(
+            (sessionObj["sessionRequestData"] as? [String: Any])?["requestedStreamingFeatures"] as? [String: Any]
+        ) ?? updated.requestedStreamingFeatures
+        updated.finalizedStreamingFeatures = Self.extractStreamingFeatures(sessionObj["finalizedStreamingFeatures"] as? [String: Any]) ?? updated.finalizedStreamingFeatures
+        return mergeQueueSessionState(previous: activeSession, next: updated)
     }
 
     func reportSessionAd(
@@ -1896,7 +2346,8 @@ private actor GFNAPIClient {
         watchedTimeInMs: Int? = nil,
         pausedTimeInMs: Int? = nil,
         cancelReason: String? = nil,
-        errorInfo: String? = nil
+        errorInfo: String? = nil,
+        settings: AppSettings? = nil
     ) async throws -> ActiveSession {
         let token = session.tokens.idToken ?? session.tokens.accessToken
         let base = Self.resolvePollBase(streamingBaseUrl: activeSession.streamingBaseUrl, serverIp: activeSession.serverIp)
@@ -1939,7 +2390,8 @@ private actor GFNAPIClient {
                 deviceId: activeSession.deviceId,
                 includeOrigin: true
             ),
-            body: body
+            body: body,
+            sessionSettings: settings
         )
         guard response.statusCode == 200 else {
             let text = String(data: data, encoding: .utf8) ?? "unknown"
@@ -1955,12 +2407,15 @@ private actor GFNAPIClient {
         let sessionObj = json["session"] as? [String: Any] ?? [:]
         var updated = activeSession
         updated.status = sessionObj["status"] as? Int ?? updated.status
-        updated.queuePosition = (sessionObj["queuePosition"] as? Int) ??
-            ((sessionObj["seatSetupInfo"] as? [String: Any])?["queuePosition"] as? Int) ??
-            updated.queuePosition
+        updated.queuePosition = Self.extractQueuePosition(sessionObj: sessionObj) ?? updated.queuePosition
         updated.seatSetupStep = Self.extractSeatSetupStep(sessionObj: sessionObj) ?? updated.seatSetupStep
-        // Keep ad state in sync with server response; clear stale queue-ad state when omitted.
         updated.adState = Self.extractAdState(sessionObj: sessionObj)
+        updated.gpuType = sessionObj["gpuType"] as? String ?? updated.gpuType
+        updated.negotiatedStreamProfile = Self.extractNegotiatedStreamProfile(sessionObj: sessionObj) ?? updated.negotiatedStreamProfile
+        updated.requestedStreamingFeatures = Self.extractStreamingFeatures(
+            (sessionObj["sessionRequestData"] as? [String: Any])?["requestedStreamingFeatures"] as? [String: Any]
+        ) ?? updated.requestedStreamingFeatures
+        updated.finalizedStreamingFeatures = Self.extractStreamingFeatures(sessionObj["finalizedStreamingFeatures"] as? [String: Any]) ?? updated.finalizedStreamingFeatures
         return updated
     }
 
@@ -2014,10 +2469,15 @@ private actor GFNAPIClient {
     func fetchActiveSessions(
         session: AuthSession,
         streamingBaseUrl: String,
-        vpcId: String
+        vpcId: String,
+        settings: AppSettings? = nil,
+        deviceId: String? = nil
     ) async throws -> [RemoteSessionCandidate] {
         let token = session.tokens.idToken ?? session.tokens.accessToken
         let base = Self.normalizedStreamingBase(streamingBaseUrl, vpcId: vpcId)
+        let requestDeviceId = deviceId?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+            ? deviceId!
+            : UUID().uuidString
         let url = URL(string: "\(base)/v2/session")!
         let (data, response) = try await request(
             url: url,
@@ -2025,9 +2485,10 @@ private actor GFNAPIClient {
             headers: Self.cloudMatchHeaders(
                 token: token,
                 clientId: UUID().uuidString,
-                deviceId: UUID().uuidString,
+                deviceId: requestDeviceId,
                 includeOrigin: false
-            )
+            ),
+            sessionSettings: settings
         )
         guard response.statusCode == 200 else { return [] }
         let json = try parseJSON(data)
@@ -2057,6 +2518,7 @@ private actor GFNAPIClient {
         let clientId = UUID().uuidString
         let claimDeviceId = deviceId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? UUID().uuidString : deviceId
         let deviceProfile = Self.streamDeviceProfile(for: game.title, settings: settings)
+        let streamProfile = StreamSettingsResolver.profile(for: settings, membershipTier: session.user.membershipTier)
         let zoneBase = Self.normalizedStreamingBase(streamingBaseUrl, vpcId: vpcId)
         var effectiveServerIp = Self.remoteSessionTargetHost(
             serverIp: candidate.serverIp,
@@ -2076,7 +2538,8 @@ private actor GFNAPIClient {
                         deviceId: claimDeviceId,
                         includeOrigin: false,
                         deviceProfile: deviceProfile
-                    )
+                    ),
+                    sessionSettings: settings
                 )
                 if prefetchResponse.statusCode == 200,
                    let prefetchJSON = try? parseJSON(prefetchData),
@@ -2102,8 +2565,9 @@ private actor GFNAPIClient {
                     deviceId: claimDeviceId,
                     includeOrigin: false,
                     deviceProfile: deviceProfile
+                    ),
+                    sessionSettings: settings
                 )
-            )
             let validationJSON = validationResponse.statusCode == 200 ? (try? parseJSON(validationData)) ?? [:] : [:]
             validationSessionObj = validationJSON["session"] as? [String: Any] ?? [:]
             preClaimStatus = validationSessionObj["status"] as? Int
@@ -2121,6 +2585,7 @@ private actor GFNAPIClient {
                 sessionId: candidate.id,
                 appId: candidate.appId ?? game.launchAppId ?? "0",
                 settings: settings,
+                profile: streamProfile,
                 deviceProfile: deviceProfile,
                 deviceHashId: claimDeviceId
             )
@@ -2135,7 +2600,8 @@ private actor GFNAPIClient {
                     includeOrigin: true,
                     deviceProfile: deviceProfile
                 ),
-                body: claimBody
+                body: claimBody,
+                sessionSettings: settings
             )
             guard claimResponse.statusCode == 200 else {
                 let text = String(data: claimData, encoding: .utf8) ?? "unknown"
@@ -2159,7 +2625,7 @@ private actor GFNAPIClient {
             game: game,
             startedAt: .now,
             status: (resolvedSessionObj["status"] as? Int) ?? candidate.status,
-            queuePosition: nil,
+            queuePosition: Self.extractQueuePosition(sessionObj: resolvedSessionObj),
             seatSetupStep: Self.extractSeatSetupStep(sessionObj: resolvedSessionObj),
             serverIp: claimServerIp,
             mediaIp: mediaConnectionInfo.ip,
@@ -2171,11 +2637,17 @@ private actor GFNAPIClient {
             streamingBaseUrl: zoneBase,
             clientId: clientId,
             deviceId: claimDeviceId,
-            adState: Self.extractAdState(sessionObj: resolvedSessionObj)
+            adState: Self.extractAdState(sessionObj: resolvedSessionObj),
+            gpuType: resolvedSessionObj["gpuType"] as? String,
+            negotiatedStreamProfile: Self.extractNegotiatedStreamProfile(sessionObj: resolvedSessionObj),
+            requestedStreamingFeatures: Self.extractStreamingFeatures(
+                (resolvedSessionObj["sessionRequestData"] as? [String: Any])?["requestedStreamingFeatures"] as? [String: Any]
+            ),
+            finalizedStreamingFeatures: Self.extractStreamingFeatures(resolvedSessionObj["finalizedStreamingFeatures"] as? [String: Any])
         )
 
         for _ in 0..<45 {
-            let polled = try await pollSession(session: session, activeSession: active)
+            let polled = try await pollSession(session: session, activeSession: active, settings: settings)
             active = polled
             if active.status == 2 || active.status == 3 {
                 return active
@@ -2430,8 +2902,83 @@ private actor GFNAPIClient {
             sessionAds: ads,
             ads: ads,
             opportunity: opportunity,
-            serverSentEmptyAds: sessionObj["sessionAds"] is NSNull
+            serverSentEmptyAds: sessionObj["sessionAds"] == nil || sessionObj["sessionAds"] is NSNull
         )
+    }
+
+    private static func extractQueuePosition(sessionObj: [String: Any]) -> Int? {
+        toPositiveInt(sessionObj["queuePosition"])
+            ?? toPositiveInt((sessionObj["seatSetupInfo"] as? [String: Any])?["queuePosition"])
+            ?? toPositiveInt((sessionObj["sessionProgress"] as? [String: Any])?["queuePosition"])
+            ?? toPositiveInt((sessionObj["progressInfo"] as? [String: Any])?["queuePosition"])
+    }
+
+    private static func extractStreamingFeatures(_ features: [String: Any]?) -> StreamingFeatures? {
+        guard let features else { return nil }
+        let normalized = StreamingFeatures(
+            reflex: toBoolean(features["reflex"]),
+            bitDepth: toPositiveInt(features["bitDepth"]),
+            cloudGsync: toBoolean(features["cloudGsync"]),
+            chromaFormat: toPositiveInt(features["chromaFormat"]),
+            enabledL4S: toBoolean(features["enabledL4S"]),
+            trueHdr: toBoolean(features["trueHdr"])
+        )
+        if normalized.reflex == nil,
+           normalized.bitDepth == nil,
+           normalized.cloudGsync == nil,
+           normalized.chromaFormat == nil,
+           normalized.enabledL4S == nil,
+           normalized.trueHdr == nil {
+            return nil
+        }
+        return normalized
+    }
+
+    private static func extractNegotiatedStreamProfile(sessionObj: [String: Any]) -> NegotiatedStreamProfile? {
+        let requested = (sessionObj["sessionRequestData"] as? [String: Any])?["requestedStreamingFeatures"] as? [String: Any]
+        let finalized = sessionObj["finalizedStreamingFeatures"] as? [String: Any]
+        let monitor = ((sessionObj["sessionRequestData"] as? [String: Any])?["clientRequestMonitorSettings"] as? [[String: Any]])?.first
+            ?? (sessionObj["monitorSettings"] as? [[String: Any]])?.first
+        let width = toPositiveInt(monitor?["widthInPixels"])
+        let height = toPositiveInt(monitor?["heightInPixels"])
+        let bitDepth = toPositiveInt(finalized?["bitDepth"]) ?? toPositiveInt(requested?["bitDepth"])
+        let chromaFormat = toPositiveInt(finalized?["chromaFormat"]) ?? toPositiveInt(requested?["chromaFormat"])
+        let colorQuality: StreamColorQuality? = {
+            switch (bitDepth, chromaFormat) {
+            case (10, 2):
+                return .tenBit444
+            case (10, _):
+                return .tenBit420
+            case (_, 2):
+                return .eightBit444
+            case (0, _):
+                return .eightBit420
+            default:
+                return nil
+            }
+        }()
+        let resolution = width.flatMap { width in
+            height.map { "\(width)x\($0)" }
+        }
+        let normalized = NegotiatedStreamProfile(
+            resolution: resolution,
+            fps: toPositiveInt(monitor?["framesPerSecond"]),
+            codec: toOptionalString(sessionObj["codec"]) ?? toOptionalString(finalized?["codec"]) ?? toOptionalString(requested?["codec"]),
+            colorQuality: colorQuality,
+            enableL4S: toBoolean(finalized?["enabledL4S"]) ?? toBoolean(requested?["enabledL4S"]),
+            enableCloudGsync: toBoolean(finalized?["cloudGsync"]) ?? toBoolean(requested?["cloudGsync"]),
+            enableReflex: toBoolean(finalized?["reflex"]) ?? toBoolean(requested?["reflex"])
+        )
+        if normalized.resolution == nil,
+           normalized.fps == nil,
+           normalized.codec == nil,
+           normalized.colorQuality == nil,
+           normalized.enableL4S == nil,
+           normalized.enableCloudGsync == nil,
+           normalized.enableReflex == nil {
+            return nil
+        }
+        return normalized
     }
 
     private static func resolveSignaling(sessionObj: [String: Any], fallbackServerIp: String?) -> (server: String?, url: String?) {
@@ -2770,9 +3317,9 @@ private actor GFNAPIClient {
                     let id = "\(appId):\(selectedVariantId ?? "default")"
                     let imageUrl: String? = {
                         guard let images = app["images"] as? [String: Any] else { return nil }
-                        let raw = (images["GAME_BOX_ART"] as? String)
-                            ?? (images["TV_BANNER"] as? String)
+                        let raw = (images["TV_BANNER"] as? String)
                             ?? (images["HERO_IMAGE"] as? String)
+                            ?? (images["GAME_BOX_ART"] as? String)
                         return optimizedImageURL(raw)
                     }()
                     if seen.contains(id) { continue }
@@ -2886,9 +3433,9 @@ private actor GFNAPIClient {
         )
         let imageUrl: String? = {
             guard let images = app["images"] as? [String: Any] else { return game.imageUrl }
-            let raw = (images["GAME_BOX_ART"] as? String)
-                ?? (images["TV_BANNER"] as? String)
+            let raw = (images["TV_BANNER"] as? String)
                 ?? (images["HERO_IMAGE"] as? String)
+                ?? (images["GAME_BOX_ART"] as? String)
             return optimizedImageURL(raw) ?? game.imageUrl
         }()
 
@@ -3036,8 +3583,16 @@ private actor GFNAPIClient {
         settings: AppSettings,
         profile: StreamVideoProfile,
         launcherName: String,
-        deviceProfile: StreamDeviceProfile
+        deviceProfile: StreamDeviceProfile,
+        deviceHashId: String,
+        accountLinked: Bool
     ) -> Data {
+        let hdrEnabled = settings.hdrEnabled
+        let colorQuality = StreamSettingsResolver.colorQuality(for: settings)
+        let bitDepth = hdrEnabled ? 10 : colorQuality.bitDepth
+        let chromaFormat = colorQuality.chromaFormat
+        let hdrDisplayDataValue: Any = hdrEnabled ? hdrDisplayData() : NSNull()
+        let hdrCapabilitiesValue: Any = hdrEnabled ? hdrCapabilities() : NSNull()
         let metadata: [[String: String]] = [
             ["key": "SubSessionId", "value": UUID().uuidString],
             ["key": "wssignaling", "value": "1"],
@@ -3056,27 +3611,28 @@ private actor GFNAPIClient {
                 "networkTestSessionId": NSNull(),
                 "parentSessionId": NSNull(),
                 "clientIdentification": deviceProfile.clientIdentification,
-                "deviceHashId": UUID().uuidString,
+                "deviceHashId": deviceHashId,
                 "clientVersion": "30.0",
                 "sdkVersion": "1.0",
                 "streamerVersion": 1,
                 "clientPlatformName": deviceProfile.clientPlatformName,
                 "clientRequestMonitorSettings": [[
+                    "monitorId": 0,
+                    "positionX": 0,
+                    "positionY": 0,
                     "widthInPixels": profile.width,
                     "heightInPixels": profile.height,
                     "framesPerSecond": profile.fps,
-                    "sdrHdrMode": 0,
-                    "displayData": [
-                        "desiredContentMaxLuminance": 0,
-                        "desiredContentMinLuminance": 0,
-                        "desiredContentMaxFrameAverageLuminance": 0
-                    ],
+                    "sdrHdrMode": hdrEnabled ? 1 : 0,
+                    "displayData": hdrDisplayDataValue,
+                    "hdr10PlusGamingData": NSNull(),
                     "dpi": 100
                 ]],
                 "useOps": true,
                 "audioMode": 2,
                 "metaData": metadata,
-                "sdrHdrMode": 0,
+                "sdrHdrMode": hdrEnabled ? 1 : 0,
+                "clientDisplayHdrCapabilities": hdrCapabilitiesValue,
                 "surroundAudioInfo": 0,
                 "remoteControllersBitmap": 0,
                 "clientTimezoneOffset": TimeZone.current.secondsFromGMT() * 1000,
@@ -3084,28 +3640,16 @@ private actor GFNAPIClient {
                 "appLaunchMode": 1,
                 "secureRTSPSupported": false,
                 "partnerCustomData": "",
-                "accountLinked": true,
+                "accountLinked": accountLinked,
                 "enablePersistingInGameSettings": true,
                 "userAge": 26,
-                "requestedStreamingFeatures": [
-                    "reflex": profile.fps >= 120,
-                    "bitDepth": 0,
-                    "cloudGsync": false,
-                    "enabledL4S": settings.enableL4S,
-                    "mouseMovementFlags": 0,
-                    "trueHdr": false,
-                    "supportedHidDevices": 0,
-                    "profile": 0,
-                    "fallbackToLogicalResolution": false,
-                    "hidDevices": NSNull(),
-                    "chromaFormat": 0,
-                    "prefilterMode": 0,
-                    "prefilterSharpness": 0,
-                    "prefilterNoiseReduction": 0,
-                    "hudStreamingMode": 0,
-                    "sdrColorSpace": 2,
-                    "hdrColorSpace": 0
-                ]
+                "requestedStreamingFeatures": requestedStreamingFeatures(
+                    settings: settings,
+                    profile: profile,
+                    bitDepth: bitDepth,
+                    chromaFormat: chromaFormat,
+                    hdrEnabled: hdrEnabled
+                )
             ]
         ]
         return (try? JSONSerialization.data(withJSONObject: body)) ?? Data()
@@ -3115,15 +3659,24 @@ private actor GFNAPIClient {
         sessionId: String,
         appId: String,
         settings: AppSettings,
+        profile: StreamVideoProfile,
         deviceProfile: StreamDeviceProfile,
         deviceHashId: String
     ) -> Data {
+        let hdrEnabled = settings.hdrEnabled
+        let colorQuality = StreamSettingsResolver.colorQuality(for: settings)
+        let bitDepth = hdrEnabled ? 10 : colorQuality.bitDepth
+        let chromaFormat = colorQuality.chromaFormat
+        let hdrDisplayDataValue: Any = hdrEnabled ? hdrDisplayData() : NSNull()
+        let hdrCapabilitiesValue: Any = hdrEnabled ? hdrCapabilities() : NSNull()
         let metadata: [[String: String]] = [
             ["key": "SubSessionId", "value": UUID().uuidString],
             ["key": "wssignaling", "value": "1"],
             ["key": "GSStreamerType", "value": "WebRTC"],
             ["key": "networkType", "value": "Unknown"],
-            ["key": "ClientImeSupport", "value": "0"]
+            ["key": "ClientImeSupport", "value": "0"],
+            ["key": "clientPhysicalResolution", "value": "{\"horizontalPixels\":\(profile.width),\"verticalPixels\":\(profile.height)}"],
+            ["key": "surroundAudioInfo", "value": "2"]
         ] + deviceProfile.metadata
         let body: [String: Any] = [
             "action": 2,
@@ -3131,13 +3684,25 @@ private actor GFNAPIClient {
             "sessionRequestData": [
                 "audioMode": 2,
                 "remoteControllersBitmap": 0,
-                "sdrHdrMode": 0,
+                "sdrHdrMode": hdrEnabled ? 1 : 0,
                 "networkTestSessionId": NSNull(),
                 "availableSupportedControllers": [],
                 "clientVersion": "30.0",
                 "deviceHashId": deviceHashId,
                 "internalTitle": NSNull(),
                 "clientPlatformName": deviceProfile.clientPlatformName,
+                "clientRequestMonitorSettings": [[
+                    "monitorId": 0,
+                    "positionX": 0,
+                    "positionY": 0,
+                    "widthInPixels": profile.width,
+                    "heightInPixels": profile.height,
+                    "framesPerSecond": profile.fps,
+                    "sdrHdrMode": hdrEnabled ? 1 : 0,
+                    "displayData": hdrDisplayDataValue,
+                    "hdr10PlusGamingData": NSNull(),
+                    "dpi": 100
+                ]],
                 "metaData": metadata,
                 "surroundAudioInfo": 0,
                 "clientTimezoneOffset": TimeZone.current.secondsFromGMT() * 1000,
@@ -3149,26 +3714,67 @@ private actor GFNAPIClient {
                 "sdkVersion": "1.0",
                 "enhancedStreamMode": 1,
                 "useOps": true,
-                "clientDisplayHdrCapabilities": NSNull(),
+                "clientDisplayHdrCapabilities": hdrCapabilitiesValue,
                 "accountLinked": true,
                 "partnerCustomData": "",
                 "enablePersistingInGameSettings": true,
                 "secureRTSPSupported": false,
                 "userAge": 26,
-                "requestedStreamingFeatures": [
-                    "reflex": false,
-                    "bitDepth": 0,
-                    "cloudGsync": false,
-                    "profile": 0,
-                    "fallbackToLogicalResolution": false,
-                    "chromaFormat": 0,
-                    "prefilterMode": 0,
-                    "hudStreamingMode": 0
-                ]
+                "requestedStreamingFeatures": requestedStreamingFeatures(
+                    settings: settings,
+                    profile: profile,
+                    bitDepth: bitDepth,
+                    chromaFormat: chromaFormat,
+                    hdrEnabled: hdrEnabled
+                )
             ],
             "metaData": []
         ]
         return (try? JSONSerialization.data(withJSONObject: body)) ?? Data()
+    }
+
+    private static func requestedStreamingFeatures(
+        settings: AppSettings,
+        profile: StreamVideoProfile,
+        bitDepth: Int,
+        chromaFormat: Int,
+        hdrEnabled: Bool
+    ) -> [String: Any] {
+        [
+            "reflex": settings.enableCloudGsync || profile.fps >= 60,
+            "bitDepth": bitDepth,
+            "cloudGsync": settings.enableCloudGsync,
+            "enabledL4S": settings.enableL4S,
+            "trueHdr": hdrEnabled,
+            "mouseMovementFlags": 0,
+            "supportedHidDevices": 0,
+            "profile": 0,
+            "fallbackToLogicalResolution": false,
+            "hidDevices": NSNull(),
+            "chromaFormat": chromaFormat,
+            "prefilterMode": 0,
+            "prefilterSharpness": 0,
+            "prefilterNoiseReduction": 0,
+            "hudStreamingMode": 0,
+            "sdrColorSpace": 2,
+            "hdrColorSpace": hdrEnabled ? 4 : 0
+        ]
+    }
+
+    private static func hdrDisplayData() -> [String: Any] {
+        [
+            "desiredContentMaxLuminance": 1000,
+            "desiredContentMinLuminance": 0,
+            "desiredContentMaxFrameAverageLuminance": 500
+        ]
+    }
+
+    private static func hdrCapabilities() -> [String: Any] {
+        [
+            "version": 1,
+            "hdrEdrSupportedFlagsInUint32": 1,
+            "staticMetadataDescriptorId": 0
+        ]
     }
 
     private static func streamDeviceProfile(for gameTitle: String, settings: AppSettings) -> StreamDeviceProfile {
@@ -3248,7 +3854,7 @@ final class OpenNOWStore: ObservableObject {
     private let logger = Logger(subsystem: "OpenNOWiOS", category: "Session")
     private let defaults = UserDefaults.standard
     private var authSession: AuthSession?
-    private var telemetryTask: Task<Void, Never>?
+    private var sessionElapsedTask: Task<Void, Never>?
     private var sessionPollTask: Task<Void, Never>?
     private var launchTask: Task<Void, Never>?
     #if os(tvOS)
@@ -3270,12 +3876,14 @@ final class OpenNOWStore: ObservableObject {
     private let activeSessionSnapshotKey = "OpenNOW.iOS.activeSession"
     private let deviceIdKey = "OpenNOW.iOS.deviceId"
     private let setupPhaseTimeoutSeconds: TimeInterval = 90
+    private let sessionRestoreMaxAgeSeconds: TimeInterval = 12 * 60 * 60
 
     init() {
         var loadedSettings = Self.loadSettings(from: defaults) ?? .default
         if loadedSettings.preferredCodec == "HEVC" {
             loadedSettings.preferredCodec = "H265"
         }
+        loadedSettings.normalizeStreamDefaults()
         settings = loadedSettings
         authSession = Self.loadAuthSession(from: defaults)
         activeSession = Self.loadActiveSession(from: defaults)
@@ -3298,7 +3906,7 @@ final class OpenNOWStore: ObservableObject {
 
     deinit {
         launchTask?.cancel()
-        telemetryTask?.cancel()
+        sessionElapsedTask?.cancel()
         sessionPollTask?.cancel()
         #if os(tvOS)
         if let tvAuthLogObserver {
@@ -3405,7 +4013,7 @@ final class OpenNOWStore: ObservableObject {
         activeSession = nil
         setStreamSession(nil, reason: "signOut")
         subscription = nil
-        telemetryTask?.cancel()
+        sessionElapsedTask?.cancel()
         sessionPollTask?.cancel()
         endSessionPollBackgroundTask()
         sessionElapsedSeconds = 0
@@ -3440,7 +4048,9 @@ final class OpenNOWStore: ObservableObject {
             resumableSessions = (try? await api.fetchActiveSessions(
                 session: refreshed,
                 streamingBaseUrl: refreshed.provider.streamingServiceUrl,
-                vpcId: vpcId
+                vpcId: vpcId,
+                settings: settings,
+                deviceId: persistentDeviceId()
             )) ?? []
             if let sub {
                 user?.membershipTier = sub.membershipTier
@@ -3472,16 +4082,93 @@ final class OpenNOWStore: ObservableObject {
         defer { isLaunchingSession = false }
         do {
             logger.info("Launch requested game=\(game.title, privacy: .public) zoneUrl=\(zoneUrl ?? "default", privacy: .public)")
-            let started = try await api.startSession(
-                session: session,
-                game: game,
+            let refreshed = try await api.refreshSession(session)
+            authSession = refreshed
+            user = refreshed.user
+            persistAuthSession(refreshed)
+
+            let effectiveLaunchOption = effectiveLaunchOption(for: game, requested: launchOption)
+            let launchAppId = effectiveLaunchOption?.appId ?? game.launchAppId
+            guard let launchAppId, !launchAppId.isEmpty else {
+                throw NSError(
+                    domain: "OpenNOW.Session",
+                    code: 30,
+                    userInfo: [NSLocalizedDescriptionKey: "Selected game has no launch app ID"]
+                )
+            }
+
+            let deviceId = persistentDeviceId()
+            let baseUrl = zoneUrl ?? refreshed.provider.streamingServiceUrl
+            let activeCandidates = (try? await api.fetchActiveSessions(
+                session: refreshed,
+                streamingBaseUrl: baseUrl,
                 vpcId: cachedVpcId,
                 settings: settings,
-                streamProfile: StreamSettingsResolver.profile(for: settings),
-                streamingBaseUrl: zoneUrl,
-                launchAppIdOverride: launchOption?.appId,
-                launcherName: launchOption?.storefront ?? "Auto"
-            )
+                deviceId: deviceId
+            )) ?? []
+            resumableSessions = activeCandidates
+
+            let readyCandidate = activeCandidates.first {
+                $0.appId == launchAppId && $0.serverIp != nil && ($0.status == 2 || $0.status == 3)
+            }
+            let launchingCandidate = activeCandidates.first {
+                $0.appId == launchAppId && $0.status == 1
+            } ?? activeCandidates.first { $0.status == 1 }
+
+            let started: ActiveSession
+            if let readyCandidate {
+                started = try await api.claimSession(
+                    session: refreshed,
+                    candidate: readyCandidate,
+                    game: game,
+                    streamingBaseUrl: baseUrl,
+                    vpcId: cachedVpcId,
+                    settings: settings,
+                    deviceId: deviceId
+                )
+            } else if let launchingCandidate {
+                let pending = ActiveSession(
+                    id: launchingCandidate.id,
+                    game: game,
+                    startedAt: .now,
+                    status: launchingCandidate.status,
+                    queuePosition: nil,
+                    seatSetupStep: nil,
+                    serverIp: launchingCandidate.serverIp,
+                    mediaIp: nil,
+                    mediaPort: 0,
+                    signalingServer: nil,
+                    signalingUrl: nil,
+                    iceServers: [],
+                    zone: cachedVpcId,
+                    streamingBaseUrl: baseUrl,
+                    clientId: UUID().uuidString,
+                    deviceId: deviceId,
+                    adState: nil
+                )
+                let hydrated = (try? await api.pollSession(
+                    session: refreshed,
+                    activeSession: pending,
+                    settings: settings
+                )) ?? pending
+                started = mergeQueueSessionState(previous: pending, next: hydrated)
+            } else {
+                started = try await api.startSession(
+                    session: refreshed,
+                    game: game,
+                    vpcId: cachedVpcId,
+                    settings: settings,
+                    streamProfile: StreamSettingsResolver.profile(
+                        for: settings,
+                        membershipTier: subscription?.membershipTier ?? user?.membershipTier
+                    ),
+                    streamingBaseUrl: baseUrl,
+                    launchAppIdOverride: launchAppId,
+                    launcherName: effectiveLaunchOption?.storefront ?? "Auto",
+                    deviceId: deviceId,
+                    accountLinked: shouldSendAccountLinked(game: game, launchOption: effectiveLaunchOption)
+                )
+            }
             activeSession = started
             adReportStateById = [:]
             adStartedAtById = [:]
@@ -3515,7 +4202,9 @@ final class OpenNOWStore: ObservableObject {
             resumableSessions = try await api.fetchActiveSessions(
                 session: refreshed,
                 streamingBaseUrl: refreshed.provider.streamingServiceUrl,
-                vpcId: cachedVpcId
+                vpcId: cachedVpcId,
+                settings: settings,
+                deviceId: persistentDeviceId()
             )
         } catch {
             lastError = "Could not fetch active sessions: \(error.localizedDescription)"
@@ -3604,6 +4293,38 @@ final class OpenNOWStore: ObservableObject {
         launchTask = Task { await self.resumeSession(candidate: candidate) }
     }
 
+    var primaryRemoteJumpBackSession: RemoteSessionCandidate? {
+        let activeId = activeSession?.id
+        return resumableSessions.first {
+            $0.id != activeId && ($0.status == 1 || $0.status == 2 || $0.status == 3)
+        }
+    }
+
+    var canJumpBackToSession: Bool {
+        activeSession != nil || primaryRemoteJumpBackSession != nil
+    }
+
+    func jumpBackToSession() {
+        if let active = activeSession {
+            restoreActiveSessionSurface(active)
+            return
+        }
+
+        if let candidate = primaryRemoteJumpBackSession {
+            scheduleResume(candidate: candidate)
+            return
+        }
+
+        launchTask?.cancel()
+        launchTask = Task { [weak self] in
+            guard let self else { return }
+            await self.refreshRemoteSessions()
+            if let candidate = self.primaryRemoteJumpBackSession {
+                self.scheduleResume(candidate: candidate)
+            }
+        }
+    }
+
     func endSession() async {
         launchTask?.cancel()
         launchTask = nil
@@ -3613,7 +4334,7 @@ final class OpenNOWStore: ObservableObject {
         guard let session = authSession, let active = activeSession else {
             activeSession = nil
             setStreamSession(nil, reason: "endSession.noActiveSession")
-            telemetryTask?.cancel()
+            sessionElapsedTask?.cancel()
             sessionPollTask?.cancel()
             endSessionPollBackgroundTask()
             sessionElapsedSeconds = 0
@@ -3632,7 +4353,7 @@ final class OpenNOWStore: ObservableObject {
         setStreamSession(nil, reason: "endSession.completed")
         adReportStateById = [:]
         adStartedAtById = [:]
-        telemetryTask?.cancel()
+        sessionElapsedTask?.cancel()
         sessionPollTask?.cancel()
         endSessionPollBackgroundTask()
         sessionElapsedSeconds = 0
@@ -3646,11 +4367,8 @@ final class OpenNOWStore: ObservableObject {
     }
 
     func maximizeQueueOverlay() {
-        guard activeSession != nil else { return }
-        withAnimation(.easeInOut(duration: 0.32)) {
-            showStreamLoading = true
-            queueOverlayVisible = true
-        }
+        guard let active = activeSession else { return }
+        restoreActiveSessionSurface(active)
     }
 
     var canReopenStreamer: Bool {
@@ -3739,8 +4457,26 @@ final class OpenNOWStore: ObservableObject {
     func dismissStreamer() {
         setStreamSession(nil, reason: "dismissStreamer")
         // Note: poll task stays cancelled (stopped in handoff).
-        // QueueStatusPill reflects last known activeSession state.
-        // User can reopen via pill tap → reopenStreamer().
+        // The queue banner reflects last known activeSession state.
+        // User can reopen via the banner tap.
+    }
+
+    private func restoreActiveSessionSurface(_ session: ActiveSession) {
+        guard activeSession?.id == session.id else { return }
+        if canReopenStreamer {
+            reopenStreamer()
+            return
+        }
+        launchTask?.cancel()
+        withAnimation(.easeInOut(duration: 0.32)) {
+            showStreamLoading = true
+            queueOverlayVisible = true
+        }
+        if sessionPollTask == nil {
+            startSessionTasks()
+        } else {
+            syncTrackedSessionSurface()
+        }
     }
 
     func reopenStreamer() {
@@ -3771,7 +4507,12 @@ final class OpenNOWStore: ObservableObject {
     }
 
     func persistSettings() {
-        if let encoded = try? JSONEncoder().encode(settings) {
+        var normalized = settings
+        normalized.normalizeStreamDefaults()
+        if normalized != settings {
+            settings = normalized
+        }
+        if let encoded = try? JSONEncoder().encode(normalized) {
             defaults.set(encoded, forKey: settingsKey)
         }
     }
@@ -3793,9 +4534,51 @@ final class OpenNOWStore: ObservableObject {
         persistSettings()
     }
 
+    func launchOptions(for game: CloudGame) -> [GameLaunchOption] {
+        let options = game.launchOptions.filter { !$0.appId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        if !options.isEmpty {
+            return options
+        }
+        if let launchAppId = game.launchAppId, !launchAppId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return [GameLaunchOption(storefront: game.platform.isEmpty ? "Auto" : game.platform, appId: launchAppId, supportedControls: nil)]
+        }
+        return []
+    }
+
+    func defaultLaunchOption(for game: CloudGame) -> GameLaunchOption? {
+        guard let defaultId = settings.defaultGameVariantIds[game.id] else { return nil }
+        return launchOptions(for: game).first { $0.id == defaultId || $0.appId == defaultId }
+    }
+
+    func setDefaultGameVariant(game: CloudGame, option: GameLaunchOption?) {
+        if let option {
+            settings.defaultGameVariantIds[game.id] = option.id
+        } else {
+            settings.defaultGameVariantIds.removeValue(forKey: game.id)
+        }
+        persistSettings()
+    }
+
     func clearFavorites() {
         settings.favoriteGameIds.removeAll()
         persistSettings()
+    }
+
+    func clearDefaultGameVariants() {
+        settings.defaultGameVariantIds.removeAll()
+        persistSettings()
+    }
+
+    func resetSettings() {
+        settings = .default
+        settings.normalizeStreamDefaults()
+        persistSettings()
+        refreshTrackedSessionSurface()
+    }
+
+    func clearImageCache() {
+        OpenNOWImageCache.shared.removeAll()
+        URLCache.shared.removeAllCachedResponses()
     }
 
     func updateTouchControlLayout(_ layout: TouchControlLayout, profile: String) {
@@ -3863,23 +4646,37 @@ final class OpenNOWStore: ObservableObject {
         return settings.favoriteGameIds.compactMap { gamesById[$0] }
     }
 
+    private func effectiveLaunchOption(for game: CloudGame, requested: GameLaunchOption?) -> GameLaunchOption? {
+        if let requested {
+            return requested
+        }
+        return defaultLaunchOption(for: game)
+    }
+
+    private func shouldSendAccountLinked(game: CloudGame, launchOption: GameLaunchOption?) -> Bool {
+        let playType = game.playType?.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        if playType == "INSTALL_TO_PLAY" {
+            return false
+        }
+        let launcher = launchOption?.storefront.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        if launcher == "XBOX" || launcher == "MICROSOFT" {
+            return false
+        }
+        return true
+    }
+
     private func startSessionTasks() {
         setStreamSession(nil, reason: "startSessionTasks.reset")
         reopenToken = UUID()
-        telemetryTask?.cancel()
+        sessionElapsedTask?.cancel()
         sessionPollTask?.cancel()
         endSessionPollBackgroundTask()
 
-        telemetryTask = Task { [weak self] in
+        telemetry = SessionTelemetry(pingMs: 0, fps: 0, packetLossPercent: 0, bitrateMbps: 0)
+        sessionElapsedTask = Task { [weak self] in
             guard let self else { return }
             while !Task.isCancelled {
                 if let active = self.activeSession {
-                    let now = Date().timeIntervalSince1970
-                    let ping = 10 + Int((sin(now) + 1) * 8)
-                    let fps = max(30, self.settings.preferredFPS - Int((cos(now * 0.8) + 1) * 2))
-                    let loss = max(0.0, min(1.0, (sin(now * 0.35) + 1) * 0.16))
-                    let bitrate = max(8.0, min(75.0, 30.0 + sin(now * 0.4) * 12.0))
-                    self.telemetry = SessionTelemetry(pingMs: ping, fps: fps, packetLossPercent: loss, bitrateMbps: bitrate)
                     self.sessionElapsedSeconds = Int(Date().timeIntervalSince(active.startedAt))
                 }
                 try? await Task.sleep(for: .seconds(1))
@@ -3906,7 +4703,11 @@ final class OpenNOWStore: ObservableObject {
                     let refreshed = try await self.api.refreshSession(session)
                     self.authSession = refreshed
                     self.persistAuthSession(refreshed)
-                    let polled = try await self.api.pollSession(session: refreshed, activeSession: active)
+                    let polled = try await self.api.pollSession(
+                        session: refreshed,
+                        activeSession: active,
+                        settings: self.settings
+                    )
                     consecutivePollFailures = 0
                     self.activeSession = polled
                     self.syncTrackedSessionSurface()
@@ -4098,7 +4899,7 @@ final class OpenNOWStore: ObservableObject {
             let refreshed = try await api.refreshSession(currentAuth)
             authSession = refreshed
             persistAuthSession(refreshed)
-            var latest = try await api.pollSession(session: refreshed, activeSession: session)
+            var latest = try await api.pollSession(session: refreshed, activeSession: session, settings: settings)
             for attempt in 0..<6 {
                 if isReadyForStreamer(latest) {
                     let handoff = await prepareSessionForStreamer(latest)
@@ -4112,7 +4913,7 @@ final class OpenNOWStore: ObservableObject {
                     "Reopen waiting for ready endpoint id=\(latest.id, privacy: .public) status=\(latest.status) attempt=\(attempt + 1) signalingServer=\(latest.signalingServer ?? "nil", privacy: .public) signalingUrl=\(latest.signalingUrl ?? "nil", privacy: .public) mediaIp=\(latest.mediaIp ?? "nil", privacy: .public) mediaPort=\(latest.mediaPort)"
                 )
                 try await Task.sleep(for: .milliseconds(900))
-                latest = try await api.pollSession(session: refreshed, activeSession: latest)
+                latest = try await api.pollSession(session: refreshed, activeSession: latest, settings: settings)
             }
 
             guard activeSession?.id == session.id else { return }
@@ -4162,10 +4963,20 @@ final class OpenNOWStore: ObservableObject {
                 watchedTimeInMs: watchedTimeInMs,
                 pausedTimeInMs: pausedTimeInMs,
                 cancelReason: cancelReason,
-                errorInfo: errorInfo
+                errorInfo: errorInfo,
+                settings: settings
             )
             if activeSession?.id == updated.id {
-                activeSession = updated
+                let terminalAction = action == .finish || action == .cancel
+                var previous = active
+                if terminalAction {
+                    previous.adState = removeSessionAdItem(previous.adState, adId: adId)
+                }
+                activeSession = mergeQueueSessionState(
+                    previous: previous,
+                    next: updated,
+                    preserveMissingAdState: !terminalAction
+                )
             }
             if action == .finish || action == .cancel {
                 adStartedAtById.removeValue(forKey: adId)
@@ -4205,12 +5016,18 @@ final class OpenNOWStore: ObservableObject {
             syncTrackedSessionSurface()
             return
         }
-        guard resumableSessions.contains(where: { $0.id == persisted.id }) else {
+        if Date().timeIntervalSince(persisted.startedAt) > sessionRestoreMaxAgeSeconds {
+            logger.notice("Discarding stale persisted session id=\(persisted.id, privacy: .public)")
             activeSession = nil
             showStreamLoading = false
             queueOverlayVisible = false
             syncTrackedSessionSurface()
             return
+        }
+        if !resumableSessions.contains(where: { $0.id == persisted.id }) {
+            logger.notice(
+                "Persisted session id=\(persisted.id, privacy: .public) not present in active-session list; keeping it pollable for jump back."
+            )
         }
         guard sessionPollTask == nil else {
             syncTrackedSessionSurface()

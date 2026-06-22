@@ -5,6 +5,7 @@ import WebKit
 import OSLog
 import AVFoundation
 import GameController
+import CoreHaptics
 
 struct StreamerView: View {
     let session: ActiveSession
@@ -709,6 +710,9 @@ private struct StreamerWebView: UIViewRepresentable {
   let inputProtocolVersion = 2;
   let inputHandshakeComplete = false;
   let inputFallbackTimer = null;
+  let nativeHapticsAvailable = false;
+  let hapticsAdvertised = null;
+  let lastHapticsAdvertisementMs = 0;
   let partialReliableThresholdMs = DEFAULT_PARTIAL_RELIABLE_THRESHOLD_MS;
   let riInputCapabilities = {
     hidDeviceMask: DEFAULT_HID_DEVICE_MASK,
@@ -730,6 +734,7 @@ private struct StreamerWebView: UIViewRepresentable {
   let lastControllerStatusText = '';
   let lastStatsMarkup = '';
   const GAMEPAD_PACKET_SIZE = 38;
+  const HAPTICS_ADVERTISEMENT_REFRESH_MS = 5000;
   const GAMEPAD_DEADZONE = 0.15;
   const GAMEPAD_KEEPALIVE_MS = 1000;
   const GAMEPAD_DPAD_UP = 0x0001;
@@ -1233,6 +1238,8 @@ private struct StreamerWebView: UIViewRepresentable {
     inputReady = false;
     inputProtocolVersion = 2;
     inputHandshakeComplete = false;
+    hapticsAdvertised = null;
+    lastHapticsAdvertisementMs = 0;
     partialReliableThresholdMs = DEFAULT_PARTIAL_RELIABLE_THRESHOLD_MS;
     riInputCapabilities = {
       hidDeviceMask: DEFAULT_HID_DEVICE_MASK,
@@ -1297,6 +1304,7 @@ private struct StreamerWebView: UIViewRepresentable {
     inputReady = isChannelOpen(reliableCh) && inputHandshakeComplete;
     if (inputReady) {
       post('status', 'Input ready');
+      advertiseNativeHaptics();
     }
   }
   function shouldKeepPeerAliveOnSignalingClose() {
@@ -1347,7 +1355,7 @@ private struct StreamerWebView: UIViewRepresentable {
     }, 2000);
   }
   function handleInputHandshakeMessage(bytes) {
-    if (!bytes || bytes.length < 2) return;
+    if (!bytes || bytes.length < 2) return false;
     const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     const firstWord = view.getUint16(0, true);
     let version = 2;
@@ -1356,7 +1364,7 @@ private struct StreamerWebView: UIViewRepresentable {
     } else if (bytes[0] === 0x0e) {
       version = firstWord;
     } else {
-      return;
+      return false;
     }
     if (inputFallbackTimer) {
       clearTimeout(inputFallbackTimer);
@@ -1369,6 +1377,87 @@ private struct StreamerWebView: UIViewRepresentable {
       setupInputHeartbeat();
       log('Input handshake complete (protocol v' + inputProtocolVersion + ')');
     }
+    return true;
+  }
+  function encodeHapticsEnabled(enabled) {
+    const buf = new ArrayBuffer(6);
+    const v = new DataView(buf);
+    v.setUint32(0, 13, true);
+    v.setUint16(4, enabled ? 1 : 0, false);
+    return wrapSingleEvent(buf);
+  }
+  function advertiseNativeHaptics(force = false) {
+    if (!inputReady) return;
+    const enabled = !!nativeHapticsAvailable;
+    const now = performance.now();
+    if (!force && hapticsAdvertised === enabled && now - lastHapticsAdvertisementMs < HAPTICS_ADVERTISEMENT_REFRESH_MS) {
+      return;
+    }
+    sendInput(encodeHapticsEnabled(enabled));
+    hapticsAdvertised = enabled;
+    lastHapticsAdvertisementMs = now;
+  }
+  function readUint16LE(bytes, offset) {
+    if (offset < 0 || offset + 2 > bytes.length) return null;
+    return new DataView(bytes.buffer, bytes.byteOffset + offset, 2).getUint16(0, true);
+  }
+  function readInt32LE(bytes, offset) {
+    if (offset < 0 || offset + 4 > bytes.length) return null;
+    return new DataView(bytes.buffer, bytes.byteOffset + offset, 4).getInt32(0, true);
+  }
+  function parseLegacyHaptics(bytes, offset) {
+    if (offset < 0 || offset + 10 > bytes.length) return null;
+    const kind = readUint16LE(bytes, offset);
+    if (kind !== 1) return null;
+    const length = readUint16LE(bytes, offset + 2);
+    if (length == null || length < 6) return null;
+    return {
+      controllerId: readUint16LE(bytes, offset + 4) ?? 0,
+      weakMagnitude: readUint16LE(bytes, offset + 6) ?? 0,
+      strongMagnitude: readUint16LE(bytes, offset + 8) ?? 0
+    };
+  }
+  function parseOcHaptics(bytes, offset) {
+    if (offset < 0 || offset + 9 > bytes.length) return null;
+    const controllerByte = bytes[offset] & 0xff;
+    if (controllerByte < 6 || controllerByte >= 10) return null;
+    const reportKind = bytes[offset + 3] & 0xff;
+    const flags = bytes[offset + 4] & 0xff;
+    if (reportKind !== 5 || (flags & 0xfe) !== 0) return null;
+    return {
+      controllerId: controllerByte - 6,
+      weakMagnitude: (bytes[offset + 7] & 0xff) << 8,
+      strongMagnitude: (bytes[offset + 8] & 0xff) << 8
+    };
+  }
+  function parseHapticsSubMessage(bytes, offset) {
+    const type = readInt32LE(bytes, offset);
+    if (type == null) return null;
+    if (type === 267) return parseLegacyHaptics(bytes, offset + 4);
+    if (type === 17) return parseOcHaptics(bytes, offset + 4);
+    return null;
+  }
+  function parseGamepadRumble(bytes) {
+    if (!bytes || bytes.length < 2) return null;
+    const firstWord = readUint16LE(bytes, 0);
+    if (firstWord === 267) return parseLegacyHaptics(bytes, 2);
+    switch (firstWord & 0xff) {
+      case 34:
+        return parseHapticsSubMessage(bytes, 1);
+      case 32:
+      case 33:
+      case 35:
+      case 36:
+      case 37:
+        return null;
+      default:
+        return parseLegacyHaptics(bytes, 0);
+    }
+  }
+  function handleInputHapticsMessage(bytes) {
+    const command = parseGamepadRumble(bytes);
+    if (!command) return;
+    postPayload('gamepad-rumble', command);
   }
   function renderStatsOverlay() {
     if (!statsEl || !statsPrimary || !statsMeta) return;
@@ -1612,6 +1701,17 @@ private struct StreamerWebView: UIViewRepresentable {
     v.setUint32(0, type, true);
     v.setUint8(4, button);
     writeTimestampBE(v, 10);
+    return wrapSingleEvent(buf);
+  }
+  function encodeMouseWheel(delta) {
+    const buf = new ArrayBuffer(22);
+    const v = new DataView(buf);
+    v.setUint32(0, 10, true);
+    v.setInt16(4, 0, false);
+    v.setInt16(6, Math.max(-32768, Math.min(32767, delta)), false);
+    v.setInt16(8, 0, false);
+    v.setUint32(10, 0, false);
+    writeTimestampBE(v, 14);
     return wrapSingleEvent(buf);
   }
   function wrapSingleEvent(buf) {
@@ -2088,7 +2188,8 @@ private struct StreamerWebView: UIViewRepresentable {
     reliableCh.onmessage = async (event) => {
       try {
         const bytes = await toBytes(event.data);
-        handleInputHandshakeMessage(bytes);
+        if (handleInputHandshakeMessage(bytes)) return;
+        handleInputHapticsMessage(bytes);
       } catch (_) {}
     };
     partialCh = thisPc.createDataChannel('input_channel_partially_reliable', {
@@ -2443,6 +2544,39 @@ private struct StreamerWebView: UIViewRepresentable {
       return;
     }
     nativeGamepadState = state && state.connected ? state : null;
+  };
+  window.__opennowNativeHapticsState = function(state) {
+    const nextAvailable = !!state?.enabled;
+    if (nativeHapticsAvailable === nextAvailable) return;
+    nativeHapticsAvailable = nextAvailable;
+    hapticsAdvertised = null;
+    advertiseNativeHaptics(true);
+  };
+  window.__opennowNativeKeyboardEvent = function(event) {
+    if (!event || !inputReady) return;
+    const keycode = Number(event.keycode);
+    const scancode = Number(event.scancode);
+    if (!Number.isFinite(keycode) || !Number.isFinite(scancode)) return;
+    const modifiers = Number.isFinite(Number(event.modifiers)) ? Number(event.modifiers) : 0;
+    sendInput(encodeKey(event.pressed ? 3 : 4, keycode, scancode, modifiers));
+  };
+  window.__opennowNativeMouseMove = function(event) {
+    if (!event) return;
+    const dx = Number(event.dx);
+    const dy = Number(event.dy);
+    if (!Number.isFinite(dx) || !Number.isFinite(dy)) return;
+    sendMouseMoveDelta(dx, dy);
+  };
+  window.__opennowNativeMouseButton = function(event) {
+    if (!event || !inputReady) return;
+    const button = Math.max(1, Math.min(5, Math.round(Number(event.button) || 1)));
+    sendInput(encodeMouseButton(event.pressed ? 8 : 9, button));
+  };
+  window.__opennowNativeMouseWheel = function(event) {
+    if (!event || !inputReady) return;
+    const delta = Math.round(Number(event.delta) || 0);
+    if (delta === 0) return;
+    sendInput(encodeMouseWheel(delta));
   };
   window.__opennowDeviceStatus = function(state) {
     deviceBatteryPercent = Number.isFinite(state?.batteryPercent) ? state.batteryPercent : null;
@@ -3563,6 +3697,7 @@ private struct StreamerWebView: UIViewRepresentable {
         private var contentProcessRestartCount = 0
         private static let maxContentProcessRestarts = 5
         private let controllerBridge = NativeControllerBridge()
+        private let hardwareInputBridge = NativeHardwareInputBridge()
         private let deviceStatusBridge = NativeDeviceStatusBridge()
 
         init(
@@ -3577,11 +3712,13 @@ private struct StreamerWebView: UIViewRepresentable {
 
         func attach(webView: WKWebView) {
             controllerBridge.attach(webView: webView)
+            hardwareInputBridge.attach(webView: webView)
             deviceStatusBridge.attach(webView: webView)
         }
 
         func detach() {
             controllerBridge.detach()
+            hardwareInputBridge.detach()
             deviceStatusBridge.detach()
         }
 
@@ -3617,9 +3754,28 @@ private struct StreamerWebView: UIViewRepresentable {
                     return
                 }
                 onStreamerPreferencesChange(preferences)
+            case "gamepad-rumble":
+                guard let payload = body["payload"] as? [String: Any],
+                      let controllerId = Self.intValue(payload["controllerId"]),
+                      let weakMagnitude = Self.intValue(payload["weakMagnitude"]),
+                      let strongMagnitude = Self.intValue(payload["strongMagnitude"]) else {
+                    return
+                }
+                controllerBridge.applyRumble(
+                    controllerId: controllerId,
+                    weakMagnitude: weakMagnitude,
+                    strongMagnitude: strongMagnitude
+                )
             default:
                 break
             }
+        }
+
+        private static func intValue(_ value: Any?) -> Int? {
+            if let number = value as? NSNumber {
+                return number.intValue
+            }
+            return value as? Int
         }
 
         func webView(
@@ -3640,6 +3796,7 @@ private struct StreamerWebView: UIViewRepresentable {
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             controllerBridge.attach(webView: webView)
+            hardwareInputBridge.attach(webView: webView)
             deviceStatusBridge.attach(webView: webView)
         }
 
@@ -3656,6 +3813,296 @@ private struct StreamerWebView: UIViewRepresentable {
             }
         }
     }
+}
+
+private enum NativeStreamJavaScriptBridge {
+    static func call(_ functionName: String, payload: [String: Any], in webView: WKWebView?) {
+        guard let webView,
+              JSONSerialization.isValidJSONObject(payload),
+              let data = try? JSONSerialization.data(withJSONObject: payload),
+              let json = String(data: data, encoding: .utf8) else {
+            return
+        }
+        webView.evaluateJavaScript(
+            "window.\(functionName) && window.\(functionName)(\(json))",
+            completionHandler: nil
+        )
+    }
+}
+
+private final class NativeHardwareInputBridge {
+    private typealias KeyMapping = (keycode: Int, scancode: Int)
+
+    private weak var webView: WKWebView?
+    private var observers: [NSObjectProtocol] = []
+    private var keyboard: GCKeyboard?
+    private var mice: [GCMouse] = []
+    private var pendingMouseDX = 0.0
+    private var pendingMouseDY = 0.0
+    private var mouseMoveScheduled = false
+
+    func attach(webView: WKWebView) {
+        self.webView = webView
+        if observers.isEmpty {
+            startMonitoring()
+        }
+        attachCurrentKeyboard()
+        attachCurrentMice()
+    }
+
+    func detach() {
+        observers.forEach(NotificationCenter.default.removeObserver)
+        observers.removeAll()
+        clearKeyboardHandler()
+        clearMouseHandlers()
+        webView = nil
+        pendingMouseDX = 0
+        pendingMouseDY = 0
+        mouseMoveScheduled = false
+    }
+
+    private func startMonitoring() {
+        let center = NotificationCenter.default
+        observers.append(center.addObserver(
+            forName: .GCKeyboardDidConnect,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.attachCurrentKeyboard()
+        })
+        observers.append(center.addObserver(
+            forName: .GCKeyboardDidDisconnect,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.attachCurrentKeyboard()
+        })
+        observers.append(center.addObserver(
+            forName: .GCMouseDidConnect,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.attachCurrentMice()
+        })
+        observers.append(center.addObserver(
+            forName: .GCMouseDidDisconnect,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.attachCurrentMice()
+        })
+    }
+
+    private func attachCurrentKeyboard() {
+        let nextKeyboard = GCKeyboard.coalesced
+        guard nextKeyboard !== keyboard else { return }
+        clearKeyboardHandler()
+        keyboard = nextKeyboard
+        keyboard?.keyboardInput?.keyChangedHandler = { [weak self] keyboardInput, _, keyCode, pressed in
+            self?.sendKey(keyCode, pressed: pressed, keyboardInput: keyboardInput)
+        }
+    }
+
+    private func clearKeyboardHandler() {
+        keyboard?.keyboardInput?.keyChangedHandler = nil
+        keyboard = nil
+    }
+
+    private func attachCurrentMice() {
+        let nextMice = GCMouse.mice()
+        let identityChanged = nextMice.count != mice.count
+            || zip(nextMice, mice).contains(where: { lhs, rhs in lhs !== rhs })
+        guard identityChanged else { return }
+
+        clearMouseHandlers()
+        mice = nextMice
+        for mouse in mice {
+            guard let input = mouse.mouseInput else { continue }
+            input.mouseMovedHandler = { [weak self] _, deltaX, deltaY in
+                self?.queueMouseMove(dx: Double(deltaX), dy: -Double(deltaY))
+            }
+            wireMouseButton(input.leftButton, button: 1)
+            wireMouseButton(input.middleButton, button: 2)
+            wireMouseButton(input.rightButton, button: 3)
+            input.auxiliaryButtons?.enumerated().forEach { index, button in
+                wireMouseButton(button, button: min(5, index + 4))
+            }
+            input.scroll.valueChangedHandler = { [weak self] _, _, yValue in
+                self?.sendMouseWheel(delta: Int((yValue * 120).rounded()))
+            }
+        }
+    }
+
+    private func clearMouseHandlers() {
+        for mouse in mice {
+            guard let input = mouse.mouseInput else { continue }
+            input.mouseMovedHandler = nil
+            input.leftButton.pressedChangedHandler = nil
+            input.middleButton?.pressedChangedHandler = nil
+            input.rightButton?.pressedChangedHandler = nil
+            input.auxiliaryButtons?.forEach { $0.pressedChangedHandler = nil }
+            input.scroll.valueChangedHandler = nil
+        }
+        mice = []
+    }
+
+    private func wireMouseButton(_ buttonInput: GCControllerButtonInput?, button: Int) {
+        buttonInput?.pressedChangedHandler = { [weak self] _, _, pressed in
+            self?.sendMouseButton(button: button, pressed: pressed)
+        }
+    }
+
+    private func queueMouseMove(dx: Double, dy: Double) {
+        guard dx.isFinite, dy.isFinite else { return }
+        pendingMouseDX += dx
+        pendingMouseDY += dy
+        guard !mouseMoveScheduled else { return }
+        mouseMoveScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            self?.flushMouseMove()
+        }
+    }
+
+    private func flushMouseMove() {
+        mouseMoveScheduled = false
+        let dx = Int(pendingMouseDX.rounded()).clamped(to: -32768...32767)
+        let dy = Int(pendingMouseDY.rounded()).clamped(to: -32768...32767)
+        pendingMouseDX = 0
+        pendingMouseDY = 0
+        guard dx != 0 || dy != 0 else { return }
+        NativeStreamJavaScriptBridge.call(
+            "__opennowNativeMouseMove",
+            payload: ["dx": dx, "dy": dy],
+            in: webView
+        )
+    }
+
+    private func sendMouseButton(button: Int, pressed: Bool) {
+        NativeStreamJavaScriptBridge.call(
+            "__opennowNativeMouseButton",
+            payload: ["button": button.clamped(to: 1...5), "pressed": pressed],
+            in: webView
+        )
+    }
+
+    private func sendMouseWheel(delta: Int) {
+        guard delta != 0 else { return }
+        NativeStreamJavaScriptBridge.call(
+            "__opennowNativeMouseWheel",
+            payload: ["delta": delta.clamped(to: -32768...32767)],
+            in: webView
+        )
+    }
+
+    private func sendKey(_ keyCode: GCKeyCode, pressed: Bool, keyboardInput: GCKeyboardInput) {
+        guard let mapping = Self.keyMap[keyCode] else { return }
+        NativeStreamJavaScriptBridge.call(
+            "__opennowNativeKeyboardEvent",
+            payload: [
+                "keycode": mapping.keycode,
+                "scancode": mapping.scancode,
+                "modifiers": modifiers(for: keyboardInput, changedKey: keyCode, pressed: pressed),
+                "pressed": pressed
+            ],
+            in: webView
+        )
+    }
+
+    private func modifiers(
+        for keyboardInput: GCKeyboardInput,
+        changedKey: GCKeyCode,
+        pressed: Bool
+    ) -> Int {
+        var value = 0
+        if isPressed(.leftShift, or: .rightShift, in: keyboardInput, changedKey: changedKey, pressed: pressed) {
+            value |= 0x01
+        }
+        if isPressed(.leftControl, or: .rightControl, in: keyboardInput, changedKey: changedKey, pressed: pressed) {
+            value |= 0x02
+        }
+        if isPressed(.leftAlt, or: .rightAlt, in: keyboardInput, changedKey: changedKey, pressed: pressed) {
+            value |= 0x04
+        }
+        if isPressed(.leftGUI, or: .rightGUI, in: keyboardInput, changedKey: changedKey, pressed: pressed) {
+            value |= 0x08
+        }
+        if isKeyPressed(.capsLock, in: keyboardInput, changedKey: changedKey, pressed: pressed) {
+            value |= 0x10
+        }
+        if isKeyPressed(.keypadNumLock, in: keyboardInput, changedKey: changedKey, pressed: pressed) {
+            value |= 0x20
+        }
+        return value
+    }
+
+    private func isPressed(
+        _ lhs: GCKeyCode,
+        or rhs: GCKeyCode,
+        in keyboardInput: GCKeyboardInput,
+        changedKey: GCKeyCode,
+        pressed: Bool
+    ) -> Bool {
+        isKeyPressed(lhs, in: keyboardInput, changedKey: changedKey, pressed: pressed)
+            || isKeyPressed(rhs, in: keyboardInput, changedKey: changedKey, pressed: pressed)
+    }
+
+    private func isKeyPressed(
+        _ keyCode: GCKeyCode,
+        in keyboardInput: GCKeyboardInput,
+        changedKey: GCKeyCode,
+        pressed: Bool
+    ) -> Bool {
+        if keyCode == changedKey {
+            return pressed
+        }
+        return keyboardInput.button(forKeyCode: keyCode)?.isPressed == true
+    }
+
+    private static let keyMap: [GCKeyCode: KeyMapping] = [
+        .keyA: (0x41, 0x001e), .keyB: (0x42, 0x0030), .keyC: (0x43, 0x002e),
+        .keyD: (0x44, 0x0020), .keyE: (0x45, 0x0012), .keyF: (0x46, 0x0021),
+        .keyG: (0x47, 0x0022), .keyH: (0x48, 0x0023), .keyI: (0x49, 0x0017),
+        .keyJ: (0x4a, 0x0024), .keyK: (0x4b, 0x0025), .keyL: (0x4c, 0x0026),
+        .keyM: (0x4d, 0x0032), .keyN: (0x4e, 0x0031), .keyO: (0x4f, 0x0018),
+        .keyP: (0x50, 0x0019), .keyQ: (0x51, 0x0010), .keyR: (0x52, 0x0013),
+        .keyS: (0x53, 0x001f), .keyT: (0x54, 0x0014), .keyU: (0x55, 0x0016),
+        .keyV: (0x56, 0x002f), .keyW: (0x57, 0x0011), .keyX: (0x58, 0x002d),
+        .keyY: (0x59, 0x0015), .keyZ: (0x5a, 0x002c),
+        .one: (0x31, 0x0002), .two: (0x32, 0x0003), .three: (0x33, 0x0004),
+        .four: (0x34, 0x0005), .five: (0x35, 0x0006), .six: (0x36, 0x0007),
+        .seven: (0x37, 0x0008), .eight: (0x38, 0x0009), .nine: (0x39, 0x000a),
+        .zero: (0x30, 0x000b),
+        .returnOrEnter: (0x0d, 0x001c), .escape: (0x1b, 0x0001),
+        .deleteOrBackspace: (0x08, 0x000e), .tab: (0x09, 0x000f),
+        .spacebar: (0x20, 0x0039), .hyphen: (0xbd, 0x000c),
+        .equalSign: (0xbb, 0x000d), .openBracket: (0xdb, 0x001a),
+        .closeBracket: (0xdd, 0x001b), .backslash: (0xdc, 0x002b),
+        .semicolon: (0xba, 0x0027), .quote: (0xde, 0x0028),
+        .graveAccentAndTilde: (0xc0, 0x0029), .comma: (0xbc, 0x0033),
+        .period: (0xbe, 0x0034), .slash: (0xbf, 0x0035),
+        .capsLock: (0x14, 0x003a),
+        .F1: (0x70, 0x003b), .F2: (0x71, 0x003c), .F3: (0x72, 0x003d),
+        .F4: (0x73, 0x003e), .F5: (0x74, 0x003f), .F6: (0x75, 0x0040),
+        .F7: (0x76, 0x0041), .F8: (0x77, 0x0042), .F9: (0x78, 0x0043),
+        .F10: (0x79, 0x0044), .F11: (0x7a, 0x0057), .F12: (0x7b, 0x0058),
+        .insert: (0x2d, 0x0152), .home: (0x24, 0x0147), .pageUp: (0x21, 0x0149),
+        .deleteForward: (0x2e, 0x0153), .end: (0x23, 0x014f), .pageDown: (0x22, 0x0151),
+        .rightArrow: (0x27, 0x014d), .leftArrow: (0x25, 0x014b),
+        .downArrow: (0x28, 0x0150), .upArrow: (0x26, 0x0148),
+        .keypadNumLock: (0x90, 0x0145), .keypadSlash: (0x6f, 0x0135),
+        .keypadAsterisk: (0x6a, 0x0037), .keypadHyphen: (0x6d, 0x004a),
+        .keypadPlus: (0x6b, 0x004e), .keypadEnter: (0x0d, 0x011c),
+        .keypad1: (0x61, 0x004f), .keypad2: (0x62, 0x0050),
+        .keypad3: (0x63, 0x0051), .keypad4: (0x64, 0x004b),
+        .keypad5: (0x65, 0x004c), .keypad6: (0x66, 0x004d),
+        .keypad7: (0x67, 0x0047), .keypad8: (0x68, 0x0048),
+        .keypad9: (0x69, 0x0049), .keypad0: (0x60, 0x0052),
+        .keypadPeriod: (0x6e, 0x0053),
+        .leftShift: (0x10, 0x002a), .rightShift: (0x10, 0x0036),
+        .leftControl: (0x11, 0x001d), .rightControl: (0x11, 0x011d),
+        .leftAlt: (0x12, 0x0038), .rightAlt: (0x12, 0x0138),
+        .leftGUI: (0x5b, 0x015b), .rightGUI: (0x5c, 0x015c)
+    ]
 }
 
 private final class NativeDeviceStatusBridge {
@@ -3772,9 +4219,16 @@ private final class NativeControllerBridge {
     private var controllers: [GCController] = []
     private var activeControllerIndex = 0
     private var publishScheduled = false
+    private var hapticEngines: [ObjectIdentifier: CHHapticEngine] = [:]
+    private var lastRumbleEffectAt: [TimeInterval] = Array(repeating: 0, count: 4)
+    private var lastPublishedHapticsAvailable: Bool?
+    private static let maxControllers = 4
+    private static let rumbleEffectDuration: TimeInterval = 0.09
+    private static let rumbleThrottleDuration: TimeInterval = 0.035
 
     func attach(webView: WKWebView) {
         self.webView = webView
+        lastPublishedHapticsAvailable = nil
         if observers.isEmpty {
             startMonitoring()
         }
@@ -3786,10 +4240,35 @@ private final class NativeControllerBridge {
         observers.forEach(NotificationCenter.default.removeObserver)
         observers.removeAll()
         clearControllerHandlers()
+        stopAllControllerRumble()
         controllers = []
         activeControllerIndex = 0
         webView = nil
         publishScheduled = false
+        lastPublishedHapticsAvailable = nil
+    }
+
+    func applyRumble(controllerId: Int, weakMagnitude: Int, strongMagnitude: Int) {
+        let slot = controllerId.clamped(to: 0...(Self.maxControllers - 1))
+        let profile = buildRumbleProfile(weakMagnitude: weakMagnitude, strongMagnitude: strongMagnitude)
+
+        guard let controller = findHapticController(for: slot) else {
+            return
+        }
+
+        let now = ProcessInfo.processInfo.systemUptime
+        if !profile.isStop,
+           lastRumbleEffectAt[slot] > 0,
+           now - lastRumbleEffectAt[slot] <= Self.rumbleThrottleDuration {
+            return
+        }
+        lastRumbleEffectAt[slot] = profile.isStop ? 0 : now
+
+        if profile.isStop {
+            stopRumble(for: controller)
+            return
+        }
+        playRumble(on: controller, profile: profile)
     }
 
     private func startMonitoring() {
@@ -3822,6 +4301,7 @@ private final class NativeControllerBridge {
         controllers = nextControllers
         if controllers.isEmpty {
             activeControllerIndex = 0
+            publishHapticsState()
             return
         }
         activeControllerIndex = min(activeControllerIndex, controllers.count - 1)
@@ -3830,17 +4310,13 @@ private final class NativeControllerBridge {
                 self?.activeControllerIndex = index
                 self?.schedulePublish()
             }
-            controller.controllerPausedHandler = { [weak self] _ in
-                self?.activeControllerIndex = index
-                self?.schedulePublish()
-            }
         }
+        publishHapticsState()
     }
 
     private func clearControllerHandlers() {
         for controller in controllers {
             controller.extendedGamepad?.valueChangedHandler = nil
-            controller.controllerPausedHandler = nil
         }
     }
 
@@ -3861,6 +4337,18 @@ private final class NativeControllerBridge {
               let json = String(data: data, encoding: .utf8)
         else { return }
         webView.evaluateJavaScript("window.__opennowNativeGamepadState(\(json))", completionHandler: nil)
+        publishHapticsState()
+    }
+
+    private func publishHapticsState() {
+        let available = controllers.contains { $0.haptics != nil }
+        guard available != lastPublishedHapticsAvailable else { return }
+        lastPublishedHapticsAvailable = available
+        NativeStreamJavaScriptBridge.call(
+            "__opennowNativeHapticsState",
+            payload: ["enabled": available],
+            in: webView
+        )
     }
 
     private func controllerPayload() -> [String: Any] {
@@ -3928,6 +4416,106 @@ private final class NativeControllerBridge {
 
     private func clampAxis(_ value: Float) -> Double {
         Double(max(-1, min(1, value)))
+    }
+
+    private func findHapticController(for controllerId: Int) -> GCController? {
+        let hapticControllers = controllers.filter { $0.haptics != nil }
+        guard !hapticControllers.isEmpty else { return nil }
+        if controllerId >= 0, controllerId < controllers.count, controllers[controllerId].haptics != nil {
+            return controllers[controllerId]
+        }
+        if controllerId >= 0, controllerId < hapticControllers.count {
+            return hapticControllers[controllerId]
+        }
+        return hapticControllers.count == 1 ? hapticControllers[0] : nil
+    }
+
+    private func buildRumbleProfile(weakMagnitude: Int, strongMagnitude: Int) -> RumbleProfile {
+        let weak = Double(weakMagnitude.clamped(to: 0...65535)) / 65535.0
+        let strong = Double(strongMagnitude.clamped(to: 0...65535)) / 65535.0
+        let combined = min(1, max(0, strong * 0.78 + weak * 0.48))
+        return RumbleProfile(
+            intensity: Float(combined),
+            sharpness: Float(strong >= weak ? 0.62 : 0.35)
+        )
+    }
+
+    private func playRumble(on controller: GCController, profile: RumbleProfile) {
+        guard !profile.isStop else {
+            stopRumble(for: controller)
+            return
+        }
+        do {
+            let engine = try hapticEngine(for: controller)
+            try engine.start()
+            let event = CHHapticEvent(
+                eventType: .hapticContinuous,
+                parameters: [
+                    CHHapticEventParameter(parameterID: .hapticIntensity, value: profile.intensity),
+                    CHHapticEventParameter(parameterID: .hapticSharpness, value: profile.sharpness)
+                ],
+                relativeTime: 0,
+                duration: Self.rumbleEffectDuration
+            )
+            let pattern = try CHHapticPattern(events: [event], parameters: [])
+            let player = try engine.makePlayer(with: pattern)
+            try player.start(atTime: CHHapticTimeImmediate)
+        } catch {
+            stopRumble(for: controller)
+        }
+    }
+
+    private func hapticEngine(for controller: GCController) throws -> CHHapticEngine {
+        let key = ObjectIdentifier(controller)
+        if let engine = hapticEngines[key] {
+            return engine
+        }
+        guard let haptics = controller.haptics else {
+            throw CocoaError(.featureUnsupported)
+        }
+        let locality: GCHapticsLocality = haptics.supportedLocalities.contains(.all) ? .all : .default
+        guard let engine = haptics.createEngine(withLocality: locality) else {
+            throw CocoaError(.featureUnsupported)
+        }
+        engine.isAutoShutdownEnabled = true
+        engine.stoppedHandler = { [weak self, weak controller] _ in
+            guard let controller else { return }
+            self?.hapticEngines.removeValue(forKey: ObjectIdentifier(controller))
+        }
+        engine.resetHandler = { [weak engine] in
+            try? engine?.start()
+        }
+        hapticEngines[key] = engine
+        return engine
+    }
+
+    private func stopRumble(for controller: GCController) {
+        let key = ObjectIdentifier(controller)
+        hapticEngines[key]?.stop(completionHandler: nil)
+        hapticEngines.removeValue(forKey: key)
+    }
+
+    private func stopAllControllerRumble() {
+        hapticEngines.values.forEach { engine in
+            engine.stop(completionHandler: nil)
+        }
+        hapticEngines.removeAll()
+        lastRumbleEffectAt = Array(repeating: 0, count: Self.maxControllers)
+    }
+
+    private struct RumbleProfile {
+        let intensity: Float
+        let sharpness: Float
+
+        var isStop: Bool {
+            intensity <= 0
+        }
+    }
+}
+
+private extension Comparable {
+    func clamped(to range: ClosedRange<Self>) -> Self {
+        min(max(self, range.lowerBound), range.upperBound)
     }
 }
 #else

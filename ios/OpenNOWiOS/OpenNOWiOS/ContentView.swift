@@ -39,40 +39,9 @@ private struct SplashView: View {
 
 struct MainTabView: View {
     @EnvironmentObject private var store: OpenNOWStore
-    @AppStorage("queuePillVerticalEdge") private var queuePillVerticalEdgeRaw = ""
     @State private var streamerAutoRetryCount = 0
     @State private var presentedStreamerSession: ActiveSession?
     private static let maxStreamerAutoRetries = 3
-
-    private enum QueuePillVerticalEdge: String {
-        case top
-        case bottom
-
-        var alignment: Alignment {
-            switch self {
-            case .top: return .top
-            case .bottom: return .bottom
-            }
-        }
-
-        var transitionEdge: Edge {
-            switch self {
-            case .top: return .top
-            case .bottom: return .bottom
-            }
-        }
-    }
-
-    private var queuePillEdge: QueuePillVerticalEdge {
-        if let stored = QueuePillVerticalEdge(rawValue: queuePillVerticalEdgeRaw) {
-            return stored
-        }
-        #if os(iOS)
-        return UIDevice.current.userInterfaceIdiom == .pad ? .bottom : .top
-        #else
-        return .top
-        #endif
-    }
 
     private var queueSurfaceAnimation: Animation {
         .spring(response: 0.42, dampingFraction: 0.86)
@@ -104,8 +73,15 @@ struct MainTabView: View {
             }
         }
         .animation(queueSurfaceAnimation, value: store.queueOverlayVisible)
-        .overlay {
-            queuePillOverlay
+        .safeAreaInset(edge: .top) {
+            if store.canJumpBackToSession && !store.queueOverlayVisible && presentedStreamerSession == nil {
+                JumpBackStatusBanner()
+                    .environmentObject(store)
+                    .padding(.horizontal)
+                    .padding(.top, 6)
+                    .padding(.bottom, 4)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
         }
         .overlay {
             if let session = presentedStreamerSession {
@@ -138,7 +114,6 @@ struct MainTabView: View {
         .animation(.easeInOut(duration: 0.28), value: store.showStreamLoading && !store.queueOverlayVisible)
         .animation(.easeInOut(duration: 0.2), value: presentedStreamerSession?.id)
         .onAppear {
-            persistQueuePillEdgeIfNeeded()
             // MainTabView can be recreated by upstream auth/bootstrap state updates.
             // Reattach streamer overlay if store already has an active stream session.
             if let activeStream = store.streamSession {
@@ -168,68 +143,13 @@ struct MainTabView: View {
         )
     }
 
-    @ViewBuilder
-    private var queuePillOverlay: some View {
-        if store.showStreamLoading && !store.queueOverlayVisible {
-            GeometryReader { proxy in
-                VStack {
-                    if queuePillEdge == .bottom {
-                        Spacer(minLength: 0)
-                    }
-
-                    QueueStatusPill(edge: queuePillEdge.transitionEdge)
-                        .environmentObject(store)
-                        .padding(.top, queuePillEdge == .top ? 8 : 0)
-                        .padding(.bottom, queuePillEdge == .bottom ? bottomQueuePillPadding(in: proxy) : 0)
-                        .queuePillDrag(
-                            edgeRawValue: $queuePillVerticalEdgeRaw,
-                            defaultEdgeRawValue: queuePillEdge.rawValue,
-                            proxy: proxy,
-                            animation: queueSurfaceAnimation
-                        )
-                        .transition(
-                            .asymmetric(
-                                insertion: .move(edge: queuePillEdge.transitionEdge).combined(with: .opacity),
-                                removal: .scale(scale: 0.88, anchor: queuePillEdge == .top ? .top : .bottom).combined(with: .opacity)
-                            )
-                        )
-                        .accessibilityHint("Drag up or down to latch the queue pill to the top or bottom.")
-
-                    if queuePillEdge == .top {
-                        Spacer(minLength: 0)
-                    }
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
-            .allowsHitTesting(true)
-            .animation(queueSurfaceAnimation, value: queuePillEdge.rawValue)
-        }
-    }
-
-    private func bottomQueuePillPadding(in proxy: GeometryProxy) -> CGFloat {
-        #if os(iOS)
-        if UIDevice.current.userInterfaceIdiom == .phone {
-            return max(proxy.safeAreaInsets.bottom + 52, 68)
-        }
-        return max(proxy.safeAreaInsets.bottom + 18, 28)
-        #else
-        return 12
-        #endif
-    }
-
-    private func persistQueuePillEdgeIfNeeded() {
-        guard QueuePillVerticalEdge(rawValue: queuePillVerticalEdgeRaw) == nil else { return }
-        queuePillVerticalEdgeRaw = queuePillEdge.rawValue
-    }
 }
 
-private struct QueueStatusPill: View {
+private struct JumpBackStatusBanner: View {
     @EnvironmentObject private var store: OpenNOWStore
-    let edge: Edge
-    @State private var isPulsing = false
 
     private var statusColor: Color {
-        switch store.activeSession?.status {
+        switch currentStatus {
         case 3:
             return .green
         case 2:
@@ -239,16 +159,40 @@ private struct QueueStatusPill: View {
         }
     }
 
+    private var currentStatus: Int {
+        store.activeSession?.status ?? store.primaryRemoteJumpBackSession?.status ?? 1
+    }
+
+    private var title: String {
+        if let active = store.activeSession {
+            return active.game.title
+        }
+        if let candidate = store.primaryRemoteJumpBackSession,
+           let game = store.gameForRemoteSession(candidate) {
+            return game.title
+        }
+        return "Cloud session"
+    }
+
     private var subtitle: String {
-        guard let session = store.activeSession else { return "Preparing..." }
-        switch session.status {
+        if let session = store.activeSession {
+            return subtitle(for: session.status, queuePosition: session.queuePosition)
+        }
+        if let candidate = store.primaryRemoteJumpBackSession {
+            return subtitle(for: candidate.status, queuePosition: nil)
+        }
+        return "Resume"
+    }
+
+    private func subtitle(for status: Int, queuePosition: Int?) -> String {
+        switch status {
         case 3:
             guard store.supportsEmbeddedStreamer else { return "Ready on another platform" }
-            return store.streamSession == nil ? "Tap to return" : "Streaming"
+            return "Ready to return"
         case 2:
             return "Ready to connect"
         default:
-            if let queue = session.queuePosition {
+            if let queue = queuePosition {
                 return queue == 1 ? "Next in queue" : "Queue #\(queue)"
             }
             return "Queued"
@@ -256,23 +200,17 @@ private struct QueueStatusPill: View {
     }
 
     var body: some View {
-        HStack(spacing: 0) {
+        HStack(spacing: 12) {
             Button {
                 Haptics.light()
-                if store.canReopenStreamer {
-                    store.reopenStreamer()
-                } else {
-                    store.maximizeQueueOverlay()
-                }
+                store.jumpBackToSession()
             } label: {
                 HStack(spacing: 10) {
                     Circle()
                         .fill(statusColor)
                         .frame(width: 10, height: 10)
-                        .scaleEffect(isPulsing ? 1.2 : 0.9)
-                        .opacity(isPulsing ? 1.0 : 0.7)
                     VStack(alignment: .leading, spacing: 1) {
-                        Text(store.activeSession?.game.title ?? "Queue")
+                        Text(title)
                             .font(.caption.bold())
                             .lineLimit(1)
                         Text(subtitle)
@@ -280,158 +218,41 @@ private struct QueueStatusPill: View {
                             .foregroundStyle(.secondary)
                     }
                     Spacer(minLength: 0)
-                    Image(systemName: edge == .top ? "chevron.up" : "chevron.down")
+                    Image(systemName: "chevron.up")
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(.secondary)
                 }
-                .padding(.leading, 14)
-                .padding(.trailing, 12)
-                .padding(.vertical, 11)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
 
-            Divider()
-                .frame(height: 20)
-                .padding(.vertical, 8)
-
-            Button(role: .destructive) {
-                Haptics.medium()
-                Task { await store.endSession() }
-            } label: {
-                Image(systemName: "stop.fill")
-                    .font(.caption.bold())
-                    .frame(width: 44, height: 44)
-                    .contentShape(Rectangle())
-                    .foregroundStyle(.red)
+            if store.activeSession != nil {
+                Button(role: .destructive) {
+                    Haptics.medium()
+                    Task { await store.endSession() }
+                } label: {
+                    Image(systemName: "stop.fill")
+                        .font(.caption.bold())
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
+                        .foregroundStyle(.red)
+                }
+                .buttonStyle(.borderless)
             }
-            .buttonStyle(.plain)
         }
-        .padding(.leading, 4)
-        .padding(.trailing, 2)
-        .queuePillBackground()
-        .shadow(color: brandAccent.opacity(0.12), radius: 8, y: 2)
-        .shadow(color: .black.opacity(0.2), radius: 12, y: 4)
-        .padding(.horizontal, 16)
-        .numericQueueTransition(value: store.activeSession?.queuePosition ?? -1)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .numericTextTransition(value: store.activeSession?.queuePosition ?? -1)
         .animation(.spring(response: 0.34, dampingFraction: 0.8), value: subtitle)
         .animation(.spring(response: 0.34, dampingFraction: 0.8), value: store.activeSession?.status)
-        .onAppear {
-            withAnimation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true)) {
-                isPulsing = true
-            }
-        }
-    }
-}
-
-private struct QueuePillBackgroundModifier: ViewModifier {
-    func body(content: Content) -> some View {
-        if #available(iOS 26, *) {
-            content
-                .background(.regularMaterial, in: Capsule())
-                .glassEffect(in: Capsule())
-        } else {
-            content
-                .background(.regularMaterial, in: Capsule())
-        }
-    }
-}
-
-private struct QueuePillDragModifier: ViewModifier {
-    @Binding var edgeRawValue: String
-    let defaultEdgeRawValue: String
-    let proxy: GeometryProxy
-    let animation: Animation
-    @State private var dragOffset: CGFloat = 0
-    @State private var latchedDuringDrag = false
-
-    private var currentEdgeRawValue: String {
-        switch edgeRawValue {
-        case "top", "bottom":
-            return edgeRawValue
-        default:
-            return defaultEdgeRawValue
-        }
-    }
-
-    func body(content: Content) -> some View {
-        #if os(iOS)
-        content
-            .offset(y: dragOffset)
-            .highPriorityGesture(
-                DragGesture(minimumDistance: 3, coordinateSpace: .global)
-                    .onChanged { value in
-                        guard !latchedDuringDrag else { return }
-
-                        let currentEdge = currentEdgeRawValue
-                        let snapDistance = min(max(proxy.size.height * 0.12, 68), 118)
-                        let translation = value.translation.height
-                        let nextEdge: String?
-                        if currentEdge == "bottom", translation < -snapDistance {
-                            nextEdge = "top"
-                        } else if currentEdge != "bottom", translation > snapDistance {
-                            nextEdge = "bottom"
-                        } else {
-                            nextEdge = nil
-                        }
-
-                        if let nextEdge {
-                            latchedDuringDrag = true
-                            withAnimation(animation) {
-                                edgeRawValue = nextEdge
-                                dragOffset = 0
-                            }
-                        } else {
-                            var transaction = Transaction()
-                            transaction.animation = nil
-                            withTransaction(transaction) {
-                                dragOffset = translation
-                            }
-                        }
-                    }
-                    .onEnded { value in
-                        defer {
-                            latchedDuringDrag = false
-                        }
-
-                        guard !latchedDuringDrag else {
-                            withAnimation(animation) {
-                                dragOffset = 0
-                            }
-                            return
-                        }
-
-                        let currentEdge = currentEdgeRawValue
-                        let projectedTranslation = value.translation.height + (value.predictedEndTranslation.height * 0.18)
-                        let snapDistance = min(max(proxy.size.height * 0.12, 68), 118)
-                        let nextEdge: String?
-                        if currentEdge == "bottom", projectedTranslation < -snapDistance {
-                            nextEdge = "top"
-                        } else if currentEdge != "bottom", projectedTranslation > snapDistance {
-                            nextEdge = "bottom"
-                        } else {
-                            nextEdge = nil
-                        }
-                        withAnimation(animation) {
-                            edgeRawValue = nextEdge ?? currentEdge
-                            dragOffset = 0
-                        }
-                    }
-            )
-        #else
-        content
-        #endif
     }
 }
 
 extension View {
-    func queuePillBackground() -> some View {
-        modifier(QueuePillBackgroundModifier())
-    }
-
     @ViewBuilder
-    func numericQueueTransition(value: Int) -> some View {
+    func numericTextTransition(value: Int) -> some View {
         if #available(iOS 17, tvOS 17, *) {
             self
                 .contentTransition(.numericText())
@@ -443,20 +264,8 @@ extension View {
     }
 
     @ViewBuilder
-    func queuePillDrag(
-        edgeRawValue: Binding<String>,
-        defaultEdgeRawValue: String,
-        proxy: GeometryProxy,
-        animation: Animation
-    ) -> some View {
-        modifier(
-            QueuePillDragModifier(
-                edgeRawValue: edgeRawValue,
-                defaultEdgeRawValue: defaultEdgeRawValue,
-                proxy: proxy,
-                animation: animation
-            )
-        )
+    func numericQueueTransition(value: Int) -> some View {
+        numericTextTransition(value: value)
     }
 }
 

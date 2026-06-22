@@ -1,38 +1,38 @@
 import SwiftUI
-import Charts
 
 struct SessionView: View {
     @EnvironmentObject private var store: OpenNOWStore
-    @State private var pingSamples: [Double] = []
-    @State private var fpsSamples: [Double] = []
-    /// Which resumable row’s “End” is in progress (shows spinner).
     @State private var endingRemoteSessionId: String?
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(spacing: 20) {
-                    if let session = store.activeSession {
-                        nowPlayingCard(session: session)
-                        telemetrySection
-                        controlsSection
-                        endSessionButton
-                    } else {
-                        noSessionState
-                    }
-
-                    if !store.resumableSessions.isEmpty || store.activeSession == nil {
-                        resumableSection
-                    }
+            List {
+                if let session = store.activeSession {
+                    currentSessionSection(session)
+                    streamProfileSection(session)
+                    controlsSection
+                    endSessionSection
+                } else {
+                    Section {
+                        ContentUnavailableView("No Active Session", systemImage: "dot.radiowaves.left.and.right")
+                        if store.canJumpBackToSession {
+                            Button {
+                    store.jumpBackToSession()
+                } label: {
+                    Label("Resume Session", systemImage: "arrow.clockwise.circle")
                 }
-                .padding(.horizontal)
-                .padding(.vertical, 8)
+                .buttonStyle(.plain)
             }
+        }
+                }
+
+                remoteSessionsSection
+            }
+            .listStyle(.insetGrouped)
             .navigationTitle("Session")
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
-                        Haptics.light()
                         Task { await store.refreshRemoteSessions() }
                     } label: {
                         Image(systemName: "arrow.clockwise")
@@ -40,339 +40,160 @@ struct SessionView: View {
                 }
             }
         }
-        .onChange(of: store.telemetry) { _, new in
-            pingSamples.append(Double(new.pingMs))
-            fpsSamples.append(Double(new.fps))
-            if pingSamples.count > 30 { pingSamples.removeFirst() }
-            if fpsSamples.count > 30 { fpsSamples.removeFirst() }
-        }
     }
 
-    private func nowPlayingCard(session: ActiveSession) -> some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack(spacing: 14) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 12)
-                        .fill(gameColor(for: session.game.title).opacity(0.2))
-                        .frame(width: 56, height: 56)
-                    Image(systemName: session.game.icon)
-                        .font(.title2)
-                        .foregroundStyle(gameColor(for: session.game.title))
-                }
+    private func currentSessionSection(_ session: ActiveSession) -> some View {
+        Section {
+            GameListRowView(
+                game: session.game,
+                subtitle: statusLabel(session),
+                trailingSystemImage: session.status == 3 ? "play.circle.fill" : "hourglass"
+            )
 
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(session.game.title)
-                        .font(.headline)
-                    HStack(spacing: 6) {
-                        statusDot(status: session.status)
-                        Text(statusLabel(session.status))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-
-                Spacer()
-
-                VStack(alignment: .trailing, spacing: 2) {
-                    Text(store.formattedSessionElapsed())
-                        .font(.title3.monospacedDigit().bold())
-                    Text("elapsed")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-            }
-
+            LabeledContent("Elapsed", value: store.formattedSessionElapsed())
             if let queue = session.queuePosition {
-                HStack {
-                    Image(systemName: "person.3.fill")
-                        .foregroundStyle(.orange)
-                    Text("Queue position: \(queue)")
-                        .font(.subheadline)
-                        .foregroundStyle(.orange)
+                LabeledContent("Queue", value: queue == 1 ? "Next" : "#\(queue)")
+            }
+            if let gpuType = session.gpuType, !gpuType.isEmpty {
+                LabeledContent("GPU", value: gpuType)
+            }
+
+            if store.canReopenStreamer {
+                Button {
+                    store.jumpBackToSession()
+                } label: {
+                    Label("Return to Stream", systemImage: "play.circle.fill")
                 }
-                .padding(10)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(.orange.opacity(0.1), in: RoundedRectangle(cornerRadius: 10))
+            } else if store.showStreamLoading {
+                Button {
+                    store.jumpBackToSession()
+                } label: {
+                    Label("Show Queue", systemImage: "list.bullet.rectangle")
+                }
+            } else {
+                Button {
+                    store.jumpBackToSession()
+                } label: {
+                    Label("Resume Session", systemImage: "arrow.clockwise.circle")
+                }
             }
-        }
-        .padding(16)
-        .glassCard()
-    }
-
-    private func statusDot(status: Int) -> some View {
-        Circle()
-            .fill(statusDotColor(status))
-            .frame(width: 8, height: 8)
-    }
-
-    private func statusDotColor(_ status: Int) -> Color {
-        switch status {
-        case 3:
-            return .green
-        case 2, 1:
-            return .orange
-        default:
-            return .red
+        } header: {
+            Text("Current")
         }
     }
 
-    private func statusLabel(_ status: Int) -> String {
-        switch status {
-        case 3: return store.supportsEmbeddedStreamer ? "Connected" : "Ready"
-        case 2: return "Initializing"
-        case 1: return "Queued"
-        default: return "Status \(status)"
-        }
-    }
-
-    private var telemetrySection: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("Telemetry")
-                .font(.headline)
-
-            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
-                MetricTileView(
-                    label: "Ping",
-                    value: "\(store.telemetry.pingMs) ms",
-                    icon: "antenna.radiowaves.left.and.right",
-                    color: pingColor(store.telemetry.pingMs),
-                    samples: pingSamples
-                )
-                MetricTileView(
-                    label: "FPS",
-                    value: "\(store.telemetry.fps)",
-                    icon: "chart.line.uptrend.xyaxis",
-                    color: fpsColor(store.telemetry.fps),
-                    samples: fpsSamples
-                )
-                MetricTileView(
-                    label: "Packet Loss",
-                    value: String(format: "%.2f%%", store.telemetry.packetLossPercent),
-                    icon: "exclamationmark.triangle",
-                    color: lossColor(store.telemetry.packetLossPercent),
-                    samples: []
-                )
-                MetricTileView(
-                    label: "Bitrate",
-                    value: String(format: "%.1f Mbps", store.telemetry.bitrateMbps),
-                    icon: "waveform",
-                    color: .blue,
-                    samples: []
-                )
+    private func streamProfileSection(_ session: ActiveSession) -> some View {
+        let profile = session.negotiatedStreamProfile
+        let configured = StreamSettingsResolver.profile(
+            for: store.settings,
+            membershipTier: store.subscription?.membershipTier ?? store.user?.membershipTier
+        )
+        return Section("Stream Profile") {
+            LabeledContent("Requested", value: "\(configured.width)x\(configured.height) @ \(configured.fps) fps")
+            if let resolution = profile?.resolution {
+                LabeledContent("Negotiated", value: profile?.fps.map { "\(resolution) @ \($0) fps" } ?? resolution)
             }
+            if let colorQuality = profile?.colorQuality {
+                LabeledContent("Color", value: colorQuality.label)
+            } else {
+                LabeledContent("Color", value: StreamSettingsResolver.colorQuality(for: store.settings).label)
+            }
+            LabeledContent("HDR", value: (session.finalizedStreamingFeatures?.trueHdr ?? store.settings.hdrEnabled) ? "On" : "Off")
+            LabeledContent("L4S", value: (session.finalizedStreamingFeatures?.enabledL4S ?? store.settings.enableL4S) ? "On" : "Off")
+            LabeledContent("G-Sync", value: (session.finalizedStreamingFeatures?.cloudGsync ?? store.settings.enableCloudGsync) ? "On" : "Off")
         }
-    }
-
-    private func pingColor(_ ms: Int) -> Color {
-        ms < 30 ? .green : (ms < 60 ? .orange : .red)
-    }
-
-    private func fpsColor(_ fps: Int) -> Color {
-        fps >= 60 ? .green : (fps >= 30 ? .orange : .red)
-    }
-
-    private func lossColor(_ loss: Double) -> Color {
-        loss < 0.15 ? .green : (loss < 1.0 ? .orange : .red)
     }
 
     private var controlsSection: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("Controls")
-                .font(.headline)
-                .padding(.bottom, 4)
-
+        Section("Controls") {
             Toggle(isOn: $store.micEnabled) {
-                Label("Microphone", systemImage: store.micEnabled ? "mic.fill" : "mic.slash.fill")
+                Label("Microphone", systemImage: store.micEnabled ? "mic.fill" : "mic.slash")
             }
-            .tint(brandAccent)
-            .padding(14)
-            .glassCard()
-
             Toggle(isOn: $store.recordingEnabled) {
                 Label("Recording", systemImage: "record.circle")
             }
-            .tint(.red)
-            .padding(14)
-            .glassCard()
         }
     }
 
-    private var endSessionButton: some View {
-        Button(role: .destructive) {
-            Haptics.medium()
-            Task { await store.endSession() }
-        } label: {
-            Label("End Session", systemImage: "stop.circle.fill")
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 14)
-                .font(.headline)
-        }
-        .buttonStyle(.bordered)
-        .tint(.red)
-    }
-
-    private var noSessionState: some View {
-        VStack(spacing: 20) {
-            Image(systemName: "dot.radiowaves.left.and.right")
-                .font(.system(size: 56))
-                .foregroundStyle(.quaternary)
-                .padding(.top, 40)
-            Text("No Active Session")
-                .font(.title3.bold())
-            Text(
-                store.supportsEmbeddedStreamer
-                    ? "Launch a game from Home, Browse, or Library to start streaming."
-                    : "This Apple TV build can browse session state, but streaming is still disabled."
-            )
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .padding(.horizontal, 20)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(24)
-        .glassCard()
-    }
-
-    private var resumableSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Active on Account")
-                .font(.headline)
-
-            if !store.supportsEmbeddedStreamer {
-                Text("Resume is disabled on this Apple TV build until the native streamer lands.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+    private var endSessionSection: some View {
+        Section {
+            Button(role: .destructive) {
+                Task { await store.endSession() }
+            } label: {
+                Label("End Session", systemImage: "stop.circle")
             }
+        }
+    }
 
+    private var remoteSessionsSection: some View {
+        Section("Active on Account") {
             if store.resumableSessions.isEmpty {
                 Text("No resumable sessions found.")
-                    .font(.subheadline)
                     .foregroundStyle(.secondary)
-                    .padding(16)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .glassCard()
             } else {
                 ForEach(store.resumableSessions) { candidate in
-                    let isEndingRemote = endingRemoteSessionId == candidate.id
                     let game = store.gameForRemoteSession(candidate)
                     HStack(spacing: 12) {
-                        if let game {
-                            GameArtworkView(game: game, iconSize: 24)
-                                .frame(width: 48, height: 48)
-                                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                if let game {
+                    GameListRowView(game: game, subtitle: remoteStatus(candidate), trailingSystemImage: "arrow.clockwise.circle")
+                } else {
+                            Label(remoteStatus(candidate), systemImage: "cloud")
+                        }
+                        Spacer(minLength: 8)
+                        if endingRemoteSessionId == candidate.id {
+                            ProgressView()
                         } else {
-                            ZStack {
-                                RoundedRectangle(cornerRadius: 12)
-                                    .fill(.secondary.opacity(0.14))
-                                Image(systemName: "dot.radiowaves.left.and.right")
-                                    .font(.headline)
-                                    .foregroundStyle(.secondary)
-                            }
-                            .frame(width: 48, height: 48)
-                        }
-
-                        VStack(alignment: .leading, spacing: 5) {
-                            Text(game?.title ?? "Cloud session")
-                                .font(.subheadline.weight(.semibold))
-                                .lineLimit(1)
-                            HStack(spacing: 6) {
-                                statusDot(status: candidate.status)
-                                Text(statusLabel(candidate.status))
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                if let appId = candidate.appId, game == nil {
-                                    Text("App \(appId)")
-                                        .font(.caption2)
-                                        .foregroundStyle(.tertiary)
-                                        .lineLimit(1)
+                            Menu {
+                                Button {
+                                    store.scheduleResume(candidate: candidate)
+                                } label: {
+                                    Label("Resume", systemImage: "arrow.clockwise.circle")
                                 }
-                            }
-                        }
-                        Spacer()
-                        HStack(spacing: 8) {
-                            Button("Resume") {
-                                Haptics.light()
-                                store.scheduleResume(candidate: candidate)
-                            }
-                            .buttonStyle(.bordered)
-                            .tint(brandAccent)
-                            .disabled(isEndingRemote || !store.supportsEmbeddedStreamer)
-
-                            Button(role: .destructive) {
-                                Haptics.medium()
-                                Task { @MainActor in
-                                    endingRemoteSessionId = candidate.id
-                                    await store.endRemoteSession(candidate: candidate)
-                                    if endingRemoteSessionId == candidate.id {
+                                Button(role: .destructive) {
+                                    Task {
+                                        endingRemoteSessionId = candidate.id
+                                        await store.endRemoteSession(candidate: candidate)
                                         endingRemoteSessionId = nil
                                     }
+                                } label: {
+                                    Label("End", systemImage: "stop.circle")
                                 }
                             } label: {
-                                Group {
-                                    if isEndingRemote {
-                                        ProgressView()
-                                            .controlSize(.small)
-                                            .tint(.red)
-                                    } else {
-                                        Text("End")
-                                    }
-                                }
-                                .frame(minWidth: 52, minHeight: 20)
+                                Image(systemName: "ellipsis.circle")
                             }
-                            .buttonStyle(.bordered)
-                            .disabled(isEndingRemote)
                         }
                     }
-                    .padding(14)
-                    .glassCard()
                 }
             }
         }
     }
-}
 
-private struct MetricTileView: View {
-    let label: String
-    let value: String
-    let icon: String
-    let color: Color
-    let samples: [Double]
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Image(systemName: icon)
-                    .font(.caption.bold())
-                    .foregroundStyle(color)
-                Spacer()
+    private func statusLabel(_ session: ActiveSession) -> String {
+        switch session.status {
+        case 3:
+            return store.supportsEmbeddedStreamer ? "Streaming" : "Ready"
+        case 2:
+            return "Connecting"
+        case 1:
+            if let queue = session.queuePosition {
+                return queue == 1 ? "Next in queue" : "Queue #\(queue)"
             }
-
-            Text(value)
-                .font(.title3.monospacedDigit().bold())
-                .foregroundStyle(color)
-
-            Text(label)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-
-            if samples.count > 2 {
-                Chart {
-                    ForEach(Array(samples.enumerated()), id: \.offset) { index, sample in
-                        LineMark(
-                            x: .value("Index", index),
-                            y: .value(label, sample)
-                        )
-                        .foregroundStyle(color)
-                        .interpolationMethod(.catmullRom)
-                    }
-                }
-                .chartXAxis(.hidden)
-                .chartYAxis(.hidden)
-                .frame(height: 40)
-            }
+            return "Queued"
+        default:
+            return "Status \(session.status)"
         }
-        .padding(14)
-        .glassCard()
+    }
+
+    private func remoteStatus(_ candidate: RemoteSessionCandidate) -> String {
+        switch candidate.status {
+        case 3:
+            return "Ready"
+        case 2:
+            return "Connecting"
+        case 1:
+            return "Queued"
+        default:
+            return "Status \(candidate.status)"
+        }
     }
 }

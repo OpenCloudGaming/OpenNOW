@@ -2,6 +2,7 @@ import SwiftUI
 
 struct SettingsView: View {
     @EnvironmentObject private var store: OpenNOWStore
+    @State private var showingResetConfirmation = false
 
     private let fpsValues = [30, 60, 120]
     private let qualityValues = ["Balanced", "Data Saver", "Quality"]
@@ -13,6 +14,7 @@ struct SettingsView: View {
             Form {
                 profileSection
                 streamingSection
+                advancedStreamingSection
                 sessionSection
                 inputSection
                 appSection
@@ -23,160 +25,164 @@ struct SettingsView: View {
                 aboutSection
             }
             .navigationTitle("Settings")
-            .tint(.blue)
             .onChange(of: store.settings) { _, _ in
                 store.persistSettings()
             }
             .onChange(of: store.settings.queueLiveActivitiesEnabled) { _, _ in
                 store.refreshTrackedSessionSurface()
             }
+            .onAppear {
+                enforceAvailableResolution()
+            }
+            .onChange(of: store.settings.preferredAspectRatio) { _, _ in
+                enforceAvailableResolution()
+            }
+            .onChange(of: currentMembershipTier ?? "") { _, _ in
+                enforceAvailableResolution()
+            }
+            .confirmationDialog("Reset settings?", isPresented: $showingResetConfirmation, titleVisibility: .visible) {
+                Button("Reset Settings", role: .destructive) {
+                    store.resetSettings()
+                }
+                Button("Cancel", role: .cancel) {}
+            }
         }
     }
 
     private var profileSection: some View {
         Section {
-            HStack(spacing: 14) {
-                Image(systemName: "person.crop.circle.fill")
-                    .font(.system(size: 44))
-                    .foregroundStyle(.blue)
-
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(store.user?.displayName ?? "OpenNOW")
-                        .font(.headline)
-                    Text(headerSummary)
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                }
-            }
-            .padding(.vertical, 4)
+            LabeledContent("Account", value: store.user?.displayName ?? "Signed out")
+            LabeledContent("Tier", value: store.subscription?.membershipTier ?? store.user?.membershipTier ?? "Unknown")
+            LabeledContent("Profile", value: headerSummary)
         }
     }
 
     private var streamingSection: some View {
         Section {
-            Picker(selection: $store.settings.preferredRegion) {
+            Picker("Region", selection: $store.settings.preferredRegion) {
                 ForEach(regionValues, id: \.self) { Text($0).tag($0) }
-            } label: {
-                Label("Region", systemImage: "globe")
             }
 
-            Picker(selection: $store.settings.preferredResolution) {
-                ForEach(StreamSettingsResolver.resolutionOptions, id: \.value) { option in
-                    Text(option.label).tag(option.value)
+            Picker("Aspect Ratio", selection: $store.settings.preferredAspectRatio) {
+                ForEach(StreamSettingsResolver.aspectRatioOptions, id: \.self) { value in
+                    Text(value).tag(value)
                 }
-            } label: {
-                Label("Resolution", systemImage: "display")
             }
 
-            Picker(selection: $store.settings.preferredFPS) {
+            Picker("Resolution", selection: $store.settings.preferredResolution) {
+                Text("Auto").tag("Auto")
+                ForEach(StreamSettingsResolver.choices(forAspectRatio: store.settings.preferredAspectRatio)) { choice in
+                    let available = resolutionAvailable(choice)
+                    Text(resolutionLabel(for: choice, available: available))
+                        .foregroundStyle(available ? .primary : .secondary)
+                        .tag(choice.value)
+                        .disabled(!available)
+                }
+            }
+
+            Picker("Target FPS", selection: $store.settings.preferredFPS) {
                 ForEach(fpsValues, id: \.self) { Text("\($0) fps").tag($0) }
-            } label: {
-                Label("Target FPS", systemImage: "speedometer")
             }
 
-            Picker(selection: $store.settings.preferredQuality) {
+            Picker("Quality", selection: $store.settings.preferredQuality) {
                 ForEach(qualityValues, id: \.self) { Text($0).tag($0) }
-            } label: {
-                Label("Quality", systemImage: "slider.horizontal.3")
             }
 
-            Picker(selection: $store.settings.preferredCodec) {
+            Picker("Codec", selection: $store.settings.preferredCodec) {
                 ForEach(codecValues, id: \.self) { Text($0).tag($0) }
-            } label: {
-                Label("Codec", systemImage: "video")
             }
 
-            Picker(selection: $store.settings.maxBitrateMbps) {
+            Picker("Color", selection: $store.settings.preferredColorQuality) {
+                ForEach(StreamColorQuality.allCases) { color in
+                    Text(color.label).tag(color.rawValue)
+                }
+            }
+
+            Picker("Max Bitrate", selection: $store.settings.maxBitrateMbps) {
                 ForEach(StreamSettingsResolver.bitrateOptionsMbps, id: \.self) { value in
                     Text(bitrateLabel(for: value)).tag(value)
                 }
-            } label: {
-                Label("Max Bitrate", systemImage: "gauge.with.dots.needle.67percent")
             }
         } header: {
             Text("Streaming")
         } footer: {
-            Text("Streaming changes apply to the next session launch.")
+            Text("Resolutions above your current plan are shown but unavailable.")
+        }
+    }
+
+    private var advancedStreamingSection: some View {
+        Section {
+            Toggle("HDR", isOn: $store.settings.hdrEnabled)
+                .disabled(!hdrAvailable)
+
+            Toggle("Cloud G-Sync", isOn: $store.settings.enableCloudGsync)
+
+            Toggle("L4S Low Latency", isOn: $store.settings.enableL4S)
+
+            Toggle("Stream Sharpening", isOn: $store.settings.streamSharpeningEnabled)
+
+            if store.settings.streamSharpeningEnabled {
+                LabeledContent {
+                    Slider(value: $store.settings.streamSharpeningAmount, in: 0...1)
+                        .frame(maxWidth: 180)
+                } label: {
+                    Text("Amount")
+                }
+            }
+
+            Toggle("Session Proxy", isOn: $store.settings.sessionProxyEnabled)
+
+            if store.settings.sessionProxyEnabled {
+                TextField("Proxy URL", text: $store.settings.sessionProxyUrl)
+                    .textInputAutocapitalization(.never)
+                    .keyboardType(.URL)
+                    .autocorrectionDisabled()
+            }
+        } header: {
+            Text("Advanced Streaming")
+        } footer: {
+            if !hdrAvailable {
+                Text("HDR requires an Ultimate-capable account.")
+            }
         }
     }
 
     private var sessionSection: some View {
         Section("Game Session") {
-            Picker(selection: $store.settings.keyboardLayout) {
+            Picker("Keyboard Layout", selection: $store.settings.keyboardLayout) {
                 ForEach(StreamSettingsResolver.keyboardLayoutOptions, id: \.value) { option in
                     Text(option.label).tag(option.value)
                 }
-            } label: {
-                Label("Keyboard Layout", systemImage: "keyboard")
             }
 
-            Picker(selection: $store.settings.gameLanguage) {
+            Picker("Game Language", selection: $store.settings.gameLanguage) {
                 ForEach(StreamSettingsResolver.gameLanguageOptions, id: \.value) { option in
                     Text(option.label).tag(option.value)
                 }
-            } label: {
-                Label("Game Language", systemImage: "character.book.closed")
             }
-
-            Toggle(isOn: $store.settings.enableL4S) {
-                Label("Low Latency Mode", systemImage: "bolt.horizontal")
-            }
-
         }
     }
 
     private var inputSection: some View {
-        Section {
+        Section("Input") {
             #if !os(tvOS)
-            Toggle(isOn: $store.settings.fortnitePrefersNativeTouch) {
-                Label("Fortnite Mobile Touch", systemImage: "hand.tap")
-            }
-
-            Toggle(isOn: $store.settings.streamerPreferences.touchControllerVisible) {
-                Label("Show Touch Controller", systemImage: "circle.grid.cross")
-            }
-
-            Toggle(isOn: $store.settings.streamerPreferences.touchscreenModeEnabled) {
-                Label("Touchscreen Mode", systemImage: "hand.draw")
-            }
+            Toggle("Fortnite Mobile Touch", isOn: $store.settings.fortnitePrefersNativeTouch)
+            Toggle("Touch Controller", isOn: $store.settings.streamerPreferences.touchControllerVisible)
+            Toggle("Touchscreen Mode", isOn: $store.settings.streamerPreferences.touchscreenModeEnabled)
             #endif
 
-            HStack {
-                Label("Controller Passthrough", systemImage: "gamecontroller")
-                Spacer()
-                Text("Automatic")
-                    .foregroundStyle(.secondary)
-            }
-        } header: {
-            Text("Input")
-        } footer: {
-            #if os(tvOS)
-            Text("Connected controllers are passed through using the native gamepad path. Touch overlays are disabled on Apple TV.")
-            #else
-            Text("Touchscreen Mode taps and drags directly at the touched stream location. Bluetooth controllers are detected automatically.")
-            #endif
+            LabeledContent("Controller", value: "Automatic")
         }
     }
 
     private var appSection: some View {
         Section("Experience") {
-            Toggle(isOn: $store.settings.keepMicEnabled) {
-                Label("Keep Microphone On", systemImage: "mic")
-            }
-
-            Toggle(isOn: $store.settings.showStatsOverlay) {
-                Label("Stats Overlay", systemImage: "chart.bar")
-            }
-
+            Toggle("Microphone", isOn: $store.settings.keepMicEnabled)
+            Toggle("Stats Overlay", isOn: $store.settings.showStatsOverlay)
             #if !os(tvOS)
-            Toggle(isOn: $store.settings.queueLiveActivitiesEnabled) {
-                Label("Queue Live Activities", systemImage: "livephoto")
-            }
+            Toggle("Queue Live Activities", isOn: $store.settings.queueLiveActivitiesEnabled)
             #endif
-
-            Toggle(isOn: $store.settings.hideServerSelector) {
-                Label("Skip Server Selector", systemImage: "server.rack")
-            }
+            Toggle("Skip Server Selector", isOn: $store.settings.hideServerSelector)
         }
     }
 
@@ -185,34 +191,43 @@ struct SettingsView: View {
             Button {
                 Task { await store.refreshCatalog() }
             } label: {
-                HStack {
-                    Label("Reload Catalog", systemImage: "arrow.clockwise")
-                    Spacer()
-                    if store.isLoadingGames {
-                        ProgressView()
-                    }
-                }
+                Label(store.isLoadingGames ? "Reloading Catalog" : "Reload Catalog", systemImage: "arrow.clockwise")
             }
             .disabled(store.isLoadingGames)
+
+            Button {
+                store.clearImageCache()
+            } label: {
+                Label("Clear Image Cache", systemImage: "trash")
+            }
+
+            if !store.settings.defaultGameVariantIds.isEmpty {
+                Button(role: .destructive) {
+                    store.clearDefaultGameVariants()
+                } label: {
+                    Label("Clear Default Launchers", systemImage: "star.slash")
+                }
+            }
 
             if !store.settings.favoriteGameIds.isEmpty {
                 Button(role: .destructive) {
                     store.clearFavorites()
                 } label: {
-                    HStack {
-                        Label("Clear Favorites", systemImage: "heart.slash")
-                        Spacer()
-                        Text("\(store.settings.favoriteGameIds.count)")
-                            .foregroundStyle(.secondary)
-                    }
+                    Label("Clear Favorites", systemImage: "heart.slash")
                 }
+            }
+
+            Button(role: .destructive) {
+                showingResetConfirmation = true
+            } label: {
+                Label("Reset Settings", systemImage: "arrow.counterclockwise")
             }
         }
     }
 
     private func accountSection(_ user: UserProfile) -> some View {
         Section("Account") {
-            LabeledContent("Account", value: user.displayName)
+            LabeledContent("Name", value: user.displayName)
             if let email = user.email {
                 LabeledContent("Email", value: email)
             }
@@ -229,18 +244,53 @@ struct SettingsView: View {
         Section("About") {
             LabeledContent("Version", value: "1.0")
             LabeledContent("Platform", value: OpenNOWPlatform.displayName)
-            Link(destination: URL(string: "https://github.com/OpenCloudGaming/OpenNOW")!) {
-                Text("GitHub Repository")
-            }
+            Link("GitHub Repository", destination: URL(string: "https://github.com/OpenCloudGaming/OpenNOW")!)
         }
     }
 
+    private var hdrAvailable: Bool {
+        StreamSettingsResolver.isHDRAvailable(
+            subscription: store.subscription,
+            fallbackMembershipTier: store.user?.membershipTier
+        )
+    }
+
+    private var currentMembershipTier: String? {
+        store.subscription?.membershipTier ?? store.user?.membershipTier
+    }
+
     private var headerSummary: String {
-        let profile = StreamSettingsResolver.profile(for: store.settings)
-        return "\(profile.width)x\(profile.height) at \(profile.fps) fps"
+        let profile = StreamSettingsResolver.profile(for: store.settings, membershipTier: currentMembershipTier)
+        return "\(profile.width)x\(profile.height) @ \(profile.fps) fps"
     }
 
     private func bitrateLabel(for value: Int) -> String {
         value == 0 ? "Auto" : "\(value) Mbps"
+    }
+
+    private func resolutionAvailable(_ choice: StreamSettingsResolver.StreamResolutionChoice) -> Bool {
+        StreamSettingsResolver.isResolutionAvailable(choice, membershipTier: currentMembershipTier)
+    }
+
+    private func resolutionLabel(
+        for choice: StreamSettingsResolver.StreamResolutionChoice,
+        available: Bool
+    ) -> String {
+        guard !available, let plan = choice.requiredPlan.label else {
+            return choice.label
+        }
+        return "\(choice.label) - \(plan)"
+    }
+
+    private func enforceAvailableResolution() {
+        guard store.settings.preferredResolution != "Auto",
+              let selected = StreamSettingsResolver.resolutionChoice(
+                value: store.settings.preferredResolution,
+                aspectRatio: store.settings.preferredAspectRatio
+              ),
+              !resolutionAvailable(selected) else {
+            return
+        }
+        store.settings.preferredResolution = "Auto"
     }
 }

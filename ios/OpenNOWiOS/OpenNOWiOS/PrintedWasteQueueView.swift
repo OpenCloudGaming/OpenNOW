@@ -35,10 +35,18 @@ struct PrintedWasteQueueView: View {
     @State private var lastAutoZoneId: String?
     @State private var lastClosestZoneId: String?
 
-    private enum RoutingPreference: Equatable {
+    private enum RoutingPreference: Hashable {
         case auto
         case closest
         case manual
+
+        var title: String {
+            switch self {
+            case .auto: return "Auto"
+            case .closest: return "Closest"
+            case .manual: return "Manual"
+            }
+        }
     }
 
     private var isTestingPings: Bool {
@@ -144,113 +152,152 @@ struct PrintedWasteQueueView: View {
         NavigationStack {
             Group {
                 if isLoading {
-                    ProgressView("Loading queue data...")
-                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+                    loadingState
                 } else if let fetchError {
-                    ContentUnavailableView(
-                        "Unable to Load Servers",
-                        systemImage: "exclamationmark.triangle",
-                        description: Text(fetchError)
-                    )
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    errorState(fetchError)
                 } else if zones.isEmpty {
-                    VStack(spacing: 18) {
-                        ContentUnavailableView(
-                            "No Servers Available",
-                            systemImage: "network.slash",
-                            description: Text("No servers are available right now.")
-                        )
-                        Button("Launch Anyway") {
-                            onConfirm(nil)
-                            dismiss()
-                        }
-                        .buttonStyle(.borderedProminent)
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    emptyState
                 } else {
-                    ScrollView {
-                        LazyVStack(alignment: .leading, spacing: 18) {
-                            header
-                                .printedWasteGlassSurface()
-
-                            VStack(alignment: .leading, spacing: 10) {
-                                Text("Routing")
-                                    .font(.headline)
-                                    .foregroundStyle(.secondary)
-                                routingRow
-                                Text(routingExplanation)
-                                    .font(.footnote)
-                                    .foregroundStyle(.secondary)
-                                    .fixedSize(horizontal: false, vertical: true)
-                            }
-                            .padding(14)
-                            .printedWasteGlassSurface()
-
-                            ForEach(groupedZones, id: \.region) { group in
-                                VStack(alignment: .leading, spacing: 10) {
-                                    Text("\(group.flag) \(group.label)")
-                                        .font(.headline)
-                                        .foregroundStyle(.secondary)
-                                    ForEach(group.zones) { zone in
-                                        Button {
-                                            routingPreference = .manual
-                                            selectedZoneId = zone.id
-                                        } label: {
-                                            ZoneRow(
-                                                zone: zone,
-                                                isSelected: routingPreference == .manual && selectedZoneId == zone.id,
-                                                isAuto: autoZone?.id == zone.id,
-                                                isClosest: closestZone?.id == zone.id
-                                            )
-                                        }
-                                        .buttonStyle(.plain)
-                                        .padding(12)
-                                        .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 14))
-                                        .overlay(
-                                            RoundedRectangle(cornerRadius: 14)
-                                                .stroke(.white.opacity(0.14), lineWidth: 1)
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 12)
-                    }
+                    zoneList
                 }
             }
-            .animation(.spring(response: 0.35), value: isLoading)
-            .navigationTitle("Choose Server")
+            .animation(.snappy(duration: 0.25), value: isLoading)
+            .animation(.snappy(duration: 0.25), value: routingPreference)
+            .navigationTitle("Server")
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Button("Cancel") {
                         dismiss()
                     }
                 }
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("Launch") {
-                        onConfirm(selectedZoneUrl)
-                        dismiss()
+                if !isLoading {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button {
+                            Task { await loadZones() }
+                        } label: {
+                            Image(systemName: "arrow.clockwise")
+                        }
+                        .accessibilityLabel("Reload Servers")
+                        .disabled(isTestingPings)
                     }
-                    .fontWeight(.semibold)
-                    .disabled(isLoading || zones.isEmpty)
                 }
             }
         }
         .interactiveDismissDisabled(isLoading)
         .presentationDragIndicator(.visible)
-        .presentationCornerRadius(32)
+        .presentationCornerRadius(28)
         .presentationBackground(.regularMaterial)
         .task {
             await loadZones()
         }
     }
 
-    private var header: some View {
+    private var loadingState: some View {
+        VStack(spacing: 16) {
+            ProgressView()
+                .controlSize(.large)
+            Text("Checking servers")
+                .font(.headline)
+            Text("Loading queue position and measuring latency.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+        .padding(32)
+    }
+
+    private func errorState(_ message: String) -> some View {
+        ContentUnavailableView {
+            Label("Unable to Load Servers", systemImage: "exclamationmark.triangle")
+        } description: {
+            Text(message)
+        } actions: {
+            Button("Try Again") {
+                Task { await loadZones() }
+            }
+            .buttonStyle(.borderedProminent)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var emptyState: some View {
+        ContentUnavailableView {
+            Label("No Servers Available", systemImage: "network.slash")
+        } description: {
+            Text("No routing data is available right now.")
+        } actions: {
+            Button("Launch Anyway") {
+                onConfirm(nil)
+                dismiss()
+            }
+            .buttonStyle(.borderedProminent)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var zoneList: some View {
+        List {
+            Section {
+                launchSummary
+            }
+
+            Section {
+                Picker("Routing", selection: $routingPreference) {
+                    Text("Auto").tag(RoutingPreference.auto)
+                    Text("Closest").tag(RoutingPreference.closest)
+                    Text("Manual").tag(RoutingPreference.manual)
+                }
+                .pickerStyle(.segmented)
+
+                if let selectedRoutingZone {
+                    SelectedRouteRow(
+                        title: routingPreference.title,
+                        zone: selectedRoutingZone,
+                        isTesting: isTestingPings
+                    )
+                }
+            } header: {
+                Text("Routing")
+            } footer: {
+                Text(routingExplanation)
+            }
+
+            ForEach(groupedZones, id: \.region) { group in
+                Section(group.label) {
+                    ForEach(group.zones) { zone in
+                        Button {
+                            routingPreference = .manual
+                            selectedZoneId = zone.id
+                        } label: {
+                            ZoneRow(
+                                zone: zone,
+                                isSelected: selectedRoutingZone?.id == zone.id,
+                                isManualSelection: routingPreference == .manual && selectedZoneId == zone.id,
+                                isAuto: autoZone?.id == zone.id,
+                                isClosest: closestZone?.id == zone.id
+                            )
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+        }
+        .listStyle(.insetGrouped)
+        .refreshable {
+            await loadZones()
+        }
+        .safeAreaInset(edge: .bottom) {
+            launchFooter
+        }
+    }
+
+    private var launchSummary: some View {
         HStack(spacing: 14) {
             PrintedWasteArtwork(game: game)
-                .frame(width: 68, height: 68)
-                .clipShape(RoundedRectangle(cornerRadius: 16))
+                .frame(width: 56, height: 56)
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
 
             VStack(alignment: .leading, spacing: 4) {
                 Text(game.title)
@@ -262,66 +309,56 @@ struct PrintedWasteQueueView: View {
             }
             Spacer()
             if let selectedRoutingZone {
-                VStack(alignment: .trailing, spacing: 2) {
-                    Text(routingPreference == .closest ? "Closest" : routingPreference == .manual ? "Selected" : "Auto")
-                        .font(.caption2.weight(.semibold))
+                Text(selectedRoutingZone.id)
+                    .font(.caption.weight(.semibold))
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(.quaternary, in: Capsule())
+            }
+        }
+    }
+
+    private var launchFooter: some View {
+        VStack(spacing: 10) {
+            if isTestingPings {
+                HStack(spacing: 8) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("Measuring latency")
+                        .font(.footnote)
                         .foregroundStyle(.secondary)
-                    Text(selectedRoutingZone.id)
-                        .font(.caption.weight(.bold))
+                    Spacer()
                 }
             }
+
+            Button {
+                onConfirm(selectedZoneUrl)
+                dismiss()
+            } label: {
+                Text(launchButtonTitle)
+                    .font(.headline)
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(brandAccent)
+            .disabled(selectedZoneUrl == nil)
         }
-        .padding(14)
+        .padding(.horizontal, 20)
+        .padding(.top, 12)
+        .padding(.bottom, 8)
+        .background(.regularMaterial)
     }
 
-    private var routingRow: some View {
-        HStack(spacing: 10) {
-            routingPill(title: "Auto", accessibilityLabel: "Auto", isSelected: routingPreference == .auto, isEnabled: autoZone != nil) {
-                routingPreference = .auto
-            }
-            routingPill(title: "Closest", accessibilityLabel: "Closest", isSelected: routingPreference == .closest, isEnabled: closestZone != nil || zones.contains(where: \.isMeasuring)) {
-                routingPreference = .closest
-            }
+    private var launchButtonTitle: String {
+        guard let zone = selectedRoutingZone else { return "Launch" }
+        switch routingPreference {
+        case .auto:
+            return "Launch with Auto"
+        case .closest:
+            return "Launch with Closest"
+        case .manual:
+            return "Launch on \(zone.id)"
         }
-    }
-
-    private func routingPill(title: String, accessibilityLabel: String, isSelected: Bool, isEnabled: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Text(title)
-                .font(.subheadline.weight(.semibold))
-                .lineLimit(1)
-                .minimumScaleFactor(0.9)
-            .foregroundStyle(isSelected ? brandAccent : .primary)
-            .padding(.horizontal, 16)
-            .padding(.vertical, 10)
-            .frame(maxWidth: .infinity)
-            .background(
-                Group {
-                    if #available(iOS 26, *) {
-                        Capsule()
-                            .fill(.clear)
-                            .glassEffect(in: Capsule())
-                            .overlay(
-                                Capsule()
-                                    .stroke(isSelected ? brandAccent.opacity(0.5) : .white.opacity(0.2), lineWidth: 1)
-                            )
-                    } else {
-                        if isSelected {
-                            Capsule()
-                                .fill(.regularMaterial)
-                                .overlay(Capsule().stroke(brandAccent.opacity(0.45), lineWidth: 1))
-                        } else {
-                            Capsule()
-                                .fill(.ultraThinMaterial)
-                        }
-                    }
-                }
-            )
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(accessibilityLabel)
-        .disabled(!isEnabled)
-        .opacity(isEnabled ? 1 : 0.6)
     }
 
     private func zoneDisplayName(_ zone: PrintedWasteZone) -> String {
@@ -507,13 +544,12 @@ struct PrintedWasteQueueView: View {
 private struct ZoneRow: View {
     let zone: PrintedWasteZone
     let isSelected: Bool
+    let isManualSelection: Bool
     let isAuto: Bool
     let isClosest: Bool
 
     var body: some View {
-        HStack(spacing: 12) {
-            queueBadge
-
+        HStack(spacing: 14) {
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 8) {
                     Text(zone.id)
@@ -526,46 +562,38 @@ private struct ZoneRow: View {
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                         .minimumScaleFactor(0.85)
+                }
+                HStack(spacing: 6) {
+                    statusText("Queue \(zone.queuePosition)", color: queueColor(zone.queuePosition))
                     if isAuto {
-                        smallIconBadge(icon: "bolt.fill", color: .green)
-                    } else if isClosest {
-                        smallIconBadge(icon: "location.fill", color: .blue)
+                        statusText("Auto", color: .green)
+                    }
+                    if isClosest {
+                        statusText("Closest", color: .blue)
+                    }
+                    if isManualSelection {
+                        statusText("Selected", color: brandAccent)
                     }
                 }
             }
 
             Spacer(minLength: 8)
 
-            HStack(spacing: 8) {
+            VStack(alignment: .trailing, spacing: 4) {
                 if let etaMs = zone.etaMs {
-                    metricBadge(label: formatWait(etaMs), color: .blue)
+                    Text(formatWait(etaMs))
+                        .font(.subheadline.weight(.semibold))
                 }
                 pingBadge
-                if isSelected {
-                    ZStack {
-                        Circle()
-                            .fill(brandAccent)
-                            .frame(width: 22, height: 22)
-                        Image(systemName: "checkmark")
-                            .font(.caption2.bold())
-                            .foregroundStyle(.white)
-                    }
-                }
             }
             .fixedSize(horizontal: true, vertical: false)
-        }
-        .padding(.vertical, 2)
-    }
 
-    private var queueBadge: some View {
-        Text("Q \(zone.queuePosition)")
-            .font(.caption.weight(.bold))
-            .foregroundStyle(queueColor(zone.queuePosition))
-            .lineLimit(1)
-            .fixedSize(horizontal: true, vertical: false)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .liquidBadgeBackground(tint: queueColor(zone.queuePosition).opacity(0.18), cornerRadius: 8)
+            Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                .font(.title3.weight(.semibold))
+                .foregroundStyle(isSelected ? brandAccent : Color.secondary.opacity(0.35))
+        }
+        .padding(.vertical, 4)
+        .contentShape(Rectangle())
     }
 
     private var pingBadge: some View {
@@ -581,38 +609,21 @@ private struct ZoneRow: View {
         .font(.caption.weight(.semibold))
         .lineLimit(1)
         .minimumScaleFactor(0.85)
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
-        .liquidBadgeBackground(tint: pingBadgeColor, cornerRadius: 999)
+        .foregroundStyle(pingBadgeColor)
     }
 
     private var pingBadgeColor: Color {
-        guard let pingMs = zone.pingMs else { return .secondary.opacity(0.16) }
-        if pingMs < 30 { return .green.opacity(0.18) }
-        if pingMs < 80 { return Color(red: 0.52, green: 0.8, blue: 0.13).opacity(0.18) }
-        if pingMs < 150 { return .yellow.opacity(0.2) }
-        return .red.opacity(0.18)
+        guard let pingMs = zone.pingMs else { return .secondary }
+        if pingMs < 30 { return .green }
+        if pingMs < 80 { return Color(red: 0.38, green: 0.62, blue: 0.08) }
+        if pingMs < 150 { return .orange }
+        return .red
     }
 
-    private func metricBadge(label: String, color: Color) -> some View {
-        Text(label)
-            .font(.caption.weight(.semibold))
-            .lineLimit(1)
-            .minimumScaleFactor(0.85)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .liquidBadgeBackground(tint: color.opacity(0.2), cornerRadius: 999)
-    }
-
-    private func smallIconBadge(icon: String, color: Color) -> some View {
-        Image(systemName: icon)
-            .font(.caption2.weight(.bold))
-        .lineLimit(1)
-        .minimumScaleFactor(0.85)
-        .padding(.horizontal, 8)
-        .padding(.vertical, 4)
-        .liquidBadgeBackground(tint: color.opacity(0.2), cornerRadius: 999)
-        .foregroundStyle(color)
+    private func statusText(_ text: String, color: Color) -> some View {
+        Text(text)
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(color)
     }
 
     private func queueColor(_ queue: Int) -> Color {
@@ -631,28 +642,73 @@ private struct ZoneRow: View {
     }
 }
 
+private struct SelectedRouteRow: View {
+    let title: String
+    let zone: PrintedWasteZone
+    let isTesting: Bool
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: iconName)
+                .font(.title3.weight(.semibold))
+                .foregroundStyle(brandAccent)
+                .frame(width: 30)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                    .font(.subheadline.weight(.semibold))
+                Text("\(zone.id) · Queue \(zone.queuePosition)")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer(minLength: 8)
+
+            if isTesting && zone.isMeasuring {
+                ProgressView()
+                    .controlSize(.small)
+            } else if let pingMs = zone.pingMs {
+                Text("\(pingMs) ms")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var iconName: String {
+        switch title {
+        case "Closest": return "location.fill"
+        case "Manual": return "hand.point.up.left.fill"
+        default: return "sparkles"
+        }
+    }
+}
+
 private struct PrintedWasteArtwork: View {
     let game: CloudGame
 
     var body: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 16)
-                .fill(gameColor(for: game.title).opacity(0.18))
-            if let imageUrl = game.imageUrl, let url = URL(string: imageUrl) {
-                CachedRemoteImage(url: url) { image in
-                    image
-                        .resizable()
-                        .scaledToFill()
-                } placeholder: {
-                    ProgressView()
-                } failure: {
+        GeometryReader { proxy in
+            ZStack {
+                RoundedRectangle(cornerRadius: 16)
+                    .fill(gameColor(for: game.title).opacity(0.18))
+                if let imageUrl = game.imageUrl, let url = URL(string: imageUrl) {
+                    CachedRemoteImage(url: url, targetPixelSize: imageTargetPixelSize(for: proxy.size)) { image in
+                        image
+                            .resizable()
+                            .scaledToFill()
+                    } placeholder: {
+                        GameArtworkLoadingPlaceholder(game: game, iconSize: 26, isFailure: false)
+                    } failure: {
+                        fallbackIcon
+                    }
+                } else {
                     fallbackIcon
                 }
-            } else {
-                fallbackIcon
             }
+            .frame(width: proxy.size.width, height: proxy.size.height)
+            .clipped()
         }
-        .clipped()
     }
 
     private var fallbackIcon: some View {
@@ -665,50 +721,6 @@ private struct PrintedWasteArtwork: View {
 extension View {
     func printedWasteLaunchSheet(pendingLaunchRequest: Binding<GameLaunchRequest?>) -> some View {
         modifier(PrintedWasteLaunchSheetModifier(pendingLaunchRequest: pendingLaunchRequest))
-    }
-
-    fileprivate func printedWasteGlassSurface(cornerRadius: CGFloat = 16) -> some View {
-        modifier(PrintedWasteGlassSurfaceModifier(cornerRadius: cornerRadius))
-    }
-
-    fileprivate func liquidBadgeBackground(tint: Color, cornerRadius: CGFloat) -> some View {
-        modifier(LiquidBadgeBackgroundModifier(tint: tint, cornerRadius: cornerRadius))
-    }
-}
-
-private struct PrintedWasteGlassSurfaceModifier: ViewModifier {
-    let cornerRadius: CGFloat
-
-    func body(content: Content) -> some View {
-        if #available(iOS 26, *) {
-            content
-                .background(
-                    RoundedRectangle(cornerRadius: cornerRadius)
-                        .fill(.clear)
-                        .glassEffect(in: RoundedRectangle(cornerRadius: cornerRadius))
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: cornerRadius)
-                        .stroke(.white.opacity(0.16), lineWidth: 1)
-                )
-        } else {
-            content
-                .glassCard()
-        }
-    }
-}
-
-private struct LiquidBadgeBackgroundModifier: ViewModifier {
-    let tint: Color
-    let cornerRadius: CGFloat
-
-    func body(content: Content) -> some View {
-        content
-            .background(tint, in: RoundedRectangle(cornerRadius: cornerRadius))
-            .overlay(
-                RoundedRectangle(cornerRadius: cornerRadius)
-                    .stroke(tint.opacity(0.32), lineWidth: 1)
-            )
     }
 }
 
@@ -732,23 +744,13 @@ private struct PrintedWasteLaunchSheetModifier: ViewModifier {
                 pendingLaunchRequest = nil
             }
             .sheet(item: sheetBinding) { request in
-                if #available(iOS 26, *) {
-                    PrintedWasteQueueView(game: request.game) { selectedZoneUrl in
-                        store.scheduleLaunch(game: request.game, zoneUrl: selectedZoneUrl, launchOption: request.launchOption)
-                    }
-                    .environmentObject(store)
-                    .presentationDetents([.medium, .large])
-                    .presentationDragIndicator(.visible)
-                    .presentationBackground(.clear)
-                } else {
-                    PrintedWasteQueueView(game: request.game) { selectedZoneUrl in
-                        store.scheduleLaunch(game: request.game, zoneUrl: selectedZoneUrl, launchOption: request.launchOption)
-                    }
-                    .environmentObject(store)
-                    .presentationDetents([.medium, .large])
-                    .presentationDragIndicator(.visible)
-                    .presentationBackground(.regularMaterial)
+                PrintedWasteQueueView(game: request.game) { selectedZoneUrl in
+                    store.scheduleLaunch(game: request.game, zoneUrl: selectedZoneUrl, launchOption: request.launchOption)
                 }
+                .environmentObject(store)
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
+                .presentationBackground(.regularMaterial)
             }
     }
 }
