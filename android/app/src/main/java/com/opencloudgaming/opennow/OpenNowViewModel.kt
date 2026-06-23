@@ -6,10 +6,13 @@ import android.net.Uri
 import android.widget.Toast
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -25,6 +28,10 @@ enum class AppPage {
     Settings,
     Stream,
 }
+
+private const val ANDROID_UPDATE_LAUNCH_CHECK_DELAY_MS = 5_000L
+internal const val ANDROID_UPDATE_PERIODIC_CHECK_INTERVAL_MS = 6L * 60L * 60L * 1000L
+private const val ANDROID_UPDATE_STREAMING_RETRY_DELAY_MS = 30_000L
 
 data class OpenNowUiState(
     val initializing: Boolean = true,
@@ -65,7 +72,11 @@ data class OpenNowUiState(
     val printedWastePings: Map<String, Long?> = emptyMap(),
     val printedWasteLoading: Boolean = false,
     val printedWasteError: String? = null,
+    val androidUpdate: AndroidUpdateState = AndroidUpdateState(),
 )
+
+internal fun OpenNowUiState.isAndroidUpdateCheckBlockedByStream(): Boolean =
+    streamStatus != "idle" || streamSession != null || activeStreamSettings != null
 
 class OpenNowViewModel(application: Application) : AndroidViewModel(application) {
     private val http: OkHttpClient = defaultHttpClient()
@@ -77,6 +88,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     private val subscriptionRepository = GfnSubscriptionRepository(http)
     private val printedWasteRepository = PrintedWasteRepository(http)
     private val sessionRepository = GfnSessionRepository(authStore, http)
+    private val appUpdater = AndroidAppUpdater(application, http)
     private val queueAdReportMutex = Mutex()
 
     private val _state = MutableStateFlow(OpenNowUiState(settings = settingsStore.settings.value))
@@ -85,6 +97,8 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     private var gamesJob: Job? = null
     private var launchJob: Job? = null
     private var loginJob: Job? = null
+    private var androidUpdateJob: Job? = null
+    private var androidUpdateAutoJob: Job? = null
 
     init {
         viewModelScope.launch {
@@ -92,6 +106,22 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 _state.update { it.copy(settings = next) }
             }
         }
+        viewModelScope.launch {
+            appUpdater.state.collect { next ->
+                _state.update { it.copy(androidUpdate = next) }
+            }
+        }
+        viewModelScope.launch {
+            state
+                .map { it.isAndroidUpdateCheckBlockedByStream() to it.androidUpdate.status }
+                .distinctUntilChanged()
+                .collect { (blocked, updateStatus) ->
+                    if (blocked && updateStatus == AndroidUpdateStatus.Checking) {
+                        cancelAndroidUpdateCheckForStreaming()
+                    }
+                }
+        }
+        startAndroidUpdateAutoChecks()
         initialize()
     }
 
@@ -243,17 +273,17 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                     error = "Browser sign-in could not reach the local callback. Use this code to finish sign-in.",
                 )
             }
-            loginWithDeviceCode(provider)
+            loginWithDeviceCode(provider, clearErrorOnPrompt = false)
         }
     }
 
-    private suspend fun loginWithDeviceCode(provider: LoginProvider): AuthSession =
+    private suspend fun loginWithDeviceCode(provider: LoginProvider, clearErrorOnPrompt: Boolean = true): AuthSession =
         authRepository.loginWithDeviceCode(provider) { prompt ->
             _state.update {
                 it.copy(
                     deviceLoginPrompt = prompt,
                     launchPhase = "Waiting for sign-in",
-                    error = null,
+                    error = if (clearErrorOnPrompt) null else it.error,
                 )
             }
         }
@@ -387,6 +417,74 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
 
     fun updateSettings(next: AppSettings) {
         settingsStore.replace(next)
+    }
+
+    fun checkAndroidUpdate() {
+        startAndroidUpdateCheck(automatic = false)
+    }
+
+    fun downloadAndroidUpdate() {
+        if (androidUpdateJob?.isActive == true) return
+        androidUpdateJob = viewModelScope.launch {
+            appUpdater.downloadUpdate()
+        }
+    }
+
+    fun installAndroidUpdate() {
+        appUpdater.installDownloadedUpdate()
+    }
+
+    private fun startAndroidUpdateAutoChecks() {
+        if (androidUpdateAutoJob?.isActive == true) return
+        androidUpdateAutoJob = viewModelScope.launch {
+            delay(ANDROID_UPDATE_LAUNCH_CHECK_DELAY_MS)
+            while (true) {
+                runAutomaticAndroidUpdateCheck()
+                delay(ANDROID_UPDATE_PERIODIC_CHECK_INTERVAL_MS)
+            }
+        }
+    }
+
+    private suspend fun runAutomaticAndroidUpdateCheck() {
+        if (!state.value.settings.autoCheckForUpdates) return
+        waitForAndroidUpdateCheckWindow()
+        val snapshot = state.value
+        if (!snapshot.settings.autoCheckForUpdates || !snapshot.androidUpdate.shouldRunAutomaticCheck()) return
+        startAndroidUpdateCheck(automatic = true)?.join()
+    }
+
+    private suspend fun waitForAndroidUpdateCheckWindow() {
+        while (state.value.isAndroidUpdateCheckBlockedByStream()) {
+            delay(ANDROID_UPDATE_STREAMING_RETRY_DELAY_MS)
+        }
+    }
+
+    private fun startAndroidUpdateCheck(automatic: Boolean): Job? {
+        if (androidUpdateJob?.isActive == true) return null
+        if (state.value.isAndroidUpdateCheckBlockedByStream()) {
+            if (!automatic) {
+                appUpdater.markCheckDeferredForStreaming()
+            }
+            return null
+        }
+        return viewModelScope.launch {
+            if (state.value.isAndroidUpdateCheckBlockedByStream()) {
+                if (!automatic) {
+                    appUpdater.markCheckDeferredForStreaming()
+                }
+                return@launch
+            }
+            appUpdater.checkForUpdate()
+        }.also { job ->
+            androidUpdateJob = job
+        }
+    }
+
+    private fun cancelAndroidUpdateCheckForStreaming() {
+        if (state.value.androidUpdate.status != AndroidUpdateStatus.Checking) return
+        androidUpdateJob?.cancel()
+        androidUpdateJob = null
+        appUpdater.markCheckDeferredForStreaming()
     }
 
     fun resetSettings() {

@@ -9,6 +9,23 @@ Open it from Android Studio with **File > Open > `OpenNOW/android`**. Android St
 - `:app:assembleDebug` builds a debug APK.
 - `:app:assembleRelease` builds a release APK after signing config is added locally.
 
+## APK Update Manifest
+
+The Android settings screen checks `https://api.printedwaste.com/releases/opennow/latest` and can download the returned APK. The manifest should look like this:
+
+```json
+{
+  "versionCode": 7,
+  "versionName": "0.5.2",
+  "apkUrl": "https://api.printedwaste.com/release-files/opennow/app-release.apk",
+  "artifactUrl": "https://api.printedwaste.com/release-files/opennow/app-release.apk",
+  "sha256": "optional lowercase apk checksum",
+  "releaseNotes": "Short notes shown in Settings\nSecond line"
+}
+```
+
+`apkUrl`, `artifactUrl`, or `url` may point at the APK. `releaseNotes` may use real newlines or literal `\n` separators. The app compares `versionCode` against its installed build and asks Android's package installer to confirm the downloaded APK.
+
 ## Runtime Notes
 
 - UI is native Compose.

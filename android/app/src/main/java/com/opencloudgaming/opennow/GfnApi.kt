@@ -34,6 +34,7 @@ import kotlinx.serialization.json.putJsonObject
 import okhttp3.Dns
 import okhttp3.FormBody
 import okhttp3.Headers
+import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.MediaType.Companion.toMediaType
@@ -42,14 +43,17 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Credentials
 import okhttp3.dnsoverhttps.DnsOverHttps
+import java.io.Closeable
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.io.OutputStreamWriter
+import java.net.BindException
 import java.net.InetSocketAddress
 import java.net.InetAddress
 import java.net.Proxy
 import java.net.ServerSocket
 import java.net.Socket
+import java.net.SocketException
 import java.net.SocketTimeoutException
 import java.net.URI
 import java.net.UnknownHostException
@@ -99,6 +103,8 @@ private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
 private val GRAPHQL_MEDIA_TYPE = "application/graphql".toMediaType()
 private val REDIRECT_PORTS = intArrayOf(2259, 6460, 7119, 8870, 9096)
 private const val OAUTH_CALLBACK_TIMEOUT_MS = 120_000L
+private const val OAUTH_CALLBACK_PROBE_TIMEOUT_MS = 2_000
+private const val OAUTH_CALLBACK_PROBE_PATH = "/opennow-callback-probe"
 private const val DEVICE_CODE_MIN_POLL_INTERVAL_SECONDS = 5
 private const val TOKEN_REFRESH_WINDOW_MS = 10 * 60 * 1000L
 private const val CLIENT_TOKEN_REFRESH_WINDOW_MS = 5 * 60 * 1000L
@@ -115,12 +121,28 @@ val OpenNowJson: Json = Json {
 
 fun defaultHttpClient(): OkHttpClient =
     OkHttpClient.Builder()
+        .addInterceptor { chain ->
+            val request = chain.request()
+            val canonicalUrl = canonicalizeGfnRequestUrl(request.url)
+            val canonicalRequest = if (canonicalUrl == request.url) {
+                request
+            } else {
+                request.newBuilder().url(canonicalUrl).build()
+            }
+            chain.proceed(canonicalRequest)
+        }
         .dns(OpenNowDns)
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
         .writeTimeout(30, TimeUnit.SECONDS)
         .pingInterval(15, TimeUnit.SECONDS)
         .build()
+
+internal fun canonicalizeGfnRequestUrl(url: HttpUrl): HttpUrl =
+    when (url.host.lowercase(Locale.US)) {
+        "games.geforcenow.com" -> url.newBuilder().host("games.geforce.com").build()
+        else -> url
+    }
 
 private data class SessionProxyConfig(
     val normalizedUrl: String,
@@ -179,22 +201,57 @@ private fun resolveSessionProxyConfig(settings: StreamSettings): SessionProxyCon
     )
 }
 
+private data class NamedDnsResolver(val name: String, val dns: Dns)
+
 private object OpenNowDns : Dns {
-    private val doh: Dns by lazy {
-        val bootstrapClient = OkHttpClient.Builder().build()
-        DnsOverHttps.Builder()
-            .client(bootstrapClient)
-            .url("https://cloudflare-dns.com/dns-query".toHttpUrl())
-            .bootstrapDnsHosts(ipv4(1, 1, 1, 1), ipv4(1, 0, 0, 1))
+    private val dohResolvers: List<NamedDnsResolver> by lazy {
+        val bootstrapClient = OkHttpClient.Builder()
+            .connectTimeout(5, TimeUnit.SECONDS)
+            .readTimeout(5, TimeUnit.SECONDS)
             .build()
+        listOf(
+            NamedDnsResolver(
+                name = "cloudflare-doh",
+                dns = DnsOverHttps.Builder()
+                    .client(bootstrapClient)
+                    .url("https://cloudflare-dns.com/dns-query".toHttpUrl())
+                    .bootstrapDnsHosts(ipv4(1, 1, 1, 1), ipv4(1, 0, 0, 1))
+                    .build(),
+            ),
+            NamedDnsResolver(
+                name = "google-doh",
+                dns = DnsOverHttps.Builder()
+                    .client(bootstrapClient)
+                    .url("https://dns.google/dns-query".toHttpUrl())
+                    .bootstrapDnsHosts(ipv4(8, 8, 8, 8), ipv4(8, 8, 4, 4))
+                    .build(),
+            ),
+            NamedDnsResolver(
+                name = "quad9-doh",
+                dns = DnsOverHttps.Builder()
+                    .client(bootstrapClient)
+                    .url("https://dns.quad9.net/dns-query".toHttpUrl())
+                    .bootstrapDnsHosts(ipv4(9, 9, 9, 9), ipv4(149, 112, 112, 112))
+                    .build(),
+            ),
+        )
     }
 
     override fun lookup(hostname: String): List<InetAddress> {
-        val systemResult = runCatching { Dns.SYSTEM.lookup(hostname) }.getOrNull()
+        val failures = mutableListOf<String>()
+        val systemResult = runCatching { Dns.SYSTEM.lookup(hostname) }
+            .onFailure { failures += "system=${it.message ?: it::class.java.simpleName}" }
+            .getOrNull()
         if (!systemResult.isNullOrEmpty()) return systemResult
-        val dohResult = runCatching { doh.lookup(hostname) }.getOrNull()
-        if (!dohResult.isNullOrEmpty()) return dohResult
-        throw UnknownHostException("$hostname: system DNS and DNS-over-HTTPS fallback failed")
+
+        for (resolver in dohResolvers) {
+            val result = runCatching { resolver.dns.lookup(hostname) }
+                .onFailure { failures += "${resolver.name}=${it.message ?: it::class.java.simpleName}" }
+                .getOrNull()
+            if (!result.isNullOrEmpty()) return result
+        }
+
+        throw UnknownHostException("$hostname: DNS lookup failed after system, Cloudflare, Google, and Quad9 (${failures.joinToString("; ")})")
     }
 
     private fun ipv4(a: Int, b: Int, c: Int, d: Int): InetAddress =
@@ -360,6 +417,15 @@ class GfnAuthRepository(
 ) {
     private val externalOAuthRedirects = Channel<Map<String, String>>(capacity = 4)
 
+    private data class OAuthCallbackServers(
+        val port: Int,
+        val sockets: List<ServerSocket>,
+    ) : Closeable {
+        override fun close() {
+            sockets.forEach { socket -> runCatching { socket.close() } }
+        }
+    }
+
     suspend fun loginProviders(): List<LoginProvider> {
         val request = Request.Builder()
             .url(SERVICE_URLS_ENDPOINT)
@@ -422,19 +488,29 @@ class GfnAuthRepository(
 
     suspend fun login(provider: LoginProvider): AuthSession {
         drainExternalOAuthRedirects()
-        val server = openAvailableCallbackServer()
-        val port = server.localPort
+        val callbackServers = openAvailableCallbackServers()
+        val port = callbackServers.port
         val verifier = randomBase64Url(64).take(86)
         val challenge = sha256Base64Url(verifier)
         val authUrl = buildAuthUrl(provider, challenge, port)
         val code = coroutineScope {
-            val codeDeferred = async(Dispatchers.IO) { waitForAuthorizationCode(server) }
+            val codeDeferred = async(Dispatchers.IO) { waitForAuthorizationCode(callbackServers) }
+            runCatching {
+                verifyCallbackListenerReachable(port)
+            }.onFailure { error ->
+                codeDeferred.cancel()
+                callbackServers.close()
+                throw IllegalStateException(
+                    "OAuth callback listener was not reachable on localhost:$port before opening the browser.",
+                    error,
+                )
+            }
             val customTabs = CustomTabsIntent.Builder().build()
             customTabs.intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             runCatching {
                 customTabs.launchUrl(context, Uri.parse(authUrl))
             }.onFailure {
-                server.close()
+                callbackServers.close()
                 throw it
             }
             codeDeferred.await()
@@ -792,39 +868,45 @@ class GfnAuthRepository(
         return "$AUTH_ENDPOINT?$params"
     }
 
-    private suspend fun openAvailableCallbackServer(): ServerSocket = withContext(Dispatchers.IO) {
+    private suspend fun openAvailableCallbackServers(): OAuthCallbackServers = withContext(Dispatchers.IO) {
         for (port in REDIRECT_PORTS) {
-            val server = runCatching { openCallbackServerSocket(port) }.getOrNull()
+            val server = runCatching { openCallbackServerSockets(port) }.getOrNull()
             if (server != null) return@withContext server
         }
         error("No available OAuth callback ports")
     }
 
-    private suspend fun waitForAuthorizationCode(server: ServerSocket): String = withContext(Dispatchers.IO) {
-        server.use {
+    private suspend fun waitForAuthorizationCode(callbackServers: OAuthCallbackServers): String = withContext(Dispatchers.IO) {
+        callbackServers.use {
             val deadline = System.currentTimeMillis() + OAUTH_CALLBACK_TIMEOUT_MS
             while (System.currentTimeMillis() < deadline) {
                 externalOAuthRedirects.tryReceive().getOrNull()?.let { params ->
                     authorizationCodeFromParams(params)?.let { code -> return@withContext code }
                 }
-                server.soTimeout = minOf(5_000, (deadline - System.currentTimeMillis()).coerceAtLeast(1)).toInt()
-                val socket = try {
-                    server.accept()
-                } catch (_: SocketTimeoutException) {
-                    continue
-                }
-                socket.use { callbackSocket ->
-                    val params = runCatching { readCallbackQueryParams(callbackSocket) }.getOrDefault(emptyMap())
-                    params["error"]?.takeIf { it.isNotBlank() }?.let { error ->
-                        writeCallbackResponse(callbackSocket, "Login failed or was cancelled.")
-                        throw IllegalStateException(error)
+                for (server in callbackServers.sockets) {
+                    val remainingMs = deadline - System.currentTimeMillis()
+                    if (remainingMs <= 0L) break
+                    server.soTimeout = minOf(500, remainingMs.coerceAtLeast(1)).toInt()
+                    val socket = try {
+                        server.accept()
+                    } catch (_: SocketTimeoutException) {
+                        null
+                    } catch (error: SocketException) {
+                        if (server.isClosed) null else throw error
+                    } ?: continue
+                    socket.use { callbackSocket ->
+                        val params = runCatching { readCallbackQueryParams(callbackSocket) }.getOrDefault(emptyMap())
+                        params["error"]?.takeIf { it.isNotBlank() }?.let { error ->
+                            writeCallbackResponse(callbackSocket, "Login failed or was cancelled.")
+                            throw IllegalStateException(error)
+                        }
+                        val code = authorizationCodeFromParams(params)
+                        if (code != null) {
+                            writeCallbackResponse(callbackSocket, "Login complete. Return to OpenNOW.")
+                            return@withContext code
+                        }
+                        writeCallbackResponse(callbackSocket, "Waiting for NVIDIA to finish sign-in.")
                     }
-                    val code = authorizationCodeFromParams(params)
-                    if (code != null) {
-                        writeCallbackResponse(callbackSocket, "Login complete. Return to OpenNOW.")
-                        return@withContext code
-                    }
-                    writeCallbackResponse(callbackSocket, "Waiting for NVIDIA to finish sign-in.")
                 }
             }
             throw IllegalStateException("Timed out waiting for OAuth callback")
@@ -851,11 +933,77 @@ class GfnAuthRepository(
         }
     }
 
-    private fun openCallbackServerSocket(port: Int): ServerSocket =
-        ServerSocket().apply {
-            reuseAddress = true
-            bind(InetSocketAddress(port))
+    private suspend fun verifyCallbackListenerReachable(port: Int) = withContext(Dispatchers.IO) {
+        val failures = mutableListOf<String>()
+        val reachable = listOf("127.0.0.1", "::1").any { host ->
+            runCatching {
+                probeCallbackListener(host, port)
+            }.onFailure { error ->
+                failures += "$host=${error.message ?: error::class.java.simpleName}"
+            }.getOrDefault(false)
         }
+        check(reachable) {
+            "OAuth callback listener probe failed (${failures.joinToString("; ")})"
+        }
+    }
+
+    private fun probeCallbackListener(host: String, port: Int): Boolean {
+        val address = InetAddress.getByName(host)
+        Socket().use { socket ->
+            socket.connect(InetSocketAddress(address, port), OAUTH_CALLBACK_PROBE_TIMEOUT_MS)
+            socket.soTimeout = OAUTH_CALLBACK_PROBE_TIMEOUT_MS
+            val hostHeader = if (host.contains(":")) "[$host]" else host
+            val writer = OutputStreamWriter(socket.getOutputStream())
+            writer.write("GET $OAUTH_CALLBACK_PROBE_PATH HTTP/1.1\r\n")
+            writer.write("Host: $hostHeader:$port\r\n")
+            writer.write("Connection: close\r\n\r\n")
+            writer.flush()
+            val status = BufferedReader(InputStreamReader(socket.getInputStream())).use { reader ->
+                reader.readLine().orEmpty()
+            }
+            return status.startsWith("HTTP/1.1 200") || status.startsWith("HTTP/1.0 200")
+        }
+    }
+
+    private fun openCallbackServerSockets(port: Int): OAuthCallbackServers {
+        val sockets = mutableListOf<ServerSocket>()
+        val failures = mutableListOf<String>()
+        var portInUse = false
+        for (host in listOf("127.0.0.1", "::1")) {
+            runCatching { openCallbackServerSocket(port, host) }
+                .onSuccess { sockets += it }
+                .onFailure { error ->
+                    failures += "$host=${error.message ?: error::class.java.simpleName}"
+                    portInUse = portInUse || error is BindException
+                }
+        }
+        if (portInUse) {
+            sockets.forEach { socket -> runCatching { socket.close() } }
+            error("OAuth callback port $port is already in use")
+        }
+        if (sockets.isEmpty()) {
+            runCatching { openCallbackServerSocket(port, host = null) }
+                .onSuccess { sockets += it }
+                .onFailure { error -> failures += "wildcard=${error.message ?: error::class.java.simpleName}" }
+        }
+        if (sockets.isEmpty()) {
+            error("OAuth callback port $port unavailable (${failures.joinToString("; ")})")
+        }
+        return OAuthCallbackServers(port, sockets)
+    }
+
+    private fun openCallbackServerSocket(port: Int, host: String?): ServerSocket {
+        val socket = ServerSocket()
+        return try {
+            socket.reuseAddress = true
+            val address = host?.let(InetAddress::getByName)
+            socket.bind(if (address == null) InetSocketAddress(port) else InetSocketAddress(address, port))
+            socket
+        } catch (error: Throwable) {
+            runCatching { socket.close() }
+            throw error
+        }
+    }
 
     private fun readCallbackQueryParams(socket: Socket): Map<String, String> {
         socket.soTimeout = 2_000

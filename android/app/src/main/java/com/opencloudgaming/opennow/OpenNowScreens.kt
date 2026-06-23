@@ -179,6 +179,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.text.DateFormat
+import java.util.Date
 import java.util.Locale
 import java.net.URL
 import kotlin.math.min
@@ -342,14 +344,14 @@ private fun LoginScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
     val signInFocusRequester = remember { FocusRequester() }
     val tvLogin = state.codecReport?.androidTvProfile == true
     val deviceCodeLoginAvailable = state.selectedProvider.supportsDeviceCodeLogin
-    val preferTvDeviceLogin = tvLogin && deviceCodeLoginAvailable
+    val preferDeviceCodeLogin = tvLogin && deviceCodeLoginAvailable
     val deviceLoginPrompt = state.deviceLoginPrompt.takeIf { deviceCodeLoginAvailable }
-    LaunchedEffect(preferTvDeviceLogin, deviceLoginPrompt == null) {
-        if (preferTvDeviceLogin && deviceLoginPrompt == null) {
+    LaunchedEffect(preferDeviceCodeLogin, deviceLoginPrompt == null) {
+        if (preferDeviceCodeLogin && deviceLoginPrompt == null) {
             runCatching { signInFocusRequester.requestFocus() }
         }
     }
-    if (preferTvDeviceLogin && deviceLoginPrompt != null) {
+    if (preferDeviceCodeLogin && deviceLoginPrompt != null) {
         TvDeviceLoginScreen(
             prompt = deviceLoginPrompt,
             phase = state.launchPhase,
@@ -382,14 +384,14 @@ private fun LoginScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                 Text(
                     when {
                         state.launchPhase.isNotBlank() -> state.launchPhase
-                        preferTvDeviceLogin -> stringResource(R.string.login_tv_start, state.selectedProvider.displayName)
+                        preferDeviceCodeLogin -> stringResource(R.string.login_tv_start, state.selectedProvider.displayName)
                         else -> stringResource(R.string.login_with_provider, state.selectedProvider.displayName)
                     },
                 )
             }
             if (!tvLogin && deviceCodeLoginAvailable) {
                 TextButton(onClick = { viewModel.loginWithCode() }) {
-                    Text("Use TV code sign-in")
+                    Text("Use code sign-in")
                 }
             }
         }
@@ -2768,6 +2770,9 @@ private fun SettingsContent(
     SettingsSection("App Data") {
                 AppDataSettingsPanel(viewModel = viewModel)
             }
+    SettingsSection("App updates") {
+                AndroidUpdatePanel(state = state, viewModel = viewModel)
+            }
     SettingsSection("Account") {
                 AccountSettingsPanel(state = state, viewModel = viewModel)
             }
@@ -2846,6 +2851,110 @@ private fun AppDataSettingsPanel(viewModel: OpenNowViewModel) {
             }
         }
     }
+}
+
+@Composable
+private fun AndroidUpdatePanel(state: OpenNowUiState, viewModel: OpenNowViewModel) {
+    val update = state.androidUpdate
+    val checkBlockedByStream = state.isAndroidUpdateCheckBlockedByStream()
+    val showCheckPauseMessage = checkBlockedByStream && when (update.status) {
+        AndroidUpdateStatus.Available,
+        AndroidUpdateStatus.Downloading,
+        AndroidUpdateStatus.Downloaded -> false
+        else -> true
+    }
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Text(formatAndroidUpdateSourceLabel(update.sourceUrl), color = SettingsTextMuted, style = MaterialTheme.typography.labelSmall)
+        Text(
+            if (showCheckPauseMessage) "Update checks pause while streaming." else update.message,
+            color = updateMessageColor(update.status),
+            style = MaterialTheme.typography.bodySmall,
+        )
+        update.lastCheckedAt?.let { checkedAt ->
+            Text("Last checked ${DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(Date(checkedAt))}", color = SettingsTextMuted, style = MaterialTheme.typography.labelSmall)
+        }
+        update.availableVersionName?.let { version ->
+            Text("Available version $version", color = SettingsTextMuted, style = MaterialTheme.typography.bodySmall)
+        }
+        update.availableVersionCode?.let { code ->
+            Text("Build $code", color = SettingsTextMuted, style = MaterialTheme.typography.bodySmall)
+        }
+        update.releaseNotes?.takeIf { it.isNotBlank() }?.let { notes ->
+            Text(notes, color = SettingsTextMuted, style = MaterialTheme.typography.bodySmall, maxLines = 4, overflow = TextOverflow.Ellipsis)
+        }
+        if (update.status == AndroidUpdateStatus.Downloading) {
+            LinearProgressIndicator(Modifier.fillMaxWidth())
+            update.progress?.let { progress ->
+                Text(formatAndroidUpdateProgress(progress), color = SettingsTextMuted, style = MaterialTheme.typography.labelSmall)
+            }
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+            OutlinedButton(
+                onClick = viewModel::checkAndroidUpdate,
+                enabled = update.canCheck && !checkBlockedByStream,
+                modifier = Modifier.weight(1f),
+            ) {
+                Text(if (update.status == AndroidUpdateStatus.Checking) "Checking..." else "Check", maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+            when {
+                update.status == AndroidUpdateStatus.Available -> {
+                    Button(
+                        onClick = viewModel::downloadAndroidUpdate,
+                        enabled = update.canDownload,
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Text("Download", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
+                }
+                update.status == AndroidUpdateStatus.Downloaded -> {
+                    Button(
+                        onClick = viewModel::installAndroidUpdate,
+                        enabled = update.canInstall,
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Text("Install", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun updateMessageColor(status: AndroidUpdateStatus): Color =
+    when (status) {
+        AndroidUpdateStatus.Available,
+        AndroidUpdateStatus.Downloaded,
+        AndroidUpdateStatus.NotAvailable -> MaterialTheme.colorScheme.primary
+        AndroidUpdateStatus.Error -> Color(0xffff9f9f)
+        else -> SettingsTextMuted
+    }
+
+private fun formatAndroidUpdateProgress(progress: AndroidUpdateProgress): String {
+    val bytes = progress.totalBytes?.let { total ->
+        "${formatUpdateBytes(progress.transferredBytes)} / ${formatUpdateBytes(total)}"
+    } ?: formatUpdateBytes(progress.transferredBytes)
+    return progress.percent?.let { "$it% - $bytes" } ?: bytes
+}
+
+private fun formatAndroidUpdateSourceLabel(activeSource: String): String {
+    val source = activeSource.ifBlank { ANDROID_UPDATE_SOURCE_URL }.trim()
+    val normalized = runCatching { normalizeAndroidUpdateSourceUrl(source) }.getOrNull() ?: source
+    val host = runCatching { Uri.parse(normalized).host }.getOrNull()
+    return if (host.isNullOrBlank()) "Checks: $normalized" else "Checks: $host"
+}
+
+private fun formatUpdateBytes(bytes: Long): String {
+    if (bytes < 1024L) return "$bytes B"
+    val units = listOf("KB", "MB", "GB")
+    var value = bytes.toDouble() / 1024.0
+    var unit = units.first()
+    for (index in 1 until units.size) {
+        if (value < 1024.0) break
+        value /= 1024.0
+        unit = units[index]
+    }
+    return "%.1f %s".format(Locale.US, value, unit)
 }
 
 @Composable
