@@ -75,6 +75,9 @@ class SettingsStore(context: Context) {
                 rightOffsetXDp = androidTouch.rightOffsetXDp.coerceIn(-220f, 220f),
                 rightOffsetYDp = androidTouch.rightOffsetYDp.coerceIn(-160f, 160f),
             ),
+            streamIntroMusic = nerdMode && streamIntroMusic,
+            stretchStreamToFill = nerdMode && stretchStreamToFill,
+            controllerUiSounds = nerdMode && controllerUiSounds,
             autoFullScreen = true,
         )
     }

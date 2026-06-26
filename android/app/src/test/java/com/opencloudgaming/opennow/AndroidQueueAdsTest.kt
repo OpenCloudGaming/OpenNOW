@@ -56,6 +56,34 @@ class AndroidQueueAdsTest {
     }
 
     @Test
+    fun mergeQueueSessionStatePreservesAdsForReadyStatusWithoutStreamEndpoint() {
+        val previous = session(
+            adState = SessionAdState(
+                isAdsRequired = true,
+                sessionAdsRequired = true,
+                sessionAds = listOf(ad("ad-1")),
+                ads = listOf(ad("ad-1")),
+            ),
+        )
+        val partialReady = session(
+            status = 2,
+            serverIp = "",
+            signalingServer = "",
+            signalingUrl = "",
+            adState = SessionAdState(
+                isAdsRequired = true,
+                sessionAdsRequired = true,
+                serverSentEmptyAds = true,
+            ),
+        )
+
+        val merged = mergeQueueSessionState(previous, partialReady)
+
+        assertEquals(2, merged.status)
+        assertEquals(listOf("ad-1"), sessionAdItems(merged.adState).map { it.adId })
+    }
+
+    @Test
     fun mergeQueueAdStateDoesNotRestoreAfterExplicitLocalClear() {
         val previous = SessionAdState(
             isAdsRequired = true,
@@ -242,6 +270,9 @@ class AndroidQueueAdsTest {
         status: Int = 1,
         queuePosition: Int? = 7,
         adState: SessionAdState? = null,
+        serverIp: String = "np.example.invalid",
+        signalingServer: String = "np.example.invalid:443",
+        signalingUrl: String = "wss://np.example.invalid/nvst/",
     ): SessionInfo =
         SessionInfo(
             sessionId = "session-1",
@@ -250,8 +281,8 @@ class AndroidQueueAdsTest {
             adState = adState,
             zone = "prod",
             streamingBaseUrl = "https://np.example.invalid",
-            serverIp = "np.example.invalid",
-            signalingServer = "",
-            signalingUrl = "",
+            serverIp = serverIp,
+            signalingServer = signalingServer,
+            signalingUrl = signalingUrl,
         )
 }

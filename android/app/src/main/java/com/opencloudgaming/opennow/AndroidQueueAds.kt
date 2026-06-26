@@ -1,7 +1,5 @@
 package com.opencloudgaming.opennow
 
-private val READY_SESSION_STATUSES = setOf(2, 3)
-
 internal fun isSessionAdsRequired(adState: SessionAdState?): Boolean =
     adState?.sessionAdsRequired ?: (adState?.isAdsRequired == true)
 
@@ -39,7 +37,7 @@ internal fun mergeQueueSessionState(
     next: SessionInfo,
     preserveMissingAdState: Boolean = true,
 ): SessionInfo {
-    if (next.status in READY_SESSION_STATUSES) return next
+    if (next.isReadyForStream()) return next
     return next.copy(
         adState = mergeQueueAdState(previous.adState, next.adState, preserveMissingAdState),
         mediaConnectionInfo = next.mediaConnectionInfo ?: previous.mediaConnectionInfo,

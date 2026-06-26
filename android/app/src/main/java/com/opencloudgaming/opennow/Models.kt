@@ -102,8 +102,9 @@ data class AppSettings(
     val compactGameCards: Boolean = true,
     val showGameStoreLabels: Boolean = true,
     val expressiveUi: Boolean = true,
-    val dynamicColor: Boolean = true,
+    val dynamicColor: Boolean = false,
     val uiAccent: UiAccent = UiAccent.OpenNow,
+    val nerdMode: Boolean = false,
     val hideStreamButtons: Boolean = false,
     val showAntiAfkIndicator: Boolean = true,
     val showStatsOnLaunch: Boolean = false,
@@ -111,13 +112,15 @@ data class AppSettings(
     val phoneRumbleFallback: Boolean = true,
     val hideServerSelector: Boolean = false,
     val controllerMode: Boolean = false,
-    val controllerUiSounds: Boolean = true,
+    val controllerUiSounds: Boolean = false,
     val controllerBackgroundAnimations: Boolean = true,
     val controllerThemeStyle: String = "aurora",
     val controllerThemeColor: ControllerThemeRgb = ControllerThemeRgb(),
     val controllerLibraryGameBackdrop: Boolean = true,
     val autoLoadControllerLibrary: Boolean = false,
     val autoFullScreen: Boolean = true,
+    val streamIntroMusic: Boolean = false,
+    val stretchStreamToFill: Boolean = false,
     val favoriteGameIds: List<String> = emptyList(),
     val defaultGameVariantIds: Map<String, String> = emptyMap(),
     val sessionCounterEnabled: Boolean = false,
@@ -127,6 +130,7 @@ data class AppSettings(
     val androidTouch: AndroidTouchSettings = AndroidTouchSettings(),
     val discordRichPresence: Boolean = false,
     val autoCheckForUpdates: Boolean = true,
+    val analyticsOptOut: Boolean = false,
     val allowEscapeToExitFullscreen: Boolean = false,
 )
 
@@ -166,6 +170,32 @@ internal fun normalizeStreamResolutionForAspect(resolution: String, aspectRatio:
             parseResolutionPixels(option).first * parseResolutionPixels(option).second
         },
     ) ?: options.first()
+}
+
+internal fun normalizeStreamResolutionForAspectAndPlan(
+    resolution: String,
+    aspectRatio: String,
+    subscriptionInfo: SubscriptionInfo?,
+    fallbackMembershipTier: String?,
+): String {
+    val normalized = normalizeStreamResolutionForAspect(resolution, aspectRatio)
+    val choices = streamResolutionChoicesForAspect(aspectRatio)
+    val current = choices.firstOrNull { it.value == normalized }
+    if (current?.isAvailableFor(subscriptionInfo, fallbackMembershipTier) == true) return normalized
+
+    val availableChoices = choices.filter { it.isAvailableFor(subscriptionInfo, fallbackMembershipTier) }
+        .ifEmpty {
+            streamResolutionChoicesForAspect("16:9").filter { it.isAvailableFor(subscriptionInfo, fallbackMembershipTier) }
+        }
+    if (availableChoices.isEmpty()) return normalized
+
+    val requestedPixels = parseResolutionPixels(normalized).let { it.first * it.second }
+    return availableChoices
+        .filter { it.width * it.height <= requestedPixels }
+        .maxByOrNull { it.width * it.height }
+        ?.value
+        ?: availableChoices.minByOrNull { it.width * it.height }?.value
+        ?: normalized
 }
 
 internal fun parseResolutionPixels(value: String): Pair<Int, Int> {
@@ -229,6 +259,16 @@ internal fun hasUltimateStreamingPlan(subscriptionInfo: SubscriptionInfo?, fallb
 internal fun StreamSettings.withHdrAllowed(subscriptionInfo: SubscriptionInfo?, fallbackMembershipTier: String?): StreamSettings =
     if (hdrEnabled && !hasUltimateStreamingPlan(subscriptionInfo, fallbackMembershipTier)) copy(hdrEnabled = false) else this
 
+internal fun StreamSettings.withResolutionAllowed(subscriptionInfo: SubscriptionInfo?, fallbackMembershipTier: String?): StreamSettings {
+    val allowedAspectRatio = if (streamResolutionChoicesForAspect(aspectRatio).any { it.isAvailableFor(subscriptionInfo, fallbackMembershipTier) }) {
+        aspectRatio
+    } else {
+        "16:9"
+    }
+    val allowedResolution = normalizeStreamResolutionForAspectAndPlan(resolution, allowedAspectRatio, subscriptionInfo, fallbackMembershipTier)
+    return if (allowedResolution == resolution && allowedAspectRatio == aspectRatio) this else copy(resolution = allowedResolution, aspectRatio = allowedAspectRatio)
+}
+
 private val STREAM_RESOLUTION_OPTIONS = listOf(
     StreamResolutionOption("1280x720", "16:9", "720"),
     StreamResolutionOption("1366x768", "16:9", "768"),
@@ -242,7 +282,7 @@ private val STREAM_RESOLUTION_OPTIONS = listOf(
     StreamResolutionOption("1112x834", "4:3", "834"),
     StreamResolutionOption("1600x1200", "4:3", "1080"),
     StreamResolutionOption("1280x1024", "5:4", "1050"),
-    StreamResolutionOption("1680x720", "21:9", "720", StreamResolutionPlan.Priority),
+    StreamResolutionOption("1680x720", "21:9", "720"),
     StreamResolutionOption("2560x1080", "21:9", "1080", StreamResolutionPlan.Priority),
     StreamResolutionOption("3840x1080", "32:9", "1080", StreamResolutionPlan.Priority),
     StreamResolutionOption("2560x1440", "16:9", "1440", StreamResolutionPlan.Priority),
@@ -757,6 +797,15 @@ data class ActiveSessionInfo(
     val fps: Int? = null,
 )
 
+internal fun SessionInfo.isReadyForStream(): Boolean =
+    status in setOf(2, 3) &&
+        serverIp.isNotBlank() &&
+        signalingServer.isNotBlank() &&
+        signalingUrl.isNotBlank()
+
+internal fun ActiveSessionInfo.isReadyForClaim(): Boolean =
+    status in setOf(2, 3) && !serverIp.isNullOrBlank()
+
 data class CodecCapability(
     val codec: VideoCodec,
     val decoderAvailable: Boolean,
@@ -799,8 +848,14 @@ internal fun CodecCapability.streamingDecoderName(): String? =
 internal fun CodecCapability.streamingRealtimeSafe(): Boolean =
     streamingDecoderAvailable() && (codec == VideoCodec.H264 || streamingHardwareDecoderAvailable() || webRtcDecoderAvailable == true)
 
-internal fun CodecCapability.streamingDecoderUsableForLaunch(): Boolean =
-    webRtcDecoderAvailable ?: (decoderAvailable && (codec == VideoCodec.H264 || hardwareDecoder))
+internal fun CodecCapability.streamingDecoderUsableForLaunch(): Boolean {
+    if (webRtcDecoderAvailable == false) return false
+    if (codec == VideoCodec.H264) return webRtcDecoderAvailable ?: decoderAvailable
+    if (webRtcDecoderAvailable == true) {
+        return webRtcHardwareDecoderAvailable ?: (hardwareDecoder && realtimeSafe)
+    }
+    return decoderAvailable && hardwareDecoder && realtimeSafe
+}
 
 private fun RuntimeCodecReport.bestStreamingFallbackCodec(): VideoCodec =
     listOf(VideoCodec.AV1, VideoCodec.H265, VideoCodec.H264)

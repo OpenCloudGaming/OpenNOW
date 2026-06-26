@@ -3,6 +3,7 @@ package com.opencloudgaming.opennow
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.media.AudioManager
 import android.os.Build
 import android.os.Bundle
 import android.os.SystemClock
@@ -38,6 +39,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        volumeControlStream = AudioManager.STREAM_MUSIC
         setContent {
             OpenNowApp(viewModel)
         }
@@ -71,6 +73,9 @@ class MainActivity : ComponentActivity() {
         if (streamSystemUiActive && event.action == KeyEvent.ACTION_DOWN && event.shouldReapplyStreamSystemUi()) {
             enforceStreamSystemUiFromInput()
         }
+        if (streamSystemUiActive && event.isAndroidVolumeKey()) {
+            return super.dispatchKeyEvent(event)
+        }
         if (NativeStreamInputRouter.dispatchKey(event)) {
             return true
         }
@@ -90,6 +95,11 @@ class MainActivity : ComponentActivity() {
         }
         return super.dispatchKeyEvent(event)
     }
+
+    private fun KeyEvent.isAndroidVolumeKey(): Boolean =
+        keyCode == KeyEvent.KEYCODE_VOLUME_UP ||
+            keyCode == KeyEvent.KEYCODE_VOLUME_DOWN ||
+            keyCode == KeyEvent.KEYCODE_VOLUME_MUTE
 
     override fun dispatchGenericMotionEvent(event: MotionEvent): Boolean {
         if (streamSystemUiActive && (event.isMouseLikePointerEvent() || event.isControllerMotionEvent())) {

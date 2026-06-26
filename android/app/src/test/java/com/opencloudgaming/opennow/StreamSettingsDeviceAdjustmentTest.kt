@@ -7,7 +7,7 @@ class StreamSettingsDeviceAdjustmentTest {
     @Test
     fun preservesSelectedH265WhenHardwareDecoderExists() {
         val adjusted = StreamSettings(codec = VideoCodec.H265, colorQuality = ColorQuality.TenBit420)
-            .adjustedForDevice(codecReport(VideoCodec.H265, hardwareDecoder = true, realtimeSafe = false))
+            .adjustedForDevice(codecReport(VideoCodec.H265, hardwareDecoder = true, realtimeSafe = true))
 
         assertEquals(VideoCodec.H265, adjusted.codec)
         assertEquals(ColorQuality.EightBit420, adjusted.colorQuality)
@@ -16,7 +16,7 @@ class StreamSettingsDeviceAdjustmentTest {
     @Test
     fun preservesSelectedAv1WhenHardwareDecoderExists() {
         val adjusted = StreamSettings(codec = VideoCodec.AV1, colorQuality = ColorQuality.TenBit420)
-            .adjustedForDevice(codecReport(VideoCodec.AV1, hardwareDecoder = true, realtimeSafe = false))
+            .adjustedForDevice(codecReport(VideoCodec.AV1, hardwareDecoder = true, realtimeSafe = true))
 
         assertEquals(VideoCodec.AV1, adjusted.codec)
         assertEquals(ColorQuality.EightBit420, adjusted.colorQuality)
@@ -35,6 +35,24 @@ class StreamSettingsDeviceAdjustmentTest {
     fun fallsBackToH264WhenSelectedDecoderHasNoHardwarePath() {
         val adjusted = StreamSettings(codec = VideoCodec.AV1, colorQuality = ColorQuality.TenBit420, maxBitrateMbps = 90)
             .adjustedForDevice(codecReport(VideoCodec.AV1, hardwareDecoder = false, realtimeSafe = false))
+
+        assertEquals(VideoCodec.H264, adjusted.codec)
+        assertEquals(ColorQuality.EightBit420, adjusted.colorQuality)
+        assertEquals(35, adjusted.maxBitrateMbps)
+    }
+
+    @Test
+    fun fallsBackToH264WhenH265WebRtcDecoderIsSoftwareOnly() {
+        val adjusted = StreamSettings(codec = VideoCodec.H265, colorQuality = ColorQuality.TenBit420, maxBitrateMbps = 90)
+            .adjustedForDevice(
+                codecReport(
+                    VideoCodec.H265,
+                    hardwareDecoder = true,
+                    realtimeSafe = true,
+                    webRtcDecoderAvailable = true,
+                    webRtcHardwareDecoderAvailable = false,
+                ),
+            )
 
         assertEquals(VideoCodec.H264, adjusted.codec)
         assertEquals(ColorQuality.EightBit420, adjusted.colorQuality)
@@ -137,6 +155,7 @@ class StreamSettingsDeviceAdjustmentTest {
                     hardwareDecoder = false,
                     realtimeSafe = false,
                     webRtcDecoderAvailable = true,
+                    webRtcHardwareDecoderAvailable = true,
                 ),
         )
 
@@ -165,6 +184,7 @@ class StreamSettingsDeviceAdjustmentTest {
                     hardwareEncoder = false,
                     realtimeSafe = false,
                     webRtcDecoderAvailable = true,
+                    webRtcHardwareDecoderAvailable = true,
                 ),
             ),
             nativeRuntimeSummary = "{}",
@@ -186,6 +206,7 @@ class StreamSettingsDeviceAdjustmentTest {
         lowPower: Boolean = false,
         tv: Boolean = false,
         webRtcDecoderAvailable: Boolean? = null,
+        webRtcHardwareDecoderAvailable: Boolean? = null,
     ): RuntimeCodecReport =
         RuntimeCodecReport(
             capabilities = listOf(
@@ -197,6 +218,7 @@ class StreamSettingsDeviceAdjustmentTest {
                     hardwareEncoder = false,
                     realtimeSafe = realtimeSafe,
                     webRtcDecoderAvailable = webRtcDecoderAvailable,
+                    webRtcHardwareDecoderAvailable = webRtcHardwareDecoderAvailable,
                 ),
             ),
             nativeRuntimeSummary = "{}",

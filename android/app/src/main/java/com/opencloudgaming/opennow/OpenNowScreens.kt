@@ -1,6 +1,7 @@
 package com.opencloudgaming.opennow
 
 import android.app.Activity
+import android.content.res.Configuration
 import android.content.Intent
 import android.graphics.Color as AndroidColor
 import android.graphics.BitmapFactory
@@ -89,7 +90,6 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ElevatedButton
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -153,6 +153,7 @@ import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
@@ -208,6 +209,12 @@ private data class ChoiceMenuOption(
     val enabled: Boolean = true,
     val badge: String? = null,
 )
+
+private enum class SearchTarget {
+    Store,
+    Library,
+    Settings,
+}
 
 private data class LauncherBadge(
     val iconRes: Int,
@@ -302,7 +309,12 @@ fun OpenNowTheme(settings: AppSettings, content: @Composable () -> Unit) {
         onSurfaceVariant = TextMuted,
     )
     val colorScheme = if (settings.dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-        dynamicDarkColorScheme(context)
+        dynamicDarkColorScheme(context).copy(
+            primary = accent,
+            onPrimary = Color(0xff08090c),
+            secondary = accent,
+            tertiary = Green,
+        )
     } else {
         fallbackScheme
     }
@@ -638,6 +650,24 @@ private fun MainShell(state: OpenNowUiState, viewModel: OpenNowViewModel) {
     val streamingActive = inStream && state.streamStatus != "idle"
     val modalPickerOpen = state.pendingPrintedWasteGame != null || state.pendingStoreChoiceGame != null
     val tvProfile = state.codecReport?.androidTvProfile == true
+    var visibleSearchTarget by remember { mutableStateOf<SearchTarget?>(null) }
+    var settingsSearchQuery by remember { mutableStateOf("") }
+    fun revealSearch(
+        target: SearchTarget = when (state.page) {
+            AppPage.Library -> SearchTarget.Library
+            AppPage.Settings -> SearchTarget.Settings
+            else -> SearchTarget.Store
+        },
+    ) {
+        visibleSearchTarget = target
+        if (target == SearchTarget.Store && state.page != AppPage.Home) {
+            viewModel.setPage(AppPage.Home)
+        } else if (target == SearchTarget.Library && state.page != AppPage.Library) {
+            viewModel.setPage(AppPage.Library)
+        } else if (target == SearchTarget.Settings && state.page != AppPage.Settings) {
+            viewModel.setPage(AppPage.Settings)
+        }
+    }
     BackHandler(enabled = state.selectedGame != null && !inStream) {
         viewModel.clearSelectedGame()
     }
@@ -647,6 +677,7 @@ private fun MainShell(state: OpenNowUiState, viewModel: OpenNowViewModel) {
     BoxWithConstraints(Modifier.fillMaxSize()) {
         var phoneLandscapeScrollChromeHidden by remember { mutableStateOf(false) }
         val phoneLandscapeChrome = !tvProfile && !inStream && isPhoneLandscape(maxWidth, maxHeight)
+        val portraitChrome = !inStream && maxHeight >= maxWidth
         val showNavigationRail = !inStream && (tvProfile || phoneLandscapeChrome)
         val scrollChromePage = state.page == AppPage.Home || state.page == AppPage.Library
         LaunchedEffect(phoneLandscapeChrome, scrollChromePage) {
@@ -664,20 +695,35 @@ private fun MainShell(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                         tonalElevation = 0.dp,
                     ) {
                         BottomNavItem(
-                            selected = state.page == AppPage.Home,
-                            onClick = { viewModel.setPage(AppPage.Home) },
+                            selected = state.page == AppPage.Home && visibleSearchTarget != SearchTarget.Store,
+                            onClick = {
+                                visibleSearchTarget = null
+                                viewModel.setPage(AppPage.Home)
+                            },
                             iconRes = R.drawable.ic_tab_store,
                             label = stringResource(R.string.nav_store),
                         )
                         BottomNavItem(
-                            selected = state.page == AppPage.Library,
-                            onClick = { viewModel.setPage(AppPage.Library) },
+                            selected = visibleSearchTarget != null,
+                            onClick = { revealSearch() },
+                            iconRes = R.drawable.ic_search,
+                            label = stringResource(R.string.nav_search),
+                        )
+                        BottomNavItem(
+                            selected = state.page == AppPage.Library && visibleSearchTarget != SearchTarget.Library,
+                            onClick = {
+                                visibleSearchTarget = null
+                                viewModel.setPage(AppPage.Library)
+                            },
                             iconRes = R.drawable.ic_tab_library,
                             label = stringResource(R.string.nav_library),
                         )
                         BottomNavItem(
-                            selected = state.page == AppPage.Settings,
-                            onClick = { viewModel.setPage(AppPage.Settings) },
+                            selected = state.page == AppPage.Settings && visibleSearchTarget != SearchTarget.Settings,
+                            onClick = {
+                                visibleSearchTarget = null
+                                viewModel.setPage(AppPage.Settings)
+                            },
                             iconRes = R.drawable.ic_tab_settings,
                             label = stringResource(R.string.nav_settings),
                         )
@@ -688,29 +734,24 @@ private fun MainShell(state: OpenNowUiState, viewModel: OpenNowViewModel) {
             Box(Modifier.fillMaxSize().padding(padding)) {
                 Row(Modifier.fillMaxSize()) {
                     if (showNavigationRail) {
-                        AppNavigationRail(state = state, viewModel = viewModel)
+                        AppNavigationRail(
+                            state = state,
+                            activeSearchTarget = visibleSearchTarget,
+                            onNavigate = { page ->
+                                visibleSearchTarget = null
+                                viewModel.setPage(page)
+                            },
+                            onSearch = { revealSearch(it) },
+                        )
                     }
                     Column(Modifier.fillMaxSize()) {
-                        AnimatedVisibility(visible = !inStream && !(phoneLandscapeChrome && scrollChromePage && phoneLandscapeScrollChromeHidden)) {
+                        AnimatedVisibility(
+                            visible = portraitChrome,
+                        ) {
                             if (!inStream) {
                                 TopStatusBar(
                                     state = state,
                                     onResumeActiveSession = viewModel::resumeActiveSession,
-                                    landscapeSearchQuery = when {
-                                        phoneLandscapeChrome && state.page == AppPage.Home -> state.catalogSearch
-                                        phoneLandscapeChrome && state.page == AppPage.Library -> state.librarySearch
-                                        else -> null
-                                    },
-                                    onLandscapeSearchChange = when {
-                                        phoneLandscapeChrome && state.page == AppPage.Home -> viewModel::setCatalogSearch
-                                        phoneLandscapeChrome && state.page == AppPage.Library -> viewModel::setLibrarySearch
-                                        else -> null
-                                    },
-                                    landscapeSearchPlaceholder = when (state.page) {
-                                        AppPage.Library -> "Search library"
-                                        else -> stringResource(R.string.search_games)
-                                    },
-                                    landscapeSearchBusy = state.page == AppPage.Home && state.loadingGames && state.catalogSearch.isNotBlank(),
                                 )
                             }
                         }
@@ -721,7 +762,10 @@ private fun MainShell(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                                     viewModel = viewModel,
                                     tvProfile = tvProfile,
                                     hideChromeWhenScrolled = phoneLandscapeChrome,
-                                    searchInTopBar = phoneLandscapeChrome,
+                                    searchRequested = visibleSearchTarget == SearchTarget.Store,
+                                    onSearchDismissed = {
+                                        if (visibleSearchTarget == SearchTarget.Store) visibleSearchTarget = null
+                                    },
                                     onScrollChromeHiddenChange = { phoneLandscapeScrollChromeHidden = it },
                                 )
                                 AppPage.Library -> LibraryScreen(
@@ -729,10 +773,25 @@ private fun MainShell(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                                     viewModel = viewModel,
                                     tvProfile = tvProfile,
                                     hideChromeWhenScrolled = phoneLandscapeChrome,
-                                    searchInTopBar = phoneLandscapeChrome,
+                                    searchRequested = visibleSearchTarget == SearchTarget.Library,
+                                    onSearchDismissed = {
+                                        if (visibleSearchTarget == SearchTarget.Library) visibleSearchTarget = null
+                                    },
                                     onScrollChromeHiddenChange = { phoneLandscapeScrollChromeHidden = it },
                                 )
-                                AppPage.Settings -> SettingsScreen(state, viewModel, tvProfile)
+                                AppPage.Settings -> SettingsScreen(
+                                    state = state,
+                                    viewModel = viewModel,
+                                    tvProfile = tvProfile,
+                                    searchRequested = visibleSearchTarget == SearchTarget.Settings,
+                                    searchQuery = settingsSearchQuery,
+                                    onSearchQueryChange = { next ->
+                                        settingsSearchQuery = next
+                                        if (next.isBlank() && visibleSearchTarget == SearchTarget.Settings) {
+                                            visibleSearchTarget = null
+                                        }
+                                    },
+                                )
                                 AppPage.Stream -> StreamScreen(state, viewModel)
                             }
                         }
@@ -786,27 +845,46 @@ private fun MainShell(state: OpenNowUiState, viewModel: OpenNowViewModel) {
 }
 
 @Composable
-private fun AppNavigationRail(state: OpenNowUiState, viewModel: OpenNowViewModel) {
+private fun AppNavigationRail(
+    state: OpenNowUiState,
+    activeSearchTarget: SearchTarget?,
+    onNavigate: (AppPage) -> Unit,
+    onSearch: (SearchTarget) -> Unit,
+) {
     NavigationRail(
         modifier = Modifier.fillMaxHeight(),
         containerColor = if (state.page == AppPage.Settings) SettingsBackground else MaterialTheme.colorScheme.background,
     ) {
         Spacer(Modifier.height(8.dp))
         AppNavigationRailItem(
-            selected = state.page == AppPage.Home,
-            onClick = { viewModel.setPage(AppPage.Home) },
+            selected = state.page == AppPage.Home && activeSearchTarget != SearchTarget.Store,
+            onClick = { onNavigate(AppPage.Home) },
             iconRes = R.drawable.ic_tab_store,
             label = stringResource(R.string.nav_store),
         )
         AppNavigationRailItem(
-            selected = state.page == AppPage.Library,
-            onClick = { viewModel.setPage(AppPage.Library) },
+            selected = activeSearchTarget != null,
+            onClick = {
+                onSearch(
+                    when (state.page) {
+                        AppPage.Library -> SearchTarget.Library
+                        AppPage.Settings -> SearchTarget.Settings
+                        else -> SearchTarget.Store
+                    },
+                )
+            },
+            iconRes = R.drawable.ic_search,
+            label = stringResource(R.string.nav_search),
+        )
+        AppNavigationRailItem(
+            selected = state.page == AppPage.Library && activeSearchTarget != SearchTarget.Library,
+            onClick = { onNavigate(AppPage.Library) },
             iconRes = R.drawable.ic_tab_library,
             label = stringResource(R.string.nav_library),
         )
         AppNavigationRailItem(
-            selected = state.page == AppPage.Settings,
-            onClick = { viewModel.setPage(AppPage.Settings) },
+            selected = state.page == AppPage.Settings && activeSearchTarget != SearchTarget.Settings,
+            onClick = { onNavigate(AppPage.Settings) },
             iconRes = R.drawable.ic_tab_settings,
             label = stringResource(R.string.nav_settings),
         )
@@ -849,10 +927,6 @@ private fun RowScope.BottomNavItem(selected: Boolean, onClick: () -> Unit, iconR
 private fun TopStatusBar(
     state: OpenNowUiState,
     onResumeActiveSession: () -> Unit,
-    landscapeSearchQuery: String? = null,
-    onLandscapeSearchChange: ((String) -> Unit)? = null,
-    landscapeSearchPlaceholder: String = "",
-    landscapeSearchBusy: Boolean = false,
 ) {
     Surface(
         modifier = Modifier.fillMaxWidth(),
@@ -871,15 +945,9 @@ private fun TopStatusBar(
                 val tier = state.subscriptionInfo?.membershipTier ?: state.authSession?.user?.membershipTier ?: "GFN"
                 Text("$tier ${state.activeSession?.let { "  Active session ${it.sessionId.take(8)}" } ?: ""}", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
             }
-            if (landscapeSearchQuery != null && onLandscapeSearchChange != null) {
-                Spacer(Modifier.width(10.dp))
-                NativeSearchField(
-                    query = landscapeSearchQuery,
-                    onQueryChange = onLandscapeSearchChange,
-                    placeholder = landscapeSearchPlaceholder,
-                    searching = landscapeSearchBusy,
-                    modifier = Modifier.width(300.dp),
-                )
+            if (state.settings.nerdMode) {
+                Spacer(Modifier.width(6.dp))
+                TopStatusDetails(state)
             }
             if (state.activeSession != null) {
                 Spacer(Modifier.width(6.dp))
@@ -887,6 +955,30 @@ private fun TopStatusBar(
                     Text(stringResource(R.string.action_resume))
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun TopStatusDetails(state: OpenNowUiState) {
+    val stream = state.activeStreamSettings ?: state.settings.stream
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(5.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Surface(
+            shape = RoundedCornerShape(999.dp),
+            color = PanelAlt.copy(alpha = 0.78f),
+            tonalElevation = 0.dp,
+        ) {
+            Text(
+                "Codec ${stream.codec.name}",
+                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                color = TextMuted,
+                style = MaterialTheme.typography.labelSmall,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
         }
     }
 }
@@ -1035,7 +1127,8 @@ private fun HomeScreen(
     viewModel: OpenNowViewModel,
     tvProfile: Boolean,
     hideChromeWhenScrolled: Boolean,
-    searchInTopBar: Boolean,
+    searchRequested: Boolean,
+    onSearchDismissed: () -> Unit,
     onScrollChromeHiddenChange: (Boolean) -> Unit,
 ) {
     val visibleGames = state.games.ifEmpty { state.catalogResult.games }
@@ -1045,6 +1138,7 @@ private fun HomeScreen(
     val scope = rememberCoroutineScope()
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
+    val showSearch = searchRequested || state.catalogSearch.isNotBlank()
     val showScrollActions = gridState.firstVisibleItemIndex > 0 || gridState.firstVisibleItemScrollOffset > 80
     val scrolledAwayFromTop = gridState.firstVisibleItemIndex > 0 || gridState.firstVisibleItemScrollOffset > 0
     val hideScrollChrome = hideChromeWhenScrolled && scrolledAwayFromTop
@@ -1053,6 +1147,13 @@ private fun HomeScreen(
     }
     DisposableEffect(Unit) {
         onDispose { onScrollChromeHiddenChange(false) }
+    }
+    LaunchedEffect(searchRequested) {
+        if (searchRequested) {
+            delay(90)
+            runCatching { searchFocusRequester.requestFocus() }
+            keyboardController?.show()
+        }
     }
     SwipeToRefreshContainer(
         refreshing = state.loadingGames,
@@ -1067,11 +1168,14 @@ private fun HomeScreen(
                     .padding(12.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                AnimatedVisibility(visible = !searchInTopBar && !hideScrollChrome) {
+                AnimatedVisibility(visible = showSearch) {
                     NativeSearchField(
                         modifier = Modifier.fillMaxWidth(),
                         query = state.catalogSearch,
-                        onQueryChange = viewModel::setCatalogSearch,
+                        onQueryChange = { next ->
+                            viewModel.setCatalogSearch(next)
+                            if (next.isBlank()) onSearchDismissed()
+                        },
                         placeholder = stringResource(R.string.search_games),
                         searching = searchingCatalog,
                         focusRequester = searchFocusRequester,
@@ -1119,7 +1223,10 @@ private fun HomeScreen(
                             onChooseStore = viewModel::chooseStore,
                             onSortChange = viewModel::setCatalogSort,
                             onFilterToggle = viewModel::toggleCatalogFilter,
-                            onClearSearch = { viewModel.setCatalogSearch("") },
+                            onClearSearch = {
+                                viewModel.setCatalogSearch("")
+                                onSearchDismissed()
+                            },
                             onClearFilters = viewModel::clearCatalogFilters,
                             gridState = gridState,
                             modifier = Modifier.fillMaxSize(),
@@ -1197,13 +1304,25 @@ private fun LibraryScreen(
     viewModel: OpenNowViewModel,
     tvProfile: Boolean,
     hideChromeWhenScrolled: Boolean,
-    searchInTopBar: Boolean,
+    searchRequested: Boolean,
+    onSearchDismissed: () -> Unit,
     onScrollChromeHiddenChange: (Boolean) -> Unit,
 ) {
-    val favorites = state.libraryGames.filter { it.id in state.settings.favoriteGameIds }
-    val orderedGames = if (favorites.isNotEmpty()) favorites + state.libraryGames.filterNot { it.id in state.settings.favoriteGameIds } else state.libraryGames
-    val games = orderedGames.filter { gameMatchesSearch(it, state.librarySearch) }
+    val orderedGames = remember(state.libraryGames, state.settings.favoriteGameIds) {
+        favoriteOrderedGames(state.libraryGames, state.settings.favoriteGameIds)
+    }
+    val filterOptions = remember(orderedGames) {
+        libraryStoreFilterOptions(orderedGames)
+    }
+    val games = remember(orderedGames, state.librarySearch, state.libraryFilterIds) {
+        orderedGames.filter { game ->
+            gameMatchesSearch(game, state.librarySearch) && gameMatchesLibraryFilters(game, state.libraryFilterIds)
+        }
+    }
     val gridState = rememberLazyGridState()
+    val searchFocusRequester = remember { FocusRequester() }
+    val keyboardController = LocalSoftwareKeyboardController.current
+    val showSearch = searchRequested || state.librarySearch.isNotBlank()
     val scrolledAwayFromTop = gridState.firstVisibleItemIndex > 0 || gridState.firstVisibleItemScrollOffset > 0
     val hideScrollChrome = hideChromeWhenScrolled && scrolledAwayFromTop
     LaunchedEffect(hideScrollChrome) {
@@ -1211,6 +1330,13 @@ private fun LibraryScreen(
     }
     DisposableEffect(Unit) {
         onDispose { onScrollChromeHiddenChange(false) }
+    }
+    LaunchedEffect(searchRequested) {
+        if (searchRequested) {
+            delay(90)
+            runCatching { searchFocusRequester.requestFocus() }
+            keyboardController?.show()
+        }
     }
     SwipeToRefreshContainer(
         refreshing = state.loadingGames,
@@ -1234,12 +1360,23 @@ private fun LibraryScreen(
                     state = state,
                     onResumeActiveSession = viewModel::resumeActiveSession,
                 )
-                AnimatedVisibility(visible = !searchInTopBar && !hideScrollChrome) {
+                AnimatedVisibility(visible = showSearch) {
                     NativeSearchField(
                         modifier = Modifier.fillMaxWidth(),
                         query = state.librarySearch,
-                        onQueryChange = viewModel::setLibrarySearch,
+                        onQueryChange = { next ->
+                            viewModel.setLibrarySearch(next)
+                            if (next.isBlank()) onSearchDismissed()
+                        },
                         placeholder = "Search library",
+                        focusRequester = searchFocusRequester,
+                    )
+                }
+                if (filterOptions.isNotEmpty()) {
+                    LibraryFilterControls(
+                        options = filterOptions,
+                        selectedIds = state.libraryFilterIds,
+                        onToggle = viewModel::toggleLibraryFilter,
                     )
                 }
                 GameGrid(
@@ -1254,11 +1391,29 @@ private fun LibraryScreen(
                     modifier = Modifier.weight(1f),
                     gridState = gridState,
                     emptyContent = {
-                        if (state.librarySearch.isNotBlank() && state.libraryGames.isNotEmpty()) {
+                        val hasSearch = state.librarySearch.isNotBlank()
+                        val hasFilters = state.libraryFilterIds.isNotEmpty()
+                        if ((hasSearch || hasFilters) && state.libraryGames.isNotEmpty()) {
                             SearchEmptyState(
                                 title = stringResource(R.string.library_empty_search_title),
-                                message = stringResource(R.string.library_empty_search_body),
-                                onClearSearch = { viewModel.setLibrarySearch("") },
+                                message = when {
+                                    hasSearch && hasFilters -> stringResource(R.string.library_empty_search_filters_body)
+                                    hasSearch -> stringResource(R.string.library_empty_search_body)
+                                    else -> stringResource(R.string.library_empty_filters_body)
+                                },
+                                onClearSearch = if (hasSearch) {
+                                    {
+                                        viewModel.setLibrarySearch("")
+                                        onSearchDismissed()
+                                    }
+                                } else {
+                                    null
+                                },
+                                onClearFilters = if (hasFilters) {
+                                    viewModel::clearLibraryFilters
+                                } else {
+                                    null
+                                },
                             )
                         } else {
                             Text(stringResource(R.string.no_games_loaded), color = TextMuted)
@@ -1269,6 +1424,61 @@ private fun LibraryScreen(
         }
     }
 }
+
+@Composable
+private fun LibraryFilterControls(
+    options: List<CatalogFilterOption>,
+    selectedIds: List<String>,
+    onToggle: (String) -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+            FilterMenu(options = options, selectedIds = selectedIds, onToggle = onToggle)
+        }
+        SelectedFilterChips(options = options, selectedIds = selectedIds, onToggle = onToggle)
+    }
+}
+
+private fun libraryStoreFilterOptions(games: List<GameInfo>): List<CatalogFilterOption> {
+    val labelsById = linkedMapOf<String, String>()
+    games.forEach { game ->
+        libraryStoreFilterIds(game).forEach { (id, label) ->
+            labelsById.putIfAbsent(id, label)
+        }
+    }
+    return labelsById.entries
+        .sortedBy { it.value.lowercase(Locale.US) }
+        .map { (id, label) ->
+            CatalogFilterOption(
+                id = id,
+                rawId = id.removePrefix(LIBRARY_STORE_FILTER_PREFIX),
+                label = label,
+                groupId = "library_store",
+                groupLabel = "Launcher",
+            )
+        }
+}
+
+private fun gameMatchesLibraryFilters(game: GameInfo, selectedIds: List<String>): Boolean {
+    if (selectedIds.isEmpty()) return true
+    val gameFilterIds = libraryStoreFilterIds(game).map { it.first }.toSet()
+    return selectedIds.any { it in gameFilterIds }
+}
+
+private fun libraryStoreFilterIds(game: GameInfo): List<Pair<String, String>> {
+    val labels = displayStoresForVariants(game.variants).ifEmpty {
+        game.availableStores.map(::gameStoreDisplayName)
+    }
+    return labels
+        .mapNotNull { label ->
+            val normalized = normalizeGameStore(label)
+            if (normalized.isBlank()) return@mapNotNull null
+            LIBRARY_STORE_FILTER_PREFIX + normalized to label
+        }
+        .distinctBy { it.first }
+}
+
+private const val LIBRARY_STORE_FILTER_PREFIX = "library_store:"
 
 @Composable
 private fun ActiveSessionResumeCard(
@@ -1466,22 +1676,13 @@ private fun GameGrid(
     }
     val scale = settings.posterSizeScale.coerceIn(0.82f, 1.08f)
     val compact = settings.compactGameCards
+    val landscapeLayout = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
     BoxWithConstraints(modifier.fillMaxSize()) {
-        val columns = gameGridColumnCount(maxWidth)
-        val phonePortrait = isPhonePortrait(maxWidth, maxHeight)
-        val phoneLandscape = isPhoneLandscape(maxWidth, maxHeight)
-        val cardHeight = when {
-            phoneLandscape && compact -> 158.dp
-            phoneLandscape -> 178.dp
-            phonePortrait && compact -> 218.dp
-            phonePortrait -> 246.dp
-            compact -> 252.dp
-            else -> 286.dp
-        }
+        val gridSpec = gameGridSpec(maxWidth, compact, landscapeLayout)
         LazyVerticalGrid(
             modifier = Modifier.fillMaxSize(),
             state = gridState,
-            columns = GridCells.Fixed(columns),
+            columns = GridCells.Fixed(gridSpec.columns),
             contentPadding = PaddingValues(4.dp),
             horizontalArrangement = Arrangement.spacedBy(if (compact) 8.dp else 10.dp),
             verticalArrangement = Arrangement.spacedBy(if (compact) 10.dp else 12.dp),
@@ -1492,7 +1693,7 @@ private fun GameGrid(
                     favorite = game.id in favoriteIds,
                     settings = settings,
                     tvProfile = tvProfile,
-                    cardHeight = cardHeight * scale,
+                    cardHeight = gridSpec.cardHeight * scale,
                     thumbnailPlayOverlay = !tvProfile,
                     onSelect = onSelect,
                     onFavorite = onFavorite,
@@ -1548,22 +1749,13 @@ private fun StoreGameGrid(
     }
     val scale = settings.posterSizeScale.coerceIn(0.82f, 1.08f)
     val compact = settings.compactGameCards
+    val landscapeLayout = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
     BoxWithConstraints(modifier.fillMaxSize()) {
-        val columns = gameGridColumnCount(maxWidth)
-        val phonePortrait = isPhonePortrait(maxWidth, maxHeight)
-        val phoneLandscape = isPhoneLandscape(maxWidth, maxHeight)
-        val cardHeight = when {
-            phoneLandscape && compact -> 158.dp
-            phoneLandscape -> 178.dp
-            phonePortrait && compact -> 218.dp
-            phonePortrait -> 246.dp
-            compact -> 252.dp
-            else -> 286.dp
-        }
+        val gridSpec = gameGridSpec(maxWidth, compact, landscapeLayout)
         LazyVerticalGrid(
             modifier = Modifier.fillMaxSize(),
             state = gridState,
-            columns = GridCells.Fixed(columns),
+            columns = GridCells.Fixed(gridSpec.columns),
             contentPadding = PaddingValues(0.dp),
             horizontalArrangement = Arrangement.spacedBy(if (compact) 8.dp else 10.dp),
             verticalArrangement = Arrangement.spacedBy(if (compact) 10.dp else 12.dp),
@@ -1577,7 +1769,7 @@ private fun StoreGameGrid(
                     favorite = game.id in favoriteIds,
                     settings = settings,
                     tvProfile = tvProfile,
-                    cardHeight = cardHeight * scale,
+                    cardHeight = gridSpec.cardHeight * scale,
                     thumbnailPlayOverlay = !tvProfile,
                     onSelect = onSelect,
                     onFavorite = onFavorite,
@@ -1588,6 +1780,34 @@ private fun StoreGameGrid(
         }
     }
 }
+
+private data class GameGridSpec(
+    val columns: Int,
+    val cardHeight: Dp,
+)
+
+private fun gameGridSpec(
+    maxWidth: androidx.compose.ui.unit.Dp,
+    compact: Boolean,
+    landscapeLayout: Boolean,
+): GameGridSpec {
+    return when {
+        landscapeLayout -> GameGridSpec(
+            columns = landscapePosterColumnCount(maxWidth),
+            cardHeight = if (compact) 188.dp else 214.dp,
+        )
+        compact -> GameGridSpec(columns = gameGridColumnCount(maxWidth), cardHeight = 218.dp)
+        else -> GameGridSpec(columns = gameGridColumnCount(maxWidth), cardHeight = 246.dp)
+    }
+}
+
+private fun landscapePosterColumnCount(maxWidth: androidx.compose.ui.unit.Dp): Int =
+    when {
+        maxWidth >= 1440.dp -> 8
+        maxWidth >= 1050.dp -> 7
+        maxWidth >= 520.dp -> 6
+        else -> 5
+    }
 
 private fun gameGridColumnCount(maxWidth: androidx.compose.ui.unit.Dp): Int =
     when {
@@ -2407,6 +2627,11 @@ private fun gameMatchesSearch(game: GameInfo, query: String): Boolean {
     return normalized.split(Regex("\\s+")).all { it in haystack }
 }
 
+private fun favoriteOrderedGames(games: List<GameInfo>, favoriteIds: List<String>): List<GameInfo> {
+    val favorites = games.filter { it.id in favoriteIds }
+    return if (favorites.isNotEmpty()) favorites + games.filterNot { it.id in favoriteIds } else games
+}
+
 @Composable
 @OptIn(ExperimentalLayoutApi::class)
 private fun StoreLaunchSelector(
@@ -2561,10 +2786,27 @@ private fun StoreLaunchSelector(
 }
 
 @Composable
-private fun SettingsScreen(state: OpenNowUiState, viewModel: OpenNowViewModel, tvProfile: Boolean) {
+private fun SettingsScreen(
+    state: OpenNowUiState,
+    viewModel: OpenNowViewModel,
+    tvProfile: Boolean,
+    searchRequested: Boolean,
+    searchQuery: String,
+    onSearchQueryChange: (String) -> Unit,
+) {
     var showSessionProxyWarning by remember { mutableStateOf(false) }
     val scrollState = rememberScrollState()
+    val searchFocusRequester = remember { FocusRequester() }
+    val keyboardController = LocalSoftwareKeyboardController.current
     val focusManager = LocalFocusManager.current
+    val showSearch = searchRequested || searchQuery.isNotBlank()
+    LaunchedEffect(searchRequested) {
+        if (searchRequested) {
+            delay(90)
+            runCatching { searchFocusRequester.requestFocus() }
+            keyboardController?.show()
+        }
+    }
     if (showSessionProxyWarning) {
         SessionProxyWarningDialog(
             onCancel = { showSessionProxyWarning = false },
@@ -2584,7 +2826,21 @@ private fun SettingsScreen(state: OpenNowUiState, viewModel: OpenNowViewModel, t
                 .padding(20.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
-            SettingsContent(state = state, viewModel = viewModel, showSessionProxyWarning = { showSessionProxyWarning = true })
+            AnimatedVisibility(visible = showSearch) {
+                NativeSearchField(
+                    query = searchQuery,
+                    onQueryChange = onSearchQueryChange,
+                    placeholder = stringResource(R.string.search_settings),
+                    focusRequester = searchFocusRequester,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+            SettingsContent(
+                state = state,
+                viewModel = viewModel,
+                searchQuery = searchQuery,
+                showSessionProxyWarning = { showSessionProxyWarning = true },
+            )
         }
     } else {
         LazyColumn(
@@ -2595,7 +2851,23 @@ private fun SettingsScreen(state: OpenNowUiState, viewModel: OpenNowViewModel, t
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             item {
-                SettingsContent(state = state, viewModel = viewModel, showSessionProxyWarning = { showSessionProxyWarning = true })
+                AnimatedVisibility(visible = showSearch) {
+                    NativeSearchField(
+                        query = searchQuery,
+                        onQueryChange = onSearchQueryChange,
+                        placeholder = stringResource(R.string.search_settings),
+                        focusRequester = searchFocusRequester,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+            }
+            item {
+                SettingsContent(
+                    state = state,
+                    viewModel = viewModel,
+                    searchQuery = searchQuery,
+                    showSessionProxyWarning = { showSessionProxyWarning = true },
+                )
             }
         }
     }
@@ -2605,16 +2877,33 @@ private fun SettingsScreen(state: OpenNowUiState, viewModel: OpenNowViewModel, t
 private fun SettingsContent(
     state: OpenNowUiState,
     viewModel: OpenNowViewModel,
+    searchQuery: String,
     showSessionProxyWarning: () -> Unit,
 ) {
     val settings = state.settings
     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-    SettingsSection(stringResource(R.string.settings_section_stream)) {
+    SearchableSettingsSection(searchQuery, "App updates", "update", "updates", "disable update checking", "checking", "check", "download", "install", "apk") {
+                SettingSwitch(stringResource(R.string.settings_disable_update_checking), !settings.autoCheckForUpdates) { disabled ->
+                    viewModel.updateSettings(settings.copy(autoCheckForUpdates = !disabled))
+                }
+                AndroidUpdatePanel(state = state, viewModel = viewModel)
+            }
+    SearchableSettingsSection(searchQuery, "Privacy", "privacy", "analytics", "telemetry", "posthog", "usage", "tracking", "opt out") {
+                SettingSwitch("Share usage analytics", !settings.analyticsOptOut) { enabled ->
+                    viewModel.updateSettings(settings.copy(analyticsOptOut = !enabled))
+                }
+            }
+    SearchableSettingsSection(searchQuery, stringResource(R.string.settings_section_stream), "stream", "resolution", "aspect ratio", "fps", "bitrate", "codec", "color", "hdr", "sharpening", "region", "session proxy", "proxy", "l4s", "cloud g-sync", "vrr") {
                 val fallbackMembershipTier = state.authSession?.user?.membershipTier
                 val resolutionChoices = streamResolutionChoicesForAspect(settings.stream.aspectRatio).ifEmpty {
                     streamResolutionChoicesForAspect("16:9")
                 }
-                val selectedResolution = normalizeStreamResolutionForAspect(settings.stream.resolution, settings.stream.aspectRatio)
+                val selectedResolution = normalizeStreamResolutionForAspectAndPlan(
+                    settings.stream.resolution,
+                    settings.stream.aspectRatio,
+                    state.subscriptionInfo,
+                    fallbackMembershipTier,
+                )
                 ChoiceMenuRow(
                     label = stringResource(R.string.settings_resolution),
                     options = resolutionChoices.map { choice ->
@@ -2647,7 +2936,12 @@ private fun SettingsContent(
                     viewModel.updateStreamSettings { s ->
                         s.copy(
                             aspectRatio = it,
-                            resolution = normalizeStreamResolutionForAspect(s.resolution, it),
+                            resolution = normalizeStreamResolutionForAspectAndPlan(
+                                s.resolution,
+                                it,
+                                state.subscriptionInfo,
+                                fallbackMembershipTier,
+                            ),
                         )
                     }
                 }
@@ -2713,7 +3007,7 @@ private fun SettingsContent(
                 SettingSwitch(stringResource(R.string.settings_l4s), settings.stream.enableL4S) { viewModel.updateStreamSettings { s -> s.copy(enableL4S = it) } }
                 SettingSwitch(stringResource(R.string.settings_cloud_gsync), settings.stream.enableCloudGsync) { viewModel.updateStreamSettings { s -> s.copy(enableCloudGsync = it) } }
             }
-    SettingsSection("Input") {
+    SearchableSettingsSection(searchQuery, "Input", "input", "mouse", "sensitivity", "acceleration", "keyboard", "layout", "language", "clipboard", "paste", "rumble", "touch", "finger", "opacity", "edge", "padding", "offset", "controls", "stick", "button", "tone") {
                 NumberSlider("Mouse sensitivity", settings.stream.mouseSensitivity, 0.25f, 3f, 0.05f) {
                     viewModel.updateStreamSettings { s -> s.copy(mouseSensitivity = it) }
                 }
@@ -2741,7 +3035,7 @@ private fun SettingsContent(
                 NumberSlider("Right controls horizontal offset", settings.androidTouch.rightOffsetXDp, -220f, 220f, 2f) { value -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(rightOffsetXDp = value))) }
                 NumberSlider("Right controls vertical offset", settings.androidTouch.rightOffsetYDp, -160f, 160f, 2f) { value -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(rightOffsetYDp = value))) }
             }
-    SettingsSection(stringResource(R.string.settings_section_interface)) {
+    SearchableSettingsSection(searchQuery, stringResource(R.string.settings_section_interface), "interface", "ui", "system colors", "accent", "nerd", "expressive", "compact", "cards", "store labels", "game card size", "stats", "server selector", "controller", "sounds", "animations", "backdrop", "auto-load", "library", "session counter", "intro", "music", "stretch", "fill") {
                 val accentOptions = UiAccent.entries.map { it to uiAccentLabel(it) }
                 SettingSwitch(stringResource(R.string.settings_dynamic_color), settings.dynamicColor) { viewModel.updateSettings(settings.copy(dynamicColor = it)) }
                 ChoiceRow(stringResource(R.string.settings_accent), accentOptions.map { it.second }, accentOptions.firstOrNull { it.first == settings.uiAccent }?.second ?: accentOptions.first().second) { label ->
@@ -2749,6 +3043,7 @@ private fun SettingsContent(
                         viewModel.updateSettings(settings.copy(uiAccent = accent))
                     }
                 }
+                SettingSwitch(stringResource(R.string.settings_nerd_mode), settings.nerdMode) { viewModel.updateSettings(settings.copy(nerdMode = it)) }
                 SettingSwitch(stringResource(R.string.settings_expressive_ui), settings.expressiveUi) { viewModel.updateSettings(settings.copy(expressiveUi = it)) }
                 SettingSwitch(stringResource(R.string.settings_compact_cards), settings.compactGameCards) { viewModel.updateSettings(settings.copy(compactGameCards = it)) }
                 SettingSwitch(stringResource(R.string.settings_show_store_labels), settings.showGameStoreLabels) { viewModel.updateSettings(settings.copy(showGameStoreLabels = it)) }
@@ -2761,28 +3056,37 @@ private fun SettingsContent(
                 }
                 SettingSwitch(stringResource(R.string.settings_hide_server_selector), settings.hideServerSelector) { viewModel.updateSettings(settings.copy(hideServerSelector = it)) }
                 SettingSwitch(stringResource(R.string.settings_controller_mode), settings.controllerMode) { viewModel.updateSettings(settings.copy(controllerMode = it)) }
-                SettingSwitch(stringResource(R.string.settings_controller_sounds), settings.controllerUiSounds) { viewModel.updateSettings(settings.copy(controllerUiSounds = it)) }
                 SettingSwitch(stringResource(R.string.settings_controller_animations), settings.controllerBackgroundAnimations) { viewModel.updateSettings(settings.copy(controllerBackgroundAnimations = it)) }
                 SettingSwitch(stringResource(R.string.settings_controller_backdrop), settings.controllerLibraryGameBackdrop) { viewModel.updateSettings(settings.copy(controllerLibraryGameBackdrop = it)) }
                 SettingSwitch(stringResource(R.string.settings_auto_load_library), settings.autoLoadControllerLibrary) { viewModel.updateSettings(settings.copy(autoLoadControllerLibrary = it)) }
                 SettingSwitch(stringResource(R.string.settings_session_counter), settings.sessionCounterEnabled) { viewModel.updateSettings(settings.copy(sessionCounterEnabled = it)) }
             }
-    SettingsSection("App Data") {
+    SearchableSettingsSection(searchQuery, "App Data", "app data", "data", "cache", "clear", "reset", "settings") {
                 AppDataSettingsPanel(viewModel = viewModel)
             }
-    SettingsSection("App updates") {
-                AndroidUpdatePanel(state = state, viewModel = viewModel)
-            }
-    SettingsSection("Account") {
+    SearchableSettingsSection(searchQuery, "Account", "account", "login", "logout", "sign in", "saved", "provider", "membership", "subscription") {
                 AccountSettingsPanel(state = state, viewModel = viewModel)
             }
-    SettingsSection("Codec Diagnostics") {
-                CodecDiagnosticsPanel(state.codecReport)
-            }
-    SettingsSection("Debug Logs") {
-                DebugLogsPanel(state = state, viewModel = viewModel)
-            }
-    SettingsSection("About") {
+    if (settings.nerdMode) {
+    SearchableSettingsSection(searchQuery, stringResource(R.string.settings_section_nerd_tools), "nerd", "intro", "music", "rock", "tone", "button", "sound", "stretch", "fill", "fullscreen", "wave") {
+                    SettingSwitch(stringResource(R.string.settings_stream_intro_music), settings.streamIntroMusic) { enabled ->
+                        viewModel.updateSettings(settings.copy(streamIntroMusic = enabled))
+                    }
+                    SettingSwitch(stringResource(R.string.settings_button_press_tones), settings.controllerUiSounds) { enabled ->
+                        viewModel.updateSettings(settings.copy(controllerUiSounds = enabled))
+                    }
+                    SettingSwitch(stringResource(R.string.settings_stretch_stream_to_fill), settings.stretchStreamToFill) { enabled ->
+                        viewModel.updateSettings(settings.copy(stretchStreamToFill = enabled))
+                    }
+                }
+    SearchableSettingsSection(searchQuery, "Codec Diagnostics", "codec", "diagnostics", "probe", "av1", "h264", "h265", "hevc", "decode") {
+                    CodecDiagnosticsPanel(state.codecReport)
+                }
+    SearchableSettingsSection(searchQuery, "Debug Logs", "debug", "logs", "logcat", "events") {
+                    DebugLogsPanel(state = state, viewModel = viewModel)
+                }
+    }
+    SearchableSettingsSection(searchQuery, "About", "about", "version", "build", "app") {
                 AppVersionPanel()
             }
     }
@@ -2856,6 +3160,7 @@ private fun AppDataSettingsPanel(viewModel: OpenNowViewModel) {
 @Composable
 private fun AndroidUpdatePanel(state: OpenNowUiState, viewModel: OpenNowViewModel) {
     val update = state.androidUpdate
+    val updateCheckingDisabled = !state.settings.autoCheckForUpdates
     val checkBlockedByStream = state.isAndroidUpdateCheckBlockedByStream()
     val showCheckPauseMessage = checkBlockedByStream && when (update.status) {
         AndroidUpdateStatus.Available,
@@ -2866,7 +3171,11 @@ private fun AndroidUpdatePanel(state: OpenNowUiState, viewModel: OpenNowViewMode
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Text(formatAndroidUpdateSourceLabel(update.sourceUrl), color = SettingsTextMuted, style = MaterialTheme.typography.labelSmall)
         Text(
-            if (showCheckPauseMessage) "Update checks pause while streaming." else update.message,
+            when {
+                updateCheckingDisabled -> "Update checks are disabled."
+                showCheckPauseMessage -> "Update checks pause while streaming."
+                else -> update.message
+            },
             color = updateMessageColor(update.status),
             style = MaterialTheme.typography.bodySmall,
         )
@@ -2891,7 +3200,7 @@ private fun AndroidUpdatePanel(state: OpenNowUiState, viewModel: OpenNowViewMode
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
             OutlinedButton(
                 onClick = viewModel::checkAndroidUpdate,
-                enabled = update.canCheck && !checkBlockedByStream,
+                enabled = update.canCheck && !checkBlockedByStream && !updateCheckingDisabled,
                 modifier = Modifier.weight(1f),
             ) {
                 Text(if (update.status == AndroidUpdateStatus.Checking) "Checking..." else "Check", maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -3231,6 +3540,8 @@ private fun DebugLogsPanel(state: OpenNowUiState, viewModel: OpenNowViewModel) {
 private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
     val context = LocalContext.current
     val activity = context as? Activity
+    val audioController = remember(context) { AndroidNerdAudioController(context.applicationContext) }
+    val audioScope = rememberCoroutineScope()
     val session = state.streamSession
     val game = state.streamGame
     var streamState by remember { mutableStateOf("Preparing") }
@@ -3242,7 +3553,18 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
     var touchLayoutEditing by remember { mutableStateOf(false) }
     var statsVisible by remember(state.settings.showStatsOnLaunch) { mutableStateOf(state.settings.showStatsOnLaunch) }
     var streamStats by remember { mutableStateOf(StreamRuntimeStats()) }
-    val streamReady = session?.status in setOf(2, 3)
+    var introPlaying by remember { mutableStateOf(false) }
+    val streamReady = session?.isReadyForStream() == true
+    val nerdMode = state.settings.nerdMode
+    val introEnabled = nerdMode && state.settings.streamIntroMusic
+    val buttonToneEnabled = nerdMode && state.settings.controllerUiSounds
+    val stretchToFill = nerdMode && state.settings.stretchStreamToFill
+    val updateIntroPlaying: (Boolean) -> Unit = { playing ->
+        audioScope.launch { introPlaying = playing }
+    }
+    val playButtonTone = {
+        audioController.playButtonTone(buttonToneEnabled)
+    }
     val launchStreamSettings = state.activeStreamSettings ?: state.settings.stream
     val streamSettings = launchStreamSettings.copy(
         mouseSensitivity = state.settings.stream.mouseSensitivity,
@@ -3278,6 +3600,10 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                 streamState = it
                 viewModel.restartStreamWithSafeVideoProfile(it)
             },
+            onSessionRecoveryRequired = {
+                streamState = it
+                viewModel.recoverStreamSession(it)
+            },
             onStats = { streamStats = it },
         )
     }
@@ -3303,6 +3629,11 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
             NativeStreamInputRouter.setStreamUiActive(false)
             NativeStreamInputRouter.detach(client)
             client.release()
+        }
+    }
+    DisposableEffect(audioController) {
+        onDispose {
+            audioController.release()
         }
     }
 
@@ -3343,6 +3674,13 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
             client.start(session, launchStreamSettings)
         }
     }
+    LaunchedEffect(streamReady, session?.sessionId, introEnabled) {
+        if (streamReady) {
+            audioController.startIntro(introEnabled, updateIntroPlaying)
+        } else {
+            audioController.stopIntro(updateIntroPlaying)
+        }
+    }
 
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         if (session == null && state.streamStatus != "idle") {
@@ -3365,6 +3703,7 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                 touchMouseEnabled = state.settings.androidTouch.mousePad,
                 externalMouseRoot = activity?.window?.decorView,
                 onMouseCaptureInput = { (activity as? MainActivity)?.enforceStreamSystemUiFromInput() },
+                stretchToFill = stretchToFill,
             )
             if (statsVisible) {
                 StreamStatsPill(
@@ -3376,10 +3715,24 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                     modifier = Modifier.align(Alignment.TopStart),
                 )
             }
+            if (nerdMode) {
+                NerdStreamStatusOverlay(
+                    codecLabel = streamStats.codec ?: streamSettings.codec.name,
+                    introEnabled = introEnabled,
+                    introPlaying = introPlaying,
+                    stretchToFill = stretchToFill,
+                    onIntroToggle = {
+                        playButtonTone()
+                        audioController.toggleIntro(updateIntroPlaying)
+                    },
+                    modifier = Modifier.align(Alignment.TopEnd),
+                )
+            }
             if (state.settings.androidTouch.enabled) {
                 TouchOverlay(
                     client = client,
                     touch = state.settings.androidTouch,
+                    onButtonTone = playButtonTone,
                     layoutEditing = touchLayoutEditing,
                     onLeftOffsetChange = { x, y ->
                         viewModel.updateSettings(
@@ -3461,6 +3814,9 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                             settings.copy(streamSharpeningAmount = value)
                         }
                     },
+                    onStretchToFillToggle = {
+                        viewModel.updateSettings(state.settings.copy(stretchStreamToFill = !state.settings.stretchStreamToFill))
+                    },
                     onTouchScaleChange = { value ->
                         viewModel.updateSettings(state.settings.copy(androidTouch = state.settings.androidTouch.copy(scale = value)))
                     },
@@ -3485,6 +3841,7 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                     onTouchRightOffsetChange = { value ->
                         viewModel.updateSettings(state.settings.copy(androidTouch = state.settings.androidTouch.copy(rightOffsetYDp = value)))
                     },
+                    onButtonTone = playButtonTone,
                     onClose = { controlsOpen = false },
                 )
             }
@@ -3521,6 +3878,108 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
 }
 
 @Composable
+private fun NerdStreamStatusOverlay(
+    codecLabel: String,
+    introEnabled: Boolean,
+    introPlaying: Boolean,
+    stretchToFill: Boolean,
+    onIntroToggle: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        modifier.padding(top = 8.dp, end = 8.dp),
+        horizontalAlignment = Alignment.End,
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Surface(
+            shape = RoundedCornerShape(999.dp),
+            color = Panel.copy(alpha = 0.52f),
+            tonalElevation = 0.dp,
+        ) {
+            Row(
+                Modifier.padding(horizontal = 9.dp, vertical = 5.dp),
+                horizontalArrangement = Arrangement.spacedBy(7.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    "Codec ${codecLabel.uppercase(Locale.US)}",
+                    color = TextPrimary,
+                    style = MaterialTheme.typography.labelSmall,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                if (stretchToFill) {
+                    Text(
+                        "Fill",
+                        color = MaterialTheme.colorScheme.primary,
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Bold,
+                    )
+                }
+            }
+        }
+        if (introEnabled) {
+            Surface(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(999.dp))
+                    .clickable(onClick = onIntroToggle)
+                    .semantics {
+                        contentDescription = if (introPlaying) "Pause intro music" else "Play intro music"
+                    },
+                shape = RoundedCornerShape(999.dp),
+                color = Panel.copy(alpha = 0.52f),
+                tonalElevation = 0.dp,
+            ) {
+                Row(
+                    Modifier.padding(horizontal = 9.dp, vertical = 5.dp),
+                    horizontalArrangement = Arrangement.spacedBy(7.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    NerdWaveformIcon(active = introPlaying, modifier = Modifier.width(28.dp).height(14.dp))
+                    Text(
+                        if (introPlaying) "Intro" else "Paused",
+                        color = if (introPlaying) MaterialTheme.colorScheme.primary else TextMuted,
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Bold,
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun NerdWaveformIcon(active: Boolean, modifier: Modifier = Modifier) {
+    val transition = rememberInfiniteTransition(label = "nerd-wave")
+    val phase by transition.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(animation = tween(720), repeatMode = RepeatMode.Restart),
+        label = "phase",
+    )
+    Canvas(modifier) {
+        val barCount = 5
+        val gap = size.width * 0.08f
+        val barWidth = (size.width - gap * (barCount - 1)) / barCount
+        repeat(barCount) { index ->
+            val wave = if (active) {
+                0.38f + 0.62f * kotlin.math.abs(kotlin.math.sin((phase * 2f * Math.PI) + index * 0.85)).toFloat()
+            } else {
+                0.34f
+            }
+            val barHeight = size.height * wave
+            val left = index * (barWidth + gap)
+            drawRoundRect(
+                color = if (active) Green else TextMuted,
+                topLeft = Offset(left, (size.height - barHeight) / 2f),
+                size = Size(barWidth, barHeight),
+                cornerRadius = CornerRadius(barWidth / 2f, barWidth / 2f),
+            )
+        }
+    }
+}
+
+@Composable
 private fun StreamVideoSurface(
     client: NativeStreamClient,
     settings: StreamSettings,
@@ -3528,6 +3987,7 @@ private fun StreamVideoSurface(
     touchMouseEnabled: Boolean,
     externalMouseRoot: android.view.View?,
     onMouseCaptureInput: () -> Unit,
+    stretchToFill: Boolean,
     modifier: Modifier = Modifier,
 ) {
     val rootView = LocalView.current
@@ -3560,7 +4020,9 @@ private fun StreamVideoSurface(
         contentAlignment = Alignment.Center,
     ) {
         val containerAspect = if (maxHeight.value > 0f) maxWidth.value / maxHeight.value else streamAspect
-        val viewportModifier = if (containerAspect > streamAspect) {
+        val viewportModifier = if (stretchToFill) {
+            Modifier.fillMaxSize()
+        } else if (containerAspect > streamAspect) {
             Modifier
                 .fillMaxHeight()
                 .aspectRatio(streamAspect)
@@ -3592,7 +4054,7 @@ private fun StreamVideoSurface(
                     AndroidView(
                         modifier = Modifier.fillMaxSize(),
                         factory = { ctx ->
-                            client.createRenderer(ctx, settings).apply {
+                            client.createRenderer(ctx, settings, stretchToFill).apply {
                                 isFocusable = false
                                 isFocusableInTouchMode = false
                                 hideAndroidPointerTree()
@@ -3613,7 +4075,7 @@ private fun StreamVideoSurface(
                             }
                         },
                         update = { renderer ->
-                            client.updateRendererSettings(settings)
+                            client.updateRendererSettings(settings, stretchToFill)
                             renderer.isFocusable = false
                             renderer.isFocusableInTouchMode = false
                             renderer.setPreferredStreamFrameRate(settings.fps)
@@ -3913,6 +4375,7 @@ private fun StreamControlsPanel(
     onMousePadToggle: () -> Unit,
     onSharpeningToggle: () -> Unit,
     onSharpeningAmountChange: (Float) -> Unit,
+    onStretchToFillToggle: () -> Unit,
     onTouchScaleChange: (Float) -> Unit,
     onButtonScaleChange: (Float) -> Unit,
     onStickScaleChange: (Float) -> Unit,
@@ -3921,6 +4384,7 @@ private fun StreamControlsPanel(
     onTouchBottomPaddingChange: (Float) -> Unit,
     onTouchLeftOffsetChange: (Float) -> Unit,
     onTouchRightOffsetChange: (Float) -> Unit,
+    onButtonTone: () -> Unit,
     onClose: () -> Unit,
 ) {
     val doneFocusRequester = remember { FocusRequester() }
@@ -3962,13 +4426,19 @@ private fun StreamControlsPanel(
                         Text(status, color = TextMuted, style = MaterialTheme.typography.labelMedium)
                     }
                     OutlinedButton(
-                        onClick = onExit,
+                        onClick = {
+                            onButtonTone()
+                            onExit()
+                        },
                         contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
                     ) {
                         Text("Exit")
                     }
                     OutlinedButton(
-                        onClick = onClose,
+                        onClick = {
+                            onButtonTone()
+                            onClose()
+                        },
                         modifier = Modifier.focusRequester(doneFocusRequester),
                         contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
                     ) {
@@ -3978,31 +4448,82 @@ private fun StreamControlsPanel(
             }
             item {
                 StreamPanelSection("Display") {
-                    StreamControlSwitch("Audio", if (audioMuted) "Muted" else "On", !audioMuted, onAudioToggle)
-                    StreamControlSwitch("Stream stats", if (statsVisible) "On" else "Off", statsVisible, onStatsToggle)
-                    StreamControlAction("Stats style", settings.streamStatsStyle.label, onStatsStyleCycle)
-                    StreamControlSwitch("Stream sharpening", if (settings.stream.streamSharpeningEnabled) "On" else "Off", settings.stream.streamSharpeningEnabled, onSharpeningToggle)
+                    StreamControlSwitch("Audio", if (audioMuted) "Muted" else "On", !audioMuted) {
+                        onButtonTone()
+                        onAudioToggle()
+                    }
+                    StreamControlSwitch("Stream stats", if (statsVisible) "On" else "Off", statsVisible) {
+                        onButtonTone()
+                        onStatsToggle()
+                    }
+                    StreamControlAction("Stats style", settings.streamStatsStyle.label) {
+                        onButtonTone()
+                        onStatsStyleCycle()
+                    }
+                    StreamControlSwitch("Stream sharpening", if (settings.stream.streamSharpeningEnabled) "On" else "Off", settings.stream.streamSharpeningEnabled) {
+                        onButtonTone()
+                        onSharpeningToggle()
+                    }
                     if (settings.stream.streamSharpeningEnabled) {
                         CompactSlider("Sharpness amount", settings.stream.streamSharpeningAmount, 0f, 1f, onSharpeningAmountChange)
+                    }
+                    if (settings.nerdMode) {
+                        StreamControlSwitch("Stretch to fill", if (settings.stretchStreamToFill) "On" else "Off", settings.stretchStreamToFill) {
+                            onButtonTone()
+                            onStretchToFillToggle()
+                        }
                     }
                 }
             }
             item {
                 StreamPanelSection("Input") {
-                    StreamControlSwitch("Keyboard bar", if (keyboardOpen) "Visible" else "Hidden", keyboardOpen, onKeyboardToggle)
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-                        OutlinedButton(onClick = onEsc, modifier = Modifier.weight(1f)) { Text("Esc") }
-                        OutlinedButton(onClick = onEnter, modifier = Modifier.weight(1f)) { Text("Enter") }
-                        OutlinedButton(onClick = onBackspace, modifier = Modifier.weight(1f)) { Text("⌫") }
+                    StreamControlSwitch("Keyboard bar", if (keyboardOpen) "Visible" else "Hidden", keyboardOpen) {
+                        onButtonTone()
+                        onKeyboardToggle()
                     }
-                    StreamControlSwitch("Finger mouse", if (settings.androidTouch.mousePad) "On" else "Off", settings.androidTouch.mousePad, onMousePadToggle)
-                    StreamControlSwitch("Touch controller", if (settings.androidTouch.enabled) "Visible" else "Hidden", settings.androidTouch.enabled, onTouchControlsToggle)
-                    StreamControlSwitch("Phone rumble fallback", if (settings.phoneRumbleFallback) "On" else "Off", settings.phoneRumbleFallback, onPhoneRumbleFallbackToggle)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                        OutlinedButton(
+                            onClick = {
+                                onButtonTone()
+                                onEsc()
+                            },
+                            modifier = Modifier.weight(1f),
+                        ) { Text("Esc") }
+                        OutlinedButton(
+                            onClick = {
+                                onButtonTone()
+                                onEnter()
+                            },
+                            modifier = Modifier.weight(1f),
+                        ) { Text("Enter") }
+                        OutlinedButton(
+                            onClick = {
+                                onButtonTone()
+                                onBackspace()
+                            },
+                            modifier = Modifier.weight(1f),
+                        ) { Text("⌫") }
+                    }
+                    StreamControlSwitch("Finger mouse", if (settings.androidTouch.mousePad) "On" else "Off", settings.androidTouch.mousePad) {
+                        onButtonTone()
+                        onMousePadToggle()
+                    }
+                    StreamControlSwitch("Touch controller", if (settings.androidTouch.enabled) "Visible" else "Hidden", settings.androidTouch.enabled) {
+                        onButtonTone()
+                        onTouchControlsToggle()
+                    }
+                    StreamControlSwitch("Phone rumble fallback", if (settings.phoneRumbleFallback) "On" else "Off", settings.phoneRumbleFallback) {
+                        onButtonTone()
+                        onPhoneRumbleFallbackToggle()
+                    }
                 }
             }
             item {
                 StreamPanelSection("Touch Layout") {
-                    StreamControlSwitch("Drag edit mode", if (touchLayoutEditing) "On" else "Off", touchLayoutEditing, onTouchLayoutEditingToggle)
+                    StreamControlSwitch("Drag edit mode", if (touchLayoutEditing) "On" else "Off", touchLayoutEditing) {
+                        onButtonTone()
+                        onTouchLayoutEditingToggle()
+                    }
                     CompactSlider("Layout scale", settings.androidTouch.scale, 0.6f, 1.4f, onTouchScaleChange)
                     CompactSlider("Button size", settings.androidTouch.buttonScale, 0.65f, 1.5f, onButtonScaleChange)
                     CompactSlider("Stick size", settings.androidTouch.stickScale, 0.65f, 1.5f, onStickScaleChange)
@@ -4680,6 +5201,7 @@ private fun QueueAdControlIconView(icon: QueueAdControlIcon, modifier: Modifier 
 private fun TouchOverlay(
     client: NativeStreamClient,
     touch: AndroidTouchSettings,
+    onButtonTone: () -> Unit,
     layoutEditing: Boolean,
     onLeftOffsetChange: (Float, Float) -> Unit,
     onRightOffsetChange: (Float, Float) -> Unit,
@@ -4730,6 +5252,7 @@ private fun TouchOverlay(
                     leftOffsetY = leftOffsetY,
                     rightOffsetX = rightOffsetX,
                     rightOffsetY = rightOffsetY,
+                    onButtonTone = onButtonTone,
                     onLeftOffsetChange = onLeftOffsetChange,
                     onRightOffsetChange = onRightOffsetChange,
                 )
@@ -4745,6 +5268,7 @@ private fun TouchOverlay(
                     leftOffsetY = leftOffsetY,
                     rightOffsetX = rightOffsetX,
                     rightOffsetY = rightOffsetY,
+                    onButtonTone = onButtonTone,
                     onLeftOffsetChange = onLeftOffsetChange,
                     onRightOffsetChange = onRightOffsetChange,
                 )
@@ -4765,6 +5289,7 @@ private fun PortraitTouchControls(
     leftOffsetY: Dp,
     rightOffsetX: Dp,
     rightOffsetY: Dp,
+    onButtonTone: () -> Unit,
     onLeftOffsetChange: (Float, Float) -> Unit,
     onRightOffsetChange: (Float, Float) -> Unit,
 ) {
@@ -4785,22 +5310,26 @@ private fun PortraitTouchControls(
                 horizontalAlignment = Alignment.Start,
             ) {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    GamepadButton("LB", 0x0100, client, opacity, 48.dp * buttonScale * layoutScale)
-                    GamepadTriggerButton("LT", left = true, client = client, opacity = opacity, size = 48.dp * buttonScale * layoutScale)
+                    GamepadButton("LB", 0x0100, client, opacity, 48.dp * buttonScale * layoutScale, onButtonTone)
+                    GamepadTriggerButton("LT", left = true, client = client, opacity = opacity, size = 48.dp * buttonScale * layoutScale, onPressTone = onButtonTone)
                 }
                 Spacer(Modifier.height(44.dp * buttonScale * layoutScale))
                 Row(
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                     verticalAlignment = Alignment.Bottom,
                 ) {
-                    VirtualStick(
-                        label = "L",
+                    StickWithThumbButton(
+                        stickLabel = "L",
+                        thumbLabel = "L3",
+                        thumbMask = GamepadButtonMapping.LEFT_THUMB,
                         client = client,
                         opacity = opacity,
                         diameter = 116.dp * stickScale * layoutScale,
+                        buttonScale = buttonScale * layoutScale,
+                        onButtonTone = onButtonTone,
                         onChange = client::setVirtualLeftStick,
                     )
-                    DpadCluster(client, opacity, buttonScale * layoutScale)
+                    DpadCluster(client, opacity, buttonScale * layoutScale, onButtonTone)
                 }
             }
         }
@@ -4816,25 +5345,29 @@ private fun PortraitTouchControls(
                 horizontalAlignment = Alignment.End,
             ) {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    GamepadTriggerButton("RT", left = false, client = client, opacity = opacity, size = 48.dp * buttonScale * layoutScale)
-                    GamepadButton("RB", 0x0200, client, opacity, 48.dp * buttonScale * layoutScale)
+                    GamepadTriggerButton("RT", left = false, client = client, opacity = opacity, size = 48.dp * buttonScale * layoutScale, onPressTone = onButtonTone)
+                    GamepadButton("RB", 0x0200, client, opacity, 48.dp * buttonScale * layoutScale, onButtonTone)
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    GamepadButton("View", 0x0020, client, opacity, 44.dp * buttonScale * layoutScale)
-                    GamepadButton("Menu", 0x0010, client, opacity, 44.dp * buttonScale * layoutScale)
+                    GamepadButton("View", 0x0020, client, opacity, 44.dp * buttonScale * layoutScale, onButtonTone)
+                    GamepadButton("Menu", 0x0010, client, opacity, 44.dp * buttonScale * layoutScale, onButtonTone)
                 }
                 Row(
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                     verticalAlignment = Alignment.Bottom,
                 ) {
-                    VirtualStick(
-                        label = "R",
+                    StickWithThumbButton(
+                        stickLabel = "R",
+                        thumbLabel = "R3",
+                        thumbMask = GamepadButtonMapping.RIGHT_THUMB,
                         client = client,
                         opacity = opacity,
                         diameter = 104.dp * stickScale * layoutScale,
+                        buttonScale = buttonScale * layoutScale,
+                        onButtonTone = onButtonTone,
                         onChange = client::setVirtualRightStick,
                     )
-                    FaceButtonCluster(client, opacity, buttonScale * layoutScale)
+                    FaceButtonCluster(client, opacity, buttonScale * layoutScale, onButtonTone)
                 }
             }
         }
@@ -4853,6 +5386,7 @@ private fun BoxScope.LandscapeTouchControls(
     leftOffsetY: Dp,
     rightOffsetX: Dp,
     rightOffsetY: Dp,
+    onButtonTone: () -> Unit,
     onLeftOffsetChange: (Float, Float) -> Unit,
     onRightOffsetChange: (Float, Float) -> Unit,
 ) {
@@ -4866,8 +5400,8 @@ private fun BoxScope.LandscapeTouchControls(
         modifier = Modifier.align(Alignment.TopStart),
     ) {
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            GamepadButton("LB", 0x0100, client, opacity, 46.dp * controlScale)
-            GamepadTriggerButton("LT", left = true, client = client, opacity = opacity, size = 50.dp * controlScale)
+            GamepadButton("LB", 0x0100, client, opacity, 46.dp * controlScale, onButtonTone)
+            GamepadTriggerButton("LT", left = true, client = client, opacity = opacity, size = 50.dp * controlScale, onPressTone = onButtonTone)
         }
     }
     TouchControlGroup(
@@ -4879,8 +5413,8 @@ private fun BoxScope.LandscapeTouchControls(
         modifier = Modifier.align(Alignment.TopCenter),
     ) {
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            GamepadPillButton("View", 0x0020, client, opacity, width = 76.dp * controlScale, height = 42.dp * controlScale)
-            GamepadPillButton("Start", 0x0010, client, opacity, width = 84.dp * controlScale, height = 42.dp * controlScale)
+            GamepadPillButton("View", 0x0020, client, opacity, width = 76.dp * controlScale, height = 42.dp * controlScale, onPressTone = onButtonTone)
+            GamepadPillButton("Start", 0x0010, client, opacity, width = 84.dp * controlScale, height = 42.dp * controlScale, onPressTone = onButtonTone)
         }
     }
     TouchControlGroup(
@@ -4892,8 +5426,8 @@ private fun BoxScope.LandscapeTouchControls(
         modifier = Modifier.align(Alignment.TopEnd),
     ) {
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            GamepadTriggerButton("RT", left = false, client = client, opacity = opacity, size = 50.dp * controlScale)
-            GamepadButton("RB", 0x0200, client, opacity, 46.dp * controlScale)
+            GamepadTriggerButton("RT", left = false, client = client, opacity = opacity, size = 50.dp * controlScale, onPressTone = onButtonTone)
+            GamepadButton("RB", 0x0200, client, opacity, 46.dp * controlScale, onButtonTone)
         }
     }
     TouchControlGroup(
@@ -4908,14 +5442,18 @@ private fun BoxScope.LandscapeTouchControls(
             horizontalArrangement = Arrangement.spacedBy(14.dp),
             verticalAlignment = Alignment.Bottom,
         ) {
-            VirtualStick(
-                label = "L",
+            StickWithThumbButton(
+                stickLabel = "L",
+                thumbLabel = "L3",
+                thumbMask = GamepadButtonMapping.LEFT_THUMB,
                 client = client,
                 opacity = opacity,
                 diameter = 112.dp * stickScale * layoutScale,
+                buttonScale = controlScale * 0.88f,
+                onButtonTone = onButtonTone,
                 onChange = client::setVirtualLeftStick,
             )
-            DpadCluster(client, opacity, controlScale * 0.88f)
+            DpadCluster(client, opacity, controlScale * 0.88f, onButtonTone)
         }
     }
     TouchControlGroup(
@@ -4928,14 +5466,18 @@ private fun BoxScope.LandscapeTouchControls(
     ) {
         Row(
             horizontalArrangement = Arrangement.spacedBy(14.dp),
-            verticalAlignment = Alignment.Bottom,
-        ) {
-            FaceButtonCluster(client, opacity, controlScale * 0.9f)
-            VirtualStick(
-                label = "R",
+        verticalAlignment = Alignment.Bottom,
+    ) {
+            FaceButtonCluster(client, opacity, controlScale * 0.9f, onButtonTone)
+            StickWithThumbButton(
+                stickLabel = "R",
+                thumbLabel = "R3",
+                thumbMask = GamepadButtonMapping.RIGHT_THUMB,
                 client = client,
                 opacity = opacity,
                 diameter = 98.dp * stickScale * layoutScale,
+                buttonScale = controlScale * 0.9f,
+                onButtonTone = onButtonTone,
                 onChange = client::setVirtualRightStick,
             )
         }
@@ -5019,6 +5561,41 @@ private fun clampStickOffset(offset: Offset, maxRadius: Float): Offset {
 }
 
 @Composable
+private fun StickWithThumbButton(
+    stickLabel: String,
+    thumbLabel: String,
+    thumbMask: Int,
+    client: NativeStreamClient,
+    opacity: Float,
+    diameter: Dp,
+    buttonScale: Float,
+    onButtonTone: () -> Unit,
+    onChange: (Float, Float) -> Unit,
+) {
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        GamepadPillButton(
+            label = thumbLabel,
+            mask = thumbMask,
+            client = client,
+            opacity = opacity,
+            width = 56.dp * buttonScale,
+            height = 34.dp * buttonScale,
+            onPressTone = onButtonTone,
+        )
+        VirtualStick(
+            label = stickLabel,
+            client = client,
+            opacity = opacity,
+            diameter = diameter,
+            onChange = onChange,
+        )
+    }
+}
+
+@Composable
 private fun VirtualStick(
     label: String,
     client: NativeStreamClient,
@@ -5086,34 +5663,41 @@ private fun VirtualStick(
 }
 
 @Composable
-private fun FaceButtonCluster(client: NativeStreamClient, opacity: Float, scale: Float) {
+private fun FaceButtonCluster(client: NativeStreamClient, opacity: Float, scale: Float, onButtonTone: () -> Unit) {
     Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        GamepadButton("Y", 0x8000, client, opacity, 54.dp * scale)
+        GamepadButton("Y", 0x8000, client, opacity, 54.dp * scale, onButtonTone)
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            GamepadButton("X", 0x4000, client, opacity, 54.dp * scale)
+            GamepadButton("X", 0x4000, client, opacity, 54.dp * scale, onButtonTone)
             Spacer(Modifier.size(54.dp * scale))
-            GamepadButton("B", 0x2000, client, opacity, 54.dp * scale)
+            GamepadButton("B", 0x2000, client, opacity, 54.dp * scale, onButtonTone)
         }
-        GamepadButton("A", 0x1000, client, opacity, 54.dp * scale)
+        GamepadButton("A", 0x1000, client, opacity, 54.dp * scale, onButtonTone)
     }
 }
 
 @Composable
-private fun DpadCluster(client: NativeStreamClient, opacity: Float, scale: Float) {
+private fun DpadCluster(client: NativeStreamClient, opacity: Float, scale: Float, onButtonTone: () -> Unit) {
     val buttonSize = 54.dp * scale
     Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        GamepadButton("↑", 0x0001, client, opacity, buttonSize)
+        GamepadButton("↑", 0x0001, client, opacity, buttonSize, onButtonTone)
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            GamepadButton("←", 0x0004, client, opacity, buttonSize)
+            GamepadButton("←", 0x0004, client, opacity, buttonSize, onButtonTone)
             Spacer(Modifier.size(buttonSize))
-            GamepadButton("→", 0x0008, client, opacity, buttonSize)
+            GamepadButton("→", 0x0008, client, opacity, buttonSize, onButtonTone)
         }
-        GamepadButton("↓", 0x0002, client, opacity, buttonSize)
+        GamepadButton("↓", 0x0002, client, opacity, buttonSize, onButtonTone)
     }
 }
 
 @Composable
-private fun GamepadTriggerButton(label: String, left: Boolean, client: NativeStreamClient, opacity: Float, size: androidx.compose.ui.unit.Dp) {
+private fun GamepadTriggerButton(
+    label: String,
+    left: Boolean,
+    client: NativeStreamClient,
+    opacity: Float,
+    size: androidx.compose.ui.unit.Dp,
+    onPressTone: () -> Unit = {},
+) {
     var pressed by remember { mutableStateOf(false) }
     val accent = MaterialTheme.colorScheme.primary
     val idleSurface = MaterialTheme.colorScheme.surfaceVariant
@@ -5124,12 +5708,13 @@ private fun GamepadTriggerButton(label: String, left: Boolean, client: NativeStr
             .clip(RoundedCornerShape(999.dp))
             .background((if (pressed) accent else idleSurface).copy(alpha = opacity))
             .border(1.dp, accent.copy(alpha = opacity), RoundedCornerShape(999.dp))
-            .pointerInput(left) {
+            .pointerInput(client, left) {
                 awaitPointerEventScope {
                     while (true) {
                         val event = awaitPointerEvent()
                         val down = event.changes.any { it.pressed }
                         if (down != pressed) {
+                            if (down) onPressTone()
                             pressed = down
                             client.setVirtualTrigger(left, down)
                         }
@@ -5141,10 +5726,22 @@ private fun GamepadTriggerButton(label: String, left: Boolean, client: NativeStr
     ) {
         Text(label, fontWeight = FontWeight.Bold, color = if (pressed) MaterialTheme.colorScheme.onPrimary else TextPrimary)
     }
+    DisposableEffect(client, left) {
+        onDispose {
+            client.setVirtualTrigger(left, false)
+        }
+    }
 }
 
 @Composable
-private fun GamepadButton(label: String, mask: Int, client: NativeStreamClient, opacity: Float, size: androidx.compose.ui.unit.Dp) {
+private fun GamepadButton(
+    label: String,
+    mask: Int,
+    client: NativeStreamClient,
+    opacity: Float,
+    size: androidx.compose.ui.unit.Dp,
+    onPressTone: () -> Unit = {},
+) {
     var pressed by remember { mutableStateOf(false) }
     val accent = MaterialTheme.colorScheme.primary
     val idleSurface = MaterialTheme.colorScheme.surfaceVariant
@@ -5154,12 +5751,13 @@ private fun GamepadButton(label: String, mask: Int, client: NativeStreamClient, 
             .clip(CircleShape)
             .background((if (pressed) accent else idleSurface).copy(alpha = opacity))
             .border(1.dp, accent.copy(alpha = opacity), CircleShape)
-            .pointerInput(mask) {
+            .pointerInput(client, mask) {
                 awaitPointerEventScope {
                     while (true) {
                         val event = awaitPointerEvent()
                         val down = event.changes.any { it.pressed }
                         if (down != pressed) {
+                            if (down) onPressTone()
                             pressed = down
                             client.setVirtualButton(mask, down)
                         }
@@ -5171,6 +5769,11 @@ private fun GamepadButton(label: String, mask: Int, client: NativeStreamClient, 
     ) {
         Text(label, fontWeight = FontWeight.Bold, color = if (pressed) MaterialTheme.colorScheme.onPrimary else TextPrimary)
     }
+    DisposableEffect(client, mask) {
+        onDispose {
+            client.setVirtualButton(mask, false)
+        }
+    }
 }
 
 @Composable
@@ -5181,6 +5784,7 @@ private fun GamepadPillButton(
     opacity: Float,
     width: androidx.compose.ui.unit.Dp,
     height: androidx.compose.ui.unit.Dp,
+    onPressTone: () -> Unit = {},
 ) {
     var pressed by remember { mutableStateOf(false) }
     val accent = MaterialTheme.colorScheme.primary
@@ -5192,12 +5796,13 @@ private fun GamepadPillButton(
             .clip(RoundedCornerShape(999.dp))
             .background((if (pressed) accent else idleSurface).copy(alpha = opacity))
             .border(1.dp, accent.copy(alpha = opacity), RoundedCornerShape(999.dp))
-            .pointerInput(mask) {
+            .pointerInput(client, mask) {
                 awaitPointerEventScope {
                     while (true) {
                         val event = awaitPointerEvent()
                         val down = event.changes.any { it.pressed }
                         if (down != pressed) {
+                            if (down) onPressTone()
                             pressed = down
                             client.setVirtualButton(mask, down)
                         }
@@ -5215,6 +5820,30 @@ private fun GamepadPillButton(
             overflow = TextOverflow.Ellipsis,
         )
     }
+    DisposableEffect(client, mask) {
+        onDispose {
+            client.setVirtualButton(mask, false)
+        }
+    }
+}
+
+@Composable
+private fun SearchableSettingsSection(
+    searchQuery: String,
+    title: String,
+    vararg keywords: String,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    if (settingsSearchMatches(searchQuery, title, *keywords)) {
+        SettingsSection(title, content)
+    }
+}
+
+private fun settingsSearchMatches(searchQuery: String, vararg terms: String): Boolean {
+    val tokens = searchQuery.trim().lowercase(Locale.US).split(Regex("\\s+")).filter { it.isNotBlank() }
+    if (tokens.isEmpty()) return true
+    val haystack = terms.joinToString(" ").lowercase(Locale.US)
+    return tokens.all { token -> token in haystack }
 }
 
 @Composable

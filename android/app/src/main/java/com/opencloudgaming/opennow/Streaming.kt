@@ -609,6 +609,9 @@ object NativeStreamInputRouter {
             systemBackHandler?.invoke()
             return systemBackHandler != null
         }
+        if (event.action == KeyEvent.ACTION_UP && event.isStreamExitShortcutKey()) {
+            return systemBackHandler != null
+        }
         if (streamUiActive) return false
         val current = client ?: return false
         if (event.shouldConsumeAsStreamKeyboard()) {
@@ -1519,6 +1522,7 @@ class NativeStreamClient(
     private val onState: (String) -> Unit,
     private val onError: (String) -> Unit,
     private val onSafeVideoFallbackRequired: (String) -> Unit = {},
+    private val onSessionRecoveryRequired: (String) -> Unit = {},
     private val onStats: (StreamRuntimeStats) -> Unit = {},
 ) {
     private val appContext = context.applicationContext
@@ -1557,6 +1561,7 @@ class NativeStreamClient(
     private var transportGeneration = 0
     private var reconnectAttempts = 0
     private var videoSafeFallbackApplied = false
+    private var sessionRecoveryRequested = false
     private var lastIceState: PeerConnection.IceConnectionState? = null
     private var audioMuted = false
     private var virtualButtons = 0
@@ -1640,7 +1645,7 @@ class NativeStreamClient(
             .createPeerConnectionFactory()
     }
 
-    fun createRenderer(context: Context, settings: StreamSettings): SurfaceViewRenderer =
+    fun createRenderer(context: Context, settings: StreamSettings, stretchToFill: Boolean = false): SurfaceViewRenderer =
         SurfaceViewRenderer(context).also {
             renderer?.let { oldRenderer ->
                 videoTrack?.removeSink(oldRenderer)
@@ -1661,12 +1666,12 @@ class NativeStreamClient(
             }
             it.setEnableHardwareScaler(true)
             it.setMirror(false)
-            it.setScalingType(RendererCommon.ScalingType.SCALE_ASPECT_FIT)
+            it.setStreamScaling(stretchToFill)
             renderer = it
             videoTrack?.addSink(it)
         }
 
-    fun updateRendererSettings(settings: StreamSettings) {
+    fun updateRendererSettings(settings: StreamSettings, stretchToFill: Boolean = false) {
         this.settings = this.settings.copy(
             mouseSensitivity = settings.mouseSensitivity,
             mouseAcceleration = settings.mouseAcceleration,
@@ -1674,6 +1679,17 @@ class NativeStreamClient(
             streamSharpeningAmount = settings.streamSharpeningAmount,
         )
         rendererSharpnessDrawer?.amount = streamSharpnessShaderStrength(settings.streamSharpeningEnabled, settings.streamSharpeningAmount)
+        renderer?.setStreamScaling(stretchToFill)
+    }
+
+    private fun SurfaceViewRenderer.setStreamScaling(stretchToFill: Boolean) {
+        setScalingType(
+            if (stretchToFill) {
+                RendererCommon.ScalingType.SCALE_ASPECT_FILL
+            } else {
+                RendererCommon.ScalingType.SCALE_ASPECT_FIT
+            },
+        )
     }
 
     fun updateHapticsSettings(phoneFallbackEnabled: Boolean) {
@@ -1691,6 +1707,7 @@ class NativeStreamClient(
         transportGeneration += 1
         reconnectAttempts = 0
         videoSafeFallbackApplied = false
+        sessionRecoveryRequested = false
         lastStatsSample = null
         livenessWatchdog.reset()
         onStats(StreamRuntimeStats())
@@ -1702,6 +1719,7 @@ class NativeStreamClient(
     fun stop() {
         transportGeneration += 1
         reconnectAttempts = 0
+        sessionRecoveryRequested = false
         livenessWatchdog.reset()
         closeTransport(clearInputState = true)
         emitState("Stopped")
@@ -2181,14 +2199,6 @@ class NativeStreamClient(
             if (generation != transportGeneration || peerConnection != null) return@launch
             offerTimeoutJob = null
             NativeInputDiagnostics.add("video offer timeout codec=${settings.codec} resolution=${settings.resolution} bitrate=${settings.maxBitrateMbps}")
-            if (
-                requestSafeVideoFallback(
-                    message = "Timed out waiting for video offer; restarting with safe H264 1080p profile",
-                    diagnosticReason = "offer timeout",
-                )
-            ) {
-                return@launch
-            }
             restartTransport("Timed out waiting for video offer")
         }
     }
@@ -2297,7 +2307,7 @@ class NativeStreamClient(
         val currentSession = session ?: return
         val currentSettings = settings
         if (reconnectAttempts >= MAX_TRANSPORT_RECONNECT_ATTEMPTS) {
-            failStream("$reason. Stream reconnect failed after $MAX_TRANSPORT_RECONNECT_ATTEMPTS attempts.")
+            requestSessionRecovery("$reason. Stream reconnect failed after $MAX_TRANSPORT_RECONNECT_ATTEMPTS attempts.")
             return
         }
         reconnectAttempts += 1
@@ -2307,6 +2317,15 @@ class NativeStreamClient(
         closeTransport(clearInputState = false, cancelRecovery = false)
         iceRecoveryJob = null
         startTransport(currentSession, currentSettings, generation)
+    }
+
+    private fun requestSessionRecovery(message: String) {
+        if (sessionRecoveryRequested) return
+        sessionRecoveryRequested = true
+        transportGeneration += 1
+        closeTransport(clearInputState = false)
+        emitState("Recovering cloud session")
+        emitSessionRecoveryRequired(message)
     }
 
     private fun failStream(message: String, generation: Int? = null) {
@@ -2326,6 +2345,10 @@ class NativeStreamClient(
 
     private fun emitSafeVideoFallbackRequired(message: String) {
         scope.launch { onSafeVideoFallbackRequired(message) }
+    }
+
+    private fun emitSessionRecoveryRequired(message: String) {
+        scope.launch { onSessionRecoveryRequired(message) }
     }
 
     private fun PeerConnection.IceConnectionState.toIceStatusLabel(): String = "ICE_${name}"
@@ -2556,14 +2579,6 @@ class NativeStreamClient(
                 NativeInputDiagnostics.add("media stall keyframe requested stalledMs=${action.stalledMs} attempt=${action.attempt}")
             }
             is StreamLivenessAction.RestartTransport -> {
-                if (
-                    requestSafeVideoFallback(
-                        message = "Decoder stalled; restarting with safe H264 1080p profile",
-                        diagnosticReason = "media stall",
-                    )
-                ) {
-                    return
-                }
                 NativeInputDiagnostics.add("media stall transport restart stalledMs=${action.stalledMs}")
                 restartTransport("Media stalled for ${action.stalledMs / 1000}s")
             }

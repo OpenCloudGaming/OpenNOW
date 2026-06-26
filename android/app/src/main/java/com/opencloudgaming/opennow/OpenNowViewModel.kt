@@ -49,6 +49,7 @@ data class OpenNowUiState(
     val librarySearch: String = "",
     val catalogSortId: String = "relevance",
     val catalogFilterIds: List<String> = emptyList(),
+    val libraryFilterIds: List<String> = emptyList(),
     val loadingGames: Boolean = false,
     val settings: AppSettings = AppSettings(),
     val codecReport: RuntimeCodecReport? = null,
@@ -103,6 +104,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     init {
         viewModelScope.launch {
             settingsStore.settings.collect { next ->
+                OpenNowAnalytics.applyOptOut(next.analyticsOptOut)
                 _state.update { it.copy(settings = next) }
             }
         }
@@ -207,6 +209,14 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                             error = null,
                         )
                     }
+                    OpenNowAnalytics.identify(session)
+                    OpenNowAnalytics.capture(
+                        event = "user_logged_in",
+                        properties = mapOf(
+                            "provider" to session.provider.code,
+                            "membership_tier" to (session.user.membershipTier ?: ""),
+                        ),
+                    )
                     refreshAfterAuth(session)
                 }
                 .onFailure { error ->
@@ -244,6 +254,15 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                             error = null,
                         )
                     }
+                    OpenNowAnalytics.identify(session)
+                    OpenNowAnalytics.capture(
+                        event = "user_logged_in",
+                        properties = mapOf(
+                            "provider" to session.provider.code,
+                            "membership_tier" to (session.user.membershipTier ?: ""),
+                            "login_method" to "device_code",
+                        ),
+                    )
                     refreshAfterAuth(session)
                 }
                 .onFailure { error ->
@@ -308,6 +327,8 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
 
     fun logout() {
         viewModelScope.launch {
+            OpenNowAnalytics.capture(event = "user_logged_out")
+            OpenNowAnalytics.reset()
             authRepository.logout()
             val nextSession = authStore.activeSession()
             _state.update {
@@ -317,6 +338,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                     savedAccounts = authStore.state.value.sessions.map { saved -> saved.toSavedAccount() },
                     games = emptyList(),
                     libraryGames = emptyList(),
+                    libraryFilterIds = emptyList(),
                     streamSession = null,
                     activeStreamSettings = null,
                     activeSession = null,
@@ -345,12 +367,21 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                     games = emptyList(),
                     libraryGames = emptyList(),
                     catalogResult = CatalogBrowseResult(emptyList()),
+                    libraryFilterIds = emptyList(),
                     selectedGame = null,
                     activeSession = null,
                     error = null,
                     page = AppPage.Home,
                 )
             }
+            OpenNowAnalytics.identify(session)
+            OpenNowAnalytics.capture(
+                event = "account_switched",
+                properties = mapOf(
+                    "provider" to session.provider.code,
+                    "membership_tier" to (session.user.membershipTier ?: ""),
+                ),
+            )
             refreshAfterAuth(session)
         }
     }
@@ -363,6 +394,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 savedAccounts = emptyList(),
                 games = emptyList(),
                 libraryGames = emptyList(),
+                libraryFilterIds = emptyList(),
                 streamSession = null,
                 activeStreamSettings = null,
                 activeSession = null,
@@ -382,11 +414,28 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
 
     fun setCatalogSearch(query: String) {
         _state.update { it.copy(catalogSearch = query) }
+        if (query.isNotBlank()) {
+            OpenNowAnalytics.capture(
+                event = "catalog_searched",
+                properties = mapOf("query" to query),
+            )
+        }
         refreshCatalogDebounced()
     }
 
     fun setLibrarySearch(query: String) {
         _state.update { it.copy(librarySearch = query) }
+    }
+
+    fun toggleLibraryFilter(filterId: String) {
+        _state.update {
+            val filters = if (filterId in it.libraryFilterIds) it.libraryFilterIds - filterId else it.libraryFilterIds + filterId
+            it.copy(libraryFilterIds = filters)
+        }
+    }
+
+    fun clearLibraryFilters() {
+        _state.update { it.copy(libraryFilterIds = emptyList()) }
     }
 
     fun setCatalogSort(sortId: String) {
@@ -395,10 +444,18 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun toggleCatalogFilter(filterId: String) {
+        val adding = filterId !in state.value.catalogFilterIds
         _state.update {
             val filters = if (filterId in it.catalogFilterIds) it.catalogFilterIds - filterId else it.catalogFilterIds + filterId
             it.copy(catalogFilterIds = filters)
         }
+        OpenNowAnalytics.capture(
+            event = "catalog_filter_applied",
+            properties = mapOf(
+                "filter_id" to filterId,
+                "action" to if (adding) "add" else "remove",
+            ),
+        )
         refreshCatalogDebounced()
     }
 
@@ -409,6 +466,13 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
 
     fun selectGame(game: GameInfo) {
         _state.update { it.copy(selectedGame = game) }
+        OpenNowAnalytics.capture(
+            event = "game_selected",
+            properties = mapOf(
+                "game_id" to game.id,
+                "game_title" to game.title,
+            ),
+        )
     }
 
     fun clearSelectedGame() {
@@ -425,6 +489,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
 
     fun downloadAndroidUpdate() {
         if (androidUpdateJob?.isActive == true) return
+        OpenNowAnalytics.capture(event = "app_update_downloaded")
         androidUpdateJob = viewModelScope.launch {
             appUpdater.downloadUpdate()
         }
@@ -510,10 +575,18 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun updateFavorites(gameId: String) {
+        val adding = gameId !in settingsStore.settings.value.favoriteGameIds
         settingsStore.update {
             val next = if (gameId in it.favoriteGameIds) it.favoriteGameIds - gameId else it.favoriteGameIds + gameId
             it.copy(favoriteGameIds = next)
         }
+        OpenNowAnalytics.capture(
+            event = "favorite_toggled",
+            properties = mapOf(
+                "game_id" to gameId,
+                "action" to if (adding) "add" else "remove",
+            ),
+        )
     }
 
     fun setDefaultGameVariant(gameId: String, variantId: String?) {
@@ -579,6 +652,16 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             val settings = effectiveStreamSettings()
             val token = auth.tokens.idToken ?: auth.tokens.accessToken
             val baseUrl = streamingBaseUrlOverride ?: effectiveStreamingBaseUrl()
+            OpenNowAnalytics.capture(
+                event = "stream_started",
+                properties = mapOf(
+                    "game_id" to game.id,
+                    "game_title" to game.title,
+                    "resolution" to settings.resolution,
+                    "fps" to settings.fps,
+                    "codec" to settings.codec.name,
+                ),
+            )
             _state.update {
                 it.copy(
                     streamStatus = "queue",
@@ -610,7 +693,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 val active = sessionRepository.getActiveSessions(token, baseUrl, settings)
                 val numericLaunchAppId = launchAppId.toIntOrNull()
                 val readyCandidate = active.firstOrNull {
-                    it.appId == numericLaunchAppId && it.serverIp != null && it.status in setOf(2, 3)
+                    it.appId == numericLaunchAppId && it.isReadyForClaim()
                 }
                 val launchingCandidate = active.firstOrNull {
                     it.appId == numericLaunchAppId && it.status == 1
@@ -715,6 +798,13 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                     runCatching { sessionRepository.stopActiveSession(token, active, streamSettings) }
                 }
             }
+            OpenNowAnalytics.capture(
+                event = "stream_stopped",
+                properties = mapOf(
+                    "game_title" to (state.value.streamGame?.title ?: ""),
+                    "game_id" to (state.value.streamGame?.id ?: ""),
+                ),
+            )
             _state.update {
                 it.copy(
                     streamSession = null,
@@ -743,7 +833,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
 
     fun minimizeStreamLaunch() {
         _state.update { current ->
-            if (current.streamStatus == "idle" || current.streamSession?.status in setOf(2, 3)) {
+            if (current.streamStatus == "idle" || current.streamSession?.isReadyForStream() == true) {
                 current
             } else {
                 current.copy(streamLaunchMinimized = true, page = current.streamReturnPage ?: AppPage.Home)
@@ -794,7 +884,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                         streamGame = matchingGame,
                         streamSession = active.toPendingSession(zone = "prod"),
                         activeStreamSettings = settings,
-                        launchPhase = if (active.status in setOf(2, 3) && active.serverIp != null) "Resuming session" else loadingPhaseFor(active.toPendingSession(zone = "prod")),
+                        launchPhase = if (active.isReadyForClaim()) "Resuming session" else loadingPhaseFor(active.toPendingSession(zone = "prod")),
                     )
                 }
                 resumeKnownActiveSession(token, active, settings, baseUrl)
@@ -850,6 +940,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     private fun effectiveStreamSettings(): StreamSettings {
         val snapshot = state.value
         return snapshot.settings.stream
+            .withResolutionAllowed(snapshot.subscriptionInfo, snapshot.authSession?.user?.membershipTier)
             .withHdrAllowed(snapshot.subscriptionInfo, snapshot.authSession?.user?.membershipTier)
             .adjustedForDevice(snapshot.codecReport)
     }
@@ -970,10 +1061,28 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun markStreamConnected() {
+        OpenNowAnalytics.capture(
+            event = "stream_connected",
+            properties = mapOf(
+                "game_title" to (state.value.streamGame?.title ?: ""),
+                "game_id" to (state.value.streamGame?.id ?: ""),
+                "resolution" to (state.value.activeStreamSettings?.resolution ?: ""),
+                "fps" to (state.value.activeStreamSettings?.fps ?: 0),
+                "codec" to (state.value.activeStreamSettings?.codec?.name ?: ""),
+            ),
+        )
         _state.update { it.copy(streamStatus = "streaming", launchPhase = "") }
     }
 
     fun markStreamError(message: String) {
+        OpenNowAnalytics.capture(
+            event = "stream_error",
+            properties = mapOf(
+                "error_message" to message,
+                "game_title" to (state.value.streamGame?.title ?: ""),
+                "game_id" to (state.value.streamGame?.id ?: ""),
+            ),
+        )
         _state.update { it.copy(error = message, streamStatus = "idle", activeStreamSettings = null, launchPhase = "") }
     }
 
@@ -983,7 +1092,15 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         val auth = initial.authSession ?: return
         val currentSettings = initial.activeStreamSettings ?: effectiveStreamSettings()
         val safeSettings = currentSettings.androidSafeVideoFallback()
+        if (initial.streamSession != null && isFreeTier()) {
+            recoverStreamSession("$reason. Reconnecting the existing free-tier session instead of restarting the queue.")
+            return
+        }
         if (currentSettings == safeSettings) {
+            if (initial.streamSession != null) {
+                recoverStreamSession("$reason. Reconnecting the existing session.")
+                return
+            }
             _state.update {
                 it.copy(
                     error = "$reason. Safe H264 profile also stalled.",
@@ -1057,6 +1174,105 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                         activeStreamSettings = safeSettings,
                         streamStatus = "connecting",
                         launchPhase = "Connecting safe H264 stream",
+                        streamLaunchMinimized = false,
+                        queuePosition = null,
+                        queueAdActiveId = null,
+                        page = AppPage.Stream,
+                    )
+                }
+            }.onFailure { error ->
+                if (error is CancellationException) return@onFailure
+                _state.update {
+                    it.copy(
+                        error = normalizeLaunchError(error),
+                        streamStatus = "idle",
+                        activeStreamSettings = null,
+                        streamReturnPage = null,
+                        launchPhase = "",
+                        streamLaunchMinimized = false,
+                        queuePosition = null,
+                        queueAdActiveId = null,
+                        page = returnPage,
+                    )
+                }
+            }
+        }
+    }
+
+    fun recoverStreamSession(reason: String) {
+        if (launchJob?.isActive == true) return
+        val initial = state.value
+        val auth = initial.authSession ?: run {
+            markStreamError(reason)
+            return
+        }
+        val initialSession = initial.streamSession ?: run {
+            markStreamError(reason)
+            return
+        }
+        val currentSettings = initial.activeStreamSettings ?: effectiveStreamSettings()
+        launchJob = viewModelScope.launch {
+            val token = auth.tokens.idToken ?: auth.tokens.accessToken
+            val snapshot = state.value
+            val previousSession = snapshot.streamSession ?: initialSession
+            val active = snapshot.activeSession
+            val game = snapshot.streamGame
+            val baseUrl = listOfNotNull(
+                previousSession.streamingBaseUrl,
+                active?.streamingBaseUrl,
+                effectiveStreamingBaseUrl(auth),
+            ).firstOrNull { !it.isLikelyDirectServerUrl() } ?: effectiveStreamingBaseUrl(auth)
+            val returnPage = snapshot.streamReturnPage ?: snapshot.page.takeUnless { it == AppPage.Stream } ?: AppPage.Home
+
+            _state.update {
+                it.copy(
+                    streamSession = null,
+                    activeStreamSettings = currentSettings,
+                    streamStatus = "connecting",
+                    launchPhase = "Recovering stream",
+                    page = AppPage.Stream,
+                    streamReturnPage = returnPage,
+                    streamLaunchMinimized = false,
+                    error = null,
+                    queuePosition = null,
+                    queueAdActiveId = null,
+                )
+            }
+
+            runCatching {
+                val activeSessions = sessionRepository.getActiveSessions(token, baseUrl, currentSettings)
+                val resolvedAppId = runCatching {
+                    resolveFallbackLaunchAppId(
+                        token = token,
+                        game = game,
+                        active = active,
+                        baseUrl = baseUrl,
+                    ).toIntOrNull()
+                }.getOrNull()
+                val readyCandidate = activeSessions.firstOrNull {
+                    it.sessionId == previousSession.sessionId &&
+                        it.isReadyForClaim()
+                } ?: resolvedAppId?.let { appId ->
+                    activeSessions.firstOrNull {
+                        it.appId == appId &&
+                            it.isReadyForClaim()
+                    }
+                }
+                val fallbackCandidate = readyCandidate
+                    ?: previousSession.toRecoveryActiveSession(
+                        appId = resolvedAppId ?: active?.appId ?: 0,
+                        fallbackActive = active,
+                    )
+                    ?: error("The running session could not be found anymore, so recovery was not possible.")
+                sessionRepository.claimSession(token, fallbackCandidate, currentSettings)
+            }.onSuccess { readySession ->
+                _state.update {
+                    it.copy(
+                        streamSession = readySession,
+                        activeSession = readySession.toActiveRecoverySession(active),
+                        activeStreamSettings = currentSettings,
+                        streamStatus = "connecting",
+                        launchPhase = "Reconnecting stream",
                         streamLaunchMinimized = false,
                         queuePosition = null,
                         queueAdActiveId = null,
@@ -1345,7 +1561,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         settings: StreamSettings,
         baseUrl: String,
     ): SessionInfo {
-        if (active.status in setOf(2, 3) && active.serverIp != null) {
+        if (active.isReadyForClaim()) {
             _state.update { it.copy(launchPhase = "Resuming session") }
             return sessionRepository.claimSession(token, active, settings)
         }
@@ -1372,7 +1588,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 queueAdActiveId = chooseQueueAdActiveId(it.queueAdActiveId, latest),
             )
         }
-        if (latest.status in setOf(2, 3) && latest.serverIp.isNotBlank()) {
+        if (latest.isReadyForStream()) {
             val hydratedActive = active.copy(
                 status = latest.status,
                 queuePosition = latest.queuePosition,
@@ -1397,7 +1613,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 queueAdActiveId = chooseQueueAdActiveId(it.queueAdActiveId, latest),
             )
         }
-        while (latest.status !in setOf(2, 3)) {
+        while (!latest.isReadyForStream()) {
             val waitMs = if (shouldWaitForQueueAdPlayback(latest.adState)) 30_000L else 2_000L
             if (waitMs > 2_000L) {
                 var elapsedMs = 0L
@@ -1407,14 +1623,14 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                     state.value.streamSession
                         ?.takeIf { it.sessionId == latest.sessionId }
                         ?.let { latest = mergeQueueSessionState(latest, it) }
-                    if (!shouldWaitForQueueAdPlayback(latest.adState) || latest.status in setOf(2, 3)) {
+                    if (!shouldWaitForQueueAdPlayback(latest.adState) || latest.isReadyForStream()) {
                         break
                     }
                 }
             } else {
                 kotlinx.coroutines.delay(waitMs)
             }
-            if (latest.status in setOf(2, 3)) {
+            if (latest.isReadyForStream()) {
                 break
             }
             val polled = sessionRepository.pollSession(
@@ -1508,6 +1724,28 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             gpuType = gpuType,
             deviceId = authStore.stableDeviceId(),
         )
+    }
+
+    private fun SessionInfo.toRecoveryActiveSession(appId: Int, fallbackActive: ActiveSessionInfo?): ActiveSessionInfo? {
+        if (serverIp.isBlank() || appId <= 0) return null
+        return ActiveSessionInfo(
+            sessionId = sessionId,
+            appId = appId,
+            gpuType = gpuType ?: fallbackActive?.gpuType,
+            status = status.takeIf { it in setOf(2, 3) } ?: 2,
+            queuePosition = queuePosition,
+            seatSetupStep = seatSetupStep,
+            streamingBaseUrl = streamingBaseUrl ?: fallbackActive?.streamingBaseUrl,
+            serverIp = serverIp,
+            signalingUrl = signalingUrl.takeIf { it.isNotBlank() } ?: fallbackActive?.signalingUrl,
+            resolution = fallbackActive?.resolution,
+            fps = fallbackActive?.fps,
+        )
+    }
+
+    private fun SessionInfo.toActiveRecoverySession(fallbackActive: ActiveSessionInfo?): ActiveSessionInfo? {
+        val appId = fallbackActive?.takeIf { it.sessionId == sessionId }?.appId ?: fallbackActive?.appId ?: return null
+        return toRecoveryActiveSession(appId, fallbackActive)
     }
 
     private fun shouldSendAccountLinked(game: GameInfo, variant: GameVariant?): Boolean {

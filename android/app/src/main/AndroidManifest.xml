@@ -26,6 +26,7 @@
         android:required="false" />
 
     <application
+        android:name=".OpenNowApplication"
         android:allowBackup="false"
         android:banner="@drawable/opennow_banner"
         android:hardwareAccelerated="true"
