@@ -10,9 +10,10 @@ const repoRoot = resolve(packageRoot, "..");
 const crateRoot = join(repoRoot, "native", "opennow-streamer");
 const manifestPath = join(crateRoot, "Cargo.toml");
 const protocolSourcePath = join(crateRoot, "src", "protocol.rs");
+const appProtocolSourcePath = join(packageRoot, "src", "shared", "nativeStreamer.ts");
 const exeName = process.platform === "win32" ? "opennow-streamer.exe" : "opennow-streamer";
 const verifyCommandId = "verify";
-const nativeStreamerProtocolVersion = readNativeStreamerProtocolVersion();
+const nativeStreamerProtocolVersion = readVerifiedNativeStreamerProtocolVersion();
 const nativeTarget = process.env.OPENNOW_NATIVE_STREAMER_TARGET?.trim() || "";
 const platformKey = process.env.OPENNOW_NATIVE_STREAMER_PLATFORM_KEY?.trim() || `${process.platform}-${process.arch}`;
 const targetReleaseDir = nativeTarget
@@ -32,13 +33,35 @@ function hasFeature(features, feature) {
     .includes(feature);
 }
 
-function readNativeStreamerProtocolVersion() {
-  const source = readFileSync(protocolSourcePath, "utf8");
-  const match = source.match(/pub\s+const\s+PROTOCOL_VERSION\s*:\s*u64\s*=\s*(\d+)\s*;/);
+function readProtocolVersion(sourcePath, pattern, label) {
+  const source = readFileSync(sourcePath, "utf8");
+  const match = source.match(pattern);
   if (!match) {
-    throw new Error(`Unable to read native streamer protocol version from ${protocolSourcePath}`);
+    throw new Error(`Unable to read ${label} protocol version from ${sourcePath}`);
   }
   return Number.parseInt(match[1], 10);
+}
+
+function readVerifiedNativeStreamerProtocolVersion() {
+  const appProtocolVersion = readProtocolVersion(
+    appProtocolSourcePath,
+    /export\s+const\s+NATIVE_STREAMER_PROTOCOL_VERSION\s*=\s*(\d+)\s*;/,
+    "app",
+  );
+  const nativeProtocolVersion = readProtocolVersion(
+    protocolSourcePath,
+    /pub\s+const\s+PROTOCOL_VERSION\s*:\s*u64\s*=\s*(\d+)\s*;/,
+    "native",
+  );
+
+  if (appProtocolVersion !== nativeProtocolVersion) {
+    throw new Error(
+      `Native streamer protocol mismatch: app sends ${appProtocolVersion} from ${appProtocolSourcePath}, `
+      + `native expects ${nativeProtocolVersion} from ${protocolSourcePath}.`,
+    );
+  }
+
+  return appProtocolVersion;
 }
 
 function isWindowsBuild() {
