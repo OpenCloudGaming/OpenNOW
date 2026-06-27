@@ -483,7 +483,7 @@ object NativeStreamInputRouter {
     fun isControllerAppBackKey(event: KeyEvent): Boolean =
         isControllerAppBackKey(
             keyCode = event.keyCode,
-            controllerSource = event.isControllerSource(),
+            controllerSource = event.isControllerInputDevice(),
             streamUiActive = streamUiActive,
         )
 
@@ -641,6 +641,7 @@ object NativeStreamInputRouter {
 
     private fun KeyEvent.isStreamControlsShortcutKey(): Boolean =
         !streamUiActive &&
+            !isControllerInputDevice() &&
             !isHardwareKeyboardSource() &&
             isDpadSource() &&
             (keyCode == KeyEvent.KEYCODE_ENTER ||
@@ -652,20 +653,23 @@ object NativeStreamInputRouter {
             (keyCode == KeyEvent.KEYCODE_ESCAPE && !isHardwareKeyboardSource())
 
     private fun KeyEvent.isControllerSource(): Boolean =
-        (source and InputDevice.SOURCE_GAMEPAD) == InputDevice.SOURCE_GAMEPAD ||
-            (source and InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK
+        AndroidControllerInput.hasControllerSource(source)
+
+    private fun KeyEvent.isControllerInputDevice(): Boolean =
+        AndroidControllerInput.hasControllerSource(source) ||
+            InputDevice.getDevice(deviceId)?.sources?.let(AndroidControllerInput::hasControllerSource) == true
 
     private fun KeyEvent.isDpadSource(): Boolean =
         (source and InputDevice.SOURCE_DPAD) == InputDevice.SOURCE_DPAD
 
     private fun KeyEvent.isHardwareKeyboardSource(): Boolean =
-        !isControllerSource() &&
+        !isControllerInputDevice() &&
             ((source and InputDevice.SOURCE_KEYBOARD) == InputDevice.SOURCE_KEYBOARD ||
                 InputDevice.getDevice(deviceId)?.keyboardType == InputDevice.KEYBOARD_TYPE_ALPHABETIC)
 
     private fun KeyEvent.shouldConsumeAsStreamKeyboard(): Boolean =
         (action == KeyEvent.ACTION_DOWN || action == KeyEvent.ACTION_UP) &&
-            !isControllerSource() &&
+            !isControllerInputDevice() &&
             !isAndroidSystemKey() &&
             (isHardwareKeyboardSource() || keyCode.isTextEntryKeyCode())
 
@@ -909,6 +913,19 @@ object InputDataChannelLabels {
         }
 }
 
+internal object AndroidControllerInput {
+    fun hasControllerSource(source: Int): Boolean =
+        source.hasSource(InputDevice.SOURCE_GAMEPAD) ||
+            source.hasSource(InputDevice.SOURCE_JOYSTICK)
+
+    fun isPrimaryActivationKey(keyCode: Int): Boolean =
+        keyCode == KeyEvent.KEYCODE_DPAD_CENTER ||
+            keyCode == KeyEvent.KEYCODE_ENTER ||
+            keyCode == KeyEvent.KEYCODE_NUMPAD_ENTER
+
+    private fun Int.hasSource(source: Int): Boolean = (this and source) == source
+}
+
 internal data class GamepadRumbleCommand(
     val controllerId: Int,
     val weakMagnitude: Int,
@@ -1001,11 +1018,15 @@ internal object GamepadButtonMapping {
     const val X = 0x4000
     const val Y = 0x8000
 
-    fun maskForKeyCode(keyCode: Int): Int? = when (keyCode) {
+    fun maskForKeyCode(keyCode: Int, controllerActivation: Boolean = false): Int? = when (keyCode) {
         KeyEvent.KEYCODE_DPAD_UP -> DPAD_UP
         KeyEvent.KEYCODE_DPAD_DOWN -> DPAD_DOWN
         KeyEvent.KEYCODE_DPAD_LEFT -> DPAD_LEFT
         KeyEvent.KEYCODE_DPAD_RIGHT -> DPAD_RIGHT
+        KeyEvent.KEYCODE_DPAD_CENTER,
+        KeyEvent.KEYCODE_ENTER,
+        KeyEvent.KEYCODE_NUMPAD_ENTER,
+        -> if (controllerActivation) A else null
         KeyEvent.KEYCODE_BUTTON_START -> START
         KeyEvent.KEYCODE_BUTTON_SELECT -> BACK
         KeyEvent.KEYCODE_BUTTON_THUMBL -> LEFT_THUMB
@@ -2401,6 +2422,7 @@ class NativeStreamClient(
                     inputDropLogged = false
                     NativeInputDiagnostics.add("input channel open label=$normalizedLabel")
                     updateHapticsAdvertisement(force = true)
+                    schedulePrimeConnectedGamepadState(reason = "channel open $normalizedLabel")
                 }
             }
             override fun onMessage(buffer: DataChannel.Buffer) {
@@ -2442,6 +2464,7 @@ class NativeStreamClient(
         inputEncoder.resetGamepadSequences()
         NativeInputDiagnostics.add("input handshake protocol=$version bytes=${bytes.size}")
         updateHapticsAdvertisement(force = true)
+        schedulePrimeConnectedGamepadState(reason = "input handshake")
         return true
     }
 
@@ -2459,6 +2482,7 @@ class NativeStreamClient(
         gamepadKeepaliveJob?.cancel()
         gamepadKeepaliveJob = scope.launch {
             var connectedScanCountdown = 0
+            primeConnectedGamepadState(reason = "keepalive start")
             while (true) {
                 delay(100L)
                 connectedScanCountdown -= 1
@@ -2655,7 +2679,11 @@ class NativeStreamClient(
     private fun dispatchGamepadKey(event: KeyEvent): Boolean {
         if (event.action != KeyEvent.ACTION_DOWN && event.action != KeyEvent.ACTION_UP) return false
         val pressed = event.action == KeyEvent.ACTION_DOWN
-        val mask = GamepadButtonMapping.maskForKeyCode(event.keyCode)
+        val controllerInputDevice = event.isControllerInputDevice()
+        val mask = GamepadButtonMapping.maskForKeyCode(
+            event.keyCode,
+            controllerActivation = controllerInputDevice,
+        )
         if (mask != null) {
             activeControllerId = controllerIdFor(event)
             if (!physicalControllerActive) {
@@ -2787,9 +2815,7 @@ class NativeStreamClient(
         val connectedDevices = mutableListOf<InputDevice>()
         InputDevice.getDeviceIds().forEach { deviceId ->
             val device = InputDevice.getDevice(deviceId) ?: return@forEach
-            if (device.sources.hasSource(InputDevice.SOURCE_GAMEPAD) ||
-                device.sources.hasSource(InputDevice.SOURCE_JOYSTICK)
-            ) {
+            if (AndroidControllerInput.hasControllerSource(device.sources)) {
                 connectedDevices += device
             }
         }
@@ -2819,6 +2845,21 @@ class NativeStreamClient(
             sendCurrentGamepadState()
         }
         updateHapticsAdvertisement(force = connectionChanged)
+    }
+
+    private fun schedulePrimeConnectedGamepadState(reason: String) {
+        scope.launch {
+            primeConnectedGamepadState(reason)
+        }
+    }
+
+    private fun primeConnectedGamepadState(reason: String) {
+        refreshConnectedPhysicalControllers()
+        if (!hasAnyControllerState()) return
+        val sent = sendCurrentGamepadState()
+        NativeInputDiagnostics.add(
+            "gamepad state prime reason=$reason sent=$sent connected=$physicalControllerConnected active=$physicalControllerActive slot=$activeControllerId reliable=${reliableInput?.state()} partial=${partiallyReliableInput?.state()}",
+        )
     }
 
     private fun updateHapticsAdvertisement(force: Boolean = false) {
@@ -3093,18 +3134,17 @@ class NativeStreamClient(
     }
 
     private fun KeyEvent.isGamepadEvent(): Boolean {
-        val controllerSource =
-            (source and InputDevice.SOURCE_GAMEPAD) == InputDevice.SOURCE_GAMEPAD ||
-                (source and InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK
-        return (controllerSource &&
+        val controllerInputDevice = isControllerInputDevice()
+        return (controllerInputDevice &&
             (GamepadButtonMapping.maskForKeyCode(keyCode) != null ||
+                AndroidControllerInput.isPrimaryActivationKey(keyCode) ||
                 keyCode == KeyEvent.KEYCODE_BUTTON_L2 ||
                 keyCode == KeyEvent.KEYCODE_BUTTON_R2)) ||
             GamepadButtonMapping.isControllerButtonKeyCode(keyCode)
     }
 
     private fun KeyEvent.isHardwareKeyboardSource(): Boolean =
-        !isGamepadEvent() &&
+        !isControllerInputDevice() &&
             ((source and InputDevice.SOURCE_KEYBOARD) == InputDevice.SOURCE_KEYBOARD ||
                 InputDevice.getDevice(deviceId)?.keyboardType == InputDevice.KEYBOARD_TYPE_ALPHABETIC)
 
@@ -3112,11 +3152,12 @@ class NativeStreamClient(
         isFromSource(InputDevice.SOURCE_JOYSTICK) ||
             isFromSource(InputDevice.SOURCE_GAMEPAD)
 
-    private fun Int.hasSource(source: Int): Boolean = (this and source) == source
-
     private fun InputDevice.isControllerDevice(): Boolean =
-        sources.hasSource(InputDevice.SOURCE_GAMEPAD) ||
-            sources.hasSource(InputDevice.SOURCE_JOYSTICK)
+        AndroidControllerInput.hasControllerSource(sources)
+
+    private fun KeyEvent.isControllerInputDevice(): Boolean =
+        AndroidControllerInput.hasControllerSource(source) ||
+            InputDevice.getDevice(deviceId)?.sources?.let(AndroidControllerInput::hasControllerSource) == true
 
     private fun Int.toGfnMouseButton(): Int = when {
         this and MotionEvent.BUTTON_PRIMARY != 0 -> 1

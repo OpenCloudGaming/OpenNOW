@@ -1,10 +1,12 @@
 package com.opencloudgaming.opennow
 
+import android.view.InputDevice
 import android.view.KeyEvent
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -49,6 +51,28 @@ class InputEncoderGamepadTest {
         assertTrue(GamepadButtonMapping.isControllerButtonKeyCode(KeyEvent.KEYCODE_BUTTON_R2))
         assertFalse(GamepadButtonMapping.isControllerButtonKeyCode(KeyEvent.KEYCODE_DPAD_CENTER))
         assertFalse(GamepadButtonMapping.isControllerButtonKeyCode(KeyEvent.KEYCODE_ENTER))
+    }
+
+    @Test
+    fun detectsControllerCapableAndroidSources() {
+        assertTrue(AndroidControllerInput.hasControllerSource(InputDevice.SOURCE_GAMEPAD or InputDevice.SOURCE_DPAD))
+        assertTrue(AndroidControllerInput.hasControllerSource(InputDevice.SOURCE_JOYSTICK or InputDevice.SOURCE_DPAD))
+        assertFalse(AndroidControllerInput.hasControllerSource(InputDevice.SOURCE_DPAD))
+        assertFalse(AndroidControllerInput.hasControllerSource(InputDevice.SOURCE_KEYBOARD or InputDevice.SOURCE_DPAD))
+    }
+
+    @Test
+    fun mapsControllerActivationKeysToPrimaryGamepadButtonOnlyForControllers() {
+        assertEquals(
+            GamepadButtonMapping.A,
+            GamepadButtonMapping.maskForKeyCode(KeyEvent.KEYCODE_DPAD_CENTER, controllerActivation = true),
+        )
+        assertEquals(
+            GamepadButtonMapping.A,
+            GamepadButtonMapping.maskForKeyCode(KeyEvent.KEYCODE_ENTER, controllerActivation = true),
+        )
+        assertNull(GamepadButtonMapping.maskForKeyCode(KeyEvent.KEYCODE_DPAD_CENTER))
+        assertNull(GamepadButtonMapping.maskForKeyCode(KeyEvent.KEYCODE_ENTER))
     }
 
     @Test

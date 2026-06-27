@@ -196,6 +196,7 @@ private val SettingsPanel = Color(0xff11161a)
 private val SettingsPanelAlt = Color(0xff171d22)
 private val SettingsText = Color(0xffeef3f5)
 private val SettingsTextMuted = Color(0xff98a4aa)
+private const val DONATE_URL = "https://paypal.me/PrintedWaste"
 private val PHONE_NAV_RAIL_MAX_SMALLEST_WIDTH = 600.dp
 private val APP_NAV_RAIL_WIDTH = 80.dp
 
@@ -3137,6 +3138,9 @@ private fun SettingsContent(
     SearchableSettingsSection(searchQuery, "About", "about", "version", "build", "app") {
                 AppVersionPanel()
             }
+    SearchableSettingsSection(searchQuery, stringResource(R.string.settings_section_thanks), "thanks", "credits", "contributors", "darkevilpt", "donate", "paypal", "printedwaste") {
+                ThanksPanel()
+            }
     }
 }
 
@@ -3528,6 +3532,43 @@ private fun AppVersionPanel() {
 }
 
 @Composable
+private fun ThanksPanel() {
+    val context = LocalContext.current
+    val clipboard = LocalClipboardManager.current
+    Text(
+        stringResource(R.string.settings_thanks_body),
+        color = SettingsTextMuted,
+        style = MaterialTheme.typography.bodyMedium,
+    )
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .background(SettingsPanelAlt)
+            .padding(horizontal = 14.dp, vertical = 12.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(stringResource(R.string.settings_thanks_darkevilpt), color = SettingsText, fontWeight = FontWeight.SemiBold)
+            Text(stringResource(R.string.settings_thanks_darkevilpt_note), color = SettingsTextMuted, style = MaterialTheme.typography.bodySmall)
+        }
+    }
+    Button(
+        onClick = {
+            val opened = openExternalUrl(context, DONATE_URL)
+            if (!opened) {
+                clipboard.setText(AnnotatedString(DONATE_URL))
+                Toast.makeText(context, context.getString(R.string.settings_donate_link_copied), Toast.LENGTH_SHORT).show()
+            }
+        },
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Text(stringResource(R.string.settings_donate_paypal), maxLines = 1, overflow = TextOverflow.Ellipsis)
+    }
+}
+
+@Composable
 private fun DebugLogsPanel(state: OpenNowUiState, viewModel: OpenNowViewModel) {
     val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
@@ -3548,7 +3589,7 @@ private fun DebugLogsPanel(state: OpenNowUiState, viewModel: OpenNowViewModel) {
             saveError = error.message ?: "Could not save logs"
         }
     }
-    Text("Includes launch state, queue state, ads, stream settings, input settings, and codec capabilities.", color = SettingsTextMuted)
+    Text("Includes launch state, queue state, ad reports, stream events, recovery events, stream settings, input settings, and codec capabilities.", color = SettingsTextMuted)
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
         Button(
             onClick = {
@@ -3632,6 +3673,7 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
             context = context.applicationContext,
             onState = {
                 streamState = it
+                viewModel.recordNativeStreamState(it)
                 if (it == "Streaming") viewModel.markStreamConnected()
             },
             onError = {

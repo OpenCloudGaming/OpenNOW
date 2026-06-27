@@ -47,6 +47,7 @@
     <string name="settings_section_stream">Stream</string>
     <string name="settings_section_interface">Interface</string>
     <string name="settings_section_nerd_tools">Nerd tools</string>
+    <string name="settings_section_thanks">Thanks</string>
     <string name="settings_resolution">Resolution</string>
     <string name="settings_aspect_ratio">Aspect ratio</string>
     <string name="settings_fps">FPS</string>
@@ -88,6 +89,11 @@
     <string name="settings_controller_backdrop">Controller library game backdrop</string>
     <string name="settings_auto_load_library">Auto-load controller library</string>
     <string name="settings_session_counter">Session counter</string>
+    <string name="settings_thanks_body">Thanks to the people helping improve OpenNOW for everyone.</string>
+    <string name="settings_thanks_darkevilpt">DarkevilPT</string>
+    <string name="settings_thanks_darkevilpt_note">Community support</string>
+    <string name="settings_donate_paypal">Donate with PayPal</string>
+    <string name="settings_donate_link_copied">Donate link copied</string>
     <string name="accent_opennow">OpenNOW</string>
     <string name="accent_pixel">Pixel blue</string>
     <string name="accent_hot_pink">Hot pink</string>

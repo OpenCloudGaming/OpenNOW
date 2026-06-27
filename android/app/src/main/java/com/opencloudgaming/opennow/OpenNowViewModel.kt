@@ -3,6 +3,7 @@ package com.opencloudgaming.opennow
 import android.app.Application
 import android.content.Intent
 import android.net.Uri
+import android.util.Log
 import android.widget.Toast
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -21,6 +22,9 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import okhttp3.OkHttpClient
+import java.text.DateFormat
+import java.util.Date
+import java.util.Locale
 
 enum class AppPage {
     Home,
@@ -32,6 +36,15 @@ enum class AppPage {
 private const val ANDROID_UPDATE_LAUNCH_CHECK_DELAY_MS = 5_000L
 internal const val ANDROID_UPDATE_PERIODIC_CHECK_INTERVAL_MS = 6L * 60L * 60L * 1000L
 private const val ANDROID_UPDATE_STREAMING_RETRY_DELAY_MS = 30_000L
+private const val DEBUG_EVENT_LIMIT = 140
+private const val DEBUG_EVENT_MESSAGE_LIMIT = 640
+private const val DEBUG_LOG_TAG = "OpenNOWDebug"
+
+private data class DebugLogEvent(
+    val timestampMs: Long,
+    val category: String,
+    val message: String,
+)
 
 data class OpenNowUiState(
     val initializing: Boolean = true,
@@ -91,6 +104,8 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     private val sessionRepository = GfnSessionRepository(authStore, http)
     private val appUpdater = AndroidAppUpdater(application, http)
     private val queueAdReportMutex = Mutex()
+    private val debugEventsLock = Any()
+    private val debugEvents = ArrayDeque<DebugLogEvent>()
 
     private val _state = MutableStateFlow(OpenNowUiState(settings = settingsStore.settings.value))
     val state: StateFlow<OpenNowUiState> = _state.asStateFlow()
@@ -126,6 +141,28 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         startAndroidUpdateAutoChecks()
         initialize()
     }
+
+    private fun recordDebugEvent(category: String, message: String) {
+        val oneLineMessage = message
+            .lineSequence()
+            .joinToString(" ") { it.trim() }
+            .take(DEBUG_EVENT_MESSAGE_LIMIT)
+        val event = DebugLogEvent(
+            timestampMs = System.currentTimeMillis(),
+            category = category,
+            message = oneLineMessage,
+        )
+        synchronized(debugEventsLock) {
+            debugEvents.addLast(event)
+            while (debugEvents.size > DEBUG_EVENT_LIMIT) {
+                debugEvents.removeFirst()
+            }
+        }
+        Log.d(DEBUG_LOG_TAG, "${event.category}: ${event.message}")
+    }
+
+    private fun debugEventSnapshot(): List<DebugLogEvent> =
+        synchronized(debugEventsLock) { debugEvents.toList() }
 
     fun initialize() {
         viewModelScope.launch {
@@ -620,12 +657,16 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun play(game: GameInfo, streamingBaseUrlOverride: String? = null, skipPrintedWaste: Boolean = false, skipStoreChoice: Boolean = false) {
-        if (launchJob?.isActive == true) return
+        if (launchJob?.isActive == true) {
+            recordDebugEvent("launch", "Ignored play request while another launch is active game=${game.title}")
+            return
+        }
         if (!skipStoreChoice) {
             val launchVariants = launchableGameVariants(game.variants)
             val defaultVariantId = state.value.settings.defaultGameVariantIds[game.id]
             val defaultVariant = launchVariants.firstOrNull { it.id == defaultVariantId }
             if (defaultVariant != null) {
+                recordDebugEvent("launch", "Using default launcher ${gameStoreDisplayName(defaultVariant.store)} for ${game.title}")
                 Toast.makeText(
                     getApplication(),
                     getApplication<Application>().getString(
@@ -638,20 +679,29 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 return
             }
             if (launchVariants.size > 1) {
+                recordDebugEvent("launch", "Waiting for launcher choice game=${game.title} variants=${launchVariants.size}")
                 _state.update { it.copy(pendingStoreChoiceGame = game, selectedGame = null, error = null) }
                 return
             }
         }
         launchJob = viewModelScope.launch {
-            val auth = state.value.authSession ?: return@launch
+            val auth = state.value.authSession ?: run {
+                recordDebugEvent("launch", "Play request ignored without an auth session game=${game.title}")
+                return@launch
+            }
             val returnPage = state.value.page.takeUnless { it == AppPage.Stream } ?: state.value.streamReturnPage ?: AppPage.Home
             if (!skipPrintedWaste && streamingBaseUrlOverride == null && shouldUsePrintedWasteQueue(auth)) {
+                recordDebugEvent("queue", "Opening PrintedWaste selector game=${game.title}")
                 showPrintedWasteSelector(game)
                 return@launch
             }
             val settings = effectiveStreamSettings()
             val token = auth.tokens.idToken ?: auth.tokens.accessToken
             val baseUrl = streamingBaseUrlOverride ?: effectiveStreamingBaseUrl()
+            recordDebugEvent(
+                "launch",
+                "Starting launch game=${game.title} base=${hostForDebug(baseUrl)} settings=${settings.debugSummary()} override=${streamingBaseUrlOverride != null}",
+            )
             OpenNowAnalytics.capture(
                 event = "stream_started",
                 properties = mapOf(
@@ -688,9 +738,11 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                     ?: game.launchAppId?.takeIf { it.all(Char::isDigit) }
                     ?: catalogRepository.resolveLaunchAppId(token, candidateId, baseUrl)
                     ?: error("Could not resolve numeric appId for ${game.title}")
+                recordDebugEvent("launch", "Resolved appId=$launchAppId candidate=$candidateId game=${game.title}")
 
                 _state.update { it.copy(launchPhase = "Checking active sessions") }
                 val active = sessionRepository.getActiveSessions(token, baseUrl, settings)
+                recordDebugEvent("queue", "Active sessions checked count=${active.size} ${active.joinToString(limit = 4) { it.debugSummary() }}")
                 val numericLaunchAppId = launchAppId.toIntOrNull()
                 val compatibleActive = active.filter { it.matchesStreamSettings(settings) }
                 val staleLaunchSession = active.firstOrNull {
@@ -704,13 +756,19 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 val launchingCandidate = compatibleActive.firstOrNull {
                     it.appId == numericLaunchAppId && it.status == 1
                 } ?: compatibleActive.firstOrNull { it.status == 1 }
+                recordDebugEvent(
+                    "queue",
+                    "Launch candidates compatible=${compatibleActive.size} ready=${readyCandidate?.shortDebugId().orEmpty()} launching=${launchingCandidate?.shortDebugId().orEmpty()} stale=${staleLaunchSession?.shortDebugId().orEmpty()}",
+                )
                 val readySession = when {
                     readyCandidate != null -> {
+                        recordDebugEvent("queue", "Claiming ready active session ${readyCandidate.debugSummary()}")
                         _state.update { it.copy(launchPhase = "Resuming session", activeSession = readyCandidate) }
                         sessionRepository.claimSession(token, readyCandidate, settings)
                     }
                     launchingCandidate != null -> {
                         val pending = launchingCandidate.toPendingSession(zone = "prod")
+                        recordDebugEvent("queue", "Polling existing launching session ${pending.debugSummary()}")
                         _state.update {
                             it.copy(
                                 launchPhase = loadingPhaseFor(pending),
@@ -732,13 +790,18 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                                 deviceId = null,
                                 settings = settings,
                             )
-                        }.getOrElse { pending }
+                        }.getOrElse { error ->
+                            recordDebugEvent("queue", "Initial hydrate failed session=${pending.shortDebugId()} error=${error.debugMessage()}")
+                            pending
+                        }
                         pollUntilReady(token, mergeQueueSessionState(pending, hydrated), settings)
                     }
                     else -> {
                         if (staleLaunchSession != null) {
+                            recordDebugEvent("queue", "Stopping stale active session ${staleLaunchSession.debugSummary()}")
                             _state.update { it.copy(launchPhase = "Restarting session at requested resolution") }
                             runCatching { sessionRepository.stopActiveSession(token, staleLaunchSession, settings) }
+                                .onFailure { error -> recordDebugEvent("queue", "Failed to stop stale active session ${staleLaunchSession.shortDebugId()} error=${error.debugMessage()}") }
                         }
                         _state.update { it.copy(launchPhase = "Creating session") }
                         val created = sessionRepository.createSession(
@@ -750,9 +813,11 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                             settings = settings,
                             accountLinked = shouldSendAccountLinked(game, selectedVariant),
                         )
+                        recordDebugEvent("queue", "Created session ${created.debugSummary()}")
                         pollUntilReady(token, created, settings)
                     }
                 }
+                recordDebugEvent("stream", "Session ready for native stream ${readySession.debugSummary()}")
                 _state.update {
                     it.copy(
                         streamSession = readySession,
@@ -767,6 +832,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 }
             }.onFailure { error ->
                 if (error is CancellationException) return@onFailure
+                recordDebugEvent("launch", "Launch failed game=${game.title} error=${error.debugMessage()}")
                 val returnPage = state.value.streamReturnPage ?: AppPage.Home
                 _state.update {
                     it.copy(
@@ -787,6 +853,11 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun stopStream() {
+        val beforeStop = state.value
+        recordDebugEvent(
+            "stream",
+            "Stop requested status=${beforeStop.streamStatus} session=${beforeStop.streamSession?.shortDebugId().orEmpty()} game=${beforeStop.streamGame?.title.orEmpty()}",
+        )
         launchJob?.cancel()
         launchJob = null
         viewModelScope.launch {
@@ -797,6 +868,8 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             val streamSettings = snapshot.activeStreamSettings ?: effectiveStreamSettings()
             if (auth != null && session != null) {
                 runCatching { sessionRepository.stopSession(auth.tokens.idToken ?: auth.tokens.accessToken, session, streamSettings) }
+                    .onSuccess { recordDebugEvent("stream", "Stopped cloud session ${session.shortDebugId()}") }
+                    .onFailure { error -> recordDebugEvent("stream", "Failed to stop cloud session ${session.shortDebugId()} error=${error.debugMessage()}") }
             } else if (auth != null) {
                 val token = auth.tokens.idToken ?: auth.tokens.accessToken
                 val active = snapshot.activeSession
@@ -806,6 +879,10 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                     }.getOrNull()
                 if (active != null) {
                     runCatching { sessionRepository.stopActiveSession(token, active, streamSettings) }
+                        .onSuccess { recordDebugEvent("stream", "Stopped active session ${active.shortDebugId()}") }
+                        .onFailure { error -> recordDebugEvent("stream", "Failed to stop active session ${active.shortDebugId()} error=${error.debugMessage()}") }
+                } else {
+                    recordDebugEvent("stream", "No cloud session found to stop")
                 }
             }
             OpenNowAnalytics.capture(
@@ -831,17 +908,20 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 )
             }
             refreshActiveSession()
+            recordDebugEvent("stream", "Stream state reset returnPage=$returnPage")
         }
     }
 
     fun refreshPrintedWasteQueues() {
         val game = state.value.pendingPrintedWasteGame ?: return
+        recordDebugEvent("queue", "Refreshing PrintedWaste queues game=${game.title}")
         viewModelScope.launch {
             loadPrintedWasteQueue(game)
         }
     }
 
     fun minimizeStreamLaunch() {
+        recordDebugEvent("queue", "Minimize launch requested status=${state.value.streamStatus} phase=${state.value.launchPhase}")
         _state.update { current ->
             if (current.streamStatus == "idle" || current.streamSession?.isReadyForStream() == true) {
                 current
@@ -852,15 +932,23 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun restoreStreamLaunch() {
+        recordDebugEvent("queue", "Restore launch requested status=${state.value.streamStatus} phase=${state.value.launchPhase}")
         _state.update { current ->
             if (current.streamStatus == "idle") current else current.copy(streamLaunchMinimized = false, page = AppPage.Stream)
         }
     }
 
     fun resumeActiveSession() {
-        if (launchJob?.isActive == true) return
+        if (launchJob?.isActive == true) {
+            recordDebugEvent("queue", "Ignored resume request while another launch is active")
+            return
+        }
+        recordDebugEvent("queue", "Resume active session requested cached=${state.value.activeSession?.debugSummary().orEmpty()}")
         launchJob = viewModelScope.launch {
-            val auth = state.value.authSession ?: return@launch
+            val auth = state.value.authSession ?: run {
+                recordDebugEvent("queue", "Resume ignored without an auth session")
+                return@launch
+            }
             val settings = effectiveStreamSettings()
             val token = auth.tokens.idToken ?: auth.tokens.accessToken
             val baseUrl = effectiveStreamingBaseUrl(auth)
@@ -886,6 +974,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 val active = cachedActive ?: sessionRepository.getActiveSessions(token, baseUrl, settings)
                     .firstOrNull { it.status in setOf(1, 2, 3) }
                     ?: error("No active session to resume.")
+                recordDebugEvent("queue", "Resume found active ${active.debugSummary()} base=${hostForDebug(baseUrl)}")
                 val matchingGame = (state.value.games + state.value.libraryGames)
                     .firstOrNull { it.launchAppId == active.appId.toString() || it.variants.any { variant -> variant.id == active.appId.toString() } }
                 _state.update {
@@ -899,6 +988,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 }
                 resumeKnownActiveSession(token, active, settings, baseUrl)
             }.onSuccess { readySession ->
+                recordDebugEvent("stream", "Resume ready for native stream ${readySession.debugSummary()}")
                 _state.update {
                     it.copy(
                         streamSession = readySession,
@@ -913,6 +1003,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 }
             }.onFailure { error ->
                 if (error is CancellationException) return@onFailure
+                recordDebugEvent("queue", "Resume failed error=${error.debugMessage()}")
                 val returnPage = state.value.streamReturnPage ?: AppPage.Home
                 _state.update {
                     it.copy(
@@ -935,6 +1026,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
 
     fun launchWithPrintedWaste(zoneUrl: String?) {
         val game = state.value.pendingPrintedWasteGame ?: return
+        recordDebugEvent("queue", "PrintedWaste selection game=${game.title} zone=${hostForDebug(zoneUrl)} auto=${zoneUrl == null}")
         launchJob?.cancel()
         launchJob = null
         _state.update {
@@ -998,10 +1090,20 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         errorInfo: String? = null,
     ) {
         viewModelScope.launch {
-            val auth = state.value.authSession ?: return@launch
-            val session = state.value.streamSession ?: return@launch
+            val auth = state.value.authSession ?: run {
+                recordDebugEvent("ad", "Ignoring ad report without auth ad=${shortDebugId(adId)} action=$action")
+                return@launch
+            }
+            val session = state.value.streamSession ?: run {
+                recordDebugEvent("ad", "Ignoring ad report without session ad=${shortDebugId(adId)} action=$action")
+                return@launch
+            }
             val normalizedAction = action.lowercase()
             val isTerminalAction = normalizedAction == "finish" || normalizedAction == "cancel"
+            recordDebugEvent(
+                "ad",
+                "Report action=$normalizedAction ad=${shortDebugId(adId)} session=${session.shortDebugId()} watched=${watchedTimeInMs ?: 0} reason=${cancelReason.orEmpty()}",
+            )
             if (!isTerminalAction) {
                 _state.update {
                     it.copy(queueAdActiveId = adId)
@@ -1039,6 +1141,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                     )
                 }
             }.onSuccess { updated ->
+                recordDebugEvent("ad", "Report accepted action=$normalizedAction updated=${updated.debugSummary()}")
                 _state.update { current ->
                     val previous = current.streamSession?.takeIf { it.sessionId == updated.sessionId } ?: session
                     val merged = mergeQueueSessionState(previous, updated)
@@ -1049,6 +1152,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                     )
                 }
             }.onFailure { error ->
+                recordDebugEvent("ad", "Report failed action=$normalizedAction ad=${shortDebugId(adId)} error=${error.debugMessage()}")
                 _state.update { current ->
                     val currentSession = current.streamSession
                     if (normalizedAction == "finish" && currentSession?.adState != null) {
@@ -1071,6 +1175,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun markStreamConnected() {
+        recordDebugEvent("stream", "Native stream connected session=${state.value.streamSession?.shortDebugId().orEmpty()} game=${state.value.streamGame?.title.orEmpty()}")
         OpenNowAnalytics.capture(
             event = "stream_connected",
             properties = mapOf(
@@ -1085,6 +1190,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun markStreamError(message: String) {
+        recordDebugEvent("stream", "Native stream error message=${message.take(DEBUG_EVENT_MESSAGE_LIMIT)} session=${state.value.streamSession?.shortDebugId().orEmpty()}")
         OpenNowAnalytics.capture(
             event = "stream_error",
             properties = mapOf(
@@ -1096,12 +1202,23 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         _state.update { it.copy(error = message, streamStatus = "idle", activeStreamSettings = null, launchPhase = "") }
     }
 
+    fun recordNativeStreamState(message: String) {
+        recordDebugEvent("native", "state=$message session=${state.value.streamSession?.shortDebugId().orEmpty()}")
+    }
+
     fun restartStreamWithSafeVideoProfile(reason: String) {
-        if (launchJob?.isActive == true) return
+        if (launchJob?.isActive == true) {
+            recordDebugEvent("recovery", "Ignored safe video restart while launch job is active reason=${reason.take(DEBUG_EVENT_MESSAGE_LIMIT)}")
+            return
+        }
         val initial = state.value
-        val auth = initial.authSession ?: return
+        val auth = initial.authSession ?: run {
+            recordDebugEvent("recovery", "Safe video restart ignored without auth reason=${reason.take(DEBUG_EVENT_MESSAGE_LIMIT)}")
+            return
+        }
         val currentSettings = initial.activeStreamSettings ?: effectiveStreamSettings()
         val safeSettings = currentSettings.androidSafeVideoFallback()
+        recordDebugEvent("recovery", "Safe video restart requested reason=${reason.take(DEBUG_EVENT_MESSAGE_LIMIT)} current=${currentSettings.debugSummary()} safe=${safeSettings.debugSummary()}")
         if (currentSettings == safeSettings) {
             if (initial.streamSession != null) {
                 recoverStreamSession("$reason. Reconnecting the existing session.")
@@ -1150,9 +1267,11 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             runCatching {
                 previousSession?.let { session ->
                     runCatching { sessionRepository.stopSession(token, session, previousSettings) }
+                        .onFailure { error -> recordDebugEvent("recovery", "Failed to stop previous session ${session.shortDebugId()} error=${error.debugMessage()}") }
                 }
                 active?.takeIf { it.sessionId != previousSession?.sessionId }?.let { activeSession ->
                     runCatching { sessionRepository.stopActiveSession(token, activeSession, previousSettings) }
+                        .onFailure { error -> recordDebugEvent("recovery", "Failed to stop previous active session ${activeSession.shortDebugId()} error=${error.debugMessage()}") }
                 }
 
                 val selectedVariant = game?.variants?.getOrNull(game.selectedVariantIndex) ?: game?.variants?.firstOrNull()
@@ -1172,8 +1291,10 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                     settings = safeSettings,
                     accountLinked = game?.let { shouldSendAccountLinked(it, selectedVariant) } ?: true,
                 )
+                recordDebugEvent("recovery", "Created safe video session ${created.debugSummary()}")
                 pollUntilReady(token, created, safeSettings)
             }.onSuccess { readySession ->
+                recordDebugEvent("recovery", "Safe video session ready ${readySession.debugSummary()}")
                 _state.update {
                     it.copy(
                         streamSession = readySession,
@@ -1188,6 +1309,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 }
             }.onFailure { error ->
                 if (error is CancellationException) return@onFailure
+                recordDebugEvent("recovery", "Safe video restart failed error=${error.debugMessage()}")
                 _state.update {
                     it.copy(
                         error = normalizeLaunchError(error),
@@ -1206,17 +1328,23 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun recoverStreamSession(reason: String) {
-        if (launchJob?.isActive == true) return
+        if (launchJob?.isActive == true) {
+            recordDebugEvent("recovery", "Ignored stream recovery while launch job is active reason=${reason.take(DEBUG_EVENT_MESSAGE_LIMIT)}")
+            return
+        }
         val initial = state.value
         val auth = initial.authSession ?: run {
+            recordDebugEvent("recovery", "Recovery missing auth reason=${reason.take(DEBUG_EVENT_MESSAGE_LIMIT)}")
             markStreamError(reason)
             return
         }
         val initialSession = initial.streamSession ?: run {
+            recordDebugEvent("recovery", "Recovery missing stream session reason=${reason.take(DEBUG_EVENT_MESSAGE_LIMIT)}")
             markStreamError(reason)
             return
         }
         val currentSettings = initial.activeStreamSettings ?: effectiveStreamSettings()
+        recordDebugEvent("recovery", "Recovery requested reason=${reason.take(DEBUG_EVENT_MESSAGE_LIMIT)} session=${initialSession.debugSummary()} settings=${currentSettings.debugSummary()}")
         launchJob = viewModelScope.launch {
             val token = auth.tokens.idToken ?: auth.tokens.accessToken
             val snapshot = state.value
@@ -1247,6 +1375,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
 
             runCatching {
                 val activeSessions = sessionRepository.getActiveSessions(token, baseUrl, currentSettings)
+                recordDebugEvent("recovery", "Recovery active sessions count=${activeSessions.size} base=${hostForDebug(baseUrl)}")
                 val resolvedAppId = runCatching {
                     resolveFallbackLaunchAppId(
                         token = token,
@@ -1270,8 +1399,10 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                         fallbackActive = active,
                     )
                     ?: error("The running session could not be found anymore, so recovery was not possible.")
+                recordDebugEvent("recovery", "Claiming recovery candidate ${fallbackCandidate.debugSummary()}")
                 sessionRepository.claimSession(token, fallbackCandidate, currentSettings)
             }.onSuccess { readySession ->
+                recordDebugEvent("recovery", "Recovery claim ready ${readySession.debugSummary()}")
                 _state.update {
                     it.copy(
                         streamSession = readySession,
@@ -1287,6 +1418,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 }
             }.onFailure { error ->
                 if (error is CancellationException) return@onFailure
+                recordDebugEvent("recovery", "Recovery failed error=${error.debugMessage()}")
                 _state.update {
                     it.copy(
                         error = normalizeLaunchError(error),
@@ -1349,6 +1481,9 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             appendLine("streamGame=${snapshot.streamGame?.title.orEmpty()} selectedGame=${snapshot.selectedGame?.title.orEmpty()}")
             appendLine("sessionId=${session?.sessionId.orEmpty()} sessionStatus=${session?.status} seatSetupStep=${session?.seatSetupStep} serverIp=${session?.serverIp.orEmpty()} base=${session?.streamingBaseUrl.orEmpty()}")
             appendLine("adsRequired=${isSessionAdsRequired(session?.adState)} ads=${sessionAdItems(session?.adState).size} activeAd=${snapshot.queueAdActiveId.orEmpty()} queuePaused=${session?.adState?.isQueuePaused}")
+            appendLine("adMessage=${session?.adState?.message.orEmpty()} grace=${session?.adState?.gracePeriodSeconds} serverSentEmptyAds=${session?.adState?.serverSentEmptyAds}")
+            appendLine("negotiated=${session?.negotiatedStreamProfile?.debugSummary().orEmpty()} requestedFeatures=${session?.requestedStreamingFeatures?.debugSummary().orEmpty()} finalizedFeatures=${session?.finalizedStreamingFeatures?.debugSummary().orEmpty()}")
+            appendLine("printedWaste.loading=${snapshot.printedWasteLoading} queueZones=${snapshot.printedWasteQueue.size} mappingZones=${snapshot.printedWasteMapping.size} pings=${snapshot.printedWastePings.size} error=${snapshot.printedWasteError.orEmpty()}")
             appendLine("settings.resolution=${snapshot.settings.stream.resolution} fps=${snapshot.settings.stream.fps} codec=${snapshot.settings.stream.codec} bitrate=${snapshot.settings.stream.maxBitrateMbps}")
             snapshot.activeStreamSettings?.let { active ->
                 appendLine("active.resolution=${active.resolution} fps=${active.fps} codec=${active.codec} bitrate=${active.maxBitrateMbps}")
@@ -1360,6 +1495,16 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             }
             appendLine(NativeInputDiagnostics.snapshot())
             snapshot.error?.let { appendLine("error=$it") }
+            val events = debugEventSnapshot()
+            appendLine("events.count=${events.size}")
+            if (events.isEmpty()) {
+                appendLine("events=(empty)")
+            } else {
+                val formatter = DateFormat.getTimeInstance(DateFormat.MEDIUM, Locale.US)
+                events.forEachIndexed { index, event ->
+                    appendLine("event.${index + 1} ${formatter.format(Date(event.timestampMs))} [${event.category}] ${event.message}")
+                }
+            }
         }
     }
 
@@ -1495,6 +1640,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     }
 
     private suspend fun showPrintedWasteSelector(game: GameInfo) {
+        recordDebugEvent("queue", "Loading PrintedWaste selector game=${game.title}")
         _state.update {
             it.copy(
                 pendingStoreChoiceGame = null,
@@ -1510,6 +1656,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     }
 
     private suspend fun loadPrintedWasteQueue(game: GameInfo) {
+        recordDebugEvent("queue", "Fetching PrintedWaste queue data game=${game.title}")
         _state.update {
             it.copy(
                 pendingStoreChoiceGame = null,
@@ -1533,6 +1680,25 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 Triple(queueData, mappingData, pings)
             }
         }.onSuccess { (queue, mapping, pings) ->
+            val usableZones = queue
+                .filter { (zoneId, _) -> isStandardPrintedWasteZoneId(zoneId) && mapping[zoneId]?.nuked != true }
+                .keys
+            val bestZone = usableZones
+                .mapNotNull { zoneId ->
+                    val zone = queue[zoneId] ?: return@mapNotNull null
+                    val url = printedWasteZoneUrlForId(zoneId)
+                    Triple(zoneId, zone.QueuePosition, pings[url])
+                }
+                .minWithOrNull(
+                    compareBy<Triple<String, Int, Long?>>(
+                        { it.third ?: Long.MAX_VALUE },
+                        { it.second },
+                    ),
+                )
+            recordDebugEvent(
+                "queue",
+                "PrintedWaste queue loaded zones=${queue.size} usable=${usableZones.size} best=${bestZone?.first.orEmpty()} bestQueue=${bestZone?.second ?: 0} bestPing=${bestZone?.third ?: -1}",
+            )
             _state.update {
                 it.copy(
                     printedWasteQueue = queue,
@@ -1543,6 +1709,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 )
             }
         }.onFailure { error ->
+            recordDebugEvent("queue", "PrintedWaste queue load failed error=${error.debugMessage()}")
             _state.update {
                 it.copy(
                     printedWasteLoading = false,
@@ -1568,11 +1735,13 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         baseUrl: String,
     ): SessionInfo {
         if (active.isReadyForClaim()) {
+            recordDebugEvent("queue", "Active session already ready for claim ${active.debugSummary()}")
             _state.update { it.copy(launchPhase = "Resuming session") }
             return sessionRepository.claimSession(token, active, settings)
         }
 
         val pending = active.toPendingSession(zone = "prod")
+        recordDebugEvent("queue", "Hydrating active session before resume ${pending.debugSummary()}")
         val hydrated = runCatching {
             sessionRepository.pollSession(
                 token = token,
@@ -1584,8 +1753,12 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 deviceId = null,
                 settings = settings,
             )
-        }.getOrElse { pending }
+        }.getOrElse { error ->
+            recordDebugEvent("queue", "Resume hydrate failed session=${pending.shortDebugId()} error=${error.debugMessage()}")
+            pending
+        }
         val latest = mergeQueueSessionState(pending, hydrated)
+        recordDebugEvent("queue", "Resume hydrate result ${latest.debugSummary()}")
         _state.update {
             it.copy(
                 streamSession = latest,
@@ -1603,6 +1776,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 serverIp = latest.serverIp,
                 signalingUrl = latest.signalingUrl,
             )
+            recordDebugEvent("queue", "Resume session became ready ${latest.debugSummary()}")
             _state.update { it.copy(launchPhase = "Resuming session") }
             return sessionRepository.claimSession(token, hydratedActive, settings)
         }
@@ -1611,6 +1785,8 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
 
     private suspend fun pollUntilReady(token: String, created: SessionInfo, settings: StreamSettings): SessionInfo {
         var latest = created
+        var pollCount = 0
+        recordDebugEvent("queue", "Begin polling ${latest.debugSummary()}")
         _state.update {
             it.copy(
                 streamSession = latest,
@@ -1621,6 +1797,12 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         }
         while (!latest.isReadyForStream()) {
             val waitMs = if (shouldWaitForQueueAdPlayback(latest.adState)) 30_000L else 2_000L
+            if (waitMs > 2_000L) {
+                recordDebugEvent(
+                    "queue",
+                    "Waiting for queue ad playback session=${latest.shortDebugId()} ads=${sessionAdItems(latest.adState).size} paused=${latest.adState?.isQueuePaused} message=${latest.adState?.message.orEmpty()}",
+                )
+            }
             if (waitMs > 2_000L) {
                 var elapsedMs = 0L
                 while (elapsedMs < waitMs) {
@@ -1639,6 +1821,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             if (latest.isReadyForStream()) {
                 break
             }
+            pollCount += 1
             val polled = sessionRepository.pollSession(
                 token = token,
                 streamingBaseUrl = latest.streamingBaseUrl ?: effectiveStreamingBaseUrl(),
@@ -1650,6 +1833,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 settings = settings,
             )
             latest = mergeQueueSessionState(latest, polled)
+            recordDebugEvent("queue", "Poll #$pollCount result ${latest.debugSummary()}")
             _state.update {
                 it.copy(
                     streamSession = latest,
@@ -1659,6 +1843,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 )
             }
         }
+        recordDebugEvent("queue", "Polling complete after $pollCount polls ${latest.debugSummary()}")
         return latest
     }
 
@@ -1777,3 +1962,42 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             providerCode = provider.code,
         )
 }
+
+private fun shortDebugId(value: String?): String {
+    val text = value.orEmpty()
+    if (text.length <= 12) return text
+    return "${text.take(6)}...${text.takeLast(4)}"
+}
+
+private fun hostForDebug(url: String?): String =
+    runCatching { Uri.parse(url.orEmpty()).host.orEmpty() }
+        .getOrDefault("")
+        .ifBlank { url.orEmpty().take(80) }
+
+private fun Throwable.debugMessage(): String {
+    val type = javaClass.simpleName.ifBlank { "Throwable" }
+    val text = message.orEmpty()
+        .lineSequence()
+        .joinToString(" ") { it.trim() }
+        .take(DEBUG_EVENT_MESSAGE_LIMIT)
+    return if (text.isBlank()) type else "$type: $text"
+}
+
+private fun StreamSettings.debugSummary(): String =
+    "res=$resolution aspect=$aspectRatio fps=$fps bitrate=$maxBitrateMbps codec=$codec color=${colorQuality.name} hdr=$hdrEnabled l4s=$enableL4S gsync=$enableCloudGsync sharp=$streamSharpeningEnabled"
+
+private fun SessionInfo.shortDebugId(): String = shortDebugId(sessionId)
+
+private fun SessionInfo.debugSummary(): String =
+    "id=${shortDebugId()} status=$status ready=${isReadyForStream()} queue=${queuePosition ?: "-"} seat=${seatSetupStep ?: "-"} adsRequired=${isSessionAdsRequired(adState)} ads=${sessionAdItems(adState).size} paused=${adState?.isQueuePaused} base=${hostForDebug(streamingBaseUrl)} server=${serverIp.take(80)}"
+
+private fun ActiveSessionInfo.shortDebugId(): String = shortDebugId(sessionId)
+
+private fun ActiveSessionInfo.debugSummary(): String =
+    "id=${shortDebugId()} app=$appId status=$status queue=${queuePosition ?: "-"} seat=${seatSetupStep ?: "-"} base=${hostForDebug(streamingBaseUrl)} server=${serverIp.orEmpty().take(80)} res=${resolution.orEmpty()} fps=${fps ?: 0}"
+
+private fun NegotiatedStreamProfile.debugSummary(): String =
+    "res=${resolution.orEmpty()} fps=${fps ?: 0} codec=${codec?.name.orEmpty()} color=${colorQuality?.name.orEmpty()} l4s=$enableL4S gsync=$enableCloudGsync reflex=$enableReflex"
+
+private fun StreamingFeatures.debugSummary(): String =
+    "reflex=$reflex bitDepth=$bitDepth gsync=$cloudGsync chroma=$chromaFormat l4s=$enabledL4S hdr=$trueHdr"
