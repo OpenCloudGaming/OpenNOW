@@ -92,6 +92,51 @@ export function extractServerInfoRegionBases(payload: CloudMatchServerInfoRespon
   return bases;
 }
 
+function isDefaultStreamingServiceBase(baseUrl: string): boolean {
+  try {
+    const hostname = new URL(baseUrl).hostname.toLowerCase();
+    return hostname === "prod.cloudmatchbeta.nvidiagrid.net" ||
+      (hostname.startsWith("prod.") && hostname.endsWith(".nvidiagrid.net"));
+  } catch {
+    return false;
+  }
+}
+
+async function resolveCreateSessionBase(
+  base: string,
+  token: string,
+  clientId: string,
+  deviceId: string,
+  proxyUrl?: string,
+): Promise<string> {
+  if (!isDefaultStreamingServiceBase(base)) {
+    return base;
+  }
+
+  try {
+    const response = await fetchWithOptionalProxy(`${base}/v2/serverInfo`, {
+      method: "GET",
+      headers: buildGfnCloudMatchHeaders({ token, clientId, deviceId, includeOrigin: false }),
+    }, proxyUrl);
+    if (!response.ok) {
+      return base;
+    }
+
+    const [localRegionBase] = extractServerInfoRegionBases(
+      (await response.json()) as CloudMatchServerInfoResponse,
+    );
+    if (!localRegionBase || localRegionBase === base) {
+      return base;
+    }
+
+    console.log(`[CloudMatch] createSession resolved ${base} to local region ${localRegionBase}`);
+    return localRegionBase;
+  } catch (error) {
+    console.warn(`[CloudMatch] createSession local-region discovery failed: ${formatErrorForLog(error)}`);
+    return base;
+  }
+}
+
 function getElectronApp(): Electron.App | null {
   try {
     return require("electron").app ?? null;
@@ -118,7 +163,7 @@ export function buildRequestedStreamingFeatures(
   settings: StreamSettings,
   bitDepth: number,
   chromaFormat: number,
-  hdrEnabled: boolean,
+  _hdrEnabled: boolean,
 ): CloudMatchRequest["sessionRequestData"]["requestedStreamingFeatures"] {
   const cloudGsync = settings.enableCloudGsync;
 
@@ -127,19 +172,14 @@ export function buildRequestedStreamingFeatures(
     bitDepth,
     cloudGsync,
     enabledL4S: settings.enableL4S,
-    mouseMovementFlags: 0,
-    trueHdr: hdrEnabled,
     supportedHidDevices: 0,
     profile: 0,
     fallbackToLogicalResolution: false,
-    hidDevices: null,
     chromaFormat,
     prefilterMode: 0,
     prefilterSharpness: 0,
     prefilterNoiseReduction: 0,
     hudStreamingMode: 0,
-    sdrColorSpace: 2,
-    hdrColorSpace: hdrEnabled ? 4 : 0,
   };
 }
 
@@ -612,9 +652,9 @@ function buildSessionRequestBody(input: SessionCreateRequest, deviceHashId: stri
                 desiredContentMinLuminance: 0,
                 desiredContentMaxFrameAverageLuminance: 500,
               }
-            : null,
+            : {},
           hdr10PlusGamingData: null,
-          dpi: 100,
+          dpi: 0,
         },
       ],
       useOps: true,
@@ -887,18 +927,21 @@ function extractAdState(payload: CloudMatchResponse): SessionAdState | undefined
 }
 
 function toColorQuality(bitDepth?: number, chromaFormat?: number): ColorQuality | undefined {
-  if (bitDepth !== 0 && bitDepth !== 10) {
+  const normalizedBitDepth = bitDepth === 10 ? 1 : bitDepth;
+  const normalizedChromaFormat = chromaFormat === 2 ? 1 : chromaFormat;
+
+  if (normalizedBitDepth !== 0 && normalizedBitDepth !== 1) {
     return undefined;
   }
-  if (chromaFormat !== 0 && chromaFormat !== 2) {
+  if (normalizedChromaFormat !== 0 && normalizedChromaFormat !== 1) {
     return undefined;
   }
 
-  if (bitDepth === 10) {
-    return chromaFormat === 2 ? "10bit_444" : "10bit_420";
+  if (normalizedBitDepth === 1) {
+    return normalizedChromaFormat === 1 ? "10bit_444" : "10bit_420";
   }
 
-  return chromaFormat === 2 ? "8bit_444" : "8bit_420";
+  return normalizedChromaFormat === 1 ? "8bit_444" : "8bit_420";
 }
 
 function normalizeStreamingFeatures(
@@ -1074,7 +1117,14 @@ export async function createSession(input: SessionCreateRequest): Promise<Sessio
 
   const body = buildSessionRequestBody(input, deviceId);
 
-  const base = resolveStreamingBaseUrl(input.zone, input.streamingBaseUrl);
+  const requestedBase = resolveStreamingBaseUrl(input.zone, input.streamingBaseUrl);
+  const base = await resolveCreateSessionBase(
+    requestedBase,
+    input.token,
+    clientId,
+    deviceId,
+    input.proxyUrl,
+  );
   const keyboardLayout = resolveGfnKeyboardLayout(input.settings.keyboardLayout ?? DEFAULT_KEYBOARD_LAYOUT, process.platform);
   const languageCode = input.settings.gameLanguage ?? "en_US";
   const url = `${base}/v2/session?${new URLSearchParams({ keyboardLayout, languageCode }).toString()}`;

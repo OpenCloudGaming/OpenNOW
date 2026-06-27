@@ -82,14 +82,14 @@ export function resolveGfnKeyboardLayout(layout: KeyboardLayout, platform: strin
   return option?.value ?? DEFAULT_KEYBOARD_LAYOUT;
 }
 
-/** Helper: get CloudMatch bitDepth value (0 = 8-bit SDR, 10 = 10-bit HDR capable) */
+/** Helper: get CloudMatch bitDepth value (0 = 8-bit, 1 = 10-bit) */
 export function colorQualityBitDepth(cq: ColorQuality): number {
-  return cq.startsWith("10bit") ? 10 : 0;
+  return cq.startsWith("10bit") ? 1 : 0;
 }
 
-/** Helper: get CloudMatch chromaFormat value (0 = 4:2:0, 2 = 4:4:4) */
+/** Helper: get CloudMatch chromaFormat value (0 = 4:2:0, 1 = 4:4:4) */
 export function colorQualityChromaFormat(cq: ColorQuality): number {
-  return cq.endsWith("444") ? 2 : 0;
+  return cq.endsWith("444") ? 1 : 0;
 }
 
 /** Helper: does this color quality mode require HEVC or AV1? */

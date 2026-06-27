@@ -23,9 +23,9 @@ export interface CloudMatchRequest {
       framesPerSecond: number;
       sdrHdrMode: number;
       displayData: {
-        desiredContentMaxLuminance: number;
-        desiredContentMinLuminance: number;
-        desiredContentMaxFrameAverageLuminance: number;
+        desiredContentMaxLuminance?: number;
+        desiredContentMinLuminance?: number;
+        desiredContentMaxFrameAverageLuminance?: number;
       } | null;
       hdr10PlusGamingData?: unknown;
       dpi: number;
@@ -54,19 +54,19 @@ export interface CloudMatchRequest {
       bitDepth: number;
       cloudGsync: boolean;
       enabledL4S: boolean;
-      trueHdr: boolean;
-      mouseMovementFlags: number;
-      supportedHidDevices: number;
-      profile: number;
-      fallbackToLogicalResolution: boolean;
-      hidDevices: string | null;
+      trueHdr?: boolean;
+      mouseMovementFlags?: number;
+      supportedHidDevices?: number;
+      profile?: number;
+      fallbackToLogicalResolution?: boolean;
+      hidDevices?: string | null;
       chromaFormat: number;
-      prefilterMode: number;
-      prefilterSharpness: number;
-      prefilterNoiseReduction: number;
-      hudStreamingMode: number;
-      sdrColorSpace: number;
-      hdrColorSpace: number;
+      prefilterMode?: number;
+      prefilterSharpness?: number;
+      prefilterNoiseReduction?: number;
+      hudStreamingMode?: number;
+      sdrColorSpace?: number;
+      hdrColorSpace?: number;
     };
   };
 }
