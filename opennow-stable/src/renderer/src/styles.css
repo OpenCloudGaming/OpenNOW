@@ -1522,8 +1522,6 @@ body,
 .page-transition-surface {
   min-height: 100%;
   height: 100%;
-  transform: translate3d(0, 0, 0);
-  backface-visibility: hidden;
 }
 
 /* ======================================================
