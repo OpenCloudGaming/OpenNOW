@@ -39,7 +39,7 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: opennow-stable/package-lock.json
+          cache-dependency-path: opennow-stable/bun.lock
 
       - name: Install dependencies
         working-directory: opennow-stable
@@ -247,7 +247,7 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: "**/package-lock.json"
+          cache-dependency-path: opennow-stable/bun.lock
 
       - name: Setup Rust
         if: matrix.native_build == 'true'
