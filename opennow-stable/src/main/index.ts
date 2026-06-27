@@ -36,7 +36,6 @@ import type {
   Settings,
   PingResult,
   StreamRegion,
-  VideoAccelerationPreference,
   MicrophonePermissionResult,
   ThankYouContributor,
   ThankYouDataResult,
@@ -77,22 +76,16 @@ import {
   fetchPrintedWasteServerMapping,
 } from "./services/printedWaste";
 import { pingRegions } from "./services/regionPing";
+import {
+  buildVideoAccelerationCommandLine,
+  isAccelerationPreference,
+  type BootstrapVideoPreferences,
+} from "./videoAcceleration";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 // Configure Chromium video and WebRTC behavior before app.whenReady().
-
-interface BootstrapVideoPreferences {
-  decoderPreference: VideoAccelerationPreference;
-  encoderPreference: VideoAccelerationPreference;
-}
-
-function isAccelerationPreference(
-  value: unknown,
-): value is VideoAccelerationPreference {
-  return value === "auto" || value === "hardware" || value === "software";
-}
 
 function loadBootstrapVideoPreferences(): BootstrapVideoPreferences {
   const defaults: BootstrapVideoPreferences = {
@@ -125,70 +118,18 @@ console.log(
   `[Main] Video acceleration preference: decode=${bootstrapVideoPrefs.decoderPreference}, encode=${bootstrapVideoPrefs.encoderPreference}`,
 );
 
-// --- Platform-specific HW video decode features ---
-const platformFeatures: string[] = [];
-const isLinuxArm =
-  process.platform === "linux" &&
-  (process.arch === "arm64" || process.arch === "arm");
-
-if (process.platform === "win32") {
-  // Windows: D3D11 + Media Foundation path for HW decode/encode acceleration
-  if (bootstrapVideoPrefs.decoderPreference !== "software") {
-    platformFeatures.push("D3D11VideoDecoder");
-  }
-  if (
-    bootstrapVideoPrefs.decoderPreference !== "software" ||
-    bootstrapVideoPrefs.encoderPreference !== "software"
-  ) {
-    platformFeatures.push("MediaFoundationD3D11VideoCapture");
-  }
-} else if (process.platform === "linux") {
-  if (isLinuxArm) {
-    // Raspberry Pi/Linux ARM: allow Chromium's direct V4L2 decoder path.
-    if (bootstrapVideoPrefs.decoderPreference !== "software") {
-      platformFeatures.push("UseChromeOSDirectVideoDecoder");
-    }
-  } else {
-    // Linux x64 desktop GPUs: VA-API path (Intel/AMD).
-    if (bootstrapVideoPrefs.decoderPreference !== "software") {
-      platformFeatures.push("VaapiVideoDecoder");
-    }
-    if (bootstrapVideoPrefs.encoderPreference !== "software") {
-      platformFeatures.push("VaapiVideoEncoder");
-    }
-    if (
-      bootstrapVideoPrefs.decoderPreference !== "software" ||
-      bootstrapVideoPrefs.encoderPreference !== "software"
-    ) {
-      platformFeatures.push("VaapiIgnoreDriverChecks");
-    }
-  }
-}
-// macOS: VideoToolbox handles HW acceleration natively, no extra feature flags needed
+const videoAccelerationCommandLine = buildVideoAccelerationCommandLine(
+  bootstrapVideoPrefs,
+  process.platform,
+  process.arch,
+);
 
 app.commandLine.appendSwitch(
   "enable-features",
-  [
-    // --- MP4 recording via MediaRecorder (Chromium 127+) ---
-    "MediaRecorderEnableMp4Muxer",
-    // --- AV1 support (cross-platform) ---
-    "Dav1dVideoDecoder", // Fast AV1 software fallback via dav1d (if no HW decoder)
-    // --- Additional (cross-platform) ---
-    "HardwareMediaKeyHandling",
-    // --- Platform-specific HW decode/encode ---
-    ...platformFeatures,
-  ].join(","),
+  videoAccelerationCommandLine.enableFeatures.join(","),
 );
 
-const disableFeatures: string[] = [
-  // Prevents mDNS candidate generation — faster ICE connectivity
-  "WebRtcHideLocalIpsWithMdns",
-];
-if (process.platform === "linux" && !isLinuxArm) {
-  // ChromeOS-only direct video decoder path interferes on regular Linux
-  disableFeatures.push("UseChromeOSDirectVideoDecoder");
-}
-app.commandLine.appendSwitch("disable-features", disableFeatures.join(","));
+app.commandLine.appendSwitch("disable-features", videoAccelerationCommandLine.disableFeatures.join(","));
 
 app.commandLine.appendSwitch(
   "force-fieldtrials",
@@ -198,20 +139,13 @@ app.commandLine.appendSwitch(
   ].join("/"),
 );
 
-if (bootstrapVideoPrefs.decoderPreference === "hardware") {
-  app.commandLine.appendSwitch("enable-accelerated-video-decode");
-} else if (bootstrapVideoPrefs.decoderPreference === "software") {
-  app.commandLine.appendSwitch("disable-accelerated-video-decode");
+for (const [name, value] of Object.entries(videoAccelerationCommandLine.switches)) {
+  if (value === true) {
+    app.commandLine.appendSwitch(name);
+  } else {
+    app.commandLine.appendSwitch(name, value);
+  }
 }
-
-if (bootstrapVideoPrefs.encoderPreference === "hardware") {
-  app.commandLine.appendSwitch("enable-accelerated-video-encode");
-} else if (bootstrapVideoPrefs.encoderPreference === "software") {
-  app.commandLine.appendSwitch("disable-accelerated-video-encode");
-}
-
-// Ensure the GPU process doesn't blocklist our GPU for video decode
-app.commandLine.appendSwitch("ignore-gpu-blocklist");
 
 // --- Responsiveness flags ---
 // Keep default compositor frame pacing (vsync + frame cap) to avoid runaway
@@ -550,6 +484,15 @@ const THANKS_REQUEST_HEADERS = {
 } as const;
 const THANKS_EXCLUDED_PATTERN = /(copilot|claude|cappy)/i;
 const THANKS_FETCH_TIMEOUT_MS = 8000;
+const THANKS_CUSTOM_SUPPORTERS: readonly ThankYouSupporter[] = [
+  {
+    name: "DarkevilPT",
+    avatarUrl: "https://github.com/DarkevilPT.png?size=96",
+    profileUrl: "https://github.com/DarkevilPT",
+    isPrivate: false,
+    source: "custom",
+  },
+] as const;
 
 interface GitHubContributorResponse {
   login?: string;
@@ -704,7 +647,32 @@ function parseSupportersFromHtml(html: string): ThankYouSupporter[] {
       avatarUrl,
       profileUrl,
       isPrivate: isPrivate || !name,
+      source: isPrivate || !name ? "private" : "github",
     });
+  }
+
+  return supporters;
+}
+
+function getSupporterDedupeKey(supporter: ThankYouSupporter): string {
+  const profileUrl = supporter.profileUrl?.trim().toLowerCase();
+  if (profileUrl) return `profile:${profileUrl}`;
+  return `name:${supporter.name.trim().toLowerCase()}|private:${supporter.isPrivate}`;
+}
+
+function mergeThanksSupporters(
+  ...supporterGroups: readonly (readonly ThankYouSupporter[])[]
+): ThankYouSupporter[] {
+  const supporters: ThankYouSupporter[] = [];
+  const seenKeys = new Set<string>();
+
+  for (const group of supporterGroups) {
+    for (const supporter of group) {
+      const dedupeKey = getSupporterDedupeKey(supporter);
+      if (seenKeys.has(dedupeKey)) continue;
+      seenKeys.add(dedupeKey);
+      supporters.push({ ...supporter });
+    }
   }
 
   return supporters;
@@ -756,12 +724,16 @@ async function fetchThanksData(): Promise<ThankYouDataResult> {
   }
 
   if (supportersResult.status === "fulfilled") {
-    result.supporters = supportersResult.value;
+    result.supporters = mergeThanksSupporters(
+      THANKS_CUSTOM_SUPPORTERS,
+      supportersResult.value,
+    );
     if (result.supporters.length === 0) {
       result.supportersError =
         "No public supporters were found on GitHub Sponsors.";
     }
   } else {
+    result.supporters = mergeThanksSupporters(THANKS_CUSTOM_SUPPORTERS);
     result.supportersError =
       supportersResult.reason instanceof Error
         ? supportersResult.reason.message

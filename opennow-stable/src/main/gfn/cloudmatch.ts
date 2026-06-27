@@ -49,6 +49,49 @@ const GFN_DEVICE_ID_FILENAME = "gfn-device-id.json";
 let cachedStableDeviceId: string | null = null;
 const require = createRequire(import.meta.url);
 
+interface CloudMatchServerInfoResponse {
+  metaData?: Array<{
+    key: string;
+    value: string;
+  }>;
+}
+
+function normalizeCloudMatchBaseUrl(url: string): string {
+  const trimmed = url.trim();
+  const withProtocol = /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+  return withProtocol.endsWith("/") ? withProtocol.slice(0, -1) : withProtocol;
+}
+
+export function extractServerInfoRegionBases(payload: CloudMatchServerInfoResponse): string[] {
+  const metadata = payload.metaData ?? [];
+  const byKey = new Map(metadata.map((entry) => [entry.key, entry.value]));
+  const regionNames = byKey.get("gfn-regions")
+    ?.split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean) ?? [];
+  const localRegionName = byKey.get("local-region")?.trim();
+  const orderedRegionNames = [
+    ...(localRegionName ? [localRegionName] : []),
+    ...regionNames,
+  ];
+  const bases: string[] = [];
+  const seen = new Set<string>();
+
+  for (const regionName of orderedRegionNames) {
+    const regionUrl = byKey.get(regionName);
+    if (!regionUrl?.startsWith("http")) {
+      continue;
+    }
+    const normalized = normalizeCloudMatchBaseUrl(regionUrl);
+    if (!seen.has(normalized)) {
+      seen.add(normalized);
+      bases.push(normalized);
+    }
+  }
+
+  return bases;
+}
+
 function getElectronApp(): Electron.App | null {
   try {
     return require("electron").app ?? null;
@@ -1207,22 +1250,71 @@ export async function getActiveSessions(
     throw new Error("Missing token for getting active sessions");
   }
 
-  const base = streamingBaseUrl.trim().endsWith("/")
-    ? streamingBaseUrl.trim().slice(0, -1)
-    : streamingBaseUrl.trim();
+  const base = normalizeCloudMatchBaseUrl(streamingBaseUrl);
+  const headers = buildGfnCloudMatchHeaders({
+    token,
+    deviceId: getStableDeviceId(),
+    includeOrigin: false,
+  });
+  const primary = await fetchActiveSessionsFromBase(base, headers);
+  if (primary) {
+    return primary;
+  }
+
+  for (const fallbackBase of await discoverActiveSessionFallbackBases(base, headers)) {
+    if (fallbackBase === base) {
+      continue;
+    }
+    const fallback = await fetchActiveSessionsFromBase(fallbackBase, headers);
+    if (fallback) {
+      return fallback;
+    }
+  }
+
+  return [];
+}
+
+async function discoverActiveSessionFallbackBases(
+  base: string,
+  headers: Record<string, string>,
+): Promise<string[]> {
+  try {
+    const response = await fetch(`${base}/v2/serverInfo`, {
+      method: "GET",
+      headers,
+    });
+    if (!response.ok) {
+      return [];
+    }
+    return extractServerInfoRegionBases((await response.json()) as CloudMatchServerInfoResponse);
+  } catch (error) {
+    console.warn(`[CloudMatch] getActiveSessions fallback discovery failed: ${formatErrorForLog(error)}`);
+    return [];
+  }
+}
+
+async function fetchActiveSessionsFromBase(
+  base: string,
+  headers: Record<string, string>,
+): Promise<ActiveSessionInfo[] | null> {
   const url = `${base}/v2/session`;
 
-  const response = await fetch(url, {
-    method: "GET",
-    headers: buildGfnCloudMatchHeaders({ token, includeOrigin: false }),
-  });
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method: "GET",
+      headers,
+    });
+  } catch (error) {
+    console.warn(`[CloudMatch] getActiveSessions fetch failed for ${base}: ${formatErrorForLog(error)}`);
+    return null;
+  }
 
   const text = await response.text();
 
   if (!response.ok) {
-    // Return empty list on failure (matching Rust behavior)
     console.warn(`Get sessions failed: ${response.status} - ${text.slice(0, 200)}`);
-    return [];
+    return null;
   }
 
   let sessionsResponse: GetSessionsResponse;
@@ -1286,6 +1378,14 @@ export async function getActiveSessions(
     });
 
   return activeSessions;
+}
+
+function formatErrorForLog(error: unknown): string {
+  if (error instanceof Error) {
+    const cause = error.cause instanceof Error ? `: ${error.cause.message}` : "";
+    return `${error.message}${cause}`;
+  }
+  return String(error);
 }
 
 /**

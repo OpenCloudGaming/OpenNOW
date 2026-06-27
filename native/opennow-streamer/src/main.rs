@@ -17,6 +17,7 @@ mod gstreamer_platform;
 mod gstreamer_transitions;
 mod input;
 mod protocol;
+mod shortcuts;
 mod sdp;
 
 use serde::Serialize;
@@ -99,6 +100,9 @@ fn handle_command(
         }
         "bitrate" => {
             return write_reply(backend.update_bitrate_limit(command));
+        }
+        "update-shortcuts" => {
+            return write_reply(backend.update_shortcuts(command));
         }
         "stop" => {
             return write_reply(backend.stop(command));

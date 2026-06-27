@@ -43,6 +43,7 @@ import {
   type NativeStreamerMessage,
   type NativeStreamerResponse,
 } from "@shared/nativeStreamer";
+import type { NativeStreamerShortcutBindings } from "@shared/gfn";
 
 type NativeStreamerCommandInput = NativeStreamerCommand extends infer T
   ? T extends NativeStreamerCommand
@@ -747,6 +748,19 @@ export class NativeStreamerManager {
     });
   }
 
+  updateShortcuts(shortcuts: NativeStreamerShortcutBindings): void {
+    if (!this.child || !this.activeSessionId) {
+      return;
+    }
+
+    void this.request({
+      type: "update-shortcuts",
+      shortcuts,
+    }, CONTROL_TIMEOUT_MS).catch((error) => {
+      console.warn("[NativeStreamer] Failed to update native shortcut bindings:", error);
+    });
+  }
+
   async stop(reason = "stopped"): Promise<void> {
     const child = this.child;
     this.activeSessionId = null;
@@ -1169,6 +1183,11 @@ export class NativeStreamerManager {
     if (message.type === "input-ready") {
       console.log(`[NativeStreamer] Input protocol ready: v${message.protocolVersion}`);
       this.options.emit({ type: "native-input-ready", protocolVersion: message.protocolVersion });
+      return;
+    }
+
+    if (message.type === "shortcut") {
+      this.options.emit({ type: "native-shortcut", action: message.action });
       return;
     }
 

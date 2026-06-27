@@ -20,6 +20,7 @@ pub trait NativeStreamerBackend {
     fn send_input(&mut self, command: CommandEnvelope) -> BackendReply;
     fn update_render_surface(&mut self, command: CommandEnvelope) -> BackendReply;
     fn update_bitrate_limit(&mut self, command: CommandEnvelope) -> BackendReply;
+    fn update_shortcuts(&mut self, command: CommandEnvelope) -> BackendReply;
     fn stop(&mut self, command: CommandEnvelope) -> BackendReply;
 }
 
@@ -460,6 +461,11 @@ impl NativeStreamerBackend for StubBackend {
         }
     }
 
+    fn update_shortcuts(&mut self, command: CommandEnvelope) -> BackendReply {
+        // Stub backend has no native window; accept the command without applying it.
+        BackendReply::response(Response::Ok { id: command.id })
+    }
+
     fn stop(&mut self, command: CommandEnvelope) -> BackendReply {
         self.active_context = None;
         let message = command
@@ -492,7 +498,7 @@ fn preferred_hevc_profile_id(color_quality: ColorQuality) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::{ColorQuality, SessionInfo, StreamSettings};
+    use crate::protocol::{ColorQuality, NativeStreamerShortcutBindings, SessionInfo, StreamSettings};
 
     fn context(resolution: &str) -> NativeStreamerSessionContext {
         NativeStreamerSessionContext {
@@ -516,6 +522,7 @@ mod tests {
                 enable_cloud_gsync: false,
                 native_transition_diagnostics: None,
             },
+            shortcuts: NativeStreamerShortcutBindings::default(),
         }
     }
 

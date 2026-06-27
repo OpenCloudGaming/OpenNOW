@@ -7,6 +7,7 @@ import type {
   NativeInputPacket,
   NativeRenderSurfaceUpdate,
   NativeStreamerSessionContext,
+  NativeStreamerShortcutBindings,
   NativeStreamerStatus,
   SendAnswerRequest,
   Settings,
@@ -111,6 +112,22 @@ export class SignalingCoordinator {
         }
 
         this.getNativeStreamerManager().updateSurface(surface);
+      },
+    );
+
+    ipcMain.on(
+      IPC_CHANNELS.NATIVE_UPDATE_SHORTCUTS,
+      (_event, shortcuts: NativeStreamerShortcutBindings) => {
+        if (!this.isNativeStreamerSelected()) {
+          return;
+        }
+        if (this.nativeStreamerContext) {
+          this.nativeStreamerContext = {
+            ...this.nativeStreamerContext,
+            shortcuts,
+          };
+        }
+        this.getNativeStreamerManager().updateShortcuts(shortcuts);
       },
     );
 

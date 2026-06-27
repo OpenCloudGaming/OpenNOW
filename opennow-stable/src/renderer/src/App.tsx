@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, JSX } from "react";
 import { createPortal } from "react-dom";
+import { AnimatePresence, m } from "motion/react";
 
 import type {
   ActiveSessionInfo,
+  AuthDeviceLoginChallenge,
   AuthSession,
   CatalogBrowseResult,
   CatalogFilterGroup,
@@ -13,6 +15,7 @@ import type {
   GamePanelResult,
   LoginProvider,
   MainToRendererSignalingEvent,
+  NativeStreamerShortcutAction,
   SessionInfo,
   SessionStopRequest,
   SavedAccount,
@@ -31,6 +34,7 @@ import {
 } from "@shared/gfn";
 import { GfnWebRtcClient } from "./gfn/webrtcClient";
 import { formatShortcutForDisplay, isShortcutMatch, normalizeShortcut } from "./shortcuts";
+import { dispatchStreamShortcutAction } from "./streamShortcutActions";
 import { useElapsedSeconds } from "./utils/useElapsedSeconds";
 import { useQueueAdRuntime } from "./hooks/useQueueAdRuntime";
 import { usePlaytime } from "./utils/usePlaytime";
@@ -91,6 +95,7 @@ import { SettingsPage } from "./components/SettingsPage";
 import { StreamLoading } from "./components/StreamLoading";
 import { StreamView } from "./components/StreamView";
 import { QueueServerSelectModal } from "./components/QueueServerSelectModal";
+import { pageTransition } from "./components/MotionProvider";
 
 const DEFAULT_STREAM_PREFERENCES = getDefaultStreamPreferences();
 
@@ -205,7 +210,9 @@ export function App(): JSX.Element {
   const [providers, setProviders] = useState<LoginProvider[]>([]);
   const [providerIdpId, setProviderIdpId] = useState("");
   const [isLoggingIn, setIsLoggingIn] = useState(false);
+  const [activeLoginMode, setActiveLoginMode] = useState<"oauth" | "qr" | null>(null);
   const [loginError, setLoginError] = useState<string | null>(null);
+  const [qrLoginChallenge, setQrLoginChallenge] = useState<AuthDeviceLoginChallenge | null>(null);
   const [isInitializing, setIsInitializing] = useState(true);
   const [startupStatusMessage, setStartupStatusMessage] = useState(() => t("auth.status.restoringSavedSession"));
   const [startupRefreshNotice, setStartupRefreshNotice] = useState<{
@@ -215,6 +222,7 @@ export function App(): JSX.Element {
 
   // Navigation
   const [currentPage, setCurrentPage] = useState<AppPage>("home");
+  const [pageBeforeSettings, setPageBeforeSettings] = useState<AppPage>("home");
   const [sessionFullscreen, setSessionFullscreenState] = useState(false);
 
   // Games State
@@ -243,6 +251,7 @@ export function App(): JSX.Element {
     posterSizeScale: 1,
     fps: 60,
     maxBitrateMbps: 75,
+    recordingBitrateMbps: null,
     streamClientMode: "web",
     nativeStreamerBackend: "gstreamer",
     nativeVideoBackend: "auto",
@@ -360,6 +369,7 @@ export function App(): JSX.Element {
   const codecStartupTestAttemptedRef = useRef(false);
   const navbarSessionActionInFlightRef = useRef<"resume" | "terminate" | null>(null);
   const nativeStreamingRef = useRef(false);
+  const handleStreamShortcutActionRef = useRef<((action: NativeStreamerShortcutAction) => void) | null>(null);
   const streamingGameRef = useRef<GameInfo | null>(null);
 
   useEffect(() => {
@@ -544,16 +554,6 @@ export function App(): JSX.Element {
     settings.resolution,
     settings.streamClientMode,
   ]);
-
-  const buildSignalingConnectRequest = useCallback((activeSession: SessionInfo): SignalingConnectRequest => {
-    const streamSettings = buildCurrentStreamSettings();
-    return {
-      sessionId: activeSession.sessionId,
-      signalingServer: activeSession.signalingServer,
-      signalingUrl: activeSession.signalingUrl,
-      nativeStreamer: buildNativeStreamerSessionContext(activeSession, streamSettings),
-    };
-  }, [buildCurrentStreamSettings]);
 
   const warmNativeStreamerForLaunch = useCallback((): void => {
     if (settings.streamClientMode !== "native") {
@@ -986,8 +986,40 @@ export function App(): JSX.Element {
     settings.shortcutToggleRecording,
   ]);
 
+  const nativeStreamerShortcuts = useMemo(() => ({
+    toggleStats: shortcuts.toggleStats.canonical,
+    togglePointerLock: shortcuts.togglePointerLock.canonical,
+    toggleFullscreen: shortcuts.toggleFullscreen.canonical,
+    stopStream: shortcuts.stopStream.canonical,
+    toggleAntiAfk: shortcuts.toggleAntiAfk.canonical,
+    toggleMicrophone: shortcuts.toggleMicrophone.canonical,
+    screenshot: "",
+    toggleRecording: "",
+  }), [shortcuts]);
+
+  const buildSignalingConnectRequest = useCallback((activeSession: SessionInfo): SignalingConnectRequest => {
+    const streamSettings = buildCurrentStreamSettings();
+    return {
+      sessionId: activeSession.sessionId,
+      signalingServer: activeSession.signalingServer,
+      signalingUrl: activeSession.signalingUrl,
+      nativeStreamer: buildNativeStreamerSessionContext(activeSession, streamSettings, nativeStreamerShortcuts),
+    };
+  }, [buildCurrentStreamSettings, nativeStreamerShortcuts]);
+
+  // Propagate shortcut binding changes to native process during active session
+  useEffect(() => {
+    if (streamStatus !== "streaming" || !session || !nativeStreamingRef.current) {
+      return;
+    }
+    window.openNow.updateNativeShortcuts(nativeStreamerShortcuts);
+  }, [nativeStreamerShortcuts, session, streamStatus]);
+
   const setSessionFullscreen = useCallback(async (nextFullscreen: boolean) => {
     const canUseNativeFullscreen = typeof window.openNow?.setFullscreen === "function";
+    if (document.pointerLockElement) {
+      clientRef.current?.suppressNextSyntheticEscapeOnPointerLockLoss();
+    }
 
     if (canUseNativeFullscreen) {
       try {
@@ -1518,7 +1550,12 @@ export function App(): JSX.Element {
   // Login handler
   const handleLogin = useCallback(async () => {
     setIsLoggingIn(true);
+    setActiveLoginMode("oauth");
     setLoginError(null);
+    if (qrLoginChallenge) {
+      void window.openNow.cancelDeviceLogin({ attemptId: qrLoginChallenge.attemptId });
+    }
+    setQrLoginChallenge(null);
     try {
       const session = await window.openNow.login({ providerIdpId: providerIdpId || undefined });
       setAuthSession(session);
@@ -1529,8 +1566,104 @@ export function App(): JSX.Element {
       setLoginError(error instanceof Error ? error.message : t("errors.loginFailed"));
     } finally {
       setIsLoggingIn(false);
+      setActiveLoginMode(null);
     }
-  }, [loadSessionRuntimeData, providerIdpId, refreshSavedAccounts, t]);
+  }, [loadSessionRuntimeData, providerIdpId, qrLoginChallenge, refreshSavedAccounts, t]);
+
+  const qrLoginAttemptRef = useRef(0);
+  const completingQrLoginRef = useRef(false);
+
+  const handleCancelQrLogin = useCallback(() => {
+    if (completingQrLoginRef.current) {
+      return;
+    }
+    qrLoginAttemptRef.current += 1;
+    if (qrLoginChallenge) {
+      void window.openNow.cancelDeviceLogin({ attemptId: qrLoginChallenge.attemptId });
+    }
+    setQrLoginChallenge(null);
+    setIsLoggingIn(false);
+    setActiveLoginMode(null);
+    setLoginError(null);
+  }, [qrLoginChallenge]);
+
+  const handleQrLogin = useCallback(async () => {
+    const attemptId = qrLoginAttemptRef.current + 1;
+    qrLoginAttemptRef.current = attemptId;
+    completingQrLoginRef.current = false;
+    setIsLoggingIn(true);
+    setActiveLoginMode("qr");
+    setLoginError(null);
+    if (qrLoginChallenge) {
+      void window.openNow.cancelDeviceLogin({ attemptId: qrLoginChallenge.attemptId });
+    }
+    setQrLoginChallenge(null);
+
+    try {
+      const challenge = await window.openNow.startDeviceLogin({ providerIdpId: providerIdpId || undefined });
+      if (qrLoginAttemptRef.current !== attemptId) {
+        void window.openNow.cancelDeviceLogin({ attemptId: challenge.attemptId });
+        return;
+      }
+
+      setQrLoginChallenge(challenge);
+      let intervalSeconds = Math.max(1, challenge.intervalSeconds);
+
+      while (Date.now() < challenge.expiresAt) {
+        await sleep(intervalSeconds * 1000);
+        if (qrLoginAttemptRef.current !== attemptId) {
+          return;
+        }
+
+        const result = await window.openNow.pollDeviceLogin({
+          attemptId: challenge.attemptId,
+          deviceCode: challenge.deviceCode,
+        });
+        if (qrLoginAttemptRef.current !== attemptId) {
+          return;
+        }
+
+        if (result.status === "authorized") {
+          completingQrLoginRef.current = true;
+          setQrLoginChallenge(null);
+          setActiveLoginMode(null);
+          const session = await window.openNow.completeDeviceLogin({ attemptId: challenge.attemptId });
+          if (qrLoginAttemptRef.current !== attemptId) {
+            return;
+          }
+          setAuthSession(session);
+          setProviderIdpId(session.provider.idpId);
+          await refreshSavedAccounts();
+          await loadSessionRuntimeData(session);
+          return;
+        }
+
+        if (result.status === "pending") {
+          continue;
+        }
+
+        if (result.status === "slow_down") {
+          intervalSeconds += 5;
+          continue;
+        }
+
+        throw new Error(result.error ?? t("errors.loginFailed"));
+      }
+
+      throw new Error(t("auth.qr.expired"));
+    } catch (error) {
+      if (qrLoginAttemptRef.current === attemptId) {
+        setLoginError(error instanceof Error ? error.message : t("errors.loginFailed"));
+      }
+    } finally {
+      if (qrLoginAttemptRef.current === attemptId) {
+        setQrLoginChallenge(null);
+        setIsLoggingIn(false);
+        setActiveLoginMode(null);
+        completingQrLoginRef.current = false;
+      }
+    }
+  }, [loadSessionRuntimeData, providerIdpId, qrLoginChallenge, refreshSavedAccounts, t]);
 
   const handleSwitchAccount = useCallback(async (userId: string) => {
     try {
@@ -2324,6 +2457,8 @@ export function App(): JSX.Element {
           if (nativeStreamingRef.current || sessionRef.current) {
             activateNativeInputForCurrentSession(event.protocolVersion);
           }
+        } else if (event.type === "native-shortcut") {
+          handleStreamShortcutActionRef.current?.(event.action);
         } else if (event.type === "native-stream-stats") {
           diagnosticsStore.set(mergeNativeStreamStats(
             diagnosticsStore.getSnapshot(),
@@ -3214,13 +3349,7 @@ export function App(): JSX.Element {
 
   const releasePointerLockIfNeeded = useCallback(async () => {
     if (document.pointerLockElement) {
-      // Tell the client to suppress synthetic Escape/reactive re-acquisition
-      try {
-        // clientRef is a mutable ref to the GfnWebRtcClient instance; access runtime property
-        (clientRef.current as any).suppressNextSyntheticEscape = true;
-      } catch (e) {
-        // ignore
-      }
+      clientRef.current?.suppressNextSyntheticEscapeOnPointerLockLoss();
       document.exitPointerLock();
       await sleep(75);
     }
@@ -3248,6 +3377,56 @@ export function App(): JSX.Element {
 
     await handleStopStream();
   }, [handleStopStream, releasePointerLockIfNeeded, requestExitPrompt, streamStatus, streamingGame?.title, t]);
+
+  const handleStreamShortcutAction = useCallback((action: NativeStreamerShortcutAction): void => {
+    switch (action) {
+      case "toggleStats":
+        setShowStatsOverlay((prev) => !prev);
+        return;
+      case "togglePointerLock":
+        {
+          const targetVideo = videoRef.current;
+          if (streamStatus === "streaming" && targetVideo) {
+            if (document.pointerLockElement === targetVideo) {
+              clientRef.current?.suppressNextSyntheticEscapeOnPointerLockLoss();
+              document.exitPointerLock();
+            } else {
+              void requestPointerLockCapture(targetVideo);
+            }
+          }
+        }
+        return;
+      case "toggleFullscreen":
+        if (streamStatus === "connecting" || streamStatus === "streaming") {
+          void toggleSessionFullscreen();
+        }
+        return;
+      case "stopStream":
+        void handlePromptedStopStream();
+        return;
+      case "toggleAntiAfk":
+        if (streamStatus === "streaming") {
+          setAntiAfkEnabled((prev) => !prev);
+          setAntiAfkAckNonce((n) => n + 1);
+        }
+        return;
+      case "toggleMicrophone":
+        if (streamStatus === "streaming") {
+          clientRef.current?.toggleMicrophone();
+        }
+        return;
+      case "screenshot":
+      case "toggleRecording":
+        if (streamStatus === "streaming" && !nativeStreamingRef.current) {
+          dispatchStreamShortcutAction(action);
+        }
+        return;
+    }
+  }, [handlePromptedStopStream, requestPointerLockCapture, streamStatus, toggleSessionFullscreen]);
+
+  useEffect(() => {
+    handleStreamShortcutActionRef.current = handleStreamShortcutAction;
+  }, [handleStreamShortcutAction]);
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -3310,7 +3489,7 @@ export function App(): JSX.Element {
         e.preventDefault();
         e.stopPropagation();
         e.stopImmediatePropagation();
-        setShowStatsOverlay((prev) => !prev);
+        handleStreamShortcutAction("toggleStats");
         return;
       }
 
@@ -3318,18 +3497,7 @@ export function App(): JSX.Element {
         e.preventDefault();
         e.stopPropagation();
         e.stopImmediatePropagation();
-        if (streamStatus === "streaming" && videoRef.current) {
-          if (document.pointerLockElement === videoRef.current) {
-            try {
-              (clientRef.current as any).suppressNextSyntheticEscape = true;
-            } catch {
-              // best-effort — client may not be initialised
-            }
-            document.exitPointerLock();
-          } else {
-            void requestPointerLockCapture(videoRef.current);
-          }
-        }
+        handleStreamShortcutAction("togglePointerLock");
         return;
       }
 
@@ -3415,8 +3583,25 @@ export function App(): JSX.Element {
     const pages: AppPage[] = ["library", "home", "settings"];
     const currentIndex = Math.max(0, pages.indexOf(currentPage));
     const nextIndex = (currentIndex + direction + pages.length) % pages.length;
-    setCurrentPage(pages[nextIndex]);
+    const nextPage = pages[nextIndex];
+    if (nextPage === "settings" && currentPage !== "settings") {
+      setPageBeforeSettings(currentPage);
+    }
+    setCurrentPage(nextPage);
   }, [currentPage]);
+
+  const handleNavigate = useCallback((page: AppPage): void => {
+    if (page === "settings" && currentPage !== "settings") {
+      setPageBeforeSettings(currentPage);
+    }
+    setCurrentPage(page);
+  }, [currentPage]);
+
+  const handleCloseSettings = useCallback((): void => {
+    setCurrentPage(pageBeforeSettings);
+  }, [pageBeforeSettings]);
+
+  const mainPage: AppPage = currentPage === "settings" ? pageBeforeSettings : currentPage;
 
   // Show login screen if not authenticated
   if (!authSession) {
@@ -3427,10 +3612,14 @@ export function App(): JSX.Element {
           selectedProviderId={providerIdpId}
           onProviderChange={setProviderIdpId}
           onLogin={handleLogin}
+          onQrLogin={handleQrLogin}
+          onCancelQrLogin={handleCancelQrLogin}
           isLoading={isLoggingIn}
           error={loginError}
           isInitializing={isInitializing}
           statusMessage={startupStatusMessage}
+          qrLoginChallenge={qrLoginChallenge}
+          isQrLoginPending={activeLoginMode === "qr" && !qrLoginChallenge}
         />
       </>
     );
@@ -3479,6 +3668,7 @@ export function App(): JSX.Element {
             isFullscreen={sessionFullscreen || !!document.fullscreenElement}
             isConnecting={streamStatus === "connecting"}
             isStreaming={isStreaming}
+            recordingBitrateMbps={settings.recordingBitrateMbps}
             gameTitle={streamingGame?.title ?? t("app.labels.game")}
             platformStore={streamingStore ?? undefined}
             onToggleFullscreen={() => {
@@ -3560,7 +3750,7 @@ export function App(): JSX.Element {
       )}
       <Navbar
         currentPage={currentPage}
-        onNavigate={setCurrentPage}
+        onNavigate={handleNavigate}
         user={authSession.user}
         subscription={subscriptionInfo}
         activeSession={navbarActiveSession}
@@ -3584,72 +3774,86 @@ export function App(): JSX.Element {
       />
 
       <main className="main-content">
-        {currentPage === "home" && (
-          <HomePage
-            games={filteredGames}
-            searchQuery={searchQuery}
-            onSearchChange={setSearchQuery}
-            onPlayGame={handleInitiatePlay}
-            isLoading={settings.controllerMode ? isLoadingStorePanels : isLoadingCatalog}
-            selectedGameId={selectedGameId}
-            onSelectGame={setSelectedGameId}
-            selectedVariantByGameId={variantByGameId}
-            onSelectGameVariant={handleSelectGameVariant}
-            filterGroups={catalogFilterGroups}
-            selectedFilterIds={catalogSelectedFilterIds}
-            onToggleFilter={(filterId) => {
-              setCatalogSelectedFilterIds((previous) => previous.includes(filterId) ? previous.filter((value) => value !== filterId) : [...previous, filterId]);
-            }}
-            sortOptions={catalogSortOptions}
-            selectedSortId={catalogSelectedSortId}
-            onSortChange={setCatalogSelectedSortId}
-            totalCount={catalogTotalCount}
-            supportedCount={catalogSupportedCount}
-            controllerMode={settings.controllerMode}
-            storePanels={storePanels}
-            storeHeroGames={featuredGames}
-            activeSessionAppIds={navbarActiveSession ? [navbarActiveSession.appId] : []}
-            onBuyGame={handleBuyGame}
-            onPreviousControllerPage={() => navigateControllerPage(-1)}
-            onNextControllerPage={() => navigateControllerPage(1)}
-          />
-        )}
+        <AnimatePresence mode="wait" initial={false}>
+          <m.div
+            key={mainPage}
+            className="page-transition-surface"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={pageTransition}
+          >
+            {mainPage === "home" && (
+              <HomePage
+                games={filteredGames}
+                searchQuery={searchQuery}
+                onSearchChange={setSearchQuery}
+                onPlayGame={handleInitiatePlay}
+                isLoading={settings.controllerMode ? isLoadingStorePanels : isLoadingCatalog}
+                selectedGameId={selectedGameId}
+                onSelectGame={setSelectedGameId}
+                selectedVariantByGameId={variantByGameId}
+                onSelectGameVariant={handleSelectGameVariant}
+                filterGroups={catalogFilterGroups}
+                selectedFilterIds={catalogSelectedFilterIds}
+                onToggleFilter={(filterId) => {
+                  setCatalogSelectedFilterIds((previous) => previous.includes(filterId) ? previous.filter((value) => value !== filterId) : [...previous, filterId]);
+                }}
+                sortOptions={catalogSortOptions}
+                selectedSortId={catalogSelectedSortId}
+                onSortChange={setCatalogSelectedSortId}
+                totalCount={catalogTotalCount}
+                supportedCount={catalogSupportedCount}
+                controllerMode={settings.controllerMode}
+                storePanels={storePanels}
+                storeHeroGames={featuredGames}
+                activeSessionAppIds={navbarActiveSession ? [navbarActiveSession.appId] : []}
+                onBuyGame={handleBuyGame}
+                onPreviousControllerPage={() => navigateControllerPage(-1)}
+                onNextControllerPage={() => navigateControllerPage(1)}
+              />
+            )}
 
-        {currentPage === "library" && (
-          <LibraryPage
-            games={filteredLibraryGames}
-            searchQuery={searchQuery}
-            onSearchChange={setSearchQuery}
-            onPlayGame={handleInitiatePlay}
-            isLoading={isLoadingLibrary}
-            selectedGameId={selectedGameId}
-            onSelectGame={setSelectedGameId}
-            selectedVariantByGameId={variantByGameId}
-            onSelectGameVariant={handleSelectGameVariant}
-            libraryCount={libraryGames.length}
-            sortOptions={catalogSortOptions.filter((option) => option.id !== "relevance")}
-            selectedSortId={catalogSelectedSortId === "relevance" ? "last_played" : catalogSelectedSortId}
-            onSortChange={setCatalogSelectedSortId}
-            controllerMode={settings.controllerMode}
-            featuredGames={featuredGames.length > 0 ? featuredGames : games}
-            activeSessionAppIds={navbarActiveSession ? [navbarActiveSession.appId] : []}
-            onBuyGame={handleBuyGame}
-            onPreviousControllerPage={() => navigateControllerPage(-1)}
-            onNextControllerPage={() => navigateControllerPage(1)}
-          />
-        )}
-
+            {mainPage === "library" && (
+              <LibraryPage
+                games={filteredLibraryGames}
+                searchQuery={searchQuery}
+                onSearchChange={setSearchQuery}
+                onPlayGame={handleInitiatePlay}
+                isLoading={isLoadingLibrary}
+                selectedGameId={selectedGameId}
+                onSelectGame={setSelectedGameId}
+                selectedVariantByGameId={variantByGameId}
+                onSelectGameVariant={handleSelectGameVariant}
+                libraryCount={libraryGames.length}
+                sortOptions={catalogSortOptions.filter((option) => option.id !== "relevance")}
+                selectedSortId={catalogSelectedSortId === "relevance" ? "last_played" : catalogSelectedSortId}
+                onSortChange={setCatalogSelectedSortId}
+                controllerMode={settings.controllerMode}
+                featuredGames={featuredGames.length > 0 ? featuredGames : games}
+                activeSessionAppIds={navbarActiveSession ? [navbarActiveSession.appId] : []}
+                onBuyGame={handleBuyGame}
+                onPreviousControllerPage={() => navigateControllerPage(-1)}
+                onNextControllerPage={() => navigateControllerPage(1)}
+              />
+            )}
+          </m.div>
+        </AnimatePresence>
+      </main>
+      <AnimatePresence initial={false}>
         {currentPage === "settings" && (
           <SettingsPage
+            key="settings"
             settings={settings}
             regions={regions}
             codecResults={codecResults}
             codecTesting={codecTesting}
             onRunCodecTest={runCodecTest}
             onSettingChange={updateSetting}
+            onClose={handleCloseSettings}
           />
         )}
-      </main>
+      </AnimatePresence>
       {logoutConfirmModal}
       {removeAccountConfirmModal}
       {queueModalGame && streamStatus === "idle" && (

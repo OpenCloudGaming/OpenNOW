@@ -250,6 +250,8 @@ export interface Settings {
   posterSizeScale: number;
   fps: number;
   maxBitrateMbps: number;
+  /** Recording video bitrate in Mbps; null means let MediaRecorder choose automatically */
+  recordingBitrateMbps: number | null;
   streamClientMode: StreamClientMode;
   nativeStreamerBackend: NativeStreamerBackendPreference;
   nativeVideoBackend: NativeVideoBackendPreference;
@@ -343,6 +345,7 @@ export interface AuthTokens {
   refreshToken?: string;
   idToken?: string;
   expiresAt: number;
+  authClientId?: string;
   clientToken?: string;
   clientTokenExpiresAt?: number;
   clientTokenLifetimeMs?: number;
@@ -420,6 +423,7 @@ export interface ThankYouSupporter {
   avatarUrl?: string;
   profileUrl?: string;
   isPrivate: boolean;
+  source: "github" | "custom" | "private";
 }
 
 export interface ThankYouDataResult {
@@ -431,6 +435,44 @@ export interface ThankYouDataResult {
 
 export interface AuthLoginRequest {
   providerIdpId?: string;
+}
+
+export interface AuthDeviceLoginStartRequest {
+  providerIdpId?: string;
+}
+
+export interface AuthDeviceLoginChallenge {
+  attemptId: string;
+  deviceCode: string;
+  userCode: string;
+  verificationUri: string;
+  verificationUriComplete: string;
+  expiresAt: number;
+  intervalSeconds: number;
+}
+
+export interface AuthDeviceLoginPollRequest {
+  attemptId: string;
+  deviceCode: string;
+}
+
+export interface AuthDeviceLoginAttemptRequest {
+  attemptId: string;
+}
+
+export type AuthDeviceLoginPollStatus =
+  | "pending"
+  | "slow_down"
+  | "expired"
+  | "access_denied"
+  | "authorized"
+  | "error";
+
+export interface AuthDeviceLoginPollResult {
+  status: AuthDeviceLoginPollStatus;
+  session?: AuthSession;
+  error?: string;
+  intervalSeconds?: number;
 }
 
 export interface AuthSessionRequest {
@@ -498,6 +540,38 @@ export interface SubscriptionFetchRequest {
   token?: string;
   providerStreamingBaseUrl?: string;
   userId: string;
+}
+
+export interface PersistentStorageResetRequest {
+  /** Null or omitted keeps the current storage region, matching NVIDIA's storage reset flow. */
+  storageRegion?: string | null;
+}
+
+export interface PersistentStorageResetResult {
+  ok: true;
+  storageRegion: string | null;
+  message?: string;
+}
+
+export interface PersistentStorageLocation {
+  code: string;
+  name: string;
+  isAvailable: boolean;
+  isCurrent?: boolean;
+  isRecommended?: boolean;
+}
+
+export interface PersistentStorageLocationsFetchRequest {
+  serverRegionId?: string | null;
+  currentRegionCode?: string | null;
+  currentRegionName?: string | null;
+  locale?: string;
+}
+
+export interface PersistentStorageLocationsResult {
+  locations: PersistentStorageLocation[];
+  currentRegionCode?: string;
+  currentRegionName?: string;
 }
 
 export interface GameVariant {
@@ -876,14 +950,37 @@ export interface SendAnswerRequest {
   nvstSdp?: string;
 }
 
+export type NativeStreamerShortcutAction =
+  | "toggleStats"
+  | "togglePointerLock"
+  | "toggleFullscreen"
+  | "stopStream"
+  | "toggleAntiAfk"
+  | "toggleMicrophone"
+  | "screenshot"
+  | "toggleRecording";
+
+export interface NativeStreamerShortcutBindings {
+  toggleStats: string;
+  togglePointerLock: string;
+  toggleFullscreen: string;
+  stopStream: string;
+  toggleAntiAfk: string;
+  toggleMicrophone: string;
+  screenshot: string;
+  toggleRecording: string;
+}
+
 export interface NativeStreamerSessionContext {
   session: SessionInfo;
   settings: StreamSettings;
+  shortcuts: NativeStreamerShortcutBindings;
 }
 
 export function buildNativeStreamerSessionContext(
   session: SessionInfo,
   settings: StreamSettings,
+  shortcuts: NativeStreamerShortcutBindings,
 ): NativeStreamerSessionContext {
   const negotiatedStreamProfile = session.negotiatedStreamProfile
     ? {
@@ -902,6 +999,7 @@ export function buildNativeStreamerSessionContext(
       enableCloudGsync:
         session.negotiatedStreamProfile?.enableCloudGsync ?? settings.enableCloudGsync,
     },
+    shortcuts,
   };
 }
 
@@ -957,6 +1055,7 @@ export type MainToRendererSignalingEvent =
   | { type: "disconnected"; reason: string }
   | { type: "offer"; sdp: string }
   | { type: "remote-ice"; candidate: IceCandidatePayload }
+  | { type: "native-shortcut"; action: NativeStreamerShortcutAction }
   | { type: "native-stream-started"; message?: string }
   | { type: "native-stream-stopped"; reason?: string }
   | { type: "native-stream-stats"; stats: NativeStreamStats }
@@ -1042,12 +1141,18 @@ export interface OpenNowApi {
   getLoginProviders(): Promise<LoginProvider[]>;
   getRegions(input?: RegionsFetchRequest): Promise<StreamRegion[]>;
   login(input: AuthLoginRequest): Promise<AuthSession>;
+  startDeviceLogin(input: AuthDeviceLoginStartRequest): Promise<AuthDeviceLoginChallenge>;
+  pollDeviceLogin(input: AuthDeviceLoginPollRequest): Promise<AuthDeviceLoginPollResult>;
+  completeDeviceLogin(input: AuthDeviceLoginAttemptRequest): Promise<AuthSession>;
+  cancelDeviceLogin(input: AuthDeviceLoginAttemptRequest): Promise<void>;
   logout(): Promise<void>;
   logoutAll(): Promise<void>;
   getSavedAccounts(): Promise<SavedAccount[]>;
   switchAccount(userId: string): Promise<AuthSession>;
   removeAccount(userId: string): Promise<void>;
   fetchSubscription(input: SubscriptionFetchRequest): Promise<SubscriptionInfo>;
+  fetchPersistentStorageLocations(input?: PersistentStorageLocationsFetchRequest): Promise<PersistentStorageLocationsResult>;
+  resetPersistentStorage(input?: PersistentStorageResetRequest): Promise<PersistentStorageResetResult>;
   fetchMainGames(input: GamesFetchRequest): Promise<GameInfo[]>;
   fetchStorePanels(input: GamesFetchRequest): Promise<GamePanelResult[]>;
   fetchFeaturedGames(input: GamesFetchRequest): Promise<GameInfo[]>;
@@ -1074,6 +1179,7 @@ export interface OpenNowApi {
   sendIceCandidate(input: IceCandidatePayload): Promise<void>;
   sendNativeInput(input: NativeInputPacket): void;
   updateNativeRenderSurface(input: NativeRenderSurfaceUpdate): void;
+  updateNativeShortcuts(shortcuts: NativeStreamerShortcutBindings): void;
   requestKeyframe(input: KeyframeRequest): Promise<void>;
   onSignalingEvent(listener: (event: MainToRendererSignalingEvent) => void): () => void;
   /** Listen for F11 fullscreen toggle from main process */

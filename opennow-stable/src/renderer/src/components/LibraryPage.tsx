@@ -1,13 +1,16 @@
 import { Library, Search, Clock, Gamepad2, Loader2, ArrowUpDown, MoreHorizontal, Menu } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { JSX } from "react";
+import { AnimatePresence, m } from "motion/react";
 import type { CatalogSortOption, GameInfo } from "@shared/gfn";
 import { GameCard, getStoreDisplayName, getStoreIconComponent } from "./GameCard";
 import { useTranslation } from "../i18n";
 import { formatCatalogLastPlayed } from "../utils/lastPlayedFormat";
+import { controllerButton, readControllerGamepadButtons } from "../utils/controllerGamepad";
+import { pageTransition, panelSpring } from "./MotionProvider";
 
 const CONTROLLER_HERO_ROTATION_MS = 8000;
-const CONTROLLER_MOVE_REPEAT_MS = 220;
+const CONTROLLER_MOVE_REPEAT_MS = 140;
 const CONTROLLER_Y_HOLD_MS = 350;
 
 const CONTROLLER_HERO_BACKGROUND_KEYS = [
@@ -153,12 +156,16 @@ function ControllerGameCard({
   const logoUrl = getGameLogoUrl(game);
 
   return (
-    <button
+    <m.button
       type="button"
       className={`controller-native-card${isSelected ? " selected" : ""}`}
       onClick={onSelect}
       onDoubleClick={onPlay}
       aria-label={game.title}
+      animate={{ y: isSelected ? -3 : 0, scale: isSelected ? 1.025 : 1 }}
+      whileHover={{ y: -3, scale: 1.02 }}
+      whileTap={{ scale: 0.985 }}
+      transition={panelSpring}
     >
       <span className="controller-native-card-art">
         {game.imageUrl ? <img src={game.imageUrl} alt="" loading="lazy" /> : <span className="controller-native-card-placeholder">{game.title.slice(0, 1)}</span>}
@@ -171,7 +178,7 @@ function ControllerGameCard({
       <span className="controller-native-card-title">
         {logoUrl ? <img src={logoUrl} alt={game.title} loading="lazy" /> : game.title}
       </span>
-    </button>
+    </m.button>
   );
 }
 
@@ -193,13 +200,17 @@ export function LibraryPage({
   controllerMode = false,
   featuredGames = [],
   activeSessionAppIds = [],
+  onPreviousControllerPage,
+  onNextControllerPage,
 }: LibraryPageProps): JSX.Element {
   const { t } = useTranslation();
   const [controllerHeroIndex, setControllerHeroIndex] = useState(0);
   const [detailsGame, setDetailsGame] = useState<GameInfo | null>(null);
   const [controllerStoreFilterId, setControllerStoreFilterId] = useState("library");
   const [controllerStoreFilterOpen, setControllerStoreFilterOpen] = useState(false);
+  const [controllerSearchOpen, setControllerSearchOpen] = useState(false);
   const [focusedControllerStoreFilterIndex, setFocusedControllerStoreFilterIndex] = useState(0);
+  const controllerSearchInputRef = useRef<HTMLInputElement | null>(null);
   const gamepadPreviousButtonsRef = useRef(0);
   const gamepadLastMoveAtRef = useRef(0);
   const gamepadFrameRef = useRef<number | null>(null);
@@ -221,6 +232,11 @@ export function LibraryPage({
     showControllerStoreFilterOverlay: (): void => {},
     onPlayGame: (_game: GameInfo): void => {},
   });
+
+  useEffect(() => {
+    if (!controllerMode || !controllerSearchOpen) return;
+    controllerSearchInputRef.current?.focus();
+  }, [controllerMode, controllerSearchOpen]);
 
   const controllerStoreFilterItems = useMemo(
     () => getControllerStoreFilterItems(games, t("library.allStores")),
@@ -356,50 +372,59 @@ export function LibraryPage({
         }
         return;
       }
+      if (controllerSearchOpen) {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          setControllerSearchOpen(false);
+        }
+        return;
+      }
       if (event.key === "ArrowLeft") {
         event.preventDefault();
         focusControllerGame(selectedControllerGameIndex - 1);
       } else if (event.key === "ArrowRight") {
         event.preventDefault();
         focusControllerGame(selectedControllerGameIndex + 1);
-      } else if (event.key === "ArrowDown" || event.key.toLowerCase() === "x") {
+      } else if (event.key === "ArrowDown") {
         event.preventDefault();
         cycleSelectedVariant();
       } else if (event.key === "Enter" || event.key === " ") {
         event.preventDefault();
         if (selectedControllerGame) onPlayGame(selectedControllerGame);
-      } else if (event.key.toLowerCase() === "i") {
+      } else if (event.key.toLowerCase() === "x") {
+        event.preventDefault();
+        setControllerSearchOpen(true);
+      } else if (event.key.toLowerCase() === "b" || event.key === "Escape") {
+        event.preventDefault();
+        onPreviousControllerPage?.();
+      } else if (event.key === "[") {
+        event.preventDefault();
+        onPreviousControllerPage?.();
+      } else if (event.key === "]") {
+        event.preventDefault();
+        onNextControllerPage?.();
+      } else if (event.key.toLowerCase() === "i" || event.key.toLowerCase() === "m") {
         event.preventDefault();
         if (selectedControllerGame) setDetailsGame(selectedControllerGame);
       }
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [controllerMode, detailsGame, games, onPlayGame, selectedControllerGame, selectedControllerGameIndex]);
+  }, [controllerMode, controllerSearchOpen, detailsGame, onNextControllerPage, onPlayGame, onPreviousControllerPage, selectedControllerGame, selectedControllerGameIndex]);
 
   useEffect(() => {
     if (!controllerMode) return;
     const readButtons = (): number => {
       const pad = navigator.getGamepads?.().find((gamepad): gamepad is Gamepad => Boolean(gamepad));
-      if (!pad) return 0;
-      let buttons = 0;
-      if (pad.buttons[0]?.pressed) buttons |= 1 << 0;
-      if (pad.buttons[1]?.pressed) buttons |= 1 << 1;
-      if (pad.buttons[3]?.pressed) buttons |= 1 << 2;
-      if (pad.buttons[12]?.pressed || (pad.axes[1] ?? 0) < -0.65) buttons |= 1 << 5;
-      if (pad.buttons[13]?.pressed || (pad.axes[1] ?? 0) > 0.65) buttons |= 1 << 6;
-      if (pad.buttons[14]?.pressed || (pad.axes[0] ?? 0) < -0.65) buttons |= 1 << 7;
-      if (pad.buttons[15]?.pressed || (pad.axes[0] ?? 0) > 0.65) buttons |= 1 << 8;
-      if (pad.buttons[2]?.pressed) buttons |= 1 << 9;
-      return buttons;
+      return readControllerGamepadButtons(pad);
     };
 
     const handleGamepadFrame = () => {
       const buttons = readButtons();
       let pressed = buttons & ~gamepadPreviousButtonsRef.current;
       const released = gamepadPreviousButtonsRef.current & ~buttons;
-      const moveMask = (1 << 5) | (1 << 6) | (1 << 7) | (1 << 8);
-      const yButton = 1 << 2;
+      const moveMask = controllerButton.up | controllerButton.down | controllerButton.left | controllerButton.right;
+      const yButton = controllerButton.north;
       const now = performance.now();
       const activeMoves = buttons & moveMask;
       const pressedMoves = pressed & moveMask;
@@ -434,10 +459,17 @@ export function LibraryPage({
         showStoreFilter();
       }
 
+      if (controllerSearchOpen) {
+        if (pressed & controllerButton.east) setControllerSearchOpen(false);
+        gamepadPreviousButtonsRef.current = buttons;
+        gamepadFrameRef.current = window.requestAnimationFrame(handleGamepadFrame);
+        return;
+      }
+
       if (storeFilterOpen) {
-        if (pressed & (1 << 5)) moveStoreFilter(-1);
-        if (pressed & (1 << 6)) moveStoreFilter(1);
-        if (pressed & (1 << 1)) hideStoreFilter(false);
+        if (pressed & controllerButton.up) moveStoreFilter(-1);
+        if (pressed & controllerButton.down) moveStoreFilter(1);
+        if (pressed & controllerButton.east) hideStoreFilter(false);
         if (released & yButton) hideStoreFilter(true);
         gamepadPreviousButtonsRef.current = buttons;
         gamepadFrameRef.current = window.requestAnimationFrame(handleGamepadFrame);
@@ -445,16 +477,23 @@ export function LibraryPage({
       }
 
       if (currentDetailsGame) {
-        if (pressed & (1 << 0)) playGame(currentDetailsGame);
-        if (pressed & (1 << 1)) setDetailsGame(null);
+        if (pressed & controllerButton.south) playGame(currentDetailsGame);
+        if (pressed & controllerButton.east) setDetailsGame(null);
       } else {
         if ((released & yButton) && !controllerYConsumedByHoldRef.current) cycleStoreFilter();
-        if (pressed & (1 << 0)) {
+        if (pressed & controllerButton.south) {
           if (currentSelectedGame) playGame(currentSelectedGame);
         }
-        if (pressed & (1 << 7)) focusGame(currentSelectedIndex - 1);
-        if (pressed & (1 << 8)) focusGame(currentSelectedIndex + 1);
-        if ((pressed & (1 << 6)) || (pressed & (1 << 9))) cycleVariant();
+        if (pressed & controllerButton.east) onPreviousControllerPage?.();
+        if (pressed & controllerButton.west) setControllerSearchOpen(true);
+        if (pressed & controllerButton.leftShoulder) onPreviousControllerPage?.();
+        if (pressed & controllerButton.rightShoulder) onNextControllerPage?.();
+        if (pressed & controllerButton.menu) {
+          if (currentSelectedGame) setDetailsGame(currentSelectedGame);
+        }
+        if (pressed & controllerButton.left) focusGame(currentSelectedIndex - 1);
+        if (pressed & controllerButton.right) focusGame(currentSelectedIndex + 1);
+        if (pressed & controllerButton.down) cycleVariant();
       }
       gamepadPreviousButtonsRef.current = buttons;
 
@@ -491,7 +530,7 @@ export function LibraryPage({
       window.removeEventListener("gamepaddisconnected", handleDisconnect);
       stopGamepadNavigation();
     };
-  }, [controllerMode]);
+  }, [controllerMode, controllerSearchOpen, onNextControllerPage, onPreviousControllerPage]);
 
   if (controllerMode) {
     const featuredGame = controllerFeaturedGames[controllerHeroIndex] ?? selectedControllerGame;
@@ -520,38 +559,65 @@ export function LibraryPage({
         ) : featuredGame ? (
           <>
             <section className="controller-hero" aria-label={featuredGame.title}>
-              {heroImageUrl ? (
-                <img src={heroImageUrl} alt="" className="controller-hero-image" />
-              ) : (
-                <div className="controller-hero-placeholder" />
-              )}
-              <div className="controller-hero-scrim" />
-              <div className="controller-hero-content">
-                {heroLogoUrl ? (
-                  <img src={heroLogoUrl} alt={featuredGame.title} className="controller-hero-logo" />
+              <AnimatePresence initial={false} mode="popLayout">
+                {heroImageUrl ? (
+                  <m.img
+                    key={heroImageUrl}
+                    src={heroImageUrl}
+                    alt=""
+                    className="controller-hero-image"
+                    initial={{ opacity: 0, scale: 1.035 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    exit={{ opacity: 0, scale: 1.015 }}
+                    transition={pageTransition}
+                  />
                 ) : (
-                  <h1>{featuredGame.title}</h1>
+                  <m.div
+                    key="controller-library-hero-placeholder"
+                    className="controller-hero-placeholder"
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    exit={{ opacity: 0 }}
+                    transition={pageTransition}
+                  />
                 )}
-                <div className="controller-hero-actions">
-                  <button
-                    type="button"
-                    className="controller-primary-action"
-                    onClick={() => {
-                      if (heroShouldBuy) {
-                        onBuyGame?.(featuredGame, heroSelectedVariantId);
-                        return;
-                      }
-                      onPlayGame(featuredGame);
-                    }}
-                  >
-                    {featuredGameHasActiveSession ? t("app.actions.resume") : heroShouldBuy ? t("app.actions.buy") : t("app.actions.play")}
-                  </button>
-                  {heroStoreLabel && <span className="controller-hero-variant-pill">{heroStoreLabel}</span>}
-                  <button type="button" className="controller-icon-action" aria-label={t("library.moreOptions")} onClick={() => cycleGameVariant(featuredGame)}>
-                    <MoreHorizontal size={30} />
-                  </button>
-                </div>
-              </div>
+              </AnimatePresence>
+              <div className="controller-hero-scrim" />
+              <AnimatePresence initial={false} mode="wait">
+                <m.div
+                  key={featuredGame.id}
+                  className="controller-hero-content"
+                  initial={{ opacity: 0, y: 16 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -8 }}
+                  transition={pageTransition}
+                >
+                  {heroLogoUrl ? (
+                    <img src={heroLogoUrl} alt={featuredGame.title} className="controller-hero-logo" />
+                  ) : (
+                    <h1>{featuredGame.title}</h1>
+                  )}
+                  <div className="controller-hero-actions">
+                    <button
+                      type="button"
+                      className="controller-primary-action"
+                      onClick={() => {
+                        if (heroShouldBuy) {
+                          onBuyGame?.(featuredGame, heroSelectedVariantId);
+                          return;
+                        }
+                        onPlayGame(featuredGame);
+                      }}
+                    >
+                      {featuredGameHasActiveSession ? t("app.actions.resume") : heroShouldBuy ? t("app.actions.buy") : t("app.actions.play")}
+                    </button>
+                    {heroStoreLabel && <span className="controller-hero-variant-pill">{heroStoreLabel}</span>}
+                    <button type="button" className="controller-icon-action" aria-label={t("library.moreOptions")} onClick={() => cycleGameVariant(featuredGame)}>
+                      <MoreHorizontal size={30} />
+                    </button>
+                  </div>
+                </m.div>
+              </AnimatePresence>
             </section>
 
             <div className="controller-hero-dots" aria-hidden="true">
@@ -596,9 +662,25 @@ export function LibraryPage({
               <div className="controller-hint controller-hint--more"><span className="controller-menu-button"><Menu size={22} /></span><span>{t("library.moreOptions")}</span></div>
             </div>
 
-            {controllerStoreFilterOpen && (
-              <div className="controller-store-filter-overlay" role="dialog" aria-modal="true" aria-label={t("library.chooseStore")}>
-                <div className="controller-store-filter-panel">
+            <AnimatePresence initial={false}>
+              {controllerStoreFilterOpen && (
+                <m.div
+                  className="controller-store-filter-overlay"
+                  role="dialog"
+                  aria-modal="true"
+                  aria-label={t("library.chooseStore")}
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  transition={pageTransition}
+                >
+                  <m.div
+                    className="controller-store-filter-panel"
+                    initial={{ opacity: 0, y: 16, scale: 0.985 }}
+                    animate={{ opacity: 1, y: 0, scale: 1 }}
+                    exit={{ opacity: 0, y: 10, scale: 0.99 }}
+                    transition={panelSpring}
+                  >
                   <span className="controller-store-filter-eyebrow">{t("library.storeFilter")}</span>
                   <h3>{t("library.chooseStore")}</h3>
                   <p>{t("library.storeFilterHint")}</p>
@@ -618,13 +700,64 @@ export function LibraryPage({
                       </button>
                     ))}
                   </div>
-                </div>
-              </div>
-            )}
+                  </m.div>
+                </m.div>
+              )}
+            </AnimatePresence>
 
-            {detailsGame && (
-              <div className="controller-details-overlay" role="dialog" aria-modal="true" aria-label={detailsGame.title}>
-                <div className="controller-details-panel">
+            <AnimatePresence initial={false}>
+              {controllerSearchOpen && (
+                <m.div
+                  className="controller-search-overlay"
+                  role="dialog"
+                  aria-modal="true"
+                  aria-label={t("app.actions.search")}
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  transition={pageTransition}
+                >
+                  <m.div
+                    className="controller-search-panel"
+                    initial={{ opacity: 0, y: 16, scale: 0.985 }}
+                    animate={{ opacity: 1, y: 0, scale: 1 }}
+                    exit={{ opacity: 0, y: 10, scale: 0.99 }}
+                    transition={panelSpring}
+                  >
+                  <span className="controller-search-eyebrow">{t("app.actions.search")}</span>
+                  <input
+                    ref={controllerSearchInputRef}
+                    type="text"
+                    value={searchQuery}
+                    onChange={(event) => onSearchChange(event.target.value)}
+                    placeholder={t("library.searchPlaceholder")}
+                    className="controller-search-input"
+                  />
+                  <p>{t("app.actions.back")}</p>
+                  </m.div>
+                </m.div>
+              )}
+            </AnimatePresence>
+
+            <AnimatePresence initial={false}>
+              {detailsGame && (
+                <m.div
+                  className="controller-details-overlay"
+                  role="dialog"
+                  aria-modal="true"
+                  aria-label={detailsGame.title}
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  transition={pageTransition}
+                >
+                  <m.div
+                    className="controller-details-panel"
+                    initial={{ opacity: 0, y: 18, scale: 0.985 }}
+                    animate={{ opacity: 1, y: 0, scale: 1 }}
+                    exit={{ opacity: 0, y: 10, scale: 0.99 }}
+                    transition={panelSpring}
+                  >
                   <h3>{detailsGame.title}</h3>
                   <p className="controller-details-store">{t("library.selectedStore", { store: getGameStoreSummary(detailsGame, t("library.storeNotListed")) })}</p>
                   <p className="controller-details-body">{detailsGame.description || detailsGame.longDescription || detailsGame.featureLabels?.join(" / ") || t("library.loadingGameDetails")}</p>
@@ -641,9 +774,10 @@ export function LibraryPage({
                     <button type="button" className="controller-primary-action" onClick={() => onPlayGame(detailsGame)}>{t("app.actions.play")}</button>
                     <button type="button" className="controller-secondary-action" onClick={() => setDetailsGame(null)}>{t("app.actions.back")}</button>
                   </div>
-                </div>
-              </div>
-            )}
+                  </m.div>
+                </m.div>
+              )}
+            </AnimatePresence>
           </>
         ) : null}
       </div>
@@ -702,7 +836,12 @@ export function LibraryPage({
             <p>{t("library.empty.noGamesMatch", { query: searchQuery })}</p>
           </div>
         ) : (
-          <div className="game-grid">
+          <m.div
+            className="game-grid"
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={pageTransition}
+          >
             {games.map((game) => (
               <div key={game.id} className="library-game-wrapper">
                 <GameCard
@@ -721,7 +860,7 @@ export function LibraryPage({
                 )}
               </div>
             ))}
-          </div>
+          </m.div>
         )}
       </div>
     </div>

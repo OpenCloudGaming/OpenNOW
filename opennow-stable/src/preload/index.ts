@@ -3,6 +3,9 @@ import electron from "electron";
 import { IPC_CHANNELS } from "@shared/ipc";
 import type {
   AuthLoginRequest,
+  AuthDeviceLoginAttemptRequest,
+  AuthDeviceLoginPollRequest,
+  AuthDeviceLoginStartRequest,
   AuthSession,
   AuthSessionRequest,
   GamesFetchRequest,
@@ -42,6 +45,8 @@ import type {
   PrintedWasteServerMapping,
   ThankYouDataResult,
   AppUpdaterState,
+  PersistentStorageLocationsFetchRequest,
+  PersistentStorageResetRequest,
 } from "@shared/gfn";
 import { parseSerializedSessionErrorTransport } from "@shared/sessionError";
 
@@ -67,6 +72,14 @@ const api: OpenNowApi = {
   getLoginProviders: () => ipcRenderer.invoke(IPC_CHANNELS.AUTH_GET_PROVIDERS),
   getRegions: (input: RegionsFetchRequest = {}) => ipcRenderer.invoke(IPC_CHANNELS.AUTH_GET_REGIONS, input),
   login: (input: AuthLoginRequest) => ipcRenderer.invoke(IPC_CHANNELS.AUTH_LOGIN, input),
+  startDeviceLogin: (input: AuthDeviceLoginStartRequest) =>
+    ipcRenderer.invoke(IPC_CHANNELS.AUTH_DEVICE_LOGIN_START, input),
+  pollDeviceLogin: (input: AuthDeviceLoginPollRequest) =>
+    ipcRenderer.invoke(IPC_CHANNELS.AUTH_DEVICE_LOGIN_POLL, input),
+  completeDeviceLogin: (input: AuthDeviceLoginAttemptRequest) =>
+    ipcRenderer.invoke(IPC_CHANNELS.AUTH_DEVICE_LOGIN_COMPLETE, input),
+  cancelDeviceLogin: (input: AuthDeviceLoginAttemptRequest) =>
+    ipcRenderer.invoke(IPC_CHANNELS.AUTH_DEVICE_LOGIN_CANCEL, input),
   logout: () => ipcRenderer.invoke(IPC_CHANNELS.AUTH_LOGOUT),
   logoutAll: () => ipcRenderer.invoke(IPC_CHANNELS.AUTH_LOGOUT_ALL),
   getSavedAccounts: (): Promise<SavedAccount[]> => ipcRenderer.invoke(IPC_CHANNELS.AUTH_GET_SAVED_ACCOUNTS),
@@ -75,6 +88,10 @@ const api: OpenNowApi = {
   removeAccount: (userId: string): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.AUTH_REMOVE_ACCOUNT, userId),
   fetchSubscription: (input: SubscriptionFetchRequest) =>
     ipcRenderer.invoke(IPC_CHANNELS.SUBSCRIPTION_FETCH, input),
+  fetchPersistentStorageLocations: (input: PersistentStorageLocationsFetchRequest = {}) =>
+    ipcRenderer.invoke(IPC_CHANNELS.PERSISTENT_STORAGE_LOCATIONS_FETCH, input),
+  resetPersistentStorage: (input: PersistentStorageResetRequest = {}) =>
+    ipcRenderer.invoke(IPC_CHANNELS.PERSISTENT_STORAGE_RESET, input),
   fetchMainGames: (input: GamesFetchRequest) => ipcRenderer.invoke(IPC_CHANNELS.GAMES_FETCH_MAIN, input),
   fetchStorePanels: (input: GamesFetchRequest) => ipcRenderer.invoke(IPC_CHANNELS.GAMES_FETCH_STORE_PANELS, input),
   fetchFeaturedGames: (input: GamesFetchRequest) => ipcRenderer.invoke(IPC_CHANNELS.GAMES_FETCH_FEATURED, input),
@@ -105,6 +122,9 @@ const api: OpenNowApi = {
   },
   updateNativeRenderSurface: (input: NativeRenderSurfaceUpdate) => {
     ipcRenderer.send(IPC_CHANNELS.NATIVE_RENDER_SURFACE, input);
+  },
+  updateNativeShortcuts: (shortcuts) => {
+    ipcRenderer.send(IPC_CHANNELS.NATIVE_UPDATE_SHORTCUTS, shortcuts);
   },
   requestKeyframe: (input: KeyframeRequest) =>
     ipcRenderer.invoke(IPC_CHANNELS.REQUEST_KEYFRAME, input),

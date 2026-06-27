@@ -62,6 +62,8 @@ OpenNOW is a community-built Electron app for playing GeForce NOW from an open-s
 
 Grab the latest desktop build from [GitHub Releases](https://github.com/OpenCloudGaming/OpenNOW/releases). The iOS prototype is available through [TestFlight](https://testflight.apple.com/join/u1XPJKH2).
 
+For macOS users looking for a more performant OpenNOW version, Jayian1890 maintains the separate [OpenNOW-Mac](https://github.com/OpenCloudGaming/OpenNOW-Mac) repository.
+
 ## Documentation
 
 Canonical documentation lives at [opennow.zortos.me](https://opennow.zortos.me):

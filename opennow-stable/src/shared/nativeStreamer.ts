@@ -3,13 +3,14 @@ import type {
   NativeStreamerBackend,
   NativeStreamStats,
   NativeRenderSurface,
+  NativeStreamerShortcutAction,
   NativeStreamerSessionContext,
   NativeVideoTransition,
   NativeVideoBackendCapability,
   SendAnswerRequest,
 } from "./gfn";
 
-export const NATIVE_STREAMER_PROTOCOL_VERSION = 2;
+export const NATIVE_STREAMER_PROTOCOL_VERSION = 3;
 
 export type { NativeStreamerBackend };
 
@@ -71,6 +72,11 @@ export type NativeStreamerCommand =
       id: string;
       type: "stop";
       reason?: string;
+    }
+  | {
+      id: string;
+      type: "update-shortcuts";
+      shortcuts: import("./gfn").NativeStreamerShortcutBindings;
     };
 
 export type NativeStreamerResponse =
@@ -113,6 +119,10 @@ export type NativeStreamerEvent =
   | {
       type: "input-ready";
       protocolVersion: number;
+    }
+  | {
+      type: "shortcut";
+      action: NativeStreamerShortcutAction;
     }
   | {
       type: "video-stall";

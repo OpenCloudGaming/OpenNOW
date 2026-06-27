@@ -93,8 +93,18 @@
     },
     "actions": {
       "signIn": "Sign In",
+      "signInWithQr": "Sign in with QR code",
+      "cancelQrLogin": "Cancel QR login",
       "connecting": "Connecting...",
       "restoringSession": "Restoring Session..."
+    },
+    "qr": {
+      "title": "Scan to sign in",
+      "preparing": "Preparing QR login",
+      "preparingDescription": "Requesting a sign-in code...",
+      "description": "Scan with your phone, then approve the sign-in request. OpenNOW will continue automatically.",
+      "alt": "Login QR code",
+      "expired": "QR login expired. Start a new QR login to try again."
     },
     "accounts": {
       "activeAccount": "Active account",
@@ -377,6 +387,7 @@
     "searchPlaceholder": "Search settings...",
     "noMatches": "No settings matched \"{{query}}\".",
     "sections": {
+      "account": "Account",
       "stream": "Stream",
       "nativeStreamer": "Native Streamer",
       "game": "Game",
@@ -393,6 +404,39 @@
       "refreshPing": "Refresh ping",
       "noRegionsMatch": "No regions match \"{{query}}\""
     },
+    "persistentStorage": {
+      "title": "Persistent Storage",
+      "resetTitle": "Storage Reset",
+      "description": "Persistent Cloud Storage saves downloaded games and supported game data for future sessions.",
+      "detected": "Detected",
+      "usage": "{{used}} used of {{total}}",
+      "usedOutOf": "used out of {{total}}",
+      "meterLabel": "Persistent Storage usage",
+      "usedLegend": "Used ({{value}})",
+      "availableLegend": "Available ({{value}})",
+      "usedLegendUnavailable": "Used unavailable",
+      "availableLegendUnavailable": "Available unavailable",
+      "usageUnavailable": "Persistent storage is active, but usage is unavailable.",
+      "notDetected": "No Persistent Storage add-on was found for the active account.",
+      "region": "Region: {{region}}",
+      "remaining": "{{value}} available",
+      "regionUnavailable": "Region unavailable",
+      "locationTitle": "Storage Location",
+      "currentLocationOption": "{{region}} (Current)",
+      "currentLocationUnavailable": "Current location",
+      "resetWillKeepLocation": "Reset keeps the current storage location: {{region}}.",
+      "resetWillMoveLocation": "Reset will also change storage location to {{region}}.",
+      "locationsLoading": "Loading storage locations...",
+      "locationsFailed": "Failed to load storage locations.",
+      "recommended": "Recommended",
+      "unavailable": "Unavailable",
+      "resetHint": "Deletes all installed games and persistent data from NVIDIA cloud storage. Choose a different location first if you want reset to move storage.",
+      "resetConfirm": "Reset Persistent Storage in {{region}}? This will delete all installed games and persistent data from NVIDIA cloud storage. This action cannot be undone.",
+      "resetStorage": "Reset Storage",
+      "resetting": "Resetting...",
+      "resetSuccess": "Persistent Storage reset complete.",
+      "resetFailed": "Failed to reset Persistent Storage. Please try again."
+    },
     "video": {
       "title": "Video",
       "aspectRatio": "Aspect Ratio",
@@ -403,6 +447,9 @@
       "encoder": "Encoder",
       "colorDepth": "Color Depth",
       "maxBitrate": "Max Bitrate",
+      "recordingBitrate": "Recording Bitrate",
+      "recordingBitrateHint": "Controls local recording video bitrate. Auto lets the browser choose.",
+      "customBitrate": "Custom",
       "appliesAfterRestart": "Applies after app restart.",
       "requiresH265OrAv1": "This mode requires H265 or AV1. Codec will be auto-switched.",
       "testing": "Testing...",
@@ -424,7 +471,8 @@
       "notInWebrtc": "Not in WebRTC",
       "decode": "Decode",
       "encode": "Encode",
-      "profiles": "Profiles:"
+      "profiles": "Profiles:",
+      "linuxHardwareHint": "Linux AppImage diagnostics use Chromium's VA-API/WebRTC capability report. OpenNOW now enables NVIDIA VA-API flags on restart, but proprietary NVIDIA systems still need distro codecs plus libva-nvidia-driver/nvidia-vaapi-driver; if H.265 or GPU stays missing, check your distro's VA-API setup rather than installing more AppImage files."
     },
     "colorQuality": {
       "mostCompatible": "Most compatible",
@@ -601,6 +649,9 @@
       "subtitle": "OpenNOW is shaped by contributors building the client and supporters backing the project behind the scenes.",
       "contributor": "Contributor",
       "supporter": "Supporter",
+      "privateSponsor": "Private sponsor",
+      "projectSponsor": "Project sponsor",
+      "githubSponsors": "GitHub Sponsors",
       "communityDataUnavailable": "Community data unavailable",
       "contributorsTitle": "Contributors",
       "contributorsSubtitle": "People improving OpenNOW in code, fixes, and features.",

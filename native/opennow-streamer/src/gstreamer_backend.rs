@@ -6,6 +6,7 @@ use crate::gstreamer_config::{
     resolve_d3d_fullscreen_sink, resolve_present_max_fps, NATIVE_D3D_FULLSCREEN_ENV,
     NATIVE_PRESENT_MAX_FPS_ENV, PRESENT_LIMITER_AUTO_SENTINEL,
 };
+use crate::gstreamer_platform::{clear_native_shortcut_bindings, set_native_shortcut_bindings};
 use crate::gstreamer_pipeline::{
     current_platform_label, init_gstreamer, native_video_backend_capabilities, GstreamerPipeline,
 };
@@ -124,6 +125,7 @@ impl NativeStreamerBackend for GstreamerBackend {
             }
         }
 
+        set_native_shortcut_bindings(&context.shortcuts);
         self.active_context = Some(context);
         self.pending_remote_ice.clear();
         self.remote_description_set = false;
@@ -192,6 +194,7 @@ impl NativeStreamerBackend for GstreamerBackend {
 
         let present_max_fps = resolve_present_max_fps(context.settings.fps);
         let d3d_fullscreen_sink = resolve_d3d_fullscreen_sink(context.settings.enable_cloud_gsync);
+        set_native_shortcut_bindings(&context.shortcuts);
         pipeline.set_present_max_fps(present_max_fps);
         pipeline.set_d3d_fullscreen_sink(d3d_fullscreen_sink);
         pipeline.configure_stats(&context, prepared.nvst_params.max_bitrate_kbps);
@@ -373,10 +376,22 @@ impl NativeStreamerBackend for GstreamerBackend {
         }
     }
 
+    fn update_shortcuts(&mut self, command: CommandEnvelope) -> BackendReply {
+        let Some(shortcuts) = command.shortcuts else {
+            return BackendReply::response(missing_field(&command.id, "shortcuts"));
+        };
+        set_native_shortcut_bindings(&shortcuts);
+        if let Some(context) = self.active_context.as_mut() {
+            context.shortcuts = shortcuts;
+        }
+        BackendReply::response(Response::Ok { id: command.id })
+    }
+
     fn stop(&mut self, command: CommandEnvelope) -> BackendReply {
         self.active_context = None;
         self.pending_remote_ice.clear();
         self.remote_description_set = false;
+        clear_native_shortcut_bindings();
         if let Some(pipeline) = self.pipeline.take() {
             if let Err(message) = pipeline.stop() {
                 return BackendReply {

@@ -1,13 +1,18 @@
-import { Globe, Check, Search, X, Loader, Zap, Mic, FileDown, Wifi, Trash2, Heart, Users, ExternalLink, Monitor, Keyboard, Download, RefreshCcw, Info, Cpu, AlertTriangle } from "lucide-react";
+import { Globe, Check, Search, X, Loader, Zap, Mic, FileDown, Wifi, Trash2, Heart, Users, ExternalLink, Monitor, Keyboard, Download, RefreshCcw, Info, Cpu, AlertTriangle, MapPin, ScanLine, Gauge, Film, SlidersHorizontal, HardDrive } from "lucide-react";
 import { useState, useCallback, useMemo, useEffect, useRef } from "react";
+import { createPortal } from "react-dom";
 import type { JSX } from "react";
+import { m } from "motion/react";
 
 import type {
   Settings,
   StreamRegion,
   VideoCodec,
   ColorQuality,
+  AspectRatio,
   EntitledResolution,
+  SubscriptionInfo,
+  PersistentStorageLocation,
   VideoAccelerationPreference,
   MicrophoneMode,
   PingResult,
@@ -31,9 +36,10 @@ import {
   USER_FACING_VIDEO_CODEC_OPTIONS,
 } from "@shared/gfn";
 import { formatShortcutForDisplay, normalizeShortcut, shortcutFromKeyboardEvent } from "../shortcuts";
-import { getCodecDecodeBadgeState, type CodecTestResult } from "../lib/codecDiagnostics";
+import { getCodecDecodeBadgeState, shouldShowLinuxHardwareCodecHint, type CodecTestResult } from "../lib/codecDiagnostics";
 import { getAccentColorOption, getAccentColorOptions } from "../lib/uiCustomization";
 import { useTranslation } from "../i18n";
+import { pageTransition, panelSpring } from "./MotionProvider";
 import {
   clearStoredRegionPingResults,
   loadStoredRegionPingResults,
@@ -47,12 +53,26 @@ interface SettingsPageProps {
   codecTesting: boolean;
   onRunCodecTest: () => Promise<void>;
   onSettingChange: <K extends keyof Settings>(key: K, value: Settings[K]) => void;
+  onClose: () => void;
 }
 
-type ThanksLoadState = "idle" | "loading" | "loaded" | "error";
+type SettingsNavItem = {
+  id: SettingsSectionId;
+  label: string;
+  icon: JSX.Element;
+};
 
-type SettingsSectionId = "stream" | "native-streamer" | "game" | "audio" | "input" | "interface" | "about" | "thanks";
+type SettingsNavGroup = {
+  label: string;
+  items: SettingsNavItem[];
+};
+
+type ThanksLoadState = "idle" | "loading" | "loaded" | "error";
+type StorageResetState = "idle" | "resetting" | "success" | "error";
+
+type SettingsSectionId = "account" | "stream" | "native-streamer" | "game" | "audio" | "input" | "interface" | "about" | "thanks";
 type SettingsSearchScopeId =
+  | "account-storage"
   | "stream-region"
   | "stream-video"
   | "stream-codec-diagnostics"
@@ -65,6 +85,22 @@ type SettingsSearchScopeId =
   | "thanks";
 
 const SETTINGS_SCOPE_SEARCH_TERMS: Record<SettingsSearchScopeId, readonly string[]> = {
+  "account-storage": [
+    "account",
+    "subscription",
+    "storage",
+    "persistent storage",
+    "cloud storage",
+    "install to play",
+    "reset storage",
+    "storage reset",
+    "region",
+    "data",
+    "games",
+    "downloads",
+    "available",
+    "used",
+  ],
   "stream-region": [
     "stream",
     "region",
@@ -290,17 +326,20 @@ interface FpsPreset {
   value: number;
 }
 
-interface AspectRatioPreset {
-  value: string;
-  label: string;
-}
+function inferAspectRatioFromResolution(resolution: string): AspectRatio {
+  const parts = resolution.split("x");
+  const width = parseInt(parts[0] ?? "", 10);
+  const height = parseInt(parts[1] ?? "", 10);
+  if (!Number.isFinite(width) || !Number.isFinite(height) || height === 0) {
+    return "16:9";
+  }
 
-const STATIC_ASPECT_RATIO_PRESETS: AspectRatioPreset[] = [
-  { value: "16:9", label: "16:9 (Widescreen)" },
-  { value: "16:10", label: "16:10 (Widescreen)" },
-  { value: "21:9", label: "21:9 (Ultrawide)" },
-  { value: "32:9", label: "32:9 (Super Ultrawide)" },
-];
+  const ratio = width / height;
+  if (Math.abs(ratio - 32 / 9) < 0.08) return "32:9";
+  if (Math.abs(ratio - 21 / 9) < 0.08) return "21:9";
+  if (Math.abs(ratio - 16 / 10) < 0.05) return "16:10";
+  return "16:9";
+}
 
 const STATIC_RESOLUTION_PRESETS: ResolutionPreset[] = [
   { value: "1280x720", label: "720p (16:9)" },
@@ -549,6 +588,16 @@ function formatBytes(value: number): string {
   return `${size.toFixed(digits)} ${units[unitIndex]}`;
 }
 
+function formatStorageGb(value: number | undefined): string | null {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return null;
+  }
+
+  const rounded = Math.round(value * 10) / 10;
+  const display = Number.isInteger(rounded) ? rounded.toFixed(0) : rounded.toFixed(1);
+  return `${display} GB`;
+}
+
 function formatUpdaterTimestamp(value?: number): string | null {
   if (!value) return null;
   try {
@@ -591,7 +640,7 @@ function saveCachedEntitledResolutions(cache: EntitledResolutionsCache): void {
 
 /* ── Component ────────────────────────────────────────────────────── */
 
-export function SettingsPage({ settings, regions, onSettingChange, codecResults, codecTesting, onRunCodecTest }: SettingsPageProps): JSX.Element {
+export function SettingsPage({ settings, regions, onSettingChange, codecResults, codecTesting, onRunCodecTest, onClose }: SettingsPageProps): JSX.Element {
   const { locale, availableLocales, setLocale, t } = useTranslation();
   const [savedIndicator, setSavedIndicator] = useState(false);
   const [activeSection, setActiveSection] = useState<SettingsSectionId>("stream");
@@ -726,7 +775,14 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
 
   // Dynamic entitled resolutions from MES API
   const [entitledResolutions, setEntitledResolutions] = useState<EntitledResolution[]>([]);
+  const [subscriptionInfo, setSubscriptionInfo] = useState<SubscriptionInfo | null>(null);
   const [subscriptionLoading, setSubscriptionLoading] = useState(true);
+  const [storageLocations, setStorageLocations] = useState<PersistentStorageLocation[]>([]);
+  const [storageLocationsLoading, setStorageLocationsLoading] = useState(false);
+  const [storageLocationsError, setStorageLocationsError] = useState<string | null>(null);
+  const [selectedStorageRegion, setSelectedStorageRegion] = useState<string | null>(null);
+  const [storageResetState, setStorageResetState] = useState<StorageResetState>("idle");
+  const [storageResetMessage, setStorageResetMessage] = useState<string | null>(null);
 
   useEffect(() => {
     setToggleStatsInput(settings.shortcutToggleStats);
@@ -817,49 +873,92 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
     }
   }, [activeSection, refreshNativeStreamerStatus, settingsSearch.length]);
 
-  // Fetch subscription data (cached per account; reload only when account changes)
+  const loadSubscriptionData = useCallback(async (isCancelled: () => boolean = () => false): Promise<void> => {
+    setSubscriptionLoading(true);
+
+    try {
+      const sessionResult = await window.openNow.getAuthSession();
+      const session = sessionResult.session;
+      if (!session || isCancelled()) {
+        setEntitledResolutions([]);
+        setSubscriptionInfo(null);
+        setStorageLocations([]);
+        setStorageLocationsError(null);
+        setStorageLocationsLoading(false);
+        return;
+      }
+
+      const userId = session.user.userId;
+      const cached = loadCachedEntitledResolutions();
+      if (cached && cached.userId === userId && !isCancelled()) {
+        setEntitledResolutions(cached.entitledResolutions);
+      }
+
+      const sub = await window.openNow.fetchSubscription({
+        userId,
+      });
+
+      if (!isCancelled()) {
+        setSubscriptionInfo(sub);
+        setEntitledResolutions(sub.entitledResolutions);
+        saveCachedEntitledResolutions({
+          userId,
+          entitledResolutions: sub.entitledResolutions,
+        });
+      }
+
+      if (isCancelled()) {
+        return;
+      }
+
+      if (!sub.storageAddon) {
+        setStorageLocations([]);
+        setStorageLocationsError(null);
+        setStorageLocationsLoading(false);
+        return;
+      }
+
+      setStorageLocationsLoading(true);
+      setStorageLocationsError(null);
+      try {
+        const locationsResult = await window.openNow.fetchPersistentStorageLocations({
+          serverRegionId: sub.serverRegionId,
+          currentRegionCode: sub.storageAddon.regionCode,
+          currentRegionName: sub.storageAddon.regionName,
+        });
+        if (!isCancelled()) {
+          setStorageLocations(locationsResult.locations);
+        }
+      } catch (error) {
+        console.warn("[Settings] Failed to fetch persistent storage locations:", error);
+        if (!isCancelled()) {
+          setStorageLocations([]);
+          setStorageLocationsError(t("settings.persistentStorage.locationsFailed"));
+        }
+      } finally {
+        if (!isCancelled()) {
+          setStorageLocationsLoading(false);
+        }
+      }
+    } catch (err) {
+      console.warn("Failed to fetch subscription for settings:", err);
+      if (!isCancelled()) {
+        setSubscriptionInfo(null);
+        setStorageLocations([]);
+        setStorageLocationsError(null);
+        setStorageLocationsLoading(false);
+      }
+    } finally {
+      if (!isCancelled()) setSubscriptionLoading(false);
+    }
+  }, [t]);
+
+  // Fetch subscription data for dynamic stream presets and persistent storage state.
   useEffect(() => {
     let cancelled = false;
-
-    async function load(): Promise<void> {
-      try {
-        const sessionResult = await window.openNow.getAuthSession();
-        const session = sessionResult.session;
-        if (!session || cancelled) {
-          setEntitledResolutions([]);
-          setSubscriptionLoading(false);
-          return;
-        }
-
-        const userId = session.user.userId;
-        const cached = loadCachedEntitledResolutions();
-        if (cached && cached.userId === userId) {
-          setEntitledResolutions(cached.entitledResolutions);
-          setSubscriptionLoading(false);
-          return;
-        }
-
-        const sub = await window.openNow.fetchSubscription({
-          userId,
-        });
-
-        if (!cancelled) {
-          setEntitledResolutions(sub.entitledResolutions);
-          saveCachedEntitledResolutions({
-            userId,
-            entitledResolutions: sub.entitledResolutions,
-          });
-        }
-      } catch (err) {
-        console.warn("Failed to fetch subscription for settings:", err);
-      } finally {
-        if (!cancelled) setSubscriptionLoading(false);
-      }
-    }
-
-    load();
+    void loadSubscriptionData(() => cancelled);
     return () => { cancelled = true; };
-  }, []);
+  }, [loadSubscriptionData]);
 
   const hasDynamic = entitledResolutions.length > 0;
 
@@ -884,6 +983,102 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
     ? `${formatBytes(updaterState.progress.bytesPerSecond)}/s`
     : null;
   const updaterBadgeLabel = useMemo(() => getUpdaterBadgeLabel(updaterState), [updaterState]);
+  const persistentStorage = subscriptionInfo?.storageAddon;
+  const persistentStorageSizeGb = typeof persistentStorage?.sizeGb === "number" ? persistentStorage.sizeGb : null;
+  const persistentStorageUsedGb = typeof persistentStorage?.usedGb === "number" ? persistentStorage.usedGb : null;
+  const persistentStorageRemainingGb =
+    persistentStorageSizeGb !== null && persistentStorageUsedGb !== null
+      ? Math.max(0, persistentStorageSizeGb - persistentStorageUsedGb)
+      : null;
+  const persistentStorageUsagePercent =
+    persistentStorageSizeGb !== null && persistentStorageSizeGb > 0 && persistentStorageUsedGb !== null
+      ? Math.max(0, Math.min(100, (persistentStorageUsedGb / persistentStorageSizeGb) * 100))
+      : null;
+  const persistentStorageSizeLabel = formatStorageGb(persistentStorage?.sizeGb);
+  const persistentStorageUsedLabel = formatStorageGb(persistentStorage?.usedGb);
+  const persistentStorageRemainingLabel = formatStorageGb(persistentStorageRemainingGb ?? undefined);
+  const persistentStorageUsageLabel = persistentStorage
+    ? persistentStorageUsedLabel && persistentStorageSizeLabel
+      ? t("settings.persistentStorage.usage", {
+        used: persistentStorageUsedLabel,
+        total: persistentStorageSizeLabel,
+      })
+      : t("settings.persistentStorage.usageUnavailable")
+    : subscriptionLoading
+      ? t("app.status.loading")
+      : t("settings.persistentStorage.notDetected");
+  const persistentStorageRegionLabel =
+    persistentStorage?.regionName ??
+    persistentStorage?.regionCode ??
+    (persistentStorage ? t("settings.persistentStorage.regionUnavailable") : null);
+  const persistentStorageDetails = [
+    persistentStorageRegionLabel
+      ? t("settings.persistentStorage.region", { region: persistentStorageRegionLabel })
+      : null,
+    persistentStorageRemainingLabel
+      ? t("settings.persistentStorage.remaining", { value: persistentStorageRemainingLabel })
+      : null,
+  ].filter((value): value is string => Boolean(value));
+  const currentStorageLocationOptionLabel = persistentStorageRegionLabel
+    ? t("settings.persistentStorage.currentLocationOption", { region: persistentStorageRegionLabel })
+    : t("settings.persistentStorage.currentLocationUnavailable");
+  const storageLocationOptions = storageLocations.filter(
+    (location) => location.code !== persistentStorage?.regionCode,
+  );
+  const selectedStorageLocation = selectedStorageRegion
+    ? storageLocations.find((location) => location.code === selectedStorageRegion)
+    : null;
+  const storageResetTargetLabel =
+    selectedStorageLocation?.name ??
+    (selectedStorageRegion && selectedStorageRegion.trim().length > 0 ? selectedStorageRegion : null) ??
+    persistentStorageRegionLabel ??
+    t("settings.persistentStorage.regionUnavailable");
+  const storageResetTargetHint = selectedStorageRegion
+    ? t("settings.persistentStorage.resetWillMoveLocation", { region: storageResetTargetLabel })
+    : t("settings.persistentStorage.resetWillKeepLocation", { region: storageResetTargetLabel });
+
+  useEffect(() => {
+    setSelectedStorageRegion(null);
+  }, [persistentStorage?.regionCode]);
+
+  useEffect(() => {
+    if (
+      selectedStorageRegion &&
+      storageLocations.length > 0 &&
+      !storageLocations.some((location) => location.code === selectedStorageRegion)
+    ) {
+      setSelectedStorageRegion(null);
+    }
+  }, [selectedStorageRegion, storageLocations]);
+
+  const handleResetPersistentStorage = useCallback(async (): Promise<void> => {
+    if (!persistentStorage || storageResetState === "resetting") {
+      return;
+    }
+
+    if (!window.confirm(t("settings.persistentStorage.resetConfirm", { region: storageResetTargetLabel }))) {
+      return;
+    }
+
+    setStorageResetState("resetting");
+    setStorageResetMessage(null);
+
+    try {
+      await window.openNow.resetPersistentStorage({ storageRegion: selectedStorageRegion ?? null });
+      setStorageResetState("success");
+      setStorageResetMessage(t("settings.persistentStorage.resetSuccess"));
+      setSelectedStorageRegion(null);
+      await loadSubscriptionData();
+    } catch (error) {
+      console.error("[Settings] Failed to reset persistent storage:", error);
+      setStorageResetState("error");
+      setStorageResetMessage(
+        error instanceof Error && error.message
+          ? error.message
+          : t("settings.persistentStorage.resetFailed"),
+      );
+    }
+  }, [loadSubscriptionData, persistentStorage, selectedStorageRegion, storageResetState, storageResetTargetLabel, t]);
 
   const selectedResolutionLabel = useMemo(() => {
     if (hasDynamic) {
@@ -905,6 +1100,14 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
     },
     [onSettingChange]
   );
+
+  const handleResolutionChange = useCallback((resolution: string) => {
+    handleChange("resolution", resolution);
+    const aspectRatio = inferAspectRatioFromResolution(resolution);
+    if (settings.aspectRatio !== aspectRatio) {
+      handleChange("aspectRatio", aspectRatio);
+    }
+  }, [handleChange, settings.aspectRatio]);
 
   const openNativeStreamerEnablePrompt = useCallback((): void => {
     if (nativeStreamerEnablePromptCloseTimerRef.current !== null) {
@@ -1618,6 +1821,13 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
   }, [renderPersonLink]);
 
   const renderSupporterCard = useCallback((supporter: ThankYouSupporter) => {
+    const sourceLabel =
+      supporter.isPrivate || supporter.source === "private"
+        ? t("settings.thanks.privateSponsor")
+        : supporter.source === "custom"
+          ? t("settings.thanks.projectSponsor")
+          : t("settings.thanks.githubSponsors");
+
     return renderPersonLink(
       supporter,
       <>
@@ -1634,13 +1844,13 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
             <span className="settings-person-badge settings-person-badge--supporter">{t("settings.thanks.supporter")}</span>
           </div>
           <div className="settings-person-meta">
-            <span>{supporter.isPrivate ? "Private sponsor" : "GitHub Sponsors"}</span>
+            <span>{sourceLabel}</span>
             {supporter.profileUrl && <ExternalLink size={14} />}
           </div>
         </div>
       </>,
     );
-  }, [renderPersonLink]);
+  }, [renderPersonLink, t]);
 
   const thanksTabContent = (
     <div className="settings-thanks-layout">
@@ -1754,6 +1964,8 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
     return searchTokens.every((token) => searchableWords.some((word) => tokenMatchesWord(token, word)));
   };
 
+  const showAccountStorage = showAll ? scopeMatchesSearch("account-storage") : activeSection === "account";
+  const showAccount = showAccountStorage;
   const showStreamRegion = showAll ? scopeMatchesSearch("stream-region") : activeSection === "stream";
   const showStreamVideo = showAll ? scopeMatchesSearch("stream-video") : activeSection === "stream";
   const showStreamCodecDiagnostics = showAll ? scopeMatchesSearch("stream-codec-diagnostics") : activeSection === "stream";
@@ -1765,88 +1977,113 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
   const showInterface = showAll ? scopeMatchesSearch("interface") : activeSection === "interface";
   const showAbout = showAll ? scopeMatchesSearch("about") : activeSection === "about";
   const showThanks = showAll ? scopeMatchesSearch("thanks") : activeSection === "thanks";
-  const hasAnySearchMatches = showStream || showNativeStreamer || showGame || showAudio || showInput || showInterface || showAbout || showThanks;
+  const hasAnySearchMatches = showAccount || showStream || showNativeStreamer || showGame || showAudio || showInput || showInterface || showAbout || showThanks;
   const shouldRenderSettingsSections = showAll || activeSection !== "thanks";
 
-  return (
-    <div className="settings-page">
-      <header className="settings-header">
-        <h1>{t("settings.title")}</h1>
-        <div className={`settings-saved ${savedIndicator ? "visible" : ""}`}>
-          <Check size={14} />
-          {t("settings.saved")}
-        </div>
-      </header>
+  const settingsNavGroups = useMemo<SettingsNavGroup[]>(() => [
+    {
+      label: "Account",
+      items: [
+        { id: "account", label: t("settings.sections.account"), icon: <Users size={15} /> },
+      ],
+    },
+    {
+      label: "Streaming",
+      items: [
+        { id: "stream", label: t("settings.sections.stream"), icon: <Wifi size={15} /> },
+        { id: "native-streamer", label: t("settings.sections.nativeStreamer"), icon: <Cpu size={15} /> },
+      ],
+    },
+    {
+      label: "Controls",
+      items: [
+        { id: "game", label: t("settings.sections.game"), icon: <Globe size={15} /> },
+        { id: "audio", label: t("settings.sections.audio"), icon: <Mic size={15} /> },
+        { id: "input", label: t("settings.sections.input"), icon: <Keyboard size={15} /> },
+      ],
+    },
+    {
+      label: "App",
+      items: [
+        { id: "interface", label: t("settings.sections.interface"), icon: <Monitor size={15} /> },
+        { id: "about", label: t("settings.sections.about"), icon: <Info size={15} /> },
+        { id: "thanks", label: t("settings.sections.thanks"), icon: <Heart size={15} /> },
+      ],
+    },
+  ], [t, locale]);
 
-      {nativeStreamerEnablePromptVisible && (
-        <div
-          className={`native-streamer-warning ${nativeStreamerEnablePromptClosing ? "native-streamer-warning--closing" : ""}`}
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="native-streamer-warning-title"
-          aria-describedby="native-streamer-warning-copy"
-        >
-          <button
-            type="button"
-            className="native-streamer-warning-backdrop"
-            aria-label={t("app.actions.cancel")}
-            aria-hidden="true"
-            tabIndex={-1}
-            onClick={closeNativeStreamerEnablePrompt}
-          />
-          <div ref={nativeStreamerEnablePromptRef} className="native-streamer-warning-card" tabIndex={-1}>
-            <div className="native-streamer-warning-kicker">
-              <AlertTriangle size={14} />
-              {t("settings.nativeStreamer.enablePromptKicker")}
-            </div>
-            <h3 id="native-streamer-warning-title" className="native-streamer-warning-title">
-              {t("settings.nativeStreamer.enablePromptTitle")}
-            </h3>
-            <p id="native-streamer-warning-copy" className="native-streamer-warning-text">
-              {t("settings.nativeStreamer.enablePromptBody")}
-            </p>
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === "Escape" && !nativeStreamerEnablePromptVisible) {
+        event.preventDefault();
+        onClose();
+      }
+    };
 
-            <div className="native-streamer-warning-list">
-              <div className="native-streamer-warning-list-item">
-                <Cpu size={16} />
-                <span>{t("settings.nativeStreamer.enablePromptNewSessions")}</span>
-              </div>
-              <div className="native-streamer-warning-list-item">
-                <Keyboard size={16} />
-                <span>{t("settings.nativeStreamer.enablePromptShortcuts")}</span>
-              </div>
-              <div className="native-streamer-warning-list-item">
-                <Monitor size={16} />
-                <span>{t("settings.nativeStreamer.enablePromptAltTab")}</span>
-              </div>
-            </div>
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    window.addEventListener("keydown", handleKeyDown);
 
-            <div className="native-streamer-warning-actions">
-              <button
-                type="button"
-                className="native-streamer-warning-btn native-streamer-warning-btn--secondary"
-                onClick={closeNativeStreamerEnablePrompt}
-              >
-                {t("settings.nativeStreamer.enablePromptCancel")}
-              </button>
-              <button
-                type="button"
-                className="native-streamer-warning-btn native-streamer-warning-btn--primary"
-                onClick={confirmNativeStreamerEnablePrompt}
-                ref={nativeStreamerEnablePromptConfirmRef}
-                autoFocus
-              >
-                {t("settings.nativeStreamer.enablePromptEnable")}
-              </button>
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [nativeStreamerEnablePromptVisible, onClose]);
+
+  if (typeof document === "undefined") {
+    return <></>;
+  }
+
+  return createPortal(
+    <m.div
+      className="settings-overlay"
+      role="dialog"
+      aria-modal="true"
+      aria-label={t("settings.title")}
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      transition={pageTransition}
+    >
+      <m.button
+        type="button"
+        className="settings-overlay-backdrop"
+        onClick={onClose}
+        aria-label={t("app.actions.close")}
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
+        transition={pageTransition}
+      />
+
+      <m.div
+        className="settings-modal"
+        onClick={(event) => event.stopPropagation()}
+        initial={{ opacity: 0, y: 18, scale: 0.985 }}
+        animate={{ opacity: 1, y: 0, scale: 1 }}
+        exit={{ opacity: 0, y: 10, scale: 0.99 }}
+        transition={panelSpring}
+      >
+        <header className="settings-modal-header">
+          <h1>{t("settings.title")}</h1>
+          <div className="settings-modal-header-actions">
+            <div className={`settings-saved ${savedIndicator ? "visible" : ""}`}>
+              <Check size={14} />
+              {t("settings.saved")}
             </div>
-            <div className="native-streamer-warning-hint">
-              <kbd>Esc</kbd> {t("settings.nativeStreamer.enablePromptEsc")}
-            </div>
+            <button
+              type="button"
+              className="settings-modal-close"
+              onClick={onClose}
+              title={t("app.actions.close")}
+              aria-label={t("app.actions.close")}
+            >
+              <X size={18} />
+            </button>
           </div>
-        </div>
-      )}
+        </header>
 
-      <div className="settings-layout">
+        <div className="settings-layout">
 
       {/* ── Sidebar ───────────────────────────────────────── */}
       <nav className="settings-sidebar">
@@ -1865,28 +2102,24 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
             </button>
           )}
         </div>
-        <nav className="settings-nav">
-          {([
-            { id: "stream" as SettingsSectionId, label: t("settings.sections.stream"), icon: <Wifi size={15} /> },
-            { id: "native-streamer" as SettingsSectionId, label: t("settings.sections.nativeStreamer"), icon: <Cpu size={15} /> },
-            { id: "game" as SettingsSectionId, label: t("settings.sections.game"), icon: <Globe size={15} /> },
-            { id: "audio" as SettingsSectionId, label: t("settings.sections.audio"), icon: <Mic size={15} /> },
-            { id: "input" as SettingsSectionId, label: t("settings.sections.input"), icon: <Keyboard size={15} /> },
-            { id: "interface" as SettingsSectionId, label: t("settings.sections.interface"), icon: <Monitor size={15} /> },
-            { id: "about" as SettingsSectionId, label: t("settings.sections.about"), icon: <Info size={15} /> },
-            { id: "thanks" as SettingsSectionId, label: t("settings.sections.thanks"), icon: <Heart size={15} /> },
-          ]).map(item => (
-            <button
-              key={item.id}
-              type="button"
-              className={`settings-nav-item ${!showAll && activeSection === item.id ? "active" : ""}`}
-              onClick={() => { setActiveSection(item.id); setSettingsSearch(""); }}
-            >
-              {item.icon}
-              {item.label}
-            </button>
+        <div className="settings-nav">
+          {settingsNavGroups.map((group) => (
+            <div key={group.label} className="settings-nav-group">
+              <div className="settings-nav-group-label">{group.label}</div>
+              {group.items.map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  className={`settings-nav-item ${!showAll && activeSection === item.id ? "active" : ""}`}
+                  onClick={() => { setActiveSection(item.id); setSettingsSearch(""); }}
+                >
+                  {item.icon}
+                  {item.label}
+                </button>
+              ))}
+            </div>
           ))}
-        </nav>
+        </div>
       </nav>
 
       {/* ── Content ───────────────────────────────────────── */}
@@ -1902,24 +2135,160 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
             {showThanks && thanksTabContent}
             {shouldRenderSettingsSections && (
               <>
+            {showAccount && (
+              <section className="settings-section settings-storage-section">
+                {showAll && <div className="settings-section-context">{t("settings.sections.account")}</div>}
+                <div className="settings-section-header settings-section-header--with-copy">
+                  <HardDrive size={18} />
+                  <div>
+                    <h2>{t("settings.persistentStorage.title")}</h2>
+                    <p className="settings-section-subtitle">{t("settings.persistentStorage.description")}</p>
+                  </div>
+                </div>
+                <div className="settings-storage-card">
+                  <div className="settings-storage-summary">
+                    <div className="settings-storage-headline">
+                      <HardDrive size={18} />
+                      {persistentStorage ? (
+                        persistentStorageUsedLabel && persistentStorageSizeLabel ? (
+                          <span>
+                            <strong>{persistentStorageUsedLabel}</strong>{" "}
+                            {t("settings.persistentStorage.usedOutOf", { total: persistentStorageSizeLabel })}
+                          </span>
+                        ) : (
+                          <span>{t("settings.persistentStorage.usageUnavailable")}</span>
+                        )
+                      ) : (
+                        <span>{persistentStorageUsageLabel}</span>
+                      )}
+                    </div>
+                    {persistentStorage ? (
+                      <span className="settings-inline-badge settings-inline-badge--codec settings-inline-badge--codec-gpu">
+                        {t("settings.persistentStorage.detected")}
+                      </span>
+                    ) : null}
+                  </div>
+
+                  {persistentStorageUsagePercent !== null ? (
+                    <div
+                      className="settings-storage-meter"
+                      role="progressbar"
+                      aria-label={t("settings.persistentStorage.meterLabel")}
+                      aria-valuemin={0}
+                      aria-valuemax={persistentStorageSizeGb ?? 100}
+                      aria-valuenow={persistentStorageUsedGb ?? 0}
+                    >
+                      <div
+                        className="settings-storage-meter-used"
+                        style={{ width: `${persistentStorageUsagePercent}%` }}
+                      />
+                    </div>
+                  ) : (
+                    <div className="settings-storage-meter settings-storage-meter--empty" />
+                  )}
+
+                  <div className="settings-storage-legend">
+                    <span>
+                      <span className="settings-storage-legend-dot settings-storage-legend-dot--used" />
+                      {persistentStorageUsedLabel
+                        ? t("settings.persistentStorage.usedLegend", { value: persistentStorageUsedLabel })
+                        : t("settings.persistentStorage.usedLegendUnavailable")}
+                    </span>
+                    <span>
+                      <span className="settings-storage-legend-dot settings-storage-legend-dot--available" />
+                      {persistentStorageRemainingLabel
+                        ? t("settings.persistentStorage.availableLegend", { value: persistentStorageRemainingLabel })
+                        : t("settings.persistentStorage.availableLegendUnavailable")}
+                    </span>
+                  </div>
+
+                  <div className="settings-storage-location-control">
+                    <label className="settings-storage-location-copy" htmlFor="persistent-storage-reset-region">
+                      <span>{t("settings.persistentStorage.locationTitle")}</span>
+                      <span>{storageResetTargetHint}</span>
+                      {storageLocationsLoading ? (
+                        <span>{t("settings.persistentStorage.locationsLoading")}</span>
+                      ) : storageLocationsError ? (
+                        <span className="settings-storage-message settings-storage-message--error">{storageLocationsError}</span>
+                      ) : null}
+                    </label>
+                    <select
+                      id="persistent-storage-reset-region"
+                      className="settings-storage-select"
+                      value={selectedStorageRegion ?? ""}
+                      disabled={!persistentStorage || storageLocationsLoading || storageResetState === "resetting"}
+                      onChange={(event) => {
+                        const value = event.target.value.trim();
+                        setSelectedStorageRegion(value.length > 0 ? value : null);
+                      }}
+                    >
+                      <option value="">{currentStorageLocationOptionLabel}</option>
+                      {storageLocationOptions.map((location) => (
+                        <option key={location.code} value={location.code} disabled={!location.isAvailable}>
+                          {location.name}
+                          {location.isRecommended ? ` (${t("settings.persistentStorage.recommended")})` : ""}
+                          {!location.isAvailable ? ` (${t("settings.persistentStorage.unavailable")})` : ""}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="settings-storage-footer">
+                    <div className="settings-storage-meta">
+                      {persistentStorageDetails.length > 0 ? (
+                        <span>{persistentStorageDetails.join(" / ")}</span>
+                      ) : null}
+                      <span>{t("settings.persistentStorage.resetHint")}</span>
+                      {storageResetMessage ? (
+                        <span className={`settings-storage-message settings-storage-message--${storageResetState}`}>
+                          {storageResetMessage}
+                        </span>
+                      ) : null}
+                    </div>
+                    <button
+                      type="button"
+                      className="settings-delete-cache-btn settings-storage-reset-btn"
+                      disabled={!persistentStorage || subscriptionLoading || storageResetState === "resetting"}
+                      onClick={() => {
+                        void handleResetPersistentStorage();
+                      }}
+                    >
+                      {storageResetState === "resetting" ? (
+                        <Loader size={16} className="spin" />
+                      ) : (
+                        <Trash2 size={16} />
+                      )}
+                      {storageResetState === "resetting"
+                        ? t("settings.persistentStorage.resetting")
+                        : t("settings.persistentStorage.resetStorage")}
+                    </button>
+                  </div>
+                </div>
+              </section>
+            )}
             {/* ═══ STREAM ════════════════════════════════════ */}
             {showStream && (
               <>
                 {/* ── Region ── */}
                 {showStreamRegion && (
-                <section className="settings-section">
+                <section className="settings-section settings-section--dropdown">
                   {showAll && <div className="settings-section-context">{t("settings.sections.stream")}</div>}
                   <div className="settings-section-header">
+                    <MapPin size={18} />
                     <h2>{t("settings.region.title")}</h2>
                   </div>
                   <div className="settings-rows">
+                    <div className="settings-row settings-row--column settings-row--region">
                     <div className="region-selector">
               <button
                 className={`region-selected ${regionDropdownOpen ? "open" : ""}`}
                 onClick={() => setRegionDropdownOpen(!regionDropdownOpen)}
                 type="button"
               >
-                <span className="region-selected-name">{selectedRegionName}</span>
+                <span className="region-selected-leading">
+                  <Globe size={15} className="region-selected-icon" />
+                  <span className="region-selected-name">{selectedRegionName || t("settings.region.autoBest")}</span>
+                </span>
                 {!settings.region && bestRegionUrl && (
                   (() => {
                     const bestRegion = regions.find(r => r.url === bestRegionUrl);
@@ -2067,7 +2436,8 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                   </div>
                 </div>
               )}
-                </div>
+                    </div>
+                    </div>
               </div>
             </section>
 
@@ -2076,28 +2446,14 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
             <section className="settings-section">
               {showAll && <div className="settings-section-context">{t("settings.sections.stream")}</div>}
               <div className="settings-section-header">
+                <Monitor size={18} />
                 <h2>{t("settings.video.title")}</h2>
               </div>
               <div className="settings-rows">
-                {/* Aspect Ratio — static chips */}
-                <div className="settings-row">
-                  <label className="settings-label">{t("settings.video.aspectRatio")}</label>
-                  <div className="settings-chip-row">
-                    {STATIC_ASPECT_RATIO_PRESETS.map((preset) => (
-                      <button
-                        key={preset.value}
-                        className={`settings-chip ${settings.aspectRatio === preset.value ? "active" : ""}`}
-                        onClick={() => { handleChange("aspectRatio", preset.value as any); }}
-                      >
-                        <span>{preset.label}</span>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
                 {/* Resolution — grouped dropdown */}
                 <div className="settings-row settings-row--column">
-                  <label className="settings-label">
+                  <label className="settings-label settings-label--with-icon">
+                    <ScanLine size={15} className="settings-label-icon" />
                     {t("settings.video.resolution")}
                     {subscriptionLoading && <Loader size={12} className="settings-loading-icon" />}
                   </label>
@@ -2122,7 +2478,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                                 key={res.value}
                                 type="button"
                                 className={`settings-dropdown-item ${settings.resolution === res.value ? "active" : ""}`}
-                                onClick={() => { handleChange("resolution", res.value); setResolutionDropdownOpen(false); }}
+                                onClick={() => { handleResolutionChange(res.value); setResolutionDropdownOpen(false); }}
                               >
                                 <span>{res.label}</span>
                                 {settings.resolution === res.value && <Check size={14} className="settings-dropdown-check" />}
@@ -2137,7 +2493,10 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
 
                 {/* FPS — dynamic or static chips */}
                 <div className="settings-row">
-                  <label className="settings-label">{t("settings.video.fps")}</label>
+                  <label className="settings-label settings-label--with-icon">
+                    <Gauge size={15} className="settings-label-icon" />
+                    {t("settings.video.fps")}
+                  </label>
                   <div className="settings-chip-row">
                     {(hasDynamic ? dynamicFpsOptions.map((v) => ({ value: v })) : STATIC_FPS_PRESETS).map((preset) => (
                       <button
@@ -2153,7 +2512,10 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
 
                 {/* Codec */}
                 <div className="settings-row">
-                  <label className="settings-label">{t("settings.video.codec")}</label>
+                  <label className="settings-label settings-label--with-icon">
+                    <Film size={15} className="settings-label-icon" />
+                    {t("settings.video.codec")}
+                  </label>
                   <div className="settings-chip-row">
                     {codecOptions.map((codec) => {
                       const badgeState = getCodecDecodeBadgeState(codec, codecResults, codecTesting);
@@ -2175,49 +2537,12 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                   </div>
                 </div>
 
-                <div className="settings-row settings-row--column">
-                  <label className="settings-label">{t("settings.video.decoder")}</label>
-                  <div className="settings-chip-row">
-                    {accelerationOptions.map((option) => (
-                      <button
-                        key={`decoder-${option.value}`}
-                        className={`settings-chip ${settings.decoderPreference === option.value ? "active" : ""}`}
-                        onClick={() => handleChange("decoderPreference", option.value)}
-                      >
-                        {option.value === "auto"
-                          ? t("app.labels.auto")
-                          : option.value === "hardware"
-                            ? t("app.labels.hardware")
-                            : t("settings.video.softwareCpu")}
-                      </button>
-                    ))}
-                  </div>
-                  <span className="settings-subtle-hint">{t("settings.video.appliesAfterRestart")}</span>
-                </div>
-
-                <div className="settings-row settings-row--column">
-                  <label className="settings-label">{t("settings.video.encoder")}</label>
-                  <div className="settings-chip-row">
-                    {accelerationOptions.map((option) => (
-                      <button
-                        key={`encoder-${option.value}`}
-                        className={`settings-chip ${settings.encoderPreference === option.value ? "active" : ""}`}
-                        onClick={() => handleChange("encoderPreference", option.value)}
-                      >
-                        {option.value === "auto"
-                          ? t("app.labels.auto")
-                          : option.value === "hardware"
-                            ? t("app.labels.hardware")
-                            : t("settings.video.softwareCpu")}
-                      </button>
-                    ))}
-                  </div>
-                  <span className="settings-subtle-hint">{t("settings.video.appliesAfterRestart")}</span>
-                </div>
-
                 {/* Color Quality */}
                 <div className="settings-row settings-row--column">
-                  <label className="settings-label">{t("settings.video.colorDepth")}</label>
+                  <label className="settings-label settings-label--with-icon">
+                    <SlidersHorizontal size={15} className="settings-label-icon" />
+                    {t("settings.video.colorDepth")}
+                  </label>
                   <div className="settings-chip-row">
                     {colorQualityOptions.map((opt) => {
                       const needsHevc = colorQualityRequiresHevc(opt.value);
@@ -2248,7 +2573,10 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                 {/* Bitrate slider */}
                 <div className="settings-row settings-row--column">
                   <div className="settings-row-top">
-                    <label className="settings-label">{t("settings.video.maxBitrate")}</label>
+                    <label className="settings-label settings-label--with-icon">
+                      <HardDrive size={15} className="settings-label-icon" />
+                      {t("settings.video.maxBitrate")}
+                    </label>
                     <span className="settings-value-badge">{settings.maxBitrateMbps} Mbps</span>
                   </div>
                   <input
@@ -2260,6 +2588,44 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                     value={settings.maxBitrateMbps}
                     onChange={(e) => handleChange("maxBitrateMbps", parseInt(e.target.value, 10))}
                   />
+                </div>
+
+                <div className="settings-row settings-row--column">
+                  <div className="settings-row-top">
+                    <label className="settings-label">{t("settings.video.recordingBitrate")}</label>
+                    <span className="settings-value-badge">
+                      {settings.recordingBitrateMbps === null
+                        ? t("app.labels.auto")
+                        : `${settings.recordingBitrateMbps} Mbps`}
+                    </span>
+                  </div>
+                  <div className="settings-chip-row">
+                    <button
+                      type="button"
+                      className={`settings-chip ${settings.recordingBitrateMbps === null ? "active" : ""}`}
+                      onClick={() => handleChange("recordingBitrateMbps", null)}
+                    >
+                      <span>{t("app.labels.auto")}</span>
+                    </button>
+                    <button
+                      type="button"
+                      className={`settings-chip ${settings.recordingBitrateMbps !== null ? "active" : ""}`}
+                      onClick={() => handleChange("recordingBitrateMbps", settings.recordingBitrateMbps ?? 75)}
+                    >
+                      <span>{t("settings.video.customBitrate")}</span>
+                    </button>
+                  </div>
+                  <input
+                    type="range"
+                    className="settings-slider"
+                    min={5}
+                    max={200}
+                    step={5}
+                    value={settings.recordingBitrateMbps ?? 75}
+                    disabled={settings.recordingBitrateMbps === null}
+                    onChange={(e) => handleChange("recordingBitrateMbps", parseInt(e.target.value, 10))}
+                  />
+                  <span className="settings-subtle-hint">{t("settings.video.recordingBitrateHint")}</span>
                 </div>
 
                 <div className="settings-row settings-row--column">
@@ -2318,15 +2684,15 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
             </section>
 
             )}
-            {showStreamCodecDiagnostics && (
+            {(showStreamVideo || showStreamCodecDiagnostics) && (
             <div className="settings-advanced-wrap">
               <button
                 type="button"
                 className="settings-advanced-toggle"
                 onClick={() => setCodecAdvancedOpen(v => !v)}
               >
-                <Zap size={14} />
-                {t("settings.codecDiagnostics.advanced")}
+                <SlidersHorizontal size={14} />
+                Advanced
                 <svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor" className={`settings-advanced-chevron ${codecAdvancedOpen ? "flipped" : ""}`}>
                   <path d="M4.47 5.97a.75.75 0 0 1 1.06 0L8 8.44l2.47-2.47a.75.75 0 1 1 1.06 1.06l-3 3a.75.75 0 0 1-1.06 0l-3-3a.75.75 0 0 1 0-1.06Z" />
                 </svg>
@@ -2335,11 +2701,65 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                 <section className="settings-section">
                   {showAll && <div className="settings-section-context">{t("settings.sections.stream")}</div>}
                   <div className="settings-section-header">
-                    <h2>{t("settings.codecDiagnostics.title")}</h2>
+                    <Cpu size={18} />
+                    <h2>Advanced</h2>
                   </div>
                   <div className="settings-rows">
+                    {showStreamVideo && (
+                      <>
+                        <div className="settings-row settings-row--column">
+                          <label className="settings-label settings-label--with-icon">
+                            <Cpu size={15} className="settings-label-icon" />
+                            {t("settings.video.decoder")}
+                          </label>
+                          <div className="settings-chip-row">
+                            {accelerationOptions.map((option) => (
+                              <button
+                                key={`decoder-${option.value}`}
+                                className={`settings-chip ${settings.decoderPreference === option.value ? "active" : ""}`}
+                                onClick={() => handleChange("decoderPreference", option.value)}
+                              >
+                                {option.value === "auto"
+                                  ? t("app.labels.auto")
+                                  : option.value === "hardware"
+                                    ? t("app.labels.hardware")
+                                    : t("settings.video.softwareCpu")}
+                              </button>
+                            ))}
+                          </div>
+                          <span className="settings-subtle-hint">{t("settings.video.appliesAfterRestart")}</span>
+                        </div>
+
+                        <div className="settings-row settings-row--column">
+                          <label className="settings-label settings-label--with-icon">
+                            <Film size={15} className="settings-label-icon" />
+                            {t("settings.video.encoder")}
+                          </label>
+                          <div className="settings-chip-row">
+                            {accelerationOptions.map((option) => (
+                              <button
+                                key={`encoder-${option.value}`}
+                                className={`settings-chip ${settings.encoderPreference === option.value ? "active" : ""}`}
+                                onClick={() => handleChange("encoderPreference", option.value)}
+                              >
+                                {option.value === "auto"
+                                  ? t("app.labels.auto")
+                                  : option.value === "hardware"
+                                    ? t("app.labels.hardware")
+                                    : t("settings.video.softwareCpu")}
+                              </button>
+                            ))}
+                          </div>
+                          <span className="settings-subtle-hint">{t("settings.video.appliesAfterRestart")}</span>
+                        </div>
+                      </>
+                    )}
+
+                    {showStreamCodecDiagnostics && (
+                      <>
                     <div className="settings-row codec-test-row">
-                      <label className="settings-label codec-test-description">
+                      <label className="settings-label codec-test-description settings-label--with-icon">
+                        <Zap size={15} className="settings-label-icon" />
                         {t("settings.codecDiagnostics.description")}
                       </label>
                       <button
@@ -2363,6 +2783,11 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                     </div>
                     {codecTestOpen && codecResults && (
                       <div className="codec-results">
+                        {shouldShowLinuxHardwareCodecHint(codecResults) ? (
+                          <div className="codec-result-hint">
+                            {t("settings.codecDiagnostics.linuxHardwareHint")}
+                          </div>
+                        ) : null}
                         {codecResults.map((result) => (
                           <div key={result.codec} className="codec-result-card">
                             <div className="codec-result-header">
@@ -2400,6 +2825,8 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                           </div>
                         ))}
                       </div>
+                    )}
+                      </>
                     )}
                   </div>
                 </section>
@@ -3634,7 +4061,77 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
           </>
         )}
       </div>
-      </div>
-    </div>
+        </div>
+      </m.div>
+
+      {nativeStreamerEnablePromptVisible && (
+        <div
+          className={`native-streamer-warning ${nativeStreamerEnablePromptClosing ? "native-streamer-warning--closing" : ""}`}
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="native-streamer-warning-title"
+          aria-describedby="native-streamer-warning-copy"
+        >
+          <button
+            type="button"
+            className="native-streamer-warning-backdrop"
+            aria-label={t("app.actions.cancel")}
+            aria-hidden="true"
+            tabIndex={-1}
+            onClick={closeNativeStreamerEnablePrompt}
+          />
+          <div ref={nativeStreamerEnablePromptRef} className="native-streamer-warning-card" tabIndex={-1}>
+            <div className="native-streamer-warning-kicker">
+              <AlertTriangle size={14} />
+              {t("settings.nativeStreamer.enablePromptKicker")}
+            </div>
+            <h3 id="native-streamer-warning-title" className="native-streamer-warning-title">
+              {t("settings.nativeStreamer.enablePromptTitle")}
+            </h3>
+            <p id="native-streamer-warning-copy" className="native-streamer-warning-text">
+              {t("settings.nativeStreamer.enablePromptBody")}
+            </p>
+
+            <div className="native-streamer-warning-list">
+              <div className="native-streamer-warning-list-item">
+                <Cpu size={16} />
+                <span>{t("settings.nativeStreamer.enablePromptNewSessions")}</span>
+              </div>
+              <div className="native-streamer-warning-list-item">
+                <Keyboard size={16} />
+                <span>{t("settings.nativeStreamer.enablePromptShortcuts")}</span>
+              </div>
+              <div className="native-streamer-warning-list-item">
+                <Monitor size={16} />
+                <span>{t("settings.nativeStreamer.enablePromptAltTab")}</span>
+              </div>
+            </div>
+
+            <div className="native-streamer-warning-actions">
+              <button
+                type="button"
+                className="native-streamer-warning-btn native-streamer-warning-btn--secondary"
+                onClick={closeNativeStreamerEnablePrompt}
+              >
+                {t("settings.nativeStreamer.enablePromptCancel")}
+              </button>
+              <button
+                type="button"
+                className="native-streamer-warning-btn native-streamer-warning-btn--primary"
+                onClick={confirmNativeStreamerEnablePrompt}
+                ref={nativeStreamerEnablePromptConfirmRef}
+                autoFocus
+              >
+                {t("settings.nativeStreamer.enablePromptEnable")}
+              </button>
+            </div>
+            <div className="native-streamer-warning-hint">
+              <kbd>Esc</kbd> {t("settings.nativeStreamer.enablePromptEsc")}
+            </div>
+          </div>
+        </div>
+      )}
+    </m.div>,
+    document.body,
   );
 }
