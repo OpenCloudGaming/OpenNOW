@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 
 const require = createRequire(import.meta.url);
 
@@ -107,31 +108,14 @@ if (!hasElectronBinary()) {
   rmSync(resolvedDistRoot, { recursive: true, force: true });
   mkdirSync(resolvedDistRoot, { recursive: true });
 
-  const tarResult = spawnSync("tar", ["-xf", zipPath, "-C", resolvedDistRoot], {
-    stdio: "inherit",
-    shell: false,
-  });
+  const electronRequire = createRequire(electronPackageJson);
+  const { extract } = await import(pathToFileURL(electronRequire.resolve("@electron-internal/extract-zip")).href);
 
-  if (tarResult.status !== 0 && platform === "win32") {
-    const expandResult = spawnSync(
-      "powershell.exe",
-      [
-        "-NoProfile",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-Command",
-        "Expand-Archive -LiteralPath $args[0] -DestinationPath $args[1] -Force",
-        zipPath,
-        resolvedDistRoot,
-      ],
-      { stdio: "inherit" },
-    );
-
-    if (expandResult.status !== 0) {
-      process.exit(expandResult.status ?? 1);
-    }
-  } else if (tarResult.status !== 0) {
-    process.exit(tarResult.status ?? 1);
+  try {
+    await extract(zipPath, { dir: resolvedDistRoot });
+  } catch (error) {
+    console.error("Failed to extract Electron archive:", error);
+    process.exit(1);
   }
 
   const extractedTypeDef = path.join(resolvedDistRoot, "electron.d.ts");
