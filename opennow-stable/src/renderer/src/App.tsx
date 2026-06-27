@@ -10,6 +10,7 @@ import type {
   CatalogBrowseResult,
   CatalogFilterGroup,
   CatalogSortOption,
+  DirectLaunchRequest,
   ExistingSessionStrategy,
   GameInfo,
   GamePanelResult,
@@ -30,6 +31,7 @@ import {
   buildNativeStreamerSessionContext,
   DEFAULT_KEYBOARD_LAYOUT,
   getDefaultStreamPreferences,
+  isGameInLibrary,
   isSessionAdsRequired,
 } from "@shared/gfn";
 import { GfnWebRtcClient } from "./gfn/webrtcClient";
@@ -103,10 +105,90 @@ type AppStyle = CSSProperties & {
   "--game-poster-scale"?: string;
 };
 
+interface DirectLaunchTarget {
+  game: GameInfo;
+  variantId?: string;
+}
+
 function getAppStyle(posterSizeScale: number): AppStyle {
   return {
     "--game-poster-scale": String(posterSizeScale),
   };
+}
+
+function normalizeDirectLaunchText(value: string | undefined): string {
+  return value?.trim().replace(/\s+/g, " ").toLowerCase() ?? "";
+}
+
+function directLaunchOwnershipScore(game: GameInfo): number {
+  return game.isInLibrary || isGameInLibrary(game) ? 10 : 0;
+}
+
+function findDirectLaunchTargetByTitle(catalog: GameInfo[], title: string): DirectLaunchTarget | null {
+  const normalizedTitle = normalizeDirectLaunchText(title);
+  if (!normalizedTitle) return null;
+
+  let best: { target: DirectLaunchTarget; score: number } | null = null;
+  for (const game of catalog) {
+    const gameTitle = normalizeDirectLaunchText(game.title);
+    const shortName = normalizeDirectLaunchText(game.shortName);
+    let score = 0;
+    if (gameTitle === normalizedTitle) {
+      score = 100;
+    } else if (shortName && shortName === normalizedTitle) {
+      score = 95;
+    } else if (gameTitle.startsWith(normalizedTitle)) {
+      score = 80;
+    } else if (matchesGameSearch(game, title)) {
+      score = 60;
+    }
+
+    if (score === 0) continue;
+    score += directLaunchOwnershipScore(game);
+    if (!best || score > best.score) {
+      best = { target: { game }, score };
+    }
+  }
+
+  return best?.target ?? null;
+}
+
+function createSyntheticDirectLaunchGame(request: DirectLaunchRequest, appId: string): GameInfo {
+  const title = request.title?.trim() || `GFN App ${appId}`;
+  return {
+    id: `direct-launch-${appId}`,
+    launchAppId: appId,
+    title,
+    searchText: normalizeDirectLaunchText(title),
+    selectedVariantIndex: 0,
+    variants: [
+      {
+        id: appId,
+        store: "UNKNOWN",
+        supportedControls: [],
+      },
+    ],
+  };
+}
+
+function findDirectLaunchTarget(
+  request: DirectLaunchRequest,
+  catalog: GameInfo[],
+  variantByGameId: Record<string, string>,
+): DirectLaunchTarget | null {
+  const numericAppId = parseNumericId(request.appId);
+  if (numericAppId !== null) {
+    const matched = findSessionContextForAppId(catalog, variantByGameId, numericAppId);
+    if (matched) {
+      return { game: matched.game, variantId: matched.variant?.id };
+    }
+  }
+
+  if (request.title) {
+    return findDirectLaunchTargetByTitle(catalog, request.title);
+  }
+
+  return null;
 }
 
 function isNvidiaProvider(provider: LoginProvider | null | undefined): boolean {
@@ -327,6 +409,7 @@ export function App(): JSX.Element {
   const [removeAccountConfirmOpen, setRemoveAccountConfirmOpen] = useState(false);
   const [logoutConfirmOpen, setLogoutConfirmOpen] = useState(false);
   const [launchError, setLaunchError] = useState<LaunchErrorState | null>(null);
+  const [pendingDirectLaunchRequest, setPendingDirectLaunchRequest] = useState<DirectLaunchRequest | null>(null);
   const [queueModalGame, setQueueModalGame] = useState<GameInfo | null>(null);
   const [queueModalData, setQueueModalData] = useState<PrintedWasteQueueData | null>(null);
   const [sessionStartedAtMs, setSessionStartedAtMs] = useState<number | null>(null);
@@ -433,6 +516,8 @@ export function App(): JSX.Element {
   const hasInitializedRef = useRef(false);
   const regionsRequestRef = useRef(0);
   const launchInFlightRef = useRef(false);
+  const directLaunchAttemptIdRef = useRef<string | null>(null);
+  const handledDirectLaunchIdsRef = useRef<Set<string>>(new Set());
   const runtimeSnapshotRef = useRef<RuntimeSnapshot | null>(loadRuntimeSnapshot());
   /** Joins concurrent claim/resume calls for the same Cloud session id (single CloudMatch RESUME + signaling). */
   const claimResumePromisesRef = useRef<Map<string, Promise<void>>>(new Map());
@@ -461,6 +546,21 @@ export function App(): JSX.Element {
   });
   const exitPromptResolverRef = useRef<((confirmed: boolean) => void) | null>(null);
 
+
+  const queueDirectLaunchRequest = useCallback((request: DirectLaunchRequest | null): void => {
+    if (!request || handledDirectLaunchIdsRef.current.has(request.id)) return;
+    setPendingDirectLaunchRequest((previous) => previous?.id === request.id ? previous : request);
+  }, []);
+
+  useEffect(() => {
+    const unsubscribe = window.openNow.onDirectLaunchRequest(queueDirectLaunchRequest);
+    void window.openNow.getPendingDirectLaunchRequest()
+      .then(queueDirectLaunchRequest)
+      .catch((error) => {
+        console.warn("Failed to read pending direct launch request:", error);
+      });
+    return unsubscribe;
+  }, [queueDirectLaunchRequest]);
 
   const resetStorePanels = useCallback((): void => {
     storePanelsLoadIdRef.current += 1;
@@ -2636,7 +2736,7 @@ export function App(): JSX.Element {
   }, [attemptSessionRecovery, diagnosticsStore, handleExpectedNativeSessionClose, refreshNavbarActiveSession, resetLaunchRuntime, scheduleStableRecoveryReset, settings, streamMicLevel, streamVolume, t]);
 
   // Play game handler
-  const handlePlayGame = useCallback(async (game: GameInfo, options?: { bypassGuards?: boolean; streamingBaseUrl?: string }) => {
+  const handlePlayGame = useCallback(async (game: GameInfo, options?: { bypassGuards?: boolean; streamingBaseUrl?: string; variantId?: string }) => {
     if (!selectedProvider) return;
 
     console.log("handlePlayGame entry", {
@@ -2655,7 +2755,7 @@ export function App(): JSX.Element {
       return;
     }
 
-    const selectedVariantId = variantByGameId[game.id] ?? defaultVariantId(game);
+    const selectedVariantId = options?.variantId ?? variantByGameId[game.id] ?? defaultVariantId(game);
     const selectedVariant = getSelectedVariant(game, selectedVariantId);
     const epicOwnershipError = getEpicOwnershipLaunchError(selectedVariant);
     if (epicOwnershipError) {
@@ -2938,6 +3038,85 @@ export function App(): JSX.Element {
     t,
     variantByGameId,
     warmNativeStreamerForLaunch,
+  ]);
+
+  useEffect(() => {
+    const request = pendingDirectLaunchRequest;
+    if (!request || handledDirectLaunchIdsRef.current.has(request.id)) return;
+    if (!authSession || isInitializing || isLoadingCatalog || isLoadingLibrary) return;
+    if (launchInFlightRef.current || streamStatus !== "idle" || navbarSessionActionInFlightRef.current) return;
+    if (directLaunchAttemptIdRef.current === request.id) return;
+
+    directLaunchAttemptIdRef.current = request.id;
+    let cancelled = false;
+
+    const launch = async (): Promise<void> => {
+      let target = findDirectLaunchTarget(request, allKnownGames, variantByGameId);
+      const token = authSession.tokens.idToken ?? authSession.tokens.accessToken;
+
+      if (!target && request.title && token) {
+        try {
+          const searchResult = await window.openNow.browseCatalog({
+            token,
+            providerStreamingBaseUrl: effectiveStreamingBaseUrl,
+            searchQuery: request.title,
+            sortId: "relevance",
+            filterIds: [],
+            fetchCount: 25,
+          });
+          target = findDirectLaunchTarget(request, searchResult.games, variantByGameId);
+        } catch (error) {
+          console.warn("Direct launch catalog search failed:", error);
+        }
+      }
+
+      const requestedAppId = request.appId && isNumericId(request.appId) ? request.appId : undefined;
+      if (!target && requestedAppId) {
+        target = {
+          game: createSyntheticDirectLaunchGame(request, requestedAppId),
+          variantId: requestedAppId,
+        };
+      }
+
+      if (cancelled) return;
+
+      handledDirectLaunchIdsRef.current.add(request.id);
+      directLaunchAttemptIdRef.current = null;
+      setPendingDirectLaunchRequest((previous) => previous?.id === request.id ? null : previous);
+
+      if (!target) {
+        const requestedName = request.title?.trim() || request.appId || t("app.labels.game");
+        setLaunchError({
+          stage: "queue",
+          title: t("errors.directLaunchNotFoundTitle"),
+          description: t("errors.directLaunchNotFoundDescription", { value: requestedName }),
+        });
+        return;
+      }
+
+      void handlePlayGame(target.game, { variantId: target.variantId });
+    };
+
+    void launch();
+
+    return () => {
+      cancelled = true;
+      if (directLaunchAttemptIdRef.current === request.id) {
+        directLaunchAttemptIdRef.current = null;
+      }
+    };
+  }, [
+    allKnownGames,
+    authSession,
+    effectiveStreamingBaseUrl,
+    handlePlayGame,
+    isInitializing,
+    isLoadingCatalog,
+    isLoadingLibrary,
+    pendingDirectLaunchRequest,
+    streamStatus,
+    t,
+    variantByGameId,
   ]);
 
   // Gate handler: shows queue server modal for FREE-tier users before launching

@@ -34,6 +34,7 @@ import type {
   AppUpdaterState,
   SessionConflictChoice,
   Settings,
+  DirectLaunchRequest,
   PingResult,
   StreamRegion,
   MicrophonePermissionResult,
@@ -81,6 +82,7 @@ import {
   isAccelerationPreference,
   type BootstrapVideoPreferences,
 } from "./videoAcceleration";
+import { parseDirectLaunchArgs, type DirectLaunchArgs } from "@shared/directLaunch";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -181,9 +183,45 @@ let isShutdownRequested = false;
 let isShutdownCleanupComplete = false;
 let isUpdaterInstallQuitInProgress = false;
 let explicitShutdownFallbackTimer: NodeJS.Timeout | null = null;
+let directLaunchRequestSequence = 0;
+let pendingDirectLaunchRequest: DirectLaunchRequest | null = createDirectLaunchRequestFromArgv(process.argv);
 
 // Runtime pointer-lock state (updated by renderer)
 let isPointerLockActiveRuntime = false;
+
+function createDirectLaunchRequest(args: DirectLaunchArgs): DirectLaunchRequest {
+  return {
+    ...args,
+    id: `cli-${process.pid}-${Date.now()}-${++directLaunchRequestSequence}`,
+    source: "cli",
+    receivedAt: Date.now(),
+  };
+}
+
+function createDirectLaunchRequestFromArgv(argv: readonly string[]): DirectLaunchRequest | null {
+  const args = parseDirectLaunchArgs(argv);
+  return args ? createDirectLaunchRequest(args) : null;
+}
+
+function focusMainWindow(): void {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (mainWindow.isMinimized()) {
+    mainWindow.restore();
+  }
+  mainWindow.show();
+  mainWindow.focus();
+}
+
+function emitDirectLaunchRequest(request: DirectLaunchRequest): void {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  mainWindow.webContents.send(IPC_CHANNELS.DIRECT_LAUNCH_REQUEST, request);
+}
+
+function enqueueDirectLaunchRequest(request: DirectLaunchRequest): void {
+  pendingDirectLaunchRequest = request;
+  focusMainWindow();
+  emitDirectLaunchRequest(request);
+}
 
 function clearExplicitShutdownFallback(): void {
   if (explicitShutdownFallbackTimer) {
@@ -456,6 +494,9 @@ async function createMainWindow(): Promise<void> {
     await mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL);
   } else {
     await mainWindow.loadFile(join(__dirname, "../../dist/index.html"));
+  }
+  if (pendingDirectLaunchRequest) {
+    emitDirectLaunchRequest(pendingDirectLaunchRequest);
   }
 
   mainWindow.on("closed", () => {
@@ -821,6 +862,15 @@ function registerIpcHandlers(): void {
   });
 
   ipcMain.handle(
+    IPC_CHANNELS.DIRECT_LAUNCH_GET_PENDING,
+    async (): Promise<DirectLaunchRequest | null> => {
+      const request = pendingDirectLaunchRequest;
+      pendingDirectLaunchRequest = null;
+      return request;
+    },
+  );
+
+  ipcMain.handle(
     IPC_CHANNELS.APP_UPDATER_GET_STATE,
     async (): Promise<AppUpdaterState> => {
       const buildInfo = getAppBuildInfo();
@@ -1093,6 +1143,22 @@ function registerIpcHandlers(): void {
   });
 }
 
+const gotSingleInstanceLock = app.requestSingleInstanceLock();
+
+if (!gotSingleInstanceLock) {
+  app.quit();
+} else {
+  app.on("second-instance", (_event, argv) => {
+    const request = createDirectLaunchRequestFromArgv(argv);
+    if (request) {
+      enqueueDirectLaunchRequest(request);
+      return;
+    }
+    focusMainWindow();
+  });
+}
+
+if (gotSingleInstanceLock) {
 app.whenReady().then(async () => {
   // Initialize log capture first to capture all console output
   initLogCapture("main");
@@ -1211,6 +1277,7 @@ app.whenReady().then(async () => {
     }
   });
 });
+}
 
 app.on("window-all-closed", () => {
   requestAppShutdown({ reason: "window-all-closed" });

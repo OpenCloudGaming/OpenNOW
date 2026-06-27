@@ -515,6 +515,14 @@ export interface GamesFetchRequest {
   providerStreamingBaseUrl?: string;
 }
 
+export interface DirectLaunchRequest {
+  id: string;
+  source: "cli";
+  appId?: string;
+  title?: string;
+  receivedAt: number;
+}
+
 export interface CatalogBrowseRequest extends GamesFetchRequest {
   searchQuery?: string;
   sortId?: string;
@@ -1161,6 +1169,8 @@ export interface OpenNowApi {
   fetchPublicGames(): Promise<GameInfo[]>;
   resolveLaunchAppId(input: ResolveLaunchIdRequest): Promise<string | null>;
   resolveStoreUrl(input: ResolveStoreUrlRequest): Promise<string | null>;
+  getPendingDirectLaunchRequest(): Promise<DirectLaunchRequest | null>;
+  onDirectLaunchRequest(listener: (request: DirectLaunchRequest) => void): () => void;
   createSession(input: SessionCreateRequest): Promise<SessionInfo>;
   pollSession(input: SessionPollRequest): Promise<SessionInfo>;
   reportSessionAd(input: SessionAdReportRequest): Promise<SessionInfo>;

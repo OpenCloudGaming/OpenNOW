@@ -706,6 +706,8 @@
   "errors": {
     "launchUnknown": "The game could not start. Please try again.",
     "launchFailedTitle": "Launch Failed",
+    "directLaunchNotFoundTitle": "Direct Launch Failed",
+    "directLaunchNotFoundDescription": "OpenNOW could not find a game matching \"{{value}}\". Use --launch-app-id for exact LaunchBox entries.",
     "duplicateSessionTitle": "Duplicate Session Detected",
     "duplicateSessionDescription": "Another session is already running on your account. Close it first or wait for it to timeout, then launch again.",
     "insufficientPlayabilityTitle": "Membership Upgrade Required",
