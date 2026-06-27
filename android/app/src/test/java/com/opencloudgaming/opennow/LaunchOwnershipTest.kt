@@ -74,6 +74,34 @@ class LaunchOwnershipTest {
         assertEquals(listOf("Game", "Subnautica 2"), merged.map { it.title })
     }
 
+    @Test
+    fun libraryStoreFiltersOnlyUseOwnedStores() {
+        val game = game(
+            variants = listOf(
+                variant(id = "epic", store = "Epic", libraryStatus = "PLATFORM_SYNC"),
+                variant(id = "steam", store = "Steam", libraryStatus = "NOT_OWNED"),
+                variant(id = "xbox", store = "Xbox"),
+            ),
+            isInLibrary = true,
+        )
+
+        assertEquals(listOf("Epic"), libraryStoreDisplayNames(game))
+    }
+
+    @Test
+    fun libraryStoreFiltersFallBackToSelectedVariantForLegacyLibraryRows() {
+        val game = game(
+            variants = listOf(
+                variant(id = "steam", store = "Steam"),
+                variant(id = "xbox", store = "Xbox", librarySelected = true),
+            ),
+            isInLibrary = true,
+            selectedVariantIndex = 0,
+        )
+
+        assertEquals(listOf("Xbox"), libraryStoreDisplayNames(game))
+    }
+
     private fun variant(
         id: String = "variant",
         store: String = "Steam",
@@ -94,6 +122,7 @@ class LaunchOwnershipTest {
         title: String = "Game",
         playType: String? = null,
         isInLibrary: Boolean = false,
+        selectedVariantIndex: Int = 0,
     ): GameInfo =
         GameInfo(
             id = id,
@@ -102,5 +131,6 @@ class LaunchOwnershipTest {
             playType = playType,
             isInLibrary = isInLibrary,
             variants = variants,
+            selectedVariantIndex = selectedVariantIndex,
         )
 }

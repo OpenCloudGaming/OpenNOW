@@ -584,6 +584,28 @@ internal fun displayStoresForVariants(variants: List<GameVariant>): List<String>
         .filter { it.isNotBlank() }
         .distinctBy { normalizeGameStore(it) }
 
+internal fun libraryStoreDisplayNames(game: GameInfo): List<String> {
+    val variants = when {
+        game.variants.any(::isOwnedGameVariant) -> game.variants.filter(::isOwnedGameVariant)
+        game.isInLibrary -> listOfNotNull(game.variants.firstOrNull { it.librarySelected == true })
+            .ifEmpty { listOfNotNull(game.variants.getOrNull(game.selectedVariantIndex)) }
+            .ifEmpty { game.variants.take(1) }
+        else -> emptyList()
+    }
+    val variantStores = variants
+        .flatMap { variant -> gameStoreDisplayName(variant.store).split(" / ") }
+        .map { it.trim() }
+        .filter { it.isNotBlank() }
+        .distinctBy { normalizeGameStore(it) }
+    if (variantStores.isNotEmpty()) return variantStores
+    if (!game.isInLibrary) return emptyList()
+    return game.availableStores
+        .map(::gameStoreDisplayName)
+        .map { it.trim() }
+        .filter { it.isNotBlank() }
+        .distinctBy { normalizeGameStore(it) }
+}
+
 private fun mergeGameInfo(left: GameInfo, right: GameInfo): GameInfo {
     val variants = (left.variants + right.variants).distinctBy { it.id }
     val selectedVariantId = left.variants.getOrNull(left.selectedVariantIndex)?.id
@@ -806,6 +828,22 @@ internal fun SessionInfo.isReadyForStream(): Boolean =
 internal fun ActiveSessionInfo.isReadyForClaim(): Boolean =
     status in setOf(2, 3) && !serverIp.isNullOrBlank()
 
+internal fun ActiveSessionInfo.matchesStreamSettings(settings: StreamSettings): Boolean {
+    val activeResolution = parseResolutionPixelsOrNull(resolution)
+    val expectedResolution = streamResolutionPixels(settings)
+    val resolutionMatches = activeResolution == null || activeResolution == expectedResolution
+    val activeFps = fps?.takeIf { it > 0 }
+    val fpsMatches = activeFps == null || activeFps == settings.fps
+    return resolutionMatches && fpsMatches
+}
+
+private fun parseResolutionPixelsOrNull(value: String?): Pair<Int, Int>? {
+    val parts = value?.split("x") ?: return null
+    val width = parts.getOrNull(0)?.toIntOrNull()
+    val height = parts.getOrNull(1)?.toIntOrNull()
+    return if (width != null && height != null && width > 0 && height > 0) width to height else null
+}
+
 data class CodecCapability(
     val codec: VideoCodec,
     val decoderAvailable: Boolean,
@@ -851,14 +889,12 @@ internal fun CodecCapability.streamingRealtimeSafe(): Boolean =
 internal fun CodecCapability.streamingDecoderUsableForLaunch(): Boolean {
     if (webRtcDecoderAvailable == false) return false
     if (codec == VideoCodec.H264) return webRtcDecoderAvailable ?: decoderAvailable
-    if (webRtcDecoderAvailable == true) {
-        return webRtcHardwareDecoderAvailable ?: (hardwareDecoder && realtimeSafe)
-    }
-    return decoderAvailable && hardwareDecoder && realtimeSafe
+    if (webRtcDecoderAvailable != true || webRtcHardwareDecoderAvailable != true) return false
+    return !decoderAvailable || (hardwareDecoder && realtimeSafe)
 }
 
 private fun RuntimeCodecReport.bestStreamingFallbackCodec(): VideoCodec =
-    listOf(VideoCodec.AV1, VideoCodec.H265, VideoCodec.H264)
+    listOf(VideoCodec.H264, VideoCodec.AV1, VideoCodec.H265)
         .firstOrNull { codec -> capabilities.firstOrNull { it.codec == codec }?.streamingDecoderUsableForLaunch() == true }
         ?: VideoCodec.H264
 

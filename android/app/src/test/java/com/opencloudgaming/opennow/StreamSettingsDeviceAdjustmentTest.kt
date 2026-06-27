@@ -5,18 +5,34 @@ import org.junit.Test
 
 class StreamSettingsDeviceAdjustmentTest {
     @Test
-    fun preservesSelectedH265WhenHardwareDecoderExists() {
+    fun preservesSelectedH265WhenWebRtcHardwareDecoderExists() {
         val adjusted = StreamSettings(codec = VideoCodec.H265, colorQuality = ColorQuality.TenBit420)
-            .adjustedForDevice(codecReport(VideoCodec.H265, hardwareDecoder = true, realtimeSafe = true))
+            .adjustedForDevice(
+                codecReport(
+                    VideoCodec.H265,
+                    hardwareDecoder = true,
+                    realtimeSafe = true,
+                    webRtcDecoderAvailable = true,
+                    webRtcHardwareDecoderAvailable = true,
+                ),
+            )
 
         assertEquals(VideoCodec.H265, adjusted.codec)
         assertEquals(ColorQuality.EightBit420, adjusted.colorQuality)
     }
 
     @Test
-    fun preservesSelectedAv1WhenHardwareDecoderExists() {
+    fun preservesSelectedAv1WhenWebRtcHardwareDecoderExists() {
         val adjusted = StreamSettings(codec = VideoCodec.AV1, colorQuality = ColorQuality.TenBit420)
-            .adjustedForDevice(codecReport(VideoCodec.AV1, hardwareDecoder = true, realtimeSafe = true))
+            .adjustedForDevice(
+                codecReport(
+                    VideoCodec.AV1,
+                    hardwareDecoder = true,
+                    realtimeSafe = true,
+                    webRtcDecoderAvailable = true,
+                    webRtcHardwareDecoderAvailable = true,
+                ),
+            )
 
         assertEquals(VideoCodec.AV1, adjusted.codec)
         assertEquals(ColorQuality.EightBit420, adjusted.colorQuality)
@@ -25,7 +41,15 @@ class StreamSettingsDeviceAdjustmentTest {
     @Test
     fun preservesTenBitWhenHdrIsEnabled() {
         val adjusted = StreamSettings(codec = VideoCodec.H265, colorQuality = ColorQuality.TenBit420, hdrEnabled = true)
-            .adjustedForDevice(codecReport(VideoCodec.H265, hardwareDecoder = true, realtimeSafe = true))
+            .adjustedForDevice(
+                codecReport(
+                    VideoCodec.H265,
+                    hardwareDecoder = true,
+                    realtimeSafe = true,
+                    webRtcDecoderAvailable = true,
+                    webRtcHardwareDecoderAvailable = true,
+                ),
+            )
 
         assertEquals(VideoCodec.H265, adjusted.codec)
         assertEquals(ColorQuality.TenBit420, adjusted.colorQuality)
@@ -60,9 +84,28 @@ class StreamSettingsDeviceAdjustmentTest {
     }
 
     @Test
-    fun keepsSelectedCodecOnLowPowerDevicesWhenHardwareDecoderExists() {
+    fun fallsBackToH264WhenH265OnlyHasPlatformHardwareDecoder() {
         val adjusted = StreamSettings(codec = VideoCodec.H265, colorQuality = ColorQuality.TenBit420, maxBitrateMbps = 90)
-            .adjustedForDevice(codecReport(VideoCodec.H265, hardwareDecoder = true, realtimeSafe = true, lowPower = true))
+            .adjustedForDevice(codecReport(VideoCodec.H265, hardwareDecoder = true, realtimeSafe = true))
+
+        assertEquals(VideoCodec.H264, adjusted.codec)
+        assertEquals(ColorQuality.EightBit420, adjusted.colorQuality)
+        assertEquals(35, adjusted.maxBitrateMbps)
+    }
+
+    @Test
+    fun keepsSelectedCodecOnLowPowerDevicesWhenWebRtcHardwareDecoderExists() {
+        val adjusted = StreamSettings(codec = VideoCodec.H265, colorQuality = ColorQuality.TenBit420, maxBitrateMbps = 90)
+            .adjustedForDevice(
+                codecReport(
+                    VideoCodec.H265,
+                    hardwareDecoder = true,
+                    realtimeSafe = true,
+                    lowPower = true,
+                    webRtcDecoderAvailable = true,
+                    webRtcHardwareDecoderAvailable = true,
+                ),
+            )
 
         assertEquals(VideoCodec.H265, adjusted.codec)
         assertEquals(ColorQuality.EightBit420, adjusted.colorQuality)
@@ -72,7 +115,15 @@ class StreamSettingsDeviceAdjustmentTest {
     @Test
     fun preservesHighRefreshRateForSupportedAndroidStreams() {
         val adjusted = StreamSettings(codec = VideoCodec.AV1, fps = 120, maxBitrateMbps = 90)
-            .adjustedForDevice(codecReport(VideoCodec.AV1, hardwareDecoder = true, realtimeSafe = true))
+            .adjustedForDevice(
+                codecReport(
+                    VideoCodec.AV1,
+                    hardwareDecoder = true,
+                    realtimeSafe = true,
+                    webRtcDecoderAvailable = true,
+                    webRtcHardwareDecoderAvailable = true,
+                ),
+            )
 
         assertEquals(VideoCodec.AV1, adjusted.codec)
         assertEquals(120, adjusted.fps)

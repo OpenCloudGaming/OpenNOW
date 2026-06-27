@@ -20,6 +20,13 @@ internal fun selectStreamDisplayMode(
         }
     }.orEmpty()
     val candidates = resolutionMatched.ifEmpty { supportedModes }
+    val currentCandidate = currentMode?.takeIf { current ->
+        candidates.any { mode ->
+            mode.id == current.id &&
+                current.refreshRate + STREAM_REFRESH_TOLERANCE_FPS >= target
+        }
+    }
+    if (currentCandidate != null) return currentCandidate
 
     return candidates
         .filter { it.refreshRate + STREAM_REFRESH_TOLERANCE_FPS >= target }

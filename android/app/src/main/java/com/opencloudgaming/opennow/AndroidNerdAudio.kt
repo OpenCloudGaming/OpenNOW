@@ -62,25 +62,6 @@ internal class AndroidNerdAudioController(context: Context) {
         }
     }
 
-    fun toggleIntro(onPlayingChanged: (Boolean) -> Unit) {
-        val player = introPlayer
-        if (player == null) {
-            startIntro(enabled = true, onPlayingChanged = onPlayingChanged)
-            return
-        }
-        runCatching {
-            if (player.isPlaying) {
-                player.pause()
-                onPlayingChanged(false)
-            } else {
-                player.start()
-                onPlayingChanged(true)
-            }
-        }.onFailure {
-            stopIntro(onPlayingChanged)
-        }
-    }
-
     fun stopIntro(onPlayingChanged: (Boolean) -> Unit = {}) {
         val player = introPlayer ?: return
         introPlayer = null

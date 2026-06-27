@@ -126,4 +126,39 @@ class StreamResolutionTest {
 
         assertEquals(false, fourK.isAvailableFor(subscription, null))
     }
+
+    @Test
+    fun activeSessionMustMatchRequestedUltrawideResolutionBeforeReuse() {
+        val settings = StreamSettings(resolution = "1680x720", aspectRatio = "21:9", fps = 60)
+        val stale = activeSession(resolution = "1680x1050", fps = 60)
+
+        assertEquals(false, stale.matchesStreamSettings(settings))
+    }
+
+    @Test
+    fun activeSessionMatchesRequestedUltrawideResolutionBeforeReuse() {
+        val settings = StreamSettings(resolution = "1680x720", aspectRatio = "21:9", fps = 60)
+        val active = activeSession(resolution = "1680x720", fps = 60)
+
+        assertEquals(true, active.matchesStreamSettings(settings))
+    }
+
+    @Test
+    fun activeSessionWithUnknownMonitorModeCanStillBeClaimed() {
+        val settings = StreamSettings(resolution = "1680x720", aspectRatio = "21:9", fps = 60)
+        val active = activeSession(resolution = null, fps = null)
+
+        assertEquals(true, active.matchesStreamSettings(settings))
+    }
+
+    private fun activeSession(resolution: String?, fps: Int?): ActiveSessionInfo =
+        ActiveSessionInfo(
+            sessionId = "session",
+            appId = 100,
+            status = 2,
+            serverIp = "127.0.0.1",
+            signalingUrl = "wss://127.0.0.1/nvst/",
+            resolution = resolution,
+            fps = fps,
+        )
 }

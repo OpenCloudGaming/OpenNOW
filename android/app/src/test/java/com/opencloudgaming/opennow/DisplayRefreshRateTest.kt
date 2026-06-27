@@ -20,6 +20,20 @@ class DisplayRefreshRateTest {
     }
 
     @Test
+    fun keepsCurrentHighRefreshModeWhenItAlreadyCoversStreamFps() {
+        val selected = selectStreamDisplayMode(
+            supportedModes = listOf(
+                mode(id = 1, refreshRate = 60f),
+                mode(id = 2, refreshRate = 120f),
+            ),
+            currentMode = mode(id = 2, refreshRate = 120f),
+            requestedFps = 60,
+        )
+
+        assertEquals(2, selected?.id)
+    }
+
+    @Test
     fun usesHighestModeWhenRequestedFpsExceedsDisplaySupport() {
         val selected = selectStreamDisplayMode(
             supportedModes = listOf(

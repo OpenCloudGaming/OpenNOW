@@ -1666,7 +1666,7 @@ class NativeStreamClient(
             }
             it.setEnableHardwareScaler(true)
             it.setMirror(false)
-            it.setStreamScaling(stretchToFill)
+            it.setStreamScaling()
             renderer = it
             videoTrack?.addSink(it)
         }
@@ -1679,17 +1679,11 @@ class NativeStreamClient(
             streamSharpeningAmount = settings.streamSharpeningAmount,
         )
         rendererSharpnessDrawer?.amount = streamSharpnessShaderStrength(settings.streamSharpeningEnabled, settings.streamSharpeningAmount)
-        renderer?.setStreamScaling(stretchToFill)
+        renderer?.setStreamScaling()
     }
 
-    private fun SurfaceViewRenderer.setStreamScaling(stretchToFill: Boolean) {
-        setScalingType(
-            if (stretchToFill) {
-                RendererCommon.ScalingType.SCALE_ASPECT_FILL
-            } else {
-                RendererCommon.ScalingType.SCALE_ASPECT_FIT
-            },
-        )
+    private fun SurfaceViewRenderer.setStreamScaling() {
+        setScalingType(RendererCommon.ScalingType.SCALE_ASPECT_FIT)
     }
 
     fun updateHapticsSettings(phoneFallbackEnabled: Boolean) {
@@ -2199,6 +2193,14 @@ class NativeStreamClient(
             if (generation != transportGeneration || peerConnection != null) return@launch
             offerTimeoutJob = null
             NativeInputDiagnostics.add("video offer timeout codec=${settings.codec} resolution=${settings.resolution} bitrate=${settings.maxBitrateMbps}")
+            if (
+                requestSafeVideoFallback(
+                    message = "Timed out waiting for video offer; restarting with safe H264 1080p profile",
+                    diagnosticReason = "offer timeout",
+                )
+            ) {
+                return@launch
+            }
             restartTransport("Timed out waiting for video offer")
         }
     }
@@ -2579,6 +2581,14 @@ class NativeStreamClient(
                 NativeInputDiagnostics.add("media stall keyframe requested stalledMs=${action.stalledMs} attempt=${action.attempt}")
             }
             is StreamLivenessAction.RestartTransport -> {
+                if (
+                    requestSafeVideoFallback(
+                        message = "Decoder stalled; restarting with safe H264 1080p profile",
+                        diagnosticReason = "media stall",
+                    )
+                ) {
+                    return
+                }
                 NativeInputDiagnostics.add("media stall transport restart stalledMs=${action.stalledMs}")
                 restartTransport("Media stalled for ${action.stalledMs / 1000}s")
             }

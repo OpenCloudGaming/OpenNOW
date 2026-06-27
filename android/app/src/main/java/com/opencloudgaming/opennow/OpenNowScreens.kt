@@ -11,9 +11,6 @@ import android.speech.RecognizerIntent
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.PointerIcon
-import android.view.Surface
-import android.view.SurfaceHolder
-import android.view.SurfaceView
 import android.view.View
 import android.view.ViewGroup
 import android.widget.Toast
@@ -96,7 +93,6 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
-import androidx.compose.material3.NavigationRail
 import androidx.compose.material3.NavigationRailItem
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -201,6 +197,7 @@ private val SettingsPanelAlt = Color(0xff171d22)
 private val SettingsText = Color(0xffeef3f5)
 private val SettingsTextMuted = Color(0xff98a4aa)
 private val PHONE_NAV_RAIL_MAX_SMALLEST_WIDTH = 600.dp
+private val APP_NAV_RAIL_WIDTH = 80.dp
 
 private data class SettingsChoiceOption(val value: String, val label: String)
 private data class ChoiceMenuOption(
@@ -327,6 +324,27 @@ fun OpenNowTheme(settings: AppSettings, content: @Composable () -> Unit) {
 @Composable
 fun OpenNowApp(viewModel: OpenNowViewModel) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val context = LocalContext.current
+    val launchAudioController = remember(context) { AndroidNerdAudioController(context.applicationContext) }
+    val playIntroOnAppLaunch = remember { state.settings.streamIntroMusic }
+    var launchIntroStarted by remember { mutableStateOf(false) }
+
+    DisposableEffect(launchAudioController) {
+        onDispose {
+            launchAudioController.release()
+        }
+    }
+    LaunchedEffect(playIntroOnAppLaunch, state.settings.streamIntroMusic, state.page, state.streamStatus) {
+        val streamActive = state.page == AppPage.Stream || state.streamStatus != "idle"
+        if (playIntroOnAppLaunch && state.settings.streamIntroMusic && !streamActive) {
+            if (!launchIntroStarted) {
+                launchIntroStarted = true
+                launchAudioController.startIntro(enabled = true) {}
+            }
+        } else {
+            launchAudioController.stopIntro()
+        }
+    }
 
     OpenNowTheme(state.settings) {
         Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
@@ -676,6 +694,7 @@ private fun MainShell(state: OpenNowUiState, viewModel: OpenNowViewModel) {
     }
     BoxWithConstraints(Modifier.fillMaxSize()) {
         var phoneLandscapeScrollChromeHidden by remember { mutableStateOf(false) }
+        val horizontalChrome = maxWidth > maxHeight
         val phoneLandscapeChrome = !tvProfile && !inStream && isPhoneLandscape(maxWidth, maxHeight)
         val portraitChrome = !inStream && maxHeight >= maxWidth
         val showNavigationRail = !inStream && (tvProfile || phoneLandscapeChrome)
@@ -737,6 +756,7 @@ private fun MainShell(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                         AppNavigationRail(
                             state = state,
                             activeSearchTarget = visibleSearchTarget,
+                            showAppIcon = showNavigationRail && horizontalChrome,
                             onNavigate = { page ->
                                 visibleSearchTarget = null
                                 viewModel.setPage(page)
@@ -744,7 +764,11 @@ private fun MainShell(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                             onSearch = { revealSearch(it) },
                         )
                     }
-                    Column(Modifier.fillMaxSize()) {
+                    Column(
+                        Modifier
+                            .weight(1f)
+                            .fillMaxHeight(),
+                    ) {
                         AnimatedVisibility(
                             visible = portraitChrome,
                         ) {
@@ -848,46 +872,72 @@ private fun MainShell(state: OpenNowUiState, viewModel: OpenNowViewModel) {
 private fun AppNavigationRail(
     state: OpenNowUiState,
     activeSearchTarget: SearchTarget?,
+    showAppIcon: Boolean,
     onNavigate: (AppPage) -> Unit,
     onSearch: (SearchTarget) -> Unit,
 ) {
-    NavigationRail(
-        modifier = Modifier.fillMaxHeight(),
-        containerColor = if (state.page == AppPage.Settings) SettingsBackground else MaterialTheme.colorScheme.background,
+    Surface(
+        modifier = Modifier
+            .width(APP_NAV_RAIL_WIDTH)
+            .fillMaxHeight(),
+        color = if (state.page == AppPage.Settings) SettingsBackground else MaterialTheme.colorScheme.background,
+        tonalElevation = 0.dp,
     ) {
-        Spacer(Modifier.height(8.dp))
-        AppNavigationRailItem(
-            selected = state.page == AppPage.Home && activeSearchTarget != SearchTarget.Store,
-            onClick = { onNavigate(AppPage.Home) },
-            iconRes = R.drawable.ic_tab_store,
-            label = stringResource(R.string.nav_store),
-        )
-        AppNavigationRailItem(
-            selected = activeSearchTarget != null,
-            onClick = {
-                onSearch(
-                    when (state.page) {
-                        AppPage.Library -> SearchTarget.Library
-                        AppPage.Settings -> SearchTarget.Settings
-                        else -> SearchTarget.Store
-                    },
+        Box(Modifier.fillMaxSize()) {
+            if (showAppIcon) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .fillMaxWidth()
+                        .padding(top = 12.dp, bottom = 8.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    OpenNowAppIcon(34.dp)
+                }
+            }
+            Column(
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .fillMaxWidth(),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                if (!showAppIcon) {
+                    Spacer(Modifier.height(8.dp))
+                }
+                AppNavigationRailItem(
+                    selected = state.page == AppPage.Home && activeSearchTarget != SearchTarget.Store,
+                    onClick = { onNavigate(AppPage.Home) },
+                    iconRes = R.drawable.ic_tab_store,
+                    label = stringResource(R.string.nav_store),
                 )
-            },
-            iconRes = R.drawable.ic_search,
-            label = stringResource(R.string.nav_search),
-        )
-        AppNavigationRailItem(
-            selected = state.page == AppPage.Library && activeSearchTarget != SearchTarget.Library,
-            onClick = { onNavigate(AppPage.Library) },
-            iconRes = R.drawable.ic_tab_library,
-            label = stringResource(R.string.nav_library),
-        )
-        AppNavigationRailItem(
-            selected = state.page == AppPage.Settings && activeSearchTarget != SearchTarget.Settings,
-            onClick = { onNavigate(AppPage.Settings) },
-            iconRes = R.drawable.ic_tab_settings,
-            label = stringResource(R.string.nav_settings),
-        )
+                AppNavigationRailItem(
+                    selected = activeSearchTarget != null,
+                    onClick = {
+                        onSearch(
+                            when (state.page) {
+                                AppPage.Library -> SearchTarget.Library
+                                AppPage.Settings -> SearchTarget.Settings
+                                else -> SearchTarget.Store
+                            },
+                        )
+                    },
+                    iconRes = R.drawable.ic_search,
+                    label = stringResource(R.string.nav_search),
+                )
+                AppNavigationRailItem(
+                    selected = state.page == AppPage.Library && activeSearchTarget != SearchTarget.Library,
+                    onClick = { onNavigate(AppPage.Library) },
+                    iconRes = R.drawable.ic_tab_library,
+                    label = stringResource(R.string.nav_library),
+                )
+                AppNavigationRailItem(
+                    selected = state.page == AppPage.Settings && activeSearchTarget != SearchTarget.Settings,
+                    onClick = { onNavigate(AppPage.Settings) },
+                    iconRes = R.drawable.ic_tab_settings,
+                    label = stringResource(R.string.nav_settings),
+                )
+            }
+        }
     }
 }
 
@@ -1466,9 +1516,7 @@ private fun gameMatchesLibraryFilters(game: GameInfo, selectedIds: List<String>)
 }
 
 private fun libraryStoreFilterIds(game: GameInfo): List<Pair<String, String>> {
-    val labels = displayStoresForVariants(game.variants).ifEmpty {
-        game.availableStores.map(::gameStoreDisplayName)
-    }
+    val labels = libraryStoreDisplayNames(game)
     return labels
         .mapNotNull { label ->
             val normalized = normalizeGameStore(label)
@@ -2945,6 +2993,9 @@ private fun SettingsContent(
                         )
                     }
                 }
+                SettingSwitch(stringResource(R.string.settings_stretch_stream_to_fill), settings.stretchStreamToFill) { enabled ->
+                    viewModel.updateSettings(settings.copy(stretchStreamToFill = enabled))
+                }
                 NumberSlider(stringResource(R.string.settings_fps), settings.stream.fps.toFloat(), 30f, 240f, 30f) {
                     viewModel.updateStreamSettings { s -> s.copy(fps = it.roundToInt()) }
                 }
@@ -3074,9 +3125,6 @@ private fun SettingsContent(
                     }
                     SettingSwitch(stringResource(R.string.settings_button_press_tones), settings.controllerUiSounds) { enabled ->
                         viewModel.updateSettings(settings.copy(controllerUiSounds = enabled))
-                    }
-                    SettingSwitch(stringResource(R.string.settings_stretch_stream_to_fill), settings.stretchStreamToFill) { enabled ->
-                        viewModel.updateSettings(settings.copy(stretchStreamToFill = enabled))
                     }
                 }
     SearchableSettingsSection(searchQuery, "Codec Diagnostics", "codec", "diagnostics", "probe", "av1", "h264", "h265", "hevc", "decode") {
@@ -3541,7 +3589,6 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
     val context = LocalContext.current
     val activity = context as? Activity
     val audioController = remember(context) { AndroidNerdAudioController(context.applicationContext) }
-    val audioScope = rememberCoroutineScope()
     val session = state.streamSession
     val game = state.streamGame
     var streamState by remember { mutableStateOf("Preparing") }
@@ -3553,15 +3600,10 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
     var touchLayoutEditing by remember { mutableStateOf(false) }
     var statsVisible by remember(state.settings.showStatsOnLaunch) { mutableStateOf(state.settings.showStatsOnLaunch) }
     var streamStats by remember { mutableStateOf(StreamRuntimeStats()) }
-    var introPlaying by remember { mutableStateOf(false) }
     val streamReady = session?.isReadyForStream() == true
     val nerdMode = state.settings.nerdMode
-    val introEnabled = nerdMode && state.settings.streamIntroMusic
     val buttonToneEnabled = nerdMode && state.settings.controllerUiSounds
-    val stretchToFill = nerdMode && state.settings.stretchStreamToFill
-    val updateIntroPlaying: (Boolean) -> Unit = { playing ->
-        audioScope.launch { introPlaying = playing }
-    }
+    val stretchToFill = state.settings.stretchStreamToFill
     val playButtonTone = {
         audioController.playButtonTone(buttonToneEnabled)
     }
@@ -3674,13 +3716,6 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
             client.start(session, launchStreamSettings)
         }
     }
-    LaunchedEffect(streamReady, session?.sessionId, introEnabled) {
-        if (streamReady) {
-            audioController.startIntro(introEnabled, updateIntroPlaying)
-        } else {
-            audioController.stopIntro(updateIntroPlaying)
-        }
-    }
 
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         if (session == null && state.streamStatus != "idle") {
@@ -3718,13 +3753,7 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
             if (nerdMode) {
                 NerdStreamStatusOverlay(
                     codecLabel = streamStats.codec ?: streamSettings.codec.name,
-                    introEnabled = introEnabled,
-                    introPlaying = introPlaying,
                     stretchToFill = stretchToFill,
-                    onIntroToggle = {
-                        playButtonTone()
-                        audioController.toggleIntro(updateIntroPlaying)
-                    },
                     modifier = Modifier.align(Alignment.TopEnd),
                 )
             }
@@ -3880,10 +3909,7 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
 @Composable
 private fun NerdStreamStatusOverlay(
     codecLabel: String,
-    introEnabled: Boolean,
-    introPlaying: Boolean,
     stretchToFill: Boolean,
-    onIntroToggle: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Column(
@@ -3918,64 +3944,6 @@ private fun NerdStreamStatusOverlay(
                 }
             }
         }
-        if (introEnabled) {
-            Surface(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(999.dp))
-                    .clickable(onClick = onIntroToggle)
-                    .semantics {
-                        contentDescription = if (introPlaying) "Pause intro music" else "Play intro music"
-                    },
-                shape = RoundedCornerShape(999.dp),
-                color = Panel.copy(alpha = 0.52f),
-                tonalElevation = 0.dp,
-            ) {
-                Row(
-                    Modifier.padding(horizontal = 9.dp, vertical = 5.dp),
-                    horizontalArrangement = Arrangement.spacedBy(7.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    NerdWaveformIcon(active = introPlaying, modifier = Modifier.width(28.dp).height(14.dp))
-                    Text(
-                        if (introPlaying) "Intro" else "Paused",
-                        color = if (introPlaying) MaterialTheme.colorScheme.primary else TextMuted,
-                        style = MaterialTheme.typography.labelSmall,
-                        fontWeight = FontWeight.Bold,
-                    )
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun NerdWaveformIcon(active: Boolean, modifier: Modifier = Modifier) {
-    val transition = rememberInfiniteTransition(label = "nerd-wave")
-    val phase by transition.animateFloat(
-        initialValue = 0f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(animation = tween(720), repeatMode = RepeatMode.Restart),
-        label = "phase",
-    )
-    Canvas(modifier) {
-        val barCount = 5
-        val gap = size.width * 0.08f
-        val barWidth = (size.width - gap * (barCount - 1)) / barCount
-        repeat(barCount) { index ->
-            val wave = if (active) {
-                0.38f + 0.62f * kotlin.math.abs(kotlin.math.sin((phase * 2f * Math.PI) + index * 0.85)).toFloat()
-            } else {
-                0.34f
-            }
-            val barHeight = size.height * wave
-            val left = index * (barWidth + gap)
-            drawRoundRect(
-                color = if (active) Green else TextMuted,
-                topLeft = Offset(left, (size.height - barHeight) / 2f),
-                size = Size(barWidth, barHeight),
-                cornerRadius = CornerRadius(barWidth / 2f, barWidth / 2f),
-            )
-        }
     }
 }
 
@@ -3994,11 +3962,14 @@ private fun StreamVideoSurface(
     val pointerRootView = externalMouseRoot ?: rootView
     val (streamWidth, streamHeight) = streamResolutionPixels(settings)
     val streamAspect = (streamWidth.toFloat() / streamHeight.toFloat()).takeIf { it.isFinite() && it > 0f } ?: (16f / 9f)
-    val currentStreamFps by rememberUpdatedState(settings.fps)
     val currentOnMouseCaptureInput by rememberUpdatedState(onMouseCaptureInput)
     var zoomScale by remember { mutableFloatStateOf(1f) }
     var zoomOffset by remember { mutableStateOf(Offset.Zero) }
     var viewportSize by remember { mutableStateOf(IntSize.Zero) }
+    LaunchedEffect(settings.resolution, settings.aspectRatio, stretchToFill) {
+        zoomScale = 1f
+        zoomOffset = Offset.Zero
+    }
     DisposableEffect(client, rootView, pointerRootView, hideExternalMousePointer) {
         pointerRootView.configureAndroidMousePointerCapture(hideExternalMousePointer, { currentOnMouseCaptureInput() }) { event ->
             client.dispatchMotion(event)
@@ -4040,6 +4011,23 @@ private fun StreamVideoSurface(
                 .clipToBounds()
                 .background(Color.Black),
         ) {
+            val stretchedRendererModifier = when {
+                !stretchToFill -> Modifier.matchParentSize()
+                containerAspect > streamAspect -> Modifier
+                    .fillMaxHeight()
+                    .aspectRatio(streamAspect)
+                    .align(Alignment.Center)
+                    .graphicsLayer {
+                        scaleX = (containerAspect / streamAspect).takeIf { it.isFinite() && it > 0f } ?: 1f
+                    }
+                else -> Modifier
+                    .fillMaxWidth()
+                    .aspectRatio(streamAspect)
+                    .align(Alignment.Center)
+                    .graphicsLayer {
+                        scaleY = (streamAspect / containerAspect).takeIf { it.isFinite() && it > 0f } ?: 1f
+                    }
+            }
             Box(
                 Modifier
                     .matchParentSize()
@@ -4052,33 +4040,18 @@ private fun StreamVideoSurface(
             ) {
                 key(settings.streamSharpeningEnabled) {
                     AndroidView(
-                        modifier = Modifier.fillMaxSize(),
+                        modifier = stretchedRendererModifier,
                         factory = { ctx ->
                             client.createRenderer(ctx, settings, stretchToFill).apply {
                                 isFocusable = false
                                 isFocusableInTouchMode = false
                                 hideAndroidPointerTree()
-                                setPreferredStreamFrameRate(settings.fps)
-                                holder.addCallback(
-                                    object : SurfaceHolder.Callback {
-                                        override fun surfaceCreated(holder: SurfaceHolder) {
-                                            holder.surface.setPreferredStreamFrameRate(currentStreamFps)
-                                        }
-
-                                        override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
-                                            holder.surface.setPreferredStreamFrameRate(currentStreamFps)
-                                        }
-
-                                        override fun surfaceDestroyed(holder: SurfaceHolder) = Unit
-                                    },
-                                )
                             }
                         },
                         update = { renderer ->
                             client.updateRendererSettings(settings, stretchToFill)
                             renderer.isFocusable = false
                             renderer.isFocusableInTouchMode = false
-                            renderer.setPreferredStreamFrameRate(settings.fps)
                             pointerRootView.configureAndroidMousePointerCapture(hideExternalMousePointer, { currentOnMouseCaptureInput() }) { event ->
                                 client.dispatchMotion(event)
                             }
@@ -4126,16 +4099,6 @@ private fun clampStreamZoomOffset(offset: Offset, zoomScale: Float, viewportSize
         x = offset.x.coerceIn(-maxX, maxX),
         y = offset.y.coerceIn(-maxY, maxY),
     )
-}
-
-private fun SurfaceView.setPreferredStreamFrameRate(fps: Int) {
-    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return
-    holder.surface.setPreferredStreamFrameRate(fps)
-}
-
-private fun Surface.setPreferredStreamFrameRate(fps: Int) {
-    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R || !isValid) return
-    setFrameRate(normalizedStreamDisplayFps(fps), Surface.FRAME_RATE_COMPATIBILITY_FIXED_SOURCE)
 }
 
 private fun androidNullPointerIcon(view: android.view.View): PointerIcon? =
@@ -4467,11 +4430,9 @@ private fun StreamControlsPanel(
                     if (settings.stream.streamSharpeningEnabled) {
                         CompactSlider("Sharpness amount", settings.stream.streamSharpeningAmount, 0f, 1f, onSharpeningAmountChange)
                     }
-                    if (settings.nerdMode) {
-                        StreamControlSwitch("Stretch to fill", if (settings.stretchStreamToFill) "On" else "Off", settings.stretchStreamToFill) {
-                            onButtonTone()
-                            onStretchToFillToggle()
-                        }
+                    StreamControlSwitch("Stretch to fill", if (settings.stretchStreamToFill) "On" else "Off", settings.stretchStreamToFill) {
+                        onButtonTone()
+                        onStretchToFillToggle()
                     }
                 }
             }
@@ -6462,6 +6423,16 @@ private fun OpenNowMark(size: androidx.compose.ui.unit.Dp) {
         modifier = Modifier
             .width(size * 1.85f)
             .height(size),
+        contentScale = ContentScale.Fit,
+    )
+}
+
+@Composable
+private fun OpenNowAppIcon(size: androidx.compose.ui.unit.Dp) {
+    Image(
+        painter = painterResource(R.drawable.opennow_icon),
+        contentDescription = "OpenNOW",
+        modifier = Modifier.size(size),
         contentScale = ContentScale.Fit,
     )
 }

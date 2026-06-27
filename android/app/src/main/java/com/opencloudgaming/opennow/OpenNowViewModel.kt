@@ -692,12 +692,18 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 _state.update { it.copy(launchPhase = "Checking active sessions") }
                 val active = sessionRepository.getActiveSessions(token, baseUrl, settings)
                 val numericLaunchAppId = launchAppId.toIntOrNull()
-                val readyCandidate = active.firstOrNull {
+                val compatibleActive = active.filter { it.matchesStreamSettings(settings) }
+                val staleLaunchSession = active.firstOrNull {
+                    it.appId == numericLaunchAppId &&
+                        it.status in setOf(1, 2, 3) &&
+                        !it.matchesStreamSettings(settings)
+                }
+                val readyCandidate = compatibleActive.firstOrNull {
                     it.appId == numericLaunchAppId && it.isReadyForClaim()
                 }
-                val launchingCandidate = active.firstOrNull {
+                val launchingCandidate = compatibleActive.firstOrNull {
                     it.appId == numericLaunchAppId && it.status == 1
-                } ?: active.firstOrNull { it.status == 1 }
+                } ?: compatibleActive.firstOrNull { it.status == 1 }
                 val readySession = when {
                     readyCandidate != null -> {
                         _state.update { it.copy(launchPhase = "Resuming session", activeSession = readyCandidate) }
@@ -730,6 +736,10 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                         pollUntilReady(token, mergeQueueSessionState(pending, hydrated), settings)
                     }
                     else -> {
+                        if (staleLaunchSession != null) {
+                            _state.update { it.copy(launchPhase = "Restarting session at requested resolution") }
+                            runCatching { sessionRepository.stopActiveSession(token, staleLaunchSession, settings) }
+                        }
                         _state.update { it.copy(launchPhase = "Creating session") }
                         val created = sessionRepository.createSession(
                             token = token,
@@ -1092,10 +1102,6 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         val auth = initial.authSession ?: return
         val currentSettings = initial.activeStreamSettings ?: effectiveStreamSettings()
         val safeSettings = currentSettings.androidSafeVideoFallback()
-        if (initial.streamSession != null && isFreeTier()) {
-            recoverStreamSession("$reason. Reconnecting the existing free-tier session instead of restarting the queue.")
-            return
-        }
         if (currentSettings == safeSettings) {
             if (initial.streamSession != null) {
                 recoverStreamSession("$reason. Reconnecting the existing session.")
