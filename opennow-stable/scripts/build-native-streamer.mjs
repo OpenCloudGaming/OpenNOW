@@ -1,4 +1,4 @@
-import { copyFileSync, chmodSync, existsSync, mkdirSync, statSync } from "node:fs";
+import { copyFileSync, chmodSync, existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
@@ -9,8 +9,11 @@ const packageRoot = resolve(__dirname, "..");
 const repoRoot = resolve(packageRoot, "..");
 const crateRoot = join(repoRoot, "native", "opennow-streamer");
 const manifestPath = join(crateRoot, "Cargo.toml");
+const protocolSourcePath = join(crateRoot, "src", "protocol.rs");
+const appProtocolSourcePath = join(packageRoot, "src", "shared", "nativeStreamer.ts");
 const exeName = process.platform === "win32" ? "opennow-streamer.exe" : "opennow-streamer";
-const nativeStreamerProtocolVersion = 2;
+const verifyCommandId = "verify";
+const nativeStreamerProtocolVersion = readVerifiedNativeStreamerProtocolVersion();
 const nativeTarget = process.env.OPENNOW_NATIVE_STREAMER_TARGET?.trim() || "";
 const platformKey = process.env.OPENNOW_NATIVE_STREAMER_PLATFORM_KEY?.trim() || `${process.platform}-${process.arch}`;
 const targetReleaseDir = nativeTarget
@@ -28,6 +31,37 @@ function hasFeature(features, feature) {
     .map((value) => value.trim().toLowerCase())
     .filter(Boolean)
     .includes(feature);
+}
+
+function readProtocolVersion(sourcePath, pattern, label) {
+  const source = readFileSync(sourcePath, "utf8");
+  const match = source.match(pattern);
+  if (!match) {
+    throw new Error(`Unable to read ${label} protocol version from ${sourcePath}`);
+  }
+  return Number.parseInt(match[1], 10);
+}
+
+function readVerifiedNativeStreamerProtocolVersion() {
+  const appProtocolVersion = readProtocolVersion(
+    appProtocolSourcePath,
+    /export\s+const\s+NATIVE_STREAMER_PROTOCOL_VERSION\s*=\s*(\d+)\s*;/,
+    "app",
+  );
+  const nativeProtocolVersion = readProtocolVersion(
+    protocolSourcePath,
+    /pub\s+const\s+PROTOCOL_VERSION\s*:\s*u64\s*=\s*(\d+)\s*;/,
+    "native",
+  );
+
+  if (appProtocolVersion !== nativeProtocolVersion) {
+    throw new Error(
+      `Native streamer protocol mismatch: app sends ${appProtocolVersion} from ${appProtocolSourcePath}, `
+      + `native expects ${nativeProtocolVersion} from ${protocolSourcePath}.`,
+    );
+  }
+
+  return appProtocolVersion;
 }
 
 function isWindowsBuild() {
@@ -260,9 +294,36 @@ function buildBundledGstreamerEnv(baseEnv, binaryPath) {
   return env;
 }
 
+function parseNativeStreamerResponse(stdout) {
+  const messages = [];
+  for (const rawLine of stdout.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line) {
+      continue;
+    }
+
+    try {
+      messages.push(JSON.parse(line));
+    } catch {
+      console.error(`Native streamer verification returned invalid JSON: ${line}`);
+      process.exit(1);
+    }
+  }
+
+  const response = messages.find((message) => message?.id === verifyCommandId);
+  if (!response) {
+    console.error(
+      `Native streamer verification did not return a response to ${verifyCommandId}: ${JSON.stringify(messages)}`,
+    );
+    process.exit(1);
+  }
+
+  return response;
+}
+
 function verifyGstreamerBinary(binaryPath, env) {
   const result = spawnSync(binaryPath, {
-    input: `${JSON.stringify({ id: "verify", type: "hello", protocolVersion: nativeStreamerProtocolVersion })}\n`,
+    input: `${JSON.stringify({ id: verifyCommandId, type: "hello", protocolVersion: nativeStreamerProtocolVersion })}\n`,
     encoding: "utf8",
     env: {
       ...env,
@@ -276,16 +337,11 @@ function verifyGstreamerBinary(binaryPath, env) {
     process.exit(result.status ?? 1);
   }
 
-  const responseLine = result.stdout
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .find(Boolean);
-
-  let response;
-  try {
-    response = JSON.parse(responseLine ?? "");
-  } catch (error) {
-    console.error(`Native streamer verification returned invalid JSON: ${responseLine}`);
+  const response = parseNativeStreamerResponse(result.stdout);
+  if (response.type === "error") {
+    console.error(
+      `Native streamer verification failed: ${response.code ?? "error"}${response.message ? `: ${response.message}` : ""}`,
+    );
     process.exit(1);
   }
 
