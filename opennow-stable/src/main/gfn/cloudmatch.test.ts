@@ -5,8 +5,10 @@ import assert from "node:assert/strict";
 
 import type { StreamSettings } from "@shared/gfn";
 import {
+  DEFAULT_KEYBOARD_LAYOUT,
   colorQualityBitDepth,
   colorQualityChromaFormat,
+  resolveGfnKeyboardLayout,
 } from "@shared/gfn";
 import {
   buildRequestedStreamingFeatures,
@@ -148,6 +150,10 @@ test("CloudMatch resolves default prod endpoint to serverInfo local region befor
     };
   };
   let requestBody: CapturedSessionRequestBody | null = null;
+  const expectedSessionUrl = `https://np-lax-01.cloudmatchbeta.nvidiagrid.net/v2/session?${new URLSearchParams({
+    keyboardLayout: resolveGfnKeyboardLayout(DEFAULT_KEYBOARD_LAYOUT, process.platform),
+    languageCode: "en_US",
+  }).toString()}`;
 
   console.warn = () => {};
   globalThis.fetch = (async (input, init) => {
@@ -166,7 +172,7 @@ test("CloudMatch resolves default prod endpoint to serverInfo local region befor
       }), { status: 200 });
     }
 
-    if (url === "https://np-lax-01.cloudmatchbeta.nvidiagrid.net/v2/session?keyboardLayout=en-US&languageCode=en_US") {
+    if (url === expectedSessionUrl) {
       requestBody = JSON.parse(String(init?.body));
       const createdRequestBody = requestBody;
       if (!createdRequestBody) {
@@ -208,7 +214,7 @@ test("CloudMatch resolves default prod endpoint to serverInfo local region befor
     assert.equal(session.streamingBaseUrl, "https://np-lax-01.cloudmatchbeta.nvidiagrid.net");
     assert.deepEqual(calls, [
       "https://prod.cloudmatchbeta.nvidiagrid.net/v2/serverInfo",
-      "https://np-lax-01.cloudmatchbeta.nvidiagrid.net/v2/session?keyboardLayout=en-US&languageCode=en_US",
+      expectedSessionUrl,
     ]);
     const capturedRequestBody = requestBody as CapturedSessionRequestBody | null;
     assert.ok(capturedRequestBody);
