@@ -103,7 +103,7 @@ test("CloudMatch extracts local serverInfo region before fallback regions", () =
   ]);
 });
 
-test("CloudMatch falls back to serverInfo local region when active-session fetch fails", async () => {
+test("CloudMatch falls back to serverInfo local region when active-session HTTP request fails", async () => {
   const originalFetch = globalThis.fetch;
   const originalWarn = console.warn;
   const calls: string[] = [];
@@ -114,7 +114,7 @@ test("CloudMatch falls back to serverInfo local region when active-session fetch
     calls.push(url);
 
     if (url === "https://prod.bpc.geforcenow.nvidiagrid.net/v2/session") {
-      throw new TypeError("fetch failed");
+      return new Response("bad gateway", { status: 502 });
     }
 
     if (url === "https://prod.bpc.geforcenow.nvidiagrid.net/v2/serverInfo") {

@@ -1313,9 +1313,8 @@ async function fetchActiveSessionsFromBase(
   const text = await response.text();
 
   if (!response.ok) {
-    // Return empty list on failure (matching Rust behavior)
     console.warn(`Get sessions failed: ${response.status} - ${text.slice(0, 200)}`);
-    return [];
+    return null;
   }
 
   let sessionsResponse: GetSessionsResponse;
