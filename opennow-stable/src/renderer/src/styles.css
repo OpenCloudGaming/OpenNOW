@@ -2151,7 +2151,7 @@ body,
   color: var(--ink);
   box-shadow: none;
   cursor: pointer;
-  contain: layout style paint;
+  contain: layout style;
   transform: translate3d(0, 0, 0);
   backface-visibility: hidden;
   will-change: transform;
@@ -2965,7 +2965,7 @@ body,
   color: #f4f4f4;
   box-shadow: 0 18px 38px rgba(0, 0, 0, 0.32);
   cursor: pointer;
-  contain: layout style paint;
+  contain: layout style;
   transform: translate3d(0, 0, 0);
   backface-visibility: hidden;
   will-change: transform;
@@ -3364,7 +3364,7 @@ body,
   overflow: hidden;
   cursor: pointer;
   transition: transform var(--t-normal), border-color var(--t-normal), box-shadow var(--t-normal);
-  contain: layout style paint;
+  contain: layout style;
   transform: translate3d(0, 0, 0);
   backface-visibility: hidden;
   will-change: transform;
