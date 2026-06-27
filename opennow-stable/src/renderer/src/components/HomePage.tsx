@@ -1,11 +1,13 @@
 import { Search, LayoutGrid, Loader2, ArrowUpDown, Filter, ChevronDown, Gamepad2, Menu } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { JSX } from "react";
+import { AnimatePresence, m } from "motion/react";
 import { isOwnedLibraryStatus } from "@shared/gfn";
 import type { CatalogFilterGroup, CatalogSortOption, GameInfo, GamePanelResult, GameVariant } from "@shared/gfn";
 import { GameCard, getStoreDisplayName, getStoreIconComponent } from "./GameCard";
 import { useTranslation } from "../i18n";
 import { controllerButton, readControllerGamepadButtons } from "../utils/controllerGamepad";
+import { pageTransition, panelSpring } from "./MotionProvider";
 
 const CONTROLLER_STORE_HERO_ROTATION_MS = 7000;
 const CONTROLLER_MOVE_REPEAT_MS = 140;
@@ -173,7 +175,7 @@ function ControllerStoreTile({
   const needsPurchase = gameNeedsPurchase(game, selectedVariantId);
 
   return (
-    <div
+    <m.div
       role="button"
       tabIndex={0}
       className={`controller-store-tile${focused ? " focused" : ""}`}
@@ -186,6 +188,9 @@ function ControllerStoreTile({
         onPlay();
       }}
       aria-label={game.title}
+      animate={{ scale: focused ? 1.055 : 1 }}
+      whileTap={{ scale: 0.98 }}
+      transition={panelSpring}
     >
       <span className="controller-store-tile-art">
         {imageUrl ? <img src={imageUrl} alt="" loading="lazy" /> : <span className="controller-store-tile-placeholder">{game.title.slice(0, 1)}</span>}
@@ -220,7 +225,7 @@ function ControllerStoreTile({
       >
         {needsPurchase ? t("app.actions.buy") : t("app.actions.play")}
       </button>
-    </div>
+    </m.div>
   );
 }
 
@@ -509,18 +514,49 @@ export function HomePage({
           <>
             {heroGame && (
               <section className="controller-hero controller-store-hero" aria-label={heroGame.title}>
-                {heroImageUrl ? <img src={heroImageUrl} alt="" className="controller-hero-image" /> : <div className="controller-hero-placeholder" />}
+                <AnimatePresence initial={false} mode="popLayout">
+                  {heroImageUrl ? (
+                    <m.img
+                      key={heroImageUrl}
+                      src={heroImageUrl}
+                      alt=""
+                      className="controller-hero-image"
+                      initial={{ opacity: 0, scale: 1.035 }}
+                      animate={{ opacity: 1, scale: 1 }}
+                      exit={{ opacity: 0, scale: 1.015 }}
+                      transition={pageTransition}
+                    />
+                  ) : (
+                    <m.div
+                      key="controller-store-hero-placeholder"
+                      className="controller-hero-placeholder"
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1 }}
+                      exit={{ opacity: 0 }}
+                      transition={pageTransition}
+                    />
+                  )}
+                </AnimatePresence>
                 <div className="controller-hero-scrim" />
-                <div className="controller-hero-content">
-                  {heroLogoUrl ? <img src={heroLogoUrl} alt={heroGame.title} className="controller-hero-logo" /> : <h1>{heroGame.title}</h1>}
-                  <p className="controller-store-hero-meta">{getPrimaryStoreName(heroGame, heroSelectedVariantId)} / {getPrimaryGenre(heroGame)}</p>
-                  <div className="controller-hero-actions">
-                    <button type="button" className="controller-primary-action" onClick={() => onBuyGame?.(heroGame, heroSelectedVariantId)}>
-                      {t("app.actions.buy")}
-                    </button>
-                    <span className="controller-store-hero-pill">{getPrimaryStoreName(heroGame, heroSelectedVariantId)}</span>
-                  </div>
-                </div>
+                <AnimatePresence initial={false} mode="wait">
+                  <m.div
+                    key={heroGame.id}
+                    className="controller-hero-content"
+                    initial={{ opacity: 0, y: 16 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -8 }}
+                    transition={pageTransition}
+                  >
+                    {heroLogoUrl ? <img src={heroLogoUrl} alt={heroGame.title} className="controller-hero-logo" /> : <h1>{heroGame.title}</h1>}
+                    <p className="controller-store-hero-meta">{getPrimaryStoreName(heroGame, heroSelectedVariantId)} / {getPrimaryGenre(heroGame)}</p>
+                    <div className="controller-hero-actions">
+                      <button type="button" className="controller-primary-action" onClick={() => onBuyGame?.(heroGame, heroSelectedVariantId)}>
+                        {t("app.actions.buy")}
+                      </button>
+                      <span className="controller-store-hero-pill">{getPrimaryStoreName(heroGame, heroSelectedVariantId)}</span>
+                    </div>
+                  </m.div>
+                </AnimatePresence>
               </section>
             )}
 
@@ -575,9 +611,25 @@ export function HomePage({
               <div className="controller-hint controller-hint--more"><span className="controller-menu-button"><Menu size={22} /></span><span>{t("library.moreOptions")}</span></div>
             </div>
 
-            {controllerSearchOpen && (
-              <div className="controller-search-overlay" role="dialog" aria-modal="true" aria-label={t("app.actions.search")}>
-                <div className="controller-search-panel">
+            <AnimatePresence initial={false}>
+              {controllerSearchOpen && (
+                <m.div
+                  className="controller-search-overlay"
+                  role="dialog"
+                  aria-modal="true"
+                  aria-label={t("app.actions.search")}
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  transition={pageTransition}
+                >
+                  <m.div
+                    className="controller-search-panel"
+                    initial={{ opacity: 0, y: 16, scale: 0.985 }}
+                    animate={{ opacity: 1, y: 0, scale: 1 }}
+                    exit={{ opacity: 0, y: 10, scale: 0.99 }}
+                    transition={panelSpring}
+                  >
                   <span className="controller-search-eyebrow">{t("app.actions.search")}</span>
                   <input
                     ref={controllerSearchInputRef}
@@ -588,9 +640,10 @@ export function HomePage({
                     className="controller-search-input"
                   />
                   <p>{t("app.actions.back")}</p>
-                </div>
-              </div>
-            )}
+                  </m.div>
+                </m.div>
+              )}
+            </AnimatePresence>
           </>
         )}
       </div>
@@ -693,7 +746,12 @@ export function HomePage({
             </p>
           </div>
         ) : (
-          <div className="game-grid">
+          <m.div
+            className="game-grid"
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={pageTransition}
+          >
             {games.map((game) => (
               <GameCard
                 key={game.id}
@@ -704,7 +762,7 @@ export function HomePage({
                 onSelectStore={(variantId) => onSelectGameVariant(game.id, variantId)}
               />
             ))}
-          </div>
+          </m.div>
         )}
       </div>
     </div>

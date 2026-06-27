@@ -33,6 +33,7 @@
     "discord-rpc": "^4.0.1",
     "electron-updater": "^6.8.3",
     "lucide-react": "^1.17.0",
+    "motion": "^12.42.0",
     "qrcode": "^1.5.4",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",

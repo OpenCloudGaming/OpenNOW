@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, JSX } from "react";
 import { createPortal } from "react-dom";
+import { AnimatePresence, m } from "motion/react";
 
 import type {
   ActiveSessionInfo,
@@ -94,6 +95,7 @@ import { SettingsPage } from "./components/SettingsPage";
 import { StreamLoading } from "./components/StreamLoading";
 import { StreamView } from "./components/StreamView";
 import { QueueServerSelectModal } from "./components/QueueServerSelectModal";
+import { pageTransition } from "./components/MotionProvider";
 
 const DEFAULT_STREAM_PREFERENCES = getDefaultStreamPreferences();
 
@@ -3772,73 +3774,86 @@ export function App(): JSX.Element {
       />
 
       <main className="main-content">
-        {mainPage === "home" && (
-          <HomePage
-            games={filteredGames}
-            searchQuery={searchQuery}
-            onSearchChange={setSearchQuery}
-            onPlayGame={handleInitiatePlay}
-            isLoading={settings.controllerMode ? isLoadingStorePanels : isLoadingCatalog}
-            selectedGameId={selectedGameId}
-            onSelectGame={setSelectedGameId}
-            selectedVariantByGameId={variantByGameId}
-            onSelectGameVariant={handleSelectGameVariant}
-            filterGroups={catalogFilterGroups}
-            selectedFilterIds={catalogSelectedFilterIds}
-            onToggleFilter={(filterId) => {
-              setCatalogSelectedFilterIds((previous) => previous.includes(filterId) ? previous.filter((value) => value !== filterId) : [...previous, filterId]);
-            }}
-            sortOptions={catalogSortOptions}
-            selectedSortId={catalogSelectedSortId}
-            onSortChange={setCatalogSelectedSortId}
-            totalCount={catalogTotalCount}
-            supportedCount={catalogSupportedCount}
-            controllerMode={settings.controllerMode}
-            storePanels={storePanels}
-            storeHeroGames={featuredGames}
-            activeSessionAppIds={navbarActiveSession ? [navbarActiveSession.appId] : []}
-            onBuyGame={handleBuyGame}
-            onPreviousControllerPage={() => navigateControllerPage(-1)}
-            onNextControllerPage={() => navigateControllerPage(1)}
-          />
-        )}
+        <AnimatePresence mode="wait" initial={false}>
+          <m.div
+            key={mainPage}
+            className="page-transition-surface"
+            initial={{ opacity: 0, y: 12, filter: "blur(3px)" }}
+            animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
+            exit={{ opacity: 0, y: -8, filter: "blur(2px)" }}
+            transition={pageTransition}
+          >
+            {mainPage === "home" && (
+              <HomePage
+                games={filteredGames}
+                searchQuery={searchQuery}
+                onSearchChange={setSearchQuery}
+                onPlayGame={handleInitiatePlay}
+                isLoading={settings.controllerMode ? isLoadingStorePanels : isLoadingCatalog}
+                selectedGameId={selectedGameId}
+                onSelectGame={setSelectedGameId}
+                selectedVariantByGameId={variantByGameId}
+                onSelectGameVariant={handleSelectGameVariant}
+                filterGroups={catalogFilterGroups}
+                selectedFilterIds={catalogSelectedFilterIds}
+                onToggleFilter={(filterId) => {
+                  setCatalogSelectedFilterIds((previous) => previous.includes(filterId) ? previous.filter((value) => value !== filterId) : [...previous, filterId]);
+                }}
+                sortOptions={catalogSortOptions}
+                selectedSortId={catalogSelectedSortId}
+                onSortChange={setCatalogSelectedSortId}
+                totalCount={catalogTotalCount}
+                supportedCount={catalogSupportedCount}
+                controllerMode={settings.controllerMode}
+                storePanels={storePanels}
+                storeHeroGames={featuredGames}
+                activeSessionAppIds={navbarActiveSession ? [navbarActiveSession.appId] : []}
+                onBuyGame={handleBuyGame}
+                onPreviousControllerPage={() => navigateControllerPage(-1)}
+                onNextControllerPage={() => navigateControllerPage(1)}
+              />
+            )}
 
-        {mainPage === "library" && (
-          <LibraryPage
-            games={filteredLibraryGames}
-            searchQuery={searchQuery}
-            onSearchChange={setSearchQuery}
-            onPlayGame={handleInitiatePlay}
-            isLoading={isLoadingLibrary}
-            selectedGameId={selectedGameId}
-            onSelectGame={setSelectedGameId}
-            selectedVariantByGameId={variantByGameId}
-            onSelectGameVariant={handleSelectGameVariant}
-            libraryCount={libraryGames.length}
-            sortOptions={catalogSortOptions.filter((option) => option.id !== "relevance")}
-            selectedSortId={catalogSelectedSortId === "relevance" ? "last_played" : catalogSelectedSortId}
-            onSortChange={setCatalogSelectedSortId}
-            controllerMode={settings.controllerMode}
-            featuredGames={featuredGames.length > 0 ? featuredGames : games}
-            activeSessionAppIds={navbarActiveSession ? [navbarActiveSession.appId] : []}
-            onBuyGame={handleBuyGame}
-            onPreviousControllerPage={() => navigateControllerPage(-1)}
-            onNextControllerPage={() => navigateControllerPage(1)}
-          />
-        )}
-
+            {mainPage === "library" && (
+              <LibraryPage
+                games={filteredLibraryGames}
+                searchQuery={searchQuery}
+                onSearchChange={setSearchQuery}
+                onPlayGame={handleInitiatePlay}
+                isLoading={isLoadingLibrary}
+                selectedGameId={selectedGameId}
+                onSelectGame={setSelectedGameId}
+                selectedVariantByGameId={variantByGameId}
+                onSelectGameVariant={handleSelectGameVariant}
+                libraryCount={libraryGames.length}
+                sortOptions={catalogSortOptions.filter((option) => option.id !== "relevance")}
+                selectedSortId={catalogSelectedSortId === "relevance" ? "last_played" : catalogSelectedSortId}
+                onSortChange={setCatalogSelectedSortId}
+                controllerMode={settings.controllerMode}
+                featuredGames={featuredGames.length > 0 ? featuredGames : games}
+                activeSessionAppIds={navbarActiveSession ? [navbarActiveSession.appId] : []}
+                onBuyGame={handleBuyGame}
+                onPreviousControllerPage={() => navigateControllerPage(-1)}
+                onNextControllerPage={() => navigateControllerPage(1)}
+              />
+            )}
+          </m.div>
+        </AnimatePresence>
       </main>
-      {currentPage === "settings" && (
-        <SettingsPage
-          settings={settings}
-          regions={regions}
-          codecResults={codecResults}
-          codecTesting={codecTesting}
-          onRunCodecTest={runCodecTest}
-          onSettingChange={updateSetting}
-          onClose={handleCloseSettings}
-        />
-      )}
+      <AnimatePresence initial={false}>
+        {currentPage === "settings" && (
+          <SettingsPage
+            key="settings"
+            settings={settings}
+            regions={regions}
+            codecResults={codecResults}
+            codecTesting={codecTesting}
+            onRunCodecTest={runCodecTest}
+            onSettingChange={updateSetting}
+            onClose={handleCloseSettings}
+          />
+        )}
+      </AnimatePresence>
       {logoutConfirmModal}
       {removeAccountConfirmModal}
       {queueModalGame && streamStatus === "idle" && (

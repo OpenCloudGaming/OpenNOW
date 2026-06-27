@@ -55,7 +55,7 @@
   --shadow-glow: 0 0 20px var(--accent-glow);
 
   /* Transitions */
-  --ease: cubic-bezier(0.4, 0, 0.2, 1);
+  --ease: cubic-bezier(0.16, 1, 0.3, 1);
   --t-fast: 150ms var(--ease);
   --t-normal: 200ms var(--ease);
   --t-slow: 300ms var(--ease);
@@ -286,6 +286,17 @@ body,
 
   100% {
     background-position: 0% 50%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 1ms !important;
   }
 }
 
@@ -1505,7 +1516,14 @@ body,
   overflow: auto;
   padding: 20px;
   margin-top: var(--navbar-h);
-  will-change: scroll-position;
+  overscroll-behavior: contain;
+}
+
+.page-transition-surface {
+  min-height: 100%;
+  height: 100%;
+  transform: translate3d(0, 0, 0);
+  backface-visibility: hidden;
 }
 
 /* ======================================================
@@ -2133,14 +2151,18 @@ body,
   color: var(--ink);
   box-shadow: none;
   cursor: pointer;
-  transition: transform 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
+  contain: layout style paint;
+  transform: translate3d(0, 0, 0);
+  backface-visibility: hidden;
+  will-change: transform;
+  transition: border-color var(--t-fast), box-shadow var(--t-fast), filter var(--t-fast);
 }
 
 .controller-store-tile.focused {
-  transform: scale(1.055);
-  border-width: 2.5px;
   border-color: #4ee887;
-  box-shadow: 0 0 26px rgba(var(--accent-rgb), 0.38);
+  box-shadow:
+    0 0 0 2px #4ee887,
+    0 0 26px rgba(var(--accent-rgb), 0.38);
   z-index: 3;
 }
 
@@ -2730,6 +2752,7 @@ body,
   object-fit: cover;
   object-position: center;
   filter: saturate(0.98) brightness(0.78);
+  will-change: opacity, transform;
 }
 
 .controller-hero-placeholder {
@@ -2749,6 +2772,7 @@ body,
   left: clamp(42px, 7vw, 300px);
   bottom: clamp(46px, 6.4vh, 140px);
   z-index: 1;
+  will-change: opacity, transform;
 }
 
 .controller-hero-content h1 {
@@ -2861,15 +2885,17 @@ body,
 }
 
 .controller-hero-dots span {
-  width: clamp(42px, 1.58vw, 70px);
+  width: clamp(68px, 2.48vw, 120px);
   height: clamp(10px, 0.46vw, 18px);
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.2);
+  transform: scaleX(0.62);
+  transition: transform var(--t-normal), background-color var(--t-normal);
 }
 
 .controller-hero-dots span.active {
-  width: clamp(68px, 2.48vw, 120px);
   background: #36dc77;
+  transform: scaleX(1);
 }
 
 .controller-library-strip {
@@ -2939,10 +2965,16 @@ body,
   color: #f4f4f4;
   box-shadow: 0 18px 38px rgba(0, 0, 0, 0.32);
   cursor: pointer;
+  contain: layout style paint;
+  transform: translate3d(0, 0, 0);
+  backface-visibility: hidden;
+  will-change: transform;
+  transition: border-color var(--t-fast), box-shadow var(--t-fast), filter var(--t-fast);
 }
 
 .controller-native-card.selected {
   border-color: #2ee375;
+  box-shadow: 0 0 0 2px rgba(var(--accent-rgb), 0.68), 0 24px 48px rgba(0, 0, 0, 0.38);
 }
 
 .controller-native-card-art,
@@ -3038,7 +3070,7 @@ body,
 }
 
 .controller-library-card .game-card:hover {
-  transform: translateY(-3px) scale(1.015);
+  border-color: rgba(255, 255, 255, 0.16);
 }
 
 .controller-library-card .game-card.selected {
@@ -3331,9 +3363,9 @@ body,
   border-radius: var(--r-md);
   overflow: hidden;
   cursor: pointer;
-  transition: transform var(--t-normal), border-color var(--t-normal);
-  contain: layout style;
-  transform: translateZ(0);
+  transition: transform var(--t-normal), border-color var(--t-normal), box-shadow var(--t-normal);
+  contain: layout style paint;
+  transform: translate3d(0, 0, 0);
   backface-visibility: hidden;
   will-change: transform;
 }
@@ -3359,8 +3391,12 @@ body,
 }
 
 .game-card:hover {
-  transform: translateY(-2px) scale(1.01);
+  transform: translate3d(0, -2px, 0) scale(1.01);
   border-color: rgba(255, 255, 255, 0.1);
+}
+
+.game-card:active {
+  transform: translate3d(0, 0, 0) scale(0.985);
 }
 
 .game-card:hover::after {
@@ -3395,7 +3431,8 @@ body,
   display: block;
   object-fit: cover;
   object-position: center;
-  transition: transform var(--t-normal);
+  transition: transform var(--t-slow);
+  will-change: transform;
 }
 
 .game-card:hover .game-card-image {
@@ -3593,26 +3630,6 @@ button.game-card-store-chip.owned.active:hover {
 /* ======================================================
    SETTINGS PAGE — modal preferences panel
    ====================================================== */
-@keyframes settings-overlay-in {
-  from {
-    opacity: 0;
-  }
-  to {
-    opacity: 1;
-  }
-}
-
-@keyframes settings-modal-in {
-  from {
-    opacity: 0;
-    transform: translateY(12px) scale(0.985);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0) scale(1);
-  }
-}
-
 .settings-overlay {
   position: fixed;
   inset: 0;
@@ -3621,7 +3638,6 @@ button.game-card-store-chip.owned.active:hover {
   align-items: center;
   justify-content: center;
   padding: 28px 36px;
-  animation: settings-overlay-in 180ms var(--ease);
 }
 
 .settings-overlay-backdrop {
@@ -3649,7 +3665,9 @@ button.game-card-store-chip.owned.active:hover {
     var(--shadow-lg),
     0 0 0 1px rgba(255, 255, 255, 0.03) inset;
   overflow: hidden;
-  animation: settings-modal-in 220ms var(--ease);
+  transform: translate3d(0, 0, 0);
+  backface-visibility: hidden;
+  will-change: transform, opacity;
 }
 
 .settings-modal-header {
@@ -5612,7 +5630,7 @@ button.game-card-store-chip.owned.active:hover {
   background: var(--chip);
   color: var(--ink-muted);
   cursor: pointer;
-  transition: all var(--t-fast);
+  transition: background var(--t-fast), color var(--t-fast), border-color var(--t-fast), opacity var(--t-fast);
   flex-shrink: 0;
 }
 

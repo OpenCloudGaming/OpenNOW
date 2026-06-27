@@ -4,6 +4,7 @@ import { scan } from "react-scan";
 
 import { initLogCapture } from "@shared/logger";
 import { App } from "./App";
+import { MotionProvider } from "./components/MotionProvider";
 import { initializeLocale } from "./i18n";
 import "./styles.css";
 
@@ -17,6 +18,8 @@ if (import.meta.env.DEV) {
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
-    <App />
+    <MotionProvider>
+      <App />
+    </MotionProvider>
   </React.StrictMode>,
 );
