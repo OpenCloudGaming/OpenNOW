@@ -571,20 +571,16 @@ jobs:
       - name: Merge macOS update feeds
         shell: bash
         run: |
-          pip install pyyaml -q
-          python3 - <<'PYEOF'
-          import yaml, sys, os
-          base_path = 'release-artifacts/latest-mac.yml'
-          arm64_path = 'release-artifacts/latest-mac-arm64.yml'
-          with open(base_path) as f: base = yaml.safe_load(f)
-          with open(arm64_path) as f: arm64 = yaml.safe_load(f)
-          if base['version'] != arm64['version']:
-              print(f"Version mismatch: x64={base['version']} arm64={arm64['version']}", file=sys.stderr)
-              sys.exit(1)
-          base['files'] = (base.get('files') or []) + (arm64.get('files') or [])
-          with open(base_path, 'w') as f: yaml.dump(base, f, default_flow_style=False)
-          os.remove(arm64_path)
-          PYEOF
+          x64_ver=$(awk '/^version:/{print $2; exit}' release-artifacts/latest-mac.yml)
+          arm64_ver=$(awk '/^version:/{print $2; exit}' release-artifacts/latest-mac-arm64.yml)
+          [ "$x64_ver" != "$arm64_ver" ] && { echo "Version mismatch: x64=$x64_ver arm64=$arm64_ver" >&2; exit 1; }
+          awk '
+            FNR==NR { if(/^files:/) { f=1; next } if(f && /^[^ ]/) f=0; if(f) arm64=arm64 $0"\n"; next }
+            /^path:/ { printf "%s", arm64 }
+            1
+          ' release-artifacts/latest-mac-arm64.yml release-artifacts/latest-mac.yml > /tmp/merged.yml
+          mv /tmp/merged.yml release-artifacts/latest-mac.yml
+          rm release-artifacts/latest-mac-arm64.yml
 
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
