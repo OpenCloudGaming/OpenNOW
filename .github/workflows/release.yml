@@ -184,6 +184,7 @@ jobs:
             artifact_paths: |
               opennow-stable/dist-release/*.dmg
               opennow-stable/dist-release/*-x64.zip
+              opennow-stable/dist-release/latest-mac.yml
           - label: macos-arm64
             os: blacksmith-6vcpu-macos-15
             builder_args: "--mac dmg zip --arm64"
