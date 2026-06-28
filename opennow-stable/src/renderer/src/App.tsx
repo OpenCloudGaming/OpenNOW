@@ -3044,7 +3044,15 @@ export function App(): JSX.Element {
     const request = pendingDirectLaunchRequest;
     if (!request || handledDirectLaunchIdsRef.current.has(request.id)) return;
     if (!authSession || isInitializing || isLoadingCatalog || isLoadingLibrary) return;
-    if (launchInFlightRef.current || streamStatus !== "idle" || navbarSessionActionInFlightRef.current) return;
+    if (
+      launchInFlightRef.current ||
+      streamStatus !== "idle" ||
+      isResumingNavbarSession ||
+      isTerminatingNavbarSession ||
+      navbarSessionActionInFlightRef.current
+    ) {
+      return;
+    }
     if (directLaunchAttemptIdRef.current === request.id) return;
 
     directLaunchAttemptIdRef.current = request.id;
@@ -3080,6 +3088,15 @@ export function App(): JSX.Element {
 
       if (cancelled) return;
 
+      if (
+        launchInFlightRef.current ||
+        streamStatusRef.current !== "idle" ||
+        navbarSessionActionInFlightRef.current
+      ) {
+        directLaunchAttemptIdRef.current = null;
+        return;
+      }
+
       handledDirectLaunchIdsRef.current.add(request.id);
       directLaunchAttemptIdRef.current = null;
       setPendingDirectLaunchRequest((previous) => previous?.id === request.id ? null : previous);
@@ -3113,6 +3130,8 @@ export function App(): JSX.Element {
     isInitializing,
     isLoadingCatalog,
     isLoadingLibrary,
+    isResumingNavbarSession,
+    isTerminatingNavbarSession,
     pendingDirectLaunchRequest,
     streamStatus,
     t,
