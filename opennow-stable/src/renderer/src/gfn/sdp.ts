@@ -40,10 +40,12 @@ export function extractPublicIp(hostOrIp: string): string | null {
 }
 
 /**
- * Fix 0.0.0.0 in the server's SDP offer with the actual server IP.
- * Matches Rust's fix_server_ip() — replaces "c=IN IP4 0.0.0.0" with real IP.
- * Also fixes a=candidate: lines that contain 0.0.0.0 as the candidate IP,
- * since Chrome's WebRTC stack treats those as unreachable and ICE fails.
+ * Fix 0.0.0.0 ICE candidate addresses with the actual server IP.
+ *
+ * The official GFN web client leaves c=IN IP4 0.0.0.0 lines intact and only
+ * rewrites a=candidate lines when an explicit WebRTC media endpoint is present.
+ * Rewriting every c= line to an RTSPS/session host can make DTLS close before
+ * media tracks arrive.
  */
 export function fixServerIp(sdp: string, serverIp: string): string {
   const ip = extractPublicIp(serverIp);
@@ -51,14 +53,8 @@ export function fixServerIp(sdp: string, serverIp: string): string {
     console.log(`[SDP] fixServerIp: could not extract IP from "${serverIp}"`);
     return sdp;
   }
-  // 1. Fix connection lines: c=IN IP4 0.0.0.0
-  const cCount = (sdp.match(/c=IN IP4 0\.0\.0\.0/g) ?? []).length;
-  let fixed = sdp.replace(/c=IN IP4 0\.0\.0\.0/g, `c=IN IP4 ${ip}`);
-  console.log(`[SDP] fixServerIp: replaced ${cCount} c= lines with ${ip}`);
-
-  // 2. Fix ICE candidate lines: a=candidate:... 0.0.0.0 ...
-  //    Format: a=candidate:<foundation> <component> <protocol> <priority> <ip> <port> typ <type>
-  const candidateCount = (fixed.match(/(a=candidate:\S+\s+\d+\s+\w+\s+\d+\s+)0\.0\.0\.0(\s+)/g) ?? []).length;
+  let fixed = sdp;
+  const candidateCount = (sdp.match(/(a=candidate:\S+\s+\d+\s+\w+\s+\d+\s+)0\.0\.0\.0(\s+)/g) ?? []).length;
   if (candidateCount > 0) {
     fixed = fixed.replace(
       /(a=candidate:\S+\s+\d+\s+\w+\s+\d+\s+)0\.0\.0\.0(\s+)/g,
@@ -471,7 +467,8 @@ export function buildNvstSdp(params: NvstParams): string {
   const is120Fps = params.fps === 120;
   const is240Fps = params.fps >= 240;
   const isAv1 = params.codec === "AV1";
-  const bitDepth = params.colorQuality.startsWith("10bit") ? 10 : 8;
+  const supportsHighBitDepth = params.codec === "H265" || params.codec === "AV1";
+  const bitDepth = supportsHighBitDepth && params.colorQuality.startsWith("10bit") ? 10 : 8;
   const hidDeviceMask = params.hidDeviceMask ?? PARTIALLY_RELIABLE_HID_DEVICE_MASK_ALL;
   const enablePartiallyReliableTransferGamepad = params.enablePartiallyReliableTransferGamepad
     ?? PARTIALLY_RELIABLE_GAMEPAD_MASK_ALL;

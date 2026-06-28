@@ -307,7 +307,22 @@
     }
   },
   "stream": {
+    "sessionStarted": {
+      "kicker": "Ready",
+      "title": "Session started"
+    },
     "stats": {
+      "overlayLabel": "Stream statistics",
+      "expand": "Show detailed stats",
+      "collapse": "Hide detailed stats",
+      "live": "Live",
+      "sync": "Sync",
+      "network": "RTT",
+      "bitrateShort": "Bit",
+      "bitratePerformance": "Actual receive bitrate compared with the negotiated target",
+      "showAdvanced": "Advanced diagnostics",
+      "hideAdvanced": "Hide advanced diagnostics",
+      "waitingForVideo": "Waiting for game video…",
       "connecting": "Connecting...",
       "network": "Network",
       "decode": "Decode",

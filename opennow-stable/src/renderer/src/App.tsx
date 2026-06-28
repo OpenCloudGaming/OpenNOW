@@ -225,7 +225,11 @@ const isMac = navigator.platform.toLowerCase().includes("mac");
 
 function isExpectedNativeSessionClose(reason: string): boolean {
   const normalized = reason.trim().toLowerCase();
-  return normalized === "socket closed" || normalized === "signaling disconnected: socket closed";
+  return normalized === "bye" ||
+    normalized === "peerremoved" ||
+    normalized === "peer removed" ||
+    normalized === "socket closed" ||
+    normalized === "signaling disconnected: socket closed";
 }
 
 function gameIdentityMatches(left: GameInfo, right: GameInfo): boolean {
@@ -2360,7 +2364,7 @@ export function App(): JSX.Element {
   ]);
 
   const handleExpectedNativeSessionClose = useCallback((reason: string): void => {
-    console.log("[Recovery] Treating native signaling close as ended session:", reason);
+    console.log("[Recovery] Treating signaling close as ended session:", reason);
     const activeGameId = streamingGameRef.current?.id;
     if (activeGameId) {
       endPlaytimeSession(activeGameId);
@@ -2636,6 +2640,10 @@ export function App(): JSX.Element {
             console.log("[Recovery] Ignoring signaling disconnect during app shutdown");
             return;
           }
+          if (streamStatusRef.current !== "idle" && isExpectedNativeSessionClose(event.reason)) {
+            handleExpectedNativeSessionClose(event.reason);
+            return;
+          }
           if (
             nativeStreamingRef.current
             && streamStatusRef.current === "streaming"
@@ -2646,6 +2654,7 @@ export function App(): JSX.Element {
           }
           const iceState = latestIceConnectionStateRef.current;
           if (
+            (hasConfirmedRemoteIceRef.current && iceState === "new") ||
             iceState === "connected" ||
             iceState === "completed" ||
             iceState === "checking"

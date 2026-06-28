@@ -115,11 +115,12 @@ export function normalizeStreamPreferences(codec: VideoCodec, colorQuality: Colo
   const normalizedColorQuality = USER_FACING_COLOR_QUALITY_OPTIONS.includes(colorQuality)
     ? colorQuality
     : USER_FACING_COLOR_QUALITY_OPTIONS[0];
+  const codecCompatibleColorQuality = normalizedCodec === "H264" ? "8bit_420" : normalizedColorQuality;
 
   return {
     codec: normalizedCodec,
-    colorQuality: normalizedColorQuality,
-    migrated: normalizedCodec !== codec || normalizedColorQuality !== colorQuality,
+    colorQuality: codecCompatibleColorQuality,
+    migrated: normalizedCodec !== codec || codecCompatibleColorQuality !== colorQuality,
   };
 }
 
@@ -318,7 +319,7 @@ export interface Settings {
 
 export const DEFAULT_STREAM_PREFERENCES: Readonly<Pick<Settings, "codec" | "colorQuality">> = Object.freeze({
   codec: "H264",
-  colorQuality: "10bit_420",
+  colorQuality: "8bit_420",
 });
 
 export function getDefaultStreamPreferences(): Pick<Settings, "codec" | "colorQuality"> {
@@ -795,6 +796,7 @@ export interface IceServer {
 export interface MediaConnectionInfo {
   ip: string;
   port: number;
+  usage?: number;
 }
 
 /** Server-negotiated stream profile received from CloudMatch after session ready */

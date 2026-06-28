@@ -16,6 +16,7 @@ interface SignalingMessage {
   ackid?: number;
   ack?: number;
   hb?: number;
+  error?: string;
   peer_info?: {
     id: number;
     name?: string;
@@ -217,6 +218,12 @@ export class GfnSignalingClient {
       return;
     }
 
+    if (parsed.error === "peerRemoved") {
+      console.log("[Signaling] Received peerRemoved signaling error");
+      this.emit({ type: "disconnected", reason: "peerRemoved" });
+      return;
+    }
+
     if (!parsed.peer_msg?.msg) {
       return;
     }
@@ -226,9 +233,16 @@ export class GfnSignalingClient {
       console.log(`[Signaling] Remote peer id: ${this.remotePeerId}`);
     }
 
+    const peerMessage = parsed.peer_msg.msg.trim();
+    if (peerMessage === "BYE") {
+      console.log("[Signaling] Received BYE peer message");
+      this.emit({ type: "disconnected", reason: "BYE" });
+      return;
+    }
+
     let peerPayload: Record<string, unknown>;
     try {
-      peerPayload = JSON.parse(parsed.peer_msg.msg) as Record<string, unknown>;
+      peerPayload = JSON.parse(peerMessage) as Record<string, unknown>;
     } catch {
       this.emit({ type: "log", message: "Received non-JSON peer payload" });
       return;
@@ -242,7 +256,13 @@ export class GfnSignalingClient {
     }
 
     if (typeof peerPayload.candidate === "string") {
-      console.log(`[Signaling] Received remote ICE candidate: ${peerPayload.candidate}`);
+      const sdpMLineIndex =
+        typeof peerPayload.sdpMLineIndex === "number" || peerPayload.sdpMLineIndex === null
+          ? peerPayload.sdpMLineIndex
+          : 0;
+      console.log(
+        `[Signaling] Received remote ICE candidate: ${peerPayload.candidate} (sdpMLineIndex=${sdpMLineIndex})`,
+      );
       this.emit({
         type: "remote-ice",
         candidate: {
@@ -251,9 +271,10 @@ export class GfnSignalingClient {
             typeof peerPayload.sdpMid === "string" || peerPayload.sdpMid === null
               ? peerPayload.sdpMid
               : undefined,
-          sdpMLineIndex:
-            typeof peerPayload.sdpMLineIndex === "number" || peerPayload.sdpMLineIndex === null
-              ? peerPayload.sdpMLineIndex
+          sdpMLineIndex,
+          usernameFragment:
+            typeof peerPayload.usernameFragment === "string" || peerPayload.usernameFragment === null
+              ? peerPayload.usernameFragment
               : undefined,
         },
       });
@@ -304,6 +325,7 @@ export class GfnSignalingClient {
           candidate: candidate.candidate,
           sdpMid: candidate.sdpMid,
           sdpMLineIndex: candidate.sdpMLineIndex,
+          usernameFragment: candidate.usernameFragment,
         }),
       },
       ackid: this.nextAckId(),

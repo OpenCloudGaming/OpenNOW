@@ -14,6 +14,8 @@ import {
   isOwnedLibraryStatus,
   isOwnedVariant,
   NATIVE_STREAMER_WINDOWS_ONLY_MESSAGE,
+  getDefaultStreamPreferences,
+  normalizeStreamPreferences,
   normalizeStreamClientModeForPlatform,
 } from "./gfn";
 
@@ -176,6 +178,26 @@ test("normalizes native stream client mode to web on non-Windows platforms", () 
   assert.equal(normalizeStreamClientModeForPlatform("native", "darwin"), "web");
   assert.equal(normalizeStreamClientModeForPlatform("web", "linux"), "web");
   assert.equal(normalizeStreamClientModeForPlatform("native", "win32"), "native");
+});
+
+test("defaults H264 streaming to 8-bit SDR-compatible color quality", () => {
+  assert.deepEqual(getDefaultStreamPreferences(), {
+    codec: "H264",
+    colorQuality: "8bit_420",
+  });
+});
+
+test("normalizes H264 stream preferences away from high bit-depth modes", () => {
+  assert.deepEqual(normalizeStreamPreferences("H264", "10bit_420"), {
+    codec: "H264",
+    colorQuality: "8bit_420",
+    migrated: true,
+  });
+  assert.deepEqual(normalizeStreamPreferences("H265", "10bit_420"), {
+    codec: "H265",
+    colorQuality: "10bit_420",
+    migrated: false,
+  });
 });
 
 test("uses the exact Windows-only unsupported native streamer status message", () => {
