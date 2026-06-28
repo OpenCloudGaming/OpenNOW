@@ -1,9 +1,11 @@
 # Dependencies
 node_modules/
 
-# Lock files (keep bun.lock, ignore others)
+# Lock files
 yarn.lock
 pnpm-lock.yaml
+package-lock.json
+!opennow-stable/package-lock.json
 
 # Build outputs
 dist/
@@ -44,9 +46,6 @@ gfn_tokens.json
 
 # Test files
 test/
-
-package-lock.json
-opennow-stable/package-lock.json
 
 # AI Agent guidelines (local only)
 AGENTS.md

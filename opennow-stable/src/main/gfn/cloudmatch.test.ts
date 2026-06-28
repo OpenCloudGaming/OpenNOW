@@ -4,7 +4,18 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import type { StreamSettings } from "@shared/gfn";
-import { buildRequestedStreamingFeatures, extractServerInfoRegionBases, getActiveSessions } from "./cloudmatch";
+import {
+  DEFAULT_KEYBOARD_LAYOUT,
+  colorQualityBitDepth,
+  colorQualityChromaFormat,
+  resolveGfnKeyboardLayout,
+} from "@shared/gfn";
+import {
+  buildRequestedStreamingFeatures,
+  createSession,
+  extractServerInfoRegionBases,
+  getActiveSessions,
+} from "./cloudmatch";
 
 function makeSettings(overrides: Partial<StreamSettings> = {}): StreamSettings {
   return {
@@ -85,6 +96,29 @@ test("CloudMatch uses resolver Reflex decision when present", () => {
   assert.equal(features.reflex, false);
 });
 
+test("CloudMatch uses official streaming feature enum values", () => {
+  assert.equal(colorQualityBitDepth("8bit_420"), 0);
+  assert.equal(colorQualityBitDepth("10bit_420"), 1);
+  assert.equal(colorQualityChromaFormat("8bit_420"), 0);
+  assert.equal(colorQualityChromaFormat("8bit_444"), 1);
+
+  const features = buildRequestedStreamingFeatures(makeSettings({ enableL4S: true }), 1, 1, false);
+  assert.deepEqual(features, {
+    reflex: true,
+    bitDepth: 1,
+    cloudGsync: false,
+    enabledL4S: true,
+    supportedHidDevices: 0,
+    profile: 0,
+    fallbackToLogicalResolution: false,
+    chromaFormat: 1,
+    prefilterMode: 0,
+    prefilterSharpness: 0,
+    prefilterNoiseReduction: 0,
+    hudStreamingMode: 0,
+  });
+});
+
 test("CloudMatch extracts local serverInfo region before fallback regions", () => {
   const bases = extractServerInfoRegionBases({
     metaData: [
@@ -101,6 +135,95 @@ test("CloudMatch extracts local serverInfo region before fallback regions", () =
     "https://np-eu.example.nvidiagrid.net",
     "https://np-us.example.nvidiagrid.net",
   ]);
+});
+
+test("CloudMatch resolves default prod endpoint to serverInfo local region before creating a session", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalWarn = console.warn;
+  const calls: string[] = [];
+  type CapturedSessionRequestBody = {
+    sessionRequestData: {
+      requestedStreamingFeatures: {
+        bitDepth?: number;
+        chromaFormat?: number;
+      };
+    };
+  };
+  let requestBody: CapturedSessionRequestBody | null = null;
+  const expectedSessionUrl = `https://np-lax-01.cloudmatchbeta.nvidiagrid.net/v2/session?${new URLSearchParams({
+    keyboardLayout: resolveGfnKeyboardLayout(DEFAULT_KEYBOARD_LAYOUT, process.platform),
+    languageCode: "en_US",
+  }).toString()}`;
+
+  console.warn = () => {};
+  globalThis.fetch = (async (input, init) => {
+    const url = String(input);
+    calls.push(url);
+
+    if (url === "https://prod.cloudmatchbeta.nvidiagrid.net/v2/serverInfo") {
+      return new Response(JSON.stringify({
+        requestStatus: { statusCode: 1, statusDescription: "SUCCESS_STATUS", serverId: "NP-LAX-01" },
+        metaData: [
+          { key: "local-region", value: "US West" },
+          { key: "gfn-regions", value: "US West, US East" },
+          { key: "US West", value: "https://np-lax-01.cloudmatchbeta.nvidiagrid.net/" },
+          { key: "US East", value: "https://np-ash-01.cloudmatchbeta.nvidiagrid.net/" },
+        ],
+      }), { status: 200 });
+    }
+
+    if (url === expectedSessionUrl) {
+      requestBody = JSON.parse(String(init?.body));
+      const createdRequestBody = requestBody;
+      if (!createdRequestBody) {
+        throw new Error("Session request body was not captured");
+      }
+      return new Response(JSON.stringify({
+        requestStatus: { statusCode: 1, statusDescription: "SUCCESS_STATUS" },
+        session: {
+          sessionId: "session-1",
+          status: 1,
+          seatSetupInfo: { seatSetupStep: 0 },
+          sessionControlInfo: { ip: "np-lax-01.cloudmatchbeta.nvidiagrid.net" },
+          connectionInfo: [],
+          iceServerConfiguration: {
+            iceServers: [{ urls: "stun:127.0.0.1:19302" }],
+          },
+          sessionRequestData: {
+            clientRequestMonitorSettings: [{ widthInPixels: 2560, heightInPixels: 1440, framesPerSecond: 240 }],
+            requestedStreamingFeatures: createdRequestBody.sessionRequestData.requestedStreamingFeatures,
+          },
+        },
+      }), { status: 200 });
+    }
+
+    throw new Error(`Unexpected fetch: ${url}`);
+  }) as typeof fetch;
+
+  try {
+    const session = await createSession({
+      token: "token",
+      streamingBaseUrl: "https://prod.cloudmatchbeta.nvidiagrid.net/",
+      appId: "1001",
+      internalTitle: "Test Game",
+      accountLinked: true,
+      zone: "prod",
+      settings: makeSettings({ colorQuality: "10bit_444", enableL4S: true }),
+    });
+
+    assert.equal(session.streamingBaseUrl, "https://np-lax-01.cloudmatchbeta.nvidiagrid.net");
+    assert.deepEqual(calls, [
+      "https://prod.cloudmatchbeta.nvidiagrid.net/v2/serverInfo",
+      expectedSessionUrl,
+    ]);
+    const capturedRequestBody = requestBody as CapturedSessionRequestBody | null;
+    assert.ok(capturedRequestBody);
+    assert.equal(capturedRequestBody.sessionRequestData.requestedStreamingFeatures.bitDepth, 1);
+    assert.equal(capturedRequestBody.sessionRequestData.requestedStreamingFeatures.chromaFormat, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+    console.warn = originalWarn;
+  }
 });
 
 test("CloudMatch falls back to serverInfo local region when active-session HTTP request fails", async () => {
