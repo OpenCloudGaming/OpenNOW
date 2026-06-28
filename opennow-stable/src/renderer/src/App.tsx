@@ -160,12 +160,14 @@ function createSyntheticDirectLaunchGame(request: DirectLaunchRequest, appId: st
     launchAppId: appId,
     title,
     searchText: normalizeDirectLaunchText(title),
+    isInLibrary: true,
     selectedVariantIndex: 0,
     variants: [
       {
         id: appId,
         store: "UNKNOWN",
         supportedControls: [],
+        libraryStatus: "IN_LIBRARY",
       },
     ],
   };
