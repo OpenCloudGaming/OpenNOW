@@ -571,16 +571,51 @@ jobs:
       - name: Merge macOS update feeds
         shell: bash
         run: |
-          x64_ver=$(awk '/^version:/{print $2; exit}' release-artifacts/latest-mac.yml)
-          arm64_ver=$(awk '/^version:/{print $2; exit}' release-artifacts/latest-mac-arm64.yml)
+          set -euo pipefail
+
+          x64_feed=release-artifacts/latest-mac.yml
+          arm64_feed=release-artifacts/latest-mac-arm64.yml
+
+          for feed in "$x64_feed" "$arm64_feed"; do
+            [ -s "$feed" ] || { echo "Missing macOS update feed: $feed" >&2; exit 1; }
+            grep -q '^files:' "$feed" || { echo "Missing files block in $feed" >&2; exit 1; }
+          done
+
+          x64_ver=$(awk '/^version:/{print $2; exit}' "$x64_feed")
+          arm64_ver=$(awk '/^version:/{print $2; exit}' "$arm64_feed")
+          [ -n "$x64_ver" ] && [ -n "$arm64_ver" ] || { echo "Missing macOS update feed version." >&2; exit 1; }
           [ "$x64_ver" != "$arm64_ver" ] && { echo "Version mismatch: x64=$x64_ver arm64=$arm64_ver" >&2; exit 1; }
           awk '
-            FNR==NR { if(/^files:/) { f=1; next } if(f && /^[^ ]/) f=0; if(f) arm64=arm64 $0"\n"; next }
-            /^path:/ { printf "%s", arm64 }
-            1
-          ' release-artifacts/latest-mac-arm64.yml release-artifacts/latest-mac.yml > /tmp/merged.yml
-          mv /tmp/merged.yml release-artifacts/latest-mac.yml
-          rm release-artifacts/latest-mac-arm64.yml
+            FNR == NR {
+              if (/^files:/) { in_arm64_files=1; next }
+              if (in_arm64_files && /^[^ ]/) in_arm64_files=0
+              if (in_arm64_files) arm64_files=arm64_files $0 "\n"
+              next
+            }
+            /^files:/ { in_x64_files=1; print; next }
+            in_x64_files && /^[^ ]/ && !inserted {
+              printf "%s", arm64_files
+              inserted=1
+              in_x64_files=0
+            }
+            { print }
+            END {
+              if (arm64_files == "") {
+                print "Missing arm64 files block entries." > "/dev/stderr"
+                exit 1
+              }
+              if (in_x64_files && !inserted) {
+                printf "%s", arm64_files
+                inserted=1
+              }
+              if (!inserted) {
+                print "Missing x64 files block insertion point." > "/dev/stderr"
+                exit 1
+              }
+            }
+          ' "$arm64_feed" "$x64_feed" > /tmp/merged.yml
+          mv /tmp/merged.yml "$x64_feed"
+          rm "$arm64_feed"
 
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
