@@ -4699,6 +4699,9 @@ button.game-card-store-chip.owned.active:hover {
 }
 
 .settings-game-accounts-section {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
   overflow: hidden;
 }
 
@@ -4720,23 +4723,28 @@ button.game-card-store-chip.owned.active:hover {
 .settings-game-accounts-card {
   margin: 0 18px 18px;
   padding: 14px;
+  max-height: clamp(260px, calc(100vh - 430px), 420px);
+  min-height: 0;
   border-radius: 6px;
   border: 1px solid rgba(255, 255, 255, 0.06);
   background: rgba(255, 255, 255, 0.025);
   display: flex;
   flex-direction: column;
   gap: 10px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
 }
 
 .settings-game-account-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  display: flex;
+  flex-direction: column;
   gap: 10px;
 }
 
 .settings-game-account-card {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
   gap: 14px;
   padding: 14px;
@@ -4747,7 +4755,9 @@ button.game-card-store-chip.owned.active:hover {
 
 .settings-game-account-main {
   display: flex;
+  flex: 1 1 auto;
   min-width: 0;
+  align-items: center;
   gap: 12px;
 }
 
@@ -4822,8 +4832,8 @@ button.game-card-store-chip.owned.active:hover {
 .settings-game-account-actions {
   display: flex;
   flex: 0 0 auto;
-  flex-direction: column;
-  align-items: stretch;
+  flex-direction: row;
+  align-items: center;
   gap: 8px;
 }
 
@@ -4870,6 +4880,10 @@ button.game-card-store-chip.owned.active:hover {
   .settings-game-account-actions,
   .settings-game-account-actions > button {
     width: 100%;
+  }
+
+  .settings-game-account-actions {
+    flex-direction: column;
   }
 }
 
