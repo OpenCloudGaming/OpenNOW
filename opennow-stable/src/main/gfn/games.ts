@@ -17,7 +17,7 @@ import {
   buildGfnLcarsHeaders,
 } from "./clientHeaders";
 import { fetchWithOptionalProxy } from "./proxyFetch";
-import { sessionProxyCacheKeyPart } from "./proxyUrl";
+import { sessionProxyCacheKeyPart, sessionProxyHasCredentials } from "./proxyUrl";
 
 const GRAPHQL_URL = "https://games.geforce.com/graphql";
 const PANELS_QUERY_HASH = "f8e26265a5db5c20e1334a6872cf04b6e3970507697f6ae55a6ddefa5420daf0";
@@ -40,6 +40,10 @@ function addProxyCacheScope(hash: ReturnType<typeof createHash>, proxyUrl?: stri
 function publicGamesCacheKey(proxyUrl?: string): string {
   const proxyCachePart = sessionProxyCacheKeyPart(proxyUrl);
   return proxyCachePart ? `${PUBLIC_GAMES_CACHE_KEY}:${proxyCachePart}` : PUBLIC_GAMES_CACHE_KEY;
+}
+
+function shouldBypassGamesCache(proxyUrl?: string): boolean {
+  return sessionProxyHasCredentials(proxyUrl);
 }
 
 function accountScopedGamesCacheKey(scope: string, accountId: string, providerStreamingBaseUrl?: string, proxyUrl?: string): string {
@@ -73,6 +77,10 @@ async function loadAccountScopedFromCache<T>(
   providerStreamingBaseUrl?: string,
   proxyUrl?: string,
 ): Promise<Awaited<ReturnType<typeof cacheManager.loadFromCache<T>>>> {
+  if (shouldBypassGamesCache(proxyUrl)) {
+    return null;
+  }
+
   const resolvedAccountId = resolveAccountCacheId(accountId, token);
   const primaryKey = accountScopedGamesCacheKey(scope, resolvedAccountId, providerStreamingBaseUrl, proxyUrl);
   const cached = await cacheManager.loadFromCache<T>(primaryKey);
@@ -1082,14 +1090,19 @@ export async function browseCatalog(input: CatalogBrowseRequest): Promise<Catalo
 
   const result = await browseCatalogUncached(input);
   const accountId = resolveAccountCacheId(input.userId, token);
-  const cacheKey = catalogBrowseCacheKey(input, accountId);
-  await cacheManager.saveToCache(cacheKey, result);
+  if (!shouldBypassGamesCache(input.proxyUrl)) {
+    const cacheKey = catalogBrowseCacheKey(input, accountId);
+    await cacheManager.saveToCache(cacheKey, result);
+  }
   return result;
 }
 
 export async function peekCachedBrowseCatalog(input: CatalogBrowseRequest): Promise<CatalogBrowseResult | null> {
   const token = input.token;
   if (!token) {
+    return null;
+  }
+  if (shouldBypassGamesCache(input.proxyUrl)) {
     return null;
   }
 
@@ -1134,8 +1147,10 @@ export async function fetchMainGames(
   }
 
   const games = await fetchMainGamesUncached(token, providerStreamingBaseUrl, proxyUrl);
-  const cacheKey = accountScopedGamesCacheKey("main", resolveAccountCacheId(accountId, token), providerStreamingBaseUrl, proxyUrl);
-  await cacheManager.saveToCache(cacheKey, games);
+  if (!shouldBypassGamesCache(proxyUrl)) {
+    const cacheKey = accountScopedGamesCacheKey("main", resolveAccountCacheId(accountId, token), providerStreamingBaseUrl, proxyUrl);
+    await cacheManager.saveToCache(cacheKey, games);
+  }
   return games;
 }
 
@@ -1151,8 +1166,10 @@ export async function fetchFeaturedGames(
   const vpcId = await getVpcId(token, providerStreamingBaseUrl, proxyUrl);
   const games = featuredGamesFromPanels(await fetchPanels(token, ["MARQUEE"], vpcId, undefined, proxyUrl)).slice(0, 6);
 
-  const cacheKey = accountScopedGamesCacheKey("featured", resolveAccountCacheId(accountId, token), providerStreamingBaseUrl, proxyUrl);
-  await cacheManager.saveToCache(cacheKey, games);
+  if (!shouldBypassGamesCache(proxyUrl)) {
+    const cacheKey = accountScopedGamesCacheKey("featured", resolveAccountCacheId(accountId, token), providerStreamingBaseUrl, proxyUrl);
+    await cacheManager.saveToCache(cacheKey, games);
+  }
   return games;
 }
 
@@ -1167,8 +1184,10 @@ export async function fetchStorePanels(
 
   const vpcId = await getVpcId(token, providerStreamingBaseUrl, proxyUrl);
   const panels = parsePanelResults(await fetchPanels(token, ["MAIN"], vpcId, undefined, proxyUrl));
-  const cacheKey = accountScopedGamesCacheKey("store-panels", resolveAccountCacheId(accountId, token), providerStreamingBaseUrl, proxyUrl);
-  await cacheManager.saveToCache(cacheKey, panels);
+  if (!shouldBypassGamesCache(proxyUrl)) {
+    const cacheKey = accountScopedGamesCacheKey("store-panels", resolveAccountCacheId(accountId, token), providerStreamingBaseUrl, proxyUrl);
+    await cacheManager.saveToCache(cacheKey, panels);
+  }
   return panels;
 }
 
@@ -1191,8 +1210,10 @@ export async function fetchLibraryGames(
   }
 
   const games = await fetchLibraryGamesUncached(token, providerStreamingBaseUrl, proxyUrl);
-  const cacheKey = accountScopedGamesCacheKey("library", resolveAccountCacheId(accountId, token), providerStreamingBaseUrl, proxyUrl);
-  await cacheManager.saveToCache(cacheKey, games);
+  if (!shouldBypassGamesCache(proxyUrl)) {
+    const cacheKey = accountScopedGamesCacheKey("library", resolveAccountCacheId(accountId, token), providerStreamingBaseUrl, proxyUrl);
+    await cacheManager.saveToCache(cacheKey, games);
+  }
   return games;
 }
 
@@ -1215,6 +1236,10 @@ async function fetchLibraryGamesUncached(
 }
 
 export async function fetchPublicGames(proxyUrl?: string): Promise<GameInfo[]> {
+  if (shouldBypassGamesCache(proxyUrl)) {
+    return fetchPublicGamesUncached(proxyUrl);
+  }
+
   const cacheKey = publicGamesCacheKey(proxyUrl);
   const cached = await cacheManager.loadFromCache<GameInfo[]>(cacheKey);
   if (cached) {

@@ -141,6 +141,19 @@ function getSessionProxyUiScope(proxyUrl: string | undefined): string {
   }
 }
 
+function hasSessionProxyCredentials(proxyUrl: string | undefined): boolean {
+  if (!proxyUrl) return false;
+  const trimmed = proxyUrl.trim();
+  const candidate = /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) ? trimmed : `http://${trimmed}`;
+
+  try {
+    const parsed = new URL(candidate);
+    return parsed.username.length > 0 || parsed.password.length > 0;
+  } catch {
+    return false;
+  }
+}
+
 function buildProxyAwareCatalogQueryKey(
   searchQuery: string,
   filterIds: string[],
@@ -583,6 +596,7 @@ export function App(): JSX.Element {
   const storePanelsLoadIdRef = useRef(0);
   const runtimeDataLoadIdRef = useRef(0);
   const lastCatalogQueryRef = useRef<string | null>(null);
+  const lastCatalogProxyUrlRef = useRef<string | undefined>(undefined);
   const signalingRecoveryRef = useRef<SignalingRecoveryState>({
     attemptCount: 0,
     inFlight: null,
@@ -1522,7 +1536,13 @@ export function App(): JSX.Element {
     catalogResult: CatalogBrowseResult,
     library: GameInfo[],
     queryKey: string,
+    proxyUrl?: string,
   ): void => {
+    if (hasSessionProxyCredentials(proxyUrl)) {
+      clearCatalogSnapshot();
+      return;
+    }
+
     saveCatalogSnapshot({
       version: 1,
       userId: session.user.userId,
@@ -1539,6 +1559,11 @@ export function App(): JSX.Element {
   }, []);
 
   const hydrateCatalogSnapshot = useCallback((session: AuthSession, proxyUrl: string | undefined = activeSessionProxyUrl): string | null => {
+    if (hasSessionProxyCredentials(proxyUrl)) {
+      clearCatalogSnapshot();
+      return null;
+    }
+
     const queryKey = buildProxyAwareCatalogQueryKey("", catalogSelectedFilterIds, catalogSelectedSortId, proxyUrl);
     const snapshot = loadCatalogSnapshot(
       session.user.userId,
@@ -1560,6 +1585,7 @@ export function App(): JSX.Element {
     ));
     applyVariantSelections([...snapshot.games, ...snapshot.libraryGames]);
     lastCatalogQueryRef.current = queryKey;
+    lastCatalogProxyUrlRef.current = proxyUrl;
     return queryKey;
   }, [activeSessionProxyUrl, applyVariantSelections, catalogSelectedFilterIds, catalogSelectedSortId]);
 
@@ -1578,6 +1604,7 @@ export function App(): JSX.Element {
 
     if (!background) {
       lastCatalogQueryRef.current = null;
+      lastCatalogProxyUrlRef.current = proxyUrl;
       setIsLoadingCatalog(true);
       setIsLoadingLibrary(true);
     }
@@ -1616,8 +1643,9 @@ export function App(): JSX.Element {
       latestCatalogResult = catalogResult;
       applyCatalogBrowseResult(catalogResult);
       lastCatalogQueryRef.current = catalogQueryKey;
+      lastCatalogProxyUrlRef.current = proxyUrl;
       if (latestLibraryGames) {
-        persistCatalogSnapshot(session, catalogResult, latestLibraryGames, catalogQueryKey);
+        persistCatalogSnapshot(session, catalogResult, latestLibraryGames, catalogQueryKey, proxyUrl);
       }
     }).catch((error) => {
       console.error("Catalog load failed:", error);
@@ -1642,7 +1670,7 @@ export function App(): JSX.Element {
       setLibraryGames(libGames);
       applyVariantSelections(libGames);
       if (latestCatalogResult) {
-        persistCatalogSnapshot(session, latestCatalogResult, libGames, catalogQueryKey);
+        persistCatalogSnapshot(session, latestCatalogResult, libGames, catalogQueryKey, proxyUrl);
       }
     }).catch((error) => {
       console.error("Library load failed:", error);
@@ -2120,10 +2148,15 @@ export function App(): JSX.Element {
       return;
     }
     const queryKey = buildProxyAwareCatalogQueryKey(searchQuery, catalogSelectedFilterIds, catalogSelectedSortId, activeSessionProxyUrl);
-    if (lastCatalogQueryRef.current === queryKey && games.length > 0) {
+    if (
+      lastCatalogQueryRef.current === queryKey
+      && lastCatalogProxyUrlRef.current === activeSessionProxyUrl
+      && games.length > 0
+    ) {
       return;
     }
     lastCatalogQueryRef.current = queryKey;
+    lastCatalogProxyUrlRef.current = activeSessionProxyUrl;
 
     const handle = window.setTimeout(() => {
       void loadGames("main", { background: games.length > 0 });

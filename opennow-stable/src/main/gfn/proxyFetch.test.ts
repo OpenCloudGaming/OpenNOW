@@ -3,7 +3,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { normalizeSessionProxyUrl, sessionProxyCacheKeyPart, sessionProxyPartitionForUrl } from "./proxyUrl";
+import {
+  normalizeSessionProxyUrl,
+  sessionProxyCacheKeyPart,
+  sessionProxyHasCredentials,
+  sessionProxyPartitionForUrl,
+} from "./proxyUrl";
 
 test("normalizes scheme-less session proxy host:port values as http proxies", () => {
   assert.equal(normalizeSessionProxyUrl("localhost:8080"), "http://localhost:8080");
@@ -42,4 +47,10 @@ test("derives stable opaque proxy cache key parts", () => {
   assert.equal(withCredentials, explicit);
   assert.match(withCredentials ?? "", /^[0-9a-f]{16}$/);
   assert.ok(!withCredentials?.includes("secret"));
+});
+
+test("detects session proxy credentials without requiring them", () => {
+  assert.equal(sessionProxyHasCredentials("proxy.example.com:8080"), false);
+  assert.equal(sessionProxyHasCredentials("http://user@proxy.example.com:8080"), true);
+  assert.equal(sessionProxyHasCredentials("http://user:secret@proxy.example.com:8080"), true);
 });

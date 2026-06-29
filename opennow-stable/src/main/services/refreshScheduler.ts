@@ -1,5 +1,6 @@
 import type { GameInfo } from "@shared/gfn";
 import { getAccountGamesCacheKeys } from "../gfn/games";
+import { sessionProxyHasCredentials } from "../gfn/proxyUrl";
 import { cacheEventBus } from "./cacheEventBus";
 import { cacheManager } from "./cacheManager";
 
@@ -89,6 +90,11 @@ class RefreshScheduler {
     }
 
     const { token, userId, providerStreamingBaseUrl, proxyUrl } = this.authContext;
+    if (sessionProxyHasCredentials(proxyUrl)) {
+      console.log("[CACHE] Credentialed proxy configured, skipping background game cache refresh");
+      return;
+    }
+
     const cacheKeys = getAccountGamesCacheKeys(userId, providerStreamingBaseUrl, proxyUrl);
     const force = options.force === true;
 
