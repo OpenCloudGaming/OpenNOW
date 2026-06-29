@@ -3,8 +3,14 @@ import type {
   PersistentStorageLocationsResult,
   PersistentStorageResetResult,
 } from "@shared/gfn";
+import {
+  buildPaywallHeaders,
+  GFN_PAYWALL_API_BASE_URL,
+  parsePaywallMessage,
+  readPaywallJson,
+  resolvePaywallTokenCandidates,
+} from "./paywall";
 
-const GFN_PAYWALL_API_BASE_URL = "https://api-prod.nvidia.com/gfn-paywall-api/api/v2";
 const GFN_STATUS_COMPONENTS_URL = "https://status.geforcenow.com/api/v2/components.json";
 const DEFAULT_PAYWALL_LOCALE = "en_US";
 const FALLBACK_FETCH_TIMEOUT_MS = 10_000;
@@ -24,14 +30,7 @@ interface FetchPersistentStorageLocationsInput {
   currentRegionName?: string | null;
 }
 
-interface PaywallResponseWithMessage {
-  message?: unknown;
-  errors?: {
-    errorMessage?: unknown;
-  };
-}
-
-interface PaywallProductsResponse extends PaywallResponseWithMessage {
+interface PaywallProductsResponse {
   status?: unknown;
   products?: PaywallProduct[];
 }
@@ -90,7 +89,7 @@ const FALLBACK_STORAGE_STATUS_LOCATIONS: StorageStatusLocation[] = [
   { name: "Quebec (Canada)", codes: ["NP-MON-02"] },
   { name: "United Kingdom 1", codes: ["NP-LON-07", "NP-LON-08"] },
   { name: "Sweden", codes: ["NP-STH-03", "NP-STH-04"] },
-  { name: "Netherlands North", codes: ["NP-AMS-06", "NP-AMS-08"] },
+  { name: "Netherlands North", codes: ["NP-AMS-07", "NP-AMS-06", "NP-AMS-08"] },
   { name: "Germany", codes: ["NP-FRK-06", "NP-FRK-07", "NP-FRK-08"] },
   { name: "France 1", codes: ["NP-PAR-05", "NP-PAR-06", "NP-PAR-07"] },
   { name: "Poland", codes: ["NP-WAW-01"] },
@@ -122,38 +121,6 @@ function buildProductsUrl(input: Pick<FetchPersistentStorageLocationsInput, "loc
   return url.toString();
 }
 
-function buildPaywallHeaders(idToken: string): Record<string, string> {
-  return {
-    Accept: "application/json",
-    "Content-Type": "application/json",
-    idToken,
-  };
-}
-
-function parseMessage(payload: unknown): string | undefined {
-  if (!payload || typeof payload !== "object") {
-    return undefined;
-  }
-
-  const response = payload as PaywallResponseWithMessage;
-  const statuspageMessage = (payload as { error?: { message?: unknown } }).error?.message;
-  const message = response.message ?? response.errors?.errorMessage ?? statuspageMessage;
-  return typeof message === "string" && message.trim().length > 0 ? message : undefined;
-}
-
-async function readPaywallJson(response: Response): Promise<unknown> {
-  const text = await response.text();
-  if (!text.trim()) {
-    return null;
-  }
-
-  try {
-    return JSON.parse(text) as unknown;
-  } catch {
-    return text;
-  }
-}
-
 function asString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
 }
@@ -180,10 +147,6 @@ function normalizeStatusCode(value: string): string | undefined {
 
 function isCurrentLocationName(name: string, currentRegionName: string | undefined): boolean {
   return Boolean(currentRegionName && name.toLowerCase() === currentRegionName.toLowerCase());
-}
-
-function tokenCandidates(idToken: string, alternates: string[] | undefined): string[] {
-  return [...new Set([idToken, ...(alternates ?? [])].map((token) => token.trim()).filter(Boolean))];
 }
 
 function isAuthFailure(failure: PaywallFailure): boolean {
@@ -470,7 +433,7 @@ export async function fetchPersistentStorageLocations(
   const currentRegionName = normalizeRegionName(input.currentRegionName);
   let lastFailure: PaywallFailure | null = null;
 
-  for (const idToken of tokenCandidates(input.idToken, input.idTokenAlternates)) {
+  for (const idToken of await resolvePaywallTokenCandidates(input.idToken, input.idTokenAlternates)) {
     const response = await fetch(buildProductsUrl(input), {
       headers: buildPaywallHeaders(idToken),
     });
@@ -479,7 +442,7 @@ export async function fetchPersistentStorageLocations(
     if (!response.ok) {
       lastFailure = {
         status: response.status,
-        message: parseMessage(payload) ?? `Persistent storage locations failed with status ${response.status}`,
+        message: parsePaywallMessage(payload) ?? `Persistent storage locations failed with status ${response.status}`,
         payload,
       };
       if (isAuthFailure(lastFailure)) {
@@ -492,7 +455,7 @@ export async function fetchPersistentStorageLocations(
     if (productsResponse.status === "failure") {
       lastFailure = {
         status: response.status,
-        message: parseMessage(productsResponse) ?? "Persistent storage locations request failed",
+        message: parsePaywallMessage(productsResponse) ?? "Persistent storage locations request failed",
         payload,
       };
       if (isAuthFailure(lastFailure)) {
@@ -539,7 +502,7 @@ export async function resetPersistentStorage(
   const storageRegions = getFallbackRegionCandidates(storageRegion);
   let lastFailure: PaywallFailure | null = null;
 
-  for (const idToken of tokenCandidates(input.idToken, input.idTokenAlternates)) {
+  for (const idToken of await resolvePaywallTokenCandidates(input.idToken, input.idTokenAlternates)) {
     for (const candidateRegion of storageRegions) {
       const response = await fetch(buildResetStorageUrl(candidateRegion), {
         method: "POST",
@@ -552,13 +515,13 @@ export async function resetPersistentStorage(
         return {
           ok: true,
           storageRegion: candidateRegion,
-          message: parseMessage(payload),
+          message: parsePaywallMessage(payload),
         };
       }
 
       lastFailure = {
         status: response.status,
-        message: parseMessage(payload) ?? `Persistent storage reset failed with status ${response.status}`,
+        message: parsePaywallMessage(payload) ?? `Persistent storage reset failed with status ${response.status}`,
         payload,
       };
 
