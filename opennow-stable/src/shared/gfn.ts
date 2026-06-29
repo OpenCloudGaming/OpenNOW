@@ -514,6 +514,8 @@ export interface PingResult {
 export interface GamesFetchRequest {
   token?: string;
   providerStreamingBaseUrl?: string;
+  /** Stable account id used for on-disk cache scoping (avoids cache misses on token refresh). */
+  userId?: string;
 }
 
 export interface DirectLaunchRequest {

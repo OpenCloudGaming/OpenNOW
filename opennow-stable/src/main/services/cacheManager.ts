@@ -67,13 +67,14 @@ class CacheManager {
       }
 
       const now = Date.now();
-      if (now > parsed.metadata.expiresAt) {
-        console.log(`[CACHE] Cache expired: ${key} (expired ${Math.round((now - parsed.metadata.expiresAt) / 1000)}s ago)`);
-        return null;
-      }
-
       const ageSeconds = Math.round((now - parsed.metadata.timestamp) / 1000);
-      console.log(`[CACHE] Cache hit: ${key} (age: ${ageSeconds}s)`);
+      if (now > parsed.metadata.expiresAt) {
+        console.log(
+          `[CACHE] Cache hit (stale): ${key} (age: ${ageSeconds}s, expired ${Math.round((now - parsed.metadata.expiresAt) / 1000)}s ago)`,
+        );
+      } else {
+        console.log(`[CACHE] Cache hit: ${key} (age: ${ageSeconds}s)`);
+      }
       return parsed;
     } catch (error) {
       console.error(`[CACHE] Error reading cache file: ${key}`, error);
@@ -165,6 +166,28 @@ class CacheManager {
   isExpired(timestamp: number): boolean {
     const ageMs = Date.now() - timestamp;
     return ageMs > CACHE_TTL_MS;
+  }
+
+  async isStaleOrMissing(key: string): Promise<boolean> {
+    if (!this.initialized) {
+      return true;
+    }
+
+    const filePath = this.getCacheFilePath(key);
+    if (!existsSync(filePath)) {
+      return true;
+    }
+
+    try {
+      const content = await readFile(filePath, "utf-8");
+      const parsed = JSON.parse(content) as CachedData<unknown>;
+      if (!parsed.metadata || typeof parsed.metadata.expiresAt !== "number") {
+        return true;
+      }
+      return Date.now() > parsed.metadata.expiresAt;
+    } catch {
+      return true;
+    }
   }
 
   getCacheTtlMs(): number {

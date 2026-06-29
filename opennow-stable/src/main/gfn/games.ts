@@ -28,7 +28,17 @@ const MAX_CATALOG_PAGES = 3;
 const DEFAULT_SORT_ID = "relevance";
 const PUBLIC_GAMES_CACHE_KEY = "games:public:v2";
 
-function accountScopedGamesCacheKey(scope: string, token: string, providerStreamingBaseUrl?: string): string {
+function accountScopedGamesCacheKey(scope: string, accountId: string, providerStreamingBaseUrl?: string): string {
+  const digest = createHash("sha256")
+    .update(accountId)
+    .update("\0")
+    .update(providerStreamingBaseUrl ?? "")
+    .digest("hex")
+    .slice(0, 16);
+  return `games:${scope}:${digest}`;
+}
+
+function legacyTokenScopedGamesCacheKey(scope: string, token: string, providerStreamingBaseUrl?: string): string {
   const digest = createHash("sha256")
     .update(token)
     .update("\0")
@@ -36,6 +46,64 @@ function accountScopedGamesCacheKey(scope: string, token: string, providerStream
     .digest("hex")
     .slice(0, 16);
   return `games:${scope}:${digest}`;
+}
+
+function resolveAccountCacheId(accountId: string | undefined, token: string): string {
+  return accountId?.trim() || token;
+}
+
+async function loadAccountScopedFromCache<T>(
+  scope: string,
+  accountId: string | undefined,
+  token: string,
+  providerStreamingBaseUrl?: string,
+): Promise<Awaited<ReturnType<typeof cacheManager.loadFromCache<T>>>> {
+  const resolvedAccountId = resolveAccountCacheId(accountId, token);
+  const primaryKey = accountScopedGamesCacheKey(scope, resolvedAccountId, providerStreamingBaseUrl);
+  const cached = await cacheManager.loadFromCache<T>(primaryKey);
+  if (cached) {
+    return cached;
+  }
+
+  if (resolvedAccountId !== token) {
+    const legacyKey = legacyTokenScopedGamesCacheKey(scope, token, providerStreamingBaseUrl);
+    if (legacyKey !== primaryKey) {
+      const legacy = await cacheManager.loadFromCache<T>(legacyKey);
+      if (legacy) {
+        void cacheManager.saveToCache(primaryKey, legacy.data);
+        void cacheManager.invalidateCache(legacyKey);
+        return legacy;
+      }
+    }
+  }
+
+  return null;
+}
+
+function catalogBrowseCacheKey(input: CatalogBrowseRequest, accountId: string): string {
+  const queryDigest = createHash("sha256")
+    .update(input.searchQuery?.trim() ?? "")
+    .update("\0")
+    .update(input.sortId ?? "")
+    .update("\0")
+    .update((input.filterIds ?? []).join(","))
+    .update("\0")
+    .update(String(input.fetchCount ?? ""))
+    .digest("hex")
+    .slice(0, 12);
+  return `${accountScopedGamesCacheKey("catalog", accountId, input.providerStreamingBaseUrl)}:${queryDigest}`;
+}
+
+export function getAccountGamesCacheKeys(accountId: string, providerStreamingBaseUrl?: string): {
+  main: string;
+  library: string;
+  public: string;
+} {
+  return {
+    main: accountScopedGamesCacheKey("main", accountId, providerStreamingBaseUrl),
+    library: accountScopedGamesCacheKey("library", accountId, providerStreamingBaseUrl),
+    public: PUBLIC_GAMES_CACHE_KEY,
+  };
 }
 
 interface GraphQlResponse {
@@ -962,40 +1030,99 @@ ${appFields}
 }
 
 export async function browseCatalog(input: CatalogBrowseRequest): Promise<CatalogBrowseResult> {
-  return browseCatalogUncached(input);
+  const token = input.token;
+  if (!token) {
+    throw new Error("Catalog browsing requires an authenticated token");
+  }
+
+  const cached = await peekCachedBrowseCatalog(input);
+  if (cached) {
+    return cached;
+  }
+
+  const result = await browseCatalogUncached(input);
+  const accountId = resolveAccountCacheId(input.userId, token);
+  const cacheKey = catalogBrowseCacheKey(input, accountId);
+  await cacheManager.saveToCache(cacheKey, result);
+  return result;
 }
 
-export async function fetchMainGames(token: string, providerStreamingBaseUrl?: string): Promise<GameInfo[]> {
-  const cacheKey = accountScopedGamesCacheKey("main", token, providerStreamingBaseUrl);
-  const cached = await cacheManager.loadFromCache<GameInfo[]>(cacheKey);
+export async function peekCachedBrowseCatalog(input: CatalogBrowseRequest): Promise<CatalogBrowseResult | null> {
+  const token = input.token;
+  if (!token) {
+    return null;
+  }
+
+  const accountId = resolveAccountCacheId(input.userId, token);
+  const cacheKey = catalogBrowseCacheKey(input, accountId);
+  const cached = await cacheManager.loadFromCache<CatalogBrowseResult>(cacheKey);
+  return cached?.data ?? null;
+}
+
+export async function peekCachedLibraryGames(
+  token: string,
+  providerStreamingBaseUrl?: string,
+  accountId?: string,
+): Promise<GameInfo[] | null> {
+  const cached = await loadAccountScopedFromCache<GameInfo[]>("library", accountId, token, providerStreamingBaseUrl);
+  return cached?.data ?? null;
+}
+
+export async function fetchLibraryGamesFromCache(
+  token: string,
+  providerStreamingBaseUrl?: string,
+  accountId?: string,
+): Promise<GameInfo[] | null> {
+  const cached = await peekCachedLibraryGames(token, providerStreamingBaseUrl, accountId);
+  if (!cached) {
+    return null;
+  }
+  return mergePublicGameVariants(cached, await fetchPublicGames());
+}
+
+export async function fetchMainGames(
+  token: string,
+  providerStreamingBaseUrl?: string,
+  accountId?: string,
+): Promise<GameInfo[]> {
+  const cached = await loadAccountScopedFromCache<GameInfo[]>("main", accountId, token, providerStreamingBaseUrl);
   if (cached) {
     return mergePublicGameVariants(cached.data, await fetchPublicGames());
   }
 
   const games = await fetchMainGamesUncached(token, providerStreamingBaseUrl);
+  const cacheKey = accountScopedGamesCacheKey("main", resolveAccountCacheId(accountId, token), providerStreamingBaseUrl);
   await cacheManager.saveToCache(cacheKey, games);
   return games;
 }
 
-export async function fetchFeaturedGames(token: string, providerStreamingBaseUrl?: string): Promise<GameInfo[]> {
-  const cacheKey = accountScopedGamesCacheKey("featured", token, providerStreamingBaseUrl);
-  const cached = await cacheManager.loadFromCache<GameInfo[]>(cacheKey);
+export async function fetchFeaturedGames(
+  token: string,
+  providerStreamingBaseUrl?: string,
+  accountId?: string,
+): Promise<GameInfo[]> {
+  const cached = await loadAccountScopedFromCache<GameInfo[]>("featured", accountId, token, providerStreamingBaseUrl);
   if (cached) return cached.data;
 
   const vpcId = await getVpcId(token, providerStreamingBaseUrl);
   const games = featuredGamesFromPanels(await fetchPanels(token, ["MARQUEE"], vpcId)).slice(0, 6);
 
+  const cacheKey = accountScopedGamesCacheKey("featured", resolveAccountCacheId(accountId, token), providerStreamingBaseUrl);
   await cacheManager.saveToCache(cacheKey, games);
   return games;
 }
 
-export async function fetchStorePanels(token: string, providerStreamingBaseUrl?: string): Promise<GamePanelResult[]> {
-  const cacheKey = accountScopedGamesCacheKey("store-panels", token, providerStreamingBaseUrl);
-  const cached = await cacheManager.loadFromCache<GamePanelResult[]>(cacheKey);
+export async function fetchStorePanels(
+  token: string,
+  providerStreamingBaseUrl?: string,
+  accountId?: string,
+): Promise<GamePanelResult[]> {
+  const cached = await loadAccountScopedFromCache<GamePanelResult[]>("store-panels", accountId, token, providerStreamingBaseUrl);
   if (cached) return cached.data;
 
   const vpcId = await getVpcId(token, providerStreamingBaseUrl);
   const panels = parsePanelResults(await fetchPanels(token, ["MAIN"], vpcId));
+  const cacheKey = accountScopedGamesCacheKey("store-panels", resolveAccountCacheId(accountId, token), providerStreamingBaseUrl);
   await cacheManager.saveToCache(cacheKey, panels);
   return panels;
 }
@@ -1010,14 +1137,15 @@ async function fetchMainGamesUncached(token: string, providerStreamingBaseUrl?: 
 export async function fetchLibraryGames(
   token: string,
   providerStreamingBaseUrl?: string,
+  accountId?: string,
 ): Promise<GameInfo[]> {
-  const cacheKey = accountScopedGamesCacheKey("library", token, providerStreamingBaseUrl);
-  const cached = await cacheManager.loadFromCache<GameInfo[]>(cacheKey);
+  const cached = await loadAccountScopedFromCache<GameInfo[]>("library", accountId, token, providerStreamingBaseUrl);
   if (cached) {
     return mergePublicGameVariants(cached.data, await fetchPublicGames());
   }
 
   const games = await fetchLibraryGamesUncached(token, providerStreamingBaseUrl);
+  const cacheKey = accountScopedGamesCacheKey("library", resolveAccountCacheId(accountId, token), providerStreamingBaseUrl);
   await cacheManager.saveToCache(cacheKey, games);
   return games;
 }

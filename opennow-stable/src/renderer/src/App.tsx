@@ -49,6 +49,12 @@ import type {
   StreamWarningState,
 } from "./lib/appTypes";
 import { loadCatalogPreferences, saveCatalogPreferences, VARIANT_SELECTION_LOCALSTORAGE_KEY } from "./lib/catalogPreferences";
+import {
+  buildCatalogQueryKey,
+  clearCatalogSnapshot,
+  loadCatalogSnapshot,
+  saveCatalogSnapshot,
+} from "./lib/catalogSnapshot";
 import { loadStoredCodecResults, saveStoredCodecResults, testCodecSupport, type CodecTestResult } from "./lib/codecDiagnostics";
 import {
   areStringArraysEqual,
@@ -545,6 +551,7 @@ export function App(): JSX.Element {
   const storePanelsLoadedContextRef = useRef("");
   const storePanelsLoadIdRef = useRef(0);
   const runtimeDataLoadIdRef = useRef(0);
+  const lastCatalogQueryRef = useRef<string | null>(null);
   const signalingRecoveryRef = useRef<SignalingRecoveryState>({
     attemptCount: 0,
     inFlight: null,
@@ -1479,14 +1486,69 @@ export function App(): JSX.Element {
     applyVariantSelections(catalogResult.games);
   }, [applyVariantSelections]);
 
-  const loadSessionRuntimeData = useCallback(async (session: AuthSession): Promise<void> => {
+  const persistCatalogSnapshot = useCallback((
+    session: AuthSession,
+    catalogResult: CatalogBrowseResult,
+    library: GameInfo[],
+    queryKey: string,
+  ): void => {
+    saveCatalogSnapshot({
+      version: 1,
+      userId: session.user.userId,
+      streamingBaseUrl: session.provider.streamingServiceUrl,
+      queryKey,
+      games: catalogResult.games,
+      libraryGames: library,
+      filterGroups: catalogResult.filterGroups,
+      sortOptions: catalogResult.sortOptions,
+      totalCount: catalogResult.totalCount,
+      supportedCount: catalogResult.numberSupported,
+      savedAt: Date.now(),
+    });
+  }, []);
+
+  const hydrateCatalogSnapshot = useCallback((session: AuthSession): string | null => {
+    const queryKey = buildCatalogQueryKey("", catalogSelectedFilterIds, catalogSelectedSortId);
+    const snapshot = loadCatalogSnapshot(
+      session.user.userId,
+      session.provider.streamingServiceUrl,
+      queryKey,
+    );
+    if (!snapshot) {
+      return null;
+    }
+
+    setGames(snapshot.games);
+    setLibraryGames(snapshot.libraryGames);
+    setCatalogFilterGroups(snapshot.filterGroups);
+    setCatalogSortOptions(snapshot.sortOptions);
+    setCatalogTotalCount(snapshot.totalCount);
+    setCatalogSupportedCount(snapshot.supportedCount);
+    setSelectedGameId((previous) => (
+      snapshot.games.some((game) => game.id === previous) ? previous : (snapshot.games[0]?.id ?? "")
+    ));
+    applyVariantSelections([...snapshot.games, ...snapshot.libraryGames]);
+    lastCatalogQueryRef.current = queryKey;
+    return queryKey;
+  }, [applyVariantSelections, catalogSelectedFilterIds, catalogSelectedSortId]);
+
+  const loadSessionRuntimeData = useCallback(async (
+    session: AuthSession,
+    options?: { background?: boolean },
+  ): Promise<void> => {
     const token = session.tokens.idToken ?? session.tokens.accessToken;
     const streamingBaseUrl = session.provider.streamingServiceUrl;
+    const userId = session.user.userId;
     const loadId = ++runtimeDataLoadIdRef.current;
     const isCurrentLoad = (): boolean => runtimeDataLoadIdRef.current === loadId;
+    const background = options?.background === true;
+    const catalogQueryKey = buildCatalogQueryKey("", catalogSelectedFilterIds, catalogSelectedSortId);
 
-    setIsLoadingCatalog(true);
-    setIsLoadingLibrary(true);
+    if (!background) {
+      lastCatalogQueryRef.current = null;
+      setIsLoadingCatalog(true);
+      setIsLoadingLibrary(true);
+    }
 
     void window.openNow.getRegions({ token }).then((discovered) => {
       if (isCurrentLoad()) setRegions(discovered);
@@ -1506,44 +1568,59 @@ export function App(): JSX.Element {
       if (isCurrentLoad()) setSubscriptionInfo(null);
     });
 
+    let latestCatalogResult: CatalogBrowseResult | null = null;
+    let latestLibraryGames: GameInfo[] | null = null;
+
     void window.openNow.browseCatalog({
       token,
+      userId,
       providerStreamingBaseUrl: streamingBaseUrl,
       searchQuery: "",
       sortId: catalogSelectedSortId,
       filterIds: catalogSelectedFilterIds,
     }).then((catalogResult) => {
       if (!isCurrentLoad()) return;
+      latestCatalogResult = catalogResult;
       applyCatalogBrowseResult(catalogResult);
+      lastCatalogQueryRef.current = catalogQueryKey;
+      if (latestLibraryGames) {
+        persistCatalogSnapshot(session, catalogResult, latestLibraryGames, catalogQueryKey);
+      }
     }).catch((error) => {
       console.error("Catalog load failed:", error);
-      if (!isCurrentLoad()) return;
+      if (!isCurrentLoad() || background) return;
       setGames([]);
       setCatalogFilterGroups([]);
       setCatalogSortOptions([]);
       setCatalogTotalCount(0);
       setCatalogSupportedCount(0);
     }).finally(() => {
-      if (isCurrentLoad()) setIsLoadingCatalog(false);
+      if (isCurrentLoad() && !background) setIsLoadingCatalog(false);
     });
 
     void window.openNow.fetchLibraryGames({
       token,
+      userId,
       providerStreamingBaseUrl: streamingBaseUrl,
     }).then((libGames) => {
       if (!isCurrentLoad()) return;
+      latestLibraryGames = libGames;
       setLibraryGames(libGames);
       applyVariantSelections(libGames);
+      if (latestCatalogResult) {
+        persistCatalogSnapshot(session, latestCatalogResult, libGames, catalogQueryKey);
+      }
     }).catch((error) => {
       console.error("Library load failed:", error);
-      if (!isCurrentLoad()) return;
+      if (!isCurrentLoad() || background) return;
       setLibraryGames([]);
     }).finally(() => {
-      if (isCurrentLoad()) setIsLoadingLibrary(false);
+      if (isCurrentLoad() && !background) setIsLoadingLibrary(false);
     });
 
     void window.openNow.fetchFeaturedGames({
       token,
+      userId,
       providerStreamingBaseUrl: streamingBaseUrl,
     }).then((featured) => {
       if (isCurrentLoad()) setFeaturedGames(featured);
@@ -1556,6 +1633,7 @@ export function App(): JSX.Element {
     applyVariantSelections,
     catalogSelectedFilterIds,
     catalogSelectedSortId,
+    persistCatalogSnapshot,
   ]);
 
   // Initialize app
@@ -1627,7 +1705,8 @@ export function App(): JSX.Element {
         setProviderIdpId(activeProviderId);
 
         if (persistedSession) {
-          await loadSessionRuntimeData(persistedSession);
+          const hydrated = hydrateCatalogSnapshot(persistedSession);
+          void loadSessionRuntimeData(persistedSession, { background: hydrated !== null });
         } else {
           runtimeDataLoadIdRef.current += 1;
           resetStorePanels();
@@ -1653,7 +1732,7 @@ export function App(): JSX.Element {
     };
 
     void initialize();
-  }, [loadSessionRuntimeData, resetStorePanels, t]);
+  }, [hydrateCatalogSnapshot, loadSessionRuntimeData, resetStorePanels, t]);
 
   // Login handler
   const handleLogin = useCallback(async () => {
@@ -1862,6 +1941,7 @@ export function App(): JSX.Element {
     setLogoutConfirmOpen(false);
     runtimeDataLoadIdRef.current += 1;
     resetStorePanels();
+    clearCatalogSnapshot();
     await window.openNow.logoutAll();
     setAuthSession(null);
     setSavedAccounts([]);
@@ -1890,19 +1970,26 @@ export function App(): JSX.Element {
   }, []);
 
   // Load games handler
-  const loadGames = useCallback(async (targetSource: "main" | "library") => {
+  const loadGames = useCallback(async (
+    targetSource: "main" | "library",
+    options?: { background?: boolean },
+  ) => {
     const setLoading = targetSource === "main" ? setIsLoadingCatalog : setIsLoadingLibrary;
-    setLoading(true);
+    if (!options?.background) {
+      setLoading(true);
+    }
     try {
       const token = authSession?.tokens.idToken ?? authSession?.tokens.accessToken;
+      const userId = authSession?.user.userId;
       const baseUrl = effectiveStreamingBaseUrl;
-      if (!token) {
+      if (!token || !userId) {
         return;
       }
 
       if (targetSource === "main") {
         const catalogResult = await window.openNow.browseCatalog({
           token,
+          userId,
           providerStreamingBaseUrl: baseUrl,
           searchQuery,
           sortId: catalogSelectedSortId,
@@ -1910,7 +1997,7 @@ export function App(): JSX.Element {
         });
         applyCatalogBrowseResult(catalogResult);
         if (featuredGames.length === 0) {
-          void window.openNow.fetchFeaturedGames({ token, providerStreamingBaseUrl: baseUrl }).then((featured) => {
+          void window.openNow.fetchFeaturedGames({ token, userId, providerStreamingBaseUrl: baseUrl }).then((featured) => {
             if (featured.length > 0) setFeaturedGames(featured);
           }).catch((error) => {
             console.warn("Featured games refresh failed:", error);
@@ -1919,16 +2006,18 @@ export function App(): JSX.Element {
         return;
       }
 
-      const result = await window.openNow.fetchLibraryGames({ token, providerStreamingBaseUrl: baseUrl });
+      const result = await window.openNow.fetchLibraryGames({ token, userId, providerStreamingBaseUrl: baseUrl });
       setLibraryGames(result);
       setSelectedGameId((previous) => result.some((game) => game.id === previous) ? previous : (result[0]?.id ?? ""));
       applyVariantSelections(result);
     } catch (error) {
       console.error("Failed to load games:", error);
     } finally {
-      setLoading(false);
+      if (!options?.background) {
+        setLoading(false);
+      }
     }
-  }, [applyCatalogBrowseResult, applyVariantSelections, authSession, effectiveStreamingBaseUrl, featuredGames, searchQuery, catalogFilterKey, catalogSelectedSortId]);
+  }, [applyCatalogBrowseResult, applyVariantSelections, authSession, effectiveStreamingBaseUrl, featuredGames.length, searchQuery, catalogFilterKey, catalogSelectedSortId]);
 
   const loadStorePanels = useCallback(async () => {
     const session = authSession;
@@ -1987,14 +2076,30 @@ export function App(): JSX.Element {
   }, [libraryGames, storePanelGames]);
 
   useEffect(() => {
-    if (!authSession || currentPage !== "home" || settings.controllerMode) {
+    if (!authSession || currentPage !== "home" || settings.controllerMode || isInitializing) {
       return;
     }
+    const queryKey = buildCatalogQueryKey(searchQuery, catalogSelectedFilterIds, catalogSelectedSortId);
+    if (lastCatalogQueryRef.current === queryKey && games.length > 0) {
+      return;
+    }
+    lastCatalogQueryRef.current = queryKey;
+
     const handle = window.setTimeout(() => {
-      void loadGames("main");
+      void loadGames("main", { background: games.length > 0 });
     }, searchQuery.trim() ? 220 : 0);
     return () => window.clearTimeout(handle);
-  }, [authSession, currentPage, loadGames, searchQuery, catalogFilterKey, catalogSelectedSortId, settings.controllerMode]);
+  }, [
+    authSession,
+    currentPage,
+    games.length,
+    isInitializing,
+    loadGames,
+    searchQuery,
+    catalogFilterKey,
+    catalogSelectedSortId,
+    settings.controllerMode,
+  ]);
 
   useEffect(() => {
     if (!authSession || currentPage !== "home" || !settings.controllerMode) {
@@ -2016,6 +2121,14 @@ export function App(): JSX.Element {
       }
       return next;
     });
+  }, []);
+
+  const handleToggleCatalogFilter = useCallback((filterId: string): void => {
+    setCatalogSelectedFilterIds((previous) => (
+      previous.includes(filterId)
+        ? previous.filter((value) => value !== filterId)
+        : [...previous, filterId]
+    ));
   }, []);
 
   const resolveSessionClaimAppId = useCallback((existingSession: ActiveSessionInfo): string => {
@@ -3778,6 +3891,11 @@ export function App(): JSX.Element {
     );
   }, [libraryGames, searchQuery, catalogSelectedSortId, playtime]);
 
+  const activeSessionAppIds = useMemo(
+    () => (navbarActiveSession ? [navbarActiveSession.appId] : []),
+    [navbarActiveSession?.appId],
+  );
+
   const activeSessionGameTitle = useMemo(() => {
     if (!navbarActiveSession) return null;
     const mappedTitle = gameTitleByAppId.get(navbarActiveSession.appId);
@@ -4017,9 +4135,7 @@ export function App(): JSX.Element {
                 onSelectGameVariant={handleSelectGameVariant}
                 filterGroups={catalogFilterGroups}
                 selectedFilterIds={catalogSelectedFilterIds}
-                onToggleFilter={(filterId) => {
-                  setCatalogSelectedFilterIds((previous) => previous.includes(filterId) ? previous.filter((value) => value !== filterId) : [...previous, filterId]);
-                }}
+                onToggleFilter={handleToggleCatalogFilter}
                 sortOptions={catalogSortOptions}
                 selectedSortId={catalogSelectedSortId}
                 onSortChange={setCatalogSelectedSortId}
