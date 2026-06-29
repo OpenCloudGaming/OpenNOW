@@ -648,11 +648,21 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 .onSuccess { url ->
                     _state.update { it.copy(connectorActionStore = null) }
                     openUrl(url)
+                    refreshAccountConnectorsAfterLinking()
                 }
                 .onFailure { error ->
                     if (error is CancellationException) return@onFailure
                     _state.update { it.copy(connectorActionStore = null, error = error.message ?: "Failed to start store connection") }
                 }
+        }
+    }
+
+    private fun refreshAccountConnectorsAfterLinking() {
+        viewModelScope.launch {
+            repeat(6) { attempt ->
+                delay(if (attempt == 0) 5_000L else 10_000L)
+                refreshAccountConnectors()
+            }
         }
     }
 

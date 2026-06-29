@@ -1639,6 +1639,16 @@ class GfnAccountConnectorRepository(
               appStoreDefinitions(language: ${'$'}locale) {
                 store
                 label
+                sortOrder
+                features {
+                  __typename
+                  ... on AccountLinkingSso {
+                    supported
+                  }
+                  ... on AccountGamesSyncing {
+                    supported
+                  }
+                }
                 accountLinkingMetadata {
                   isSupported
                   isRequired
@@ -1676,12 +1686,18 @@ class GfnAccountConnectorRepository(
             ?.mapNotNull { it.asObject() }
             ?.associateBy { normalizeGameStore(it.string("store").orEmpty()) }
             .orEmpty()
-        return data.arr("appStoreDefinitions")
+        val connectors = data.arr("appStoreDefinitions")
             ?.mapNotNull { raw ->
                 val store = raw.asObject() ?: return@mapNotNull null
                 val storeId = store.string("store")?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
                 val metadata = store.obj("accountLinkingMetadata")
-                val supported = metadata?.boolean("isSupported") ?: false
+                val featureSupported = store.arr("features")
+                    ?.mapNotNull { it.asObject() }
+                    ?.any { feature ->
+                        feature.boolean("supported") == true &&
+                            feature.string("__typename") in setOf("AccountLinkingSso", "AccountGamesSyncing")
+                    } == true
+                val supported = metadata?.boolean("isSupported") == true || featureSupported
                 val normalizedStoreId = normalizeGameStore(storeId)
                 if (!supported && normalizedStoreId !in userStores) return@mapNotNull null
                 val linked = userStores[normalizedStoreId]?.obj("accountLinkingData")
@@ -1699,15 +1715,21 @@ class GfnAccountConnectorRepository(
                     syncDate = sync?.string("syncDate"),
                 )
             }
-            ?.sortedWith(compareByDescending<AccountConnector> { it.isLinked }.thenBy { it.label.lowercase(Locale.US) })
             .orEmpty()
+            .ensureSteamConnector(userStores)
+        return connectors.sortedWith(
+            compareByDescending<AccountConnector> { it.isLinked }
+                .thenBy { accountConnectorSortRank(it.store) }
+                .thenBy { it.label.lowercase(Locale.US) },
+        )
     }
 
     suspend fun loginUrl(store: String, accessToken: String): String {
+        val platform = accountLinkingPlatform(store)
         val url = "$ACCOUNT_LINKING_BASE_URL/login_url"
             .toHttpUrl()
             .newBuilder()
-            .addQueryParameter("platform", store)
+            .addQueryParameter("platform", platform)
             .addQueryParameter("redirect_uri", ACCOUNT_LINKING_REDIRECT_URL)
             .addQueryParameter("client_id", ACCOUNT_LINKING_CLIENT_ID)
             .build()
@@ -1722,8 +1744,9 @@ class GfnAccountConnectorRepository(
     }
 
     suspend fun disconnect(store: String, accessToken: String) {
+        val platform = accountLinkingPlatform(store)
         val request = Request.Builder()
-            .url("$ACCOUNT_LINKING_BASE_URL/linking/${encoded(store)}")
+            .url("$ACCOUNT_LINKING_BASE_URL/linking/${encoded(platform)}")
             .headers(accountLinkingHeaders(accessToken))
             .delete()
             .build()
@@ -1752,6 +1775,36 @@ class GfnAccountConnectorRepository(
             .add("Authorization", bearerAuthorization(accessToken))
             .add("User-Agent", GFN_USER_AGENT)
             .build()
+
+    private fun List<AccountConnector>.ensureSteamConnector(userStores: Map<String, JsonObject>): List<AccountConnector> {
+        if (any { normalizeGameStore(it.store) == "STEAM" }) return this
+        val linked = userStores["STEAM"]?.obj("accountLinkingData")
+        val sync = linked?.obj("accountSyncingData")
+        return this + AccountConnector(
+            store = "STEAM",
+            label = "Steam",
+            supported = true,
+            required = false,
+            userDisplayName = linked?.string("userDisplayName"),
+            userIdentifier = linked?.string("userIdentifier"),
+            expiresInSeconds = linked?.long("expiresIn"),
+            syncedGameCount = sync?.int("totalNumberOfSyncedGfnGames"),
+            syncState = sync?.string("syncState"),
+            syncDate = sync?.string("syncDate"),
+        )
+    }
+
+    private fun accountLinkingPlatform(store: String): String =
+        normalizeGameStore(store).ifBlank { store }.uppercase(Locale.US)
+
+    private fun accountConnectorSortRank(store: String): Int =
+        when (normalizeGameStore(store)) {
+            "STEAM" -> 0
+            "EPIC", "EGS", "EPIC_GAMES_STORE" -> 1
+            "XBOX", "XBOX_GAME_PASS", "GAME_PASS" -> 2
+            "UBISOFT", "UBISOFT_CONNECT" -> 3
+            else -> 10
+        }
 }
 
 class PrintedWasteRepository(

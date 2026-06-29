@@ -482,7 +482,12 @@ data class AccountConnector(
 )
 
 val AccountConnector.isLinked: Boolean
-    get() = !userDisplayName.isNullOrBlank() || !userIdentifier.isNullOrBlank()
+    get() = !userDisplayName.isNullOrBlank() ||
+        !userIdentifier.isNullOrBlank() ||
+        expiresInSeconds != null ||
+        syncedGameCount != null ||
+        !syncState.isNullOrBlank() ||
+        !syncDate.isNullOrBlank()
 
 @Serializable
 data class GameVariant(
