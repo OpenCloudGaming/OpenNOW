@@ -29,6 +29,7 @@ import {
   isNativeStreamerSupportedPlatform,
   NATIVE_STREAMER_WINDOWS_ONLY_MESSAGE,
   colorQualityRequiresHevc,
+  getSafeFallbackEntitledResolutions,
   keyboardLayoutOptions,
   resolveEntitledStreamProfile,
   USER_FACING_COLOR_QUALITY_OPTIONS,
@@ -979,26 +980,33 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
     }
   }, [t]);
 
-  const hasDynamic = entitledResolutions.length > 0;
-  const useEntitledStreamOptions = hasDynamic || subscriptionInfo !== null;
+  const effectiveEntitledResolutions = useMemo(
+    () => entitledResolutions.length > 0
+      ? entitledResolutions
+      : subscriptionInfo
+        ? getSafeFallbackEntitledResolutions()
+        : [],
+    [entitledResolutions, subscriptionInfo],
+  );
+  const useEntitledStreamOptions = effectiveEntitledResolutions.length > 0;
 
   // Grouped resolution presets (dynamic)
   const resolutionGroups = useMemo(
-    () => (hasDynamic ? groupResolutions(entitledResolutions) : []),
-    [entitledResolutions, hasDynamic]
+    () => (useEntitledStreamOptions ? groupResolutions(effectiveEntitledResolutions) : []),
+    [effectiveEntitledResolutions, useEntitledStreamOptions]
   );
 
   // Dynamic FPS presets based on current resolution
   const dynamicFpsOptions = useMemo(
-    () => (hasDynamic ? getFpsForResolution(entitledResolutions, settings.resolution) : []),
-    [entitledResolutions, settings.resolution, hasDynamic]
+    () => (useEntitledStreamOptions ? getFpsForResolution(effectiveEntitledResolutions, settings.resolution) : []),
+    [effectiveEntitledResolutions, settings.resolution, useEntitledStreamOptions]
   );
   const resolvedEntitledProfile = useMemo(
-    () => resolveEntitledStreamProfile(entitledResolutions, {
+    () => resolveEntitledStreamProfile(effectiveEntitledResolutions, {
       resolution: settings.resolution,
       fps: settings.fps,
     }),
-    [entitledResolutions, settings.fps, settings.resolution],
+    [effectiveEntitledResolutions, settings.fps, settings.resolution],
   );
   const posterSizePercent = Math.round(settings.posterSizeScale * 100);
   const updaterLastCheckedLabel = useMemo(() => formatUpdaterTimestamp(updaterState.lastCheckedAt), [updaterState.lastCheckedAt]);

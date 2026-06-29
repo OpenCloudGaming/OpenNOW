@@ -34,6 +34,7 @@ import {
   isGameInLibrary,
   isSessionAdsRequired,
   resolveEntitledStreamProfile,
+  SAFE_FALLBACK_STREAM_PROFILE,
 } from "@shared/gfn";
 import { GfnWebRtcClient } from "./gfn/webrtcClient";
 import { formatShortcutForDisplay, isShortcutMatch, normalizeShortcut } from "./shortcuts";
@@ -687,15 +688,17 @@ export function App(): JSX.Element {
     clearRuntimeSnapshot();
   }, [diagnosticsStore, resetStatsOverlayToPreference, settings.discordRichPresence]);
 
-  const buildCurrentStreamSettings = useCallback((): StreamSettings => {
-    const entitledProfile = resolveEntitledStreamProfile(subscriptionInfo?.entitledResolutions ?? [], {
+  const buildCurrentStreamSettings = useCallback((subscriptionOverride?: SubscriptionInfo | null): StreamSettings => {
+    const currentSubscription = subscriptionOverride === undefined ? subscriptionInfo : subscriptionOverride;
+    const entitledProfile = resolveEntitledStreamProfile(currentSubscription?.entitledResolutions ?? [], {
       resolution: settings.resolution,
       fps: settings.fps,
     });
+    const streamProfile = entitledProfile ?? SAFE_FALLBACK_STREAM_PROFILE;
 
     return {
-      resolution: entitledProfile?.resolution ?? settings.resolution,
-      fps: entitledProfile?.fps ?? settings.fps,
+      resolution: streamProfile.resolution,
+      fps: streamProfile.fps,
       maxBitrateMbps: settings.maxBitrateMbps,
       codec: settings.codec,
       colorQuality: settings.colorQuality,
@@ -969,6 +972,30 @@ export function App(): JSX.Element {
     }
     return selectedProvider?.streamingServiceUrl ?? "";
   }, [selectedProvider, settings.region]);
+
+  const resolveSubscriptionInfoForLaunch = useCallback(async (): Promise<SubscriptionInfo | null> => {
+    if (subscriptionInfo) {
+      return subscriptionInfo;
+    }
+
+    const token = authSession?.tokens.idToken ?? authSession?.tokens.accessToken;
+    if (!authSession || !token) {
+      return null;
+    }
+
+    try {
+      const subscription = await window.openNow.fetchSubscription({
+        token,
+        providerStreamingBaseUrl: effectiveStreamingBaseUrl,
+        userId: authSession.user.userId,
+      });
+      setSubscriptionInfo(subscription);
+      return subscription;
+    } catch (error) {
+      console.warn("Failed to resolve subscription before launch; using safe stream profile fallback:", error);
+      return null;
+    }
+  }, [authSession, effectiveStreamingBaseUrl, subscriptionInfo]);
 
   const {
     activeQueueAd,
@@ -1506,10 +1533,7 @@ export function App(): JSX.Element {
     const entitledProfile = resolveEntitledStreamProfile(subscriptionInfo.entitledResolutions, {
       resolution: settings.resolution,
       fps: settings.fps,
-    });
-    if (!entitledProfile) {
-      return;
-    }
+    }) ?? SAFE_FALLBACK_STREAM_PROFILE;
 
     if (entitledProfile.resolution !== settings.resolution) {
       void updateSetting("resolution", entitledProfile.resolution);
@@ -2378,6 +2402,8 @@ export function App(): JSX.Element {
           setStreamingStore(null);
         }
 
+        const launchSubscription = await resolveSubscriptionInfoForLaunch();
+        const streamSettings = buildCurrentStreamSettings(launchSubscription);
         const claimed = await window.openNow.claimSession({
           token,
           streamingBaseUrl: effectiveStreamingBaseUrl,
@@ -2385,7 +2411,7 @@ export function App(): JSX.Element {
           sessionId: existingSession.sessionId,
           ...resolveResumeIdentity(existingSession.sessionId),
           appId: resolveSessionClaimAppId(existingSession),
-          settings: buildCurrentStreamSettings(),
+          settings: streamSettings,
         });
 
         await applyClaimedSessionAndConnect(claimed);
@@ -2400,7 +2426,7 @@ export function App(): JSX.Element {
 
     claimResumePromisesRef.current.set(sid, resumePromiseHolder.promise);
     await resumePromiseHolder.promise;
-  }, [applyClaimedSessionAndConnect, authSession, buildCurrentStreamSettings, effectiveStreamingBaseUrl, findGameContextForSession, resolveResumeIdentity, resolveSessionClaimAppId, warmNativeStreamerForLaunch]);
+  }, [applyClaimedSessionAndConnect, authSession, buildCurrentStreamSettings, effectiveStreamingBaseUrl, findGameContextForSession, resolveResumeIdentity, resolveSessionClaimAppId, resolveSubscriptionInfoForLaunch, warmNativeStreamerForLaunch]);
 
   const attemptSessionRecovery = useCallback(async (reason: string): Promise<boolean> => {
     const recoveryState = signalingRecoveryRef.current;
@@ -2527,6 +2553,8 @@ export function App(): JSX.Element {
             throw new Error("The running session is missing a server address, so resume was not possible.");
           }
 
+          const recoverySubscription = await resolveSubscriptionInfoForLaunch();
+          const recoveryStreamSettings = buildCurrentStreamSettings(recoverySubscription);
           const claimed = await window.openNow.claimSession({
             token,
             streamingBaseUrl: effectiveStreamingBaseUrl,
@@ -2535,7 +2563,7 @@ export function App(): JSX.Element {
             ...resolveResumeIdentity(candidate.sessionId),
             recoveryMode: true,
             appId: resolveSessionClaimAppId(candidate),
-            settings: buildCurrentStreamSettings(),
+            settings: recoveryStreamSettings,
           });
           if (!isRecoveryGenerationCurrent(recoveryGeneration)) {
             console.log("[Recovery] Discarding claimed session due to stale recovery generation");
@@ -2586,6 +2614,7 @@ export function App(): JSX.Element {
     resolveResumeIdentity,
     resolveSessionClaimAppId,
     buildCurrentStreamSettings,
+    resolveSubscriptionInfoForLaunch,
   ]);
 
   const handleExpectedNativeSessionClose = useCallback((reason: string): void => {
@@ -3109,6 +3138,8 @@ export function App(): JSX.Element {
       }
 
       const sessionProxyUrl = activeSessionProxyUrl;
+      const launchSubscription = await resolveSubscriptionInfoForLaunch();
+      const streamSettings = buildCurrentStreamSettings(launchSubscription);
 
       // Create new session
       const newSession = await window.openNow.createSession({
@@ -3120,7 +3151,7 @@ export function App(): JSX.Element {
         existingSessionStrategy,
         proxyUrl: sessionProxyUrl,
         zone: "prod",
-        settings: buildCurrentStreamSettings(),
+        settings: streamSettings,
       });
 
       setSession(newSession);
@@ -3271,6 +3302,7 @@ export function App(): JSX.Element {
     resetSignalingRecoveryState,
     resetLaunchRuntime,
     resetStatsOverlayToPreference,
+    resolveSubscriptionInfoForLaunch,
     selectedProvider,
     streamStatus,
     t,

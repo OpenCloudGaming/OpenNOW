@@ -3,7 +3,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { resolveEntitledStreamProfile } from "./gfn";
+import {
+  getSafeFallbackEntitledResolutions,
+  resolveEntitledStreamProfile,
+  SAFE_FALLBACK_STREAM_PROFILE,
+} from "./gfn";
 
 test("resolves requested stream settings to entitled resolution and fps profiles", () => {
   const entitlements = [
@@ -20,4 +24,14 @@ test("resolves requested stream settings to entitled resolution and fps profiles
     { resolution: "1920x1080", fps: 60 },
   );
   assert.equal(resolveEntitledStreamProfile([], { resolution: "1920x1080", fps: 60 }), null);
+});
+
+test("safe fallback entitlements resolve oversized requests to 1080p60", () => {
+  assert.deepEqual(
+    resolveEntitledStreamProfile(
+      getSafeFallbackEntitledResolutions(),
+      { resolution: "3840x2160", fps: 240 },
+    ),
+    SAFE_FALLBACK_STREAM_PROFILE,
+  );
 });
