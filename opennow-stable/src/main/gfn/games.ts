@@ -16,6 +16,7 @@ import {
   buildGfnGraphQlHeaders,
   buildGfnLcarsHeaders,
 } from "./clientHeaders";
+import { fetchAllAppsPages, type AppsPageResponse } from "./paginatedApps";
 
 const GRAPHQL_URL = "https://games.geforce.com/graphql";
 const PANELS_QUERY_HASH = "f8e26265a5db5c20e1334a6872cf04b6e3970507697f6ae55a6ddefa5420daf0";
@@ -25,8 +26,22 @@ const LIBRARY_WITH_TIME_QUERY_HASH = "039e8c0d553972975485fee56e59f2549d2fdb518e
 const DEFAULT_LOCALE = "en_US";
 const DEFAULT_CATALOG_FETCH_COUNT = 120;
 const MAX_CATALOG_PAGES = 3;
+const LIBRARY_FETCH_COUNT = 200;
+const MAX_LIBRARY_PAGES = 25;
 const DEFAULT_SORT_ID = "relevance";
+const DEFAULT_LIBRARY_SORT = "variants.gfn.library.lastPlayedDate:DESC,computedValues.libraryAddedDate:DESC,sortName:ASC";
 const PUBLIC_GAMES_CACHE_KEY = "games:public:v2";
+const LIBRARY_APPS_FILTER = {
+  variants: {
+    gfn: {
+      library: {
+        status: {
+          notEquals: "NOT_OWNED",
+        },
+      },
+    },
+  },
+} satisfies Record<string, unknown>;
 
 function accountScopedGamesCacheKey(scope: string, accountId: string, providerStreamingBaseUrl?: string): string {
   const digest = createHash("sha256")
@@ -160,6 +175,8 @@ interface AppsSearchResponse {
   };
   errors?: Array<{ message: string }>;
 }
+
+type AppsPage = AppsPageResponse<AppData>;
 
 interface GraphQlFilterGroup {
   id: string;
@@ -513,14 +530,27 @@ function appToGame(app: AppData): GameInfo {
 function mergeAppMetaIntoGame(game: GameInfo, app: AppData): GameInfo {
   const merged = appToGame(app);
   const selectedVariantId = game.variants[game.selectedVariantIndex]?.id;
+  const variants = merged.variants.map((variant) => {
+    const existing = game.variants.find((candidate) => candidate.id === variant.id);
+    return {
+      ...variant,
+      librarySelected: variant.librarySelected ?? existing?.librarySelected,
+      inLibrary: variant.inLibrary ?? existing?.inLibrary,
+      libraryStatus: variant.libraryStatus ?? existing?.libraryStatus,
+      lastPlayedDate: variant.lastPlayedDate ?? existing?.lastPlayedDate,
+    };
+  });
   const selectedVariantIndex = selectedVariantId
-    ? merged.variants.findIndex((variant) => variant.id === selectedVariantId)
+    ? variants.findIndex((variant) => variant.id === selectedVariantId)
     : -1;
 
   return {
     ...game,
     ...merged,
     id: game.id,
+    isInLibrary: merged.isInLibrary || game.isInLibrary,
+    lastPlayed: merged.lastPlayed ?? game.lastPlayed,
+    variants,
     selectedVariantIndex: selectedVariantIndex >= 0 ? selectedVariantIndex : merged.selectedVariantIndex,
   };
 }
@@ -1172,6 +1202,14 @@ async function fetchLibraryGamesUncached(
   providerStreamingBaseUrl?: string,
 ): Promise<GameInfo[]> {
   const vpcId = await getVpcId(token, providerStreamingBaseUrl);
+  try {
+    const apps = await fetchPaginatedLibraryApps(token, vpcId);
+    const games = dedupeGames(apps.map(appToGame));
+    return mergePublicGameVariants(await enrichGamesWithMetadata(token, vpcId, games), await fetchPublicGames());
+  } catch (error) {
+    console.warn("Paginated library query failed, falling back to library panel:", error);
+  }
+
   let payload: GraphQlResponse;
 
   try {
@@ -1182,6 +1220,74 @@ async function fetchLibraryGamesUncached(
 
   const games = flattenPanels(payload);
   return mergePublicGameVariants(await enrichGamesWithMetadata(token, vpcId, games), await fetchPublicGames());
+}
+
+async function fetchPaginatedLibraryApps(token: string, vpcId: string): Promise<AppData[]> {
+  const query = `query GetLibraryApps(
+    $vpcId: String!,
+    $locale: String!,
+    $sortString: String!,
+    $fetchCount: Int!,
+    $cursor: String!,
+    $filters: AppFilterFields!
+  ) {
+    apps(
+      vpcId: $vpcId,
+      language: $locale,
+      orderBy: $sortString,
+      first: $fetchCount,
+      after: $cursor,
+      filters: $filters
+    ) {
+      numberReturned
+      numberSupported
+      pageInfo { hasNextPage endCursor totalCount }
+      items {
+        id
+        title
+        images { KEY_ART KEY_IMAGE GAME_BOX_ART TV_BANNER HERO_IMAGE MARQUEE_HERO_IMAGE FEATURE_IMAGE GAME_LOGO SCREENSHOTS }
+        variants {
+          id
+          appStore
+          storeUrl
+          supportedControls
+          gfn {
+            status
+            library { status selected lastPlayedDate }
+          }
+        }
+        gfn {
+          playabilityState
+          minimumMembershipTierLabel
+          catalogSkuStrings {
+            SKU_BASED_TAG
+            SKU_BASED_PLAYABILITY_TEXT
+            SKU_BASED_UNPLAYABLE_DIALOG_HEADER
+            SKU_BASED_UNPLAYABLE_DIALOG_BODY_UPGRADE
+            SKU_BASED_UNPLAYABLE_DIALOG_BODY_UPGRADE_ECOMM_RESTRICTED
+          }
+        }
+        itemMetadata { campaignIds }
+      }
+    }
+  }`;
+
+  const result = await fetchAllAppsPages<AppData>(
+    (cursor) => postGraphQl<AppsPage>(
+      query,
+      {
+        vpcId,
+        locale: DEFAULT_LOCALE,
+        sortString: DEFAULT_LIBRARY_SORT,
+        fetchCount: LIBRARY_FETCH_COUNT,
+        cursor,
+        filters: LIBRARY_APPS_FILTER,
+      },
+      token,
+    ),
+    { maxPages: MAX_LIBRARY_PAGES },
+  );
+  return result.items;
 }
 
 export async function fetchPublicGames(): Promise<GameInfo[]> {
