@@ -405,6 +405,7 @@ export function App(): JSX.Element {
     sessionProxyEnabled: false,
     sessionProxyUrl: "",
     clipboardPaste: false,
+    enableGyroscopeControls: false,
     mouseSensitivity: 1,
     mouseAcceleration: 1,
     shortcutToggleStats: DEFAULT_SHORTCUTS.shortcutToggleStats,

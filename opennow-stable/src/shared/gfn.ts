@@ -269,6 +269,8 @@ export interface Settings {
   sessionProxyEnabled: boolean;
   sessionProxyUrl: string;
   clipboardPaste: boolean;
+  /** Enable experimental gyroscope controller input mapping */
+  enableGyroscopeControls: boolean;
   mouseSensitivity: number;
   mouseAcceleration: number;
   shortcutToggleStats: string;

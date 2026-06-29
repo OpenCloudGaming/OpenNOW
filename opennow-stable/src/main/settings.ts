@@ -68,6 +68,8 @@ export interface Settings {
   sessionProxyUrl: string;
   /** Enable clipboard paste into stream */
   clipboardPaste: boolean;
+  /** Enable experimental gyroscope controller input mapping */
+  enableGyroscopeControls: boolean;
   /** Mouse sensitivity multiplier */
   mouseSensitivity: number;
   /** Software mouse acceleration strength percentage (1-150) */
@@ -191,6 +193,7 @@ const DEFAULT_SETTINGS: Settings = {
   sessionProxyEnabled: false,
   sessionProxyUrl: "",
   clipboardPaste: false,
+  enableGyroscopeControls: false,
   mouseSensitivity: 1,
   mouseAcceleration: 1,
   shortcutToggleStats: "F3",

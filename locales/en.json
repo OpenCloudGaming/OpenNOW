@@ -569,6 +569,8 @@
       "title": "Input",
       "mouseAndKeyboard": "Mouse and Keyboard",
       "clipboardPaste": "Clipboard Paste",
+      "gyroscopeControls": "Gyroscope Controls",
+      "gyroscopeControlsHint": "Expose controller motion sensors for gyro aiming when the input backend supports it.",
       "keyboardLayoutHint": "Controls how your physical keyboard is mapped inside the remote session. Separate from the in-game language setting.",
       "mouseSensitivity": "Mouse Sensitivity",
       "mouseSensitivityHint": "Multiplier applied to mouse movement (1.00 = default)",

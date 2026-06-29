@@ -184,6 +184,11 @@ const SETTINGS_SCOPE_SEARCH_TERMS: Record<SettingsSearchScopeId, readonly string
     "hotkey",
     "keybind",
     "controls",
+    "controller",
+    "gamepad",
+    "gyro",
+    "gyroscope",
+    "motion controls",
     "anti afk",
     "pointer lock",
     "recording",
@@ -3434,6 +3439,26 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                     />
                     <span className="settings-toggle-track" />
                   </label>
+                </div>
+
+                <div className="settings-row settings-row--column">
+                  <div className="settings-row-top settings-row-top--compact">
+                    <label className="settings-label settings-label--wrap">
+                      <span className="settings-label-title">
+                        {t("settings.input.gyroscopeControls")}
+                        <span className="settings-inline-badge settings-inline-badge--beta">{t("app.labels.beta")}</span>
+                      </span>
+                    </label>
+                    <label className="settings-toggle">
+                      <input
+                        type="checkbox"
+                        checked={settings.enableGyroscopeControls}
+                        onChange={(e) => handleChange("enableGyroscopeControls", e.target.checked)}
+                      />
+                      <span className="settings-toggle-track" />
+                    </label>
+                  </div>
+                  <span className="settings-subtle-hint">{t("settings.input.gyroscopeControlsHint")}</span>
                 </div>
 
                 <div className="settings-row settings-row--top-aligned">
