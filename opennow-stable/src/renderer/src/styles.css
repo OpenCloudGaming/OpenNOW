@@ -5414,8 +5414,8 @@ button.game-card-store-chip.owned.active:hover {
 .settings-toggle {
   position: relative;
   display: inline-block;
-  flex: 0 0 44px;
-  width: 44px;
+  flex: 0 0 46px;
+  width: 46px;
   height: 24px;
   cursor: pointer;
 }
@@ -5430,17 +5430,19 @@ button.game-card-store-chip.owned.active:hover {
   position: absolute;
   inset: 0;
   background: rgba(255, 255, 255, 0.1);
-  border-radius: 12px;
-  transition: background var(--t-normal);
+  border-radius: 999px;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+  transition: background var(--t-normal), box-shadow var(--t-normal);
 }
 
 .settings-toggle-track::before {
   content: "";
   position: absolute;
-  top: 3px;
-  left: 3px;
-  width: 18px;
-  height: 18px;
+  top: 4px;
+  left: 4px;
+  width: 16px;
+  height: 16px;
   background: #fff;
   border-radius: 50%;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
@@ -5449,10 +5451,13 @@ button.game-card-store-chip.owned.active:hover {
 
 .settings-toggle input:checked+.settings-toggle-track {
   background: var(--accent);
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.18),
+    0 0 0 1px rgba(var(--accent-rgb), 0.12);
 }
 
 .settings-toggle input:checked+.settings-toggle-track::before {
-  transform: translateX(20px);
+  transform: translateX(22px);
 }
 
 /* Placeholder */
