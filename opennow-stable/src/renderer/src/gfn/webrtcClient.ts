@@ -28,7 +28,6 @@ import {
   GAMEPAD_MAX_CONTROLLERS,
   type GamepadInput,
   codeMap,
-  mapTextCharToKeySpec,
 } from "./inputProtocol";
 import { FULLSCREEN_KEYBOARD_LOCK_CODES } from "./keyboardLock";
 import {
@@ -3036,30 +3035,12 @@ export class GfnWebRtcClient {
       return 0;
     }
 
-    let sent = 0;
-    const maxChars = 4096;
-    for (const char of text.slice(0, maxChars)) {
-      const key = mapTextCharToKeySpec(char, this.keyboardLayout);
-      if (!key) {
-        continue;
-      }
-
-      if (key.shift) {
-        this.sendKeyPacket(codeMap.ShiftLeft.vk, codeMap.ShiftLeft.scancode, 0x01, true);
-      }
-
-      const mods = key.shift ? 0x01 : 0;
-      this.sendKeyPacket(key.vk, key.scancode, mods, true);
-      this.sendKeyPacket(key.vk, key.scancode, mods, false);
-
-      if (key.shift) {
-        this.sendKeyPacket(codeMap.ShiftLeft.vk, codeMap.ShiftLeft.scancode, 0, false);
-      }
-
-      sent++;
+    const chunks = this.inputEncoder.encodeTextInput(text);
+    for (const chunk of chunks) {
+      this.sendReliable(chunk);
     }
 
-    return sent;
+    return Array.from(text).length;
   }
 
   private sendGamepad(payload: Uint8Array): void {

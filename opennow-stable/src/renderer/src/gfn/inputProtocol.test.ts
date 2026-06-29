@@ -23,6 +23,7 @@ import {
   INPUT_MOUSE_BUTTON_DOWN,
   INPUT_MOUSE_REL,
   INPUT_MOUSE_WHEEL,
+  INPUT_TEXT,
   InputEncoder,
   codeMap,
   isPartiallyReliableHidTransferEligible,
@@ -265,6 +266,27 @@ test("encodes mouse button and wheel with v3 single-event wrapper", () => {
   assert.equal(wheelPayload.getInt16(4, false), 0);
   assert.equal(wheelPayload.getInt16(6, false), -120);
   assert.equal(wheelPayload.getBigUint64(14, false), 456n);
+});
+
+test("encodes unicode text input with official SendUnicode packet framing", () => {
+  const encoder = new InputEncoder();
+  encoder.setProtocolVersion(3);
+  const [packet] = encoder.encodeTextInput("a🙂\nß");
+
+  assert.ok(packet);
+  assert.equal(packet[0], 0x22);
+  assert.equal(view(packet).getUint32(1, true), INPUT_TEXT);
+  assert.equal(new TextDecoder().decode(packet.subarray(5)), "a🙂\nß");
+});
+
+test("chunks unicode text input without splitting UTF-8 code points", () => {
+  const encoder = new InputEncoder();
+  const packets = encoder.encodeTextInput(`${"a".repeat(1015)}🙂b`);
+
+  assert.equal(packets.length, 2);
+  assert.equal(packets[0].byteLength, 5 + 1015);
+  assert.equal(new TextDecoder().decode(packets[0].subarray(5)), "a".repeat(1015));
+  assert.equal(new TextDecoder().decode(packets[1].subarray(5)), "🙂b");
 });
 
 test("maps Gamepad API button values to XInput flags without pressed", () => {

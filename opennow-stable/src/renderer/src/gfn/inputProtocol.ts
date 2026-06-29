@@ -11,6 +11,10 @@ export const INPUT_MOUSE_BUTTON_UP = 9;
 export const INPUT_MOUSE_WHEEL = 10;
 export const INPUT_GAMEPAD = 12;
 export const INPUT_HAPTICS_ENABLED = 13;
+export const INPUT_TEXT = 23;
+
+const TEXT_INPUT_CHUNK_MAX_BYTES = 1016;
+const TEXT_INPUT_HEADER_BYTES = 5;
 
 // Mouse button constants (1-based for GFN protocol)
 // GFN uses: 1=Left, 2=Middle, 3=Right, 4=Back, 5=Forward
@@ -803,6 +807,28 @@ export class InputEncoder {
     return wrapSingleEvent(bytes, this.protocolVersion);
   }
 
+  encodeTextInput(text: string): Uint8Array[] {
+    const utf8 = new TextEncoder().encode(text);
+    const chunks: Uint8Array[] = [];
+
+    for (let offset = 0; offset < utf8.byteLength;) {
+      const chunkLength = textInputChunkLength(utf8, offset);
+      if (chunkLength <= 0) {
+        break;
+      }
+
+      const bytes = new Uint8Array(TEXT_INPUT_HEADER_BYTES + chunkLength);
+      const view = new DataView(bytes.buffer);
+      bytes[0] = 0x22;
+      view.setUint32(1, INPUT_TEXT, true);
+      bytes.set(utf8.subarray(offset, offset + chunkLength), TEXT_INPUT_HEADER_BYTES);
+      chunks.push(bytes);
+      offset += chunkLength;
+    }
+
+    return chunks;
+  }
+
   encodeGamepadState(payload: GamepadInput, bitmap: number, usePartiallyReliable: boolean): Uint8Array {
     const bytes = new Uint8Array(GAMEPAD_PACKET_SIZE);
     const view = new DataView(bytes.buffer);
@@ -895,6 +921,23 @@ export class InputEncoder {
     view.setBigUint64(10, payload.timestampUs, false);    // timestamp: BE
     return wrapSingleEvent(bytes, this.protocolVersion);
   }
+}
+
+function textInputChunkLength(bytes: Uint8Array, offset: number): number {
+  const remaining = bytes.byteLength - offset;
+  if (remaining <= TEXT_INPUT_CHUNK_MAX_BYTES) {
+    return remaining;
+  }
+
+  let end = offset + TEXT_INPUT_CHUNK_MAX_BYTES;
+  for (let attempt = 0; attempt < 4; attempt++) {
+    if ((bytes[end] & 0xc0) !== 0x80) {
+      return end - offset;
+    }
+    end--;
+  }
+
+  return 0;
 }
 
 /** Per-key modifier byte (official GFN yS()). Lock keys sync separately via INPUT_LOCK_KEYS_SYNC. */
