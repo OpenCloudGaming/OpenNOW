@@ -371,6 +371,15 @@ export interface EntitledStreamProfile {
   fps: number;
 }
 
+export const SAFE_FALLBACK_STREAM_PROFILE: Readonly<EntitledStreamProfile> = Object.freeze({
+  resolution: "1920x1080",
+  fps: 60,
+});
+
+export function getSafeFallbackEntitledResolutions(): EntitledResolution[] {
+  return [{ width: 1920, height: 1080, fps: 60 }];
+}
+
 function parseResolutionValue(resolution: string): { width: number; height: number } | null {
   const [widthText, heightText] = resolution.split("x");
   const width = Number.parseInt(widthText ?? "", 10);
