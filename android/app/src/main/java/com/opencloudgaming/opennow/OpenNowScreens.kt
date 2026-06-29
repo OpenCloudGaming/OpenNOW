@@ -3461,7 +3461,18 @@ private fun AccountSettingsPanel(state: OpenNowUiState, viewModel: OpenNowViewMo
         AccountConnectorsPanel(
             connectors = state.accountConnectors,
             loading = state.loadingAccountConnectors,
+            actionStore = state.connectorActionStore,
             onRefresh = viewModel::refreshAccountConnectors,
+            onConnect = { connector ->
+                viewModel.connectAccountConnector(connector.store) { url ->
+                    if (!openExternalUrl(context, url)) {
+                        Toast.makeText(context, "No browser available", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            },
+            onDisconnect = { connector ->
+                viewModel.disconnectAccountConnector(connector.store)
+            },
             openExternal = { url ->
                 if (!openExternalUrl(context, url)) {
                     Toast.makeText(context, "No browser available", Toast.LENGTH_SHORT).show()
@@ -3520,9 +3531,35 @@ private fun StorageAddonPanel(storageAddon: StorageAddon?, openExternal: (String
 private fun AccountConnectorsPanel(
     connectors: List<AccountConnector>,
     loading: Boolean,
+    actionStore: String?,
     onRefresh: () -> Unit,
+    onConnect: (AccountConnector) -> Unit,
+    onDisconnect: (AccountConnector) -> Unit,
     openExternal: (String) -> Unit,
 ) {
+    var disconnecting by remember { mutableStateOf<AccountConnector?>(null) }
+    disconnecting?.let { connector ->
+        AlertDialog(
+            onDismissRequest = { disconnecting = null },
+            title = { Text("Disconnect ${connector.label}?") },
+            text = { Text("This removes the linked ${connector.label} account from GeForce NOW. You can connect it again later.") },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        disconnecting = null
+                        onDisconnect(connector)
+                    },
+                ) {
+                    Text("Disconnect")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { disconnecting = null }) {
+                    Text(stringResource(R.string.action_cancel))
+                }
+            },
+        )
+    }
     Surface(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(14.dp),
@@ -3543,34 +3580,51 @@ private fun AccountConnectorsPanel(
                 )
             } else {
                 connectors.take(6).forEach { connector ->
-                    ConnectorRow(connector)
+                    ConnectorRow(
+                        connector = connector,
+                        busy = actionStore == connector.store,
+                        onConnect = { onConnect(connector) },
+                        onDisconnect = { disconnecting = connector },
+                    )
                 }
             }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-                Button(onClick = { openExternal(GFN_ACCOUNT_CONNECT_URL) }, modifier = Modifier.weight(1f)) {
-                    Text("Connect store", maxLines = 1, overflow = TextOverflow.Ellipsis)
-                }
-                OutlinedButton(onClick = { openExternal(GFN_ACCOUNT_MANAGEMENT_URL) }, modifier = Modifier.weight(1f)) {
-                    Text("Manage", maxLines = 1, overflow = TextOverflow.Ellipsis)
-                }
+            OutlinedButton(onClick = { openExternal(GFN_ACCOUNT_HELP_URL) }, modifier = Modifier.fillMaxWidth()) {
+                Text("Connection help", maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
         }
     }
 }
 
 @Composable
-private fun ConnectorRow(connector: AccountConnector) {
-    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+private fun ConnectorRow(
+    connector: AccountConnector,
+    busy: Boolean,
+    onConnect: () -> Unit,
+    onDisconnect: () -> Unit,
+) {
+    val actionEnabled = !busy && (connector.isLinked || connector.supported)
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(enabled = actionEnabled) {
+                if (connector.isLinked) onDisconnect() else onConnect()
+            },
+    ) {
         Column(Modifier.weight(1f)) {
             Text(connector.label, color = SettingsText, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
             Text(connectorStatusText(connector), color = SettingsTextMuted, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
-        Text(
-            if (connector.isLinked) "Linked" else "Not linked",
-            color = if (connector.isLinked) MaterialTheme.colorScheme.primary else SettingsTextMuted,
-            style = MaterialTheme.typography.labelMedium,
-            fontWeight = FontWeight.Bold,
-        )
+        if (connector.isLinked) {
+            OutlinedButton(onClick = onDisconnect, enabled = !busy, contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) {
+                Text(if (busy) "Removing..." else "Disconnect")
+            }
+        } else {
+            Button(onClick = onConnect, enabled = connector.supported && !busy, contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) {
+                Text(if (busy) "Opening..." else "Connect")
+            }
+        }
     }
 }
 
@@ -3587,8 +3641,7 @@ private fun AuthSession.toSavedAccount(): SavedAccount =
 private const val GFN_STORAGE_MANAGEMENT_URL = "https://gfn.link/cloudstorage"
 private const val GFN_STORAGE_RESET_URL = "https://gfn.link/resetstorage"
 private const val GFN_ADD_STORAGE_URL = "https://gfn.link/addstorage"
-private const val GFN_ACCOUNT_CONNECT_URL = "https://gfn.link/connect"
-private const val GFN_ACCOUNT_MANAGEMENT_URL = "https://gfn.link/account"
+private const val GFN_ACCOUNT_HELP_URL = "https://gfn.link/5399"
 
 private fun formatStorageGb(value: Double): String =
     if (value % 1.0 == 0.0) "${value.toInt()} GB" else "%.1f GB".format(Locale.US, value)
