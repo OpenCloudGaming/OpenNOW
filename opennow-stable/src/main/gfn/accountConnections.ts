@@ -408,7 +408,7 @@ function finalRedirectUrl(result: Partial<AccountLinkLoginResult> & { error?: st
   return url.toString();
 }
 
-function parseLoginCallback(callbackUrl: URL): AccountLinkLoginResult {
+function parseLoginCallback(callbackUrl: URL, expectedProvider: string): AccountLinkLoginResult {
   const error = callbackUrl.searchParams.get("error");
   if (error) {
     throw new Error(callbackUrl.searchParams.get("error_description") ?? error);
@@ -418,9 +418,13 @@ function parseLoginCallback(callbackUrl: URL): AccountLinkLoginResult {
   if (!platform) {
     throw new Error("Account-linking callback did not include a provider");
   }
+  const normalizedPlatform = normalizeProviderCode(platform);
+  if (normalizedPlatform !== expectedProvider) {
+    throw new Error(`Account-linking callback provider mismatch: expected ${expectedProvider}, received ${normalizedPlatform}`);
+  }
 
   return {
-    platform: normalizeProviderCode(platform),
+    platform: normalizedPlatform,
     displayName: callbackUrl.searchParams.get("display_name") ?? undefined,
     expiresIn: callbackUrl.searchParams.get("expires_in") ?? undefined,
   };
@@ -456,7 +460,7 @@ function startAccountLinkCallbackServer(
 
       let result: AccountLinkLoginResult;
       try {
-        result = parseLoginCallback(callbackUrl);
+        result = parseLoginCallback(callbackUrl, provider);
         response.statusCode = 302;
         response.setHeader("Location", finalRedirectUrl(result, provider));
         response.end();
@@ -579,13 +583,23 @@ async function deleteProviderLink(provider: string, token: string): Promise<void
   }
 }
 
-async function invalidateAccountGameCaches(session: AuthSession): Promise<void> {
-  const keys = getAccountGamesCacheKeys(session.user.userId, session.provider.streamingServiceUrl);
-  await Promise.allSettled([
-    cacheManager.invalidateCache(keys.main),
-    cacheManager.invalidateCache(keys.library),
-    cacheManager.invalidateCachesByPrefix(keys.catalogPrefix),
-  ]);
+async function invalidateAccountGameCaches(session: AuthSession, proxyUrl?: string): Promise<void> {
+  const cacheKeySets = [getAccountGamesCacheKeys(session.user.userId, session.provider.streamingServiceUrl)];
+  if (proxyUrl?.trim()) {
+    try {
+      cacheKeySets.push(getAccountGamesCacheKeys(session.user.userId, session.provider.streamingServiceUrl, proxyUrl));
+    } catch (error) {
+      console.warn("[AccountConnections] Skipping proxy-scoped game cache invalidation:", error);
+    }
+  }
+
+  const invalidations = new Map<string, Promise<void>>();
+  for (const keys of cacheKeySets) {
+    invalidations.set(keys.main, cacheManager.invalidateCache(keys.main));
+    invalidations.set(keys.library, cacheManager.invalidateCache(keys.library));
+    invalidations.set(keys.catalogPrefix, cacheManager.invalidateCachesByPrefix(keys.catalogPrefix));
+  }
+  await Promise.allSettled(invalidations.values());
 }
 
 function mergeLoginResult(
@@ -622,7 +636,7 @@ export async function fetchGameAccountConnections(session: AuthSession): Promise
   return fetchConnectionsForSession(session);
 }
 
-export async function linkGameAccount(session: AuthSession, provider: string): Promise<GameAccountOperationResult> {
+export async function linkGameAccount(session: AuthSession, provider: string, proxyUrl?: string): Promise<GameAccountOperationResult> {
   const definition = await resolveProviderDefinition(provider);
   const normalizedProvider = normalizeProviderCode(definition.store);
   const support = getProviderFeatureSupport(definition);
@@ -649,7 +663,6 @@ export async function linkGameAccount(session: AuthSession, provider: string): P
     try {
       await requestProviderSync(normalizedProvider, token);
       await wait(SYNC_REFRESH_WAIT_MS);
-      await invalidateAccountGameCaches(session);
     } catch (error) {
       message = error instanceof Error ? error.message : "Account connected, but library sync did not start";
       await wait(POST_LOGIN_REFRESH_WAIT_MS);
@@ -657,6 +670,7 @@ export async function linkGameAccount(session: AuthSession, provider: string): P
   } else {
     await wait(POST_LOGIN_REFRESH_WAIT_MS);
   }
+  await invalidateAccountGameCaches(session, proxyUrl);
 
   const refreshed = mergeLoginResult(await fetchConnectionsForSession(session), loginResult);
   return {
@@ -667,14 +681,14 @@ export async function linkGameAccount(session: AuthSession, provider: string): P
   };
 }
 
-export async function unlinkGameAccount(session: AuthSession, provider: string): Promise<GameAccountOperationResult> {
+export async function unlinkGameAccount(session: AuthSession, provider: string, proxyUrl?: string): Promise<GameAccountOperationResult> {
   const definition = await resolveProviderDefinition(provider);
   const normalizedProvider = normalizeProviderCode(definition.store);
   const token = getSessionIdToken(session);
 
   await deleteProviderLink(normalizedProvider, token);
   await wait(DISCONNECT_REFRESH_WAIT_MS);
-  await invalidateAccountGameCaches(session);
+  await invalidateAccountGameCaches(session, proxyUrl);
 
   const refreshed = await fetchConnectionsForSession(session);
   return {
@@ -684,7 +698,7 @@ export async function unlinkGameAccount(session: AuthSession, provider: string):
   };
 }
 
-export async function resyncGameAccount(session: AuthSession, provider: string): Promise<GameAccountOperationResult> {
+export async function resyncGameAccount(session: AuthSession, provider: string, proxyUrl?: string): Promise<GameAccountOperationResult> {
   const definition = await resolveProviderDefinition(provider);
   const normalizedProvider = normalizeProviderCode(definition.store);
   const support = getProviderFeatureSupport(definition);
@@ -695,7 +709,7 @@ export async function resyncGameAccount(session: AuthSession, provider: string):
   const token = getSessionIdToken(session);
   await requestProviderSync(normalizedProvider, token);
   await wait(SYNC_REFRESH_WAIT_MS);
-  await invalidateAccountGameCaches(session);
+  await invalidateAccountGameCaches(session, proxyUrl);
 
   const refreshed = await fetchConnectionsForSession(session);
   return {

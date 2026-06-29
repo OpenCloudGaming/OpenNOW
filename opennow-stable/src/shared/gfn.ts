@@ -617,6 +617,7 @@ export interface GameAccountConnectionsResult {
 
 export interface GameAccountOperationRequest {
   provider: string;
+  proxyUrl?: string;
 }
 
 export interface GameAccountOperationResult extends GameAccountConnectionsResult {

@@ -267,7 +267,7 @@ export function registerAccountCatalogIpcHandlers(
     IPC_CHANNELS.GAME_ACCOUNT_LINK,
     async (_event, payload: GameAccountOperationRequest) => {
       const session = await ensureGameAccountSession();
-      return linkGameAccount(session, payload.provider);
+      return linkGameAccount(session, payload.provider, payload.proxyUrl);
     },
   );
 
@@ -275,7 +275,7 @@ export function registerAccountCatalogIpcHandlers(
     IPC_CHANNELS.GAME_ACCOUNT_UNLINK,
     async (_event, payload: GameAccountOperationRequest) => {
       const session = await ensureGameAccountSession();
-      return unlinkGameAccount(session, payload.provider);
+      return unlinkGameAccount(session, payload.provider, payload.proxyUrl);
     },
   );
 
@@ -283,7 +283,7 @@ export function registerAccountCatalogIpcHandlers(
     IPC_CHANNELS.GAME_ACCOUNT_RESYNC,
     async (_event, payload: GameAccountOperationRequest) => {
       const session = await ensureGameAccountSession();
-      return resyncGameAccount(session, payload.provider);
+      return resyncGameAccount(session, payload.provider, payload.proxyUrl);
     },
   );
 

@@ -1153,7 +1153,10 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
     setGameAccountsError(null);
 
     try {
-      const payload = { provider: account.provider };
+      const payload = {
+        provider: account.provider,
+        proxyUrl: settings.sessionProxyEnabled ? settings.sessionProxyUrl.trim() || undefined : undefined,
+      };
       const result =
         action === "link"
           ? await window.openNow.linkGameAccount(payload)
@@ -1179,7 +1182,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
     } finally {
       setGameAccountBusy(null);
     }
-  }, [gameAccountBusy, t]);
+  }, [gameAccountBusy, settings.sessionProxyEnabled, settings.sessionProxyUrl, t]);
 
   const selectedResolutionLabel = useMemo(() => {
     if (hasDynamic) {
