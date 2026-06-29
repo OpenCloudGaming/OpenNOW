@@ -11,7 +11,7 @@ import type {
   GameAccountOperationResult,
 } from "@shared/gfn";
 import { cacheManager } from "../services/cacheManager";
-import { getAccountGamesCacheKeys } from "./games";
+import { getAccountGamesCacheKeys, getLegacyTokenScopedAccountGamesCacheKeys } from "./games";
 import { buildGfnGraphQlHeaders, GFN_PLAY_ORIGIN, GFN_PLAY_REFERER, GFN_USER_AGENT } from "./clientHeaders";
 
 const LCARS_GRAPHQL_URL = "https://apps.gxn.nvidia.com/graphql";
@@ -583,10 +583,19 @@ async function deleteProviderLink(provider: string, token: string): Promise<void
 }
 
 async function invalidateAccountGameCaches(session: AuthSession, proxyUrl?: string): Promise<void> {
-  const cacheKeySets = [getAccountGamesCacheKeys(session.user.userId, session.provider.streamingServiceUrl)];
+  const cacheKeySets: Array<{ main: string; library: string; catalogPrefix: string }> = [
+    getAccountGamesCacheKeys(session.user.userId, session.provider.streamingServiceUrl),
+  ];
+  const legacyTokens = [...new Set([session.tokens.idToken, session.tokens.accessToken].filter((token): token is string => Boolean(token)))];
+  cacheKeySets.push(
+    ...legacyTokens.map((token) => getLegacyTokenScopedAccountGamesCacheKeys(token, session.provider.streamingServiceUrl)),
+  );
   if (proxyUrl?.trim()) {
     try {
       cacheKeySets.push(getAccountGamesCacheKeys(session.user.userId, session.provider.streamingServiceUrl, proxyUrl));
+      cacheKeySets.push(
+        ...legacyTokens.map((token) => getLegacyTokenScopedAccountGamesCacheKeys(token, session.provider.streamingServiceUrl, proxyUrl)),
+      );
     } catch (error) {
       console.warn("[AccountConnections] Skipping proxy-scoped game cache invalidation:", error);
     }
