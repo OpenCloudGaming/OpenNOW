@@ -181,9 +181,11 @@ jobs:
             bundle_gstreamer: "1"
             native_target: "x86_64-apple-darwin"
             native_platform_key: "darwin-x64"
+            arch: x64
             artifact_paths: |
               opennow-stable/dist-release/*.dmg
               opennow-stable/dist-release/*-x64.zip
+              opennow-stable/dist-release/latest-mac.yml
           - label: macos-arm64
             os: blacksmith-6vcpu-macos-15
             builder_args: "--mac dmg zip --arm64"
@@ -191,9 +193,11 @@ jobs:
             bundle_gstreamer: "1"
             native_target: "aarch64-apple-darwin"
             native_platform_key: "darwin-arm64"
+            arch: arm64
             artifact_paths: |
               opennow-stable/dist-release/*.dmg
               opennow-stable/dist-release/*-arm64.zip
+              opennow-stable/dist-release/latest-mac-arm64.yml
           - label: linux-x64
             os: blacksmith-2vcpu-ubuntu-2404
             builder_args: "--linux AppImage deb --x64"
@@ -533,6 +537,11 @@ jobs:
       - name: Package installers
         run: npx electron-builder --publish never ${{ matrix.builder_args }}
 
+      - name: Rename macOS update feed
+        if: matrix.arch == 'arm64'
+        shell: bash
+        run: mv dist-release/latest-mac.yml dist-release/latest-mac-arm64.yml
+
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -558,6 +567,55 @@ jobs:
         with:
           path: release-artifacts
           merge-multiple: true
+
+      - name: Merge macOS update feeds
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          x64_feed=release-artifacts/latest-mac.yml
+          arm64_feed=release-artifacts/latest-mac-arm64.yml
+
+          for feed in "$x64_feed" "$arm64_feed"; do
+            [ -s "$feed" ] || { echo "Missing macOS update feed: $feed" >&2; exit 1; }
+            grep -q '^files:' "$feed" || { echo "Missing files block in $feed" >&2; exit 1; }
+          done
+
+          x64_ver=$(awk '/^version:/{print $2; exit}' "$x64_feed")
+          arm64_ver=$(awk '/^version:/{print $2; exit}' "$arm64_feed")
+          [ -n "$x64_ver" ] && [ -n "$arm64_ver" ] || { echo "Missing macOS update feed version." >&2; exit 1; }
+          [ "$x64_ver" != "$arm64_ver" ] && { echo "Version mismatch: x64=$x64_ver arm64=$arm64_ver" >&2; exit 1; }
+          awk '
+            FNR == NR {
+              if (/^files:/) { in_arm64_files=1; next }
+              if (in_arm64_files && /^[^ ]/) in_arm64_files=0
+              if (in_arm64_files) arm64_files=arm64_files $0 "\n"
+              next
+            }
+            /^files:/ { in_x64_files=1; print; next }
+            in_x64_files && /^[^ ]/ && !inserted {
+              printf "%s", arm64_files
+              inserted=1
+              in_x64_files=0
+            }
+            { print }
+            END {
+              if (arm64_files == "") {
+                print "Missing arm64 files block entries." > "/dev/stderr"
+                exit 1
+              }
+              if (in_x64_files && !inserted) {
+                printf "%s", arm64_files
+                inserted=1
+              }
+              if (!inserted) {
+                print "Missing x64 files block insertion point." > "/dev/stderr"
+                exit 1
+              }
+            }
+          ' "$arm64_feed" "$x64_feed" > /tmp/merged.yml
+          mv /tmp/merged.yml "$x64_feed"
+          rm "$arm64_feed"
 
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
