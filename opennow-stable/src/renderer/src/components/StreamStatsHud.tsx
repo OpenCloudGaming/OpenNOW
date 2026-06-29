@@ -12,7 +12,7 @@ import {
   getRttColor,
   getTimingColor,
 } from "../utils/streamDiagnosticsFormat";
-import { panelSpring, smoothEase } from "./MotionProvider";
+import { panelSpring, smoothEase, surfaceRevealTransition } from "./MotionProvider";
 import { useTranslation } from "../i18n";
 
 function getLagReasonLabel(reason: StreamLagReason): string {
@@ -165,7 +165,7 @@ export function StreamStatsHud({
       initial={{ opacity: 0, x: -14, y: 10 }}
       animate={{ opacity: 1, x: 0, y: 0 }}
       exit={{ opacity: 0, x: -10, y: 6 }}
-      transition={{ duration: 0.34, ease: smoothEase }}
+      transition={surfaceRevealTransition}
       layout
       aria-label={t("stream.stats.overlayLabel")}
     >

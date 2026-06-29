@@ -380,7 +380,7 @@ function VideoFocusOnReady({
     if (!isConnecting && videoRef.current && shouldFocusVideo) {
       const timer = window.setTimeout(() => {
         if (videoRef.current && document.activeElement !== videoRef.current) {
-          videoRef.current.focus();
+          videoRef.current.focus({ preventScroll: true });
           console.log("[StreamView] Focused video element");
         }
       }, 100);
@@ -1308,7 +1308,7 @@ export function StreamView({
     // mousedown's preventDefault() blocks the browser from re-focusing on click.
     const timer = window.setTimeout(() => {
       if (localVideoRef.current && document.activeElement !== localVideoRef.current) {
-        localVideoRef.current.focus();
+        localVideoRef.current.focus({ preventScroll: true });
       }
     }, 50);
     try {
@@ -1411,6 +1411,44 @@ export function StreamView({
     return () => window.removeEventListener("keydown", onKeyDown, true);
   }, [handleToggleSideBar, isMacClient]);
 
+  useEffect(() => {
+    const blurStreamFocusTarget = (): void => {
+      const active = document.activeElement;
+      if (active instanceof HTMLElement && active.closest(".sv")) {
+        active.blur();
+      }
+    };
+
+    const hideFocusRingOnAccessKey = (event: KeyboardEvent): void => {
+      if (event.key === "Alt" && !event.repeat) {
+        blurStreamFocusTarget();
+      }
+    };
+
+    const restoreStreamVideoFocus = (event: PointerEvent): void => {
+      if (showSideBar || isConnecting || exitPrompt.open) {
+        return;
+      }
+      const target = event.target as HTMLElement | null;
+      if (target?.closest(".sv-sidebar, .sv-exit, .sv-shot-modal, button, a, input, textarea, select")) {
+        return;
+      }
+      const video = localVideoRef.current;
+      if (video && document.activeElement !== video) {
+        video.focus({ preventScroll: true });
+      }
+    };
+
+    window.addEventListener("blur", blurStreamFocusTarget);
+    window.addEventListener("keydown", hideFocusRingOnAccessKey, true);
+    window.addEventListener("pointerdown", restoreStreamVideoFocus, true);
+    return () => {
+      window.removeEventListener("blur", blurStreamFocusTarget);
+      window.removeEventListener("keydown", hideFocusRingOnAccessKey, true);
+      window.removeEventListener("pointerdown", restoreStreamVideoFocus, true);
+    };
+  }, [exitPrompt.open, isConnecting, showSideBar]);
+
   return (
     <div className={["sv", className].filter(Boolean).join(" ")}>
       <video
@@ -1418,11 +1456,11 @@ export function StreamView({
         autoPlay
         playsInline
         muted
-        tabIndex={0}
+        tabIndex={-1}
         className="sv-video"
         onClick={() => {
           if (localVideoRef.current && document.activeElement !== localVideoRef.current) {
-            localVideoRef.current.focus();
+            localVideoRef.current.focus({ preventScroll: true });
           }
         }}
       />

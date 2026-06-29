@@ -8,6 +8,12 @@ export const pageTransition = {
   ease: smoothEase,
 } as const;
 
+/** Shared reveal timing for floating panels (stats HUD, settings modal, etc.). */
+export const surfaceRevealTransition = {
+  duration: 0.34,
+  ease: smoothEase,
+} as const;
+
 export const panelSpring = {
   type: "spring",
   stiffness: 420,

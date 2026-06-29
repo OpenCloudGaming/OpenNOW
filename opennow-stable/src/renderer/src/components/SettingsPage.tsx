@@ -1,8 +1,6 @@
 import { Globe, Check, Search, X, Loader, Zap, Mic, FileDown, Wifi, Trash2, Heart, Users, ExternalLink, Monitor, Keyboard, Download, RefreshCcw, Info, Cpu, AlertTriangle, MapPin, ScanLine, Gauge, Film, SlidersHorizontal, HardDrive } from "lucide-react";
 import { useState, useCallback, useMemo, useEffect, useRef } from "react";
-import { createPortal } from "react-dom";
 import type { JSX } from "react";
-import { m } from "motion/react";
 
 import type {
   Settings,
@@ -39,7 +37,6 @@ import { formatShortcutForDisplay, normalizeShortcut, shortcutFromKeyboardEvent 
 import { getCodecDecodeBadgeState, shouldShowLinuxHardwareCodecHint, type CodecTestResult } from "../lib/codecDiagnostics";
 import { getAccentColorOption, getAccentColorOptions } from "../lib/uiCustomization";
 import { useTranslation } from "../i18n";
-import { pageTransition, panelSpring } from "./MotionProvider";
 import {
   clearStoredRegionPingResults,
   loadStoredRegionPingResults,
@@ -2030,40 +2027,8 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
     };
   }, [nativeStreamerEnablePromptVisible, onClose]);
 
-  if (typeof document === "undefined") {
-    return <></>;
-  }
-
-  return createPortal(
-    <m.div
-      className="settings-overlay"
-      role="dialog"
-      aria-modal="true"
-      aria-label={t("settings.title")}
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      exit={{ opacity: 0 }}
-      transition={pageTransition}
-    >
-      <m.button
-        type="button"
-        className="settings-overlay-backdrop"
-        onClick={onClose}
-        aria-label={t("app.actions.close")}
-        initial={{ opacity: 0 }}
-        animate={{ opacity: 1 }}
-        exit={{ opacity: 0 }}
-        transition={pageTransition}
-      />
-
-      <m.div
-        className="settings-modal"
-        onClick={(event) => event.stopPropagation()}
-        initial={{ opacity: 0, y: 18, scale: 0.985 }}
-        animate={{ opacity: 1, y: 0, scale: 1 }}
-        exit={{ opacity: 0, y: 10, scale: 0.99 }}
-        transition={panelSpring}
-      >
+  return (
+    <>
         <header className="settings-modal-header">
           <h1>{t("settings.title")}</h1>
           <div className="settings-modal-header-actions">
@@ -4062,7 +4027,6 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
         )}
       </div>
         </div>
-      </m.div>
 
       {nativeStreamerEnablePromptVisible && (
         <div
@@ -4131,7 +4095,6 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
           </div>
         </div>
       )}
-    </m.div>,
-    document.body,
+    </>
   );
 }

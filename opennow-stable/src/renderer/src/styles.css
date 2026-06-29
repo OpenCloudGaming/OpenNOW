@@ -3626,9 +3626,9 @@ button.game-card-store-chip.owned.active:hover {
 
 
 /* ======================================================
-   SETTINGS PAGE — modal preferences panel
+   ANIMATED MODAL — shared Motion overlay shell
    ====================================================== */
-.settings-overlay {
+.animated-modal-overlay {
   position: fixed;
   inset: 0;
   z-index: 3100;
@@ -3638,14 +3638,28 @@ button.game-card-store-chip.owned.active:hover {
   padding: 28px 36px;
 }
 
-.settings-overlay-backdrop {
+.animated-modal-scrim {
   position: absolute;
   inset: 0;
   border: none;
-  background: rgba(6, 7, 9, 0.72);
+  padding: 0;
+  margin: 0;
+  background-color: rgba(6, 7, 9, 0.72);
   -webkit-backdrop-filter: blur(10px);
   backdrop-filter: blur(10px);
   cursor: pointer;
+}
+
+.settings-modal-placeholder {
+  flex: 1;
+  min-height: 0;
+}
+
+.animated-modal-panel {
+  position: relative;
+  z-index: 1;
+  transform: translateZ(0);
+  backface-visibility: hidden;
 }
 
 .settings-modal {
@@ -3663,9 +3677,7 @@ button.game-card-store-chip.owned.active:hover {
     var(--shadow-lg),
     0 0 0 1px rgba(255, 255, 255, 0.03) inset;
   overflow: hidden;
-  transform: translate3d(0, 0, 0);
-  backface-visibility: hidden;
-  will-change: transform, opacity;
+  contain: layout style paint;
 }
 
 .settings-modal-header {
@@ -6124,6 +6136,11 @@ button.game-card-store-chip.owned.active:hover {
   transition: opacity 300ms ease;
 }
 
+.sv:focus,
+.sv:focus-within {
+  outline: none;
+}
+
 .sv--switching {
   opacity: 0;
   pointer-events: none;
@@ -6137,12 +6154,17 @@ button.game-card-store-chip.owned.active:hover {
   position: relative;
   z-index: 1;
   outline: none;
+  border: none;
+  box-shadow: none;
 }
 
 .sv-video:focus,
-.sv-video:focus-visible {
-  outline: none;
-  box-shadow: none;
+.sv-video:focus-visible,
+.sv-video:focus-within {
+  outline: none !important;
+  outline-offset: 0;
+  border: none;
+  box-shadow: none !important;
 }
 
 .sv-empty {
@@ -6705,17 +6727,57 @@ button.game-card-store-chip.owned.active:hover {
   display: flex;
   align-items: center;
   justify-content: center;
+  padding: 24px;
   pointer-events: none;
 }
 
 .sv-ready-splash-backdrop {
   position: absolute;
   inset: 0;
+  overflow: hidden;
   background:
-    radial-gradient(circle at 50% 42%, rgba(var(--accent-rgb), 0.2), transparent 55%),
-    linear-gradient(180deg, rgba(8, 9, 11, 0.38), rgba(8, 9, 11, 0.58));
-  backdrop-filter: blur(4px);
-  -webkit-backdrop-filter: blur(4px);
+    radial-gradient(circle at 50% 38%, rgba(var(--accent-rgb), 0.16), transparent 52%),
+    radial-gradient(circle at 50% 100%, rgba(0, 0, 0, 0.45), transparent 58%),
+    linear-gradient(180deg, rgba(6, 7, 9, 0.42), rgba(6, 7, 9, 0.72));
+  backdrop-filter: blur(6px) saturate(1.15);
+  -webkit-backdrop-filter: blur(6px) saturate(1.15);
+  animation: sv-ready-backdrop-breathe 3.2s ease-in-out infinite;
+}
+
+.sv-ready-splash-orb {
+  position: absolute;
+  border-radius: 999px;
+  filter: blur(28px);
+  opacity: 0.55;
+  pointer-events: none;
+}
+
+.sv-ready-splash-orb--a {
+  width: 220px;
+  height: 220px;
+  top: 18%;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(var(--accent-rgb), 0.28);
+  animation: sv-ready-orb-drift-a 4.8s ease-in-out infinite;
+}
+
+.sv-ready-splash-orb--b {
+  width: 140px;
+  height: 140px;
+  bottom: 16%;
+  left: 22%;
+  background: rgba(var(--accent-rgb), 0.14);
+  animation: sv-ready-orb-drift-b 5.6s ease-in-out infinite;
+}
+
+.sv-ready-splash-orb--c {
+  width: 120px;
+  height: 120px;
+  top: 28%;
+  right: 18%;
+  background: rgba(96, 165, 250, 0.12);
+  animation: sv-ready-orb-drift-c 6.2s ease-in-out infinite;
 }
 
 .sv-ready-splash-card {
@@ -6724,70 +6786,223 @@ button.game-card-store-chip.owned.active:hover {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 8px;
-  max-width: min(88vw, 420px);
-  padding: 28px 34px 30px;
+  gap: 14px;
+  width: min(100%, 440px);
+  padding: 30px 34px 26px;
   text-align: center;
+  border-radius: var(--r-xl);
+  border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--panel-border));
+  background:
+    linear-gradient(165deg, rgba(18, 19, 22, 0.94), rgba(10, 10, 12, 0.88));
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.03) inset,
+    0 24px 70px rgba(0, 0, 0, 0.55),
+    0 0 48px rgba(var(--accent-rgb), 0.12);
+  overflow: hidden;
+}
+
+.sv-ready-splash-card-glow {
+  position: absolute;
+  inset: -40% -20% auto;
+  height: 62%;
+  background: radial-gradient(circle at 50% 100%, rgba(var(--accent-rgb), 0.22), transparent 68%);
+  pointer-events: none;
+}
+
+.sv-ready-splash-card-shimmer {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    105deg,
+    transparent 42%,
+    rgba(255, 255, 255, 0.07) 50%,
+    transparent 58%
+  );
+  transform: translateX(-120%);
+  animation: sv-ready-shimmer 1.1s var(--ease) 0.85s forwards;
+  pointer-events: none;
+}
+
+.sv-ready-splash-emblem {
+  position: relative;
+  width: 84px;
+  height: 84px;
+  margin-bottom: 2px;
 }
 
 .sv-ready-splash-ring {
-  position: relative;
-  width: 72px;
-  height: 72px;
-  margin-bottom: 4px;
-}
-
-.sv-ready-splash-ring-core,
-.sv-ready-splash-ring-pulse {
   position: absolute;
   inset: 0;
   border-radius: 999px;
+  border: 1px solid rgba(var(--accent-rgb), 0.35);
 }
 
-.sv-ready-splash-ring-core {
-  border: 2px solid color-mix(in srgb, var(--accent) 70%, transparent);
-  box-shadow: 0 0 24px rgba(var(--accent-rgb), 0.35);
+.sv-ready-splash-ring--outer {
+  animation: sv-ready-ring 2.4s ease-out infinite;
 }
 
-.sv-ready-splash-ring-pulse {
-  border: 1px solid rgba(var(--accent-rgb), 0.45);
-  animation: sv-ready-ring 1.8s ease-out infinite;
+.sv-ready-splash-ring--mid {
+  animation: sv-ready-ring 2.4s ease-out 0.55s infinite;
+}
+
+.sv-ready-splash-ring--inner {
+  animation: sv-ready-ring 2.4s ease-out 1.1s infinite;
+}
+
+.sv-ready-splash-emblem-core {
+  position: absolute;
+  inset: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  color: var(--accent-on);
+  background:
+    radial-gradient(circle at 30% 24%, rgba(255, 255, 255, 0.22), transparent 42%),
+    linear-gradient(145deg, var(--accent-hover), var(--accent-press));
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.12) inset,
+    0 10px 28px rgba(var(--accent-rgb), 0.35);
+  animation: sv-ready-emblem-pop 0.65s var(--ease) 0.18s both;
+}
+
+.sv-ready-splash-copy {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
 }
 
 .sv-ready-splash-kicker {
   margin: 0;
-  font-size: 0.72rem;
-  font-weight: 700;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
   color: var(--accent);
 }
 
 .sv-ready-splash-title {
   margin: 0;
-  font-size: clamp(1.35rem, 4vw, 1.85rem);
+  max-width: 24ch;
+  font-size: clamp(1.45rem, 4.2vw, 2rem);
   font-weight: 600;
-  letter-spacing: -0.02em;
+  letter-spacing: -0.03em;
   color: var(--ink);
   text-wrap: balance;
 }
 
 .sv-ready-splash-game {
   margin: 0;
-  font-size: 0.92rem;
+  max-width: 40ch;
+  font-size: 0.95rem;
   color: var(--ink-soft);
   text-wrap: pretty;
 }
 
+.sv-ready-splash-progress {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 3px;
+  transform-origin: left center;
+  background: linear-gradient(90deg, var(--accent), var(--accent-hover));
+  box-shadow: 0 0 14px rgba(var(--accent-rgb), 0.45);
+  animation-name: sv-ready-progress;
+  animation-timing-function: linear;
+  animation-fill-mode: forwards;
+}
+
+@keyframes sv-ready-backdrop-breathe {
+  0%,
+  100% {
+    filter: brightness(1);
+  }
+
+  50% {
+    filter: brightness(1.08);
+  }
+}
+
+@keyframes sv-ready-orb-drift-a {
+  0%,
+  100% {
+    transform: translateX(-50%) translateY(0);
+  }
+
+  50% {
+    transform: translateX(-46%) translateY(12px);
+  }
+}
+
+@keyframes sv-ready-orb-drift-b {
+  0%,
+  100% {
+    transform: translate(0, 0);
+  }
+
+  50% {
+    transform: translate(18px, -10px);
+  }
+}
+
+@keyframes sv-ready-orb-drift-c {
+  0%,
+  100% {
+    transform: translate(0, 0);
+  }
+
+  50% {
+    transform: translate(-14px, 16px);
+  }
+}
+
 @keyframes sv-ready-ring {
   0% {
-    transform: scale(0.82);
-    opacity: 0.85;
+    transform: scale(0.76);
+    opacity: 0.75;
   }
 
   100% {
-    transform: scale(1.45);
+    transform: scale(1.55);
     opacity: 0;
+  }
+}
+
+@keyframes sv-ready-emblem-pop {
+  0% {
+    transform: scale(0.72);
+    opacity: 0;
+  }
+
+  65% {
+    transform: scale(1.06);
+    opacity: 1;
+  }
+
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+@keyframes sv-ready-shimmer {
+  0% {
+    transform: translateX(-120%);
+  }
+
+  100% {
+    transform: translateX(120%);
+  }
+}
+
+@keyframes sv-ready-progress {
+  from {
+    transform: scaleX(1);
+  }
+
+  to {
+    transform: scaleX(0);
   }
 }
 
@@ -7112,6 +7327,12 @@ button.game-card-store-chip.owned.active:hover {
   color: var(--accent);
 }
 
+.sv-fs:focus,
+.sv-fs:focus-visible {
+  outline: none;
+  box-shadow: none;
+}
+
 /* End session button */
 .sv-end {
   position: fixed;
@@ -7137,6 +7358,12 @@ button.game-card-store-chip.owned.active:hover {
   background: rgba(180, 30, 30, 0.9);
   border-color: var(--error);
   color: #fff;
+}
+
+.sv-end:focus,
+.sv-end:focus-visible {
+  outline: none;
+  box-shadow: none;
 }
 
 /* Keyboard hints */
@@ -8690,6 +8917,10 @@ button.game-card-store-chip.owned.active:hover {
     animation-name: spin !important;
     animation-duration: 1s !important;
     animation-iteration-count: infinite !important;
+  }
+
+  .animated-modal-scrim {
+    background-color: rgba(6, 7, 9, 0.72);
   }
 }
 

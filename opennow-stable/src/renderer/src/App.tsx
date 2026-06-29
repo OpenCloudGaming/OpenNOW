@@ -94,6 +94,7 @@ import { Navbar } from "./components/Navbar";
 import { HomePage } from "./components/HomePage";
 import { LibraryPage } from "./components/LibraryPage";
 import { SettingsPage } from "./components/SettingsPage";
+import { SettingsModalHost } from "./components/SettingsModalHost";
 import { StreamLoading } from "./components/StreamLoading";
 import { StreamView } from "./components/StreamView";
 import { QueueServerSelectModal } from "./components/QueueServerSelectModal";
@@ -311,6 +312,7 @@ export function App(): JSX.Element {
   // Navigation
   const [currentPage, setCurrentPage] = useState<AppPage>("home");
   const [pageBeforeSettings, setPageBeforeSettings] = useState<AppPage>("home");
+  const [settingsMounted, setSettingsMounted] = useState(false);
   const [sessionFullscreen, setSessionFullscreenState] = useState(false);
 
   // Games State
@@ -3810,6 +3812,16 @@ export function App(): JSX.Element {
     setCurrentPage(pageBeforeSettings);
   }, [pageBeforeSettings]);
 
+  const handleSettingsExitComplete = useCallback((): void => {
+    setSettingsMounted(false);
+  }, []);
+
+  useEffect(() => {
+    if (currentPage === "settings") {
+      setSettingsMounted(true);
+    }
+  }, [currentPage]);
+
   const mainPage: AppPage = currentPage === "settings" ? pageBeforeSettings : currentPage;
 
   // Show login screen if not authenticated
@@ -4049,10 +4061,13 @@ export function App(): JSX.Element {
           </m.div>
         </AnimatePresence>
       </main>
-      <AnimatePresence initial={false}>
-        {currentPage === "settings" && (
+      <SettingsModalHost
+        open={currentPage === "settings"}
+        onClose={handleCloseSettings}
+        onExitComplete={handleSettingsExitComplete}
+      >
+        {settingsMounted && (
           <SettingsPage
-            key="settings"
             settings={settings}
             regions={regions}
             codecResults={codecResults}
@@ -4062,7 +4077,7 @@ export function App(): JSX.Element {
             onClose={handleCloseSettings}
           />
         )}
-      </AnimatePresence>
+      </SettingsModalHost>
       {logoutConfirmModal}
       {removeAccountConfirmModal}
       {queueModalGame && streamStatus === "idle" && (
