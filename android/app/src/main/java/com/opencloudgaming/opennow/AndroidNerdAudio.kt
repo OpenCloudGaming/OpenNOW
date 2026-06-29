@@ -5,16 +5,32 @@ import android.media.AudioAttributes
 import android.media.AudioManager
 import android.media.MediaPlayer
 import android.media.ToneGenerator
+import android.os.Handler
+import android.os.Looper
 import android.os.SystemClock
 
 internal class AndroidNerdAudioController(context: Context) {
     private val appContext = context.applicationContext
-    private var introPlayer: MediaPlayer? = null
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private var cuePlayer: MediaPlayer? = null
+    private var cuePurpose: MusicCuePurpose? = null
+    private var cuePlayingChanged: ((Boolean) -> Unit)? = null
     private var toneGenerator: ToneGenerator? = null
     private var lastToneAtMs = 0L
+    private val stopCueRunnable = Runnable {
+        stopMusicCue(cuePlayingChanged ?: {})
+    }
 
     fun startIntro(enabled: Boolean, onPlayingChanged: (Boolean) -> Unit) {
-        stopIntro(onPlayingChanged)
+        startMusicCue(MusicCuePurpose.Intro, enabled, onPlayingChanged)
+    }
+
+    fun startQueueReadyReminder(enabled: Boolean, onPlayingChanged: (Boolean) -> Unit = {}) {
+        startMusicCue(MusicCuePurpose.QueueReady, enabled, onPlayingChanged)
+    }
+
+    private fun startMusicCue(purpose: MusicCuePurpose, enabled: Boolean, onPlayingChanged: (Boolean) -> Unit) {
+        stopMusicCue(onPlayingChanged)
         if (!enabled) return
 
         val descriptor = runCatching {
@@ -32,39 +48,64 @@ internal class AndroidNerdAudioController(context: Context) {
                 )
                 player.setDataSource(it.fileDescriptor, it.startOffset, it.length)
             }
-            player.setVolume(0.72f, 0.72f)
+            player.setVolume(MUSIC_CUE_VOLUME, MUSIC_CUE_VOLUME)
             player.isLooping = false
             player.setOnCompletionListener { completed ->
-                if (introPlayer === completed) {
-                    introPlayer = null
+                if (cuePlayer === completed) {
+                    cuePlayer = null
+                    cuePurpose = null
+                    cuePlayingChanged = null
+                    mainHandler.removeCallbacks(stopCueRunnable)
                 }
                 completed.release()
                 onPlayingChanged(false)
             }
             player.setOnErrorListener { failed, _, _ ->
-                if (introPlayer === failed) {
-                    introPlayer = null
+                if (cuePlayer === failed) {
+                    cuePlayer = null
+                    cuePurpose = null
+                    cuePlayingChanged = null
+                    mainHandler.removeCallbacks(stopCueRunnable)
                 }
                 failed.release()
                 onPlayingChanged(false)
                 true
             }
             player.prepare()
-            introPlayer = player
+            cuePlayer = player
+            cuePurpose = purpose
+            cuePlayingChanged = onPlayingChanged
             player.start()
+            mainHandler.postDelayed(stopCueRunnable, MUSIC_CUE_MAX_DURATION_MS)
             onPlayingChanged(true)
         }.onFailure {
             player.release()
-            if (introPlayer === player) {
-                introPlayer = null
+            if (cuePlayer === player) {
+                cuePlayer = null
+                cuePurpose = null
+                cuePlayingChanged = null
+                mainHandler.removeCallbacks(stopCueRunnable)
             }
             onPlayingChanged(false)
         }
     }
 
     fun stopIntro(onPlayingChanged: (Boolean) -> Unit = {}) {
-        val player = introPlayer ?: return
-        introPlayer = null
+        if (cuePurpose == MusicCuePurpose.Intro) {
+            stopMusicCue(onPlayingChanged)
+        }
+    }
+
+    fun stopAll(onPlayingChanged: (Boolean) -> Unit = {}) {
+        stopMusicCue(onPlayingChanged)
+    }
+
+    private fun stopMusicCue(onPlayingChanged: (Boolean) -> Unit = {}) {
+        val player = cuePlayer ?: return
+        cuePlayer = null
+        cuePurpose = null
+        cuePlayingChanged = null
+        mainHandler.removeCallbacks(stopCueRunnable)
         runCatching { player.stop() }
         player.release()
         onPlayingChanged(false)
@@ -86,12 +127,19 @@ internal class AndroidNerdAudioController(context: Context) {
     }
 
     fun release() {
-        stopIntro()
+        stopAll()
         toneGenerator?.release()
         toneGenerator = null
     }
 
+    private enum class MusicCuePurpose {
+        Intro,
+        QueueReady,
+    }
+
     private companion object {
+        private const val MUSIC_CUE_VOLUME = 0.20f
+        private const val MUSIC_CUE_MAX_DURATION_MS = 3_000L
         private const val BUTTON_TONE_VOLUME = 34
         private const val BUTTON_TONE_DURATION_MS = 48
         private const val MIN_BUTTON_TONE_INTERVAL_MS = 55L

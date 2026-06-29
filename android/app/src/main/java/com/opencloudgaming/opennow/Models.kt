@@ -205,6 +205,23 @@ internal fun parseResolutionPixels(value: String): Pair<Int, Int> {
     return if (width != null && height != null && width > 0 && height > 0) width to height else 1920 to 1080
 }
 
+internal fun streamSettingsSessionSignature(settings: StreamSettings): String {
+    val (width, height) = streamResolutionPixels(settings)
+    return listOf(
+        "opennow-android-stream-v1",
+        "res=${width}x$height",
+        "fps=${settings.fps}",
+        "bitrate=${settings.maxBitrateMbps}",
+        "codec=${settings.codec.name}",
+        "color=${settings.colorQuality.name}",
+        "hdr=${if (settings.hdrEnabled) 1 else 0}",
+        "l4s=${if (settings.enableL4S) 1 else 0}",
+        "gsync=${if (settings.enableCloudGsync) 1 else 0}",
+        "keyboard=${settings.keyboardLayout.trim()}",
+        "language=${settings.gameLanguage.trim()}",
+    ).joinToString(";")
+}
+
 private data class StreamResolutionOption(
     val value: String,
     val aspectRatio: String,
@@ -817,6 +834,7 @@ data class ActiveSessionInfo(
     val signalingUrl: String? = null,
     val resolution: String? = null,
     val fps: Int? = null,
+    val settingsSignature: String? = null,
 )
 
 internal fun SessionInfo.isReadyForStream(): Boolean =
@@ -829,12 +847,11 @@ internal fun ActiveSessionInfo.isReadyForClaim(): Boolean =
     status in setOf(2, 3) && !serverIp.isNullOrBlank()
 
 internal fun ActiveSessionInfo.matchesStreamSettings(settings: StreamSettings): Boolean {
+    if (settingsSignature != streamSettingsSessionSignature(settings)) return false
     val activeResolution = parseResolutionPixelsOrNull(resolution)
     val expectedResolution = streamResolutionPixels(settings)
-    val resolutionMatches = activeResolution == null || activeResolution == expectedResolution
     val activeFps = fps?.takeIf { it > 0 }
-    val fpsMatches = activeFps == null || activeFps == settings.fps
-    return resolutionMatches && fpsMatches
+    return activeResolution == expectedResolution && activeFps == settings.fps
 }
 
 private fun parseResolutionPixelsOrNull(value: String?): Pair<Int, Int>? {

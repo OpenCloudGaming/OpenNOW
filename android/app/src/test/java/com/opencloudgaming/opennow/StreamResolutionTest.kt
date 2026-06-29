@@ -130,7 +130,11 @@ class StreamResolutionTest {
     @Test
     fun activeSessionMustMatchRequestedUltrawideResolutionBeforeReuse() {
         val settings = StreamSettings(resolution = "1680x720", aspectRatio = "21:9", fps = 60)
-        val stale = activeSession(resolution = "1680x1050", fps = 60)
+        val stale = activeSession(
+            resolution = "1680x1050",
+            fps = 60,
+            settingsSignature = streamSettingsSessionSignature(settings),
+        )
 
         assertEquals(false, stale.matchesStreamSettings(settings))
     }
@@ -138,20 +142,65 @@ class StreamResolutionTest {
     @Test
     fun activeSessionMatchesRequestedUltrawideResolutionBeforeReuse() {
         val settings = StreamSettings(resolution = "1680x720", aspectRatio = "21:9", fps = 60)
-        val active = activeSession(resolution = "1680x720", fps = 60)
+        val active = activeSession(
+            resolution = "1680x720",
+            fps = 60,
+            settingsSignature = streamSettingsSessionSignature(settings),
+        )
 
         assertEquals(true, active.matchesStreamSettings(settings))
     }
 
     @Test
-    fun activeSessionWithUnknownMonitorModeCanStillBeClaimed() {
+    fun activeSessionWithoutOpenNowSettingsSignatureIsNotReusedForLaunch() {
         val settings = StreamSettings(resolution = "1680x720", aspectRatio = "21:9", fps = 60)
-        val active = activeSession(resolution = null, fps = null)
+        val active = activeSession(resolution = "1680x720", fps = 60)
 
-        assertEquals(true, active.matchesStreamSettings(settings))
+        assertEquals(false, active.matchesStreamSettings(settings))
     }
 
-    private fun activeSession(resolution: String?, fps: Int?): ActiveSessionInfo =
+    @Test
+    fun activeSessionWithDifferentOpenNowSettingsSignatureIsNotReusedForLaunch() {
+        val settings = StreamSettings(resolution = "1680x720", aspectRatio = "21:9", fps = 60, codec = VideoCodec.H265, maxBitrateMbps = 150)
+        val otherSettings = settings.copy(codec = VideoCodec.H264, maxBitrateMbps = 75)
+        val active = activeSession(
+            resolution = "1680x720",
+            fps = 60,
+            settingsSignature = streamSettingsSessionSignature(otherSettings),
+        )
+
+        assertEquals(false, active.matchesStreamSettings(settings))
+    }
+
+    @Test
+    fun activeSessionWithUnknownMonitorModeIsNotReusedForLaunch() {
+        val settings = StreamSettings(resolution = "1680x720", aspectRatio = "21:9", fps = 60)
+        val active = activeSession(
+            resolution = null,
+            fps = null,
+            settingsSignature = streamSettingsSessionSignature(settings),
+        )
+
+        assertEquals(false, active.matchesStreamSettings(settings))
+    }
+
+    @Test
+    fun activeSessionWithUnknownRefreshRateIsNotReusedForLaunch() {
+        val settings = StreamSettings(resolution = "1680x720", aspectRatio = "21:9", fps = 60)
+        val active = activeSession(
+            resolution = "1680x720",
+            fps = null,
+            settingsSignature = streamSettingsSessionSignature(settings),
+        )
+
+        assertEquals(false, active.matchesStreamSettings(settings))
+    }
+
+    private fun activeSession(
+        resolution: String?,
+        fps: Int?,
+        settingsSignature: String? = null,
+    ): ActiveSessionInfo =
         ActiveSessionInfo(
             sessionId = "session",
             appId = 100,
@@ -160,5 +209,6 @@ class StreamResolutionTest {
             signalingUrl = "wss://127.0.0.1/nvst/",
             resolution = resolution,
             fps = fps,
+            settingsSignature = settingsSignature,
         )
 }

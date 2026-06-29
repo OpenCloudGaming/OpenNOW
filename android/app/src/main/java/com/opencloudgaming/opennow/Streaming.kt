@@ -1685,7 +1685,7 @@ class NativeStreamClient(
             } else {
                 it.init(eglBase.eglBaseContext, null)
             }
-            it.setEnableHardwareScaler(true)
+            it.setEnableHardwareScaler(false)
             it.setMirror(false)
             it.setStreamScaling()
             renderer = it

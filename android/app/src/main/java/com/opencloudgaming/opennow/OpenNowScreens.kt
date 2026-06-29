@@ -199,6 +199,8 @@ private val SettingsTextMuted = Color(0xff98a4aa)
 private const val DONATE_URL = "https://paypal.me/PrintedWaste"
 private val PHONE_NAV_RAIL_MAX_SMALLEST_WIDTH = 600.dp
 private val APP_NAV_RAIL_WIDTH = 80.dp
+private const val PHONE_ULTRAWIDE_MIN_STREAM_ASPECT = 2.2f
+private const val PHONE_ULTRAWIDE_MIN_VIEWPORT_ASPECT = 2.0f
 
 private data class SettingsChoiceOption(val value: String, val label: String)
 private data class ChoiceMenuOption(
@@ -329,32 +331,78 @@ fun OpenNowApp(viewModel: OpenNowViewModel) {
     val launchAudioController = remember(context) { AndroidNerdAudioController(context.applicationContext) }
     val playIntroOnAppLaunch = remember { state.settings.streamIntroMusic }
     var launchIntroStarted by remember { mutableStateOf(false) }
+    var musicCuePlaying by remember { mutableStateOf(false) }
+    var previousStreamStatus by remember { mutableStateOf(state.streamStatus) }
+    var previousLaunchMinimized by remember { mutableStateOf(state.streamLaunchMinimized) }
 
     DisposableEffect(launchAudioController) {
         onDispose {
             launchAudioController.release()
         }
     }
-    LaunchedEffect(playIntroOnAppLaunch, state.settings.streamIntroMusic, state.page, state.streamStatus) {
+    LaunchedEffect(playIntroOnAppLaunch, state.settings.streamIntroMusic, state.page, state.streamStatus, state.streamLaunchMinimized) {
         val streamActive = state.page == AppPage.Stream || state.streamStatus != "idle"
-        if (playIntroOnAppLaunch && state.settings.streamIntroMusic && !streamActive) {
+        val queueReadyWhileMinimized =
+            previousLaunchMinimized &&
+                previousStreamStatus == "queue" &&
+                state.streamStatus == "connecting"
+        previousStreamStatus = state.streamStatus
+        previousLaunchMinimized = state.streamLaunchMinimized
+
+        if (!state.settings.streamIntroMusic) {
+            launchAudioController.stopAll { musicCuePlaying = it }
+        } else if (queueReadyWhileMinimized) {
+            launchAudioController.startQueueReadyReminder(enabled = true) { musicCuePlaying = it }
+        } else if (playIntroOnAppLaunch && !streamActive) {
             if (!launchIntroStarted) {
                 launchIntroStarted = true
-                launchAudioController.startIntro(enabled = true) {}
+                launchAudioController.startIntro(enabled = true) { musicCuePlaying = it }
             }
         } else {
-            launchAudioController.stopIntro()
+            launchAudioController.stopIntro { musicCuePlaying = it }
         }
     }
 
     OpenNowTheme(state.settings) {
-        Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-            val startingText = stringResource(R.string.status_starting_opennow)
-            when {
-                state.initializing -> LoadingScreen(state.launchPhase.ifBlank { startingText })
-                state.authSession == null -> LoginScreen(state, viewModel)
-                else -> MainShell(state, viewModel)
+        Box(Modifier.fillMaxSize()) {
+            Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+                val startingText = stringResource(R.string.status_starting_opennow)
+                when {
+                    state.initializing -> LoadingScreen(state.launchPhase.ifBlank { startingText })
+                    state.authSession == null -> LoginScreen(state, viewModel)
+                    else -> MainShell(state, viewModel)
+                }
             }
+            AnimatedVisibility(
+                visible = musicCuePlaying && state.settings.streamIntroMusic,
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(top = 14.dp, end = 14.dp),
+            ) {
+                MusicCueMuteButton {
+                    launchAudioController.stopAll { musicCuePlaying = it }
+                    viewModel.updateSettings(state.settings.copy(streamIntroMusic = false))
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun MusicCueMuteButton(onClick: () -> Unit) {
+    Surface(
+        shape = CircleShape,
+        color = PanelAlt.copy(alpha = 0.9f),
+        tonalElevation = 4.dp,
+        shadowElevation = 4.dp,
+    ) {
+        IconButton(onClick = onClick, modifier = Modifier.size(44.dp)) {
+            Icon(
+                painter = painterResource(R.drawable.ic_volume_off),
+                contentDescription = stringResource(R.string.action_mute_music),
+                tint = TextPrimary,
+                modifier = Modifier.size(22.dp),
+            )
         }
     }
 }
@@ -1324,11 +1372,51 @@ private fun StoreScrollableControls(
             }
         }
         SelectedFilterChips(options = filterOptions, selectedIds = state.catalogFilterIds, onToggle = onFilterToggle)
-        if (state.error != null) {
-            Text(state.error.orEmpty(), color = Color(0xffff9f9f), modifier = Modifier.padding(horizontal = 4.dp))
+        InlineErrorNotice(error = state.error)
+    }
+}
+
+@Composable
+private fun InlineErrorNotice(error: String?) {
+    if (error.isNullOrBlank()) return
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(12.dp),
+        color = Color(0xff33181c),
+        tonalElevation = 0.dp,
+    ) {
+        Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
+            Text(
+                compactErrorTitle(error),
+                color = Color(0xffffb8bf),
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                compactErrorBody(error),
+                color = Color(0xffffb8bf),
+                style = MaterialTheme.typography.bodySmall,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
         }
     }
 }
+
+private fun compactErrorTitle(error: String): String =
+    when {
+        error.contains("DNS lookup failed", ignoreCase = true) -> "Network lookup failed"
+        error.contains("Unable to resolve host", ignoreCase = true) -> "Network lookup failed"
+        else -> "Something went wrong"
+    }
+
+private fun compactErrorBody(error: String): String =
+    error
+        .replace('\n', ' ')
+        .replace(Regex("\\s+"), " ")
+        .let { if (it.length > 180) "${it.take(177)}..." else it }
 
 @Composable
 private fun StoreScrollActionButton(iconRes: Int, contentDescription: String, onClick: () -> Unit) {
@@ -3112,6 +3200,9 @@ private fun SettingsContent(
                 SettingSwitch(stringResource(R.string.settings_controller_backdrop), settings.controllerLibraryGameBackdrop) { viewModel.updateSettings(settings.copy(controllerLibraryGameBackdrop = it)) }
                 SettingSwitch(stringResource(R.string.settings_auto_load_library), settings.autoLoadControllerLibrary) { viewModel.updateSettings(settings.copy(autoLoadControllerLibrary = it)) }
                 SettingSwitch(stringResource(R.string.settings_session_counter), settings.sessionCounterEnabled) { viewModel.updateSettings(settings.copy(sessionCounterEnabled = it)) }
+                SettingSwitch(stringResource(R.string.settings_stream_intro_music), settings.streamIntroMusic) { enabled ->
+                    viewModel.updateSettings(settings.copy(streamIntroMusic = enabled))
+                }
             }
     SearchableSettingsSection(searchQuery, "App Data", "app data", "data", "cache", "clear", "reset", "settings") {
                 AppDataSettingsPanel(viewModel = viewModel)
@@ -3121,9 +3212,6 @@ private fun SettingsContent(
             }
     if (settings.nerdMode) {
     SearchableSettingsSection(searchQuery, stringResource(R.string.settings_section_nerd_tools), "nerd", "intro", "music", "rock", "tone", "button", "sound", "stretch", "fill", "fullscreen", "wave") {
-                    SettingSwitch(stringResource(R.string.settings_stream_intro_music), settings.streamIntroMusic) { enabled ->
-                        viewModel.updateSettings(settings.copy(streamIntroMusic = enabled))
-                    }
                     SettingSwitch(stringResource(R.string.settings_button_press_tones), settings.controllerUiSounds) { enabled ->
                         viewModel.updateSettings(settings.copy(controllerUiSounds = enabled))
                     }
@@ -4001,6 +4089,7 @@ private fun StreamVideoSurface(
     modifier: Modifier = Modifier,
 ) {
     val rootView = LocalView.current
+    val configuration = LocalConfiguration.current
     val pointerRootView = externalMouseRoot ?: rootView
     val (streamWidth, streamHeight) = streamResolutionPixels(settings)
     val streamAspect = (streamWidth.toFloat() / streamHeight.toFloat()).takeIf { it.isFinite() && it > 0f } ?: (16f / 9f)
@@ -4008,7 +4097,14 @@ private fun StreamVideoSurface(
     var zoomScale by remember { mutableFloatStateOf(1f) }
     var zoomOffset by remember { mutableStateOf(Offset.Zero) }
     var viewportSize by remember { mutableStateOf(IntSize.Zero) }
-    LaunchedEffect(settings.resolution, settings.aspectRatio, stretchToFill) {
+    LaunchedEffect(
+        settings.resolution,
+        settings.aspectRatio,
+        stretchToFill,
+        configuration.orientation,
+        configuration.screenWidthDp,
+        configuration.screenHeightDp,
+    ) {
         zoomScale = 1f
         zoomOffset = Offset.Zero
     }
@@ -4033,22 +4129,31 @@ private fun StreamVideoSurface(
         contentAlignment = Alignment.Center,
     ) {
         val containerAspect = if (maxHeight.value > 0f) maxWidth.value / maxHeight.value else streamAspect
-        val viewportModifier = if (stretchToFill) {
-            Modifier.fillMaxSize()
-        } else if (containerAspect > streamAspect) {
-            Modifier
+        val cropUltrawideToPhoneViewport =
+            !stretchToFill &&
+                isPhoneLandscape(maxWidth, maxHeight) &&
+                streamAspect >= PHONE_ULTRAWIDE_MIN_STREAM_ASPECT &&
+                containerAspect >= PHONE_ULTRAWIDE_MIN_VIEWPORT_ASPECT &&
+                streamAspect > containerAspect
+        val viewportModifier = when {
+            stretchToFill -> Modifier.fillMaxSize()
+            cropUltrawideToPhoneViewport || containerAspect > streamAspect -> Modifier
                 .fillMaxHeight()
                 .aspectRatio(streamAspect)
-        } else {
-            Modifier
+            else -> Modifier
                 .fillMaxWidth()
                 .aspectRatio(streamAspect)
         }
         Box(
             viewportModifier
                 .onSizeChanged {
-                    viewportSize = it
-                    zoomOffset = clampStreamZoomOffset(zoomOffset, zoomScale, it)
+                    if (viewportSize != it) {
+                        viewportSize = it
+                        zoomScale = 1f
+                        zoomOffset = Offset.Zero
+                    } else {
+                        zoomOffset = clampStreamZoomOffset(zoomOffset, zoomScale, it)
+                    }
                 }
                 .clipToBounds()
                 .background(Color.Black),
@@ -4080,7 +4185,7 @@ private fun StreamVideoSurface(
                         translationY = zoomOffset.y
                     },
             ) {
-                key(settings.streamSharpeningEnabled) {
+                key(settings.streamSharpeningEnabled, viewportSize.width, viewportSize.height, stretchToFill) {
                     AndroidView(
                         modifier = stretchedRendererModifier,
                         factory = { ctx ->
