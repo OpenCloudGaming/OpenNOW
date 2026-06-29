@@ -56,6 +56,7 @@ data class OpenNowUiState(
     val subscriptionInfo: SubscriptionInfo? = null,
     val accountConnectors: List<AccountConnector> = emptyList(),
     val loadingAccountConnectors: Boolean = false,
+    val connectorActionStore: String? = null,
     val regions: List<StreamRegion> = emptyList(),
     val games: List<GameInfo> = emptyList(),
     val libraryGames: List<GameInfo> = emptyList(),
@@ -379,6 +380,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                     subscriptionInfo = null,
                     accountConnectors = emptyList(),
                     loadingAccountConnectors = false,
+                    connectorActionStore = null,
                     games = emptyList(),
                     libraryGames = emptyList(),
                     libraryFilterIds = emptyList(),
@@ -409,6 +411,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                     subscriptionInfo = null,
                     accountConnectors = emptyList(),
                     loadingAccountConnectors = false,
+                    connectorActionStore = null,
                     games = emptyList(),
                     libraryGames = emptyList(),
                     catalogResult = CatalogBrowseResult(emptyList()),
@@ -440,6 +443,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 subscriptionInfo = null,
                 accountConnectors = emptyList(),
                 loadingAccountConnectors = false,
+                connectorActionStore = null,
                 games = emptyList(),
                 libraryGames = emptyList(),
                 libraryFilterIds = emptyList(),
@@ -631,6 +635,41 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 .onFailure { error ->
                     if (error is CancellationException) return@onFailure
                     _state.update { it.copy(loadingAccountConnectors = false, error = error.message ?: "Failed to load account connections") }
+                }
+        }
+    }
+
+    fun connectAccountConnector(store: String, openUrl: (String) -> Unit) {
+        val session = state.value.authSession ?: return
+        viewModelScope.launch {
+            val token = authRepository.restore(forceRefresh = false)?.tokens?.accessToken ?: session.tokens.accessToken
+            _state.update { it.copy(connectorActionStore = store, error = null) }
+            runCatching { accountConnectorRepository.loginUrl(store, token) }
+                .onSuccess { url ->
+                    _state.update { it.copy(connectorActionStore = null) }
+                    openUrl(url)
+                }
+                .onFailure { error ->
+                    if (error is CancellationException) return@onFailure
+                    _state.update { it.copy(connectorActionStore = null, error = error.message ?: "Failed to start store connection") }
+                }
+        }
+    }
+
+    fun disconnectAccountConnector(store: String) {
+        val session = state.value.authSession ?: return
+        viewModelScope.launch {
+            val token = authRepository.restore(forceRefresh = false)?.tokens?.accessToken ?: session.tokens.accessToken
+            _state.update { it.copy(connectorActionStore = store, error = null) }
+            runCatching { accountConnectorRepository.disconnect(store, token) }
+                .onSuccess {
+                    Toast.makeText(getApplication(), "Store disconnected", Toast.LENGTH_SHORT).show()
+                    _state.update { it.copy(connectorActionStore = null) }
+                    refreshAccountConnectors()
+                }
+                .onFailure { error ->
+                    if (error is CancellationException) return@onFailure
+                    _state.update { it.copy(connectorActionStore = null, error = error.message ?: "Failed to disconnect store") }
                 }
         }
     }

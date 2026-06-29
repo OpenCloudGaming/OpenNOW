@@ -104,6 +104,9 @@ private const val TOTAL_STORAGE_SIZE_IN_GB = "TOTAL_STORAGE_SIZE_IN_GB"
 private const val USED_STORAGE_SIZE_IN_GB = "USED_STORAGE_SIZE_IN_GB"
 private const val STORAGE_METRO_REGION = "STORAGE_METRO_REGION"
 private const val STORAGE_METRO_REGION_NAME = "STORAGE_METRO_REGION_NAME"
+private const val ACCOUNT_LINKING_BASE_URL = "https://linking.nvidia.com/v1"
+private const val ACCOUNT_LINKING_CLIENT_ID = LCARS_CLIENT_ID
+private const val ACCOUNT_LINKING_REDIRECT_URL = "https://static-als.nvidia.com/result"
 
 private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
 private val GRAPHQL_MEDIA_TYPE = "application/graphql".toMediaType()
@@ -1700,6 +1703,34 @@ class GfnAccountConnectorRepository(
             .orEmpty()
     }
 
+    suspend fun loginUrl(store: String, accessToken: String): String {
+        val url = "$ACCOUNT_LINKING_BASE_URL/login_url"
+            .toHttpUrl()
+            .newBuilder()
+            .addQueryParameter("platform", store)
+            .addQueryParameter("redirect_uri", ACCOUNT_LINKING_REDIRECT_URL)
+            .addQueryParameter("client_id", ACCOUNT_LINKING_CLIENT_ID)
+            .build()
+        val request = Request.Builder()
+            .url(url)
+            .headers(accountLinkingHeaders(accessToken))
+            .build()
+        val (code, text) = http.awaitText(request)
+        check(code in 200..299) { "Store connection failed ($code): ${text.take(240)}" }
+        return OpenNowJson.parseToJsonElement(text).jsonObject.string("login_url")
+            ?: error("Store connection did not return a login URL")
+    }
+
+    suspend fun disconnect(store: String, accessToken: String) {
+        val request = Request.Builder()
+            .url("$ACCOUNT_LINKING_BASE_URL/linking/${encoded(store)}")
+            .headers(accountLinkingHeaders(accessToken))
+            .delete()
+            .build()
+        val (code, text) = http.awaitText(request)
+        check(code in 200..299) { "Store disconnect failed ($code): ${text.take(240)}" }
+    }
+
     private suspend fun postGraphQl(query: String, variables: JsonObject, token: String): JsonObject {
         val body = buildJsonObject {
             put("query", query)
@@ -1714,6 +1745,13 @@ class GfnAccountConnectorRepository(
         check(code in 200..299) { "Account connectors failed ($code): ${text.take(400)}" }
         return OpenNowJson.parseToJsonElement(text).jsonObject
     }
+
+    private fun accountLinkingHeaders(accessToken: String): Headers =
+        Headers.Builder()
+            .add("Accept", "application/json")
+            .add("Authorization", bearerAuthorization(accessToken))
+            .add("User-Agent", GFN_USER_AGENT)
+            .build()
 }
 
 class PrintedWasteRepository(
