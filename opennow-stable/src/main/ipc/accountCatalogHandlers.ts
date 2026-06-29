@@ -32,7 +32,7 @@ import { fetchSubscription, fetchDynamicRegions } from "../gfn/subscription";
 import { fetchPersistentStorageLocations, resetPersistentStorage } from "../gfn/persistentStorage";
 
 interface RefreshSchedulerAuthContextUpdater {
-  updateAuthContext(token: string, userId: string, providerStreamingBaseUrl?: string): void;
+  updateAuthContext(token: string, userId: string, providerStreamingBaseUrl?: string, proxyUrl?: string): void;
 }
 
 async function resolveGamesFetchContext(
@@ -43,6 +43,7 @@ async function resolveGamesFetchContext(
   token: string;
   streamingBaseUrl: string;
   userId: string;
+  proxyUrl?: string;
 }> {
   let session = deps.authService.getSession();
   if (!session || options.networkRequired) {
@@ -57,8 +58,9 @@ async function resolveGamesFetchContext(
     payload?.providerStreamingBaseUrl ??
     deps.authService.getSelectedProvider().streamingServiceUrl;
   const userId = payload.userId ?? session.user.userId;
-  deps.refreshScheduler.updateAuthContext(token, userId, streamingBaseUrl);
-  return { token, streamingBaseUrl, userId };
+  const proxyUrl = payload.proxyUrl;
+  deps.refreshScheduler.updateAuthContext(token, userId, streamingBaseUrl, proxyUrl);
+  return { token, streamingBaseUrl, userId, proxyUrl };
 }
 
 function savedSessionTokens(
@@ -244,24 +246,24 @@ export function registerAccountCatalogIpcHandlers(
   ipcMain.handle(
     IPC_CHANNELS.GAMES_FETCH_MAIN,
     async (_event, payload: GamesFetchRequest) => {
-      const { token, streamingBaseUrl, userId } = await resolveGamesContext(payload);
-      return fetchMainGames(token, streamingBaseUrl, userId);
+      const { token, streamingBaseUrl, userId, proxyUrl } = await resolveGamesContext(payload);
+      return fetchMainGames(token, streamingBaseUrl, userId, proxyUrl);
     },
   );
 
   ipcMain.handle(
     IPC_CHANNELS.GAMES_FETCH_FEATURED,
     async (_event, payload: GamesFetchRequest) => {
-      const { token, streamingBaseUrl, userId } = await resolveGamesContext(payload);
-      return fetchFeaturedGames(token, streamingBaseUrl, userId);
+      const { token, streamingBaseUrl, userId, proxyUrl } = await resolveGamesContext(payload);
+      return fetchFeaturedGames(token, streamingBaseUrl, userId, proxyUrl);
     },
   );
 
   ipcMain.handle(
     IPC_CHANNELS.GAMES_FETCH_STORE_PANELS,
     async (_event, payload: GamesFetchRequest) => {
-      const { token, streamingBaseUrl, userId } = await resolveGamesContext(payload);
-      return fetchStorePanels(token, streamingBaseUrl, userId);
+      const { token, streamingBaseUrl, userId, proxyUrl } = await resolveGamesContext(payload);
+      return fetchStorePanels(token, streamingBaseUrl, userId, proxyUrl);
     },
   );
 
@@ -276,20 +278,20 @@ export function registerAccountCatalogIpcHandlers(
         const tokens = savedSessionTokens(savedSession);
         if (tokens) {
           const userId = payload.userId ?? tokens.userId;
-          const cachedLibrary = await fetchLibraryGamesFromCache(tokens.token, streamingBaseUrl, userId);
+          const cachedLibrary = await fetchLibraryGamesFromCache(tokens.token, streamingBaseUrl, userId, payload.proxyUrl);
           if (cachedLibrary) {
-            refreshScheduler.updateAuthContext(tokens.token, userId, streamingBaseUrl);
+            refreshScheduler.updateAuthContext(tokens.token, userId, streamingBaseUrl, payload.proxyUrl);
             return cachedLibrary;
           }
         }
       }
 
-      const { token, streamingBaseUrl: resolvedBaseUrl, userId } = await resolveGamesFetchContext(
+      const { token, streamingBaseUrl: resolvedBaseUrl, userId, proxyUrl } = await resolveGamesFetchContext(
         deps,
         payload,
         { networkRequired: true },
       );
-      return fetchLibraryGames(token, resolvedBaseUrl, userId);
+      return fetchLibraryGames(token, resolvedBaseUrl, userId, proxyUrl);
     },
   );
 
@@ -311,13 +313,13 @@ export function registerAccountCatalogIpcHandlers(
             providerStreamingBaseUrl: streamingBaseUrl,
           });
           if (cached) {
-            refreshScheduler.updateAuthContext(tokens.token, userId, streamingBaseUrl);
+            refreshScheduler.updateAuthContext(tokens.token, userId, streamingBaseUrl, payload.proxyUrl);
             return cached;
           }
         }
       }
 
-      const { token, streamingBaseUrl: resolvedBaseUrl, userId } = await resolveGamesFetchContext(
+      const { token, streamingBaseUrl: resolvedBaseUrl, userId, proxyUrl } = await resolveGamesFetchContext(
         deps,
         payload,
         { networkRequired: true },
@@ -327,6 +329,7 @@ export function registerAccountCatalogIpcHandlers(
         token,
         userId,
         providerStreamingBaseUrl: resolvedBaseUrl,
+        proxyUrl,
       });
     },
   );
@@ -342,7 +345,7 @@ export function registerAccountCatalogIpcHandlers(
       const streamingBaseUrl =
         payload?.providerStreamingBaseUrl ??
         authService.getSelectedProvider().streamingServiceUrl;
-      return resolveLaunchAppId(token, payload.appIdOrUuid, streamingBaseUrl);
+      return resolveLaunchAppId(token, payload.appIdOrUuid, streamingBaseUrl, payload.proxyUrl);
     },
   );
 
@@ -353,6 +356,7 @@ export function registerAccountCatalogIpcHandlers(
       return resolveStoreUrl(token, payload.appIdOrUuid, streamingBaseUrl, {
         variantId: payload.variantId,
         store: payload.store,
+        proxyUrl: payload.proxyUrl,
       });
     },
   );

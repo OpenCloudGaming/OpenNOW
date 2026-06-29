@@ -15,6 +15,12 @@ export function sessionProxyPartitionForUrl(normalizedProxyUrl: string): string 
   return partition;
 }
 
+export function sessionProxyCacheKeyPart(raw?: string): string | null {
+  const normalizedProxyUrl = normalizeSessionProxyUrl(raw);
+  if (!normalizedProxyUrl) return null;
+  return crypto.createHash("sha256").update(normalizedProxyUrl).digest("hex").slice(0, 16);
+}
+
 export function normalizeSessionProxyUrl(raw?: string): string | null {
   const trimmed = raw?.trim() ?? "";
   if (!trimmed) return null;
