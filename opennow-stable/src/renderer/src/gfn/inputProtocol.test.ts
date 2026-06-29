@@ -81,23 +81,18 @@ function assertV3BatchWrapper(bytes: Uint8Array, marker: number, lengthOffset: n
   return new DataView(bytes.buffer, bytes.byteOffset + payloadOffset, payloadSize);
 }
 
-test("maps keyboard events using layout-aware keyCode and zero scancode", () => {
+test("maps keyboard events using official code-position VKs and zero scancode", () => {
   assert.deepEqual(mapKeyboardEvent(keyboardEvent({ code: "KeyA", key: "a", keyCode: 65 })), { vk: 65, scancode: 0 });
   assert.deepEqual(mapKeyboardEvent(keyboardEvent({ code: "KeyN", key: "n", keyCode: 78 })), { vk: 78, scancode: 0 });
   assert.deepEqual(mapKeyboardEvent(keyboardEvent({ code: "KeyT", key: "t", keyCode: 84 })), { vk: 84, scancode: 0 });
 });
 
-test("prefers layout keyCode over physical code (German QWERTZ)", () => {
+test("prefers physical code over layout keyCode like the official client", () => {
   const event = keyboardEvent({ code: "KeyZ", key: "y", keyCode: 89 });
-  assert.deepEqual(mapKeyboardEvent(event), { vk: 89, scancode: 0 });
+  assert.deepEqual(mapKeyboardEvent(event), { vk: codeMap.KeyZ.vk, scancode: 0 });
 });
 
-test("maps punctuation using platform keyCode on non-US layouts", () => {
-  const event = keyboardEvent({ code: "Slash", key: "ö", keyCode: 191 });
-  assert.deepEqual(mapKeyboardEvent(event), { vk: 191, scancode: 0 });
-});
-
-test("maps OEM punctuation physically when a non-English GFN layout is selected", () => {
+test("maps German OEM punctuation physically instead of using local layout keyCode", () => {
   assert.deepEqual(
     mapKeyboardEvent(keyboardEvent({ code: "BracketLeft", key: "ü", keyCode: 186 }), "de-DE"),
     { vk: codeMap.BracketLeft.vk, scancode: 0 },
@@ -109,6 +104,10 @@ test("maps OEM punctuation physically when a non-English GFN layout is selected"
   assert.deepEqual(
     mapKeyboardEvent(keyboardEvent({ code: "Backquote", key: "^", keyCode: 220 }), "de-DE"),
     { vk: codeMap.Backquote.vk, scancode: 0 },
+  );
+  assert.deepEqual(
+    mapKeyboardEvent(keyboardEvent({ code: "Slash", key: "-", keyCode: 189 }), "de-DE"),
+    { vk: codeMap.Slash.vk, scancode: 0 },
   );
 });
 

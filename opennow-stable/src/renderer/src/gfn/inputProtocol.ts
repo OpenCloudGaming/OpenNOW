@@ -244,8 +244,8 @@ const specialVirtualKeyByCode: Record<string, number> = {
   BracketRight: 0xdd,
   Backslash: 0xdc,
   IntlBackslash: 0xe2,
-  IntlRo: 0xc1,
-  IntlYen: 0xdc,
+  IntlRo: 0xc2,
+  IntlYen: 0xc1,
   Semicolon: 0xba,
   Quote: 0xde,
   Backquote: 0xc0,
@@ -272,10 +272,19 @@ const specialVirtualKeyByCode: Record<string, number> = {
   End: 0x23,
   PageUp: 0x21,
   PageDown: 0x22,
-  PrintScreen: 0x2c,
+  PrintScreen: 0x2a,
   ScrollLock: 0x91,
   Pause: 0x13,
   ContextMenu: 0x5d,
+  OSLeft: 0x5b,
+  OSRight: 0x5c,
+  KanaMode: 0xe9,
+  Lang1: 0x15,
+  Lang2: 0x19,
+  Convert: 0xea,
+  NonConvert: 0xeb,
+  NumpadClear: 0x0c,
+  NumpadClearEntry: 0x0c,
   NumpadAdd: 0x6b,
   NumpadSubtract: 0x6d,
   NumpadMultiply: 0x6a,
@@ -285,30 +294,6 @@ const specialVirtualKeyByCode: Record<string, number> = {
   NumpadEqual: 0xbb,
   NumpadComma: 0xbc,
 };
-
-const physicalOemVirtualKeyCodes = new Set([
-  "Minus",
-  "Equal",
-  "BracketLeft",
-  "BracketRight",
-  "Backslash",
-  "IntlBackslash",
-  "IntlRo",
-  "IntlYen",
-  "Semicolon",
-  "Quote",
-  "Backquote",
-  "Comma",
-  "Period",
-  "Slash",
-]);
-
-function shouldUsePhysicalOemVirtualKey(event: KeyLike, layout?: KeyboardLayout): boolean {
-  if (!layout || layout === "en-US" || layout === "en-GB") {
-    return false;
-  }
-  return physicalOemVirtualKeyCodes.has(event.code);
-}
 
 const keyFallbackMap: Record<string, KeyMapping> = {
   Escape: { vk: 0x1b, scancode: 0x0001 },
@@ -552,11 +537,11 @@ function virtualKeyFromKeyValue(key: string): number | null {
   return null;
 }
 
-function virtualKeyFromEvent(event: KeyLike, layout?: KeyboardLayout): number | null {
-  if (shouldUsePhysicalOemVirtualKey(event, layout)) {
-    const physicalVk = defaultVirtualKeyFromCode(event.code);
-    if (physicalVk !== null) {
-      return physicalVk;
+function virtualKeyFromEvent(event: KeyLike): number | null {
+  if (event.code) {
+    const codeVk = defaultVirtualKeyFromCode(event.code);
+    if (codeVk !== null) {
+      return codeVk;
     }
   }
 
@@ -964,8 +949,8 @@ export function lockKeysStateFromEvent(event: KeyboardEvent): number {
   return state;
 }
 
-export function mapKeyboardEvent(event: KeyboardEvent, layout?: KeyboardLayout): KeyMapping | null {
-  const vk = virtualKeyFromEvent(event, layout);
+export function mapKeyboardEvent(event: KeyboardEvent, _layout?: KeyboardLayout): KeyMapping | null {
+  const vk = virtualKeyFromEvent(event);
   if (vk === null || vk === 0) {
     return null;
   }
