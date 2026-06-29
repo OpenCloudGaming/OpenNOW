@@ -35,6 +35,7 @@ const DEFAULT_LIBRARY_SORT = "variants.gfn.library.lastPlayedDate:DESC,computedV
 const LIBRARY_GAMES_CACHE_SCOPE = "library:v2";
 const CATALOG_GAMES_CACHE_SCOPE = "catalog";
 const PUBLIC_GAMES_CACHE_KEY = "games:public:v2";
+const DEFAULT_CLOUDMATCH_BASE_URL = "https://prod.cloudmatchbeta.nvidiagrid.net/";
 const LIBRARY_APPS_FILTER = {
   variants: {
     gfn: {
@@ -153,6 +154,18 @@ export function getAccountGamesCacheKeys(accountId: string, providerStreamingBas
     library: accountScopedGamesCacheKey(LIBRARY_GAMES_CACHE_SCOPE, accountId, providerStreamingBaseUrl, proxyUrl),
     catalogPrefix: getAccountCatalogGamesCachePrefix(accountId, providerStreamingBaseUrl, proxyUrl),
     public: publicGamesCacheKey(proxyUrl),
+  };
+}
+
+export function getLegacyTokenScopedAccountGamesCacheKeys(token: string, providerStreamingBaseUrl?: string, proxyUrl?: string): {
+  main: string;
+  library: string;
+  catalogPrefix: string;
+} {
+  return {
+    main: legacyTokenScopedGamesCacheKey("main", token, providerStreamingBaseUrl, proxyUrl),
+    library: legacyTokenScopedGamesCacheKey(LIBRARY_GAMES_CACHE_SCOPE, token, providerStreamingBaseUrl, proxyUrl),
+    catalogPrefix: legacyTokenScopedGamesCacheKey(CATALOG_GAMES_CACHE_SCOPE, token, providerStreamingBaseUrl, proxyUrl),
   };
 }
 
@@ -351,22 +364,24 @@ async function postGraphQl<T>(
 }
 
 async function getVpcId(token: string, providerStreamingBaseUrl?: string, proxyUrl?: string): Promise<string> {
-  const defaultBase = "https://prod.cloudmatchbeta.nvidiagrid.net/";
-  const allowedHosts = new Set([
-    "prod.cloudmatchbeta.nvidiagrid.net",
-    "img.nvidiagrid.net",
-  ]);
-
   let validatedBaseUrl: URL;
   try {
-    const candidate = new URL(providerStreamingBaseUrl?.trim() || defaultBase);
-    if (candidate.protocol !== "https:" || !allowedHosts.has(candidate.hostname)) {
-      validatedBaseUrl = new URL(defaultBase);
+    const candidate = new URL(providerStreamingBaseUrl?.trim() || DEFAULT_CLOUDMATCH_BASE_URL);
+    const hostname = candidate.hostname.toLowerCase();
+    if (
+      candidate.protocol !== "https:" ||
+      (
+        hostname !== "prod.cloudmatchbeta.nvidiagrid.net" &&
+        hostname !== "img.nvidiagrid.net" &&
+        !hostname.endsWith(".geforcenow.nvidiagrid.net")
+      )
+    ) {
+      validatedBaseUrl = new URL(DEFAULT_CLOUDMATCH_BASE_URL);
     } else {
       validatedBaseUrl = candidate;
     }
   } catch {
-    validatedBaseUrl = new URL(defaultBase);
+    validatedBaseUrl = new URL(DEFAULT_CLOUDMATCH_BASE_URL);
   }
 
   const serverInfoUrl = new URL("v2/serverInfo", validatedBaseUrl);
