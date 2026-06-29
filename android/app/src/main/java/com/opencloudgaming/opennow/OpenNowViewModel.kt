@@ -376,6 +376,9 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                     authSession = nextSession,
                     selectedProvider = nextSession?.provider ?: it.selectedProvider,
                     savedAccounts = authStore.state.value.sessions.map { saved -> saved.toSavedAccount() },
+                    subscriptionInfo = null,
+                    accountConnectors = emptyList(),
+                    loadingAccountConnectors = false,
                     games = emptyList(),
                     libraryGames = emptyList(),
                     libraryFilterIds = emptyList(),
@@ -618,7 +621,8 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     fun refreshAccountConnectors() {
         val session = state.value.authSession ?: return
         viewModelScope.launch {
-            val token = authRepository.restore(forceRefresh = false)?.tokens?.accessToken ?: session.tokens.accessToken
+            val token = authRepository.restore(forceRefresh = false)?.tokens?.let { it.idToken ?: it.accessToken }
+                ?: (session.tokens.idToken ?: session.tokens.accessToken)
             _state.update { it.copy(loadingAccountConnectors = true) }
             runCatching { accountConnectorRepository.fetchConnectors(token) }
                 .onSuccess { connectors ->

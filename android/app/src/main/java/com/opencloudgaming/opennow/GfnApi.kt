@@ -1506,7 +1506,7 @@ class GfnSubscriptionRepository(
         val subscription = data.obj("subscription") ?: data
         val storageAddon = subscription.arr("addons")
             ?.mapNotNull { it.asObject() }
-            ?.firstOrNull { it.string("type") == STORAGE_ADDON_TYPE }
+            ?.firstOrNull(::isActivePersistentStorageAddon)
             ?.let(::parseStorageAddon)
         return SubscriptionInfo(
             membershipTier = data.string("membershipTier") ?: "FREE",
@@ -1546,6 +1546,11 @@ class GfnSubscriptionRepository(
             autoPayEnabled = addon.boolean("autoPayEnabled"),
         )
     }
+
+    private fun isActivePersistentStorageAddon(addon: JsonObject): Boolean =
+        addon.string("type") == STORAGE_ADDON_TYPE &&
+            addon.string("subType") == "PERMANENT_STORAGE" &&
+            addon.string("status") == "OK"
 }
 
 class GfnAccountConnectorRepository(
