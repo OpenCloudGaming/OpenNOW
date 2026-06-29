@@ -12,6 +12,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -108,6 +109,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     private val sessionRepository = GfnSessionRepository(authStore, http)
     private val appUpdater = AndroidAppUpdater(application, http)
     private val queueAdReportMutex = Mutex()
+    private val accountConnectorRefreshMutex = Mutex()
     private val debugEventsLock = Any()
     private val debugEvents = ArrayDeque<DebugLogEvent>()
 
@@ -625,6 +627,12 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     fun refreshAccountConnectors() {
         val session = state.value.authSession ?: return
         viewModelScope.launch {
+            refreshAccountConnectors(session)
+        }
+    }
+
+    private suspend fun refreshAccountConnectors(session: AuthSession) {
+        accountConnectorRefreshMutex.withLock {
             val token = authRepository.restore(forceRefresh = false)?.tokens?.let { it.idToken ?: it.accessToken }
                 ?: (session.tokens.idToken ?: session.tokens.accessToken)
             _state.update { it.copy(loadingAccountConnectors = true) }
@@ -644,7 +652,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         viewModelScope.launch {
             val token = authRepository.restore(forceRefresh = false)?.tokens?.accessToken ?: session.tokens.accessToken
             _state.update { it.copy(connectorActionStore = store, error = null) }
-            runCatching { accountConnectorRepository.loginUrl(store, token) }
+            runCatching { withTimeout(20_000L) { accountConnectorRepository.loginUrl(store, token) } }
                 .onSuccess { url ->
                     _state.update { it.copy(connectorActionStore = null) }
                     openUrl(url)
@@ -661,7 +669,8 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         viewModelScope.launch {
             repeat(6) { attempt ->
                 delay(if (attempt == 0) 5_000L else 10_000L)
-                refreshAccountConnectors()
+                val session = state.value.authSession ?: return@launch
+                refreshAccountConnectors(session)
             }
         }
     }
