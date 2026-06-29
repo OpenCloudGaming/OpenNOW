@@ -50,7 +50,11 @@ export async function fetchAllAppsPages<T>(
     endCursor = apps?.pageInfo?.endCursor ?? "";
     totalCount = apps?.pageInfo?.totalCount ?? totalCount;
 
-    if (!hasNextPage || !endCursor) {
+    if (hasNextPage && !endCursor) {
+      throw new Error("GFN apps pagination returned hasNextPage without endCursor");
+    }
+
+    if (!hasNextPage) {
       return {
         items,
         numberReturned,

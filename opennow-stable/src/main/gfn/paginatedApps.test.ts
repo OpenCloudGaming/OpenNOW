@@ -61,3 +61,21 @@ test("fetchAllAppsPages fails instead of silently truncating at the page cap", a
     /exceeded 1 pages/,
   );
 });
+
+test("fetchAllAppsPages fails when a next page has no cursor", async () => {
+  await assert.rejects(
+    fetchAllAppsPages(
+      async () => ({
+        data: {
+          apps: {
+            numberReturned: 40,
+            pageInfo: { hasNextPage: true, endCursor: "", totalCount: 80 },
+            items: Array.from({ length: 40 }, (_, index) => index),
+          },
+        },
+      }),
+      { maxPages: 5 },
+    ),
+    /hasNextPage without endCursor/,
+  );
+});
