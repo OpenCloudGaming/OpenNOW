@@ -23,6 +23,7 @@ import type {
   NativeStreamerStatus,
   NativeVideoBackendCapability,
   NativeVideoBackendPreference,
+  GameAccountConnection,
 } from "@shared/gfn";
 import {
   createUnsupportedNativeStreamerStatus,
@@ -66,6 +67,7 @@ type SettingsNavGroup = {
 
 type ThanksLoadState = "idle" | "loading" | "loaded" | "error";
 type StorageResetState = "idle" | "resetting" | "success" | "error";
+type GameAccountBusyAction = "link" | "unlink" | "resync";
 
 type SettingsSectionId = "account" | "stream" | "native-streamer" | "game" | "audio" | "input" | "interface" | "about" | "thanks";
 type SettingsSearchScopeId =
@@ -91,6 +93,18 @@ const SETTINGS_SCOPE_SEARCH_TERMS: Record<SettingsSearchScopeId, readonly string
     "install to play",
     "reset storage",
     "storage reset",
+    "connections",
+    "connected accounts",
+    "game accounts",
+    "link accounts",
+    "unlink accounts",
+    "sync library",
+    "steam",
+    "epic",
+    "ubisoft",
+    "battle.net",
+    "xbox",
+    "gaijin",
     "region",
     "data",
     "games",
@@ -627,6 +641,13 @@ function getUpdaterBadgeLabel(state: AppUpdaterState): string {
   }
 }
 
+function formatGameAccountSyncDate(value: string | undefined): string | null {
+  if (!value) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  return date.toLocaleString();
+}
+
 function saveCachedEntitledResolutions(cache: EntitledResolutionsCache): void {
   try {
     window.sessionStorage.setItem(ENTITLED_RESOLUTIONS_STORAGE_KEY, JSON.stringify(cache));
@@ -780,6 +801,14 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
   const [selectedStorageRegion, setSelectedStorageRegion] = useState<string | null>(null);
   const [storageResetState, setStorageResetState] = useState<StorageResetState>("idle");
   const [storageResetMessage, setStorageResetMessage] = useState<string | null>(null);
+  const [gameAccounts, setGameAccounts] = useState<GameAccountConnection[]>([]);
+  const [gameAccountsLoading, setGameAccountsLoading] = useState(true);
+  const [gameAccountsError, setGameAccountsError] = useState<string | null>(null);
+  const [gameAccountStatusMessage, setGameAccountStatusMessage] = useState<string | null>(null);
+  const [gameAccountBusy, setGameAccountBusy] = useState<{
+    provider: string;
+    action: GameAccountBusyAction;
+  } | null>(null);
 
   useEffect(() => {
     setToggleStatsInput(settings.shortcutToggleStats);
@@ -957,6 +986,33 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
     return () => { cancelled = true; };
   }, [loadSubscriptionData]);
 
+  const loadGameAccounts = useCallback(async (isCancelled: () => boolean = () => false): Promise<void> => {
+    setGameAccountsLoading(true);
+    setGameAccountsError(null);
+    setGameAccountStatusMessage(null);
+
+    try {
+      const result = await window.openNow.fetchGameAccountConnections();
+      if (!isCancelled()) {
+        setGameAccounts(result.accounts);
+      }
+    } catch (error) {
+      console.warn("[Settings] Failed to fetch game account connections:", error);
+      if (!isCancelled()) {
+        setGameAccounts([]);
+        setGameAccountsError(
+          error instanceof Error && error.message.includes("No authenticated session")
+            ? t("settings.accountConnections.signInRequired")
+            : t("settings.accountConnections.loadFailed"),
+        );
+      }
+    } finally {
+      if (!isCancelled()) {
+        setGameAccountsLoading(false);
+      }
+    }
+  }, [t]);
+
   const hasDynamic = entitledResolutions.length > 0;
 
   // Grouped resolution presets (dynamic)
@@ -1076,6 +1132,54 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
       );
     }
   }, [loadSubscriptionData, persistentStorage, selectedStorageRegion, storageResetState, storageResetTargetLabel, t]);
+
+  const handleGameAccountAction = useCallback(async (
+    account: GameAccountConnection,
+    action: GameAccountBusyAction,
+  ): Promise<void> => {
+    if (gameAccountBusy) {
+      return;
+    }
+
+    if (
+      action === "unlink" &&
+      !window.confirm(t("settings.accountConnections.unlinkConfirm", { provider: account.label }))
+    ) {
+      return;
+    }
+
+    setGameAccountBusy({ provider: account.provider, action });
+    setGameAccountStatusMessage(null);
+    setGameAccountsError(null);
+
+    try {
+      const payload = { provider: account.provider };
+      const result =
+        action === "link"
+          ? await window.openNow.linkGameAccount(payload)
+          : action === "unlink"
+            ? await window.openNow.unlinkGameAccount(payload)
+            : await window.openNow.resyncGameAccount(payload);
+      setGameAccounts(result.accounts);
+      setGameAccountStatusMessage(
+        result.message ??
+        (action === "link"
+          ? t("settings.accountConnections.linkSuccess", { provider: account.label })
+          : action === "unlink"
+            ? t("settings.accountConnections.unlinkSuccess", { provider: account.label })
+            : t("settings.accountConnections.resyncSuccess", { provider: account.label })),
+      );
+    } catch (error) {
+      console.error(`[Settings] Game account ${action} failed:`, error);
+      setGameAccountsError(
+        error instanceof Error && error.message
+          ? error.message
+          : t("settings.accountConnections.actionFailed"),
+      );
+    } finally {
+      setGameAccountBusy(null);
+    }
+  }, [gameAccountBusy, t]);
 
   const selectedResolutionLabel = useMemo(() => {
     if (hasDynamic) {
@@ -1798,6 +1902,116 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
     setThanksLoadState("idle");
   }, []);
 
+  const renderGameAccountCard = useCallback((account: GameAccountConnection) => {
+    const busyAction = gameAccountBusy?.provider === account.provider ? gameAccountBusy.action : null;
+    const isBusy = Boolean(gameAccountBusy);
+    const syncDateLabel = formatGameAccountSyncDate(account.syncDate);
+    const statusLabel =
+      account.status === "expired"
+        ? t("settings.accountConnections.statusExpired")
+        : account.status === "sync_error"
+          ? t("settings.accountConnections.statusSyncError")
+          : account.isConnected
+            ? t("settings.accountConnections.statusConnected")
+            : t("settings.accountConnections.statusNotConnected");
+    const statusClass =
+      account.status === "expired" || account.status === "sync_error"
+        ? "settings-inline-badge--updater-error"
+        : account.isConnected
+          ? "settings-inline-badge--codec-gpu"
+          : "settings-inline-badge--codec-testing";
+    const primaryAction: GameAccountBusyAction =
+      account.isConnected && account.status !== "expired" ? "unlink" : "link";
+    const primaryLabel =
+      primaryAction === "unlink"
+        ? t("settings.accountConnections.unlink")
+        : account.status === "expired"
+          ? t("settings.accountConnections.reconnect")
+          : t("settings.accountConnections.connect");
+    const primaryIcon =
+      primaryAction === "unlink"
+        ? <Trash2 size={15} />
+        : <ExternalLink size={15} />;
+
+    return (
+      <div key={account.provider} className="settings-game-account-card">
+        <div className="settings-game-account-main">
+          <div className="settings-game-account-icon">
+            {account.iconUrl ? (
+              <img src={account.iconUrl} alt="" loading="lazy" />
+            ) : (
+              <Users size={18} />
+            )}
+          </div>
+          <div className="settings-game-account-copy">
+            <div className="settings-game-account-title-row">
+              <h3>{account.label}</h3>
+              <span className={`settings-inline-badge settings-inline-badge--codec ${statusClass}`}>
+                {statusLabel}
+              </span>
+            </div>
+            <p>
+              {account.isConnected
+                ? account.displayName || t("settings.accountConnections.connectedAccount")
+                : t("settings.accountConnections.notConnectedDescription")}
+            </p>
+            <div className="settings-game-account-features">
+              {account.supportsLinking && <span>{t("settings.accountConnections.ssoSupported")}</span>}
+              {account.supportsSync && <span>{t("settings.accountConnections.syncSupported")}</span>}
+              {account.isRequired && <span>{t("settings.accountConnections.requiredForSomeGames")}</span>}
+            </div>
+            {account.supportsSync && account.isConnected ? (
+              <p className="settings-game-account-sync">
+                {account.syncState === "SYNC_SUCCESS"
+                  ? t("settings.accountConnections.syncSummary", {
+                    count: account.syncedGames,
+                    date: syncDateLabel ?? t("settings.accountConnections.recently"),
+                  })
+                  : t("settings.accountConnections.syncState", {
+                    state: account.syncState ?? t("settings.accountConnections.syncUnknown"),
+                  })}
+              </p>
+            ) : null}
+          </div>
+        </div>
+        <div className="settings-game-account-actions">
+          {account.supportsSync && account.isConnected ? (
+            <button
+              type="button"
+              className="settings-chip settings-game-account-action"
+              disabled={isBusy}
+              onClick={() => {
+                void handleGameAccountAction(account, "resync");
+              }}
+            >
+              {busyAction === "resync" ? <Loader size={15} className="spin" /> : <RefreshCcw size={15} />}
+              {busyAction === "resync"
+                ? t("settings.accountConnections.resyncing")
+                : t("settings.accountConnections.resync")}
+            </button>
+          ) : null}
+          <button
+            type="button"
+            className={`settings-game-account-action ${
+              primaryAction === "unlink" ? "settings-delete-cache-btn" : "settings-chip"
+            }`}
+            disabled={isBusy}
+            onClick={() => {
+              void handleGameAccountAction(account, primaryAction);
+            }}
+          >
+            {busyAction === primaryAction ? <Loader size={15} className="spin" /> : primaryIcon}
+            {busyAction === primaryAction
+              ? primaryAction === "unlink"
+                ? t("settings.accountConnections.unlinking")
+                : t("settings.accountConnections.connecting")
+              : primaryLabel}
+          </button>
+        </div>
+      </div>
+    );
+  }, [gameAccountBusy, handleGameAccountAction, t]);
+
   const renderContributorCard = useCallback((contributor: ThankYouContributor) => {
     return renderPersonLink(
       contributor,
@@ -1977,6 +2191,16 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
   const hasAnySearchMatches = showAccount || showStream || showNativeStreamer || showGame || showAudio || showInput || showInterface || showAbout || showThanks;
   const shouldRenderSettingsSections = showAll || activeSection !== "thanks";
 
+  useEffect(() => {
+    if (!showAccount) {
+      return;
+    }
+
+    let cancelled = false;
+    void loadGameAccounts(() => cancelled);
+    return () => { cancelled = true; };
+  }, [loadGameAccounts, showAccount]);
+
   const settingsNavGroups = useMemo<SettingsNavGroup[]>(() => [
     {
       label: "Account",
@@ -2101,6 +2325,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
             {shouldRenderSettingsSections && (
               <>
             {showAccount && (
+              <>
               <section className="settings-section settings-storage-section">
                 {showAll && <div className="settings-section-context">{t("settings.sections.account")}</div>}
                 <div className="settings-section-header settings-section-header--with-copy">
@@ -2230,6 +2455,57 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                   </div>
                 </div>
               </section>
+              <section className="settings-section settings-game-accounts-section">
+                {showAll && <div className="settings-section-context">{t("settings.sections.account")}</div>}
+                <div className="settings-section-header settings-section-header--with-copy settings-game-accounts-header">
+                  <Users size={18} />
+                  <div>
+                    <h2>{t("settings.accountConnections.title")}</h2>
+                    <p className="settings-section-subtitle">{t("settings.accountConnections.description")}</p>
+                  </div>
+                  <button
+                    type="button"
+                    className="settings-chip settings-game-account-refresh"
+                    disabled={gameAccountsLoading || Boolean(gameAccountBusy)}
+                    onClick={() => {
+                      void loadGameAccounts();
+                    }}
+                  >
+                    {gameAccountsLoading ? <Loader size={15} className="spin" /> : <RefreshCcw size={15} />}
+                    {t("settings.accountConnections.refresh")}
+                  </button>
+                </div>
+                <div className="settings-game-accounts-card">
+                  {gameAccountsError ? (
+                    <div className="settings-game-account-state settings-game-account-state--error">
+                      <AlertTriangle size={16} />
+                      <span>{gameAccountsError}</span>
+                    </div>
+                  ) : null}
+                  {gameAccountStatusMessage ? (
+                    <div className="settings-game-account-state settings-game-account-state--success">
+                      <Check size={16} />
+                      <span>{gameAccountStatusMessage}</span>
+                    </div>
+                  ) : null}
+                  {gameAccountsLoading ? (
+                    <div className="settings-game-account-state settings-game-account-state--muted">
+                      <Loader size={16} className="spin" />
+                      <span>{t("settings.accountConnections.loading")}</span>
+                    </div>
+                  ) : gameAccounts.length > 0 ? (
+                    <div className="settings-game-account-grid">
+                      {gameAccounts.map((account) => renderGameAccountCard(account))}
+                    </div>
+                  ) : (
+                    <div className="settings-game-account-state settings-game-account-state--muted">
+                      <Users size={16} />
+                      <span>{t("settings.accountConnections.empty")}</span>
+                    </div>
+                  )}
+                </div>
+              </section>
+              </>
             )}
             {/* ═══ STREAM ════════════════════════════════════ */}
             {showStream && (

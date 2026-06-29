@@ -589,6 +589,42 @@ export interface PersistentStorageLocationsResult {
   currentRegionName?: string;
 }
 
+export type GameAccountConnectionStatus = "not_connected" | "connected" | "expired" | "sync_error";
+
+export interface GameAccountConnection {
+  provider: string;
+  label: string;
+  sortOrder: number;
+  iconUrl?: string;
+  supportsLinking: boolean;
+  supportsSync: boolean;
+  isRequired: boolean;
+  isConnected: boolean;
+  status: GameAccountConnectionStatus;
+  displayName?: string;
+  userIdentifier?: string;
+  expiresIn?: string;
+  expiresAt?: number;
+  syncState?: string;
+  syncDate?: string;
+  syncedGames: number;
+}
+
+export interface GameAccountConnectionsResult {
+  accounts: GameAccountConnection[];
+  fetchedAt: number;
+}
+
+export interface GameAccountOperationRequest {
+  provider: string;
+}
+
+export interface GameAccountOperationResult extends GameAccountConnectionsResult {
+  ok: true;
+  account?: GameAccountConnection;
+  message?: string;
+}
+
 export interface GameVariant {
   id: string;
   store: string;
@@ -1169,6 +1205,10 @@ export interface OpenNowApi {
   fetchSubscription(input: SubscriptionFetchRequest): Promise<SubscriptionInfo>;
   fetchPersistentStorageLocations(input?: PersistentStorageLocationsFetchRequest): Promise<PersistentStorageLocationsResult>;
   resetPersistentStorage(input?: PersistentStorageResetRequest): Promise<PersistentStorageResetResult>;
+  fetchGameAccountConnections(): Promise<GameAccountConnectionsResult>;
+  linkGameAccount(input: GameAccountOperationRequest): Promise<GameAccountOperationResult>;
+  unlinkGameAccount(input: GameAccountOperationRequest): Promise<GameAccountOperationResult>;
+  resyncGameAccount(input: GameAccountOperationRequest): Promise<GameAccountOperationResult>;
   fetchMainGames(input: GamesFetchRequest): Promise<GameInfo[]>;
   fetchStorePanels(input: GamesFetchRequest): Promise<GamePanelResult[]>;
   fetchFeaturedGames(input: GamesFetchRequest): Promise<GameInfo[]>;

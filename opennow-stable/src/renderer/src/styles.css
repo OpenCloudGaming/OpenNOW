@@ -4698,6 +4698,181 @@ button.game-card-store-chip.owned.active:hover {
   }
 }
 
+.settings-game-accounts-section {
+  overflow: hidden;
+}
+
+.settings-game-accounts-header {
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.settings-game-accounts-header > div {
+  flex: 1 1 auto;
+}
+
+.settings-game-account-refresh {
+  flex: 0 0 auto;
+  margin-left: auto;
+}
+
+.settings-game-accounts-card {
+  margin: 0 18px 18px;
+  padding: 14px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(255, 255, 255, 0.025);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.settings-game-account-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 10px;
+}
+
+.settings-game-account-card {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 14px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.055);
+  background: rgba(0, 0, 0, 0.12);
+}
+
+.settings-game-account-main {
+  display: flex;
+  min-width: 0;
+  gap: 12px;
+}
+
+.settings-game-account-icon {
+  width: 34px;
+  height: 34px;
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--ink-muted);
+}
+
+.settings-game-account-icon img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.settings-game-account-copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.settings-game-account-title-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.settings-game-account-title-row h3 {
+  margin: 0;
+  color: var(--ink);
+  font-size: 0.94rem;
+  font-weight: 700;
+}
+
+.settings-game-account-copy p {
+  margin: 0;
+  color: var(--ink-muted);
+  font-size: 0.8rem;
+  line-height: 1.4;
+}
+
+.settings-game-account-features {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.settings-game-account-features span {
+  padding: 3px 7px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.055);
+  color: var(--ink-muted);
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+.settings-game-account-sync {
+  color: var(--ink-soft);
+}
+
+.settings-game-account-actions {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+}
+
+.settings-game-account-action {
+  justify-content: center;
+}
+
+.settings-game-account-state {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 38px;
+  padding: 10px 12px;
+  border-radius: 6px;
+  font-size: 0.82rem;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.settings-game-account-state--muted {
+  color: var(--ink-muted);
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.settings-game-account-state--success {
+  color: var(--accent);
+  background: rgba(var(--accent-rgb), 0.08);
+  border: 1px solid rgba(var(--accent-rgb), 0.15);
+}
+
+.settings-game-account-state--error {
+  color: #fca5a5;
+  background: rgba(248, 113, 113, 0.08);
+  border: 1px solid rgba(248, 113, 113, 0.16);
+}
+
+@media (max-width: 820px) {
+  .settings-game-accounts-header,
+  .settings-game-account-card {
+    flex-direction: column;
+  }
+
+  .settings-game-account-refresh,
+  .settings-game-account-actions,
+  .settings-game-account-actions > button {
+    width: 100%;
+  }
+}
+
 .native-streamer-warning {
   position: fixed;
   inset: 0;
@@ -5084,10 +5259,15 @@ button.game-card-store-chip.owned.active:hover {
   white-space: nowrap;
 }
 
-.settings-chip:hover {
+.settings-chip:hover:not(:disabled) {
   background: var(--panel-border-solid);
   color: var(--ink-soft);
   border-color: var(--panel-border-solid);
+}
+
+.settings-chip:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
 }
 
 .settings-chip.active {

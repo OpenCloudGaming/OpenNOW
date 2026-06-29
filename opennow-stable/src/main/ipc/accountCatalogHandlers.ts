@@ -14,6 +14,7 @@ import type {
   SubscriptionFetchRequest,
   PersistentStorageLocationsFetchRequest,
   PersistentStorageResetRequest,
+  GameAccountOperationRequest,
 } from "@shared/gfn";
 import type { AuthService } from "../gfn/auth";
 import {
@@ -30,6 +31,12 @@ import {
 } from "../gfn/games";
 import { fetchSubscription, fetchDynamicRegions } from "../gfn/subscription";
 import { fetchPersistentStorageLocations, resetPersistentStorage } from "../gfn/persistentStorage";
+import {
+  fetchGameAccountConnections,
+  linkGameAccount,
+  resyncGameAccount,
+  unlinkGameAccount,
+} from "../gfn/accountConnections";
 
 interface RefreshSchedulerAuthContextUpdater {
   updateAuthContext(token: string, userId: string, providerStreamingBaseUrl?: string, proxyUrl?: string): void;
@@ -240,6 +247,43 @@ export function registerAccountCatalogIpcHandlers(
       });
       authService.clearSubscriptionCache();
       return result;
+    },
+  );
+
+  const ensureGameAccountSession = async () => {
+    const session = await authService.ensureValidSession();
+    if (!session) {
+      throw new Error("No authenticated session available");
+    }
+    return session;
+  };
+
+  ipcMain.handle(IPC_CHANNELS.GAME_ACCOUNTS_FETCH, async () => {
+    const session = await ensureGameAccountSession();
+    return fetchGameAccountConnections(session);
+  });
+
+  ipcMain.handle(
+    IPC_CHANNELS.GAME_ACCOUNT_LINK,
+    async (_event, payload: GameAccountOperationRequest) => {
+      const session = await ensureGameAccountSession();
+      return linkGameAccount(session, payload.provider);
+    },
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.GAME_ACCOUNT_UNLINK,
+    async (_event, payload: GameAccountOperationRequest) => {
+      const session = await ensureGameAccountSession();
+      return unlinkGameAccount(session, payload.provider);
+    },
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.GAME_ACCOUNT_RESYNC,
+    async (_event, payload: GameAccountOperationRequest) => {
+      const session = await ensureGameAccountSession();
+      return resyncGameAccount(session, payload.provider);
     },
   );
 

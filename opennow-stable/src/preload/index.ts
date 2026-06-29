@@ -48,6 +48,9 @@ import type {
   AppUpdaterState,
   PersistentStorageLocationsFetchRequest,
   PersistentStorageResetRequest,
+  GameAccountOperationRequest,
+  GameAccountConnectionsResult,
+  GameAccountOperationResult,
 } from "@shared/gfn";
 import { parseSerializedSessionErrorTransport } from "@shared/sessionError";
 
@@ -93,6 +96,14 @@ const api: OpenNowApi = {
     ipcRenderer.invoke(IPC_CHANNELS.PERSISTENT_STORAGE_LOCATIONS_FETCH, input),
   resetPersistentStorage: (input: PersistentStorageResetRequest = {}) =>
     ipcRenderer.invoke(IPC_CHANNELS.PERSISTENT_STORAGE_RESET, input),
+  fetchGameAccountConnections: (): Promise<GameAccountConnectionsResult> =>
+    ipcRenderer.invoke(IPC_CHANNELS.GAME_ACCOUNTS_FETCH),
+  linkGameAccount: (input: GameAccountOperationRequest): Promise<GameAccountOperationResult> =>
+    ipcRenderer.invoke(IPC_CHANNELS.GAME_ACCOUNT_LINK, input),
+  unlinkGameAccount: (input: GameAccountOperationRequest): Promise<GameAccountOperationResult> =>
+    ipcRenderer.invoke(IPC_CHANNELS.GAME_ACCOUNT_UNLINK, input),
+  resyncGameAccount: (input: GameAccountOperationRequest): Promise<GameAccountOperationResult> =>
+    ipcRenderer.invoke(IPC_CHANNELS.GAME_ACCOUNT_RESYNC, input),
   fetchMainGames: (input: GamesFetchRequest) => ipcRenderer.invoke(IPC_CHANNELS.GAMES_FETCH_MAIN, input),
   fetchStorePanels: (input: GamesFetchRequest) => ipcRenderer.invoke(IPC_CHANNELS.GAMES_FETCH_STORE_PANELS, input),
   fetchFeaturedGames: (input: GamesFetchRequest) => ipcRenderer.invoke(IPC_CHANNELS.GAMES_FETCH_FEATURED, input),
