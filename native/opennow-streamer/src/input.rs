@@ -281,7 +281,7 @@ pub(crate) fn layout_mapped_keyboard_keycode(fallback_keycode: u16, physical_sca
         0x0042 => 0x77,
         0x0043 => 0x78,
         0x0044 => 0x79,
-        0x0045 => 0x13,
+        0x0045 => fallback_keycode,
         0x0046 => 0x91,
         0x0047 => 0x67,
         0x0048 => 0x68,
@@ -301,7 +301,10 @@ pub(crate) fn layout_mapped_keyboard_keycode(fallback_keycode: u16, physical_sca
         0x0058 => 0x7B,
         0x0059 => 0xBB,
         0x0064 => 0x7C,
+        0x0070 => 0xE9,
         0x0073 => 0xC2,
+        0x0079 => 0xEA,
+        0x007B => 0xEB,
         0x007D => 0xC1,
         0x007E => 0xBC,
         0xE01C => 0x0D,
@@ -592,6 +595,11 @@ mod tests {
         assert_eq!(layout_mapped_keyboard_keycode(0x00dc, 0x0029), 0x00c0);
         assert_eq!(layout_mapped_keyboard_keycode(0x00bd, 0x0035), 0x00bf);
         assert_eq!(layout_mapped_keyboard_keycode(0x0010, 0x0036), 0x00a1);
+        assert_eq!(layout_mapped_keyboard_keycode(0x0090, 0x0045), 0x0090);
+        assert_eq!(layout_mapped_keyboard_keycode(0x0013, 0x0045), 0x0013);
+        assert_eq!(layout_mapped_keyboard_keycode(0x00f2, 0x0070), 0x00e9);
+        assert_eq!(layout_mapped_keyboard_keycode(0x001c, 0x0079), 0x00ea);
+        assert_eq!(layout_mapped_keyboard_keycode(0x001d, 0x007b), 0x00eb);
         assert_eq!(layout_mapped_keyboard_keycode(0x1234, 0xffff), 0x1234);
     }
 }
