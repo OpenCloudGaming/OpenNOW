@@ -427,6 +427,9 @@ data class StorageAddon(
     val usedGb: Double? = null,
     val regionName: String? = null,
     val regionCode: String? = null,
+    val status: String? = null,
+    val subType: String? = null,
+    val autoPayEnabled: Boolean? = null,
 )
 
 @Serializable
@@ -446,6 +449,23 @@ data class SubscriptionInfo(
     val storageAddon: StorageAddon? = null,
     val entitledResolutions: List<EntitledResolution> = emptyList(),
 )
+
+@Serializable
+data class AccountConnector(
+    val store: String,
+    val label: String,
+    val supported: Boolean = true,
+    val required: Boolean = false,
+    val userDisplayName: String? = null,
+    val userIdentifier: String? = null,
+    val expiresInSeconds: Long? = null,
+    val syncedGameCount: Int? = null,
+    val syncState: String? = null,
+    val syncDate: String? = null,
+)
+
+val AccountConnector.isLinked: Boolean
+    get() = !userDisplayName.isNullOrBlank() || !userIdentifier.isNullOrBlank()
 
 @Serializable
 data class GameVariant(
