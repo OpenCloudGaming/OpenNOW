@@ -15,15 +15,6 @@ interface GameCardProps {
   onSelectStore?: (variantId: string) => void;
 }
 
-interface StoreOption {
-  store: string;
-  storeKey: string;
-  variantId: string;
-  displayName: string;
-  isOwned: boolean;
-  isActive: boolean;
-}
-
 /* ── Official store brand icons (Simple Icons / MDI, viewBox 0 0 24 24) ── */
 
 function SteamIcon(): JSX.Element {

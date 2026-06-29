@@ -226,27 +226,10 @@ interface AppResolution {
   preferredVariantId?: string;
   selectedVariantIndex: number;
   lastPlayed?: string;
-  const defaultBase = "https://prod.cloudmatchbeta.nvidiagrid.net/";
-  const allowedHosts = new Set([
-    "prod.cloudmatchbeta.nvidiagrid.net",
-    "img.nvidiagrid.net",
-  ]);
+  isInLibrary: boolean;
+}
 
-  let validatedBaseUrl: URL;
-  try {
-    const candidate = new URL((providerStreamingBaseUrl?.trim() || defaultBase));
-    if (candidate.protocol !== "https:" || !allowedHosts.has(candidate.hostname)) {
-      validatedBaseUrl = new URL(defaultBase);
-    } else {
-      validatedBaseUrl = candidate;
-    }
-  } catch {
-    validatedBaseUrl = new URL(defaultBase);
-  }
-
-  const serverInfoUrl = new URL("v2/serverInfo", validatedBaseUrl);
-
-  const response = await fetch(serverInfoUrl.toString(), {
+interface CatalogDefinitions {
   filterGroups: CatalogFilterGroup[];
   sortOptions: CatalogSortOption[];
   filterPayloadById: Record<string, unknown>;
@@ -311,10 +294,27 @@ async function postGraphQl<T>(query: string, variables: Record<string, unknown>,
 }
 
 async function getVpcId(token: string, providerStreamingBaseUrl?: string): Promise<string> {
-  const base = providerStreamingBaseUrl?.trim() || "https://prod.cloudmatchbeta.nvidiagrid.net/";
-  const normalizedBase = base.endsWith("/") ? base : `${base}/`;
+  const defaultBase = "https://prod.cloudmatchbeta.nvidiagrid.net/";
+  const allowedHosts = new Set([
+    "prod.cloudmatchbeta.nvidiagrid.net",
+    "img.nvidiagrid.net",
+  ]);
 
-  const response = await fetch(`${normalizedBase}v2/serverInfo`, {
+  let validatedBaseUrl: URL;
+  try {
+    const candidate = new URL(providerStreamingBaseUrl?.trim() || defaultBase);
+    if (candidate.protocol !== "https:" || !allowedHosts.has(candidate.hostname)) {
+      validatedBaseUrl = new URL(defaultBase);
+    } else {
+      validatedBaseUrl = candidate;
+    }
+  } catch {
+    validatedBaseUrl = new URL(defaultBase);
+  }
+
+  const serverInfoUrl = new URL("v2/serverInfo", validatedBaseUrl);
+
+  const response = await fetch(serverInfoUrl.toString(), {
     headers: buildGfnLcarsHeaders({
       token,
       clientType: "NATIVE",

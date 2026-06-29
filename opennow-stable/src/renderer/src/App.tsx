@@ -4144,7 +4144,7 @@ export function App(): JSX.Element {
                 controllerMode={settings.controllerMode}
                 storePanels={storePanels}
                 storeHeroGames={featuredGames}
-                activeSessionAppIds={navbarActiveSession ? [navbarActiveSession.appId] : []}
+                activeSessionAppIds={activeSessionAppIds}
                 onBuyGame={handleBuyGame}
                 onPreviousControllerPage={() => navigateControllerPage(-1)}
                 onNextControllerPage={() => navigateControllerPage(1)}
@@ -4168,7 +4168,7 @@ export function App(): JSX.Element {
                 onSortChange={setCatalogSelectedSortId}
                 controllerMode={settings.controllerMode}
                 featuredGames={featuredGames.length > 0 ? featuredGames : games}
-                activeSessionAppIds={navbarActiveSession ? [navbarActiveSession.appId] : []}
+                activeSessionAppIds={activeSessionAppIds}
                 onBuyGame={handleBuyGame}
                 onPreviousControllerPage={() => navigateControllerPage(-1)}
                 onNextControllerPage={() => navigateControllerPage(1)}

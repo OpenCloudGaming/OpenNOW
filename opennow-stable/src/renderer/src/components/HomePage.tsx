@@ -4,7 +4,7 @@ import type { JSX } from "react";
 import { AnimatePresence, m } from "motion/react";
 import { isOwnedLibraryStatus } from "@shared/gfn";
 import type { CatalogFilterGroup, CatalogSortOption, GameInfo, GamePanelResult, GameVariant } from "@shared/gfn";
-import { GameCard, getStoreDisplayName, getStoreIconComponent } from "./GameCard";
+import { getStoreDisplayName, getStoreIconComponent } from "./GameCard";
 import { GameCardListItem, useCatalogCardActionsRef } from "./GameCardListItem";
 import { useTranslation } from "../i18n";
 import { controllerButton, readControllerGamepadButtons } from "../utils/controllerGamepad";
@@ -251,7 +251,7 @@ export const HomePage = memo(function HomePage({
   controllerMode = false,
   storePanels = [],
   storeHeroGames = [],
-  activeSessionAppIds = [],
+  activeSessionAppIds: _activeSessionAppIds = [],
   onBuyGame,
   onPreviousControllerPage,
   onNextControllerPage,

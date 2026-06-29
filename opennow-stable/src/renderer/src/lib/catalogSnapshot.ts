@@ -1,4 +1,4 @@
-import type { CatalogBrowseResult, CatalogFilterGroup, CatalogSortOption, GameInfo } from "@shared/gfn";
+import type { CatalogFilterGroup, CatalogSortOption, GameInfo } from "@shared/gfn";
 
 const CATALOG_SNAPSHOT_KEY = "opennow.catalogSnapshot.v1";
 

@@ -3,7 +3,7 @@ import { memo, useEffect, useMemo, useRef, useState } from "react";
 import type { JSX } from "react";
 import { AnimatePresence, m } from "motion/react";
 import type { CatalogSortOption, GameInfo } from "@shared/gfn";
-import { GameCard, getStoreDisplayName, getStoreIconComponent } from "./GameCard";
+import { getStoreDisplayName, getStoreIconComponent } from "./GameCard";
 import { GameCardListItem, useCatalogCardActionsRef } from "./GameCardListItem";
 import { useTranslation } from "../i18n";
 import { formatCatalogLastPlayed } from "../utils/lastPlayedFormat";
