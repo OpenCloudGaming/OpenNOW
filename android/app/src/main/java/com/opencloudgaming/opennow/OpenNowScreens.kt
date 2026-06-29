@@ -3409,6 +3409,7 @@ private fun formatUpdateBytes(bytes: Long): String {
 @Composable
 private fun AccountSettingsPanel(state: OpenNowUiState, viewModel: OpenNowViewModel) {
     val currentUserId = state.authSession?.user?.userId
+    val context = LocalContext.current
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         state.savedAccounts.ifEmpty {
             state.authSession?.toSavedAccount()?.let { listOf(it) } ?: emptyList()
@@ -3449,6 +3450,127 @@ private fun AccountSettingsPanel(state: OpenNowUiState, viewModel: OpenNowViewMo
             OutlinedButton(onClick = viewModel::logout, modifier = Modifier.weight(1f)) { Text("Sign out") }
         }
         OutlinedButton(onClick = viewModel::logoutAll, modifier = Modifier.fillMaxWidth()) { Text("Sign out all accounts") }
+        StorageAddonPanel(
+            storageAddon = state.subscriptionInfo?.storageAddon,
+            openExternal = { url ->
+                if (!openExternalUrl(context, url)) {
+                    Toast.makeText(context, "No browser available", Toast.LENGTH_SHORT).show()
+                }
+            },
+        )
+        AccountConnectorsPanel(
+            connectors = state.accountConnectors,
+            loading = state.loadingAccountConnectors,
+            onRefresh = viewModel::refreshAccountConnectors,
+            openExternal = { url ->
+                if (!openExternalUrl(context, url)) {
+                    Toast.makeText(context, "No browser available", Toast.LENGTH_SHORT).show()
+                }
+            },
+        )
+    }
+}
+
+@Composable
+private fun StorageAddonPanel(storageAddon: StorageAddon?, openExternal: (String) -> Unit) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(14.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.76f),
+    ) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("Cloud storage", color = SettingsText, fontWeight = FontWeight.SemiBold)
+            if (storageAddon == null) {
+                Text("No persistent storage add-on is active for this account.", color = SettingsTextMuted, style = MaterialTheme.typography.bodySmall)
+                OutlinedButton(onClick = { openExternal(GFN_ADD_STORAGE_URL) }, modifier = Modifier.fillMaxWidth()) {
+                    Text("Add storage", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+            } else {
+                val used = storageAddon.usedGb
+                val total = storageAddon.sizeGb
+                Text(
+                    listOfNotNull(
+                        total?.let { "Total ${formatStorageGb(it)}" },
+                        used?.let { "Used ${formatStorageGb(it)}" },
+                        if (used != null && total != null) "Available ${formatStorageGb((total - used).coerceAtLeast(0.0))}" else null,
+                    ).joinToString(" - "),
+                    color = SettingsTextMuted,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                storageAddon.regionName?.takeIf { it.isNotBlank() }?.let { region ->
+                    Text("Location: $region", color = SettingsTextMuted, style = MaterialTheme.typography.bodySmall)
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                    Button(onClick = { openExternal(GFN_STORAGE_MANAGEMENT_URL) }, modifier = Modifier.weight(1f)) {
+                        Text("Manage", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
+                    OutlinedButton(onClick = { openExternal(GFN_STORAGE_RESET_URL) }, modifier = Modifier.weight(1f)) {
+                        Text("Reset", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
+                }
+                OutlinedButton(onClick = { openExternal(GFN_STORAGE_MANAGEMENT_URL) }, modifier = Modifier.fillMaxWidth()) {
+                    Text("Change storage location", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AccountConnectorsPanel(
+    connectors: List<AccountConnector>,
+    loading: Boolean,
+    onRefresh: () -> Unit,
+    openExternal: (String) -> Unit,
+) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(14.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.76f),
+    ) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Game store connections", color = SettingsText, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+                TextButton(onClick = onRefresh, enabled = !loading) {
+                    Text(if (loading) "Refreshing..." else "Refresh")
+                }
+            }
+            if (connectors.isEmpty()) {
+                Text(
+                    if (loading) "Loading connected stores..." else "Connect Steam, Epic, Xbox, and other supported stores to sync your GeForce NOW library.",
+                    color = SettingsTextMuted,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            } else {
+                connectors.take(6).forEach { connector ->
+                    ConnectorRow(connector)
+                }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                Button(onClick = { openExternal(GFN_ACCOUNT_CONNECT_URL) }, modifier = Modifier.weight(1f)) {
+                    Text("Connect store", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+                OutlinedButton(onClick = { openExternal(GFN_ACCOUNT_MANAGEMENT_URL) }, modifier = Modifier.weight(1f)) {
+                    Text("Manage", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ConnectorRow(connector: AccountConnector) {
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+        Column(Modifier.weight(1f)) {
+            Text(connector.label, color = SettingsText, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(connectorStatusText(connector), color = SettingsTextMuted, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+        Text(
+            if (connector.isLinked) "Linked" else "Not linked",
+            color = if (connector.isLinked) MaterialTheme.colorScheme.primary else SettingsTextMuted,
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.Bold,
+        )
     }
 }
 
@@ -3461,6 +3583,28 @@ private fun AuthSession.toSavedAccount(): SavedAccount =
         membershipTier = user.membershipTier,
         providerCode = provider.code,
     )
+
+private const val GFN_STORAGE_MANAGEMENT_URL = "https://gfn.link/cloudstorage"
+private const val GFN_STORAGE_RESET_URL = "https://gfn.link/resetstorage"
+private const val GFN_ADD_STORAGE_URL = "https://gfn.link/addstorage"
+private const val GFN_ACCOUNT_CONNECT_URL = "https://gfn.link/connect"
+private const val GFN_ACCOUNT_MANAGEMENT_URL = "https://gfn.link/account"
+
+private fun formatStorageGb(value: Double): String =
+    if (value % 1.0 == 0.0) "${value.toInt()} GB" else "%.1f GB".format(Locale.US, value)
+
+private fun connectorStatusText(connector: AccountConnector): String {
+    if (!connector.isLinked) return if (connector.required) "Required for some games" else "Available to connect"
+    val identity = connector.userDisplayName?.takeIf { it.isNotBlank() }
+        ?: connector.userIdentifier?.takeIf { it.isNotBlank() }
+    val sync = when {
+        connector.syncedGameCount != null -> "${connector.syncedGameCount} synced games"
+        !connector.syncState.isNullOrBlank() -> connector.syncState.replace('_', ' ').lowercase(Locale.US)
+            .replaceFirstChar { it.titlecase(Locale.US) }
+        else -> null
+    }
+    return listOfNotNull(identity, sync).joinToString(" - ").ifBlank { "Connected" }
+}
 
 @Composable
 private fun CodecDiagnosticsPanel(report: RuntimeCodecReport?) {

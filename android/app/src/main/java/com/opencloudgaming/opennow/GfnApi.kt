@@ -99,6 +99,11 @@ private const val MAX_CATALOG_PAGES = 3
 private const val DEFAULT_SORT_ID = "relevance"
 private const val SESSION_MODIFY_ACTION_AD_UPDATE = 6
 internal const val OPENNOW_STREAM_SETTINGS_METADATA_KEY = "OpenNOWStreamSettingsSignature"
+private const val STORAGE_ADDON_TYPE = "STORAGE"
+private const val TOTAL_STORAGE_SIZE_IN_GB = "TOTAL_STORAGE_SIZE_IN_GB"
+private const val USED_STORAGE_SIZE_IN_GB = "USED_STORAGE_SIZE_IN_GB"
+private const val STORAGE_METRO_REGION = "STORAGE_METRO_REGION"
+private const val STORAGE_METRO_REGION_NAME = "STORAGE_METRO_REGION_NAME"
 
 private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
 private val GRAPHQL_MEDIA_TYPE = "application/graphql".toMediaType()
@@ -1572,6 +1577,11 @@ class GfnSubscriptionRepository(
                 fps = obj.int("framesPerSecond") ?: return@mapNotNull null,
             )
         }?.sortedWith(compareByDescending<EntitledResolution> { it.width }.thenByDescending { it.height }.thenByDescending { it.fps }).orEmpty()
+        val subscription = data.obj("subscription") ?: data
+        val storageAddon = subscription.arr("addons")
+            ?.mapNotNull { it.asObject() }
+            ?.firstOrNull(::isActivePersistentStorageAddon)
+            ?.let(::parseStorageAddon)
         return SubscriptionInfo(
             membershipTier = data.string("membershipTier") ?: "FREE",
             subscriptionType = data.string("type"),
@@ -1585,8 +1595,124 @@ class GfnSubscriptionRepository(
             state = data.obj("currentSubscriptionState")?.string("state"),
             isGamePlayAllowed = data.obj("currentSubscriptionState")?.boolean("isGamePlayAllowed"),
             isUnlimited = data.string("subType") == "UNLIMITED",
+            storageAddon = storageAddon,
             entitledResolutions = resolutions,
         )
+    }
+
+    private fun parseStorageAddon(addon: JsonObject): StorageAddon {
+        val attributes = addon.arr("attributes")
+            ?.mapNotNull { it.asObject() }
+            ?.associate { attribute ->
+                attribute.string("key").orEmpty() to attribute.string("textValue").orEmpty()
+            }
+            .orEmpty()
+        val total = attributes[TOTAL_STORAGE_SIZE_IN_GB]?.toDoubleOrNull()
+        val used = attributes[USED_STORAGE_SIZE_IN_GB]?.toDoubleOrNull()
+        return StorageAddon(
+            type = addon.string("type") ?: STORAGE_ADDON_TYPE,
+            sizeGb = total,
+            usedGb = used,
+            regionName = attributes[STORAGE_METRO_REGION_NAME],
+            regionCode = attributes[STORAGE_METRO_REGION],
+            status = addon.string("status"),
+            subType = addon.string("subType"),
+            autoPayEnabled = addon.boolean("autoPayEnabled"),
+        )
+    }
+
+    private fun isActivePersistentStorageAddon(addon: JsonObject): Boolean =
+        addon.string("type") == STORAGE_ADDON_TYPE &&
+            addon.string("subType") == "PERMANENT_STORAGE" &&
+            addon.string("status") == "OK"
+}
+
+class GfnAccountConnectorRepository(
+    private val http: OkHttpClient = defaultHttpClient(),
+) {
+    suspend fun fetchConnectors(token: String): List<AccountConnector> {
+        val query = """
+            query GetAccountConnectors(${'$'}locale: String!, ${'$'}stringsKey: [String]!) {
+              appStoreDefinitions(language: ${'$'}locale) {
+                store
+                label
+                accountLinkingMetadata {
+                  isSupported
+                  isRequired
+                  label
+                }
+              }
+              userAccount {
+                storesData {
+                  store
+                  accountLinkingData {
+                    userDisplayName
+                    expiresIn
+                    userIdentifier
+                    accountSyncingData {
+                      totalNumberOfSyncedGfnGames
+                      syncState
+                      syncDate
+                    }
+                  }
+                }
+              }
+              clientStrings(language: ${'$'}locale, keys: ${'$'}stringsKey)
+            }
+        """.trimIndent()
+        val payload = postGraphQl(
+            query,
+            buildJsonObject {
+                put("locale", DEFAULT_LOCALE)
+                putJsonArray("stringsKey") {}
+            },
+            token,
+        ).checkGraphQlErrors("Account connectors")
+        val data = payload.obj("data") ?: return emptyList()
+        val userStores = data.obj("userAccount")?.arr("storesData")
+            ?.mapNotNull { it.asObject() }
+            ?.associateBy { normalizeGameStore(it.string("store").orEmpty()) }
+            .orEmpty()
+        return data.arr("appStoreDefinitions")
+            ?.mapNotNull { raw ->
+                val store = raw.asObject() ?: return@mapNotNull null
+                val storeId = store.string("store")?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+                val metadata = store.obj("accountLinkingMetadata")
+                val supported = metadata?.boolean("isSupported") ?: false
+                val normalizedStoreId = normalizeGameStore(storeId)
+                if (!supported && normalizedStoreId !in userStores) return@mapNotNull null
+                val linked = userStores[normalizedStoreId]?.obj("accountLinkingData")
+                val sync = linked?.obj("accountSyncingData")
+                AccountConnector(
+                    store = storeId,
+                    label = metadata?.string("label") ?: store.string("label") ?: gameStoreDisplayName(storeId),
+                    supported = supported,
+                    required = metadata?.boolean("isRequired") ?: false,
+                    userDisplayName = linked?.string("userDisplayName"),
+                    userIdentifier = linked?.string("userIdentifier"),
+                    expiresInSeconds = linked?.long("expiresIn"),
+                    syncedGameCount = sync?.int("totalNumberOfSyncedGfnGames"),
+                    syncState = sync?.string("syncState"),
+                    syncDate = sync?.string("syncDate"),
+                )
+            }
+            ?.sortedWith(compareByDescending<AccountConnector> { it.isLinked }.thenBy { it.label.lowercase(Locale.US) })
+            .orEmpty()
+    }
+
+    private suspend fun postGraphQl(query: String, variables: JsonObject, token: String): JsonObject {
+        val body = buildJsonObject {
+            put("query", query)
+            put("variables", variables)
+        }.toString().toRequestBody(JSON_MEDIA_TYPE)
+        val request = Request.Builder()
+            .url(GAMES_GRAPHQL_URL)
+            .headers(desktopGraphQlHeaders(token))
+            .post(body)
+            .build()
+        val (code, text) = http.awaitText(request)
+        check(code in 200..299) { "Account connectors failed ($code): ${text.take(400)}" }
+        return OpenNowJson.parseToJsonElement(text).jsonObject
     }
 }
 

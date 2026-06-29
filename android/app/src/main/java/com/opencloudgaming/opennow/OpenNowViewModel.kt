@@ -54,6 +54,8 @@ data class OpenNowUiState(
     val selectedProvider: LoginProvider = defaultProvider(),
     val savedAccounts: List<SavedAccount> = emptyList(),
     val subscriptionInfo: SubscriptionInfo? = null,
+    val accountConnectors: List<AccountConnector> = emptyList(),
+    val loadingAccountConnectors: Boolean = false,
     val regions: List<StreamRegion> = emptyList(),
     val games: List<GameInfo> = emptyList(),
     val libraryGames: List<GameInfo> = emptyList(),
@@ -100,6 +102,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     private val catalogRepository = GfnCatalogRepository(http)
     private val catalogCacheStore = CatalogCacheStore(application)
     private val subscriptionRepository = GfnSubscriptionRepository(http)
+    private val accountConnectorRepository = GfnAccountConnectorRepository(http)
     private val printedWasteRepository = PrintedWasteRepository(http)
     private val sessionRepository = GfnSessionRepository(authStore, http)
     private val appUpdater = AndroidAppUpdater(application, http)
@@ -373,6 +376,9 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                     authSession = nextSession,
                     selectedProvider = nextSession?.provider ?: it.selectedProvider,
                     savedAccounts = authStore.state.value.sessions.map { saved -> saved.toSavedAccount() },
+                    subscriptionInfo = null,
+                    accountConnectors = emptyList(),
+                    loadingAccountConnectors = false,
                     games = emptyList(),
                     libraryGames = emptyList(),
                     libraryFilterIds = emptyList(),
@@ -401,6 +407,8 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                     selectedProvider = session.provider,
                     savedAccounts = authStore.state.value.sessions.map { saved -> saved.toSavedAccount() },
                     subscriptionInfo = null,
+                    accountConnectors = emptyList(),
+                    loadingAccountConnectors = false,
                     games = emptyList(),
                     libraryGames = emptyList(),
                     catalogResult = CatalogBrowseResult(emptyList()),
@@ -429,6 +437,9 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             it.copy(
                 authSession = null,
                 savedAccounts = emptyList(),
+                subscriptionInfo = null,
+                accountConnectors = emptyList(),
+                loadingAccountConnectors = false,
                 games = emptyList(),
                 libraryGames = emptyList(),
                 libraryFilterIds = emptyList(),
@@ -604,6 +615,23 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         val session = state.value.authSession ?: return
         viewModelScope.launch {
             refreshAfterAuth(session)
+        }
+    }
+
+    fun refreshAccountConnectors() {
+        val session = state.value.authSession ?: return
+        viewModelScope.launch {
+            val token = authRepository.restore(forceRefresh = false)?.tokens?.let { it.idToken ?: it.accessToken }
+                ?: (session.tokens.idToken ?: session.tokens.accessToken)
+            _state.update { it.copy(loadingAccountConnectors = true) }
+            runCatching { accountConnectorRepository.fetchConnectors(token) }
+                .onSuccess { connectors ->
+                    _state.update { it.copy(accountConnectors = connectors, loadingAccountConnectors = false) }
+                }
+                .onFailure { error ->
+                    if (error is CancellationException) return@onFailure
+                    _state.update { it.copy(loadingAccountConnectors = false, error = error.message ?: "Failed to load account connections") }
+                }
         }
     }
 
@@ -1544,6 +1572,11 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             }.getOrNull()
             _state.update { it.copy(subscriptionInfo = sub) }
         }
+        val accountConnectorsJob = viewModelScope.launch {
+            _state.update { it.copy(loadingAccountConnectors = true) }
+            val connectors = runCatching { accountConnectorRepository.fetchConnectors(token) }.getOrDefault(emptyList())
+            _state.update { it.copy(accountConnectors = connectors, loadingAccountConnectors = false) }
+        }
         val regionsJob = viewModelScope.launch {
             val regions = runCatching { fetchDynamicRegions(http, token, session.provider.streamingServiceUrl).first }.getOrDefault(emptyList())
             _state.update { it.copy(regions = regions) }
@@ -1584,6 +1617,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             }
         }
         subscriptionJob.join()
+        accountConnectorsJob.join()
         regionsJob.join()
     }
 
