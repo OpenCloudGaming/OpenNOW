@@ -4131,6 +4131,7 @@ button.game-card-store-chip.owned.active:hover {
   min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
+  scrollbar-gutter: stable;
   padding: 20px 22px;
   display: flex;
   flex-direction: column;
@@ -4495,7 +4496,7 @@ button.game-card-store-chip.owned.active:hover {
 }
 
 .settings-storage-section {
-  overflow: hidden;
+  overflow: visible;
 }
 
 .settings-storage-card {
@@ -4723,17 +4724,12 @@ button.game-card-store-chip.owned.active:hover {
 .settings-game-accounts-card {
   margin: 0 18px 18px;
   padding: 14px;
-  max-height: clamp(260px, calc(100vh - 430px), 420px);
-  min-height: 0;
   border-radius: 6px;
   border: 1px solid rgba(255, 255, 255, 0.06);
   background: rgba(255, 255, 255, 0.025);
   display: flex;
   flex-direction: column;
   gap: 10px;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  scrollbar-gutter: stable;
 }
 
 .settings-game-account-grid {
@@ -4744,10 +4740,12 @@ button.game-card-store-chip.owned.active:hover {
 
 .settings-game-account-card {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 14px;
-  padding: 14px;
+  width: 100%;
+  min-height: 96px;
+  padding: 16px;
   border-radius: 6px;
   border: 1px solid rgba(255, 255, 255, 0.055);
   background: rgba(0, 0, 0, 0.12);
@@ -4757,7 +4755,7 @@ button.game-card-store-chip.owned.active:hover {
   display: flex;
   flex: 1 1 auto;
   min-width: 0;
-  align-items: center;
+  align-items: flex-start;
   gap: 12px;
 }
 
@@ -4835,6 +4833,7 @@ button.game-card-store-chip.owned.active:hover {
   flex-direction: row;
   align-items: center;
   gap: 8px;
+  padding-top: 1px;
 }
 
 .settings-game-account-action {
