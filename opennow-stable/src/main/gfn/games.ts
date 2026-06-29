@@ -226,10 +226,27 @@ interface AppResolution {
   preferredVariantId?: string;
   selectedVariantIndex: number;
   lastPlayed?: string;
-  isInLibrary: boolean;
-}
+  const defaultBase = "https://prod.cloudmatchbeta.nvidiagrid.net/";
+  const allowedHosts = new Set([
+    "prod.cloudmatchbeta.nvidiagrid.net",
+    "img.nvidiagrid.net",
+  ]);
 
-interface CatalogDefinitions {
+  let validatedBaseUrl: URL;
+  try {
+    const candidate = new URL((providerStreamingBaseUrl?.trim() || defaultBase));
+    if (candidate.protocol !== "https:" || !allowedHosts.has(candidate.hostname)) {
+      validatedBaseUrl = new URL(defaultBase);
+    } else {
+      validatedBaseUrl = candidate;
+    }
+  } catch {
+    validatedBaseUrl = new URL(defaultBase);
+  }
+
+  const serverInfoUrl = new URL("v2/serverInfo", validatedBaseUrl);
+
+  const response = await fetch(serverInfoUrl.toString(), {
   filterGroups: CatalogFilterGroup[];
   sortOptions: CatalogSortOption[];
   filterPayloadById: Record<string, unknown>;
