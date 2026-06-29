@@ -62,12 +62,14 @@ export interface Settings {
   colorQuality: ColorQuality;
   /** Preferred region URL (empty = auto) */
   region: string;
-  /** Enable the optional proxy for Nvidia session creation and queue polling */
+  /** Enable the optional proxy for Nvidia games catalog, session creation, and queue polling */
   sessionProxyEnabled: boolean;
-  /** Optional proxy used only for Nvidia session creation and queue polling */
+  /** Optional proxy used for Nvidia games catalog, session creation, and queue polling */
   sessionProxyUrl: string;
   /** Enable clipboard paste into stream */
   clipboardPaste: boolean;
+  /** Enable experimental gyroscope controller input mapping */
+  enableGyroscopeControls: boolean;
   /** Mouse sensitivity multiplier */
   mouseSensitivity: number;
   /** Software mouse acceleration strength percentage (1-150) */
@@ -191,6 +193,7 @@ const DEFAULT_SETTINGS: Settings = {
   sessionProxyEnabled: false,
   sessionProxyUrl: "",
   clipboardPaste: false,
+  enableGyroscopeControls: false,
   mouseSensitivity: 1,
   mouseAcceleration: 1,
   shortcutToggleStats: "F3",

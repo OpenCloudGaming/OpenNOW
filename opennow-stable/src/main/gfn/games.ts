@@ -16,6 +16,9 @@ import {
   buildGfnGraphQlHeaders,
   buildGfnLcarsHeaders,
 } from "./clientHeaders";
+import { fetchAllAppsPages, type AppsPageResponse } from "./paginatedApps";
+import { fetchWithOptionalProxy } from "./proxyFetch";
+import { sessionProxyCacheKeyPart, sessionProxyHasCredentials } from "./proxyUrl";
 
 const GRAPHQL_URL = "https://games.geforce.com/graphql";
 const PANELS_QUERY_HASH = "f8e26265a5db5c20e1334a6872cf04b6e3970507697f6ae55a6ddefa5420daf0";
@@ -25,17 +28,132 @@ const LIBRARY_WITH_TIME_QUERY_HASH = "039e8c0d553972975485fee56e59f2549d2fdb518e
 const DEFAULT_LOCALE = "en_US";
 const DEFAULT_CATALOG_FETCH_COUNT = 120;
 const MAX_CATALOG_PAGES = 3;
+const LIBRARY_FETCH_COUNT = 200;
+const MAX_LIBRARY_PAGES = 25;
 const DEFAULT_SORT_ID = "relevance";
+const DEFAULT_LIBRARY_SORT = "variants.gfn.library.lastPlayedDate:DESC,computedValues.libraryAddedDate:DESC,sortName:ASC";
+const LIBRARY_GAMES_CACHE_SCOPE = "library:v2";
+const CATALOG_GAMES_CACHE_SCOPE = "catalog";
 const PUBLIC_GAMES_CACHE_KEY = "games:public:v2";
+const LIBRARY_APPS_FILTER = {
+  variants: {
+    gfn: {
+      library: {
+        status: {
+          notEquals: "NOT_OWNED",
+        },
+      },
+    },
+  },
+} satisfies Record<string, unknown>;
 
-function accountScopedGamesCacheKey(scope: string, token: string, providerStreamingBaseUrl?: string): string {
-  const digest = createHash("sha256")
+function addProxyCacheScope(hash: ReturnType<typeof createHash>, proxyUrl?: string): void {
+  const proxyCachePart = sessionProxyCacheKeyPart(proxyUrl);
+  if (proxyCachePart) {
+    hash.update("\0").update(proxyCachePart);
+  }
+}
+
+function publicGamesCacheKey(proxyUrl?: string): string {
+  const proxyCachePart = sessionProxyCacheKeyPart(proxyUrl);
+  return proxyCachePart ? `${PUBLIC_GAMES_CACHE_KEY}:${proxyCachePart}` : PUBLIC_GAMES_CACHE_KEY;
+}
+
+function shouldBypassGamesCache(proxyUrl?: string): boolean {
+  return sessionProxyHasCredentials(proxyUrl);
+}
+
+function accountScopedGamesCacheKey(scope: string, accountId: string, providerStreamingBaseUrl?: string, proxyUrl?: string): string {
+  const hash = createHash("sha256")
+    .update(accountId)
+    .update("\0")
+    .update(providerStreamingBaseUrl ?? "");
+  addProxyCacheScope(hash, proxyUrl);
+  const digest = hash.digest("hex").slice(0, 16);
+  return `games:${scope}:${digest}`;
+}
+
+function legacyTokenScopedGamesCacheKey(scope: string, token: string, providerStreamingBaseUrl?: string, proxyUrl?: string): string {
+  const hash = createHash("sha256")
     .update(token)
     .update("\0")
-    .update(providerStreamingBaseUrl ?? "")
-    .digest("hex")
-    .slice(0, 16);
+    .update(providerStreamingBaseUrl ?? "");
+  addProxyCacheScope(hash, proxyUrl);
+  const digest = hash.digest("hex").slice(0, 16);
   return `games:${scope}:${digest}`;
+}
+
+function resolveAccountCacheId(accountId: string | undefined, token: string): string {
+  return accountId?.trim() || token;
+}
+
+async function loadAccountScopedFromCache<T>(
+  scope: string,
+  accountId: string | undefined,
+  token: string,
+  providerStreamingBaseUrl?: string,
+  proxyUrl?: string,
+): Promise<Awaited<ReturnType<typeof cacheManager.loadFromCache<T>>>> {
+  if (shouldBypassGamesCache(proxyUrl)) {
+    return null;
+  }
+
+  const resolvedAccountId = resolveAccountCacheId(accountId, token);
+  const primaryKey = accountScopedGamesCacheKey(scope, resolvedAccountId, providerStreamingBaseUrl, proxyUrl);
+  const cached = await cacheManager.loadFromCache<T>(primaryKey);
+  if (cached) {
+    return cached;
+  }
+
+  if (resolvedAccountId !== token) {
+    const legacyKey = legacyTokenScopedGamesCacheKey(scope, token, providerStreamingBaseUrl, proxyUrl);
+    if (legacyKey !== primaryKey) {
+      const legacy = await cacheManager.loadFromCache<T>(legacyKey);
+      if (legacy) {
+        void cacheManager.saveToCache(primaryKey, legacy.data);
+        void cacheManager.invalidateCache(legacyKey);
+        return legacy;
+      }
+    }
+  }
+
+  return null;
+}
+
+function catalogBrowseCacheKey(input: CatalogBrowseRequest, accountId: string): string {
+  const queryDigest = createHash("sha256")
+    .update(input.searchQuery?.trim() ?? "")
+    .update("\0")
+    .update(input.sortId ?? "")
+    .update("\0")
+    .update((input.filterIds ?? []).join(","))
+    .update("\0")
+    .update(String(input.fetchCount ?? ""))
+    .digest("hex")
+    .slice(0, 12);
+  return `${getAccountCatalogGamesCachePrefix(accountId, input.providerStreamingBaseUrl, input.proxyUrl)}:${queryDigest}`;
+}
+
+export function getAccountCatalogGamesCachePrefix(
+  accountId: string,
+  providerStreamingBaseUrl?: string,
+  proxyUrl?: string,
+): string {
+  return accountScopedGamesCacheKey(CATALOG_GAMES_CACHE_SCOPE, accountId, providerStreamingBaseUrl, proxyUrl);
+}
+
+export function getAccountGamesCacheKeys(accountId: string, providerStreamingBaseUrl?: string, proxyUrl?: string): {
+  main: string;
+  library: string;
+  catalogPrefix: string;
+  public: string;
+} {
+  return {
+    main: accountScopedGamesCacheKey("main", accountId, providerStreamingBaseUrl, proxyUrl),
+    library: accountScopedGamesCacheKey(LIBRARY_GAMES_CACHE_SCOPE, accountId, providerStreamingBaseUrl, proxyUrl),
+    catalogPrefix: getAccountCatalogGamesCachePrefix(accountId, providerStreamingBaseUrl, proxyUrl),
+    public: publicGamesCacheKey(proxyUrl),
+  };
 }
 
 interface GraphQlResponse {
@@ -92,6 +210,8 @@ interface AppsSearchResponse {
   };
   errors?: Array<{ message: string }>;
 }
+
+type AppsPage = AppsPageResponse<AppData>;
 
 interface GraphQlFilterGroup {
   id: string;
@@ -210,12 +330,17 @@ function randomHuId(): string {
   return `${Date.now().toString(16)}${Math.random().toString(16).slice(2)}`;
 }
 
-async function postGraphQl<T>(query: string, variables: Record<string, unknown>, token?: string): Promise<T> {
-  const response = await fetch(GRAPHQL_URL, {
+async function postGraphQl<T>(
+  query: string,
+  variables: Record<string, unknown>,
+  token?: string,
+  proxyUrl?: string,
+): Promise<T> {
+  const response = await fetchWithOptionalProxy(GRAPHQL_URL, {
     method: "POST",
     headers: buildGfnGraphQlHeaders(token),
     body: JSON.stringify({ query, variables }),
-  });
+  }, proxyUrl);
 
   if (!response.ok) {
     const text = await response.text();
@@ -225,11 +350,28 @@ async function postGraphQl<T>(query: string, variables: Record<string, unknown>,
   return (await response.json()) as T;
 }
 
-async function getVpcId(token: string, providerStreamingBaseUrl?: string): Promise<string> {
-  const base = providerStreamingBaseUrl?.trim() || "https://prod.cloudmatchbeta.nvidiagrid.net/";
-  const normalizedBase = base.endsWith("/") ? base : `${base}/`;
+async function getVpcId(token: string, providerStreamingBaseUrl?: string, proxyUrl?: string): Promise<string> {
+  const defaultBase = "https://prod.cloudmatchbeta.nvidiagrid.net/";
+  const allowedHosts = new Set([
+    "prod.cloudmatchbeta.nvidiagrid.net",
+    "img.nvidiagrid.net",
+  ]);
 
-  const response = await fetch(`${normalizedBase}v2/serverInfo`, {
+  let validatedBaseUrl: URL;
+  try {
+    const candidate = new URL(providerStreamingBaseUrl?.trim() || defaultBase);
+    if (candidate.protocol !== "https:" || !allowedHosts.has(candidate.hostname)) {
+      validatedBaseUrl = new URL(defaultBase);
+    } else {
+      validatedBaseUrl = candidate;
+    }
+  } catch {
+    validatedBaseUrl = new URL(defaultBase);
+  }
+
+  const serverInfoUrl = new URL("v2/serverInfo", validatedBaseUrl);
+
+  const response = await fetchWithOptionalProxy(serverInfoUrl.toString(), {
     headers: buildGfnLcarsHeaders({
       token,
       clientType: "NATIVE",
@@ -237,7 +379,7 @@ async function getVpcId(token: string, providerStreamingBaseUrl?: string): Promi
       includeUserAgent: true,
       includeEmptyTokenAuthorization: true,
     }),
-  });
+  }, proxyUrl);
 
   if (!response.ok) {
     return "GFN-PC";
@@ -428,14 +570,27 @@ function appToGame(app: AppData): GameInfo {
 function mergeAppMetaIntoGame(game: GameInfo, app: AppData): GameInfo {
   const merged = appToGame(app);
   const selectedVariantId = game.variants[game.selectedVariantIndex]?.id;
+  const variants = merged.variants.map((variant) => {
+    const existing = game.variants.find((candidate) => candidate.id === variant.id);
+    return {
+      ...variant,
+      librarySelected: variant.librarySelected ?? existing?.librarySelected,
+      inLibrary: variant.inLibrary ?? existing?.inLibrary,
+      libraryStatus: variant.libraryStatus ?? existing?.libraryStatus,
+      lastPlayedDate: variant.lastPlayedDate ?? existing?.lastPlayedDate,
+    };
+  });
   const selectedVariantIndex = selectedVariantId
-    ? merged.variants.findIndex((variant) => variant.id === selectedVariantId)
+    ? variants.findIndex((variant) => variant.id === selectedVariantId)
     : -1;
 
   return {
     ...game,
     ...merged,
     id: game.id,
+    isInLibrary: merged.isInLibrary || game.isInLibrary,
+    lastPlayed: merged.lastPlayed ?? game.lastPlayed,
+    variants,
     selectedVariantIndex: selectedVariantIndex >= 0 ? selectedVariantIndex : merged.selectedVariantIndex,
   };
 }
@@ -506,6 +661,7 @@ async function fetchAppMetaData(
   token: string,
   appIds: string[],
   vpcId: string,
+  proxyUrl?: string,
 ): Promise<AppMetaDataResponse> {
   const normalizedIds = [...new Set(appIds.map((id) => id.trim()).filter((id) => id.length > 0))];
   if (normalizedIds.length === 0) {
@@ -531,12 +687,12 @@ async function fetchAppMetaData(
     variables,
   });
 
-  const response = await fetch(`${GRAPHQL_URL}?${params.toString()}`, {
+  const response = await fetchWithOptionalProxy(`${GRAPHQL_URL}?${params.toString()}`, {
     headers: {
       ...buildGfnGraphQlHeaders(token),
       "Content-Type": "application/graphql",
     },
-  });
+  }, proxyUrl);
 
   if (!response.ok) {
     const text = await response.text();
@@ -546,7 +702,7 @@ async function fetchAppMetaData(
   return (await response.json()) as AppMetaDataResponse;
 }
 
-async function enrichGamesWithMetadata(token: string, vpcId: string, games: GameInfo[]): Promise<GameInfo[]> {
+async function enrichGamesWithMetadata(token: string, vpcId: string, games: GameInfo[], proxyUrl?: string): Promise<GameInfo[]> {
   const uuids = [...new Set(games.map((game) => game.uuid).filter((uuid): uuid is string => !!uuid))];
 
   if (uuids.length === 0) {
@@ -558,7 +714,7 @@ async function enrichGamesWithMetadata(token: string, vpcId: string, games: Game
 
   for (let index = 0; index < uuids.length; index += chunkSize) {
     const chunk = uuids.slice(index, index + chunkSize);
-    const payload = await fetchAppMetaData(token, chunk, vpcId);
+    const payload = await fetchAppMetaData(token, chunk, vpcId, proxyUrl);
     if (payload.errors?.length) {
       throw new Error(payload.errors.map((error) => error.message).join(", "));
     }
@@ -581,6 +737,7 @@ async function fetchPanels(
   panelNames: string[],
   vpcId: string,
   options?: { withLibraryTime?: boolean },
+  proxyUrl?: string,
 ): Promise<GraphQlResponse> {
   const variables = JSON.stringify({
     vpcId,
@@ -610,12 +767,12 @@ async function fetchPanels(
     variables,
   });
 
-  const response = await fetch(`${GRAPHQL_URL}?${params.toString()}`, {
+  const response = await fetchWithOptionalProxy(`${GRAPHQL_URL}?${params.toString()}`, {
     headers: {
       ...buildGfnGraphQlHeaders(token),
       "Content-Type": "application/graphql",
     },
-  });
+  }, proxyUrl);
 
   if (!response.ok) {
     const text = await response.text();
@@ -716,7 +873,7 @@ function parsePanelResults(payload: GraphQlResponse): GamePanelResult[] {
   return panels;
 }
 
-async function fetchFilterAndSortDefinitions(token?: string): Promise<CatalogDefinitions> {
+async function fetchFilterAndSortDefinitions(token?: string, proxyUrl?: string): Promise<CatalogDefinitions> {
   const query = `query GetFilterGroupAndSortOrderDefinitions($locale: String!) {
     filterGroupDefinitions(language: $locale) {
       id
@@ -734,7 +891,7 @@ async function fetchFilterAndSortDefinitions(token?: string): Promise<CatalogDef
     }
   }`;
 
-  const payload = await postGraphQl<FilterSortDefinitionsResponse>(query, { locale: DEFAULT_LOCALE }, token);
+  const payload = await postGraphQl<FilterSortDefinitionsResponse>(query, { locale: DEFAULT_LOCALE }, token, proxyUrl);
   if (payload.errors?.length) {
     throw new Error(payload.errors.map((error) => error.message).join(", "));
   }
@@ -800,8 +957,8 @@ async function browseCatalogUncached(input: CatalogBrowseRequest): Promise<Catal
     throw new Error("Catalog browsing requires an authenticated token");
   }
 
-  const vpcId = await getVpcId(token, input.providerStreamingBaseUrl);
-  const definitions = await fetchFilterAndSortDefinitions(token);
+  const vpcId = await getVpcId(token, input.providerStreamingBaseUrl, input.proxyUrl);
+  const definitions = await fetchFilterAndSortDefinitions(token, input.proxyUrl);
   const normalizedFilterIds = (input.filterIds ?? []).filter((id) => id in definitions.filterPayloadById);
   const selectedSort = definitions.sortOptions.find((option) => option.id === input.sortId)
     ?? definitions.sortOptions.find((option) => option.id === DEFAULT_SORT_ID)
@@ -916,6 +1073,7 @@ ${appFields}
             filters,
           },
       token,
+      input.proxyUrl,
     );
 
     if (payload.errors?.length) {
@@ -938,8 +1096,8 @@ ${appFields}
     cursor = endCursor;
   }
 
-  let games = dedupeGames(await enrichGamesWithMetadata(token, vpcId, collectedApps.map(appToGame)));
-  const publicGames = await fetchPublicGames();
+  let games = dedupeGames(await enrichGamesWithMetadata(token, vpcId, collectedApps.map(appToGame), input.proxyUrl));
+  const publicGames = await fetchPublicGames(input.proxyUrl);
   const gamesWithPublicVariants = appendPublicGameSearchMatches(
     mergePublicGameVariants(games, publicGames),
     publicGames,
@@ -962,91 +1120,253 @@ ${appFields}
 }
 
 export async function browseCatalog(input: CatalogBrowseRequest): Promise<CatalogBrowseResult> {
-  return browseCatalogUncached(input);
-}
-
-export async function fetchMainGames(token: string, providerStreamingBaseUrl?: string): Promise<GameInfo[]> {
-  const cacheKey = accountScopedGamesCacheKey("main", token, providerStreamingBaseUrl);
-  const cached = await cacheManager.loadFromCache<GameInfo[]>(cacheKey);
-  if (cached) {
-    return mergePublicGameVariants(cached.data, await fetchPublicGames());
+  const token = input.token;
+  if (!token) {
+    throw new Error("Catalog browsing requires an authenticated token");
   }
 
-  const games = await fetchMainGamesUncached(token, providerStreamingBaseUrl);
-  await cacheManager.saveToCache(cacheKey, games);
+  const cached = await peekCachedBrowseCatalog(input);
+  if (cached) {
+    return cached;
+  }
+
+  const result = await browseCatalogUncached(input);
+  const accountId = resolveAccountCacheId(input.userId, token);
+  if (!shouldBypassGamesCache(input.proxyUrl)) {
+    const cacheKey = catalogBrowseCacheKey(input, accountId);
+    await cacheManager.saveToCache(cacheKey, result);
+  }
+  return result;
+}
+
+export async function peekCachedBrowseCatalog(input: CatalogBrowseRequest): Promise<CatalogBrowseResult | null> {
+  const token = input.token;
+  if (!token) {
+    return null;
+  }
+  if (shouldBypassGamesCache(input.proxyUrl)) {
+    return null;
+  }
+
+  const accountId = resolveAccountCacheId(input.userId, token);
+  const cacheKey = catalogBrowseCacheKey(input, accountId);
+  const cached = await cacheManager.loadFromCache<CatalogBrowseResult>(cacheKey);
+  return cached?.data ?? null;
+}
+
+export async function peekCachedLibraryGames(
+  token: string,
+  providerStreamingBaseUrl?: string,
+  accountId?: string,
+  proxyUrl?: string,
+): Promise<GameInfo[] | null> {
+  const cached = await loadAccountScopedFromCache<GameInfo[]>(LIBRARY_GAMES_CACHE_SCOPE, accountId, token, providerStreamingBaseUrl, proxyUrl);
+  return cached?.data ?? null;
+}
+
+export async function fetchLibraryGamesFromCache(
+  token: string,
+  providerStreamingBaseUrl?: string,
+  accountId?: string,
+  proxyUrl?: string,
+): Promise<GameInfo[] | null> {
+  const cached = await peekCachedLibraryGames(token, providerStreamingBaseUrl, accountId, proxyUrl);
+  if (!cached) {
+    return null;
+  }
+  return mergePublicGameVariants(cached, await fetchPublicGames(proxyUrl));
+}
+
+export async function fetchMainGames(
+  token: string,
+  providerStreamingBaseUrl?: string,
+  accountId?: string,
+  proxyUrl?: string,
+): Promise<GameInfo[]> {
+  const cached = await loadAccountScopedFromCache<GameInfo[]>("main", accountId, token, providerStreamingBaseUrl, proxyUrl);
+  if (cached) {
+    return mergePublicGameVariants(cached.data, await fetchPublicGames(proxyUrl));
+  }
+
+  const games = await fetchMainGamesUncached(token, providerStreamingBaseUrl, proxyUrl);
+  if (!shouldBypassGamesCache(proxyUrl)) {
+    const cacheKey = accountScopedGamesCacheKey("main", resolveAccountCacheId(accountId, token), providerStreamingBaseUrl, proxyUrl);
+    await cacheManager.saveToCache(cacheKey, games);
+  }
   return games;
 }
 
-export async function fetchFeaturedGames(token: string, providerStreamingBaseUrl?: string): Promise<GameInfo[]> {
-  const cacheKey = accountScopedGamesCacheKey("featured", token, providerStreamingBaseUrl);
-  const cached = await cacheManager.loadFromCache<GameInfo[]>(cacheKey);
+export async function fetchFeaturedGames(
+  token: string,
+  providerStreamingBaseUrl?: string,
+  accountId?: string,
+  proxyUrl?: string,
+): Promise<GameInfo[]> {
+  const cached = await loadAccountScopedFromCache<GameInfo[]>("featured", accountId, token, providerStreamingBaseUrl, proxyUrl);
   if (cached) return cached.data;
 
-  const vpcId = await getVpcId(token, providerStreamingBaseUrl);
-  const games = featuredGamesFromPanels(await fetchPanels(token, ["MARQUEE"], vpcId)).slice(0, 6);
+  const vpcId = await getVpcId(token, providerStreamingBaseUrl, proxyUrl);
+  const games = featuredGamesFromPanels(await fetchPanels(token, ["MARQUEE"], vpcId, undefined, proxyUrl)).slice(0, 6);
 
-  await cacheManager.saveToCache(cacheKey, games);
+  if (!shouldBypassGamesCache(proxyUrl)) {
+    const cacheKey = accountScopedGamesCacheKey("featured", resolveAccountCacheId(accountId, token), providerStreamingBaseUrl, proxyUrl);
+    await cacheManager.saveToCache(cacheKey, games);
+  }
   return games;
 }
 
-export async function fetchStorePanels(token: string, providerStreamingBaseUrl?: string): Promise<GamePanelResult[]> {
-  const cacheKey = accountScopedGamesCacheKey("store-panels", token, providerStreamingBaseUrl);
-  const cached = await cacheManager.loadFromCache<GamePanelResult[]>(cacheKey);
+export async function fetchStorePanels(
+  token: string,
+  providerStreamingBaseUrl?: string,
+  accountId?: string,
+  proxyUrl?: string,
+): Promise<GamePanelResult[]> {
+  const cached = await loadAccountScopedFromCache<GamePanelResult[]>("store-panels", accountId, token, providerStreamingBaseUrl, proxyUrl);
   if (cached) return cached.data;
 
-  const vpcId = await getVpcId(token, providerStreamingBaseUrl);
-  const panels = parsePanelResults(await fetchPanels(token, ["MAIN"], vpcId));
-  await cacheManager.saveToCache(cacheKey, panels);
+  const vpcId = await getVpcId(token, providerStreamingBaseUrl, proxyUrl);
+  const panels = parsePanelResults(await fetchPanels(token, ["MAIN"], vpcId, undefined, proxyUrl));
+  if (!shouldBypassGamesCache(proxyUrl)) {
+    const cacheKey = accountScopedGamesCacheKey("store-panels", resolveAccountCacheId(accountId, token), providerStreamingBaseUrl, proxyUrl);
+    await cacheManager.saveToCache(cacheKey, panels);
+  }
   return panels;
 }
 
-async function fetchMainGamesUncached(token: string, providerStreamingBaseUrl?: string): Promise<GameInfo[]> {
-  const vpcId = await getVpcId(token, providerStreamingBaseUrl);
-  const payload = await fetchPanels(token, ["MAIN"], vpcId);
+async function fetchMainGamesUncached(token: string, providerStreamingBaseUrl?: string, proxyUrl?: string): Promise<GameInfo[]> {
+  const vpcId = await getVpcId(token, providerStreamingBaseUrl, proxyUrl);
+  const payload = await fetchPanels(token, ["MAIN"], vpcId, undefined, proxyUrl);
   const games = flattenPanels(payload);
-  return mergePublicGameVariants(await enrichGamesWithMetadata(token, vpcId, games), await fetchPublicGames());
+  return mergePublicGameVariants(await enrichGamesWithMetadata(token, vpcId, games, proxyUrl), await fetchPublicGames(proxyUrl));
 }
 
 export async function fetchLibraryGames(
   token: string,
   providerStreamingBaseUrl?: string,
+  accountId?: string,
+  proxyUrl?: string,
 ): Promise<GameInfo[]> {
-  const cacheKey = accountScopedGamesCacheKey("library", token, providerStreamingBaseUrl);
-  const cached = await cacheManager.loadFromCache<GameInfo[]>(cacheKey);
+  const cached = await loadAccountScopedFromCache<GameInfo[]>(LIBRARY_GAMES_CACHE_SCOPE, accountId, token, providerStreamingBaseUrl, proxyUrl);
   if (cached) {
-    return mergePublicGameVariants(cached.data, await fetchPublicGames());
+    return mergePublicGameVariants(cached.data, await fetchPublicGames(proxyUrl));
   }
 
-  const games = await fetchLibraryGamesUncached(token, providerStreamingBaseUrl);
-  await cacheManager.saveToCache(cacheKey, games);
+  const games = await fetchLibraryGamesUncached(token, providerStreamingBaseUrl, proxyUrl);
+  if (!shouldBypassGamesCache(proxyUrl)) {
+    const cacheKey = accountScopedGamesCacheKey(LIBRARY_GAMES_CACHE_SCOPE, resolveAccountCacheId(accountId, token), providerStreamingBaseUrl, proxyUrl);
+    await cacheManager.saveToCache(cacheKey, games);
+  }
   return games;
 }
 
 async function fetchLibraryGamesUncached(
   token: string,
   providerStreamingBaseUrl?: string,
+  proxyUrl?: string,
 ): Promise<GameInfo[]> {
-  const vpcId = await getVpcId(token, providerStreamingBaseUrl);
+  const vpcId = await getVpcId(token, providerStreamingBaseUrl, proxyUrl);
+  try {
+    const apps = await fetchPaginatedLibraryApps(token, vpcId, proxyUrl);
+    const games = dedupeGames(apps.map(appToGame));
+    return mergePublicGameVariants(await enrichGamesWithMetadata(token, vpcId, games, proxyUrl), await fetchPublicGames(proxyUrl));
+  } catch (error) {
+    console.warn("Paginated library query failed, falling back to library panel:", error);
+  }
+
   let payload: GraphQlResponse;
 
   try {
-    payload = await fetchPanels(token, ["LIBRARY"], vpcId, { withLibraryTime: true });
+    payload = await fetchPanels(token, ["LIBRARY"], vpcId, { withLibraryTime: true }, proxyUrl);
   } catch {
-    payload = await fetchPanels(token, ["LIBRARY"], vpcId);
+    payload = await fetchPanels(token, ["LIBRARY"], vpcId, undefined, proxyUrl);
   }
 
   const games = flattenPanels(payload);
-  return mergePublicGameVariants(await enrichGamesWithMetadata(token, vpcId, games), await fetchPublicGames());
+  return mergePublicGameVariants(await enrichGamesWithMetadata(token, vpcId, games, proxyUrl), await fetchPublicGames(proxyUrl));
 }
 
-export async function fetchPublicGames(): Promise<GameInfo[]> {
-  const cached = await cacheManager.loadFromCache<GameInfo[]>(PUBLIC_GAMES_CACHE_KEY);
+async function fetchPaginatedLibraryApps(token: string, vpcId: string, proxyUrl?: string): Promise<AppData[]> {
+  const query = `query GetLibraryApps(
+    $vpcId: String!,
+    $locale: String!,
+    $sortString: String!,
+    $fetchCount: Int!,
+    $cursor: String!,
+    $filters: AppFilterFields!
+  ) {
+    apps(
+      vpcId: $vpcId,
+      language: $locale,
+      orderBy: $sortString,
+      first: $fetchCount,
+      after: $cursor,
+      filters: $filters
+    ) {
+      numberReturned
+      numberSupported
+      pageInfo { hasNextPage endCursor totalCount }
+      items {
+        id
+        title
+        images { KEY_ART KEY_IMAGE GAME_BOX_ART TV_BANNER HERO_IMAGE MARQUEE_HERO_IMAGE FEATURE_IMAGE GAME_LOGO SCREENSHOTS }
+        variants {
+          id
+          appStore
+          storeUrl
+          supportedControls
+          gfn {
+            status
+            library { status selected lastPlayedDate }
+          }
+        }
+        gfn {
+          playabilityState
+          minimumMembershipTierLabel
+          catalogSkuStrings {
+            SKU_BASED_TAG
+            SKU_BASED_PLAYABILITY_TEXT
+            SKU_BASED_UNPLAYABLE_DIALOG_HEADER
+            SKU_BASED_UNPLAYABLE_DIALOG_BODY_UPGRADE
+            SKU_BASED_UNPLAYABLE_DIALOG_BODY_UPGRADE_ECOMM_RESTRICTED
+          }
+        }
+        itemMetadata { campaignIds }
+      }
+    }
+  }`;
+
+  const result = await fetchAllAppsPages<AppData>(
+    (cursor) => postGraphQl<AppsPage>(
+      query,
+      {
+        vpcId,
+        locale: DEFAULT_LOCALE,
+        sortString: DEFAULT_LIBRARY_SORT,
+        fetchCount: LIBRARY_FETCH_COUNT,
+        cursor,
+        filters: LIBRARY_APPS_FILTER,
+      },
+      token,
+      proxyUrl,
+    ),
+    { maxPages: MAX_LIBRARY_PAGES },
+  );
+  return result.items;
+}
+
+export async function fetchPublicGames(proxyUrl?: string): Promise<GameInfo[]> {
+  if (shouldBypassGamesCache(proxyUrl)) {
+    return fetchPublicGamesUncached(proxyUrl);
+  }
+
+  const cacheKey = publicGamesCacheKey(proxyUrl);
+  const cached = await cacheManager.loadFromCache<GameInfo[]>(cacheKey);
   if (cached) {
     return cached.data;
   }
 
-  const games = await fetchPublicGamesUncached();
-  await cacheManager.saveToCache(PUBLIC_GAMES_CACHE_KEY, games);
+  const games = await fetchPublicGamesUncached(proxyUrl);
+  await cacheManager.saveToCache(cacheKey, games);
   return games;
 }
 
@@ -1054,13 +1374,14 @@ export async function resolveLaunchAppId(
   token: string,
   appIdOrUuid: string,
   providerStreamingBaseUrl?: string,
+  proxyUrl?: string,
 ): Promise<string | null> {
   if (isNumericId(appIdOrUuid)) {
     return appIdOrUuid;
   }
 
-  const vpcId = await getVpcId(token, providerStreamingBaseUrl);
-  const payload = await fetchAppMetaData(token, [appIdOrUuid], vpcId);
+  const vpcId = await getVpcId(token, providerStreamingBaseUrl, proxyUrl);
+  const payload = await fetchAppMetaData(token, [appIdOrUuid], vpcId, proxyUrl);
 
   if (payload.errors?.length) {
     throw new Error(payload.errors.map((error) => error.message).join(", "));
@@ -1078,10 +1399,10 @@ export async function resolveStoreUrl(
   token: string,
   appIdOrUuid: string,
   providerStreamingBaseUrl?: string,
-  options: { variantId?: string; store?: string } = {},
+  options: { variantId?: string; store?: string; proxyUrl?: string } = {},
 ): Promise<string | null> {
-  const vpcId = await getVpcId(token, providerStreamingBaseUrl);
-  const payload = await fetchAppMetaData(token, [appIdOrUuid], vpcId);
+  const vpcId = await getVpcId(token, providerStreamingBaseUrl, options.proxyUrl);
+  const payload = await fetchAppMetaData(token, [appIdOrUuid], vpcId, options.proxyUrl);
 
   if (payload.errors?.length) {
     throw new Error(payload.errors.map((error) => error.message).join(", "));

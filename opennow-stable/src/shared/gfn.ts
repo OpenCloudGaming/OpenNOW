@@ -115,11 +115,12 @@ export function normalizeStreamPreferences(codec: VideoCodec, colorQuality: Colo
   const normalizedColorQuality = USER_FACING_COLOR_QUALITY_OPTIONS.includes(colorQuality)
     ? colorQuality
     : USER_FACING_COLOR_QUALITY_OPTIONS[0];
+  const codecCompatibleColorQuality = normalizedCodec === "H264" ? "8bit_420" : normalizedColorQuality;
 
   return {
     codec: normalizedCodec,
-    colorQuality: normalizedColorQuality,
-    migrated: normalizedCodec !== codec || normalizedColorQuality !== colorQuality,
+    colorQuality: codecCompatibleColorQuality,
+    migrated: normalizedCodec !== codec || codecCompatibleColorQuality !== colorQuality,
   };
 }
 
@@ -268,6 +269,8 @@ export interface Settings {
   sessionProxyEnabled: boolean;
   sessionProxyUrl: string;
   clipboardPaste: boolean;
+  /** Enable experimental gyroscope controller input mapping */
+  enableGyroscopeControls: boolean;
   mouseSensitivity: number;
   mouseAcceleration: number;
   shortcutToggleStats: string;
@@ -318,7 +321,7 @@ export interface Settings {
 
 export const DEFAULT_STREAM_PREFERENCES: Readonly<Pick<Settings, "codec" | "colorQuality">> = Object.freeze({
   codec: "H264",
-  colorQuality: "10bit_420",
+  colorQuality: "8bit_420",
 });
 
 export function getDefaultStreamPreferences(): Pick<Settings, "codec" | "colorQuality"> {
@@ -363,6 +366,87 @@ export interface EntitledResolution {
   width: number;
   height: number;
   fps: number;
+}
+
+export interface EntitledStreamProfile {
+  resolution: string;
+  fps: number;
+}
+
+export const SAFE_FALLBACK_STREAM_PROFILE: Readonly<EntitledStreamProfile> = Object.freeze({
+  resolution: "1920x1080",
+  fps: 60,
+});
+
+export function getSafeFallbackEntitledResolutions(): EntitledResolution[] {
+  return [{ width: 1920, height: 1080, fps: 60 }];
+}
+
+function parseResolutionValue(resolution: string): { width: number; height: number } | null {
+  const [widthText, heightText] = resolution.split("x");
+  const width = Number.parseInt(widthText ?? "", 10);
+  const height = Number.parseInt(heightText ?? "", 10);
+  return Number.isFinite(width) && width > 0 && Number.isFinite(height) && height > 0
+    ? { width, height }
+    : null;
+}
+
+function isValidEntitledResolution(resolution: EntitledResolution): boolean {
+  return Number.isFinite(resolution.width)
+    && resolution.width > 0
+    && Number.isFinite(resolution.height)
+    && resolution.height > 0
+    && Number.isFinite(resolution.fps)
+    && resolution.fps > 0;
+}
+
+function compareEntitledResolutionDescending(a: EntitledResolution, b: EntitledResolution): number {
+  const pixelDelta = b.width * b.height - a.width * a.height;
+  if (pixelDelta !== 0) return pixelDelta;
+  if (b.width !== a.width) return b.width - a.width;
+  if (b.height !== a.height) return b.height - a.height;
+  return b.fps - a.fps;
+}
+
+export function resolveEntitledStreamProfile(
+  entitledResolutions: readonly EntitledResolution[],
+  requested: EntitledStreamProfile,
+): EntitledStreamProfile | null {
+  const validEntitlements = entitledResolutions.filter(isValidEntitledResolution);
+  if (validEntitlements.length === 0) {
+    return null;
+  }
+
+  const requestedResolution = parseResolutionValue(requested.resolution);
+  const matchingResolutionEntries = requestedResolution
+    ? validEntitlements.filter(
+      (resolution) =>
+        resolution.width === requestedResolution.width &&
+        resolution.height === requestedResolution.height,
+    )
+    : [];
+  const fallbackResolution = [...validEntitlements].sort(compareEntitledResolutionDescending)[0];
+  const selectedResolutionEntries = matchingResolutionEntries.length > 0
+    ? matchingResolutionEntries
+    : validEntitlements.filter(
+      (resolution) =>
+        resolution.width === fallbackResolution.width &&
+        resolution.height === fallbackResolution.height,
+    );
+  const fpsOptions = [...new Set(selectedResolutionEntries.map((resolution) => Math.trunc(resolution.fps)))]
+    .sort((a, b) => a - b);
+  const requestedFps = Number.isFinite(requested.fps) && requested.fps > 0
+    ? Math.trunc(requested.fps)
+    : undefined;
+  const fps = requestedFps && fpsOptions.includes(requestedFps)
+    ? requestedFps
+    : [...fpsOptions].reverse().find((option) => requestedFps !== undefined && option <= requestedFps) ?? fpsOptions[0];
+  const selectedResolution = selectedResolutionEntries[0];
+
+  return {
+    resolution: `${selectedResolution.width}x${selectedResolution.height}`,
+    fps,
+  };
 }
 
 export interface StorageAddon {
@@ -513,6 +597,18 @@ export interface PingResult {
 export interface GamesFetchRequest {
   token?: string;
   providerStreamingBaseUrl?: string;
+  /** Optional proxy used for GFN games catalog/list requests. */
+  proxyUrl?: string;
+  /** Stable account id used for on-disk cache scoping (avoids cache misses on token refresh). */
+  userId?: string;
+}
+
+export interface DirectLaunchRequest {
+  id: string;
+  source: "cli";
+  appId?: string;
+  title?: string;
+  receivedAt: number;
 }
 
 export interface CatalogBrowseRequest extends GamesFetchRequest {
@@ -525,12 +621,14 @@ export interface CatalogBrowseRequest extends GamesFetchRequest {
 export interface ResolveLaunchIdRequest {
   token?: string;
   providerStreamingBaseUrl?: string;
+  proxyUrl?: string;
   appIdOrUuid: string;
 }
 
 export interface ResolveStoreUrlRequest {
   token?: string;
   providerStreamingBaseUrl?: string;
+  proxyUrl?: string;
   appIdOrUuid: string;
   variantId?: string;
   store?: string;
@@ -572,6 +670,43 @@ export interface PersistentStorageLocationsResult {
   locations: PersistentStorageLocation[];
   currentRegionCode?: string;
   currentRegionName?: string;
+}
+
+export type GameAccountConnectionStatus = "not_connected" | "connected" | "expired" | "sync_error";
+
+export interface GameAccountConnection {
+  provider: string;
+  label: string;
+  sortOrder: number;
+  iconUrl?: string;
+  supportsLinking: boolean;
+  supportsSync: boolean;
+  isRequired: boolean;
+  isConnected: boolean;
+  status: GameAccountConnectionStatus;
+  displayName?: string;
+  userIdentifier?: string;
+  expiresIn?: string;
+  expiresAt?: number;
+  syncState?: string;
+  syncDate?: string;
+  syncedGames: number;
+}
+
+export interface GameAccountConnectionsResult {
+  accounts: GameAccountConnection[];
+  fetchedAt: number;
+}
+
+export interface GameAccountOperationRequest {
+  provider: string;
+  proxyUrl?: string;
+}
+
+export interface GameAccountOperationResult extends GameAccountConnectionsResult {
+  ok: true;
+  account?: GameAccountConnection;
+  message?: string;
 }
 
 export interface GameVariant {
@@ -787,6 +922,7 @@ export interface IceServer {
 export interface MediaConnectionInfo {
   ip: string;
   port: number;
+  usage?: number;
 }
 
 /** Server-negotiated stream profile received from CloudMatch after session ready */
@@ -1153,6 +1289,10 @@ export interface OpenNowApi {
   fetchSubscription(input: SubscriptionFetchRequest): Promise<SubscriptionInfo>;
   fetchPersistentStorageLocations(input?: PersistentStorageLocationsFetchRequest): Promise<PersistentStorageLocationsResult>;
   resetPersistentStorage(input?: PersistentStorageResetRequest): Promise<PersistentStorageResetResult>;
+  fetchGameAccountConnections(): Promise<GameAccountConnectionsResult>;
+  linkGameAccount(input: GameAccountOperationRequest): Promise<GameAccountOperationResult>;
+  unlinkGameAccount(input: GameAccountOperationRequest): Promise<GameAccountOperationResult>;
+  resyncGameAccount(input: GameAccountOperationRequest): Promise<GameAccountOperationResult>;
   fetchMainGames(input: GamesFetchRequest): Promise<GameInfo[]>;
   fetchStorePanels(input: GamesFetchRequest): Promise<GamePanelResult[]>;
   fetchFeaturedGames(input: GamesFetchRequest): Promise<GameInfo[]>;
@@ -1161,6 +1301,8 @@ export interface OpenNowApi {
   fetchPublicGames(): Promise<GameInfo[]>;
   resolveLaunchAppId(input: ResolveLaunchIdRequest): Promise<string | null>;
   resolveStoreUrl(input: ResolveStoreUrlRequest): Promise<string | null>;
+  getPendingDirectLaunchRequest(): Promise<DirectLaunchRequest | null>;
+  onDirectLaunchRequest(listener: (request: DirectLaunchRequest) => void): () => void;
   createSession(input: SessionCreateRequest): Promise<SessionInfo>;
   pollSession(input: SessionPollRequest): Promise<SessionInfo>;
   reportSessionAd(input: SessionAdReportRequest): Promise<SessionInfo>;

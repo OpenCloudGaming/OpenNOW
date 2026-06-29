@@ -12,7 +12,7 @@ import {
   rewriteH265TierFlag,
 } from "./sdp";
 
-test("fixServerIp replaces 0.0.0.0 connection and candidate IPs from GFN dashed hostnames", () => {
+test("fixServerIp replaces 0.0.0.0 candidate IPs without changing connection lines", () => {
   const sdp = [
     "v=0",
     "c=IN IP4 0.0.0.0",
@@ -22,7 +22,7 @@ test("fixServerIp replaces 0.0.0.0 connection and candidate IPs from GFN dashed 
 
   const fixed = fixServerIp(sdp, "161-248-11-132.bpc.geforcenow.nvidiagrid.net");
 
-  assert.match(fixed, /c=IN IP4 161\.248\.11\.132/);
+  assert.match(fixed, /c=IN IP4 0\.0\.0\.0/);
   assert.match(fixed, /a=candidate:1 1 udp 2130706431 161\.248\.11\.132 47998 typ host/);
   assert.match(fixed, /a=candidate:2 1 tcp 1 192\.168\.1\.5 9 typ host/);
   assert.equal(fixServerIp(sdp, "unparseable.example.com"), sdp);

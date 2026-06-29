@@ -8,6 +8,7 @@ import type {
   AuthDeviceLoginStartRequest,
   AuthSession,
   AuthSessionRequest,
+  DirectLaunchRequest,
   GamesFetchRequest,
   CatalogBrowseRequest,
   ResolveLaunchIdRequest,
@@ -47,6 +48,9 @@ import type {
   AppUpdaterState,
   PersistentStorageLocationsFetchRequest,
   PersistentStorageResetRequest,
+  GameAccountOperationRequest,
+  GameAccountConnectionsResult,
+  GameAccountOperationResult,
 } from "@shared/gfn";
 import { parseSerializedSessionErrorTransport } from "@shared/sessionError";
 
@@ -92,6 +96,14 @@ const api: OpenNowApi = {
     ipcRenderer.invoke(IPC_CHANNELS.PERSISTENT_STORAGE_LOCATIONS_FETCH, input),
   resetPersistentStorage: (input: PersistentStorageResetRequest = {}) =>
     ipcRenderer.invoke(IPC_CHANNELS.PERSISTENT_STORAGE_RESET, input),
+  fetchGameAccountConnections: (): Promise<GameAccountConnectionsResult> =>
+    ipcRenderer.invoke(IPC_CHANNELS.GAME_ACCOUNTS_FETCH),
+  linkGameAccount: (input: GameAccountOperationRequest): Promise<GameAccountOperationResult> =>
+    ipcRenderer.invoke(IPC_CHANNELS.GAME_ACCOUNT_LINK, input),
+  unlinkGameAccount: (input: GameAccountOperationRequest): Promise<GameAccountOperationResult> =>
+    ipcRenderer.invoke(IPC_CHANNELS.GAME_ACCOUNT_UNLINK, input),
+  resyncGameAccount: (input: GameAccountOperationRequest): Promise<GameAccountOperationResult> =>
+    ipcRenderer.invoke(IPC_CHANNELS.GAME_ACCOUNT_RESYNC, input),
   fetchMainGames: (input: GamesFetchRequest) => ipcRenderer.invoke(IPC_CHANNELS.GAMES_FETCH_MAIN, input),
   fetchStorePanels: (input: GamesFetchRequest) => ipcRenderer.invoke(IPC_CHANNELS.GAMES_FETCH_STORE_PANELS, input),
   fetchFeaturedGames: (input: GamesFetchRequest) => ipcRenderer.invoke(IPC_CHANNELS.GAMES_FETCH_FEATURED, input),
@@ -103,6 +115,18 @@ const api: OpenNowApi = {
     ipcRenderer.invoke(IPC_CHANNELS.GAMES_RESOLVE_LAUNCH_ID, input),
   resolveStoreUrl: (input: ResolveStoreUrlRequest) =>
     ipcRenderer.invoke(IPC_CHANNELS.GAMES_RESOLVE_STORE_URL, input),
+  getPendingDirectLaunchRequest: (): Promise<DirectLaunchRequest | null> =>
+    ipcRenderer.invoke(IPC_CHANNELS.DIRECT_LAUNCH_GET_PENDING),
+  onDirectLaunchRequest: (listener: (request: DirectLaunchRequest) => void) => {
+    const wrapped = (_event: Electron.IpcRendererEvent, payload: DirectLaunchRequest) => {
+      listener(payload);
+    };
+
+    ipcRenderer.on(IPC_CHANNELS.DIRECT_LAUNCH_REQUEST, wrapped);
+    return () => {
+      ipcRenderer.off(IPC_CHANNELS.DIRECT_LAUNCH_REQUEST, wrapped);
+    };
+  },
   createSession: (input: SessionCreateRequest) => invokeSessionChannel(IPC_CHANNELS.CREATE_SESSION, input),
   pollSession: (input: SessionPollRequest) => invokeSessionChannel(IPC_CHANNELS.POLL_SESSION, input),
   reportSessionAd: (input: SessionAdReportRequest) => invokeSessionChannel(IPC_CHANNELS.REPORT_SESSION_AD, input),

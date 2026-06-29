@@ -15,6 +15,20 @@ export function sessionProxyPartitionForUrl(normalizedProxyUrl: string): string 
   return partition;
 }
 
+export function sessionProxyCacheKeyPart(raw?: string): string | null {
+  const normalizedProxyUrl = normalizeSessionProxyUrl(raw);
+  if (!normalizedProxyUrl) return null;
+  const parsed = new URL(normalizedProxyUrl);
+  return crypto.createHash("sha256").update(`${parsed.protocol}//${parsed.host}`).digest("hex").slice(0, 16);
+}
+
+export function sessionProxyHasCredentials(raw?: string): boolean {
+  const normalizedProxyUrl = normalizeSessionProxyUrl(raw);
+  if (!normalizedProxyUrl) return false;
+  const parsed = new URL(normalizedProxyUrl);
+  return parsed.username.length > 0 || parsed.password.length > 0;
+}
+
 export function normalizeSessionProxyUrl(raw?: string): string | null {
   const trimmed = raw?.trim() ?? "";
   if (!trimmed) return null;

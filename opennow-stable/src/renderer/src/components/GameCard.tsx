@@ -1,5 +1,5 @@
 import { Play, Monitor } from "lucide-react";
-import { memo, useCallback, useState } from "react";
+import { memo, useCallback, useMemo, useState } from "react";
 import type { JSX } from "react";
 import { normalizeGameStore } from "@shared/gfn";
 import type { GameInfo } from "@shared/gfn";
@@ -13,16 +13,6 @@ interface GameCardProps {
   onSelect: () => void;
   selectedVariantId?: string;
   onSelectStore?: (variantId: string) => void;
-}
-
-interface StoreOption {
-  store: string;
-  storeKey: string;
-  variantId: string;
-  displayName: string;
-  IconComponent: () => JSX.Element;
-  isOwned: boolean;
-  isActive: boolean;
 }
 
 /* ── Official store brand icons (Simple Icons / MDI, viewBox 0 0 24 24) ── */
@@ -157,6 +147,23 @@ export function getStoreIconComponent(store: string): () => JSX.Element {
   return STORE_ICON_MAP[key] ?? DefaultStoreIcon;
 }
 
+const StoreBrandIcon = memo(function StoreBrandIcon({ store }: { store: string }): JSX.Element {
+  const key = normalizeStoreKey(store);
+  const IconComponent = STORE_ICON_MAP[key] ?? DefaultStoreIcon;
+  return <IconComponent />;
+});
+
+function gameCardPropsAreEqual(prev: GameCardProps, next: GameCardProps): boolean {
+  return (
+    prev.game === next.game
+    && prev.isSelected === next.isSelected
+    && prev.selectedVariantId === next.selectedVariantId
+    && prev.onPlay === next.onPlay
+    && prev.onSelect === next.onSelect
+    && prev.onSelectStore === next.onSelectStore
+  );
+}
+
 export const GameCard = memo(function GameCard({
   game,
   isSelected = false,
@@ -166,11 +173,13 @@ export const GameCard = memo(function GameCard({
   onSelectStore,
 }: GameCardProps): JSX.Element {
   const { t } = useTranslation();
-  const storeOptions: StoreOption[] = getGameCardStoreOptions(game, selectedVariantId).map((option) => ({
-    ...option,
-    displayName: getStoreDisplayName(option.store),
-    IconComponent: getStoreIconComponent(option.store),
-  }));
+  const storeOptions = useMemo(
+    () => getGameCardStoreOptions(game, selectedVariantId).map((option) => ({
+      ...option,
+      displayName: getStoreDisplayName(option.store),
+    })),
+    [game, selectedVariantId],
+  );
   const activeStoreOption = storeOptions.find((option) => option.isActive) ?? storeOptions[0];
 
   const [aspectPct, setAspectPct] = useState<number | undefined>(undefined);
@@ -279,14 +288,14 @@ export const GameCard = memo(function GameCard({
                       aria-label={t("gameCard.store", { store: store.displayName })}
                       aria-pressed={store.isActive}
                     >
-                      <store.IconComponent />
+                      <StoreBrandIcon store={store.store} />
                     </button>
                   );
                 }
 
                 return (
                   <span key={store.storeKey} className={className} title={title}>
-                    <store.IconComponent />
+                    <StoreBrandIcon store={store.store} />
                   </span>
                 );
               })}
@@ -299,4 +308,4 @@ export const GameCard = memo(function GameCard({
       </div>
     </div>
   );
-});
+}, gameCardPropsAreEqual);

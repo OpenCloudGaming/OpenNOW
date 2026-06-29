@@ -28,14 +28,11 @@ import {
   GAMEPAD_MAX_CONTROLLERS,
   type GamepadInput,
   codeMap,
-  mapTextCharToKeySpec,
 } from "./inputProtocol";
 import { FULLSCREEN_KEYBOARD_LOCK_CODES } from "./keyboardLock";
 import {
   buildNvstSdp,
   extractIceCredentials,
-  extractIceUfragFromOffer,
-  extractPublicIp,
   fixServerIp,
   mungeAnswerSdp,
   preferCodec,
@@ -3038,30 +3035,12 @@ export class GfnWebRtcClient {
       return 0;
     }
 
-    let sent = 0;
-    const maxChars = 4096;
-    for (const char of text.slice(0, maxChars)) {
-      const key = mapTextCharToKeySpec(char, this.keyboardLayout);
-      if (!key) {
-        continue;
-      }
-
-      if (key.shift) {
-        this.sendKeyPacket(codeMap.ShiftLeft.vk, codeMap.ShiftLeft.scancode, 0x01, true);
-      }
-
-      const mods = key.shift ? 0x01 : 0;
-      this.sendKeyPacket(key.vk, key.scancode, mods, true);
-      this.sendKeyPacket(key.vk, key.scancode, mods, false);
-
-      if (key.shift) {
-        this.sendKeyPacket(codeMap.ShiftLeft.vk, codeMap.ShiftLeft.scancode, 0, false);
-      }
-
-      sent++;
+    const chunks = this.inputEncoder.encodeTextInput(text);
+    for (const chunk of chunks) {
+      this.sendReliable(chunk);
     }
 
-    return sent;
+    return Array.from(text).length;
   }
 
   private sendGamepad(payload: Uint8Array): void {
@@ -4215,6 +4194,14 @@ export class GfnWebRtcClient {
     this.installInputCapture(this.options.videoElement);
     this.setupStatsPolling();
 
+    let answerSent = false;
+    const queuedLocalIce: IceCandidatePayload[] = [];
+    const sendLocalIce = (candidate: IceCandidatePayload): void => {
+      window.openNow.sendIceCandidate(candidate).catch((error) => {
+        this.log(`Failed to send local ICE candidate: ${String(error)}`);
+      });
+    };
+
     pc.onicecandidate = (event) => {
       if (!event.candidate) {
         this.log("ICE gathering complete (null candidate)");
@@ -4231,9 +4218,12 @@ export class GfnWebRtcClient {
         sdpMLineIndex: payload.sdpMLineIndex,
         usernameFragment: payload.usernameFragment,
       };
-      window.openNow.sendIceCandidate(candidate).catch((error) => {
-        this.log(`Failed to send local ICE candidate: ${String(error)}`);
-      });
+      if (!answerSent) {
+        queuedLocalIce.push(candidate);
+        this.log("Queued local ICE candidate until answer is sent");
+        return;
+      }
+      sendLocalIce(candidate);
     };
 
     pc.onconnectionstatechange = () => {
@@ -4299,7 +4289,11 @@ export class GfnWebRtcClient {
 
     // 1. Fix 0.0.0.0 in server's SDP offer with real server IP
     //    The GFN server sends c=IN IP4 0.0.0.0; replace with actual IP
-    const serverIpForSdp = session.mediaConnectionInfo?.ip || session.serverIp || "";
+    const webRtcMediaConnection =
+      session.mediaConnectionInfo?.usage === 2 || session.mediaConnectionInfo?.usage === 17
+        ? session.mediaConnectionInfo
+        : undefined;
+    const serverIpForSdp = webRtcMediaConnection?.ip ?? "";
     let processedOffer = offerSdp;
     if (serverIpForSdp) {
       processedOffer = fixServerIp(processedOffer, serverIpForSdp);
@@ -4309,11 +4303,11 @@ export class GfnWebRtcClient {
       if (remaining > 0) {
         this.log(`Warning: ${remaining} occurrences of 0.0.0.0 still remain in SDP after fix`);
       }
+    } else if (session.mediaConnectionInfo) {
+      this.log(
+        `Skipping SDP ICE rewrite for mediaConnectionInfo usage=${session.mediaConnectionInfo.usage ?? "unknown"} (${session.mediaConnectionInfo.ip}:${session.mediaConnectionInfo.port})`,
+      );
     }
-
-    // 2. Extract server's ice-ufrag BEFORE any modifications (needed for manual candidate injection)
-    const serverIceUfrag = extractIceUfragFromOffer(processedOffer);
-    this.log(`Server ICE ufrag: "${serverIceUfrag}"`);
 
     const preferredHevcProfileId = hevcPreferredProfileId(settings.colorQuality);
 
@@ -4399,10 +4393,13 @@ export class GfnWebRtcClient {
     }
 
     await pc.setLocalDescription(answer);
-    this.log("Local description set, waiting for ICE gathering...");
+    this.log("Local description set; sending answer before ICE gathering completes");
 
-    const finalSdp = await this.waitForIceGathering(pc, 5000);
-    this.log(`ICE gathering done, final SDP length: ${finalSdp.length} chars`);
+    const finalSdp = pc.localDescription?.sdp ?? answer.sdp;
+    if (!finalSdp) {
+      throw new Error("Missing local SDP after setLocalDescription");
+    }
+    this.log(`Immediate local SDP length: ${finalSdp.length} chars`);
 
     // Debug negotiated video codec/fmtp lines from local answer SDP
     {
@@ -4463,55 +4460,31 @@ export class GfnWebRtcClient {
       nvstSdp,
     });
     this.log("Sent SDP answer and nvstSdp");
-
-    // 5. Inject manual ICE candidate from mediaConnectionInfo AFTER answer is sent
-    //    (matches Rust reference ordering — full SDP exchange completes first)
-    //    GFN servers use ice-lite and may not trickle candidates via signaling.
-    //    The actual media endpoint comes from the session's connectionInfo array.
-    if (session.mediaConnectionInfo) {
-      const mci = session.mediaConnectionInfo;
-      const rawIp = extractPublicIp(mci.ip);
-      if (rawIp && mci.port > 0) {
-        const candidateStr = `candidate:1 1 udp 2130706431 ${rawIp} ${mci.port} typ host`;
-        this.log(`Injecting manual ICE candidate: ${rawIp}:${mci.port}`);
-
-        // Try sdpMid "0" first, then "1", "2", "3" (matching Rust fallback)
-        const mids = ["0", "1", "2", "3"];
-        let injected = false;
-        for (const mid of mids) {
-          try {
-            await pc.addIceCandidate({
-              candidate: candidateStr,
-              sdpMid: mid,
-              sdpMLineIndex: parseInt(mid, 10),
-              usernameFragment: serverIceUfrag || undefined,
-            });
-            this.log(`Manual ICE candidate injected (sdpMid=${mid})`);
-            injected = true;
-            break;
-          } catch (error) {
-            this.log(`Manual ICE candidate failed for sdpMid=${mid}: ${String(error)}`);
-          }
-        }
-        if (!injected) {
-          this.log("Warning: Could not inject manual ICE candidate on any sdpMid");
-        }
-      } else {
-        this.log(`Warning: mediaConnectionInfo present but no valid IP (ip=${mci.ip}, port=${mci.port})`);
+    answerSent = true;
+    if (queuedLocalIce.length > 0) {
+      this.log(`Flushing ${queuedLocalIce.length} queued local ICE candidates after answer`);
+      for (const candidate of queuedLocalIce.splice(0)) {
+        sendLocalIce(candidate);
       }
-    } else {
-      this.log("No mediaConnectionInfo available — relying on trickle ICE only");
     }
+
+    // Recent GFN browser runtimes rely on the server-provided trickled ICE
+    // candidate. Injecting mediaConnectionInfo as a higher-priority fallback can
+    // make Chromium pick an RTSPS endpoint that connects but never delivers frames.
+    this.log("Waiting for server-provided ICE candidates");
 
     this.log("=== handleOffer COMPLETE — waiting for ICE connectivity and tracks ===");
   }
 
   async addRemoteCandidate(candidate: IceCandidatePayload): Promise<void> {
-    this.log(`Remote ICE candidate received: ${candidate.candidate} (sdpMid=${candidate.sdpMid})`);
+    const sdpMLineIndex = candidate.sdpMLineIndex ?? (candidate.sdpMid == null ? 0 : undefined);
+    this.log(
+      `Remote ICE candidate received: ${candidate.candidate} (sdpMid=${candidate.sdpMid}, sdpMLineIndex=${sdpMLineIndex})`,
+    );
     const init: RTCIceCandidateInit = {
       candidate: candidate.candidate,
       sdpMid: candidate.sdpMid ?? undefined,
-      sdpMLineIndex: candidate.sdpMLineIndex ?? undefined,
+      sdpMLineIndex,
       usernameFragment: candidate.usernameFragment ?? undefined,
     };
 

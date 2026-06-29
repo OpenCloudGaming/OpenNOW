@@ -459,7 +459,7 @@ function resolveMediaConnectionInfo(
   connections: Array<{ ip?: string; port: number; usage: number; protocol?: number; resourcePath?: string }>,
   serverIp: string,
   options?: { logMissing?: boolean },
-): { ip: string; port: number } | undefined {
+): { ip: string; port: number; usage: number } | undefined {
   // Helper: extract IP from a connection entry
   const extractIp = (conn: { ip?: string; resourcePath?: string }): string | null => {
     // Try direct IP field
@@ -500,7 +500,7 @@ function resolveMediaConnectionInfo(
     const ip = extractIp(primary);
     const port = extractPort(primary);
     console.log(`[CloudMatch] resolveMediaConnectionInfo: usage=2 candidate: ip=${ip}, port=${port}`);
-    if (ip && port > 0) return { ip, port };
+    if (ip && port > 0) return { ip, port, usage: primary.usage };
   }
 
   // Priority 2: usage=17 (Alternative media path)
@@ -509,7 +509,7 @@ function resolveMediaConnectionInfo(
     const ip = extractIp(alt);
     const port = extractPort(alt);
     console.log(`[CloudMatch] resolveMediaConnectionInfo: usage=17 candidate: ip=${ip}, port=${port}`);
-    if (ip && port > 0) return { ip, port };
+    if (ip && port > 0) return { ip, port, usage: alt.usage };
   }
 
   // Priority 3: usage=14 with highest port (Alliance fallback)
@@ -521,7 +521,7 @@ function resolveMediaConnectionInfo(
     const ip = extractIp(conn) ?? serverIp;
     const port = extractPort(conn);
     console.log(`[CloudMatch] resolveMediaConnectionInfo: usage=14 candidate: ip=${ip}, port=${port} (serverIp fallback=${serverIp})`);
-    if (ip && port > 0) return { ip, port };
+    if (ip && port > 0) return { ip, port, usage: conn.usage };
   }
 
   if (options?.logMissing ?? true) {

@@ -1,10 +1,11 @@
 import { Search, LayoutGrid, Loader2, ArrowUpDown, Filter, ChevronDown, Gamepad2, Menu } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import type { JSX } from "react";
 import { AnimatePresence, m } from "motion/react";
 import { isOwnedLibraryStatus } from "@shared/gfn";
 import type { CatalogFilterGroup, CatalogSortOption, GameInfo, GamePanelResult, GameVariant } from "@shared/gfn";
-import { GameCard, getStoreDisplayName, getStoreIconComponent } from "./GameCard";
+import { getStoreDisplayName, getStoreIconComponent } from "./GameCard";
+import { GameCardListItem, useCatalogCardActionsRef } from "./GameCardListItem";
 import { useTranslation } from "../i18n";
 import { controllerButton, readControllerGamepadButtons } from "../utils/controllerGamepad";
 import { pageTransition, panelSpring } from "./MotionProvider";
@@ -229,7 +230,7 @@ function ControllerStoreTile({
   );
 }
 
-export function HomePage({
+export const HomePage = memo(function HomePage({
   games,
   searchQuery,
   onSearchChange,
@@ -250,12 +251,17 @@ export function HomePage({
   controllerMode = false,
   storePanels = [],
   storeHeroGames = [],
-  activeSessionAppIds = [],
+  activeSessionAppIds: _activeSessionAppIds = [],
   onBuyGame,
   onPreviousControllerPage,
   onNextControllerPage,
 }: HomePageProps): JSX.Element {
   const { t } = useTranslation();
+  const catalogActionsRef = useCatalogCardActionsRef({
+    onPlayGame,
+    onSelectGame,
+    onSelectGameVariant,
+  });
   const [controllerHeroIndex, setControllerHeroIndex] = useState(0);
   const [focusedRowIndex, setFocusedRowIndex] = useState(0);
   const [focusedColumnIndex, setFocusedColumnIndex] = useState(0);
@@ -487,6 +493,19 @@ export function HomePage({
       stopGamepadNavigation();
     };
   }, [controllerMode, controllerSearchOpen, onNextControllerPage, onPreviousControllerPage]);
+
+  const gameGridItems = useMemo(
+    () => games.map((game) => (
+      <GameCardListItem
+        key={game.id}
+        game={game}
+        isSelected={game.id === selectedGameId}
+        selectedVariantId={selectedVariantByGameId[game.id]}
+        actionsRef={catalogActionsRef}
+      />
+    )),
+    [catalogActionsRef, games, selectedGameId, selectedVariantByGameId],
+  );
 
   if (controllerMode) {
     const showInitialLoading = isLoading && controllerSections.length === 0;
@@ -746,25 +765,11 @@ export function HomePage({
             </p>
           </div>
         ) : (
-          <m.div
-            className="game-grid"
-            initial={{ opacity: 0, y: 8 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={pageTransition}
-          >
-            {games.map((game) => (
-              <GameCard
-                key={game.id}
-                game={game}
-                onSelect={() => onSelectGame(game.id)}
-                onPlay={() => onPlayGame(game)}
-                selectedVariantId={selectedVariantByGameId[game.id]}
-                onSelectStore={(variantId) => onSelectGameVariant(game.id, variantId)}
-              />
-            ))}
-          </m.div>
+          <div className="game-grid">
+            {gameGridItems}
+          </div>
         )}
       </div>
     </div>
   );
-}
+});

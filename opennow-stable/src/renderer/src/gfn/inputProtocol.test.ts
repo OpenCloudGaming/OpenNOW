@@ -23,6 +23,7 @@ import {
   INPUT_MOUSE_BUTTON_DOWN,
   INPUT_MOUSE_REL,
   INPUT_MOUSE_WHEEL,
+  INPUT_TEXT,
   InputEncoder,
   codeMap,
   isPartiallyReliableHidTransferEligible,
@@ -80,23 +81,18 @@ function assertV3BatchWrapper(bytes: Uint8Array, marker: number, lengthOffset: n
   return new DataView(bytes.buffer, bytes.byteOffset + payloadOffset, payloadSize);
 }
 
-test("maps keyboard events using layout-aware keyCode and zero scancode", () => {
+test("maps keyboard events using official code-position VKs and zero scancode", () => {
   assert.deepEqual(mapKeyboardEvent(keyboardEvent({ code: "KeyA", key: "a", keyCode: 65 })), { vk: 65, scancode: 0 });
   assert.deepEqual(mapKeyboardEvent(keyboardEvent({ code: "KeyN", key: "n", keyCode: 78 })), { vk: 78, scancode: 0 });
   assert.deepEqual(mapKeyboardEvent(keyboardEvent({ code: "KeyT", key: "t", keyCode: 84 })), { vk: 84, scancode: 0 });
 });
 
-test("prefers layout keyCode over physical code (German QWERTZ)", () => {
+test("prefers physical code over layout keyCode like the official client", () => {
   const event = keyboardEvent({ code: "KeyZ", key: "y", keyCode: 89 });
-  assert.deepEqual(mapKeyboardEvent(event), { vk: 89, scancode: 0 });
+  assert.deepEqual(mapKeyboardEvent(event), { vk: codeMap.KeyZ.vk, scancode: 0 });
 });
 
-test("maps punctuation using platform keyCode on non-US layouts", () => {
-  const event = keyboardEvent({ code: "Slash", key: "ö", keyCode: 191 });
-  assert.deepEqual(mapKeyboardEvent(event), { vk: 191, scancode: 0 });
-});
-
-test("maps OEM punctuation physically when a non-English GFN layout is selected", () => {
+test("maps German OEM punctuation physically instead of using local layout keyCode", () => {
   assert.deepEqual(
     mapKeyboardEvent(keyboardEvent({ code: "BracketLeft", key: "ü", keyCode: 186 }), "de-DE"),
     { vk: codeMap.BracketLeft.vk, scancode: 0 },
@@ -108,6 +104,10 @@ test("maps OEM punctuation physically when a non-English GFN layout is selected"
   assert.deepEqual(
     mapKeyboardEvent(keyboardEvent({ code: "Backquote", key: "^", keyCode: 220 }), "de-DE"),
     { vk: codeMap.Backquote.vk, scancode: 0 },
+  );
+  assert.deepEqual(
+    mapKeyboardEvent(keyboardEvent({ code: "Slash", key: "-", keyCode: 189 }), "de-DE"),
+    { vk: codeMap.Slash.vk, scancode: 0 },
   );
 });
 
@@ -265,6 +265,27 @@ test("encodes mouse button and wheel with v3 single-event wrapper", () => {
   assert.equal(wheelPayload.getInt16(4, false), 0);
   assert.equal(wheelPayload.getInt16(6, false), -120);
   assert.equal(wheelPayload.getBigUint64(14, false), 456n);
+});
+
+test("encodes unicode text input with official SendUnicode packet framing", () => {
+  const encoder = new InputEncoder();
+  encoder.setProtocolVersion(3);
+  const [packet] = encoder.encodeTextInput("a🙂\nß");
+
+  assert.ok(packet);
+  assert.equal(packet[0], 0x22);
+  assert.equal(view(packet).getUint32(1, true), INPUT_TEXT);
+  assert.equal(new TextDecoder().decode(packet.subarray(5)), "a🙂\nß");
+});
+
+test("chunks unicode text input without splitting UTF-8 code points", () => {
+  const encoder = new InputEncoder();
+  const packets = encoder.encodeTextInput(`${"a".repeat(1015)}🙂b`);
+
+  assert.equal(packets.length, 2);
+  assert.equal(packets[0].byteLength, 5 + 1015);
+  assert.equal(new TextDecoder().decode(packets[0].subarray(5)), "a".repeat(1015));
+  assert.equal(new TextDecoder().decode(packets[1].subarray(5)), "🙂b");
 });
 
 test("maps Gamepad API button values to XInput flags without pressed", () => {

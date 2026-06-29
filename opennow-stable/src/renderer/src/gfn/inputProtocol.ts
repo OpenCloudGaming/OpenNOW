@@ -11,6 +11,10 @@ export const INPUT_MOUSE_BUTTON_UP = 9;
 export const INPUT_MOUSE_WHEEL = 10;
 export const INPUT_GAMEPAD = 12;
 export const INPUT_HAPTICS_ENABLED = 13;
+export const INPUT_TEXT = 23;
+
+const TEXT_INPUT_CHUNK_MAX_BYTES = 1016;
+const TEXT_INPUT_HEADER_BYTES = 5;
 
 // Mouse button constants (1-based for GFN protocol)
 // GFN uses: 1=Left, 2=Middle, 3=Right, 4=Back, 5=Forward
@@ -240,8 +244,8 @@ const specialVirtualKeyByCode: Record<string, number> = {
   BracketRight: 0xdd,
   Backslash: 0xdc,
   IntlBackslash: 0xe2,
-  IntlRo: 0xc1,
-  IntlYen: 0xdc,
+  IntlRo: 0xc2,
+  IntlYen: 0xc1,
   Semicolon: 0xba,
   Quote: 0xde,
   Backquote: 0xc0,
@@ -268,10 +272,19 @@ const specialVirtualKeyByCode: Record<string, number> = {
   End: 0x23,
   PageUp: 0x21,
   PageDown: 0x22,
-  PrintScreen: 0x2c,
+  PrintScreen: 0x2a,
   ScrollLock: 0x91,
   Pause: 0x13,
   ContextMenu: 0x5d,
+  OSLeft: 0x5b,
+  OSRight: 0x5c,
+  KanaMode: 0xe9,
+  Lang1: 0x15,
+  Lang2: 0x19,
+  Convert: 0xea,
+  NonConvert: 0xeb,
+  NumpadClear: 0x0c,
+  NumpadClearEntry: 0x0c,
   NumpadAdd: 0x6b,
   NumpadSubtract: 0x6d,
   NumpadMultiply: 0x6a,
@@ -281,30 +294,6 @@ const specialVirtualKeyByCode: Record<string, number> = {
   NumpadEqual: 0xbb,
   NumpadComma: 0xbc,
 };
-
-const physicalOemVirtualKeyCodes = new Set([
-  "Minus",
-  "Equal",
-  "BracketLeft",
-  "BracketRight",
-  "Backslash",
-  "IntlBackslash",
-  "IntlRo",
-  "IntlYen",
-  "Semicolon",
-  "Quote",
-  "Backquote",
-  "Comma",
-  "Period",
-  "Slash",
-]);
-
-function shouldUsePhysicalOemVirtualKey(event: KeyLike, layout?: KeyboardLayout): boolean {
-  if (!layout || layout === "en-US" || layout === "en-GB") {
-    return false;
-  }
-  return physicalOemVirtualKeyCodes.has(event.code);
-}
 
 const keyFallbackMap: Record<string, KeyMapping> = {
   Escape: { vk: 0x1b, scancode: 0x0001 },
@@ -548,11 +537,11 @@ function virtualKeyFromKeyValue(key: string): number | null {
   return null;
 }
 
-function virtualKeyFromEvent(event: KeyLike, layout?: KeyboardLayout): number | null {
-  if (shouldUsePhysicalOemVirtualKey(event, layout)) {
-    const physicalVk = defaultVirtualKeyFromCode(event.code);
-    if (physicalVk !== null) {
-      return physicalVk;
+function virtualKeyFromEvent(event: KeyLike): number | null {
+  if (event.code) {
+    const codeVk = defaultVirtualKeyFromCode(event.code);
+    if (codeVk !== null) {
+      return codeVk;
     }
   }
 
@@ -803,6 +792,28 @@ export class InputEncoder {
     return wrapSingleEvent(bytes, this.protocolVersion);
   }
 
+  encodeTextInput(text: string): Uint8Array[] {
+    const utf8 = new TextEncoder().encode(text);
+    const chunks: Uint8Array[] = [];
+
+    for (let offset = 0; offset < utf8.byteLength;) {
+      const chunkLength = textInputChunkLength(utf8, offset);
+      if (chunkLength <= 0) {
+        break;
+      }
+
+      const bytes = new Uint8Array(TEXT_INPUT_HEADER_BYTES + chunkLength);
+      const view = new DataView(bytes.buffer);
+      bytes[0] = 0x22;
+      view.setUint32(1, INPUT_TEXT, true);
+      bytes.set(utf8.subarray(offset, offset + chunkLength), TEXT_INPUT_HEADER_BYTES);
+      chunks.push(bytes);
+      offset += chunkLength;
+    }
+
+    return chunks;
+  }
+
   encodeGamepadState(payload: GamepadInput, bitmap: number, usePartiallyReliable: boolean): Uint8Array {
     const bytes = new Uint8Array(GAMEPAD_PACKET_SIZE);
     const view = new DataView(bytes.buffer);
@@ -897,6 +908,23 @@ export class InputEncoder {
   }
 }
 
+function textInputChunkLength(bytes: Uint8Array, offset: number): number {
+  const remaining = bytes.byteLength - offset;
+  if (remaining <= TEXT_INPUT_CHUNK_MAX_BYTES) {
+    return remaining;
+  }
+
+  let end = offset + TEXT_INPUT_CHUNK_MAX_BYTES;
+  for (let attempt = 0; attempt < 4; attempt++) {
+    if ((bytes[end] & 0xc0) !== 0x80) {
+      return end - offset;
+    }
+    end--;
+  }
+
+  return 0;
+}
+
 /** Per-key modifier byte (official GFN yS()). Lock keys sync separately via INPUT_LOCK_KEYS_SYNC. */
 export function modifierFlags(event: KeyboardEvent): number {
   let flags = 0;
@@ -921,8 +949,8 @@ export function lockKeysStateFromEvent(event: KeyboardEvent): number {
   return state;
 }
 
-export function mapKeyboardEvent(event: KeyboardEvent, layout?: KeyboardLayout): KeyMapping | null {
-  const vk = virtualKeyFromEvent(event, layout);
+export function mapKeyboardEvent(event: KeyboardEvent, _layout?: KeyboardLayout): KeyMapping | null {
+  const vk = virtualKeyFromEvent(event);
   if (vk === null || vk === 0) {
     return null;
   }

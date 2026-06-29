@@ -1,11 +1,13 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { createPortal } from "react-dom";
+import { AnimatePresence } from "motion/react";
 import type { JSX } from "react";
 import { Maximize, Minimize, Loader2, LogOut, Clock3, AlertTriangle, Mic, MicOff, Camera, ChevronLeft, ChevronRight, Save, Trash2, X, Circle, Square, Video, FolderOpen } from "lucide-react";
 import SideBar from "./SideBar";
+import { SessionStartedSplash } from "./SessionStartedSplash";
+import { StreamStatsHud } from "./StreamStatsHud";
 import type { StreamDiagnosticsStore } from "../utils/streamDiagnosticsStore";
-import { useStreamDiagnosticsSelector, useStreamDiagnosticsStore } from "../utils/streamDiagnosticsStore";
-import type { StreamLagReason } from "../gfn/webrtcClient";
+import { useStreamDiagnosticsSelector } from "../utils/streamDiagnosticsStore";
 import type { MicState } from "../gfn/microphoneManager";
 import { getStoreDisplayName, getStoreIconComponent } from "./GameCard";
 import { RemainingPlaytimeIndicator, SessionElapsedIndicator } from "./ElapsedSessionIndicators";
@@ -13,13 +15,6 @@ import type { MicrophoneMode, ScreenshotEntry, RecordingEntry, SubscriptionInfo 
 import { formatShortcutForDisplay, isShortcutMatch, normalizeShortcut, shortcutFromKeyboardEvent } from "../shortcuts";
 import { addStreamShortcutActionListener } from "../streamShortcutActions";
 import { useMicMeter } from "../hooks/useMicMeter";
-import {
-  getBitratePerformanceColor,
-  getInputQueueColor,
-  getPacketLossColor,
-  getRttColor,
-  getTimingColor,
-} from "../utils/streamDiagnosticsFormat";
 import { formatElapsed } from "../utils/timeFormat";
 import { useTranslation } from "../i18n";
 
@@ -92,39 +87,6 @@ interface StreamViewProps {
 }
 
 
-function getLagReasonLabel(reason: StreamLagReason): string {
-  switch (reason) {
-    case "network":
-      return "Network";
-    case "decoder":
-      return "Decode";
-    case "input_backpressure":
-      return "Input";
-    case "render":
-      return "Render";
-    case "stable":
-      return "Stable";
-    default:
-      return "Unknown";
-  }
-}
-
-function getLagReasonColor(reason: StreamLagReason): string {
-  switch (reason) {
-    case "network":
-    case "decoder":
-      return "var(--error)";
-    case "input_backpressure":
-    case "render":
-      return "var(--warning)";
-    case "stable":
-      return "var(--success)";
-    default:
-      return "var(--ink-muted)";
-  }
-}
-
-
 function formatFileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
@@ -162,171 +124,6 @@ function isMicBadgeStateEqual(prev: MicBadgeState, next: MicBadgeState): boolean
     prev.connectedGamepads === next.connectedGamepads &&
     prev.micState === next.micState &&
     prev.micEnabled === next.micEnabled
-  );
-}
-
-function StreamStatsHud({
-  diagnosticsStore,
-  gstreamerEnabled,
-  serverRegion,
-  sessionTimeRemainingText,
-}: {
-  diagnosticsStore: StreamDiagnosticsStore;
-  gstreamerEnabled: boolean;
-  serverRegion?: string;
-  sessionTimeRemainingText: string | null;
-}): JSX.Element {
-  const { t } = useTranslation();
-  const stats = useStreamDiagnosticsStore(diagnosticsStore);
-  const hasLiveBitrate = stats.bitrateKbps > 0;
-  const bitrateKbps = hasLiveBitrate ? stats.bitrateKbps : stats.targetBitrateKbps;
-  const bitrateMbps = bitrateKbps > 0 ? (bitrateKbps / 1000).toFixed(1) : "--";
-  const bitrateLabel = hasLiveBitrate
-    ? `${bitrateMbps} Mbps`
-    : stats.targetBitrateKbps > 0
-      ? `Target ${bitrateMbps} Mbps`
-      : "-- Mbps";
-  const bitratePerformancePercent = stats.targetBitrateKbps > 0 && stats.bitrateKbps > 0
-    ? (stats.bitrateKbps / stats.targetBitrateKbps) * 100
-    : 0;
-  const bitratePerformanceText = bitratePerformancePercent > 0
-    ? `${bitratePerformancePercent.toFixed(0)}%`
-    : "--";
-  const bitratePerformanceColor = getBitratePerformanceColor(bitratePerformancePercent);
-  const hasResolution = stats.nativeRendererActive || stats.resolution !== "";
-  const displayFps = Math.max(stats.decodeFps, stats.renderFps);
-  const primaryText = hasResolution
-    ? `${stats.resolution || "Native renderer"}${displayFps > 0 ? ` · ${displayFps}fps` : ""}`
-    : "";
-  const hasCodec = stats.codec && stats.codec !== "";
-  const regionLabel = stats.serverRegion || serverRegion || "";
-  const decodeColor = getTimingColor(stats.decodeTimeMs, 8, 16);
-  const renderColor = getTimingColor(stats.renderTimeMs, 12, 22);
-  const jitterBufferColor = getTimingColor(stats.jitterBufferDelayMs, 10, 24);
-  const lossColor = getPacketLossColor(stats.packetLossPercent);
-  const lossLabel = stats.nativeRendererActive ? "Drop" : "Loss";
-  const lossTitle = stats.nativeRendererActive ? "Native renderer dropped frame percentage" : "Packet loss percentage";
-  const dText = stats.decodeTimeMs > 0 ? `${stats.decodeTimeMs.toFixed(1)}ms` : "--";
-  const rText = stats.renderTimeMs > 0 ? `${stats.renderTimeMs.toFixed(1)}ms` : "--";
-  const jbText = stats.jitterBufferDelayMs > 0 ? `${stats.jitterBufferDelayMs.toFixed(1)}ms` : "--";
-  const inputLive = stats.inputReady && stats.connectionState === "connected";
-  const inputQueueColor = getInputQueueColor(stats.inputQueueBufferedBytes, stats.inputQueueDropCount);
-  const inputQueueText = `${(stats.inputQueueBufferedBytes / 1024).toFixed(1)}KB`;
-  const partiallyReliableQueueText = `${(stats.partiallyReliableInputQueueBufferedBytes / 1024).toFixed(1)}KB`;
-  const mouseResidualText = `${stats.mouseResidualMagnitude.toFixed(2)}px`;
-  const gstreamerStatusText = gstreamerEnabled
-    ? `GStreamer enabled · ${stats.nativeRendererActive ? "in use" : "not active"}`
-    : "GStreamer disabled · Chromium WebRTC";
-
-  return (
-    <div className="sv-stats">
-      <div className="sv-stats-head">
-        {hasResolution ? (
-          <span className="sv-stats-primary">{primaryText}</span>
-        ) : (
-          <span className="sv-stats-primary sv-stats-wait">Connecting...</span>
-        )}
-        <span className={`sv-stats-live ${inputLive ? "is-live" : "is-pending"}`}>
-          {inputLive ? "Live" : "Sync"}
-        </span>
-      </div>
-
-      <div className="sv-stats-sub">
-        <span className="sv-stats-sub-left">
-          {hasCodec ? stats.codec : "N/A"}
-          {stats.isHdr && <span className="sv-stats-hdr">HDR</span>}
-        </span>
-        <span className="sv-stats-sub-right">{bitrateLabel}</span>
-      </div>
-
-      <div className="sv-stats-metrics">
-        <span className="sv-stats-chip" title="Round-trip network latency">
-          RTT <span className="sv-stats-chip-val" style={{ color: getRttColor(stats.rttMs) }}>{stats.rttMs > 0 ? `${stats.rttMs.toFixed(0)}ms` : "--"}</span>
-        </span>
-        {sessionTimeRemainingText && (
-          <span className="sv-stats-chip sv-stats-chip--time" title={t("sidebar.sessionTimeRemainingTitle")}>
-            {t("stream.stats.timeRemainingShort")} <span className="sv-stats-chip-val">{sessionTimeRemainingText}</span>
-          </span>
-        )}
-        <span className="sv-stats-chip" title="D = decode time">
-          D <span className="sv-stats-chip-val" style={{ color: decodeColor }}>{dText}</span>
-        </span>
-        <span className="sv-stats-chip" title="R = render time">
-          R <span className="sv-stats-chip-val" style={{ color: renderColor }}>{rText}</span>
-        </span>
-        <span className="sv-stats-chip" title="JB = jitter buffer delay">
-          JB <span className="sv-stats-chip-val" style={{ color: jitterBufferColor }}>{jbText}</span>
-        </span>
-        <span className="sv-stats-chip" title={lossTitle}>
-          {lossLabel} <span className="sv-stats-chip-val" style={{ color: lossColor }}>{stats.packetLossPercent.toFixed(2)}%</span>
-        </span>
-        <span className="sv-stats-chip" title="Actual receive bitrate compared with the negotiated target">
-          Bit <span className="sv-stats-chip-val" style={{ color: bitratePerformanceColor }}>{bitratePerformanceText}</span>
-        </span>
-        <span className="sv-stats-chip" title="Input queue pressure (buffered bytes and delayed flush)">
-          IQ <span className="sv-stats-chip-val" style={{ color: inputQueueColor }}>{inputQueueText}</span>
-        </span>
-        <span className="sv-stats-chip" title="Partially reliable input channel state and queued bytes">
-          PR <span className="sv-stats-chip-val" style={{ color: stats.partiallyReliableInputOpen ? "var(--success)" : "var(--ink-muted)" }}>
-            {stats.partiallyReliableInputOpen ? `${stats.mouseMoveTransport === "partially_reliable" ? "mouse" : "open"} · ${partiallyReliableQueueText}` : "off"}
-          </span>
-        </span>
-        <span className="sv-stats-chip" title="Mouse flush cadence and packet rate">
-          MF <span className="sv-stats-chip-val" style={{ color: stats.mouseAdaptiveFlushActive ? "var(--warning)" : "var(--success)" }}>
-            {stats.mouseFlushIntervalMs.toFixed(0)}ms · {stats.mousePacketsPerSecond}/s
-          </span>
-        </span>
-        {stats.lagReason !== "stable" && stats.lagReason !== "unknown" && (
-          <span className="sv-stats-chip" title={stats.lagReasonDetail}>
-            Lag <span className="sv-stats-chip-val" style={{ color: getLagReasonColor(stats.lagReason) }}>{getLagReasonLabel(stats.lagReason)}</span>
-          </span>
-        )}
-      </div>
-
-      <div className="sv-stats-foot">
-        Input queue peak {(stats.inputQueuePeakBufferedBytes / 1024).toFixed(1)}KB · PR peak {(stats.partiallyReliableInputQueuePeakBufferedBytes / 1024).toFixed(1)}KB · drops {stats.inputQueueDropCount} · sched {stats.inputQueueMaxSchedulingDelayMs.toFixed(1)}ms · residual {mouseResidualText}
-      </div>
-
-      <div className="sv-stats-foot">
-        {gstreamerStatusText}
-      </div>
-
-      {(stats.hardwareAcceleration || stats.colorCodec) && (
-        <div className="sv-stats-foot">
-          {[stats.hardwareAcceleration, stats.colorCodec].filter(Boolean).join(" · ")}
-        </div>
-      )}
-
-      {(stats.decoderPressureActive || stats.decoderRecoveryAttempts > 0) && (
-        <div className="sv-stats-foot">
-          Decoder recovery {stats.decoderPressureActive ? "active" : "idle"} · attempts {stats.decoderRecoveryAttempts} · action {stats.decoderRecoveryAction}
-        </div>
-      )}
-
-      {(stats.nativeTransitionSummary || stats.nativeQueueMode || stats.nativeCapsFramerate) && (
-        <div className="sv-stats-foot">
-          Native transition {stats.nativeTransitionSummary ?? "none"} · queue {stats.nativeQueueMode ?? "unknown"} · caps {stats.nativeCapsFramerate ?? "unknown"}{typeof stats.nativeRequestedFps === "number" ? ` · requested ${stats.nativeRequestedFps}fps` : ""}{typeof stats.nativeFramesPendingToPresent === "number" ? ` · pending ${stats.nativeFramesPendingToPresent}` : ""}{typeof stats.nativePartialFlushCount === "number" || typeof stats.nativeCompleteFlushCount === "number" ? ` · flush ${stats.nativePartialFlushCount ?? 0}/${stats.nativeCompleteFlushCount ?? 0}` : ""}
-        </div>
-      )}
-
-      {(stats.nativeRequestedStreamingFeaturesSummary || stats.nativeFinalizedStreamingFeaturesSummary) && (
-        <div className="sv-stats-foot">
-          Stream features requested {stats.nativeRequestedStreamingFeaturesSummary ?? "none"} · finalized {stats.nativeFinalizedStreamingFeaturesSummary ?? "none"}
-        </div>
-      )}
-
-      {(stats.gpuType || regionLabel) && (
-        <div className="sv-stats-foot">
-          {[stats.gpuType, regionLabel].filter(Boolean).join(" · ")}
-        </div>
-      )}
-
-      {stats.lagReason !== "stable" && stats.lagReason !== "unknown" && (
-        <div className="sv-stats-foot">
-          Lag source {getLagReasonLabel(stats.lagReason).toLowerCase()} · {stats.lagReasonDetail}
-        </div>
-      )}
-    </div>
   );
 }
 
@@ -484,23 +281,64 @@ function StreamTitleBar({
   );
 }
 
+function hasVisibleStreamVideo(stats: {
+  nativeRendererActive: boolean;
+  framesDecoded: number;
+  resolution: string;
+}): boolean {
+  if (stats.nativeRendererActive) {
+    return true;
+  }
+  return stats.framesDecoded > 0;
+}
+
 function StreamEmptyState({
   diagnosticsStore,
 }: {
   diagnosticsStore: StreamDiagnosticsStore;
 }): JSX.Element | null {
-  const hasResolution = useStreamDiagnosticsSelector(
+  const hasVisibleVideo = useStreamDiagnosticsSelector(
     diagnosticsStore,
-    (stats) => stats.nativeRendererActive || stats.resolution !== "",
+    (stats) => hasVisibleStreamVideo(stats),
   );
 
-  if (hasResolution) {
+  if (hasVisibleVideo) {
     return null;
   }
 
   return (
     <div className="sv-empty">
       <div className="sv-empty-grad" />
+    </div>
+  );
+}
+
+function StreamWaitingForVideo({
+  diagnosticsStore,
+  isConnecting,
+}: {
+  diagnosticsStore: StreamDiagnosticsStore;
+  isConnecting: boolean;
+}): JSX.Element | null {
+  const { t } = useTranslation();
+  const waitingForFirstFrame = useStreamDiagnosticsSelector(
+    diagnosticsStore,
+    (stats) => {
+      if (stats.nativeRendererActive || stats.framesDecoded > 0) {
+        return false;
+      }
+      return stats.connectionState === "connected" || stats.resolution !== "";
+    },
+  );
+
+  if (isConnecting || !waitingForFirstFrame) {
+    return null;
+  }
+
+  return (
+    <div className="sv-warm" role="status" aria-live="polite">
+      <Loader2 className="sv-warm-spin" size={34} />
+      <p className="sv-warm-text">{t("stream.stats.waitingForVideo")}</p>
     </div>
   );
 }
@@ -542,7 +380,7 @@ function VideoFocusOnReady({
     if (!isConnecting && videoRef.current && shouldFocusVideo) {
       const timer = window.setTimeout(() => {
         if (videoRef.current && document.activeElement !== videoRef.current) {
-          videoRef.current.focus();
+          videoRef.current.focus({ preventScroll: true });
           console.log("[StreamView] Focused video element");
         }
       }, 100);
@@ -625,7 +463,61 @@ export function StreamView({
     diagnosticsStore,
     (stats) => stats.nativeRendererActive,
   );
-  const showStatsHud = showStats && !nativeRendererActive && !isConnecting;
+  const localVideoRef = useRef<HTMLVideoElement | null>(null);
+  const streamHasVideo = useStreamDiagnosticsSelector(
+    diagnosticsStore,
+    (stats) => hasVisibleStreamVideo(stats),
+  );
+  const [videoElementHasFrame, setVideoElementHasFrame] = useState(false);
+
+  useEffect(() => {
+    if (isConnecting) {
+      setVideoElementHasFrame(false);
+      return undefined;
+    }
+
+    const video = localVideoRef.current;
+    if (!video) {
+      return undefined;
+    }
+
+    const syncVideoFrame = (): void => {
+      setVideoElementHasFrame(video.videoWidth > 0 && video.videoHeight > 0);
+    };
+
+    syncVideoFrame();
+    video.addEventListener("loadeddata", syncVideoFrame);
+    video.addEventListener("playing", syncVideoFrame);
+    video.addEventListener("resize", syncVideoFrame);
+
+    return () => {
+      video.removeEventListener("loadeddata", syncVideoFrame);
+      video.removeEventListener("playing", syncVideoFrame);
+      video.removeEventListener("resize", syncVideoFrame);
+    };
+  }, [isConnecting]);
+
+  const streamVideoReady = streamHasVideo || videoElementHasFrame;
+  const [sessionReadySplashVisible, setSessionReadySplashVisible] = useState(false);
+  const sessionReadySplashShownRef = useRef(false);
+  const showStatsHud = showStats && !nativeRendererActive && !isConnecting && !sessionReadySplashVisible;
+
+  useEffect(() => {
+    if (isConnecting) {
+      sessionReadySplashShownRef.current = false;
+      setSessionReadySplashVisible(false);
+      return;
+    }
+    if (nativeRendererActive || !streamVideoReady || sessionReadySplashShownRef.current) {
+      return;
+    }
+    sessionReadySplashShownRef.current = true;
+    setSessionReadySplashVisible(true);
+  }, [isConnecting, nativeRendererActive, streamVideoReady]);
+
+  const handleSessionReadySplashFinished = useCallback(() => {
+    setSessionReadySplashVisible(false);
+  }, []);
 
   // Recording state
   const [isRecording, setIsRecording] = useState(false);
@@ -760,8 +652,6 @@ export function StreamView({
   const PlatformIcon = platformStore ? getStoreIconComponent(platformStore) : null;
   const isMacClient = navigator.platform?.toLowerCase().includes("mac") || navigator.userAgent.includes("Macintosh");
 
-  // Local ref for video element to manage focus
-  const localVideoRef = useRef<HTMLVideoElement | null>(null);
   // Local ref for audio element (game audio stream)
   const localAudioRef = useRef<HTMLAudioElement | null>(null);
   // AudioContext used during an active recording (torn down on stop/error)
@@ -1418,7 +1308,7 @@ export function StreamView({
     // mousedown's preventDefault() blocks the browser from re-focusing on click.
     const timer = window.setTimeout(() => {
       if (localVideoRef.current && document.activeElement !== localVideoRef.current) {
-        localVideoRef.current.focus();
+        localVideoRef.current.focus({ preventScroll: true });
       }
     }, 50);
     try {
@@ -1521,6 +1411,44 @@ export function StreamView({
     return () => window.removeEventListener("keydown", onKeyDown, true);
   }, [handleToggleSideBar, isMacClient]);
 
+  useEffect(() => {
+    const blurStreamFocusTarget = (): void => {
+      const active = document.activeElement;
+      if (active instanceof HTMLElement && active.closest(".sv")) {
+        active.blur();
+      }
+    };
+
+    const hideFocusRingOnAccessKey = (event: KeyboardEvent): void => {
+      if (event.key === "Alt" && !event.repeat) {
+        blurStreamFocusTarget();
+      }
+    };
+
+    const restoreStreamVideoFocus = (event: PointerEvent): void => {
+      if (showSideBar || isConnecting || exitPrompt.open) {
+        return;
+      }
+      const target = event.target as HTMLElement | null;
+      if (target?.closest(".sv-sidebar, .sv-exit, .sv-shot-modal, button, a, input, textarea, select")) {
+        return;
+      }
+      const video = localVideoRef.current;
+      if (video && document.activeElement !== video) {
+        video.focus({ preventScroll: true });
+      }
+    };
+
+    window.addEventListener("blur", blurStreamFocusTarget);
+    window.addEventListener("keydown", hideFocusRingOnAccessKey, true);
+    window.addEventListener("pointerdown", restoreStreamVideoFocus, true);
+    return () => {
+      window.removeEventListener("blur", blurStreamFocusTarget);
+      window.removeEventListener("keydown", hideFocusRingOnAccessKey, true);
+      window.removeEventListener("pointerdown", restoreStreamVideoFocus, true);
+    };
+  }, [exitPrompt.open, isConnecting, showSideBar]);
+
   return (
     <div className={["sv", className].filter(Boolean).join(" ")}>
       <video
@@ -1528,11 +1456,11 @@ export function StreamView({
         autoPlay
         playsInline
         muted
-        tabIndex={0}
+        tabIndex={-1}
         className="sv-video"
         onClick={() => {
           if (localVideoRef.current && document.activeElement !== localVideoRef.current) {
-            localVideoRef.current.focus();
+            localVideoRef.current.focus({ preventScroll: true });
           }
         }}
       />
@@ -2021,6 +1949,7 @@ export function StreamView({
 
       {/* Gradient background when no video */}
       <StreamEmptyState diagnosticsStore={diagnosticsStore} />
+      <StreamWaitingForVideo diagnosticsStore={diagnosticsStore} isConnecting={isConnecting} />
 
       {/* Connecting overlay */}
       {isConnecting && (
@@ -2071,15 +2000,24 @@ export function StreamView({
         </div>
       )}
 
-      {/* Stats HUD (top-right) */}
-      {(showStatsHud || showStats) && !isConnecting && (
-        <StreamStatsHud
-          diagnosticsStore={diagnosticsStore}
-          gstreamerEnabled={gstreamerEnabled}
-          serverRegion={serverRegion}
-          sessionTimeRemainingText={showSessionTimeRemainingInStats ? sessionTimeRemainingText : null}
-        />
-      )}
+      <SessionStartedSplash
+        visible={sessionReadySplashVisible && !isConnecting}
+        gameTitle={gameTitle}
+        onFinished={handleSessionReadySplashFinished}
+      />
+
+      <AnimatePresence>
+        {showStatsHud && (
+          <StreamStatsHud
+            key="stream-stats-hud"
+            diagnosticsStore={diagnosticsStore}
+            gstreamerEnabled={gstreamerEnabled}
+            serverRegion={serverRegion}
+            sessionTimeRemainingText={showSessionTimeRemainingInStats ? sessionTimeRemainingText : null}
+            hintsVisible={showHints}
+          />
+        )}
+      </AnimatePresence>
 
       {/* Microphone toggle button */}
       <MicrophoneIndicator

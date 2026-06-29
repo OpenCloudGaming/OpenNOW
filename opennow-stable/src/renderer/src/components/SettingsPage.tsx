@@ -1,8 +1,6 @@
 import { Globe, Check, Search, X, Loader, Zap, Mic, FileDown, Wifi, Trash2, Heart, Users, ExternalLink, Monitor, Keyboard, Download, RefreshCcw, Info, Cpu, AlertTriangle, MapPin, ScanLine, Gauge, Film, SlidersHorizontal, HardDrive } from "lucide-react";
 import { useState, useCallback, useMemo, useEffect, useRef } from "react";
-import { createPortal } from "react-dom";
 import type { JSX } from "react";
-import { m } from "motion/react";
 
 import type {
   Settings,
@@ -12,7 +10,6 @@ import type {
   AspectRatio,
   EntitledResolution,
   SubscriptionInfo,
-  PersistentStorageLocation,
   VideoAccelerationPreference,
   MicrophoneMode,
   PingResult,
@@ -25,13 +22,16 @@ import type {
   NativeStreamerStatus,
   NativeVideoBackendCapability,
   NativeVideoBackendPreference,
+  GameAccountConnection,
 } from "@shared/gfn";
 import {
   createUnsupportedNativeStreamerStatus,
   isNativeStreamerSupportedPlatform,
   NATIVE_STREAMER_WINDOWS_ONLY_MESSAGE,
   colorQualityRequiresHevc,
+  getSafeFallbackEntitledResolutions,
   keyboardLayoutOptions,
+  resolveEntitledStreamProfile,
   USER_FACING_COLOR_QUALITY_OPTIONS,
   USER_FACING_VIDEO_CODEC_OPTIONS,
 } from "@shared/gfn";
@@ -39,7 +39,6 @@ import { formatShortcutForDisplay, normalizeShortcut, shortcutFromKeyboardEvent 
 import { getCodecDecodeBadgeState, shouldShowLinuxHardwareCodecHint, type CodecTestResult } from "../lib/codecDiagnostics";
 import { getAccentColorOption, getAccentColorOptions } from "../lib/uiCustomization";
 import { useTranslation } from "../i18n";
-import { pageTransition, panelSpring } from "./MotionProvider";
 import {
   clearStoredRegionPingResults,
   loadStoredRegionPingResults,
@@ -69,6 +68,7 @@ type SettingsNavGroup = {
 
 type ThanksLoadState = "idle" | "loading" | "loaded" | "error";
 type StorageResetState = "idle" | "resetting" | "success" | "error";
+type GameAccountBusyAction = "link" | "unlink" | "resync";
 
 type SettingsSectionId = "account" | "stream" | "native-streamer" | "game" | "audio" | "input" | "interface" | "about" | "thanks";
 type SettingsSearchScopeId =
@@ -94,6 +94,18 @@ const SETTINGS_SCOPE_SEARCH_TERMS: Record<SettingsSearchScopeId, readonly string
     "install to play",
     "reset storage",
     "storage reset",
+    "connections",
+    "connected accounts",
+    "game accounts",
+    "link accounts",
+    "unlink accounts",
+    "sync library",
+    "steam",
+    "epic",
+    "ubisoft",
+    "battle.net",
+    "xbox",
+    "gaijin",
     "region",
     "data",
     "games",
@@ -173,6 +185,11 @@ const SETTINGS_SCOPE_SEARCH_TERMS: Record<SettingsSearchScopeId, readonly string
     "hotkey",
     "keybind",
     "controls",
+    "controller",
+    "gamepad",
+    "gyro",
+    "gyroscope",
+    "motion controls",
     "anti afk",
     "pointer lock",
     "recording",
@@ -211,6 +228,7 @@ const SETTINGS_SCOPE_SEARCH_TERMS: Record<SettingsSearchScopeId, readonly string
 const POSTER_SIZE_MIN = 75;
 const POSTER_SIZE_MAX = 135;
 const POSTER_SIZE_STEP = 5;
+const NVIDIA_STORAGE_MANAGER_URL = "https://www.nvidia.com/en-us/account/gfn/manage-storage/";
 
 const codecOptions: VideoCodec[] = [...USER_FACING_VIDEO_CODEC_OPTIONS];
 
@@ -551,10 +569,11 @@ function getFpsForResolution(entitled: EntitledResolution[], resolution: string)
   return [...new Set(fpsList)].sort((a, b) => a - b);
 }
 
-const ENTITLED_RESOLUTIONS_STORAGE_KEY = "opennow.entitled-resolutions.v1";
+const ENTITLED_RESOLUTIONS_STORAGE_KEY = "opennow.entitled-resolutions.v2";
 
 interface EntitledResolutionsCache {
   userId: string;
+  membershipTier: string;
   entitledResolutions: EntitledResolution[];
 }
 
@@ -568,6 +587,7 @@ function loadCachedEntitledResolutions(): EntitledResolutionsCache | null {
     }
     return {
       userId: parsed.userId,
+      membershipTier: typeof parsed.membershipTier === "string" ? parsed.membershipTier : "",
       entitledResolutions: parsed.entitledResolutions,
     };
   } catch {
@@ -628,6 +648,13 @@ function getUpdaterBadgeLabel(state: AppUpdaterState): string {
     default:
       return "Idle";
   }
+}
+
+function formatGameAccountSyncDate(value: string | undefined): string | null {
+  if (!value) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  return date.toLocaleString();
 }
 
 function saveCachedEntitledResolutions(cache: EntitledResolutionsCache): void {
@@ -777,12 +804,16 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
   const [entitledResolutions, setEntitledResolutions] = useState<EntitledResolution[]>([]);
   const [subscriptionInfo, setSubscriptionInfo] = useState<SubscriptionInfo | null>(null);
   const [subscriptionLoading, setSubscriptionLoading] = useState(true);
-  const [storageLocations, setStorageLocations] = useState<PersistentStorageLocation[]>([]);
-  const [storageLocationsLoading, setStorageLocationsLoading] = useState(false);
-  const [storageLocationsError, setStorageLocationsError] = useState<string | null>(null);
-  const [selectedStorageRegion, setSelectedStorageRegion] = useState<string | null>(null);
   const [storageResetState, setStorageResetState] = useState<StorageResetState>("idle");
   const [storageResetMessage, setStorageResetMessage] = useState<string | null>(null);
+  const [gameAccounts, setGameAccounts] = useState<GameAccountConnection[]>([]);
+  const [gameAccountsLoading, setGameAccountsLoading] = useState(true);
+  const [gameAccountsError, setGameAccountsError] = useState<string | null>(null);
+  const [gameAccountStatusMessage, setGameAccountStatusMessage] = useState<string | null>(null);
+  const [gameAccountBusy, setGameAccountBusy] = useState<{
+    provider: string;
+    action: GameAccountBusyAction;
+  } | null>(null);
 
   useEffect(() => {
     setToggleStatsInput(settings.shortcutToggleStats);
@@ -882,15 +913,17 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
       if (!session || isCancelled()) {
         setEntitledResolutions([]);
         setSubscriptionInfo(null);
-        setStorageLocations([]);
-        setStorageLocationsError(null);
-        setStorageLocationsLoading(false);
         return;
       }
 
       const userId = session.user.userId;
       const cached = loadCachedEntitledResolutions();
-      if (cached && cached.userId === userId && !isCancelled()) {
+      if (
+        cached &&
+        cached.userId === userId &&
+        cached.membershipTier === session.user.membershipTier &&
+        !isCancelled()
+      ) {
         setEntitledResolutions(cached.entitledResolutions);
       }
 
@@ -903,55 +936,20 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
         setEntitledResolutions(sub.entitledResolutions);
         saveCachedEntitledResolutions({
           userId,
+          membershipTier: sub.membershipTier,
           entitledResolutions: sub.entitledResolutions,
         });
       }
 
-      if (isCancelled()) {
-        return;
-      }
-
-      if (!sub.storageAddon) {
-        setStorageLocations([]);
-        setStorageLocationsError(null);
-        setStorageLocationsLoading(false);
-        return;
-      }
-
-      setStorageLocationsLoading(true);
-      setStorageLocationsError(null);
-      try {
-        const locationsResult = await window.openNow.fetchPersistentStorageLocations({
-          serverRegionId: sub.serverRegionId,
-          currentRegionCode: sub.storageAddon.regionCode,
-          currentRegionName: sub.storageAddon.regionName,
-        });
-        if (!isCancelled()) {
-          setStorageLocations(locationsResult.locations);
-        }
-      } catch (error) {
-        console.warn("[Settings] Failed to fetch persistent storage locations:", error);
-        if (!isCancelled()) {
-          setStorageLocations([]);
-          setStorageLocationsError(t("settings.persistentStorage.locationsFailed"));
-        }
-      } finally {
-        if (!isCancelled()) {
-          setStorageLocationsLoading(false);
-        }
-      }
     } catch (err) {
       console.warn("Failed to fetch subscription for settings:", err);
       if (!isCancelled()) {
         setSubscriptionInfo(null);
-        setStorageLocations([]);
-        setStorageLocationsError(null);
-        setStorageLocationsLoading(false);
       }
     } finally {
       if (!isCancelled()) setSubscriptionLoading(false);
     }
-  }, [t]);
+  }, []);
 
   // Fetch subscription data for dynamic stream presets and persistent storage state.
   useEffect(() => {
@@ -960,18 +958,60 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
     return () => { cancelled = true; };
   }, [loadSubscriptionData]);
 
-  const hasDynamic = entitledResolutions.length > 0;
+  const loadGameAccounts = useCallback(async (isCancelled: () => boolean = () => false): Promise<void> => {
+    setGameAccountsLoading(true);
+    setGameAccountsError(null);
+    setGameAccountStatusMessage(null);
+
+    try {
+      const result = await window.openNow.fetchGameAccountConnections();
+      if (!isCancelled()) {
+        setGameAccounts(result.accounts);
+      }
+    } catch (error) {
+      console.warn("[Settings] Failed to fetch game account connections:", error);
+      if (!isCancelled()) {
+        setGameAccounts([]);
+        setGameAccountsError(
+          error instanceof Error && error.message.includes("No authenticated session")
+            ? t("settings.accountConnections.signInRequired")
+            : t("settings.accountConnections.loadFailed"),
+        );
+      }
+    } finally {
+      if (!isCancelled()) {
+        setGameAccountsLoading(false);
+      }
+    }
+  }, [t]);
+
+  const effectiveEntitledResolutions = useMemo(
+    () => entitledResolutions.length > 0
+      ? entitledResolutions
+      : subscriptionInfo
+        ? getSafeFallbackEntitledResolutions()
+        : [],
+    [entitledResolutions, subscriptionInfo],
+  );
+  const useEntitledStreamOptions = effectiveEntitledResolutions.length > 0;
 
   // Grouped resolution presets (dynamic)
   const resolutionGroups = useMemo(
-    () => (hasDynamic ? groupResolutions(entitledResolutions) : []),
-    [entitledResolutions, hasDynamic]
+    () => (useEntitledStreamOptions ? groupResolutions(effectiveEntitledResolutions) : []),
+    [effectiveEntitledResolutions, useEntitledStreamOptions]
   );
 
   // Dynamic FPS presets based on current resolution
   const dynamicFpsOptions = useMemo(
-    () => (hasDynamic ? getFpsForResolution(entitledResolutions, settings.resolution) : []),
-    [entitledResolutions, settings.resolution, hasDynamic]
+    () => (useEntitledStreamOptions ? getFpsForResolution(effectiveEntitledResolutions, settings.resolution) : []),
+    [effectiveEntitledResolutions, settings.resolution, useEntitledStreamOptions]
+  );
+  const resolvedEntitledProfile = useMemo(
+    () => resolveEntitledStreamProfile(effectiveEntitledResolutions, {
+      resolution: settings.resolution,
+      fps: settings.fps,
+    }),
+    [effectiveEntitledResolutions, settings.fps, settings.resolution],
   );
   const posterSizePercent = Math.round(settings.posterSizeScale * 100);
   const updaterLastCheckedLabel = useMemo(() => formatUpdaterTimestamp(updaterState.lastCheckedAt), [updaterState.lastCheckedAt]);
@@ -1022,66 +1062,84 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
   const currentStorageLocationOptionLabel = persistentStorageRegionLabel
     ? t("settings.persistentStorage.currentLocationOption", { region: persistentStorageRegionLabel })
     : t("settings.persistentStorage.currentLocationUnavailable");
-  const storageLocationOptions = storageLocations.filter(
-    (location) => location.code !== persistentStorage?.regionCode,
-  );
-  const selectedStorageLocation = selectedStorageRegion
-    ? storageLocations.find((location) => location.code === selectedStorageRegion)
-    : null;
-  const storageResetTargetLabel =
-    selectedStorageLocation?.name ??
-    (selectedStorageRegion && selectedStorageRegion.trim().length > 0 ? selectedStorageRegion : null) ??
-    persistentStorageRegionLabel ??
-    t("settings.persistentStorage.regionUnavailable");
-  const storageResetTargetHint = selectedStorageRegion
-    ? t("settings.persistentStorage.resetWillMoveLocation", { region: storageResetTargetLabel })
-    : t("settings.persistentStorage.resetWillKeepLocation", { region: storageResetTargetLabel });
+  const storageResetTargetLabel = persistentStorageRegionLabel ?? t("settings.persistentStorage.regionUnavailable");
+  const storageResetTargetHint = t("settings.persistentStorage.resetRequiresBrowserHint", {
+    region: storageResetTargetLabel,
+  });
 
-  useEffect(() => {
-    setSelectedStorageRegion(null);
-  }, [persistentStorage?.regionCode]);
-
-  useEffect(() => {
-    if (
-      selectedStorageRegion &&
-      storageLocations.length > 0 &&
-      !storageLocations.some((location) => location.code === selectedStorageRegion)
-    ) {
-      setSelectedStorageRegion(null);
+  const handleOpenPersistentStorageManager = useCallback(async (): Promise<void> => {
+    try {
+      await window.openNow.openExternalUrl(NVIDIA_STORAGE_MANAGER_URL);
+    } catch (error) {
+      console.error("[Settings] Failed to open NVIDIA Storage Manager:", error);
+      setStorageResetState("error");
+      setStorageResetMessage(t("settings.persistentStorage.openManagerFailed"));
     }
-  }, [selectedStorageRegion, storageLocations]);
+  }, [t]);
 
   const handleResetPersistentStorage = useCallback(async (): Promise<void> => {
-    if (!persistentStorage || storageResetState === "resetting") {
+    if (!persistentStorage) {
       return;
     }
 
-    if (!window.confirm(t("settings.persistentStorage.resetConfirm", { region: storageResetTargetLabel }))) {
+    setStorageResetState("idle");
+    setStorageResetMessage(t("settings.persistentStorage.resetRequiresBrowser"));
+    await handleOpenPersistentStorageManager();
+  }, [handleOpenPersistentStorageManager, persistentStorage, t]);
+
+  const handleGameAccountAction = useCallback(async (
+    account: GameAccountConnection,
+    action: GameAccountBusyAction,
+  ): Promise<void> => {
+    if (gameAccountBusy) {
       return;
     }
 
-    setStorageResetState("resetting");
-    setStorageResetMessage(null);
+    if (
+      action === "unlink" &&
+      !window.confirm(t("settings.accountConnections.unlinkConfirm", { provider: account.label }))
+    ) {
+      return;
+    }
+
+    setGameAccountBusy({ provider: account.provider, action });
+    setGameAccountStatusMessage(null);
+    setGameAccountsError(null);
 
     try {
-      await window.openNow.resetPersistentStorage({ storageRegion: selectedStorageRegion ?? null });
-      setStorageResetState("success");
-      setStorageResetMessage(t("settings.persistentStorage.resetSuccess"));
-      setSelectedStorageRegion(null);
-      await loadSubscriptionData();
+      const payload = {
+        provider: account.provider,
+        proxyUrl: settings.sessionProxyEnabled ? settings.sessionProxyUrl.trim() || undefined : undefined,
+      };
+      const result =
+        action === "link"
+          ? await window.openNow.linkGameAccount(payload)
+          : action === "unlink"
+            ? await window.openNow.unlinkGameAccount(payload)
+            : await window.openNow.resyncGameAccount(payload);
+      setGameAccounts(result.accounts);
+      setGameAccountStatusMessage(
+        result.message ??
+        (action === "link"
+          ? t("settings.accountConnections.linkSuccess", { provider: account.label })
+          : action === "unlink"
+            ? t("settings.accountConnections.unlinkSuccess", { provider: account.label })
+            : t("settings.accountConnections.resyncSuccess", { provider: account.label })),
+      );
     } catch (error) {
-      console.error("[Settings] Failed to reset persistent storage:", error);
-      setStorageResetState("error");
-      setStorageResetMessage(
+      console.error(`[Settings] Game account ${action} failed:`, error);
+      setGameAccountsError(
         error instanceof Error && error.message
           ? error.message
-          : t("settings.persistentStorage.resetFailed"),
+          : t("settings.accountConnections.actionFailed"),
       );
+    } finally {
+      setGameAccountBusy(null);
     }
-  }, [loadSubscriptionData, persistentStorage, selectedStorageRegion, storageResetState, storageResetTargetLabel, t]);
+  }, [gameAccountBusy, settings.sessionProxyEnabled, settings.sessionProxyUrl, t]);
 
   const selectedResolutionLabel = useMemo(() => {
-    if (hasDynamic) {
+    if (useEntitledStreamOptions) {
       for (const group of resolutionGroups) {
         const found = group.resolutions.find(r => r.value === settings.resolution);
         if (found) return found.label;
@@ -1090,7 +1148,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
     }
     const found = STATIC_RESOLUTION_PRESETS.find(r => r.value === settings.resolution);
     return found ? found.label : settings.resolution || "Select";
-  }, [settings.resolution, hasDynamic, resolutionGroups]);
+  }, [settings.resolution, useEntitledStreamOptions, resolutionGroups]);
 
   const handleChange = useCallback(
     <K extends keyof Settings>(key: K, value: Settings[K]) => {
@@ -1108,6 +1166,26 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
       handleChange("aspectRatio", aspectRatio);
     }
   }, [handleChange, settings.aspectRatio]);
+
+  useEffect(() => {
+    if (!useEntitledStreamOptions || !resolvedEntitledProfile) {
+      return;
+    }
+
+    if (resolvedEntitledProfile.resolution !== settings.resolution) {
+      handleResolutionChange(resolvedEntitledProfile.resolution);
+    }
+    if (resolvedEntitledProfile.fps !== settings.fps) {
+      handleChange("fps", resolvedEntitledProfile.fps);
+    }
+  }, [
+    handleChange,
+    handleResolutionChange,
+    resolvedEntitledProfile,
+    settings.fps,
+    settings.resolution,
+    useEntitledStreamOptions,
+  ]);
 
   const openNativeStreamerEnablePrompt = useCallback((): void => {
     if (nativeStreamerEnablePromptCloseTimerRef.current !== null) {
@@ -1801,6 +1879,130 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
     setThanksLoadState("idle");
   }, []);
 
+  const renderGameAccountCard = useCallback((account: GameAccountConnection) => {
+    const busyAction = gameAccountBusy?.provider === account.provider ? gameAccountBusy.action : null;
+    const isBusy = Boolean(gameAccountBusy);
+    const syncDateLabel = formatGameAccountSyncDate(account.syncDate);
+    const statusLabel =
+      account.status === "expired"
+        ? t("settings.accountConnections.statusExpired")
+        : account.status === "sync_error"
+          ? t("settings.accountConnections.statusSyncError")
+          : account.isConnected
+            ? t("settings.accountConnections.statusConnected")
+            : t("settings.accountConnections.statusNotConnected");
+    const statusClass =
+      account.status === "expired" || account.status === "sync_error"
+        ? "settings-inline-badge--updater-error"
+        : account.isConnected
+          ? "settings-inline-badge--codec-gpu"
+          : "settings-inline-badge--codec-testing";
+    const canLink = account.supportsLinking && (!account.isConnected || account.status === "expired");
+    const canUnlink = account.isConnected && account.status !== "expired";
+    const canSyncOnly = account.supportsSync && !account.supportsLinking && !account.isConnected;
+    const primaryAction: GameAccountBusyAction =
+      canUnlink ? "unlink" : canLink ? "link" : "resync";
+    const primaryLabel =
+      primaryAction === "unlink"
+        ? t("settings.accountConnections.unlink")
+        : primaryAction === "resync"
+          ? t("settings.accountConnections.sync")
+          : account.status === "expired"
+            ? t("settings.accountConnections.reconnect")
+            : t("settings.accountConnections.connect");
+    const primaryIcon =
+      primaryAction === "unlink"
+        ? <Trash2 size={15} />
+        : primaryAction === "resync"
+          ? <RefreshCcw size={15} />
+          : <ExternalLink size={15} />;
+    const hasPrimaryAction = canUnlink || canLink || canSyncOnly;
+
+    return (
+      <div key={account.provider} className="settings-game-account-card">
+        <div className="settings-game-account-main">
+          <div className="settings-game-account-icon">
+            {account.iconUrl ? (
+              <img src={account.iconUrl} alt="" loading="lazy" />
+            ) : (
+              <Users size={18} />
+            )}
+          </div>
+          <div className="settings-game-account-copy">
+            <div className="settings-game-account-title-row">
+              <h3>{account.label}</h3>
+              <span className={`settings-inline-badge settings-inline-badge--codec ${statusClass}`}>
+                {statusLabel}
+              </span>
+            </div>
+            <p>
+              {account.isConnected
+                ? account.displayName || t("settings.accountConnections.connectedAccount")
+                : account.supportsSync && !account.supportsLinking
+                  ? t("settings.accountConnections.syncOnlyDescription")
+                  : t("settings.accountConnections.notConnectedDescription")}
+            </p>
+            <div className="settings-game-account-features">
+              {account.supportsLinking && <span>{t("settings.accountConnections.ssoSupported")}</span>}
+              {account.supportsSync && <span>{t("settings.accountConnections.syncSupported")}</span>}
+              {account.isRequired && <span>{t("settings.accountConnections.requiredForSomeGames")}</span>}
+            </div>
+            {account.supportsSync && account.isConnected ? (
+              <p className="settings-game-account-sync">
+                {account.syncState === "SYNC_SUCCESS"
+                  ? t("settings.accountConnections.syncSummary", {
+                    count: account.syncedGames,
+                    date: syncDateLabel ?? t("settings.accountConnections.recently"),
+                  })
+                  : t("settings.accountConnections.syncState", {
+                    state: account.syncState ?? t("settings.accountConnections.syncUnknown"),
+                  })}
+              </p>
+            ) : null}
+          </div>
+        </div>
+        <div className="settings-game-account-actions">
+          {account.supportsSync && account.isConnected ? (
+            <button
+              type="button"
+              className="settings-chip settings-game-account-action"
+              disabled={isBusy}
+              onClick={() => {
+                void handleGameAccountAction(account, "resync");
+              }}
+            >
+              {busyAction === "resync" ? <Loader size={15} className="spin" /> : <RefreshCcw size={15} />}
+              {busyAction === "resync"
+                ? t("settings.accountConnections.resyncing")
+                : t("settings.accountConnections.resync")}
+            </button>
+          ) : null}
+          {hasPrimaryAction ? (
+            <button
+              type="button"
+              className={`settings-game-account-action ${
+                primaryAction === "unlink" ? "settings-delete-cache-btn" : "settings-chip"
+              }`}
+              disabled={isBusy}
+              onClick={() => {
+                void handleGameAccountAction(account, primaryAction);
+              }}
+            >
+              {busyAction === primaryAction ? <Loader size={15} className="spin" /> : primaryIcon}
+              {busyAction === primaryAction
+                ? primaryAction === "unlink"
+                  ? t("settings.accountConnections.unlinking")
+                  : primaryAction === "resync"
+                    ? t("settings.accountConnections.syncing")
+                    : t("settings.accountConnections.connecting")
+                : primaryLabel}
+            </button>
+          ) : null}
+        </div>
+      </div>
+    );
+  }, [gameAccountBusy, handleGameAccountAction, t]);
+
   const renderContributorCard = useCallback((contributor: ThankYouContributor) => {
     return renderPersonLink(
       contributor,
@@ -1980,6 +2182,16 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
   const hasAnySearchMatches = showAccount || showStream || showNativeStreamer || showGame || showAudio || showInput || showInterface || showAbout || showThanks;
   const shouldRenderSettingsSections = showAll || activeSection !== "thanks";
 
+  useEffect(() => {
+    if (!showAccount) {
+      return;
+    }
+
+    let cancelled = false;
+    void loadGameAccounts(() => cancelled);
+    return () => { cancelled = true; };
+  }, [loadGameAccounts, showAccount]);
+
   const settingsNavGroups = useMemo<SettingsNavGroup[]>(() => [
     {
       label: "Account",
@@ -2030,40 +2242,8 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
     };
   }, [nativeStreamerEnablePromptVisible, onClose]);
 
-  if (typeof document === "undefined") {
-    return <></>;
-  }
-
-  return createPortal(
-    <m.div
-      className="settings-overlay"
-      role="dialog"
-      aria-modal="true"
-      aria-label={t("settings.title")}
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      exit={{ opacity: 0 }}
-      transition={pageTransition}
-    >
-      <m.button
-        type="button"
-        className="settings-overlay-backdrop"
-        onClick={onClose}
-        aria-label={t("app.actions.close")}
-        initial={{ opacity: 0 }}
-        animate={{ opacity: 1 }}
-        exit={{ opacity: 0 }}
-        transition={pageTransition}
-      />
-
-      <m.div
-        className="settings-modal"
-        onClick={(event) => event.stopPropagation()}
-        initial={{ opacity: 0, y: 18, scale: 0.985 }}
-        animate={{ opacity: 1, y: 0, scale: 1 }}
-        exit={{ opacity: 0, y: 10, scale: 0.99 }}
-        transition={panelSpring}
-      >
+  return (
+    <>
         <header className="settings-modal-header">
           <h1>{t("settings.title")}</h1>
           <div className="settings-modal-header-actions">
@@ -2136,6 +2316,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
             {shouldRenderSettingsSections && (
               <>
             {showAccount && (
+              <>
               <section className="settings-section settings-storage-section">
                 {showAll && <div className="settings-section-context">{t("settings.sections.account")}</div>}
                 <div className="settings-section-header settings-section-header--with-copy">
@@ -2206,30 +2387,14 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                     <label className="settings-storage-location-copy" htmlFor="persistent-storage-reset-region">
                       <span>{t("settings.persistentStorage.locationTitle")}</span>
                       <span>{storageResetTargetHint}</span>
-                      {storageLocationsLoading ? (
-                        <span>{t("settings.persistentStorage.locationsLoading")}</span>
-                      ) : storageLocationsError ? (
-                        <span className="settings-storage-message settings-storage-message--error">{storageLocationsError}</span>
-                      ) : null}
                     </label>
                     <select
                       id="persistent-storage-reset-region"
                       className="settings-storage-select"
-                      value={selectedStorageRegion ?? ""}
-                      disabled={!persistentStorage || storageLocationsLoading || storageResetState === "resetting"}
-                      onChange={(event) => {
-                        const value = event.target.value.trim();
-                        setSelectedStorageRegion(value.length > 0 ? value : null);
-                      }}
+                      defaultValue=""
+                      disabled
                     >
                       <option value="">{currentStorageLocationOptionLabel}</option>
-                      {storageLocationOptions.map((location) => (
-                        <option key={location.code} value={location.code} disabled={!location.isAvailable}>
-                          {location.name}
-                          {location.isRecommended ? ` (${t("settings.persistentStorage.recommended")})` : ""}
-                          {!location.isAvailable ? ` (${t("settings.persistentStorage.unavailable")})` : ""}
-                        </option>
-                      ))}
                     </select>
                   </div>
 
@@ -2245,26 +2410,73 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                         </span>
                       ) : null}
                     </div>
-                    <button
-                      type="button"
-                      className="settings-delete-cache-btn settings-storage-reset-btn"
-                      disabled={!persistentStorage || subscriptionLoading || storageResetState === "resetting"}
-                      onClick={() => {
-                        void handleResetPersistentStorage();
-                      }}
-                    >
-                      {storageResetState === "resetting" ? (
-                        <Loader size={16} className="spin" />
-                      ) : (
-                        <Trash2 size={16} />
-                      )}
-                      {storageResetState === "resetting"
-                        ? t("settings.persistentStorage.resetting")
-                        : t("settings.persistentStorage.resetStorage")}
-                    </button>
+                    <div className="settings-storage-actions">
+                      <button
+                        type="button"
+                        className="settings-export-logs-btn settings-storage-manager-btn"
+                        disabled={!persistentStorage || subscriptionLoading}
+                        onClick={() => {
+                          void handleResetPersistentStorage();
+                        }}
+                      >
+                        <ExternalLink size={16} />
+                        {t("settings.persistentStorage.openManager")}
+                      </button>
+                    </div>
                   </div>
                 </div>
               </section>
+              <section className="settings-section settings-game-accounts-section">
+                {showAll && <div className="settings-section-context">{t("settings.sections.account")}</div>}
+                <div className="settings-section-header settings-section-header--with-copy settings-game-accounts-header">
+                  <Users size={18} />
+                  <div>
+                    <h2>{t("settings.accountConnections.title")}</h2>
+                    <p className="settings-section-subtitle">{t("settings.accountConnections.description")}</p>
+                  </div>
+                  <button
+                    type="button"
+                    className="settings-chip settings-game-account-refresh"
+                    disabled={gameAccountsLoading || Boolean(gameAccountBusy)}
+                    onClick={() => {
+                      void loadGameAccounts();
+                    }}
+                  >
+                    {gameAccountsLoading ? <Loader size={15} className="spin" /> : <RefreshCcw size={15} />}
+                    {t("settings.accountConnections.refresh")}
+                  </button>
+                </div>
+                <div className="settings-game-accounts-card">
+                  {gameAccountsError ? (
+                    <div className="settings-game-account-state settings-game-account-state--error">
+                      <AlertTriangle size={16} />
+                      <span>{gameAccountsError}</span>
+                    </div>
+                  ) : null}
+                  {gameAccountStatusMessage ? (
+                    <div className="settings-game-account-state settings-game-account-state--success">
+                      <Check size={16} />
+                      <span>{gameAccountStatusMessage}</span>
+                    </div>
+                  ) : null}
+                  {gameAccountsLoading ? (
+                    <div className="settings-game-account-state settings-game-account-state--muted">
+                      <Loader size={16} className="spin" />
+                      <span>{t("settings.accountConnections.loading")}</span>
+                    </div>
+                  ) : gameAccounts.length > 0 ? (
+                    <div className="settings-game-account-grid">
+                      {gameAccounts.map((account) => renderGameAccountCard(account))}
+                    </div>
+                  ) : (
+                    <div className="settings-game-account-state settings-game-account-state--muted">
+                      <Users size={16} />
+                      <span>{t("settings.accountConnections.empty")}</span>
+                    </div>
+                  )}
+                </div>
+              </section>
+              </>
             )}
             {/* ═══ STREAM ════════════════════════════════════ */}
             {showStream && (
@@ -2470,7 +2682,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                     </button>
                     {resolutionDropdownOpen && (
                       <div className="settings-dropdown-menu settings-dropdown-menu--grouped">
-                        {(hasDynamic ? resolutionGroups : [{ category: "All", resolutions: STATIC_RESOLUTION_PRESETS.map(p => ({ ...p, width: 0, height: 0 })) }]).map(group => (
+                        {(useEntitledStreamOptions ? resolutionGroups : [{ category: "All", resolutions: STATIC_RESOLUTION_PRESETS.map(p => ({ ...p, width: 0, height: 0 })) }]).map(group => (
                           <div key={group.category} className="settings-dropdown-group">
                             <div className="settings-dropdown-group-label">{group.category}</div>
                             {group.resolutions.map(res => (
@@ -2498,7 +2710,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                     {t("settings.video.fps")}
                   </label>
                   <div className="settings-chip-row">
-                    {(hasDynamic ? dynamicFpsOptions.map((v) => ({ value: v })) : STATIC_FPS_PRESETS).map((preset) => (
+                    {(useEntitledStreamOptions ? dynamicFpsOptions.map((v) => ({ value: v })) : STATIC_FPS_PRESETS).map((preset) => (
                       <button
                         key={preset.value}
                         className={`settings-chip ${settings.fps === preset.value ? "active" : ""}`}
@@ -3235,6 +3447,26 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                     />
                     <span className="settings-toggle-track" />
                   </label>
+                </div>
+
+                <div className="settings-row settings-row--column">
+                  <div className="settings-row-top settings-row-top--compact">
+                    <label className="settings-label settings-label--wrap">
+                      <span className="settings-label-title">
+                        {t("settings.input.gyroscopeControls")}
+                        <span className="settings-inline-badge settings-inline-badge--beta">{t("app.labels.beta")}</span>
+                      </span>
+                    </label>
+                    <label className="settings-toggle">
+                      <input
+                        type="checkbox"
+                        checked={settings.enableGyroscopeControls}
+                        onChange={(e) => handleChange("enableGyroscopeControls", e.target.checked)}
+                      />
+                      <span className="settings-toggle-track" />
+                    </label>
+                  </div>
+                  <span className="settings-subtle-hint">{t("settings.input.gyroscopeControlsHint")}</span>
                 </div>
 
                 <div className="settings-row settings-row--top-aligned">
@@ -4062,7 +4294,6 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
         )}
       </div>
         </div>
-      </m.div>
 
       {nativeStreamerEnablePromptVisible && (
         <div
@@ -4131,7 +4362,6 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
           </div>
         </div>
       )}
-    </m.div>,
-    document.body,
+    </>
   );
 }
