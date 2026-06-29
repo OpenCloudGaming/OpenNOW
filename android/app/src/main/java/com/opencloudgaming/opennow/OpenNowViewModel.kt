@@ -633,8 +633,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
 
     private suspend fun refreshAccountConnectors(session: AuthSession) {
         accountConnectorRefreshMutex.withLock {
-            val token = authRepository.restore(forceRefresh = false)?.tokens?.let { it.idToken ?: it.accessToken }
-                ?: (session.tokens.idToken ?: session.tokens.accessToken)
+            val token = accountConnectorAuthToken(session)
             _state.update { it.copy(loadingAccountConnectors = true) }
             runCatching { accountConnectorRepository.fetchConnectors(token) }
                 .onSuccess { connectors ->
@@ -650,7 +649,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     fun connectAccountConnector(store: String, openUrl: (String) -> Unit) {
         val session = state.value.authSession ?: return
         viewModelScope.launch {
-            val token = authRepository.restore(forceRefresh = false)?.tokens?.accessToken ?: session.tokens.accessToken
+            val token = accountConnectorAuthToken(session)
             _state.update { it.copy(connectorActionStore = store, error = null) }
             runCatching { withTimeout(20_000L) { accountConnectorRepository.loginUrl(store, token) } }
                 .onSuccess { url ->
@@ -660,10 +659,16 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 }
                 .onFailure { error ->
                     if (error is CancellationException) return@onFailure
-                    _state.update { it.copy(connectorActionStore = null, error = error.message ?: "Failed to start store connection") }
+                    val message = error.message ?: "Failed to start store connection"
+                    Toast.makeText(getApplication(), message, Toast.LENGTH_SHORT).show()
+                    _state.update { it.copy(connectorActionStore = null, error = message) }
                 }
         }
     }
+
+    private suspend fun accountConnectorAuthToken(session: AuthSession): String =
+        authRepository.restore(forceRefresh = false)?.tokens?.let { it.idToken ?: it.accessToken }
+            ?: (session.tokens.idToken ?: session.tokens.accessToken)
 
     private fun refreshAccountConnectorsAfterLinking() {
         viewModelScope.launch {
@@ -678,7 +683,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     fun disconnectAccountConnector(store: String) {
         val session = state.value.authSession ?: return
         viewModelScope.launch {
-            val token = authRepository.restore(forceRefresh = false)?.tokens?.accessToken ?: session.tokens.accessToken
+            val token = accountConnectorAuthToken(session)
             _state.update { it.copy(connectorActionStore = store, error = null) }
             runCatching { accountConnectorRepository.disconnect(store, token) }
                 .onSuccess {
@@ -688,7 +693,9 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 }
                 .onFailure { error ->
                     if (error is CancellationException) return@onFailure
-                    _state.update { it.copy(connectorActionStore = null, error = error.message ?: "Failed to disconnect store") }
+                    val message = error.message ?: "Failed to disconnect store"
+                    Toast.makeText(getApplication(), message, Toast.LENGTH_SHORT).show()
+                    _state.update { it.copy(connectorActionStore = null, error = message) }
                 }
         }
     }
