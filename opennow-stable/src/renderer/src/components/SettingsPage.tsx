@@ -1920,18 +1920,26 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
         : account.isConnected
           ? "settings-inline-badge--codec-gpu"
           : "settings-inline-badge--codec-testing";
+    const canLink = account.supportsLinking && (!account.isConnected || account.status === "expired");
+    const canUnlink = account.isConnected && account.status !== "expired";
+    const canSyncOnly = account.supportsSync && !account.supportsLinking && !account.isConnected;
     const primaryAction: GameAccountBusyAction =
-      account.isConnected && account.status !== "expired" ? "unlink" : "link";
+      canUnlink ? "unlink" : canLink ? "link" : "resync";
     const primaryLabel =
       primaryAction === "unlink"
         ? t("settings.accountConnections.unlink")
-        : account.status === "expired"
-          ? t("settings.accountConnections.reconnect")
-          : t("settings.accountConnections.connect");
+        : primaryAction === "resync"
+          ? t("settings.accountConnections.sync")
+          : account.status === "expired"
+            ? t("settings.accountConnections.reconnect")
+            : t("settings.accountConnections.connect");
     const primaryIcon =
       primaryAction === "unlink"
         ? <Trash2 size={15} />
-        : <ExternalLink size={15} />;
+        : primaryAction === "resync"
+          ? <RefreshCcw size={15} />
+          : <ExternalLink size={15} />;
+    const hasPrimaryAction = canUnlink || canLink || canSyncOnly;
 
     return (
       <div key={account.provider} className="settings-game-account-card">
@@ -1953,7 +1961,9 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
             <p>
               {account.isConnected
                 ? account.displayName || t("settings.accountConnections.connectedAccount")
-                : t("settings.accountConnections.notConnectedDescription")}
+                : account.supportsSync && !account.supportsLinking
+                  ? t("settings.accountConnections.syncOnlyDescription")
+                  : t("settings.accountConnections.notConnectedDescription")}
             </p>
             <div className="settings-game-account-features">
               {account.supportsLinking && <span>{t("settings.accountConnections.ssoSupported")}</span>}
@@ -1990,23 +2000,27 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                 : t("settings.accountConnections.resync")}
             </button>
           ) : null}
-          <button
-            type="button"
-            className={`settings-game-account-action ${
-              primaryAction === "unlink" ? "settings-delete-cache-btn" : "settings-chip"
-            }`}
-            disabled={isBusy}
-            onClick={() => {
-              void handleGameAccountAction(account, primaryAction);
-            }}
-          >
-            {busyAction === primaryAction ? <Loader size={15} className="spin" /> : primaryIcon}
-            {busyAction === primaryAction
-              ? primaryAction === "unlink"
-                ? t("settings.accountConnections.unlinking")
-                : t("settings.accountConnections.connecting")
-              : primaryLabel}
-          </button>
+          {hasPrimaryAction ? (
+            <button
+              type="button"
+              className={`settings-game-account-action ${
+                primaryAction === "unlink" ? "settings-delete-cache-btn" : "settings-chip"
+              }`}
+              disabled={isBusy}
+              onClick={() => {
+                void handleGameAccountAction(account, primaryAction);
+              }}
+            >
+              {busyAction === primaryAction ? <Loader size={15} className="spin" /> : primaryIcon}
+              {busyAction === primaryAction
+                ? primaryAction === "unlink"
+                  ? t("settings.accountConnections.unlinking")
+                  : primaryAction === "resync"
+                    ? t("settings.accountConnections.syncing")
+                    : t("settings.accountConnections.connecting")
+                : primaryLabel}
+            </button>
+          ) : null}
         </div>
       </div>
     );

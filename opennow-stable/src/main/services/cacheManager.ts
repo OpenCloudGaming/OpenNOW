@@ -38,9 +38,12 @@ class CacheManager {
     }
   }
 
+  private sanitizeCacheKey(key: string): string {
+    return key.replace(/[^a-z0-9-]/gi, "_");
+  }
+
   private getCacheFilePath(key: string): string {
-    const sanitized = key.replace(/[^a-z0-9-]/gi, "_");
-    return join(this.cacheDir, `${sanitized}.json`);
+    return join(this.cacheDir, `${this.sanitizeCacheKey(key)}.json`);
   }
 
   async loadFromCache<T>(key: string): Promise<CachedData<T> | null> {
@@ -125,6 +128,35 @@ class CacheManager {
       console.log(`[CACHE] Invalidated cache: ${key}`);
     } catch (error) {
       console.error(`[CACHE] Error deleting cache file: ${key}`, error);
+      throw error;
+    }
+  }
+
+  async invalidateCachesByPrefix(prefix: string): Promise<void> {
+    if (!this.initialized) {
+      console.warn(`[CACHE] Cache not initialized, skipping prefix invalidation for: ${prefix}`);
+      return;
+    }
+
+    const sanitizedPrefix = this.sanitizeCacheKey(prefix);
+
+    try {
+      const files = await readdir(this.cacheDir);
+      const matchingFiles = files.filter(
+        (file) => file === `${sanitizedPrefix}.json` || file.startsWith(`${sanitizedPrefix}_`),
+      );
+
+      if (matchingFiles.length === 0) {
+        console.log(`[CACHE] No cache entries matched prefix: ${prefix}`);
+        return;
+      }
+
+      await Promise.all(matchingFiles.map(async (file) => {
+        await unlink(join(this.cacheDir, file));
+        console.log(`[CACHE] Invalidated cache by prefix ${prefix}: ${file}`);
+      }));
+    } catch (error) {
+      console.error(`[CACHE] Error deleting cache files by prefix: ${prefix}`, error);
       throw error;
     }
   }

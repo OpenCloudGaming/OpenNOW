@@ -584,6 +584,7 @@ async function invalidateAccountGameCaches(session: AuthSession): Promise<void> 
   await Promise.allSettled([
     cacheManager.invalidateCache(keys.main),
     cacheManager.invalidateCache(keys.library),
+    cacheManager.invalidateCachesByPrefix(keys.catalogPrefix),
   ]);
 }
 
@@ -594,7 +595,7 @@ function mergeLoginResult(
   const provider = normalizeProviderCode(loginResult.platform);
   let mergedAccount: GameAccountConnection | null = null;
   const accounts = result.accounts.map((account) => {
-    if (account.provider !== provider || account.isConnected) {
+    if (account.provider !== provider || (account.isConnected && account.status !== "expired")) {
       return account;
     }
     const expiresInSeconds = parseExpiresIn(loginResult.expiresIn);
@@ -625,8 +626,8 @@ export async function linkGameAccount(session: AuthSession, provider: string): P
   const definition = await resolveProviderDefinition(provider);
   const normalizedProvider = normalizeProviderCode(definition.store);
   const support = getProviderFeatureSupport(definition);
-  if (!support.supportsLinking && !support.supportsSync) {
-    throw new Error(`${definition.label ?? normalizedProvider} does not support account linking or library sync`);
+  if (!support.supportsLinking) {
+    throw new Error(`${definition.label ?? normalizedProvider} does not support account linking`);
   }
 
   const token = getSessionIdToken(session);

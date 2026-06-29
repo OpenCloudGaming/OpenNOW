@@ -33,6 +33,7 @@ const MAX_LIBRARY_PAGES = 25;
 const DEFAULT_SORT_ID = "relevance";
 const DEFAULT_LIBRARY_SORT = "variants.gfn.library.lastPlayedDate:DESC,computedValues.libraryAddedDate:DESC,sortName:ASC";
 const LIBRARY_GAMES_CACHE_SCOPE = "library:v2";
+const CATALOG_GAMES_CACHE_SCOPE = "catalog";
 const PUBLIC_GAMES_CACHE_KEY = "games:public:v2";
 const LIBRARY_APPS_FILTER = {
   variants: {
@@ -130,17 +131,27 @@ function catalogBrowseCacheKey(input: CatalogBrowseRequest, accountId: string): 
     .update(String(input.fetchCount ?? ""))
     .digest("hex")
     .slice(0, 12);
-  return `${accountScopedGamesCacheKey("catalog", accountId, input.providerStreamingBaseUrl, input.proxyUrl)}:${queryDigest}`;
+  return `${getAccountCatalogGamesCachePrefix(accountId, input.providerStreamingBaseUrl, input.proxyUrl)}:${queryDigest}`;
+}
+
+export function getAccountCatalogGamesCachePrefix(
+  accountId: string,
+  providerStreamingBaseUrl?: string,
+  proxyUrl?: string,
+): string {
+  return accountScopedGamesCacheKey(CATALOG_GAMES_CACHE_SCOPE, accountId, providerStreamingBaseUrl, proxyUrl);
 }
 
 export function getAccountGamesCacheKeys(accountId: string, providerStreamingBaseUrl?: string, proxyUrl?: string): {
   main: string;
   library: string;
+  catalogPrefix: string;
   public: string;
 } {
   return {
     main: accountScopedGamesCacheKey("main", accountId, providerStreamingBaseUrl, proxyUrl),
     library: accountScopedGamesCacheKey(LIBRARY_GAMES_CACHE_SCOPE, accountId, providerStreamingBaseUrl, proxyUrl),
+    catalogPrefix: getAccountCatalogGamesCachePrefix(accountId, providerStreamingBaseUrl, proxyUrl),
     public: publicGamesCacheKey(proxyUrl),
   };
 }
