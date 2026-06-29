@@ -39,7 +39,7 @@ test("derives stable opaque proxy cache key parts", () => {
 
   assert.equal(sessionProxyCacheKeyPart(), null);
   assert.equal(schemeLess, explicit);
-  assert.notEqual(withCredentials, explicit);
+  assert.equal(withCredentials, explicit);
   assert.match(withCredentials ?? "", /^[0-9a-f]{16}$/);
   assert.ok(!withCredentials?.includes("secret"));
 });
