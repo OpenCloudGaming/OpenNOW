@@ -176,8 +176,8 @@ function normalizeProviderCode(provider: string): string {
   }
 }
 
-function sha1(value: string): string {
-  return createHash("sha1").update(value).digest("hex");
+function stableHashedUserId(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
 }
 
 function getSessionIdToken(session: AuthSession): string {
@@ -256,7 +256,7 @@ async function fetchStaticAccountProviderDefinitions(): Promise<AppStoreDefiniti
 async function fetchUserAccount(session: AuthSession): Promise<UserAccountData | undefined> {
   const token = getSessionIdToken(session);
   const params = buildPersistedQueryParams("userAccount", USER_ACCOUNT_QUERY_HASH);
-  params.set("huId", sha1(session.user.userId));
+  params.set("huId", stableHashedUserId(session.user.userId));
 
   const response = await fetch(`${LCARS_GRAPHQL_URL}?${params.toString()}`, {
     headers: buildLcarsHeaders(token),
