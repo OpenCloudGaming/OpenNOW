@@ -4,8 +4,8 @@ use crate::gstreamer_platform::win32_renderer_window;
 use crate::input::InputEncoder;
 #[cfg(target_os = "windows")]
 use crate::input::{
-    layout_mapped_keyboard_scancode, GamepadInput, KeyboardPayload, MouseButtonPayload,
-    MouseMovePayload, MouseWheelPayload, GAMEPAD_MAX_CONTROLLERS,
+    layout_mapped_keyboard_keycode, layout_mapped_keyboard_scancode, GamepadInput, KeyboardPayload,
+    MouseButtonPayload, MouseMovePayload, MouseWheelPayload, GAMEPAD_MAX_CONTROLLERS,
     PARTIALLY_RELIABLE_GAMEPAD_MASK_ALL,
 };
 use crate::protocol::Event;
@@ -484,7 +484,7 @@ fn send_encoded_native_window_input_event(
             timestamp_us,
         } => {
             let payload = KeyboardPayload {
-                keycode,
+                keycode: layout_mapped_keyboard_keycode(keycode, scancode),
                 scancode: layout_mapped_keyboard_scancode(scancode),
                 modifiers,
                 timestamp_us,
