@@ -30,6 +30,7 @@ const LIBRARY_FETCH_COUNT = 200;
 const MAX_LIBRARY_PAGES = 25;
 const DEFAULT_SORT_ID = "relevance";
 const DEFAULT_LIBRARY_SORT = "variants.gfn.library.lastPlayedDate:DESC,computedValues.libraryAddedDate:DESC,sortName:ASC";
+const LIBRARY_GAMES_CACHE_SCOPE = "library:v2";
 const PUBLIC_GAMES_CACHE_KEY = "games:public:v2";
 const LIBRARY_APPS_FILTER = {
   variants: {
@@ -116,7 +117,7 @@ export function getAccountGamesCacheKeys(accountId: string, providerStreamingBas
 } {
   return {
     main: accountScopedGamesCacheKey("main", accountId, providerStreamingBaseUrl),
-    library: accountScopedGamesCacheKey("library", accountId, providerStreamingBaseUrl),
+    library: accountScopedGamesCacheKey(LIBRARY_GAMES_CACHE_SCOPE, accountId, providerStreamingBaseUrl),
     public: PUBLIC_GAMES_CACHE_KEY,
   };
 }
@@ -1111,7 +1112,7 @@ export async function peekCachedLibraryGames(
   providerStreamingBaseUrl?: string,
   accountId?: string,
 ): Promise<GameInfo[] | null> {
-  const cached = await loadAccountScopedFromCache<GameInfo[]>("library", accountId, token, providerStreamingBaseUrl);
+  const cached = await loadAccountScopedFromCache<GameInfo[]>(LIBRARY_GAMES_CACHE_SCOPE, accountId, token, providerStreamingBaseUrl);
   return cached?.data ?? null;
 }
 
@@ -1186,13 +1187,13 @@ export async function fetchLibraryGames(
   providerStreamingBaseUrl?: string,
   accountId?: string,
 ): Promise<GameInfo[]> {
-  const cached = await loadAccountScopedFromCache<GameInfo[]>("library", accountId, token, providerStreamingBaseUrl);
+  const cached = await loadAccountScopedFromCache<GameInfo[]>(LIBRARY_GAMES_CACHE_SCOPE, accountId, token, providerStreamingBaseUrl);
   if (cached) {
     return mergePublicGameVariants(cached.data, await fetchPublicGames());
   }
 
   const games = await fetchLibraryGamesUncached(token, providerStreamingBaseUrl);
-  const cacheKey = accountScopedGamesCacheKey("library", resolveAccountCacheId(accountId, token), providerStreamingBaseUrl);
+  const cacheKey = accountScopedGamesCacheKey(LIBRARY_GAMES_CACHE_SCOPE, resolveAccountCacheId(accountId, token), providerStreamingBaseUrl);
   await cacheManager.saveToCache(cacheKey, games);
   return games;
 }
