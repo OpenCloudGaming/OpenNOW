@@ -4702,8 +4702,7 @@ button.game-card-store-chip.owned.active:hover {
 .settings-game-accounts-section {
   display: flex;
   flex-direction: column;
-  min-height: 0;
-  overflow: hidden;
+  overflow: visible;
 }
 
 .settings-game-accounts-header {
