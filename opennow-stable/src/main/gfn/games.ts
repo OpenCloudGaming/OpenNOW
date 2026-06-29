@@ -16,6 +16,7 @@ import {
   buildGfnGraphQlHeaders,
   buildGfnLcarsHeaders,
 } from "./clientHeaders";
+import { fetchAllAppsPages, type AppsPageResponse } from "./paginatedApps";
 import { fetchWithOptionalProxy } from "./proxyFetch";
 import { sessionProxyCacheKeyPart, sessionProxyHasCredentials } from "./proxyUrl";
 
@@ -27,8 +28,23 @@ const LIBRARY_WITH_TIME_QUERY_HASH = "039e8c0d553972975485fee56e59f2549d2fdb518e
 const DEFAULT_LOCALE = "en_US";
 const DEFAULT_CATALOG_FETCH_COUNT = 120;
 const MAX_CATALOG_PAGES = 3;
+const LIBRARY_FETCH_COUNT = 200;
+const MAX_LIBRARY_PAGES = 25;
 const DEFAULT_SORT_ID = "relevance";
+const DEFAULT_LIBRARY_SORT = "variants.gfn.library.lastPlayedDate:DESC,computedValues.libraryAddedDate:DESC,sortName:ASC";
+const LIBRARY_GAMES_CACHE_SCOPE = "library:v2";
 const PUBLIC_GAMES_CACHE_KEY = "games:public:v2";
+const LIBRARY_APPS_FILTER = {
+  variants: {
+    gfn: {
+      library: {
+        status: {
+          notEquals: "NOT_OWNED",
+        },
+      },
+    },
+  },
+} satisfies Record<string, unknown>;
 
 function addProxyCacheScope(hash: ReturnType<typeof createHash>, proxyUrl?: string): void {
   const proxyCachePart = sessionProxyCacheKeyPart(proxyUrl);
@@ -124,7 +140,7 @@ export function getAccountGamesCacheKeys(accountId: string, providerStreamingBas
 } {
   return {
     main: accountScopedGamesCacheKey("main", accountId, providerStreamingBaseUrl, proxyUrl),
-    library: accountScopedGamesCacheKey("library", accountId, providerStreamingBaseUrl, proxyUrl),
+    library: accountScopedGamesCacheKey(LIBRARY_GAMES_CACHE_SCOPE, accountId, providerStreamingBaseUrl, proxyUrl),
     public: publicGamesCacheKey(proxyUrl),
   };
 }
@@ -183,6 +199,8 @@ interface AppsSearchResponse {
   };
   errors?: Array<{ message: string }>;
 }
+
+type AppsPage = AppsPageResponse<AppData>;
 
 interface GraphQlFilterGroup {
   id: string;
@@ -541,14 +559,27 @@ function appToGame(app: AppData): GameInfo {
 function mergeAppMetaIntoGame(game: GameInfo, app: AppData): GameInfo {
   const merged = appToGame(app);
   const selectedVariantId = game.variants[game.selectedVariantIndex]?.id;
+  const variants = merged.variants.map((variant) => {
+    const existing = game.variants.find((candidate) => candidate.id === variant.id);
+    return {
+      ...variant,
+      librarySelected: variant.librarySelected ?? existing?.librarySelected,
+      inLibrary: variant.inLibrary ?? existing?.inLibrary,
+      libraryStatus: variant.libraryStatus ?? existing?.libraryStatus,
+      lastPlayedDate: variant.lastPlayedDate ?? existing?.lastPlayedDate,
+    };
+  });
   const selectedVariantIndex = selectedVariantId
-    ? merged.variants.findIndex((variant) => variant.id === selectedVariantId)
+    ? variants.findIndex((variant) => variant.id === selectedVariantId)
     : -1;
 
   return {
     ...game,
     ...merged,
     id: game.id,
+    isInLibrary: merged.isInLibrary || game.isInLibrary,
+    lastPlayed: merged.lastPlayed ?? game.lastPlayed,
+    variants,
     selectedVariantIndex: selectedVariantIndex >= 0 ? selectedVariantIndex : merged.selectedVariantIndex,
   };
 }
@@ -1118,7 +1149,7 @@ export async function peekCachedLibraryGames(
   accountId?: string,
   proxyUrl?: string,
 ): Promise<GameInfo[] | null> {
-  const cached = await loadAccountScopedFromCache<GameInfo[]>("library", accountId, token, providerStreamingBaseUrl, proxyUrl);
+  const cached = await loadAccountScopedFromCache<GameInfo[]>(LIBRARY_GAMES_CACHE_SCOPE, accountId, token, providerStreamingBaseUrl, proxyUrl);
   return cached?.data ?? null;
 }
 
@@ -1204,14 +1235,14 @@ export async function fetchLibraryGames(
   accountId?: string,
   proxyUrl?: string,
 ): Promise<GameInfo[]> {
-  const cached = await loadAccountScopedFromCache<GameInfo[]>("library", accountId, token, providerStreamingBaseUrl, proxyUrl);
+  const cached = await loadAccountScopedFromCache<GameInfo[]>(LIBRARY_GAMES_CACHE_SCOPE, accountId, token, providerStreamingBaseUrl, proxyUrl);
   if (cached) {
     return mergePublicGameVariants(cached.data, await fetchPublicGames(proxyUrl));
   }
 
   const games = await fetchLibraryGamesUncached(token, providerStreamingBaseUrl, proxyUrl);
   if (!shouldBypassGamesCache(proxyUrl)) {
-    const cacheKey = accountScopedGamesCacheKey("library", resolveAccountCacheId(accountId, token), providerStreamingBaseUrl, proxyUrl);
+    const cacheKey = accountScopedGamesCacheKey(LIBRARY_GAMES_CACHE_SCOPE, resolveAccountCacheId(accountId, token), providerStreamingBaseUrl, proxyUrl);
     await cacheManager.saveToCache(cacheKey, games);
   }
   return games;
@@ -1223,6 +1254,14 @@ async function fetchLibraryGamesUncached(
   proxyUrl?: string,
 ): Promise<GameInfo[]> {
   const vpcId = await getVpcId(token, providerStreamingBaseUrl, proxyUrl);
+  try {
+    const apps = await fetchPaginatedLibraryApps(token, vpcId, proxyUrl);
+    const games = dedupeGames(apps.map(appToGame));
+    return mergePublicGameVariants(await enrichGamesWithMetadata(token, vpcId, games, proxyUrl), await fetchPublicGames(proxyUrl));
+  } catch (error) {
+    console.warn("Paginated library query failed, falling back to library panel:", error);
+  }
+
   let payload: GraphQlResponse;
 
   try {
@@ -1233,6 +1272,75 @@ async function fetchLibraryGamesUncached(
 
   const games = flattenPanels(payload);
   return mergePublicGameVariants(await enrichGamesWithMetadata(token, vpcId, games, proxyUrl), await fetchPublicGames(proxyUrl));
+}
+
+async function fetchPaginatedLibraryApps(token: string, vpcId: string, proxyUrl?: string): Promise<AppData[]> {
+  const query = `query GetLibraryApps(
+    $vpcId: String!,
+    $locale: String!,
+    $sortString: String!,
+    $fetchCount: Int!,
+    $cursor: String!,
+    $filters: AppFilterFields!
+  ) {
+    apps(
+      vpcId: $vpcId,
+      language: $locale,
+      orderBy: $sortString,
+      first: $fetchCount,
+      after: $cursor,
+      filters: $filters
+    ) {
+      numberReturned
+      numberSupported
+      pageInfo { hasNextPage endCursor totalCount }
+      items {
+        id
+        title
+        images { KEY_ART KEY_IMAGE GAME_BOX_ART TV_BANNER HERO_IMAGE MARQUEE_HERO_IMAGE FEATURE_IMAGE GAME_LOGO SCREENSHOTS }
+        variants {
+          id
+          appStore
+          storeUrl
+          supportedControls
+          gfn {
+            status
+            library { status selected lastPlayedDate }
+          }
+        }
+        gfn {
+          playabilityState
+          minimumMembershipTierLabel
+          catalogSkuStrings {
+            SKU_BASED_TAG
+            SKU_BASED_PLAYABILITY_TEXT
+            SKU_BASED_UNPLAYABLE_DIALOG_HEADER
+            SKU_BASED_UNPLAYABLE_DIALOG_BODY_UPGRADE
+            SKU_BASED_UNPLAYABLE_DIALOG_BODY_UPGRADE_ECOMM_RESTRICTED
+          }
+        }
+        itemMetadata { campaignIds }
+      }
+    }
+  }`;
+
+  const result = await fetchAllAppsPages<AppData>(
+    (cursor) => postGraphQl<AppsPage>(
+      query,
+      {
+        vpcId,
+        locale: DEFAULT_LOCALE,
+        sortString: DEFAULT_LIBRARY_SORT,
+        fetchCount: LIBRARY_FETCH_COUNT,
+        cursor,
+        filters: LIBRARY_APPS_FILTER,
+      },
+      token,
+      proxyUrl,
+    ),
+    { maxPages: MAX_LIBRARY_PAGES },
+  );
+  return result.items;
 }
 
 export async function fetchPublicGames(proxyUrl?: string): Promise<GameInfo[]> {
