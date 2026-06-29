@@ -5207,6 +5207,7 @@ button.game-card-store-chip.owned.active:hover {
 .settings-toggle {
   position: relative;
   display: inline-block;
+  flex: 0 0 44px;
   width: 44px;
   height: 24px;
   cursor: pointer;
