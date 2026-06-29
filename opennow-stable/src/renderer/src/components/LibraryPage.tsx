@@ -1,10 +1,9 @@
 import { Library, Search, Clock, Gamepad2, Loader2, ArrowUpDown, MoreHorizontal, Menu } from "lucide-react";
-import { memo, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { JSX } from "react";
 import { AnimatePresence, m } from "motion/react";
 import type { CatalogSortOption, GameInfo } from "@shared/gfn";
-import { getStoreDisplayName, getStoreIconComponent } from "./GameCard";
-import { GameCardListItem, useCatalogCardActionsRef } from "./GameCardListItem";
+import { GameCard, getStoreDisplayName, getStoreIconComponent } from "./GameCard";
 import { useTranslation } from "../i18n";
 import { formatCatalogLastPlayed } from "../utils/lastPlayedFormat";
 import { controllerButton, readControllerGamepadButtons } from "../utils/controllerGamepad";
@@ -183,7 +182,7 @@ function ControllerGameCard({
   );
 }
 
-export const LibraryPage = memo(function LibraryPage({
+export function LibraryPage({
   games,
   searchQuery,
   onSearchChange,
@@ -205,11 +204,6 @@ export const LibraryPage = memo(function LibraryPage({
   onNextControllerPage,
 }: LibraryPageProps): JSX.Element {
   const { t } = useTranslation();
-  const catalogActionsRef = useCatalogCardActionsRef({
-    onPlayGame,
-    onSelectGame,
-    onSelectGameVariant,
-  });
   const [controllerHeroIndex, setControllerHeroIndex] = useState(0);
   const [detailsGame, setDetailsGame] = useState<GameInfo | null>(null);
   const [controllerStoreFilterId, setControllerStoreFilterId] = useState("library");
@@ -538,26 +532,6 @@ export const LibraryPage = memo(function LibraryPage({
     };
   }, [controllerMode, controllerSearchOpen, onNextControllerPage, onPreviousControllerPage]);
 
-  const libraryGridItems = useMemo(
-    () => games.map((game) => (
-      <div key={game.id} className="library-game-wrapper">
-        <GameCardListItem
-          game={game}
-          isSelected={game.id === selectedGameId}
-          selectedVariantId={selectedVariantByGameId[game.id]}
-          actionsRef={catalogActionsRef}
-        />
-        {game.lastPlayed && (
-          <div className="library-last-played">
-            <Clock size={12} />
-            <span>{formatCatalogLastPlayed(t, game.lastPlayed)}</span>
-          </div>
-        )}
-      </div>
-    )),
-    [catalogActionsRef, games, selectedGameId, selectedVariantByGameId, t],
-  );
-
   if (controllerMode) {
     const featuredGame = controllerFeaturedGames[controllerHeroIndex] ?? selectedControllerGame;
     const heroImageUrl = featuredGame ? getControllerHeroBackgroundCandidates(featuredGame)[0] : undefined;
@@ -862,11 +836,33 @@ export const LibraryPage = memo(function LibraryPage({
             <p>{t("library.empty.noGamesMatch", { query: searchQuery })}</p>
           </div>
         ) : (
-          <div className="game-grid">
-            {libraryGridItems}
-          </div>
+          <m.div
+            className="game-grid"
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={pageTransition}
+          >
+            {games.map((game) => (
+              <div key={game.id} className="library-game-wrapper">
+                <GameCard
+                  game={game}
+                  isSelected={game.id === selectedGameId}
+                  onSelect={() => onSelectGame(game.id)}
+                  onPlay={() => onPlayGame(game)}
+                  selectedVariantId={selectedVariantByGameId[game.id]}
+                  onSelectStore={(variantId) => onSelectGameVariant(game.id, variantId)}
+                />
+                {game.lastPlayed && (
+                  <div className="library-last-played">
+                    <Clock size={12} />
+                    <span>{formatCatalogLastPlayed(t, game.lastPlayed)}</span>
+                  </div>
+                )}
+              </div>
+            ))}
+          </m.div>
         )}
       </div>
     </div>
   );
-});
+}

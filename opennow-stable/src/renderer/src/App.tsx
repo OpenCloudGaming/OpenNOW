@@ -10,7 +10,6 @@ import type {
   CatalogBrowseResult,
   CatalogFilterGroup,
   CatalogSortOption,
-  DirectLaunchRequest,
   ExistingSessionStrategy,
   GameInfo,
   GamePanelResult,
@@ -31,10 +30,7 @@ import {
   buildNativeStreamerSessionContext,
   DEFAULT_KEYBOARD_LAYOUT,
   getDefaultStreamPreferences,
-  isGameInLibrary,
   isSessionAdsRequired,
-  resolveEntitledStreamProfile,
-  SAFE_FALLBACK_STREAM_PROFILE,
 } from "@shared/gfn";
 import { GfnWebRtcClient } from "./gfn/webrtcClient";
 import { formatShortcutForDisplay, isShortcutMatch, normalizeShortcut } from "./shortcuts";
@@ -51,12 +47,6 @@ import type {
   StreamWarningState,
 } from "./lib/appTypes";
 import { loadCatalogPreferences, saveCatalogPreferences, VARIANT_SELECTION_LOCALSTORAGE_KEY } from "./lib/catalogPreferences";
-import {
-  buildCatalogQueryKey,
-  clearCatalogSnapshot,
-  loadCatalogSnapshot,
-  saveCatalogSnapshot,
-} from "./lib/catalogSnapshot";
 import { loadStoredCodecResults, saveStoredCodecResults, testCodecSupport, type CodecTestResult } from "./lib/codecDiagnostics";
 import {
   areStringArraysEqual,
@@ -102,7 +92,6 @@ import { Navbar } from "./components/Navbar";
 import { HomePage } from "./components/HomePage";
 import { LibraryPage } from "./components/LibraryPage";
 import { SettingsPage } from "./components/SettingsPage";
-import { SettingsModalHost } from "./components/SettingsModalHost";
 import { StreamLoading } from "./components/StreamLoading";
 import { StreamView } from "./components/StreamView";
 import { QueueServerSelectModal } from "./components/QueueServerSelectModal";
@@ -114,132 +103,10 @@ type AppStyle = CSSProperties & {
   "--game-poster-scale"?: string;
 };
 
-interface DirectLaunchTarget {
-  game: GameInfo;
-  variantId?: string;
-}
-
 function getAppStyle(posterSizeScale: number): AppStyle {
   return {
     "--game-poster-scale": String(posterSizeScale),
   };
-}
-
-function getEnabledSessionProxyUrl(settings: Pick<Settings, "sessionProxyEnabled" | "sessionProxyUrl">): string | undefined {
-  const proxyUrl = settings.sessionProxyEnabled ? settings.sessionProxyUrl.trim() : "";
-  return proxyUrl || undefined;
-}
-
-function getSessionProxyUiScope(proxyUrl: string | undefined): string {
-  if (!proxyUrl) return "direct";
-  const trimmed = proxyUrl.trim();
-  const candidate = /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) ? trimmed : `http://${trimmed}`;
-
-  try {
-    const parsed = new URL(candidate);
-    return `${parsed.protocol}//${parsed.host}`;
-  } catch {
-    return "proxy";
-  }
-}
-
-function hasSessionProxyCredentials(proxyUrl: string | undefined): boolean {
-  if (!proxyUrl) return false;
-  const trimmed = proxyUrl.trim();
-  const candidate = /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) ? trimmed : `http://${trimmed}`;
-
-  try {
-    const parsed = new URL(candidate);
-    return parsed.username.length > 0 || parsed.password.length > 0;
-  } catch {
-    return false;
-  }
-}
-
-function buildProxyAwareCatalogQueryKey(
-  searchQuery: string,
-  filterIds: string[],
-  sortId: string,
-  proxyUrl: string | undefined,
-): string {
-  return `${buildCatalogQueryKey(searchQuery, filterIds, sortId)}|${getSessionProxyUiScope(proxyUrl)}`;
-}
-
-function normalizeDirectLaunchText(value: string | undefined): string {
-  return value?.trim().replace(/\s+/g, " ").toLowerCase() ?? "";
-}
-
-function directLaunchOwnershipScore(game: GameInfo): number {
-  return game.isInLibrary || isGameInLibrary(game) ? 10 : 0;
-}
-
-function findDirectLaunchTargetByTitle(catalog: GameInfo[], title: string): DirectLaunchTarget | null {
-  const normalizedTitle = normalizeDirectLaunchText(title);
-  if (!normalizedTitle) return null;
-
-  let best: { target: DirectLaunchTarget; score: number } | null = null;
-  for (const game of catalog) {
-    const gameTitle = normalizeDirectLaunchText(game.title);
-    const shortName = normalizeDirectLaunchText(game.shortName);
-    let score = 0;
-    if (gameTitle === normalizedTitle) {
-      score = 100;
-    } else if (shortName && shortName === normalizedTitle) {
-      score = 95;
-    } else if (gameTitle.startsWith(normalizedTitle)) {
-      score = 80;
-    } else if (matchesGameSearch(game, title)) {
-      score = 60;
-    }
-
-    if (score === 0) continue;
-    score += directLaunchOwnershipScore(game);
-    if (!best || score > best.score) {
-      best = { target: { game }, score };
-    }
-  }
-
-  return best?.target ?? null;
-}
-
-function createSyntheticDirectLaunchGame(request: DirectLaunchRequest, appId: string): GameInfo {
-  const title = request.title?.trim() || `GFN App ${appId}`;
-  return {
-    id: `direct-launch-${appId}`,
-    launchAppId: appId,
-    title,
-    searchText: normalizeDirectLaunchText(title),
-    isInLibrary: true,
-    selectedVariantIndex: 0,
-    variants: [
-      {
-        id: appId,
-        store: "UNKNOWN",
-        supportedControls: [],
-        libraryStatus: "IN_LIBRARY",
-      },
-    ],
-  };
-}
-
-function findDirectLaunchTarget(
-  request: DirectLaunchRequest,
-  catalog: GameInfo[],
-  variantByGameId: Record<string, string>,
-): DirectLaunchTarget | null {
-  const numericAppId = parseNumericId(request.appId);
-  if (numericAppId !== null) {
-    const matched = findSessionContextForAppId(catalog, variantByGameId, numericAppId);
-    if (matched) {
-      return { game: matched.game, variantId: matched.variant?.id };
-    }
-  }
-
-  if (request.title) {
-    return findDirectLaunchTargetByTitle(catalog, request.title);
-  }
-
-  return null;
 }
 
 function isNvidiaProvider(provider: LoginProvider | null | undefined): boolean {
@@ -274,11 +141,7 @@ const isMac = navigator.platform.toLowerCase().includes("mac");
 
 function isExpectedNativeSessionClose(reason: string): boolean {
   const normalized = reason.trim().toLowerCase();
-  return normalized === "bye" ||
-    normalized === "peerremoved" ||
-    normalized === "peer removed" ||
-    normalized === "socket closed" ||
-    normalized === "signaling disconnected: socket closed";
+  return normalized === "socket closed" || normalized === "signaling disconnected: socket closed";
 }
 
 function gameIdentityMatches(left: GameInfo, right: GameInfo): boolean {
@@ -360,7 +223,6 @@ export function App(): JSX.Element {
   // Navigation
   const [currentPage, setCurrentPage] = useState<AppPage>("home");
   const [pageBeforeSettings, setPageBeforeSettings] = useState<AppPage>("home");
-  const [settingsMounted, setSettingsMounted] = useState(false);
   const [sessionFullscreen, setSessionFullscreenState] = useState(false);
 
   // Games State
@@ -406,7 +268,6 @@ export function App(): JSX.Element {
     sessionProxyEnabled: false,
     sessionProxyUrl: "",
     clipboardPaste: false,
-    enableGyroscopeControls: false,
     mouseSensitivity: 1,
     mouseAcceleration: 1,
     shortcutToggleStats: DEFAULT_SHORTCUTS.shortcutToggleStats,
@@ -441,10 +302,6 @@ export function App(): JSX.Element {
     autoCheckForUpdates: true,
   });
   const [settingsLoaded, setSettingsLoaded] = useState(false);
-  const activeSessionProxyUrl = useMemo(
-    () => getEnabledSessionProxyUrl(settings),
-    [settings.sessionProxyEnabled, settings.sessionProxyUrl],
-  );
   const [codecResults, setCodecResults] = useState<CodecTestResult[] | null>(() => loadStoredCodecResults());
   const [codecTesting, setCodecTesting] = useState(false);
   const [regions, setRegions] = useState<StreamRegion[]>([]);
@@ -470,7 +327,6 @@ export function App(): JSX.Element {
   const [removeAccountConfirmOpen, setRemoveAccountConfirmOpen] = useState(false);
   const [logoutConfirmOpen, setLogoutConfirmOpen] = useState(false);
   const [launchError, setLaunchError] = useState<LaunchErrorState | null>(null);
-  const [pendingDirectLaunchRequest, setPendingDirectLaunchRequest] = useState<DirectLaunchRequest | null>(null);
   const [queueModalGame, setQueueModalGame] = useState<GameInfo | null>(null);
   const [queueModalData, setQueueModalData] = useState<PrintedWasteQueueData | null>(null);
   const [sessionStartedAtMs, setSessionStartedAtMs] = useState<number | null>(null);
@@ -577,8 +433,6 @@ export function App(): JSX.Element {
   const hasInitializedRef = useRef(false);
   const regionsRequestRef = useRef(0);
   const launchInFlightRef = useRef(false);
-  const directLaunchAttemptIdRef = useRef<string | null>(null);
-  const handledDirectLaunchIdsRef = useRef<Set<string>>(new Set());
   const runtimeSnapshotRef = useRef<RuntimeSnapshot | null>(loadRuntimeSnapshot());
   /** Joins concurrent claim/resume calls for the same Cloud session id (single CloudMatch RESUME + signaling). */
   const claimResumePromisesRef = useRef<Map<string, Promise<void>>>(new Map());
@@ -598,8 +452,6 @@ export function App(): JSX.Element {
   const storePanelsLoadedContextRef = useRef("");
   const storePanelsLoadIdRef = useRef(0);
   const runtimeDataLoadIdRef = useRef(0);
-  const lastCatalogQueryRef = useRef<string | null>(null);
-  const lastCatalogProxyUrlRef = useRef<string | undefined>(undefined);
   const signalingRecoveryRef = useRef<SignalingRecoveryState>({
     attemptCount: 0,
     inFlight: null,
@@ -609,21 +461,6 @@ export function App(): JSX.Element {
   });
   const exitPromptResolverRef = useRef<((confirmed: boolean) => void) | null>(null);
 
-
-  const queueDirectLaunchRequest = useCallback((request: DirectLaunchRequest | null): void => {
-    if (!request || handledDirectLaunchIdsRef.current.has(request.id)) return;
-    setPendingDirectLaunchRequest((previous) => previous?.id === request.id ? previous : request);
-  }, []);
-
-  useEffect(() => {
-    const unsubscribe = window.openNow.onDirectLaunchRequest(queueDirectLaunchRequest);
-    void window.openNow.getPendingDirectLaunchRequest()
-      .then(queueDirectLaunchRequest)
-      .catch((error) => {
-        console.warn("Failed to read pending direct launch request:", error);
-      });
-    return unsubscribe;
-  }, [queueDirectLaunchRequest]);
 
   const resetStorePanels = useCallback((): void => {
     storePanelsLoadIdRef.current += 1;
@@ -689,30 +526,21 @@ export function App(): JSX.Element {
     clearRuntimeSnapshot();
   }, [diagnosticsStore, resetStatsOverlayToPreference, settings.discordRichPresence]);
 
-  const buildCurrentStreamSettings = useCallback((subscriptionOverride?: SubscriptionInfo | null): StreamSettings => {
-    const currentSubscription = subscriptionOverride === undefined ? subscriptionInfo : subscriptionOverride;
-    const entitledProfile = resolveEntitledStreamProfile(currentSubscription?.entitledResolutions ?? [], {
-      resolution: settings.resolution,
-      fps: settings.fps,
-    });
-    const streamProfile = entitledProfile ?? SAFE_FALLBACK_STREAM_PROFILE;
-
-    return {
-      resolution: streamProfile.resolution,
-      fps: streamProfile.fps,
-      maxBitrateMbps: settings.maxBitrateMbps,
-      codec: settings.codec,
-      colorQuality: settings.colorQuality,
-      keyboardLayout: settings.keyboardLayout,
-      gameLanguage: settings.gameLanguage,
-      enableL4S: settings.enableL4S,
-      enableCloudGsync: settings.enableCloudGsync,
-      clientMode: settings.streamClientMode,
-      nativeStreamerBackend: "gstreamer",
-      nativeCloudGsyncMode: settings.nativeCloudGsyncMode,
-      nativeTransitionDiagnostics: settings.nativeTransitionDiagnostics,
-    };
-  }, [
+  const buildCurrentStreamSettings = useCallback((): StreamSettings => ({
+    resolution: settings.resolution,
+    fps: settings.fps,
+    maxBitrateMbps: settings.maxBitrateMbps,
+    codec: settings.codec,
+    colorQuality: settings.colorQuality,
+    keyboardLayout: settings.keyboardLayout,
+    gameLanguage: settings.gameLanguage,
+    enableL4S: settings.enableL4S,
+    enableCloudGsync: settings.enableCloudGsync,
+    clientMode: settings.streamClientMode,
+    nativeStreamerBackend: "gstreamer",
+    nativeCloudGsyncMode: settings.nativeCloudGsyncMode,
+    nativeTransitionDiagnostics: settings.nativeTransitionDiagnostics,
+  }), [
     settings.codec,
     settings.colorQuality,
     settings.enableCloudGsync,
@@ -725,7 +553,6 @@ export function App(): JSX.Element {
     settings.nativeTransitionDiagnostics,
     settings.resolution,
     settings.streamClientMode,
-    subscriptionInfo?.entitledResolutions,
   ]);
 
   const warmNativeStreamerForLaunch = useCallback((): void => {
@@ -973,30 +800,6 @@ export function App(): JSX.Element {
     }
     return selectedProvider?.streamingServiceUrl ?? "";
   }, [selectedProvider, settings.region]);
-
-  const resolveSubscriptionInfoForLaunch = useCallback(async (): Promise<SubscriptionInfo | null> => {
-    if (subscriptionInfo) {
-      return subscriptionInfo;
-    }
-
-    const token = authSession?.tokens.idToken ?? authSession?.tokens.accessToken;
-    if (!authSession || !token) {
-      return null;
-    }
-
-    try {
-      const subscription = await window.openNow.fetchSubscription({
-        token,
-        providerStreamingBaseUrl: effectiveStreamingBaseUrl,
-        userId: authSession.user.userId,
-      });
-      setSubscriptionInfo(subscription);
-      return subscription;
-    } catch (error) {
-      console.warn("Failed to resolve subscription before launch; using safe stream profile fallback:", error);
-      return null;
-    }
-  }, [authSession, effectiveStreamingBaseUrl, subscriptionInfo]);
 
   const {
     activeQueueAd,
@@ -1526,30 +1329,6 @@ export function App(): JSX.Element {
     }
   }, [settingsLoaded]);
 
-  useEffect(() => {
-    if (!settingsLoaded || !subscriptionInfo) {
-      return;
-    }
-
-    const entitledProfile = resolveEntitledStreamProfile(subscriptionInfo.entitledResolutions, {
-      resolution: settings.resolution,
-      fps: settings.fps,
-    }) ?? SAFE_FALLBACK_STREAM_PROFILE;
-
-    if (entitledProfile.resolution !== settings.resolution) {
-      void updateSetting("resolution", entitledProfile.resolution);
-    }
-    if (entitledProfile.fps !== settings.fps) {
-      void updateSetting("fps", entitledProfile.fps);
-    }
-  }, [
-    settings.fps,
-    settings.resolution,
-    settingsLoaded,
-    subscriptionInfo,
-    updateSetting,
-  ]);
-
   const handleMouseSensitivityChange = useCallback((value: number) => {
     void updateSetting("mouseSensitivity", value);
   }, [updateSetting]);
@@ -1592,83 +1371,14 @@ export function App(): JSX.Element {
     applyVariantSelections(catalogResult.games);
   }, [applyVariantSelections]);
 
-  const persistCatalogSnapshot = useCallback((
-    session: AuthSession,
-    catalogResult: CatalogBrowseResult,
-    library: GameInfo[],
-    queryKey: string,
-    proxyUrl?: string,
-  ): void => {
-    if (hasSessionProxyCredentials(proxyUrl)) {
-      clearCatalogSnapshot();
-      return;
-    }
-
-    saveCatalogSnapshot({
-      version: 1,
-      userId: session.user.userId,
-      streamingBaseUrl: session.provider.streamingServiceUrl,
-      queryKey,
-      games: catalogResult.games,
-      libraryGames: library,
-      filterGroups: catalogResult.filterGroups,
-      sortOptions: catalogResult.sortOptions,
-      totalCount: catalogResult.totalCount,
-      supportedCount: catalogResult.numberSupported,
-      savedAt: Date.now(),
-    });
-  }, []);
-
-  const hydrateCatalogSnapshot = useCallback((session: AuthSession, proxyUrl: string | undefined = activeSessionProxyUrl): string | null => {
-    if (hasSessionProxyCredentials(proxyUrl)) {
-      clearCatalogSnapshot();
-      return null;
-    }
-
-    const queryKey = buildProxyAwareCatalogQueryKey("", catalogSelectedFilterIds, catalogSelectedSortId, proxyUrl);
-    const snapshot = loadCatalogSnapshot(
-      session.user.userId,
-      session.provider.streamingServiceUrl,
-      queryKey,
-    );
-    if (!snapshot) {
-      return null;
-    }
-
-    setGames(snapshot.games);
-    setLibraryGames(snapshot.libraryGames);
-    setCatalogFilterGroups(snapshot.filterGroups);
-    setCatalogSortOptions(snapshot.sortOptions);
-    setCatalogTotalCount(snapshot.totalCount);
-    setCatalogSupportedCount(snapshot.supportedCount);
-    setSelectedGameId((previous) => (
-      snapshot.games.some((game) => game.id === previous) ? previous : (snapshot.games[0]?.id ?? "")
-    ));
-    applyVariantSelections([...snapshot.games, ...snapshot.libraryGames]);
-    lastCatalogQueryRef.current = queryKey;
-    lastCatalogProxyUrlRef.current = proxyUrl;
-    return queryKey;
-  }, [activeSessionProxyUrl, applyVariantSelections, catalogSelectedFilterIds, catalogSelectedSortId]);
-
-  const loadSessionRuntimeData = useCallback(async (
-    session: AuthSession,
-    options?: { background?: boolean; proxyUrl?: string },
-  ): Promise<void> => {
+  const loadSessionRuntimeData = useCallback(async (session: AuthSession): Promise<void> => {
     const token = session.tokens.idToken ?? session.tokens.accessToken;
     const streamingBaseUrl = session.provider.streamingServiceUrl;
-    const userId = session.user.userId;
     const loadId = ++runtimeDataLoadIdRef.current;
     const isCurrentLoad = (): boolean => runtimeDataLoadIdRef.current === loadId;
-    const background = options?.background === true;
-    const proxyUrl = options?.proxyUrl ?? activeSessionProxyUrl;
-    const catalogQueryKey = buildProxyAwareCatalogQueryKey("", catalogSelectedFilterIds, catalogSelectedSortId, proxyUrl);
 
-    if (!background) {
-      lastCatalogQueryRef.current = null;
-      lastCatalogProxyUrlRef.current = proxyUrl;
-      setIsLoadingCatalog(true);
-      setIsLoadingLibrary(true);
-    }
+    setIsLoadingCatalog(true);
+    setIsLoadingLibrary(true);
 
     void window.openNow.getRegions({ token }).then((discovered) => {
       if (isCurrentLoad()) setRegions(discovered);
@@ -1688,64 +1398,45 @@ export function App(): JSX.Element {
       if (isCurrentLoad()) setSubscriptionInfo(null);
     });
 
-    let latestCatalogResult: CatalogBrowseResult | null = null;
-    let latestLibraryGames: GameInfo[] | null = null;
-
     void window.openNow.browseCatalog({
       token,
-      userId,
       providerStreamingBaseUrl: streamingBaseUrl,
-      proxyUrl,
       searchQuery: "",
       sortId: catalogSelectedSortId,
       filterIds: catalogSelectedFilterIds,
     }).then((catalogResult) => {
       if (!isCurrentLoad()) return;
-      latestCatalogResult = catalogResult;
       applyCatalogBrowseResult(catalogResult);
-      lastCatalogQueryRef.current = catalogQueryKey;
-      lastCatalogProxyUrlRef.current = proxyUrl;
-      if (latestLibraryGames) {
-        persistCatalogSnapshot(session, catalogResult, latestLibraryGames, catalogQueryKey, proxyUrl);
-      }
     }).catch((error) => {
       console.error("Catalog load failed:", error);
-      if (!isCurrentLoad() || background) return;
+      if (!isCurrentLoad()) return;
       setGames([]);
       setCatalogFilterGroups([]);
       setCatalogSortOptions([]);
       setCatalogTotalCount(0);
       setCatalogSupportedCount(0);
     }).finally(() => {
-      if (isCurrentLoad() && !background) setIsLoadingCatalog(false);
+      if (isCurrentLoad()) setIsLoadingCatalog(false);
     });
 
     void window.openNow.fetchLibraryGames({
       token,
-      userId,
       providerStreamingBaseUrl: streamingBaseUrl,
-      proxyUrl,
     }).then((libGames) => {
       if (!isCurrentLoad()) return;
-      latestLibraryGames = libGames;
       setLibraryGames(libGames);
       applyVariantSelections(libGames);
-      if (latestCatalogResult) {
-        persistCatalogSnapshot(session, latestCatalogResult, libGames, catalogQueryKey, proxyUrl);
-      }
     }).catch((error) => {
       console.error("Library load failed:", error);
-      if (!isCurrentLoad() || background) return;
+      if (!isCurrentLoad()) return;
       setLibraryGames([]);
     }).finally(() => {
-      if (isCurrentLoad() && !background) setIsLoadingLibrary(false);
+      if (isCurrentLoad()) setIsLoadingLibrary(false);
     });
 
     void window.openNow.fetchFeaturedGames({
       token,
-      userId,
       providerStreamingBaseUrl: streamingBaseUrl,
-      proxyUrl,
     }).then((featured) => {
       if (isCurrentLoad()) setFeaturedGames(featured);
     }).catch((error) => {
@@ -1753,12 +1444,10 @@ export function App(): JSX.Element {
       if (isCurrentLoad()) setFeaturedGames([]);
     });
   }, [
-    activeSessionProxyUrl,
     applyCatalogBrowseResult,
     applyVariantSelections,
     catalogSelectedFilterIds,
     catalogSelectedSortId,
-    persistCatalogSnapshot,
   ]);
 
   // Initialize app
@@ -1773,7 +1462,6 @@ export function App(): JSX.Element {
         setSettings(loadedSettings);
         setShowStatsOverlay(loadedSettings.showStatsOnLaunch);
         setSettingsLoaded(true);
-        const loadedSessionProxyUrl = getEnabledSessionProxyUrl(loadedSettings);
 
         // Load providers and session (refresh only if token is near expiry)
         setStartupStatusMessage(t("auth.status.restoringSavedSession"));
@@ -1831,8 +1519,7 @@ export function App(): JSX.Element {
         setProviderIdpId(activeProviderId);
 
         if (persistedSession) {
-          const hydrated = hydrateCatalogSnapshot(persistedSession, loadedSessionProxyUrl);
-          void loadSessionRuntimeData(persistedSession, { background: hydrated !== null, proxyUrl: loadedSessionProxyUrl });
+          await loadSessionRuntimeData(persistedSession);
         } else {
           runtimeDataLoadIdRef.current += 1;
           resetStorePanels();
@@ -1858,7 +1545,7 @@ export function App(): JSX.Element {
     };
 
     void initialize();
-  }, [hydrateCatalogSnapshot, loadSessionRuntimeData, resetStorePanels, t]);
+  }, [loadSessionRuntimeData, resetStorePanels, t]);
 
   // Login handler
   const handleLogin = useCallback(async () => {
@@ -2067,7 +1754,6 @@ export function App(): JSX.Element {
     setLogoutConfirmOpen(false);
     runtimeDataLoadIdRef.current += 1;
     resetStorePanels();
-    clearCatalogSnapshot();
     await window.openNow.logoutAll();
     setAuthSession(null);
     setSavedAccounts([]);
@@ -2096,36 +1782,27 @@ export function App(): JSX.Element {
   }, []);
 
   // Load games handler
-  const loadGames = useCallback(async (
-    targetSource: "main" | "library",
-    options?: { background?: boolean },
-  ) => {
+  const loadGames = useCallback(async (targetSource: "main" | "library") => {
     const setLoading = targetSource === "main" ? setIsLoadingCatalog : setIsLoadingLibrary;
-    if (!options?.background) {
-      setLoading(true);
-    }
+    setLoading(true);
     try {
       const token = authSession?.tokens.idToken ?? authSession?.tokens.accessToken;
-      const userId = authSession?.user.userId;
       const baseUrl = effectiveStreamingBaseUrl;
-      const proxyUrl = activeSessionProxyUrl;
-      if (!token || !userId) {
+      if (!token) {
         return;
       }
 
       if (targetSource === "main") {
         const catalogResult = await window.openNow.browseCatalog({
           token,
-          userId,
           providerStreamingBaseUrl: baseUrl,
-          proxyUrl,
           searchQuery,
           sortId: catalogSelectedSortId,
           filterIds: catalogSelectedFilterIds,
         });
         applyCatalogBrowseResult(catalogResult);
         if (featuredGames.length === 0) {
-          void window.openNow.fetchFeaturedGames({ token, userId, providerStreamingBaseUrl: baseUrl, proxyUrl }).then((featured) => {
+          void window.openNow.fetchFeaturedGames({ token, providerStreamingBaseUrl: baseUrl }).then((featured) => {
             if (featured.length > 0) setFeaturedGames(featured);
           }).catch((error) => {
             console.warn("Featured games refresh failed:", error);
@@ -2134,18 +1811,16 @@ export function App(): JSX.Element {
         return;
       }
 
-      const result = await window.openNow.fetchLibraryGames({ token, userId, providerStreamingBaseUrl: baseUrl, proxyUrl });
+      const result = await window.openNow.fetchLibraryGames({ token, providerStreamingBaseUrl: baseUrl });
       setLibraryGames(result);
       setSelectedGameId((previous) => result.some((game) => game.id === previous) ? previous : (result[0]?.id ?? ""));
       applyVariantSelections(result);
     } catch (error) {
       console.error("Failed to load games:", error);
     } finally {
-      if (!options?.background) {
-        setLoading(false);
-      }
+      setLoading(false);
     }
-  }, [activeSessionProxyUrl, applyCatalogBrowseResult, applyVariantSelections, authSession, effectiveStreamingBaseUrl, featuredGames.length, searchQuery, catalogFilterKey, catalogSelectedSortId]);
+  }, [applyCatalogBrowseResult, applyVariantSelections, authSession, effectiveStreamingBaseUrl, featuredGames, searchQuery, catalogFilterKey, catalogSelectedSortId]);
 
   const loadStorePanels = useCallback(async () => {
     const session = authSession;
@@ -2154,7 +1829,7 @@ export function App(): JSX.Element {
     const token = session.tokens.idToken ?? session.tokens.accessToken;
     if (!token) return;
 
-    const contextKey = `${session.user.userId}\0${effectiveStreamingBaseUrl}\0${getSessionProxyUiScope(activeSessionProxyUrl)}`;
+    const contextKey = `${session.user.userId}\0${effectiveStreamingBaseUrl}`;
     if (storePanelsLoadedContextRef.current === contextKey) return;
 
     const loadId = ++storePanelsLoadIdRef.current;
@@ -2164,7 +1839,6 @@ export function App(): JSX.Element {
       const panels = await window.openNow.fetchStorePanels({
         token,
         providerStreamingBaseUrl: effectiveStreamingBaseUrl,
-        proxyUrl: activeSessionProxyUrl,
       });
       if (!isCurrentLoad()) return;
       const panelGames = flattenStorePanelGames(panels);
@@ -2186,7 +1860,7 @@ export function App(): JSX.Element {
     } finally {
       if (isCurrentLoad()) setIsLoadingStorePanels(false);
     }
-  }, [activeSessionProxyUrl, authSession, effectiveStreamingBaseUrl]);
+  }, [authSession, effectiveStreamingBaseUrl]);
 
   useEffect(() => {
     if (storePanelGames.length === 0 || libraryGames.length === 0) return;
@@ -2205,36 +1879,14 @@ export function App(): JSX.Element {
   }, [libraryGames, storePanelGames]);
 
   useEffect(() => {
-    if (!authSession || currentPage !== "home" || settings.controllerMode || isInitializing) {
+    if (!authSession || currentPage !== "home" || settings.controllerMode) {
       return;
     }
-    const queryKey = buildProxyAwareCatalogQueryKey(searchQuery, catalogSelectedFilterIds, catalogSelectedSortId, activeSessionProxyUrl);
-    if (
-      lastCatalogQueryRef.current === queryKey
-      && lastCatalogProxyUrlRef.current === activeSessionProxyUrl
-      && games.length > 0
-    ) {
-      return;
-    }
-    lastCatalogQueryRef.current = queryKey;
-    lastCatalogProxyUrlRef.current = activeSessionProxyUrl;
-
     const handle = window.setTimeout(() => {
-      void loadGames("main", { background: games.length > 0 });
+      void loadGames("main");
     }, searchQuery.trim() ? 220 : 0);
     return () => window.clearTimeout(handle);
-  }, [
-    authSession,
-    currentPage,
-    games.length,
-    isInitializing,
-    loadGames,
-    searchQuery,
-    activeSessionProxyUrl,
-    catalogFilterKey,
-    catalogSelectedSortId,
-    settings.controllerMode,
-  ]);
+  }, [authSession, currentPage, loadGames, searchQuery, catalogFilterKey, catalogSelectedSortId, settings.controllerMode]);
 
   useEffect(() => {
     if (!authSession || currentPage !== "home" || !settings.controllerMode) {
@@ -2256,14 +1908,6 @@ export function App(): JSX.Element {
       }
       return next;
     });
-  }, []);
-
-  const handleToggleCatalogFilter = useCallback((filterId: string): void => {
-    setCatalogSelectedFilterIds((previous) => (
-      previous.includes(filterId)
-        ? previous.filter((value) => value !== filterId)
-        : [...previous, filterId]
-    ));
   }, []);
 
   const resolveSessionClaimAppId = useCallback((existingSession: ActiveSessionInfo): string => {
@@ -2403,8 +2047,6 @@ export function App(): JSX.Element {
           setStreamingStore(null);
         }
 
-        const launchSubscription = await resolveSubscriptionInfoForLaunch();
-        const streamSettings = buildCurrentStreamSettings(launchSubscription);
         const claimed = await window.openNow.claimSession({
           token,
           streamingBaseUrl: effectiveStreamingBaseUrl,
@@ -2412,7 +2054,7 @@ export function App(): JSX.Element {
           sessionId: existingSession.sessionId,
           ...resolveResumeIdentity(existingSession.sessionId),
           appId: resolveSessionClaimAppId(existingSession),
-          settings: streamSettings,
+          settings: buildCurrentStreamSettings(),
         });
 
         await applyClaimedSessionAndConnect(claimed);
@@ -2427,7 +2069,7 @@ export function App(): JSX.Element {
 
     claimResumePromisesRef.current.set(sid, resumePromiseHolder.promise);
     await resumePromiseHolder.promise;
-  }, [applyClaimedSessionAndConnect, authSession, buildCurrentStreamSettings, effectiveStreamingBaseUrl, findGameContextForSession, resolveResumeIdentity, resolveSessionClaimAppId, resolveSubscriptionInfoForLaunch, warmNativeStreamerForLaunch]);
+  }, [applyClaimedSessionAndConnect, authSession, buildCurrentStreamSettings, effectiveStreamingBaseUrl, findGameContextForSession, resolveResumeIdentity, resolveSessionClaimAppId, warmNativeStreamerForLaunch]);
 
   const attemptSessionRecovery = useCallback(async (reason: string): Promise<boolean> => {
     const recoveryState = signalingRecoveryRef.current;
@@ -2554,8 +2196,6 @@ export function App(): JSX.Element {
             throw new Error("The running session is missing a server address, so resume was not possible.");
           }
 
-          const recoverySubscription = await resolveSubscriptionInfoForLaunch();
-          const recoveryStreamSettings = buildCurrentStreamSettings(recoverySubscription);
           const claimed = await window.openNow.claimSession({
             token,
             streamingBaseUrl: effectiveStreamingBaseUrl,
@@ -2564,7 +2204,7 @@ export function App(): JSX.Element {
             ...resolveResumeIdentity(candidate.sessionId),
             recoveryMode: true,
             appId: resolveSessionClaimAppId(candidate),
-            settings: recoveryStreamSettings,
+            settings: buildCurrentStreamSettings(),
           });
           if (!isRecoveryGenerationCurrent(recoveryGeneration)) {
             console.log("[Recovery] Discarding claimed session due to stale recovery generation");
@@ -2615,11 +2255,10 @@ export function App(): JSX.Element {
     resolveResumeIdentity,
     resolveSessionClaimAppId,
     buildCurrentStreamSettings,
-    resolveSubscriptionInfoForLaunch,
   ]);
 
   const handleExpectedNativeSessionClose = useCallback((reason: string): void => {
-    console.log("[Recovery] Treating signaling close as ended session:", reason);
+    console.log("[Recovery] Treating native signaling close as ended session:", reason);
     const activeGameId = streamingGameRef.current?.id;
     if (activeGameId) {
       endPlaytimeSession(activeGameId);
@@ -2895,10 +2534,6 @@ export function App(): JSX.Element {
             console.log("[Recovery] Ignoring signaling disconnect during app shutdown");
             return;
           }
-          if (streamStatusRef.current !== "idle" && isExpectedNativeSessionClose(event.reason)) {
-            handleExpectedNativeSessionClose(event.reason);
-            return;
-          }
           if (
             nativeStreamingRef.current
             && streamStatusRef.current === "streaming"
@@ -2909,7 +2544,6 @@ export function App(): JSX.Element {
           }
           const iceState = latestIceConnectionStateRef.current;
           if (
-            (hasConfirmedRemoteIceRef.current && iceState === "new") ||
             iceState === "connected" ||
             iceState === "completed" ||
             iceState === "checking"
@@ -3002,7 +2636,7 @@ export function App(): JSX.Element {
   }, [attemptSessionRecovery, diagnosticsStore, handleExpectedNativeSessionClose, refreshNavbarActiveSession, resetLaunchRuntime, scheduleStableRecoveryReset, settings, streamMicLevel, streamVolume, t]);
 
   // Play game handler
-  const handlePlayGame = useCallback(async (game: GameInfo, options?: { bypassGuards?: boolean; streamingBaseUrl?: string; variantId?: string }) => {
+  const handlePlayGame = useCallback(async (game: GameInfo, options?: { bypassGuards?: boolean; streamingBaseUrl?: string }) => {
     if (!selectedProvider) return;
 
     console.log("handlePlayGame entry", {
@@ -3021,7 +2655,7 @@ export function App(): JSX.Element {
       return;
     }
 
-    const selectedVariantId = options?.variantId ?? variantByGameId[game.id] ?? defaultVariantId(game);
+    const selectedVariantId = variantByGameId[game.id] ?? defaultVariantId(game);
     const selectedVariant = getSelectedVariant(game, selectedVariantId);
     const epicOwnershipError = getEpicOwnershipLaunchError(selectedVariant);
     if (epicOwnershipError) {
@@ -3071,7 +2705,6 @@ export function App(): JSX.Element {
           const resolved = await window.openNow.resolveLaunchAppId({
             token,
             providerStreamingBaseUrl: effectiveStreamingBaseUrl,
-            proxyUrl: activeSessionProxyUrl,
             appIdOrUuid: game.uuid ?? selectedVariantId,
           });
           if (resolved && isNumericId(resolved)) {
@@ -3138,9 +2771,7 @@ export function App(): JSX.Element {
         }
       }
 
-      const sessionProxyUrl = activeSessionProxyUrl;
-      const launchSubscription = await resolveSubscriptionInfoForLaunch();
-      const streamSettings = buildCurrentStreamSettings(launchSubscription);
+      const sessionProxyUrl = settings.sessionProxyEnabled ? settings.sessionProxyUrl.trim() : "";
 
       // Create new session
       const newSession = await window.openNow.createSession({
@@ -3150,9 +2781,9 @@ export function App(): JSX.Element {
         internalTitle: game.title,
         accountLinked: chooseAccountLinked(game, selectedVariant),
         existingSessionStrategy,
-        proxyUrl: sessionProxyUrl,
+        proxyUrl: sessionProxyUrl || undefined,
         zone: "prod",
-        settings: streamSettings,
+        settings: buildCurrentStreamSettings(),
       });
 
       setSession(newSession);
@@ -3225,7 +2856,7 @@ export function App(): JSX.Element {
           sessionId: newSession.sessionId,
           clientId: newSession.clientId,
           deviceId: newSession.deviceId,
-          proxyUrl: sessionProxyUrl,
+          proxyUrl: sessionProxyUrl || undefined,
         });
 
         if (launchAbortRef.current) {
@@ -3293,9 +2924,7 @@ export function App(): JSX.Element {
     }
   }, [
     authSession,
-    activeSessionProxyUrl,
     allKnownGames,
-    buildCurrentStreamSettings,
     buildSignalingConnectRequest,
     claimAndConnectSession,
     effectiveStreamingBaseUrl,
@@ -3303,112 +2932,12 @@ export function App(): JSX.Element {
     resetSignalingRecoveryState,
     resetLaunchRuntime,
     resetStatsOverlayToPreference,
-    resolveSubscriptionInfoForLaunch,
     selectedProvider,
+    settings,
     streamStatus,
     t,
     variantByGameId,
     warmNativeStreamerForLaunch,
-  ]);
-
-  useEffect(() => {
-    const request = pendingDirectLaunchRequest;
-    if (!request || handledDirectLaunchIdsRef.current.has(request.id)) return;
-    if (!authSession || isInitializing || isLoadingCatalog || isLoadingLibrary) return;
-    if (
-      launchInFlightRef.current ||
-      streamStatus !== "idle" ||
-      isResumingNavbarSession ||
-      isTerminatingNavbarSession ||
-      navbarSessionActionInFlightRef.current
-    ) {
-      return;
-    }
-    if (directLaunchAttemptIdRef.current === request.id) return;
-
-    directLaunchAttemptIdRef.current = request.id;
-    let cancelled = false;
-
-    const launch = async (): Promise<void> => {
-      let target = findDirectLaunchTarget(request, allKnownGames, variantByGameId);
-      const token = authSession.tokens.idToken ?? authSession.tokens.accessToken;
-
-      if (!target && request.title && token) {
-        try {
-          const searchResult = await window.openNow.browseCatalog({
-            token,
-            providerStreamingBaseUrl: effectiveStreamingBaseUrl,
-            proxyUrl: activeSessionProxyUrl,
-            searchQuery: request.title,
-            sortId: "relevance",
-            filterIds: [],
-            fetchCount: 25,
-          });
-          target = findDirectLaunchTarget(request, searchResult.games, variantByGameId);
-        } catch (error) {
-          console.warn("Direct launch catalog search failed:", error);
-        }
-      }
-
-      const requestedAppId = request.appId && isNumericId(request.appId) ? request.appId : undefined;
-      if (!target && requestedAppId) {
-        target = {
-          game: createSyntheticDirectLaunchGame(request, requestedAppId),
-          variantId: requestedAppId,
-        };
-      }
-
-      if (cancelled) return;
-
-      if (
-        launchInFlightRef.current ||
-        streamStatusRef.current !== "idle" ||
-        navbarSessionActionInFlightRef.current
-      ) {
-        directLaunchAttemptIdRef.current = null;
-        return;
-      }
-
-      handledDirectLaunchIdsRef.current.add(request.id);
-      directLaunchAttemptIdRef.current = null;
-      setPendingDirectLaunchRequest((previous) => previous?.id === request.id ? null : previous);
-
-      if (!target) {
-        const requestedName = request.title?.trim() || request.appId || t("app.labels.game");
-        setLaunchError({
-          stage: "queue",
-          title: t("errors.directLaunchNotFoundTitle"),
-          description: t("errors.directLaunchNotFoundDescription", { value: requestedName }),
-        });
-        return;
-      }
-
-      void handlePlayGame(target.game, { variantId: target.variantId });
-    };
-
-    void launch();
-
-    return () => {
-      cancelled = true;
-      if (directLaunchAttemptIdRef.current === request.id) {
-        directLaunchAttemptIdRef.current = null;
-      }
-    };
-  }, [
-    allKnownGames,
-    activeSessionProxyUrl,
-    authSession,
-    effectiveStreamingBaseUrl,
-    handlePlayGame,
-    isInitializing,
-    isLoadingCatalog,
-    isLoadingLibrary,
-    isResumingNavbarSession,
-    isTerminatingNavbarSession,
-    pendingDirectLaunchRequest,
-    streamStatus,
-    t,
-    variantByGameId,
   ]);
 
   // Gate handler: shows queue server modal for FREE-tier users before launching
@@ -3513,7 +3042,6 @@ export function App(): JSX.Element {
     void window.openNow.resolveStoreUrl({
       token,
       providerStreamingBaseUrl: effectiveStreamingBaseUrl,
-      proxyUrl: activeSessionProxyUrl,
       appIdOrUuid: game.uuid ?? game.id,
       variantId: selectedVariant?.id ?? selectedVariantId,
       store: selectedVariant?.store,
@@ -3522,7 +3050,7 @@ export function App(): JSX.Element {
     }).catch((error) => {
       console.error("Failed to resolve Store URL:", error);
     });
-  }, [activeSessionProxyUrl, authSession, effectiveStreamingBaseUrl, handleOpenStoreUrl]);
+  }, [authSession, effectiveStreamingBaseUrl, handleOpenStoreUrl]);
 
   useEffect(() => {
     if (!logoutConfirmOpen && !removeAccountConfirmOpen) return;
@@ -4039,11 +3567,6 @@ export function App(): JSX.Element {
     );
   }, [libraryGames, searchQuery, catalogSelectedSortId, playtime]);
 
-  const activeSessionAppIds = useMemo(
-    () => (navbarActiveSession ? [navbarActiveSession.appId] : []),
-    [navbarActiveSession?.appId],
-  );
-
   const activeSessionGameTitle = useMemo(() => {
     if (!navbarActiveSession) return null;
     const mappedTitle = gameTitleByAppId.get(navbarActiveSession.appId);
@@ -4077,16 +3600,6 @@ export function App(): JSX.Element {
   const handleCloseSettings = useCallback((): void => {
     setCurrentPage(pageBeforeSettings);
   }, [pageBeforeSettings]);
-
-  const handleSettingsExitComplete = useCallback((): void => {
-    setSettingsMounted(false);
-  }, []);
-
-  useEffect(() => {
-    if (currentPage === "settings") {
-      setSettingsMounted(true);
-    }
-  }, [currentPage]);
 
   const mainPage: AppPage = currentPage === "settings" ? pageBeforeSettings : currentPage;
 
@@ -4283,7 +3796,9 @@ export function App(): JSX.Element {
                 onSelectGameVariant={handleSelectGameVariant}
                 filterGroups={catalogFilterGroups}
                 selectedFilterIds={catalogSelectedFilterIds}
-                onToggleFilter={handleToggleCatalogFilter}
+                onToggleFilter={(filterId) => {
+                  setCatalogSelectedFilterIds((previous) => previous.includes(filterId) ? previous.filter((value) => value !== filterId) : [...previous, filterId]);
+                }}
                 sortOptions={catalogSortOptions}
                 selectedSortId={catalogSelectedSortId}
                 onSortChange={setCatalogSelectedSortId}
@@ -4292,7 +3807,7 @@ export function App(): JSX.Element {
                 controllerMode={settings.controllerMode}
                 storePanels={storePanels}
                 storeHeroGames={featuredGames}
-                activeSessionAppIds={activeSessionAppIds}
+                activeSessionAppIds={navbarActiveSession ? [navbarActiveSession.appId] : []}
                 onBuyGame={handleBuyGame}
                 onPreviousControllerPage={() => navigateControllerPage(-1)}
                 onNextControllerPage={() => navigateControllerPage(1)}
@@ -4316,7 +3831,7 @@ export function App(): JSX.Element {
                 onSortChange={setCatalogSelectedSortId}
                 controllerMode={settings.controllerMode}
                 featuredGames={featuredGames.length > 0 ? featuredGames : games}
-                activeSessionAppIds={activeSessionAppIds}
+                activeSessionAppIds={navbarActiveSession ? [navbarActiveSession.appId] : []}
                 onBuyGame={handleBuyGame}
                 onPreviousControllerPage={() => navigateControllerPage(-1)}
                 onNextControllerPage={() => navigateControllerPage(1)}
@@ -4325,13 +3840,10 @@ export function App(): JSX.Element {
           </m.div>
         </AnimatePresence>
       </main>
-      <SettingsModalHost
-        open={currentPage === "settings"}
-        onClose={handleCloseSettings}
-        onExitComplete={handleSettingsExitComplete}
-      >
-        {settingsMounted && (
+      <AnimatePresence initial={false}>
+        {currentPage === "settings" && (
           <SettingsPage
+            key="settings"
             settings={settings}
             regions={regions}
             codecResults={codecResults}
@@ -4341,7 +3853,7 @@ export function App(): JSX.Element {
             onClose={handleCloseSettings}
           />
         )}
-      </SettingsModalHost>
+      </AnimatePresence>
       {logoutConfirmModal}
       {removeAccountConfirmModal}
       {queueModalGame && streamStatus === "idle" && (

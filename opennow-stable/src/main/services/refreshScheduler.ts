@@ -1,45 +1,37 @@
 import type { GameInfo } from "@shared/gfn";
-import { getAccountGamesCacheKeys } from "../gfn/games";
-import { sessionProxyHasCredentials } from "../gfn/proxyUrl";
 import { cacheEventBus } from "./cacheEventBus";
 import { cacheManager } from "./cacheManager";
 
 export interface RefreshAuthContext {
   token: string;
-  userId: string;
   providerStreamingBaseUrl?: string;
-  proxyUrl?: string;
 }
 
-type FetchFunction<T> = (
-  token: string,
-  providerStreamingBaseUrl?: string,
-  proxyUrl?: string,
-) => Promise<T>;
-type PublicFetchFunction = (proxyUrl?: string) => Promise<GameInfo[]>;
+type FetchFunction<T> = (token: string, providerStreamingBaseUrl?: string) => Promise<T>;
+type PublicFetchFunction = () => Promise<GameInfo[]>;
 
 class RefreshScheduler {
   private refreshTimer: ReturnType<typeof setInterval> | null = null;
   private isRefreshing: boolean = false;
   private authContext: RefreshAuthContext | null = null;
-  private fetchMainGamesUncached: FetchFunction<GameInfo[]> | null = null;
-  private fetchLibraryGamesUncached: FetchFunction<GameInfo[]> | null = null;
-  private fetchPublicGamesUncached: PublicFetchFunction | null = null;
+  private fetchMainGames: FetchFunction<GameInfo[]> | null = null;
+  private fetchLibraryGames: FetchFunction<GameInfo[]> | null = null;
+  private fetchPublicGames: PublicFetchFunction | null = null;
   private refreshIntervalMs: number = 12 * 60 * 60 * 1000;
 
   initialize(
-    fetchMainGamesUncached: FetchFunction<GameInfo[]>,
-    fetchLibraryGamesUncached: FetchFunction<GameInfo[]>,
-    fetchPublicGamesUncached: PublicFetchFunction,
+    fetchMainGames: FetchFunction<GameInfo[]>,
+    fetchLibraryGames: FetchFunction<GameInfo[]>,
+    fetchPublicGames: PublicFetchFunction,
   ): void {
-    this.fetchMainGamesUncached = fetchMainGamesUncached;
-    this.fetchLibraryGamesUncached = fetchLibraryGamesUncached;
-    this.fetchPublicGamesUncached = fetchPublicGamesUncached;
+    this.fetchMainGames = fetchMainGames;
+    this.fetchLibraryGames = fetchLibraryGames;
+    this.fetchPublicGames = fetchPublicGames;
     console.log(`[CACHE] RefreshScheduler initialized (interval: ${this.refreshIntervalMs / 60000} minutes)`);
   }
 
-  updateAuthContext(token: string, userId: string, providerStreamingBaseUrl?: string, proxyUrl?: string): void {
-    this.authContext = { token, userId, providerStreamingBaseUrl, proxyUrl };
+  updateAuthContext(token: string, providerStreamingBaseUrl?: string): void {
+    this.authContext = { token, providerStreamingBaseUrl };
     console.log(`[CACHE] Auth context updated for refresh scheduler`);
   }
 
@@ -49,13 +41,13 @@ class RefreshScheduler {
       return;
     }
 
-    if (!this.fetchMainGamesUncached || !this.fetchLibraryGamesUncached || !this.fetchPublicGamesUncached) {
+    if (!this.fetchMainGames || !this.fetchLibraryGames || !this.fetchPublicGames) {
       console.error(`[CACHE] Cannot start RefreshScheduler: fetch functions not initialized`);
       return;
     }
 
     console.log(`[CACHE] Starting RefreshScheduler`);
-    void this.performRefresh();
+    this.performRefresh();
     this.refreshTimer = setInterval(() => {
       void this.performRefresh();
     }, this.refreshIntervalMs);
@@ -73,7 +65,7 @@ class RefreshScheduler {
     console.log(`[CACHE] RefreshScheduler stopped`);
   }
 
-  async performRefresh(options: { force?: boolean } = {}): Promise<void> {
+  async performRefresh(): Promise<void> {
     if (this.isRefreshing) {
       console.log(`[CACHE] Refresh already in progress, skipping`);
       return;
@@ -84,87 +76,40 @@ class RefreshScheduler {
       return;
     }
 
-    if (!this.fetchMainGamesUncached || !this.fetchLibraryGamesUncached || !this.fetchPublicGamesUncached) {
+    if (!this.fetchMainGames || !this.fetchLibraryGames || !this.fetchPublicGames) {
       console.error(`[CACHE] Fetch functions not available`);
-      return;
-    }
-
-    const { token, userId, providerStreamingBaseUrl, proxyUrl } = this.authContext;
-    if (sessionProxyHasCredentials(proxyUrl)) {
-      console.log("[CACHE] Credentialed proxy configured, skipping background game cache refresh");
-      return;
-    }
-
-    const cacheKeys = getAccountGamesCacheKeys(userId, providerStreamingBaseUrl, proxyUrl);
-    const force = options.force === true;
-
-    const [mainNeedsRefresh, libraryNeedsRefresh, publicNeedsRefresh] = force
-      ? [true, true, true]
-      : await Promise.all([
-        cacheManager.isStaleOrMissing(cacheKeys.main),
-        cacheManager.isStaleOrMissing(cacheKeys.library),
-        cacheManager.isStaleOrMissing(cacheKeys.public),
-      ]);
-
-    if (!mainNeedsRefresh && !libraryNeedsRefresh && !publicNeedsRefresh) {
-      console.log("[CACHE] All game caches are fresh, skipping background refresh");
       return;
     }
 
     this.isRefreshing = true;
     const startTime = Date.now();
-    console.log("[CACHE] Refresh cycle started", {
-      main: mainNeedsRefresh,
-      library: libraryNeedsRefresh,
-      public: publicNeedsRefresh,
-      force,
-    });
+    console.log(`[CACHE] Refresh cycle started`);
 
     try {
       cacheEventBus.emit("cache:refresh-start");
 
-      const refreshTasks: Promise<void>[] = [];
-
-      if (mainNeedsRefresh) {
-        refreshTasks.push(
-          this.fetchMainGamesUncached(token, providerStreamingBaseUrl, proxyUrl)
-            .then(async (games) => {
-              await cacheManager.saveToCache(cacheKeys.main, games);
-            }),
-        );
+      const shouldRefreshLibrary = !(await cacheManager.loadFromCache<GameInfo[]>("games:library"));
+      if (!shouldRefreshLibrary) {
+        console.log("[CACHE] Skipping library refresh; cached library is still fresh");
       }
 
-      if (libraryNeedsRefresh) {
-        refreshTasks.push(
-          this.fetchLibraryGamesUncached(token, providerStreamingBaseUrl, proxyUrl)
-            .then(async (games) => {
-              await cacheManager.saveToCache(cacheKeys.library, games);
-            }),
-        );
-      }
-
-      if (publicNeedsRefresh) {
-        refreshTasks.push(
-          this.fetchPublicGamesUncached(proxyUrl)
-            .then(async (games) => {
-              await cacheManager.saveToCache(cacheKeys.public, games);
-            }),
-        );
-      }
+      const refreshTasks: Promise<GameInfo[]>[] = [
+        this.fetchMainGames(this.authContext.token, this.authContext.providerStreamingBaseUrl),
+        shouldRefreshLibrary
+          ? this.fetchLibraryGames(this.authContext.token, this.authContext.providerStreamingBaseUrl)
+          : Promise.resolve([]),
+        this.fetchPublicGames(),
+      ];
 
       const results = await Promise.allSettled(refreshTasks);
 
       let hasErrors = false;
-      const taskNames: string[] = [];
-      if (mainNeedsRefresh) taskNames.push("main");
-      if (libraryNeedsRefresh) taskNames.push("library");
-      if (publicNeedsRefresh) taskNames.push("public");
-
-      for (let i = 0; i < results.length; i += 1) {
+      for (let i = 0; i < results.length; i++) {
         const result = results[i];
+        const name = ["main", "library", "public"][i];
+
         if (result.status === "rejected") {
           hasErrors = true;
-          const name = taskNames[i] ?? "unknown";
           console.error(`[CACHE] Refresh failed for ${name} games:`, result.reason);
           cacheEventBus.emit("cache:refresh-error", {
             key: `games:${name}`,
@@ -192,7 +137,7 @@ class RefreshScheduler {
 
   async manualRefresh(): Promise<void> {
     console.log(`[CACHE] Manual refresh requested`);
-    await this.performRefresh({ force: true });
+    await this.performRefresh();
   }
 
   setRefreshInterval(intervalMs: number): void {

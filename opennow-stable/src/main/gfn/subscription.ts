@@ -185,9 +185,7 @@ export async function fetchSubscription(
   const entitledResolutions: EntitledResolution[] = [];
   if (data.features?.resolutions) {
     for (const res of data.features.resolutions) {
-      if (!res.isEntitled) {
-        continue;
-      }
+      // Include all resolutions (matching Rust implementation behavior)
       entitledResolutions.push({
         width: res.widthInPixels,
         height: res.heightInPixels,

@@ -38,12 +38,9 @@ class CacheManager {
     }
   }
 
-  private sanitizeCacheKey(key: string): string {
-    return key.replace(/[^a-z0-9-]/gi, "_");
-  }
-
   private getCacheFilePath(key: string): string {
-    return join(this.cacheDir, `${this.sanitizeCacheKey(key)}.json`);
+    const sanitized = key.replace(/[^a-z0-9-]/gi, "_");
+    return join(this.cacheDir, `${sanitized}.json`);
   }
 
   async loadFromCache<T>(key: string): Promise<CachedData<T> | null> {
@@ -70,14 +67,13 @@ class CacheManager {
       }
 
       const now = Date.now();
-      const ageSeconds = Math.round((now - parsed.metadata.timestamp) / 1000);
       if (now > parsed.metadata.expiresAt) {
-        console.log(
-          `[CACHE] Cache hit (stale): ${key} (age: ${ageSeconds}s, expired ${Math.round((now - parsed.metadata.expiresAt) / 1000)}s ago)`,
-        );
-      } else {
-        console.log(`[CACHE] Cache hit: ${key} (age: ${ageSeconds}s)`);
+        console.log(`[CACHE] Cache expired: ${key} (expired ${Math.round((now - parsed.metadata.expiresAt) / 1000)}s ago)`);
+        return null;
       }
+
+      const ageSeconds = Math.round((now - parsed.metadata.timestamp) / 1000);
+      console.log(`[CACHE] Cache hit: ${key} (age: ${ageSeconds}s)`);
       return parsed;
     } catch (error) {
       console.error(`[CACHE] Error reading cache file: ${key}`, error);
@@ -132,35 +128,6 @@ class CacheManager {
     }
   }
 
-  async invalidateCachesByPrefix(prefix: string): Promise<void> {
-    if (!this.initialized) {
-      console.warn(`[CACHE] Cache not initialized, skipping prefix invalidation for: ${prefix}`);
-      return;
-    }
-
-    const sanitizedPrefix = this.sanitizeCacheKey(prefix);
-
-    try {
-      const files = await readdir(this.cacheDir);
-      const matchingFiles = files.filter(
-        (file) => file === `${sanitizedPrefix}.json` || file.startsWith(`${sanitizedPrefix}_`),
-      );
-
-      if (matchingFiles.length === 0) {
-        console.log(`[CACHE] No cache entries matched prefix: ${prefix}`);
-        return;
-      }
-
-      await Promise.all(matchingFiles.map(async (file) => {
-        await unlink(join(this.cacheDir, file));
-        console.log(`[CACHE] Invalidated cache by prefix ${prefix}: ${file}`);
-      }));
-    } catch (error) {
-      console.error(`[CACHE] Error deleting cache files by prefix: ${prefix}`, error);
-      throw error;
-    }
-  }
-
   async deleteAll(): Promise<void> {
     if (!this.initialized) {
       console.warn(`[CACHE] Cache not initialized, skipping deleteAll`);
@@ -198,28 +165,6 @@ class CacheManager {
   isExpired(timestamp: number): boolean {
     const ageMs = Date.now() - timestamp;
     return ageMs > CACHE_TTL_MS;
-  }
-
-  async isStaleOrMissing(key: string): Promise<boolean> {
-    if (!this.initialized) {
-      return true;
-    }
-
-    const filePath = this.getCacheFilePath(key);
-    if (!existsSync(filePath)) {
-      return true;
-    }
-
-    try {
-      const content = await readFile(filePath, "utf-8");
-      const parsed = JSON.parse(content) as CachedData<unknown>;
-      if (!parsed.metadata || typeof parsed.metadata.expiresAt !== "number") {
-        return true;
-      }
-      return Date.now() > parsed.metadata.expiresAt;
-    } catch {
-      return true;
-    }
   }
 
   getCacheTtlMs(): number {
