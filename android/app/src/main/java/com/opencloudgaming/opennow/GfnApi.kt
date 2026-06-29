@@ -104,9 +104,9 @@ private const val TOTAL_STORAGE_SIZE_IN_GB = "TOTAL_STORAGE_SIZE_IN_GB"
 private const val USED_STORAGE_SIZE_IN_GB = "USED_STORAGE_SIZE_IN_GB"
 private const val STORAGE_METRO_REGION = "STORAGE_METRO_REGION"
 private const val STORAGE_METRO_REGION_NAME = "STORAGE_METRO_REGION_NAME"
-private const val ACCOUNT_LINKING_BASE_URL = "https://linking.nvidia.com/v1"
-private const val ACCOUNT_LINKING_CLIENT_ID = LCARS_CLIENT_ID
-private const val ACCOUNT_LINKING_REDIRECT_URL = "https://static-als.nvidia.com/result"
+private const val ACCOUNT_LINKING_BASE_URL = "https://als.geforcenow.com/v1"
+private const val ACCOUNT_LINKING_CLIENT_ID = "gfn-pc"
+private const val ACCOUNT_LINKING_REDIRECT_URL = "http://localhost:2259/"
 
 private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
 private val GRAPHQL_MEDIA_TYPE = "application/graphql".toMediaType()
@@ -1771,8 +1771,10 @@ class GfnAccountConnectorRepository(
 
     private fun accountLinkingHeaders(accessToken: String): Headers =
         Headers.Builder()
-            .add("Accept", "application/json")
+            .add("Accept", "application/json, text/plain, */*")
             .add("Authorization", bearerAuthorization(accessToken))
+            .add("Origin", GFN_PLAY_ORIGIN)
+            .add("Referer", GFN_PLAY_REFERER)
             .add("User-Agent", GFN_USER_AGENT)
             .build()
 
@@ -1795,7 +1797,12 @@ class GfnAccountConnectorRepository(
     }
 
     private fun accountLinkingPlatform(store: String): String =
-        normalizeGameStore(store).ifBlank { store }.uppercase(Locale.US)
+        when (val normalized = normalizeGameStore(store).ifBlank { store }.uppercase(Locale.US)) {
+            "UBISOFT", "UBISOFT_CONNECT" -> "UPLAY"
+            "BATTLE_NET", "BLIZZARD" -> "BATTLENET"
+            "EPIC_GAMES", "EPIC_GAMES_STORE" -> "EPIC"
+            else -> normalized
+        }
 
     private fun accountConnectorSortRank(store: String): Int =
         when (normalizeGameStore(store)) {
