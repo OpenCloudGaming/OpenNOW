@@ -33,6 +33,7 @@ import {
   getDefaultStreamPreferences,
   isGameInLibrary,
   isSessionAdsRequired,
+  resolveEntitledStreamProfile,
 } from "@shared/gfn";
 import { GfnWebRtcClient } from "./gfn/webrtcClient";
 import { formatShortcutForDisplay, isShortcutMatch, normalizeShortcut } from "./shortcuts";
@@ -686,21 +687,28 @@ export function App(): JSX.Element {
     clearRuntimeSnapshot();
   }, [diagnosticsStore, resetStatsOverlayToPreference, settings.discordRichPresence]);
 
-  const buildCurrentStreamSettings = useCallback((): StreamSettings => ({
-    resolution: settings.resolution,
-    fps: settings.fps,
-    maxBitrateMbps: settings.maxBitrateMbps,
-    codec: settings.codec,
-    colorQuality: settings.colorQuality,
-    keyboardLayout: settings.keyboardLayout,
-    gameLanguage: settings.gameLanguage,
-    enableL4S: settings.enableL4S,
-    enableCloudGsync: settings.enableCloudGsync,
-    clientMode: settings.streamClientMode,
-    nativeStreamerBackend: "gstreamer",
-    nativeCloudGsyncMode: settings.nativeCloudGsyncMode,
-    nativeTransitionDiagnostics: settings.nativeTransitionDiagnostics,
-  }), [
+  const buildCurrentStreamSettings = useCallback((): StreamSettings => {
+    const entitledProfile = resolveEntitledStreamProfile(subscriptionInfo?.entitledResolutions ?? [], {
+      resolution: settings.resolution,
+      fps: settings.fps,
+    });
+
+    return {
+      resolution: entitledProfile?.resolution ?? settings.resolution,
+      fps: entitledProfile?.fps ?? settings.fps,
+      maxBitrateMbps: settings.maxBitrateMbps,
+      codec: settings.codec,
+      colorQuality: settings.colorQuality,
+      keyboardLayout: settings.keyboardLayout,
+      gameLanguage: settings.gameLanguage,
+      enableL4S: settings.enableL4S,
+      enableCloudGsync: settings.enableCloudGsync,
+      clientMode: settings.streamClientMode,
+      nativeStreamerBackend: "gstreamer",
+      nativeCloudGsyncMode: settings.nativeCloudGsyncMode,
+      nativeTransitionDiagnostics: settings.nativeTransitionDiagnostics,
+    };
+  }, [
     settings.codec,
     settings.colorQuality,
     settings.enableCloudGsync,
@@ -713,6 +721,7 @@ export function App(): JSX.Element {
     settings.nativeTransitionDiagnostics,
     settings.resolution,
     settings.streamClientMode,
+    subscriptionInfo?.entitledResolutions,
   ]);
 
   const warmNativeStreamerForLaunch = useCallback((): void => {
@@ -1488,6 +1497,33 @@ export function App(): JSX.Element {
       }
     }
   }, [settingsLoaded]);
+
+  useEffect(() => {
+    if (!settingsLoaded || !subscriptionInfo) {
+      return;
+    }
+
+    const entitledProfile = resolveEntitledStreamProfile(subscriptionInfo.entitledResolutions, {
+      resolution: settings.resolution,
+      fps: settings.fps,
+    });
+    if (!entitledProfile) {
+      return;
+    }
+
+    if (entitledProfile.resolution !== settings.resolution) {
+      void updateSetting("resolution", entitledProfile.resolution);
+    }
+    if (entitledProfile.fps !== settings.fps) {
+      void updateSetting("fps", entitledProfile.fps);
+    }
+  }, [
+    settings.fps,
+    settings.resolution,
+    settingsLoaded,
+    subscriptionInfo,
+    updateSetting,
+  ]);
 
   const handleMouseSensitivityChange = useCallback((value: number) => {
     void updateSetting("mouseSensitivity", value);

@@ -31,6 +31,7 @@ import {
   NATIVE_STREAMER_WINDOWS_ONLY_MESSAGE,
   colorQualityRequiresHevc,
   keyboardLayoutOptions,
+  resolveEntitledStreamProfile,
   USER_FACING_COLOR_QUALITY_OPTIONS,
   USER_FACING_VIDEO_CODEC_OPTIONS,
 } from "@shared/gfn";
@@ -562,10 +563,11 @@ function getFpsForResolution(entitled: EntitledResolution[], resolution: string)
   return [...new Set(fpsList)].sort((a, b) => a - b);
 }
 
-const ENTITLED_RESOLUTIONS_STORAGE_KEY = "opennow.entitled-resolutions.v1";
+const ENTITLED_RESOLUTIONS_STORAGE_KEY = "opennow.entitled-resolutions.v2";
 
 interface EntitledResolutionsCache {
   userId: string;
+  membershipTier: string;
   entitledResolutions: EntitledResolution[];
 }
 
@@ -579,6 +581,7 @@ function loadCachedEntitledResolutions(): EntitledResolutionsCache | null {
     }
     return {
       userId: parsed.userId,
+      membershipTier: typeof parsed.membershipTier === "string" ? parsed.membershipTier : "",
       entitledResolutions: parsed.entitledResolutions,
     };
   } catch {
@@ -916,7 +919,12 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
 
       const userId = session.user.userId;
       const cached = loadCachedEntitledResolutions();
-      if (cached && cached.userId === userId && !isCancelled()) {
+      if (
+        cached &&
+        cached.userId === userId &&
+        cached.membershipTier === session.user.membershipTier &&
+        !isCancelled()
+      ) {
         setEntitledResolutions(cached.entitledResolutions);
       }
 
@@ -929,6 +937,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
         setEntitledResolutions(sub.entitledResolutions);
         saveCachedEntitledResolutions({
           userId,
+          membershipTier: sub.membershipTier,
           entitledResolutions: sub.entitledResolutions,
         });
       }
@@ -1014,6 +1023,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
   }, [t]);
 
   const hasDynamic = entitledResolutions.length > 0;
+  const useEntitledStreamOptions = hasDynamic || subscriptionInfo !== null;
 
   // Grouped resolution presets (dynamic)
   const resolutionGroups = useMemo(
@@ -1025,6 +1035,13 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
   const dynamicFpsOptions = useMemo(
     () => (hasDynamic ? getFpsForResolution(entitledResolutions, settings.resolution) : []),
     [entitledResolutions, settings.resolution, hasDynamic]
+  );
+  const resolvedEntitledProfile = useMemo(
+    () => resolveEntitledStreamProfile(entitledResolutions, {
+      resolution: settings.resolution,
+      fps: settings.fps,
+    }),
+    [entitledResolutions, settings.fps, settings.resolution],
   );
   const posterSizePercent = Math.round(settings.posterSizeScale * 100);
   const updaterLastCheckedLabel = useMemo(() => formatUpdaterTimestamp(updaterState.lastCheckedAt), [updaterState.lastCheckedAt]);
@@ -1185,7 +1202,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
   }, [gameAccountBusy, settings.sessionProxyEnabled, settings.sessionProxyUrl, t]);
 
   const selectedResolutionLabel = useMemo(() => {
-    if (hasDynamic) {
+    if (useEntitledStreamOptions) {
       for (const group of resolutionGroups) {
         const found = group.resolutions.find(r => r.value === settings.resolution);
         if (found) return found.label;
@@ -1194,7 +1211,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
     }
     const found = STATIC_RESOLUTION_PRESETS.find(r => r.value === settings.resolution);
     return found ? found.label : settings.resolution || "Select";
-  }, [settings.resolution, hasDynamic, resolutionGroups]);
+  }, [settings.resolution, useEntitledStreamOptions, resolutionGroups]);
 
   const handleChange = useCallback(
     <K extends keyof Settings>(key: K, value: Settings[K]) => {
@@ -1212,6 +1229,26 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
       handleChange("aspectRatio", aspectRatio);
     }
   }, [handleChange, settings.aspectRatio]);
+
+  useEffect(() => {
+    if (!useEntitledStreamOptions || !resolvedEntitledProfile) {
+      return;
+    }
+
+    if (resolvedEntitledProfile.resolution !== settings.resolution) {
+      handleResolutionChange(resolvedEntitledProfile.resolution);
+    }
+    if (resolvedEntitledProfile.fps !== settings.fps) {
+      handleChange("fps", resolvedEntitledProfile.fps);
+    }
+  }, [
+    handleChange,
+    handleResolutionChange,
+    resolvedEntitledProfile,
+    settings.fps,
+    settings.resolution,
+    useEntitledStreamOptions,
+  ]);
 
   const openNativeStreamerEnablePrompt = useCallback((): void => {
     if (nativeStreamerEnablePromptCloseTimerRef.current !== null) {
@@ -2728,7 +2765,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                     </button>
                     {resolutionDropdownOpen && (
                       <div className="settings-dropdown-menu settings-dropdown-menu--grouped">
-                        {(hasDynamic ? resolutionGroups : [{ category: "All", resolutions: STATIC_RESOLUTION_PRESETS.map(p => ({ ...p, width: 0, height: 0 })) }]).map(group => (
+                        {(useEntitledStreamOptions ? resolutionGroups : [{ category: "All", resolutions: STATIC_RESOLUTION_PRESETS.map(p => ({ ...p, width: 0, height: 0 })) }]).map(group => (
                           <div key={group.category} className="settings-dropdown-group">
                             <div className="settings-dropdown-group-label">{group.category}</div>
                             {group.resolutions.map(res => (
@@ -2756,7 +2793,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                     {t("settings.video.fps")}
                   </label>
                   <div className="settings-chip-row">
-                    {(hasDynamic ? dynamicFpsOptions.map((v) => ({ value: v })) : STATIC_FPS_PRESETS).map((preset) => (
+                    {(useEntitledStreamOptions ? dynamicFpsOptions.map((v) => ({ value: v })) : STATIC_FPS_PRESETS).map((preset) => (
                       <button
                         key={preset.value}
                         className={`settings-chip ${settings.fps === preset.value ? "active" : ""}`}
