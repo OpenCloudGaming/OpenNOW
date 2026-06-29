@@ -472,7 +472,7 @@
       "cpu": "CPU",
       "softwareCpu": "Software (CPU)",
       "sessionProxy": "Session proxy",
-      "sessionProxyHint": "Used only for Nvidia session creation and queue polling. Streaming/signaling traffic is not proxied. Zortos provides a proxy for GitHub Sponsors/supporters.",
+      "sessionProxyHint": "Used for Nvidia games catalog, session creation, and queue polling. Streaming/signaling traffic is not proxied. Zortos provides a proxy for GitHub Sponsors/supporters.",
       "experimentalL4SRequest": "Experimental L4S Request",
       "experimentalL4SRequestHint": "Request the GeForce NOW L4S streaming feature on newly created sessions. This does not change browser WebRTC behavior by itself and may be ignored by the service or network path."
     },

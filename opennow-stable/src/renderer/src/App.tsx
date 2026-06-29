@@ -123,6 +123,46 @@ function getAppStyle(posterSizeScale: number): AppStyle {
   };
 }
 
+function getEnabledSessionProxyUrl(settings: Pick<Settings, "sessionProxyEnabled" | "sessionProxyUrl">): string | undefined {
+  const proxyUrl = settings.sessionProxyEnabled ? settings.sessionProxyUrl.trim() : "";
+  return proxyUrl || undefined;
+}
+
+function getSessionProxyUiScope(proxyUrl: string | undefined): string {
+  if (!proxyUrl) return "direct";
+  const trimmed = proxyUrl.trim();
+  const candidate = /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) ? trimmed : `http://${trimmed}`;
+
+  try {
+    const parsed = new URL(candidate);
+    return `${parsed.protocol}//${parsed.host}`;
+  } catch {
+    return "proxy";
+  }
+}
+
+function hasSessionProxyCredentials(proxyUrl: string | undefined): boolean {
+  if (!proxyUrl) return false;
+  const trimmed = proxyUrl.trim();
+  const candidate = /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) ? trimmed : `http://${trimmed}`;
+
+  try {
+    const parsed = new URL(candidate);
+    return parsed.username.length > 0 || parsed.password.length > 0;
+  } catch {
+    return false;
+  }
+}
+
+function buildProxyAwareCatalogQueryKey(
+  searchQuery: string,
+  filterIds: string[],
+  sortId: string,
+  proxyUrl: string | undefined,
+): string {
+  return `${buildCatalogQueryKey(searchQuery, filterIds, sortId)}|${getSessionProxyUiScope(proxyUrl)}`;
+}
+
 function normalizeDirectLaunchText(value: string | undefined): string {
   return value?.trim().replace(/\s+/g, " ").toLowerCase() ?? "";
 }
@@ -398,6 +438,10 @@ export function App(): JSX.Element {
     autoCheckForUpdates: true,
   });
   const [settingsLoaded, setSettingsLoaded] = useState(false);
+  const activeSessionProxyUrl = useMemo(
+    () => getEnabledSessionProxyUrl(settings),
+    [settings.sessionProxyEnabled, settings.sessionProxyUrl],
+  );
   const [codecResults, setCodecResults] = useState<CodecTestResult[] | null>(() => loadStoredCodecResults());
   const [codecTesting, setCodecTesting] = useState(false);
   const [regions, setRegions] = useState<StreamRegion[]>([]);
@@ -552,6 +596,7 @@ export function App(): JSX.Element {
   const storePanelsLoadIdRef = useRef(0);
   const runtimeDataLoadIdRef = useRef(0);
   const lastCatalogQueryRef = useRef<string | null>(null);
+  const lastCatalogProxyUrlRef = useRef<string | undefined>(undefined);
   const signalingRecoveryRef = useRef<SignalingRecoveryState>({
     attemptCount: 0,
     inFlight: null,
@@ -1491,7 +1536,13 @@ export function App(): JSX.Element {
     catalogResult: CatalogBrowseResult,
     library: GameInfo[],
     queryKey: string,
+    proxyUrl?: string,
   ): void => {
+    if (hasSessionProxyCredentials(proxyUrl)) {
+      clearCatalogSnapshot();
+      return;
+    }
+
     saveCatalogSnapshot({
       version: 1,
       userId: session.user.userId,
@@ -1507,8 +1558,13 @@ export function App(): JSX.Element {
     });
   }, []);
 
-  const hydrateCatalogSnapshot = useCallback((session: AuthSession): string | null => {
-    const queryKey = buildCatalogQueryKey("", catalogSelectedFilterIds, catalogSelectedSortId);
+  const hydrateCatalogSnapshot = useCallback((session: AuthSession, proxyUrl: string | undefined = activeSessionProxyUrl): string | null => {
+    if (hasSessionProxyCredentials(proxyUrl)) {
+      clearCatalogSnapshot();
+      return null;
+    }
+
+    const queryKey = buildProxyAwareCatalogQueryKey("", catalogSelectedFilterIds, catalogSelectedSortId, proxyUrl);
     const snapshot = loadCatalogSnapshot(
       session.user.userId,
       session.provider.streamingServiceUrl,
@@ -1529,12 +1585,13 @@ export function App(): JSX.Element {
     ));
     applyVariantSelections([...snapshot.games, ...snapshot.libraryGames]);
     lastCatalogQueryRef.current = queryKey;
+    lastCatalogProxyUrlRef.current = proxyUrl;
     return queryKey;
-  }, [applyVariantSelections, catalogSelectedFilterIds, catalogSelectedSortId]);
+  }, [activeSessionProxyUrl, applyVariantSelections, catalogSelectedFilterIds, catalogSelectedSortId]);
 
   const loadSessionRuntimeData = useCallback(async (
     session: AuthSession,
-    options?: { background?: boolean },
+    options?: { background?: boolean; proxyUrl?: string },
   ): Promise<void> => {
     const token = session.tokens.idToken ?? session.tokens.accessToken;
     const streamingBaseUrl = session.provider.streamingServiceUrl;
@@ -1542,10 +1599,12 @@ export function App(): JSX.Element {
     const loadId = ++runtimeDataLoadIdRef.current;
     const isCurrentLoad = (): boolean => runtimeDataLoadIdRef.current === loadId;
     const background = options?.background === true;
-    const catalogQueryKey = buildCatalogQueryKey("", catalogSelectedFilterIds, catalogSelectedSortId);
+    const proxyUrl = options?.proxyUrl ?? activeSessionProxyUrl;
+    const catalogQueryKey = buildProxyAwareCatalogQueryKey("", catalogSelectedFilterIds, catalogSelectedSortId, proxyUrl);
 
     if (!background) {
       lastCatalogQueryRef.current = null;
+      lastCatalogProxyUrlRef.current = proxyUrl;
       setIsLoadingCatalog(true);
       setIsLoadingLibrary(true);
     }
@@ -1575,6 +1634,7 @@ export function App(): JSX.Element {
       token,
       userId,
       providerStreamingBaseUrl: streamingBaseUrl,
+      proxyUrl,
       searchQuery: "",
       sortId: catalogSelectedSortId,
       filterIds: catalogSelectedFilterIds,
@@ -1583,8 +1643,9 @@ export function App(): JSX.Element {
       latestCatalogResult = catalogResult;
       applyCatalogBrowseResult(catalogResult);
       lastCatalogQueryRef.current = catalogQueryKey;
+      lastCatalogProxyUrlRef.current = proxyUrl;
       if (latestLibraryGames) {
-        persistCatalogSnapshot(session, catalogResult, latestLibraryGames, catalogQueryKey);
+        persistCatalogSnapshot(session, catalogResult, latestLibraryGames, catalogQueryKey, proxyUrl);
       }
     }).catch((error) => {
       console.error("Catalog load failed:", error);
@@ -1602,13 +1663,14 @@ export function App(): JSX.Element {
       token,
       userId,
       providerStreamingBaseUrl: streamingBaseUrl,
+      proxyUrl,
     }).then((libGames) => {
       if (!isCurrentLoad()) return;
       latestLibraryGames = libGames;
       setLibraryGames(libGames);
       applyVariantSelections(libGames);
       if (latestCatalogResult) {
-        persistCatalogSnapshot(session, latestCatalogResult, libGames, catalogQueryKey);
+        persistCatalogSnapshot(session, latestCatalogResult, libGames, catalogQueryKey, proxyUrl);
       }
     }).catch((error) => {
       console.error("Library load failed:", error);
@@ -1622,6 +1684,7 @@ export function App(): JSX.Element {
       token,
       userId,
       providerStreamingBaseUrl: streamingBaseUrl,
+      proxyUrl,
     }).then((featured) => {
       if (isCurrentLoad()) setFeaturedGames(featured);
     }).catch((error) => {
@@ -1629,6 +1692,7 @@ export function App(): JSX.Element {
       if (isCurrentLoad()) setFeaturedGames([]);
     });
   }, [
+    activeSessionProxyUrl,
     applyCatalogBrowseResult,
     applyVariantSelections,
     catalogSelectedFilterIds,
@@ -1648,6 +1712,7 @@ export function App(): JSX.Element {
         setSettings(loadedSettings);
         setShowStatsOverlay(loadedSettings.showStatsOnLaunch);
         setSettingsLoaded(true);
+        const loadedSessionProxyUrl = getEnabledSessionProxyUrl(loadedSettings);
 
         // Load providers and session (refresh only if token is near expiry)
         setStartupStatusMessage(t("auth.status.restoringSavedSession"));
@@ -1705,8 +1770,8 @@ export function App(): JSX.Element {
         setProviderIdpId(activeProviderId);
 
         if (persistedSession) {
-          const hydrated = hydrateCatalogSnapshot(persistedSession);
-          void loadSessionRuntimeData(persistedSession, { background: hydrated !== null });
+          const hydrated = hydrateCatalogSnapshot(persistedSession, loadedSessionProxyUrl);
+          void loadSessionRuntimeData(persistedSession, { background: hydrated !== null, proxyUrl: loadedSessionProxyUrl });
         } else {
           runtimeDataLoadIdRef.current += 1;
           resetStorePanels();
@@ -1982,6 +2047,7 @@ export function App(): JSX.Element {
       const token = authSession?.tokens.idToken ?? authSession?.tokens.accessToken;
       const userId = authSession?.user.userId;
       const baseUrl = effectiveStreamingBaseUrl;
+      const proxyUrl = activeSessionProxyUrl;
       if (!token || !userId) {
         return;
       }
@@ -1991,13 +2057,14 @@ export function App(): JSX.Element {
           token,
           userId,
           providerStreamingBaseUrl: baseUrl,
+          proxyUrl,
           searchQuery,
           sortId: catalogSelectedSortId,
           filterIds: catalogSelectedFilterIds,
         });
         applyCatalogBrowseResult(catalogResult);
         if (featuredGames.length === 0) {
-          void window.openNow.fetchFeaturedGames({ token, userId, providerStreamingBaseUrl: baseUrl }).then((featured) => {
+          void window.openNow.fetchFeaturedGames({ token, userId, providerStreamingBaseUrl: baseUrl, proxyUrl }).then((featured) => {
             if (featured.length > 0) setFeaturedGames(featured);
           }).catch((error) => {
             console.warn("Featured games refresh failed:", error);
@@ -2006,7 +2073,7 @@ export function App(): JSX.Element {
         return;
       }
 
-      const result = await window.openNow.fetchLibraryGames({ token, userId, providerStreamingBaseUrl: baseUrl });
+      const result = await window.openNow.fetchLibraryGames({ token, userId, providerStreamingBaseUrl: baseUrl, proxyUrl });
       setLibraryGames(result);
       setSelectedGameId((previous) => result.some((game) => game.id === previous) ? previous : (result[0]?.id ?? ""));
       applyVariantSelections(result);
@@ -2017,7 +2084,7 @@ export function App(): JSX.Element {
         setLoading(false);
       }
     }
-  }, [applyCatalogBrowseResult, applyVariantSelections, authSession, effectiveStreamingBaseUrl, featuredGames.length, searchQuery, catalogFilterKey, catalogSelectedSortId]);
+  }, [activeSessionProxyUrl, applyCatalogBrowseResult, applyVariantSelections, authSession, effectiveStreamingBaseUrl, featuredGames.length, searchQuery, catalogFilterKey, catalogSelectedSortId]);
 
   const loadStorePanels = useCallback(async () => {
     const session = authSession;
@@ -2026,7 +2093,7 @@ export function App(): JSX.Element {
     const token = session.tokens.idToken ?? session.tokens.accessToken;
     if (!token) return;
 
-    const contextKey = `${session.user.userId}\0${effectiveStreamingBaseUrl}`;
+    const contextKey = `${session.user.userId}\0${effectiveStreamingBaseUrl}\0${getSessionProxyUiScope(activeSessionProxyUrl)}`;
     if (storePanelsLoadedContextRef.current === contextKey) return;
 
     const loadId = ++storePanelsLoadIdRef.current;
@@ -2036,6 +2103,7 @@ export function App(): JSX.Element {
       const panels = await window.openNow.fetchStorePanels({
         token,
         providerStreamingBaseUrl: effectiveStreamingBaseUrl,
+        proxyUrl: activeSessionProxyUrl,
       });
       if (!isCurrentLoad()) return;
       const panelGames = flattenStorePanelGames(panels);
@@ -2057,7 +2125,7 @@ export function App(): JSX.Element {
     } finally {
       if (isCurrentLoad()) setIsLoadingStorePanels(false);
     }
-  }, [authSession, effectiveStreamingBaseUrl]);
+  }, [activeSessionProxyUrl, authSession, effectiveStreamingBaseUrl]);
 
   useEffect(() => {
     if (storePanelGames.length === 0 || libraryGames.length === 0) return;
@@ -2079,11 +2147,16 @@ export function App(): JSX.Element {
     if (!authSession || currentPage !== "home" || settings.controllerMode || isInitializing) {
       return;
     }
-    const queryKey = buildCatalogQueryKey(searchQuery, catalogSelectedFilterIds, catalogSelectedSortId);
-    if (lastCatalogQueryRef.current === queryKey && games.length > 0) {
+    const queryKey = buildProxyAwareCatalogQueryKey(searchQuery, catalogSelectedFilterIds, catalogSelectedSortId, activeSessionProxyUrl);
+    if (
+      lastCatalogQueryRef.current === queryKey
+      && lastCatalogProxyUrlRef.current === activeSessionProxyUrl
+      && games.length > 0
+    ) {
       return;
     }
     lastCatalogQueryRef.current = queryKey;
+    lastCatalogProxyUrlRef.current = activeSessionProxyUrl;
 
     const handle = window.setTimeout(() => {
       void loadGames("main", { background: games.length > 0 });
@@ -2096,6 +2169,7 @@ export function App(): JSX.Element {
     isInitializing,
     loadGames,
     searchQuery,
+    activeSessionProxyUrl,
     catalogFilterKey,
     catalogSelectedSortId,
     settings.controllerMode,
@@ -2931,6 +3005,7 @@ export function App(): JSX.Element {
           const resolved = await window.openNow.resolveLaunchAppId({
             token,
             providerStreamingBaseUrl: effectiveStreamingBaseUrl,
+            proxyUrl: activeSessionProxyUrl,
             appIdOrUuid: game.uuid ?? selectedVariantId,
           });
           if (resolved && isNumericId(resolved)) {
@@ -2997,7 +3072,7 @@ export function App(): JSX.Element {
         }
       }
 
-      const sessionProxyUrl = settings.sessionProxyEnabled ? settings.sessionProxyUrl.trim() : "";
+      const sessionProxyUrl = activeSessionProxyUrl;
 
       // Create new session
       const newSession = await window.openNow.createSession({
@@ -3007,7 +3082,7 @@ export function App(): JSX.Element {
         internalTitle: game.title,
         accountLinked: chooseAccountLinked(game, selectedVariant),
         existingSessionStrategy,
-        proxyUrl: sessionProxyUrl || undefined,
+        proxyUrl: sessionProxyUrl,
         zone: "prod",
         settings: buildCurrentStreamSettings(),
       });
@@ -3082,7 +3157,7 @@ export function App(): JSX.Element {
           sessionId: newSession.sessionId,
           clientId: newSession.clientId,
           deviceId: newSession.deviceId,
-          proxyUrl: sessionProxyUrl || undefined,
+          proxyUrl: sessionProxyUrl,
         });
 
         if (launchAbortRef.current) {
@@ -3150,7 +3225,9 @@ export function App(): JSX.Element {
     }
   }, [
     authSession,
+    activeSessionProxyUrl,
     allKnownGames,
+    buildCurrentStreamSettings,
     buildSignalingConnectRequest,
     claimAndConnectSession,
     effectiveStreamingBaseUrl,
@@ -3159,7 +3236,6 @@ export function App(): JSX.Element {
     resetLaunchRuntime,
     resetStatsOverlayToPreference,
     selectedProvider,
-    settings,
     streamStatus,
     t,
     variantByGameId,
@@ -3193,6 +3269,7 @@ export function App(): JSX.Element {
           const searchResult = await window.openNow.browseCatalog({
             token,
             providerStreamingBaseUrl: effectiveStreamingBaseUrl,
+            proxyUrl: activeSessionProxyUrl,
             searchQuery: request.title,
             sortId: "relevance",
             filterIds: [],
@@ -3250,6 +3327,7 @@ export function App(): JSX.Element {
     };
   }, [
     allKnownGames,
+    activeSessionProxyUrl,
     authSession,
     effectiveStreamingBaseUrl,
     handlePlayGame,
@@ -3366,6 +3444,7 @@ export function App(): JSX.Element {
     void window.openNow.resolveStoreUrl({
       token,
       providerStreamingBaseUrl: effectiveStreamingBaseUrl,
+      proxyUrl: activeSessionProxyUrl,
       appIdOrUuid: game.uuid ?? game.id,
       variantId: selectedVariant?.id ?? selectedVariantId,
       store: selectedVariant?.store,
@@ -3374,7 +3453,7 @@ export function App(): JSX.Element {
     }).catch((error) => {
       console.error("Failed to resolve Store URL:", error);
     });
-  }, [authSession, effectiveStreamingBaseUrl, handleOpenStoreUrl]);
+  }, [activeSessionProxyUrl, authSession, effectiveStreamingBaseUrl, handleOpenStoreUrl]);
 
   useEffect(() => {
     if (!logoutConfirmOpen && !removeAccountConfirmOpen) return;

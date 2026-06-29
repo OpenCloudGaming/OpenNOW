@@ -1,5 +1,6 @@
 import type { GameInfo } from "@shared/gfn";
 import { getAccountGamesCacheKeys } from "../gfn/games";
+import { sessionProxyHasCredentials } from "../gfn/proxyUrl";
 import { cacheEventBus } from "./cacheEventBus";
 import { cacheManager } from "./cacheManager";
 
@@ -7,14 +8,15 @@ export interface RefreshAuthContext {
   token: string;
   userId: string;
   providerStreamingBaseUrl?: string;
+  proxyUrl?: string;
 }
 
 type FetchFunction<T> = (
   token: string,
   providerStreamingBaseUrl?: string,
-  accountId?: string,
+  proxyUrl?: string,
 ) => Promise<T>;
-type PublicFetchFunction = () => Promise<GameInfo[]>;
+type PublicFetchFunction = (proxyUrl?: string) => Promise<GameInfo[]>;
 
 class RefreshScheduler {
   private refreshTimer: ReturnType<typeof setInterval> | null = null;
@@ -36,8 +38,8 @@ class RefreshScheduler {
     console.log(`[CACHE] RefreshScheduler initialized (interval: ${this.refreshIntervalMs / 60000} minutes)`);
   }
 
-  updateAuthContext(token: string, userId: string, providerStreamingBaseUrl?: string): void {
-    this.authContext = { token, userId, providerStreamingBaseUrl };
+  updateAuthContext(token: string, userId: string, providerStreamingBaseUrl?: string, proxyUrl?: string): void {
+    this.authContext = { token, userId, providerStreamingBaseUrl, proxyUrl };
     console.log(`[CACHE] Auth context updated for refresh scheduler`);
   }
 
@@ -87,8 +89,13 @@ class RefreshScheduler {
       return;
     }
 
-    const { token, userId, providerStreamingBaseUrl } = this.authContext;
-    const cacheKeys = getAccountGamesCacheKeys(userId, providerStreamingBaseUrl);
+    const { token, userId, providerStreamingBaseUrl, proxyUrl } = this.authContext;
+    if (sessionProxyHasCredentials(proxyUrl)) {
+      console.log("[CACHE] Credentialed proxy configured, skipping background game cache refresh");
+      return;
+    }
+
+    const cacheKeys = getAccountGamesCacheKeys(userId, providerStreamingBaseUrl, proxyUrl);
     const force = options.force === true;
 
     const [mainNeedsRefresh, libraryNeedsRefresh, publicNeedsRefresh] = force
@@ -120,7 +127,7 @@ class RefreshScheduler {
 
       if (mainNeedsRefresh) {
         refreshTasks.push(
-          this.fetchMainGamesUncached(token, providerStreamingBaseUrl, userId)
+          this.fetchMainGamesUncached(token, providerStreamingBaseUrl, proxyUrl)
             .then(async (games) => {
               await cacheManager.saveToCache(cacheKeys.main, games);
             }),
@@ -129,7 +136,7 @@ class RefreshScheduler {
 
       if (libraryNeedsRefresh) {
         refreshTasks.push(
-          this.fetchLibraryGamesUncached(token, providerStreamingBaseUrl, userId)
+          this.fetchLibraryGamesUncached(token, providerStreamingBaseUrl, proxyUrl)
             .then(async (games) => {
               await cacheManager.saveToCache(cacheKeys.library, games);
             }),
@@ -138,7 +145,7 @@ class RefreshScheduler {
 
       if (publicNeedsRefresh) {
         refreshTasks.push(
-          this.fetchPublicGamesUncached()
+          this.fetchPublicGamesUncached(proxyUrl)
             .then(async (games) => {
               await cacheManager.saveToCache(cacheKeys.public, games);
             }),

@@ -514,6 +514,8 @@ export interface PingResult {
 export interface GamesFetchRequest {
   token?: string;
   providerStreamingBaseUrl?: string;
+  /** Optional proxy used for GFN games catalog/list requests. */
+  proxyUrl?: string;
   /** Stable account id used for on-disk cache scoping (avoids cache misses on token refresh). */
   userId?: string;
 }
@@ -536,12 +538,14 @@ export interface CatalogBrowseRequest extends GamesFetchRequest {
 export interface ResolveLaunchIdRequest {
   token?: string;
   providerStreamingBaseUrl?: string;
+  proxyUrl?: string;
   appIdOrUuid: string;
 }
 
 export interface ResolveStoreUrlRequest {
   token?: string;
   providerStreamingBaseUrl?: string;
+  proxyUrl?: string;
   appIdOrUuid: string;
   variantId?: string;
   store?: string;
