@@ -299,9 +299,31 @@ const physicalOemVirtualKeyCodes = new Set([
   "Slash",
 ]);
 
+/**
+ * Layouts where ALL keys (letters, digits, OEM) should use physical position
+ * (event.code) instead of the platform keyCode.
+ *
+ * On Linux, browsers report event.keyCode based on the active OS keyboard layout
+ * rather than the physical key position. For AZERTY (fr-FR) and QWERTZ (de-DE),
+ * this means pressing the physical W key on an AZERTY board reports keyCode=90 (Z)
+ * instead of the physical position W. The GFN server already has the correct
+ * layout set via the session parameter, so we must send physical positions and
+ * let the server translate them — otherwise every letter key is misinterpreted.
+ */
+const physicalAllKeysLayouts = new Set<string>(["fr-FR", "de-DE", "fr-BE", "fr-CH"]);
+
 function shouldUsePhysicalOemVirtualKey(event: KeyLike, layout?: KeyboardLayout): boolean {
   if (!layout || layout === "en-US" || layout === "en-GB") {
     return false;
+  }
+  // For layouts where letters/digits differ from physical position, force
+  // physical code for ALL key types so the GFN server maps them correctly.
+  if (physicalAllKeysLayouts.has(layout)) {
+    const code = event.code;
+    // Letter keys: KeyA–KeyZ
+    if (code.startsWith("Key") && code.length === 4) return true;
+    // Digit keys: Digit0–Digit9
+    if (code.startsWith("Digit") && code.length === 6) return true;
   }
   return physicalOemVirtualKeyCodes.has(event.code);
 }
