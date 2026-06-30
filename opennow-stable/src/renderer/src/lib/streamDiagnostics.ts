@@ -93,6 +93,15 @@ export function mergeNativeStreamStats(
     framesDecoded: stats.framesDecoded,
     framesDropped: sinkDropped,
     packetLossPercent: dropPercent,
+    inputQueueBufferedBytes: 0,
+    inputQueuePeakBufferedBytes: 0,
+    partiallyReliableInputQueueBufferedBytes: 0,
+    partiallyReliableInputQueuePeakBufferedBytes: 0,
+    inputQueueDropCount: 0,
+    inputQueueMaxSchedulingDelayMs: 0,
+    mouseAdaptiveFlushActive: false,
+    mousePacketsPerSecond: 0,
+    mouseResidualMagnitude: 0,
     lagReason: dropPercent > 1 ? "render" : "stable",
     lagReasonDetail: stats.lastTransitionSummary
       ? `Native bitrate ${stats.bitratePerformancePercent.toFixed(0)}% of target · ${stats.lastTransitionSummary}`

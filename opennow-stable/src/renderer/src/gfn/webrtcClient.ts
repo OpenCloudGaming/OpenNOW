@@ -1323,6 +1323,13 @@ export class GfnWebRtcClient {
     inputQueueDropCount: number;
     inputQueueMaxSchedulingDelayMs: number;
   }): { reason: StreamLagReason; detail: string } {
+    if (this.nativeInputActive || this.diagnostics.nativeRendererActive) {
+      return {
+        reason: "stable",
+        detail: "Native streamer input bridge active",
+      };
+    }
+
     const networkSignals: string[] = [];
     if (params.packetLossPercent >= 1) networkSignals.push(`${params.packetLossPercent.toFixed(1)}% loss`);
     if (params.rttMs >= 75) networkSignals.push(`RTT ${params.rttMs.toFixed(0)}ms`);
@@ -1919,6 +1926,15 @@ export class GfnWebRtcClient {
     }
     this.diagnostics.lagReason = "stable";
     this.diagnostics.lagReasonDetail = "Native streamer input bridge active";
+    this.diagnostics.inputQueueBufferedBytes = 0;
+    this.diagnostics.inputQueuePeakBufferedBytes = 0;
+    this.diagnostics.partiallyReliableInputQueueBufferedBytes = 0;
+    this.diagnostics.partiallyReliableInputQueuePeakBufferedBytes = 0;
+    this.diagnostics.inputQueueDropCount = 0;
+    this.diagnostics.inputQueueMaxSchedulingDelayMs = 0;
+    this.diagnostics.mouseAdaptiveFlushActive = false;
+    this.diagnostics.mousePacketsPerSecond = 0;
+    this.diagnostics.mouseResidualMagnitude = 0;
     this.diagnostics.partiallyReliableInputOpen = true;
     this.diagnostics.mouseMoveTransport = this.canSendInputTypePartiallyReliable(INPUT_MOUSE_REL)
       ? "partially_reliable"
