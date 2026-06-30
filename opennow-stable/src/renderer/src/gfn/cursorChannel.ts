@@ -182,6 +182,14 @@ export function nativeCursorStyle(
   return `url(${dataUrl}) ${x} ${y}, auto`;
 }
 
+export function shouldApplyCursorChannelPosition(
+  wasCursorVisible: boolean,
+  nextCursorVisible: boolean,
+  position?: GfnCursorPosition,
+): position is GfnCursorPosition {
+  return !wasCursorVisible && nextCursorVisible && position !== undefined;
+}
+
 export class GfnCursorOverlayController {
   private readonly canvas: HTMLCanvasElement;
   private readonly context: CanvasRenderingContext2D | null;
@@ -337,9 +345,10 @@ export class GfnCursorOverlayController {
   }
 
   private applyCursor(cursor: GfnCursorShape, normalizedPosition?: GfnCursorPosition): void {
+    const wasCursorVisible = this.cursorVisible;
     this.currentCursor = cursor;
     this.cursorVisible = cursor.style !== "none";
-    if (normalizedPosition) {
+    if (shouldApplyCursorChannelPosition(wasCursorVisible, this.cursorVisible, normalizedPosition)) {
       const viewport = this.getViewport();
       this.positionX = normalizedPosition.x * viewport.width / CURSOR_POSITION_MAX;
       this.positionY = normalizedPosition.y * viewport.height / CURSOR_POSITION_MAX;

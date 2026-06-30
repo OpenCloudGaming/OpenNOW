@@ -7,6 +7,7 @@ import {
   cursorDevicePixelRatioScale,
   nativeCursorStyle,
   parseGfnCursorChannelMessage,
+  shouldApplyCursorChannelPosition,
 } from "./cursorChannel";
 
 function utf8(value: string): Uint8Array {
@@ -87,4 +88,12 @@ test("nativeCursorStyle uses the negotiated image-set function", () => {
     nativeCursorStyle("data:image/png;base64,AAAA", 2, 3, 1, null),
     "url(data:image/png;base64,AAAA) 2 3, auto",
   );
+});
+
+test("shouldApplyCursorChannelPosition only trusts position when cursor becomes visible", () => {
+  const position = { x: 0, y: 0 };
+  assert.equal(shouldApplyCursorChannelPosition(false, true, position), true);
+  assert.equal(shouldApplyCursorChannelPosition(true, true, position), false);
+  assert.equal(shouldApplyCursorChannelPosition(false, false, position), false);
+  assert.equal(shouldApplyCursorChannelPosition(false, true), false);
 });
