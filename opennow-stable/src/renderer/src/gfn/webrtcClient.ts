@@ -455,7 +455,12 @@ export function classifyStreamLagReason(
 
   if (params.renderFps > 0 && params.decodeFps > 0) {
     const renderGap = params.decodeFps - params.renderFps;
-    if (renderGap >= 12 || params.renderFps < 20) {
+    const renderGapPercent = renderGap / params.decodeFps;
+    // Absolute fps gaps are misleading at 120/240fps streams — require a large relative drop.
+    const renderPressure =
+      params.renderFps < 30
+      || (renderGap >= 20 && renderGapPercent >= 0.2);
+    if (renderPressure) {
       return {
         reason: "render",
         detail: `render ${params.renderFps}fps vs decode ${params.decodeFps}fps`,

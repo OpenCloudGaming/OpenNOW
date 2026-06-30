@@ -155,3 +155,21 @@ test("classifyStreamLagReason reports decoder lag only for sustained pressure", 
   assert.equal(result.reason, "decoder");
   assert.match(result.detail, /backlog 52/);
 });
+
+test("classifyStreamLagReason ignores small render gap at high stream fps", () => {
+  const result = classifyStreamLagReason({
+    ...stableLagParams,
+    decodeFps: 240,
+    renderFps: 228,
+  });
+  assert.equal(result.reason, "stable");
+});
+
+test("classifyStreamLagReason reports render lag for large relative render drop", () => {
+  const result = classifyStreamLagReason({
+    ...stableLagParams,
+    decodeFps: 120,
+    renderFps: 90,
+  });
+  assert.equal(result.reason, "render");
+});
