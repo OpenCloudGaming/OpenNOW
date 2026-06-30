@@ -2,7 +2,6 @@ import java.util.Properties
 
 plugins {
     id("com.android.application")
-    id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
     id("org.jetbrains.kotlin.plugin.serialization")
 }
@@ -13,14 +12,14 @@ val localProperties = Properties().apply {
 
 android {
     namespace = "com.opencloudgaming.opennow"
-    compileSdk = 36
+    compileSdk = 37
 
     defaultConfig {
         applicationId = "com.opencloudgaming.opennow"
         minSdk = 24
         targetSdk = 36
-        versionCode = 16
-        versionName = "0.6.1"
+        versionCode = 17
+        versionName = "0.6.2"
 
         buildConfigField("String", "POSTHOG_PROJECT_TOKEN", "\"${localProperties.getProperty("posthog.apiKey", "")}\"")
         buildConfigField("String", "POSTHOG_HOST", "\"${localProperties.getProperty("posthog.host", "https://us.i.posthog.com")}\"")
@@ -29,11 +28,6 @@ android {
             abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
         }
 
-        externalNativeBuild {
-            cmake {
-                cppFlags += listOf("-std=c++17", "-fexceptions", "-frtti")
-            }
-        }
     }
 
     buildTypes {
@@ -82,29 +76,29 @@ kotlin {
 }
 
 dependencies {
-    implementation(platform("androidx.compose:compose-bom:2026.04.01"))
-    androidTestImplementation(platform("androidx.compose:compose-bom:2026.04.01"))
+    implementation(platform("androidx.compose:compose-bom:2026.06.00"))
+    androidTestImplementation(platform("androidx.compose:compose-bom:2026.06.00"))
 
-    implementation("androidx.activity:activity-compose:1.11.0")
-    implementation("androidx.browser:browser:1.9.0")
+    implementation("androidx.activity:activity-compose:1.13.0")
+    implementation("androidx.browser:browser:1.10.0")
     implementation("androidx.compose.foundation:foundation")
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-tooling-preview")
-    implementation("androidx.core:core:1.16.0")
-    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.10.0")
-    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.10.0")
-    implementation("androidx.media3:media3-common:1.9.0")
-    implementation("androidx.media3:media3-exoplayer:1.9.0")
-    implementation("androidx.media3:media3-ui:1.9.0")
+    implementation("androidx.core:core:1.19.0")
+    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.11.0")
+    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.11.0")
+    implementation("androidx.media3:media3-common:1.10.1")
+    implementation("androidx.media3:media3-exoplayer:1.10.1")
+    implementation("androidx.media3:media3-ui:1.10.1")
 
-    implementation("com.squareup.okhttp3:logging-interceptor:4.12.0")
-    implementation("com.squareup.okhttp3:okhttp-dnsoverhttps:4.12.0")
-    implementation("com.squareup.okhttp3:okhttp:4.12.0")
-    implementation("io.github.webrtc-sdk:android:144.7559.05")
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
-    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.8.1")
-    implementation("com.posthog:posthog-android:3.51.1")
+    implementation("com.squareup.okhttp3:logging-interceptor:5.4.0")
+    implementation("com.squareup.okhttp3:okhttp-dnsoverhttps:5.4.0")
+    implementation("com.squareup.okhttp3:okhttp:5.4.0")
+    implementation("io.github.webrtc-sdk:android:144.7559.09")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0")
+    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.11.0")
+    implementation("com.posthog:posthog-android:3.51.2")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")

@@ -35,6 +35,31 @@ class StreamResolutionTest {
     }
 
     @Test
+    fun customResolutionPixelsArePreservedForLaunch() {
+        val settings = StreamSettings(resolution = "1728x720", aspectRatio = "21:9")
+
+        assertEquals(1728 to 720, streamResolutionPixels(settings))
+    }
+
+    @Test
+    fun freePlanKeepsCustomResolutionInsidePlanBounds() {
+        val adjusted = StreamSettings(resolution = "1728x720", aspectRatio = "21:9")
+            .withResolutionAllowed(SubscriptionInfo(membershipTier = "FREE"), null)
+
+        assertEquals("1728x720", adjusted.resolution)
+        assertEquals("21:9", adjusted.aspectRatio)
+    }
+
+    @Test
+    fun freePlanClampsCustomResolutionOutsidePlanBounds() {
+        val adjusted = StreamSettings(resolution = "5120x2160", aspectRatio = "21:9")
+            .withResolutionAllowed(SubscriptionInfo(membershipTier = "FREE"), null)
+
+        assertEquals("1680x720", adjusted.resolution)
+        assertEquals("21:9", adjusted.aspectRatio)
+    }
+
+    @Test
     fun freePlanResolutionGuardFallsBackWhenAspectHasNoAvailableMode() {
         val adjusted = StreamSettings(resolution = "3840x1080", aspectRatio = "32:9")
             .withResolutionAllowed(SubscriptionInfo(membershipTier = "FREE"), null)

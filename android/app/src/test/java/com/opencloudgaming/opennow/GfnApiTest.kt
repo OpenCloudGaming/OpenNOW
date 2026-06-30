@@ -70,7 +70,7 @@ class GfnApiTest {
     }
 
     @Test
-    fun activeSessionMonitorSettingsPreferSessionRequestDataMonitor() {
+    fun activeSessionMonitorSettingsPreferActualTopLevelMonitor() {
         val session = OpenNowJson.parseToJsonElement(
             """
             {
@@ -87,8 +87,8 @@ class GfnApiTest {
         ).jsonObject
         val monitor = requireNotNull(activeSessionMonitorSettings(session))
 
-        assertEquals(1680, monitor.getValue("widthInPixels").jsonPrimitive.int)
-        assertEquals(720, monitor.getValue("heightInPixels").jsonPrimitive.int)
+        assertEquals(1366, monitor.getValue("widthInPixels").jsonPrimitive.int)
+        assertEquals(768, monitor.getValue("heightInPixels").jsonPrimitive.int)
     }
 
     @Test

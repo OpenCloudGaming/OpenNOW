@@ -22,14 +22,19 @@ internal class AndroidNerdAudioController(context: Context) {
     }
 
     fun startIntro(enabled: Boolean, onPlayingChanged: (Boolean) -> Unit) {
-        startMusicCue(MusicCuePurpose.Intro, enabled, onPlayingChanged)
+        startMusicCue(MusicCuePurpose.Intro, enabled, INTRO_MUSIC_MAX_DURATION_MS, onPlayingChanged)
     }
 
     fun startQueueReadyReminder(enabled: Boolean, onPlayingChanged: (Boolean) -> Unit = {}) {
-        startMusicCue(MusicCuePurpose.QueueReady, enabled, onPlayingChanged)
+        startMusicCue(MusicCuePurpose.QueueReady, enabled, QUEUE_READY_CUE_DURATION_MS, onPlayingChanged)
     }
 
-    private fun startMusicCue(purpose: MusicCuePurpose, enabled: Boolean, onPlayingChanged: (Boolean) -> Unit) {
+    private fun startMusicCue(
+        purpose: MusicCuePurpose,
+        enabled: Boolean,
+        maxDurationMs: Long,
+        onPlayingChanged: (Boolean) -> Unit,
+    ) {
         stopMusicCue(onPlayingChanged)
         if (!enabled) return
 
@@ -76,7 +81,7 @@ internal class AndroidNerdAudioController(context: Context) {
             cuePurpose = purpose
             cuePlayingChanged = onPlayingChanged
             player.start()
-            mainHandler.postDelayed(stopCueRunnable, MUSIC_CUE_MAX_DURATION_MS)
+            mainHandler.postDelayed(stopCueRunnable, maxDurationMs)
             onPlayingChanged(true)
         }.onFailure {
             player.release()
@@ -92,6 +97,12 @@ internal class AndroidNerdAudioController(context: Context) {
 
     fun stopIntro(onPlayingChanged: (Boolean) -> Unit = {}) {
         if (cuePurpose == MusicCuePurpose.Intro) {
+            stopMusicCue(onPlayingChanged)
+        }
+    }
+
+    fun stopQueueReadyReminder(onPlayingChanged: (Boolean) -> Unit = {}) {
+        if (cuePurpose == MusicCuePurpose.QueueReady) {
             stopMusicCue(onPlayingChanged)
         }
     }
@@ -139,7 +150,8 @@ internal class AndroidNerdAudioController(context: Context) {
 
     private companion object {
         private const val MUSIC_CUE_VOLUME = 0.20f
-        private const val MUSIC_CUE_MAX_DURATION_MS = 3_000L
+        private const val INTRO_MUSIC_MAX_DURATION_MS = 150_000L
+        private const val QUEUE_READY_CUE_DURATION_MS = 7_000L
         private const val BUTTON_TONE_VOLUME = 34
         private const val BUTTON_TONE_DURATION_MS = 48
         private const val MIN_BUTTON_TONE_INTERVAL_MS = 55L

@@ -788,7 +788,14 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 showPrintedWasteSelector(game)
                 return@launch
             }
-            val settings = effectiveStreamSettings()
+            val requestedSettings = streamSettingsBeforeDeviceAdjustment()
+            val settings = requestedSettings.adjustedForDevice(state.value.codecReport)
+            if (settings != requestedSettings) {
+                recordDebugEvent(
+                    "launch",
+                    "Adjusted stream settings requested=${requestedSettings.debugSummary()} effective=${settings.debugSummary()}",
+                )
+            }
             val token = auth.tokens.idToken ?: auth.tokens.accessToken
             val baseUrl = streamingBaseUrlOverride ?: effectiveStreamingBaseUrl()
             recordDebugEvent(
@@ -1133,11 +1140,14 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     }
 
     private fun effectiveStreamSettings(): StreamSettings {
+        return streamSettingsBeforeDeviceAdjustment().adjustedForDevice(state.value.codecReport)
+    }
+
+    private fun streamSettingsBeforeDeviceAdjustment(): StreamSettings {
         val snapshot = state.value
         return snapshot.settings.stream
             .withResolutionAllowed(snapshot.subscriptionInfo, snapshot.authSession?.user?.membershipTier)
             .withHdrAllowed(snapshot.subscriptionInfo, snapshot.authSession?.user?.membershipTier)
-            .adjustedForDevice(snapshot.codecReport)
     }
 
     private suspend fun resolveFallbackLaunchAppId(

@@ -84,6 +84,32 @@ class StreamSettingsDeviceAdjustmentTest {
     }
 
     @Test
+    fun preservesSelectedResolutionWhenFallingBackToH264() {
+        val adjusted = StreamSettings(
+            resolution = "1680x720",
+            aspectRatio = "21:9",
+            codec = VideoCodec.H265,
+            colorQuality = ColorQuality.TenBit420,
+            maxBitrateMbps = 90,
+        )
+            .adjustedForDevice(
+                codecReport(
+                    VideoCodec.H265,
+                    hardwareDecoder = true,
+                    realtimeSafe = true,
+                    webRtcDecoderAvailable = true,
+                    webRtcHardwareDecoderAvailable = false,
+                ),
+            )
+
+        assertEquals(VideoCodec.H264, adjusted.codec)
+        assertEquals(ColorQuality.EightBit420, adjusted.colorQuality)
+        assertEquals("1680x720", adjusted.resolution)
+        assertEquals("21:9", adjusted.aspectRatio)
+        assertEquals(35, adjusted.maxBitrateMbps)
+    }
+
+    @Test
     fun fallsBackToH264WhenH265OnlyHasPlatformHardwareDecoder() {
         val adjusted = StreamSettings(codec = VideoCodec.H265, colorQuality = ColorQuality.TenBit420, maxBitrateMbps = 90)
             .adjustedForDevice(codecReport(VideoCodec.H265, hardwareDecoder = true, realtimeSafe = true))

@@ -166,8 +166,8 @@ private fun hdrCapabilitiesJson(): JsonObject =
     }
 
 internal fun activeSessionMonitorSettings(session: JsonObject): JsonObject? =
-    session.obj("sessionRequestData")?.arr("clientRequestMonitorSettings")?.firstOrNull()?.asObject()
-        ?: session.arr("monitorSettings")?.firstOrNull()?.asObject()
+    session.arr("monitorSettings")?.firstOrNull()?.asObject()
+        ?: session.obj("sessionRequestData")?.arr("clientRequestMonitorSettings")?.firstOrNull()?.asObject()
 
 internal fun activeSessionSettingsSignature(session: JsonObject): String? =
     session.obj("sessionRequestData")?.arr("metaData")?.metadataValue(OPENNOW_STREAM_SETTINGS_METADATA_KEY)

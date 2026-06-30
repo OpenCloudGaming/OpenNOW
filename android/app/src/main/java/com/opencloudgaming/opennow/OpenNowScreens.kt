@@ -43,6 +43,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.focusable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
@@ -191,89 +192,6 @@ private val Panel = Color(0xff11161a)
 private val PanelAlt = Color(0xff171d22)
 private val TextPrimary = Color(0xffeef3f5)
 private val TextMuted = Color(0xff98a4aa)
-private val SettingsBackground = Color(0xff090b0d)
-private val SettingsPanel = Color(0xff11161a)
-private val SettingsPanelAlt = Color(0xff171d22)
-private val SettingsText = Color(0xffeef3f5)
-private val SettingsTextMuted = Color(0xff98a4aa)
-private const val DONATE_URL = "https://paypal.me/PrintedWaste"
-private val PHONE_NAV_RAIL_MAX_SMALLEST_WIDTH = 600.dp
-private val APP_NAV_RAIL_WIDTH = 80.dp
-private const val PHONE_ULTRAWIDE_MIN_STREAM_ASPECT = 2.2f
-private const val PHONE_ULTRAWIDE_MIN_VIEWPORT_ASPECT = 2.0f
-
-private data class SettingsChoiceOption(val value: String, val label: String)
-private data class ChoiceMenuOption(
-    val value: String,
-    val label: String,
-    val enabled: Boolean = true,
-    val badge: String? = null,
-)
-
-private enum class SearchTarget {
-    Store,
-    Library,
-    Settings,
-}
-
-private data class LauncherBadge(
-    val iconRes: Int,
-    val name: String,
-    val background: Color,
-    val foreground: Color = TextPrimary,
-)
-
-private val keyboardLayoutOptions = listOf(
-    SettingsChoiceOption("en-US", "English (US)"),
-    SettingsChoiceOption("en-GB", "English (UK)"),
-    SettingsChoiceOption("tr-TR", "Turkish Q"),
-    SettingsChoiceOption("de-DE", "German"),
-    SettingsChoiceOption("fr-FR", "French"),
-    SettingsChoiceOption("es-ES", "Spanish"),
-    SettingsChoiceOption("es-MX", "Spanish (Latin America)"),
-    SettingsChoiceOption("it-IT", "Italian"),
-    SettingsChoiceOption("pt-PT", "Portuguese (Portugal)"),
-    SettingsChoiceOption("pt-BR", "Portuguese (Brazil)"),
-    SettingsChoiceOption("pl-PL", "Polish"),
-    SettingsChoiceOption("ru-RU", "Russian"),
-    SettingsChoiceOption("ja-JP", "Japanese"),
-    SettingsChoiceOption("ko-KR", "Korean"),
-    SettingsChoiceOption("zh-CN", "Chinese (Simplified)"),
-    SettingsChoiceOption("zh-TW", "Chinese (Traditional)"),
-)
-
-private val gameLanguageOptions = listOf(
-    SettingsChoiceOption("en_US", "English (US)"),
-    SettingsChoiceOption("en_GB", "English (UK)"),
-    SettingsChoiceOption("de_DE", "Deutsch"),
-    SettingsChoiceOption("fr_FR", "Francais"),
-    SettingsChoiceOption("es_ES", "Espanol (ES)"),
-    SettingsChoiceOption("es_MX", "Espanol (MX)"),
-    SettingsChoiceOption("it_IT", "Italiano"),
-    SettingsChoiceOption("pt_PT", "Portugues (PT)"),
-    SettingsChoiceOption("pt_BR", "Portugues (BR)"),
-    SettingsChoiceOption("ru_RU", "Russian"),
-    SettingsChoiceOption("pl_PL", "Polish"),
-    SettingsChoiceOption("tr_TR", "Turkish"),
-    SettingsChoiceOption("ar_SA", "Arabic"),
-    SettingsChoiceOption("ja_JP", "Japanese"),
-    SettingsChoiceOption("ko_KR", "Korean"),
-    SettingsChoiceOption("zh_CN", "Chinese (Simplified)"),
-    SettingsChoiceOption("zh_TW", "Chinese (Traditional)"),
-    SettingsChoiceOption("th_TH", "Thai"),
-    SettingsChoiceOption("vi_VN", "Vietnamese"),
-    SettingsChoiceOption("id_ID", "Indonesian"),
-    SettingsChoiceOption("cs_CZ", "Czech"),
-    SettingsChoiceOption("el_GR", "Greek"),
-    SettingsChoiceOption("hu_HU", "Hungarian"),
-    SettingsChoiceOption("ro_RO", "Romanian"),
-    SettingsChoiceOption("uk_UA", "Ukrainian"),
-    SettingsChoiceOption("nl_NL", "Dutch"),
-    SettingsChoiceOption("sv_SE", "Swedish"),
-    SettingsChoiceOption("da_DK", "Danish"),
-    SettingsChoiceOption("fi_FI", "Finnish"),
-    SettingsChoiceOption("no_NO", "Norwegian"),
-)
 private val UiAccent.color: Color
     get() = when (this) {
         UiAccent.OpenNow -> Green
@@ -285,7 +203,7 @@ private val UiAccent.color: Color
     }
 
 @Composable
-private fun uiAccentLabel(accent: UiAccent): String = when (accent) {
+internal fun uiAccentLabel(accent: UiAccent): String = when (accent) {
     UiAccent.OpenNow -> stringResource(R.string.accent_opennow)
     UiAccent.Pixel -> stringResource(R.string.accent_pixel)
     UiAccent.HotPink -> stringResource(R.string.accent_hot_pink)
@@ -332,34 +250,77 @@ fun OpenNowApp(viewModel: OpenNowViewModel) {
     val playIntroOnAppLaunch = remember { state.settings.streamIntroMusic }
     var launchIntroStarted by remember { mutableStateOf(false) }
     var musicCuePlaying by remember { mutableStateOf(false) }
+    var activeMusicCue by remember { mutableStateOf<MusicCueUiPurpose?>(null) }
     var previousStreamStatus by remember { mutableStateOf(state.streamStatus) }
-    var previousLaunchMinimized by remember { mutableStateOf(state.streamLaunchMinimized) }
+    var queuedForStartCue by remember { mutableStateOf(false) }
+    var lastStartCueSessionId by remember { mutableStateOf<String?>(null) }
+    fun updateMusicCue(purpose: MusicCueUiPurpose, playing: Boolean) {
+        musicCuePlaying = playing
+        activeMusicCue = when {
+            playing -> purpose
+            activeMusicCue == purpose -> null
+            else -> activeMusicCue
+        }
+    }
+    fun clearMusicCue(playing: Boolean) {
+        musicCuePlaying = playing
+        if (!playing) activeMusicCue = null
+    }
 
     DisposableEffect(launchAudioController) {
         onDispose {
             launchAudioController.release()
         }
     }
-    LaunchedEffect(playIntroOnAppLaunch, state.settings.streamIntroMusic, state.page, state.streamStatus, state.streamLaunchMinimized) {
+    LaunchedEffect(
+        playIntroOnAppLaunch,
+        state.settings.streamIntroMusic,
+        state.settings.queueReadyMusic,
+        state.page,
+        state.streamStatus,
+        state.launchPhase,
+        state.queuePosition,
+        state.streamSession?.sessionId,
+        state.streamSession?.queuePosition,
+    ) {
         val streamActive = state.page == AppPage.Stream || state.streamStatus != "idle"
-        val queueReadyWhileMinimized =
-            previousLaunchMinimized &&
-                previousStreamStatus == "queue" &&
-                state.streamStatus == "connecting"
+        val sessionId = state.streamSession?.sessionId
+        val queueReadyForStream =
+            previousStreamStatus == "queue" &&
+                state.streamStatus == "connecting" &&
+                sessionId != null &&
+                sessionId != lastStartCueSessionId
         previousStreamStatus = state.streamStatus
-        previousLaunchMinimized = state.streamLaunchMinimized
+        if (state.streamStatus == "queue") {
+            queuedForStartCue = queuedForStartCue ||
+                state.queuePosition != null ||
+                state.streamSession?.queuePosition?.takeIf { it > 0 } != null ||
+                state.launchPhase.equals("Queue", ignoreCase = true)
+        }
 
         if (!state.settings.streamIntroMusic) {
-            launchAudioController.stopAll { musicCuePlaying = it }
-        } else if (queueReadyWhileMinimized) {
-            launchAudioController.startQueueReadyReminder(enabled = true) { musicCuePlaying = it }
-        } else if (playIntroOnAppLaunch && !streamActive) {
+            launchAudioController.stopIntro { updateMusicCue(MusicCueUiPurpose.Intro, it) }
+        }
+        if (!state.settings.queueReadyMusic) {
+            launchAudioController.stopQueueReadyReminder { updateMusicCue(MusicCueUiPurpose.QueueReady, it) }
+        }
+
+        if (!state.settings.streamIntroMusic && !state.settings.queueReadyMusic) {
+            launchAudioController.stopAll(::clearMusicCue)
+        } else if (queueReadyForStream && queuedForStartCue) {
+            lastStartCueSessionId = sessionId
+            queuedForStartCue = false
+            launchAudioController.startQueueReadyReminder(enabled = state.settings.queueReadyMusic) { updateMusicCue(MusicCueUiPurpose.QueueReady, it) }
+        } else if (playIntroOnAppLaunch && state.settings.streamIntroMusic && !streamActive) {
             if (!launchIntroStarted) {
                 launchIntroStarted = true
-                launchAudioController.startIntro(enabled = true) { musicCuePlaying = it }
+                launchAudioController.startIntro(enabled = true) { updateMusicCue(MusicCueUiPurpose.Intro, it) }
             }
         } else {
-            launchAudioController.stopIntro { musicCuePlaying = it }
+            launchAudioController.stopIntro { updateMusicCue(MusicCueUiPurpose.Intro, it) }
+        }
+        if (state.streamStatus == "idle") {
+            queuedForStartCue = false
         }
     }
 
@@ -374,18 +335,34 @@ fun OpenNowApp(viewModel: OpenNowViewModel) {
                 }
             }
             AnimatedVisibility(
-                visible = musicCuePlaying && state.settings.streamIntroMusic,
+                visible = musicCuePlaying && when (activeMusicCue) {
+                    MusicCueUiPurpose.Intro -> state.settings.streamIntroMusic
+                    MusicCueUiPurpose.QueueReady -> state.settings.queueReadyMusic
+                    null -> false
+                },
                 modifier = Modifier
                     .align(Alignment.TopEnd)
                     .padding(top = 14.dp, end = 14.dp),
             ) {
                 MusicCueMuteButton {
-                    launchAudioController.stopAll { musicCuePlaying = it }
-                    viewModel.updateSettings(state.settings.copy(streamIntroMusic = false))
+                    val cue = activeMusicCue
+                    launchAudioController.stopAll(::clearMusicCue)
+                    viewModel.updateSettings(
+                        when (cue) {
+                            MusicCueUiPurpose.QueueReady -> state.settings.copy(queueReadyMusic = false)
+                            MusicCueUiPurpose.Intro -> state.settings.copy(streamIntroMusic = false)
+                            null -> state.settings.copy(streamIntroMusic = false, queueReadyMusic = false)
+                        },
+                    )
                 }
             }
         }
     }
+}
+
+private enum class MusicCueUiPurpose {
+    Intro,
+    QueueReady,
 }
 
 @Composable
@@ -667,7 +644,7 @@ private fun DeviceLoginControls(
     }
 }
 
-private fun openExternalUrl(context: android.content.Context, url: String): Boolean {
+internal fun openExternalUrl(context: android.content.Context, url: String): Boolean {
     val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
     return runCatching {
         context.startActivity(intent)
@@ -1083,7 +1060,7 @@ private fun TopStatusDetails(state: OpenNowUiState) {
 }
 
 @Composable
-private fun NativeSearchField(
+internal fun NativeSearchField(
     query: String,
     onQueryChange: (String) -> Unit,
     placeholder: String,
@@ -1200,7 +1177,7 @@ private fun handleDpadFocusMove(event: androidx.compose.ui.input.key.KeyEvent, f
     return focusManager.moveFocus(direction)
 }
 
-private fun handleVerticalDpadFocusMove(event: androidx.compose.ui.input.key.KeyEvent, focusManager: FocusManager): Boolean {
+internal fun handleVerticalDpadFocusMove(event: androidx.compose.ui.input.key.KeyEvent, focusManager: FocusManager): Boolean {
     if (event.type != KeyEventType.KeyDown) return false
     val direction = when (event.key) {
         Key.DirectionUp -> FocusDirection.Up
@@ -1211,7 +1188,7 @@ private fun handleVerticalDpadFocusMove(event: androidx.compose.ui.input.key.Key
     return true
 }
 
-private fun isTvActivateKey(event: androidx.compose.ui.input.key.KeyEvent): Boolean =
+internal fun isTvActivateKey(event: androidx.compose.ui.input.key.KeyEvent): Boolean =
     event.type == KeyEventType.KeyUp &&
         event.key in setOf(
             Key.DirectionCenter,
@@ -1285,10 +1262,6 @@ private fun HomeScreen(
                         },
                     )
                 }
-                ActiveSessionResumeCard(
-                    state = state,
-                    onResumeActiveSession = viewModel::resumeActiveSession,
-                )
                 Box(
                     Modifier
                         .weight(1f)
@@ -1484,21 +1457,6 @@ private fun LibraryScreen(
     ) {
         BoxWithConstraints(Modifier.fillMaxSize()) {
             Column(Modifier.fillMaxSize().padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        Text(stringResource(R.string.nav_library), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-                        Text(stringResource(R.string.library_count, state.libraryGames.size), color = TextMuted)
-                    }
-                    if (state.activeSession != null) {
-                        ElevatedButton(
-                            onClick = viewModel::resumeActiveSession,
-                        ) { Text(stringResource(R.string.action_resume)) }
-                    }
-                }
-                ActiveSessionResumeCard(
-                    state = state,
-                    onResumeActiveSession = viewModel::resumeActiveSession,
-                )
                 AnimatedVisibility(visible = showSearch) {
                     NativeSearchField(
                         modifier = Modifier.fillMaxWidth(),
@@ -1511,13 +1469,13 @@ private fun LibraryScreen(
                         focusRequester = searchFocusRequester,
                     )
                 }
-                if (filterOptions.isNotEmpty()) {
-                    LibraryFilterControls(
-                        options = filterOptions,
-                        selectedIds = state.libraryFilterIds,
-                        onToggle = viewModel::toggleLibraryFilter,
-                    )
-                }
+                LibraryFilterControls(
+                    gameCount = games.size,
+                    totalCount = state.libraryGames.size,
+                    options = filterOptions,
+                    selectedIds = state.libraryFilterIds,
+                    onToggle = viewModel::toggleLibraryFilter,
+                )
                 GameGrid(
                     games,
                     state.settings.favoriteGameIds,
@@ -1566,13 +1524,33 @@ private fun LibraryScreen(
 
 @Composable
 private fun LibraryFilterControls(
+    gameCount: Int,
+    totalCount: Int,
     options: List<CatalogFilterOption>,
     selectedIds: List<String>,
     onToggle: (String) -> Unit,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-            FilterMenu(options = options, selectedIds = selectedIds, onToggle = onToggle)
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = if (gameCount == totalCount) {
+                    stringResource(R.string.library_count, totalCount)
+                } else {
+                    "$gameCount / ${stringResource(R.string.library_count, totalCount)}"
+                },
+                color = TextMuted,
+                style = MaterialTheme.typography.labelMedium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+            if (options.isNotEmpty()) {
+                FilterMenu(options = options, selectedIds = selectedIds, onToggle = onToggle)
+            }
         }
         SelectedFilterChips(options = options, selectedIds = selectedIds, onToggle = onToggle)
     }
@@ -2105,7 +2083,7 @@ private fun launcherBadgeForGame(game: GameInfo): LauncherBadge {
     return launcherBadgeForStoreKey(key)
 }
 
-private fun launcherBadgeForStoreKey(storeKey: String?): LauncherBadge =
+internal fun launcherBadgeForStoreKey(storeKey: String?): LauncherBadge =
     when (storeKey) {
         "STEAM" -> LauncherBadge(R.drawable.ic_store_steam, "Steam", Color(0xff17324d))
         "EPIC", "EGS", "EPIC_GAMES_STORE" -> LauncherBadge(R.drawable.ic_store_epic, "Epic", Color(0xff111111))
@@ -2800,121 +2778,104 @@ private fun StoreLaunchSelector(
             .fillMaxSize()
             .background(Color.Black.copy(alpha = 0.72f))
             .clickable(enabled = false) {},
-        contentAlignment = Alignment.Center,
     ) {
+        val phoneLandscape = isPhoneLandscape(maxWidth, maxHeight)
         val landscape = maxWidth > maxHeight
-        Card(
-            modifier = modifier
-                .fillMaxWidth(if (landscape) 0.78f else 0.92f)
-                .fillMaxHeight(if (landscape) 0.86f else 0.64f),
-            colors = CardDefaults.cardColors(containerColor = Panel),
-            shape = RoundedCornerShape(22.dp),
+        Box(
+            Modifier.fillMaxSize(),
+            contentAlignment = if (phoneLandscape) Alignment.CenterEnd else Alignment.Center,
         ) {
-            Column(Modifier.fillMaxSize().padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    UrlImage(
-                        game.imageUrl,
-                        Modifier
-                            .width(58.dp)
-                            .height(76.dp)
-                            .clip(RoundedCornerShape(12.dp)),
-                    )
-                    Spacer(Modifier.width(12.dp))
-                    Column(Modifier.weight(1f)) {
-                        Text(game.title, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        Text(stringResource(R.string.store_selector_choose_launcher), color = TextMuted, style = MaterialTheme.typography.bodySmall)
-                    }
-                }
-
-                LazyColumn(
-                    modifier = Modifier.weight(1f),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    items(variants, key = { it.id }) { variant ->
-                        val isSelected = variant.id == selectedVariantId
-                        val isSavedDefault = variant.id == defaultVariantId
-                        Surface(
+            Card(
+                modifier = modifier
+                    .then(
+                        if (phoneLandscape) {
+                            Modifier
+                                .padding(end = 12.dp)
+                                .fillMaxWidth(0.9f)
+                                .fillMaxHeight(0.9f)
+                        } else {
+                            Modifier
+                                .fillMaxWidth(if (landscape) 0.78f else 0.92f)
+                                .fillMaxHeight(if (landscape) 0.86f else 0.64f)
+                        },
+                    ),
+                colors = CardDefaults.cardColors(containerColor = Panel),
+                shape = RoundedCornerShape(22.dp),
+            ) {
+                if (phoneLandscape) {
+                    Row(
+                        Modifier.fillMaxSize().padding(14.dp),
+                        horizontalArrangement = Arrangement.spacedBy(14.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        LaunchGameSummary(
+                            game = game,
+                            subtitle = stringResource(R.string.store_selector_choose_launcher),
                             modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable { selectedVariantId = variant.id },
-                            shape = RoundedCornerShape(14.dp),
-                            color = if (isSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.18f) else PanelAlt,
-                        ) {
-                            Row(
-                                Modifier.padding(14.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                            ) {
-                                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                                    Text(gameStoreDisplayName(variant.store), fontWeight = FontWeight.Bold)
-                                    val details = listOf(
-                                        if (isSavedDefault) stringResource(R.string.store_selector_default) else "",
-                                        variantDetailsText(variant),
-                                    ).filter { it.isNotBlank() }.joinToString(" - ")
-                                    if (details.isNotBlank()) {
-                                        Text(details, color = TextMuted, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                    }
+                                .width(190.dp)
+                                .fillMaxHeight(),
+                        )
+                        StoreLaunchOptionsColumn(
+                            variants = variants,
+                            selectedVariantId = selectedVariantId,
+                            defaultVariantId = defaultVariantId,
+                            rememberDefaultStore = rememberDefaultStore,
+                            selectedVariant = selectedVariant,
+                            continueFocusRequester = continueFocusRequester,
+                            onSelectVariant = { selectedVariantId = it },
+                            onRememberDefaultStoreChange = { rememberDefaultStore = it },
+                            onDismiss = onDismiss,
+                            onContinue = { variant ->
+                                if (rememberDefaultStore || defaultVariantId != null) {
+                                    onSetDefaultStore(game.id, if (rememberDefaultStore) variant.id else null)
                                 }
-                                if (isSelected) {
-                                    Text(
-                                        stringResource(R.string.store_selector_selected),
-                                        color = MaterialTheme.colorScheme.primary,
-                                        style = MaterialTheme.typography.labelLarge,
-                                        fontWeight = FontWeight.Bold,
-                                        maxLines = 1,
-                                    )
+                                if (rememberDefaultStore) {
+                                    Toast.makeText(context, context.getString(R.string.store_selector_long_press_tip), Toast.LENGTH_LONG).show()
                                 }
+                                onLaunch(game, variant)
+                            },
+                            modifier = Modifier
+                                .weight(1f)
+                                .fillMaxHeight(),
+                        )
+                    }
+                } else {
+                    Column(Modifier.fillMaxSize().padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            UrlImage(
+                                game.imageUrl,
+                                Modifier
+                                    .width(58.dp)
+                                    .height(76.dp)
+                                    .clip(RoundedCornerShape(12.dp)),
+                            )
+                            Spacer(Modifier.width(12.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text(game.title, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                Text(stringResource(R.string.store_selector_choose_launcher), color = TextMuted, style = MaterialTheme.typography.bodySmall)
                             }
                         }
-                    }
-                }
-
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(14.dp))
-                        .clickable { rememberDefaultStore = !rememberDefaultStore }
-                        .padding(vertical = 2.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    Checkbox(
-                        checked = rememberDefaultStore,
-                        onCheckedChange = { rememberDefaultStore = it },
-                    )
-                    Text(
-                        stringResource(R.string.store_selector_default_checkbox),
-                        color = TextPrimary,
-                        style = MaterialTheme.typography.bodySmall,
-                        modifier = Modifier.weight(1f),
-                    )
-                }
-
-                Row(
-                    Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    TextButton(onClick = onDismiss, modifier = Modifier.weight(0.85f)) {
-                        Text(stringResource(R.string.action_cancel))
-                    }
-                    Button(
-                        onClick = {
-                            val variant = selectedVariant ?: return@Button
-                            if (rememberDefaultStore || defaultVariantId != null) {
-                                onSetDefaultStore(game.id, if (rememberDefaultStore) variant.id else null)
-                            }
-                            if (rememberDefaultStore) {
-                                Toast.makeText(context, context.getString(R.string.store_selector_long_press_tip), Toast.LENGTH_LONG).show()
-                            }
-                            onLaunch(game, variant)
-                        },
-                        enabled = selectedVariant != null,
-                        modifier = Modifier
-                            .weight(1.15f)
-                            .focusRequester(continueFocusRequester),
-                    ) {
-                        Text(stringResource(R.string.action_continue), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        StoreLaunchOptionsColumn(
+                            variants = variants,
+                            selectedVariantId = selectedVariantId,
+                            defaultVariantId = defaultVariantId,
+                            rememberDefaultStore = rememberDefaultStore,
+                            selectedVariant = selectedVariant,
+                            continueFocusRequester = continueFocusRequester,
+                            onSelectVariant = { selectedVariantId = it },
+                            onRememberDefaultStoreChange = { rememberDefaultStore = it },
+                            onDismiss = onDismiss,
+                            onContinue = { variant ->
+                                if (rememberDefaultStore || defaultVariantId != null) {
+                                    onSetDefaultStore(game.id, if (rememberDefaultStore) variant.id else null)
+                                }
+                                if (rememberDefaultStore) {
+                                    Toast.makeText(context, context.getString(R.string.store_selector_long_press_tip), Toast.LENGTH_LONG).show()
+                                }
+                                onLaunch(game, variant)
+                            },
+                            modifier = Modifier.weight(1f),
+                        )
                     }
                 }
             }
@@ -2923,990 +2884,135 @@ private fun StoreLaunchSelector(
 }
 
 @Composable
-private fun SettingsScreen(
-    state: OpenNowUiState,
-    viewModel: OpenNowViewModel,
-    tvProfile: Boolean,
-    searchRequested: Boolean,
-    searchQuery: String,
-    onSearchQueryChange: (String) -> Unit,
-) {
-    var showSessionProxyWarning by remember { mutableStateOf(false) }
-    val scrollState = rememberScrollState()
-    val searchFocusRequester = remember { FocusRequester() }
-    val keyboardController = LocalSoftwareKeyboardController.current
-    val focusManager = LocalFocusManager.current
-    val showSearch = searchRequested || searchQuery.isNotBlank()
-    LaunchedEffect(searchRequested) {
-        if (searchRequested) {
-            delay(90)
-            runCatching { searchFocusRequester.requestFocus() }
-            keyboardController?.show()
+private fun LaunchGameSummary(game: GameInfo, subtitle: String, modifier: Modifier = Modifier) {
+    Column(modifier, verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        UrlImage(
+            game.imageUrl,
+            Modifier
+                .fillMaxWidth()
+                .weight(1f)
+                .clip(RoundedCornerShape(16.dp)),
+        )
+        Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+            Text(game.title, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            Text(subtitle, color = TextMuted, style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
         }
     }
-    if (showSessionProxyWarning) {
-        SessionProxyWarningDialog(
-            onCancel = { showSessionProxyWarning = false },
-            onEnable = {
-                viewModel.updateStreamSettings { s -> s.copy(sessionProxyEnabled = true) }
-                showSessionProxyWarning = false
-            },
-        )
-    }
-    if (tvProfile) {
-        Column(
-            Modifier
-                .fillMaxSize()
-                .background(SettingsBackground)
-                .onPreviewKeyEvent { handleVerticalDpadFocusMove(it, focusManager) }
-                .verticalScroll(scrollState)
-                .padding(20.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp),
+}
+
+@Composable
+private fun StoreLaunchOptionsColumn(
+    variants: List<GameVariant>,
+    selectedVariantId: String?,
+    defaultVariantId: String?,
+    rememberDefaultStore: Boolean,
+    selectedVariant: GameVariant?,
+    continueFocusRequester: FocusRequester,
+    onSelectVariant: (String) -> Unit,
+    onRememberDefaultStoreChange: (Boolean) -> Unit,
+    onDismiss: () -> Unit,
+    onContinue: (GameVariant) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(modifier, verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        LazyColumn(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            AnimatedVisibility(visible = showSearch) {
-                NativeSearchField(
-                    query = searchQuery,
-                    onQueryChange = onSearchQueryChange,
-                    placeholder = stringResource(R.string.search_settings),
-                    focusRequester = searchFocusRequester,
-                    modifier = Modifier.fillMaxWidth(),
+            items(variants, key = { it.id }) { variant ->
+                StoreLaunchVariantRow(
+                    variant = variant,
+                    selected = variant.id == selectedVariantId,
+                    savedDefault = variant.id == defaultVariantId,
+                    onClick = { onSelectVariant(variant.id) },
                 )
             }
-            SettingsContent(
-                state = state,
-                viewModel = viewModel,
-                searchQuery = searchQuery,
-                showSessionProxyWarning = { showSessionProxyWarning = true },
+        }
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(14.dp))
+                .clickable { onRememberDefaultStoreChange(!rememberDefaultStore) }
+                .padding(vertical = 2.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Checkbox(
+                checked = rememberDefaultStore,
+                onCheckedChange = onRememberDefaultStoreChange,
+            )
+            Text(
+                stringResource(R.string.store_selector_default_checkbox),
+                color = TextPrimary,
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.weight(1f),
             )
         }
-    } else {
-        LazyColumn(
-            Modifier
-                .fillMaxSize()
-                .background(SettingsBackground),
-            contentPadding = PaddingValues(14.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            item {
-                AnimatedVisibility(visible = showSearch) {
-                    NativeSearchField(
-                        query = searchQuery,
-                        onQueryChange = onSearchQueryChange,
-                        placeholder = stringResource(R.string.search_settings),
-                        focusRequester = searchFocusRequester,
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                }
+            TextButton(onClick = onDismiss, modifier = Modifier.weight(0.85f)) {
+                Text(stringResource(R.string.action_cancel))
             }
-            item {
-                SettingsContent(
-                    state = state,
-                    viewModel = viewModel,
-                    searchQuery = searchQuery,
-                    showSessionProxyWarning = { showSessionProxyWarning = true },
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun SettingsContent(
-    state: OpenNowUiState,
-    viewModel: OpenNowViewModel,
-    searchQuery: String,
-    showSessionProxyWarning: () -> Unit,
-) {
-    val settings = state.settings
-    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-    SearchableSettingsSection(searchQuery, "App updates", "update", "updates", "disable update checking", "checking", "check", "download", "install", "apk") {
-                SettingSwitch(stringResource(R.string.settings_disable_update_checking), !settings.autoCheckForUpdates) { disabled ->
-                    viewModel.updateSettings(settings.copy(autoCheckForUpdates = !disabled))
-                }
-                AndroidUpdatePanel(state = state, viewModel = viewModel)
-            }
-    SearchableSettingsSection(searchQuery, "Privacy", "privacy", "analytics", "telemetry", "posthog", "usage", "tracking", "opt out") {
-                SettingSwitch("Share usage analytics", !settings.analyticsOptOut) { enabled ->
-                    viewModel.updateSettings(settings.copy(analyticsOptOut = !enabled))
-                }
-            }
-    SearchableSettingsSection(searchQuery, stringResource(R.string.settings_section_stream), "stream", "resolution", "aspect ratio", "fps", "bitrate", "codec", "color", "hdr", "sharpening", "region", "session proxy", "proxy", "l4s", "cloud g-sync", "vrr") {
-                val fallbackMembershipTier = state.authSession?.user?.membershipTier
-                val resolutionChoices = streamResolutionChoicesForAspect(settings.stream.aspectRatio).ifEmpty {
-                    streamResolutionChoicesForAspect("16:9")
-                }
-                val selectedResolution = normalizeStreamResolutionForAspectAndPlan(
-                    settings.stream.resolution,
-                    settings.stream.aspectRatio,
-                    state.subscriptionInfo,
-                    fallbackMembershipTier,
-                )
-                ChoiceMenuRow(
-                    label = stringResource(R.string.settings_resolution),
-                    options = resolutionChoices.map { choice ->
-                        val available = choice.isAvailableFor(state.subscriptionInfo, fallbackMembershipTier)
-                        ChoiceMenuOption(
-                            value = choice.value,
-                            label = choice.label,
-                            enabled = available,
-                            badge = if (available) null else choice.requiredPlanLabel,
-                        )
-                    },
-                    selectedLabel = resolutionChoices.firstOrNull { it.value == selectedResolution }?.label ?: selectedResolution,
-                ) {
-                    viewModel.updateStreamSettings { s -> s.copy(resolution = it) }
-                }
-                ChoiceMenuRow(
-                    label = stringResource(R.string.settings_aspect_ratio),
-                    options = streamAspectRatioOptions().map { aspectRatio ->
-                        val choices = streamResolutionChoicesForAspect(aspectRatio)
-                        val available = choices.any { it.isAvailableFor(state.subscriptionInfo, fallbackMembershipTier) }
-                        ChoiceMenuOption(
-                            value = aspectRatio,
-                            label = aspectRatio,
-                            enabled = available,
-                            badge = if (available) null else choices.firstNotNullOfOrNull { it.requiredPlanLabel },
-                        )
-                    },
-                    selectedLabel = settings.stream.aspectRatio,
-                ) {
-                    viewModel.updateStreamSettings { s ->
-                        s.copy(
-                            aspectRatio = it,
-                            resolution = normalizeStreamResolutionForAspectAndPlan(
-                                s.resolution,
-                                it,
-                                state.subscriptionInfo,
-                                fallbackMembershipTier,
-                            ),
-                        )
-                    }
-                }
-                SettingSwitch(stringResource(R.string.settings_stretch_stream_to_fill), settings.stretchStreamToFill) { enabled ->
-                    viewModel.updateSettings(settings.copy(stretchStreamToFill = enabled))
-                }
-                NumberSlider(stringResource(R.string.settings_fps), settings.stream.fps.toFloat(), 30f, 240f, 30f) {
-                    viewModel.updateStreamSettings { s -> s.copy(fps = it.roundToInt()) }
-                }
-                NumberSlider(stringResource(R.string.settings_bitrate), settings.stream.maxBitrateMbps.toFloat(), 1f, 150f, 1f) {
-                    viewModel.updateStreamSettings { s -> s.copy(maxBitrateMbps = it.roundToInt()) }
-                }
-                ChoiceRow(stringResource(R.string.settings_codec), VideoCodec.entries.map { it.name }, settings.stream.codec.name) {
-                    viewModel.updateStreamSettings { s -> s.copy(codec = VideoCodec.valueOf(it)) }
-                }
-                ChoiceRow(stringResource(R.string.settings_color), ColorQuality.entries.map { it.label }, settings.stream.colorQuality.label) { label ->
-                    viewModel.updateStreamSettings { s -> s.copy(colorQuality = ColorQuality.entries.first { it.label == label }) }
-                }
-                val hdrAvailable = hasUltimateStreamingPlan(state.subscriptionInfo, fallbackMembershipTier)
-                SettingSwitch(
-                    stringResource(R.string.settings_hdr),
-                    settings.stream.hdrEnabled && hdrAvailable,
-                    enabled = hdrAvailable,
-                ) { enabled ->
-                    viewModel.updateStreamSettings { s ->
-                        s.copy(
-                            hdrEnabled = enabled,
-                            colorQuality = if (enabled && !s.colorQuality.name.startsWith("TenBit")) ColorQuality.TenBit420 else s.colorQuality,
-                        )
-                    }
-                }
-                SettingSwitch("Stream sharpening", settings.stream.streamSharpeningEnabled) {
-                    viewModel.updateStreamSettings { s -> s.copy(streamSharpeningEnabled = it) }
-                }
-                if (settings.stream.streamSharpeningEnabled) {
-                    NumberSlider("Sharpness amount", settings.stream.streamSharpeningAmount, 0f, 1f, 0.05f) {
-                        viewModel.updateStreamSettings { s -> s.copy(streamSharpeningAmount = it) }
-                    }
-                }
-                ChoiceRow(stringResource(R.string.settings_region), listOf(stringResource(R.string.option_auto)) + state.regions.map { it.name }, state.regions.firstOrNull { it.url == settings.stream.region }?.name ?: stringResource(R.string.option_auto)) { label ->
-                    val url = state.regions.firstOrNull { it.name == label }?.url.orEmpty()
-                    viewModel.updateStreamSettings { s -> s.copy(region = url) }
-                }
-                SettingSwitch(stringResource(R.string.settings_session_proxy), settings.stream.sessionProxyEnabled) { enabled ->
-                    if (enabled) {
-                        showSessionProxyWarning()
-                    } else {
-                        viewModel.updateStreamSettings { s -> s.copy(sessionProxyEnabled = false) }
-                    }
-                }
-                Text(
-                    stringResource(R.string.settings_session_proxy_hint),
-                    color = SettingsTextMuted,
-                    style = MaterialTheme.typography.bodySmall,
-                )
-                if (settings.stream.sessionProxyEnabled) {
-                    OutlinedTextField(
-                        value = settings.stream.sessionProxyUrl,
-                        onValueChange = { value -> viewModel.updateStreamSettings { s -> s.copy(sessionProxyUrl = value) } },
-                        modifier = Modifier.fillMaxWidth(),
-                        singleLine = true,
-                        label = { Text(stringResource(R.string.settings_session_proxy_url)) },
-                        placeholder = { Text("http://127.0.0.1:8080") },
-                    )
-                }
-                SettingSwitch(stringResource(R.string.settings_l4s), settings.stream.enableL4S) { viewModel.updateStreamSettings { s -> s.copy(enableL4S = it) } }
-                SettingSwitch(stringResource(R.string.settings_cloud_gsync), settings.stream.enableCloudGsync) { viewModel.updateStreamSettings { s -> s.copy(enableCloudGsync = it) } }
-            }
-    SearchableSettingsSection(searchQuery, "Input", "input", "mouse", "sensitivity", "acceleration", "keyboard", "layout", "language", "clipboard", "paste", "rumble", "touch", "finger", "opacity", "edge", "padding", "offset", "controls", "stick", "button", "tone") {
-                NumberSlider("Mouse sensitivity", settings.stream.mouseSensitivity, 0.25f, 3f, 0.05f) {
-                    viewModel.updateStreamSettings { s -> s.copy(mouseSensitivity = it) }
-                }
-                NumberSlider("Mouse acceleration", settings.stream.mouseAcceleration.toFloat(), 1f, 150f, 1f) {
-                    viewModel.updateStreamSettings { s -> s.copy(mouseAcceleration = it.roundToInt()) }
-                }
-                ChoiceOptionRow("Keyboard layout", keyboardLayoutOptions, settings.stream.keyboardLayout) {
-                    viewModel.updateStreamSettings { s -> s.copy(keyboardLayout = it) }
-                }
-                ChoiceOptionRow("Game language", gameLanguageOptions, settings.stream.gameLanguage) {
-                    viewModel.updateStreamSettings { s -> s.copy(gameLanguage = it) }
-                }
-                SettingSwitch("Clipboard paste", settings.clipboardPaste) { enabled -> viewModel.updateSettings(settings.copy(clipboardPaste = enabled)) }
-                SettingSwitch("Phone rumble fallback", settings.phoneRumbleFallback) { enabled -> viewModel.updateSettings(settings.copy(phoneRumbleFallback = enabled)) }
-                SettingSwitch("Touch controls", settings.androidTouch.enabled) { enabled -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(enabled = enabled))) }
-                SettingSwitch("Finger mouse", settings.androidTouch.mousePad) { enabled -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(mousePad = enabled))) }
-                NumberSlider("Touch layout scale", settings.androidTouch.scale, 0.6f, 1.4f, 0.05f) { value -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(scale = value))) }
-                NumberSlider("Touch button size", settings.androidTouch.buttonScale, 0.65f, 1.5f, 0.05f) { value -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(buttonScale = value))) }
-                NumberSlider("Touch stick size", settings.androidTouch.stickScale, 0.65f, 1.5f, 0.05f) { value -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(stickScale = value))) }
-                NumberSlider("Touch opacity", settings.androidTouch.opacity, 0.15f, 1f, 0.05f) { value -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(opacity = value))) }
-                NumberSlider("Touch edge padding", settings.androidTouch.edgePaddingDp, 0f, 72f, 1f) { value -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(edgePaddingDp = value))) }
-                NumberSlider("Touch bottom padding", settings.androidTouch.bottomPaddingDp, 0f, 120f, 1f) { value -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(bottomPaddingDp = value))) }
-                NumberSlider("Left controls horizontal offset", settings.androidTouch.leftOffsetXDp, -220f, 220f, 2f) { value -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(leftOffsetXDp = value))) }
-                NumberSlider("Left controls vertical offset", settings.androidTouch.leftOffsetYDp, -160f, 160f, 2f) { value -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(leftOffsetYDp = value))) }
-                NumberSlider("Right controls horizontal offset", settings.androidTouch.rightOffsetXDp, -220f, 220f, 2f) { value -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(rightOffsetXDp = value))) }
-                NumberSlider("Right controls vertical offset", settings.androidTouch.rightOffsetYDp, -160f, 160f, 2f) { value -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(rightOffsetYDp = value))) }
-            }
-    SearchableSettingsSection(searchQuery, stringResource(R.string.settings_section_interface), "interface", "ui", "system colors", "accent", "nerd", "expressive", "compact", "cards", "store labels", "game card size", "stats", "server selector", "controller", "sounds", "animations", "backdrop", "auto-load", "library", "session counter", "intro", "music", "stretch", "fill") {
-                val accentOptions = UiAccent.entries.map { it to uiAccentLabel(it) }
-                SettingSwitch(stringResource(R.string.settings_dynamic_color), settings.dynamicColor) { viewModel.updateSettings(settings.copy(dynamicColor = it)) }
-                ChoiceRow(stringResource(R.string.settings_accent), accentOptions.map { it.second }, accentOptions.firstOrNull { it.first == settings.uiAccent }?.second ?: accentOptions.first().second) { label ->
-                    accentOptions.firstOrNull { it.second == label }?.first?.let { accent ->
-                        viewModel.updateSettings(settings.copy(uiAccent = accent))
-                    }
-                }
-                SettingSwitch(stringResource(R.string.settings_nerd_mode), settings.nerdMode) { viewModel.updateSettings(settings.copy(nerdMode = it)) }
-                SettingSwitch(stringResource(R.string.settings_expressive_ui), settings.expressiveUi) { viewModel.updateSettings(settings.copy(expressiveUi = it)) }
-                SettingSwitch(stringResource(R.string.settings_compact_cards), settings.compactGameCards) { viewModel.updateSettings(settings.copy(compactGameCards = it)) }
-                SettingSwitch(stringResource(R.string.settings_show_store_labels), settings.showGameStoreLabels) { viewModel.updateSettings(settings.copy(showGameStoreLabels = it)) }
-                NumberSlider(stringResource(R.string.settings_card_size), settings.posterSizeScale, 0.82f, 1.08f, 0.02f) { value -> viewModel.updateSettings(settings.copy(posterSizeScale = value)) }
-                SettingSwitch(stringResource(R.string.settings_show_stats), settings.showStatsOnLaunch) { viewModel.updateSettings(settings.copy(showStatsOnLaunch = it)) }
-                ChoiceRow("Stats overlay style", StreamStatsStyle.entries.map { it.label }, settings.streamStatsStyle.label) { label ->
-                    StreamStatsStyle.entries.firstOrNull { it.label == label }?.let { style ->
-                        viewModel.updateSettings(settings.copy(streamStatsStyle = style))
-                    }
-                }
-                SettingSwitch(stringResource(R.string.settings_hide_server_selector), settings.hideServerSelector) { viewModel.updateSettings(settings.copy(hideServerSelector = it)) }
-                SettingSwitch(stringResource(R.string.settings_controller_mode), settings.controllerMode) { viewModel.updateSettings(settings.copy(controllerMode = it)) }
-                SettingSwitch(stringResource(R.string.settings_controller_animations), settings.controllerBackgroundAnimations) { viewModel.updateSettings(settings.copy(controllerBackgroundAnimations = it)) }
-                SettingSwitch(stringResource(R.string.settings_controller_backdrop), settings.controllerLibraryGameBackdrop) { viewModel.updateSettings(settings.copy(controllerLibraryGameBackdrop = it)) }
-                SettingSwitch(stringResource(R.string.settings_auto_load_library), settings.autoLoadControllerLibrary) { viewModel.updateSettings(settings.copy(autoLoadControllerLibrary = it)) }
-                SettingSwitch(stringResource(R.string.settings_session_counter), settings.sessionCounterEnabled) { viewModel.updateSettings(settings.copy(sessionCounterEnabled = it)) }
-                SettingSwitch(stringResource(R.string.settings_stream_intro_music), settings.streamIntroMusic) { enabled ->
-                    viewModel.updateSettings(settings.copy(streamIntroMusic = enabled))
-                }
-            }
-    SearchableSettingsSection(searchQuery, "App Data", "app data", "data", "cache", "clear", "reset", "settings") {
-                AppDataSettingsPanel(viewModel = viewModel)
-            }
-    SearchableSettingsSection(searchQuery, "Account", "account", "login", "logout", "sign in", "saved", "provider", "membership", "subscription") {
-                AccountSettingsPanel(state = state, viewModel = viewModel)
-            }
-    if (settings.nerdMode) {
-    SearchableSettingsSection(searchQuery, stringResource(R.string.settings_section_nerd_tools), "nerd", "intro", "music", "rock", "tone", "button", "sound", "stretch", "fill", "fullscreen", "wave") {
-                    SettingSwitch(stringResource(R.string.settings_button_press_tones), settings.controllerUiSounds) { enabled ->
-                        viewModel.updateSettings(settings.copy(controllerUiSounds = enabled))
-                    }
-                }
-    SearchableSettingsSection(searchQuery, "Codec Diagnostics", "codec", "diagnostics", "probe", "av1", "h264", "h265", "hevc", "decode") {
-                    CodecDiagnosticsPanel(state.codecReport)
-                }
-    SearchableSettingsSection(searchQuery, "Debug Logs", "debug", "logs", "logcat", "events") {
-                    DebugLogsPanel(state = state, viewModel = viewModel)
-                }
-    }
-    SearchableSettingsSection(searchQuery, "About", "about", "version", "build", "app") {
-                AppVersionPanel()
-            }
-    SearchableSettingsSection(searchQuery, stringResource(R.string.settings_section_thanks), "thanks", "credits", "contributors", "darkevilpt", "donate", "paypal", "printedwaste") {
-                ThanksPanel()
-            }
-    }
-}
-
-@Composable
-private fun AppDataSettingsPanel(viewModel: OpenNowViewModel) {
-    var clearCacheConfirmOpen by remember { mutableStateOf(false) }
-    var resetSettingsConfirmOpen by remember { mutableStateOf(false) }
-    if (clearCacheConfirmOpen) {
-        AlertDialog(
-            onDismissRequest = { clearCacheConfirmOpen = false },
-            title = { Text("Clear game cache?") },
-            text = { Text("Cached store, library, and search results will be removed. Your account and settings stay unchanged.") },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        clearCacheConfirmOpen = false
-                        viewModel.clearCatalogCache()
-                    },
-                ) {
-                    Text("Clear cache")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { clearCacheConfirmOpen = false }) {
-                    Text(stringResource(R.string.action_cancel))
-                }
-            },
-        )
-    }
-    if (resetSettingsConfirmOpen) {
-        AlertDialog(
-            onDismissRequest = { resetSettingsConfirmOpen = false },
-            title = { Text("Reset settings?") },
-            text = { Text("Stream, input, interface, and controller preferences will return to recommended defaults. Accounts stay signed in.") },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        resetSettingsConfirmOpen = false
-                        viewModel.resetSettings()
-                    },
-                ) {
-                    Text("Reset settings")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { resetSettingsConfirmOpen = false }) {
-                    Text(stringResource(R.string.action_cancel))
-                }
-            },
-        )
-    }
-    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        Text(
-            "Recommended defaults keep touch controls, fullscreen recovery, dynamic color, compact cards, and controller polish on. Riskier debugging, proxy, stats, clipboard, and auto-load options stay off.",
-            color = SettingsTextMuted,
-            style = MaterialTheme.typography.bodySmall,
-        )
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-            OutlinedButton(onClick = { clearCacheConfirmOpen = true }, modifier = Modifier.weight(1f)) {
-                Text("Clear cache", maxLines = 1, overflow = TextOverflow.Ellipsis)
-            }
-            OutlinedButton(onClick = { resetSettingsConfirmOpen = true }, modifier = Modifier.weight(1f)) {
-                Text("Reset settings", maxLines = 1, overflow = TextOverflow.Ellipsis)
-            }
-        }
-    }
-}
-
-@Composable
-private fun AndroidUpdatePanel(state: OpenNowUiState, viewModel: OpenNowViewModel) {
-    val update = state.androidUpdate
-    val updateCheckingDisabled = !state.settings.autoCheckForUpdates
-    val checkBlockedByStream = state.isAndroidUpdateCheckBlockedByStream()
-    val showCheckPauseMessage = checkBlockedByStream && when (update.status) {
-        AndroidUpdateStatus.Available,
-        AndroidUpdateStatus.Downloading,
-        AndroidUpdateStatus.Downloaded -> false
-        else -> true
-    }
-    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        Text(formatAndroidUpdateSourceLabel(update.sourceUrl), color = SettingsTextMuted, style = MaterialTheme.typography.labelSmall)
-        Text(
-            when {
-                updateCheckingDisabled -> "Update checks are disabled."
-                showCheckPauseMessage -> "Update checks pause while streaming."
-                else -> update.message
-            },
-            color = updateMessageColor(update.status),
-            style = MaterialTheme.typography.bodySmall,
-        )
-        update.lastCheckedAt?.let { checkedAt ->
-            Text("Last checked ${DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(Date(checkedAt))}", color = SettingsTextMuted, style = MaterialTheme.typography.labelSmall)
-        }
-        update.availableVersionName?.let { version ->
-            Text("Available version $version", color = SettingsTextMuted, style = MaterialTheme.typography.bodySmall)
-        }
-        update.availableVersionCode?.let { code ->
-            Text("Build $code", color = SettingsTextMuted, style = MaterialTheme.typography.bodySmall)
-        }
-        update.releaseNotes?.takeIf { it.isNotBlank() }?.let { notes ->
-            Text(notes, color = SettingsTextMuted, style = MaterialTheme.typography.bodySmall, maxLines = 4, overflow = TextOverflow.Ellipsis)
-        }
-        if (update.status == AndroidUpdateStatus.Downloading) {
-            LinearProgressIndicator(Modifier.fillMaxWidth())
-            update.progress?.let { progress ->
-                Text(formatAndroidUpdateProgress(progress), color = SettingsTextMuted, style = MaterialTheme.typography.labelSmall)
-            }
-        }
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-            OutlinedButton(
-                onClick = viewModel::checkAndroidUpdate,
-                enabled = update.canCheck && !checkBlockedByStream && !updateCheckingDisabled,
-                modifier = Modifier.weight(1f),
+            Button(
+                onClick = {
+                    val variant = selectedVariant ?: return@Button
+                    onContinue(variant)
+                },
+                enabled = selectedVariant != null,
+                modifier = Modifier
+                    .weight(1.15f)
+                    .focusRequester(continueFocusRequester),
             ) {
-                Text(if (update.status == AndroidUpdateStatus.Checking) "Checking..." else "Check", maxLines = 1, overflow = TextOverflow.Ellipsis)
-            }
-            when {
-                update.status == AndroidUpdateStatus.Available -> {
-                    Button(
-                        onClick = viewModel::downloadAndroidUpdate,
-                        enabled = update.canDownload,
-                        modifier = Modifier.weight(1f),
-                    ) {
-                        Text("Download", maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    }
-                }
-                update.status == AndroidUpdateStatus.Downloaded -> {
-                    Button(
-                        onClick = viewModel::installAndroidUpdate,
-                        enabled = update.canInstall,
-                        modifier = Modifier.weight(1f),
-                    ) {
-                        Text("Install", maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    }
-                }
+                Text(stringResource(R.string.action_continue), maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
         }
     }
 }
 
 @Composable
-private fun updateMessageColor(status: AndroidUpdateStatus): Color =
-    when (status) {
-        AndroidUpdateStatus.Available,
-        AndroidUpdateStatus.Downloaded,
-        AndroidUpdateStatus.NotAvailable -> MaterialTheme.colorScheme.primary
-        AndroidUpdateStatus.Error -> Color(0xffff9f9f)
-        else -> SettingsTextMuted
-    }
-
-private fun formatAndroidUpdateProgress(progress: AndroidUpdateProgress): String {
-    val bytes = progress.totalBytes?.let { total ->
-        "${formatUpdateBytes(progress.transferredBytes)} / ${formatUpdateBytes(total)}"
-    } ?: formatUpdateBytes(progress.transferredBytes)
-    return progress.percent?.let { "$it% - $bytes" } ?: bytes
-}
-
-private fun formatAndroidUpdateSourceLabel(activeSource: String): String {
-    val source = activeSource.ifBlank { ANDROID_UPDATE_SOURCE_URL }.trim()
-    val normalized = runCatching { normalizeAndroidUpdateSourceUrl(source) }.getOrNull() ?: source
-    val host = runCatching { Uri.parse(normalized).host }.getOrNull()
-    return if (host.isNullOrBlank()) "Checks: $normalized" else "Checks: $host"
-}
-
-private fun formatUpdateBytes(bytes: Long): String {
-    if (bytes < 1024L) return "$bytes B"
-    val units = listOf("KB", "MB", "GB")
-    var value = bytes.toDouble() / 1024.0
-    var unit = units.first()
-    for (index in 1 until units.size) {
-        if (value < 1024.0) break
-        value /= 1024.0
-        unit = units[index]
-    }
-    return "%.1f %s".format(Locale.US, value, unit)
-}
-
-@Composable
-private fun AccountSettingsPanel(state: OpenNowUiState, viewModel: OpenNowViewModel) {
-    val currentUserId = state.authSession?.user?.userId
-    val context = LocalContext.current
-    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        state.savedAccounts.ifEmpty {
-            state.authSession?.toSavedAccount()?.let { listOf(it) } ?: emptyList()
-        }.forEach { account ->
-            val selected = account.userId == currentUserId
-            Surface(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(14.dp),
-                color = if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.16f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.76f),
-            ) {
-                Row(
-                    Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                ) {
-                    Column(Modifier.weight(1f)) {
-                        Text(account.displayName.ifBlank { "NVIDIA Account" }, color = SettingsText, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        Text(
-                            listOfNotNull(account.email?.takeIf { it.isNotBlank() }, account.providerCode, account.membershipTier).joinToString(" - "),
-                            color = SettingsTextMuted,
-                            style = MaterialTheme.typography.bodySmall,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
-                    if (selected) {
-                        Text("Active", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
-                    } else {
-                        OutlinedButton(onClick = { viewModel.switchAccount(account.userId) }, contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) {
-                            Text("Switch")
-                        }
-                    }
-                }
-            }
-        }
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-            Button(onClick = { viewModel.login() }, modifier = Modifier.weight(1f)) { Text("Add account") }
-            OutlinedButton(onClick = viewModel::logout, modifier = Modifier.weight(1f)) { Text("Sign out") }
-        }
-        OutlinedButton(onClick = viewModel::logoutAll, modifier = Modifier.fillMaxWidth()) { Text("Sign out all accounts") }
-        StorageAddonPanel(
-            storageAddon = state.subscriptionInfo?.storageAddon,
-            openExternal = { url ->
-                if (!openExternalUrl(context, url)) {
-                    Toast.makeText(context, "No browser available", Toast.LENGTH_SHORT).show()
-                }
-            },
-        )
-        AccountConnectorsPanel(
-            connectors = state.accountConnectors,
-            loading = state.loadingAccountConnectors,
-            actionStore = state.connectorActionStore,
-            onRefresh = viewModel::refreshAccountConnectors,
-            onConnect = { connector ->
-                viewModel.connectAccountConnector(connector.store) { url ->
-                    if (!openExternalUrl(context, url)) {
-                        Toast.makeText(context, "No browser available", Toast.LENGTH_SHORT).show()
-                    }
-                }
-            },
-            onDisconnect = { connector ->
-                viewModel.disconnectAccountConnector(connector.store)
-            },
-            openExternal = { url ->
-                if (!openExternalUrl(context, url)) {
-                    Toast.makeText(context, "No browser available", Toast.LENGTH_SHORT).show()
-                }
-            },
-        )
-    }
-}
-
-@Composable
-private fun StorageAddonPanel(storageAddon: StorageAddon?, openExternal: (String) -> Unit) {
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(14.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.76f),
-    ) {
-        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("Cloud storage", color = SettingsText, fontWeight = FontWeight.SemiBold)
-            if (storageAddon == null) {
-                Text("No persistent storage add-on is active for this account.", color = SettingsTextMuted, style = MaterialTheme.typography.bodySmall)
-                OutlinedButton(onClick = { openExternal(GFN_ADD_STORAGE_URL) }, modifier = Modifier.fillMaxWidth()) {
-                    Text("Add storage", maxLines = 1, overflow = TextOverflow.Ellipsis)
-                }
-            } else {
-                val used = storageAddon.usedGb
-                val total = storageAddon.sizeGb
-                Text(
-                    listOfNotNull(
-                        total?.let { "Total ${formatStorageGb(it)}" },
-                        used?.let { "Used ${formatStorageGb(it)}" },
-                        if (used != null && total != null) "Available ${formatStorageGb((total - used).coerceAtLeast(0.0))}" else null,
-                    ).joinToString(" - "),
-                    color = SettingsTextMuted,
-                    style = MaterialTheme.typography.bodySmall,
-                )
-                storageAddon.regionName?.takeIf { it.isNotBlank() }?.let { region ->
-                    Text("Location: $region", color = SettingsTextMuted, style = MaterialTheme.typography.bodySmall)
-                }
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-                    Button(onClick = { openExternal(GFN_STORAGE_MANAGEMENT_URL) }, modifier = Modifier.weight(1f)) {
-                        Text("Manage", maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    }
-                    OutlinedButton(onClick = { openExternal(GFN_STORAGE_RESET_URL) }, modifier = Modifier.weight(1f)) {
-                        Text("Reset", maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    }
-                }
-                OutlinedButton(onClick = { openExternal(GFN_STORAGE_MANAGEMENT_URL) }, modifier = Modifier.fillMaxWidth()) {
-                    Text("Change storage location", maxLines = 1, overflow = TextOverflow.Ellipsis)
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun AccountConnectorsPanel(
-    connectors: List<AccountConnector>,
-    loading: Boolean,
-    actionStore: String?,
-    onRefresh: () -> Unit,
-    onConnect: (AccountConnector) -> Unit,
-    onDisconnect: (AccountConnector) -> Unit,
-    openExternal: (String) -> Unit,
+private fun StoreLaunchVariantRow(
+    variant: GameVariant,
+    selected: Boolean,
+    savedDefault: Boolean,
+    onClick: () -> Unit,
 ) {
-    var disconnecting by remember { mutableStateOf<AccountConnector?>(null) }
-    disconnecting?.let { connector ->
-        AlertDialog(
-            onDismissRequest = { disconnecting = null },
-            title = { Text("Disconnect ${connector.label}?") },
-            text = { Text("This removes the linked ${connector.label} account from GeForce NOW. You can connect it again later.") },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        disconnecting = null
-                        onDisconnect(connector)
-                    },
-                ) {
-                    Text("Disconnect")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { disconnecting = null }) {
-                    Text(stringResource(R.string.action_cancel))
-                }
-            },
-        )
-    }
+    val badge = launcherBadgeForStoreKey(splitGameStoreKeys(variant.store).firstOrNull())
     Surface(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(14.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.76f),
-    ) {
-        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("Game store connections", color = SettingsText, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
-                TextButton(onClick = onRefresh, enabled = !loading) {
-                    Text(if (loading) "Refreshing..." else "Refresh")
-                }
-            }
-            if (connectors.isEmpty()) {
-                Text(
-                    if (loading) "Loading connected stores..." else "Connect Steam, Epic, Xbox, and other supported stores to sync your GeForce NOW library.",
-                    color = SettingsTextMuted,
-                    style = MaterialTheme.typography.bodySmall,
-                )
-            } else {
-                connectors.take(6).forEach { connector ->
-                    ConnectorRow(
-                        connector = connector,
-                        busy = actionStore == connector.store,
-                        onConnect = { onConnect(connector) },
-                        onDisconnect = { disconnecting = connector },
-                    )
-                }
-            }
-            OutlinedButton(onClick = { openExternal(GFN_ACCOUNT_HELP_URL) }, modifier = Modifier.fillMaxWidth()) {
-                Text("Connection help", maxLines = 1, overflow = TextOverflow.Ellipsis)
-            }
-        }
-    }
-}
-
-@Composable
-private fun ConnectorRow(
-    connector: AccountConnector,
-    busy: Boolean,
-    onConnect: () -> Unit,
-    onDisconnect: () -> Unit,
-) {
-    val actionEnabled = !busy && (connector.isLinked || connector.supported)
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(enabled = actionEnabled) {
-                if (connector.isLinked) onDisconnect() else onConnect()
-            },
+            .clickable { onClick() },
+        shape = RoundedCornerShape(14.dp),
+        color = if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.18f) else PanelAlt,
     ) {
-        Column(Modifier.weight(1f)) {
-            Text(connector.label, color = SettingsText, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Text(connectorStatusText(connector), color = SettingsTextMuted, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
-        }
-        if (connector.isLinked) {
-            OutlinedButton(onClick = onDisconnect, enabled = !busy, contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) {
-                Text(if (busy) "Removing..." else "Disconnect")
-            }
-        } else {
-            Button(onClick = onConnect, enabled = connector.supported && !busy, contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) {
-                Text(if (busy) "Opening..." else "Connect")
-            }
-        }
-    }
-}
-
-private fun AuthSession.toSavedAccount(): SavedAccount =
-    SavedAccount(
-        userId = user.userId,
-        displayName = user.displayName,
-        email = user.email,
-        avatarUrl = user.avatarUrl,
-        membershipTier = user.membershipTier,
-        providerCode = provider.code,
-    )
-
-private const val GFN_STORAGE_MANAGEMENT_URL = "https://gfn.link/cloudstorage"
-private const val GFN_STORAGE_RESET_URL = "https://gfn.link/resetstorage"
-private const val GFN_ADD_STORAGE_URL = "https://gfn.link/addstorage"
-private const val GFN_ACCOUNT_HELP_URL = "https://gfn.link/5399"
-
-private fun formatStorageGb(value: Double): String =
-    if (value % 1.0 == 0.0) "${value.toInt()} GB" else "%.1f GB".format(Locale.US, value)
-
-private fun connectorStatusText(connector: AccountConnector): String {
-    if (!connector.isLinked) return if (connector.required) "Required for some games" else "Available to connect"
-    val identity = connector.userDisplayName?.takeIf { it.isNotBlank() }
-        ?: connector.userIdentifier?.takeIf { it.isNotBlank() }
-    val sync = when {
-        connector.syncedGameCount != null -> "${connector.syncedGameCount} synced games"
-        !connector.syncState.isNullOrBlank() -> connector.syncState.replace('_', ' ').lowercase(Locale.US)
-            .replaceFirstChar { it.titlecase(Locale.US) }
-        else -> null
-    }
-    return listOfNotNull(identity, sync).joinToString(" - ").ifBlank { "Connected" }
-}
-
-@Composable
-private fun CodecDiagnosticsPanel(report: RuntimeCodecReport?) {
-    if (report == null) {
-        Text(stringResource(R.string.settings_codec_diagnostics_unavailable), color = SettingsTextMuted)
-        return
-    }
-    val clipboard = LocalClipboardManager.current
-    var copied by remember(report) { mutableStateOf(false) }
-    val safeDecoders = report.capabilities.count { it.streamingRealtimeSafe() }
-    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        Button(
-            onClick = {
-                clipboard.setText(AnnotatedString(formatCodecDiagnosticReport(report)))
-                copied = true
-            },
-            modifier = Modifier.fillMaxWidth(),
+        Row(
+            Modifier.padding(14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Text(
-                if (copied) {
-                    stringResource(R.string.settings_codec_diagnostics_copied)
-                } else {
-                    stringResource(R.string.settings_codec_diagnostics_copy)
-                },
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-        }
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-            CodecSummaryChip("${safeDecoders}/${report.capabilities.size}", "real-time decoders")
-            CodecSummaryChip(if (report.lowPowerGpuProfile) "Low power" else "Standard", "device profile")
-            CodecSummaryChip(if (report.androidTvProfile) "TV" else "Mobile", "shell")
-        }
-        report.capabilities.forEach { capability ->
-            CodecCapabilityRow(capability)
-        }
-        Text(
-            report.nativeRuntimeSummary.replace("{", "").replace("}", "").replace("\"", ""),
-            color = SettingsTextMuted,
-            style = MaterialTheme.typography.bodySmall,
-            maxLines = 3,
-            overflow = TextOverflow.Ellipsis,
-        )
-    }
-}
-
-private fun formatCodecDiagnosticReport(report: RuntimeCodecReport): String = buildString {
-    appendLine("OpenNOW Android codec diagnostics")
-    appendLine("nativeRuntimeSummary=${report.nativeRuntimeSummary}")
-    appendLine("androidTvProfile=${report.androidTvProfile}")
-    appendLine("lowPowerGpuProfile=${report.lowPowerGpuProfile}")
-    report.capabilities.forEach { capability ->
-        appendLine()
-        appendLine("codec=${capability.codec}")
-        appendLine("decoderAvailable=${capability.decoderAvailable}")
-        appendLine("decoderName=${capability.decoderName ?: "none"}")
-        appendLine("hardwareDecoder=${capability.hardwareDecoder}")
-        appendLine("realtimeSafe=${capability.realtimeSafe}")
-        appendLine("webRtcDecoderAvailable=${capability.webRtcDecoderAvailable ?: "unknown"}")
-        appendLine("webRtcDecoderName=${capability.webRtcDecoderName ?: "none"}")
-        appendLine("webRtcHardwareDecoderAvailable=${capability.webRtcHardwareDecoderAvailable ?: "unknown"}")
-        appendLine("webRtcProfiles=${capability.webRtcCodecProfiles.joinToString(", ").ifBlank { "none" }}")
-        appendLine("encoderAvailable=${capability.encoderAvailable}")
-        appendLine("encoderName=${capability.encoderName ?: "none"}")
-        appendLine("hardwareEncoder=${capability.hardwareEncoder}")
-    }
-}
-
-@Composable
-private fun RowScope.CodecSummaryChip(value: String, label: String) {
-    Surface(
-        modifier = Modifier.weight(1f),
-        shape = RoundedCornerShape(14.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.76f),
-    ) {
-        Column(Modifier.padding(horizontal = 10.dp, vertical = 8.dp)) {
-            Text(value, color = SettingsText, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Text(label, color = SettingsTextMuted, style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
-        }
-    }
-}
-
-@Composable
-private fun CodecCapabilityRow(capability: CodecCapability) {
-    val streamingReady = capability.streamingDecoderAvailable()
-    val healthy = capability.streamingRealtimeSafe()
-    val status = when {
-        healthy -> "Ready"
-        streamingReady -> "WebRTC ready"
-        capability.decoderAvailable -> "Platform only"
-        else -> "Unavailable"
-    }
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(14.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.76f),
-    ) {
-        Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(capability.codec.name, color = SettingsText, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+            ConnectorStoreIcon(badge)
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(gameStoreDisplayName(variant.store), fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                val details = listOf(
+                    if (savedDefault) stringResource(R.string.store_selector_default) else "",
+                    variantDetailsText(variant),
+                ).filter { it.isNotBlank() }.joinToString(" - ")
+                if (details.isNotBlank()) {
+                    Text(details, color = TextMuted, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+            }
+            if (selected) {
                 Text(
-                    status,
-                    color = if (healthy) MaterialTheme.colorScheme.primary else Color(0xffffc266),
-                    style = MaterialTheme.typography.labelMedium,
+                    stringResource(R.string.store_selector_selected),
+                    color = MaterialTheme.colorScheme.primary,
+                    style = MaterialTheme.typography.labelLarge,
                     fontWeight = FontWeight.Bold,
+                    maxLines = 1,
                 )
             }
-            Text(
-                "WebRTC: ${capability.streamingDecoderName() ?: "none"}",
-                color = SettingsTextMuted,
-                style = MaterialTheme.typography.bodySmall,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-            Text(
-                "Hardware decode ${yesNo(capability.streamingHardwareDecoderAvailable())} - platform ${capability.decoderName ?: "none"}",
-                color = SettingsTextMuted,
-                style = MaterialTheme.typography.bodySmall,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
         }
-    }
-}
-
-private fun yesNo(value: Boolean): String = if (value) "yes" else "no"
-
-private val StreamStatsStyle.label: String
-    get() = when (this) {
-        StreamStatsStyle.Compact -> "Compact line"
-        StreamStatsStyle.Detailed -> "Detailed card"
-    }
-
-private fun StreamStatsStyle.next(): StreamStatsStyle =
-    when (this) {
-        StreamStatsStyle.Compact -> StreamStatsStyle.Detailed
-        StreamStatsStyle.Detailed -> StreamStatsStyle.Compact
-    }
-
-@Composable
-private fun AppVersionPanel() {
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(14.dp))
-            .background(SettingsPanelAlt)
-            .padding(horizontal = 14.dp, vertical = 12.dp),
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            Text("OpenNOW Android", color = SettingsText, fontWeight = FontWeight.SemiBold)
-            Text("Version ${BuildConfig.VERSION_NAME}", color = SettingsTextMuted, style = MaterialTheme.typography.bodySmall)
-        }
-        Text("Build ${BuildConfig.VERSION_CODE}", color = SettingsTextMuted, style = MaterialTheme.typography.labelMedium)
-    }
-}
-
-@Composable
-private fun ThanksPanel() {
-    val context = LocalContext.current
-    val clipboard = LocalClipboardManager.current
-    Text(
-        stringResource(R.string.settings_thanks_body),
-        color = SettingsTextMuted,
-        style = MaterialTheme.typography.bodyMedium,
-    )
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(14.dp))
-            .background(SettingsPanelAlt)
-            .padding(horizontal = 14.dp, vertical = 12.dp),
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            Text(stringResource(R.string.settings_thanks_darkevilpt), color = SettingsText, fontWeight = FontWeight.SemiBold)
-            Text(stringResource(R.string.settings_thanks_darkevilpt_note), color = SettingsTextMuted, style = MaterialTheme.typography.bodySmall)
-        }
-    }
-    Button(
-        onClick = {
-            val opened = openExternalUrl(context, DONATE_URL)
-            if (!opened) {
-                clipboard.setText(AnnotatedString(DONATE_URL))
-                Toast.makeText(context, context.getString(R.string.settings_donate_link_copied), Toast.LENGTH_SHORT).show()
-            }
-        },
-        modifier = Modifier.fillMaxWidth(),
-    ) {
-        Text(stringResource(R.string.settings_donate_paypal), maxLines = 1, overflow = TextOverflow.Ellipsis)
-    }
-}
-
-@Composable
-private fun DebugLogsPanel(state: OpenNowUiState, viewModel: OpenNowViewModel) {
-    val context = LocalContext.current
-    val clipboard = LocalClipboardManager.current
-    var copied by remember { mutableStateOf(false) }
-    var saved by remember { mutableStateOf(false) }
-    var saveError by remember { mutableStateOf<String?>(null) }
-    var pendingLogText by remember { mutableStateOf("") }
-    val saveLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/plain")) { uri ->
-        if (uri == null) return@rememberLauncherForActivityResult
-        runCatching {
-            context.contentResolver.openOutputStream(uri)?.use { output ->
-                output.write(pendingLogText.toByteArray(Charsets.UTF_8))
-            } ?: error("Could not open log file")
-        }.onSuccess {
-            saved = true
-            saveError = null
-        }.onFailure { error ->
-            saveError = error.message ?: "Could not save logs"
-        }
-    }
-    Text("Includes launch state, queue state, ad reports, stream events, recovery events, stream settings, input settings, and codec capabilities.", color = SettingsTextMuted)
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-        Button(
-            onClick = {
-                clipboard.setText(AnnotatedString(viewModel.debugLogText()))
-                copied = true
-            },
-            modifier = Modifier.weight(1f),
-        ) {
-            Text(if (copied) "Copied logs" else "Copy logs", maxLines = 1, overflow = TextOverflow.Ellipsis)
-        }
-        OutlinedButton(
-            onClick = {
-                pendingLogText = viewModel.debugLogText()
-                saved = false
-                saveError = null
-                saveLauncher.launch("opennow-android-logs.txt")
-            },
-            modifier = Modifier.weight(1f),
-        ) {
-            Text(if (saved) "Saved .txt" else "Save .txt", maxLines = 1, overflow = TextOverflow.Ellipsis)
-        }
-    }
-    state.error?.let { error ->
-        OutlinedButton(onClick = {
-            clipboard.setText(AnnotatedString(error))
-            copied = true
-        }) {
-            Text("Copy error")
-        }
-    }
-    saveError?.let {
-        Text(it, color = Color(0xffff9f9f), style = MaterialTheme.typography.bodySmall)
     }
 }
 
@@ -3924,6 +3030,7 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
     var keyboardText by remember { mutableStateOf("") }
     var audioMuted by remember { mutableStateOf(false) }
     var touchLayoutEditing by remember { mutableStateOf(false) }
+    var streamGuideOpen by remember(session?.sessionId) { mutableStateOf(false) }
     var statsVisible by remember(state.settings.showStatsOnLaunch) { mutableStateOf(state.settings.showStatsOnLaunch) }
     var streamStats by remember { mutableStateOf(StreamRuntimeStats()) }
     val streamReady = session?.isReadyForStream() == true
@@ -3940,10 +3047,17 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
         streamSharpeningEnabled = state.settings.stream.streamSharpeningEnabled,
         streamSharpeningAmount = state.settings.stream.streamSharpeningAmount,
     )
-    val streamOverlayOpen = controlsOpen || exitConfirmOpen || keyboardOpen
+    val dismissStreamGuide = {
+        streamGuideOpen = false
+        if (!state.settings.androidStreamGuideDismissed) {
+            viewModel.updateSettings(state.settings.copy(androidStreamGuideDismissed = true))
+        }
+    }
+    val streamOverlayOpen = controlsOpen || exitConfirmOpen || keyboardOpen || streamGuideOpen
     val externalMousePassthroughActive = streamReady && !streamOverlayOpen
     val handleStreamBack = {
         when {
+            streamGuideOpen -> dismissStreamGuide()
             exitConfirmOpen -> exitConfirmOpen = false
             keyboardOpen -> keyboardOpen = false
             controlsOpen -> controlsOpen = false
@@ -4011,6 +3125,11 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
         NativeStreamInputRouter.setSystemMenuHandler {
             keyboardOpen = false
             exitConfirmOpen = false
+            if (streamGuideOpen) {
+                dismissStreamGuide()
+            } else {
+                streamGuideOpen = false
+            }
             controlsOpen = true
         }
         NativeStreamInputRouter.setSystemBackHandler {
@@ -4018,16 +3137,21 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
         }
     }
 
+    LaunchedEffect(streamReady, state.settings.androidStreamGuideDismissed, session?.sessionId) {
+        streamGuideOpen = streamReady && !state.settings.androidStreamGuideDismissed
+    }
+
     LaunchedEffect(streamReady, state.settings.androidTouch.mousePad) {
         NativeStreamInputRouter.setTouchMouseEnabled(streamReady && state.settings.androidTouch.mousePad)
     }
-    LaunchedEffect(streamReady, state.settings.androidTouch.mousePad, controlsOpen, exitConfirmOpen, keyboardOpen, state.settings.androidTouch.enabled) {
+    LaunchedEffect(streamReady, state.settings.androidTouch.mousePad, controlsOpen, exitConfirmOpen, keyboardOpen, streamGuideOpen, state.settings.androidTouch.enabled) {
         NativeStreamInputRouter.setCaptureAllTouch(
             streamReady &&
                 state.settings.androidTouch.mousePad &&
                 !controlsOpen &&
                 !exitConfirmOpen &&
-                !keyboardOpen,
+                !keyboardOpen &&
+                !streamGuideOpen,
         )
     }
     DisposableEffect(Unit) {
@@ -4106,6 +3230,23 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                     },
                     modifier = Modifier.align(Alignment.BottomCenter),
                 )
+            }
+            if (streamGuideOpen) {
+                AnimatedLaunchOverlay(Modifier.align(Alignment.Center)) {
+                    StreamFirstLaunchGuide(
+                        gameTitle = game?.title ?: "your game",
+                        touchControlsEnabled = state.settings.androidTouch.enabled,
+                        onOpenControls = {
+                            playButtonTone()
+                            dismissStreamGuide()
+                            controlsOpen = true
+                        },
+                        onDismiss = {
+                            playButtonTone()
+                            dismissStreamGuide()
+                        },
+                    )
+                }
             }
             AnimatedVisibility(
                 visible = controlsOpen,
@@ -4655,6 +3796,123 @@ private fun StreamControlLauncher(
     DisposableEffect(Unit) {
         onDispose {
             NativeStreamInputRouter.clearUiTouchPassthroughBounds()
+        }
+    }
+}
+
+@Composable
+private fun StreamFirstLaunchGuide(
+    gameTitle: String,
+    touchControlsEnabled: Boolean,
+    onOpenControls: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val primaryFocusRequester = remember { FocusRequester() }
+    val overlayInteraction = remember { MutableInteractionSource() }
+    LaunchedEffect(Unit) {
+        delay(80)
+        runCatching { primaryFocusRequester.requestFocus() }
+    }
+    BoxWithConstraints(
+        Modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.62f))
+            .clickable(
+                interactionSource = overlayInteraction,
+                indication = null,
+                onClick = {},
+            ),
+        contentAlignment = Alignment.Center,
+    ) {
+        val landscape = maxWidth > maxHeight
+        val panelWidth = if (landscape) 0.58f else 0.92f
+        Surface(
+            modifier = Modifier
+                .padding(18.dp)
+                .fillMaxWidth(panelWidth)
+                .then(if (landscape) Modifier.fillMaxHeight(0.9f) else Modifier),
+            shape = RoundedCornerShape(20.dp),
+            color = Panel.copy(alpha = 0.96f),
+            tonalElevation = 8.dp,
+        ) {
+            Column(
+                Modifier
+                    .padding(18.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(14.dp),
+            ) {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text("Native stream guide", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                    Text(
+                        "Quick controls for $gameTitle",
+                        color = TextMuted,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                StreamGuidePoint(
+                    title = "Open controls",
+                    body = "Press Android Back once, Menu, controller Start hold, or D-pad Center/Enter. Back again closes panels.",
+                )
+                StreamGuidePoint(
+                    title = "Change stream options",
+                    body = "Controls include stats, audio, keyboard bar, finger mouse, touch controller, sharpening, and stretch to fill.",
+                )
+                StreamGuidePoint(
+                    title = if (touchControlsEnabled) "Touch controls are active" else "Touch controls are hidden",
+                    body = if (touchControlsEnabled) {
+                        "Use the panel to resize, fade, move, or hide the on-screen controls."
+                    } else {
+                        "Use the panel to turn on the on-screen controller when you need it."
+                    },
+                )
+                StreamGuidePoint(
+                    title = "Exit is separate",
+                    body = "Use Exit in the controls panel when you want to leave the stream. OpenNOW asks before ending the cloud session.",
+                )
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    OutlinedButton(
+                        onClick = onDismiss,
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Text("Got it", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
+                    Button(
+                        onClick = onOpenControls,
+                        modifier = Modifier
+                            .weight(1f)
+                            .focusRequester(primaryFocusRequester),
+                    ) {
+                        Text("Open controls", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun StreamGuidePoint(title: String, body: String) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(Color.White.copy(alpha = 0.06f))
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        verticalAlignment = Alignment.Top,
+    ) {
+        Surface(
+            modifier = Modifier.padding(top = 6.dp).size(8.dp),
+            shape = CircleShape,
+            color = MaterialTheme.colorScheme.primary,
+        ) {}
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(title, fontWeight = FontWeight.SemiBold)
+            Text(body, color = TextMuted, style = MaterialTheme.typography.bodySmall)
         }
     }
 }
@@ -5552,6 +4810,7 @@ private fun TouchOverlay(
                     layoutScale = layoutScale,
                     buttonScale = buttonScale,
                     stickScale = stickScale,
+                    viewportHeight = maxHeight,
                     layoutEditing = layoutEditing,
                     leftOffsetX = leftOffsetX,
                     leftOffsetY = leftOffsetY,
@@ -5686,6 +4945,7 @@ private fun BoxScope.LandscapeTouchControls(
     layoutScale: Float,
     buttonScale: Float,
     stickScale: Float,
+    viewportHeight: Dp,
     layoutEditing: Boolean,
     leftOffsetX: Dp,
     leftOffsetY: Dp,
@@ -5696,11 +4956,12 @@ private fun BoxScope.LandscapeTouchControls(
     onRightOffsetChange: (Float, Float) -> Unit,
 ) {
     val controlScale = buttonScale * layoutScale
+    val topControlClearance = landscapeTouchTopControlClearanceDp(viewportHeight.value, controlScale).dp
     TouchControlGroup(
         id = "landscape-top-left",
         layoutEditing = layoutEditing,
         offsetX = leftOffsetX,
-        offsetY = leftOffsetY,
+        offsetY = leftOffsetY + topControlClearance,
         onOffsetChange = onLeftOffsetChange,
         modifier = Modifier.align(Alignment.TopStart),
     ) {
@@ -5713,7 +4974,7 @@ private fun BoxScope.LandscapeTouchControls(
         id = "landscape-top-center",
         layoutEditing = false,
         offsetX = 0.dp,
-        offsetY = 0.dp,
+        offsetY = topControlClearance,
         onOffsetChange = { _, _ -> },
         modifier = Modifier.align(Alignment.TopCenter),
     ) {
@@ -5726,7 +4987,7 @@ private fun BoxScope.LandscapeTouchControls(
         id = "landscape-top-right",
         layoutEditing = layoutEditing,
         offsetX = rightOffsetX,
-        offsetY = rightOffsetY,
+        offsetY = rightOffsetY + topControlClearance,
         onOffsetChange = onRightOffsetChange,
         modifier = Modifier.align(Alignment.TopEnd),
     ) {
@@ -5787,6 +5048,12 @@ private fun BoxScope.LandscapeTouchControls(
             )
         }
     }
+}
+
+internal fun landscapeTouchTopControlClearanceDp(viewportHeightDp: Float, controlScale: Float): Float {
+    val viewportBand = (viewportHeightDp * 0.11f).coerceIn(34f, 58f)
+    val scaledBand = viewportBand * controlScale.coerceIn(0.75f, 1.35f)
+    return scaledBand.coerceIn(30f, 76f)
 }
 
 @Composable
@@ -6133,229 +5400,6 @@ private fun GamepadPillButton(
 }
 
 @Composable
-private fun SearchableSettingsSection(
-    searchQuery: String,
-    title: String,
-    vararg keywords: String,
-    content: @Composable ColumnScope.() -> Unit,
-) {
-    if (settingsSearchMatches(searchQuery, title, *keywords)) {
-        SettingsSection(title, content)
-    }
-}
-
-private fun settingsSearchMatches(searchQuery: String, vararg terms: String): Boolean {
-    val tokens = searchQuery.trim().lowercase(Locale.US).split(Regex("\\s+")).filter { it.isNotBlank() }
-    if (tokens.isEmpty()) return true
-    val haystack = terms.joinToString(" ").lowercase(Locale.US)
-    return tokens.all { token -> token in haystack }
-}
-
-@Composable
-private fun SettingsSection(title: String, content: @Composable ColumnScope.() -> Unit) {
-    val sectionShape = RoundedCornerShape(14.dp)
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        shape = sectionShape,
-    ) {
-        Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Text(title, color = SettingsText, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-            content()
-        }
-    }
-}
-
-@Composable
-private fun SettingSwitch(label: String, checked: Boolean, enabled: Boolean = true, onCheckedChange: (Boolean) -> Unit) {
-    val focusManager = LocalFocusManager.current
-    var focused by remember { mutableStateOf(false) }
-    val shape = RoundedCornerShape(14.dp)
-    val toggle = {
-        if (enabled) {
-            onCheckedChange(!checked)
-        }
-    }
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .onFocusChanged { focused = it.isFocused || it.hasFocus }
-            .border(
-                width = if (focused) 2.dp else 1.dp,
-                color = if (focused) MaterialTheme.colorScheme.primary else Color.Transparent,
-                shape = shape,
-            )
-            .clip(shape)
-            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.76f))
-            .clickable(enabled = enabled, onClick = toggle)
-            .onPreviewKeyEvent { event ->
-                when {
-                    enabled && isTvActivateKey(event) -> {
-                        toggle()
-                        true
-                    }
-                    else -> handleVerticalDpadFocusMove(event, focusManager)
-                }
-            }
-            .focusable()
-            .padding(horizontal = 12.dp, vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        val contentColor = MaterialTheme.colorScheme.onSurface.copy(alpha = if (enabled) 1f else 0.45f)
-        Text(label, Modifier.weight(1f), color = contentColor, maxLines = 2, overflow = TextOverflow.Ellipsis)
-        Switch(checked = checked, enabled = enabled, onCheckedChange = onCheckedChange)
-    }
-}
-
-@Composable
-private fun SessionProxyWarningDialog(onCancel: () -> Unit, onEnable: () -> Unit) {
-    AlertDialog(
-        onDismissRequest = onCancel,
-        title = { Text(stringResource(R.string.settings_session_proxy_warning_title), fontWeight = FontWeight.Bold) },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text(stringResource(R.string.settings_session_proxy_warning_traffic), style = MaterialTheme.typography.bodySmall)
-                Text(stringResource(R.string.settings_session_proxy_warning_breakage), style = MaterialTheme.typography.bodySmall)
-                Text(stringResource(R.string.settings_session_proxy_warning_trust), style = MaterialTheme.typography.bodySmall)
-            }
-        },
-        confirmButton = {
-            Button(onClick = onEnable) {
-                Text(stringResource(R.string.settings_session_proxy_warning_enable))
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onCancel) {
-                Text(stringResource(R.string.action_cancel))
-            }
-        },
-        containerColor = SettingsPanel,
-        titleContentColor = SettingsText,
-        textContentColor = SettingsTextMuted,
-    )
-}
-
-@Composable
-private fun NumberSlider(label: String, value: Float, min: Float, max: Float, step: Float, onChange: (Float) -> Unit) {
-    var local by remember(value) { mutableFloatStateOf(value) }
-    val focusManager = LocalFocusManager.current
-    Column(
-        Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(14.dp))
-            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.76f))
-            .padding(horizontal = 12.dp, vertical = 10.dp),
-    ) {
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Text(label, Modifier.weight(1f), color = MaterialTheme.colorScheme.onSurface, maxLines = 2, overflow = TextOverflow.Ellipsis)
-            Text(if (step < 1f) "%.2f".format(local) else local.roundToInt().toString(), color = MaterialTheme.colorScheme.onSurfaceVariant)
-        }
-        Slider(
-            modifier = Modifier.onPreviewKeyEvent { handleVerticalDpadFocusMove(it, focusManager) },
-            value = local,
-            onValueChange = { local = ((it / step).roundToInt() * step).coerceIn(min, max) },
-            onValueChangeFinished = { onChange(local) },
-            valueRange = min..max,
-        )
-    }
-}
-
-@Composable
-private fun ChoiceRow(label: String, options: List<String>, selected: String, onSelect: (String) -> Unit) {
-    ChoiceMenuRow(
-        label = label,
-        options = options.map { ChoiceMenuOption(value = it, label = it) },
-        selectedLabel = selected,
-        onSelect = onSelect,
-    )
-}
-
-@Composable
-private fun ChoiceMenuRow(
-    label: String,
-    options: List<ChoiceMenuOption>,
-    selectedLabel: String,
-    onSelect: (String) -> Unit,
-) {
-    var expanded by remember { mutableStateOf(false) }
-    var focused by remember { mutableStateOf(false) }
-    val focusManager = LocalFocusManager.current
-    val autoLabel = stringResource(R.string.option_auto)
-    val shape = RoundedCornerShape(14.dp)
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .onFocusChanged { focused = it.isFocused || it.hasFocus }
-            .border(
-                width = if (focused) 2.dp else 1.dp,
-                color = if (focused) MaterialTheme.colorScheme.primary else Color.Transparent,
-                shape = shape,
-            )
-            .clip(shape)
-            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.76f))
-            .clickable { expanded = true }
-            .onPreviewKeyEvent { event ->
-                when {
-                    isTvActivateKey(event) -> {
-                        expanded = true
-                        true
-                    }
-                    else -> handleVerticalDpadFocusMove(event, focusManager)
-                }
-            }
-            .focusable()
-            .padding(horizontal = 12.dp, vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(label, Modifier.weight(1f), color = MaterialTheme.colorScheme.onSurface, maxLines = 2, overflow = TextOverflow.Ellipsis)
-        Box {
-            OutlinedButton(onClick = { expanded = true }) { Text(selectedLabel.ifBlank { autoLabel }, maxLines = 1, overflow = TextOverflow.Ellipsis) }
-            DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
-                options.forEach { option ->
-                    DropdownMenuItem(
-                        text = {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            ) {
-                                Text(
-                                    option.label,
-                                    color = if (option.enabled) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.48f),
-                                )
-                                option.badge?.let { badge ->
-                                    Text(
-                                        badge,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
-                                        style = MaterialTheme.typography.labelSmall,
-                                        fontWeight = FontWeight.Bold,
-                                        modifier = Modifier
-                                            .border(1.dp, MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.3f), RoundedCornerShape(3.dp))
-                                            .padding(horizontal = 4.dp, vertical = 1.dp),
-                                    )
-                                }
-                            }
-                        },
-                        enabled = option.enabled,
-                        onClick = {
-                            expanded = false
-                            onSelect(option.value)
-                        },
-                    )
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun ChoiceOptionRow(label: String, options: List<SettingsChoiceOption>, selectedValue: String, onSelect: (String) -> Unit) {
-    val selectedLabel = options.firstOrNull { it.value == selectedValue }?.label ?: selectedValue
-    ChoiceRow(label, options.map { it.label }, selectedLabel) { selected ->
-        options.firstOrNull { it.label == selected }?.value?.let(onSelect)
-    }
-}
-
-@Composable
 private fun SortPicker(options: List<CatalogSortOption>, selected: String, onSelect: (String) -> Unit, modifier: Modifier = Modifier) {
     val labels = options.ifEmpty { listOf(CatalogSortOption("relevance", "Relevance", "")) }
     val selectedLabel = labels.firstOrNull { it.id == selected }?.label ?: labels.first().label
@@ -6502,118 +5546,236 @@ private fun PrintedWasteSelector(
     var selectedZoneId by remember(game.id, sortedZones) { mutableStateOf<String?>(autoZone?.zoneId) }
     val selectedZone = sortedZones.firstOrNull { it.zoneId == selectedZoneId } ?: autoZone
 
-    Box(
+    BoxWithConstraints(
         Modifier
             .fillMaxSize()
             .background(Color.Black.copy(alpha = 0.72f))
             .clickable(enabled = false) {},
-        contentAlignment = Alignment.Center,
     ) {
-        Card(
-            modifier = modifier
-                .fillMaxWidth(0.94f)
-                .fillMaxHeight(0.82f),
-            colors = CardDefaults.cardColors(containerColor = Panel),
-            shape = RoundedCornerShape(22.dp),
+        val phoneLandscape = isPhoneLandscape(maxWidth, maxHeight)
+        Box(
+            Modifier.fillMaxSize(),
+            contentAlignment = if (phoneLandscape) Alignment.CenterEnd else Alignment.Center,
         ) {
-            Column(Modifier.fillMaxSize().padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    UrlImage(
-                        game.imageUrl,
-                        Modifier
-                            .width(58.dp)
-                            .height(76.dp)
-                            .clip(RoundedCornerShape(12.dp)),
-                    )
-                    Spacer(Modifier.width(12.dp))
-                    Column(Modifier.weight(1f)) {
-                        Text(game.title, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        Text("Free tier queue routing", color = TextMuted, style = MaterialTheme.typography.bodySmall)
-                    }
-                }
-
-                if (state.printedWasteLoading) {
-                    Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                            CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
-                            Text("Checking PrintedWaste queues and latency", color = TextMuted)
-                        }
-                    }
-                } else if (state.printedWasteError != null) {
-                    Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                            Text(state.printedWasteError, color = Color(0xffff9f9f))
-                            OutlinedButton(onClick = viewModel::refreshPrintedWasteQueues) { Text("Retry") }
-                        }
+            Card(
+                modifier = modifier
+                    .then(
+                        if (phoneLandscape) {
+                            Modifier
+                                .padding(end = 12.dp)
+                                .fillMaxWidth(0.9f)
+                                .fillMaxHeight(0.9f)
+                        } else {
+                            Modifier
+                                .fillMaxWidth(0.94f)
+                                .fillMaxHeight(0.82f)
+                        },
+                    ),
+                colors = CardDefaults.cardColors(containerColor = Panel),
+                shape = RoundedCornerShape(22.dp),
+            ) {
+                if (phoneLandscape) {
+                    Row(
+                        Modifier.fillMaxSize().padding(14.dp),
+                        horizontalArrangement = Arrangement.spacedBy(14.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        PrintedWasteGameSummary(
+                            game = game,
+                            modifier = Modifier
+                                .width(190.dp)
+                                .fillMaxHeight(),
+                        )
+                        PrintedWasteOptionsColumn(
+                            state = state,
+                            zones = sortedZones,
+                            selectedZoneId = selectedZoneId,
+                            selectedZone = selectedZone,
+                            autoZone = autoZone,
+                            showRecommendedCard = true,
+                            onSelectZone = { selectedZoneId = it },
+                            onRetry = viewModel::refreshPrintedWasteQueues,
+                            onDismiss = viewModel::dismissPrintedWasteSelector,
+                            onDefault = { viewModel.launchWithPrintedWaste(null) },
+                            onLaunch = { viewModel.launchWithPrintedWaste(selectedZone?.routingUrl) },
+                            modifier = Modifier
+                                .weight(1f)
+                                .fillMaxHeight(),
+                        )
                     }
                 } else {
-                    autoZone?.let { zoneOption ->
-                        Surface(
-                            modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(16.dp),
-                            color = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
-                        ) {
-                            Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                Text("Recommended: ${zoneOption.zoneId}", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
-                                Text(
-                                    listOfNotNull(
-                                        zoneOption.pingMs?.let { "${it}ms" },
-                                        "Queue ${zoneOption.zone.QueuePosition}",
-                                        zoneOption.zone.eta?.let { formatPrintedWasteWait(it) },
-                                    ).joinToString(" · "),
-                                    color = TextMuted,
-                                )
+                    Column(Modifier.fillMaxSize().padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            UrlImage(
+                                game.imageUrl,
+                                Modifier
+                                    .width(58.dp)
+                                    .height(76.dp)
+                                    .clip(RoundedCornerShape(12.dp)),
+                            )
+                            Spacer(Modifier.width(12.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text(game.title, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                Text("Free tier queue routing", color = TextMuted, style = MaterialTheme.typography.bodySmall)
                             }
                         }
-                    }
-                    LazyColumn(
-                        modifier = Modifier.weight(1f),
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        items(sortedZones, key = { it.zoneId }) { zoneOption ->
-                            val zoneId = zoneOption.zoneId
-                            val zone = zoneOption.zone
-                            val selected = zoneId == selectedZoneId
-                            Surface(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clip(RoundedCornerShape(12.dp))
-                                    .clickable { selectedZoneId = zoneId },
-                                shape = RoundedCornerShape(12.dp),
-                                color = if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.16f) else PanelAlt,
-                                tonalElevation = if (selected) 2.dp else 0.dp,
-                            ) {
-                                Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                                    Column(Modifier.weight(1f)) {
-                                        Text(zoneId, fontWeight = FontWeight.Bold, color = if (selected) MaterialTheme.colorScheme.primary else TextPrimary)
-                                        Text(regionLabel(zone.Region), color = TextMuted, style = MaterialTheme.typography.bodySmall)
-                                    }
-                                    Text(zoneOption.pingMs?.let { "${it}ms" } ?: "--", color = zoneOption.pingMs?.let(::pingColor) ?: TextMuted, fontWeight = FontWeight.Bold)
-                                    Spacer(Modifier.width(10.dp))
-                                    Text("Q ${zone.QueuePosition}", color = queueColor(zone.QueuePosition), fontWeight = FontWeight.Bold)
-                                    zone.eta?.let {
-                                        Spacer(Modifier.width(10.dp))
-                                        Text(formatPrintedWasteWait(it), color = TextMuted)
-                                    }
-                                }
-                            }
-                        }
+                        PrintedWasteOptionsColumn(
+                            state = state,
+                            zones = sortedZones,
+                            selectedZoneId = selectedZoneId,
+                            selectedZone = selectedZone,
+                            autoZone = autoZone,
+                            showRecommendedCard = true,
+                            onSelectZone = { selectedZoneId = it },
+                            onRetry = viewModel::refreshPrintedWasteQueues,
+                            onDismiss = viewModel::dismissPrintedWasteSelector,
+                            onDefault = { viewModel.launchWithPrintedWaste(null) },
+                            onLaunch = { viewModel.launchWithPrintedWaste(selectedZone?.routingUrl) },
+                            modifier = Modifier.weight(1f),
+                        )
                     }
                 }
+            }
+        }
+    }
+}
 
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
-                    TextButton(onClick = viewModel::dismissPrintedWasteSelector) { Text("Cancel") }
-                    OutlinedButton(onClick = { viewModel.launchWithPrintedWaste(null) }, modifier = Modifier.weight(1f)) {
-                        Text("Default")
-                    }
-                    Button(
-                        onClick = { viewModel.launchWithPrintedWaste(selectedZone?.routingUrl) },
-                        enabled = !state.printedWasteLoading && selectedZone != null,
-                        modifier = Modifier.weight(1f),
-                    ) {
-                        Text("Launch")
-                    }
+@Composable
+private fun PrintedWasteGameSummary(
+    game: GameInfo,
+    modifier: Modifier = Modifier,
+) {
+    Column(modifier, verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        UrlImage(
+            game.imageUrl,
+            Modifier
+                .fillMaxWidth()
+                .weight(1f)
+                .clip(RoundedCornerShape(16.dp)),
+        )
+        Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+            Text(game.title, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            Text("Free tier queue routing", color = TextMuted, style = MaterialTheme.typography.bodySmall, maxLines = 1)
+        }
+    }
+}
+
+@Composable
+private fun PrintedWasteOptionsColumn(
+    state: OpenNowUiState,
+    zones: List<PrintedWasteZoneOption>,
+    selectedZoneId: String?,
+    selectedZone: PrintedWasteZoneOption?,
+    autoZone: PrintedWasteZoneOption?,
+    showRecommendedCard: Boolean,
+    onSelectZone: (String) -> Unit,
+    onRetry: () -> Unit,
+    onDismiss: () -> Unit,
+    onDefault: () -> Unit,
+    onLaunch: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(modifier, verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        if (state.printedWasteLoading) {
+            Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
+                    Text("Checking PrintedWaste queues and latency", color = TextMuted)
                 }
+            }
+        } else if (state.printedWasteError != null) {
+            Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text(state.printedWasteError, color = Color(0xffff9f9f))
+                    OutlinedButton(onClick = onRetry) { Text("Retry") }
+                }
+            }
+        } else {
+            if (showRecommendedCard) {
+                autoZone?.let {
+                    RecommendedPrintedWasteCard(it)
+                }
+            }
+            LazyColumn(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                items(zones, key = { it.zoneId }) { zoneOption ->
+                    PrintedWasteZoneRow(
+                        zoneOption = zoneOption,
+                        selected = zoneOption.zoneId == selectedZoneId,
+                        onClick = { onSelectZone(zoneOption.zoneId) },
+                    )
+                }
+            }
+        }
+
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+            OutlinedButton(onClick = onDefault, modifier = Modifier.weight(1f)) {
+                Text("Default", maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+            Button(
+                onClick = onLaunch,
+                enabled = !state.printedWasteLoading && selectedZone != null,
+                modifier = Modifier.weight(1f),
+            ) {
+                Text("Launch", maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+        }
+    }
+}
+
+@Composable
+private fun RecommendedPrintedWasteCard(zoneOption: PrintedWasteZoneOption) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
+    ) {
+        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text("Recommended: ${zoneOption.zoneId}", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(
+                listOfNotNull(
+                    zoneOption.pingMs?.let { "${it}ms" },
+                    "Queue ${zoneOption.zone.QueuePosition}",
+                    zoneOption.zone.eta?.let { formatPrintedWasteWait(it) },
+                ).joinToString(" · "),
+                color = TextMuted,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+    }
+}
+
+@Composable
+private fun PrintedWasteZoneRow(
+    zoneOption: PrintedWasteZoneOption,
+    selected: Boolean,
+    onClick: () -> Unit,
+) {
+    val zone = zoneOption.zone
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .clickable { onClick() },
+        shape = RoundedCornerShape(12.dp),
+        color = if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.16f) else PanelAlt,
+        tonalElevation = if (selected) 2.dp else 0.dp,
+    ) {
+        Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(zoneOption.zoneId, fontWeight = FontWeight.Bold, color = if (selected) MaterialTheme.colorScheme.primary else TextPrimary)
+                Text(regionLabel(zone.Region), color = TextMuted, style = MaterialTheme.typography.bodySmall)
+            }
+            Text(zoneOption.pingMs?.let { "${it}ms" } ?: "--", color = zoneOption.pingMs?.let(::pingColor) ?: TextMuted, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.width(10.dp))
+            Text("Q ${zone.QueuePosition}", color = queueColor(zone.QueuePosition), fontWeight = FontWeight.Bold)
+            zone.eta?.let {
+                Spacer(Modifier.width(10.dp))
+                Text(formatPrintedWasteWait(it), color = TextMuted, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
         }
     }
@@ -6781,7 +5943,7 @@ private fun OpenNowAppIcon(size: androidx.compose.ui.unit.Dp) {
     )
 }
 
-private val ColorQuality.label: String
+internal val ColorQuality.label: String
     get() = when (this) {
         ColorQuality.EightBit420 -> "8-bit 4:2:0"
         ColorQuality.EightBit444 -> "8-bit 4:4:4"

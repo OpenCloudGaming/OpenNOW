@@ -83,7 +83,8 @@
     <string name="settings_controller_mode">Controller mode</string>
     <string name="settings_controller_sounds">Button press tones</string>
     <string name="settings_button_press_tones">Button press tones</string>
-    <string name="settings_stream_intro_music">Play app music cues</string>
+    <string name="settings_stream_intro_music">Play intro music</string>
+    <string name="settings_queue_ready_music">Play music when queue finishes</string>
     <string name="action_mute_music">Mute music</string>
     <string name="settings_stretch_stream_to_fill">Stretch stream to fill</string>
     <string name="settings_controller_animations">Controller background animations</string>

@@ -120,6 +120,7 @@ data class AppSettings(
     val autoLoadControllerLibrary: Boolean = false,
     val autoFullScreen: Boolean = true,
     val streamIntroMusic: Boolean = false,
+    val queueReadyMusic: Boolean = false,
     val stretchStreamToFill: Boolean = false,
     val favoriteGameIds: List<String> = emptyList(),
     val defaultGameVariantIds: Map<String, String> = emptyMap(),
@@ -128,6 +129,7 @@ data class AppSettings(
     val sessionClockShowDurationSeconds: Int = 30,
     val clipboardPaste: Boolean = true,
     val androidTouch: AndroidTouchSettings = AndroidTouchSettings(),
+    val androidStreamGuideDismissed: Boolean = false,
     val discordRichPresence: Boolean = false,
     val autoCheckForUpdates: Boolean = true,
     val analyticsOptOut: Boolean = false,
@@ -135,6 +137,9 @@ data class AppSettings(
 )
 
 internal fun streamResolutionPixels(settings: StreamSettings): Pair<Int, Int> {
+    if (!isKnownStreamResolution(settings.resolution)) {
+        parseResolutionPixelsOrNull(settings.resolution)?.let { return it }
+    }
     return parseResolutionPixels(normalizeStreamResolutionForAspect(settings.resolution, settings.aspectRatio))
 }
 
@@ -178,6 +183,11 @@ internal fun normalizeStreamResolutionForAspectAndPlan(
     subscriptionInfo: SubscriptionInfo?,
     fallbackMembershipTier: String?,
 ): String {
+    val customResolution = parseResolutionPixelsOrNull(resolution)?.takeUnless { isKnownStreamResolution(resolution) }
+    if (customResolution != null && customResolutionAllowedForPlan(customResolution, subscriptionInfo, fallbackMembershipTier)) {
+        return "${customResolution.first}x${customResolution.second}"
+    }
+
     val normalized = normalizeStreamResolutionForAspect(resolution, aspectRatio)
     val choices = streamResolutionChoicesForAspect(aspectRatio)
     val current = choices.firstOrNull { it.value == normalized }
@@ -277,6 +287,12 @@ internal fun StreamSettings.withHdrAllowed(subscriptionInfo: SubscriptionInfo?, 
     if (hdrEnabled && !hasUltimateStreamingPlan(subscriptionInfo, fallbackMembershipTier)) copy(hdrEnabled = false) else this
 
 internal fun StreamSettings.withResolutionAllowed(subscriptionInfo: SubscriptionInfo?, fallbackMembershipTier: String?): StreamSettings {
+    val customResolution = parseResolutionPixelsOrNull(resolution)?.takeUnless { isKnownStreamResolution(resolution) }
+    if (customResolution != null && customResolutionAllowedForPlan(customResolution, subscriptionInfo, fallbackMembershipTier)) {
+        val normalizedResolution = "${customResolution.first}x${customResolution.second}"
+        return if (normalizedResolution == resolution) this else copy(resolution = normalizedResolution)
+    }
+
     val allowedAspectRatio = if (streamResolutionChoicesForAspect(aspectRatio).any { it.isAvailableFor(subscriptionInfo, fallbackMembershipTier) }) {
         aspectRatio
     } else {
@@ -284,6 +300,26 @@ internal fun StreamSettings.withResolutionAllowed(subscriptionInfo: Subscription
     }
     val allowedResolution = normalizeStreamResolutionForAspectAndPlan(resolution, allowedAspectRatio, subscriptionInfo, fallbackMembershipTier)
     return if (allowedResolution == resolution && allowedAspectRatio == aspectRatio) this else copy(resolution = allowedResolution, aspectRatio = allowedAspectRatio)
+}
+
+private fun isKnownStreamResolution(resolution: String): Boolean =
+    STREAM_RESOLUTION_OPTIONS.any { it.value == resolution }
+
+private fun customResolutionAllowedForPlan(
+    resolution: Pair<Int, Int>,
+    subscriptionInfo: SubscriptionInfo?,
+    fallbackMembershipTier: String?,
+): Boolean {
+    val availableChoices = STREAM_RESOLUTION_OPTIONS
+        .map { it.toChoice() }
+        .filter { it.isAvailableFor(subscriptionInfo, fallbackMembershipTier) }
+    if (availableChoices.isEmpty()) return false
+
+    val (width, height) = resolution
+    val pixels = width * height
+    return width <= availableChoices.maxOf { it.width } &&
+        height <= availableChoices.maxOf { it.height } &&
+        pixels <= availableChoices.maxOf { it.width * it.height }
 }
 
 private val STREAM_RESOLUTION_OPTIONS = listOf(
