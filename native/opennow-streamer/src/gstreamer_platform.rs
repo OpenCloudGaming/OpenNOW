@@ -195,6 +195,7 @@ pub(crate) mod win32_renderer_window {
     const RI_MOUSE_WHEEL: u16 = 0x0400;
     const VK_SHIFT: u16 = 0x10;
     const VK_ESCAPE: u16 = 0x1B;
+    const VK_V: u16 = 0x56;
     const VK_TAB: u16 = 0x09;
     const VK_CONTROL: u16 = 0x11;
     const VK_MENU: u16 = 0x12;
@@ -720,6 +721,7 @@ pub(crate) mod win32_renderer_window {
             ClipCursor(&rect);
         }
         hide_cursor();
+        emit_input_capture_changed(true);
 
         let slot = CAPTURED_HWND.get_or_init(|| Mutex::new(None));
         if let Ok(mut captured) = slot.lock() {
@@ -747,6 +749,7 @@ pub(crate) mod win32_renderer_window {
         ReleaseCapture();
         ClipCursor(null());
         show_cursor();
+        emit_input_capture_changed(false);
         unregister_raw_input_devices();
         SetWindowPos(
             hwnd,
@@ -1040,6 +1043,13 @@ pub(crate) mod win32_renderer_window {
         }
 
         let modifiers = current_legacy_modifier_flags();
+        if pressed && is_clipboard_paste_shortcut(keycode, modifiers) {
+            suppressed_keys.insert(key_id);
+            drop(suppressed_keys);
+            emit_clipboard_paste_request();
+            return true;
+        }
+
         let Some(action) = shortcut_action_for_keypress(keycode, scancode, modifiers) else {
             return false;
         };
@@ -1071,6 +1081,19 @@ pub(crate) mod win32_renderer_window {
                 return;
             }
             let modifiers = current_modifier_flags(&keys);
+            if is_clipboard_paste_shortcut(keycode, modifiers) {
+                keys.insert(
+                    scancode,
+                    PressedKey {
+                        keycode,
+                        scancode,
+                        suppressed: true,
+                    },
+                );
+                drop(keys);
+                emit_clipboard_paste_request();
+                return;
+            }
             if let Some(action) = shortcut_action_for_keypress(keycode, scancode, modifiers) {
                 keys.insert(
                     scancode,
@@ -1373,6 +1396,36 @@ pub(crate) mod win32_renderer_window {
             return;
         };
         let _ = sender.send(event);
+    }
+
+    fn is_clipboard_paste_shortcut(keycode: u16, modifiers: u16) -> bool {
+        keycode == VK_V
+            && ((modifiers & 0x02) != 0 || unsafe { is_ctrl_modifier_down() })
+            && (modifiers & 0x04) == 0
+    }
+
+    unsafe fn is_ctrl_modifier_down() -> bool {
+        is_key_down(VK_CONTROL) || is_key_down(VK_LCONTROL) || is_key_down(VK_RCONTROL)
+    }
+
+    fn emit_clipboard_paste_request() {
+        let Some(sender) = INPUT_EVENT_SENDER
+            .get()
+            .and_then(|sender| sender.lock().ok().and_then(|sender| sender.clone()))
+        else {
+            return;
+        };
+        let _ = sender.send(NativeWindowInputEvent::ClipboardPaste);
+    }
+
+    fn emit_input_capture_changed(captured: bool) {
+        let Some(sender) = INPUT_EVENT_SENDER
+            .get()
+            .and_then(|sender| sender.lock().ok().and_then(|sender| sender.clone()))
+        else {
+            return;
+        };
+        let _ = sender.send(NativeWindowInputEvent::InputCaptureChanged { captured });
     }
 
     fn clamp_i32_to_i16(value: i32) -> i16 {

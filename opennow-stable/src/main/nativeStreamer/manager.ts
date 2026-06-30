@@ -1191,6 +1191,16 @@ export class NativeStreamerManager {
       return;
     }
 
+    if (message.type === "clipboard-paste") {
+      this.options.emit({ type: "native-clipboard-paste" });
+      return;
+    }
+
+    if (message.type === "input-capture-changed") {
+      this.options.emit({ type: "native-input-capture-changed", captured: message.captured });
+      return;
+    }
+
     if (message.type === "video-stall") {
       const formatAge = (value: number | undefined): string => value === undefined ? "n/a" : `${value}ms`;
       const stats = [

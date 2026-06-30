@@ -125,6 +125,13 @@ export type NativeStreamerEvent =
       action: NativeStreamerShortcutAction;
     }
   | {
+      type: "clipboard-paste";
+    }
+  | {
+      type: "input-capture-changed";
+      captured: boolean;
+    }
+  | {
       type: "video-stall";
       stallMs: number;
       encodedKbps?: number;

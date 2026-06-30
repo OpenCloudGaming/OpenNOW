@@ -26,6 +26,7 @@ interface StreamViewProps {
   diagnosticsStore: StreamDiagnosticsStore;
   showStats: boolean;
   showNativeStats?: boolean;
+  nativeInputCaptureActive?: boolean;
   gstreamerEnabled: boolean;
   shortcuts: {
     toggleStats: string;
@@ -397,6 +398,7 @@ export function StreamView({
   diagnosticsStore,
   showStats,
   showNativeStats = false,
+  nativeInputCaptureActive = false,
   gstreamerEnabled,
   shortcuts,
   serverRegion,
@@ -1200,7 +1202,7 @@ export function StreamView({
       updateSurface({
         deviceScaleFactor: dpr,
         visible,
-        showStats: showNativeStats,
+        showStats: showStats || showNativeStats,
         rect: visible
           ? {
               x: Math.round(rect.left * dpr),
@@ -1251,15 +1253,18 @@ export function StreamView({
         showStats: false,
       });
     };
-  }, [showNativeStats]);
+  }, [showNativeStats, showStats]);
 
   useEffect(() => {
     const handlePointerLockChange = () => {
-      setIsPointerLocked(document.pointerLockElement === localVideoRef.current);
+      setIsPointerLocked(
+        document.pointerLockElement === localVideoRef.current || nativeInputCaptureActive,
+      );
     };
+    handlePointerLockChange();
     document.addEventListener("pointerlockchange", handlePointerLockChange);
     return () => document.removeEventListener("pointerlockchange", handlePointerLockChange);
-  }, []);
+  }, [nativeInputCaptureActive]);
 
   useEffect(() => {
     // Show a transient HUD hint when pointer lock is acquired

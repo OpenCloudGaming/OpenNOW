@@ -104,6 +104,10 @@ pub(crate) enum NativeWindowInputEvent {
     Shortcut {
         action: NativeStreamerShortcutAction,
     },
+    ClipboardPaste,
+    InputCaptureChanged {
+        captured: bool,
+    },
     Key {
         pressed: bool,
         keycode: u16,
@@ -391,14 +395,24 @@ fn send_native_window_input_events(
         return;
     }
 
-    // Forward shortcuts immediately (before input readiness check)
-    // Shortcuts are local control and don't need the stream channel
+    // Forward shortcuts and host bridge events immediately (before input readiness check)
+    // These are local control events and don't need the stream channel
     let mut other_events = Vec::new();
     for event in events.iter().copied() {
         match event {
             NativeWindowInputEvent::Shortcut { action } => {
                 if let Some(sender) = event_sender.as_ref() {
                     let _ = sender.send(Event::Shortcut { action });
+                }
+            }
+            NativeWindowInputEvent::ClipboardPaste => {
+                if let Some(sender) = event_sender.as_ref() {
+                    let _ = sender.send(Event::ClipboardPaste);
+                }
+            }
+            NativeWindowInputEvent::InputCaptureChanged { captured } => {
+                if let Some(sender) = event_sender.as_ref() {
+                    let _ = sender.send(Event::InputCaptureChanged { captured });
                 }
             }
             _ => {
@@ -473,6 +487,18 @@ fn send_encoded_native_window_input_event(
         NativeWindowInputEvent::Shortcut { action } => {
             if let Some(sender) = event_sender.as_ref() {
                 let _ = sender.send(Event::Shortcut { action });
+            }
+            return;
+        }
+        NativeWindowInputEvent::ClipboardPaste => {
+            if let Some(sender) = event_sender.as_ref() {
+                let _ = sender.send(Event::ClipboardPaste);
+            }
+            return;
+        }
+        NativeWindowInputEvent::InputCaptureChanged { captured } => {
+            if let Some(sender) = event_sender.as_ref() {
+                let _ = sender.send(Event::InputCaptureChanged { captured });
             }
             return;
         }

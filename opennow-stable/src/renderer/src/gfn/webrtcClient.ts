@@ -2816,7 +2816,9 @@ export class GfnWebRtcClient {
   private reliableDropLogged = false;
 
   private sendNativeInput(payload: Uint8Array, partiallyReliable: boolean): void {
-    const safePayload = Uint8Array.from(payload);
+    const safePayload = payload.byteOffset === 0 && payload.byteLength === payload.buffer.byteLength
+      ? payload
+      : payload.slice();
     window.openNow.sendNativeInput({
       payload: safePayload,
       partiallyReliable,

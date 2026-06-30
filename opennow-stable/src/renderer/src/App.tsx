@@ -338,6 +338,27 @@ async function readStreamClipboardText(): Promise<string> {
   return window.openNow.readClipboardText();
 }
 
+async function sendStreamClipboardPaste(
+  client: GfnWebRtcClient | null,
+  isMac: boolean,
+): Promise<void> {
+  if (!client) {
+    return;
+  }
+
+  try {
+    const text = await readStreamClipboardText();
+    if (text) {
+      client.sendText(text);
+      return;
+    }
+  } catch (error) {
+    console.warn("Clipboard read failed, falling back to paste shortcut:", error);
+  }
+
+  client.sendPasteShortcut(isMac);
+}
+
 export function App(): JSX.Element {
   const { locale, t } = useTranslation();
 
@@ -459,6 +480,8 @@ export function App(): JSX.Element {
   const [showStatsOverlay, setShowStatsOverlay] = useState(false);
   const [antiAfkEnabled, setAntiAfkEnabled] = useState(false);
   const [antiAfkAckNonce, setAntiAfkAckNonce] = useState(0);
+  const [nativeInputCaptureActive, setNativeInputCaptureActive] = useState(false);
+  const [nativeInputBridgeReady, setNativeInputBridgeReady] = useState(false);
   const [exitPrompt, setExitPrompt] = useState<ExitPromptState>({ open: false, gameTitle: t("app.labels.game") });
   const [streamingGame, setStreamingGame] = useState<GameInfo | null>(null);
   const [streamingStore, setStreamingStore] = useState<string | null>(null);
@@ -1373,13 +1396,14 @@ export function App(): JSX.Element {
 
   useEffect(() => {
     if (!antiAfkEnabled || streamStatus !== "streaming") return;
+    if (nativeStreamingRef.current && !nativeInputBridgeReady) return;
 
     const interval = window.setInterval(() => {
       clientRef.current?.sendAntiAfkPulse();
     }, 240000); // 4 minutes
 
     return () => clearInterval(interval);
-  }, [antiAfkEnabled, streamStatus]);
+  }, [antiAfkEnabled, nativeInputBridgeReady, streamStatus]);
 
   // Periodically re-sync subscription playtime from backend while streaming.
   useEffect(() => {
@@ -2361,6 +2385,8 @@ export function App(): JSX.Element {
     setSession(claimed);
     sessionRef.current = claimed;
     nativeInputProtocolVersionRef.current = null;
+    setNativeInputBridgeReady(false);
+    setNativeInputCaptureActive(false);
     setQueuePosition(undefined);
     setLaunchError(null);
     setStreamStatus("connecting");
@@ -2814,12 +2840,19 @@ export function App(): JSX.Element {
         } else if (event.type === "native-input-ready") {
           console.log("[App] Native input protocol ready:", event.protocolVersion);
           nativeInputProtocolVersionRef.current = event.protocolVersion;
+          setNativeInputBridgeReady(true);
           clientRef.current?.setNativeInputProtocolVersion(event.protocolVersion);
           if (nativeStreamingRef.current || sessionRef.current) {
             activateNativeInputForCurrentSession(event.protocolVersion);
           }
         } else if (event.type === "native-shortcut") {
           handleStreamShortcutActionRef.current?.(event.action);
+        } else if (event.type === "native-clipboard-paste") {
+          if (settings.clipboardPaste && (!nativeStreamingRef.current || nativeInputBridgeReady)) {
+            void sendStreamClipboardPaste(clientRef.current, isMac);
+          }
+        } else if (event.type === "native-input-capture-changed") {
+          setNativeInputCaptureActive(event.captured);
         } else if (event.type === "native-stream-stats") {
           diagnosticsStore.set(mergeNativeStreamStats(
             diagnosticsStore.getSnapshot(),
@@ -2840,6 +2873,8 @@ export function App(): JSX.Element {
           console.warn("[App] Native streamer stopped:", reason);
           nativeStreamingRef.current = false;
           nativeInputProtocolVersionRef.current = null;
+          setNativeInputBridgeReady(false);
+          setNativeInputCaptureActive(false);
           clientRef.current?.dispose();
           clientRef.current = null;
           launchInFlightRef.current = false;
@@ -2999,7 +3034,7 @@ export function App(): JSX.Element {
     });
 
     return () => unsubscribe();
-  }, [attemptSessionRecovery, diagnosticsStore, handleExpectedNativeSessionClose, refreshNavbarActiveSession, resetLaunchRuntime, scheduleStableRecoveryReset, settings, streamMicLevel, streamVolume, t]);
+  }, [attemptSessionRecovery, diagnosticsStore, handleExpectedNativeSessionClose, nativeInputBridgeReady, refreshNavbarActiveSession, resetLaunchRuntime, scheduleStableRecoveryReset, settings, streamMicLevel, streamVolume, t]);
 
   // Play game handler
   const handlePlayGame = useCallback(async (game: GameInfo, options?: { bypassGuards?: boolean; streamingBaseUrl?: string; variantId?: string }) => {
@@ -3856,6 +3891,10 @@ export function App(): JSX.Element {
         setShowStatsOverlay((prev) => !prev);
         return;
       case "togglePointerLock":
+        if (nativeStreamingRef.current) {
+          // Native streamer toggles OS input capture locally in the renderer window.
+          return;
+        }
         {
           const targetVideo = videoRef.current;
           if (streamStatus === "streaming" && targetVideo) {
@@ -3938,20 +3977,7 @@ export function App(): JSX.Element {
 
         if (settings.clipboardPaste) {
           void (async () => {
-            const client = clientRef.current;
-            if (!client) return;
-
-            try {
-              const text = await readStreamClipboardText();
-              if (text) {
-                client.sendText(text);
-              }
-              return;
-            } catch (error) {
-              console.warn("Clipboard read failed, falling back to paste shortcut:", error);
-            }
-
-            client.sendPasteShortcut(isMac);
+            await sendStreamClipboardPaste(clientRef.current, isMac);
           })();
         }
         return;
@@ -4128,6 +4154,7 @@ export function App(): JSX.Element {
             diagnosticsStore={diagnosticsStore}
             showStats={showStatsOverlay}
             showNativeStats={settings.showNativeStreamerStats}
+            nativeInputCaptureActive={nativeInputCaptureActive}
             gstreamerEnabled={settings.streamClientMode === "native"}
             shortcuts={{
               toggleStats: formatShortcutForDisplay(settings.shortcutToggleStats, isMac),
