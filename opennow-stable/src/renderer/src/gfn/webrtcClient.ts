@@ -222,6 +222,8 @@ interface ClientOptions {
   autoFullScreen?: boolean;
   /** Preferred microphone device ID */
   microphoneDeviceId?: string;
+  /** Use the WebRTC cursor_channel overlay; false leaves cursor rendering to the stream/server. */
+  nativeCursorOverlay?: boolean;
   /** Mouse sensitivity multiplier (1.0 = default) */
   mouseSensitivity?: number;
   /** Software acceleration strength percentage (1-150) */
@@ -962,6 +964,10 @@ export class GfnWebRtcClient {
         this.micManager.setDeviceId(options.microphoneDeviceId);
       }
     }
+  }
+
+  private isNativeCursorOverlayEnabled(): boolean {
+    return this.options.nativeCursorOverlay !== false;
   }
 
   private shouldAutoFullscreen(): boolean {
@@ -2821,6 +2827,11 @@ export class GfnWebRtcClient {
       this.log("Partially reliable input channel closed");
     };
 
+    if (!this.isNativeCursorOverlayEnabled()) {
+      this.log("Cursor channel disabled; using server-side cursor rendering");
+      return;
+    }
+
     this.cursorChannel = pc.createDataChannel("cursor_channel", {
       ordered: true,
     });
@@ -3175,8 +3186,12 @@ export class GfnWebRtcClient {
 
     const pointerLockTarget = (videoElement.parentElement as HTMLElement | null) ?? videoElement;
     const originalPointerLockTargetTabIndex = pointerLockTarget.getAttribute("tabindex");
-    this.cursorOverlay = new GfnCursorOverlayController(videoElement);
-    this.cursorOverlay.setFallbackResolution(parseResolution(this.currentResolution));
+    if (this.isNativeCursorOverlayEnabled()) {
+      this.cursorOverlay = new GfnCursorOverlayController(videoElement);
+      this.cursorOverlay.setFallbackResolution(parseResolution(this.currentResolution));
+    } else {
+      this.cursorOverlay = null;
+    }
     if (originalPointerLockTargetTabIndex === null) {
       pointerLockTarget.tabIndex = -1;
     }

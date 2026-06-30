@@ -192,6 +192,10 @@ const SETTINGS_SCOPE_SEARCH_TERMS: Record<SettingsSearchScopeId, readonly string
     "motion controls",
     "anti afk",
     "pointer lock",
+    "native cursor",
+    "cursor overlay",
+    "server cursor",
+    "server-side cursor",
     "recording",
     "screenshot",
   ],
@@ -3467,6 +3471,26 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                     </label>
                   </div>
                   <span className="settings-subtle-hint">{t("settings.input.gyroscopeControlsHint")}</span>
+                </div>
+
+                <div className="settings-row settings-row--column">
+                  <div className="settings-row-top settings-row-top--compact">
+                    <label className="settings-label settings-label--wrap">
+                      <span className="settings-label-title">
+                        {t("settings.input.nativeCursorOverlay")}
+                        <span className="settings-inline-badge settings-inline-badge--beta">{t("app.labels.beta")}</span>
+                      </span>
+                    </label>
+                    <label className="settings-toggle">
+                      <input
+                        type="checkbox"
+                        checked={settings.nativeCursorOverlay}
+                        onChange={(e) => handleChange("nativeCursorOverlay", e.target.checked)}
+                      />
+                      <span className="settings-toggle-track" />
+                    </label>
+                  </div>
+                  <span className="settings-subtle-hint">{t("settings.input.nativeCursorOverlayHint")}</span>
                 </div>
 
                 <div className="settings-row settings-row--top-aligned">
