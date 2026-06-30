@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 
 import {
   chooseAdaptiveMouseFlushInterval,
+  classifyStreamLagReason,
   quantizeMouseDeltaWithResidual,
   subsampleCoalescedPointerEvents,
 } from "./webrtcClient";
@@ -86,4 +87,71 @@ test("subsampleCoalescedPointerEvents thins large coalesced bursts", () => {
   assert.ok(stride > 1);
   assert.ok(events.length < samples.length);
   assert.equal(events[0]?.movementX, 0);
+});
+
+const stableLagParams = {
+  nativeInputActive: false,
+  nativeRendererActive: false,
+  framesReceived: 5000,
+  framesDecoded: 4980,
+  decodeTimeMs: 9.2,
+  decodeFps: 120,
+  renderFps: 118,
+  rttMs: 6,
+  packetLossPercent: 0,
+  jitterMs: 0.5,
+  jitterBufferDelayMs: 0.5,
+  inputQueueBufferedBytes: 0,
+  inputQueueDropCount: 0,
+  decoderPressureActive: false,
+  decoderPressureReason: "stable",
+  decoderBacklogFrames: 20,
+  dropRatePercent: 0.1,
+  backpressureThresholdBytes: 64 * 1024,
+};
+
+test("classifyStreamLagReason ignores mouse coalesce timer jitter for input lag", () => {
+  const result = classifyStreamLagReason({
+    ...stableLagParams,
+    inputQueueBufferedBytes: 2048,
+  });
+  assert.equal(result.reason, "stable");
+});
+
+test("classifyStreamLagReason ignores normal AV1 decode time without sustained decoder pressure", () => {
+  const result = classifyStreamLagReason({
+    ...stableLagParams,
+    decodeTimeMs: 8.4,
+    decodeFps: 120,
+  });
+  assert.equal(result.reason, "stable");
+});
+
+test("classifyStreamLagReason reports input lag only for drops or full channel buffer", () => {
+  assert.equal(
+    classifyStreamLagReason({
+      ...stableLagParams,
+      inputQueueDropCount: 2,
+    }).reason,
+    "input_backpressure",
+  );
+  assert.equal(
+    classifyStreamLagReason({
+      ...stableLagParams,
+      inputQueueBufferedBytes: 64 * 1024,
+    }).reason,
+    "input_backpressure",
+  );
+});
+
+test("classifyStreamLagReason reports decoder lag only for sustained pressure", () => {
+  const result = classifyStreamLagReason({
+    ...stableLagParams,
+    decoderPressureActive: true,
+    decoderPressureReason: "backlog_and_drop",
+    decoderBacklogFrames: 52,
+    dropRatePercent: 7.5,
+  });
+  assert.equal(result.reason, "decoder");
+  assert.match(result.detail, /backlog 52/);
 });

@@ -376,6 +376,101 @@ export function subsampleCoalescedPointerEvents<T extends { movementX: number; m
   return { events, stride };
 }
 
+export interface ClassifyStreamLagReasonParams {
+  nativeInputActive: boolean;
+  nativeRendererActive: boolean;
+  framesReceived: number;
+  framesDecoded: number;
+  decodeTimeMs: number;
+  decodeFps: number;
+  renderFps: number;
+  rttMs: number;
+  packetLossPercent: number;
+  jitterMs: number;
+  jitterBufferDelayMs: number;
+  inputQueueBufferedBytes: number;
+  inputQueueDropCount: number;
+  decoderPressureActive: boolean;
+  decoderPressureReason: string;
+  decoderBacklogFrames: number;
+  dropRatePercent: number;
+  backpressureThresholdBytes: number;
+}
+
+/** Classify overlay lag warnings using sustained pressure signals, not timer jitter or normal decode times. */
+export function classifyStreamLagReason(
+  params: ClassifyStreamLagReasonParams,
+): { reason: StreamLagReason; detail: string } {
+  if (params.nativeInputActive || params.nativeRendererActive) {
+    return {
+      reason: "stable",
+      detail: "Native streamer input bridge active",
+    };
+  }
+
+  const networkSignals: string[] = [];
+  if (params.packetLossPercent >= 1) networkSignals.push(`${params.packetLossPercent.toFixed(1)}% loss`);
+  if (params.rttMs >= 75) networkSignals.push(`RTT ${params.rttMs.toFixed(0)}ms`);
+  if (params.jitterMs >= 12) networkSignals.push(`jitter ${params.jitterMs.toFixed(1)}ms`);
+  if (params.jitterBufferDelayMs >= 20) networkSignals.push(`buffer ${params.jitterBufferDelayMs.toFixed(1)}ms`);
+  if (networkSignals.length > 0) {
+    return {
+      reason: "network",
+      detail: networkSignals.join(" · "),
+    };
+  }
+
+  const severeDecoderStall = params.framesReceived > 100 && params.framesDecoded === 0;
+  if (params.decoderPressureActive || severeDecoderStall) {
+    const detailParts: string[] = [];
+    if (severeDecoderStall) detailParts.push("frames received but not decoded");
+    if (params.decoderPressureReason === "decode_saturated" && params.decodeTimeMs > 0) {
+      detailParts.push(`decode ${params.decodeTimeMs.toFixed(1)}ms`);
+    }
+    if (params.decoderBacklogFrames >= 45) detailParts.push(`backlog ${params.decoderBacklogFrames}`);
+    if (params.dropRatePercent >= 6) detailParts.push(`${params.dropRatePercent.toFixed(1)}% drops`);
+    if (detailParts.length === 0 && params.decoderPressureReason !== "stable") {
+      detailParts.push(params.decoderPressureReason.replace(/_/g, " "));
+    }
+    return {
+      reason: "decoder",
+      detail: detailParts.join(" · ") || "decode pressure",
+    };
+  }
+
+  if (
+    params.inputQueueDropCount > 0
+    || params.inputQueueBufferedBytes >= params.backpressureThresholdBytes
+  ) {
+    const detailParts: string[] = [];
+    if (params.inputQueueDropCount > 0) detailParts.push(`drops ${params.inputQueueDropCount}`);
+    if (params.inputQueueBufferedBytes >= params.backpressureThresholdBytes) {
+      detailParts.push(`buffered ${(params.inputQueueBufferedBytes / 1024).toFixed(1)}KB`);
+    }
+    return {
+      reason: "input_backpressure",
+      detail: detailParts.join(" · "),
+    };
+  }
+
+  if (params.renderFps > 0 && params.decodeFps > 0) {
+    const renderGap = params.decodeFps - params.renderFps;
+    if (renderGap >= 12 || params.renderFps < 20) {
+      return {
+        reason: "render",
+        detail: `render ${params.renderFps}fps vs decode ${params.decodeFps}fps`,
+      };
+    }
+  }
+
+  return {
+    reason: params.decodeFps > 0 || params.renderFps > 0 ? "stable" : "unknown",
+    detail: params.decodeFps > 0 || params.renderFps > 0
+      ? "No dominant lag source detected"
+      : "Waiting for stream stats",
+  };
+}
+
 export function quantizeMouseDeltaWithResidual(accumulatedDelta: number): { send: number; residual: number } {
   const send = Math.round(accumulatedDelta);
   return {
@@ -1338,119 +1433,6 @@ export class GfnWebRtcClient {
     };
   }
 
-  private classifyLagReason(params: {
-    framesReceived: number;
-    framesDecoded: number;
-    framesDropped: number;
-    decodeTimeMs: number;
-    decodeFps: number;
-    renderFps: number;
-    rttMs: number;
-    packetLossPercent: number;
-    jitterMs: number;
-    jitterBufferDelayMs: number;
-    inputQueueBufferedBytes: number;
-    inputQueueDropCount: number;
-    inputQueueMaxSchedulingDelayMs: number;
-  }): { reason: StreamLagReason; detail: string } {
-    if (this.nativeInputActive || this.diagnostics.nativeRendererActive) {
-      return {
-        reason: "stable",
-        detail: "Native streamer input bridge active",
-      };
-    }
-
-    const networkSignals: string[] = [];
-    if (params.packetLossPercent >= 1) networkSignals.push(`${params.packetLossPercent.toFixed(1)}% loss`);
-    if (params.rttMs >= 75) networkSignals.push(`RTT ${params.rttMs.toFixed(0)}ms`);
-    if (params.jitterMs >= 12) networkSignals.push(`jitter ${params.jitterMs.toFixed(1)}ms`);
-    if (params.jitterBufferDelayMs >= 20) networkSignals.push(`buffer ${params.jitterBufferDelayMs.toFixed(1)}ms`);
-    if (networkSignals.length > 0) {
-      return {
-        reason: "network",
-        detail: networkSignals.join(" · "),
-      };
-    }
-
-    const frameBudgetMs = params.decodeFps > 0 ? 1000 / params.decodeFps : 0;
-    if (
-      params.inputQueueMaxSchedulingDelayMs >= 6
-      || (
-        params.inputQueueMaxSchedulingDelayMs >= 3
-        && params.inputQueueBufferedBytes >= 4096
-      )
-    ) {
-      const detailParts: string[] = [];
-      if (params.inputQueueMaxSchedulingDelayMs >= 3) {
-        detailParts.push(`sched ${params.inputQueueMaxSchedulingDelayMs.toFixed(1)}ms`);
-      }
-      if (params.inputQueueBufferedBytes >= 4096) {
-        detailParts.push(`buffered ${(params.inputQueueBufferedBytes / 1024).toFixed(1)}KB`);
-      }
-      return {
-        reason: "input_backpressure",
-        detail: detailParts.join(" · ") || "input scheduling delay",
-      };
-    }
-
-    const decodeSaturated =
-      frameBudgetMs > 0 &&
-      params.decodeTimeMs > 0 &&
-      params.decodeTimeMs >= frameBudgetMs * 0.82;
-    const severeDecoderStall = params.framesReceived > 100 && params.framesDecoded === 0;
-    const decoderBacklog = Math.max(0, params.framesReceived - params.framesDecoded);
-    if (severeDecoderStall || decodeSaturated || decoderBacklog >= 45 || params.framesDropped >= 8) {
-      const detailParts: string[] = [];
-      if (severeDecoderStall) detailParts.push("frames received but not decoded");
-      if (decodeSaturated) detailParts.push(`decode ${params.decodeTimeMs.toFixed(1)}ms`);
-      if (decoderBacklog >= 45) detailParts.push(`backlog ${decoderBacklog}`);
-      if (params.framesDropped >= 8) detailParts.push(`drops ${params.framesDropped}`);
-      return {
-        reason: "decoder",
-        detail: detailParts.join(" · ") || "decode saturation",
-      };
-    }
-
-    if (
-      params.inputQueueDropCount > 0 ||
-      params.inputQueueBufferedBytes >= GfnWebRtcClient.RELIABLE_MOUSE_BACKPRESSURE_BYTES ||
-      (
-        params.inputQueueMaxSchedulingDelayMs >= 4
-        && params.inputQueueBufferedBytes >= 4096
-      )
-    ) {
-      const detailParts: string[] = [];
-      if (params.inputQueueDropCount > 0) detailParts.push(`drops ${params.inputQueueDropCount}`);
-      if (params.inputQueueBufferedBytes >= GfnWebRtcClient.RELIABLE_MOUSE_BACKPRESSURE_BYTES) {
-        detailParts.push(`buffered ${(params.inputQueueBufferedBytes / 1024).toFixed(1)}KB`);
-      }
-      if (params.inputQueueMaxSchedulingDelayMs >= 4) {
-        detailParts.push(`sched ${params.inputQueueMaxSchedulingDelayMs.toFixed(1)}ms`);
-      }
-      return {
-        reason: "input_backpressure",
-        detail: detailParts.join(" · "),
-      };
-    }
-
-    if (params.renderFps > 0 && params.decodeFps > 0) {
-      const renderGap = params.decodeFps - params.renderFps;
-      if (renderGap >= 8 || params.renderFps < 24) {
-        return {
-          reason: "render",
-          detail: `render ${params.renderFps}fps vs decode ${params.decodeFps}fps`,
-        };
-      }
-    }
-
-    return {
-      reason: params.decodeFps > 0 || params.renderFps > 0 ? "stable" : "unknown",
-      detail: params.decodeFps > 0 || params.renderFps > 0
-        ? "No dominant lag source detected"
-        : "Waiting for stream stats",
-    };
-  }
-
   private async requestDecoderKeyframe(backlogFrames: number, reason: string): Promise<boolean> {
     const now = performance.now();
     if (now - this.lastDecoderKeyframeRequestAtMs < GfnWebRtcClient.DECODER_KEYFRAME_COOLDOWN_MS) {
@@ -1610,6 +1592,12 @@ export class GfnWebRtcClient {
     let framesReceived = 0;
     let framesDecoded = 0;
     let framesDropped = 0;
+    let pressureSignal = {
+      active: false,
+      reason: "stable",
+      backlogFrames: 0,
+      dropRatePercent: 0,
+    };
 
     for (const entry of report.values()) {
       const stats = entry as unknown as Record<string, unknown>;
@@ -1762,7 +1750,7 @@ export class GfnWebRtcClient {
         this.diagnostics.renderTimeMs = Math.round(avgFrameDelay * 1000 * 10) / 10;
       }
 
-      const pressureSignal = this.shouldTreatAsDecoderPressure({
+      pressureSignal = this.shouldTreatAsDecoderPressure({
         framesReceived,
         framesDecoded,
         framesDropped,
@@ -1805,10 +1793,11 @@ export class GfnWebRtcClient {
     this.diagnostics.mouseResidualMagnitude = Math.hypot(this.pendingMouseDxFloat, this.pendingMouseDyFloat);
     this.diagnostics.mouseAdaptiveFlushActive = this.mouseAdaptiveFlushActive;
 
-    const lagClassification = this.classifyLagReason({
+    const lagClassification = classifyStreamLagReason({
+      nativeInputActive: this.nativeInputActive,
+      nativeRendererActive: this.diagnostics.nativeRendererActive,
       framesReceived,
       framesDecoded,
-      framesDropped,
       decodeTimeMs: this.diagnostics.decodeTimeMs,
       decodeFps: this.diagnostics.decodeFps,
       renderFps: this.diagnostics.renderFps,
@@ -1818,7 +1807,11 @@ export class GfnWebRtcClient {
       jitterBufferDelayMs: this.diagnostics.jitterBufferDelayMs,
       inputQueueBufferedBytes: reliableBufferedAmount,
       inputQueueDropCount: this.inputQueueDropCount,
-      inputQueueMaxSchedulingDelayMs: this.diagnostics.inputQueueMaxSchedulingDelayMs,
+      decoderPressureActive: pressureSignal.active,
+      decoderPressureReason: pressureSignal.reason,
+      decoderBacklogFrames: pressureSignal.backlogFrames,
+      dropRatePercent: pressureSignal.dropRatePercent,
+      backpressureThresholdBytes: GfnWebRtcClient.RELIABLE_MOUSE_BACKPRESSURE_BYTES,
     });
     this.diagnostics.lagReason = lagClassification.reason;
     this.diagnostics.lagReasonDetail = lagClassification.detail;
