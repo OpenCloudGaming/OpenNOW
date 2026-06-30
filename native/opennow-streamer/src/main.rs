@@ -6,6 +6,8 @@ mod gstreamer_backend;
 #[cfg(feature = "gstreamer")]
 mod gstreamer_config;
 #[cfg(feature = "gstreamer")]
+mod gstreamer_cursor;
+#[cfg(feature = "gstreamer")]
 mod gstreamer_input;
 #[cfg(feature = "gstreamer")]
 mod gstreamer_liveness;
@@ -17,8 +19,8 @@ mod gstreamer_platform;
 mod gstreamer_transitions;
 mod input;
 mod protocol;
-mod shortcuts;
 mod sdp;
+mod shortcuts;
 
 use serde::Serialize;
 use serde_json::Value;

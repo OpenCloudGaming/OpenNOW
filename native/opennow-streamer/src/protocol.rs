@@ -72,12 +72,30 @@ pub struct StreamSettings {
     pub max_bitrate_mbps: u32,
     pub codec: VideoCodec,
     pub color_quality: ColorQuality,
+    #[serde(default = "default_native_cursor_overlay")]
+    pub native_cursor_overlay: bool,
+    #[serde(default = "default_mouse_sensitivity")]
+    pub mouse_sensitivity: f64,
+    #[serde(default = "default_mouse_acceleration")]
+    pub mouse_acceleration: u32,
     #[serde(default)]
     #[allow(dead_code)]
     pub enable_cloud_gsync: bool,
     #[cfg_attr(not(feature = "gstreamer"), allow(dead_code))]
     #[serde(default)]
     pub native_transition_diagnostics: Option<NativeTransitionDiagnosticsSettings>,
+}
+
+fn default_native_cursor_overlay() -> bool {
+    true
+}
+
+fn default_mouse_sensitivity() -> f64 {
+    1.0
+}
+
+fn default_mouse_acceleration() -> u32 {
+    1
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -529,9 +547,7 @@ pub enum Event {
     #[serde(rename = "clipboard-paste")]
     ClipboardPaste,
     #[serde(rename = "input-capture-changed")]
-    InputCaptureChanged {
-        captured: bool,
-    },
+    InputCaptureChanged { captured: bool },
     #[serde(rename = "video-stall")]
     VideoStall(VideoStallEvent),
     #[serde(rename = "video-transition")]

@@ -861,6 +861,12 @@ export interface StreamSettings {
   cloudGsyncResolution?: CloudGsyncResolution;
   /** Hidden diagnostics for native transition recovery and 240 FPS server-side stream changes. */
   nativeTransitionDiagnostics?: NativeTransitionDiagnostics;
+  /** Use the WebRTC cursor_channel cursor path instead of server-side cursor rendering. */
+  nativeCursorOverlay?: boolean;
+  /** Multiplier applied to relative mouse input before it is sent to the stream. */
+  mouseSensitivity?: number;
+  /** Optional software acceleration percentage for relative mouse input. */
+  mouseAcceleration?: number;
 }
 
 export interface SessionCreateRequest {

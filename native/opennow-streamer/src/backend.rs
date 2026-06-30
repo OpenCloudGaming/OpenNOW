@@ -498,7 +498,9 @@ fn preferred_hevc_profile_id(color_quality: ColorQuality) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::{ColorQuality, NativeStreamerShortcutBindings, SessionInfo, StreamSettings};
+    use crate::protocol::{
+        ColorQuality, NativeStreamerShortcutBindings, SessionInfo, StreamSettings,
+    };
 
     fn context(resolution: &str) -> NativeStreamerSessionContext {
         NativeStreamerSessionContext {
@@ -519,6 +521,9 @@ mod tests {
                 max_bitrate_mbps: 75,
                 codec: VideoCodec::H265,
                 color_quality: ColorQuality::TenBit420,
+                native_cursor_overlay: true,
+                mouse_sensitivity: 1.0,
+                mouse_acceleration: 1,
                 enable_cloud_gsync: false,
                 native_transition_diagnostics: None,
             },
