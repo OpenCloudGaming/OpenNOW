@@ -350,8 +350,8 @@ async function sendStreamClipboardPaste(
     const text = await readStreamClipboardText();
     if (text) {
       client.sendText(text);
-      return;
     }
+    return;
   } catch (error) {
     console.warn("Clipboard read failed, falling back to paste shortcut:", error);
   }
