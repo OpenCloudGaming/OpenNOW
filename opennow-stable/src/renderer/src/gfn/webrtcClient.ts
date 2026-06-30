@@ -3437,6 +3437,8 @@ export class GfnWebRtcClient {
         pendingEntryAbsY = null;
 
         if (typeof targetAbsX === "number" && typeof targetAbsY === "number") {
+          const targetRect = pointerLockTarget.getBoundingClientRect();
+          this.cursorOverlay?.setClientPosition(targetRect.left + targetAbsX, targetRect.top + targetAbsY);
           const { scaleX, scaleY, serverWidth, serverHeight } = getPointerScale();
 
           // Translate the element-local target into server pixels.

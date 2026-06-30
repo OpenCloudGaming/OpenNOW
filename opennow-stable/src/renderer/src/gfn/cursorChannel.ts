@@ -309,6 +309,18 @@ export class GfnCursorOverlayController {
     this.positionCanvas(viewport);
   }
 
+  public setClientPosition(clientX: number, clientY: number): void {
+    if (!Number.isFinite(clientX) || !Number.isFinite(clientY)) {
+      return;
+    }
+    const viewport = this.getViewport();
+    const parentRect = this.videoElement.parentElement?.getBoundingClientRect() ?? new DOMRect(0, 0, 0, 0);
+    this.positionX = Math.max(0, Math.min(viewport.width, clientX - parentRect.left - viewport.originX));
+    this.positionY = Math.max(0, Math.min(viewport.height, clientY - parentRect.top - viewport.originY));
+    this.positionInitialized = true;
+    this.positionCanvas(viewport);
+  }
+
   public refresh(): void {
     const viewport = this.getViewport();
     if (!this.positionInitialized) {
