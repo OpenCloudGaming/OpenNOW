@@ -167,7 +167,7 @@ test("uses German physical keys for synthetic text injection with de-DE layout",
   assert.deepEqual(mapTextCharToKeySpec("_", "de-DE"), { ...codeMap.Slash, shift: true });
 });
 
-test("modifierFlags matches official yS() (no lock keys in per-key byte)", () => {
+test("modifierFlags matches official Cb() including xb() shift bit", () => {
   const event = keyboardEvent({
     code: "KeyA",
     key: "a",
@@ -180,6 +180,16 @@ test("modifierFlags matches official yS() (no lock keys in per-key byte)", () =>
   });
 
   assert.equal(modifierFlags(event), 0x0f);
+});
+
+test("shiftModifierByte matches official xb() on Mac shifted punctuation", () => {
+  const event = keyboardEvent({
+    code: "Digit1",
+    key: "!",
+    keyCode: 49,
+    shiftKey: true,
+  });
+  assert.equal(modifierFlags(event, true), 0x01);
 });
 
 test("lockKeysStateFromEvent encodes caps/num/scroll for sync packet", () => {

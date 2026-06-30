@@ -1025,13 +1025,33 @@ function textInputChunkLength(bytes: Uint8Array, offset: number): number {
   return 0;
 }
 
-/** Per-key modifier byte (official GFN yS()). Lock keys sync separately via INPUT_LOCK_KEYS_SYNC. */
-export function modifierFlags(event: KeyboardEvent): number {
+function isMacKeyboardLayout(): boolean {
+  return typeof navigator !== "undefined" && /Mac|iPhone|iPad|iPod/.test(navigator.platform);
+}
+
+/** Shift bit for per-key modifier byte (official GFN xb()). */
+export function shiftModifierByte(event: KeyboardEvent, isMacLayout: boolean = isMacKeyboardLayout()): number {
+  if (isMacLayout && event.key.length === 1) {
+    if ("!@#$%^&*()~_+{}|:\"<>?".includes(event.key)) {
+      return 1;
+    }
+    if ("1234567890`-=[]\\;',./".includes(event.key)) {
+      return 0;
+    }
+  }
+  if (event.shiftKey && !event.code.startsWith("Shift")) {
+    return 1;
+  }
+  return 0;
+}
+
+/** Per-key modifier byte (official GFN Cb(): ctrl/alt/meta + xb shift). */
+export function modifierFlags(event: KeyboardEvent, isMacLayout: boolean = isMacKeyboardLayout()): number {
   let flags = 0;
-  if (event.shiftKey && !event.code.startsWith("Shift")) flags |= 0x01;
   if (event.ctrlKey && !event.code.startsWith("Control")) flags |= 0x02;
   if (event.altKey && !event.code.startsWith("Alt")) flags |= 0x04;
   if (event.metaKey && !event.code.startsWith("Meta")) flags |= 0x08;
+  flags |= shiftModifierByte(event, isMacLayout);
   return flags;
 }
 
