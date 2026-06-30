@@ -1337,8 +1337,8 @@ export interface OpenNowApi {
   setFullscreen(v: boolean): Promise<void>;
   toggleFullscreen(): Promise<void>;
   togglePointerLock(): Promise<void>;
-  /** Notify main process that pointer lock state changed (active = true/false) */
-  notifyPointerLockChange(active: boolean): void;
+  /** Notify main process that pointer lock state changed (active = true/false). */
+  notifyPointerLockChange(active: boolean, suppressEscapeFullscreenGrace?: boolean): void;
   /** Read plain text from the OS clipboard through Electron main process */
   readClipboardText(): Promise<string>;
   getSettings(): Promise<Settings>;

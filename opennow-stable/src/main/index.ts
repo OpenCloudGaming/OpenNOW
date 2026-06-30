@@ -82,6 +82,10 @@ import {
   isAccelerationPreference,
   type BootstrapVideoPreferences,
 } from "./videoAcceleration";
+import {
+  nextPointerLockEscapeCaptureUntilMs,
+  shouldCaptureEscapeFullscreenInput,
+} from "./escapeFullscreenGuard";
 import { parseDirectLaunchArgs, type DirectLaunchArgs } from "@shared/directLaunch";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -188,6 +192,7 @@ let pendingDirectLaunchRequest: DirectLaunchRequest | null = createDirectLaunchR
 
 // Runtime pointer-lock state (updated by renderer)
 let isPointerLockActiveRuntime = false;
+let pointerLockEscapeCaptureUntilMs = 0;
 
 function createDirectLaunchRequest(args: DirectLaunchArgs): DirectLaunchRequest {
   return {
@@ -464,22 +469,31 @@ async function createMainWindow(): Promise<void> {
 
   // Track pointer-lock state from renderer; used to decide whether to swallow
   // Escape at the native level (before Chromium handles it).
-  ipcMain.on(IPC_CHANNELS.POINTER_LOCK_CHANGE, (_ev, active: boolean) => {
-    isPointerLockActiveRuntime = Boolean(active);
-  });
+  ipcMain.on(
+    IPC_CHANNELS.POINTER_LOCK_CHANGE,
+    (_ev, active: boolean, suppressEscapeFullscreenGrace?: boolean) => {
+      isPointerLockActiveRuntime = Boolean(active);
+      pointerLockEscapeCaptureUntilMs = nextPointerLockEscapeCaptureUntilMs(
+        isPointerLockActiveRuntime,
+        Boolean(suppressEscapeFullscreenGrace),
+        Date.now(),
+      );
+    },
+  );
 
   // Intercept Escape early to avoid Chromium exiting fullscreen before the
-  // renderer can forward the key to the remote session. This is a best-effort
-  // interception and is gated by the user's `allowEscapeToExitFullscreen` setting.
+  // renderer can forward the key to the remote session. Keep a short fullscreen
+  // grace window after pointer lock drops so rapid repeated Escape presses cannot
+  // win the race before the renderer re-locks the pointer.
   mainWindow.webContents.on("before-input-event", (event, input) => {
     try {
-      if (
-        input.type === "keyDown" &&
-        input.key === "Escape" &&
-        isPointerLockActiveRuntime &&
-        settingsManager &&
-        !settingsManager.get("allowEscapeToExitFullscreen")
-      ) {
+      if (shouldCaptureEscapeFullscreenInput(input, {
+        allowEscapeToExitFullscreen: Boolean(settingsManager?.get("allowEscapeToExitFullscreen")),
+        pointerLockActive: isPointerLockActiveRuntime,
+        windowFullscreen: Boolean(mainWindow && !mainWindow.isDestroyed() && mainWindow.isFullScreen()),
+        pointerLockEscapeCaptureUntilMs,
+        nowMs: Date.now(),
+      })) {
         event.preventDefault();
         if (mainWindow && mainWindow.webContents) {
           mainWindow.webContents.send(IPC_CHANNELS.EXTERNAL_ESCAPE);
@@ -502,6 +516,8 @@ async function createMainWindow(): Promise<void> {
   mainWindow.on("closed", () => {
     mainWindow = null;
     rendererControlledFullscreen = false;
+    isPointerLockActiveRuntime = false;
+    pointerLockEscapeCaptureUntilMs = 0;
   });
 }
 
