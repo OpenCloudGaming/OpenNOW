@@ -526,6 +526,12 @@ pub enum Event {
     Shortcut {
         action: NativeStreamerShortcutAction,
     },
+    #[serde(rename = "clipboard-paste")]
+    ClipboardPaste,
+    #[serde(rename = "input-capture-changed")]
+    InputCaptureChanged {
+        captured: bool,
+    },
     #[serde(rename = "video-stall")]
     VideoStall(VideoStallEvent),
     #[serde(rename = "video-transition")]

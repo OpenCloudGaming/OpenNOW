@@ -8,6 +8,70 @@ export interface ParsedShortcut {
   canonical: string;
 }
 
+const NAMED_KEY_TOKENS = new Set([
+  "BACKSPACE",
+  "TAB",
+  "ENTER",
+  "NUMPADENTER",
+  "PAUSE",
+  "CAPSLOCK",
+  "ESCAPE",
+  "SPACE",
+  "PAGEUP",
+  "PAGEDOWN",
+  "END",
+  "HOME",
+  "ARROWLEFT",
+  "ARROWUP",
+  "ARROWRIGHT",
+  "ARROWDOWN",
+  "INSERT",
+  "DELETE",
+  "PRINTSCREEN",
+  "APPS",
+  "MENU",
+  "METALEFT",
+  "METARIGHT",
+  "NUMPADMULTIPLY",
+  "NUMPADADD",
+  "NUMPADSEPARATOR",
+  "NUMPADSUBTRACT",
+  "NUMPADDECIMAL",
+  "NUMPADDIVIDE",
+  "NUMLOCK",
+  "SCROLLLOCK",
+  "SEMICOLON",
+  "EQUAL",
+  "COMMA",
+  "MINUS",
+  "PERIOD",
+  "SLASH",
+  "BACKQUOTE",
+  "BRACKETLEFT",
+  "BACKSLASH",
+  "BRACKETRIGHT",
+  "QUOTE",
+]);
+
+function normalizeFunctionKeyToken(upper: string): string | null {
+  const match = upper.match(/^F(\d{1,2})$/);
+  if (!match) {
+    return null;
+  }
+
+  const index = Number.parseInt(match[1], 10);
+  return index >= 1 && index <= 24 ? upper : null;
+}
+
+function normalizeNumpadDigitToken(upper: string): string | null {
+  const match = upper.match(/^NUMPAD(\d)$/);
+  if (!match) {
+    return null;
+  }
+
+  return upper;
+}
+
 function normalizeKeyToken(token: string): string | null {
   const upper = token.toUpperCase();
   const alias: Record<string, string> = {
@@ -24,18 +88,25 @@ function normalizeKeyToken(token: string): string | null {
   if (alias[upper]) {
     return alias[upper];
   }
+
   if (upper.length === 1) {
     return upper;
   }
-  if (/^F\d{1,2}$/.test(upper)) {
+
+  const functionKey = normalizeFunctionKeyToken(upper);
+  if (functionKey) {
+    return functionKey;
+  }
+
+  const numpadDigit = normalizeNumpadDigitToken(upper);
+  if (numpadDigit) {
+    return numpadDigit;
+  }
+
+  if (NAMED_KEY_TOKENS.has(upper)) {
     return upper;
   }
-  if (upper.startsWith("ARROW")) {
-    return upper;
-  }
-  if (/^[A-Z0-9_]+$/.test(upper)) {
-    return upper;
-  }
+
   return null;
 }
 
@@ -61,25 +132,8 @@ function normalizeEventCode(code: string): string | null {
   if (upper.startsWith("DIGIT") && upper.length === 6) {
     return upper.slice(5);
   }
-  if (upper.startsWith("NUMPAD")) {
-    return upper;
-  }
-  if (/^F\d{1,2}$/.test(upper)) {
-    return upper;
-  }
-  if (upper.startsWith("ARROW")) {
-    return upper;
-  }
-  if (upper === "SPACE") {
-    return "SPACE";
-  }
-  if (upper === "ENTER" || upper === "NUMPADENTER") {
-    return "ENTER";
-  }
-  if (/^[A-Z0-9_]+$/.test(upper)) {
-    return upper;
-  }
-  return null;
+
+  return normalizeKeyToken(code);
 }
 
 function isKeyMatch(event: KeyboardEvent, shortcutKey: string): boolean {

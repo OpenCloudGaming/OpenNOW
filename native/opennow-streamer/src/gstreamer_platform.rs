@@ -195,11 +195,13 @@ pub(crate) mod win32_renderer_window {
     const RI_MOUSE_WHEEL: u16 = 0x0400;
     const VK_SHIFT: u16 = 0x10;
     const VK_ESCAPE: u16 = 0x1B;
+    const VK_V: u16 = 0x56;
     const VK_TAB: u16 = 0x09;
     const VK_CONTROL: u16 = 0x11;
     const VK_MENU: u16 = 0x12;
     const VK_CAPITAL: i32 = 0x14;
     const VK_NUMLOCK: i32 = 0x90;
+    const VK_SCROLL: i32 = 0x91;
     const VK_LSHIFT: u16 = 0xA0;
     const VK_RSHIFT: u16 = 0xA1;
     const VK_LCONTROL: u16 = 0xA2;
@@ -343,6 +345,7 @@ pub(crate) mod win32_renderer_window {
     static CAPTURED_HWND: OnceLock<Mutex<Option<isize>>> = OnceLock::new();
     static PROTECTED_HWND: OnceLock<Mutex<Option<isize>>> = OnceLock::new();
     static PRESSED_KEYS: OnceLock<Mutex<HashMap<u16, PressedKey>>> = OnceLock::new();
+    static LAST_LOCK_KEYS_STATE: OnceLock<Mutex<u8>> = OnceLock::new();
     static LEGACY_SUPPRESSED_KEYS: OnceLock<Mutex<HashSet<u16>>> = OnceLock::new();
     static STARTED_AT: OnceLock<Instant> = OnceLock::new();
     static ESCAPE_HOLD_HWND: OnceLock<Mutex<Option<isize>>> = OnceLock::new();
@@ -720,11 +723,13 @@ pub(crate) mod win32_renderer_window {
             ClipCursor(&rect);
         }
         hide_cursor();
+        emit_input_capture_changed(true);
 
         let slot = CAPTURED_HWND.get_or_init(|| Mutex::new(None));
         if let Ok(mut captured) = slot.lock() {
             *captured = Some(hwnd as isize);
         }
+        sync_lock_keys_state(true);
     }
 
     unsafe fn release_input_capture(hwnd: Hwnd) {
@@ -747,6 +752,7 @@ pub(crate) mod win32_renderer_window {
         ReleaseCapture();
         ClipCursor(null());
         show_cursor();
+        emit_input_capture_changed(false);
         unregister_raw_input_devices();
         SetWindowPos(
             hwnd,
@@ -1040,6 +1046,13 @@ pub(crate) mod win32_renderer_window {
         }
 
         let modifiers = current_legacy_modifier_flags();
+        if pressed && is_clipboard_paste_shortcut(keycode, modifiers) {
+            suppressed_keys.insert(key_id);
+            drop(suppressed_keys);
+            emit_clipboard_paste_request();
+            return true;
+        }
+
         let Some(action) = shortcut_action_for_keypress(keycode, scancode, modifiers) else {
             return false;
         };
@@ -1051,6 +1064,8 @@ pub(crate) mod win32_renderer_window {
     }
 
     unsafe fn handle_keyboard_state(keycode: u16, scancode: u16, pressed: bool) {
+        sync_lock_keys_state(false);
+
         let keys = PRESSED_KEYS.get_or_init(|| Mutex::new(HashMap::new()));
         let Ok(mut keys) = keys.lock() else {
             return;
@@ -1070,7 +1085,20 @@ pub(crate) mod win32_renderer_window {
             if previous.is_some() {
                 return;
             }
-            let modifiers = current_modifier_flags(&keys);
+            let modifiers = pressed_key_modifier_flags(&keys, keycode);
+            if is_clipboard_paste_shortcut(keycode, modifiers) {
+                keys.insert(
+                    scancode,
+                    PressedKey {
+                        keycode,
+                        scancode,
+                        suppressed: true,
+                    },
+                );
+                drop(keys);
+                emit_clipboard_paste_request();
+                return;
+            }
             if let Some(action) = shortcut_action_for_keypress(keycode, scancode, modifiers) {
                 keys.insert(
                     scancode,
@@ -1092,15 +1120,12 @@ pub(crate) mod win32_renderer_window {
                     suppressed: false,
                 },
             );
-        } else {
-            let Some(previous) = keys.remove(&scancode) else {
-                return;
-            };
+        } else if let Some(previous) = keys.remove(&scancode) {
             if previous.suppressed {
                 return;
             }
         }
-        let modifiers = current_modifier_flags(&keys);
+        let modifiers = pressed_key_modifier_flags(&keys, keycode);
         drop(keys);
 
         emit_input_event(NativeWindowInputEvent::Key {
@@ -1236,37 +1261,128 @@ pub(crate) mod win32_renderer_window {
         }
     }
 
-    unsafe fn current_modifier_flags(keys: &HashMap<u16, PressedKey>) -> u16 {
+    /// Lock-key bitmask for INPUT_LOCK_KEYS_SYNC (official GFN iS() on desktop Windows).
+    unsafe fn lock_keys_sync_state() -> u8 {
+        let mut state = 0x10;
+        if (GetKeyState(VK_CAPITAL) & 0x0001) != 0 {
+            state |= 0x01;
+        }
+        state |= 0x20;
+        state |= 0x40;
+        if (GetKeyState(VK_NUMLOCK) & 0x0001) != 0 {
+            state |= 0x02;
+        }
+        if (GetKeyState(VK_SCROLL) & 0x0001) != 0 {
+            state |= 0x04;
+        }
+        state
+    }
+
+    unsafe fn sync_lock_keys_state(force: bool) {
+        let state = lock_keys_sync_state();
+        let slot = LAST_LOCK_KEYS_STATE.get_or_init(|| Mutex::new(0));
+        let Ok(mut last) = slot.lock() else {
+            return;
+        };
+        if !force && *last == state {
+            return;
+        }
+        *last = state;
+        drop(last);
+        emit_input_event(NativeWindowInputEvent::LockKeysSync { state });
+    }
+
+    /// Per-key modifier byte from tracked pressed keys (official GFN yS()/Cb()).
+    /// Lock keys sync separately via INPUT_LOCK_KEYS_SYNC, not here.
+    unsafe fn pressed_key_modifier_flags(keys: &HashMap<u16, PressedKey>, active_keycode: u16) -> u16 {
         let mut modifiers = 0u16;
-        if keys
-            .values()
-            .any(|key| matches!(key.keycode, VK_LSHIFT | VK_RSHIFT | VK_SHIFT))
+        let mut shift_tracked = false;
+        let mut control_tracked = false;
+        let mut alt_tracked = false;
+        let mut win_tracked = false;
+
+        for key in keys.values() {
+            if key.keycode == active_keycode {
+                continue;
+            }
+            match key.keycode {
+                VK_LSHIFT | VK_RSHIFT | VK_SHIFT => {
+                    shift_tracked = true;
+                    modifiers |= 0x01;
+                }
+                VK_LCONTROL | VK_RCONTROL | VK_CONTROL => {
+                    control_tracked = true;
+                    modifiers |= 0x02;
+                }
+                VK_LMENU | VK_RMENU | VK_MENU => {
+                    alt_tracked = true;
+                    modifiers |= 0x04;
+                }
+                VK_LWIN | VK_RWIN => {
+                    win_tracked = true;
+                    modifiers |= 0x08;
+                }
+                _ => {}
+            }
+        }
+
+        if !matches!(active_keycode, VK_LSHIFT | VK_RSHIFT | VK_SHIFT)
+            && !shift_tracked
+            && (is_key_down(VK_SHIFT) || is_key_down(VK_LSHIFT) || is_key_down(VK_RSHIFT))
         {
             modifiers |= 0x01;
         }
-        if keys
-            .values()
-            .any(|key| matches!(key.keycode, VK_LCONTROL | VK_RCONTROL | VK_CONTROL))
+        if !matches!(active_keycode, VK_LCONTROL | VK_RCONTROL | VK_CONTROL)
+            && !control_tracked
+            && (is_key_down(VK_CONTROL) || is_key_down(VK_LCONTROL) || is_key_down(VK_RCONTROL))
         {
             modifiers |= 0x02;
         }
-        if keys
-            .values()
-            .any(|key| matches!(key.keycode, VK_LMENU | VK_RMENU | VK_MENU))
+        if !matches!(active_keycode, VK_LMENU | VK_RMENU | VK_MENU)
+            && !alt_tracked
+            && (is_key_down(VK_MENU) || is_key_down(VK_LMENU) || is_key_down(VK_RMENU))
         {
             modifiers |= 0x04;
         }
-        if keys
-            .values()
-            .any(|key| matches!(key.keycode, VK_LWIN | VK_RWIN))
+        if !matches!(active_keycode, VK_LWIN | VK_RWIN)
+            && !win_tracked
+            && (is_key_down(VK_LWIN) || is_key_down(VK_RWIN))
         {
             modifiers |= 0x08;
         }
-        if (GetKeyState(VK_CAPITAL) & 0x0001) != 0 {
-            modifiers |= 0x10;
+
+        modifiers
+    }
+
+    /// Legacy fallback for shortcut matching before a key enters the pressed-key map.
+    unsafe fn keyboard_modifier_flags(active_keycode: u16) -> u16 {
+        let keys = PRESSED_KEYS.get_or_init(|| Mutex::new(HashMap::new()));
+        if let Ok(keys) = keys.lock() {
+            if !keys.is_empty() {
+                return pressed_key_modifier_flags(&keys, active_keycode);
+            }
         }
-        if (GetKeyState(VK_NUMLOCK) & 0x0001) != 0 {
-            modifiers |= 0x20;
+
+        let mut modifiers = 0u16;
+        if !matches!(active_keycode, VK_LSHIFT | VK_RSHIFT | VK_SHIFT)
+            && (is_key_down(VK_SHIFT) || is_key_down(VK_LSHIFT) || is_key_down(VK_RSHIFT))
+        {
+            modifiers |= 0x01;
+        }
+        if !matches!(active_keycode, VK_LCONTROL | VK_RCONTROL | VK_CONTROL)
+            && (is_key_down(VK_CONTROL) || is_key_down(VK_LCONTROL) || is_key_down(VK_RCONTROL))
+        {
+            modifiers |= 0x02;
+        }
+        if !matches!(active_keycode, VK_LMENU | VK_RMENU | VK_MENU)
+            && (is_key_down(VK_MENU) || is_key_down(VK_LMENU) || is_key_down(VK_RMENU))
+        {
+            modifiers |= 0x04;
+        }
+        if !matches!(active_keycode, VK_LWIN | VK_RWIN)
+            && (is_key_down(VK_LWIN) || is_key_down(VK_RWIN))
+        {
+            modifiers |= 0x08;
         }
         modifiers
     }
@@ -1373,6 +1489,36 @@ pub(crate) mod win32_renderer_window {
             return;
         };
         let _ = sender.send(event);
+    }
+
+    fn is_clipboard_paste_shortcut(keycode: u16, modifiers: u16) -> bool {
+        keycode == VK_V
+            && ((modifiers & 0x02) != 0 || unsafe { is_ctrl_modifier_down() })
+            && (modifiers & 0x04) == 0
+    }
+
+    unsafe fn is_ctrl_modifier_down() -> bool {
+        is_key_down(VK_CONTROL) || is_key_down(VK_LCONTROL) || is_key_down(VK_RCONTROL)
+    }
+
+    fn emit_clipboard_paste_request() {
+        let Some(sender) = INPUT_EVENT_SENDER
+            .get()
+            .and_then(|sender| sender.lock().ok().and_then(|sender| sender.clone()))
+        else {
+            return;
+        };
+        let _ = sender.send(NativeWindowInputEvent::ClipboardPaste);
+    }
+
+    fn emit_input_capture_changed(captured: bool) {
+        let Some(sender) = INPUT_EVENT_SENDER
+            .get()
+            .and_then(|sender| sender.lock().ok().and_then(|sender| sender.clone()))
+        else {
+            return;
+        };
+        let _ = sender.send(NativeWindowInputEvent::InputCaptureChanged { captured });
     }
 
     fn clamp_i32_to_i16(value: i32) -> i16 {

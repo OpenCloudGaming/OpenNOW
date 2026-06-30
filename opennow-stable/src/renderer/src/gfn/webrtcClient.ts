@@ -28,6 +28,10 @@ import {
   GAMEPAD_MAX_CONTROLLERS,
   type GamepadInput,
   codeMap,
+  startInputSessionClock,
+  captureTimestampUs,
+  sendTimestampUs,
+  restampProtocolV3OuterTimestamp,
 } from "./inputProtocol";
 import { FULLSCREEN_KEYBOARD_LOCK_CODES } from "./keyboardLock";
 import {
@@ -234,11 +238,7 @@ interface ClientOptions {
 }
 
 function timestampUs(sourceTimestampMs?: number): bigint {
-  const base =
-    typeof sourceTimestampMs === "number" && Number.isFinite(sourceTimestampMs) && sourceTimestampMs >= 0
-      ? sourceTimestampMs
-      : performance.now();
-  return BigInt(Math.floor(base * 1000));
+  return captureTimestampUs(sourceTimestampMs);
 }
 
 function parsePartialReliableThresholdMs(sdp: string): number | null {
@@ -324,7 +324,9 @@ export interface AdaptiveMouseFlushDecisionParams {
 export function chooseAdaptiveMouseFlushInterval(params: AdaptiveMouseFlushDecisionParams): number {
   const boundedBase = Math.max(params.minIntervalMs, Math.min(params.maxIntervalMs, params.baseIntervalMs));
   const boundedCurrent = Math.max(params.minIntervalMs, Math.min(params.maxIntervalMs, params.currentIntervalMs));
-  if (!params.canUsePartiallyReliableMouse) {
+  // Official GFN keeps a fixed coalesce interval (4/8/16 ms) for PR mouse and does not
+  // back off because the reliable keyboard channel is busy.
+  if (params.canUsePartiallyReliableMouse) {
     return boundedBase;
   }
 
@@ -347,6 +349,131 @@ export function chooseAdaptiveMouseFlushInterval(params: AdaptiveMouseFlushDecis
     return Math.min(boundedBase, boundedCurrent + 1);
   }
   return boundedCurrent;
+}
+
+/** Subsample coalesced pointer samples like official GFN wm() when bursts are large. */
+export function subsampleCoalescedPointerEvents<T extends { movementX: number; movementY: number }>(
+  samples: readonly T[],
+  pendingBatchEntries: number,
+  maxBatchEntries: number = 16,
+): { events: T[]; stride: number } {
+  if (samples.length <= 1) {
+    return { events: [...samples], stride: 1 };
+  }
+
+  const budget = samples.length > 2 * maxBatchEntries
+    ? 1
+    : Math.max(maxBatchEntries - pendingBatchEntries - 4, 1);
+  if (samples.length <= budget) {
+    return { events: [...samples], stride: 1 };
+  }
+
+  const stride = Math.ceil(samples.length / budget);
+  const events: T[] = [];
+  for (let index = 0; index < samples.length; index += stride) {
+    events.push(samples[index]!);
+  }
+  return { events, stride };
+}
+
+export interface ClassifyStreamLagReasonParams {
+  nativeInputActive: boolean;
+  nativeRendererActive: boolean;
+  framesReceived: number;
+  framesDecoded: number;
+  decodeTimeMs: number;
+  decodeFps: number;
+  renderFps: number;
+  rttMs: number;
+  packetLossPercent: number;
+  jitterMs: number;
+  jitterBufferDelayMs: number;
+  inputQueueBufferedBytes: number;
+  inputQueueDropCount: number;
+  decoderPressureActive: boolean;
+  decoderPressureReason: string;
+  decoderBacklogFrames: number;
+  dropRatePercent: number;
+  backpressureThresholdBytes: number;
+}
+
+/** Classify overlay lag warnings using sustained pressure signals, not timer jitter or normal decode times. */
+export function classifyStreamLagReason(
+  params: ClassifyStreamLagReasonParams,
+): { reason: StreamLagReason; detail: string } {
+  if (params.nativeInputActive || params.nativeRendererActive) {
+    return {
+      reason: "stable",
+      detail: "Native streamer input bridge active",
+    };
+  }
+
+  const networkSignals: string[] = [];
+  if (params.packetLossPercent >= 1) networkSignals.push(`${params.packetLossPercent.toFixed(1)}% loss`);
+  if (params.rttMs >= 75) networkSignals.push(`RTT ${params.rttMs.toFixed(0)}ms`);
+  if (params.jitterMs >= 12) networkSignals.push(`jitter ${params.jitterMs.toFixed(1)}ms`);
+  if (params.jitterBufferDelayMs >= 20) networkSignals.push(`buffer ${params.jitterBufferDelayMs.toFixed(1)}ms`);
+  if (networkSignals.length > 0) {
+    return {
+      reason: "network",
+      detail: networkSignals.join(" · "),
+    };
+  }
+
+  const severeDecoderStall = params.framesReceived > 100 && params.framesDecoded === 0;
+  if (params.decoderPressureActive || severeDecoderStall) {
+    const detailParts: string[] = [];
+    if (severeDecoderStall) detailParts.push("frames received but not decoded");
+    if (params.decoderPressureReason === "decode_saturated" && params.decodeTimeMs > 0) {
+      detailParts.push(`decode ${params.decodeTimeMs.toFixed(1)}ms`);
+    }
+    if (params.decoderBacklogFrames >= 45) detailParts.push(`backlog ${params.decoderBacklogFrames}`);
+    if (params.dropRatePercent >= 6) detailParts.push(`${params.dropRatePercent.toFixed(1)}% drops`);
+    if (detailParts.length === 0 && params.decoderPressureReason !== "stable") {
+      detailParts.push(params.decoderPressureReason.replace(/_/g, " "));
+    }
+    return {
+      reason: "decoder",
+      detail: detailParts.join(" · ") || "decode pressure",
+    };
+  }
+
+  if (
+    params.inputQueueDropCount > 0
+    || params.inputQueueBufferedBytes >= params.backpressureThresholdBytes
+  ) {
+    const detailParts: string[] = [];
+    if (params.inputQueueDropCount > 0) detailParts.push(`drops ${params.inputQueueDropCount}`);
+    if (params.inputQueueBufferedBytes >= params.backpressureThresholdBytes) {
+      detailParts.push(`buffered ${(params.inputQueueBufferedBytes / 1024).toFixed(1)}KB`);
+    }
+    return {
+      reason: "input_backpressure",
+      detail: detailParts.join(" · "),
+    };
+  }
+
+  if (params.renderFps > 0 && params.decodeFps > 0) {
+    const renderGap = params.decodeFps - params.renderFps;
+    const renderGapPercent = renderGap / params.decodeFps;
+    // Absolute fps gaps are misleading at 120/240fps streams — require a large relative drop.
+    const renderPressure =
+      params.renderFps < 30
+      || (renderGap >= 20 && renderGapPercent >= 0.2);
+    if (renderPressure) {
+      return {
+        reason: "render",
+        detail: `render ${params.renderFps}fps vs decode ${params.decodeFps}fps`,
+      };
+    }
+  }
+
+  return {
+    reason: params.decodeFps > 0 || params.renderFps > 0 ? "stable" : "unknown",
+    detail: params.decodeFps > 0 || params.renderFps > 0
+      ? "No dominant lag source detected"
+      : "Waiting for stream stats",
+  };
 }
 
 export function quantizeMouseDeltaWithResidual(accumulatedDelta: number): { send: number; residual: number } {
@@ -596,6 +723,7 @@ export class GfnWebRtcClient {
   /** When true, window blur or document hidden blocks forwarding until focus/visible again. */
   private windowStateInputPaused = false;
   private inputProtocolVersion = 2;
+  private flushPendingMouseMovement: () => void = () => {};
   private heartbeatTimer: number | null = null;
   private mouseFlushTimer: number | null = null;
   private statsTimer: number | null = null;
@@ -692,7 +820,8 @@ export class GfnWebRtcClient {
   private mousePacketsPerSecond = 0;
   private mousePacketRateWindowStartedAtMs = 0;
   private mouseFlushIntervalMs = GfnWebRtcClient.MOUSE_FLUSH_NORMAL_MS;
-  private mouseFlushLastTickMs = 0;
+  private mouseFlushLastSendMs = 0;
+  private mouseCoalescedBatchEntries = 0;
   private pendingMouseTimestampUs: bigint | null = null;
   private mouseDeltaFilter = new MouseDeltaFilter();
   private mouseSensitivity = 1;
@@ -1218,6 +1347,7 @@ export class GfnWebRtcClient {
       this.gamepadPollTimer = null;
     }
     this.clearSyntheticEscapeSuppression();
+    this.flushPendingMouseMovement = () => {};
   }
 
   private setupStatsPolling(): void {
@@ -1305,89 +1435,6 @@ export class GfnWebRtcClient {
       reason,
       backlogFrames,
       dropRatePercent,
-    };
-  }
-
-  private classifyLagReason(params: {
-    framesReceived: number;
-    framesDecoded: number;
-    framesDropped: number;
-    decodeTimeMs: number;
-    decodeFps: number;
-    renderFps: number;
-    rttMs: number;
-    packetLossPercent: number;
-    jitterMs: number;
-    jitterBufferDelayMs: number;
-    inputQueueBufferedBytes: number;
-    inputQueueDropCount: number;
-    inputQueueMaxSchedulingDelayMs: number;
-  }): { reason: StreamLagReason; detail: string } {
-    const networkSignals: string[] = [];
-    if (params.packetLossPercent >= 1) networkSignals.push(`${params.packetLossPercent.toFixed(1)}% loss`);
-    if (params.rttMs >= 75) networkSignals.push(`RTT ${params.rttMs.toFixed(0)}ms`);
-    if (params.jitterMs >= 12) networkSignals.push(`jitter ${params.jitterMs.toFixed(1)}ms`);
-    if (params.jitterBufferDelayMs >= 20) networkSignals.push(`buffer ${params.jitterBufferDelayMs.toFixed(1)}ms`);
-    if (networkSignals.length > 0) {
-      return {
-        reason: "network",
-        detail: networkSignals.join(" · "),
-      };
-    }
-
-    const frameBudgetMs = params.decodeFps > 0 ? 1000 / params.decodeFps : 0;
-    const decodeSaturated =
-      frameBudgetMs > 0 &&
-      params.decodeTimeMs > 0 &&
-      params.decodeTimeMs >= frameBudgetMs * 0.82;
-    const severeDecoderStall = params.framesReceived > 100 && params.framesDecoded === 0;
-    const decoderBacklog = Math.max(0, params.framesReceived - params.framesDecoded);
-    if (severeDecoderStall || decodeSaturated || decoderBacklog >= 45 || params.framesDropped >= 8) {
-      const detailParts: string[] = [];
-      if (severeDecoderStall) detailParts.push("frames received but not decoded");
-      if (decodeSaturated) detailParts.push(`decode ${params.decodeTimeMs.toFixed(1)}ms`);
-      if (decoderBacklog >= 45) detailParts.push(`backlog ${decoderBacklog}`);
-      if (params.framesDropped >= 8) detailParts.push(`drops ${params.framesDropped}`);
-      return {
-        reason: "decoder",
-        detail: detailParts.join(" · ") || "decode saturation",
-      };
-    }
-
-    if (
-      params.inputQueueDropCount > 0 ||
-      params.inputQueueBufferedBytes >= GfnWebRtcClient.RELIABLE_MOUSE_BACKPRESSURE_BYTES ||
-      params.inputQueueMaxSchedulingDelayMs >= 4
-    ) {
-      const detailParts: string[] = [];
-      if (params.inputQueueDropCount > 0) detailParts.push(`drops ${params.inputQueueDropCount}`);
-      if (params.inputQueueBufferedBytes >= GfnWebRtcClient.RELIABLE_MOUSE_BACKPRESSURE_BYTES) {
-        detailParts.push(`buffered ${(params.inputQueueBufferedBytes / 1024).toFixed(1)}KB`);
-      }
-      if (params.inputQueueMaxSchedulingDelayMs >= 4) {
-        detailParts.push(`sched ${params.inputQueueMaxSchedulingDelayMs.toFixed(1)}ms`);
-      }
-      return {
-        reason: "input_backpressure",
-        detail: detailParts.join(" · "),
-      };
-    }
-
-    if (params.renderFps > 0 && params.decodeFps > 0) {
-      const renderGap = params.decodeFps - params.renderFps;
-      if (renderGap >= 8 || params.renderFps < 24) {
-        return {
-          reason: "render",
-          detail: `render ${params.renderFps}fps vs decode ${params.decodeFps}fps`,
-        };
-      }
-    }
-
-    return {
-      reason: params.decodeFps > 0 || params.renderFps > 0 ? "stable" : "unknown",
-      detail: params.decodeFps > 0 || params.renderFps > 0
-        ? "No dominant lag source detected"
-        : "Waiting for stream stats",
     };
   }
 
@@ -1550,6 +1597,12 @@ export class GfnWebRtcClient {
     let framesReceived = 0;
     let framesDecoded = 0;
     let framesDropped = 0;
+    let pressureSignal = {
+      active: false,
+      reason: "stable",
+      backlogFrames: 0,
+      dropRatePercent: 0,
+    };
 
     for (const entry of report.values()) {
       const stats = entry as unknown as Record<string, unknown>;
@@ -1702,7 +1755,7 @@ export class GfnWebRtcClient {
         this.diagnostics.renderTimeMs = Math.round(avgFrameDelay * 1000 * 10) / 10;
       }
 
-      const pressureSignal = this.shouldTreatAsDecoderPressure({
+      pressureSignal = this.shouldTreatAsDecoderPressure({
         framesReceived,
         framesDecoded,
         framesDropped,
@@ -1745,10 +1798,11 @@ export class GfnWebRtcClient {
     this.diagnostics.mouseResidualMagnitude = Math.hypot(this.pendingMouseDxFloat, this.pendingMouseDyFloat);
     this.diagnostics.mouseAdaptiveFlushActive = this.mouseAdaptiveFlushActive;
 
-    const lagClassification = this.classifyLagReason({
+    const lagClassification = classifyStreamLagReason({
+      nativeInputActive: this.nativeInputActive,
+      nativeRendererActive: this.diagnostics.nativeRendererActive,
       framesReceived,
       framesDecoded,
-      framesDropped,
       decodeTimeMs: this.diagnostics.decodeTimeMs,
       decodeFps: this.diagnostics.decodeFps,
       renderFps: this.diagnostics.renderFps,
@@ -1758,7 +1812,11 @@ export class GfnWebRtcClient {
       jitterBufferDelayMs: this.diagnostics.jitterBufferDelayMs,
       inputQueueBufferedBytes: reliableBufferedAmount,
       inputQueueDropCount: this.inputQueueDropCount,
-      inputQueueMaxSchedulingDelayMs: this.diagnostics.inputQueueMaxSchedulingDelayMs,
+      decoderPressureActive: pressureSignal.active,
+      decoderPressureReason: pressureSignal.reason,
+      decoderBacklogFrames: pressureSignal.backlogFrames,
+      dropRatePercent: pressureSignal.dropRatePercent,
+      backpressureThresholdBytes: GfnWebRtcClient.RELIABLE_MOUSE_BACKPRESSURE_BYTES,
     });
     this.diagnostics.lagReason = lagClassification.reason;
     this.diagnostics.lagReasonDetail = lagClassification.detail;
@@ -1789,6 +1847,7 @@ export class GfnWebRtcClient {
     for (const cleanup of this.inputCleanup.splice(0)) {
       cleanup();
     }
+    this.flushPendingMouseMovement = () => {};
     this.stopAllGamepadRumble();
     this.updateHapticsAdvertisement(false);
   }
@@ -1881,7 +1940,8 @@ export class GfnWebRtcClient {
     this.pendingMouseDyFloat = 0;
     this.pendingMouseTimestampUs = null;
     this.mouseDeltaFilter.reset();
-    this.mouseFlushLastTickMs = 0;
+    this.mouseFlushLastSendMs = 0;
+    this.mouseCoalescedBatchEntries = 0;
     this.mouseFlushBaseIntervalMs = GfnWebRtcClient.MOUSE_FLUSH_NORMAL_MS;
     this.mouseFlushIntervalMs = GfnWebRtcClient.MOUSE_FLUSH_NORMAL_MS;
     this.mouseAdaptiveFlushActive = false;
@@ -1919,6 +1979,15 @@ export class GfnWebRtcClient {
     }
     this.diagnostics.lagReason = "stable";
     this.diagnostics.lagReasonDetail = "Native streamer input bridge active";
+    this.diagnostics.inputQueueBufferedBytes = 0;
+    this.diagnostics.inputQueuePeakBufferedBytes = 0;
+    this.diagnostics.partiallyReliableInputQueueBufferedBytes = 0;
+    this.diagnostics.partiallyReliableInputQueuePeakBufferedBytes = 0;
+    this.diagnostics.inputQueueDropCount = 0;
+    this.diagnostics.inputQueueMaxSchedulingDelayMs = 0;
+    this.diagnostics.mouseAdaptiveFlushActive = false;
+    this.diagnostics.mousePacketsPerSecond = 0;
+    this.diagnostics.mouseResidualMagnitude = 0;
     this.diagnostics.partiallyReliableInputOpen = true;
     this.diagnostics.mouseMoveTransport = this.canSendInputTypePartiallyReliable(INPUT_MOUSE_REL)
       ? "partially_reliable"
@@ -2687,6 +2756,7 @@ export class GfnWebRtcClient {
       // Official GFN browser client does NOT echo the handshake back.
       // It just reads the protocol version and starts sending input.
       // (The Rust reference implementation does echo, but that's for its own server.)
+      startInputSessionClock();
       this.inputReady = true;
       this.inputProtocolVersion = version;
       this.inputEncoder.setProtocolVersion(version);
@@ -2815,8 +2885,28 @@ export class GfnWebRtcClient {
 
   private reliableDropLogged = false;
 
+  /**
+   * Send a reliable single-input packet immediately (official GFN Jc()->Tc()).
+   * When a mouse batch is pending, flush it first (official kc(): cl() then send key).
+   */
+  private sendReliableSingleInput(payload: Uint8Array): void {
+    this.flushPendingMouseMovement();
+
+    let packet = payload;
+    if (this.inputProtocolVersion > 2) {
+      packet = payload.slice();
+      restampProtocolV3OuterTimestamp(packet, sendTimestampUs());
+    } else if (payload.byteOffset !== 0 || payload.byteLength !== payload.buffer.byteLength) {
+      packet = payload.slice();
+    }
+
+    this.sendReliable(packet);
+  }
+
   private sendNativeInput(payload: Uint8Array, partiallyReliable: boolean): void {
-    const safePayload = Uint8Array.from(payload);
+    const safePayload = payload.byteOffset === 0 && payload.byteLength === payload.buffer.byteLength
+      ? payload
+      : payload.slice();
     window.openNow.sendNativeInput({
       payload: safePayload,
       partiallyReliable,
@@ -2859,7 +2949,7 @@ export class GfnWebRtcClient {
     if (!this.inputReady) {
       return;
     }
-    this.sendReliable(this.inputEncoder.encodeLockKeysSync(state));
+    this.sendReliableSingleInput(this.inputEncoder.encodeLockKeysSync(state));
   }
 
   private requestEscapeKeyboardLock(): void {
@@ -2982,7 +3072,7 @@ export class GfnWebRtcClient {
         modifiers: 0,
         timestampUs: timestampUs(),
       });
-      this.sendReliable(payload);
+      this.sendReliableSingleInput(payload);
     }
     this.pressedKeys.clear();
   }
@@ -3001,7 +3091,7 @@ export class GfnWebRtcClient {
         modifiers,
         timestampUs: timestampUs(),
       });
-    this.sendReliable(payload);
+    this.sendReliableSingleInput(payload);
   }
 
   public sendAntiAfkPulse(): boolean {
@@ -3116,13 +3206,15 @@ export class GfnWebRtcClient {
         : GfnWebRtcClient.MOUSE_FLUSH_SAFE_MS;
     this.mouseFlushIntervalMs = this.mouseFlushBaseIntervalMs;
     this.mouseAdaptiveFlushActive = false;
-    this.mouseFlushLastTickMs = performance.now();
+    const mouseInitNow = performance.now();
+    this.mouseFlushLastSendMs = mouseInitNow;
+    this.mouseCoalescedBatchEntries = 0;
     this.pendingMouseDxFloat = 0;
     this.pendingMouseDyFloat = 0;
     this.pendingMouseTimestampUs = null;
     this.mousePacketsPerSecond = 0;
     this.mousePacketsSentInWindow = 0;
-    this.mousePacketRateWindowStartedAtMs = this.mouseFlushLastTickMs;
+    this.mousePacketRateWindowStartedAtMs = mouseInitNow;
     this.mouseDeltaFilter.reset();
     this.mouseDeltaFilter.setRelaxedForRawInput(hasPointerRawUpdate);
     this.log(
@@ -3167,56 +3259,48 @@ export class GfnWebRtcClient {
       return pointerScaleCache;
     };
 
-    const flushMouse = () => {
+    const updateMousePacketRate = (): void => {
+      const now = performance.now();
+      if (this.mousePacketRateWindowStartedAtMs <= 0) {
+        this.mousePacketRateWindowStartedAtMs = now;
+      }
+      const elapsed = now - this.mousePacketRateWindowStartedAtMs;
+      if (elapsed >= 1000) {
+        this.mousePacketsPerSecond = Math.round((this.mousePacketsSentInWindow * 1000) / elapsed);
+        this.mousePacketsSentInWindow = 0;
+        this.mousePacketRateWindowStartedAtMs = now;
+      }
+    };
+
+    let pointerRawStuckCount = 0;
+    let lastPointerClientX = Number.NaN;
+    let lastPointerClientY = Number.NaN;
+
+    const hasPendingMouseMovement = (): boolean =>
+      Math.abs(this.pendingMouseDxFloat) >= 0.5 || Math.abs(this.pendingMouseDyFloat) >= 0.5;
+
+    const flushMouse = (): boolean => {
       const tickNow = performance.now();
-      if (this.mouseFlushLastTickMs > 0) {
-        const expected = this.mouseFlushLastTickMs + this.mouseFlushIntervalMs;
-        const schedulingDelay = Math.max(0, tickNow - expected);
-        this.inputQueueMaxSchedulingDelayMsWindow = Math.max(
-          this.inputQueueMaxSchedulingDelayMsWindow,
-          schedulingDelay,
-        );
-      }
-      this.mouseFlushLastTickMs = tickNow;
-
-      if (!this.inputReady) {
-        return;
+      if (!this.inputReady || !hasPendingMouseMovement()) {
+        return false;
       }
 
-      const hasPendingMovement = Math.abs(this.pendingMouseDxFloat) >= 0.5 || Math.abs(this.pendingMouseDyFloat) >= 0.5;
-      if (!hasPendingMovement) {
-        return;
-      }
-
-      const reliable = this.reliableInputChannel;
-      const mouseMoveUsesPartiallyReliable = this.canSendInputTypePartiallyReliable(INPUT_MOUSE_REL);
-      if (
-        !mouseMoveUsesPartiallyReliable
-        && 
-        reliable?.readyState === "open"
-        && reliable.bufferedAmount > GfnWebRtcClient.RELIABLE_MOUSE_BACKPRESSURE_BYTES
-      ) {
-        const now = performance.now();
-        this.inputQueueDropCount++;
-        if (now - this.mouseBackpressureLoggedAtMs >= GfnWebRtcClient.BACKPRESSURE_LOG_INTERVAL_MS) {
-          this.mouseBackpressureLoggedAtMs = now;
-          this.log(`Dropping stale mouse movement (reliable bufferedAmount=${reliable.bufferedAmount})`);
-        }
-        this.pendingMouseDxFloat = 0;
-        this.pendingMouseDyFloat = 0;
-        this.pendingMouseTimestampUs = null;
-        return;
-      }
       const { scaleX, scaleY } = getPointerScale();
       const dxQuantized = quantizeMouseDeltaWithResidual(this.pendingMouseDxFloat);
       const dyQuantized = quantizeMouseDeltaWithResidual(this.pendingMouseDyFloat);
       const dxServer = Math.max(-32768, Math.min(32767, Math.round(dxQuantized.send * scaleX)));
       const dyServer = Math.max(-32768, Math.min(32767, Math.round(dyQuantized.send * scaleY)));
       if (dxServer === 0 && dyServer === 0) {
-        // Keep pending movement intact until a non-zero packet is sent.
-        // Otherwise quantized integer deltas can be dropped when server scaling rounds to zero.
-        return;
+        return false;
       }
+
+      const expectedSendAt = this.mouseFlushLastSendMs + this.mouseFlushIntervalMs;
+      const schedulingDelay = Math.max(0, tickNow - expectedSendAt);
+      this.inputQueueMaxSchedulingDelayMsWindow = Math.max(
+        this.inputQueueMaxSchedulingDelayMsWindow,
+        schedulingDelay,
+      );
+
       this.pendingMouseDxFloat = dxQuantized.residual;
       this.pendingMouseDyFloat = dyQuantized.residual;
 
@@ -3227,56 +3311,73 @@ export class GfnWebRtcClient {
       });
 
       this.pendingMouseTimestampUs = null;
+      this.mouseCoalescedBatchEntries = 0;
       this.sendInputPacket(payload, INPUT_MOUSE_REL);
       this.mousePacketsSentInWindow += 1;
-      // Update simulated absolute pointer (stored in server pixels) if we have a baseline.
+      this.mouseFlushLastSendMs = tickNow;
+      updateMousePacketRate();
+      this.mouseAdaptiveFlushActive = false;
+
       if (simulatedAbsX !== null && simulatedAbsY !== null) {
         simulatedAbsX += dxServer;
         simulatedAbsY += dyServer;
       }
+      return true;
     };
-    const scheduleNextFlush = (): void => {
-      if (this.mouseFlushTimer !== null) {
-        window.clearTimeout(this.mouseFlushTimer);
+
+    this.flushPendingMouseMovement = () => {
+      try {
+        flushMouse();
+      } catch (err) {
+        this.log(`Mouse flush failed (non-fatal): ${String(err)}`);
       }
+    };
+
+    /** Official GFN dl(): schedule cl() after the coalesce interval elapses. */
+    const scheduleMouseBatchFlush = (): void => {
+      if (this.mouseFlushTimer !== null) {
+        return;
+      }
+
+      const now = performance.now();
+      const elapsed = now - this.mouseFlushLastSendMs;
+      if (this.mouseFlushIntervalMs <= 0 || elapsed >= this.mouseFlushIntervalMs) {
+        flushMouse();
+        if (hasPendingMouseMovement()) {
+          scheduleMouseBatchFlush();
+        }
+        return;
+      }
+
       this.mouseFlushTimer = window.setTimeout(() => {
+        this.mouseFlushTimer = null;
         try {
           flushMouse();
-          const reliableBufferedAmount = this.reliableInputChannel?.bufferedAmount ?? 0;
-          const schedulingDelay = this.inputQueueMaxSchedulingDelayMsWindow;
-          const nextInterval = chooseAdaptiveMouseFlushInterval({
-            baseIntervalMs: this.mouseFlushBaseIntervalMs,
-            currentIntervalMs: this.mouseFlushIntervalMs,
-            reliableBufferedAmount,
-            schedulingDelayMs: schedulingDelay,
-            canUsePartiallyReliableMouse: this.canSendInputTypePartiallyReliable(INPUT_MOUSE_REL),
-            backpressureThresholdBytes: GfnWebRtcClient.RELIABLE_MOUSE_BACKPRESSURE_BYTES,
-            minIntervalMs: GfnWebRtcClient.MOUSE_FLUSH_MIN_MS,
-            maxIntervalMs: GfnWebRtcClient.MOUSE_FLUSH_MAX_MS,
-          });
-          this.mouseAdaptiveFlushActive = nextInterval !== this.mouseFlushBaseIntervalMs;
-          this.mouseFlushIntervalMs = nextInterval;
-          const now = performance.now();
-          if (this.mousePacketRateWindowStartedAtMs <= 0) {
-            this.mousePacketRateWindowStartedAtMs = now;
-          }
-          const elapsed = now - this.mousePacketRateWindowStartedAtMs;
-          if (elapsed >= 1000) {
-            this.mousePacketsPerSecond = Math.round((this.mousePacketsSentInWindow * 1000) / elapsed);
-            this.mousePacketsSentInWindow = 0;
-            this.mousePacketRateWindowStartedAtMs = now;
-          }
         } catch (err) {
           this.log(`Mouse flush tick failed (non-fatal): ${String(err)}`);
         } finally {
-          // clearTimers() nulls this timer during teardown; avoid re-arming a zombie loop.
-          if (this.mouseFlushTimer !== null) {
-            scheduleNextFlush();
+          if (hasPendingMouseMovement()) {
+            scheduleMouseBatchFlush();
           }
         }
-      }, this.mouseFlushIntervalMs);
+      }, Math.max(0, this.mouseFlushIntervalMs - elapsed));
     };
-    scheduleNextFlush();
+
+    /** Official GFN Cp(): after wm(), flush when the mouse batch transitions empty -> non-empty. */
+    const afterPointerMovement = (): void => {
+      if (!hasPendingMouseMovement()) {
+        return;
+      }
+      const elapsed = performance.now() - this.mouseFlushLastSendMs;
+      if (this.mouseFlushIntervalMs <= 0 || elapsed >= this.mouseFlushIntervalMs) {
+        flushMouse();
+        if (hasPendingMouseMovement()) {
+          scheduleMouseBatchFlush();
+        }
+      } else {
+        scheduleMouseBatchFlush();
+      }
+    };
 
     const tryAutoLock = (): void => {
       try {
@@ -3375,7 +3476,23 @@ export class GfnWebRtcClient {
 
       this.pendingMouseDxFloat += adjustedDx;
       this.pendingMouseDyFloat += adjustedDy;
-      this.pendingMouseTimestampUs = timestampUs(eventTimestampMs);
+      if (this.pendingMouseTimestampUs === null) {
+        this.pendingMouseTimestampUs = timestampUs(eventTimestampMs);
+      }
+      this.mouseCoalescedBatchEntries += 1;
+    };
+
+    const processRelativePointerSamples = (
+      samples: readonly { movementX: number; movementY: number; timeStamp: number }[],
+    ): void => {
+      const hadBatch = hasPendingMouseMovement();
+      const { events } = subsampleCoalescedPointerEvents(samples, this.mouseCoalescedBatchEntries);
+      for (const sample of events) {
+        queueMouseMovement(sample.movementX, sample.movementY, sample.timeStamp);
+      }
+      if (!hadBatch && hasPendingMouseMovement()) {
+        afterPointerMovement();
+      }
     };
 
     const onPointerMove = (event: PointerEvent) => {
@@ -3388,15 +3505,28 @@ export class GfnWebRtcClient {
       }
 
       if (isPointerLockActive()) {
-        // Pointer lock active: use raw relative movement (movementX/Y).
+        if (hasPointerRawUpdate && event.type === "pointerrawupdate") {
+          if (event.movementX === 0 && event.movementY === 0) {
+            const clientMoved =
+              event.clientX !== lastPointerClientX || event.clientY !== lastPointerClientY;
+            lastPointerClientX = event.clientX;
+            lastPointerClientY = event.clientY;
+            if (clientMoved && ++pointerRawStuckCount >= 8) {
+              this.log("pointerrawupdate stuck; switching to immediate mouse flush");
+              this.mouseFlushIntervalMs = 0;
+              pointerRawStuckCount = 0;
+            }
+          } else {
+            pointerRawStuckCount = 0;
+          }
+        }
+
         const samples = hasCoalescedEvents ? event.getCoalescedEvents() : [];
         if (samples.length > 0) {
-          for (const sample of samples) {
-            queueMouseMovement(sample.movementX, sample.movementY, sample.timeStamp);
-          }
+          processRelativePointerSamples(samples);
           return;
         }
-        queueMouseMovement(event.movementX, event.movementY, event.timeStamp);
+        processRelativePointerSamples([event]);
       } else if (mouseInStreamView) {
         // Pointer lock disabled: keep local cursor tracking up to date without
         // forwarding mouse movement into the stream.
@@ -3414,7 +3544,7 @@ export class GfnWebRtcClient {
       } catch {}
       if (this.isStreamInputBlocked()) return;
       if (isPointerLockActive()) {
-        queueMouseMovement(event.movementX, event.movementY, event.timeStamp);
+        processRelativePointerSamples([event]);
       } else if (mouseInStreamView) {
         // Pointer lock disabled: keep local cursor tracking up to date without
         // forwarding mouse movement into the stream.
@@ -3458,18 +3588,23 @@ export class GfnWebRtcClient {
         return;
       }
 
+      if (this.pressedKeys.has(mapped.vk)) {
+        event.preventDefault();
+        return;
+      }
+
       event.preventDefault();
       this.pressedKeys.add(mapped.vk);
+
+      const eventTimestampUs = timestampUs(event.timeStamp);
 
       const payload = this.inputEncoder.encodeKeyDown({
         keycode: mapped.vk,
         scancode: mapped.scancode,
         modifiers: modifierFlags(event),
-        // Use a fresh monotonic timestamp for keyboard events. In some
-        // fullscreen paths, event.timeStamp can be unstable.
-        timestampUs: timestampUs(),
+        timestampUs: eventTimestampUs,
       });
-      this.sendReliable(payload);
+      this.sendReliableSingleInput(payload);
     };
 
     const onKeyUp = (event: KeyboardEvent) => {
@@ -3478,25 +3613,54 @@ export class GfnWebRtcClient {
         return;
       }
 
+      this.syncLockKeysState(event);
+
       const isEscapeEvent =
         event.key === "Escape"
         || event.key === "Esc"
         || event.code === "Escape"
         || event.keyCode === 27;
+      const isCapsLockToggle = event.code === "CapsLock";
       const mapped = mapKeyboardEvent(event, this.keyboardLayout) ?? (isEscapeEvent ? codeMap.Escape : null);
-      if (!mapped) {
+      if (!mapped && !isCapsLockToggle) {
+        return;
+      }
+
+      event.preventDefault();
+      const eventTimestampUs = timestampUs(event.timeStamp);
+      const modifiers = modifierFlags(event);
+
+      if (isCapsLockToggle) {
+        // Official GFN gg(): CapsLock keyup sends synthetic keydown then keyup (vk 160).
+        const capsVk = 0xa0;
+        this.sendReliableSingleInput(this.inputEncoder.encodeKeyDown({
+          keycode: capsVk,
+          scancode: 0,
+          modifiers,
+          timestampUs: eventTimestampUs,
+        }));
+        this.pressedKeys.delete(capsVk);
+        this.sendReliableSingleInput(this.inputEncoder.encodeKeyUp({
+          keycode: capsVk,
+          scancode: 0,
+          modifiers,
+          timestampUs: eventTimestampUs,
+        }));
+        return;
+      }
+
+      if (!mapped || !this.pressedKeys.has(mapped.vk)) {
         return;
       }
 
       event.preventDefault();
       this.pressedKeys.delete(mapped.vk);
-      const payload = this.inputEncoder.encodeKeyUp({
+      this.sendReliableSingleInput(this.inputEncoder.encodeKeyUp({
         keycode: mapped.vk,
         scancode: mapped.scancode,
-        modifiers: modifierFlags(event),
-        timestampUs: timestampUs(),
-      });
-      this.sendReliable(payload);
+        modifiers,
+        timestampUs: eventTimestampUs,
+      }));
     };
 
     const onMouseDown = (event: MouseEvent) => {
@@ -3513,7 +3677,7 @@ export class GfnWebRtcClient {
         timestampUs: timestampUs(event.timeStamp),
       });
       // Official GFN client sends all mouse events on reliable channel (input_channel_v1)
-      this.sendReliable(payload);
+      this.sendReliableSingleInput(payload);
     };
 
     const onMouseUp = (event: MouseEvent) => {
@@ -3530,7 +3694,7 @@ export class GfnWebRtcClient {
         timestampUs: timestampUs(event.timeStamp),
       });
       // Official GFN client sends all mouse events on reliable channel (input_channel_v1)
-      this.sendReliable(payload);
+      this.sendReliableSingleInput(payload);
     };
 
     const onWheel = (event: WheelEvent) => {
@@ -3549,7 +3713,7 @@ export class GfnWebRtcClient {
         delta,
         timestampUs: timestampUs(event.timeStamp),
       });
-      this.sendReliable(payload);
+      this.sendReliableSingleInput(payload);
     };
 
     const onClick = () => {
@@ -3679,7 +3843,7 @@ export class GfnWebRtcClient {
           modifiers: 0,
           timestampUs: timestampUs(),
         });
-        this.sendReliable(escDown);
+        this.sendReliableSingleInput(escDown);
 
         const escUp = this.inputEncoder.encodeKeyUp({
           keycode: 0x1B,
@@ -3687,7 +3851,7 @@ export class GfnWebRtcClient {
           modifiers: 0,
           timestampUs: timestampUs(),
         });
-        this.sendReliable(escUp);
+        this.sendReliableSingleInput(escUp);
 
         schedulePointerLockRetention("synthetic Escape");
       }, 50);
@@ -3865,7 +4029,7 @@ export class GfnWebRtcClient {
           modifiers: 0,
           timestampUs: timestampUs(),
         });
-        this.sendReliable(escDown);
+        this.sendReliableSingleInput(escDown);
 
         const escUp = this.inputEncoder.encodeKeyUp({
           keycode: 0x1B,
@@ -3873,7 +4037,7 @@ export class GfnWebRtcClient {
           modifiers: 0,
           timestampUs: timestampUs(),
         });
-        this.sendReliable(escUp);
+        this.sendReliableSingleInput(escUp);
       });
     } catch {}
 

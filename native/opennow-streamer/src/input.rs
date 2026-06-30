@@ -10,6 +10,7 @@ pub const INPUT_MOUSE_BUTTON_DOWN: u32 = 8;
 pub const INPUT_MOUSE_BUTTON_UP: u32 = 9;
 pub const INPUT_MOUSE_WHEEL: u32 = 10;
 pub const INPUT_GAMEPAD: u32 = 12;
+pub const INPUT_LOCK_KEYS_SYNC: u32 = 19;
 
 pub const GAMEPAD_MAX_CONTROLLERS: u8 = 4;
 pub const GAMEPAD_PACKET_SIZE: usize = 38;
@@ -20,6 +21,8 @@ const WRAPPER_LEGACY_INPUT: u8 = 0x21;
 const WRAPPER_SINGLE_INPUT: u8 = 0x22;
 const WRAPPER_PARTIALLY_RELIABLE_INPUT: u8 = 0x26;
 const WRAPPER_VERSION_MARKER: u8 = 0x23;
+const WRAPPER_VERSION_HEADER_BYTES: usize = 9;
+const WRAPPER_SINGLE_BODY_OFFSET: usize = WRAPPER_VERSION_HEADER_BYTES + 1;
 const GAMEPAD_PAYLOAD_SIZE: u16 = 26;
 const GAMEPAD_INNER_SIZE: u16 = 20;
 const GAMEPAD_RESERVED_MARKER: u16 = 85;
@@ -114,6 +117,13 @@ impl InputEncoder {
         self.encode_keyboard(INPUT_KEY_UP, payload)
     }
 
+    pub fn encode_lock_keys_sync(&self, state: u8) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(5);
+        put_u32_le(&mut bytes, INPUT_LOCK_KEYS_SYNC);
+        bytes.push(state);
+        wrap_single_input(self.protocol_version, 0, &bytes)
+    }
+
     pub fn encode_mouse_move(&self, payload: MouseMovePayload) -> Vec<u8> {
         let mut bytes = Vec::with_capacity(22);
         put_u32_le(&mut bytes, INPUT_MOUSE_REL);
@@ -191,6 +201,78 @@ impl InputEncoder {
             .insert(controller_id, current.wrapping_add(1));
         current
     }
+}
+
+/// Rewrite the protocol v3 `[0x23][timestamp]` header to the send-time session clock.
+pub fn restamp_protocol_v3_outer_timestamp(packet: &mut [u8], timestamp_us: u64) -> bool {
+    if packet.len() < WRAPPER_VERSION_HEADER_BYTES || packet[0] != WRAPPER_VERSION_MARKER {
+        return false;
+    }
+
+    packet[1..WRAPPER_VERSION_HEADER_BYTES].copy_from_slice(&timestamp_us.to_be_bytes());
+    true
+}
+
+/// Coalesce protocol v3 single-input packets into one datachannel payload.
+/// Official GFN batches multiple `[0x22][body]` frames under one `[0x23][timestamp]` header
+/// stamped with the send-time session clock (`ed()`), not per-event capture timestamps.
+/// Returns `None` when payloads cannot be safely coalesced (for example protocol v2).
+pub fn combine_single_input_packets(
+    payloads: &[Vec<u8>],
+    send_timestamp_us: u64,
+) -> Option<Vec<u8>> {
+    if payloads.is_empty() {
+        return None;
+    }
+    if payloads.len() == 1 {
+        let mut packet = payloads[0].clone();
+        restamp_protocol_v3_outer_timestamp(&mut packet, send_timestamp_us);
+        return Some(packet);
+    }
+
+    let mut combined_bodies = Vec::new();
+
+    for payload in payloads {
+        if payload.len() >= WRAPPER_SINGLE_BODY_OFFSET
+            && payload[0] == WRAPPER_VERSION_MARKER
+            && payload[WRAPPER_VERSION_HEADER_BYTES] == WRAPPER_SINGLE_INPUT
+        {
+            combined_bodies.push(WRAPPER_SINGLE_INPUT);
+            combined_bodies.extend_from_slice(&payload[WRAPPER_SINGLE_BODY_OFFSET..]);
+            continue;
+        }
+
+        return None;
+    }
+
+    let mut bytes = Vec::with_capacity(WRAPPER_VERSION_HEADER_BYTES + combined_bodies.len());
+    bytes.push(WRAPPER_VERSION_MARKER);
+    bytes.extend_from_slice(&send_timestamp_us.to_be_bytes());
+    bytes.extend_from_slice(&combined_bodies);
+    Some(bytes)
+}
+
+/// Finalize reliable keyboard/button packets for send, restamping v3 headers at send time.
+pub fn finalize_reliable_single_input_packets(
+    payloads: &[Vec<u8>],
+    send_timestamp_us: u64,
+) -> Vec<Vec<u8>> {
+    if payloads.is_empty() {
+        return Vec::new();
+    }
+
+    if let Some(combined) = combine_single_input_packets(payloads, send_timestamp_us) {
+        return vec![combined];
+    }
+
+    payloads
+        .iter()
+        .map(|payload| {
+            let mut packet = payload.clone();
+            restamp_protocol_v3_outer_timestamp(&mut packet, send_timestamp_us);
+            packet
+        })
+        .collect()
 }
 
 pub fn partially_reliable_hid_mask_for_input_type(input_type: u32) -> u32 {
@@ -433,6 +515,83 @@ fn put_u64_be(bytes: &mut Vec<u8>, value: u64) {
 
 fn put_u64_le(bytes: &mut Vec<u8>, value: u64) {
     bytes.extend_from_slice(&value.to_le_bytes());
+}
+
+#[cfg(test)]
+mod combine_tests {
+    use super::*;
+
+    #[test]
+    fn combines_protocol_v3_single_input_packets() {
+        let encoder = InputEncoder::new(3);
+        let first = encoder.encode_key_down(KeyboardPayload {
+            keycode: 0x0041,
+            scancode: 0,
+            modifiers: 0,
+            timestamp_us: 10,
+        });
+        let second = encoder.encode_key_down(KeyboardPayload {
+            keycode: 0x0042,
+            scancode: 0,
+            modifiers: 0,
+            timestamp_us: 20,
+        });
+
+        let combined = combine_single_input_packets(&[first.clone(), second.clone()], 20)
+            .expect("v3 keyboard packets should combine");
+
+        assert_eq!(combined[0], WRAPPER_VERSION_MARKER);
+        assert_eq!(&combined[1..9], &20u64.to_be_bytes());
+        assert_eq!(combined[9], WRAPPER_SINGLE_INPUT);
+        assert_eq!(&combined[10..14], &[0x03, 0, 0, 0]);
+        assert_eq!(combined[28], WRAPPER_SINGLE_INPUT);
+        assert_eq!(&combined[29..33], &[0x03, 0, 0, 0]);
+    }
+
+    #[test]
+    fn leaves_protocol_v2_packets_uncombined() {
+        let encoder = InputEncoder::new(2);
+        let first = encoder.encode_key_down(KeyboardPayload {
+            keycode: 0x0041,
+            scancode: 0,
+            modifiers: 0,
+            timestamp_us: 10,
+        });
+        let second = encoder.encode_key_up(KeyboardPayload {
+            keycode: 0x0041,
+            scancode: 0,
+            modifiers: 0,
+            timestamp_us: 11,
+        });
+
+        assert!(combine_single_input_packets(&[first, second], 11).is_none());
+    }
+
+    #[test]
+    fn restamps_single_v3_packet_at_send_time() {
+        let encoder = InputEncoder::new(3);
+        let mut packet = encoder.encode_key_down(KeyboardPayload {
+            keycode: 0x0041,
+            scancode: 0,
+            modifiers: 0,
+            timestamp_us: 10,
+        });
+
+        assert!(restamp_protocol_v3_outer_timestamp(&mut packet, 99));
+        assert_eq!(&packet[1..9], &99u64.to_be_bytes());
+    }
+
+    #[test]
+    fn encodes_lock_keys_sync_as_single_input() {
+        let encoder = InputEncoder::new(3);
+        let payload = encoder.encode_lock_keys_sync(0x73);
+
+        assert_eq!(payload.len(), 15);
+        assert_eq!(payload[0], WRAPPER_VERSION_MARKER);
+        assert_eq!(payload[9], WRAPPER_SINGLE_INPUT);
+        assert_eq!(&payload[10..14], &[0x13, 0, 0, 0]);
+        assert_eq!(payload[14], 0x73);
+    }
 }
 
 #[cfg(test)]

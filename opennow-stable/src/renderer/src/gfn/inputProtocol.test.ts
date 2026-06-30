@@ -24,6 +24,12 @@ import {
   INPUT_MOUSE_REL,
   INPUT_MOUSE_WHEEL,
   INPUT_TEXT,
+  finalizeReliableSingleInputPackets,
+  combineSingleInputPackets,
+  restampProtocolV3OuterTimestamp,
+  startInputSessionClock,
+  sendTimestampUs,
+  captureTimestampUs,
   InputEncoder,
   codeMap,
   isPartiallyReliableHidTransferEligible,
@@ -161,7 +167,7 @@ test("uses German physical keys for synthetic text injection with de-DE layout",
   assert.deepEqual(mapTextCharToKeySpec("_", "de-DE"), { ...codeMap.Slash, shift: true });
 });
 
-test("modifierFlags matches official yS() (no lock keys in per-key byte)", () => {
+test("modifierFlags matches official Cb() including xb() shift bit", () => {
   const event = keyboardEvent({
     code: "KeyA",
     key: "a",
@@ -174,6 +180,16 @@ test("modifierFlags matches official yS() (no lock keys in per-key byte)", () =>
   });
 
   assert.equal(modifierFlags(event), 0x0f);
+});
+
+test("shiftModifierByte matches official xb() on Mac shifted punctuation", () => {
+  const event = keyboardEvent({
+    code: "Digit1",
+    key: "!",
+    keyCode: 49,
+    shiftKey: true,
+  });
+  assert.equal(modifierFlags(event, true), 0x01);
 });
 
 test("lockKeysStateFromEvent encodes caps/num/scroll for sync packet", () => {
@@ -370,4 +386,64 @@ test("partially reliable HID helpers only mark mouse-relative input eligible", (
   assert.equal(isPartiallyReliableHidTransferEligible(INPUT_MOUSE_REL), true);
   assert.equal(isPartiallyReliableHidTransferEligible(INPUT_MOUSE_BUTTON_DOWN), false);
   assert.equal(isPartiallyReliableHidTransferEligible(INPUT_GAMEPAD), false);
+});
+
+test("uses session-relative capture and send timestamps", () => {
+  startInputSessionClock(1_000);
+  assert.equal(captureTimestampUs(1_010), 10_000n);
+  assert.equal(sendTimestampUs(1_025), 25_000n);
+});
+
+test("restamps protocol v3 outer header at send time", () => {
+  const encoder = new InputEncoder();
+  encoder.setProtocolVersion(3);
+  const packet = encoder.encodeKeyDown({
+    keycode: 0x41,
+    scancode: 0,
+    modifiers: 0,
+    timestampUs: 7n,
+  });
+
+  startInputSessionClock(0);
+  assert.ok(restampProtocolV3OuterTimestamp(packet, 99n));
+  assert.equal(view(packet).getBigUint64(1, false), 99n);
+});
+
+test("combines multiple v3 keyboard packets under one outer header", () => {
+  const encoder = new InputEncoder();
+  encoder.setProtocolVersion(3);
+  const down = encoder.encodeKeyDown({
+    keycode: 0x41,
+    scancode: 0,
+    modifiers: 0,
+    timestampUs: 1n,
+  });
+  const up = encoder.encodeKeyUp({
+    keycode: 0x41,
+    scancode: 0,
+    modifiers: 0,
+    timestampUs: 2n,
+  });
+
+  startInputSessionClock(0);
+  const combined = combineSingleInputPackets([down, up], 50n);
+  assert.ok(combined);
+  assert.equal(combined![0], 0x23);
+  assert.equal(view(combined!).getBigUint64(1, false), 50n);
+  assert.equal(combined![9], 0x22);
+  assert.equal(combined![28], 0x22);
+  assert.equal(view(combined!).getUint32(10, true), INPUT_KEY_DOWN);
+  assert.equal(view(combined!).getUint32(29, true), INPUT_KEY_UP);
+});
+
+test("finalizeReliableSingleInputPackets coalesces keyboard bursts", () => {
+  const encoder = new InputEncoder();
+  encoder.setProtocolVersion(3);
+  const packets = finalizeReliableSingleInputPackets([
+    encoder.encodeKeyDown({ keycode: 0x41, scancode: 0, modifiers: 0, timestampUs: 1n }),
+    encoder.encodeKeyDown({ keycode: 0x42, scancode: 0, modifiers: 0, timestampUs: 2n }),
+  ], 77n);
+
+  assert.equal(packets.length, 1);
+  assert.equal(view(packets[0]).getBigUint64(1, false), 77n);
 });

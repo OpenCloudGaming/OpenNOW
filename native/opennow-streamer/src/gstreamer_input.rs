@@ -4,9 +4,10 @@ use crate::gstreamer_platform::win32_renderer_window;
 use crate::input::InputEncoder;
 #[cfg(target_os = "windows")]
 use crate::input::{
-    layout_mapped_keyboard_keycode, layout_mapped_keyboard_scancode, GamepadInput, KeyboardPayload,
-    MouseButtonPayload, MouseMovePayload, MouseWheelPayload, GAMEPAD_MAX_CONTROLLERS,
-    PARTIALLY_RELIABLE_GAMEPAD_MASK_ALL,
+    finalize_reliable_single_input_packets, layout_mapped_keyboard_keycode,
+    layout_mapped_keyboard_scancode, restamp_protocol_v3_outer_timestamp, GamepadInput,
+    KeyboardPayload, MouseButtonPayload, MouseMovePayload, MouseWheelPayload,
+    GAMEPAD_MAX_CONTROLLERS, PARTIALLY_RELIABLE_GAMEPAD_MASK_ALL,
 };
 use crate::protocol::Event;
 #[cfg(target_os = "windows")]
@@ -104,6 +105,10 @@ pub(crate) enum NativeWindowInputEvent {
     Shortcut {
         action: NativeStreamerShortcutAction,
     },
+    ClipboardPaste,
+    InputCaptureChanged {
+        captured: bool,
+    },
     Key {
         pressed: bool,
         keycode: u16,
@@ -124,6 +129,9 @@ pub(crate) enum NativeWindowInputEvent {
     MouseWheel {
         delta: i16,
         timestamp_us: u64,
+    },
+    LockKeysSync {
+        state: u8,
     },
 }
 
@@ -309,34 +317,40 @@ impl NativeWindowInputBridge {
             );
 
             while !thread_stop.load(Ordering::SeqCst) {
-                match receiver.recv_timeout(NATIVE_INPUT_BRIDGE_POLL_INTERVAL) {
-                    Ok(event) => {
-                        pending_events.clear();
-                        pending_events.push(event);
-                        let mut disconnected = false;
-                        while pending_events.len() < NATIVE_INPUT_DRAIN_MAX_EVENTS {
-                            match receiver.try_recv() {
-                                Ok(event) => pending_events.push(event),
-                                Err(TryRecvError::Empty) => break,
-                                Err(TryRecvError::Disconnected) => {
-                                    disconnected = true;
-                                    break;
-                                }
-                            }
-                        }
-                        send_native_window_input_events(
-                            &input_thread_state,
-                            &input_thread_channels,
-                            &thread_sender,
-                            &pending_events,
-                        );
-                        if disconnected {
-                            break;
+                pending_events.clear();
+                loop {
+                    match receiver.try_recv() {
+                        Ok(event) => pending_events.push(event),
+                        Err(TryRecvError::Empty) => break,
+                        Err(TryRecvError::Disconnected) => return,
+                    }
+                    if pending_events.len() >= NATIVE_INPUT_DRAIN_MAX_EVENTS {
+                        break;
+                    }
+                }
+
+                if pending_events.is_empty() {
+                    match receiver.recv_timeout(NATIVE_INPUT_BRIDGE_POLL_INTERVAL) {
+                        Ok(event) => pending_events.push(event),
+                        Err(RecvTimeoutError::Timeout) => continue,
+                        Err(RecvTimeoutError::Disconnected) => break,
+                    }
+
+                    while pending_events.len() < NATIVE_INPUT_DRAIN_MAX_EVENTS {
+                        match receiver.try_recv() {
+                            Ok(event) => pending_events.push(event),
+                            Err(TryRecvError::Empty) => break,
+                            Err(TryRecvError::Disconnected) => break,
                         }
                     }
-                    Err(RecvTimeoutError::Timeout) => {}
-                    Err(RecvTimeoutError::Disconnected) => break,
                 }
+
+                send_native_window_input_events(
+                    &input_thread_state,
+                    &input_thread_channels,
+                    &thread_sender,
+                    &pending_events,
+                );
             }
         });
         let gamepad_thread = Some(spawn_native_gamepad_thread(
@@ -391,14 +405,24 @@ fn send_native_window_input_events(
         return;
     }
 
-    // Forward shortcuts immediately (before input readiness check)
-    // Shortcuts are local control and don't need the stream channel
+    // Forward shortcuts and host bridge events immediately (before input readiness check)
+    // These are local control events and don't need the stream channel
     let mut other_events = Vec::new();
     for event in events.iter().copied() {
         match event {
             NativeWindowInputEvent::Shortcut { action } => {
                 if let Some(sender) = event_sender.as_ref() {
                     let _ = sender.send(Event::Shortcut { action });
+                }
+            }
+            NativeWindowInputEvent::ClipboardPaste => {
+                if let Some(sender) = event_sender.as_ref() {
+                    let _ = sender.send(Event::ClipboardPaste);
+                }
+            }
+            NativeWindowInputEvent::InputCaptureChanged { captured } => {
+                if let Some(sender) = event_sender.as_ref() {
+                    let _ = sender.send(Event::InputCaptureChanged { captured });
                 }
             }
             _ => {
@@ -412,37 +436,84 @@ fn send_native_window_input_events(
         return;
     }
 
-    let Ok(encoder) = input_state.encoder.lock() else {
-        return;
-    };
-
     let mut pending_mouse_move: Option<(i32, i32, u64)> = None;
-    for event in other_events.iter().copied() {
-        if let NativeWindowInputEvent::MouseMove {
-            dx,
-            dy,
-            timestamp_us,
-        } = event
-        {
-            let (pending_dx, pending_dy, pending_timestamp_us) =
-                pending_mouse_move.get_or_insert((0, 0, timestamp_us));
-            *pending_dx = pending_dx.saturating_add(i32::from(dx));
-            *pending_dy = pending_dy.saturating_add(i32::from(dy));
-            *pending_timestamp_us = timestamp_us;
-            continue;
+    let mut current_reliable_singles: Vec<Vec<u8>> = Vec::new();
+    let mut reliable_single_batches: Vec<Vec<Vec<u8>>> = Vec::new();
+    let mut pending_mouse_packets: Vec<Vec<u8>> = Vec::new();
+
+    {
+        let Ok(encoder) = input_state.encoder.lock() else {
+            return;
+        };
+
+        let mut flush_current_reliable_singles = |singles: &mut Vec<Vec<u8>>,
+                                                   batches: &mut Vec<Vec<Vec<u8>>>| {
+            if singles.is_empty() {
+                return;
+            }
+            batches.push(std::mem::take(singles));
+        };
+
+        for event in other_events.iter().copied() {
+            if let NativeWindowInputEvent::MouseMove {
+                dx,
+                dy,
+                timestamp_us,
+            } = event
+            {
+                let (pending_dx, pending_dy, pending_timestamp_us) =
+                    pending_mouse_move.get_or_insert((0, 0, timestamp_us));
+                *pending_dx = pending_dx.saturating_add(i32::from(dx));
+                *pending_dy = pending_dy.saturating_add(i32::from(dy));
+                *pending_timestamp_us = timestamp_us;
+                continue;
+            }
+
+            flush_current_reliable_singles(
+                &mut current_reliable_singles,
+                &mut reliable_single_batches,
+            );
+            collect_pending_mouse_move_packets(
+                &encoder,
+                &mut pending_mouse_move,
+                &mut pending_mouse_packets,
+            );
+            if let Some(payload) =
+                encode_native_window_input_payload(&encoder, event_sender, event)
+            {
+                current_reliable_singles.push(payload);
+            }
         }
 
-        flush_pending_mouse_move(&encoder, input_channels, &mut pending_mouse_move);
-        send_encoded_native_window_input_event(&encoder, input_channels, event_sender, event);
+        flush_current_reliable_singles(
+            &mut current_reliable_singles,
+            &mut reliable_single_batches,
+        );
+        collect_pending_mouse_move_packets(
+            &encoder,
+            &mut pending_mouse_move,
+            &mut pending_mouse_packets,
+        );
     }
-    flush_pending_mouse_move(&encoder, input_channels, &mut pending_mouse_move);
+
+    let send_timestamp_us = native_input_timestamp_us();
+    for batch in reliable_single_batches {
+        for payload in finalize_reliable_single_input_packets(&batch, send_timestamp_us) {
+            let _ = input_channels.send_packet(&payload, false);
+        }
+    }
+
+    for mut payload in pending_mouse_packets {
+        restamp_protocol_v3_outer_timestamp(&mut payload, send_timestamp_us);
+        let _ = input_channels.send_packet(&payload, true);
+    }
 }
 
 #[cfg(target_os = "windows")]
-fn flush_pending_mouse_move(
+fn collect_pending_mouse_move_packets(
     encoder: &InputEncoder,
-    input_channels: &GstreamerInputChannels,
     pending_mouse_move: &mut Option<(i32, i32, u64)>,
+    pending_mouse_packets: &mut Vec<Vec<u8>>,
 ) {
     let Some((mut dx, mut dy, timestamp_us)) = pending_mouse_move.take() else {
         return;
@@ -451,30 +522,40 @@ fn flush_pending_mouse_move(
     while dx != 0 || dy != 0 {
         let chunk_dx = dx.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16;
         let chunk_dy = dy.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16;
-        let payload = encoder.encode_mouse_move(MouseMovePayload {
+        pending_mouse_packets.push(encoder.encode_mouse_move(MouseMovePayload {
             dx: chunk_dx,
             dy: chunk_dy,
             timestamp_us,
-        });
-        let _ = input_channels.send_packet(&payload, true);
+        }));
         dx = dx.saturating_sub(i32::from(chunk_dx));
         dy = dy.saturating_sub(i32::from(chunk_dy));
     }
 }
 
 #[cfg(target_os = "windows")]
-fn send_encoded_native_window_input_event(
+fn encode_native_window_input_payload(
     encoder: &InputEncoder,
-    input_channels: &GstreamerInputChannels,
     event_sender: &Option<Sender<Event>>,
     event: NativeWindowInputEvent,
-) {
-    let (payload, partially_reliable) = match event {
+) -> Option<Vec<u8>> {
+    match event {
         NativeWindowInputEvent::Shortcut { action } => {
             if let Some(sender) = event_sender.as_ref() {
                 let _ = sender.send(Event::Shortcut { action });
             }
-            return;
+            None
+        }
+        NativeWindowInputEvent::ClipboardPaste => {
+            if let Some(sender) = event_sender.as_ref() {
+                let _ = sender.send(Event::ClipboardPaste);
+            }
+            None
+        }
+        NativeWindowInputEvent::InputCaptureChanged { captured } => {
+            if let Some(sender) = event_sender.as_ref() {
+                let _ = sender.send(Event::InputCaptureChanged { captured });
+            }
+            None
         }
         NativeWindowInputEvent::Key {
             pressed,
@@ -489,25 +570,21 @@ fn send_encoded_native_window_input_event(
                 modifiers,
                 timestamp_us,
             };
-            let bytes = if pressed {
+            Some(if pressed {
                 encoder.encode_key_down(payload)
             } else {
                 encoder.encode_key_up(payload)
-            };
-            (bytes, false)
+            })
         }
         NativeWindowInputEvent::MouseMove {
             dx,
             dy,
             timestamp_us,
-        } => (
-            encoder.encode_mouse_move(MouseMovePayload {
-                dx,
-                dy,
-                timestamp_us,
-            }),
-            true,
-        ),
+        } => Some(encoder.encode_mouse_move(MouseMovePayload {
+            dx,
+            dy,
+            timestamp_us,
+        })),
         NativeWindowInputEvent::MouseButton {
             pressed,
             button,
@@ -517,25 +594,41 @@ fn send_encoded_native_window_input_event(
                 button,
                 timestamp_us,
             };
-            let bytes = if pressed {
+            Some(if pressed {
                 encoder.encode_mouse_button_down(payload)
             } else {
                 encoder.encode_mouse_button_up(payload)
-            };
-            (bytes, false)
+            })
         }
         NativeWindowInputEvent::MouseWheel {
             delta,
             timestamp_us,
-        } => (
-            encoder.encode_mouse_wheel(MouseWheelPayload {
-                delta,
-                timestamp_us,
-            }),
-            false,
-        ),
+        } => Some(encoder.encode_mouse_wheel(MouseWheelPayload {
+            delta,
+            timestamp_us,
+        })),
+        NativeWindowInputEvent::LockKeysSync { state } => {
+            Some(encoder.encode_lock_keys_sync(state))
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+#[allow(dead_code)]
+fn send_encoded_native_window_input_event(
+    encoder: &InputEncoder,
+    input_channels: &GstreamerInputChannels,
+    event_sender: &Option<Sender<Event>>,
+    event: NativeWindowInputEvent,
+) {
+    let Some(payload) = encode_native_window_input_payload(encoder, event_sender, event) else {
+        return;
     };
 
+    let partially_reliable = matches!(
+        event,
+        NativeWindowInputEvent::MouseMove { .. }
+    );
     let _ = input_channels.send_packet(&payload, partially_reliable);
 }
 
@@ -678,9 +771,10 @@ fn send_native_gamepad_snapshot(
     let Ok(mut encoder) = input_state.encoder.lock() else {
         return;
     };
-    let payload = encoder.encode_gamepad_state(bitmap, input, use_partially_reliable);
+    let mut payload = encoder.encode_gamepad_state(bitmap, input, use_partially_reliable);
     drop(encoder);
 
+    restamp_protocol_v3_outer_timestamp(&mut payload, native_input_timestamp_us());
     let _ = input_channels.send_packet(&payload, use_partially_reliable);
 }
 
