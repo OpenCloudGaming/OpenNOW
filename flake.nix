@@ -25,7 +25,7 @@
 
           src = ./opennow-stable;
 
-          npmDepsHash = "sha256-iMoYLIydDGTHgm6eMdoXb65NcPFXfWcVztmvMRHmCJs=";
+          npmDepsHash = "sha256-2jhCbYz5l0M9y0eYsjL+kr1kf+bopK6vhIW5C7s96D4=";
           npmDepsFetcherVersion = 2;
           makeCacheWritable = true;
           forceGitDeps = true;
@@ -58,6 +58,10 @@
           ];
 
           ELECTRON_SKIP_BINARY_DOWNLOAD = "1";
+
+          preBuild = ''
+            ln -sfn ${./locales} ../locales
+          '';
 
           installPhase = ''
             runHook preInstall
