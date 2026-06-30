@@ -324,7 +324,9 @@ export interface AdaptiveMouseFlushDecisionParams {
 export function chooseAdaptiveMouseFlushInterval(params: AdaptiveMouseFlushDecisionParams): number {
   const boundedBase = Math.max(params.minIntervalMs, Math.min(params.maxIntervalMs, params.baseIntervalMs));
   const boundedCurrent = Math.max(params.minIntervalMs, Math.min(params.maxIntervalMs, params.currentIntervalMs));
-  if (!params.canUsePartiallyReliableMouse) {
+  // Official GFN keeps a fixed coalesce interval (4/8/16 ms) for PR mouse and does not
+  // back off because the reliable keyboard channel is busy.
+  if (params.canUsePartiallyReliableMouse) {
     return boundedBase;
   }
 
@@ -347,6 +349,31 @@ export function chooseAdaptiveMouseFlushInterval(params: AdaptiveMouseFlushDecis
     return Math.min(boundedBase, boundedCurrent + 1);
   }
   return boundedCurrent;
+}
+
+/** Subsample coalesced pointer samples like official GFN wm() when bursts are large. */
+export function subsampleCoalescedPointerEvents<T extends { movementX: number; movementY: number }>(
+  samples: readonly T[],
+  pendingBatchEntries: number,
+  maxBatchEntries: number = 16,
+): { events: T[]; stride: number } {
+  if (samples.length <= 1) {
+    return { events: [...samples], stride: 1 };
+  }
+
+  const budget = samples.length > 2 * maxBatchEntries
+    ? 1
+    : Math.max(maxBatchEntries - pendingBatchEntries - 4, 1);
+  if (samples.length <= budget) {
+    return { events: [...samples], stride: 1 };
+  }
+
+  const stride = Math.ceil(samples.length / budget);
+  const events: T[] = [];
+  for (let index = 0; index < samples.length; index += stride) {
+    events.push(samples[index]!);
+  }
+  return { events, stride };
 }
 
 export function quantizeMouseDeltaWithResidual(accumulatedDelta: number): { send: number; residual: number } {
@@ -694,7 +721,8 @@ export class GfnWebRtcClient {
   private mousePacketsPerSecond = 0;
   private mousePacketRateWindowStartedAtMs = 0;
   private mouseFlushIntervalMs = GfnWebRtcClient.MOUSE_FLUSH_NORMAL_MS;
-  private mouseFlushLastTickMs = 0;
+  private mouseFlushLastSendMs = 0;
+  private mouseCoalescedBatchEntries = 0;
   private pendingMouseTimestampUs: bigint | null = null;
   private mouseDeltaFilter = new MouseDeltaFilter();
   private mouseSensitivity = 1;
@@ -1346,6 +1374,26 @@ export class GfnWebRtcClient {
     }
 
     const frameBudgetMs = params.decodeFps > 0 ? 1000 / params.decodeFps : 0;
+    if (
+      params.inputQueueMaxSchedulingDelayMs >= 6
+      || (
+        params.inputQueueMaxSchedulingDelayMs >= 3
+        && params.inputQueueBufferedBytes >= 4096
+      )
+    ) {
+      const detailParts: string[] = [];
+      if (params.inputQueueMaxSchedulingDelayMs >= 3) {
+        detailParts.push(`sched ${params.inputQueueMaxSchedulingDelayMs.toFixed(1)}ms`);
+      }
+      if (params.inputQueueBufferedBytes >= 4096) {
+        detailParts.push(`buffered ${(params.inputQueueBufferedBytes / 1024).toFixed(1)}KB`);
+      }
+      return {
+        reason: "input_backpressure",
+        detail: detailParts.join(" · ") || "input scheduling delay",
+      };
+    }
+
     const decodeSaturated =
       frameBudgetMs > 0 &&
       params.decodeTimeMs > 0 &&
@@ -1894,7 +1942,8 @@ export class GfnWebRtcClient {
     this.pendingMouseDyFloat = 0;
     this.pendingMouseTimestampUs = null;
     this.mouseDeltaFilter.reset();
-    this.mouseFlushLastTickMs = 0;
+    this.mouseFlushLastSendMs = 0;
+    this.mouseCoalescedBatchEntries = 0;
     this.mouseFlushBaseIntervalMs = GfnWebRtcClient.MOUSE_FLUSH_NORMAL_MS;
     this.mouseFlushIntervalMs = GfnWebRtcClient.MOUSE_FLUSH_NORMAL_MS;
     this.mouseAdaptiveFlushActive = false;
@@ -2847,9 +2896,11 @@ export class GfnWebRtcClient {
       return;
     }
     this.reliableSingleInputFlushScheduled = true;
-    queueMicrotask(() => {
+    // Yield to pointer/mouse macrotasks before flushing keyboard batches (official GFN
+    // sends immediately; deferring one macrotask avoids starving coalesced pointer work).
+    window.setTimeout(() => {
       this.flushQueuedReliableSingleInputs();
-    });
+    }, 0);
   }
 
   private flushQueuedReliableSingleInputs(): void {
@@ -3174,13 +3225,15 @@ export class GfnWebRtcClient {
         : GfnWebRtcClient.MOUSE_FLUSH_SAFE_MS;
     this.mouseFlushIntervalMs = this.mouseFlushBaseIntervalMs;
     this.mouseAdaptiveFlushActive = false;
-    this.mouseFlushLastTickMs = performance.now();
+    const mouseInitNow = performance.now();
+    this.mouseFlushLastSendMs = mouseInitNow;
+    this.mouseCoalescedBatchEntries = 0;
     this.pendingMouseDxFloat = 0;
     this.pendingMouseDyFloat = 0;
     this.pendingMouseTimestampUs = null;
     this.mousePacketsPerSecond = 0;
     this.mousePacketsSentInWindow = 0;
-    this.mousePacketRateWindowStartedAtMs = this.mouseFlushLastTickMs;
+    this.mousePacketRateWindowStartedAtMs = mouseInitNow;
     this.mouseDeltaFilter.reset();
     this.mouseDeltaFilter.setRelaxedForRawInput(hasPointerRawUpdate);
     this.log(
@@ -3225,32 +3278,50 @@ export class GfnWebRtcClient {
       return pointerScaleCache;
     };
 
-    const flushMouse = () => {
+    const updateMousePacketRate = (): void => {
+      const now = performance.now();
+      if (this.mousePacketRateWindowStartedAtMs <= 0) {
+        this.mousePacketRateWindowStartedAtMs = now;
+      }
+      const elapsed = now - this.mousePacketRateWindowStartedAtMs;
+      if (elapsed >= 1000) {
+        this.mousePacketsPerSecond = Math.round((this.mousePacketsSentInWindow * 1000) / elapsed);
+        this.mousePacketsSentInWindow = 0;
+        this.mousePacketRateWindowStartedAtMs = now;
+      }
+    };
+
+    const updateAdaptiveMouseFlushInterval = (): void => {
+      const reliableBufferedAmount = this.reliableInputChannel?.bufferedAmount ?? 0;
+      const schedulingDelay = this.inputQueueMaxSchedulingDelayMsWindow;
+      const nextInterval = chooseAdaptiveMouseFlushInterval({
+        baseIntervalMs: this.mouseFlushBaseIntervalMs,
+        currentIntervalMs: this.mouseFlushIntervalMs,
+        reliableBufferedAmount,
+        schedulingDelayMs: schedulingDelay,
+        canUsePartiallyReliableMouse: this.canSendInputTypePartiallyReliable(INPUT_MOUSE_REL),
+        backpressureThresholdBytes: GfnWebRtcClient.RELIABLE_MOUSE_BACKPRESSURE_BYTES,
+        minIntervalMs: GfnWebRtcClient.MOUSE_FLUSH_MIN_MS,
+        maxIntervalMs: GfnWebRtcClient.MOUSE_FLUSH_MAX_MS,
+      });
+      this.mouseAdaptiveFlushActive = nextInterval !== this.mouseFlushBaseIntervalMs;
+      this.mouseFlushIntervalMs = nextInterval;
+    };
+
+    const flushMouse = (): boolean => {
       const tickNow = performance.now();
-      const hasPendingMovement = Math.abs(this.pendingMouseDxFloat) >= 0.5 || Math.abs(this.pendingMouseDyFloat) >= 0.5;
-      if (this.mouseFlushLastTickMs > 0 && hasPendingMovement) {
-        const expected = this.mouseFlushLastTickMs + this.mouseFlushIntervalMs;
-        const schedulingDelay = Math.max(0, tickNow - expected);
-        this.inputQueueMaxSchedulingDelayMsWindow = Math.max(
-          this.inputQueueMaxSchedulingDelayMsWindow,
-          schedulingDelay,
-        );
-      }
-      this.mouseFlushLastTickMs = tickNow;
+      const hasPendingMovement =
+        Math.abs(this.pendingMouseDxFloat) >= 0.5 || Math.abs(this.pendingMouseDyFloat) >= 0.5;
 
-      if (!this.inputReady) {
-        return;
-      }
-
-      if (!hasPendingMovement) {
-        return;
+      if (!this.inputReady || !hasPendingMovement) {
+        return false;
       }
 
       const reliable = this.reliableInputChannel;
       const mouseMoveUsesPartiallyReliable = this.canSendInputTypePartiallyReliable(INPUT_MOUSE_REL);
       if (
         !mouseMoveUsesPartiallyReliable
-        && 
+        &&
         reliable?.readyState === "open"
         && reliable.bufferedAmount > GfnWebRtcClient.RELIABLE_MOUSE_BACKPRESSURE_BYTES
       ) {
@@ -3263,8 +3334,10 @@ export class GfnWebRtcClient {
         this.pendingMouseDxFloat = 0;
         this.pendingMouseDyFloat = 0;
         this.pendingMouseTimestampUs = null;
-        return;
+        this.mouseCoalescedBatchEntries = 0;
+        return false;
       }
+
       const { scaleX, scaleY } = getPointerScale();
       const dxQuantized = quantizeMouseDeltaWithResidual(this.pendingMouseDxFloat);
       const dyQuantized = quantizeMouseDeltaWithResidual(this.pendingMouseDyFloat);
@@ -3273,8 +3346,16 @@ export class GfnWebRtcClient {
       if (dxServer === 0 && dyServer === 0) {
         // Keep pending movement intact until a non-zero packet is sent.
         // Otherwise quantized integer deltas can be dropped when server scaling rounds to zero.
-        return;
+        return false;
       }
+
+      const expectedSendAt = this.mouseFlushLastSendMs + this.mouseFlushIntervalMs;
+      const schedulingDelay = Math.max(0, tickNow - expectedSendAt);
+      this.inputQueueMaxSchedulingDelayMsWindow = Math.max(
+        this.inputQueueMaxSchedulingDelayMsWindow,
+        schedulingDelay,
+      );
+
       this.pendingMouseDxFloat = dxQuantized.residual;
       this.pendingMouseDyFloat = dyQuantized.residual;
 
@@ -3285,56 +3366,60 @@ export class GfnWebRtcClient {
       });
 
       this.pendingMouseTimestampUs = null;
+      this.mouseCoalescedBatchEntries = 0;
       this.sendInputPacket(payload, INPUT_MOUSE_REL);
       this.mousePacketsSentInWindow += 1;
+      this.mouseFlushLastSendMs = tickNow;
+      updateMousePacketRate();
+      updateAdaptiveMouseFlushInterval();
+
       // Update simulated absolute pointer (stored in server pixels) if we have a baseline.
       if (simulatedAbsX !== null && simulatedAbsY !== null) {
         simulatedAbsX += dxServer;
         simulatedAbsY += dyServer;
       }
+      return true;
     };
-    const scheduleNextFlush = (): void => {
+
+    const armMouseFlushTimer = (): void => {
       if (this.mouseFlushTimer !== null) {
-        window.clearTimeout(this.mouseFlushTimer);
+        return;
       }
-      this.mouseFlushTimer = window.setTimeout(() => {
+
+      const now = performance.now();
+      const elapsed = now - this.mouseFlushLastSendMs;
+      if (elapsed >= this.mouseFlushIntervalMs) {
         try {
           flushMouse();
-          const reliableBufferedAmount = this.reliableInputChannel?.bufferedAmount ?? 0;
-          const schedulingDelay = this.inputQueueMaxSchedulingDelayMsWindow;
-          const nextInterval = chooseAdaptiveMouseFlushInterval({
-            baseIntervalMs: this.mouseFlushBaseIntervalMs,
-            currentIntervalMs: this.mouseFlushIntervalMs,
-            reliableBufferedAmount,
-            schedulingDelayMs: schedulingDelay,
-            canUsePartiallyReliableMouse: this.canSendInputTypePartiallyReliable(INPUT_MOUSE_REL),
-            backpressureThresholdBytes: GfnWebRtcClient.RELIABLE_MOUSE_BACKPRESSURE_BYTES,
-            minIntervalMs: GfnWebRtcClient.MOUSE_FLUSH_MIN_MS,
-            maxIntervalMs: GfnWebRtcClient.MOUSE_FLUSH_MAX_MS,
-          });
-          this.mouseAdaptiveFlushActive = nextInterval !== this.mouseFlushBaseIntervalMs;
-          this.mouseFlushIntervalMs = nextInterval;
-          const now = performance.now();
-          if (this.mousePacketRateWindowStartedAtMs <= 0) {
-            this.mousePacketRateWindowStartedAtMs = now;
-          }
-          const elapsed = now - this.mousePacketRateWindowStartedAtMs;
-          if (elapsed >= 1000) {
-            this.mousePacketsPerSecond = Math.round((this.mousePacketsSentInWindow * 1000) / elapsed);
-            this.mousePacketsSentInWindow = 0;
-            this.mousePacketRateWindowStartedAtMs = now;
-          }
+        } catch (err) {
+          this.log(`Mouse flush failed (non-fatal): ${String(err)}`);
+        }
+        if (
+          Math.abs(this.pendingMouseDxFloat) >= 0.5
+          || Math.abs(this.pendingMouseDyFloat) >= 0.5
+        ) {
+          armMouseFlushTimer();
+        }
+        return;
+      }
+
+      this.mouseFlushTimer = window.setTimeout(() => {
+        this.mouseFlushTimer = null;
+        try {
+          flushMouse();
         } catch (err) {
           this.log(`Mouse flush tick failed (non-fatal): ${String(err)}`);
         } finally {
-          // clearTimers() nulls this timer during teardown; avoid re-arming a zombie loop.
-          if (this.mouseFlushTimer !== null) {
-            scheduleNextFlush();
+          if (this.mouseFlushTimer === null) {
+            const hasPendingMovement =
+              Math.abs(this.pendingMouseDxFloat) >= 0.5 || Math.abs(this.pendingMouseDyFloat) >= 0.5;
+            if (hasPendingMovement) {
+              armMouseFlushTimer();
+            }
           }
         }
-      }, this.mouseFlushIntervalMs);
+      }, Math.max(0, this.mouseFlushIntervalMs - elapsed));
     };
-    scheduleNextFlush();
 
     const tryAutoLock = (): void => {
       try {
@@ -3433,7 +3518,11 @@ export class GfnWebRtcClient {
 
       this.pendingMouseDxFloat += adjustedDx;
       this.pendingMouseDyFloat += adjustedDy;
-      this.pendingMouseTimestampUs = timestampUs(eventTimestampMs);
+      if (this.pendingMouseTimestampUs === null) {
+        this.pendingMouseTimestampUs = timestampUs(eventTimestampMs);
+      }
+      this.mouseCoalescedBatchEntries += 1;
+      armMouseFlushTimer();
     };
 
     const onPointerMove = (event: PointerEvent) => {
@@ -3448,10 +3537,19 @@ export class GfnWebRtcClient {
       if (isPointerLockActive()) {
         // Pointer lock active: use raw relative movement (movementX/Y).
         const samples = hasCoalescedEvents ? event.getCoalescedEvents() : [];
-        if (samples.length > 0) {
+        if (samples.length > 1) {
+          let totalDx = 0;
+          let totalDy = 0;
           for (const sample of samples) {
-            queueMouseMovement(sample.movementX, sample.movementY, sample.timeStamp);
+            totalDx += sample.movementX;
+            totalDy += sample.movementY;
           }
+          queueMouseMovement(totalDx, totalDy, samples[0]!.timeStamp);
+          return;
+        }
+        if (samples.length === 1) {
+          const sample = samples[0]!;
+          queueMouseMovement(sample.movementX, sample.movementY, sample.timeStamp);
           return;
         }
         queueMouseMovement(event.movementX, event.movementY, event.timeStamp);
