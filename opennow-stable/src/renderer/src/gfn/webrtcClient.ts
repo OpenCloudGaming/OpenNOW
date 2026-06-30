@@ -28,6 +28,10 @@ import {
   GAMEPAD_MAX_CONTROLLERS,
   type GamepadInput,
   codeMap,
+  startInputSessionClock,
+  captureTimestampUs,
+  sendTimestampUs,
+  finalizeReliableSingleInputPackets,
 } from "./inputProtocol";
 import { FULLSCREEN_KEYBOARD_LOCK_CODES } from "./keyboardLock";
 import {
@@ -234,11 +238,7 @@ interface ClientOptions {
 }
 
 function timestampUs(sourceTimestampMs?: number): bigint {
-  const base =
-    typeof sourceTimestampMs === "number" && Number.isFinite(sourceTimestampMs) && sourceTimestampMs >= 0
-      ? sourceTimestampMs
-      : performance.now();
-  return BigInt(Math.floor(base * 1000));
+  return captureTimestampUs(sourceTimestampMs);
 }
 
 function parsePartialReliableThresholdMs(sdp: string): number | null {
@@ -596,6 +596,8 @@ export class GfnWebRtcClient {
   /** When true, window blur or document hidden blocks forwarding until focus/visible again. */
   private windowStateInputPaused = false;
   private inputProtocolVersion = 2;
+  private pendingReliableSingleInputs: Uint8Array[] = [];
+  private reliableSingleInputFlushScheduled = false;
   private heartbeatTimer: number | null = null;
   private mouseFlushTimer: number | null = null;
   private statsTimer: number | null = null;
@@ -1218,6 +1220,7 @@ export class GfnWebRtcClient {
       this.gamepadPollTimer = null;
     }
     this.clearSyntheticEscapeSuppression();
+    this.clearReliableSingleInputQueue();
   }
 
   private setupStatsPolling(): void {
@@ -1364,7 +1367,10 @@ export class GfnWebRtcClient {
     if (
       params.inputQueueDropCount > 0 ||
       params.inputQueueBufferedBytes >= GfnWebRtcClient.RELIABLE_MOUSE_BACKPRESSURE_BYTES ||
-      params.inputQueueMaxSchedulingDelayMs >= 4
+      (
+        params.inputQueueMaxSchedulingDelayMs >= 4
+        && params.inputQueueBufferedBytes >= 4096
+      )
     ) {
       const detailParts: string[] = [];
       if (params.inputQueueDropCount > 0) detailParts.push(`drops ${params.inputQueueDropCount}`);
@@ -2703,6 +2709,7 @@ export class GfnWebRtcClient {
       // Official GFN browser client does NOT echo the handshake back.
       // It just reads the protocol version and starts sending input.
       // (The Rust reference implementation does echo, but that's for its own server.)
+      startInputSessionClock();
       this.inputReady = true;
       this.inputProtocolVersion = version;
       this.inputEncoder.setProtocolVersion(version);
@@ -2831,6 +2838,39 @@ export class GfnWebRtcClient {
 
   private reliableDropLogged = false;
 
+  private queueReliableSingleInput(payload: Uint8Array): void {
+    const safePayload = payload.byteOffset === 0 && payload.byteLength === payload.buffer.byteLength
+      ? payload
+      : payload.slice();
+    this.pendingReliableSingleInputs.push(safePayload);
+    if (this.reliableSingleInputFlushScheduled) {
+      return;
+    }
+    this.reliableSingleInputFlushScheduled = true;
+    queueMicrotask(() => {
+      this.flushQueuedReliableSingleInputs();
+    });
+  }
+
+  private flushQueuedReliableSingleInputs(): void {
+    this.reliableSingleInputFlushScheduled = false;
+    if (this.pendingReliableSingleInputs.length === 0) {
+      return;
+    }
+
+    const queued = this.pendingReliableSingleInputs;
+    this.pendingReliableSingleInputs = [];
+    const packets = finalizeReliableSingleInputPackets(queued, sendTimestampUs());
+    for (const packet of packets) {
+      this.sendReliable(packet);
+    }
+  }
+
+  private clearReliableSingleInputQueue(): void {
+    this.pendingReliableSingleInputs = [];
+    this.reliableSingleInputFlushScheduled = false;
+  }
+
   private sendNativeInput(payload: Uint8Array, partiallyReliable: boolean): void {
     const safePayload = payload.byteOffset === 0 && payload.byteLength === payload.buffer.byteLength
       ? payload
@@ -2877,7 +2917,7 @@ export class GfnWebRtcClient {
     if (!this.inputReady) {
       return;
     }
-    this.sendReliable(this.inputEncoder.encodeLockKeysSync(state));
+    this.queueReliableSingleInput(this.inputEncoder.encodeLockKeysSync(state));
   }
 
   private requestEscapeKeyboardLock(): void {
@@ -3000,7 +3040,7 @@ export class GfnWebRtcClient {
         modifiers: 0,
         timestampUs: timestampUs(),
       });
-      this.sendReliable(payload);
+      this.queueReliableSingleInput(payload);
     }
     this.pressedKeys.clear();
   }
@@ -3019,7 +3059,7 @@ export class GfnWebRtcClient {
         modifiers,
         timestampUs: timestampUs(),
       });
-    this.sendReliable(payload);
+    this.queueReliableSingleInput(payload);
   }
 
   public sendAntiAfkPulse(): boolean {
@@ -3187,7 +3227,8 @@ export class GfnWebRtcClient {
 
     const flushMouse = () => {
       const tickNow = performance.now();
-      if (this.mouseFlushLastTickMs > 0) {
+      const hasPendingMovement = Math.abs(this.pendingMouseDxFloat) >= 0.5 || Math.abs(this.pendingMouseDyFloat) >= 0.5;
+      if (this.mouseFlushLastTickMs > 0 && hasPendingMovement) {
         const expected = this.mouseFlushLastTickMs + this.mouseFlushIntervalMs;
         const schedulingDelay = Math.max(0, tickNow - expected);
         this.inputQueueMaxSchedulingDelayMsWindow = Math.max(
@@ -3201,7 +3242,6 @@ export class GfnWebRtcClient {
         return;
       }
 
-      const hasPendingMovement = Math.abs(this.pendingMouseDxFloat) >= 0.5 || Math.abs(this.pendingMouseDyFloat) >= 0.5;
       if (!hasPendingMovement) {
         return;
       }
@@ -3476,6 +3516,11 @@ export class GfnWebRtcClient {
         return;
       }
 
+      if (this.pressedKeys.has(mapped.vk)) {
+        event.preventDefault();
+        return;
+      }
+
       event.preventDefault();
       this.pressedKeys.add(mapped.vk);
 
@@ -3487,7 +3532,7 @@ export class GfnWebRtcClient {
         // fullscreen paths, event.timeStamp can be unstable.
         timestampUs: timestampUs(),
       });
-      this.sendReliable(payload);
+      this.queueReliableSingleInput(payload);
     };
 
     const onKeyUp = (event: KeyboardEvent) => {
@@ -3514,7 +3559,7 @@ export class GfnWebRtcClient {
         modifiers: modifierFlags(event),
         timestampUs: timestampUs(),
       });
-      this.sendReliable(payload);
+      this.queueReliableSingleInput(payload);
     };
 
     const onMouseDown = (event: MouseEvent) => {
@@ -3531,7 +3576,7 @@ export class GfnWebRtcClient {
         timestampUs: timestampUs(event.timeStamp),
       });
       // Official GFN client sends all mouse events on reliable channel (input_channel_v1)
-      this.sendReliable(payload);
+      this.queueReliableSingleInput(payload);
     };
 
     const onMouseUp = (event: MouseEvent) => {
@@ -3548,7 +3593,7 @@ export class GfnWebRtcClient {
         timestampUs: timestampUs(event.timeStamp),
       });
       // Official GFN client sends all mouse events on reliable channel (input_channel_v1)
-      this.sendReliable(payload);
+      this.queueReliableSingleInput(payload);
     };
 
     const onWheel = (event: WheelEvent) => {
@@ -3567,7 +3612,7 @@ export class GfnWebRtcClient {
         delta,
         timestampUs: timestampUs(event.timeStamp),
       });
-      this.sendReliable(payload);
+      this.queueReliableSingleInput(payload);
     };
 
     const onClick = () => {
@@ -3697,7 +3742,7 @@ export class GfnWebRtcClient {
           modifiers: 0,
           timestampUs: timestampUs(),
         });
-        this.sendReliable(escDown);
+        this.queueReliableSingleInput(escDown);
 
         const escUp = this.inputEncoder.encodeKeyUp({
           keycode: 0x1B,
@@ -3705,7 +3750,7 @@ export class GfnWebRtcClient {
           modifiers: 0,
           timestampUs: timestampUs(),
         });
-        this.sendReliable(escUp);
+        this.queueReliableSingleInput(escUp);
 
         schedulePointerLockRetention("synthetic Escape");
       }, 50);
@@ -3883,7 +3928,7 @@ export class GfnWebRtcClient {
           modifiers: 0,
           timestampUs: timestampUs(),
         });
-        this.sendReliable(escDown);
+        this.queueReliableSingleInput(escDown);
 
         const escUp = this.inputEncoder.encodeKeyUp({
           keycode: 0x1B,
@@ -3891,7 +3936,7 @@ export class GfnWebRtcClient {
           modifiers: 0,
           timestampUs: timestampUs(),
         });
-        this.sendReliable(escUp);
+        this.queueReliableSingleInput(escUp);
       });
     } catch {}
 
