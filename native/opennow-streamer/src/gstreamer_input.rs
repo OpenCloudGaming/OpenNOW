@@ -12,6 +12,8 @@ use crate::input::{
 use crate::protocol::Event;
 #[cfg(target_os = "windows")]
 use crate::protocol::NativeStreamerShortcutAction;
+#[cfg(target_os = "windows")]
+use crate::protocol::StreamSettings;
 use gst::glib;
 use gst::prelude::*;
 use gstreamer as gst;
@@ -41,6 +43,14 @@ const NATIVE_INPUT_DRAIN_MAX_EVENTS: usize = 512;
 const NATIVE_GAMEPAD_POLL_INTERVAL: Duration = Duration::from_millis(4);
 #[cfg(target_os = "windows")]
 const NATIVE_GAMEPAD_KEEPALIVE_INTERVAL: Duration = Duration::from_millis(100);
+#[cfg(target_os = "windows")]
+const MIN_MOUSE_SENSITIVITY: f64 = 0.01;
+#[cfg(target_os = "windows")]
+const MAX_MOUSE_SENSITIVITY: f64 = 4.0;
+#[cfg(target_os = "windows")]
+const MIN_MOUSE_ACCELERATION: u32 = 1;
+#[cfg(target_os = "windows")]
+const MAX_MOUSE_ACCELERATION: u32 = 150;
 
 #[cfg(target_os = "windows")]
 static NATIVE_INPUT_STARTED_AT: OnceLock<Instant> = OnceLock::new();
@@ -133,6 +143,93 @@ pub(crate) enum NativeWindowInputEvent {
     LockKeysSync {
         state: u8,
     },
+}
+
+#[cfg(target_os = "windows")]
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct NativeMouseSettings {
+    sensitivity: f64,
+    acceleration_percent: u32,
+}
+
+#[cfg(target_os = "windows")]
+impl NativeMouseSettings {
+    pub(crate) fn from_stream_settings(settings: &StreamSettings) -> Self {
+        let sensitivity = if settings.mouse_sensitivity.is_finite() {
+            settings
+                .mouse_sensitivity
+                .clamp(MIN_MOUSE_SENSITIVITY, MAX_MOUSE_SENSITIVITY)
+        } else {
+            1.0
+        };
+        let acceleration_percent = settings
+            .mouse_acceleration
+            .clamp(MIN_MOUSE_ACCELERATION, MAX_MOUSE_ACCELERATION);
+        Self {
+            sensitivity,
+            acceleration_percent,
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+#[derive(Debug, Clone, Copy)]
+struct AdjustedMouseMove {
+    send_dx: i16,
+    send_dy: i16,
+}
+
+#[cfg(target_os = "windows")]
+#[derive(Debug, Clone, Copy)]
+struct NativeMouseAdjuster {
+    settings: NativeMouseSettings,
+    residual_x: f64,
+    residual_y: f64,
+}
+
+#[cfg(target_os = "windows")]
+impl NativeMouseAdjuster {
+    fn new(settings: NativeMouseSettings) -> Self {
+        Self {
+            settings,
+            residual_x: 0.0,
+            residual_y: 0.0,
+        }
+    }
+
+    fn adjust(&mut self, dx: i16, dy: i16) -> Option<AdjustedMouseMove> {
+        if dx == 0 && dy == 0 {
+            return None;
+        }
+
+        let mut adjusted_dx = f64::from(dx) * self.settings.sensitivity;
+        let mut adjusted_dy = f64::from(dy) * self.settings.sensitivity;
+        if self.settings.acceleration_percent > 1 {
+            let speed = adjusted_dx.hypot(adjusted_dy);
+            let strength = f64::from(self.settings.acceleration_percent.saturating_sub(1)) / 149.0;
+            let accel_factor = 1.0 + (0.6 * strength).min((speed / 50.0) * strength);
+            adjusted_dx *= accel_factor;
+            adjusted_dy *= accel_factor;
+        }
+
+        Some(AdjustedMouseMove {
+            send_dx: quantize_mouse_delta(adjusted_dx, &mut self.residual_x),
+            send_dy: quantize_mouse_delta(adjusted_dy, &mut self.residual_y),
+        })
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn quantize_mouse_delta(delta: f64, residual: &mut f64) -> i16 {
+    let accumulated = delta + *residual;
+    let rounded = accumulated.round();
+    let clamped = rounded.clamp(f64::from(i16::MIN), f64::from(i16::MAX));
+    *residual = if (rounded - clamped).abs() < f64::EPSILON {
+        accumulated - clamped
+    } else {
+        0.0
+    };
+    clamped as i16
 }
 
 #[cfg(target_os = "windows")]
@@ -297,6 +394,7 @@ impl NativeWindowInputBridge {
         input_state: GstreamerInputState,
         input_channels: GstreamerInputChannels,
         event_sender: Option<Sender<Event>>,
+        mouse_settings: NativeMouseSettings,
     ) -> Self {
         let (sender, receiver) = mpsc::channel::<NativeWindowInputEvent>();
         unsafe {
@@ -309,6 +407,7 @@ impl NativeWindowInputBridge {
         let input_thread_state = input_state.clone();
         let input_thread_channels = input_channels.clone();
         let input_thread = thread::spawn(move || {
+            let mut mouse_adjuster = NativeMouseAdjuster::new(mouse_settings);
             let mut pending_events = Vec::with_capacity(NATIVE_INPUT_DRAIN_MAX_EVENTS);
             send_log(
                 &thread_sender,
@@ -349,6 +448,7 @@ impl NativeWindowInputBridge {
                     &input_thread_state,
                     &input_thread_channels,
                     &thread_sender,
+                    &mut mouse_adjuster,
                     &pending_events,
                 );
             }
@@ -399,6 +499,7 @@ fn send_native_window_input_events(
     input_state: &GstreamerInputState,
     input_channels: &GstreamerInputChannels,
     event_sender: &Option<Sender<Event>>,
+    mouse_adjuster: &mut NativeMouseAdjuster,
     events: &[NativeWindowInputEvent],
 ) {
     if events.is_empty() {
@@ -446,13 +547,13 @@ fn send_native_window_input_events(
             return;
         };
 
-        let mut flush_current_reliable_singles = |singles: &mut Vec<Vec<u8>>,
-                                                   batches: &mut Vec<Vec<Vec<u8>>>| {
-            if singles.is_empty() {
-                return;
-            }
-            batches.push(std::mem::take(singles));
-        };
+        let flush_current_reliable_singles =
+            |singles: &mut Vec<Vec<u8>>, batches: &mut Vec<Vec<Vec<u8>>>| {
+                if singles.is_empty() {
+                    return;
+                }
+                batches.push(std::mem::take(singles));
+            };
 
         for event in other_events.iter().copied() {
             if let NativeWindowInputEvent::MouseMove {
@@ -461,10 +562,16 @@ fn send_native_window_input_events(
                 timestamp_us,
             } = event
             {
+                let Some(adjusted) = mouse_adjuster.adjust(dx, dy) else {
+                    continue;
+                };
+                if adjusted.send_dx == 0 && adjusted.send_dy == 0 {
+                    continue;
+                }
                 let (pending_dx, pending_dy, pending_timestamp_us) =
                     pending_mouse_move.get_or_insert((0, 0, timestamp_us));
-                *pending_dx = pending_dx.saturating_add(i32::from(dx));
-                *pending_dy = pending_dy.saturating_add(i32::from(dy));
+                *pending_dx = pending_dx.saturating_add(i32::from(adjusted.send_dx));
+                *pending_dy = pending_dy.saturating_add(i32::from(adjusted.send_dy));
                 *pending_timestamp_us = timestamp_us;
                 continue;
             }
@@ -478,17 +585,13 @@ fn send_native_window_input_events(
                 &mut pending_mouse_move,
                 &mut pending_mouse_packets,
             );
-            if let Some(payload) =
-                encode_native_window_input_payload(&encoder, event_sender, event)
+            if let Some(payload) = encode_native_window_input_payload(&encoder, event_sender, event)
             {
                 current_reliable_singles.push(payload);
             }
         }
 
-        flush_current_reliable_singles(
-            &mut current_reliable_singles,
-            &mut reliable_single_batches,
-        );
+        flush_current_reliable_singles(&mut current_reliable_singles, &mut reliable_single_batches);
         collect_pending_mouse_move_packets(
             &encoder,
             &mut pending_mouse_move,
@@ -625,10 +728,7 @@ fn send_encoded_native_window_input_event(
         return;
     };
 
-    let partially_reliable = matches!(
-        event,
-        NativeWindowInputEvent::MouseMove { .. }
-    );
+    let partially_reliable = matches!(event, NativeWindowInputEvent::MouseMove { .. });
     let _ = input_channels.send_packet(&payload, partially_reliable);
 }
 
@@ -871,7 +971,7 @@ pub(crate) fn create_input_data_channels(
     })
 }
 
-fn create_data_channel(
+pub(crate) fn create_data_channel(
     webrtc: &gst::Element,
     label: &'static str,
     options: Option<gst::Structure>,
@@ -1143,4 +1243,38 @@ pub(crate) fn channel_label(channel: &gst_webrtc::WebRTCDataChannel) -> String {
         .label()
         .map(|label| label.to_string())
         .unwrap_or_else(|| "<unlabeled>".to_owned())
+}
+
+#[cfg(all(test, target_os = "windows"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn native_mouse_adjuster_applies_sensitivity_with_residuals() {
+        let mut adjuster = NativeMouseAdjuster::new(NativeMouseSettings {
+            sensitivity: 0.25,
+            acceleration_percent: 1,
+        });
+
+        let first = adjuster.adjust(1, 0).expect("first move");
+        let second = adjuster.adjust(1, 0).expect("second move");
+        let third = adjuster.adjust(1, 0).expect("third move");
+        let fourth = adjuster.adjust(1, 0).expect("fourth move");
+
+        assert_eq!(
+            [first.send_dx, second.send_dx, third.send_dx, fourth.send_dx],
+            [0, 1, 0, 0]
+        );
+    }
+
+    #[test]
+    fn native_mouse_adjuster_matches_renderer_acceleration_curve() {
+        let mut adjuster = NativeMouseAdjuster::new(NativeMouseSettings {
+            sensitivity: 1.0,
+            acceleration_percent: 150,
+        });
+
+        let adjusted = adjuster.adjust(50, 0).expect("accelerated move");
+        assert_eq!(adjusted.send_dx, 80);
+    }
 }

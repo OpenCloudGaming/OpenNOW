@@ -5,19 +5,20 @@ use crate::gstreamer_config::{
     NATIVE_PRESENT_MAX_FPS_ENV, NATIVE_VIDEO_API_ENV, NATIVE_VIDEO_BACKEND_ENV,
     PRESENT_LIMITER_AUTO_SENTINEL,
 };
-#[cfg(target_os = "windows")]
-use crate::gstreamer_input::NativeWindowInputBridge;
+use crate::gstreamer_cursor::{create_cursor_data_channel, disable_native_cursor_channel};
 use crate::gstreamer_input::{
     create_input_data_channels, wire_remote_data_channels, GstreamerInputChannels,
     GstreamerInputState,
 };
+#[cfg(target_os = "windows")]
+use crate::gstreamer_input::{NativeMouseSettings, NativeWindowInputBridge};
 use crate::gstreamer_liveness::{
     install_present_limiter, watch_audio_activity, watch_first_sink_buffer,
     watch_rtp_video_bitrate, watch_video_caps_transitions, watch_video_decoded_rate,
     watch_video_sink_caps_transitions, watch_video_sink_rate, VideoLivenessMonitor,
 };
 use crate::gstreamer_platform::{
-    apply_render_surface_to_video_sink, primary_display_refresh_hz,
+    apply_render_surface_to_video_sink, primary_display_refresh_hz, reset_native_cursor,
     start_external_renderer_window_guard, update_external_renderer_surface,
 };
 use crate::gstreamer_transitions::DEFAULT_VIDEO_QUEUE_DEPTH;
@@ -326,6 +327,7 @@ pub(crate) struct GstreamerPipeline {
     pub(crate) webrtc: gst::Element,
     input_state: GstreamerInputState,
     input_channels: Option<GstreamerInputChannels>,
+    cursor_channel: Option<gst_webrtc::WebRTCDataChannel>,
     #[cfg(target_os = "windows")]
     native_window_input_bridge: Option<NativeWindowInputBridge>,
     render_state: GstreamerRenderState,
@@ -385,6 +387,7 @@ impl GstreamerPipeline {
             webrtc,
             input_state,
             input_channels: None,
+            cursor_channel: None,
             #[cfg(target_os = "windows")]
             native_window_input_bridge: None,
             render_state,
@@ -426,6 +429,7 @@ impl GstreamerPipeline {
     fn ensure_input_data_channels(
         &mut self,
         partial_reliable_threshold_ms: u32,
+        context: &NativeStreamerSessionContext,
     ) -> Result<(), String> {
         if self.input_channels.is_some() {
             return Ok(());
@@ -440,12 +444,24 @@ impl GstreamerPipeline {
         )?;
         let _ = channels.labels();
         self.input_channels = Some(channels);
-        self.ensure_native_window_input_bridge();
+        self.ensure_native_window_input_bridge(context);
+        Ok(())
+    }
+
+    fn ensure_cursor_data_channel(&mut self) -> Result<(), String> {
+        if self.cursor_channel.is_some() {
+            return Ok(());
+        }
+
+        self.cursor_channel = Some(create_cursor_data_channel(
+            &self.webrtc,
+            self.event_sender.clone(),
+        )?);
         Ok(())
     }
 
     #[cfg(target_os = "windows")]
-    fn ensure_native_window_input_bridge(&mut self) {
+    fn ensure_native_window_input_bridge(&mut self, context: &NativeStreamerSessionContext) {
         if self.native_window_input_bridge.is_some() {
             return;
         }
@@ -457,11 +473,12 @@ impl GstreamerPipeline {
             self.input_state.clone(),
             input_channels,
             self.event_sender.clone(),
+            NativeMouseSettings::from_stream_settings(&context.settings),
         ));
     }
 
     #[cfg(not(target_os = "windows"))]
-    fn ensure_native_window_input_bridge(&mut self) {
+    fn ensure_native_window_input_bridge(&mut self, _context: &NativeStreamerSessionContext) {
         send_log(
             &self.event_sender,
             "warn",
@@ -477,6 +494,8 @@ impl GstreamerPipeline {
         offer_sdp: gst_sdp::SDPMessage,
         original_remote_credentials: Option<&IceCredentials>,
         partial_reliable_threshold_ms: u32,
+        native_cursor_overlay: bool,
+        context: &NativeStreamerSessionContext,
     ) -> Result<String, String> {
         let offer =
             gst_webrtc::WebRTCSessionDescription::new(gst_webrtc::WebRTCSDPType::Offer, offer_sdp);
@@ -490,7 +509,12 @@ impl GstreamerPipeline {
             self.original_remote_ice_credentials = Some(credentials.clone());
             self.try_restore_original_remote_ice_credentials("after remote description")?;
         }
-        self.ensure_input_data_channels(partial_reliable_threshold_ms)?;
+        self.ensure_input_data_channels(partial_reliable_threshold_ms, context)?;
+        if native_cursor_overlay {
+            self.ensure_cursor_data_channel()?;
+        } else {
+            disable_native_cursor_channel(&self.event_sender);
+        }
         let answer = self.create_answer()?;
         let answer_sdp = answer
             .sdp()
@@ -752,6 +776,7 @@ impl GstreamerPipeline {
 
     pub(crate) fn stop(mut self) -> Result<(), String> {
         self.video_liveness.set_stats_overlay_visible(false);
+        reset_native_cursor();
         self.render_state.stop_external_renderer_window_guard();
         #[cfg(target_os = "windows")]
         if let Some(mut bridge) = self.native_window_input_bridge.take() {

@@ -216,7 +216,8 @@ export class SignalingCoordinator {
       key === "nativeStreamerExecutablePath" ||
       key === "nativeCloudGsyncMode" ||
       key === "nativeD3dFullscreenMode" ||
-      key === "nativeExternalRenderer"
+      key === "nativeExternalRenderer" ||
+      key === "nativeCursorOverlay"
     ) {
       this.stopNativeStreamer(
         key === "nativeStreamerBackend"
@@ -229,7 +230,9 @@ export class SignalingCoordinator {
                 ? "native D3D fullscreen mode changed"
                 : key === "nativeExternalRenderer"
                   ? "native external renderer setting changed"
-                  : "native streamer disabled",
+                  : key === "nativeCursorOverlay"
+                    ? "native cursor overlay setting changed"
+                    : "native streamer disabled",
       );
       this.resetNativeStreamerContext();
     }

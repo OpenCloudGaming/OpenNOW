@@ -6,10 +6,10 @@ use crate::gstreamer_config::{
     resolve_d3d_fullscreen_sink, resolve_present_max_fps, NATIVE_D3D_FULLSCREEN_ENV,
     NATIVE_PRESENT_MAX_FPS_ENV, PRESENT_LIMITER_AUTO_SENTINEL,
 };
-use crate::gstreamer_platform::{clear_native_shortcut_bindings, set_native_shortcut_bindings};
 use crate::gstreamer_pipeline::{
     current_platform_label, init_gstreamer, native_video_backend_capabilities, GstreamerPipeline,
 };
+use crate::gstreamer_platform::{clear_native_shortcut_bindings, set_native_shortcut_bindings};
 use crate::protocol::{
     missing_field, CommandEnvelope, Event, IceCandidatePayload, NativeRenderSurface,
     NativeStreamerCapabilities, NativeStreamerSessionContext, NativeVideoBackendCapability,
@@ -221,6 +221,8 @@ impl NativeStreamerBackend for GstreamerBackend {
             (prepared.gstreamer_ice_pwd_replacements > 0)
                 .then_some(&prepared.nvst_params.credentials),
             prepared.nvst_params.partial_reliable_threshold_ms,
+            context.settings.native_cursor_overlay,
+            &context,
         ) {
             Ok(answer_sdp) => munge_answer_sdp(&answer_sdp, prepared.nvst_params.max_bitrate_kbps),
             Err(message) => {
@@ -424,8 +426,8 @@ mod tests {
         caps_framerate_summary, sink_stats_summary, VideoStallAction, VideoStallTracker,
     };
     use crate::gstreamer_pipeline::{
-        configure_stats_overlay_element, effective_present_max_fps, format_video_chain_selection,
-        rtp_video_chain_definition, RtpVideoApi, RtpVideoChainRole,
+        configure_stats_overlay_element, default_rtp_video_api_priority, effective_present_max_fps,
+        format_video_chain_selection, rtp_video_chain_definition, RtpVideoApi, RtpVideoChainRole,
     };
     use crate::gstreamer_transitions::resolve_queue_mode;
     use crate::protocol::{NativeQueueMode, StreamSettings, VideoCodec};
@@ -812,6 +814,9 @@ mod tests {
             max_bitrate_mbps: 75,
             codec: VideoCodec::H265,
             color_quality: crate::protocol::ColorQuality::TenBit420,
+            native_cursor_overlay: true,
+            mouse_sensitivity: 1.0,
+            mouse_acceleration: 1,
             enable_cloud_gsync: false,
             native_transition_diagnostics: None,
         });
@@ -823,6 +828,9 @@ mod tests {
             max_bitrate_mbps: 75,
             codec: VideoCodec::H265,
             color_quality: crate::protocol::ColorQuality::TenBit420,
+            native_cursor_overlay: true,
+            mouse_sensitivity: 1.0,
+            mouse_acceleration: 1,
             enable_cloud_gsync: true,
             native_transition_diagnostics: None,
         });

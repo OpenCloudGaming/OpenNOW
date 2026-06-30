@@ -735,6 +735,9 @@ export function App(): JSX.Element {
       nativeStreamerBackend: "gstreamer",
       nativeCloudGsyncMode: settings.nativeCloudGsyncMode,
       nativeTransitionDiagnostics: settings.nativeTransitionDiagnostics,
+      nativeCursorOverlay: settings.nativeCursorOverlay,
+      mouseSensitivity: settings.mouseSensitivity,
+      mouseAcceleration: settings.mouseAcceleration,
     };
   }, [
     settings.codec,
@@ -745,7 +748,10 @@ export function App(): JSX.Element {
     settings.gameLanguage,
     settings.keyboardLayout,
     settings.maxBitrateMbps,
+    settings.mouseAcceleration,
+    settings.mouseSensitivity,
     settings.nativeCloudGsyncMode,
+    settings.nativeCursorOverlay,
     settings.nativeTransitionDiagnostics,
     settings.resolution,
     settings.streamClientMode,
