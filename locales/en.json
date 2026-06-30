@@ -571,6 +571,8 @@
       "clipboardPaste": "Clipboard Paste",
       "gyroscopeControls": "Gyroscope Controls",
       "gyroscopeControlsHint": "Expose controller motion sensors for gyro aiming when the input backend supports it.",
+      "nativeCursorOverlay": "Native Cursor Overlay",
+      "nativeCursorOverlayHint": "WebRTC only. Uses NVIDIA's cursor_channel for a local cursor overlay; turn this off to leave cursor rendering to the server-side stream.",
       "keyboardLayoutHint": "Controls how your physical keyboard is mapped inside the remote session. Separate from the in-game language setting.",
       "mouseSensitivity": "Mouse Sensitivity",
       "mouseSensitivityHint": "Multiplier applied to mouse movement (1.00 = default)",

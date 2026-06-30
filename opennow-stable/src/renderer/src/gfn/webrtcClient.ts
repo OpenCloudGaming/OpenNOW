@@ -34,6 +34,7 @@ import {
   restampProtocolV3OuterTimestamp,
 } from "./inputProtocol";
 import { FULLSCREEN_KEYBOARD_LOCK_CODES } from "./keyboardLock";
+import { GfnCursorOverlayController } from "./cursorChannel";
 import {
   buildNvstSdp,
   extractIceCredentials,
@@ -221,6 +222,8 @@ interface ClientOptions {
   autoFullScreen?: boolean;
   /** Preferred microphone device ID */
   microphoneDeviceId?: string;
+  /** Use the WebRTC cursor_channel overlay; false leaves cursor rendering to the stream/server. */
+  nativeCursorOverlay?: boolean;
   /** Mouse sensitivity multiplier (1.0 = default) */
   mouseSensitivity?: number;
   /** Software acceleration strength percentage (1-150) */
@@ -710,7 +713,9 @@ export class GfnWebRtcClient {
   private pc: RTCPeerConnection | null = null;
   private reliableInputChannel: RTCDataChannel | null = null;
   private partiallyReliableInputChannel: RTCDataChannel | null = null;
+  private cursorChannel: RTCDataChannel | null = null;
   private controlChannel: RTCDataChannel | null = null;
+  private cursorOverlay: GfnCursorOverlayController | null = null;
   private nativeInputActive = false;
   private audioContext: AudioContext | null = null;
   private audioSourceNode: MediaStreamAudioSourceNode | null = null;
@@ -959,6 +964,10 @@ export class GfnWebRtcClient {
         this.micManager.setDeviceId(options.microphoneDeviceId);
       }
     }
+  }
+
+  private isNativeCursorOverlayEnabled(): boolean {
+    return this.options.nativeCursorOverlay !== false;
   }
 
   private shouldAutoFullscreen(): boolean {
@@ -1313,6 +1322,7 @@ export class GfnWebRtcClient {
     this.diagnostics.targetBitrateKbps = this.negotiatedMaxBitrateKbps;
     this.diagnostics.decodeFps = settings.fps;
     this.diagnostics.renderFps = settings.fps;
+    this.cursorOverlay?.setFallbackResolution(parseResolution(settings.resolution));
   }
 
   private closeDataChannels(): void {
@@ -1321,11 +1331,18 @@ export class GfnWebRtcClient {
       this.controlChannel.onclose = null;
       this.controlChannel.onerror = null;
     }
+    if (this.cursorChannel) {
+      this.cursorChannel.onmessage = null;
+      this.cursorChannel.onclose = null;
+      this.cursorChannel.onerror = null;
+    }
     this.reliableInputChannel?.close();
     this.partiallyReliableInputChannel?.close();
+    this.cursorChannel?.close();
     this.controlChannel?.close();
     this.reliableInputChannel = null;
     this.partiallyReliableInputChannel = null;
+    this.cursorChannel = null;
     this.controlChannel = null;
   }
 
@@ -1847,6 +1864,8 @@ export class GfnWebRtcClient {
     for (const cleanup of this.inputCleanup.splice(0)) {
       cleanup();
     }
+    this.cursorOverlay?.dispose();
+    this.cursorOverlay = null;
     this.flushPendingMouseMovement = () => {};
     this.stopAllGamepadRumble();
     this.updateHapticsAdvertisement(false);
@@ -2807,6 +2826,31 @@ export class GfnWebRtcClient {
       this.emitStats();
       this.log("Partially reliable input channel closed");
     };
+
+    if (!this.isNativeCursorOverlayEnabled()) {
+      this.log("Cursor channel disabled; using server-side cursor rendering");
+      return;
+    }
+
+    this.cursorChannel = pc.createDataChannel("cursor_channel", {
+      ordered: true,
+    });
+    this.cursorChannel.binaryType = "arraybuffer";
+    this.cursorChannel.onopen = () => {
+      this.log("Cursor channel open");
+    };
+    this.cursorChannel.onmessage = async (event) => {
+      const bytes = await toBytes(event.data as string | Blob | ArrayBuffer);
+      if (!this.cursorOverlay?.handleMessage(bytes)) {
+        this.log(`Cursor channel message ignored (${bytes.length} bytes)`);
+      }
+    };
+    this.cursorChannel.onclose = () => {
+      this.log("Cursor channel closed");
+    };
+    this.cursorChannel.onerror = () => {
+      this.log("Cursor channel error");
+    };
   }
 
   private mapTimerNotificationCode(rawCode: number): StreamTimeWarning["code"] | null {
@@ -3142,6 +3186,12 @@ export class GfnWebRtcClient {
 
     const pointerLockTarget = (videoElement.parentElement as HTMLElement | null) ?? videoElement;
     const originalPointerLockTargetTabIndex = pointerLockTarget.getAttribute("tabindex");
+    if (this.isNativeCursorOverlayEnabled()) {
+      this.cursorOverlay = new GfnCursorOverlayController(videoElement);
+      this.cursorOverlay.setFallbackResolution(parseResolution(this.currentResolution));
+    } else {
+      this.cursorOverlay = null;
+    }
     if (originalPointerLockTargetTabIndex === null) {
       pointerLockTarget.tabIndex = -1;
     }
@@ -3156,6 +3206,7 @@ export class GfnWebRtcClient {
       const lockElement = document.pointerLockElement;
       return lockElement === pointerLockTarget || lockElement === videoElement;
     };
+    this.cursorOverlay?.setPointerLocked(isPointerLockActive());
 
     // Mirror mode: tracks whether the HW cursor is over the stream viewport.
     // Dual-source: coarse window focus/blur sets the initial state and handles
@@ -3401,6 +3452,8 @@ export class GfnWebRtcClient {
         pendingEntryAbsY = null;
 
         if (typeof targetAbsX === "number" && typeof targetAbsY === "number") {
+          const targetRect = pointerLockTarget.getBoundingClientRect();
+          this.cursorOverlay?.setClientPosition(targetRect.left + targetAbsX, targetRect.top + targetAbsY);
           const { scaleX, scaleY, serverWidth, serverHeight } = getPointerScale();
 
           // Translate the element-local target into server pixels.
@@ -3474,6 +3527,7 @@ export class GfnWebRtcClient {
         adjustedDy *= accelFactor;
       }
 
+      this.cursorOverlay?.moveBy(adjustedDx, adjustedDy);
       this.pendingMouseDxFloat += adjustedDx;
       this.pendingMouseDyFloat += adjustedDy;
       if (this.pendingMouseTimestampUs === null) {
@@ -3760,6 +3814,7 @@ export class GfnWebRtcClient {
     // (matches official GFN client's "pointerLockEscape" feature)
     const onPointerLockChange = () => {
       if (isPointerLockActive()) {
+        this.cursorOverlay?.setPointerLocked(true);
         // Pointer lock gained — cancel any pending synthetic Escape.
         // Reset absolute position tracking since we switch to relative movement.
         lastAbsX = null;
@@ -3787,6 +3842,7 @@ export class GfnWebRtcClient {
       }
 
       const suppressEscapeFullscreenGrace = this.suppressNextSyntheticEscape;
+      this.cursorOverlay?.setPointerLocked(false);
 
       // Pointer lock was lost — reset mirror state so tracking resumes from the
       // current cursor position rather than from a stale last-known position.

@@ -70,6 +70,8 @@ export interface Settings {
   clipboardPaste: boolean;
   /** Enable experimental gyroscope controller input mapping */
   enableGyroscopeControls: boolean;
+  /** Use the WebRTC cursor_channel overlay instead of leaving cursor rendering to the stream */
+  nativeCursorOverlay: boolean;
   /** Mouse sensitivity multiplier */
   mouseSensitivity: number;
   /** Software mouse acceleration strength percentage (1-150) */
@@ -194,6 +196,7 @@ const DEFAULT_SETTINGS: Settings = {
   sessionProxyUrl: "",
   clipboardPaste: false,
   enableGyroscopeControls: false,
+  nativeCursorOverlay: true,
   mouseSensitivity: 1,
   mouseAcceleration: 1,
   shortcutToggleStats: "F3",
