@@ -38,3 +38,15 @@ export function shouldCaptureEscapeFullscreenInput(
 
   return state.windowFullscreen && state.nowMs <= state.pointerLockEscapeCaptureUntilMs;
 }
+
+export function nextPointerLockEscapeCaptureUntilMs(
+  active: boolean,
+  suppressEscapeFullscreenGrace: boolean,
+  nowMs: number,
+): number {
+  if (active || suppressEscapeFullscreenGrace) {
+    return 0;
+  }
+
+  return nowMs + POINTER_LOCK_ESCAPE_FULLSCREEN_GRACE_MS;
+}

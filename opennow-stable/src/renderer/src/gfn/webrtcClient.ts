@@ -3622,13 +3622,15 @@ export class GfnWebRtcClient {
         return;
       }
 
+      const suppressEscapeFullscreenGrace = this.suppressNextSyntheticEscape;
+
       // Pointer lock was lost — reset mirror state so tracking resumes from the
       // current cursor position rather than from a stale last-known position.
       lastAbsX = null;
       lastAbsY = null;
 
       try {
-        (window as any).openNow?.notifyPointerLockChange?.(false);
+        (window as any).openNow?.notifyPointerLockChange?.(false, suppressEscapeFullscreenGrace);
       } catch {}
 
       // Pointer lock was lost

@@ -83,7 +83,7 @@ import {
   type BootstrapVideoPreferences,
 } from "./videoAcceleration";
 import {
-  POINTER_LOCK_ESCAPE_FULLSCREEN_GRACE_MS,
+  nextPointerLockEscapeCaptureUntilMs,
   shouldCaptureEscapeFullscreenInput,
 } from "./escapeFullscreenGuard";
 import { parseDirectLaunchArgs, type DirectLaunchArgs } from "@shared/directLaunch";
@@ -469,14 +469,17 @@ async function createMainWindow(): Promise<void> {
 
   // Track pointer-lock state from renderer; used to decide whether to swallow
   // Escape at the native level (before Chromium handles it).
-  ipcMain.on(IPC_CHANNELS.POINTER_LOCK_CHANGE, (_ev, active: boolean) => {
-    isPointerLockActiveRuntime = Boolean(active);
-    if (isPointerLockActiveRuntime) {
-      pointerLockEscapeCaptureUntilMs = 0;
-    } else {
-      pointerLockEscapeCaptureUntilMs = Date.now() + POINTER_LOCK_ESCAPE_FULLSCREEN_GRACE_MS;
-    }
-  });
+  ipcMain.on(
+    IPC_CHANNELS.POINTER_LOCK_CHANGE,
+    (_ev, active: boolean, suppressEscapeFullscreenGrace?: boolean) => {
+      isPointerLockActiveRuntime = Boolean(active);
+      pointerLockEscapeCaptureUntilMs = nextPointerLockEscapeCaptureUntilMs(
+        isPointerLockActiveRuntime,
+        Boolean(suppressEscapeFullscreenGrace),
+        Date.now(),
+      );
+    },
+  );
 
   // Intercept Escape early to avoid Chromium exiting fullscreen before the
   // renderer can forward the key to the remote session. Keep a short fullscreen

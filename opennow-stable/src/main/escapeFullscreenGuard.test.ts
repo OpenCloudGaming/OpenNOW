@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 
 import {
   isEscapeKeyDownInput,
+  nextPointerLockEscapeCaptureUntilMs,
+  POINTER_LOCK_ESCAPE_FULLSCREEN_GRACE_MS,
   shouldCaptureEscapeFullscreenInput,
 } from "./escapeFullscreenGuard";
 
@@ -64,4 +66,13 @@ test("shouldCaptureEscapeFullscreenInput allows Escape outside protected stream 
     pointerLockEscapeCaptureUntilMs: 1500,
     nowMs: 1000,
   }), false);
+});
+
+test("nextPointerLockEscapeCaptureUntilMs only arms grace for unsuppressed pointer-lock loss", () => {
+  assert.equal(nextPointerLockEscapeCaptureUntilMs(true, false, 1000), 0);
+  assert.equal(nextPointerLockEscapeCaptureUntilMs(false, true, 1000), 0);
+  assert.equal(
+    nextPointerLockEscapeCaptureUntilMs(false, false, 1000),
+    1000 + POINTER_LOCK_ESCAPE_FULLSCREEN_GRACE_MS,
+  );
 });
