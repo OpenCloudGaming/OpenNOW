@@ -1080,7 +1080,7 @@ pub(crate) mod win32_renderer_window {
             if previous.is_some() {
                 return;
             }
-            let modifiers = current_modifier_flags(&keys);
+            let modifiers = keyboard_modifier_flags(keycode);
             if is_clipboard_paste_shortcut(keycode, modifiers) {
                 keys.insert(
                     scancode,
@@ -1115,15 +1115,12 @@ pub(crate) mod win32_renderer_window {
                     suppressed: false,
                 },
             );
-        } else {
-            let Some(previous) = keys.remove(&scancode) else {
-                return;
-            };
+        } else if let Some(previous) = keys.remove(&scancode) {
             if previous.suppressed {
                 return;
             }
         }
-        let modifiers = current_modifier_flags(&keys);
+        let modifiers = keyboard_modifier_flags(keycode);
         drop(keys);
 
         emit_input_event(NativeWindowInputEvent::Key {
@@ -1259,37 +1256,29 @@ pub(crate) mod win32_renderer_window {
         }
     }
 
-    unsafe fn current_modifier_flags(keys: &HashMap<u16, PressedKey>) -> u16 {
+    /// Per-key modifier byte matching official GFN `Cb()` / `xb()`.
+    /// Lock keys (Caps/Num/Scroll) sync separately via INPUT_LOCK_KEYS_SYNC, not here.
+    unsafe fn keyboard_modifier_flags(active_keycode: u16) -> u16 {
         let mut modifiers = 0u16;
-        if keys
-            .values()
-            .any(|key| matches!(key.keycode, VK_LSHIFT | VK_RSHIFT | VK_SHIFT))
+        if !matches!(active_keycode, VK_LSHIFT | VK_RSHIFT | VK_SHIFT)
+            && (is_key_down(VK_SHIFT) || is_key_down(VK_LSHIFT) || is_key_down(VK_RSHIFT))
         {
             modifiers |= 0x01;
         }
-        if keys
-            .values()
-            .any(|key| matches!(key.keycode, VK_LCONTROL | VK_RCONTROL | VK_CONTROL))
+        if !matches!(active_keycode, VK_LCONTROL | VK_RCONTROL | VK_CONTROL)
+            && (is_key_down(VK_CONTROL) || is_key_down(VK_LCONTROL) || is_key_down(VK_RCONTROL))
         {
             modifiers |= 0x02;
         }
-        if keys
-            .values()
-            .any(|key| matches!(key.keycode, VK_LMENU | VK_RMENU | VK_MENU))
+        if !matches!(active_keycode, VK_LMENU | VK_RMENU | VK_MENU)
+            && (is_key_down(VK_MENU) || is_key_down(VK_LMENU) || is_key_down(VK_RMENU))
         {
             modifiers |= 0x04;
         }
-        if keys
-            .values()
-            .any(|key| matches!(key.keycode, VK_LWIN | VK_RWIN))
+        if !matches!(active_keycode, VK_LWIN | VK_RWIN)
+            && (is_key_down(VK_LWIN) || is_key_down(VK_RWIN))
         {
             modifiers |= 0x08;
-        }
-        if (GetKeyState(VK_CAPITAL) & 0x0001) != 0 {
-            modifiers |= 0x10;
-        }
-        if (GetKeyState(VK_NUMLOCK) & 0x0001) != 0 {
-            modifiers |= 0x20;
         }
         modifiers
     }

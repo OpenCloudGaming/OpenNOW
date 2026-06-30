@@ -20,6 +20,8 @@ const WRAPPER_LEGACY_INPUT: u8 = 0x21;
 const WRAPPER_SINGLE_INPUT: u8 = 0x22;
 const WRAPPER_PARTIALLY_RELIABLE_INPUT: u8 = 0x26;
 const WRAPPER_VERSION_MARKER: u8 = 0x23;
+const WRAPPER_VERSION_HEADER_BYTES: usize = 9;
+const WRAPPER_SINGLE_BODY_OFFSET: usize = WRAPPER_VERSION_HEADER_BYTES + 1;
 const GAMEPAD_PAYLOAD_SIZE: u16 = 26;
 const GAMEPAD_INNER_SIZE: u16 = 20;
 const GAMEPAD_RESERVED_MARKER: u16 = 85;
@@ -191,6 +193,45 @@ impl InputEncoder {
             .insert(controller_id, current.wrapping_add(1));
         current
     }
+}
+
+/// Coalesce protocol v3 single-input packets into one datachannel payload.
+/// Official GFN batches multiple `[0x22][body]` frames under one `[0x23][timestamp]` header.
+/// Returns `None` when payloads cannot be safely coalesced (for example protocol v2).
+pub fn combine_single_input_packets(payloads: &[Vec<u8>]) -> Option<Vec<u8>> {
+    if payloads.is_empty() {
+        return None;
+    }
+    if payloads.len() == 1 {
+        return Some(payloads[0].clone());
+    }
+
+    let mut combined_bodies = Vec::new();
+    let mut timestamp_us = 0u64;
+
+    for payload in payloads {
+        if payload.len() >= WRAPPER_SINGLE_BODY_OFFSET
+            && payload[0] == WRAPPER_VERSION_MARKER
+            && payload[WRAPPER_VERSION_HEADER_BYTES] == WRAPPER_SINGLE_INPUT
+        {
+            timestamp_us = timestamp_us.max(u64::from_be_bytes(
+                payload[1..WRAPPER_VERSION_HEADER_BYTES]
+                    .try_into()
+                    .unwrap_or([0; 8]),
+            ));
+            combined_bodies.push(WRAPPER_SINGLE_INPUT);
+            combined_bodies.extend_from_slice(&payload[WRAPPER_SINGLE_BODY_OFFSET..]);
+            continue;
+        }
+
+        return None;
+    }
+
+    let mut bytes = Vec::with_capacity(WRAPPER_VERSION_HEADER_BYTES + combined_bodies.len());
+    bytes.push(WRAPPER_VERSION_MARKER);
+    bytes.extend_from_slice(&timestamp_us.to_be_bytes());
+    bytes.extend_from_slice(&combined_bodies);
+    Some(bytes)
 }
 
 pub fn partially_reliable_hid_mask_for_input_type(input_type: u32) -> u32 {
@@ -433,6 +474,57 @@ fn put_u64_be(bytes: &mut Vec<u8>, value: u64) {
 
 fn put_u64_le(bytes: &mut Vec<u8>, value: u64) {
     bytes.extend_from_slice(&value.to_le_bytes());
+}
+
+#[cfg(test)]
+mod combine_tests {
+    use super::*;
+
+    #[test]
+    fn combines_protocol_v3_single_input_packets() {
+        let encoder = InputEncoder::new(3);
+        let first = encoder.encode_key_down(KeyboardPayload {
+            keycode: 0x0041,
+            scancode: 0,
+            modifiers: 0,
+            timestamp_us: 10,
+        });
+        let second = encoder.encode_key_down(KeyboardPayload {
+            keycode: 0x0042,
+            scancode: 0,
+            modifiers: 0,
+            timestamp_us: 20,
+        });
+
+        let combined = combine_single_input_packets(&[first.clone(), second.clone()])
+            .expect("v3 keyboard packets should combine");
+
+        assert_eq!(combined[0], WRAPPER_VERSION_MARKER);
+        assert_eq!(&combined[1..9], &20u64.to_be_bytes());
+        assert_eq!(combined[9], WRAPPER_SINGLE_INPUT);
+        assert_eq!(&combined[10..14], &[0x03, 0, 0, 0]);
+        assert_eq!(combined[28], WRAPPER_SINGLE_INPUT);
+        assert_eq!(&combined[29..33], &[0x03, 0, 0, 0]);
+    }
+
+    #[test]
+    fn leaves_protocol_v2_packets_uncombined() {
+        let encoder = InputEncoder::new(2);
+        let first = encoder.encode_key_down(KeyboardPayload {
+            keycode: 0x0041,
+            scancode: 0,
+            modifiers: 0,
+            timestamp_us: 10,
+        });
+        let second = encoder.encode_key_up(KeyboardPayload {
+            keycode: 0x0041,
+            scancode: 0,
+            modifiers: 0,
+            timestamp_us: 11,
+        });
+
+        assert!(combine_single_input_packets(&[first, second]).is_none());
+    }
 }
 
 #[cfg(test)]
