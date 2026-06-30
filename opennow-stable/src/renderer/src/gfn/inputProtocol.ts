@@ -16,6 +16,110 @@ export const INPUT_TEXT = 23;
 const TEXT_INPUT_CHUNK_MAX_BYTES = 1016;
 const TEXT_INPUT_HEADER_BYTES = 5;
 
+export const WRAPPER_VERSION_MARKER = 0x23;
+export const WRAPPER_SINGLE_INPUT = 0x22;
+const WRAPPER_VERSION_HEADER_BYTES = 9;
+const WRAPPER_SINGLE_BODY_OFFSET = WRAPPER_VERSION_HEADER_BYTES + 1;
+
+let inputSessionStartedAtMs = 0;
+
+/** Reset session-relative input clock when the input handshake completes. */
+export function startInputSessionClock(nowMs: number = performance.now()): void {
+  inputSessionStartedAtMs = nowMs;
+}
+
+/** Session-relative capture timestamp for inner event payloads (official GFN Or()). */
+export function captureTimestampUs(sourceTimestampMs?: number): bigint {
+  const baseMs =
+    typeof sourceTimestampMs === "number" && Number.isFinite(sourceTimestampMs) && sourceTimestampMs >= 0
+      ? sourceTimestampMs - inputSessionStartedAtMs
+      : performance.now() - inputSessionStartedAtMs;
+  return BigInt(Math.max(0, Math.floor(baseMs * 1000)));
+}
+
+/** Send-time session clock for v3 outer headers (official GFN ed()). */
+export function sendTimestampUs(nowMs: number = performance.now()): bigint {
+  return captureTimestampUs(nowMs);
+}
+
+function writeSessionTimestamp(view: DataView, offset: number, timestampUs: bigint): void {
+  const clamped = timestampUs < 0n ? 0n : timestampUs;
+  const lo = Number(clamped & 0xFFFFFFFFn);
+  const hi = Number(clamped >> 32n);
+  view.setUint32(offset, hi, false);
+  view.setUint32(offset + 4, lo, false);
+}
+
+/** Rewrite the protocol v3 `[0x23][timestamp]` header to the send-time session clock. */
+export function restampProtocolV3OuterTimestamp(packet: Uint8Array, timestampUs: bigint): boolean {
+  if (packet.length < WRAPPER_VERSION_HEADER_BYTES || packet[0] !== WRAPPER_VERSION_MARKER) {
+    return false;
+  }
+  writeSessionTimestamp(new DataView(packet.buffer, packet.byteOffset, packet.byteLength), 1, timestampUs);
+  return true;
+}
+
+/**
+ * Coalesce protocol v3 single-input packets into one datachannel payload.
+ * Official GFN batches multiple `[0x22][body]` frames under one `[0x23][timestamp]`
+ * header stamped with the send-time session clock (`ed()`).
+ */
+export function combineSingleInputPackets(
+  payloads: readonly Uint8Array[],
+  sendTimestampUsValue: bigint,
+): Uint8Array | null {
+  if (payloads.length === 0) {
+    return null;
+  }
+  if (payloads.length === 1) {
+    const packet = payloads[0].slice();
+    restampProtocolV3OuterTimestamp(packet, sendTimestampUsValue);
+    return packet;
+  }
+
+  const combinedBodies: number[] = [];
+  for (const payload of payloads) {
+    if (
+      payload.length >= WRAPPER_SINGLE_BODY_OFFSET
+      && payload[0] === WRAPPER_VERSION_MARKER
+      && payload[WRAPPER_VERSION_HEADER_BYTES] === WRAPPER_SINGLE_INPUT
+    ) {
+      combinedBodies.push(WRAPPER_SINGLE_INPUT);
+      combinedBodies.push(...payload.subarray(WRAPPER_SINGLE_BODY_OFFSET));
+      continue;
+    }
+    return null;
+  }
+
+  const bytes = new Uint8Array(WRAPPER_VERSION_HEADER_BYTES + combinedBodies.length);
+  const view = new DataView(bytes.buffer);
+  bytes[0] = WRAPPER_VERSION_MARKER;
+  writeSessionTimestamp(view, 1, sendTimestampUsValue);
+  bytes.set(combinedBodies, WRAPPER_VERSION_HEADER_BYTES);
+  return bytes;
+}
+
+/** Finalize reliable keyboard/button packets, coalescing and restamping v3 headers at send time. */
+export function finalizeReliableSingleInputPackets(
+  payloads: readonly Uint8Array[],
+  sendTimestampUsValue: bigint,
+): Uint8Array[] {
+  if (payloads.length === 0) {
+    return [];
+  }
+
+  const combined = combineSingleInputPackets(payloads, sendTimestampUsValue);
+  if (combined) {
+    return [combined];
+  }
+
+  return payloads.map((payload) => {
+    const packet = payload.slice();
+    restampProtocolV3OuterTimestamp(packet, sendTimestampUsValue);
+    return packet;
+  });
+}
+
 // Mouse button constants (1-based for GFN protocol)
 // GFN uses: 1=Left, 2=Middle, 3=Right, 4=Back, 5=Forward
 export const MOUSE_LEFT = 1;
@@ -586,15 +690,11 @@ export function mapTextCharToKeySpec(char: string, layout?: KeyboardLayout): Tex
 }
 
 /**
- * Write an 8-byte big-endian timestamp (performance.now() * 1000 = microseconds)
- * into a DataView at the given offset. Matches official GFN client's _r() function.
+ * Write an 8-byte big-endian session-relative timestamp into a DataView.
+ * Outer v3 headers are restamped again at send time via restampProtocolV3OuterTimestamp().
  */
 function writeTimestamp(view: DataView, offset: number): void {
-  const tsUs = performance.now() * 1000;
-  const lo = Math.floor(tsUs) & 0xFFFFFFFF;
-  const hi = Math.floor(tsUs / 4294967296);
-  view.setUint32(offset, hi, false);     // high 32 bits, big-endian
-  view.setUint32(offset + 4, lo, false); // low 32 bits, big-endian
+  writeSessionTimestamp(view, offset, sendTimestampUs());
 }
 
 /**
@@ -925,13 +1025,33 @@ function textInputChunkLength(bytes: Uint8Array, offset: number): number {
   return 0;
 }
 
-/** Per-key modifier byte (official GFN yS()). Lock keys sync separately via INPUT_LOCK_KEYS_SYNC. */
-export function modifierFlags(event: KeyboardEvent): number {
+function isMacKeyboardLayout(): boolean {
+  return typeof navigator !== "undefined" && /Mac|iPhone|iPad|iPod/.test(navigator.platform);
+}
+
+/** Shift bit for per-key modifier byte (official GFN xb()). */
+export function shiftModifierByte(event: KeyboardEvent, isMacLayout: boolean = isMacKeyboardLayout()): number {
+  if (isMacLayout && event.key.length === 1) {
+    if ("!@#$%^&*()~_+{}|:\"<>?".includes(event.key)) {
+      return 1;
+    }
+    if ("1234567890`-=[]\\;',./".includes(event.key)) {
+      return 0;
+    }
+  }
+  if (event.shiftKey && !event.code.startsWith("Shift")) {
+    return 1;
+  }
+  return 0;
+}
+
+/** Per-key modifier byte (official GFN Cb(): ctrl/alt/meta + xb shift). */
+export function modifierFlags(event: KeyboardEvent, isMacLayout: boolean = isMacKeyboardLayout()): number {
   let flags = 0;
-  if (event.shiftKey && !event.code.startsWith("Shift")) flags |= 0x01;
   if (event.ctrlKey && !event.code.startsWith("Control")) flags |= 0x02;
   if (event.altKey && !event.code.startsWith("Alt")) flags |= 0x04;
   if (event.metaKey && !event.code.startsWith("Meta")) flags |= 0x08;
+  flags |= shiftModifierByte(event, isMacLayout);
   return flags;
 }
 
