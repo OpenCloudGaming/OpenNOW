@@ -175,8 +175,6 @@ impl NativeMouseSettings {
 #[cfg(target_os = "windows")]
 #[derive(Debug, Clone, Copy)]
 struct AdjustedMouseMove {
-    cursor_dx: f64,
-    cursor_dy: f64,
     send_dx: i16,
     send_dy: i16,
 }
@@ -204,21 +202,19 @@ impl NativeMouseAdjuster {
             return None;
         }
 
-        let mut cursor_dx = f64::from(dx) * self.settings.sensitivity;
-        let mut cursor_dy = f64::from(dy) * self.settings.sensitivity;
+        let mut adjusted_dx = f64::from(dx) * self.settings.sensitivity;
+        let mut adjusted_dy = f64::from(dy) * self.settings.sensitivity;
         if self.settings.acceleration_percent > 1 {
-            let speed = cursor_dx.hypot(cursor_dy);
+            let speed = adjusted_dx.hypot(adjusted_dy);
             let strength = f64::from(self.settings.acceleration_percent.saturating_sub(1)) / 149.0;
             let accel_factor = 1.0 + (0.6 * strength).min((speed / 50.0) * strength);
-            cursor_dx *= accel_factor;
-            cursor_dy *= accel_factor;
+            adjusted_dx *= accel_factor;
+            adjusted_dy *= accel_factor;
         }
 
         Some(AdjustedMouseMove {
-            cursor_dx,
-            cursor_dy,
-            send_dx: quantize_mouse_delta(cursor_dx, &mut self.residual_x),
-            send_dy: quantize_mouse_delta(cursor_dy, &mut self.residual_y),
+            send_dx: quantize_mouse_delta(adjusted_dx, &mut self.residual_x),
+            send_dy: quantize_mouse_delta(adjusted_dy, &mut self.residual_y),
         })
     }
 }
@@ -569,12 +565,6 @@ fn send_native_window_input_events(
                 let Some(adjusted) = mouse_adjuster.adjust(dx, dy) else {
                     continue;
                 };
-                unsafe {
-                    win32_renderer_window::move_native_cursor_by_delta(
-                        adjusted.cursor_dx,
-                        adjusted.cursor_dy,
-                    );
-                }
                 if adjusted.send_dx == 0 && adjusted.send_dy == 0 {
                     continue;
                 }
@@ -1271,7 +1261,6 @@ mod tests {
         let third = adjuster.adjust(1, 0).expect("third move");
         let fourth = adjuster.adjust(1, 0).expect("fourth move");
 
-        assert_eq!(first.cursor_dx, 0.25);
         assert_eq!(
             [first.send_dx, second.send_dx, third.send_dx, fourth.send_dx],
             [0, 1, 0, 0]
@@ -1286,7 +1275,6 @@ mod tests {
         });
 
         let adjusted = adjuster.adjust(50, 0).expect("accelerated move");
-        assert_eq!(adjusted.cursor_dx, 80.0);
         assert_eq!(adjusted.send_dx, 80);
     }
 }

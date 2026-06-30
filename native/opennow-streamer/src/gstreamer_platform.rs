@@ -281,7 +281,6 @@ pub(crate) mod win32_renderer_window {
     const IDC_HAND: u16 = 32649;
     const IDC_APPSTARTING: u16 = 32650;
     const IDC_HELP: u16 = 32651;
-    const CURSOR_POSITION_MAX_F64: f64 = 65535.0;
     const MAX_CUSTOM_CURSOR_IMAGE_BYTES: usize = 2 * 1024 * 1024;
     const MAX_CUSTOM_CURSOR_DIMENSION: u32 = 512;
 
@@ -312,7 +311,6 @@ pub(crate) mod win32_renderer_window {
     struct NativeCursorRuntime {
         visible: bool,
         current: Option<CursorHandle>,
-        position: Option<(f64, f64)>,
         custom: HashMap<u8, CursorHandle>,
     }
 
@@ -433,7 +431,6 @@ pub(crate) mod win32_renderer_window {
             lparam: Lparam,
         ) -> Bool;
         fn GetMonitorInfoW(monitor: Hmonitor, info: *mut MonitorInfo) -> Bool;
-        fn GetCursorPos(point: *mut Point) -> Bool;
         fn GetRawInputData(
             raw_input: Hrawinput,
             command: Uint,
@@ -455,7 +452,6 @@ pub(crate) mod win32_renderer_window {
         fn ReleaseCapture() -> Bool;
         fn SetCapture(hwnd: Hwnd) -> Hwnd;
         fn SetCursor(cursor: Hcursor) -> Hcursor;
-        fn SetCursorPos(x: i32, y: i32) -> Bool;
         fn SetFocus(hwnd: Hwnd) -> Hwnd;
         fn SetForegroundWindow(hwnd: Hwnd) -> Bool;
         fn SetWindowLongPtrW(hwnd: Hwnd, index: i32, new_long: isize) -> isize;
@@ -532,20 +528,20 @@ pub(crate) mod win32_renderer_window {
 
             let was_visible = runtime.visible;
             let previous_cursor = runtime.current;
-            let (next_visible, next_cursor, position) = match update {
-                NativeCursorUpdate::Hidden => (false, None, None),
+            let (next_visible, next_cursor) = match update {
+                NativeCursorUpdate::Hidden => (false, None),
                 NativeCursorUpdate::Predefined {
                     cursor_id,
-                    position,
+                    position: _,
                 } => {
                     let handle = predefined_cursor_handle(cursor_id)
                         .ok_or_else(|| format!("Unknown predefined cursor id {cursor_id}."))?;
-                    (true, Some(handle), position)
+                    (true, Some(handle))
                 }
                 NativeCursorUpdate::Custom {
                     cursor_id,
                     image,
-                    position,
+                    position: _,
                     ..
                 } => {
                     let handle = if image.is_some() {
@@ -564,19 +560,11 @@ pub(crate) mod win32_renderer_window {
                             format!("Custom cursor id {cursor_id} was referenced before its image.")
                         })?
                     };
-                    (true, Some(handle), position)
+                    (true, Some(handle))
                 }
             };
             runtime.visible = next_visible;
             runtime.current = next_cursor;
-            if !was_visible && next_visible {
-                if let Some(position) = position {
-                    runtime.position = Some((f64::from(position.x), f64::from(position.y)));
-                } else if runtime.position.is_none() {
-                    runtime.position =
-                        Some((CURSOR_POSITION_MAX_F64 / 2.0, CURSOR_POSITION_MAX_F64 / 2.0));
-                }
-            }
             (
                 next_visible,
                 next_cursor,
@@ -589,7 +577,6 @@ pub(crate) mod win32_renderer_window {
         }
 
         apply_native_cursor_to_current_window();
-        sync_native_cursor_screen_position();
         request_native_cursor_refresh_for_current_window();
         Ok(changed && next_visible && next_cursor.is_some())
     }
@@ -603,7 +590,6 @@ pub(crate) mod win32_renderer_window {
             };
             runtime.visible = false;
             runtime.current = None;
-            runtime.position = None;
             runtime
                 .custom
                 .drain()
@@ -785,131 +771,6 @@ pub(crate) mod win32_renderer_window {
             hide_cursor();
         }
         SetCursor(null_mut());
-    }
-
-    unsafe fn sync_native_cursor_screen_position() {
-        if !native_cursor_visible() {
-            return;
-        }
-        let Some(hwnd) = captured_hwnd().or_else(protected_hwnd) else {
-            return;
-        };
-        let hwnd = hwnd as Hwnd;
-        let Some(rect) = target_renderer_rect().or_else(|| monitor_rect_for_window(hwnd)) else {
-            return;
-        };
-        let position = native_cursor_position_for_rect(hwnd, rect);
-        set_cursor_pos_for_normalized_position(rect, position);
-        apply_native_cursor_to_window(hwnd);
-    }
-
-    pub unsafe fn move_native_cursor_by_delta(dx: f64, dy: f64) {
-        if (!dx.is_finite() || !dy.is_finite())
-            || ((dx == 0.0 && dy == 0.0) || !native_cursor_visible())
-        {
-            return;
-        }
-        let Some(hwnd) = captured_hwnd() else {
-            return;
-        };
-        let hwnd = hwnd as Hwnd;
-        let Some(rect) = target_renderer_rect().or_else(|| monitor_rect_for_window(hwnd)) else {
-            return;
-        };
-        let width = f64::from(rect.right.saturating_sub(rect.left).max(1));
-        let height = f64::from(rect.bottom.saturating_sub(rect.top).max(1));
-        let mut position = native_cursor_position_for_rect(hwnd, rect);
-        position.0 = (position.0 + (dx / width) * CURSOR_POSITION_MAX_F64)
-            .clamp(0.0, CURSOR_POSITION_MAX_F64);
-        position.1 = (position.1 + (dy / height) * CURSOR_POSITION_MAX_F64)
-            .clamp(0.0, CURSOR_POSITION_MAX_F64);
-
-        let cursor_slot = NATIVE_CURSOR.get_or_init(|| Mutex::new(NativeCursorRuntime::default()));
-        if let Ok(mut runtime) = cursor_slot.lock() {
-            runtime.position = Some(position);
-        }
-        set_cursor_pos_for_normalized_position(rect, position);
-        apply_native_cursor_to_window(hwnd);
-    }
-
-    unsafe fn set_cursor_pos_for_normalized_position(rect: Rect, position: (f64, f64)) {
-        let width = f64::from(
-            rect.right
-                .saturating_sub(rect.left)
-                .saturating_sub(1)
-                .max(1),
-        );
-        let height = f64::from(
-            rect.bottom
-                .saturating_sub(rect.top)
-                .saturating_sub(1)
-                .max(1),
-        );
-        let x = f64::from(rect.left)
-            + (position.0.clamp(0.0, CURSOR_POSITION_MAX_F64) / CURSOR_POSITION_MAX_F64) * width;
-        let y = f64::from(rect.top)
-            + (position.1.clamp(0.0, CURSOR_POSITION_MAX_F64) / CURSOR_POSITION_MAX_F64) * height;
-        SetCursorPos(
-            (x.round() as i32).clamp(rect.left, rect.right.saturating_sub(1)),
-            (y.round() as i32).clamp(rect.top, rect.bottom.saturating_sub(1)),
-        );
-    }
-
-    unsafe fn native_cursor_position_for_rect(hwnd: Hwnd, rect: Rect) -> (f64, f64) {
-        if let Some(position) = NATIVE_CURSOR
-            .get()
-            .and_then(|cursor| cursor.lock().ok().and_then(|runtime| runtime.position))
-        {
-            return position;
-        }
-
-        let mut point = Point { x: 0, y: 0 };
-        let position = if GetCursorPos(&mut point) != 0 && point_in_rect(point, rect) {
-            normalized_position_from_screen_point(point, rect)
-        } else if let Some(monitor_rect) = monitor_rect_for_window(hwnd) {
-            let center = Point {
-                x: monitor_rect.left + monitor_rect.right.saturating_sub(monitor_rect.left) / 2,
-                y: monitor_rect.top + monitor_rect.bottom.saturating_sub(monitor_rect.top) / 2,
-            };
-            if point_in_rect(center, rect) {
-                normalized_position_from_screen_point(center, rect)
-            } else {
-                (CURSOR_POSITION_MAX_F64 / 2.0, CURSOR_POSITION_MAX_F64 / 2.0)
-            }
-        } else {
-            (CURSOR_POSITION_MAX_F64 / 2.0, CURSOR_POSITION_MAX_F64 / 2.0)
-        };
-
-        let cursor_slot = NATIVE_CURSOR.get_or_init(|| Mutex::new(NativeCursorRuntime::default()));
-        if let Ok(mut runtime) = cursor_slot.lock() {
-            runtime.position = Some(position);
-        }
-        position
-    }
-
-    fn normalized_position_from_screen_point(point: Point, rect: Rect) -> (f64, f64) {
-        let width = f64::from(
-            rect.right
-                .saturating_sub(rect.left)
-                .saturating_sub(1)
-                .max(1),
-        );
-        let height = f64::from(
-            rect.bottom
-                .saturating_sub(rect.top)
-                .saturating_sub(1)
-                .max(1),
-        );
-        (
-            (f64::from(point.x.saturating_sub(rect.left)) / width * CURSOR_POSITION_MAX_F64)
-                .clamp(0.0, CURSOR_POSITION_MAX_F64),
-            (f64::from(point.y.saturating_sub(rect.top)) / height * CURSOR_POSITION_MAX_F64)
-                .clamp(0.0, CURSOR_POSITION_MAX_F64),
-        )
-    }
-
-    fn point_in_rect(point: Point, rect: Rect) -> bool {
-        point.x >= rect.left && point.x < rect.right && point.y >= rect.top && point.y < rect.bottom
     }
 
     pub unsafe fn set_input_event_sender(sender: Option<Sender<NativeWindowInputEvent>>) {
