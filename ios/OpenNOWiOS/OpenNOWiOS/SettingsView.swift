@@ -612,6 +612,9 @@ struct SettingsView: View {
             Link(destination: URL(string: "https://github.com/Kief5555")!) {
                 Label("Kiefer", systemImage: "person.crop.circle")
             }
+            Link(destination: URL(string: "https://github.com/zortos293")!) {
+                Label("Zortos", systemImage: "person.crop.circle")
+            }
         }
     }
 
