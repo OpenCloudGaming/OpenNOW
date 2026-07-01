@@ -60,6 +60,7 @@
   "build": {
     "appId": "com.zortos.opennow.stable",
     "productName": "OpenNOW",
+    "afterSign": "scripts/after-sign-mac.mjs",
     "publish": [
       {
         "provider": "github",
