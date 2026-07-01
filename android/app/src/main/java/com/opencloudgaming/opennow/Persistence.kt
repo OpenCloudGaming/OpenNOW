@@ -19,6 +19,7 @@ private const val KEY_SETTINGS = "settings"
 private const val KEY_AUTH = "auth"
 private const val KEY_DEVICE_ID = "gfn_device_id"
 private const val KEY_CATALOG_CACHE_PREFIX = "catalog_cache_"
+private const val KEY_ANDROID_UPDATE_DISMISSED_NOTICE = "android_update_dismissed_notice"
 private const val CATALOG_CACHE_TTL_MS = 12L * 60L * 60L * 1000L
 
 class SettingsStore(context: Context) {
@@ -241,5 +242,16 @@ class CatalogCacheStore(context: Context) {
     private fun storageKey(key: String): String {
         val digest = MessageDigest.getInstance("SHA-256").digest(key.toByteArray())
         return KEY_CATALOG_CACHE_PREFIX + digest.joinToString("") { "%02x".format(it) }
+    }
+}
+
+class AndroidUpdateNoticeStore(context: Context) {
+    private val prefs = context.applicationContext.getSharedPreferences(STORE_NAME, Context.MODE_PRIVATE)
+
+    fun dismissedKey(): String? =
+        prefs.getString(KEY_ANDROID_UPDATE_DISMISSED_NOTICE, null)?.takeIf { it.isNotBlank() }
+
+    fun dismiss(key: String) {
+        prefs.edit().putString(KEY_ANDROID_UPDATE_DISMISSED_NOTICE, key).apply()
     }
 }

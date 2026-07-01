@@ -4,10 +4,12 @@ import android.app.Activity
 import android.content.res.Configuration
 import android.content.Intent
 import android.graphics.Color as AndroidColor
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Build
 import android.speech.RecognizerIntent
+import android.util.LruCache
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.PointerIcon
@@ -35,7 +37,6 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectDragGestures
-import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -88,6 +89,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ElevatedButton
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -106,6 +108,9 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.dynamicDarkColorScheme
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
+import androidx.compose.material3.pulltorefresh.PullToRefreshDefaults
+import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -176,6 +181,8 @@ import androidx.media3.ui.PlayerView
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import java.text.DateFormat
 import java.util.Date
@@ -249,23 +256,14 @@ fun OpenNowApp(viewModel: OpenNowViewModel) {
     val launchAudioController = remember(context) { AndroidNerdAudioController(context.applicationContext) }
     val playIntroOnAppLaunch = remember { state.settings.streamIntroMusic }
     var launchIntroStarted by remember { mutableStateOf(false) }
-    var musicCuePlaying by remember { mutableStateOf(false) }
-    var activeMusicCue by remember { mutableStateOf<MusicCueUiPurpose?>(null) }
     var previousStreamStatus by remember { mutableStateOf(state.streamStatus) }
     var queuedForStartCue by remember { mutableStateOf(false) }
     var lastStartCueSessionId by remember { mutableStateOf<String?>(null) }
-    fun updateMusicCue(purpose: MusicCueUiPurpose, playing: Boolean) {
-        musicCuePlaying = playing
-        activeMusicCue = when {
-            playing -> purpose
-            activeMusicCue == purpose -> null
-            else -> activeMusicCue
-        }
-    }
-    fun clearMusicCue(playing: Boolean) {
-        musicCuePlaying = playing
-        if (!playing) activeMusicCue = null
-    }
+    var hiddenUpdatePromptKey by remember { mutableStateOf<String?>(null) }
+    val updatePromptKey = state.androidUpdate.visibleNoticeKey(state.dismissedAndroidUpdateNoticeKey)
+    val showUpdatePrompt = updatePromptKey != null &&
+        updatePromptKey != hiddenUpdatePromptKey &&
+        state.androidUpdate.status in setOf(AndroidUpdateStatus.Available, AndroidUpdateStatus.Downloaded)
 
     DisposableEffect(launchAudioController) {
         onDispose {
@@ -299,25 +297,25 @@ fun OpenNowApp(viewModel: OpenNowViewModel) {
         }
 
         if (!state.settings.streamIntroMusic) {
-            launchAudioController.stopIntro { updateMusicCue(MusicCueUiPurpose.Intro, it) }
+            launchAudioController.stopIntro()
         }
         if (!state.settings.queueReadyMusic) {
-            launchAudioController.stopQueueReadyReminder { updateMusicCue(MusicCueUiPurpose.QueueReady, it) }
+            launchAudioController.stopQueueReadyReminder()
         }
 
         if (!state.settings.streamIntroMusic && !state.settings.queueReadyMusic) {
-            launchAudioController.stopAll(::clearMusicCue)
+            launchAudioController.stopAll()
         } else if (queueReadyForStream && queuedForStartCue) {
             lastStartCueSessionId = sessionId
             queuedForStartCue = false
-            launchAudioController.startQueueReadyReminder(enabled = state.settings.queueReadyMusic) { updateMusicCue(MusicCueUiPurpose.QueueReady, it) }
+            launchAudioController.startQueueReadyReminder(enabled = state.settings.queueReadyMusic)
         } else if (playIntroOnAppLaunch && state.settings.streamIntroMusic && !streamActive) {
             if (!launchIntroStarted) {
                 launchIntroStarted = true
-                launchAudioController.startIntro(enabled = true) { updateMusicCue(MusicCueUiPurpose.Intro, it) }
+                launchAudioController.startIntro(enabled = true) {}
             }
         } else {
-            launchAudioController.stopIntro { updateMusicCue(MusicCueUiPurpose.Intro, it) }
+            launchAudioController.stopIntro()
         }
         if (state.streamStatus == "idle") {
             queuedForStartCue = false
@@ -334,54 +332,77 @@ fun OpenNowApp(viewModel: OpenNowViewModel) {
                     else -> MainShell(state, viewModel)
                 }
             }
-            AnimatedVisibility(
-                visible = musicCuePlaying && when (activeMusicCue) {
-                    MusicCueUiPurpose.Intro -> state.settings.streamIntroMusic
-                    MusicCueUiPurpose.QueueReady -> state.settings.queueReadyMusic
-                    null -> false
-                },
-                modifier = Modifier
-                    .align(Alignment.TopEnd)
-                    .padding(top = 14.dp, end = 14.dp),
-            ) {
-                MusicCueMuteButton {
-                    val cue = activeMusicCue
-                    launchAudioController.stopAll(::clearMusicCue)
-                    viewModel.updateSettings(
-                        when (cue) {
-                            MusicCueUiPurpose.QueueReady -> state.settings.copy(queueReadyMusic = false)
-                            MusicCueUiPurpose.Intro -> state.settings.copy(streamIntroMusic = false)
-                            null -> state.settings.copy(streamIntroMusic = false, queueReadyMusic = false)
-                        },
-                    )
-                }
+            updatePromptKey?.takeIf { showUpdatePrompt }?.let { promptKey ->
+                AndroidUpdatePromptDialog(
+                    update = state.androidUpdate,
+                    onPrimary = {
+                        hiddenUpdatePromptKey = promptKey
+                        when (state.androidUpdate.status) {
+                            AndroidUpdateStatus.Available -> viewModel.downloadAndroidUpdate()
+                            AndroidUpdateStatus.Downloaded -> viewModel.installAndroidUpdate()
+                            else -> Unit
+                        }
+                    },
+                    onDetails = {
+                        hiddenUpdatePromptKey = promptKey
+                        viewModel.openAndroidUpdateSettings()
+                    },
+                    onDismiss = viewModel::dismissAndroidUpdateNotice,
+                )
             }
         }
     }
 }
 
-private enum class MusicCueUiPurpose {
-    Intro,
-    QueueReady,
-}
-
 @Composable
-private fun MusicCueMuteButton(onClick: () -> Unit) {
-    Surface(
-        shape = CircleShape,
-        color = PanelAlt.copy(alpha = 0.9f),
-        tonalElevation = 4.dp,
-        shadowElevation = 4.dp,
-    ) {
-        IconButton(onClick = onClick, modifier = Modifier.size(44.dp)) {
-            Icon(
-                painter = painterResource(R.drawable.ic_volume_off),
-                contentDescription = stringResource(R.string.action_mute_music),
-                tint = TextPrimary,
-                modifier = Modifier.size(22.dp),
-            )
-        }
-    }
+private fun AndroidUpdatePromptDialog(
+    update: AndroidUpdateState,
+    onPrimary: () -> Unit,
+    onDetails: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val version = update.availableVersionName?.let { "Version $it" }
+        ?: update.availableVersionCode?.let { "Build $it" }
+        ?: "A new build"
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(if (update.status == AndroidUpdateStatus.Downloaded) "Update ready" else "OpenNOW update available") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(
+                    if (update.status == AndroidUpdateStatus.Downloaded) {
+                        "$version is downloaded and ready to install."
+                    } else {
+                        "$version is available for this device."
+                    },
+                )
+                update.releaseNotes?.trim()?.takeIf { it.isNotBlank() }?.let { notes ->
+                    Text(
+                        notes,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.bodySmall,
+                        maxLines = 8,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            Button(onClick = onPrimary) {
+                Text(if (update.status == AndroidUpdateStatus.Downloaded) "Install" else "Download")
+            }
+        },
+        dismissButton = {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                TextButton(onClick = onDetails) {
+                    Text("Details")
+                }
+                TextButton(onClick = onDismiss) {
+                    Text(stringResource(R.string.action_cancel))
+                }
+            }
+        },
+    )
 }
 
 @Composable
@@ -1280,7 +1301,10 @@ private fun HomeScreen(
                                 onSortChange = viewModel::setCatalogSort,
                                 onFilterToggle = viewModel::toggleCatalogFilter,
                             )
-                            RefreshingGamesPlaceholder(Modifier.weight(1f))
+                            RefreshingGamesPlaceholder(
+                                settings = state.settings,
+                                modifier = Modifier.weight(1f),
+                            )
                         }
                     } else {
                         StoreGameGrid(
@@ -1476,47 +1500,54 @@ private fun LibraryScreen(
                     selectedIds = state.libraryFilterIds,
                     onToggle = viewModel::toggleLibraryFilter,
                 )
-                GameGrid(
-                    games,
-                    state.settings.favoriteGameIds,
-                    state.settings,
-                    tvProfile,
-                    viewModel::selectGame,
-                    viewModel::updateFavorites,
-                    viewModel::play,
-                    viewModel::chooseStore,
-                    modifier = Modifier.weight(1f),
-                    gridState = gridState,
-                    emptyContent = {
-                        val hasSearch = state.librarySearch.isNotBlank()
-                        val hasFilters = state.libraryFilterIds.isNotEmpty()
-                        if ((hasSearch || hasFilters) && state.libraryGames.isNotEmpty()) {
-                            SearchEmptyState(
-                                title = stringResource(R.string.library_empty_search_title),
-                                message = when {
-                                    hasSearch && hasFilters -> stringResource(R.string.library_empty_search_filters_body)
-                                    hasSearch -> stringResource(R.string.library_empty_search_body)
-                                    else -> stringResource(R.string.library_empty_filters_body)
-                                },
-                                onClearSearch = if (hasSearch) {
-                                    {
-                                        viewModel.setLibrarySearch("")
-                                        onSearchDismissed()
-                                    }
-                                } else {
-                                    null
-                                },
-                                onClearFilters = if (hasFilters) {
-                                    viewModel::clearLibraryFilters
-                                } else {
-                                    null
-                                },
-                            )
-                        } else {
-                            Text(stringResource(R.string.no_games_loaded), color = TextMuted)
-                        }
-                    },
-                )
+                if (state.loadingGames && state.libraryGames.isEmpty()) {
+                    RefreshingGamesPlaceholder(
+                        settings = state.settings,
+                        modifier = Modifier.weight(1f),
+                    )
+                } else {
+                    GameGrid(
+                        games,
+                        state.settings.favoriteGameIds,
+                        state.settings,
+                        tvProfile,
+                        viewModel::selectGame,
+                        viewModel::updateFavorites,
+                        viewModel::play,
+                        viewModel::chooseStore,
+                        modifier = Modifier.weight(1f),
+                        gridState = gridState,
+                        emptyContent = {
+                            val hasSearch = state.librarySearch.isNotBlank()
+                            val hasFilters = state.libraryFilterIds.isNotEmpty()
+                            if ((hasSearch || hasFilters) && state.libraryGames.isNotEmpty()) {
+                                SearchEmptyState(
+                                    title = stringResource(R.string.library_empty_search_title),
+                                    message = when {
+                                        hasSearch && hasFilters -> stringResource(R.string.library_empty_search_filters_body)
+                                        hasSearch -> stringResource(R.string.library_empty_search_body)
+                                        else -> stringResource(R.string.library_empty_filters_body)
+                                    },
+                                    onClearSearch = if (hasSearch) {
+                                        {
+                                            viewModel.setLibrarySearch("")
+                                            onSearchDismissed()
+                                        }
+                                    } else {
+                                        null
+                                    },
+                                    onClearFilters = if (hasFilters) {
+                                        viewModel::clearLibraryFilters
+                                    } else {
+                                        null
+                                    },
+                                )
+                            } else {
+                                Text(stringResource(R.string.no_games_loaded), color = TextMuted)
+                            }
+                        },
+                    )
+                }
             }
         }
     }
@@ -1709,59 +1740,98 @@ private fun SearchEmptyState(
 }
 
 @Composable
-private fun RefreshingGamesPlaceholder(modifier: Modifier = Modifier) {
-    Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-        Text("Loading games", color = TextMuted)
+private fun RefreshingGamesPlaceholder(
+    settings: AppSettings,
+    modifier: Modifier = Modifier,
+) {
+    GameGridSkeleton(settings = settings, modifier = modifier)
+}
+
+@Composable
+private fun GameGridSkeleton(
+    settings: AppSettings,
+    modifier: Modifier = Modifier,
+) {
+    val scale = settings.posterSizeScale.coerceIn(0.82f, 1.08f)
+    val compact = settings.compactGameCards
+    val landscapeLayout = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
+    BoxWithConstraints(modifier.fillMaxSize()) {
+        val gridSpec = gameGridSpec(maxWidth, compact, landscapeLayout)
+        val placeholderItems = remember(gridSpec.columns) { List(gridSpec.columns * 3) { it } }
+        LazyVerticalGrid(
+            modifier = Modifier.fillMaxSize(),
+            columns = GridCells.Fixed(gridSpec.columns),
+            contentPadding = PaddingValues(4.dp),
+            horizontalArrangement = Arrangement.spacedBy(if (compact) 8.dp else 10.dp),
+            verticalArrangement = Arrangement.spacedBy(if (compact) 10.dp else 12.dp),
+            userScrollEnabled = false,
+        ) {
+            gridItems(placeholderItems, key = { it }) {
+                GameCardSkeleton(cardHeight = gridSpec.cardHeight * scale)
+            }
+        }
     }
 }
 
 @Composable
-private fun SwipeToRefreshContainer(
+private fun GameCardSkeleton(cardHeight: Dp) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(cardHeight),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.58f)),
+        shape = RoundedCornerShape(12.dp),
+    ) {
+        Column(Modifier.fillMaxSize()) {
+            GameImagePulse(
+                Modifier
+                    .weight(1f)
+                    .fillMaxWidth(),
+            )
+            Column(Modifier.padding(9.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                SkeletonLine(widthFraction = 0.74f)
+                SkeletonLine(widthFraction = 0.46f)
+            }
+        }
+    }
+}
+
+@Composable
+private fun SkeletonLine(widthFraction: Float) {
+    GameImagePulse(
+        Modifier
+            .fillMaxWidth(widthFraction)
+            .height(9.dp)
+            .clip(RoundedCornerShape(999.dp)),
+    )
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+internal fun SwipeToRefreshContainer(
     refreshing: Boolean,
     onRefresh: () -> Unit,
     modifier: Modifier = Modifier,
     showRefreshIndicator: Boolean = true,
     content: @Composable () -> Unit,
 ) {
-    var dragDistance by remember { mutableFloatStateOf(0f) }
-    Box(
-        modifier.pointerInput(refreshing) {
-            detectVerticalDragGestures(
-                onDragEnd = {
-                    if (!refreshing && dragDistance > 140f) onRefresh()
-                    dragDistance = 0f
-                },
-                onDragCancel = { dragDistance = 0f },
-                onVerticalDrag = { change, dragAmount ->
-                    if (dragAmount > 0) {
-                        dragDistance += dragAmount
-                        change.consume()
-                    }
-                },
-            )
+    val pullRefreshState = rememberPullToRefreshState()
+    PullToRefreshBox(
+        isRefreshing = refreshing,
+        onRefresh = onRefresh,
+        modifier = modifier,
+        state = pullRefreshState,
+        indicator = {
+            if (showRefreshIndicator) {
+                PullToRefreshDefaults.Indicator(
+                    state = pullRefreshState,
+                    isRefreshing = refreshing,
+                    modifier = Modifier.align(Alignment.TopCenter),
+                )
+            }
         },
     ) {
         content()
-        AnimatedVisibility(
-            visible = showRefreshIndicator && (refreshing || dragDistance > 40f),
-            modifier = Modifier.align(Alignment.TopCenter).padding(top = 8.dp),
-        ) {
-            Surface(
-                shape = RoundedCornerShape(999.dp),
-                color = PanelAlt.copy(alpha = 0.94f),
-                tonalElevation = 3.dp,
-            ) {
-                Row(Modifier.padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                    if (refreshing) CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
-                    Text(
-                        if (refreshing) "Refreshing" else "Release to refresh",
-                        color = TextMuted,
-                        style = MaterialTheme.typography.labelMedium,
-                        modifier = Modifier.padding(start = if (refreshing) 8.dp else 0.dp),
-                    )
-                }
-            }
-        }
     }
 }
 
@@ -5868,8 +5938,50 @@ private sealed interface UrlImageState {
     data class Loaded(val bitmap: ImageBitmap) : UrlImageState
 }
 
+private object UrlImageLoader {
+    private const val CACHE_SIZE_KB = 24 * 1024
+    private const val IMAGE_CONNECT_TIMEOUT_MS = 4_500
+    private const val IMAGE_READ_TIMEOUT_MS = 9_000
+    private val cache = object : LruCache<String, ImageBitmap>(CACHE_SIZE_KB) {
+        override fun sizeOf(key: String, value: ImageBitmap): Int =
+            ((value.width * value.height * 4) / 1024).coerceAtLeast(1)
+    }
+    private val semaphore = Semaphore(6)
+
+    suspend fun load(url: String): UrlImageState {
+        cached(url)?.let { return UrlImageState.Loaded(it) }
+        return semaphore.withPermit {
+            cached(url)?.let { return@withPermit UrlImageState.Loaded(it) }
+            withContext(Dispatchers.IO) {
+                runCatching {
+                    val connection = URL(url).openConnection().apply {
+                        connectTimeout = IMAGE_CONNECT_TIMEOUT_MS
+                        readTimeout = IMAGE_READ_TIMEOUT_MS
+                        useCaches = true
+                    }
+                    connection.getInputStream().buffered().use { stream ->
+                        val options = BitmapFactory.Options().apply {
+                            inPreferredConfig = Bitmap.Config.RGB_565
+                        }
+                        BitmapFactory.decodeStream(stream, null, options)?.asImageBitmap()
+                    }
+                }.getOrNull()?.also { bitmap ->
+                    put(url, bitmap)
+                }?.let(UrlImageState::Loaded) ?: UrlImageState.Failed
+            }
+        }
+    }
+
+    private fun cached(url: String): ImageBitmap? =
+        synchronized(cache) { cache.get(url) }
+
+    private fun put(url: String, bitmap: ImageBitmap) {
+        synchronized(cache) { cache.put(url, bitmap) }
+    }
+}
+
 @Composable
-private fun UrlImage(url: String?, modifier: Modifier = Modifier) {
+internal fun UrlImage(url: String?, modifier: Modifier = Modifier) {
     val imageState by produceState<UrlImageState>(
         initialValue = if (url.isNullOrBlank()) UrlImageState.Empty else UrlImageState.Loading,
         key1 = url,
@@ -5877,13 +5989,7 @@ private fun UrlImage(url: String?, modifier: Modifier = Modifier) {
         value = if (url.isNullOrBlank()) {
             UrlImageState.Empty
         } else {
-            withContext(Dispatchers.IO) {
-                runCatching {
-                    URL(url).openStream().use { stream ->
-                        BitmapFactory.decodeStream(stream)?.asImageBitmap()
-                    }
-                }.getOrNull()?.let(UrlImageState::Loaded) ?: UrlImageState.Failed
-            }
+            UrlImageLoader.load(url)
         }
     }
     Box(modifier.background(Color(0xff102015)), contentAlignment = Alignment.Center) {
@@ -5906,10 +6012,10 @@ private fun UrlImage(url: String?, modifier: Modifier = Modifier) {
 private fun GameImagePulse(modifier: Modifier = Modifier) {
     val transition = rememberInfiniteTransition(label = "game-image-loading")
     val pulse by transition.animateFloat(
-        initialValue = 0.86f,
+        initialValue = 0.42f,
         targetValue = 1f,
         animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 950),
+            animation = tween(durationMillis = 900),
             repeatMode = RepeatMode.Reverse,
         ),
         label = "game-image-loading-alpha",
@@ -5917,7 +6023,7 @@ private fun GameImagePulse(modifier: Modifier = Modifier) {
     Box(
         modifier
             .background(Color(0xff0d1216))
-            .background(Color(0xff1a2329).copy(alpha = pulse)),
+            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.05f + pulse * 0.07f)),
     )
 }
 

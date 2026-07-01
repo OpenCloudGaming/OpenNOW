@@ -48,17 +48,21 @@ import org.webrtc.HardwareVideoDecoderFactory
 import org.webrtc.IceCandidate
 import org.webrtc.MediaConstraints
 import org.webrtc.MediaStream
+import org.webrtc.MediaStreamTrack
 import org.webrtc.PeerConnection
 import org.webrtc.PeerConnectionFactory
+import org.webrtc.Predicate
 import org.webrtc.RTCStats
 import org.webrtc.RTCStatsCollectorCallback
 import org.webrtc.RendererCommon
+import org.webrtc.RtpCapabilities
 import org.webrtc.RtpReceiver
 import org.webrtc.RtpTransceiver
 import org.webrtc.SdpObserver
 import org.webrtc.SessionDescription
 import org.webrtc.SurfaceViewRenderer
 import org.webrtc.VideoCodecInfo
+import org.webrtc.VideoDecoder
 import org.webrtc.VideoDecoderFactory
 import org.webrtc.VideoTrack
 import org.webrtc.audio.AudioDeviceModule
@@ -80,10 +84,30 @@ object NativeCodecProbe {
     }
 
     external fun nativeRuntimeSummary(): String
+    external fun nativeDecoderAvailable(mimeType: String): Boolean
+}
+
+private object WebRtcRuntime {
+    @Volatile
+    private var initialized = false
+
+    fun ensureInitialized(context: Context) {
+        if (initialized) return
+        synchronized(this) {
+            if (initialized) return
+            PeerConnectionFactory.initialize(
+                PeerConnectionFactory.InitializationOptions.builder(context.applicationContext)
+                    .setEnableInternalTracer(false)
+                    .createInitializationOptions(),
+            )
+            initialized = true
+        }
+    }
 }
 
 object CodecProbe {
     fun report(context: Context): RuntimeCodecReport {
+        WebRtcRuntime.ensureInitialized(context)
         val packageManager = context.packageManager
         val isTv = packageManager.hasSystemFeature("android.software.leanback")
         val renderer = listOf(Build.HARDWARE, Build.BOARD, Build.DEVICE, Build.MODEL, Build.MANUFACTURER)
@@ -96,15 +120,19 @@ object CodecProbe {
             val decoders = codecInfos(mime, encoder = false)
             val encoders = codecInfos(mime, encoder = true)
             val webRtc = webRtcDecoders[codec]
+            val nativeDecoderAvailable = runCatching { NativeCodecProbe.nativeDecoderAvailable(mime) }.getOrNull()
+            val preferredDecoder = decoders.firstOrNull(::isHardwareCodec) ?: decoders.firstOrNull()
+            val preferredEncoder = encoders.firstOrNull(::isHardwareCodec) ?: encoders.firstOrNull()
             CodecCapability(
                 codec = codec,
                 decoderAvailable = decoders.isNotEmpty(),
                 encoderAvailable = encoders.isNotEmpty(),
                 hardwareDecoder = decoders.any(::isHardwareCodec),
                 hardwareEncoder = encoders.any(::isHardwareCodec),
-                decoderName = decoders.firstOrNull()?.name,
-                encoderName = encoders.firstOrNull()?.name,
+                decoderName = preferredDecoder?.name,
+                encoderName = preferredEncoder?.name,
                 realtimeSafe = decoders.any { isRealtimeSafeDecoder(codec, it) },
+                nativeDecoderAvailable = nativeDecoderAvailable,
                 webRtcDecoderAvailable = webRtc?.decoderAvailable,
                 webRtcHardwareDecoderAvailable = webRtc?.hardwareDecoderAvailable,
                 webRtcDecoderName = webRtc?.decoderName,
@@ -140,14 +168,14 @@ object CodecProbe {
     private fun probeWebRtcDecoders(): Map<VideoCodec, WebRtcCodecProbe> {
         val eglBase = runCatching { EglBase.create() }.getOrNull() ?: return emptyMap()
         return try {
-            val defaultFactory = DefaultVideoDecoderFactory(eglBase.eglBaseContext)
-            val hardwareFactory = HardwareVideoDecoderFactory(eglBase.eglBaseContext)
-            val defaultSupported = defaultFactory.supportedCodecsByVideoCodec()
+            val streamingFactory = OpenNowVideoDecoderFactory(eglBase.eglBaseContext)
+            val hardwareFactory = openNowHardwareVideoDecoderFactory(eglBase.eglBaseContext)
+            val streamingSupported = streamingFactory.supportedCodecsByVideoCodec()
             val hardwareSupported = hardwareFactory.supportedCodecsByVideoCodec()
             VideoCodec.entries.associateWith { codec ->
-                val defaultInfos = defaultSupported[codec].orEmpty()
+                val defaultInfos = streamingSupported[codec].orEmpty()
                 val hardwareInfos = hardwareSupported[codec].orEmpty()
-                val decoderName = defaultFactory.firstDecoderName(defaultInfos)
+                val decoderName = streamingFactory.firstDecoderName(defaultInfos)
                 WebRtcCodecProbe(
                     decoderAvailable = decoderName != null,
                     hardwareDecoderAvailable = hardwareFactory.firstDecoderName(hardwareInfos) != null,
@@ -205,6 +233,14 @@ object CodecProbe {
         }
     }
 
+    internal fun isOpenNowHardwareDecoderAllowed(info: MediaCodecInfo): Boolean {
+        if (!isHardwareCodec(info)) return false
+        val name = info.name.lowercase(Locale.US)
+        if (name.contains("google") || name.contains("software") || name.contains("sw")) return false
+        if (name.contains("exynos")) return false
+        return true
+    }
+
     private fun isRealtimeSafeDecoder(codec: VideoCodec, info: MediaCodecInfo): Boolean {
         if (!isHardwareCodec(info)) return false
         val name = info.name.lowercase(Locale.US)
@@ -224,6 +260,107 @@ object CodecProbe {
             VideoCodec.AV1 -> "video/av01"
         }
 }
+
+private fun openNowHardwareVideoDecoderFactory(sharedContext: EglBase.Context): VideoDecoderFactory =
+    HardwareVideoDecoderFactory(
+        sharedContext,
+        Predicate<MediaCodecInfo> { info -> CodecProbe.isOpenNowHardwareDecoderAllowed(info) },
+    )
+
+private class OpenNowVideoDecoderFactory(sharedContext: EglBase.Context) : VideoDecoderFactory {
+    private val defaultFactory = DefaultVideoDecoderFactory(sharedContext)
+    private val hardwareFactory = openNowHardwareVideoDecoderFactory(sharedContext)
+
+    override fun createDecoder(info: VideoCodecInfo): VideoDecoder? {
+        val codec = info.name.toOpenNowVideoCodec()
+        val decoder = if (codec == VideoCodec.H265 || codec == VideoCodec.AV1) {
+            hardwareFactory.createDecoder(info)
+        } else {
+            defaultFactory.createDecoder(info)
+        }
+        if ((codec == VideoCodec.H265 || codec == VideoCodec.AV1) && decoder != null) {
+            NativeInputDiagnostics.add("native MediaCodec decoder selected codec=${codec.name} implementation=${decoder.getImplementationName()}")
+        }
+        return decoder
+    }
+
+    override fun getSupportedCodecs(): Array<VideoCodecInfo> {
+        val defaultCodecs = defaultFactory.getSupportedCodecs()
+            .filterNot { it.name.toOpenNowVideoCodec() in ADVANCED_STREAM_CODECS }
+        val nativeAdvancedCodecs = hardwareFactory.getSupportedCodecs()
+            .filter { it.name.toOpenNowVideoCodec() in ADVANCED_STREAM_CODECS }
+        return (defaultCodecs + nativeAdvancedCodecs)
+            .distinctBy { it.stableKey() }
+            .toTypedArray()
+    }
+
+    private fun VideoCodecInfo.stableKey(): String =
+        "${name.uppercase(Locale.US)}:${params.toSortedMap()}"
+
+    private companion object {
+        private val ADVANCED_STREAM_CODECS = setOf(VideoCodec.H265, VideoCodec.AV1)
+    }
+}
+
+private fun String.toOpenNowVideoCodec(): VideoCodec? =
+    when (uppercase(Locale.US)) {
+        "AVC", "H264", "H.264" -> VideoCodec.H264
+        "HEVC", "H265", "H.265" -> VideoCodec.H265
+        "AV01", "AV1" -> VideoCodec.AV1
+        else -> null
+    }
+
+private fun VideoCodec.webRtcCodecName(): String =
+    when (this) {
+        VideoCodec.H264 -> "H264"
+        VideoCodec.H265 -> "H265"
+        VideoCodec.AV1 -> "AV1"
+    }
+
+private fun RtpCapabilities.CodecCapability.openNowCodecName(): String? {
+    val fromMime = mimeType
+        ?.substringAfter("/", "")
+        ?.takeIf { it.isNotBlank() }
+        ?.toOpenNowVideoCodec()
+        ?.webRtcCodecName()
+    if (fromMime != null) return fromMime
+    return name?.toOpenNowVideoCodec()?.webRtcCodecName() ?: name?.uppercase(Locale.US)
+}
+
+private fun RtpCapabilities.CodecCapability.codecParameterInt(name: String): Int? =
+    parameters
+        ?.entries
+        ?.firstOrNull { it.key.equals(name, ignoreCase = true) }
+        ?.value
+        ?.toIntOrNull()
+
+private fun RtpCapabilities.CodecCapability.h265ProfilePriority(preferTenBit: Boolean): Int {
+    val profile = codecParameterInt("profile-id")
+    return if (preferTenBit) {
+        when (profile) {
+            2 -> 0
+            1 -> 1
+            else -> 2
+        }
+    } else {
+        when (profile) {
+            1 -> 0
+            null -> 1
+            2 -> 2
+            else -> 3
+        }
+    }
+}
+
+private fun RtpCapabilities.CodecCapability.preferenceKey(): String =
+    "${openNowCodecName().orEmpty()}:${parameters.orEmpty().toSortedMap()}"
+
+private fun StreamSettings.prefersTenBitVideo(): Boolean =
+    hdrEnabled ||
+        colorQuality == ColorQuality.TenBit420 ||
+        colorQuality == ColorQuality.TenBit444
+
+private val WEBRTC_AUXILIARY_VIDEO_CODECS = setOf("RTX", "RED", "ULPFEC", "FLEXFEC-03")
 
 sealed interface SignalingEvent {
     data object Connected : SignalingEvent
@@ -650,14 +787,14 @@ object NativeStreamInputRouter {
 
     private fun KeyEvent.isStreamExitShortcutKey(): Boolean =
         keyCode == KeyEvent.KEYCODE_BACK ||
+            ((keyCode == KeyEvent.KEYCODE_BUTTON_B || keyCode == KeyEvent.KEYCODE_BUTTON_SELECT) && !isControllerInputDevice()) ||
             (keyCode == KeyEvent.KEYCODE_ESCAPE && !isHardwareKeyboardSource())
 
     private fun KeyEvent.isControllerSource(): Boolean =
         AndroidControllerInput.hasControllerSource(source)
 
     private fun KeyEvent.isControllerInputDevice(): Boolean =
-        AndroidControllerInput.hasControllerSource(source) ||
-            InputDevice.getDevice(deviceId)?.sources?.let(AndroidControllerInput::hasControllerSource) == true
+        AndroidControllerInput.isControllerEvent(source, deviceId)
 
     private fun KeyEvent.isDpadSource(): Boolean =
         (source and InputDevice.SOURCE_DPAD) == InputDevice.SOURCE_DPAD
@@ -755,7 +892,8 @@ object NativeStreamInputRouter {
 
     private fun MotionEvent.isNativeUiNavigationMotion(): Boolean =
         isFromSource(InputDevice.SOURCE_JOYSTICK) ||
-            isFromSource(InputDevice.SOURCE_GAMEPAD)
+            isFromSource(InputDevice.SOURCE_GAMEPAD) ||
+            AndroidControllerInput.isControllerEvent(source, deviceId)
 
     private fun MotionEvent.isFromSource(source: Int): Boolean = (this.source and source) == source
 
@@ -917,6 +1055,24 @@ internal object AndroidControllerInput {
     fun hasControllerSource(source: Int): Boolean =
         source.hasSource(InputDevice.SOURCE_GAMEPAD) ||
             source.hasSource(InputDevice.SOURCE_JOYSTICK)
+
+    fun isControllerDevice(device: InputDevice?): Boolean =
+        device != null && isControllerDevice(device.sources, device.name)
+
+    fun isControllerDevice(source: Int, deviceName: String?): Boolean =
+        hasControllerSource(source) ||
+            (source.hasSource(InputDevice.SOURCE_DPAD) && isKnownControllerName(deviceName))
+
+    fun isControllerEvent(source: Int, deviceId: Int): Boolean =
+        hasControllerSource(source) ||
+            isControllerDevice(InputDevice.getDevice(deviceId))
+
+    fun isKnownControllerName(name: String?): Boolean {
+        val normalized = name.orEmpty().lowercase(Locale.US)
+        return normalized.contains("stadia controller") ||
+            normalized == "stadia" ||
+            normalized.contains("google stadia")
+    }
 
     fun isPrimaryActivationKey(keyCode: Int): Boolean =
         keyCode == KeyEvent.KEYCODE_DPAD_CENTER ||
@@ -1653,15 +1809,11 @@ class NativeStreamClient(
     )
 
     init {
-        PeerConnectionFactory.initialize(
-            PeerConnectionFactory.InitializationOptions.builder(appContext)
-                .setEnableInternalTracer(false)
-                .createInitializationOptions(),
-        )
+        WebRtcRuntime.ensureInitialized(appContext)
         factory = PeerConnectionFactory.builder()
             .setOptions(PeerConnectionFactory.Options())
             .setAudioDeviceModule(audioDeviceModule)
-            .setVideoDecoderFactory(DefaultVideoDecoderFactory(eglBase.eglBaseContext))
+            .setVideoDecoderFactory(OpenNowVideoDecoderFactory(eglBase.eglBaseContext))
             .setVideoEncoderFactory(DefaultVideoEncoderFactory(eglBase.eglBaseContext, true, true))
             .createPeerConnectionFactory()
     }
@@ -2148,7 +2300,7 @@ class NativeStreamClient(
         val currentSession = session ?: return
         offerTimeoutJob?.cancel()
         offerTimeoutJob = null
-        val fixed = SdpTools.fixServerIp(rawOffer, currentSession.serverIp)
+        val fixed = prepareRemoteOffer(rawOffer, currentSession)
         val preferred = SdpTools.preferCodec(fixed, settings)
         val pc = ensurePeerConnection(currentSession, generation)
         ensureInputDataChannels(pc, preferred)
@@ -2157,6 +2309,7 @@ class NativeStreamClient(
         pc.setRemoteDescription(
             object : SimpleSdpObserver() {
                 override fun onSetSuccess() {
+                    applyVideoCodecPreferences(pc)
                     pc.createAnswer(
                         object : SimpleSdpObserver() {
                             override fun onCreateSuccess(description: SessionDescription?) {
@@ -2166,6 +2319,19 @@ class NativeStreamClient(
                                     return
                                 }
                                 val munged = SdpTools.mungeAnswerSdp(rawDescription.description, settings.maxBitrateMbps * 1000)
+                                if (settings.codec != VideoCodec.H264 && !SdpTools.negotiatesCodec(munged, settings.codec)) {
+                                    NativeInputDiagnostics.add("local answer did not negotiate requested codec=${settings.codec}; requesting safe fallback")
+                                    if (
+                                        requestSafeVideoFallback(
+                                            message = "${settings.codec} was requested but WebRTC did not negotiate it; restarting with safe H264 profile",
+                                            diagnosticReason = "codec negotiation",
+                                        )
+                                    ) {
+                                        return
+                                    }
+                                    failStream("${settings.codec} requested but not negotiated in local SDP", generation)
+                                    return
+                                }
                                 val answer = SessionDescription(SessionDescription.Type.ANSWER, munged)
                                 pc.setLocalDescription(
                                     object : SimpleSdpObserver() {
@@ -2207,6 +2373,76 @@ class NativeStreamClient(
         )
     }
 
+    private fun prepareRemoteOffer(rawOffer: String, session: SessionInfo): String {
+        var prepared = SdpTools.fixServerIp(rawOffer, session.serverIp)
+        if (settings.codec == VideoCodec.H265) {
+            val maxLevels = h265ReceiverMaxLevelsByProfile()
+            if (maxLevels.isNotEmpty()) {
+                val rewritten = SdpTools.rewriteH265LevelIdByProfile(prepared, maxLevels)
+                if (rewritten.replacements > 0) {
+                    NativeInputDiagnostics.add("h265 level-id clamped replacements=${rewritten.replacements} maxLevels=$maxLevels")
+                    prepared = rewritten.sdp
+                }
+            }
+            if (!supportsH265TierFlagOne()) {
+                val rewritten = SdpTools.rewriteH265TierFlag(prepared, 0)
+                if (rewritten.replacements > 0) {
+                    NativeInputDiagnostics.add("h265 tier-flag rewritten replacements=${rewritten.replacements}")
+                    prepared = rewritten.sdp
+                }
+            }
+        }
+        return prepared
+    }
+
+    private fun applyVideoCodecPreferences(pc: PeerConnection) {
+        val preferences = receiverCodecPreferences(settings.codec)
+        if (preferences.isEmpty()) return
+        val transceiver = pc.transceivers.firstOrNull {
+            it.mediaType == MediaStreamTrack.MediaType.MEDIA_TYPE_VIDEO ||
+                it.receiver?.track()?.kind() == MediaStreamTrack.VIDEO_TRACK_KIND
+        } ?: return
+        val result = transceiver.setCodecPreferences(preferences)
+        if (result.isSuccess) {
+            NativeInputDiagnostics.add("codec preferences applied codec=${settings.codec} count=${preferences.size}")
+        } else {
+            NativeInputDiagnostics.add("codec preferences failed codec=${settings.codec} error=${result.error()?.message.orEmpty()}")
+        }
+    }
+
+    private fun receiverCodecPreferences(codec: VideoCodec): List<RtpCapabilities.CodecCapability> {
+        val receiverCaps = runCatching {
+            requireNotNull(factory).getRtpReceiverCapabilities(MediaStreamTrack.MediaType.MEDIA_TYPE_VIDEO).codecs
+        }.getOrNull().orEmpty()
+        val target = codec.webRtcCodecName()
+        val preferred = receiverCaps
+            .filter { it.openNowCodecName() == target }
+            .let { caps -> if (codec == VideoCodec.H265) caps.sortedBy { it.h265ProfilePriority(settings.prefersTenBitVideo()) } else caps }
+        if (preferred.isEmpty()) return emptyList()
+        val auxiliary = receiverCaps.filter { it.openNowCodecName() in WEBRTC_AUXILIARY_VIDEO_CODECS }
+        return (preferred + auxiliary).distinctBy { it.preferenceKey() }
+    }
+
+    private fun h265ReceiverMaxLevelsByProfile(): Map<Int, Int> =
+        receiverH265Capabilities()
+            .mapNotNull { capability ->
+                val profile = capability.codecParameterInt("profile-id") ?: return@mapNotNull null
+                val level = capability.codecParameterInt("level-id") ?: return@mapNotNull null
+                profile to level
+            }
+            .groupBy({ it.first }, { it.second })
+            .mapValues { (_, levels) -> levels.maxOrNull() ?: 0 }
+            .filterValues { it > 0 }
+
+    private fun supportsH265TierFlagOne(): Boolean =
+        receiverH265Capabilities().any { it.codecParameterInt("tier-flag") == 1 }
+
+    private fun receiverH265Capabilities(): List<RtpCapabilities.CodecCapability> =
+        runCatching {
+            requireNotNull(factory).getRtpReceiverCapabilities(MediaStreamTrack.MediaType.MEDIA_TYPE_VIDEO).codecs
+        }.getOrNull().orEmpty()
+            .filter { it.openNowCodecName() == VideoCodec.H265.webRtcCodecName() }
+
     private fun startOfferTimeout(generation: Int) {
         offerTimeoutJob?.cancel()
         offerTimeoutJob = scope.launch {
@@ -2216,7 +2452,7 @@ class NativeStreamClient(
             NativeInputDiagnostics.add("video offer timeout codec=${settings.codec} resolution=${settings.resolution} bitrate=${settings.maxBitrateMbps}")
             if (
                 requestSafeVideoFallback(
-                    message = "Timed out waiting for video offer; restarting with safe H264 1080p profile",
+                    message = "Timed out waiting for video offer; restarting with safe H264 profile",
                     diagnosticReason = "offer timeout",
                 )
             ) {
@@ -2607,7 +2843,7 @@ class NativeStreamClient(
             is StreamLivenessAction.RestartTransport -> {
                 if (
                     requestSafeVideoFallback(
-                        message = "Decoder stalled; restarting with safe H264 1080p profile",
+                        message = "Decoder stalled; restarting with safe H264 profile",
                         diagnosticReason = "media stall",
                     )
                 ) {
@@ -2815,7 +3051,7 @@ class NativeStreamClient(
         val connectedDevices = mutableListOf<InputDevice>()
         InputDevice.getDeviceIds().forEach { deviceId ->
             val device = InputDevice.getDevice(deviceId) ?: return@forEach
-            if (AndroidControllerInput.hasControllerSource(device.sources)) {
+            if (AndroidControllerInput.isControllerDevice(device)) {
                 connectedDevices += device
             }
         }
@@ -2881,7 +3117,7 @@ class NativeStreamClient(
         buildList {
             InputDevice.getDeviceIds().forEach { deviceId ->
                 val device = InputDevice.getDevice(deviceId) ?: return@forEach
-                if (!device.isControllerDevice()) return@forEach
+                if (!AndroidControllerInput.isControllerDevice(device)) return@forEach
                 if (device.hasControllerRumble()) add(device)
             }
         }
@@ -3150,14 +3386,11 @@ class NativeStreamClient(
 
     private fun MotionEvent.isGamepadMotionEvent(): Boolean =
         isFromSource(InputDevice.SOURCE_JOYSTICK) ||
-            isFromSource(InputDevice.SOURCE_GAMEPAD)
-
-    private fun InputDevice.isControllerDevice(): Boolean =
-        AndroidControllerInput.hasControllerSource(sources)
+            isFromSource(InputDevice.SOURCE_GAMEPAD) ||
+            (AndroidControllerInput.isControllerEvent(source, deviceId) && !isMouseLikePointer())
 
     private fun KeyEvent.isControllerInputDevice(): Boolean =
-        AndroidControllerInput.hasControllerSource(source) ||
-            InputDevice.getDevice(deviceId)?.sources?.let(AndroidControllerInput::hasControllerSource) == true
+        AndroidControllerInput.isControllerEvent(source, deviceId)
 
     private fun Int.toGfnMouseButton(): Int = when {
         this and MotionEvent.BUTTON_PRIMARY != 0 -> 1
@@ -3197,6 +3430,8 @@ open class SimpleSdpObserver : SdpObserver {
 }
 
 object SdpTools {
+    data class RewriteResult(val sdp: String, val replacements: Int)
+
     fun fixServerIp(sdp: String, serverIp: String): String {
         val ip = extractPublicIp(serverIp) ?: return sdp
         return sdp
@@ -3265,6 +3500,102 @@ object SdpTools {
             output += line
         }
         return output.joinToString(lineEnding)
+    }
+
+    fun rewriteH265TierFlag(sdp: String, tierFlag: Int): RewriteResult {
+        val payloads = h265PayloadTypes(sdp)
+        if (payloads.isEmpty()) return RewriteResult(sdp, 0)
+        val lineEnding = if (sdp.contains("\r\n")) "\r\n" else "\n"
+        var replacements = 0
+        val output = sdp.split(Regex("\\r?\\n")).map { line ->
+            if (!line.startsWith("a=fmtp:")) return@map line
+            val pt = line.substringAfter(":").substringBefore(" ")
+            if (pt !in payloads) return@map line
+            val next = line.replace(Regex("tier-flag=1", RegexOption.IGNORE_CASE), "tier-flag=$tierFlag")
+            if (next != line) replacements += 1
+            next
+        }
+        return RewriteResult(output.joinToString(lineEnding), replacements)
+    }
+
+    fun rewriteH265LevelIdByProfile(sdp: String, maxLevelByProfile: Map<Int, Int>): RewriteResult {
+        val payloads = h265PayloadTypes(sdp)
+        if (payloads.isEmpty() || maxLevelByProfile.isEmpty()) return RewriteResult(sdp, 0)
+        val lineEnding = if (sdp.contains("\r\n")) "\r\n" else "\n"
+        var replacements = 0
+        val output = sdp.split(Regex("\\r?\\n")).map { line ->
+            if (!line.startsWith("a=fmtp:")) return@map line
+            val rest = line.substringAfter(":")
+            val pt = rest.substringBefore(" ")
+            val params = rest.substringAfter(" ", "")
+            if (pt !in payloads || params.isBlank()) return@map line
+            val profile = Regex("(?:^|;)\\s*profile-id=(\\d+)", RegexOption.IGNORE_CASE)
+                .find(params)
+                ?.groupValues
+                ?.getOrNull(1)
+                ?.toIntOrNull()
+                ?: return@map line
+            val level = Regex("(?:^|;)\\s*level-id=(\\d+)", RegexOption.IGNORE_CASE)
+                .find(params)
+                ?.groupValues
+                ?.getOrNull(1)
+                ?.toIntOrNull()
+                ?: return@map line
+            val maxLevel = maxLevelByProfile[profile] ?: return@map line
+            if (level <= maxLevel) return@map line
+            val next = line.replace(Regex("(level-id=)(\\d+)", RegexOption.IGNORE_CASE), "$1$maxLevel")
+            if (next != line) replacements += 1
+            next
+        }
+        return RewriteResult(output.joinToString(lineEnding), replacements)
+    }
+
+    fun negotiatesCodec(sdp: String, codec: VideoCodec): Boolean {
+        val target = when (codec) {
+            VideoCodec.H264 -> "H264"
+            VideoCodec.H265 -> "H265"
+            VideoCodec.AV1 -> "AV1"
+        }
+        var inVideo = false
+        sdp.split(Regex("\\r?\\n")).forEach { line ->
+            if (line.startsWith("m=video")) {
+                inVideo = true
+                return@forEach
+            }
+            if (line.startsWith("m=") && inVideo) {
+                inVideo = false
+            }
+            if (!inVideo || !line.startsWith("a=rtpmap:")) return@forEach
+            val codecName = line.substringAfter(" ")
+                .substringBefore("/")
+                .uppercase(Locale.US)
+                .let { if (it == "HEVC") "H265" else it }
+            if (codecName == target) return true
+        }
+        return false
+    }
+
+    private fun h265PayloadTypes(sdp: String): Set<String> {
+        var inVideo = false
+        val payloads = mutableSetOf<String>()
+        sdp.split(Regex("\\r?\\n")).forEach { line ->
+            if (line.startsWith("m=video")) {
+                inVideo = true
+                return@forEach
+            }
+            if (line.startsWith("m=") && inVideo) {
+                inVideo = false
+            }
+            if (!inVideo || !line.startsWith("a=rtpmap:")) return@forEach
+            val rest = line.substringAfter(":")
+            val pt = rest.substringBefore(" ")
+            val codecName = rest.substringAfter(" ")
+                .substringBefore("/")
+                .uppercase(Locale.US)
+                .let { if (it == "HEVC") "H265" else it }
+            if (pt.isNotBlank() && codecName == "H265") payloads += pt
+        }
+        return payloads
     }
 
     private fun h265ProfilePriority(fmtp: String?, preferTenBit: Boolean): Int {
@@ -3337,48 +3668,135 @@ object SdpTools {
         val maxBitrate = settings.maxBitrateMbps * 1000
         val minBitrate = max(5000, (maxBitrate * 0.35f).roundToInt())
         val initialBitrate = max(minBitrate, (maxBitrate * 0.7f).roundToInt())
-        return listOf(
-            "v=0",
-            "o=SdpTest test_id_13 14 IN IPv4 127.0.0.1",
-            "s=-",
-            "t=0 0",
-            "a=general.icePassword:$pwd",
-            "a=general.iceUserNameFragment:$ufrag",
-            "a=general.dtlsFingerprint:$fingerprint",
-            "m=video 0 RTP/AVP",
-            "a=msid:fbc-video-0",
-            "a=vqos.dynamicStreamingMode:0",
-            "a=vqos.drc.enable:0",
-            "a=vqos.dfc.enable:${if (settings.fps >= 90) 1 else 0}",
-            "a=video.enableRtpNack:1",
-            "a=video.packetSize:1140",
-            "a=video.clientViewportWd:$width",
-            "a=video.clientViewportHt:$height",
-            "a=video.maxFPS:${settings.fps}",
-            "a=video.initialBitrateKbps:$initialBitrate",
-            "a=video.initialPeakBitrateKbps:$maxBitrate",
-            "a=vqos.bw.maximumBitrateKbps:$maxBitrate",
-            "a=vqos.bw.minimumBitrateKbps:$minBitrate",
-            "a=vqos.bw.peakBitrateKbps:$maxBitrate",
-            "a=vqos.bw.serverPeakBitrateKbps:$maxBitrate",
-            "a=vqos.bw.enableBandwidthEstimation:1",
-            "a=vqos.bw.disableBitrateLimit:0",
-            "a=vqos.resControl.cpmRtc.enable:0",
-            "a=vqos.resControl.cpmRtc.minResolutionPercent:100",
-            "a=video.bitDepth:$bitDepth",
-            "m=audio 0 RTP/AVP",
-            "a=msid:audio",
-            "m=mic 0 RTP/AVP",
-            "a=msid:mic",
-            "a=rtpmap:0 PCMU/8000",
-            "m=application 0 RTP/AVP",
-            "a=msid:input_1",
-            "a=ri.partialReliableThresholdMs:$threshold",
-            "a=ri.hidDeviceMask:4294967295",
-            "a=ri.enablePartiallyReliableTransferGamepad:15",
-            "a=ri.enablePartiallyReliableTransferHid:4294967295",
-            "",
-        ).joinToString("\n")
+        val isHighFps = settings.fps >= 90
+        val is120Fps = settings.fps == 120
+        val is240Fps = settings.fps >= 240
+        val isAv1 = settings.codec == VideoCodec.AV1
+        return buildList {
+            add("v=0")
+            add("o=SdpTest test_id_13 14 IN IPv4 127.0.0.1")
+            add("s=-")
+            add("t=0 0")
+            add("a=general.icePassword:$pwd")
+            add("a=general.iceUserNameFragment:$ufrag")
+            add("a=general.dtlsFingerprint:$fingerprint")
+            add("m=video 0 RTP/AVP")
+            add("a=msid:fbc-video-0")
+            add("a=vqos.fec.rateDropWindow:10")
+            add("a=vqos.fec.minRequiredFecPackets:2")
+            add("a=vqos.fec.repairMinPercent:5")
+            add("a=vqos.fec.repairPercent:5")
+            add("a=vqos.fec.repairMaxPercent:35")
+            add("a=vqos.dynamicStreamingMode:0")
+            add("a=vqos.drc.enable:0")
+            add("a=video.dx9EnableNv12:1")
+            add("a=video.dx9EnableHdr:1")
+            add("a=vqos.qpg.enable:1")
+            add("a=vqos.resControl.qp.qpg.featureSetting:7")
+            add("a=bwe.useOwdCongestionControl:1")
+            add("a=video.enableRtpNack:1")
+            add("a=vqos.bw.txRxLag.minFeedbackTxDeltaMs:200")
+            add("a=vqos.drc.bitrateIirFilterFactor:18")
+            add("a=video.packetSize:1140")
+            add("a=packetPacing.minNumPacketsPerGroup:15")
+            if (isHighFps) {
+                add("a=vqos.dfc.enable:1")
+                add("a=vqos.dfc.decodeFpsAdjPercent:85")
+                add("a=vqos.dfc.targetDownCooldownMs:250")
+                add("a=vqos.dfc.dfcAlgoVersion:${if (is120Fps || is240Fps) 2 else 1}")
+                add("a=vqos.dfc.minTargetFps:${if (is120Fps || is240Fps) 100 else 60}")
+                add("a=vqos.resControl.dfc.useClientFpsPerf:0")
+                add("a=vqos.dfc.adjustResAndFps:0")
+                add("a=bwe.iirFilterFactor:8")
+                add("a=video.encoderFeatureSetting:47")
+                add("a=video.encoderPreset:6")
+                add("a=vqos.resControl.cpmRtc.badNwSkipFramesCount:600")
+                add("a=vqos.resControl.cpmRtc.decodeTimeThresholdMs:9")
+                add("a=video.fbcDynamicFpsGrabTimeoutMs:${if (is120Fps) 6 else 18}")
+                add("a=vqos.resControl.cpmRtc.serverResolutionUpdateCoolDownCount:${if (is120Fps) 6000 else 12000}")
+            } else {
+                add("a=vqos.dfc.enable:0")
+                add("a=vqos.dfc.adjustResAndFps:0")
+            }
+            if (is240Fps) {
+                add("a=video.enableNextCaptureMode:1")
+                add("a=vqos.maxStreamFpsEstimate:240")
+                add("a=video.videoSplitEncodeStripsPerFrame:3")
+                add("a=video.updateSplitEncodeStateDynamically:1")
+                add("a=vqos.rtcPreemptiveIdrSettings.minBurstNackSize:65535")
+                add("a=vqos.rtcPreemptiveIdrSettings.minNackPacketCaptureAgeMs:65535")
+            }
+            add("a=vqos.adjustStreamingFpsDuringOutOfFocus:0")
+            add("a=vqos.resControl.cpmRtc.ignoreOutOfFocusWindowState:1")
+            add("a=vqos.resControl.perfHistory.rtcIgnoreOutOfFocusWindowState:1")
+            add("a=vqos.resControl.cpmRtc.featureMask:0")
+            add("a=vqos.resControl.cpmRtc.enable:0")
+            add("a=vqos.resControl.cpmRtc.minResolutionPercent:100")
+            add("a=vqos.resControl.cpmRtc.resolutionChangeHoldonMs:999999")
+            add("a=packetPacing.numGroups:${if (is120Fps) 3 else 5}")
+            add("a=packetPacing.maxDelayUs:1000")
+            add("a=packetPacing.minNumPacketsFrame:10")
+            add("a=video.rtpNackQueueLength:1024")
+            add("a=video.rtpNackQueueMaxPackets:512")
+            add("a=video.rtpNackMaxPacketCount:25")
+            add("a=vqos.drc.qpMaxResThresholdAdj:4")
+            add("a=vqos.grc.qpMaxResThresholdAdj:4")
+            add("a=vqos.drc.iirFilterFactor:100")
+            if (isAv1) {
+                add("a=vqos.drc.minQpHeadroom:20")
+                add("a=vqos.drc.lowerQpThreshold:100")
+                add("a=vqos.drc.upperQpThreshold:200")
+                add("a=vqos.drc.minAdaptiveQpThreshold:180")
+                add("a=vqos.drc.qpCodecThresholdAdj:0")
+                add("a=vqos.drc.qpMaxResThresholdAdj:20")
+                add("a=vqos.dfc.minQpHeadroom:20")
+                add("a=vqos.dfc.qpLowerLimit:100")
+                add("a=vqos.dfc.qpMaxUpperLimit:200")
+                add("a=vqos.dfc.qpMinUpperLimit:180")
+                add("a=vqos.dfc.qpMaxResThresholdAdj:20")
+                add("a=vqos.dfc.qpCodecThresholdAdj:0")
+                add("a=vqos.grc.minQpHeadroom:20")
+                add("a=vqos.grc.lowerQpThreshold:100")
+                add("a=vqos.grc.upperQpThreshold:200")
+                add("a=vqos.grc.minAdaptiveQpThreshold:180")
+                add("a=vqos.grc.qpMaxResThresholdAdj:20")
+                add("a=vqos.grc.qpCodecThresholdAdj:0")
+                add("a=video.minQp:25")
+                add("a=video.enableAv1RcPrecisionFactor:1")
+            }
+            add("a=video.clientViewportWd:$width")
+            add("a=video.clientViewportHt:$height")
+            add("a=video.maxFPS:${settings.fps}")
+            add("a=video.initialBitrateKbps:$initialBitrate")
+            add("a=video.initialPeakBitrateKbps:$maxBitrate")
+            add("a=vqos.bw.maximumBitrateKbps:$maxBitrate")
+            add("a=vqos.bw.minimumBitrateKbps:$minBitrate")
+            add("a=vqos.bw.peakBitrateKbps:$maxBitrate")
+            add("a=vqos.bw.serverPeakBitrateKbps:$maxBitrate")
+            add("a=vqos.bw.enableBandwidthEstimation:1")
+            add("a=vqos.bw.disableBitrateLimit:0")
+            add("a=vqos.grc.maximumBitrateKbps:$maxBitrate")
+            add("a=vqos.grc.enable:0")
+            add("a=video.maxNumReferenceFrames:4")
+            add("a=video.mapRtpTimestampsToFrames:1")
+            add("a=video.encoderCscMode:3")
+            add("a=video.dynamicRangeMode:0")
+            add("a=video.bitDepth:$bitDepth")
+            add("a=video.scalingFeature1:${if (isAv1) 1 else 0}")
+            add("a=video.prefilterParams.prefilterModel:0")
+            add("m=audio 0 RTP/AVP")
+            add("a=msid:audio")
+            add("m=mic 0 RTP/AVP")
+            add("a=msid:mic")
+            add("a=rtpmap:0 PCMU/8000")
+            add("m=application 0 RTP/AVP")
+            add("a=msid:input_1")
+            add("a=ri.partialReliableThresholdMs:$threshold")
+            add("a=ri.hidDeviceMask:4294967295")
+            add("a=ri.enablePartiallyReliableTransferGamepad:15")
+            add("a=ri.enablePartiallyReliableTransferHid:4294967295")
+            add("")
+        }.joinToString("\n")
     }
 
     private fun extractPublicIp(hostOrIp: String): String? {

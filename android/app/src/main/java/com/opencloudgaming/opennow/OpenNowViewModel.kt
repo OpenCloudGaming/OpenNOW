@@ -34,6 +34,10 @@ enum class AppPage {
     Stream,
 }
 
+enum class SettingsRouteTarget {
+    General,
+}
+
 private const val ANDROID_UPDATE_LAUNCH_CHECK_DELAY_MS = 5_000L
 internal const val ANDROID_UPDATE_PERIODIC_CHECK_INTERVAL_MS = 6L * 60L * 60L * 1000L
 private const val ANDROID_UPDATE_STREAMING_RETRY_DELAY_MS = 30_000L
@@ -68,6 +72,8 @@ data class OpenNowUiState(
     val catalogFilterIds: List<String> = emptyList(),
     val libraryFilterIds: List<String> = emptyList(),
     val loadingGames: Boolean = false,
+    val settingsRefreshing: Boolean = false,
+    val settingsRouteTarget: SettingsRouteTarget? = null,
     val settings: AppSettings = AppSettings(),
     val codecReport: RuntimeCodecReport? = null,
     val selectedGame: GameInfo? = null,
@@ -91,6 +97,7 @@ data class OpenNowUiState(
     val printedWasteLoading: Boolean = false,
     val printedWasteError: String? = null,
     val androidUpdate: AndroidUpdateState = AndroidUpdateState(),
+    val dismissedAndroidUpdateNoticeKey: String? = null,
 )
 
 internal fun OpenNowUiState.isAndroidUpdateCheckBlockedByStream(): Boolean =
@@ -108,12 +115,18 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     private val printedWasteRepository = PrintedWasteRepository(http)
     private val sessionRepository = GfnSessionRepository(authStore, http)
     private val appUpdater = AndroidAppUpdater(application, http)
+    private val androidUpdateNoticeStore = AndroidUpdateNoticeStore(application)
     private val queueAdReportMutex = Mutex()
     private val accountConnectorRefreshMutex = Mutex()
     private val debugEventsLock = Any()
     private val debugEvents = ArrayDeque<DebugLogEvent>()
 
-    private val _state = MutableStateFlow(OpenNowUiState(settings = settingsStore.settings.value))
+    private val _state = MutableStateFlow(
+        OpenNowUiState(
+            settings = settingsStore.settings.value,
+            dismissedAndroidUpdateNoticeKey = androidUpdateNoticeStore.dismissedKey(),
+        ),
+    )
     val state: StateFlow<OpenNowUiState> = _state.asStateFlow()
 
     private var gamesJob: Job? = null
@@ -121,6 +134,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     private var loginJob: Job? = null
     private var androidUpdateJob: Job? = null
     private var androidUpdateAutoJob: Job? = null
+    private var settingsRefreshJob: Job? = null
 
     init {
         viewModelScope.launch {
@@ -195,6 +209,26 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
 
     fun setPage(page: AppPage) {
         _state.update { it.copy(page = page, selectedGame = null) }
+    }
+
+    fun openAndroidUpdateSettings() {
+        _state.update {
+            it.copy(
+                page = AppPage.Settings,
+                selectedGame = null,
+                settingsRouteTarget = SettingsRouteTarget.General,
+            )
+        }
+    }
+
+    fun consumeSettingsRouteTarget(target: SettingsRouteTarget) {
+        _state.update { current ->
+            if (current.settingsRouteTarget == target) {
+                current.copy(settingsRouteTarget = null)
+            } else {
+                current
+            }
+        }
     }
 
     fun handleControllerBackNavigation() {
@@ -462,7 +496,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     fun refreshGames() {
         val session = state.value.authSession ?: return
         viewModelScope.launch {
-            refreshAfterAuth(session)
+            refreshAfterAuth(session, keepRefreshVisibleWithCache = true)
         }
     }
 
@@ -541,6 +575,12 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         startAndroidUpdateCheck(automatic = false)
     }
 
+    fun dismissAndroidUpdateNotice() {
+        val key = androidUpdateNoticeKey(state.value.androidUpdate) ?: return
+        androidUpdateNoticeStore.dismiss(key)
+        _state.update { it.copy(dismissedAndroidUpdateNoticeKey = key) }
+    }
+
     fun downloadAndroidUpdate() {
         if (androidUpdateJob?.isActive == true) return
         OpenNowAnalytics.capture(event = "app_update_downloaded")
@@ -606,6 +646,28 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         appUpdater.markCheckDeferredForStreaming()
     }
 
+    fun refreshSettings() {
+        if (settingsRefreshJob?.isActive == true) return
+        settingsRefreshJob = viewModelScope.launch {
+            _state.update { it.copy(settingsRefreshing = true, error = null) }
+            try {
+                val updateJob = startAndroidUpdateCheck(automatic = false)
+                val session = state.value.authSession
+                val accountJob = session?.let { activeSession ->
+                    launch { refreshSettingsAccountData(activeSession) }
+                }
+                val accountConnectorsJob = session?.let { activeSession ->
+                    launch { refreshAccountConnectors(activeSession) }
+                }
+                updateJob?.join()
+                accountJob?.join()
+                accountConnectorsJob?.join()
+            } finally {
+                _state.update { it.copy(settingsRefreshing = false) }
+            }
+        }
+    }
+
     fun resetSettings() {
         settingsStore.reset()
         Toast.makeText(getApplication(), "Settings reset to recommended defaults", Toast.LENGTH_SHORT).show()
@@ -643,6 +705,28 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                     if (error is CancellationException) return@onFailure
                     _state.update { it.copy(loadingAccountConnectors = false, error = error.message ?: "Failed to load account connections") }
                 }
+        }
+    }
+
+    private suspend fun refreshSettingsAccountData(session: AuthSession) {
+        val token = accountConnectorAuthToken(session)
+        coroutineScope {
+            val subscription = async {
+                runCatching {
+                    val vpcId = catalogRepository.getVpcId(token, session.provider.streamingServiceUrl)
+                    subscriptionRepository.fetchSubscription(token, session.user.userId, vpcId)
+                }.getOrNull()
+            }
+            val regions = async {
+                runCatching { fetchDynamicRegions(http, token, session.provider.streamingServiceUrl).first }
+                    .getOrDefault(emptyList())
+            }
+            _state.update { current ->
+                current.copy(
+                    subscriptionInfo = subscription.await() ?: current.subscriptionInfo,
+                    regions = regions.await().ifEmpty { current.regions },
+                )
+            }
         }
     }
 
@@ -1594,7 +1678,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             appendLine("input.keyboardLayout=${snapshot.settings.stream.keyboardLayout} touch=${snapshot.settings.androidTouch}")
             appendLine("codec.native=${codecReport?.nativeRuntimeSummary.orEmpty()} lowPower=${codecReport?.lowPowerGpuProfile} tv=${codecReport?.androidTvProfile}")
             codecReport?.capabilities?.forEach { cap ->
-                appendLine("codec.${cap.codec}: decoder=${cap.decoderName ?: "none"} hardware=${cap.hardwareDecoder} webRtc=${cap.webRtcDecoderName ?: "none"} webRtcAvailable=${cap.webRtcDecoderAvailable ?: "unknown"} webRtcHardware=${cap.webRtcHardwareDecoderAvailable ?: "unknown"} encoder=${cap.encoderName ?: "none"}")
+                appendLine("codec.${cap.codec}: decoder=${cap.decoderName ?: "none"} hardware=${cap.hardwareDecoder} nativeAvailable=${cap.nativeDecoderAvailable ?: "unknown"} webRtc=${cap.webRtcDecoderName ?: "none"} webRtcAvailable=${cap.webRtcDecoderAvailable ?: "unknown"} webRtcHardware=${cap.webRtcHardwareDecoderAvailable ?: "unknown"} encoder=${cap.encoderName ?: "none"}")
             }
             appendLine(NativeInputDiagnostics.snapshot())
             snapshot.error?.let { appendLine("error=$it") }
@@ -1611,7 +1695,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    private suspend fun refreshAfterAuth(session: AuthSession) {
+    private suspend fun refreshAfterAuth(session: AuthSession, keepRefreshVisibleWithCache: Boolean = false) {
         _state.update { it.copy(loadingGames = true, error = null) }
         val baseUrl = effectiveStreamingBaseUrl(session)
         val token = session.tokens.idToken ?: session.tokens.accessToken
@@ -1635,7 +1719,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                     games = cachedMain ?: it.games,
                     libraryGames = cachedMergedLibrary.ifEmpty { cachedLibrary ?: it.libraryGames },
                     catalogResult = cachedCatalog ?: it.catalogResult,
-                    loadingGames = false,
+                    loadingGames = keepRefreshVisibleWithCache,
                     error = null,
                 )
             }

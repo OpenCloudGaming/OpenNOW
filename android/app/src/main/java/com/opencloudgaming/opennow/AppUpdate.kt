@@ -86,6 +86,22 @@ internal fun AndroidUpdateState.shouldRunAutomaticCheck(): Boolean =
         else -> true
     }
 
+internal fun androidUpdateNoticeKey(update: AndroidUpdateState): String? =
+    when (update.status) {
+        AndroidUpdateStatus.Available,
+        AndroidUpdateStatus.Downloading,
+        AndroidUpdateStatus.Downloaded,
+        -> listOfNotNull(
+            update.availableVersionCode?.let { "code:$it" },
+            update.availableVersionName?.takeIf { it.isNotBlank() }?.let { "name:$it" },
+        ).takeIf { it.isNotEmpty() }?.joinToString("|")
+            ?: update.sourceUrl.takeIf { it.isNotBlank() }?.let { "source:$it" }
+        else -> null
+    }
+
+internal fun AndroidUpdateState.visibleNoticeKey(dismissedKey: String?): String? =
+    androidUpdateNoticeKey(this)?.takeUnless { it == dismissedKey }
+
 internal data class AndroidUpdateCandidate(
     val sourceUrl: String,
     val apkUrl: String,

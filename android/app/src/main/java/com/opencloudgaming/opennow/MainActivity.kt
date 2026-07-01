@@ -371,23 +371,20 @@ class MainActivity : ComponentActivity() {
 
     private fun MotionEvent.isMouseLikePointerEvent(): Boolean {
         val controllerSource =
-            (source and InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK ||
-                (source and InputDevice.SOURCE_GAMEPAD) == InputDevice.SOURCE_GAMEPAD
+            AndroidControllerInput.hasControllerSource(source) ||
+                AndroidControllerInput.isControllerEvent(source, deviceId)
         return (source and InputDevice.SOURCE_MOUSE) == InputDevice.SOURCE_MOUSE ||
             (source and InputDevice.SOURCE_MOUSE_RELATIVE) == InputDevice.SOURCE_MOUSE_RELATIVE ||
             ((source and InputDevice.SOURCE_TOUCHPAD) == InputDevice.SOURCE_TOUCHPAD && !controllerSource)
     }
 
     private fun MotionEvent.isControllerMotionEvent(): Boolean =
-        (source and InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK ||
-            (source and InputDevice.SOURCE_GAMEPAD) == InputDevice.SOURCE_GAMEPAD
+        AndroidControllerInput.isControllerEvent(source, deviceId)
 
     private fun KeyEvent.shouldReapplyStreamSystemUi(): Boolean =
         keyCode == KeyEvent.KEYCODE_BACK ||
             keyCode == KeyEvent.KEYCODE_MENU ||
-            (source and InputDevice.SOURCE_GAMEPAD) == InputDevice.SOURCE_GAMEPAD ||
-            (source and InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK ||
-            (source and InputDevice.SOURCE_DPAD) == InputDevice.SOURCE_DPAD ||
+            AndroidControllerInput.isControllerEvent(source, deviceId) ||
             keyCode in KeyEvent.KEYCODE_BUTTON_A..KeyEvent.KEYCODE_BUTTON_MODE
 
     private companion object {

@@ -931,6 +931,7 @@ data class CodecCapability(
     val decoderName: String? = null,
     val encoderName: String? = null,
     val realtimeSafe: Boolean = hardwareDecoder,
+    val nativeDecoderAvailable: Boolean? = null,
     val webRtcDecoderAvailable: Boolean? = null,
     val webRtcHardwareDecoderAvailable: Boolean? = null,
     val webRtcDecoderName: String? = null,
@@ -956,18 +957,22 @@ internal fun CodecCapability.streamingDecoderAvailable(): Boolean =
     webRtcDecoderAvailable ?: decoderAvailable
 
 internal fun CodecCapability.streamingHardwareDecoderAvailable(): Boolean =
-    webRtcHardwareDecoderAvailable ?: hardwareDecoder
+    webRtcHardwareDecoderAvailable ?: (nativeDecoderAvailable?.let { it && hardwareDecoder } ?: hardwareDecoder)
 
 internal fun CodecCapability.streamingDecoderName(): String? =
     webRtcDecoderName ?: decoderName
 
 internal fun CodecCapability.streamingRealtimeSafe(): Boolean =
-    streamingDecoderAvailable() && (codec == VideoCodec.H264 || streamingHardwareDecoderAvailable() || webRtcDecoderAvailable == true)
+    streamingDecoderAvailable() &&
+        (codec == VideoCodec.H264 || (nativeDecoderAvailable != false && (streamingHardwareDecoderAvailable() || webRtcDecoderAvailable == true)))
 
 internal fun CodecCapability.streamingDecoderUsableForLaunch(): Boolean {
-    if (webRtcDecoderAvailable == false) return false
+    if (webRtcDecoderAvailable == false && nativeDecoderAvailable != true) return false
     if (codec == VideoCodec.H264) return webRtcDecoderAvailable ?: decoderAvailable
-    if (webRtcDecoderAvailable != true || webRtcHardwareDecoderAvailable != true) return false
+    if (nativeDecoderAvailable == false) return false
+    val nativeHardwareReady = nativeDecoderAvailable == true && hardwareDecoder
+    val webRtcHardwareReady = webRtcDecoderAvailable == true && webRtcHardwareDecoderAvailable == true
+    if (!nativeHardwareReady && !webRtcHardwareReady) return false
     return !decoderAvailable || (hardwareDecoder && realtimeSafe)
 }
 
@@ -1011,15 +1016,13 @@ internal fun StreamSettings.adjustedForDevice(report: RuntimeCodecReport?): Stre
 
 internal fun StreamSettings.androidSafeVideoFallback(): StreamSettings =
     copy(
-        resolution = "1920x1080",
-        aspectRatio = "16:9",
         fps = minOf(fps, 60),
         maxBitrateMbps = minOf(maxBitrateMbps, 75),
         codec = VideoCodec.H264,
         colorQuality = ColorQuality.EightBit420,
         hdrEnabled = false,
         enableCloudGsync = false,
-    )
+    ).cappedResolution(SAFE_VIDEO_FALLBACK_MAX_WIDTH, SAFE_VIDEO_FALLBACK_MAX_HEIGHT)
 
 private fun StreamSettings.androidWebRtcColorQuality(): ColorQuality {
     if (hdrEnabled) return when (colorQuality) {
@@ -1065,3 +1068,5 @@ private const val LOW_POWER_TV_MAX_WIDTH = 1920
 private const val LOW_POWER_TV_MAX_HEIGHT = 1080
 private const val LOW_POWER_TV_BITRATE_CAP_MBPS = 25
 private const val LOW_POWER_TV_FPS_CAP = 60
+private const val SAFE_VIDEO_FALLBACK_MAX_WIDTH = 1920
+private const val SAFE_VIDEO_FALLBACK_MAX_HEIGHT = 1080

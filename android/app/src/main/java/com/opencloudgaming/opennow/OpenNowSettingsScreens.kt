@@ -176,6 +176,13 @@ internal fun SettingsScreen(
             selectedCategory = null
         }
     }
+    LaunchedEffect(state.settingsRouteTarget) {
+        if (state.settingsRouteTarget == SettingsRouteTarget.General) {
+            onSearchQueryChange("")
+            selectedCategory = SettingsCategory.General
+            viewModel.consumeSettingsRouteTarget(SettingsRouteTarget.General)
+        }
+    }
     BackHandler(enabled = selectedCategory != null) {
         selectedCategory = null
     }
@@ -189,46 +196,20 @@ internal fun SettingsScreen(
         )
     }
     if (tvProfile) {
-        Column(
-            Modifier
-                .fillMaxSize()
-                .background(SettingsBackground)
-                .onPreviewKeyEvent { handleVerticalDpadFocusMove(it, focusManager) }
-                .verticalScroll(scrollState)
-                .padding(20.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp),
+        SwipeToRefreshContainer(
+            refreshing = state.settingsRefreshing,
+            onRefresh = viewModel::refreshSettings,
+            modifier = Modifier.fillMaxSize(),
         ) {
-            AnimatedVisibility(visible = showSearch) {
-                NativeSearchField(
-                    query = searchQuery,
-                    onQueryChange = onSearchQueryChange,
-                    placeholder = stringResource(R.string.search_settings),
-                    focusRequester = searchFocusRequester,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-            }
-            AnimatedContent(targetState = selectedCategory, label = "settings-route") { category ->
-                SettingsBody(
-                    state = state,
-                    viewModel = viewModel,
-                    searchQuery = searchQuery,
-                    selectedCategory = category,
-                    categories = categories,
-                    onSelectCategory = { selectedCategory = it },
-                    onBack = { selectedCategory = null },
-                    showSessionProxyWarning = { showSessionProxyWarning = true },
-                )
-            }
-        }
-    } else {
-        LazyColumn(
-            Modifier
-                .fillMaxSize()
-                .background(SettingsBackground),
-            contentPadding = PaddingValues(14.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            item {
+            Column(
+                Modifier
+                    .fillMaxSize()
+                    .background(SettingsBackground)
+                    .onPreviewKeyEvent { handleVerticalDpadFocusMove(it, focusManager) }
+                    .verticalScroll(scrollState)
+                    .padding(20.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp),
+            ) {
                 AnimatedVisibility(visible = showSearch) {
                     NativeSearchField(
                         query = searchQuery,
@@ -238,8 +219,6 @@ internal fun SettingsScreen(
                         modifier = Modifier.fillMaxWidth(),
                     )
                 }
-            }
-            item {
                 AnimatedContent(targetState = selectedCategory, label = "settings-route") { category ->
                     SettingsBody(
                         state = state,
@@ -251,6 +230,46 @@ internal fun SettingsScreen(
                         onBack = { selectedCategory = null },
                         showSessionProxyWarning = { showSessionProxyWarning = true },
                     )
+                }
+            }
+        }
+    } else {
+        SwipeToRefreshContainer(
+            refreshing = state.settingsRefreshing,
+            onRefresh = viewModel::refreshSettings,
+            modifier = Modifier.fillMaxSize(),
+        ) {
+            LazyColumn(
+                Modifier
+                    .fillMaxSize()
+                    .background(SettingsBackground),
+                contentPadding = PaddingValues(14.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                item {
+                    AnimatedVisibility(visible = showSearch) {
+                        NativeSearchField(
+                            query = searchQuery,
+                            onQueryChange = onSearchQueryChange,
+                            placeholder = stringResource(R.string.search_settings),
+                            focusRequester = searchFocusRequester,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
+                }
+                item {
+                    AnimatedContent(targetState = selectedCategory, label = "settings-route") { category ->
+                        SettingsBody(
+                            state = state,
+                            viewModel = viewModel,
+                            searchQuery = searchQuery,
+                            selectedCategory = category,
+                            categories = categories,
+                            onSelectCategory = { selectedCategory = it },
+                            onBack = { selectedCategory = null },
+                            showSessionProxyWarning = { showSessionProxyWarning = true },
+                        )
+                    }
                 }
             }
         }
@@ -281,6 +300,7 @@ private fun SettingsBody(
         selectedCategory == null -> {
             SettingsCategoryLanding(
                 state = state,
+                viewModel = viewModel,
                 categories = categories,
                 onSelectCategory = onSelectCategory,
             )
@@ -538,8 +558,10 @@ private fun SettingsContent(
                     DebugLogsPanel(state = state, viewModel = viewModel)
                 }
     }
-    CategorySettingsSection(selectedCategory, SettingsCategory.About, searchQuery, "About", "about", "version", "build", "app") {
+    CategorySettingsSection(selectedCategory, SettingsCategory.About, searchQuery, "About", "about", "version", "build", "app", "github", "developer", "kiefer", "opennow", "repository") {
                 AppVersionPanel()
+                OpenNowGitHubPanel()
+                DeveloperPanel()
             }
     CategorySettingsSection(selectedCategory, SettingsCategory.About, searchQuery, stringResource(R.string.settings_section_thanks), "thanks", "credits", "contributors", "darkevilpt", "donate", "paypal", "printedwaste") {
                 ThanksPanel()
@@ -550,6 +572,7 @@ private fun SettingsContent(
 @Composable
 private fun SettingsCategoryLanding(
     state: OpenNowUiState,
+    viewModel: OpenNowViewModel,
     categories: List<SettingsCategory>,
     onSelectCategory: (SettingsCategory) -> Unit,
 ) {
@@ -557,6 +580,12 @@ private fun SettingsCategoryLanding(
         SettingsAccountCard(
             state = state,
             onClick = { onSelectCategory(SettingsCategory.Account) },
+        )
+        AndroidUpdateNoticeRow(
+            update = state.androidUpdate,
+            dismissedKey = state.dismissedAndroidUpdateNoticeKey,
+            onOpenUpdates = { onSelectCategory(SettingsCategory.General) },
+            onDismiss = viewModel::dismissAndroidUpdateNotice,
         )
         Surface(
             modifier = Modifier.fillMaxWidth(),
@@ -572,8 +601,10 @@ private fun SettingsCategoryLanding(
                 }
             }
         }
-        SearchableSettingsSection("", "About", "about", "version", "build", "app") {
+        SearchableSettingsSection("", "About", "about", "version", "build", "app", "github", "developer", "kiefer", "opennow", "repository") {
             AppVersionPanel()
+            OpenNowGitHubPanel()
+            DeveloperPanel()
         }
         SearchableSettingsSection("", stringResource(R.string.settings_section_thanks), "thanks", "credits", "contributors", "darkevilpt", "donate", "paypal", "printedwaste") {
             ThanksPanel()

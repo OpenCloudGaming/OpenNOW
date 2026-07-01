@@ -15,10 +15,12 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -38,7 +40,9 @@ import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.ProgressBarRangeInfo
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.progressBarRangeInfo
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
@@ -47,6 +51,7 @@ import androidx.compose.ui.unit.dp
 import java.text.DateFormat
 import java.util.Date
 import java.util.Locale
+import kotlin.math.roundToInt
 
 @Composable
 internal fun AppDataSettingsPanel(viewModel: OpenNowViewModel) {
@@ -385,8 +390,6 @@ private fun formatUpdateBytes(bytes: Long): String {
 internal fun AccountSettingsPanel(state: OpenNowUiState, viewModel: OpenNowViewModel) {
     val currentUserId = state.authSession?.user?.userId
     val context = LocalContext.current
-    var skippedUpdateKey by remember { mutableStateOf<String?>(null) }
-    val updateCardKey = accountUpdateCardKey(state.androidUpdate)
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         state.savedAccounts.ifEmpty {
             state.authSession?.toSavedAccount()?.let { listOf(it) } ?: emptyList()
@@ -422,19 +425,12 @@ internal fun AccountSettingsPanel(state: OpenNowUiState, viewModel: OpenNowViewM
                 }
             }
         }
-        if (updateCardKey != null && skippedUpdateKey != updateCardKey) {
-            AccountUpdateCard(
-                update = state.androidUpdate,
-                onPrimaryAction = {
-                    when (state.androidUpdate.status) {
-                        AndroidUpdateStatus.Available -> viewModel.downloadAndroidUpdate()
-                        AndroidUpdateStatus.Downloaded -> viewModel.installAndroidUpdate()
-                        else -> Unit
-                    }
-                },
-                onLater = { skippedUpdateKey = updateCardKey },
-            )
-        }
+        AndroidUpdateNoticeRow(
+            update = state.androidUpdate,
+            dismissedKey = state.dismissedAndroidUpdateNoticeKey,
+            onOpenUpdates = viewModel::openAndroidUpdateSettings,
+            onDismiss = viewModel::dismissAndroidUpdateNotice,
+        )
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
             Button(onClick = { viewModel.login() }, modifier = Modifier.weight(1f)) { Text("Add account") }
             OutlinedButton(onClick = viewModel::logout, modifier = Modifier.weight(1f)) { Text("Sign out") }
@@ -473,53 +469,60 @@ internal fun AccountSettingsPanel(state: OpenNowUiState, viewModel: OpenNowViewM
 }
 
 @Composable
-private fun AccountUpdateCard(
+internal fun AndroidUpdateNoticeRow(
     update: AndroidUpdateState,
-    onPrimaryAction: () -> Unit,
-    onLater: () -> Unit,
+    dismissedKey: String?,
+    onOpenUpdates: () -> Unit,
+    onDismiss: () -> Unit,
 ) {
+    val noticeKey = update.visibleNoticeKey(dismissedKey) ?: return
     Surface(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(18.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp))
+            .clickable(onClick = onOpenUpdates),
+        shape = RoundedCornerShape(16.dp),
         color = MaterialTheme.colorScheme.primary.copy(alpha = 0.14f),
     ) {
-        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                    Text(accountUpdateTitle(update), color = SettingsText, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    Text(accountUpdateSubtitle(update), color = SettingsTextMuted, style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                }
-                UpdateStatusBadge(update.status)
+        Row(
+            Modifier.padding(start = 12.dp, top = 10.dp, bottom = 10.dp, end = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            UpdateStatusBadge(update.status)
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(accountUpdateTitle(update), color = SettingsText, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(accountUpdateSubtitle(update), color = SettingsTextMuted, style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
             }
             if (update.status == AndroidUpdateStatus.Downloading) {
-                LinearProgressIndicator(Modifier.fillMaxWidth())
-                update.progress?.let { progress ->
-                    Text(formatAndroidUpdateProgress(progress), color = SettingsTextMuted, style = MaterialTheme.typography.labelSmall)
-                }
+                CircularUpdateProgress(update.progress)
             }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-                Button(
-                    onClick = onPrimaryAction,
-                    enabled = update.status == AndroidUpdateStatus.Available || update.status == AndroidUpdateStatus.Downloaded,
-                    modifier = Modifier.weight(1f),
-                ) {
-                    Text(accountUpdatePrimaryLabel(update), maxLines = 1, overflow = TextOverflow.Ellipsis)
-                }
-                OutlinedButton(onClick = onLater, modifier = Modifier.weight(1f)) {
-                    Text("Skip", maxLines = 1, overflow = TextOverflow.Ellipsis)
-                }
+            IconButton(
+                onClick = onDismiss,
+                modifier = Modifier.semantics { contentDescription = "Dismiss update ${noticeKey.takeLast(12)}" },
+            ) {
+                Icon(
+                    painter = painterResource(R.drawable.ic_clear),
+                    contentDescription = null,
+                    tint = SettingsTextMuted,
+                    modifier = Modifier.size(20.dp),
+                )
             }
         }
     }
 }
 
-private fun accountUpdateCardKey(update: AndroidUpdateState): String? =
-    when (update.status) {
-        AndroidUpdateStatus.Available,
-        AndroidUpdateStatus.Downloading,
-        AndroidUpdateStatus.Downloaded -> listOfNotNull(update.availableVersionName, update.availableVersionCode?.toString(), update.status.name).joinToString(":")
-        else -> null
-    }
+@Composable
+private fun CircularUpdateProgress(progress: AndroidUpdateProgress?) {
+    val label = progress?.let(::formatAndroidUpdateProgress) ?: "Downloading"
+    Text(
+        label,
+        color = SettingsTextMuted,
+        style = MaterialTheme.typography.labelSmall,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
+    )
+}
 
 private fun accountUpdateTitle(update: AndroidUpdateState): String =
     when (update.status) {
@@ -531,13 +534,6 @@ private fun accountUpdateTitle(update: AndroidUpdateState): String =
 private fun accountUpdateSubtitle(update: AndroidUpdateState): String =
     update.availableVersionName?.let { "Version $it is ready for this device." }
         ?: update.message
-
-private fun accountUpdatePrimaryLabel(update: AndroidUpdateState): String =
-    when (update.status) {
-        AndroidUpdateStatus.Downloaded -> "Install"
-        AndroidUpdateStatus.Downloading -> "Downloading"
-        else -> "Update"
-    }
 
 @Composable
 private fun StorageAddonPanel(storageAddon: StorageAddon?, openExternal: (String) -> Unit) {
@@ -556,6 +552,7 @@ private fun StorageAddonPanel(storageAddon: StorageAddon?, openExternal: (String
             } else {
                 val used = storageAddon.usedGb
                 val total = storageAddon.sizeGb
+                val usageFraction = storageUsageFraction(used, total)
                 Text(
                     listOfNotNull(
                         total?.let { "Total ${formatStorageGb(it)}" },
@@ -565,6 +562,40 @@ private fun StorageAddonPanel(storageAddon: StorageAddon?, openExternal: (String
                     color = SettingsTextMuted,
                     style = MaterialTheme.typography.bodySmall,
                 )
+                if (usageFraction != null) {
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                            Text(
+                                "Storage usage",
+                                color = SettingsText,
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.SemiBold,
+                                modifier = Modifier.weight(1f),
+                            )
+                            Text(
+                                "${formatStoragePercent(usageFraction)} used",
+                                color = SettingsTextMuted,
+                                style = MaterialTheme.typography.labelSmall,
+                            )
+                        }
+                        LinearProgressIndicator(
+                            progress = { usageFraction },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(999.dp))
+                                .semantics {
+                                    contentDescription = "Cloud storage ${formatStoragePercent(usageFraction)} used"
+                                    progressBarRangeInfo = ProgressBarRangeInfo(usageFraction, 0f..1f)
+                                },
+                            color = when {
+                                usageFraction >= 0.9f -> Color(0xffff8a65)
+                                usageFraction >= 0.75f -> Color(0xffffc266)
+                                else -> MaterialTheme.colorScheme.primary
+                            },
+                            trackColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.7f),
+                        )
+                    }
+                }
                 storageAddon.regionName?.takeIf { it.isNotBlank() }?.let { region ->
                     Text("Location: $region", color = SettingsTextMuted, style = MaterialTheme.typography.bodySmall)
                 }
@@ -721,9 +752,20 @@ private const val GFN_STORAGE_MANAGEMENT_URL = "https://gfn.link/cloudstorage"
 private const val GFN_STORAGE_RESET_URL = "https://gfn.link/resetstorage"
 private const val GFN_ADD_STORAGE_URL = "https://gfn.link/addstorage"
 private const val GFN_ACCOUNT_HELP_URL = "https://gfn.link/5399"
+private const val OPENNOW_GITHUB_URL = "https://github.com/OpenCloudGaming/OpenNOW"
+private const val DEVELOPER_GITHUB_URL = "https://github.com/Kief5555"
+private const val DEVELOPER_AVATAR_URL = "https://github.com/Kief5555.png?size=160"
 
 private fun formatStorageGb(value: Double): String =
     if (value % 1.0 == 0.0) "${value.toInt()} GB" else "%.1f GB".format(Locale.US, value)
+
+private fun storageUsageFraction(usedGb: Double?, totalGb: Double?): Float? {
+    if (usedGb == null || totalGb == null || totalGb <= 0.0) return null
+    return (usedGb / totalGb).coerceIn(0.0, 1.0).toFloat()
+}
+
+private fun formatStoragePercent(fraction: Float): String =
+    "${(fraction * 100).roundToInt().coerceIn(0, 100)}%"
 
 private fun connectorStatusText(connector: AccountConnector): String {
     if (!connector.isLinked) return if (connector.required) "Required for some games" else "Available to connect"
@@ -795,6 +837,7 @@ private fun formatCodecDiagnosticReport(report: RuntimeCodecReport): String = bu
         appendLine("decoderName=${capability.decoderName ?: "none"}")
         appendLine("hardwareDecoder=${capability.hardwareDecoder}")
         appendLine("realtimeSafe=${capability.realtimeSafe}")
+        appendLine("nativeDecoderAvailable=${capability.nativeDecoderAvailable ?: "unknown"}")
         appendLine("webRtcDecoderAvailable=${capability.webRtcDecoderAvailable ?: "unknown"}")
         appendLine("webRtcDecoderName=${capability.webRtcDecoderName ?: "none"}")
         appendLine("webRtcHardwareDecoderAvailable=${capability.webRtcHardwareDecoderAvailable ?: "unknown"}")
@@ -852,7 +895,7 @@ private fun CodecCapabilityRow(capability: CodecCapability) {
                 overflow = TextOverflow.Ellipsis,
             )
             Text(
-                "Hardware decode ${yesNo(capability.streamingHardwareDecoderAvailable())} - platform ${capability.decoderName ?: "none"}",
+                "Hardware decode ${yesNo(capability.streamingHardwareDecoderAvailable())} - native ${capability.nativeDecoderAvailable ?: "unknown"} - platform ${capability.decoderName ?: "none"}",
                 color = SettingsTextMuted,
                 style = MaterialTheme.typography.bodySmall,
                 maxLines = 1,
@@ -896,6 +939,59 @@ internal fun AppVersionPanel() {
 }
 
 @Composable
+internal fun OpenNowGitHubPanel() {
+    val context = LocalContext.current
+    val clipboard = LocalClipboardManager.current
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .background(SettingsPanelAlt)
+            .padding(horizontal = 14.dp, vertical = 12.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text("OpenNOW Repository", color = SettingsText, fontWeight = FontWeight.SemiBold)
+            Text("OpenCloudGaming/OpenNOW", color = SettingsTextMuted, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+        OutlinedButton(onClick = { openExternalUrlOrCopy(context, clipboard, OPENNOW_GITHUB_URL, "GitHub link copied") }) {
+            Text("GitHub", maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+    }
+}
+
+@Composable
+internal fun DeveloperPanel() {
+    val context = LocalContext.current
+    val clipboard = LocalClipboardManager.current
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .background(SettingsPanelAlt)
+            .padding(horizontal = 14.dp, vertical = 12.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Surface(
+            modifier = Modifier.size(52.dp),
+            shape = CircleShape,
+            color = MaterialTheme.colorScheme.surfaceVariant,
+        ) {
+            UrlImage(DEVELOPER_AVATAR_URL, Modifier.fillMaxSize().clip(CircleShape))
+        }
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text("Kiefer", color = SettingsText, fontWeight = FontWeight.SemiBold)
+            Text("Developer", color = SettingsTextMuted, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+        OutlinedButton(onClick = { openExternalUrlOrCopy(context, clipboard, DEVELOPER_GITHUB_URL, "GitHub link copied") }) {
+            Text("GitHub", maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+    }
+}
+
+@Composable
 internal fun ThanksPanel() {
     val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
@@ -920,15 +1016,23 @@ internal fun ThanksPanel() {
     }
     Button(
         onClick = {
-            val opened = openExternalUrl(context, DONATE_URL)
-            if (!opened) {
-                clipboard.setText(AnnotatedString(DONATE_URL))
-                Toast.makeText(context, context.getString(R.string.settings_donate_link_copied), Toast.LENGTH_SHORT).show()
-            }
+            openExternalUrlOrCopy(context, clipboard, DONATE_URL, context.getString(R.string.settings_donate_link_copied))
         },
         modifier = Modifier.fillMaxWidth(),
     ) {
         Text(stringResource(R.string.settings_donate_paypal), maxLines = 1, overflow = TextOverflow.Ellipsis)
+    }
+}
+
+private fun openExternalUrlOrCopy(
+    context: android.content.Context,
+    clipboard: androidx.compose.ui.platform.ClipboardManager,
+    url: String,
+    copiedMessage: String,
+) {
+    if (!openExternalUrl(context, url)) {
+        clipboard.setText(AnnotatedString(url))
+        Toast.makeText(context, copiedMessage, Toast.LENGTH_SHORT).show()
     }
 }
 

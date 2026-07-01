@@ -120,6 +120,43 @@ class StreamSettingsDeviceAdjustmentTest {
     }
 
     @Test
+    fun fallsBackToH264WhenNativeAdvancedDecoderProbeFails() {
+        val adjusted = StreamSettings(codec = VideoCodec.H265, colorQuality = ColorQuality.TenBit420, maxBitrateMbps = 90)
+            .adjustedForDevice(
+                codecReport(
+                    VideoCodec.H265,
+                    hardwareDecoder = true,
+                    realtimeSafe = true,
+                    nativeDecoderAvailable = false,
+                    webRtcDecoderAvailable = true,
+                    webRtcHardwareDecoderAvailable = true,
+                ),
+            )
+
+        assertEquals(VideoCodec.H264, adjusted.codec)
+        assertEquals(ColorQuality.EightBit420, adjusted.colorQuality)
+        assertEquals(35, adjusted.maxBitrateMbps)
+    }
+
+    @Test
+    fun preservesAdvancedCodecWhenNativeAndWebRtcHardwarePathsExist() {
+        val adjusted = StreamSettings(codec = VideoCodec.AV1, colorQuality = ColorQuality.TenBit420)
+            .adjustedForDevice(
+                codecReport(
+                    VideoCodec.AV1,
+                    hardwareDecoder = true,
+                    realtimeSafe = true,
+                    nativeDecoderAvailable = true,
+                    webRtcDecoderAvailable = true,
+                    webRtcHardwareDecoderAvailable = true,
+                ),
+            )
+
+        assertEquals(VideoCodec.AV1, adjusted.codec)
+        assertEquals(ColorQuality.EightBit420, adjusted.colorQuality)
+    }
+
+    @Test
     fun keepsSelectedCodecOnLowPowerDevicesWhenWebRtcHardwareDecoderExists() {
         val adjusted = StreamSettings(codec = VideoCodec.H265, colorQuality = ColorQuality.TenBit420, maxBitrateMbps = 90)
             .adjustedForDevice(
@@ -186,6 +223,25 @@ class StreamSettingsDeviceAdjustmentTest {
         assertEquals(ColorQuality.EightBit420, fallback.colorQuality)
         assertEquals(false, fallback.hdrEnabled)
         assertEquals(false, fallback.enableCloudGsync)
+    }
+
+    @Test
+    fun safeVideoFallbackPreservesLaunchResolutionInsideH264Bounds() {
+        val fallback = StreamSettings(
+            resolution = "1680x720",
+            aspectRatio = "21:9",
+            fps = 60,
+            maxBitrateMbps = 75,
+            codec = VideoCodec.H265,
+            colorQuality = ColorQuality.TenBit420,
+        ).androidSafeVideoFallback()
+
+        assertEquals("1680x720", fallback.resolution)
+        assertEquals("21:9", fallback.aspectRatio)
+        assertEquals(60, fallback.fps)
+        assertEquals(75, fallback.maxBitrateMbps)
+        assertEquals(VideoCodec.H264, fallback.codec)
+        assertEquals(ColorQuality.EightBit420, fallback.colorQuality)
     }
 
     @Test
@@ -282,6 +338,7 @@ class StreamSettingsDeviceAdjustmentTest {
         realtimeSafe: Boolean,
         lowPower: Boolean = false,
         tv: Boolean = false,
+        nativeDecoderAvailable: Boolean? = null,
         webRtcDecoderAvailable: Boolean? = null,
         webRtcHardwareDecoderAvailable: Boolean? = null,
     ): RuntimeCodecReport =
@@ -294,6 +351,7 @@ class StreamSettingsDeviceAdjustmentTest {
                     hardwareDecoder = hardwareDecoder,
                     hardwareEncoder = false,
                     realtimeSafe = realtimeSafe,
+                    nativeDecoderAvailable = nativeDecoderAvailable,
                     webRtcDecoderAvailable = webRtcDecoderAvailable,
                     webRtcHardwareDecoderAvailable = webRtcHardwareDecoderAvailable,
                 ),

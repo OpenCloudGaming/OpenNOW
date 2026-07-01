@@ -146,4 +146,18 @@ class AppUpdateTest {
             ).isAndroidUpdateCheckBlockedByStream(),
         )
     }
+
+    @Test
+    fun updateNoticeKeyIsStableAcrossAvailableAndDownloadedStates() {
+        val available = AndroidUpdateState(
+            status = AndroidUpdateStatus.Available,
+            availableVersionName = "0.5.4",
+            availableVersionCode = 9,
+        )
+        val downloaded = available.copy(status = AndroidUpdateStatus.Downloaded)
+
+        assertEquals(androidUpdateNoticeKey(available), androidUpdateNoticeKey(downloaded))
+        assertEquals(null, available.visibleNoticeKey(androidUpdateNoticeKey(downloaded)))
+        assertEquals(androidUpdateNoticeKey(available), available.visibleNoticeKey(null))
+    }
 }

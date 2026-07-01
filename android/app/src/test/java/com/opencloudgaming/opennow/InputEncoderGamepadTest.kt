@@ -62,6 +62,14 @@ class InputEncoderGamepadTest {
     }
 
     @Test
+    fun recognizesStadiaControllerNamesWithDpadOnlySources() {
+        assertTrue(AndroidControllerInput.isKnownControllerName("Stadia Controller rev. A"))
+        assertTrue(AndroidControllerInput.isKnownControllerName("Google Stadia Controller"))
+        assertTrue(AndroidControllerInput.isControllerDevice(InputDevice.SOURCE_DPAD, "Stadia Controller"))
+        assertFalse(AndroidControllerInput.isControllerDevice(InputDevice.SOURCE_DPAD, "TV Remote"))
+    }
+
+    @Test
     fun mapsControllerActivationKeysToPrimaryGamepadButtonOnlyForControllers() {
         assertEquals(
             GamepadButtonMapping.A,
