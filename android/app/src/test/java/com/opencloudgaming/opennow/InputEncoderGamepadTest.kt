@@ -66,7 +66,46 @@ class InputEncoderGamepadTest {
         assertTrue(AndroidControllerInput.isKnownControllerName("Stadia Controller rev. A"))
         assertTrue(AndroidControllerInput.isKnownControllerName("Google Stadia Controller"))
         assertTrue(AndroidControllerInput.isControllerDevice(InputDevice.SOURCE_DPAD, "Stadia Controller"))
+        assertTrue(AndroidControllerInput.isControllerDevice(InputDevice.SOURCE_DPAD, "DualSense Wireless Controller"))
+        assertTrue(AndroidControllerInput.isControllerDevice(InputDevice.SOURCE_DPAD, "Xbox Wireless Controller"))
         assertFalse(AndroidControllerInput.isControllerDevice(InputDevice.SOURCE_DPAD, "TV Remote"))
+    }
+
+    @Test
+    fun resolvesHatOnlyControllerMotionAsLeftStick() {
+        val axes = AndroidGamepadAxisMapping.resolve(
+            raw = AndroidGamepadRawAxes(hatX = -1f, hatY = 0.75f),
+            available = AndroidGamepadAxisAvailability(
+                x = false,
+                y = false,
+                z = false,
+                rz = false,
+                rx = false,
+                ry = false,
+                hatX = true,
+                hatY = true,
+            ),
+        )
+
+        assertEquals(-1f, axes.leftX, 0.0001f)
+        assertEquals(0.75f, axes.leftY, 0.0001f)
+        assertEquals("hat", axes.leftSource)
+        assertTrue(axes.hatUsedAsLeftStick)
+    }
+
+    @Test
+    fun keepsStandardControllerAxesOnExpectedSticks() {
+        val axes = AndroidGamepadAxisMapping.resolve(
+            AndroidGamepadRawAxes(x = 0.5f, y = -0.25f, z = 0.6f, rz = -0.7f, rx = -0.2f, ry = 0.1f),
+        )
+
+        assertEquals(0.5f, axes.leftX, 0.0001f)
+        assertEquals(-0.25f, axes.leftY, 0.0001f)
+        assertEquals(0.6f, axes.rightX, 0.0001f)
+        assertEquals(-0.7f, axes.rightY, 0.0001f)
+        assertEquals("x/y", axes.leftSource)
+        assertEquals("z/rz", axes.rightSource)
+        assertFalse(axes.hatUsedAsLeftStick)
     }
 
     @Test

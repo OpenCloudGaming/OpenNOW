@@ -3117,6 +3117,8 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
         streamSharpeningEnabled = state.settings.stream.streamSharpeningEnabled,
         streamSharpeningAmount = state.settings.stream.streamSharpeningAmount,
     )
+    var resolutionMismatchStats by remember(session?.sessionId, launchStreamSettings.resolution, launchStreamSettings.aspectRatio) { mutableStateOf(0) }
+    var resolutionMismatchRestartRequested by remember(session?.sessionId, launchStreamSettings.resolution, launchStreamSettings.aspectRatio) { mutableStateOf(false) }
     val dismissStreamGuide = {
         streamGuideOpen = false
         if (!state.settings.androidStreamGuideDismissed) {
@@ -3235,6 +3237,25 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
     LaunchedEffect(session?.sessionId, session?.status, launchStreamSettings) {
         if (session != null && streamReady) {
             client.start(session, launchStreamSettings)
+        }
+    }
+    LaunchedEffect(session?.sessionId, streamReady, streamStats, launchStreamSettings.resolution, launchStreamSettings.aspectRatio) {
+        val decodedPixels = parseResolutionPixelsOrNull(streamStats.resolution)
+        val expectedPixels = streamResolutionPixels(launchStreamSettings)
+        when {
+            !streamReady || decodedPixels == null -> Unit
+            decodedPixels == expectedPixels -> resolutionMismatchStats = 0
+            else -> {
+                resolutionMismatchStats += 1
+                if (resolutionMismatchStats >= 3 && !resolutionMismatchRestartRequested) {
+                    resolutionMismatchRestartRequested = true
+                    client.stop()
+                    viewModel.restartStreamForResolutionMismatch(
+                        actualResolution = "${decodedPixels.first}x${decodedPixels.second}",
+                        expectedResolution = "${expectedPixels.first}x${expectedPixels.second}",
+                    )
+                }
+            }
         }
     }
 
@@ -3499,8 +3520,6 @@ private fun StreamVideoSurface(
     val rootView = LocalView.current
     val configuration = LocalConfiguration.current
     val pointerRootView = externalMouseRoot ?: rootView
-    val (streamWidth, streamHeight) = streamResolutionPixels(settings)
-    val streamAspect = (streamWidth.toFloat() / streamHeight.toFloat()).takeIf { it.isFinite() && it > 0f } ?: (16f / 9f)
     val currentOnMouseCaptureInput by rememberUpdatedState(onMouseCaptureInput)
     var zoomScale by remember { mutableFloatStateOf(1f) }
     var zoomOffset by remember { mutableStateOf(Offset.Zero) }
@@ -3530,119 +3549,81 @@ private fun StreamVideoSurface(
             pointerRootView.showAndroidPointerTree()
         }
     }
-    BoxWithConstraints(
+    Box(
         modifier
             .fillMaxSize()
-            .background(Color.Black),
+            .background(Color.Black)
+            .onSizeChanged {
+                if (viewportSize != it) {
+                    viewportSize = it
+                    zoomScale = 1f
+                    zoomOffset = Offset.Zero
+                } else {
+                    zoomOffset = clampStreamZoomOffset(zoomOffset, zoomScale, it)
+                }
+            }
+            .clipToBounds(),
         contentAlignment = Alignment.Center,
     ) {
-        val containerAspect = if (maxHeight.value > 0f) maxWidth.value / maxHeight.value else streamAspect
-        val cropUltrawideToPhoneViewport =
-            !stretchToFill &&
-                isPhoneLandscape(maxWidth, maxHeight) &&
-                streamAspect >= PHONE_ULTRAWIDE_MIN_STREAM_ASPECT &&
-                containerAspect >= PHONE_ULTRAWIDE_MIN_VIEWPORT_ASPECT &&
-                streamAspect > containerAspect
-        val viewportModifier = when {
-            stretchToFill -> Modifier.fillMaxSize()
-            cropUltrawideToPhoneViewport || containerAspect > streamAspect -> Modifier
-                .fillMaxHeight()
-                .aspectRatio(streamAspect)
-            else -> Modifier
-                .fillMaxWidth()
-                .aspectRatio(streamAspect)
-        }
         Box(
-            viewportModifier
-                .onSizeChanged {
-                    if (viewportSize != it) {
-                        viewportSize = it
-                        zoomScale = 1f
-                        zoomOffset = Offset.Zero
-                    } else {
-                        zoomOffset = clampStreamZoomOffset(zoomOffset, zoomScale, it)
-                    }
-                }
-                .clipToBounds()
-                .background(Color.Black),
-        ) {
-            val stretchedRendererModifier = when {
-                !stretchToFill -> Modifier.matchParentSize()
-                containerAspect > streamAspect -> Modifier
-                    .fillMaxHeight()
-                    .aspectRatio(streamAspect)
-                    .align(Alignment.Center)
-                    .graphicsLayer {
-                        scaleX = (containerAspect / streamAspect).takeIf { it.isFinite() && it > 0f } ?: 1f
-                    }
-                else -> Modifier
-                    .fillMaxWidth()
-                    .aspectRatio(streamAspect)
-                    .align(Alignment.Center)
-                    .graphicsLayer {
-                        scaleY = (streamAspect / containerAspect).takeIf { it.isFinite() && it > 0f } ?: 1f
-                    }
-            }
-            Box(
-                Modifier
-                    .matchParentSize()
-                    .graphicsLayer {
-                        scaleX = zoomScale
-                        scaleY = zoomScale
-                        translationX = zoomOffset.x
-                        translationY = zoomOffset.y
-                    },
-            ) {
-                key(settings.streamSharpeningEnabled, viewportSize.width, viewportSize.height, stretchToFill) {
-                    AndroidView(
-                        modifier = stretchedRendererModifier,
-                        factory = { ctx ->
-                            client.createRenderer(ctx, settings, stretchToFill).apply {
-                                isFocusable = false
-                                isFocusableInTouchMode = false
-                                hideAndroidPointerTree()
-                            }
-                        },
-                        update = { renderer ->
-                            client.updateRendererSettings(settings, stretchToFill)
-                            renderer.isFocusable = false
-                            renderer.isFocusableInTouchMode = false
-                            pointerRootView.configureAndroidMousePointerCapture(hideExternalMousePointer, { currentOnMouseCaptureInput() }) { event ->
-                                client.dispatchMotion(event)
-                            }
-                            if (hideExternalMousePointer) {
-                                pointerRootView.hideAndroidPointerTree()
-                                renderer.hideAndroidPointerTree()
-                            } else {
-                                pointerRootView.showAndroidPointerTree()
-                                renderer.showAndroidPointerTree()
-                            }
-                            renderer.setOnKeyListener(null)
-                            renderer.setOnGenericMotionListener { _, event ->
-                                if (hideExternalMousePointer) pointerRootView.hideAndroidPointerTree()
-                                client.dispatchMotion(event)
-                            }
-                            renderer.setOnTouchListener { view, event ->
-                                NativeStreamInputRouter.dispatchTouch(event, view.width, view.height)
-                            }
-                        },
-                    )
-                }
-            }
-            FingerMouseInputLayer(
-                enabled = touchMouseEnabled,
-                onZoomGesture = { scaleChange, pan ->
-                    val nextScale = (zoomScale * scaleChange).coerceIn(1f, 3f)
-                    zoomScale = nextScale
-                    zoomOffset = if (nextScale <= 1.001f) {
-                        Offset.Zero
-                    } else {
-                        clampStreamZoomOffset(zoomOffset + pan, nextScale, viewportSize)
-                    }
+            Modifier
+                .matchParentSize()
+                .graphicsLayer {
+                    scaleX = zoomScale
+                    scaleY = zoomScale
+                    translationX = zoomOffset.x
+                    translationY = zoomOffset.y
                 },
-                modifier = Modifier.matchParentSize(),
-            )
+        ) {
+            key(settings.streamSharpeningEnabled, viewportSize.width, viewportSize.height, stretchToFill) {
+                AndroidView(
+                    modifier = Modifier.matchParentSize(),
+                    factory = { ctx ->
+                        client.createRenderer(ctx, settings, stretchToFill).apply {
+                            isFocusable = false
+                            isFocusableInTouchMode = false
+                            hideAndroidPointerTree()
+                        }
+                    },
+                    update = { renderer ->
+                        client.updateRendererSettings(settings, stretchToFill)
+                        renderer.isFocusable = false
+                        renderer.isFocusableInTouchMode = false
+                        pointerRootView.configureAndroidMousePointerCapture(hideExternalMousePointer, { currentOnMouseCaptureInput() }) { event ->
+                            client.dispatchMotion(event)
+                        }
+                        if (hideExternalMousePointer) {
+                            pointerRootView.hideAndroidPointerTree()
+                            renderer.hideAndroidPointerTree()
+                        } else {
+                            pointerRootView.showAndroidPointerTree()
+                            renderer.showAndroidPointerTree()
+                        }
+                        renderer.setOnKeyListener(null)
+                        renderer.setOnGenericMotionListener { _, event ->
+                            if (hideExternalMousePointer) pointerRootView.hideAndroidPointerTree()
+                            client.dispatchMotion(event)
+                        }
+                        renderer.setOnTouchListener { view, event ->
+                            NativeStreamInputRouter.dispatchTouch(event, view.width, view.height)
+                        }
+                    },
+                )
+            }
         }
+        FingerMouseInputLayer(
+            enabled = touchMouseEnabled,
+            onZoomGesture = { scaleChange, pan ->
+                val nextScale = (zoomScale * scaleChange).coerceIn(1f, 3f)
+                zoomScale = nextScale
+                zoomOffset = if (nextScale <= 1.001f) {
+                    Offset.Zero
+                } else {
+                    clampStreamZoomOffset(zoomOffset + pan, nextScale, viewportSize)
+                }
+            },
+            modifier = Modifier.matchParentSize(),
+        )
     }
 }
 

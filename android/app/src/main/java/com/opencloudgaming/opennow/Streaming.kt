@@ -1071,7 +1071,19 @@ internal object AndroidControllerInput {
         val normalized = name.orEmpty().lowercase(Locale.US)
         return normalized.contains("stadia controller") ||
             normalized == "stadia" ||
-            normalized.contains("google stadia")
+            normalized.contains("google stadia") ||
+            normalized.contains("dualsense") ||
+            normalized.contains("dualshock") ||
+            normalized.contains("wireless controller") ||
+            normalized.contains("xbox") ||
+            normalized.contains("x-input") ||
+            normalized.contains("xinput") ||
+            normalized.contains("8bitdo") ||
+            normalized.contains("gamesir") ||
+            normalized.contains("backbone") ||
+            normalized.contains("razer kishi") ||
+            normalized.contains("switch pro") ||
+            normalized.contains("gamepad")
     }
 
     fun isPrimaryActivationKey(keyCode: Int): Boolean =
@@ -1080,6 +1092,71 @@ internal object AndroidControllerInput {
             keyCode == KeyEvent.KEYCODE_NUMPAD_ENTER
 
     private fun Int.hasSource(source: Int): Boolean = (this and source) == source
+}
+
+internal data class AndroidGamepadRawAxes(
+    val x: Float = 0f,
+    val y: Float = 0f,
+    val z: Float = 0f,
+    val rz: Float = 0f,
+    val rx: Float = 0f,
+    val ry: Float = 0f,
+    val hatX: Float = 0f,
+    val hatY: Float = 0f,
+)
+
+internal data class AndroidGamepadAxisAvailability(
+    val x: Boolean = true,
+    val y: Boolean = true,
+    val z: Boolean = true,
+    val rz: Boolean = true,
+    val rx: Boolean = true,
+    val ry: Boolean = true,
+    val hatX: Boolean = true,
+    val hatY: Boolean = true,
+) {
+    fun hasLeftStickPair(): Boolean = x && y
+    fun hasHatPair(): Boolean = hatX && hatY
+}
+
+internal data class AndroidGamepadResolvedAxes(
+    val leftX: Float,
+    val leftY: Float,
+    val rightX: Float,
+    val rightY: Float,
+    val leftSource: String,
+    val rightSource: String,
+    val hatUsedAsLeftStick: Boolean,
+)
+
+internal object AndroidGamepadAxisMapping {
+    fun resolve(raw: AndroidGamepadRawAxes, available: AndroidGamepadAxisAvailability = AndroidGamepadAxisAvailability()): AndroidGamepadResolvedAxes {
+        val rightUsesZRz = axisPairActive(raw.z, raw.rz) || !axisPairActive(raw.rx, raw.ry)
+        val rightX = if (rightUsesZRz) raw.z else raw.rx
+        val rightY = if (rightUsesZRz) raw.rz else raw.ry
+        val rightSource = if (rightUsesZRz) "z/rz" else "rx/ry"
+
+        val useHatForLeft =
+            !available.hasLeftStickPair() &&
+                available.hasHatPair() &&
+                axisPairActive(raw.hatX, raw.hatY)
+        val leftX = if (useHatForLeft) raw.hatX else raw.x
+        val leftY = if (useHatForLeft) raw.hatY else raw.y
+        return AndroidGamepadResolvedAxes(
+            leftX = leftX,
+            leftY = leftY,
+            rightX = rightX,
+            rightY = rightY,
+            leftSource = if (useHatForLeft) "hat" else "x/y",
+            rightSource = rightSource,
+            hatUsedAsLeftStick = useHatForLeft,
+        )
+    }
+
+    private fun axisPairActive(x: Float, y: Float): Boolean =
+        abs(x) > AXIS_NOISE || abs(y) > AXIS_NOISE
+
+    private const val AXIS_NOISE = 0.001f
 }
 
 internal data class GamepadRumbleCommand(
@@ -1776,6 +1853,7 @@ class NativeStreamClient(
     private var externalMouseMoveSentLogged = false
     private var externalMouseAbsoluteJumpLogged = false
     private var hardwareKeyboardEventLogged = false
+    private var physicalGamepadAxisLogged = false
     private var lastStatsSample: StreamStatsSample? = null
     private val livenessWatchdog = StreamLivenessWatchdog()
     private val textSendMutex = Mutex()
@@ -1839,7 +1917,7 @@ class NativeStreamClient(
             }
             it.setEnableHardwareScaler(false)
             it.setMirror(false)
-            it.setStreamScaling()
+            it.setStreamScaling(stretchToFill)
             renderer = it
             videoTrack?.addSink(it)
         }
@@ -1852,11 +1930,17 @@ class NativeStreamClient(
             streamSharpeningAmount = settings.streamSharpeningAmount,
         )
         rendererSharpnessDrawer?.amount = streamSharpnessShaderStrength(settings.streamSharpeningEnabled, settings.streamSharpeningAmount)
-        renderer?.setStreamScaling()
+        renderer?.setStreamScaling(stretchToFill)
     }
 
-    private fun SurfaceViewRenderer.setStreamScaling() {
-        setScalingType(RendererCommon.ScalingType.SCALE_ASPECT_FIT)
+    private fun SurfaceViewRenderer.setStreamScaling(stretchToFill: Boolean) {
+        setScalingType(
+            if (stretchToFill) {
+                RendererCommon.ScalingType.SCALE_ASPECT_FILL
+            } else {
+                RendererCommon.ScalingType.SCALE_ASPECT_FIT
+            },
+        )
     }
 
     fun updateHapticsSettings(phoneFallbackEnabled: Boolean) {
@@ -1938,6 +2022,7 @@ class NativeStreamClient(
         externalMouseMoveSentLogged = false
         externalMouseAbsoluteJumpLogged = false
         hardwareKeyboardEventLogged = false
+        physicalGamepadAxisLogged = false
         inputEncoder.resetGamepadSequences()
     }
 
@@ -2888,10 +2973,16 @@ class NativeStreamClient(
         }
         physicalControllerConnected = true
         physicalControllerActive = true
-        val lx = event.getAxisValue(MotionEvent.AXIS_X)
-        val ly = event.getAxisValue(MotionEvent.AXIS_Y)
-        val rx = event.getAxisValue(MotionEvent.AXIS_Z).takeIf { abs(it) > 0.001f } ?: event.getAxisValue(MotionEvent.AXIS_RX)
-        val ry = event.getAxisValue(MotionEvent.AXIS_RZ).takeIf { abs(it) > 0.001f } ?: event.getAxisValue(MotionEvent.AXIS_RY)
+        val axes = AndroidGamepadAxisMapping.resolve(event.rawGamepadAxes(), event.axisAvailability())
+        if (!physicalGamepadAxisLogged) {
+            physicalGamepadAxisLogged = true
+            val raw = event.rawGamepadAxes()
+            NativeInputDiagnostics.add(
+                "physical gamepad axes left=${axes.leftSource} right=${axes.rightSource} hatAsLeft=${axes.hatUsedAsLeftStick} " +
+                    "x=${raw.x.formatAxis()} y=${raw.y.formatAxis()} z=${raw.z.formatAxis()} rz=${raw.rz.formatAxis()} " +
+                    "rx=${raw.rx.formatAxis()} ry=${raw.ry.formatAxis()} hatX=${raw.hatX.formatAxis()} hatY=${raw.hatY.formatAxis()}",
+            )
+        }
         val lt = max(
             max(event.getAxisValue(MotionEvent.AXIS_LTRIGGER), normalizeTriggerAxis(event.getAxisValue(MotionEvent.AXIS_BRAKE))),
             if (physicalLeftTriggerButtonPressed) 1f else 0f,
@@ -2900,9 +2991,9 @@ class NativeStreamClient(
             max(event.getAxisValue(MotionEvent.AXIS_RTRIGGER), normalizeTriggerAxis(event.getAxisValue(MotionEvent.AXIS_GAS))),
             if (physicalRightTriggerButtonPressed) 1f else 0f,
         )
-        val left = applyDeadzone(lx, ly)
-        val right = applyDeadzone(rx, ry)
-        physicalHatButtons = event.hatDpadButtons()
+        val left = applyDeadzone(axes.leftX, axes.leftY)
+        val right = applyDeadzone(axes.rightX, axes.rightY)
+        physicalHatButtons = if (axes.hatUsedAsLeftStick) 0 else event.hatDpadButtons()
         lastLeftTrigger = normalizeToUint8(lt)
         lastRightTrigger = normalizeToUint8(rt)
         lastLeftStickX = normalizeToInt16(left.first)
@@ -3369,6 +3460,36 @@ class NativeStreamClient(
         return mask
     }
 
+    private fun MotionEvent.rawGamepadAxes(): AndroidGamepadRawAxes =
+        AndroidGamepadRawAxes(
+            x = getAxisValue(MotionEvent.AXIS_X),
+            y = getAxisValue(MotionEvent.AXIS_Y),
+            z = getAxisValue(MotionEvent.AXIS_Z),
+            rz = getAxisValue(MotionEvent.AXIS_RZ),
+            rx = getAxisValue(MotionEvent.AXIS_RX),
+            ry = getAxisValue(MotionEvent.AXIS_RY),
+            hatX = getAxisValue(MotionEvent.AXIS_HAT_X),
+            hatY = getAxisValue(MotionEvent.AXIS_HAT_Y),
+        )
+
+    private fun MotionEvent.axisAvailability(): AndroidGamepadAxisAvailability =
+        AndroidGamepadAxisAvailability(
+            x = hasMotionAxis(MotionEvent.AXIS_X),
+            y = hasMotionAxis(MotionEvent.AXIS_Y),
+            z = hasMotionAxis(MotionEvent.AXIS_Z),
+            rz = hasMotionAxis(MotionEvent.AXIS_RZ),
+            rx = hasMotionAxis(MotionEvent.AXIS_RX),
+            ry = hasMotionAxis(MotionEvent.AXIS_RY),
+            hatX = hasMotionAxis(MotionEvent.AXIS_HAT_X),
+            hatY = hasMotionAxis(MotionEvent.AXIS_HAT_Y),
+        )
+
+    private fun MotionEvent.hasMotionAxis(axis: Int): Boolean {
+        val inputDevice = device ?: return false
+        return inputDevice.getMotionRange(axis, source) != null ||
+            inputDevice.getMotionRange(axis) != null
+    }
+
     private fun KeyEvent.isGamepadEvent(): Boolean {
         val controllerInputDevice = isControllerInputDevice()
         return (controllerInputDevice &&
@@ -3420,6 +3541,7 @@ class NativeStreamClient(
     private fun normalizeToInt16(value: Float): Int = (value.coerceIn(-1f, 1f) * 32767).roundToInt().coerceIn(-32768, 32767)
     private fun normalizeToUint8(value: Float): Int = (value.coerceIn(0f, 1f) * 255).roundToInt().coerceIn(0, 255)
     private fun normalizeTriggerAxis(value: Float): Float = if (value < 0f) ((value + 1f) / 2f).coerceIn(0f, 1f) else value.coerceIn(0f, 1f)
+    private fun Float.formatAxis(): String = String.format(Locale.US, "%.3f", this)
 }
 
 open class SimpleSdpObserver : SdpObserver {

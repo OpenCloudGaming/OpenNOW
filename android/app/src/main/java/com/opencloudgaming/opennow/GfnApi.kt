@@ -165,6 +165,93 @@ private fun hdrCapabilitiesJson(): JsonObject =
         put("staticMetadataDescriptorId", 0)
     }
 
+private fun hdrDisplayDataJson(): JsonObject =
+    buildJsonObject {
+        put("desiredContentMaxLuminance", 1000)
+        put("desiredContentMinLuminance", 0)
+        put("desiredContentMaxFrameAverageLuminance", 500)
+    }
+
+private data class StreamRequestProfile(
+    val width: Int,
+    val height: Int,
+    val hdrEnabled: Boolean,
+    val bitDepth: Int,
+    val chroma: Int,
+)
+
+private fun StreamSettings.requestProfile(): StreamRequestProfile {
+    val (width, height) = streamResolutionPixels(this)
+    val hdrEnabled = hdrEnabled
+    return StreamRequestProfile(
+        width = width,
+        height = height,
+        hdrEnabled = hdrEnabled,
+        bitDepth = if (hdrEnabled || colorQuality.name.startsWith("TenBit")) 10 else 0,
+        chroma = if (colorQuality == ColorQuality.EightBit444 || colorQuality == ColorQuality.TenBit444) 2 else 0,
+    )
+}
+
+private fun monitorSettings(profile: StreamRequestProfile, fps: Int): JsonObject =
+    buildJsonObject {
+        put("monitorId", 0)
+        put("positionX", 0)
+        put("positionY", 0)
+        put("widthInPixels", profile.width)
+        put("heightInPixels", profile.height)
+        put("framesPerSecond", fps)
+        put("sdrHdrMode", if (profile.hdrEnabled) 1 else 0)
+        put("displayData", if (profile.hdrEnabled) hdrDisplayDataJson() else JsonNull)
+        put("hdr10PlusGamingData", JsonNull)
+        put("dpi", 100)
+    }
+
+private fun requestedStreamingFeatures(settings: StreamSettings, profile: StreamRequestProfile): JsonObject =
+    buildJsonObject {
+        put("reflex", settings.enableCloudGsync || settings.fps >= 60)
+        put("bitDepth", profile.bitDepth)
+        put("cloudGsync", settings.enableCloudGsync)
+        put("enabledL4S", settings.enableL4S)
+        put("trueHdr", profile.hdrEnabled)
+        put("mouseMovementFlags", 0)
+        put("supportedHidDevices", 0)
+        put("profile", 0)
+        put("fallbackToLogicalResolution", false)
+        put("hidDevices", JsonNull)
+        put("chromaFormat", profile.chroma)
+        put("prefilterMode", 0)
+        put("prefilterSharpness", 0)
+        put("prefilterNoiseReduction", 0)
+        put("hudStreamingMode", 0)
+        put("sdrColorSpace", 2)
+        put("hdrColorSpace", if (profile.hdrEnabled) 4 else 0)
+    }
+
+private fun baseWebRtcSessionMetadata(): JsonArray = buildJsonArray {
+    add(metadataEntry("SubSessionId", UUID.randomUUID().toString()))
+    add(metadataEntry("wssignaling", "1"))
+    add(metadataEntry("GSStreamerType", "WebRTC"))
+    add(metadataEntry("networkType", "Unknown"))
+    add(metadataEntry("ClientImeSupport", "0"))
+    add(metadataEntry("surroundAudioInfo", "2"))
+}
+
+private fun webRtcSessionMetadata(settings: StreamSettings, profile: StreamRequestProfile): JsonArray = buildJsonArray {
+    baseWebRtcSessionMetadata().forEach { add(it) }
+    if (profile.width > 0 && profile.height > 0) {
+        add(
+            metadataEntry(
+                "clientPhysicalResolution",
+                buildJsonObject {
+                    put("horizontalPixels", profile.width)
+                    put("verticalPixels", profile.height)
+                }.toString(),
+            ),
+        )
+    }
+    add(metadataEntry(OPENNOW_STREAM_SETTINGS_METADATA_KEY, streamSettingsSessionSignature(settings)))
+}
+
 internal fun activeSessionMonitorSettings(session: JsonObject): JsonObject? =
     session.arr("monitorSettings")?.firstOrNull()?.asObject()
         ?: session.obj("sessionRequestData")?.arr("clientRequestMonitorSettings")?.firstOrNull()?.asObject()
@@ -181,31 +268,27 @@ private fun JsonArray.metadataValue(key: String): String? =
             ?.takeIf(String::isNotBlank)
     }
 
-internal fun buildMinimalClaimRequestBody(appId: String, deviceId: String, settings: StreamSettings? = null): JsonObject =
-    buildJsonObject {
+internal fun buildMinimalClaimRequestBody(appId: String, deviceId: String, settings: StreamSettings? = null): JsonObject {
+    val profile = settings?.requestProfile()
+    return buildJsonObject {
         put("action", 2)
         put("data", "RESUME")
         putJsonObject("sessionRequestData") {
             put("audioMode", 2)
             put("remoteControllersBitmap", 0)
-            put("sdrHdrMode", if (settings?.hdrEnabled == true) 1 else 0)
+            put("sdrHdrMode", if (profile?.hdrEnabled == true) 1 else 0)
             put("networkTestSessionId", JsonNull)
             putJsonArray("availableSupportedControllers") {}
             put("clientVersion", "30.0")
             put("deviceHashId", deviceId)
             put("internalTitle", JsonNull)
             put("clientPlatformName", "windows")
-            putJsonArray("metaData") {
-                add(metadataEntry("SubSessionId", UUID.randomUUID().toString()))
-                add(metadataEntry("wssignaling", "1"))
-                add(metadataEntry("GSStreamerType", "WebRTC"))
-                add(metadataEntry("networkType", "Unknown"))
-                add(metadataEntry("ClientImeSupport", "0"))
-                add(metadataEntry("surroundAudioInfo", "2"))
-                if (settings != null) {
-                    add(metadataEntry(OPENNOW_STREAM_SETTINGS_METADATA_KEY, streamSettingsSessionSignature(settings)))
+            if (settings != null && profile != null) {
+                putJsonArray("clientRequestMonitorSettings") {
+                    add(monitorSettings(profile, settings.fps))
                 }
             }
+            put("metaData", if (settings != null && profile != null) webRtcSessionMetadata(settings, profile) else baseWebRtcSessionMetadata())
             put("surroundAudioInfo", 0)
             put("clientTimezoneOffset", java.util.TimeZone.getDefault().getOffset(System.currentTimeMillis()))
             put("clientIdentification", "GFN-PC")
@@ -216,15 +299,19 @@ internal fun buildMinimalClaimRequestBody(appId: String, deviceId: String, setti
             put("sdkVersion", "1.0")
             put("enhancedStreamMode", 1)
             put("useOps", true)
-            put("clientDisplayHdrCapabilities", if (settings?.hdrEnabled == true) hdrCapabilitiesJson() else JsonNull)
+            put("clientDisplayHdrCapabilities", if (profile?.hdrEnabled == true) hdrCapabilitiesJson() else JsonNull)
             put("accountLinked", true)
             put("partnerCustomData", "")
             put("enablePersistingInGameSettings", true)
             put("secureRTSPSupported", false)
             put("userAge", 26)
+            if (settings != null && profile != null) {
+                put("requestedStreamingFeatures", requestedStreamingFeatures(settings, profile))
+            }
         }
         putJsonArray("metaData") {}
     }
+}
 
 private data class SessionProxyConfig(
     val normalizedUrl: String,
@@ -2160,10 +2247,7 @@ class GfnSessionRepository(
         accountLinked: Boolean,
         deviceId: String,
     ): JsonObject {
-        val (width, height) = streamResolutionPixels(settings)
-        val hdrEnabled = settings.hdrEnabled
-        val bitDepth = if (hdrEnabled || settings.colorQuality.name.startsWith("TenBit")) 10 else 0
-        val chroma = if (settings.colorQuality == ColorQuality.EightBit444 || settings.colorQuality == ColorQuality.TenBit444) 2 else 0
+        val profile = settings.requestProfile()
         return buildJsonObject {
             putJsonObject("sessionRequestData") {
                 put("appId", appId)
@@ -2178,24 +2262,13 @@ class GfnSessionRepository(
                 put("streamerVersion", 1)
                 put("clientPlatformName", "windows")
                 putJsonArray("clientRequestMonitorSettings") {
-                    add(buildJsonObject {
-                        put("monitorId", 0)
-                        put("positionX", 0)
-                        put("positionY", 0)
-                        put("widthInPixels", width)
-                        put("heightInPixels", height)
-                        put("framesPerSecond", settings.fps)
-                        put("sdrHdrMode", if (hdrEnabled) 1 else 0)
-                        put("displayData", if (hdrEnabled) hdrDisplayData() else JsonNull)
-                        put("hdr10PlusGamingData", JsonNull)
-                        put("dpi", 100)
-                    })
+                    add(monitorSettings(profile, settings.fps))
                 }
                 put("useOps", true)
                 put("audioMode", 2)
-                put("metaData", webRtcSessionMetadata(settings, width, height))
-                put("sdrHdrMode", if (hdrEnabled) 1 else 0)
-                put("clientDisplayHdrCapabilities", if (hdrEnabled) hdrCapabilities() else JsonNull)
+                put("metaData", webRtcSessionMetadata(settings, profile))
+                put("sdrHdrMode", if (profile.hdrEnabled) 1 else 0)
+                put("clientDisplayHdrCapabilities", if (profile.hdrEnabled) hdrCapabilitiesJson() else JsonNull)
                 put("surroundAudioInfo", 0)
                 put("remoteControllersBitmap", 0)
                 put("clientTimezoneOffset", java.util.TimeZone.getDefault().getOffset(System.currentTimeMillis()))
@@ -2206,56 +2279,13 @@ class GfnSessionRepository(
                 put("accountLinked", accountLinked)
                 put("enablePersistingInGameSettings", true)
                 put("userAge", 26)
-                put("requestedStreamingFeatures", requestedStreamingFeatures(settings, bitDepth, chroma, hdrEnabled))
+                put("requestedStreamingFeatures", requestedStreamingFeatures(settings, profile))
             }
         }
     }
 
     private fun buildClaimRequestBody(appId: String, deviceId: String, settings: StreamSettings): JsonObject =
         buildMinimalClaimRequestBody(appId, deviceId, settings)
-
-    private fun requestedStreamingFeatures(settings: StreamSettings, bitDepth: Int, chroma: Int, hdrEnabled: Boolean): JsonObject =
-        buildJsonObject {
-            put("reflex", settings.enableCloudGsync || settings.fps >= 60)
-            put("bitDepth", bitDepth)
-            put("cloudGsync", settings.enableCloudGsync)
-            put("enabledL4S", settings.enableL4S)
-            put("trueHdr", hdrEnabled)
-            put("mouseMovementFlags", 0)
-            put("supportedHidDevices", 0)
-            put("profile", 0)
-            put("fallbackToLogicalResolution", false)
-            put("hidDevices", JsonNull)
-            put("chromaFormat", chroma)
-            put("prefilterMode", 0)
-            put("prefilterSharpness", 0)
-            put("prefilterNoiseReduction", 0)
-            put("hudStreamingMode", 0)
-            put("sdrColorSpace", 2)
-            put("hdrColorSpace", if (hdrEnabled) 4 else 0)
-        }
-
-    private fun hdrDisplayData(): JsonObject =
-        buildJsonObject {
-            put("desiredContentMaxLuminance", 1000)
-            put("desiredContentMinLuminance", 0)
-            put("desiredContentMaxFrameAverageLuminance", 500)
-        }
-
-    private fun hdrCapabilities(): JsonObject = hdrCapabilitiesJson()
-
-    private fun webRtcSessionMetadata(settings: StreamSettings, width: Int, height: Int): JsonArray = buildJsonArray {
-        add(metadataEntry("SubSessionId", UUID.randomUUID().toString()))
-        add(metadataEntry("wssignaling", "1"))
-        add(metadataEntry("GSStreamerType", "WebRTC"))
-        add(metadataEntry("networkType", "Unknown"))
-        add(metadataEntry("ClientImeSupport", "0"))
-        if (width > 0 && height > 0) {
-            add(metadataEntry("clientPhysicalResolution", buildJsonObject { put("horizontalPixels", width); put("verticalPixels", height) }.toString()))
-        }
-        add(metadataEntry("surroundAudioInfo", "2"))
-        add(metadataEntry(OPENNOW_STREAM_SETTINGS_METADATA_KEY, streamSettingsSessionSignature(settings)))
-    }
 
     private suspend fun toSessionInfo(zone: String, base: String, payload: JsonObject, clientId: String, deviceId: String): SessionInfo {
         val status = payload.obj("requestStatus")?.int("statusCode")

@@ -915,7 +915,7 @@ internal fun ActiveSessionInfo.matchesStreamSettings(settings: StreamSettings): 
     return activeResolution == expectedResolution && activeFps == settings.fps
 }
 
-private fun parseResolutionPixelsOrNull(value: String?): Pair<Int, Int>? {
+internal fun parseResolutionPixelsOrNull(value: String?): Pair<Int, Int>? {
     val parts = value?.split("x") ?: return null
     val width = parts.getOrNull(0)?.toIntOrNull()
     val height = parts.getOrNull(1)?.toIntOrNull()
