@@ -87,6 +87,7 @@ import {
   shouldCaptureEscapeFullscreenInput,
 } from "./escapeFullscreenGuard";
 import { parseDirectLaunchArgs, type DirectLaunchArgs } from "@shared/directLaunch";
+import { getReleaseHighlightsPayload, shouldShowReleaseHighlights } from "./releaseHighlights";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -1149,6 +1150,19 @@ function registerIpcHandlers(): void {
     return fetchPrintedWasteServerMapping(app.getVersion());
   });
 
+  // Release highlights IPC handlers
+  ipcMain.handle(
+    IPC_CHANNELS.RELEASE_HIGHLIGHTS_GET,
+    async (_event, version?: string): Promise<import("@shared/gfn").ReleaseHighlightsPayload> => {
+      const targetVersion = (version ?? app.getVersion()).replace(/^v/, "");
+      return getReleaseHighlightsPayload(targetVersion);
+    },
+  );
+
+  ipcMain.handle(IPC_CHANNELS.RELEASE_HIGHLIGHTS_ACK, async (): Promise<void> => {
+    settingsManager.set("lastSeenReleaseHighlightsVersion", app.getVersion().replace(/^v/, ""));
+  });
+
   // Save window size when it changes
   mainWindow?.on("resize", () => {
     if (mainWindow && !mainWindow.isDestroyed()) {
@@ -1283,6 +1297,33 @@ app.whenReady().then(async () => {
 
   await createMainWindow();
   appUpdater.initialize();
+
+  // Fire-and-forget: check if we should show release highlights after the window loads
+  void (async () => {
+    try {
+      if (!app.isPackaged) return;
+      const current = app.getVersion().replace(/^v/, "");
+      const lastSeen = settingsManager.get("lastSeenReleaseHighlightsVersion") ?? "";
+      if (!shouldShowReleaseHighlights(current, lastSeen)) return;
+
+      // Fetch payload (may take up to 8s for GitHub, graceful fallback if offline)
+      const payload = await getReleaseHighlightsPayload(current);
+
+      // Wait for the renderer to finish loading before sending
+      const win = mainWindow;
+      if (!win || win.isDestroyed()) return;
+
+      if (win.webContents.isLoading()) {
+        await new Promise<void>((resolve) => win.webContents.once("did-finish-load", resolve));
+      }
+
+      if (!win.isDestroyed()) {
+        win.webContents.send(IPC_CHANNELS.RELEASE_HIGHLIGHTS_SHOW, payload);
+      }
+    } catch (error) {
+      console.warn("[ReleaseHighlights] Startup check failed:", error);
+    }
+  })();
 
   app.on("activate", async () => {
     if (isShutdownRequested) {

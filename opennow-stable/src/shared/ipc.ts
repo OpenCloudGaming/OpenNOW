@@ -95,6 +95,10 @@ export const IPC_CHANNELS = {
   PRINTEDWASTE_SERVER_MAPPING_FETCH: "printedwaste:server-mapping-fetch",
   // Discord Rich Presence
   DISCORD_CLEAR_ACTIVITY: "discord:clear-activity",
+  // Release highlights (What's new)
+  RELEASE_HIGHLIGHTS_GET: "release-highlights:get",
+  RELEASE_HIGHLIGHTS_ACK: "release-highlights:ack",
+  RELEASE_HIGHLIGHTS_SHOW: "release-highlights:show",
 } as const;
 
 export type IpcChannel = (typeof IPC_CHANNELS)[keyof typeof IPC_CHANNELS];

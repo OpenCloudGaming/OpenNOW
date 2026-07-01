@@ -17,6 +17,7 @@ import type {
   LoginProvider,
   MainToRendererSignalingEvent,
   NativeStreamerShortcutAction,
+  ReleaseHighlightsPayload,
   SessionInfo,
   SessionStopRequest,
   SavedAccount,
@@ -106,6 +107,7 @@ import { SettingsModalHost } from "./components/SettingsModalHost";
 import { StreamLoading } from "./components/StreamLoading";
 import { StreamView } from "./components/StreamView";
 import { QueueServerSelectModal } from "./components/QueueServerSelectModal";
+import { ReleaseHighlightsModal } from "./components/ReleaseHighlightsModal";
 import { pageTransition } from "./components/MotionProvider";
 
 const DEFAULT_STREAM_PREFERENCES = getDefaultStreamPreferences();
@@ -461,8 +463,11 @@ export function App(): JSX.Element {
     enableCloudGsync: false,
     discordRichPresence: false,
     autoCheckForUpdates: true,
+    lastSeenReleaseHighlightsVersion: "",
   });
   const [settingsLoaded, setSettingsLoaded] = useState(false);
+  const [releaseHighlightsPayload, setReleaseHighlightsPayload] = useState<ReleaseHighlightsPayload | null>(null);
+  const [releaseHighlightsIsAuto, setReleaseHighlightsIsAuto] = useState(false);
   const activeSessionProxyUrl = useMemo(
     () => getEnabledSessionProxyUrl(settings),
     [settings.sessionProxyEnabled, settings.sessionProxyUrl],
@@ -648,6 +653,15 @@ export function App(): JSX.Element {
       });
     return unsubscribe;
   }, [queueDirectLaunchRequest]);
+
+  // Subscribe to automatic release-highlights events pushed from main process
+  useEffect(() => {
+    const unsubscribe = window.openNow.onReleaseHighlightsShow((payload) => {
+      setReleaseHighlightsPayload(payload);
+      setReleaseHighlightsIsAuto(true);
+    });
+    return unsubscribe;
+  }, []);
 
   const resetStorePanels = useCallback((): void => {
     storePanelsLoadIdRef.current += 1;
@@ -4106,6 +4120,18 @@ export function App(): JSX.Element {
     setCurrentPage(pageBeforeSettings);
   }, [pageBeforeSettings]);
 
+  const handleOpenWhatsNew = useCallback((): void => {
+    // Fetch current-version highlights and open modal in manual mode (no auto-ack)
+    void window.openNow.getReleaseHighlights()
+      .then((payload) => {
+        setReleaseHighlightsPayload(payload);
+        setReleaseHighlightsIsAuto(false);
+      })
+      .catch((error) => {
+        console.warn("[App] Failed to fetch release highlights:", error);
+      });
+  }, []);
+
   const handleSettingsExitComplete = useCallback((): void => {
     setSettingsMounted(false);
   }, []);
@@ -4368,6 +4394,7 @@ export function App(): JSX.Element {
             onRunCodecTest={runCodecTest}
             onSettingChange={updateSetting}
             onClose={handleCloseSettings}
+            onOpenWhatsNew={handleOpenWhatsNew}
           />
         )}
       </SettingsModalHost>
@@ -4379,6 +4406,21 @@ export function App(): JSX.Element {
           initialQueueData={queueModalData}
           onConfirm={handleQueueModalConfirm}
           onCancel={handleQueueModalCancel}
+        />
+      )}
+      {releaseHighlightsPayload && (
+        <ReleaseHighlightsModal
+          payload={releaseHighlightsPayload}
+          version={releaseHighlightsPayload.version}
+          onDismiss={() => {
+            if (releaseHighlightsIsAuto) {
+              void window.openNow.ackReleaseHighlights().catch((err) => {
+                console.warn("[App] Failed to ack release highlights:", err);
+              });
+            }
+            setReleaseHighlightsPayload(null);
+            setReleaseHighlightsIsAuto(false);
+          }}
         />
       )}
     </div>
