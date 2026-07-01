@@ -3,6 +3,7 @@ import SwiftUI
 
 struct StreamLoadingView: View {
   @EnvironmentObject private var store: OpenNOWStore
+  var coversBottomBar = false
 
   private enum StreamPhase: Equatable {
     case queue
@@ -82,10 +83,10 @@ struct StreamLoadingView: View {
       ZStack {
         #if os(tvOS)
           Color.black
-            .ignoresSafeArea()
+            .ignoresSafeArea(edges: ignoredBackgroundEdges)
         #else
           Color(.systemBackground)
-            .ignoresSafeArea()
+            .ignoresSafeArea(edges: ignoredBackgroundEdges)
         #endif
 
         if isWide {
@@ -125,6 +126,10 @@ struct StreamLoadingView: View {
 
   private func shouldUseWideLayout(size: CGSize) -> Bool {
     size.width > size.height && size.width >= 680
+  }
+
+  private var ignoredBackgroundEdges: Edge.Set {
+    coversBottomBar ? .all : [.top, .leading, .trailing]
   }
 
   private func landscapeQueueLayout(proxy: GeometryProxy) -> some View {
@@ -569,7 +574,7 @@ private struct QueueAdPlayerCard: View {
             .onAppear {
               configurePlayer(url: url)
             }
-            .onChange(of: ad.adId) { _, _ in
+            .onChangeCompat(of: ad.adId) { _ in
               didSendFinish = false
               hasReportedPlaying = false
               isPaused = false

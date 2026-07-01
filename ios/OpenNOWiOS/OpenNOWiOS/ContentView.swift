@@ -74,7 +74,7 @@ struct MainTabView: View {
                 presentedStreamerSession = activeStream
             }
         }
-        .onChange(of: store.streamSession) { _, newValue in
+        .onChangeCompat(of: store.streamSession) { newValue in
             if let newValue {
                 Self.dismissFocusedInput()
                 presentedStreamerSession = newValue
@@ -83,7 +83,7 @@ struct MainTabView: View {
                 presentedStreamerSession = nil
             }
         }
-        .onChange(of: store.activeSession?.id) { _, newId in
+        .onChangeCompat(of: store.activeSession?.id) { newId in
             streamerAutoRetryCount = 0
             if let newId {
                 nativeStreamerBypassSessionIds = Set(nativeStreamerBypassSessionIds.filter { $0 == newId })
@@ -92,7 +92,7 @@ struct MainTabView: View {
                 presentedStreamerSession = nil
             }
         }
-        .onChange(of: presentedStreamerSession?.id) { _, newValue in
+        .onChangeCompat(of: presentedStreamerSession?.id) { newValue in
             if newValue != nil {
                 Self.dismissFocusedInput()
             }
@@ -101,28 +101,24 @@ struct MainTabView: View {
 
     private var tabSurface: some View {
         TabView {
-            HomeView()
+            tabContent {
+                HomeView()
+            }
                 .tabItem { Label("Home", systemImage: "house.fill") }
-            BrowseView()
+            tabContent {
+                BrowseView()
+            }
                 .tabItem { Label("Browse", systemImage: "square.grid.2x2.fill") }
-            LibraryView()
+            tabContent {
+                LibraryView()
+            }
                 .tabItem { Label("Library", systemImage: "books.vertical.fill") }
-            SettingsView()
+            tabContent {
+                SettingsView()
+            }
                 .tabItem { Label("Settings", systemImage: "slider.horizontal.3") }
         }
         .tint(brandAccent)
-        .overlay {
-            ZStack {
-                if store.queueOverlayVisible {
-                    StreamLoadingView()
-                        .environmentObject(store)
-                        .ignoresSafeArea()
-                        .zIndex(1000)
-                        .transition(queueOverlayTransition)
-                }
-            }
-        }
-        .animation(queueSurfaceAnimation, value: store.queueOverlayVisible)
         .safeAreaInset(edge: .top) {
             if store.canJumpBackToSession && !store.queueOverlayVisible {
                 JumpBackStatusBanner()
@@ -133,6 +129,20 @@ struct MainTabView: View {
                     .transition(.move(edge: .top).combined(with: .opacity))
             }
         }
+    }
+
+    private func tabContent<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+        content()
+            .overlay {
+                if store.queueOverlayVisible {
+                    StreamLoadingView()
+                        .environmentObject(store)
+                        .ignoresSafeArea(edges: [.top, .leading, .trailing])
+                        .zIndex(1000)
+                        .transition(queueOverlayTransition)
+                }
+            }
+            .animation(queueSurfaceAnimation, value: store.queueOverlayVisible)
     }
 
     private func streamerSurface(session: ActiveSession) -> some View {
@@ -183,6 +193,119 @@ struct MainTabView: View {
         #endif
     }
 
+}
+
+struct OpenNOWUnavailableView<Description: View, Actions: View>: View {
+    private let title: String
+    private let systemImage: String
+    private let description: Description
+    private let actions: Actions
+
+    init(
+        _ title: String,
+        systemImage: String,
+        @ViewBuilder description: () -> Description,
+        @ViewBuilder actions: () -> Actions
+    ) {
+        self.title = title
+        self.systemImage = systemImage
+        self.description = description()
+        self.actions = actions()
+    }
+
+    var body: some View {
+        if #available(iOS 17.0, tvOS 17.0, macOS 14.0, *) {
+            ContentUnavailableView {
+                Label(title, systemImage: systemImage)
+            } description: {
+                description
+            } actions: {
+                actions
+            }
+        } else {
+            VStack(spacing: 12) {
+                Image(systemName: systemImage)
+                    .font(.system(size: 42, weight: .semibold))
+                    .foregroundStyle(.secondary)
+
+                Text(title)
+                    .font(.headline)
+                    .multilineTextAlignment(.center)
+
+                description
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+
+                actions
+                    .padding(.top, 2)
+            }
+            .frame(maxWidth: .infinity, alignment: .center)
+            .padding(.horizontal, 20)
+            .padding(.vertical, 28)
+        }
+    }
+}
+
+extension OpenNOWUnavailableView where Description == EmptyView, Actions == EmptyView {
+    init(_ title: String, systemImage: String) {
+        self.init(title, systemImage: systemImage) {
+            EmptyView()
+        } actions: {
+            EmptyView()
+        }
+    }
+}
+
+extension OpenNOWUnavailableView where Actions == EmptyView {
+    init(
+        _ title: String,
+        systemImage: String,
+        @ViewBuilder description: () -> Description
+    ) {
+        self.init(title, systemImage: systemImage, description: description) {
+            EmptyView()
+        }
+    }
+}
+
+extension View {
+    @ViewBuilder
+    func onChangeCompat<Value: Equatable>(
+        of value: Value,
+        perform action: @escaping (Value) -> Void
+    ) -> some View {
+        if #available(iOS 17.0, tvOS 17.0, macOS 14.0, *) {
+            self.onChange(of: value) { _, newValue in
+                action(newValue)
+            }
+        } else {
+            self.onChange(of: value, perform: action)
+        }
+    }
+
+    @ViewBuilder
+    func searchableCompat(
+        text: Binding<String>,
+        isPresented: Binding<Bool>,
+        placement: SearchFieldPlacement,
+        prompt: String
+    ) -> some View {
+        if #available(iOS 17.0, tvOS 17.0, macOS 14.0, *) {
+            self.searchable(
+                text: text,
+                isPresented: isPresented,
+                placement: placement,
+                prompt: Text(prompt)
+            )
+        } else {
+            self.searchable(
+                text: text,
+                placement: placement,
+                prompt: Text(prompt)
+            )
+        }
+    }
 }
 
 private struct JumpBackStatusBanner: View {

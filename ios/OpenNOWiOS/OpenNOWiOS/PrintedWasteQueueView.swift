@@ -186,8 +186,6 @@ struct PrintedWasteQueueView: View {
         }
         .interactiveDismissDisabled(isLoading)
         .presentationDragIndicator(.visible)
-        .presentationCornerRadius(28)
-        .presentationBackground(.regularMaterial)
         .task {
             await loadZones()
         }
@@ -209,9 +207,7 @@ struct PrintedWasteQueueView: View {
     }
 
     private func errorState(_ message: String) -> some View {
-        ContentUnavailableView {
-            Label("Unable to Load Servers", systemImage: "exclamationmark.triangle")
-        } description: {
+        OpenNOWUnavailableView("Unable to Load Servers", systemImage: "exclamationmark.triangle") {
             Text(message)
         } actions: {
             Button("Try Again") {
@@ -223,9 +219,7 @@ struct PrintedWasteQueueView: View {
     }
 
     private var emptyState: some View {
-        ContentUnavailableView {
-            Label("No Servers Available", systemImage: "network.slash")
-        } description: {
+        OpenNOWUnavailableView("No Servers Available", systemImage: "network.slash") {
             Text("No routing data is available right now.")
         } actions: {
             Button("Launch Anyway") {
@@ -737,7 +731,7 @@ private struct PrintedWasteLaunchSheetModifier: ViewModifier {
         )
 
         content
-            .onChange(of: pendingLaunchRequest?.id) { _, _ in
+            .onChangeCompat(of: pendingLaunchRequest?.id) { _ in
                 guard !store.shouldPresentPrintedWasteQueue,
                       let request = pendingLaunchRequest else { return }
                 store.scheduleLaunch(game: request.game, zoneUrl: nil, launchOption: request.launchOption)
@@ -750,7 +744,6 @@ private struct PrintedWasteLaunchSheetModifier: ViewModifier {
                 .environmentObject(store)
                 .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.visible)
-                .presentationBackground(.regularMaterial)
             }
     }
 }

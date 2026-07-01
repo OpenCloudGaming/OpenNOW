@@ -37,7 +37,7 @@ struct OpenNOWiOSApp: App {
                 .task {
                     store.handleScenePhase(scenePhase)
                 }
-                .onChange(of: scenePhase) { _, newPhase in
+                .onChangeCompat(of: scenePhase) { newPhase in
                     store.handleScenePhase(newPhase)
                 }
         }

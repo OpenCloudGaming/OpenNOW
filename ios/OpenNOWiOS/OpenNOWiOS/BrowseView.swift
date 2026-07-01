@@ -62,7 +62,7 @@ struct BrowseView: View {
 
     private var emptySection: some View {
         Section {
-            ContentUnavailableView(
+            OpenNOWUnavailableView(
                 hasActiveFilters ? "No Matches" : "No Games",
                 systemImage: hasActiveFilters ? "line.3.horizontal.decrease.circle" : "square.grid.2x2"
             )

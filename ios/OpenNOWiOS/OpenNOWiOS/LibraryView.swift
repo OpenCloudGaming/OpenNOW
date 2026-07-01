@@ -15,7 +15,7 @@ struct LibraryView: View {
             List {
                 if store.user == nil {
                     Section {
-                        ContentUnavailableView("Signed Out", systemImage: "person.crop.circle.badge.exclamationmark")
+                        OpenNOWUnavailableView("Signed Out", systemImage: "person.crop.circle.badge.exclamationmark")
                     }
                 } else if store.libraryGames.isEmpty && store.isLoadingGames {
                     Section {
@@ -28,11 +28,11 @@ struct LibraryView: View {
                     }
                 } else if store.libraryGames.isEmpty && !store.isLoadingGames {
                     Section {
-                        ContentUnavailableView("Library Empty", systemImage: "books.vertical")
+                        OpenNOWUnavailableView("Library Empty", systemImage: "books.vertical")
                     }
                 } else if filteredGames.isEmpty {
                     Section {
-                        ContentUnavailableView("No Matches", systemImage: "magnifyingglass")
+                        OpenNOWUnavailableView("No Matches", systemImage: "magnifyingglass")
                         if hasActiveFilters {
                             Button("Clear Filters") {
                                 clearFilters()

@@ -271,7 +271,7 @@ struct HomeView: View {
                                     .gameBannerGridListRowStyle()
                             }
                         } else if store.allGames.isEmpty {
-                            ContentUnavailableView("No Games", systemImage: "square.grid.2x2")
+                            OpenNOWUnavailableView("No Games", systemImage: "square.grid.2x2")
                         } else {
                             ForEach(gameBannerRows(for: Array(store.allGames.prefix(40)))) { row in
                                 GameBannerRowView(
@@ -294,7 +294,7 @@ struct HomeView: View {
                 }
             }
             .listStyle(.insetGrouped)
-            .searchable(
+            .searchableCompat(
                 text: $store.searchText,
                 isPresented: $isSearchPresented,
                 placement: .navigationBarDrawer(displayMode: .automatic),
@@ -338,7 +338,7 @@ struct HomeView: View {
                         .gameBannerGridListRowStyle()
                 }
             } else if homeSearchResults.isEmpty {
-                ContentUnavailableView("No Matches", systemImage: "magnifyingglass")
+                OpenNOWUnavailableView("No Matches", systemImage: "magnifyingglass")
             } else {
                 ForEach(gameBannerRows(for: Array(homeSearchResults.prefix(40)))) { row in
                     GameBannerRowView(

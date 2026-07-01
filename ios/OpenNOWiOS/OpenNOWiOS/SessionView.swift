@@ -14,7 +14,7 @@ struct SessionView: View {
                     endSessionSection
                 } else {
                     Section {
-                        ContentUnavailableView("No Active Session", systemImage: "dot.radiowaves.left.and.right")
+                        OpenNOWUnavailableView("No Active Session", systemImage: "dot.radiowaves.left.and.right")
                         if store.canJumpBackToSession {
                             Button {
                     store.jumpBackToSession()

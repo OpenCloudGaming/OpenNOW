@@ -102,19 +102,19 @@ struct SettingsView: View {
                 .navigationTitle(category.title)
                 .navigationBarTitleDisplayMode(.inline)
             }
-            .onChange(of: store.settings) { _, _ in
+            .onChangeCompat(of: store.settings) { _ in
                 store.persistSettings()
             }
-            .onChange(of: store.settings.queueLiveActivitiesEnabled) { _, _ in
+            .onChangeCompat(of: store.settings.queueLiveActivitiesEnabled) { _ in
                 store.refreshTrackedSessionSurface()
             }
             .onAppear {
                 enforceAvailableResolution()
             }
-            .onChange(of: store.settings.preferredAspectRatio) { _, _ in
+            .onChangeCompat(of: store.settings.preferredAspectRatio) { _ in
                 enforceAvailableResolution()
             }
-            .onChange(of: currentMembershipTier ?? "") { _, _ in
+            .onChangeCompat(of: currentMembershipTier ?? "") { _ in
                 enforceAvailableResolution()
             }
             .confirmationDialog("Reset settings?", isPresented: $showingResetConfirmation, titleVisibility: .visible) {
@@ -341,11 +341,12 @@ struct SettingsView: View {
                     Text("Loading connections")
                 }
             } else if store.accountConnectors.isEmpty {
-                ContentUnavailableView(
+                OpenNOWUnavailableView(
                     "No Connections Found",
-                    systemImage: "link.badge.plus",
-                    description: Text("Refresh to load supported store connections for this account.")
-                )
+                    systemImage: "link.badge.plus"
+                ) {
+                    Text("Refresh to load supported store connections for this account.")
+                }
                 .frame(maxWidth: .infinity)
             } else {
                 ForEach(store.accountConnectors.prefix(8)) { connector in
