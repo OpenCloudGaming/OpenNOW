@@ -53,6 +53,8 @@ interface SettingsPageProps {
   onRunCodecTest: () => Promise<void>;
   onSettingChange: <K extends keyof Settings>(key: K, value: Settings[K]) => void;
   onClose: () => void;
+  /** Called when the user clicks "What's new" in the About section */
+  onOpenWhatsNew?: () => void;
 }
 
 type SettingsNavItem = {
@@ -671,7 +673,7 @@ function saveCachedEntitledResolutions(cache: EntitledResolutionsCache): void {
 
 /* ── Component ────────────────────────────────────────────────────── */
 
-export function SettingsPage({ settings, regions, onSettingChange, codecResults, codecTesting, onRunCodecTest, onClose }: SettingsPageProps): JSX.Element {
+export function SettingsPage({ settings, regions, onSettingChange, codecResults, codecTesting, onRunCodecTest, onClose, onOpenWhatsNew }: SettingsPageProps): JSX.Element {
   const { locale, availableLocales, setLocale, t } = useTranslation();
   const [savedIndicator, setSavedIndicator] = useState(false);
   const [activeSection, setActiveSection] = useState<SettingsSectionId>("stream");
@@ -4308,6 +4310,21 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
 	                  <Trash2 size={16} />
 	                  {t("settings.about.deleteCache")}
 	                </button>
+              </div>
+
+              <div className="settings-row">
+                <label className="settings-label">
+                  {t("settings.about.whatsNew")}
+                  <span className="settings-hint">{t("settings.about.whatsNewHint")}</span>
+                </label>
+                <button
+                  type="button"
+                  className="settings-export-logs-btn"
+                  onClick={() => onOpenWhatsNew?.()}
+                >
+                  <Info size={16} />
+                  {t("settings.about.whatsNew")}
+                </button>
               </div>
             </div>
           </section>

@@ -660,6 +660,8 @@
       "deleteCacheConfirm": "Are you sure you want to delete all cached data? This will clear all game metadata, images, and library information.",
       "cacheCleared": "Cache cleared successfully. The app will refresh on next startup.",
       "deleteCacheFailed": "Failed to delete cache. Please try again.",
+      "whatsNew": "What's new",
+      "whatsNewHint": "View the release notes for the current version of OpenNOW.",
       "updateStatus": {
         "packagedBuildsOnly": "Packaged builds only",
         "checking": "Checking",
@@ -785,5 +787,13 @@
     "queueAdPlayTimeout": "Ad play timeout",
     "queueAdVideoStuck": "Ad video is stuck",
     "queueAdUrlLoad": "Error loading url"
+  },
+  "releaseHighlights": {
+    "kicker": "What's new",
+    "title": "OpenNOW {{version}}",
+    "gotIt": "Got it",
+    "viewOnGitHub": "View full release on GitHub",
+    "unavailable": "Release notes couldn't be loaded right now.",
+    "settingsLink": "What's new"
   }
 }

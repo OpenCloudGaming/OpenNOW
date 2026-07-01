@@ -139,6 +139,8 @@ export interface Settings {
   autoCheckForUpdates: boolean;
   /** When true, pressing Escape will exit fullscreen; when false Escape is sent to the game while pointer-locked */
   allowEscapeToExitFullscreen?: boolean;
+  /** Last version for which the release highlights modal was acknowledged (empty = never) */
+  lastSeenReleaseHighlightsVersion: string;
 }
 
 const defaultStopShortcut = "Ctrl+Shift+Q";
@@ -231,6 +233,7 @@ const DEFAULT_SETTINGS: Settings = {
   discordRichPresence: false,
   autoCheckForUpdates: true,
   allowEscapeToExitFullscreen: false,
+  lastSeenReleaseHighlightsVersion: "",
 };
 
 export class SettingsManager {

@@ -4,6 +4,7 @@ import type { AppUpdater, ProgressInfo, UpdateDownloadedEvent, UpdateInfo } from
 
 import { getAppBuildInfo } from "./appBuildInfo";
 import { getLinuxUpdaterSupport } from "./linuxUpdaterSupport";
+import { writeCacheEntry } from "./releaseHighlights";
 import type { AppUpdaterState } from "@shared/gfn";
 
 const { autoUpdater } = electronUpdater;
@@ -285,6 +286,23 @@ export function createAppUpdaterController(options: AppUpdaterControllerOptions)
   updater.on("update-downloaded", (info: UpdateDownloadedEvent) => {
     downloadedUpdateInfo = info;
     const downloadedVersion = getUpdateVersion(info) ?? availableUpdateInfo?.version;
+
+    // Cache the release notes for offline fallback in the What's New modal
+    const releaseNotesRaw = (info as UpdateDownloadedEvent & { releaseNotes?: unknown }).releaseNotes;
+    if (downloadedVersion && releaseNotesRaw) {
+      let body: string | null = null;
+      if (typeof releaseNotesRaw === "string") {
+        body = releaseNotesRaw;
+      } else if (Array.isArray(releaseNotesRaw)) {
+        body = (releaseNotesRaw as Array<{ note?: string | null }>)
+          .map((entry) => entry?.note ?? "")
+          .filter(Boolean)
+          .join("\n\n");
+      }
+      if (body) {
+        writeCacheEntry(downloadedVersion.replace(/^v/, ""), body);
+      }
+    }
     updateState({
       status: "downloaded",
       availableVersion: downloadedVersion,

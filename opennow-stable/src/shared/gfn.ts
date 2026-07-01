@@ -319,6 +319,8 @@ export interface Settings {
   autoCheckForUpdates: boolean;
   /** When true, pressing Escape will exit fullscreen; when false Escape is sent to the game while pointer-locked */
   allowEscapeToExitFullscreen?: boolean;
+  /** Last version for which the release highlights modal was acknowledged (empty = never) */
+  lastSeenReleaseHighlightsVersion: string;
 }
 
 export const DEFAULT_STREAM_PREFERENCES: Readonly<Pick<Settings, "codec" | "colorQuality">> = Object.freeze({
@@ -1251,6 +1253,18 @@ export type AppUpdaterStatus =
   | "downloaded"
   | "error";
 
+/** Payload sent to the renderer for the What's New modal */
+export interface ReleaseHighlightsPayload {
+  /** App version these notes are for (e.g. "0.4.2") */
+  version: string;
+  /** Display title — defaults to "OpenNOW v{version}" */
+  title: string;
+  /** Release notes in markdown format */
+  bodyMarkdown: string;
+  /** Where the body came from */
+  source: "github" | "updater-cache" | "fallback";
+}
+
 export interface AppUpdaterProgress {
   percent: number;
   transferred: number;
@@ -1422,6 +1436,15 @@ export interface OpenNowApi {
   getThanksData(): Promise<ThankYouDataResult>;
   /** Clear Discord rich presence activity */
   clearDiscordActivity(): Promise<void>;
+
+  /** Fetch release highlights payload for a given version (defaults to current) */
+  getReleaseHighlights(version?: string): Promise<ReleaseHighlightsPayload>;
+
+  /** Mark the current version's highlights as acknowledged */
+  ackReleaseHighlights(): Promise<void>;
+
+  /** Subscribe to automatic release-highlights show events from main process */
+  onReleaseHighlightsShow(listener: (payload: ReleaseHighlightsPayload) => void): () => void;
 }
 
 export interface ScreenshotSaveRequest {
