@@ -37,6 +37,55 @@ struct AuthSession: Codable, Equatable {
     let user: UserProfile
 }
 
+struct SavedAccount: Identifiable, Codable, Equatable {
+    var id: String { userId }
+    let userId: String
+    let displayName: String
+    let email: String?
+    let membershipTier: String
+    let providerCode: String
+
+    init(
+        userId: String,
+        displayName: String,
+        email: String?,
+        membershipTier: String,
+        providerCode: String
+    ) {
+        self.userId = userId
+        self.displayName = displayName
+        self.email = email
+        self.membershipTier = membershipTier
+        self.providerCode = providerCode
+    }
+
+    init(session: AuthSession) {
+        userId = session.user.userId
+        displayName = session.user.displayName
+        email = session.user.email
+        membershipTier = session.user.membershipTier
+        providerCode = session.provider.code
+    }
+}
+
+struct PersistedAuthState: Codable, Equatable {
+    var sessions: [AuthSession] = []
+    var activeUserId: String?
+    var selectedProvider: LoginProvider?
+
+    var activeSession: AuthSession? {
+        if let activeUserId,
+           let session = sessions.first(where: { $0.user.userId == activeUserId }) {
+            return session
+        }
+        return sessions.first
+    }
+
+    var savedAccounts: [SavedAccount] {
+        sessions.map(SavedAccount.init(session:))
+    }
+}
+
 struct CloudGame: Identifiable, Codable, Equatable {
     let id: String
     let title: String
@@ -108,14 +157,57 @@ struct RemoteSessionCandidate: Identifiable, Codable, Equatable {
     let appId: String?
     let status: Int
     let serverIp: String?
+    let streamSettingsSignature: String?
+}
+
+struct StorageAddon: Codable, Equatable {
+    let type: String
+    let sizeGb: Double?
+    let usedGb: Double?
+    let regionName: String?
+    let regionCode: String?
+    let status: String?
+    let subType: String?
+    let autoPayEnabled: Bool?
+
+    var usageFraction: Double? {
+        guard let sizeGb, let usedGb, sizeGb > 0 else { return nil }
+        return min(max(usedGb / sizeGb, 0), 1)
+    }
 }
 
 struct SubscriptionSnapshot: Codable, Equatable {
     let membershipTier: String
+    let subscriptionType: String?
+    let subscriptionSubType: String?
     let isGamePlayAllowed: Bool
     let isUnlimited: Bool
     let remainingHours: Double
     let totalHours: Double
+    let storageAddon: StorageAddon?
+}
+
+struct AccountConnector: Identifiable, Codable, Equatable {
+    var id: String { store }
+    let store: String
+    let label: String
+    let supported: Bool
+    let required: Bool
+    let userDisplayName: String?
+    let userIdentifier: String?
+    let expiresInSeconds: Int?
+    let syncedGameCount: Int?
+    let syncState: String?
+    let syncDate: String?
+
+    var isLinked: Bool {
+        userDisplayName?.isEmpty == false ||
+            userIdentifier?.isEmpty == false ||
+            expiresInSeconds != nil ||
+            syncedGameCount != nil ||
+            syncState?.isEmpty == false ||
+            syncDate?.isEmpty == false
+    }
 }
 
 enum StreamColorQuality: String, Codable, CaseIterable, Identifiable {
@@ -305,6 +397,7 @@ struct AppSettings: Codable, Equatable {
     var preferredFPS: Int
     var preferredQuality: String
     var preferredCodec: String
+    var nativeStreamerEnabled: Bool = false
     var preferredColorQuality: String = StreamColorQuality.eightBit420.rawValue
     var hdrEnabled: Bool = false
     var maxBitrateMbps: Int
@@ -319,6 +412,7 @@ struct AppSettings: Codable, Equatable {
     var keepMicEnabled: Bool
     var showStatsOverlay: Bool
     var hideServerSelector: Bool
+    var nerdMode: Bool = false
     var queueLiveActivitiesEnabled: Bool
     var selectedProviderIdpId: String
     var fortnitePrefersNativeTouch: Bool
@@ -334,6 +428,7 @@ struct AppSettings: Codable, Equatable {
         case preferredFPS
         case preferredQuality
         case preferredCodec
+        case nativeStreamerEnabled
         case preferredColorQuality
         case hdrEnabled
         case maxBitrateMbps
@@ -348,6 +443,7 @@ struct AppSettings: Codable, Equatable {
         case keepMicEnabled
         case showStatsOverlay
         case hideServerSelector
+        case nerdMode
         case queueLiveActivitiesEnabled
         case selectedProviderIdpId
         case fortnitePrefersNativeTouch
@@ -363,6 +459,7 @@ struct AppSettings: Codable, Equatable {
         preferredFPS: Int,
         preferredQuality: String,
         preferredCodec: String,
+        nativeStreamerEnabled: Bool = false,
         maxBitrateMbps: Int,
         keyboardLayout: String,
         gameLanguage: String,
@@ -383,6 +480,7 @@ struct AppSettings: Codable, Equatable {
         self.preferredFPS = preferredFPS
         self.preferredQuality = preferredQuality
         self.preferredCodec = preferredCodec
+        self.nativeStreamerEnabled = nativeStreamerEnabled
         self.maxBitrateMbps = maxBitrateMbps
         self.keyboardLayout = keyboardLayout
         self.gameLanguage = gameLanguage
@@ -391,6 +489,7 @@ struct AppSettings: Codable, Equatable {
         self.keepMicEnabled = keepMicEnabled
         self.showStatsOverlay = showStatsOverlay
         self.hideServerSelector = hideServerSelector
+        self.nerdMode = false
         self.queueLiveActivitiesEnabled = queueLiveActivitiesEnabled
         self.selectedProviderIdpId = selectedProviderIdpId
         self.fortnitePrefersNativeTouch = fortnitePrefersNativeTouch
@@ -407,6 +506,7 @@ struct AppSettings: Codable, Equatable {
         preferredFPS = try container.decodeIfPresent(Int.self, forKey: .preferredFPS) ?? 60
         preferredQuality = try container.decodeIfPresent(String.self, forKey: .preferredQuality) ?? "Balanced"
         preferredCodec = try container.decodeIfPresent(String.self, forKey: .preferredCodec) ?? "Auto"
+        nativeStreamerEnabled = try container.decodeIfPresent(Bool.self, forKey: .nativeStreamerEnabled) ?? false
         preferredColorQuality = try container.decodeIfPresent(String.self, forKey: .preferredColorQuality) ?? StreamColorQuality.eightBit420.rawValue
         hdrEnabled = try container.decodeIfPresent(Bool.self, forKey: .hdrEnabled) ?? false
         maxBitrateMbps = try container.decodeIfPresent(Int.self, forKey: .maxBitrateMbps) ?? 0
@@ -421,6 +521,7 @@ struct AppSettings: Codable, Equatable {
         keepMicEnabled = try container.decodeIfPresent(Bool.self, forKey: .keepMicEnabled) ?? false
         showStatsOverlay = try container.decodeIfPresent(Bool.self, forKey: .showStatsOverlay) ?? true
         hideServerSelector = try container.decodeIfPresent(Bool.self, forKey: .hideServerSelector) ?? false
+        nerdMode = try container.decodeIfPresent(Bool.self, forKey: .nerdMode) ?? false
         queueLiveActivitiesEnabled = try container.decodeIfPresent(Bool.self, forKey: .queueLiveActivitiesEnabled) ?? true
         selectedProviderIdpId = try container.decodeIfPresent(String.self, forKey: .selectedProviderIdpId)
             ?? "PDiAhv2kJTFeQ7WOPqiQ2tRZ7lGhR2X11dXvM4TZSxg"
@@ -869,6 +970,27 @@ enum StreamSettingsResolver {
         #endif
     }
 
+    static func sessionSignature(for settings: AppSettings) -> String {
+        sessionSignature(for: settings, profile: profile(for: settings, membershipTier: nil))
+    }
+
+    static func sessionSignature(for settings: AppSettings, profile: StreamVideoProfile) -> String {
+        let color = colorQuality(for: settings).rawValue
+        return [
+            "opennow-ios-stream-v1",
+            "res=\(profile.width)x\(profile.height)",
+            "fps=\(profile.fps)",
+            "bitrate=\(profile.maxBitrateKbps / 1000)",
+            "codec=\(settings.preferredCodec.uppercased())",
+            "color=\(color)",
+            "hdr=\(settings.hdrEnabled ? 1 : 0)",
+            "l4s=\(settings.enableL4S ? 1 : 0)",
+            "gsync=\(settings.enableCloudGsync ? 1 : 0)",
+            "keyboard=\(settings.keyboardLayout.trimmingCharacters(in: .whitespacesAndNewlines))",
+            "language=\(settings.gameLanguage.trimmingCharacters(in: .whitespacesAndNewlines))"
+        ].joined(separator: ";")
+    }
+
     static func profile(
         for settings: AppSettings,
         nativeBounds: CGRect,
@@ -950,14 +1072,14 @@ enum StreamSettingsResolver {
     }
 
     static func plan(for membershipTier: String?) -> StreamResolutionPlan {
-        let normalized = (membershipTier ?? "")
-            .uppercased()
-            .components(separatedBy: CharacterSet.alphanumerics.inverted)
-            .joined()
+        let normalized = normalizedMembershipKey(membershipTier)
         if normalized.contains("ULTIMATE") || normalized.contains("RTX3080") {
             return .ultimate
         }
-        if normalized.contains("PRIORITY") || normalized.contains("PERFORMANCE") || normalized.contains("FOUNDERS") {
+        if normalized.contains("PREMIUM")
+            || normalized.contains("PRIORITY")
+            || normalized.contains("PERFORMANCE")
+            || normalized.contains("FOUNDERS") {
             return .priority
         }
         return .free
@@ -1102,8 +1224,11 @@ private enum GFNConstants {
     static let clientTokenEndpoint = URL(string: "https://login.nvidia.com/client_token")!
     static let mesEndpoint = URL(string: "https://mes.geforcenow.com/v4/subscriptions")!
     static let graphQL = "https://games.geforce.com/graphql"
+    static let accountLinkingBase = URL(string: "https://als.geforcenow.com/v1")!
 
     static let clientId = "ZU7sPN-miLujMD95LfOQ453IB0AtjM8sMyvgJ9wCXEQ"
+    static let accountLinkingClientId = "gfn-pc"
+    static let accountLinkingRedirectUri = "http://localhost:2259/"
     static let scopes = "openid consent email tk_client age"
     static let defaultProvider = LoginProvider(
         idpId: "PDiAhv2kJTFeQ7WOPqiQ2tRZ7lGhR2X11dXvM4TZSxg",
@@ -1121,6 +1246,17 @@ private enum GFNConstants {
     static let oauthCallbackScheme = "opennowios"
     static let oauthRedirectPort: UInt16 = 2259
     static let sessionModifyActionAdUpdate = 6
+    static let streamSettingsMetadataKey = "OpenNOWStreamSettingsSignature"
+    static let storageAddonType = "STORAGE"
+    static let storageAddonSubType = "PERMANENT_STORAGE"
+    static let totalStorageSizeAttribute = "TOTAL_STORAGE_SIZE_IN_GB"
+    static let usedStorageSizeAttribute = "USED_STORAGE_SIZE_IN_GB"
+    static let storageMetroRegionAttribute = "STORAGE_METRO_REGION"
+    static let storageMetroRegionNameAttribute = "STORAGE_METRO_REGION_NAME"
+    static let storageManagementURL = URL(string: "https://gfn.link/cloudstorage")!
+    static let storageResetURL = URL(string: "https://gfn.link/resetstorage")!
+    static let storageAddURL = URL(string: "https://gfn.link/addstorage")!
+    static let accountHelpURL = URL(string: "https://gfn.link/5399")!
 }
 
 private enum TVAuthDiagnostics {
@@ -1242,6 +1378,185 @@ private func validEndpointHost(_ host: String?) -> String? {
         return nil
     }
     return normalized
+}
+
+func normalizeGameStore(_ store: String) -> String {
+    store
+        .uppercased()
+        .components(separatedBy: CharacterSet(charactersIn: " -"))
+        .filter { !$0.isEmpty }
+        .joined(separator: "_")
+}
+
+func gameStoreDisplayName(_ store: String) -> String {
+    let parts = store
+        .split(separator: ",")
+        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        .filter { !$0.isEmpty }
+    let normalizedParts = parts.isEmpty ? [store.trimmingCharacters(in: .whitespacesAndNewlines)] : parts
+    let labels = normalizedParts.map { part -> String in
+        switch normalizeGameStore(part) {
+        case "EPIC", "EGS", "EPIC_GAMES_STORE":
+            return "Epic"
+        case "STEAM":
+            return "Steam"
+        case "XBOX", "XBOX_GAME_PASS", "GAME_PASS":
+            return "Xbox"
+        case "MICROSOFT", "MICROSOFT_STORE":
+            return "Microsoft Store"
+        case "UBISOFT", "UBISOFT_CONNECT":
+            return "Ubisoft Connect"
+        case "EA", "EA_APP", "ORIGIN":
+            return "EA app"
+        case "GOG", "GOG_COM":
+            return "GOG"
+        case "BATTLENET", "BATTLE_NET", "BLIZZARD":
+            return "Battle.net"
+        case "RIOT", "RIOT_CLIENT", "RIOT_GAMES":
+            return "Riot"
+        case "ROCKSTAR", "ROCKSTAR_GAMES", "ROCKSTAR_GAMES_LAUNCHER":
+            return "Rockstar"
+        case "GOOGLE_PLAY", "PLAY_STORE", "ANDROID":
+            return "Google Play"
+        case "AMAZON", "AMAZON_GAMES":
+            return "Amazon Games"
+        default:
+            let words = part
+                .replacingOccurrences(of: "_", with: " ")
+                .lowercased()
+                .split(separator: " ")
+                .map { String($0.prefix(1)).uppercased() + String($0.dropFirst()) }
+            return words.joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? "Unknown"
+                : words.joined(separator: " ")
+        }
+    }
+    return Array(Set(labels)).sorted().joined(separator: " / ")
+}
+
+func gameMetadataDisplayLabel(_ rawValue: String) -> String {
+    let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return "" }
+
+    var normalized = trimmed
+    let uppercase = normalized.uppercased()
+    if uppercase.hasPrefix("GFN_") || uppercase.hasPrefix("GAME_") {
+        normalized = String(normalized.dropFirst(4))
+    }
+
+    normalized = normalized
+        .replacingOccurrences(of: "_", with: " ")
+        .replacingOccurrences(of: "-", with: " ")
+    normalized = normalized
+        .split(whereSeparator: { $0.isWhitespace })
+        .map(String.init)
+        .joined(separator: " ")
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+
+    let key = normalized
+        .lowercased()
+        .components(separatedBy: CharacterSet.alphanumerics.inverted)
+        .filter { !$0.isEmpty }
+        .joined()
+    if key.isEmpty || key == "na" || key == "unknown" || key == "none" {
+        return ""
+    }
+
+    switch key {
+    case "readytoplay":
+        return "Ready to Play"
+    case "installtoplay":
+        return "Install to Play"
+    case "fullgame":
+        return "Full Game"
+    case "singleplayer":
+        return "Single-player"
+    case "multiplayer":
+        return "Multiplayer"
+    case "mousekeyboard", "keyboardmouse":
+        return "Mouse and Keyboard"
+    case "gamepad":
+        return "Gamepad"
+    case "dualshock4", "dualshock4gamepad":
+        return "DualShock 4"
+    case "dualsense", "dualsensegamepad":
+        return "DualSense"
+    case "nvidia":
+        return "NVIDIA"
+    default:
+        break
+    }
+
+    let alwaysUppercase: Set<String> = ["pc", "vr", "dlc", "hdr", "rtx", "fps", "pvp", "pve", "mmo", "rpg"]
+    return normalized
+        .split(separator: " ")
+        .map { word -> String in
+            let lower = word.lowercased()
+            if alwaysUppercase.contains(lower) {
+                return lower.uppercased()
+            }
+            if lower == "ios" {
+                return "iOS"
+            }
+            if lower == "macos" {
+                return "macOS"
+            }
+            return String(lower.prefix(1)).uppercased() + String(lower.dropFirst())
+        }
+        .joined(separator: " ")
+}
+
+func gameMetadataDisplayLabels(_ rawValues: [String]) -> [String] {
+    var seen: Set<String> = []
+    var labels: [String] = []
+    for rawValue in rawValues {
+        let parts = rawValue
+            .split(separator: ",")
+            .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        for part in parts.isEmpty ? [rawValue] : parts {
+            let label = gameMetadataDisplayLabel(part)
+            guard !isNoisyGameMetadataLabel(label) else { continue }
+            let key = label.lowercased()
+            guard !seen.contains(key) else { continue }
+            seen.insert(key)
+            labels.append(label)
+        }
+    }
+    return labels
+}
+
+private func isNoisyGameMetadataLabel(_ label: String) -> Bool {
+    let normalized = label
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+        .lowercased()
+        .components(separatedBy: CharacterSet.alphanumerics.inverted)
+        .filter { !$0.isEmpty }
+        .joined()
+    return normalized.isEmpty || normalized == "na" || normalized == "n/a" || normalized == "unknown" || normalized == "none"
+}
+
+private func normalizedMembershipKey(_ membershipTier: String?) -> String {
+    (membershipTier ?? "")
+        .uppercased()
+        .components(separatedBy: CharacterSet.alphanumerics.inverted)
+        .joined()
+}
+
+private func membershipTierIsFree(_ membershipTier: String?) -> Bool {
+    let normalized = normalizedMembershipKey(membershipTier)
+    return normalized.isEmpty || normalized == "FREE" || normalized.contains("FREETIER")
+}
+
+private func membershipTierRequiresPaid(_ membershipTier: String?) -> Bool {
+    let normalized = normalizedMembershipKey(membershipTier)
+    guard !normalized.isEmpty else { return false }
+    return normalized.contains("PREMIUM")
+        || normalized.contains("PRIORITY")
+        || normalized.contains("PERFORMANCE")
+        || normalized.contains("FOUNDERS")
+        || normalized.contains("ULTIMATE")
+        || normalized.contains("RTX3080")
 }
 
 typealias TVOSOAuthPresenter = @MainActor @Sendable (_ url: URL, _ callbackScheme: String) async throws -> URL
@@ -2135,14 +2450,275 @@ private actor GFNAPIClient {
         let total = (json["totalTimeInMinutes"] as? Double ?? 0) / 60.0
         let state = json["currentSubscriptionState"] as? [String: Any]
         let allowed = state?["isGamePlayAllowed"] as? Bool ?? true
-        let isUnlimited = (json["subType"] as? String) == "UNLIMITED"
+        let subscription = (json["subscription"] as? [String: Any]) ?? json
+        let subscriptionType = json["type"] as? String
+        let subscriptionSubType = json["subType"] as? String
+        let isUnlimited = subscriptionSubType == "UNLIMITED"
+        let storageAddon = ((subscription["addons"] as? [[String: Any]]) ?? [])
+            .first(where: Self.isActivePersistentStorageAddon)
+            .map(Self.parseStorageAddon)
         return SubscriptionSnapshot(
             membershipTier: tier,
+            subscriptionType: subscriptionType,
+            subscriptionSubType: subscriptionSubType,
             isGamePlayAllowed: allowed,
             isUnlimited: isUnlimited,
             remainingHours: remaining,
-            totalHours: total
+            totalHours: total,
+            storageAddon: storageAddon
         )
+    }
+
+    private static func parseStorageAddon(_ addon: [String: Any]) -> StorageAddon {
+        let attributes = ((addon["attributes"] as? [[String: Any]]) ?? [])
+            .reduce(into: [String: String]()) { result, attribute in
+                guard let key = attribute["key"] as? String else { return }
+                if let text = attribute["textValue"] as? String {
+                    result[key] = text
+                } else if let number = attribute["numberValue"] {
+                    result[key] = "\(number)"
+                }
+            }
+        return StorageAddon(
+            type: (addon["type"] as? String) ?? GFNConstants.storageAddonType,
+            sizeGb: Double(attributes[GFNConstants.totalStorageSizeAttribute] ?? ""),
+            usedGb: Double(attributes[GFNConstants.usedStorageSizeAttribute] ?? ""),
+            regionName: attributes[GFNConstants.storageMetroRegionNameAttribute],
+            regionCode: attributes[GFNConstants.storageMetroRegionAttribute],
+            status: addon["status"] as? String,
+            subType: addon["subType"] as? String,
+            autoPayEnabled: addon["autoPayEnabled"] as? Bool
+        )
+    }
+
+    private static func isActivePersistentStorageAddon(_ addon: [String: Any]) -> Bool {
+        (addon["type"] as? String) == GFNConstants.storageAddonType &&
+            (addon["subType"] as? String) == GFNConstants.storageAddonSubType &&
+            (addon["status"] as? String) == "OK"
+    }
+
+    func fetchAccountConnectors(session: AuthSession) async throws -> [AccountConnector] {
+        let token = session.tokens.idToken ?? session.tokens.accessToken
+        let query = """
+        query GetAccountConnectors($locale: String!, $stringsKey: [String]!) {
+          appStoreDefinitions(language: $locale) {
+            store
+            label
+            sortOrder
+            features {
+              __typename
+              ... on AccountLinkingSso {
+                supported
+              }
+              ... on AccountGamesSyncing {
+                supported
+              }
+            }
+            accountLinkingMetadata {
+              isSupported
+              isRequired
+              label
+            }
+          }
+          userAccount {
+            storesData {
+              store
+              accountLinkingData {
+                userDisplayName
+                expiresIn
+                userIdentifier
+                accountSyncingData {
+                  totalNumberOfSyncedGfnGames
+                  syncState
+                  syncDate
+                }
+              }
+            }
+          }
+          clientStrings(language: $locale, keys: $stringsKey)
+        }
+        """
+        let payload: [String: Any] = [
+            "query": query,
+            "variables": [
+                "locale": "en_US",
+                "stringsKey": []
+            ] as [String: Any]
+        ]
+        let body = try JSONSerialization.data(withJSONObject: payload)
+        let (data, response) = try await request(
+            url: URL(string: GFNConstants.graphQL)!,
+            method: "POST",
+            headers: Self.desktopGraphQLHeaders(token: token, contentType: "application/json; charset=utf-8"),
+            body: body
+        )
+        guard response.statusCode == 200 else {
+            let text = String(data: data, encoding: .utf8) ?? "unknown"
+            throw NSError(domain: "OpenNOW.AccountConnectors", code: response.statusCode, userInfo: [NSLocalizedDescriptionKey: text])
+        }
+        let json = try parseJSON(data)
+        if let errors = json["errors"] as? [[String: Any]], !errors.isEmpty {
+            let message = errors.compactMap { $0["message"] as? String }.joined(separator: "\n")
+            throw NSError(
+                domain: "OpenNOW.AccountConnectors",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: message.isEmpty ? "Account connector query failed" : message]
+            )
+        }
+        let dataObject = json["data"] as? [String: Any] ?? [:]
+        let userStores = (((dataObject["userAccount"] as? [String: Any])?["storesData"] as? [[String: Any]]) ?? [])
+            .reduce(into: [String: [String: Any]]()) { result, store in
+                guard let storeId = store["store"] as? String else { return }
+                result[normalizeGameStore(storeId)] = store
+            }
+        var connectors = (((dataObject["appStoreDefinitions"] as? [[String: Any]]) ?? []).compactMap { raw -> AccountConnector? in
+            guard let storeId = raw["store"] as? String, !storeId.isEmpty else { return nil }
+            let metadata = raw["accountLinkingMetadata"] as? [String: Any]
+            let featureSupported = ((raw["features"] as? [[String: Any]]) ?? []).contains { feature in
+                (feature["supported"] as? Bool) == true &&
+                    ((feature["__typename"] as? String) == "AccountLinkingSso" ||
+                     (feature["__typename"] as? String) == "AccountGamesSyncing")
+            }
+            let supported = (metadata?["isSupported"] as? Bool) == true || featureSupported
+            let normalizedStoreId = normalizeGameStore(storeId)
+            guard supported || userStores[normalizedStoreId] != nil else { return nil }
+            let linked = userStores[normalizedStoreId]?["accountLinkingData"] as? [String: Any]
+            let sync = linked?["accountSyncingData"] as? [String: Any]
+            return AccountConnector(
+                store: storeId,
+                label: (metadata?["label"] as? String) ?? (raw["label"] as? String) ?? gameStoreDisplayName(storeId),
+                supported: supported,
+                required: metadata?["isRequired"] as? Bool ?? false,
+                userDisplayName: linked?["userDisplayName"] as? String,
+                userIdentifier: linked?["userIdentifier"] as? String,
+                expiresInSeconds: Self.toPositiveInt(linked?["expiresIn"]),
+                syncedGameCount: Self.toPositiveInt(sync?["totalNumberOfSyncedGfnGames"]),
+                syncState: sync?["syncState"] as? String,
+                syncDate: sync?["syncDate"] as? String
+            )
+        })
+        if !connectors.contains(where: { normalizeGameStore($0.store) == "STEAM" }) {
+            let linked = userStores["STEAM"]?["accountLinkingData"] as? [String: Any]
+            let sync = linked?["accountSyncingData"] as? [String: Any]
+            connectors.append(
+                AccountConnector(
+                    store: "STEAM",
+                    label: "Steam",
+                    supported: true,
+                    required: false,
+                    userDisplayName: linked?["userDisplayName"] as? String,
+                    userIdentifier: linked?["userIdentifier"] as? String,
+                    expiresInSeconds: Self.toPositiveInt(linked?["expiresIn"]),
+                    syncedGameCount: Self.toPositiveInt(sync?["totalNumberOfSyncedGfnGames"]),
+                    syncState: sync?["syncState"] as? String,
+                    syncDate: sync?["syncDate"] as? String
+                )
+            )
+        }
+        return connectors.sorted {
+            if $0.isLinked != $1.isLinked { return $0.isLinked && !$1.isLinked }
+            let lhsRank = Self.accountConnectorSortRank($0.store)
+            let rhsRank = Self.accountConnectorSortRank($1.store)
+            if lhsRank != rhsRank { return lhsRank < rhsRank }
+            return $0.label.localizedCaseInsensitiveCompare($1.label) == .orderedAscending
+        }
+    }
+
+    func accountConnectorLoginURL(store: String, session: AuthSession) async throws -> URL {
+        let token = session.tokens.idToken ?? session.tokens.accessToken
+        let platform = Self.accountLinkingPlatform(store)
+        var components = URLComponents(url: GFNConstants.accountLinkingBase.appendingPathComponent("login_url"), resolvingAgainstBaseURL: false)!
+        components.queryItems = [
+            .init(name: "platform", value: platform),
+            .init(name: "redirect_uri", value: GFNConstants.accountLinkingRedirectUri),
+            .init(name: "client_id", value: GFNConstants.accountLinkingClientId)
+        ]
+        let (data, response) = try await request(
+            url: components.url!,
+            headers: Self.accountLinkingHeaders(token: token)
+        )
+        guard response.statusCode >= 200 && response.statusCode < 300 else {
+            let text = String(data: data, encoding: .utf8) ?? "unknown"
+            throw NSError(domain: "OpenNOW.AccountConnectors", code: response.statusCode, userInfo: [NSLocalizedDescriptionKey: text])
+        }
+        let json = try parseJSON(data)
+        guard let rawURL = json["login_url"] as? String, let url = URL(string: rawURL) else {
+            throw NSError(domain: "OpenNOW.AccountConnectors", code: 2, userInfo: [NSLocalizedDescriptionKey: "Store connection did not return a login URL"])
+        }
+        return url
+    }
+
+    func disconnectAccountConnector(store: String, session: AuthSession) async throws {
+        let token = session.tokens.idToken ?? session.tokens.accessToken
+        let platform = Self.accountLinkingPlatform(store)
+        let url = GFNConstants.accountLinkingBase
+            .appendingPathComponent("linking")
+            .appendingPathComponent(platform)
+        let (data, response) = try await request(
+            url: url,
+            method: "DELETE",
+            headers: Self.accountLinkingHeaders(token: token)
+        )
+        guard response.statusCode >= 200 && response.statusCode < 300 else {
+            let text = String(data: data, encoding: .utf8) ?? "unknown"
+            throw NSError(domain: "OpenNOW.AccountConnectors", code: response.statusCode, userInfo: [NSLocalizedDescriptionKey: text])
+        }
+    }
+
+    private static func desktopGraphQLHeaders(token: String, contentType: String) -> [String: String] {
+        [
+            "Accept": "application/json, text/plain, */*",
+            "Content-Type": contentType,
+            "Origin": "https://play.geforcenow.com",
+            "Referer": "https://play.geforcenow.com/",
+            "Authorization": "GFNJWT \(token)",
+            "nv-client-id": GFNConstants.lcarsClientId,
+            "nv-client-type": "NATIVE",
+            "nv-client-version": GFNConstants.gfnClientVersion,
+            "nv-client-streamer": "NVIDIA-CLASSIC",
+            "nv-device-os": "WINDOWS",
+            "nv-device-type": "DESKTOP",
+            "nv-browser-type": "CHROME",
+            "User-Agent": GFNConstants.userAgent
+        ]
+    }
+
+    private static func accountLinkingHeaders(token: String) -> [String: String] {
+        [
+            "Accept": "application/json, text/plain, */*",
+            "Authorization": "Bearer \(token)",
+            "Origin": "https://play.geforcenow.com",
+            "Referer": "https://play.geforcenow.com/",
+            "User-Agent": GFNConstants.userAgent
+        ]
+    }
+
+    private static func accountLinkingPlatform(_ store: String) -> String {
+        switch normalizeGameStore(store) {
+        case "UBISOFT", "UBISOFT_CONNECT":
+            return "UPLAY"
+        case "BATTLE_NET", "BLIZZARD":
+            return "BATTLENET"
+        case "EPIC_GAMES", "EPIC_GAMES_STORE":
+            return "EPIC"
+        default:
+            return normalizeGameStore(store).isEmpty ? store.uppercased() : normalizeGameStore(store)
+        }
+    }
+
+    private static func accountConnectorSortRank(_ store: String) -> Int {
+        switch normalizeGameStore(store) {
+        case "STEAM":
+            return 0
+        case "EPIC", "EGS", "EPIC_GAMES_STORE":
+            return 1
+        case "XBOX", "XBOX_GAME_PASS", "GAME_PASS":
+            return 2
+        case "UBISOFT", "UBISOFT_CONNECT":
+            return 3
+        default:
+            return 10
+        }
     }
 
     func startSession(
@@ -2499,9 +3075,20 @@ private actor GFNAPIClient {
             let status = item["status"] as? Int ?? 0
             guard status == 1 || status == 2 || status == 3 else { return nil }
             guard let sessionId = item["sessionId"] as? String else { return nil }
-            let appId = (item["sessionRequestData"] as? [String: Any])?["appId"].flatMap { "\($0)" }
+            let sessionRequestData = item["sessionRequestData"] as? [String: Any]
+            let appId = sessionRequestData?["appId"].flatMap { "\($0)" }
             let serverIp = Self.extractServerIp(sessionObj: item)
-            return RemoteSessionCandidate(id: sessionId, appId: appId, status: status, serverIp: serverIp)
+            let streamSettingsSignature = Self.metadataValue(
+                key: GFNConstants.streamSettingsMetadataKey,
+                in: sessionRequestData?["metaData"] as? [[String: Any]]
+            )
+            return RemoteSessionCandidate(
+                id: sessionId,
+                appId: appId,
+                status: status,
+                serverIp: serverIp,
+                streamSettingsSignature: streamSettingsSignature
+            )
         }
     }
 
@@ -2719,6 +3306,20 @@ private actor GFNAPIClient {
             }
         }
         return nil
+    }
+
+    private static func metadataValue(key: String, in metadata: [[String: Any]]?) -> String? {
+        guard let item = metadata?.first(where: {
+            guard let itemKey = $0["key"] as? String else { return false }
+            return itemKey.caseInsensitiveCompare(key) == .orderedSame
+        }) else {
+            return nil
+        }
+        guard let rawValue = item["value"], !(rawValue is NSNull) else {
+            return nil
+        }
+        let value = String(describing: rawValue).trimmingCharacters(in: .whitespacesAndNewlines)
+        return value.isEmpty ? nil : value
     }
 
     private static func extractMediaConnectionInfo(sessionObj: [String: Any]) -> (ip: String?, port: Int) {
@@ -3601,6 +4202,7 @@ private actor GFNAPIClient {
             ["key": "ClientImeSupport", "value": "0"],
             ["key": "preferredLauncher", "value": launcherName],
             ["key": "clientPhysicalResolution", "value": "{\"horizontalPixels\":\(profile.width),\"verticalPixels\":\(profile.height)}"],
+            ["key": GFNConstants.streamSettingsMetadataKey, "value": StreamSettingsResolver.sessionSignature(for: settings, profile: profile)],
             ["key": "surroundAudioInfo", "value": "2"]
         ] + deviceProfile.metadata
         let body: [String: Any] = [
@@ -3676,6 +4278,7 @@ private actor GFNAPIClient {
             ["key": "networkType", "value": "Unknown"],
             ["key": "ClientImeSupport", "value": "0"],
             ["key": "clientPhysicalResolution", "value": "{\"horizontalPixels\":\(profile.width),\"verticalPixels\":\(profile.height)}"],
+            ["key": GFNConstants.streamSettingsMetadataKey, "value": StreamSettingsResolver.sessionSignature(for: settings, profile: profile)],
             ["key": "surroundAudioInfo", "value": "2"]
         ] + deviceProfile.metadata
         let body: [String: Any] = [
@@ -3833,6 +4436,10 @@ final class OpenNOWStore: ObservableObject {
     @Published private(set) var telemetry = SessionTelemetry(pingMs: 0, fps: 0, packetLossPercent: 0, bitrateMbps: 0)
     @Published private(set) var sessionElapsedSeconds = 0
     @Published private(set) var subscription: SubscriptionSnapshot?
+    @Published private(set) var savedAccounts: [SavedAccount] = []
+    @Published private(set) var accountConnectors: [AccountConnector] = []
+    @Published private(set) var loadingAccountConnectors = false
+    @Published private(set) var connectorActionStore: String?
     @Published var settings: AppSettings
     @Published var searchText = ""
     @Published var micEnabled = false
@@ -3872,6 +4479,7 @@ final class OpenNOWStore: ObservableObject {
     #endif
 
     private let settingsKey = "OpenNOW.iOS.settings"
+    private let authStateKey = "OpenNOW.iOS.authState"
     private let authSessionKey = "OpenNOW.iOS.authSession"
     private let activeSessionSnapshotKey = "OpenNOW.iOS.activeSession"
     private let deviceIdKey = "OpenNOW.iOS.deviceId"
@@ -3885,7 +4493,14 @@ final class OpenNOWStore: ObservableObject {
         }
         loadedSettings.normalizeStreamDefaults()
         settings = loadedSettings
-        authSession = Self.loadAuthSession(from: defaults)
+        let loadedAuthState = Self.loadAuthState(from: defaults)
+        authSession = loadedAuthState.activeSession
+        savedAccounts = loadedAuthState.savedAccounts
+        if let selectedProvider = loadedAuthState.selectedProvider {
+            settings.selectedProviderIdpId = selectedProvider.idpId
+        } else if let provider = authSession?.provider {
+            settings.selectedProviderIdpId = provider.idpId
+        }
         activeSession = Self.loadActiveSession(from: defaults)
         user = authSession?.user
         showStreamLoading = activeSession != nil
@@ -3917,6 +4532,10 @@ final class OpenNOWStore: ObservableObject {
 
     var supportsNativeOAuth: Bool { OpenNOWPlatform.supportsNativeOAuth }
     var supportsEmbeddedStreamer: Bool { OpenNOWPlatform.supportsEmbeddedStreamer }
+    var cloudStorageManagementURL: URL { GFNConstants.storageManagementURL }
+    var cloudStorageResetURL: URL { GFNConstants.storageResetURL }
+    var cloudStorageAddURL: URL { GFNConstants.storageAddURL }
+    var accountHelpURL: URL { GFNConstants.accountHelpURL }
 
     func bootstrap() async {
         guard isBootstrapping else { return }
@@ -4003,9 +4622,55 @@ final class OpenNOWStore: ObservableObject {
     #endif
 
     func signOut() {
+        let currentUserId = authSession?.user.userId
         Task { await NotificationManager.shared.cancelSessionNotifications() }
+        var state = Self.loadAuthState(from: defaults)
+        if let currentUserId {
+            state.sessions.removeAll { $0.user.userId == currentUserId }
+        } else {
+            state.sessions.removeAll()
+        }
+        state.activeUserId = state.sessions.first?.user.userId
+        state.selectedProvider = state.sessions.first?.provider ?? state.selectedProvider
+        persistAuthState(state)
+        clearAccountScopedState()
+        if let nextSession = state.activeSession {
+            authSession = nextSession
+            user = nextSession.user
+            settings.selectedProviderIdpId = nextSession.provider.idpId
+            persistSettings()
+            Task { await refreshCatalog() }
+        } else {
+            user = nil
+            authSession = nil
+        }
+    }
+
+    func signOutAll() {
+        Task { await NotificationManager.shared.cancelSessionNotifications() }
+        persistAuthState(PersistedAuthState())
+        defaults.removeObject(forKey: authStateKey)
+        defaults.removeObject(forKey: authSessionKey)
+        clearAccountScopedState()
         user = nil
         authSession = nil
+    }
+
+    func switchAccount(to userId: String) async {
+        var state = Self.loadAuthState(from: defaults)
+        guard let nextSession = state.sessions.first(where: { $0.user.userId == userId }) else { return }
+        state.activeUserId = nextSession.user.userId
+        state.selectedProvider = nextSession.provider
+        persistAuthState(state)
+        clearAccountScopedState()
+        authSession = nextSession
+        user = nextSession.user
+        settings.selectedProviderIdpId = nextSession.provider.idpId
+        persistSettings()
+        await refreshCatalog()
+    }
+
+    private func clearAccountScopedState() {
         allGames = []
         featuredGames = []
         libraryGames = []
@@ -4021,7 +4686,9 @@ final class OpenNOWStore: ObservableObject {
         queueOverlayVisible = false
         adReportStateById = [:]
         adStartedAtById = [:]
-        defaults.removeObject(forKey: authSessionKey)
+        accountConnectors = []
+        loadingAccountConnectors = false
+        connectorActionStore = nil
         syncTrackedSessionSurface()
     }
 
@@ -4040,11 +4707,15 @@ final class OpenNOWStore: ObservableObject {
             cachedVpcId = vpcId
             let library = try await api.fetchLibraryGames(session: refreshed, vpcId: vpcId)
             let sub = try? await api.fetchSubscription(session: refreshed, vpcId: vpcId)
+            let connectors = try? await api.fetchAccountConnectors(session: refreshed)
 
             allGames = mainGames
             featuredGames = Array(mainGames.prefix(8))
             libraryGames = library
             subscription = sub
+            if let connectors {
+                accountConnectors = connectors
+            }
             resumableSessions = (try? await api.fetchActiveSessions(
                 session: refreshed,
                 streamingBaseUrl: refreshed.provider.streamingServiceUrl,
@@ -4053,7 +4724,12 @@ final class OpenNOWStore: ObservableObject {
                 deviceId: persistentDeviceId()
             )) ?? []
             if let sub {
-                user?.membershipTier = sub.membershipTier
+                var updatedUser = refreshed.user
+                updatedUser.membershipTier = sub.membershipTier
+                let updatedSession = AuthSession(provider: refreshed.provider, tokens: refreshed.tokens, user: updatedUser)
+                authSession = updatedSession
+                user = updatedUser
+                persistAuthSession(updatedSession)
             }
             lastError = nil
         } catch is CancellationError {
@@ -4067,6 +4743,74 @@ final class OpenNOWStore: ObservableObject {
         }
     }
 
+    func refreshAccountConnectors() async {
+        guard let session = authSession else { return }
+        loadingAccountConnectors = true
+        defer { loadingAccountConnectors = false }
+        do {
+            let refreshed = try await api.refreshSession(session)
+            authSession = refreshed
+            user = refreshed.user
+            persistAuthSession(refreshed)
+            accountConnectors = try await api.fetchAccountConnectors(session: refreshed)
+            lastError = nil
+        } catch is CancellationError {
+            return
+        } catch {
+            lastError = "Failed to load account connections: \(error.localizedDescription)"
+        }
+    }
+
+    func connectAccountConnector(_ connector: AccountConnector, openURL: @escaping (URL) -> Void) async {
+        guard let session = authSession else { return }
+        connectorActionStore = connector.store
+        defer { connectorActionStore = nil }
+        do {
+            let refreshed = try await api.refreshSession(session)
+            authSession = refreshed
+            user = refreshed.user
+            persistAuthSession(refreshed)
+            let url = try await api.accountConnectorLoginURL(store: connector.store, session: refreshed)
+            openURL(url)
+            scheduleAccountConnectorRefreshAfterLinking()
+            lastError = nil
+        } catch is CancellationError {
+            return
+        } catch {
+            lastError = "Failed to connect \(connector.label): \(error.localizedDescription)"
+        }
+    }
+
+    func disconnectAccountConnector(_ connector: AccountConnector) async {
+        guard let session = authSession else { return }
+        connectorActionStore = connector.store
+        defer { connectorActionStore = nil }
+        do {
+            let refreshed = try await api.refreshSession(session)
+            authSession = refreshed
+            user = refreshed.user
+            persistAuthSession(refreshed)
+            try await api.disconnectAccountConnector(store: connector.store, session: refreshed)
+            accountConnectors = try await api.fetchAccountConnectors(session: refreshed)
+            lastError = nil
+        } catch is CancellationError {
+            return
+        } catch {
+            lastError = "Failed to disconnect \(connector.label): \(error.localizedDescription)"
+        }
+    }
+
+    private func scheduleAccountConnectorRefreshAfterLinking() {
+        Task { [weak self] in
+            let delays: [UInt64] = [5, 10, 10, 10, 10, 10]
+            for seconds in delays {
+                try? await Task.sleep(for: .seconds(seconds))
+                guard let self else { return }
+                await self.refreshAccountConnectors()
+            }
+        }
+    }
+
     func launch(game: CloudGame, zoneUrl: String? = nil, launchOption: GameLaunchOption? = nil) async {
         guard supportsEmbeddedStreamer else {
             lastError = OpenNOWPlatform.streamingUnavailableReason
@@ -4074,6 +4818,10 @@ final class OpenNOWStore: ObservableObject {
         }
         guard let session = authSession else {
             lastError = "Sign in first."
+            return
+        }
+        if let launchRestriction = launchRestrictionMessage(for: game) {
+            lastError = launchRestriction
             return
         }
         isLaunchingSession = true
@@ -4108,12 +4856,23 @@ final class OpenNOWStore: ObservableObject {
             )) ?? []
             resumableSessions = activeCandidates
 
-            let readyCandidate = activeCandidates.first {
+            let requestedSignature = streamSettingsSignature(for: settings, session: refreshed)
+            let compatibleCandidates = activeCandidates.filter {
+                remoteSession($0, matchesStreamSettingsSignature: requestedSignature)
+            }
+            let staleLaunchCandidate = activeCandidates.first {
+                $0.appId == launchAppId
+                    && remoteSessionIsLaunchable($0)
+                    && !remoteSession($0, matchesStreamSettingsSignature: requestedSignature)
+            }
+            let readyCandidate = compatibleCandidates.first {
                 $0.appId == launchAppId && $0.serverIp != nil && ($0.status == 2 || $0.status == 3)
             }
-            let launchingCandidate = activeCandidates.first {
+            let launchingCandidate = compatibleCandidates.first {
                 $0.appId == launchAppId && $0.status == 1
-            } ?? activeCandidates.first { $0.status == 1 }
+            } ?? compatibleCandidates.first {
+                ($0.appId == nil || $0.appId?.isEmpty == true) && $0.status == 1
+            }
 
             let started: ActiveSession
             if let readyCandidate {
@@ -4153,6 +4912,20 @@ final class OpenNOWStore: ObservableObject {
                 )) ?? pending
                 started = mergeQueueSessionState(previous: pending, next: hydrated)
             } else {
+                if let staleLaunchCandidate {
+                    do {
+                        try await api.stopRemoteSession(
+                            session: refreshed,
+                            candidate: staleLaunchCandidate,
+                            streamingBaseUrl: baseUrl,
+                            vpcId: cachedVpcId
+                        )
+                        resumableSessions.removeAll { $0.id == staleLaunchCandidate.id }
+                        logger.info("Stopped stale session before relaunch id=\(staleLaunchCandidate.id, privacy: .public)")
+                    } catch {
+                        logger.warning("Could not stop stale session before relaunch id=\(staleLaunchCandidate.id, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
+                    }
+                }
                 started = try await api.startSession(
                     session: refreshed,
                     game: game,
@@ -4559,6 +5332,15 @@ final class OpenNOWStore: ObservableObject {
         persistSettings()
     }
 
+    func launchRestrictionMessage(for game: CloudGame) -> String? {
+        guard membershipTierRequiresPaid(game.membershipTierLabel), isFreeTierUser else {
+            return nil
+        }
+        let requiredTier = game.membershipTierLabel.map(gameMetadataDisplayLabel) ?? "Premium"
+        let article = requiredTier.first.map { "AEIOU".contains(String($0).uppercased()) ? "an" : "a" } ?? "a"
+        return "\(game.title) requires \(article) \(requiredTier) GeForce NOW membership."
+    }
+
     func clearFavorites() {
         settings.favoriteGameIds.removeAll()
         persistSettings()
@@ -4663,6 +5445,29 @@ final class OpenNOWStore: ObservableObject {
             return false
         }
         return true
+    }
+
+    private func streamSettingsSignature(for settings: AppSettings, session: AuthSession) -> String {
+        let profile = StreamSettingsResolver.profile(
+            for: settings,
+            membershipTier: subscription?.membershipTier ?? session.user.membershipTier
+        )
+        return StreamSettingsResolver.sessionSignature(for: settings, profile: profile)
+    }
+
+    private func remoteSession(
+        _ candidate: RemoteSessionCandidate,
+        matchesStreamSettingsSignature signature: String
+    ) -> Bool {
+        guard let existing = candidate.streamSettingsSignature?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !existing.isEmpty else {
+            return true
+        }
+        return existing == signature
+    }
+
+    private func remoteSessionIsLaunchable(_ candidate: RemoteSessionCandidate) -> Bool {
+        candidate.status == 1 || candidate.status == 2 || candidate.status == 3
     }
 
     private func startSessionTasks() {
@@ -4930,8 +5735,7 @@ final class OpenNOWStore: ObservableObject {
     }
 
     private var isFreeTierUser: Bool {
-        let tier = (subscription?.membershipTier ?? user?.membershipTier)?.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
-        return (tier?.isEmpty ?? true) || tier == "FREE"
+        membershipTierIsFree(subscription?.membershipTier ?? user?.membershipTier)
     }
 
     private func reportQueueAdAction(
@@ -5156,14 +5960,66 @@ final class OpenNOWStore: ObservableObject {
         return try? JSONDecoder().decode(AuthSession.self, from: data)
     }
 
+    private static func loadAuthState(from defaults: UserDefaults) -> PersistedAuthState {
+        if let data = defaults.data(forKey: "OpenNOW.iOS.authState"),
+           let state = try? JSONDecoder().decode(PersistedAuthState.self, from: data) {
+            return normalizedAuthState(state)
+        }
+        guard let legacySession = loadAuthSession(from: defaults) else {
+            return PersistedAuthState()
+        }
+        return PersistedAuthState(
+            sessions: [legacySession],
+            activeUserId: legacySession.user.userId,
+            selectedProvider: legacySession.provider
+        )
+    }
+
+    private static func normalizedAuthState(_ state: PersistedAuthState) -> PersistedAuthState {
+        var seen = Set<String>()
+        let sessions = state.sessions.filter { session in
+            guard !session.user.userId.isEmpty, !seen.contains(session.user.userId) else { return false }
+            seen.insert(session.user.userId)
+            return true
+        }
+        let activeUserId = state.activeUserId.flatMap { id in
+            sessions.contains(where: { $0.user.userId == id }) ? id : nil
+        } ?? sessions.first?.user.userId
+        return PersistedAuthState(
+            sessions: sessions,
+            activeUserId: activeUserId,
+            selectedProvider: state.selectedProvider ?? sessions.first(where: { $0.user.userId == activeUserId })?.provider
+        )
+    }
+
     private static func loadActiveSession(from defaults: UserDefaults) -> ActiveSession? {
         guard let data = defaults.data(forKey: "OpenNOW.iOS.activeSession") else { return nil }
         return try? JSONDecoder().decode(ActiveSession.self, from: data)
     }
 
     private func persistAuthSession(_ session: AuthSession) {
+        var state = Self.loadAuthState(from: defaults)
+        state.sessions.removeAll { $0.user.userId == session.user.userId }
+        state.sessions.insert(session, at: 0)
+        state.activeUserId = session.user.userId
+        state.selectedProvider = session.provider
+        persistAuthState(state)
         if let encoded = try? JSONEncoder().encode(session) {
             defaults.set(encoded, forKey: authSessionKey)
+        }
+    }
+
+    private func persistAuthState(_ state: PersistedAuthState) {
+        let normalized = Self.normalizedAuthState(state)
+        savedAccounts = normalized.savedAccounts
+        if let encoded = try? JSONEncoder().encode(normalized) {
+            defaults.set(encoded, forKey: authStateKey)
+        }
+        if let active = normalized.activeSession,
+           let encoded = try? JSONEncoder().encode(active) {
+            defaults.set(encoded, forKey: authSessionKey)
+        } else {
+            defaults.removeObject(forKey: authSessionKey)
         }
     }
 

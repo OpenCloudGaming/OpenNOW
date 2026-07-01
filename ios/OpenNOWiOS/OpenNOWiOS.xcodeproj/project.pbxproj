@@ -23,6 +23,9 @@
 		BB0000000000000000000009 /* NotificationManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000019 /* NotificationManager.swift */; };
 		BB000000000000000000000A /* StreamerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000000000000000000001A /* StreamerView.swift */; };
 		BB000000000000000000000B /* Haptics.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000000000000000000001B /* Haptics.swift */; };
+		DD0000000000000000000001 /* NativeStreamerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD0000000000000000000011 /* NativeStreamerView.swift */; };
+		DD0000000000000000000002 /* WebRTC.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = DD0000000000000000000012 /* WebRTC.xcframework */; };
+		DD0000000000000000000003 /* WebRTC.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = DD0000000000000000000012 /* WebRTC.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		CC0000000000000000000001 /* QueueActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC0000000000000000000011 /* QueueActivityAttributes.swift */; };
 		CC0000000000000000000002 /* QueueLiveActivityManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC0000000000000000000012 /* QueueLiveActivityManager.swift */; };
 		CC0000000000000000000003 /* OpenNOWWidgetBundle.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC0000000000000000000013 /* OpenNOWWidgetBundle.swift */; };
@@ -42,6 +45,17 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXCopyFilesBuildPhase section */
+		DD0000000000000000000101 /* Embed Frameworks */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 10;
+			files = (
+				DD0000000000000000000003 /* WebRTC.xcframework in Embed Frameworks */,
+			);
+			name = "Embed Frameworks";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		CC0000000000000000000102 /* Embed App Extensions */ = {
 			isa = PBXCopyFilesBuildPhase;
 			buildActionMask = 2147483647;
@@ -73,6 +87,8 @@
 		BB0000000000000000000019 /* NotificationManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationManager.swift; sourceTree = "<group>"; };
 		BB000000000000000000001A /* StreamerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StreamerView.swift; sourceTree = "<group>"; };
 		BB000000000000000000001B /* Haptics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Haptics.swift; sourceTree = "<group>"; };
+		DD0000000000000000000011 /* NativeStreamerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeStreamerView.swift; sourceTree = "<group>"; };
+		DD0000000000000000000012 /* WebRTC.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; path = WebRTC.xcframework; sourceTree = "<group>"; };
 		CC0000000000000000000011 /* QueueActivityAttributes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QueueActivityAttributes.swift; sourceTree = "<group>"; };
 		CC0000000000000000000012 /* QueueLiveActivityManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QueueLiveActivityManager.swift; sourceTree = "<group>"; };
 		CC0000000000000000000013 /* OpenNOWWidgetBundle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenNOWWidgetBundle.swift; sourceTree = "<group>"; };
@@ -86,6 +102,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				DD0000000000000000000002 /* WebRTC.xcframework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -104,6 +121,7 @@
 			children = (
 				0A1B2C3D4E5F6A7B8C9D4002 /* OpenNOWiOS */,
 				CC0000000000000000000202 /* OpenNOWWidget */,
+				DD0000000000000000004004 /* Frameworks */,
 				0A1B2C3D4E5F6A7B8C9D4003 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -126,6 +144,7 @@
 				BB0000000000000000000018 /* PrintedWasteQueueView.swift */,
 				BB0000000000000000000019 /* NotificationManager.swift */,
 				BB000000000000000000001A /* StreamerView.swift */,
+				DD0000000000000000000011 /* NativeStreamerView.swift */,
 				CC0000000000000000000011 /* QueueActivityAttributes.swift */,
 				CC0000000000000000000012 /* QueueLiveActivityManager.swift */,
 				0A1B2C3D4E5F6A7B8C9D2004 /* Assets.xcassets */,
@@ -152,6 +171,14 @@
 			path = OpenNOWWidget;
 			sourceTree = "<group>";
 		};
+		DD0000000000000000004004 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				DD0000000000000000000012 /* WebRTC.xcframework */,
+			);
+			path = Frameworks;
+			sourceTree = "<group>";
+		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
@@ -162,6 +189,7 @@
 				0A1B2C3D4E5F6A7B8C9D3002 /* Sources */,
 				0A1B2C3D4E5F6A7B8C9D3001 /* Frameworks */,
 				0A1B2C3D4E5F6A7B8C9D3003 /* Resources */,
+				DD0000000000000000000101 /* Embed Frameworks */,
 				CC0000000000000000000102 /* Embed App Extensions */,
 			);
 			buildRules = (
@@ -265,6 +293,7 @@
 				BB0000000000000000000008 /* PrintedWasteQueueView.swift in Sources */,
 				BB0000000000000000000009 /* NotificationManager.swift in Sources */,
 				BB000000000000000000000A /* StreamerView.swift in Sources */,
+				DD0000000000000000000001 /* NativeStreamerView.swift in Sources */,
 				CC0000000000000000000001 /* QueueActivityAttributes.swift in Sources */,
 				CC0000000000000000000002 /* QueueLiveActivityManager.swift in Sources */,
 			);

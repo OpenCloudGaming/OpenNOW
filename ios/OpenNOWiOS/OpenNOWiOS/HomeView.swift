@@ -235,10 +235,6 @@ struct HomeView: View {
     var body: some View {
         NavigationStack {
             List {
-                if let user = store.user {
-                    accountSection(user: user)
-                }
-
                 if let error = store.lastError {
                     Section {
                         ErrorBannerView(message: error)
@@ -332,22 +328,6 @@ struct HomeView: View {
             pendingLaunchRequest = GameLaunchRequest(game: game, launchOption: option)
         }
         .printedWasteLaunchSheet(pendingLaunchRequest: $pendingLaunchRequest)
-    }
-
-    private func accountSection(user: UserProfile) -> some View {
-        Section {
-            LabeledContent {
-                Text(store.subscription?.membershipTier ?? user.membershipTier)
-                    .foregroundStyle(.secondary)
-            } label: {
-                Label(user.displayName, systemImage: "person.crop.circle")
-            }
-            if let sub = store.subscription, !sub.isUnlimited {
-                LabeledContent("Time Remaining", value: String(format: "%.1f h", sub.remainingHours))
-            } else if store.subscription?.isUnlimited == true {
-                LabeledContent("Session Time", value: "Unlimited")
-            }
-        }
     }
 
     private var searchResultsSection: some View {
@@ -931,6 +911,7 @@ struct GameLaunchDetailsSheet: View {
     @EnvironmentObject private var store: OpenNOWStore
     @Environment(\.dismiss) private var dismiss
     @State private var selectedOption: GameLaunchOption?
+    @State private var launchAlertMessage: String?
 
     private var launcherOptions: [GameLaunchOption] {
         store.launchOptions(for: game)
@@ -975,9 +956,8 @@ struct GameLaunchDetailsSheet: View {
                         }
 
                         if let selectedOption {
-                            LabeledContent("App ID", value: selectedOption.appId)
-                            if let controls = selectedOption.supportedControls, !controls.isEmpty {
-                                LabeledContent("Controls", value: controls.joined(separator: ", "))
+                            if !selectedControlLabels.isEmpty {
+                                LabeledContent("Controls", value: selectedControlLabels.joined(separator: ", "))
                             }
                             Button {
                                 store.setDefaultGameVariant(game: game, option: selectedOption)
@@ -1008,15 +988,19 @@ struct GameLaunchDetailsSheet: View {
                     if let developer = game.developer {
                         LabeledContent("Developer", value: developer)
                     }
-                    LabeledContent("Genre", value: game.genre)
-                    LabeledContent("Platform", value: game.platform)
+                    if let genre = displayMetadataLabel(game.genre) {
+                        LabeledContent("Genre", value: genre)
+                    }
+                    if let platform = displayPlatform {
+                        LabeledContent("Platform", value: platform)
+                    }
                     if !resolvedStores.isEmpty {
                         LabeledContent("Stores", value: resolvedStores.map(storeDisplayName).joined(separator: ", "))
                     }
-                    if let playType = game.playType {
+                    if let playType = displayMetadataLabel(game.playType) {
                         LabeledContent("Play Type", value: playType)
                     }
-                    if let tier = game.membershipTierLabel {
+                    if let tier = displayMetadataLabel(game.membershipTierLabel) {
                         LabeledContent("Membership", value: tier)
                     }
                 }
@@ -1054,6 +1038,11 @@ struct GameLaunchDetailsSheet: View {
             }
             .safeAreaInset(edge: .bottom) {
                 Button {
+                    if let launchRestriction = store.launchRestrictionMessage(for: game) {
+                        Haptics.medium()
+                        launchAlertMessage = launchRestriction
+                        return
+                    }
                     Haptics.medium()
                     onLaunch(selectedOption ?? launcherOptions.first)
                     dismiss()
@@ -1071,6 +1060,13 @@ struct GameLaunchDetailsSheet: View {
                 .padding(.bottom, 8)
                 .background(.regularMaterial)
             }
+            .alert("Launch Unavailable", isPresented: launchAlertPresented) {
+                Button("OK", role: .cancel) {
+                    launchAlertMessage = nil
+                }
+            } message: {
+                Text(launchAlertMessage ?? "")
+            }
         }
         .onAppear {
             selectedOption = store.defaultLaunchOption(for: game) ?? launcherOptions.first
@@ -1082,6 +1078,22 @@ struct GameLaunchDetailsSheet: View {
             get: { selectedOption?.id ?? launcherOptions.first?.id ?? "" },
             set: { id in selectedOption = launcherOptions.first { $0.id == id } }
         )
+    }
+
+    private var launchAlertPresented: Binding<Bool> {
+        Binding(
+            get: { launchAlertMessage != nil },
+            set: { isPresented in
+                if !isPresented {
+                    launchAlertMessage = nil
+                }
+            }
+        )
+    }
+
+    private var selectedControlLabels: [String] {
+        guard let controls = selectedOption?.supportedControls else { return [] }
+        return gameMetadataDisplayLabels(controls)
     }
 
     private var resolvedStores: [String] {
@@ -1105,7 +1117,7 @@ struct GameLaunchDetailsSheet: View {
     }
 
     private var detailLabels: [String] {
-        Array(Set((game.featureLabels ?? []) + (game.tags ?? []))).sorted()
+        gameMetadataDisplayLabels((game.featureLabels ?? []) + (game.tags ?? [])).sorted()
     }
 
     private var gameSubtitle: String {
@@ -1113,7 +1125,19 @@ struct GameLaunchDetailsSheet: View {
         if !stores.isEmpty {
             return stores
         }
-        return [game.genre, game.platform].filter { !$0.isEmpty }.joined(separator: " · ")
+        return [displayMetadataLabel(game.genre), displayPlatform].compactMap { $0 }.joined(separator: " · ")
+    }
+
+    private var displayPlatform: String? {
+        let trimmed = game.platform.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        return storeDisplayName(trimmed)
+    }
+
+    private func displayMetadataLabel(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let label = gameMetadataDisplayLabel(value)
+        return label.isEmpty ? nil : label
     }
 }
 

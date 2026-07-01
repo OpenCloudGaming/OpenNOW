@@ -10,8 +10,10 @@ import CoreHaptics
 struct StreamerView: View {
     let session: ActiveSession
     let settings: AppSettings
+    let nativeStreamerEnabled: Bool
     let onTouchLayoutChange: (String, TouchControlLayout) -> Void
     let onStreamerPreferencesChange: (StreamerPreferences) -> Void
+    var onNativeFallbackRequiresFreshEndpoint: ((String) -> Void)? = nil
     let onClose: () -> Void
     var onRetry: (() -> Void)? = nil
     private let logger = Logger(subsystem: "OpenNOWiOS", category: "StreamerView")
@@ -19,6 +21,7 @@ struct StreamerView: View {
     @State private var latestStatusLine = "Initializing streamer..."
     @State private var isPeerConnected = false
     @State private var isShowingExitConfirmation = false
+    @State private var nativeFallbackReason: String?
 
     private var isShowingConnectionOverlay: Bool {
         !isPeerConnected
@@ -27,28 +30,8 @@ struct StreamerView: View {
     var body: some View {
         GeometryReader { proxy in
             ZStack(alignment: .topTrailing) {
-                StreamerWebView(
-                    session: session,
-                    settings: settings,
-                    onTouchLayoutChange: onTouchLayoutChange,
-                    onStreamerPreferencesChange: onStreamerPreferencesChange
-                ) { event in
-                    logger.info("Streamer event: \(event, privacy: .public)")
-                    statusText = event
-                    if event.hasPrefix("Status: ") {
-                        latestStatusLine = String(event.dropFirst("Status: ".count))
-                        if latestStatusLine.localizedCaseInsensitiveContains("peer: connected") {
-                            isPeerConnected = true
-                        }
-                    }
-                    if event.localizedCaseInsensitiveContains("peer: connected") {
-                        isPeerConnected = true
-                    }
-                    if event.hasPrefix("Error:") {
-                        isPeerConnected = false
-                    }
-                }
-                .ignoresSafeArea()
+                streamerContent
+                    .ignoresSafeArea()
 
                 if isShowingConnectionOverlay {
                     ZStack {
@@ -104,32 +87,13 @@ struct StreamerView: View {
                     .transition(.opacity)
                 }
 
-                Button {
+                StreamExitControl {
                     isShowingExitConfirmation = true
-                } label: {
-                    Image(systemName: "xmark")
-                        .font(.headline.weight(.bold))
-                        .foregroundStyle(.white.opacity(0.9))
-                        .frame(width: 36, height: 36)
-                        .background(
-                            Group {
-                                if #available(iOS 26, *) {
-                                    Circle()
-                                        .fill(.regularMaterial)
-                                        .glassEffect(in: Circle())
-                                } else {
-                                    Circle()
-                                        .fill(.regularMaterial)
-                                        .overlay(
-                                            Circle()
-                                                .stroke(Color.white.opacity(0.22), lineWidth: 1)
-                                        )
-                                }
-                            }
-                        )
                 }
+                .frame(width: 44, height: 44)
                 .padding(.top, topControlPadding(in: proxy))
                 .padding(.trailing, trailingControlPadding(in: proxy))
+                .zIndex(20)
                 .accessibilityLabel("Exit stream")
 
                 if statusText.hasPrefix("Error:") {
@@ -159,6 +123,7 @@ struct StreamerView: View {
         }
         .background(Color.black.ignoresSafeArea())
         .onAppear {
+            Self.dismissFocusedInput()
             do {
                 try AVAudioSession.sharedInstance().setCategory(
                     .playback,
@@ -174,6 +139,73 @@ struct StreamerView: View {
                 false,
                 options: .notifyOthersOnDeactivation
             )
+        }
+    }
+
+    @ViewBuilder
+    private var streamerContent: some View {
+        if NativeStreamerCapability.isAvailable,
+           settings.nativeStreamerEnabled,
+           nativeStreamerEnabled,
+           nativeFallbackReason == nil {
+            NativeStreamerView(
+                session: session,
+                settings: settings,
+                onEvent: handleStreamerEvent,
+                onFallback: { reason in
+                    DispatchQueue.main.async {
+                        logger.notice("Native streamer fallback: \(reason, privacy: .public)")
+                        if Self.nativeFallbackRequiresFreshEndpoint(reason), let onRetry {
+                            onNativeFallbackRequiresFreshEndpoint?(reason)
+                            nativeFallbackReason = reason
+                            isPeerConnected = false
+                            handleStreamerEvent("Status: Refreshing session after native streamer fallback")
+                            onRetry()
+                            return
+                        }
+                        nativeFallbackReason = reason
+                        isPeerConnected = false
+                        handleStreamerEvent("Status: Falling back to WebRTC web streamer")
+                    }
+                }
+            )
+        } else {
+            StreamerWebView(
+                session: session,
+                settings: settings,
+                onTouchLayoutChange: onTouchLayoutChange,
+                onStreamerPreferencesChange: onStreamerPreferencesChange,
+                onEvent: handleStreamerEvent
+            )
+        }
+    }
+
+    private static func nativeFallbackRequiresFreshEndpoint(_ reason: String) -> Bool {
+        let lowercased = reason.lowercased()
+        return lowercased.contains("ice failed")
+            || lowercased.contains("media stalled")
+            || lowercased.contains("native stream reconnect failed")
+            || lowercased.contains("failed to apply answer")
+            || lowercased.contains("failed to create answer")
+            || lowercased.contains("rejected server offer")
+    }
+
+    private func handleStreamerEvent(_ event: String) {
+        logger.info("Streamer event: \(event, privacy: .public)")
+        statusText = event
+        if event.hasPrefix("Status: ") {
+            latestStatusLine = String(event.dropFirst("Status: ".count))
+            if latestStatusLine.localizedCaseInsensitiveContains("peer: connected")
+                || latestStatusLine.localizedCaseInsensitiveContains("streamer connected") {
+                isPeerConnected = true
+            }
+        }
+        if event.localizedCaseInsensitiveContains("peer: connected")
+            || event.localizedCaseInsensitiveContains("streamer connected") {
+            isPeerConnected = true
+        }
+        if event.hasPrefix("Error:") {
+            isPeerConnected = false
         }
     }
 
@@ -194,11 +226,11 @@ struct StreamerView: View {
                     .font(.title3.weight(.bold))
                     .foregroundStyle(.white)
 
-                Text("Do you really want to exit \(session.game.title)?")
+                Text("Exit the stream for \(session.game.title)?")
                     .font(.subheadline)
                     .foregroundStyle(.white.opacity(0.86))
 
-                Text("Your current cloud gaming session will be closed.")
+                Text("The cloud session stays ready so you can resume from Continue.")
                     .font(.caption)
                     .foregroundStyle(.white.opacity(0.62))
 
@@ -244,7 +276,16 @@ struct StreamerView: View {
     }
 
     private func trailingControlPadding(in proxy: GeometryProxy) -> CGFloat {
-        max(proxy.safeAreaInsets.trailing + 12, 12)
+        max(proxy.safeAreaInsets.trailing + 40, 40)
+    }
+
+    private static func dismissFocusedInput() {
+        UIApplication.shared.sendAction(
+            #selector(UIResponder.resignFirstResponder),
+            to: nil,
+            from: nil,
+            for: nil
+        )
     }
 }
 
@@ -273,6 +314,59 @@ private struct StreamExitButtonStyle: ButtonStyle {
     }
 }
 
+private struct StreamExitControl: UIViewRepresentable {
+    let action: () -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(action: action)
+    }
+
+    func makeUIView(context: Context) -> StreamExitUIButton {
+        let button = StreamExitUIButton(type: .system)
+        button.onActivate = { context.coordinator.action() }
+        button.tintColor = .white
+        button.backgroundColor = UIColor.black.withAlphaComponent(0.42)
+        button.layer.cornerRadius = 22
+        button.layer.borderWidth = 1
+        button.layer.borderColor = UIColor.white.withAlphaComponent(0.18).cgColor
+        button.clipsToBounds = true
+        button.accessibilityLabel = "Exit stream"
+        button.setImage(UIImage(systemName: "xmark"), for: .normal)
+        button.addTarget(context.coordinator, action: #selector(Coordinator.activate), for: .touchUpInside)
+        return button
+    }
+
+    func updateUIView(_ uiView: StreamExitUIButton, context: Context) {
+        context.coordinator.action = action
+        uiView.onActivate = { context.coordinator.action() }
+    }
+
+    final class Coordinator: NSObject {
+        var action: () -> Void
+
+        init(action: @escaping () -> Void) {
+            self.action = action
+        }
+
+        @objc func activate() {
+            action()
+        }
+    }
+}
+
+private final class StreamExitUIButton: UIButton {
+    var onActivate: (() -> Void)?
+
+    override func accessibilityActivate() -> Bool {
+        onActivate?()
+        return true
+    }
+}
+
+private final class StreamerWKWebView: WKWebView {
+    override var canBecomeFirstResponder: Bool { true }
+}
+
 private struct StreamerWebView: UIViewRepresentable {
     let session: ActiveSession
     let settings: AppSettings
@@ -297,22 +391,30 @@ private struct StreamerWebView: UIViewRepresentable {
         config.mediaTypesRequiringUserActionForPlayback = []
         config.defaultWebpagePreferences.allowsContentJavaScript = true
         config.userContentController.add(context.coordinator, name: "opennow")
-        let webView = WKWebView(frame: .zero, configuration: config)
+        let webView = StreamerWKWebView(frame: .zero, configuration: config)
         webView.navigationDelegate = context.coordinator
         webView.customUserAgent = Self.desktopLikeUserAgent
         webView.isOpaque = false
         webView.backgroundColor = .black
         webView.scrollView.isScrollEnabled = false
+        webView.scrollView.keyboardDismissMode = .none
         let html = buildHTML(for: session, settings: settings)
         let baseURL = URL(string: "https://play.geforcenow.com")
         context.coordinator.cachedHTML = html
         context.coordinator.cachedBaseURL = baseURL
         context.coordinator.attach(webView: webView)
         webView.loadHTMLString(html, baseURL: baseURL)
+        DispatchQueue.main.async {
+            webView.becomeFirstResponder()
+        }
         return webView
     }
 
-    func updateUIView(_ uiView: WKWebView, context: Context) {}
+    func updateUIView(_ uiView: WKWebView, context: Context) {
+        DispatchQueue.main.async {
+            uiView.becomeFirstResponder()
+        }
+    }
 
     static func dismantleUIView(_ uiView: WKWebView, coordinator: Coordinator) {
         uiView.configuration.userContentController.removeScriptMessageHandler(forName: "opennow")

@@ -1,5 +1,9 @@
 import SwiftUI
 
+#if canImport(UIKit)
+import UIKit
+#endif
+
 struct ContentView: View {
     @EnvironmentObject private var store: OpenNOWStore
 
@@ -41,6 +45,7 @@ struct MainTabView: View {
     @EnvironmentObject private var store: OpenNOWStore
     @State private var streamerAutoRetryCount = 0
     @State private var presentedStreamerSession: ActiveSession?
+    @State private var nativeStreamerBypassSessionIds = Set<String>()
     private static let maxStreamerAutoRetries = 3
 
     private var queueSurfaceAnimation: Animation {
@@ -48,6 +53,53 @@ struct MainTabView: View {
     }
 
     var body: some View {
+        ZStack {
+            if presentedStreamerSession == nil {
+                tabSurface
+                    .transition(.opacity)
+            }
+
+            if let session = presentedStreamerSession {
+                streamerSurface(session: session)
+                    .transition(.opacity)
+            }
+        }
+        .animation(.easeInOut(duration: 0.28), value: store.showStreamLoading && !store.queueOverlayVisible)
+        .animation(.easeInOut(duration: 0.2), value: presentedStreamerSession?.id)
+        .onAppear {
+            // MainTabView can be recreated by upstream auth/bootstrap state updates.
+            // Reattach streamer overlay if store already has an active stream session.
+            if let activeStream = store.streamSession {
+                Self.dismissFocusedInput()
+                presentedStreamerSession = activeStream
+            }
+        }
+        .onChange(of: store.streamSession) { _, newValue in
+            if let newValue {
+                Self.dismissFocusedInput()
+                presentedStreamerSession = newValue
+            } else if store.activeSession == nil {
+                // Session fully ended; allow the cover to close.
+                presentedStreamerSession = nil
+            }
+        }
+        .onChange(of: store.activeSession?.id) { _, newId in
+            streamerAutoRetryCount = 0
+            if let newId {
+                nativeStreamerBypassSessionIds = Set(nativeStreamerBypassSessionIds.filter { $0 == newId })
+            } else {
+                nativeStreamerBypassSessionIds.removeAll()
+                presentedStreamerSession = nil
+            }
+        }
+        .onChange(of: presentedStreamerSession?.id) { _, newValue in
+            if newValue != nil {
+                Self.dismissFocusedInput()
+            }
+        }
+    }
+
+    private var tabSurface: some View {
         TabView {
             HomeView()
                 .tabItem { Label("Home", systemImage: "house.fill") }
@@ -55,8 +107,6 @@ struct MainTabView: View {
                 .tabItem { Label("Browse", systemImage: "square.grid.2x2.fill") }
             LibraryView()
                 .tabItem { Label("Library", systemImage: "books.vertical.fill") }
-            SessionView()
-                .tabItem { Label("Session", systemImage: "dot.radiowaves.left.and.right") }
             SettingsView()
                 .tabItem { Label("Settings", systemImage: "slider.horizontal.3") }
         }
@@ -74,7 +124,7 @@ struct MainTabView: View {
         }
         .animation(queueSurfaceAnimation, value: store.queueOverlayVisible)
         .safeAreaInset(edge: .top) {
-            if store.canJumpBackToSession && !store.queueOverlayVisible && presentedStreamerSession == nil {
+            if store.canJumpBackToSession && !store.queueOverlayVisible {
                 JumpBackStatusBanner()
                     .environmentObject(store)
                     .padding(.horizontal)
@@ -83,57 +133,36 @@ struct MainTabView: View {
                     .transition(.move(edge: .top).combined(with: .opacity))
             }
         }
-        .overlay {
-            if let session = presentedStreamerSession {
-                StreamerView(
-                    session: session,
-                    settings: store.settings,
-                    onTouchLayoutChange: { profile, layout in
-                        store.updateTouchControlLayout(layout, profile: profile)
-                    },
-                    onStreamerPreferencesChange: { preferences in
-                        store.updateStreamerPreferences(preferences)
-                    },
-                    onClose: {
-                        presentedStreamerSession = nil
-                        streamerAutoRetryCount = 0
-                        store.dismissStreamer()
-                    },
-                    onRetry: streamerAutoRetryCount < Self.maxStreamerAutoRetries ? {
-                        presentedStreamerSession = nil
-                        streamerAutoRetryCount += 1
-                        store.dismissStreamer()
-                        store.scheduleStreamerReopen()
-                    } : nil
-                )
-                .ignoresSafeArea()
-                .zIndex(3000)
-                .transition(.opacity)
-            }
-        }
-        .animation(.easeInOut(duration: 0.28), value: store.showStreamLoading && !store.queueOverlayVisible)
-        .animation(.easeInOut(duration: 0.2), value: presentedStreamerSession?.id)
-        .onAppear {
-            // MainTabView can be recreated by upstream auth/bootstrap state updates.
-            // Reattach streamer overlay if store already has an active stream session.
-            if let activeStream = store.streamSession {
-                presentedStreamerSession = activeStream
-            }
-        }
-        .onChange(of: store.streamSession) { _, newValue in
-            if let newValue {
-                presentedStreamerSession = newValue
-            } else if store.activeSession == nil {
-                // Session fully ended; allow the cover to close.
+    }
+
+    private func streamerSurface(session: ActiveSession) -> some View {
+        StreamerView(
+            session: session,
+            settings: store.settings,
+            nativeStreamerEnabled: !nativeStreamerBypassSessionIds.contains(session.id),
+            onTouchLayoutChange: { profile, layout in
+                store.updateTouchControlLayout(layout, profile: profile)
+            },
+            onStreamerPreferencesChange: { preferences in
+                store.updateStreamerPreferences(preferences)
+            },
+            onNativeFallbackRequiresFreshEndpoint: { _ in
+                nativeStreamerBypassSessionIds.insert(session.id)
+            },
+            onClose: {
                 presentedStreamerSession = nil
-            }
-        }
-        .onChange(of: store.activeSession?.id) { _, _ in
-            streamerAutoRetryCount = 0
-            if store.activeSession == nil {
+                streamerAutoRetryCount = 0
+                store.dismissStreamer()
+            },
+            onRetry: streamerAutoRetryCount < Self.maxStreamerAutoRetries ? {
                 presentedStreamerSession = nil
-            }
-        }
+                streamerAutoRetryCount += 1
+                store.dismissStreamer()
+                store.scheduleStreamerReopen()
+            } : nil
+        )
+        .ignoresSafeArea()
+        .zIndex(3000)
     }
 
     private var queueOverlayTransition: AnyTransition {
@@ -141,6 +170,17 @@ struct MainTabView: View {
             insertion: .opacity,
             removal: .opacity
         )
+    }
+
+    private static func dismissFocusedInput() {
+        #if canImport(UIKit)
+        UIApplication.shared.sendAction(
+            #selector(UIResponder.resignFirstResponder),
+            to: nil,
+            from: nil,
+            for: nil
+        )
+        #endif
     }
 
 }

@@ -724,28 +724,21 @@ private struct StreamActionButtonStyleModifier: ViewModifier {
   func body(content: Content) -> some View {
     content
       .font(.subheadline.bold())
-      .foregroundStyle(.white.opacity(0.84))
+      .foregroundStyle(tint)
       .padding(.horizontal, 18)
       .padding(.vertical, 11)
       .frame(maxWidth: .infinity)
       .background(
-        Group {
-          if #available(iOS 26, *) {
-            Capsule()
-              .fill(tint.opacity(0.14))
-              .glassEffect(in: Capsule())
-          } else {
-            Capsule()
-              .fill(.regularMaterial)
-              .overlay(Capsule().fill(tint.opacity(0.14)))
-          }
-        }
+        Capsule()
+          .fill(.regularMaterial)
+          .overlay(Capsule().fill(tint.opacity(0.10)))
+          .overlay(Capsule().stroke(tint.opacity(0.32), lineWidth: 1))
       )
   }
 }
 
 extension View {
-  fileprivate func streamActionButtonStyle(tint: Color = .white) -> some View {
+  fileprivate func streamActionButtonStyle(tint: Color = .primary) -> some View {
     modifier(StreamActionButtonStyleModifier(tint: tint))
   }
 }
