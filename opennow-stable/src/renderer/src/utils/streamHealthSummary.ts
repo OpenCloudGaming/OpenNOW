@@ -2,6 +2,29 @@ import type { StreamDiagnostics } from "../gfn/webrtcClient";
 
 export type StreamHealthTier = "good" | "fair" | "poor" | "connecting";
 
+/**
+ * Latency quality grades based on round-trip time.
+ * Excellent: <20 ms  — imperceptible lag
+ * Good:      <50 ms  — minor, unnoticeable to most users
+ * Fair:      <80 ms  — slightly perceptible
+ * Poor:      ≥80 ms  — noticeable lag
+ */
+export type LatencyGrade = "Excellent" | "Good" | "Fair" | "Poor";
+
+/**
+ * Classify a round-trip time value into a human-readable latency grade.
+ *
+ * @param rttMs Round-trip time in milliseconds (0 or negative = unresolved)
+ * @returns     LatencyGrade label
+ */
+export function getLatencyGrade(rttMs: number): LatencyGrade {
+  if (rttMs <= 0) return "Fair"; // unknown/unresolved — treat neutrally
+  if (rttMs < 20) return "Excellent";
+  if (rttMs < 50) return "Good";
+  if (rttMs < 80) return "Fair";
+  return "Poor";
+}
+
 export interface StreamHealthSummary {
   /** Short label for UI chips */
   label: string;

@@ -32,6 +32,7 @@ export function buildVideoAccelerationCommandLine(
     "ignore-gpu-blocklist": true,
   };
   const isLinuxArm = platform === "linux" && (arch === "arm64" || arch === "arm");
+  const isDarwinArm64 = platform === "darwin" && arch === "arm64";
 
   if (platform === "win32") {
     if (preferences.decoderPreference !== "software") {
@@ -61,6 +62,42 @@ export function buildVideoAccelerationCommandLine(
         enableFeatures.push("VaapiIgnoreDriverChecks");
       }
     }
+  } else if (platform === "darwin") {
+    // Always enable Metal GPU rasterization and IOSurface memory on macOS
+    enableFeatures.push("CanvasOopRasterization", "Metal", "IOSurfaceMemory");
+    switches["enable-gpu-rasterization"] = true;
+    // Always enable accelerated MJPEG decode on macOS
+    switches["enable-accelerated-mjpeg-decode"] = true;
+
+    if (isDarwinArm64) {
+      // Apple Silicon (M1/M2/M3/M4): Metal GPU + VideoToolbox with VP9/HEVC/Arm paths
+      switches["use-gl"] = "metal";
+      if (preferences.decoderPreference !== "software") {
+        enableFeatures.push(
+          "VideoToolboxVideoDecoder",
+          "VideoToolboxVp9Decoding",
+          "VideoToolboxHEVCDecoding",
+          "VideoToolboxVp9DecodingOnArm",
+          "VaapiIgnoreDriverChecks",
+          "UseMetalVideoDecoder",
+          "MetalANGLE",
+          "UseEGLImageForMacVideoToolbox",
+        );
+      }
+      if (preferences.encoderPreference !== "software") {
+        enableFeatures.push("VideoToolboxVideoEncoder", "UseMetalVideoEncoder");
+      }
+    } else {
+      // Intel Mac: ANGLE GL + VideoToolbox decode with VP9 support
+      // Note: VideoToolboxVideoEncoder is Apple Silicon only; not added for Intel Mac
+      switches["use-gl"] = "angle";
+      if (preferences.decoderPreference !== "software") {
+        enableFeatures.push(
+          "VideoToolboxVideoDecoder",
+          "VideoToolboxVp9Decoding",
+        );
+      }
+    }
   }
 
   if (platform === "linux" && !isLinuxArm) {
@@ -80,4 +117,14 @@ export function buildVideoAccelerationCommandLine(
   }
 
   return { enableFeatures, disableFeatures, switches };
+}
+
+/**
+ * Returns a human-readable label for the macOS platform variant.
+ * @param arch - Node.js architecture string
+ */
+export function getMacPlatformLabel(arch: NodeJS.Architecture): string {
+  if (arch === "arm64") return "Apple Silicon";
+  if (arch === "x64") return "Intel Mac";
+  return "Mac";
 }

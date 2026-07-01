@@ -2,7 +2,12 @@ import { Monitor, Wifi, Activity, Gamepad2, AlertTriangle } from "lucide-react";
 import type { StreamDiagnostics } from "../gfn/webrtcClient";
 import type { JSX } from "react";
 import { useTranslation } from "../i18n";
-import { formatBitrate, getRttColor } from "../utils/streamDiagnosticsFormat";
+import {
+  formatBitrate,
+  formatLatencyGrade,
+  getJitterColor,
+  getRttColor,
+} from "../utils/streamDiagnosticsFormat";
 
 interface StatsOverlayProps {
   stats: StreamDiagnostics;
@@ -21,6 +26,7 @@ export function StatsOverlay({
   if (!isVisible) return null;
 
   const rttColor = getRttColor(stats.rttMs);
+  const jitterColor = getJitterColor(stats.jitterMs);
   const showPacketLoss = stats.packetLossPercent > 0;
   const hasData = stats.resolution !== "" || stats.bitrateKbps > 0;
 
@@ -49,13 +55,23 @@ export function StatsOverlay({
           <span className="sovl-val">{formatBitrate(stats.bitrateKbps)}</span>
         </div>
 
-        {/* RTT / Latency */}
+        {/* RTT / Latency — shows grade label (Excellent / Good / Fair / Poor) with color */}
         <div className="sovl-pill">
           <Activity size={13} className="sovl-icon" style={{ color: rttColor }} />
           <span className="sovl-val" style={{ color: rttColor }}>
-            {stats.rttMs > 0 ? `${stats.rttMs.toFixed(0)}ms` : "-- ms"}
+            {formatLatencyGrade(stats.rttMs)}
           </span>
         </div>
+
+        {/* Jitter — color-coded green/yellow/red */}
+        {stats.jitterMs > 0 && (
+          <div className="sovl-pill">
+            <span className="sovl-label" style={{ color: jitterColor }}>jitter</span>
+            <span className="sovl-val" style={{ color: jitterColor }}>
+              {stats.jitterMs.toFixed(1)}ms
+            </span>
+          </div>
+        )}
 
         {/* Codec */}
         {stats.codec && (

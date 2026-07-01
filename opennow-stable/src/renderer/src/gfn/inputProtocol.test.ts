@@ -230,7 +230,10 @@ test("wraps protocol v3 keyboard as single input", () => {
 });
 
 test("maps browser mouse buttons to GFN buttons", () => {
-  assert.deepEqual([0, 1, 2, 3, 4].map(toMouseButton), [1, 2, 3, 4, 5]);
+  // GFN protocol: 1=Left, 2=Right, 3=Middle, 4=Back, 5=Forward
+  // (confirmed from Swift native Mac client WebRTCInputProtocol.swift)
+  // Browser: 0=Left, 1=Middle, 2=Right, 3=Back, 4=Forward
+  assert.deepEqual([0, 1, 2, 3, 4].map(toMouseButton), [1, 3, 2, 4, 5]);
 });
 
 test("encodes mouse move with v3 cursor wrapper and inner payload", () => {
@@ -268,24 +271,31 @@ test("encodes mouse button and wheel with v3 single-event wrapper", () => {
 });
 
 test("encodes unicode text input with official SendUnicode packet framing", () => {
+  // Swift WebRTCInputProtocol.swift: [INPUT_TEXT:4LE][byteCount:4LE][utf8...] wrapped in wrapSingleEvent
+  // After wrapSingleEvent: [0x23][8B timestamp][0x22][INPUT_TEXT:4LE][byteCount:4LE][utf8...]
   const encoder = new InputEncoder();
   encoder.setProtocolVersion(3);
   const [packet] = encoder.encodeTextInput("a🙂\nß");
 
   assert.ok(packet);
-  assert.equal(packet[0], 0x22);
-  assert.equal(view(packet).getUint32(1, true), INPUT_TEXT);
-  assert.equal(new TextDecoder().decode(packet.subarray(5)), "a🙂\nß");
+  assert.equal(packet[0], 0x23);                                          // outer timestamp wrapper
+  assert.equal(packet[9], 0x22);                                          // single-event marker
+  assert.equal(view(packet).getUint32(10, true), INPUT_TEXT);             // type at payload offset 0
+  const utf8 = new TextEncoder().encode("a🙂\nß");
+  assert.equal(view(packet).getUint32(14, true), utf8.byteLength);        // byte count at payload offset 4
+  assert.equal(new TextDecoder().decode(packet.subarray(18)), "a🙂\nß"); // utf8 at payload offset 8
 });
 
 test("chunks unicode text input without splitting UTF-8 code points", () => {
+  // Each chunk: 10 bytes wrapSingleEvent overhead + 8 bytes header + chunkLength bytes utf8
   const encoder = new InputEncoder();
+  encoder.setProtocolVersion(3); // v3 adds wrapSingleEvent overhead
   const packets = encoder.encodeTextInput(`${"a".repeat(1015)}🙂b`);
 
   assert.equal(packets.length, 2);
-  assert.equal(packets[0].byteLength, 5 + 1015);
-  assert.equal(new TextDecoder().decode(packets[0].subarray(5)), "a".repeat(1015));
-  assert.equal(new TextDecoder().decode(packets[1].subarray(5)), "🙂b");
+  assert.equal(packets[0].byteLength, 10 + 8 + 1015); // wrapper(10) + header(8) + utf8
+  assert.equal(new TextDecoder().decode(packets[0].subarray(18)), "a".repeat(1015));
+  assert.equal(new TextDecoder().decode(packets[1].subarray(18)), "🙂b");
 });
 
 test("maps Gamepad API button values to XInput flags without pressed", () => {

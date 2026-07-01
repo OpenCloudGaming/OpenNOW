@@ -456,6 +456,123 @@ export function mungeAnswerSdp(sdp: string, maxBitrateKbps: number): string {
   return result.join(lineEnding);
 }
 
+/**
+ * Codec name normalizer mapping rtpmap codec strings to canonical short names.
+ * Used by reorderCodecsForPlatform to identify payload types by codec family.
+ */
+const CODEC_FAMILY_MAP: Record<string, string> = {
+  H264: "H264",
+  H265: "H265",
+  HEVC: "H265",
+  AV1: "AV1",
+  VP8: "VP8",
+  VP9: "VP9",
+};
+
+/**
+ * Reorder video codec payload types in the SDP m=video line to prefer
+ * hardware-accelerated codecs on the given platform/architecture.
+ *
+ * Priority rules:
+ *   darwin arm64 (Apple Silicon): AV1 → H264 → H265 → others
+ *     (M3+ has native AV1 decode via VideoToolbox; H264 HW always present)
+ *   darwin x86_64 / generic darwin: H264 → H265 → AV1 → others
+ *     (VideoToolbox H264/H265 is fast; AV1 is SW-only on Intel Macs)
+ *   other platforms: no reordering (returns sdp unmodified)
+ *
+ * Unlike preferCodec(), this function does NOT remove payload types — it only
+ * moves the preferred codec families to the front of the m= payload list so
+ * the remote end picks the best hardware-accelerated option during negotiation.
+ *
+ * @param sdp      The SDP string (offer or answer) to modify
+ * @param platform OS platform string, e.g. "darwin", "win32", "linux"
+ * @param arch     CPU architecture string, e.g. "arm64", "x64"
+ * @returns        SDP with video payload types reordered (or unmodified if no-op)
+ */
+export function reorderCodecsForPlatform(
+  sdp: string,
+  platform: string,
+  arch: string,
+): string {
+  if (platform !== "darwin") {
+    // No platform-specific reordering for non-macOS targets
+    return sdp;
+  }
+
+  // Apple Silicon (arm64): AV1 decode is HW-accelerated on M3+ via VideoToolbox.
+  // Prefer AV1 first, then H264 (always HW), then H265.
+  // Intel Mac: AV1 decode is software-only; prefer H264 then H265.
+  const isAppleSilicon = arch === "arm64";
+  const priorityOrder: string[] = isAppleSilicon
+    ? ["AV1", "H264", "H265"]  // M3+ has HW AV1 via VideoToolbox; prefer it
+    : ["H264", "H265", "AV1"]; // Intel Mac: AV1 is SW-only, keep H264 first
+
+  console.log(
+    `[SDP] reorderCodecsForPlatform: platform=${platform} arch=${arch} ` +
+    `priority=[${priorityOrder.join(", ")}]`,
+  );
+
+  const lineEnding = sdp.includes("\r\n") ? "\r\n" : "\n";
+  const lines = sdp.split(/\r?\n/);
+
+  // First pass: collect payload-type → codec-family for the video section
+  const ptToFamily = new Map<string, string>();
+  let inVideoSection = false;
+  for (const line of lines) {
+    if (line.startsWith("m=video")) {
+      inVideoSection = true;
+      continue;
+    }
+    if (line.startsWith("m=") && inVideoSection) {
+      inVideoSection = false;
+    }
+    if (!inVideoSection || !line.startsWith("a=rtpmap:")) {
+      continue;
+    }
+    const [, rest = ""] = line.split(":", 2);
+    const [pt = "", codecPart = ""] = rest.split(/\s+/, 2);
+    const rawName = (codecPart.split("/")[0] ?? "").toUpperCase();
+    const family = CODEC_FAMILY_MAP[rawName];
+    if (pt && family) {
+      ptToFamily.set(pt, family);
+    }
+  }
+
+  // Second pass: rewrite each m=video line's payload type list
+  const result = lines.map((line) => {
+    if (!line.startsWith("m=video")) {
+      return line;
+    }
+    const parts = line.split(/\s+/);
+    const header = parts.slice(0, 3); // "m=video <port> <proto>"
+    const payloads = parts.slice(3);
+
+    // Bucket payload types by priority tier
+    const buckets: string[][] = priorityOrder.map(() => []);
+    const rest: string[] = [];
+
+    for (const pt of payloads) {
+      const family = ptToFamily.get(pt);
+      const idx = family ? priorityOrder.indexOf(family) : -1;
+      if (idx >= 0) {
+        buckets[idx]!.push(pt);
+      } else {
+        rest.push(pt);
+      }
+    }
+
+    const ordered = [...buckets.flat(), ...rest];
+    const rewritten = [...header, ...ordered].join(" ");
+
+    if (rewritten !== line) {
+      console.log(`[SDP] reorderCodecsForPlatform: reordered payload types → [${ordered.join(", ")}]`);
+    }
+    return rewritten;
+  });
+
+  return result.join(lineEnding);
+}
+
 export function buildNvstSdp(params: NvstParams): string {
   console.log(`[SDP] buildNvstSdp: ${params.width}x${params.height}@${params.fps}fps, codec=${params.codec}, colorQuality=${params.colorQuality}, maxBitrate=${params.maxBitrateKbps}kbps`);
   console.log(`[SDP] buildNvstSdp: ICE ufrag=${params.credentials.ufrag}, pwd=${params.credentials.pwd.slice(0, 8)}..., fingerprint=${params.credentials.fingerprint.slice(0, 20)}...`);

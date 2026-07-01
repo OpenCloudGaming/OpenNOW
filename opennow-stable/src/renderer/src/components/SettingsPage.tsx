@@ -44,6 +44,10 @@ import {
   loadStoredRegionPingResults,
   saveStoredRegionPingResults,
 } from "../utils/pingResultsStorage";
+import {
+  getMacStreamPresets,
+  type MacStreamQualityPresetId,
+} from "../utils/streamQualityPresets";
 
 interface SettingsPageProps {
   settings: Settings;
@@ -2662,6 +2666,48 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                 <h2>{t("settings.video.title")}</h2>
               </div>
               <div className="settings-rows">
+                {/* macOS Stream Quality Presets */}
+                {isMac && (() => {
+                  const macPresets = getMacStreamPresets();
+                  const macPresetMeta: { id: MacStreamQualityPresetId; label: string; description: string }[] = [
+                    { id: 'mac-performance', label: 'Performance', description: '720p · 45 Mbps · Ultra-Low Latency' },
+                    { id: 'mac-balanced',   label: 'Balanced',    description: '1080p · 75 Mbps · Low Latency' },
+                    { id: 'mac-quality',    label: 'Quality',     description: '1080p · 120 Mbps · AV1 / H.264' },
+                    { id: 'mac-ultra',      label: 'Ultra',       description: '1440p · 150 Mbps · H.264' },
+                  ];
+                  const activeMacPreset = (Object.keys(macPresets) as MacStreamQualityPresetId[]).find(
+                    (id) =>
+                      macPresets[id].resolution === settings.resolution &&
+                      macPresets[id].fps === settings.fps &&
+                      macPresets[id].maxBitrateMbps === settings.maxBitrateMbps
+                  ) ?? null;
+                  return (
+                    <div className="settings-row settings-row--column">
+                      <label className="settings-label settings-label--with-icon">
+                        <Zap size={15} className="settings-label-icon" />
+                        Mac Presets
+                      </label>
+                      <div className="settings-chip-row">
+                        {macPresetMeta.map(({ id, label, description }) => (
+                          <button
+                            key={id}
+                            type="button"
+                            className={`settings-chip ${activeMacPreset === id ? 'active' : ''}`}
+                            title={description}
+                            onClick={() => {
+                              const p = macPresets[id];
+                              handleResolutionChange(p.resolution);
+                              handleChange('fps', p.fps);
+                              handleChange('maxBitrateMbps', p.maxBitrateMbps);
+                            }}
+                          >
+                            <span>{label}</span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })()}
                 {/* Resolution — grouped dropdown */}
                 <div className="settings-row settings-row--column">
                   <label className="settings-label settings-label--with-icon">
