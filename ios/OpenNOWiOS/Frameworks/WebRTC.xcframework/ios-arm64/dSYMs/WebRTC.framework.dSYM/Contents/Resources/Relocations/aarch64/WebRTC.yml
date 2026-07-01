@@ -1,0 +1,5 @@
+---
+triple:          'arm64-apple-darwin'
+binary-path:     'ios/OpenNOWiOS/Frameworks/WebRTC.xcframework/ios-arm64/WebRTC.framework/WebRTC'
+relocations:     []
+...

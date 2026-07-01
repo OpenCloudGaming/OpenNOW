@@ -30,5 +30,6 @@ Current app architecture:
 - Deployment target: iOS 17.0
 - Bundle ID (default): `com.opencloudgaming.opennow`
 - App icon slots are scaffolded in `OpenNOWiOS/Assets.xcassets/AppIcon.appiconset`.
+- The vendored `Frameworks/WebRTC.xcframework` includes a matching iOS device dSYM under `ios-arm64/dSYMs` so App Store archive uploads include WebRTC's UUID. If WebRTC is replaced, regenerate or replace the framework and dSYM from the same build.
 - The shared `OpenNOWiOS` target now builds for tvOS as well.
 - The current Apple TV build is intentionally limited: sign-in uses the tvOS authentication session path, Live Activities are disabled, notifications are stubbed, and in-app streaming still needs a native tvOS player rather than the iOS web-view flow.
