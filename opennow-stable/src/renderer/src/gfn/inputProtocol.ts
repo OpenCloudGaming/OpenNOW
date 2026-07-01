@@ -14,13 +14,16 @@ export const INPUT_HAPTICS_ENABLED = 13;
 export const INPUT_TEXT = 23;
 
 const TEXT_INPUT_CHUNK_MAX_BYTES = 1016;
-const TEXT_INPUT_HEADER_BYTES = 5;
+// Text input packet: [INPUT_TEXT: u32 LE][byteLength: u32 LE] + utf8 payload
+// then wrapped with wrapSingleEvent() — confirmed from Swift WebRTCInputProtocol.swift
+const TEXT_INPUT_HEADER_BYTES = 8;
 
 // Mouse button constants (1-based for GFN protocol)
-// GFN uses: 1=Left, 2=Middle, 3=Right, 4=Back, 5=Forward
+// GFN uses: 1=Left, 2=Right, 3=Middle, 4=Back, 5=Forward
+// (confirmed from Swift native Mac client WebRTCInputProtocol.swift)
 export const MOUSE_LEFT = 1;
-export const MOUSE_MIDDLE = 2;
-export const MOUSE_RIGHT = 3;
+export const MOUSE_RIGHT = 2;
+export const MOUSE_MIDDLE = 3;
 export const MOUSE_BACK = 4;
 export const MOUSE_FORWARD = 5;
 
@@ -802,12 +805,14 @@ export class InputEncoder {
         break;
       }
 
+      // Format: [INPUT_TEXT: u32 LE][byteLength: u32 LE][utf8 bytes...]
+      // then wrapped with wrapSingleEvent() — matches Swift WebRTCInputProtocol.swift
       const bytes = new Uint8Array(TEXT_INPUT_HEADER_BYTES + chunkLength);
       const view = new DataView(bytes.buffer);
-      bytes[0] = 0x22;
-      view.setUint32(1, INPUT_TEXT, true);
+      view.setUint32(0, INPUT_TEXT, true);           // type: u32 LE
+      view.setUint32(4, chunkLength, true);          // byteLength: u32 LE
       bytes.set(utf8.subarray(offset, offset + chunkLength), TEXT_INPUT_HEADER_BYTES);
-      chunks.push(bytes);
+      chunks.push(wrapSingleEvent(bytes, this.protocolVersion));
       offset += chunkLength;
     }
 
@@ -955,18 +960,26 @@ export function mapKeyboardEvent(event: KeyboardEvent, _layout?: KeyboardLayout)
     return null;
   }
 
-  // Official GFN Zc() always sends scancode 0; the server uses layout + VK instead.
+  // GFN server resolves physical key position from VK + layout; scancode is not required.
+  // Sending scancode 0 matches the official GFN web client behaviour.
   return { vk, scancode: 0 };
 }
 
 /**
  * Convert browser mouse button (0-based) to GFN protocol (1-based).
  * Browser: 0=Left, 1=Middle, 2=Right, 3=Back, 4=Forward
- * GFN:     1=Left, 2=Middle, 3=Right, 4=Back, 5=Forward
+ * GFN:     1=Left, 2=Right, 3=Middle, 4=Back, 5=Forward
+ * (confirmed from Swift native Mac client WebRTCInputProtocol.swift)
  */
 export function toMouseButton(button: number): number {
-  // Convert 0-based browser button to 1-based GFN button
-  return button + 1;
+  switch (button) {
+    case 0: return MOUSE_LEFT;    // Left   → 1
+    case 1: return MOUSE_MIDDLE;  // Middle → 3
+    case 2: return MOUSE_RIGHT;   // Right  → 2
+    case 3: return MOUSE_BACK;    // Back   → 4
+    case 4: return MOUSE_FORWARD; // Forward→ 5
+    default: return button + 1;
+  }
 }
 
 /**

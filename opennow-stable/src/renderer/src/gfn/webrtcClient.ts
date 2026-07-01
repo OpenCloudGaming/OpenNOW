@@ -447,7 +447,7 @@ class MouseDeltaFilter {
       const scale = 1 + 0.1 * Math.max(1, Math.min(16, dtMs));
       const vx2 = 2 * scale * Math.abs(this.velocityX);
       const vy2 = 2 * scale * Math.abs(this.velocityY);
-      const threshold = Math.max(this.relaxedForRawInput ? 9800 : 8100, vx2 * vx2 + vy2 * vy2);
+      const threshold = Math.max(this.relaxedForRawInput ? 90000 : 62500, vx2 * vx2 + vy2 * vy2);
       accept = diffMag < threshold;
       if (!accept && (this.rejectedX !== 0 || this.rejectedY !== 0)) {
         const rx = dx - this.rejectedX;
@@ -2914,6 +2914,16 @@ export class GfnWebRtcClient {
 
     this.requestEscapeKeyboardLock();
 
+    // On macOS, unadjustedMovement:true bypasses the OS pointer-acceleration curve,
+    // making the in-game cursor feel much slower than the native macOS cursor.
+    // Skip raw input on macOS so the system acceleration passes through naturally.
+    const isMacOS = navigator.platform.toLowerCase().includes("mac");
+    if (isMacOS) {
+      this.log("macOS detected — using standard pointer lock (OS-accelerated) for native cursor feel");
+      await this.requestPointerLockCompat(lockTarget);
+      return;
+    }
+
     try {
       await this.requestPointerLockCompat(lockTarget, { unadjustedMovement: true });
       this.log("Pointer lock acquired with unadjustedMovement=true (raw/unaccelerated)");
@@ -2944,9 +2954,15 @@ export class GfnWebRtcClient {
         this.log("Auto pointer lock acquired");
         return;
       } catch (err) {
-        // Fallback to a simpler request if the guarded method fails
+        // Fallback to a simpler request if the guarded method fails.
+        // On macOS, always use standard pointer lock (no unadjustedMovement)
+        // so OS acceleration passes through and cursor speed matches the desktop.
+        const isMacOSFallback = navigator.platform.toLowerCase().includes("mac");
         try {
-          await this.requestPointerLockCompat(target, { unadjustedMovement: true });
+          await this.requestPointerLockCompat(
+            target,
+            isMacOSFallback ? undefined : { unadjustedMovement: true },
+          );
           this.log("Auto pointer lock acquired (fallback)");
           return;
         } catch (err2) {
