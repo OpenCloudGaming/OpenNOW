@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
@@ -578,22 +579,29 @@ private fun StorageAddonPanel(storageAddon: StorageAddon?, openExternal: (String
                                 style = MaterialTheme.typography.labelSmall,
                             )
                         }
-                        LinearProgressIndicator(
-                            progress = { usageFraction },
+                        val usageColor = when {
+                            usageFraction >= 0.9f -> Color(0xffff8a65)
+                            usageFraction >= 0.75f -> Color(0xffffc266)
+                            else -> MaterialTheme.colorScheme.primary
+                        }
+                        Box(
                             modifier = Modifier
                                 .fillMaxWidth()
+                                .height(4.dp)
                                 .clip(RoundedCornerShape(999.dp))
+                                .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.7f))
                                 .semantics {
                                     contentDescription = "Cloud storage ${formatStoragePercent(usageFraction)} used"
                                     progressBarRangeInfo = ProgressBarRangeInfo(usageFraction, 0f..1f)
                                 },
-                            color = when {
-                                usageFraction >= 0.9f -> Color(0xffff8a65)
-                                usageFraction >= 0.75f -> Color(0xffffc266)
-                                else -> MaterialTheme.colorScheme.primary
-                            },
-                            trackColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.7f),
-                        )
+                        ) {
+                            Box(
+                                Modifier
+                                    .fillMaxWidth(usageFraction.coerceIn(0f, 1f))
+                                    .height(4.dp)
+                                    .background(usageColor),
+                            )
+                        }
                     }
                 }
                 storageAddon.regionName?.takeIf { it.isNotBlank() }?.let { region ->
