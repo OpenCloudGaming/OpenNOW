@@ -10,7 +10,6 @@ export default async function afterSign({ appOutDir, packager }) {
 
   execFileSync("codesign", [
     "--force",
-    "--deep",
     "--sign", "-",
     "--requirements", `=designated => identifier "${bundleId}"`,
     appPath,

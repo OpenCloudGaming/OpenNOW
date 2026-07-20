@@ -537,6 +537,10 @@ jobs:
       - name: Package installers
         run: npx electron-builder --publish never ${{ matrix.builder_args }}
 
+      - name: Verify macOS code signatures
+        if: runner.os == 'macOS'
+        run: codesign --verify --deep --strict --verbose=2 dist-release/mac*/OpenNOW.app
+
       - name: Rename macOS update feed
         if: matrix.arch == 'arm64'
         shell: bash

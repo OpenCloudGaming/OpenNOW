@@ -27,7 +27,7 @@
     "lint": "oxlint src",
     "locales:check": "node scripts/check-translations.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.json",
-    "test": "node scripts/run-tests.mjs"
+    "test": "node scripts/run-tests.mjs && node --test scripts/after-sign-mac.test.mjs"
   },
   "dependencies": {
     "discord-rpc": "^4.0.1",
