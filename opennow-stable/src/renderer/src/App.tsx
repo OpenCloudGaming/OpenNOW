@@ -3299,6 +3299,9 @@ export function App(): JSX.Element {
             setStreamStatus("streaming");
             markDiscordStreamStarted();
             scheduleStableRecoveryReset(activeSession.sessionId);
+            // Session confirmed stable — reset auto-rejoin counter so it doesn't
+            // block future rejoins after successful sessions.
+            consecutiveAutoRejoinAttemptsRef.current = 0;
             console.log(
               "[Stream] Offer applied; use [WebRTC] logs for ICE/video dimensions. signalingServer=%s media=%s",
               activeSession.signalingServer,
