@@ -3042,7 +3042,12 @@ export function App(): JSX.Element {
     const launch = (streamingBaseUrl: string | null): void => {
       if (!streamingBaseUrl) {
         console.error("[AutoRejoin] Cannot rejoin: getSmartAutoJoinBaseUrl returned null");
-        resetLaunchRuntime();
+        setLaunchError({
+          stage: "connecting",
+          title: t("errors.sessionConnectionLostTitle"),
+          description: t("errors.sessionConnectionLostDescription"),
+        });
+        resetLaunchRuntime({ keepLaunchError: true });
         void refreshNavbarActiveSession();
         return;
       }
@@ -3075,7 +3080,7 @@ export function App(): JSX.Element {
         });
     }
     return true;
-  }, [refreshNavbarActiveSession, resetLaunchRuntime, settings.enableFastQueueJoin]);
+  }, [refreshNavbarActiveSession, resetLaunchRuntime, setLaunchError, settings.enableFastQueueJoin, t]);
 
   const handleExpectedNativeSessionClose = useCallback((reason: string): void => {
     console.log("[Recovery] Treating signaling close as ended session:", reason);
@@ -3203,6 +3208,9 @@ export function App(): JSX.Element {
       setStreamStatus("streaming");
       markDiscordStreamStarted();
       scheduleStableRecoveryReset(activeSession.sessionId);
+      // Session confirmed stable — reset auto-rejoin counter so it doesn't
+      // block future rejoins after successful sessions.
+      consecutiveAutoRejoinAttemptsRef.current = 0;
     };
 
     const unsubscribe = window.openNow.onSignalingEvent(async (event: MainToRendererSignalingEvent) => {

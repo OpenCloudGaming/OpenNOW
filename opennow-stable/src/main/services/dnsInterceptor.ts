@@ -67,5 +67,13 @@ export function initDnsInterceptor(): void {
     originalLookup(hostname, actualOptions, actualCallback);
   };
 
+  // Preserve util.promisify(dns.lookup) compatibility — copy the custom promisify
+  // symbol from the original so callers get the correct { address, family } shape.
+  const promisifyCustom = Symbol.for("nodejs.util.promisify.custom");
+  if (promisifyCustom in originalLookup) {
+    // @ts-ignore
+    dns.lookup[promisifyCustom] = originalLookup[promisifyCustom as keyof typeof originalLookup];
+  }
+
   console.log("[DNS Interceptor] Interceptor initialized successfully with safe fallback resolver.");
 }

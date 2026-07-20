@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import dns from "node:dns";
 import { tcpPing } from "../services/regionPing";
-import { fetchPrintedWasteServerMapping } from "../services/printedWaste";
+import { fetchPrintedWasteQueue, fetchPrintedWasteServerMapping } from "../services/printedWaste";
 import { app } from "electron";
 import { createRequire } from "node:module";
 import { createHash } from "node:crypto";
@@ -1963,55 +1963,29 @@ export async function claimSession(input: SessionClaimRequest): Promise<SessionI
   throw new Error("Session did not become ready after claiming");
 }
 
-interface QueueNodeInfo {
-  QueuePosition: number;
-  Region: string;
-  eta?: number;
-}
-
-interface QueueApiResponse {
-  status: boolean;
-  data: Record<string, QueueNodeInfo>;
-}
-
 function clusterPrefix(key: string): string {
   const parts = key.split("-");
   return parts.length > 2 ? parts.slice(0, parts.length - 1).join("-") : key;
 }
 
 export async function getSmartAutoJoinBaseUrl(proxyUrl?: string): Promise<string | null> {
-  const QUEUE_API_URL = "https://api.printedwaste.com/gfn/queue/";
-
   try {
-    // 1. Fetch server mapping to filter out nuked zones
     const appVersion = app.getVersion();
+
+    // 1. Fetch server mapping to filter out nuked zones
     const serverMapping = await fetchPrintedWasteServerMapping(appVersion).catch((e) => {
       console.warn("[SmartAutoJoin] Failed to fetch server mapping:", e);
       return null;
     });
 
-    // 2. Fetch queue with abort controller timeout
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 7000);
-    let queueRes: Response;
-    try {
-      queueRes = await fetchWithOptionalProxy(
-        QUEUE_API_URL,
-        { method: "GET", signal: controller.signal },
-        proxyUrl
-      );
-    } finally {
-      clearTimeout(timeoutId);
-    }
-
-    if (!queueRes.ok) return null;
-    const queueBody = (await queueRes.json()) as QueueApiResponse;
-    if (!queueBody.status || !queueBody.data) return null;
+    // 2. Fetch queue via shared service (includes User-Agent header + proxy support)
+    const queueData = await fetchPrintedWasteQueue(appVersion, proxyUrl);
+    if (!queueData || Object.keys(queueData).length === 0) return null;
 
     // Get unique datacenter prefixes
     const prefixes = Array.from(
       new Set(
-        Object.keys(queueBody.data).map((zoneId) => clusterPrefix(zoneId).toLowerCase())
+        Object.keys(queueData).map((zoneId) => clusterPrefix(zoneId).toLowerCase())
       )
     );
 
@@ -2020,7 +1994,7 @@ export async function getSmartAutoJoinBaseUrl(proxyUrl?: string): Promise<string
     // Ping all datacenters in parallel (takes only ~200-300ms total)
     await Promise.all(
       prefixes.map(async (prefix) => {
-        const matchingZone = Object.keys(queueBody.data).find(
+        const matchingZone = Object.keys(queueData).find(
           (zoneId) => clusterPrefix(zoneId).toLowerCase() === prefix
         );
         if (!matchingZone) return;
@@ -2040,7 +2014,7 @@ export async function getSmartAutoJoinBaseUrl(proxyUrl?: string): Promise<string
     );
 
     const candidateZones: Array<{ zoneId: string; queue: number; pingMs: number }> = [];
-    for (const [zoneId, zoneInfo] of Object.entries(queueBody.data)) {
+    for (const [zoneId, zoneInfo] of Object.entries(queueData)) {
       // Filter out nuked zones using server mapping (case-insensitive check)
       if (serverMapping) {
         const mappingKey = Object.keys(serverMapping).find(
