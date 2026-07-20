@@ -451,7 +451,9 @@
       "autoBest": "Auto (Best)",
       "searchPlaceholder": "Search regions...",
       "refreshPing": "Refresh ping",
-      "noRegionsMatch": "No regions match \"{{query}}\""
+      "noRegionsMatch": "No regions match \"{{query}}\"",
+      "autoRejoin": "Auto Rejoin",
+      "autoRejoinHint": "Automatically picks the best server using your ping and queue, and automatically rejoins the game when your session ends."
     },
     "persistentStorage": {
       "title": "Persistent Storage",

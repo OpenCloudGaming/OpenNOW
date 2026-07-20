@@ -2823,9 +2823,9 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                     </div>
                     <div className="settings-row">
                       <label className="settings-label">
-                         {"Auto Rejoin"}
+                         {t("settings.region.autoRejoin")}
                         <span className="settings-hint">
-                          {"Automatically picks the best server using your ping and queue, and automatically rejoins the game when your session ends."}
+                          {t("settings.region.autoRejoinHint")}
                         </span>
                       </label>
                       <label className="settings-toggle">
