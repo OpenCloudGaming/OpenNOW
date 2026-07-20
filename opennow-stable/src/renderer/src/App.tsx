@@ -74,7 +74,7 @@ import {
   sortLibraryGames,
 } from "./lib/gameCatalog";
 import { chooseAccountLinked, getEpicOwnershipLaunchError, resolveInstallToPlayStorageRegionUrl } from "./lib/launchOwnership";
-import { hasAnyEligiblePrintedWasteZone, isAllianceStreamingBaseUrl } from "./lib/printedWaste";
+import { hasAnyEligiblePrintedWasteZone, isAllianceStreamingBaseUrl, pickBestPrintedWasteZone, constructPrintedWasteZoneUrl } from "./lib/printedWaste";
 import {
   mergePolledSessionState,
   normalizeMembershipTier,
@@ -779,6 +779,8 @@ export function App(): JSX.Element {
       window.clearTimeout(stableRecoveryResetTimerRef.current);
       stableRecoveryResetTimerRef.current = null;
     }
+    prePingSmartUrlRef.current = null;
+    prePingInFlightRef.current = false;
     if (remoteIceGraceTimerRef.current !== null) {
       window.clearTimeout(remoteIceGraceTimerRef.current);
       remoteIceGraceTimerRef.current = null;
@@ -1709,15 +1711,12 @@ export function App(): JSX.Element {
 
         // Only standard NP-* zones (same filter as QueueServerSelectModal)
         const isStandardZone = (id: string): boolean => id.startsWith("NP-") && !id.startsWith("NPA-");
-        const constructZoneUrl = (id: string): string =>
-          `https://${id.toLowerCase()}.cloudmatchbeta.nvidiagrid.net/`;
 
         const candidates = Object.entries(queueData)
           .filter(([zoneId]) => isStandardZone(zoneId) && !nukedIds.has(zoneId))
-          .map(([zoneId, zone]) => ({
+          .map(([zoneId]) => ({
             zoneId,
-            queuePosition: zone.QueuePosition,
-            routingUrl: constructZoneUrl(zoneId),
+            routingUrl: constructPrintedWasteZoneUrl(zoneId),
           }));
 
         if (candidates.length === 0) {
@@ -1729,21 +1728,11 @@ export function App(): JSX.Element {
         const pingResults = await window.openNow.pingRegions(regionsToTest);
         const pingMap = new Map<string, number | null>(pingResults.map((r) => [r.url, r.pingMs]));
 
-        const withPing = candidates.map((c) => ({ ...c, pingMs: pingMap.get(c.routingUrl) ?? null }));
-        const pool = withPing.filter((z) => z.pingMs !== null).length > 0
-          ? withPing.filter((z) => z.pingMs !== null)
-          : withPing;
-
-        const maxPing = Math.max(...pool.map((z) => z.pingMs ?? 999), 1);
-        const maxQueue = Math.max(...pool.map((z) => z.queuePosition), 1);
-        const AUTO_PING_WEIGHT = 0.75;
-        const AUTO_QUEUE_WEIGHT = 0.25;
-
-        const best = pool.reduce((prev, curr) => {
-          const prevScore = ((prev.pingMs ?? maxPing) / maxPing) * AUTO_PING_WEIGHT + (prev.queuePosition / maxQueue) * AUTO_QUEUE_WEIGHT;
-          const currScore = ((curr.pingMs ?? maxPing) / maxPing) * AUTO_PING_WEIGHT + (curr.queuePosition / maxQueue) * AUTO_QUEUE_WEIGHT;
-          return currScore < prevScore ? curr : prev;
-        });
+        const best = pickBestPrintedWasteZone(queueData, serverMapping, pingMap);
+        if (!best) {
+          console.warn("[AutoRejoin] No best server found by the picker algorithm");
+          return;
+        }
 
         prePingSmartUrlRef.current = best.routingUrl;
         console.log(`[AutoRejoin] Best server: ${best.zoneId} (ping: ${best.pingMs}ms, queue: ${best.queuePosition})`);
