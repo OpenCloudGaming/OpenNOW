@@ -1679,44 +1679,80 @@ export function App(): JSX.Element {
     previousFreeTierRemainingSecondsRef.current = freeTierSessionRemainingSeconds;
   }, [freeTierSessionRemainingSeconds]);
 
-  // Auto-Rejoin: pre-ping best server using sessionTimeRemainingSeconds (works for ALL tiers, not just FREE)
+  // Auto-Rejoin: pre-fetch best server URL using the same weighted algorithm as QueueServerSelectModal
+  // (75% ping weight + 25% queue weight). Runs when ~15s remain in the session.
   useEffect(() => {
     if (!settings.enableFastQueueJoin) return;
-
-    // Only log at key thresholds to avoid console spam
-    if (sessionTimeRemainingSeconds !== null) {
-      if (sessionTimeRemainingSeconds <= 60 && (sessionTimeRemainingSeconds % 5 === 0 || sessionTimeRemainingSeconds <= 15)) {
-        console.log("[AutoRejoin] Session time remaining:", sessionTimeRemainingSeconds, "s | cachedUrl:", prePingSmartUrlRef.current, "| inFlight:", prePingInFlightRef.current);
-      } else if (sessionTimeRemainingSeconds % 300 === 0) {
-        // Log every 5 minutes during normal play so user can verify it's alive
-        console.log("[AutoRejoin] ⏱ Session time remaining:", Math.round(sessionTimeRemainingSeconds / 60), "min");
-      }
-    } else {
-      // Only log this once — when it first becomes null
-      console.log("[AutoRejoin] sessionTimeRemainingSeconds is null (not streaming or tier unknown)");
-    }
-
     if (
-      sessionTimeRemainingSeconds !== null &&
-      sessionTimeRemainingSeconds <= 15 &&
-      prePingSmartUrlRef.current === null &&
-      !prePingInFlightRef.current
-    ) {
-      prePingInFlightRef.current = true;
-      console.log("[AutoRejoin] *** TRIGGERING pre-fetch at", sessionTimeRemainingSeconds, "s remaining ***");
-      window.openNow.getSmartAutoJoinBaseUrl().then((smartUrl) => {
-        if (smartUrl) {
-          prePingSmartUrlRef.current = smartUrl;
-          console.log("[AutoRejoin] ✅ Cached best server URL:", smartUrl);
-        } else {
-          console.warn("[AutoRejoin] ⚠️ Pre-fetch returned no server URL");
+      sessionTimeRemainingSeconds === null ||
+      sessionTimeRemainingSeconds > 15 ||
+      prePingSmartUrlRef.current !== null ||
+      prePingInFlightRef.current
+    ) return;
+
+    prePingInFlightRef.current = true;
+    console.log("[AutoRejoin] Fetching queue + pinging servers at", sessionTimeRemainingSeconds, "s remaining");
+
+    void (async () => {
+      try {
+        const [queueData, serverMapping] = await Promise.all([
+          window.openNow.fetchPrintedWasteQueue(),
+          window.openNow.fetchPrintedWasteServerMapping().catch(() => null),
+        ]);
+
+        const nukedIds = new Set<string>();
+        if (serverMapping) {
+          for (const [zoneId, meta] of Object.entries(serverMapping)) {
+            if (meta.nuked) nukedIds.add(zoneId);
+          }
         }
+
+        // Only standard NP-* zones (same filter as QueueServerSelectModal)
+        const isStandardZone = (id: string): boolean => id.startsWith("NP-") && !id.startsWith("NPA-");
+        const constructZoneUrl = (id: string): string =>
+          `https://${id.toLowerCase()}.cloudmatchbeta.nvidiagrid.net/`;
+
+        const candidates = Object.entries(queueData)
+          .filter(([zoneId]) => isStandardZone(zoneId) && !nukedIds.has(zoneId))
+          .map(([zoneId, zone]) => ({
+            zoneId,
+            queuePosition: zone.QueuePosition,
+            routingUrl: constructZoneUrl(zoneId),
+          }));
+
+        if (candidates.length === 0) {
+          console.warn("[AutoRejoin] No valid candidate zones found");
+          return;
+        }
+
+        const regionsToTest = candidates.map((c) => ({ name: c.zoneId, url: c.routingUrl }));
+        const pingResults = await window.openNow.pingRegions(regionsToTest);
+        const pingMap = new Map<string, number | null>(pingResults.map((r) => [r.url, r.pingMs]));
+
+        const withPing = candidates.map((c) => ({ ...c, pingMs: pingMap.get(c.routingUrl) ?? null }));
+        const pool = withPing.filter((z) => z.pingMs !== null).length > 0
+          ? withPing.filter((z) => z.pingMs !== null)
+          : withPing;
+
+        const maxPing = Math.max(...pool.map((z) => z.pingMs ?? 999), 1);
+        const maxQueue = Math.max(...pool.map((z) => z.queuePosition), 1);
+        const AUTO_PING_WEIGHT = 0.75;
+        const AUTO_QUEUE_WEIGHT = 0.25;
+
+        const best = pool.reduce((prev, curr) => {
+          const prevScore = ((prev.pingMs ?? maxPing) / maxPing) * AUTO_PING_WEIGHT + (prev.queuePosition / maxQueue) * AUTO_QUEUE_WEIGHT;
+          const currScore = ((curr.pingMs ?? maxPing) / maxPing) * AUTO_PING_WEIGHT + (curr.queuePosition / maxQueue) * AUTO_QUEUE_WEIGHT;
+          return currScore < prevScore ? curr : prev;
+        });
+
+        prePingSmartUrlRef.current = best.routingUrl;
+        console.log(`[AutoRejoin] Best server: ${best.zoneId} (ping: ${best.pingMs}ms, queue: ${best.queuePosition})`);
+      } catch (err) {
+        console.error("[AutoRejoin] Pre-fetch failed:", err);
+      } finally {
         prePingInFlightRef.current = false;
-      }).catch((err) => {
-        console.error("[AutoRejoin] ❌ Pre-ping failed:", err);
-        prePingInFlightRef.current = false;
-      });
-    }
+      }
+    })();
   }, [sessionTimeRemainingSeconds, settings.enableFastQueueJoin]);
 
   useEffect(() => {
@@ -3068,16 +3104,10 @@ export function App(): JSX.Element {
       console.log("[AutoRejoin] Using pre-fetched URL:", cachedUrl);
       launch(cachedUrl);
     } else {
-      console.warn("[AutoRejoin] No cached URL — fetching best server now (might be slower)");
-      void window.openNow.getSmartAutoJoinBaseUrl()
-        .then((url) => {
-          console.log("[AutoRejoin] Post-session fetch returned:", url);
-          launch(url);
-        })
-        .catch((error) => {
-          console.error("[AutoRejoin] Fallback fetch failed:", error);
-          launch(null);
-        });
+      // No cached URL — pre-ping didn't complete in time. Show error instead of
+      // silently dropping to idle (same error as session connection lost).
+      console.warn("[AutoRejoin] No cached URL available — pre-ping did not complete in time");
+      launch(null);
     }
     return true;
   }, [refreshNavbarActiveSession, resetLaunchRuntime, setLaunchError, settings.enableFastQueueJoin, t]);
@@ -4319,64 +4349,6 @@ export function App(): JSX.Element {
     }
   }, [endPlaytimeSession, markExplicitSignalingShutdown, refreshNavbarActiveSession, resetLaunchRuntime, resolveExitPrompt, stopSessionByTarget, streamingGame]);
 
-  // DEV ONLY: expose auto-rejoin test function so you can call window.__testAutoRejoin() in DevTools
-  useEffect(() => {
-    if (!import.meta.env.DEV) return;
-    (window as unknown as Record<string, unknown>).__testAutoRejoin = async () => {
-      console.log("[AutoRejoin] 🧪 Manual test triggered from DevTools console");
-      if (!settings.enableFastQueueJoin) {
-        console.warn("[AutoRejoin] ⚠️ enableFastQueueJoin is OFF — enable Auto-Rejoin in Settings first!");
-        return false;
-      }
-      const activeGame = streamingGameRef.current;
-      if (!activeGame) {
-        console.warn("[AutoRejoin] ⚠️ No active game is running right now to rejoin!");
-        return false;
-      }
-
-      // Step 1: Show "finding best server" notification while still streaming
-      setRemoteStreamWarning({ code: 1, message: "⏳ Finding best server...", tone: "warn" });
-      console.log("[AutoRejoin] 🧪 Fetching best server URL...");
-
-      // Step 2: Fetch best server URL BEFORE stopping the stream
-      let bestUrl: string | null = null;
-      try {
-        bestUrl = await window.openNow.getSmartAutoJoinBaseUrl();
-      } catch (e) {
-        console.warn("[AutoRejoin] ⚠️ Failed to pre-fetch best server:", e);
-      }
-
-      const serverName = bestUrl
-        ? new URL(bestUrl).hostname.split(".")[0].toUpperCase()
-        : "best server";
-
-      // Step 3: Show 5s countdown notification with the server name
-      for (let i = 5; i >= 1; i--) {
-        setRemoteStreamWarning({
-          code: 1,
-          message: `🔄 Reconnecting to ${serverName} in ${i}s...`,
-          tone: "warn",
-        });
-        console.log(`[AutoRejoin] 🧪 Reconnecting to ${serverName} in ${i}s...`);
-        await new Promise<void>((resolve) => window.setTimeout(resolve, 1000));
-      }
-
-      setRemoteStreamWarning(null);
-
-      // Step 4: Stop session and launch rejoin
-      console.log("[AutoRejoin] 🧪 Stopping existing stream session...");
-      await handleStopStream();
-      console.log("[AutoRejoin] 🧪 Triggering startAutoRejoin for game:", activeGame.title);
-      // Pass pre-fetched URL directly if available
-      if (bestUrl) {
-        prePingSmartUrlRef.current = bestUrl;
-      }
-      return startAutoRejoin("test", activeGame);
-    };
-    return () => {
-      delete (window as unknown as Record<string, unknown>).__testAutoRejoin;
-    };
-  }, [startAutoRejoin, settings.enableFastQueueJoin, handleStopStream]);
 
   const handleDismissLaunchError = useCallback(async () => {
     markExplicitSignalingShutdown();
