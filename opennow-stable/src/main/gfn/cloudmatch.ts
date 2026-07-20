@@ -1,6 +1,8 @@
 import crypto from "node:crypto";
 import dns from "node:dns";
 import { tcpPing } from "../services/regionPing";
+import { fetchPrintedWasteServerMapping } from "../services/printedWaste";
+import { app } from "electron";
 import { createRequire } from "node:module";
 import { createHash } from "node:crypto";
 
@@ -1972,77 +1974,36 @@ interface QueueApiResponse {
   data: Record<string, QueueNodeInfo>;
 }
 
-function haversineKm(lat1: number, lng1: number, lat2: number, lng2: number): number {
-  const R = 6371;
-  const dLat = (lat2 - lat1) * Math.PI / 180;
-  const dLng = (lng2 - lng1) * Math.PI / 180;
-  const a =
-    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
-    Math.sin(dLng / 2) * Math.sin(dLng / 2);
-  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-}
-
 function clusterPrefix(key: string): string {
   const parts = key.split("-");
   return parts.length > 2 ? parts.slice(0, parts.length - 1).join("-") : key;
-}
-
-async function isDnsResolvable(url: string): Promise<boolean> {
-  try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 3000);
-    await fetch(url, { method: "HEAD", signal: controller.signal })
-      .finally(() => clearTimeout(timeoutId));
-    return true;
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    if (msg.includes("ENOTFOUND") || msg.includes("getaddrinfo")) return false;
-    return true;
-  }
-}
-
-async function resolveIP(domain: string, proxyUrl?: string): Promise<string | null> {
-  try {
-    const url = `https://cloudflare-dns.com/dns-query?name=${domain}&type=A`;
-    const response = await fetchWithOptionalProxy(url, {
-      method: "GET",
-      headers: { "accept": "application/dns-json" }
-    }, proxyUrl);
-    if (!response.ok) return null;
-    const data = await response.json() as { Answer?: Array<{ data: string }> };
-    if (data.Answer && data.Answer.length > 0) {
-      return data.Answer[0].data;
-    }
-  } catch (e) {
-    console.warn(`[SmartAutoJoin] DNS lookup failed for ${domain}:`, e);
-  }
-  return null;
-}
-
-async function getGeoLocation(ip: string, proxyUrl?: string): Promise<{ lat: number; lon: number; city: string; country: string } | null> {
-  try {
-    const url = `https://freeipapi.com/api/json/${ip}`;
-    const response = await fetchWithOptionalProxy(url, { method: "GET" }, proxyUrl);
-    if (!response.ok) return null;
-    const data = await response.json() as { latitude?: number; longitude?: number; cityName?: string; regionName?: string; countryName?: string };
-    return {
-      lat: parseFloat(String(data.latitude)),
-      lon: parseFloat(String(data.longitude)),
-      city: data.cityName || data.regionName || "",
-      country: data.countryName || ""
-    };
-  } catch (e) {
-    console.warn(`[SmartAutoJoin] Geo-IP lookup failed for IP ${ip}:`, e);
-  }
-  return null;
 }
 
 export async function getSmartAutoJoinBaseUrl(proxyUrl?: string): Promise<string | null> {
   const QUEUE_API_URL = "https://api.printedwaste.com/gfn/queue/";
 
   try {
-    const queueRes = await fetchWithOptionalProxy(QUEUE_API_URL, { method: "GET" }, proxyUrl);
+    // 1. Fetch server mapping to filter out nuked zones
+    const appVersion = app.getVersion();
+    const serverMapping = await fetchPrintedWasteServerMapping(appVersion).catch((e) => {
+      console.warn("[SmartAutoJoin] Failed to fetch server mapping:", e);
+      return null;
+    });
+
+    // 2. Fetch queue with abort controller timeout
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 7000);
+    let queueRes: Response;
+    try {
+      queueRes = await fetchWithOptionalProxy(
+        QUEUE_API_URL,
+        { method: "GET", signal: controller.signal },
+        proxyUrl
+      );
+    } finally {
+      clearTimeout(timeoutId);
+    }
+
     if (!queueRes.ok) return null;
     const queueBody = (await queueRes.json()) as QueueApiResponse;
     if (!queueBody.status || !queueBody.data) return null;
@@ -2080,6 +2041,17 @@ export async function getSmartAutoJoinBaseUrl(proxyUrl?: string): Promise<string
 
     const candidateZones: Array<{ zoneId: string; queue: number; pingMs: number }> = [];
     for (const [zoneId, zoneInfo] of Object.entries(queueBody.data)) {
+      // Filter out nuked zones using server mapping (case-insensitive check)
+      if (serverMapping) {
+        const mappingKey = Object.keys(serverMapping).find(
+          (k) => k.toLowerCase() === zoneId.toLowerCase()
+        );
+        if (mappingKey && serverMapping[mappingKey].nuked) {
+          console.log(`[SmartAutoJoin] Skipping nuked zone: ${zoneId}`);
+          continue;
+        }
+      }
+
       const prefix = clusterPrefix(zoneId).toLowerCase();
       const dc = datacenters[prefix];
       if (dc) {

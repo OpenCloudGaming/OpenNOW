@@ -253,8 +253,8 @@ const api: OpenNowApi = {
     ipcRenderer.invoke(IPC_CHANNELS.MEDIA_REGEN_THUMBNAIL, input),
   deleteCache: (): Promise<void> =>
     ipcRenderer.invoke(IPC_CHANNELS.CACHE_DELETE_ALL),
-  getSmartAutoJoinBaseUrl: (): Promise<string | null> =>
-    ipcRenderer.invoke(IPC_CHANNELS.GET_SMART_AUTO_JOIN_BASE_URL),
+  getSmartAutoJoinBaseUrl: (proxyUrl?: string): Promise<string | null> =>
+    ipcRenderer.invoke(IPC_CHANNELS.GET_SMART_AUTO_JOIN_BASE_URL, proxyUrl),
   fetchPrintedWasteQueue: (): Promise<PrintedWasteQueueData> =>
     ipcRenderer.invoke(IPC_CHANNELS.PRINTEDWASTE_QUEUE_FETCH),
   fetchPrintedWasteServerMapping: (): Promise<PrintedWasteServerMapping> =>

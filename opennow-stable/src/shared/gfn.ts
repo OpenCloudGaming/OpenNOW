@@ -1678,7 +1678,7 @@ export interface OpenNowApi {
 
   deleteCache(): Promise<void>;
 
-  getSmartAutoJoinBaseUrl(): Promise<string | null>;
+  getSmartAutoJoinBaseUrl(proxyUrl?: string): Promise<string | null>;
   /** Fetch current GFN queue wait times from the PrintedWaste API */
   fetchPrintedWasteQueue(): Promise<PrintedWasteQueueData>;
   /** Fetch PrintedWaste server mapping metadata (includes nuked status) */

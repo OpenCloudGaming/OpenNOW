@@ -24,6 +24,10 @@ export function initDnsInterceptor(): void {
     if (typeof options === "function") {
       actualCallback = options;
       actualOptions = {};
+    } else if (typeof options === "number") {
+      actualOptions = { family: options };
+    } else {
+      actualOptions = options ?? {};
     }
 
     if (isNvidiaHostname(hostname)) {
@@ -34,17 +38,27 @@ export function initDnsInterceptor(): void {
         return;
       }
 
-      fallbackResolver.resolve4(hostname, (err, addresses) => {
-        if (!err && addresses && addresses.length > 0) {
-          const ip = addresses[0];
-          console.log(`[DNS Interceptor] Intercepted lookup for ${hostname} -> resolved to ${ip}`);
-          if (actualOptions.all) {
-            actualCallback(null, [{ address: ip, family: 4 }], 4);
-          } else {
-            actualCallback(null, ip, 4);
-          }
+      // Try original lookup first to respect local network configurations/hosts file
+      originalLookup(hostname, actualOptions, (err, address, resolvedFamily) => {
+        if (err && (err.code === "ENOTFOUND" || err.code === "EAI_AGAIN")) {
+          // If native lookup failed, attempt resolving via Cloudflare/Google public DNS
+          fallbackResolver.resolve4(hostname, (fallbackErr, addresses) => {
+            if (!fallbackErr && addresses && addresses.length > 0) {
+              const ip = addresses[0];
+              console.log(`[DNS Interceptor] Fallback resolved ${hostname} -> ${ip}`);
+              if (actualOptions.all) {
+                actualCallback(null, [{ address: ip, family: 4 }], 4);
+              } else {
+                actualCallback(null, ip, 4);
+              }
+            } else {
+              // Return original error if fallback also failed
+              actualCallback(err, address, resolvedFamily);
+            }
+          });
         } else {
-          originalLookup(hostname, actualOptions, actualCallback);
+          // Normal success or other errors
+          actualCallback(err, address, resolvedFamily);
         }
       });
       return;
@@ -53,5 +67,5 @@ export function initDnsInterceptor(): void {
     originalLookup(hostname, actualOptions, actualCallback);
   };
 
-  console.log("[DNS Interceptor] Interceptor initialized successfully.");
+  console.log("[DNS Interceptor] Interceptor initialized successfully with safe fallback resolver.");
 }

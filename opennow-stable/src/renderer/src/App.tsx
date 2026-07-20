@@ -641,6 +641,7 @@ export function App(): JSX.Element {
   const handlePlayGameRef = useRef<((game: GameInfo, options?: { bypassGuards?: boolean; streamingBaseUrl?: string; variantId?: string }) => Promise<void>) | null>(null);
   const prePingSmartUrlRef = useRef<string | null>(null);
   const prePingInFlightRef = useRef<boolean>(false);
+  const consecutiveAutoRejoinAttemptsRef = useRef<number>(0);
 
   const resetStatsOverlayToPreference = useCallback((): void => {
     setShowStatsOverlay(settings.showStatsOnLaunch);
@@ -3013,12 +3014,22 @@ export function App(): JSX.Element {
       prefetchInFlight: prePingInFlightRef.current,
       game: game?.title ?? null,
       hasLaunchHandler: Boolean(playGame),
+      consecutiveAttempts: consecutiveAutoRejoinAttemptsRef.current,
     });
 
     if (!settings.enableFastQueueJoin) {
       console.log("[AutoRejoin] Skipping: enableFastQueueJoin is OFF");
       return false;
     }
+
+    if (consecutiveAutoRejoinAttemptsRef.current >= 3) {
+      console.warn("[AutoRejoin] Max consecutive auto-rejoin attempts reached (3), stopping to prevent infinite loop.");
+      consecutiveAutoRejoinAttemptsRef.current = 0;
+      return false;
+    }
+
+    consecutiveAutoRejoinAttemptsRef.current += 1;
+
     if (!game) {
       console.error("[AutoRejoin] Skipping: streamingGameRef is null (no active game)");
       return false;
@@ -3475,6 +3486,9 @@ export function App(): JSX.Element {
 
   // Play game handler
   const handlePlayGame = useCallback(async (game: GameInfo, options?: { bypassGuards?: boolean; streamingBaseUrl?: string; variantId?: string }) => {
+    if (!options?.bypassGuards) {
+      consecutiveAutoRejoinAttemptsRef.current = 0;
+    }
     if (!selectedProvider) return;
 
     console.log("handlePlayGame entry", {

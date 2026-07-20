@@ -1172,7 +1172,9 @@ function registerIpcHandlers(): void {
   ipcMain.handle(
     IPC_CHANNELS.GET_SMART_AUTO_JOIN_BASE_URL,
     async () => {
-      return await getSmartAutoJoinBaseUrl();
+      const proxyEnabled = settingsManager?.get("sessionProxyEnabled");
+      const proxyUrl = proxyEnabled ? (settingsManager?.get("sessionProxyUrl") ?? undefined) : undefined;
+      return await getSmartAutoJoinBaseUrl(proxyUrl);
     },
   );
 
