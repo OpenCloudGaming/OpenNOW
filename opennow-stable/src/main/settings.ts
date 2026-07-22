@@ -153,6 +153,8 @@ export interface Settings {
   autoCheckForUpdates: boolean;
   /** When true, pressing Escape will exit fullscreen; when false Escape is sent to the game while pointer-locked */
   allowEscapeToExitFullscreen?: boolean;
+  /** Automatically select a server and rejoin after a free-tier session ends. */
+  enableFastQueueJoin: boolean;
   /** Last version for which the release highlights modal was acknowledged (empty = never) */
   lastSeenReleaseHighlightsVersion: string;
   /** Client-side GPU post-processing shaders applied to the stream (web client mode) */
@@ -259,6 +261,7 @@ const DEFAULT_SETTINGS: Settings = {
   discordRichPresence: false,
   autoCheckForUpdates: true,
   allowEscapeToExitFullscreen: false,
+  enableFastQueueJoin: false,
   lastSeenReleaseHighlightsVersion: "",
   videoShader: { ...DEFAULT_VIDEO_SHADER_SETTINGS },
 };

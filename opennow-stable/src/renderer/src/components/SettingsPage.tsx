@@ -2821,6 +2821,22 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
               )}
                     </div>
                     </div>
+                    <div className="settings-row">
+                      <label className="settings-label">
+                         {t("settings.region.autoRejoin")}
+                        <span className="settings-hint">
+                          {t("settings.region.autoRejoinHint")}
+                        </span>
+                      </label>
+                      <label className="settings-toggle">
+                        <input
+                          type="checkbox"
+                          checked={Boolean(settings.enableFastQueueJoin)}
+                          onChange={(e) => handleChange("enableFastQueueJoin", e.target.checked)}
+                        />
+                        <span className="settings-toggle-track" />
+                      </label>
+                    </div>
               </div>
             </section>
 

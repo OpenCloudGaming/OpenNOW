@@ -5,27 +5,15 @@ import {
   loadStoredPrintedWastePingResults,
   saveStoredPrintedWastePingResults,
 } from "../utils/pingResultsStorage";
+import {
+  isStandardPrintedWasteZone,
+  constructPrintedWasteZoneUrl,
+  pickBestPrintedWasteZone,
+} from "../lib/printedWaste";
 
 // ── Constants / helpers ───────────────────────────────────────────────────────
 
-/**
- * Only include standard NVIDIA zones (NP-*).
- * Alliance-partner zones start with NPA- and have their own routing
- * infrastructure that doesn't follow the cloudmatchbeta.nvidiagrid.net pattern.
- */
-function isStandardZone(zoneId: string): boolean {
-  return zoneId.startsWith("NP-") && !zoneId.startsWith("NPA-");
-}
 
-/**
- * Build the direct cloudmatch URL from a zone ID.
- * "NP-AMS-08" → "https://np-ams-08.cloudmatchbeta.nvidiagrid.net/"
- * This URL is used as streamingBaseUrl in createSession to route the user
- * to that specific zone's load balancer.
- */
-function constructZoneUrl(zoneId: string): string {
-  return `https://${zoneId.toLowerCase()}.cloudmatchbeta.nvidiagrid.net/`;
-}
 
 function formatWait(etaMs: number): string {
   const mins = Math.ceil(etaMs / 60000);
@@ -157,7 +145,7 @@ export function QueueServerSelectModal({ game, initialQueueData = null, onConfir
         if (cancelled) return;
         const nextNuked = new Set<string>();
         for (const [zoneId, meta] of Object.entries(mapping)) {
-          if (isStandardZone(zoneId) && meta.nuked === true) {
+          if (isStandardPrintedWasteZone(zoneId) && meta.nuked === true) {
             nextNuked.add(zoneId);
           }
         }
@@ -183,12 +171,12 @@ export function QueueServerSelectModal({ game, initialQueueData = null, onConfir
       return;
     }
     const allStandardZones = Object.entries(queueData)
-      .filter(([zoneId]) => isStandardZone(zoneId) && !nukedZoneIds.has(zoneId))
+      .filter(([zoneId]) => isStandardPrintedWasteZone(zoneId) && !nukedZoneIds.has(zoneId))
       .map(([zoneId, zone]) => ({
         zoneId,
         pwRegion: zone.Region,
         queuePosition: zone.QueuePosition,
-        routingUrl: constructZoneUrl(zoneId),
+        routingUrl: constructPrintedWasteZoneUrl(zoneId),
       }));
     if (allStandardZones.length === 0) {
       setZonePings(new Map());
@@ -256,9 +244,9 @@ export function QueueServerSelectModal({ game, initialQueueData = null, onConfir
   const zones = useMemo<ZoneInfo[]>(() => {
     if (!queueData) return [];
     return Object.entries(queueData)
-      .filter(([zoneId]) => isStandardZone(zoneId) && !nukedZoneIds?.has(zoneId))
+      .filter(([zoneId]) => isStandardPrintedWasteZone(zoneId) && !nukedZoneIds?.has(zoneId))
       .map(([zoneId, zone]: [string, PrintedWasteZone]) => {
-        const routingUrl = constructZoneUrl(zoneId);
+        const routingUrl = constructPrintedWasteZoneUrl(zoneId);
         const pingMs = zonePings?.get(routingUrl) ?? null;
         return {
           zoneId,
@@ -286,20 +274,17 @@ export function QueueServerSelectModal({ game, initialQueueData = null, onConfir
   // Falls back to queue-only
   // when ping data isn't in yet.
   const autoZone = useMemo<ZoneInfo | null>(() => {
-    if (zones.length === 0) return null;
-    const withPing = zones.filter((z) => z.pingMs !== null);
-    const pool     = withPing.length > 0 ? withPing : zones;
-    const maxPing  = Math.max(...pool.map((z) => z.pingMs ?? 999), 1);
-    const maxQueue = Math.max(...pool.map((z) => z.queuePosition), 1);
-    return pool.reduce((best, z) => {
-      const score = ((z.pingMs ?? maxPing) / maxPing) * AUTO_PING_WEIGHT + (z.queuePosition / maxQueue) * AUTO_QUEUE_WEIGHT;
-      const bScore = ((best.pingMs ?? maxPing) / maxPing) * AUTO_PING_WEIGHT + (best.queuePosition / maxQueue) * AUTO_QUEUE_WEIGHT;
-      if (score === bScore && z.pingMs !== null && best.pingMs !== null) {
-        return z.pingMs < best.pingMs ? z : best;
-      }
-      return score < bScore ? z : best;
-    }, pool[0]!);
-  }, [zones]);
+    if (!queueData) return null;
+    const mapping = nukedZoneIds ? Object.fromEntries(Array.from(nukedZoneIds).map((id) => [id, { nuked: true }])) : null;
+    const pingMap = new Map<string, number | null>();
+    for (const z of zones) {
+      pingMap.set(z.routingUrl, z.pingMs);
+    }
+    const best = pickBestPrintedWasteZone(queueData, mapping, pingMap);
+    if (!best) return null;
+    const zone = zones.find((z) => z.zoneId === best.zoneId);
+    return zone ?? null;
+  }, [queueData, nukedZoneIds, zones]);
 
   // Closest: lowest latency. Only available after pings complete.
   const closestZone = useMemo<ZoneInfo | null>(() => {

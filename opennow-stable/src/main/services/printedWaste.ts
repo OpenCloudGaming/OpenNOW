@@ -3,6 +3,7 @@ import type {
   PrintedWasteServerMapping,
 } from "@shared/gfn";
 import { fetchWithTimeout, withTimeout } from "./requestTimeout";
+import { fetchWithOptionalProxy } from "../gfn/proxyFetch";
 
 const PRINTEDWASTE_TIMEOUT_MS = 7000;
 const PRINTEDWASTE_QUEUE_URL = "https://api.printedwaste.com/gfn/queue/";
@@ -11,18 +12,29 @@ const PRINTEDWASTE_SERVER_MAPPING_URL =
 
 export async function fetchPrintedWasteQueue(
   appVersion: string,
+  proxyUrl?: string,
 ): Promise<PrintedWasteQueueData> {
-  const response = await fetchWithTimeout(
-    PRINTEDWASTE_QUEUE_URL,
-    {
-      headers: {
-        "User-Agent": `opennow/${appVersion}`,
-        Accept: "application/json",
-      },
-    },
+  const controller = new AbortController();
+  const timeoutId = setTimeout(
+    () => controller.abort(new Error("PrintedWaste queue request timed out after 7000ms")),
     PRINTEDWASTE_TIMEOUT_MS,
-    "PrintedWaste queue request",
   );
+  let response: Response;
+  try {
+    response = await fetchWithOptionalProxy(
+      PRINTEDWASTE_QUEUE_URL,
+      {
+        headers: {
+          "User-Agent": `opennow/${appVersion}`,
+          Accept: "application/json",
+        },
+        signal: controller.signal,
+      },
+      proxyUrl,
+    );
+  } finally {
+    clearTimeout(timeoutId);
+  }
   if (!response.ok) {
     throw new Error(`PrintedWaste API returned HTTP ${response.status}`);
   }

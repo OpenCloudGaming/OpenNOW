@@ -74,7 +74,7 @@ import {
   sortLibraryGames,
 } from "./lib/gameCatalog";
 import { chooseAccountLinked, getEpicOwnershipLaunchError, resolveInstallToPlayStorageRegionUrl } from "./lib/launchOwnership";
-import { hasAnyEligiblePrintedWasteZone, isAllianceStreamingBaseUrl } from "./lib/printedWaste";
+import { hasAnyEligiblePrintedWasteZone, isAllianceStreamingBaseUrl, pickBestPrintedWasteZone, constructPrintedWasteZoneUrl, isStandardPrintedWasteZone } from "./lib/printedWaste";
 import {
   mergePolledSessionState,
   normalizeMembershipTier,
@@ -548,6 +548,7 @@ export function App(): JSX.Element {
     autoCheckForUpdates: true,
     lastSeenReleaseHighlightsVersion: "",
     videoShader: { ...DEFAULT_VIDEO_SHADER_SETTINGS },
+    enableFastQueueJoin: false,
   });
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [releaseHighlightsPayload, setReleaseHighlightsPayload] = useState<ReleaseHighlightsPayload | null>(null);
@@ -636,6 +637,12 @@ export function App(): JSX.Element {
   useEffect(() => {
     streamingGameRef.current = streamingGame;
   }, [streamingGame]);
+
+  const handlePlayGameRef = useRef<((game: GameInfo, options?: { bypassGuards?: boolean; streamingBaseUrl?: string; variantId?: string }) => Promise<void>) | null>(null);
+  const prePingSmartUrlRef = useRef<string | null>(null);
+  const prePingInFlightRef = useRef<boolean>(false);
+  const consecutiveAutoRejoinAttemptsRef = useRef<number>(0);
+  const autoRejoinInFlightRef = useRef<boolean>(false);
 
   const resetStatsOverlayToPreference = useCallback((): void => {
     setShowStatsOverlay(settings.showStatsOnLaunch);
@@ -773,6 +780,9 @@ export function App(): JSX.Element {
       window.clearTimeout(stableRecoveryResetTimerRef.current);
       stableRecoveryResetTimerRef.current = null;
     }
+    prePingSmartUrlRef.current = null;
+    prePingInFlightRef.current = false;
+    autoRejoinInFlightRef.current = false;
     if (remoteIceGraceTimerRef.current !== null) {
       window.clearTimeout(remoteIceGraceTimerRef.current);
       remoteIceGraceTimerRef.current = null;
@@ -1672,6 +1682,80 @@ export function App(): JSX.Element {
 
     previousFreeTierRemainingSecondsRef.current = freeTierSessionRemainingSeconds;
   }, [freeTierSessionRemainingSeconds]);
+
+  // Auto-Rejoin: pre-fetch best server URL using the same weighted algorithm as QueueServerSelectModal
+  // (75% ping weight + 25% queue weight). Runs when ~15s remain in the session.
+  useEffect(() => {
+    if (!settings.enableFastQueueJoin) return;
+    const activeProvider = authSession?.provider ?? selectedProvider;
+    const isNvidiaAccount = isNvidiaProvider(activeProvider);
+    const isAllianceServer = isAllianceStreamingBaseUrl(effectiveStreamingBaseUrl);
+    if (!isNvidiaAccount || isAllianceServer) return;
+
+    if (
+      sessionTimeRemainingSeconds === null ||
+      sessionTimeRemainingSeconds > 15 ||
+      prePingSmartUrlRef.current !== null ||
+      prePingInFlightRef.current
+    ) return;
+
+    const targetSessionId = sessionRef.current?.sessionId;
+    prePingInFlightRef.current = true;
+    console.log("[AutoRejoin] Fetching queue + pinging servers at", sessionTimeRemainingSeconds, "s remaining");
+
+    void (async () => {
+      try {
+        const [queueData, serverMapping] = await Promise.all([
+          window.openNow.fetchPrintedWasteQueue(),
+          window.openNow.fetchPrintedWasteServerMapping().catch(() => null),
+        ]);
+
+        const nukedIds = new Set<string>();
+        if (serverMapping) {
+          for (const [zoneId, meta] of Object.entries(serverMapping)) {
+            if (meta.nuked) nukedIds.add(zoneId);
+          }
+        }
+
+        // Only standard NP-* zones (same filter as QueueServerSelectModal)
+        const isStandardZone = (id: string): boolean => id.startsWith("NP-") && !id.startsWith("NPA-");
+
+        const candidates = Object.entries(queueData)
+          .filter(([zoneId]) => isStandardZone(zoneId) && !nukedIds.has(zoneId))
+          .map(([zoneId]) => ({
+            zoneId,
+            routingUrl: constructPrintedWasteZoneUrl(zoneId),
+          }));
+
+        if (candidates.length === 0) {
+          console.warn("[AutoRejoin] No valid candidate zones found");
+          return;
+        }
+
+        const regionsToTest = candidates.map((c) => ({ name: c.zoneId, url: c.routingUrl }));
+        const pingResults = await window.openNow.pingRegions(regionsToTest);
+        const pingMap = new Map<string, number | null>(pingResults.map((r) => [r.url, r.pingMs]));
+
+        const best = pickBestPrintedWasteZone(queueData, serverMapping, pingMap);
+        if (!best) {
+          console.warn("[AutoRejoin] No best server found by the picker algorithm");
+          return;
+        }
+
+        if (!prePingInFlightRef.current || (targetSessionId && sessionRef.current?.sessionId !== targetSessionId)) {
+          console.log("[AutoRejoin] Pre-fetch completed after session reset or end — ignoring stale result");
+          return;
+        }
+
+        prePingSmartUrlRef.current = best.routingUrl;
+        console.log(`[AutoRejoin] Best server: ${best.zoneId} (ping: ${best.pingMs}ms, queue: ${best.queuePosition})`);
+      } catch (err) {
+        console.error("[AutoRejoin] Pre-fetch failed:", err);
+      } finally {
+        prePingInFlightRef.current = false;
+      }
+    })();
+  }, [authSession, effectiveStreamingBaseUrl, selectedProvider, sessionTimeRemainingSeconds, settings.enableFastQueueJoin]);
 
   useEffect(() => {
     if (!localSessionTimerWarning) return;
@@ -2956,6 +3040,111 @@ export function App(): JSX.Element {
     resolveSubscriptionInfoForLaunch,
   ]);
 
+  const startAutoRejoin = useCallback((reason: string, testGameOverride?: GameInfo | null): boolean => {
+    const game = testGameOverride !== undefined ? testGameOverride : streamingGameRef.current;
+    const playGame = handlePlayGameRef.current;
+    const cachedUrl = prePingSmartUrlRef.current;
+
+    console.log("[AutoRejoin] *** startAutoRejoin called ***", {
+      reason,
+      enabled: settings.enableFastQueueJoin,
+      cachedUrl,
+      prefetchInFlight: prePingInFlightRef.current,
+      game: game?.title ?? null,
+      hasLaunchHandler: Boolean(playGame),
+      consecutiveAttempts: consecutiveAutoRejoinAttemptsRef.current,
+    });
+
+    if (!settings.enableFastQueueJoin) {
+      console.log("[AutoRejoin] Skipping: enableFastQueueJoin is OFF");
+      return false;
+    }
+
+    if (autoRejoinInFlightRef.current) {
+      console.log("[AutoRejoin] Skipping: auto-rejoin is already in flight for this session close");
+      return false;
+    }
+
+    if (consecutiveAutoRejoinAttemptsRef.current >= 3) {
+      console.warn("[AutoRejoin] Max consecutive auto-rejoin attempts reached (3), stopping to prevent infinite loop.");
+      consecutiveAutoRejoinAttemptsRef.current = 0;
+      return false;
+    }
+
+    autoRejoinInFlightRef.current = true;
+    consecutiveAutoRejoinAttemptsRef.current += 1;
+
+    if (!game) {
+      console.error("[AutoRejoin] Skipping: streamingGameRef is null (no active game)");
+      autoRejoinInFlightRef.current = false;
+      return false;
+    }
+    if (!playGame) {
+      console.error("[AutoRejoin] Skipping: handlePlayGameRef is null (ref not synced yet)");
+      autoRejoinInFlightRef.current = false;
+      return false;
+    }
+
+    const activeVariantId = sessionRef.current?.appId ?? (game ? variantByGameId[game.id] : undefined);
+
+    const launch = (streamingBaseUrl?: string): void => {
+      console.log("[AutoRejoin] ✅ Launching rejoin to:", streamingBaseUrl ?? "default region");
+      prePingSmartUrlRef.current = null;
+      prePingInFlightRef.current = false;
+      resetLaunchRuntime();
+      void refreshNavbarActiveSession();
+      launchInFlightRef.current = false;
+      window.setTimeout(() => {
+        void playGame(game, { bypassGuards: true, streamingBaseUrl, variantId: activeVariantId }).catch((error) => {
+          console.error("[AutoRejoin] Rejoin launch failed:", error);
+        });
+      }, 500);
+    };
+
+    const activeProvider = authSession?.provider ?? selectedProvider;
+    const isNvidiaAccount = isNvidiaProvider(activeProvider);
+    const isAllianceServer = isAllianceStreamingBaseUrl(effectiveStreamingBaseUrl);
+
+    if (!isNvidiaAccount || isAllianceServer) {
+      console.log("[AutoRejoin] Non-NVIDIA or Alliance provider detected — bypassing PrintedWaste server picker and rejoining via provider routing");
+      launch(undefined);
+      return true;
+    }
+
+    if (cachedUrl) {
+      console.log("[AutoRejoin] Using pre-fetched URL:", cachedUrl);
+      launch(cachedUrl);
+    } else {
+      console.warn("[AutoRejoin] No cached URL available — attempting live server pick fallback...");
+      void (async () => {
+        try {
+          const [queueData, serverMapping] = await Promise.all([
+            window.openNow.fetchPrintedWasteQueue(),
+            window.openNow.fetchPrintedWasteServerMapping().catch(() => null),
+          ]);
+          const candidates = Object.entries(queueData)
+            .filter(([zoneId]) => isStandardPrintedWasteZone(zoneId) && serverMapping?.[zoneId]?.nuked !== true)
+            .map(([zoneId]) => ({ zoneId, routingUrl: constructPrintedWasteZoneUrl(zoneId) }));
+          if (candidates.length > 0) {
+            const regionsToTest = candidates.map((c) => ({ name: c.zoneId, url: c.routingUrl }));
+            const pingResults = await window.openNow.pingRegions(regionsToTest).catch(() => []);
+            const pingMap = new Map<string, number | null>(pingResults.map((r) => [r.url, r.pingMs]));
+            const best = pickBestPrintedWasteZone(queueData, serverMapping, pingMap);
+            if (best) {
+              launch(best.routingUrl);
+              return;
+            }
+          }
+        } catch (err) {
+          console.warn("[AutoRejoin] Live server pick fallback failed:", err);
+        }
+        // Fallback: launch using default region routing
+        launch(undefined);
+      })();
+    }
+    return true;
+  }, [authSession, effectiveStreamingBaseUrl, refreshNavbarActiveSession, resetLaunchRuntime, selectedProvider, settings.enableFastQueueJoin, variantByGameId]);
+
   const handleExpectedNativeSessionClose = useCallback((reason: string): void => {
     console.log("[Recovery] Treating signaling close as ended session:", reason);
     const activeGameId = streamingGameRef.current?.id;
@@ -2966,9 +3155,12 @@ export function App(): JSX.Element {
     clientRef.current?.dispose();
     clientRef.current = null;
     launchInFlightRef.current = false;
-    resetLaunchRuntime();
-    void refreshNavbarActiveSession();
-  }, [endPlaytimeSession, markExplicitSignalingShutdown, refreshNavbarActiveSession, resetLaunchRuntime]);
+    const rejoining = startAutoRejoin(reason);
+    if (!rejoining) {
+      resetLaunchRuntime();
+      void refreshNavbarActiveSession();
+    }
+  }, [endPlaytimeSession, markExplicitSignalingShutdown, refreshNavbarActiveSession, resetLaunchRuntime, startAutoRejoin]);
 
   // Signaling events
   useEffect(() => {
@@ -3079,6 +3271,9 @@ export function App(): JSX.Element {
       setStreamStatus("streaming");
       markDiscordStreamStarted();
       scheduleStableRecoveryReset(activeSession.sessionId);
+      // Session confirmed stable — reset auto-rejoin counter so it doesn't
+      // block future rejoins after successful sessions.
+      consecutiveAutoRejoinAttemptsRef.current = 0;
     };
 
     const unsubscribe = window.openNow.onSignalingEvent(async (event: MainToRendererSignalingEvent) => {
@@ -3148,6 +3343,9 @@ export function App(): JSX.Element {
             setStreamStatus("streaming");
             markDiscordStreamStarted();
             scheduleStableRecoveryReset(activeSession.sessionId);
+            // Session confirmed stable — reset auto-rejoin counter so it doesn't
+            // block future rejoins after successful sessions.
+            consecutiveAutoRejoinAttemptsRef.current = 0;
             console.log(
               "[Stream] Offer applied; use [WebRTC] logs for ICE/video dimensions. signalingServer=%s media=%s",
               activeSession.signalingServer,
@@ -3316,14 +3514,16 @@ export function App(): JSX.Element {
             }
             clientRef.current?.dispose();
             clientRef.current = null;
-            setLaunchError({
-              stage: streamStatusToLoadingStage(streamStatusRef.current),
-              title: t("errors.sessionConnectionLostTitle"),
-              description: t("errors.sessionConnectionLostDescription"),
-            });
-            resetLaunchRuntime({ keepLaunchError: true, keepStreamingContext: true });
-            void refreshNavbarActiveSession();
-            launchInFlightRef.current = false;
+            if (!startAutoRejoin(event.reason)) {
+              setLaunchError({
+                stage: streamStatusToLoadingStage(streamStatusRef.current),
+                title: t("errors.sessionConnectionLostTitle"),
+                description: t("errors.sessionConnectionLostDescription"),
+              });
+              resetLaunchRuntime({ keepLaunchError: true, keepStreamingContext: true });
+              void refreshNavbarActiveSession();
+              launchInFlightRef.current = false;
+            }
           }
         } else if (event.type === "error") {
           console.error("Signaling error:", event.message);
@@ -3356,10 +3556,13 @@ export function App(): JSX.Element {
     });
 
     return () => unsubscribe();
-  }, [attemptSessionRecovery, diagnosticsStore, handleExpectedNativeSessionClose, markDiscordStreamStarted, nativeInputBridgeReady, refreshNavbarActiveSession, resetLaunchRuntime, scheduleStableRecoveryReset, settings, streamMicLevel, streamVolume, t]);
+  }, [attemptSessionRecovery, diagnosticsStore, handleExpectedNativeSessionClose, markDiscordStreamStarted, nativeInputBridgeReady, refreshNavbarActiveSession, resetLaunchRuntime, scheduleStableRecoveryReset, settings, startAutoRejoin, streamMicLevel, streamVolume, t]);
 
   // Play game handler
   const handlePlayGame = useCallback(async (game: GameInfo, options?: { bypassGuards?: boolean; streamingBaseUrl?: string; variantId?: string }) => {
+    if (!options?.bypassGuards) {
+      consecutiveAutoRejoinAttemptsRef.current = 0;
+    }
     if (!selectedProvider) return;
 
     console.log("handlePlayGame entry", {
@@ -3678,6 +3881,10 @@ export function App(): JSX.Element {
     variantByGameId,
     warmNativeStreamerForLaunch,
   ]);
+
+  useEffect(() => {
+    handlePlayGameRef.current = handlePlayGame;
+  }, [handlePlayGame]);
 
   useEffect(() => {
     const request = pendingDirectLaunchRequest;
@@ -4177,6 +4384,7 @@ export function App(): JSX.Element {
       console.error("Stop failed:", error);
     }
   }, [endPlaytimeSession, markExplicitSignalingShutdown, refreshNavbarActiveSession, resetLaunchRuntime, resolveExitPrompt, stopSessionByTarget, streamingGame]);
+
 
   const handleDismissLaunchError = useCallback(async () => {
     markExplicitSignalingShutdown();

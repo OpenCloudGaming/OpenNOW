@@ -406,6 +406,8 @@ export interface Settings {
   autoCheckForUpdates: boolean;
   /** When true, pressing Escape will exit fullscreen; when false Escape is sent to the game while pointer-locked */
   allowEscapeToExitFullscreen?: boolean;
+  /** Automatically select the GFN region with the shortest queue. */
+  enableFastQueueJoin: boolean;
   /** Last version for which the release highlights modal was acknowledged (empty = never) */
   lastSeenReleaseHighlightsVersion: string;
   /** Client-side GPU post-processing shaders applied to the stream (web client mode) */
@@ -1067,6 +1069,8 @@ export interface StreamSettings {
   nativeTransitionDiagnostics?: NativeTransitionDiagnostics;
   /** Requested session app launch mode; "gamepadFriendly" asks NVIDIA to launch games big-picture style. */
   appLaunchMode?: AppLaunchMode;
+  /** Automatically select the GFN region with the shortest queue. */
+  enableFastQueueJoin?: boolean;
 }
 
 export interface SessionCreateRequest {
@@ -1673,7 +1677,6 @@ export interface OpenNowApi {
   regenMediaThumbnail(input: { filePath: string }): Promise<{ ok: boolean; thumbnailDataUrl: string | null }>;
 
   deleteCache(): Promise<void>;
-
   /** Fetch current GFN queue wait times from the PrintedWaste API */
   fetchPrintedWasteQueue(): Promise<PrintedWasteQueueData>;
   /** Fetch PrintedWaste server mapping metadata (includes nuked status) */
