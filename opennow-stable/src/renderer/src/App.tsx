@@ -1699,6 +1699,7 @@ export function App(): JSX.Element {
       prePingInFlightRef.current
     ) return;
 
+    const targetSessionId = sessionRef.current?.sessionId;
     prePingInFlightRef.current = true;
     console.log("[AutoRejoin] Fetching queue + pinging servers at", sessionTimeRemainingSeconds, "s remaining");
 
@@ -1738,6 +1739,11 @@ export function App(): JSX.Element {
         const best = pickBestPrintedWasteZone(queueData, serverMapping, pingMap);
         if (!best) {
           console.warn("[AutoRejoin] No best server found by the picker algorithm");
+          return;
+        }
+
+        if (!prePingInFlightRef.current || (targetSessionId && sessionRef.current?.sessionId !== targetSessionId)) {
+          console.log("[AutoRejoin] Pre-fetch completed after session reset or end — ignoring stale result");
           return;
         }
 
