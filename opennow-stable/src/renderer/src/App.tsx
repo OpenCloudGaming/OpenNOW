@@ -642,6 +642,7 @@ export function App(): JSX.Element {
   const prePingSmartUrlRef = useRef<string | null>(null);
   const prePingInFlightRef = useRef<boolean>(false);
   const consecutiveAutoRejoinAttemptsRef = useRef<number>(0);
+  const autoRejoinInFlightRef = useRef<boolean>(false);
 
   const resetStatsOverlayToPreference = useCallback((): void => {
     setShowStatsOverlay(settings.showStatsOnLaunch);
@@ -781,6 +782,7 @@ export function App(): JSX.Element {
     }
     prePingSmartUrlRef.current = null;
     prePingInFlightRef.current = false;
+    autoRejoinInFlightRef.current = false;
     if (remoteIceGraceTimerRef.current !== null) {
       window.clearTimeout(remoteIceGraceTimerRef.current);
       remoteIceGraceTimerRef.current = null;
@@ -1685,6 +1687,11 @@ export function App(): JSX.Element {
   // (75% ping weight + 25% queue weight). Runs when ~15s remain in the session.
   useEffect(() => {
     if (!settings.enableFastQueueJoin) return;
+    const activeProvider = authSession?.provider ?? selectedProvider;
+    const isNvidiaAccount = isNvidiaProvider(activeProvider);
+    const isAllianceServer = isAllianceStreamingBaseUrl(effectiveStreamingBaseUrl);
+    if (!isNvidiaAccount || isAllianceServer) return;
+
     if (
       sessionTimeRemainingSeconds === null ||
       sessionTimeRemainingSeconds > 15 ||
@@ -1742,7 +1749,7 @@ export function App(): JSX.Element {
         prePingInFlightRef.current = false;
       }
     })();
-  }, [sessionTimeRemainingSeconds, settings.enableFastQueueJoin]);
+  }, [authSession, effectiveStreamingBaseUrl, selectedProvider, sessionTimeRemainingSeconds, settings.enableFastQueueJoin]);
 
   useEffect(() => {
     if (!localSessionTimerWarning) return;
@@ -3047,20 +3054,28 @@ export function App(): JSX.Element {
       return false;
     }
 
+    if (autoRejoinInFlightRef.current) {
+      console.log("[AutoRejoin] Skipping: auto-rejoin is already in flight for this session close");
+      return false;
+    }
+
     if (consecutiveAutoRejoinAttemptsRef.current >= 3) {
       console.warn("[AutoRejoin] Max consecutive auto-rejoin attempts reached (3), stopping to prevent infinite loop.");
       consecutiveAutoRejoinAttemptsRef.current = 0;
       return false;
     }
 
+    autoRejoinInFlightRef.current = true;
     consecutiveAutoRejoinAttemptsRef.current += 1;
 
     if (!game) {
       console.error("[AutoRejoin] Skipping: streamingGameRef is null (no active game)");
+      autoRejoinInFlightRef.current = false;
       return false;
     }
     if (!playGame) {
       console.error("[AutoRejoin] Skipping: handlePlayGameRef is null (ref not synced yet)");
+      autoRejoinInFlightRef.current = false;
       return false;
     }
 
@@ -3079,6 +3094,16 @@ export function App(): JSX.Element {
         });
       }, 500);
     };
+
+    const activeProvider = authSession?.provider ?? selectedProvider;
+    const isNvidiaAccount = isNvidiaProvider(activeProvider);
+    const isAllianceServer = isAllianceStreamingBaseUrl(effectiveStreamingBaseUrl);
+
+    if (!isNvidiaAccount || isAllianceServer) {
+      console.log("[AutoRejoin] Non-NVIDIA or Alliance provider detected — bypassing PrintedWaste server picker and rejoining via provider routing");
+      launch(undefined);
+      return true;
+    }
 
     if (cachedUrl) {
       console.log("[AutoRejoin] Using pre-fetched URL:", cachedUrl);
@@ -3112,7 +3137,7 @@ export function App(): JSX.Element {
       })();
     }
     return true;
-  }, [refreshNavbarActiveSession, resetLaunchRuntime, settings.enableFastQueueJoin, variantByGameId]);
+  }, [authSession, effectiveStreamingBaseUrl, refreshNavbarActiveSession, resetLaunchRuntime, selectedProvider, settings.enableFastQueueJoin, variantByGameId]);
 
   const handleExpectedNativeSessionClose = useCallback((reason: string): void => {
     console.log("[Recovery] Treating signaling close as ended session:", reason);
