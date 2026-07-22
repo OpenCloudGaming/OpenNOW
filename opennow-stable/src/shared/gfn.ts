@@ -1677,8 +1677,6 @@ export interface OpenNowApi {
   regenMediaThumbnail(input: { filePath: string }): Promise<{ ok: boolean; thumbnailDataUrl: string | null }>;
 
   deleteCache(): Promise<void>;
-
-  getSmartAutoJoinBaseUrl(proxyUrl?: string): Promise<string | null>;
   /** Fetch current GFN queue wait times from the PrintedWaste API */
   fetchPrintedWasteQueue(): Promise<PrintedWasteQueueData>;
   /** Fetch PrintedWaste server mapping metadata (includes nuked status) */

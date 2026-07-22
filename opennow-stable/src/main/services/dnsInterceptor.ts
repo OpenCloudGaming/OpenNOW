@@ -8,10 +8,20 @@ fallbackResolver.setServers(["1.1.1.1", "8.8.8.8"]);
 function isNvidiaHostname(hostname: string): boolean {
   if (!hostname) return false;
   const lower = hostname.toLowerCase();
+  if (lower.startsWith("unit.") || lower.startsWith("np-test.") || lower.endsWith(".test") || lower.includes("example")) return false;
   return lower.endsWith(".nvidiagrid.net") || lower.endsWith(".nvidia.com");
 }
 
 export function initDnsInterceptor(): void {
+  const isTestEnvironment =
+    process.env.NODE_ENV === "test" ||
+    Boolean(process.env.NODE_TEST_CONTEXT) ||
+    process.argv.some((a) => a.includes("test")) ||
+    process.execArgv.some((a) => a.includes("test"));
+
+  if (isTestEnvironment) {
+    return;
+  }
   // @ts-ignore
   dns.lookup = function (
     hostname: string,

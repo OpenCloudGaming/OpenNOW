@@ -74,7 +74,7 @@ import {
   sortLibraryGames,
 } from "./lib/gameCatalog";
 import { chooseAccountLinked, getEpicOwnershipLaunchError, resolveInstallToPlayStorageRegionUrl } from "./lib/launchOwnership";
-import { hasAnyEligiblePrintedWasteZone, isAllianceStreamingBaseUrl, pickBestPrintedWasteZone, constructPrintedWasteZoneUrl } from "./lib/printedWaste";
+import { hasAnyEligiblePrintedWasteZone, isAllianceStreamingBaseUrl, pickBestPrintedWasteZone, constructPrintedWasteZoneUrl, isStandardPrintedWasteZone } from "./lib/printedWaste";
 import {
   mergePolledSessionState,
   normalizeMembershipTier,
@@ -3064,26 +3064,17 @@ export function App(): JSX.Element {
       return false;
     }
 
-    const launch = (streamingBaseUrl: string | null): void => {
-      if (!streamingBaseUrl) {
-        console.error("[AutoRejoin] Cannot rejoin: getSmartAutoJoinBaseUrl returned null");
-        setLaunchError({
-          stage: "connecting",
-          title: t("errors.sessionConnectionLostTitle"),
-          description: t("errors.sessionConnectionLostDescription"),
-        });
-        resetLaunchRuntime({ keepLaunchError: true });
-        void refreshNavbarActiveSession();
-        return;
-      }
-      console.log("[AutoRejoin] ✅ Launching rejoin to:", streamingBaseUrl);
+    const activeVariantId = sessionRef.current?.appId ?? (game ? variantByGameId[game.id] : undefined);
+
+    const launch = (streamingBaseUrl?: string): void => {
+      console.log("[AutoRejoin] ✅ Launching rejoin to:", streamingBaseUrl ?? "default region");
       prePingSmartUrlRef.current = null;
       prePingInFlightRef.current = false;
       resetLaunchRuntime();
       void refreshNavbarActiveSession();
       launchInFlightRef.current = false;
       window.setTimeout(() => {
-        void playGame(game, { bypassGuards: true, streamingBaseUrl }).catch((error) => {
+        void playGame(game, { bypassGuards: true, streamingBaseUrl, variantId: activeVariantId }).catch((error) => {
           console.error("[AutoRejoin] Rejoin launch failed:", error);
         });
       }, 500);
@@ -3093,13 +3084,35 @@ export function App(): JSX.Element {
       console.log("[AutoRejoin] Using pre-fetched URL:", cachedUrl);
       launch(cachedUrl);
     } else {
-      // No cached URL — pre-ping didn't complete in time. Show error instead of
-      // silently dropping to idle (same error as session connection lost).
-      console.warn("[AutoRejoin] No cached URL available — pre-ping did not complete in time");
-      launch(null);
+      console.warn("[AutoRejoin] No cached URL available — attempting live server pick fallback...");
+      void (async () => {
+        try {
+          const [queueData, serverMapping] = await Promise.all([
+            window.openNow.fetchPrintedWasteQueue(),
+            window.openNow.fetchPrintedWasteServerMapping().catch(() => null),
+          ]);
+          const candidates = Object.entries(queueData)
+            .filter(([zoneId]) => isStandardPrintedWasteZone(zoneId) && serverMapping?.[zoneId]?.nuked !== true)
+            .map(([zoneId]) => ({ zoneId, routingUrl: constructPrintedWasteZoneUrl(zoneId) }));
+          if (candidates.length > 0) {
+            const regionsToTest = candidates.map((c) => ({ name: c.zoneId, url: c.routingUrl }));
+            const pingResults = await window.openNow.pingRegions(regionsToTest).catch(() => []);
+            const pingMap = new Map<string, number | null>(pingResults.map((r) => [r.url, r.pingMs]));
+            const best = pickBestPrintedWasteZone(queueData, serverMapping, pingMap);
+            if (best) {
+              launch(best.routingUrl);
+              return;
+            }
+          }
+        } catch (err) {
+          console.warn("[AutoRejoin] Live server pick fallback failed:", err);
+        }
+        // Fallback: launch using default region routing
+        launch(undefined);
+      })();
     }
     return true;
-  }, [refreshNavbarActiveSession, resetLaunchRuntime, setLaunchError, settings.enableFastQueueJoin, t]);
+  }, [refreshNavbarActiveSession, resetLaunchRuntime, settings.enableFastQueueJoin, variantByGameId]);
 
   const handleExpectedNativeSessionClose = useCallback((reason: string): void => {
     console.log("[Recovery] Treating signaling close as ended session:", reason);

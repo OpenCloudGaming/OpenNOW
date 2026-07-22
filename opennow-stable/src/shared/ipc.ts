@@ -94,7 +94,6 @@ export const IPC_CHANNELS = {
   MEDIA_DELETE_FILE: "media:delete-file",
   MEDIA_REGEN_THUMBNAIL: "media:regen-thumbnail",
   // PrintedWaste queue integration
-  GET_SMART_AUTO_JOIN_BASE_URL: "app:get-smart-auto-join-base-url",
   PRINTEDWASTE_QUEUE_FETCH: "printedwaste:queue-fetch",
   PRINTEDWASTE_SERVER_MAPPING_FETCH: "printedwaste:server-mapping-fetch",
   // Discord Rich Presence

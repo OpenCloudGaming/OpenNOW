@@ -47,7 +47,7 @@ import type {
 
 import { getSettingsManager, type SettingsManager } from "./settings";
 
-import { getActiveSessions, getSmartAutoJoinBaseUrl } from "./gfn/cloudmatch";
+import { getActiveSessions } from "./gfn/cloudmatch";
 import { AuthService } from "./gfn/auth";
 import { initSessionProxyAuth } from "./gfn/proxyFetch";
 import {
@@ -1169,14 +1169,7 @@ function registerIpcHandlers(): void {
     },
   );
 
-  ipcMain.handle(
-    IPC_CHANNELS.GET_SMART_AUTO_JOIN_BASE_URL,
-    async () => {
-      const proxyEnabled = settingsManager?.get("sessionProxyEnabled");
-      const proxyUrl = proxyEnabled ? (settingsManager?.get("sessionProxyUrl") ?? undefined) : undefined;
-      return await getSmartAutoJoinBaseUrl(proxyUrl);
-    },
-  );
+
 
   // Logs export IPC handler
   ipcMain.handle(
