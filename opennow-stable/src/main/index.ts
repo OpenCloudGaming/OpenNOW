@@ -58,6 +58,8 @@ import {
   type AppUpdaterController,
 } from "./updater";
 import { registerAccountCatalogIpcHandlers } from "./ipc/accountCatalogHandlers";
+import { registerConsolePinIpcHandlers } from "./ipc/consolePinHandlers";
+import { createSafeStorageAdapter } from "./security/safeStorageAdapter";
 import { registerCoreIpcHandlers } from "./ipc/coreHandlers";
 import { registerSessionIpcHandlers } from "./ipc/sessionHandlers";
 import {
@@ -134,6 +136,14 @@ app.commandLine.appendSwitch("disable-renderer-backgrounding");
 app.commandLine.appendSwitch("disable-backgrounding-occluded-windows");
 // Remove getUserMedia FPS cap (not strictly needed for receive-only but avoids potential limits)
 app.commandLine.appendSwitch("max-gum-fps", "999");
+/*
+ * Catalog artwork is served with `Cache-Control: max-age=604800`, but a browsed
+ * store plus library is a few thousand images. Chromium's default disk cache is
+ * small enough that the catalog evicts itself, so every launch re-downloaded the
+ * same art. 512 MB comfortably holds a fully browsed catalog at the sizes the
+ * shell actually requests (see lib/consoleImageSizing.ts).
+ */
+app.commandLine.appendSwitch("disk-cache-size", String(512 * 1024 * 1024));
 if (!app.isPackaged && process.env.OPENNOW_REMOTE_DEBUG === "1") {
   app.commandLine.appendSwitch("remote-debugging-port", "9222");
 }
@@ -449,6 +459,10 @@ function registerIpcHandlers(): void {
     refreshScheduler,
   });
 
+  registerConsolePinIpcHandlers({
+    getConsoleProfiles: () => authService.getConsoleProfiles(),
+  });
+
   registerSessionIpcHandlers({
     ipcMain,
     dialog,
@@ -516,6 +530,8 @@ app.whenReady().then(async () => {
 
   authService = new AuthService(
     join(app.getPath("userData"), "auth-state.json"),
+    join(app.getPath("userData"), "console-profiles.json"),
+    createSafeStorageAdapter(),
   );
   await authService.initialize();
 

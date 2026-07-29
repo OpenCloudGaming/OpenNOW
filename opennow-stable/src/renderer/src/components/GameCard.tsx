@@ -2,11 +2,19 @@ import { Play, Monitor } from "lucide-react";
 import { memo, useCallback, useEffect, useMemo, useState } from "react";
 import type { JSX } from "react";
 import { m } from "motion/react";
-import { normalizeGameStore } from "@shared/gfn";
 import type { GameInfo } from "@shared/gfn";
 import { getActiveGameAvailabilityBadge } from "../lib/gameCardStatus";
-import { getStoreOptions as getGameCardStoreOptions } from "../lib/gameCardStores";
+import {
+  getStoreOptions as getGameCardStoreOptions,
+  getStoreDisplayName,
+  normalizeStoreKey,
+} from "../lib/gameCardStores";
 import { useTranslation } from "../i18n";
+
+// Re-exported for the many call sites that still reach for these through the
+// card module; the implementations live in lib/gameCardStores so pure modules
+// can use them without pulling in React.
+export { getStoreDisplayName, normalizeStoreKey };
 
 interface GameCardProps {
   game: GameInfo;
@@ -95,33 +103,6 @@ const STORE_ICON_MAP: Record<string, () => JSX.Element> = {
   XBOX: XboxIcon,
   BATTLE_NET: BattleNetIcon,
 };
-
-const STORE_DISPLAY_NAME: Record<string, string> = {
-  STEAM: "Steam",
-  EPIC_GAMES_STORE: "Epic",
-  UPLAY: "Ubisoft",
-  EA_APP: "EA",
-  GOG: "GOG",
-  XBOX: "Xbox",
-  BATTLE_NET: "Battle.net",
-};
-
-/** Normalize an appStore value to the uppercase key used by the icon/name maps. */
-export function normalizeStoreKey(raw: string): string {
-  return normalizeGameStore(raw);
-}
-
-function formatStoreFallbackName(storeKey: string): string {
-  return storeKey
-    .toLowerCase()
-    .replace(/_/g, " ")
-    .replace(/\b\w/g, (match) => match.toUpperCase());
-}
-
-export function getStoreDisplayName(store: string): string {
-  const key = normalizeStoreKey(store);
-  return STORE_DISPLAY_NAME[key] ?? formatStoreFallbackName(key);
-}
 
 export function getStoreIconComponent(store: string): () => JSX.Element {
   const key = normalizeStoreKey(store);

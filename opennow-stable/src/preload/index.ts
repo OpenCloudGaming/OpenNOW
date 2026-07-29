@@ -19,6 +19,12 @@ import type {
   MarkGameOwnedResult,
   OpenNowApi,
   SavedAccount,
+  ConsolePinClearRequest,
+  ConsolePinMutationResult,
+  ConsolePinSetRequest,
+  ConsolePinStatus,
+  ConsolePinVerifyRequest,
+  ConsolePinVerifyResult,
   SessionAdReportRequest,
   SessionCreateRequest,
   SessionPollRequest,
@@ -93,6 +99,14 @@ const api: OpenNowApi = {
   switchAccount: (userId: string): Promise<AuthSession> =>
     ipcRenderer.invoke(IPC_CHANNELS.AUTH_SWITCH_ACCOUNT, userId),
   removeAccount: (userId: string): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.AUTH_REMOVE_ACCOUNT, userId),
+  getConsolePinStatus: (userId: string): Promise<ConsolePinStatus> =>
+    ipcRenderer.invoke(IPC_CHANNELS.CONSOLE_PIN_GET_STATUS, userId),
+  setConsolePin: (input: ConsolePinSetRequest): Promise<ConsolePinMutationResult> =>
+    ipcRenderer.invoke(IPC_CHANNELS.CONSOLE_PIN_SET, input),
+  clearConsolePin: (input: ConsolePinClearRequest): Promise<ConsolePinMutationResult> =>
+    ipcRenderer.invoke(IPC_CHANNELS.CONSOLE_PIN_CLEAR, input),
+  verifyConsolePin: (input: ConsolePinVerifyRequest): Promise<ConsolePinVerifyResult> =>
+    ipcRenderer.invoke(IPC_CHANNELS.CONSOLE_PIN_VERIFY, input),
   fetchSubscription: (input: SubscriptionFetchRequest) =>
     ipcRenderer.invoke(IPC_CHANNELS.SUBSCRIPTION_FETCH, input),
   fetchPersistentStorageLocations: (input: PersistentStorageLocationsFetchRequest = {}) =>

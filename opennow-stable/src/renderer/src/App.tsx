@@ -98,6 +98,8 @@ import { FeedbackModal } from "./components/FeedbackModal";
 import { ModalSurface } from "./components/ui/ModalSurface";
 import { overlayMotion, pageTransition, streamRevealTransition } from "./components/MotionProvider";
 import { LazyShaderAtmosphere } from "./components/LazyShaderAtmosphere";
+import { ConsoleProfileGate } from "./components/console/ConsoleProfileGate";
+import { useConsoleShell } from "./hooks/useConsoleShell";
 import { syncRendererTelemetry } from "./telemetry/posthog";
 
 type AppStyle = CSSProperties & {
@@ -424,6 +426,7 @@ export function App(): JSX.Element {
     handleRemoveAccount,
     confirmRemoveAccount,
     handleAddAccount,
+    refreshSavedAccounts,
     confirmLogout,
     handleLogout,
     accountToRemoveDisplayName,
@@ -457,8 +460,7 @@ export function App(): JSX.Element {
     : (selectedProvider?.streamingServiceUrl ?? "");
 
   const {
-    games,
-    featuredGames,
+    games,
     storePanels,
     libraryGames,
     searchQuery,
@@ -630,6 +632,22 @@ export function App(): JSX.Element {
   // Console shell is active when the user enabled Controller Mode or the app was
   // launched with a direct-launch argument (frontend / big picture usage).
   const effectiveControllerMode = settings.controllerMode || directLaunchConsoleMode;
+
+  const consoleShell = useConsoleShell({
+    controllerMode: effectiveControllerMode,
+    directLaunchConsoleMode,
+    pickerEnabled: settings.consoleProfilePickerOnLaunch,
+    isInitializing,
+    hasAuthSession: authSession !== null,
+    savedAccounts,
+    activeUserId: authSession?.user.userId ?? null,
+    onSwitchAccount: handleSwitchAccount,
+    onAddAccount: handleAddAccount,
+    onRemoveAccount: async (userId) => {
+      await window.openNow.removeAccount(userId);
+      await refreshSavedAccounts();
+    },
+  });
 
   const buildCurrentStreamSettings = useCallback((subscriptionOverride?: SubscriptionInfo | null): StreamSettings => {
     const currentSubscription = subscriptionOverride === undefined ? subscriptionInfo : subscriptionOverride;
@@ -2502,7 +2520,9 @@ export function App(): JSX.Element {
       ? "connecting"
       : toLoadingStatus(streamStatus);
   const showCatalogAtmosphere = mainPage === "home" || mainPage === "library";
-  const shellBlocked = showLaunchOverlay
+  const consoleGateOpen = consoleShell.stage !== "shell";
+  const shellBlocked = consoleGateOpen
+    || showLaunchOverlay
     || streamSurfacePresent
     || launchSurfacePresent
     || currentPage === "settings"
@@ -2523,6 +2543,20 @@ export function App(): JSX.Element {
 
   return (
     <div className={`app-container${effectiveControllerMode ? " app-container--controller" : ""}${showCatalogAtmosphere ? " app-container--atmosphere" : ""}`} style={getAppStyle(settings.posterSizeScale)}>
+      {/* Sibling of the shell, not a child: `shellBlocked` already marks the
+          shell inert and suspends its gamepad pollers, so exactly one poller
+          is live while the gate is open. */}
+      <ConsoleProfileGate
+        shell={consoleShell}
+        savedAccounts={savedAccounts}
+        activeUserId={authSession?.user.userId ?? null}
+        onAddAccount={handleAddAccount}
+        onRemoveAccount={async (userId) => {
+          await window.openNow.removeAccount(userId);
+          await refreshSavedAccounts();
+        }}
+        onLogoutAll={() => setLogoutConfirmOpen(true)}
+      />
       <div
         className="app-shell"
         inert={shellBlocked ? true : undefined}
@@ -2573,6 +2607,7 @@ export function App(): JSX.Element {
           void handleTerminateNavbarSession();
         }}
         savedAccounts={savedAccounts}
+        onOpenProfilePicker={consoleShell.openPicker}
         onSwitchAccount={handleSwitchAccount}
         onRemoveAccount={(userId, restoreFocusTarget) => {
           accountConfirmRestoreFocusRef.current = restoreFocusTarget ?? null;
@@ -2620,8 +2655,7 @@ export function App(): JSX.Element {
                 supportedCount={catalogSupportedCount}
                 controllerMode={effectiveControllerMode}
                 surfaceActive={catalogSurfaceActive}
-                storePanels={storePanels}
-                storeHeroGames={featuredGames}
+                storePanels={storePanels}
                 activeSessionAppIds={activeSessionAppIds}
                 onBuyGame={handleBuyGame}
                 onMarkGameOwned={handleMarkGameOwned}
@@ -2650,8 +2684,7 @@ export function App(): JSX.Element {
                   selectedSortId={catalogSelectedSortId === "relevance" ? "last_played" : catalogSelectedSortId}
                   onSortChange={setCatalogSelectedSortId}
                   controllerMode={effectiveControllerMode}
-                  surfaceActive={catalogSurfaceActive}
-                  featuredGames={featuredGames.length > 0 ? featuredGames : games}
+                  surfaceActive={catalogSurfaceActive}
                   activeSessionAppIds={activeSessionAppIds}
                   onBuyGame={handleBuyGame}
                   onPreviousControllerPage={() => navigateControllerPage(-1)}

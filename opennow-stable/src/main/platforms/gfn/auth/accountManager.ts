@@ -1,5 +1,6 @@
 import type { AuthSession, AuthSessionResult, SavedAccount } from "@shared/gfn";
 
+import type { ConsoleProfileStore } from "./consoleProfileStore";
 import type { PersistedAccountState } from "./persistedAccountState";
 
 type EnsureSession = (forceRefresh: boolean, expectedUserId?: string) => Promise<AuthSessionResult>;
@@ -8,6 +9,8 @@ export class AccountManager {
   constructor(
     private readonly state: PersistedAccountState,
     private readonly clearCaches: () => void,
+    /** Optional so callers that never touch console PINs stay unchanged. */
+    private readonly consoleProfiles?: ConsoleProfileStore,
   ) {}
 
   setSession(session: AuthSession | null): void {
@@ -24,7 +27,12 @@ export class AccountManager {
   }
 
   getSavedAccounts(): SavedAccount[] {
-    return this.state.accounts.getSavedAccounts();
+    // The account state has no view of the lock store, so the PIN flag is
+    // decorated here. Only the boolean crosses the process boundary.
+    return this.state.accounts.getSavedAccounts().map((account) => ({
+      ...account,
+      hasPin: this.consoleProfiles?.hasPin(account.userId) ?? false,
+    }));
   }
 
   async saveLoginSession(
@@ -90,6 +98,7 @@ export class AccountManager {
     }
     this.clearCaches();
     await this.state.persist();
+    await this.consoleProfiles?.forgetUser(userId);
   }
 
   async logout(): Promise<void> {
@@ -101,11 +110,13 @@ export class AccountManager {
     this.state.accounts.setActiveAccount(this.state.accounts.firstUserId());
     this.clearCaches();
     await this.state.persist();
+    await this.consoleProfiles?.forgetUser(activeUserId);
   }
 
   async logoutAll(): Promise<void> {
     this.state.accounts.reset();
     this.clearCaches();
     await this.state.persist();
+    await this.consoleProfiles?.forgetAll();
   }
 }

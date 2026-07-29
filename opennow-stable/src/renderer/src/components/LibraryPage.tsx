@@ -5,27 +5,27 @@ import { AnimatePresence, m } from "motion/react";
 import type { CatalogSortOption, GameInfo } from "@shared/gfn";
 import { GameCardListItem, useCatalogCardActionsRef } from "./GameCardListItem";
 import type { PlaytimeData } from "../lib/gameCatalog";
-import { getControllerFeaturedGames, getControllerHeroBackgroundCandidates } from "../lib/controllerCatalogUi";
+import { buildConsoleLibraryRows } from "../lib/consoleLibraryRows";
+import { clampRowFocus, moveRowFocus, type RowFocusDirection } from "../lib/consoleRowFocus";
+import { getConsoleStoreChoices } from "../lib/consoleStoreChoices";
 import {
   gameMatchesLibraryFilters,
-  gameMatchesStoreFilter,
   getControllerStoreFilterItems,
   getLibraryFilterGroups,
   getLibraryFilterOptionById,
-  type ControllerStoreFilterItem,
   type LibraryFilterOption,
 } from "../lib/libraryFilters";
 import { useTranslation } from "../i18n";
 import { formatCatalogLastPlayed } from "../utils/lastPlayedFormat";
-import { controllerButton, readControllerGamepadButtons } from "../utils/controllerGamepad";
+import { controllerButton } from "../utils/controllerGamepad";
+import { wasReleasedAsTap } from "../lib/controllerInputState";
+import { useControllerFocusScroll } from "../hooks/useControllerFocusScroll";
+import { useControllerKeyDown, useControllerNavigation } from "../hooks/useControllerNavigation";
 import { pageTransition } from "./MotionProvider";
 import { SelectDropdown } from "./ui/SelectDropdown";
 import { LibraryControllerView } from "./library/LibraryControllerView";
 import { MotionSpinner } from "./MotionSpinner";
 
-const CONTROLLER_HERO_ROTATION_MS = 8000;
-const CONTROLLER_MOVE_REPEAT_MS = 140;
-const CONTROLLER_Y_HOLD_MS = 350;
 
 export interface LibraryPageProps {
   games: GameInfo[];
@@ -46,7 +46,6 @@ export interface LibraryPageProps {
   onSortChange: (sortId: string) => void;
   controllerMode?: boolean;
   surfaceActive?: boolean;
-  featuredGames?: GameInfo[];
   activeSessionAppIds?: number[];
   onPreviousControllerPage?: () => void;
   onNextControllerPage?: () => void;
@@ -71,7 +70,6 @@ export const LibraryPage = memo(function LibraryPage({
   onSortChange,
   controllerMode = false,
   surfaceActive = true,
-  featuredGames = [],
   activeSessionAppIds = [],
   onPreviousControllerPage,
   onNextControllerPage,
@@ -82,55 +80,21 @@ export const LibraryPage = memo(function LibraryPage({
     onSelectGame,
     onSelectGameVariant,
   });
-  const [controllerHeroIndex, setControllerHeroIndex] = useState(0);
   const [detailsGame, setDetailsGame] = useState<GameInfo | null>(null);
+  const [detailsActionIndex, setDetailsActionIndex] = useState(0);
+  const [storePickerOpen, setStorePickerOpen] = useState(false);
+  const [storePickerIndex, setStorePickerIndex] = useState(0);
   const [controllerStoreFilterId, setControllerStoreFilterId] = useState("library");
   const [controllerStoreFilterOpen, setControllerStoreFilterOpen] = useState(false);
   const [controllerSearchOpen, setControllerSearchOpen] = useState(false);
   const [focusedControllerStoreFilterIndex, setFocusedControllerStoreFilterIndex] = useState(0);
   const [selectedLibraryFilterIds, setSelectedLibraryFilterIds] = useState<string[]>([]);
+  const [focusedRowIndex, setFocusedRowIndex] = useState(0);
+  const [focusedColumnIndex, setFocusedColumnIndex] = useState(0);
   const controllerSearchInputRef = useRef<HTMLInputElement | null>(null);
-  const gamepadPreviousButtonsRef = useRef(0);
-  const gamepadLastMoveAtRef = useRef(0);
-  const gamepadFrameRef = useRef<number | null>(null);
-  const pendingScrollFrameRef = useRef<number | null>(null);
-  const controllerYPressedAtRef = useRef(0);
-  const controllerYConsumedByHoldRef = useRef(false);
-  const controllerGameRowRef = useRef<HTMLDivElement | null>(null);
-  const controllerInputStateRef = useRef({
-    detailsGame: null as GameInfo | null,
-    selectedControllerGame: undefined as GameInfo | undefined,
-    selectedControllerGameIndex: 0,
-    controllerStoreFilterOpen: false,
-    focusedControllerStoreFilterIndex: 0,
-    controllerStoreFilterItems: [] as ControllerStoreFilterItem[],
-    focusControllerGame: (_index: number): void => {},
-    cycleSelectedVariant: (): void => {},
-    cycleControllerStoreFilter: (): void => {},
-    moveControllerStoreFilterFocusBy: (_delta: number): void => {},
-    hideControllerStoreFilterOverlay: (_applySelection: boolean): void => {},
-    showControllerStoreFilterOverlay: (): void => {},
-    onPlayGame: (_game: GameInfo): void => {},
-  });
-
-  useEffect(() => {
-    if (surfaceActive) return undefined;
-    if (pendingScrollFrameRef.current !== null) {
-      window.cancelAnimationFrame(pendingScrollFrameRef.current);
-      pendingScrollFrameRef.current = null;
-    }
-    gamepadPreviousButtonsRef.current = 0;
-    gamepadLastMoveAtRef.current = 0;
-    controllerYPressedAtRef.current = 0;
-    controllerYConsumedByHoldRef.current = false;
-    return undefined;
-  }, [surfaceActive]);
-
-  useEffect(() => () => {
-    if (pendingScrollFrameRef.current !== null) {
-      window.cancelAnimationFrame(pendingScrollFrameRef.current);
-    }
-  }, []);
+  const controllerRowRefs = useRef<Array<HTMLDivElement | null>>([]);
+  const controllerSurfaceActive = controllerMode && surfaceActive;
+  const scrollFocusIntoView = useControllerFocusScroll(controllerSurfaceActive);
 
   useEffect(() => {
     if (!controllerMode || !surfaceActive || !controllerSearchOpen) return;
@@ -187,64 +151,6 @@ export const LibraryPage = memo(function LibraryPage({
     () => getControllerStoreFilterItems(games, t("library.allStores")),
     [games, t],
   );
-  const controllerGames = useMemo(
-    () => controllerStoreFilterId === "library" ? games : games.filter((game) => gameMatchesStoreFilter(game, controllerStoreFilterId)),
-    [controllerStoreFilterId, games],
-  );
-  const controllerFeaturedGames = useMemo(
-    () => getControllerFeaturedGames(featuredGames, controllerGames),
-    [featuredGames, controllerGames],
-  );
-
-  useEffect(() => {
-    if (!controllerMode || !surfaceActive) return;
-    setControllerHeroIndex(0);
-  }, [controllerMode, controllerStoreFilterId, controllerFeaturedGames.length, controllerFeaturedGames[0]?.id, surfaceActive]);
-
-  useEffect(() => {
-    if (controllerMode) return;
-    gamepadPreviousButtonsRef.current = 0;
-    gamepadLastMoveAtRef.current = 0;
-  }, [controllerMode]);
-
-  useEffect(() => {
-    if (!controllerMode || !surfaceActive || controllerFeaturedGames.length <= 1) return;
-    let cancelled = false;
-    let advancing = false;
-    const interval = window.setInterval(() => {
-      if (advancing) return;
-      advancing = true;
-      const nextIndex = (controllerHeroIndex + 1) % controllerFeaturedGames.length;
-      const nextGame = controllerFeaturedGames[nextIndex];
-      const nextImageUrl = nextGame ? getControllerHeroBackgroundCandidates(nextGame)[0] : undefined;
-      if (!nextImageUrl) {
-        if (!cancelled) setControllerHeroIndex(nextIndex);
-        advancing = false;
-        return;
-      }
-
-      const image = new Image();
-      image.src = nextImageUrl;
-      void image.decode()
-        .catch(() => undefined)
-        .then(() => {
-          if (!cancelled) setControllerHeroIndex(nextIndex);
-        })
-        .finally(() => {
-          advancing = false;
-        });
-    }, CONTROLLER_HERO_ROTATION_MS);
-    return () => {
-      cancelled = true;
-      window.clearInterval(interval);
-    };
-  }, [controllerHeroIndex, controllerMode, controllerFeaturedGames, surfaceActive]);
-
-  useEffect(() => {
-    if (!controllerMode || !surfaceActive || games.length === 0) return;
-    if (controllerGames.some((game) => game.id === selectedGameId)) return;
-    onSelectGame(controllerGames[0]?.id ?? games[0].id);
-  }, [controllerGames, controllerMode, games, onSelectGame, selectedGameId, surfaceActive]);
 
   useEffect(() => {
     if (controllerStoreFilterItems.some((item) => item.id === controllerStoreFilterId)) return;
@@ -252,24 +158,53 @@ export const LibraryPage = memo(function LibraryPage({
     setFocusedControllerStoreFilterIndex(0);
   }, [controllerStoreFilterId, controllerStoreFilterItems]);
 
-  const selectedControllerGameIndex = Math.max(0, controllerGames.findIndex((game) => game.id === selectedGameId));
-  const selectedControllerGame = controllerGames[selectedControllerGameIndex] ?? controllerGames[0];
+  const controllerRows = useMemo(
+    () => buildConsoleLibraryRows({ games, playtimeData, storeFilterId: controllerStoreFilterId, t }),
+    [controllerStoreFilterId, games, playtimeData, t],
+  );
+  const controllerRowLengths = useMemo(() => controllerRows.map((row) => row.games.length), [controllerRows]);
 
-  const focusControllerGame = (index: number): void => {
-    if (!surfaceActive || controllerGames.length === 0) return;
-    const nextIndex = Math.max(0, Math.min(index, controllerGames.length - 1));
-    const nextGame = controllerGames[nextIndex];
+  /**
+   * Keeps the shared selection pinned to whatever card is focused on THIS
+   * page. selectedGameId is app-level state shared with the store, so on
+   * arriving here it still points at the other page's game; syncing focus ->
+   * selection (rather than the reverse) is what makes the billboard, the
+   * focus ring and the selection agree.
+   */
+  useEffect(() => {
+    if (!controllerMode || !surfaceActive || controllerRowLengths.length === 0) return;
+    const next = clampRowFocus(controllerRowLengths, { rowIndex: focusedRowIndex, columnIndex: focusedColumnIndex });
+    const focusedGame = controllerRows[next.rowIndex]?.games[next.columnIndex];
+    if (!focusedGame) return;
+    if (next.rowIndex !== focusedRowIndex) setFocusedRowIndex(next.rowIndex);
+    if (next.columnIndex !== focusedColumnIndex) setFocusedColumnIndex(next.columnIndex);
+    if (focusedGame.id !== selectedGameId) onSelectGame(focusedGame.id);
+  }, [controllerMode, controllerRowLengths, controllerRows, focusedColumnIndex, focusedRowIndex, onSelectGame, selectedGameId, surfaceActive]);
+  const selectedControllerGame = controllerRows[focusedRowIndex]?.games[focusedColumnIndex]
+    ?? controllerRows[0]?.games[0];
+
+  const focusControllerCard = (rowIndex: number, columnIndex: number): void => {
+    if (!surfaceActive || controllerRowLengths.length === 0) return;
+    const next = clampRowFocus(controllerRowLengths, { rowIndex, columnIndex });
+    const nextGame = controllerRows[next.rowIndex]?.games[next.columnIndex];
+    if (!nextGame) return;
+    setFocusedRowIndex(next.rowIndex);
+    setFocusedColumnIndex(next.columnIndex);
     onSelectGame(nextGame.id);
-    if (pendingScrollFrameRef.current !== null) {
-      window.cancelAnimationFrame(pendingScrollFrameRef.current);
-    }
-    pendingScrollFrameRef.current = window.requestAnimationFrame(() => {
-      pendingScrollFrameRef.current = null;
-      if (!surfaceActive) return;
-      const row = controllerGameRowRef.current;
-      const card = row?.querySelector<HTMLElement>(`[data-controller-game-id="${CSS.escape(nextGame.id)}"]`);
+    // Scroll the card horizontally into its track first, then let the hook bring
+    // the whole row into view — the row must win the vertical scroll.
+    scrollFocusIntoView(() => {
+      const card = controllerRowRefs.current[next.rowIndex]?.querySelector<HTMLElement>(
+        `[data-console-column="${next.columnIndex}"]`,
+      );
       card?.scrollIntoView({ inline: "nearest", block: "nearest", behavior: "auto" });
+      return card?.closest<HTMLElement>(".console-row");
     });
+  };
+
+  const moveControllerFocus = (direction: RowFocusDirection): void => {
+    const next = moveRowFocus(controllerRowLengths, { rowIndex: focusedRowIndex, columnIndex: focusedColumnIndex }, direction);
+    focusControllerCard(next.rowIndex, next.columnIndex);
   };
 
   const cycleGameVariant = (game: GameInfo | undefined): void => {
@@ -290,7 +225,6 @@ export const LibraryPage = memo(function LibraryPage({
     const nextItem = controllerStoreFilterItems[(activeIndex + 1) % controllerStoreFilterItems.length];
     setControllerStoreFilterId(nextItem.id);
     setFocusedControllerStoreFilterIndex((activeIndex + 1) % controllerStoreFilterItems.length);
-    setControllerHeroIndex(0);
   };
 
   const showControllerStoreFilterOverlay = (): void => {
@@ -309,204 +243,189 @@ export const LibraryPage = memo(function LibraryPage({
       const item = controllerStoreFilterItems[focusedControllerStoreFilterIndex] ?? controllerStoreFilterItems[0];
       if (item) {
         setControllerStoreFilterId(item.id);
-        setControllerHeroIndex(0);
-      }
+          }
     }
     setControllerStoreFilterOpen(false);
   };
 
-  // Keep the gamepad poller on a stable ref snapshot. Do not list the inline
-  // helpers as effect deps — they are recreated every render and only need to
-  // be copied into the ref, not trigger another commit.
-  controllerInputStateRef.current = {
-    detailsGame,
-    selectedControllerGame,
-    selectedControllerGameIndex,
-    controllerStoreFilterOpen,
-    focusedControllerStoreFilterIndex,
-    controllerStoreFilterItems,
-    focusControllerGame,
-    cycleSelectedVariant,
-    cycleControllerStoreFilter,
-    moveControllerStoreFilterFocusBy,
-    hideControllerStoreFilterOverlay,
-    showControllerStoreFilterOverlay,
-    onPlayGame,
+  const storeChoicesFor = (game: GameInfo) => getConsoleStoreChoices(game, selectedVariantByGameId[game.id]);
+  const detailsActionCount = (game: GameInfo): number => (storeChoicesFor(game).length > 1 ? 3 : 2);
+
+  const openStorePicker = (): void => {
+    if (!detailsGame) return;
+    const choices = storeChoicesFor(detailsGame);
+    setStorePickerIndex(Math.max(0, choices.findIndex((choice) => choice.isActive)));
+    setStorePickerOpen(true);
   };
 
-  useEffect(() => {
-    if (!controllerMode || !surfaceActive) return;
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (detailsGame) {
-        if (event.key === "Escape" || event.key.toLowerCase() === "b") {
-          event.preventDefault();
-          setDetailsGame(null);
-        }
-        if (event.key === "Enter" || event.key === " ") {
-          event.preventDefault();
-          onPlayGame(detailsGame);
-        }
-        return;
-      }
-      if (controllerSearchOpen) {
-        if (event.key === "Escape") {
-          event.preventDefault();
-          setControllerSearchOpen(false);
-        }
-        return;
-      }
-      if (event.key === "ArrowLeft") {
+  const selectStoreChoice = (variantId: string): void => {
+    if (detailsGame) onSelectGameVariant(detailsGame.id, variantId);
+    setStorePickerOpen(false);
+  };
+
+  const activateDetailsAction = (): void => {
+    if (!detailsGame) return;
+    if (detailsActionIndex === 0) {
+      onPlayGame(detailsGame);
+      return;
+    }
+    if (storeChoicesFor(detailsGame).length > 1 && detailsActionIndex === 1) {
+      openStorePicker();
+      return;
+    }
+    setDetailsGame(null);
+  };
+
+  const openDetails = (game: GameInfo | undefined): void => {
+    if (!game) return;
+    setDetailsGame(game);
+    setDetailsActionIndex(0);
+    setStorePickerOpen(false);
+  };
+
+  const closeDetails = (): void => {
+    setDetailsGame(null);
+    setStorePickerOpen(false);
+  };
+
+  useControllerKeyDown(controllerSurfaceActive, (event) => {
+    if (detailsGame && storePickerOpen) {
+      const choices = storeChoicesFor(detailsGame);
+      if (event.key === "Escape" || event.key.toLowerCase() === "b") {
         event.preventDefault();
-        focusControllerGame(selectedControllerGameIndex - 1);
-      } else if (event.key === "ArrowRight") {
+        setStorePickerOpen(false);
+      } else if (event.key === "ArrowUp") {
         event.preventDefault();
-        focusControllerGame(selectedControllerGameIndex + 1);
+        setStorePickerIndex((index) => Math.max(0, index - 1));
       } else if (event.key === "ArrowDown") {
         event.preventDefault();
-        cycleSelectedVariant();
+        setStorePickerIndex((index) => Math.min(choices.length - 1, index + 1));
       } else if (event.key === "Enter" || event.key === " ") {
         event.preventDefault();
-        if (selectedControllerGame) onPlayGame(selectedControllerGame);
-      } else if (event.key.toLowerCase() === "x") {
-        event.preventDefault();
-        setControllerSearchOpen(true);
-      } else if (event.key.toLowerCase() === "b" || event.key === "Escape") {
-        event.preventDefault();
-        onPreviousControllerPage?.();
-      } else if (event.key === "[") {
-        event.preventDefault();
-        onPreviousControllerPage?.();
-      } else if (event.key === "]") {
-        event.preventDefault();
-        onNextControllerPage?.();
-      } else if (event.key.toLowerCase() === "i" || event.key.toLowerCase() === "m") {
-        event.preventDefault();
-        if (selectedControllerGame) setDetailsGame(selectedControllerGame);
+        const choice = choices[storePickerIndex];
+        if (choice) selectStoreChoice(choice.variantId);
       }
-    };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [controllerMode, controllerSearchOpen, detailsGame, onNextControllerPage, onPlayGame, onPreviousControllerPage, selectedControllerGame, selectedControllerGameIndex, surfaceActive]);
+      return;
+    }
+    if (detailsGame) {
+      if (event.key === "Escape" || event.key.toLowerCase() === "b") {
+        event.preventDefault();
+        closeDetails();
+      } else if (event.key === "ArrowLeft") {
+        event.preventDefault();
+        setDetailsActionIndex((index) => Math.max(0, index - 1));
+      } else if (event.key === "ArrowRight") {
+        event.preventDefault();
+        setDetailsActionIndex((index) => Math.min(detailsActionCount(detailsGame) - 1, index + 1));
+      } else if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        activateDetailsAction();
+      }
+      return;
+    }
+    if (controllerSearchOpen) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setControllerSearchOpen(false);
+      }
+      return;
+    }
+    if (event.key === "ArrowLeft") {
+      event.preventDefault();
+      moveControllerFocus("left");
+    } else if (event.key === "ArrowRight") {
+      event.preventDefault();
+      moveControllerFocus("right");
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
+      moveControllerFocus("up");
+    } else if (event.key === "ArrowDown") {
+      event.preventDefault();
+      moveControllerFocus("down");
+    } else if (event.key.toLowerCase() === "v") {
+      event.preventDefault();
+      cycleSelectedVariant();
+    } else if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      openDetails(selectedControllerGame);
+    } else if (event.key.toLowerCase() === "x") {
+      event.preventDefault();
+      setControllerSearchOpen(true);
+    } else if (event.key.toLowerCase() === "b" || event.key === "Escape") {
+      event.preventDefault();
+      onPreviousControllerPage?.();
+    } else if (event.key === "[") {
+      event.preventDefault();
+      onPreviousControllerPage?.();
+    } else if (event.key === "]") {
+      event.preventDefault();
+      onNextControllerPage?.();
+    } else if (event.key.toLowerCase() === "i" || event.key.toLowerCase() === "m") {
+      event.preventDefault();
+      if (selectedControllerGame) setDetailsGame(selectedControllerGame);
+    }
+  });
 
-  useEffect(() => {
-    if (!controllerMode || !surfaceActive) return;
-    const readButtons = (): number => {
-      const pad = navigator.getGamepads?.().find((gamepad): gamepad is Gamepad => Boolean(gamepad));
-      return readControllerGamepadButtons(pad);
-    };
-
-    const handleGamepadFrame = () => {
-      const buttons = readButtons();
-      let pressed = buttons & ~gamepadPreviousButtonsRef.current;
-      const released = gamepadPreviousButtonsRef.current & ~buttons;
-      const moveMask = controllerButton.up | controllerButton.down | controllerButton.left | controllerButton.right;
+  useControllerNavigation({
+    enabled: controllerSurfaceActive,
+    holdMask: controllerButton.north,
+    onFrame: (frame) => {
+      const { pressed, released } = frame;
       const yButton = controllerButton.north;
-      const now = performance.now();
-      const activeMoves = buttons & moveMask;
-      const pressedMoves = pressed & moveMask;
-      if (pressedMoves) {
-        gamepadLastMoveAtRef.current = now;
-      } else if (activeMoves && now - gamepadLastMoveAtRef.current > CONTROLLER_MOVE_REPEAT_MS) {
-        pressed |= activeMoves;
-        gamepadLastMoveAtRef.current = now;
-      }
 
-      const {
-        detailsGame: currentDetailsGame,
-        selectedControllerGame: currentSelectedGame,
-        selectedControllerGameIndex: currentSelectedIndex,
-        controllerStoreFilterOpen: storeFilterOpen,
-        focusControllerGame: focusGame,
-        cycleSelectedVariant: cycleVariant,
-        cycleControllerStoreFilter: cycleStoreFilter,
-        moveControllerStoreFilterFocusBy: moveStoreFilter,
-        hideControllerStoreFilterOverlay: hideStoreFilter,
-        showControllerStoreFilterOverlay: showStoreFilter,
-        onPlayGame: playGame,
-      } = controllerInputStateRef.current;
-
-      if (pressed & yButton) {
-        controllerYPressedAtRef.current = now;
-        controllerYConsumedByHoldRef.current = false;
-      }
-
-      if ((buttons & yButton) && !controllerYConsumedByHoldRef.current && now - controllerYPressedAtRef.current >= CONTROLLER_Y_HOLD_MS) {
-        controllerYConsumedByHoldRef.current = true;
-        showStoreFilter();
-      }
+      // Hold Y opens the store filter overlay; a tap cycles it. The hold fires
+      // before the overlay branches below so it can open from any state.
+      if (frame.holdFired) showControllerStoreFilterOverlay();
 
       if (controllerSearchOpen) {
         if (pressed & controllerButton.east) setControllerSearchOpen(false);
-        gamepadPreviousButtonsRef.current = buttons;
-        gamepadFrameRef.current = window.requestAnimationFrame(handleGamepadFrame);
         return;
       }
 
-      if (storeFilterOpen) {
-        if (pressed & controllerButton.up) moveStoreFilter(-1);
-        if (pressed & controllerButton.down) moveStoreFilter(1);
-        if (pressed & controllerButton.east) hideStoreFilter(false);
-        if (released & yButton) hideStoreFilter(true);
-        gamepadPreviousButtonsRef.current = buttons;
-        gamepadFrameRef.current = window.requestAnimationFrame(handleGamepadFrame);
+      if (controllerStoreFilterOpen) {
+        if (pressed & controllerButton.up) moveControllerStoreFilterFocusBy(-1);
+        if (pressed & controllerButton.down) moveControllerStoreFilterFocusBy(1);
+        if (pressed & controllerButton.east) hideControllerStoreFilterOverlay(false);
+        if (released & yButton) hideControllerStoreFilterOverlay(true);
         return;
       }
 
-      if (currentDetailsGame) {
-        if (pressed & controllerButton.south) playGame(currentDetailsGame);
-        if (pressed & controllerButton.east) setDetailsGame(null);
-      } else {
-        if ((released & yButton) && !controllerYConsumedByHoldRef.current) cycleStoreFilter();
+      if (detailsGame && storePickerOpen) {
+        const choices = storeChoicesFor(detailsGame);
+        if (pressed & controllerButton.east) setStorePickerOpen(false);
+        if (pressed & controllerButton.up) setStorePickerIndex((index) => Math.max(0, index - 1));
+        if (pressed & controllerButton.down) setStorePickerIndex((index) => Math.min(choices.length - 1, index + 1));
         if (pressed & controllerButton.south) {
-          if (currentSelectedGame) playGame(currentSelectedGame);
+          const choice = choices[storePickerIndex];
+          if (choice) selectStoreChoice(choice.variantId);
         }
-        if (pressed & controllerButton.east) onPreviousControllerPage?.();
-        if (pressed & controllerButton.west) setControllerSearchOpen(true);
-        if (pressed & controllerButton.leftShoulder) onPreviousControllerPage?.();
-        if (pressed & controllerButton.rightShoulder) onNextControllerPage?.();
-        if (pressed & controllerButton.menu) {
-          if (currentSelectedGame) setDetailsGame(currentSelectedGame);
+        return;
+      }
+
+      if (detailsGame) {
+        if (pressed & controllerButton.south) activateDetailsAction();
+        if (pressed & controllerButton.east) closeDetails();
+        if (pressed & controllerButton.left) setDetailsActionIndex((index) => Math.max(0, index - 1));
+        if (pressed & controllerButton.right) {
+          setDetailsActionIndex((index) => Math.min(detailsActionCount(detailsGame) - 1, index + 1));
         }
-        if (pressed & controllerButton.left) focusGame(currentSelectedIndex - 1);
-        if (pressed & controllerButton.right) focusGame(currentSelectedIndex + 1);
-        if (pressed & controllerButton.down) cycleVariant();
+        return;
       }
-      gamepadPreviousButtonsRef.current = buttons;
 
-      gamepadFrameRef.current = window.requestAnimationFrame(handleGamepadFrame);
-    };
-
-    const startGamepadNavigation = () => {
-      if (gamepadFrameRef.current !== null) return;
-      gamepadPreviousButtonsRef.current = readButtons();
-      gamepadLastMoveAtRef.current = performance.now();
-      gamepadFrameRef.current = window.requestAnimationFrame(handleGamepadFrame);
-    };
-
-    const stopGamepadNavigation = () => {
-      if (gamepadFrameRef.current !== null) {
-        window.cancelAnimationFrame(gamepadFrameRef.current);
-        gamepadFrameRef.current = null;
-      }
-      gamepadPreviousButtonsRef.current = 0;
-      gamepadLastMoveAtRef.current = 0;
-    };
-
-    const handleDisconnect = () => {
-      const hasConnectedPad = navigator.getGamepads?.().some(Boolean) ?? false;
-      if (!hasConnectedPad) stopGamepadNavigation();
-    };
-
-    window.addEventListener("gamepadconnected", startGamepadNavigation);
-    window.addEventListener("gamepaddisconnected", handleDisconnect);
-    startGamepadNavigation();
-
-    return () => {
-      window.removeEventListener("gamepadconnected", startGamepadNavigation);
-      window.removeEventListener("gamepaddisconnected", handleDisconnect);
-      stopGamepadNavigation();
-    };
-  }, [controllerMode, controllerSearchOpen, onNextControllerPage, onPreviousControllerPage, surfaceActive]);
+      if (wasReleasedAsTap(frame, yButton)) cycleControllerStoreFilter();
+      // A opens the detail sheet; playing happens from there.
+      if (pressed & controllerButton.south) openDetails(selectedControllerGame);
+      if (pressed & controllerButton.east) onPreviousControllerPage?.();
+      if (pressed & controllerButton.west) setControllerSearchOpen(true);
+      if (pressed & controllerButton.leftShoulder) onPreviousControllerPage?.();
+      if (pressed & controllerButton.rightShoulder) onNextControllerPage?.();
+      if ((pressed & controllerButton.menu) && selectedControllerGame) setDetailsGame(selectedControllerGame);
+      if (pressed & controllerButton.up) moveControllerFocus("up");
+      if (pressed & controllerButton.down) moveControllerFocus("down");
+      if (pressed & controllerButton.left) moveControllerFocus("left");
+      if (pressed & controllerButton.right) moveControllerFocus("right");
+    },
+  });
 
   const libraryGridItems = useMemo(
     () => visibleLibraryGames.map((game) => (
@@ -531,26 +450,29 @@ export const LibraryPage = memo(function LibraryPage({
   );
 
   if (controllerMode) {
-    const featuredGame = controllerFeaturedGames[controllerHeroIndex] ?? selectedControllerGame;
+    // Always the focused card. A separate featured carousel meant the billboard
+    // and the focus ring disagreed, and it headlined a store game that was not
+    // even in this library.
+    const heroGame = selectedControllerGame;
     return (
       <LibraryControllerView
         isLoading={isLoading}
         libraryCount={libraryCount}
         searchQuery={searchQuery}
         onSearchChange={onSearchChange}
-        selectedGameId={selectedGameId}
-        onSelectGame={onSelectGame}
         onPlayGame={onPlayGame}
         onBuyGame={onBuyGame}
         selectedVariantByGameId={selectedVariantByGameId}
         activeSessionAppIds={activeSessionAppIds}
-        featuredGame={featuredGame}
-        controllerFeaturedGames={controllerFeaturedGames}
-        controllerHeroIndex={controllerHeroIndex}
-        controllerGames={controllerGames}
-        controllerGameRowRef={controllerGameRowRef}
+        rows={controllerRows}
+        rowRefs={controllerRowRefs}
+        focusedRowIndex={focusedRowIndex}
+        focusedColumnIndex={focusedColumnIndex}
+        onFocusCard={focusControllerCard}
+        heroGame={heroGame}
         controllerStoreFilterOpen={controllerStoreFilterOpen}
         controllerStoreFilterItems={controllerStoreFilterItems}
+        controllerStoreFilterId={controllerStoreFilterId}
         focusedControllerStoreFilterIndex={focusedControllerStoreFilterIndex}
         onFocusControllerStoreFilter={setFocusedControllerStoreFilterIndex}
         onSelectControllerStoreFilter={(itemId) => {
@@ -560,11 +482,17 @@ export const LibraryPage = memo(function LibraryPage({
         controllerSearchOpen={controllerSearchOpen}
         controllerSearchInputRef={controllerSearchInputRef}
         detailsGame={detailsGame}
-        onCloseDetails={() => setDetailsGame(null)}
+        detailsActionIndex={detailsActionIndex}
+        onFocusDetailsAction={setDetailsActionIndex}
+        onCloseDetails={closeDetails}
+        storePickerOpen={storePickerOpen}
+        storePickerIndex={storePickerIndex}
+        onFocusStoreChoice={setStorePickerIndex}
+        onSelectStoreChoice={selectStoreChoice}
+        onOpenStorePicker={openStorePicker}
+        onCloseStorePicker={() => setStorePickerOpen(false)}
         onCycleGameVariant={cycleGameVariant}
-        onSelectHint={() => {
-          if (selectedControllerGame) onPlayGame(selectedControllerGame);
-        }}
+        onSelectHint={() => openDetails(selectedControllerGame)}
         onBackHint={() => onPreviousControllerPage?.()}
         onFilterHint={showControllerStoreFilterOverlay}
         onSearchHint={() => setControllerSearchOpen(true)}

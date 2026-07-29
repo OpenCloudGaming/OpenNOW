@@ -11,6 +11,12 @@ import type {
   AuthSessionResult,
   LoginProvider,
   SavedAccount,
+  ConsolePinClearRequest,
+  ConsolePinMutationResult,
+  ConsolePinSetRequest,
+  ConsolePinStatus,
+  ConsolePinVerifyRequest,
+  ConsolePinVerifyResult,
 } from "./auth";
 import type {
   CatalogBrowseRequest,
@@ -91,6 +97,10 @@ export interface OpenNowApi {
   getSavedAccounts(): Promise<SavedAccount[]>;
   switchAccount(userId: string): Promise<AuthSession>;
   removeAccount(userId: string): Promise<void>;
+  getConsolePinStatus(userId: string): Promise<ConsolePinStatus>;
+  setConsolePin(input: ConsolePinSetRequest): Promise<ConsolePinMutationResult>;
+  clearConsolePin(input: ConsolePinClearRequest): Promise<ConsolePinMutationResult>;
+  verifyConsolePin(input: ConsolePinVerifyRequest): Promise<ConsolePinVerifyResult>;
   fetchSubscription(input: SubscriptionFetchRequest): Promise<SubscriptionInfo>;
   fetchPersistentStorageLocations(input?: PersistentStorageLocationsFetchRequest): Promise<PersistentStorageLocationsResult>;
   resetPersistentStorage(input?: PersistentStorageResetRequest): Promise<PersistentStorageResetResult>;

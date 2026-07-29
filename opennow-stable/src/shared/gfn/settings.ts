@@ -104,6 +104,8 @@ export interface Settings {
   controllerMode: boolean;
   /** Launch fullscreen with Controller Mode enabled, like GeForce NOW's TV mode */
   launchInConsoleMode: boolean;
+  /** Show the "Who's playing?" profile picker when console mode starts */
+  consoleProfilePickerOnLaunch: boolean;
   autoFullScreen: boolean;
   favoriteGameIds: string[];
   sessionCounterEnabled: boolean;
@@ -259,6 +261,7 @@ export function createDefaultSettings(platform: string): Settings {
     translucentUI: false,
     controllerMode: false,
     launchInConsoleMode: false,
+    consoleProfilePickerOnLaunch: true,
     autoFullScreen: false,
     favoriteGameIds: [],
     sessionCounterEnabled: false,

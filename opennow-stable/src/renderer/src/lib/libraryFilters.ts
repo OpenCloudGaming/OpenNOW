@@ -1,5 +1,5 @@
 import type { GameInfo } from "@shared/gfn";
-import { getStoreDisplayName, normalizeStoreKey } from "../components/GameCard";
+import { getStoreDisplayName, normalizeStoreKey } from "./gameCardStores";
 import type { PlaytimeData } from "./gameCatalog";
 
 export interface LibraryFilterOption {
@@ -132,7 +132,7 @@ function mapLibraryFilterOptions(options: Map<string, LibraryFilterOption>): Lib
   return [...options.values()].sort((left, right) => left.label.localeCompare(right.label));
 }
 
-function gameHasLibraryActivity(game: GameInfo, playtimeData: PlaytimeData): boolean {
+export function gameHasLibraryActivity(game: GameInfo, playtimeData: PlaytimeData): boolean {
   if (game.lastPlayed) return true;
   const record = playtimeData[game.id];
   if (!record) return false;

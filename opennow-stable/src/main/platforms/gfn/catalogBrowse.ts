@@ -518,12 +518,54 @@ export async function fetchStorePanels(
   if (cached) return cached.data;
 
   const vpcId = await getVpcId(token, providerStreamingBaseUrl, proxyUrl);
-  const panels = parsePanelResults(await fetchPanels(token, ["MAIN"], vpcId, undefined, proxyUrl));
+  const panels = await enrichPanelArtwork(
+    token,
+    vpcId,
+    parsePanelResults(await fetchPanels(token, ["MAIN"], vpcId, undefined, proxyUrl)),
+    proxyUrl,
+  );
   if (!shouldBypassGamesCache(proxyUrl)) {
     const cacheKey = accountScopedGamesCacheKey("store-panels", resolveAccountCacheId(accountId, token), providerStreamingBaseUrl, proxyUrl);
     await cacheManager.saveToCache(cacheKey, panels);
   }
   return panels;
+}
+
+/**
+ * The panels query is a server-persisted document that only returns TV_BANNER
+ * and HERO_IMAGE, so store rows arrive without box art. The library path solves
+ * the same problem with `enrichGamesWithMetadata`, whose app-metadata query does
+ * return the full image set; reuse it here rather than duplicating a fetch.
+ *
+ * Games are re-attached by identity because the enrichment dedupes, and the same
+ * title legitimately appears in several sections.
+ */
+async function enrichPanelArtwork(
+  token: string,
+  vpcId: string,
+  panels: GamePanelResult[],
+  proxyUrl?: string,
+): Promise<GamePanelResult[]> {
+  const allGames = panels.flatMap((panel) => panel.sections).flatMap((section) => section.games);
+  if (allGames.length === 0) return panels;
+
+  let enrichedById: Map<string, GameInfo>;
+  try {
+    const enriched = await enrichGamesWithMetadata(token, vpcId, allGames, proxyUrl);
+    enrichedById = new Map(enriched.map((game) => [game.uuid || game.id, game]));
+  } catch (error) {
+    // Artwork is a nicety; a metadata outage must not empty the storefront.
+    console.warn("Store panel artwork enrichment failed, using panel artwork:", error);
+    return panels;
+  }
+
+  return panels.map((panel) => ({
+    ...panel,
+    sections: panel.sections.map((section) => ({
+      ...section,
+      games: section.games.map((game) => enrichedById.get(game.uuid || game.id) ?? game),
+    })),
+  }));
 }
 
 export async function fetchMainGamesUncached(token: string, providerStreamingBaseUrl?: string, proxyUrl?: string): Promise<GameInfo[]> {

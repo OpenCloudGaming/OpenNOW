@@ -25,6 +25,8 @@ interface NavbarProps {
   onOpenFeedback?: () => void;
   onBlockingOverlayChange?: (blocking: boolean) => void;
   controllerMode?: boolean;
+  /** Console mode only — the avatar opens the gamepad-navigable profile picker. */
+  onOpenProfilePicker?: () => void;
 }
 
 type NavbarModalType = "time" | "storage" | null;
@@ -55,6 +57,7 @@ export function Navbar({
   onOpenFeedback,
   onBlockingOverlayChange,
   controllerMode = false,
+  onOpenProfilePicker,
 }: NavbarProps): JSX.Element {
   const { t } = useTranslation();
   const [modalType, setModalType] = useState<NavbarModalType>(null);
@@ -404,7 +407,30 @@ export function Navbar({
             )}
           </div>
         )}
-        {user ? (
+        {user && controllerMode ? (
+          // The dropdown below is mouse-only — it closes on a document mousedown
+          // and has no keyboard or gamepad path, so it is unreachable with a
+          // controller. In console mode the avatar opens the profile picker
+          // instead, which is fully navigable.
+          <button
+            type="button"
+            className="navbar-user navbar-user--clickable navbar-user--console"
+            onClick={() => onOpenProfilePicker?.()}
+            aria-label={t("auth.accounts.switchAccount")}
+          >
+            {user.avatarUrl ? (
+              <img src={user.avatarUrl} alt="" className="navbar-avatar" />
+            ) : (
+              <div className="navbar-avatar-fallback">
+                <User size={14} />
+              </div>
+            )}
+            <div className="navbar-user-info">
+              <span className="navbar-username">{user.displayName}</span>
+              {tierInfo && <span className={`navbar-tier ${tierInfo.className}`}>{t(tierInfo.labelKey)}</span>}
+            </div>
+          </button>
+        ) : user ? (
           <>
             <div className="navbar-account-container" ref={accountContainerRef}>
               <button

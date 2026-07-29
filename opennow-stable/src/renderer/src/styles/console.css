@@ -1,0 +1,1718 @@
+/* ======================================================
+   CONSOLE MODE — Netflix-style TV shell
+   ======================================================
+
+   PERFORMANCE CONTRACT — read before adding rules here.
+
+   This tree renders at TV resolutions on modest GPUs, often alongside a live
+   WebGL background and an active WebRTC stream. It is also intentionally
+   motion-free at the React level: `motion`/`AnimatePresence` crashed the
+   Chromium renderer when combined with the library hero and card strip, so all
+   console animation is CSS. See the docblock on ConsoleRow.tsx.
+
+   The rules:
+
+   1. Animate ONLY `transform` and `opacity` inside `.console-row`. Never
+      `filter`, `box-shadow`, `background`, `width`/`height`, or `border-radius`
+      — each forces paint or layout on every frame of a d-pad repeat. Glows are
+      pre-composited pseudo-elements whose OPACITY transitions.
+   2. `will-change: transform` belongs only on the focused card and the active
+      row. Promoting every card multiplies GPU memory by the card count.
+   3. Keep `contain` on cards and rows so a focus change cannot invalidate
+      layout for the whole shelf.
+   4. Rows below the fold use `content-visibility: auto` with an
+      `contain-intrinsic-size` hint — the single largest win on a long library.
+   5. Entrances are mount-only (`animation-fill-mode: both`) and must never
+      re-trigger on re-render. Exits are not animated; components unmount
+      immediately. That is the accepted cost of having no AnimatePresence.
+   6. Every entrance here is gated behind `prefers-reduced-motion: no-preference`
+      and the global reduce block in styles.css zeroes delays as well as
+      durations. Both are required — a surviving delay hides content outright.
+   ====================================================== */
+
+:root {
+  /*
+   * THE SIZING UNIT.
+   *
+   * Every dimension in this file is a multiple of --console-u, so the shell
+   * scales with the actual resolution instead of being pinned to pixel values.
+   * One unit is 1% of the viewport width, but capped by height so the layout
+   * cannot overflow vertically on short or ultrawide windows: at 16:9 both
+   * terms are equal, and off 16:9 the smaller constraint wins.
+   *
+   * 1vh == 0.5625vw at 16:9, which is the conversion factor used wherever a
+   * value was originally expressed against height.
+   */
+  --console-u: min(1vw, 1.7778vh);
+
+  /* Matches motion's `smoothEase`, so shared surfaces stay consistent. */
+  --console-ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --console-ease-emph: cubic-bezier(0.2, 0.9, 0.1, 1);
+
+  --console-t-focus: 140ms;
+  --console-t-enter: 260ms;
+  /*
+   * The billboard re-runs its art and copy transitions every time focus moves
+   * to another card, so this has to finish well inside one d-pad repeat
+   * (CONTROLLER_MOVE_REPEAT_MS = 140ms) plus a little. At 420ms a held
+   * direction restarted the animation before it ever completed, which is what
+   * made the hero look like it was stuttering rather than cross-fading.
+   */
+  --console-t-hero: 200ms;
+  --console-stagger: 40ms;
+
+  --console-focus-scale: 1.06;
+  /* Vertical breathing room inside a row track so the focused card's scale is
+     never clipped by the scroll container. Must exceed
+     (card height * (scale - 1)) / 2. */
+  --console-focus-room: calc(var(--console-u) * 1.463);
+  --console-card-ratio: 2 / 3;
+  /* Deliberately modest: a 2:3 card is tall, so card width drives how much
+     vertical space a shelf costs. Wider cards meant one shelf filled the
+     window. */
+  --console-card-width: calc(var(--console-u) * 9.4);
+  --console-row-gap: calc(var(--console-u) * 0.9);
+  --console-gutter: calc(var(--console-u) * 3.2);
+  /* How far the shelves ride up onto the billboard. The billboard's copy is
+     offset by at least this much so the two never collide. */
+  --console-billboard-bleed: calc(var(--console-u) * 4.219);
+}
+
+/* ---------- Keyframes ---------- */
+
+@keyframes console-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes console-rise-in {
+  from { opacity: 0; transform: translate3d(0, calc(var(--console-u) * 0.9), 0); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes console-tile-in {
+  from { opacity: 0; transform: translate3d(0, calc(var(--console-u) * 1.1), 0) scale(0.94); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes console-row-in {
+  from { opacity: 0; transform: translate3d(calc(var(--console-u) * 1.8), 0, 0); }
+  to { opacity: 1; transform: none; }
+}
+
+/* Same 1.035 start scale as the motion hero it replaces, so the store hero
+   reads identically after the migration. */
+@keyframes console-hero-in {
+  from { opacity: 0; transform: scale(1.035); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+@keyframes console-hero-out {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+
+@keyframes console-hero-copy-in {
+  from { opacity: 0; transform: translate3d(0, calc(var(--console-u) * 0.8), 0); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes console-pin-dot-pop {
+  0% { transform: scale(0.4); opacity: 0.3; }
+  60% { transform: scale(1.15); }
+  100% { transform: scale(1); opacity: 1; }
+}
+
+@keyframes console-pin-shake {
+  0%, 100% { transform: translate3d(0, 0, 0); }
+  20% { transform: translate3d(calc(var(--console-u) * -0.42), 0, 0); }
+  40% { transform: translate3d(calc(var(--console-u) * 0.36), 0, 0); }
+  60% { transform: translate3d(calc(var(--console-u) * -0.21), 0, 0); }
+  80% { transform: translate3d(calc(var(--console-u) * 0.1), 0, 0); }
+}
+
+@keyframes console-overlay-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes console-panel-in {
+  from { opacity: 0; transform: translate3d(0, calc(var(--console-u) * 0.7), 0) scale(0.985); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes console-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* ---------- Staggered entrances ----------
+   `--i` is set inline by the renderer. The min() cap stops a long shelf from
+   taking seconds to finish appearing. */
+
+@media (prefers-reduced-motion: no-preference) {
+  .console-row {
+    animation: console-row-in var(--console-t-enter) var(--console-ease-out) both;
+    animation-delay: calc(min(var(--i, 0), 4) * var(--console-stagger));
+  }
+
+  /*
+   * Off-screen rows must not animate. `content-visibility: auto` defers their
+   * rendering, so the entrance only starts when they are scrolled toward —
+   * long after mount. The result was shelves sliding in at random moments
+   * during scrolling, which read as broken timing rather than as an entrance.
+   */
+  .console-row--deferred {
+    animation: none;
+  }
+
+  .console-profile-tile,
+  .console-manage-row {
+    animation: console-tile-in var(--console-t-enter) var(--console-ease-out) both;
+    animation-delay: calc(min(var(--i, 0), 6) * var(--console-stagger));
+  }
+
+  .console-gate-title,
+  .console-gate-subtitle {
+    animation: console-rise-in var(--console-t-enter) var(--console-ease-out) both;
+  }
+
+  .console-gate-subtitle { animation-delay: 60ms; }
+
+  .console-billboard-copy {
+    animation: console-hero-copy-in var(--console-t-hero) var(--console-ease-out) both;
+  }
+
+  .console-billboard-art--entering {
+    animation: console-hero-in var(--console-t-hero) var(--console-ease-out) both;
+  }
+
+  .console-billboard-art--leaving {
+    animation: console-hero-out var(--console-t-hero) linear both;
+  }
+
+  .console-overlay { animation: console-overlay-in 180ms var(--console-ease-out) both; }
+  .console-overlay-panel { animation: console-panel-in 220ms var(--console-ease-out) both; }
+
+  .console-pin-dot--filled { animation: console-pin-dot-pop 260ms var(--console-ease-emph) both; }
+  .console-pin-panel.is-error { animation: console-pin-shake 400ms var(--console-ease-emph) both; }
+}
+
+/* ======================================================
+   SHELL
+   ====================================================== */
+
+.console-page {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
+.console-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: none;
+  scroll-behavior: auto;
+  padding-bottom: calc(var(--console-u) * 1.125);
+}
+
+.console-scroll::-webkit-scrollbar { display: none; }
+
+/* ======================================================
+   BILLBOARD
+   ====================================================== */
+
+/* The billboard competes with the shelves for a scroll area that is already
+   shorter than the viewport (navbar + hint bar). At 52vh it took two thirds of
+   that area and only one shelf survived, so it is capped well below half. */
+/* Runs full-bleed to the top of the window, behind the translucent navbar. */
+.console-billboard {
+  position: relative;
+  width: 100%;
+  flex: 0 0 auto;
+  aspect-ratio: 16 / 7;
+  /* Slightly taller than the visible target because the shelves bleed up over
+     its bottom edge by --console-billboard-bleed. */
+  max-height: 45vh;
+  min-height: 24vh;
+  overflow: hidden;
+  isolation: isolate;
+  contain: layout style paint;
+}
+
+.console-billboard-art {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  z-index: 0;
+}
+
+.console-billboard-art--leaving { z-index: 1; }
+.console-billboard-art--entering { z-index: 2; }
+
+.console-billboard-placeholder {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(135deg, var(--bg-c), var(--bg-a));
+  z-index: 0;
+}
+
+/* Two scrims: bottom so the art melts into the shelves rather than ending on a
+   hard edge, right so the copy column keeps contrast whatever the artwork is.
+   The bottom stop is deliberately short of fully opaque until the very last few
+   percent, so hero art stays faintly visible behind the first row heading. */
+.console-billboard-scrim {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  pointer-events: none;
+  background:
+    linear-gradient(to top,
+      var(--bg-a) 0%,
+      rgba(16, 16, 20, 0.92) 14%,
+      rgba(16, 16, 20, 0.55) 34%,
+      rgba(16, 16, 20, 0.18) 54%,
+      transparent 76%),
+    linear-gradient(to right, rgba(16, 16, 20, 0.92) 0%, rgba(16, 16, 20, 0.5) 38%, transparent 72%);
+}
+
+.console-billboard-copy {
+  position: absolute;
+  z-index: 4;
+  left: var(--console-gutter);
+  bottom: calc(var(--console-billboard-bleed) + calc(var(--console-u) * 1.069));
+  max-width: min(48ch, 46vw);
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--console-u) * 0.506);
+}
+
+.console-billboard-logo {
+  max-width: calc(var(--console-u) * 28);
+  max-height: calc(var(--console-u) * 6.188);
+  object-fit: contain;
+  object-position: left bottom;
+}
+
+.console-billboard-title {
+  margin: 0;
+  font-size: calc(var(--console-u) * 3.6);
+  font-weight: 800;
+  line-height: 1.04;
+  letter-spacing: -0.02em;
+  text-shadow: 0 3px 22px rgba(0, 0, 0, 0.6);
+}
+
+.console-billboard-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: calc(var(--console-u) * 0.521);
+  margin: 0;
+  font-size: calc(var(--console-u) * 1.05);
+  color: var(--ink-soft);
+}
+
+.console-billboard-meta-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: calc(var(--console-u) * 0.313);
+  padding: 3px calc(var(--console-u) * 0.573);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.09);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: var(--ink);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.console-billboard-meta-chip--accent {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  color: var(--ink);
+}
+
+.console-billboard-description {
+  margin: 0;
+  font-size: calc(var(--console-u) * 1);
+  line-height: 1.5;
+  color: var(--ink-soft);
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.console-billboard-actions {
+  display: flex;
+  align-items: center;
+  gap: calc(var(--console-u) * 0.625);
+  flex-wrap: wrap;
+  margin-top: calc(var(--console-u) * 0.208);
+}
+
+.console-billboard-dots {
+  position: absolute;
+  z-index: 4;
+  right: var(--console-gutter);
+  bottom: calc(var(--console-billboard-bleed) + calc(var(--console-u) * 1.069));
+  display: flex;
+  gap: calc(var(--console-u) * 0.417);
+}
+
+.console-billboard-dots span {
+  width: calc(var(--console-u) * 0.417);
+  height: calc(var(--console-u) * 0.417);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.28);
+  transition: background var(--console-t-focus) var(--console-ease-out),
+    transform var(--console-t-focus) var(--console-ease-out);
+}
+
+.console-billboard-dots span.active {
+  background: var(--accent);
+  transform: scale(1.35);
+}
+
+/* ======================================================
+   ACTIONS
+   ====================================================== */
+
+.console-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: calc(var(--console-u) * 0.469);
+  padding: calc(var(--console-u) * 0.619) calc(var(--console-u) * 2);
+  border-radius: var(--r-md);
+  border: 1px solid transparent;
+  font-size: calc(var(--console-u) * 1.05);
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: transform var(--console-t-focus) var(--console-ease-out),
+    background var(--console-t-focus) var(--console-ease-out),
+    border-color var(--console-t-focus) var(--console-ease-out),
+    color var(--console-t-focus) var(--console-ease-out);
+}
+
+.console-action:disabled { opacity: 0.55; cursor: default; }
+
+.console-action--primary {
+  background: var(--accent);
+  color: var(--accent-on, #0a0a0c);
+}
+
+.console-action--primary:hover:not(:disabled),
+.console-action--primary.is-focused { background: var(--accent-hover); }
+
+.console-action--secondary {
+  background: rgba(255, 255, 255, 0.13);
+  border-color: rgba(255, 255, 255, 0.16);
+  color: var(--ink);
+}
+
+.console-action--secondary:hover:not(:disabled),
+.console-action--secondary.is-focused { background: rgba(255, 255, 255, 0.22); }
+
+.console-action--danger {
+  background: color-mix(in srgb, var(--error) 22%, transparent);
+  border-color: color-mix(in srgb, var(--error) 45%, transparent);
+  color: var(--ink);
+}
+
+.console-action--danger:hover:not(:disabled),
+.console-action--danger.is-focused { background: color-mix(in srgb, var(--error) 38%, transparent); }
+
+.console-action.is-focused {
+  transform: scale(1.05);
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+.console-action--icon {
+  padding: calc(var(--console-u) * 0.619);
+  aspect-ratio: 1;
+}
+
+/* ======================================================
+   ROWS
+   ====================================================== */
+
+/* Only a slight overlap onto the billboard scrim. A deeper pull looks good on
+   paper but collides with the billboard's copy column at TV aspect ratios. */
+/* The shelves ride up onto the bottom of the billboard so the hero art carries
+   on behind the first row and fades out, the way the detail sheet's backdrop
+   does — rather than the art stopping at a visible seam. */
+.console-rows {
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--console-u) * 0.9);
+  margin-top: calc(-1 * var(--console-billboard-bleed));
+  position: relative;
+  z-index: 5;
+}
+
+/* No `paint` containment: it clips the focused card's scale and glow. */
+.console-row {
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--console-u) * 0.506);
+  contain: layout style;
+}
+
+/* Only rows past the initial viewport skip rendering; applying this to the
+   first rows would delay the very content the user is looking at. */
+.console-row--deferred {
+  content-visibility: auto;
+  contain-intrinsic-size: auto calc(var(--console-u) * 17);
+}
+
+.console-row-heading {
+  display: flex;
+  align-items: baseline;
+  gap: calc(var(--console-u) * 0.625);
+  padding-inline: var(--console-gutter);
+}
+
+.console-row-title {
+  margin: 0;
+  font-size: calc(var(--console-u) * 1.35);
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--ink);
+}
+
+.console-row-count {
+  font-size: calc(var(--console-u) * 0.85);
+  color: var(--ink-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* A horizontal scroller clips vertically too (setting one axis to a non-visible
+   value forces the other to `auto`), so the focus scale has to live inside the
+   track's own padding. The negative margin cancels that padding again so the
+   shelf spacing is unchanged. */
+.console-row-track {
+  display: flex;
+  gap: var(--console-row-gap);
+  overflow-x: auto;
+  overflow-y: visible;
+  scrollbar-width: none;
+  scroll-behavior: auto;
+  padding: var(--console-focus-room) var(--console-gutter);
+  margin-block: calc(-1 * var(--console-focus-room));
+}
+
+.console-row-track::-webkit-scrollbar { display: none; }
+
+.console-row--active .console-row-track { will-change: scroll-position; }
+
+/* ======================================================
+   POSTER CARD
+   ====================================================== */
+
+.console-card {
+  position: relative;
+  flex: 0 0 var(--console-card-width);
+  width: var(--console-card-width);
+  aspect-ratio: var(--console-card-ratio);
+  padding: 0;
+  border: none;
+  border-radius: var(--r-md);
+  overflow: hidden;
+  background: var(--card);
+  cursor: pointer;
+  isolation: isolate;
+  contain: layout style;
+  transition: transform var(--console-t-focus) var(--console-ease-out);
+}
+
+.console-card.is-focused {
+  transform: scale(var(--console-focus-scale));
+  will-change: transform;
+  z-index: 3;
+}
+
+/* Neighbours deliberately do NOT shift. Pushing them aside made the whole row
+   appear to move on every d-pad step, which reads as instability rather than
+   polish; the focused card simply scales over its neighbours instead. */
+
+.console-card-art {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  z-index: 1;
+}
+
+/* Landscape-source fallback. Letterboxing the banner inside the 2:3 frame was
+   tried first and looked broken — a thin band floating in dead space. Filling
+   the frame instead keeps every card visually identical; the bias toward the
+   upper third is where game key art puts its subject. */
+.console-card[data-poster-fallback="landscape"] .console-card-art {
+  object-fit: cover;
+  object-position: center 38%;
+}
+
+/* A landscape card leans harder on its caption, so give it more scrim. */
+.console-card[data-poster-fallback="landscape"] .console-card-gradient {
+  background: linear-gradient(to top, rgba(8, 8, 10, 0.95) 0%, rgba(8, 8, 10, 0.45) 38%, transparent 66%);
+}
+
+.console-card-placeholder {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  font-size: calc(var(--console-u) * 3);
+  font-weight: 800;
+  color: var(--ink-muted);
+  background: linear-gradient(150deg, var(--bg-c), var(--bg-a));
+}
+
+.console-card-gradient {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  pointer-events: none;
+  background: linear-gradient(to top, rgba(8, 8, 10, 0.9) 0%, rgba(8, 8, 10, 0.25) 34%, transparent 60%);
+}
+
+/* Pre-composited focus glow. Opacity transitions; box-shadow never animates. */
+.console-card-glow {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  pointer-events: none;
+  border-radius: inherit;
+  opacity: 0;
+  box-shadow:
+    inset 0 0 0 3px var(--accent),
+    0 14px 40px rgba(0, 0, 0, 0.55),
+    0 0 32px var(--accent-glow);
+  transition: opacity var(--console-t-focus) var(--console-ease-out);
+}
+
+.console-card.is-focused .console-card-glow { opacity: 1; }
+
+.console-card-caption {
+  position: absolute;
+  z-index: 4;
+  inset: auto 0 0 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: calc(var(--console-u) * 0.26);
+  padding: calc(var(--console-u) * 0.521);
+  text-align: left;
+}
+
+.console-card-logo {
+  max-width: 88%;
+  max-height: calc(var(--console-u) * 1.912);
+  object-fit: contain;
+  object-position: left bottom;
+}
+
+.console-card-title {
+  font-size: calc(var(--console-u) * 0.82);
+  font-weight: 700;
+  line-height: 1.25;
+  color: var(--ink);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.console-card-badge {
+  position: absolute;
+  z-index: 4;
+  top: calc(var(--console-u) * 0.417);
+  right: calc(var(--console-u) * 0.417);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: calc(var(--console-u) * 1.354);
+  height: calc(var(--console-u) * 1.354);
+  border-radius: 8px;
+  background: rgba(10, 10, 12, 0.78);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  backdrop-filter: blur(6px);
+}
+
+.console-card-badge svg { width: 14px; height: 14px; }
+
+.console-card-pill {
+  position: absolute;
+  z-index: 4;
+  top: calc(var(--console-u) * 0.417);
+  left: calc(var(--console-u) * 0.417);
+  padding: 2px calc(var(--console-u) * 0.417);
+  border-radius: 999px;
+  font-size: calc(var(--console-u) * 0.6);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  background: rgba(10, 10, 12, 0.78);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  color: var(--ink-soft);
+}
+
+.console-card-pill--owned {
+  background: color-mix(in srgb, var(--accent) 26%, rgba(10, 10, 12, 0.7));
+  border-color: color-mix(in srgb, var(--accent) 50%, transparent);
+  color: var(--ink);
+}
+
+.console-card-pill--session {
+  background: color-mix(in srgb, var(--info, #5aa9e6) 30%, rgba(10, 10, 12, 0.7));
+  border-color: color-mix(in srgb, var(--info, #5aa9e6) 52%, transparent);
+  color: var(--ink);
+}
+
+/* ======================================================
+   HINT BAR
+   ====================================================== */
+
+/* A flow item, not an overlay: as an overlay it hid the bottom of the first
+   shelf, which read as clipped content rather than as a peek. */
+.console-hint-bar {
+  position: relative;
+  z-index: 8;
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: calc(var(--console-u) * 1.6);
+  padding: calc(var(--console-u) * 0.619) var(--console-gutter);
+  /* Gradient only, matching the navbar — no backdrop blur; it smeared the
+     shelves scrolling underneath. */
+  background: linear-gradient(to top, rgba(2, 5, 4, 0.94) 45%, rgba(2, 5, 4, 0.55) 80%, transparent);
+  pointer-events: auto;
+}
+
+/* The gate centres its content, so its hint bar stays pinned to the bottom. */
+.console-gate .console-hint-bar {
+  position: fixed;
+  inset: auto 0 0 0;
+  z-index: 1051;
+}
+
+.console-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: calc(var(--console-u) * 0.417);
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--ink-soft);
+  font-size: calc(var(--console-u) * 0.82);
+  font-weight: 600;
+  cursor: pointer;
+  transition: color var(--console-t-focus) var(--console-ease-out);
+}
+
+.console-hint:hover { color: var(--ink); }
+
+.console-hint-glyph {
+  display: inline-grid;
+  place-items: center;
+  width: calc(var(--console-u) * 1.6);
+  height: calc(var(--console-u) * 1.6);
+  border-radius: 999px;
+  font-size: calc(var(--console-u) * 0.72);
+  font-weight: 800;
+  color: #0b0b0d;
+}
+
+.console-hint-glyph--a { background: #67d97f; }
+.console-hint-glyph--b { background: #e9695f; }
+.console-hint-glyph--x { background: #62a8e8; }
+.console-hint-glyph--y { background: #e8c65f; }
+
+.console-hint-glyph--menu {
+  background: rgba(255, 255, 255, 0.16);
+  color: var(--ink);
+  border-radius: 7px;
+}
+
+.console-hint-glyph--menu svg { width: 14px; height: 14px; }
+
+/* ======================================================
+   OVERLAYS
+   ====================================================== */
+
+.console-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: grid;
+  place-items: center;
+  padding: var(--console-gutter);
+  background: rgba(8, 8, 10, 0.82);
+  backdrop-filter: blur(14px);
+}
+
+.console-overlay-panel {
+  width: calc(var(--console-u) * 92);
+  max-height: 84vh;
+  overflow-y: auto;
+  scrollbar-width: none;
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--console-u) * 0.833);
+  padding: calc(var(--console-u) * 1.688);
+  border-radius: var(--r-lg);
+  background: var(--panel);
+  border: 1px solid var(--panel-border-solid);
+  box-shadow: var(--shadow-lg);
+}
+
+.console-overlay-panel::-webkit-scrollbar { display: none; }
+
+.console-overlay-eyebrow {
+  font-size: calc(var(--console-u) * 0.72);
+  font-weight: 800;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.console-overlay-title {
+  margin: 0;
+  font-size: calc(var(--console-u) * 1.9);
+  font-weight: 800;
+  letter-spacing: -0.015em;
+}
+
+.console-overlay-body {
+  margin: 0;
+  font-size: calc(var(--console-u) * 0.95);
+  line-height: 1.55;
+  color: var(--ink-soft);
+}
+
+.console-overlay-options {
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--console-u) * 0.417);
+}
+
+.console-overlay-option {
+  padding: calc(var(--console-u) * 0.731) calc(var(--console-u) * 0.938);
+  border-radius: var(--r-md);
+  border: 1px solid transparent;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--ink);
+  font-size: calc(var(--console-u) * 1);
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+  transition: transform var(--console-t-focus) var(--console-ease-out),
+    background var(--console-t-focus) var(--console-ease-out),
+    border-color var(--console-t-focus) var(--console-ease-out);
+}
+
+.console-overlay-option.is-focused {
+  background: rgba(255, 255, 255, 0.14);
+  border-color: var(--accent);
+  transform: translate3d(6px, 0, 0);
+}
+
+.console-overlay-option.is-selected::after {
+  content: "✓";
+  float: right;
+  color: var(--accent);
+  font-weight: 800;
+}
+
+.console-overlay-actions {
+  display: flex;
+  gap: calc(var(--console-u) * 0.521);
+  flex-wrap: wrap;
+  margin-top: calc(var(--console-u) * 0.208);
+}
+
+.console-overlay-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: calc(var(--console-u) * 0.417) calc(var(--console-u) * 0.938);
+  font-size: calc(var(--console-u) * 0.82);
+  color: var(--ink-muted);
+}
+
+.console-search-input {
+  width: 100%;
+  padding: calc(var(--console-u) * 0.844) calc(var(--console-u) * 0.938);
+  border-radius: var(--r-md);
+  border: 1px solid var(--panel-border-solid);
+  background: var(--bg-a);
+  color: var(--ink);
+  font-size: calc(var(--console-u) * 1.4);
+  font-weight: 600;
+}
+
+.console-search-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+/* ======================================================
+   GAME DETAILS SHEET
+   ====================================================== */
+
+.console-details {
+  position: fixed;
+  inset: 0;
+  z-index: 1040;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  overflow: hidden;
+  isolation: isolate;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .console-details { animation: console-fade-in 200ms var(--console-ease-out) both; }
+  .console-details-body { animation: console-rise-in var(--console-t-enter) var(--console-ease-out) both; }
+}
+
+.console-details-backdrop {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+}
+
+.console-details-backdrop img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.console-details-scrim {
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(to top, var(--bg-a) 12%, rgba(16, 16, 20, 0.86) 46%, rgba(16, 16, 20, 0.6) 100%),
+    linear-gradient(to right, rgba(16, 16, 20, 0.9) 0%, rgba(16, 16, 20, 0.4) 60%, transparent 100%);
+}
+
+.console-details-body {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr);
+  align-items: end;
+  gap: calc(var(--console-u) * 3);
+  padding: var(--console-gutter);
+  padding-bottom: calc(var(--console-u) * 4.5);
+  max-height: 100%;
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+
+.console-details-body::-webkit-scrollbar { display: none; }
+
+@media (max-width: 1100px) {
+  .console-details-body { grid-template-columns: minmax(0, 1fr); }
+  .console-details-media { display: none; }
+}
+
+.console-details-main {
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--console-u) * 0.787);
+  min-width: 0;
+}
+
+.console-details-logo {
+  max-width: calc(var(--console-u) * 36);
+  max-height: calc(var(--console-u) * 7.875);
+  object-fit: contain;
+  object-position: left bottom;
+}
+
+.console-details-title {
+  margin: 0;
+  font-size: calc(var(--console-u) * 3);
+  font-weight: 800;
+  line-height: 1.05;
+  letter-spacing: -0.02em;
+}
+
+.console-details-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: calc(var(--console-u) * 0.417);
+}
+
+.console-details-description {
+  margin: 0;
+  max-width: 68ch;
+  font-size: calc(var(--console-u) * 1);
+  line-height: 1.55;
+  color: var(--ink-soft);
+  display: -webkit-box;
+  -webkit-line-clamp: 5;
+  line-clamp: 5;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.console-details-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: calc(var(--console-u) * 0.521);
+  margin-top: calc(var(--console-u) * 0.208);
+}
+
+.console-details-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: calc(var(--console-u) * 0.417) calc(var(--console-u) * 1.042);
+  margin: calc(var(--console-u) * 0.208) 0 0;
+  font-size: calc(var(--console-u) * 0.82);
+}
+
+.console-details-facts div { min-width: 0; }
+
+.console-details-facts dt {
+  color: var(--ink-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-weight: 700;
+  font-size: 0.86em;
+}
+
+.console-details-facts dd {
+  margin: 2px 0 0;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.console-details-media {
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--console-u) * 0.521);
+  min-width: 0;
+}
+
+.console-details-shot {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+  border-radius: var(--r-md);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: var(--card);
+}
+
+.console-details-thumbs {
+  display: flex;
+  gap: calc(var(--console-u) * 0.417);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.console-details-thumbs::-webkit-scrollbar { display: none; }
+
+.console-details-thumb {
+  flex: 0 0 auto;
+  width: calc(var(--console-u) * 6);
+  aspect-ratio: 16 / 9;
+  padding: 0;
+  overflow: hidden;
+  border-radius: var(--r-sm);
+  border: 2px solid transparent;
+  background: var(--card);
+  cursor: pointer;
+  opacity: 0.6;
+  transition: opacity var(--console-t-focus) var(--console-ease-out),
+    border-color var(--console-t-focus) var(--console-ease-out);
+}
+
+.console-details-thumb img { width: 100%; height: 100%; object-fit: cover; }
+
+.console-details-thumb.is-active,
+.console-details-thumb:hover {
+  opacity: 1;
+  border-color: var(--accent);
+}
+
+.console-details-close {
+  position: absolute;
+  z-index: 2;
+  left: var(--console-gutter);
+  bottom: calc(var(--console-u) * 1.35);
+  display: inline-flex;
+  align-items: center;
+  gap: calc(var(--console-u) * 0.417);
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--ink-soft);
+  font-size: calc(var(--console-u) * 0.82);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.console-details-close:hover { color: var(--ink); }
+
+/* ======================================================
+   EMPTY / LOADING STATES
+   ====================================================== */
+
+.console-empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: calc(var(--console-u) * 0.729);
+  padding: var(--console-gutter);
+  text-align: center;
+}
+
+.console-empty-icon { color: var(--ink-muted); }
+
+.console-empty h3 {
+  margin: 0;
+  font-size: calc(var(--console-u) * 1.7);
+  font-weight: 700;
+}
+
+.console-empty p {
+  margin: 0;
+  max-width: 56ch;
+  font-size: calc(var(--console-u) * 1);
+  color: var(--ink-soft);
+  line-height: 1.55;
+}
+
+.console-spinner {
+  width: calc(var(--console-u) * 2.5);
+  height: calc(var(--console-u) * 2.5);
+  border-radius: 999px;
+  border: 3px solid rgba(255, 255, 255, 0.12);
+  border-top-color: var(--accent);
+  animation: console-spin 850ms linear infinite;
+}
+
+/* ======================================================
+   NAV RAIL
+   ====================================================== */
+
+.navbar--controller .navbar-nav-item {
+  font-size: calc(var(--console-u) * 1);
+  font-weight: 600;
+  position: relative;
+  transition: color var(--console-t-focus) var(--console-ease-out);
+}
+
+/* Underline the active item instead of filling it — reads better at a distance
+   and does not animate a background. */
+.navbar--controller .navbar-nav-item.active::after {
+  content: "";
+  position: absolute;
+  inset: auto calc(var(--console-u) * 0.5) calc(var(--console-u) * -0.3) calc(var(--console-u) * 0.5);
+  height: 2px;
+  border-radius: 2px;
+  background: var(--accent);
+}
+
+.navbar-user--console {
+  border: 1px solid transparent;
+  border-radius: var(--r-md);
+  transition: border-color var(--console-t-focus) var(--console-ease-out),
+    background var(--console-t-focus) var(--console-ease-out);
+}
+
+.navbar-user--console:hover,
+.navbar-user--console:focus-visible {
+  background: rgba(255, 255, 255, 0.1);
+  border-color: var(--accent);
+  outline: none;
+}
+
+/* ======================================================
+   PROFILE GATE — picker, PIN pad, manage profiles
+   ====================================================== */
+
+/* Above the console navbar (z-index 1000) so the gate is a true full-screen
+   takeover, but below the stream overlays. */
+.console-gate {
+  position: fixed;
+  inset: 0;
+  z-index: 1050;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: calc(var(--console-u) * 1.688);
+  padding: var(--console-gutter);
+  background:
+    radial-gradient(120% 90% at 50% 0%, var(--bg-c) 0%, var(--bg-a) 62%),
+    var(--bg-a);
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+
+.console-gate::-webkit-scrollbar { display: none; }
+
+.console-gate-title {
+  margin: 0;
+  font-size: calc(var(--console-u) * 3.4);
+  font-weight: 300;
+  letter-spacing: -0.02em;
+  text-align: center;
+  color: var(--ink);
+}
+
+.console-gate-subtitle {
+  margin: 0;
+  max-width: 62ch;
+  font-size: calc(var(--console-u) * 1);
+  line-height: 1.55;
+  text-align: center;
+  color: var(--ink-soft);
+}
+
+.console-gate-error {
+  margin: 0;
+  font-size: calc(var(--console-u) * 1);
+  font-weight: 600;
+  text-align: center;
+  color: var(--error, #e9695f);
+}
+
+.console-profile-grid {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: center;
+  gap: calc(var(--console-u) * 2.2);
+  max-width: calc(var(--console-u) * 92);
+}
+
+.console-profile-tile {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: calc(var(--console-u) * 0.625);
+  width: calc(var(--console-u) * 11);
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--ink-soft);
+  cursor: pointer;
+  transition: transform var(--console-t-focus) var(--console-ease-out),
+    color var(--console-t-focus) var(--console-ease-out);
+}
+
+.console-profile-tile.is-focused {
+  transform: scale(1.07);
+  color: var(--ink);
+  will-change: transform;
+}
+
+.console-profile-avatar {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 1;
+  border-radius: var(--r-lg);
+  overflow: hidden;
+  background: var(--card);
+  border: 3px solid transparent;
+  display: grid;
+  place-items: center;
+  transition: border-color var(--console-t-focus) var(--console-ease-out);
+}
+
+.console-profile-tile.is-focused .console-profile-avatar { border-color: var(--accent); }
+
+.console-profile-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.console-profile-avatar-fallback {
+  font-size: calc(var(--console-u) * 3);
+  font-weight: 700;
+  color: var(--ink);
+  background: linear-gradient(150deg, var(--bg-c), var(--card-hover));
+  width: 100%;
+  height: 100%;
+  display: grid;
+  place-items: center;
+}
+
+.console-profile-avatar-action {
+  width: 100%;
+  height: 100%;
+  display: grid;
+  place-items: center;
+  color: var(--ink-soft);
+  background: rgba(255, 255, 255, 0.05);
+  border: 2px dashed rgba(255, 255, 255, 0.18);
+  border-radius: inherit;
+}
+
+.console-profile-lock {
+  position: absolute;
+  right: calc(var(--console-u) * 0.417);
+  bottom: calc(var(--console-u) * 0.417);
+  display: grid;
+  place-items: center;
+  width: calc(var(--console-u) * 1.563);
+  height: calc(var(--console-u) * 1.563);
+  border-radius: 999px;
+  background: rgba(10, 10, 12, 0.86);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  color: var(--ink);
+}
+
+.console-profile-lock svg { width: 15px; height: 15px; }
+
+.console-profile-name {
+  font-size: calc(var(--console-u) * 1);
+  font-weight: 600;
+  text-align: center;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.console-profile-tier {
+  font-size: calc(var(--console-u) * 0.7);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
+}
+
+.console-profile-active {
+  font-size: calc(var(--console-u) * 0.7);
+  font-weight: 700;
+  color: var(--accent);
+}
+
+/* ---------- PIN pad ---------- */
+
+.console-pin-panel {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: calc(var(--console-u) * 1.238);
+}
+
+.console-pin-dots {
+  display: flex;
+  gap: calc(var(--console-u) * 0.833);
+}
+
+.console-pin-dot {
+  width: calc(var(--console-u) * 1.4);
+  height: calc(var(--console-u) * 1.4);
+  border-radius: 999px;
+  border: 2px solid rgba(255, 255, 255, 0.28);
+  background: transparent;
+}
+
+.console-pin-dot--filled {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.console-pin-panel.is-error .console-pin-dot--filled {
+  background: var(--error, #e9695f);
+  border-color: var(--error, #e9695f);
+}
+
+.console-pin-keypad {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: calc(var(--console-u) * 1.1);
+}
+
+.console-pin-key {
+  width: calc(var(--console-u) * 5.4);
+  height: calc(var(--console-u) * 5.4);
+  border-radius: var(--r-md);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.07);
+  color: var(--ink);
+  font-size: calc(var(--console-u) * 1.8);
+  font-weight: 700;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  transition: transform var(--console-t-focus) var(--console-ease-out),
+    background var(--console-t-focus) var(--console-ease-out),
+    border-color var(--console-t-focus) var(--console-ease-out);
+}
+
+.console-pin-key.is-focused {
+  background: rgba(255, 255, 255, 0.18);
+  border-color: var(--accent);
+  transform: scale(1.08);
+}
+
+.console-pin-key:disabled { opacity: 0.4; cursor: default; }
+.console-pin-key svg { width: 22px; height: 22px; }
+
+/* Hold-B recovery ring — a stroke-dashoffset transition, no keyframes. */
+.console-pin-recovery {
+  display: flex;
+  align-items: center;
+  gap: calc(var(--console-u) * 0.625);
+  font-size: calc(var(--console-u) * 0.85);
+  color: var(--ink-muted);
+  min-height: calc(var(--console-u) * 1.771);
+}
+
+.console-pin-recovery-ring {
+  width: calc(var(--console-u) * 1.563);
+  height: calc(var(--console-u) * 1.563);
+  transform: rotate(-90deg);
+}
+
+.console-pin-recovery-ring circle {
+  fill: none;
+  stroke-width: 3;
+  stroke-linecap: round;
+}
+
+.console-pin-recovery-ring .track { stroke: rgba(255, 255, 255, 0.14); }
+
+.console-pin-recovery-ring .progress {
+  stroke: var(--error, #e9695f);
+  transition: stroke-dashoffset 120ms linear;
+}
+
+/* ---------- Manage profiles ---------- */
+
+.console-manage-list {
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--console-u) * 0.625);
+  width: calc(var(--console-u) * 92);
+}
+
+.console-manage-row {
+  display: flex;
+  align-items: center;
+  gap: calc(var(--console-u) * 1.4);
+  padding: calc(var(--console-u) * 0.844) calc(var(--console-u) * 1.6);
+  border-radius: var(--r-md);
+  border: 1px solid transparent;
+  background: rgba(255, 255, 255, 0.05);
+  transition: background var(--console-t-focus) var(--console-ease-out),
+    border-color var(--console-t-focus) var(--console-ease-out),
+    transform var(--console-t-focus) var(--console-ease-out);
+}
+
+.console-manage-row.is-focused {
+  background: rgba(255, 255, 255, 0.11);
+  border-color: var(--accent);
+  transform: translate3d(6px, 0, 0);
+}
+
+.console-manage-avatar {
+  flex: 0 0 auto;
+  width: calc(var(--console-u) * 3.4);
+  height: calc(var(--console-u) * 3.4);
+  border-radius: var(--r-sm);
+  overflow: hidden;
+  background: var(--card);
+  display: grid;
+  place-items: center;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.console-manage-avatar img { width: 100%; height: 100%; object-fit: cover; }
+
+.console-manage-identity {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  text-align: left;
+}
+
+.console-manage-name {
+  font-size: calc(var(--console-u) * 1.05);
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.console-manage-detail {
+  font-size: calc(var(--console-u) * 0.82);
+  color: var(--ink-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.console-manage-actions {
+  display: flex;
+  gap: calc(var(--console-u) * 0.417);
+  flex-wrap: wrap;
+  flex: 0 0 auto;
+}
+
+.console-manage-note {
+  max-width: 74ch;
+  margin: 0;
+  font-size: calc(var(--console-u) * 0.82);
+  line-height: 1.6;
+  color: var(--ink-muted);
+  text-align: center;
+}
+
+/* ======================================================
+   STORE PICKER (game details -> change store)
+   ====================================================== */
+
+.console-store-picker {
+  position: fixed;
+  inset: 0;
+  z-index: 1060;
+  display: grid;
+  place-items: center;
+  padding: var(--console-gutter);
+  background: rgba(8, 8, 10, 0.84);
+  backdrop-filter: blur(calc(var(--console-u) * 0.7));
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .console-store-picker { animation: console-overlay-in 160ms var(--console-ease-out) both; }
+  .console-store-picker-panel { animation: console-panel-in 200ms var(--console-ease-out) both; }
+  .console-store-choice {
+    animation: console-tile-in 220ms var(--console-ease-out) both;
+    animation-delay: calc(min(var(--i, 0), 5) * 30ms);
+  }
+}
+
+.console-store-picker-panel {
+  width: calc(var(--console-u) * 34);
+  max-width: 92vw;
+  max-height: 84vh;
+  overflow-y: auto;
+  scrollbar-width: none;
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--console-u) * 0.8);
+  padding: calc(var(--console-u) * 1.6);
+  border-radius: var(--r-lg);
+  background: var(--panel);
+  border: 1px solid var(--panel-border-solid);
+  box-shadow: var(--shadow-lg);
+}
+
+.console-store-picker-panel::-webkit-scrollbar { display: none; }
+
+.console-store-picker-list {
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--console-u) * 0.42);
+  margin-top: calc(var(--console-u) * 0.4);
+}
+
+.console-store-choice {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: calc(var(--console-u) * 0.8);
+  padding: calc(var(--console-u) * 0.72) calc(var(--console-u) * 0.9);
+  border-radius: var(--r-md);
+  border: 1px solid transparent;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+  transition: transform var(--console-t-focus) var(--console-ease-out),
+    background var(--console-t-focus) var(--console-ease-out),
+    border-color var(--console-t-focus) var(--console-ease-out);
+}
+
+.console-store-choice.is-focused {
+  background: rgba(255, 255, 255, 0.14);
+  border-color: var(--accent);
+  transform: translate3d(calc(var(--console-u) * 0.3), 0, 0);
+}
+
+.console-store-choice-icon {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: calc(var(--console-u) * 1.7);
+  height: calc(var(--console-u) * 1.7);
+}
+
+.console-store-choice-icon svg {
+  width: 100%;
+  height: 100%;
+}
+
+.console-store-choice-name {
+  flex: 1;
+  min-width: 0;
+  font-size: calc(var(--console-u) * 0.95);
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.console-store-choice-owned {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: calc(var(--console-u) * 0.24);
+  padding: calc(var(--console-u) * 0.16) calc(var(--console-u) * 0.5);
+  border-radius: 999px;
+  font-size: calc(var(--console-u) * 0.68);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  background: color-mix(in srgb, var(--accent) 24%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 46%, transparent);
+  color: var(--ink);
+}
+
+.console-store-choice-owned svg {
+  width: calc(var(--console-u) * 0.62);
+  height: calc(var(--console-u) * 0.62);
+}
+
+/* Marks the variant currently in use, distinct from ownership. */
+.console-store-choice.is-active .console-store-choice-active {
+  position: absolute;
+  left: 0;
+  top: 18%;
+  bottom: 18%;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: var(--accent);
+}
+
+/* ======================================================
+   CONSOLE SPLASH
+   ====================================================== */
+
+@keyframes console-splash-mark-in {
+  0% { opacity: 0; transform: scale(0.82); }
+  60% { opacity: 1; transform: scale(1.04); }
+  100% { opacity: 1; transform: scale(1); }
+}
+
+@keyframes console-splash-glow {
+  0%, 100% { opacity: 0.32; transform: scale(1); }
+  50% { opacity: 0.6; transform: scale(1.12); }
+}
+
+@keyframes console-splash-bar {
+  from { transform: scaleX(0); }
+  to { transform: scaleX(1); }
+}
+
+.console-splash {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: calc(var(--console-u) * 0.8);
+  text-align: center;
+}
+
+/* Fixed and auto-margined so it centres on the screen. Anchored to the splash's
+   own box it tracked the content height and drifted off-centre. */
+.console-splash-glow {
+  position: fixed;
+  z-index: 0;
+  inset: 0;
+  margin: auto;
+  width: calc(var(--console-u) * 40);
+  height: calc(var(--console-u) * 40);
+  border-radius: 50%;
+  background: radial-gradient(circle, var(--accent-glow) 0%, transparent 68%);
+  pointer-events: none;
+}
+
+.console-splash-mark {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+}
+
+.console-splash-logo {
+  width: calc(var(--console-u) * 9);
+  height: auto;
+  filter: drop-shadow(0 calc(var(--console-u) * 0.4) calc(var(--console-u) * 1.4) rgba(0, 0, 0, 0.6));
+}
+
+.console-splash-title {
+  position: relative;
+  z-index: 1;
+  margin: 0;
+  font-size: calc(var(--console-u) * 3);
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  color: var(--ink);
+}
+
+.console-splash-subtitle {
+  position: relative;
+  z-index: 1;
+  margin: 0;
+  font-size: calc(var(--console-u) * 0.95);
+  color: var(--ink-soft);
+}
+
+.console-splash-bar {
+  position: relative;
+  z-index: 1;
+  margin-top: calc(var(--console-u) * 0.9);
+  width: calc(var(--console-u) * 14);
+  height: 3px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.12);
+  overflow: hidden;
+}
+
+.console-splash-bar span {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+  transform-origin: left center;
+  transform: scaleX(1);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .console-splash-mark { animation: console-splash-mark-in 520ms var(--console-ease-emph) both; }
+  .console-splash-glow { animation: console-splash-glow 2.4s ease-in-out infinite; }
+  .console-splash-title { animation: console-rise-in var(--console-t-enter) var(--console-ease-out) both; animation-delay: 120ms; }
+  .console-splash-subtitle { animation: console-rise-in var(--console-t-enter) var(--console-ease-out) both; animation-delay: 200ms; }
+  /* Runs for exactly the splash duration, so the bar tracks the hand-off. */
+  .console-splash-bar span { animation: console-splash-bar 1600ms linear both; }
+}

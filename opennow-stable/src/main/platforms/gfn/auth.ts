@@ -18,7 +18,9 @@ import type {
   SubscriptionInfo,
 } from "@shared/gfn";
 
+import type { SafeStorageLike } from "../../security/encryptedJsonFile";
 import { AccountManager } from "./auth/accountManager";
+import { ConsoleProfileStore } from "./auth/consoleProfileStore";
 import { exchangeDeviceCode, requestDeviceAuthorization } from "./auth/deviceLogin";
 import { SubscriptionVpcEnrichmentCaches } from "./auth/enrichmentCaches";
 import {
@@ -56,11 +58,13 @@ export class AuthService {
   private readonly enrichmentCaches: SubscriptionVpcEnrichmentCaches;
   private readonly sessionValidity: SessionValidityCoordinator;
   private readonly accountManager: AccountManager;
+  private readonly consoleProfiles: ConsoleProfileStore;
   private deviceLoginAttempts = new Map<string, DeviceLoginAttempt>();
   private pendingDeviceLoginSessions = new Map<string, AuthSession>();
 
-  constructor(statePath: string) {
+  constructor(statePath: string, consoleProfilesPath: string, secretStorage: SafeStorageLike) {
     this.state = new PersistedAccountState(statePath);
+    this.consoleProfiles = new ConsoleProfileStore(consoleProfilesPath, secretStorage);
     this.providerDiscovery = new ProviderDiscovery();
     this.enrichmentCaches = new SubscriptionVpcEnrichmentCaches({
       getSession: () => this.getSession(),
@@ -76,10 +80,17 @@ export class AuthService {
     this.accountManager = new AccountManager(
       this.state,
       () => this.enrichmentCaches.clearAll(),
+      this.consoleProfiles,
     );
   }
 
+  /** Console profile PIN locks. Hashes never leave the main process. */
+  getConsoleProfiles(): ConsoleProfileStore {
+    return this.consoleProfiles;
+  }
+
   async initialize(): Promise<void> {
+    await this.consoleProfiles.initialize();
     const restoredSession = await this.state.initialize();
     if (restoredSession) {
       this.state.accounts.setSelectedProvider(restoredSession.provider);

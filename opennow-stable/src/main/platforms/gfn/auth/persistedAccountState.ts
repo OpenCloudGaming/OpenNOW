@@ -1,7 +1,7 @@
 import { access, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 
-import type { AuthSession, LoginProvider, SavedAccount } from "@shared/gfn";
+import type { AuthSession, LoginProvider, SavedAccountIdentity } from "@shared/gfn";
 
 import { defaultProvider, normalizeProvider } from "./providerDiscovery";
 
@@ -122,7 +122,8 @@ export class AccountState {
     return this.sessions.delete(userId);
   }
 
-  getSavedAccounts(): SavedAccount[] {
+  /** Identity only — the console PIN flag is decorated by AccountManager. */
+  getSavedAccounts(): SavedAccountIdentity[] {
     return Array.from(this.sessions.values()).map((session) => ({
       userId: session.user.userId,
       displayName: session.user.displayName,

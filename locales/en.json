@@ -45,6 +45,7 @@
       "markingOwned": "Marking as owned...",
       "ready": "Ready",
       "saved": "Saved",
+      "sessionActive": "Session active",
       "testing": "Testing...",
       "unknown": "Unknown",
       "upToDate": "Up to date"
@@ -183,7 +184,49 @@
       "purchaseUnavailable": "Purchase unavailable",
       "playNow": "Play Now",
       "variant": "{{variant}}",
-      "storeCount": "{{count}} stores"
+      "storeCount": "{{count}} stores",
+      "cloudGame": "Cloud Game"
+    }
+  },
+  "console": {
+    "splash": {
+      "title": "OpenNOW",
+      "subtitle": "Console mode"
+    },
+    "profiles": {
+      "whosPlaying": "Who's playing?",
+      "signedIn": "Signed in",
+      "manage": "Manage profiles",
+      "lockedProfile": "{{name}} (PIN required)",
+      "switchFailed": "Could not switch to that profile."
+    },
+    "pin": {
+      "title": "Enter {{name}}'s PIN",
+      "subtitle": "This profile is locked with a 4-digit PIN.",
+      "enteredDigits": "{{count}} of 4 digits entered",
+      "delete": "Delete",
+      "incorrect": "Incorrect PIN. {{count}} attempts left.",
+      "incorrect_plural": "Incorrect PIN. {{count}} attempts left.",
+      "lockedOut": "Too many attempts. Try again in {{seconds}}s.",
+      "recoveryHint": "Hold B to remove this profile",
+      "recoveryReady": "Release to choose",
+      "removeProfile": "Remove this profile"
+    },
+    "manage": {
+      "title": "Manage profiles",
+      "subtitle": "Set a PIN to keep a profile private on a shared TV.",
+      "setPin": "Set PIN",
+      "changePin": "Change PIN",
+      "removePin": "Remove PIN",
+      "pinOn": "PIN on",
+      "currentPin": "Current PIN",
+      "newPin": "New PIN",
+      "wrongPin": "That PIN is incorrect.",
+      "pinFormat": "A PIN must be exactly 4 digits.",
+      "lockedOut": "Too many attempts. Try again shortly.",
+      "noPinSet": "This profile has no PIN.",
+      "pinFailed": "Could not update the PIN.",
+      "securityNote": "A profile PIN keeps accounts separate on a shared TV. It does not encrypt your account, and anyone with access to this device's files can still read the saved sign-in."
     }
   },
   "library": {
@@ -200,7 +243,13 @@
     "clearFilters": "Clear",
     "removeFilter": "Remove {{filter}} filter",
     "allStores": "All Stores",
+    "rows": {
+      "continuePlaying": "Continue playing",
+      "recentlyAdded": "Recently added",
+      "allGames": "All games"
+    },
     "storeFilter": "Store Filter",
+    "changeStore": "Change store",
     "chooseStore": "Choose a Store",
     "storeFilterHint": "Hold Y, use up/down, release Y to apply",
     "moreInfo": "More Info",
@@ -208,6 +257,16 @@
     "storeNotListed": "Store not listed",
     "selectedStore": "Selected Store: {{store}}",
     "loadingGameDetails": "Loading game details...",
+    "detailLabels": {
+      "developer": "Developer",
+      "publisher": "Publisher",
+      "players": "Players",
+      "genres": "Genres",
+      "controls": "Controls",
+      "nvidiaTech": "NVIDIA Tech"
+    },
+    "screenshotNumber": "Screenshot {{index}}",
+    "viewDetails": "Details",
     "developer": "Developer: {{developer}}",
     "publisher": "Publisher: {{publisher}}",
     "players": "Players: {{players}}",
@@ -720,6 +779,8 @@
       "autoFullScreenHint": "Automatically enter fullscreen when connecting to or starting a session.",
       "controllerMode": "Controller Mode",
       "controllerModeHint": "Use a large-screen console-style shell with controller button hints and a horizontal library layout.",
+      "consoleProfilePicker": "Ask who's playing",
+      "consoleProfilePickerHint": "Show the profile picker when console mode starts. Direct game launches are never interrupted.",
       "escapeExitsFullscreen": "Escape Exits Fullscreen",
       "escapeExitsFullscreenHint": "When enabled, pressing Escape exits fullscreen immediately. When disabled (default), Escape is forwarded to the game while pointer-locked; hold Escape ~1.5s to exit fullscreen.",
       "discordRichPresence": "Discord Rich Presence",

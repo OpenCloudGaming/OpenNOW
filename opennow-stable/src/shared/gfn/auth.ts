@@ -31,13 +31,68 @@ export interface AuthSession {
   user: AuthUser;
 }
 
-export interface SavedAccount {
+/**
+ * Account fields derivable from the persisted auth session alone. The PIN lock
+ * store is a separate owner, so it decorates this into a `SavedAccount`.
+ */
+export interface SavedAccountIdentity {
   userId: string;
   displayName: string;
   email?: string;
   avatarUrl?: string;
   membershipTier: string;
   providerCode: string;
+}
+
+export interface SavedAccount extends SavedAccountIdentity {
+  /** Whether a console profile PIN is set. The hash never leaves the main process. */
+  hasPin: boolean;
+}
+
+export type ConsolePinFailureReason =
+  | "invalid_format"
+  | "invalid_pin"
+  | "locked_out"
+  | "no_pin_set"
+  | "unknown_account"
+  | "storage_unavailable";
+
+export interface ConsolePinSetRequest {
+  userId: string;
+  pin: string;
+  /** Required when replacing an existing PIN. */
+  currentPin?: string;
+}
+
+export interface ConsolePinClearRequest {
+  userId: string;
+  currentPin: string;
+}
+
+export interface ConsolePinVerifyRequest {
+  userId: string;
+  pin: string;
+}
+
+export interface ConsolePinStatus {
+  userId: string;
+  hasPin: boolean;
+  /** Epoch ms until which verification is refused, or null when unlocked. */
+  lockedUntilMs: number | null;
+  remainingAttempts: number;
+}
+
+export interface ConsolePinVerifyResult {
+  ok: boolean;
+  reason?: ConsolePinFailureReason;
+  remainingAttempts: number;
+  lockedUntilMs: number | null;
+}
+
+export interface ConsolePinMutationResult {
+  ok: boolean;
+  reason?: ConsolePinFailureReason;
+  hasPin: boolean;
 }
 
 export interface AuthLoginRequest {

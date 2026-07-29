@@ -2,6 +2,33 @@ import type { GameInfo, GameVariant } from "@shared/gfn";
 import { isOwnedVariant, normalizeGameStore } from "@shared/gfn";
 import { getResolvedSelectedVariantId } from "./gameCardVariants";
 
+const STORE_DISPLAY_NAME: Record<string, string> = {
+  STEAM: "Steam",
+  EPIC_GAMES_STORE: "Epic",
+  UPLAY: "Ubisoft",
+  EA_APP: "EA",
+  GOG: "GOG",
+  XBOX: "Xbox",
+  BATTLE_NET: "Battle.net",
+};
+
+/** Normalize an appStore value to the uppercase key used by the icon/name maps. */
+export function normalizeStoreKey(raw: string): string {
+  return normalizeGameStore(raw);
+}
+
+function formatStoreFallbackName(storeKey: string): string {
+  return storeKey
+    .toLowerCase()
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (match) => match.toUpperCase());
+}
+
+export function getStoreDisplayName(store: string): string {
+  const key = normalizeStoreKey(store);
+  return STORE_DISPLAY_NAME[key] ?? formatStoreFallbackName(key);
+}
+
 export interface StoreOption {
   storeKey: string;
   store: string;

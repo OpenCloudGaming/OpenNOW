@@ -2,7 +2,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { Dispatch, RefObject, SetStateAction } from "react";
 import { isShortcutMatch, normalizeShortcut } from "../shortcuts";
 import { addStreamShortcutActionListener } from "../streamShortcutActions";
-import { controllerButton, readControllerGamepadButtons } from "../utils/controllerGamepad";
+import { controllerButton } from "../utils/controllerGamepad";
+import { useControllerNavigation } from "./useControllerNavigation";
 
 const CONTROLLER_MENU_REPEAT_MS = 180;
 
@@ -42,11 +43,6 @@ function isTypingTarget(target: EventTarget | null): boolean {
   );
 }
 
-function readButtons(): number {
-  const pad = navigator.getGamepads?.().find((gamepad): gamepad is Gamepad => Boolean(gamepad));
-  return readControllerGamepadButtons(pad);
-}
-
 export function useStreamMenuNavigation({
   shortcuts,
   isMacClient,
@@ -62,11 +58,6 @@ export function useStreamMenuNavigation({
   const [showSideBar, setShowSideBar] = useState(false);
   const [activeSidebarTab, setActiveSidebarTab] = useState<StreamMenuTab>("session");
   const sidebarRef = useRef<HTMLElement | null>(null);
-  const sidebarGamepadFrameRef = useRef<number | null>(null);
-  const sidebarGamepadPreviousButtonsRef = useRef(0);
-  const sidebarGamepadLastMoveAtRef = useRef(0);
-  const exitPromptGamepadFrameRef = useRef<number | null>(null);
-  const exitPromptGamepadPreviousButtonsRef = useRef(0);
 
   const handleToggleSideBar = useCallback(() => {
     setShowSideBar((open) => {
@@ -87,65 +78,52 @@ export function useStreamMenuNavigation({
     });
   }, []);
 
-  useEffect(() => {
-    if (!showSideBar || exitPromptOpen) return;
+  const sidebarNavigationActive = showSideBar && !exitPromptOpen;
 
-    const getMenuItems = (): HTMLElement[] => {
-      const scope = selectedScreenshotId
-        ? document.querySelector<HTMLElement>(".sv-shot-modal-card")
-        : sidebarRef.current;
-      if (!scope) return [];
-      return Array.from(scope.querySelectorAll<HTMLElement>(
-        "button:not(:disabled), input:not(:disabled):not([type='checkbox']), label.sidebar-mini-toggle, [tabindex='0']",
-      )).filter((element) => {
-        const style = window.getComputedStyle(element);
-        const isInactiveTab =
-          element.getAttribute("role") === "tab" &&
-          element.getAttribute("aria-selected") !== "true";
-        return !isInactiveTab && style.display !== "none" && style.visibility !== "hidden";
-      });
-    };
+  const getMenuItems = useCallback((): HTMLElement[] => {
+    const scope = selectedScreenshotId
+      ? document.querySelector<HTMLElement>(".sv-shot-modal-card")
+      : sidebarRef.current;
+    if (!scope) return [];
+    return Array.from(scope.querySelectorAll<HTMLElement>(
+      "button:not(:disabled), input:not(:disabled):not([type='checkbox']), label.sidebar-mini-toggle, [tabindex='0']",
+    )).filter((element) => {
+      const style = window.getComputedStyle(element);
+      const isInactiveTab =
+        element.getAttribute("role") === "tab" &&
+        element.getAttribute("aria-selected") !== "true";
+      return !isInactiveTab && style.display !== "none" && style.visibility !== "hidden";
+    });
+  }, [selectedScreenshotId]);
 
-    const focusItem = (direction: -1 | 1): void => {
-      const items = getMenuItems();
-      if (items.length === 0) return;
-      const currentIndex = items.findIndex((item) => item === document.activeElement);
-      const nextIndex = currentIndex < 0
-        ? 0
-        : (currentIndex + direction + items.length) % items.length;
-      items[nextIndex]?.focus({ preventScroll: true });
-      items[nextIndex]?.scrollIntoView({ block: "nearest" });
-    };
+  const focusItem = useCallback((direction: -1 | 1): void => {
+    const items = getMenuItems();
+    if (items.length === 0) return;
+    const currentIndex = items.findIndex((item) => item === document.activeElement);
+    const nextIndex = currentIndex < 0
+      ? 0
+      : (currentIndex + direction + items.length) % items.length;
+    items[nextIndex]?.focus({ preventScroll: true });
+    items[nextIndex]?.scrollIntoView({ block: "nearest" });
+  }, [getMenuItems]);
 
-    const changeRange = (input: HTMLInputElement, direction: -1 | 1): void => {
-      const min = Number(input.min || 0);
-      const max = Number(input.max || 100);
-      const step = Number(input.step || 1);
-      const value = Math.max(min, Math.min(max, Number(input.value) + step * direction));
-      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(input, String(value));
-      input.dispatchEvent(new Event("input", { bubbles: true }));
-      input.dispatchEvent(new Event("change", { bubbles: true }));
-    };
+  const changeRange = useCallback((input: HTMLInputElement, direction: -1 | 1): void => {
+    const min = Number(input.min || 0);
+    const max = Number(input.max || 100);
+    const step = Number(input.step || 1);
+    const value = Math.max(min, Math.min(max, Number(input.value) + step * direction));
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(input, String(value));
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+  }, []);
 
-    const handleGamepadFrame = (): void => {
-      const buttons = readButtons();
-      let pressed = buttons & ~sidebarGamepadPreviousButtonsRef.current;
-      const moveMask = controllerButton.up |
-        controllerButton.down |
-        controllerButton.left |
-        controllerButton.right;
-      const activeMoves = buttons & moveMask;
-      const now = performance.now();
-      if (pressed & moveMask) {
-        sidebarGamepadLastMoveAtRef.current = now;
-      } else if (
-        activeMoves &&
-        now - sidebarGamepadLastMoveAtRef.current > CONTROLLER_MENU_REPEAT_MS
-      ) {
-        pressed |= activeMoves;
-        sidebarGamepadLastMoveAtRef.current = now;
-      }
-
+  useControllerNavigation({
+    enabled: sidebarNavigationActive,
+    repeatMs: CONTROLLER_MENU_REPEAT_MS,
+    // The stream menu never started or stopped on hotplug; preserving that
+    // keeps the live-stream path byte-for-byte equivalent.
+    listenForConnection: false,
+    onFrame: ({ pressed }) => {
       const active = document.activeElement as HTMLElement | null;
       const range = active instanceof HTMLInputElement && active.type === "range" ? active : null;
       if (pressed & controllerButton.up) focusItem(-1);
@@ -170,49 +148,32 @@ export function useStreamMenuNavigation({
         else setShowSideBar(false);
       }
       if (pressed & controllerButton.menu) setShowSideBar(false);
+    },
+  });
 
-      sidebarGamepadPreviousButtonsRef.current = buttons;
-      sidebarGamepadFrameRef.current = window.requestAnimationFrame(handleGamepadFrame);
-    };
-
+  useEffect(() => {
+    if (!sidebarNavigationActive) return undefined;
     const initialFocusTimer = window.setTimeout(() => {
       const initialFocus = selectedScreenshotId
         ? document.querySelector<HTMLElement>(".sv-shot-modal-btn:not(:disabled), .sv-shot-modal-close")
         : sidebarRef.current?.querySelector<HTMLElement>(".sidebar-tab--active");
       initialFocus?.focus({ preventScroll: true });
     }, 0);
-    sidebarGamepadPreviousButtonsRef.current = readButtons();
-    sidebarGamepadLastMoveAtRef.current = performance.now();
-    sidebarGamepadFrameRef.current = window.requestAnimationFrame(handleGamepadFrame);
+    return () => window.clearTimeout(initialFocusTimer);
+  }, [selectedScreenshotId, sidebarNavigationActive]);
 
-    return () => {
-      window.clearTimeout(initialFocusTimer);
-      if (sidebarGamepadFrameRef.current !== null) {
-        window.cancelAnimationFrame(sidebarGamepadFrameRef.current);
-        sidebarGamepadFrameRef.current = null;
-      }
-      sidebarGamepadPreviousButtonsRef.current = 0;
-      sidebarGamepadLastMoveAtRef.current = 0;
-    };
-  }, [
-    exitPromptOpen,
-    selectAdjacentSidebarTab,
-    selectedScreenshotId,
-    setSelectedScreenshotId,
-    showSideBar,
-  ]);
+  const focusExitButton = useCallback((confirm: boolean): void => {
+    document.querySelector<HTMLButtonElement>(
+      confirm ? ".sv-exit-btn-confirm" : ".sv-exit-btn-cancel",
+    )?.focus({ preventScroll: true });
+  }, []);
 
-  useEffect(() => {
-    if (!exitPromptOpen) return;
-
-    const focusExitButton = (confirm: boolean): void => {
-      document.querySelector<HTMLButtonElement>(
-        confirm ? ".sv-exit-btn-confirm" : ".sv-exit-btn-cancel",
-      )?.focus({ preventScroll: true });
-    };
-    const handleGamepadFrame = (): void => {
-      const buttons = readButtons();
-      const pressed = buttons & ~exitPromptGamepadPreviousButtonsRef.current;
+  useControllerNavigation({
+    enabled: exitPromptOpen,
+    // A two-button prompt must not auto-repeat under a held stick.
+    repeatMs: null,
+    listenForConnection: false,
+    onFrame: ({ pressed }) => {
       if (pressed & (controllerButton.left | controllerButton.up)) focusExitButton(false);
       if (pressed & (controllerButton.right | controllerButton.down)) focusExitButton(true);
       if (pressed & controllerButton.south) {
@@ -220,9 +181,12 @@ export function useStreamMenuNavigation({
         if (active?.closest(".sv-exit-card")) active.click();
       }
       if (pressed & (controllerButton.east | controllerButton.menu)) onCancelExit();
-      exitPromptGamepadPreviousButtonsRef.current = buttons;
-      exitPromptGamepadFrameRef.current = window.requestAnimationFrame(handleGamepadFrame);
-    };
+    },
+  });
+
+  useEffect(() => {
+    if (!exitPromptOpen) return undefined;
+
     const handleKeyDown = (event: KeyboardEvent): void => {
       if (event.key === "Escape") {
         event.preventDefault();
@@ -234,19 +198,12 @@ export function useStreamMenuNavigation({
     };
 
     const focusTimer = window.setTimeout(() => focusExitButton(false), 0);
-    exitPromptGamepadPreviousButtonsRef.current = readButtons();
-    exitPromptGamepadFrameRef.current = window.requestAnimationFrame(handleGamepadFrame);
     window.addEventListener("keydown", handleKeyDown, true);
     return () => {
       window.clearTimeout(focusTimer);
       window.removeEventListener("keydown", handleKeyDown, true);
-      if (exitPromptGamepadFrameRef.current !== null) {
-        window.cancelAnimationFrame(exitPromptGamepadFrameRef.current);
-        exitPromptGamepadFrameRef.current = null;
-      }
-      exitPromptGamepadPreviousButtonsRef.current = 0;
     };
-  }, [exitPromptOpen, onCancelExit, onConfirmExit]);
+  }, [exitPromptOpen, focusExitButton, onCancelExit, onConfirmExit]);
 
   useEffect(() => {
     return addStreamShortcutActionListener((action) => {
