@@ -1,4 +1,7 @@
 {
+  "common": {
+    "loading": "로딩 중..."
+  },
   "app": {
     "name": "OpenNOW",
     "tagline": "오픈 소스 클라우드 게임 클라이언트",
@@ -15,7 +18,8 @@
       "done": "완료",
       "open": "열기",
       "play": "플레이",
-      "buy": "Buy",
+      "buy": "구매",
+      "markAsOwned": "소유한 것으로 표시",
       "refresh": "새로고침",
       "remove": "제거",
       "reset": "재설정",
@@ -38,6 +42,7 @@
       "failed": "실패",
       "idle": "유휴",
       "loading": "로드 중...",
+      "markingOwned": "소유한 것으로 표시...",
       "ready": "준비",
       "saved": "저장됨",
       "testing": "테스트 중...",
@@ -93,8 +98,18 @@
     },
     "actions": {
       "signIn": "로그인",
+      "signInWithQr": "QR 코드로 로그인",
+      "cancelQrLogin": "QR 로그인 취소",
       "connecting": "연결 중...",
       "restoringSession": "세션을 복원하는 중..."
+    },
+    "qr": {
+      "title": "스캔해서 로그인",
+      "preparing": "QR 로그인을 준비 중",
+      "preparingDescription": "로그인 코드를 요청하는 중...",
+      "description": "휴대폰으로 스캔한 후, 로그인 요청을 승인하세요. OpenNOW는 그 후 자동으로 계속합니다.",
+      "alt": "로그인 QR코드",
+      "expired": "QR 로그인이 만료되었습니다. 다시 시도하려면 새 QR 로그인을 시작하세요."
     },
     "accounts": {
       "activeAccount": "활성 계정",
@@ -140,6 +155,7 @@
   "home": {
     "searchPlaceholder": "게임 검색...",
     "filters": "필터",
+    "sortAriaLabel": "게임 정렬",
     "count": {
       "loading": "로드 중...",
       "shown": "{{shown}} 표시됨",
@@ -154,20 +170,20 @@
       "checkBackLater": "새로운 추가 사항은 나중에 다시 확인하세요."
     },
     "controller": {
-      "eyebrow": "CONTROLLER STORE",
+      "eyebrow": "컨트롤러 스토어",
       "title": "Store Theater",
-      "hints": "D-pad browse / A launch / Space select",
-      "featured": "Featured",
-      "emptyTitle": "No Store collections found",
-      "emptyBody": "The cloud storefront returned empty panels. Try again after the catalog service refreshes.",
-      "readyToStream": "Ready to stream",
-      "cloudReady": "Cloud ready",
+      "hints": "D-pad 탐색 / A 실행 / Space 선택",
+      "featured": "추천",
+      "emptyTitle": "스토어 컬렉션을 찾을 수 없습니다",
+      "emptyBody": "클라우드 스토어프론트에서 빈 패널을 반환했습니다. 카탈로그 서비스가 새로 고쳐진 후 다시 시도해 주세요.",
+      "readyToStream": "스트림 준비됨",
+      "cloudReady": "클라우드 준비됨",
       "owned": "소유",
-      "notOwned": "Not owned",
-      "purchaseUnavailable": "Purchase unavailable",
-      "playNow": "Play Now",
+      "notOwned": "소유하지 않음",
+      "purchaseUnavailable": "구매 불가",
+      "playNow": "지금 플레이",
       "variant": "{{variant}}",
-      "storeCount": "{{count}} stores"
+      "storeCount": "{{count}} 스토어"
     }
   },
   "library": {
@@ -176,23 +192,44 @@
     "searchPlaceholder": "라이브러리 검색...",
     "gameCount": "{{count}} 게임",
     "gameCount_plural": "{{count}} 게임",
-    "filter": "Filter",
-    "allStores": "All Stores",
-    "storeFilter": "Store Filter",
-    "chooseStore": "Choose a Store",
-    "storeFilterHint": "Hold Y, use up/down, release Y to apply",
-    "moreInfo": "More Info",
-    "moreOptions": "More Options",
-    "storeNotListed": "Store not listed",
-    "selectedStore": "Selected Store: {{store}}",
-    "loadingGameDetails": "Loading game details...",
-    "developer": "Developer: {{developer}}",
-    "publisher": "Publisher: {{publisher}}",
-    "players": "Players: {{players}}",
-    "controls": "Controls: {{controls}}",
-    "nvidiaTech": "NVIDIA Tech: {{tech}}",
-    "genres": "Genres: {{genres}}",
-    "rating": "Rating: {{rating}}",
+    "filteredGameCount": "{{total}}개의 게임 중 {{shown}}개",
+    "filter": "필터",
+    "filters": "필터",
+    "sortAriaLabel": "라이브러리 정렬",
+    "activeFilters": "활성 필터",
+    "clearFilters": "초기화",
+    "removeFilter": "{{filter}} 필터 제거",
+    "allStores": "모든 스토어",
+    "storeFilter": "스토어 필터",
+    "chooseStore": "스토어 선택",
+    "storeFilterHint": "Y를 홀드한 후, Up/Down 사용한 후 Y를 놓아서 적용",
+    "moreInfo": "자세한 정보",
+    "moreOptions": "옵션 더보기",
+    "storeNotListed": "스토어에 리스트되지 않음",
+    "selectedStore": "선택된 스토어: {{store}}",
+    "loadingGameDetails": "게임 상세정보를 로드하는 중...",
+    "developer": "개발자: {{developer}}",
+    "publisher": "퍼블리셔: {{publisher}}",
+    "players": "플레이어: {{players}}",
+    "controls": "컨트롤: {{controls}}",
+    "nvidiaTech": "NVIDIA 기술: {{tech}}",
+    "genres": "장르: {{genres}}",
+    "rating": "평가: {{rating}}",
+    "filterGroups": {
+      "playType": "플레이 타입",
+      "platform": "플랫폼",
+      "controls": "컨트롤",
+      "activity": "활동"
+    },
+    "filterOptions": {
+      "installToPlay": "설치해서 플레이",
+      "cloudLaunch": "클라우드 실행",
+      "keyboardMouse": "키보드 및 마우스",
+      "controller": "컨트롤러",
+      "touch": "터치",
+      "played": "플레이함",
+      "neverPlayed": "플레이한 적 없음"
+    },
     "lastPlayed": {
       "never": "플레이한 적 없음",
       "justNow": "지금 막",
@@ -206,7 +243,9 @@
       "libraryEmpty": "라이브러리가 비어 있습니다.",
       "ownedGamesAppearHere": "소유한 게임이 여기에 표시됩니다. 게임을 찾으려면 카탈로그를 탐색하세요.",
       "noGamesFound": "게임을 찾을 수 없습니다.",
-      "noGamesMatch": "\"{{query}}\"와 일치하는 게임이 없습니다."
+      "noGamesMatch": "\"{{query}}\"와 일치하는 게임이 없습니다.",
+      "noFilteredGames": "이 필터에 일치하는 게임이 없습니다",
+      "tryAdjustingFilters": "필터를 초기화하거나 검색을 바꿔 보세요."
     }
   },
   "gameCard": {
@@ -214,17 +253,24 @@
     "playGame": "{{title}} 플레이",
     "store": "{{store}} 스토어",
     "owned": "소유",
-    "available": "가능"
+    "available": "가능",
+    "status": {
+      "maintenance": "점검 중",
+      "updating": "업데이트 중...",
+      "unavailable": "사용 불가"
+    }
   },
   "streamLoading": {
     "labels": {
       "launchError": "실행 오류",
       "nowLoading": "지금 로드 중",
-      "adQueue": "광고 대기열"
+      "adQueue": "광고 대기열",
+      "launchProgress": "게임 실행 절차"
     },
     "steps": {
       "queue": "대기열",
       "setup": "설정",
+      "connect": "연결",
       "ready": "준비"
     },
     "status": {
@@ -237,6 +283,28 @@
       "connectingToServer": "서버에 연결하는 중...",
       "settingUpStream": "스트림 설정 중...",
       "loading": "로드 중..."
+    },
+    "detail": {
+      "queueMoving": "실시간 대기열이 이동 중입니다. {{position}}번째로 확정되었습니다.",
+      "findingCapacity": "이 세션에서 제일 좋은 클라우드 리그를 찾는 중입니다.",
+      "rigReserved": "게이밍 리그를 예약했습니다. 세션 설정을 적용합니다.",
+      "servicesStarting": "게임 서비스를 시작하고 원격 디스플레이를 준비하는 중입니다.",
+      "mediaHandshake": "저지연 비디오와 입력 채널을 협상하는 중입니다."
+    },
+    "cozy": {
+      "queue": "편히 기다리세요. 자리는 예약해 두었다가 게임이 준비되면 이동시켜 드리겠습니다.",
+      "setup": "Your cloud rig is reserved and getting comfortable for you.",
+      "starting": "The game is starting on your cloud rig.",
+      "connecting": "The game is ready. Waiting for the first clear frame.",
+      "next": "Up next"
+    },
+    "telemetry": {
+      "queuePosition": "Queue position",
+      "calculating": "Calculating",
+      "cleared": "Cleared",
+      "elapsed": "Elapsed",
+      "session": "Session",
+      "protected": "Secured"
     },
     "ads": {
       "resumeToStayInQueue": "대기열에 머물려면 광고를 재개하세요.",
@@ -297,7 +365,25 @@
     }
   },
   "stream": {
+    "sessionStarted": {
+      "kicker": "준비",
+      "title": "Session started"
+    },
+    "connectedBadge": {
+      "title": "Connected"
+    },
     "stats": {
+      "overlayLabel": "Stream statistics",
+      "expand": "Show detailed stats",
+      "collapse": "Hide detailed stats",
+      "live": "Live",
+      "sync": "Sync",
+      "rtt": "RTT",
+      "bitrateShort": "Bit",
+      "bitratePerformance": "Actual receive bitrate compared with the negotiated target",
+      "showAdvanced": "Advanced diagnostics",
+      "hideAdvanced": "Hide advanced diagnostics",
+      "waitingForVideo": "Waiting for game video…",
       "connecting": "연결 중...",
       "network": "네트워크",
       "decode": "디코드",
@@ -377,6 +463,7 @@
     "searchPlaceholder": "검색 설정...",
     "noMatches": "\"{{query}}\"와 일치하는 설정이 없습니다.",
     "sections": {
+      "account": "Account",
       "stream": "스트림",
       "nativeStreamer": "네이티브 스트리머",
       "game": "게임",
@@ -393,6 +480,81 @@
       "refreshPing": "핑 새로 고침",
       "noRegionsMatch": "\"{{query}}\"와 일치하는 지역이 없습니다."
     },
+    "persistentStorage": {
+      "title": "Persistent Storage",
+      "resetTitle": "Storage Reset",
+      "description": "Persistent Cloud Storage saves downloaded games and supported game data for future sessions.",
+      "detected": "Detected",
+      "usage": "{{used}} used of {{total}}",
+      "usedOutOf": "used out of {{total}}",
+      "meterLabel": "Persistent Storage usage",
+      "usedLegend": "Used ({{value}})",
+      "availableLegend": "Available ({{value}})",
+      "usedLegendUnavailable": "Used unavailable",
+      "availableLegendUnavailable": "Available unavailable",
+      "usageUnavailable": "Persistent storage is active, but usage is unavailable.",
+      "notDetected": "No Persistent Storage add-on was found for the active account.",
+      "region": "Region: {{region}}",
+      "remaining": "{{value}} available",
+      "regionUnavailable": "Region unavailable",
+      "locationTitle": "Storage Location",
+      "currentLocationOption": "{{region}} (현재)",
+      "currentLocationUnavailable": "현재 위치",
+      "resetWillKeepLocation": "초기화는 현재 스토리지 위치({{region}})를 유지합니다.",
+      "resetWillMoveLocation": "초기화는 스토리지 위치도 {{region}}로 변경합니다.",
+      "locationsLoading": "스토리지 위치를 로드 중...",
+      "locationsFailed": "스토리지 위치를 로드하는 데 실패했습니다.",
+      "recommended": "추천",
+      "unavailable": "사용 불가",
+      "resetHint": "NVIDIA 스토리지 관리자는 브라우저에서 재설정 및 저장 위치 변경을 처리합니다.",
+      "resetConfirm": "{{region}}의 영구 스토리지를 초기화하시겠습니까? 모든 설치된 게임과 영구 데이터를 NVIDIA 클라우드 스토리지에서 삭제합니다. 이 동작은 실행 취소할 수 없습니다.",
+      "openManager": "NVIDIA 열기",
+      "openManagerFailed": "NVIDIA 스토리지 관리자를 여는 데 실패했습니다.",
+      "resetStorage": "스토리지 초기화",
+      "resetting": "초기화 중...",
+      "resetSuccess": "영구 스토리지 초기화가 성공했습니다.",
+      "resetRequiresBrowserHint": "현재 위치는 {{region}}입니다. 재설정 및 위치 변경은 NVIDIA 스토리지 관리자에서 열립니다.",
+      "resetRequiresBrowser": "NVIDIA는 초기화하는데 웹 계정 세션을 요구합니다. 초기화 또는 위치 변경을 NVIDIA 스토리지 관리자에서 완료하세요.",
+      "resetFailed": "영구 스토리지를 초기화하는 데 실패했습니다. 나중에 다시 시도해 주세요."
+    },
+    "accountConnections": {
+      "title": "연결된 게임 계정",
+      "description": "지원되는 스토어 계정을 연결해서 프로바이더가 필요한 게임을 잠금 해제하고 소유한 라이브러리를 OpenNOW에 동기화하세요.",
+      "refresh": "새로고침",
+      "loading": "연결된 게임 계정 로드 중...",
+      "empty": "이 계정에 대해 지원되는 게임 계정 프로바이더가 반환되지 않았습니다.",
+      "signInRequired": "연결된 게임 계정을 관리하기 전에 로그인하세요.",
+      "loadFailed": "연결된 게임 계정을 로드하는 데 실패했습니다.",
+      "actionFailed": "게임 계정 동작에 실패하였습니다. 나중에 다시 시도해 주세요.",
+      "unlinkConfirm": "{{provider}}를 GeForce NOW에서 연결 해제하시겠습니까? 재연결할 때까지 해당 계정의 연동된 라이브러리 항목이 사라질 수 있습니다.",
+      "linkSuccess": "{{provider}}이(가) 연결되었습니다.",
+      "unlinkSuccess": "{{provider}}이(가) 연결 해제되었습니다.",
+      "resyncSuccess": "{{provider}} 라이브러리 동기화가 시작되었습니다.",
+      "statusExpired": "만료됨",
+      "statusSyncError": "동기화 문제",
+      "statusConnected": "연결됨",
+      "statusNotConnected": "연결되지 않음",
+      "connect": "연결",
+      "reconnect": "재연결",
+      "unlink": "연결 해제",
+      "connecting": "연결 중...",
+      "unlinking": "연결 해제 중...",
+      "sync": "동기화",
+      "syncing": "동기화 중...",
+      "resync": "재동기화",
+      "resyncing": "재동기화 중...",
+      "connectedAccount": "연결된 계정",
+      "notConnectedDescription": "게임에서 요구할 때 이 프로바이더를 GeForce NOW에 연결하세요.",
+      "syncOnlyDescription": "계정 연동 SSO 없이 이 프로바이더가 지원하는 라이브러리 게임을 동기화하세요.",
+      "ssoSupported": "계정 연결",
+      "syncSupported": "라이브러리 동기화",
+      "requiredForSomeGames": "일부 게임에서 필요함",
+      "syncSummary": "{{date}} 기준으로 {{count}}개의 게임이 동기화됨",
+      "syncSummary_plural": "{{date}} 기준으로 {{count}}개의 게임이 동기화됨",
+      "syncState": "동기화 상태: {{state}}",
+      "syncUnknown": "알 수 없음",
+      "recently": "최근"
+    },
     "video": {
       "title": "비디오",
       "aspectRatio": "종횡비",
@@ -403,6 +565,9 @@
       "encoder": "인코더",
       "colorDepth": "색상 심도",
       "maxBitrate": "최대 비트 전송률",
+      "recordingBitrate": "녹화 비트레이트",
+      "recordingBitrateHint": "Controls local recording video bitrate. Auto lets the browser choose.",
+      "customBitrate": "Custom",
       "appliesAfterRestart": "앱을 다시 시작한 후 적용됩니다.",
       "requiresH265OrAv1": "이 모드에는 H265 또는 AV1이 필요합니다. 코덱이 자동으로 전환됩니다.",
       "testing": "테스트 중...",
@@ -411,8 +576,37 @@
       "softwareCpu": "소프트웨어(CPU)",
       "sessionProxy": "세션 프록시",
       "sessionProxyHint": "Nvidia 세션 생성 및 대기열 폴링에만 사용됩니다. 스트리밍/시그널링 트래픽은 프록시되지 않습니다. Zortos는 GitHub 후원자/서포터를 위한 프록시를 제공합니다.",
+      "zortosCommunityProxy": {
+        "useButton": "Use Zortos community proxy",
+        "enabledBadge": "Using Zortos community proxy",
+        "enablePromptKicker": "Community service",
+        "enablePromptTitle": "Use Zortos community proxy?",
+        "enablePromptBody": "This session proxy is voluntarily provided by Zortos to help OpenNOW users reach GeForce NOW. It is optional, shared, and may be rate-limited or unavailable at times.",
+        "enablePromptCostHint": "Running this proxy has ongoing server costs. If it helps you, consider supporting Zortos on GitHub Sponsors.",
+        "enablePromptDonate": "Donate on GitHub Sponsors",
+        "enablePromptContinue": "계속",
+        "enablePromptEsc": "cancel",
+        "provisioning": "Activating...",
+        "provisionFailed": "Could not activate the Zortos community proxy right now. Try again later or set up a proxy manually."
+      },
       "experimentalL4SRequest": "실험적인 L4S 요청",
-      "experimentalL4SRequestHint": "새로 생성된 세션에서 GeForce NOW L4S 스트리밍 기능을 요청하세요. 이는 브라우저 WebRTC 동작 자체를 변경하지 않으며 서비스 또는 네트워크 경로에서 무시될 수 있습니다."
+      "experimentalL4SRequestHint": "새로 생성된 세션에서 GeForce NOW L4S 스트리밍 기능을 요청하세요. 이는 브라우저 WebRTC 동작 자체를 변경하지 않으며 서비스 또는 네트워크 경로에서 무시될 수 있습니다.",
+      "identifyAsSteamDeck": "Identify as Steam Deck",
+      "identifyAsSteamDeckHint": "Identify as the Steam Deck GFN client to unlock Deck-specific resolutions and 90 FPS. Video options refresh automatically.",
+      "launchInConsoleMode": "Console Mode (TV / Big Picture)",
+      "launchInConsoleModeHint": "Start OpenNOW fullscreen with Controller Mode enabled, like GeForce NOW's TV mode. Sessions ask NVIDIA to launch games gamepad-friendly (big picture) while Console Mode or Controller Mode is active."
+    },
+    "videoFilters": {
+      "title": "Video Filters",
+      "hint": "GPU post-processing shaders applied to the decoded stream: sharpening, color grading, and film grain. Can also be adjusted live from the in-stream sidebar.",
+      "nativeUnavailable": "Video filters do not apply while native streaming renders the video outside the app window.",
+      "sharpen": "Sharpen",
+      "saturation": "Saturation",
+      "contrast": "Contrast",
+      "brightness": "Brightness",
+      "vibrance": "Vibrance",
+      "filmGrain": "Film Grain",
+      "reset": "Reset to defaults"
     },
     "codecDiagnostics": {
       "advanced": "고급 - 코덱 진단",
@@ -424,7 +618,8 @@
       "notInWebrtc": "WebRTC에 없음",
       "decode": "디코드",
       "encode": "인코딩",
-      "profiles": "프로필:"
+      "profiles": "프로필:",
+      "linuxHardwareHint": "Linux AppImage diagnostics use Chromium's WebRTC/MediaCapabilities report. Hardware decode depends on the Chromium build plus your distro GPU/video stack: x64 systems may need VA-API/NVIDIA VA-API drivers, while ARM V4L2 support depends on Chromium/Electron exposing that decoder."
     },
     "colorQuality": {
       "mostCompatible": "가장 호환성이 좋음",
@@ -437,6 +632,8 @@
       "title": "게임",
       "language": "언어",
       "inGameLanguageHint": "게임 내 메뉴, 자막, 오디오 언어(지원되는 경우)",
+      "persistInGameSettings": "Save in-game graphics settings",
+      "persistInGameSettingsHint": "Lets supported games keep graphics options changed inside the stream. Sent only for games that advertise NVIDIA in-game settings persistence support.",
       "keyboardLayout": "키보드 레이아웃",
       "preferredStore": "선호하는 매장",
       "launchBehavior": "실행 동작"
@@ -464,6 +661,12 @@
       "title": "입력",
       "mouseAndKeyboard": "마우스 및 키보드",
       "clipboardPaste": "클립보드 붙여넣기",
+      "gyroscopeControls": "Gyroscope Controls",
+      "gyroscopeControlsHint": "Expose controller motion sensors for gyro aiming when the input backend supports it.",
+      "steamControllerCompatibilityMode": "Steam Controller Compatibility Mode",
+      "steamControllerCompatibilityModeHint": "macOS only. Restores Chromium's older HID gamepad path for Steam Controller, but may reduce Xbox controller compatibility. Applies after app restart.",
+      "nativeCursorOverlay": "Native Cursor Overlay",
+      "nativeCursorOverlayHint": "WebRTC only. Uses NVIDIA's cursor_channel for a local cursor overlay; turn this off to leave cursor rendering to the server-side stream.",
       "keyboardLayoutHint": "원격 세션 내에서 실제 키보드가 매핑되는 방식을 제어합니다. 게임 내 언어 설정과 별개입니다.",
       "mouseSensitivity": "마우스 감도",
       "mouseSensitivityHint": "마우스 움직임에 적용되는 승수(1.00 = 기본값)",
@@ -491,6 +694,13 @@
       "appearance": "외관",
       "appLanguage": "앱 언어",
       "appLanguageHint": "OpenNOW의 인터페이스 언어를 변경합니다. 번역되지 않은 문자열에는 영어가 사용됩니다.",
+      "theme": "Theme",
+      "themeHint": "Choose a light, dark, or system-matching theme.",
+      "themeAuto": "System Auto",
+      "themeLight": "Light",
+      "themeDark": "Dark",
+      "translucentUI": "Translucent UI",
+      "translucentUIHint": "Enable glassmorphism and translucent overlays.",
       "accentColor": "악센트 색상",
       "accentColorHint": "표준 데스크톱 UI 전체에 선택한 악센트를 적용하고 실행 간에 유지됩니다.",
       "accentColorGreen": "OpenNOW 그린",
@@ -540,6 +750,11 @@
       "checkForUpdates": "업데이트 확인",
       "downloadUpdate": "업데이트 다운로드",
       "restartToInstall": "다시 시작하여 설치",
+      "updateChannel": "Update Channel",
+      "updateChannelHint": "Choose Stable for regular releases or Nightly to preview the latest builds from the dev branch.",
+      "updateChannelStable": "Stable (Default)",
+      "updateChannelNightly": "나이틀리",
+      "updateChannelNightlyHint": "나이틀리 빌드는 안정성이 떨어질 수 있습니다. 채널을 전환하면 즉시 사용 가능한 업데이트를 확인합니다.",
       "automaticallyCheckForUpdates": "자동으로 업데이트 확인",
       "automaticallyCheckForUpdatesOnHint": "켜져 있으면 패키지 빌드는 시작 후 백그라운드에서 OpenNOW가 실행되는 동안 정기적으로 GitHub 릴리스를 확인합니다.",
       "automaticallyCheckForUpdatesOffHint": "꺼져 있으면 아래 수동 업데이트 버튼을 사용하지 않는 한 OpenNOW는 현재 버전을 유지합니다.",
@@ -551,6 +766,12 @@
       "deleteCacheConfirm": "캐시된 데이터를 모두 삭제하시겠습니까? 모든 게임 메타데이터, 이미지, 라이브러리 정보가 삭제됩니다.",
       "cacheCleared": "캐시가 성공적으로 지워졌습니다. 다음에 시작할 때 앱이 새로 고쳐집니다.",
       "deleteCacheFailed": "캐시를 삭제하지 못했습니다. 다시 시도해 주세요.",
+      "whatsNew": "업데이트 내역",
+      "whatsNewHint": "현재 버전의 OpenNOW 릴리즈 노트를 봅니다.",
+      "errorReporting": "익명 진단 전송",
+      "errorReportingHint": "익명의 크래시 리포트와 앱 오픈 정보(설치 ID, 버전, OS)를 전송합니다. NVIDIA 계정, 게임 라이브러리나 게임 플레이는 절대 포함되지 않습니다.",
+      "sendFeedback": "피드백 보내기",
+      "sendFeedbackHint": "OpenNOW 팀에 버그 리포트나 아이디어를 공유합니다.",
       "updateStatus": {
         "packagedBuildsOnly": "패키지된 빌드만",
         "checking": "확인 중",
@@ -574,8 +795,8 @@
       "enablePromptEsc": "취소하다",
       "reportOnGithubIssues": "GitHub 문제 보고",
       "reportOnDiscord": "불화에 대한 보고",
-      "showNativeStreamerStats": "Show Native Streamer Stats",
-      "showNativeStreamerStatsHint": "Display the native streamer's own diagnostics overlay during native sessions.",
+      "showNativeStreamerStats": "네이티브 스트리머 통계 보기",
+      "showNativeStreamerStatsHint": "네이티브 세션에서 네이티브 스트리머의 자체 진단 오버레이를 표시합니다.",
       "streamerStatus": "스트리머 상태",
       "checkNativeStreamer": "네이티브 스트리머 확인",
       "gstreamerReady": "GStreamer 준비",
@@ -586,6 +807,22 @@
       "runtimeDefaultHint": "패키지된 Windows/macOS 빌드는 기본 스트리머 옆에 있는 번들 런타임을 자동 감지합니다. Linux는 distro 패키지를 사용합니다.",
       "linuxRuntimeHint": "VAAPI/V4L2/Vulkan 플러그인은 호스트 배포판 및 GPU 드라이버 스택과 일치해야 하므로 Linux AppImage/개인 GStreamer 번들은 기본적으로 의도적으로 사용되지 않습니다. .deb 패키지는 Debian/Ubuntu 종속성을 자동으로 선언합니다.",
       "videoPath": "비디오 경로",
+      "thisPc": "이 PC",
+      "supportedVideoBackends": "백엔드 호환성",
+      "hardwarePathsReady": "{{count}} 하드웨어 경로 준비됨",
+      "hardwarePathsReady_plural": "{{count}} 하드웨어 경로 준비됨",
+      "supported": "지원됨",
+      "unavailable": "사용 불가",
+      "autoPick": "자동 선택",
+      "selected": "선택됨",
+      "codecSupport": "코덱 지원",
+      "noRenderer": "렌더러 없음",
+      "systemMemory": "시스템 메모리",
+      "noCodecsAvailable": "이 백엔드에 호환되는 코덱이 감지되지 않았습니다.",
+      "probingBackends": "설치된 GPU 드라이버 및 GStreamer 플러그인을 검사하는 중…",
+      "activePath": "활성화된 경로",
+      "capabilityProbeHint": "Refresh the streamer status to probe the video backends supported by this PC.",
+      "backendUnavailableOnPc": "This backend is not supported by the installed GPU drivers and GStreamer plugins.",
       "codecSupportUnknown": "코덱 지원 여부를 알 수 없음",
       "memoryPathUnknown": "메모리 경로를 알 수 없음",
       "videoPathDefaultHint": "OpenNOW는 GStreamer가 감지된 후 활성 하드웨어 디코드 경로를 표시합니다.",
@@ -594,13 +831,26 @@
       "framePacing": "프레임 속도",
       "lowestLatency": "최저 지연 시간",
       "smoothGsync": "부드러운 G-Sync",
-      "framePacingHint": "최저 대기 시간은 G-Sync 속도를 피하고 마우스 느낌에 가장 적합합니다. Smooth G-Sync는 테어링을 줄일 수 있지만 렌더링을 모니터 새로 고침 빈도로 제한할 수 있습니다."
+      "framePacingHint": "최저 대기 시간은 G-Sync 속도를 피하고 마우스 느낌에 가장 적합합니다. Smooth G-Sync는 테어링을 줄일 수 있지만 렌더링을 모니터 새로 고침 빈도로 제한할 수 있습니다.",
+      "renderMode": "Render Mode",
+      "renderModeInternal": "Internal (One Window)",
+      "renderModeExternal": "External (Floating)",
+      "renderModeHint": "Internal (default) embeds native video in the OpenNOW window. External keeps the floating GStreamer window for testing/fallback. Change applies to the next native streamer process.",
+      "renderModeInternalOnlyHint": "This platform uses Internal (one window) only. Keyboard, mouse, and controller input stay in Electron and are forwarded over IPC. External floating mode is Windows-only.",
+      "transportMode": "Transport Mode",
+      "transportModeWebrtc": "WebRTC (Default)",
+      "transportModeNvst": "NVST (Experimental)",
+      "transportModeHint": "WebRTC is the supported path. NVST (experimental) uses classic RTSPS + UDP video (Moonlight-hypothesis scaffold) while keyboard/mouse/controller stay on WebRTC SCTP datachannels. First live sessions may need SRTP/pcap validation.",
+      "transportModeWindowsOnlyHint": "NVST transport is Windows-only for now. This platform always uses WebRTC."
     },
     "thanks": {
       "title": "OpenNOW의 성장을 도와주셔서 감사합니다",
       "subtitle": "OpenNOW는 클라이언트를 구축하는 기여자와 뒤에서 프로젝트를 지원하는 지지자들에 의해 형성됩니다.",
       "contributor": "기여자",
       "supporter": "서포터",
+      "privateSponsor": "Private sponsor",
+      "projectSponsor": "Project sponsor",
+      "githubSponsors": "GitHub Sponsors",
       "communityDataUnavailable": "커뮤니티 데이터를 사용할 수 없습니다",
       "contributorsTitle": "기여자",
       "contributorsSubtitle": "코드, 수정 사항 및 기능에서 OpenNOW를 개선하는 사람들.",
@@ -613,6 +863,7 @@
     }
   },
   "navbar": {
+    "sendFeedback": "Feedback",
     "subscriptionDetails": "구독 세부정보",
     "playtimeDetails": "플레이 시간 세부정보",
     "storageDetails": "스토리지 세부정보",
@@ -652,15 +903,29 @@
       "notAvailable": "해당 없음"
     }
   },
+  "games": {
+    "markOwned": {
+      "success": "Marked {{title}} as owned."
+    }
+  },
   "errors": {
     "launchUnknown": "게임을 시작할 수 없습니다. 다시 시도해 주세요.",
     "launchFailedTitle": "실행 실패",
+    "directLaunchNotFoundTitle": "Direct Launch Failed",
+    "directLaunchNotFoundDescription": "OpenNOW could not find a game matching \"{{value}}\". Use --launch-app-id for exact LaunchBox entries.",
     "duplicateSessionTitle": "중복 세션이 감지되었습니다.",
     "duplicateSessionDescription": "귀하의 계정에서 이미 다른 세션이 실행 중입니다. 먼저 닫거나 시간 초과될 때까지 기다린 후 다시 시작하세요.",
     "insufficientPlayabilityTitle": "Membership Upgrade Required",
     "insufficientPlayabilityDescription": "Your current GeForce NOW membership is not high enough to play this game. Upgrade to a higher tier and try again.",
     "insufficientPlayabilityTierDescription": "This game requires {{tier}} on GeForce NOW. Upgrade your membership to play it.",
+    "userStorageUnavailableTitle": "Persistent Storage Unavailable",
+    "userStorageUnavailableDescription": "NVIDIA reported that Persistent Storage is unavailable for this account or storage location. Open Settings → Account → Persistent Storage, then use NVIDIA Storage Manager to reset or move the storage location. If it still fails, check NVIDIA server status.",
+    "userStorageUnavailableAction": "Open Storage Settings",
     "loginFailed": "로그인 실패",
+    "markOwnedFailed": "Failed to mark game as owned.",
+    "markOwnedFailedWithReason": "Failed to mark game as owned: {{reason}}",
+    "markOwnedMissingVariant": "Select a store variant before marking it owned.",
+    "markOwnedSignInRequired": "Sign in before marking games as owned.",
     "switchAccountFailed": "계정을 전환하지 못했습니다.",
     "nativeStreamerStoppedTitle": "네이티브 스트리머가 중지되었습니다.",
     "nativeStreamerStoppedDescription": "기본 스트리밍 프로세스가 중지되어 자동으로 복원할 수 없습니다. 앱에서 세션을 다시 재개해 보세요.",
@@ -671,5 +936,51 @@
     "queueAdPlayTimeout": "광고 재생 시간 초과",
     "queueAdVideoStuck": "광고 영상이 멈췄어요",
     "queueAdUrlLoad": "URL을 로드하는 중 오류가 발생했습니다."
+  },
+  "releaseHighlights": {
+    "kicker": "업데이트 내역",
+    "title": "OpenNOW {{version}}",
+    "gotIt": "Got it",
+    "viewOnGitHub": "View full release on GitHub",
+    "unavailable": "Release notes couldn't be loaded right now.",
+    "settingsLink": "업데이트 내역"
+  },
+  "telemetryConsent": {
+    "kicker": "Privacy",
+    "title": "Help improve OpenNOW?",
+    "body": "OpenNOW can send anonymous diagnostics so we can find crashes and understand how many installs are active.",
+    "sendsErrors": "Sends crash details, app version, and OS information",
+    "sendsAppOpens": "Sends an anonymous signal when the app opens (for install counts)",
+    "sendsAnonymousId": "Uses a random install ID — not linked to your name or email",
+    "neverSendsAccount": "Never sends your NVIDIA account, tokens, or library",
+    "neverSendsGameplay": "Never records gameplay, streams, or session content",
+    "changeLater": "You can change this anytime in Settings → About.",
+    "accept": "익명 진단 전송",
+    "decline": "Not now"
+  },
+  "feedback": {
+    "kicker": "Feedback",
+    "title": "피드백 보내기",
+    "category": "Category",
+    "categories": {
+      "bug": "Bug report",
+      "idea": "Idea / feature request",
+      "other": "기타"
+    },
+    "message": "Message",
+    "messagePlaceholder": "Tell us what happened or what you'd like to see…",
+    "includeSystemInfo": "Include app version and system info",
+    "includeLogs": "Include recent app logs",
+    "includeLogsHint": "Attaches redacted main + renderer console logs (no passwords, tokens, or emails). Helpful for bug reports.",
+    "send": "피드백 보내기",
+    "sending": "Sending…",
+    "cancel": "취소",
+    "close": "닫기",
+    "success": "Thanks — your feedback was sent.",
+    "errors": {
+      "empty": "Please enter a message before sending.",
+      "notConfigured": "Feedback is unavailable because PostHog is not configured in this build.",
+      "sendFailed": "Couldn't send feedback. Please try again."
+    }
   }
 }

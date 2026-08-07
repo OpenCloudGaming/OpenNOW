@@ -1,4 +1,7 @@
 {
+  "common": {
+    "loading": "Loading..."
+  },
   "app": {
     "name": "OpenNOW",
     "tagline": "Klient do gier w chmurze Open-Source",
@@ -16,6 +19,7 @@
       "open": "Otwórz",
       "play": "Graj",
       "buy": "Buy",
+      "markAsOwned": "Mark as Owned",
       "refresh": "Odśwież",
       "remove": "Usuń",
       "reset": "Reset",
@@ -38,6 +42,7 @@
       "failed": "Niepowodzenie",
       "idle": "Bezczynny",
       "loading": "Ładowanie...",
+      "markingOwned": "Marking as owned...",
       "ready": "Gotowe",
       "saved": "Zapisane",
       "testing": "Testowanie...",
@@ -93,8 +98,18 @@
     },
     "actions": {
       "signIn": "Zaloguj się",
+      "signInWithQr": "Sign in with QR code",
+      "cancelQrLogin": "Cancel QR login",
       "connecting": "Łączenie...",
       "restoringSession": "Przywracanie sesji"
+    },
+    "qr": {
+      "title": "Scan to sign in",
+      "preparing": "Preparing QR login",
+      "preparingDescription": "Requesting a sign-in code...",
+      "description": "Scan with your phone, then approve the sign-in request. OpenNOW will continue automatically.",
+      "alt": "Login QR code",
+      "expired": "QR login expired. Start a new QR login to try again."
     },
     "accounts": {
       "activeAccount": "Aktywne konto",
@@ -140,6 +155,7 @@
   "home": {
     "searchPlaceholder": "Wyszukaj gry...",
     "filters": "Filtry",
+    "sortAriaLabel": "Sort games",
     "count": {
       "loading": "Ładowanie...",
       "shown": "{{shown}} pokazane",
@@ -176,7 +192,13 @@
     "searchPlaceholder": "Przeszukaj swoją bibliotekę...",
     "gameCount": "{{count}} gra",
     "gameCount_plural": "{{count}} gry",
+    "filteredGameCount": "{{shown}} of {{total}} games",
     "filter": "Filter",
+    "filters": "Filtry",
+    "sortAriaLabel": "Sort library",
+    "activeFilters": "Active filters",
+    "clearFilters": "Clear",
+    "removeFilter": "Remove {{filter}} filter",
     "allStores": "All Stores",
     "storeFilter": "Store Filter",
     "chooseStore": "Choose a Store",
@@ -193,6 +215,21 @@
     "nvidiaTech": "NVIDIA Tech: {{tech}}",
     "genres": "Genres: {{genres}}",
     "rating": "Rating: {{rating}}",
+    "filterGroups": {
+      "playType": "Play Type",
+      "platform": "Platform",
+      "controls": "Controls",
+      "activity": "Activity"
+    },
+    "filterOptions": {
+      "installToPlay": "Install to Play",
+      "cloudLaunch": "Cloud Launch",
+      "keyboardMouse": "Keyboard & Mouse",
+      "controller": "Controller",
+      "touch": "Touch",
+      "played": "Played",
+      "neverPlayed": "Never Played"
+    },
     "lastPlayed": {
       "never": "Nigdy nie grane",
       "justNow": "Przed chwilą",
@@ -206,7 +243,9 @@
       "libraryEmpty": "Twoja biblioteka jest pusta",
       "ownedGamesAppearHere": "Gry, które posiadasz, pokażą się tutaj. Przeglądaj katalog, żeby znaleźć gry.",
       "noGamesFound": "Żadnych gier nie znaleziono",
-      "noGamesMatch": "Żadna gra nie pasuje do \"{{query}}\""
+      "noGamesMatch": "Żadna gra nie pasuje do \"{{query}}\"",
+      "noFilteredGames": "No games match those filters",
+      "tryAdjustingFilters": "Try clearing a filter or changing your search."
     }
   },
   "gameCard": {
@@ -214,17 +253,24 @@
     "playGame": "Graj w {{title}}",
     "store": "{{store}} sklep",
     "owned": "Posiadane",
-    "available": "Dostępne"
+    "available": "Dostępne",
+    "status": {
+      "maintenance": "Under maintenance",
+      "updating": "Updating",
+      "unavailable": "Unavailable"
+    }
   },
   "streamLoading": {
     "labels": {
       "launchError": "Błąd uruchomienia",
       "nowLoading": "Teraz ładowanie",
-      "adQueue": "Kolejka reklamowa"
+      "adQueue": "Kolejka reklamowa",
+      "launchProgress": "Game launch progress"
     },
     "steps": {
       "queue": "Kolejka",
       "setup": "Konfigurowanie",
+      "connect": "Connect",
       "ready": "Gotowe"
     },
     "status": {
@@ -237,6 +283,28 @@
       "connectingToServer": "Łączenie z serwerem...",
       "settingUpStream": "Konfigurowanie streamu...",
       "loading": "Ładowanie..."
+    },
+    "detail": {
+      "queueMoving": "The live queue is moving. Your place is secured at #{{position}}.",
+      "findingCapacity": "Finding the best available cloud rig for this session.",
+      "rigReserved": "A gaming rig is reserved. Applying your session configuration now.",
+      "servicesStarting": "Starting game services and preparing the remote display.",
+      "mediaHandshake": "Negotiating the low-latency video and input channels."
+    },
+    "cozy": {
+      "queue": "Settle in. We'll keep your place and bring the game in when it's ready.",
+      "setup": "Your cloud rig is reserved and getting comfortable for you.",
+      "starting": "The game is starting on your cloud rig.",
+      "connecting": "The game is ready. Waiting for the first clear frame.",
+      "next": "Up next"
+    },
+    "telemetry": {
+      "queuePosition": "Queue position",
+      "calculating": "Calculating",
+      "cleared": "Cleared",
+      "elapsed": "Elapsed",
+      "session": "Session",
+      "protected": "Secured"
     },
     "ads": {
       "resumeToStayInQueue": "Wznów reklamy, aby pozostać w kolejce.",
@@ -297,7 +365,25 @@
     }
   },
   "stream": {
+    "sessionStarted": {
+      "kicker": "Gotowe",
+      "title": "Session started"
+    },
+    "connectedBadge": {
+      "title": "Connected"
+    },
     "stats": {
+      "overlayLabel": "Stream statistics",
+      "expand": "Show detailed stats",
+      "collapse": "Hide detailed stats",
+      "live": "Live",
+      "sync": "Sync",
+      "rtt": "RTT",
+      "bitrateShort": "Bit",
+      "bitratePerformance": "Actual receive bitrate compared with the negotiated target",
+      "showAdvanced": "Advanced diagnostics",
+      "hideAdvanced": "Hide advanced diagnostics",
+      "waitingForVideo": "Waiting for game video…",
       "connecting": "Łączenie...",
       "network": "Sieć",
       "decode": "Dekodowanie",
@@ -377,6 +463,7 @@
     "searchPlaceholder": "Ustawienia wyszukiwania",
     "noMatches": "Żadne ustawienia nie pasują do \"{{query}}\"",
     "sections": {
+      "account": "Account",
       "stream": "Stream",
       "nativeStreamer": "Natywny Streamer",
       "game": "Gra",
@@ -393,6 +480,81 @@
       "refreshPing": "Odśwież opóźnienie",
       "noRegionsMatch": "Żaden region nie pasuje do \"{{query}}\""
     },
+    "persistentStorage": {
+      "title": "Persistent Storage",
+      "resetTitle": "Storage Reset",
+      "description": "Persistent Cloud Storage saves downloaded games and supported game data for future sessions.",
+      "detected": "Detected",
+      "usage": "{{used}} used of {{total}}",
+      "usedOutOf": "used out of {{total}}",
+      "meterLabel": "Persistent Storage usage",
+      "usedLegend": "Used ({{value}})",
+      "availableLegend": "Available ({{value}})",
+      "usedLegendUnavailable": "Used unavailable",
+      "availableLegendUnavailable": "Available unavailable",
+      "usageUnavailable": "Persistent storage is active, but usage is unavailable.",
+      "notDetected": "No Persistent Storage add-on was found for the active account.",
+      "region": "Region: {{region}}",
+      "remaining": "{{value}} available",
+      "regionUnavailable": "Region unavailable",
+      "locationTitle": "Storage Location",
+      "currentLocationOption": "{{region}} (Current)",
+      "currentLocationUnavailable": "Current location",
+      "resetWillKeepLocation": "Reset keeps the current storage location: {{region}}.",
+      "resetWillMoveLocation": "Reset will also change storage location to {{region}}.",
+      "locationsLoading": "Loading storage locations...",
+      "locationsFailed": "Failed to load storage locations.",
+      "recommended": "Recommended",
+      "unavailable": "Unavailable",
+      "resetHint": "NVIDIA Storage Manager handles reset and storage-location changes in your browser.",
+      "resetConfirm": "Reset Persistent Storage in {{region}}? This will delete all installed games and persistent data from NVIDIA cloud storage. This action cannot be undone.",
+      "openManager": "Open NVIDIA",
+      "openManagerFailed": "Failed to open NVIDIA Storage Manager.",
+      "resetStorage": "Reset Storage",
+      "resetting": "Resetting...",
+      "resetSuccess": "Persistent Storage reset complete.",
+      "resetRequiresBrowserHint": "Current location: {{region}}. Reset and location changes open in NVIDIA Storage Manager.",
+      "resetRequiresBrowser": "NVIDIA requires its web account session for this reset. Complete reset or location changes in NVIDIA Storage Manager.",
+      "resetFailed": "Failed to reset Persistent Storage. Please try again."
+    },
+    "accountConnections": {
+      "title": "Connected Game Accounts",
+      "description": "Link supported store accounts to unlock provider-required games and sync owned libraries into OpenNOW.",
+      "refresh": "Odśwież",
+      "loading": "Loading connected game accounts...",
+      "empty": "No supported game-account providers were returned for this account.",
+      "signInRequired": "Sign in before managing connected game accounts.",
+      "loadFailed": "Failed to load connected game accounts.",
+      "actionFailed": "Game account action failed. Please try again.",
+      "unlinkConfirm": "Unlink {{provider}} from GeForce NOW? Synced library entries from that account may disappear until you reconnect.",
+      "linkSuccess": "{{provider}} connected.",
+      "unlinkSuccess": "{{provider}} unlinked.",
+      "resyncSuccess": "{{provider}} library sync started.",
+      "statusExpired": "Expired",
+      "statusSyncError": "Sync issue",
+      "statusConnected": "Connected",
+      "statusNotConnected": "Not connected",
+      "connect": "Connect",
+      "reconnect": "Reconnect",
+      "unlink": "Unlink",
+      "connecting": "Łączenie...",
+      "unlinking": "Unlinking...",
+      "sync": "Sync",
+      "syncing": "Syncing...",
+      "resync": "Resync",
+      "resyncing": "Resyncing...",
+      "connectedAccount": "Connected account",
+      "notConnectedDescription": "Connect this provider to GeForce NOW when a game requires it.",
+      "syncOnlyDescription": "Sync this provider's supported library games without account-linking SSO.",
+      "ssoSupported": "Account linking",
+      "syncSupported": "Library sync",
+      "requiredForSomeGames": "Required for some games",
+      "syncSummary": "{{count}} synced game as of {{date}}",
+      "syncSummary_plural": "{{count}} synced games as of {{date}}",
+      "syncState": "Sync state: {{state}}",
+      "syncUnknown": "Niewiadome",
+      "recently": "recently"
+    },
     "video": {
       "title": "Wideo",
       "aspectRatio": "Proporcje obrazu",
@@ -403,6 +565,9 @@
       "encoder": "Enkoder",
       "colorDepth": "Głębia koloru",
       "maxBitrate": "Maksymalna przepływność (bitrate)",
+      "recordingBitrate": "Recording Bitrate",
+      "recordingBitrateHint": "Controls local recording video bitrate. Auto lets the browser choose.",
+      "customBitrate": "Custom",
       "appliesAfterRestart": "Stosuje się po ponownym uruchomieniu aplikacji.",
       "requiresH265OrAv1": "Ten tryb potrzebuje H265 albo AV1. Kodek będzie automatycznie przełączony.",
       "testing": "Testowanie...",
@@ -411,8 +576,37 @@
       "softwareCpu": "Oprogramowanie (CPU)",
       "sessionProxy": "Proxy sesji",
       "sessionProxyHint": "Używane tylko do tworzenia sesji Nvidia i ankiet w kolejce. Ruch przesyłania strumienia/sygnalizacji nie jest proxy. Zortos zapewnia proxy dla Sponsorów/wspierających GitHub.",
+      "zortosCommunityProxy": {
+        "useButton": "Use Zortos community proxy",
+        "enabledBadge": "Using Zortos community proxy",
+        "enablePromptKicker": "Community service",
+        "enablePromptTitle": "Use Zortos community proxy?",
+        "enablePromptBody": "This session proxy is voluntarily provided by Zortos to help OpenNOW users reach GeForce NOW. It is optional, shared, and may be rate-limited or unavailable at times.",
+        "enablePromptCostHint": "Running this proxy has ongoing server costs. If it helps you, consider supporting Zortos on GitHub Sponsors.",
+        "enablePromptDonate": "Donate on GitHub Sponsors",
+        "enablePromptContinue": "Kontynuuj",
+        "enablePromptEsc": "cancel",
+        "provisioning": "Activating...",
+        "provisionFailed": "Could not activate the Zortos community proxy right now. Try again later or set up a proxy manually."
+      },
       "experimentalL4SRequest": "Eksperymentalne żądanie L4S",
-      "experimentalL4SRequestHint": "Poproś o funkcję strumieniowania GeForceNOW L4S na nowo utworzonych sesjach. To nie zmienia zachowań przeglądarki WebRTC i może być ignorowane przez usługę lub ścieżkę sieciową."
+      "experimentalL4SRequestHint": "Poproś o funkcję strumieniowania GeForceNOW L4S na nowo utworzonych sesjach. To nie zmienia zachowań przeglądarki WebRTC i może być ignorowane przez usługę lub ścieżkę sieciową.",
+      "identifyAsSteamDeck": "Identify as Steam Deck",
+      "identifyAsSteamDeckHint": "Identify as the Steam Deck GFN client to unlock Deck-specific resolutions and 90 FPS. Video options refresh automatically.",
+      "launchInConsoleMode": "Console Mode (TV / Big Picture)",
+      "launchInConsoleModeHint": "Start OpenNOW fullscreen with Controller Mode enabled, like GeForce NOW's TV mode. Sessions ask NVIDIA to launch games gamepad-friendly (big picture) while Console Mode or Controller Mode is active."
+    },
+    "videoFilters": {
+      "title": "Video Filters",
+      "hint": "GPU post-processing shaders applied to the decoded stream: sharpening, color grading, and film grain. Can also be adjusted live from the in-stream sidebar.",
+      "nativeUnavailable": "Video filters do not apply while native streaming renders the video outside the app window.",
+      "sharpen": "Sharpen",
+      "saturation": "Saturation",
+      "contrast": "Contrast",
+      "brightness": "Brightness",
+      "vibrance": "Vibrance",
+      "filmGrain": "Film Grain",
+      "reset": "Reset to defaults"
     },
     "codecDiagnostics": {
       "advanced": "Zaawansowane — Diagnostyka kodeka",
@@ -424,7 +618,8 @@
       "notInWebrtc": "Nie w WebRTC",
       "decode": "Dekodowanie",
       "encode": "Enkodowanie",
-      "profiles": "Profile:"
+      "profiles": "Profile:",
+      "linuxHardwareHint": "Linux AppImage diagnostics use Chromium's WebRTC/MediaCapabilities report. Hardware decode depends on the Chromium build plus your distro GPU/video stack: x64 systems may need VA-API/NVIDIA VA-API drivers, while ARM V4L2 support depends on Chromium/Electron exposing that decoder."
     },
     "colorQuality": {
       "mostCompatible": "Najbardziej kompatybilne",
@@ -437,6 +632,8 @@
       "title": "Gra",
       "language": "Język",
       "inGameLanguageHint": "Język dla menu w grze, napisów i dźwięku (jeżeli jest obsługiwany)",
+      "persistInGameSettings": "Save in-game graphics settings",
+      "persistInGameSettingsHint": "Lets supported games keep graphics options changed inside the stream. Sent only for games that advertise NVIDIA in-game settings persistence support.",
       "keyboardLayout": "Układ klawiatury",
       "preferredStore": "Preferowany sklep",
       "launchBehavior": "Zachowanie uruchomienia"
@@ -464,6 +661,12 @@
       "title": "Wejście",
       "mouseAndKeyboard": "Mysz i Klawiatura",
       "clipboardPaste": "Wklejanie schowka",
+      "gyroscopeControls": "Gyroscope Controls",
+      "gyroscopeControlsHint": "Expose controller motion sensors for gyro aiming when the input backend supports it.",
+      "steamControllerCompatibilityMode": "Steam Controller Compatibility Mode",
+      "steamControllerCompatibilityModeHint": "macOS only. Restores Chromium's older HID gamepad path for Steam Controller, but may reduce Xbox controller compatibility. Applies after app restart.",
+      "nativeCursorOverlay": "Native Cursor Overlay",
+      "nativeCursorOverlayHint": "WebRTC only. Uses NVIDIA's cursor_channel for a local cursor overlay; turn this off to leave cursor rendering to the server-side stream.",
       "keyboardLayoutHint": "Kontroluje sposób mapowania klawiatury w zdalnej sesji. Oddzielne od ustawienia języka w grze.",
       "mouseSensitivity": "Czułość myszy",
       "mouseSensitivityHint": "Mnożnik stosowany do ruchu myszy (1.00 = wartość domyślna)",
@@ -491,6 +694,13 @@
       "appearance": "Wygląd",
       "appLanguage": "Język aplikacji",
       "appLanguageHint": "Zmienia język interfejsu OpenNOW. Nieprzetłumaczone treści wyświetlane są po angielsku.",
+      "theme": "Theme",
+      "themeHint": "Choose a light, dark, or system-matching theme.",
+      "themeAuto": "System Auto",
+      "themeLight": "Light",
+      "themeDark": "Dark",
+      "translucentUI": "Translucent UI",
+      "translucentUIHint": "Enable glassmorphism and translucent overlays.",
       "accentColor": "Kolor akcentu",
       "accentColorHint": "Stosuje zaznaczony akcent w standardowym interfejsie pulpitu i zostaje między uruchomieniami.",
       "accentColorGreen": "Zielony OpenNOW",
@@ -540,6 +750,11 @@
       "checkForUpdates": "Sprawdź dostępność aktualizacji",
       "downloadUpdate": "Pobierz aktualizację",
       "restartToInstall": "Uruchom ponownie, aby zainstalować",
+      "updateChannel": "Update Channel",
+      "updateChannelHint": "Choose Stable for regular releases or Nightly to preview the latest builds from the dev branch.",
+      "updateChannelStable": "Stable (Default)",
+      "updateChannelNightly": "Nightly",
+      "updateChannelNightlyHint": "Nightly builds may be less reliable. Switching channels immediately checks for an available update.",
       "automaticallyCheckForUpdates": "Automatycznie sprawdzaj aktualizacje",
       "automaticallyCheckForUpdatesOnHint": "Po włączeniu, spakowane buildy sprawdzają wydania GitHub Releases w tle po uruchomieniu aplikacji oraz okresowo podczas działania OpenNOW.",
       "automaticallyCheckForUpdatesOffHint": "Gdy wyłączone, OpenNOW pozostaje w bieżącej wersji, chyba że użyjesz przycisków ręcznej aktualizacji poniżej.",
@@ -551,8 +766,14 @@
       "deleteCacheConfirm": "Czy na pewno chcesz usunąć wszystkie buforowane dane? Spowoduje to wyczyszczenie wszystkich metadanych gry, zdjęć i informacji bibliotek.",
       "cacheCleared": "Pamięć podręczna wyczyszczona pomyślnie. Aplikacja odświeży przy następnym uruchomieniu.",
       "deleteCacheFailed": "Usunięcie pamięci podręcznej nie powiodło się. Spróbuj ponownie.",
+      "whatsNew": "What's new",
+      "whatsNewHint": "View the release notes for the current version of OpenNOW.",
+      "errorReporting": "Send anonymous diagnostics",
+      "errorReportingHint": "Sends anonymous crash reports and app opens (install ID, version, OS). Never includes your NVIDIA account, games library, or gameplay.",
+      "sendFeedback": "Send feedback",
+      "sendFeedbackHint": "Share a bug report or idea with the OpenNOW team.",
       "updateStatus": {
-        "packagedBuildsOnly": "",
+        "packagedBuildsOnly": "Packaged builds only",
         "checking": "Sprawdzanie",
         "updateAvailable": "Dostępna Aktualizacja",
         "downloading": "Pobieranie",
@@ -586,6 +807,22 @@
       "runtimeDefaultHint": "Spakowane buildy dla Windowsa i macOS automatycznie wykrywają dołączone środowisko uruchomieniowe obok natywnego streamera. Linux korzysta z pakietów dostarczanych przez dystrybucję.",
       "linuxRuntimeHint": "Prywatne biblioteki GStreamer nie są domyślnie dołączane do linuksowych buildów AppImage, ponieważ wtyczki VAAPI/V4L2/Vulkan muszą być zgodne z systemem użytkownika i jego sterownikami GPU. Pakiety .deb automatycznie deklarują wymagane zależności dla Debiana i Ubuntu.",
       "videoPath": "Ścieżka wideo",
+      "thisPc": "This PC",
+      "supportedVideoBackends": "Backend Compatibility",
+      "hardwarePathsReady": "{{count}} hardware path ready",
+      "hardwarePathsReady_plural": "{{count}} hardware paths ready",
+      "supported": "Supported",
+      "unavailable": "Unavailable",
+      "autoPick": "Auto pick",
+      "selected": "Selected",
+      "codecSupport": "Codec support",
+      "noRenderer": "No renderer",
+      "systemMemory": "System memory",
+      "noCodecsAvailable": "No compatible codecs were detected for this backend.",
+      "probingBackends": "Probing the installed GPU drivers and GStreamer plugins…",
+      "activePath": "Active path",
+      "capabilityProbeHint": "Refresh the streamer status to probe the video backends supported by this PC.",
+      "backendUnavailableOnPc": "This backend is not supported by the installed GPU drivers and GStreamer plugins.",
       "codecSupportUnknown": "Obsługa kodeka nieznana",
       "memoryPathUnknown": "Ścieżka pamięci nieznana",
       "videoPathDefaultHint": "OpenNOW wyświetli aktywną ścieżkę dekodowania sprzętowego po wykryciu GStreamera.",
@@ -594,13 +831,26 @@
       "framePacing": "Częstotliwość generowania klatek",
       "lowestLatency": "Najniższe opóźnienie",
       "smoothGsync": "Wygładzona synchronizacja-G",
-      "framePacingHint": "Najniższe opóźnienie pozwala na uniknięcie tempa G-Sync i jest najlepsze dla poczucia myszy. Wygładzanie G-Sync może zmniejszyć rozdarcie, ale może zablokować częstotliwość odświeżania monitora."
+      "framePacingHint": "Najniższe opóźnienie pozwala na uniknięcie tempa G-Sync i jest najlepsze dla poczucia myszy. Wygładzanie G-Sync może zmniejszyć rozdarcie, ale może zablokować częstotliwość odświeżania monitora.",
+      "renderMode": "Render Mode",
+      "renderModeInternal": "Internal (One Window)",
+      "renderModeExternal": "External (Floating)",
+      "renderModeHint": "Internal (default) embeds native video in the OpenNOW window. External keeps the floating GStreamer window for testing/fallback. Change applies to the next native streamer process.",
+      "renderModeInternalOnlyHint": "This platform uses Internal (one window) only. Keyboard, mouse, and controller input stay in Electron and are forwarded over IPC. External floating mode is Windows-only.",
+      "transportMode": "Transport Mode",
+      "transportModeWebrtc": "WebRTC (Default)",
+      "transportModeNvst": "NVST (Experimental)",
+      "transportModeHint": "WebRTC is the supported path. NVST (experimental) uses classic RTSPS + UDP video (Moonlight-hypothesis scaffold) while keyboard/mouse/controller stay on WebRTC SCTP datachannels. First live sessions may need SRTP/pcap validation.",
+      "transportModeWindowsOnlyHint": "NVST transport is Windows-only for now. This platform always uses WebRTC."
     },
     "thanks": {
       "title": "Dziękujemy za pomoc w rozwoju OpenNOW",
       "subtitle": "OpenNOW kształtuje się przez współtwórców budujących klienta i wspierających projekt za scenami.",
       "contributor": "Kontrybutor",
       "supporter": "Wspierający",
+      "privateSponsor": "Private sponsor",
+      "projectSponsor": "Project sponsor",
+      "githubSponsors": "GitHub Sponsors",
       "communityDataUnavailable": "Dane społeczności niedostępne",
       "contributorsTitle": "Współtwórcy",
       "contributorsSubtitle": "Osoby rozwijające OpenNOW kodem, poprawkami i nowymi funkcjami.",
@@ -613,6 +863,7 @@
     }
   },
   "navbar": {
+    "sendFeedback": "Feedback",
     "subscriptionDetails": "Szczegóły subskrypcji",
     "playtimeDetails": "Szczegóły czasu gry",
     "storageDetails": "Szczegóły pamięci",
@@ -652,15 +903,29 @@
       "notAvailable": "N/A"
     }
   },
+  "games": {
+    "markOwned": {
+      "success": "Marked {{title}} as owned."
+    }
+  },
   "errors": {
     "launchUnknown": "Gra nie mogła się rozpocząć. Spróbuj ponownie.",
     "launchFailedTitle": "Uruchomienie nie powiodło się",
+    "directLaunchNotFoundTitle": "Direct Launch Failed",
+    "directLaunchNotFoundDescription": "OpenNOW could not find a game matching \"{{value}}\". Use --launch-app-id for exact LaunchBox entries.",
     "duplicateSessionTitle": "Wykryto duplikat sesji",
     "duplicateSessionDescription": "Inna sesja jest już uruchomiona na Twoim koncie. Zamknij ją najpierw lub poczekaj aż skończy się, a następnie uruchom ponownie.",
     "insufficientPlayabilityTitle": "Wymagane ulepszenie członkostwa",
     "insufficientPlayabilityDescription": "Twoje obecne członkostwo GeForce NOW nie jest wystarczająco wysokie, aby grać w tę grę. Ulepsz do wyższego poziomu i spróbuj ponownie.",
     "insufficientPlayabilityTierDescription": "Ta gra wymaga {{tier}} na GeForce NOW. Ulepsz swoje członkostwo, aby w to zagrać.",
+    "userStorageUnavailableTitle": "Persistent Storage Unavailable",
+    "userStorageUnavailableDescription": "NVIDIA reported that Persistent Storage is unavailable for this account or storage location. Open Settings → Account → Persistent Storage, then use NVIDIA Storage Manager to reset or move the storage location. If it still fails, check NVIDIA server status.",
+    "userStorageUnavailableAction": "Open Storage Settings",
     "loginFailed": "Logowanie nie powiodło się",
+    "markOwnedFailed": "Failed to mark game as owned.",
+    "markOwnedFailedWithReason": "Failed to mark game as owned: {{reason}}",
+    "markOwnedMissingVariant": "Select a store variant before marking it owned.",
+    "markOwnedSignInRequired": "Sign in before marking games as owned.",
     "switchAccountFailed": "Nie udało się zmienić konta",
     "nativeStreamerStoppedTitle": "Natywny Streamer zatrzymany",
     "nativeStreamerStoppedDescription": "Natywny proces streamowania został zatrzymany i nie mógł zostać automatycznie przywrócony. Spróbuj wznowić sesję ponownie z poziomu aplikacji.",
@@ -671,5 +936,51 @@
     "queueAdPlayTimeout": "Limit czasu odtwarzania reklam",
     "queueAdVideoStuck": "Film reklamowy utknął",
     "queueAdUrlLoad": "Błąd ładowania adresu URL"
+  },
+  "releaseHighlights": {
+    "kicker": "What's new",
+    "title": "OpenNOW {{version}}",
+    "gotIt": "Got it",
+    "viewOnGitHub": "View full release on GitHub",
+    "unavailable": "Release notes couldn't be loaded right now.",
+    "settingsLink": "What's new"
+  },
+  "telemetryConsent": {
+    "kicker": "Privacy",
+    "title": "Help improve OpenNOW?",
+    "body": "OpenNOW can send anonymous diagnostics so we can find crashes and understand how many installs are active.",
+    "sendsErrors": "Sends crash details, app version, and OS information",
+    "sendsAppOpens": "Sends an anonymous signal when the app opens (for install counts)",
+    "sendsAnonymousId": "Uses a random install ID — not linked to your name or email",
+    "neverSendsAccount": "Never sends your NVIDIA account, tokens, or library",
+    "neverSendsGameplay": "Never records gameplay, streams, or session content",
+    "changeLater": "You can change this anytime in Settings → About.",
+    "accept": "Send anonymous diagnostics",
+    "decline": "Not now"
+  },
+  "feedback": {
+    "kicker": "Feedback",
+    "title": "Send feedback",
+    "category": "Category",
+    "categories": {
+      "bug": "Bug report",
+      "idea": "Idea / feature request",
+      "other": "Inne"
+    },
+    "message": "Message",
+    "messagePlaceholder": "Tell us what happened or what you'd like to see…",
+    "includeSystemInfo": "Include app version and system info",
+    "includeLogs": "Include recent app logs",
+    "includeLogsHint": "Attaches redacted main + renderer console logs (no passwords, tokens, or emails). Helpful for bug reports.",
+    "send": "Send feedback",
+    "sending": "Sending…",
+    "cancel": "Anuluj",
+    "close": "Zamknij",
+    "success": "Thanks — your feedback was sent.",
+    "errors": {
+      "empty": "Please enter a message before sending.",
+      "notConfigured": "Feedback is unavailable because PostHog is not configured in this build.",
+      "sendFailed": "Couldn't send feedback. Please try again."
+    }
   }
 }
