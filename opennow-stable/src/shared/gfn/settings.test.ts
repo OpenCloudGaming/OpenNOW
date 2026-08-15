@@ -10,6 +10,8 @@ import {
   normalizeRecordingBitrateMbps,
   normalizeRecordingFps,
   normalizeRecordingResolution,
+  normalizeGameStreamProfiles,
+  resolveGameStreamProfile,
   resolveRuntimePlatform,
 } from "./settings";
 
@@ -45,12 +47,55 @@ test("creates fresh mutable nested settings defaults", () => {
   assert.notStrictEqual(first, second);
   assert.notStrictEqual(first.favoriteGameIds, second.favoriteGameIds);
   assert.notStrictEqual(first.videoShader, second.videoShader);
+  assert.notStrictEqual(first.gameStreamProfiles, second.gameStreamProfiles);
 
   first.favoriteGameIds.push("game-1");
   first.videoShader.sharpen = 0;
+  first.gameStreamProfiles["game-1"] = {
+    resolution: "1280x720",
+    fps: 120,
+    maxBitrateMbps: 30,
+  };
 
   assert.deepEqual(second.favoriteGameIds, []);
   assert.equal(second.videoShader.sharpen, 40);
+  assert.deepEqual(second.gameStreamProfiles, {});
+});
+
+test("normalizes persisted per-game stream profiles", () => {
+  const persisted = JSON.parse(JSON.stringify({
+    overwatch: { resolution: "1280x720", fps: 120, maxBitrateMbps: 35 },
+    wukong: { resolution: "3840x2160", fps: 60, maxBitrateMbps: 200 },
+    invalid: { resolution: "4K", fps: "fast", maxBitrateMbps: 75 },
+  }));
+
+  assert.deepEqual(normalizeGameStreamProfiles(persisted), {
+    overwatch: { resolution: "1280x720", fps: 120, maxBitrateMbps: 35 },
+    wukong: { resolution: "3840x2160", fps: 60, maxBitrateMbps: 150 },
+  });
+});
+
+test("resolves a per-game stream profile without changing global defaults", () => {
+  const settings = createDefaultSettings("linux");
+  settings.gameStreamProfiles.overwatch = {
+    resolution: "1280x720",
+    fps: 120,
+    maxBitrateMbps: 30,
+  };
+
+  assert.deepEqual(resolveGameStreamProfile(settings, "overwatch"), {
+    resolution: "1280x720",
+    fps: 120,
+    maxBitrateMbps: 30,
+  });
+  assert.deepEqual(resolveGameStreamProfile(settings, "wukong"), {
+    resolution: "1920x1080",
+    fps: 60,
+    maxBitrateMbps: 75,
+  });
+  assert.equal(settings.resolution, "1920x1080");
+  assert.equal(settings.fps, 60);
+  assert.equal(settings.maxBitrateMbps, 75);
 });
 
 test("uses brief recurring Anti-AFK reminder defaults", () => {

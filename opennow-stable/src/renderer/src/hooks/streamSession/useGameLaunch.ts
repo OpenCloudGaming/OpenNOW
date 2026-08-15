@@ -47,7 +47,10 @@ export interface GameLaunchOptions {
   activeSessionProxyUrl?: string;
   allKnownGames: GameInfo[];
   authSession: AuthSession | null;
-  buildCurrentStreamSettings: (subscription?: SubscriptionInfo | null) => StreamSettings;
+  buildCurrentStreamSettings: (
+    subscription?: SubscriptionInfo | null,
+    gameId?: string | null,
+  ) => StreamSettings;
   buildSignalingConnectRequest: (session: SessionInfo) => SignalingConnectRequest;
   canLaunch: boolean;
   claimAndConnectSession: (session: import("@shared/gfn").ActiveSessionInfo) => Promise<void>;
@@ -113,6 +116,7 @@ export function useGameLaunch({
     setSession,
     setSessionStartedAtMs,
     setStreamingGame,
+    streamingGameRef,
     setStreamingStore,
     setStreamStatus,
     signalingRecoveryRef,
@@ -214,12 +218,13 @@ export function useGameLaunch({
       };
       const launchVariant = matchedGameContext.variant ?? selectedVariant;
       launchGameContext = matchedGameContext.game;
+      streamingGameRef.current = matchedGameContext.game;
       setStreamingGame(matchedGameContext.game);
       setStreamingStore(launchVariant?.store ?? null);
 
       const launchSubscription = await resolveSubscriptionInfoForLaunch();
       if (launchAbortRef.current) return;
-      const streamSettings = buildCurrentStreamSettings(launchSubscription);
+      const streamSettings = buildCurrentStreamSettings(launchSubscription, matchedGameContext.game.id);
       const i2pStorageRegionBaseUrl = await resolveInstallToPlayStreamingBaseUrl(
         matchedGameContext.game,
         launchSubscription,

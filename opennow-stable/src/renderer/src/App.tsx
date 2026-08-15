@@ -27,6 +27,7 @@ import {
   createDefaultSettings,
   createPlatformShortcutDefaults,
   resolveEntitledStreamProfile,
+  resolveGameStreamProfile,
   resolveRuntimePlatform,
   SAFE_FALLBACK_STREAM_PROFILE,
 } from "@shared/gfn";
@@ -751,11 +752,15 @@ export function App(): JSX.Element {
     onRemoveAccount: removeAccountNow,
   });
 
-  const buildCurrentStreamSettings = useCallback((subscriptionOverride?: SubscriptionInfo | null): StreamSettings => {
+  const buildCurrentStreamSettings = useCallback((
+    subscriptionOverride?: SubscriptionInfo | null,
+    gameId?: string | null,
+  ): StreamSettings => {
     const currentSubscription = subscriptionOverride === undefined ? subscriptionInfo : subscriptionOverride;
+    const requestedProfile = resolveGameStreamProfile(settings, gameId);
     const entitledProfile = resolveEntitledStreamProfile(currentSubscription?.entitledResolutions ?? [], {
-      resolution: settings.resolution,
-      fps: settings.fps,
+      resolution: requestedProfile.resolution,
+      fps: requestedProfile.fps,
     });
     const streamProfile = entitledProfile ?? SAFE_FALLBACK_STREAM_PROFILE;
     const codecProfile = resolveStreamProfileCodec(
@@ -767,7 +772,7 @@ export function App(): JSX.Element {
     return {
       resolution: streamProfile.resolution,
       fps: streamProfile.fps,
-      maxBitrateMbps: settings.maxBitrateMbps,
+      maxBitrateMbps: requestedProfile.maxBitrateMbps,
       codec: codecProfile.codec,
       colorQuality: codecProfile.colorQuality,
       keyboardLayout: settings.keyboardLayout,
@@ -794,6 +799,7 @@ export function App(): JSX.Element {
     settings.enableCloudGsync,
     settings.enableL4S,
     settings.fps,
+    settings.gameStreamProfiles,
     settings.gameLanguage,
     settings.keyboardLayout,
     settings.launchInConsoleMode,
@@ -1084,8 +1090,11 @@ export function App(): JSX.Element {
     toggleRecording: "",
   }), [shortcuts]);
 
-  const buildSignalingConnectRequest = useCallback((activeSession: SessionInfo): SignalingConnectRequest => {
-    const streamSettings = buildCurrentStreamSettings();
+  const buildSignalingConnectRequest = useCallback((
+    activeSession: SessionInfo,
+    gameId?: string | null,
+  ): SignalingConnectRequest => {
+    const streamSettings = buildCurrentStreamSettings(undefined, gameId ?? streamingGameRef.current?.id);
     return {
       sessionId: activeSession.sessionId,
       signalingServer: activeSession.signalingServer,
@@ -1680,6 +1689,7 @@ export function App(): JSX.Element {
 
         const matchedContext = findGameContextForSession(existingSession);
         if (matchedContext) {
+          streamingGameRef.current = matchedContext.game;
           setStreamingGame(matchedContext.game);
           setStreamingStore(matchedContext.variant?.store ?? null);
         } else {
@@ -1687,7 +1697,7 @@ export function App(): JSX.Element {
         }
 
         const launchSubscription = await resolveSubscriptionInfoForLaunch();
-        const streamSettings = buildCurrentStreamSettings(launchSubscription);
+        const streamSettings = buildCurrentStreamSettings(launchSubscription, matchedContext?.game.id);
         const claimed = await window.openNow.claimSession({
           token,
           streamingBaseUrl: effectiveStreamingBaseUrl,
@@ -1807,8 +1817,15 @@ export function App(): JSX.Element {
             throw new Error("The running session is missing a server address, so resume was not possible.");
           }
 
+          const matchedContext = findGameContextForSession(candidate);
+          if (matchedContext) {
+            streamingGameRef.current = matchedContext.game;
+          }
           const recoverySubscription = await resolveSubscriptionInfoForLaunch();
-          const recoveryStreamSettings = buildCurrentStreamSettings(recoverySubscription);
+          const recoveryStreamSettings = buildCurrentStreamSettings(
+            recoverySubscription,
+            matchedContext?.game.id ?? streamingGameRef.current?.id,
+          );
           const claimed = await window.openNow.claimSession({
             token,
             streamingBaseUrl: effectiveStreamingBaseUrl,
@@ -1826,7 +1843,6 @@ export function App(): JSX.Element {
             return false;
           }
 
-          const matchedContext = findGameContextForSession(candidate);
           if (matchedContext) {
             setStreamingGame(matchedContext.game);
             setStreamingStore(matchedContext.variant?.store ?? null);
@@ -3128,6 +3144,12 @@ export function App(): JSX.Element {
         selectedVariantId={detailsGame ? variantByGameId[detailsGame.id] : undefined}
         onSelectVariant={(variantId) => {
           if (detailsGame) handleSelectGameVariant(detailsGame.id, variantId);
+        }}
+        settings={settings}
+        entitledResolutions={subscriptionInfo?.entitledResolutions ?? []}
+        onGameStreamProfilesPreview={(profiles) => previewSetting("gameStreamProfiles", profiles)}
+        onGameStreamProfilesChange={(profiles) => {
+          void updateSetting("gameStreamProfiles", profiles);
         }}
         onPlay={(game, variantId) => {
           handleCloseDetails();

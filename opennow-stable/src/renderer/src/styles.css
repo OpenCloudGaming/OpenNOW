@@ -3495,6 +3495,154 @@ button.game-card-store-chip.owned.active:hover {
   outline-offset: 2px;
 }
 
+.game-stream-profile {
+  gap: 14px;
+  padding: 16px;
+  border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--panel-border));
+  border-radius: var(--r-md);
+  background:
+    radial-gradient(circle at 8% 0%, rgba(var(--accent-rgb), 0.08), transparent 42%),
+    color-mix(in srgb, var(--chip) 66%, transparent);
+}
+
+.game-stream-profile-heading,
+.game-stream-profile-title-wrap,
+.game-stream-profile-toggle-row,
+.game-stream-profile-bitrate > div,
+.game-stream-profile-summary {
+  display: flex;
+  align-items: center;
+}
+
+.game-stream-profile-heading,
+.game-stream-profile-toggle-row,
+.game-stream-profile-bitrate > div {
+  justify-content: space-between;
+}
+
+.game-stream-profile-title-wrap {
+  min-width: 0;
+  gap: 11px;
+}
+
+.game-stream-profile-title-wrap p {
+  margin: 4px 0 0;
+  color: var(--ink-muted);
+  font-size: 0.72rem;
+  line-height: 1.4;
+}
+
+.game-stream-profile-icon {
+  display: inline-flex;
+  width: 34px;
+  height: 34px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(var(--accent-rgb), 0.3);
+  border-radius: 10px;
+  background: var(--accent-surface);
+  color: var(--accent);
+}
+
+.game-stream-profile-badge {
+  flex: 0 0 auto;
+  margin-left: 16px;
+  padding: 5px 8px;
+  border: 1px solid var(--panel-border);
+  border-radius: 999px;
+  color: var(--ink-muted);
+  font-size: 0.66rem;
+  font-weight: 760;
+  letter-spacing: 0.035em;
+}
+
+.game-stream-profile-badge.is-custom {
+  border-color: rgba(var(--accent-rgb), 0.38);
+  background: var(--accent-surface);
+  color: var(--accent);
+}
+
+.game-stream-profile-toggle-row {
+  gap: 20px;
+  padding-top: 13px;
+  border-top: 1px solid var(--panel-border);
+}
+
+.game-stream-profile-toggle-row > div {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.game-stream-profile-toggle-row strong,
+.game-stream-profile-field > span,
+.game-stream-profile-bitrate span {
+  color: var(--ink);
+  font-size: var(--text-sm);
+  font-weight: 720;
+}
+
+.game-stream-profile-toggle-row > div > span {
+  color: var(--ink-muted);
+  font-size: 0.71rem;
+}
+
+.game-stream-profile-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 12px;
+  padding-top: 2px;
+}
+
+.game-stream-profile-field {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--panel-border);
+  border-radius: var(--r-sm);
+  background: color-mix(in srgb, var(--panel) 68%, transparent);
+}
+
+.game-stream-profile-field .select-dropdown {
+  width: 100%;
+}
+
+.game-stream-profile-field .settings-chip-row {
+  gap: 6px;
+}
+
+.game-stream-profile-field .settings-chip {
+  min-width: 48px;
+  flex: 1;
+  padding-inline: 9px;
+}
+
+.game-stream-profile-bitrate {
+  grid-column: 1 / -1;
+}
+
+.game-stream-profile-bitrate strong {
+  color: var(--accent);
+  font-size: 0.75rem;
+}
+
+.game-stream-profile-summary {
+  gap: 10px;
+  color: var(--ink-soft);
+  font-size: 0.75rem;
+  font-weight: 680;
+}
+
+.game-stream-profile-summary i {
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: var(--ink-muted);
+}
+
 .game-detail-actions {
   flex: 0 0 auto;
   display: flex;
@@ -3574,6 +3722,18 @@ button.game-card-store-chip.owned.active:hover {
 
   .game-detail-play {
     min-width: 0;
+  }
+
+  .game-stream-profile-heading {
+    align-items: flex-start;
+  }
+
+  .game-stream-profile-controls {
+    grid-template-columns: 1fr;
+  }
+
+  .game-stream-profile-bitrate {
+    grid-column: auto;
   }
 }
 

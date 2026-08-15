@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import type { MainToRendererSignalingEvent, Settings } from "@shared/gfn";
+import { resolveGameStreamProfile } from "@shared/gfn";
 
 import { dispatchStreamShortcutAction } from "../../streamShortcutActions";
 import {
@@ -75,6 +76,7 @@ export function useSignalingEvents({
     setStreamStatus,
     signalingRecoveryRef,
     streamMicLevel,
+    streamingGameRef,
     streamStatusRef,
     streamVolume,
     videoRef,
@@ -179,6 +181,7 @@ export function useSignalingEvents({
         activeSession.negotiatedStreamProfile?.codec ?? settings.codec,
         settings.colorQuality,
       );
+      const streamProfile = resolveGameStreamProfile(settings, streamingGameRef.current?.id);
 
       nativeStreamingRef.current = true;
       pendingControlledDisconnectsRef.current = 0;
@@ -191,9 +194,9 @@ export function useSignalingEvents({
         {
           codec: nativeCodecProfile.codec,
           colorQuality: nativeCodecProfile.colorQuality,
-          resolution: settings.resolution,
-          fps: settings.fps,
-          maxBitrateKbps: settings.maxBitrateMbps * 1000,
+          resolution: activeSession.negotiatedStreamProfile?.resolution ?? streamProfile.resolution,
+          fps: activeSession.negotiatedStreamProfile?.fps ?? streamProfile.fps,
+          maxBitrateKbps: streamProfile.maxBitrateMbps * 1000,
         },
         {
           // Windows internal: RawInput on the child HWND (Electron click-through is flaky).
@@ -270,6 +273,7 @@ export function useSignalingEvents({
           const client = ensureWebRtcClient();
 
           if (client) {
+            const streamProfile = resolveGameStreamProfile(settings, streamingGameRef.current?.id);
             const codecProfile = resolveStreamProfileCodec(
               activeSession.negotiatedStreamProfile?.codec ?? settings.codec,
               activeSession.negotiatedStreamProfile?.colorQuality ?? settings.colorQuality,
@@ -277,9 +281,9 @@ export function useSignalingEvents({
             await client.handleOffer(event.sdp, activeSession, {
               codec: codecProfile.codec,
               colorQuality: codecProfile.colorQuality,
-              resolution: settings.resolution,
-              fps: settings.fps,
-              maxBitrateKbps: settings.maxBitrateMbps * 1000,
+              resolution: activeSession.negotiatedStreamProfile?.resolution ?? streamProfile.resolution,
+              fps: activeSession.negotiatedStreamProfile?.fps ?? streamProfile.fps,
+              maxBitrateKbps: streamProfile.maxBitrateMbps * 1000,
               fallbackCodec: settings.fallbackCodec,
               nativeTransitionDiagnostics: settings.nativeTransitionDiagnostics,
             });

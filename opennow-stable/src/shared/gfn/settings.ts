@@ -56,12 +56,22 @@ export interface MicrophonePermissionResult {
   shouldUseBrowserApi: boolean;
 }
 
+export interface GameStreamProfile {
+  resolution: string;
+  fps: number;
+  maxBitrateMbps: number;
+}
+
+export type GameStreamProfiles = Record<string, GameStreamProfile>;
+
 export interface Settings {
   resolution: string;
   aspectRatio: AspectRatio;
   posterSizeScale: number;
   fps: number;
   maxBitrateMbps: number;
+  /** Per-game stream quality overrides keyed by the stable catalog game ID. */
+  gameStreamProfiles: GameStreamProfiles;
   /** Recording video bitrate in Mbps; null means let MediaRecorder choose automatically */
   recordingBitrateMbps: number | null;
   recordingResolution: RecordingResolution;
@@ -271,6 +281,7 @@ export function createDefaultSettings(platform: string): Settings {
     posterSizeScale: 1.05,
     fps: 60,
     maxBitrateMbps: 75,
+    gameStreamProfiles: {},
     recordingBitrateMbps: null,
     recordingResolution: DEFAULT_RECORDING_RESOLUTION,
     recordingFps: DEFAULT_RECORDING_FPS,
@@ -339,6 +350,62 @@ export function createDefaultSettings(platform: string): Settings {
     errorReportingConsent: "unset",
     telemetryInstallId: "",
   };
+}
+
+function isValidGameStreamResolution(value: unknown): value is string {
+  if (typeof value !== "string" || !/^\d{3,5}x\d{3,5}$/.test(value)) {
+    return false;
+  }
+  const [width, height] = value.split("x").map(Number);
+  return Number.isInteger(width) && width > 0 && Number.isInteger(height) && height > 0;
+}
+
+export function normalizeGameStreamProfiles(raw: unknown): GameStreamProfiles {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return {};
+  }
+
+  const entries: Array<[string, GameStreamProfile]> = [];
+  for (const [rawGameId, value] of Object.entries(raw)) {
+    const gameId = rawGameId.trim();
+    if (!gameId || !value || typeof value !== "object" || Array.isArray(value)) {
+      continue;
+    }
+
+    const candidate = value as Partial<Record<keyof GameStreamProfile, unknown>>;
+    const fps = Number(candidate.fps);
+    const maxBitrateMbps = Number(candidate.maxBitrateMbps);
+    if (
+      !isValidGameStreamResolution(candidate.resolution)
+      || !Number.isInteger(fps)
+      || fps < 1
+      || fps > 1000
+      || !Number.isFinite(maxBitrateMbps)
+    ) {
+      continue;
+    }
+
+    entries.push([gameId, {
+      resolution: candidate.resolution,
+      fps,
+      maxBitrateMbps: Math.max(5, Math.min(150, Math.round(maxBitrateMbps))),
+    }]);
+  }
+  return Object.fromEntries(entries);
+}
+
+export function resolveGameStreamProfile(
+  settings: Pick<Settings, "resolution" | "fps" | "maxBitrateMbps" | "gameStreamProfiles">,
+  gameId?: string | null,
+): GameStreamProfile {
+  const profile = gameId ? settings.gameStreamProfiles[gameId] : undefined;
+  return profile
+    ? { ...profile }
+    : {
+        resolution: settings.resolution,
+        fps: settings.fps,
+        maxBitrateMbps: settings.maxBitrateMbps,
+      };
 }
 
 export const DEFAULT_STREAM_PREFERENCES: Readonly<Pick<Settings, "codec" | "fallbackCodec" | "colorQuality">> = Object.freeze({
