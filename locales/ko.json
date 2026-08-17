@@ -810,6 +810,16 @@
       "filmGrain": "Film Grain",
       "reset": "Reset to defaults"
     },
+    "frameInterpolation": {
+      "title": "Frame Interpolation",
+      "hint": "Experimental neural frame interpolation (Framegen WebGPU runtime) that synthesizes extra frames between decoded stream frames for smoother motion. Adds display latency and GPU load. Web client mode only; uses shader-f16 when available.",
+      "nativeUnavailable": "Frame interpolation does not apply while native streaming renders the video outside the app window.",
+      "factor": "Factor",
+      "quality": "Model quality",
+      "qualityHint": "Internal resolution of interpolated frames. Lower uses less GPU; 480p is a good starting point.",
+      "weightsNotice": "Runtime code is MIT. Model weights are non-commercial research/personal use only (Framegen weight license).",
+      "reset": "Reset to defaults"
+    },
     "codecDiagnostics": {
       "advanced": "고급 - 코덱 진단",
       "title": "코덱 진단",
@@ -1172,6 +1182,8 @@
     "switchAccountFailed": "계정을 전환하지 못했습니다.",
     "nativeStreamerStoppedTitle": "네이티브 스트리머가 중지되었습니다.",
     "nativeStreamerStoppedDescription": "기본 스트리밍 프로세스가 중지되어 자동으로 복원할 수 없습니다. 앱에서 세션을 다시 재개해 보세요.",
+    "remoteSessionEndedTitle": "Remote Session Ended",
+    "remoteSessionEndedDescription": "GeForce NOW ended the remote stream. This usually means the game or launcher exited, rather than OpenNOW timing out an idle session. Try launching the game again. If it closes again, include the OpenNOW logs in a bug report.",
     "sessionConnectionLostTitle": "세션 연결 끊김",
     "resumeAttachFailedDescription": "미디어 핸드셰이크 전에 연결 재개에 실패했습니다. 다시 한 번 재개해 보세요.",
     "sessionConnectionLostDescription": "실행 중인 세션에 대한 연결이 끊어져 자동으로 복원할 수 없습니다. 앱에서 다시 시작해 보세요.",

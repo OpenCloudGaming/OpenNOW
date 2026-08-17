@@ -810,6 +810,16 @@
       "filmGrain": "Film Grain",
       "reset": "Reset to defaults"
     },
+    "frameInterpolation": {
+      "title": "Frame Interpolation",
+      "hint": "Experimental neural frame interpolation (Framegen WebGPU runtime) that synthesizes extra frames between decoded stream frames for smoother motion. Adds display latency and GPU load. Web client mode only; uses shader-f16 when available.",
+      "nativeUnavailable": "Frame interpolation does not apply while native streaming renders the video outside the app window.",
+      "factor": "Factor",
+      "quality": "Model quality",
+      "qualityHint": "Internal resolution of interpolated frames. Lower uses less GPU; 480p is a good starting point.",
+      "weightsNotice": "Runtime code is MIT. Model weights are non-commercial research/personal use only (Framegen weight license).",
+      "reset": "Reset to defaults"
+    },
     "codecDiagnostics": {
       "advanced": "Дополнительно — Диагностика кодеков",
       "title": "Диагностика кодеков",
@@ -1172,6 +1182,8 @@
     "switchAccountFailed": "Не удалось переключить аккаунт",
     "nativeStreamerStoppedTitle": "Родной стример остановлен",
     "nativeStreamerStoppedDescription": "Собственный процесс потоковой передачи остановлен и не может быть восстановлен автоматически. Попробуйте возобновить сеанс еще раз из приложения.",
+    "remoteSessionEndedTitle": "Remote Session Ended",
+    "remoteSessionEndedDescription": "GeForce NOW ended the remote stream. This usually means the game or launcher exited, rather than OpenNOW timing out an idle session. Try launching the game again. If it closes again, include the OpenNOW logs in a bug report.",
     "sessionConnectionLostTitle": "Соединение с сеансом потеряно",
     "resumeAttachFailedDescription": "Не удалось возобновить присоединение до установления связи с носителем. Попробуйте возобновить еще раз.",
     "sessionConnectionLostDescription": "Соединение с запущенным сеансом было потеряно и не может быть восстановлено автоматически. Попробуйте возобновить его еще раз из приложения.",

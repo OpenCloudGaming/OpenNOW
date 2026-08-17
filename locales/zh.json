@@ -810,6 +810,16 @@
       "filmGrain": "Film Grain",
       "reset": "Reset to defaults"
     },
+    "frameInterpolation": {
+      "title": "Frame Interpolation",
+      "hint": "Experimental neural frame interpolation (Framegen WebGPU runtime) that synthesizes extra frames between decoded stream frames for smoother motion. Adds display latency and GPU load. Web client mode only; uses shader-f16 when available.",
+      "nativeUnavailable": "Frame interpolation does not apply while native streaming renders the video outside the app window.",
+      "factor": "Factor",
+      "quality": "Model quality",
+      "qualityHint": "Internal resolution of interpolated frames. Lower uses less GPU; 480p is a good starting point.",
+      "weightsNotice": "Runtime code is MIT. Model weights are non-commercial research/personal use only (Framegen weight license).",
+      "reset": "Reset to defaults"
+    },
     "codecDiagnostics": {
       "advanced": "高级 - 编解码器诊断",
       "title": "编解码器诊断",
@@ -1172,6 +1182,8 @@
     "switchAccountFailed": "切换账号失败",
     "nativeStreamerStoppedTitle": "本机流媒体已停止",
     "nativeStreamerStoppedDescription": "本机流媒体进程已停止且无法自动恢复。尝试从应用程序再次恢复会话。",
+    "remoteSessionEndedTitle": "Remote Session Ended",
+    "remoteSessionEndedDescription": "GeForce NOW ended the remote stream. This usually means the game or launcher exited, rather than OpenNOW timing out an idle session. Try launching the game again. If it closes again, include the OpenNOW logs in a bug report.",
     "sessionConnectionLostTitle": "会话连接丢失",
     "resumeAttachFailedDescription": "媒体握手之前恢复连接失败。尝试再次恢复。",
     "sessionConnectionLostDescription": "与正在运行的会话的连接已丢失且无法自动恢复。尝试从应用程序再次恢复它。",

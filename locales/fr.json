@@ -810,6 +810,16 @@
       "filmGrain": "Film Grain",
       "reset": "Reset to defaults"
     },
+    "frameInterpolation": {
+      "title": "Frame Interpolation",
+      "hint": "Experimental neural frame interpolation (Framegen WebGPU runtime) that synthesizes extra frames between decoded stream frames for smoother motion. Adds display latency and GPU load. Web client mode only; uses shader-f16 when available.",
+      "nativeUnavailable": "Frame interpolation does not apply while native streaming renders the video outside the app window.",
+      "factor": "Factor",
+      "quality": "Model quality",
+      "qualityHint": "Internal resolution of interpolated frames. Lower uses less GPU; 480p is a good starting point.",
+      "weightsNotice": "Runtime code is MIT. Model weights are non-commercial research/personal use only (Framegen weight license).",
+      "reset": "Reset to defaults"
+    },
     "codecDiagnostics": {
       "advanced": "Avancé - Diagnostic des codecs",
       "title": "Diagnostic des codecs",
@@ -1172,6 +1182,8 @@
     "switchAccountFailed": "Échec du changement de compte",
     "nativeStreamerStoppedTitle": "Streamer natif arrêté",
     "nativeStreamerStoppedDescription": "Le processus de streaming natif s'est arrêté et n'a pas pu être restauré automatiquement. Essayez de reprendre la session depuis l'application.",
+    "remoteSessionEndedTitle": "Remote Session Ended",
+    "remoteSessionEndedDescription": "GeForce NOW ended the remote stream. This usually means the game or launcher exited, rather than OpenNOW timing out an idle session. Try launching the game again. If it closes again, include the OpenNOW logs in a bug report.",
     "sessionConnectionLostTitle": "Connexion de session perdue",
     "resumeAttachFailedDescription": "La reprise de l’attachement a échoué avant l’établissement de liaison multimédia. Essayez de reprendre une fois de plus.",
     "sessionConnectionLostDescription": "La connexion à votre session en cours a été perdue et n'a pas pu être restaurée automatiquement. Essayez de le reprendre depuis l'application.",
