@@ -62,5 +62,3 @@ result
 .deriveddata-device/
 .opencode
 vendor/
-!native/opennow-streamer/vendor/
-!native/opennow-streamer/vendor/**

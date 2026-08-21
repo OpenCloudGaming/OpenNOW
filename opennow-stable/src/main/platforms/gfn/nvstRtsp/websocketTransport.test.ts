@@ -21,6 +21,7 @@ test("buildNvstWssUpgradeRequest uses Bifrost-shaped GET / by default", () => {
   assert.equal(requestLine, "GET / HTTP/1.1");
   assert.equal(Buffer.from(requestLine, "utf8").toString("hex"), "474554202f20485454502f312e31");
   assert.equal(buildNvstWssUpgradeRequestTarget("host.example", 322, "slash"), "/");
+  assert.equal(buildNvstWssUpgradeRequestTarget("host.example", 322, "rtspPath"), "/rtsp");
   assert.equal(
     buildNvstWssUpgradeRequestTarget("host.example", 322, "sessionPath", "abc-uuid"),
     "/v2/session/abc-uuid",
@@ -36,6 +37,15 @@ test("buildNvstWssUpgradeRequest uses Bifrost-shaped GET / by default", () => {
   assert.doesNotMatch(request, /x-nv-sessionid/i);
 });
 
+test("buildNvstWssUpgradeRequest supports the /rtsp endpoint with session identity", () => {
+  const request = buildNvstWssUpgradeRequest("host.example", 322, "key", {
+    form: "rtspPath",
+    sessionId: "sess-uuid",
+  });
+  assert.match(request, /^GET \/rtsp HTTP\/1\.1\r\n/);
+  assert.match(request, /\r\nx-nv-sessionid: sess-uuid\r\n/);
+});
+
 test("buildEmptyPathUpgradeRequest keeps empty URI for research (live → 400)", () => {
   const request = buildEmptyPathUpgradeRequest(
     "80-250-97-40.cloudmatchbeta.nvidiagrid.net",
@@ -47,7 +57,7 @@ test("buildEmptyPathUpgradeRequest keeps empty URI for research (live → 400)",
   assert.equal(Buffer.from(requestLine, "utf8").toString("hex"), "4745542020485454502f312e31");
 });
 
-test("buildNvstWssUpgradeRequest can attach x-nv-sessionid for 403 retry", () => {
+test("buildNvstWssUpgradeRequest attaches x-nv-sessionid to upgrade requests", () => {
   const request = buildNvstWssUpgradeRequest("host.example", 322, "abc", {
     form: "slash",
     sessionId: "sess-uuid",

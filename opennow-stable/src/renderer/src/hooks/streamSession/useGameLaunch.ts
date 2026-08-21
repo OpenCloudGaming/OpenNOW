@@ -247,9 +247,14 @@ export function useGameLaunch({
             const otherSession = activeSessions.find((s) => s.status === 2 || s.status === 3) ?? null;
 
             if (matchingSession) {
-              await claimAndConnectSession(matchingSession);
-              setNavbarActiveSession(null);
-              return;
+              if (streamSettings.transportMode === "nvst") {
+                // Leftover NVST seats can carry the legacy "PING" streamer pool; always fresh-create.
+                existingSessionStrategy = "force-new";
+              } else {
+                await claimAndConnectSession(matchingSession);
+                setNavbarActiveSession(null);
+                return;
+              }
             }
 
             if (otherSession) {

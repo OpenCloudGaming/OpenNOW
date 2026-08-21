@@ -78,12 +78,12 @@ export function registerSessionIpcHandlers(deps: SessionIpcHandlerDeps): void {
       const streamingBaseUrl =
         payload.streamingBaseUrl ??
         authService.getSelectedProvider().streamingServiceUrl;
-      const forceNewSession = shouldForceNewSession(
-        payload.existingSessionStrategy,
-      );
       const resolvedSettings = await resolveSessionCloudGsyncSettings(
         payload.settings,
       );
+      const forceNewSession =
+        shouldForceNewSession(payload.existingSessionStrategy) ||
+        resolvedSettings.transportMode === "nvst";
       const resolvedPayload: SessionCreateRequest = {
         ...payload,
         settings: resolvedSettings,

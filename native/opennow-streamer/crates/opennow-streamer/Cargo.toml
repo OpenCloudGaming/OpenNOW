@@ -1,0 +1,13 @@
+[package]
+name = "opennow-streamer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+opennow-streamer-core = { path = "../opennow-streamer-core" }
+opennow-streamer-platform = { path = "../opennow-streamer-platform" }
+opennow-streamer-protocol = { path = "../opennow-streamer-protocol" }
+serde_json.workspace = true
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

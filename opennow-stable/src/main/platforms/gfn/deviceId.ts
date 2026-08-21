@@ -15,6 +15,19 @@ function getElectronApp(): Electron.App | null {
   }
 }
 
+/** Official Grid `X-Device-Id` / JSON `deviceHashId` is 64-char SHA-256 hex, not a UUID. */
+export function toCloudMatchDeviceHashId(deviceId: string): string {
+  const trimmed = deviceId.trim();
+  if (/^[0-9a-f]{64}$/i.test(trimmed)) {
+    return trimmed.toLowerCase();
+  }
+  return crypto.createHash("sha256").update(trimmed, "utf8").digest("hex");
+}
+
+export function getCloudMatchDeviceHashId(): string {
+  return toCloudMatchDeviceHashId(getStableDeviceId());
+}
+
 export function getStableDeviceId(): string {
   if (cachedStableDeviceId) {
     return cachedStableDeviceId;

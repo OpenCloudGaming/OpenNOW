@@ -53,14 +53,43 @@ export interface NativeStreamerSessionContext {
   nvstVideo?: NvstVideoSession;
 }
 
+export type NvstSrtpProfile =
+  | "AEAD_AES_128_GCM"
+  | "AEAD_AES_256_GCM"
+  | "AEAD_AES_128_GCM_8"
+  | "AEAD_AES_256_GCM_8"
+  | "AES_CM_128_HMAC_SHA1_32"
+  | "AES_CM_128_HMAC_SHA1_80"
+  | "AES_CM_256_HMAC_SHA1_32"
+  | "AES_CM_256_HMAC_SHA1_80";
+
 export interface NvstVideoSession {
   clientUdpPort: number;
+  /**
+   * Dedicated NATT-only video (Mjolnir) socket port reserved by the native
+   * streamer. When present, the native streamer reads raw-SRTP video from this
+   * socket while the ICE/DTLS bundle socket carries control/audio.
+   */
+  mjolnirUdpPort?: number;
   videoPeerIp: string;
   videoPeerPort: number;
   srtpAesKeyHex: string;
   srtpKeyId: number;
+  srtpSaltHex: string;
+  srtpProfile?: NvstSrtpProfile;
   pingPayload?: string;
+  pingVersion?: number;
+  localIceUsernameFragment?: string;
+  localIcePassword?: string;
+  remoteIceUsernameFragment?: string;
+  remoteIcePassword?: string;
+  /** SHA-256 colon hex from the local WebRtcTransport-equivalent cert. */
+  localDtlsFingerprint?: string;
+  /** SHA-256 colon hex advertised by DESCRIBE (`dtlsFingerprint` / `V2`). */
+  remoteDtlsFingerprint?: string;
   codec?: string;
+  /** Idle receive timeout. Handshake needs longer than the 5s media default. */
+  timeoutMs?: number;
 }
 
 export function buildNativeStreamerSessionContext(
@@ -130,6 +159,7 @@ export interface NativeRenderSurfaceUpdate {
 
 export interface NativeRenderSurface extends NativeRenderSurfaceUpdate {
   windowHandle?: string;
+  screenRect?: NativeRenderSurfaceRect;
 }
 
 export interface KeyframeRequest {

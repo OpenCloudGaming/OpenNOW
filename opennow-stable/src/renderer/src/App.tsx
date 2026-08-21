@@ -43,7 +43,8 @@ import { useGameLaunch } from "./hooks/streamSession/useGameLaunch";
 import { useSignalingEvents } from "./hooks/streamSession/useSignalingEvents";
 import {
   RECOVERABLE_STREAM_STATUSES,
-  SIGNALING_RECOVERY_ATTEMPT_DELAYS_MS,
+  SIGNALING_RECOVERY_WINDOW_MS,
+  nextSignalingRecoveryPollDelayMs,
   remoteSessionEndCode,
   sendStreamClipboardPaste,
   sleep,
@@ -781,6 +782,7 @@ export function App(): JSX.Element {
     resetRecoveryConnectionState();
     discordStreamingActivitySessionRef.current = null;
     signalingRecoveryRef.current.attemptCount = 0;
+    signalingRecoveryRef.current.deadlineAtMs = null;
     signalingRecoveryRef.current.inFlight = null;
     signalingRecoveryRef.current.appId = null;
     setSession(null);
@@ -879,8 +881,7 @@ export function App(): JSX.Element {
       enableL4S: settings.enableL4S,
       enableCloudGsync: settings.enableCloudGsync,
       clientMode: settings.streamClientMode,
-      nativeStreamerBackend: "gstreamer",
-      transportMode: "webrtc",
+      transportMode: settings.transportMode,
       nativeCloudGsyncMode: settings.nativeCloudGsyncMode,
       nativeTransitionDiagnostics: settings.nativeTransitionDiagnostics,
       appLaunchMode: resolveAppLaunchMode({
@@ -906,6 +907,7 @@ export function App(): JSX.Element {
     settings.nativeTransitionDiagnostics,
     settings.resolution,
     settings.streamClientMode,
+    settings.transportMode,
     subscriptionInfo?.entitledResolutions,
   ]);
 
@@ -1850,8 +1852,10 @@ export function App(): JSX.Element {
       throw new Error("Connection to the running session was lost and your login token is no longer available for resume.");
     }
 
-    if (recoveryState.attemptCount >= SIGNALING_RECOVERY_ATTEMPT_DELAYS_MS.length) {
-      console.warn("[Recovery] Recovery budget exhausted");
+    const now = Date.now();
+    recoveryState.deadlineAtMs ??= now + SIGNALING_RECOVERY_WINDOW_MS;
+    if (now >= recoveryState.deadlineAtMs) {
+      console.warn("[Recovery] Recovery window expired");
       return false;
     }
 
@@ -1862,23 +1866,29 @@ export function App(): JSX.Element {
       await disconnectSignalingControlled();
 
       let lastError: Error | null = null;
-      while (recoveryState.attemptCount < SIGNALING_RECOVERY_ATTEMPT_DELAYS_MS.length) {
-        const attemptIndex = recoveryState.attemptCount;
-        recoveryState.attemptCount += 1;
-        const attemptNumber = recoveryState.attemptCount;
-        const attemptDelayMs = SIGNALING_RECOVERY_ATTEMPT_DELAYS_MS[attemptIndex] ?? 0;
-
-        console.warn(
-          `[Recovery] Attempt ${attemptNumber}/${SIGNALING_RECOVERY_ATTEMPT_DELAYS_MS.length} after signaling disconnect: ${reason}`,
-        );
-
-        if (attemptDelayMs > 0) {
-          await sleep(attemptDelayMs);
-        }
+      while (Date.now() < (recoveryState.deadlineAtMs ?? 0)) {
+        const pollDelayMs = nextSignalingRecoveryPollDelayMs({
+          attemptCount: recoveryState.attemptCount,
+          online: navigator.onLine !== false,
+          nowMs: Date.now(),
+          deadlineAtMs: recoveryState.deadlineAtMs ?? 0,
+        });
+        if (pollDelayMs === null) break;
+        if (pollDelayMs > 0) await sleep(pollDelayMs);
         if (!isRecoveryGenerationCurrent(recoveryGeneration)) {
           console.log("[Recovery] Aborting attempt after explicit shutdown");
           return false;
         }
+        if (navigator.onLine === false) {
+          console.log("[Recovery] Network is offline; waiting before polling the session again");
+          continue;
+        }
+
+        recoveryState.attemptCount += 1;
+        const attemptNumber = recoveryState.attemptCount;
+        console.warn(
+          `[Recovery] Attempt ${attemptNumber} after signaling disconnect: ${reason}`,
+        );
 
         try {
           const activeSessions = await window.openNow.getActiveSessions(token, effectiveStreamingBaseUrl);
@@ -3095,7 +3105,7 @@ export function App(): JSX.Element {
               statsPosition={settings.statsOverlayPosition}
               showNativeStats={settings.showNativeStreamerStats}
               nativeInputCaptureActive={nativeInputCaptureActive}
-              gstreamerEnabled={settings.streamClientMode === "native"}
+              nativeStreamingEnabled={settings.streamClientMode === "native"}
               nativeExternalRenderer={settings.nativeExternalRenderer}
               shortcuts={{
                 toggleStats: formatShortcutForDisplay(settings.shortcutToggleStats, isMac),

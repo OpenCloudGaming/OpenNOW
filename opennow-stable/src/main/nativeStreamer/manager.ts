@@ -1,6 +1,5 @@
 import electron from "electron";
 import { randomUUID } from "node:crypto";
-import { tmpdir } from "node:os";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { basename } from "node:path";
 
@@ -12,11 +11,10 @@ import {
   type IceCandidatePayload,
   type KeyframeRequest,
   type MainToRendererSignalingEvent,
-  type NativeStreamerBackendPreference,
   type NativeStreamerFeatureMode,
   type NativeVideoBackendPreference,
   type NativeStreamerStatus,
-  type NativeGstreamerRuntimeStatus,
+  type NativeStreamerRuntimeStatus,
   type NativeRenderSurface,
   type NativeStreamerSessionContext,
   type SendAnswerRequest,
@@ -59,7 +57,6 @@ interface NativeStreamerCallbacks {
 
 interface NativeStreamerManagerOptions extends NativeStreamerCallbacks {
   mainDir: string;
-  getBackendPreference(): NativeStreamerBackendPreference;
   getVideoBackendPreference(): NativeVideoBackendPreference;
   getExecutablePathOverride(): string;
   getCloudGsyncMode(): NativeStreamerFeatureMode;
@@ -74,7 +71,7 @@ interface PendingRequest {
 }
 
 const HELLO_TIMEOUT_MS = 10000;
-const BUNDLED_GSTREAMER_HELLO_TIMEOUT_MS = process.platform === "win32" ? 120000 : 30000;
+const BUNDLED_NATIVE_HELLO_TIMEOUT_MS = process.platform === "win32" ? 120000 : 30000;
 const CONTROL_TIMEOUT_MS = 8000;
 const SESSION_START_TIMEOUT_MS = process.platform === "win32" ? 90000 : 45000;
 const SURFACE_UPDATE_TIMEOUT_MS = 15000;
@@ -104,10 +101,11 @@ export class NativeStreamerManager {
   private startupPromise: Promise<void> | null = null;
   private stdoutBuffer = "";
   private stderrTail: string[] = [];
-  private gstreamerRuntime: NativeGstreamerRuntimeStatus | null = null;
+  private runtimeStatus: NativeStreamerRuntimeStatus | null = null;
   private pending = new Map<string, PendingRequest>();
   private capabilities: NativeStreamerCapabilities | null = null;
   private activeSessionId: string | null = null;
+  private activeTransport: "webrtc" | "nvst" | null = null;
   private inputBackpressureWarned = false;
   private answerInFlight = false;
   private queuedLocalIce: IceCandidatePayload[] = [];
@@ -136,6 +134,10 @@ export class NativeStreamerManager {
     return this.activeSessionId !== null;
   }
 
+  isNvstSessionActive(sessionId: string): boolean {
+    return this.activeSessionId === sessionId && this.activeTransport === "nvst";
+  }
+
   private retainDiagnosticState(values: Record<string, unknown>): void {
     this.diagnosticState = {
       ...this.diagnosticState,
@@ -146,6 +148,56 @@ export class NativeStreamerManager {
 
   setVideoBackendOverride(value: NativeVideoBackendPreference | null): void {
     this.videoBackendOverride = value;
+  }
+
+  async reserveNvstUdp(): Promise<{
+    port: number;
+    mjolnirPort?: number;
+    localAddress?: string;
+    iceUsernameFragment?: string;
+    icePassword?: string;
+    dtlsFingerprint?: string;
+    send(payload: Buffer, host: string, port: number): Promise<void>;
+    release(): Promise<void>;
+  }> {
+    await this.ensureProcess();
+    const response = await this.request({ type: "nvst-bind" }, CONTROL_TIMEOUT_MS);
+    if (response.type !== "nvst-bound" || !Number.isInteger(response.port) || response.port <= 0) {
+      throw new Error("Native streamer did not reserve an NVST UDP socket.");
+    }
+    const port = response.port;
+    const mjolnirPort = Number.isInteger(response.mjolnirPort) && (response.mjolnirPort ?? 0) > 0
+      ? response.mjolnirPort
+      : undefined;
+    const localAddress = typeof response.localAddress === "string" && response.localAddress.length > 0
+      ? response.localAddress
+      : undefined;
+    console.log(
+      `[NativeStreamer] Reserved NVST video UDP on port ${port} before RTSP ANNOUNCE`
+      + `${mjolnirPort ? ` mjolnirPort=${mjolnirPort}` : ""}`
+      + `${localAddress ? ` localAddress=${localAddress}` : ""}`
+      + `${response.dtlsFingerprint ? ` (dtlsFingerprintBytes=${response.dtlsFingerprint.length})` : ""}`,
+    );
+    return {
+      port,
+      mjolnirPort,
+      localAddress,
+      iceUsernameFragment: response.iceUsernameFragment,
+      icePassword: response.icePassword,
+      dtlsFingerprint: response.dtlsFingerprint,
+      send: async (payload, host, peerPort) => {
+        const sent = await this.request({
+          type: "nvst-send",
+          host,
+          port: peerPort,
+          payloadBase64: payload.toString("base64"),
+        }, CONTROL_TIMEOUT_MS);
+        if (sent.type !== "ok") {
+          throw new Error(`Native streamer returned ${sent.type} instead of ok for nvst-send.`);
+        }
+      },
+      release: async () => undefined,
+    };
   }
 
   async prepareForSession(context: NativeStreamerSessionContext): Promise<void> {
@@ -174,11 +226,15 @@ export class NativeStreamerManager {
       );
     }
 
-    await this.request({
+    const response = await this.request({
       type: "start",
       context,
     }, SESSION_START_TIMEOUT_MS);
+    if (response.type !== "ok") {
+      throw new Error(`Native streamer returned ${response.type} instead of ok.`);
+    }
     this.activeSessionId = context.session.sessionId;
+    this.activeTransport = response.transport === "nvst" ? "nvst" : "webrtc";
     this.retainDiagnosticState({ sessionState: "ready" });
     await this.flushQueuedRemoteIce(context.session.sessionId);
   }
@@ -209,8 +265,8 @@ export class NativeStreamerManager {
     });
 
     if (!this.capabilities?.supportsOfferAnswer) {
-      console.warn(
-        `[NativeStreamer] Backend "${this.capabilities?.backend ?? "unknown"}" reports offer/answer is not ready; forwarding offer for validation/fallback.`,
+      throw new Error(
+        `Native streamer backend "${this.capabilities?.backend ?? "unknown"}" does not support offer/answer.`,
       );
     }
 
@@ -261,14 +317,14 @@ export class NativeStreamerManager {
       await this.ensureProcess();
       return createNativeStreamerStatus(
         this.capabilities,
-        this.gstreamerRuntime,
+        this.runtimeStatus,
         this.options.getVideoBackendPreference(),
         process.platform,
       );
     } catch (error) {
       return createNativeStreamerDetectionFailureStatus(
         error,
-        this.gstreamerRuntime,
+        this.runtimeStatus,
         process.platform,
       );
     }
@@ -276,6 +332,9 @@ export class NativeStreamerManager {
 
   async addRemoteIce(candidate: IceCandidatePayload, context: NativeStreamerSessionContext): Promise<void> {
     const sessionId = context.session.sessionId;
+    if (this.capabilities && !this.capabilities.supportsRemoteIce) {
+      return;
+    }
     if (!this.child || this.activeSessionId !== sessionId) {
       this.queueRemoteIce(sessionId, candidate);
       return;
@@ -412,6 +471,7 @@ export class NativeStreamerManager {
       stopReason: reason,
     });
     this.activeSessionId = null;
+    this.activeTransport = null;
     this.capabilities = null;
     this.surfaceUpdates.markNotReady();
     this.clearQueuedRemoteIce();
@@ -448,6 +508,7 @@ export class NativeStreamerManager {
       stopReason: reason,
     });
     this.activeSessionId = null;
+    this.activeTransport = null;
     this.capabilities = null;
     this.surfaceUpdates.markNotReady();
     this.clearQueuedRemoteIce();
@@ -478,7 +539,6 @@ export class NativeStreamerManager {
     }
 
     const startupPromise = (async () => {
-      const backendPreference = this.options.getBackendPreference();
       let lastError: Error | null = null;
 
       for (const executablePath of resolveNativeStreamerExecutableCandidates({
@@ -487,20 +547,11 @@ export class NativeStreamerManager {
         resourcesPath: process.resourcesPath,
         appPath: app.getAppPath(),
         mainDir: this.options.mainDir,
-        isPackaged: app.isPackaged,
         envExecutablePath: process.env.OPENNOW_NATIVE_STREAMER,
         getConfiguredPath: () => this.options.getExecutablePathOverride(),
-        cacheContext: {
-          appVersion: app.getVersion(),
-          isPackaged: app.isPackaged,
-          platform: process.platform,
-          resourcesPath: process.resourcesPath,
-          tempDirectory: tmpdir(),
-          userDataPath: app.getPath("userData"),
-        },
       })) {
         try {
-          await this.startProcess(executablePath, backendPreference);
+          await this.startProcess(executablePath);
           return;
         } catch (error) {
           lastError = error instanceof Error ? error : new Error(String(error));
@@ -533,17 +584,12 @@ export class NativeStreamerManager {
     }
   }
 
-  private async startProcess(
-    executablePath: string,
-    backendPreference: NativeStreamerBackendPreference,
-  ): Promise<void> {
+  private async startProcess(executablePath: string): Promise<void> {
     this.retainDiagnosticState({
       processState: "starting",
       executable: basename(executablePath),
-      backendPreference,
     });
     console.log("[NativeStreamer] Starting:", executablePath);
-    console.log("[NativeStreamer] Backend preference:", backendPreference);
     const videoBackendPreference = this.videoBackendOverride
       ?? this.options.getVideoBackendPreference();
     this.retainDiagnosticState({ videoBackendPreference });
@@ -556,7 +602,6 @@ export class NativeStreamerManager {
       arch: process.arch,
       userDataPath: app.getPath("userData"),
       protocolVersion: NATIVE_STREAMER_PROTOCOL_VERSION,
-      backendPreference,
       videoBackendPreference,
       externalRendererEnabled: process.platform === "win32"
         ? this.options.getExternalRendererEnabled()
@@ -566,22 +611,16 @@ export class NativeStreamerManager {
       cloudGsyncMode: this.options.getCloudGsyncMode(),
       d3dFullscreenMode: this.options.getD3dFullscreenMode(),
     });
-    this.gstreamerRuntime = runtimeStatus;
+    this.runtimeStatus = runtimeStatus;
     this.retainDiagnosticState({
-      runtimeBundled: runtimeStatus.bundled,
+      runtimeSelfContained: runtimeStatus.selfContained,
       runtimeState: runtimeStatus.message,
     });
-    if (runtimeStatus.bundled) {
-      console.log("[NativeStreamer] Using bundled GStreamer runtime:", runtimeStatus.path);
-    } else {
-      console.log("[NativeStreamer]", runtimeStatus.message);
-    }
+    console.log("[NativeStreamer]", runtimeStatus.message, runtimeStatus.path);
 
     const child = spawn(executablePath, [], {
       stdio: "pipe",
-      // The default native path lets the GStreamer video sink create its own
-      // render window. Hiding the child process also hides that sink window on
-      // Windows, which leaves the Electron input placeholder black.
+      // The native presenter may own a top-level window on Windows.
       windowsHide: false,
       env: childEnv,
     });
@@ -592,9 +631,10 @@ export class NativeStreamerManager {
     this.inputBackpressureWarned = false;
 
     child.stdout.setEncoding("utf8");
-    child.stdout.on("data", (chunk: string) => this.handleStdout(chunk));
+    child.stdout.on("data", (chunk: string) => this.handleStdout(child, chunk));
     child.stderr.setEncoding("utf8");
     child.stderr.on("data", (chunk: string) => {
+      if (this.child !== child) return;
       for (const line of chunk.split(/\r?\n/)) {
         if (line.trim()) {
           this.appendStderr(line);
@@ -614,7 +654,7 @@ export class NativeStreamerManager {
       this.handleProcessExit(child, reason);
     });
 
-    const helloTimeoutMs = runtimeStatus.bundled ? BUNDLED_GSTREAMER_HELLO_TIMEOUT_MS : HELLO_TIMEOUT_MS;
+    const helloTimeoutMs = runtimeStatus.selfContained ? BUNDLED_NATIVE_HELLO_TIMEOUT_MS : HELLO_TIMEOUT_MS;
     const response = await this.request({
       type: "hello",
       protocolVersion: NATIVE_STREAMER_PROTOCOL_VERSION,
@@ -638,22 +678,7 @@ export class NativeStreamerManager {
         `Native streamer reported protocolVersion=${response.capabilities.protocolVersion}, expected ${NATIVE_STREAMER_PROTOCOL_VERSION}.`,
       );
     }
-    this.assertBackendPreference(response.capabilities, backendPreference);
     await this.surfaceUpdates.markReady();
-  }
-
-  private assertBackendPreference(
-    capabilities: NativeStreamerCapabilities,
-    backendPreference: NativeStreamerBackendPreference,
-  ): void {
-    if (backendPreference === "auto" || capabilities.backend === backendPreference) {
-      return;
-    }
-
-    const reason = capabilities.fallbackReason ? ` ${capabilities.fallbackReason}` : "";
-    throw new Error(
-      `Native streamer backend "${backendPreference}" is unavailable; process selected "${capabilities.backend}".${reason}`,
-    );
   }
 
   private request(input: NativeStreamerCommandInput, timeoutMs: number): Promise<NativeStreamerResponse> {
@@ -707,7 +732,8 @@ export class NativeStreamerManager {
     });
   }
 
-  private handleStdout(chunk: string): void {
+  private handleStdout(child: ChildProcessWithoutNullStreams, chunk: string): void {
+    if (this.child !== child) return;
     this.stdoutBuffer += chunk;
     const lines = this.stdoutBuffer.split(/\r?\n/);
     this.stdoutBuffer = lines.pop() ?? "";
@@ -771,6 +797,10 @@ export class NativeStreamerManager {
     }
 
     if (message.type === "local-ice") {
+      if (!this.capabilities?.supportsLocalIce) {
+        console.warn("[NativeStreamer] Ignoring local ICE from a backend that did not advertise it.");
+        return;
+      }
       if (this.answerInFlight) {
         this.queuedLocalIce.push(message.candidate);
         return;
@@ -972,6 +1002,7 @@ export class NativeStreamerManager {
     this.stdoutBuffer = "";
     this.stderrTail = [];
     this.activeSessionId = null;
+    this.activeTransport = null;
     this.capabilities = null;
     this.inputBackpressureWarned = false;
     this.surfaceUpdates.markNotReady();
@@ -1039,6 +1070,9 @@ export class NativeStreamerManager {
 
   private async flushQueuedRemoteIce(sessionId: string): Promise<void> {
     const queued = this.drainQueuedRemoteIce(sessionId);
+    if (!this.capabilities?.supportsRemoteIce) {
+      return;
+    }
     for (const candidate of queued) {
       await this.sendRemoteIce(candidate);
     }

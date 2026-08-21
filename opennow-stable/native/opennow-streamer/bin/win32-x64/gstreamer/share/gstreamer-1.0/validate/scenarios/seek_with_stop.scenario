@@ -1,3 +1,0 @@
-description, seek=true, duration=5.0, need_clock_sync=true, min-media-duration=2
-include,location=includes/default-seek-flags.scenario
-seek, playback-time=1.0, start=0.0, stop="min(5.0, duration-1.0)", flags="$(default_flags)"

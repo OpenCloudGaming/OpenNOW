@@ -118,12 +118,10 @@ export function getAvailableNativeCodecLabels(backend: NativeVideoBackendCapabil
     .map((codec) => formatNativeVideoCodec(codec.codec)) ?? [];
 }
 
-export function formatGstreamerRuntimeLabel(status: NativeStreamerStatus | null): string {
-  switch (status?.gstreamerRuntime.source) {
-    case "bundled":
-      return status.gstreamerAvailable ? "Bundled Runtime Used" : "Bundled Runtime Found";
-    case "system":
-      return "System Runtime";
+export function formatNativeRuntimeLabel(status: NativeStreamerStatus | null): string {
+  switch (status?.runtime.source) {
+    case "self-contained":
+      return status.available ? "Native Runtime Ready" : "Native Runtime Found";
     case "missing":
       return "Runtime Missing";
     default:
@@ -131,9 +129,8 @@ export function formatGstreamerRuntimeLabel(status: NativeStreamerStatus | null)
   }
 }
 
-export function getGstreamerRuntimeBadgeClass(status: NativeStreamerStatus | null): string {
-  if (status?.gstreamerRuntime.source === "bundled" && status.gstreamerAvailable) return "settings-inline-badge--codec-gpu";
-  if (status?.gstreamerRuntime.source === "system" && status.gstreamerAvailable) return "settings-inline-badge--codec-testing";
+export function getNativeRuntimeBadgeClass(status: NativeStreamerStatus | null): string {
+  if (status?.runtime.source === "self-contained" && status.available) return "settings-inline-badge--codec-gpu";
   return "settings-inline-badge--updater-error";
 }
 

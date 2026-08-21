@@ -8,7 +8,6 @@ import type {
   VideoCodec,
 } from "./stream";
 import type {
-  NativeStreamerBackendPreference,
   NativeStreamerFeatureMode,
   StreamTransportMode,
 } from "./nativeStreamer";
@@ -34,7 +33,6 @@ export interface StreamSettings {
   /** Renderer-selected client path; main uses this to apply native-only Cloud G-Sync gating. */
   clientMode?: StreamClientMode;
   /** Selected native streamer backend; stub cannot support Cloud G-Sync presentation. */
-  nativeStreamerBackend?: NativeStreamerBackendPreference;
   /** Native media transport; legacy NVST values normalize to WebRTC. */
   transportMode?: StreamTransportMode;
   /** Native-only override for Cloud G-Sync display detection. */
@@ -219,6 +217,7 @@ export function getSessionAdDurationMs(ad: SessionAdInfo | undefined): number | 
 
 export interface SessionInfo {
   sessionId: string;
+  subSessionId?: string;
   appId?: string;
   status: number;
   queuePosition?: number;
@@ -236,7 +235,9 @@ export interface SessionInfo {
   appLaunchMode?: number;
   /** Wire in-game settings persistence value the session was created with, kept session-stable for resumes */
   enablePersistingInGameSettings?: boolean;
-  /** Classic NVST RTSPS endpoints from CloudMatch usage=14 connections. */
+  /** Complete ordered CloudMatch transport list consumed by the native stream SDK. */
+  connectionInfo?: SessionConnectionInfo[];
+  /** Classic NVST RTSPS endpoints from CloudMatch usage=16 connections. */
   rtspsEndpoints?: string[];
   iceServers: IceServer[];
   mediaConnectionInfo?: MediaConnectionInfo;
@@ -247,9 +248,20 @@ export interface SessionInfo {
   deviceId?: string;
 }
 
+export interface SessionConnectionInfo {
+  ip?: string;
+  port: number;
+  usage: number;
+  protocol?: number;
+  appLevelProtocol?: number;
+  resourcePath?: string;
+  [key: string]: unknown;
+}
+
 /** Information about an active session from getActiveSessions */
 export interface ActiveSessionInfo {
   sessionId: string;
+  subSessionId?: string;
   appId: number;
   /** Wire appLaunchMode the session was created with, as echoed by the server */
   appLaunchMode?: number;

@@ -53,16 +53,18 @@ test("capability selection skips unavailable preferred and platform backends", (
 test("status formatting reports selected video path and codec summary", () => {
   const status = createNativeStreamerStatus({
     protocolVersion: 4,
-    backend: "gstreamer",
+    backend: "native",
     supportsOfferAnswer: true,
     supportsRemoteIce: true,
     supportsLocalIce: true,
     supportsInput: true,
+    supportsVideoDecode: true,
+    supportsVideoPresent: true,
     videoBackends: [backend("vaapi", "linux")],
   }, {
-    source: "system",
-    bundled: false,
-    message: "System runtime",
+    source: "self-contained",
+    selfContained: true,
+    message: "Self-contained runtime",
   }, "auto", "linux");
 
   assert.equal(status.activeVideoBackend?.backend, "vaapi");

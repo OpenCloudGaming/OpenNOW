@@ -1,0 +1,24 @@
+[package]
+name = "opennow-streamer-platform-macos"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Native VideoToolbox, Metal, and CoreAudio backend for OpenNOW"
+[dependencies]
+thiserror.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2"
+objc2 = "0.6.3"
+objc2-app-kit = { version = "0.3.2", features = ["NSEvent"] }
+objc2-audio-toolbox = "0.3.2"
+objc2-core-audio-types = "0.3.2"
+objc2-core-foundation = "0.3.2"
+objc2-core-media = "0.3.2"
+objc2-core-video = "0.3.2"
+objc2-foundation = "0.3.2"
+objc2-metal = "0.3.2"
+objc2-quartz-core = "0.3.2"
+objc2-video-toolbox = "0.3.2"
+opus = "0.3.1"

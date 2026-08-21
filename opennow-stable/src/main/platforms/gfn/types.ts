@@ -3,16 +3,20 @@ import type { SessionErrorInfo } from "@shared/sessionError";
 
 export interface CloudMatchRequest {
   sessionRequestData: {
-    appId: string;
+    appId: string | number;
     internalTitle: string | null;
     availableSupportedControllers: number[];
+    preferredController?: number;
+    requestedAudioFormat?: number;
+    externalAppId?: string | null;
+    transport?: null;
     networkTestSessionId: string | null;
     parentSessionId: string | null;
     clientIdentification: string;
     deviceHashId: string;
     clientVersion: string;
     sdkVersion: string;
-    streamerVersion: number;
+    streamerVersion: number | string;
     clientPlatformName: string;
     clientRequestMonitorSettings: Array<{
       monitorId?: number;
@@ -23,6 +27,14 @@ export interface CloudMatchRequest {
       framesPerSecond: number;
       sdrHdrMode: number;
       displayData: {
+        displayPrimaryX0?: number;
+        displayPrimaryY0?: number;
+        displayPrimaryX1?: number;
+        displayPrimaryY1?: number;
+        displayPrimaryX2?: number;
+        displayPrimaryY2?: number;
+        displayWhitePointX?: number;
+        displayWhitePointY?: number;
         desiredContentMaxLuminance?: number;
         desiredContentMinLuminance?: number;
         desiredContentMaxFrameAverageLuminance?: number;
@@ -37,7 +49,9 @@ export interface CloudMatchRequest {
     clientDisplayHdrCapabilities: {
       version: number;
       hdrEdrSupportedFlagsInUint32: number;
-      staticMetadataDescriptorId: number;
+      staticMetadataDescriptorId?: number;
+      static_metadata_descriptor_id?: number;
+      display_data?: Record<string, number>;
     } | null;
     surroundAudioInfo: number;
     remoteControllersBitmap: number;
@@ -45,7 +59,7 @@ export interface CloudMatchRequest {
     enhancedStreamMode: number;
     appLaunchMode: number;
     secureRTSPSupported: boolean;
-    partnerCustomData: string;
+    partnerCustomData: string | null;
     accountLinked: boolean;
     enablePersistingInGameSettings: boolean;
     userAge: number;
@@ -65,6 +79,8 @@ export interface CloudMatchRequest {
       prefilterSharpness?: number;
       prefilterNoiseReduction?: number;
       hudStreamingMode?: number;
+      qosPolicy?: number;
+      touchSupport?: boolean;
       sdrColorSpace?: number;
       hdrColorSpace?: number;
       maxBitrateKbps?: number;
@@ -84,6 +100,7 @@ export interface CloudMatchResponse {
   };
   session: {
     sessionId: string;
+    subSessionId?: string;
     status: number;
     queuePosition?: number;
     seatSetupInfo?: {
@@ -146,7 +163,9 @@ export interface CloudMatchResponse {
       port: number;
       usage: number;
       protocol?: number;
+      appLevelProtocol?: number;
       resourcePath?: string;
+      [key: string]: unknown;
     }>;
     sessionControlInfo?: {
       ip?: string;
@@ -195,6 +214,7 @@ export interface CloudMatchResponse {
 /** Session in the get sessions response */
 export interface SessionEntry {
   sessionId: string;
+  subSessionId?: string;
   status: number;
   queuePosition?: number;
   seatSetupInfo?: {
@@ -221,6 +241,9 @@ export interface SessionEntry {
     port: number;
     usage: number;
     protocol?: number;
+    appLevelProtocol?: number;
+    resourcePath?: string;
+    [key: string]: unknown;
   }>;
   monitorSettings?: Array<{
     widthInPixels?: number;

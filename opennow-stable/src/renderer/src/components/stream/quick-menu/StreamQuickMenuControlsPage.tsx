@@ -32,7 +32,7 @@ interface StreamQuickMenuControlsPageProps {
   onMouseSensitivityChange: (value: number) => void;
   mouseAcceleration: number;
   onMouseAccelerationChange: (value: number) => void;
-  gstreamerEnabled: boolean;
+  nativeStreamingEnabled: boolean;
   videoShader: VideoShaderSettings;
   onVideoShaderChange: (value: VideoShaderSettings) => void;
   frameInterpolation: FrameInterpolationSettings;
@@ -49,7 +49,7 @@ export function StreamQuickMenuControlsPage({
   onMouseSensitivityChange,
   mouseAcceleration,
   onMouseAccelerationChange,
-  gstreamerEnabled,
+  nativeStreamingEnabled,
   videoShader,
   onVideoShaderChange,
   frameInterpolation,
@@ -120,7 +120,7 @@ export function StreamQuickMenuControlsPage({
           <span>Frame Interpolation</span>
           <span className="sidebar-section-sub">Experimental Framegen WebGPU processing.</span>
         </div>
-        {gstreamerEnabled ? (
+        {nativeStreamingEnabled ? (
           <span className="sidebar-hint">
             Frame interpolation is unavailable while the native streamer renders the video.
           </span>
@@ -196,7 +196,7 @@ export function StreamQuickMenuControlsPage({
           <span>Video Filters</span>
           <span className="sidebar-section-sub">GPU shaders applied to the stream.</span>
         </div>
-        {gstreamerEnabled ? (
+        {nativeStreamingEnabled ? (
           <span className="sidebar-hint">Video filters are unavailable while the native streamer renders the video.</span>
         ) : (
           <>

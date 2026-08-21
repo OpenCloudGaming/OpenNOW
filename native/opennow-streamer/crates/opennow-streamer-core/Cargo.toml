@@ -1,0 +1,16 @@
+[package]
+name = "opennow-streamer-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+base64.workspace = true
+opennow-streamer-platform = { path = "../opennow-streamer-platform" }
+opennow-streamer-protocol = { path = "../opennow-streamer-protocol" }
+opennow-streamer-transport = { path = "../opennow-streamer-transport" }
+serde_json.workspace = true
+
+[dev-dependencies]
+str0m.workspace = true

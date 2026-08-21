@@ -84,7 +84,7 @@ export function mergeNativeStreamStats(
   const totalSinkFrames = sinkRendered + sinkDropped;
   const dropPercent = totalSinkFrames > 0 ? (sinkDropped / totalSinkFrames) * 100 : 0;
   const hardwareAcceleration = [
-    stats.hardwareAcceleration || "GStreamer native decode",
+    stats.hardwareAcceleration || "Native decode",
     stats.zeroCopy && stats.memoryMode ? `${stats.memoryMode} zero-copy` : "",
     !stats.zeroCopy && stats.memoryMode ? stats.memoryMode : "",
     !stats.memoryMode && stats.zeroCopyD3D12 ? "D3D12 zero-copy" : "",

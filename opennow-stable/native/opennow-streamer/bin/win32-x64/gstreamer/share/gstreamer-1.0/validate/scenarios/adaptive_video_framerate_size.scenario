@@ -1,7 +1,0 @@
-description, duration=25.0
-set-restriction, playback-time=5.0, restriction-caps="video/x-raw,framerate=(fraction)5/1"
-set-restriction, playback-time=10.0, restriction-caps="video/x-raw,height=20,width=20,framerate=(fraction)5/1"
-set-restriction, playback-time=15.0, restriction-caps="video/x-raw,height=20,width=20,framerate=(fraction)30/1"
-set-restriction, playback-time=20.0, restriction-caps="video/x-raw,height=720,width=1280,framerate=(fraction)30/1"
-eos, playback-time=25.0
-stop, playback-time=25.0

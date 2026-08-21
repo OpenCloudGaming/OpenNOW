@@ -9,6 +9,7 @@ import type {
 
 import type { CloudMatchResponse, GetSessionsResponse } from "./types";
 import { SessionError } from "./errorCodes";
+import { resolveSessionControlBaseUrl } from "./cloudmatchTransport";
 import {
   normalizeIceServers,
   resolveSignaling,
@@ -430,13 +431,14 @@ export async function toSessionInfo(options: ToSessionInfoOptions): Promise<Sess
 
   return {
     sessionId: payload.session.sessionId,
-    appId: payload.session.sessionRequestData?.appId ?? options.fallbackAppId,
+    subSessionId: payload.session.subSessionId,
+    appId: String(payload.session.sessionRequestData?.appId ?? options.fallbackAppId),
     status: payload.session.status,
     seatSetupStep,
     queuePosition,
     adState,
     zone,
-    streamingBaseUrl,
+    streamingBaseUrl: resolveSessionControlBaseUrl(payload.session.sessionControlInfo?.ip, streamingBaseUrl),
     serverIp: signaling.serverIp,
     signalingServer: signaling.signalingServer,
     signalingUrl: signaling.signalingUrl,
@@ -444,6 +446,7 @@ export async function toSessionInfo(options: ToSessionInfoOptions): Promise<Sess
     gpuType: payload.session.gpuType,
     appLaunchMode: echoedSessionAppLaunchMode(payload) ?? options.fallbackAppLaunchMode,
     enablePersistingInGameSettings,
+    connectionInfo: connections.length > 0 ? connections.map((connection) => ({ ...connection })) : undefined,
     rtspsEndpoints: signaling.rtspsEndpoints.length > 0 ? signaling.rtspsEndpoints : undefined,
     iceServers: await normalizeIceServers(payload),
     mediaConnectionInfo: signaling.mediaConnectionInfo,

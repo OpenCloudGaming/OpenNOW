@@ -1,5 +1,0 @@
-description, seek=true, duration=5.0
-include,location=includes/default-seek-flags.scenario
-seek, playback-time=1.0, rate=1.0, start=2.0, flags="$(default_flags)"
-seek, playback-time=3.0, rate=1.0, start=0.0, flags="$(default_flags)"
-seek, playback-time=1.0, rate=1.0, start=2.0, stop=3.0, flags="$(default_flags)"

@@ -129,6 +129,26 @@ export function extractServerInfoRegionBases(payload: CloudMatchServerInfoRespon
   return bases;
 }
 
+/** Official Bifrost POSTs to metro/regional hostnames (eu-*-*) rather than zone LBs (np-*-*). */
+export function selectCreateSessionBase(bases: readonly string[]): string | undefined {
+  if (bases.length === 0) {
+    return undefined;
+  }
+
+  for (const base of bases) {
+    try {
+      const host = new URL(base).hostname.toLowerCase();
+      if (!host.startsWith("np-")) {
+        return base;
+      }
+    } catch {
+      continue;
+    }
+  }
+
+  return bases[0];
+}
+
 export function isDefaultStreamingServiceBase(baseUrl: string): boolean {
   try {
     const hostname = new URL(baseUrl).hostname.toLowerCase();
@@ -145,6 +165,7 @@ export async function resolveCreateSessionBase(
   clientId: string,
   deviceId: string,
   proxyUrl?: string,
+  options: { preferRegionalHost?: boolean } = {},
 ): Promise<string> {
   if (!isDefaultStreamingServiceBase(base)) {
     return base;
@@ -159,14 +180,19 @@ export async function resolveCreateSessionBase(
       return base;
     }
 
-    const [localRegionBase] = extractServerInfoRegionBases(
+    const regionBases = extractServerInfoRegionBases(
       (await response.json()) as CloudMatchServerInfoResponse,
     );
+    const localRegionBase = options.preferRegionalHost
+      ? selectCreateSessionBase(regionBases)
+      : regionBases[0];
     if (!localRegionBase || localRegionBase === base) {
       return base;
     }
 
-    console.log(`[CloudMatch] createSession resolved ${base} to local region ${localRegionBase}`);
+    console.log(
+      `[CloudMatch] createSession resolved ${base} to ${options.preferRegionalHost ? "regional create host" : "local region"} ${localRegionBase}`,
+    );
     return localRegionBase;
   } catch (error) {
     console.warn(`[CloudMatch] createSession local-region discovery failed: ${formatErrorForLog(error)}`);
@@ -202,14 +228,25 @@ export function isZoneHostname(ip: string): boolean {
   );
 }
 
+/** Official Bifrost polls GET /v2/session on sessionControlInfo.ip (zone LB), not the create host. */
+export function resolveSessionControlBaseUrl(
+  controlIp: string | string[] | undefined,
+  fallback: string,
+): string {
+  const host = (Array.isArray(controlIp) ? controlIp[0] : controlIp)?.trim().replace(/\.$/, "");
+  if (host && isZoneHostname(host)) {
+    return `https://${host.toLowerCase()}`;
+  }
+  return fallback;
+}
+
 export function resolvePollStopBase(zone: string, provided?: string, serverIp?: string): string {
   const base = resolveStreamingBaseUrl(zone, provided);
-  // Only use serverIp if it's a real server IP (not a zone hostname).
-  // The Rust version checks: if we're NOT an alliance partner AND we have a server_ip, use it.
-  // But if the "serverIp" is actually the zone hostname (from an early poll when connectionInfo
-  // was empty), using it is circular and doesn't help.
-  if (serverIp && shouldUseServerIp(base) && !isZoneHostname(serverIp)) {
-    return `https://${serverIp}`;
+  // Official Bifrost polls GET /v2/session on sessionControlInfo.ip, including zone LBs
+  // such as np-ams-06.cloudmatchbeta.nvidiagrid.net. Real seat IPs stay preferred once known.
+  const host = serverIp?.trim().replace(/\.$/, "");
+  if (host && shouldUseServerIp(base)) {
+    return `https://${isZoneHostname(host) ? host.toLowerCase() : host}`;
   }
   return base;
 }

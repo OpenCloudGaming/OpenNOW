@@ -23,6 +23,10 @@ export interface NativeStreamerCapabilities {
   supportsRemoteIce: boolean;
   supportsLocalIce: boolean;
   supportsInput: boolean;
+  supportsVideoDecode: boolean;
+  supportsVideoPresent: boolean;
+  supportsAudioDecode?: boolean;
+  supportsAudioOutput?: boolean;
   videoBackends?: NativeVideoBackendCapability[];
 }
 
@@ -41,6 +45,17 @@ export type NativeStreamerCommand =
       id: string;
       type: "start";
       context: NativeStreamerSessionContext;
+    }
+  | {
+      id: string;
+      type: "nvst-bind";
+    }
+  | {
+      id: string;
+      type: "nvst-send";
+      host: string;
+      port: number;
+      payloadBase64: string;
     }
   | {
       id: string;
@@ -93,6 +108,17 @@ export type NativeStreamerResponse =
   | {
       id: string;
       type: "ok";
+      transport?: "webrtc" | "nvst";
+    }
+  | {
+      id: string;
+      type: "nvst-bound";
+      port: number;
+      mjolnirPort?: number;
+      localAddress?: string;
+      iceUsernameFragment?: string;
+      icePassword?: string;
+      dtlsFingerprint?: string;
     }
   | {
       id: string;
@@ -114,7 +140,7 @@ export type NativeStreamerEvent =
     }
   | {
       type: "status";
-      status: "starting" | "ready" | "streaming" | "stopped";
+      status: "starting" | "ready" | "streaming" | "paused" | "stopped";
       message?: string;
     }
   | {

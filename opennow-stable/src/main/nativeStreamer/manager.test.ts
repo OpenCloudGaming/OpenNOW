@@ -37,6 +37,7 @@ interface FakeChild {
 
 interface ManagerInternals {
   child: ChildProcessWithoutNullStreams | null;
+  stdoutBuffer: string;
   activeSessionId: string | null;
   capabilities: NativeStreamerCapabilities | null;
   pending: Map<string, unknown>;
@@ -45,8 +46,22 @@ interface ManagerInternals {
     timeoutMs: number,
   ): Promise<NativeStreamerResponse>;
   installStdinErrorHandler(child: ChildProcessWithoutNullStreams): void;
+  handleStdout(child: ChildProcessWithoutNullStreams, chunk: string): void;
   handleEvent(message: NativeStreamerEvent): void;
 }
+
+test("stdout from a replaced native process cannot affect the current session", () => {
+  const { internals } = createManager();
+  const current = createFakeChild();
+  const stale = createFakeChild();
+  internals.child = current.child;
+
+  internals.handleStdout(stale.child, "stale partial output");
+  assert.equal(internals.stdoutBuffer, "");
+
+  internals.handleStdout(current.child, "current partial output");
+  assert.equal(internals.stdoutBuffer, "current partial output");
+});
 
 function createFakeChild(): FakeChild {
   const stdin = new FakeStdin();
@@ -74,7 +89,6 @@ function createManager(): {
 } {
   const manager = new NativeStreamerManager({
     mainDir: "",
-    getBackendPreference: () => "auto",
     getVideoBackendPreference: () => "auto",
     getExecutablePathOverride: () => "",
     getCloudGsyncMode: () => "auto",
@@ -98,7 +112,6 @@ test("Linux decoder startup timeout requests one native software retry", () => {
   let recoveryMessage = "";
   const manager = new NativeStreamerManager({
     mainDir: "",
-    getBackendPreference: () => "auto",
     getVideoBackendPreference: () => "nvdec",
     getExecutablePathOverride: () => "",
     getCloudGsyncMode: () => "auto",
@@ -175,11 +188,13 @@ test("input writes tolerate a child exit race but still throw unrelated failures
   internals.activeSessionId = "session";
   internals.capabilities = {
     protocolVersion: 4,
-    backend: "gstreamer",
+    backend: "native",
     supportsOfferAnswer: true,
     supportsRemoteIce: true,
     supportsLocalIce: true,
     supportsInput: true,
+    supportsVideoDecode: true,
+    supportsVideoPresent: true,
   };
   fake.stdin.writeImpl = () => {
     throw writeError("ERR_STREAM_DESTROYED");
@@ -200,11 +215,13 @@ test("input writes tolerate a child exit race but still throw unrelated failures
   internals.activeSessionId = "session";
   internals.capabilities = {
     protocolVersion: 4,
-    backend: "gstreamer",
+    backend: "native",
     supportsOfferAnswer: true,
     supportsRemoteIce: true,
     supportsLocalIce: true,
     supportsInput: true,
+    supportsVideoDecode: true,
+    supportsVideoPresent: true,
   };
 
   assert.throws(

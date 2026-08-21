@@ -4,6 +4,7 @@ import type { GfnWebRtcClient } from "../platforms/gfn/webrtcClient";
 
 export type SignalingRecoveryState = {
   attemptCount: number;
+  deadlineAtMs: number | null;
   inFlight: Promise<boolean> | null;
   explicitShutdown: boolean;
   appId: number | null;
@@ -11,10 +12,23 @@ export type SignalingRecoveryState = {
 };
 
 export const RECOVERABLE_STREAM_STATUSES: readonly StreamStatus[] = ["streaming"];
-export const SIGNALING_RECOVERY_ATTEMPT_DELAYS_MS = [0, 3000] as const;
+export const SIGNALING_RECOVERY_WINDOW_MS = 300_000;
+export const SIGNALING_RECOVERY_POLL_INTERVAL_MS = 5_000;
 export const SIGNALING_RECOVERY_STABLE_RESET_DELAY_MS = 15000;
 export const SIGNALING_REMOTE_ICE_GRACE_MS = 5000;
 export const ICE_DISCONNECTED_RECOVERY_GRACE_MS = 7000;
+
+export function nextSignalingRecoveryPollDelayMs(input: {
+  attemptCount: number;
+  online: boolean;
+  nowMs: number;
+  deadlineAtMs: number;
+}): number | null {
+  const remainingMs = input.deadlineAtMs - input.nowMs;
+  if (remainingMs <= 0) return null;
+  if (input.attemptCount === 0 && input.online) return 0;
+  return Math.min(SIGNALING_RECOVERY_POLL_INTERVAL_MS, remainingMs);
+}
 
 export function isRemoteSessionEndReason(reason: string): boolean {
   const normalized = reason.trim().toLowerCase();

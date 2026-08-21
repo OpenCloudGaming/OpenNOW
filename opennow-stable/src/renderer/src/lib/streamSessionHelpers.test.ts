@@ -4,7 +4,10 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import type { SessionInfo } from "@shared/gfn";
-import { disposeSessionCreatedAfterAbort } from "./streamSessionHelpers";
+import {
+  disposeSessionCreatedAfterAbort,
+  nextSignalingRecoveryPollDelayMs,
+} from "./streamSessionHelpers";
 
 const session = { sessionId: "late-session" } as SessionInfo;
 
@@ -28,4 +31,31 @@ test("an active launch keeps its newly created session", async () => {
 
   assert.equal(disposed, false);
   assert.equal(stopCalls, 0);
+});
+
+test("signaling recovery polls immediately online and waits without burning offline attempts", () => {
+  assert.equal(nextSignalingRecoveryPollDelayMs({
+    attemptCount: 0,
+    online: true,
+    nowMs: 1_000,
+    deadlineAtMs: 301_000,
+  }), 0);
+  assert.equal(nextSignalingRecoveryPollDelayMs({
+    attemptCount: 0,
+    online: false,
+    nowMs: 1_000,
+    deadlineAtMs: 301_000,
+  }), 5_000);
+  assert.equal(nextSignalingRecoveryPollDelayMs({
+    attemptCount: 1,
+    online: true,
+    nowMs: 299_000,
+    deadlineAtMs: 301_000,
+  }), 2_000);
+  assert.equal(nextSignalingRecoveryPollDelayMs({
+    attemptCount: 1,
+    online: true,
+    nowMs: 301_000,
+    deadlineAtMs: 301_000,
+  }), null);
 });

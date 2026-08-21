@@ -1,5 +1,3 @@
-import dns from "node:dns";
-
 import type { IceServer, MediaConnectionInfo } from "@shared/gfn";
 
 import type { CloudMatchResponse } from "./types";
@@ -10,35 +8,6 @@ const READY_SESSION_STATUSES = new Set([2, 3]);
 
 export function isReadySessionStatus(status: number): boolean {
   return READY_SESSION_STATUSES.has(status);
-}
-
-async function resolveHostnameWithFallback(hostname: string): Promise<string | null> {
-  // Try system resolver first, then fall back to Cloudflare (1.1.1.1) and Google (8.8.8.8)
-  try {
-    const r = await dns.promises.lookup(hostname);
-    if (r && (r as any).address) return (r as any).address;
-  } catch {
-    // ignore and try custom resolvers
-  }
-
-  const fallbackServers = ["1.1.1.1", "8.8.8.8"];
-  for (const server of fallbackServers) {
-    try {
-      const resolver = new dns.Resolver();
-      resolver.setServers([server]);
-      const addrs: string[] = await new Promise((resolve, reject) => {
-        resolver.resolve4(hostname, (err, addresses) => {
-          if (err) reject(err);
-          else resolve(addresses);
-        });
-      });
-      if (addrs && addrs.length > 0) return addrs[0];
-    } catch {
-      // try next fallback
-    }
-  }
-
-  return null;
 }
 
 export async function normalizeIceServers(response: CloudMatchResponse): Promise<IceServer[]> {
@@ -54,68 +23,13 @@ export async function normalizeIceServers(response: CloudMatchResponse): Promise
     })
     .filter((entry) => entry.urls.length > 0);
 
-  if (servers.length > 0) {
-    // Attempt to resolve any hostnames in STUN/TURN URLs to IPs to avoid relying on the
-    // renderer's DNS resolution. This makes it possible to try alternate DNS servers
-    // when the system resolver fails.
-    const resolvedServers: IceServer[] = [];
-    for (const s of servers) {
-      const resolvedUrls: string[] = [];
-      for (const u of s.urls) {
-          try {
-          const m = u.match(/^([a-zA-Z0-9+.-]+):([^/]+)/);
-          if (m) {
-            const scheme = m[1];
-            const hostPort = m[2];
-            const host = hostPort.split(":")[0];
-            const portPart = hostPort.includes(":") ? ":" + hostPort.split(":").slice(1).join(":") : "";
+  if (servers.length > 0) return servers;
 
-            // Helper to bracket IPv6 literals when necessary
-            const bracketIfIpv6 = (h: string) => {
-              if (h.startsWith("[") && h.endsWith("]")) return h;
-              // Heuristic: contains ':' and is not an IPv4 dotted-quad
-              if (h.includes(":") && !/^\d{1,3}(?:\.\d{1,3}){3}$/.test(h)) {
-                return `[${h}]`;
-              }
-              return h;
-            };
-
-            // If host already looks like an IPv4 or bracketed IPv6, keep original URL
-            if (/^\d{1,3}(?:\.\d{1,3}){3}$/.test(host) || /^\[[0-9a-fA-F:]+\]$/.test(host)) {
-              resolvedUrls.push(u);
-            } else {
-              const ip = await resolveHostnameWithFallback(host);
-              const finalHost = ip ?? host;
-              const maybeBracketted = bracketIfIpv6(finalHost);
-              resolvedUrls.push(`${scheme}:${maybeBracketted}${portPart}`);
-            }
-          } else {
-            resolvedUrls.push(u);
-          }
-        } catch {
-          resolvedUrls.push(u);
-        }
-      }
-      resolvedServers.push({ urls: resolvedUrls, username: s.username, credential: s.credential });
-    }
-
-    return resolvedServers;
-  }
-
-  // Default fallbacks — try to resolve known STUN hostnames to IPs as well
-  const defaults = ["s1.stun.gamestream.nvidia.com:19308", "stun.l.google.com:19302", "stun1.l.google.com:19302"];
-  const out: IceServer[] = [];
-  for (const d of defaults) {
-    const parts = d.split(":");
-    const host = parts[0];
-    const port = parts.length > 1 ? `:${parts.slice(1).join(":")}` : "";
-    const ip = await resolveHostnameWithFallback(host);
-    const bracketIfIpv6 = (h: string) => (h.includes(":") && !h.startsWith("[") ? `[${h}]` : h);
-    if (ip) out.push({ urls: [`stun:${bracketIfIpv6(ip)}${port}`] });
-    else out.push({ urls: [`stun:${bracketIfIpv6(host)}${port}`] });
-  }
-
-  return out;
+  return [
+    { urls: ["stun:s1.stun.gamestream.nvidia.com:19308"] },
+    { urls: ["stun:stun.l.google.com:19302"] },
+    { urls: ["stun:stun1.l.google.com:19302"] },
+  ];
 }
 
 /**
@@ -208,9 +122,15 @@ export function resolveSignaling(response: CloudMatchResponse): {
 
   const rtspsHost =
     connections
-      .map((connection) => typeof connection.resourcePath === "string"
-        ? extractHostFromUrl(connection.resourcePath)
-        : null)
+      .filter((connection) =>
+        connection.usage === 16
+        || connection.appLevelProtocol === 6
+        || (typeof connection.resourcePath === "string" && /^rtsps?:\/\//i.test(connection.resourcePath)),
+      )
+      .map((connection) => connection.ip
+        ?? (typeof connection.resourcePath === "string"
+          ? extractHostFromUrl(connection.resourcePath)
+          : null))
       .find((host): host is string => Boolean(host)) ??
     signalingHost ??
     (isZoneHostname(serverIp) ? null : serverIp);
@@ -228,16 +148,18 @@ export function resolveSignaling(response: CloudMatchResponse): {
 
 /**
  * Resolve the media connection endpoint (IP + port) from the session's connectionInfo array.
- * Matches Rust's media_connection_info() priority chain:
- *   1. usage=2 (Primary media path, UDP)
- *   2. usage=17 (Alternative media path)
- *   3. usage=14 with highest port (Alliance fallback — distinguishes media port from signaling port)
- *   4. Fallback: use serverIp with the highest port from any usage=14 entry
+ * This is the compatibility projection used by the WebRTC path:
+ *   1. usage=2 (legacy VIDEO)
+ *   2. usage=17 (BUNDLE)
+ *
+ * The native path receives the complete ordered connectionInfo array and must
+ * select current native transports such as usage=15 (MEDIA) itself. Signaling
+ * (14), MEDIA (15), and RTSPS (16) must not be repurposed as WebRTC ICE endpoints.
  *
  * For each entry, IP is extracted from:
  *   a. The .ip field directly
  *   b. The hostname in .resourcePath (e.g. rtsps://80-250-97-40.server.net:48322)
- *   c. Fallback to serverIp (only for usage=14 Alliance fallback)
+ * CloudMatch usage=14 is signaling and must never be repurposed as a media endpoint.
  */
 export function resolveMediaConnectionInfo(
   connections: Array<{ ip?: string; port: number; usage: number; protocol?: number; resourcePath?: string }>,
@@ -278,7 +200,7 @@ export function resolveMediaConnectionInfo(
     return 0;
   };
 
-  // Priority 1: usage=2 (Primary media path, UDP)
+  // Priority 1: usage=2 (legacy VIDEO)
   const primary = connections.find((c) => c.usage === 2);
   if (primary) {
     const ip = extractIp(primary);
@@ -287,25 +209,13 @@ export function resolveMediaConnectionInfo(
     if (ip && port > 0) return { ip, port, usage: primary.usage };
   }
 
-  // Priority 2: usage=17 (Alternative media path)
+  // Priority 2: usage=17 (BUNDLE)
   const alt = connections.find((c) => c.usage === 17);
   if (alt) {
     const ip = extractIp(alt);
     const port = extractPort(alt);
     console.log(`[CloudMatch] resolveMediaConnectionInfo: usage=17 candidate: ip=${ip}, port=${port}`);
     if (ip && port > 0) return { ip, port, usage: alt.usage };
-  }
-
-  // Priority 3: usage=14 with highest port (Alliance fallback)
-  const alliance = connections
-    .filter((c) => c.usage === 14)
-    .sort((a, b) => b.port - a.port);
-
-  for (const conn of alliance) {
-    const ip = extractIp(conn) ?? serverIp;
-    const port = extractPort(conn);
-    console.log(`[CloudMatch] resolveMediaConnectionInfo: usage=14 candidate: ip=${ip}, port=${port} (serverIp fallback=${serverIp})`);
-    if (ip && port > 0) return { ip, port, usage: conn.usage };
   }
 
   if (options?.logMissing ?? true) {
@@ -323,28 +233,29 @@ export function buildSignalingUrl(
   serverIp: string,
 ): { signalingUrl: string; signalingHost: string | null } {
   if (raw.startsWith("rtsps://") || raw.startsWith("rtsp://")) {
-    // Extract hostname from RTSP URL, convert to wss://
-    const withoutScheme = raw.startsWith("rtsps://")
-      ? raw.slice("rtsps://".length)
-      : raw.slice("rtsp://".length);
-    const host = withoutScheme.split(":")[0]?.split("/")[0];
-    if (host && host.length > 0 && !host.startsWith(".")) {
+    const signalingUrl = `wss://${raw.slice(raw.indexOf("://") + 3)}`;
+    try {
+      const parsed = new URL(signalingUrl);
+      if (!parsed.hostname || parsed.hostname.startsWith(".")) throw new Error("invalid host");
       return {
-        signalingUrl: `wss://${host}/nvst/`,
-        signalingHost: host,
+        signalingUrl,
+        signalingHost: parsed.host,
+      };
+    } catch {
+      return {
+        signalingUrl: `wss://${serverIp}:443/nvst/`,
+        signalingHost: null,
       };
     }
-    return {
-      signalingUrl: `wss://${serverIp}:443/nvst/`,
-      signalingHost: null,
-    };
   }
 
   if (raw.startsWith("wss://")) {
     // Already a full WSS URL, use as-is; extract host
-    const withoutScheme = raw.slice("wss://".length);
-    const host = withoutScheme.split("/")[0] ?? null;
-    return { signalingUrl: raw, signalingHost: host };
+    try {
+      return { signalingUrl: raw, signalingHost: new URL(raw).host };
+    } catch {
+      return { signalingUrl: raw, signalingHost: null };
+    }
   }
 
   if (raw.startsWith("/")) {

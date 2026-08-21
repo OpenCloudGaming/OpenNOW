@@ -1,11 +1,10 @@
 import type {
-  NativeGstreamerRuntimeStatus,
+  NativeStreamerRuntimeStatus,
   NativeStreamerStatus,
   NativeVideoBackendCapability,
   NativeVideoBackendPreference,
 } from "@shared/gfn";
 import type { NativeStreamerCapabilities } from "@shared/nativeStreamer";
-import { linuxInstallInstructions } from "./runtime";
 
 function formatVideoBackendName(backend: string | undefined): string {
   switch (backend) {
@@ -86,63 +85,40 @@ export function formatError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function isWindowsDllLoadFailure(error: unknown, platform: NodeJS.Platform): boolean {
-  const message = formatError(error);
-  return platform === "win32"
-    && (message.includes("3221225781") || message.toLowerCase().includes("0xc0000135"));
-}
-
 function formatNativeStreamerDetectionFailure(
   error: unknown,
-  runtime: NativeGstreamerRuntimeStatus | null,
-  platform: NodeJS.Platform,
+  runtime: NativeStreamerRuntimeStatus | null,
 ): string {
-  if (isWindowsDllLoadFailure(error, platform)) {
-    return runtime?.bundled
-      ? `Native streamer could not load a required DLL even though bundled GStreamer was detected at ${runtime.path}. The packaged runtime may be incomplete or blocked. ${formatError(error)}`
-      : `Native streamer could not load a required DLL and no bundled GStreamer runtime was detected. ${formatError(error)}`;
+  const message = formatError(error);
+  if (message.includes("3221225781") || message.toLowerCase().includes("0xc0000135")) {
+    const location = runtime?.path ? ` at ${runtime.path}` : "";
+    return `Native streamer could not load a required library${location}. The executable may be incomplete or blocked. ${message}`;
   }
-  return `Native streamer was not detected: ${formatError(error)}`;
+  return `Native streamer was not detected: ${message}`;
 }
 
 export function createNativeStreamerStatus(
   capabilities: NativeStreamerCapabilities | null,
-  runtimeStatus: NativeGstreamerRuntimeStatus | null,
+  runtimeStatus: NativeStreamerRuntimeStatus | null,
   preferredBackend: NativeVideoBackendPreference,
   platform = process.platform,
 ): NativeStreamerStatus {
   const backend = capabilities?.backend;
-  const gstreamerAvailable = backend === "gstreamer" && capabilities?.supportsOfferAnswer === true;
+  const available = backend === "native"
+    && capabilities?.supportsOfferAnswer === true
+    && capabilities?.supportsVideoDecode === true
+    && capabilities?.supportsVideoPresent === true;
   const videoBackends = capabilities?.videoBackends ?? [];
   const activeVideoBackend = resolveActiveVideoBackend(videoBackends, preferredBackend, platform);
   const runtime = runtimeStatus ?? {
     source: "unknown",
-    bundled: false,
-    message: "GStreamer runtime has not been checked yet.",
-    installInstructions: linuxInstallInstructions(platform),
-  } satisfies NativeGstreamerRuntimeStatus;
-  const effectiveRuntime: NativeGstreamerRuntimeStatus = gstreamerAvailable
-    ? runtime.bundled
-      ? runtime
-      : {
-        ...runtime,
-        source: "system",
-        message: "Using system GStreamer runtime; packaged Windows/macOS builds should use the bundled runtime.",
-      }
-    : {
-      ...runtime,
-      source: runtime.bundled ? "bundled" : platform === "linux" ? "missing" : runtime.source,
-      message: runtime.bundled
-        ? "Bundled GStreamer runtime was found, but the GStreamer backend is not ready."
-        : platform === "linux"
-          ? "GStreamer is not ready. Install distro GStreamer packages so plugins match the host GPU/driver stack."
-          : runtime.message,
-      installInstructions: runtime.installInstructions ?? linuxInstallInstructions(platform),
-    };
+    selfContained: false,
+    message: "Native streamer runtime has not been checked yet.",
+  } satisfies NativeStreamerRuntimeStatus;
 
   return {
     detected: true,
-    gstreamerAvailable,
+    available,
     supportsOfferAnswer: capabilities?.supportsOfferAnswer === true,
     backend,
     fallbackReason: capabilities?.fallbackReason,
@@ -150,31 +126,28 @@ export function createNativeStreamerStatus(
     activeVideoBackend,
     codecSummary: summarizeCodecs(activeVideoBackend),
     zeroCopySummary: summarizeZeroCopy(activeVideoBackend),
-    gstreamerRuntime: effectiveRuntime,
-    message: gstreamerAvailable
-      ? `${effectiveRuntime.message} Video path: ${formatVideoBackendName(activeVideoBackend?.backend)}.`
-      : capabilities?.fallbackReason ?? effectiveRuntime.message,
+    runtime,
+    message: available
+      ? `${runtime.message} Video path: ${formatVideoBackendName(activeVideoBackend?.backend)}.`
+      : capabilities?.fallbackReason ?? runtime.message,
   };
 }
 
 export function createNativeStreamerDetectionFailureStatus(
   error: unknown,
-  runtimeStatus: NativeGstreamerRuntimeStatus | null,
-  platform = process.platform,
+  runtimeStatus: NativeStreamerRuntimeStatus | null,
+  _platform = process.platform,
 ): NativeStreamerStatus {
   const runtime = runtimeStatus ?? {
-    source: platform === "linux" ? "missing" : "unknown",
-    bundled: false,
-    message: platform === "linux"
-      ? "GStreamer is not ready. Linux uses distro packages because private AppImage GStreamer bundling is unreliable across glibc, libdrm/VAAPI/Vulkan, and GPU driver stacks."
-      : "GStreamer runtime could not be checked because the native streamer did not start.",
-    installInstructions: linuxInstallInstructions(platform),
-  } satisfies NativeGstreamerRuntimeStatus;
+    source: "unknown",
+    selfContained: false,
+    message: "Native streamer runtime could not be checked because the executable did not start.",
+  } satisfies NativeStreamerRuntimeStatus;
   return {
     detected: false,
-    gstreamerAvailable: false,
+    available: false,
     supportsOfferAnswer: false,
-    gstreamerRuntime: runtime,
-    message: formatNativeStreamerDetectionFailure(error, runtime, platform),
+    runtime,
+    message: formatNativeStreamerDetectionFailure(error, runtime),
   };
 }

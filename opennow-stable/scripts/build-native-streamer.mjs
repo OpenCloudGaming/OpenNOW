@@ -1,533 +1,129 @@
-import { copyFileSync, chmodSync, existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
-import { delimiter, dirname, join, resolve } from "node:path";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
+const __dirname = dirname(fileURLToPath(import.meta.url));
 const packageRoot = resolve(__dirname, "..");
 const repoRoot = resolve(packageRoot, "..");
-const crateRoot = join(repoRoot, "native", "opennow-streamer");
-const manifestPath = join(crateRoot, "Cargo.toml");
-const protocolSourcePath = join(crateRoot, "src", "protocol.rs");
+const workspaceRoot = join(repoRoot, "native", "opennow-streamer");
+const manifestPath = join(workspaceRoot, "Cargo.toml");
+const protocolSourcePath = join(
+  workspaceRoot,
+  "crates",
+  "opennow-streamer-protocol",
+  "src",
+  "lib.rs",
+);
 const appProtocolSourcePath = join(packageRoot, "src", "shared", "nativeStreamer.ts");
-const exeName = process.platform === "win32" ? "opennow-streamer.exe" : "opennow-streamer";
-const verifyCommandId = "verify";
-const nativeStreamerProtocolVersion = readVerifiedNativeStreamerProtocolVersion();
 const nativeTarget = process.env.OPENNOW_NATIVE_STREAMER_TARGET?.trim() || "";
-const platformKey = process.env.OPENNOW_NATIVE_STREAMER_PLATFORM_KEY?.trim() || `${process.platform}-${process.arch}`;
-const targetReleaseDir = nativeTarget
-  ? join(crateRoot, "target", nativeTarget, "release")
-  : join(crateRoot, "target", "release");
-const builtBinary = join(targetReleaseDir, exeName);
-const packageBinaryDir = join(crateRoot, "bin");
-const packageBinary = join(packageBinaryDir, exeName);
-const packagePlatformBinaryDir = join(packageBinaryDir, platformKey);
-const packagePlatformBinary = join(packagePlatformBinaryDir, exeName);
+const platformKey = process.env.OPENNOW_NATIVE_STREAMER_PLATFORM_KEY?.trim()
+  || `${process.platform}-${process.arch}`;
+const exeName = platformKey.startsWith("win32-") ? "opennow-streamer.exe" : "opennow-streamer";
+const releaseDir = nativeTarget
+  ? join(workspaceRoot, "target", nativeTarget, "release")
+  : join(workspaceRoot, "target", "release");
+const builtBinary = join(releaseDir, exeName);
+const binRoot = join(workspaceRoot, "bin");
+const platformBinary = join(binRoot, platformKey, exeName);
+rmSync(join(binRoot, exeName), { force: true });
 
-function hasFeature(features, feature) {
-  return features
-    .split(/[,\s]+/)
-    .map((value) => value.trim().toLowerCase())
-    .filter(Boolean)
-    .includes(feature);
-}
-
-function readProtocolVersion(sourcePath, pattern, label) {
-  const source = readFileSync(sourcePath, "utf8");
-  const match = source.match(pattern);
-  if (!match) {
-    throw new Error(`Unable to read ${label} protocol version from ${sourcePath}`);
-  }
+function readVersion(path, pattern, label) {
+  const match = readFileSync(path, "utf8").match(pattern);
+  if (!match) throw new Error(`Unable to read ${label} protocol version from ${path}`);
   return Number.parseInt(match[1], 10);
 }
 
-function readVerifiedNativeStreamerProtocolVersion() {
-  const appProtocolVersion = readProtocolVersion(
-    appProtocolSourcePath,
-    /export\s+const\s+NATIVE_STREAMER_PROTOCOL_VERSION\s*=\s*(\d+)\s*;/,
-    "app",
-  );
-  const nativeProtocolVersion = readProtocolVersion(
-    protocolSourcePath,
-    /pub\s+const\s+PROTOCOL_VERSION\s*:\s*u64\s*=\s*(\d+)\s*;/,
-    "native",
-  );
-
-  if (appProtocolVersion !== nativeProtocolVersion) {
-    throw new Error(
-      `Native streamer protocol mismatch: app sends ${appProtocolVersion} from ${appProtocolSourcePath}, `
-      + `native expects ${nativeProtocolVersion} from ${protocolSourcePath}.`,
-    );
-  }
-
-  return appProtocolVersion;
-}
-
-function isWindowsBuild() {
-  return process.platform === "win32" || /windows-msvc$/i.test(nativeTarget);
-}
-
-function isDarwinBuild() {
-  return process.platform === "darwin" || /apple-darwin$/i.test(nativeTarget);
-}
-
-function shouldBundlePrivateGstreamerRuntime(nativeFeatures) {
-  if (!hasFeature(nativeFeatures, "gstreamer")) {
-    return false;
-  }
-  if (!isWindowsBuild() && !isDarwinBuild()) {
-    return false;
-  }
-
-  const override = process.env.OPENNOW_BUNDLE_GSTREAMER_RUNTIME?.trim();
-  if (override === "0") {
-    return false;
-  }
-  if (override === "1") {
-    return true;
-  }
-  return true;
-}
-
-function prependEnvPath(env, directory) {
-  const pathKey = Object.keys(env).find((key) => key.toLowerCase() === "path") || "PATH";
-  env[pathKey] = env[pathKey] ? `${directory}${delimiter}${env[pathKey]}` : directory;
-}
-
-function appendEnvValue(env, key, value) {
-  env[key] = env[key]?.trim() ? `${env[key]} ${value}` : value;
-}
-
-function configureDarwinLinkerPadding(env, nativeFeatures) {
-  if (!isDarwinBuild() || !shouldBundlePrivateGstreamerRuntime(nativeFeatures)) {
-    return;
-  }
-  appendEnvValue(env, "RUSTFLAGS", "-C link-arg=-Wl,-headerpad_max_install_names");
-}
-
-function brewPrefix() {
-  const result = spawnSync("brew", ["--prefix"], { encoding: "utf8" });
-  return result.status === 0 ? result.stdout.trim() || null : null;
-}
-
-function brewPrefixForPackage(packageName) {
-  const result = spawnSync("brew", ["--prefix", packageName], { encoding: "utf8" });
-  return result.status === 0 ? result.stdout.trim() || null : null;
-}
-
-function configuredCandidate(root, source) {
-  return root ? { root, source } : null;
-}
-
-function existingConfiguredCandidates(candidates) {
-  return candidates.filter(Boolean);
-}
-
-function formatCandidateSources(candidates) {
-  return candidates.map((candidate) => candidate.source).join(", ") || "none";
-}
-
-function configureGstreamerPluginDiscovery(env, sdkRoot) {
-  const pluginDir = join(sdkRoot, "lib", "gstreamer-1.0");
-  const scanner = join(
-    sdkRoot,
-    "libexec",
-    "gstreamer-1.0",
-    process.platform === "win32" ? "gst-plugin-scanner.exe" : "gst-plugin-scanner",
-  );
-
-  if (isExistingDirectory(pluginDir)) {
-    env.GST_PLUGIN_PATH = pluginDir;
-    env.GST_PLUGIN_PATH_1_0 = pluginDir;
-    env.GST_PLUGIN_SYSTEM_PATH = pluginDir;
-    env.GST_PLUGIN_SYSTEM_PATH_1_0 = pluginDir;
-  }
-  if (isExistingFile(scanner)) {
-    env.GST_PLUGIN_SCANNER = scanner;
-    env.GST_PLUGIN_SCANNER_1_0 = scanner;
-  }
-  env.GST_REGISTRY_REUSE_PLUGIN_SCANNER = "no";
-}
-
-function configureGstreamerSdk(env) {
-  if (process.platform === "win32") {
-    const candidates = existingConfiguredCandidates([
-      configuredCandidate(env.GSTREAMER_1_0_ROOT_MSVC_X86_64, "GSTREAMER_1_0_ROOT_MSVC_X86_64"),
-      configuredCandidate("C:\\Program Files\\gstreamer\\1.0\\msvc_x86_64", "default Program Files"),
-      configuredCandidate("C:\\gstreamer\\1.0\\msvc_x86_64", "default C drive"),
-    ]);
-    const sdk = candidates
-      .map((candidate) => {
-        const pkgConfigFile = join(candidate.root, "lib", "pkgconfig", "gstreamer-1.0.pc");
-        const pkgConfigBinary = ["pkg-config.exe", "pkgconf.exe"]
-          .map((name) => join(candidate.root, "bin", name))
-          .find((path) => existsSync(path));
-        return { ...candidate, pkgConfigBinary, pkgConfigFile };
-      })
-      .find((candidate) => candidate.pkgConfigBinary && existsSync(candidate.pkgConfigFile));
-    if (!sdk) {
-      console.warn(
-        [
-          "GStreamer SDK was not found automatically; relying on the current PKG_CONFIG environment.",
-          `Checked ${candidates.length} candidate source(s): ${formatCandidateSources(candidates)}.`,
-          "Expected relative files: bin/pkg-config.exe or bin/pkgconf.exe, and lib/pkgconfig/gstreamer-1.0.pc.",
-        ].join(" "),
-      );
-      return null;
-    }
-    const pkgConfigDir = join(sdk.root, "lib", "pkgconfig");
-    env.PKG_CONFIG = sdk.pkgConfigBinary;
-    env.PKG_CONFIG_PATH = env.PKG_CONFIG_PATH ? `${pkgConfigDir}${delimiter}${env.PKG_CONFIG_PATH}` : pkgConfigDir;
-    prependEnvPath(env, join(sdk.root, "bin"));
-    // The Windows MSI supports a custom INSTALLDIR, but a native executable outside
-    // the SDK cannot reliably infer that relocated plugin directory from its own path.
-    configureGstreamerPluginDiscovery(env, sdk.root);
-    console.log(`Configured GStreamer SDK from ${sdk.source}.`);
-    console.log("Configured pkg-config executable for GStreamer SDK.");
-    return sdk.root;
-  }
-
-  if (process.platform === "darwin") {
-    const homebrewRoot = brewPrefix();
-    const homebrewGStreamerRoot = brewPrefixForPackage("gstreamer");
-    const candidates = existingConfiguredCandidates([
-      configuredCandidate(env.GSTREAMER_1_0_ROOT_MACOS, "GSTREAMER_1_0_ROOT_MACOS"),
-      configuredCandidate("/Library/Frameworks/GStreamer.framework/Versions/1.0", "GStreamer framework version 1.0"),
-      configuredCandidate("/Library/Frameworks/GStreamer.framework/Versions/Current", "GStreamer framework current"),
-      configuredCandidate(homebrewGStreamerRoot, "Homebrew gstreamer prefix"),
-      configuredCandidate(homebrewRoot && join(homebrewRoot, "opt", "gstreamer"), "Homebrew opt gstreamer"),
-      configuredCandidate(homebrewRoot, "Homebrew prefix"),
-      configuredCandidate("/opt/homebrew", "default Homebrew Apple Silicon prefix"),
-      configuredCandidate("/usr/local", "default Homebrew Intel prefix"),
-    ]);
-    const sdk = candidates.find((candidate) =>
-      existsSync(join(candidate.root, "lib", "pkgconfig", "gstreamer-1.0.pc"))
-      && existsSync(join(candidate.root, "lib", "libgstreamer-1.0.dylib")),
-    );
-    if (!sdk) {
-      console.warn(
-        [
-          "GStreamer macOS SDK was not found automatically; relying on the current PKG_CONFIG environment.",
-          `Checked ${candidates.length} candidate source(s): ${formatCandidateSources(candidates)}.`,
-          "Expected relative files: lib/pkgconfig/gstreamer-1.0.pc and lib/libgstreamer-1.0.dylib.",
-        ].join(" "),
-      );
-      return null;
-    }
-    const sdkRoot = sdk.root;
-    const pkgConfigDir = join(sdkRoot, "lib", "pkgconfig");
-    env.GSTREAMER_1_0_ROOT_MACOS = sdkRoot;
-    env.PKG_CONFIG_PATH = env.PKG_CONFIG_PATH ? `${pkgConfigDir}${delimiter}${env.PKG_CONFIG_PATH}` : pkgConfigDir;
-    prependEnvPath(env, join(sdkRoot, "bin"));
-    env.DYLD_LIBRARY_PATH = env.DYLD_LIBRARY_PATH ? `${join(sdkRoot, "lib")}${delimiter}${env.DYLD_LIBRARY_PATH}` : join(sdkRoot, "lib");
-    env.DYLD_FALLBACK_LIBRARY_PATH = env.DYLD_FALLBACK_LIBRARY_PATH ? `${join(sdkRoot, "lib")}${delimiter}${env.DYLD_FALLBACK_LIBRARY_PATH}` : join(sdkRoot, "lib");
-    if (/apple-darwin$/.test(nativeTarget)) {
-      env.PKG_CONFIG_ALLOW_CROSS = "1";
-      env.PKG_CONFIG_SYSROOT_DIR = env.PKG_CONFIG_SYSROOT_DIR || "/";
-    }
-    console.log(`Configured GStreamer SDK from ${sdk.source}.`);
-    return sdkRoot;
-  }
-
-  return null;
-}
-
-function bundleGstreamerRuntime(sdkRoot, nativeFeatures) {
-  if (!shouldBundlePrivateGstreamerRuntime(nativeFeatures)) {
-    return false;
-  }
-
-  const args = [
-    join(__dirname, "bundle-gstreamer-runtime.mjs"),
-    "--dest",
-    join(packagePlatformBinaryDir, "gstreamer"),
-  ];
-
-  if (sdkRoot) {
-    args.push("--sdk-root", sdkRoot);
-  }
-  args.push("--binary", packagePlatformBinary);
-
-  const result = spawnSync(process.execPath, args, {
-    cwd: packageRoot,
-    stdio: "inherit",
-    env: process.env,
-  });
-
-  if (result.status !== 0) {
-    process.exit(result.status ?? 1);
-  }
-
-  if (process.platform === "win32") {
-    injectWindowsVulkanPlugins(join(packagePlatformBinaryDir, "gstreamer"));
-  }
-
-  return true;
-}
-
-function injectWindowsVulkanPlugins(runtimeRoot) {
-  const result = spawnSync(
-    process.execPath,
-    [join(__dirname, "inject-gstreamer-vulkan-windows.mjs"), "--dest", runtimeRoot],
-    {
-      cwd: packageRoot,
-      stdio: "inherit",
-      env: process.env,
-    },
-  );
-  if (result.status !== 0) {
-    process.exit(result.status ?? 1);
-  }
-}
-
-function isExistingFile(path) {
-  try {
-    return existsSync(path) && statSync(path).isFile();
-  } catch {
-    return false;
-  }
-}
-
-function isExistingDirectory(path) {
-  try {
-    return existsSync(path) && statSync(path).isDirectory();
-  } catch {
-    return false;
-  }
-}
-
-function buildBundledGstreamerEnv(baseEnv, binaryPath) {
-  const env = { SystemRoot: baseEnv.SystemRoot, WINDIR: baseEnv.WINDIR };
-  const runtimeRoot = join(dirname(binaryPath), "gstreamer");
-  const binDir = join(runtimeRoot, "bin");
-  const libDir = join(runtimeRoot, "lib");
-  const pluginDir = join(libDir, "gstreamer-1.0");
-  const scanner = join(runtimeRoot, "libexec", "gstreamer-1.0", process.platform === "win32" ? "gst-plugin-scanner.exe" : "gst-plugin-scanner");
-  const gioModulesDir = join(libDir, "gio", "modules");
-
-  if (!isExistingDirectory(runtimeRoot)) {
-    throw new Error(`Bundled GStreamer runtime was not found next to ${binaryPath}`);
-  }
-  if (process.platform === "win32") prependEnvPath(env, dirname(binaryPath));
-  if (isExistingDirectory(binDir)) prependEnvPath(env, binDir);
-  if (isExistingDirectory(pluginDir)) {
-    env.GST_PLUGIN_PATH = pluginDir;
-    env.GST_PLUGIN_PATH_1_0 = pluginDir;
-    env.GST_PLUGIN_SYSTEM_PATH = pluginDir;
-    env.GST_PLUGIN_SYSTEM_PATH_1_0 = pluginDir;
-  }
-  if (isExistingFile(scanner)) {
-    env.GST_PLUGIN_SCANNER = scanner;
-    env.GST_PLUGIN_SCANNER_1_0 = scanner;
-  }
-  env.GST_REGISTRY_REUSE_PLUGIN_SCANNER = "no";
-  if (isExistingDirectory(gioModulesDir)) {
-    env.GIO_MODULE_DIR = gioModulesDir;
-    env.GIO_EXTRA_MODULES = gioModulesDir;
-  }
-  if (process.platform === "linux" && isExistingDirectory(libDir)) {
-    env.LD_LIBRARY_PATH = env.LD_LIBRARY_PATH ? `${libDir}${delimiter}${env.LD_LIBRARY_PATH}` : libDir;
-  }
-  if (process.platform === "darwin" && isExistingDirectory(libDir)) {
-    env.DYLD_LIBRARY_PATH = env.DYLD_LIBRARY_PATH ? `${libDir}${delimiter}${env.DYLD_LIBRARY_PATH}` : libDir;
-    env.DYLD_FALLBACK_LIBRARY_PATH = env.DYLD_FALLBACK_LIBRARY_PATH ? `${libDir}${delimiter}${env.DYLD_FALLBACK_LIBRARY_PATH}` : libDir;
-  }
-  if (process.platform === "win32" && isExistingDirectory(libDir)) {
-    prependEnvPath(env, libDir);
-  }
-  return env;
-}
-
-function parseNativeStreamerResponse(stdout) {
-  const messages = [];
-  for (const rawLine of stdout.split(/\r?\n/)) {
-    const line = rawLine.trim();
-    if (!line) {
-      continue;
-    }
-
-    try {
-      messages.push(JSON.parse(line));
-    } catch {
-      console.error(`Native streamer verification returned invalid JSON: ${line}`);
-      process.exit(1);
-    }
-  }
-
-  const response = messages.find((message) => message?.id === verifyCommandId);
-  if (!response) {
-    console.error(
-      `Native streamer verification did not return a response to ${verifyCommandId}: ${JSON.stringify(messages)}`,
-    );
-    process.exit(1);
-  }
-
-  return response;
-}
-
-function verifyGstreamerBinary(binaryPath, env) {
-  const result = spawnSync(binaryPath, {
-    input: `${JSON.stringify({ id: verifyCommandId, type: "hello", protocolVersion: nativeStreamerProtocolVersion })}\n`,
-    encoding: "utf8",
-    env: {
-      ...env,
-      OPENNOW_NATIVE_STREAMER_BACKEND: "gstreamer",
-    },
-  });
-
-  if (result.status !== 0) {
-    console.error(result.stderr || result.stdout);
-    console.error(`Native streamer verification failed for ${binaryPath}`);
-    process.exit(result.status ?? 1);
-  }
-
-  const response = parseNativeStreamerResponse(result.stdout);
-  if (response.type === "error") {
-    console.error(
-      `Native streamer verification failed: ${response.code ?? "error"}${response.message ? `: ${response.message}` : ""}`,
-    );
-    process.exit(1);
-  }
-
-  const capabilities = response.capabilities;
-  if (
-    response.type !== "ready" ||
-    capabilities?.backend !== "gstreamer" ||
-    capabilities?.supportsOfferAnswer !== true ||
-    capabilities?.supportsInput !== true
-  ) {
-    console.error(
-      `Native streamer verification expected a GStreamer backend, got: ${JSON.stringify(
-        capabilities,
-      )}`,
-    );
-    process.exit(1);
-  }
-
-  if (!Array.isArray(capabilities.videoBackends) || capabilities.videoBackends.length === 0) {
-    console.error(
-      `Native streamer verification expected video backend capabilities, got: ${JSON.stringify(
-        capabilities,
-      )}`,
-    );
-    process.exit(1);
-  }
-
-  const availableVideoBackends = capabilities.videoBackends
-    .filter((backend) => backend?.available)
-    .map((backend) => {
-      const codecs = Array.isArray(backend.codecs)
-        ? backend.codecs.filter((codec) => codec.available).map((codec) => codec.codec).join("/")
-        : "";
-      return `${backend.backend}${codecs ? `(${codecs})` : ""}`;
-    });
-
-  if (availableVideoBackends.length === 0) {
-    console.error(
-      `Native streamer verification found no usable video backend: ${JSON.stringify(
-        capabilities.videoBackends,
-      )}`,
-    );
-    process.exit(1);
-  }
-
-  console.log(`Verified native streamer GStreamer capabilities: ${availableVideoBackends.join(", ")}.`);
-}
-
-function verifyBundledWindowsLoader(binaryPath, baseEnv) {
-  const result = spawnSync(binaryPath, {
-    cwd: dirname(binaryPath),
-    input: `${JSON.stringify({ id: verifyCommandId, type: "hello", protocolVersion: nativeStreamerProtocolVersion })}\n`,
-    encoding: "utf8",
-    env: {
-      SystemRoot: baseEnv.SystemRoot,
-      WINDIR: baseEnv.WINDIR,
-      PATH: dirname(binaryPath),
-      OPENNOW_NATIVE_STREAMER_BACKEND: "gstreamer",
-    },
-  });
-  if (result.status !== 0) {
-    console.error(result.stderr || result.stdout);
-    console.error("Bundled native streamer could not start using only DLLs next to its executable.");
-    process.exit(result.status ?? 1);
-  }
-  parseNativeStreamerResponse(result.stdout);
-  console.log("Verified native streamer Windows loader dependency closure.");
-}
-
-function verifyBundledWindowsVulkanPlugin(binaryPath, env) {
-  const gstInspect = join(dirname(binaryPath), "gstreamer", "bin", "gst-inspect-1.0.exe");
-  const result = spawnSync(gstInspect, ["vulkanupload"], {
-    encoding: "utf8",
-    env,
-  });
-  if (result.status !== 0) {
-    console.error(result.stderr || result.stdout);
-    console.error("Bundled GStreamer Vulkan plugin failed to load.");
-    process.exit(result.status ?? 1);
-  }
-  console.log("Verified bundled GStreamer Vulkan plugin and loader.");
-}
-
-const cargoArgs = ["build", "--release", "--manifest-path", manifestPath];
-if (nativeTarget) {
-  cargoArgs.push("--target", nativeTarget);
-}
-const nativeFeatures = process.env.OPENNOW_NATIVE_STREAMER_FEATURES?.trim() || "gstreamer";
-if (nativeFeatures && nativeFeatures.toLowerCase() !== "none") {
-  cargoArgs.push("--features", nativeFeatures);
-}
-console.log(
-  nativeFeatures.toLowerCase() === "none"
-    ? "Building native streamer without optional features."
-    : `Building native streamer with features: ${nativeFeatures}`,
+const appProtocolVersion = readVersion(
+  appProtocolSourcePath,
+  /export\s+const\s+NATIVE_STREAMER_PROTOCOL_VERSION\s*=\s*(\d+)\s*;/,
+  "app",
 );
-
-const buildEnv = { ...process.env };
-let gstreamerSdkRoot = null;
-if (hasFeature(nativeFeatures, "gstreamer")) {
-  gstreamerSdkRoot = configureGstreamerSdk(buildEnv);
+const nativeProtocolVersion = readVersion(
+  protocolSourcePath,
+  /pub\s+const\s+PROTOCOL_VERSION\s*:\s*u64\s*=\s*(\d+)\s*;/,
+  "native",
+);
+if (appProtocolVersion !== nativeProtocolVersion) {
+  throw new Error(
+    `Native streamer protocol mismatch: app sends ${appProtocolVersion}, native expects ${nativeProtocolVersion}.`,
+  );
 }
-configureDarwinLinkerPadding(buildEnv, nativeFeatures);
 
-const cargoCommand = process.platform === "win32" ? "cargo.exe" : "cargo";
-const result = spawnSync(cargoCommand, cargoArgs, {
-  cwd: repoRoot,
+const cargoArgs = [
+  "build",
+  "--locked",
+  "--release",
+  "--package",
+  "opennow-streamer",
+  "--manifest-path",
+  manifestPath,
+];
+if (nativeTarget) cargoArgs.push("--target", nativeTarget);
+
+const build = spawnSync("cargo", cargoArgs, {
+  cwd: workspaceRoot,
   stdio: "inherit",
-  env: buildEnv,
+  env: process.env,
 });
+if (build.status !== 0) process.exit(build.status ?? 1);
+if (!existsSync(builtBinary)) throw new Error(`Native streamer build missing: ${builtBinary}`);
 
-if (result.status !== 0) {
-  process.exit(result.status ?? 1);
+mkdirSync(dirname(platformBinary), { recursive: true });
+copyFileSync(builtBinary, platformBinary);
+if (!platformKey.startsWith("win32-")) {
+  chmodSync(platformBinary, 0o755);
 }
 
-if (!existsSync(builtBinary)) {
-  console.error(`Native streamer build did not produce ${builtBinary}`);
-  process.exit(1);
-}
-
-mkdirSync(packageBinaryDir, { recursive: true });
-mkdirSync(packagePlatformBinaryDir, { recursive: true });
-copyFileSync(builtBinary, packageBinary);
-copyFileSync(builtBinary, packagePlatformBinary);
-
-if (process.platform !== "win32") {
-  chmodSync(packageBinary, 0o755);
-  chmodSync(packagePlatformBinary, 0o755);
-}
-
-if (hasFeature(nativeFeatures, "gstreamer")) {
-  verifyGstreamerBinary(packageBinary, buildEnv);
-  if (bundleGstreamerRuntime(gstreamerSdkRoot, nativeFeatures)) {
-    const bundledEnv = buildBundledGstreamerEnv(buildEnv, packagePlatformBinary);
-    if (process.platform === "win32") {
-      verifyBundledWindowsLoader(packagePlatformBinary, buildEnv);
-      verifyBundledWindowsVulkanPlugin(packagePlatformBinary, bundledEnv);
-    }
-    verifyGstreamerBinary(packagePlatformBinary, bundledEnv);
+const hostPlatformKey = `${process.platform}-${process.arch}`;
+if (!nativeTarget || platformKey === hostPlatformKey) {
+  const input = [
+    JSON.stringify({ id: "verify", type: "hello", protocolVersion: nativeProtocolVersion }),
+    JSON.stringify({
+      id: "verify-start",
+      type: "start",
+      context: {
+        session: {
+          sessionId: "build-verification",
+          serverIp: "127.0.0.1",
+          iceServers: [],
+        },
+        settings: { codec: "H264" },
+        shortcuts: {},
+      },
+    }),
+    JSON.stringify({ id: "stop", type: "stop", reason: "build verification" }),
+    "",
+  ].join("\n");
+  const verify = spawnSync(platformBinary, [], {
+    cwd: packageRoot,
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      SDL_AUDIODRIVER: "dummy",
+      SDL_VIDEODRIVER: "dummy",
+    },
+    input,
+    timeout: 15_000,
+  });
+  if (verify.status !== 0) {
+    throw new Error(`Native streamer verification failed: ${verify.stderr || verify.stdout}`);
+  }
+  const messages = verify.stdout
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .map((line) => JSON.parse(line));
+  const ready = messages.find((message) => message.id === "verify" && message.type === "ready");
+  const stopped = messages.find((message) => message.id === "stop" && message.type === "ok");
+  const started = messages.find((message) => message.id === "verify-start" && message.type === "ok");
+  const capabilitiesComplete = ready?.capabilities?.supportsOfferAnswer === true
+    && ready.capabilities.supportsVideoDecode === true
+    && ready.capabilities.supportsVideoPresent === true
+    && ready.capabilities.supportsAudioDecode === true
+    && ready.capabilities.supportsAudioOutput === true;
+  if (!capabilitiesComplete || !started || !stopped) {
+    throw new Error(`Native streamer verification returned an incomplete handshake: ${verify.stdout}`);
   }
 }
 
-console.log(`Copied native streamer to ${packageBinary}`);
-console.log(`Copied native streamer to ${packagePlatformBinary}`);
+console.log(`Built native streamer v2: ${platformBinary}`);

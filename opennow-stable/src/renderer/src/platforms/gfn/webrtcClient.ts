@@ -154,12 +154,12 @@ function describeColorQuality(colorQuality: ColorQuality): string {
 function describeNativeHardwareAcceleration(): string {
   const platform = navigator.platform.toLowerCase();
   if (platform.includes("win")) {
-    return "GStreamer D3D11/DXVA";
+    return "Native D3D11/DXVA";
   }
   if (platform.includes("mac")) {
-    return "GStreamer VideoToolbox";
+    return "Native VideoToolbox";
   }
-  return "GStreamer NVDEC/VAAPI/V4L2/Vulkan";
+  return "Native VA-API/V4L2/Vulkan";
 }
 
 interface ClientOptions {
@@ -299,7 +299,7 @@ export class GfnWebRtcClient {
   /**
    * When true, Electron captures keyboard/mouse/gamepad and forwards packets to
    * the native streamer over IPC (internal child-surface renderer).
-   * When false, the floating external GStreamer window owns OS-level input.
+   * When false, the external native presenter owns OS-level input.
    */
   private nativeElectronInputBridge = false;
   private remoteIceEndpoint: SessionInfo["mediaConnectionInfo"] | null = null;
