@@ -12,6 +12,7 @@ import {
   isGameInLibrary,
   isNativeDirectXBackendSupported,
   isNativeExternalRendererSupported,
+  isNativeExternalRendererRequired,
   isNativeStreamerSupportedPlatform,
   isNvstTransportSupported,
   isOwnedLibraryStatus,
@@ -152,7 +153,6 @@ test("buildNativeStreamerSessionContext forwards requested/finalized streaming f
       enableL4S: true,
       enableCloudGsync: true,
       clientMode: "native",
-      nativeStreamerBackend: "gstreamer",
       nativeCloudGsyncMode: "auto",
       nativeTransitionDiagnostics: {
         forceQueueMode: "adaptive",
@@ -184,10 +184,26 @@ test("buildNativeStreamerSessionContext forwards requested/finalized streaming f
     chromaFormat: 0,
     enabledL4S: false,
   });
+  assert.equal(context.settings.codec, "H265");
   assert.equal(context.session.negotiatedStreamProfile?.codec, "H265");
   assert.equal(context.settings.enableCloudGsync, false);
   assert.equal(context.settings.nativeTransitionDiagnostics?.forceQueueMode, "adaptive");
   assert.equal(context.shortcuts.toggleRecording, "F12");
+
+  const nvstContext = buildNativeStreamerSessionContext(
+    {
+      ...context.session,
+      negotiatedStreamProfile: {
+        resolution: "2560x1440",
+        fps: 240,
+        enableCloudGsync: false,
+      },
+    },
+    { ...context.settings, transportMode: "nvst", codec: "AV1" },
+    context.shortcuts,
+  );
+  assert.equal(nvstContext.settings.codec, "AV1");
+  assert.equal(nvstContext.session.negotiatedStreamProfile?.codec, "AV1");
 });
 
 test("keeps native stream client mode on supported desktop platforms", () => {
@@ -236,27 +252,37 @@ test("reports unsupported native streamer status on unknown platforms only", () 
   assert.equal(isNativeStreamerSupportedPlatform("android"), false);
 });
 
-test("isNativeExternalRendererSupported is Windows-only", () => {
+test("external renderer is selectable on Windows and required on macOS", () => {
   assert.equal(isNativeExternalRendererSupported("win32"), true);
   assert.equal(isNativeExternalRendererSupported("windows"), true);
   assert.equal(isNativeExternalRendererSupported("linux"), false);
-  assert.equal(isNativeExternalRendererSupported("darwin"), false);
+  assert.equal(isNativeExternalRendererSupported("darwin"), true);
+  assert.equal(isNativeExternalRendererRequired("darwin"), true);
+  assert.equal(isNativeExternalRendererRequired("win32"), false);
   assert.equal(isNativeDirectXBackendSupported("win32"), true);
   assert.equal(isNativeDirectXBackendSupported("linux"), false);
   assert.equal(normalizeNativeExternalRendererForPlatform(true, "linux"), false);
   assert.equal(normalizeNativeExternalRendererForPlatform(true, "win32"), true);
   assert.equal(normalizeNativeExternalRendererForPlatform(false, "win32"), false);
+  assert.equal(normalizeNativeExternalRendererForPlatform(false, "darwin"), true);
 
   const status = createUnsupportedNativeStreamerStatus();
   assert.equal(status.detected, false);
-  assert.equal(status.gstreamerAvailable, false);
+  assert.equal(status.available, false);
   assert.equal(status.supportsOfferAnswer, false);
   assert.equal(status.message, NATIVE_STREAMER_UNSUPPORTED_PLATFORM_MESSAGE);
-  assert.equal(status.gstreamerRuntime.message, NATIVE_STREAMER_UNSUPPORTED_PLATFORM_MESSAGE);
+  assert.equal(status.runtime.message, NATIVE_STREAMER_UNSUPPORTED_PLATFORM_MESSAGE);
 });
 
-test("NVST transport stays disabled and normalizes to WebRTC", () => {
-  assert.equal(isNvstTransportSupported("win32"), false);
-  assert.equal(normalizeTransportModeForPlatform("nvst", "win32", "native"), "webrtc");
+test("NVST transport is limited to native sessions on supported desktop platforms", () => {
+  assert.equal(isNvstTransportSupported("win32"), true);
+  assert.equal(isNvstTransportSupported("darwin"), true);
+  assert.equal(isNvstTransportSupported("linux"), true);
+  assert.equal(isNvstTransportSupported("android"), false);
+  assert.equal(normalizeTransportModeForPlatform("nvst", "win32", "native"), "nvst");
+  assert.equal(normalizeTransportModeForPlatform("nvst", "darwin", "native"), "nvst");
+  assert.equal(normalizeTransportModeForPlatform("nvst", "linux", "native"), "nvst");
+  assert.equal(normalizeTransportModeForPlatform("nvst", "linux", "web"), "webrtc");
+  assert.equal(normalizeTransportModeForPlatform("nvst", "android", "native"), "webrtc");
   assert.equal(normalizeTransportModeForPlatform("webrtc", "win32", "native"), "webrtc");
 });

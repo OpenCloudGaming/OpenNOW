@@ -1,9 +1,0 @@
-description, duration=30.0, minfo-media-duration=310.0, seek=true, reverse-playback=true, need-clock-sync=true, min-media-duration=310.0, ignore-eos=true
-include,location=includes/default-seek-flags.scenario
-seek, name=Fast-backward-seek, playback-time=0.0,   rate=-2.0,  start=0.0, stop=310.0, flags="$(default_flags)"
-seek, name=Fast-backward-seek, playback-time=300.0, rate=-4.0,  start=0.0, stop=300.0, flags="$(default_flags)"
-seek, name=Fast-backward-seek, playback-time=280.0, rate=-8.0,  start=0.0, stop=280.0, flags="$(default_flags)"
-seek, name=Fast-backward-seek, playback-time=240.0, rate=-16.0, start=0.0, stop=240.0, flags="$(default_flags)"
-seek, name=Fast-backward-seek, playback-time=160.0, rate=-32.0, start=0.0, stop=160.0, flags="$(default_flags)"
-wait, message-type=eos
-stop

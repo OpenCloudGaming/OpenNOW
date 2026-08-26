@@ -1,0 +1,35 @@
+[package]
+name = "opennow-streamer-transport"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+aes.workspace = true
+ctr.workspace = true
+crc32fast.workspace = true
+getrandom.workspace = true
+ghash.workspace = true
+hmac.workspace = true
+opennow-streamer-protocol = { path = "../opennow-streamer-protocol" }
+serde_json.workspace = true
+sha1.workspace = true
+socket2.workspace = true
+subtle.workspace = true
+thiserror.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+str0m = { workspace = true, features = ["wincrypto-dimpl"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# Keep transport crypto architecture-independent. The Apple/Swift provider's
+# static archive discovery breaks x86_64 cross-builds on Apple Silicon, while
+# WebRTC crypto is not on the VideoToolbox/Metal media hot path.
+str0m = { workspace = true, features = ["rust-crypto"] }
+
+[target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
+str0m = { workspace = true, features = ["rust-crypto"] }
+
+[dev-dependencies]
+serde_json.workspace = true

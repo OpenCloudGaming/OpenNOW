@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "https://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleDevelopmentRegion</key>
+  <string>en</string>
+  <key>CFBundleDisplayName</key>
+  <string>OpenNOW Streamer</string>
+  <key>CFBundleExecutable</key>
+  <string>opennow-streamer</string>
+  <key>CFBundleIdentifier</key>
+  <string>com.zortos.opennow.streamer</string>
+  <key>CFBundleInfoDictionaryVersion</key>
+  <string>6.0</string>
+  <key>CFBundleName</key>
+  <string>OpenNOW Stream</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleShortVersionString</key>
+  <string>__OPENNOW_STREAMER_VERSION__</string>
+  <key>CFBundleVersion</key>
+  <string>__OPENNOW_STREAMER_VERSION__</string>
+  <key>LSBackgroundOnly</key>
+  <false/>
+  <key>LSMinimumSystemVersion</key>
+  <string>12.0</string>
+  <key>NSHighResolutionCapable</key>
+  <true/>
+</dict>
+</plist>

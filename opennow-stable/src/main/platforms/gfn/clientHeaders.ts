@@ -1,4 +1,6 @@
-import crypto from "node:crypto";
+import os from "node:os";
+
+import { getCloudMatchDeviceHashId } from "./deviceId";
 
 import { GFN_PLAY_ORIGIN as SHARED_GFN_PLAY_ORIGIN, GFN_PLAY_REFERER as SHARED_GFN_PLAY_REFERER } from "@shared/gfn/endpoints";
 
@@ -8,14 +10,48 @@ import {
   type GfnDeviceOs,
 } from "./deviceIdentity";
 
-const GFN_WINDOWS_USER_AGENT =
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36 NVIDIACEFClient/HEAD/debb5919f6 GFN-PC/2.0.80.173";
-const GFN_MACOS_USER_AGENT =
-  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 GFN-PC/2.0.80.173";
+/** Official mall `shared/assets/config/config.json` build.version / hash (2.0.87.131). */
+export const GFN_CLIENT_VERSION = "2.0.87.131";
+/** Official CEF host token: `HEAD/` + first 10 hex chars of mall `build.hash`. */
+const GFN_CEF_PRODUCT = "NVIDIACEFClient/HEAD/7b92719716";
 
-export const GFN_USER_AGENT = process.platform === "darwin" ? GFN_MACOS_USER_AGENT : GFN_WINDOWS_USER_AGENT;
-export const GFN_CLIENT_VERSION = "2.0.80.173";
+const GFN_WINDOWS_USER_AGENT =
+  `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36 ${GFN_CEF_PRODUCT} GFN-PC/${GFN_CLIENT_VERSION}`;
+const GFN_MACOS_USER_AGENT =
+  `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36 ${GFN_CEF_PRODUCT} GFN-PC/${GFN_CLIENT_VERSION}`;
+const GFN_LINUX_USER_AGENT =
+  `Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36 ${GFN_CEF_PRODUCT} GFN-PC/${GFN_CLIENT_VERSION}`;
+
+export function gfnUserAgentForPlatform(platform: NodeJS.Platform = process.platform): string {
+  if (platform === "darwin") {
+    return GFN_MACOS_USER_AGENT;
+  }
+  if (platform === "linux") {
+    return GFN_LINUX_USER_AGENT;
+  }
+  return GFN_WINDOWS_USER_AGENT;
+}
+
+export const GFN_USER_AGENT = gfnUserAgentForPlatform();
+/** Official mall JSON `clientVersion` token used in native Grid User-Agent. */
+export const GFN_BIFROST_CLIENT_VERSION = "30.0";
+/** Official Mac BifrostClientSDK token from Grid POST 2026-08-19. */
+const GFN_BIFROST_SDK = "4.9";
+const GFN_BIFROST_SDK_BUILD = "38495286";
+
+export function gfnBifrostUserAgentForPlatform(platform: NodeJS.Platform = process.platform): string {
+  if (platform === "darwin") {
+    return `GFN-PC/${GFN_BIFROST_CLIENT_VERSION} (MacOSX ${os.release()}) BifrostClientSDK/${GFN_BIFROST_SDK} (${GFN_BIFROST_SDK_BUILD})`;
+  }
+  if (platform === "linux") {
+    return `GFN-PC/${GFN_BIFROST_CLIENT_VERSION} (Linux ${os.release()}) BifrostClientSDK/${GFN_BIFROST_SDK} (${GFN_BIFROST_SDK_BUILD})`;
+  }
+  return `GFN-PC/${GFN_BIFROST_CLIENT_VERSION} (Windows NT 10.0) BifrostClientSDK/${GFN_BIFROST_SDK} (${GFN_BIFROST_SDK_BUILD})`;
+}
+
 export const LCARS_CLIENT_ID = "ec7e38d4-03af-4b58-b131-cfb0495903ab";
+/** Official CloudMatch / Bifrost `clientIdentification` for the native PC client. */
+export const GFN_CLIENT_IDENTIFICATION = "GFN-PC";
 
 export const GFN_PLAY_ORIGIN = SHARED_GFN_PLAY_ORIGIN;
 export const GFN_PLAY_REFERER = SHARED_GFN_PLAY_REFERER;
@@ -45,6 +81,7 @@ function applyDeviceIdentityHeaders(
 ): void {
   headers["nv-device-os"] = identity.deviceOs;
   headers["nv-device-type"] = identity.deviceType;
+  headers["x-nv-client-identity"] = GFN_CLIENT_IDENTIFICATION;
   if (options?.includeMakeModel !== false) {
     headers["nv-device-make"] = identity.deviceMake;
     headers["nv-device-model"] = identity.deviceModel;
@@ -148,50 +185,64 @@ export interface GfnCloudMatchHeadersOptions {
 
 function resolveCloudMatchIdentity(options: GfnCloudMatchHeadersOptions): { clientId: string; deviceId: string } {
   return {
-    clientId: options.clientId ?? crypto.randomUUID(),
-    deviceId: options.deviceId ?? crypto.randomUUID(),
+    clientId: options.clientId ?? LCARS_CLIENT_ID,
+    deviceId: options.deviceId ?? getCloudMatchDeviceHashId(),
   };
 }
 
 export function buildGfnCloudMatchHeaders(options: GfnCloudMatchHeadersOptions): Record<string, string> {
   const { clientId, deviceId } = resolveCloudMatchIdentity(options);
   const identity = resolveGfnDeviceIdentity({ identifyAsSteamDeck: options.identifyAsSteamDeck });
-  const headers: Record<string, string> = {
-    "User-Agent": GFN_USER_AGENT,
+  const userAgent = gfnBifrostUserAgentForPlatform();
+  void options.includeOrigin;
+  return {
+    "User-Agent": userAgent,
     Authorization: gfnJwtAuthorization(options.token),
-    "Content-Type": "application/json",
-    "nv-browser-type": "CHROME",
-    "nv-client-id": clientId,
-    "nv-client-streamer": "NVIDIA-CLASSIC",
-    "nv-client-type": "NATIVE",
-    "nv-client-version": GFN_CLIENT_VERSION,
-    "x-device-id": deviceId,
+    "Content-Type": "text/plain",
+    "NV-Client-ID": clientId,
+    "NV-Client-Streamer": "NVIDIA-CLASSIC",
+    "NV-Client-Type": "NATIVE",
+    "NV-Client-Version": GFN_CLIENT_VERSION,
+    "NV-Device-OS": identity.deviceOs,
+    "NV-Device-Type": identity.deviceType,
+    "NV-Device-Make": identity.deviceMake,
+    "NV-Device-Model": identity.deviceModel,
+    "X-Device-Id": deviceId,
+    "x-nv-client-identity": userAgent,
   };
-  applyDeviceIdentityHeaders(headers, identity);
+}
 
-  if (options.includeOrigin !== false) {
-    headers.Origin = GFN_PLAY_ORIGIN;
-    headers.Referer = GFN_PLAY_REFERER;
+export interface GfnNvstClientHeadersOptions {
+  deviceId?: string;
+  identifyAsSteamDeck?: boolean;
+}
+
+/**
+ * Official Bifrost GridServer / CloudMatch HTTP identity. Not used on RTSP-over-WSS:
+ * that upgrade is `GET /rtsp` + `x-nv-sessionid` only.
+ */
+export function buildGfnNvstClientHeaders(
+  options: GfnNvstClientHeadersOptions = {},
+): Record<string, string> {
+  const identity = resolveGfnDeviceIdentity({ identifyAsSteamDeck: options.identifyAsSteamDeck });
+  const userAgent = gfnBifrostUserAgentForPlatform();
+  const headers: Record<string, string> = {
+    "User-Agent": userAgent,
+    "x-nv-client-identity": userAgent,
+    "NV-Device-OS": identity.deviceOs,
+    "NV-Client-Streamer": "NVIDIA-CLASSIC",
+    "NV-Device-Type": identity.deviceType,
+    "NV-Client-Type": "NATIVE",
+    "NV-Device-Make": identity.deviceMake,
+    "NV-Device-Model": identity.deviceModel,
+    "NV-Client-Version": GFN_CLIENT_VERSION,
+  };
+  if (options.deviceId) {
+    headers["X-Device-Id"] = options.deviceId;
   }
-
   return headers;
 }
 
 export function buildGfnCloudMatchClaimHeaders(options: GfnCloudMatchHeadersOptions): Record<string, string> {
-  const { clientId, deviceId } = resolveCloudMatchIdentity(options);
-  const identity = resolveGfnDeviceIdentity({ identifyAsSteamDeck: options.identifyAsSteamDeck });
-  const headers: Record<string, string> = {
-    "User-Agent": GFN_USER_AGENT,
-    Authorization: gfnJwtAuthorization(options.token),
-    "Content-Type": "application/json",
-    Origin: GFN_PLAY_ORIGIN,
-    Referer: GFN_PLAY_REFERER,
-    "nv-client-id": clientId,
-    "nv-client-streamer": "NVIDIA-CLASSIC",
-    "nv-client-type": "NATIVE",
-    "nv-client-version": GFN_CLIENT_VERSION,
-    "x-device-id": deviceId,
-  };
-  applyDeviceIdentityHeaders(headers, identity);
-  return headers;
+  return buildGfnCloudMatchHeaders({ ...options, includeOrigin: false });
 }

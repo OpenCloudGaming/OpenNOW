@@ -1,5 +1,5 @@
 export const POINTER_LOCK_ESCAPE_FULLSCREEN_GRACE_MS = 1000;
-/** Match native Internal Escape-hold timing (gstreamer_platform.rs). */
+/** Match native presenter's Escape-hold timing. */
 export const ESCAPE_HOLD_TO_EXIT_FULLSCREEN_MS = 1500;
 
 export interface EscapeKeyInput {

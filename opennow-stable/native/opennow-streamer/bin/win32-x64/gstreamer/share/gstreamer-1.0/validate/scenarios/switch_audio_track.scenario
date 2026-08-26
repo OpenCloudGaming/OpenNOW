@@ -1,3 +1,0 @@
-description, summary="Change audio track at 5 second to the second audio track", min-audio-track=2, duration=10.0, min-media-duration=5.1
-switch-track, name=Next-audio-track, playback-time=5.0, type=audio, index=(string)+1
-stop, playback-time=10.0

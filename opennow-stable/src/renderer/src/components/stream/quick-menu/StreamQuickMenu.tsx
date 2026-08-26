@@ -53,7 +53,7 @@ interface StreamQuickMenuProps {
   onMouseSensitivityChange: (value: number) => void;
   mouseAcceleration: number;
   onMouseAccelerationChange: (value: number) => void;
-  gstreamerEnabled: boolean;
+  nativeStreamingEnabled: boolean;
   videoShader: VideoShaderSettings;
   onVideoShaderChange: (value: VideoShaderSettings) => void;
   frameInterpolation: FrameInterpolationSettings;
@@ -104,7 +104,7 @@ export function StreamQuickMenu({
   onMouseSensitivityChange,
   mouseAcceleration,
   onMouseAccelerationChange,
-  gstreamerEnabled,
+  nativeStreamingEnabled,
   videoShader,
   onVideoShaderChange,
   frameInterpolation,
@@ -258,7 +258,7 @@ export function StreamQuickMenu({
                 onMouseSensitivityChange={onMouseSensitivityChange}
                 mouseAcceleration={mouseAcceleration}
                 onMouseAccelerationChange={onMouseAccelerationChange}
-                gstreamerEnabled={gstreamerEnabled}
+                nativeStreamingEnabled={nativeStreamingEnabled}
                 videoShader={videoShader}
                 onVideoShaderChange={onVideoShaderChange}
                 frameInterpolation={frameInterpolation}

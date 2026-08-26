@@ -238,8 +238,8 @@ export class SettingsManager {
       migrated = true;
     }
 
-    if (settings.nativeStreamerBackend !== "gstreamer") {
-      settings.nativeStreamerBackend = "gstreamer";
+    if ("nativeStreamerBackend" in settings) {
+      delete (settings as Settings & { nativeStreamerBackend?: unknown }).nativeStreamerBackend;
       migrated = true;
     }
     const appAccentColor = normalizeAppAccentColor(settings.appAccentColor);

@@ -52,7 +52,7 @@ interface StreamViewProps {
   statsPosition: StatsOverlayPosition;
   showNativeStats?: boolean;
   nativeInputCaptureActive?: boolean;
-  gstreamerEnabled: boolean;
+  nativeStreamingEnabled: boolean;
   nativeExternalRenderer?: boolean;
   shortcuts: {
     toggleStats: string;
@@ -135,7 +135,7 @@ export function StreamView({
   statsPosition,
   showNativeStats = false,
   nativeInputCaptureActive = false,
-  gstreamerEnabled,
+  nativeStreamingEnabled,
   nativeExternalRenderer = false,
   shortcuts,
   serverRegion,
@@ -444,7 +444,7 @@ export function StreamView({
   useEffect(() => {
     const video = localVideoRef.current;
     if (!video) return;
-    const effective = nativeRendererActive || (gstreamerEnabled && isConnecting)
+    const effective = nativeRendererActive || (nativeStreamingEnabled && isConnecting)
       ? { ...videoShader, enabled: false }
       : videoShader;
     if (!shaderPipelineRef.current) {
@@ -453,12 +453,12 @@ export function StreamView({
     } else {
       shaderPipelineRef.current.updateSettings(effective);
     }
-  }, [videoShader, gstreamerEnabled, isConnecting, nativeRendererActive]);
+  }, [videoShader, nativeStreamingEnabled, isConnecting, nativeRendererActive]);
 
   useEffect(() => {
     const video = localVideoRef.current;
     if (!video) return;
-    const effective = gstreamerEnabled || nativeRendererActive
+    const effective = nativeStreamingEnabled || nativeRendererActive
       ? { ...frameInterpolation, enabled: false }
       : frameInterpolation;
     if (!frameInterpolationPipelineRef.current) {
@@ -467,7 +467,7 @@ export function StreamView({
     } else {
       frameInterpolationPipelineRef.current.updateSettings(effective);
     }
-  }, [frameInterpolation, gstreamerEnabled, nativeRendererActive]);
+  }, [frameInterpolation, nativeStreamingEnabled, nativeRendererActive]);
 
   useEffect(() => () => {
     shaderPipelineRef.current?.dispose();
@@ -700,7 +700,7 @@ export function StreamView({
 
   const nativeInternalHole = usesNativeInternalSurface({
     nativeRendererActive,
-    nativeStreamingEnabled: gstreamerEnabled,
+    nativeStreamingEnabled,
     connecting: isConnecting,
     externalRenderer: nativeExternalRenderer === true,
   });
@@ -787,7 +787,7 @@ export function StreamView({
         onMouseSensitivityChange={onMouseSensitivityChange}
         mouseAcceleration={mouseAcceleration}
         onMouseAccelerationChange={onMouseAccelerationChange}
-        gstreamerEnabled={gstreamerEnabled}
+        nativeStreamingEnabled={nativeStreamingEnabled}
         videoShader={videoShader}
         onVideoShaderChange={onVideoShaderChange}
         frameInterpolation={frameInterpolation}
@@ -876,7 +876,7 @@ export function StreamView({
             diagnosticsStore={diagnosticsStore}
             mode={statsMode === "full" ? "full" : "compact"}
             position={statsPosition}
-            gstreamerEnabled={gstreamerEnabled}
+            nativeStreamingEnabled={nativeStreamingEnabled}
             serverRegion={serverRegion}
             sessionTimeRemainingText={showSessionTimeRemainingInStats ? sessionTimeRemainingText : null}
             hintsVisible={showHints}

@@ -9,10 +9,12 @@ import {
   type DecoderPressureState,
 } from "./decoderPressureController";
 import {
+  GamepadController,
   selectGamepadPollIntervalMs,
   shouldSendGamepadPacket,
 } from "./gamepadController";
 import { InputChannelPolicyController } from "./inputChannelPolicy";
+import { InputEncoder } from "../inputProtocol";
 
 const pressureSignal: DecoderPressureSignal = {
   active: true,
@@ -180,4 +182,85 @@ test("gamepad polling and keepalive decisions preserve adaptive timing", () => {
   assert.equal(shouldSendGamepadPacket(false, 99), false);
   assert.equal(shouldSendGamepadPacket(false, 100), true);
   assert.equal(shouldSendGamepadPacket(true, 0), true);
+});
+
+test("standard controller haptics advertise and apply legacy and Oc rumble", () => {
+  const effects: Array<{
+    startDelay: number;
+    duration: number;
+    weakMagnitude: number;
+    strongMagnitude: number;
+  }> = [];
+  const gamepad = {
+    connected: true,
+    id: "Xbox Wireless Controller",
+    index: 0,
+    vibrationActuator: {
+      playEffect: async (_type: string, options: {
+        startDelay: number;
+        duration: number;
+        weakMagnitude: number;
+        strongMagnitude: number;
+      }) => {
+        effects.push(options);
+      },
+    },
+  } as unknown as Gamepad;
+  const originalNavigator = Object.getOwnPropertyDescriptor(globalThis, "navigator");
+  Object.defineProperty(globalThis, "navigator", {
+    configurable: true,
+    value: { getGamepads: () => [gamepad] },
+  });
+
+  try {
+    const encoder = new InputEncoder();
+    encoder.setProtocolVersion(3);
+    const reliable: Uint8Array[] = [];
+    const controller = new GamepadController({
+      inputEncoder: encoder,
+      isInputReady: () => true,
+      isInputPaused: () => false,
+      isNativeInputActive: () => false,
+      isNativeElectronInputBridge: () => false,
+      isReliableChannelOpen: () => true,
+      canSendPartiallyReliableGamepad: () => true,
+      sendPartiallyReliable: () => {},
+      sendReliable: (payload) => reliable.push(payload),
+      onConnectedGamepadsChanged: () => {},
+      log: () => {},
+    });
+
+    controller.refreshHapticsAdvertisement();
+    assert.equal(reliable.length, 1);
+    assert.deepEqual(Array.from(reliable[0]?.slice(-6) ?? []), [13, 0, 0, 0, 0, 1]);
+
+    controller.handleHapticsMessage(new Uint8Array([
+      0x0b, 0x01,
+      0x01, 0x00, 0x06, 0x00, 0x00, 0x00,
+      0x00, 0x80, 0xff, 0xff,
+    ]));
+    assert.equal(effects.length, 1);
+    assert.equal(effects[0]?.duration, 500);
+    assert.ok(Math.abs((effects[0]?.weakMagnitude ?? 0) - (0x8000 / 0xffff)) < 0.0001);
+    assert.equal(effects[0]?.strongMagnitude, 1);
+
+    controller.handleHapticsMessage(new Uint8Array([
+      0x22,
+      0x11, 0x00, 0x00, 0x00,
+      0x06, 0x00, 0x00, 0x05, 0x00, 0x00, 0x00, 0x00, 0x00,
+    ]));
+    assert.equal(effects.length, 2);
+    assert.deepEqual(effects[1], {
+      startDelay: 0,
+      duration: 0,
+      weakMagnitude: 0,
+      strongMagnitude: 0,
+    });
+  } finally {
+    if (originalNavigator) {
+      Object.defineProperty(globalThis, "navigator", originalNavigator);
+    } else {
+      Reflect.deleteProperty(globalThis, "navigator");
+    }
+  }
 });

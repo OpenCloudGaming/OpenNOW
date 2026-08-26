@@ -9,6 +9,7 @@ export type NativeCloudGsyncOverride = "auto" | "0" | "1";
 export type CloudGsyncDisabledReason =
   | "user-disabled"
   | "fps-too-low"
+  | "fps-too-high"
   | "unsupported-backend"
   | "unsupported-display"
   | "force-disabled"
@@ -20,7 +21,11 @@ export type CloudGsyncResolutionReason = CloudGsyncDisabledReason | CloudGsyncEn
 export interface NativeCloudGsyncCapabilities {
   platformSupportsCloudGsync: boolean;
   isVrrCapableDisplay: boolean;
+  isVrrActive?: boolean;
   isGsyncDisplay: boolean;
+  windowSystem?: "wayland" | "x11" | "windows" | "macos" | "unknown";
+  displayName?: string;
+  displayRefreshHz?: number;
   minimumFpsForCloudGsync: number;
   minimumFpsForReflexWithoutVrr: number;
   detectionSource: NativeCloudGsyncDetectionSource;
@@ -48,6 +53,7 @@ export function unsupportedNativeCloudGsyncCapabilities(reason = "unsupported"):
   return {
     platformSupportsCloudGsync: false,
     isVrrCapableDisplay: false,
+    isVrrActive: false,
     isGsyncDisplay: false,
     minimumFpsForCloudGsync: DEFAULT_MINIMUM_FPS_FOR_CLOUD_GSYNC,
     minimumFpsForReflexWithoutVrr: DEFAULT_MINIMUM_FPS_FOR_REFLEX_WITHOUT_VRR,
@@ -75,7 +81,11 @@ export function normalizeNativeCloudGsyncCapabilities(
   return {
     platformSupportsCloudGsync: capabilities?.platformSupportsCloudGsync ?? false,
     isVrrCapableDisplay: capabilities?.isVrrCapableDisplay ?? false,
+    isVrrActive: capabilities?.isVrrActive ?? false,
     isGsyncDisplay: capabilities?.isGsyncDisplay ?? false,
+    windowSystem: capabilities?.windowSystem,
+    displayName: capabilities?.displayName,
+    displayRefreshHz: capabilities?.displayRefreshHz,
     minimumFpsForCloudGsync:
       capabilities?.minimumFpsForCloudGsync ?? DEFAULT_MINIMUM_FPS_FOR_CLOUD_GSYNC,
     minimumFpsForReflexWithoutVrr:
@@ -154,6 +164,23 @@ export function resolveCloudGsync(input: CloudGsyncResolutionInput): CloudGsyncR
       enabled: true,
       reflexEnabled: true,
       reason: "force-enabled",
+      capabilities,
+    };
+  }
+
+  // NVIDIA requires the selected streaming frame rate to be no greater than
+  // the VRR display's maximum refresh. Allow a small tolerance because Linux
+  // compositors commonly report modes such as 164.834 Hz for a marketed
+  // 165 Hz panel.
+  if (
+    capabilities.displayRefreshHz !== undefined
+    && input.fps > capabilities.displayRefreshHz + 0.5
+  ) {
+    return {
+      requested: true,
+      enabled: false,
+      reflexEnabled: reflexEnabledWithoutVrr,
+      reason: "fps-too-high",
       capabilities,
     };
   }

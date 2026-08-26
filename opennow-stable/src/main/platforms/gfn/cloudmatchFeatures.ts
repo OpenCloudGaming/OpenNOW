@@ -26,10 +26,11 @@ export function buildRequestedStreamingFeatures(
   chromaFormat: number,
   _hdrEnabled: boolean,
   supportedCodecs?: readonly VideoCodec[],
+  transportMode: StreamSettings["transportMode"] = settings.transportMode,
 ): CloudMatchRequest["sessionRequestData"]["requestedStreamingFeatures"] {
   const cloudGsync = settings.enableCloudGsync;
 
-  return {
+  const commonFeatures = {
     reflex: shouldRequestReflex(settings),
     bitDepth,
     cloudGsync,
@@ -42,6 +43,29 @@ export function buildRequestedStreamingFeatures(
     prefilterSharpness: 0,
     prefilterNoiseReduction: 0,
     hudStreamingMode: 0,
+  };
+
+  if (transportMode === "nvst") {
+    const sku = resolveNvstCreateStreamSku(settings);
+    return {
+      ...commonFeatures,
+      reflex: sku.reflex,
+      bitDepth: sku.bitDepth,
+      chromaFormat: sku.chromaFormat,
+      mouseMovementFlags: 0,
+      trueHdr: false,
+      hidDevices: null,
+      qosPolicy: 0,
+      touchSupport: false,
+      codec: resolveRequestedCodecWireValue(
+        codecWireValue(settings.codec),
+        (supportedCodecs ?? []).map(codecWireValue),
+      ),
+    };
+  }
+
+  return {
+    ...commonFeatures,
     maxBitrateKbps: Math.round(settings.maxBitrateMbps * 1000),
     codec: resolveRequestedCodecWireValue(
       codecWireValue(settings.codec),
@@ -94,6 +118,26 @@ export function shouldRequestReflex(settings: StreamSettings): boolean {
     settings.cloudGsyncResolution?.capabilities.minimumFpsForReflexWithoutVrr
     ?? DEFAULT_MINIMUM_FPS_FOR_REFLEX_WITHOUT_VRR;
   return settings.enableCloudGsync || settings.fps >= reflexMinimum;
+}
+
+/**
+ * Resolve the classic-streamer SKU. The native pipeline currently accepts the
+ * 8-bit 4:2:0 profiles shared by H.264, H.265, and AV1. Non-native callers retain
+ * the captured official Mac Bifrost profile.
+ */
+export function resolveNvstCreateStreamSku(settings: StreamSettings): {
+  bitDepth: number;
+  chromaFormat: number;
+  reflex: boolean;
+} {
+  if (settings.clientMode === "native") {
+    return {
+      bitDepth: 0,
+      chromaFormat: 0,
+      reflex: shouldRequestReflex(settings),
+    };
+  }
+  return { bitDepth: 1, chromaFormat: 0, reflex: true };
 }
 
 export function shouldEnableInGameSettingsPersistence(

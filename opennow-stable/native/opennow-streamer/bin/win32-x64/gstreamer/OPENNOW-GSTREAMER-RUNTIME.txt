@@ -1,7 +1,0 @@
-OpenNOW private GStreamer runtime bundle
-Source: C:\Program Files\gstreamer\1.0\msvc_x86_64
-Generated: 2026-06-30T13:34:35.902Z
-Platform: win32
-Scope: native streamer child process only
-
-This directory is loaded only for the native streamer child process. Keep the private layout intact.

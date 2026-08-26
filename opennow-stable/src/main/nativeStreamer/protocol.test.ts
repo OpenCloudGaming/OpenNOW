@@ -16,3 +16,13 @@ test("protocol guards distinguish request responses from events by id", () => {
   assert.equal(isNativeStreamerResponse(event), false);
   assert.equal(isNativeStreamerEvent(event), true);
 });
+
+test("NVST transport readiness is an id-less native event", () => {
+  const event = {
+    type: "nvst-transport-ready",
+    phase: "sctp",
+  } satisfies NativeStreamerMessage;
+
+  assert.equal(isNativeStreamerEvent(event), true);
+  assert.equal(isNativeStreamerResponse(event), false);
+});

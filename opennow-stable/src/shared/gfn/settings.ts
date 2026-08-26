@@ -7,7 +7,6 @@ import type {
   VideoAccelerationPreference,
 } from "./stream";
 import type {
-  NativeStreamerBackendPreference,
   NativeStreamerFeatureMode,
   NativeVideoBackendPreference,
   StreamTransportMode,
@@ -71,7 +70,6 @@ export interface Settings {
   recordingResolution: RecordingResolution;
   recordingFps: RecordingFps;
   streamClientMode: StreamClientMode;
-  nativeStreamerBackend: NativeStreamerBackendPreference;
   nativeVideoBackend: NativeVideoBackendPreference;
   nativeStreamerExecutablePath: string;
   nativeCloudGsyncMode: NativeStreamerFeatureMode;
@@ -284,7 +282,6 @@ export function createDefaultSettings(platform: string): Settings {
     recordingResolution: DEFAULT_RECORDING_RESOLUTION,
     recordingFps: DEFAULT_RECORDING_FPS,
     streamClientMode: "web",
-    nativeStreamerBackend: "gstreamer",
     nativeVideoBackend: "auto",
     nativeStreamerExecutablePath: "",
     nativeCloudGsyncMode: "auto",

@@ -73,7 +73,10 @@ async function appendGitHubSummary({ tests, output, exitCode }) {
 const tests = (await discoverTests("src"))
   .map((path) => path.split(sep).join("/"))
   .sort();
-tests.push("scripts/after-sign-mac.test.mjs", "scripts/windows-pe-imports.test.mjs");
+tests.push(
+  "scripts/after-sign-mac.test.mjs",
+  "scripts/build-native-streamer-config.test.mjs",
+);
 
 if (tests.length === 0) {
   console.error("No test files found under src/**/*.test.ts");

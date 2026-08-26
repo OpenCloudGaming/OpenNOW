@@ -1,5 +1,0 @@
-description, duration=15.0
-set-restriction, playback-time=5.0, restriction-caps="video/x-raw,height=480,width=854"
-set-restriction, playback-time=10.0, restriction-caps="video/x-raw,height=720,width=1280"
-eos, playback-time=15.0
-stop, playback-time=15.0

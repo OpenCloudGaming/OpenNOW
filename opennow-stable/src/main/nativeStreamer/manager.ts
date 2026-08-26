@@ -1,8 +1,8 @@
 import electron from "electron";
 import { randomUUID } from "node:crypto";
-import { tmpdir } from "node:os";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { basename } from "node:path";
+import type { Readable, Writable } from "node:stream";
 
 import {
   createUnsupportedNativeStreamerStatus,
@@ -12,11 +12,10 @@ import {
   type IceCandidatePayload,
   type KeyframeRequest,
   type MainToRendererSignalingEvent,
-  type NativeStreamerBackendPreference,
   type NativeStreamerFeatureMode,
   type NativeVideoBackendPreference,
   type NativeStreamerStatus,
-  type NativeGstreamerRuntimeStatus,
+  type NativeStreamerRuntimeStatus,
   type NativeRenderSurface,
   type NativeStreamerSessionContext,
   type SendAnswerRequest,
@@ -25,6 +24,7 @@ import {
 import {
   NATIVE_STREAMER_PROTOCOL_VERSION,
   type NativeStreamerCapabilities,
+  type NativeStreamerActiveTransportCapabilities,
   type NativeStreamerCommand,
   type NativeStreamerEvent,
   type NativeStreamerInputPacket,
@@ -32,7 +32,6 @@ import {
   type NativeStreamerResponse,
 } from "@shared/nativeStreamer";
 import { isTerminalBrokenWriteError, setLogContext } from "@shared/logger";
-import type { NativeStreamerShortcutBindings } from "@shared/gfn";
 import {
   createNativeStreamerDetectionFailureStatus,
   createNativeStreamerStatus,
@@ -45,6 +44,7 @@ import {
   type NativeStreamerCommandInput,
 } from "./protocol";
 import { createNativeStreamerRuntimeEnvironment } from "./runtime";
+import { launchMacOSStreamerApp } from "./macosLaunchServices";
 import { NativeSurfaceUpdateQueue } from "./surfaceUpdateQueue";
 
 const { app } = electron;
@@ -59,7 +59,6 @@ interface NativeStreamerCallbacks {
 
 interface NativeStreamerManagerOptions extends NativeStreamerCallbacks {
   mainDir: string;
-  getBackendPreference(): NativeStreamerBackendPreference;
   getVideoBackendPreference(): NativeVideoBackendPreference;
   getExecutablePathOverride(): string;
   getCloudGsyncMode(): NativeStreamerFeatureMode;
@@ -73,41 +72,63 @@ interface PendingRequest {
   timeout: NodeJS.Timeout;
 }
 
+interface NvstReservationLease {
+  ownership: "negotiator" | "native";
+  released: boolean;
+}
+
+interface PendingNvstReadiness {
+  sessionId: string;
+  resolve(): void;
+  reject(error: Error): void;
+  timeout: NodeJS.Timeout;
+}
+
+interface NativeStreamerProcessIo {
+  child: ChildProcessWithoutNullStreams;
+  stdin: Writable;
+  stdout: Readable;
+  stderr: Readable;
+  launchMode: "direct" | "macos-launch-services";
+  cleanup(): void;
+}
+
 const HELLO_TIMEOUT_MS = 10000;
-const BUNDLED_GSTREAMER_HELLO_TIMEOUT_MS = process.platform === "win32" ? 120000 : 30000;
+const BUNDLED_NATIVE_HELLO_TIMEOUT_MS = process.platform === "win32" ? 120000 : 30000;
 const CONTROL_TIMEOUT_MS = 8000;
 const SESSION_START_TIMEOUT_MS = process.platform === "win32" ? 90000 : 45000;
 const SURFACE_UPDATE_TIMEOUT_MS = 15000;
 const OFFER_TIMEOUT_MS = 20000;
 const STOP_TIMEOUT_MS = 1200;
+const NVST_TRANSPORT_READY_TIMEOUT_MS = 7000;
+const INPUT_RESPONSE_TIMEOUT_MS = 2000;
 const MAX_INPUT_STDIN_BUFFER_BYTES = 64 * 1024;
-const MIN_NATIVE_BITRATE_KBPS = 5_000;
-const MAX_NATIVE_BITRATE_KBPS = 150_000;
 
 function toError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
 }
 
-function normalizeBitrateKbps(value: number): number {
-  if (!Number.isFinite(value)) {
-    return MIN_NATIVE_BITRATE_KBPS;
-  }
-
-  return Math.min(
-    MAX_NATIVE_BITRATE_KBPS,
-    Math.max(MIN_NATIVE_BITRATE_KBPS, Math.round(value)),
-  );
-}
-
 export class NativeStreamerManager {
   private child: ChildProcessWithoutNullStreams | null = null;
+  private processIo: NativeStreamerProcessIo | null = null;
+  private nativeProcessPid: number | null = null;
   private startupPromise: Promise<void> | null = null;
   private stdoutBuffer = "";
+  private stderrBuffer = "";
   private stderrTail: string[] = [];
-  private gstreamerRuntime: NativeGstreamerRuntimeStatus | null = null;
+  private runtimeStatus: NativeStreamerRuntimeStatus | null = null;
   private pending = new Map<string, PendingRequest>();
   private capabilities: NativeStreamerCapabilities | null = null;
   private activeSessionId: string | null = null;
+  private activeTransport: "webrtc" | "nvst" | null = null;
+  private activeTransportCapabilities: NativeStreamerActiveTransportCapabilities | null = null;
+  private nvstReservation: NvstReservationLease | null = null;
+  private pendingNvstSessionId: string | null = null;
+  private nvstReadinessWaiters = new Set<PendingNvstReadiness>();
+  private nvstTransportReady = false;
+  private nvstReadinessError: Error | null = null;
+  private inputReady = false;
+  private nativeInputOwner: "electron" | "native" = "electron";
   private inputBackpressureWarned = false;
   private answerInFlight = false;
   private queuedLocalIce: IceCandidatePayload[] = [];
@@ -136,6 +157,10 @@ export class NativeStreamerManager {
     return this.activeSessionId !== null;
   }
 
+  isNvstSessionActive(sessionId: string): boolean {
+    return this.activeSessionId === sessionId && this.activeTransport === "nvst";
+  }
+
   private retainDiagnosticState(values: Record<string, unknown>): void {
     this.diagnosticState = {
       ...this.diagnosticState,
@@ -146,6 +171,74 @@ export class NativeStreamerManager {
 
   setVideoBackendOverride(value: NativeVideoBackendPreference | null): void {
     this.videoBackendOverride = value;
+  }
+
+  async reserveNvstUdp(): Promise<{
+    port: number;
+    mjolnirPort?: number;
+    localAddress?: string;
+    iceUsernameFragment?: string;
+    icePassword?: string;
+    dtlsFingerprint?: string;
+    send(payload: Buffer, host: string, port: number): Promise<void>;
+    release(): Promise<void>;
+  }> {
+    await this.ensureProcess();
+    const response = await this.request({ type: "nvst-bind" }, CONTROL_TIMEOUT_MS);
+    if (response.type !== "nvst-bound" || !Number.isInteger(response.port) || response.port <= 0) {
+      throw new Error("Native streamer did not reserve an NVST UDP socket.");
+    }
+    const port = response.port;
+    const mjolnirPort = Number.isInteger(response.mjolnirPort) && (response.mjolnirPort ?? 0) > 0
+      ? response.mjolnirPort
+      : undefined;
+    const localAddress = typeof response.localAddress === "string" && response.localAddress.length > 0
+      ? response.localAddress
+      : undefined;
+    const lease: NvstReservationLease = {
+      ownership: "negotiator",
+      released: false,
+    };
+    this.nvstReservation = lease;
+    console.log(
+      `[NativeStreamer] Reserved NVST video UDP on port ${port} before RTSP ANNOUNCE`
+      + `${mjolnirPort ? ` mjolnirPort=${mjolnirPort}` : ""}`
+      + `${localAddress ? ` localAddress=${localAddress}` : ""}`
+      + `${response.dtlsFingerprint ? ` (dtlsFingerprintBytes=${response.dtlsFingerprint.length})` : ""}`,
+    );
+    return {
+      port,
+      mjolnirPort,
+      localAddress,
+      iceUsernameFragment: response.iceUsernameFragment,
+      icePassword: response.icePassword,
+      dtlsFingerprint: response.dtlsFingerprint,
+      send: async (payload, host, peerPort) => {
+        const sent = await this.request({
+          type: "nvst-send",
+          host,
+          port: peerPort,
+          payloadBase64: payload.toString("base64"),
+        }, CONTROL_TIMEOUT_MS);
+        if (sent.type !== "ok") {
+          throw new Error(`Native streamer returned ${sent.type} instead of ok for nvst-send.`);
+        }
+      },
+      release: async () => {
+        if (lease.released) {
+          return;
+        }
+        lease.released = true;
+        if (lease.ownership === "native" || this.nvstReservation !== lease) {
+          return;
+        }
+        this.nvstReservation = null;
+        const released = await this.request({ type: "nvst-unbind" }, CONTROL_TIMEOUT_MS);
+        if (released.type !== "ok") {
+          throw new Error(`Native streamer returned ${released.type} instead of ok for nvst-unbind.`);
+        }
+      },
+    };
   }
 
   async prepareForSession(context: NativeStreamerSessionContext): Promise<void> {
@@ -174,13 +267,89 @@ export class NativeStreamerManager {
       );
     }
 
-    await this.request({
-      type: "start",
-      context,
-    }, SESSION_START_TIMEOUT_MS);
+    const expectsNvst = context.settings.transportMode === "nvst" || context.nvstVideo !== undefined;
+    this.inputReady = false;
+    this.nvstTransportReady = false;
+    this.nvstReadinessError = null;
+    this.pendingNvstSessionId = expectsNvst ? context.session.sessionId : null;
+    let response: NativeStreamerResponse;
+    try {
+      response = await this.request({
+        type: "start",
+        context,
+      }, SESSION_START_TIMEOUT_MS);
+    } catch (error) {
+      this.pendingNvstSessionId = null;
+      throw error;
+    }
+    if (response.type !== "ok") {
+      this.pendingNvstSessionId = null;
+      throw new Error(`Native streamer returned ${response.type} instead of ok.`);
+    }
     this.activeSessionId = context.session.sessionId;
+    this.activeTransport = response.transport === "nvst" ? "nvst" : "webrtc";
+    this.activeTransportCapabilities = response.capabilities ?? {
+      supportsOfferAnswer: this.activeTransport === "webrtc"
+        && this.capabilities?.supportsOfferAnswer === true,
+      supportsRemoteIce: this.activeTransport === "webrtc"
+        && this.capabilities?.supportsRemoteIce === true,
+      supportsLocalIce: this.activeTransport === "webrtc"
+        && this.capabilities?.supportsLocalIce === true,
+      supportsInput: this.capabilities?.supportsInput === true,
+      supportsAudioDecode: this.capabilities?.supportsAudioDecode === true,
+      supportsAudioOutput: this.capabilities?.supportsAudioOutput === true,
+    };
+    if (this.activeTransport === "nvst" && this.nvstReservation?.ownership === "negotiator") {
+      this.nvstReservation.ownership = "native";
+    }
+    if (this.activeTransport !== "nvst") {
+      this.inputReady = false;
+      this.nvstTransportReady = false;
+      this.nvstReadinessError = null;
+    }
+    this.pendingNvstSessionId = null;
     this.retainDiagnosticState({ sessionState: "ready" });
     await this.flushQueuedRemoteIce(context.session.sessionId);
+  }
+
+  waitForNvstTransportReady(
+    sessionId: string,
+    timeoutMs = NVST_TRANSPORT_READY_TIMEOUT_MS,
+  ): Promise<void> {
+    if (this.activeSessionId !== sessionId || this.activeTransport !== "nvst") {
+      return Promise.reject(new Error(`Native NVST session ${sessionId} is not active.`));
+    }
+    if (!this.activeTransportCapabilities?.supportsInput) {
+      return Promise.reject(new Error("Native NVST transport does not support the DTLS/SCTP readiness handshake."));
+    }
+    if (this.nvstReadinessError) {
+      return Promise.reject(this.nvstReadinessError);
+    }
+    if (this.nvstTransportReady) {
+      return Promise.resolve();
+    }
+
+    return new Promise<void>((resolve, reject) => {
+      const waiter: PendingNvstReadiness = {
+        sessionId,
+        resolve: () => {
+          clearTimeout(waiter.timeout);
+          this.nvstReadinessWaiters.delete(waiter);
+          resolve();
+        },
+        reject: (error) => {
+          clearTimeout(waiter.timeout);
+          this.nvstReadinessWaiters.delete(waiter);
+          reject(error);
+        },
+        timeout: setTimeout(() => {
+          waiter.reject(new Error(
+            `Native NVST DTLS/SCTP readiness timed out after ${timeoutMs}ms.`,
+          ));
+        }, timeoutMs),
+      };
+      this.nvstReadinessWaiters.add(waiter);
+    });
   }
 
   async handleOffer(sdp: string, context: NativeStreamerSessionContext): Promise<void> {
@@ -208,9 +377,9 @@ export class NativeStreamerManager {
       negotiatedCodec: negotiatedProfile?.codec ?? context.settings.codec,
     });
 
-    if (!this.capabilities?.supportsOfferAnswer) {
-      console.warn(
-        `[NativeStreamer] Backend "${this.capabilities?.backend ?? "unknown"}" reports offer/answer is not ready; forwarding offer for validation/fallback.`,
+    if (!(this.activeTransportCapabilities?.supportsOfferAnswer ?? this.capabilities?.supportsOfferAnswer)) {
+      throw new Error(
+        `Native streamer backend "${this.capabilities?.backend ?? "unknown"}" does not support offer/answer.`,
       );
     }
 
@@ -261,14 +430,14 @@ export class NativeStreamerManager {
       await this.ensureProcess();
       return createNativeStreamerStatus(
         this.capabilities,
-        this.gstreamerRuntime,
+        this.runtimeStatus,
         this.options.getVideoBackendPreference(),
         process.platform,
       );
     } catch (error) {
       return createNativeStreamerDetectionFailureStatus(
         error,
-        this.gstreamerRuntime,
+        this.runtimeStatus,
         process.platform,
       );
     }
@@ -276,6 +445,13 @@ export class NativeStreamerManager {
 
   async addRemoteIce(candidate: IceCandidatePayload, context: NativeStreamerSessionContext): Promise<void> {
     const sessionId = context.session.sessionId;
+    if (
+      this.activeTransportCapabilities
+        ? !this.activeTransportCapabilities.supportsRemoteIce
+        : this.capabilities && !this.capabilities.supportsRemoteIce
+    ) {
+      return;
+    }
     if (!this.child || this.activeSessionId !== sessionId) {
       this.queueRemoteIce(sessionId, candidate);
       return;
@@ -297,19 +473,23 @@ export class NativeStreamerManager {
 
   sendInput(input: NativeStreamerInputPacket): void {
     const child = this.child;
+    const stdin = child ? this.processStdin(child) : null;
     if (
       !child
+      || !stdin
       || child.killed
-      || !child.stdin.writable
-      || child.stdin.destroyed
-      || child.stdin.writableEnded
+      || !stdin.writable
+      || stdin.destroyed
+      || stdin.writableEnded
       || !this.activeSessionId
       || !this.capabilities?.supportsInput
+      || !this.activeTransportCapabilities?.supportsInput
+      || !this.inputReady
     ) {
       return;
     }
 
-    if (child.stdin.writableLength > MAX_INPUT_STDIN_BUFFER_BYTES) {
+    if (stdin.writableLength > MAX_INPUT_STDIN_BUFFER_BYTES) {
       if (!this.inputBackpressureWarned) {
         this.inputBackpressureWarned = true;
         console.warn("[NativeStreamer] Dropping native input while streamer stdin is backpressured.");
@@ -323,10 +503,37 @@ export class NativeStreamerManager {
       input,
     } satisfies NativeStreamerCommand;
 
+    const reportInputFailure = (error: Error): void => {
+      if (!this.inputReady) {
+        return;
+      }
+      const reason = `Native input write failed: ${formatError(error)}`;
+      this.inputReady = false;
+      this.retainDiagnosticState({ inputReady: false, inputUnavailableReason: reason });
+      this.options.emit({ type: "native-input-unavailable", reason });
+    };
+    const timeout = setTimeout(() => {
+      if (!this.pending.delete(payload.id)) {
+        return;
+      }
+      reportInputFailure(new Error(`Native input acknowledgement timed out after ${INPUT_RESPONSE_TIMEOUT_MS}ms.`));
+    }, INPUT_RESPONSE_TIMEOUT_MS);
+    timeout.unref?.();
+    this.pending.set(payload.id, {
+      resolve: () => {
+        clearTimeout(timeout);
+      },
+      reject: (error) => {
+        clearTimeout(timeout);
+        reportInputFailure(error);
+      },
+      timeout,
+    });
+
     let writeFailed = false;
     let flushed: boolean;
     try {
-      flushed = child.stdin.write(`${JSON.stringify(payload)}\n`, "utf8", (error) => {
+      flushed = stdin.write(`${JSON.stringify(payload)}\n`, "utf8", (error) => {
         if (!error) {
           return;
         }
@@ -335,7 +542,8 @@ export class NativeStreamerManager {
       });
     } catch (error) {
       const writeError = toError(error);
-      if (!isTerminalBrokenWriteError(writeError, child.stdin)) {
+      if (!isTerminalBrokenWriteError(writeError, stdin)) {
+        this.rejectPendingRequest(payload.id, writeError);
         throw error;
       }
       this.handleStdinFailure(child, writeError);
@@ -349,7 +557,7 @@ export class NativeStreamerManager {
     if (!flushed && !this.inputBackpressureWarned) {
       this.inputBackpressureWarned = true;
       console.warn("[NativeStreamer] Native input writer reported backpressure; input will be dropped until it drains.");
-      child.stdin.once("drain", () => {
+      stdin.once("drain", () => {
         this.inputBackpressureWarned = false;
       });
     } else if (flushed) {
@@ -359,19 +567,6 @@ export class NativeStreamerManager {
 
   updateSurface(surface: NativeRenderSurface): void {
     this.surfaceUpdates.update(surface);
-  }
-
-  updateBitrateLimit(maxBitrateKbps: number): void {
-    if (!this.child || !this.activeSessionId) {
-      return;
-    }
-
-    void this.request({
-      type: "bitrate",
-      maxBitrateKbps: normalizeBitrateKbps(maxBitrateKbps),
-    }, CONTROL_TIMEOUT_MS).catch((error) => {
-      console.warn("[NativeStreamer] Failed to update native bitrate limit:", error);
-    });
   }
 
   setInputPaused(paused: boolean): void {
@@ -387,19 +582,6 @@ export class NativeStreamerManager {
     });
   }
 
-  updateShortcuts(shortcuts: NativeStreamerShortcutBindings): void {
-    if (!this.child || !this.activeSessionId) {
-      return;
-    }
-
-    void this.request({
-      type: "update-shortcuts",
-      shortcuts,
-    }, CONTROL_TIMEOUT_MS).catch((error) => {
-      console.warn("[NativeStreamer] Failed to update native shortcut bindings:", error);
-    });
-  }
-
   async stop(reason = "stopped"): Promise<void> {
     if (reason === "retrying native video with software decoding") {
       this.suppressNextStoppedEvent = true;
@@ -412,6 +594,14 @@ export class NativeStreamerManager {
       stopReason: reason,
     });
     this.activeSessionId = null;
+    this.activeTransport = null;
+    this.activeTransportCapabilities = null;
+    this.pendingNvstSessionId = null;
+    this.nvstReservation = null;
+    this.inputReady = false;
+    this.nvstTransportReady = false;
+    this.nvstReadinessError = null;
+    this.rejectNvstReadiness(new Error(`Native streamer stopped before NVST transport readiness (${reason}).`));
     this.capabilities = null;
     this.surfaceUpdates.markNotReady();
     this.clearQueuedRemoteIce();
@@ -448,6 +638,14 @@ export class NativeStreamerManager {
       stopReason: reason,
     });
     this.activeSessionId = null;
+    this.activeTransport = null;
+    this.activeTransportCapabilities = null;
+    this.pendingNvstSessionId = null;
+    this.nvstReservation = null;
+    this.inputReady = false;
+    this.nvstTransportReady = false;
+    this.nvstReadinessError = null;
+    this.rejectNvstReadiness(new Error(`Native streamer ${reason} before NVST transport readiness.`));
     this.capabilities = null;
     this.surfaceUpdates.markNotReady();
     this.clearQueuedRemoteIce();
@@ -474,11 +672,11 @@ export class NativeStreamerManager {
       this.rejectPending(new Error("Native streamer startup handshake did not complete."));
       this.terminateProcess();
       this.stdoutBuffer = "";
+      this.stderrBuffer = "";
       this.stderrTail = [];
     }
 
     const startupPromise = (async () => {
-      const backendPreference = this.options.getBackendPreference();
       let lastError: Error | null = null;
 
       for (const executablePath of resolveNativeStreamerExecutableCandidates({
@@ -487,20 +685,11 @@ export class NativeStreamerManager {
         resourcesPath: process.resourcesPath,
         appPath: app.getAppPath(),
         mainDir: this.options.mainDir,
-        isPackaged: app.isPackaged,
         envExecutablePath: process.env.OPENNOW_NATIVE_STREAMER,
         getConfiguredPath: () => this.options.getExecutablePathOverride(),
-        cacheContext: {
-          appVersion: app.getVersion(),
-          isPackaged: app.isPackaged,
-          platform: process.platform,
-          resourcesPath: process.resourcesPath,
-          tempDirectory: tmpdir(),
-          userDataPath: app.getPath("userData"),
-        },
       })) {
         try {
-          await this.startProcess(executablePath, backendPreference);
+          await this.startProcess(executablePath);
           return;
         } catch (error) {
           lastError = error instanceof Error ? error : new Error(String(error));
@@ -515,6 +704,7 @@ export class NativeStreamerManager {
           this.rejectPending(lastError);
           this.terminateProcess();
           this.stdoutBuffer = "";
+          this.stderrBuffer = "";
           this.stderrTail = [];
           this.capabilities = null;
         }
@@ -533,17 +723,12 @@ export class NativeStreamerManager {
     }
   }
 
-  private async startProcess(
-    executablePath: string,
-    backendPreference: NativeStreamerBackendPreference,
-  ): Promise<void> {
+  private async startProcess(executablePath: string): Promise<void> {
     this.retainDiagnosticState({
       processState: "starting",
       executable: basename(executablePath),
-      backendPreference,
     });
     console.log("[NativeStreamer] Starting:", executablePath);
-    console.log("[NativeStreamer] Backend preference:", backendPreference);
     const videoBackendPreference = this.videoBackendOverride
       ?? this.options.getVideoBackendPreference();
     this.retainDiagnosticState({ videoBackendPreference });
@@ -556,52 +741,63 @@ export class NativeStreamerManager {
       arch: process.arch,
       userDataPath: app.getPath("userData"),
       protocolVersion: NATIVE_STREAMER_PROTOCOL_VERSION,
-      backendPreference,
       videoBackendPreference,
-      externalRendererEnabled: process.platform === "win32"
-        ? this.options.getExternalRendererEnabled()
-        : false,
+      externalRendererEnabled: process.platform === "darwin"
+        || (process.platform === "win32" && this.options.getExternalRendererEnabled()),
       linuxOzonePlatform: app.commandLine.getSwitchValue("ozone-platform")
         || app.commandLine.getSwitchValue("ozone-platform-hint"),
       cloudGsyncMode: this.options.getCloudGsyncMode(),
       d3dFullscreenMode: this.options.getD3dFullscreenMode(),
     });
-    this.gstreamerRuntime = runtimeStatus;
+    this.runtimeStatus = runtimeStatus;
     this.retainDiagnosticState({
-      runtimeBundled: runtimeStatus.bundled,
+      runtimeSelfContained: runtimeStatus.selfContained,
       runtimeState: runtimeStatus.message,
     });
-    if (runtimeStatus.bundled) {
-      console.log("[NativeStreamer] Using bundled GStreamer runtime:", runtimeStatus.path);
-    } else {
-      console.log("[NativeStreamer]", runtimeStatus.message);
-    }
+    console.log("[NativeStreamer]", runtimeStatus.message, runtimeStatus.path);
 
-    const child = spawn(executablePath, [], {
+    const launched = process.platform === "darwin"
+      ? launchMacOSStreamerApp(executablePath, childEnv)
+      : null;
+    const child = launched?.child ?? spawn(executablePath, [], {
       stdio: "pipe",
-      // The default native path lets the GStreamer video sink create its own
-      // render window. Hiding the child process also hides that sink window on
-      // Windows, which leaves the Electron input placeholder black.
+      // The native presenter may own a top-level window on Windows.
       windowsHide: false,
       env: childEnv,
     });
+    const processIo: NativeStreamerProcessIo = launched
+      ? {
+          child,
+          stdin: launched.stdin,
+          stdout: launched.stdout,
+          stderr: launched.stderr,
+          launchMode: "macos-launch-services",
+          cleanup: launched.cleanup,
+        }
+      : {
+          child,
+          stdin: child.stdin,
+          stdout: child.stdout,
+          stderr: child.stderr,
+          launchMode: "direct",
+          cleanup: () => undefined,
+        };
 
     this.child = child;
+    this.processIo = processIo;
+    this.nativeProcessPid = null;
+    this.nativeInputOwner = childEnv.OPENNOW_NATIVE_INPUT_OWNER === "native"
+      ? "native"
+      : "electron";
     this.stdoutBuffer = "";
+    this.stderrBuffer = "";
     this.stderrTail = [];
     this.inputBackpressureWarned = false;
 
-    child.stdout.setEncoding("utf8");
-    child.stdout.on("data", (chunk: string) => this.handleStdout(chunk));
-    child.stderr.setEncoding("utf8");
-    child.stderr.on("data", (chunk: string) => {
-      for (const line of chunk.split(/\r?\n/)) {
-        if (line.trim()) {
-          this.appendStderr(line);
-          console.warn(`[NativeStreamer] ${line}`);
-        }
-      }
-    });
+    processIo.stdout.setEncoding("utf8");
+    processIo.stdout.on("data", (chunk: string) => this.handleStdout(child, chunk));
+    processIo.stderr.setEncoding("utf8");
+    processIo.stderr.on("data", (chunk: string) => this.handleStderr(child, chunk));
     this.installStdinErrorHandler(child);
 
     child.once("error", (error) => {
@@ -614,7 +810,7 @@ export class NativeStreamerManager {
       this.handleProcessExit(child, reason);
     });
 
-    const helloTimeoutMs = runtimeStatus.bundled ? BUNDLED_GSTREAMER_HELLO_TIMEOUT_MS : HELLO_TIMEOUT_MS;
+    const helloTimeoutMs = runtimeStatus.selfContained ? BUNDLED_NATIVE_HELLO_TIMEOUT_MS : HELLO_TIMEOUT_MS;
     const response = await this.request({
       type: "hello",
       protocolVersion: NATIVE_STREAMER_PROTOCOL_VERSION,
@@ -625,8 +821,17 @@ export class NativeStreamerManager {
     }
 
     this.capabilities = response.capabilities;
+    this.nativeProcessPid = response.processId ?? child.pid ?? null;
+    if (processIo.launchMode === "macos-launch-services") {
+      console.log(
+        `[NativeStreamer] Independent macOS app ready: nativePid=${this.nativeProcessPid ?? "unknown"}`
+        + ` launchServicesMonitorPid=${child.pid ?? "unknown"}`,
+      );
+    }
     this.retainDiagnosticState({
       processState: "ready",
+      launchMode: processIo.launchMode,
+      nativeProcessPid: this.nativeProcessPid ?? "unknown",
       backend: response.capabilities.backend,
       protocolVersion: response.capabilities.protocolVersion,
       supportsOfferAnswer: response.capabilities.supportsOfferAnswer,
@@ -638,32 +843,19 @@ export class NativeStreamerManager {
         `Native streamer reported protocolVersion=${response.capabilities.protocolVersion}, expected ${NATIVE_STREAMER_PROTOCOL_VERSION}.`,
       );
     }
-    this.assertBackendPreference(response.capabilities, backendPreference);
     await this.surfaceUpdates.markReady();
-  }
-
-  private assertBackendPreference(
-    capabilities: NativeStreamerCapabilities,
-    backendPreference: NativeStreamerBackendPreference,
-  ): void {
-    if (backendPreference === "auto" || capabilities.backend === backendPreference) {
-      return;
-    }
-
-    const reason = capabilities.fallbackReason ? ` ${capabilities.fallbackReason}` : "";
-    throw new Error(
-      `Native streamer backend "${backendPreference}" is unavailable; process selected "${capabilities.backend}".${reason}`,
-    );
   }
 
   private request(input: NativeStreamerCommandInput, timeoutMs: number): Promise<NativeStreamerResponse> {
     const child = this.child;
+    const stdin = child ? this.processStdin(child) : null;
     if (
       !child
+      || !stdin
       || child.killed
-      || !child.stdin.writable
-      || child.stdin.destroyed
-      || child.stdin.writableEnded
+      || !stdin.writable
+      || stdin.destroyed
+      || stdin.writableEnded
     ) {
       return Promise.reject(new Error("Native streamer process is not running."));
     }
@@ -691,14 +883,14 @@ export class NativeStreamerManager {
       });
 
       try {
-        child.stdin.write(`${JSON.stringify(payload)}\n`, "utf8", (error) => {
+        stdin.write(`${JSON.stringify(payload)}\n`, "utf8", (error) => {
           if (error) {
             this.handleStdinFailure(child, error);
           }
         });
       } catch (error) {
         const writeError = toError(error);
-        if (isTerminalBrokenWriteError(writeError, child.stdin)) {
+        if (isTerminalBrokenWriteError(writeError, stdin)) {
           this.handleStdinFailure(child, writeError);
           return;
         }
@@ -707,7 +899,8 @@ export class NativeStreamerManager {
     });
   }
 
-  private handleStdout(chunk: string): void {
+  private handleStdout(child: ChildProcessWithoutNullStreams, chunk: string): void {
+    if (this.child !== child) return;
     this.stdoutBuffer += chunk;
     const lines = this.stdoutBuffer.split(/\r?\n/);
     this.stdoutBuffer = lines.pop() ?? "";
@@ -718,6 +911,18 @@ export class NativeStreamerManager {
         continue;
       }
       this.handleLine(trimmed);
+    }
+  }
+
+  private handleStderr(child: ChildProcessWithoutNullStreams, chunk: string): void {
+    if (this.child !== child) return;
+    this.stderrBuffer += chunk;
+    const lines = this.stderrBuffer.split(/\r?\n/);
+    this.stderrBuffer = lines.pop() ?? "";
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      this.appendStderr(line);
+      console.warn(`[NativeStreamer] ${line}`);
     }
   }
 
@@ -771,6 +976,10 @@ export class NativeStreamerManager {
     }
 
     if (message.type === "local-ice") {
+      if (!this.capabilities?.supportsLocalIce) {
+        console.warn("[NativeStreamer] Ignoring local ICE from a backend that did not advertise it.");
+        return;
+      }
       if (this.answerInFlight) {
         this.queuedLocalIce.push(message.candidate);
         return;
@@ -781,105 +990,56 @@ export class NativeStreamerManager {
     }
 
     if (message.type === "input-ready") {
+      const readySessionId = this.activeSessionId ?? this.pendingNvstSessionId;
+      if (
+        !readySessionId
+        || (this.activeTransportCapabilities && !this.activeTransportCapabilities.supportsInput)
+      ) {
+        console.warn("[NativeStreamer] Ignoring input readiness from an active transport that does not advertise input.");
+        return;
+      }
+      this.inputReady = true;
       console.log(`[NativeStreamer] Input protocol ready: v${message.protocolVersion}`);
-      this.options.emit({ type: "native-input-ready", protocolVersion: message.protocolVersion });
-      return;
-    }
-
-    if (message.type === "shortcut") {
-      this.options.emit({ type: "native-shortcut", action: message.action });
-      return;
-    }
-
-    if (message.type === "clipboard-paste") {
-      this.options.emit({ type: "native-clipboard-paste" });
-      return;
-    }
-
-    if (message.type === "input-capture-changed") {
-      this.options.emit({ type: "native-input-capture-changed", captured: message.captured });
-      return;
-    }
-
-    if (message.type === "video-stall") {
-      const formatAge = (value: number | undefined): string => value === undefined ? "n/a" : `${value}ms`;
-      const stats = [
-        `stall=${message.stallMs}ms`,
-        `stage=${message.likelyStage ?? "unknown"}`,
-        `encoded=${(message.encodedKbps ?? 0).toFixed(0)}kbps`,
-        `decoded=${message.decodedFps.toFixed(1)}fps`,
-        `sink=${message.sinkFps.toFixed(1)}fps`,
-        `requestedFps=${message.requestedFps ?? "n/a"}`,
-        `capsFramerate=${message.capsFramerate ?? "n/a"}`,
-        `queueMode=${message.queueMode ?? "unknown"}`,
-        `partialFlushes=${message.partialFlushCount ?? 0}`,
-        `completeFlushes=${message.completeFlushCount ?? 0}`,
-        `lastTransition=${message.lastTransitionType ?? "none"}`,
-        `ages=encoded:${formatAge(message.encodedAgeMs)} decoded:${formatAge(message.decodedAgeMs)} sink:${formatAge(message.sinkAgeMs)}`,
-        `rendered=${message.sinkRendered ?? "n/a"}`,
-        `dropped=${message.sinkDropped ?? "n/a"}`,
-        `memory=${message.memoryMode ?? "unknown"}`,
-        `zeroCopy=${message.zeroCopy ?? "unknown"}`,
-        `zeroCopyD3D11=${message.zeroCopyD3D11}`,
-        `zeroCopyD3D12=${message.zeroCopyD3D12}`,
-      ].join(" ");
-      console.warn(`[NativeStreamer] Video stall recovery attempt ${message.recoveryAttempt}: ${stats}`);
+      if (this.activeTransport === "nvst" || this.pendingNvstSessionId === readySessionId) {
+        this.nvstTransportReady = true;
+        this.nvstReadinessError = null;
+        this.resolveNvstReadiness(readySessionId);
+      }
       this.options.emit({
-        type: "log",
-        message: `[NativeStreamer] Video stall recovery attempt ${message.recoveryAttempt}: ${stats}`,
-      });
-      void this.options.requestKeyframe({
-        reason: "native-video-stall",
-        backlogFrames: 0,
-        attempt: message.recoveryAttempt,
-      }).catch((error) => {
-        console.warn("[NativeStreamer] Failed to request video keyframe after stall:", error);
+        type: "native-input-ready",
+        protocolVersion: message.protocolVersion,
+        inputOwner: this.nativeInputOwner,
       });
       return;
     }
 
-    if (message.type === "video-transition") {
-      const transition = message.transition;
-      const summary = transition.summary ?? `${transition.transitionType} @ ${transition.atMs}ms`;
-      console.warn(`[NativeStreamer] Video transition: ${summary}`);
-      this.options.emit({
-        type: "native-stream-transition",
-        transition,
-      });
-      this.options.emit({
-        type: "log",
-        message: `[NativeStreamer] Video transition: ${summary}`,
-      });
+    if (message.type === "nvst-transport-ready") {
+      const readySessionId = this.activeSessionId ?? this.pendingNvstSessionId;
+      if (
+        !readySessionId
+        || (this.activeTransport !== null && this.activeTransport !== "nvst")
+      ) {
+        console.warn("[NativeStreamer] Ignoring NVST readiness without an active NVST session.");
+        return;
+      }
+      console.log(`[NativeStreamer] NVST transport readiness: ${message.phase}`);
+      if (message.phase === "sctp") {
+        this.nvstTransportReady = true;
+        this.resolveNvstReadiness(readySessionId);
+      }
       return;
     }
 
-    if (message.type === "stats") {
-      this.retainDiagnosticState({
-        sessionState: "streaming",
-        statsCapturedAt: new Date().toISOString(),
-        codec: message.stats.codec,
-        resolution: message.stats.resolution,
-        hardwareAcceleration: message.stats.hardwareAcceleration,
-        memoryMode: message.stats.memoryMode ?? "unknown",
-        zeroCopy: message.stats.zeroCopy ?? false,
-        bitrateKbps: message.stats.bitrateKbps,
-        targetBitrateKbps: message.stats.targetBitrateKbps,
-        decodedFps: message.stats.decodedFps,
-        renderFps: message.stats.renderFps,
-        framesDecoded: message.stats.framesDecoded,
-        framesRendered: message.stats.framesRendered,
-        sinkDropped: message.stats.sinkDropped ?? 0,
-        queueMode: message.stats.queueMode ?? "unknown",
-        partialFlushCount: message.stats.partialFlushCount ?? 0,
-        completeFlushCount: message.stats.completeFlushCount ?? 0,
-        lastTransition: message.stats.lastTransitionSummary ?? "none",
-        serverGpuType: message.stats.serverGpuType ?? "unknown",
-        serverLocation: message.stats.serverLocation ?? "unknown",
-      });
-      this.options.emit({
-        type: "native-stream-stats",
-        stats: message.stats,
-      });
+    if (message.type === "input-unavailable") {
+      this.inputReady = false;
+      if (this.activeTransport === "nvst" || this.pendingNvstSessionId !== null) {
+        this.nvstReadinessError = new Error(
+          `Native NVST DTLS/SCTP readiness failed: ${message.reason}`,
+        );
+        this.rejectNvstReadiness(this.nvstReadinessError);
+      }
+      console.warn(`[NativeStreamer] Input unavailable: ${message.reason}`);
+      this.options.emit({ type: "native-input-unavailable", reason: message.reason });
       return;
     }
 
@@ -892,6 +1052,7 @@ export class NativeStreamerManager {
       if (message.status === "streaming") {
         this.options.emit({ type: "native-stream-started", message: message.message });
       } else if (message.status === "stopped") {
+        this.clearActiveSessionOwnership();
         if (this.suppressNextStoppedEvent) {
           this.suppressNextStoppedEvent = false;
           return;
@@ -920,6 +1081,21 @@ export class NativeStreamerManager {
     }
   }
 
+  private clearActiveSessionOwnership(): void {
+    this.rejectNvstReadiness(new Error("Native NVST session stopped before transport readiness."));
+    this.activeSessionId = null;
+    this.activeTransport = null;
+    this.activeTransportCapabilities = null;
+    this.pendingNvstSessionId = null;
+    this.nvstReservation = null;
+    this.inputReady = false;
+    this.nativeInputOwner = "electron";
+    this.nvstTransportReady = false;
+    this.nvstReadinessError = null;
+    this.surfaceUpdates.markNotReady();
+    this.clearQueuedRemoteIce();
+  }
+
   private handleStdinFailure(
     child: ChildProcessWithoutNullStreams,
     error: Error,
@@ -928,7 +1104,8 @@ export class NativeStreamerManager {
       return;
     }
 
-    if (!isTerminalBrokenWriteError(error, child.stdin)) {
+    const stdin = this.processStdin(child);
+    if (!isTerminalBrokenWriteError(error, stdin ?? child.stdin)) {
       console.error("[NativeStreamer] Streamer stdin failed:", error);
     }
 
@@ -944,7 +1121,8 @@ export class NativeStreamerManager {
   }
 
   private installStdinErrorHandler(child: ChildProcessWithoutNullStreams): void {
-    child.stdin.on("error", (error) => {
+    const stdin = this.processStdin(child) ?? child.stdin;
+    stdin.on("error", (error) => {
       this.handleStdinFailure(child, error);
     });
   }
@@ -957,6 +1135,9 @@ export class NativeStreamerManager {
       return;
     }
 
+    if (this.stderrBuffer.trim()) {
+      this.appendStderr(this.stderrBuffer);
+    }
     const tail = this.formatStderrTail();
     const hadActiveSession = this.activeSessionId !== null;
     const stoppedReason = `process ended (${reason})`;
@@ -969,9 +1150,20 @@ export class NativeStreamerManager {
       recentStderr: tail || "none",
     });
     this.child = null;
+    this.releaseProcessIo(child);
+    this.nativeProcessPid = null;
     this.stdoutBuffer = "";
+    this.stderrBuffer = "";
     this.stderrTail = [];
     this.activeSessionId = null;
+    this.activeTransport = null;
+    this.activeTransportCapabilities = null;
+    this.pendingNvstSessionId = null;
+    this.nvstReservation = null;
+    this.inputReady = false;
+    this.nvstTransportReady = false;
+    this.nvstReadinessError = null;
+    this.rejectNvstReadiness(new Error(`Native streamer process ended before NVST transport readiness (${reason}).`));
     this.capabilities = null;
     this.inputBackpressureWarned = false;
     this.surfaceUpdates.markNotReady();
@@ -1011,6 +1203,20 @@ export class NativeStreamerManager {
     pending.reject(error);
   }
 
+  private resolveNvstReadiness(sessionId: string): void {
+    for (const waiter of this.nvstReadinessWaiters) {
+      if (waiter.sessionId === sessionId) {
+        waiter.resolve();
+      }
+    }
+  }
+
+  private rejectNvstReadiness(error: Error): void {
+    for (const waiter of this.nvstReadinessWaiters) {
+      waiter.reject(error);
+    }
+  }
+
   private async flushQueuedLocalIce(): Promise<void> {
     const queued = this.queuedLocalIce;
     this.queuedLocalIce = [];
@@ -1039,6 +1245,9 @@ export class NativeStreamerManager {
 
   private async flushQueuedRemoteIce(sessionId: string): Promise<void> {
     const queued = this.drainQueuedRemoteIce(sessionId);
+    if (!this.capabilities?.supportsRemoteIce) {
+      return;
+    }
     for (const candidate of queued) {
       await this.sendRemoteIce(candidate);
     }
@@ -1066,11 +1275,80 @@ export class NativeStreamerManager {
       return;
     }
 
+    const processIo = this.takeProcessIo(child);
+    const nativeProcessPid = this.nativeProcessPid;
     this.child = null;
+    this.nativeProcessPid = null;
+
+    if (processIo?.launchMode === "macos-launch-services") {
+      const shutdown = {
+        id: randomUUID(),
+        type: "shutdown",
+        reason: "Electron host stopped native streamer",
+      } satisfies NativeStreamerCommand;
+      try {
+        processIo.stdin.end(`${JSON.stringify(shutdown)}\n`, "utf8");
+      } catch (error) {
+        if (!isTerminalBrokenWriteError(error, processIo.stdin)) {
+          console.warn("[NativeStreamer] Failed to request native app shutdown:", error);
+        }
+        processIo.stdin.destroy();
+      }
+
+      let finalized = false;
+      const finalize = (): void => {
+        if (finalized) return;
+        finalized = true;
+        processIo.cleanup();
+      };
+      child.once("exit", finalize);
+      const forceTimer = setTimeout(() => {
+        if (nativeProcessPid) {
+          try {
+            process.kill(nativeProcessPid, "SIGTERM");
+          } catch (error) {
+            const code = error && typeof error === "object" && "code" in error
+              ? error.code
+              : undefined;
+            if (code !== "ESRCH") {
+              console.warn("[NativeStreamer] Failed to terminate native macOS app:", error);
+            }
+          }
+        }
+        if (!child.killed) {
+          try {
+            child.kill();
+          } catch (error) {
+            console.warn("[NativeStreamer] Failed to terminate LaunchServices monitor:", error);
+          }
+        }
+        finalize();
+      }, STOP_TIMEOUT_MS);
+      forceTimer.unref?.();
+      child.once("exit", () => clearTimeout(forceTimer));
+      return;
+    }
+
+    processIo?.cleanup();
     try {
       child.kill();
     } catch (error) {
       console.warn("[NativeStreamer] Failed to terminate process:", error);
     }
+  }
+
+  private processStdin(child: ChildProcessWithoutNullStreams): Writable | null {
+    return this.processIo?.child === child ? this.processIo.stdin : child.stdin;
+  }
+
+  private takeProcessIo(child: ChildProcessWithoutNullStreams): NativeStreamerProcessIo | null {
+    if (this.processIo?.child !== child) return null;
+    const processIo = this.processIo;
+    this.processIo = null;
+    return processIo;
+  }
+
+  private releaseProcessIo(child: ChildProcessWithoutNullStreams): void {
+    this.takeProcessIo(child)?.cleanup();
   }
 }

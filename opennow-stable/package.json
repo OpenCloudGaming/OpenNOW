@@ -26,7 +26,7 @@
     "preview": "electron-vite preview",
     "dist": "npm run build && npm run native:build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder",
     "dist:signed": "npm run build && npm run native:build && electron-builder",
-    "native:check": "cargo check --manifest-path ../native/opennow-streamer/Cargo.toml",
+    "native:check": "cargo check --manifest-path ../native/opennow-streamer/Cargo.toml --workspace",
     "native:build": "node scripts/build-native-streamer.mjs",
     "lint": "oxlint src",
     "locales:check": "node scripts/check-translations.mjs",
@@ -114,11 +114,8 @@
     ],
     "extraResources": [
       {
-        "from": "../native/opennow-streamer/bin",
-        "to": "native/opennow-streamer",
-        "filter": [
-          "**/*"
-        ]
+        "from": "../THIRD_PARTY_NOTICES",
+        "to": "THIRD_PARTY_NOTICES"
       }
     ],
     "electronLanguages": [
@@ -140,6 +137,15 @@
     ],
     "asar": true,
     "win": {
+      "extraResources": [
+        {
+          "from": "../native/opennow-streamer/bin/win32-${arch}",
+          "to": "native/opennow-streamer/win32-${arch}",
+          "filter": [
+            "**/*"
+          ]
+        }
+      ],
       "target": [
         "nsis",
         "portable"
@@ -152,6 +158,15 @@
       "artifactName": "OpenNOW-v${version}-portable-${arch}.${ext}"
     },
     "mac": {
+      "extraResources": [
+        {
+          "from": "../native/opennow-streamer/bin/darwin-${arch}",
+          "to": "native/opennow-streamer/darwin-${arch}",
+          "filter": [
+            "**/*"
+          ]
+        }
+      ],
       "target": [
         "dmg",
         "zip"
@@ -165,6 +180,13 @@
         {
           "from": "../logo.png",
           "to": "app-icon.png"
+        },
+        {
+          "from": "../native/opennow-streamer/bin/linux-${arch}",
+          "to": "native/opennow-streamer/linux-${arch}",
+          "filter": [
+            "**/*"
+          ]
         }
       ],
       "target": [
@@ -174,27 +196,6 @@
       "category": "Game",
       "maintainer": "zortos293 <zortos293@users.noreply.github.com>",
       "artifactName": "OpenNOW-v${version}-linux-${arch}.${ext}"
-    },
-    "deb": {
-      "depends": [
-        "libgstreamer1.0-0",
-        "libgstreamer-plugins-base1.0-0",
-        "gstreamer1.0-tools",
-        "gstreamer1.0-libav",
-        "gstreamer1.0-plugins-base",
-        "gstreamer1.0-plugins-good",
-        "gstreamer1.0-plugins-bad",
-        "gstreamer1.0-plugins-ugly",
-        "gstreamer1.0-nice",
-        "gstreamer1.0-vaapi",
-        "gstreamer1.0-gl",
-        "gstreamer1.0-x",
-        "gstreamer1.0-alsa",
-        "libva2",
-        "libva-drm2",
-        "libvulkan1",
-        "mesa-vulkan-drivers"
-      ]
     }
   }
 }

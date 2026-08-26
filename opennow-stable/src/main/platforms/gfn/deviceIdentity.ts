@@ -1,3 +1,5 @@
+import { execFileSync } from "node:child_process";
+
 /**
  * GFN device identity profiles.
  *
@@ -18,29 +20,47 @@ export interface GfnDeviceIdentity {
   clientPlatformName: string;
 }
 
-// OpenNOW historically always sent clientPlatformName "windows" on the desktop
-// CloudMatch path (even on macOS/Linux). Keep that unless Steam Deck spoof is on.
+let cachedDarwinHwModel: string | null = null;
+
+function readDarwinHwModel(): string {
+  if (cachedDarwinHwModel) {
+    return cachedDarwinHwModel;
+  }
+  try {
+    const model = execFileSync("sysctl", ["-n", "hw.model"], {
+      encoding: "utf8",
+      timeout: 500,
+    }).trim();
+    cachedDarwinHwModel = model.length > 0 ? model : "UNKNOWN";
+  } catch {
+    cachedDarwinHwModel = "UNKNOWN";
+  }
+  return cachedDarwinHwModel;
+}
+
 const DESKTOP_IDENTITY_BY_PLATFORM: Record<"win32" | "darwin" | "linux", GfnDeviceIdentity> = {
   win32: {
     deviceOs: "WINDOWS",
     deviceType: "DESKTOP",
     deviceMake: "UNKNOWN",
     deviceModel: "UNKNOWN",
-    clientPlatformName: "windows",
+    clientPlatformName: "Windows",
   },
   darwin: {
     deviceOs: "MACOS",
     deviceType: "DESKTOP",
-    deviceMake: "UNKNOWN",
+    deviceMake: "Apple",
     deviceModel: "UNKNOWN",
-    clientPlatformName: "windows",
+    // Native Bifrost / QUERY_GFN_START uses MacOSX. Mall JS Session Control
+    // falls back to OSName "MacOS", but official Mac never POSTs that body.
+    clientPlatformName: "MacOSX",
   },
   linux: {
     deviceOs: "LINUX",
     deviceType: "DESKTOP",
     deviceMake: "UNKNOWN",
     deviceModel: "UNKNOWN",
-    clientPlatformName: "windows",
+    clientPlatformName: "Linux",
   },
 };
 
@@ -67,7 +87,14 @@ export function isIdentifyAsSteamDeckEnabled(): boolean {
 export function resolveHostDesktopIdentity(
   platform: NodeJS.Platform = process.platform,
 ): GfnDeviceIdentity {
-  if (platform === "win32" || platform === "darwin" || platform === "linux") {
+  if (platform === "darwin") {
+    return {
+      ...DESKTOP_IDENTITY_BY_PLATFORM.darwin,
+      deviceMake: "Apple",
+      deviceModel: readDarwinHwModel(),
+    };
+  }
+  if (platform === "win32" || platform === "linux") {
     return DESKTOP_IDENTITY_BY_PLATFORM[platform];
   }
   return DESKTOP_IDENTITY_BY_PLATFORM.linux;

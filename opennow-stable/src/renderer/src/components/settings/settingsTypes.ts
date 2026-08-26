@@ -154,7 +154,7 @@ export const SETTINGS_SCOPE_SEARCH_TERMS: Record<SettingsSearchScopeId, readonly
     "native",
     "streamer",
     "native streaming",
-    "gstreamer",
+    "media runtime",
     "backend",
     "directx",
     "dx11",

@@ -1,7 +1,6 @@
 import type { StreamClientMode } from "./stream";
 
-export type NativeStreamerBackend = "stub" | "gstreamer";
-export type NativeStreamerBackendPreference = "auto" | NativeStreamerBackend;
+export type NativeStreamerBackend = "native";
 export type NativeStreamerFeatureMode = "auto" | "disabled" | "forced";
 export type NativeVideoBackendPreference =
   | "auto"
@@ -16,8 +15,15 @@ export type StreamTransportMode = "webrtc" | "nvst";
 
 export const NATIVE_STREAMER_UNSUPPORTED_PLATFORM_MESSAGE =
   "Native streamer requires a supported desktop OS (Windows, macOS, or Linux).";
+/** Highest frame rate the native receive, decode, and presentation pipeline accepts. */
+export const MAX_NATIVE_STREAM_FPS = 240;
 /** @deprecated Use NATIVE_STREAMER_UNSUPPORTED_PLATFORM_MESSAGE. */
 export const NATIVE_STREAMER_WINDOWS_ONLY_MESSAGE = NATIVE_STREAMER_UNSUPPORTED_PLATFORM_MESSAGE;
+
+export function clampNativeStreamFps(fps: number): number {
+  const normalized = Number.isFinite(fps) ? Math.trunc(fps) : 60;
+  return Math.max(1, Math.min(MAX_NATIVE_STREAM_FPS, normalized));
+}
 
 export function isNativeStreamerSupportedPlatform(platform: string): boolean {
   const normalized = platform.toLowerCase();
@@ -29,14 +35,25 @@ export function isNativeStreamerSupportedPlatform(platform: string): boolean {
 }
 
 export function isNativeExternalRendererSupported(platform: string): boolean {
+  return isNativeDirectXBackendSupported(platform) || isMacOsPlatform(platform);
+}
+
+/** macOS cannot embed an AppKit view across the Electron/helper process boundary. */
+export function isNativeExternalRendererRequired(platform: string): boolean {
+  return isMacOsPlatform(platform);
+}
+
+export function isNativeDirectXBackendSupported(platform: string): boolean {
   const normalized = platform.toLowerCase();
   return normalized === "win32" || normalized.startsWith("win") || normalized.includes("windows");
 }
 
-export const isNativeDirectXBackendSupported = isNativeExternalRendererSupported;
-/** NVST is intentionally disabled until the transport is complete. */
-export function isNvstTransportSupported(_platform: string): boolean {
-  return false;
+function isMacOsPlatform(platform: string): boolean {
+  const normalized = platform.toLowerCase();
+  return normalized === "darwin" || normalized.includes("mac");
+}
+export function isNvstTransportSupported(platform: string): boolean {
+  return isNativeStreamerSupportedPlatform(platform);
 }
 
 export function normalizeStreamClientModeForPlatform(mode: StreamClientMode, platform: string): StreamClientMode {
@@ -44,15 +61,20 @@ export function normalizeStreamClientModeForPlatform(mode: StreamClientMode, pla
 }
 
 export function normalizeNativeExternalRendererForPlatform(enabled: boolean, platform: string): boolean {
-  return enabled && isNativeExternalRendererSupported(platform);
+  return isNativeExternalRendererRequired(platform)
+    || (enabled && isNativeExternalRendererSupported(platform));
 }
 
 export function normalizeTransportModeForPlatform(
-  _mode: StreamTransportMode,
-  _platform: string,
-  _streamClientMode: StreamClientMode = "native",
+  mode: StreamTransportMode,
+  platform: string,
+  streamClientMode: StreamClientMode = "native",
 ): StreamTransportMode {
-  return "webrtc";
+  return mode === "nvst"
+    && streamClientMode === "native"
+    && isNvstTransportSupported(platform)
+    ? "nvst"
+    : "webrtc";
 }
 
 export function nativeStreamerFeatureModeToEnvValue(mode: NativeStreamerFeatureMode): "auto" | "0" | "1" {
@@ -66,25 +88,18 @@ export function nativeStreamerFeatureModeToEnvValue(mode: NativeStreamerFeatureM
   }
 }
 
-export type NativeGstreamerRuntimeSource = "bundled" | "system" | "missing" | "unknown";
+export type NativeStreamerRuntimeSource = "self-contained" | "missing" | "unknown";
 
-export interface NativeGstreamerInstallInstruction {
-  distro: string;
-  command: string;
-  note?: string;
-}
-
-export interface NativeGstreamerRuntimeStatus {
-  source: NativeGstreamerRuntimeSource;
-  bundled: boolean;
+export interface NativeStreamerRuntimeStatus {
+  source: NativeStreamerRuntimeSource;
+  selfContained: boolean;
   path?: string;
   message: string;
-  installInstructions?: NativeGstreamerInstallInstruction[];
 }
 
 export interface NativeStreamerStatus {
   detected: boolean;
-  gstreamerAvailable: boolean;
+  available: boolean;
   supportsOfferAnswer: boolean;
   backend?: NativeStreamerBackend;
   fallbackReason?: string;
@@ -92,18 +107,18 @@ export interface NativeStreamerStatus {
   activeVideoBackend?: NativeVideoBackendCapability;
   codecSummary?: string;
   zeroCopySummary?: string;
-  gstreamerRuntime: NativeGstreamerRuntimeStatus;
+  runtime: NativeStreamerRuntimeStatus;
   message: string;
 }
 
 export function createUnsupportedNativeStreamerStatus(): NativeStreamerStatus {
   return {
     detected: false,
-    gstreamerAvailable: false,
+    available: false,
     supportsOfferAnswer: false,
-    gstreamerRuntime: {
+    runtime: {
       source: "unknown",
-      bundled: false,
+      selfContained: false,
       message: NATIVE_STREAMER_UNSUPPORTED_PLATFORM_MESSAGE,
     },
     message: NATIVE_STREAMER_UNSUPPORTED_PLATFORM_MESSAGE,

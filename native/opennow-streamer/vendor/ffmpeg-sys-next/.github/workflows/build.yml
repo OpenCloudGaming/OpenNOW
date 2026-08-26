@@ -1,0 +1,107 @@
+name: build
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+  schedule:
+    - cron: "0 0 * * *"
+jobs:
+  build-test-lint:
+    name: FFmpeg ${{ matrix.ffmpeg_version }} - bindgen, test, and lint
+    runs-on: ubuntu-latest
+    container: jrottenberg/ffmpeg:${{ matrix.ffmpeg_version }}-ubuntu
+    strategy:
+      matrix:
+        ffmpeg_version:
+          ["3.3", "3.4", "4.0", "4.1", "4.2", "4.3", "4.4", "5.0", "5.1", "6.0"]
+      fail-fast: false
+    env:
+      CARGO_PROFILE_DEV_BUILD_OVERRIDE_DEBUG: true
+      FEATURES: avcodec,avdevice,avfilter,avformat,postproc,swresample,swscale
+    steps:
+      - uses: actions/checkout@v2
+      - name: Install dependencies
+        run: |
+          apt update
+          apt install -y --no-install-recommends clang curl pkg-config ca-certificates
+      - name: Set up Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          override: true
+          components: rustfmt, clippy
+      - name: Build
+        run: |
+          cargo build --features $FEATURES
+      - name: Test
+        run: |
+          cargo test --features $FEATURES
+      - name: Lint
+        run: |
+          cargo clippy --features $FEATURES -- -D warnings
+
+  # While this issue persists in the ffmpeg docker hub https://github.com/jrottenberg/ffmpeg/issues/418
+  # manually download ffmpeg sources and link
+  # seems like the docker image is somehow conflicting with the github action's ubuntu version
+  build-test-lint-7-1:
+    name: FFmpeg ${{ matrix.ffmpeg_version }} - bindgen, test, and lint
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        ffmpeg_version: ["6.1", "7.0", "7.1", "8.0", "8.1", "9.0"]
+    env:
+      CARGO_PROFILE_DEV_BUILD_OVERRIDE_DEBUG: true
+      FEATURES: avcodec,avdevice,avfilter,avformat,swresample,swscale #,postproc
+      FFMPEG_DIR: /home/runner/work/rust-ffmpeg-sys/rust-ffmpeg-sys/ffmpeg-${{ matrix.ffmpeg_version }}-linux-clang-default
+    steps:
+      - uses: actions/checkout@v2
+      - name: Install dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y --no-install-recommends clang curl pkg-config xz-utils
+          curl -L https://sourceforge.net/projects/avbuild/files/linux/ffmpeg-${{ matrix.ffmpeg_version }}-linux-clang-default.tar.xz/download -o ffmpeg.tar.xz
+          tar -xf ffmpeg.tar.xz
+          pwd
+      - name: Set up Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          override: true
+          components: rustfmt, clippy
+      - name: Build
+        run: |
+          cargo build --features $FEATURES
+      - name: Test
+        run: |
+          cargo test --features $FEATURES
+      - name: Lint
+        run: |
+          cargo clippy --features $FEATURES -- -D warnings
+
+  latest-ffmpeg-build-static:
+    name: Manually fetch, build, and link static ffmpeg
+    runs-on: ubuntu-latest
+    env:
+      FEATURES: build,static,build-lib-x264,build-license-gpl,avcodec,avdevice,avfilter,avformat,swresample,swscale #,postproc
+    steps:
+      - uses: actions/checkout@v2
+      - name: Set up Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          override: true
+          components: rustfmt, clippy
+      - name: Check format
+        run: |
+          cargo fmt --all -- --check
+      - name: Install dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y --no-install-recommends clang curl pkg-config ca-certificates llvm pkg-config curl libssl-dev yasm nasm libx264-dev
+
+      - name: Build and statically link latest ffmpeg
+        run: |
+          cargo build --features $FEATURES -vv
+          cargo test --features $FEATURES

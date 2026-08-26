@@ -1,11 +1,8 @@
 import type {
   IceCandidatePayload,
   NativeStreamerBackend,
-  NativeStreamStats,
   NativeRenderSurface,
-  NativeStreamerShortcutAction,
   NativeStreamerSessionContext,
-  NativeVideoTransition,
   NativeVideoBackendCapability,
   SendAnswerRequest,
 } from "./gfn";
@@ -23,12 +20,25 @@ export interface NativeStreamerCapabilities {
   supportsRemoteIce: boolean;
   supportsLocalIce: boolean;
   supportsInput: boolean;
+  supportsVideoDecode: boolean;
+  supportsVideoPresent: boolean;
+  supportsAudioDecode?: boolean;
+  supportsAudioOutput?: boolean;
   videoBackends?: NativeVideoBackendCapability[];
 }
 
 export interface NativeStreamerInputPacket {
   payloadBase64: string;
   partiallyReliable?: boolean;
+}
+
+export interface NativeStreamerActiveTransportCapabilities {
+  supportsOfferAnswer: boolean;
+  supportsRemoteIce: boolean;
+  supportsLocalIce: boolean;
+  supportsInput: boolean;
+  supportsAudioDecode: boolean;
+  supportsAudioOutput: boolean;
 }
 
 export type NativeStreamerCommand =
@@ -41,6 +51,21 @@ export type NativeStreamerCommand =
       id: string;
       type: "start";
       context: NativeStreamerSessionContext;
+    }
+  | {
+      id: string;
+      type: "nvst-bind";
+    }
+  | {
+      id: string;
+      type: "nvst-unbind";
+    }
+  | {
+      id: string;
+      type: "nvst-send";
+      host: string;
+      port: number;
+      payloadBase64: string;
     }
   | {
       id: string;
@@ -70,18 +95,13 @@ export type NativeStreamerCommand =
     }
   | {
       id: string;
-      type: "bitrate";
-      maxBitrateKbps: number;
-    }
-  | {
-      id: string;
       type: "stop";
       reason?: string;
     }
   | {
       id: string;
-      type: "update-shortcuts";
-      shortcuts: import("./gfn").NativeStreamerShortcutBindings;
+      type: "shutdown";
+      reason?: string;
     };
 
 export type NativeStreamerResponse =
@@ -89,10 +109,23 @@ export type NativeStreamerResponse =
       id: string;
       type: "ready";
       capabilities: NativeStreamerCapabilities;
+      processId?: number;
     }
   | {
       id: string;
       type: "ok";
+      transport?: "webrtc" | "nvst";
+      capabilities?: NativeStreamerActiveTransportCapabilities;
+    }
+  | {
+      id: string;
+      type: "nvst-bound";
+      port: number;
+      mjolnirPort?: number;
+      localAddress?: string;
+      iceUsernameFragment?: string;
+      icePassword?: string;
+      dtlsFingerprint?: string;
     }
   | {
       id: string;
@@ -114,7 +147,7 @@ export type NativeStreamerEvent =
     }
   | {
       type: "status";
-      status: "starting" | "ready" | "streaming" | "stopped";
+      status: "starting" | "ready" | "streaming" | "paused" | "stopped";
       message?: string;
     }
   | {
@@ -126,50 +159,12 @@ export type NativeStreamerEvent =
       protocolVersion: number;
     }
   | {
-      type: "shortcut";
-      action: NativeStreamerShortcutAction;
+      type: "nvst-transport-ready";
+      phase: "dtls" | "sctp";
     }
   | {
-      type: "clipboard-paste";
-    }
-  | {
-      type: "input-capture-changed";
-      captured: boolean;
-    }
-  | {
-      type: "video-stall";
-      stallMs: number;
-      encodedKbps?: number;
-      decodedFps: number;
-      sinkFps: number;
-      encodedAgeMs?: number;
-      decodedAgeMs?: number;
-      sinkAgeMs?: number;
-      likelyStage?: string;
-      sinkRendered?: number;
-      sinkDropped?: number;
-      memoryMode?: string;
-      zeroCopy?: boolean;
-      requestedFps?: number;
-      capsFramerate?: string;
-      queueMode?: string;
-      partialFlushCount?: number;
-      completeFlushCount?: number;
-      lastTransitionType?: string;
-      lastTransitionAtMs?: number;
-      requestedStreamingFeaturesSummary?: string;
-      finalizedStreamingFeaturesSummary?: string;
-      zeroCopyD3D11: boolean;
-      zeroCopyD3D12: boolean;
-      recoveryAttempt: number;
-    }
-  | {
-      type: "video-transition";
-      transition: NativeVideoTransition;
-    }
-  | {
-      type: "stats";
-      stats: NativeStreamStats;
+      type: "input-unavailable";
+      reason: string;
     }
   | {
       type: "error";

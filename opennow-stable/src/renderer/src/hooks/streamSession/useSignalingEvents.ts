@@ -8,10 +8,9 @@ import {
   SIGNALING_REMOTE_ICE_GRACE_MS,
   isRemoteSessionEndReason,
   readStreamClipboardText,
-  sendStreamClipboardPaste,
 } from "../../lib/streamSessionHelpers";
 import { streamStatusToLoadingStage } from "../../lib/sessionState";
-import { mergeNativeStreamStats } from "../../lib/streamDiagnostics";
+import { nativeInputLifecycleAction } from "../../lib/nativeInputReadiness";
 import { decideSignalingDisconnect } from "../../lib/streamRecoveryDecisions";
 import { warningMessage, warningTone } from "../../lib/sessionWarnings";
 import { resolveStreamProfileCodec } from "../../lib/codecDiagnostics";
@@ -56,7 +55,6 @@ export function useSignalingEvents({
     awaitingRecoveryRemoteIceRef,
     clientRef,
     hasConfirmedRemoteIceRef,
-    handleStreamShortcutActionRef,
     iceDisconnectedRecoveryTimerRef,
     latestIceConnectionStateRef,
     launchInFlightRef,
@@ -164,7 +162,10 @@ export function useSignalingEvents({
       return clientRef.current;
     };
 
-    const activateNativeInputForCurrentSession = (protocolVersion?: number): void => {
+    const activateNativeInputForCurrentSession = (
+      protocolVersion?: number,
+      inputOwner?: "electron" | "native",
+    ): void => {
       const activeSession = sessionRef.current;
       if (!activeSession) {
         console.warn("[App] Received native stream event but no active session in sessionRef!");
@@ -182,10 +183,6 @@ export function useSignalingEvents({
 
       nativeStreamingRef.current = true;
       pendingControlledDisconnectsRef.current = 0;
-      const isWindowsHost = navigator.platform.toLowerCase().includes("win");
-      const electronInputBridge =
-        /linux/i.test(`${navigator.platform} ${navigator.userAgent}`)
-        || (!settings.nativeExternalRenderer && !isWindowsHost);
       client.activateNativeInput(
         protocolVersion,
         {
@@ -196,19 +193,12 @@ export function useSignalingEvents({
           maxBitrateKbps: settings.maxBitrateMbps * 1000,
         },
         {
-          // Windows internal: RawInput on the child HWND (Electron click-through is flaky).
-          // Linux: always Electron → IPC (External floating renderer is unsupported).
-          // macOS internal: Electron → IPC. External floating window: always OS capture.
-          electronInputBridge,
+          electronInputBridge: inputOwner
+            ? inputOwner === "electron"
+            : !settings.nativeExternalRenderer,
         },
       );
-      // The external native window exclusively owns Escape through RawInput.
-      // Internal mode leaves Escape with Electron so it can prevent Chromium's
-      // fullscreen exit and forward one synthetic tap to the native streamer.
-      window.openNow.notifyNativeInputModeChange(
-        true,
-        isWindowsHost && settings.nativeExternalRenderer,
-      );
+      window.openNow.notifyNativeInputModeChange(true, false);
       setLaunchError(null);
       setStreamStatus("streaming");
       markDiscordStreamStarted();
@@ -296,49 +286,56 @@ export function useSignalingEvents({
             );
           }
         } else if (event.type === "native-stream-started") {
+          const inputAction = nativeInputLifecycleAction(event);
           console.log("[App] Native streamer started:", event.message ?? "");
+          nativeStreamingRef.current = true;
+          setLaunchError(null);
+          setStreamStatus("streaming");
+          if (nativeInputProtocolVersionRef.current === null) {
+            setNativeInputBridgeReady(false);
+          }
           diagnosticsStore.set({
             ...diagnosticsStore.getSnapshot(),
             nativeRendererActive: true,
+            inputReady: nativeInputProtocolVersionRef.current !== null,
+            lagReasonDetail: inputAction.state === "pending"
+              ? "Native renderer active; input bridge pending"
+              : diagnosticsStore.getSnapshot().lagReasonDetail,
           });
-          activateNativeInputForCurrentSession(nativeInputProtocolVersionRef.current ?? undefined);
+          const activeSession = sessionRef.current;
+          if (!activeSession) {
+            console.warn("[App] Native streamer started without an active session");
+            return;
+          }
+          markDiscordStreamStarted();
+          scheduleStableRecoveryReset(activeSession.sessionId);
         } else if (event.type === "native-input-ready") {
+          const inputAction = nativeInputLifecycleAction(event);
           console.log("[App] Native input protocol ready:", event.protocolVersion);
           nativeInputProtocolVersionRef.current = event.protocolVersion;
           setNativeInputBridgeReady(true);
           clientRef.current?.setNativeInputProtocolVersion(event.protocolVersion);
-          if (nativeStreamingRef.current || sessionRef.current) {
-            activateNativeInputForCurrentSession(event.protocolVersion);
+          if (inputAction.activate && (nativeStreamingRef.current || sessionRef.current)) {
+            activateNativeInputForCurrentSession(
+              inputAction.protocolVersion,
+              event.inputOwner,
+            );
           }
-        } else if (event.type === "native-shortcut") {
-          handleStreamShortcutActionRef.current?.(event.action);
-        } else if (event.type === "native-clipboard-paste") {
-          if (settings.clipboardPaste && (!nativeStreamingRef.current || nativeInputBridgeReady)) {
-            void sendStreamClipboardPaste(clientRef.current);
+        } else if (event.type === "native-input-unavailable") {
+          const inputAction = nativeInputLifecycleAction(event);
+          if (inputAction.state !== "unavailable") {
+            return;
           }
-        } else if (event.type === "native-input-capture-changed") {
-          setNativeInputCaptureActive(event.captured);
-          // Treat OS RawInput capture like pointer lock so main-process Escape
-          // interception keeps Chromium from exiting fullscreen on tap.
-          try {
-            window.openNow.notifyPointerLockChange(event.captured);
-          } catch {
-            /* best-effort */
-          }
-        } else if (event.type === "native-stream-stats") {
-          diagnosticsStore.set(mergeNativeStreamStats(
-            diagnosticsStore.getSnapshot(),
-            event.stats,
-          ));
-        } else if (event.type === "native-stream-transition") {
+          console.warn("[App] Native input unavailable:", inputAction.reason);
+          nativeInputProtocolVersionRef.current = null;
+          setNativeInputBridgeReady(false);
+          setNativeInputCaptureActive(false);
+          clientRef.current?.markNativeInputUnavailable(inputAction.reason);
+          window.openNow.notifyNativeInputModeChange(false, false);
           diagnosticsStore.set({
             ...diagnosticsStore.getSnapshot(),
-            nativeRendererActive: true,
-            nativeTransitionSummary: event.transition.summary,
-            nativeRequestedFps: event.transition.requestedFps,
-            nativeCapsFramerate: event.transition.capsFramerate,
-            nativeQueueMode: event.transition.queueMode,
-            lagReasonDetail: event.transition.summary ?? "Native video transition detected",
+            inputReady: false,
+            lagReasonDetail: `Native input unavailable: ${inputAction.reason}`,
           });
         } else if (event.type === "native-stream-stopped") {
           const reason = event.reason ?? "Native streamer stopped";

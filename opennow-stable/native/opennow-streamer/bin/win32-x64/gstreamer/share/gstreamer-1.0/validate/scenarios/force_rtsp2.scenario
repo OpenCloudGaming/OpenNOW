@@ -1,1 +1,0 @@
-set-property, target-element-factory-name="rtspsrc", property-name=default-rtsp-version, property-value=(string)"2-0"

@@ -78,6 +78,7 @@ export function useStreamRuntimeState() {
   const pendingControlledDisconnectsRef = useRef(0);
   const signalingRecoveryRef = useRef<SignalingRecoveryState>({
     attemptCount: 0,
+    deadlineAtMs: null,
     inFlight: null,
     explicitShutdown: false,
     appId: null,

@@ -143,6 +143,14 @@ test("disconnect recovery only treats explicit remote peer termination as a sess
       iceState: "failed",
       pendingControlledDisconnects: 0,
     }), "recover");
+    assert.equal(decideSignalingDisconnect({
+      appUnloading: false,
+      streamStatus: "connecting",
+      reason,
+      hasConfirmedRemoteIce: false,
+      iceState: "new",
+      pendingControlledDisconnects: 0,
+    }), "recover");
   }
 });
 

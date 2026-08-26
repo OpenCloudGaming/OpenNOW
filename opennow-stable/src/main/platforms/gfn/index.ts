@@ -28,7 +28,7 @@ export {
 } from "./games";
 export { initSessionProxyAuth } from "./proxyFetch";
 export { normalizeSessionProxyUrl, sessionProxyHasCredentials } from "./proxyUrl";
-export { getStableDeviceId } from "./deviceId";
+export { getCloudMatchDeviceHashId, getStableDeviceId, toCloudMatchDeviceHashId } from "./deviceId";
 export {
   STEAM_DECK_DEVICE_IDENTITY,
   configureIdentifyAsSteamDeck,
@@ -47,7 +47,10 @@ export {
 } from "./accountConnections";
 export { GfnSignalingClient } from "./signaling";
 export {
+  GFN_BIFROST_CLIENT_VERSION,
+  GFN_CLIENT_IDENTIFICATION,
   GFN_CLIENT_VERSION,
+  gfnBifrostUserAgentForPlatform,
   GFN_PLAY_ORIGIN,
   GFN_PLAY_REFERER,
   GFN_USER_AGENT,
@@ -56,6 +59,7 @@ export {
   buildGfnCloudMatchHeaders,
   buildGfnGraphQlHeaders,
   buildGfnLcarsHeaders,
+  buildGfnNvstClientHeaders,
   buildNvidiaAuthHeaders,
   gfnJwtAuthorization,
 } from "./clientHeaders";

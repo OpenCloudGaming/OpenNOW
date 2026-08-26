@@ -81,14 +81,26 @@ import { getReleaseHighlightsPayload, shouldShowReleaseHighlights } from "./rele
 import { shutdownMainTelemetry, syncMainTelemetry } from "./telemetry/posthog";
 import { createMainWindow } from "./window/mainWindow";
 import { resolveAppInstanceProfile } from "./appInstance";
-import { shouldDefaultLinuxShellToX11 } from "./nativeStreamer/runtime";
 import {
   DiagnosticHistoryController,
   DiagnosticHistoryStore,
 } from "./services/diagnosticHistory";
+import { resolveLinuxWindowSystem } from "./linuxWindowSystem";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
+
+const linuxOzonePlatform = app.commandLine.getSwitchValue("ozone-platform")
+  || app.commandLine.getSwitchValue("ozone-platform-hint");
+if (
+  process.platform === "linux"
+  && (!linuxOzonePlatform || linuxOzonePlatform === "auto")
+) {
+  app.commandLine.appendSwitch(
+    "ozone-platform",
+    resolveLinuxWindowSystem(linuxOzonePlatform, process.env),
+  );
+}
 
 const appInstanceProfile = resolveAppInstanceProfile(
   process.argv,
@@ -137,16 +149,6 @@ const bootstrapChromiumPrefs = loadBootstrapChromiumPreferences();
 console.log(
   `[Main] Video acceleration preference: decode=${bootstrapChromiumPrefs.decoderPreference}, encode=${bootstrapChromiumPrefs.encoderPreference}`,
 );
-
-const explicitLinuxOzonePlatform = app.commandLine.getSwitchValue("ozone-platform")
-  || app.commandLine.getSwitchValue("ozone-platform-hint")
-  || process.env.ELECTRON_OZONE_PLATFORM_HINT;
-if (shouldDefaultLinuxShellToX11(process.platform, explicitLinuxOzonePlatform)) {
-  app.commandLine.appendSwitch("ozone-platform", "x11");
-  console.log(
-    "[Main] Linux display backend: X11/XWayland (required for embedded native GStreamer video).",
-  );
-}
 
 const chromiumCommandLine = buildChromiumCommandLine(
   bootstrapChromiumPrefs,

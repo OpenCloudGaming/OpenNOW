@@ -2,19 +2,9 @@ import { createHash, randomBytes } from "node:crypto";
 import type { Duplex } from "node:stream";
 import { connect as tlsConnect, type TLSSocket } from "node:tls";
 
-/**
- * Official `:322` upgrade request-target is still under research.
- *
- * Live matrix (raw TLS unless noted):
- * - empty (`GET  HTTP/1.1`) → HTTP 400
- * - absolute `rtsps://` / `wss://` / `https://` → HTTP 404
- * - `/` via Node `ws` → HTTP 404 (extra Client headers; not Bifrost-shaped)
- * - `/` via raw TLS Bifrost-shaped headers → **pending** (never tried)
- *
- * Poco 1.14.1 WebSocket::connect does not set method/URI; it only adds Upgrade
- * headers. Default HTTPRequest is GET `/`. See docs/research/_tmp-bifrost2-ws-uri-resolved.txt.
- */
+/** The official client upgrades GET /rtsp with x-nv-sessionid. */
 export type NvstWssUpgradeTargetForm =
+  | "rtspPath"
   | "slash"
   | "sessionPath"
   | "rtsps"
@@ -29,6 +19,8 @@ export function buildNvstWssUpgradeRequestTarget(
   sessionId?: string,
 ): string {
   switch (form) {
+    case "rtspPath":
+      return "/rtsp";
     case "slash":
       return "/";
     case "sessionPath":
@@ -49,7 +41,6 @@ export function buildNvstWssUpgradeRequestTarget(
 /**
  * Raw TLS WebSocket upgrade for NVST `:322`.
  * Header order matches Poco WebSocket::connect + Bifrost Content-Length: 0.
- * Optional `x-nv-sessionid` is only for a 403 retry.
  */
 export function buildNvstWssUpgradeRequest(
   host: string,
@@ -75,7 +66,6 @@ export function buildNvstWssUpgradeRequest(
     `Content-Length: 0\r\n`;
   const sessionId = options.sessionId?.trim();
   if (sessionId && form !== "sessionPath") {
-    // Only attach as header on 403 retry paths; sessionPath already uses UUID in URI.
     request += `x-nv-sessionid: ${sessionId}\r\n`;
   }
   return `${request}\r\n`;
@@ -100,7 +90,6 @@ function connectNvstWssOnce(
   timeoutMs: number,
   form: NvstWssUpgradeTargetForm,
   sessionId?: string,
-  attachSessionHeader = false,
 ): Promise<Duplex> {
   const key = randomBytes(16).toString("base64");
   const expectedAccept = createHash("sha1")
@@ -108,9 +97,7 @@ function connectNvstWssOnce(
     .digest("base64");
   const request = buildNvstWssUpgradeRequest(host, port, key, {
     form,
-    // For slash/rtsps/… first attempt: no session header.
-    // For 403 retry or sessionPath: pass sessionId.
-    sessionId: attachSessionHeader || form === "sessionPath" ? sessionId : undefined,
+    sessionId,
   });
   const requestLine = request.split("\r\n")[0] ?? "";
   const requestLineHex = Buffer.from(requestLine, "utf8").toString("hex");
@@ -192,7 +179,7 @@ function connectNvstWssOnce(
           new Error(
             `WSS upgrade failed: HTTP ${statusCode || "unknown"} (${statusLine || "no status"}); ` +
               `form=${form} request-line=${requestLine} hex=${requestLineHex}` +
-              (attachSessionHeader ? " with x-nv-sessionid" : ""),
+              (sessionId && form !== "sessionPath" ? " with x-nv-sessionid" : ""),
           ),
         );
         return;
@@ -206,9 +193,6 @@ function connectNvstWssOnce(
   });
 }
 
-/** Primary: Bifrost-shaped GET /. Fallback: CloudMatch-style /v2/session/<id>. */
-const UPGRADE_TARGET_FORMS: NvstWssUpgradeTargetForm[] = ["slash", "sessionPath"];
-
 export async function connectNvstWss(
   host: string,
   port: number,
@@ -216,42 +200,22 @@ export async function connectNvstWss(
   sessionId?: string,
   onLog?: (message: string) => void,
 ): Promise<Duplex> {
-  let lastError: Error | null = null;
-  for (const form of UPGRADE_TARGET_FORMS) {
-    try {
-      const target = buildNvstWssUpgradeRequestTarget(host, port, form, sessionId);
-      onLog?.(
-        `Trying WSS upgrade form=${form} (GET ${target} HTTP/1.1) raw-TLS Bifrost headers`,
-      );
-      return await connectNvstWssOnce(host, port, timeoutMs, form, sessionId, false);
-    } catch (error) {
-      const err = error instanceof Error ? error : new Error(String(error));
-      lastError = err;
-      const message = err.message;
-      if (sessionId && /\bHTTP 403\b/.test(message)) {
-        onLog?.(`Upgrade HTTP 403 on form=${form}; retrying with x-nv-sessionid`);
-        try {
-          return await connectNvstWssOnce(host, port, timeoutMs, form, sessionId, true);
-        } catch (retryError) {
-          lastError = retryError instanceof Error ? retryError : new Error(String(retryError));
-        }
-      }
-      if (!/\bHTTP (400|404)\b/.test(message)) {
-        throw lastError;
-      }
-      onLog?.(message);
-    }
-  }
-  throw lastError ?? new Error("WSS upgrade failed for all request-target forms");
+  const form = "rtspPath";
+  const target = buildNvstWssUpgradeRequestTarget(host, port, form, sessionId);
+  onLog?.(`Trying WSS upgrade form=${form} (GET ${target} HTTP/1.1) with x-nv-sessionid`);
+  return connectNvstWssOnce(host, port, timeoutMs, form, sessionId);
 }
 
-export function encodeWsTextFrame(payload: Buffer): Buffer {
+function encodeMaskedWsFrame(opcode: number, payload: Buffer): Buffer {
   const len = payload.length;
+  if (opcode >= 0x8 && len > 125) {
+    throw new Error("WS control frame payload exceeds 125 bytes");
+  }
   const mask = randomBytes(4);
   let header: Buffer;
   if (len < 126) {
     header = Buffer.alloc(2);
-    header[0] = 0x81; // FIN + text
+    header[0] = 0x80 | opcode;
     header[1] = 0x80 | len; // MASK bit set
   } else if (len < 65536) {
     header = Buffer.alloc(4);
@@ -272,9 +236,22 @@ export function encodeWsTextFrame(payload: Buffer): Buffer {
   return Buffer.concat([header, mask, masked]);
 }
 
-/** Minimal client-side WS frame reader (text + close; ignores ping/pong/control). */
+export function encodeWsTextFrame(payload: Buffer): Buffer {
+  return encodeMaskedWsFrame(0x1, payload);
+}
+
+export function encodeWsPongFrame(payload: Buffer): Buffer {
+  return encodeMaskedWsFrame(0xa, payload);
+}
+
+export function encodeWsPingFrame(): Buffer {
+  return encodeMaskedWsFrame(0x9, Buffer.alloc(0));
+}
+
+/** Minimal client-side WS frame reader for RTSP messages and control frames. */
 export class WsFrameReader {
   private buffer = Buffer.alloc(0);
+  private pingPayloads: Buffer[] = [];
 
   push(chunk: Buffer): Buffer[] {
     this.buffer = Buffer.concat([this.buffer, chunk]);
@@ -324,9 +301,16 @@ export class WsFrameReader {
         messages.push(payload);
       } else if (opcode === 0x8) {
         throw new Error("RTSPS WebSocket closed");
+      } else if (opcode === 0x9) {
+        this.pingPayloads.push(payload);
       }
-      // 0x9/0xa ping/pong ignored for probe
     }
     return messages;
+  }
+
+  drainPingPayloads(): Buffer[] {
+    const payloads = this.pingPayloads;
+    this.pingPayloads = [];
+    return payloads;
   }
 }

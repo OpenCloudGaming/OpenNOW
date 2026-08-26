@@ -1,8 +1,14 @@
 import type { Duplex } from "node:stream";
 
-import { connectNvstWss, encodeWsTextFrame, WsFrameReader } from "./websocketTransport";
+import {
+  connectNvstWss,
+  encodeWsPingFrame,
+  encodeWsPongFrame,
+  encodeWsTextFrame,
+  WsFrameReader,
+} from "./websocketTransport";
 
-const GS_VERSION = "14.2";
+export const RTSPS_WS_KEEPALIVE_INTERVAL_MS = 2_000;
 
 export interface ParsedRtspResponse {
   statusCode: number;
@@ -42,6 +48,33 @@ export function header(headers: Record<string, string>, name: string): string | 
   return headers[name.toLowerCase()];
 }
 
+/** Content-Length only when there is a body. Empty header values are kept (official SETUP sends `Transport: `). */
+export function buildRtspRequest(
+  method: string,
+  uri: string,
+  extraHeaders: Record<string, string> = {},
+  body = "",
+  cseq = 1,
+): string {
+  const headers: Record<string, string> = {
+    CSeq: String(cseq),
+    "Request-Id": String(cseq),
+    ...extraHeaders,
+  };
+  if (body.length > 0) {
+    headers["Content-Length"] = String(Buffer.byteLength(body, "utf8"));
+  }
+  let message = `${method} ${uri} RTSP/1.0\r\n`;
+  for (const [key, value] of Object.entries(headers)) {
+    message += `${key}: ${value}\r\n`;
+  }
+  message += "\r\n";
+  if (body.length > 0) {
+    message += body;
+  }
+  return message;
+}
+
 export function extractVideoPeer(
   transport: string | undefined,
 ): { ip: string; port: number } | undefined {
@@ -61,7 +94,10 @@ export class RtspOverWssClient {
   private frameReader = new WsFrameReader();
   private buffer = Buffer.alloc(0);
   private cseq = 0;
+  private healthy = false;
+  private keepaliveTimer: NodeJS.Timeout | null = null;
   private pending: {
+    cseq: number;
     resolve: (response: ParsedRtspResponse) => void;
     reject: (error: Error) => void;
   } | null = null;
@@ -71,10 +107,11 @@ export class RtspOverWssClient {
     private readonly port: number,
     private readonly timeoutMs: number,
     private readonly onLog?: (message: string) => void,
+    private readonly connectSocket: typeof connectNvstWss = connectNvstWss,
   ) {}
 
   async connect(sessionId?: string): Promise<void> {
-    const socket = await connectNvstWss(
+    const socket = await this.connectSocket(
       this.host,
       this.port,
       this.timeoutMs,
@@ -82,32 +119,30 @@ export class RtspOverWssClient {
       this.onLog,
     );
     this.socket = socket;
+    this.frameReader = new WsFrameReader();
+    this.buffer = Buffer.alloc(0);
+    this.healthy = true;
+    this.keepaliveTimer = setInterval(() => {
+      if (this.isHealthy()) {
+        this.socket?.write(encodeWsPingFrame());
+      }
+    }, RTSPS_WS_KEEPALIVE_INTERVAL_MS);
+    this.keepaliveTimer.unref();
     socket.on("data", (chunk: Buffer) => this.onSocketData(chunk));
     socket.on("error", (error) => {
-      if (this.pending) {
-        this.pending.reject(error instanceof Error ? error : new Error(String(error)));
-        this.pending = null;
-      }
+      this.failConnection(error instanceof Error ? error : new Error(String(error)), false);
     });
     socket.on("close", () => {
-      if (this.pending) {
-        this.pending.reject(new Error("RTSPS WebSocket closed"));
-        this.pending = null;
-      }
+      this.failConnection(new Error("RTSPS WebSocket closed"), false);
     });
   }
 
+  isHealthy(): boolean {
+    return this.healthy && this.socket !== null && !this.socket.destroyed;
+  }
+
   close(): void {
-    try {
-      this.socket?.destroy();
-    } catch {
-      // ignore
-    }
-    this.socket = null;
-    if (this.pending) {
-      this.pending.reject(new Error("RTSPS probe closed"));
-      this.pending = null;
-    }
+    this.failConnection(new Error("RTSPS probe closed"), true);
   }
 
   async request(
@@ -116,7 +151,7 @@ export class RtspOverWssClient {
     extraHeaders: Record<string, string> = {},
     body = "",
   ): Promise<ParsedRtspResponse> {
-    if (!this.socket || this.socket.destroyed) {
+    if (!this.isHealthy()) {
       throw new Error("RTSPS WebSocket is not open");
     }
     if (this.pending) {
@@ -124,66 +159,58 @@ export class RtspOverWssClient {
     }
 
     this.cseq += 1;
-    const headers: Record<string, string> = {
-      CSeq: String(this.cseq),
-      "Request-Id": String(this.cseq),
-      "X-GS-Version": GS_VERSION,
-      ...extraHeaders,
-    };
-    if (body.length > 0) {
-      headers["Content-Length"] = String(Buffer.byteLength(body, "utf8"));
-    }
-
-    let message = `${method} ${uri} RTSP/1.0\r\n`;
-    for (const [key, value] of Object.entries(headers)) {
-      message += `${key}: ${value}\r\n`;
-    }
-    message += "\r\n";
-    if (body.length > 0) {
-      message += body;
-    }
+    const message = buildRtspRequest(method, uri, extraHeaders, body, this.cseq);
 
     return await new Promise<ParsedRtspResponse>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        if (this.pending) {
-          this.pending = null;
-          reject(new Error(`RTSP ${method} timed out after ${this.timeoutMs}ms`));
-        }
-      }, this.timeoutMs);
-
-      this.pending = {
-        resolve: (response) => {
+      const pending = {
+        cseq: this.cseq,
+        resolve: (response: ParsedRtspResponse) => {
           clearTimeout(timer);
           resolve(response);
         },
-        reject: (error) => {
+        reject: (error: Error) => {
           clearTimeout(timer);
           reject(error);
         },
       };
+      const timer = setTimeout(() => {
+        if (this.pending !== pending) {
+          return;
+        }
+        this.failConnection(
+          new Error(`RTSP ${method} timed out after ${this.timeoutMs}ms`),
+          true,
+        );
+      }, this.timeoutMs);
+      this.pending = pending;
 
       try {
         this.socket?.write(encodeWsTextFrame(Buffer.from(message, "utf8")));
       } catch (error) {
         clearTimeout(timer);
         this.pending = null;
-        reject(error instanceof Error ? error : new Error(String(error)));
+        const writeError = error instanceof Error ? error : new Error(String(error));
+        this.failConnection(writeError, true);
+        reject(writeError);
       }
     });
   }
 
   private onSocketData(chunk: Buffer): void {
+    if (!this.isHealthy()) {
+      return;
+    }
     try {
-      for (const payload of this.frameReader.push(chunk)) {
+      const payloads = this.frameReader.push(chunk);
+      for (const pingPayload of this.frameReader.drainPingPayloads()) {
+        this.socket?.write(encodeWsPongFrame(pingPayload));
+      }
+      for (const payload of payloads) {
         this.buffer = Buffer.concat([this.buffer, payload]);
         this.tryCompleteResponse();
       }
     } catch (error) {
-      if (this.pending) {
-        const pending = this.pending;
-        this.pending = null;
-        pending.reject(error instanceof Error ? error : new Error(String(error)));
-      }
+      this.failConnection(error instanceof Error ? error : new Error(String(error)), true);
     }
   }
 
@@ -225,13 +252,38 @@ export class RtspOverWssClient {
 
     try {
       const parsed = parseRtspResponse(raw);
+      const responseCseq = header(parsed.headers, "cseq");
+      if (responseCseq !== String(this.pending.cseq)) {
+        throw new Error(
+          `RTSP response CSeq mismatch: expected ${this.pending.cseq}, received ${responseCseq ?? "missing"}`,
+        );
+      }
       const pending = this.pending;
       this.pending = null;
       pending?.resolve(parsed);
     } catch (error) {
-      const pending = this.pending;
-      this.pending = null;
-      pending?.reject(error instanceof Error ? error : new Error(String(error)));
+      this.failConnection(error instanceof Error ? error : new Error(String(error)), true);
+    }
+  }
+
+  private failConnection(error: Error, destroySocket: boolean): void {
+    if (this.keepaliveTimer) {
+      clearInterval(this.keepaliveTimer);
+      this.keepaliveTimer = null;
+    }
+    this.healthy = false;
+    this.buffer = Buffer.alloc(0);
+    const socket = this.socket;
+    this.socket = null;
+    const pending = this.pending;
+    this.pending = null;
+    pending?.reject(error);
+    if (destroySocket) {
+      try {
+        socket?.destroy();
+      } catch {
+        // ignore
+      }
     }
   }
 }

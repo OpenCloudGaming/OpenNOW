@@ -12,10 +12,12 @@ export function useStreamSession() {
 export {
   ICE_DISCONNECTED_RECOVERY_GRACE_MS,
   RECOVERABLE_STREAM_STATUSES,
-  SIGNALING_RECOVERY_ATTEMPT_DELAYS_MS,
+  SIGNALING_RECOVERY_POLL_INTERVAL_MS,
   SIGNALING_RECOVERY_STABLE_RESET_DELAY_MS,
+  SIGNALING_RECOVERY_WINDOW_MS,
   SIGNALING_REMOTE_ICE_GRACE_MS,
   isRemoteSessionEndReason,
+  nextSignalingRecoveryPollDelayMs,
   remoteSessionEndCode,
   readStreamClipboardText,
   sendStreamClipboardPaste,

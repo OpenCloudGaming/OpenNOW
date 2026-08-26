@@ -7,13 +7,14 @@ import {
   unsupportedNativeCloudGsyncCapabilities,
   type NativeCloudGsyncCapabilities,
 } from "@shared/cloudGsync";
+import { probeLinuxVrr } from "./linuxVrr";
 
 interface WindowsDisplayProbe {
   adapters?: string[];
   monitors?: string[];
 }
 
-function assumedWindowsCapabilities(reason: string): NativeCloudGsyncCapabilities {
+function assumedCapabilities(reason: string): NativeCloudGsyncCapabilities {
   return {
     platformSupportsCloudGsync: true,
     isVrrCapableDisplay: true,
@@ -21,6 +22,7 @@ function assumedWindowsCapabilities(reason: string): NativeCloudGsyncCapabilitie
     minimumFpsForCloudGsync: DEFAULT_MINIMUM_FPS_FOR_CLOUD_GSYNC,
     minimumFpsForReflexWithoutVrr: DEFAULT_MINIMUM_FPS_FOR_REFLEX_WITHOUT_VRR,
     detectionSource: "assumed",
+    windowSystem: process.platform === "win32" ? "windows" : "unknown",
     reason,
   };
 }
@@ -64,7 +66,24 @@ export async function getNativeCloudGsyncCapabilities(
   const override = normalizeCloudGsyncOverride(overrideValue);
 
   if (override === "1") {
-    return assumedWindowsCapabilities("OPENNOW_NATIVE_CLOUD_GSYNC=1");
+    return assumedCapabilities("OPENNOW_NATIVE_CLOUD_GSYNC=1");
+  }
+
+  if (process.platform === "linux") {
+    const probe = await probeLinuxVrr();
+    return {
+      platformSupportsCloudGsync: probe.platformSupported,
+      isVrrCapableDisplay: probe.displayCapable,
+      isVrrActive: probe.active,
+      isGsyncDisplay: probe.gsyncDisplay,
+      minimumFpsForCloudGsync: DEFAULT_MINIMUM_FPS_FOR_CLOUD_GSYNC,
+      minimumFpsForReflexWithoutVrr: DEFAULT_MINIMUM_FPS_FOR_REFLEX_WITHOUT_VRR,
+      detectionSource: probe.detection,
+      windowSystem: probe.windowSystem,
+      displayName: probe.displayName,
+      displayRefreshHz: probe.refreshHz,
+      reason: probe.reason,
+    };
   }
 
   if (process.platform !== "win32") {
@@ -87,7 +106,7 @@ export async function getNativeCloudGsyncCapabilities(
     // Node/Electron has no NVAPI/DXGI VRR binding here. Match the official client's
     // vrrDisplayWar behavior: on Windows with NVIDIA present, treat likely G-Sync
     // setups as VRR-capable when exact detection is unavailable.
-    return assumedWindowsCapabilities(
+    return assumedCapabilities(
       `nvidia-adapter-assumed-vrr adapters=${adapters.join(",")} monitors=${monitors.join(",") || "unknown"}`,
     );
   } catch (error) {

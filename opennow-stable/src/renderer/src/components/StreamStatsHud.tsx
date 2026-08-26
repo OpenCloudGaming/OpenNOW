@@ -46,7 +46,7 @@ export interface StreamStatsHudProps {
   diagnosticsStore: StreamDiagnosticsStore;
   mode: "compact" | "full";
   position: StatsOverlayPosition;
-  gstreamerEnabled: boolean;
+  nativeStreamingEnabled: boolean;
   serverRegion?: string;
   sessionTimeRemainingText: string | null;
   hintsVisible?: boolean;
@@ -57,7 +57,7 @@ export function StreamStatsHud({
   diagnosticsStore,
   mode,
   position,
-  gstreamerEnabled,
+  nativeStreamingEnabled,
   serverRegion,
   sessionTimeRemainingText,
   hintsVisible = false,
@@ -252,13 +252,13 @@ export function StreamStatsHud({
       }),
     );
     lines.push(
-      gstreamerEnabled
-        ? t("stream.stats.advancedGstreamerEnabled", {
+      nativeStreamingEnabled
+        ? t("stream.stats.advancedNativeEnabled", {
             state: stats.nativeRendererActive
               ? t("stream.stats.inUseValue")
               : t("stream.stats.notActiveValue"),
           })
-        : t("stream.stats.advancedGstreamerDisabled"),
+        : t("stream.stats.advancedNativeDisabled"),
     );
     if (!stats.nativeRendererActive && stats.transportType !== "unknown") {
       lines.push(t("stream.stats.advancedIceCandidate", { transport: transportText }));
@@ -321,7 +321,7 @@ export function StreamStatsHud({
       );
     }
     return lines;
-  }, [gstreamerEnabled, hasLagIssue, shaderActive, stats, t, transportText]);
+  }, [nativeStreamingEnabled, hasLagIssue, shaderActive, stats, t, transportText]);
 
   const kpiRow = (
     <div className="sv-stats-kpis">

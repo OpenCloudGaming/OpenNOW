@@ -36,14 +36,27 @@ jobs:
       prerelease: ${{ steps.release.outputs.prerelease }}
       make_latest: ${{ steps.release.outputs.make_latest }}
       release_tag: ${{ steps.release.outputs.release_tag }}
-      source_ref: ${{ steps.release.outputs.source_ref }}
       release_type: ${{ steps.release.outputs.release_type }}
       release_name: ${{ steps.release.outputs.release_name }}
       previous_tag: ${{ steps.release.outputs.previous_tag }}
 
     steps:
+      - name: Validate manual release source
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
+        run: |
+          if [[ "$REF_TYPE" != "branch" || "$REF_NAME" != "dev" ]]; then
+            echo "Manual releases must be dispatched from the dev branch." >&2
+            exit 1
+          fi
+
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && 'refs/heads/dev' || github.sha }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -127,10 +140,8 @@ jobs:
 
           if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
             release_tag="v${version}"
-            source_ref="$REF_NAME"
           else
             release_tag="$raw"
-            source_ref="$REF_NAME"
           fi
 
           release_pages="$(gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/releases?per_page=100")"
@@ -167,7 +178,6 @@ jobs:
             echo "prerelease=$prerelease"
             echo "make_latest=$make_latest"
             echo "release_tag=$release_tag"
-            echo "source_ref=$source_ref"
             echo "release_type=$release_type"
             echo "release_name=$release_name"
             echo "previous_tag=$previous_tag"
@@ -186,7 +196,7 @@ jobs:
       - name: Checkout source
         uses: actions/checkout@v4
         with:
-          ref: ${{ needs.preflight.outputs.source_ref }}
+          ref: ${{ github.event_name == 'workflow_dispatch' && 'refs/heads/dev' || github.sha }}
           fetch-depth: 0
           token: ${{ secrets.RELEASE_PUSH_TOKEN || secrets.GITHUB_TOKEN }}
 
@@ -197,7 +207,6 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           REF_TYPE: ${{ github.ref_type }}
           RELEASE_VERSION: ${{ needs.preflight.outputs.version }}
-          SOURCE_REF: ${{ needs.preflight.outputs.source_ref }}
           RELEASE_TYPE: ${{ needs.preflight.outputs.release_type }}
         run: |
           if [[ "$RELEASE_TYPE" == "nightly" ]]; then
@@ -225,7 +234,7 @@ jobs:
             echo "No version bump changes to commit."
           else
             git commit -m "chore(release): prepare v${RELEASE_VERSION}"
-            git push origin HEAD:"$SOURCE_REF"
+            git push origin HEAD:dev
           fi
           echo "release_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
@@ -243,8 +252,7 @@ jobs:
             os: blacksmith-4vcpu-windows-2025
             builder_args: "--win nsis portable --x64"
             native_build: "true"
-            bundle_gstreamer: "1"
-            native_target: ""
+            native_target: "x86_64-pc-windows-msvc"
             native_platform_key: "win32-x64"
             artifact_paths: |
               opennow-stable/dist-release/*-x64.exe
@@ -253,9 +261,8 @@ jobs:
           - label: windows-arm64
             os: blacksmith-4vcpu-windows-2025
             builder_args: "--win nsis portable --arm64"
-            native_build: "false"
-            bundle_gstreamer: "0"
-            native_target: ""
+            native_build: "true"
+            native_target: "aarch64-pc-windows-msvc"
             native_platform_key: "win32-arm64"
             artifact_paths: |
               opennow-stable/dist-release/*-arm64.exe
@@ -263,7 +270,6 @@ jobs:
             os: blacksmith-6vcpu-macos-15
             builder_args: "--mac dmg zip --x64"
             native_build: "true"
-            bundle_gstreamer: "1"
             native_target: "x86_64-apple-darwin"
             native_platform_key: "darwin-x64"
             arch: x64
@@ -275,7 +281,6 @@ jobs:
             os: blacksmith-6vcpu-macos-15
             builder_args: "--mac dmg zip --arm64"
             native_build: "true"
-            bundle_gstreamer: "1"
             native_target: "aarch64-apple-darwin"
             native_platform_key: "darwin-arm64"
             arch: arm64
@@ -287,8 +292,7 @@ jobs:
             os: blacksmith-4vcpu-ubuntu-2404
             builder_args: "--linux AppImage deb --x64"
             native_build: "true"
-            bundle_gstreamer: "0"
-            native_target: ""
+            native_target: "x86_64-unknown-linux-gnu"
             native_platform_key: "linux-x64"
             artifact_paths: |
               opennow-stable/dist-release/*-x86_64.AppImage
@@ -298,8 +302,7 @@ jobs:
             os: blacksmith-4vcpu-ubuntu-2404-arm
             builder_args: "--linux AppImage deb --arm64"
             native_build: "true"
-            bundle_gstreamer: "0"
-            native_target: ""
+            native_target: "aarch64-unknown-linux-gnu"
             native_platform_key: "linux-arm64"
             artifact_paths: |
               opennow-stable/dist-release/*-arm64.AppImage
@@ -316,8 +319,6 @@ jobs:
       ELECTRON_BUILDER_CACHE: ${{ github.workspace }}/.cache/electron-builder
       npm_config_audit: "false"
       npm_config_fund: "false"
-      GSTREAMER_VERSION: "1.28.2"
-      GSTREAMER_WINDOWS_VERSION: "1.28.3"
       CARGO_NET_RETRY: "10"
       CARGO_HTTP_MULTIPLEXING: "false"
       CARGO_REGISTRIES_CRATES_IO_PROTOCOL: sparse
@@ -329,7 +330,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          ref: ${{ needs.prepare-source.outputs.release_sha }}
+          ref: ${{ github.event_name == 'workflow_dispatch' && 'refs/heads/dev' || github.sha }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -341,6 +342,70 @@ jobs:
       - name: Setup Rust
         if: matrix.native_build == 'true'
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Linux native streamer build dependencies
+        if: matrix.native_build == 'true' && runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            cmake \
+            libasound2-dev \
+            libdrm-dev \
+            libpulse-dev \
+            libva-dev \
+            libx11-dev \
+            libxcursor-dev \
+            libxext-dev \
+            libxfixes-dev \
+            libxi-dev \
+            libxrandr-dev \
+            libxrender-dev \
+            libxss-dev \
+            make \
+            nasm \
+            pkg-config
+
+      - name: Install Linux ARM64 cross compiler
+        if: matrix.native_build == 'true' && matrix.label == 'linux-arm64'
+        run: sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+
+      - name: Install Windows ARM64 compiler
+        if: matrix.native_target == 'aarch64-pc-windows-msvc'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $installerRoot = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer"
+          $installPath = & "$installerRoot\vswhere.exe" -latest -products * -property installationPath
+          if (-not $installPath) {
+            throw "Visual Studio Build Tools installation was not found."
+          }
+          $compiler = Get-ChildItem "$installPath\VC\Tools\MSVC\*\bin\Hostx64\arm64\cl.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $compiler) {
+            $arguments = "modify --installPath `"$installPath`" --quiet --norestart --add Microsoft.VisualStudio.Component.VC.Tools.ARM64"
+            $install = Start-Process "$installerRoot\vs_installer.exe" -ArgumentList $arguments -Wait -PassThru
+            if ($install.ExitCode -notin 0, 3010) {
+              throw "Visual Studio ARM64 compiler installation failed with exit code $($install.ExitCode)."
+            }
+            $compiler = Get-ChildItem "$installPath\VC\Tools\MSVC\*\bin\Hostx64\arm64\cl.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+          }
+          if (-not $compiler) {
+            throw "Visual Studio ARM64 compiler is unavailable after installation."
+          }
+          Write-Host "Using Windows ARM64 compiler: $($compiler.FullName)"
+
+      - name: Setup Windows ARM64 build tools
+        if: matrix.native_target == 'aarch64-pc-windows-msvc'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: amd64_arm64
+
+      - name: Pin CMake for bundled SDL2
+        if: matrix.native_build == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          python3 -m venv "$RUNNER_TEMP/cmake-venv"
+          "$RUNNER_TEMP/cmake-venv/bin/pip" install --disable-pip-version-check cmake==3.31.6
+          echo "$RUNNER_TEMP/cmake-venv/bin" >> "$GITHUB_PATH"
 
       - name: Install Rust target
         if: matrix.native_build == 'true' && matrix.native_target != ''
@@ -367,225 +432,6 @@ jobs:
           key: ${{ runner.os }}-electron-${{ hashFiles('**/package-lock.json') }}
           restore-keys: |
             ${{ runner.os }}-electron-
-
-      - name: Install Linux build/runtime packages
-        if: runner.os == 'Linux'
-        env:
-          DEBIAN_FRONTEND: noninteractive
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            fakeroot \
-            rpm \
-            build-essential \
-            pkg-config \
-            libx11-dev \
-            libglib2.0-dev \
-            libgstreamer1.0-dev \
-            libgstreamer-plugins-base1.0-dev \
-            libgstreamer-plugins-bad1.0-dev \
-            gstreamer1.0-alsa \
-            gstreamer1.0-libav \
-            gstreamer1.0-plugins-base \
-            gstreamer1.0-plugins-good \
-            gstreamer1.0-plugins-bad \
-            gstreamer1.0-plugins-ugly \
-            gstreamer1.0-nice \
-            gstreamer1.0-vaapi \
-            gstreamer1.0-gl \
-            gstreamer1.0-x \
-            libva2 \
-            libva-drm2 \
-            libvulkan1 \
-            mesa-vulkan-drivers
-
-      - name: Cache macOS GStreamer packages
-        if: matrix.native_build == 'true' && runner.os == 'macOS'
-        uses: actions/cache@v4
-        with:
-          path: ${{ github.workspace }}/.cache/gstreamer-macos
-          key: gstreamer-macos-${{ env.GSTREAMER_VERSION }}
-
-      - name: Install macOS GStreamer build/runtime packages
-        if: matrix.native_build == 'true' && runner.os == 'macOS'
-        run: |
-          primary_base="https://gstreamer.freedesktop.org/data/pkg/macos/${GSTREAMER_VERSION}"
-          mirror_base="https://gstreamer.freedesktop.org/pkg/macos/${GSTREAMER_VERSION}"
-          cache_dir="${GITHUB_WORKSPACE}/.cache/gstreamer-macos/${GSTREAMER_VERSION}"
-          mkdir -p "$cache_dir"
-          runtime="$cache_dir/gstreamer-1.0-${GSTREAMER_VERSION}-universal.pkg"
-          devel="$cache_dir/gstreamer-1.0-devel-${GSTREAMER_VERSION}-universal.pkg"
-          download_pkg() {
-            local name="$1"
-            local destination="$2"
-            local partial="${destination}.part"
-            if [ -s "$destination" ]; then
-              return 0
-            fi
-            rm -f "$partial"
-            if ! curl --fail --location --retry 8 --retry-all-errors --retry-delay 5 --connect-timeout 30 --continue-at - --output "$partial" "$primary_base/$name"; then
-              curl --fail --location --retry 8 --retry-all-errors --retry-delay 5 --connect-timeout 30 --continue-at - --output "$partial" "$mirror_base/$name"
-            fi
-            test -s "$partial"
-            mv "$partial" "$destination"
-          }
-          download_pkg "gstreamer-1.0-${GSTREAMER_VERSION}-universal.pkg" "$runtime"
-          download_pkg "gstreamer-1.0-devel-${GSTREAMER_VERSION}-universal.pkg" "$devel"
-          test -s "$runtime"
-          test -s "$devel"
-          sudo installer -pkg "$runtime" -target /
-          sudo installer -pkg "$devel" -target /
-          root="/Library/Frameworks/GStreamer.framework/Versions/1.0"
-          echo "GSTREAMER_1_0_ROOT_MACOS=$root" >> "$GITHUB_ENV"
-          echo "$root/bin" >> "$GITHUB_PATH"
-          echo "PKG_CONFIG_PATH=$root/lib/pkgconfig:$PKG_CONFIG_PATH" >> "$GITHUB_ENV"
-
-      - name: Cache Windows GStreamer SDK
-        if: matrix.native_build == 'true' && runner.os == 'Windows'
-        uses: actions/cache@v4
-        with:
-          path: |
-            C:\gstreamer
-            ${{ github.workspace }}\.cache\gstreamer-windows
-          key: gstreamer-windows-${{ env.GSTREAMER_WINDOWS_VERSION }}
-
-      - name: Install Windows GStreamer SDK
-        if: matrix.native_build == 'true' && runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $installRoot = "C:\gstreamer\1.0\msvc_x86_64"
-          $roots = @(
-            $installRoot,
-            "C:\Program Files\gstreamer\1.0\msvc_x86_64"
-          )
-          $searchBases = @("C:\gstreamer", "C:\Program Files\gstreamer")
-          $script:gstreamerPcPaths = @()
-          $script:lastInstallerExitCode = $null
-          function Test-GStreamerRoot([string] $candidate) {
-            return [bool]($candidate -and
-              (Test-Path (Join-Path $candidate "lib\pkgconfig\gstreamer-1.0.pc")) -and
-              ((Test-Path (Join-Path $candidate "bin\pkg-config.exe")) -or (Test-Path (Join-Path $candidate "bin\pkgconf.exe"))))
-          }
-          function Find-GStreamerRoot {
-            $script:gstreamerPcPaths = @()
-            foreach ($candidate in $roots) {
-              if (Test-GStreamerRoot $candidate) { return $candidate }
-            }
-            foreach ($base in $searchBases) {
-              if (-not (Test-Path $base)) { continue }
-              $pcFiles = @(Get-ChildItem -Path $base -Filter "gstreamer-1.0.pc" -Recurse -ErrorAction SilentlyContinue | Where-Object { $_.FullName -like "*\lib\pkgconfig\gstreamer-1.0.pc" })
-              foreach ($pc in $pcFiles) {
-                $script:gstreamerPcPaths += $pc.FullName
-                $root = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $pc.FullName))
-                if (Test-GStreamerRoot $root) { return $root }
-              }
-            }
-            return $null
-          }
-          function Get-GStreamerInstaller([string] $fileName, [string] $downloadDir, [string[]] $urlBases) {
-            New-Item -ItemType Directory -Force -Path $downloadDir | Out-Null
-            $output = Join-Path $downloadDir $fileName
-            $partial = "$output.part"
-            if ((Test-Path $output) -and ((Get-Item $output).Length -gt 0)) {
-              Write-Host "Using cached GStreamer MSI: $output"
-              return $output
-            }
-            foreach ($base in $urlBases) {
-              $url = "$base/$fileName"
-              Write-Host "Downloading GStreamer MSI from $url"
-              if ((Test-Path $partial) -and ((Get-Item $partial).Length -eq 0)) { Remove-Item -Force $partial }
-              $process = Start-Process -FilePath "curl.exe" -ArgumentList @(
-                "--fail",
-                "--location",
-                "--retry", "8",
-                "--retry-all-errors",
-                "--retry-delay", "5",
-                "--connect-timeout", "30",
-                "--continue-at", "-",
-                "--output", $partial,
-                $url
-              ) -Wait -PassThru -NoNewWindow
-              if ($process.ExitCode -eq 0 -and (Test-Path $partial) -and ((Get-Item $partial).Length -gt 0)) {
-                Move-Item -Force $partial $output
-                return $output
-              }
-              Write-Host "GStreamer MSI download failed from $url with curl exit code $($process.ExitCode)."
-              if ((Test-Path $partial) -and ((Get-Item $partial).Length -eq 0)) { Remove-Item -Force $partial }
-            }
-            if (Test-Path $partial) {
-              Write-Host "Removing incomplete GStreamer MSI download: $partial"
-              Remove-Item -Force $partial
-            }
-            return $null
-          }
-          function Install-GStreamerSdk([string] $version) {
-            $urlBases = @(
-              "https://gstreamer.freedesktop.org/data/pkg/windows/$version/msvc",
-              "https://gstreamer.freedesktop.org/pkg/windows/$version/msvc"
-            )
-            $downloadDir = Join-Path $env:GITHUB_WORKSPACE ".cache\gstreamer-windows\$version"
-            $installer = Get-GStreamerInstaller "gstreamer-1.0-msvc-x86_64-$version.exe" $downloadDir $urlBases
-            if (-not $installer) { return $false }
-            $install = Start-Process -FilePath $installer -ArgumentList @(
-              "/VERYSILENT",
-              "/SUPPRESSMSGBOXES",
-              "/NORESTART",
-              "/TYPE=devel",
-              "/DIR=$installRoot"
-            ) -Wait -PassThru -NoNewWindow
-            $script:lastInstallerExitCode = $install.ExitCode
-            if ($install.ExitCode -ne 0) { return $false }
-            return [bool](Find-GStreamerRoot)
-          }
-          $root = Find-GStreamerRoot
-          if ($root) {
-            Write-Host "Using cached GStreamer Windows SDK: $root"
-          } elseif (-not (Install-GStreamerSdk $env:GSTREAMER_WINDOWS_VERSION)) {
-            [void](Find-GStreamerRoot)
-            Write-Host "GStreamer explicit roots searched: $($roots -join ', ')"
-            Write-Host "GStreamer recursive search bases: $($searchBases -join ', ')"
-            Write-Host "Discovered gstreamer-1.0.pc paths: $(if ($script:gstreamerPcPaths.Count) { $script:gstreamerPcPaths -join ', ' } else { 'none' })"
-            Write-Error "Failed to install/discover GStreamer Windows SDK version $env:GSTREAMER_WINDOWS_VERSION. Installer exit code: $script:lastInstallerExitCode."
-            exit 1
-          }
-          $root = Find-GStreamerRoot
-          Write-Host "GStreamer explicit roots searched: $($roots -join ', ')"
-          Write-Host "GStreamer recursive search bases: $($searchBases -join ', ')"
-          Write-Host "Discovered gstreamer-1.0.pc paths: $(if ($script:gstreamerPcPaths.Count) { $script:gstreamerPcPaths -join ', ' } else { 'none' })"
-          if (-not $root) {
-            Write-Error "GStreamer SDK root not found. Checked: $($roots -join ', '). Expected lib\pkgconfig\gstreamer-1.0.pc and bin\pkg-config.exe or bin\pkgconf.exe."
-            exit 1
-          }
-          $gstInspect = Join-Path $root "bin\gst-inspect-1.0.exe"
-          if (-not (Test-Path $gstInspect)) {
-            Write-Error "gst-inspect-1.0.exe not found in $root\bin after GStreamer install."
-            exit 1
-          }
-          $h264Decoders = @("avdec_h264", "d3d11h264dec", "d3d12h264dec")
-          $availableH264Decoders = @()
-          foreach ($decoder in $h264Decoders) {
-            $inspect = Start-Process -FilePath $gstInspect -ArgumentList @($decoder) -Wait -PassThru -NoNewWindow
-            if ($inspect.ExitCode -eq 0) {
-              $availableH264Decoders += $decoder
-              Write-Host "GStreamer decoder available: $decoder"
-            } else {
-              Write-Host "GStreamer decoder unavailable: $decoder"
-            }
-          }
-          if ($availableH264Decoders.Count -eq 0) {
-            Write-Error "GStreamer Windows SDK installed, but no H.264 decoder plugins were found among: $($h264Decoders -join ', ')"
-            exit 1
-          }
-          # Official Cerbero Windows packages disable gstvulkan. OpenNOW injects a
-          # vendored Vulkan plugin into the private runtime after bundling.
-          Write-Host "Skipping base-SDK Vulkan element checks; Vulkan is injected into the private OpenNOW runtime bundle."
-          "GSTREAMER_1_0_ROOT_MSVC_X86_64=$root" | Out-File -FilePath $env:GITHUB_ENV -Append
-          "$root\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
-
-      - name: Build patched Windows GStreamer D3D11 plugin
-        if: matrix.native_build == 'true' && runner.os == 'Windows'
-        shell: pwsh
-        run: ./scripts/build-patched-gstreamer-d3d11.ps1 -GStreamerRoot "$env:GSTREAMER_1_0_ROOT_MSVC_X86_64" -Version "$env:GSTREAMER_WINDOWS_VERSION"
 
       - name: Install FPM for arm64 deb builds
         if: matrix.label == 'linux-arm64'
@@ -621,8 +467,6 @@ jobs:
       - name: Build native streamer
         if: matrix.native_build == 'true'
         env:
-          OPENNOW_NATIVE_STREAMER_FEATURES: gstreamer
-          OPENNOW_BUNDLE_GSTREAMER_RUNTIME: ${{ matrix.bundle_gstreamer }}
           OPENNOW_NATIVE_STREAMER_TARGET: ${{ matrix.native_target }}
           OPENNOW_NATIVE_STREAMER_PLATFORM_KEY: ${{ matrix.native_platform_key }}
         run: npm run native:build
@@ -777,24 +621,10 @@ jobs:
       contents: write
 
     steps:
-      - name: Resolve release branch
-        id: branch
-        shell: bash
-        env:
-          REF_TYPE: ${{ github.ref_type }}
-          REF_NAME: ${{ github.ref_name }}
-        run: |
-          if [[ "$REF_TYPE" == "branch" ]]; then
-            branch="$REF_NAME"
-          else
-            branch="main"
-          fi
-          echo "branch=$branch" >> "$GITHUB_OUTPUT"
-
       - name: Checkout release branch
         uses: actions/checkout@v4
         with:
-          ref: ${{ steps.branch.outputs.branch }}
+          ref: ${{ github.event_name == 'workflow_dispatch' && 'refs/heads/dev' || 'refs/heads/main' }}
           fetch-depth: 0
           token: ${{ secrets.RELEASE_PUSH_TOKEN || secrets.GITHUB_TOKEN }}
 

@@ -58,7 +58,6 @@ export class GfnSignalingClient {
 
     signInUrl.protocol = "wss:";
     signInUrl.pathname = `${signInUrl.pathname.replace(/\/?$/, "/")}sign_in`;
-    signInUrl.search = "";
     signInUrl.searchParams.set("peer_id", this.peerName);
     signInUrl.searchParams.set("version", "2");
     signInUrl.searchParams.set("peer_role", "1");

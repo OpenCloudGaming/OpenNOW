@@ -38,18 +38,24 @@ jobs:
             {
               label: "windows-x64",
               os: "blacksmith-2vcpu-windows-2025",
+              native_target: "x86_64-pc-windows-msvc",
+              native_platform_key: "win32-x64",
               builder_args: "--win nsis portable --x64",
               artifact_paths: "opennow-stable/dist-release/*-x64.exe\n",
             },
             {
               label: "windows-arm64",
               os: "blacksmith-2vcpu-windows-2025",
+              native_target: "aarch64-pc-windows-msvc",
+              native_platform_key: "win32-arm64",
               builder_args: "--win nsis portable --arm64",
               artifact_paths: "opennow-stable/dist-release/*-arm64.exe\n",
             },
             {
               label: "macos-x64",
               os: "blacksmith-6vcpu-macos-15",
+              native_target: "x86_64-apple-darwin",
+              native_platform_key: "darwin-x64",
               builder_args: "--mac dmg zip --x64",
               artifact_paths:
                 "opennow-stable/dist-release/*.dmg\n" +
@@ -58,6 +64,8 @@ jobs:
             {
               label: "macos-arm64",
               os: "blacksmith-6vcpu-macos-15",
+              native_target: "aarch64-apple-darwin",
+              native_platform_key: "darwin-arm64",
               builder_args: "--mac dmg zip --arm64",
               artifact_paths:
                 "opennow-stable/dist-release/*.dmg\n" +
@@ -66,6 +74,8 @@ jobs:
             {
               label: "linux-x64",
               os: "blacksmith-2vcpu-ubuntu-2404",
+              native_target: "x86_64-unknown-linux-gnu",
+              native_platform_key: "linux-x64",
               builder_args: "--linux AppImage deb --x64",
               artifact_paths:
                 "opennow-stable/dist-release/*-x86_64.AppImage\n" +
@@ -74,6 +84,8 @@ jobs:
             {
               label: "linux-arm64",
               os: "blacksmith-2vcpu-ubuntu-2404-arm",
+              native_target: "aarch64-unknown-linux-gnu",
+              native_platform_key: "linux-arm64",
               builder_args: "--linux AppImage deb --arm64",
               artifact_paths:
                 "opennow-stable/dist-release/*-arm64.AppImage\n" +
@@ -87,7 +99,11 @@ jobs:
           const isDevValidationPullRequest = isPullRequest && baseRef === "dev";
           const include = isDevValidationPullRequest
             ? builds.filter(({ label }) =>
-                label === "windows-x64" || label === "linux-x64" || label === "linux-arm64")
+                label === "windows-x64"
+                || label === "macos-x64"
+                || label === "macos-arm64"
+                || label === "linux-x64"
+                || label === "linux-arm64")
             : builds;
 
           fs.appendFileSync(process.env.GITHUB_OUTPUT, `matrix=${JSON.stringify({ include })}\n`);
@@ -121,30 +137,73 @@ jobs:
           cache-dependency-path: opennow-stable/package-lock.json
 
       - name: Setup Rust
-        if: runner.os == 'Linux'
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.native_target }}
 
-      - name: Install Linux native streamer dependencies
+      - name: Install Linux native streamer build dependencies
         if: runner.os == 'Linux'
-        env:
-          DEBIAN_FRONTEND: noninteractive
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            build-essential \
-            pkg-config \
+          sudo apt-get install -y \
+            cmake \
+            libasound2-dev \
+            libdrm-dev \
+            libpulse-dev \
+            libva-dev \
             libx11-dev \
-            libglib2.0-dev \
-            libgstreamer1.0-dev \
-            libgstreamer-plugins-base1.0-dev \
-            libgstreamer-plugins-bad1.0-dev \
-            gstreamer1.0-libav \
-            gstreamer1.0-plugins-base \
-            gstreamer1.0-plugins-good \
-            gstreamer1.0-plugins-bad \
-            gstreamer1.0-nice \
-            gstreamer1.0-gl \
-            gstreamer1.0-x
+            libxcursor-dev \
+            libxext-dev \
+            libxfixes-dev \
+            libxi-dev \
+            libxrandr-dev \
+            libxrender-dev \
+            libxss-dev \
+            make \
+            nasm \
+            pkg-config
+
+      - name: Install Linux ARM64 cross compiler
+        if: matrix.label == 'linux-arm64'
+        run: sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+
+      - name: Install Windows ARM64 compiler
+        if: matrix.native_target == 'aarch64-pc-windows-msvc'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $installerRoot = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer"
+          $installPath = & "$installerRoot\vswhere.exe" -latest -products * -property installationPath
+          if (-not $installPath) {
+            throw "Visual Studio Build Tools installation was not found."
+          }
+          $compiler = Get-ChildItem "$installPath\VC\Tools\MSVC\*\bin\Hostx64\arm64\cl.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $compiler) {
+            $arguments = "modify --installPath `"$installPath`" --quiet --norestart --add Microsoft.VisualStudio.Component.VC.Tools.ARM64"
+            $install = Start-Process "$installerRoot\vs_installer.exe" -ArgumentList $arguments -Wait -PassThru
+            if ($install.ExitCode -notin 0, 3010) {
+              throw "Visual Studio ARM64 compiler installation failed with exit code $($install.ExitCode)."
+            }
+            $compiler = Get-ChildItem "$installPath\VC\Tools\MSVC\*\bin\Hostx64\arm64\cl.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+          }
+          if (-not $compiler) {
+            throw "Visual Studio ARM64 compiler is unavailable after installation."
+          }
+          Write-Host "Using Windows ARM64 compiler: $($compiler.FullName)"
+
+      - name: Setup Windows ARM64 build tools
+        if: matrix.native_target == 'aarch64-pc-windows-msvc'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: amd64_arm64
+
+      - name: Pin CMake for bundled SDL2
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          python3 -m venv "$RUNNER_TEMP/cmake-venv"
+          "$RUNNER_TEMP/cmake-venv/bin/pip" install --disable-pip-version-check cmake==3.31.6
+          echo "$RUNNER_TEMP/cmake-venv/bin" >> "$GITHUB_PATH"
 
       - name: Install dependencies
         run: npm ci
@@ -165,10 +224,14 @@ jobs:
         id: build
         run: npm run build
 
-      - name: Test and build Linux native streamer
-        if: runner.os == 'Linux'
+      - name: Test and build native streamer v2
+        env:
+          OPENNOW_NATIVE_STREAMER_TARGET: ${{ matrix.native_target }}
+          OPENNOW_NATIVE_STREAMER_PLATFORM_KEY: ${{ matrix.native_platform_key }}
         run: |
-          cargo test --manifest-path ../native/opennow-streamer/Cargo.toml --features gstreamer
+          cargo fmt --manifest-path ../native/opennow-streamer/Cargo.toml --all -- --check
+          cargo clippy --manifest-path ../native/opennow-streamer/Cargo.toml --workspace --all-targets -- -D warnings
+          cargo test --manifest-path ../native/opennow-streamer/Cargo.toml --workspace
           npm run native:build
 
       - name: CI summary

@@ -1,4 +1,4 @@
-import { BrowserWindow, type IpcMain } from "electron";
+import electron, { type BrowserWindow, type IpcMain } from "electron";
 import { IPC_CHANNELS } from "@shared/ipc";
 import type {
   IceCandidatePayload,
@@ -15,6 +15,10 @@ import type {
 } from "@shared/gfn";
 import { streamDiagnosticId } from "@shared/gfn";
 import { setLogContext } from "@shared/logger";
+import {
+  GfnNvstRtspSessionOwner,
+  type GfnNvstRtspOwner,
+} from "../platforms/gfn/nvstRtsp/owner";
 import { GfnSignalingClient } from "../platforms/gfn/signaling";
 import { NativeStreamerManager } from "../nativeStreamer/manager";
 import { normalizeNativeInputPacket } from "../nativeStreamer/input";
@@ -22,11 +26,14 @@ import { normalizeNativeRenderSurface } from "../nativeStreamer/surface";
 import { getNativeCloudGsyncCapabilities } from "../nativeCloudGsync";
 import type { SettingsManager } from "../settings";
 
+const { BrowserWindow: ElectronBrowserWindow } = electron;
+
 export interface SignalingCoordinatorDeps {
   ipcMain: IpcMain;
   mainDir: string;
   settingsManager: SettingsManager;
   getMainWindow(): BrowserWindow | null;
+  gfnNvstRtspOwner?: GfnNvstRtspOwner;
 }
 
 export class SignalingCoordinator {
@@ -37,11 +44,50 @@ export class SignalingCoordinator {
   private nativeStreamerFallbackSessionId: string | null = null;
   private nativeSoftwareRetrySessionId: string | null = null;
   private lastSignalingPayload: SignalingConnectRequest | null = null;
+  private readonly gfnNvstRtspOwner: GfnNvstRtspOwner;
   private sessionDiagnosticState: Record<string, unknown> = {
     phase: "idle",
   };
 
-  constructor(private readonly deps: SignalingCoordinatorDeps) {}
+  constructor(private readonly deps: SignalingCoordinatorDeps) {
+    this.gfnNvstRtspOwner = deps.gfnNvstRtspOwner ?? new GfnNvstRtspSessionOwner({
+      reserveVideoUdp: () => this.getNativeStreamerManager().reserveNvstUdp(),
+      onVideoReady: async (videoSession) => {
+        const current = this.nativeStreamerContext;
+        if (!current) {
+          throw new Error("Native streamer context missing while arming NVST receive");
+        }
+        this.nativeStreamerContext = {
+          ...current,
+          nvstVideo: videoSession,
+        };
+      },
+      onAnnounceReady: async (videoSession) => {
+        await this.armNativeAfterNvstAnnounce(videoSession);
+      },
+    });
+  }
+
+  private async armNativeAfterNvstAnnounce(videoSession: NonNullable<NativeStreamerSessionContext["nvstVideo"]>): Promise<void> {
+    const current = this.nativeStreamerContext;
+    if (!current) {
+      throw new Error("Native streamer context missing after NVST ANNOUNCE");
+    }
+    const armed = {
+      ...current,
+      nvstVideo: videoSession,
+    };
+    this.nativeStreamerContext = armed;
+
+    // `prepareForSession` returns only after both native UDP receivers have
+    // inherited their sockets and started. Send PLAY at that point. Waiting
+    // for the subsequent DTLS/SCTP readiness event here makes resume fragile:
+    // resumed GFN seats close their short-lived RTSPS control connection while
+    // that handshake is still completing, and PLAY on a replacement socket is
+    // acknowledged without activating the Mjolnir video route. NVIDIA likewise
+    // issues PLAY immediately after starting its transport workers.
+    await this.getNativeStreamerManager().prepareForSession(armed);
+  }
 
   private retainSessionState(values: Record<string, unknown>): void {
     this.sessionDiagnosticState = {
@@ -127,12 +173,18 @@ export class SignalingCoordinator {
           return;
         }
 
-        const window = BrowserWindow.fromWebContents(event.sender);
+        const window = ElectronBrowserWindow.fromWebContents(event.sender);
         if (!window || window.isDestroyed()) {
           return;
         }
 
-        const surface = normalizeNativeRenderSurface(window, payload);
+        const surface = normalizeNativeRenderSurface(
+          window,
+          payload,
+          process.platform === "win32"
+            ? (point) => electron.screen.dipToScreenPoint(point)
+            : undefined,
+        );
         if (!surface) {
           return;
         }
@@ -153,7 +205,6 @@ export class SignalingCoordinator {
             shortcuts,
           };
         }
-        this.getNativeStreamerManager().updateShortcuts(shortcuts);
       },
     );
 
@@ -200,6 +251,7 @@ export class SignalingCoordinator {
     this.signalingClientKey = null;
     this.nativeStreamerManager?.setVideoBackendOverride(null);
     this.nativeStreamerManager?.dispose(options.reason);
+    void this.gfnNvstRtspOwner.release(options.reason);
     this.nativeStreamerManager = null;
     this.nativeStreamerContext = null;
     this.nativeStreamerFallbackSessionId = null;
@@ -207,11 +259,15 @@ export class SignalingCoordinator {
     this.lastSignalingPayload = null;
   }
 
-  stopNativeStreamer(reason: string): void {
-    void this.nativeStreamerManager?.stop(reason);
+  async stopNativeStreamer(reason: string): Promise<void> {
+    await Promise.all([
+      this.nativeStreamerManager?.stop(reason),
+      this.gfnNvstRtspOwner.release(reason),
+    ]);
   }
 
   resetNativeStreamerContext(): void {
+    void this.gfnNvstRtspOwner.release("native streamer context reset");
     this.nativeStreamerContext = null;
     this.nativeStreamerFallbackSessionId = null;
     this.nativeSoftwareRetrySessionId = null;
@@ -239,7 +295,6 @@ export class SignalingCoordinator {
       };
     }
 
-    this.nativeStreamerManager?.updateBitrateLimit(maxBitrateMbps * 1000);
   }
 
   applySettingsChange<K extends keyof Settings>(
@@ -248,27 +303,24 @@ export class SignalingCoordinator {
   ): void {
     if (
       (key === "streamClientMode" && value !== "native") ||
-      key === "nativeStreamerBackend" ||
       key === "nativeStreamerExecutablePath" ||
       key === "nativeCloudGsyncMode" ||
       key === "nativeD3dFullscreenMode" ||
       key === "nativeExternalRenderer" ||
       key === "transportMode"
     ) {
-      this.stopNativeStreamer(
-        key === "nativeStreamerBackend"
-          ? "native streamer backend changed"
-          : key === "nativeStreamerExecutablePath"
-            ? "native streamer executable changed"
-            : key === "nativeCloudGsyncMode"
-              ? "native Cloud G-Sync mode changed"
-              : key === "nativeD3dFullscreenMode"
-                ? "native D3D fullscreen mode changed"
-                : key === "nativeExternalRenderer"
-                  ? "native external renderer setting changed"
-                  : key === "transportMode"
-                    ? "native transport mode changed"
-                    : "native streamer disabled",
+      void this.stopNativeStreamer(
+        key === "nativeStreamerExecutablePath"
+          ? "native streamer executable changed"
+          : key === "nativeCloudGsyncMode"
+            ? "native Cloud G-Sync mode changed"
+            : key === "nativeD3dFullscreenMode"
+              ? "native D3D fullscreen mode changed"
+              : key === "nativeExternalRenderer"
+                ? "native external renderer setting changed"
+                : key === "transportMode"
+                  ? "native transport mode changed"
+                  : "native streamer disabled",
       );
       this.resetNativeStreamerContext();
     }
@@ -280,7 +332,7 @@ export class SignalingCoordinator {
           "[NativeStreamer] Native video backend changed; active session will keep its current backend until the next native streamer restart.",
         );
       } else {
-        this.stopNativeStreamer("native video backend changed");
+        void this.stopNativeStreamer("native video backend changed");
       }
     }
     if (key === "maxBitrateMbps") {
@@ -289,6 +341,7 @@ export class SignalingCoordinator {
   }
 
   private async connectSignaling(payload: SignalingConnectRequest): Promise<void> {
+    const previousNativeStreamerContext = this.nativeStreamerContext;
     if (
       this.lastSignalingPayload
       && this.lastSignalingPayload.sessionId !== payload.sessionId
@@ -342,6 +395,16 @@ export class SignalingCoordinator {
     }
 
     if (this.signalingClient && this.signalingClientKey === nextKey) {
+      if (
+        previousNativeStreamerContext?.session.sessionId === payload.sessionId
+        && previousNativeStreamerContext.nvstVideo
+        && this.nativeStreamerContext?.settings.transportMode === "nvst"
+      ) {
+        this.nativeStreamerContext = {
+          ...this.nativeStreamerContext,
+          nvstVideo: previousNativeStreamerContext.nvstVideo,
+        };
+      }
       console.log(
         "[Signaling] Reuse existing signaling connection (duplicate connect request ignored)",
       );
@@ -369,9 +432,12 @@ export class SignalingCoordinator {
         phase: "signaling-connect-failed",
         lastError: error instanceof Error ? error.message : String(error),
       });
-      await this.nativeStreamerManager
-        ?.stop("signaling connect failed")
-        .catch(() => undefined);
+      await Promise.all([
+        this.nativeStreamerManager
+          ?.stop("signaling connect failed")
+          .catch(() => undefined),
+        this.gfnNvstRtspOwner.release("signaling connect failed"),
+      ]);
       this.signalingClient = null;
       this.signalingClientKey = null;
       throw error;
@@ -383,7 +449,10 @@ export class SignalingCoordinator {
       phase: "disconnecting",
       stopReason: "renderer signaling disconnect",
     });
-    await this.nativeStreamerManager?.stop("signaling disconnect");
+    await Promise.all([
+      this.nativeStreamerManager?.stop("signaling disconnect"),
+      this.gfnNvstRtspOwner.release("signaling disconnect"),
+    ]);
     this.nativeStreamerManager?.setVideoBackendOverride(null);
     this.nativeStreamerContext = null;
     this.nativeStreamerFallbackSessionId = null;
@@ -398,22 +467,6 @@ export class SignalingCoordinator {
   private emitToRenderer(event: MainToRendererSignalingEvent): void {
     const mainWindow = this.deps.getMainWindow();
     if (mainWindow && !mainWindow.isDestroyed()) {
-      if (event.type === "native-stream-stats") {
-        const serverGpuType = event.stats.serverGpuType?.trim()
-          || this.nativeStreamerContext?.session.gpuType?.trim()
-          || undefined;
-        const serverLocation = event.stats.serverLocation?.trim()
-          || this.nativeStreamerContext?.session.serverLocation?.trim()
-          || undefined;
-        event = {
-          ...event,
-          stats: {
-            ...event.stats,
-            serverGpuType,
-            serverLocation,
-          },
-        };
-      }
       mainWindow.webContents.send(IPC_CHANNELS.SIGNALING_EVENT, event);
     }
   }
@@ -421,7 +474,6 @@ export class SignalingCoordinator {
   private getNativeStreamerManager(): NativeStreamerManager {
     this.nativeStreamerManager ??= new NativeStreamerManager({
       mainDir: this.deps.mainDir,
-      getBackendPreference: () => "gstreamer",
       getVideoBackendPreference: () =>
         this.deps.settingsManager?.get("nativeVideoBackend") ?? "auto",
       getExecutablePathOverride: () =>
@@ -432,7 +484,16 @@ export class SignalingCoordinator {
         this.deps.settingsManager?.get("nativeD3dFullscreenMode") ?? "auto",
       getExternalRendererEnabled: () =>
         this.deps.settingsManager?.get("nativeExternalRenderer") ?? false,
-      emit: (event) => this.emitToRenderer(event),
+      emit: (event) => {
+        if (event.type === "native-stream-stopped") {
+          void this.gfnNvstRtspOwner.release(
+            event.reason
+              ? `native streamer stopped: ${event.reason}`
+              : "native streamer stopped",
+          );
+        }
+        this.emitToRenderer(event);
+      },
       sendAnswer: async (payload) => {
         if (!this.signalingClient) {
           throw new Error("Signaling is not connected");
@@ -518,6 +579,9 @@ export class SignalingCoordinator {
       void this.nativeStreamerManager?.stop(
         `signaling disconnected: ${event.reason}`,
       );
+      void this.gfnNvstRtspOwner.release(
+        `signaling disconnected: ${event.reason}`,
+      );
       this.nativeStreamerContext = null;
       this.nativeStreamerFallbackSessionId = null;
       this.emitToRenderer(event);
@@ -531,6 +595,21 @@ export class SignalingCoordinator {
 
     if (!this.isNativeStreamerSelected() || !context || nativeFallbackActive) {
       this.emitToRenderer(event);
+      return;
+    }
+
+    const nativeNvstActive = this.nativeStreamerManager
+      ?.isNvstSessionActive(context.session.sessionId) ?? false;
+
+    if (
+      nativeNvstActive
+      && (event.type === "offer" || event.type === "remote-ice")
+    ) {
+      console.log(
+        `[NativeStreamer] Explicit NVST is active; ignoring WebRTC ${event.type} (${
+          event.type === "offer" ? `sdpBytes=${event.sdp.length}` : "candidate"
+        })`,
+      );
       return;
     }
 
@@ -562,6 +641,25 @@ export class SignalingCoordinator {
       await this.getNativeStreamerManager().handleOffer(sdp, context);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      if (context.settings.transportMode === "nvst") {
+        console.warn("[NativeStreamer] Explicit NVST startup failed:", message);
+        this.retainSessionState({
+          streamer: "native",
+          phase: "native-nvst-failed",
+          lastError: message,
+        });
+        await Promise.all([
+          this.nativeStreamerManager
+            ?.stop("explicit NVST startup failed")
+            .catch(() => undefined),
+          this.gfnNvstRtspOwner.release("explicit NVST startup failed"),
+        ]);
+        this.emitToRenderer({
+          type: "error",
+          message: `Native NVST failed: ${message}. WebRTC media fallback is disabled for explicit NVST mode.`,
+        });
+        return;
+      }
       console.warn("[NativeStreamer] Falling back to web streamer:", message);
       this.retainSessionState({
         streamer: "web-fallback",
@@ -573,9 +671,12 @@ export class SignalingCoordinator {
         this.nativeStreamerManager?.drainQueuedRemoteIce(
           context.session.sessionId,
         ) ?? [];
-      await this.nativeStreamerManager
-        ?.stop("native streamer fallback")
-        .catch(() => undefined);
+      await Promise.all([
+        this.nativeStreamerManager
+          ?.stop("native streamer fallback")
+          .catch(() => undefined),
+        this.gfnNvstRtspOwner.release("native streamer fallback"),
+      ]);
       this.emitToRenderer({
         type: "error",
         message: `Native streamer failed: ${message}. Falling back to web streamer.`,
@@ -612,9 +713,43 @@ export class SignalingCoordinator {
         type: "log",
         message: "Preparing native streamer before signaling attach.",
       });
-      await this.getNativeStreamerManager().prepareForSession(context);
+      const preparedContext = await this.gfnNvstRtspOwner.prepare(context);
+      if (
+        this.nativeStreamerContext?.session.sessionId
+        !== preparedContext.session.sessionId
+      ) {
+        await this.gfnNvstRtspOwner.release(
+          "native streamer context changed during NVST preparation",
+        );
+        throw new Error("Native streamer context changed during NVST preparation");
+      }
+      this.nativeStreamerContext = preparedContext;
+      // Official Bifrost binds the ICE/bundle socket in-process before ANNOUNCE
+      // and never rebinds. Native reserved that socket during prepare(); start
+      // must reuse it on the same process.
+      await this.getNativeStreamerManager().prepareForSession(preparedContext);
+      await this.gfnNvstRtspOwner.handoffVideoUdp();
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      if (context.settings.transportMode === "nvst") {
+        console.warn("[NativeStreamer] Explicit NVST pre-attach startup failed:", message);
+        this.retainSessionState({
+          streamer: "native",
+          phase: "native-nvst-pre-attach-failed",
+          lastError: message,
+        });
+        await Promise.all([
+          this.nativeStreamerManager
+            ?.stop("explicit NVST pre-attach startup failed")
+            .catch(() => undefined),
+          this.gfnNvstRtspOwner.release("explicit NVST pre-attach startup failed"),
+        ]);
+        this.emitToRenderer({
+          type: "error",
+          message: `Native NVST failed before signaling attach: ${message}. WebRTC media fallback is disabled for explicit NVST mode.`,
+        });
+        throw error;
+      }
       console.warn(
         "[NativeStreamer] Pre-attach startup failed; falling back to web streamer:",
         message,
@@ -625,9 +760,12 @@ export class SignalingCoordinator {
         lastError: message,
       });
       this.nativeStreamerFallbackSessionId = context.session.sessionId;
-      await this.nativeStreamerManager
-        ?.stop("native streamer pre-attach fallback")
-        .catch(() => undefined);
+      await Promise.all([
+        this.nativeStreamerManager
+          ?.stop("native streamer pre-attach fallback")
+          .catch(() => undefined),
+        this.gfnNvstRtspOwner.release("native streamer pre-attach fallback"),
+      ]);
       this.emitToRenderer({
         type: "error",
         message: `Native streamer failed before signaling attach: ${message}. Falling back to web streamer.`,

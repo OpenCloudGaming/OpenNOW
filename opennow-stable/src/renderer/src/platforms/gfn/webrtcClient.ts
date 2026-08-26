@@ -75,6 +75,7 @@ import {
   type RiInputCapabilities,
 } from "./webrtc/inputChannelPolicy";
 import { GamepadController } from "./webrtc/gamepadController";
+import { parseInputProtocolVersion } from "./webrtc/inputHandshake";
 import { DomInputCaptureController } from "./webrtc/domInputCaptureController";
 import { PeerMediaLifecycleController } from "./webrtc/peerMediaLifecycleController";
 import { updateVideoSenderBitrate } from "./webrtc/senderBitrate";
@@ -154,12 +155,12 @@ function describeColorQuality(colorQuality: ColorQuality): string {
 function describeNativeHardwareAcceleration(): string {
   const platform = navigator.platform.toLowerCase();
   if (platform.includes("win")) {
-    return "GStreamer D3D11/DXVA";
+    return "Native D3D11/DXVA";
   }
   if (platform.includes("mac")) {
-    return "GStreamer VideoToolbox";
+    return "Native VideoToolbox";
   }
-  return "GStreamer NVDEC/VAAPI/V4L2/Vulkan";
+  return "Native VA-API/V4L2/Vulkan";
 }
 
 interface ClientOptions {
@@ -299,7 +300,7 @@ export class GfnWebRtcClient {
   /**
    * When true, Electron captures keyboard/mouse/gamepad and forwards packets to
    * the native streamer over IPC (internal child-surface renderer).
-   * When false, the floating external GStreamer window owns OS-level input.
+   * When false, the external native presenter owns OS-level input.
    */
   private nativeElectronInputBridge = false;
   private remoteIceEndpoint: SessionInfo["mediaConnectionInfo"] | null = null;
@@ -939,6 +940,16 @@ export class GfnWebRtcClient {
       this.controlChannel.onclose = null;
       this.controlChannel.onerror = null;
     }
+    if (this.reliableInputChannel) {
+      this.reliableInputChannel.onmessage = null;
+      this.reliableInputChannel.onclose = null;
+      this.reliableInputChannel.onerror = null;
+    }
+    if (this.partiallyReliableInputChannel) {
+      this.partiallyReliableInputChannel.onmessage = null;
+      this.partiallyReliableInputChannel.onclose = null;
+      this.partiallyReliableInputChannel.onerror = null;
+    }
     this.reliableInputChannel?.close();
     this.partiallyReliableInputChannel?.close();
     this.closeCursorChannel();
@@ -1347,10 +1358,7 @@ export class GfnWebRtcClient {
     this.nativeInputActive = true;
     // Internal (one-window) mode: Electron owns capture and IPC-forwards packets.
     // External floating window: OS-level capture stays in the native streamer.
-    // Linux is Internal-only: always use the Electron IPC bridge regardless of stale options.
-    const isLinuxHost = typeof navigator !== "undefined"
-      && /linux/i.test(`${navigator.platform} ${navigator.userAgent}`);
-    this.nativeElectronInputBridge = isLinuxHost || options?.electronInputBridge !== false;
+    this.nativeElectronInputBridge = options?.electronInputBridge !== false;
     this.inputReady = true;
     const nativeProtocolVersion = GfnWebRtcClient.normalizeInputProtocolVersion(
       protocolVersion
@@ -1414,10 +1422,12 @@ export class GfnWebRtcClient {
       );
     } else {
       this.detachInputCapture();
-      // Overlay Meta/Home detection only; gamepad state is owned by the floating window.
+      // SDL owns keyboard/mouse in an external native window. Keep Chromium's
+      // Gamepad API polling alive because the native capture protocol currently
+      // carries keyboard and mouse events only.
       this.gamepadController.start();
       this.log(
-        `Native external-window input active (protocol v${nativeProtocolVersion}); OS capture handled by streamer, Electron overlay shortcuts only.`,
+        `Native external-window input active (protocol v${nativeProtocolVersion}); SDL owns keyboard/mouse and Electron retains gamepad forwarding.`,
       );
     }
   }
@@ -1433,6 +1443,22 @@ export class GfnWebRtcClient {
     this.gamepadController.resetProtocolState();
     this.log(`Native input protocol updated to v${version}`);
 
+  }
+
+  public markNativeInputUnavailable(reason: string): void {
+    this.nativeInputActive = false;
+    this.nativeElectronInputBridge = false;
+    this.inputReady = false;
+    this.inputProtocolVersion = 2;
+    this.inputEncoder.setProtocolVersion(2);
+    this.detachInputCapture();
+    this.gamepadController.stop();
+    this.diagnostics.inputReady = false;
+    this.diagnostics.partiallyReliableInputOpen = false;
+    this.diagnostics.mouseMoveTransport = "reliable";
+    this.diagnostics.lagReason = "unknown";
+    this.diagnostics.lagReasonDetail = `Native input unavailable: ${reason}`;
+    this.emitStats();
   }
 
   private async waitForIceGathering(pc: RTCPeerConnection, timeoutMs: number): Promise<string> {
@@ -1481,6 +1507,20 @@ export class GfnWebRtcClient {
     }, 2000);
   }
 
+  private markReliableInputChannelUnavailable(reason: string): void {
+    if (this.heartbeatTimer !== null) {
+      window.clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = null;
+    }
+    this.inputReady = false;
+    this.inputProtocolVersion = 2;
+    this.inputEncoder.setProtocolVersion(2);
+    this.gamepadController.stop();
+    this.diagnostics.inputReady = false;
+    this.emitStats();
+    this.log(reason);
+  }
+
   private isPartiallyReliableChannelOpen(): boolean {
     return this.inputChannelPolicyController.isPartiallyReliableOpen();
   }
@@ -1515,10 +1555,6 @@ export class GfnWebRtcClient {
       return;
     }
 
-    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-    const firstWord = view.getUint16(0, true);
-    let version = 2;
-
     if (this.inputReady) {
       this.gamepadController.handleHapticsMessage(bytes);
       return;
@@ -1529,16 +1565,14 @@ export class GfnWebRtcClient {
       .join(" ");
     this.log(`Input channel message: ${bytes.length} bytes [${hex}]`);
 
-    if (firstWord === 526) {
-      version = bytes.length >= 4 ? view.getUint16(2, true) : 2;
-      this.log(`Handshake detected: firstWord=526 (0x020e), version=${version}`);
-    } else if (bytes[0] === 0x0e) {
-      version = firstWord;
-      this.log(`Handshake detected: byte[0]=0x0e, version=${version}`);
-    } else {
+    const version = parseInputProtocolVersion(bytes);
+    if (version === null) {
+      const firstWord = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+        .getUint16(0, true);
       this.log(`Input channel message not a handshake: firstWord=${firstWord} (0x${firstWord.toString(16)})`);
       return;
     }
+    this.log(`Handshake detected: protocol version=${version}`);
 
     if (!this.inputReady) {
       // Official GFN browser client does NOT echo the handshake back.
@@ -1596,6 +1630,14 @@ export class GfnWebRtcClient {
     this.reliableInputChannel.onmessage = async (event) => {
       const bytes = await toBytes(event.data as string | Blob | ArrayBuffer);
       this.onInputHandshakeMessage(bytes);
+    };
+
+    this.reliableInputChannel.onclose = () => {
+      this.markReliableInputChannelUnavailable("Reliable input channel closed");
+    };
+
+    this.reliableInputChannel.onerror = () => {
+      this.markReliableInputChannelUnavailable("Reliable input channel failed");
     };
 
     this.partiallyReliableInputChannel = pc.createDataChannel("input_channel_partially_reliable", {

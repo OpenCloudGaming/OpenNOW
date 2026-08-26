@@ -1,0 +1,40 @@
+[package]
+name = "opennow-streamer-platform-linux"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Linux media backend for the OpenNOW native streamer"
+
+[features]
+default = ["vulkan"]
+vaapi = ["dep:cros-codecs"]
+vulkan = ["dep:ash", "dep:ash-window", "dep:raw-window-handle"]
+ffmpeg = ["dep:ffmpeg-next"]
+ffmpeg-bundled = [
+    "ffmpeg",
+    "dep:ffmpeg-sys-next",
+    "ffmpeg-next/build",
+    "ffmpeg-sys-next/build-portable",
+    "ffmpeg-sys-next/build-nvdec",
+    "ffmpeg-sys-next/build-vulkan",
+]
+
+[dependencies]
+ash = { version = "0.38", optional = true }
+ash-window = { version = "0.13", optional = true }
+# This maintained fork zero-initializes libva extension fields, so it remains
+# buildable when newer libva headers grow the VP9 parameter structures.
+cros-codecs = { package = "cros-codecs-extended", version = "0.0.5-extended.2", features = ["vaapi"], optional = true }
+ffmpeg-next = { version = "9.0.0", default-features = false, features = ["format", "software-scaling"], optional = true }
+ffmpeg-sys-next = { version = "9.0.0", default-features = false, optional = true }
+libc = "0.2"
+libloading = "0.8"
+raw-window-handle = { version = "0.6", optional = true }
+thiserror = "2"
+
+[dev-dependencies]
+static_assertions = "1"
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"

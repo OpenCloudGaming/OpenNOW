@@ -64,3 +64,4 @@ result
 vendor/
 !native/opennow-streamer/vendor/
 !native/opennow-streamer/vendor/**
+native/opennow-streamer/vendor/**/.cargo-ok

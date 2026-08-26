@@ -1,4 +1,3 @@
-import type { NativeQueueMode } from "./stream";
 import type { SessionInfo, StreamSettings } from "./session";
 
 export interface SignalingConnectRequest {
@@ -53,14 +52,60 @@ export interface NativeStreamerSessionContext {
   nvstVideo?: NvstVideoSession;
 }
 
+export type NvstSrtpProfile =
+  | "AEAD_AES_128_GCM"
+  | "AEAD_AES_256_GCM"
+  | "AEAD_AES_128_GCM_8"
+  | "AEAD_AES_256_GCM_8"
+  | "AES_CM_128_HMAC_SHA1_32"
+  | "AES_CM_128_HMAC_SHA1_80"
+  | "AES_CM_256_HMAC_SHA1_32"
+  | "AES_CM_256_HMAC_SHA1_80";
+
 export interface NvstVideoSession {
   clientUdpPort: number;
+  /** Negotiated NVST packet payload size. FEC covers this plus the RTP header allowance. */
+  packetSize?: number;
+  /**
+   * Dedicated NATT-only video (Mjolnir) socket port reserved by the native
+   * streamer. When present, the native streamer reads raw-SRTP video from this
+   * socket while the ICE/DTLS bundle socket carries control/audio.
+   */
+  mjolnirUdpPort?: number;
   videoPeerIp: string;
   videoPeerPort: number;
+  /** Routable CloudMatch endpoint for the ICE/DTLS control and audio bundle. */
+  bundlePeerIp?: string;
+  bundlePeerPort?: number;
   srtpAesKeyHex: string;
   srtpKeyId: number;
+  srtpSaltHex: string;
+  srtpProfile?: NvstSrtpProfile;
   pingPayload?: string;
+  pingVersion?: number;
+  localIceUsernameFragment?: string;
+  localIcePassword?: string;
+  remoteIceUsernameFragment?: string;
+  remoteIcePassword?: string;
+  /** SHA-256 colon hex from the local WebRtcTransport-equivalent cert. */
+  localDtlsFingerprint?: string;
+  /** SHA-256 colon hex advertised by DESCRIBE (`dtlsFingerprint` / `V2`). */
+  remoteDtlsFingerprint?: string;
+  /** True when DESCRIBE assigns all RTCP feedback to the `rtcp1` SCTP channel. */
+  rtcpOnSctp?: boolean;
   codec?: string;
+  audioTrack?: NvstAudioTrack;
+  /** Idle receive timeout. Handshake needs longer than the 5s media default. */
+  timeoutMs?: number;
+}
+
+export interface NvstAudioTrack {
+  payloadType: number;
+  codec: "opus";
+  clockRateHz: number;
+  channels: number;
+  mid?: string;
+  ssrc?: number;
 }
 
 export function buildNativeStreamerSessionContext(
@@ -69,12 +114,16 @@ export function buildNativeStreamerSessionContext(
   shortcuts: NativeStreamerShortcutBindings,
   nvstVideo?: NvstVideoSession,
 ): NativeStreamerSessionContext {
+  // CloudMatch does not consistently echo the chosen codec in its finalized
+  // profile. Prefer an explicit server value, but otherwise preserve the
+  // concrete codec selected by renderer capability resolution.
+  const codec = session.negotiatedStreamProfile?.codec ?? settings.codec;
   const negotiatedStreamProfile = session.negotiatedStreamProfile
     ? {
       ...session.negotiatedStreamProfile,
-      codec: session.negotiatedStreamProfile.codec ?? settings.codec,
+      codec,
     }
-    : { codec: settings.codec };
+    : { codec };
 
   return {
     session: {
@@ -83,30 +132,13 @@ export function buildNativeStreamerSessionContext(
     },
     settings: {
       ...settings,
+      codec,
       enableCloudGsync:
         session.negotiatedStreamProfile?.enableCloudGsync ?? settings.enableCloudGsync,
     },
     shortcuts,
     ...(nvstVideo ? { nvstVideo } : {}),
   };
-}
-
-export interface NativeVideoTransition {
-  transitionType: string;
-  source: string;
-  atMs: number;
-  oldCaps?: string;
-  newCaps?: string;
-  oldFramerate?: string;
-  newFramerate?: string;
-  oldMemoryMode?: string;
-  newMemoryMode?: string;
-  renderGapMs?: number;
-  requestedFps?: number;
-  capsFramerate?: string;
-  highFpsRisk?: boolean;
-  queueMode?: NativeQueueMode;
-  summary?: string;
 }
 
 export interface NativeInputPacket {
@@ -130,6 +162,7 @@ export interface NativeRenderSurfaceUpdate {
 
 export interface NativeRenderSurface extends NativeRenderSurfaceUpdate {
   windowHandle?: string;
+  screenRect?: NativeRenderSurfaceRect;
 }
 
 export interface KeyframeRequest {
@@ -143,47 +176,13 @@ export type MainToRendererSignalingEvent =
   | { type: "disconnected"; reason: string }
   | { type: "offer"; sdp: string }
   | { type: "remote-ice"; candidate: IceCandidatePayload }
-  | { type: "native-shortcut"; action: NativeStreamerShortcutAction }
-  | { type: "native-clipboard-paste" }
-  | { type: "native-input-capture-changed"; captured: boolean }
   | { type: "native-stream-started"; message?: string }
   | { type: "native-stream-stopped"; reason?: string }
-  | { type: "native-stream-stats"; stats: NativeStreamStats }
-  | { type: "native-stream-transition"; transition: NativeVideoTransition }
-  | { type: "native-input-ready"; protocolVersion: number }
+  | {
+      type: "native-input-ready";
+      protocolVersion: number;
+      inputOwner?: "electron" | "native";
+    }
+  | { type: "native-input-unavailable"; reason: string }
   | { type: "error"; message: string }
   | { type: "log"; message: string };
-
-export interface NativeStreamStats {
-  codec: string;
-  resolution: string;
-  hardwareAcceleration: string;
-  memoryMode?: string;
-  zeroCopy?: boolean;
-  requestedFps?: number;
-  capsFramerate?: string;
-  bitrateKbps: number;
-  targetBitrateKbps: number;
-  bitratePerformancePercent: number;
-  decodedFps: number;
-  renderFps: number;
-  framesDecoded: number;
-  framesRendered: number;
-  framesPendingToPresent?: number;
-  sinkRendered?: number;
-  sinkDropped?: number;
-  zeroCopyD3D11: boolean;
-  zeroCopyD3D12: boolean;
-  queueMode?: NativeQueueMode;
-  queueDepthChanges?: number;
-  presentPacingChanges?: number;
-  partialFlushCount?: number;
-  completeFlushCount?: number;
-  lastTransitionType?: string;
-  lastTransitionAtMs?: number;
-  lastTransitionSummary?: string;
-  requestedStreamingFeaturesSummary?: string;
-  finalizedStreamingFeaturesSummary?: string;
-  serverGpuType?: string;
-  serverLocation?: string;
-}

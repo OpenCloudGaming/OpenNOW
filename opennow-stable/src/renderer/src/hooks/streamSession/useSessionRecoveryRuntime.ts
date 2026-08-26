@@ -72,6 +72,7 @@ export function useSessionRecoveryRuntime(runtime: RecoveryRuntime) {
     resetRecoveryConnectionState();
     signalingRecoveryRef.current.generation += 1;
     signalingRecoveryRef.current.attemptCount = 0;
+    signalingRecoveryRef.current.deadlineAtMs = null;
     signalingRecoveryRef.current.inFlight = null;
     signalingRecoveryRef.current.appId = null;
     if (!options?.keepExplicitShutdown) {
@@ -83,6 +84,7 @@ export function useSessionRecoveryRuntime(runtime: RecoveryRuntime) {
     resetRecoveryConnectionState();
     signalingRecoveryRef.current.generation += 1;
     signalingRecoveryRef.current.explicitShutdown = true;
+    signalingRecoveryRef.current.deadlineAtMs = null;
     signalingRecoveryRef.current.inFlight = null;
   }, [resetRecoveryConnectionState, signalingRecoveryRef]);
 

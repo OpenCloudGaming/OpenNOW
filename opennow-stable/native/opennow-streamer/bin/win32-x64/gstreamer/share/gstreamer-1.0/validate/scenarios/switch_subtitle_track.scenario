@@ -1,3 +1,0 @@
-description, summary="Change subtitle track at 1 second while playing back", min-subtitle-track=2, duration=5.0, need-clock-sync=true
-switch-track, playback-time=1.0, type=text, index=(string)+1
-stop, playback-time=5.0

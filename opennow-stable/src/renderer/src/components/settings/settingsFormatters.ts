@@ -46,7 +46,7 @@ export const colorQualityOptions: { value: ColorQuality; label: string; descript
 
 export const nativeVideoBackendOptions: { value: NativeVideoBackendPreference; label: string; description: string }[] = [
   { value: "auto", label: "Auto", description: "Pick the default native path for the session" },
-  { value: "d3d12", label: "DirectX 12", description: "Use the D3D12 decoder and renderer" },
+  { value: "d3d12", label: "DirectX 12", description: "Use D3D11-on-12 for Media Foundation decode and D3D12-backed rendering" },
   { value: "d3d11", label: "DirectX 11", description: "Use the D3D11 decoder and renderer" },
   { value: "nvdec", label: "NVIDIA NVDEC", description: "Use NVIDIA's native Linux hardware decoders" },
   { value: "vaapi", label: "VAAPI", description: "Use Linux VA-API hardware decoding" },
@@ -118,12 +118,10 @@ export function getAvailableNativeCodecLabels(backend: NativeVideoBackendCapabil
     .map((codec) => formatNativeVideoCodec(codec.codec)) ?? [];
 }
 
-export function formatGstreamerRuntimeLabel(status: NativeStreamerStatus | null): string {
-  switch (status?.gstreamerRuntime.source) {
-    case "bundled":
-      return status.gstreamerAvailable ? "Bundled Runtime Used" : "Bundled Runtime Found";
-    case "system":
-      return "System Runtime";
+export function formatNativeRuntimeLabel(status: NativeStreamerStatus | null): string {
+  switch (status?.runtime.source) {
+    case "self-contained":
+      return status.available ? "Native Runtime Ready" : "Native Runtime Found";
     case "missing":
       return "Runtime Missing";
     default:
@@ -131,9 +129,8 @@ export function formatGstreamerRuntimeLabel(status: NativeStreamerStatus | null)
   }
 }
 
-export function getGstreamerRuntimeBadgeClass(status: NativeStreamerStatus | null): string {
-  if (status?.gstreamerRuntime.source === "bundled" && status.gstreamerAvailable) return "settings-inline-badge--codec-gpu";
-  if (status?.gstreamerRuntime.source === "system" && status.gstreamerAvailable) return "settings-inline-badge--codec-testing";
+export function getNativeRuntimeBadgeClass(status: NativeStreamerStatus | null): string {
+  if (status?.runtime.source === "self-contained" && status.available) return "settings-inline-badge--codec-gpu";
   return "settings-inline-badge--updater-error";
 }
 

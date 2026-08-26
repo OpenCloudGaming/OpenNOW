@@ -1046,9 +1046,8 @@ export class DomInputCaptureController {
         || event.key === "Esc"
         || event.code === "Escape"
         || event.keyCode === 27;
-      const isCapsLockToggle = event.code === "CapsLock";
       const mapped = mapKeyboardEvent(event, this.dependencies.getKeyboardLayout()) ?? (isEscapeEvent ? codeMap.Escape : null);
-      if (!mapped && !isCapsLockToggle) {
+      if (!mapped) {
         return;
       }
 
@@ -1056,36 +1055,7 @@ export class DomInputCaptureController {
       const eventTimestampUs = timestampUs(event.timeStamp);
       const modifiers = modifierFlags(event);
 
-      if (isCapsLockToggle) {
-        // Official GFN gg(): CapsLock keyup sends synthetic keydown then keyup (vk 160).
-        if (mapped && this.pressedKeys.has(mapped.vk)) {
-          this.pressedKeys.delete(mapped.vk);
-          this.dependencies.sendReliableSingleInput(this.dependencies.inputEncoder.encodeKeyUp({
-            keycode: mapped.vk,
-            scancode: mapped.scancode,
-            modifiers,
-            timestampUs: eventTimestampUs,
-          }));
-        }
-
-        const capsVk = 0xa0;
-        this.dependencies.sendReliableSingleInput(this.dependencies.inputEncoder.encodeKeyDown({
-          keycode: capsVk,
-          scancode: 0,
-          modifiers,
-          timestampUs: eventTimestampUs,
-        }));
-        this.pressedKeys.delete(capsVk);
-        this.dependencies.sendReliableSingleInput(this.dependencies.inputEncoder.encodeKeyUp({
-          keycode: capsVk,
-          scancode: 0,
-          modifiers,
-          timestampUs: eventTimestampUs,
-        }));
-        return;
-      }
-
-      if (!mapped || !this.pressedKeys.has(mapped.vk)) {
+      if (!this.pressedKeys.has(mapped.vk)) {
         return;
       }
 

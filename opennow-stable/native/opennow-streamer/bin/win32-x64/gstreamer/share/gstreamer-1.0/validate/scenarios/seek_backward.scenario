@@ -1,6 +1,0 @@
-description, seek=true, duration=30, need-clock-sync=true, ignore-eos=true
-include,location=includes/default-seek-flags.scenario
-seek, name=Backward-seek, playback-time="min(5.0, ($(duration) / 4))", rate=1.0, start=0.0, flags="$(default_flags)"
-seek, name=Backward-seek, playback-time="min(10.0, 2*($(duration) / 4))", rate=1.0, start="min(5.0, $(duration) / 4)", flags="$(default_flags)"
-seek, name=Backward-seek, playback-time="min(15.0, 3*($(duration) / 4))", rate=1.0, start="min(10.0, 2*($(duration) / 4))", flags="$(default_flags)"
-stop, playback-time="min(15.0, 3*($(duration) / 4))"

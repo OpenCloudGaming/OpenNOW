@@ -41,7 +41,20 @@ export function decideSignalingDisconnect({
   ) {
     return "ignore-active-ice";
   }
-  if (!hasConfirmedRemoteIce) return "fail-before-remote-ice";
+  if (!hasConfirmedRemoteIce) {
+    // A 1006 WebSocket close is surfaced without its numeric code as one of
+    // these generic reasons. It is neither a remote session end nor a
+    // controlled shutdown, so let the existing bounded recovery window reclaim
+    // the session instead of permanently abandoning it before ICE arrives.
+    const normalizedReason = reason.trim().toLowerCase();
+    if (
+      normalizedReason === "socket closed"
+      || normalizedReason === "signaling disconnected: socket closed"
+    ) {
+      return "recover";
+    }
+    return "fail-before-remote-ice";
+  }
   if (pendingControlledDisconnects > 0) return "ignore-controlled-disconnect";
   return "recover";
 }

@@ -44,6 +44,23 @@ test("fps below Cloud G-Sync minimum disables it", () => {
   assert.equal(result.reason, "fps-too-low");
 });
 
+test("fps above the active display refresh disables Cloud G-Sync", () => {
+  const result = resolveCloudGsync({
+    userRequested: true,
+    fps: 240,
+    clientMode: "native",
+    nativeBackendAvailable: true,
+    capabilities: {
+      ...vrrCapabilities,
+      displayRefreshHz: 164.834,
+    },
+  });
+
+  assert.equal(result.enabled, false);
+  assert.equal(result.reason, "fps-too-high");
+  assert.equal(result.reflexEnabled, true);
+});
+
 test("unsupported VRR display disables native Cloud G-Sync", () => {
   const result = resolveCloudGsync({
     userRequested: true,

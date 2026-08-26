@@ -1,0 +1,48 @@
+[package]
+name = "opennow-streamer-platform"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[features]
+default = []
+linux-vaapi = ["opennow-streamer-platform-linux/vaapi"]
+linux-ffmpeg = ["opennow-streamer-platform-linux/ffmpeg"]
+linux-ffmpeg-bundled = ["opennow-streamer-platform-linux/ffmpeg-bundled"]
+
+[dependencies]
+audiopus_sys.workspace = true
+base64.workspace = true
+image.workspace = true
+openh264.workspace = true
+opennow-streamer-protocol = { path = "../opennow-streamer-protocol" }
+opus.workspace = true
+sdl2.workspace = true
+
+[target.'cfg(target_os = "windows")'.dependencies]
+opennow-streamer-platform-windows = { path = "../opennow-streamer-platform-windows" }
+raw-window-handle = "0.6"
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Threading",
+    "Win32_UI_Input",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+opennow-streamer-platform-linux = { path = "../opennow-streamer-platform-linux" }
+raw-window-handle = "0.6"
+x11-dl = "2.21"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2"
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["NSGraphics", "NSResponder", "NSRunningApplication", "NSView", "NSWindow", "NSWorkspace"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["NSGeometry"] }
+opennow-streamer-platform-macos = { path = "../opennow-streamer-platform-macos" }
+raw-window-handle = "0.6"

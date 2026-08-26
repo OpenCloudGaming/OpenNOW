@@ -69,6 +69,7 @@ function installMouseHarness(options: {
   controller: DomInputCaptureController;
   dispatchMouseMove: (movementX: number, timeStamp: number) => void;
   dispatchMouseDown: (clientX: number, clientY: number, timeStamp: number) => void;
+  dispatchKey: (type: "keydown" | "keyup", code: string, keyCode: number, capsLock: boolean) => void;
   setPointerLocked: (locked: boolean) => void;
   pendingTimerCount: () => number;
   runNextTimer: (nowMs: number) => void;
@@ -173,6 +174,22 @@ function installMouseHarness(options: {
         preventDefault: () => {},
       });
     },
+    dispatchKey: (type, code, keyCode, capsLock) => {
+      documentTarget.dispatch(type, {
+        code,
+        key: code === "CapsLock" ? "CapsLock" : code,
+        keyCode,
+        location: 0,
+        repeat: false,
+        shiftKey: false,
+        ctrlKey: false,
+        altKey: false,
+        metaKey: false,
+        timeStamp: 1,
+        getModifierState: (modifier: string) => modifier === "CapsLock" && capsLock,
+        preventDefault: () => {},
+      });
+    },
     setPointerLocked: (locked) => {
       (fakeDocument as { pointerLockElement: FakeEventTarget | null }).pointerLockElement = locked
         ? pointerLockTarget
@@ -207,6 +224,29 @@ function installMouseHarness(options: {
     },
   };
 }
+
+test("Caps Lock never emits synthetic Shift packets", () => {
+  const harness = installMouseHarness({ mouseSensitivity: 1, resolution: "1920x1080" });
+  try {
+    harness.dispatchKey("keydown", "CapsLock", 0x14, false);
+    harness.dispatchKey("keyup", "CapsLock", 0x14, true);
+
+    const keyPackets = harness.reliableSinglePayloads.filter((payload) => payload.byteLength === 18);
+    assert.equal(keyPackets.length, 2);
+    assert.deepEqual(
+      keyPackets.map((payload) => ({
+        type: new DataView(payload.buffer, payload.byteOffset, payload.byteLength).getUint32(0, true),
+        virtualKey: new DataView(payload.buffer, payload.byteOffset, payload.byteLength).getUint16(4, false),
+      })),
+      [
+        { type: 3, virtualKey: 0x14 },
+        { type: 4, virtualKey: 0x14 },
+      ],
+    );
+  } finally {
+    harness.restoreGlobals();
+  }
+});
 
 test("negative half-pixel residual parks without synchronous recursion and resumes on input", () => {
   const harness = installMouseHarness({ mouseSensitivity: 0.5, resolution: "4x4" });

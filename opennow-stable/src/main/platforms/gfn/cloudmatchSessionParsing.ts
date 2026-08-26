@@ -9,6 +9,7 @@ import type {
 
 import type { CloudMatchResponse, GetSessionsResponse } from "./types";
 import { SessionError } from "./errorCodes";
+import { resolveSessionControlBaseUrl } from "./cloudmatchTransport";
 import {
   normalizeIceServers,
   resolveSignaling,
@@ -262,6 +263,19 @@ export function toColorQuality(bitDepth?: number, chromaFormat?: number): ColorQ
   return normalizedChromaFormat === 1 ? "8bit_444" : "8bit_420";
 }
 
+function toVideoCodec(codec?: number): NegotiatedStreamProfile["codec"] {
+  switch (codec) {
+    case 1:
+      return "H264";
+    case 2:
+      return "H265";
+    case 3:
+      return "AV1";
+    default:
+      return undefined;
+  }
+}
+
 export function normalizeStreamingFeatures(
   features:
     | NonNullable<CloudMatchResponse["session"]["sessionRequestData"]>["requestedStreamingFeatures"]
@@ -308,6 +322,7 @@ export function extractNegotiatedStreamProfile(payload: CloudMatchResponse): Neg
     finalizedFeatures?.bitDepth ?? requestedFeatures?.bitDepth,
     finalizedFeatures?.chromaFormat ?? requestedFeatures?.chromaFormat,
   );
+  const codec = toVideoCodec(finalizedFeatures?.codec ?? requestedFeatures?.codec);
   const enabledL4S = finalizedFeatures?.enabledL4S ?? requestedFeatures?.enabledL4S;
   const enabledCloudGsync = finalizedFeatures?.cloudGsync ?? requestedFeatures?.cloudGsync;
   const enabledReflex = finalizedFeatures?.reflex ?? requestedFeatures?.reflex;
@@ -331,6 +346,10 @@ export function extractNegotiatedStreamProfile(payload: CloudMatchResponse): Neg
 
   if (colorQuality) {
     profile.colorQuality = colorQuality;
+  }
+
+  if (codec) {
+    profile.codec = codec;
   }
 
   if (typeof enabledL4S === "boolean") {
@@ -430,13 +449,14 @@ export async function toSessionInfo(options: ToSessionInfoOptions): Promise<Sess
 
   return {
     sessionId: payload.session.sessionId,
-    appId: payload.session.sessionRequestData?.appId ?? options.fallbackAppId,
+    subSessionId: payload.session.subSessionId,
+    appId: String(payload.session.sessionRequestData?.appId ?? options.fallbackAppId),
     status: payload.session.status,
     seatSetupStep,
     queuePosition,
     adState,
     zone,
-    streamingBaseUrl,
+    streamingBaseUrl: resolveSessionControlBaseUrl(payload.session.sessionControlInfo?.ip, streamingBaseUrl),
     serverIp: signaling.serverIp,
     signalingServer: signaling.signalingServer,
     signalingUrl: signaling.signalingUrl,
@@ -444,6 +464,7 @@ export async function toSessionInfo(options: ToSessionInfoOptions): Promise<Sess
     gpuType: payload.session.gpuType,
     appLaunchMode: echoedSessionAppLaunchMode(payload) ?? options.fallbackAppLaunchMode,
     enablePersistingInGameSettings,
+    connectionInfo: connections.length > 0 ? connections.map((connection) => ({ ...connection })) : undefined,
     rtspsEndpoints: signaling.rtspsEndpoints.length > 0 ? signaling.rtspsEndpoints : undefined,
     iceServers: await normalizeIceServers(payload),
     mediaConnectionInfo: signaling.mediaConnectionInfo,
