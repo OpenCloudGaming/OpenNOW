@@ -1,7 +1,9 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-pub const PROTOCOL_VERSION: u64 = 4;
+pub mod log;
+
+pub const PROTOCOL_VERSION: u64 = 5;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -13,12 +15,6 @@ pub struct Command {
     pub protocol_version: Option<u64>,
     #[serde(default)]
     pub context: Option<Value>,
-    #[serde(default)]
-    pub sdp: Option<String>,
-    #[serde(default)]
-    pub candidate: Option<IceCandidate>,
-    #[serde(default)]
-    pub input: Option<NativeInput>,
     #[serde(default)]
     pub paused: Option<bool>,
     #[serde(default)]
@@ -35,27 +31,8 @@ pub struct Command {
     pub port: Option<u16>,
     #[serde(default)]
     pub payload_base64: Option<String>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct IceCandidate {
-    pub candidate: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub sdp_mid: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub sdp_m_line_index: Option<u32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub username_fragment: Option<String>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct NativeInput {
     #[serde(default)]
-    pub payload_base64: String,
-    #[serde(default)]
-    pub partially_reliable: bool,
+    pub output_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -117,8 +94,6 @@ pub struct Session {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sub_session_id: Option<String>,
     pub server_ip: String,
-    #[serde(default)]
-    pub ice_servers: Vec<IceServer>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub media_connection_info: Option<MediaConnectionInfo>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -146,18 +121,6 @@ pub struct ConnectionInfo {
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct IceServer {
-    pub urls: Vec<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub username: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub credential: Option<String>,
-    #[serde(flatten)]
-    pub extra: Map<String, Value>,
-}
-
-#[derive(Debug, Clone, Deserialize, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct MediaConnectionInfo {
     pub ip: String,
     pub port: u32,
@@ -172,16 +135,12 @@ pub struct MediaConnectionInfo {
 pub struct Capabilities {
     pub protocol_version: u64,
     pub backend: &'static str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub fallback_reason: Option<&'static str>,
-    pub supports_offer_answer: bool,
-    pub supports_remote_ice: bool,
-    pub supports_local_ice: bool,
     pub supports_input: bool,
     pub supports_video_decode: bool,
     pub supports_video_present: bool,
     pub supports_audio_decode: bool,
     pub supports_audio_output: bool,
+    pub supports_owned_nvst_negotiation: bool,
     pub video_backends: Vec<VideoBackendCapability>,
 }
 
@@ -242,18 +201,6 @@ mod tests {
         .expect("command");
         assert_eq!(command.kind, "start");
         assert!(command.context.is_some());
-    }
-
-    #[test]
-    fn serializes_candidate_for_app_contract() {
-        let candidate = IceCandidate {
-            candidate: "candidate:1 1 udp 1 127.0.0.1 5000 typ host".to_owned(),
-            sdp_mid: Some("0".to_owned()),
-            sdp_m_line_index: Some(0),
-            username_fragment: None,
-        };
-        let value = serde_json::to_value(candidate).expect("candidate");
-        assert_eq!(value["sdpMLineIndex"], 0);
     }
 
     #[test]

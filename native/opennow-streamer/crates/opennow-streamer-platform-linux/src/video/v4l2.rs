@@ -1067,7 +1067,6 @@ fn copy_capture_frame(
         planes,
         dmabuf: None,
         vulkan: None,
-        overlay: None,
         timestamp_us: dequeued.timestamp_us,
     };
     frame.validate()?;

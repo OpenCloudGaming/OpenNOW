@@ -81,11 +81,11 @@ const SIDEBAR_RESERVED_SHORTCUTS_MAC = new Set(["META+G", "CMD+G", "COMMAND+G"])
 const SIDEBAR_RESERVED_SHORTCUT_FALLBACKS: Record<ShortcutSettingKey, readonly string[]> = {
   shortcutToggleStats: ["F3", "Ctrl+Shift+F3", "Ctrl+Alt+F3"],
   shortcutTogglePointerLock: ["F8", "Ctrl+Shift+F8", "Ctrl+Alt+F8"],
-  shortcutToggleFullscreen: ["F10", "Ctrl+Shift+F10", "Ctrl+Alt+F10"],
+  shortcutToggleFullscreen: ["F11", "Ctrl+Shift+F11", "Ctrl+Alt+F11"],
   shortcutStopStream: [defaultStopShortcut, "Ctrl+Alt+Q", "Ctrl+Alt+Shift+Q"],
   shortcutToggleAntiAfk: [defaultAntiAfkShortcut, "Ctrl+Alt+K", "Ctrl+Alt+Shift+K"],
   shortcutToggleMicrophone: [defaultMicShortcut, "Ctrl+Alt+M", "Ctrl+Alt+Shift+M"],
-  shortcutScreenshot: ["F11", "Ctrl+Shift+S", "Ctrl+Alt+S", "Ctrl+Shift+F11", "Ctrl+Alt+Shift+S"],
+  shortcutScreenshot: ["Ctrl+F11", "Ctrl+Shift+S", "Ctrl+Alt+S", "Ctrl+Alt+Shift+F11", "Ctrl+Alt+Shift+S"],
   shortcutToggleRecording: ["F12", "Ctrl+Shift+R", "Ctrl+Alt+R", "Ctrl+Shift+F12", "Ctrl+Alt+Shift+R"],
 };
 
@@ -354,6 +354,17 @@ export class SettingsManager {
     const normalizeShortcut = (value: string): string => value.replace(/\s+/g, "").toUpperCase();
     const stopShortcut = normalizeShortcut(settings.shortcutStopStream);
     const antiAfkShortcut = normalizeShortcut(settings.shortcutToggleAntiAfk);
+    const fullscreenShortcut = normalizeShortcut(settings.shortcutToggleFullscreen);
+    const screenshotShortcut = normalizeShortcut(settings.shortcutScreenshot);
+
+    if (fullscreenShortcut === "F10" && screenshotShortcut === "F11") {
+      settings.shortcutToggleFullscreen = DEFAULT_SHORTCUTS.shortcutToggleFullscreen;
+      settings.shortcutScreenshot = DEFAULT_SHORTCUTS.shortcutScreenshot;
+      if (settings.statsOverlayPosition === "bottom-left") {
+        settings.statsOverlayPosition = "top-right";
+      }
+      migrated = true;
+    }
 
     if (LEGACY_STOP_SHORTCUTS.has(stopShortcut)) {
       settings.shortcutStopStream = defaultStopShortcut;

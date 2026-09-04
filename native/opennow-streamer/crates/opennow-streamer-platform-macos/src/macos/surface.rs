@@ -26,7 +26,7 @@ define_class!(
     struct PassiveSurfaceView;
 
     impl PassiveSurfaceView {
-        // Returning nil lets hit testing continue through the BrowserWindow content view instead
+        // Returning nil lets hit testing continue through the parent content view instead
         // of routing pointer, gesture, or drag input to the video surface.
         #[unsafe(method(hitTest:))]
         fn hit_test(&self, _point: CGPoint) -> Option<&NSView> {
@@ -63,23 +63,6 @@ enum Attachment {
     WindowChild {
         parent: Retained<NSView>,
     },
-}
-
-/// Creates the overlay window exactly as `SurfaceOwner::attach` does for `OwnedOverlay`,
-/// for isolating window-server behavior without a streaming session.
-pub(super) fn debug_overlay_window(main_thread: MainThreadMarker) {
-    let rect = ScreenRect::new(200.0, 167.0, 1400.0, 868.0);
-    let surface = SurfaceOwner::attach(
-        SurfaceTarget::OwnedOverlay(crate::format::OwnedOverlayConfig::new(rect, true)),
-        main_thread,
-    )
-    .expect("production overlay surface");
-    if let Some(window) = &surface.window {
-        window.orderFrontRegardless();
-    }
-    surface.visible.store(true, Ordering::Release);
-    eprintln!("NVST debug-overlay-window created");
-    std::mem::forget(surface);
 }
 
 pub(super) struct SurfaceOwner {
@@ -138,13 +121,13 @@ impl SurfaceOwner {
                 };
                 unsafe { window.setReleasedWhenClosed(false) };
                 window.setBecomesKeyOnlyIfNeeded(true);
-                // The panel belongs to the accessory helper, while Electron remains the
+                // The panel belongs to the accessory helper, while the shell remains the
                 // active application. NSPanel may otherwise hide itself as soon as the
                 // helper deactivates, leaving a live native surface that is never visible.
                 window.setHidesOnDeactivate(false);
                 // Cross-process child windows are not supported by AppKit. Keep this passive
-                // panel above the Electron content while it is ordered, and explicitly order
-                // it out whenever the Electron parent is no longer frontmost.
+                // panel above the shell content while it is ordered, and explicitly order
+                // it out whenever the shell parent is no longer frontmost.
                 window.setLevel(NSFloatingWindowLevel);
                 window.setCollectionBehavior(
                     NSWindowCollectionBehavior::CanJoinAllSpaces

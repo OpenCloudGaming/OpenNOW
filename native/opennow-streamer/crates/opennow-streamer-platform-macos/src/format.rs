@@ -1,10 +1,10 @@
 use std::ffi::c_void;
 use std::ptr::NonNull;
-use std::sync::Arc;
 
 use thiserror::Error;
 
 const MAX_PARAMETER_SET_BYTES: usize = 64 * 1024;
+const MAX_AV1_CONFIGURATION_BYTES: usize = 64 * 1024;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum H264Framing {
@@ -16,24 +16,6 @@ pub enum H264Framing {
 pub enum VideoColorSpace {
     Bt601,
     Bt709,
-}
-
-/// Placement for a small GPU-composited diagnostic surface.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum GpuOverlayPlacement {
-    TopLeft,
-    TopRight,
-}
-
-/// Immutable RGBA8 pixels uploaded only when diagnostic text changes.
-///
-/// Metal samples this surface without reading a decoded video pixel buffer back to the CPU.
-#[derive(Clone, Debug)]
-pub struct GpuOverlayFrame {
-    pub width: u32,
-    pub height: u32,
-    pub rgba: Arc<[u8]>,
-    pub placement: GpuOverlayPlacement,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -93,6 +75,140 @@ impl H264ParameterSets {
 pub struct H264Format {
     pub parameter_sets: H264ParameterSets,
     pub color_space: VideoColorSpace,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct H265ParameterSets {
+    video: Vec<u8>,
+    sequence: Vec<u8>,
+    picture: Vec<u8>,
+}
+
+impl H265ParameterSets {
+    pub fn new(
+        video: impl AsRef<[u8]>,
+        sequence: impl AsRef<[u8]>,
+        picture: impl AsRef<[u8]>,
+    ) -> Result<Self, FormatError> {
+        Ok(Self {
+            video: normalize_h265_parameter_set(video.as_ref(), 32)?,
+            sequence: normalize_h265_parameter_set(sequence.as_ref(), 33)?,
+            picture: normalize_h265_parameter_set(picture.as_ref(), 34)?,
+        })
+    }
+
+    pub fn video(&self) -> &[u8] {
+        &self.video
+    }
+
+    pub fn sequence(&self) -> &[u8] {
+        &self.sequence
+    }
+
+    pub fn picture(&self) -> &[u8] {
+        &self.picture
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct H265Format {
+    pub parameter_sets: H265ParameterSets,
+    pub color_space: VideoColorSpace,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Av1Format {
+    codec_configuration: Vec<u8>,
+    width: i32,
+    height: i32,
+    pub color_space: VideoColorSpace,
+}
+
+impl Av1Format {
+    pub fn new(
+        codec_configuration: impl AsRef<[u8]>,
+        width: u32,
+        height: u32,
+        color_space: VideoColorSpace,
+    ) -> Result<Self, FormatError> {
+        let codec_configuration = codec_configuration.as_ref();
+        if codec_configuration.len() < 4
+            || codec_configuration[0] != 0x81
+            || codec_configuration.len() > MAX_AV1_CONFIGURATION_BYTES
+        {
+            return Err(FormatError::InvalidAv1Configuration);
+        }
+        let width = i32::try_from(width)
+            .ok()
+            .filter(|value| *value > 0)
+            .ok_or(FormatError::InvalidVideoDimensions)?;
+        let height = i32::try_from(height)
+            .ok()
+            .filter(|value| *value > 0)
+            .ok_or(FormatError::InvalidVideoDimensions)?;
+        Ok(Self {
+            codec_configuration: codec_configuration.to_vec(),
+            width,
+            height,
+            color_space,
+        })
+    }
+
+    pub fn codec_configuration(&self) -> &[u8] {
+        &self.codec_configuration
+    }
+
+    pub const fn width(&self) -> i32 {
+        self.width
+    }
+
+    pub const fn height(&self) -> i32 {
+        self.height
+    }
+}
+
+impl H265Format {
+    pub const fn new(parameter_sets: H265ParameterSets, color_space: VideoColorSpace) -> Self {
+        Self {
+            parameter_sets,
+            color_space,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum VideoFormat {
+    H264(H264Format),
+    H265(H265Format),
+    Av1(Av1Format),
+}
+
+impl VideoFormat {
+    pub const fn color_space(&self) -> VideoColorSpace {
+        match self {
+            Self::H264(format) => format.color_space,
+            Self::H265(format) => format.color_space,
+            Self::Av1(format) => format.color_space,
+        }
+    }
+}
+
+impl From<H264Format> for VideoFormat {
+    fn from(value: H264Format) -> Self {
+        Self::H264(value)
+    }
+}
+
+impl From<H265Format> for VideoFormat {
+    fn from(value: H265Format) -> Self {
+        Self::H265(value)
+    }
+}
+
+impl From<Av1Format> for VideoFormat {
+    fn from(value: Av1Format) -> Self {
+        Self::Av1(value)
+    }
 }
 
 impl H264Format {
@@ -178,7 +294,7 @@ impl QueueLimits {
     }
 }
 
-/// Absolute screen bounds in Electron's top-left, device-independent coordinate space.
+/// Absolute screen bounds in the shell's top-left, device-independent coordinate space.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ScreenRect {
     pub x: f64,
@@ -273,7 +389,7 @@ impl BorrowedNsWindow {
 
 /// A rectangle in renderer-relative, top-left AppKit points.
 ///
-/// Points match Electron's device-independent coordinates. Negative origins are allowed for
+/// Points match the shell's device-independent coordinates. Negative origins are allowed for
 /// clipping, while width and height must be finite and non-negative.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RendererRect {
@@ -357,9 +473,23 @@ pub enum SurfaceTarget {
 #[derive(Clone, Debug, PartialEq)]
 pub struct BackendConfig {
     pub surface: SurfaceTarget,
-    pub video: H264Format,
+    pub video: VideoFormat,
     pub audio: AudioFormat,
     pub queues: QueueLimits,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct EmbeddedBackendConfig {
+    pub video: VideoFormat,
+    pub audio: AudioFormat,
+    pub queues: QueueLimits,
+}
+
+impl EmbeddedBackendConfig {
+    pub(crate) fn validate(&self) -> Result<(), FormatError> {
+        self.audio.validate()?;
+        self.queues.validate()
+    }
 }
 
 impl BackendConfig {
@@ -378,12 +508,14 @@ impl BackendConfig {
 
 #[derive(Debug, Error, Eq, PartialEq)]
 pub enum FormatError {
-    #[error("H.264 parameter set is empty")]
+    #[error("video parameter set is empty")]
     EmptyParameterSet,
-    #[error("H.264 parameter set exceeds the supported size")]
+    #[error("video parameter set exceeds the supported size")]
     ParameterSetTooLarge,
     #[error("expected H.264 NAL type {expected}, got {actual}")]
     UnexpectedNalType { expected: u8, actual: u8 },
+    #[error("expected H.265 NAL type {expected}, got {actual}")]
+    UnexpectedH265NalType { expected: u8, actual: u8 },
     #[error("multiple NAL units were supplied where one parameter set was expected")]
     MultipleParameterSets,
     #[error("H.264 access unit has no NAL units")]
@@ -394,6 +526,10 @@ pub enum FormatError {
     InvalidAvcc,
     #[error("H.264 NAL unit is too large for AVCC framing")]
     NalUnitTooLarge,
+    #[error("AV1 codec configuration is not a bounded version-1 av1C record")]
+    InvalidAv1Configuration,
+    #[error("encoded video dimensions must fit positive signed 32-bit values")]
+    InvalidVideoDimensions,
     #[error("frame timescale must be positive")]
     InvalidTimescale,
     #[error("frame duration must not be negative")]
@@ -439,6 +575,27 @@ fn normalize_parameter_set(bytes: &[u8], expected_type: u8) -> Result<Vec<u8>, F
     let actual = bytes[0] & 0x1f;
     if actual != expected_type {
         return Err(FormatError::UnexpectedNalType {
+            expected: expected_type,
+            actual,
+        });
+    }
+    Ok(bytes.to_vec())
+}
+
+fn normalize_h265_parameter_set(bytes: &[u8], expected_type: u8) -> Result<Vec<u8>, FormatError> {
+    let bytes = strip_start_code(bytes);
+    if bytes.is_empty() {
+        return Err(FormatError::EmptyParameterSet);
+    }
+    if bytes.len() > MAX_PARAMETER_SET_BYTES {
+        return Err(FormatError::ParameterSetTooLarge);
+    }
+    if find_start_code(bytes, 1).is_some() {
+        return Err(FormatError::MultipleParameterSets);
+    }
+    let actual = (bytes[0] >> 1) & 0x3f;
+    if actual != expected_type {
+        return Err(FormatError::UnexpectedH265NalType {
             expected: expected_type,
             actual,
         });
@@ -568,6 +725,51 @@ mod tests {
             Err(FormatError::UnexpectedNalType {
                 expected: 7,
                 actual: 8
+            })
+        );
+    }
+
+    #[test]
+    fn normalizes_hevc_parameter_set_start_codes() {
+        let sets = H265ParameterSets::new(
+            [0, 0, 0, 1, 0x40, 0x01, 0x0c],
+            [0, 0, 1, 0x42, 0x01, 0x01],
+            [0x44, 0x01, 0xc0],
+        )
+        .unwrap();
+        assert_eq!(sets.video(), &[0x40, 0x01, 0x0c]);
+        assert_eq!(sets.sequence(), &[0x42, 0x01, 0x01]);
+        assert_eq!(sets.picture(), &[0x44, 0x01, 0xc0]);
+    }
+
+    #[test]
+    fn validates_bounded_av1_codec_configuration_and_dimensions() {
+        let format = Av1Format::new(
+            [0x81, 0x0d, 0x0c, 0x00, 0x0a, 0x01],
+            3840,
+            2160,
+            VideoColorSpace::Bt709,
+        )
+        .expect("valid av1C configuration");
+        assert_eq!(format.codec_configuration()[0], 0x81);
+        assert_eq!((format.width(), format.height()), (3840, 2160));
+        assert_eq!(
+            Av1Format::new([0x01, 0, 0, 0], 1920, 1080, VideoColorSpace::Bt709),
+            Err(FormatError::InvalidAv1Configuration)
+        );
+        assert_eq!(
+            Av1Format::new([0x81, 0, 0, 0], 0, 1080, VideoColorSpace::Bt709),
+            Err(FormatError::InvalidVideoDimensions)
+        );
+    }
+
+    #[test]
+    fn rejects_wrong_hevc_parameter_set_type() {
+        assert_eq!(
+            H265ParameterSets::new([0x42, 1], [0x42, 2], [0x44, 3]),
+            Err(FormatError::UnexpectedH265NalType {
+                expected: 32,
+                actual: 33
             })
         );
     }

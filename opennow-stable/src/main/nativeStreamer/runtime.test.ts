@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { NATIVE_STREAMER_PROTOCOL_VERSION } from "@shared/nativeStreamer";
 import {
   createNativeStreamerRuntimeEnvironment,
   nativeStreamerExecutableName,
@@ -18,7 +19,7 @@ test("v2 runtime is self-contained and removes inherited GStreamer variables", (
     platform: "linux",
     arch: "arm64",
     userDataPath: "/tmp/opennow-test",
-    protocolVersion: 4,
+    protocolVersion: NATIVE_STREAMER_PROTOCOL_VERSION,
     videoBackendPreference: "auto",
     externalRendererEnabled: false,
     cloudGsyncMode: "disabled",
@@ -26,7 +27,10 @@ test("v2 runtime is self-contained and removes inherited GStreamer variables", (
   });
 
   assert.equal(result.env.GST_PLUGIN_PATH, undefined);
-  assert.equal(result.env.OPENNOW_NATIVE_STREAMER_PROTOCOL, "4");
+  assert.equal(
+    result.env.OPENNOW_NATIVE_STREAMER_PROTOCOL,
+    String(NATIVE_STREAMER_PROTOCOL_VERSION),
+  );
   assert.equal(result.env.OPENNOW_NATIVE_INPUT_OWNER, "electron");
   assert.equal(result.env.OPENNOW_NATIVE_VIDEO_BACKEND, "auto");
   assert.equal(result.env.SDL_VIDEODRIVER, "x11");
@@ -42,7 +46,7 @@ test("external renderer makes the native SDL window the input owner", () => {
     platform: "win32",
     arch: "x64",
     userDataPath: "C:\\OpenNOW",
-    protocolVersion: 4,
+    protocolVersion: NATIVE_STREAMER_PROTOCOL_VERSION,
     videoBackendPreference: "auto",
     externalRendererEnabled: true,
     cloudGsyncMode: "auto",
@@ -60,7 +64,7 @@ test("explicit Linux video backend preference is passed to the child", () => {
     platform: "linux",
     arch: "x64",
     userDataPath: "/tmp/opennow-test",
-    protocolVersion: 4,
+    protocolVersion: NATIVE_STREAMER_PROTOCOL_VERSION,
     videoBackendPreference: "v4l2",
     externalRendererEnabled: false,
     cloudGsyncMode: "auto",
@@ -77,7 +81,7 @@ test("Cloud G-SYNC uses a top-level native output on X11", () => {
     platform: "linux",
     arch: "x64",
     userDataPath: "/tmp/opennow-test",
-    protocolVersion: 4,
+    protocolVersion: NATIVE_STREAMER_PROTOCOL_VERSION,
     videoBackendPreference: "auto",
     externalRendererEnabled: false,
     cloudGsyncMode: "auto",
@@ -96,7 +100,7 @@ test("Wayland uses a native top-level renderer and owns its input", () => {
     platform: "linux",
     arch: "arm64",
     userDataPath: "/tmp/opennow-test",
-    protocolVersion: 4,
+    protocolVersion: NATIVE_STREAMER_PROTOCOL_VERSION,
     videoBackendPreference: "auto",
     externalRendererEnabled: false,
     linuxOzonePlatform: "wayland",

@@ -35,6 +35,7 @@ const COMMAND_MOUSE_CURSOR_CAPTURE: u16 = 0x0308;
 const COMMAND_TRACK_REMOTE_CURSOR_IMAGE: u16 = 0x030d;
 const COMMAND_WINDOW_STATE: u16 = 0x0320;
 const COMMAND_SYSTEM_STATE: u16 = 0x0321;
+const COMMAND_HAPTICS_STATE: u16 = 0x0322;
 
 const INPUT_KEY_DOWN: u32 = 3;
 const INPUT_KEY_UP: u32 = 4;
@@ -534,8 +535,8 @@ impl fmt::Display for NvstInputCodecError {
 
 #[derive(Debug, Default)]
 pub(crate) struct NvstInputCodec {
-    gamepad_sequence: u8,
-    gamepad_registered: bool,
+    gamepad_sequences: [u8; 4],
+    gamepad_registered: u8,
 }
 
 impl NvstInputCodec {
@@ -625,7 +626,14 @@ impl NvstInputCodec {
                 }
                 INPUT_MOUSE_WHEEL => {
                     require_len(event.bytes, 22, "short mouse wheel packet")?;
-                    let body = [0, 0, event.bytes[6], event.bytes[7], 0, 0];
+                    let body = [
+                        event.bytes[4],
+                        event.bytes[5],
+                        event.bytes[6],
+                        event.bytes[7],
+                        0,
+                        0,
+                    ];
                     encoded.push(remote_input_message(
                         remote_input_packet(input_type, &body),
                         read_u64_be(event.bytes, 14).unwrap_or(event.timestamp_us),
@@ -634,22 +642,42 @@ impl NvstInputCodec {
                 INPUT_GAMEPAD => {
                     require_len(event.bytes, 38, "short gamepad packet")?;
                     let timestamp = read_u64_le(event.bytes, 30).unwrap_or(event.timestamp_us);
-                    if !self.gamepad_registered {
-                        self.gamepad_registered = true;
+                    let controller_id = usize::from(
+                        read_u16_le(event.bytes, 6)
+                            .ok_or(NvstInputCodecError::Malformed("missing gamepad id"))?,
+                    );
+                    if controller_id >= self.gamepad_sequences.len() {
+                        return Err(NvstInputCodecError::Malformed(
+                            "gamepad id is outside the supported range",
+                        ));
+                    }
+                    let registration_bit = 1_u8 << controller_id;
+                    let descriptor_index = 3 + controller_id as u8;
+                    if self.gamepad_registered & registration_bit == 0 {
+                        self.gamepad_registered |= registration_bit;
                         encoded.push(NvstEncodedInput {
                             route: NvstInputRoute::ControlReliable,
-                            bytes: device_descriptor(timestamp, 3),
+                            bytes: device_descriptor(timestamp, descriptor_index),
                         });
                     }
-                    self.gamepad_sequence = self.gamepad_sequence.wrapping_add(1);
+                    self.gamepad_sequences[controller_id] =
+                        self.gamepad_sequences[controller_id].wrapping_add(1);
                     encoded.push(NvstEncodedInput {
                         route: NvstInputRoute::InputPartial,
-                        bytes: gamepad_command(event.bytes, timestamp, self.gamepad_sequence),
+                        bytes: gamepad_command(
+                            event.bytes,
+                            timestamp,
+                            self.gamepad_sequences[controller_id],
+                            descriptor_index,
+                        ),
                     });
                 }
                 INPUT_HAPTICS_ENABLED => {
-                    // Haptics capability is negotiated by the native gamepad descriptor. The
-                    // browser-side toggle has no separate NVST control command to forward.
+                    require_len(event.bytes, 6, "short haptics packet")?;
+                    encoded.push(NvstEncodedInput {
+                        route: NvstInputRoute::ControlReliable,
+                        bytes: haptics_state(read_u16_be(event.bytes, 4).unwrap_or_default() != 0),
+                    });
                 }
                 INPUT_LOCK_KEYS_SYNC => {
                     require_len(event.bytes, 5, "short lock-key sync packet")?;
@@ -804,7 +832,12 @@ fn remote_input_packet(input_type: u32, body: &[u8]) -> Vec<u8> {
     packet
 }
 
-fn gamepad_command(packet: &[u8], timestamp_us: u64, sequence: u8) -> Vec<u8> {
+fn gamepad_command(
+    packet: &[u8],
+    timestamp_us: u64,
+    sequence: u8,
+    descriptor_index: u8,
+) -> Vec<u8> {
     let mut payload = Vec::with_capacity(52);
     payload.push(0x23);
     payload.extend_from_slice(&timestamp_us.to_be_bytes());
@@ -814,6 +847,7 @@ fn gamepad_command(packet: &[u8], timestamp_us: u64, sequence: u8) -> Vec<u8> {
         0x00, 0x55, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     ];
     body[3] = sequence;
+    body[13] = descriptor_index;
     body[17..19].copy_from_slice(&packet[12..14]);
     body[19] = packet[14];
     body[20] = packet[15];
@@ -889,12 +923,13 @@ fn text_keystroke(character: char) -> Option<(u16, u16)> {
     Some((virtual_key, 1))
 }
 
-fn activation_chain(timestamp_us: u64) -> [Vec<u8>; 7] {
+fn activation_chain(timestamp_us: u64) -> [Vec<u8>; 8] {
     [
         enable_input(1, false),
         device_descriptor(timestamp_us, 2),
         mouse_cursor_capture(true),
         remote_cursor_tracking(true),
+        haptics_state(true),
         state_change(COMMAND_WINDOW_STATE, 19, 0),
         state_change(COMMAND_SYSTEM_STATE, 0, 0),
         enable_input(1, true),
@@ -907,6 +942,10 @@ fn mouse_cursor_capture(enabled: bool) -> Vec<u8> {
 
 fn remote_cursor_tracking(enabled: bool) -> Vec<u8> {
     control_command(COMMAND_TRACK_REMOTE_CURSOR_IMAGE, &[u8::from(enabled)])
+}
+
+fn haptics_state(enabled: bool) -> Vec<u8> {
+    control_command(COMMAND_HAPTICS_STATE, &[u8::from(enabled)])
 }
 
 fn control_keepalive(stream_value: u32) -> Vec<u8> {
@@ -981,6 +1020,12 @@ fn require_remaining(
 
 fn read_u16_be(bytes: &[u8], offset: usize) -> Option<u16> {
     Some(u16::from_be_bytes(
+        bytes.get(offset..offset + 2)?.try_into().ok()?,
+    ))
+}
+
+fn read_u16_le(bytes: &[u8], offset: usize) -> Option<u16> {
+    Some(u16::from_le_bytes(
         bytes.get(offset..offset + 2)?.try_into().ok()?,
     ))
 }
@@ -1173,9 +1218,10 @@ mod tests {
         );
         assert_eq!(chain[2], hex("0803010001"));
         assert_eq!(chain[3], hex("0d03010001"));
-        assert_eq!(chain[4], hex("20030c00000000001300000000000000"));
-        assert_eq!(chain[5], hex("21030c00000000000000000000000000"));
-        assert_eq!(chain[6], hex("0b020c00000000000100000001000000"));
+        assert_eq!(chain[4], hex("2203010001"));
+        assert_eq!(chain[5], hex("20030c00000000001300000000000000"));
+        assert_eq!(chain[6], hex("21030c00000000000000000000000000"));
+        assert_eq!(chain[7], hex("0b020c00000000000100000001000000"));
     }
 
     #[test]
@@ -1251,6 +1297,38 @@ mod tests {
     }
 
     #[test]
+    fn gamepads_keep_independent_descriptor_identity_and_sequences() {
+        let mut codec = NvstInputCodec::default();
+        let packet = |controller_id: u16, timestamp: u64| {
+            let mut gamepad = vec![0; 38];
+            gamepad[..4].copy_from_slice(&INPUT_GAMEPAD.to_le_bytes());
+            gamepad[6..8].copy_from_slice(&controller_id.to_le_bytes());
+            gamepad[8..10].copy_from_slice(&0b11_u16.to_le_bytes());
+            gamepad[30..38].copy_from_slice(&timestamp.to_le_bytes());
+            gamepad
+        };
+
+        let first = codec.encode(&packet(0, 1), 0).expect("first pad");
+        let second = codec.encode(&packet(1, 2), 0).expect("second pad");
+        let first_again = codec.encode(&packet(0, 3), 0).expect("first pad again");
+
+        assert_eq!(first.len(), 2);
+        assert_eq!(second.len(), 2);
+        assert_eq!(first_again.len(), 1);
+        assert_eq!(first[1].bytes[26], 3);
+        assert_eq!(second[1].bytes[26], 4);
+        assert_eq!(first[1].bytes[16], 1);
+        assert_eq!(second[1].bytes[16], 1);
+        assert_eq!(first_again[0].bytes[16], 2);
+        assert_eq!(
+            codec.encode(&packet(4, 4), 0),
+            Err(NvstInputCodecError::Malformed(
+                "gamepad id is outside the supported range"
+            ))
+        );
+    }
+
+    #[test]
     fn transport_control_inputs_do_not_disable_native_input() {
         let mut codec = NvstInputCodec::default();
 
@@ -1266,7 +1344,10 @@ mod tests {
         haptics.push(0x22);
         haptics.extend_from_slice(&INPUT_HAPTICS_ENABLED.to_le_bytes());
         haptics.extend_from_slice(&1_u16.to_be_bytes());
-        assert!(codec.encode(&haptics, 0).unwrap().is_empty());
+        let haptics = codec.encode(&haptics, 0).unwrap();
+        assert_eq!(haptics.len(), 1);
+        assert_eq!(haptics[0].route, NvstInputRoute::ControlReliable);
+        assert_eq!(haptics[0].bytes, hex("2203010001"));
 
         let mut lock_keys = vec![0x23];
         lock_keys.extend_from_slice(&12_u64.to_be_bytes());

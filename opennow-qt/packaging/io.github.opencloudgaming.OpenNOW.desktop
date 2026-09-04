@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=OpenNOW
+Comment=Controller-first GeForce NOW client
+Exec=opennow-qt %U
+Icon=io.github.opencloudgaming.OpenNOW
+Terminal=false
+Categories=Game;Network;
+Keywords=GeForce;cloud;gaming;controller;
+StartupNotify=true
+StartupWMClass=OpenNOW
+MimeType=x-scheme-handler/opennow;

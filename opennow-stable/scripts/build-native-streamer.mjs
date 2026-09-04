@@ -204,13 +204,18 @@ if (!nativeTarget || platformKey === hostPlatformKey) {
     .map((line) => JSON.parse(line));
   const ready = messages.find((message) => message.id === "verify" && message.type === "ready");
   const stopped = messages.find((message) => message.id === "stop" && message.type === "ok");
-  const started = messages.find((message) => message.id === "verify-start" && message.type === "ok");
-  const capabilitiesComplete = ready?.capabilities?.supportsOfferAnswer === true
+  const startRejected = messages.find((message) =>
+    message.id === "verify-start"
+      && message.type === "error"
+      && message.code === "nvst-handoff-required");
+  const capabilitiesComplete = ready?.capabilities?.protocolVersion === nativeProtocolVersion
+    && ready.capabilities.supportsOwnedNvstNegotiation === true
+    && ready.capabilities.supportsInput === true
     && ready.capabilities.supportsVideoDecode === true
     && ready.capabilities.supportsVideoPresent === true
     && ready.capabilities.supportsAudioDecode === true
     && ready.capabilities.supportsAudioOutput === true;
-  if (!capabilitiesComplete || !started || !stopped) {
+  if (!capabilitiesComplete || !startRejected || !stopped) {
     throw new Error(`Native streamer verification returned an incomplete handshake: ${verify.stdout}`);
   }
 }

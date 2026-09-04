@@ -7,10 +7,10 @@ rust-version.workspace = true
 
 [dependencies]
 base64.workspace = true
+getrandom.workspace = true
 opennow-streamer-platform = { path = "../opennow-streamer-platform" }
 opennow-streamer-protocol = { path = "../opennow-streamer-protocol" }
 opennow-streamer-transport = { path = "../opennow-streamer-transport" }
+rustls.workspace = true
 serde_json.workspace = true
-
-[dev-dependencies]
-str0m.workspace = true
+tungstenite.workspace = true

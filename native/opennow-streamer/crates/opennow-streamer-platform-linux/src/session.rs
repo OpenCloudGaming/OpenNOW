@@ -25,6 +25,7 @@ pub enum DecoderBackend {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DecoderPreference {
     Automatic,
+    HardwareOnly,
     VulkanOnly,
     CudaOnly,
     VaApiThenV4l2,
@@ -784,6 +785,12 @@ fn decoder_order(preference: DecoderPreference) -> &'static [DecoderBackend] {
             DecoderBackend::VaApi,
             DecoderBackend::V4l2,
             DecoderBackend::Ffmpeg,
+        ],
+        DecoderPreference::HardwareOnly => &[
+            DecoderBackend::Vulkan,
+            DecoderBackend::Cuda,
+            DecoderBackend::VaApi,
+            DecoderBackend::V4l2,
         ],
         DecoderPreference::VulkanOnly => &[DecoderBackend::Vulkan],
         DecoderPreference::CudaOnly => &[DecoderBackend::Cuda],

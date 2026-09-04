@@ -67,10 +67,6 @@ fn main() -> io::Result<()> {
             .with_ansi(false)
             .try_init();
     }
-    #[cfg(target_os = "macos")]
-    if std::env::var_os("OPENNOW_DEBUG_WINDOW").is_some() {
-        opennow_streamer_platform::debug_show_overlay_window();
-    }
     let (host, media_runtime) = create_runtime().map_err(io::Error::other)?;
     let shutdown_runtime = media_runtime.clone();
     let protocol = thread::Builder::new()

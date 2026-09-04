@@ -2,12 +2,9 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::Cursor as IoCursor;
 #[cfg(target_os = "windows")]
 use std::sync::atomic::AtomicBool;
-#[cfg(target_os = "linux")]
-use std::sync::atomic::AtomicU64;
-#[cfg(any(target_os = "windows", target_os = "linux"))]
+#[cfg(target_os = "windows")]
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
-#[cfg(target_os = "linux")]
 use std::time::Instant;
 
 use base64::Engine as _;
@@ -23,12 +20,8 @@ use sdl2::render::{Texture, WindowCanvas};
 use crate::linux_frame_pacing::{FrameSelectionPolicy, LinuxFramePacer};
 #[cfg(target_os = "linux")]
 use crate::linux_xinput::LinuxXInputController;
-use crate::media::{CapturedInput, CapturedInputQueue, MediaStreamConfig};
-#[cfg(target_os = "linux")]
-use crate::native_stats_overlay::NativeStatsOverlay;
+use crate::media::{CapturedInput, CapturedInputQueue, MediaStreamConfig, StreamShortcutBindings};
 use crate::native_surface::NativeSurface;
-#[cfg(target_os = "windows")]
-use crate::windows_debug_overlay::NativeDebugOverlay;
 #[cfg(target_os = "windows")]
 use crate::windows_raw_input::WindowsRawInputController;
 
@@ -37,7 +30,8 @@ use opennow_streamer_platform_linux::DecodedVideoFrame as LinuxDecodedVideoFrame
 #[cfg(target_os = "windows")]
 use opennow_streamer_platform_windows::{
     AudioFormat, BackendConfig, BackendEvent, Bounds, ExistingWindow, OwnedWindow, Subsystem,
-    SurfaceTarget, VideoCodec, VideoFormat, WindowHandle, WindowsBackend, WindowsGraphicsApi,
+    SurfaceTarget, VideoChromaFormat, VideoCodec, VideoFormat, VideoPixelFormat, WindowHandle,
+    WindowsBackend, WindowsDecoderMode, WindowsGraphicsApi,
 };
 
 const AUDIO_SAMPLE_RATE: i32 = 48_000;
@@ -66,14 +60,6 @@ pub(crate) struct OutputBuffers {
     video: Mutex<Option<DecodedVideoFrame>>,
     #[cfg(target_os = "linux")]
     linux_video: Mutex<VecDeque<QueuedLinuxVideoFrame>>,
-    #[cfg(target_os = "linux")]
-    software_video_drops: AtomicU64,
-    #[cfg(target_os = "linux")]
-    hardware_video_drops: AtomicU64,
-    #[cfg(target_os = "linux")]
-    display_video_skips: AtomicU64,
-    #[cfg(target_os = "linux")]
-    received_video_bytes: AtomicU64,
     audio: Mutex<VecDeque<f32>>,
     audio_capacity: usize,
     captured_input: Arc<CapturedInputQueue>,
@@ -157,18 +143,14 @@ impl WindowsBridge {
 
 impl OutputBuffers {
     pub(crate) fn new() -> Self {
+        Self::with_captured_input(Arc::new(CapturedInputQueue::default()))
+    }
+
+    pub(crate) fn with_captured_input(captured_input: Arc<CapturedInputQueue>) -> Self {
         Self {
             video: Mutex::new(None),
             #[cfg(target_os = "linux")]
             linux_video: Mutex::new(VecDeque::with_capacity(LINUX_VIDEO_QUEUE_CAPACITY)),
-            #[cfg(target_os = "linux")]
-            software_video_drops: AtomicU64::new(0),
-            #[cfg(target_os = "linux")]
-            hardware_video_drops: AtomicU64::new(0),
-            #[cfg(target_os = "linux")]
-            display_video_skips: AtomicU64::new(0),
-            #[cfg(target_os = "linux")]
-            received_video_bytes: AtomicU64::new(0),
             audio: Mutex::new(VecDeque::with_capacity(
                 AUDIO_SAMPLE_RATE as usize * AUDIO_CHANNELS as usize * MAX_AUDIO_LATENCY_MS / 1_000,
             )),
@@ -176,7 +158,7 @@ impl OutputBuffers {
                 * AUDIO_CHANNELS as usize
                 * MAX_AUDIO_LATENCY_MS
                 / 1_000,
-            captured_input: Arc::new(CapturedInputQueue::default()),
+            captured_input,
         }
     }
 
@@ -185,17 +167,11 @@ impl OutputBuffers {
     }
 
     pub(crate) fn replace_video(&self, frame: DecodedVideoFrame) -> bool {
-        let dropped = self
-            .video
+        self.video
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .replace(frame)
-            .is_some();
-        #[cfg(target_os = "linux")]
-        if dropped {
-            self.software_video_drops.fetch_add(1, Ordering::Relaxed);
-        }
-        dropped
+            .is_some()
     }
 
     pub(crate) fn take_video(&self) -> Option<DecodedVideoFrame> {
@@ -221,9 +197,6 @@ impl OutputBuffers {
             frame,
             arrived_at: Instant::now(),
         });
-        if dropped {
-            self.hardware_video_drops.fetch_add(1, Ordering::Relaxed);
-        }
         dropped
     }
 
@@ -248,22 +221,14 @@ impl OutputBuffers {
         if queue.len() <= target_queue_depth {
             return None;
         }
-        let (frame, skipped) = match selection {
-            FrameSelectionPolicy::OldestReady => (queue.pop_front(), 0),
+        match selection {
+            FrameSelectionPolicy::OldestReady => queue.pop_front(),
             FrameSelectionPolicy::LatestReady => {
                 let frame = queue.pop_back();
-                let skipped = queue.len();
                 queue.clear();
-                (frame, skipped)
+                frame
             }
-        };
-        if skipped > 0 {
-            self.display_video_skips.fetch_add(
-                u64::try_from(skipped).unwrap_or(u64::MAX),
-                Ordering::Relaxed,
-            );
         }
-        frame
     }
 
     #[cfg(target_os = "linux")]
@@ -272,32 +237,6 @@ impl OutputBuffers {
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .clear();
-    }
-
-    #[cfg(target_os = "linux")]
-    fn software_video_drops(&self) -> u64 {
-        self.software_video_drops.load(Ordering::Relaxed)
-    }
-
-    #[cfg(target_os = "linux")]
-    fn hardware_video_drops(&self) -> u64 {
-        self.hardware_video_drops.load(Ordering::Relaxed)
-    }
-
-    #[cfg(target_os = "linux")]
-    fn display_video_skips(&self) -> u64 {
-        self.display_video_skips.load(Ordering::Relaxed)
-    }
-
-    #[cfg(target_os = "linux")]
-    pub(crate) fn record_received_video_bytes(&self, bytes: usize) {
-        self.received_video_bytes
-            .fetch_add(u64::try_from(bytes).unwrap_or(u64::MAX), Ordering::Relaxed);
-    }
-
-    #[cfg(target_os = "linux")]
-    fn received_video_bytes(&self) -> u64 {
-        self.received_video_bytes.load(Ordering::Relaxed)
     }
 
     pub(crate) fn push_audio(&self, samples: &[f32]) -> usize {
@@ -326,12 +265,7 @@ impl OutputBuffers {
     pub(crate) fn clear(&self) {
         self.take_video();
         #[cfg(target_os = "linux")]
-        {
-            self.clear_linux_video();
-            self.software_video_drops.store(0, Ordering::Relaxed);
-            self.hardware_video_drops.store(0, Ordering::Relaxed);
-            self.display_video_skips.store(0, Ordering::Relaxed);
-        }
+        self.clear_linux_video();
         self.audio
             .lock()
             .unwrap_or_else(|error| error.into_inner())
@@ -343,6 +277,57 @@ impl OutputBuffers {
         for sample in destination {
             *sample = audio.pop_front().unwrap_or(0.0);
         }
+    }
+}
+
+#[cfg(target_os = "windows")]
+pub(crate) struct HeadlessAudioOutput {
+    device: AudioDevice<StreamAudioCallback>,
+    output: Arc<OutputBuffers>,
+    _sdl: sdl2::Sdl,
+}
+
+#[cfg(target_os = "windows")]
+impl HeadlessAudioOutput {
+    pub(crate) fn start(output: Arc<OutputBuffers>) -> Result<Self, String> {
+        let sdl = sdl2::init().map_err(|error| format!("SDL initialization failed: {error}"))?;
+        let audio_subsystem = sdl
+            .audio()
+            .map_err(|error| format!("SDL audio initialization failed: {error}"))?;
+        let desired = AudioSpecDesired {
+            freq: Some(AUDIO_SAMPLE_RATE),
+            channels: Some(AUDIO_CHANNELS),
+            samples: Some(AUDIO_BUFFER_FRAMES),
+        };
+        let callback_output = Arc::clone(&output);
+        let device = audio_subsystem
+            .open_playback(None, &desired, move |_| StreamAudioCallback {
+                output: callback_output,
+            })
+            .map_err(|error| format!("native audio output creation failed: {error}"))?;
+        device.resume();
+        Ok(Self {
+            device,
+            output,
+            _sdl: sdl,
+        })
+    }
+
+    pub(crate) fn set_paused(&self, paused: bool) {
+        if paused {
+            self.device.pause();
+            self.output.clear();
+        } else {
+            self.device.resume();
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl Drop for HeadlessAudioOutput {
+    fn drop(&mut self) {
+        self.device.pause();
+        self.output.clear();
     }
 }
 
@@ -365,10 +350,7 @@ pub(crate) struct LinuxHardwareOutput {
     stream_size: (u32, u32),
     surface_size: Option<(u32, u32)>,
     stream_fps: u32,
-    debug_overlay: NativeStatsOverlay,
-    presented_frames: u64,
     frame_pacer: LinuxFramePacer,
-    vrr_fullscreen_initialized: bool,
     visible: bool,
     paused: bool,
     _sdl: sdl2::Sdl,
@@ -459,10 +441,17 @@ impl LinuxHardwareOutput {
             None
         };
         let external_relative_motion = raw_input.is_some();
+        let mut input_capture = SdlInputCapture::new(
+            capture_input,
+            external_relative_motion,
+            false,
+            stream.shortcuts,
+        );
+        input_capture.enable_gamepads(&sdl);
         Ok(Self {
             presenter: None,
             native_surface,
-            input_capture: SdlInputCapture::new(capture_input, external_relative_motion),
+            input_capture,
             raw_input,
             window,
             video,
@@ -473,17 +462,7 @@ impl LinuxHardwareOutput {
             stream_size: (stream.width.max(1), stream.height.max(1)),
             surface_size: None,
             stream_fps: stream.fps.max(1),
-            debug_overlay: NativeStatsOverlay::new(
-                stream,
-                if stream.cloud_gsync {
-                    "LINUX / VULKAN VRR"
-                } else {
-                    "LINUX / VULKAN"
-                },
-            ),
-            presented_frames: 0,
             frame_pacer,
-            vrr_fullscreen_initialized: false,
             visible: false,
             paused: false,
             _sdl: sdl,
@@ -492,9 +471,7 @@ impl LinuxHardwareOutput {
 
     fn start(&mut self, surface: Option<&RenderSurface>) -> Result<(), String> {
         self.paused = false;
-        self.presented_frames = 0;
         self.frame_pacer.reset();
-        self.vrr_fullscreen_initialized = false;
         self.output.clear();
         self.audio.resume();
         if let Some(surface) = surface {
@@ -506,15 +483,17 @@ impl LinuxHardwareOutput {
     fn set_paused(&mut self, paused: bool) {
         self.paused = paused;
         self.frame_pacer.reset();
-        self.vrr_fullscreen_initialized = false;
         if paused {
-            self.input_capture.release(&self._sdl, &mut self.window);
+            self.input_capture
+                .set_input_paused(true, &self._sdl, &mut self.window);
             if let Some(raw_input) = self.raw_input.as_ref() {
                 raw_input.set_enabled(false);
             }
             self.audio.pause();
             self.output.clear();
         } else {
+            self.input_capture
+                .set_input_paused(false, &self._sdl, &mut self.window);
             self.audio.resume();
         }
     }
@@ -537,7 +516,6 @@ impl LinuxHardwareOutput {
         self.visible = false;
         self.paused = false;
         self.frame_pacer.reset();
-        self.vrr_fullscreen_initialized = false;
     }
 
     fn update_surface(&mut self, surface: &RenderSurface) -> Result<(), String> {
@@ -570,22 +548,9 @@ impl LinuxHardwareOutput {
             if !self.visible {
                 self.window.raise();
             }
-            if self.frame_pacer.vrr_enabled() && !self.vrr_fullscreen_initialized {
-                use sdl2::video::FullscreenType;
-
-                self.window
-                    .set_fullscreen(FullscreenType::Desktop)
-                    .map_err(|error| {
-                        format!("Cloud G-SYNC could not enter compositor fullscreen: {error}")
-                    })?;
-                self.vrr_fullscreen_initialized = true;
-                eprintln!(
-                    "Linux Cloud G-SYNC presentation requested compositor fullscreen for VRR"
-                );
-            }
         } else {
             let parent_handle = surface.window_handle.as_deref().ok_or_else(|| {
-                "visible native surface is missing Electron windowHandle".to_owned()
+                "visible native surface is missing the shell window handle".to_owned()
             })?;
             self.native_surface
                 .as_mut()
@@ -653,11 +618,6 @@ impl LinuxHardwareOutput {
                 }
                 self.presenter = None;
                 self.visible = false;
-            } else if handle_linux_stats_shortcut(&mut self.debug_overlay, &event)
-                || (self.external_renderer
-                    && handle_native_window_shortcut(&mut self.window, &event))
-            {
-                continue;
             } else {
                 self.input_capture.handle_event(
                     &self._sdl,
@@ -669,7 +629,9 @@ impl LinuxHardwareOutput {
         }
         if let Some(raw_input) = self.raw_input.as_ref() {
             raw_input.set_enabled(
-                self.visible && self.input_capture.focused && self.input_capture.relative_mouse,
+                self.visible
+                    && self.input_capture.focused
+                    && self.input_capture.relative_mouse_enabled(),
             );
         }
         // NVST input must not sit behind Vulkan presentation. FIFO acquire can
@@ -697,14 +659,6 @@ impl LinuxHardwareOutput {
                 self.surface_size = Some(drawable_size);
             }
         }
-        self.debug_overlay
-            .set_presentation_skips(self.output.display_video_skips());
-        self.debug_overlay.update(
-            self.presented_frames,
-            self.output.hardware_video_drops(),
-            self.input_capture.relative_mouse,
-            self.output.received_video_bytes(),
-        );
         let now = Instant::now();
         if !self.frame_pacer.is_due(now) {
             return Ok(false);
@@ -718,9 +672,8 @@ impl LinuxHardwareOutput {
         };
         self.frame_pacer
             .observe_frame(queued_frame.arrived_at, queued_frame.frame.timestamp_us);
-        let mut frame = queued_frame.frame;
+        let frame = queued_frame.frame;
         self.stream_size = (frame.format.width.max(1), frame.format.height.max(1));
-        self.debug_overlay.composite_linux_frame(&mut frame);
         if frame.vulkan.as_ref().is_some_and(|vulkan| {
             self.presenter
                 .as_ref()
@@ -750,7 +703,6 @@ impl LinuxHardwareOutput {
             .present(&frame)
             .map_err(|error| error.to_string())?;
         if presented {
-            self.presented_frames = self.presented_frames.saturating_add(1);
             self.frame_pacer.mark_presented(Instant::now());
         }
         Ok(presented)
@@ -880,13 +832,37 @@ impl AudioCallback for StreamAudioCallback {
 pub(crate) struct SdlInputCapture {
     captured: Vec<CapturedInput>,
     pressed_keys: HashMap<sdl2::keyboard::Scancode, u16>,
+    pressed_shortcuts: HashSet<sdl2::keyboard::Scancode>,
     pressed_buttons: HashSet<u8>,
+    configured: bool,
     enabled: bool,
     focused: bool,
     relative_mouse: bool,
     external_relative_motion: bool,
+    external_mouse_buttons: bool,
     cursor_state: RemoteCursorState,
     cursors: HashMap<(u8, u8), sdl2::mouse::Cursor>,
+    game_controller: Option<sdl2::GameControllerSubsystem>,
+    gamepads: HashMap<u32, (u8, sdl2::controller::GameController)>,
+    gamepad_states: [GamepadState; 4],
+    last_gamepad_keepalive: Instant,
+    shortcuts: StreamShortcutBindings,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct GamepadState {
+    connected: bool,
+    buttons: u16,
+    left_trigger: u8,
+    right_trigger: u8,
+    raw_left_stick_x: i16,
+    raw_left_stick_y: i16,
+    raw_right_stick_x: i16,
+    raw_right_stick_y: i16,
+    left_stick_x: i16,
+    left_stick_y: i16,
+    right_stick_x: i16,
+    right_stick_y: i16,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -897,20 +873,200 @@ enum RemoteCursorState {
 }
 
 impl SdlInputCapture {
-    pub(crate) fn new(enabled: bool, external_relative_motion: bool) -> Self {
+    pub(crate) fn new(
+        enabled: bool,
+        external_relative_motion: bool,
+        external_mouse_buttons: bool,
+        shortcuts: StreamShortcutBindings,
+    ) -> Self {
         Self {
             captured: Vec::new(),
             pressed_keys: HashMap::new(),
+            pressed_shortcuts: HashSet::new(),
             pressed_buttons: HashSet::new(),
+            configured: enabled,
             enabled,
             focused: false,
             relative_mouse: false,
             external_relative_motion,
+            external_mouse_buttons,
             // Do not infer hidden-cursor gameplay before the first server
             // update. GFN sends a distinct predefined cursor ID 0 when the
             // game actually wants locked relative input.
             cursor_state: RemoteCursorState::Unknown,
             cursors: HashMap::new(),
+            game_controller: None,
+            gamepads: HashMap::new(),
+            gamepad_states: [GamepadState::default(); 4],
+            last_gamepad_keepalive: Instant::now(),
+            shortcuts,
+        }
+    }
+
+    pub(crate) fn enable_gamepads(&mut self, sdl: &sdl2::Sdl) {
+        let Ok(subsystem) = sdl.game_controller() else {
+            return;
+        };
+        let count = subsystem.num_joysticks().unwrap_or(0);
+        self.game_controller = Some(subsystem);
+        for index in 0..count {
+            self.open_gamepad(index);
+        }
+    }
+
+    fn open_gamepad(&mut self, joystick_index: u32) {
+        let Some(subsystem) = self.game_controller.as_ref() else {
+            return;
+        };
+        if !subsystem.is_game_controller(joystick_index) {
+            return;
+        }
+        let Ok(controller) = subsystem.open(joystick_index) else {
+            return;
+        };
+        let instance_id = controller.instance_id();
+        if self.gamepads.contains_key(&instance_id) {
+            return;
+        }
+        let Some(slot) =
+            (0_u8..4).find(|slot| !self.gamepads.values().any(|(current, _)| current == slot))
+        else {
+            return;
+        };
+        self.gamepads.insert(instance_id, (slot, controller));
+        self.gamepad_states[usize::from(slot)] = GamepadState {
+            connected: true,
+            ..GamepadState::default()
+        };
+        self.push_gamepad(slot);
+    }
+
+    fn close_gamepad(&mut self, instance_id: u32) {
+        let Some((slot, _)) = self.gamepads.remove(&instance_id) else {
+            return;
+        };
+        self.gamepad_states[usize::from(slot)] = GamepadState::default();
+        self.push_gamepad(slot);
+    }
+
+    fn gamepad_bitmap(&self) -> u16 {
+        self.gamepad_states
+            .iter()
+            .enumerate()
+            .filter(|(_, state)| state.connected)
+            .fold(0_u16, |bitmap, (slot, _)| {
+                bitmap | (1 << slot) | (1 << (slot + 8))
+            })
+    }
+
+    fn push_gamepad(&mut self, slot: u8) {
+        let state = self.gamepad_states[usize::from(slot)];
+        self.captured.push(CapturedInput::Gamepad {
+            controller_id: slot,
+            bitmap: self.gamepad_bitmap(),
+            buttons: state.buttons,
+            left_trigger: state.left_trigger,
+            right_trigger: state.right_trigger,
+            left_stick_x: state.left_stick_x,
+            left_stick_y: state.left_stick_y,
+            right_stick_x: state.right_stick_x,
+            right_stick_y: state.right_stick_y,
+        });
+    }
+
+    fn update_gamepad_button(
+        &mut self,
+        instance_id: u32,
+        button: sdl2::controller::Button,
+        pressed: bool,
+    ) {
+        let Some(slot) = self.gamepads.get(&instance_id).map(|(slot, _)| *slot) else {
+            return;
+        };
+        if button == sdl2::controller::Button::Guide {
+            if pressed {
+                self.captured.push(CapturedInput::Guide);
+            }
+            return;
+        }
+        let Some(mask) = gamepad_button_mask(button) else {
+            return;
+        };
+        let state = &mut self.gamepad_states[usize::from(slot)];
+        if pressed {
+            state.buttons |= mask;
+        } else {
+            state.buttons &= !mask;
+        }
+        self.push_gamepad(slot);
+    }
+
+    fn update_gamepad_axis(&mut self, instance_id: u32, axis: sdl2::controller::Axis, value: i16) {
+        let Some(slot) = self.gamepads.get(&instance_id).map(|(slot, _)| *slot) else {
+            return;
+        };
+        let state = &mut self.gamepad_states[usize::from(slot)];
+        match axis {
+            sdl2::controller::Axis::LeftX => state.raw_left_stick_x = value,
+            sdl2::controller::Axis::LeftY => state.raw_left_stick_y = value,
+            sdl2::controller::Axis::RightX => state.raw_right_stick_x = value,
+            sdl2::controller::Axis::RightY => state.raw_right_stick_y = value,
+            sdl2::controller::Axis::TriggerLeft => state.left_trigger = trigger_axis(value),
+            sdl2::controller::Axis::TriggerRight => state.right_trigger = trigger_axis(value),
+        }
+        (state.left_stick_x, state.left_stick_y) =
+            radial_deadzone(state.raw_left_stick_x, state.raw_left_stick_y);
+        state.left_stick_y = state.left_stick_y.saturating_neg();
+        (state.right_stick_x, state.right_stick_y) =
+            radial_deadzone(state.raw_right_stick_x, state.raw_right_stick_y);
+        state.right_stick_y = state.right_stick_y.saturating_neg();
+        self.push_gamepad(slot);
+    }
+
+    pub(crate) fn set_input_paused(
+        &mut self,
+        paused: bool,
+        sdl: &sdl2::Sdl,
+        window: &mut sdl2::video::Window,
+    ) {
+        if paused {
+            self.release(sdl, window);
+            // Publish neutral states before capture is suspended so a remote
+            // game cannot retain a held trigger, stick, or button while the
+            // Qt shell owns input.
+            for slot in 0_u8..4 {
+                if self.gamepad_states[usize::from(slot)].connected {
+                    self.gamepad_states[usize::from(slot)] = GamepadState {
+                        connected: true,
+                        ..GamepadState::default()
+                    };
+                    self.push_gamepad(slot);
+                }
+            }
+            self.enabled = false;
+        } else {
+            self.enabled = self.configured;
+            self.last_gamepad_keepalive = Instant::now();
+            if self.enabled {
+                let disconnected = self
+                    .gamepads
+                    .iter()
+                    .filter_map(|(instance_id, (_, controller))| {
+                        (!controller.attached()).then_some(*instance_id)
+                    })
+                    .collect::<Vec<_>>();
+                for instance_id in disconnected {
+                    self.close_gamepad(instance_id);
+                }
+                let count = self
+                    .game_controller
+                    .as_ref()
+                    .and_then(|controller| controller.num_joysticks().ok())
+                    .unwrap_or(0);
+                for joystick_index in 0..count {
+                    self.open_gamepad(joystick_index);
+                }
+            }
         }
     }
 
@@ -928,12 +1084,41 @@ impl SdlInputCapture {
         }
         let window_size = window.size();
         match event {
+            Event::ControllerDeviceAdded { which, .. } => self.open_gamepad(which),
+            Event::ControllerDeviceRemoved { which, .. } => self.close_gamepad(which),
+            Event::ControllerButtonDown { which, button, .. } => {
+                self.update_gamepad_button(which, button, true)
+            }
+            Event::ControllerButtonUp { which, button, .. } => {
+                self.update_gamepad_button(which, button, false)
+            }
+            Event::ControllerAxisMotion {
+                which, axis, value, ..
+            } => self.update_gamepad_axis(which, axis, value),
             Event::KeyDown {
                 scancode: Some(scancode),
                 keymod,
                 repeat: false,
                 ..
             } => {
+                if is_native_guide_shortcut(scancode, keymod) {
+                    // Match the GeForce NOW desktop client: Ctrl+G belongs to
+                    // the local stream menu and must never reach the game.
+                    // Tracking it as a pressed shortcut also consumes key-up
+                    // even when Ctrl is released before G.
+                    self.pressed_shortcuts.insert(scancode);
+                    self.captured.push(CapturedInput::Guide);
+                    return;
+                }
+                if let Some(virtual_key) = sdl_virtual_key(scancode)
+                    && let Some(action) = self
+                        .shortcuts
+                        .action(virtual_key, sdl_modifiers(scancode, keymod))
+                {
+                    self.pressed_shortcuts.insert(scancode);
+                    self.captured.push(CapturedInput::Shortcut(action));
+                    return;
+                }
                 let Some(virtual_key) = sdl_virtual_key(scancode) else {
                     return;
                 };
@@ -950,6 +1135,9 @@ impl SdlInputCapture {
                 keymod,
                 ..
             } => {
+                if self.pressed_shortcuts.remove(&scancode) {
+                    return;
+                }
                 if let Some(virtual_key) = self.pressed_keys.remove(&scancode) {
                     self.captured.push(CapturedInput::Key {
                         virtual_key,
@@ -972,8 +1160,6 @@ impl SdlInputCapture {
                     height: absolute.height,
                 });
             }
-            Event::MouseButtonDown { .. } | Event::MouseButtonUp { .. }
-                if self.relative_mouse && self.external_relative_motion => {}
             Event::MouseButtonDown { mouse_btn, .. } => {
                 // A button event proves this window owns foreground input even
                 // if SDL delivered FocusGained later in the same pump batch.
@@ -981,7 +1167,8 @@ impl SdlInputCapture {
                 if self.cursor_state == RemoteCursorState::Hidden {
                     self.enable_relative_mouse(sdl, window);
                 }
-                if let Some(button) = sdl_mouse_button(mouse_btn)
+                if !self.external_mouse_buttons
+                    && let Some(button) = sdl_mouse_button(mouse_btn)
                     && self.pressed_buttons.insert(button)
                 {
                     self.captured.push(CapturedInput::MouseButton {
@@ -991,7 +1178,8 @@ impl SdlInputCapture {
                 }
             }
             Event::MouseButtonUp { mouse_btn, .. } => {
-                if let Some(button) = sdl_mouse_button(mouse_btn)
+                if !self.external_mouse_buttons
+                    && let Some(button) = sdl_mouse_button(mouse_btn)
                     && self.pressed_buttons.remove(&button)
                 {
                     self.captured.push(CapturedInput::MouseButton {
@@ -1000,15 +1188,17 @@ impl SdlInputCapture {
                     });
                 }
             }
-            Event::MouseWheel { .. } if self.relative_mouse && self.external_relative_motion => {}
-            Event::MouseWheel { y, direction, .. } if y != 0 => {
+            Event::MouseWheel {
+                x, y, direction, ..
+            } if !self.external_mouse_buttons && (x != 0 || y != 0) => {
                 let direction = if direction == sdl2::mouse::MouseWheelDirection::Flipped {
                     -1
                 } else {
                     1
                 };
                 self.captured.push(CapturedInput::MouseWheel {
-                    delta: clamp_i16(y.saturating_mul(120).saturating_mul(direction)),
+                    delta_x: clamp_i16(x.saturating_mul(120).saturating_mul(direction)),
+                    delta_y: clamp_i16(y.saturating_mul(120).saturating_mul(direction)),
                 });
             }
             Event::Window {
@@ -1050,6 +1240,19 @@ impl SdlInputCapture {
         }
     }
 
+    pub(crate) fn toggle_pointer_lock(
+        &mut self,
+        sdl: &sdl2::Sdl,
+        window: &mut sdl2::video::Window,
+    ) {
+        if self.relative_mouse {
+            self.disable_relative_mouse(sdl, window);
+            sdl.mouse().show_cursor(true);
+        } else {
+            self.enable_relative_mouse(sdl, window);
+        }
+    }
+
     pub(crate) fn apply_cursor(
         &mut self,
         sdl: &sdl2::Sdl,
@@ -1078,6 +1281,10 @@ impl SdlInputCapture {
             return;
         }
         self.disable_relative_mouse(sdl, window);
+        if !native_cursor_overlay_enabled() {
+            sdl.mouse().show_cursor(false);
+            return;
+        }
         let cursor_key = (message_type, cursor_id);
         if message_type == 1 {
             match custom_sdl_cursor(bytes) {
@@ -1138,6 +1345,7 @@ impl SdlInputCapture {
                 pressed: false,
             });
         }
+        self.pressed_shortcuts.clear();
         for button in self.pressed_buttons.drain() {
             self.captured.push(CapturedInput::MouseButton {
                 button,
@@ -1150,12 +1358,68 @@ impl SdlInputCapture {
     }
 
     pub(crate) fn take(&mut self) -> Vec<CapturedInput> {
+        if self.enabled && self.last_gamepad_keepalive.elapsed().as_millis() >= 100 {
+            for slot in 0_u8..4 {
+                if self.gamepad_states[usize::from(slot)].connected {
+                    self.push_gamepad(slot);
+                }
+            }
+            self.last_gamepad_keepalive = Instant::now();
+        }
         std::mem::take(&mut self.captured)
     }
 
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     pub(crate) const fn relative_mouse_enabled(&self) -> bool {
         self.relative_mouse
     }
+
+    #[cfg(target_os = "windows")]
+    pub(crate) const fn capture_enabled(&self) -> bool {
+        self.enabled
+    }
+}
+
+fn gamepad_button_mask(button: sdl2::controller::Button) -> Option<u16> {
+    use sdl2::controller::Button;
+    Some(match button {
+        Button::A => 0x1000,
+        Button::B => 0x2000,
+        Button::X => 0x4000,
+        Button::Y => 0x8000,
+        Button::Back => 0x0020,
+        Button::Start => 0x0010,
+        Button::LeftStick => 0x0040,
+        Button::RightStick => 0x0080,
+        Button::LeftShoulder => 0x0100,
+        Button::RightShoulder => 0x0200,
+        Button::DPadUp => 0x0001,
+        Button::DPadDown => 0x0002,
+        Button::DPadLeft => 0x0004,
+        Button::DPadRight => 0x0008,
+        _ => return None,
+    })
+}
+
+fn radial_deadzone(x: i16, y: i16) -> (i16, i16) {
+    const DEADZONE: f32 = 0.15;
+    let normalized_x = f32::from(x) / 32767.0;
+    let normalized_y = f32::from(y) / 32767.0;
+    let magnitude = normalized_x.hypot(normalized_y);
+    if magnitude < DEADZONE {
+        return (0, 0);
+    }
+    let scaled = ((magnitude - DEADZONE) / (1.0 - DEADZONE)).clamp(0.0, 1.0);
+    let factor = scaled / magnitude;
+    (
+        (normalized_x * factor * 32767.0).round() as i16,
+        (normalized_y * factor * 32767.0).round() as i16,
+    )
+}
+
+fn trigger_axis(value: i16) -> u8 {
+    let normalized = (f32::from(value) / 32767.0).clamp(0.0, 1.0);
+    (normalized * 255.0).round() as u8
 }
 
 pub(crate) struct SoftwareOutput {
@@ -1174,10 +1438,6 @@ pub(crate) struct SoftwareOutput {
     output: Arc<OutputBuffers>,
     external_renderer: bool,
     #[cfg(target_os = "linux")]
-    debug_overlay: NativeStatsOverlay,
-    #[cfg(target_os = "linux")]
-    presented_frames: u64,
-    #[cfg(target_os = "linux")]
     presented_linux_frame: bool,
     visible: bool,
     paused: bool,
@@ -1185,7 +1445,7 @@ pub(crate) struct SoftwareOutput {
 }
 
 impl SoftwareOutput {
-    fn initialize(output: Arc<OutputBuffers>, _stream: MediaStreamConfig) -> Result<Self, String> {
+    fn initialize(output: Arc<OutputBuffers>, stream: MediaStreamConfig) -> Result<Self, String> {
         #[cfg(target_os = "linux")]
         configure_linux_sdl_video_driver();
         let sdl = sdl2::init().map_err(|error| format!("SDL initialization failed: {error}"))?;
@@ -1266,11 +1526,18 @@ impl SoftwareOutput {
         let external_relative_motion = raw_input.is_some();
         #[cfg(not(target_os = "linux"))]
         let external_relative_motion = false;
+        let mut input_capture = SdlInputCapture::new(
+            capture_input,
+            external_relative_motion,
+            false,
+            stream.shortcuts,
+        );
+        input_capture.enable_gamepads(&sdl);
 
         Ok(Self {
             texture: None,
             native_surface,
-            input_capture: SdlInputCapture::new(capture_input, external_relative_motion),
+            input_capture,
             #[cfg(target_os = "linux")]
             raw_input,
             canvas,
@@ -1280,10 +1547,6 @@ impl SoftwareOutput {
             audio,
             output,
             external_renderer,
-            #[cfg(target_os = "linux")]
-            debug_overlay: NativeStatsOverlay::new(_stream, "LINUX / SDL"),
-            #[cfg(target_os = "linux")]
-            presented_frames: 0,
             #[cfg(target_os = "linux")]
             presented_linux_frame: false,
             visible: false,
@@ -1296,7 +1559,6 @@ impl SoftwareOutput {
         self.paused = false;
         #[cfg(target_os = "linux")]
         {
-            self.presented_frames = 0;
             self.presented_linux_frame = false;
         }
         self.output.clear();
@@ -1311,7 +1573,7 @@ impl SoftwareOutput {
         self.paused = paused;
         if paused {
             self.input_capture
-                .release(&self._sdl, self.canvas.window_mut());
+                .set_input_paused(true, &self._sdl, self.canvas.window_mut());
             #[cfg(target_os = "linux")]
             if let Some(raw_input) = self.raw_input.as_ref() {
                 raw_input.set_enabled(false);
@@ -1319,6 +1581,8 @@ impl SoftwareOutput {
             self.audio.pause();
             self.output.clear();
         } else {
+            self.input_capture
+                .set_input_paused(false, &self._sdl, self.canvas.window_mut());
             self.audio.resume();
         }
     }
@@ -1380,10 +1644,9 @@ impl SoftwareOutput {
             self.visible = true;
             return Ok(());
         }
-        let parent_handle = surface
-            .window_handle
-            .as_deref()
-            .ok_or_else(|| "visible native surface is missing Electron windowHandle".to_owned())?;
+        let parent_handle = surface.window_handle.as_deref().ok_or_else(|| {
+            "visible native surface is missing the shell window handle".to_owned()
+        })?;
         self.native_surface
             .as_mut()
             .map_err(|error| error.clone())?
@@ -1417,15 +1680,6 @@ impl SoftwareOutput {
                 self.visible = false;
                 continue;
             }
-            #[cfg(target_os = "linux")]
-            if handle_linux_stats_shortcut(&mut self.debug_overlay, &event) {
-                continue;
-            }
-            if self.external_renderer
-                && handle_native_window_shortcut(self.canvas.window_mut(), &event)
-            {
-                continue;
-            }
             let window_size = self.canvas.window().size();
             let stream_size = self.texture_size.unwrap_or(window_size);
             self.input_capture.handle_event(
@@ -1438,7 +1692,9 @@ impl SoftwareOutput {
         #[cfg(target_os = "linux")]
         if let Some(raw_input) = self.raw_input.as_ref() {
             raw_input.set_enabled(
-                self.visible && self.input_capture.focused && self.input_capture.relative_mouse,
+                self.visible
+                    && self.input_capture.focused
+                    && self.input_capture.relative_mouse_enabled(),
             );
         }
         if self.paused || !self.visible {
@@ -1455,23 +1711,9 @@ impl SoftwareOutput {
             return Ok(false);
         };
         #[cfg(target_os = "linux")]
-        let frame = {
-            let mut frame = frame;
+        {
             self.presented_linux_frame = false;
-            self.debug_overlay.update(
-                self.presented_frames,
-                self.output.software_video_drops(),
-                self.input_capture.relative_mouse,
-                self.output.received_video_bytes(),
-            );
-            self.debug_overlay.composite_rgb24(
-                &mut frame.rgb,
-                frame.width,
-                frame.height,
-                frame.width as usize * 3,
-            );
-            frame
-        };
+        }
         if self.texture_size != Some((frame.width, frame.height))
             || self.texture_format != Some(PixelFormatEnum::RGB24)
         {
@@ -1494,15 +1736,11 @@ impl SoftwareOutput {
         self.canvas.clear();
         self.canvas.copy(texture, None, target)?;
         self.canvas.present();
-        #[cfg(target_os = "linux")]
-        {
-            self.presented_frames = self.presented_frames.saturating_add(1);
-        }
         Ok(true)
     }
 
     #[cfg(target_os = "linux")]
-    fn present_linux_frame(&mut self, mut frame: LinuxDecodedVideoFrame) -> Result<bool, String> {
+    fn present_linux_frame(&mut self, frame: LinuxDecodedVideoFrame) -> Result<bool, String> {
         use opennow_streamer_platform_linux::PixelFormat;
 
         if frame.format.pixel_format != PixelFormat::Nv12 || frame.planes.len() != 2 {
@@ -1513,15 +1751,6 @@ impl SoftwareOutput {
         }
         let width = frame.format.width;
         let height = frame.format.height;
-        self.debug_overlay
-            .set_presentation_skips(self.output.display_video_skips());
-        self.debug_overlay.update(
-            self.presented_frames,
-            self.output.hardware_video_drops(),
-            self.input_capture.relative_mouse,
-            self.output.received_video_bytes(),
-        );
-        self.debug_overlay.composite_linux_frame(&mut frame);
         if self.texture_size != Some((width, height))
             || self.texture_format != Some(PixelFormatEnum::NV12)
         {
@@ -1569,7 +1798,6 @@ impl SoftwareOutput {
             target,
         )?;
         self.canvas.present();
-        self.presented_frames = self.presented_frames.saturating_add(1);
         self.presented_linux_frame = true;
         Ok(true)
     }
@@ -1960,69 +2188,11 @@ fn normalized_cursor_coordinate(value: u16, viewport_extent: u32) -> i32 {
     coordinate.min(extent.saturating_sub(1)) as i32
 }
 
-#[cfg(target_os = "linux")]
-fn handle_linux_stats_shortcut(
-    overlay: &mut NativeStatsOverlay,
-    event: &sdl2::event::Event,
+fn is_native_guide_shortcut(
+    scancode: sdl2::keyboard::Scancode,
+    keymod: sdl2::keyboard::Mod,
 ) -> bool {
-    use sdl2::event::Event;
-    use sdl2::keyboard::Scancode;
-
-    match event {
-        Event::KeyDown {
-            scancode: Some(Scancode::F3),
-            repeat: false,
-            ..
-        } => {
-            overlay.toggle();
-            true
-        }
-        Event::KeyUp {
-            scancode: Some(Scancode::F3),
-            ..
-        } => true,
-        _ => false,
-    }
-}
-
-pub(crate) fn handle_native_window_shortcut(
-    window: &mut sdl2::video::Window,
-    event: &sdl2::event::Event,
-) -> bool {
-    use sdl2::event::Event;
-    use sdl2::keyboard::Scancode;
-    use sdl2::video::FullscreenType;
-
-    match event {
-        Event::KeyDown {
-            scancode: Some(Scancode::F11),
-            repeat: false,
-            ..
-        } => {
-            let next = if window.fullscreen_state() == FullscreenType::Off {
-                FullscreenType::Desktop
-            } else {
-                FullscreenType::Off
-            };
-            match window.set_fullscreen(next) {
-                Ok(()) => eprintln!(
-                    "External SDL fullscreen changed: {}",
-                    if next == FullscreenType::Off {
-                        "off"
-                    } else {
-                        "desktop"
-                    }
-                ),
-                Err(error) => eprintln!("External SDL fullscreen toggle failed: {error}"),
-            }
-            true
-        }
-        Event::KeyUp {
-            scancode: Some(Scancode::F11),
-            ..
-        } => true,
-        _ => false,
-    }
+    scancode == sdl2::keyboard::Scancode::G && sdl_modifiers(scancode, keymod) == 0x02
 }
 
 pub(crate) fn native_input_capture_enabled() -> bool {
@@ -2036,11 +2206,16 @@ fn native_input_capture_enabled_value(owner: Option<&str>) -> bool {
 pub(crate) enum ActiveOutput {
     Software(Box<SoftwareOutput>),
     #[cfg(target_os = "windows")]
-    Windows(WindowsOutput),
+    Windows(Box<WindowsOutput>),
     #[cfg(target_os = "linux")]
     LinuxHardware(Box<LinuxHardwareOutput>),
     #[cfg(target_os = "macos")]
     Mac(Box<crate::macos_backend::MacOutput>),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OutputControl {
+    PointerLock,
 }
 
 impl ActiveOutput {
@@ -2052,6 +2227,11 @@ impl ActiveOutput {
     #[cfg(target_os = "linux")]
     pub(crate) fn is_linux_hardware(&self) -> bool {
         matches!(self, Self::LinuxHardware(_))
+    }
+
+    #[cfg(target_os = "windows")]
+    pub(crate) fn is_windows_hardware(&self) -> bool {
+        matches!(self, Self::Windows(output) if output.is_hardware())
     }
 
     pub(crate) fn initialize(
@@ -2068,8 +2248,15 @@ impl ActiveOutput {
                 .map(Self::Mac);
         }
         #[cfg(target_os = "windows")]
-        if use_hardware {
-            return WindowsOutput::initialize(windows_bridge, output, stream).map(Self::Windows);
+        if use_hardware || stream.codec != crate::media::MediaVideoCodec::H264 {
+            let decoder_mode = if use_hardware {
+                WindowsDecoderMode::Hardware
+            } else {
+                WindowsDecoderMode::Software
+            };
+            return WindowsOutput::initialize(windows_bridge, output, stream, decoder_mode)
+                .map(Box::new)
+                .map(Self::Windows);
         }
         #[cfg(target_os = "linux")]
         if use_linux_hardware {
@@ -2187,6 +2374,45 @@ impl ActiveOutput {
         }
     }
 
+    pub(crate) fn control(&mut self, control: OutputControl) -> Result<(), String> {
+        match self {
+            Self::Software(output) => match control {
+                OutputControl::PointerLock => {
+                    output
+                        .input_capture
+                        .toggle_pointer_lock(&output._sdl, output.canvas.window_mut());
+                    Ok(())
+                }
+            },
+            #[cfg(target_os = "windows")]
+            Self::Windows(output) => {
+                let Some(surface) = output.external_surface.as_mut() else {
+                    return Err("Runtime controls require the external stream window".to_owned());
+                };
+                match control {
+                    OutputControl::PointerLock => {
+                        surface
+                            .input_capture
+                            .toggle_pointer_lock(&surface.sdl, &mut surface.window);
+                        surface.sync_raw_input();
+                        Ok(())
+                    }
+                }
+            }
+            #[cfg(target_os = "linux")]
+            Self::LinuxHardware(output) => match control {
+                OutputControl::PointerLock => {
+                    output
+                        .input_capture
+                        .toggle_pointer_lock(&output._sdl, &mut output.window);
+                    Ok(())
+                }
+            },
+            #[cfg(target_os = "macos")]
+            Self::Mac(output) => output.control(control),
+        }
+    }
+
     #[cfg(target_os = "macos")]
     pub(crate) fn configure_macos_h264(
         &mut self,
@@ -2194,6 +2420,28 @@ impl ActiveOutput {
     ) -> Result<opennow_streamer_platform_macos::StreamSink, String> {
         match self {
             Self::Mac(output) => output.configure_h264(parameter_sets),
+            Self::Software(_) => Err("VideoToolbox is not the selected media backend".to_owned()),
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) fn configure_macos_h265(
+        &mut self,
+        parameter_sets: opennow_streamer_platform_macos::H265ParameterSets,
+    ) -> Result<opennow_streamer_platform_macos::StreamSink, String> {
+        match self {
+            Self::Mac(output) => output.configure_h265(parameter_sets),
+            Self::Software(_) => Err("VideoToolbox is not the selected media backend".to_owned()),
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) fn configure_macos_av1(
+        &mut self,
+        format: opennow_streamer_platform_macos::Av1Format,
+    ) -> Result<opennow_streamer_platform_macos::StreamSink, String> {
+        match self {
+            Self::Mac(output) => output.configure_av1(format),
             Self::Software(_) => Err("VideoToolbox is not the selected media backend".to_owned()),
         }
     }
@@ -2224,45 +2472,39 @@ struct WindowsExternalSdlSurface {
     native_surface: NativeSurface,
     input_capture: SdlInputCapture,
     raw_input: Option<WindowsRawInputController>,
-    debug_overlay: NativeDebugOverlay,
     stream_size: (u32, u32),
     visible: bool,
-    focused: bool,
+    session_paused: bool,
+    input_suspended: bool,
 }
 
 #[cfg(target_os = "windows")]
 impl WindowsExternalSdlSurface {
     fn initialize(
         stream: MediaStreamConfig,
-        graphics_api: WindowsGraphicsApi,
         captured_input: Arc<CapturedInputQueue>,
     ) -> Result<Self, String> {
         // Force the Windows RawInput path. Warp-relative motion is quantized by
         // cursor recentering and Windows pointer scaling, which is particularly
         // noticeable in 120 FPS first-person games.
+        sdl2::hint::set("SDL_WINDOWS_DPI_AWARENESS", "permonitorv2");
+        sdl2::hint::set("SDL_WINDOWS_DPI_SCALING", "1");
         sdl2::hint::set("SDL_MOUSE_RELATIVE_MODE_WARP", "0");
         sdl2::hint::set("SDL_MOUSE_RELATIVE_SCALING", "0");
         let sdl = sdl2::init().map_err(|error| format!("SDL initialization failed: {error}"))?;
         let video = sdl
             .video()
             .map_err(|error| format!("SDL video initialization failed: {error}"))?;
-        let window = video
-            .window("OpenNOW Stream", 1280, 720)
+        let mut window_builder = video.window("OpenNOW Stream", 1280, 720);
+        window_builder
             .position_centered()
             .resizable()
-            .hidden()
+            .borderless()
+            .hidden();
+        let mut window = window_builder
             .build()
             .map_err(|error| format!("external SDL video window creation failed: {error}"))?;
         let native_surface = NativeSurface::new(&window)?;
-        let debug_overlay = NativeDebugOverlay::new(
-            &video,
-            native_surface.window_handle(),
-            stream,
-            match graphics_api {
-                WindowsGraphicsApi::D3d12 => "D3D11VA / D3D12",
-                WindowsGraphicsApi::D3d11 => "D3D11VA ZERO-COPY",
-            },
-        )?;
         let event_pump = sdl
             .event_pump()
             .map_err(|error| format!("external SDL event pump creation failed: {error}"))?;
@@ -2287,17 +2529,25 @@ impl WindowsExternalSdlSurface {
             "External SDL stream window ready (native keyboard/mouse capture: {capture_input})"
         );
         let external_relative_motion = raw_input.is_some();
+        let mut input_capture = SdlInputCapture::new(
+            capture_input,
+            external_relative_motion,
+            raw_input.is_some(),
+            stream.shortcuts,
+        );
+        input_capture.enable_gamepads(&sdl);
+        input_capture.set_input_paused(true, &sdl, &mut window);
         Ok(Self {
             sdl,
             window,
             event_pump,
             native_surface,
-            input_capture: SdlInputCapture::new(capture_input, external_relative_motion),
+            input_capture,
             raw_input,
-            debug_overlay,
             stream_size: (stream.width, stream.height),
             visible: false,
-            focused: false,
+            session_paused: false,
+            input_suspended: true,
         })
     }
 
@@ -2309,116 +2559,77 @@ impl WindowsExternalSdlSurface {
 
     fn update(&mut self, surface: &RenderSurface) -> Result<(), String> {
         let Some(rect) = surface.rect.filter(|_| surface.visible) else {
-            self.input_capture.release(&self.sdl, &mut self.window);
-            if let Some(raw_input) = self.raw_input.as_ref() {
-                raw_input.set_enabled(false);
-            }
-            self.debug_overlay.hide();
-            self.window.hide();
             self.visible = false;
+            self.sync_input_ownership();
+            self.native_surface.hide_checked()?;
             return Ok(());
         };
-        let bounds = surface.screen_rect.unwrap_or(rect);
-        self.window.set_position(
-            sdl2::video::WindowPos::Positioned(bounds.x),
-            sdl2::video::WindowPos::Positioned(bounds.y),
-        );
-        self.window
-            .set_size(bounds.width.max(2), bounds.height.max(2))
-            .map_err(|error| format!("failed to resize external SDL video surface: {error}"))?;
-        self.window.show();
-        if !self.visible {
-            self.window.raise();
+        let parent_handle = surface.window_handle.as_deref().ok_or_else(|| {
+            "visible Windows stream surface is missing the Qt window handle".to_owned()
+        })?;
+        let foreground_owner = parse_windows_handle(parent_handle)?.get();
+        self.native_surface.attach_and_show(
+            parent_handle,
+            rect,
+            surface.screen_rect,
+            surface.device_scale_factor,
+        )?;
+        if let Some(raw_input) = self.raw_input.as_ref() {
+            raw_input.set_foreground_owner(foreground_owner);
         }
         self.visible = true;
-        self.focused = self.window.has_input_focus();
-        if let Some(raw_input) = self.raw_input.as_ref() {
-            raw_input.set_target(self.native_surface.window_handle());
-        }
-        if self.focused {
-            self.debug_overlay.show_if_enabled();
-        }
+        self.sync_input_ownership();
         Ok(())
     }
 
-    fn pump(&mut self, presented_frames: u64, dropped_frames: u64) {
+    fn pump(&mut self) {
         let stream_window_id = self.window.id();
         for event in self.event_pump.poll_iter().collect::<Vec<_>>() {
             if matches!(event, sdl2::event::Event::Quit { .. }) {
-                self.input_capture.release(&self.sdl, &mut self.window);
-                self.window.hide();
-                self.debug_overlay.hide();
-                self.visible = false;
-                self.focused = false;
-            } else if matches!(
+                if let Err(error) = self.release() {
+                    eprintln!("{error}");
+                }
+                continue;
+            }
+            let focus_lost = matches!(
                 event,
                 sdl2::event::Event::Window {
                     window_id,
                     win_event: sdl2::event::WindowEvent::FocusLost,
                     ..
                 } if window_id == stream_window_id
-            ) {
-                self.focused = false;
-                self.debug_overlay.hide();
-            } else if matches!(
-                event,
-                sdl2::event::Event::Window {
-                    window_id,
-                    win_event: sdl2::event::WindowEvent::FocusGained,
-                    ..
-                } if window_id == stream_window_id
-            ) {
-                self.focused = true;
-                self.debug_overlay.show_if_enabled();
-            } else if matches!(
-                event,
-                sdl2::event::Event::KeyDown {
-                    scancode: Some(sdl2::keyboard::Scancode::F3),
-                    repeat: false,
-                    ..
+            );
+            self.input_capture
+                .handle_event(&self.sdl, &mut self.window, self.stream_size, event);
+            if focus_lost {
+                if let Some(raw_input) = self.raw_input.as_ref() {
+                    raw_input.release_buttons();
                 }
-            ) {
-                self.debug_overlay.toggle();
-                continue;
-            } else if matches!(
-                event,
-                sdl2::event::Event::KeyUp {
-                    scancode: Some(sdl2::keyboard::Scancode::F3),
-                    ..
-                }
-            ) {
-                continue;
-            } else if handle_native_window_shortcut(&mut self.window, &event) {
-                continue;
-            } else {
-                self.input_capture.handle_event(
-                    &self.sdl,
-                    &mut self.window,
-                    self.stream_size,
-                    event,
-                );
             }
         }
-        if let Some(raw_input) = self.raw_input.as_ref() {
-            raw_input
-                .set_enabled(self.visible && self.focused && self.input_capture.relative_mouse);
-        }
-        self.debug_overlay.update(
-            presented_frames,
-            dropped_frames,
-            self.input_capture.relative_mouse,
-        );
+        self.sync_raw_input();
     }
 
-    fn release(&mut self) {
-        self.input_capture.release(&self.sdl, &mut self.window);
-        if let Some(raw_input) = self.raw_input.as_ref() {
-            raw_input.set_enabled(false);
-        }
-        self.debug_overlay.hide();
-        self.window.hide();
+    fn release(&mut self) -> Result<(), String> {
         self.visible = false;
-        self.focused = false;
+        self.sync_input_ownership();
+        self.native_surface.hide_checked()
+    }
+
+    fn set_paused(&mut self, paused: bool) {
+        self.session_paused = paused;
+        self.sync_input_ownership();
+    }
+
+    fn sync_input_ownership(&mut self) {
+        let suspended = self.session_paused || !self.visible;
+        if suspended == self.input_suspended {
+            return;
+        }
+        self.input_capture
+            .set_input_paused(suspended, &self.sdl, &mut self.window);
+        self.input_suspended = suspended;
+        self.sync_raw_input();
     }
 
     fn take_captured_input(&mut self) -> Vec<CapturedInput> {
@@ -2428,6 +2639,22 @@ impl WindowsExternalSdlSurface {
     fn update_cursor(&mut self, bytes: &[u8]) {
         self.input_capture
             .apply_cursor(&self.sdl, &mut self.window, self.stream_size, bytes);
+        // SDL changes its process-wide Raw Input registration when relative mode changes.
+        // Reclaim it immediately so the first button after a server cursor transition cannot
+        // fall into an ownership gap.
+        self.sync_raw_input();
+    }
+
+    fn sync_raw_input(&self) {
+        if let Some(raw_input) = self.raw_input.as_ref() {
+            // Keep Raw Input registered for the whole visible session. It is the sole button
+            // and wheel owner in both cursor modes; foreground validation still happens on the
+            // Raw Input thread. Only motion switches between SDL absolute and raw relative.
+            raw_input.set_capture(
+                self.visible && self.input_capture.capture_enabled(),
+                self.input_capture.relative_mouse_enabled(),
+            );
+        }
     }
 }
 
@@ -2435,27 +2662,35 @@ impl WindowsExternalSdlSurface {
 pub(crate) struct WindowsOutput {
     backend: Arc<WindowsBackend>,
     graphics_api: WindowsGraphicsApi,
+    decoder_mode: WindowsDecoderMode,
     bridge: Arc<WindowsBridge>,
     output: Arc<OutputBuffers>,
     external_surface: Option<WindowsExternalSdlSurface>,
-    dropped_video_frames: u64,
     stopped: bool,
 }
 
 #[cfg(target_os = "windows")]
 impl WindowsOutput {
+    fn is_hardware(&self) -> bool {
+        self.decoder_mode == WindowsDecoderMode::Hardware
+    }
+
     fn initialize(
         bridge: Arc<WindowsBridge>,
         output: Arc<OutputBuffers>,
         stream: MediaStreamConfig,
+        decoder_mode: WindowsDecoderMode,
     ) -> Result<Self, String> {
         bridge.reset();
         let external_renderer = external_renderer_enabled();
-        let graphics_api = selected_windows_graphics_api(stream.codec);
+        let graphics_api = if decoder_mode == WindowsDecoderMode::Software {
+            WindowsGraphicsApi::D3d11
+        } else {
+            selected_windows_graphics_api(stream.codec)
+        };
         let external_surface = if external_renderer {
             Some(WindowsExternalSdlSurface::initialize(
                 stream,
-                graphics_api,
                 output.captured_input(),
             )?)
         } else {
@@ -2466,8 +2701,9 @@ impl WindowsOutput {
             None => hidden_windows_surface(),
         };
         let backend = Arc::new(
-            WindowsBackend::start_for(
+            WindowsBackend::start_for_mode(
                 graphics_api,
+                decoder_mode,
                 BackendConfig {
                     video: VideoFormat {
                         codec: match stream.codec {
@@ -2482,6 +2718,22 @@ impl WindowsOutput {
                         frame_rate_denominator: std::num::NonZeroU32::new(1)
                             .expect("one is non-zero"),
                         average_bitrate: stream.bitrate_bps.max(1),
+                        pixel_format: match (
+                            stream.color_quality.bit_depth(),
+                            stream.color_quality.is_444(),
+                        ) {
+                            (10, true) => VideoPixelFormat::Y410,
+                            (10, false) => VideoPixelFormat::P010,
+                            (_, true) => VideoPixelFormat::Ayuv,
+                            _ => VideoPixelFormat::Nv12,
+                        },
+                        chroma_format: if stream.color_quality.is_444() {
+                            VideoChromaFormat::Cs444
+                        } else {
+                            VideoChromaFormat::Cs420
+                        },
+                        // Official GFN SDR sessions report limited-range BT.709.
+                        full_range: false,
                     },
                     audio: AudioFormat {
                         sample_rate: AUDIO_SAMPLE_RATE as u32,
@@ -2490,7 +2742,9 @@ impl WindowsOutput {
                     surface: initial_surface,
                     video_queue_capacity:
                         opennow_streamer_platform_windows::ADAPTIVE_VIDEO_QUEUE_CAPACITY,
-                    audio_queue_capacity: 4,
+                    // 10 x 20 ms PCM packets matches the adaptive renderer's
+                    // maximum jitter-buffer target without becoming unbounded.
+                    audio_queue_capacity: 10,
                 },
             )
             .map_err(|error| error.to_string())?,
@@ -2499,10 +2753,10 @@ impl WindowsOutput {
         Ok(Self {
             backend,
             graphics_api,
+            decoder_mode,
             bridge,
             output,
             external_surface,
-            dropped_video_frames: 0,
             stopped: false,
         })
     }
@@ -2515,10 +2769,8 @@ impl WindowsOutput {
     }
 
     fn set_paused(&mut self, paused: bool) -> Result<(), String> {
-        if paused && let Some(surface) = self.external_surface.as_mut() {
-            surface
-                .input_capture
-                .release(&surface.sdl, &mut surface.window);
+        if let Some(surface) = self.external_surface.as_mut() {
+            surface.set_paused(paused);
         }
         self.backend
             .set_paused(paused)
@@ -2540,16 +2792,23 @@ impl WindowsOutput {
 
     fn pump(&mut self) -> Result<OutputEvent, String> {
         if let Some(surface) = self.external_surface.as_mut() {
-            surface.pump(self.backend.presented_frames(), self.dropped_video_frames);
+            surface.pump();
         }
         let Some(event) = self.backend.try_event() else {
             return Ok(OutputEvent::None);
         };
         Ok(match event {
-            BackendEvent::FirstFramePresented => OutputEvent::Presented(match self.graphics_api {
-                WindowsGraphicsApi::D3d12 => "Media Foundation/D3D11-on-12/D3D12/WASAPI",
-                WindowsGraphicsApi::D3d11 => "Media Foundation/D3D11/WASAPI",
-            }),
+            BackendEvent::FirstFramePresented => {
+                OutputEvent::Presented(match (self.graphics_api, self.decoder_mode) {
+                    (WindowsGraphicsApi::D3d12, WindowsDecoderMode::Hardware) => {
+                        "Media Foundation hardware/D3D11-on-12/D3D12/WASAPI"
+                    }
+                    (WindowsGraphicsApi::D3d11, WindowsDecoderMode::Hardware) => {
+                        "Media Foundation hardware/D3D11/WASAPI"
+                    }
+                    (_, WindowsDecoderMode::Software) => "Media Foundation software/D3D11/WASAPI",
+                })
+            }
             BackendEvent::KeyFrameRequired => {
                 self.bridge.require_keyframe();
                 OutputEvent::RequestKeyframe
@@ -2566,12 +2825,6 @@ impl WindowsOutput {
             },
             BackendEvent::Fatal(error) => OutputEvent::Fatal(error.to_string()),
             BackendEvent::QueueOverflow(subsystem) => {
-                if matches!(
-                    subsystem,
-                    Subsystem::VideoDecode | Subsystem::VideoPresentation
-                ) {
-                    self.dropped_video_frames = self.dropped_video_frames.saturating_add(1);
-                }
                 if subsystem == Subsystem::VideoDecode {
                     self.bridge.require_keyframe();
                 }
@@ -2589,7 +2842,9 @@ impl WindowsOutput {
         }
         self.bridge.replace_backend(None);
         if let Some(surface) = self.external_surface.as_mut() {
-            surface.release();
+            if let Err(error) = surface.release() {
+                eprintln!("{error}");
+            }
             let captured_input = self.output.captured_input();
             for input in surface.take_captured_input() {
                 captured_input.push(input);
@@ -2674,7 +2929,7 @@ fn windows_surface(surface: &RenderSurface) -> Result<SurfaceTarget, String> {
     let parent = surface
         .window_handle
         .as_deref()
-        .ok_or_else(|| "visible native surface is missing Electron windowHandle".to_owned())?;
+        .ok_or_else(|| "visible native surface is missing the shell window handle".to_owned())?;
     let parent = parse_windows_handle(parent)?;
     Ok(SurfaceTarget::Owned(OwnedWindow {
         parent: Some(parent),
@@ -2694,6 +2949,18 @@ pub(crate) fn external_renderer_enabled() -> bool {
             .ok()
             .as_deref(),
     )
+}
+
+fn native_cursor_overlay_enabled() -> bool {
+    std::env::var("OPENNOW_NATIVE_CURSOR_OVERLAY")
+        .ok()
+        .as_deref()
+        .is_none_or(|value| {
+            !matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "0" | "false" | "no" | "off"
+            )
+        })
 }
 
 fn external_renderer_enabled_value(value: Option<&str>) -> bool {
@@ -2716,8 +2983,8 @@ fn parse_windows_handle(value: &str) -> Result<WindowHandle, String> {
     } else {
         trimmed.parse::<isize>()
     }
-    .map_err(|error| format!("invalid Electron HWND {value:?}: {error}"))?;
-    WindowHandle::new(raw).ok_or_else(|| "Electron HWND must be non-zero".to_owned())
+    .map_err(|error| format!("invalid shell HWND {value:?}: {error}"))?;
+    WindowHandle::new(raw).ok_or_else(|| "shell HWND must be non-zero".to_owned())
 }
 
 #[cfg(target_os = "windows")]
@@ -2770,14 +3037,6 @@ mod tests {
             video: Mutex::new(None),
             #[cfg(target_os = "linux")]
             linux_video: Mutex::new(VecDeque::with_capacity(LINUX_VIDEO_QUEUE_CAPACITY)),
-            #[cfg(target_os = "linux")]
-            software_video_drops: AtomicU64::new(0),
-            #[cfg(target_os = "linux")]
-            hardware_video_drops: AtomicU64::new(0),
-            #[cfg(target_os = "linux")]
-            display_video_skips: AtomicU64::new(0),
-            #[cfg(target_os = "linux")]
-            received_video_bytes: AtomicU64::new(0),
             audio: Mutex::new(VecDeque::new()),
             audio_capacity: 4,
             captured_input: Arc::new(CapturedInputQueue::default()),
@@ -2815,7 +3074,6 @@ mod tests {
             planes: Vec::new(),
             dmabuf: None,
             vulkan: None,
-            overlay: None,
             timestamp_us,
         };
         let output = OutputBuffers::new();
@@ -2823,7 +3081,6 @@ mod tests {
             assert!(!output.queue_linux_video(frame(timestamp_us)));
         }
         assert!(output.queue_linux_video(frame(LINUX_VIDEO_QUEUE_CAPACITY as u64)));
-        assert_eq!(output.hardware_video_drops(), 1);
         assert_eq!(
             output
                 .take_linux_video()
@@ -2853,8 +3110,6 @@ mod tests {
                 .timestamp_us,
             11,
         );
-        assert_eq!(recovery.hardware_video_drops(), 0);
-        assert_eq!(recovery.display_video_skips(), 1);
         assert!(recovery.take_linux_video().is_none());
     }
 
@@ -2911,6 +3166,20 @@ mod tests {
     }
 
     #[test]
+    fn ctrl_g_is_reserved_for_the_shell_stream_menu() {
+        use sdl2::keyboard::{Mod, Scancode};
+
+        assert!(is_native_guide_shortcut(Scancode::G, Mod::LCTRLMOD));
+        assert!(is_native_guide_shortcut(Scancode::G, Mod::RCTRLMOD));
+        assert!(!is_native_guide_shortcut(Scancode::G, Mod::NOMOD));
+        assert!(!is_native_guide_shortcut(
+            Scancode::G,
+            Mod::LCTRLMOD | Mod::LSHIFTMOD
+        ));
+        assert!(!is_native_guide_shortcut(Scancode::F1, Mod::LCTRLMOD));
+    }
+
+    #[test]
     fn adjacent_sdl_mouse_motion_is_preserved_and_clamped() {
         let mut input = Vec::new();
         push_mouse_motion(&mut input, 10, -20);
@@ -2939,8 +3208,17 @@ mod tests {
     }
 
     #[test]
+    fn gamepad_sticks_use_the_official_radial_deadzone() {
+        assert_eq!(radial_deadzone(2_000, 2_000), (0, 0));
+        let diagonal = radial_deadzone(16_384, 16_384);
+        assert_eq!(diagonal.0, diagonal.1);
+        assert!(diagonal.0 > 10_000);
+        assert_eq!(radial_deadzone(i16::MAX, 0), (i16::MAX, 0));
+    }
+
+    #[test]
     fn native_input_capture_waits_for_the_first_server_cursor_mode() {
-        let capture = SdlInputCapture::new(true, false);
+        let capture = SdlInputCapture::new(true, false, false, StreamShortcutBindings::default());
         assert!(!capture.focused);
         assert!(!capture.relative_mouse);
         assert_eq!(capture.cursor_state, RemoteCursorState::Unknown);

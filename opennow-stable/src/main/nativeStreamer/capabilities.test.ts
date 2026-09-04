@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import type { NativeVideoBackendCapability } from "@shared/gfn";
+import { NATIVE_STREAMER_PROTOCOL_VERSION } from "@shared/nativeStreamer";
 import {
   createNativeStreamerStatus,
   resolveActiveVideoBackend,
@@ -52,7 +53,7 @@ test("capability selection skips unavailable preferred and platform backends", (
 
 test("status formatting reports selected video path and codec summary", () => {
   const status = createNativeStreamerStatus({
-    protocolVersion: 4,
+    protocolVersion: NATIVE_STREAMER_PROTOCOL_VERSION,
     backend: "native",
     supportsOfferAnswer: true,
     supportsRemoteIce: true,

@@ -1,36 +1,74 @@
 use std::collections::HashMap;
 use std::net::UdpSocket;
-use std::sync::mpsc::{Receiver, Sender};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::mpsc::{Receiver, Sender, SyncSender, TrySendError};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use opennow_streamer_platform::{
-    CapturedInput, CapturedInputQueue, CapturedInputSample, EncodedFrame, MediaCodec, MediaControl,
-    MediaFeedback, MediaRuntime, MediaSession, MediaSink, MediaStreamConfig, MediaVideoCodec,
-    PushOutcome, supports_audio_decode, supports_audio_output, video_backends,
+    CapturedInput, CapturedInputQueue, CapturedInputSample, EncodedFrame, MediaCodec,
+    MediaColorQuality, MediaControl, MediaFeedback, MediaRuntime, MediaRuntimeControl,
+    MediaSession, MediaSink, MediaStreamConfig, MediaVideoCodec, PushOutcome, RecordingSummary,
+    StreamShortcutAction, StreamShortcutBindings, embedded_video_backends, record_matroska,
+    supports_audio_decode, supports_audio_output, video_backends,
 };
 use opennow_streamer_protocol::{
     Capabilities, Command, PROTOCOL_VERSION, SessionContext, error, event, response,
 };
 use opennow_streamer_transport::{
     NvstDropReason, NvstReceiveEvent, NvstReceiverState, NvstRecovery, NvstUdpReceiverControl,
-    NvstUdpReceiverSession, PreferredVideoTransport, ReservedNvstBundle, SharedNvstFeedback,
-    TransportControl, TransportEvent, TransportSession, negotiate, reserve_nvst_mjolnir_udp_socket,
-    select_preferred_video_transport, spawn_nvst_mjolnir_receiver,
+    NvstUdpReceiverSession, ReservedNvstBundle, SharedNvstFeedback, parse_nvst_video_handoff,
+    reserve_nvst_mjolnir_udp_socket, spawn_nvst_mjolnir_receiver,
     spawn_nvst_udp_receiver_with_socket,
 };
 use serde_json::{Value, json};
 
+mod nvst_rtsp;
+
+use nvst_rtsp::{ActiveNvstRtspSession, prepare_owned_nvst};
+
 pub use opennow_streamer_transport::{EncodedMediaFrame, MediaConsumer};
+
+#[derive(Clone)]
+pub struct EventSender {
+    inner: EventSenderInner,
+}
+
+#[derive(Clone)]
+enum EventSenderInner {
+    Unbounded(Sender<Value>),
+    Bounded(SyncSender<Value>),
+}
+
+impl EventSender {
+    fn unbounded(sender: Sender<Value>) -> Self {
+        Self {
+            inner: EventSenderInner::Unbounded(sender),
+        }
+    }
+
+    pub fn bounded(sender: SyncSender<Value>) -> Self {
+        Self {
+            inner: EventSenderInner::Bounded(sender),
+        }
+    }
+
+    fn send(&self, value: Value) -> Result<(), ()> {
+        match &self.inner {
+            EventSenderInner::Unbounded(sender) => sender.send(value).map_err(|_| ()),
+            EventSenderInner::Bounded(sender) => match sender.try_send(value) {
+                Ok(()) => Ok(()),
+                Err(TrySendError::Full(_) | TrySendError::Disconnected(_)) => Err(()),
+            },
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum State {
     Idle,
-    Prepared,
-    Negotiating,
     Connected,
 }
 
@@ -40,7 +78,7 @@ const NATIVE_INPUT_POLL_INTERVAL: Duration = Duration::from_micros(250);
 
 trait NvstSessionResources {
     fn request_keyframe(&self);
-    fn acknowledge_video_frame(&self, bytes: u32);
+    fn acknowledge_video_frame(&self, frame_index: u32, bytes: u32);
     fn send_captured_input(&self, bytes: Vec<u8>) -> Result<(), String>;
     fn apply_cursor(&self, bytes: Vec<u8>);
     fn recover(&self) -> Result<(), String>;
@@ -59,8 +97,9 @@ impl NvstSessionResources for ActiveNvstResources {
         self.feedback.request_keyframe();
     }
 
-    fn acknowledge_video_frame(&self, bytes: u32) {
-        self.feedback.publish_accepted_frame(bytes, Instant::now());
+    fn acknowledge_video_frame(&self, frame_index: u32, bytes: u32) {
+        self.feedback
+            .publish_accepted_frame(frame_index, bytes, Instant::now());
     }
 
     fn send_captured_input(&self, bytes: Vec<u8>) -> Result<(), String> {
@@ -100,18 +139,19 @@ impl NvstSessionResources for ActiveNvstResources {
 
 pub struct Engine {
     lifecycle: Arc<Mutex<Lifecycle>>,
-    transport: Option<TransportSession>,
     nvst_transport: Option<NvstUdpReceiverSession>,
     nvst_mjolnir_transport: Option<NvstUdpReceiverSession>,
     reserved_nvst_bundle: Option<ReservedNvstBundle>,
     nvst_hole_punch_socket: Option<UdpSocket>,
-    events: Sender<Value>,
+    nvst_rtsp: Option<ActiveNvstRtspSession>,
+    events: EventSender,
     media_consumer: Option<MediaConsumer>,
     media_runtime: Option<MediaRuntime>,
     media_session: Option<MediaSession>,
     media_worker: Option<JoinHandle<()>>,
     media_feedback: Option<Receiver<MediaFeedback>>,
     feedback_worker: Option<JoinHandle<()>>,
+    recording_worker: Option<JoinHandle<Result<RecordingSummary, String>>>,
 }
 
 #[derive(Debug)]
@@ -123,17 +163,21 @@ struct Lifecycle {
 
 impl Engine {
     pub fn new(events: Sender<Value>) -> Self {
+        Self::with_event_sender(EventSender::unbounded(events))
+    }
+
+    pub fn with_event_sender(events: EventSender) -> Self {
         Self {
             lifecycle: Arc::new(Mutex::new(Lifecycle {
                 state: State::Idle,
                 context: None,
                 generation: 0,
             })),
-            transport: None,
             nvst_transport: None,
             nvst_mjolnir_transport: None,
             reserved_nvst_bundle: None,
             nvst_hole_punch_socket: None,
+            nvst_rtsp: None,
             events,
             media_consumer: None,
             media_runtime: None,
@@ -141,21 +185,33 @@ impl Engine {
             media_worker: None,
             media_feedback: None,
             feedback_worker: None,
+            recording_worker: None,
         }
     }
 
+    pub fn embedded(events: EventSender) -> Self {
+        Self::with_event_sender(events)
+    }
+
     pub fn with_media_consumer(events: Sender<Value>, media_consumer: MediaConsumer) -> Self {
+        Self::with_media_consumer_and_event_sender(EventSender::unbounded(events), media_consumer)
+    }
+
+    pub fn with_media_consumer_and_event_sender(
+        events: EventSender,
+        media_consumer: MediaConsumer,
+    ) -> Self {
         Self {
             lifecycle: Arc::new(Mutex::new(Lifecycle {
                 state: State::Idle,
                 context: None,
                 generation: 0,
             })),
-            transport: None,
             nvst_transport: None,
             nvst_mjolnir_transport: None,
             reserved_nvst_bundle: None,
             nvst_hole_punch_socket: None,
+            nvst_rtsp: None,
             events,
             media_consumer: Some(media_consumer),
             media_runtime: None,
@@ -163,21 +219,29 @@ impl Engine {
             media_worker: None,
             media_feedback: None,
             feedback_worker: None,
+            recording_worker: None,
         }
     }
 
     pub fn with_media_runtime(events: Sender<Value>, media_runtime: MediaRuntime) -> Self {
+        Self::with_media_runtime_and_event_sender(EventSender::unbounded(events), media_runtime)
+    }
+
+    pub fn with_media_runtime_and_event_sender(
+        events: EventSender,
+        media_runtime: MediaRuntime,
+    ) -> Self {
         Self {
             lifecycle: Arc::new(Mutex::new(Lifecycle {
                 state: State::Idle,
                 context: None,
                 generation: 0,
             })),
-            transport: None,
             nvst_transport: None,
             nvst_mjolnir_transport: None,
             reserved_nvst_bundle: None,
             nvst_hole_punch_socket: None,
+            nvst_rtsp: None,
             events,
             media_consumer: None,
             media_runtime: Some(media_runtime),
@@ -185,7 +249,12 @@ impl Engine {
             media_worker: None,
             media_feedback: None,
             feedback_worker: None,
+            recording_worker: None,
         }
+    }
+
+    pub fn with_embedded_media_runtime(events: EventSender, media_runtime: MediaRuntime) -> Self {
+        Self::with_media_runtime_and_event_sender(events, media_runtime)
     }
 
     pub fn handle(&mut self, command: Command) -> (Vec<Value>, bool) {
@@ -196,18 +265,29 @@ impl Engine {
             "nvst-unbind" => self.nvst_unbind(command),
             "nvst-send" => self.nvst_send(command),
             "start" => self.start(command),
-            "offer" => self.offer(command),
-            "remote-ice" => self.remote_ice(command),
-            "input" => self.input(command),
             "input-paused" => self.set_paused(command),
             "surface" => self.update_surface(command),
+            "stats-toggle" => Ok(vec![
+                response(id, "ok"),
+                event(
+                    "shortcut-action",
+                    json!({"action":"toggle-stats", "source":"command"}),
+                ),
+            ]),
+            "fullscreen-toggle" => Ok(vec![
+                response(id, "ok"),
+                event(
+                    "shortcut-action",
+                    json!({"action":"toggle-fullscreen", "source":"command"}),
+                ),
+            ]),
+            "anti-afk-pulse" => self.anti_afk_pulse(command),
+            "recording-start" => self.start_recording(command),
+            "recording-stop" => self.stop_recording(command),
             "bitrate" | "update-shortcuts" => Err(error(
                 Some(&id),
                 "unsupported-command",
-                format!(
-                    "Native streamer v2 cannot apply the {} command",
-                    command.kind
-                ),
+                format!("Native streamer cannot apply the {} command", command.kind),
             )),
             "stop" => {
                 self.stop(command.reason.as_deref().unwrap_or("stopped"));
@@ -235,33 +315,38 @@ impl Engine {
             return Err(error(
                 Some(&command.id),
                 "protocol-version-mismatch",
-                format!("Native streamer v2 requires protocol {PROTOCOL_VERSION}"),
+                format!("Native streamer requires protocol {PROTOCOL_VERSION}"),
             ));
         }
-        let backends = video_backends();
+        let backends = if self
+            .media_runtime
+            .as_ref()
+            .is_some_and(MediaRuntime::is_embedded)
+        {
+            embedded_video_backends()
+        } else {
+            video_backends()
+        };
         let media_ready = self.media_runtime.is_some();
         let video_ready = media_ready && backends.iter().any(|backend| backend.available);
         let capabilities = Capabilities {
             protocol_version: PROTOCOL_VERSION,
             backend: "native",
-            fallback_reason: (!media_ready)
-                .then_some("Native streamer v2 requires an in-process decoded media runtime"),
-            supports_offer_answer: media_ready,
-            supports_remote_ice: media_ready,
-            supports_local_ice: media_ready,
             supports_input: media_ready,
             supports_video_decode: video_ready,
             supports_video_present: video_ready,
             supports_audio_decode: media_ready && supports_audio_decode(),
             supports_audio_output: media_ready && supports_audio_output(),
+            supports_owned_nvst_negotiation: media_ready,
             video_backends: backends,
         };
-        Ok(vec![json!({
+        let ready = json!({
             "id": command.id,
             "type": "ready",
             "processId": std::process::id(),
             "capabilities": capabilities,
-        })])
+        });
+        Ok(vec![ready])
     }
 
     fn nvst_bind(&mut self, command: Command) -> Result<Vec<Value>, Value> {
@@ -386,7 +471,7 @@ impl Engine {
     }
 
     fn start(&mut self, command: Command) -> Result<Vec<Value>, Value> {
-        let context = parse_context(command.context, &command.id)?;
+        let mut context = parse_context(command.context, &command.id)?;
         validate_context(&context, &command.id)?;
         {
             let lifecycle = lock_lifecycle(&self.lifecycle);
@@ -394,6 +479,48 @@ impl Engine {
                 return Err(invalid_state(&command.id, "start", lifecycle.state, "Idle"));
             }
         }
+        let wants_owned_nvst = context
+            .settings
+            .get("transportMode")
+            .and_then(Value::as_str)
+            .is_some_and(|mode| mode.eq_ignore_ascii_case("nvst"))
+            && context.nvst_video.is_none();
+        let mut prepared_nvst = if wants_owned_nvst {
+            if self.reserved_nvst_bundle.is_none() {
+                self.reserved_nvst_bundle =
+                    Some(ReservedNvstBundle::reserve().map_err(|error_value| {
+                        error(
+                            Some(&command.id),
+                            "nvst-bind-failed",
+                            format!(
+                                "Native streamer could not reserve its NVST sockets: {error_value}"
+                            ),
+                        )
+                    })?);
+            }
+            let prepared_result = {
+                let bundle = self
+                    .reserved_nvst_bundle
+                    .as_mut()
+                    .expect("NVST reservation created above");
+                prepare_owned_nvst(&context, bundle)
+            };
+            let prepared = match prepared_result {
+                Ok(prepared) => prepared,
+                Err(negotiation_error) => {
+                    self.reserved_nvst_bundle = None;
+                    return Err(error(
+                        Some(&command.id),
+                        negotiation_error.code,
+                        negotiation_error.message,
+                    ));
+                }
+            };
+            context.nvst_video = Some(prepared.handoff.clone());
+            Some(prepared)
+        } else {
+            None
+        };
         let transport_context = serde_json::to_value(&context).map_err(|context_error| {
             error(
                 Some(&command.id),
@@ -401,43 +528,23 @@ impl Engine {
                 format!("Session context is not serializable: {context_error}"),
             )
         })?;
-        let explicit_nvst = transport_context
-            .pointer("/settings/transportMode")
-            .and_then(Value::as_str)
-            .is_some_and(|mode| mode.eq_ignore_ascii_case("nvst"))
-            || transport_context.get("nvstVideo").is_some()
-            || transport_context.get("nvstTransport").is_some();
-        let (nvst_config, fallback_note) =
-            match select_preferred_video_transport(&transport_context) {
-                PreferredVideoTransport::Nvst(config) => (Some(*config), None),
-                PreferredVideoTransport::WebRtcFallback(reason) if explicit_nvst => {
-                    return Err(error(
-                        Some(&command.id),
-                        "invalid-nvst-handoff",
-                        format!("Explicit NVST transport is invalid: {reason:?}"),
-                    ));
-                }
-                PreferredVideoTransport::WebRtcFallback(reason) => (
-                    None,
-                    Some(format!(
-                        "NVST unavailable; using WebRTC fallback: {reason:?}"
-                    )),
-                ),
-            };
-        if self.media_runtime.is_some()
-            && nvst_config.is_none()
-            && context
-                .settings
-                .get("codec")
-                .and_then(Value::as_str)
-                .is_some_and(|codec| !codec.eq_ignore_ascii_case("h264"))
-        {
-            return Err(error(
-                Some(&command.id),
-                "unsupported-video-codec",
-                "Native streamer v2 was built with H.264 decode only",
-            ));
-        }
+        let nvst_config = match parse_nvst_video_handoff(&transport_context) {
+            Ok(Some(config)) => Some(config),
+            Ok(None) => {
+                return Err(error(
+                    Some(&command.id),
+                    "nvst-handoff-required",
+                    "Native streaming requires an NVST handoff",
+                ));
+            }
+            Err(reason) => {
+                return Err(error(
+                    Some(&command.id),
+                    "invalid-nvst-handoff",
+                    format!("NVST transport is invalid: {reason}"),
+                ));
+            }
+        };
         let nvst_bundle_available = nvst_config
             .as_ref()
             .is_some_and(|config| config.remote_dtls_fingerprint().is_some());
@@ -445,14 +552,14 @@ impl Engine {
             .as_ref()
             .is_some_and(|config| config.audio_track().is_some());
 
-        if let Some(transport) = self.transport.take() {
-            transport.stop();
-        }
         if let Some(transport) = self.nvst_transport.take() {
             transport.stop();
         }
         if let Some(transport) = self.nvst_mjolnir_transport.take() {
             transport.stop();
+        }
+        if let Some(mut rtsp) = self.nvst_rtsp.take() {
+            rtsp.shutdown();
         }
         self.stop_media_resources();
         if let Some(runtime) = self.media_runtime.clone() {
@@ -483,6 +590,18 @@ impl Engine {
             self.media_session = Some(session);
             self.media_worker = Some(media_worker);
             self.media_feedback = Some(feedback_receiver);
+        }
+
+        if let Some(prepared) = prepared_nvst.as_mut()
+            && let Err(negotiation_error) = prepared.announce()
+        {
+            self.stop_media_resources();
+            self.reserved_nvst_bundle = None;
+            return Err(error(
+                Some(&command.id),
+                negotiation_error.code,
+                negotiation_error.message,
+            ));
         }
 
         let mut nvst_events = None;
@@ -595,11 +714,7 @@ impl Engine {
             let mut lifecycle = lock_lifecycle(&self.lifecycle);
             lifecycle.generation = lifecycle.generation.wrapping_add(1);
             lifecycle.context = Some(context);
-            lifecycle.state = if nvst_events.is_some() {
-                State::Connected
-            } else {
-                State::Prepared
-            };
+            lifecycle.state = State::Connected;
             lifecycle.generation
         };
         if let Some(nvst_events) = nvst_events {
@@ -610,6 +725,7 @@ impl Engine {
                 .media_session
                 .as_ref()
                 .map(MediaSession::captured_input);
+            let shortcut_runtime = self.media_runtime.clone();
             let nvst_resources = nvst_resources.expect("NVST events require active resources");
             self.feedback_worker = thread::Builder::new()
                 .name("opennow-nvst-events".to_owned())
@@ -618,10 +734,13 @@ impl Engine {
                         &output,
                         &lifecycle,
                         generation,
-                        nvst_events,
-                        media_feedback,
-                        captured_input,
-                        nvst_resources,
+                        NvstSessionEventResources {
+                            nvst_events,
+                            media_feedback,
+                            captured_input,
+                            shortcut_runtime,
+                            transport: nvst_resources,
+                        },
                     );
                 })
                 .ok();
@@ -645,276 +764,34 @@ impl Engine {
                 ));
             }
         }
+        if let Some(prepared) = prepared_nvst {
+            match prepared.finish() {
+                Ok(active) => self.nvst_rtsp = Some(active),
+                Err(negotiation_error) => {
+                    self.stop("Native-owned NVST negotiation failed");
+                    return Err(error(
+                        Some(&command.id),
+                        negotiation_error.code,
+                        negotiation_error.message,
+                    ));
+                }
+            }
+        }
         let _ = self.events.send(event(
             "status",
             json!({
                 "status": "ready",
-                "message": if self.nvst_transport.is_some() {
-                    "NVST authenticated H.264 receive path initialized"
-                } else if self.media_runtime.is_some() {
-                    "H.264 video and Opus audio media path initialized"
-                } else {
-                    "Native WebRTC session prepared"
-                }
+                "message": "NVST authenticated media path initialized"
             }),
         ));
-        if let Some(note) = fallback_note {
-            let _ = self
-                .events
-                .send(event("log", json!({ "level": "debug", "message": note })));
-        }
         let mut start_response = response(command.id, "ok");
-        let using_nvst = self.nvst_transport.is_some();
-        start_response["transport"] =
-            Value::String(if using_nvst { "nvst" } else { "webrtc" }.to_owned());
-        start_response["capabilities"] = if using_nvst {
-            json!({
-                "supportsOfferAnswer": false,
-                "supportsRemoteIce": false,
-                "supportsLocalIce": false,
-                "supportsInput": nvst_bundle_available,
-                "supportsAudioDecode": nvst_audio_negotiated && supports_audio_decode(),
-                "supportsAudioOutput": nvst_audio_negotiated && supports_audio_output(),
-            })
-        } else {
-            json!({
-                "supportsOfferAnswer": self.media_runtime.is_some(),
-                "supportsRemoteIce": self.media_runtime.is_some(),
-                "supportsLocalIce": self.media_runtime.is_some(),
-                "supportsInput": self.media_runtime.is_some(),
-                "supportsAudioDecode": self.media_runtime.is_some() && supports_audio_decode(),
-                "supportsAudioOutput": self.media_runtime.is_some() && supports_audio_output(),
-            })
-        };
-        Ok(vec![start_response])
-    }
-
-    fn offer(&mut self, command: Command) -> Result<Vec<Value>, Value> {
-        if self.nvst_transport.is_some() {
-            return Err(error(
-                Some(&command.id),
-                "nvst-video-active",
-                "NVST video is active; do not negotiate a WebRTC media offer for this session",
-            ));
-        }
-        let offer_sdp = command.sdp.as_deref().ok_or_else(|| {
-            error(
-                Some(&command.id),
-                "missing-sdp",
-                "Offer command does not include SDP",
-            )
-        })?;
-        let offered_context = command
-            .context
-            .map(|context| parse_context(Some(context), &command.id))
-            .transpose()?;
-        if let Some(context) = &offered_context {
-            validate_context(context, &command.id)?;
-        }
-        let (context, generation) = {
-            let mut lifecycle = lock_lifecycle(&self.lifecycle);
-            if lifecycle.state == State::Idle {
-                return Err(error(
-                    Some(&command.id),
-                    "not-started",
-                    "Start must be sent before offer",
-                ));
-            }
-            if lifecycle.state != State::Prepared {
-                return Err(invalid_state(
-                    &command.id,
-                    "offer",
-                    lifecycle.state,
-                    "Prepared",
-                ));
-            }
-            let Some(stored_context) = lifecycle.context.as_ref() else {
-                lifecycle.state = State::Idle;
-                return Err(error(
-                    Some(&command.id),
-                    "invalid-state",
-                    "Prepared lifecycle is missing its session context",
-                ));
-            };
-            let stored_session_id = stored_context.session.session_id.clone();
-            if let Some(context) = offered_context {
-                if context.session.session_id != stored_session_id {
-                    return Err(error(
-                        Some(&command.id),
-                        "session-mismatch",
-                        "Offer context does not match the prepared session",
-                    ));
-                }
-                lifecycle.context = Some(context);
-            }
-            let Some(context) = lifecycle.context.clone() else {
-                lifecycle.state = State::Idle;
-                return Err(error(
-                    Some(&command.id),
-                    "invalid-state",
-                    "Prepared lifecycle is missing its session context",
-                ));
-            };
-            lifecycle.state = State::Negotiating;
-            (context, lifecycle.generation)
-        };
-        let Some(media_consumer) = self.media_consumer.clone() else {
-            let mut lifecycle = lock_lifecycle(&self.lifecycle);
-            if lifecycle.generation == generation && lifecycle.state == State::Negotiating {
-                lifecycle.state = State::Prepared;
-            }
-            return Err(error(
-                Some(&command.id),
-                "media-consumer-unavailable",
-                "No in-process encoded media consumer is configured",
-            ));
-        };
-        let threshold = partial_reliable_threshold(offer_sdp).unwrap_or(300);
-        let (transport_events, receiver) = std::sync::mpsc::channel();
-        let negotiated = negotiate(
-            offer_sdp,
-            &context.session,
-            threshold,
-            transport_events,
-            media_consumer,
-        )
-        .map_err(|transport_error| {
-            let mut lifecycle = lock_lifecycle(&self.lifecycle);
-            if lifecycle.generation == generation && lifecycle.state == State::Negotiating {
-                lifecycle.state = State::Prepared;
-            }
-            error(
-                Some(&command.id),
-                transport_error.code(),
-                transport_error.to_string(),
-            )
-        })?;
-        let output = self.events.clone();
-        let lifecycle = self.lifecycle.clone();
-        let transport_control = negotiated.session.control();
-        let media_feedback = self.media_feedback.take();
-        let feedback_worker = thread::Builder::new()
-            .name("opennow-media-events".to_owned())
-            .spawn(move || {
-                forward_session_events(
-                    &output,
-                    &lifecycle,
-                    generation,
-                    receiver,
-                    media_feedback,
-                    transport_control,
-                );
-            });
-        self.feedback_worker = Some(match feedback_worker {
-            Ok(worker) => worker,
-            Err(spawn_error) => {
-                negotiated.session.stop();
-                let mut lifecycle = lock_lifecycle(&self.lifecycle);
-                if lifecycle.generation == generation && lifecycle.state == State::Negotiating {
-                    lifecycle.state = State::Prepared;
-                }
-                drop(lifecycle);
-                self.stop_media_resources();
-                return Err(error(
-                    Some(&command.id),
-                    "media-worker-failed",
-                    spawn_error.to_string(),
-                ));
-            }
+        start_response["transport"] = Value::String("nvst".to_owned());
+        start_response["capabilities"] = json!({
+            "supportsInput": nvst_bundle_available,
+            "supportsAudioDecode": nvst_audio_negotiated && supports_audio_decode(),
+            "supportsAudioOutput": nvst_audio_negotiated && supports_audio_output(),
         });
-        self.transport = Some(negotiated.session);
-        let _ = self.events.send(event(
-            "local-ice",
-            json!({ "candidate": negotiated.local_candidate }),
-        ));
-        Ok(vec![json!({
-            "id": command.id,
-            "type": "answer",
-            "answer": { "sdp": negotiated.answer_sdp },
-        })])
-    }
-
-    fn remote_ice(&self, command: Command) -> Result<Vec<Value>, Value> {
-        if self.nvst_transport.is_some() {
-            return Err(error(
-                Some(&command.id),
-                "nvst-remote-ice-unsupported",
-                "NVST owns its negotiated ICE bundle and does not accept remote-ice commands",
-            ));
-        }
-        let state = lock_lifecycle(&self.lifecycle).state;
-        if !matches!(state, State::Negotiating | State::Connected) {
-            return Err(invalid_state(
-                &command.id,
-                "remote-ice",
-                state,
-                "Negotiating or Connected",
-            ));
-        }
-        let transport = self.transport.as_ref().ok_or_else(|| {
-            error(
-                Some(&command.id),
-                "transport-not-ready",
-                "No active WebRTC transport",
-            )
-        })?;
-        let candidate = command.candidate.as_ref().ok_or_else(|| {
-            error(
-                Some(&command.id),
-                "missing-candidate",
-                "Remote ICE command is empty",
-            )
-        })?;
-        transport
-            .add_remote_candidate(candidate)
-            .map_err(|transport_error| {
-                error(
-                    Some(&command.id),
-                    transport_error.code(),
-                    transport_error.to_string(),
-                )
-            })?;
-        Ok(vec![response(command.id, "ok")])
-    }
-
-    fn input(&self, command: Command) -> Result<Vec<Value>, Value> {
-        let state = lock_lifecycle(&self.lifecycle).state;
-        if state != State::Connected {
-            return Err(invalid_state(
-                &command.id,
-                "input",
-                state,
-                "Connected with an initialized input channel",
-            ));
-        }
-        let input = command
-            .input
-            .as_ref()
-            .ok_or_else(|| error(Some(&command.id), "missing-input", "Input command is empty"))?;
-        let bytes = BASE64
-            .decode(&input.payload_base64)
-            .map_err(|decode_error| {
-                error(Some(&command.id), "invalid-input", decode_error.to_string())
-            })?;
-        let send_result = if let Some(transport) = self.nvst_transport.as_ref() {
-            transport.send_input(bytes, input.partially_reliable)
-        } else if let Some(transport) = self.transport.as_ref() {
-            transport.send_input(bytes, input.partially_reliable)
-        } else {
-            return Err(error(
-                Some(&command.id),
-                "transport-not-ready",
-                "No active media transport",
-            ));
-        };
-        send_result.map_err(|transport_error| {
-            error(
-                Some(&command.id),
-                transport_error.code(),
-                transport_error.to_string(),
-            )
-        })?;
-        Ok(vec![response(command.id, "ok")])
+        Ok(vec![start_response])
     }
 
     fn set_paused(&self, command: Command) -> Result<Vec<Value>, Value> {
@@ -999,14 +876,14 @@ impl Engine {
             lifecycle.state = State::Idle;
             was_active
         };
-        if let Some(transport) = self.transport.take() {
-            transport.stop();
-        }
         if let Some(transport) = self.nvst_transport.take() {
             transport.stop();
         }
         if let Some(transport) = self.nvst_mjolnir_transport.take() {
             transport.stop();
+        }
+        if let Some(mut rtsp) = self.nvst_rtsp.take() {
+            rtsp.shutdown();
         }
         self.reserved_nvst_bundle = None;
         self.nvst_hole_punch_socket = None;
@@ -1020,6 +897,7 @@ impl Engine {
     }
 
     fn stop_media_resources(&mut self) {
+        let _ = self.stop_recording_inner();
         if self.media_runtime.is_some() {
             self.media_consumer = None;
             if let Some(session) = self.media_session.take() {
@@ -1034,20 +912,153 @@ impl Engine {
             let _ = worker.join();
         }
     }
+
+    fn start_recording(&mut self, command: Command) -> Result<Vec<Value>, Value> {
+        if self.recording_worker.is_some() {
+            return Err(error(
+                Some(&command.id),
+                "recording-already-active",
+                "A native stream recording is already active",
+            ));
+        }
+        let output_path = command
+            .output_path
+            .filter(|path| !path.is_empty())
+            .ok_or_else(|| {
+                error(
+                    Some(&command.id),
+                    "invalid-recording-output",
+                    "Native recording requires an absolute .mkv output path",
+                )
+            })?;
+        let path = std::path::PathBuf::from(&output_path);
+        if !path.is_absolute() || path.extension().and_then(|value| value.to_str()) != Some("mkv") {
+            return Err(error(
+                Some(&command.id),
+                "invalid-recording-output",
+                "Native recording requires an absolute .mkv output path",
+            ));
+        }
+        let control = self
+            .media_session
+            .as_ref()
+            .map(MediaSession::control)
+            .ok_or_else(|| {
+                error(
+                    Some(&command.id),
+                    "media-output-unavailable",
+                    "Native recording requires an active media session",
+                )
+            })?;
+        let (stream, receiver) = control
+            .subscribe_recording()
+            .map_err(|message| error(Some(&command.id), "recording-start-failed", message))?;
+        let events = self.events.clone();
+        let worker_path = path.clone();
+        let worker = thread::Builder::new()
+            .name("opennow-matroska-recording".to_owned())
+            .spawn(move || {
+                let result = record_matroska(&worker_path, stream, receiver);
+                let payload = match &result {
+                    Ok(summary) => json!({
+                        "state":"saved",
+                        "path":summary.path,
+                        "videoPackets":summary.video_packets,
+                        "audioPackets":summary.audio_packets,
+                    }),
+                    Err(message) => json!({"state":"failed","message":message}),
+                };
+                let _ = events.send(event("recording-state", payload));
+                result
+            })
+            .map_err(|spawn_error| {
+                control.unsubscribe_recording();
+                error(
+                    Some(&command.id),
+                    "recording-worker-failed",
+                    spawn_error.to_string(),
+                )
+            })?;
+        self.recording_worker = Some(worker);
+        Ok(vec![json!({
+            "id":command.id,
+            "type":"recording-started",
+            "path":path,
+        })])
+    }
+
+    fn stop_recording(&mut self, command: Command) -> Result<Vec<Value>, Value> {
+        match self.stop_recording_inner() {
+            Ok(Some(summary)) => Ok(vec![json!({
+                "id":command.id,
+                "type":"recording-stopped",
+                "path":summary.path,
+                "videoPackets":summary.video_packets,
+                "audioPackets":summary.audio_packets,
+            })]),
+            Ok(None) => Ok(vec![response(command.id, "recording-not-active")]),
+            Err(message) => Err(error(Some(&command.id), "recording-failed", message)),
+        }
+    }
+
+    fn anti_afk_pulse(&self, command: Command) -> Result<Vec<Value>, Value> {
+        let state = lock_lifecycle(&self.lifecycle).state;
+        if state != State::Connected {
+            return Err(invalid_state(
+                &command.id,
+                "anti-afk-pulse",
+                state,
+                "Connected with an initialized input channel",
+            ));
+        }
+        let send = |input| {
+            let bytes = captured_input_packet(input, 0);
+            if let Some(transport) = self.nvst_transport.as_ref() {
+                transport.send_input(bytes, false)
+            } else {
+                Err(opennow_streamer_transport::TransportError::Closed)
+            }
+        };
+        send(CapturedInput::Key {
+            virtual_key: 0x7c,
+            modifiers: 0,
+            pressed: true,
+        })
+        .and_then(|_| {
+            send(CapturedInput::Key {
+                virtual_key: 0x7c,
+                modifiers: 0,
+                pressed: false,
+            })
+        })
+        .map_err(|transport_error| {
+            error(
+                Some(&command.id),
+                transport_error.code(),
+                transport_error.to_string(),
+            )
+        })?;
+        Ok(vec![response(command.id, "ok")])
+    }
+
+    fn stop_recording_inner(&mut self) -> Result<Option<RecordingSummary>, String> {
+        let Some(worker) = self.recording_worker.take() else {
+            return Ok(None);
+        };
+        if let Some(session) = self.media_session.as_ref() {
+            session.control().unsubscribe_recording();
+        }
+        worker
+            .join()
+            .map_err(|_| "native recording worker panicked".to_owned())?
+            .map(Some)
+    }
 }
 
 impl Drop for Engine {
     fn drop(&mut self) {
         self.stop("process closed");
     }
-}
-
-fn partial_reliable_threshold(sdp: &str) -> Option<u16> {
-    sdp.lines().find_map(|line| {
-        line.trim()
-            .strip_prefix("a=ri.partialReliableThresholdMs:")
-            .and_then(|value| value.trim().parse().ok())
-    })
 }
 
 fn parse_context(context: Option<Value>, id: &str) -> Result<SessionContext, Value> {
@@ -1087,18 +1098,6 @@ fn validate_context(context: &SessionContext, id: &str) -> Result<(), Value> {
             Some(id),
             "invalid-context",
             "Session context settings and shortcuts must be objects",
-        ));
-    }
-    if context
-        .session
-        .ice_servers
-        .iter()
-        .any(|server| server.urls.is_empty() || server.urls.iter().any(|url| url.trim().is_empty()))
-    {
-        return Err(error(
-            Some(id),
-            "invalid-context",
-            "Every ICE server requires at least one non-empty URL",
         ));
     }
     if let Some(endpoint) = &context.session.media_connection_info {
@@ -1155,63 +1154,66 @@ fn lock_lifecycle(lifecycle: &Mutex<Lifecycle>) -> MutexGuard<'_, Lifecycle> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-fn forward_transport_event(
-    output: &Sender<Value>,
-    lifecycle: &Mutex<Lifecycle>,
-    generation: u64,
-    transport_event: TransportEvent,
+fn forward_shortcut_action(
+    output: &EventSender,
+    runtime: Option<&MediaRuntime>,
+    action: StreamShortcutAction,
 ) {
+    if action == StreamShortcutAction::TogglePointerLock
+        && runtime.is_some_and(MediaRuntime::is_embedded)
     {
-        let mut lifecycle = lock_lifecycle(lifecycle);
-        if lifecycle.generation != generation {
-            return;
-        }
-        match &transport_event {
-            TransportEvent::Connected => lifecycle.state = State::Connected,
-            TransportEvent::Disconnected(_) => {
-                lifecycle.context = None;
-                lifecycle.state = State::Idle;
-            }
-            _ => {}
-        }
+        let _ = output.send(event(
+            "shortcut-action",
+            json!({"action":action.protocol_name(), "source":"keyboard"}),
+        ));
+        return;
     }
-    let value = match transport_event {
-        TransportEvent::Connected => event(
-            "status",
-            json!({ "status": "streaming", "message": "ICE, DTLS-SRTP, and RTP connected" }),
-        ),
-        TransportEvent::Disconnected(message) => {
-            event("status", json!({ "status": "stopped", "message": message }))
-        }
-        TransportEvent::InputReady(protocol_version) => event(
-            "input-ready",
-            json!({ "protocolVersion": protocol_version }),
-        ),
-        TransportEvent::InputUnavailable(reason) => {
-            event("input-unavailable", json!({ "reason": reason }))
-        }
-        TransportEvent::Log(message) => {
-            event("log", json!({ "level": "warn", "message": message }))
-        }
+    let control = match action {
+        StreamShortcutAction::ToggleStats => None,
+        StreamShortcutAction::ToggleFullscreen => None,
+        StreamShortcutAction::TogglePointerLock => Some(MediaRuntimeControl::PointerLock),
+        _ => None,
     };
-    let _ = output.send(value);
+    if let Some(control) = control {
+        let result = runtime
+            .ok_or_else(|| "native media runtime is unavailable".to_owned())
+            .and_then(|runtime| runtime.control(control));
+        if let Err(message) = result {
+            let _ = output.send(event(
+                "log",
+                json!({"level":"warn", "message":format!("Shortcut {} failed: {message}", action.protocol_name())}),
+            ));
+        }
+        return;
+    }
+    let _ = output.send(event(
+        "shortcut-action",
+        json!({"action":action.protocol_name(), "source":"keyboard"}),
+    ));
 }
 
-fn forward_nvst_session_events<R: NvstSessionResources>(
-    output: &Sender<Value>,
-    lifecycle: &Mutex<Lifecycle>,
-    generation: u64,
+struct NvstSessionEventResources<R> {
     nvst_events: Receiver<NvstReceiveEvent>,
     media_feedback: Option<Receiver<MediaFeedback>>,
     captured_input: Option<Arc<CapturedInputQueue>>,
-    resources: R,
+    shortcut_runtime: Option<MediaRuntime>,
+    transport: R,
+}
+
+fn forward_nvst_session_events<R: NvstSessionResources>(
+    output: &EventSender,
+    lifecycle: &Mutex<Lifecycle>,
+    generation: u64,
+    event_resources: NvstSessionEventResources<R>,
 ) {
-    let mut feedback_state = NvstMediaFeedbackState {
-        drop_reports: HashMap::new(),
-        recovery_attempts: 0,
-        input_origin: Instant::now(),
-        input_available: false,
-    };
+    let NvstSessionEventResources {
+        nvst_events,
+        media_feedback,
+        captured_input,
+        shortcut_runtime,
+        transport: resources,
+    } = event_resources;
+    let mut feedback_state = NvstMediaFeedbackState::new(false);
     loop {
         if let Some(feedback) = media_feedback.as_ref() {
             while let Ok(feedback) = feedback.try_recv() {
@@ -1246,6 +1248,26 @@ fn forward_nvst_session_events<R: NvstSessionResources>(
                     let Some(input) = captured_input.take_sample() else {
                         break;
                     };
+                    if matches!(input.input, CapturedInput::Guide) {
+                        let _ = output.send(event("overlay-request", json!({"source":"gamepad"})));
+                        continue;
+                    }
+                    if matches!(input.input, CapturedInput::Screenshot) {
+                        let _ =
+                            output.send(event("screenshot-request", json!({"source":"keyboard"})));
+                        continue;
+                    }
+                    if matches!(input.input, CapturedInput::RecordingToggle) {
+                        let _ = output.send(event(
+                            "recording-toggle-request",
+                            json!({"source":"keyboard"}),
+                        ));
+                        continue;
+                    }
+                    if let CapturedInput::Shortcut(action) = &input.input {
+                        forward_shortcut_action(output, shortcut_runtime.as_ref(), *action);
+                        continue;
+                    }
                     if let Err(error) =
                         forward_nvst_captured_sample(&resources, input, &feedback_state)
                     {
@@ -1300,7 +1322,7 @@ fn forward_nvst_session_events<R: NvstSessionResources>(
 }
 
 fn forward_nvst_event<R: NvstSessionResources>(
-    output: &Sender<Value>,
+    output: &EventSender,
     lifecycle: &Mutex<Lifecycle>,
     generation: u64,
     resources: &R,
@@ -1435,7 +1457,7 @@ fn forward_nvst_event<R: NvstSessionResources>(
 }
 
 fn attempt_nvst_recovery<R: NvstSessionResources>(
-    output: &Sender<Value>,
+    output: &EventSender,
     lifecycle: &Mutex<Lifecycle>,
     generation: u64,
     resources: &R,
@@ -1476,7 +1498,7 @@ fn attempt_nvst_recovery<R: NvstSessionResources>(
 }
 
 fn emit_nvst_terminal<R: NvstSessionResources>(
-    output: &Sender<Value>,
+    output: &EventSender,
     lifecycle: &Mutex<Lifecycle>,
     generation: u64,
     resources: &R,
@@ -1492,6 +1514,7 @@ fn emit_nvst_terminal<R: NvstSessionResources>(
         lifecycle.state = State::Idle;
     }
     resources.stop();
+    opennow_streamer_protocol::log::log_line("WARN", "transport", &format!("{code}: {message}"));
     let _ = output.send(event("error", json!({ "code": code, "message": &message })));
     let _ = output.send(event(
         "status",
@@ -1505,10 +1528,29 @@ struct NvstMediaFeedbackState {
     recovery_attempts: usize,
     input_origin: Instant,
     input_available: bool,
+    telemetry_window_started: Instant,
+    telemetry_frames: u64,
+    telemetry_bytes: u64,
+    peak_bitrate_mbps: f64,
+}
+
+impl NvstMediaFeedbackState {
+    fn new(input_available: bool) -> Self {
+        Self {
+            drop_reports: HashMap::new(),
+            recovery_attempts: 0,
+            input_origin: Instant::now(),
+            input_available,
+            telemetry_window_started: Instant::now(),
+            telemetry_frames: 0,
+            telemetry_bytes: 0,
+            peak_bitrate_mbps: 0.0,
+        }
+    }
 }
 
 fn forward_nvst_media_feedback<R: NvstSessionResources>(
-    output: &Sender<Value>,
+    output: &EventSender,
     lifecycle: &Mutex<Lifecycle>,
     generation: u64,
     resources: &R,
@@ -1520,17 +1562,45 @@ fn forward_nvst_media_feedback<R: NvstSessionResources>(
     }
     match feedback {
         MediaFeedback::VideoFrameAccepted {
-            bytes, keyframe, ..
+            frame_index,
+            bytes,
+            keyframe,
+            ..
         } => {
-            resources.acknowledge_video_frame(bytes);
+            if let Some(frame_index) = frame_index {
+                resources.acknowledge_video_frame(frame_index, bytes);
+            }
             if keyframe {
                 state.recovery_attempts = 0;
+            }
+            state.telemetry_frames = state.telemetry_frames.saturating_add(1);
+            state.telemetry_bytes = state.telemetry_bytes.saturating_add(u64::from(bytes));
+            let elapsed = state.telemetry_window_started.elapsed();
+            if elapsed >= Duration::from_secs(1) {
+                let elapsed_seconds = elapsed.as_secs_f64();
+                let frames_per_second = state.telemetry_frames as f64 / elapsed_seconds;
+                let bitrate_mbps =
+                    state.telemetry_bytes as f64 * 8.0 / elapsed_seconds / 1_000_000.0;
+                state.peak_bitrate_mbps = state.peak_bitrate_mbps.max(bitrate_mbps);
+                let _ = output.send(event(
+                    "telemetry",
+                    json!({
+                        "framesPerSecond": frames_per_second,
+                        "bitrateMbps": bitrate_mbps,
+                        "peakBitrateMbps": state.peak_bitrate_mbps,
+                    }),
+                ));
+                state.telemetry_window_started = Instant::now();
+                state.telemetry_frames = 0;
+                state.telemetry_bytes = 0;
             }
         }
         MediaFeedback::PlaybackStarted { backend } => {
             let _ = output.send(event(
                 "status",
                 json!({
+                    "event": "first-frame",
+                    "backend": backend,
                     "status": "streaming",
                     "message": format!("{backend} presented the first NVST video frame")
                 }),
@@ -1540,6 +1610,10 @@ fn forward_nvst_media_feedback<R: NvstSessionResources>(
             let _ = output.send(event(
                 "log",
                 json!({
+                    "event": "backend-fallback",
+                    "fromBackend": from,
+                    "toBackend": to,
+                    "reason": reason,
                     "level": "warn",
                     "message": format!("{from} startup failed; using {to}: {reason}")
                 }),
@@ -1550,6 +1624,8 @@ fn forward_nvst_media_feedback<R: NvstSessionResources>(
             let _ = output.send(event(
                 "log",
                 json!({
+                    "event": "keyframe-request",
+                    "reason": reason,
                     "level": "info",
                     "message": format!("Requested an NVST video keyframe: {reason}")
                 }),
@@ -1559,6 +1635,8 @@ fn forward_nvst_media_feedback<R: NvstSessionResources>(
             let _ = output.send(event(
                 "error",
                 json!({
+                    "event": "decoder-error",
+                    "codec": codec,
                     "code": "media-decode-error",
                     "message": format!("{codec} decoder error: {message}")
                 }),
@@ -1567,7 +1645,7 @@ fn forward_nvst_media_feedback<R: NvstSessionResources>(
         MediaFeedback::OutputError { message } => {
             let _ = output.send(event(
                 "error",
-                json!({ "code": "media-output-error", "message": message }),
+                json!({ "event": "output-error", "code": "media-output-error", "message": message }),
             ));
         }
         MediaFeedback::DeviceLost {
@@ -1578,6 +1656,9 @@ fn forward_nvst_media_feedback<R: NvstSessionResources>(
             let _ = output.send(event(
                 "log",
                 json!({
+                    "event": "device-state",
+                    "subsystem": subsystem,
+                    "recovered": recovered,
                     "level": if recovered { "info" } else { "warn" },
                     "message": message.unwrap_or_else(|| format!(
                         "{subsystem} device {}",
@@ -1591,6 +1672,9 @@ fn forward_nvst_media_feedback<R: NvstSessionResources>(
                 let _ = output.send(event(
                     "log",
                     json!({
+                        "event": "queue-dropped",
+                        "media": media,
+                        "count": dropped,
                         "level": "debug",
                         "message": format!("Low-latency {media} queues dropped {dropped} stale samples/frames")
                     }),
@@ -1606,6 +1690,15 @@ fn forward_nvst_captured_input<R: NvstSessionResources>(
     input: CapturedInput,
     state: &NvstMediaFeedbackState,
 ) -> Result<(), String> {
+    if matches!(
+        input,
+        CapturedInput::Guide
+            | CapturedInput::Screenshot
+            | CapturedInput::RecordingToggle
+            | CapturedInput::Shortcut(_)
+    ) {
+        return Ok(());
+    }
     let timestamp_us = u64::try_from(state.input_origin.elapsed().as_micros()).unwrap_or(u64::MAX);
     resources.send_captured_input(captured_input_packet(input, timestamp_us))
 }
@@ -1615,6 +1708,15 @@ fn forward_nvst_captured_sample<R: NvstSessionResources>(
     sample: CapturedInputSample,
     state: &NvstMediaFeedbackState,
 ) -> Result<(), String> {
+    if matches!(
+        sample.input,
+        CapturedInput::Guide
+            | CapturedInput::Screenshot
+            | CapturedInput::RecordingToggle
+            | CapturedInput::Shortcut(_)
+    ) {
+        return Ok(());
+    }
     // Bifrost timestamps native input at OS capture, before aggregation and
     // SCTP sending. Keeping that time prevents a delayed queue drain from
     // making a group of older reports look newly generated.
@@ -1642,6 +1744,7 @@ fn captured_input_packet(input: CapturedInput, timestamp_us: u64) -> Vec<u8> {
             packet
         }
         CapturedInput::MouseMove { delta_x, delta_y } => {
+            let (delta_x, delta_y) = tune_relative_mouse(delta_x, delta_y, input_tuning());
             let mut packet = Vec::with_capacity(22);
             packet.extend_from_slice(&7_u32.to_le_bytes());
             packet.extend_from_slice(&delta_x.to_be_bytes());
@@ -1675,16 +1778,93 @@ fn captured_input_packet(input: CapturedInput, timestamp_us: u64) -> Vec<u8> {
             packet.extend_from_slice(&timestamp_us.to_be_bytes());
             packet
         }
-        CapturedInput::MouseWheel { delta } => {
+        CapturedInput::MouseWheel { delta_x, delta_y } => {
             let mut packet = Vec::with_capacity(22);
             packet.extend_from_slice(&10_u32.to_le_bytes());
-            packet.extend_from_slice(&0_i16.to_be_bytes());
-            packet.extend_from_slice(&delta.to_be_bytes());
+            packet.extend_from_slice(&delta_x.to_be_bytes());
+            packet.extend_from_slice(&delta_y.to_be_bytes());
             packet.extend_from_slice(&[0; 6]);
             packet.extend_from_slice(&timestamp_us.to_be_bytes());
             packet
         }
+        CapturedInput::Gamepad {
+            controller_id,
+            bitmap,
+            buttons,
+            left_trigger,
+            right_trigger,
+            left_stick_x,
+            left_stick_y,
+            right_stick_x,
+            right_stick_y,
+        } => {
+            let mut packet = Vec::with_capacity(38);
+            packet.extend_from_slice(&12_u32.to_le_bytes());
+            packet.extend_from_slice(&26_u16.to_le_bytes());
+            packet.extend_from_slice(&u16::from(controller_id & 0x03).to_le_bytes());
+            packet.extend_from_slice(&bitmap.to_le_bytes());
+            packet.extend_from_slice(&20_u16.to_le_bytes());
+            packet.extend_from_slice(&buttons.to_le_bytes());
+            packet.extend_from_slice(
+                &(u16::from(left_trigger) | (u16::from(right_trigger) << 8)).to_le_bytes(),
+            );
+            packet.extend_from_slice(&left_stick_x.to_le_bytes());
+            packet.extend_from_slice(&left_stick_y.to_le_bytes());
+            packet.extend_from_slice(&right_stick_x.to_le_bytes());
+            packet.extend_from_slice(&right_stick_y.to_le_bytes());
+            packet.extend_from_slice(&0_u16.to_le_bytes());
+            packet.extend_from_slice(&85_u16.to_le_bytes());
+            packet.extend_from_slice(&0_u16.to_le_bytes());
+            packet.extend_from_slice(&timestamp_us.to_le_bytes());
+            packet
+        }
+        CapturedInput::Guide
+        | CapturedInput::Screenshot
+        | CapturedInput::RecordingToggle
+        | CapturedInput::Shortcut(_) => Vec::new(),
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct InputTuning {
+    sensitivity: f64,
+    acceleration_percent: f64,
+}
+
+fn input_tuning() -> InputTuning {
+    static TUNING: OnceLock<InputTuning> = OnceLock::new();
+    *TUNING.get_or_init(|| InputTuning {
+        sensitivity: std::env::var("OPENNOW_MOUSE_SENSITIVITY")
+            .ok()
+            .and_then(|value| value.parse::<f64>().ok())
+            .unwrap_or(1.0)
+            .clamp(0.1, 3.0),
+        acceleration_percent: std::env::var("OPENNOW_MOUSE_ACCELERATION")
+            .ok()
+            .and_then(|value| value.parse::<f64>().ok())
+            .unwrap_or(1.0)
+            .clamp(1.0, 150.0),
+    })
+}
+
+fn tune_relative_mouse(delta_x: i16, delta_y: i16, tuning: InputTuning) -> (i16, i16) {
+    let mut x = f64::from(delta_x) * tuning.sensitivity;
+    let mut y = f64::from(delta_y) * tuning.sensitivity;
+    if tuning.acceleration_percent > 1.0 {
+        let speed = x.hypot(y);
+        let strength = (tuning.acceleration_percent - 1.0) / 149.0;
+        // Match the legacy client curve: preserve low-speed precision and cap
+        // the maximum turn boost at 60% for the 150% setting.
+        let factor = 1.0 + (0.6 * strength).min(speed / 50.0 * strength);
+        x *= factor;
+        y *= factor;
+    }
+    let clamp = |value: f64| {
+        value
+            .round()
+            .clamp(f64::from(i16::MIN), f64::from(i16::MAX)) as i16
+    };
+    (clamp(x), clamp(y))
 }
 
 fn media_stream_config(context: &SessionContext) -> MediaStreamConfig {
@@ -1700,6 +1880,21 @@ fn media_stream_config(context: &SessionContext) -> MediaStreamConfig {
         "H265" | "HEVC" => MediaVideoCodec::H265,
         "AV1" => MediaVideoCodec::Av1,
         _ => MediaVideoCodec::H264,
+    };
+    let color_quality_name = context
+        .session
+        .extra
+        .get("negotiatedStreamProfile")
+        .and_then(|profile| profile.get("colorQuality"))
+        .and_then(Value::as_str)
+        .or_else(|| context.settings.get("colorQuality").and_then(Value::as_str))
+        .unwrap_or("8bit_420");
+    let color_quality = match color_quality_name.trim().to_ascii_lowercase().as_str() {
+        "8bit_444" if codec == MediaVideoCodec::H265 => MediaColorQuality::EightBit444,
+        "10bit_420" if codec != MediaVideoCodec::H264 => MediaColorQuality::TenBit420,
+        "10bit_444" if codec == MediaVideoCodec::H265 => MediaColorQuality::TenBit444,
+        "10bit_444" if codec == MediaVideoCodec::Av1 => MediaColorQuality::TenBit420,
+        _ => MediaColorQuality::EightBit420,
     };
     let resolution = context
         .session
@@ -1730,12 +1925,21 @@ fn media_stream_config(context: &SessionContext) -> MediaStreamConfig {
         .get("maxBitrateMbps")
         .and_then(Value::as_u64)
         .and_then(|value| u32::try_from(value).ok())
-        .unwrap_or(10);
-    let requested_cloud_gsync = context
+        .unwrap_or(75);
+    let requested_cloud_gsync = match context
         .settings
-        .get("enableCloudGsync")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
+        .get("nativeCloudGsyncMode")
+        .and_then(Value::as_str)
+        .unwrap_or("auto")
+    {
+        "disabled" => false,
+        "forced" => true,
+        _ => context
+            .settings
+            .get("enableCloudGsync")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+    };
     // `enableCloudGsync` is the resolved client request, but CloudMatch may
     // explicitly reject it in the finalized profile. Never switch Linux into
     // unthrottled VRR pacing when the server negotiated the feature off.
@@ -1748,16 +1952,18 @@ fn media_stream_config(context: &SessionContext) -> MediaStreamConfig {
     let cloud_gsync = requested_cloud_gsync && negotiated_cloud_gsync.unwrap_or(true);
     MediaStreamConfig {
         codec,
+        color_quality,
         width: resolution.0,
         height: resolution.1,
         fps,
         bitrate_bps: bitrate_mbps.saturating_mul(1_000_000).max(1),
         cloud_gsync,
+        shortcuts: StreamShortcutBindings::from_json(&context.shortcuts),
     }
 }
 
 fn consume_encoded_media(
-    output: &Sender<Value>,
+    output: &EventSender,
     receiver: Receiver<EncodedMediaFrame>,
     sink: MediaSink,
 ) {
@@ -1781,6 +1987,7 @@ fn consume_encoded_media(
             mid: frame.mid,
             codec,
             data: frame.payload,
+            frame_index: frame.frame_index,
             timestamp: frame.rtp_timestamp,
             clock_rate_hz: frame.clock_rate_hz,
             keyframe: frame.keyframe,
@@ -1797,130 +2004,6 @@ fn consume_encoded_media(
             }
             PushOutcome::Closed => break,
             PushOutcome::Queued | PushOutcome::DroppedOldest | PushOutcome::Paused => {}
-        }
-    }
-}
-
-fn forward_session_events(
-    output: &Sender<Value>,
-    lifecycle: &Mutex<Lifecycle>,
-    generation: u64,
-    transport_events: Receiver<TransportEvent>,
-    media_feedback: Option<Receiver<MediaFeedback>>,
-    transport: TransportControl,
-) {
-    let mut drop_reports = HashMap::new();
-    loop {
-        if let Some(feedback) = media_feedback.as_ref() {
-            while let Ok(feedback) = feedback.try_recv() {
-                forward_media_feedback(
-                    output,
-                    lifecycle,
-                    generation,
-                    &transport,
-                    feedback,
-                    &mut drop_reports,
-                );
-            }
-        }
-        match transport_events.recv_timeout(Duration::from_millis(5)) {
-            Ok(transport_event) => {
-                let disconnected = matches!(transport_event, TransportEvent::Disconnected(_));
-                forward_transport_event(output, lifecycle, generation, transport_event);
-                if disconnected {
-                    break;
-                }
-            }
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
-        }
-    }
-}
-
-fn forward_media_feedback(
-    output: &Sender<Value>,
-    lifecycle: &Mutex<Lifecycle>,
-    generation: u64,
-    transport: &TransportControl,
-    feedback: MediaFeedback,
-    drop_reports: &mut HashMap<&'static str, QueueDropReport>,
-) {
-    if lock_lifecycle(lifecycle).generation != generation {
-        return;
-    }
-    match feedback {
-        MediaFeedback::VideoFrameAccepted { .. } => {}
-        MediaFeedback::PlaybackStarted { backend } => {
-            let _ = output.send(event(
-                "status",
-                json!({
-                    "status": "streaming",
-                    "message": format!("{backend} presented the first video frame")
-                }),
-            ));
-        }
-        MediaFeedback::BackendFallback { from, to, reason } => {
-            let _ = output.send(event(
-                "log",
-                json!({
-                    "level": "warn",
-                    "message": format!("{from} startup failed; using {to}: {reason}")
-                }),
-            ));
-        }
-        MediaFeedback::RequestKeyframe { mid, reason } => {
-            let request_result = transport.request_keyframe(mid);
-            let _ = output.send(event(
-                "log",
-                json!({
-                    "level": if request_result.is_ok() { "info" } else { "warn" },
-                    "message": format!("Requested a video keyframe: {reason}")
-                }),
-            ));
-        }
-        MediaFeedback::DecoderError { codec, message } => {
-            let _ = output.send(event(
-                "error",
-                json!({
-                    "code": "media-decode-error",
-                    "message": format!("{codec} decoder error: {message}")
-                }),
-            ));
-        }
-        MediaFeedback::OutputError { message } => {
-            let _ = output.send(event(
-                "error",
-                json!({ "code": "media-output-error", "message": message }),
-            ));
-        }
-        MediaFeedback::DeviceLost {
-            subsystem,
-            recovered,
-            message,
-        } => {
-            let _ = output.send(event(
-                "log",
-                json!({
-                    "level": if recovered { "info" } else { "warn" },
-                    "message": message.unwrap_or_else(|| format!(
-                        "{subsystem} device {}",
-                        if recovered { "recovered" } else { "was lost" }
-                    ))
-                }),
-            ));
-        }
-        MediaFeedback::QueueDropped { media, count } => {
-            if let Some(dropped) = record_queue_drop(drop_reports, media, count) {
-                let _ = output.send(event(
-                    "log",
-                    json!({
-                        "level": "debug",
-                        "message": format!(
-                            "Low-latency {media} queues dropped {dropped} stale samples/frames"
-                        )
-                    }),
-                ));
-            }
         }
     }
 }
@@ -1954,8 +2037,6 @@ mod tests {
     use std::net::UdpSocket;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Instant;
-    use str0m::media::{Direction, MediaKind};
-    use str0m::{Candidate, RtcConfig};
 
     fn command(value: Value) -> Command {
         serde_json::from_value(value).expect("command")
@@ -1980,21 +2061,55 @@ mod tests {
         })
     }
 
-    fn synthetic_offer() -> String {
-        opennow_streamer_transport::install_crypto();
-        let mut offerer = RtcConfig::new().build(Instant::now());
-        offerer.add_local_candidate(
-            Candidate::host("127.0.0.1:49152".parse().expect("candidate address"), "udp")
-                .expect("local candidate"),
-        );
-        let mut change = offerer.sdp_api();
-        change.add_media(MediaKind::Video, Direction::SendOnly, None, None, None);
-        let (offer, _pending) = change.apply().expect("synthetic offer");
-        offer.to_sdp_string()
-    }
-
     fn lifecycle_state(engine: &Engine) -> State {
         lock_lifecycle(&engine.lifecycle).state
+    }
+
+    #[test]
+    fn shell_shortcuts_emit_typed_actions() {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let sender = EventSender::unbounded(sender);
+        forward_shortcut_action(&sender, None, StreamShortcutAction::ToggleStats);
+        let action = receiver.recv().expect("stats shortcut action");
+        assert_eq!(action["type"], "shortcut-action");
+        assert_eq!(action["action"], "toggle-stats");
+
+        forward_shortcut_action(&sender, None, StreamShortcutAction::ToggleFullscreen);
+        let action = receiver.recv().expect("fullscreen shortcut action");
+        assert_eq!(action["type"], "shortcut-action");
+        assert_eq!(action["action"], "toggle-fullscreen");
+    }
+
+    #[test]
+    fn legacy_stats_toggle_routes_to_the_shell_without_native_rendering() {
+        let (sender, _receiver) = std::sync::mpsc::channel();
+        let mut engine = Engine::new(sender);
+        let (responses, keep_running) = engine.handle(command(json!({
+            "id": "stats",
+            "type": "stats-toggle"
+        })));
+
+        assert!(keep_running);
+        assert_eq!(responses[0]["type"], "ok");
+        assert_eq!(responses[1]["type"], "shortcut-action");
+        assert_eq!(responses[1]["action"], "toggle-stats");
+        assert_eq!(responses[1]["source"], "command");
+    }
+
+    #[test]
+    fn legacy_fullscreen_toggle_routes_to_the_shell_without_native_mutation() {
+        let (sender, _receiver) = std::sync::mpsc::channel();
+        let mut engine = Engine::new(sender);
+        let (responses, keep_running) = engine.handle(command(json!({
+            "id": "fullscreen",
+            "type": "fullscreen-toggle"
+        })));
+
+        assert!(keep_running);
+        assert_eq!(responses[0]["type"], "ok");
+        assert_eq!(responses[1]["type"], "shortcut-action");
+        assert_eq!(responses[1]["action"], "toggle-fullscreen");
+        assert_eq!(responses[1]["source"], "command");
     }
 
     fn unused_udp_port() -> u16 {
@@ -2008,6 +2123,7 @@ mod tests {
     struct TestNvstResources {
         keyframe_requests: AtomicUsize,
         acknowledged_frames: AtomicUsize,
+        acknowledged_frame_data: Mutex<Vec<(u32, u32)>>,
         recoveries: AtomicUsize,
         stops: AtomicUsize,
         captured_inputs: Mutex<Vec<Vec<u8>>>,
@@ -2018,8 +2134,12 @@ mod tests {
             self.keyframe_requests.fetch_add(1, Ordering::Relaxed);
         }
 
-        fn acknowledge_video_frame(&self, _bytes: u32) {
+        fn acknowledge_video_frame(&self, frame_index: u32, bytes: u32) {
             self.acknowledged_frames.fetch_add(1, Ordering::Relaxed);
+            self.acknowledged_frame_data
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push((frame_index, bytes));
         }
 
         fn send_captured_input(&self, bytes: Vec<u8>) -> Result<(), String> {
@@ -2056,14 +2176,10 @@ mod tests {
     #[test]
     fn decoder_keyframe_feedback_routes_to_nvst_pli_handle() {
         let (sender, receiver) = std::sync::mpsc::channel();
+        let sender = EventSender::unbounded(sender);
         let lifecycle = connected_lifecycle();
         let resources = TestNvstResources::default();
-        let mut state = NvstMediaFeedbackState {
-            drop_reports: HashMap::new(),
-            recovery_attempts: 0,
-            input_origin: Instant::now(),
-            input_available: true,
-        };
+        let mut state = NvstMediaFeedbackState::new(true);
 
         forward_nvst_media_feedback(
             &sender,
@@ -2090,14 +2206,11 @@ mod tests {
     #[test]
     fn accepted_video_keyframe_routes_pacing_feedback_and_resets_recovery_budget() {
         let (sender, _receiver) = std::sync::mpsc::channel();
+        let sender = EventSender::unbounded(sender);
         let lifecycle = connected_lifecycle();
         let resources = TestNvstResources::default();
-        let mut state = NvstMediaFeedbackState {
-            drop_reports: HashMap::new(),
-            recovery_attempts: 1,
-            input_origin: Instant::now(),
-            input_available: true,
-        };
+        let mut state = NvstMediaFeedbackState::new(true);
+        state.recovery_attempts = 1;
 
         forward_nvst_media_feedback(
             &sender,
@@ -2105,6 +2218,7 @@ mod tests {
             7,
             &resources,
             MediaFeedback::VideoFrameAccepted {
+                frame_index: Some(71),
                 timestamp: 90_000,
                 bytes: 1_024,
                 keyframe: true,
@@ -2113,18 +2227,58 @@ mod tests {
         );
 
         assert_eq!(resources.acknowledged_frames.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            *resources
+                .acknowledged_frame_data
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            [(71, 1_024)]
+        );
         assert_eq!(state.recovery_attempts, 0);
+    }
+
+    #[test]
+    fn accepted_video_frames_emit_bounded_shell_telemetry() {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let sender = EventSender::unbounded(sender);
+        let lifecycle = connected_lifecycle();
+        let resources = TestNvstResources::default();
+        let mut state = NvstMediaFeedbackState::new(true);
+        state.telemetry_window_started = Instant::now() - Duration::from_secs(1);
+
+        forward_nvst_media_feedback(
+            &sender,
+            &lifecycle,
+            7,
+            &resources,
+            MediaFeedback::VideoFrameAccepted {
+                frame_index: Some(72),
+                timestamp: 90_000,
+                bytes: 125_000,
+                keyframe: false,
+            },
+            &mut state,
+        );
+
+        let telemetry = receiver.recv().expect("stream telemetry");
+        assert_eq!(telemetry["type"], "telemetry");
+        assert!(
+            telemetry["framesPerSecond"]
+                .as_f64()
+                .is_some_and(|value| value > 0.0)
+        );
+        assert!(
+            telemetry["bitrateMbps"]
+                .as_f64()
+                .is_some_and(|value| (0.9..=1.0).contains(&value))
+        );
+        assert_eq!(telemetry["peakBitrateMbps"], telemetry["bitrateMbps"]);
     }
 
     #[test]
     fn captured_sdl_input_routes_through_the_nvst_input_codec_packet_shape() {
         let resources = TestNvstResources::default();
-        let state = NvstMediaFeedbackState {
-            drop_reports: HashMap::new(),
-            recovery_attempts: 0,
-            input_origin: Instant::now(),
-            input_available: true,
-        };
+        let state = NvstMediaFeedbackState::new(true);
 
         assert!(
             forward_nvst_captured_input(
@@ -2200,12 +2354,8 @@ mod tests {
     fn captured_input_preserves_the_os_capture_timestamp() {
         let resources = TestNvstResources::default();
         let input_origin = Instant::now();
-        let state = NvstMediaFeedbackState {
-            drop_reports: HashMap::new(),
-            recovery_attempts: 0,
-            input_origin,
-            input_available: true,
-        };
+        let mut state = NvstMediaFeedbackState::new(true);
+        state.input_origin = input_origin;
         forward_nvst_captured_sample(
             &resources,
             CapturedInputSample {
@@ -2226,6 +2376,101 @@ mod tests {
         assert_eq!(
             u64::from_be_bytes(inputs[0][14..22].try_into().unwrap()),
             4_242
+        );
+    }
+
+    #[test]
+    fn captured_gamepad_matches_the_official_38_byte_packet() {
+        let packet = captured_input_packet(
+            CapturedInput::Gamepad {
+                controller_id: 2,
+                bitmap: 0x0404,
+                buttons: 0x5101,
+                left_trigger: 17,
+                right_trigger: 231,
+                left_stick_x: -12_345,
+                left_stick_y: 23_456,
+                right_stick_x: -30_000,
+                right_stick_y: 30_001,
+            },
+            0x0102_0304_0506_0708,
+        );
+
+        assert_eq!(packet.len(), 38);
+        assert_eq!(u32::from_le_bytes(packet[0..4].try_into().unwrap()), 12);
+        assert_eq!(u16::from_le_bytes(packet[4..6].try_into().unwrap()), 26);
+        assert_eq!(u16::from_le_bytes(packet[6..8].try_into().unwrap()), 2);
+        assert_eq!(
+            u16::from_le_bytes(packet[8..10].try_into().unwrap()),
+            0x0404
+        );
+        assert_eq!(u16::from_le_bytes(packet[10..12].try_into().unwrap()), 20);
+        assert_eq!(
+            u16::from_le_bytes(packet[12..14].try_into().unwrap()),
+            0x5101
+        );
+        assert_eq!(
+            u16::from_le_bytes(packet[14..16].try_into().unwrap()),
+            0xe711
+        );
+        assert_eq!(
+            i16::from_le_bytes(packet[16..18].try_into().unwrap()),
+            -12_345
+        );
+        assert_eq!(
+            i16::from_le_bytes(packet[18..20].try_into().unwrap()),
+            23_456
+        );
+        assert_eq!(
+            i16::from_le_bytes(packet[20..22].try_into().unwrap()),
+            -30_000
+        );
+        assert_eq!(
+            i16::from_le_bytes(packet[22..24].try_into().unwrap()),
+            30_001
+        );
+        assert_eq!(u16::from_le_bytes(packet[26..28].try_into().unwrap()), 85);
+        assert_eq!(
+            u64::from_le_bytes(packet[30..38].try_into().unwrap()),
+            0x0102_0304_0506_0708
+        );
+        assert!(captured_input_packet(CapturedInput::Guide, 1).is_empty());
+        assert!(captured_input_packet(CapturedInput::Screenshot, 1).is_empty());
+        assert!(captured_input_packet(CapturedInput::RecordingToggle, 1).is_empty());
+    }
+
+    #[test]
+    fn relative_mouse_tuning_matches_sensitivity_and_bounded_acceleration() {
+        assert_eq!(
+            tune_relative_mouse(
+                20,
+                -10,
+                InputTuning {
+                    sensitivity: 0.5,
+                    acceleration_percent: 1.0,
+                },
+            ),
+            (10, -5)
+        );
+        let accelerated = tune_relative_mouse(
+            100,
+            0,
+            InputTuning {
+                sensitivity: 1.0,
+                acceleration_percent: 150.0,
+            },
+        );
+        assert_eq!(accelerated, (160, 0));
+        assert_eq!(
+            tune_relative_mouse(
+                i16::MAX,
+                i16::MIN,
+                InputTuning {
+                    sensitivity: 3.0,
+                    acceleration_percent: 150.0,
+                },
+            ),
+            (i16::MAX, i16::MIN)
         );
     }
 
@@ -2262,6 +2507,7 @@ mod tests {
     #[test]
     fn nvst_recovery_is_attempted_once_with_pli() {
         let (sender, receiver) = std::sync::mpsc::channel();
+        let sender = EventSender::unbounded(sender);
         let lifecycle = connected_lifecycle();
         let resources = TestNvstResources::default();
         let mut recovery_attempts = 0;
@@ -2293,6 +2539,7 @@ mod tests {
     #[test]
     fn repeated_packet_gaps_request_keyframes_without_stopping_the_session() {
         let (sender, receiver) = std::sync::mpsc::channel();
+        let sender = EventSender::unbounded(sender);
         let lifecycle = connected_lifecycle();
         let resources = TestNvstResources::default();
         let mut recovery_attempts = 0;
@@ -2326,6 +2573,7 @@ mod tests {
     #[test]
     fn transient_media_backpressure_requests_keyframe_without_stopping_session() {
         let (sender, receiver) = std::sync::mpsc::channel();
+        let sender = EventSender::unbounded(sender);
         let lifecycle = connected_lifecycle();
         let resources = TestNvstResources::default();
         let mut recovery_attempts = 0;
@@ -2353,6 +2601,7 @@ mod tests {
     #[test]
     fn exhausted_nvst_recovery_stops_every_leg_and_emits_terminal_status() {
         let (sender, receiver) = std::sync::mpsc::channel();
+        let sender = EventSender::unbounded(sender);
         let lifecycle = connected_lifecycle();
         let resources = TestNvstResources::default();
         let mut recovery_attempts = 0;
@@ -2400,6 +2649,7 @@ mod tests {
     #[test]
     fn assembled_keyframe_does_not_reset_recovery_episode_budget() {
         let (sender, _receiver) = std::sync::mpsc::channel();
+        let sender = EventSender::unbounded(sender);
         let lifecycle = connected_lifecycle();
         let resources = TestNvstResources::default();
         let mut recovery_attempts = 1;
@@ -2434,16 +2684,17 @@ mod tests {
         }));
         let (responses, _) = engine.handle(command);
         assert_eq!(responses[0]["type"], "ready");
-        assert_eq!(responses[0]["capabilities"]["supportsOfferAnswer"], false);
-        assert_eq!(responses[0]["capabilities"]["supportsVideoPresent"], false);
-    }
-
-    #[test]
-    fn extracts_partial_reliable_threshold() {
-        assert_eq!(
-            partial_reliable_threshold("v=0\r\na=ri.partialReliableThresholdMs:250\r\n"),
-            Some(250),
+        assert!(
+            responses[0]["capabilities"]
+                .get("supportsOfferAnswer")
+                .is_none()
         );
+        assert!(
+            responses[0]["capabilities"]
+                .get("supportsRemoteIce")
+                .is_none()
+        );
+        assert_eq!(responses[0]["capabilities"]["supportsVideoPresent"], false);
     }
 
     #[test]
@@ -2454,7 +2705,8 @@ mod tests {
             "resolution": "2560x1440",
             "fps": 120,
             "maxBitrateMbps": 75,
-            "enableCloudGsync": true
+            "enableCloudGsync": true,
+            "autoFullScreen": true
         });
         value["session"]["negotiatedStreamProfile"] = json!({
             "enableCloudGsync": true
@@ -2465,11 +2717,13 @@ mod tests {
             media_stream_config(&context),
             MediaStreamConfig {
                 codec: MediaVideoCodec::H264,
+                color_quality: MediaColorQuality::EightBit420,
                 width: 2560,
                 height: 1440,
                 fps: 120,
                 bitrate_bps: 75_000_000,
                 cloud_gsync: true,
+                shortcuts: StreamShortcutBindings::default(),
             }
         );
 
@@ -2487,11 +2741,16 @@ mod tests {
         });
         high_fps["session"]["negotiatedStreamProfile"] = json!({
             "codec": "AV1",
-            "fps": 300
+            "fps": 300,
+            "colorQuality": "10bit_444"
         });
         let high_fps: SessionContext = serde_json::from_value(high_fps).expect("context");
         assert_eq!(media_stream_config(&high_fps).codec, MediaVideoCodec::Av1);
         assert_eq!(media_stream_config(&high_fps).fps, 240);
+        assert_eq!(
+            media_stream_config(&high_fps).color_quality,
+            MediaColorQuality::TenBit420
+        );
 
         let mut rejected_vrr = synthetic_context("rejected-vrr-config", json!([]));
         rejected_vrr["settings"] = json!({ "enableCloudGsync": true });
@@ -2500,36 +2759,38 @@ mod tests {
         });
         let rejected_vrr: SessionContext = serde_json::from_value(rejected_vrr).expect("context");
         assert!(!media_stream_config(&rejected_vrr).cloud_gsync);
+
+        let mut forced_vrr = synthetic_context("forced-vrr-config", json!([]));
+        forced_vrr["settings"] = json!({
+            "enableCloudGsync": false,
+            "nativeCloudGsyncMode": "forced",
+            "showNativeStreamerStats": true,
+            "statsOverlayPosition": "top-right"
+        });
+        forced_vrr["session"]["negotiatedStreamProfile"] = json!({
+            "enableCloudGsync": true
+        });
+        let forced_vrr: SessionContext = serde_json::from_value(forced_vrr).expect("context");
+        let forced_config = media_stream_config(&forced_vrr);
+        assert!(forced_config.cloud_gsync);
+
+        let mut legacy_overlay = synthetic_context("legacy-overlay-config", json!([]));
+        legacy_overlay["settings"] = json!({
+            "showNativeStreamerStats": true,
+            "showStatsOnLaunch": true,
+            "statsOverlayPosition": "bottom-left",
+            "autoFullScreen": true
+        });
+        let legacy_overlay: SessionContext =
+            serde_json::from_value(legacy_overlay).expect("context");
+        assert_eq!(
+            media_stream_config(&legacy_overlay),
+            MediaStreamConfig::default()
+        );
     }
 
     #[test]
-    fn start_validates_stores_context_and_prepares_session() {
-        let (sender, receiver) = std::sync::mpsc::channel();
-        let mut engine = Engine::new(sender);
-        let context = synthetic_context("synthetic-session", json!([]));
-        let start = command(json!({
-            "id": "start",
-            "type": "start",
-            "context": context,
-        }));
-        let (responses, _) = engine.handle(start);
-
-        assert_eq!(responses[0]["type"], "ok");
-        assert_eq!(responses[0]["transport"], "webrtc");
-        let lifecycle = lock_lifecycle(&engine.lifecycle);
-        assert_eq!(lifecycle.state, State::Prepared);
-        let stored = serde_json::to_value(lifecycle.context.as_ref().expect("stored context"))
-            .expect("serializable stored context");
-        assert_eq!(stored["session"]["sessionId"], "synthetic-session");
-        assert_eq!(stored["session"]["syntheticExtension"], "preserved");
-        assert_eq!(stored["syntheticContextExtension"], true);
-        drop(lifecycle);
-        let status = receiver.recv().expect("ready status");
-        assert_eq!(status["status"], "ready");
-    }
-
-    #[test]
-    fn valid_nvst_handoff_starts_udp_video_and_bypasses_webrtc_offer_negotiation() {
+    fn valid_nvst_handoff_starts_udp_video_and_rejects_removed_offer_command() {
         let (sender, receiver) = std::sync::mpsc::channel();
         let (media_sender, _media_receiver) = std::sync::mpsc::sync_channel(4);
         let mut engine = Engine::with_media_consumer(sender, media_sender);
@@ -2551,13 +2812,20 @@ mod tests {
 
         assert_eq!(responses[0]["type"], "ok");
         assert_eq!(responses[0]["transport"], "nvst");
-        assert_eq!(responses[0]["capabilities"]["supportsOfferAnswer"], false);
-        assert_eq!(responses[0]["capabilities"]["supportsRemoteIce"], false);
+        assert!(
+            responses[0]["capabilities"]
+                .get("supportsOfferAnswer")
+                .is_none()
+        );
+        assert!(
+            responses[0]["capabilities"]
+                .get("supportsRemoteIce")
+                .is_none()
+        );
         assert_eq!(responses[0]["capabilities"]["supportsInput"], false);
         assert_eq!(responses[0]["capabilities"]["supportsAudioDecode"], false);
         assert_eq!(lifecycle_state(&engine), State::Connected);
         assert!(engine.nvst_transport.is_some());
-        assert!(engine.transport.is_none());
         assert!(receiver.try_iter().any(|message| {
             message["type"] == "status"
                 && message["message"]
@@ -2569,9 +2837,8 @@ mod tests {
             "id": "offer",
             "type": "offer",
             "context": context,
-            "sdp": synthetic_offer(),
         })));
-        assert_eq!(responses[0]["code"], "nvst-video-active");
+        assert_eq!(responses[0]["code"], "unknown-command");
 
         let (responses, _) = engine.handle(command(json!({
             "id": "stop",
@@ -2583,7 +2850,7 @@ mod tests {
     }
 
     #[test]
-    fn explicit_invalid_nvst_handoff_fails_closed_without_webrtc_fallback() {
+    fn explicit_invalid_nvst_handoff_fails_closed() {
         let (sender, _receiver) = std::sync::mpsc::channel();
         let mut engine = Engine::new(sender);
         let mut context = synthetic_context("invalid-nvst-session", json!([]));
@@ -2600,12 +2867,11 @@ mod tests {
 
         assert_eq!(responses[0]["code"], "invalid-nvst-handoff");
         assert_eq!(lifecycle_state(&engine), State::Idle);
-        assert!(engine.transport.is_none());
         assert!(engine.nvst_transport.is_none());
     }
 
     #[test]
-    fn explicit_nvst_mode_without_handoff_fails_closed() {
+    fn explicit_nvst_mode_without_endpoint_fails_closed() {
         let (sender, _receiver) = std::sync::mpsc::channel();
         let mut engine = Engine::new(sender);
         let mut context = synthetic_context("missing-nvst-session", json!([]));
@@ -2617,9 +2883,8 @@ mod tests {
             "context": context,
         })));
 
-        assert_eq!(responses[0]["code"], "invalid-nvst-handoff");
+        assert_eq!(responses[0]["code"], "missing-rtsps-endpoint");
         assert_eq!(lifecycle_state(&engine), State::Idle);
-        assert!(engine.transport.is_none());
         assert!(engine.nvst_transport.is_none());
     }
 
@@ -2646,7 +2911,7 @@ mod tests {
     }
 
     #[test]
-    fn start_rejects_invalid_and_duplicate_sessions() {
+    fn start_rejects_invalid_contexts_and_missing_nvst_handoffs() {
         let (sender, _receiver) = std::sync::mpsc::channel();
         let mut engine = Engine::new(sender);
         let invalid = command(json!({
@@ -2662,241 +2927,13 @@ mod tests {
         assert_eq!(responses[0]["code"], "invalid-context");
         assert_eq!(lifecycle_state(&engine), State::Idle);
 
-        for id in ["first", "duplicate"] {
-            let start = command(json!({
-                "id": id,
-                "type": "start",
-                "context": synthetic_context("synthetic-session", json!([])),
-            }));
-            let (responses, _) = engine.handle(start);
-            if id == "first" {
-                assert_eq!(responses[0]["type"], "ok");
-            } else {
-                assert_eq!(responses[0]["code"], "invalid-state");
-            }
-        }
-    }
-
-    #[test]
-    fn offer_negotiates_directly_with_configured_ice_services() {
-        let (sender, _receiver) = std::sync::mpsc::channel();
-        let (media_sender, _media_receiver) = std::sync::mpsc::sync_channel(4);
-        let mut engine = Engine::with_media_consumer(sender, media_sender);
-        let context = synthetic_context(
-            "synthetic-session",
-            json!([{
-                "urls": ["stun:stun.synthetic.invalid:3478", "turn:turn.synthetic.invalid:3478"],
-                "username": "synthetic-user",
-                "credential": "synthetic-credential"
-            }]),
-        );
         let (responses, _) = engine.handle(command(json!({
-            "id": "start",
-            "type": "start",
-            "context": context.clone(),
-        })));
-        assert_eq!(responses[0]["type"], "ok");
-
-        let (responses, _) = engine.handle(command(json!({
-            "id": "offer",
-            "type": "offer",
-            "context": context,
-            "sdp": synthetic_offer()
-        })));
-        assert_eq!(responses[0]["type"], "answer");
-        assert!(
-            responses[0]["answer"]["sdp"]
-                .as_str()
-                .is_some_and(|sdp| sdp.contains("m=video") && !sdp.contains("m=video 0"))
-        );
-        assert_eq!(lifecycle_state(&engine), State::Negotiating);
-    }
-
-    #[test]
-    fn offer_fails_typed_when_no_in_process_media_consumer_exists() {
-        let (sender, _receiver) = std::sync::mpsc::channel();
-        let mut engine = Engine::new(sender);
-        let context = synthetic_context("synthetic-session", json!([]));
-        let (responses, _) = engine.handle(command(json!({
-            "id": "start",
-            "type": "start",
-            "context": context.clone(),
-        })));
-        assert_eq!(responses[0]["type"], "ok");
-
-        let (responses, _) = engine.handle(command(json!({
-            "id": "offer",
-            "type": "offer",
-            "context": context,
-            "sdp": "v=0\r\n"
-        })));
-
-        assert_eq!(responses[0]["code"], "media-consumer-unavailable");
-        assert_eq!(lifecycle_state(&engine), State::Prepared);
-    }
-
-    #[test]
-    fn prepared_session_negotiates_synthetic_offer_for_typed_media_consumer() {
-        let (sender, receiver) = std::sync::mpsc::channel();
-        let (media_sender, _media_receiver) = std::sync::mpsc::sync_channel(4);
-        let mut engine = Engine::with_media_consumer(sender, media_sender);
-        let context = synthetic_context("synthetic-session", json!([]));
-        let (responses, _) = engine.handle(command(json!({
-            "id": "start",
-            "type": "start",
-            "context": context.clone(),
-        })));
-        assert_eq!(responses[0]["type"], "ok");
-
-        let (responses, _) = engine.handle(command(json!({
-            "id": "offer",
-            "type": "offer",
-            "context": context,
-            "sdp": synthetic_offer()
-        })));
-
-        assert_eq!(responses[0]["type"], "answer");
-        assert!(
-            responses[0]["answer"]["sdp"]
-                .as_str()
-                .is_some_and(|sdp| sdp.contains("m=video") && !sdp.contains("m=video 0"))
-        );
-        assert_eq!(lifecycle_state(&engine), State::Negotiating);
-        assert!(
-            receiver
-                .try_iter()
-                .any(|value| value["type"] == "local-ice")
-        );
-    }
-
-    #[test]
-    fn disconnect_clears_context_and_stale_disconnect_cannot_clear_new_session() {
-        let (sender, receiver) = std::sync::mpsc::channel();
-        let mut engine = Engine::new(sender.clone());
-        let (responses, _) = engine.handle(command(json!({
-            "id": "first",
-            "type": "start",
-            "context": synthetic_context("first-session", json!([])),
-        })));
-        assert_eq!(responses[0]["type"], "ok");
-        let first_generation = lock_lifecycle(&engine.lifecycle).generation;
-        forward_transport_event(
-            &sender,
-            &engine.lifecycle,
-            first_generation,
-            TransportEvent::Disconnected("synthetic disconnect".to_owned()),
-        );
-        {
-            let lifecycle = lock_lifecycle(&engine.lifecycle);
-            assert_eq!(lifecycle.state, State::Idle);
-            assert!(lifecycle.context.is_none());
-        }
-
-        let (responses, _) = engine.handle(command(json!({
-            "id": "second",
-            "type": "start",
-            "context": synthetic_context("second-session", json!([])),
-        })));
-        assert_eq!(responses[0]["type"], "ok");
-        forward_transport_event(
-            &sender,
-            &engine.lifecycle,
-            first_generation,
-            TransportEvent::Disconnected("late stale disconnect".to_owned()),
-        );
-        let lifecycle = lock_lifecycle(&engine.lifecycle);
-        assert_eq!(lifecycle.state, State::Prepared);
-        assert_eq!(
-            lifecycle
-                .context
-                .as_ref()
-                .map(|value| value.session.session_id.as_str()),
-            Some("second-session")
-        );
-        drop(lifecycle);
-
-        let events = receiver.try_iter().collect::<Vec<_>>();
-        assert!(events.iter().any(|value| value["status"] == "stopped"));
-        assert!(
-            !events
-                .iter()
-                .any(|value| value["message"] == "late stale disconnect")
-        );
-    }
-
-    #[test]
-    fn encoded_media_consumer_is_typed_in_process_and_preserves_arc_payload() {
-        let (sender, receiver) = std::sync::mpsc::channel();
-        let (media_sender, media_receiver) = std::sync::mpsc::sync_channel(4);
-        let mut engine = Engine::with_media_consumer(sender, media_sender);
-        let (responses, _) = engine.handle(command(json!({
-            "id": "start",
+            "id": "missing-nvst",
             "type": "start",
             "context": synthetic_context("synthetic-session", json!([])),
         })));
-        assert_eq!(responses[0]["type"], "ok");
-        let payload: Arc<[u8]> = Arc::from([1_u8, 2, 3]);
-        engine
-            .media_consumer
-            .as_ref()
-            .expect("media consumer")
-            .send(EncodedMediaFrame {
-                mid: "video-0".to_owned(),
-                codec: "H264".to_owned(),
-                payload: payload.clone(),
-                rtp_timestamp: 90_000,
-                clock_rate_hz: 90_000,
-                channels: None,
-                received_at_us: 1_500,
-                keyframe: true,
-                contiguous: true,
-            })
-            .expect("frame delivery");
-
-        let frame = media_receiver.recv().expect("encoded frame");
-        assert!(Arc::ptr_eq(&frame.payload, &payload));
-        assert_eq!(frame.rtp_timestamp, 90_000);
-        assert_eq!(frame.clock_rate_hz, 90_000);
-        assert_eq!(frame.received_at_us, 1_500);
-        assert!(
-            receiver
-                .try_iter()
-                .all(|value| value["type"] != "encoded-media")
-        );
-    }
-
-    #[test]
-    fn unapplied_commands_are_rejected_and_stop_clears_context() {
-        let (sender, _receiver) = std::sync::mpsc::channel();
-        let mut engine = Engine::new(sender);
-        let (responses, _) = engine.handle(command(json!({
-            "id": "surface",
-            "type": "surface",
-            "surface": {}
-        })));
-        assert_eq!(responses[0]["code"], "unsupported-command");
-
-        let (responses, _) = engine.handle(command(json!({
-            "id": "start",
-            "type": "start",
-            "context": synthetic_context("synthetic-session", json!([])),
-        })));
-        assert_eq!(responses[0]["type"], "ok");
-        let (responses, _) = engine.handle(command(json!({
-            "id": "shortcuts",
-            "type": "update-shortcuts",
-            "shortcuts": { "stopStream": "Ctrl+Alt+Q" }
-        })));
-        assert_eq!(responses[0]["code"], "unsupported-command");
-        let (responses, _) = engine.handle(command(json!({
-            "id": "stop",
-            "type": "stop",
-            "reason": "synthetic test complete"
-        })));
-        assert_eq!(responses[0]["type"], "ok");
-        let lifecycle = lock_lifecycle(&engine.lifecycle);
-        assert_eq!(lifecycle.state, State::Idle);
-        assert!(lifecycle.context.is_none());
+        assert_eq!(responses[0]["code"], "nvst-handoff-required");
+        assert_eq!(lifecycle_state(&engine), State::Idle);
     }
 
     #[test]

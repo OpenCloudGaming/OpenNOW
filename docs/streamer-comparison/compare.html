@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OpenNOW vs GeForce NOW streamer</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,600;1,6..72,400&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --ink: #ece6d6;
+      --paper: #12110e;
+      --panel: #1b1914;
+      --line: #3a3528;
+      --on: #4ad4b0;
+      --gfn: #e4a227;
+      --warn: #e36b4c;
+      --mute: #9a917c;
+      --max: 1120px;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background:
+        radial-gradient(1200px 600px at 10% -10%, #2a2316 0%, transparent 55%),
+        var(--paper);
+      color: var(--ink);
+      font: 18px/1.55 Newsreader, "Iowan Old Style", Georgia, serif;
+    }
+    body::before {
+      content: "";
+      pointer-events: none;
+      position: fixed;
+      inset: 0;
+      background: repeating-linear-gradient(
+        0deg,
+        transparent,
+        transparent 2px,
+        rgba(0, 0, 0, 0.08) 3px
+      );
+      z-index: 0;
+    }
+    header, main, footer { position: relative; z-index: 1; }
+    a { color: var(--on); }
+    code, pre, .mono { font-family: "IBM Plex Mono", ui-monospace, monospace; }
+    header {
+      max-width: var(--max);
+      margin: 0 auto;
+      padding: 48px 24px 16px;
+    }
+    .kicker {
+      font: 600 12px/1 "IBM Plex Mono", monospace;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--gfn);
+    }
+    h1 {
+      font-size: clamp(36px, 6vw, 64px);
+      line-height: 0.95;
+      font-weight: 600;
+      letter-spacing: -0.03em;
+      margin: 12px 0 16px;
+    }
+    .lede { max-width: 40em; color: var(--mute); font-size: 20px; }
+    nav {
+      position: sticky;
+      top: 0;
+      z-index: 5;
+      background: rgba(18, 17, 14, 0.92);
+      border-bottom: 1px solid var(--line);
+      backdrop-filter: blur(8px);
+    }
+    nav .row {
+      max-width: var(--max);
+      margin: 0 auto;
+      padding: 10px 24px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 14px 22px;
+      font: 600 12px/1 "IBM Plex Mono", monospace;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+    nav a { color: var(--ink); text-decoration: none; }
+    nav a:hover { color: var(--on); }
+    main { max-width: var(--max); margin: 0 auto; padding: 28px 24px 80px; }
+    section { margin: 56px 0; }
+    h2 {
+      font-size: 32px;
+      margin: 0 0 12px;
+      letter-spacing: -0.02em;
+    }
+    h3 { font-size: 22px; margin: 28px 0 8px; }
+    p { margin: 0 0 12px; }
+    .pair {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+    }
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      padding: 18px 18px 8px;
+    }
+    .card.on { box-shadow: inset 3px 0 0 var(--on); }
+    .card.gfn { box-shadow: inset 3px 0 0 var(--gfn); }
+    .tag {
+      font: 600 11px/1 "IBM Plex Mono", monospace;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      margin-bottom: 8px;
+    }
+    .on .tag { color: var(--on); }
+    .gfn .tag { color: var(--gfn); }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 16px;
+    }
+    th, td {
+      border-top: 1px solid var(--line);
+      padding: 10px 8px;
+      vertical-align: top;
+      text-align: left;
+    }
+    th {
+      font: 600 11px/1 "IBM Plex Mono", monospace;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--mute);
+    }
+    .diff { color: var(--warn); }
+    .same { color: var(--on); }
+    .note {
+      border-left: 3px solid var(--gfn);
+      padding: 8px 14px;
+      color: var(--mute);
+      margin: 16px 0;
+    }
+    ol { padding-left: 22px; }
+    li { margin: 0 0 8px; }
+    footer {
+      max-width: var(--max);
+      margin: 0 auto;
+      padding: 0 24px 48px;
+      color: var(--mute);
+      font-size: 15px;
+    }
+    @media (max-width: 800px) {
+      .pair { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="kicker">Local research · 2026-08-30 · GFN 2.0.87.131 / gs_04_90</div>
+    <h1>Two streamers, one seat.</h1>
+    <p class="lede">OpenNOW’s native process speaks the same NVST two-socket shape as official GeForce NOW. Video still feels close. Mouse does not. The gap is not “we forgot Raw Input.” Qt already has that thread. Official tells the host <code>accel=0, speed=10</code> on every focus change. No log or capture on this machine dumps those bytes.</p>
+  </header>
+  <nav>
+    <div class="row">
+      <a href="#verdict">Verdict</a>
+      <a href="#matrix">Matrix</a>
+      <a href="#video">Video</a>
+      <a href="#audio">Audio</a>
+      <a href="#mouse">Mouse</a>
+      <a href="#controller">Controller</a>
+      <a href="#settings">Settings</a>
+      <a href="#recovery">Recovery</a>
+      <a href="README.md">Markdown set</a>
+    </div>
+  </nav>
+  <main>
+    <section id="verdict">
+      <h2>Verdict</h2>
+      <div class="pair">
+        <article class="card on">
+          <div class="tag">OpenNOW native · Qt</div>
+          <p>Owned RTSPS. Mjolnir video. Bundle audio and input. Media Foundation plus tearing present. Raw Input thread for relative mouse. Client-side type-7 tuning. No captured host mouse-settings frame. Native CloudMatch forces 8-bit 4:2:0. Audio has no jitter buffer and no RED. There is no microphone capture or send path.</p>
+        </article>
+        <article class="card gfn">
+          <div class="tag">Official GFN · this machine</div>
+          <p>Same sockets and NACK envelope. DX11 DXVA HEVC 10-bit at 2560×1440@120. WASAPI 16-bit with <code>TimestampAudioBuffer</code> and RED level 2. Raw Input async thread plus <code>accel=0, speed=10</code> on every focus change. Session mouse accel disabled. SDLGamepad plus haptics feature 6.</p>
+        </article>
+      </div>
+      <p class="note">The comparison is Qt native versus official Geronimo on this machine. Official GFN’s Chrome 128 shell is NVIDIA’s UI, not an OpenNOW path.</p>
+    </section>
+
+    <section id="matrix">
+      <h2>Side by side</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Plane</th>
+            <th>Shared</th>
+            <th>OpenNOW</th>
+            <th>Official GFN</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Transport</td>
+            <td class="same">RTSPS over WebSocket. Mjolnir 49005. Bundle 49006. NACK 1024/2048/3. Packet 1280.</td>
+            <td>Owned NVST. No ICE restart. No RTX, REMB, or TWCC.</td>
+            <td>Always Geronimo NVST. Unified socket off. RTCP on SCTP.</td>
+          </tr>
+          <tr>
+            <td>Video</td>
+            <td class="same">D3D11 decode. Tearing flip present. Vsync off in session.</td>
+            <td class="diff">Create body zeros bit depth and chroma. Present is 8-bit BGRA. ANNOUNCE default 75 Mbps. Local media default 10 Mbps. Recovery is PLI + 0x302.</td>
+            <td>This session. 10-bit HEVC, chroma 3, 100000 kbps cap, dedicated decode device. Recovery is queue flush + IDR + invalidation.</td>
+          </tr>
+          <tr>
+            <td>Audio</td>
+            <td class="same">Opus 48 kHz stereo on the bundle. WASAPI. In-band FEC off.</td>
+            <td class="diff">Shared-mode float32. Preroll 15–60 ms. <code>enableRedundancy:0</code>. <code>decode_float(..., false)</code>. No A/V clock. NVST mic advertised then refused.</td>
+            <td>16-bit WASAPI. TimestampAudioBuffer 80/60/200. RED level 2. Mic RED 3. First audio beat first video.</td>
+          </tr>
+          <tr>
+            <td>Mouse</td>
+            <td class="same">SDL plus dedicated Raw Input thread. Cursor ID 0 locks and hides.</td>
+            <td class="diff">No captured type 10 frame. Optional <code>tune_relative_mouse</code>. i16 split. Foreground HWND filter.</td>
+            <td>Always <code>accel=0, speed=10</code>. Session accel off. Modes 0/1/2. Warp from 16-bit coords. Alt settings on focus, SDL settings on blur.</td>
+          </tr>
+          <tr>
+            <td>Controller</td>
+            <td class="same">SDL. Type-12 38-byte XInput shape. Slot 0–3. Preferred controller 2.</td>
+            <td class="diff">15% deadzone. 100 ms keepalive. No rumble. Guide stays local. NVST index hardcoded 0x03. Gyro setting unused.</td>
+            <td>SDLGamepad + GSHID. Haptics feature 6. 858 mappings. Mall synthesizes keys, stream does not.</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="video">
+      <h2>Video</h2>
+      <p>Read the long form in <a href="video.md">video.md</a>.</p>
+      <h3>Settings path</h3>
+      <p>User store → <code>settings.json</code> → <code>cloudmatch.rs</code> <code>build_create_body</code> → NVIDIA seat → streamer <code>SessionContext</code> → <code>media_stream_config</code> and ANNOUNCE.</p>
+      <p>Native create then overwrites color. <code>bit_depth = 0</code>, <code>chroma = 0</code>, <code>trueHdr = false</code>. Bitrate is omitted from the feature bag and still sent later in ANNOUNCE <code>x-nv-vqos</code>. <code>codec: auto</code> requests H.264 so CloudMatch cannot pick AV1 before decode is known. Official Auto is wire 0 and still chose HEVC here.</p>
+      <h3>Decode and present</h3>
+      <div class="pair">
+        <article class="card on">
+          <div class="tag">OpenNOW</div>
+          <p>MF hardware MFT, then the Microsoft D3D11-aware MFT. NV12 or P010 out. Swapchain BGRA, tearing, latency 1. Clock ignores RTP timestamps and learns cadence. Encoded queue cap 2. Overflow clears the reference chain.</p>
+        </article>
+        <article class="card gfn">
+          <div class="tag">Official</div>
+          <p>Dedicated DX11 DXVA device, 10 decode surfaces, FRL pacing. Present on a second device. Algemist continues. First frame 10-bit, chroma 3, limited range. UI vsync on, session vsync off.</p>
+        </article>
+      </div>
+    </section>
+
+    <section id="audio">
+      <h2>Audio</h2>
+      <p>Read the long form in <a href="audio.md">audio.md</a>.</p>
+      <p>Official concealment is a timestamped buffer plus RED. OpenNOW concealment is “drop the packet.” WASAPI underrun stops the client and raises preroll. That is a hole, not a fade.</p>
+      <p>ANNOUNCE still writes <code>rtcMicOnNativeBundle:1</code> for compatibility, but the runtime has no microphone capture, encoder, queue or send path. Official mic this session was 20 ms, 2 ch, 16 kbps, RED 3.</p>
+    </section>
+
+    <section id="mouse">
+      <h2>Mouse</h2>
+      <p>Read the long form in <a href="mouse-input.md">mouse-input.md</a>.</p>
+      <h3>Official mode machine, from logs</h3>
+      <table>
+        <thead>
+          <tr><th>Mode</th><th>Local cursor</th><th>Lock</th><th>Trigger</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>2</td>
+            <td>Hidden</td>
+            <td>Yes</td>
+            <td>System cursor ID 0 at (0,0). Relative look.</td>
+          </tr>
+          <tr>
+            <td>1</td>
+            <td>Visible</td>
+            <td>No</td>
+            <td>System cursor IDs 1, 2, 3, 5, 8, 9, 12. Warp <code>coord / 65535 * window</code>.</td>
+          </tr>
+          <tr>
+            <td>0</td>
+            <td>Visible</td>
+            <td>No</td>
+            <td>Connect default and some bitmap transitions.</td>
+          </tr>
+        </tbody>
+      </table>
+      <p>OpenNOW collapses that to hidden versus visible. Type 0 and id 0 enter SDL relative mode and Raw Input type 7. Everything else is absolute type 5.</p>
+      <h3>What official sends that we do not have as bytes</h3>
+      <ol>
+        <li><code>Disabling session mouse acceleration</code> at <code>QUERY_GFN_START</code>.</li>
+        <li><code>Sending alt mouse settings (accel=0, speed=10)</code> when the Raw Input async thread starts.</li>
+        <li><code>Sending SDL mouse settings (accel=0, speed=10)</code> on blur.</li>
+        <li>NVB feature type 10 on those same moments. No hex in the logs.</li>
+      </ol>
+      <p>OpenNOW’s capture-backed activation is enable-input, device descriptor 2, cursor capture on, track cursor on, window state 19, system state 0, enable-input. Then type 7 deltas, optionally scaled by <code>OPENNOW_MOUSE_SENSITIVITY</code> and <code>OPENNOW_MOUSE_ACCELERATION</code>.</p>
+    </section>
+
+    <section id="controller">
+      <h2>Controller</h2>
+      <p>Read the long form in <a href="controller-input.md">controller-input.md</a>.</p>
+      <p>The 38-byte type-12 packet and 15% radial deadzone are what OpenNOW sends. Native NVST then drops slot identity. <code>gamepad_command()</code> copies buttons, triggers, and sticks only. Inner index is hardcoded <code>0x03</code>.</p>
+      <p>Official this session opened Xbox One through <code>SDLGamepad</code>, not a logged XInput poll. Haptics went out as feature type 6. OpenNOW has no rumble path on native or NVST.</p>
+    </section>
+
+    <section id="settings">
+      <h2>Settings that survive native CloudMatch</h2>
+      <table>
+        <thead>
+          <tr><th>Setting</th><th>Store default</th><th>Native create</th><th>Official persist here</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>resolution / fps</td>
+            <td>1920×1080 / 60</td>
+            <td>Sent. AUTO fps 0 becomes 60.</td>
+            <td>2560×1440 / 120</td>
+          </tr>
+          <tr>
+            <td>codec</td>
+            <td>auto</td>
+            <td>Wire H.264</td>
+            <td>0 Auto → HEVC</td>
+          </tr>
+          <tr>
+            <td>maxBitrateMbps</td>
+            <td>75</td>
+            <td class="diff">ANNOUNCE only, not create features</td>
+            <td>100, applied as 100000 kbps</td>
+          </tr>
+          <tr>
+            <td>colorQuality</td>
+            <td>8bit_420</td>
+            <td class="diff">Forced 0 / 0</td>
+            <td>10-bit, live chroma 3</td>
+          </tr>
+          <tr>
+            <td>enableCloudGsync</td>
+            <td>false</td>
+            <td>Sent. Desktop UI labeled Reflex.</td>
+            <td>cloudGsync false, reflex true</td>
+          </tr>
+          <tr>
+            <td>mouseSensitivity / accel</td>
+            <td>1 / 1</td>
+            <td>Env into streamer, not CloudMatch</td>
+            <td>Not stored. Host gets 0 / 10.</td>
+          </tr>
+          <tr>
+            <td>VSync / HDR / DRC / AI filter</td>
+            <td>Absent or unused</td>
+            <td class="diff">Not sent</td>
+            <td>Full customProfile</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="recovery">
+      <h2>Video recovery ladder</h2>
+      <div class="pair">
+        <article class="card on">
+          <div class="tag">OpenNOW</div>
+          <ol>
+            <li>NACK gaps for 150 ms, 3 tries.</li>
+            <li>Unrecoverable gap resets the assembler.</li>
+            <li>RTCP PLI plus control <code>0x302</code> IDR.</li>
+            <li>Drop inter-frames until a keyframe, then rebuild the MFT.</li>
+            <li>Device loss recreates Graphics for 5 s, then class-preserving software fallback.</li>
+          </ol>
+        </article>
+        <article class="card gfn">
+          <div class="tag">Official · 12:27 burst</div>
+          <ol>
+            <li>NACK. 639 of 677 used, 0 retries this session.</li>
+            <li>Decode queue hits 30, then 40. Complete flush.</li>
+            <li>IDR request for stream 0.</li>
+            <li>Invalidation request after a dropped P-frame.</li>
+            <li>Next I-frame. <code>Stream[0]: recovered</code>. Display may freeze on bad refs.</li>
+          </ol>
+        </article>
+      </div>
+      <p>Official logged no PLI or FIR. OpenNOW has no invalidation command. Matching official recovery means adding that request, not sending more PLIs.</p>
+    </section>
+  </main>
+  <footer>
+    <p>Sources. OpenNOW tree under <code>native/opennow-streamer</code> and <code>native/opennow-core</code>. Official logs under <code>%LOCALAPPDATA%\NVIDIA Corporation\GeForceNOW\</code>. No official binary was disassembled.</p>
+    <p>Markdown. <a href="README.md">Index</a> · <a href="video.md">Video</a> · <a href="audio.md">Audio</a> · <a href="mouse-input.md">Mouse</a> · <a href="controller-input.md">Controller</a></p>
+  </footer>
+</body>
+</html>

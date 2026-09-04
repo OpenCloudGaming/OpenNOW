@@ -2,6 +2,7 @@
 members = [
     "crates/opennow-streamer",
     "crates/opennow-streamer-core",
+    "crates/opennow-streamer-ffi",
     "crates/opennow-streamer-platform",
     "crates/opennow-streamer-platform-linux",
     "crates/opennow-streamer-platform-macos",
@@ -30,10 +31,21 @@ ghash = "0.5"
 hmac = "0.12"
 image = { version = "0.25", default-features = false, features = ["bmp", "ico", "png"] }
 openh264 = { version = "0.9.8", default-features = false, features = ["source"] }
+oxideav-core = "0.1.34"
+oxideav-mkv = "0.0.9"
 opus = "0.3.1"
 # Pin rust-sdl2 after its bundled SDL2 update. SDL 2.26.4 from the crates.io
 # release does not compile against current PipeWire headers with modern GCC.
-sdl2 = { git = "https://github.com/Rust-SDL2/rust-sdl2.git", rev = "adeb978d921a1440da07fddd6651da9f567ed21b", default-features = false, features = ["bundled", "raw-window-handle", "static-link", "unsafe_textures"] }
+#
+# This is upstream adeb978d plus a cherry-pick of upstream #1512, which Windows
+# needs because clang types C enums as `int` for MSVC and `unsigned` for Linux
+# and `set_mod_state` only accepted the Linux form. The fix cannot be taken by
+# moving the pin forward: the commit before it rewrote `Texture<'a>` to
+# `Texture<'_>` inside the `unsafe_textures` block, where `Texture` has no
+# lifetime, so every revision from there through master fails to build with the
+# feature we rely on. Drop this fork once upstream repairs `unsafe_textures`.
+sdl2 = { git = "https://github.com/zortos293/rust-sdl2.git", rev = "8c812c4a0087eaf664a11a844634200cebe9afb8", default-features = false, features = ["bundled", "raw-window-handle", "static-link", "unsafe_textures"] }
+scuffle-av1 = "0.1.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha1 = "0.10"
@@ -41,6 +53,8 @@ socket2 = { version = "0.5", features = ["all"] }
 str0m = { version = "0.23", default-features = false }
 subtle = "2"
 thiserror = "2"
+rustls = { version = "0.23", default-features = false, features = ["std", "ring"] }
+tungstenite = { version = "0.28", default-features = false, features = ["handshake", "rustls-tls-native-roots"] }
 
 [profile.release]
 lto = "thin"

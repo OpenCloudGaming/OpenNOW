@@ -124,6 +124,10 @@ export interface Settings {
   controllerModePromptDismissed: boolean;
   /** Request GeForce NOW's gamepad-friendly app launch mode for new sessions */
   launchInConsoleMode: boolean;
+  /** Switch the Qt shell to console when a pad is hot-plugged */
+  switchToConsoleOnPad: boolean;
+  /** Leave console shell on recent keyboard or mouse input */
+  leaveConsoleOnPointer: boolean;
   /** Show the "Who's playing?" profile picker when console mode starts */
   consoleProfilePickerOnLaunch: boolean;
   autoFullScreen: boolean;
@@ -197,11 +201,11 @@ export type ShortcutSettings = Pick<Settings, ShortcutSettingKey>;
 export const DEFAULT_SHORTCUT_SETTINGS: Readonly<ShortcutSettings> = Object.freeze({
   shortcutToggleStats: "Ctrl+N",
   shortcutTogglePointerLock: "F8",
-  shortcutToggleFullscreen: "F10",
+  shortcutToggleFullscreen: "F11",
   shortcutStopStream: "Ctrl+Shift+Q",
   shortcutToggleAntiAfk: "Ctrl+Shift+K",
   shortcutToggleMicrophone: "Ctrl+Shift+M",
-  shortcutScreenshot: "F11",
+  shortcutScreenshot: "Ctrl+F11",
   shortcutToggleRecording: "F12",
 });
 
@@ -311,7 +315,7 @@ export function createDefaultSettings(platform: string): Settings {
     antiAfkReminderEveryMinutes: 15,
     antiAfkReminderDurationSeconds: 5,
     showStatsOnLaunch: false,
-    statsOverlayPosition: "bottom-left",
+    statsOverlayPosition: "top-right",
     hideServerSelector: false,
     appAccentColor: "green",
     appTheme: "auto",
@@ -319,6 +323,8 @@ export function createDefaultSettings(platform: string): Settings {
     controllerMode: false,
     controllerModePromptDismissed: false,
     launchInConsoleMode: false,
+    switchToConsoleOnPad: true,
+    leaveConsoleOnPointer: true,
     consoleProfilePickerOnLaunch: true,
     autoFullScreen: false,
     favoriteGameIds: [],

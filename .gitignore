@@ -9,6 +9,7 @@ package-lock.json
 
 # Build outputs
 dist/
+/build/
 target/
 target2/
 target3/

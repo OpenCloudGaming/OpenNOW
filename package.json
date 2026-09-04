@@ -1,10 +1,14 @@
 {
   "name": "opennow-workspace",
   "private": true,
-  "description": "OpenNOW Electron workspace",
+  "description": "OpenNOW desktop workspace during the Qt migration",
   "scripts": {
     "dev": "npm --prefix opennow-stable run dev",
     "build": "npm --prefix opennow-stable run build",
+    "qt:configure": "cmake -S opennow-qt -B build/opennow-qt -DCMAKE_BUILD_TYPE=Debug",
+    "qt:build": "cmake --build build/opennow-qt",
+    "qt:test": "ctest --test-dir build/opennow-qt --output-on-failure",
+    "qt:package": "cmake --build build/opennow-qt --config Release --target package",
     "native:check": "npm --prefix opennow-stable run native:check",
     "native:build": "npm --prefix opennow-stable run native:build",
     "locales:check": "node opennow-stable/scripts/check-translations.mjs",

@@ -29,6 +29,11 @@ impl NativeSurface {
         self.inner.hide();
     }
 
+    #[cfg(target_os = "windows")]
+    pub(crate) fn hide_checked(&mut self) -> Result<(), String> {
+        self.inner.hide_checked()
+    }
+
     pub(crate) fn refresh_ordering(&mut self) -> Result<(), String> {
         self.inner.refresh_ordering()
     }
@@ -50,7 +55,7 @@ fn parse_handle(value: &str) -> Result<usize, String> {
     parsed
         .ok()
         .filter(|handle| *handle != 0)
-        .ok_or_else(|| format!("invalid Electron native window handle: {value}"))
+        .ok_or_else(|| format!("invalid shell native window handle: {value}"))
 }
 
 #[cfg(any(target_os = "windows", target_os = "linux"))]
@@ -61,19 +66,41 @@ fn physical_rect(rect: RenderSurfaceRect, _scale: f32) -> (i32, i32, u32, u32) {
 #[cfg(target_os = "windows")]
 mod platform {
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    use windows_sys::Win32::Foundation::{GetLastError, SetLastError};
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::SetFocus;
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        GWL_EXSTYLE, GWL_STYLE, GWLP_HWNDPARENT, GetWindowLongPtrW, HWND_TOP, SW_HIDE,
-        SWP_NOACTIVATE, SWP_SHOWWINDOW, SetForegroundWindow, SetWindowLongPtrW, SetWindowPos,
-        ShowWindow, WS_CHILD, WS_DISABLED, WS_EX_NOACTIVATE, WS_EX_TRANSPARENT, WS_POPUP,
-        WS_VISIBLE,
+        GWL_EXSTYLE, GWL_STYLE, GetWindowLongPtrW, HWND_TOP, SW_HIDE, SWP_FRAMECHANGED,
+        SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW, SetForegroundWindow,
+        SetParent, SetWindowLongPtrW, SetWindowPos, ShowWindow, WS_CAPTION, WS_CHILD,
+        WS_CLIPSIBLINGS, WS_DISABLED, WS_EX_APPWINDOW, WS_EX_NOACTIVATE, WS_EX_TRANSPARENT,
+        WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_POPUP, WS_SYSMENU, WS_THICKFRAME, WS_VISIBLE,
     };
 
     use super::*;
 
+    fn child_style(style: u32) -> u32 {
+        (style
+            & !(WS_VISIBLE
+                | WS_POPUP
+                | WS_DISABLED
+                | WS_CAPTION
+                | WS_THICKFRAME
+                | WS_MINIMIZEBOX
+                | WS_MAXIMIZEBOX
+                | WS_SYSMENU))
+            | WS_CHILD
+            | WS_CLIPSIBLINGS
+    }
+
+    fn child_extended_style(style: u32) -> u32 {
+        style & !(WS_EX_APPWINDOW | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT)
+    }
+
     pub(crate) struct Surface {
         child: windows_sys::Win32::Foundation::HWND,
-        owner: windows_sys::Win32::Foundation::HWND,
+        parent: windows_sys::Win32::Foundation::HWND,
+        standalone_style: u32,
+        standalone_extended_style: u32,
         shown: bool,
     }
 
@@ -89,7 +116,9 @@ mod platform {
             };
             Ok(Self {
                 child,
-                owner: std::ptr::null_mut(),
+                parent: std::ptr::null_mut(),
+                standalone_style: unsafe { GetWindowLongPtrW(child, GWL_STYLE) as u32 },
+                standalone_extended_style: unsafe { GetWindowLongPtrW(child, GWL_EXSTYLE) as u32 },
                 shown: false,
             })
         }
@@ -105,25 +134,38 @@ mod platform {
             _screen_rect: Option<RenderSurfaceRect>,
             _scale: f32,
         ) -> Result<(), String> {
-            let owner = parse_handle(parent_handle)? as _;
-            let (x, y, width, height) = physical_rect(_screen_rect.unwrap_or(rect), _scale);
+            let parent = parse_handle(parent_handle)? as _;
+            let (x, y, width, height) = physical_rect(rect, _scale);
             unsafe {
-                if self.owner != owner {
-                    SetWindowLongPtrW(self.child, GWLP_HWNDPARENT, owner as isize);
-                    self.owner = owner;
-                }
-                let style = GetWindowLongPtrW(self.child, GWL_STYLE) as u32;
                 SetWindowLongPtrW(
                     self.child,
                     GWL_STYLE,
-                    ((style & !(WS_VISIBLE | WS_CHILD | WS_DISABLED)) | WS_POPUP) as isize,
+                    child_style(self.standalone_style) as isize,
                 );
-                let extended = GetWindowLongPtrW(self.child, GWL_EXSTYLE) as u32;
                 SetWindowLongPtrW(
                     self.child,
                     GWL_EXSTYLE,
-                    (extended & !(WS_EX_NOACTIVATE | WS_EX_TRANSPARENT)) as isize,
+                    child_extended_style(self.standalone_extended_style) as isize,
                 );
+                if self.parent != parent {
+                    SetLastError(0);
+                    if SetParent(self.child, parent).is_null() && GetLastError() != 0 {
+                        SetWindowLongPtrW(
+                            self.child,
+                            GWL_STYLE,
+                            (self.standalone_style & !WS_VISIBLE) as isize,
+                        );
+                        SetWindowLongPtrW(
+                            self.child,
+                            GWL_EXSTYLE,
+                            self.standalone_extended_style as isize,
+                        );
+                        return Err(
+                            "failed to attach SDL video surface to the Qt window".to_owned()
+                        );
+                    }
+                    self.parent = parent;
+                }
                 if SetWindowPos(
                     self.child,
                     HWND_TOP,
@@ -131,13 +173,13 @@ mod platform {
                     y,
                     width as i32,
                     height as i32,
-                    SWP_NOACTIVATE | SWP_SHOWWINDOW,
+                    SWP_FRAMECHANGED | SWP_NOACTIVATE | SWP_SHOWWINDOW,
                 ) == 0
                 {
-                    return Err("failed to position external SDL video surface".to_owned());
+                    return Err("failed to position the Qt child video surface".to_owned());
                 }
                 if !self.shown {
-                    let _ = SetForegroundWindow(self.child);
+                    let _ = SetForegroundWindow(parent);
                     let _ = SetFocus(self.child);
                     self.shown = true;
                 }
@@ -145,15 +187,90 @@ mod platform {
             Ok(())
         }
 
-        pub(crate) fn hide(&mut self) {
+        pub(crate) fn hide_checked(&mut self) -> Result<(), String> {
             unsafe {
                 ShowWindow(self.child, SW_HIDE);
+                if !self.parent.is_null() {
+                    SetLastError(0);
+                    if SetParent(self.child, std::ptr::null_mut()).is_null() && GetLastError() != 0
+                    {
+                        self.shown = false;
+                        return Err(
+                            "failed to detach SDL video surface from the Qt window".to_owned()
+                        );
+                    }
+                    self.parent = std::ptr::null_mut();
+                    SetWindowLongPtrW(
+                        self.child,
+                        GWL_STYLE,
+                        (self.standalone_style & !WS_VISIBLE) as isize,
+                    );
+                    SetWindowLongPtrW(
+                        self.child,
+                        GWL_EXSTYLE,
+                        self.standalone_extended_style as isize,
+                    );
+                    let _ = SetWindowPos(
+                        self.child,
+                        std::ptr::null_mut(),
+                        0,
+                        0,
+                        0,
+                        0,
+                        SWP_FRAMECHANGED | SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER,
+                    );
+                }
             }
             self.shown = false;
+            Ok(())
+        }
+
+        pub(crate) fn hide(&mut self) {
+            let _ = self.hide_checked();
         }
 
         pub(crate) fn refresh_ordering(&mut self) -> Result<(), String> {
             Ok(())
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn embedded_presenter_is_an_enabled_input_capable_child() {
+            let style = child_style(
+                WS_POPUP
+                    | WS_VISIBLE
+                    | WS_DISABLED
+                    | WS_CAPTION
+                    | WS_THICKFRAME
+                    | WS_MINIMIZEBOX
+                    | WS_MAXIMIZEBOX
+                    | WS_SYSMENU,
+            );
+            assert_ne!(style & WS_CHILD, 0);
+            assert_ne!(style & WS_CLIPSIBLINGS, 0);
+            assert_eq!(
+                style
+                    & (WS_POPUP
+                        | WS_VISIBLE
+                        | WS_DISABLED
+                        | WS_CAPTION
+                        | WS_THICKFRAME
+                        | WS_MINIMIZEBOX
+                        | WS_MAXIMIZEBOX
+                        | WS_SYSMENU),
+                0
+            );
+
+            let extended =
+                child_extended_style(WS_EX_APPWINDOW | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT);
+            assert_eq!(
+                extended & (WS_EX_APPWINDOW | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT),
+                0
+            );
         }
     }
 }
@@ -227,7 +344,7 @@ mod platform {
                 RawWindowHandle::Xlib(handle) => handle.window,
                 RawWindowHandle::Wayland(_) => {
                     return Err(
-                        "native Electron surface embedding requires an X11/XWayland session"
+                        "native shell surface embedding requires an X11/XWayland session"
                             .to_owned(),
                     );
                 }

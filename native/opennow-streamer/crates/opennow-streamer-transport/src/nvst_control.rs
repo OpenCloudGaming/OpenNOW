@@ -8,8 +8,9 @@ pub(crate) const IDR_REQUEST_CODE: u16 = 0x302;
 pub(crate) const FRAME_ACK_PAYLOAD_LEN: usize = 102;
 pub(crate) const FRAME_PACING_PAYLOAD_LEN: usize = 28;
 pub(crate) const QOS_REPORT_PAYLOAD_LEN: usize = 52;
-pub(crate) const FRAMES_PER_PACING_REPORT: u32 = 3;
-pub(crate) const DEFAULT_FRAME_TIME_US: u32 = 16_000;
+// The official GFN client keeps the frame-pacing PID target at 16.666 ms even for a
+// 120 FPS encoded stream. This is a renderer/feedback target, not the encoded-frame interval.
+pub(crate) const DEFAULT_FRAME_TIME_US: u32 = 16_666;
 pub(crate) const QOS_REPORT_INTERVAL: Duration = Duration::from_micros(55_556);
 pub(crate) const QOS_WARM_UP: Duration = Duration::from_millis(1_900);
 

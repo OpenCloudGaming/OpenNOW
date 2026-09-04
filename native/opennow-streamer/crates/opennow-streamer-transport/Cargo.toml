@@ -21,6 +21,7 @@ thiserror.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 str0m = { workspace = true, features = ["wincrypto-dimpl"] }
+windows-sys = { version = "0.52", features = ["Win32_Networking_WinSock"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # Keep transport crypto architecture-independent. The Apple/Swift provider's

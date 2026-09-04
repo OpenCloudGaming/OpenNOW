@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://opennow.app/contracts/legacy-open-now-api.schema.json",
+  "title": "OpenNOW Electron bridge parity inventory",
+  "type": "object",
+  "required": ["version", "source", "columns", "operations"],
+  "additionalProperties": false,
+  "properties": {
+    "version": { "const": 1 },
+    "source": { "type": "string", "minLength": 1 },
+    "columns": {
+      "const": ["legacy", "kind", "requestSchema", "resultSchema", "owner", "replacement", "status", "requestFixture", "resultFixture"]
+    },
+    "operations": {
+      "type": "array",
+      "minItems": 109,
+      "maxItems": 109,
+      "items": {
+        "type": "array",
+        "prefixItems": [
+          { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9]*$" },
+          { "enum": ["request", "send", "event"] },
+          { "type": "string", "minLength": 1 },
+          { "type": "string", "minLength": 1 },
+          { "enum": ["core", "qt", "streamer"] },
+          { "type": "string", "minLength": 1 },
+          { "enum": ["ported", "superseded", "pending"] },
+          {},
+          {}
+        ],
+        "minItems": 9,
+        "maxItems": 9
+      }
+    }
+  }
+}

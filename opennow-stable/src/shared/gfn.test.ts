@@ -161,11 +161,11 @@ test("buildNativeStreamerSessionContext forwards requested/finalized streaming f
     {
       toggleStats: "F3",
       togglePointerLock: "F8",
-      toggleFullscreen: "F10",
+      toggleFullscreen: "F11",
       stopStream: "Ctrl+Shift+Q",
       toggleAntiAfk: "Ctrl+Shift+K",
       toggleMicrophone: "Ctrl+Shift+M",
-      screenshot: "F11",
+      screenshot: "Ctrl+F11",
       toggleRecording: "F12",
     },
   );

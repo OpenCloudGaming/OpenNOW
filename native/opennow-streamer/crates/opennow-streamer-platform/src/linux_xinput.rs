@@ -290,20 +290,22 @@ fn process_button(state: &XInputState, detail: libc::c_int, pressed: bool) {
     if pressed {
         match detail {
             4 => {
-                state
-                    .captured_input
-                    .push(CapturedInput::MouseWheel { delta: 120 });
+                state.captured_input.push(CapturedInput::MouseWheel {
+                    delta_x: 0,
+                    delta_y: 120,
+                });
                 return;
             }
             5 => {
-                state
-                    .captured_input
-                    .push(CapturedInput::MouseWheel { delta: -120 });
+                state.captured_input.push(CapturedInput::MouseWheel {
+                    delta_x: 0,
+                    delta_y: -120,
+                });
                 return;
             }
             _ => {}
         }
-    } else if matches!(detail, 4 | 5 | 6 | 7) {
+    } else if matches!(detail, 4..=7) {
         return;
     }
     let button = match detail {

@@ -7,11 +7,12 @@ import type {
   MainToRendererSignalingEvent,
   NativeStreamerSessionContext,
 } from "@shared/gfn";
-import type {
-  NativeStreamerCapabilities,
-  NativeStreamerActiveTransportCapabilities,
-  NativeStreamerEvent,
-  NativeStreamerResponse,
+import {
+  NATIVE_STREAMER_PROTOCOL_VERSION,
+  type NativeStreamerCapabilities,
+  type NativeStreamerActiveTransportCapabilities,
+  type NativeStreamerEvent,
+  type NativeStreamerResponse,
 } from "@shared/nativeStreamer";
 import { NativeStreamerManager } from "./manager";
 import type { NativeStreamerCommandInput } from "./protocol";
@@ -199,7 +200,7 @@ test("input writes tolerate a child exit race but still throw unrelated failures
   internals.child = fake.child;
   internals.activeSessionId = "session";
   internals.capabilities = {
-    protocolVersion: 4,
+    protocolVersion: NATIVE_STREAMER_PROTOCOL_VERSION,
     backend: "native",
     supportsOfferAnswer: true,
     supportsRemoteIce: true,
@@ -228,7 +229,7 @@ test("input writes tolerate a child exit race but still throw unrelated failures
   internals.child = secondFake.child;
   internals.activeSessionId = "session";
   internals.capabilities = {
-    protocolVersion: 4,
+    protocolVersion: NATIVE_STREAMER_PROTOCOL_VERSION,
     backend: "native",
     supportsOfferAnswer: true,
     supportsRemoteIce: true,
@@ -269,7 +270,7 @@ test("input is suppressed until the active transport reports its channels ready"
   internals.child = fake.child;
   internals.activeSessionId = "session";
   internals.capabilities = {
-    protocolVersion: 4,
+    protocolVersion: NATIVE_STREAMER_PROTOCOL_VERSION,
     backend: "native",
     supportsOfferAnswer: true,
     supportsRemoteIce: true,
@@ -331,7 +332,7 @@ test("native input responses preserve success and report SCTP write failures", (
   internals.child = fake.child;
   internals.activeSessionId = "session";
   internals.capabilities = {
-    protocolVersion: 4,
+    protocolVersion: NATIVE_STREAMER_PROTOCOL_VERSION,
     backend: "native",
     supportsOfferAnswer: true,
     supportsRemoteIce: true,

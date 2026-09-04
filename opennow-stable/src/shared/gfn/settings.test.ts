@@ -80,8 +80,8 @@ test("creates fresh platform shortcut collections", () => {
   assert.deepEqual(second.sidebarToggleAliases, ["Ctrl+G", "Ctrl+Shift+G"]);
 });
 
-test("defaults the stats HUD to the bottom-left anchor", () => {
-  assert.equal(createDefaultSettings("linux").statsOverlayPosition, "bottom-left");
+test("defaults the Paper stats HUD to the top-right anchor", () => {
+  assert.equal(createDefaultSettings("linux").statsOverlayPosition, "top-right");
 });
 
 test("uses recording defaults that preserve live stream performance", () => {

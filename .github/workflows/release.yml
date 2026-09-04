@@ -391,7 +391,13 @@ jobs:
           if (-not $compiler) {
             throw "Visual Studio ARM64 compiler is unavailable after installation."
           }
+          $linker = Join-Path $compiler.Directory.FullName "link.exe"
+          if (-not (Test-Path $linker)) {
+            throw "Visual Studio ARM64 linker is unavailable after installation."
+          }
+          "CARGO_TARGET_AARCH64_PC_WINDOWS_MSVC_LINKER=$linker" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           Write-Host "Using Windows ARM64 compiler: $($compiler.FullName)"
+          Write-Host "Using Windows ARM64 linker: $linker"
 
       - name: Setup Windows ARM64 build tools
         if: matrix.native_target == 'aarch64-pc-windows-msvc'
@@ -636,6 +642,8 @@ jobs:
 
       - name: Commit and push
         shell: bash
+        env:
+          TARGET_BRANCH: ${{ github.event_name == 'workflow_dispatch' && 'dev' || 'main' }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -645,4 +653,4 @@ jobs:
             exit 0
           fi
           git commit -m "chore(release): prepare v${{ needs.preflight.outputs.version }}"
-          git push origin HEAD:${{ steps.branch.outputs.branch }}
+          git push origin "HEAD:${TARGET_BRANCH}"

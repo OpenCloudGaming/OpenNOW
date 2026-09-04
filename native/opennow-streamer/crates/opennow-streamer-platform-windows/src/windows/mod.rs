@@ -1,22 +1,31 @@
 mod audio;
 mod decoder;
+mod embedded;
 mod graphics;
+
+pub use embedded::{
+    AdoptedD3d11Context, D3d11Frame, D3d11FrameProducer, D3d11FrameSubmitter, D3d11RecordedFrame,
+    D3d11TextureFormat,
+};
 
 use std::collections::VecDeque;
 use std::sync::{Arc, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use ::windows::Win32::Foundation::FreeLibrary;
 use ::windows::Win32::Media::MediaFoundation::{MF_VERSION, MFSTARTUP_LITE, MFShutdown, MFStartup};
 use ::windows::Win32::Media::{TIMERR_NOERROR, timeBeginPeriod, timeEndPeriod};
 use ::windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx, CoUninitialize};
+use ::windows::Win32::System::LibraryLoader::{LOAD_LIBRARY_SEARCH_SYSTEM32, LoadLibraryExW};
 use ::windows::Win32::System::Threading::{
     GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_ABOVE_NORMAL,
 };
+use ::windows::core::w;
 
 use crate::{
     ADAPTIVE_VIDEO_QUEUE_CAPACITY, BackendConfig, BackendError, BackendEvent, CapabilityProbe,
-    Control, LifecycleState, Shared, Subsystem, VideoCodec, WindowsGraphicsApi,
+    Control, LifecycleState, Shared, Subsystem, VideoCodec, WindowsDecoderMode, WindowsGraphicsApi,
 };
 
 use self::audio::AudioRenderer;
@@ -246,8 +255,17 @@ impl Drop for LowLatencyThreadGuard {
 
 struct MediaRuntime;
 
+fn ensure_media_foundation_available() -> Result<(), String> {
+    unsafe {
+        let module = LoadLibraryExW(w!("mfplat.dll"), None, LOAD_LIBRARY_SEARCH_SYSTEM32)
+            .map_err(|error| format!("Media Foundation is unavailable: {error}"))?;
+        FreeLibrary(module).map_err(|error| format!("FreeLibrary(mfplat.dll): {error}"))
+    }
+}
+
 impl MediaRuntime {
     fn initialize() -> Result<Self, BackendError> {
+        ensure_media_foundation_available().map_err(BackendError::Startup)?;
         unsafe {
             CoInitializeEx(None, COINIT_MULTITHREADED)
                 .ok()
@@ -279,6 +297,9 @@ pub(super) fn probe(api: WindowsGraphicsApi) -> CapabilityProbe {
                 h264_hardware_decode: false,
                 h265_hardware_decode: false,
                 av1_hardware_decode: false,
+                h264_software_decode: false,
+                h265_software_decode: false,
+                av1_software_decode: false,
                 d3d11_presentation: false,
                 wasapi_render: false,
                 reason: Some(error.to_string()),
@@ -291,24 +312,51 @@ pub(super) fn probe(api: WindowsGraphicsApi) -> CapabilityProbe {
         .as_ref()
         .map_err(Clone::clone)
         .and_then(|graphics| {
-            Decoder::probe(graphics, VideoCodec::H264).map_err(|error| error.to_string())
+            Decoder::probe(graphics, VideoCodec::H264, WindowsDecoderMode::Hardware)
+                .map_err(|error| error.to_string())
         });
     let h265_decoder = graphics
         .as_ref()
         .map_err(Clone::clone)
         .and_then(|graphics| {
-            Decoder::probe(graphics, VideoCodec::H265).map_err(|error| error.to_string())
+            Decoder::probe(graphics, VideoCodec::H265, WindowsDecoderMode::Hardware)
+                .map_err(|error| error.to_string())
         });
     let av1_decoder = graphics
         .as_ref()
         .map_err(Clone::clone)
         .and_then(|graphics| {
-            Decoder::probe(graphics, VideoCodec::Av1).map_err(|error| error.to_string())
+            Decoder::probe(graphics, VideoCodec::Av1, WindowsDecoderMode::Hardware)
+                .map_err(|error| error.to_string())
+        });
+    let h264_software_decoder = graphics
+        .as_ref()
+        .map_err(Clone::clone)
+        .and_then(|graphics| {
+            Decoder::probe(graphics, VideoCodec::H264, WindowsDecoderMode::Software)
+                .map_err(|error| error.to_string())
+        });
+    let h265_software_decoder = graphics
+        .as_ref()
+        .map_err(Clone::clone)
+        .and_then(|graphics| {
+            Decoder::probe(graphics, VideoCodec::H265, WindowsDecoderMode::Software)
+                .map_err(|error| error.to_string())
+        });
+    let av1_software_decoder = graphics
+        .as_ref()
+        .map_err(Clone::clone)
+        .and_then(|graphics| {
+            Decoder::probe(graphics, VideoCodec::Av1, WindowsDecoderMode::Software)
+                .map_err(|error| error.to_string())
         });
     let audio = AudioRenderer::probe().map_err(|error| error.to_string());
     let h264_hardware_decode = h264_decoder.is_ok();
     let h265_hardware_decode = h265_decoder.is_ok();
     let av1_hardware_decode = av1_decoder.is_ok();
+    let h264_software_decode = h264_software_decoder.is_ok();
+    let h265_software_decode = h265_software_decoder.is_ok();
+    let av1_software_decode = av1_software_decoder.is_ok();
     let d3d11_presentation = graphics.is_ok();
     let wasapi_render = audio.is_ok();
     let mut probe = CapabilityProbe {
@@ -316,6 +364,9 @@ pub(super) fn probe(api: WindowsGraphicsApi) -> CapabilityProbe {
         h264_hardware_decode,
         h265_hardware_decode,
         av1_hardware_decode,
+        h264_software_decode,
+        h265_software_decode,
+        av1_software_decode,
         d3d11_presentation,
         wasapi_render,
         reason: None,
@@ -339,6 +390,7 @@ pub(super) fn probe(api: WindowsGraphicsApi) -> CapabilityProbe {
 
 pub(super) fn spawn(
     api: WindowsGraphicsApi,
+    decoder_mode: WindowsDecoderMode,
     config: BackendConfig,
     shared: Arc<Shared>,
     controls: mpsc::Receiver<Control>,
@@ -348,7 +400,7 @@ pub(super) fn spawn(
     let worker = thread::Builder::new()
         .name("opennow-windows-media".to_owned())
         .spawn(move || {
-            let runtime = match Worker::new(api, config, worker_shared, controls) {
+            let runtime = match Worker::new(api, decoder_mode, config, worker_shared, controls) {
                 Ok(worker) => {
                     let _ = ready_sender.send(Ok(()));
                     worker
@@ -379,6 +431,7 @@ pub(super) fn spawn(
 
 struct Worker {
     api: WindowsGraphicsApi,
+    decoder_mode: WindowsDecoderMode,
     config: BackendConfig,
     shared: Arc<Shared>,
     controls: mpsc::Receiver<Control>,
@@ -401,6 +454,7 @@ struct AudioRecovery {
 impl Worker {
     fn new(
         api: WindowsGraphicsApi,
+        decoder_mode: WindowsDecoderMode,
         config: BackendConfig,
         shared: Arc<Shared>,
         controls: mpsc::Receiver<Control>,
@@ -408,14 +462,23 @@ impl Worker {
         let runtime = MediaRuntime::initialize()?;
         let graphics = Graphics::new(api, config.surface, config.video)
             .map_err(|error| BackendError::Startup(format!("{api:?} presentation: {error}")))?;
-        let decoder = Decoder::new(&graphics, config.video)
-            .map_err(|error| BackendError::Startup(format!("Media Foundation H.264: {error}")))?;
+        let decoder = Decoder::new(&graphics, config.video, decoder_mode).map_err(|error| {
+            BackendError::Startup(format!(
+                "Media Foundation {} {} decoder: {error}",
+                match decoder_mode {
+                    WindowsDecoderMode::Hardware => "hardware",
+                    WindowsDecoderMode::Software => "software",
+                },
+                config.video.codec.label()
+            ))
+        })?;
         let audio = AudioRenderer::new(config.audio)
             .map_err(|error| BackendError::Startup(format!("WASAPI: {error}")))?;
         let presentation_clock = PresentationClock::new(config.video.frame_duration_100ns());
         shared.set_state(LifecycleState::Running);
         Ok(Self {
             api,
+            decoder_mode,
             config,
             shared,
             controls,
@@ -569,6 +632,18 @@ impl Worker {
             while self.decoder.wants_input() {
                 if let Some(frame) = self.shared.video.try_pop() {
                     did_work = true;
+                    if frame.reset_decoder
+                        && let Err(error) = self.reset_decoder_for_keyframe()
+                    {
+                        if let Err(error) = self.rebuild_video(Subsystem::VideoDecode, error) {
+                            self.fail(error);
+                            return;
+                        }
+                        // rebuild_video deliberately requests another clean
+                        // keyframe; do not feed this one to a decoder whose
+                        // recovery path failed midway.
+                        continue;
+                    }
                     if let Err(error) = self.decoder.submit(frame) {
                         if let Err(error) = self.rebuild_video(Subsystem::VideoDecode, error) {
                             self.fail(error);
@@ -719,7 +794,8 @@ impl Worker {
                 .unwrap_or_else(|error| error.into_inner());
             match Graphics::new(self.api, self.config.surface, self.config.video).and_then(
                 |graphics| {
-                    Decoder::new(&graphics, self.config.video).map(|decoder| (graphics, decoder))
+                    Decoder::new(&graphics, self.config.video, self.decoder_mode)
+                        .map(|decoder| (graphics, decoder))
                 },
             ) {
                 Ok((graphics, decoder)) => {
@@ -754,7 +830,7 @@ impl Worker {
         self.presentation_clock
             .reset(self.config.video.frame_duration_100ns());
         self.first_frame_presented = false;
-        match Decoder::new(&self.graphics, self.config.video) {
+        match Decoder::new(&self.graphics, self.config.video, self.decoder_mode) {
             Ok(decoder) => {
                 self.decoder = decoder;
                 self.graphics
@@ -768,6 +844,20 @@ impl Worker {
             }
             Err(error) => self.recover_video(subsystem, format!("{message}: {error}")),
         }
+    }
+
+    fn reset_decoder_for_keyframe(&mut self) -> Result<(), String> {
+        self.decoder.stop();
+        self.decoded_video.clear();
+        self.presentation_clock
+            .reset(self.config.video.frame_duration_100ns());
+        self.first_frame_presented = false;
+        self.decoder = Decoder::new(&self.graphics, self.config.video, self.decoder_mode)
+            .map_err(|error| format!("recovery-keyframe decoder reset failed: {error}"))?;
+        self.graphics
+            .reconfigure_video(self.config.video)
+            .map_err(|error| format!("recovery-keyframe presenter reset failed: {error}"))?;
+        Ok(())
     }
 
     fn begin_audio_recovery(&mut self, message: String) {

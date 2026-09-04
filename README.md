@@ -62,7 +62,12 @@
 
 ## Overview
 
-OpenNOW is a community-built Electron app for playing GeForce NOW from an open-source desktop client. The active desktop implementation lives in [`opennow-stable/`](opennow-stable).
+OpenNOW is a community-built desktop client for playing GeForce NOW. The shipping
+Electron implementation remains in [`opennow-stable/`](opennow-stable) while its
+controller-first Qt Quick replacement is developed in [`opennow-qt/`](opennow-qt).
+The complete parity and safe-removal gates are tracked in
+[`docs/qt-migration.md`](docs/qt-migration.md); Electron stays supported until
+those gates pass.
 
 ## Downloads
 
@@ -104,6 +109,8 @@ This repository intentionally does not carry duplicate long-form product, setup,
 ```text
 .
 ├── opennow-stable/          Active Electron desktop client
+├── opennow-qt/              Qt Quick controller-first replacement shell
+├── native/opennow-core/     Shell-neutral Rust application core
 ├── native/opennow-streamer/ Native Rust streaming infrastructure
 ├── locales/                 Crowdin-managed localization files
 ├── .github/                 Workflows, templates, and contributor metadata

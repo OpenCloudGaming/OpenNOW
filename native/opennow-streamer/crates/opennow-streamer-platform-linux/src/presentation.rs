@@ -168,10 +168,8 @@ pub struct VulkanPresenter {
     pipeline: vk::Pipeline,
     descriptor_pool: vk::DescriptorPool,
     descriptor_set: vk::DescriptorSet,
-    overlay_descriptor_set: vk::DescriptorSet,
     sampler: vk::Sampler,
     nv12_images: Option<Nv12Images>,
-    overlay_images: Option<Nv12Images>,
     dmabuf_import_supported: bool,
     dmabuf_import_reported: bool,
     imported_dmabufs: HashMap<DmaBufKey, ImportedDmaBufImage>,
@@ -354,10 +352,8 @@ impl VulkanPresenter {
             pipeline: vk::Pipeline::null(),
             descriptor_pool: vk::DescriptorPool::null(),
             descriptor_set: vk::DescriptorSet::null(),
-            overlay_descriptor_set: vk::DescriptorSet::null(),
             sampler: vk::Sampler::null(),
             nv12_images: None,
-            overlay_images: None,
             dmabuf_import_supported,
             dmabuf_import_reported: false,
             imported_dmabufs: HashMap::new(),
@@ -498,40 +494,6 @@ impl VulkanPresenter {
             }
             None
         };
-        let overlay_upload = if let Some(overlay) = frame.overlay.as_ref() {
-            self.ensure_overlay_images(overlay.width, overlay.height)?;
-            let luma_size = overlay.width as usize * overlay.height as usize;
-            let upload_size = luma_size + luma_size / 2;
-            self.ensure_staging(upload_size as vk::DeviceSize)?;
-            let mapped = unsafe {
-                self.device.map_memory(
-                    self.staging_memory,
-                    0,
-                    upload_size as vk::DeviceSize,
-                    vk::MemoryMapFlags::empty(),
-                )
-            }
-            .map_err(|error| vk_error("map overlay staging memory", error))?;
-            unsafe {
-                copy_plane_rows(
-                    &overlay.luma,
-                    mapped.cast(),
-                    overlay.width as usize,
-                    overlay.height as usize,
-                );
-                copy_plane_rows(
-                    &overlay.chroma,
-                    mapped.cast::<u8>().add(luma_size),
-                    overlay.width as usize,
-                    overlay.height as usize / 2,
-                );
-                self.device.unmap_memory(self.staging_memory);
-            }
-            Some((luma_size, overlay))
-        } else {
-            None
-        };
-
         let (image_index, acquire_suboptimal) = match unsafe {
             self.swapchain_loader.acquire_next_image(
                 self.swapchain,
@@ -727,98 +689,6 @@ impl VulkanPresenter {
                     &to_sample,
                 );
             }
-            if let Some((overlay_luma_size, overlay)) = overlay_upload {
-                let images = self.overlay_images.as_ref().ok_or_else(|| {
-                    Error::backend(Subsystem::Vulkan, "overlay GPU images are unavailable")
-                })?;
-                let source_stage = if images.initialized {
-                    vk::PipelineStageFlags::FRAGMENT_SHADER
-                } else {
-                    vk::PipelineStageFlags::TOP_OF_PIPE
-                };
-                let old_layout = if images.initialized {
-                    vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL
-                } else {
-                    vk::ImageLayout::UNDEFINED
-                };
-                let to_transfer = [images.luma.image, images.chroma.image].map(|image| {
-                    vk::ImageMemoryBarrier::default()
-                        .old_layout(old_layout)
-                        .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-                        .src_access_mask(if images.initialized {
-                            vk::AccessFlags::SHADER_READ
-                        } else {
-                            vk::AccessFlags::empty()
-                        })
-                        .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE)
-                        .image(image)
-                        .subresource_range(color_range())
-                });
-                self.device.cmd_pipeline_barrier(
-                    self.command_buffer,
-                    source_stage,
-                    vk::PipelineStageFlags::TRANSFER,
-                    vk::DependencyFlags::empty(),
-                    &[],
-                    &[],
-                    &to_transfer,
-                );
-                let luma_copy = vk::BufferImageCopy::default()
-                    .image_subresource(
-                        vk::ImageSubresourceLayers::default()
-                            .aspect_mask(vk::ImageAspectFlags::COLOR)
-                            .layer_count(1),
-                    )
-                    .image_extent(vk::Extent3D {
-                        width: overlay.width,
-                        height: overlay.height,
-                        depth: 1,
-                    });
-                let chroma_copy = vk::BufferImageCopy::default()
-                    .buffer_offset(overlay_luma_size as vk::DeviceSize)
-                    .image_subresource(
-                        vk::ImageSubresourceLayers::default()
-                            .aspect_mask(vk::ImageAspectFlags::COLOR)
-                            .layer_count(1),
-                    )
-                    .image_extent(vk::Extent3D {
-                        width: overlay.width / 2,
-                        height: overlay.height / 2,
-                        depth: 1,
-                    });
-                self.device.cmd_copy_buffer_to_image(
-                    self.command_buffer,
-                    self.staging_buffer,
-                    images.luma.image,
-                    vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                    &[luma_copy],
-                );
-                self.device.cmd_copy_buffer_to_image(
-                    self.command_buffer,
-                    self.staging_buffer,
-                    images.chroma.image,
-                    vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                    &[chroma_copy],
-                );
-                let to_sample = [images.luma.image, images.chroma.image].map(|image| {
-                    vk::ImageMemoryBarrier::default()
-                        .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-                        .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                        .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
-                        .dst_access_mask(vk::AccessFlags::SHADER_READ)
-                        .image(image)
-                        .subresource_range(color_range())
-                });
-                self.device.cmd_pipeline_barrier(
-                    self.command_buffer,
-                    vk::PipelineStageFlags::TRANSFER,
-                    vk::PipelineStageFlags::FRAGMENT_SHADER,
-                    vk::DependencyFlags::empty(),
-                    &[],
-                    &[],
-                    &to_sample,
-                );
-            }
             let clear_values = [vk::ClearValue {
                 color: vk::ClearColorValue {
                     float32: [0.0, 0.0, 0.0, 1.0],
@@ -869,68 +739,6 @@ impl VulkanPresenter {
                 constants,
             );
             self.device.cmd_draw(self.command_buffer, 3, 1, 0, 0);
-            if let Some((_, overlay)) = overlay_upload {
-                let (fit_x, fit_y, fit_width, fit_height) = aspect_fit_extent(
-                    frame.format.width,
-                    frame.format.height,
-                    self.extent.width,
-                    self.extent.height,
-                );
-                let x = fit_x
-                    + (u64::from(overlay.origin_x) * u64::from(fit_width)
-                        / u64::from(frame.format.width)) as u32;
-                let y = fit_y
-                    + (u64::from(overlay.origin_y) * u64::from(fit_height)
-                        / u64::from(frame.format.height)) as u32;
-                let width = (u64::from(overlay.width) * u64::from(fit_width)
-                    / u64::from(frame.format.width)) as u32;
-                let height = (u64::from(overlay.height) * u64::from(fit_height)
-                    / u64::from(frame.format.height)) as u32;
-                let overlay_viewport = vk::Viewport::default()
-                    .x(x as f32)
-                    .y(y as f32)
-                    .width(width.max(1) as f32)
-                    .height(height.max(1) as f32)
-                    .max_depth(1.0);
-                let overlay_scissor = vk::Rect2D::default()
-                    .offset(vk::Offset2D {
-                        x: x as i32,
-                        y: y as i32,
-                    })
-                    .extent(vk::Extent2D {
-                        width: width.max(1).min(self.extent.width.saturating_sub(x)),
-                        height: height.max(1).min(self.extent.height.saturating_sub(y)),
-                    });
-                self.device
-                    .cmd_set_viewport(self.command_buffer, 0, &[overlay_viewport]);
-                self.device
-                    .cmd_set_scissor(self.command_buffer, 0, &[overlay_scissor]);
-                self.device.cmd_bind_descriptor_sets(
-                    self.command_buffer,
-                    vk::PipelineBindPoint::GRAPHICS,
-                    self.pipeline_layout,
-                    0,
-                    &[self.overlay_descriptor_set],
-                    &[],
-                );
-                let constants = ConversionConstants {
-                    texture_scale: [1.0, 1.0],
-                    color_matrix: 1,
-                    full_range: 0,
-                };
-                let constants = std::slice::from_raw_parts(
-                    (&constants as *const ConversionConstants).cast::<u8>(),
-                    std::mem::size_of::<ConversionConstants>(),
-                );
-                self.device.cmd_push_constants(
-                    self.command_buffer,
-                    self.pipeline_layout,
-                    vk::ShaderStageFlags::FRAGMENT,
-                    0,
-                    constants,
-                );
-                self.device.cmd_draw(self.command_buffer, 3, 1, 0, 0);
-            }
             self.device.cmd_end_render_pass(self.command_buffer);
             if let Some(vulkan) = direct_vulkan.as_ref() {
                 let release = vulkan
@@ -991,11 +799,6 @@ impl VulkanPresenter {
                 );
             } else if let Some(nv12) = self.nv12_images.as_mut() {
                 nv12.initialized = true;
-            }
-            if overlay_upload.is_some()
-                && let Some(images) = self.overlay_images.as_mut()
-            {
-                images.initialized = true;
             }
             if let Err(error) = self.device.end_command_buffer(self.command_buffer) {
                 self.needs_reconfigure = true;
@@ -1304,20 +1107,19 @@ impl VulkanPresenter {
             .map_err(|error| vk_error("create NV12 sampler", error))?;
         let pool_sizes = [vk::DescriptorPoolSize::default()
             .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-            .descriptor_count(4)];
+            .descriptor_count(2)];
         let pool_info = vk::DescriptorPoolCreateInfo::default()
-            .max_sets(2)
+            .max_sets(1)
             .pool_sizes(&pool_sizes);
         self.descriptor_pool = unsafe { self.device.create_descriptor_pool(&pool_info, None) }
             .map_err(|error| vk_error("create NV12 descriptor pool", error))?;
-        let overlay_layouts = [self.descriptor_set_layout, self.descriptor_set_layout];
+        let layouts = [self.descriptor_set_layout];
         let allocate_info = vk::DescriptorSetAllocateInfo::default()
             .descriptor_pool(self.descriptor_pool)
-            .set_layouts(&overlay_layouts);
+            .set_layouts(&layouts);
         let allocated = unsafe { self.device.allocate_descriptor_sets(&allocate_info) }
             .map_err(|error| vk_error("allocate NV12 descriptor sets", error))?;
         self.descriptor_set = allocated[0];
-        self.overlay_descriptor_set = allocated[1];
 
         for image in &self.images {
             let create = vk::ImageViewCreateInfo::default()
@@ -1343,13 +1145,6 @@ impl VulkanPresenter {
         }
         if self.nv12_images.is_some() {
             self.update_nv12_descriptors();
-        }
-        if let Some(images) = self.overlay_images.as_ref() {
-            self.update_descriptor_set(
-                self.overlay_descriptor_set,
-                images.luma.view,
-                images.chroma.view,
-            );
         }
         Ok(())
     }
@@ -1563,60 +1358,6 @@ impl VulkanPresenter {
         }
     }
 
-    fn ensure_overlay_images(&mut self, width: u32, height: u32) -> Result<()> {
-        if self
-            .overlay_images
-            .as_ref()
-            .is_some_and(|images| images.width == width && images.height == height)
-        {
-            return Ok(());
-        }
-        self.destroy_overlay_images();
-        let luma = create_sampled_image(
-            &self.instance,
-            self.physical_device,
-            &self.device,
-            width,
-            height,
-            vk::Format::R8_UNORM,
-        )?;
-        let chroma = match create_sampled_image(
-            &self.instance,
-            self.physical_device,
-            &self.device,
-            width / 2,
-            height / 2,
-            vk::Format::R8G8_UNORM,
-        ) {
-            Ok(image) => image,
-            Err(error) => {
-                destroy_gpu_image(&self.device, luma);
-                return Err(error);
-            }
-        };
-        self.overlay_images = Some(Nv12Images {
-            width,
-            height,
-            luma,
-            chroma,
-            initialized: false,
-        });
-        let images = self.overlay_images.as_ref().expect("overlay images set");
-        self.update_descriptor_set(
-            self.overlay_descriptor_set,
-            images.luma.view,
-            images.chroma.view,
-        );
-        Ok(())
-    }
-
-    fn destroy_overlay_images(&mut self) {
-        if let Some(images) = self.overlay_images.take() {
-            destroy_gpu_image(&self.device, images.chroma);
-            destroy_gpu_image(&self.device, images.luma);
-        }
-    }
-
     fn recreate_command_resources(&mut self) -> Result<()> {
         unsafe {
             if self.in_flight != vk::Fence::null() {
@@ -1664,7 +1405,6 @@ impl VulkanPresenter {
                     .destroy_descriptor_pool(self.descriptor_pool, None);
                 self.descriptor_pool = vk::DescriptorPool::null();
                 self.descriptor_set = vk::DescriptorSet::null();
-                self.overlay_descriptor_set = vk::DescriptorSet::null();
             }
             if self.descriptor_set_layout != vk::DescriptorSetLayout::null() {
                 self.device
@@ -1848,7 +1588,7 @@ fn fd_identity(fd: RawFd) -> Result<(u64, u64)> {
         ));
     }
     let metadata = unsafe { metadata.assume_init() };
-    Ok((metadata.st_dev as u64, metadata.st_ino as u64))
+    Ok((metadata.st_dev, metadata.st_ino))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2182,7 +1922,6 @@ impl Drop for VulkanPresenter {
             }
         }
         self.destroy_imported_dmabufs();
-        self.destroy_overlay_images();
         self.destroy_nv12_images();
         unsafe {
             if self.staging_buffer != vk::Buffer::null() {
@@ -2582,7 +2321,6 @@ mod tests {
             ],
             dmabuf: None,
             vulkan: None,
-            overlay: None,
             timestamp_us: 0,
         };
         let constants = conversion_constants(

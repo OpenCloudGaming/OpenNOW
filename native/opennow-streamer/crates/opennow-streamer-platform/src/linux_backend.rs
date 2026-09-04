@@ -138,6 +138,7 @@ fn select_video_path_for(
     let ffmpeg = capabilities.backend_supports_all_codecs("ffmpeg-software");
     let vaapi = capabilities.decoder("vaapi-h264").available;
     let v4l2 = capabilities.decoder("v4l2-h264").available;
+    let hardware = vulkan || cuda || vaapi || v4l2;
 
     let preference = match requested.as_str() {
         "vulkan" if vulkan => Some(DecoderPreference::VulkanOnly),
@@ -145,6 +146,7 @@ fn select_video_path_for(
         "vaapi" if vaapi => Some(DecoderPreference::VaApiOnly),
         "v4l2" if v4l2 => Some(DecoderPreference::V4l2Only),
         "software" | "ffmpeg" if ffmpeg => Some(DecoderPreference::SoftwareOnly),
+        "hardware" if hardware => Some(DecoderPreference::HardwareOnly),
         "auto" if vulkan || cuda || vaapi || v4l2 || ffmpeg => Some(DecoderPreference::Automatic),
         _ => None,
     };
@@ -167,6 +169,13 @@ fn select_video_path_for(
         "vaapi" => capabilities.decoder("vaapi-h264").detail,
         "v4l2" => capabilities.decoder("v4l2-h264").detail,
         "software" | "ffmpeg" => backend_unavailable_reason(capabilities, "ffmpeg-software"),
+        "hardware" => format!(
+            "no Linux hardware decoder is available (Vulkan Video: {}; CUDA/NVDEC: {}; VA-API: {}; V4L2: {})",
+            backend_unavailable_reason(capabilities, "vulkan-video"),
+            backend_unavailable_reason(capabilities, "cuda"),
+            capabilities.decoder("vaapi-h264").detail,
+            capabilities.decoder("v4l2-h264").detail,
+        ),
         "auto" => format!(
             "no Linux decoder is available (Vulkan Video: {}; CUDA/NVDEC: {}; FFmpeg software: {})",
             backend_unavailable_reason(capabilities, "vulkan-video"),
@@ -382,6 +391,10 @@ mod tests {
         assert_eq!(
             select_video_path_for(Some("software"), &available, "x11").path,
             LinuxVideoPath::Hardware(DecoderPreference::SoftwareOnly)
+        );
+        assert_eq!(
+            select_video_path_for(Some("hardware"), &available, "x11").path,
+            LinuxVideoPath::Hardware(DecoderPreference::HardwareOnly)
         );
     }
 

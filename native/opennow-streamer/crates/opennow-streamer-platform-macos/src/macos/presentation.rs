@@ -2,7 +2,7 @@ use std::collections::VecDeque;
 use std::ffi::c_void;
 use std::ptr::{self, NonNull};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex, RwLock};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
@@ -19,15 +19,14 @@ use objc2_core_video::{
 use objc2_foundation::NSString;
 use objc2_metal::{
     MTLClearColor, MTLCommandBuffer, MTLCommandBufferStatus, MTLCommandEncoder, MTLCommandQueue,
-    MTLCreateSystemDefaultDevice, MTLDevice, MTLDrawable, MTLLibrary, MTLLoadAction, MTLOrigin,
-    MTLPixelFormat, MTLPrimitiveType, MTLRegion, MTLRenderCommandEncoder, MTLRenderPassDescriptor,
-    MTLRenderPipelineDescriptor, MTLRenderPipelineState, MTLSize, MTLStoreAction, MTLTexture,
-    MTLTextureDescriptor, MTLTextureUsage, MTLViewport,
+    MTLCreateSystemDefaultDevice, MTLDevice, MTLDrawable, MTLLibrary, MTLLoadAction,
+    MTLPixelFormat, MTLPrimitiveType, MTLRenderCommandEncoder, MTLRenderPassDescriptor,
+    MTLRenderPipelineDescriptor, MTLRenderPipelineState, MTLStoreAction, MTLTexture, MTLViewport,
 };
 use objc2_quartz_core::{CAMetalDrawable, CAMetalLayer};
 
 use crate::failure::{BackendSubsystem, FailureReporter};
-use crate::format::{GpuOverlayFrame, GpuOverlayPlacement, VideoColorSpace};
+use crate::format::VideoColorSpace;
 use crate::queue::{BoundedQueue, TryPopResult};
 
 use super::video::DecodedFrame;
@@ -40,12 +39,6 @@ using namespace metal;
 struct VertexOut {
     float4 position [[position]];
     float2 texcoord;
-};
-
-struct OverlayUniforms {
-    float4 bounds;
-    uint enabled;
-    uint3 padding;
 };
 
 vertex VertexOut video_vertex(uint vertex_id [[vertex_id]]) {
@@ -61,9 +54,7 @@ fragment float4 video_fragment(
     VertexOut in [[stage_in]],
     texture2d<float> luma [[texture(0)]],
     texture2d<float> chroma [[texture(1)]],
-    texture2d<float> overlay [[texture(2)]],
-    constant uint &color_space [[buffer(0)]],
-    constant OverlayUniforms &overlay_uniforms [[buffer(1)]]) {
+    constant uint &color_space [[buffer(0)]]) {
     constexpr sampler linear_sampler(coord::normalized, address::clamp_to_edge, filter::linear);
     float y = (luma.sample(linear_sampler, in.texcoord).r - (16.0 / 255.0)) * (255.0 / 219.0);
     float2 cbcr = chroma.sample(linear_sampler, in.texcoord).rg - float2(0.5);
@@ -79,28 +70,11 @@ fragment float4 video_fragment(
             y - 0.213249 * cbcr.x - 0.532909 * cbcr.y,
             y + 2.112402 * cbcr.x);
     }
-    float4 video = float4(saturate(rgb), 1.0);
-    float2 position = in.position.xy;
-    float4 bounds = overlay_uniforms.bounds;
-    if (overlay_uniforms.enabled != 0 &&
-        position.x >= bounds.x && position.y >= bounds.y &&
-        position.x < bounds.x + bounds.z && position.y < bounds.y + bounds.w) {
-        constexpr sampler overlay_sampler(coord::normalized, address::clamp_to_edge, filter::linear);
-        float2 overlay_coord = (position - bounds.xy) / bounds.zw;
-        float4 diagnostic = overlay.sample(overlay_sampler, overlay_coord);
-        return mix(video, diagnostic, diagnostic.a);
-    }
-    return video;
+    return float4(saturate(rgb), 1.0);
 }
 "#;
 
-#[repr(C)]
-#[derive(Clone, Copy, Default)]
-struct OverlayUniforms {
-    bounds: [f32; 4],
-    enabled: u32,
-    padding: [u32; 3],
-}
+type PresentedHandler = RcBlock<dyn Fn(NonNull<ProtocolObject<dyn MTLDrawable>>)>;
 
 pub(super) struct PresenterHandle {
     queue: Arc<BoundedQueue<DecodedFrame>>,
@@ -116,9 +90,8 @@ impl PresenterHandle {
         queue: Arc<BoundedQueue<DecodedFrame>>,
         counters: Arc<Counters>,
         failures: Arc<FailureReporter>,
-        overlay: Arc<RwLock<Option<Arc<GpuOverlayFrame>>>>,
     ) -> Result<Self, BackendError> {
-        let mut presenter = MetalPresenter::new(layer, overlay, Arc::clone(&counters))?;
+        let mut presenter = MetalPresenter::new(layer, Arc::clone(&counters))?;
         let telemetry = Arc::clone(&presenter.telemetry);
         let display_clock = DisplayClock::start()?;
         let worker_queue = Arc::clone(&queue);
@@ -403,16 +376,14 @@ struct PendingFrame {
     _chroma_texture: Retained<ProtocolObject<dyn MTLTexture>>,
 }
 
+unsafe impl Send for PendingFrame {}
+
 struct MetalPresenter {
     layer: Retained<CAMetalLayer>,
-    device: Retained<ProtocolObject<dyn MTLDevice>>,
+    _device: Retained<ProtocolObject<dyn MTLDevice>>,
     command_queue: Retained<ProtocolObject<dyn MTLCommandQueue>>,
     pipeline: Retained<ProtocolObject<dyn MTLRenderPipelineState>>,
     texture_cache: CFRetained<CVMetalTextureCache>,
-    overlay: Arc<RwLock<Option<Arc<GpuOverlayFrame>>>>,
-    uploaded_overlay: Option<UploadedOverlay>,
-    overlay_texture_pool: Vec<OverlayTextureSlot>,
-    next_overlay_texture: usize,
     pending: VecDeque<PendingFrame>,
     telemetry: Arc<PresentationTelemetry>,
     zero_copy_confirmed: bool,
@@ -499,27 +470,12 @@ impl PresentationTelemetry {
     }
 }
 
-struct UploadedOverlay {
-    source: Arc<GpuOverlayFrame>,
-    texture: Retained<ProtocolObject<dyn MTLTexture>>,
-}
-
-struct OverlayTextureSlot {
-    width: u32,
-    height: u32,
-    texture: Retained<ProtocolObject<dyn MTLTexture>>,
-}
-
 // Metal objects are thread-safe. AppKit attaches and detaches the layer on the main thread; after
 // construction this worker only uses CAMetalLayer's thread-safe drawable API.
 unsafe impl Send for MetalPresenter {}
 
 impl MetalPresenter {
-    fn new(
-        layer: Retained<CAMetalLayer>,
-        overlay: Arc<RwLock<Option<Arc<GpuOverlayFrame>>>>,
-        counters: Arc<Counters>,
-    ) -> Result<Self, BackendError> {
+    fn new(layer: Retained<CAMetalLayer>, counters: Arc<Counters>) -> Result<Self, BackendError> {
         let device = MTLCreateSystemDefaultDevice()
             .ok_or_else(|| BackendError::Metal("Metal is unavailable on this Mac".into()))?;
         layer.setDevice(Some(&device));
@@ -576,14 +532,10 @@ impl MetalPresenter {
         let texture_cache = unsafe { CFRetained::from_raw(cache_ptr) };
         Ok(Self {
             layer,
-            device,
+            _device: device,
             command_queue,
             pipeline,
             texture_cache,
-            overlay,
-            uploaded_overlay: None,
-            overlay_texture_pool: Vec::with_capacity(2),
-            next_overlay_texture: 0,
             pending: VecDeque::with_capacity(3),
             telemetry: Arc::new(PresentationTelemetry {
                 counters,
@@ -685,26 +637,6 @@ impl MetalPresenter {
             destination_width,
             destination_height,
         );
-        let overlay = self.overlay_texture()?;
-        let overlay_uniforms = overlay
-            .as_ref()
-            .map_or_else(OverlayUniforms::default, |overlay| {
-                overlay_uniforms(&overlay.source, viewport)
-            });
-        unsafe {
-            encoder.setFragmentTexture_atIndex(
-                overlay
-                    .as_ref()
-                    .map(|overlay| &*overlay.texture)
-                    .or(Some(&*luma_texture)),
-                2,
-            );
-            encoder.setFragmentBytes_length_atIndex(
-                NonNull::from(&overlay_uniforms).cast::<c_void>(),
-                std::mem::size_of_val(&overlay_uniforms),
-                1,
-            );
-        }
         encoder.setViewport(viewport);
         unsafe { encoder.drawPrimitives_vertexStart_vertexCount(MTLPrimitiveType::Triangle, 0, 3) };
         encoder.endEncoding();
@@ -719,7 +651,7 @@ impl MetalPresenter {
         }
         let telemetry = Arc::clone(&self.telemetry);
         let expected_period = frame.minimum_frame_duration_seconds;
-        let presented_handler: RcBlock<dyn Fn(NonNull<ProtocolObject<dyn MTLDrawable>>)> =
+        let presented_handler: PresentedHandler =
             RcBlock::new(move |drawable: NonNull<ProtocolObject<dyn MTLDrawable>>| {
                 // SAFETY: Metal supplies a valid drawable pointer for the duration of this block.
                 let presented_time = unsafe { drawable.as_ref() }.presentedTime();
@@ -744,89 +676,6 @@ impl MetalPresenter {
             _chroma_texture: chroma_texture,
         });
         Ok(())
-    }
-
-    fn overlay_texture(&mut self) -> Result<Option<&UploadedOverlay>, BackendError> {
-        let current = self
-            .overlay
-            .read()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone();
-        let Some(current) = current else {
-            self.uploaded_overlay = None;
-            self.overlay_texture_pool.clear();
-            self.next_overlay_texture = 0;
-            return Ok(None);
-        };
-        if self
-            .uploaded_overlay
-            .as_ref()
-            .is_some_and(|uploaded| Arc::ptr_eq(&uploaded.source, &current))
-        {
-            return Ok(self.uploaded_overlay.as_ref());
-        }
-        let expected = current.width as usize * current.height as usize * 4;
-        if current.width == 0 || current.height == 0 || current.rgba.len() != expected {
-            return Err(BackendError::Metal(
-                "diagnostic overlay has invalid RGBA dimensions".into(),
-            ));
-        }
-        if self
-            .overlay_texture_pool
-            .first()
-            .is_some_and(|slot| slot.width != current.width || slot.height != current.height)
-        {
-            self.overlay_texture_pool.clear();
-            self.next_overlay_texture = 0;
-        }
-        while self.overlay_texture_pool.len() < 2 {
-            let descriptor = unsafe {
-                MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(
-                    MTLPixelFormat::RGBA8Unorm,
-                    current.width as usize,
-                    current.height as usize,
-                    false,
-                )
-            };
-            descriptor.setUsage(MTLTextureUsage::ShaderRead);
-            let texture = self
-                .device
-                .newTextureWithDescriptor(&descriptor)
-                .ok_or_else(|| {
-                    BackendError::Metal("failed to allocate stats overlay texture".into())
-                })?;
-            self.overlay_texture_pool.push(OverlayTextureSlot {
-                width: current.width,
-                height: current.height,
-                texture,
-            });
-        }
-        let texture_index = self.next_overlay_texture;
-        self.next_overlay_texture = (self.next_overlay_texture + 1) % 2;
-        let texture = self.overlay_texture_pool[texture_index].texture.clone();
-        let region = MTLRegion {
-            origin: MTLOrigin { x: 0, y: 0, z: 0 },
-            size: MTLSize {
-                width: current.width as usize,
-                height: current.height as usize,
-                depth: 1,
-            },
-        };
-        let bytes = NonNull::new(current.rgba.as_ptr().cast_mut().cast::<c_void>())
-            .expect("validated overlay pixels are non-empty");
-        unsafe {
-            texture.replaceRegion_mipmapLevel_withBytes_bytesPerRow(
-                region,
-                0,
-                bytes,
-                current.width as usize * 4,
-            );
-        }
-        self.uploaded_overlay = Some(UploadedOverlay {
-            source: current,
-            texture,
-        });
-        Ok(self.uploaded_overlay.as_ref())
     }
 
     fn make_texture(
@@ -892,31 +741,6 @@ impl Drop for MetalPresenter {
     }
 }
 
-fn overlay_uniforms(frame: &GpuOverlayFrame, viewport: MTLViewport) -> OverlayUniforms {
-    const EDGE_MARGIN: f64 = 24.0;
-    let available_width = (viewport.width - EDGE_MARGIN * 2.0).max(1.0);
-    let available_height = (viewport.height - EDGE_MARGIN * 2.0).max(1.0);
-    let scale = (available_width / f64::from(frame.width))
-        .min(available_height / f64::from(frame.height))
-        .min(1.0);
-    let width = f64::from(frame.width) * scale;
-    let height = f64::from(frame.height) * scale;
-    let x = match frame.placement {
-        GpuOverlayPlacement::TopLeft => viewport.originX + EDGE_MARGIN,
-        GpuOverlayPlacement::TopRight => viewport.originX + viewport.width - width - EDGE_MARGIN,
-    };
-    OverlayUniforms {
-        bounds: [
-            x as f32,
-            (viewport.originY + EDGE_MARGIN) as f32,
-            width as f32,
-            height as f32,
-        ],
-        enabled: 1,
-        padding: [0; 3],
-    }
-}
-
 fn aspect_fit_viewport(
     source_width: f64,
     source_height: f64,
@@ -955,19 +779,5 @@ mod tests {
         assert_eq!(portrait.height, 768.0);
         assert_eq!(portrait.width, 432.0);
         assert_eq!(portrait.originX, 296.0);
-    }
-
-    #[test]
-    fn overlay_placement_stays_inside_the_video_viewport() {
-        let frame = GpuOverlayFrame {
-            width: 180,
-            height: 40,
-            rgba: Arc::from(vec![0_u8; 180 * 40 * 4]),
-            placement: GpuOverlayPlacement::TopRight,
-        };
-        let viewport = aspect_fit_viewport(1920.0, 1080.0, 1024.0, 768.0);
-        let uniforms = overlay_uniforms(&frame, viewport);
-        assert_eq!(uniforms.enabled, 1);
-        assert_eq!(uniforms.bounds, [820.0, 120.0, 180.0, 40.0]);
     }
 }

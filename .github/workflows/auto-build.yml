@@ -129,6 +129,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Enable Windows Media Foundation
+        if: runner.os == 'Windows'
+        shell: pwsh
+        working-directory: .
+        run: .github/scripts/ensure-windows-media-foundation.ps1
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -148,6 +154,7 @@ jobs:
           sudo apt-get install -y \
             cmake \
             libasound2-dev \
+            libdbus-1-dev \
             libdrm-dev \
             libpulse-dev \
             libva-dev \
@@ -165,7 +172,9 @@ jobs:
 
       - name: Install Linux ARM64 cross compiler
         if: matrix.label == 'linux-arm64'
-        run: sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+        run: |
+          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-g++" >> "$GITHUB_ENV"
 
       - name: Install Windows ARM64 compiler
         if: matrix.native_target == 'aarch64-pc-windows-msvc'
@@ -189,13 +198,33 @@ jobs:
           if (-not $compiler) {
             throw "Visual Studio ARM64 compiler is unavailable after installation."
           }
+          $linker = Join-Path $compiler.Directory.FullName "link.exe"
+          if (-not (Test-Path $linker)) {
+            throw "Visual Studio ARM64 linker is unavailable after installation."
+          }
+          "CARGO_TARGET_AARCH64_PC_WINDOWS_MSVC_LINKER=$linker" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           Write-Host "Using Windows ARM64 compiler: $($compiler.FullName)"
+          Write-Host "Using Windows ARM64 linker: $linker"
 
       - name: Setup Windows ARM64 build tools
         if: matrix.native_target == 'aarch64-pc-windows-msvc'
         uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: amd64_arm64
+
+      - name: Install Windows LLVM
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          choco install llvm -y --no-progress
+          $llvmBin = Join-Path $env:ProgramFiles "LLVM\bin"
+          if (-not (Test-Path (Join-Path $llvmBin "clang.exe")) -or
+              -not (Test-Path (Join-Path $llvmBin "libclang.dll"))) {
+            throw "LLVM installation is missing libclang.dll"
+          }
+          $llvmBin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          "LIBCLANG_PATH=$llvmBin" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Pin CMake for bundled SDL2
         if: runner.os == 'macOS'
@@ -225,6 +254,7 @@ jobs:
         run: npm run build
 
       - name: Test and build native streamer v2
+        shell: bash
         env:
           OPENNOW_NATIVE_STREAMER_TARGET: ${{ matrix.native_target }}
           OPENNOW_NATIVE_STREAMER_PLATFORM_KEY: ${{ matrix.native_platform_key }}

@@ -154,7 +154,7 @@ export interface OpenNowApi {
   updateNativeShortcuts(shortcuts: NativeStreamerShortcutBindings): void;
   requestKeyframe(input: KeyframeRequest): Promise<void>;
   onSignalingEvent(listener: (event: MainToRendererSignalingEvent) => void): () => void;
-  /** Listen for F11 fullscreen toggle from main process */
+  /** Listen for the fullscreen toggle from the main process */
   onToggleFullscreen(listener: () => void): () => void;
   onExitFullscreen(listener: () => void): () => void;
   quitApp(): Promise<void>;
@@ -197,7 +197,7 @@ export interface OpenNowApi {
   /** Export a screenshot to a user-selected path */
   saveScreenshotAs(input: ScreenshotSaveAsRequest): Promise<ScreenshotSaveAsResult>;
 
-  /** Listen for screenshot hotkey events from the main process (F11) */
+  /** Listen for screenshot hotkey events from the main process */
   onTriggerScreenshot(listener: () => void): () => void;
 
   /** Listen for external Escape events forwarded by the main process */

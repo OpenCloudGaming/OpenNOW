@@ -71,8 +71,8 @@ const ANNOUNCE_ALLOWLIST = {
     enablePartiallyReliableTransferHid: "-1",
   },
   aqos: {
-    enableRedundancy: "0",
-    redundancyLevel: "0",
+    enableRedundancy: "1",
+    redundancyLevel: "2",
   },
   bwe: {
     useOwdCongestionControl: "1",

@@ -7,7 +7,7 @@ import type {
   SendAnswerRequest,
 } from "./gfn";
 
-export const NATIVE_STREAMER_PROTOCOL_VERSION = 4;
+export const NATIVE_STREAMER_PROTOCOL_VERSION = 5;
 
 export type { NativeStreamerBackend };
 
@@ -39,6 +39,7 @@ export interface NativeStreamerActiveTransportCapabilities {
   supportsInput: boolean;
   supportsAudioDecode: boolean;
   supportsAudioOutput: boolean;
+  supportsOwnedNvstNegotiation?: boolean;
 }
 
 export type NativeStreamerCommand =

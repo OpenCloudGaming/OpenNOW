@@ -20,6 +20,29 @@ impl VideoCodec {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VideoPixelFormat {
+    Nv12,
+    P010,
+    Ayuv,
+    Y410,
+}
+
+impl VideoPixelFormat {
+    pub const fn bit_depth(self) -> u8 {
+        match self {
+            Self::Nv12 | Self::Ayuv => 8,
+            Self::P010 | Self::Y410 => 10,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VideoChromaFormat {
+    Cs420,
+    Cs444,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VideoFormat {
     pub codec: VideoCodec,
     pub width: u32,
@@ -27,6 +50,11 @@ pub struct VideoFormat {
     pub frame_rate_numerator: NonZeroU32,
     pub frame_rate_denominator: NonZeroU32,
     pub average_bitrate: u32,
+    /// Preferred decoder output before the MFT reports its actual subtype.
+    pub pixel_format: VideoPixelFormat,
+    pub chroma_format: VideoChromaFormat,
+    /// Whether the decoded YCbCr samples use full (0-255) rather than studio range.
+    pub full_range: bool,
 }
 
 impl VideoFormat {
@@ -160,6 +188,10 @@ pub struct EncodedVideoFrame {
     pub timestamp_100ns: i64,
     pub duration_100ns: i64,
     pub key_frame: bool,
+    /// Discard every decoder reference and decoded surface before accepting
+    /// this recovery keyframe. A clean-point flag alone does not make an MFT
+    /// forget damaged H.264 references after packet loss.
+    pub reset_decoder: bool,
 }
 
 impl EncodedVideoFrame {
@@ -182,6 +214,11 @@ impl EncodedVideoFrame {
         if self.timestamp_100ns < 0 || self.duration_100ns <= 0 {
             return Err(BackendError::InvalidFrame(
                 "video timestamps must be non-negative with positive duration".to_owned(),
+            ));
+        }
+        if self.reset_decoder && !self.key_frame {
+            return Err(BackendError::InvalidFrame(
+                "a decoder reset must be attached to a recovery keyframe".to_owned(),
             ));
         }
         Ok(())
@@ -268,6 +305,9 @@ mod tests {
             frame_rate_numerator: NonZeroU32::new(120).unwrap(),
             frame_rate_denominator: NonZeroU32::new(1).unwrap(),
             average_bitrate: 75_000_000,
+            pixel_format: VideoPixelFormat::Nv12,
+            chroma_format: VideoChromaFormat::Cs420,
+            full_range: false,
         }
     }
 
@@ -306,11 +346,21 @@ mod tests {
             timestamp_100ns: 0,
             duration_100ns: 166_667,
             key_frame: true,
+            reset_decoder: false,
         };
         assert!(valid.validate().is_ok());
         assert!(
             EncodedVideoFrame {
                 data: vec![1, 2, 3],
+                ..valid
+            }
+            .validate()
+            .is_err()
+        );
+        assert!(
+            EncodedVideoFrame {
+                key_frame: false,
+                reset_decoder: true,
                 ..valid
             }
             .validate()

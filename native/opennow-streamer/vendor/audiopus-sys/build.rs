@@ -47,7 +47,17 @@ fn build_opus(is_static: bool) {
     );
 
     println!("cargo:info=Building Opus via CMake.");
-    let opus_build_dir = cmake::build(opus_path);
+    // Rust's MSVC targets use the release CRT in debug and release profiles.
+    // A CMake Debug build defines _DEBUG and links Opus assertions against
+    // MSVCRTD, which makes every Rust test binary fail on _CrtDbgReportW.
+    // Opus is a bundled runtime dependency, so keep its C ABI/profile stable
+    // and optimized regardless of the surrounding Rust profile.
+    let mut config = cmake::Config::new(opus_path);
+    config.profile("Release");
+    if cfg!(target_env = "msvc") {
+        config.define("CMAKE_MSVC_RUNTIME_LIBRARY", "MultiThreadedDLL");
+    }
+    let opus_build_dir = config.build();
     link_opus(is_static, opus_build_dir.display())
 }
 

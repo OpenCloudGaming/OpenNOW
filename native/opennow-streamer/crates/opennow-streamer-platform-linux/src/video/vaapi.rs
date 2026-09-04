@@ -223,7 +223,6 @@ impl VaApiDecoder {
                         planes: Vec::new(),
                         dmabuf: Some(Arc::new(dmabuf)),
                         vulkan: None,
-                        overlay: None,
                         timestamp_us,
                     };
                     decoded.validate()?;
