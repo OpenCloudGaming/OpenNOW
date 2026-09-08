@@ -123,6 +123,7 @@ Column {
         }
         DesktopSettingsRow {
             width: parent.width; paperStyle: true; glyph: "sun"; title: qsTr("Image opacity")
+            visible: page.settingsScreen.valueSetting("desktopBackground", "art") === "custom"
             description: qsTr("0% hides the image · 100% shows the full image"); showDivider: false
             DesktopSettingsSlider {
                 objectName: "customBackgroundOpacity"

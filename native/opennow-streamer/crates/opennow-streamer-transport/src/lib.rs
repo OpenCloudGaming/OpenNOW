@@ -9,15 +9,16 @@ pub mod nvst;
 mod nvst_control;
 mod nvst_input;
 mod nvst_microphone;
+mod nvst_network;
 
 pub use nvst::{
     BoundedFrameQueue, EncodedVideoAccessUnit, NvstBundleIdentity, NvstConfigError, NvstDropReason,
     NvstReceiveEvent, NvstReceiverState, NvstRecovery, NvstSrtpProfile, NvstUdpReceiverControl,
     NvstUdpReceiverError, NvstUdpReceiverSession, NvstUnsupportedFeature, NvstVideoCodec,
     NvstVideoConfig, NvstVideoReceiver, ReservedNvstBundle, SharedNvstFeedback,
-    advertised_nvst_ipv4, parse_nvst_video_handoff, reserve_nvst_mjolnir_udp_socket,
-    reserve_nvst_udp_socket, spawn_nvst_mjolnir_receiver, spawn_nvst_udp_receiver,
-    spawn_nvst_udp_receiver_with_socket,
+    advertised_nvst_ipv4, nvst_video_packet_size, parse_nvst_video_handoff,
+    reserve_nvst_mjolnir_udp_socket, reserve_nvst_udp_socket, spawn_nvst_mjolnir_receiver,
+    spawn_nvst_udp_receiver, spawn_nvst_udp_receiver_with_socket,
 };
 
 static INSTALL_CRYPTO: Once = Once::new();

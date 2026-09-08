@@ -160,8 +160,11 @@ When Xvfb is available, the video variants also render a synthetic GPU texture t
 production video material and check that it stays covered until the first-frame handoff.
 
 Run `ctest --test-dir build/opennow-qt --output-on-failure -R '^qml-session-fullscreen-'`
-to verify that F11 can leave and re-enter fullscreen after confirming session exit,
-in desktop/console mode, restoring either the normal or maximized window state.
+to verify that session exit restores the pre-session windowed, maximized, or fullscreen
+mode in both desktop and console shells, and F11 still toggles correctly afterward.
+The fixture also checks exit cancellation, launch/reconnect route transitions, and a
+subsequent aborted launch with a different initial window mode, and automatic fullscreen
+on direct launch.
 
 ### Local frame generation (experimental)
 

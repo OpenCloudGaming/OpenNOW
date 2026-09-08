@@ -3,6 +3,7 @@
 #include "streaming/rendering/StreamVideoRenderCallback.h"
 
 #include <QQuickItem>
+#include <QCursor>
 #include <QHash>
 #include <QPoint>
 #include <QPointer>
@@ -86,7 +87,8 @@ public:
     [[nodiscard]] static QPoint mapRemoteCursorPosition(const QPoint &normalizedPosition,
                                                         const QSize &videoSize,
                                                         const QSizeF &itemSize);
-    [[nodiscard]] static quint16 windowsVirtualKey(int key);
+    [[nodiscard]] static quint16 windowsVirtualKey(
+        int key, Qt::KeyboardModifiers modifiers = Qt::NoModifier);
     [[nodiscard]] static quint16 inputModifiers(Qt::KeyboardModifiers modifiers, int key);
     [[nodiscard]] static QString shortcutActionForInput(
         const QVariantMap &bindings, int key, Qt::KeyboardModifiers modifiers);
@@ -126,6 +128,7 @@ private:
     };
 
     void applyRemoteCursor(const QByteArray &bytes);
+    void setRemoteCursorShape(const QCursor &cursor);
     void syncCaptureState();
     void connectFrameSwaps();
     void releaseInput();
@@ -158,6 +161,7 @@ private:
     bool m_cursorConfined = false;
     bool m_remoteCursorKnown = false;
     bool m_remoteCursorVisible = false;
+    QCursor m_remoteCursor;
     std::optional<bool> m_pendingRelativeMouse;
 };
 

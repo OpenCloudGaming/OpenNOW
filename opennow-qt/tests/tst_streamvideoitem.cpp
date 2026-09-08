@@ -5,8 +5,11 @@
 #include "input/platform/WaylandPointerCapture.h"
 
 #include <QGuiApplication>
+#include <QBuffer>
 #include <QJsonDocument>
+#include <QKeyEvent>
 #include <QCursor>
+#include <QPixmap>
 #include <QScopeGuard>
 #include <QtQml/qqml.h>
 #include <QQuickWindow>
@@ -298,6 +301,153 @@ private slots:
         QCOMPARE(StreamVideoItem::inputModifiers(
                      Qt::ShiftModifier | Qt::ControlModifier, Qt::Key_W), quint16(0x03));
         QCOMPARE(StreamVideoItem::inputModifiers(Qt::ShiftModifier, Qt::Key_Shift), quint16(0));
+    }
+
+    void forwardsShiftedPunctuation_data()
+    {
+        QTest::addColumn<int>("key");
+        QTest::addColumn<int>("baseKey");
+        QTest::addColumn<quint16>("virtualKey");
+        const struct {
+            const char *name;
+            Qt::Key key;
+            Qt::Key baseKey;
+            quint16 virtualKey;
+        } cases[] = {
+            {"!", Qt::Key_Exclam, Qt::Key_1, 0x31},
+            {"@", Qt::Key_At, Qt::Key_2, 0x32},
+            {"#", Qt::Key_NumberSign, Qt::Key_3, 0x33},
+            {"$", Qt::Key_Dollar, Qt::Key_4, 0x34},
+            {"%", Qt::Key_Percent, Qt::Key_5, 0x35},
+            {"^", Qt::Key_AsciiCircum, Qt::Key_6, 0x36},
+            {"&", Qt::Key_Ampersand, Qt::Key_7, 0x37},
+            {"*", Qt::Key_Asterisk, Qt::Key_8, 0x38},
+            {"(", Qt::Key_ParenLeft, Qt::Key_9, 0x39},
+            {")", Qt::Key_ParenRight, Qt::Key_0, 0x30},
+            {"_", Qt::Key_Underscore, Qt::Key_Minus, 0xbd},
+            {"+", Qt::Key_Plus, Qt::Key_Equal, 0xbb},
+            {"{", Qt::Key_BraceLeft, Qt::Key_BracketLeft, 0xdb},
+            {"}", Qt::Key_BraceRight, Qt::Key_BracketRight, 0xdd},
+            {"|", Qt::Key_Bar, Qt::Key_Backslash, 0xdc},
+            {":", Qt::Key_Colon, Qt::Key_Semicolon, 0xba},
+            {"\"", Qt::Key_QuoteDbl, Qt::Key_Apostrophe, 0xde},
+            {"<", Qt::Key_Less, Qt::Key_Comma, 0xbc},
+            {">", Qt::Key_Greater, Qt::Key_Period, 0xbe},
+            {"?", Qt::Key_Question, Qt::Key_Slash, 0xbf},
+            {"~", Qt::Key_AsciiTilde, Qt::Key_QuoteLeft, 0xc0},
+        };
+        for (const auto &entry : cases)
+            QTest::newRow(entry.name) << int(entry.key) << int(entry.baseKey) << entry.virtualKey;
+    }
+
+    void forwardsShiftedPunctuation()
+    {
+        QFETCH(int, key);
+        QFETCH(int, baseKey);
+        QFETCH(quint16, virtualKey);
+        QCOMPARE(StreamVideoItem::windowsVirtualKey(key, Qt::ShiftModifier), virtualKey);
+        QCOMPARE(StreamVideoItem::windowsVirtualKey(baseKey), virtualKey);
+
+        static OpenNowStreamerConfig callbacks;
+        static QList<QList<quint16>> inputCalls;
+        inputCalls.clear();
+        NativeStreamRuntime::Api api{};
+        api.create = [](const OpenNowStreamerConfig *config, OpenNowStreamer **output) {
+            callbacks = *config;
+            *output = reinterpret_cast<OpenNowStreamer *>(new int(1));
+            return OPENNOW_STREAMER_OK;
+        };
+        api.destroy = [](OpenNowStreamer *handle) {
+            delete reinterpret_cast<int *>(handle);
+            return OPENNOW_STREAMER_OK;
+        };
+        api.send = [](const OpenNowStreamer *, const std::uint8_t *, std::size_t) {
+            return OPENNOW_STREAMER_OK;
+        };
+        api.setCaptureActive = [](const OpenNowStreamer *, bool, bool, std::uintptr_t, bool *raw) {
+            *raw = false;
+            return OPENNOW_STREAMER_OK;
+        };
+        api.submitKey = [](const OpenNowStreamer *, std::uint16_t vk,
+                           std::uint16_t modifiers, bool pressed) {
+            inputCalls.append(QList<quint16>{vk, modifiers, quint16(pressed)});
+            return OPENNOW_STREAMER_OK;
+        };
+        NativeStreamRuntime runtime(api);
+        QVERIFY(runtime.start());
+        StreamVideoItem::setNativeStreamRuntime(&runtime);
+        const auto reset = qScopeGuard([] { StreamVideoItem::setNativeStreamRuntime(nullptr); });
+        QVERIFY(runtime.send({{QStringLiteral("type"), QStringLiteral("start")},
+                              {QStringLiteral("id"), QStringLiteral("punctuation")}}));
+        const QByteArray ready = R"({"id":"punctuation","type":"ok"})";
+        callbacks.response_callback(reinterpret_cast<const std::uint8_t *>(ready.constData()),
+                                    ready.size(), callbacks.user_data);
+        QTRY_VERIFY(runtime.inputAllowed());
+        QQuickWindow window;
+        window.resize(640, 480);
+        auto *item = new StreamVideoItem(window.contentItem());
+        item->setRenderCallback({});
+        item->setSize(window.size());
+        auto *overlay = new QQuickItem(window.contentItem());
+        overlay->setVisible(false);
+        for (const bool fullscreen : {false, true}) {
+            if (fullscreen) window.showFullScreen();
+            else window.showNormal();
+            window.requestActivate();
+            QTRY_VERIFY(window.isActive());
+            item->forceActiveFocus();
+            QTRY_VERIFY(item->captureActive());
+            for (const quint32 scanCode : {0u, 39u}) {
+                for (const bool shiftReleasedFirst : {false, true}) {
+                    inputCalls.clear();
+                    QKeyEvent press(QEvent::KeyPress, key, Qt::ShiftModifier, scanCode, 0, 0);
+                    QCoreApplication::sendEvent(&window, &press);
+                    QVERIFY(press.isAccepted());
+                    QCOMPARE(inputCalls, (QList<QList<quint16>>{{virtualKey, 1, 1}}));
+                    QKeyEvent repeat(QEvent::KeyPress, key, Qt::ShiftModifier,
+                                     scanCode, 0, 0, {}, true);
+                    QCoreApplication::sendEvent(&window, &repeat);
+                    QCOMPARE(inputCalls.size(), 1);
+                    const auto modifiers = shiftReleasedFirst ? Qt::NoModifier : Qt::ShiftModifier;
+                    QKeyEvent release(QEvent::KeyRelease, shiftReleasedFirst ? baseKey : key,
+                                      modifiers, scanCode, 0, 0);
+                    QCoreApplication::sendEvent(&window, &release);
+                    QVERIFY(release.isAccepted());
+                    QCOMPARE(inputCalls, (QList<QList<quint16>>{
+                        {virtualKey, 1, 1}, {virtualKey, quint16(shiftReleasedFirst ? 0 : 1), 0}}));
+                    QVERIFY(item->m_pressedKeys.isEmpty());
+                }
+            }
+            inputCalls.clear();
+            QKeyEvent held(QEvent::KeyPress, key, Qt::ShiftModifier);
+            QCoreApplication::sendEvent(&window, &held);
+            overlay->setVisible(true);
+            overlay->forceActiveFocus();
+            QTRY_VERIFY(!item->captureActive());
+            QCOMPARE(inputCalls, (QList<QList<quint16>>{{virtualKey, 1, 1}, {virtualKey, 0, 0}}));
+            QVERIFY(item->m_pressedKeys.isEmpty());
+            QKeyEvent blocked(QEvent::KeyPress, key, Qt::ShiftModifier);
+            QCoreApplication::sendEvent(&window, &blocked);
+            QCOMPARE(inputCalls.size(), 2);
+            overlay->setVisible(false);
+            item->forceActiveFocus();
+            QTRY_VERIFY(item->captureActive());
+            QKeyEvent resumed(QEvent::KeyPress, key, Qt::ShiftModifier);
+            QCoreApplication::sendEvent(&window, &resumed);
+            QCOMPARE(inputCalls.last(), (QList<quint16>{virtualKey, 1, 1}));
+            item->releaseInput();
+            QCOMPARE(inputCalls.size(), 4);
+        }
+    }
+
+    void keepsKeypadOperatorsSeparateFromShiftedNumberRow()
+    {
+        QCOMPARE(StreamVideoItem::windowsVirtualKey(Qt::Key_Plus, Qt::KeypadModifier), quint16(0x6b));
+        QCOMPARE(StreamVideoItem::windowsVirtualKey(Qt::Key_Asterisk, Qt::KeypadModifier), quint16(0x6a));
+        QCOMPARE(StreamVideoItem::windowsVirtualKey(
+                     Qt::Key_Plus, Qt::KeypadModifier | Qt::ShiftModifier), quint16(0x6b));
+        QCOMPARE(StreamVideoItem::windowsVirtualKey(
+                     Qt::Key_Asterisk, Qt::KeypadModifier | Qt::ShiftModifier), quint16(0x6a));
     }
 
     void inputEnablementIsExplicitAndObservable()
@@ -803,6 +953,91 @@ private slots:
         QVERIFY(item.relativeMouse());
         QVERIFY(item.m_pressedMouseButtons.isEmpty());
         QVERIFY(!item.m_pendingRelativeMouse.has_value());
+    }
+
+    void visibleCursorUpdatesStayHiddenUntilRelativeButtonRelease()
+    {
+        StreamVideoItem item;
+        item.applyRemoteCursor(QByteArray::fromHex("0000"));
+        QVERIFY(item.relativeMouse());
+        QCOMPARE(item.cursor().shape(), Qt::BlankCursor);
+        item.m_pressedMouseButtons.insert(1);
+        item.m_pressedMouseButtons.insert(3);
+        for (const auto &cursor : {"000c", "0002", "0000", "000c"}) {
+            item.applyRemoteCursor(QByteArray::fromHex(cursor));
+            QVERIFY(item.relativeMouse());
+            QCOMPARE(item.cursor().shape(), Qt::BlankCursor);
+            QCOMPARE(item.m_pressedMouseButtons.size(), 2);
+        }
+        item.m_captureActive = true;
+        item.m_rawInputActive = true;
+        QMouseEvent leftRelease(QEvent::MouseButtonRelease, QPointF(), QPointF(),
+                                Qt::LeftButton, Qt::RightButton, Qt::NoModifier);
+        item.mouseReleaseEvent(&leftRelease);
+        QVERIFY(item.relativeMouse());
+        QCOMPARE(item.cursor().shape(), Qt::BlankCursor);
+        QMouseEvent rightRelease(QEvent::MouseButtonRelease, QPointF(), QPointF(),
+                                 Qt::RightButton, Qt::NoButton, Qt::NoModifier);
+        item.mouseReleaseEvent(&rightRelease);
+        QVERIFY(!item.relativeMouse());
+        QCOMPARE(item.cursor().shape(), Qt::PointingHandCursor);
+        QVERIFY(item.m_pressedMouseButtons.isEmpty());
+        QVERIFY(!item.m_pendingRelativeMouse.has_value());
+    }
+
+    void deferredCursorUpdatesSurviveInputRelease()
+    {
+        StreamVideoItem item;
+        item.applyRemoteCursor(QByteArray::fromHex("0002"));
+        QCOMPARE(item.cursor().shape(), Qt::IBeamCursor);
+        item.m_pressedMouseButtons.insert(1);
+        item.applyRemoteCursor(QByteArray::fromHex("0000"));
+        QVERIFY(!item.relativeMouse());
+        QCOMPARE(item.cursor().shape(), Qt::IBeamCursor);
+        item.releaseInput();
+        QVERIFY(item.relativeMouse());
+        QCOMPARE(item.cursor().shape(), Qt::BlankCursor);
+        item.m_pressedMouseButtons.insert(1);
+        item.applyRemoteCursor(QByteArray::fromHex("000c"));
+        item.applyRemoteCursor(QByteArray::fromHex("0002"));
+        QCOMPARE(item.cursor().shape(), Qt::BlankCursor);
+        item.releaseInput();
+        QVERIFY(!item.relativeMouse());
+        QCOMPARE(item.cursor().shape(), Qt::IBeamCursor);
+        QVERIFY(item.m_pressedMouseButtons.isEmpty());
+        QVERIFY(!item.m_pendingRelativeMouse.has_value());
+    }
+
+    void deferredBitmapCursorRetainsItsShapeAndHotspot()
+    {
+        QPixmap image(8, 8);
+        image.fill(Qt::red);
+        QByteArray png;
+        QBuffer buffer(&png);
+        QVERIFY(buffer.open(QIODevice::WriteOnly));
+        QVERIFY(image.save(&buffer, "PNG"));
+        const auto encoded = png.toBase64();
+        auto message = QByteArray::fromHex("0100020300");
+        message.append(static_cast<char>(encoded.size() & 0xff));
+        message.append(static_cast<char>((encoded.size() >> 8) & 0xff));
+        message.append(encoded);
+
+        StreamVideoItem item;
+        item.applyRemoteCursor(QByteArray::fromHex("0000"));
+        item.m_pressedMouseButtons.insert(1);
+        item.applyRemoteCursor(message);
+        QVERIFY(item.relativeMouse());
+        QCOMPARE(item.cursor().shape(), Qt::BlankCursor);
+        item.releaseInput();
+        QVERIFY(!item.relativeMouse());
+        QCOMPARE(item.cursor().shape(), Qt::BitmapCursor);
+        QCOMPARE(item.cursor().hotSpot(), QPoint(2, 3));
+        QCOMPARE(item.cursor().pixmap().toImage(), image.toImage());
+        item.setVisible(false);
+        item.setVisible(true);
+        item.setRelativeMouse(true);
+        item.setRelativeMouse(false);
+        QCOMPARE(item.cursor().shape(), Qt::ArrowCursor);
     }
 
     void directVideoPreservesPixelsClippingOpacityAndOverlays()

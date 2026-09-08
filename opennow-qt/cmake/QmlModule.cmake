@@ -38,6 +38,7 @@ qt_add_qml_module(opennow-qt
         qml/desktop/components/DesktopGlyph.qml
         qml/desktop/components/DesktopKeyHint.qml
         qml/desktop/components/DesktopPoster.qml
+        qml/desktop/components/DesktopPosterOverlay.qml
         qml/desktop/components/DesktopTokens.qml
         qml/desktop/friends/DesktopFriendsScreen.qml
         qml/desktop/home/DesktopHomePoster.qml
@@ -198,6 +199,7 @@ qt_add_qml_module(opennow-qt
         res/icons/desktop-nav-friends-active-on-light.svg
         res/icons/desktop-clock-on-light.svg
         res/icons/desktop-play.svg
+        res/icons/desktop-play-filled.svg
         res/icons/desktop-lock.svg
         res/icons/desktop-check.svg
         res/icons/desktop-shield.svg

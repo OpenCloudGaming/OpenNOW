@@ -358,6 +358,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fd16c4719339c4530435d38e511904438d07cce7950afa3718a84ac36c10e89e"
 
 [[package]]
+name = "cfg_aliases"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f079e83a288787bcd14a6aea84cee5c87a67c5a3e660c30f557a3d24761b3527"
+
+[[package]]
 name = "chacha20"
 version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1219,6 +1225,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "mtu"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f6915088ba81d679b0a07ecc674f31d66af5e7edaeb0c34782669be38cdf67b5"
+dependencies = [
+ "bindgen 0.72.1",
+ "cfg_aliases 0.2.2",
+ "libc",
+ "static_assertions",
+ "windows",
+]
+
+[[package]]
 name = "nasm-rs"
 version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1235,7 +1254,7 @@ checksum = "ab2156c4fce2f8df6c499cc1c763e4394b7482525bf2a9701c9d79d215f519e4"
 dependencies = [
  "bitflags 2.13.1",
  "cfg-if",
- "cfg_aliases",
+ "cfg_aliases 0.1.1",
  "libc",
 ]
 
@@ -1743,6 +1762,7 @@ dependencies = [
  "getrandom 0.3.4",
  "ghash",
  "hmac",
+ "mtu",
  "opennow-streamer-protocol",
  "serde_json",
  "sha1",
