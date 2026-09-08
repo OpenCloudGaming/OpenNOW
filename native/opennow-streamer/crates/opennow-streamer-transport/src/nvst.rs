@@ -28,6 +28,7 @@ use subtle::ConstantTimeEq;
 use thiserror::Error;
 
 use super::nvst_microphone::{MICROPHONE_QUEUE_CAPACITY, MicrophoneQueue};
+use super::nvst_network::is_vpn_interface;
 use str0m::channel::ChannelId;
 use str0m::config::Fingerprint;
 use str0m::format::{Codec, FormatParams};
@@ -96,7 +97,6 @@ const NVST_FEC_RTP_HEADER_ALLOWANCE: usize = 16;
 const DEFAULT_NVST_VIDEO_PACKET_SIZE: usize = 1_280;
 const MIN_NVST_VIDEO_PACKET_SIZE: usize = 256;
 const MAX_NVST_VIDEO_PACKET_SIZE: usize = 65_519;
-const FALLBACK_NVST_IP_MTU: usize = 1_280;
 // Match the official client's bounded NACK/dejitter envelope: it keeps up to
 // 1,024 RTP packets available for late or retransmitted packets and permits a
 // 2,048-entry NACK queue. A 32-packet window is only a few milliseconds at
@@ -4112,33 +4112,35 @@ pub fn advertised_nvst_ipv4() -> Option<IpAddr> {
 }
 
 pub fn nvst_video_packet_size(peer: IpAddr) -> std::io::Result<usize> {
-    let route_mtu = match mtu::interface_and_mtu(peer) {
-        Ok((_, mtu)) => Some(mtu),
+    let (interface, route_mtu) = match mtu::interface_and_mtu(peer) {
+        Ok(route) => route,
         Err(error) => {
             opennow_streamer_protocol::log::log_line(
                 "WARN",
                 "nvst-udp",
                 &format!(
-                    "video route MTU lookup failed: {error}; using IP MTU {FALLBACK_NVST_IP_MTU}"
+                    "video route lookup failed: {error}; VPN unverified, retaining packet_size={DEFAULT_NVST_VIDEO_PACKET_SIZE}"
                 ),
             );
-            None
+            return Ok(DEFAULT_NVST_VIDEO_PACKET_SIZE);
         }
     };
-    let packet_size = video_packet_size_for_mtu(peer, route_mtu)?;
+    let vpn_detected = is_vpn_interface(&interface);
+    let packet_size = video_packet_size_for_vpn_mtu(peer, vpn_detected.then_some(route_mtu))?;
     opennow_streamer_protocol::log::log_line(
         "INFO",
         "nvst-udp",
         &format!(
-            "video route peer={peer} interface_mtu={} mtu_fallback={} packet_size={packet_size}",
-            route_mtu.unwrap_or(FALLBACK_NVST_IP_MTU),
-            route_mtu.is_none(),
+            "video route peer={peer} interface_mtu={route_mtu} vpn_detected={vpn_detected} packet_size={packet_size}",
         ),
     );
     Ok(packet_size)
 }
 
-fn video_packet_size_for_mtu(peer: IpAddr, route_mtu: Option<usize>) -> std::io::Result<usize> {
+fn video_packet_size_for_vpn_mtu(peer: IpAddr, route_mtu: Option<usize>) -> std::io::Result<usize> {
+    let Some(route_mtu) = route_mtu else {
+        return Ok(DEFAULT_NVST_VIDEO_PACKET_SIZE);
+    };
     let ip_header_bytes = if peer.is_ipv4() { 20 } else { 40 };
     let udp_header_bytes = 8;
     let overhead = ip_header_bytes
@@ -4146,7 +4148,6 @@ fn video_packet_size_for_mtu(peer: IpAddr, route_mtu: Option<usize>) -> std::io:
         + NVST_FEC_RTP_HEADER_ALLOWANCE
         + SRTP_AEAD_AES_GCM_TAG_LEN;
     let packet_size = route_mtu
-        .unwrap_or(FALLBACK_NVST_IP_MTU)
         .saturating_sub(overhead)
         .min(DEFAULT_NVST_VIDEO_PACKET_SIZE)
         / 16
@@ -6869,26 +6870,30 @@ mod tests {
             ("192.0.2.1", Some(1500), 1280),
             ("192.0.2.1", Some(1280), 1216),
             ("192.0.2.1", Some(1200), 1136),
-            ("192.0.2.1", None, 1216),
+            ("192.0.2.1", None, 1280),
             ("2001:db8::1", Some(1280), 1200),
-            ("2001:db8::1", None, 1200),
+            ("2001:db8::1", None, 1280),
             ("127.0.0.1", Some(65536), 1280),
         ] {
             let peer = address.parse().unwrap();
-            let packet_size = video_packet_size_for_mtu(peer, mtu).unwrap();
+            let packet_size = video_packet_size_for_vpn_mtu(peer, mtu).unwrap();
             assert_eq!(packet_size, expected);
             let ip_header_bytes = if peer.is_ipv4() { 20 } else { 40 };
-            assert!(packet_size + 16 + 16 + 8 + ip_header_bytes <= mtu.unwrap_or(1280));
+            if let Some(mtu) = mtu {
+                assert!(packet_size + 16 + 16 + 8 + ip_header_bytes <= mtu);
+            }
         }
         for mtu in [0, 59, 60, 300] {
-            assert!(video_packet_size_for_mtu("192.0.2.1".parse().unwrap(), Some(mtu)).is_err());
+            assert!(
+                video_packet_size_for_vpn_mtu("192.0.2.1".parse().unwrap(), Some(mtu)).is_err()
+            );
         }
     }
 
     #[test]
     fn tunnel_packet_size_is_preserved_by_the_handoff_and_fec_receiver() {
         let mut handoff = legacy_handoff();
-        let packet_size = video_packet_size_for_mtu(peer().ip(), Some(1280)).unwrap();
+        let packet_size = video_packet_size_for_vpn_mtu(peer().ip(), Some(1280)).unwrap();
         handoff["packetSize"] = serde_json::json!(packet_size);
         let config = NvstVideoConfig::from_legacy_handoff(&handoff, None).unwrap();
         assert_eq!(config.video_packet_size, packet_size);

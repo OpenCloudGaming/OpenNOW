@@ -109,11 +109,16 @@ ten minutes. Exercise the following without restarting the app:
 12. For VPN compatibility, start fresh sessions with Cloudflare WARP off and on, keeping the
     same game and stream settings. Record the OS, WARP version, and tunnel mode (WireGuard or
     MASQUE). Confirm first-frame playback, audio, and input with WARP still enabled. The native
-    `nvst-udp` log reports the video peer's `interface_mtu`, `mtu_fallback`, and `packet_size`;
-    a 1,280-byte IPv4 interface should select 1,216, while a 1,500-byte interface retains 1,280.
+    `nvst-udp` log reports the video peer's `interface_mtu`, `vpn_detected`, and `packet_size`;
+    a detected VPN's 1,280-byte IPv4 interface should select 1,216, while a 1,500-byte interface
+    retains 1,280. Non-VPN and unrecognized routes always retain the original 1,280-byte packet
+    size, even with a smaller MTU. Verify a split-tunnel route that bypasses the VPN also retains it.
     These are NVST payload sizes, not complete IP packet sizes: sizing reserves IP, UDP, RTP/FEC,
-    and the largest supported SRTP authentication tag, then rounds down to 16 bytes. If interface
-    discovery fails, sizing assumes a 1,280-byte IP MTU. This queries the local outgoing interface,
+    and the largest supported SRTP authentication tag, then rounds down to 16 bytes. Detection
+    uses Linux TUN/TAP metadata and known VPN interface names, macOS tunnel interface names,
+    and known VPN driver descriptions on Windows. It is conservative, not an exhaustive VPN
+    inventory; if route discovery or VPN identification fails, packet sizing stays unchanged.
+    This queries the local outgoing interface,
     not the full Internet path, and does not bypass a VPN or a firewall blocking UDP. Keep paired
     diagnostic exports if video still fails; changing WARP during a live session is a separate
     route-change/recovery test, not evidence that fresh-session negotiation passed.

@@ -56,7 +56,7 @@ Official also has named profiles, AI prefilter, HUD sharpness, and upscaling. Op
 ## How OpenNOW plays video
 
 1. Prefer NVST. Reserve Mjolnir then bundle+1. The child owns RTSPS.
-2. ANNOUNCE viewport, fps, bitrate, NACK, FEC 20–35%, packet size up to 1280 (OpenNOW reduces it for the video route's interface MTU).
+2. ANNOUNCE viewport, fps, bitrate, NACK, FEC 20–35%, packet size 1280 (OpenNOW reduces it for the video route's interface MTU only when that route uses a detected VPN).
 3. `NvstVideoReceiver` unprotects SRTP, reorders up to 1024 packets, waits up to 150 ms for a gap, NACKs, assembles access units from the GS header.
 4. Keyframe rules. H.264 NAL type 5. H.265 IRAP 16–21. AV1 SOF header byte `[3]==2`.
 5. `MediaSink` encoded video queue capacity 2. Overflow marks desync and requests a keyframe. Windows MF overflow uses `push_or_clear_on_overflow`, which dumps the whole reference chain.
