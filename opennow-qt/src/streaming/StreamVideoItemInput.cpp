@@ -320,6 +320,7 @@ void StreamVideoItem::itemChange(ItemChange change, const ItemChangeData &data)
     if (change == ItemVisibleHasChanged && !isVisible()) {
         m_remoteCursorKnown = false;
         m_remoteCursorVisible = false;
+        m_remoteCursor = QCursor();
         if (m_relativeMouse) setRelativeMouse(false);
         else unsetCursor();
     }
@@ -511,7 +512,7 @@ void StreamVideoItem::releaseInput()
     if (pendingRelativeMouse && m_relativeMouse != *pendingRelativeMouse) {
         m_relativeMouse = *pendingRelativeMouse;
         if (m_relativeMouse) setCursor(Qt::BlankCursor);
-        else unsetCursor();
+        else setCursor(m_remoteCursor);
         emit relativeMouseChanged();
     }
 }
@@ -617,10 +618,16 @@ void StreamVideoItem::setRelativeMouse(bool relative)
     } else {
         ungrabMouse();
         releaseCursorConfinement();
-        unsetCursor();
+        setCursor(m_remoteCursor);
     }
     syncCaptureState();
     emit relativeMouseChanged();
+}
+
+void StreamVideoItem::setRemoteCursorShape(const QCursor &cursor)
+{
+    m_remoteCursor = cursor;
+    if (!m_relativeMouse) setCursor(m_remoteCursor);
 }
 
 void StreamVideoItem::applyRemoteCursor(const QByteArray &bytes)
@@ -661,20 +668,20 @@ void StreamVideoItem::applyRemoteCursor(const QByteArray &bytes)
                            0, pixmap.width() - 1),
                 std::clamp(qRound(static_cast<quint8>(bytes[3]) / metadata.scale),
                            0, pixmap.height() - 1));
-            setCursor(QCursor(pixmap, hotspot.x(), hotspot.y()));
+            setRemoteCursorShape(QCursor(pixmap, hotspot.x(), hotspot.y()));
             return;
         }
     }
     switch (cursorId) {
-    case 2: setCursor(Qt::IBeamCursor); break;
-    case 3: setCursor(Qt::WaitCursor); break;
-    case 4: setCursor(Qt::CrossCursor); break;
-    case 6: setCursor(Qt::SizeFDiagCursor); break;
-    case 7: setCursor(Qt::SizeBDiagCursor); break;
-    case 8: setCursor(Qt::SizeHorCursor); break;
-    case 9: setCursor(Qt::SizeVerCursor); break;
-    case 10: setCursor(Qt::SizeAllCursor); break;
-    case 12: setCursor(Qt::PointingHandCursor); break;
-    default: setCursor(Qt::ArrowCursor); break;
+    case 2: setRemoteCursorShape(Qt::IBeamCursor); break;
+    case 3: setRemoteCursorShape(Qt::WaitCursor); break;
+    case 4: setRemoteCursorShape(Qt::CrossCursor); break;
+    case 6: setRemoteCursorShape(Qt::SizeFDiagCursor); break;
+    case 7: setRemoteCursorShape(Qt::SizeBDiagCursor); break;
+    case 8: setRemoteCursorShape(Qt::SizeHorCursor); break;
+    case 9: setRemoteCursorShape(Qt::SizeVerCursor); break;
+    case 10: setRemoteCursorShape(Qt::SizeAllCursor); break;
+    case 12: setRemoteCursorShape(Qt::PointingHandCursor); break;
+    default: setRemoteCursorShape(Qt::ArrowCursor); break;
     }
 }
