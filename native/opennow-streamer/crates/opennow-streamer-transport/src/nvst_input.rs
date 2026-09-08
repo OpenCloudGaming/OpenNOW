@@ -533,10 +533,10 @@ impl fmt::Display for NvstInputCodecError {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub(crate) struct NvstInputCodec {
-    gamepad_sequences: [u8; 4],
-    gamepad_registered: u8,
+    gamepad_sequences: [u16; 4],
+    gamepad_bitmap: Option<u16>,
 }
 
 impl NvstInputCodec {
@@ -651,14 +651,37 @@ impl NvstInputCodec {
                             "gamepad id is outside the supported range",
                         ));
                     }
-                    let registration_bit = 1_u8 << controller_id;
-                    let descriptor_index = 3 + controller_id as u8;
-                    if self.gamepad_registered & registration_bit == 0 {
-                        self.gamepad_registered |= registration_bit;
+                    let bitmap = read_u16_le(event.bytes, 8).expect("gamepad length checked");
+                    if self.gamepad_bitmap != Some(bitmap) {
+                        let previous_bitmap = self.gamepad_bitmap.unwrap_or_default();
+                        for id in 0..self.gamepad_sequences.len() {
+                            if previous_bitmap & (1 << id) != 0 && bitmap & (1 << id) == 0 {
+                                let mut neutral = event.bytes[..38].to_vec();
+                                neutral[6..8].copy_from_slice(&(id as u16).to_le_bytes());
+                                neutral[8..10].copy_from_slice(&previous_bitmap.to_le_bytes());
+                                neutral[12..24].fill(0);
+                                let mut payload = Vec::with_capacity(48);
+                                payload.push(0x23);
+                                payload.extend_from_slice(&timestamp.to_be_bytes());
+                                payload.push(0x22);
+                                payload.extend_from_slice(&neutral);
+                                encoded.push(NvstEncodedInput {
+                                    route: NvstInputRoute::ControlReliable,
+                                    bytes: control_command(COMMAND_GAMEPAD, &payload),
+                                });
+                            }
+                            if bitmap & (1 << id) == 0 {
+                                self.gamepad_sequences[id] = 0;
+                            }
+                        }
+                        self.gamepad_bitmap = Some(bitmap);
                         encoded.push(NvstEncodedInput {
                             route: NvstInputRoute::ControlReliable,
-                            bytes: device_descriptor(timestamp, descriptor_index),
+                            bytes: device_descriptor(timestamp, bitmap),
                         });
+                    }
+                    if bitmap & (1 << controller_id) == 0 {
+                        continue;
                     }
                     self.gamepad_sequences[controller_id] =
                         self.gamepad_sequences[controller_id].wrapping_add(1);
@@ -668,7 +691,6 @@ impl NvstInputCodec {
                             event.bytes,
                             timestamp,
                             self.gamepad_sequences[controller_id],
-                            descriptor_index,
                         ),
                     });
                 }
@@ -832,27 +854,15 @@ fn remote_input_packet(input_type: u32, body: &[u8]) -> Vec<u8> {
     packet
 }
 
-fn gamepad_command(
-    packet: &[u8],
-    timestamp_us: u64,
-    sequence: u8,
-    descriptor_index: u8,
-) -> Vec<u8> {
-    let mut payload = Vec::with_capacity(52);
+fn gamepad_command(packet: &[u8], timestamp_us: u64, sequence: u16) -> Vec<u8> {
+    let mut payload = Vec::with_capacity(54);
     payload.push(0x23);
     payload.extend_from_slice(&timestamp_us.to_be_bytes());
-    let mut body = [
-        0x26, 0x00, 0x00, 0x00, 0x22, 0x0c, 0x00, 0x00, 0x00, 0x1a, 0x00, 0x00, 0x00, 0x03, 0x00,
-        0x14, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x55, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    ];
-    body[3] = sequence;
-    body[13] = descriptor_index;
-    body[17..19].copy_from_slice(&packet[12..14]);
-    body[19] = packet[14];
-    body[20] = packet[15];
-    body[21..29].copy_from_slice(&packet[16..24]);
-    payload.extend_from_slice(&body);
+    payload.extend_from_slice(&[0x26, packet[6]]);
+    payload.extend_from_slice(&sequence.to_be_bytes());
+    payload.push(0x21);
+    payload.extend_from_slice(&38_u16.to_be_bytes());
+    payload.extend_from_slice(&packet[..38]);
     control_command(COMMAND_GAMEPAD, &payload)
 }
 
@@ -926,7 +936,7 @@ fn text_keystroke(character: char) -> Option<(u16, u16)> {
 fn activation_chain(timestamp_us: u64) -> [Vec<u8>; 8] {
     [
         enable_input(1, false),
-        device_descriptor(timestamp_us, 2),
+        device_descriptor(timestamp_us, 0),
         mouse_cursor_capture(true),
         remote_cursor_tracking(true),
         haptics_state(true),
@@ -960,7 +970,7 @@ fn enable_input(counter: u32, enabled: bool) -> Vec<u8> {
     control_command(COMMAND_ENABLE_INPUT, &payload)
 }
 
-fn device_descriptor(timestamp_us: u64, descriptor_index: u8) -> Vec<u8> {
+fn device_descriptor(timestamp_us: u64, bitmap: u16) -> Vec<u8> {
     let mut payload = Vec::with_capacity(48);
     payload.push(0x23);
     payload.extend_from_slice(&timestamp_us.to_be_bytes());
@@ -969,7 +979,7 @@ fn device_descriptor(timestamp_us: u64, descriptor_index: u8) -> Vec<u8> {
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x55, 0x00, 0x00,
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     ];
-    body[9] = descriptor_index;
+    body[9..11].copy_from_slice(&bitmap.to_le_bytes());
     payload.extend_from_slice(&body);
     control_command(COMMAND_GAMEPAD, &payload)
 }
@@ -1213,7 +1223,7 @@ mod tests {
         assert_eq!(
             chain[1],
             hex(
-                "0d02300023000000000132bc31220c0000001a000000020014000000000000000000000000000000550000000000000000000000"
+                "0d02300023000000000132bc31220c0000001a000000000014000000000000000000000000000000550000000000000000000000"
             )
         );
         assert_eq!(chain[2], hex("0803010001"));
@@ -1271,7 +1281,11 @@ mod tests {
         let mut codec = NvstInputCodec::default();
         let mut gamepad = vec![0; 38];
         gamepad[..4].copy_from_slice(&INPUT_GAMEPAD.to_le_bytes());
+        gamepad[4..6].copy_from_slice(&26_u16.to_le_bytes());
+        gamepad[8..10].copy_from_slice(&0x0101_u16.to_le_bytes());
+        gamepad[10..12].copy_from_slice(&20_u16.to_le_bytes());
         gamepad[12..14].copy_from_slice(&0x1000_u16.to_le_bytes());
+        gamepad[26] = 0x55;
         gamepad[30..38].copy_from_slice(&0x015b_171a_u64.to_le_bytes());
         let mut wrapped_gamepad = vec![0x23];
         wrapped_gamepad.extend_from_slice(&101_u64.to_be_bytes());
@@ -1286,7 +1300,7 @@ mod tests {
         assert_eq!(
             first[1].bytes,
             hex(
-                "0d0234002300000000015b171a26000001220c0000001a000000030014000010000000000000000000000000550000000000000000000000"
+                "0d0236002300000000015b171a260000012100260c0000001a000000010114000010000000000000000000000000550000001a175b0100000000"
             )
         );
 
@@ -1303,7 +1317,12 @@ mod tests {
             let mut gamepad = vec![0; 38];
             gamepad[..4].copy_from_slice(&INPUT_GAMEPAD.to_le_bytes());
             gamepad[6..8].copy_from_slice(&controller_id.to_le_bytes());
-            gamepad[8..10].copy_from_slice(&0b11_u16.to_le_bytes());
+            let bitmap = if timestamp == 1 {
+                0x0101_u16
+            } else {
+                0x0303_u16
+            };
+            gamepad[8..10].copy_from_slice(&bitmap.to_le_bytes());
             gamepad[30..38].copy_from_slice(&timestamp.to_le_bytes());
             gamepad
         };
@@ -1315,8 +1334,12 @@ mod tests {
         assert_eq!(first.len(), 2);
         assert_eq!(second.len(), 2);
         assert_eq!(first_again.len(), 1);
-        assert_eq!(first[1].bytes[26], 3);
-        assert_eq!(second[1].bytes[26], 4);
+        assert_eq!(&first[0].bytes[22..24], &0x0101_u16.to_le_bytes());
+        assert_eq!(&second[0].bytes[22..24], &0x0303_u16.to_le_bytes());
+        assert_eq!(first[1].bytes[26], 0);
+        assert_eq!(second[1].bytes[26], 1);
+        assert_eq!(first[1].bytes[14], 0);
+        assert_eq!(second[1].bytes[14], 1);
         assert_eq!(first[1].bytes[16], 1);
         assert_eq!(second[1].bytes[16], 1);
         assert_eq!(first_again[0].bytes[16], 2);
@@ -1326,6 +1349,108 @@ mod tests {
                 "gamepad id is outside the supported range"
             ))
         );
+    }
+
+    fn gamepad_fixture(controller_id: u16, bitmap: u16) -> Vec<u8> {
+        let mut packet =
+            hex("0c0000001a00000001011400015111e7c7cfa05bd08a31750000550000000807060504030201");
+        packet[6..8].copy_from_slice(&controller_id.to_le_bytes());
+        packet[8..10].copy_from_slice(&bitmap.to_le_bytes());
+        packet
+    }
+
+    #[test]
+    fn gamepad_envelope_preserves_every_event_field_for_all_four_slots() {
+        let mut codec = NvstInputCodec::default();
+        for id in 0..4_u16 {
+            let packet = gamepad_fixture(id, 0x0f0f);
+            assert_eq!(packet.len(), 38);
+            let messages = codec.encode(&packet, 0).unwrap();
+            assert_eq!(messages.len(), if id == 0 { 2 } else { 1 });
+            if id == 0 {
+                assert_eq!(&messages[0].bytes[22..24], &0x0f0f_u16.to_le_bytes());
+            }
+            let state = messages.last().unwrap();
+            assert_eq!(state.route, NvstInputRoute::InputPartial);
+            assert_eq!(&state.bytes[..4], &hex("0d023600"));
+            assert_eq!(&state.bytes[4..13], &hex("230102030405060708"));
+            assert_eq!(&state.bytes[13..20], &[0x26, id as u8, 0, 1, 0x21, 0, 38]);
+            assert_eq!(&state.bytes[20..], packet.as_slice());
+            let events = native_events(&state.bytes[4..], 0).unwrap();
+            assert_eq!(events.len(), 1);
+            assert_eq!(events[0].bytes, packet.as_slice());
+        }
+    }
+
+    #[test]
+    fn gamepad_sequences_use_all_sixteen_bits_and_wrap_independently() {
+        let mut codec = NvstInputCodec::default();
+        let packet = gamepad_fixture(2, 0x0f0f);
+        codec.encode(&packet, 0).unwrap();
+        for (previous, next) in [(255, 256_u16), (65535, 0), (0, 1)] {
+            codec.gamepad_sequences[2] = previous;
+            let messages = codec.encode(&packet, 0).unwrap();
+            assert_eq!(messages.len(), 1);
+            assert_eq!(&messages[0].bytes[15..17], &next.to_be_bytes());
+            assert_eq!(codec.gamepad_sequences, [0, 0, next, 0]);
+        }
+    }
+
+    #[test]
+    fn gamepad_disconnect_releases_before_topology_change_and_reconnect_registers() {
+        let mut codec = NvstInputCodec::default();
+        codec.encode(&gamepad_fixture(0, 0x0303), 0).unwrap();
+        codec.encode(&gamepad_fixture(1, 0x0303), 0).unwrap();
+
+        let removed = codec.encode(&gamepad_fixture(1, 0x0101), 0).unwrap();
+        assert_eq!(removed.len(), 2);
+        assert_eq!(removed[0].route, NvstInputRoute::ControlReliable);
+        assert_eq!(removed[1].route, NvstInputRoute::ControlReliable);
+        assert_eq!(&removed[0].bytes[..4], &hex("0d023000"));
+        assert_eq!(removed[0].bytes[13], 0x22);
+        assert_eq!(&removed[0].bytes[20..24], &hex("01000303"));
+        assert_eq!(&removed[0].bytes[26..38], &[0; 12]);
+        assert_eq!(&removed[1].bytes[22..24], &0x0101_u16.to_le_bytes());
+        assert_eq!(codec.gamepad_sequences, [1, 0, 0, 0]);
+        assert!(
+            codec
+                .encode(&gamepad_fixture(1, 0x0101), 0)
+                .unwrap()
+                .is_empty()
+        );
+
+        let reconnected = codec.encode(&gamepad_fixture(1, 0x0303), 0).unwrap();
+        assert_eq!(reconnected.len(), 2);
+        assert_eq!(&reconnected[0].bytes[22..24], &0x0303_u16.to_le_bytes());
+        assert_eq!(&reconnected[1].bytes[15..17], &1_u16.to_be_bytes());
+
+        let empty = codec.encode(&gamepad_fixture(0, 0), 0).unwrap();
+        assert_eq!(empty.len(), 3);
+        assert!(
+            empty
+                .iter()
+                .all(|message| message.route == NvstInputRoute::ControlReliable)
+        );
+        assert_eq!(&empty[2].bytes[22..24], &[0, 0]);
+        assert_eq!(codec.gamepad_sequences, [0; 4]);
+    }
+
+    #[test]
+    fn gamepad_registration_is_replayed_after_send_rollback_or_session_restart() {
+        let mut codec = NvstInputCodec::default();
+        let packet = gamepad_fixture(0, 0x0101);
+        let checkpoint = codec.clone();
+        let attempted = codec.encode(&packet, 0).unwrap();
+        codec = checkpoint;
+        let retried = codec.encode(&packet, 0).unwrap();
+        assert_eq!(retried.len(), 2);
+        assert_eq!(retried[0].bytes, attempted[0].bytes);
+        assert_eq!(retried[1].bytes, attempted[1].bytes);
+        assert_eq!(codec.encode(&packet, 0).unwrap().len(), 1);
+        let restarted = NvstInputCodec::default().encode(&packet, 0).unwrap();
+        assert_eq!(restarted.len(), 2);
+        assert_eq!(restarted[0].bytes, attempted[0].bytes);
+        assert_eq!(restarted[1].bytes, attempted[1].bytes);
     }
 
     #[test]
