@@ -122,6 +122,26 @@ mod tests {
     use super::*;
 
     #[test]
+    fn normal_sized_pages_keep_the_full_hundred_game_batch() {
+        let request = PageRequest::parse(&json!({"limit": 100})).unwrap();
+        let mut calls = 0;
+        let page = fetch_bounded_page(request.limit, |count| {
+            calls += 1;
+            assert_eq!(count, 100);
+            page_result(
+                "",
+                (0..count).map(|id| json!({"id": id})).collect(),
+                &json!({"hasNextPage": true, "endCursor": "after-100", "totalCount": 2500}),
+                0,
+            )
+        })
+        .unwrap();
+        assert_eq!(calls, 1);
+        assert_eq!(page["count"], 100);
+        assert_eq!(page["nextCursor"], "after-100");
+    }
+
+    #[test]
     fn cancelled_fetch_does_not_retry_an_oversized_page() {
         let requests = std::sync::Arc::new(crate::requests::Requests::default());
         let permit = requests.admit("page", "catalog.store.browse").unwrap();

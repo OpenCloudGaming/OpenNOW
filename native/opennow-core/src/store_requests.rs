@@ -5,7 +5,6 @@ use std::time::{Duration, Instant, SystemTime};
 
 const REQUEST_INTERVAL: Duration = Duration::from_millis(50);
 const DEFAULT_COOLDOWN: Duration = Duration::from_secs(60);
-pub const PAGE_SIZE: usize = 50;
 
 pub fn lock<T>(mutex: &Mutex<T>) -> Result<MutexGuard<'_, T>, ServiceError> {
     loop {
