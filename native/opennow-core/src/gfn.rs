@@ -2120,6 +2120,7 @@ fn app_to_game(app: &Value) -> Option<Value> {
         ],
         1200,
     );
+    let key_art_url = first_image(&app["images"], &["KEY_ART", "KEY_IMAGE"], 900);
     let screenshots = image_values(&app["images"]["SCREENSHOTS"], 1200);
     let publisher = app["publisherName"].as_str().map(ToOwned::to_owned);
     let developer = app["developerName"].as_str().map(ToOwned::to_owned);
@@ -2152,6 +2153,7 @@ fn app_to_game(app: &Value) -> Option<Value> {
         "supportedControls":controls,
         "imageUrl":image_url,
         "heroImageUrl":hero_image_url,
+        "keyArtUrl":key_art_url,
         "screenshotUrl":screenshots.first(),
         "screenshotUrls":screenshots,
         "playType":app["gfn"]["playType"],
@@ -3026,6 +3028,52 @@ mod tests {
         assert_eq!(game["imageUrl"], "https://img.example/poster.jpg");
         assert_eq!(game["heroImageUrl"], "https://img.example/hero.jpg");
         assert!(STORE_PANELS_QUERY.contains("GAME_BOX_ART"));
+    }
+
+    #[test]
+    fn home_key_art_is_separate_from_posters_and_heroes() {
+        let game = app_to_game(&json!({
+            "id":"7","title":"Game","variants":[{"id":"7","appStore":"STEAM"}],
+            "images":{
+                "GAME_BOX_ART":"https://img.example/poster.jpg",
+                "KEY_IMAGE":"https://img.example/key-image.jpg",
+                "KEY_ART":"https://img.nvidiagrid.net/apps/game/ZZ/KEY_ART.jpg",
+                "HERO_IMAGE":"https://img.example/hero.jpg"
+            }
+        }))
+        .unwrap();
+        assert_eq!(game["imageUrl"], "https://img.example/poster.jpg");
+        assert_eq!(game["heroImageUrl"], "https://img.example/hero.jpg");
+        assert_eq!(
+            game["keyArtUrl"],
+            "https://img.nvidiagrid.net/apps/game/ZZ/KEY_ART.jpg;f=jpg;w=900"
+        );
+    }
+
+    #[test]
+    fn home_key_art_handles_missing_and_empty_images() {
+        for (images, expected) in [
+            (
+                json!({"KEY_ART":"  ", "KEY_IMAGE":"https://img.example/key.jpg"}),
+                json!("https://img.example/key.jpg"),
+            ),
+            (
+                json!({"KEY_ART":["", "https://img.example/key-art.jpg"]}),
+                json!("https://img.example/key-art.jpg"),
+            ),
+            (
+                json!({"GAME_BOX_ART":"https://img.example/poster.jpg"}),
+                Value::Null,
+            ),
+            (Value::Null, Value::Null),
+        ] {
+            let game = app_to_game(&json!({
+                "id":"7","title":"Game","variants":[{"id":"7","appStore":"STEAM"}],
+                "images":images
+            }))
+            .unwrap();
+            assert_eq!(game["keyArtUrl"], expected);
+        }
     }
 
     #[test]
