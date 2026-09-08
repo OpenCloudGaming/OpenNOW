@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::net::UdpSocket;
 use std::sync::mpsc::{Receiver, Sender, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
@@ -27,10 +26,12 @@ use serde_json::{Value, json};
 
 mod microphone;
 mod nvst_rtsp;
+mod queue_drops;
 
 use microphone::MicrophoneController;
 
 use nvst_rtsp::{ActiveNvstRtspSession, prepare_owned_nvst};
+use queue_drops::QueueDropReports;
 
 pub use opennow_streamer_transport::{EncodedMediaFrame, MediaConsumer};
 
@@ -159,7 +160,7 @@ pub struct Engine {
     media_session: Option<MediaSession>,
     media_worker: Option<JoinHandle<()>>,
     media_feedback: Option<Receiver<MediaFeedback>>,
-    feedback_worker: Option<JoinHandle<()>>,
+    feedback_worker: Option<JoinHandle<PendingMediaFeedback>>,
     recording_worker: Option<JoinHandle<Result<RecordingSummary, String>>>,
     microphone: Option<MicrophoneController>,
 }
@@ -873,7 +874,7 @@ impl Engine {
                             shortcut_runtime,
                             transport: nvst_resources,
                         },
-                    );
+                    )
                 })
                 .ok();
             if self.feedback_worker.is_none() {
@@ -1104,8 +1105,17 @@ impl Engine {
             }
             self.media_feedback = None;
         }
-        if let Some(worker) = self.feedback_worker.take() {
-            let _ = worker.join();
+        if let Some(worker) = self.feedback_worker.take()
+            && let Ok(mut pending) = worker.join()
+        {
+            if let Some(feedback) = pending.receiver {
+                for feedback in feedback.try_iter() {
+                    if let MediaFeedback::QueueDropped { media, count } = feedback {
+                        pending.reports.record(media, count);
+                    }
+                }
+            }
+            pending.reports.flush(&self.events, Instant::now(), true);
         }
     }
 
@@ -1410,12 +1420,17 @@ struct NvstSessionEventResources<R> {
     transport: R,
 }
 
+struct PendingMediaFeedback {
+    receiver: Option<Receiver<MediaFeedback>>,
+    reports: QueueDropReports,
+}
+
 fn forward_nvst_session_events<R: NvstSessionResources>(
     output: &EventSender,
     lifecycle: &Mutex<Lifecycle>,
     generation: u64,
     event_resources: NvstSessionEventResources<R>,
-) {
+) -> PendingMediaFeedback {
     let NvstSessionEventResources {
         nvst_events,
         media_feedback,
@@ -1424,7 +1439,7 @@ fn forward_nvst_session_events<R: NvstSessionResources>(
         transport: resources,
     } = event_resources;
     let mut feedback_state = NvstMediaFeedbackState::new(false);
-    loop {
+    'session: loop {
         if let Some(feedback) = media_feedback.as_ref() {
             while let Ok(feedback) = feedback.try_recv() {
                 forward_nvst_media_feedback(
@@ -1436,6 +1451,12 @@ fn forward_nvst_session_events<R: NvstSessionResources>(
                     &mut feedback_state,
                 );
             }
+        }
+        feedback_state
+            .drop_reports
+            .flush(output, Instant::now(), false);
+        if lock_lifecycle(lifecycle).generation != generation {
+            break;
         }
         if let Some(captured_input) = captured_input.as_ref() {
             if !feedback_state.input_available {
@@ -1450,7 +1471,7 @@ fn forward_nvst_session_events<R: NvstSessionResources>(
                     "Native input capture queue overflowed; stopping to prevent stuck input"
                         .to_owned(),
                 );
-                return;
+                break;
             } else {
                 // Preserve high-polling-rate RawInput/SDL samples rather than
                 // turning several reports into one uneven movement burst.
@@ -1489,7 +1510,7 @@ fn forward_nvst_session_events<R: NvstSessionResources>(
                             "native-input-capture-failed",
                             format!("Native window input capture failed: {error}"),
                         );
-                        return;
+                        break 'session;
                     }
                 }
             }
@@ -1512,7 +1533,7 @@ fn forward_nvst_session_events<R: NvstSessionResources>(
                     nvst_event,
                 );
                 if terminal {
-                    return;
+                    break;
                 }
             }
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
@@ -1525,9 +1546,16 @@ fn forward_nvst_session_events<R: NvstSessionResources>(
                     "nvst-event-channel-closed",
                     "NVST receiver event channel closed unexpectedly".to_owned(),
                 );
-                return;
+                break;
             }
         }
+    }
+    feedback_state
+        .drop_reports
+        .flush(output, Instant::now(), true);
+    PendingMediaFeedback {
+        receiver: media_feedback,
+        reports: feedback_state.drop_reports,
     }
 }
 
@@ -1738,7 +1766,7 @@ fn emit_nvst_terminal<R: NvstSessionResources>(
 }
 
 struct NvstMediaFeedbackState {
-    drop_reports: HashMap<&'static str, QueueDropReport>,
+    drop_reports: QueueDropReports,
     recovery_attempts: usize,
     input_origin: Instant,
     input_available: bool,
@@ -1751,7 +1779,7 @@ struct NvstMediaFeedbackState {
 impl NvstMediaFeedbackState {
     fn new(input_available: bool) -> Self {
         Self {
-            drop_reports: HashMap::new(),
+            drop_reports: QueueDropReports::new(),
             recovery_attempts: 0,
             input_origin: Instant::now(),
             input_available,
@@ -1771,6 +1799,10 @@ fn forward_nvst_media_feedback<R: NvstSessionResources>(
     feedback: MediaFeedback,
     state: &mut NvstMediaFeedbackState,
 ) {
+    if let MediaFeedback::QueueDropped { media, count } = feedback {
+        state.drop_reports.record(media, count);
+        return;
+    }
     if lock_lifecycle(lifecycle).generation != generation {
         return;
     }
@@ -1884,20 +1916,7 @@ fn forward_nvst_media_feedback<R: NvstSessionResources>(
                 }),
             ));
         }
-        MediaFeedback::QueueDropped { media, count } => {
-            if let Some(dropped) = record_queue_drop(&mut state.drop_reports, media, count) {
-                let _ = output.send(event(
-                    "log",
-                    json!({
-                        "event": "queue-dropped",
-                        "media": media,
-                        "count": dropped,
-                        "level": "debug",
-                        "message": format!("Low-latency {media} queues dropped {dropped} stale samples/frames")
-                    }),
-                ));
-            }
-        }
+        MediaFeedback::QueueDropped { .. } => unreachable!(),
     }
 }
 
@@ -2205,7 +2224,7 @@ fn consume_encoded_media(
         "consumer started; awaiting assembled media",
     );
     loop {
-        if last_report.elapsed() >= Duration::from_secs(2) {
+        if last_report.elapsed() >= Duration::from_secs(10) {
             opennow_streamer_protocol::log::log_async(
                 "INFO",
                 "media-ingress",
@@ -2291,29 +2310,6 @@ fn consume_encoded_media(
             origin.elapsed().as_millis()
         ),
     );
-}
-
-struct QueueDropReport {
-    dropped: usize,
-    started: Instant,
-}
-
-fn record_queue_drop(
-    reports: &mut HashMap<&'static str, QueueDropReport>,
-    media: &'static str,
-    count: usize,
-) -> Option<usize> {
-    let report = reports.entry(media).or_insert_with(|| QueueDropReport {
-        dropped: 0,
-        started: Instant::now(),
-    });
-    report.dropped = report.dropped.saturating_add(count);
-    if report.started.elapsed() < Duration::from_secs(1) {
-        return None;
-    }
-    let dropped = std::mem::take(&mut report.dropped);
-    report.started = Instant::now();
-    Some(dropped)
 }
 
 #[cfg(test)]
@@ -2789,32 +2785,109 @@ mod tests {
 
     #[test]
     fn queue_drop_reports_do_not_mix_audio_samples_with_video_frames() {
-        let expired = Instant::now() - Duration::from_secs(2);
-        let mut reports = HashMap::from([
-            (
-                "audio-output",
-                QueueDropReport {
-                    dropped: 0,
-                    started: expired,
-                },
-            ),
-            (
-                "linux-present",
-                QueueDropReport {
-                    dropped: 0,
-                    started: expired,
-                },
-            ),
-        ]);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let sender = EventSender::unbounded(sender);
+        let mut reports = QueueDropReports::new();
+        reports.record("audio-output", 96_000);
+        reports.record("linux-present", 47);
+        reports.flush(&sender, Instant::now(), true);
+        let reports: std::collections::HashMap<_, _> = receiver
+            .try_iter()
+            .map(|value| (value["media"].as_str().unwrap().to_owned(), value))
+            .collect();
+        assert_eq!(reports["audio-output"]["count"], 96_000);
+        assert_eq!(reports["audio-output"]["unit"], "samples");
+        assert_eq!(reports["linux-present"]["count"], 47);
+        assert_eq!(reports["linux-present"]["unit"], "frames");
+    }
 
-        assert_eq!(
-            record_queue_drop(&mut reports, "audio-output", 96_000),
-            Some(96_000)
-        );
-        assert_eq!(
-            record_queue_drop(&mut reports, "linux-present", 47),
-            Some(47)
-        );
+    #[test]
+    fn queue_drop_feedback_flushes_periodically_without_another_drop() {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let sender = EventSender::unbounded(sender);
+        let lifecycle = Arc::new(connected_lifecycle());
+        let (feedback_sender, feedback) = std::sync::mpsc::channel();
+        let (transport_sender, nvst_events) = std::sync::mpsc::channel();
+        feedback_sender
+            .send(MediaFeedback::QueueDropped {
+                media: "video",
+                count: 5,
+            })
+            .unwrap();
+        let worker_lifecycle = lifecycle.clone();
+        let worker = thread::spawn(move || {
+            forward_nvst_session_events(
+                &sender,
+                &worker_lifecycle,
+                7,
+                NvstSessionEventResources {
+                    nvst_events,
+                    media_feedback: Some(feedback),
+                    captured_input: None,
+                    shortcut_runtime: None,
+                    transport: TestNvstResources::default(),
+                },
+            )
+        });
+        let report = receiver
+            .recv_timeout(Duration::from_secs(3))
+            .expect("idle periodic flush");
+        assert_eq!(report["event"], "queue-dropped");
+        assert_eq!(report["count"], 5);
+        lock_lifecycle(&lifecycle).generation += 1;
+        worker.join().unwrap();
+        assert!(receiver.try_recv().is_err());
+        drop(transport_sender);
+    }
+
+    #[test]
+    fn queue_drop_shutdown_preserves_invalidated_and_late_producer_feedback() {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let mut engine = Engine::new(sender);
+        let output = engine.events.clone();
+        let lifecycle = engine.lifecycle.clone();
+        let (feedback_sender, feedback) = std::sync::mpsc::channel();
+        let (_transport_sender, nvst_events) = std::sync::mpsc::channel();
+        let (finished, completion) = std::sync::mpsc::channel();
+        feedback_sender
+            .send(MediaFeedback::QueueDropped {
+                media: "video",
+                count: 3,
+            })
+            .unwrap();
+        engine.feedback_worker = Some(thread::spawn(move || {
+            let pending = forward_nvst_session_events(
+                &output,
+                &lifecycle,
+                u64::MAX,
+                NvstSessionEventResources {
+                    nvst_events,
+                    media_feedback: Some(feedback),
+                    captured_input: None,
+                    shortcut_runtime: None,
+                    transport: TestNvstResources::default(),
+                },
+            );
+            finished.send(()).unwrap();
+            pending
+        }));
+        completion.recv_timeout(Duration::from_secs(3)).unwrap();
+        feedback_sender
+            .send(MediaFeedback::QueueDropped {
+                media: "video",
+                count: 9,
+            })
+            .unwrap();
+        engine.stop("test shutdown");
+        let reports: Vec<_> = receiver
+            .try_iter()
+            .filter(|value| value["event"] == "queue-dropped")
+            .collect();
+        assert_eq!(reports.len(), 2);
+        assert_eq!(reports[0]["count"], 3);
+        assert_eq!(reports[1]["count"], 9);
+        engine.stop("repeated shutdown");
+        assert!(receiver.try_recv().is_err());
     }
 
     #[test]

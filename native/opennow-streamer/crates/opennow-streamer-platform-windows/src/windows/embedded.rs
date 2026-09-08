@@ -1183,7 +1183,7 @@ fn run_decoder_worker(
             made_progress = true;
         }
 
-        if last_progress_log.elapsed() >= Duration::from_secs(2) {
+        if last_progress_log.elapsed() >= Duration::from_secs(10) {
             let decoded_ready = decoded
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())

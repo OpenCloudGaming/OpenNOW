@@ -1440,7 +1440,7 @@ impl MediaSession {
                 while let Some(packet) = video_shared.video.pop_packet() {
                     let frame = packet.frame;
                     received += 1;
-                    if received == 1 || last_report.elapsed() >= Duration::from_secs(2) {
+                    if received == 1 || last_report.elapsed() >= Duration::from_secs(10) {
                         opennow_streamer_protocol::log::log_async("INFO", "d3d11-submit", &format!(
                             "received={received} skipped_paused={skipped_paused} skipped_reference={skipped_reference} keyframe={} bytes={}", frame.keyframe, frame.data.len()));
                         last_report = Instant::now();

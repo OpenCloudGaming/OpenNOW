@@ -4976,6 +4976,7 @@ fn run_nvst_webrtc_bundle(
     let mut last_recovery_send = Instant::now();
     let mut last_keyframe_attempt = Instant::now() - KEYFRAME_REQUEST_COOLDOWN;
     let mut keyframe_attempts = 0_u64;
+    let mut last_keyframe_attempt_log: Option<Instant> = None;
     let mut rtcp_reports_sent = 0_u64;
     let mut qos_sequence = 0_u32;
     let mut last_qos_send = Instant::now() - QOS_REPORT_INTERVAL;
@@ -5262,7 +5263,7 @@ fn run_nvst_webrtc_bundle(
             last_qos_send = now;
         }
 
-        if now.duration_since(last_control_stats_log) >= Duration::from_secs(2) {
+        if now.duration_since(last_control_stats_log) >= Duration::from_secs(10) {
             opennow_streamer_protocol::log::log_async(
                 "INFO",
                 "nvst-bundle",
@@ -5359,14 +5360,21 @@ fn run_nvst_webrtc_bundle(
                 });
             last_keyframe_attempt = now;
             keyframe_attempts = keyframe_attempts.saturating_add(1);
-            opennow_streamer_protocol::log::log_async(
-                "INFO",
-                "nvst-keyframe",
-                &format!(
-                    "attempt={keyframe_attempts} pli_queued={pli_queued} idr_queued={idr_queued} stream_known={} awaiting_assembled_keyframe=true",
-                    feedback.stream_snapshot().is_some()
-                ),
-            );
+            if last_keyframe_attempt_log
+                .is_none_or(|last| now.duration_since(last) >= Duration::from_secs(10))
+            {
+                opennow_streamer_protocol::log::log_async(
+                    "INFO",
+                    "nvst-keyframe",
+                    &format!(
+                        "attempt={keyframe_attempts} pli_queued={pli_queued} idr_queued={idr_queued} stream_known={} awaiting_assembled_keyframe=true",
+                        feedback.stream_snapshot().is_some()
+                    ),
+                );
+                last_keyframe_attempt_log = Some(now);
+            }
+        } else if !feedback.keyframe_needed.load(Ordering::Acquire) {
+            last_keyframe_attempt_log = None;
         }
 
         let mut microphone_queue = microphone.lock().unwrap_or_else(|error| error.into_inner());
@@ -6033,7 +6041,7 @@ fn run_nvst_udp_receiver(
             }
             receiver_reports_sent += 1;
         }
-        if now.duration_since(last_stats_log) >= Duration::from_secs(2) {
+        if now.duration_since(last_stats_log) >= Duration::from_secs(10) {
             last_stats_log = now;
             opennow_streamer_protocol::log::log_async(
                 "INFO",

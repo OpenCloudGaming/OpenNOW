@@ -22,57 +22,79 @@ FocusScope {
             + String(minutes).padStart(2, "0") + ":" + String(remainder).padStart(2, "0")
     }
 
+    function dropValue(key, unit, decimals) {
+        const value = root.report.drops && root.report.drops[key]
+        return value !== undefined && value !== null && Number.isFinite(Number(value))
+            ? Number(value).toFixed(decimals || 0) + " " + unit : "—"
+    }
+
     Rectangle { anchors.fill: parent; color: Qt.rgba(0, 0, 0, 0.62) }
 
     GlassPanel {
         anchors.centerIn: parent
         width: Math.min(parent.width - 80, 790)
-        height: 560
+        height: Math.min(parent.height - 40, 690)
         panelRadius: 42
         strong: true
-        Column {
-            anchors.fill: parent; anchors.margins: 42; spacing: 18
-            Text { text: qsTr("SESSION COMPLETE"); color: Theme.mint; font.family: Theme.monoFont; font.pixelSize: 13; font.weight: Font.Black; font.letterSpacing: 1.5 }
-            Text { width: parent.width; text: root.report.gameTitle || qsTr("GeForce NOW"); color: Theme.label; font.family: Theme.displayFont; font.pixelSize: 36; font.weight: Font.Black; elide: Text.ElideRight }
-            Text { text: qsTr("Played for %1").arg(root.duration(root.report.durationMs)); color: Theme.textMuted; font.family: Theme.bodyFont; font.pixelSize: 18 }
-            Grid {
-                width: parent.width; columns: 3; columnSpacing: 12; rowSpacing: 12
-                Repeater {
-                    model: [
-                        {label:qsTr("Transport"), value:root.report.transport || "—"},
-                        {label:qsTr("Media backend"), value:root.report.mediaBackend || "—"},
-                        {label:qsTr("First frame"), value:Number(root.report.firstFrameLatencyMs || 0) > 0 ? Number(root.report.firstFrameLatencyMs) + " ms" : "—"},
-                        {label:qsTr("Recoveries"), value:root.report.recoveries !== undefined && root.report.recoveries !== null ? String(Number(root.report.recoveries)) : "—"},
-                        {label:qsTr("Decoder errors"), value:root.report.decoderErrors !== undefined && root.report.decoderErrors !== null ? String(Number(root.report.decoderErrors)) : "—"},
-                        {label:qsTr("Queue drops"), value:root.report.queueDrops !== undefined && root.report.queueDrops !== null ? String(Number(root.report.queueDrops)) : "—"}
-                    ]
-                    GlassPanel {
-                        required property var modelData
-                        width: (parent.width - 24) / 3; height: 92; panelRadius: 22
-                        Column {
-                            anchors.centerIn: parent; spacing: 5
-                            Text { anchors.horizontalCenter: parent.horizontalCenter; text: modelData.label; color: Theme.textMuted; font.family: Theme.bodyFont; font.pixelSize: 12 }
-                            Text { anchors.horizontalCenter: parent.horizontalCenter; text: modelData.value; color: Theme.label; font.family: Theme.monoFont; font.pixelSize: 18; font.weight: Font.Bold }
+        Flickable {
+            anchors.fill: parent; anchors.margins: 32
+            contentHeight: reportContents.height; clip: true
+            boundsBehavior: Flickable.StopAtBounds
+            Column {
+                id: reportContents
+                width: parent.width; spacing: 18
+                Text { text: qsTr("SESSION COMPLETE"); color: Theme.mint; font.family: Theme.monoFont; font.pixelSize: 13; font.weight: Font.Black; font.letterSpacing: 1.5 }
+                Text { width: parent.width; text: root.report.gameTitle || qsTr("GeForce NOW"); color: Theme.label; font.family: Theme.displayFont; font.pixelSize: 36; font.weight: Font.Black; elide: Text.ElideRight }
+                Text { text: qsTr("Played for %1").arg(root.duration(root.report.durationMs)); color: Theme.textMuted; font.family: Theme.bodyFont; font.pixelSize: 18 }
+                Grid {
+                    id: reportGrid
+                    width: parent.width; columns: 3; columnSpacing: 12; rowSpacing: 12
+                    Repeater {
+                        model: [
+                            {label:qsTr("Transport"), value:root.report.transport || "—"},
+                            {label:qsTr("Media backend"), value:root.report.mediaBackend || "—"},
+                            {label:qsTr("First frame"), value:Number(root.report.firstFrameLatencyMs || 0) > 0 ? Number(root.report.firstFrameLatencyMs) + " ms" : "—"},
+                            {label:qsTr("Recoveries"), value:root.report.recoveries !== undefined && root.report.recoveries !== null ? String(Number(root.report.recoveries)) : "—"},
+                            {label:qsTr("Decoder errors"), value:root.report.decoderErrors !== undefined && root.report.decoderErrors !== null ? String(Number(root.report.decoderErrors)) : "—"},
+                            {label:qsTr("Video drops"), value:root.dropValue("videoDropCount", qsTr("frames"))},
+                            {label:qsTr("Audio discarded"), value:root.dropValue("audioDiscardedMs", "ms", 1)},
+                            {label:qsTr("Audio queue drops"), value:root.dropValue("audioPacketDropCount", qsTr("packets / blocks"))},
+                            {label:qsTr("Callback drops"), value:root.dropValue("callbackDropCount", qsTr("callbacks"))}
+                        ]
+                        GlassPanel {
+                            id: reportCard
+                            required property var modelData
+                            width: (reportGrid.width - 24) / 3; height: 92; panelRadius: 22
+                            Column {
+                                anchors.centerIn: parent; spacing: 5
+                                Text { anchors.horizontalCenter: parent.horizontalCenter; text: reportCard.modelData.label; color: Theme.textMuted; font.family: Theme.bodyFont; font.pixelSize: 12 }
+                                Text { anchors.horizontalCenter: parent.horizontalCenter; text: reportCard.modelData.value; color: Theme.label; font.family: Theme.monoFont; font.pixelSize: 18; font.weight: Font.Bold }
+                            }
                         }
                     }
                 }
-            }
-            Text {
-                width: parent.width
-                text: !root.errorCountsKnown
-                    ? qsTr("Error telemetry was unavailable for this session.")
-                    : Number(root.report.decoderErrors) + Number(root.report.outputErrors) === 0
-                        ? qsTr("The native media path completed without decoder or presentation errors.")
-                        : qsTr("Open Diagnostics for the redacted recovery timeline.")
-                color: root.errorCountsKnown
-                    && Number(root.report.decoderErrors) + Number(root.report.outputErrors) === 0
-                    ? Theme.mint : Theme.yellow
-                font.family: Theme.bodyFont; font.pixelSize: 15; wrapMode: Text.WordWrap
-            }
-            Row {
-                anchors.horizontalCenter: parent.horizontalCenter; spacing: 14
-                GlassButton { id: doneButton; width: 210; text: qsTr("Done"); glyph: "A"; primary: true; onClicked: AppController.showOverlay("") }
-                GlassButton { width: 250; text: qsTr("Open diagnostics"); glyph: "X"; onClicked: { AppController.showOverlay(""); AppController.navigate("diagnostics") } }
+                Text {
+                    visible: Number(root.report.drops && root.report.drops.otherQueueDropCount || 0) > 0
+                    text: qsTr("Unclassified drops: %1").arg(root.dropValue("otherQueueDropCount", qsTr("items")))
+                    color: Theme.textMuted; font.family: Theme.bodyFont; font.pixelSize: 15
+                }
+                Text {
+                    width: parent.width
+                    text: !root.errorCountsKnown
+                        ? qsTr("Error telemetry was unavailable for this session.")
+                        : Number(root.report.decoderErrors) + Number(root.report.outputErrors) === 0
+                            ? qsTr("The native media path completed without decoder or presentation errors.")
+                            : qsTr("Open Diagnostics for the redacted recovery timeline.")
+                    color: root.errorCountsKnown
+                        && Number(root.report.decoderErrors) + Number(root.report.outputErrors) === 0
+                        ? Theme.mint : Theme.yellow
+                    font.family: Theme.bodyFont; font.pixelSize: 15; wrapMode: Text.WordWrap
+                }
+                Row {
+                    anchors.horizontalCenter: parent.horizontalCenter; spacing: 14
+                    GlassButton { id: doneButton; width: 210; text: qsTr("Done"); glyph: "A"; primary: true; onClicked: AppController.showOverlay("") }
+                    GlassButton { width: 250; text: qsTr("Open diagnostics"); glyph: "X"; onClicked: { AppController.showOverlay(""); AppController.navigate("diagnostics") } }
+                }
             }
         }
         // OverlayHost owns the single reveal transform.

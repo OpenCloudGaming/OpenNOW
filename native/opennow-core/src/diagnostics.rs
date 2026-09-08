@@ -9,6 +9,34 @@ use std::time::{SystemTime, UNIX_EPOCH};
 const ENTRY_LIMIT: usize = 1_200;
 const LOG_LIMIT_BYTES: u64 = 1_500_000;
 
+pub fn embedded_drop_evidence(params: &Value) -> Value {
+    let mut evidence = serde_json::Map::new();
+    for section in ["embeddedStream", "lastSessionReport"] {
+        let Some(source) = params[section]["drops"].as_object() else {
+            continue;
+        };
+        let mut drops = serde_json::Map::new();
+        for field in [
+            "videoDropCount",
+            "audioDiscardedMs",
+            "audioPacketDropCount",
+            "callbackDropCount",
+            "otherQueueDropCount",
+        ] {
+            if let Some(value) = source.get(field).filter(|value| {
+                value.as_f64().is_some_and(|number| {
+                    (0.0..=9_007_199_254_740_991.0).contains(&number)
+                        && (field == "audioDiscardedMs" || number.fract() == 0.0)
+                })
+            }) {
+                drops.insert(field.to_owned(), value.clone());
+            }
+        }
+        evidence.insert(section.to_owned(), json!({"drops": drops}));
+    }
+    Value::Object(evidence)
+}
+
 #[derive(Clone)]
 struct Entry {
     at_ms: u128,
@@ -401,6 +429,51 @@ mod tests {
         assert!(!text.contains("/home/alice"));
         assert!(!text.contains("Alice"));
         assert!(!text.contains("/Users/alice"));
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn embedded_drop_evidence_preserves_only_bounded_typed_counters() {
+        let evidence = embedded_drop_evidence(&json!({
+            "embeddedStream": {"drops": {
+                "videoDropCount": 7, "audioDiscardedMs": 50.5,
+                "audioPacketDropCount": 2, "callbackDropCount": 3,
+                "otherQueueDropCount": 1, "token": "must-not-be-exported"
+            }},
+            "lastSessionReport": {"drops": {
+                "videoDropCount": -1, "audioDiscardedMs": "50",
+                "audioPacketDropCount": 1.5, "callbackDropCount": 1e100,
+                "otherQueueDropCount": null
+            }, "sessionId": "must-not-be-exported"}
+        }));
+        assert_eq!(
+            evidence["embeddedStream"]["drops"],
+            json!({
+                "videoDropCount": 7, "audioDiscardedMs": 50.5,
+                "audioPacketDropCount": 2, "callbackDropCount": 3,
+                "otherQueueDropCount": 1
+            })
+        );
+        assert_eq!(evidence["lastSessionReport"], json!({"drops": {}}));
+        assert_eq!(embedded_drop_evidence(&json!({})), json!({}));
+    }
+
+    #[test]
+    fn diagnostics_export_retains_embedded_drops_after_native_stop() {
+        let directory = env::temp_dir().join(format!("opennow-drop-diagnostics-{}", now_ms()));
+        let service = DiagnosticsService::new(&directory).unwrap();
+        let runtime = json!({
+            "streamer": {"status": "stopped", "queueDropCount": 0},
+            "shell": embedded_drop_evidence(&json!({
+                "embeddedStream": {"drops": {"videoDropCount": 7, "audioDiscardedMs": 50}},
+                "lastSessionReport": {"drops": {"videoDropCount": 7, "audioDiscardedMs": 50}}
+            }))
+        });
+        let exported = service.export_with_runtime(Some(&runtime)).unwrap();
+        let text = fs::read_to_string(exported["path"].as_str().unwrap()).unwrap();
+        assert!(text.contains("\"videoDropCount\": 7"));
+        assert!(text.contains("\"audioDiscardedMs\": 50"));
+        assert!(text.contains("\"lastSessionReport\""));
         let _ = fs::remove_dir_all(directory);
     }
 

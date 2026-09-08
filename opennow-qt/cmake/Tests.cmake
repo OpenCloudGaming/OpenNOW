@@ -165,6 +165,22 @@ if(BUILD_TESTING)
         COMMAND opennow-qt --smoke-test --allow-multiple-instances --desktop
             --route settings-streaming --smoke-stream-recovery --reduced-motion)
     set_tests_properties(qml-stream-recovery PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 10)
+    qt_add_resources(opennow-qt "queue-drop-acceptance"
+        PREFIX "/acceptance" BASE tests FILES tests/QueueDropsAcceptance.qml)
+    foreach(width 960 1440)
+        foreach(view stats report)
+            set(queue_drop_args)
+            if(view STREQUAL "report")
+                list(APPEND queue_drop_args --smoke-queue-report)
+            endif()
+            add_test(NAME "qml-queue-drops-${width}-${view}"
+                COMMAND opennow-qt --smoke-test --allow-multiple-instances --desktop
+                    --route settings-streaming --smoke-queue-drops --reduced-motion
+                    --smoke-width ${width} ${queue_drop_args})
+            set_tests_properties("qml-queue-drops-${width}-${view}" PROPERTIES
+                ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 15)
+        endforeach()
+    endforeach()
     add_test(NAME qml-backend-availability
         COMMAND opennow-qt --smoke-test --allow-multiple-instances --desktop
             --route settings-streaming --smoke-backend-availability --reduced-motion)

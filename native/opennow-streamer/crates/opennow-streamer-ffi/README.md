@@ -39,6 +39,16 @@ The shared decoder copies decoded images into bounded GPU snapshots isolated fro
 
 All three queues are bounded. Command submission returns `OPENNOW_STREAMER_QUEUE_FULL` rather than blocking. Responses backpressure the engine worker so an accepted command's response is retained. Unsolicited events use a drop-newest policy when their queue is full because the engine's event path cannot block latency-sensitive transport workers.
 
+Queue-drop diagnostic deltas are retained per source when periodic event delivery
+finds a full queue, then retried at the next one-second flush. The engine joins
+media producers and drains remaining drop feedback before completing stop.
+Final event delivery is also nonblocking; undeliverable final deltas are written
+directly to the native log and omitted from callback/UI totals rather than waiting
+for a stalled dispatcher. The dispatcher remains alive through engine shutdown. Callback owners must
+keep accepting events through the stop response to receive these final deltas;
+native file logging still records them if a host has already disabled callbacks.
+This does not change media queues or normal event-path backpressure.
+
 ## GPU frame lifecycle
 
 The graphics API is GPU-only. It exposes no window, swap chain, `QWindow`, CPU image, pixel buffer, or encoded-video callback.
