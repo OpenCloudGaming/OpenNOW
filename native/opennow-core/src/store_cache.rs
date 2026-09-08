@@ -3,13 +3,16 @@
 use crate::{gfn::ServiceError, store_catalog_page::RESULT_BUDGET};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex, Weak};
 
 const MAX_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_ENTRIES: usize = 512;
+
+type FetchLocks = HashMap<(PathBuf, u64), Weak<Mutex<()>>>;
 
 pub struct StoreCache {
     root: PathBuf,
@@ -17,6 +20,8 @@ pub struct StoreCache {
     // IO is serialized, but network work never holds the lock. Invalidation
     // advances the epoch so an older in-flight fetch cannot refill cleared data.
     epoch: Mutex<u64>,
+    fetches: Mutex<FetchLocks>,
+    pub requests: crate::store_requests::StoreRequests,
 }
 
 fn digest(value: &Value) -> String {
@@ -29,6 +34,8 @@ impl StoreCache {
             root: data_dir.join("store-cache-v1"),
             index: Mutex::new(None),
             epoch: Mutex::new(0),
+            fetches: Mutex::new(HashMap::new()),
+            requests: crate::store_requests::StoreRequests::default(),
         }
     }
 
@@ -62,6 +69,24 @@ impl StoreCache {
             }
             *epoch
         };
+        let fetch_lock = {
+            let mut fetches = self.fetches.lock().expect("Store fetches poisoned");
+            fetches.retain(|_, lock| lock.strong_count() > 0);
+            let entry = fetches.entry((path.clone(), epoch)).or_default();
+            match entry.upgrade() {
+                Some(lock) => lock,
+                None => {
+                    let lock = Arc::new(Mutex::new(()));
+                    *entry = Arc::downgrade(&lock);
+                    lock
+                }
+            }
+        };
+        let _fetch = crate::store_requests::lock(&fetch_lock)?;
+        if let Some(mut value) = self.read(&path) {
+            value["cacheHit"] = Value::Bool(true);
+            return Ok(value);
+        }
         let mut value = fetch()?;
         crate::requests::check()?;
         value["cacheHit"] = Value::Bool(false);
@@ -234,6 +259,71 @@ mod tests {
             .unwrap();
         assert_eq!(hit["games"][0]["id"], "saved");
         assert_eq!(hit["cacheHit"], true);
+        fs::remove_dir_all(cache.root.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn simultaneous_cache_misses_fetch_each_page_only_once() {
+        let cache = cache();
+        let ready = std::sync::Barrier::new(4);
+        let calls = std::sync::atomic::AtomicUsize::new(0);
+        std::thread::scope(|threads| {
+            let mut workers = Vec::new();
+            for _ in 0..4 {
+                workers.push(threads.spawn(|| {
+                    ready.wait();
+                    cache
+                        .load_or_fetch(&json!("a"), &json!("first"), false, || {
+                            calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                            std::thread::sleep(std::time::Duration::from_millis(100));
+                            Ok(page("shared"))
+                        })
+                        .unwrap()
+                }));
+            }
+            let results: Vec<_> = workers
+                .into_iter()
+                .map(|worker| worker.join().unwrap())
+                .collect();
+            assert_eq!(
+                results
+                    .iter()
+                    .filter(|value| value["cacheHit"] == false)
+                    .count(),
+                1
+            );
+            assert!(
+                results
+                    .iter()
+                    .all(|value| value["games"][0]["id"] == "shared")
+            );
+        });
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        fs::remove_dir_all(cache.root.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn failed_fetches_leave_saved_pages_available() {
+        let cache = cache();
+        cache
+            .load_or_fetch(&json!("a"), &json!("saved"), false, || Ok(page("saved")))
+            .unwrap();
+        assert!(
+            cache
+                .load_or_fetch(&json!("a"), &json!("missing"), false, || {
+                    Err(ServiceError {
+                        code: "rate_limited",
+                        message: "Try later".into(),
+                    })
+                })
+                .is_err()
+        );
+        let result = cache
+            .load_or_fetch(&json!("a"), &json!("saved"), false, || {
+                panic!("cached page fetched again")
+            })
+            .unwrap();
+        assert_eq!(result["cacheHit"], true);
         fs::remove_dir_all(cache.root.parent().unwrap()).unwrap();
     }
     #[test]

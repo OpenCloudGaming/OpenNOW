@@ -18,6 +18,7 @@ mod settings;
 mod store_cache;
 mod store_catalog_page;
 mod store_index;
+mod store_requests;
 mod streamer;
 mod telemetry;
 mod thanks;
