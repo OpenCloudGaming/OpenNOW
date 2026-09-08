@@ -35,14 +35,18 @@ int AcceptanceSession::startSmokeWorkload()
     if (m_smokeTest && m_arguments.contains(u"--smoke-frame-generation-stats"_s))
         return startFrameGenerationStatsWorkload();
     if (m_smokeTest && (m_arguments.contains(u"--smoke-frame-generation"_s)
+                       || m_arguments.contains(u"--smoke-stream-stats"_s)
                        || m_arguments.contains(u"--smoke-controller-metadata"_s)
                        || m_arguments.contains(u"--smoke-custom-background"_s))) {
         const bool controllerMetadata = m_arguments.contains(u"--smoke-controller-metadata"_s);
         const bool customBackground = m_arguments.contains(u"--smoke-custom-background"_s);
+        const bool streamStats = m_arguments.contains(u"--smoke-stream-stats"_s);
         QQmlComponent component(&m_engine, QUrl(controllerMetadata
             ? u"qrc:/acceptance/ControllerMetadataAcceptance.qml"_s
             : customBackground
             ? u"qrc:/acceptance/CustomBackgroundAcceptance.qml"_s
+            : streamStats
+            ? u"qrc:/acceptance/StreamStatsAcceptance.qml"_s
             : u"qrc:/acceptance/FrameGenerationAcceptance.qml"_s));
         auto *fixture = component.create();
         if (!fixture) { qCritical() << component.errors(); return EXIT_FAILURE; }

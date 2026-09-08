@@ -53,6 +53,7 @@ StreamVideoItem::StreamVideoItem(QQuickItem *parent)
             if (!s_nativeRuntime || !s_nativeRuntime->running()) {
                 m_remoteCursorKnown = false;
                 m_remoteCursorVisible = false;
+                m_remoteCursor = QCursor();
                 if (m_relativeMouse) setRelativeMouse(false);
                 else unsetCursor();
             }

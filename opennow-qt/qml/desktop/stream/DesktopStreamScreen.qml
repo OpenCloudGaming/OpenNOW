@@ -115,31 +115,6 @@ FocusScope {
         }
     }
 
-    Rectangle {
-        anchors.horizontalCenter: parent.horizontalCenter
-        layer.enabled: HdrOutput.chromeRequired
-        layer.effect: HdrChromeEffect {}
-        anchors.bottom: parent.bottom
-        anchors.bottomMargin: 24
-        width: liveHints.implicitWidth + 28
-        height: 32
-        radius: 16
-        visible: root.streaming && AppController.overlay === ""
-        color: "#9904060A"
-        border.width: 1
-        border.color: "#24FFFFFF"
-        z: 2
-
-        Row {
-            id: liveHints
-            anchors.centerIn: parent
-            spacing: 18
-            DesktopKeyHint { keyText: "Ctrl G"; label: qsTr("Session") }
-            DesktopKeyHint { keyText: "F3"; label: qsTr("Stats") }
-            DesktopKeyHint { keyText: "F11"; label: qsTr("Fullscreen") }
-        }
-    }
-
     function restoreStreamFocus() {
         if (!root.visible || root.launchCovered
                 || ShellStore.streamOverlayBlocksGameplayInput(AppController.overlay))

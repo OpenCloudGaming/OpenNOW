@@ -54,8 +54,9 @@ int AcceptanceSession::startStreamExitWorkload()
                 Q_ARG(QString, u"stop-stream"_s));
         };
         if (!require(!m_qmlWarningOccurred, "QML warning")
-            || !require((window->visibility() == QWindow::FullScreen) == fullscreen,
-                        "confirmation changed fullscreen state")) return;
+            || !require(window->visibility() == (fullscreen && state->step < 6
+                            ? QWindow::FullScreen : QWindow::Windowed),
+                        "confirmation or completed exit has the wrong window mode")) return;
         if (state->step == 0)
             state->surface = window->findChild<QQuickItem *>(u"streamSurfaceHost"_s);
         if (state->step < 6 && !require(state->surface && state->surface->isVisible()

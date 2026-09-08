@@ -39,7 +39,7 @@ bool swapsMacControlAndMeta()
 }
 }
 
-quint16 StreamVideoItem::windowsVirtualKey(int key)
+quint16 StreamVideoItem::windowsVirtualKey(int key, Qt::KeyboardModifiers modifiers)
 {
     if (key >= Qt::Key_A && key <= Qt::Key_Z) return static_cast<quint16>(key);
     if (key >= Qt::Key_0 && key <= Qt::Key_9) return static_cast<quint16>(key);
@@ -52,16 +52,37 @@ quint16 StreamVideoItem::windowsVirtualKey(int key)
     case Qt::Key_Backspace: return 0x08;
     case Qt::Key_Tab: return 0x09;
     case Qt::Key_Space: return 0x20;
+    case Qt::Key_Exclam: return 0x31;
+    case Qt::Key_At: return 0x32;
+    case Qt::Key_NumberSign: return 0x33;
+    case Qt::Key_Dollar: return 0x34;
+    case Qt::Key_Percent: return 0x35;
+    case Qt::Key_AsciiCircum: return 0x36;
+    case Qt::Key_Ampersand: return 0x37;
+    case Qt::Key_Asterisk: return modifiers.testFlag(Qt::KeypadModifier) ? 0x6a : 0x38;
+    case Qt::Key_ParenLeft: return 0x39;
+    case Qt::Key_ParenRight: return 0x30;
+    case Qt::Key_Plus: return modifiers.testFlag(Qt::KeypadModifier) ? 0x6b : 0xbb;
+    case Qt::Key_Underscore:
     case Qt::Key_Minus: return 0xbd;
     case Qt::Key_Equal: return 0xbb;
+    case Qt::Key_BraceLeft:
     case Qt::Key_BracketLeft: return 0xdb;
+    case Qt::Key_BraceRight:
     case Qt::Key_BracketRight: return 0xdd;
+    case Qt::Key_Bar:
     case Qt::Key_Backslash: return 0xdc;
+    case Qt::Key_Colon:
     case Qt::Key_Semicolon: return 0xba;
+    case Qt::Key_QuoteDbl:
     case Qt::Key_Apostrophe: return 0xde;
+    case Qt::Key_AsciiTilde:
     case Qt::Key_QuoteLeft: return 0xc0;
+    case Qt::Key_Less:
     case Qt::Key_Comma: return 0xbc;
+    case Qt::Key_Greater:
     case Qt::Key_Period: return 0xbe;
+    case Qt::Key_Question:
     case Qt::Key_Slash: return 0xbf;
     case Qt::Key_Right: return 0x27;
     case Qt::Key_Left: return 0x25;
@@ -83,8 +104,6 @@ quint16 StreamVideoItem::windowsVirtualKey(int key)
     case Qt::Key_ScrollLock: return 0x91;
     case Qt::Key_Pause: return 0x13;
     case Qt::Key_Menu: return 0x5d;
-    case Qt::Key_Plus: return 0x6b;
-    case Qt::Key_Asterisk: return 0x6a;
     default: return 0;
     }
 }
@@ -146,8 +165,9 @@ void StreamVideoItem::focusOutEvent(QFocusEvent *event)
 
 quint32 StreamVideoItem::keyIdentity(const QKeyEvent *event) const
 {
-    return event->nativeScanCode() != 0 ? event->nativeScanCode()
-                                        : static_cast<quint32>(event->key());
+    if (event->nativeScanCode() != 0) return event->nativeScanCode();
+    const auto virtualKey = windowsVirtualKey(event->key(), event->modifiers());
+    return virtualKey != 0 ? virtualKey : static_cast<quint32>(event->key());
 }
 
 void StreamVideoItem::keyPressEvent(QKeyEvent *event)
@@ -170,7 +190,7 @@ void StreamVideoItem::keyPressEvent(QKeyEvent *event)
         event->accept();
         return;
     }
-    const auto virtualKey = windowsVirtualKey(event->key());
+    const auto virtualKey = windowsVirtualKey(event->key(), event->modifiers());
     if (virtualKey == 0) {
         event->ignore();
         return;
@@ -334,6 +354,7 @@ void StreamVideoItem::itemChange(ItemChange change, const ItemChangeData &data)
     if (change == ItemVisibleHasChanged && !isVisible()) {
         m_remoteCursorKnown = false;
         m_remoteCursorVisible = false;
+        m_remoteCursor = QCursor();
         if (m_relativeMouse) setRelativeMouse(false);
         else unsetCursor();
     }
@@ -526,7 +547,7 @@ void StreamVideoItem::releaseInput()
     if (pendingRelativeMouse && m_relativeMouse != *pendingRelativeMouse) {
         m_relativeMouse = *pendingRelativeMouse;
         if (m_relativeMouse) setCursor(Qt::BlankCursor);
-        else unsetCursor();
+        else setCursor(m_remoteCursor);
         emit relativeMouseChanged();
     }
 }
@@ -626,7 +647,7 @@ void StreamVideoItem::setRelativeMouse(bool relative)
     } else {
         ungrabMouse();
         releaseCursorConfinement();
-        unsetCursor();
+        setCursor(m_remoteCursor);
     }
     syncCaptureState();
     if (relative && m_captureActive && !WaylandPointerCapture::isWayland()) {
@@ -635,6 +656,12 @@ void StreamVideoItem::setRelativeMouse(bool relative)
         m_lastMousePosition = mapFromGlobal(anchor);
     }
     emit relativeMouseChanged();
+}
+
+void StreamVideoItem::setRemoteCursorShape(const QCursor &cursor)
+{
+    m_remoteCursor = cursor;
+    if (!m_relativeMouse) setCursor(m_remoteCursor);
 }
 
 void StreamVideoItem::applyRemoteCursor(const QByteArray &bytes)
@@ -675,20 +702,20 @@ void StreamVideoItem::applyRemoteCursor(const QByteArray &bytes)
                            0, pixmap.width() - 1),
                 std::clamp(qRound(static_cast<quint8>(bytes[3]) / metadata.scale),
                            0, pixmap.height() - 1));
-            setCursor(QCursor(pixmap, hotspot.x(), hotspot.y()));
+            setRemoteCursorShape(QCursor(pixmap, hotspot.x(), hotspot.y()));
             return;
         }
     }
     switch (cursorId) {
-    case 2: setCursor(Qt::IBeamCursor); break;
-    case 3: setCursor(Qt::WaitCursor); break;
-    case 4: setCursor(Qt::CrossCursor); break;
-    case 6: setCursor(Qt::SizeFDiagCursor); break;
-    case 7: setCursor(Qt::SizeBDiagCursor); break;
-    case 8: setCursor(Qt::SizeHorCursor); break;
-    case 9: setCursor(Qt::SizeVerCursor); break;
-    case 10: setCursor(Qt::SizeAllCursor); break;
-    case 12: setCursor(Qt::PointingHandCursor); break;
-    default: setCursor(Qt::ArrowCursor); break;
+    case 2: setRemoteCursorShape(Qt::IBeamCursor); break;
+    case 3: setRemoteCursorShape(Qt::WaitCursor); break;
+    case 4: setRemoteCursorShape(Qt::CrossCursor); break;
+    case 6: setRemoteCursorShape(Qt::SizeFDiagCursor); break;
+    case 7: setRemoteCursorShape(Qt::SizeBDiagCursor); break;
+    case 8: setRemoteCursorShape(Qt::SizeHorCursor); break;
+    case 9: setRemoteCursorShape(Qt::SizeVerCursor); break;
+    case 10: setRemoteCursorShape(Qt::SizeAllCursor); break;
+    case 12: setRemoteCursorShape(Qt::PointingHandCursor); break;
+    default: setRemoteCursorShape(Qt::ArrowCursor); break;
     }
 }

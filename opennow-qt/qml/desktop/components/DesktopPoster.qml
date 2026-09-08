@@ -50,23 +50,13 @@ ItemDelegate {
                 ColorAnimation { duration: Theme.focusDuration }
             }
         }
-        Column {
+        DesktopPosterOverlay {
             x: root.artGutter + 9
             anchors.bottom: art.bottom
             anchors.bottomMargin: 12
             width: root.artWidth - 18
-            spacing: 7
+            game: root.game
             visible: root.cardLifted && !root.showTitle
-            Text { width: parent.width; text: root.game ? String(root.game.title || qsTr("Game")) : qsTr("Game"); color: DesktopTokens.text; elide: Text.ElideRight; font.family: DesktopTokens.bodyFont; font.pixelSize: 12; font.weight: Font.Bold }
-            Rectangle {
-                width: parent.width; height: 26; radius: 8; color: "#F2FFFFFF"
-                Row {
-                    anchors.centerIn: parent
-                    spacing: 6
-                    DesktopGlyph { width: 8; height: 10; icon: "desktop-play.svg" }
-                    Text { text: qsTr("Play"); color: DesktopTokens.shell; font.family: DesktopTokens.bodyFont; font.pixelSize: 11; font.weight: Font.Bold }
-                }
-            }
         }
         Column {
             x: root.artGutter; y: root.artGutter + root.artHeight + 6; width: root.artWidth; spacing: 5
