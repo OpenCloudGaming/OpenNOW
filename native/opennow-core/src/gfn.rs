@@ -373,6 +373,7 @@ pub struct GfnService {
     account_connections: AccountConnectionsService,
     persistent_storage: PersistentStorageService,
     store_cache: crate::store_cache::StoreCache,
+    server_vpc_cache: crate::server_vpc_cache::ServerVpcCache,
     auth_operation: Mutex<()>,
     state: Mutex<ServiceState>,
 }
@@ -409,6 +410,7 @@ impl GfnService {
             vault,
             profiles: ConsoleProfiles::load(&data_dir),
             store_cache: crate::store_cache::StoreCache::new(data_dir),
+            server_vpc_cache: crate::server_vpc_cache::ServerVpcCache::default(),
             auth_operation: Mutex::new(()),
             state: Mutex::new(ServiceState::default()),
         }
@@ -1282,56 +1284,53 @@ impl GfnService {
             let vpc_id = self.vpc_id(&session, token, Some(&self.store_cache.requests))?;
             // Each retry starts at the SAME cursor. Never truncate a fetched page:
             // doing so would skip games when returning NVIDIA's end cursor.
-            crate::store_catalog_page::fetch_bounded_page(
-                page.limit.min(crate::store_requests::PAGE_SIZE),
-                |fetch_count| {
-                    let searching = !page.search.is_empty();
-                    let query = if searching {
-                        STORE_SEARCH_QUERY
-                    } else {
-                        STORE_BROWSE_QUERY
-                    };
-                    let mut variables = json!({
-                        "vpcId":vpc_id, "locale":"en_US",
-                        "sortString":"itemMetadata.relevance:DESC,sortName:ASC",
-                        "fetchCount":fetch_count, "cursor":page.cursor, "filters":{}
+            crate::store_catalog_page::fetch_bounded_page(page.limit, |fetch_count| {
+                let searching = !page.search.is_empty();
+                let query = if searching {
+                    STORE_SEARCH_QUERY
+                } else {
+                    STORE_BROWSE_QUERY
+                };
+                let mut variables = json!({
+                    "vpcId":vpc_id, "locale":"en_US",
+                    "sortString":"itemMetadata.relevance:DESC,sortName:ASC",
+                    "fetchCount":fetch_count, "cursor":page.cursor, "filters":{}
+                });
+                if searching {
+                    variables["searchString"] = Value::String(page.search.clone());
+                }
+                let response = self.store_cache.requests.send(
+                    client
+                        .post(GRAPHQL_URL)
+                        .headers(graphql_headers(token)?)
+                        .json(&json!({"query":query,"variables":variables})),
+                    "GFN store query failed",
+                )?;
+                if !response.status().is_success() {
+                    return Err(ServiceError::response("GFN store query failed", response));
+                }
+                let payload = response
+                    .json::<Value>()
+                    .map_err(|error| ServiceError::network("Invalid GFN store response", error))?;
+                if let Some(message) = graphql_error_message(&payload) {
+                    return Err(ServiceError {
+                        code: "graphql_error",
+                        message,
                     });
-                    if searching {
-                        variables["searchString"] = Value::String(page.search.clone());
-                    }
-                    let response = self.store_cache.requests.send(
-                        client
-                            .post(GRAPHQL_URL)
-                            .headers(graphql_headers(token)?)
-                            .json(&json!({"query":query,"variables":variables})),
-                        "GFN store query failed",
-                    )?;
-                    if !response.status().is_success() {
-                        return Err(ServiceError::response("GFN store query failed", response));
-                    }
-                    let payload = response.json::<Value>().map_err(|error| {
-                        ServiceError::network("Invalid GFN store response", error)
-                    })?;
-                    if let Some(message) = graphql_error_message(&payload) {
-                        return Err(ServiceError {
-                            code: "graphql_error",
-                            message,
-                        });
-                    }
-                    let apps = &payload["data"]["apps"];
-                    let items = apps["items"].as_array().ok_or_else(|| ServiceError {
-                        code: "invalid_upstream_response",
-                        message: "Store response has no games array".to_owned(),
-                    })?;
-                    let games: Vec<Value> = items.iter().filter_map(app_to_game).collect();
-                    crate::store_catalog_page::page_result(
-                        &page.cursor,
-                        games,
-                        &apps["pageInfo"],
-                        now_ms(),
-                    )
-                },
-            )
+                }
+                let apps = &payload["data"]["apps"];
+                let items = apps["items"].as_array().ok_or_else(|| ServiceError {
+                    code: "invalid_upstream_response",
+                    message: "Store response has no games array".to_owned(),
+                })?;
+                let games: Vec<Value> = items.iter().filter_map(app_to_game).collect();
+                crate::store_catalog_page::page_result(
+                    &page.cursor,
+                    games,
+                    &apps["pageInfo"],
+                    now_ms(),
+                )
+            })
         })
     }
 
@@ -1674,30 +1673,31 @@ impl GfnService {
         let Ok(headers) = lcars_headers(token, "NATIVE", "NVIDIA-CLASSIC", false) else {
             return Ok("GFN-PC".to_owned());
         };
-        let request = self.client.get(url).headers(headers);
-        let response = match requests {
-            Some(requests) => requests.send(request, "Store server info failed"),
-            None => request
-                .send()
-                .map_err(|error| ServiceError::network("Server info failed", error)),
-        };
-        let response = match response {
-            Ok(response) => response,
-            Err(error) if matches!(error.code, "rate_limited" | "cancelled") => return Err(error),
-            Err(_) => return Ok("GFN-PC".to_owned()),
-        };
-        if !response.status().is_success() {
-            return Ok("GFN-PC".to_owned());
-        }
-        Ok(response
-            .json::<Value>()
-            .ok()
-            .and_then(|payload| {
-                payload["requestStatus"]["serverId"]
-                    .as_str()
-                    .map(ToOwned::to_owned)
+        self.server_vpc_cache
+            .resolve(base.as_str(), &session.user.user_id, token, || {
+                let request = self.client.get(url).headers(headers);
+                let response = match requests {
+                    Some(requests) => requests.send(request, "Store server info failed"),
+                    None => request
+                        .send()
+                        .map_err(|error| ServiceError::network("Server info failed", error)),
+                };
+                let response = match response {
+                    Ok(response) => response,
+                    Err(error) if matches!(error.code, "rate_limited" | "cancelled") => {
+                        return Err(error);
+                    }
+                    Err(_) => return Ok(None),
+                };
+                if !response.status().is_success() {
+                    return Ok(None);
+                }
+                Ok(response.json::<Value>().ok().and_then(|payload| {
+                    payload["requestStatus"]["serverId"]
+                        .as_str()
+                        .map(ToOwned::to_owned)
+                }))
             })
-            .unwrap_or_else(|| "GFN-PC".to_owned()))
     }
 
     fn fetch_user_info(&self, tokens: &AuthTokens) -> Result<AuthUser, ServiceError> {

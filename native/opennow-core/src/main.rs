@@ -14,6 +14,7 @@ mod network;
 mod persistent_storage;
 mod proxy;
 mod requests;
+mod server_vpc_cache;
 mod settings;
 mod store_cache;
 mod store_catalog_page;
