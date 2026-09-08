@@ -34,7 +34,7 @@ OpenNOW also uses a dedicated Raw Input thread plus SDL grab. Official logs `acc
 
 ## Shared shape
 
-Both clients run OPTIONS, DESCRIBE, SETUP, ANNOUNCE, then optional PLAY over WebSocket-carried RTSP. Video is raw SRTP on Mjolnir. Audio and input ride the bundle. NACK envelope numbers match. 1024-packet wait queue, 2048 pending NACKs, 3 retries, 1280-byte packets.
+Both clients run OPTIONS, DESCRIBE, SETUP, ANNOUNCE, then optional PLAY over WebSocket-carried RTSP. Video is raw SRTP on Mjolnir. Audio and input ride the bundle. NACK envelope numbers match. 1024-packet wait queue, 2048 pending NACKs, 3 retries. OpenNOW retains the 1280-byte video packet baseline except on detected VPN routes whose outgoing interface MTU requires smaller packets.
 
 The differences start after that shared envelope. Color, recovery extras, audio jitter, host mouse settings, and what CloudMatch is allowed to request.
 
