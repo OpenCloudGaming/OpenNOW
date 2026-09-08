@@ -96,6 +96,7 @@ const NVST_FEC_RTP_HEADER_ALLOWANCE: usize = 16;
 const DEFAULT_NVST_VIDEO_PACKET_SIZE: usize = 1_280;
 const MIN_NVST_VIDEO_PACKET_SIZE: usize = 256;
 const MAX_NVST_VIDEO_PACKET_SIZE: usize = 65_519;
+const FALLBACK_NVST_IP_MTU: usize = 1_280;
 // Match the official client's bounded NACK/dejitter envelope: it keeps up to
 // 1,024 RTP packets available for late or retransmitted packets and permits a
 // 2,048-entry NACK queue. A 32-packet window is only a few milliseconds at
@@ -4110,6 +4111,55 @@ pub fn advertised_nvst_ipv4() -> Option<IpAddr> {
     discover_routed_ipv4()
 }
 
+pub fn nvst_video_packet_size(peer: IpAddr) -> std::io::Result<usize> {
+    let route_mtu = match mtu::interface_and_mtu(peer) {
+        Ok((_, mtu)) => Some(mtu),
+        Err(error) => {
+            opennow_streamer_protocol::log::log_line(
+                "WARN",
+                "nvst-udp",
+                &format!(
+                    "video route MTU lookup failed: {error}; using IP MTU {FALLBACK_NVST_IP_MTU}"
+                ),
+            );
+            None
+        }
+    };
+    let packet_size = video_packet_size_for_mtu(peer, route_mtu)?;
+    opennow_streamer_protocol::log::log_line(
+        "INFO",
+        "nvst-udp",
+        &format!(
+            "video route peer={peer} interface_mtu={} mtu_fallback={} packet_size={packet_size}",
+            route_mtu.unwrap_or(FALLBACK_NVST_IP_MTU),
+            route_mtu.is_none(),
+        ),
+    );
+    Ok(packet_size)
+}
+
+fn video_packet_size_for_mtu(peer: IpAddr, route_mtu: Option<usize>) -> std::io::Result<usize> {
+    let ip_header_bytes = if peer.is_ipv4() { 20 } else { 40 };
+    let udp_header_bytes = 8;
+    let overhead = ip_header_bytes
+        + udp_header_bytes
+        + NVST_FEC_RTP_HEADER_ALLOWANCE
+        + SRTP_AEAD_AES_GCM_TAG_LEN;
+    let packet_size = route_mtu
+        .unwrap_or(FALLBACK_NVST_IP_MTU)
+        .saturating_sub(overhead)
+        .min(DEFAULT_NVST_VIDEO_PACKET_SIZE)
+        / 16
+        * 16;
+    if packet_size < MIN_NVST_VIDEO_PACKET_SIZE {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "video route MTU is too small for an NVST video packet",
+        ));
+    }
+    Ok(packet_size)
+}
+
 /// ICE + DTLS identity that already owns the reserved bundle socket.
 #[derive(Debug, Clone)]
 pub struct NvstBundleIdentity {
@@ -6811,6 +6861,43 @@ mod tests {
                 .unwrap(),
             "127.0.0.1"
         );
+    }
+
+    #[test]
+    fn video_packet_sizing_reserves_wire_overhead_on_tunnel_routes() {
+        for (address, mtu, expected) in [
+            ("192.0.2.1", Some(1500), 1280),
+            ("192.0.2.1", Some(1280), 1216),
+            ("192.0.2.1", Some(1200), 1136),
+            ("192.0.2.1", None, 1216),
+            ("2001:db8::1", Some(1280), 1200),
+            ("2001:db8::1", None, 1200),
+            ("127.0.0.1", Some(65536), 1280),
+        ] {
+            let peer = address.parse().unwrap();
+            let packet_size = video_packet_size_for_mtu(peer, mtu).unwrap();
+            assert_eq!(packet_size, expected);
+            let ip_header_bytes = if peer.is_ipv4() { 20 } else { 40 };
+            assert!(packet_size + 16 + 16 + 8 + ip_header_bytes <= mtu.unwrap_or(1280));
+        }
+        for mtu in [0, 59, 60, 300] {
+            assert!(video_packet_size_for_mtu("192.0.2.1".parse().unwrap(), Some(mtu)).is_err());
+        }
+    }
+
+    #[test]
+    fn tunnel_packet_size_is_preserved_by_the_handoff_and_fec_receiver() {
+        let mut handoff = legacy_handoff();
+        let packet_size = video_packet_size_for_mtu(peer().ip(), Some(1280)).unwrap();
+        handoff["packetSize"] = serde_json::json!(packet_size);
+        let config = NvstVideoConfig::from_legacy_handoff(&handoff, None).unwrap();
+        assert_eq!(config.video_packet_size, packet_size);
+        let receiver = NvstVideoReceiver::new(config.clone());
+        assert_eq!(receiver.fec_reorder.shard_len, packet_size + 16);
+        let plaintext = build_plaintext_rtp(1, FLAG_SOF | FLAG_EOF, 1, &vec![0; packet_size - 16]);
+        assert_eq!(plaintext.len(), receiver.fec_reorder.shard_len);
+        let encrypted = protect_for_test(&test_srtp(&config), plaintext, 0);
+        assert!(encrypted.len() + 20 + 8 <= 1280);
     }
 
     #[test]

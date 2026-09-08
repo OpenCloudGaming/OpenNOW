@@ -6,7 +6,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use opennow_streamer_protocol::SessionContext;
-use opennow_streamer_transport::ReservedNvstBundle;
+use opennow_streamer_transport::{ReservedNvstBundle, nvst_video_packet_size};
 use serde_json::{Value, json};
 use tungstenite::client::IntoClientRequest;
 use tungstenite::http::{HeaderValue, Uri};
@@ -523,6 +523,10 @@ pub fn prepare_owned_nvst(
                 format!("Could not select the local route to the NVST media peer: {error}"),
             )
         })?;
+    let video_packet_size = nvst_video_packet_size(video_peer_ip.parse().map_err(|_| {
+        NvstRtspError::new("invalid-media-peer", "NVST video peer is not an IP address")
+    })?)
+    .map_err(|error| NvstRtspError::new("nvst-video-mtu-invalid", error.to_string()))?;
     opennow_streamer_protocol::log::log_line(
         "INFO",
         "transport",
@@ -569,7 +573,7 @@ pub fn prepare_owned_nvst(
 
     let mut handoff = json!({
         "clientUdpPort":client_port,
-        "packetSize":1280,
+        "packetSize":video_packet_size,
         "mjolnirUdpPort":mjolnir_port,
         "videoPeerIp":video_peer_ip,
         "videoPeerPort":video_peer_port,
@@ -630,6 +634,7 @@ pub fn prepare_owned_nvst(
             password: handoff["localIcePassword"].as_str().unwrap_or_default(),
             fingerprint: handoff["localDtlsFingerprint"].as_str().unwrap_or_default(),
             video_port: video_peer_port,
+            video_packet_size,
             rtcp_on_sctp,
             microphone_available,
         },
@@ -669,6 +674,7 @@ struct AnnounceParams<'a> {
     password: &'a str,
     fingerprint: &'a str,
     video_port: u16,
+    video_packet_size: usize,
     rtcp_on_sctp: bool,
     microphone_available: bool,
 }
@@ -709,7 +715,7 @@ fn build_announce(context: &SessionContext, params: AnnounceParams<'_>) -> Strin
         format!("a=x-nv-video[0].clientViewportHt:{height}"),
         "a=x-nv-video[0].videoSplitEncodeStripsPerFrame:64".to_owned(),
         "a=x-nv-video[0].updateSplitEncodeStateDynamically:1".to_owned(),
-        "a=x-nv-video[0].packetSize:1280".to_owned(),
+        format!("a=x-nv-video[0].packetSize:{}", params.video_packet_size),
         "a=x-nv-video[0].enableRtpNack:1".to_owned(),
         "a=x-nv-video[0].rtpNackQueueLength:2048".to_owned(),
         "a=x-nv-video[0].rtpNackQueueMaxPackets:1024".to_owned(),
@@ -1280,6 +1286,7 @@ mod tests {
                 password: "abcdefghijklmnopqrstuv",
                 fingerprint: "AA:BB",
                 video_port: 5004,
+                video_packet_size: 1280,
                 rtcp_on_sctp: true,
                 microphone_available: false,
             },
@@ -1293,6 +1300,32 @@ mod tests {
         assert!(sdp.contains("a=x-nv-general.rtcDataChannelOnNativeBundle:1"));
         assert!(sdp.contains("a=x-nv-runtime.encryptionKey:"));
         assert!(sdp.contains("m=video 5004"));
+    }
+
+    #[test]
+    fn announce_preserves_the_route_selected_video_packet_size() {
+        for video_packet_size in [1280, 1216, 1200, 1136] {
+            let sdp = build_announce(
+                &context(),
+                AnnounceParams {
+                    key: &"01".repeat(32),
+                    key_id: 7,
+                    port: 49006,
+                    address: "192.0.2.10",
+                    ufrag: "abcd",
+                    password: "abcdefghijklmnopqrstuv",
+                    fingerprint: "AA:BB",
+                    video_port: 5004,
+                    video_packet_size,
+                    rtcp_on_sctp: true,
+                    microphone_available: false,
+                },
+            );
+            assert_eq!(
+                sdp_attribute(&sdp, "video[0].packetSize"),
+                Some(video_packet_size.to_string())
+            );
+        }
     }
 
     #[test]
@@ -1318,6 +1351,7 @@ mod tests {
                     password: "abcdefghijklmnopqrstuv",
                     fingerprint: "AA:BB",
                     video_port: 5004,
+                    video_packet_size: 1280,
                     rtcp_on_sctp: true,
                     microphone_available: false,
                 },
@@ -1343,6 +1377,7 @@ mod tests {
                 password: "abcdefghijklmnopqrstuv",
                 fingerprint: "AA:BB",
                 video_port: 5004,
+                video_packet_size: 1280,
                 rtcp_on_sctp: true,
                 microphone_available: false,
             },
@@ -1379,6 +1414,7 @@ mod tests {
                         password: "abcdefghijklmnopqrstuv",
                         fingerprint: "AA:BB",
                         video_port: 5004,
+                        video_packet_size: 1280,
                         rtcp_on_sctp: true,
                         microphone_available: available,
                     },

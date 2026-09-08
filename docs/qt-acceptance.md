@@ -106,7 +106,18 @@ ten minutes. Exercise the following without restarting the app:
 11. Force one recoverable network interruption and one graphics-device or native-runtime failure.
    Confirm bounded reconnect/reinitialization behavior, no stuck input, and a usable error if
    recovery is exhausted.
-12. Export both the redacted diagnostic report and **live evidence** from the Diagnostics screen
+12. For VPN compatibility, start fresh sessions with Cloudflare WARP off and on, keeping the
+    same game and stream settings. Record the OS, WARP version, and tunnel mode (WireGuard or
+    MASQUE). Confirm first-frame playback, audio, and input with WARP still enabled. The native
+    `nvst-udp` log reports the video peer's `interface_mtu`, `mtu_fallback`, and `packet_size`;
+    a 1,280-byte IPv4 interface should select 1,216, while a 1,500-byte interface retains 1,280.
+    These are NVST payload sizes, not complete IP packet sizes: sizing reserves IP, UDP, RTP/FEC,
+    and the largest supported SRTP authentication tag, then rounds down to 16 bytes. If interface
+    discovery fails, sizing assumes a 1,280-byte IP MTU. This queries the local outgoing interface,
+    not the full Internet path, and does not bypass a VPN or a firewall blocking UDP. Keep paired
+    diagnostic exports if video still fails; changing WARP during a live session is a separate
+    route-change/recovery test, not evidence that fresh-session negotiation passed.
+13. Export both the redacted diagnostic report and **live evidence** from the Diagnostics screen
    after the run. The live export is direct machine-readable JSON and must report
    `observedPass: true`; it includes hashed screenshot/recording/thumbnail metadata and bounded
    NVST transport, first-frame, input ownership, guide, recovery and error checks without
