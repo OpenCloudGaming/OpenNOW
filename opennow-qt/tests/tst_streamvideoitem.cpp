@@ -303,6 +303,104 @@ private slots:
         QCOMPARE(StreamVideoItem::inputModifiers(Qt::ShiftModifier, Qt::Key_Shift), quint16(0));
     }
 
+    void tabDoesNotStealGameplayFocus_data()
+    {
+        QTest::addColumn<int>("key");
+        QTest::addColumn<bool>("fullscreen");
+        for (const bool fullscreen : {false, true}) {
+            const auto mode = fullscreen ? "fullscreen" : "windowed";
+            QTest::newRow(qPrintable(QStringLiteral("tab-%1").arg(mode)))
+                << int(Qt::Key_Tab) << fullscreen;
+            QTest::newRow(qPrintable(QStringLiteral("backtab-%1").arg(mode)))
+                << int(Qt::Key_Backtab) << fullscreen;
+        }
+    }
+
+    void tabDoesNotStealGameplayFocus()
+    {
+        QFETCH(int, key);
+        QFETCH(bool, fullscreen);
+        static OpenNowStreamerConfig callbacks;
+        static QList<QList<quint16>> inputCalls;
+        inputCalls.clear();
+        NativeStreamRuntime::Api api{};
+        api.create = [](const OpenNowStreamerConfig *config, OpenNowStreamer **output) {
+            callbacks = *config;
+            *output = reinterpret_cast<OpenNowStreamer *>(new int(1));
+            return OPENNOW_STREAMER_OK;
+        };
+        api.destroy = [](OpenNowStreamer *handle) {
+            delete reinterpret_cast<int *>(handle);
+            return OPENNOW_STREAMER_OK;
+        };
+        api.send = [](const OpenNowStreamer *, const std::uint8_t *, std::size_t) {
+            return OPENNOW_STREAMER_OK;
+        };
+        api.setCaptureActive = [](const OpenNowStreamer *, bool, bool, std::uintptr_t, bool *raw) {
+            *raw = false;
+            return OPENNOW_STREAMER_OK;
+        };
+        api.submitKey = [](const OpenNowStreamer *, std::uint16_t vk,
+                           std::uint16_t modifiers, bool pressed) {
+            inputCalls.append(QList<quint16>{vk, modifiers, quint16(pressed)});
+            return OPENNOW_STREAMER_OK;
+        };
+        NativeStreamRuntime runtime(api);
+        QVERIFY(runtime.start());
+        StreamVideoItem::setNativeStreamRuntime(&runtime);
+        const auto reset = qScopeGuard([] { StreamVideoItem::setNativeStreamRuntime(nullptr); });
+        QVERIFY(runtime.send({{QStringLiteral("type"), QStringLiteral("start")},
+                              {QStringLiteral("id"), QStringLiteral("keyboard-focus")}}));
+        const QByteArray ready = R"({"id":"keyboard-focus","type":"ok"})";
+        callbacks.response_callback(reinterpret_cast<const std::uint8_t *>(ready.constData()),
+                                    ready.size(), callbacks.user_data);
+        QTRY_VERIFY(runtime.inputAllowed());
+        QQuickWindow window;
+        window.resize(640, 480);
+        auto *item = new StreamVideoItem(window.contentItem());
+        item->setRenderCallback({});
+        item->setSize(window.size());
+        auto *other = new QQuickItem(window.contentItem());
+        other->setActiveFocusOnTab(true);
+        if (fullscreen) window.showFullScreen();
+        else window.showNormal();
+        window.requestActivate();
+        QTRY_VERIFY(window.isActive());
+        item->forceActiveFocus();
+        QTRY_VERIFY(item->captureActive());
+        const auto modifiers = key == Qt::Key_Backtab ? Qt::ShiftModifier : Qt::NoModifier;
+        QKeyEvent press(QEvent::KeyPress, key, modifiers, 23, 0, 0);
+        QCoreApplication::sendEvent(&window, &press);
+        QCOMPARE(window.activeFocusItem(), item);
+        for (int i = 0; i < 3; ++i) {
+            QKeyEvent repeat(QEvent::KeyPress, key, modifiers, 23, 0, 0, {}, true);
+            QCoreApplication::sendEvent(&window, &repeat);
+            QCOMPARE(window.activeFocusItem(), item);
+            QVERIFY(item->captureActive());
+        }
+        QKeyEvent release(QEvent::KeyRelease, key, modifiers, 23, 0, 0);
+        QCoreApplication::sendEvent(&window, &release);
+        const auto wireModifiers = quint16(key == Qt::Key_Backtab ? 1 : 0);
+        QCOMPARE(inputCalls, (QList<QList<quint16>>{
+            {0x09, wireModifiers, 1}, {0x09, wireModifiers, 0}}));
+        for (const auto movement : {Qt::Key_W, Qt::Key_A, Qt::Key_S, Qt::Key_D}) {
+            inputCalls.clear();
+            QTest::keyClick(&window, movement);
+            QCOMPARE(inputCalls, (QList<QList<quint16>>{
+                {quint16(movement), 0, 1}, {quint16(movement), 0, 0}}));
+        }
+        item->setInputEnabled(false);
+        other->forceActiveFocus();
+        inputCalls.clear();
+        QTest::keyClick(&window, Qt::Key_W);
+        QVERIFY(inputCalls.isEmpty());
+        item->setInputEnabled(true);
+        item->forceActiveFocus();
+        QTRY_VERIFY(item->captureActive());
+        QTest::keyClick(&window, Qt::Key_W);
+        QCOMPARE(inputCalls, (QList<QList<quint16>>{{0x57, 0, 1}, {0x57, 0, 0}}));
+    }
+
     void forwardsShiftedPunctuation_data()
     {
         QTest::addColumn<int>("key");

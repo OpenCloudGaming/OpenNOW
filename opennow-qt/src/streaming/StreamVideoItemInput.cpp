@@ -39,7 +39,8 @@ quint16 StreamVideoItem::windowsVirtualKey(int key, Qt::KeyboardModifiers modifi
     case Qt::Key_Enter: return 0x0d;
     case Qt::Key_Escape: return 0x1b;
     case Qt::Key_Backspace: return 0x08;
-    case Qt::Key_Tab: return 0x09;
+    case Qt::Key_Tab:
+    case Qt::Key_Backtab: return 0x09;
     case Qt::Key_Space: return 0x20;
     case Qt::Key_Exclam: return 0x31;
     case Qt::Key_At: return 0x32;
@@ -158,8 +159,12 @@ quint32 StreamVideoItem::keyIdentity(const QKeyEvent *event) const
 
 void StreamVideoItem::keyPressEvent(QKeyEvent *event)
 {
-    if (!m_captureActive || event->isAutoRepeat()) {
+    if (!m_captureActive) {
         event->ignore();
+        return;
+    }
+    if (event->isAutoRepeat()) {
+        event->accept();
         return;
     }
     const auto identity = keyIdentity(event);
