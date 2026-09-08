@@ -5,8 +5,10 @@
 #include "input/platform/WaylandPointerCapture.h"
 
 #include <QGuiApplication>
+#include <QBuffer>
 #include <QJsonDocument>
 #include <QCursor>
+#include <QPixmap>
 #include <QScopeGuard>
 #include <QtQml/qqml.h>
 #include <QQuickWindow>
@@ -782,6 +784,91 @@ private slots:
         QVERIFY(item.relativeMouse());
         QVERIFY(item.m_pressedMouseButtons.isEmpty());
         QVERIFY(!item.m_pendingRelativeMouse.has_value());
+    }
+
+    void visibleCursorUpdatesStayHiddenUntilRelativeButtonRelease()
+    {
+        StreamVideoItem item;
+        item.applyRemoteCursor(QByteArray::fromHex("0000"));
+        QVERIFY(item.relativeMouse());
+        QCOMPARE(item.cursor().shape(), Qt::BlankCursor);
+        item.m_pressedMouseButtons.insert(1);
+        item.m_pressedMouseButtons.insert(3);
+        for (const auto &cursor : {"000c", "0002", "0000", "000c"}) {
+            item.applyRemoteCursor(QByteArray::fromHex(cursor));
+            QVERIFY(item.relativeMouse());
+            QCOMPARE(item.cursor().shape(), Qt::BlankCursor);
+            QCOMPARE(item.m_pressedMouseButtons.size(), 2);
+        }
+        item.m_captureActive = true;
+        item.m_rawInputActive = true;
+        QMouseEvent leftRelease(QEvent::MouseButtonRelease, QPointF(), QPointF(),
+                                Qt::LeftButton, Qt::RightButton, Qt::NoModifier);
+        item.mouseReleaseEvent(&leftRelease);
+        QVERIFY(item.relativeMouse());
+        QCOMPARE(item.cursor().shape(), Qt::BlankCursor);
+        QMouseEvent rightRelease(QEvent::MouseButtonRelease, QPointF(), QPointF(),
+                                 Qt::RightButton, Qt::NoButton, Qt::NoModifier);
+        item.mouseReleaseEvent(&rightRelease);
+        QVERIFY(!item.relativeMouse());
+        QCOMPARE(item.cursor().shape(), Qt::PointingHandCursor);
+        QVERIFY(item.m_pressedMouseButtons.isEmpty());
+        QVERIFY(!item.m_pendingRelativeMouse.has_value());
+    }
+
+    void deferredCursorUpdatesSurviveInputRelease()
+    {
+        StreamVideoItem item;
+        item.applyRemoteCursor(QByteArray::fromHex("0002"));
+        QCOMPARE(item.cursor().shape(), Qt::IBeamCursor);
+        item.m_pressedMouseButtons.insert(1);
+        item.applyRemoteCursor(QByteArray::fromHex("0000"));
+        QVERIFY(!item.relativeMouse());
+        QCOMPARE(item.cursor().shape(), Qt::IBeamCursor);
+        item.releaseInput();
+        QVERIFY(item.relativeMouse());
+        QCOMPARE(item.cursor().shape(), Qt::BlankCursor);
+        item.m_pressedMouseButtons.insert(1);
+        item.applyRemoteCursor(QByteArray::fromHex("000c"));
+        item.applyRemoteCursor(QByteArray::fromHex("0002"));
+        QCOMPARE(item.cursor().shape(), Qt::BlankCursor);
+        item.releaseInput();
+        QVERIFY(!item.relativeMouse());
+        QCOMPARE(item.cursor().shape(), Qt::IBeamCursor);
+        QVERIFY(item.m_pressedMouseButtons.isEmpty());
+        QVERIFY(!item.m_pendingRelativeMouse.has_value());
+    }
+
+    void deferredBitmapCursorRetainsItsShapeAndHotspot()
+    {
+        QPixmap image(8, 8);
+        image.fill(Qt::red);
+        QByteArray png;
+        QBuffer buffer(&png);
+        QVERIFY(buffer.open(QIODevice::WriteOnly));
+        QVERIFY(image.save(&buffer, "PNG"));
+        const auto encoded = png.toBase64();
+        auto message = QByteArray::fromHex("0100020300");
+        message.append(static_cast<char>(encoded.size() & 0xff));
+        message.append(static_cast<char>((encoded.size() >> 8) & 0xff));
+        message.append(encoded);
+
+        StreamVideoItem item;
+        item.applyRemoteCursor(QByteArray::fromHex("0000"));
+        item.m_pressedMouseButtons.insert(1);
+        item.applyRemoteCursor(message);
+        QVERIFY(item.relativeMouse());
+        QCOMPARE(item.cursor().shape(), Qt::BlankCursor);
+        item.releaseInput();
+        QVERIFY(!item.relativeMouse());
+        QCOMPARE(item.cursor().shape(), Qt::BitmapCursor);
+        QCOMPARE(item.cursor().hotSpot(), QPoint(2, 3));
+        QCOMPARE(item.cursor().pixmap().toImage(), image.toImage());
+        item.setVisible(false);
+        item.setVisible(true);
+        item.setRelativeMouse(true);
+        item.setRelativeMouse(false);
+        QCOMPARE(item.cursor().shape(), Qt::ArrowCursor);
     }
 
     void directVideoPreservesPixelsClippingOpacityAndOverlays()

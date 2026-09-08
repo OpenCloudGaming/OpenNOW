@@ -3,6 +3,7 @@
 #include "streaming/rendering/StreamVideoRenderCallback.h"
 
 #include <QQuickItem>
+#include <QCursor>
 #include <QHash>
 #include <QPoint>
 #include <QPointer>
@@ -126,6 +127,7 @@ private:
     };
 
     void applyRemoteCursor(const QByteArray &bytes);
+    void setRemoteCursorShape(const QCursor &cursor);
     void syncCaptureState();
     void connectFrameSwaps();
     void releaseInput();
@@ -158,6 +160,7 @@ private:
     bool m_cursorConfined = false;
     bool m_remoteCursorKnown = false;
     bool m_remoteCursorVisible = false;
+    QCursor m_remoteCursor;
     std::optional<bool> m_pendingRelativeMouse;
 };
 
