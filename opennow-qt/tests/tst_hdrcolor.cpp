@@ -1,5 +1,6 @@
 #include <QFile>
 #include "streaming/rendering/HdrOutputPass.h"
+#include "streaming/rendering/HdrOutput.h"
 #include "streaming/rendering/HdrChromeEffect.h"
 #include <QQmlEngine>
 #include <QQmlComponent>
@@ -112,6 +113,41 @@ private slots:
     }
 
     void cleanupTestCase() { m_rhi.reset(); }
+
+    void linuxOutputRemainsSdr()
+    {
+#if defined(Q_OS_LINUX)
+        QQuickWindow window;
+        window.setVulkanInstance(&m_instance);
+        window.resize(96, 80);
+        HdrOutput output;
+        output.attach(&window);
+        window.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&window));
+        const auto verifySdr = [&] {
+            QVERIFY(!window.grabWindow().isNull());
+            QCoreApplication::processEvents();
+            QVERIFY(!output.supported());
+            QCOMPARE(output.outputMode(), 0);
+            QVERIFY(!output.chromeRequired());
+            const auto state = HdrOutput::renderState();
+            QCOMPARE(state.mode, 0);
+            QVERIFY(!state.supported);
+        };
+        verifySdr();
+        QCOMPARE(output.status(), QStringLiteral("HDR is temporarily disabled on Linux."));
+        window.showFullScreen();
+        QTRY_COMPARE(window.visibility(), QWindow::FullScreen);
+        verifySdr();
+        window.showNormal();
+        window.resize(128, 96);
+        verifySdr();
+        QTest::qWait(1600);
+        verifySdr();
+#else
+        QSKIP("Linux-only HDR output policy");
+#endif
+    }
 
     void sdrRoundTripsAndWhiteLevel()
     {
