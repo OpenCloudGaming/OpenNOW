@@ -1006,6 +1006,7 @@
       "frameGenerationHint": "Targets 120 displayed FPS from a 60 FPS stream. Requires a fast GPU and 120 Hz display; adds latency and artifacts.",
       "frameGeneration2x": "2×",
       "hdrOutputReady": "HDR output ready. Applies to the next stream.",
+      "hdrOutputDisabledLinux": "HDR is temporarily disabled on Linux.",
       "hdrOutputUnavailable": "HDR unavailable on this display. Enable HDR in your operating system and use a supported GPU and compositor.",
       "hdrDecoderUnavailable": "HDR requires a supported 10-bit H.265 or AV1 hardware decoder.",
       "hdrFrameGenerationUnavailable": "Unavailable with HDR",
