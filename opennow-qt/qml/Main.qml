@@ -53,6 +53,9 @@ ApplicationWindow {
     property bool streamSurfaceLocked: false
     property bool lockedStreamDesktopSurface: true
     property int visibilityBeforeFullscreen: ApplicationWindow.Windowed
+    property bool sessionWindowModeSaved: false
+    property int visibilityBeforeSession: ApplicationWindow.Windowed
+    property int fullscreenRestoreVisibilityBeforeSession: ApplicationWindow.Windowed
     readonly property string configuredStatsShortcut: String(
         ShellStore.settings.shortcutToggleStats || "Ctrl+N")
     readonly property bool streamStatsShortcutEnabled: activeRoute === "stream"
@@ -210,6 +213,33 @@ ApplicationWindow {
             || (event.key === Qt.Key_F1 && AppController.inputMode === "controller")
     }
 
+    function saveSessionWindowMode() {
+        if (window.sessionWindowModeSaved)
+            return
+        window.visibilityBeforeSession = window.visibility
+        window.fullscreenRestoreVisibilityBeforeSession = window.visibilityBeforeFullscreen
+        window.sessionWindowModeSaved = true
+    }
+
+    function updateSessionWindowMode() {
+        if (["inserting", "joining", "stream"].indexOf(AppController.route) >= 0) {
+            window.saveSessionWindowMode()
+            return
+        }
+        if (!window.sessionWindowModeSaved)
+            return
+        window.sessionWindowModeSaved = false
+        window.visibilityBeforeFullscreen = window.fullscreenRestoreVisibilityBeforeSession
+        if (window.visibility === window.visibilityBeforeSession)
+            return
+        if (window.visibilityBeforeSession === ApplicationWindow.FullScreen)
+            window.showFullScreen()
+        else if (window.visibilityBeforeSession === ApplicationWindow.Maximized)
+            window.showMaximized()
+        else
+            window.showNormal()
+    }
+
     function toggleFullscreen() {
         const enteringFullscreen = window.visibility !== ApplicationWindow.FullScreen
         if (enteringFullscreen) {
@@ -359,6 +389,7 @@ ApplicationWindow {
 
     Component.onCompleted: {
         initializeStartupMode()
+        updateSessionWindowMode()
         updateStreamSurfaceLock()
         modeInitialized = true
         window.synchronizeRenderedSurface()
@@ -500,6 +531,7 @@ ApplicationWindow {
         Connections {
             target: AppController
             function onRouteChanged() {
+                window.updateSessionWindowMode()
                 window.updateStreamSurfaceLock()
                 // The desktop shell and embedded video stay opaque. Animate
                 // the entering panel, never flash the entire app on navigation.
@@ -521,8 +553,12 @@ ApplicationWindow {
                     Qt.callLater(() => routeLoader.item.forceActiveFocus())
             }
             function onDirectLaunchRequested(appId, title) {
-                if (ShellStore.settings.autoFullScreen)
+                if (ShellStore.settings.autoFullScreen) {
+                    window.saveSessionWindowMode()
+                    if (window.visibility !== ApplicationWindow.FullScreen)
+                        window.visibilityBeforeFullscreen = window.visibility
                     window.showFullScreen()
+                }
                 ShellStore.acceptDirectLaunch(appId, title)
             }
         }
