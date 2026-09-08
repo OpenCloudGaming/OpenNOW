@@ -173,8 +173,19 @@ Protocol 5 telemetry includes optional `jitterMs` (RTP interarrival jitter on
 the video 90 kHz clock) and `packetLossPercent` (cumulative authenticated RTP
 reception loss since stream start). Values are null before a stream is known.
 Reading these measurements does not advance RTCP report intervals. Qt forwards
-measured values without converting nulls into zeros; RTT, decode duration and
-end-to-end latency remain unavailable when no measurement source provides them.
+measured values without converting nulls into zeros.
+
+The optional `pingMs` field measures round-trip time using the existing authenticated
+STUN/NATT keepalives to the negotiated streaming peer. Replies must match an outstanding
+transaction, the peer address, fingerprint, and message integrity. The dedicated video
+path takes priority; a fresh control/audio bundle sample is used when no fresh video
+sample exists. Each receiver tracks at most 64 probes, and both outstanding probes and
+measurements expire after five seconds. New sessions start without a measurement, and
+missing or expired ping is emitted as null. No extra probes, discovery-server ping,
+remote-clock assumptions, or synthesized ICE replies are used for this measurement.
+Ping is transport RTT, not one-way video or input-to-display latency. Decode duration
+and end-to-end latency remain unavailable without a measurement source; Qt hides those
+two metrics when unavailable in the panel, compact bar, and copied statistics.
 
 During Windows decoder recreation, the worker retains one pending recovery
 keyframe outside the bounded input queue. Already-queued descendants remain in

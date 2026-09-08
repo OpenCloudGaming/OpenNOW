@@ -135,6 +135,15 @@ if(BUILD_TESTING)
     set_tests_properties(qml-controller-metadata PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 10)
     qt_add_resources(opennow-qt "custom-background-acceptance"
         PREFIX "/acceptance" BASE tests FILES tests/CustomBackgroundAcceptance.qml)
+    qt_add_resources(opennow-qt "stream-stats-acceptance"
+        PREFIX "/acceptance" BASE tests FILES tests/StreamStatsAcceptance.qml)
+    foreach(mode compact expanded)
+        add_test(NAME qml-stream-stats-${mode}
+            COMMAND opennow-qt --smoke-test --allow-multiple-instances --desktop
+                --route stream --smoke-stream-stats --smoke-stats-${mode} --reduced-motion)
+        set_tests_properties(qml-stream-stats-${mode} PROPERTIES
+            ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 10)
+    endforeach()
     foreach(width 960 1600)
         add_test(NAME qml-custom-background-${width}
             COMMAND opennow-qt --smoke-test --allow-multiple-instances --desktop

@@ -80,6 +80,9 @@ const NVST_RECOVERY_ATTEMPT_LIMIT: usize = 1;
 const NATIVE_INPUT_POLL_INTERVAL: Duration = Duration::from_micros(250);
 
 trait NvstSessionResources {
+    fn ping_ms(&self) -> Option<f64> {
+        None
+    }
     fn network_metrics(&self) -> Option<(f64, f64)> {
         None
     }
@@ -99,6 +102,9 @@ struct ActiveNvstResources {
 }
 
 impl NvstSessionResources for ActiveNvstResources {
+    fn ping_ms(&self) -> Option<f64> {
+        self.feedback.ping_ms(Instant::now())
+    }
     fn network_metrics(&self) -> Option<(f64, f64)> {
         self.feedback.network_metrics()
     }
@@ -1803,6 +1809,7 @@ fn forward_nvst_media_feedback<R: NvstSessionResources>(
                         "framesPerSecond": frames_per_second,
                         "bitrateMbps": bitrate_mbps,
                         "peakBitrateMbps": state.peak_bitrate_mbps,
+                        "pingMs": resources.ping_ms(),
                         "jitterMs": network.map(|metrics| metrics.0),
                         "packetLossPercent": network.map(|metrics| metrics.1),
                     }),
@@ -2434,6 +2441,7 @@ mod tests {
 
     #[derive(Default)]
     struct TestNvstResources {
+        ping_ms: Option<f64>,
         keyframe_requests: AtomicUsize,
         acknowledged_frames: AtomicUsize,
         acknowledged_frame_data: Mutex<Vec<(u32, u32)>>,
@@ -2443,6 +2451,10 @@ mod tests {
     }
 
     impl NvstSessionResources for TestNvstResources {
+        fn ping_ms(&self) -> Option<f64> {
+            self.ping_ms
+        }
+
         fn request_keyframe(&self) {
             self.keyframe_requests.fetch_add(1, Ordering::Relaxed);
         }
@@ -2586,6 +2598,37 @@ mod tests {
                 .is_some_and(|value| (0.9..=1.0).contains(&value))
         );
         assert_eq!(telemetry["peakBitrateMbps"], telemetry["bitrateMbps"]);
+    }
+
+    #[test]
+    fn accepted_video_telemetry_preserves_measured_and_unavailable_ping() {
+        for ping_ms in [None, Some(0.0), Some(25.5)] {
+            let (sender, receiver) = std::sync::mpsc::channel();
+            let sender = EventSender::unbounded(sender);
+            let resources = TestNvstResources {
+                ping_ms,
+                ..Default::default()
+            };
+            let mut state = NvstMediaFeedbackState::new(true);
+            state.telemetry_window_started = Instant::now() - Duration::from_secs(1);
+            forward_nvst_media_feedback(
+                &sender,
+                &connected_lifecycle(),
+                7,
+                &resources,
+                MediaFeedback::VideoFrameAccepted {
+                    frame_index: Some(72),
+                    timestamp: 90_000,
+                    bytes: 125_000,
+                    keyframe: false,
+                },
+                &mut state,
+            );
+            let telemetry = receiver.recv().unwrap();
+            assert_eq!(telemetry["type"], "telemetry");
+            assert!(telemetry.get("pingMs").is_some());
+            assert_eq!(telemetry["pingMs"], json!(ping_ms));
+        }
     }
 
     #[test]
