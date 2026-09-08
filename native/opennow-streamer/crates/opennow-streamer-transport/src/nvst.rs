@@ -34,7 +34,8 @@ use str0m::config::Fingerprint;
 use str0m::format::{Codec, FormatParams};
 use str0m::media::{Frequency, MediaKind, Mid};
 use str0m::net::{Protocol as RtcProtocol, Receive};
-use str0m::rtp::Ssrc;
+use str0m::rtp::{RtpHeader as BundleRtpHeader, Ssrc};
+use str0m::stats::CandidatePairStats;
 use str0m::{Candidate, Event, IceCreds, Input, Output, Rtc, RtcConfig};
 
 use super::nvst_control::{
@@ -76,6 +77,50 @@ const MAX_NACK_ATTEMPTS: u8 = 3;
 const KEYFRAME_REQUEST_COOLDOWN: Duration = Duration::from_millis(250);
 const MAX_PENDING_NACK_RANGES: usize = 16;
 const MAX_PENDING_FRAME_ACKS: usize = 512;
+const STREAM_PING_TIMEOUT: Duration = Duration::from_secs(5);
+const MAX_PENDING_STREAM_PINGS: usize = 64;
+
+#[derive(Default)]
+struct StreamPingTracker {
+    pending: VecDeque<([u8; 12], Instant)>,
+}
+
+impl StreamPingTracker {
+    fn sent(&mut self, transaction_id: [u8; 12], now: Instant) {
+        self.pending
+            .retain(|(_, sent)| now.saturating_duration_since(*sent) < STREAM_PING_TIMEOUT);
+        if self.pending.len() == MAX_PENDING_STREAM_PINGS {
+            self.pending.pop_front();
+        }
+        self.pending.push_back((transaction_id, now));
+    }
+
+    fn receive(
+        &mut self,
+        packet: &[u8],
+        source: SocketAddr,
+        credentials: &NvstStunCredentials,
+        now: Instant,
+    ) -> Option<Duration> {
+        if packet.get(..2)? != STUN_BINDING_SUCCESS_RESPONSE.to_be_bytes() {
+            return None;
+        }
+        let transaction_id = packet.get(8..20)?;
+        let index = self
+            .pending
+            .iter()
+            .position(|(id, _)| id == transaction_id)?;
+        if !matches!(
+            handle_stun_datagram(packet, source, credentials),
+            StunDatagram::Handled(None)
+        ) {
+            return None;
+        }
+        let (_, sent) = self.pending.remove(index)?;
+        let elapsed = now.checked_duration_since(sent)?;
+        (elapsed < STREAM_PING_TIMEOUT).then_some(elapsed)
+    }
+}
 
 fn verbose_diagnostics_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
@@ -336,6 +381,9 @@ pub struct NvstFeedbackState {
     received_packets: AtomicU32,
     report_prior: Mutex<(u32, u32)>,
     reception_timing: Mutex<ReceptionTiming>,
+    ice_ping: Mutex<Option<(Instant, Duration)>>,
+    video_ping: Mutex<Option<(Instant, Duration)>>,
+    bundle_ping: Mutex<Option<(Instant, Duration)>>,
     /// Remains set through send attempts until assembly receives a fresh keyframe.
     keyframe_needed: AtomicBool,
     /// Missing extended RTP sequence ranges awaiting RFC 4585 generic NACK.
@@ -355,6 +403,9 @@ impl Default for NvstFeedbackState {
             received_packets: AtomicU32::new(0),
             report_prior: Mutex::new((0, 0)),
             reception_timing: Mutex::new(ReceptionTiming::default()),
+            ice_ping: Mutex::new(None),
+            video_ping: Mutex::new(None),
+            bundle_ping: Mutex::new(None),
             keyframe_needed: AtomicBool::new(false),
             pending_nacks: Mutex::new(VecDeque::new()),
             completed_frames: AtomicU32::new(0),
@@ -366,6 +417,52 @@ impl Default for NvstFeedbackState {
 }
 
 impl NvstFeedbackState {
+    fn update_ice_ping(
+        &self,
+        pair: Option<&CandidatePairStats>,
+        previous_responses: &mut u64,
+        now: Instant,
+    ) {
+        let mut sample = self
+            .ice_ping
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(pair) = pair else {
+            *previous_responses = 0;
+            *sample = None;
+            return;
+        };
+        if pair.responses_received != *previous_responses {
+            *previous_responses = pair.responses_received;
+            *sample = pair.current_round_trip_time.map(|elapsed| (now, elapsed));
+        }
+    }
+
+    fn publish_ping(&self, video: bool, now: Instant, elapsed: Duration) {
+        let sample = if video {
+            &self.video_ping
+        } else {
+            &self.bundle_ping
+        };
+        *sample
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((now, elapsed));
+    }
+
+    pub fn ping_ms(&self, now: Instant) -> Option<f64> {
+        [&self.ice_ping, &self.video_ping, &self.bundle_ping]
+            .into_iter()
+            .find_map(|sample| {
+                sample
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .filter(|(received, _)| {
+                        now.saturating_duration_since(*received) < STREAM_PING_TIMEOUT
+                    })
+                    .map(|(_, elapsed)| elapsed.as_secs_f64() * 1000.0)
+            })
+    }
+
     fn publish_stream(&self, ssrc: u32, highest_sequence: u32, rtp_timestamp: u32, now: Instant) {
         self.video_ssrc.store(ssrc, Ordering::Release);
         let _ = self.base_sequence.compare_exchange(
@@ -4266,6 +4363,7 @@ fn create_nvst_bundle_rtc(socket: &UdpSocket) -> Result<Rtc, NvstUdpReceiverErro
     // str0m's default 16-char ufrag is rejected by Bifrost length checks.
     let mut rtc_config = RtcConfig::new()
         .set_rtp_mode(true)
+        .set_stats_interval(Some(Duration::from_secs(1)))
         .set_send_buffer_audio(MICROPHONE_QUEUE_CAPACITY);
     rtc_config.codec_config().add_config(
         GFN_RED_PAYLOAD_TYPE.into(),
@@ -4820,6 +4918,88 @@ fn matches_audio_track(track: &NvstAudioTrack, payload_type: u8, ssrc: u32) -> b
     matches_payload_type && track.ssrc.is_none_or(|expected| expected == ssrc)
 }
 
+#[derive(Default)]
+struct NvstAudioReceiver {
+    last_sequence: Option<(u32, u16)>,
+    discontinuity_pending: bool,
+}
+
+impl NvstAudioReceiver {
+    fn depacketize(
+        &mut self,
+        track: &NvstAudioTrack,
+        header: &BundleRtpHeader,
+        payload: Arc<[u8]>,
+        received_at_us: u64,
+    ) -> Result<Vec<EncodedMediaFrame>, NvstDropReason> {
+        let mut source_changed = false;
+        let missing_packets = match self.last_sequence {
+            Some((ssrc, previous)) if ssrc == *header.ssrc => {
+                let delta = header.sequence_number.wrapping_sub(previous);
+                if delta == 0 || delta >= 0x8000 {
+                    return Ok(Vec::new());
+                }
+                usize::from(delta - 1)
+            }
+            Some(_) => {
+                source_changed = true;
+                0
+            }
+            None => 0,
+        };
+        let mut frames = Vec::with_capacity(missing_packets.min(MAX_REDUNDANT_AUDIO_BLOCKS) + 1);
+        let mut append = |payload: Arc<[u8]>, timestamp: u32| {
+            frames.push(EncodedMediaFrame {
+                mid: track.mid.clone(),
+                codec: "opus".to_owned(),
+                payload,
+                frame_index: None,
+                rtp_timestamp: u64::from(timestamp),
+                clock_rate_hz: track.clock_rate_hz,
+                channels: Some(track.channels),
+                received_at_us,
+                keyframe: false,
+                contiguous: true,
+            });
+        };
+        let recovered_packets = if *header.payload_type == GFN_RED_PAYLOAD_TYPE {
+            let red = parse_red_opus(&payload).ok_or(NvstDropReason::MalformedRedAudio)?;
+            let recover_count = missing_packets.min(red.redundant.len());
+            for block in red
+                .redundant
+                .iter()
+                .skip(red.redundant.len() - recover_count)
+            {
+                append(
+                    Arc::from(block.payload),
+                    header
+                        .timestamp
+                        .wrapping_sub(u32::from(block.timestamp_offset)),
+                );
+            }
+            append(Arc::from(red.primary), header.timestamp);
+            recover_count
+        } else {
+            append(payload, header.timestamp);
+            0
+        };
+        frames[0].contiguous = !source_changed && missing_packets == recovered_packets;
+        self.last_sequence = Some((*header.ssrc, header.sequence_number));
+        Ok(frames)
+    }
+
+    fn deliver(
+        &mut self,
+        consumer: &MediaConsumer,
+        mut frame: EncodedMediaFrame,
+    ) -> Result<(), TransportError> {
+        frame.contiguous &= !self.discontinuity_pending;
+        let result = deliver_media_frame(consumer, frame);
+        self.discontinuity_pending = result.is_err();
+        result
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct RedOpusBlock<'a> {
     timestamp_offset: u16,
@@ -4961,6 +5141,8 @@ fn run_nvst_webrtc_bundle(
     let mut inbound_datagrams = 0_u64;
     let mut outbound_datagrams = 0_u64;
     let mut hole_punch_pings = 0_u64;
+    let mut ping_tracker = StreamPingTracker::default();
+    let mut ice_ping_responses = 0;
     let mut last_hole_punch = Instant::now() - PING_INTERVAL_BEFORE_CONNECTION;
     let mut seen_ssrcs = HashSet::new();
     let mut dtls_ready = false;
@@ -4998,8 +5180,7 @@ fn run_nvst_webrtc_bundle(
     let mut cursor_capture_attempts = 0_u8;
     let mut control_keepalive_at = next_control_keepalive(Instant::now());
     let mut input_timeout_reported = false;
-    let mut last_audio_sequence: Option<(u32, u16)> = None;
-    let mut audio_discontinuity_pending = false;
+    let mut audio_receiver = NvstAudioReceiver::default();
     loop {
         loop {
             match commands.try_recv() {
@@ -5185,11 +5366,13 @@ fn run_nvst_webrtc_bundle(
                     &credentials.remote_password,
                     &natt_tid,
                 );
+                let sent_at = Instant::now();
                 if let Err(error) = socket.send_to(&natt, bundle_peer) {
                     eprintln!("NVST NATT send failed: {error}");
                     forward_optional(&event_sender, receiver.stop());
                     return;
                 }
+                ping_tracker.sent(natt_tid, sent_at);
                 Some(natt)
             } else {
                 None
@@ -5435,6 +5618,11 @@ fn run_nvst_webrtc_bundle(
                     // unblocks str0m and sends ClientHello before GFN has a pair.
                 }
                 Ok(Output::Event(event)) => match event {
+                    Event::PeerStats(stats) => feedback.update_ice_ping(
+                        stats.selected_candidate_pair.as_ref(),
+                        &mut ice_ping_responses,
+                        Instant::now(),
+                    ),
                     Event::IceConnectionStateChange(state) => {
                         opennow_streamer_protocol::log::log_async(
                             "INFO",
@@ -5627,89 +5815,27 @@ fn run_nvst_webrtc_bundle(
                         });
                         if is_audio {
                             let audio = audio_track.as_ref().expect("audio track checked above");
-                            let audio_ssrc = *packet.header.ssrc;
-                            let missing_packets = last_audio_sequence
-                                .filter(|(ssrc, _)| *ssrc == audio_ssrc)
-                                .map(|(_, previous)| {
-                                    packet.header.sequence_number.wrapping_sub(previous)
-                                })
-                                .filter(|delta| {
-                                    (2..=u16::try_from(MAX_REDUNDANT_AUDIO_BLOCKS + 1)
-                                        .unwrap_or(u16::MAX))
-                                        .contains(delta)
-                                })
-                                .map_or(0, |delta| usize::from(delta - 1));
-                            last_audio_sequence = Some((audio_ssrc, packet.header.sequence_number));
                             let received_at_us = packet
                                 .timestamp
                                 .saturating_duration_since(transport_origin)
                                 .as_micros()
                                 .try_into()
                                 .unwrap_or(u64::MAX);
-                            let mut frames = Vec::with_capacity(missing_packets.saturating_add(1));
-                            let (primary, recovered_packets) =
-                                if outer_payload_type == GFN_RED_PAYLOAD_TYPE {
-                                    let Some(red) = parse_red_opus(&packet.payload) else {
-                                        let _ = event_sender.send(NvstReceiveEvent::Dropped(
-                                            NvstDropReason::MalformedRedAudio,
-                                        ));
-                                        audio_discontinuity_pending = true;
-                                        continue;
-                                    };
-                                    let recover_count = missing_packets.min(red.redundant.len());
-                                    for block in red
-                                        .redundant
-                                        .iter()
-                                        .skip(red.redundant.len().saturating_sub(recover_count))
-                                    {
-                                        frames.push(EncodedMediaFrame {
-                                            mid: audio.mid.clone(),
-                                            codec: "opus".to_owned(),
-                                            payload: Arc::from(block.payload),
-                                            frame_index: None,
-                                            rtp_timestamp: u64::from(
-                                                packet.header.timestamp.wrapping_sub(u32::from(
-                                                    block.timestamp_offset,
-                                                )),
-                                            ),
-                                            clock_rate_hz: audio.clock_rate_hz,
-                                            channels: Some(audio.channels),
-                                            received_at_us,
-                                            keyframe: false,
-                                            contiguous: true,
-                                        });
-                                    }
-                                    (Arc::from(red.primary), recover_count)
-                                } else {
-                                    (packet.payload, 0)
-                                };
-                            frames.push(EncodedMediaFrame {
-                                mid: audio.mid.clone(),
-                                codec: "opus".to_owned(),
-                                payload: primary,
-                                frame_index: None,
-                                rtp_timestamp: u64::from(packet.header.timestamp),
-                                clock_rate_hz: audio.clock_rate_hz,
-                                channels: Some(audio.channels),
+                            let frames = match audio_receiver.depacketize(
+                                audio,
+                                &packet.header,
+                                packet.payload,
                                 received_at_us,
-                                keyframe: false,
-                                contiguous: missing_packets == 0
-                                    || recovered_packets == missing_packets,
-                            });
-                            for (index, mut frame) in frames.into_iter().enumerate() {
-                                if audio_discontinuity_pending
-                                    && (recovered_packets == 0 || index > 0)
-                                {
-                                    frame.contiguous = false;
+                            ) {
+                                Ok(frames) => frames,
+                                Err(reason) => {
+                                    let _ = event_sender.send(NvstReceiveEvent::Dropped(reason));
+                                    continue;
                                 }
-                                match deliver_media_frame(&media_consumer, frame) {
-                                    Ok(()) => audio_discontinuity_pending = false,
-                                    Err(TransportError::MediaConsumerBackpressured) => {
-                                        // Mark the next accepted packet discontinuous so the
-                                        // Opus decoder performs PLC instead of clicking across
-                                        // a packet that vanished between transport and decode.
-                                        audio_discontinuity_pending = true;
-                                    }
+                            };
+                            for frame in frames {
+                                match audio_receiver.deliver(&media_consumer, frame) {
+                                    Ok(()) | Err(TransportError::MediaConsumerBackpressured) => {}
                                     Err(_) => {
                                         let _ = event_sender.send(NvstReceiveEvent::Dropped(
                                             NvstDropReason::MediaConsumerClosed,
@@ -5789,6 +5915,17 @@ fn run_nvst_webrtc_bundle(
                     }
                     if source != bundle_peer {
                         continue;
+                    }
+                    if let Some(credentials) = stun_credentials.as_ref() {
+                        let received_at = Instant::now();
+                        if let Some(elapsed) = ping_tracker.receive(
+                            &datagram[..length],
+                            source,
+                            credentials,
+                            received_at,
+                        ) {
+                            feedback.publish_ping(false, received_at, elapsed);
+                        }
                     }
                     if datagram[..length] == *b"PING" {
                         if let Err(error) = socket.send_to(b"PONG", source) {
@@ -5892,6 +6029,7 @@ fn run_nvst_udp_receiver(
     let mut peer_seen = false;
     let mut last_ping = Instant::now() - PING_INTERVAL_BEFORE_CONNECTION;
     let mut pings_sent = 0_u64;
+    let mut ping_tracker = StreamPingTracker::default();
     let mut inbound_datagrams = 0_u64;
     let mut handled_stun = 0_u64;
     let mut invalid_stun = 0_u64;
@@ -5946,12 +6084,14 @@ fn run_nvst_udp_receiver(
                     &credentials.remote_password,
                     &transaction_id,
                 );
+                let sent_at = Instant::now();
                 if let Err(error) = socket.send_to(&ping, receiver.config.video_peer) {
                     log_udp_error("video-natt-send", local_port, &error);
                     eprintln!("NVST NATT send failed: {error}");
                     forward_optional(&event_sender, receiver.stop());
                     return;
                 }
+                ping_tracker.sent(transaction_id, sent_at);
                 pings_sent += 1;
             } else {
                 if let Err(error) =
@@ -5990,6 +6130,15 @@ fn run_nvst_udp_receiver(
                 if source == receiver.config.video_peer
                     && let Some(credentials) = stun_credentials.as_ref()
                 {
+                    let received_at = Instant::now();
+                    if let Some(elapsed) =
+                        ping_tracker.receive(&datagram[..length], source, credentials, received_at)
+                    {
+                        receiver
+                            .config
+                            .feedback()
+                            .publish_ping(true, received_at, elapsed);
+                    }
                     match handle_stun_datagram(&datagram[..length], source, credentials) {
                         StunDatagram::Handled(response) => {
                             handled_stun += 1;
@@ -6139,6 +6288,13 @@ fn forward_receive_event(
 
 #[cfg(test)]
 mod tests {
+    mod audio_tests {
+        include!("nvst_audio_tests.rs");
+    }
+
+    mod ping_tests {
+        include!("nvst_ping_tests.rs");
+    }
     mod recovery_tests {
         include!("nvst_recovery_tests.rs");
     }

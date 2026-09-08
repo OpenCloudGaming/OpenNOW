@@ -35,7 +35,7 @@ Item {
         artwork: root.artwork
         fallbackColor: "#171B27"
         cornerRadius: 12
-        scrimStart: 1
+        scrimStart: root.highlighted ? 0.48 : 1
     }
 
     Rectangle {
@@ -51,6 +51,17 @@ Item {
         Behavior on border.color {
             ColorAnimation { duration: Theme.focusDuration }
         }
+    }
+
+    DesktopPosterOverlay {
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.bottom: parent.bottom
+        anchors.leftMargin: 9
+        anchors.rightMargin: 9
+        anchors.bottomMargin: 12
+        game: root.game
+        visible: root.highlighted
     }
 
     } // visual; hit-test handlers remain outside the transformed item

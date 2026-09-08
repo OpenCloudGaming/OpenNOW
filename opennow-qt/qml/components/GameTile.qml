@@ -13,6 +13,7 @@ ItemDelegate {
     property bool addTile: false
     property string eyebrow: ""
     property bool currentItem: false
+    readonly property real cornerRadius: wide ? 34 : 12
     signal menuRequested()
     highlighted: activeFocus || currentItem
 
@@ -29,7 +30,7 @@ ItemDelegate {
     background: RoundedArtwork {
         artwork: root.addTile ? "" : root.artwork
         fallbackColor: root.storeColor
-        cornerRadius: 34
+        cornerRadius: root.cornerRadius
         scrimStart: 0.28
     }
 
@@ -94,7 +95,11 @@ ItemDelegate {
         }
     }
 
-    FocusFrame { focused: root.highlighted; opacity: root.addTile ? 0.55 : 1 }
+    FocusFrame {
+        focused: root.highlighted
+        frameRadius: root.cornerRadius
+        opacity: root.addTile ? 0.55 : 1
+    }
 
     TapHandler {
         acceptedButtons: Qt.RightButton

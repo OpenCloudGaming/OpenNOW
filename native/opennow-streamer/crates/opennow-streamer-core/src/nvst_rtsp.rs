@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::io::ErrorKind;
 use std::net::{IpAddr, TcpStream};
 use std::sync::mpsc::{self, Sender};
+use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -15,6 +16,9 @@ use tungstenite::{Message, WebSocket, connect};
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(2);
+const CONTROL_PING_EXPIRY: Duration = Duration::from_secs(5);
+const CONTROL_IO_TIMEOUT: Duration = Duration::from_millis(100);
+const MAX_CONTROL_RESPONSE_BYTES: usize = 64 * 1024;
 const MAX_STREAM_BITRATE_MBPS: u64 = 200;
 // GeForce NOW 2.0.87.131 reports video[0].timeoutLengthMs=8000 and
 // video[0].sendFrameTimeoutMs=7000. Waiting sixty seconds left a dead Mjolnir media leg on screen
@@ -48,6 +52,37 @@ struct RtspClient {
     socket: WebSocket<MaybeTlsStream<TcpStream>>,
     cseq: u64,
     buffer: String,
+}
+
+#[derive(Clone, Default)]
+pub struct NvstControlPing {
+    sample: Arc<Mutex<Option<(Instant, Duration)>>>,
+}
+
+impl NvstControlPing {
+    pub fn ping_ms(&self, now: Instant) -> Option<f64> {
+        let mut sample = self.sample.lock().ok()?;
+        let (received_at, elapsed) = (*sample)?;
+        if now.checked_duration_since(received_at)? >= CONTROL_PING_EXPIRY {
+            *sample = None;
+            return None;
+        }
+        Some(elapsed.as_secs_f64() * 1000.0)
+    }
+
+    fn record(&self, sent_at: Instant, received_at: Instant) {
+        if let Ok(mut sample) = self.sample.lock() {
+            *sample = received_at
+                .checked_duration_since(sent_at)
+                .map(|elapsed| (received_at, elapsed));
+        }
+    }
+
+    fn clear(&self) {
+        if let Ok(mut sample) = self.sample.lock() {
+            *sample = None;
+        }
+    }
 }
 
 impl RtspClient {
@@ -91,7 +126,7 @@ impl RtspClient {
             opennow_streamer_protocol::log::log_line("WARN", "rtsp", &failure.message);
             failure
         })?;
-        set_read_timeout(&mut socket, REQUEST_TIMEOUT);
+        set_io_timeout(&mut socket, REQUEST_TIMEOUT);
         Ok((
             Self {
                 socket,
@@ -121,7 +156,7 @@ impl RtspClient {
         timeout: Duration,
     ) -> Result<RtspResponse, NvstRtspError> {
         let mut stage = opennow_streamer_protocol::log::Stage::begin("rtsps.request");
-        self.cseq += 1;
+        self.send_request(method, uri, headers, body)?;
         opennow_streamer_protocol::log::log_line(
             "INFO",
             "rtsps",
@@ -132,24 +167,30 @@ impl RtspClient {
                 body.len()
             ),
         );
-        let mut request = format!(
-            "{method} {uri} RTSP/1.0\r\nCSeq: {}\r\nRequest-Id: {}\r\n",
-            self.cseq, self.cseq
-        );
-        for (name, value) in headers {
-            request.push_str(&format!("{name}: {value}\r\n"));
-        }
-        if !body.is_empty() {
-            request.push_str(&format!("Content-Length: {}\r\n", body.len()));
-        }
-        request.push_str("\r\n");
-        request.push_str(body);
-        self.socket
-            .send(Message::Text(request.into()))
-            .map_err(|error| NvstRtspError::new("nvst-rtsp-failed", error.to_string()))?;
         let deadline = Instant::now() + timeout;
         loop {
-            if let Some(response) = take_rtsp_response(&mut self.buffer, self.cseq)? {
+            if self.buffer.len() > MAX_CONTROL_RESPONSE_BYTES {
+                return Err(NvstRtspError::new(
+                    "nvst-rtsp-failed",
+                    "RTSPS response exceeds control buffer limit",
+                ));
+            }
+            if Instant::now() >= deadline {
+                return Err(NvstRtspError::new(
+                    "nvst-rtsp-timeout",
+                    format!("RTSPS {method} timed out"),
+                ));
+            }
+            let response = match take_rtsp_response(&mut self.buffer, self.cseq) {
+                Ok(response) => response,
+                Err(error)
+                    if method == "TEARDOWN" && error.code == "nvst-rtsp-sequence-mismatch" =>
+                {
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
+            if let Some(response) = response {
                 opennow_streamer_protocol::log::log_line(
                     "INFO",
                     "rtsps",
@@ -160,12 +201,6 @@ impl RtspClient {
                 );
                 stage.complete();
                 return Ok(response);
-            }
-            if Instant::now() >= deadline {
-                return Err(NvstRtspError::new(
-                    "nvst-rtsp-timeout",
-                    format!("RTSPS {method} timed out"),
-                ));
             }
             match self.socket.read() {
                 Ok(Message::Text(text)) => self.buffer.push_str(text.as_str()),
@@ -189,6 +224,32 @@ impl RtspClient {
                 }
             }
         }
+    }
+
+    fn send_request(
+        &mut self,
+        method: &str,
+        uri: &str,
+        headers: &[(&str, String)],
+        body: &str,
+    ) -> Result<u64, NvstRtspError> {
+        self.cseq += 1;
+        let mut request = format!(
+            "{method} {uri} RTSP/1.0\r\nCSeq: {}\r\nRequest-Id: {}\r\n",
+            self.cseq, self.cseq
+        );
+        for (name, value) in headers {
+            request.push_str(&format!("{name}: {value}\r\n"));
+        }
+        if !body.is_empty() {
+            request.push_str(&format!("Content-Length: {}\r\n", body.len()));
+        }
+        request.push_str("\r\n");
+        request.push_str(body);
+        self.socket
+            .send(Message::Text(request.into()))
+            .map_err(|error| NvstRtspError::new("nvst-rtsp-failed", error.to_string()))?;
+        Ok(self.cseq)
     }
 }
 
@@ -215,6 +276,7 @@ fn rtsp_connect_error(error: &tungstenite::Error) -> NvstRtspError {
 }
 
 pub struct PreparedNvstRtspSession {
+    pub control_ping: NvstControlPing,
     client: Option<RtspClient>,
     target: String,
     common_headers: Vec<(&'static str, String)>,
@@ -280,6 +342,7 @@ impl PreparedNvstRtspSession {
             self.target.clone(),
             self.common_headers.clone(),
             self.rtsp_session.clone(),
+            self.control_ping.clone(),
         )
     }
 }
@@ -292,7 +355,7 @@ impl Drop for PreparedNvstRtspSession {
         let Some(client) = self.client.as_mut() else {
             return;
         };
-        set_read_timeout(&mut client.socket, Duration::from_millis(100));
+        set_io_timeout(&mut client.socket, CONTROL_IO_TIMEOUT);
         let mut headers = self.common_headers.clone();
         headers.push(("Session", self.rtsp_session.clone()));
         let _ = client.request_with_timeout(
@@ -321,17 +384,24 @@ impl ActiveNvstRtspSession {
         target: String,
         common_headers: Vec<(&'static str, String)>,
         rtsp_session: String,
+        control_ping: NvstControlPing,
     ) -> Result<Self, NvstRtspError> {
-        set_read_timeout(&mut client.socket, Duration::from_millis(100));
+        set_io_timeout(&mut client.socket, CONTROL_IO_TIMEOUT);
+        client.socket.set_config(|config| {
+            config.max_message_size = Some(MAX_CONTROL_RESPONSE_BYTES);
+            config.max_frame_size = Some(MAX_CONTROL_RESPONSE_BYTES);
+        });
         let (control, receiver) = mpsc::channel();
         let worker = thread::Builder::new()
             .name("opennow-nvst-rtsps".to_owned())
             .spawn(move || {
                 let mut last_ping = Instant::now();
+                let mut outstanding: Option<(u64, Instant)> = None;
+                let mut headers = common_headers;
+                headers.push(("Session", rtsp_session));
                 loop {
                     if receiver.try_recv().is_ok() {
-                        let mut headers = common_headers.clone();
-                        headers.push(("Session", rtsp_session.clone()));
+                        control_ping.clear();
                         let _ = client.request_with_timeout(
                             "TEARDOWN",
                             &target,
@@ -342,19 +412,30 @@ impl ActiveNvstRtspSession {
                         let _ = client.socket.close(None);
                         break;
                     }
-                    if last_ping.elapsed() >= KEEPALIVE_INTERVAL {
-                        if client
-                            .socket
-                            .send(Message::Ping(Vec::new().into()))
-                            .is_err()
-                        {
-                            break;
+                    let now = Instant::now();
+                    if outstanding.is_some_and(|(_, sent_at)| {
+                        now.duration_since(sent_at) >= KEEPALIVE_INTERVAL
+                    }) {
+                        outstanding = None;
+                        control_ping.clear();
+                    }
+                    if outstanding.is_none() && now.duration_since(last_ping) >= KEEPALIVE_INTERVAL
+                    {
+                        match client.send_request("GET_PARAMETER", &target, &headers, "") {
+                            Ok(cseq) => outstanding = Some((cseq, now)),
+                            Err(_) => break,
                         }
-                        last_ping = Instant::now();
+                        last_ping = now;
                     }
                     match client.socket.read() {
+                        Ok(Message::Text(text)) => client.buffer.push_str(text.as_str()),
+                        Ok(Message::Binary(bytes)) => {
+                            client.buffer.push_str(&String::from_utf8_lossy(&bytes));
+                        }
                         Ok(Message::Ping(bytes)) => {
-                            let _ = client.socket.send(Message::Pong(bytes));
+                            if client.socket.send(Message::Pong(bytes)).is_err() {
+                                break;
+                            }
                         }
                         Ok(Message::Close(_)) => break,
                         Ok(_) => {}
@@ -365,7 +446,32 @@ impl ActiveNvstRtspSession {
                             ) => {}
                         Err(_) => break,
                     }
+                    if client.buffer.len() > MAX_CONTROL_RESPONSE_BYTES {
+                        break;
+                    }
+                    while !client.buffer.is_empty() {
+                        let expected_cseq = outstanding.map_or(client.cseq, |(cseq, _)| cseq);
+                        match take_rtsp_response(&mut client.buffer, expected_cseq) {
+                            Ok(Some(_)) => {
+                                if let Some((_, sent_at)) = outstanding.take() {
+                                    let received_at = Instant::now();
+                                    if received_at.duration_since(sent_at) < KEEPALIVE_INTERVAL {
+                                        control_ping.record(sent_at, received_at);
+                                    } else {
+                                        control_ping.clear();
+                                    }
+                                }
+                            }
+                            Ok(None) => break,
+                            Err(error) if error.code == "nvst-rtsp-sequence-mismatch" => {}
+                            Err(_) => {
+                                control_ping.clear();
+                                return;
+                            }
+                        }
+                    }
                 }
+                control_ping.clear();
             })
             .map_err(|error| NvstRtspError::new("nvst-control-failed", error.to_string()))?;
         Ok(Self {
@@ -640,6 +746,7 @@ pub fn prepare_owned_nvst(
         },
     );
     Ok(PreparedNvstRtspSession {
+        control_ping: NvstControlPing::default(),
         client: Some(client),
         target,
         common_headers,
@@ -997,9 +1104,17 @@ fn take_rtsp_response(
                 .and_then(|(_, value)| value.trim().parse::<usize>().ok())
         })
         .unwrap_or(0);
-    let total = header_end + separator + content_length;
+    let total = (header_end + separator)
+        .checked_add(content_length)
+        .ok_or_else(|| NvstRtspError::new("nvst-rtsp-failed", "Invalid RTSPS content length"))?;
     if buffer.len() < total {
         return Ok(None);
+    }
+    if !buffer.is_char_boundary(total) {
+        return Err(NvstRtspError::new(
+            "nvst-rtsp-failed",
+            "Invalid RTSPS body encoding",
+        ));
     }
     let raw = buffer[..total].to_owned();
     buffer.drain(..total);
@@ -1048,7 +1163,7 @@ fn take_rtsp_response(
     };
     if !sequence_matches {
         return Err(NvstRtspError::new(
-            "nvst-rtsp-failed",
+            "nvst-rtsp-sequence-mismatch",
             format!(
                 "RTSPS response sequence mismatch: expected {expected_cseq}, CSeq={}, Request-Id={}",
                 response_cseq
@@ -1212,17 +1327,23 @@ fn random_runtime_key() -> Result<(String, u32), NvstRtspError> {
     ))
 }
 
-fn set_read_timeout(socket: &mut WebSocket<MaybeTlsStream<TcpStream>>, timeout: Duration) {
+fn set_io_timeout(socket: &mut WebSocket<MaybeTlsStream<TcpStream>>, timeout: Duration) {
     match socket.get_mut() {
         MaybeTlsStream::Plain(stream) => {
             let _ = stream.set_read_timeout(Some(timeout));
+            let _ = stream.set_write_timeout(Some(timeout));
         }
         MaybeTlsStream::Rustls(stream) => {
             let _ = stream.get_mut().set_read_timeout(Some(timeout));
+            let _ = stream.get_mut().set_write_timeout(Some(timeout));
         }
         _ => {}
     }
 }
+
+#[cfg(test)]
+#[path = "nvst_rtsp_control_ping_tests.rs"]
+mod control_ping_tests;
 
 #[cfg(test)]
 mod tests {

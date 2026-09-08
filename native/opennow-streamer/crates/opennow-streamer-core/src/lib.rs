@@ -30,7 +30,7 @@ mod queue_drops;
 
 use microphone::MicrophoneController;
 
-use nvst_rtsp::{ActiveNvstRtspSession, prepare_owned_nvst};
+use nvst_rtsp::{ActiveNvstRtspSession, NvstControlPing, prepare_owned_nvst};
 use queue_drops::QueueDropReports;
 
 pub use opennow_streamer_transport::{EncodedMediaFrame, MediaConsumer};
@@ -81,6 +81,9 @@ const NVST_RECOVERY_ATTEMPT_LIMIT: usize = 1;
 const NATIVE_INPUT_POLL_INTERVAL: Duration = Duration::from_micros(250);
 
 trait NvstSessionResources {
+    fn ping_ms(&self) -> Option<f64> {
+        None
+    }
     fn network_metrics(&self) -> Option<(f64, f64)> {
         None
     }
@@ -96,10 +99,19 @@ struct ActiveNvstResources {
     bundle: NvstUdpReceiverControl,
     mjolnir: Option<NvstUdpReceiverControl>,
     feedback: SharedNvstFeedback,
+    control_ping: Option<NvstControlPing>,
     media: Option<MediaControl>,
 }
 
 impl NvstSessionResources for ActiveNvstResources {
+    fn ping_ms(&self) -> Option<f64> {
+        let now = Instant::now();
+        self.feedback.ping_ms(now).or_else(|| {
+            self.control_ping
+                .as_ref()
+                .and_then(|ping| ping.ping_ms(now))
+        })
+    }
     fn network_metrics(&self) -> Option<(f64, f64)> {
         self.feedback.network_metrics()
     }
@@ -835,6 +847,9 @@ impl Engine {
                 bundle: bundle_control,
                 mjolnir: mjolnir_control,
                 feedback,
+                control_ping: prepared_nvst
+                    .as_ref()
+                    .map(|prepared| prepared.control_ping.clone()),
                 media: self.media_session.as_ref().map(MediaSession::control),
             });
             nvst_events = Some(event_receiver);
@@ -1835,6 +1850,7 @@ fn forward_nvst_media_feedback<R: NvstSessionResources>(
                         "framesPerSecond": frames_per_second,
                         "bitrateMbps": bitrate_mbps,
                         "peakBitrateMbps": state.peak_bitrate_mbps,
+                        "pingMs": resources.ping_ms(),
                         "jitterMs": network.map(|metrics| metrics.0),
                         "packetLossPercent": network.map(|metrics| metrics.1),
                     }),
@@ -2430,6 +2446,7 @@ mod tests {
 
     #[derive(Default)]
     struct TestNvstResources {
+        ping_ms: Option<f64>,
         keyframe_requests: AtomicUsize,
         acknowledged_frames: AtomicUsize,
         acknowledged_frame_data: Mutex<Vec<(u32, u32)>>,
@@ -2439,6 +2456,10 @@ mod tests {
     }
 
     impl NvstSessionResources for TestNvstResources {
+        fn ping_ms(&self) -> Option<f64> {
+            self.ping_ms
+        }
+
         fn request_keyframe(&self) {
             self.keyframe_requests.fetch_add(1, Ordering::Relaxed);
         }
@@ -2582,6 +2603,37 @@ mod tests {
                 .is_some_and(|value| (0.9..=1.0).contains(&value))
         );
         assert_eq!(telemetry["peakBitrateMbps"], telemetry["bitrateMbps"]);
+    }
+
+    #[test]
+    fn accepted_video_telemetry_preserves_measured_and_unavailable_ping() {
+        for ping_ms in [None, Some(0.0), Some(25.5)] {
+            let (sender, receiver) = std::sync::mpsc::channel();
+            let sender = EventSender::unbounded(sender);
+            let resources = TestNvstResources {
+                ping_ms,
+                ..Default::default()
+            };
+            let mut state = NvstMediaFeedbackState::new(true);
+            state.telemetry_window_started = Instant::now() - Duration::from_secs(1);
+            forward_nvst_media_feedback(
+                &sender,
+                &connected_lifecycle(),
+                7,
+                &resources,
+                MediaFeedback::VideoFrameAccepted {
+                    frame_index: Some(72),
+                    timestamp: 90_000,
+                    bytes: 125_000,
+                    keyframe: false,
+                },
+                &mut state,
+            );
+            let telemetry = receiver.recv().unwrap();
+            assert_eq!(telemetry["type"], "telemetry");
+            assert!(telemetry.get("pingMs").is_some());
+            assert_eq!(telemetry["pingMs"], json!(ping_ms));
+        }
     }
 
     #[test]

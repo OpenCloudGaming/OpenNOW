@@ -173,8 +173,29 @@ Protocol 5 telemetry includes optional `jitterMs` (RTP interarrival jitter on
 the video 90 kHz clock) and `packetLossPercent` (cumulative authenticated RTP
 reception loss since stream start). Values are null before a stream is known.
 Reading these measurements does not advance RTCP report intervals. Qt forwards
-measured values without converting nulls into zeros; RTT, decode duration and
-end-to-end latency remain unavailable when no measurement source provides them.
+measured values without converting nulls into zeros.
+
+The optional `pingMs` field measures round-trip time on the active session. It prefers
+the nominated ICE candidate pair's measured RTT, then authenticated STUN/NATT replies
+on the dedicated video socket or control/audio bundle, then a timed RTSPS keepalive.
+STUN replies must match an outstanding transaction, the peer address, fingerprint, and
+message integrity. Each receiver tracks at most 64 probes. ICE statistics only refresh
+the sample when the pair's response count changes; rereading old statistics cannot keep
+an old measurement alive.
+
+The control fallback follows [OpenNOW-Mac's live-tested keepalive method](https://github.com/OpenCloudGaming/OpenNOW-Mac/blob/90627114383501dd18ef165baa005d9ea603fdf3/GFN/NVST/Rtsp/NvstRtspConnection.swift#L161-L234):
+send `GET_PARAMETER` with the RTSP Session header every two seconds over the existing
+RTSPS WebSocket, and time the matching response. A `551 Option Not Supported` response
+still measures a real round trip. Some seats do not answer STUN/ICE probes and close the
+connection on client WebSocket pings, so those pings are replaced by session-scoped
+RTSP keepalives. Server-initiated WebSocket pings are still answered with pongs.
+
+Measurements expire after five seconds, and new sessions start without a sample.
+Missing or expired ping is emitted as null. No discovery-server ping, remote-clock
+assumptions, stale handshake timing, or synthesized ICE replies supply this metric.
+Ping is network/control-path RTT, not one-way video or input-to-display latency. Decode duration
+and end-to-end latency remain unavailable without a measurement source; Qt hides those
+two metrics when unavailable in the panel, compact bar, and copied statistics.
 
 Queue discard events retain `type: "log"`, `event: "queue-dropped"`, `media`, and
 the per-source delta `count`. The additive `unit` field is `frames` for video

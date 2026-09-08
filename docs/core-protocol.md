@@ -46,6 +46,16 @@ timeout still applies. Mutating operations already dispatched are not rolled bac
 
 ## Implemented core methods
 
+### Game artwork
+
+GraphQL-backed game objects expose nullable artwork URL strings: `imageUrl` prefers
+`GAME_BOX_ART`, `heroImageUrl` prefers hero/banner imagery, and `keyArtUrl` prefers
+NVIDIA `KEY_ART` with `KEY_IMAGE` as a fallback. Console Home uses `keyArtUrl` for
+square tiles while retaining hero imagery for wide tiles. If key art is absent,
+the shell falls back to `imageUrl`, then `heroImageUrl`. Older cached objects and
+public-catalog games may omit `keyArtUrl`; it is an optional, additive field in
+protocol 1 and does not change the handshake or existing artwork fields.
+
 ### Store pagination (`catalog.storePages.v1`)
 
 The protocol-1 envelope and 1 MiB limit are unchanged. This additive capability

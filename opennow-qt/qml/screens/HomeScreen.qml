@@ -291,7 +291,7 @@ FocusScope {
                     title: isAddTile ? qsTr("Add a game") : game.title
                     artwork: isAddTile ? "" : (modelData.wide
                         ? (game.heroImageUrl || game.imageUrl || "")
-                        : (game.imageUrl || game.heroImageUrl || ""))
+                        : (game.keyArtUrl || game.imageUrl || game.heroImageUrl || ""))
                     storeGlyph: isAddTile ? "+" : root.storeGlyph(game)
                     storeColor: isAddTile ? Theme.glassStrong : root.storeColor(storeGlyph)
                     addTile: isAddTile

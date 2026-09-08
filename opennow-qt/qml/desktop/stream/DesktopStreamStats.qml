@@ -100,7 +100,8 @@ Item {
             cards.push({key:"Drops", label:qsTr("UNCLASSIFIED DROPS"), value:read("otherQueueDropCount"), unit:qsTr("items"), field:"otherQueueDropCount"})
         if (frameGenerationEnabled)
             cards.push({key:"LocalOutputFps", label:qsTr("LOCAL OUTPUT FPS"), value:frameGenerationOutputFps(), unit:"fps", field:"frameGenerationOutputFps"})
-        return cards.filter(item => shown(item.key))
+        return cards.filter(item => shown(item.key)
+            && ((item.key !== "Decode" && item.key !== "Latency") || item.value !== null))
     }
     function compactItems() {
         const items = cards.map(item => ({text:item.label + " " + format(item.value, item.decimals) + " " + item.unit}))
