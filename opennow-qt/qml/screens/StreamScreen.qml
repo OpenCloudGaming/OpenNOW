@@ -103,6 +103,12 @@ FocusScope {
         z: 3
     }
 
+    StreamCaptureStatus {
+        layer.enabled: HdrOutput.chromeRequired
+        layer.effect: HdrChromeEffect {}
+        z: 12
+    }
+
     Connections {
         target: ShellStore
         function onPointerLockToggleRequested() {

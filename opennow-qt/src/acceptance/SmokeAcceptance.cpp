@@ -136,6 +136,7 @@ int AcceptanceSession::startSmokeWorkload()
     } else if (m_smokeTest && (m_arguments.contains(u"--smoke-backend-availability"_s)
                      || m_arguments.contains(u"--smoke-microphone"_s)
                      || m_arguments.contains(u"--smoke-audio-output"_s)
+                     || m_arguments.contains(u"--smoke-recording"_s)
                      || m_arguments.contains(u"--smoke-collections"_s)
                      || m_arguments.contains(u"--smoke-steam-big-picture"_s)
                      || m_arguments.contains(u"--smoke-idle-mode"_s)
@@ -144,6 +145,8 @@ int AcceptanceSession::startSmokeWorkload()
             ? u"qrc:/acceptance/MicrophoneAcceptance.qml"_s
             : m_arguments.contains(u"--smoke-audio-output"_s)
             ? u"qrc:/acceptance/AudioOutputAcceptance.qml"_s
+            : m_arguments.contains(u"--smoke-recording"_s)
+            ? u"qrc:/acceptance/RecordingAcceptance.qml"_s
             : m_arguments.contains(u"--smoke-collections"_s)
             ? u"qrc:/acceptance/CollectionsAcceptance.qml"_s
             : m_arguments.contains(u"--smoke-steam-big-picture"_s)
@@ -156,12 +159,14 @@ int AcceptanceSession::startSmokeWorkload()
         auto *fixture = component.create();
         if (!fixture) { qCritical() << component.errors(); return EXIT_FAILURE; }
         fixture->setParent(&m_engine);
-        if (m_arguments.contains(u"--smoke-microphone"_s)) {
+        if (m_arguments.contains(u"--smoke-microphone"_s)
+            || m_arguments.contains(u"--smoke-recording"_s)) {
             auto *runtime = fixture->property("runtime").value<QObject *>();
             if (!runtime) return EXIT_FAILURE;
             m_engine.rootContext()->setContextProperty(u"NativeStreamRuntime"_s, runtime);
         }
         if (m_arguments.contains(u"--smoke-stream-recovery"_s)
+            || m_arguments.contains(u"--smoke-recording"_s)
             || m_arguments.contains(u"--smoke-collections"_s)
             || m_arguments.contains(u"--smoke-steam-big-picture"_s)) {
             auto *client = fixture->property("client").value<QObject *>();

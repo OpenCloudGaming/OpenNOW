@@ -5,6 +5,34 @@ pub mod log;
 
 pub const PROTOCOL_VERSION: u64 = 6;
 
+#[derive(Debug, Clone, Copy)]
+pub struct ReplayBufferConfig {
+    pub enabled: bool,
+    pub duration: std::time::Duration,
+    pub memory_bytes: usize,
+}
+
+impl ReplayBufferConfig {
+    pub fn from_settings(settings: &Value) -> Self {
+        let bounded = |key: &str, default: u64, minimum: u64, maximum: u64| {
+            settings[key]
+                .as_i64()
+                .map(|value| value.clamp(minimum as i64, maximum as i64) as u64)
+                .or_else(|| {
+                    settings[key]
+                        .as_u64()
+                        .map(|value| value.clamp(minimum, maximum))
+                })
+                .unwrap_or(default)
+        };
+        Self {
+            enabled: settings["replayBufferEnabled"].as_bool() == Some(true),
+            duration: std::time::Duration::from_secs(bounded("replayBufferSeconds", 30, 15, 120)),
+            memory_bytes: bounded("replayBufferMemoryMiB", 256, 64, 512) as usize * 1024 * 1024,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AudioOutputDevice(String);
 
@@ -229,6 +257,42 @@ pub fn event(kind: &str, fields: Value) -> Value {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn replay_settings_are_opt_in_and_bounded_and_commands_are_additive() {
+        use super::{Command, ReplayBufferConfig};
+        use serde_json::json;
+        let defaults = ReplayBufferConfig::from_settings(&json!({}));
+        assert!(!defaults.enabled);
+        assert_eq!(defaults.duration.as_secs(), 30);
+        assert_eq!(defaults.memory_bytes, 256 * 1024 * 1024);
+        for enabled in [json!(false), json!("true"), json!(1), json!(null)] {
+            assert!(
+                !ReplayBufferConfig::from_settings(&json!({"replayBufferEnabled":enabled})).enabled
+            );
+        }
+        for (seconds, memory, expected_seconds, expected_memory) in [
+            (-1, -1, 15, 64),
+            (5, 20, 15, 64),
+            (60, 128, 60, 128),
+            (999, 999, 120, 512),
+        ] {
+            let config = ReplayBufferConfig::from_settings(
+                &json!({"replayBufferEnabled":true,"replayBufferSeconds":seconds,"replayBufferMemoryMiB":memory}),
+            );
+            assert!(config.enabled);
+            assert_eq!(config.duration.as_secs(), expected_seconds);
+            assert_eq!(config.memory_bytes, expected_memory * 1024 * 1024);
+        }
+        let save: Command = serde_json::from_value(
+            json!({"id":"clip-1","type":"clip-save","outputPath":"/clips/game.mkv"}),
+        )
+        .unwrap();
+        assert_eq!(save.output_path.as_deref(), Some("/clips/game.mkv"));
+        let stop: Command =
+            serde_json::from_value(json!({"id":"stop-1","type":"replay-stop"})).unwrap();
+        assert_eq!(stop.kind, "replay-stop");
+    }
+
     #[test]
     fn audio_output_device_defaults_and_preserves_exact_names() {
         use super::AudioOutputDevice;

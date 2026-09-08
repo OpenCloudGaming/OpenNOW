@@ -16,6 +16,7 @@ mod native_surface;
 mod output;
 mod queue;
 mod recording;
+mod replay;
 mod runtime;
 mod video_queue;
 #[cfg(target_os = "windows")]
@@ -55,7 +56,8 @@ pub use opennow_streamer_platform_windows::{
     AdoptedD3d11Context, D3d11Frame, D3d11FrameProducer, D3d11FrameSubmitter, D3d11RecordedFrame,
     D3d11TextureFormat,
 };
-pub use recording::{RecordingSummary, record_matroska};
+pub use recording::{RecordingSummary, record_matroska, record_replay_matroska};
+pub use replay::ReplaySnapshot;
 pub use runtime::{
     MainThreadHost, MediaRuntime, MediaRuntimeControl, create_embedded_runtime,
     create_embedded_runtime_with_input, create_embedded_runtime_with_vulkan_device, create_runtime,

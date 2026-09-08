@@ -9,6 +9,7 @@
 #include <QFileInfo>
 #include <QFile>
 #include <QGuiApplication>
+#include <QKeySequence>
 #include <QPixmap>
 #include <QRegularExpression>
 #include <QSaveFile>
@@ -26,6 +27,37 @@ AppController::AppController(QObject *parent)
     : QObject(parent)
     , m_route(u"home"_s)
 {
+}
+
+QString AppController::shortcutFromKey(int key, int modifiers) const
+{
+    const bool supported = (key >= Qt::Key_A && key <= Qt::Key_Z)
+        || (key >= Qt::Key_0 && key <= Qt::Key_9)
+        || (key >= Qt::Key_F1 && key <= Qt::Key_F24)
+        || key == Qt::Key_Return || key == Qt::Key_Enter || key == Qt::Key_Escape
+        || key == Qt::Key_Backspace || key == Qt::Key_Tab || key == Qt::Key_Space
+        || key == Qt::Key_Left || key == Qt::Key_Right || key == Qt::Key_Up
+        || key == Qt::Key_Down || key == Qt::Key_Insert || key == Qt::Key_Delete
+        || key == Qt::Key_Home || key == Qt::Key_End || key == Qt::Key_PageUp
+        || key == Qt::Key_PageDown || key == Qt::Key_Print || key == Qt::Key_Pause;
+    if (!supported)
+        return {};
+    constexpr auto allowed = Qt::ControlModifier | Qt::ShiftModifier
+        | Qt::AltModifier | Qt::MetaModifier;
+    if ((modifiers & ~static_cast<int>(allowed)) != 0)
+        return {};
+    return QKeySequence(QKeyCombination(Qt::KeyboardModifiers(modifiers),
+                        static_cast<Qt::Key>(key))).toString(QKeySequence::PortableText);
+}
+
+QString AppController::normalizeShortcut(const QString &shortcut) const
+{
+    if (shortcut.size() > 80)
+        return {};
+    const QKeySequence sequence(shortcut, QKeySequence::PortableText);
+    if (sequence.count() != 1)
+        return {};
+    return shortcutFromKey(sequence[0].key(), static_cast<int>(sequence[0].keyboardModifiers()));
 }
 
 QString AppController::route() const

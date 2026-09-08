@@ -2197,6 +2197,29 @@ mod tests {
     }
 
     #[test]
+    fn replay_commands_cross_ffi_without_activating_disabled_capture() {
+        let messages = Box::new(CallbackMessages::default());
+        let (mut handle, host) = create_with_test_runtime(&messages);
+        let path = std::env::temp_dir().join("opennow-ffi-clip.mkv");
+        let command =
+            serde_json::to_vec(&json!({"id":"clip-disabled","type":"clip-save","outputPath":path}))
+                .unwrap();
+        assert_eq!(handle.send(&command), OpenNowStreamerStatus::Ok);
+        let response = messages.wait_for_id("clip-disabled");
+        assert_eq!(response["code"], "replay-not-enabled");
+        assert_eq!(
+            handle.send(br#"{"id":"replay-stop","type":"replay-stop"}"#),
+            OpenNowStreamerStatus::Ok
+        );
+        assert_eq!(
+            messages.wait_for_id("replay-stop")["type"],
+            "replay-stopped"
+        );
+        handle.shutdown();
+        host.join().unwrap();
+    }
+
+    #[test]
     fn shutdown_responds_and_closes_the_command_queue() {
         let messages = Box::new(CallbackMessages::default());
         let (mut handle, host) = create_with_test_runtime(&messages);

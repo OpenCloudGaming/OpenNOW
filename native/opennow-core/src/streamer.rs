@@ -1353,7 +1353,8 @@ fn streamer_context(mut session: Value, settings: &Value) -> Value {
             "toggleAntiAfk":settings["shortcutToggleAntiAfk"],
             "toggleMicrophone":settings["shortcutToggleMicrophone"],
             "screenshot":settings["shortcutScreenshot"],
-            "toggleRecording":settings["shortcutToggleRecording"]
+            "toggleRecording":settings["shortcutToggleRecording"],
+            "saveClip":settings["shortcutSaveClip"]
         }
     })
 }
@@ -2254,6 +2255,32 @@ mod tests {
         assert_eq!(prepared["context"]["settings"]["maxBitrateMbps"], 200);
         assert_eq!(prepared["context"]["surface"], Value::Null);
         assert!(service.worker.lock().expect("streamer worker").is_none());
+    }
+
+    #[test]
+    fn embedded_prepare_preserves_replay_opt_in_and_capture_bindings() {
+        for enabled in [false, true] {
+            let service = StreamerService::new();
+            let prepared = service
+                .prepare_embedded(
+                    &json!({"session": {"sessionId": "replay-test", "status": 2}}),
+                    &json!({"codec": "h264", "replayBufferEnabled": enabled,
+                        "replayBufferSeconds": 60, "replayBufferMemoryMiB": 128,
+                        "shortcutToggleRecording": "F12", "shortcutSaveClip": "Alt+F9"}),
+                )
+                .unwrap();
+            assert_eq!(
+                prepared["context"]["settings"]["replayBufferEnabled"],
+                enabled
+            );
+            assert_eq!(prepared["context"]["settings"]["replayBufferSeconds"], 60);
+            assert_eq!(
+                prepared["context"]["settings"]["replayBufferMemoryMiB"],
+                128
+            );
+            assert_eq!(prepared["context"]["shortcuts"]["toggleRecording"], "F12");
+            assert_eq!(prepared["context"]["shortcuts"]["saveClip"], "Alt+F9");
+        }
     }
 
     #[test]

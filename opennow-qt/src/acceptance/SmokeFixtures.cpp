@@ -104,7 +104,7 @@ int AcceptanceSession::prepareWindow()
         if (panelIndex >= 0 && panelIndex + 1 < m_arguments.size()) {
             const auto panel = m_arguments.at(panelIndex + 1);
             const QStringList panels{u"stats"_s,u"audio"_s,u"interface"_s,u"console"_s,
-                u"shortcuts"_s,u"controllers"_s,u"subscription"_s};
+                u"shortcuts"_s,u"controllers"_s,u"subscription"_s,u"recording"_s};
             auto *settings = window ? window->findChild<QObject *>(u"desktopSettingsScreen"_s) : nullptr;
             if (!settings || !panels.contains(panel)) return EXIT_FAILURE;
             settings->setProperty("acceptancePanel", panel);

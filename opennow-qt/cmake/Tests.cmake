@@ -92,7 +92,11 @@ if(BUILD_TESTING)
     endif()
     set_tests_properties(opennow-streamcolor-tests PROPERTIES TIMEOUT 60)
     qt_add_resources(opennow-qt "region-ping-acceptance"
-        PREFIX "/acceptance" BASE tests FILES tests/RegionPingAcceptance.qml tests/RegionChoicesAcceptance.qml tests/StorePagingAcceptance.qml tests/BackendAvailabilityAcceptance.qml tests/StreamRecoveryAcceptance.qml tests/IdleModeAcceptance.qml tests/FrameGenerationAcceptance.qml tests/AudioOutputAcceptance.qml tests/CollectionsAcceptance.qml tests/SteamBigPictureAcceptance.qml tests/ControllerMetadataAcceptance.qml tests/MicrophoneAcceptance.qml)
+        PREFIX "/acceptance" BASE tests FILES tests/RegionPingAcceptance.qml tests/RegionChoicesAcceptance.qml tests/StorePagingAcceptance.qml tests/BackendAvailabilityAcceptance.qml tests/StreamRecoveryAcceptance.qml tests/IdleModeAcceptance.qml tests/FrameGenerationAcceptance.qml tests/AudioOutputAcceptance.qml tests/CollectionsAcceptance.qml tests/SteamBigPictureAcceptance.qml tests/ControllerMetadataAcceptance.qml tests/MicrophoneAcceptance.qml tests/RecordingAcceptance.qml)
+    add_test(NAME qml-recording
+        COMMAND opennow-qt --smoke-test --allow-multiple-instances --desktop
+            --route settings --smoke-recording --reduced-motion)
+    set_tests_properties(qml-recording PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 10)
     add_test(NAME qml-microphone
         COMMAND opennow-qt --smoke-test --allow-multiple-instances --desktop
             --route settings-audio --smoke-microphone --reduced-motion)
@@ -567,7 +571,7 @@ if(BUILD_TESTING)
             --smoke-height 900 --smoke-resolution-open --reduced-motion)
     set_tests_properties(qml-renew-resolution-picker PROPERTIES
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT ${OPENNOW_QT_SMOKE_TIMEOUT})
-    foreach(panel stats audio interface console shortcuts controllers subscription)
+    foreach(panel stats audio interface console shortcuts controllers subscription recording)
         foreach(size desktop compact)
             if(size STREQUAL "desktop")
                 set(renew_width 1440)
