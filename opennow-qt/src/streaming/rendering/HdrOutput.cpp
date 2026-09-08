@@ -75,8 +75,12 @@ HdrOutput::State HdrOutput::renderState()
 
 QString HdrOutput::status() const
 {
+#if defined(Q_OS_LINUX)
+    return tr("HDR is temporarily disabled on Linux.");
+#else
     return m_supported ? tr("HDR output ready. Applies to the next stream.")
                        : tr("HDR unavailable on this display. Enable HDR in your operating system and use a supported GPU and compositor.");
+#endif
 }
 
 void HdrOutput::publish(State state)
@@ -128,6 +132,7 @@ void HdrOutput::updateOutput()
             && (sc->format() != QRhiSwapChain::HDR10
                 || (m_outputPass && m_outputPass->matches(d->rhi, sc)))) return;
     auto desired = QRhiSwapChain::SDR;
+#if !defined(Q_OS_LINUX)
     if (d->rhi->backend() == QRhi::D3D11 || d->rhi->backend() == QRhi::Vulkan
             || d->rhi->backend() == QRhi::Metal) {
         if (sc->isFormatSupported(QRhiSwapChain::HDRExtendedSrgbLinear))
@@ -135,6 +140,7 @@ void HdrOutput::updateOutput()
         else if (sc->isFormatSupported(QRhiSwapChain::HDR10))
             desired = QRhiSwapChain::HDR10;
     }
+#endif
     const bool formatSupported = desired != QRhiSwapChain::SDR;
     if (d->rhi->backend() == QRhi::Metal
             && m_metalLinearOutput)
