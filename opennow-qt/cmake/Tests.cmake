@@ -637,7 +637,7 @@ if(BUILD_TESTING)
         endforeach()
     endforeach()
     foreach(surface desktop console)
-        foreach(mode windowed maximized)
+        foreach(mode windowed maximized fullscreen)
             add_test(NAME "qml-session-fullscreen-${surface}-${mode}"
                 COMMAND opennow-qt --smoke-test --allow-multiple-instances
                     --${surface} --route stream --smoke-session-fullscreen
