@@ -5064,6 +5064,7 @@ fn run_nvst_webrtc_bundle(
                             .as_micros()
                             .try_into()
                             .unwrap_or(u64::MAX);
+                        let previous_input_codec = input_codec.clone();
                         match input_codec.encode(&bytes, timestamp_us) {
                             Ok(messages) => {
                                 for message in messages {
@@ -5077,10 +5078,12 @@ fn run_nvst_webrtc_bundle(
                                     }
                                     if !channels.send_encoded(&mut rtc, &message) {
                                         sent = false;
+                                        input_codec = previous_input_codec;
                                         eprintln!(
                                             "NVST input packet could not be queued on {:?}",
                                             message.route
                                         );
+                                        break;
                                     }
                                 }
                             }
