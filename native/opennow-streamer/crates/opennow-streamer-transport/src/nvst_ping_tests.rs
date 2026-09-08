@@ -199,3 +199,55 @@ fn bundle_receiver_publishes_ping_from_its_real_udp_keepalive_reply() {
     assert!(measured.is_some_and(|value| (0.0..2000.0).contains(&value)));
     assert!(feedback.video_ping.lock().unwrap().is_none());
 }
+
+#[test]
+fn selected_ice_pair_ping_takes_priority_without_refreshing_old_samples() {
+    let feedback = NvstFeedbackState::default();
+    let now = Instant::now();
+    let mut previous_responses = 0;
+    let mut pair = CandidatePairStats {
+        protocol: RtcProtocol::Udp,
+        local: str0m::stats::CandidateStats {
+            addr: "127.0.0.1:5000".parse().unwrap(),
+        },
+        remote: str0m::stats::CandidateStats { addr: peer() },
+        current_round_trip_time: None,
+        total_round_trip_time: Duration::ZERO,
+        responses_received: 0,
+    };
+    feedback.update_ice_ping(Some(&pair), &mut previous_responses, now);
+    assert_eq!(feedback.ping_ms(now), None);
+    feedback.publish_ping(true, now, Duration::from_millis(40));
+    pair.responses_received = 1;
+    pair.current_round_trip_time = Some(Duration::from_micros(25_500));
+    feedback.update_ice_ping(Some(&pair), &mut previous_responses, now);
+    assert_eq!(feedback.ping_ms(now), Some(25.5));
+    feedback.publish_ping(
+        true,
+        now + Duration::from_secs(1),
+        Duration::from_millis(30),
+    );
+    feedback.update_ice_ping(
+        Some(&pair),
+        &mut previous_responses,
+        now + STREAM_PING_TIMEOUT,
+    );
+    assert_eq!(feedback.ping_ms(now + STREAM_PING_TIMEOUT), Some(30.0));
+    pair.responses_received = 2;
+    pair.current_round_trip_time = Some(Duration::ZERO);
+    feedback.update_ice_ping(
+        Some(&pair),
+        &mut previous_responses,
+        now + STREAM_PING_TIMEOUT,
+    );
+    assert_eq!(feedback.ping_ms(now + STREAM_PING_TIMEOUT), Some(0.0));
+    feedback.update_ice_ping(None, &mut previous_responses, now + STREAM_PING_TIMEOUT);
+    assert_eq!(feedback.ping_ms(now + STREAM_PING_TIMEOUT), Some(30.0));
+    assert_eq!(previous_responses, 0);
+    feedback.update_ice_ping(
+        Some(&pair),
+        &mut previous_responses,
+        now + STREAM_PING_TIMEOUT,
+    );
+    assert_eq!(feedback.ping_ms(now + STREAM_PING_TIMEOUT), Some(0.0));
+}

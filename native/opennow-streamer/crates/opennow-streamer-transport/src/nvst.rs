@@ -35,6 +35,7 @@ use str0m::format::{Codec, FormatParams};
 use str0m::media::{Frequency, MediaKind, Mid};
 use str0m::net::{Protocol as RtcProtocol, Receive};
 use str0m::rtp::{RtpHeader as BundleRtpHeader, Ssrc};
+use str0m::stats::CandidatePairStats;
 use str0m::{Candidate, Event, IceCreds, Input, Output, Rtc, RtcConfig};
 
 use super::nvst_control::{
@@ -380,6 +381,7 @@ pub struct NvstFeedbackState {
     received_packets: AtomicU32,
     report_prior: Mutex<(u32, u32)>,
     reception_timing: Mutex<ReceptionTiming>,
+    ice_ping: Mutex<Option<(Instant, Duration)>>,
     video_ping: Mutex<Option<(Instant, Duration)>>,
     bundle_ping: Mutex<Option<(Instant, Duration)>>,
     /// Remains set through send attempts until assembly receives a fresh keyframe.
@@ -401,6 +403,7 @@ impl Default for NvstFeedbackState {
             received_packets: AtomicU32::new(0),
             report_prior: Mutex::new((0, 0)),
             reception_timing: Mutex::new(ReceptionTiming::default()),
+            ice_ping: Mutex::new(None),
             video_ping: Mutex::new(None),
             bundle_ping: Mutex::new(None),
             keyframe_needed: AtomicBool::new(false),
@@ -414,6 +417,27 @@ impl Default for NvstFeedbackState {
 }
 
 impl NvstFeedbackState {
+    fn update_ice_ping(
+        &self,
+        pair: Option<&CandidatePairStats>,
+        previous_responses: &mut u64,
+        now: Instant,
+    ) {
+        let mut sample = self
+            .ice_ping
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(pair) = pair else {
+            *previous_responses = 0;
+            *sample = None;
+            return;
+        };
+        if pair.responses_received != *previous_responses {
+            *previous_responses = pair.responses_received;
+            *sample = pair.current_round_trip_time.map(|elapsed| (now, elapsed));
+        }
+    }
+
     fn publish_ping(&self, video: bool, now: Instant, elapsed: Duration) {
         let sample = if video {
             &self.video_ping
@@ -426,7 +450,7 @@ impl NvstFeedbackState {
     }
 
     pub fn ping_ms(&self, now: Instant) -> Option<f64> {
-        [&self.video_ping, &self.bundle_ping]
+        [&self.ice_ping, &self.video_ping, &self.bundle_ping]
             .into_iter()
             .find_map(|sample| {
                 sample
@@ -4339,6 +4363,7 @@ fn create_nvst_bundle_rtc(socket: &UdpSocket) -> Result<Rtc, NvstUdpReceiverErro
     // str0m's default 16-char ufrag is rejected by Bifrost length checks.
     let mut rtc_config = RtcConfig::new()
         .set_rtp_mode(true)
+        .set_stats_interval(Some(Duration::from_secs(1)))
         .set_send_buffer_audio(MICROPHONE_QUEUE_CAPACITY);
     rtc_config.codec_config().add_config(
         GFN_RED_PAYLOAD_TYPE.into(),
@@ -5117,6 +5142,7 @@ fn run_nvst_webrtc_bundle(
     let mut outbound_datagrams = 0_u64;
     let mut hole_punch_pings = 0_u64;
     let mut ping_tracker = StreamPingTracker::default();
+    let mut ice_ping_responses = 0;
     let mut last_hole_punch = Instant::now() - PING_INTERVAL_BEFORE_CONNECTION;
     let mut seen_ssrcs = HashSet::new();
     let mut dtls_ready = false;
@@ -5584,6 +5610,11 @@ fn run_nvst_webrtc_bundle(
                     // unblocks str0m and sends ClientHello before GFN has a pair.
                 }
                 Ok(Output::Event(event)) => match event {
+                    Event::PeerStats(stats) => feedback.update_ice_ping(
+                        stats.selected_candidate_pair.as_ref(),
+                        &mut ice_ping_responses,
+                        Instant::now(),
+                    ),
                     Event::IceConnectionStateChange(state) => {
                         opennow_streamer_protocol::log::log_async(
                             "INFO",

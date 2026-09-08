@@ -30,7 +30,7 @@ mod nvst_rtsp;
 
 use microphone::MicrophoneController;
 
-use nvst_rtsp::{ActiveNvstRtspSession, prepare_owned_nvst};
+use nvst_rtsp::{ActiveNvstRtspSession, NvstControlPing, prepare_owned_nvst};
 
 pub use opennow_streamer_transport::{EncodedMediaFrame, MediaConsumer};
 
@@ -98,12 +98,18 @@ struct ActiveNvstResources {
     bundle: NvstUdpReceiverControl,
     mjolnir: Option<NvstUdpReceiverControl>,
     feedback: SharedNvstFeedback,
+    control_ping: Option<NvstControlPing>,
     media: Option<MediaControl>,
 }
 
 impl NvstSessionResources for ActiveNvstResources {
     fn ping_ms(&self) -> Option<f64> {
-        self.feedback.ping_ms(Instant::now())
+        let now = Instant::now();
+        self.feedback.ping_ms(now).or_else(|| {
+            self.control_ping
+                .as_ref()
+                .and_then(|ping| ping.ping_ms(now))
+        })
     }
     fn network_metrics(&self) -> Option<(f64, f64)> {
         self.feedback.network_metrics()
@@ -840,6 +846,9 @@ impl Engine {
                 bundle: bundle_control,
                 mjolnir: mjolnir_control,
                 feedback,
+                control_ping: prepared_nvst
+                    .as_ref()
+                    .map(|prepared| prepared.control_ping.clone()),
                 media: self.media_session.as_ref().map(MediaSession::control),
             });
             nvst_events = Some(event_receiver);
