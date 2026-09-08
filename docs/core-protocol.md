@@ -63,6 +63,10 @@ advertises cursor pagination and separate storefront presentation. The existing
 `catalog.store.list` method now caps `limit` at 100 (default 100), returning one
 complete upstream page instead of aggregating thousands of games.
 
+Fresh upstream pages request at most 50 games, even when the requested limit is
+larger; existing cached pages may still contain up to 100. Always follow the
+returned cursor rather than assuming a full page has the requested count.
+
 Request: `{ "limit":100, "cursor":"", "searchQuery":"" }`. Cursor is an opaque
 string (at most 4096 UTF-8 bytes); search is at most 512 UTF-8 bytes. Response:
 `{ "games":[], "count":0, "totalCount":0, "hasNextPage":false,
@@ -88,6 +92,14 @@ and 512 entries. Missing or corrupt entries refetch normally. There is no timed
 catalog invalidation: an optional `refresh:true` on a first-page request clears
 that account/context's pages and presentation before fetching. Continuations
 must omit it or send false. Other accounts' entries are unaffected.
+
+Concurrent misses for the same cache key and refresh epoch share one successful
+fetch. Store network requests (including server metadata, presentation fallbacks,
+and oversized-page retries) are serialized with at least 50 ms between them.
+HTTP 429 starts a core-wide Store cooldown using `Retry-After` (seconds or HTTP
+date), or 60 seconds when it is absent or invalid. Uncached requests during the
+cooldown return `rate_limited` without network traffic; cached responses remain
+available. The core does not automatically retry a rate-limited request.
 
 The shell serializes game requests, merges by stable game identity, and retains
 loaded games and the failed cursor on error. Retries resume that page.
