@@ -34,7 +34,7 @@ use str0m::config::Fingerprint;
 use str0m::format::{Codec, FormatParams};
 use str0m::media::{Frequency, MediaKind, Mid};
 use str0m::net::{Protocol as RtcProtocol, Receive};
-use str0m::rtp::Ssrc;
+use str0m::rtp::{RtpHeader as BundleRtpHeader, Ssrc};
 use str0m::{Candidate, Event, IceCreds, Input, Output, Rtc, RtcConfig};
 
 use super::nvst_control::{
@@ -4820,6 +4820,88 @@ fn matches_audio_track(track: &NvstAudioTrack, payload_type: u8, ssrc: u32) -> b
     matches_payload_type && track.ssrc.is_none_or(|expected| expected == ssrc)
 }
 
+#[derive(Default)]
+struct NvstAudioReceiver {
+    last_sequence: Option<(u32, u16)>,
+    discontinuity_pending: bool,
+}
+
+impl NvstAudioReceiver {
+    fn depacketize(
+        &mut self,
+        track: &NvstAudioTrack,
+        header: &BundleRtpHeader,
+        payload: Arc<[u8]>,
+        received_at_us: u64,
+    ) -> Result<Vec<EncodedMediaFrame>, NvstDropReason> {
+        let mut source_changed = false;
+        let missing_packets = match self.last_sequence {
+            Some((ssrc, previous)) if ssrc == *header.ssrc => {
+                let delta = header.sequence_number.wrapping_sub(previous);
+                if delta == 0 || delta >= 0x8000 {
+                    return Ok(Vec::new());
+                }
+                usize::from(delta - 1)
+            }
+            Some(_) => {
+                source_changed = true;
+                0
+            }
+            None => 0,
+        };
+        let mut frames = Vec::with_capacity(missing_packets.min(MAX_REDUNDANT_AUDIO_BLOCKS) + 1);
+        let mut append = |payload: Arc<[u8]>, timestamp: u32| {
+            frames.push(EncodedMediaFrame {
+                mid: track.mid.clone(),
+                codec: "opus".to_owned(),
+                payload,
+                frame_index: None,
+                rtp_timestamp: u64::from(timestamp),
+                clock_rate_hz: track.clock_rate_hz,
+                channels: Some(track.channels),
+                received_at_us,
+                keyframe: false,
+                contiguous: true,
+            });
+        };
+        let recovered_packets = if *header.payload_type == GFN_RED_PAYLOAD_TYPE {
+            let red = parse_red_opus(&payload).ok_or(NvstDropReason::MalformedRedAudio)?;
+            let recover_count = missing_packets.min(red.redundant.len());
+            for block in red
+                .redundant
+                .iter()
+                .skip(red.redundant.len() - recover_count)
+            {
+                append(
+                    Arc::from(block.payload),
+                    header
+                        .timestamp
+                        .wrapping_sub(u32::from(block.timestamp_offset)),
+                );
+            }
+            append(Arc::from(red.primary), header.timestamp);
+            recover_count
+        } else {
+            append(payload, header.timestamp);
+            0
+        };
+        frames[0].contiguous = !source_changed && missing_packets == recovered_packets;
+        self.last_sequence = Some((*header.ssrc, header.sequence_number));
+        Ok(frames)
+    }
+
+    fn deliver(
+        &mut self,
+        consumer: &MediaConsumer,
+        mut frame: EncodedMediaFrame,
+    ) -> Result<(), TransportError> {
+        frame.contiguous &= !self.discontinuity_pending;
+        let result = deliver_media_frame(consumer, frame);
+        self.discontinuity_pending = result.is_err();
+        result
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct RedOpusBlock<'a> {
     timestamp_offset: u16,
@@ -4997,8 +5079,7 @@ fn run_nvst_webrtc_bundle(
     let mut cursor_capture_attempts = 0_u8;
     let mut control_keepalive_at = next_control_keepalive(Instant::now());
     let mut input_timeout_reported = false;
-    let mut last_audio_sequence: Option<(u32, u16)> = None;
-    let mut audio_discontinuity_pending = false;
+    let mut audio_receiver = NvstAudioReceiver::default();
     loop {
         loop {
             match commands.try_recv() {
@@ -5619,89 +5700,27 @@ fn run_nvst_webrtc_bundle(
                         });
                         if is_audio {
                             let audio = audio_track.as_ref().expect("audio track checked above");
-                            let audio_ssrc = *packet.header.ssrc;
-                            let missing_packets = last_audio_sequence
-                                .filter(|(ssrc, _)| *ssrc == audio_ssrc)
-                                .map(|(_, previous)| {
-                                    packet.header.sequence_number.wrapping_sub(previous)
-                                })
-                                .filter(|delta| {
-                                    (2..=u16::try_from(MAX_REDUNDANT_AUDIO_BLOCKS + 1)
-                                        .unwrap_or(u16::MAX))
-                                        .contains(delta)
-                                })
-                                .map_or(0, |delta| usize::from(delta - 1));
-                            last_audio_sequence = Some((audio_ssrc, packet.header.sequence_number));
                             let received_at_us = packet
                                 .timestamp
                                 .saturating_duration_since(transport_origin)
                                 .as_micros()
                                 .try_into()
                                 .unwrap_or(u64::MAX);
-                            let mut frames = Vec::with_capacity(missing_packets.saturating_add(1));
-                            let (primary, recovered_packets) =
-                                if outer_payload_type == GFN_RED_PAYLOAD_TYPE {
-                                    let Some(red) = parse_red_opus(&packet.payload) else {
-                                        let _ = event_sender.send(NvstReceiveEvent::Dropped(
-                                            NvstDropReason::MalformedRedAudio,
-                                        ));
-                                        audio_discontinuity_pending = true;
-                                        continue;
-                                    };
-                                    let recover_count = missing_packets.min(red.redundant.len());
-                                    for block in red
-                                        .redundant
-                                        .iter()
-                                        .skip(red.redundant.len().saturating_sub(recover_count))
-                                    {
-                                        frames.push(EncodedMediaFrame {
-                                            mid: audio.mid.clone(),
-                                            codec: "opus".to_owned(),
-                                            payload: Arc::from(block.payload),
-                                            frame_index: None,
-                                            rtp_timestamp: u64::from(
-                                                packet.header.timestamp.wrapping_sub(u32::from(
-                                                    block.timestamp_offset,
-                                                )),
-                                            ),
-                                            clock_rate_hz: audio.clock_rate_hz,
-                                            channels: Some(audio.channels),
-                                            received_at_us,
-                                            keyframe: false,
-                                            contiguous: true,
-                                        });
-                                    }
-                                    (Arc::from(red.primary), recover_count)
-                                } else {
-                                    (packet.payload, 0)
-                                };
-                            frames.push(EncodedMediaFrame {
-                                mid: audio.mid.clone(),
-                                codec: "opus".to_owned(),
-                                payload: primary,
-                                frame_index: None,
-                                rtp_timestamp: u64::from(packet.header.timestamp),
-                                clock_rate_hz: audio.clock_rate_hz,
-                                channels: Some(audio.channels),
+                            let frames = match audio_receiver.depacketize(
+                                audio,
+                                &packet.header,
+                                packet.payload,
                                 received_at_us,
-                                keyframe: false,
-                                contiguous: missing_packets == 0
-                                    || recovered_packets == missing_packets,
-                            });
-                            for (index, mut frame) in frames.into_iter().enumerate() {
-                                if audio_discontinuity_pending
-                                    && (recovered_packets == 0 || index > 0)
-                                {
-                                    frame.contiguous = false;
+                            ) {
+                                Ok(frames) => frames,
+                                Err(reason) => {
+                                    let _ = event_sender.send(NvstReceiveEvent::Dropped(reason));
+                                    continue;
                                 }
-                                match deliver_media_frame(&media_consumer, frame) {
-                                    Ok(()) => audio_discontinuity_pending = false,
-                                    Err(TransportError::MediaConsumerBackpressured) => {
-                                        // Mark the next accepted packet discontinuous so the
-                                        // Opus decoder performs PLC instead of clicking across
-                                        // a packet that vanished between transport and decode.
-                                        audio_discontinuity_pending = true;
-                                    }
+                            };
+                            for frame in frames {
+                                match audio_receiver.deliver(&media_consumer, frame) {
+                                    Ok(()) | Err(TransportError::MediaConsumerBackpressured) => {}
                                     Err(_) => {
                                         let _ = event_sender.send(NvstReceiveEvent::Dropped(
                                             NvstDropReason::MediaConsumerClosed,
@@ -6131,6 +6150,10 @@ fn forward_receive_event(
 
 #[cfg(test)]
 mod tests {
+    mod audio_tests {
+        include!("nvst_audio_tests.rs");
+    }
+
     mod recovery_tests {
         include!("nvst_recovery_tests.rs");
     }
