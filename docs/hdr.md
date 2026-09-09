@@ -35,7 +35,9 @@ continues to select 10-bit 4:2:0 for that session without rewriting the saved SD
 - macOS requests VideoToolbox x444 output only after a hardware-required Main44410 fixture
   decodes and completes Metal conversion. A codec-wide HEVC capability is not sufficient.
 - Windows advertises 4:4:4 only if an installed hardware MFT decodes the corresponding
-  AYUV/Y410 fixture and the embedded video processor converts the actual output. Older
+  AYUV/Y410 fixture and the embedded GPU converter processes the actual output. Y410 SDR
+  uses exact ten-bit UINT shader conversion because the video processor on the tested
+  RTX 3080 applied eight-bit-normalized range offsets. Older
   decoder documentation describes only Main/Main10 4:2:0, but the installed
   `HEVCVideoExtension` on an RTX 3080 successfully decoded the Main44410 fixture through
   D3D11 during validation. D3D12-on-11 profile availability differed on that same device.
