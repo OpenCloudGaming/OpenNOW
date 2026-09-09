@@ -208,6 +208,12 @@ The core copies only bounded, non-negative numeric counters into the export's
 counters survive embedded-runtime stop and remain separate from the core's
 process-streamer snapshot and its legacy mixed-unit `queueDropCount`.
 
+`diagnostics.export` also optionally accepts `runtimeCapabilities` from the
+in-process Qt streamer. The export's separate `nativeRuntime` section preserves
+allowlisted backend and codec availability, HDR support, and bounded, redacted
+failure reasons, even before a stream starts. It does not copy arbitrary runtime
+fields or treat an empty process-streamer snapshot as the embedded capabilities.
+
 ### Session resume and reconnect
 
 `session.claim` discovers the session's actual control server, sends the minimal

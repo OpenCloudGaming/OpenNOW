@@ -794,6 +794,7 @@ QtObject {
             return
         diagnosticsMessage = qsTr("Creating redacted diagnostic export…")
         diagnosticsExportRequestId = CoreClient.request("diagnostics.export", {
+            runtimeCapabilities: nativeRuntimeCapabilities,
             embeddedStream: {drops: streamDropCounts},
             lastSessionReport: lastSessionReport ? {drops: lastSessionReport.drops} : null
         }, 15000)

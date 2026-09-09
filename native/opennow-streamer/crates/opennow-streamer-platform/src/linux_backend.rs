@@ -364,6 +364,20 @@ fn v4l2_capability(
     backend.available = backend.codecs.iter().any(|codec| codec.available);
     if backend.available {
         backend.reason = None;
+    } else {
+        backend.reason = Some(static_reason(
+            backend
+                .codecs
+                .iter()
+                .filter(|codec| matches!(codec.codec, "h264" | "h265"))
+                .filter_map(|codec| {
+                    codec
+                        .reason
+                        .map(|reason| format!("{}: {reason}", codec.codec))
+                })
+                .collect::<Vec<_>>()
+                .join("; "),
+        ));
     }
     backend
 }
@@ -477,6 +491,22 @@ fn static_reason(reason: String) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unavailable_v4l2_summary_preserves_the_hevc_failure() {
+        let mut capabilities = snapshot(false, false, false, true, vec!["wayland"]);
+        capabilities.decoders.push(BackendCapability {
+            name: "v4l2-h265",
+            available: false,
+            detail: "MEDIA_IOC_REQUEST_ALLOC failed: Permission denied (os error 13)".to_owned(),
+        });
+        let backend = v4l2_capability(&capabilities, "wayland");
+        assert!(!backend.available);
+        let reason = backend.reason.unwrap();
+        assert!(reason.contains("h264:"));
+        assert!(reason.contains("h265: MEDIA_IOC_REQUEST_ALLOC failed"));
+        assert!(reason.contains("os error 13"));
+    }
 
     #[test]
     fn hevc_request_is_available_without_stateful_h264_and_never_ten_bit() {

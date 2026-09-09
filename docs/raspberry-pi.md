@@ -110,6 +110,48 @@ before sharing; never publish account credentials or session authentication
 material. Include the operating-system and device checks above when reporting a
 missing decoder or failed DMA-BUF import.
 
+### Interpreting failed discovery
+
+The export's `nativeRuntime.videoBackends` contains the embedded decoder results,
+including each codec's failure reason before a session starts. On Pi 5, inspect
+the `v4l2` backend's `h265` entry; an unavailable stateful H.264 decoder is expected
+and is not the HEVC failure reason. The standalone probe's Vulkan or software
+availability does not establish embedded hardware decoding or successful playback.
+
+HEVC discovery enumerates numeric `/dev/video*` and `/dev/media*` nodes and uses
+`MEDIA_IOC_G_TOPOLOGY` to match the video device's major/minor number to a media
+interface. It does not assume that `/dev/video19` has minor number 19, that the
+media node has a fixed number, or that a `/sys/class/media` directory exists.
+Linux registers media devices on the media bus, not that sysfs class. Discovery
+then allocates and immediately closes a media request to verify request support.
+The scan, topology allocations, retry count, and retained errors are bounded.
+
+Failures identify the operation: opening a device, querying or setting V4L2
+formats, querying media topology, or allocating a media request. `EACCES` indicates
+an access failure; `ENOTTY` from `MEDIA_IOC_REQUEST_ALLOC` means the driver does not
+support requests. Fixing discovery does not prove FFmpeg decode, DMA-BUF import,
+or sustained presentation; use the real-device acceptance matrix above.
+
+The AppImage packages Wayland platform and shell-integration plugins explicitly.
+A missing Qt Wayland plugin is a packaging failure, separate from HEVC discovery.
+CUDA probe failures are expected on non-NVIDIA Pi hardware, and VA-API is not the
+Pi HEVC path. Do not install CUDA or replace the Pi GPU driver to fix those probes.
+
+References:
+
+- [Linux media-device registration](https://github.com/raspberrypi/linux/blob/rpi-6.18.y/drivers/media/mc/mc-devnode.c)
+  registers the media bus rather than a media class.
+- [Media topology API](https://docs.kernel.org/userspace-api/media/mediactl/media-ioc-g-topology.html)
+  defines device-number matching and retries when a topology changes.
+- [Media request allocation](https://docs.kernel.org/userspace-api/media/mediactl/media-ioc-request-alloc.html)
+  defines descriptor ownership and unsupported-request errors.
+- [Pi kernel 6.18 HEVC compatibility discussion](https://github.com/raspberrypi/linux/issues/7306)
+  describes older FFmpeg control-layout incompatibilities during actual decoding.
+  That is distinct from a discovery rejection before FFmpeg is initialized; do not
+  infer that a kernel downgrade is required from the generic discovery error.
+- [linuxdeploy Qt plugin configuration](https://github.com/linuxdeploy/linuxdeploy-plugin-qt#environment-variables)
+  documents the additional Wayland deployment settings.
+
 Unit tests, ARM64 compilation, and software-Vulkan rendering tests can validate
 contracts and conversion logic. They cannot validate `rpivid`, Pi DMA-BUF
 interoperability, sustained performance, or live GFN gameplay without a Pi.
