@@ -27,7 +27,8 @@ SDR codec support. `h265_10bit`, `av1_10bit`, `h265_444`, `h265_10bit_444`, and
 `supports_format(codec, pixel_format, hdr)` distinguish each supported depth/chroma combination.
 Advanced-format probes decode a synthetic 1920x1080 access unit through the selected MFT,
 require a D3D11-backed output frame preserving the requested depth, chroma, and transfer,
-then execute the embedded video processor's exact conversion, including `VideoProcessorBlt`.
+then execute the embedded converter: `VideoProcessorBlt` for P010/HDR and a UINT shader for
+SDR Y410. Both paths produce the actual RGB10A2 texture used by Qt.
 An exposed media subtype or provisional startup format alone is not a successful probe.
 The fixtures and their generation/verification commands are in `fixtures/probe/`.
 These checks use the default adapter selected by `probe_for`;
@@ -78,6 +79,25 @@ bit depth and chroma before entering the decoded queue.
 Provisional startup metadata is not validated as an actual HDR frame before the sequence header
 arrives. The first actual sample and every output-type change undergo strict validation, including
 HDR color metadata; lower-precision frames never reach conversion.
+
+## Exact SDR Y410 conversion
+
+On the validated RTX3080 driver, the video processor preserved all decoded Y410 values but
+applied eight-bit-normalized nominal-range/chroma offsets during RGB conversion. A neutral
+10-bit white became R1017/G1021/B1016 instead of 1023, and disabling automatic processing
+made no difference. The decoded surface itself was sample-exact.
+
+SDR BT.709 Y410 therefore uses a deterministic GPU shader: one GPU copy crops the decoded
+array slice into a sampleable Y410 texture, a UINT view exposes the exact ten-bit U/Y/V codes,
+and explicit full/limited-range matrix math writes RGB10A2. The input texture and visited Qt
+output slots are bounded and reused. A deferred command list restores Qt's immediate-context
+state; format/range/extent changes recreate converter resources. Unsupported views or formats
+fail explicitly, with no CPU download or lower-precision fallback.
+
+P010/PQ HDR retains the video processor. A valid Main10 PQ ramp was checked against a software
+decoder reference and preserved 875 RGB10A2/PQ gray levels within two code values across three
+decoder recreations on the same RTX3080. This verifies the encoded color pipeline, not monitor
+scan-out or optical HDR accuracy. Shader compilation uses Windows' system D3DCompiler 47.
 
 ## HEVC availability in Qt
 
@@ -178,7 +198,7 @@ specific failures for unsupported profiles. The Windows-only unit tests exercise
 metadata and D3D11 processing; cross-target `cargo check` compiles but does not execute them.
 
 The explicit hardware precision regression decodes a lossless Main44410/RExt fixture, checks
-the actual Y410 decoder surface, converts it through the embedded video processor, and reads
+the actual Y410 decoder surface, converts it through the embedded GPU converter, and reads
 back the test-only RGB10A2 target. It verifies at least 800 distinct gray levels, every sample
 of an 877-level gray ramp, and 1920 alternating one-pixel chroma samples across three decoder
 restarts. It has no unsupported-hardware skip once explicitly selected:
@@ -188,3 +208,11 @@ cargo test --manifest-path native/opennow-streamer/Cargo.toml -p opennow-streame
 ```
 
 The cross-target checks validate the Win32 bindings for x64 and ARM64. Hardware decode, presentation, audio output, device removal, and endpoint switching still require tests on real Windows hardware.
+
+The corresponding HDR precision regression uses a valid Main10/PQ fixture and a committed
+software-decoded luma reference. It keeps the same two-code conversion tolerance rather than
+folding codec errors into a wider tolerance:
+
+```sh
+cargo test --manifest-path native/opennow-streamer/Cargo.toml -p opennow-streamer-platform-windows hevc_hdr_hardware_decode_and_conversion_preserve_pq_precision -- --ignored --nocapture --test-threads=1
+```

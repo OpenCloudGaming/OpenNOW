@@ -58,7 +58,7 @@ use super::decoder::{DecodedVideoFrame, Decoder, DecoderDevice};
 // entire core. In particular, the final HaveOutput event must be drained even when transport has
 // stopped delivering compressed access units temporarily.
 const DECODER_POLL_INTERVAL: Duration = Duration::from_millis(1);
-const MAX_FRAME_SLOTS: usize = 8;
+pub(super) const MAX_FRAME_SLOTS: usize = 8;
 // A broken driver may never return from codec work. Never join it on Qt's render
 // thread, but also never accumulate unbounded abandoned workers across retries.
 static LIVE_DECODER_WORKERS: AtomicUsize = AtomicUsize::new(0);
@@ -265,6 +265,7 @@ struct ProcessorResources {
 
 struct AdoptedResources {
     device: ID3D11Device,
+    context: ID3D11DeviceContext,
     video_device: ID3D11VideoDevice,
     video_context: ID3D11VideoContext,
     video_context_1: ID3D11VideoContext1,
@@ -272,6 +273,7 @@ struct AdoptedResources {
     format: VideoFormat,
     generation: u64,
     processor: Option<ProcessorResources>,
+    y410: Option<super::y410::Y410Converter>,
 }
 
 impl AdoptedResources {
@@ -315,6 +317,7 @@ impl AdoptedResources {
         }
         Ok(Self {
             device,
+            context,
             video_device,
             video_context,
             video_context_1,
@@ -322,6 +325,7 @@ impl AdoptedResources {
             format,
             generation: 0,
             processor: None,
+            y410: None,
         })
     }
 
@@ -329,6 +333,7 @@ impl AdoptedResources {
         if self.format != format {
             self.format = format;
             self.processor = None;
+            self.y410 = None;
         }
     }
 
@@ -377,12 +382,41 @@ impl AdoptedResources {
         frame
             .aperture
             .validate_extent(input_description.Width, input_description.Height)?;
-        self.reconfigure(frame.format);
         let array_slice = decoder_array_slice(
             frame.subresource,
             input_description.MipLevels,
             input_description.ArraySize,
         )?;
+        self.reconfigure(frame.format);
+        if frame.format.pixel_format == VideoPixelFormat::Y410
+            && frame.format.transfer_function == VideoTransferFunction::Sdr
+        {
+            if self.y410.is_none() {
+                self.y410 = Some(super::y410::Y410Converter::new(
+                    &self.device,
+                    &self.context,
+                    frame.format,
+                )?);
+            }
+            let texture = self
+                .y410
+                .as_mut()
+                .ok_or("no Y410 converter")?
+                .record(slot, frame)?;
+            self.generation = self.generation.wrapping_add(1).max(1);
+            return Ok(D3d11RecordedFrame {
+                texture: texture.as_raw(),
+                texture_format: D3d11TextureFormat::Rgb10A2,
+                color_space: D3d11ColorSpace::Sdr709,
+                width: frame.format.width,
+                height: frame.format.height,
+                frame_slot,
+                generation: self.generation,
+                presentation_time_ns: u64::try_from(frame.timestamp_100ns.max(0))
+                    .unwrap_or(0)
+                    .saturating_mul(100),
+            });
+        }
         self.ensure_processor(
             input_description.Width,
             input_description.Height,
@@ -1731,7 +1765,146 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires a hardware HEVC Main44410 MFT and Y410-to-RGB10A2 video processing"]
+    #[ignore = "requires a hardware HEVC Main10 MFT and P010/PQ-to-RGB10A2/PQ conversion"]
+    fn hevc_hdr_hardware_decode_and_conversion_preserve_pq_precision() {
+        let _runtime = EmbeddedMediaRuntime::initialize().expect("Media Foundation");
+        let mut device = None;
+        let mut context = None;
+        unsafe {
+            D3D11CreateDevice(
+                None::<&IDXGIAdapter>,
+                D3D_DRIVER_TYPE_HARDWARE,
+                HMODULE::default(),
+                D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+                Some(&[D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0]),
+                D3D11_SDK_VERSION,
+                Some(&mut device),
+                None,
+                Some(&mut context),
+            )
+            .expect("D3D11 hardware device");
+        }
+        let device = device.unwrap();
+        let context = context.unwrap();
+        let format = VideoFormat {
+            transfer_function: VideoTransferFunction::Pq,
+            color_primaries: crate::VideoColorPrimaries::Bt2020,
+            color_matrix: VideoColorMatrix::Bt2020,
+            ..color_test_format()
+        };
+        let reference = include_bytes!("../../fixtures/probe/hevc-p010-pq-precision-luma.bin")
+            .chunks_exact(2)
+            .map(|bytes| u16::from_le_bytes([bytes[0], bytes[1]]))
+            .collect::<Vec<_>>();
+        assert_eq!(reference.len(), 877);
+        let mut resources = unsafe {
+            AdoptedResources::new(
+                AdoptedD3d11Context {
+                    device: device.as_raw(),
+                    immediate_context: context.as_raw(),
+                },
+                format,
+            )
+        }
+        .unwrap();
+        for restart in 0..3 {
+            resources.reset_decoder_views();
+            let mut decoder =
+                Decoder::new(&resources, format, WindowsDecoderMode::Hardware).unwrap();
+            let frame = decoder
+                .probe_frame(include_bytes!(
+                    "../../fixtures/probe/hevc-p010-pq-precision.hevc"
+                ))
+                .expect("decode valid Main10 PQ precision access unit");
+            assert_eq!(frame.format.pixel_format, VideoPixelFormat::P010);
+            assert_eq!(frame.format.transfer_function, VideoTransferFunction::Pq);
+            let read_row = |texture: &ID3D11Texture2D, subresource: u32| {
+                let mut description = D3D11_TEXTURE2D_DESC::default();
+                unsafe {
+                    texture.GetDesc(&mut description);
+                }
+                description.Usage = D3D11_USAGE_STAGING;
+                description.BindFlags = 0;
+                description.CPUAccessFlags = D3D11_CPU_ACCESS_READ.0 as u32;
+                description.ArraySize = 1;
+                description.MipLevels = 1;
+                description.MiscFlags = 0;
+                let mut staging = None;
+                unsafe {
+                    device
+                        .CreateTexture2D(&description, None, Some(&mut staging))
+                        .unwrap();
+                }
+                let staging = staging.unwrap();
+                let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
+                unsafe {
+                    context.CopySubresourceRegion(&staging, 0, 0, 0, 0, texture, subresource, None);
+                    context
+                        .Map(&staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped))
+                        .unwrap();
+                    let bytes = std::slice::from_raw_parts(
+                        mapped.pData.cast::<u8>(),
+                        877 * if description.Format == DXGI_FORMAT_P010 {
+                            2
+                        } else {
+                            4
+                        },
+                    )
+                    .to_vec();
+                    context.Unmap(&staging, 0);
+                    (description.Format, bytes)
+                }
+            };
+            let (input_format, input) = read_row(&frame.texture, frame.subresource);
+            assert_eq!(input_format, DXGI_FORMAT_P010);
+            for (index, bytes) in input.chunks_exact(2).enumerate() {
+                let actual = u16::from_le_bytes([bytes[0], bytes[1]]);
+                assert_eq!(actual & 63, 0, "P010 sample alignment at {index}");
+                assert_eq!(
+                    actual >> 6,
+                    reference[index],
+                    "Main10 decoded luma at {index}"
+                );
+            }
+            let recorded = resources
+                .record(0, &frame)
+                .expect("convert actual P010/PQ decoder surface");
+            assert_eq!(recorded.texture_format, D3d11TextureFormat::Rgb10A2);
+            assert_eq!(recorded.color_space, D3d11ColorSpace::Pq2020);
+            let output = unsafe { clone_interface::<ID3D11Texture2D>(recorded.texture) }.unwrap();
+            let (output_format, bytes) = read_row(&output, 0);
+            assert_eq!(output_format, DXGI_FORMAT_R10G10B10A2_UNORM);
+            let mut levels = std::collections::HashSet::new();
+            for (index, bytes) in bytes.chunks_exact(4).enumerate() {
+                let pixel = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+                let expected = ((f64::from(reference[index]) - 64.0) * 1023.0 / 876.0)
+                    .round()
+                    .clamp(0.0, 1023.0) as i32;
+                levels.insert(pixel & 1023);
+                for shift in [0, 10, 20] {
+                    let actual = ((pixel >> shift) & 1023) as i32;
+                    assert!(
+                        (actual - expected).abs() <= 2,
+                        "restart={restart} PQ sample={index} channel={shift} actual={actual} expected={expected}"
+                    );
+                }
+            }
+            assert!(
+                levels.len() >= 800,
+                "retained only {} PQ gray levels",
+                levels.len()
+            );
+            eprintln!(
+                "HEVC Main10 PQ restart={restart}: P010 source matches software reference; RGB10A2/PQ retains {} gray levels",
+                levels.len()
+            );
+            drop(frame);
+            decoder.stop();
+        }
+    }
+
+    #[test]
+    #[ignore = "requires a hardware HEVC Main44410 MFT and Y410 UINT shader conversion"]
     fn hevc_444_hardware_decode_and_conversion_preserve_precision_and_chroma() {
         let _runtime = EmbeddedMediaRuntime::initialize().expect("Media Foundation");
         let mut device = None;
@@ -1788,51 +1961,83 @@ mod tests {
                 frame.texture.GetDesc(&mut input_description);
             }
             assert_eq!(input_description.Format, DXGI_FORMAT_Y410);
+            let read_rows = |texture: &ID3D11Texture2D, subresource: u32| {
+                let mut description = D3D11_TEXTURE2D_DESC::default();
+                unsafe {
+                    texture.GetDesc(&mut description);
+                }
+                description.Usage = D3D11_USAGE_STAGING;
+                description.BindFlags = 0;
+                description.CPUAccessFlags = D3D11_CPU_ACCESS_READ.0 as u32;
+                description.ArraySize = 1;
+                description.MipLevels = 1;
+                description.MiscFlags = 0;
+                let mut staging = None;
+                unsafe {
+                    device
+                        .CreateTexture2D(&description, None, Some(&mut staging))
+                        .unwrap();
+                }
+                let staging = staging.unwrap();
+                let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
+                unsafe {
+                    context.CopySubresourceRegion(&staging, 0, 0, 0, 0, texture, subresource, None);
+                    context
+                        .Map(&staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped))
+                        .unwrap();
+                    let gray = std::slice::from_raw_parts(mapped.pData.cast::<u32>(), 877).to_vec();
+                    let chroma = std::slice::from_raw_parts(
+                        mapped
+                            .pData
+                            .cast::<u8>()
+                            .add(mapped.RowPitch as usize * 64)
+                            .cast::<u32>(),
+                        1920,
+                    )
+                    .to_vec();
+                    context.Unmap(&staging, 0);
+                    (gray, chroma)
+                }
+            };
+            let decoded_pixels = read_rows(&frame.texture, frame.subresource);
             let recorded = resources
                 .record(0, &frame)
                 .expect("convert actual Y410 decoder surface");
             assert_eq!(recorded.texture_format, D3d11TextureFormat::Rgb10A2);
             assert_eq!(recorded.color_space, D3d11ColorSpace::Sdr709);
-            let output = resources.processor.as_ref().unwrap().slots[0]
-                .as_ref()
-                .unwrap()
-                .texture
-                .clone();
-            assert_eq!(recorded.texture, output.as_raw());
-            let mut description = D3D11_TEXTURE2D_DESC::default();
+            let output = unsafe { clone_interface::<ID3D11Texture2D>(recorded.texture) }.unwrap();
+            let mut output_description = D3D11_TEXTURE2D_DESC::default();
             unsafe {
-                output.GetDesc(&mut description);
+                output.GetDesc(&mut output_description);
             }
-            assert_eq!(description.Format, DXGI_FORMAT_R10G10B10A2_UNORM);
-            description.Usage = D3D11_USAGE_STAGING;
-            description.BindFlags = 0;
-            description.CPUAccessFlags = D3D11_CPU_ACCESS_READ.0 as u32;
-            let mut staging = None;
-            unsafe {
-                device
-                    .CreateTexture2D(&description, None, Some(&mut staging))
-                    .unwrap();
+            assert_eq!(output_description.Format, DXGI_FORMAT_R10G10B10A2_UNORM);
+            let pixels = read_rows(&output, 0);
+            for (index, pixel) in decoded_pixels.0.iter().copied().enumerate() {
+                assert_eq!(
+                    (pixel >> 10) & 1023,
+                    index as u32 + 64,
+                    "decoder luma precision at {index}"
+                );
+                assert_eq!(pixel & 1023, 512, "decoder neutral U at {index}");
+                assert_eq!((pixel >> 20) & 1023, 512, "decoder neutral V at {index}");
             }
-            let staging = staging.unwrap();
-            let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
-            let pixels = unsafe {
-                context.CopyResource(&staging, &output);
-                context
-                    .Map(&staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped))
-                    .unwrap();
-                let gray = std::slice::from_raw_parts(mapped.pData.cast::<u32>(), 877).to_vec();
-                let chroma = std::slice::from_raw_parts(
-                    mapped
-                        .pData
-                        .cast::<u8>()
-                        .add(mapped.RowPitch as usize * 64)
-                        .cast::<u32>(),
-                    1920,
-                )
-                .to_vec();
-                context.Unmap(&staging, 0);
-                (gray, chroma)
-            };
+            for (index, pixel) in decoded_pixels.1.iter().copied().enumerate() {
+                assert_eq!(
+                    (pixel >> 10) & 1023,
+                    512,
+                    "decoder chroma-row luma at {index}"
+                );
+                assert_eq!(
+                    pixel & 1023,
+                    if index % 2 == 0 { 384 } else { 640 },
+                    "decoder U at {index}"
+                );
+                assert_eq!(
+                    (pixel >> 20) & 1023,
+                    if index % 2 == 0 { 640 } else { 384 },
+                    "decoder V at {index}"
+                );
+            }
             let mut levels = std::collections::HashSet::new();
             for (index, pixel) in pixels.0.iter().copied().enumerate() {
                 let expected = (index as f64 * 1023.0 / 876.0).round() as i32;

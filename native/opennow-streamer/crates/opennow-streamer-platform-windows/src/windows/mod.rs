@@ -13,6 +13,7 @@ mod color;
 mod decoder;
 mod embedded;
 mod graphics;
+mod y410;
 
 pub use embedded::{
     AdoptedD3d11Context, D3d11ColorSpace, D3d11Frame, D3d11FrameProducer, D3d11FrameSubmitter,
