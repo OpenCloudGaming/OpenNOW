@@ -5,6 +5,7 @@
 #include "streaming/NativeStreamRuntime.h"
 
 #include <QCursor>
+#include <QClipboard>
 #include <QFocusEvent>
 #include <QGuiApplication>
 #include <QHoverEvent>
@@ -187,6 +188,34 @@ void StreamVideoItem::keyPressEvent(QKeyEvent *event)
     }
     if (!m_captureActive) {
         event->ignore();
+        return;
+    }
+    if (m_clipboardPaste && event->matches(QKeySequence::Paste)) {
+        m_pressedShortcuts.insert(identity);
+        event->accept();
+        const auto *clipboard = QGuiApplication::clipboard();
+        const auto text = clipboard ? clipboard->text(QClipboard::Clipboard) : QString{};
+        if (text.isEmpty() || text.size() > OPENNOW_STREAMER_MAX_TEXT_BYTES || !text.isValidUtf16()
+            || text.contains(QChar::Null)) {
+            emit clipboardPasteFailed();
+            return;
+        }
+        const auto utf8 = text.toUtf8();
+        if (utf8.size() > OPENNOW_STREAMER_MAX_TEXT_BYTES) {
+            emit clipboardPasteFailed();
+            return;
+        }
+        for (auto key = m_pressedKeys.begin(); key != m_pressedKeys.end();) {
+            const auto vk = key->virtualKey;
+            if (vk == 0xa0 || vk == 0xa2 || vk == 0xa4 || vk == 0x5b) {
+                s_nativeRuntime->submitKey(vk, 0, false);
+                key = m_pressedKeys.erase(key);
+            } else {
+                ++key;
+            }
+        }
+        if (s_nativeRuntime->submitText(utf8) != OPENNOW_STREAMER_OK)
+            emit clipboardPasteFailed();
         return;
     }
     const auto virtualKey = windowsVirtualKey(event->key(), event->modifiers());

@@ -90,6 +90,7 @@ FocusScope {
         inputEnabled: visible
             && !ShellStore.streamOverlayBlocksGameplayInput(AppController.overlay)
         shortcutBindings: ShellStore.streamShortcutBindings()
+        clipboardPaste: ShellStore.settings.clipboardPaste === true
         videoSize: Qt.size(Number(root.profile.width || 0), Number(root.profile.height || 0))
         frameGeneration: String(ShellStore.settings.frameGeneration || 'off') === '2x'
         metalFxUpscaling: Qt.platform.os === "osx" && ShellStore.settings.upscaling === "metalfx"
@@ -97,12 +98,17 @@ FocusScope {
         upscalingDenoise: Number(ShellStore.settings.upscalingDenoise ?? 0)
         z: 0
         onLocalShortcutRequested: action => ShellStore.applyStreamShortcutAction(action)
+        onClipboardPasteFailed: clipboardPasteNotice.restart()
     }
+
+    Timer { id: clipboardPasteNotice; interval: 5000 }
 
     StreamInputNotice {
         layer.enabled: HdrOutput.chromeRequired
         layer.effect: HdrChromeEffect {}
-        message: root.streaming && streamVideo.relativeMouse ? streamVideo.inputCaptureError : ""
+        message: !root.streaming ? "" : clipboardPasteNotice.running
+            ? qsTr("Clipboard paste failed. Use plain text up to 64 KiB and try again.")
+            : streamVideo.relativeMouse ? streamVideo.inputCaptureError : ""
         z: 3
     }
 

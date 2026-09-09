@@ -344,6 +344,7 @@ FocusScope {
                 "controllerInputSource", [0].concat(ControllerInput.availableControllers.map(controller => Number(controller.instanceId))),
                 [qsTr("All controllers (multiplayer)")].concat(ControllerInput.availableControllers.map(controller => qsTr("Device %1 · %2").arg(controller.slot).arg(controller.name)))))
             rows.push(toggle("Gyroscope", "Forward motion data to the rig", "enableGyroscopeControls"))
+            rows.push(toggle(qsTr("Clipboard paste"), qsTr("Paste local text into the stream with Ctrl+V (Command+V on macOS). Up to 64 KiB per paste. No automatic clipboard sync."), "clipboardPaste"))
             for (const setting of [
                 {key:"controllerLeftStickDeadzone", title:qsTr("Left stick dead zone"), description:qsTr("Ignore stick drift during gameplay. Default: 24%. The remaining travel is rescaled to full range."), maximum:50, fallback:24},
                 {key:"controllerRightStickDeadzone", title:qsTr("Right stick dead zone"), description:qsTr("Ignore stick drift during gameplay. Default: 27%. Set to 0% to leave dead zones to the game."), maximum:50, fallback:27},

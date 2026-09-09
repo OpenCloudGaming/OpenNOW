@@ -6,6 +6,8 @@
 #include "input/platform/MacPointerCapture.h"
 
 #include <QGuiApplication>
+#include <QClipboard>
+#include <QKeySequence>
 #include <QBuffer>
 #include <QJsonDocument>
 #include <QKeyEvent>
@@ -19,6 +21,7 @@
 #include <QTest>
 
 #include <atomic>
+#include <algorithm>
 #include <memory>
 
 #if QT_CONFIG(vulkan) && __has_include(<vulkan/vulkan.h>)
@@ -249,6 +252,129 @@ class StreamVideoItemTest final : public QObject
     };
 
 private slots:
+    void clipboardPasteRouting_data()
+    {
+        QTest::addColumn<bool>("fullscreen");
+        QTest::newRow("windowed") << false;
+        QTest::newRow("fullscreen") << true;
+    }
+
+    void clipboardPasteRouting()
+    {
+        QFETCH(bool, fullscreen);
+        static QList<QList<quint16>> keys;
+        static QList<QByteArray> texts;
+        static OpenNowStreamerStatus textStatus;
+        keys.clear();
+        texts.clear();
+        textStatus = OPENNOW_STREAMER_OK;
+        auto api = CursorSession::api();
+        api.submitKey = [](const OpenNowStreamer *, std::uint16_t vk,
+                           std::uint16_t modifiers, bool pressed) {
+            keys.append({vk, modifiers, quint16(pressed)});
+            return OPENNOW_STREAMER_OK;
+        };
+        api.submitText = [](const OpenNowStreamer *, const std::uint8_t *text, std::size_t size) {
+            if (textStatus == OPENNOW_STREAMER_OK)
+                texts.append(QByteArray(reinterpret_cast<const char *>(text), qsizetype(size)));
+            return textStatus;
+        };
+        NativeStreamRuntime runtime(api);
+        QVERIFY(runtime.start());
+        StreamVideoItem::setNativeStreamRuntime(&runtime);
+        const auto reset = qScopeGuard([] { StreamVideoItem::setNativeStreamRuntime(nullptr); });
+        QVERIFY(runtime.send({{QStringLiteral("type"), QStringLiteral("start")},
+                              {QStringLiteral("id"), QStringLiteral("paste-test")}}));
+        const QByteArray ready = R"({"id":"paste-test","type":"ok"})";
+        CursorSession::callbacks.response_callback(
+            reinterpret_cast<const std::uint8_t *>(ready.constData()), ready.size(),
+            CursorSession::callbacks.user_data);
+        QTRY_VERIFY(runtime.inputAllowed());
+        QQuickWindow window;
+        window.resize(640, 480);
+        auto *item = new StreamVideoItem(window.contentItem());
+        item->setRenderCallback({});
+        item->setSize(window.size());
+        if (fullscreen) window.showFullScreen();
+        else window.showNormal();
+        window.requestActivate();
+        QTRY_VERIFY(window.isActive());
+        item->forceActiveFocus();
+        QTRY_VERIFY(item->captureActive());
+        const auto paste = QKeySequence::keyBindings(QKeySequence::Paste).first()[0];
+        const auto sendPaste = [&] {
+            QTest::keyClick(&window, paste.key(), paste.keyboardModifiers());
+        };
+        auto *clipboard = QGuiApplication::clipboard();
+        const auto previousText = clipboard->text();
+        const auto restoreClipboard = qScopeGuard([&] { clipboard->setText(previousText); });
+        const auto text = QString::fromUtf8("Hello café 世界 🎮\nsecond\tline");
+        clipboard->setText(text);
+        QVERIFY(!item->clipboardPaste());
+        sendPaste();
+        QVERIFY(texts.isEmpty());
+        QVERIFY(std::any_of(keys.cbegin(), keys.cend(), [](const auto &key) {
+            return key[0] == 0x56 && key[2] == 1;
+        }));
+        keys.clear();
+        QSignalSpy changes(item, &StreamVideoItem::clipboardPasteChanged);
+        QSignalSpy failures(item, &StreamVideoItem::clipboardPasteFailed);
+        item->setClipboardPaste(true);
+        item->setClipboardPaste(true);
+        QCOMPARE(changes.size(), 1);
+        sendPaste();
+        QCOMPARE(texts, QList<QByteArray>{text.toUtf8()});
+        QVERIFY(std::none_of(keys.cbegin(), keys.cend(), [](const auto &key) {
+            return key[0] == 0x56;
+        }));
+        QVERIFY(item->m_pressedKeys.isEmpty());
+        QVERIFY(item->m_pressedShortcuts.isEmpty());
+        QKeyEvent repeat(QEvent::KeyPress, paste.key(), paste.keyboardModifiers(), {}, true);
+        item->keyPressEvent(&repeat);
+        QCOMPARE(texts.size(), 1);
+        QCOMPARE(failures.size(), 0);
+        for (const auto &invalid : {QString{}, QString(65'537, u'x'),
+                                   QString(32'769, QChar(0x00e9)),
+                                   QString(QChar::Null)}) {
+            clipboard->setText(invalid);
+            sendPaste();
+        }
+        QCOMPARE(failures.size(), 4);
+        QCOMPARE(texts.size(), 1);
+        clipboard->setText(QString(65'536, u'x'));
+        sendPaste();
+        QCOMPARE(texts.last().size(), 65'536);
+        textStatus = OPENNOW_STREAMER_QUEUE_FULL;
+        sendPaste();
+        QCOMPARE(failures.size(), 5);
+        QCOMPARE(texts.size(), 2);
+        textStatus = OPENNOW_STREAMER_OK;
+        QSignalSpy shortcuts(item, &StreamVideoItem::localShortcutRequested);
+        item->setShortcutBindings({{QStringLiteral("test"),
+            QKeySequence(paste).toString(QKeySequence::PortableText)}});
+        sendPaste();
+        QCOMPARE(shortcuts.size(), 1);
+        QCOMPARE(texts.size(), 2);
+        item->setShortcutBindings({});
+        item->setInputEnabled(false);
+        auto *overlay = new QQuickItem(window.contentItem());
+        overlay->forceActiveFocus();
+        sendPaste();
+        QCOMPARE(texts.size(), 2);
+        item->setInputEnabled(true);
+        item->forceActiveFocus();
+        QTRY_VERIFY(item->captureActive());
+        sendPaste();
+        QCOMPARE(texts.size(), 3);
+        item->setFocus(false);
+        sendPaste();
+        QCOMPARE(texts.size(), 3);
+        QCOMPARE(runtime.submitText(QByteArray(65'537, 'x')), OPENNOW_STREAMER_MESSAGE_TOO_LARGE);
+        QCOMPARE(runtime.submitText(QByteArray(1, char(0xff))), OPENNOW_STREAMER_INVALID_CONFIG);
+        QCOMPARE(runtime.submitText(QByteArray(1, '\0')), OPENNOW_STREAMER_INVALID_CONFIG);
+        QCOMPARE(runtime.submitText({}), OPENNOW_STREAMER_INVALID_CONFIG);
+    }
+
     void macPointerCaptureOwnsMotionAndReleasesAcrossTransitions()
     {
         struct PointerState {

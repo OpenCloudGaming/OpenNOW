@@ -159,6 +159,18 @@ bool StreamVideoItem::captureActive() const
     return m_captureActive;
 }
 
+bool StreamVideoItem::clipboardPaste() const
+{
+    return m_clipboardPaste;
+}
+
+void StreamVideoItem::setClipboardPaste(bool enabled)
+{
+    if (m_clipboardPaste == enabled) return;
+    m_clipboardPaste = enabled;
+    emit clipboardPasteChanged();
+}
+
 QString StreamVideoItem::inputCaptureError() const
 {
     return m_usesMacPointerCapture ? m_macPointer->error() : m_waylandPointer->error();

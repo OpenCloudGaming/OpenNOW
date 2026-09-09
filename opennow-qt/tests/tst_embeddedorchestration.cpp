@@ -17,6 +17,25 @@ class EmbeddedOrchestrationTest final : public QObject
     Q_OBJECT
 
 private slots:
+    void clipboardPasteUsesTheSharedOptInOnBothSurfaces()
+    {
+        const auto controls = source(QStringLiteral(
+            "qml/desktop/settings/pages/DesktopSettingsControlsPage.qml"));
+        QVERIFY(controls.contains(QStringLiteral("boolSetting(\"clipboardPaste\", false)")));
+        QVERIFY(controls.contains(QStringLiteral("setSetting(\"clipboardPaste\", value)")));
+        const auto console = source(QStringLiteral("qml/screens/SettingsScreen.qml"));
+        QVERIFY(console.contains(QStringLiteral("qsTr(\"Clipboard paste\")")));
+        QVERIFY(console.contains(QStringLiteral("\"clipboardPaste\"")));
+        for (const auto &path : {QStringLiteral("qml/screens/StreamScreen.qml"),
+                                QStringLiteral("qml/desktop/stream/DesktopStreamScreen.qml")}) {
+            const auto stream = source(path);
+            QVERIFY(stream.contains(QStringLiteral(
+                "clipboardPaste: ShellStore.settings.clipboardPaste === true")));
+            QVERIFY(stream.contains(QStringLiteral(
+                "onClipboardPasteFailed: clipboardPasteNotice.restart()")));
+        }
+    }
+
     void replayClippingRequiresAnEnabledSessionAndResetsPendingWork()
     {
         const auto shell = source(QStringLiteral("qml/state/ShellStore.qml"));

@@ -19,7 +19,9 @@ use serde_json::Value;
 
 static FIRST_FRAME_LOGGED: AtomicBool = AtomicBool::new(false);
 
-pub const OPENNOW_STREAMER_FFI_ABI_VERSION: u32 = 8;
+pub const OPENNOW_STREAMER_FFI_ABI_VERSION: u32 = 9;
+pub const OPENNOW_STREAMER_MAX_TEXT_BYTES: usize =
+    opennow_streamer_protocol::text_input::MAX_TEXT_BYTES;
 pub const OPENNOW_STREAMER_VULKAN_DEVICE_INFO_VERSION: u32 = 1;
 const DEFAULT_MAX_COMMAND_BYTES: usize = 1024 * 1024;
 const MAX_QUEUE_CAPACITY: usize = 4096;
@@ -847,6 +849,47 @@ pub unsafe extern "C" fn opennow_streamer_create(
 }
 
 #[unsafe(no_mangle)]
+/// Atomically admits one nonempty UTF-8 paste to the bounded captured input queue.
+/// Success acknowledges local admission, not remote delivery.
+///
+/// # Safety
+///
+/// `handle` must be null or point to a live handle not being destroyed.
+/// `text` must be null or readable for `text_len` bytes for the duration of the call.
+pub unsafe extern "C" fn opennow_streamer_submit_text(
+    handle: *const OpenNowStreamer,
+    text: *const u8,
+    text_len: usize,
+) -> OpenNowStreamerStatus {
+    ffi_status(|| {
+        use opennow_streamer_protocol::text_input::TextInputError;
+        let Some(handle) = (unsafe { handle.as_ref() }) else {
+            return OpenNowStreamerStatus::NullPointer;
+        };
+        if text_len > OPENNOW_STREAMER_MAX_TEXT_BYTES {
+            return OpenNowStreamerStatus::MessageTooLarge;
+        }
+        if text.is_null() {
+            return OpenNowStreamerStatus::NullPointer;
+        }
+        if text_len == 0 {
+            return OpenNowStreamerStatus::InvalidConfig;
+        }
+        let bytes = unsafe { std::slice::from_raw_parts(text, text_len) };
+        if bytes.contains(&0) || std::str::from_utf8(bytes).is_err() {
+            return OpenNowStreamerStatus::InvalidConfig;
+        }
+        match handle.input.submit_text(bytes) {
+            Ok(()) => OpenNowStreamerStatus::Ok,
+            Err(TextInputError::Invalid) => OpenNowStreamerStatus::InvalidConfig,
+            Err(TextInputError::TooLarge) => OpenNowStreamerStatus::MessageTooLarge,
+            Err(TextInputError::Busy) => OpenNowStreamerStatus::QueueFull,
+            Err(TextInputError::Unavailable) => OpenNowStreamerStatus::Closed,
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
 /// Submits one keyboard transition to the embedded input queue.
 ///
 /// # Safety
@@ -1498,7 +1541,7 @@ mod tests {
 
     #[test]
     fn abi_five_appends_the_shared_vulkan_owner() {
-        assert_eq!(OPENNOW_STREAMER_FFI_ABI_VERSION, 8);
+        assert_eq!(OPENNOW_STREAMER_FFI_ABI_VERSION, 9);
         assert_eq!(OPENNOW_STREAMER_VULKAN_DEVICE_INFO_VERSION, 1);
         assert_eq!(
             std::mem::offset_of!(OpenNowStreamerConfig, vulkan_device),
@@ -1981,6 +2024,71 @@ mod tests {
         assert_eq!(queue.take(), None);
 
         handle.shutdown();
+    }
+
+    #[test]
+    fn typed_text_submission_validates_copies_and_bounds_the_whole_paste() {
+        let messages = Box::new(CallbackMessages::default());
+        let mut handle = graphics_test_handle(&messages);
+        let submit = |bytes: &[u8]| unsafe {
+            opennow_streamer_submit_text(&handle, bytes.as_ptr(), bytes.len())
+        };
+        assert_eq!(
+            unsafe { opennow_streamer_submit_text(ptr::null(), b"a".as_ptr(), 1) },
+            OpenNowStreamerStatus::NullPointer
+        );
+        assert_eq!(
+            unsafe { opennow_streamer_submit_text(&handle, ptr::null(), 1) },
+            OpenNowStreamerStatus::NullPointer
+        );
+        assert_eq!(
+            unsafe { opennow_streamer_submit_text(&handle, ptr::null(), usize::MAX) },
+            OpenNowStreamerStatus::MessageTooLarge
+        );
+        for invalid in [
+            &b""[..],
+            &b"a\0b"[..],
+            &[0xff],
+            &[0xc0, 0x80],
+            &[0xed, 0xa0, 0x80],
+        ] {
+            assert_eq!(submit(invalid), OpenNowStreamerStatus::InvalidConfig);
+        }
+        assert_eq!(
+            submit(&vec![b'a'; OPENNOW_STREAMER_MAX_TEXT_BYTES + 1]),
+            OpenNowStreamerStatus::MessageTooLarge
+        );
+        assert_eq!(submit(b"paste"), OpenNowStreamerStatus::Closed);
+        handle.input.set_active(true, false, 0);
+        assert_eq!(submit(b"paste"), OpenNowStreamerStatus::Closed);
+        let queue = handle.input.queue();
+        queue.set_text_ready(1, true);
+        let mut bytes = "café 世界 🦫\r\n".as_bytes().to_vec();
+        assert_eq!(submit(&bytes), OpenNowStreamerStatus::Ok);
+        bytes.fill(b'x');
+        assert_eq!(submit(b"again"), OpenNowStreamerStatus::QueueFull);
+        let Some(CapturedInput::Text(text)) = queue.take() else {
+            panic!("missing paste")
+        };
+        assert_eq!(text.as_str(), "café 世界 🦫\r\n");
+        assert_eq!(submit(b"again"), OpenNowStreamerStatus::QueueFull);
+        drop(text);
+        assert_eq!(
+            submit(&vec![b'a'; OPENNOW_STREAMER_MAX_TEXT_BYTES]),
+            OpenNowStreamerStatus::Ok
+        );
+        handle.input.set_active(false, false, 0);
+        assert!(queue.take().is_none());
+        handle.shutdown();
+    }
+
+    #[test]
+    fn abi_9_header_and_text_bound_match_rust() {
+        let header = include_str!("../include/opennow_streamer_ffi.h");
+        assert!(header.contains("#define OPENNOW_STREAMER_FFI_ABI_VERSION 9u"));
+        assert!(header.contains("#define OPENNOW_STREAMER_MAX_TEXT_BYTES 65536u"));
+        assert_eq!(OPENNOW_STREAMER_MAX_TEXT_BYTES, 65_536);
+        assert!(header.contains("opennow_streamer_submit_text("));
     }
 
     #[test]

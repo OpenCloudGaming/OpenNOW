@@ -4024,6 +4024,10 @@ fn handle_stun_datagram(
 }
 
 enum UdpReceiverCommand {
+    SendText {
+        text: opennow_streamer_protocol::text_input::UnicodeText,
+        timestamp_us: u64,
+    },
     Pause,
     Resume,
     Recover,
@@ -4111,6 +4115,19 @@ impl NvstUdpReceiverSession {
 }
 
 impl NvstUdpReceiverControl {
+    pub fn queue_text(
+        &self,
+        text: opennow_streamer_protocol::text_input::UnicodeText,
+        timestamp_us: u64,
+    ) -> Result<(), TransportError> {
+        if !self.input_ready.load(Ordering::Acquire) {
+            return Err(TransportError::InputNotReady);
+        }
+        self.commands
+            .send(UdpReceiverCommand::SendText { text, timestamp_us })
+            .map_err(|_| TransportError::Closed)
+    }
+
     pub fn set_microphone_enabled(&self, enabled: bool) -> Result<(), NvstUdpReceiverError> {
         self.microphone
             .lock()
@@ -5210,6 +5227,15 @@ fn run_nvst_webrtc_bundle(
                 Ok(UdpReceiverCommand::Recover) => {
                     forward_optional(&event_sender, receiver.recover())
                 }
+                Ok(UdpReceiverCommand::SendText { text, timestamp_us }) => {
+                    if !text.is_cancelled()
+                        && input_state.is_ready()
+                        && let Some(channels) = input_channels
+                        && !channels.send_text(&mut rtc, &text, timestamp_us)
+                    {
+                        eprintln!("NVST text submission rejected by reliable channel");
+                    }
+                }
                 Ok(UdpReceiverCommand::SendInput { bytes, reply }) => {
                     let mut sent = true;
                     if input_state.is_ready()
@@ -6052,6 +6078,7 @@ fn run_nvst_udp_receiver(
                 Ok(UdpReceiverCommand::Recover) => {
                     forward_optional(&event_sender, receiver.recover())
                 }
+                Ok(UdpReceiverCommand::SendText { .. }) => {}
                 Ok(UdpReceiverCommand::SendInput { reply, .. }) => {
                     if let Some(reply) = reply {
                         let _ = reply.send(Err(TransportError::InputNotReady));
@@ -6295,6 +6322,56 @@ fn forward_receive_event(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn typed_text_queue_preserves_order_reservation_and_readiness() {
+        use opennow_streamer_protocol::text_input::{TextInputError, TextInputSlot};
+        let (commands, receiver) = std::sync::mpsc::channel();
+        let control = super::NvstUdpReceiverControl {
+            commands,
+            input_ready: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            microphone: std::sync::Arc::new(std::sync::Mutex::new(super::MicrophoneQueue::new(
+                false,
+            ))),
+        };
+        let slot = TextInputSlot::default();
+        assert!(matches!(
+            control.queue_text(slot.submit(b"paste").unwrap(), 42),
+            Err(super::TransportError::InputNotReady)
+        ));
+        assert!(receiver.try_recv().is_err());
+        control
+            .input_ready
+            .store(true, std::sync::atomic::Ordering::Release);
+        control.queue_input(vec![1, 2], false).unwrap();
+        control
+            .queue_text(slot.submit("世界".as_bytes()).unwrap(), 42)
+            .unwrap();
+        control.queue_input(vec![3, 4], false).unwrap();
+        assert_eq!(slot.submit(b"again"), Err(TextInputError::Busy));
+        assert!(
+            matches!(receiver.try_recv().unwrap(), super::UdpReceiverCommand::SendInput { bytes, .. } if bytes == [1, 2])
+        );
+        let super::UdpReceiverCommand::SendText { text, timestamp_us } =
+            receiver.try_recv().unwrap()
+        else {
+            panic!("missing text command")
+        };
+        assert_eq!(text.as_str(), "世界");
+        assert_eq!(timestamp_us, 42);
+        slot.cancel();
+        assert!(text.is_cancelled());
+        drop(text);
+        assert!(
+            matches!(receiver.try_recv().unwrap(), super::UdpReceiverCommand::SendInput { bytes, .. } if bytes == [3, 4])
+        );
+        drop(receiver);
+        assert!(matches!(
+            control.queue_text(slot.submit(b"paste").unwrap(), 42),
+            Err(super::TransportError::Closed)
+        ));
+        assert!(slot.submit(b"released").is_ok());
+    }
+
     mod audio_tests {
         include!("nvst_audio_tests.rs");
     }

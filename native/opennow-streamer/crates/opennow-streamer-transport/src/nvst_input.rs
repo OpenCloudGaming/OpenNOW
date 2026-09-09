@@ -131,6 +131,34 @@ pub(crate) struct NvstInputChannels {
 }
 
 impl NvstInputChannels {
+    pub(crate) fn send_text(
+        self,
+        rtc: &mut Rtc,
+        text: &opennow_streamer_protocol::text_input::UnicodeText,
+        timestamp_us: u64,
+    ) -> bool {
+        let messages = unicode_text_messages(text, timestamp_us);
+        let buffered: usize = self
+            .all()
+            .into_iter()
+            .chain([self.rtcp])
+            .filter_map(|id| rtc.channel(id).map(|mut channel| channel.buffered_amount()))
+            .sum();
+        let Some(mut channel) = rtc.channel(self.control_reliable) else {
+            return false;
+        };
+        let total_bytes: usize = messages.iter().map(|message| message.bytes.len()).sum();
+        if !text_batch_fits(buffered, total_bytes) {
+            return false;
+        }
+        if text.is_cancelled() {
+            return true;
+        }
+        messages
+            .iter()
+            .all(|message| channel.write(true, &message.bytes).unwrap_or(false))
+    }
+
     pub(crate) fn create(rtc: &mut Rtc) -> Self {
         let mut ids = Vec::with_capacity(NVST_CHANNEL_PROFILE.len());
         for definition in NVST_CHANNEL_PROFILE {
@@ -223,6 +251,10 @@ impl NvstInputChannels {
             self.cursor,
         ]
     }
+}
+
+fn text_batch_fits(buffered: usize, batch_bytes: usize) -> bool {
+    buffered.saturating_add(batch_bytes) <= 128 * 1024
 }
 
 fn channel_config(definition: NvstChannelDefinition) -> ChannelConfig {
@@ -854,6 +886,32 @@ fn remote_input_packet(input_type: u32, body: &[u8]) -> Vec<u8> {
     packet
 }
 
+fn unicode_text_messages(
+    text: &opennow_streamer_protocol::text_input::UnicodeText,
+    timestamp_us: u64,
+) -> Vec<NvstEncodedInput> {
+    let mut remaining = text.as_str();
+    let mut messages = Vec::new();
+    while !remaining.is_empty() {
+        let mut end = remaining.len().min(0x3f8);
+        while !remaining.is_char_boundary(end) {
+            end -= 1;
+        }
+        let mut packet = remote_input_packet(INPUT_TEXT, &remaining.as_bytes()[..end]);
+        if packet.len() < 0x7e * 8 {
+            packet.resize(((packet.len() + 8) / 8) * 8 + 8, 0);
+            packet.extend_from_slice(&timestamp_us.to_le_bytes());
+            packet = remote_input_packet(0x0e, &packet);
+        }
+        messages.push(NvstEncodedInput {
+            route: NvstInputRoute::ControlReliable,
+            bytes: control_command(COMMAND_REMOTE_INPUT, &packet),
+        });
+        remaining = &remaining[end..];
+    }
+    messages
+}
+
 fn gamepad_command(packet: &[u8], timestamp_us: u64, sequence: u16) -> Vec<u8> {
     let mut payload = Vec::with_capacity(54);
     payload.push(0x23);
@@ -1064,6 +1122,87 @@ fn read_u64_le(bytes: &[u8], offset: usize) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unicode_text_uses_verified_type_23_bytes_and_timestamp_envelope() {
+        let text = opennow_streamer_protocol::text_input::TextInputSlot::default()
+            .submit("é世🦫".as_bytes())
+            .unwrap();
+        let messages = unicode_text_messages(&text, 0x0102030405060708);
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].route, NvstInputRoute::ControlReliable);
+        assert_eq!(
+            messages[0].bytes,
+            hex(concat!(
+                "06023000",
+                "0000002c0e000000",
+                "0000000d17000000",
+                "c3a9e4b896f09fa6ab",
+                "000000000000000000000000000000",
+                "0807060504030201"
+            ))
+        );
+    }
+
+    #[test]
+    fn unicode_text_chunk_boundaries_preserve_every_utf8_byte() {
+        use opennow_streamer_protocol::text_input::{MAX_TEXT_BYTES, TextInputSlot};
+        for length in [1, 991, 992, 999, 1000, 1015, 1016, 1017, MAX_TEXT_BYTES] {
+            let source = "a".repeat(length);
+            let text = TextInputSlot::default().submit(source.as_bytes()).unwrap();
+            let messages = unicode_text_messages(&text, 7);
+            let mut reconstructed = Vec::new();
+            for message in &messages {
+                assert_eq!(message.route, NvstInputRoute::ControlReliable);
+                assert_eq!(&message.bytes[..2], &[6, 2]);
+                assert_eq!(
+                    usize::from(u16::from_le_bytes(message.bytes[2..4].try_into().unwrap())),
+                    message.bytes.len() - 4
+                );
+                let mut packet = &message.bytes[4..];
+                if read_u32_le(packet, 4) == Some(14) {
+                    assert_eq!(&packet[packet.len() - 8..], &7_u64.to_le_bytes());
+                    packet = &packet[8..];
+                }
+                assert_eq!(read_u32_le(packet, 4), Some(23));
+                let body_len = u32::from_be_bytes(packet[..4].try_into().unwrap()) as usize - 4;
+                assert!(body_len <= 1016);
+                assert_eq!(
+                    read_u32_le(&message.bytes[4..], 4) == Some(14),
+                    body_len < 1000
+                );
+                let body = &packet[8..8 + body_len];
+                assert!(std::str::from_utf8(body).is_ok());
+                reconstructed.extend_from_slice(body);
+            }
+            assert_eq!(reconstructed, source.as_bytes());
+        }
+        for prefix in 1013..=1016 {
+            for suffix in ["é", "世", "🦫"] {
+                let source = format!("{}{suffix}tail", "x".repeat(prefix));
+                let text = TextInputSlot::default().submit(source.as_bytes()).unwrap();
+                let messages = unicode_text_messages(&text, 0);
+                assert_eq!(messages.len(), 2);
+                let first = &messages[0].bytes[4..];
+                let first_len = u32::from_be_bytes(first[..4].try_into().unwrap()) as usize - 4;
+                assert!(source.is_char_boundary(first_len));
+                assert!(first_len <= 1016);
+                let mut reconstructed = first[8..8 + first_len].to_vec();
+                let tail = &messages[1].bytes[12..];
+                let tail_len = u32::from_be_bytes(tail[..4].try_into().unwrap()) as usize - 4;
+                reconstructed.extend_from_slice(&tail[8..8 + tail_len]);
+                assert_eq!(reconstructed, source.as_bytes());
+            }
+        }
+    }
+
+    #[test]
+    fn unicode_text_batch_admission_rejects_whole_batch_before_capacity_overflow() {
+        assert!(text_batch_fits(0, 70_000));
+        assert!(text_batch_fits(128 * 1024 - 70_000, 70_000));
+        assert!(!text_batch_fits(128 * 1024 - 70_000 + 1, 70_000));
+        assert!(!text_batch_fits(usize::MAX, 70_000));
+    }
 
     fn hex(value: &str) -> Vec<u8> {
         assert_eq!(value.len() % 2, 0, "hex input must contain whole bytes");

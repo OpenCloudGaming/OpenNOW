@@ -9,7 +9,8 @@
 extern "C" {
 #endif
 
-#define OPENNOW_STREAMER_FFI_ABI_VERSION 8u
+#define OPENNOW_STREAMER_FFI_ABI_VERSION 9u
+#define OPENNOW_STREAMER_MAX_TEXT_BYTES 65536u
 #define OPENNOW_STREAMER_VULKAN_DEVICE_INFO_VERSION 1u
 #define OPENNOW_STREAMER_GRAPHICS_CONTEXT_VERSION 3u
 #define OPENNOW_STREAMER_RENDER_COMMAND_VERSION 3u
@@ -186,6 +187,17 @@ OpenNowStreamerStatus opennow_streamer_submit_key(
     uint16_t virtual_key,
     uint16_t modifiers,
     bool pressed);
+
+/* Copies nonempty strict UTF-8 without NUL or a terminator (at most MAX_TEXT_BYTES).
+ * OK admits the entire paste locally, not a remote delivery acknowledgement.
+ * Requires active capture and negotiated session input. One paste may be in flight.
+ * Invalid/empty: INVALID_CONFIG; oversize: MESSAGE_TOO_LARGE; null: NULL_POINTER;
+ * inactive/unavailable: CLOSED; occupied/full capture queue: QUEUE_FULL.
+ * Pending text is discarded when capture or session input becomes unavailable. */
+OpenNowStreamerStatus opennow_streamer_submit_text(
+    const OpenNowStreamer *handle,
+    const uint8_t *text,
+    size_t text_len);
 
 OpenNowStreamerStatus opennow_streamer_submit_mouse_relative(
     const OpenNowStreamer *handle,
