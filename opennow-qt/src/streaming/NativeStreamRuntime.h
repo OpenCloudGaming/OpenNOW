@@ -90,6 +90,7 @@ public:
     [[nodiscard]] quint64 presentationGeneration() const;
     [[nodiscard]] bool presentationAllowed() const;
     [[nodiscard]] bool inputAllowed() const;
+    [[nodiscard]] bool serverCursorComposited() const;
     [[nodiscard]] const OpenNowStreamerVulkanDevice *vulkanDevice() const;
     // Called at most once per presentation failure from the scene-graph thread.
     void reportPresentationError(const QString &message);
@@ -136,6 +137,8 @@ signals:
     void eventReceived(const QJsonObject &event);
     void frameAvailable();
     void cursorUpdated(const QByteArray &bytes);
+    void cursorCaptureChanged(bool composited);
+    void cursorStateReset();
     void controllerRumbleRequested(quint8 controllerId, quint16 lowFrequency,
                                    quint16 highFrequency, quint32 durationMs);
     void controllerRumbleStopped();

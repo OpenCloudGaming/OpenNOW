@@ -54,6 +54,14 @@ StreamVideoItem::StreamVideoItem(std::unique_ptr<MacPointerCapture> pointerCaptu
     connect(&m_frameStatsTimer, &QTimer::timeout,
             this, &StreamVideoItem::frameGenerationStatsChanged);
     if (s_nativeRuntime) {
+        m_serverCursorComposited = s_nativeRuntime->serverCursorComposited();
+        connect(s_nativeRuntime, &NativeStreamRuntime::cursorCaptureChanged, this,
+                [this](bool composited) {
+            m_serverCursorComposited = composited;
+            updateLocalCursor();
+        });
+        connect(s_nativeRuntime, &NativeStreamRuntime::cursorStateReset,
+                this, &StreamVideoItem::resetRemoteCursor);
         connect(s_nativeRuntime, &NativeStreamRuntime::inputAllowedChanged,
                 this, &StreamVideoItem::syncCaptureState);
         connect(s_nativeRuntime, &NativeStreamRuntime::inputCaptureReset, this, [this] {
@@ -66,20 +74,16 @@ StreamVideoItem::StreamVideoItem(std::unique_ptr<MacPointerCapture> pointerCaptu
         connect(s_nativeRuntime, &NativeStreamRuntime::frameAvailable,
                 this, &StreamVideoItem::requestFrame);
         connect(s_nativeRuntime, &NativeStreamRuntime::cursorUpdated,
-                this, &StreamVideoItem::applyRemoteCursor, Qt::QueuedConnection);
+                this, &StreamVideoItem::applyRemoteCursor);
         connect(s_nativeRuntime, &NativeStreamRuntime::runningChanged, this, [this] {
             if (!s_nativeRuntime || !s_nativeRuntime->running()) {
                 m_manualRelativeMouse.reset();
-                m_remoteCursorKnown = false;
-                m_remoteCursorVisible = false;
-                m_remoteCursor = QCursor();
-                if (m_relativeMouse) setRelativeMouse(false);
-                else unsetCursor();
+                resetRemoteCursor();
             }
             syncCaptureState();
         });
     }
-    connect(this, &QQuickItem::windowChanged, this, [this](QQuickWindow *currentWindow) {
+    const auto attachWindow = [this](QQuickWindow *currentWindow) {
         connectFrameSwaps();
         if (currentWindow) {
             connect(currentWindow, &QWindow::activeChanged,
@@ -96,7 +100,9 @@ StreamVideoItem::StreamVideoItem(std::unique_ptr<MacPointerCapture> pointerCaptu
                     this, &StreamVideoItem::resynchronizeInput, Qt::UniqueConnection);
         }
         syncCaptureState();
-    });
+    };
+    connect(this, &QQuickItem::windowChanged, this, attachWindow);
+    attachWindow(window());
 }
 
 StreamVideoItem::~StreamVideoItem()

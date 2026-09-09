@@ -1597,7 +1597,12 @@ fn forward_nvst_session_events<R: NvstSessionResources>(
     } = event_resources;
     let mut feedback_state = NvstMediaFeedbackState::new(false);
     let mut pending_rumble = [None; 4];
+    let mut pending_cursor_capture = NvstCursorCaptureOutput {
+        start_id: start_id.clone(),
+        pending: None,
+    };
     'session: loop {
+        flush_cursor_capture(output, lifecycle, generation, &mut pending_cursor_capture);
         if let Some(feedback) = media_feedback.as_ref() {
             while let Ok(feedback) = feedback.try_recv() {
                 forward_nvst_media_feedback(
@@ -1709,6 +1714,7 @@ fn forward_nvst_session_events<R: NvstSessionResources>(
                     generation,
                     &resources,
                     &mut feedback_state.recovery_attempts,
+                    &mut pending_cursor_capture,
                     nvst_event,
                 );
                 if terminal {
@@ -1763,12 +1769,42 @@ fn forward_controller_rumble(
         .is_ok()
 }
 
+#[derive(Default)]
+struct NvstCursorCaptureOutput {
+    start_id: String,
+    pending: Option<bool>,
+}
+
+fn flush_cursor_capture(
+    output: &EventSender,
+    lifecycle: &Mutex<Lifecycle>,
+    generation: u64,
+    state: &mut NvstCursorCaptureOutput,
+) {
+    let Some(composited) = state.pending else {
+        return;
+    };
+    let current = lock_lifecycle(lifecycle);
+    if current.generation != generation
+        || current.context.is_none()
+        || output
+            .send(event(
+                "cursor-capture",
+                json!({ "startId": state.start_id, "composited": composited }),
+            ))
+            .is_ok()
+    {
+        state.pending = None;
+    }
+}
+
 fn forward_nvst_event<R: NvstSessionResources>(
     output: &EventSender,
     lifecycle: &Mutex<Lifecycle>,
     generation: u64,
     resources: &R,
     recovery_attempts: &mut usize,
+    pending_cursor_capture: &mut NvstCursorCaptureOutput,
     nvst_event: NvstReceiveEvent,
 ) -> bool {
     if lock_lifecycle(lifecycle).generation != generation {
@@ -1879,6 +1915,11 @@ fn forward_nvst_event<R: NvstSessionResources>(
         }
         NvstReceiveEvent::Cursor(bytes) => {
             resources.apply_cursor(bytes);
+            false
+        }
+        NvstReceiveEvent::CursorCapture(composited) => {
+            pending_cursor_capture.pending = Some(composited);
+            flush_cursor_capture(output, lifecycle, generation, pending_cursor_capture);
             false
         }
         NvstReceiveEvent::Dropped(
@@ -3345,6 +3386,7 @@ mod tests {
             7,
             &resources,
             &mut recovery_attempts,
+            &mut NvstCursorCaptureOutput::default(),
             NvstReceiveEvent::RecoveryNeeded(opennow_streamer_transport::NvstRecovery::Timeout {
                 idle_for: Duration::from_secs(2),
             }),
@@ -3364,6 +3406,102 @@ mod tests {
     }
 
     #[test]
+    fn cursor_capture_output_survives_setup_before_running() {
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        let sender = EventSender::bounded(sender);
+        let lifecycle = connected_lifecycle();
+        lock_lifecycle(&lifecycle).state = State::Idle;
+        let mut state = NvstCursorCaptureOutput {
+            start_id: "cursor-setup".to_owned(),
+            pending: Some(false),
+        };
+        sender.send(json!({ "type": "log" })).unwrap();
+        flush_cursor_capture(&sender, &lifecycle, 7, &mut state);
+        assert_eq!(state.pending, Some(false));
+        receiver.try_recv().unwrap();
+        flush_cursor_capture(&sender, &lifecycle, 7, &mut state);
+        assert_eq!(state.pending, None);
+        assert_eq!(receiver.try_recv().unwrap()["composited"], false);
+        lock_lifecycle(&lifecycle).state = State::Connected;
+        flush_cursor_capture(&sender, &lifecycle, 7, &mut state);
+        assert!(receiver.try_recv().is_err());
+        state.pending = Some(true);
+        lock_lifecycle(&lifecycle).context = None;
+        flush_cursor_capture(&sender, &lifecycle, 7, &mut state);
+        assert_eq!(state.pending, None);
+        assert!(receiver.try_recv().is_err());
+    }
+
+    #[test]
+    fn cursor_capture_output_retries_latest_state_after_backpressure() {
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        let sender = EventSender::bounded(sender);
+        let lifecycle = connected_lifecycle();
+        let resources = TestNvstResources::default();
+        let mut recovery_attempts = 0;
+        let mut state = NvstCursorCaptureOutput {
+            start_id: "cursor-session".to_owned(),
+            pending: None,
+        };
+        sender.send(json!({ "type": "log" })).unwrap();
+        for composited in [true, false] {
+            assert!(!forward_nvst_event(
+                &sender,
+                &lifecycle,
+                7,
+                &resources,
+                &mut recovery_attempts,
+                &mut state,
+                NvstReceiveEvent::CursorCapture(composited),
+            ));
+            assert_eq!(state.pending, Some(composited));
+        }
+        assert_eq!(receiver.try_recv().unwrap()["type"], "log");
+        flush_cursor_capture(&sender, &lifecycle, 7, &mut state);
+        assert_eq!(state.pending, None);
+        let message = receiver.try_recv().unwrap();
+        assert_eq!(message["type"], "cursor-capture");
+        assert_eq!(message["startId"], "cursor-session");
+        assert_eq!(message["composited"], false);
+        flush_cursor_capture(&sender, &lifecycle, 7, &mut state);
+        assert!(receiver.try_recv().is_err());
+        state.pending = Some(true);
+        lock_lifecycle(&lifecycle).generation += 1;
+        flush_cursor_capture(&sender, &lifecycle, 7, &mut state);
+        assert_eq!(state.pending, None);
+        assert!(receiver.try_recv().is_err());
+    }
+
+    #[test]
+    fn cursor_capture_events_preserve_composition_across_reactivation() {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let sender = EventSender::unbounded(sender);
+        let lifecycle = connected_lifecycle();
+        let resources = TestNvstResources::default();
+        let mut recovery_attempts = 0;
+
+        for composited in [true, false, true, false] {
+            assert!(!forward_nvst_event(
+                &sender,
+                &lifecycle,
+                7,
+                &resources,
+                &mut recovery_attempts,
+                &mut NvstCursorCaptureOutput::default(),
+                NvstReceiveEvent::CursorCapture(composited),
+            ));
+            let message = receiver.try_recv().expect("cursor composition event");
+            assert_eq!(message["type"], "cursor-capture");
+            assert_eq!(message["composited"], composited);
+        }
+        assert_eq!(resources.stops.load(Ordering::Relaxed), 0);
+        assert_eq!(resources.keyframe_requests.load(Ordering::Relaxed), 0);
+        assert_eq!(resources.recoveries.load(Ordering::Relaxed), 0);
+        assert_eq!(lock_lifecycle(&lifecycle).state, State::Connected);
+        assert!(receiver.try_recv().is_err());
+    }
+
+    #[test]
     fn repeated_packet_gaps_request_keyframes_without_stopping_the_session() {
         let (sender, receiver) = std::sync::mpsc::channel();
         let sender = EventSender::unbounded(sender);
@@ -3378,6 +3516,7 @@ mod tests {
                 7,
                 &resources,
                 &mut recovery_attempts,
+                &mut NvstCursorCaptureOutput::default(),
                 NvstReceiveEvent::RecoveryNeeded(NvstRecovery::PacketGap {
                     first_missing_index,
                     last_missing_index: first_missing_index + 31,
@@ -3411,6 +3550,7 @@ mod tests {
             7,
             &resources,
             &mut recovery_attempts,
+            &mut NvstCursorCaptureOutput::default(),
             NvstReceiveEvent::Dropped(NvstDropReason::MediaConsumerBackpressured),
         ));
 
@@ -3444,6 +3584,7 @@ mod tests {
             7,
             &resources,
             &mut recovery_attempts,
+            &mut NvstCursorCaptureOutput::default(),
             recovery(),
         ));
         assert!(forward_nvst_event(
@@ -3452,6 +3593,7 @@ mod tests {
             7,
             &resources,
             &mut recovery_attempts,
+            &mut NvstCursorCaptureOutput::default(),
             recovery(),
         ));
 
@@ -3487,6 +3629,7 @@ mod tests {
             7,
             &resources,
             &mut recovery_attempts,
+            &mut NvstCursorCaptureOutput::default(),
             NvstReceiveEvent::Frame(opennow_streamer_transport::EncodedVideoAccessUnit {
                 codec: opennow_streamer_transport::NvstVideoCodec::H264,
                 timestamp: 1,

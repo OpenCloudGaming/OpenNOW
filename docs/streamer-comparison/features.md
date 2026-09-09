@@ -44,7 +44,48 @@ off  08 03 01 00 00
 on   08 03 01 00 01
 ```
 
-Activation sends **on**. After the first local cursor, OpenNOW sends **off** so the host stops compositing its cursor into the video. Notifications keep arriving.
+Activation sends **on**. OpenNOW requests **off** after the first cursor notification,
+including native bitmap notifications whose pixel layout is not decoded. If the host
+publishes no cursor notification, a three-second watchdog requests **off** instead.
+Tracking stays enabled so notifications keep arriving. Startup capture/tracking retries
+are limited to eight attempts including activation, paced at 250 ms; disabling uses a
+separate budget of eight attempts at 250 ms. Failed disable attempts retain the
+server-composited state, and exhaustion is logged without retrying indefinitely.
+
+The streamer emits `{"type":"cursor-capture","startId":"…","composited":true}` through its existing
+JSON event output on each activation attempt, conservatively covering partially queued
+activation chains. It emits `composited:false` only after capture **off** is successfully
+queued. This records local command acceptance, not a host acknowledgement. Closing the
+reliable control channel cancels the handoff; reactivation resets its deadline and retry
+budgets and emits `true` again.
+
+Composition output retains one pending latest state per session and retries a full
+bounded event queue without blocking media or input. `startId` identifies the accepted
+start command so Qt can reject callbacks from a previous session. Native bitmap
+notifications must contain at least their eight-byte header; dedicated cursor-channel
+messages must have a supported normalized type and complete MIME/image/optional-position
+framing before they can trigger handoff or be forwarded as a shape.
+
+Composition is independent of cursor shape, visibility, and relative-input mode. Native
+bitmap notifications change composition only: they do not synthesize a system cursor,
+unhide a previously hidden cursor, or change its mode. Existing cursor callbacks retain
+their wire format and the predefined system cursor ID 0 hidden/relative rule. When local
+composition starts without a known shape, Qt may use its Arrow fallback without replacing
+known hidden/relative state. No cursor ABI change is required.
+
+The composition/visibility split and three-second silent-host fallback follow
+OpenNOW-Mac revision `666bd4a3391e13b074b37eecfd61d568e9231d34`
+(`NativeWebRTCStreamViewCursorVisibility.swift`, `NvstBifrostFreeCursorWatchdog.swift`,
+and `NvstRemoteCursor.swift`). OpenNOW retains its existing system-ID mode mapping;
+the reference does not provide a verified native bitmap pixel layout.
+
+Qt hides its local stream cursor only while input capture is active and either the
+server is compositing or relative input is active; manual unlock retains its local
+cursor override. Releasing capture restores the
+local cursor on every platform. Accepted session starts reset cached cursor state;
+composition callbacks are session-checked and coalesced outside the general bounded
+callback queue so telemetry pressure cannot lose the handoff. Window activation
+signals are attached for an existing parent window as well as later window changes.
 
 ### `0x030d` track remote cursor image
 

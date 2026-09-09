@@ -136,6 +136,7 @@ private:
     };
 
     void applyRemoteCursor(const QByteArray &bytes);
+    void resetRemoteCursor();
     void setRemoteCursorShape(const QCursor &cursor);
     void updateLocalCursor();
     void syncCaptureState();
@@ -172,6 +173,7 @@ private:
     bool m_rawInputActive = false;
     bool m_cursorConfined = false;
     bool m_remoteCursorKnown = false;
+    bool m_serverCursorComposited = true;
     bool m_remoteCursorVisible = false;
     QCursor m_remoteCursor;
     std::optional<bool> m_pendingRelativeMouse;

@@ -353,11 +353,7 @@ void StreamVideoItem::itemChange(ItemChange change, const ItemChangeData &data)
     QQuickItem::itemChange(change, data);
     if (change == ItemVisibleHasChanged && !isVisible()) {
         m_manualRelativeMouse.reset();
-        m_remoteCursorKnown = false;
-        m_remoteCursorVisible = false;
-        m_remoteCursor = QCursor();
-        if (m_relativeMouse) setRelativeMouse(false);
-        else unsetCursor();
+        resetRemoteCursor();
     }
     if (change == ItemVisibleHasChanged || change == ItemSceneChange)
         syncCaptureState();
@@ -556,11 +552,9 @@ void StreamVideoItem::releaseInput()
     // syncCaptureState() or acquiring a new grab while releasing the old one.
     if (pendingRelativeMouse && m_relativeMouse != *pendingRelativeMouse) {
         m_relativeMouse = *pendingRelativeMouse;
-        if (m_relativeMouse) setCursor(Qt::BlankCursor);
-        else setCursor(m_remoteCursor);
         emit relativeMouseChanged();
     }
-    if (m_usesMacPointerCapture) unsetCursor();
+    unsetCursor();
 }
 
 void StreamVideoItem::releaseQtMouseButtons()
@@ -654,7 +648,6 @@ void StreamVideoItem::setRelativeMouse(bool relative)
     if (relative && !m_rawInputActive) releaseQtMouseButtons();
     m_relativeMouse = relative;
     if (relative) {
-        setCursor(Qt::BlankCursor);
         if (m_captureActive && !WaylandPointerCapture::isWayland()
                 && !m_usesMacPointerCapture) {
             grabMouse();
@@ -665,7 +658,6 @@ void StreamVideoItem::setRelativeMouse(bool relative)
     } else {
         ungrabMouse();
         releaseCursorConfinement();
-        setCursor(m_remoteCursor);
     }
     syncCaptureState();
     emit relativeMouseChanged();
@@ -679,16 +671,25 @@ void StreamVideoItem::setRemoteCursorShape(const QCursor &cursor)
 
 void StreamVideoItem::updateLocalCursor()
 {
-    if (m_usesMacPointerCapture && !m_captureActive) {
+    if (!m_captureActive) {
         unsetCursor();
         return;
     }
-    if (m_relativeMouse || (m_usesMacPointerCapture && !m_remoteCursorKnown
-                           && m_manualRelativeMouse != false)) {
+    if (m_relativeMouse || (m_serverCursorComposited && m_manualRelativeMouse != false)) {
         setCursor(Qt::BlankCursor);
         return;
     }
     setCursor(m_remoteCursor);
+}
+
+void StreamVideoItem::resetRemoteCursor()
+{
+    m_remoteCursorKnown = false;
+    m_remoteCursorVisible = false;
+    m_serverCursorComposited = s_nativeRuntime ? s_nativeRuntime->serverCursorComposited() : true;
+    m_remoteCursor = QCursor();
+    setRelativeMouse(m_manualRelativeMouse.value_or(false));
+    updateLocalCursor();
 }
 
 void StreamVideoItem::togglePointerLock()

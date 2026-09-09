@@ -7,6 +7,7 @@ use thiserror::Error;
 
 pub mod nvst;
 mod nvst_control;
+mod nvst_cursor;
 mod nvst_haptics;
 mod nvst_input;
 mod nvst_microphone;

@@ -551,6 +551,68 @@ private slots:
         QVERIFY(runtime.shutdown());
     }
 
+    void cursorCompositionIsValidatedCachedAndResetForAcceptedStarts()
+    {
+        static OpenNowStreamerConfig callbacks;
+        auto api = fakeApi();
+        api.create = [](const OpenNowStreamerConfig *config, OpenNowStreamer **output) {
+            callbacks = *config;
+            return fakeCreate(config, output);
+        };
+        NativeStreamRuntime runtime(api);
+        QSignalSpy composition(&runtime, &NativeStreamRuntime::cursorCaptureChanged);
+        QSignalSpy resets(&runtime, &NativeStreamRuntime::cursorStateReset);
+        QVERIFY(runtime.start());
+        QVERIFY(runtime.send({{QStringLiteral("type"), QStringLiteral("start")},
+                              {QStringLiteral("id"), QStringLiteral("initial")}}));
+        resets.clear();
+        QVERIFY(runtime.serverCursorComposited());
+        const auto deliver = [](const QByteArray &bytes) {
+            callbacks.event_callback(reinterpret_cast<const std::uint8_t *>(bytes.constData()),
+                                     bytes.size(), callbacks.user_data);
+        };
+        deliver(R"({"type":"cursor-capture","startId":"initial","composited":false})");
+        QTRY_VERIFY(!runtime.serverCursorComposited());
+        QCOMPARE(composition.size(), 1);
+        for (const auto &bytes : {R"({"type":"cursor-capture","startId":"initial"})",
+                                 R"({"type":"cursor-capture","startId":"initial","composited":"true"})",
+                                 R"({"type":"cursor-capture","startId":"initial","composited":1})",
+                                 R"({"type":"cursor-capture","startId":"initial","composited":false})"}) {
+            deliver(bytes);
+        }
+        QCoreApplication::processEvents();
+        QVERIFY(!runtime.serverCursorComposited());
+        QCOMPARE(composition.size(), 1);
+        sendStatus = OPENNOW_STREAMER_QUEUE_FULL;
+        const auto restore = qScopeGuard([] { sendStatus = OPENNOW_STREAMER_OK; });
+        QVERIFY(!runtime.send({{QStringLiteral("type"), QStringLiteral("start")},
+                               {QStringLiteral("id"), QStringLiteral("rejected")}}));
+        QVERIFY(!runtime.serverCursorComposited());
+        QCOMPARE(resets.size(), 0);
+        sendStatus = OPENNOW_STREAMER_OK;
+        QVERIFY(runtime.send({{QStringLiteral("type"), QStringLiteral("start")},
+                              {QStringLiteral("id"), QStringLiteral("accepted")}}));
+        QVERIFY(runtime.serverCursorComposited());
+        QCOMPARE(resets.size(), 1);
+        deliver(R"({"type":"cursor-capture","startId":"initial","composited":false})");
+        QCoreApplication::processEvents();
+        QVERIFY(runtime.serverCursorComposited());
+        deliver(R"({"type":"cursor-capture","startId":"accepted","composited":false})");
+        QTRY_VERIFY(!runtime.serverCursorComposited());
+        deliver(R"({"type":"cursor-capture","startId":"accepted","composited":true})");
+        QTRY_VERIFY(runtime.serverCursorComposited());
+        QCOMPARE(composition.size(), 3);
+        QSignalSpy dropped(&runtime, &NativeStreamRuntime::callbacksDropped);
+        for (qsizetype i = 0; i < NativeStreamRuntime::MaximumPendingCallbacks + 1; ++i)
+            deliver(R"({"type":"telemetry"})");
+        deliver(R"({"type":"cursor-capture","startId":"accepted","composited":true})");
+        deliver(R"({"type":"cursor-capture","startId":"accepted","composited":false})");
+        QTRY_VERIFY(!runtime.serverCursorComposited());
+        QCOMPARE(composition.size(), 4);
+        QTRY_VERIFY(!dropped.isEmpty());
+        QVERIFY(runtime.shutdown());
+    }
+
     void lateRenderFailureKeepsItsOriginalSessionGeneration()
     {
         NativeStreamRuntime runtime(fakeApi());
