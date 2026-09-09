@@ -79,7 +79,12 @@ class CIWorkflowTest(unittest.TestCase):
                 entry = checks.split(f"          - label: {label}\n", 1)[1].split("          - label:", 1)[0]
                 self.assertIn(f"            os: {runner}\n", entry)
                 self.assertIn('            parallel: "8"\n', entry)
-        self.assertIn("CARGO_BUILD_JOBS: ${{ matrix.parallel }}", checks)
+        self.assertNotIn("CARGO_BUILD_JOBS:", checks)
+        action = (ROOT / ".github/actions/qt-unit-tests/action.yml").read_text()
+        self.assertNotIn("CARGO_BUILD_JOBS:", action.split("    - name: Lint Rust", 1)[0])
+        for step in ("Lint Rust", "Test Rust"):
+            entry = action.split(f"    - name: {step}\n", 1)[1].split("    - name:", 1)[0]
+            self.assertIn("CARGO_BUILD_JOBS: ${{ inputs.parallel }}", entry)
         self.assertIn("parallel: ${{ matrix.parallel }}", checks)
 
     def test_linux_and_windows_packages_use_eight_core_build_parallelism(self):

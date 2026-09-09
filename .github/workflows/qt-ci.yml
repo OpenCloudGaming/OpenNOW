@@ -86,7 +86,6 @@ jobs:
             parallel: "3"
     env:
       CARGO_TERM_COLOR: always
-      CARGO_BUILD_JOBS: ${{ matrix.parallel }}
       OPENNOW_CHECKOUT: ${{ matrix.label == 'windows-x64' && 'O:/' || github.workspace }}
       MACOSX_DEPLOYMENT_TARGET: ${{ matrix.label == 'macos-arm64' && '13.0' || '' }}
     steps:
