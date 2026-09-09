@@ -1,4 +1,9 @@
 {
+  "clipboardSettings": {
+    "title": "Clipboard paste",
+    "description": "Paste local text into the stream with Ctrl+V (Command+V on macOS). Up to 64 KiB per paste. No automatic clipboard sync.",
+    "failed": "Clipboard paste failed. Use plain text up to 64 KiB and try again."
+  },
   "sessionFullscreen": {
     "title": "Fullscreen when session is ready",
     "description": "Automatically enter fullscreen when your session is ready. F11 toggles fullscreen during play."
