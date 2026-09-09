@@ -15,6 +15,9 @@ QtObject {
         property int controllerCount: controllers.length
         property bool shellCaptureEnabled: true
         property bool inputSuspended: false
+        property int leftStickDeadzone: 24
+        property int rightStickDeadzone: 27
+        property int vibrationIntensity: 100
         signal controllerActivity()
         signal controllerActivityDetailed(string device, string control, int value)
     }
@@ -31,6 +34,24 @@ QtObject {
     function run(parent) {
         const page = find(parent, "desktopControllerSettings")
         check(page, "controls page must be visible")
+        ShellStore.applySetting("controllerMode", false)
+        check(input.inputSuspended && !input.shellCaptureEnabled,
+            "disabled shell navigation must not transfer controller input or rumble to gameplay")
+        ShellStore.applySetting("controllerMode", true)
+        for (const setting of [
+            ["controllerLeftStickDeadzone", "leftStickDeadzone", 24, 50],
+            ["controllerRightStickDeadzone", "rightStickDeadzone", 27, 50],
+            ["controllerVibrationIntensity", "vibrationIntensity", 100, 100]
+        ]) {
+            const slider = find(page, setting[0] + "Slider")
+            check(slider && slider.from === 0 && slider.to === setting[3], "controller tuning range")
+            for (const value of [0, setting[3], setting[2]]) {
+                slider.committed(value)
+                check(ShellStore.settings[setting[0]] === value, "controller tuning saved")
+                check(input[setting[1]] === value, "controller tuning reaches input owner")
+                check(slider.value === value, "controller tuning reflects saved value")
+            }
+        }
         for (const controller of input.availableControllers) {
             const row = find(page, "controllerRow-" + controller.instanceId)
             check(row && row.title === controller.name, "device name must be preserved")

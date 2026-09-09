@@ -334,6 +334,16 @@ FocusScope {
                 "controllerInputSource", [0].concat(ControllerInput.availableControllers.map(controller => Number(controller.instanceId))),
                 [qsTr("All controllers (multiplayer)")].concat(ControllerInput.availableControllers.map(controller => qsTr("Device %1 · %2").arg(controller.slot).arg(controller.name)))))
             rows.push(toggle("Gyroscope", "Forward motion data to the rig", "enableGyroscopeControls"))
+            for (const setting of [
+                {key:"controllerLeftStickDeadzone", title:qsTr("Left stick dead zone"), description:qsTr("Ignore stick drift during gameplay. Default: 24%. The remaining travel is rescaled to full range."), maximum:50, fallback:24},
+                {key:"controllerRightStickDeadzone", title:qsTr("Right stick dead zone"), description:qsTr("Ignore stick drift during gameplay. Default: 27%. Set to 0% to leave dead zones to the game."), maximum:50, fallback:27},
+                {key:"controllerVibrationIntensity", title:qsTr("Controller vibration"), description:qsTr("Scale game vibration on supported controllers. Set to 0% to disable."), maximum:100, fallback:100}
+            ]) {
+                const value = Number(settings[setting.key] ?? setting.fallback)
+                const values = Array.from({length:setting.maximum + 1}, (_, index) => index)
+                rows.push({t:setting.title, d:setting.description, v:value + "%", key:setting.key,
+                    values:values, labels:values.map(value => value + "%"), control:"slider", sliderPercent:value / setting.maximum})
+            }
             rows.push({t:"Mouse sensitivity", d:"Acceleration off · raw input", v:Number(settings.mouseSensitivity || 1).toFixed(1) + "×", key:"mouseSensitivity", values:[0.5,0.75,1,1.25,1.5], labels:["0.5×","0.75×","1.0×","1.25×","1.5×"], control:"slider", sliderPercent:Number(settings.mouseSensitivity || 1) / 1.5})
             rows.push(choice("Keyboard layout", "Physical key mapping requested from GeForce NOW", "keyboardLayout",
                 ["en-US","en-GB","tr-TR","de-DE","fr-FR","es-ES","es-MX","it-IT","pt-PT","pt-BR","pl-PL","da-DK","nb-NO","sv-SE","fi-FI","ru-RU","ja-JP","ko-KR","zh-CN","zh-TW"],

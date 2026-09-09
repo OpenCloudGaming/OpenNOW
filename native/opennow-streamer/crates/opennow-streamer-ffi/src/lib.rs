@@ -521,6 +521,9 @@ fn should_log_event(
     last_telemetry: &mut std::time::Instant,
     now: std::time::Instant,
 ) -> bool {
+    if kind == "controller-rumble" {
+        return false;
+    }
     if !matches!(kind, "telemetry" | "stats") {
         return true;
     }
@@ -1607,6 +1610,30 @@ mod tests {
             user_data: ptr::from_ref(messages).cast_mut().cast(),
             vulkan_device: ptr::null(),
         }
+    }
+
+    #[test]
+    fn controller_rumble_crosses_the_event_callback_without_per_packet_logging() {
+        let messages = CallbackMessages::default();
+        let (sender, receiver) = sync_channel(1);
+        let dispatcher = spawn_dispatcher(
+            "test-rumble-events",
+            receiver,
+            Callback {
+                function: Some(collect_response),
+                user_data: ptr::from_ref(&messages) as usize,
+            },
+        )
+        .unwrap();
+        let event = json!({"type":"controller-rumble", "startId":"start-7",
+            "controllerId":3, "lowFrequency":65535, "highFrequency":12345, "durationMs":65535});
+        sender.send(event.clone()).unwrap();
+        drop(sender);
+        dispatcher.join().unwrap();
+        assert_eq!(*messages.values.lock().unwrap(), vec![event]);
+        let now = Instant::now();
+        let mut last = now;
+        assert!(!should_log_event("controller-rumble", &mut last, now));
     }
 
     fn create_with_test_runtime(

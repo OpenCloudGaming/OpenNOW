@@ -410,6 +410,7 @@ pub(crate) fn server_cursor_messages(bytes: &[u8]) -> Vec<NvstServerCursorMessag
         }
         let payload = &bytes[payload_start..payload_end];
         match code {
+            super::nvst_haptics::HAPTIC_COMMAND_CODE => {}
             COMMAND_SYSTEM_CURSOR if payload.len() >= 4 => {
                 let cursor_id =
                     u32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]);
@@ -1232,6 +1233,15 @@ mod tests {
         assert_eq!(chain[5], hex("20030c00000000001300000000000000"));
         assert_eq!(chain[6], hex("21030c00000000000000000000000000"));
         assert_eq!(chain[7], hex("0b020c00000000000100000001000000"));
+    }
+
+    #[test]
+    fn haptic_motor_values_are_not_scanned_as_cursor_commands() {
+        let bytes = hex("0b010c000200080000000f010400fa000f01040001000000");
+        let cursors = server_cursor_messages(&bytes);
+        assert_eq!(cursors.len(), 1);
+        assert_eq!(cursors[0].offset, 16);
+        assert_eq!(cursors[0].cursor_id, Some(1));
     }
 
     #[test]

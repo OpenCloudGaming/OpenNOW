@@ -20,6 +20,9 @@ class ControllerInput final : public QObject
     Q_PROPERTY(quint32 inputControllerId READ inputControllerId WRITE setInputControllerId NOTIFY inputControllerIdChanged)
     Q_PROPERTY(bool shellCaptureEnabled READ shellCaptureEnabled WRITE setShellCaptureEnabled NOTIFY shellCaptureEnabledChanged)
     Q_PROPERTY(bool inputSuspended READ inputSuspended WRITE setInputSuspended NOTIFY inputSuspendedChanged)
+    Q_PROPERTY(int leftStickDeadzone READ leftStickDeadzone WRITE setLeftStickDeadzone NOTIFY leftStickDeadzoneChanged)
+    Q_PROPERTY(int rightStickDeadzone READ rightStickDeadzone WRITE setRightStickDeadzone NOTIFY rightStickDeadzoneChanged)
+    Q_PROPERTY(int vibrationIntensity READ vibrationIntensity WRITE setVibrationIntensity NOTIFY vibrationIntensityChanged)
 
 public:
     static constexpr quint32 syntheticControllerScanCode = 0x4f504e57;
@@ -36,6 +39,14 @@ public:
     void setShellCaptureEnabled(bool enabled);
     [[nodiscard]] bool inputSuspended() const;
     void setInputSuspended(bool suspended);
+    [[nodiscard]] int leftStickDeadzone() const;
+    [[nodiscard]] int rightStickDeadzone() const;
+    [[nodiscard]] int vibrationIntensity() const;
+    void setLeftStickDeadzone(int percent);
+    void setRightStickDeadzone(int percent);
+    void setVibrationIntensity(int percent);
+    void playRumble(quint8 controllerId, quint16 lowFrequency, quint16 highFrequency, quint32 durationMs);
+    void stopRumble();
 
 signals:
     void controllerCountChanged(int count);
@@ -44,6 +55,9 @@ signals:
     void inputControllerIdChanged();
     void shellCaptureEnabledChanged();
     void inputSuspendedChanged();
+    void leftStickDeadzoneChanged();
+    void rightStickDeadzoneChanged();
+    void vibrationIntensityChanged();
     void controllerActivity();
     void controllerActivityDetailed(const QString &device, const QString &control, int value);
     void gamepadSnapshot(quint8 controllerId, quint16 bitmap, quint16 buttons,
@@ -73,6 +87,7 @@ private:
         qint16 rawRightY = 0;
         quint8 leftTrigger = 0;
         quint8 rightTrigger = 0;
+        bool rumbleFailureReported = false;
         QHash<int, QPointer<QObject>> shellKeys;
         std::array<RepeatingDirection, 4> directions{{
             {false, 0, 0, Qt::Key_Left}, {false, 0, 0, Qt::Key_Right},
@@ -99,7 +114,7 @@ private:
     void updatePollInterval();
     void refreshControllerMetadata();
     static quint16 buttonMask(Uint8 button);
-    static QPair<qint16, qint16> radialDeadzone(qint16 x, qint16 y);
+    static QPair<qint16, qint16> radialDeadzone(qint16 x, qint16 y, int percent);
     static quint8 triggerValue(qint16 value);
 
     QTimer m_pollTimer;
@@ -112,6 +127,9 @@ private:
     bool m_sdlReady = false;
     bool m_shellCaptureEnabled = true;
     bool m_inputSuspended = false;
+    int m_leftStickDeadzone = 24;
+    int m_rightStickDeadzone = 27;
+    int m_vibrationIntensity = 100;
     qint64 m_lastControllerMetadataAt = 0;
     qint64 m_lastGamepadSnapshotAt = 0;
 };

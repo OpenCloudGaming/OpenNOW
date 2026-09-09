@@ -13,6 +13,35 @@ This crate exposes `opennow-streamer-core::Engine` as a C-compatible in-process 
 - `opennow_streamer_destroy` consumes the handle exactly once, waits for the engine and both callback queues to drain, and then returns. No call may race with destroy. A null handle is rejected; reusing a destroyed pointer is caller-side undefined behavior.
 - Every exported function catches Rust panics before they can unwind through the C ABI. A worker-thread panic closes the command queue.
 
+### Controller rumble events
+
+The additive `controller-rumble` JSON event uses the existing `event_callback` (no C ABI
+layout change): `startId` is the originating start command's ID, `controllerId` is a wire
+slot from 0 through 3, `lowFrequency` and `highFrequency` are unsigned 16-bit motor
+amplitudes, and `durationMs` is an integer from 1 through 65535. Hosts must discard
+events whose `startId` does not match the currently authorized start, and stop motors
+on session replacement, stop, failure, capture loss, and device removal.
+
+NVST control command `0x010b` uses a little-endian `u16 code, u16 payloadLength`
+envelope. Its payload begins with `u16 kind, u16 blobLength`. Kind 1 contains 6-byte
+records (`u16 slot, u16 left, u16 right`); kind 2 contains 8-byte records with an
+additional `u16 durationMs`. Absent or zero durations become 1000 ms, matching the
+reference client. Zero motor amplitudes are stop commands. Unknown kinds and slots
+above 3 are ignored. Complete records within the smaller of the declared blob length
+and available payload are accepted; truncated outer envelopes are not dispatched.
+
+Transport reception coalesces into four session-owned latest-value slots, including
+zero-amplitude stops. The engine polls these alongside input and forwards events
+nonblockingly through the bounded FFI queue. If that queue is full, four latest-value
+slots retain commands for retry, so stops are not permanently lost. Coalesced records
+are included in the periodic queue-drop diagnostics. Qt also bounds callback storage,
+validates every numeric field and start ID, and emits `controllerRumbleRequested` on
+the GUI thread. Its `controllerRumbleStopped` signal accompanies presentation
+invalidation. Callback overflow stops motors and discards rumble queued before the
+overflow, without discarding status or response callbacks. The shell owns
+physical-device routing and shutdown. Individual rumble events are
+not logged on the high-frequency callback path.
+
 ### Optional MetalFX spatial upscaling (ABI 7, render command 2)
 
 ABI 7 requires rebuilding the Qt shell and native runtime together. Version 2 of

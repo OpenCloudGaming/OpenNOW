@@ -19,9 +19,9 @@ use opennow_streamer_protocol::{
     response,
 };
 use opennow_streamer_transport::{
-    NvstDropReason, NvstReceiveEvent, NvstReceiverState, NvstRecovery, NvstUdpReceiverControl,
-    NvstUdpReceiverSession, ReservedNvstBundle, SharedNvstFeedback, parse_nvst_video_handoff,
-    reserve_nvst_mjolnir_udp_socket, spawn_nvst_mjolnir_receiver,
+    NvstControllerRumble, NvstDropReason, NvstReceiveEvent, NvstReceiverState, NvstRecovery,
+    NvstUdpReceiverControl, NvstUdpReceiverSession, ReservedNvstBundle, SharedNvstFeedback,
+    parse_nvst_video_handoff, reserve_nvst_mjolnir_udp_socket, spawn_nvst_mjolnir_receiver,
     spawn_nvst_udp_receiver_with_socket,
 };
 use serde_json::{Value, json};
@@ -83,6 +83,9 @@ const NVST_RECOVERY_ATTEMPT_LIMIT: usize = 1;
 const NATIVE_INPUT_POLL_INTERVAL: Duration = Duration::from_micros(250);
 
 trait NvstSessionResources {
+    fn take_rumble(&self) -> ([Option<NvstControllerRumble>; 4], usize) {
+        ([None; 4], 0)
+    }
     fn ping_ms(&self) -> Option<f64> {
         None
     }
@@ -106,6 +109,9 @@ struct ActiveNvstResources {
 }
 
 impl NvstSessionResources for ActiveNvstResources {
+    fn take_rumble(&self) -> ([Option<NvstControllerRumble>; 4], usize) {
+        self.feedback.haptics.take()
+    }
     fn ping_ms(&self) -> Option<f64> {
         let now = Instant::now();
         self.feedback.ping_ms(now).or_else(|| {
@@ -899,6 +905,7 @@ impl Engine {
                 .as_ref()
                 .map(MediaSession::captured_input);
             let shortcut_runtime = self.media_runtime.clone();
+            let start_id = command.id.clone();
             let nvst_resources = nvst_resources.expect("NVST events require active resources");
             self.feedback_worker = thread::Builder::new()
                 .name("opennow-nvst-events".to_owned())
@@ -908,6 +915,7 @@ impl Engine {
                         &lifecycle,
                         generation,
                         NvstSessionEventResources {
+                            start_id,
                             nvst_events,
                             media_feedback,
                             captured_input,
@@ -1560,6 +1568,7 @@ fn forward_shortcut_action(
 }
 
 struct NvstSessionEventResources<R> {
+    start_id: String,
     nvst_events: Receiver<NvstReceiveEvent>,
     media_feedback: Option<Receiver<MediaFeedback>>,
     captured_input: Option<Arc<CapturedInputQueue>>,
@@ -1579,6 +1588,7 @@ fn forward_nvst_session_events<R: NvstSessionResources>(
     event_resources: NvstSessionEventResources<R>,
 ) -> PendingMediaFeedback {
     let NvstSessionEventResources {
+        start_id,
         nvst_events,
         media_feedback,
         captured_input,
@@ -1586,6 +1596,7 @@ fn forward_nvst_session_events<R: NvstSessionResources>(
         transport: resources,
     } = event_resources;
     let mut feedback_state = NvstMediaFeedbackState::new(false);
+    let mut pending_rumble = [None; 4];
     'session: loop {
         if let Some(feedback) = media_feedback.as_ref() {
             while let Ok(feedback) = feedback.try_recv() {
@@ -1604,6 +1615,27 @@ fn forward_nvst_session_events<R: NvstSessionResources>(
             .flush(output, Instant::now(), false);
         if lock_lifecycle(lifecycle).generation != generation {
             break;
+        }
+        let (rumble, coalesced) = resources.take_rumble();
+        feedback_state
+            .drop_reports
+            .record("controller-rumble-coalesced", coalesced);
+        for command in rumble.into_iter().flatten() {
+            if pending_rumble[usize::from(command.controller_id)]
+                .replace(command)
+                .is_some()
+            {
+                feedback_state
+                    .drop_reports
+                    .record("controller-rumble-coalesced", 1);
+            }
+        }
+        for pending in &mut pending_rumble {
+            if let Some(command) = *pending
+                && forward_controller_rumble(output, lifecycle, generation, &start_id, command)
+            {
+                *pending = None;
+            }
         }
         if let Some(captured_input) = captured_input.as_ref() {
             if !feedback_state.input_available {
@@ -1704,6 +1736,31 @@ fn forward_nvst_session_events<R: NvstSessionResources>(
         receiver: media_feedback,
         reports: feedback_state.drop_reports,
     }
+}
+
+fn forward_controller_rumble(
+    output: &EventSender,
+    lifecycle: &Mutex<Lifecycle>,
+    generation: u64,
+    start_id: &str,
+    command: NvstControllerRumble,
+) -> bool {
+    let current = lock_lifecycle(lifecycle);
+    if current.generation != generation || current.state != State::Connected {
+        return true;
+    }
+    output
+        .send(event(
+            "controller-rumble",
+            json!({
+                "startId": start_id,
+                "controllerId": command.controller_id,
+                "lowFrequency": command.low_frequency,
+                "highFrequency": command.high_frequency,
+                "durationMs": command.duration_ms,
+            }),
+        ))
+        .is_ok()
 }
 
 fn forward_nvst_event<R: NvstSessionResources>(
@@ -2686,6 +2743,7 @@ mod tests {
 
     #[derive(Default)]
     struct TestNvstResources {
+        rumble: Arc<Mutex<[Option<NvstControllerRumble>; 4]>>,
         ping_ms: Option<f64>,
         keyframe_requests: AtomicUsize,
         acknowledged_frames: AtomicUsize,
@@ -2696,6 +2754,9 @@ mod tests {
     }
 
     impl NvstSessionResources for TestNvstResources {
+        fn take_rumble(&self) -> ([Option<NvstControllerRumble>; 4], usize) {
+            (std::mem::take(&mut *self.rumble.lock().unwrap()), 0)
+        }
         fn ping_ms(&self) -> Option<f64> {
             self.ping_ms
         }
@@ -3113,6 +3174,7 @@ mod tests {
                 &worker_lifecycle,
                 7,
                 NvstSessionEventResources {
+                    start_id: "test-session".to_owned(),
                     nvst_events,
                     media_feedback: Some(feedback),
                     captured_input: None,
@@ -3130,6 +3192,92 @@ mod tests {
         worker.join().unwrap();
         assert!(receiver.try_recv().is_err());
         drop(transport_sender);
+    }
+
+    #[test]
+    fn rumble_stop_is_retried_after_event_queue_backpressure() {
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        sender.send(json!({"type":"busy"})).unwrap();
+        let output = EventSender::bounded(sender);
+        let lifecycle = Arc::new(connected_lifecycle());
+        let resources = TestNvstResources::default();
+        resources.rumble.lock().unwrap()[2] = Some(NvstControllerRumble {
+            controller_id: 2,
+            low_frequency: 0,
+            high_frequency: 0,
+            duration_ms: 1000,
+        });
+        let pending = resources.rumble.clone();
+        let worker_lifecycle = lifecycle.clone();
+        let (_sender, nvst_events) = std::sync::mpsc::channel();
+        let worker = thread::spawn(move || {
+            forward_nvst_session_events(
+                &output,
+                &worker_lifecycle,
+                7,
+                NvstSessionEventResources {
+                    start_id: "start-7".to_owned(),
+                    nvst_events,
+                    media_feedback: None,
+                    captured_input: None,
+                    shortcut_runtime: None,
+                    transport: resources,
+                },
+            )
+        });
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while pending.lock().unwrap()[2].is_some() {
+            assert!(Instant::now() < deadline);
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(
+            receiver.recv_timeout(Duration::from_secs(3)).unwrap()["type"],
+            "busy"
+        );
+        let stop = receiver.recv_timeout(Duration::from_secs(3)).unwrap();
+        assert_eq!(stop["type"], "controller-rumble");
+        assert_eq!(stop["controllerId"], 2);
+        assert_eq!(stop["lowFrequency"], 0);
+        assert_eq!(stop["highFrequency"], 0);
+        lock_lifecycle(&lifecycle).generation += 1;
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn rumble_events_are_typed_session_scoped_and_nonblocking() {
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        let output = EventSender::bounded(sender);
+        let lifecycle = connected_lifecycle();
+        let command = opennow_streamer_transport::NvstControllerRumble {
+            controller_id: 3,
+            low_frequency: 65535,
+            high_frequency: 12345,
+            duration_ms: 65535,
+        };
+        assert!(forward_controller_rumble(
+            &output, &lifecycle, 7, "start-7", command
+        ));
+        assert!(!forward_controller_rumble(
+            &output, &lifecycle, 7, "start-7", command
+        ));
+        assert_eq!(
+            receiver.try_recv().unwrap(),
+            json!({"type":"controller-rumble",
+            "startId":"start-7", "controllerId":3, "lowFrequency":65535,
+            "highFrequency":12345, "durationMs":65535})
+        );
+        assert!(forward_controller_rumble(
+            &output,
+            &lifecycle,
+            6,
+            "old-start",
+            command
+        ));
+        lock_lifecycle(&lifecycle).state = State::Idle;
+        assert!(forward_controller_rumble(
+            &output, &lifecycle, 7, "start-7", command
+        ));
+        assert!(receiver.try_recv().is_err());
     }
 
     #[test]
@@ -3153,6 +3301,7 @@ mod tests {
                 &lifecycle,
                 u64::MAX,
                 NvstSessionEventResources {
+                    start_id: "test-session".to_owned(),
                     nvst_events,
                     media_feedback: Some(feedback),
                     captured_input: None,

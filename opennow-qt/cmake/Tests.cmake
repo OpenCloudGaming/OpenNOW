@@ -426,6 +426,20 @@ if(BUILD_TESTING)
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
         TIMEOUT 8
     )
+    qt_add_executable(opennow-controllertuning-tests
+        tests/tst_controllertuning.cpp
+        src/input/ControllerInput.cpp
+        src/input/ControllerInput.h
+    )
+    target_include_directories(opennow-controllertuning-tests PRIVATE src)
+    target_link_libraries(opennow-controllertuning-tests PRIVATE
+        Qt6::Test Qt6::Core Qt6::Gui SDL3::SDL3)
+    add_test(NAME opennow-controllertuning-tests
+             COMMAND opennow-controllertuning-tests -o -,txt)
+    set_tests_properties(opennow-controllertuning-tests PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+        TIMEOUT 15
+    )
     qt_add_executable(opennow-controllersources-tests
         tests/tst_controllersources.cpp
         src/input/ControllerInput.cpp

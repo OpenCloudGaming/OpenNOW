@@ -159,11 +159,28 @@ ApplicationWindow {
     }
 
     function syncInputOwnership() {
-        ControllerInput.inputSuspended = !window.active
         const shellOwnsInput = !window.active || AppController.route !== "stream"
             || ShellStore.streamOverlayBlocksGameplayInput(AppController.overlay)
+        ControllerInput.inputSuspended = !window.active
+            || (shellOwnsInput && ShellStore.settings.controllerMode === false)
         ControllerInput.shellCaptureEnabled = shellOwnsInput
             && ShellStore.settings.controllerMode !== false
+    }
+
+    Binding {
+        target: ControllerInput
+        property: "leftStickDeadzone"
+        value: Number(ShellStore.settings.controllerLeftStickDeadzone ?? 24)
+    }
+    Binding {
+        target: ControllerInput
+        property: "rightStickDeadzone"
+        value: Number(ShellStore.settings.controllerRightStickDeadzone ?? 27)
+    }
+    Binding {
+        target: ControllerInput
+        property: "vibrationIntensity"
+        value: Number(ShellStore.settings.controllerVibrationIntensity ?? 100)
     }
 
     // StreamVideoItem normally owns gameplay keys, but fullscreen transitions

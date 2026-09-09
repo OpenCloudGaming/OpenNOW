@@ -134,6 +134,10 @@ int runApplication(int argc, char *argv[])
         qWarning("Could not start the embedded streamer runtime: %s",
                  qUtf8Printable(nativeStreamRuntime.lastError()));
     StreamVideoItem::setNativeStreamRuntime(&nativeStreamRuntime);
+    QObject::connect(&nativeStreamRuntime, &NativeStreamRuntime::controllerRumbleRequested,
+                     &controllerInput, &ControllerInput::playRumble);
+    QObject::connect(&nativeStreamRuntime, &NativeStreamRuntime::controllerRumbleStopped,
+                     &controllerInput, &ControllerInput::stopRumble);
     QObject::connect(
         &controllerInput, &ControllerInput::gamepadSnapshot, &nativeStreamRuntime,
         [&nativeStreamRuntime](quint8 controllerId, quint16 bitmap, quint16 buttons,
