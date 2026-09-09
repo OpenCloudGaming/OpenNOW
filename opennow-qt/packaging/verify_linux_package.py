@@ -59,7 +59,7 @@ if __name__ == "__main__":
     verify_package(args.bin_dir.resolve())
     if args.deb:
         dependencies = subprocess.check_output(["dpkg-deb", "-f", args.deb, "Depends"], text=True)
-        for dependency in ("libva2", "libva-drm2"):
+        for dependency in ("libva2", "libva-drm2", "qt6-svg-plugins"):
             if not any(item.strip().split()[0] == dependency for item in dependencies.split(",")):
                 raise ValueError(f"The DEB does not require {dependency}")
         with tempfile.TemporaryDirectory(prefix="opennow-deb-check-") as directory:
