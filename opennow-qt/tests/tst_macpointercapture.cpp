@@ -87,24 +87,17 @@ private slots:
             const bool wasVisible = CGCursorIsVisible();
             capture->setCapture(&window, true, QRect(QPoint(), window.size()));
             QVERIFY2(capture->locked(), qPrintable(capture->error()));
-            QVERIFY2(!CGCursorIsVisible(), qPrintable(([&window, fullscreen] {
-                const bool immediate = CGCursorIsVisible();
-                QTest::qWait(100);
-                const bool after100ms = CGCursorIsVisible();
-                QTest::qWait(900);
-                return QStringLiteral("Cursor visibility: immediate=%1 after100ms=%2 after1000ms=%3 windowActive=%4 fullscreen=%5")
-                    .arg(immediate).arg(after100ms).arg(bool(CGCursorIsVisible()))
-                    .arg(window.isActive()).arg(fullscreen);
-            }())));
+            QTRY_VERIFY_WITH_TIMEOUT(!CGCursorIsVisible(), 1000);
             capture->release();
             QVERIFY2(capture->error().isEmpty(), qPrintable(capture->error()));
             QVERIFY(!capture->locked());
-            QCOMPARE(bool(CGCursorIsVisible()), wasVisible);
+            QTRY_COMPARE_WITH_TIMEOUT(bool(CGCursorIsVisible()), wasVisible, 1000);
             capture->setCapture(&window, true, QRect(QPoint(), window.size()));
             QVERIFY2(capture->locked(), qPrintable(capture->error()));
+            QTRY_VERIFY_WITH_TIMEOUT(!CGCursorIsVisible(), 1000);
             window.hide();
             QTRY_VERIFY(!capture->locked());
-            QCOMPARE(bool(CGCursorIsVisible()), wasVisible);
+            QTRY_COMPARE_WITH_TIMEOUT(bool(CGCursorIsVisible()), wasVisible, 1000);
         }
         window.showNormal();
         window.requestActivate();
@@ -112,8 +105,9 @@ private slots:
         const bool wasVisible = CGCursorIsVisible();
         capture->setCapture(&window, true, QRect(QPoint(), window.size()));
         QVERIFY2(capture->locked(), qPrintable(capture->error()));
+        QTRY_VERIFY_WITH_TIMEOUT(!CGCursorIsVisible(), 1000);
         capture.reset();
-        QCOMPARE(bool(CGCursorIsVisible()), wasVisible);
+        QTRY_COMPARE_WITH_TIMEOUT(bool(CGCursorIsVisible()), wasVisible, 1000);
 #else
         QSKIP("Requires native macOS CoreGraphics");
 #endif
