@@ -1,10 +1,59 @@
 import copy
 from pathlib import Path
+import subprocess
 import sys
+import tempfile
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "packaging"))
 from verify_linux_package import verify_capabilities
+
+
+class LinuxPackageDependenciesTest(unittest.TestCase):
+    def test_debian_packages_require_svg_image_plugin(self):
+        qt_source = Path(__file__).resolve().parents[1]
+        for processor, architecture in (("x86_64", "amd64"), ("aarch64", "arm64")):
+            with self.subTest(architecture=architecture), tempfile.TemporaryDirectory() as directory:
+                source = Path(directory)
+                build = source / "build"
+                (source / "main.cpp").write_text("int main() { return 0; }\n")
+                (source / "CMakeLists.txt").write_text(
+                    f'''cmake_minimum_required(VERSION 3.24)
+project(LinuxPackageContract VERSION 1.0.0 LANGUAGES CXX)
+include(GNUInstallDirs)
+add_executable(opennow-qt main.cpp)
+set(APPLE FALSE)
+set(WIN32 FALSE)
+set(CMAKE_SYSTEM_NAME Linux)
+set(CMAKE_SYSTEM_PROCESSOR "{processor}")
+set(CMAKE_CURRENT_SOURCE_DIR "{qt_source.as_posix()}")
+include("{qt_source.as_posix()}/cmake/BuildMetadata.cmake")
+set(OPENNOW_SDL3_RUNTIME_TARGET SDL3-runtime)
+add_library(SDL3-runtime SHARED IMPORTED)
+set_target_properties(SDL3-runtime PROPERTIES
+    IMPORTED_LOCATION "${{CMAKE_BINARY_DIR}}/libSDL3.so")
+set(OPENNOW_STREAMER_FFI_RUNTIME "${{CMAKE_BINARY_DIR}}/libopennow_streamer_ffi.so")
+set(OPENNOW_STREAMER_BIN_ARTIFACT "${{CMAKE_BINARY_DIR}}/opennow-streamer")
+set(OPENNOW_GENERATED_NOTICES "${{CMAKE_BINARY_DIR}}/THIRD_PARTY_NOTICES")
+include("{qt_source.as_posix()}/cmake/Packaging.cmake")
+'''
+                )
+                result = subprocess.run(
+                    ["cmake", "-S", str(source), "-B", str(build), "-G", "Unix Makefiles"],
+                    capture_output=True, text=True,
+                )
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                contract = source / "check.cmake"
+                contract.write_text(
+                    f'''include("{build.as_posix()}/CPackConfig.cmake")
+file(WRITE "{source.as_posix()}/dependencies.txt" "${{CPACK_DEBIAN_PACKAGE_DEPENDS}}")
+file(WRITE "{source.as_posix()}/architecture.txt" "${{CPACK_DEBIAN_PACKAGE_ARCHITECTURE}}")
+'''
+                )
+                subprocess.run(["cmake", "-P", str(contract)], check=True, capture_output=True)
+                dependencies = (source / "dependencies.txt").read_text().split(",")
+                self.assertIn("qt6-svg-plugins (>= 6.8)", [item.strip() for item in dependencies])
+                self.assertEqual((source / "architecture.txt").read_text(), architecture)
 
 
 class LinuxPackageCapabilitiesTest(unittest.TestCase):
