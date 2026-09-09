@@ -32,7 +32,7 @@ mod queue_drops;
 
 use microphone::MicrophoneController;
 
-use nvst_rtsp::{ActiveNvstRtspSession, NvstControlPing, prepare_owned_nvst};
+use nvst_rtsp::{ActiveNvstRtspSession, prepare_owned_nvst};
 use queue_drops::QueueDropReports;
 
 pub use opennow_streamer_transport::{EncodedMediaFrame, MediaConsumer};
@@ -109,7 +109,6 @@ struct ActiveNvstResources {
     bundle: NvstUdpReceiverControl,
     mjolnir: Option<NvstUdpReceiverControl>,
     feedback: SharedNvstFeedback,
-    control_ping: Option<NvstControlPing>,
     media: Option<MediaControl>,
 }
 
@@ -118,12 +117,7 @@ impl NvstSessionResources for ActiveNvstResources {
         self.feedback.haptics.take()
     }
     fn ping_ms(&self) -> Option<f64> {
-        let now = Instant::now();
-        self.feedback.ping_ms(now).or_else(|| {
-            self.control_ping
-                .as_ref()
-                .and_then(|ping| ping.ping_ms(now))
-        })
+        self.feedback.ping_ms(Instant::now())
     }
     fn network_metrics(&self) -> Option<(f64, f64)> {
         self.feedback.network_metrics()
@@ -891,9 +885,6 @@ impl Engine {
                 bundle: bundle_control,
                 mjolnir: mjolnir_control,
                 feedback,
-                control_ping: prepared_nvst
-                    .as_ref()
-                    .map(|prepared| prepared.control_ping.clone()),
                 media: self.media_session.as_ref().map(MediaSession::control),
             });
             nvst_events = Some(event_receiver);
@@ -3045,6 +3036,62 @@ mod tests {
             assert!(telemetry.get("pingMs").is_some());
             assert_eq!(telemetry["pingMs"], json!(ping_ms));
         }
+    }
+
+    #[test]
+    fn active_video_telemetry_requires_a_network_ping_sample() {
+        let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let peer = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let config = parse_nvst_video_handoff(&json!({
+            "nvstVideo": {
+                "clientUdpPort": socket.local_addr().unwrap().port(),
+                "videoPeerIp": "127.0.0.1",
+                "videoPeerPort": peer.local_addr().unwrap().port(),
+                "srtpAesKeyHex": "000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F",
+                "srtpSaltHex": "00000000000000009ECA935E",
+                "codec": "H264"
+            }
+        }))
+        .unwrap()
+        .unwrap();
+        let feedback = config.feedback();
+        let (media_sender, _media_receiver) = std::sync::mpsc::sync_channel(1);
+        let (event_sender, _event_receiver) = std::sync::mpsc::channel();
+        let transport = spawn_nvst_udp_receiver_with_socket(
+            config,
+            media_sender,
+            event_sender,
+            Some(socket),
+            None,
+        )
+        .unwrap();
+        let resources = ActiveNvstResources {
+            bundle: transport.control(),
+            mjolnir: None,
+            feedback,
+            media: None,
+        };
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let mut state = NvstMediaFeedbackState::new(true);
+        state.telemetry_window_started = Instant::now() - Duration::from_secs(1);
+        forward_nvst_media_feedback(
+            &EventSender::unbounded(sender),
+            &connected_lifecycle(),
+            7,
+            &resources,
+            MediaFeedback::VideoFrameAccepted {
+                frame_index: Some(72),
+                timestamp: 90_000,
+                bytes: 125_000,
+                keyframe: false,
+            },
+            &mut state,
+        );
+        let telemetry = receiver.recv_timeout(Duration::from_secs(1)).unwrap();
+        transport.stop();
+        assert_eq!(telemetry["type"], "telemetry");
+        assert!(telemetry["framesPerSecond"].as_f64().unwrap() > 0.0);
+        assert_eq!(telemetry.get("pingMs"), Some(&Value::Null));
     }
 
     #[test]

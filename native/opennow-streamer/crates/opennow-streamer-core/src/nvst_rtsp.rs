@@ -17,6 +17,7 @@ use tungstenite::{Message, WebSocket, connect};
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(2);
+#[cfg(test)]
 const CONTROL_PING_EXPIRY: Duration = Duration::from_secs(5);
 const CONTROL_IO_TIMEOUT: Duration = Duration::from_millis(100);
 const MAX_REQUEST_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
@@ -57,12 +58,13 @@ struct RtspClient {
 }
 
 #[derive(Clone, Default)]
-pub struct NvstControlPing {
+struct NvstControlPing {
     sample: Arc<Mutex<Option<(Instant, Duration)>>>,
 }
 
 impl NvstControlPing {
-    pub fn ping_ms(&self, now: Instant) -> Option<f64> {
+    #[cfg(test)]
+    fn ping_ms(&self, now: Instant) -> Option<f64> {
         let mut sample = self.sample.lock().ok()?;
         let (received_at, elapsed) = (*sample)?;
         if now.checked_duration_since(received_at)? >= CONTROL_PING_EXPIRY {
@@ -287,7 +289,7 @@ fn rtsp_connect_error(error: &tungstenite::Error) -> NvstRtspError {
 }
 
 pub struct PreparedNvstRtspSession {
-    pub control_ping: NvstControlPing,
+    control_ping: NvstControlPing,
     client: Option<RtspClient>,
     target: String,
     common_headers: Vec<(&'static str, String)>,
