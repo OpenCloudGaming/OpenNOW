@@ -6322,6 +6322,8 @@ fn forward_receive_event(
 
 #[cfg(test)]
 mod tests {
+    static PREFERRED_NVST_PORTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn typed_text_queue_preserves_order_reservation_and_readiness() {
         use opennow_streamer_protocol::text_input::{TextInputError, TextInputSlot};
@@ -7015,6 +7017,7 @@ mod tests {
 
     #[test]
     fn reserved_nvst_pair_places_bundle_immediately_after_video() {
+        let _ports = PREFERRED_NVST_PORTS.lock().unwrap();
         let (bundle, video) = reserve_nvst_socket_pair().expect("reserve pair");
         let bundle_addr = bundle.local_addr().expect("bundle address");
         let video_addr = video.local_addr().expect("video address");
@@ -7041,6 +7044,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn occupied_video_port_selects_distinct_retained_pair() {
+        let _ports = PREFERRED_NVST_PORTS.lock().unwrap();
         let (occupied_bundle, occupied_video) = reserve_nvst_socket_pair().unwrap();
         let video_port = occupied_video.local_addr().unwrap().port();
         let bundle_port = occupied_bundle.local_addr().unwrap().port();
@@ -7058,6 +7062,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn occupied_bundle_releases_partial_video_reservation() {
+        let _ports = PREFERRED_NVST_PORTS.lock().unwrap();
         let (occupied_bundle, available_video) = reserve_nvst_socket_pair().unwrap();
         let address = available_video.local_addr().unwrap();
         let bundle_port = occupied_bundle.local_addr().unwrap().port();
@@ -7083,6 +7088,7 @@ mod tests {
 
     #[test]
     fn nvst_pair_falls_back_when_either_preferred_port_is_occupied() {
+        let _ports = PREFERRED_NVST_PORTS.lock().unwrap();
         let (bundle, video) = reserve_nvst_socket_pair().unwrap();
         let preferred = video.local_addr().unwrap().port();
         let (other_bundle, other_video) = reserve_nvst_socket_pair_from(preferred).unwrap();
@@ -7105,6 +7111,7 @@ mod tests {
 
     #[test]
     fn advertised_media_address_uses_the_requested_peer_route() {
+        let _ports = PREFERRED_NVST_PORTS.lock().unwrap();
         // No packets or Internet access: UDP connect only asks the OS for a route.
         let bundle = ReservedNvstBundle::reserve().unwrap();
         assert_eq!(
@@ -9036,6 +9043,7 @@ mod tests {
 
     #[test]
     fn mjolnir_punches_negotiated_ports_before_receiving_video_at_normal_and_vpn_sizes() {
+        let _ports = PREFERRED_NVST_PORTS.lock().unwrap();
         for packet_size in [1280, 1232] {
             for use_second_port in [false, true] {
                 let (second, first) = reserve_nvst_socket_pair().expect("server port pair");
