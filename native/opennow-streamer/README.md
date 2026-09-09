@@ -197,6 +197,29 @@ Ping is network/control-path RTT, not one-way video or input-to-display latency.
 and end-to-end latency remain unavailable without a measurement source; Qt hides those
 two metrics when unavailable in the panel, compact bar, and copied statistics.
 
+Queue discard events retain `type: "log"`, `event: "queue-dropped"`, `media`, and
+the per-source delta `count`. The additive `unit` field is `frames` for video
+decode/presentation sources, `samples` for `audio-output`, `packets` for compressed
+audio or queued PCM blocks, and `items` for unknown sources. `audio-output` also
+includes `sampleRate: 48000` and `channels: 2`; its interleaved sample count converts
+to milliseconds as `count * 1000 / (sampleRate * channels)`. Audio packet/block
+duration is unknown and must not be inferred from its count. Never sum unlike
+units or treat these queue-stage counters as unique lost video frames or network
+packet loss.
+
+Pending deltas flush every second, including when no further drops occur. Full
+event queues retain pending counts for retry. Shutdown joins the media producers
+and drains their remaining drop feedback before final best-effort delivery.
+Final summaries never wait for event-queue capacity: undeliverable deltas are
+written directly to the native log with `delivery=event-queue-unavailable`, then
+removed. These deltas will be missing from callback/UI totals under saturation.
+Each delivered or directly logged final delta is removed, so it is never counted twice.
+Native-to-Qt file logs retain every delivered per-source delta and its unit,
+independently of periodic telemetry logging. Routine progress/file telemetry and
+repeated keyframe-attempt logs use ten-second intervals; errors, warnings and
+recovery transitions remain visible. Callback telemetry and wire feedback/retry
+cadences are unchanged.
+
 During Windows decoder recreation, the worker retains one pending recovery
 keyframe outside the bounded input queue. Already-queued descendants remain in
 FIFO order instead of being silently cleared. This adds at most one owned access

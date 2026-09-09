@@ -8,6 +8,7 @@ rust-version = "1.85"
 [dependencies]
 base64 = "0.22"
 ed25519-dalek = "2.2"
+httpdate = "1"
 md5 = "0.7"
 keyring = { version = "3.6", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }
 qrcode = { version = "0.14", default-features = false }

@@ -325,7 +325,7 @@ pub struct ServiceError {
 }
 
 impl ServiceError {
-    fn network(context: &str, error: reqwest::Error) -> Self {
+    pub(crate) fn network(context: &str, error: reqwest::Error) -> Self {
         Self {
             code: "network_error",
             message: format!("{context}: {}", error.without_url()),
@@ -373,6 +373,7 @@ pub struct GfnService {
     account_connections: AccountConnectionsService,
     persistent_storage: PersistentStorageService,
     store_cache: crate::store_cache::StoreCache,
+    server_vpc_cache: crate::server_vpc_cache::ServerVpcCache,
     auth_operation: Mutex<()>,
     state: Mutex<ServiceState>,
 }
@@ -409,6 +410,7 @@ impl GfnService {
             vault,
             profiles: ConsoleProfiles::load(&data_dir),
             store_cache: crate::store_cache::StoreCache::new(data_dir),
+            server_vpc_cache: crate::server_vpc_cache::ServerVpcCache::default(),
             auth_operation: Mutex::new(()),
             state: Mutex::new(ServiceState::default()),
         }
@@ -1155,7 +1157,7 @@ impl GfnService {
             .id_token
             .as_deref()
             .unwrap_or(&session.tokens.access_token);
-        let vpc_id = self.vpc_id(&session, token);
+        let vpc_id = self.vpc_id(&session, token, None)?;
         let limit = params["limit"].as_u64().unwrap_or(600).clamp(1, 2000) as usize;
         let search = params["searchQuery"]
             .as_str()
@@ -1279,7 +1281,7 @@ impl GfnService {
         let key = json!(["page", page.limit, page.cursor, page.search]);
         let refresh = params["refresh"].as_bool() == Some(true) && page.cursor.is_empty();
         self.store_cache.load_or_fetch(&scope, &key, refresh, || {
-            let vpc_id = self.vpc_id(&session, token);
+            let vpc_id = self.vpc_id(&session, token, Some(&self.store_cache.requests))?;
             // Each retry starts at the SAME cursor. Never truncate a fetched page:
             // doing so would skip games when returning NVIDIA's end cursor.
             crate::store_catalog_page::fetch_bounded_page(page.limit, |fetch_count| {
@@ -1297,12 +1299,13 @@ impl GfnService {
                 if searching {
                     variables["searchString"] = Value::String(page.search.clone());
                 }
-                let response = client
-                    .post(GRAPHQL_URL)
-                    .headers(graphql_headers(token)?)
-                    .json(&json!({"query":query,"variables":variables}))
-                    .send()
-                    .map_err(|error| ServiceError::network("GFN store query failed", error))?;
+                let response = self.store_cache.requests.send(
+                    client
+                        .post(GRAPHQL_URL)
+                        .headers(graphql_headers(token)?)
+                        .json(&json!({"query":query,"variables":variables})),
+                    "GFN store query failed",
+                )?;
                 if !response.status().is_success() {
                     return Err(ServiceError::response("GFN store query failed", response));
                 }
@@ -1372,7 +1375,7 @@ impl GfnService {
                     .id_token
                     .as_deref()
                     .unwrap_or(&session.tokens.access_token);
-                let vpc_id = self.vpc_id(&session, token);
+                let vpc_id = self.vpc_id(&session, token, Some(&self.store_cache.requests))?;
                 let (variables, request_type, sha, query) = match section {
                     "panels" => (
                         json!({"vpcId":vpc_id,"locale":"en_US","panelNames":["MAIN"]}),
@@ -1398,14 +1401,13 @@ impl GfnService {
                     // Execute our document so GAME_BOX_ART is actually requested, just
                     // like Library/browse, rather than silently ignoring these fields.
                     crate::requests::check()?;
-                    let response = client
-                        .post(GRAPHQL_URL)
-                        .headers(graphql_headers(token)?)
-                        .json(&json!({"query":query,"variables":variables}))
-                        .send()
-                        .map_err(|error| {
-                            ServiceError::network("GFN storefront query failed", error)
-                        })?;
+                    let response = self.store_cache.requests.send(
+                        client
+                            .post(GRAPHQL_URL)
+                            .headers(graphql_headers(token)?)
+                            .json(&json!({"query":query,"variables":variables})),
+                        "GFN storefront query failed",
+                    )?;
                     if !response.status().is_success() {
                         return Err(ServiceError::response(
                             "GFN storefront query failed",
@@ -1424,13 +1426,13 @@ impl GfnService {
                     payload
                 } else {
                     fetch_panels_document(
+                        &self.store_cache.requests,
                         &client,
                         token,
                         variables,
                         request_type,
                         sha,
                         query,
-                        "GFN storefront query",
                     )?
                 };
                 crate::requests::check()?;
@@ -1502,7 +1504,7 @@ impl GfnService {
             .id_token
             .as_deref()
             .unwrap_or(&session.tokens.access_token);
-        let vpc_id = self.vpc_id(&session, token);
+        let vpc_id = self.vpc_id(&session, token, None)?;
         let steam_deck = settings["identifyAsSteamDeck"].as_bool().unwrap_or(false);
         let mut url = url::Url::parse(MES_URL).expect("MES URL is valid");
         url.query_pairs_mut()
@@ -1656,31 +1658,46 @@ impl GfnService {
         })
     }
 
-    fn vpc_id(&self, session: &AuthSession, token: &str) -> String {
+    fn vpc_id(
+        &self,
+        session: &AuthSession,
+        token: &str,
+        requests: Option<&crate::store_requests::StoreRequests>,
+    ) -> Result<String, ServiceError> {
         let Ok(base) = trusted_streaming_base(&session.provider.streaming_service_url) else {
-            return "GFN-PC".to_owned();
+            return Ok("GFN-PC".to_owned());
         };
         let Ok(url) = base.join("v2/serverInfo") else {
-            return "GFN-PC".to_owned();
+            return Ok("GFN-PC".to_owned());
         };
         let Ok(headers) = lcars_headers(token, "NATIVE", "NVIDIA-CLASSIC", false) else {
-            return "GFN-PC".to_owned();
+            return Ok("GFN-PC".to_owned());
         };
-        let Ok(response) = self.client.get(url).headers(headers).send() else {
-            return "GFN-PC".to_owned();
-        };
-        if !response.status().is_success() {
-            return "GFN-PC".to_owned();
-        }
-        response
-            .json::<Value>()
-            .ok()
-            .and_then(|payload| {
-                payload["requestStatus"]["serverId"]
-                    .as_str()
-                    .map(ToOwned::to_owned)
+        self.server_vpc_cache
+            .resolve(base.as_str(), &session.user.user_id, token, || {
+                let request = self.client.get(url).headers(headers);
+                let response = match requests {
+                    Some(requests) => requests.send(request, "Store server info failed"),
+                    None => request
+                        .send()
+                        .map_err(|error| ServiceError::network("Server info failed", error)),
+                };
+                let response = match response {
+                    Ok(response) => response,
+                    Err(error) if matches!(error.code, "rate_limited" | "cancelled") => {
+                        return Err(error);
+                    }
+                    Err(_) => return Ok(None),
+                };
+                if !response.status().is_success() {
+                    return Ok(None);
+                }
+                Ok(response.json::<Value>().ok().and_then(|payload| {
+                    payload["requestStatus"]["serverId"]
+                        .as_str()
+                        .map(ToOwned::to_owned)
+                }))
             })
-            .unwrap_or_else(|| "GFN-PC".to_owned())
     }
 
     fn fetch_user_info(&self, tokens: &AuthTokens) -> Result<AuthUser, ServiceError> {
@@ -2246,14 +2263,15 @@ fn game_identity(value: &Value) -> Option<String> {
 /// mirroring Electron's fetchLcarsGraphQl). Used for the storefront
 /// marquee hero and the official Main shelves.
 fn fetch_panels_document(
+    requests: &crate::store_requests::StoreRequests,
     client: &Client,
     token: &str,
     variables: Value,
     request_type: &str,
     sha: &str,
     fallback_query: &str,
-    context: &str,
 ) -> Result<Value, ServiceError> {
+    let context = "GFN storefront query";
     crate::requests::check()?;
     let extensions = json!({"persistedQuery":{"sha256Hash":sha}}).to_string();
     let variables_text = variables.to_string();
@@ -2269,11 +2287,10 @@ fn fetch_panels_document(
         reqwest::header::CONTENT_TYPE,
         HeaderValue::from_static("application/graphql"),
     );
-    let response = client
-        .get(url.clone())
-        .headers(headers)
-        .send()
-        .map_err(|error| ServiceError::network(&format!("{context} failed"), error))?;
+    let response = requests.send(
+        client.get(url.clone()).headers(headers),
+        &format!("{context} failed"),
+    )?;
     let payload = if response.status().as_u16() == 400 {
         crate::requests::check()?;
         url.query_pairs_mut().append_pair("query", fallback_query);
@@ -2282,11 +2299,17 @@ fn fetch_panels_document(
             reqwest::header::CONTENT_TYPE,
             HeaderValue::from_static("application/graphql"),
         );
-        client
-            .get(url)
-            .headers(retry_headers)
-            .send()
-            .map_err(|error| ServiceError::network(&format!("{context} failed"), error))?
+        let response = requests.send(
+            client.get(url).headers(retry_headers),
+            &format!("{context} failed"),
+        )?;
+        if !response.status().is_success() {
+            return Err(ServiceError::response(
+                &format!("{context} failed"),
+                response,
+            ));
+        }
+        response
             .json::<Value>()
             .map_err(|error| ServiceError::network(&format!("Invalid {context} response"), error))?
     } else {

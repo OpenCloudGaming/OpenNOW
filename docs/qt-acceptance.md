@@ -46,6 +46,21 @@ collection using **New collection** or the sidebar **+**, add/remove games throu
 folder. Membership and names must survive restart, and deleting a folder must not
 remove games from the library.
 
+## Queue-drop reporting
+
+Run `ctest --test-dir build/opennow-qt -R qml-queue-drops --output-on-failure`
+for the 960- and 1440-pixel stats and session-report workloads. They exercise typed
+video/audio/callback counters, sample-to-duration conversion, invalid inputs,
+same-session reconnects, shutdown deltas, new-session reset, retained exports,
+and the existing drop-metric visibility preference using a mock core transport.
+
+For screenshots, run the built app with `--smoke-test --allow-multiple-instances
+--desktop --route settings-streaming --smoke-queue-drops --reduced-motion
+--screenshot /absolute/path/drops.png`. Add `--smoke-queue-report` to capture the
+completed-session report instead. These values are synthetic test inputs, not a
+live gameplay measurement. Audio packet/block drops remain separate because
+their discarded duration is unknown; the legacy mixed-unit total is not shown.
+
 ## Performance evidence
 
 Run the release package on the agreed baseline iGPU with its native display backend. Close frame

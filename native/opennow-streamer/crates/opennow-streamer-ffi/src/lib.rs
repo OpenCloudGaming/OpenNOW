@@ -495,21 +495,37 @@ fn spawn_dispatcher(
             let mut last_telemetry = std::time::Instant::now();
             while let Ok(value) = receiver.recv() {
                 let kind = value["type"].as_str().unwrap_or("");
-                let periodic = matches!(kind, "telemetry" | "stats" | "log");
-                if !periodic || last_telemetry.elapsed() >= std::time::Duration::from_secs(2) {
+                if should_log_event(kind, &mut last_telemetry, std::time::Instant::now()) {
                     log::log_line(
-                        if kind == "error" { "ERROR" } else { "INFO" },
+                        match (kind, value["level"].as_str()) {
+                            ("error", _) | (_, Some("error")) => "ERROR",
+                            (_, Some("warn")) => "WARN",
+                            (_, Some("debug")) => "DEBUG",
+                            _ => "INFO",
+                        },
                         "native-to-qt",
                         &log::message_summary(&value),
                     );
-                    if periodic {
-                        last_telemetry = std::time::Instant::now();
-                    }
                 }
                 callback.invoke(&value);
             }
         })
         .map_err(|_| OpenNowStreamerStatus::Closed)
+}
+
+fn should_log_event(
+    kind: &str,
+    last_telemetry: &mut std::time::Instant,
+    now: std::time::Instant,
+) -> bool {
+    if !matches!(kind, "telemetry" | "stats") {
+        return true;
+    }
+    if now.duration_since(*last_telemetry) < std::time::Duration::from_secs(10) {
+        return false;
+    }
+    *last_telemetry = now;
+    true
 }
 
 fn spawn_cursor_dispatcher(
@@ -1364,6 +1380,27 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    #[test]
+    fn logging_throttles_only_periodic_snapshots_not_drop_deltas_or_warnings() {
+        let now = Instant::now();
+        let mut last_telemetry = now;
+        for seconds in 0..10 {
+            let current = now + Duration::from_secs(seconds);
+            assert!(!should_log_event("telemetry", &mut last_telemetry, current));
+            assert!(!should_log_event("stats", &mut last_telemetry, current));
+            for kind in ["log", "error", "status"] {
+                assert!(should_log_event(kind, &mut last_telemetry, current));
+            }
+            assert_eq!(last_telemetry, now);
+        }
+        assert!(should_log_event(
+            "telemetry",
+            &mut last_telemetry,
+            now + Duration::from_secs(10)
+        ));
+        assert_eq!(last_telemetry, now + Duration::from_secs(10));
+    }
 
     #[test]
     fn hdr_recorded_frames_preserve_color_space_and_precision() {
