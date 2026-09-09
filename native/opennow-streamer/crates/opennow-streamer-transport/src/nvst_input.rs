@@ -35,7 +35,6 @@ const COMMAND_MOUSE_CURSOR_CAPTURE: u16 = 0x0308;
 const COMMAND_TRACK_REMOTE_CURSOR_IMAGE: u16 = 0x030d;
 const COMMAND_WINDOW_STATE: u16 = 0x0320;
 const COMMAND_SYSTEM_STATE: u16 = 0x0321;
-const COMMAND_HAPTICS_STATE: u16 = 0x0322;
 
 const INPUT_KEY_DOWN: u32 = 3;
 const INPUT_KEY_UP: u32 = 4;
@@ -697,10 +696,10 @@ impl NvstInputCodec {
                 }
                 INPUT_HAPTICS_ENABLED => {
                     require_len(event.bytes, 6, "short haptics packet")?;
-                    encoded.push(NvstEncodedInput {
-                        route: NvstInputRoute::ControlReliable,
-                        bytes: haptics_state(read_u16_be(event.bytes, 4).unwrap_or_default() != 0),
-                    });
+                    encoded.push(haptics_state(
+                        read_u16_be(event.bytes, 4).unwrap_or_default() != 0,
+                        event.timestamp_us,
+                    ));
                 }
                 INPUT_LOCK_KEYS_SYNC => {
                     require_len(event.bytes, 5, "short lock-key sync packet")?;
@@ -940,10 +939,10 @@ fn activation_chain(timestamp_us: u64) -> [Vec<u8>; 8] {
         device_descriptor(timestamp_us, 0),
         mouse_cursor_capture(true),
         remote_cursor_tracking(true),
-        haptics_state(true),
         state_change(COMMAND_WINDOW_STATE, 19, 0),
         state_change(COMMAND_SYSTEM_STATE, 0, 0),
         enable_input(1, true),
+        haptics_state(true, timestamp_us).bytes,
     ]
 }
 
@@ -955,8 +954,11 @@ fn remote_cursor_tracking(enabled: bool) -> Vec<u8> {
     control_command(COMMAND_TRACK_REMOTE_CURSOR_IMAGE, &[u8::from(enabled)])
 }
 
-fn haptics_state(enabled: bool) -> Vec<u8> {
-    control_command(COMMAND_HAPTICS_STATE, &[u8::from(enabled)])
+fn haptics_state(enabled: bool, timestamp_us: u64) -> NvstEncodedInput {
+    remote_input_message(
+        remote_input_packet(INPUT_HAPTICS_ENABLED, &u16::from(enabled).to_le_bytes()),
+        timestamp_us,
+    )
 }
 
 fn control_keepalive(stream_value: u32) -> Vec<u8> {
@@ -1229,10 +1231,15 @@ mod tests {
         );
         assert_eq!(chain[2], hex("0803010001"));
         assert_eq!(chain[3], hex("0d03010001"));
-        assert_eq!(chain[4], hex("2203010001"));
-        assert_eq!(chain[5], hex("20030c00000000001300000000000000"));
-        assert_eq!(chain[6], hex("21030c00000000000000000000000000"));
-        assert_eq!(chain[7], hex("0b020c00000000000100000001000000"));
+        assert_eq!(chain[4], hex("20030c00000000001300000000000000"));
+        assert_eq!(chain[5], hex("21030c00000000000000000000000000"));
+        assert_eq!(chain[6], hex("0b020c00000000000100000001000000"));
+        assert_eq!(
+            chain[7],
+            hex(
+                "06022800000000240e000000000000060d0000000100000000000000000000000000000031bc320100000000"
+            )
+        );
     }
 
     #[test]
@@ -1482,7 +1489,12 @@ mod tests {
         let haptics = codec.encode(&haptics, 0).unwrap();
         assert_eq!(haptics.len(), 1);
         assert_eq!(haptics[0].route, NvstInputRoute::ControlReliable);
-        assert_eq!(haptics[0].bytes, hex("2203010001"));
+        assert_eq!(
+            haptics[0].bytes,
+            hex(
+                "06022800000000240e000000000000060d000000010000000000000000000000000000000b00000000000000"
+            )
+        );
 
         let mut lock_keys = vec![0x23];
         lock_keys.extend_from_slice(&12_u64.to_be_bytes());
@@ -1500,6 +1512,25 @@ mod tests {
                 .any(|bytes| bytes == lock_keys_type)
         );
         assert!(encoded[0].bytes.contains(&0b011));
+    }
+
+    #[test]
+    fn haptics_disable_uses_remote_input_envelope_and_preserves_timestamp() {
+        let mut codec = NvstInputCodec::default();
+        let disabled = hex("0d0000000000");
+        let expected = hex(
+            "06022800000000240e000000000000060d000000000000000000000000000000000000000c00000000000000",
+        );
+        let encoded = codec.encode(&disabled, 12).unwrap();
+        assert_eq!(encoded.len(), 1);
+        assert_eq!(encoded[0].route, NvstInputRoute::ControlReliable);
+        assert_eq!(encoded[0].bytes, expected);
+
+        let mut wrapped = hex("23000000000000000c22");
+        wrapped.extend_from_slice(&disabled);
+        assert_eq!(codec.encode(&wrapped, 999).unwrap(), encoded);
+        assert!(codec.encode(&disabled[..5], 12).is_err());
+        assert!(codec.encode(&wrapped[..wrapped.len() - 1], 999).is_err());
     }
 
     #[test]
