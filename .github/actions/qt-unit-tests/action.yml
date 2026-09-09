@@ -19,13 +19,12 @@ inputs:
 runs:
   using: composite
   steps:
-    - name: Prepare Windows test desktop
+    - name: Prepare Windows test dependencies
       if: runner.os == 'Windows'
       shell: pwsh
       run: |
         .github/scripts/map-windows-workspace.ps1
         .github/scripts/ensure-windows-media-foundation.ps1
-        .github/scripts/ensure-windows-test-desktop.ps1
     - name: Setup Windows build tools
       if: runner.os == 'Windows'
       uses: ilammy/msvc-dev-cmd@v1
@@ -69,8 +68,9 @@ runs:
           mesa-vulkan-drivers nasm ninja-build pkg-config wayland-protocols xvfb
     - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
       with:
-        key: qt-checks-${{ inputs.label }}
+        shared-key: qt-checks-${{ inputs.label }}
         cache-bin: false
+        cache-on-failure: true
         workspaces: |
           native/opennow-core -> target
           native/opennow-streamer -> target

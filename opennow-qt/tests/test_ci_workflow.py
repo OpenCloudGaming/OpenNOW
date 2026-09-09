@@ -82,7 +82,8 @@ class CIWorkflowTest(unittest.TestCase):
         self.assertIn("cargo test --locked", checks)
         self.assertIn("--workspace --all-targets -- -D warnings", checks)
         self.assertIn('"$QT_ROOT_DIR/bin/qmlformat"', checks)
-        self.assertIn("ensure-windows-test-desktop.ps1", checks)
+        self.assertNotIn("ensure-windows-test-desktop.ps1", checks)
+        self.assertIn("ensure-windows-media-foundation.ps1", checks)
         cmake = (ROOT / "opennow-qt/cmake/Tests.cmake").read_text()
         targets = re.search(r"set\(OPENNOW_CI_UNIT_TEST_TARGETS\s+(.*?)\)", cmake, re.DOTALL)[1].split()
         self.assertEqual(len(targets), 17)
@@ -92,7 +93,20 @@ class CIWorkflowTest(unittest.TestCase):
             self.assertNotIn(forbidden, targets)
         self.assertIn("add_custom_target(opennow-ci-unit-tests DEPENDS ${OPENNOW_CI_UNIT_TEST_TARGETS})", cmake)
         self.assertIn('set_tests_properties(${OPENNOW_CI_UNIT_TEST_TARGETS} PROPERTIES LABELS "ci-unit")', cmake)
-        self.assertIn('ENVIRONMENT "QT_QPA_PLATFORM=cocoa" RUN_SERIAL TRUE TIMEOUT 30 LABELS "ci-unit"', cmake)
+        self.assertIn('ENVIRONMENT "QT_QPA_PLATFORM=cocoa" RUN_SERIAL TRUE TIMEOUT 30 LABELS "interactive-desktop"', cmake)
+
+    def test_interactive_tests_remain_registered_outside_headless_ci(self):
+        cmake = (ROOT / "opennow-qt/cmake/Tests.cmake").read_text()
+        self.assertIn("list(REMOVE_ITEM OPENNOW_CI_UNIT_TEST_TARGETS opennow-hdrcolor-tests)", cmake)
+        self.assertIn('set_tests_properties(opennow-hdrcolor-tests PROPERTIES LABELS "interactive-desktop")', cmake)
+        self.assertIn("add_custom_target(opennow-interactive-tests DEPENDS opennow-hdrcolor-tests)", cmake)
+        self.assertIn("add_custom_target(opennow-interactive-tests DEPENDS opennow-macpointer-tests)", cmake)
+        self.assertIn("add_test(NAME opennow-hdrcolor-tests", cmake)
+        self.assertIn("add_test(NAME opennow-macpointer-native-tests", cmake)
+        runtime_consumers = cmake.split("foreach(test_target IN ITEMS", 1)[1]
+        self.assertIn("opennow-hdrcolor-tests", runtime_consumers)
+        packages = (WORKFLOWS / "qt-build.yml").read_text()
+        self.assertEqual(packages.count("--no-tests=error -LE interactive-desktop"), 2)
 
     def test_general_purpose_runners_are_blacksmith(self):
         for workflow in WORKFLOWS.glob("*.yml"):
@@ -103,6 +117,15 @@ class CIWorkflowTest(unittest.TestCase):
                         runner.startswith(("blacksmith-", "${{"))
                         or runner == "[self-hosted, opennow-release-signer]",
                     )
+
+    def test_rust_caches_survive_job_renames_and_later_test_failures(self):
+        for path in (ROOT / ".github/actions/qt-unit-tests/action.yml", WORKFLOWS / "qt-build.yml"):
+            with self.subTest(path=path):
+                cache = path.read_text().split("uses: Swatinem/rust-cache@", 1)[1].split("\n      -", 1)[0]
+                self.assertIn("shared-key:", cache)
+                self.assertIn("cache-on-failure: true", cache)
+                self.assertIn("native/opennow-core -> target", cache)
+                self.assertIn("native/opennow-streamer -> target", cache)
 
     def test_publishing_remains_explicitly_opt_in_after_build(self):
         ci = (WORKFLOWS / "qt-ci.yml").read_text()

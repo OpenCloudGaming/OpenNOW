@@ -10,12 +10,17 @@ and is the start of the shell-neutral application core. See
 Pull requests and pushes to `dev` or `main` run workflow lint, packaging-contract
 tests and localization validation, followed by a native test matrix for Linux x64,
 Windows x64, and macOS ARM64. Each platform must pass Rust format/lint/tests, QML
-syntax checks, and the `ci-unit` Qt tests. The Qt check compiles only the
+syntax checks, and the headless-compatible `ci-unit` Qt tests. The Qt check compiles only the
 `opennow-ci-unit-tests` target, not the application or the release streamer with
 bundled FFmpeg. Rust test binaries and the SDL3 test dependency still need compiling;
 Rust, Qt, and SDL caches reduce repeated work.
 General-purpose check and package jobs use Blacksmith runners. The isolated
 release-signing job remains on `opennow-release-signer`.
+
+The upstream Rust cache action automatically uses Blacksmith's colocated cache.
+Platform-specific shared keys survive job renames, and dependency caches are saved
+even if a later test fails. Check and release-build caches remain separate; each
+still invalidates when the Rust toolchain or dependency configuration changes.
 
 Full application builds, embedded-runtime/QML acceptance tests, Linux/Windows ARM64
 builds, and package creation run only on manual dispatch. Automatic checks do not
@@ -32,6 +37,23 @@ To run the test-only Qt suite locally after configuring a Debug build:
 ```sh
 cmake --build build/opennow-qt --target opennow-ci-unit-tests --parallel 4
 ctest --test-dir build/opennow-qt --output-on-failure --no-tests=error -L ci-unit --parallel 4
+```
+
+Windows CI runs 16 Qt targets; Linux and macOS run 17. The Windows HDR/native-window
+test and macOS native cursor-capture test require an interactive desktop, so they
+remain registered under `interactive-desktop` instead of `ci-unit`. Blacksmith
+package jobs also exclude this label. No test assertions are disabled or relaxed.
+
+Run the separate suite from an interactive Windows or macOS session after configuring
+the Debug build. On Windows, first verify the desktop with the existing preflight:
+
+```powershell
+.github/scripts/ensure-windows-test-desktop.ps1
+```
+
+```sh
+cmake --build build/opennow-qt --target opennow-interactive-tests --config Debug --parallel 4
+ctest --test-dir build/opennow-qt -C Debug --output-on-failure --no-tests=error -L interactive-desktop
 ```
 
 ### Manual artifact-only builds

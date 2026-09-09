@@ -268,9 +268,9 @@ jobs:
       - name: Cache Rust dependencies and build artifacts
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
-          key: ${{ runner.os == 'macOS' && 'qt-ci-macos-arm64' || format('qt-ci-{0}-{1}', matrix.os, matrix.label) }}
+          shared-key: ${{ runner.os == 'macOS' && 'qt-ci-macos-arm64' || format('qt-ci-{0}-{1}', matrix.os, matrix.label) }}
           cache-bin: false
-          cache-on-failure: ${{ runner.os == 'macOS' }}
+          cache-on-failure: true
           workspaces: |
             native/opennow-core -> target
             native/opennow-streamer -> target
@@ -331,7 +331,7 @@ jobs:
         id: qt-tests
         if: runner.os == 'Linux'
         shell: bash
-        run: ctest --test-dir build/opennow-qt-release -C Release --output-on-failure --parallel 4
+        run: ctest --test-dir build/opennow-qt-release -C Release --output-on-failure --parallel 4 --no-tests=error -LE interactive-desktop
 
       - name: Create unsigned package
         if: runner.os != 'macOS'
@@ -447,7 +447,7 @@ jobs:
         if: runner.os == 'macOS'
         shell: bash
         run: |
-          ctest --test-dir build/opennow-qt-release --output-on-failure --parallel 2 \
+          ctest --test-dir build/opennow-qt-release --output-on-failure --parallel 2 --no-tests=error -LE interactive-desktop \
             -R '^opennow-.*-tests$|^opennow-acceptance-verifier-help$|^qml-(desktop-route-(home|settings|stream)|fullscreen-.*stats-shortcut|desktop-stream-.*|streamer-event-contract)$'
       - name: Package unsigned macOS validation bundle
         if: runner.os == 'macOS'

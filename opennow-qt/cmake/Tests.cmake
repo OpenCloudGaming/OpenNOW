@@ -355,7 +355,7 @@ if(BUILD_TESTING)
         add_test(NAME opennow-macpointer-native-tests
             COMMAND opennow-macpointer-tests nativeCocoaCaptureRestoresCursor -o -,txt)
         set_tests_properties(opennow-macpointer-native-tests PROPERTIES
-            ENVIRONMENT "QT_QPA_PLATFORM=cocoa" RUN_SERIAL TRUE TIMEOUT 30 LABELS "ci-unit")
+            ENVIRONMENT "QT_QPA_PLATFORM=cocoa" RUN_SERIAL TRUE TIMEOUT 30 LABELS "interactive-desktop")
     endif()
 
     qt_add_executable(opennow-nativestreamruntime-tests
@@ -499,6 +499,13 @@ if(BUILD_TESTING)
         opennow-controllersources-tests
         opennow-controllermetadata-tests
     )
+    if(WIN32)
+        list(REMOVE_ITEM OPENNOW_CI_UNIT_TEST_TARGETS opennow-hdrcolor-tests)
+        set_tests_properties(opennow-hdrcolor-tests PROPERTIES LABELS "interactive-desktop")
+        add_custom_target(opennow-interactive-tests DEPENDS opennow-hdrcolor-tests)
+    elseif(APPLE)
+        add_custom_target(opennow-interactive-tests DEPENDS opennow-macpointer-tests)
+    endif()
     add_custom_target(opennow-ci-unit-tests DEPENDS ${OPENNOW_CI_UNIT_TEST_TARGETS})
     set_tests_properties(${OPENNOW_CI_UNIT_TEST_TARGETS} PROPERTIES LABELS "ci-unit")
 
@@ -552,6 +559,7 @@ if(BUILD_TESTING)
             add_dependencies(opennow-qt-test-runtime opennow-msvc-runtime)
         endif()
         foreach(test_target IN ITEMS
+                opennow-hdrcolor-tests
                 opennow-localization-tests
                 opennow-qt-tests
                 opennow-coreclient-tests
