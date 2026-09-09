@@ -21,21 +21,12 @@ permissions:
 
 jobs:
   metadata:
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
-      - name: Test release metadata and artifact inventory
-        run: |
-          python3 -m unittest discover -s opennow-qt/tests -p test_release_metadata.py
-          python3 -m unittest discover -s opennow-qt/tests -p test_nightly_release.py
-          python3 -m unittest discover -s opennow-qt/tests -p test_supporter_build.py
-          python3 -m unittest discover -s opennow-qt/tests -p test_macos_build.py
-          python3 -m unittest discover -s opennow-qt/tests -p test_ffmpeg_build.py
-          python3 -m unittest discover -s opennow-qt/tests -p test_windows_test_bundle.py
-          python3 -m unittest discover -s opennow-qt/tests -p test_ci_build_cache.py
-          python3 -m unittest discover -s opennow-qt/tests -p test_ci_release_trust.py
       - name: Record immutable build identity
         id: version
         shell: bash
@@ -48,18 +39,8 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
           [[ "$(git rev-parse HEAD)" == "$GITHUB_SHA" ]]
 
-  localization:
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-      - run: npm run locales:check
-      - run: node --test scripts/check-translations.test.mjs
-
-  validate:
-    name: ${{ matrix.label }}
+  packages:
+    name: Package ${{ matrix.label }}
     needs: metadata
     runs-on: ${{ matrix.os }}
     strategy:
@@ -98,13 +79,25 @@ jobs:
             package-generator: ZIP
             rust-target: aarch64-pc-windows-msvc
             cmake-arch: ARM64
+          - label: windows-x64
+            os: blacksmith-8vcpu-windows-2025
+            build-parallel: 8
+            qt-host: windows
+            qt-arch: win64_msvc2022_64
+            package-generator: ZIP
+            rust-target: ""
+            cmake-arch: ""
+            linuxdeploy-arch: ""
+            linuxdeploy-sha256: ""
+            qt-plugin-sha256: ""
+            appimage-runtime-sha256: ""
 
-    env: &native-build-env
+    env:
       CARGO_TERM_COLOR: always
       SDL_VERSION: release-3.2.20
       OPENNOW_BUILD_VERSION: ${{ needs.metadata.outputs.version }}
 
-    steps: &native-build-steps
+    steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
@@ -129,11 +122,6 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: opennow-qt/tests/test_windows_release.ps1
-
-      - name: Test Linux package capability checks
-        if: runner.os == 'Linux'
-        shell: bash
-        run: python3 -m unittest discover -s opennow-qt/tests -p test_linux_package.py
 
       - name: Add package Rust target
         if: matrix.rust-target != ''
@@ -291,50 +279,6 @@ jobs:
           target-arch: ${{ endsWith(matrix.label, 'arm64') && 'arm64' || 'x64' }}
           parallel: ${{ matrix.build-parallel }}
 
-      - name: Rust format and lint
-        if: runner.os == 'Linux'
-        shell: bash
-        run: |
-          cargo fmt --manifest-path native/opennow-core/Cargo.toml -- --check
-          cargo clippy --manifest-path native/opennow-core/Cargo.toml --all-targets -- -D warnings
-          cargo fmt --manifest-path native/opennow-streamer/Cargo.toml --all -- --check
-          cargo clippy --manifest-path native/opennow-streamer/Cargo.toml --workspace --all-targets -- -D warnings
-
-      - name: Lint GitHub workflows
-        if: runner.os == 'Linux'
-        shell: bash
-        run: |
-          case "$(uname -m)" in
-            x86_64)
-              actionlint_arch=amd64
-              actionlint_sha256=8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
-              ;;
-            aarch64)
-              actionlint_arch=arm64
-              actionlint_sha256=325e971b6ba9bfa504672e29be93c24981eeb1c07576d730e9f7c8805afff0c6
-              ;;
-            *)
-              echo "Unsupported actionlint architecture: $(uname -m)" >&2
-              exit 1
-              ;;
-          esac
-          curl --fail --location --retry 3 \
-            "https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_${actionlint_arch}.tar.gz" \
-            --output "$RUNNER_TEMP/actionlint.tar.gz"
-          echo "$actionlint_sha256  $RUNNER_TEMP/actionlint.tar.gz" \
-            | sha256sum --check --strict
-          tar -xzf "$RUNNER_TEMP/actionlint.tar.gz" -C "$RUNNER_TEMP" actionlint
-          "$RUNNER_TEMP/actionlint" -color=false \
-            .github/workflows/qt-ci.yml .github/workflows/qt-build.yml \
-            .github/workflows/qt-release-candidate.yml
-
-      - name: Rust tests
-        if: runner.os == 'Linux'
-        shell: bash
-        run: |
-          cargo test --manifest-path native/opennow-core/Cargo.toml
-          cargo test --manifest-path native/opennow-streamer/Cargo.toml --workspace
-
       - name: Windows decoder regression tests
         if: matrix.label == 'windows-x64'
         shell: bash
@@ -376,7 +320,7 @@ jobs:
         shell: bash
         run: ctest --test-dir build/opennow-qt-release -C Release --output-on-failure --parallel 4
 
-      - name: Create unsigned validation package
+      - name: Create unsigned package
         shell: bash
         env:
           PACKAGE_GENERATOR: ${{ matrix.package-generator }}
@@ -451,7 +395,7 @@ jobs:
             "${appimages[0]}" \
             --smoke-test --allow-multiple-instances --route home --reduced-motion
 
-      - name: Upload unsigned validation package
+      - name: Upload unsigned package
         uses: actions/upload-artifact@v4
         with:
           name: opennow-qt-${{ matrix.label }}-unsigned
@@ -464,30 +408,8 @@ jobs:
           retention-days: 14
           compression-level: 0
 
-  windows-build:
-    name: windows-x64
-    needs: metadata
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        include:
-          - label: windows-x64
-            os: blacksmith-8vcpu-windows-2025
-            build-parallel: 8
-            qt-host: windows
-            qt-arch: win64_msvc2022_64
-            package-generator: ZIP
-            rust-target: ""
-            cmake-arch: ""
-            linuxdeploy-arch: ""
-            linuxdeploy-sha256: ""
-            qt-plugin-sha256: ""
-            appimage-runtime-sha256: ""
-    env: *native-build-env
-    steps: *native-build-steps
-
-  macos-validate:
-    name: macos-arm64
+  macos-package:
+    name: Package macos-arm64
     needs: metadata
     runs-on: macos-15
     timeout-minutes: 60
@@ -651,7 +573,7 @@ jobs:
 
   artifact-inventory:
     name: Verify complete unsigned artifact set
-    needs: [metadata, localization, validate, windows-build]
+    needs: [metadata, packages]
     runs-on: ubuntu-24.04
     env:
       RELEASE_VERSION: ${{ needs.metadata.outputs.version }}

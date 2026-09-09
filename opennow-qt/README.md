@@ -5,7 +5,30 @@ or newer and uses SDL3 for controller input. A bundled Rust process owns setting
 and is the start of the shell-neutral application core. See
 `docs/qt-migration.md` for the migration history and remaining release checklist.
 
-## Manual artifact-only builds
+## CI checks and manual builds
+
+Pull requests and pushes to `dev` or `main` run workflow lint, packaging-contract
+tests, localization validation, Rust format/lint/tests, QML syntax checks, and the
+`ci-unit` Qt tests on Linux x64. The Qt check compiles only the
+`opennow-ci-unit-tests` target, not the application or the release streamer with
+bundled FFmpeg. Rust test binaries and the SDL3 test dependency still need compiling;
+Rust, Qt, and SDL caches reduce repeated work.
+
+Full application builds, embedded-runtime/QML acceptance tests, Windows/macOS/ARM64
+platform validation, and package creation run only on manual dispatch. Automatic
+checks do not prove those platform-specific or full-application paths work; run a
+manual build before shipping changes that touch them. Windows and Linux packages
+share one four-platform matrix; macOS has a separate package job because its app
+bundle, relocation, and native test commands differ.
+
+To run the test-only Qt suite locally after configuring a Debug build:
+
+```sh
+cmake --build build/opennow-qt --target opennow-ci-unit-tests --parallel 4
+ctest --test-dir build/opennow-qt --output-on-failure --no-tests=error -L ci-unit --parallel 4
+```
+
+### Manual artifact-only builds
 
 In GitHub **Actions → qt-ci → Run workflow**, select `dev` (or the branch or tag
 to build) and leave **Publish an unsigned nightly prerelease after all checks pass**
@@ -171,7 +194,7 @@ so it can load outside the build tree.
 The app explicitly links Qt Svg so macdeployqt includes the SVG image plugin used
 by the QML icons; the relocated-bundle check requires that plugin to be present.
 
-The separate `macos-validate` CI job builds and tests the native Apple Silicon
+The manual `macos-package` job builds and tests the native Apple Silicon
 stack, then checks a relocated ZIP with the development dependencies hidden.
 These are unsigned validation artifacts, not notarized releases, and are not
 part of the Linux/Windows nightly inventory. Offscreen tests cover shell and FFI

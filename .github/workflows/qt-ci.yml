@@ -14,6 +14,7 @@ on:
     paths:
       - ".github/workflows/qt-ci.yml"
       - ".github/workflows/qt-build.yml"
+      - ".github/workflows/qt-checks.yml"
       - ".github/workflows/qt-release-candidate.yml"
       - ".github/actionlint.yaml"
       - ".github/actions/**"
@@ -31,6 +32,7 @@ on:
     paths:
       - ".github/workflows/qt-ci.yml"
       - ".github/workflows/qt-build.yml"
+      - ".github/workflows/qt-checks.yml"
       - ".github/workflows/qt-release-candidate.yml"
       - ".github/actionlint.yaml"
       - ".github/actions/**"
@@ -50,7 +52,14 @@ permissions:
   contents: read
 
 jobs:
+  checks:
+    name: Checks and tests
+    uses: ./.github/workflows/qt-checks.yml
+
   build:
+    name: Manual packages
+    if: github.event_name == 'workflow_dispatch'
+    needs: checks
     uses: ./.github/workflows/qt-build.yml
     with:
       upload_complete: ${{ github.event_name == 'workflow_dispatch' }}

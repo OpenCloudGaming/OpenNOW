@@ -480,6 +480,28 @@ if(BUILD_TESTING)
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
         TIMEOUT 30
     )
+    set(OPENNOW_CI_UNIT_TEST_TARGETS
+        opennow-hdrcolor-tests
+        opennow-theme-tests
+        opennow-framepacer-tests
+        opennow-frameinterpolator-tests
+        opennow-streamcolor-tests
+        opennow-localization-tests
+        opennow-qt-tests
+        opennow-coreclient-tests
+        opennow-waylandpointer-tests
+        opennow-macpointer-tests
+        opennow-embedded-orchestration-tests
+        opennow-singleinstance-tests
+        opennow-thumbnail-tests
+        opennow-controllerinput-tests
+        opennow-controllertuning-tests
+        opennow-controllersources-tests
+        opennow-controllermetadata-tests
+    )
+    add_custom_target(opennow-ci-unit-tests DEPENDS ${OPENNOW_CI_UNIT_TEST_TARGETS})
+    set_tests_properties(${OPENNOW_CI_UNIT_TEST_TARGETS} PROPERTIES LABELS "ci-unit")
+
     if(WIN32)
         add_dependencies(opennow-nativeframegeneration-tests opennow-streamer-ffi-test-runtime)
         # Qt's executable helper defaults to the GUI subsystem on Windows. Keep
