@@ -142,6 +142,42 @@ class NativeStreamRuntimeTest final : public QObject
     Q_OBJECT
 
 private slots:
+    void metalUpscalingPreservesDecodedSourceGeometry()
+    {
+        auto api = fakeApi();
+        api.acquireLatestFrame = &fakeAcquireLatestFrame;
+        api.releaseFrame = &fakeReleaseFrame;
+        api.recordFrame = [](const OpenNowStreamer *, const OpenNowStreamerFrame *,
+                               const OpenNowStreamerRecordCommand *command,
+                               OpenNowStreamerRecordedFrame *recorded) {
+            if (command->version != OPENNOW_STREAMER_RENDER_COMMAND_VERSION
+                || command->upscale_width != 2560 || command->upscale_height != 1440)
+                return OPENNOW_STREAMER_INVALID_CONFIG;
+            *recorded = {1, 0, OPENNOW_STREAMER_GRAPHICS_API_METAL,
+                         OPENNOW_STREAMER_TEXTURE_FORMAT_RGBA8, OPENNOW_STREAMER_COLOR_SPACE_SDR709,
+                         2560, 1440, command->frame_slot, 1, 123456789};
+            return OPENNOW_STREAMER_OK;
+        };
+        NativeStreamRuntime runtime(api);
+        QVERIFY(runtime.start());
+        OpenNowStreamerRecordCommand command{};
+        command.version = OPENNOW_STREAMER_RENDER_COMMAND_VERSION;
+        command.struct_size = sizeof(command);
+        command.upscale_width = 2560;
+        command.upscale_height = 1440;
+        OpenNowStreamerFrameInfo info{};
+        OpenNowStreamerRecordedFrame recorded{};
+        OpenNowStreamerFrame *frame = nullptr;
+        QCOMPARE(runtime.recordLatestFrame(command, &info, &recorded, &frame), OPENNOW_STREAMER_OK);
+        const auto release = qScopeGuard([&] { runtime.releaseFrame(frame); });
+        QCOMPARE(info.width, 1920U);
+        QCOMPARE(info.height, 1080U);
+        QCOMPARE(info.sequence, 1U);
+        QCOMPARE(info.presentation_time_ns, recorded.presentation_time_ns);
+        QCOMPARE(recorded.width, 2560U);
+        QCOMPARE(recorded.height, 1440U);
+    }
+
     void recordedFrameMetadataReplacesProvisionalNotificationMetadata()
     {
         static std::uint64_t sequence;

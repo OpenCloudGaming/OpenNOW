@@ -57,6 +57,12 @@ public:
         ++prepareCount;
     }
 
+    void setUpscalingTarget(const QSize &target) override
+    {
+        upscaleWidth.store(target.width());
+        upscaleHeight.store(target.height());
+    }
+
     void finishFrame() override
     {
         ++finishCount;
@@ -75,6 +81,8 @@ public:
     std::atomic_int releaseCount = 0;
     std::atomic_int viewportWidth = 0;
     std::atomic_int viewportHeight = 0;
+    std::atomic_int upscaleWidth = 0;
+    std::atomic_int upscaleHeight = 0;
 };
 
 // Exercise the production import/material with a GPU texture, without a remote
@@ -420,7 +428,34 @@ private slots:
                                         promoted, promoted));
         QVERIFY(!hasDmabufImportContract(QVersionNumber(1, 1), VK_API_VERSION_1_2,
                                          promoted, promoted));
-        QVERIFY(!dmabufImportEnabled(nullptr, VK_NULL_HANDLE));
+        QCOMPARE(enabledImportCapabilities(nullptr, VK_NULL_HANDLE), uint32_t(0));
+#else
+        QSKIP("Linux Vulkan capability contract");
+#endif
+    }
+
+    void linuxSandRequiresExplicitForeignBufferImportSupport()
+    {
+#if defined(Q_OS_LINUX) && QT_CONFIG(vulkan) && __has_include(<vulkan/vulkan.h>)
+        using namespace LinuxVulkanGraphics;
+        const QByteArrayList required = {"VK_KHR_external_memory_fd", "VK_EXT_external_memory_dma_buf",
+                                        "VK_EXT_queue_family_foreign"};
+        QVERIFY(hasDmabufBufferImportContract(QVersionNumber(1, 1), VK_API_VERSION_1_1,
+                                              required, required));
+        QVERIFY(!hasDmabufImportContract(QVersionNumber(1, 1), VK_API_VERSION_1_1,
+                                         required, required));
+        for (const auto &extension : required) {
+            auto missing = required;
+            missing.removeAll(extension);
+            QVERIFY(!hasDmabufBufferImportContract(QVersionNumber(1, 1), VK_API_VERSION_1_1,
+                                                   missing, required));
+            QVERIFY(!hasDmabufBufferImportContract(QVersionNumber(1, 1), VK_API_VERSION_1_1,
+                                                   required, missing));
+        }
+        QVERIFY(!hasDmabufBufferImportContract(QVersionNumber(1, 0), VK_API_VERSION_1_1,
+                                               required, required));
+        QVERIFY(!hasDmabufBufferImportContract(QVersionNumber(1, 1), VK_API_VERSION_1_0,
+                                               required, required));
 #else
         QSKIP("Linux Vulkan capability contract");
 #endif
@@ -883,6 +918,32 @@ private slots:
         QCOMPARE(item.metaObject()->indexOfProperty("colorBufferFormat"), -1);
     }
 
+    void metalFxUpscalingIsMacOnlyAndDoesNotReplaceThePresenter()
+    {
+        StreamVideoItem item;
+        const auto callback = std::make_shared<TestRenderCallback>();
+        item.setRenderCallback(callback);
+        item.setVideoSize(QSize(1920, 1080));
+        QSignalSpy changes(&item, &StreamVideoItem::metalFxUpscalingChanged);
+        QVERIFY(!item.metalFxUpscaling());
+        item.setMetalFxUpscaling(true);
+#if defined(Q_OS_MACOS)
+        QVERIFY(item.metalFxUpscaling());
+        QCOMPARE(changes.size(), 1);
+        item.setMetalFxUpscaling(true);
+        QCOMPARE(changes.size(), 1);
+        item.setMetalFxUpscaling(false);
+        QVERIFY(!item.metalFxUpscaling());
+        QCOMPARE(changes.size(), 2);
+#else
+        QVERIFY(!item.metalFxUpscaling());
+        QCOMPARE(changes.size(), 0);
+#endif
+        QCOMPARE(item.renderCallback(), callback);
+        QCOMPARE(item.videoSize(), QSize(1920, 1080));
+        QVERIFY(!item.frameGeneration());
+    }
+
     void frameGenerationIsOptInAndDoesNotReplaceThePresenter()
     {
         StreamVideoItem item;
@@ -947,6 +1008,47 @@ private slots:
             QVERIFY(item.renderCallbackAvailable());
         }
         StreamVideoItem::setNativeStreamRuntime(nullptr);
+    }
+
+    void upscalingTargetTracksViewportAcrossOverlaysAndWindowChanges()
+    {
+        if (QGuiApplication::platformName() == QStringLiteral("offscreen"))
+            QSKIP("The offscreen platform plugin does not create a QRhi.");
+        const auto callback = std::make_shared<TestRenderCallback>();
+        QQuickWindow window;
+        window.resize(640, 480);
+        auto *item = new StreamVideoItem(window.contentItem());
+        item->setVideoSize(QSize(320, 180));
+        item->m_metalFxUpscaling = true;
+        item->setRenderCallback(callback);
+        QQuickItem overlay(window.contentItem());
+        overlay.setZ(10);
+        for (const bool fullscreen : {false, true, false}) {
+            if (fullscreen) window.showFullScreen();
+            else {
+                window.showNormal();
+                window.resize(800, 600);
+            }
+            QTest::qWait(100);
+            item->setSize(window.size());
+            overlay.setSize(window.size());
+            for (const bool visible : {false, true}) {
+                overlay.setVisible(visible);
+                const int frames = callback->frameCount.load();
+                item->requestFrame();
+                QTRY_VERIFY_WITH_TIMEOUT(callback->frameCount.load() > frames, 5'000);
+                const auto viewport = StreamVideoItem::aspectFitRect(item->videoSize(), window.size());
+                const auto target = (QSizeF(viewport.size()) * window.effectiveDevicePixelRatio()).toSize();
+                QCOMPARE(callback->upscaleWidth.load(), target.width());
+                QCOMPARE(callback->upscaleHeight.load(), target.height());
+                QCOMPARE(item->renderCallback(), callback);
+                QCOMPARE(item->videoSize(), QSize(320, 180));
+            }
+        }
+        item->setMetalFxUpscaling(false);
+        item->requestFrame();
+        QTRY_COMPARE(callback->upscaleWidth.load(), -1);
+        QTRY_COMPARE(callback->upscaleHeight.load(), -1);
     }
 
     void drivesCallbackThroughRhiSceneGraph()

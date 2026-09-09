@@ -36,6 +36,7 @@ mod format;
 mod lifecycle;
 mod queue;
 mod ring;
+mod spatial;
 
 #[cfg(target_os = "macos")]
 mod macos;

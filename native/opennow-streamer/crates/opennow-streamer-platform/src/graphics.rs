@@ -34,6 +34,7 @@ pub struct GraphicsContext {
     pub queue: usize,
     pub queue_family_index: u32,
     pub vulkan_dmabuf_import_enabled: bool,
+    pub vulkan_dmabuf_buffer_import_enabled: bool,
 }
 
 impl GraphicsContext {
@@ -56,6 +57,8 @@ impl GraphicsContext {
 pub struct GraphicsRecordCommand {
     pub command_buffer: usize,
     pub frame_slot: u32,
+    pub upscale_width: u32,
+    pub upscale_height: u32,
 }
 
 impl GraphicsRecordCommand {
@@ -63,6 +66,14 @@ impl GraphicsRecordCommand {
         if self.command_buffer == 0 {
             return Err(GraphicsRuntimeError::InvalidRenderCommand(
                 "the command buffer must be non-null",
+            ));
+        }
+        if (self.upscale_width == 0) != (self.upscale_height == 0)
+            || self.upscale_width > 16384
+            || self.upscale_height > 16384
+        {
+            return Err(GraphicsRuntimeError::InvalidRenderCommand(
+                "upscale dimensions must both be zero or between 1 and 16384",
             ));
         }
         Ok(self)
@@ -165,6 +176,7 @@ impl GraphicsFrame for opennow_streamer_platform_linux::LinuxGpuFrame {
                     queue: context.queue,
                     queue_family: context.queue_family_index,
                     dmabuf_import_enabled: context.vulkan_dmabuf_import_enabled,
+                    dmabuf_buffer_import_enabled: context.vulkan_dmabuf_buffer_import_enabled,
                 },
                 command.command_buffer,
                 command.frame_slot,
@@ -236,6 +248,8 @@ impl GraphicsFrame for opennow_streamer_platform_macos::MetalFrame {
                 opennow_streamer_platform_macos::AdoptedMetalContext {
                     device: context.device as *mut std::ffi::c_void,
                     command_buffer: command.command_buffer as *mut std::ffi::c_void,
+                    upscale_width: command.upscale_width,
+                    upscale_height: command.upscale_height,
                 },
                 command.frame_slot,
             )
@@ -734,6 +748,7 @@ mod tests {
             queue: 4,
             queue_family_index: 5,
             vulkan_dmabuf_import_enabled: false,
+            vulkan_dmabuf_buffer_import_enabled: false,
         }
     }
 
@@ -741,6 +756,28 @@ mod tests {
         GraphicsRecordCommand {
             command_buffer: 6,
             frame_slot: 7,
+            upscale_width: 0,
+            upscale_height: 0,
+        }
+    }
+
+    #[test]
+    fn upscale_target_is_optional_and_bounded() {
+        for (width, height, valid) in [
+            (0, 0, true),
+            (2560, 1440, true),
+            (16384, 16384, true),
+            (0, 1440, false),
+            (2560, 0, false),
+            (16385, 1440, false),
+            (2560, u32::MAX, false),
+        ] {
+            let request = GraphicsRecordCommand {
+                upscale_width: width,
+                upscale_height: height,
+                ..command()
+            };
+            assert_eq!(request.validate().is_ok(), valid, "{width}x{height}");
         }
     }
 

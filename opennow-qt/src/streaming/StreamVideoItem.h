@@ -36,6 +36,8 @@ class StreamVideoItem : public QQuickItem
                    NOTIFY shortcutBindingsChanged)
     Q_PROPERTY(bool frameGeneration READ frameGeneration WRITE setFrameGeneration
                    NOTIFY frameGenerationChanged)
+    Q_PROPERTY(bool metalFxUpscaling READ metalFxUpscaling WRITE setMetalFxUpscaling
+                   NOTIFY metalFxUpscalingChanged)
     Q_PROPERTY(QVariantMap frameGenerationStats READ frameGenerationStats
                    NOTIFY frameGenerationStatsChanged)
 
@@ -67,6 +69,8 @@ public:
     void setRenderCallback(std::shared_ptr<StreamVideoRenderCallback> callback);
     bool frameGeneration() const;
     void setFrameGeneration(bool enabled);
+    bool metalFxUpscaling() const;
+    void setMetalFxUpscaling(bool enabled);
     QVariantMap frameGenerationStats() const;
 
     static void setNativeStreamRuntime(NativeStreamRuntime *runtime);
@@ -103,6 +107,7 @@ signals:
     void relativeMouseChanged();
     void shortcutBindingsChanged();
     void frameGenerationChanged();
+    void metalFxUpscalingChanged();
     void frameGenerationStatsChanged();
     void localShortcutRequested(const QString &action);
 
@@ -158,6 +163,7 @@ private:
     bool m_usesMacPointerCapture = false;
     bool m_inputEnabled = true;
     bool m_frameGeneration = false;
+    bool m_metalFxUpscaling = false;
     QTimer m_frameStatsTimer;
     QMetaObject::Connection m_frameSwapConnection;
     QMetaObject::Connection m_frameUpdateConnection;

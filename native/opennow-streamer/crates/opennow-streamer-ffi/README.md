@@ -13,7 +13,24 @@ This crate exposes `opennow-streamer-core::Engine` as a C-compatible in-process 
 - `opennow_streamer_destroy` consumes the handle exactly once, waits for the engine and both callback queues to drain, and then returns. No call may race with destroy. A null handle is rejected; reusing a destroyed pointer is caller-side undefined behavior.
 - Every exported function catches Rust panics before they can unwind through the C ABI. A worker-thread panic closes the command queue.
 
-### HDR texture metadata (ABI 6)
+### Optional MetalFX spatial upscaling (ABI 7, render command 2)
+
+ABI 7 requires rebuilding the Qt shell and native runtime together. Version 2 of
+`OpenNowStreamerRecordCommand` appends `upscale_width` and `upscale_height`.
+Set both to zero for normal scaling. On Metal, nonzero values request spatial
+MetalFX at the video viewport's physical pixel size, excluding letterboxing.
+Dimensions must both be zero or each be in `1..=16384`. Other graphics backends
+ignore the target. Unsupported MetalFX configurations fall back to the original
+converted texture without stopping the session.
+
+The Mac producer encodes scaling after YUV-to-RGB conversion in the same borrowed
+command buffer. The returned texture dimensions describe the actual output;
+`OpenNowStreamerFrameInfo` still describes the decoded source. Source sequence,
+timestamps, color precision, frame-slot ownership, and scene-graph retirement
+remain unchanged. Qt must refresh the target after resize, fullscreen, or display
+scale changes, and must not infer source video geometry from upscaled textures.
+
+### HDR texture metadata (introduced in ABI 6)
 
 ABI 6 adds `color_space` to `OpenNowStreamerRecordedFrame` and rejects clients compiled for earlier ABI versions. Rebuild the native runtime and Qt shell together. `texture_format` now accepts `RGBA16F` in addition to `RGBA8` and `RGB10A2`.
 
@@ -61,11 +78,20 @@ The graphics API is GPU-only. It exposes no window, swap chain, `QWindow`, CPU i
 
 Replacing the graphics device or session renderer requires explicit shutdown first. Shutdown clears the one-frame mailbox and advances its epoch. Previously acquired tokens stay releasable but become stale and cannot record against the replacement context. Graphics calls are bound to the thread that installed the active context; a new scene graph can bind a different thread after shutdown. Only one session renderer is retained, bounding ownership across repeated session restarts.
 
-### Vulkan enabled capabilities (ABI 4, graphics context 2)
+### Vulkan enabled capabilities (graphics context 3)
 
 Shutdown invalidates the context even if resource retirement returns `OPENNOW_STREAMER_RENDER_FAILED`. A lost Vulkan device can retire normally. If an idle wait fails for another reason, resources whose completion cannot be proven are deliberately abandoned instead of being destroyed by a later worker drop against a dead device; the error is returned to the host.
 
 `enabled_capabilities` is an explicit logical-device contract, not physical-device discovery. Set `OPENNOW_STREAMER_GRAPHICS_CAP_VULKAN_DMABUF_IMPORT` only when the host created the device with external-memory, external-memory-fd, DMA-BUF, and DRM-modifier support enabled, including their prerequisites. Unknown bits and capabilities on non-Vulkan contexts are rejected; a zero mask disables DMA-BUF import while leaving explicitly CPU-backed NV12 presentation available.
+
+Graphics context version 3 adds the independent
+`OPENNOW_STREAMER_GRAPHICS_CAP_VULKAN_DMABUF_BUFFER_IMPORT` capability. Set it only
+for Vulkan 1.1+ instances/devices with external-memory-fd, DMA-BUF, and
+`VK_EXT_queue_family_foreign` enabled on the logical device. The Pi SAND path
+requires this capability, queries external TRANSFER_SRC buffer import support,
+and transfers ownership from/to the foreign decoder around its GPU copy. It does
+not require SAND image-modifier sampling support. Setting the image-import bit
+alone does not enable this path; zero remains a safe default for both bits.
 
 Qt requests the extensions through `QT_VULKAN_DEVICE_EXTENSIONS` before any window/device creation. Qt 6.8's Vulkan backend enables each requested extension that the selected physical device advertises. The host contract checks both that this startup request was installed and that every non-core extension is requested and supported on the selected device, with Vulkan 1.1 or newer on the instance and physical device. Vulkan 1.1 provides the external-memory, bind-memory, memory-requirements, sampler-YCbCr, and maintenance prerequisites; the request also includes their extension names. `VK_KHR_image_format_list` must be enabled unless both instance and physical device provide Vulkan 1.2. Support is not inferred from advertisement alone. This contract applies to Qt-created devices, not arbitrary adopted devices.
 

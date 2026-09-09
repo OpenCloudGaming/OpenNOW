@@ -1,0 +1,58 @@
+name: Build and cache SDL3
+description: Cache the SDL installation by recipe, target, and native toolchain
+inputs:
+  version:
+    description: SDL release tag
+    required: true
+  target-arch:
+    description: Target architecture, x64 or arm64
+    required: true
+  parallel:
+    description: Maximum concurrent build jobs
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Identify SDL toolchain
+      id: toolchain
+      shell: python
+      run: |
+        import hashlib
+        import os
+        import subprocess
+
+        compiler = ["cl"] if os.name == "nt" else ["c++", "--version"]
+        identity = subprocess.run(compiler, stdout=subprocess.PIPE, stderr=subprocess.STDOUT).stdout
+        identity += subprocess.check_output(["cmake", "--version"])
+        identity += os.environ.get("MACOSX_DEPLOYMENT_TARGET", "").encode()
+        with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+            output.write(f"digest={hashlib.sha256(identity).hexdigest()}\n")
+    - name: Cache SDL3 installation
+      id: cache
+      uses: actions/cache@v4
+      with:
+        path: ${{ runner.temp }}/SDL-install
+        key: sdl3-v2-${{ runner.os }}-${{ runner.arch }}-${{ inputs.target-arch }}-${{ inputs.version }}-${{ steps.toolchain.outputs.digest }}-${{ hashFiles('.github/actions/sdl3/action.yml') }}
+    - name: Build SDL3
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        SDL_VERSION: ${{ inputs.version }}
+        SDL_TARGET_ARCH: ${{ inputs.target-arch }}
+        SDL_BUILD_PARALLEL: ${{ inputs.parallel }}
+      run: |
+        args=()
+        if [[ "$RUNNER_OS" == Windows ]]; then
+          args+=(-G "Ninja Multi-Config" -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl)
+          if [[ "$SDL_TARGET_ARCH" == arm64 ]]; then
+            args+=(-DCMAKE_SYSTEM_NAME=Windows -DCMAKE_SYSTEM_PROCESSOR=ARM64)
+          fi
+        elif [[ "$RUNNER_OS" == macOS ]]; then
+          args+=("-DCMAKE_OSX_ARCHITECTURES=$SDL_TARGET_ARCH" "-DCMAKE_OSX_DEPLOYMENT_TARGET=$MACOSX_DEPLOYMENT_TARGET" -DSDL_FRAMEWORK=OFF)
+        fi
+        git clone --depth 1 --branch "$SDL_VERSION" https://github.com/libsdl-org/SDL.git "$RUNNER_TEMP/SDL"
+        cmake -S "$RUNNER_TEMP/SDL" -B "$RUNNER_TEMP/SDL-build" \
+          -DCMAKE_BUILD_TYPE=Release -DSDL_SHARED=ON -DSDL_STATIC=OFF \
+          -DSDL_TEST_LIBRARY=OFF -DSDL_TESTS=OFF "${args[@]}"
+        cmake --build "$RUNNER_TEMP/SDL-build" --config Release --parallel "$SDL_BUILD_PARALLEL"
+        cmake --install "$RUNNER_TEMP/SDL-build" --config Release --prefix "$RUNNER_TEMP/SDL-install"

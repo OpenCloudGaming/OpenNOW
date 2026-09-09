@@ -145,19 +145,60 @@ fn output() -> PathBuf {
     PathBuf::from(env::var("OUT_DIR").unwrap())
 }
 
+const RPI_FFMPEG_REVISION: &str = "f43bd9dafd9349b6824ee1fdcd967662fcc94c20";
+
+fn use_v4l2_request() -> bool {
+    env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux")
+        && env::var("CARGO_CFG_TARGET_ARCH").as_deref() == Ok("aarch64")
+}
+
 fn source() -> PathBuf {
-    output().join(format!("ffmpeg-{}", version()))
+    if use_v4l2_request() {
+        output().join(format!("ffmpeg-rpi-{RPI_FFMPEG_REVISION}"))
+    } else {
+        output().join(format!("ffmpeg-{}", version()))
+    }
 }
 
 fn search() -> PathBuf {
     let mut absolute = env::current_dir().unwrap();
     absolute.push(output());
-    absolute.push("dist");
+    absolute.push(if use_v4l2_request() {
+        format!("dist-rpi-{RPI_FFMPEG_REVISION}")
+    } else {
+        "dist".to_string()
+    });
 
     absolute
 }
 
 fn fetch() -> io::Result<()> {
+    if use_v4l2_request() {
+        let source_dir = source();
+        if source_dir.exists() {
+            fs::remove_dir_all(&source_dir)?;
+        }
+        fs::create_dir_all(&source_dir)?;
+        for args in [
+            vec!["init"],
+            vec![
+                "fetch",
+                "--depth=1",
+                "https://github.com/jc-kynesim/rpi-ffmpeg.git",
+                RPI_FFMPEG_REVISION,
+            ],
+            vec!["checkout", "--detach", RPI_FFMPEG_REVISION],
+        ] {
+            let status = Command::new("git")
+                .current_dir(&source_dir)
+                .args(args)
+                .status()?;
+            if !status.success() {
+                return Err(io::Error::other("pinned Raspberry Pi FFmpeg fetch failed"));
+            }
+        }
+        return Ok(());
+    }
     let output_base_path = output();
     let clone_dest_dir = format!("ffmpeg-{}", version());
     let _ = std::fs::remove_dir_all(output_base_path.join(&clone_dest_dir));
@@ -783,6 +824,15 @@ fn build(sysroot: Option<&str>) -> io::Result<()> {
 
     // other external libraries
     enable!(configure, "BUILD_LIB_DRM", "libdrm");
+    if use_v4l2_request() {
+        configure.args([
+            "--enable-libdrm",
+            "--enable-libudev",
+            "--enable-v4l2-request",
+            "--enable-v4l2-m2m",
+            "--enable-sand",
+        ]);
+    }
     enable!(configure, "BUILD_NVENC", "nvenc");
 
     // configure external protocols
@@ -814,6 +864,27 @@ fn build(sysroot: Option<&str>) -> io::Result<()> {
             "configure failed {}",
             String::from_utf8_lossy(&output.stderr)
         )));
+    }
+
+    if use_v4l2_request() {
+        for (header, required) in [
+            ("config.h", "#define CONFIG_V4L2_REQUEST 1"),
+            ("config.h", "#define CONFIG_V4L2_M2M 1"),
+            ("config.h", "#define CONFIG_SAND 1"),
+            (
+                "config_components.h",
+                "#define CONFIG_HEVC_V4L2REQUEST_HWACCEL 1",
+            ),
+        ] {
+            if !fs::read_to_string(source_dir.join(header))?
+                .lines()
+                .any(|line| line == required)
+            {
+                return Err(io::Error::other(format!(
+                    "Raspberry Pi FFmpeg configuration is missing {required}"
+                )));
+            }
+        }
     }
 
     // run make
@@ -1131,6 +1202,9 @@ fn main() {
 
     let sysroot = find_sysroot();
     let include_paths: Vec<PathBuf> = if env::var("CARGO_FEATURE_BUILD").is_ok() {
+        if use_v4l2_request() {
+            println!("cargo:rpi=true");
+        }
         println!(
             "cargo:rustc-link-search=native={}",
             search().join("lib").to_string_lossy()
