@@ -113,6 +113,7 @@ runs:
       with:
         key: qt-checks-${{ inputs.label }}
         max-size: 1G
+        restore-keys: qt-checks-${{ inputs.label }}
         restore: ${{ runner.os != 'Linux' || steps.sticky-cache.outputs.ccache-warm != 'true' }}
         save: ${{ runner.os != 'Linux' || steps.sticky-cache.outputs.ccache-warm != 'true' }}
     - name: Build and cache SDL3 test dependency

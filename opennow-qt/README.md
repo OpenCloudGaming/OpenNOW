@@ -34,7 +34,9 @@ Windows/macOS and cold Linux disks use the upstream Rust and C++ cache actions, 
 automatically use Blacksmith's colocated archive cache. Platform-specific shared keys
 survive job renames, and Rust dependency caches are saved even if a later test fails.
 Build concurrency is scoped to Rust compile/test steps so it does not invalidate the
-checks archive cache. Warm Linux disks bypass archive cleanup and keep workspace outputs.
+checks archive cache. C++ archive caches explicitly restore their platform/profile
+prefix so timestamped entries can be found on later runs. Warm Linux disks bypass
+archive cleanup and keep workspace outputs.
 
 Full application builds, embedded-runtime/QML acceptance tests, Linux/Windows ARM64
 builds, and package creation run only on manual dispatch. Automatic checks do not

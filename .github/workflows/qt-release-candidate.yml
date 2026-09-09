@@ -136,6 +136,7 @@ jobs:
         with:
           key: qt-release-${{ matrix.runner }}-${{ matrix.arch }}
           max-size: 500M
+          restore-keys: qt-release-${{ matrix.runner }}-${{ matrix.arch }}
 
       - name: Build and cache SDL3
         uses: ./.github/actions/sdl3
@@ -358,6 +359,7 @@ jobs:
         with:
           key: qt-release-windows-2025-${{ matrix.arch }}
           max-size: 1G
+          restore-keys: qt-release-windows-2025-${{ matrix.arch }}
 
       - name: Build and cache SDL3
         uses: ./.github/actions/sdl3

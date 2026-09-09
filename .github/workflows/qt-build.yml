@@ -292,6 +292,7 @@ jobs:
         with:
           key: ${{ runner.os == 'macOS' && 'qt-ci-macos-arm64' || format('qt-ci-{0}-{1}', matrix.os, matrix.label) }}
           max-size: 1G
+          restore-keys: ${{ runner.os == 'macOS' && 'qt-ci-macos-arm64' || format('qt-ci-{0}-{1}', matrix.os, matrix.label) }}
           restore: ${{ runner.os != 'Linux' || steps.sticky-cache.outputs.ccache-warm != 'true' }}
           save: ${{ runner.os != 'Linux' || steps.sticky-cache.outputs.ccache-warm != 'true' }}
 

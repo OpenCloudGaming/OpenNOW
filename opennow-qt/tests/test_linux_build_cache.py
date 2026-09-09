@@ -12,6 +12,20 @@ ACTION = ROOT / ".github/actions/linux-build-cache/action.yml"
 
 
 class LinuxBuildCacheTest(unittest.TestCase):
+    def test_timestamped_cpp_archives_have_explicit_restore_prefixes(self):
+        caches = 0
+        for path in (ROOT / ".github/actions/qt-unit-tests/action.yml",
+                     ROOT / ".github/workflows/qt-build.yml",
+                     ROOT / ".github/workflows/qt-release-candidate.yml"):
+            for entry in path.read_text().split("uses: hendrikmuhs/ccache-action@")[1:]:
+                with self.subTest(path=path, cache=caches):
+                    step = re.split(r"\n\s+- ", entry, 1)[0]
+                    key = re.search(r"^\s+key: (.+)$", step, re.MULTILINE)[1]
+                    restore = re.search(r"^\s+restore-keys: (.+)$", step, re.MULTILINE)[1]
+                    self.assertEqual(restore, key)
+                    caches += 1
+        self.assertEqual(caches, 4)
+
     def test_disks_are_stable_and_only_default_branch_jobs_commit(self):
         action = ACTION.read_text()
         self.assertEqual(action.count("uses: useblacksmith/stickydisk@25e27b93b68733b532d9af6b201df28ffaf7dbfc"), 5)
