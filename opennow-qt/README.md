@@ -381,9 +381,12 @@ the core owns the final decoder/backend gate and persisted `enableHdr` preferenc
 Windows uses Qt's active DXGI output color space, not the monitor's advertised capability.
 Metal uses Qt's display-referred extended-linear sRGB output: 1.0 is SDR white, unlike
 Windows scRGB's fixed 80-nit reference. PQ/HLG content is normalized to a 203-nit content
-white on Metal, and SDR chrome remains at 1.0. If current EDR headroom disappears, the
-existing linear Metal surface is retained and HDR video is tone-mapped to SDR. This also
-avoids reinterpreting SDR pixels through a CAMetalLayer that retains its linear color space.
+white on Metal, and SDR chrome remains at 1.0. If current EDR headroom disappears while
+the format remains supported, HDR video is tone-mapped to SDR in the linear surface. If
+the display no longer supports that format, or its creation fails, the swapchain falls
+back to SDR. Recovery explicitly restores the existing CAMetalLayer's sRGB color space
+and disables extended-range content, because Qt 6.8 does not reset these on its SDR path.
+The same reset is applied after scene-graph recreation; the stream and its video item stay alive.
 
 Linux requires Vulkan HDR surface-format support and a complete, current Wayland
 `color-management-v1` output description with PQ encoding and target luminance above SDR

@@ -4,6 +4,16 @@ add_library(opennow-platform-hdr STATIC
 target_link_libraries(opennow-platform-hdr PUBLIC Qt6::Gui PRIVATE Qt6::GuiPrivate)
 target_include_directories(opennow-platform-hdr PUBLIC "${CMAKE_CURRENT_LIST_DIR}/../src")
 
+if(APPLE)
+    enable_language(OBJCXX)
+    set_property(TARGET opennow-platform-hdr PROPERTY OBJCXX_STANDARD 20)
+    set_property(TARGET opennow-platform-hdr PROPERTY OBJCXX_STANDARD_REQUIRED ON)
+    target_sources(opennow-platform-hdr PRIVATE
+        "${CMAKE_CURRENT_LIST_DIR}/../src/streaming/rendering/MetalHdrOutput.mm")
+    target_link_libraries(opennow-platform-hdr PRIVATE
+        "-framework AppKit" "-framework QuartzCore" "-framework CoreGraphics")
+endif()
+
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     find_package(PkgConfig QUIET)
     if(PkgConfig_FOUND)
