@@ -316,6 +316,15 @@ impl SettingsStore {
             "stable",
         );
         clamp_integer(&mut self.values, "mouseAcceleration", 1, 150, 1);
+        clamp_integer(&mut self.values, "controllerLeftStickDeadzone", 0, 50, 24);
+        clamp_integer(&mut self.values, "controllerRightStickDeadzone", 0, 50, 27);
+        clamp_integer(
+            &mut self.values,
+            "controllerVibrationIntensity",
+            0,
+            100,
+            100,
+        );
         clamp_integer(&mut self.values, "fps", 30, 240, 60);
         clamp_integer(&mut self.values, "maxBitrateMbps", 1, 200, 75);
         clamp_integer(&mut self.values, "windowWidth", 960, 7680, 1400);
@@ -787,6 +796,8 @@ fn defaults() -> Map<String, Value> {
         "appAccentColor":"green", "appTheme":"auto", "appLanguage":"system", "themePack":"nocturne", "translucentUI":false,
         "showTileLabels":true,
         "controllerMode":true, "controllerModePromptDismissed":false,
+        "controllerLeftStickDeadzone":24, "controllerRightStickDeadzone":27,
+        "controllerVibrationIntensity":100,
         "reducedMotion":false,
         "launchInConsoleMode":false, "consoleProfilePickerOnLaunch":true,
         "desktopRailCollapsed":true, "desktopSidebarHover":true, "desktopBackground":"art",
@@ -1689,6 +1700,33 @@ mod tests {
         let persisted: Value =
             serde_json::from_slice(&fs::read(directory.join("settings.json")).unwrap()).unwrap();
         assert_eq!(persisted["transportMode"], json!("nvst"));
+        fs::remove_dir_all(directory).unwrap();
+    }
+    #[test]
+    fn controller_tuning_is_bounded_and_persisted() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = env::temp_dir().join(format!("opennow-controller-tuning-{unique}"));
+        let mut store = SettingsStore::load(Some(directory.clone())).unwrap();
+        for (key, default, maximum) in [
+            ("controllerLeftStickDeadzone", 24, 50),
+            ("controllerRightStickDeadzone", 27, 50),
+            ("controllerVibrationIntensity", 100, 100),
+        ] {
+            assert_eq!(store.all()[key], json!(default));
+            assert_eq!(store.set(key, json!(-1)).unwrap(), json!(0));
+            assert_eq!(store.set(key, json!(101)).unwrap(), json!(maximum));
+            for invalid in [json!("bad"), json!(null), json!(false), json!(0.5)] {
+                assert_eq!(store.set(key, invalid).unwrap(), json!(default));
+            }
+            store.set(key, json!(12)).unwrap();
+            assert_eq!(
+                SettingsStore::load(Some(directory.clone())).unwrap().all()[key],
+                json!(12)
+            );
+        }
         fs::remove_dir_all(directory).unwrap();
     }
 }

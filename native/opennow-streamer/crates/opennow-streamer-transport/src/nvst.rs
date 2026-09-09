@@ -373,6 +373,7 @@ struct PendingNackRange {
 
 #[derive(Debug)]
 pub struct NvstFeedbackState {
+    pub haptics: crate::NvstHaptics,
     /// Bound video stream SSRC (0 until the first packet is authenticated).
     video_ssrc: AtomicU32,
     /// Highest extended sequence number received on the video stream.
@@ -397,6 +398,7 @@ pub struct NvstFeedbackState {
 impl Default for NvstFeedbackState {
     fn default() -> Self {
         Self {
+            haptics: crate::NvstHaptics::default(),
             video_ssrc: AtomicU32::new(0),
             highest_sequence: AtomicU32::new(0),
             base_sequence: AtomicU32::new(u32::MAX),
@@ -5686,6 +5688,11 @@ fn run_nvst_webrtc_bundle(
                             && channels.contains(data.id)
                         {
                             let label = channels.label(data.id);
+                            if data.id == channels.control_reliable
+                                || data.id == channels.control_partial
+                            {
+                                feedback.haptics.receive(&data.data);
+                            }
                             let cursor_messages = server_cursor_messages(&data.data);
                             for message in cursor_messages {
                                 eprintln!(

@@ -69,6 +69,36 @@ Column {
         DesktopSettingsRow { width: parent.width; paperStyle: true; glyph: "globe"; title: qsTr("Gyroscope"); description: qsTr("Motion aiming on supported pads")
             DesktopSettingsToggle { checked: controlsRoot.settingsScreen.boolSetting("enableGyroscopeControls",false); onValueChangedByUser: value => controlsRoot.settingsScreen.setSetting("enableGyroscopeControls",value) }
         }
+        DesktopSettingsRow {
+            width: parent.width; paperStyle: true; glyph: "controller"; title: qsTr("Left stick dead zone")
+            description: qsTr("Ignore stick drift during gameplay. Default: 24%. The remaining travel is rescaled to full range.")
+            DesktopSettingsSlider {
+                objectName: "controllerLeftStickDeadzoneSlider"
+                from: 0; to: 50; stepSize: 1
+                value: Number(controlsRoot.settingsScreen.valueSetting("controllerLeftStickDeadzone", 24))
+                onCommitted: value => controlsRoot.settingsScreen.setSetting("controllerLeftStickDeadzone", value)
+            }
+        }
+        DesktopSettingsRow {
+            width: parent.width; paperStyle: true; glyph: "controller"; title: qsTr("Right stick dead zone")
+            description: qsTr("Ignore stick drift during gameplay. Default: 27%. Set to 0% to leave dead zones to the game.")
+            DesktopSettingsSlider {
+                objectName: "controllerRightStickDeadzoneSlider"
+                from: 0; to: 50; stepSize: 1
+                value: Number(controlsRoot.settingsScreen.valueSetting("controllerRightStickDeadzone", 27))
+                onCommitted: value => controlsRoot.settingsScreen.setSetting("controllerRightStickDeadzone", value)
+            }
+        }
+        DesktopSettingsRow {
+            width: parent.width; paperStyle: true; glyph: "controller"; title: qsTr("Controller vibration")
+            description: qsTr("Scale game vibration on supported controllers. Set to 0% to disable."); showDivider: false
+            DesktopSettingsSlider {
+                objectName: "controllerVibrationIntensitySlider"
+                from: 0; to: 100; stepSize: 1
+                value: Number(controlsRoot.settingsScreen.valueSetting("controllerVibrationIntensity", 100))
+                onCommitted: value => controlsRoot.settingsScreen.setSetting("controllerVibrationIntensity", value)
+            }
+        }
     }
     DesktopSettingsPanel {
         width: parent.width; paperStyle: true

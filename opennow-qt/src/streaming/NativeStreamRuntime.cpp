@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <condition_variable>
 #include <limits>
 #include <mutex>
@@ -107,6 +108,7 @@ struct NativeStreamRuntime::CallbackState final
         QByteArray bytes;
         bool event = false;
         bool cursor = false;
+        quint64 rumbleEpoch = 0;
     };
 
     std::mutex mutex;
@@ -116,6 +118,7 @@ struct NativeStreamRuntime::CallbackState final
     bool accepting = true;
     bool drainScheduled = false;
     bool framePending = false;
+    quint64 rumbleEpoch = 0;
 };
 
 struct NativeStreamRuntime::Private {
@@ -141,6 +144,8 @@ struct NativeStreamRuntime::Private {
     std::atomic_bool inputAllowed{false};
     bool inputAuthorizationPending = false;
     QString presentationStartId;
+    QString rumbleStartId;
+    quint64 rumbleStartEpoch = 0;
 };
 
 NativeStreamRuntime::NativeStreamRuntime(QObject *parent,
@@ -229,6 +234,8 @@ void NativeStreamRuntime::invalidatePresentation()
     d->presentationAllowed.store(false, std::memory_order_release);
     d->presentationGeneration.fetch_add(1, std::memory_order_acq_rel);
     d->presentationStartId.clear();
+    d->rumbleStartId.clear();
+    emit controllerRumbleStopped();
     emit frameAvailable(); // Repaint even when the dead transport sends no more frames.
 }
 
@@ -357,6 +364,11 @@ bool NativeStreamRuntime::sendBytes(const QByteArray &command)
         if (type == u"start"_s) {
             d->firstNotification = false;
             d->presentationStartId = object.value(u"id"_s).toString();
+            d->rumbleStartId = d->presentationStartId;
+            if (d->callbackState) {
+                const std::lock_guard lock(d->callbackState->mutex);
+                d->rumbleStartEpoch = d->callbackState->rumbleEpoch;
+            }
             d->inputAuthorizationPending = true;
         }
     }
@@ -604,6 +616,7 @@ void NativeStreamRuntime::cursorCallback(const std::uint8_t *bytes, std::size_t 
         if (!state->accepting) return;
         if (state->pending.size() >= MaximumPendingCallbacks) {
             ++state->dropped;
+            ++state->rumbleEpoch;
             return;
         }
         state->pending.enqueue(
@@ -633,11 +646,12 @@ void NativeStreamRuntime::enqueueCallback(CallbackState *state, const std::uint8
         if (!state->accepting) return;
         if (state->pending.size() >= MaximumPendingCallbacks) {
             ++state->dropped;
+            ++state->rumbleEpoch;
             return;
         }
         state->pending.enqueue(
             {QByteArray(reinterpret_cast<const char *>(bytes), static_cast<qsizetype>(length)),
-             event});
+             event, false, state->rumbleEpoch});
         if (!state->drainScheduled) {
             state->drainScheduled = true;
             shouldSchedule = true;
@@ -690,18 +704,24 @@ void NativeStreamRuntime::drainCallbacks(const std::shared_ptr<CallbackState> &s
     int dropped = 0;
     bool framePending = false;
     bool reschedule = false;
+    quint64 rumbleEpoch = 0;
     {
         const std::lock_guard lock(state->mutex);
         constexpr qsizetype BatchSize = 64;
         while (!state->pending.isEmpty() && messages.size() < BatchSize)
             messages.enqueue(state->pending.dequeue());
         dropped = std::exchange(state->dropped, 0);
+        rumbleEpoch = state->rumbleEpoch;
         framePending = std::exchange(state->framePending, false);
         reschedule = !state->pending.isEmpty() || state->framePending;
         if (!reschedule) state->drainScheduled = false;
     }
 
     if (dropped > 0) {
+        if (!d->rumbleStartId.isEmpty() && rumbleEpoch != d->rumbleStartEpoch) {
+            emit controllerRumbleStopped();
+            if (!current()) return;
+        }
         handshakeLog(u"callback_queue dropped=%1"_s.arg(dropped));
         emit callbacksDropped(dropped);
         if (!current()) return;
@@ -730,6 +750,27 @@ void NativeStreamRuntime::drainCallbacks(const std::shared_ptr<CallbackState> &s
         }
         const auto kind = document.object().value(u"type"_s).toString();
         const auto status = document.object().value(u"status"_s).toString();
+        if (message.event && kind == u"controller-rumble"_s) {
+            const auto object = document.object();
+            if (message.rumbleEpoch != rumbleEpoch || !inputAllowed() || d->rumbleStartId.isEmpty()
+                || object.value(u"startId"_s).toString() != d->rumbleStartId) {
+                continue;
+            }
+            const auto controller = object.value(u"controllerId"_s).toDouble(-1);
+            const auto low = object.value(u"lowFrequency"_s).toDouble(-1);
+            const auto high = object.value(u"highFrequency"_s).toDouble(-1);
+            const auto duration = object.value(u"durationMs"_s).toDouble(-1);
+            const auto valid = [](double value, double maximum) {
+                return value >= 0 && value <= maximum && std::floor(value) == value;
+            };
+            if (valid(controller, 3) && valid(low, 65535) && valid(high, 65535)
+                && valid(duration, 65535) && duration > 0) {
+                emit controllerRumbleRequested(static_cast<quint8>(controller),
+                    static_cast<quint16>(low), static_cast<quint16>(high),
+                    static_cast<quint32>(duration));
+            }
+            continue;
+        }
         if (message.event && (kind == u"error"_s
                 || (kind == u"status"_s && (status == u"stopped"_s || status == u"error"_s)))) {
             resetInputCapture();

@@ -8,6 +8,7 @@
 #include <QJsonDocument>
 #include <QSignalSpy>
 #include <QTest>
+#include <QThread>
 
 #include <chrono>
 #include <condition_variable>
@@ -142,6 +143,98 @@ class NativeStreamRuntimeTest final : public QObject
     Q_OBJECT
 
 private slots:
+    void rumbleCallbacksValidateFieldsAndRejectReplacedSessions()
+    {
+        static OpenNowStreamerConfig callbackConfig;
+        auto api = fakeApi();
+        api.create = [](const OpenNowStreamerConfig *config, OpenNowStreamer **output) {
+            callbackConfig = *config;
+            return fakeCreate(config, output);
+        };
+        NativeStreamRuntime runtime(api);
+        QSignalSpy rumble(&runtime, &NativeStreamRuntime::controllerRumbleRequested);
+        QSignalSpy stopped(&runtime, &NativeStreamRuntime::controllerRumbleStopped);
+        QVERIFY(runtime.start());
+        const auto start = [&](const QString &id) {
+            return runtime.send({{QStringLiteral("type"), QStringLiteral("start")},
+                                 {QStringLiteral("id"), id}});
+        };
+        const auto deliver = [](const QJsonObject &event) {
+            const auto bytes = QJsonDocument(event).toJson(QJsonDocument::Compact);
+            std::thread callback([bytes] {
+                callbackConfig.event_callback(
+                    reinterpret_cast<const std::uint8_t *>(bytes.constData()),
+                    static_cast<std::size_t>(bytes.size()), callbackConfig.user_data);
+            });
+            callback.join();
+        };
+        QJsonObject event{{QStringLiteral("type"), QStringLiteral("controller-rumble")},
+                          {QStringLiteral("startId"), QStringLiteral("first")},
+                          {QStringLiteral("controllerId"), 3},
+                          {QStringLiteral("lowFrequency"), 65535},
+                          {QStringLiteral("highFrequency"), 12345},
+                          {QStringLiteral("durationMs"), 65535}};
+        QVERIFY(start(QStringLiteral("first")));
+        QTRY_VERIFY(runtime.inputAllowed());
+        bool guiThread = false;
+        connect(&runtime, &NativeStreamRuntime::controllerRumbleRequested, &runtime,
+                [&] { guiThread = QThread::currentThread() == runtime.thread(); });
+        deliver(event);
+        QTRY_COMPARE(rumble.size(), 1);
+        QVERIFY(guiThread);
+        QCOMPARE(rumble[0][0].value<quint8>(), quint8(3));
+        QCOMPARE(rumble[0][1].value<quint16>(), quint16(65535));
+        QCOMPARE(rumble[0][2].value<quint16>(), quint16(12345));
+        QCOMPARE(rumble[0][3].value<quint32>(), quint32(65535));
+        for (const auto &field : {QStringLiteral("controllerId"), QStringLiteral("lowFrequency"),
+                                  QStringLiteral("highFrequency"), QStringLiteral("durationMs")}) {
+            for (const auto &invalid : {QJsonValue(-1), QJsonValue(65536), QJsonValue(0.5),
+                                        QJsonValue(QStringLiteral("2")), QJsonValue()}) {
+                auto malformed = event;
+                malformed[field] = invalid;
+                deliver(malformed);
+            }
+        }
+        auto invalidSlot = event;
+        invalidSlot[QStringLiteral("controllerId")] = 4;
+        deliver(invalidSlot);
+        QCoreApplication::processEvents();
+        QCOMPARE(rumble.size(), 1);
+        deliver(event);
+        QVERIFY(start(QStringLiteral("second")));
+        QTRY_VERIFY(runtime.inputAllowed());
+        QCOMPARE(rumble.size(), 1);
+        const auto stopsBeforeStale = stopped.size();
+        deliver(event);
+        QCoreApplication::processEvents();
+        QCOMPARE(stopped.size(), stopsBeforeStale);
+        QCOMPARE(rumble.size(), 1);
+        event[QStringLiteral("startId")] = QStringLiteral("second");
+        event[QStringLiteral("lowFrequency")] = 0;
+        event[QStringLiteral("highFrequency")] = 0;
+        deliver(event);
+        QTRY_COMPARE(rumble.size(), 2);
+        QCOMPARE(rumble[1][1].value<quint16>(), quint16(0));
+        QCOMPARE(rumble[1][2].value<quint16>(), quint16(0));
+        QSignalSpy delivered(&runtime, &NativeStreamRuntime::eventReceived);
+        for (int i = 0; i <= NativeStreamRuntime::MaximumPendingCallbacks; ++i)
+            deliver(event);
+        QTRY_COMPARE(stopped.size(), stopsBeforeStale + 1);
+        deliver({{QStringLiteral("type"), QStringLiteral("drain-marker")}});
+        QTRY_COMPARE(delivered.size(), 1);
+        QCOMPARE(rumble.size(), 2);
+        deliver(event);
+        QTRY_COMPARE(rumble.size(), 3);
+        deliver({{QStringLiteral("type"), QStringLiteral("status")},
+                 {QStringLiteral("status"), QStringLiteral("error")}});
+        QTRY_COMPARE(stopped.size(), stopsBeforeStale + 2);
+        deliver(event);
+        QCoreApplication::processEvents();
+        QCOMPARE(rumble.size(), 3);
+        QVERIFY(runtime.shutdown());
+        QCOMPARE(stopped.size(), stopsBeforeStale + 3);
+    }
+
     void recordedFrameMetadataReplacesProvisionalNotificationMetadata()
     {
         static std::uint64_t sequence;

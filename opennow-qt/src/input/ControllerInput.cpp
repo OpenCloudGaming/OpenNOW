@@ -43,6 +43,7 @@ ControllerInput::ControllerInput(QObject *parent)
 ControllerInput::~ControllerInput()
 {
     m_pollTimer.stop();
+    stopRumble();
     publishConnectedGamepads(true);
     for (int slot = 0; slot < static_cast<int>(m_slots.size()); ++slot)
         releaseShellButtons(slot);
@@ -83,6 +84,7 @@ bool ControllerInput::acceptsController(SDL_JoystickID id) const
 void ControllerInput::setInputControllerId(quint32 id)
 {
     if (id == m_inputControllerId || (id != 0 && !m_gamepadSlots.contains(id))) return;
+    stopRumble();
     publishConnectedGamepads(true);
     for (int slot = 0; slot < static_cast<int>(m_slots.size()); ++slot)
         releaseShellButtons(slot);
@@ -178,10 +180,74 @@ bool ControllerInput::inputSuspended() const
     return m_inputSuspended;
 }
 
+int ControllerInput::leftStickDeadzone() const { return m_leftStickDeadzone; }
+int ControllerInput::rightStickDeadzone() const { return m_rightStickDeadzone; }
+int ControllerInput::vibrationIntensity() const { return m_vibrationIntensity; }
+
+void ControllerInput::setLeftStickDeadzone(int percent)
+{
+    percent = std::clamp(percent, 0, 50);
+    if (m_leftStickDeadzone == percent) return;
+    m_leftStickDeadzone = percent;
+    if (!m_shellCaptureEnabled) publishConnectedGamepads();
+    emit leftStickDeadzoneChanged();
+}
+
+void ControllerInput::setRightStickDeadzone(int percent)
+{
+    percent = std::clamp(percent, 0, 50);
+    if (m_rightStickDeadzone == percent) return;
+    m_rightStickDeadzone = percent;
+    if (!m_shellCaptureEnabled) publishConnectedGamepads();
+    emit rightStickDeadzoneChanged();
+}
+
+void ControllerInput::setVibrationIntensity(int percent)
+{
+    percent = std::clamp(percent, 0, 100);
+    if (m_vibrationIntensity == percent) return;
+    stopRumble();
+    m_vibrationIntensity = percent;
+    emit vibrationIntensityChanged();
+}
+
+void ControllerInput::playRumble(quint8 controllerId, quint16 lowFrequency,
+                               quint16 highFrequency, quint32 durationMs)
+{
+    if (m_shellCaptureEnabled || m_inputSuspended || m_vibrationIntensity == 0) return;
+    const auto slotIndex = m_inputControllerId
+        ? (controllerId == 0 ? m_gamepadSlots.value(m_inputControllerId, -1) : -1)
+        : static_cast<int>(controllerId);
+    if (slotIndex < 0 || slotIndex >= static_cast<int>(m_slots.size())) return;
+    auto &slot = m_slots[static_cast<std::size_t>(slotIndex)];
+    if (!slot.gamepad || !acceptsController(slot.instanceId)) return;
+    const auto properties = SDL_GetGamepadProperties(slot.gamepad);
+    if (!SDL_GetBooleanProperty(properties, SDL_PROP_GAMEPAD_CAP_RUMBLE_BOOLEAN, false)) return;
+    if (!SDL_RumbleGamepad(slot.gamepad,
+                     static_cast<quint16>(quint32(lowFrequency) * m_vibrationIntensity / 100),
+                     static_cast<quint16>(quint32(highFrequency) * m_vibrationIntensity / 100),
+                     std::min(durationMs, quint32(65'535))) && !slot.rumbleFailureReported) {
+        slot.rumbleFailureReported = true;
+        qWarning("Controller vibration failed for player %u: %s",
+                 static_cast<unsigned>(controllerId) + 1, SDL_GetError());
+    }
+}
+
+void ControllerInput::stopRumble()
+{
+    for (const auto &slot : m_slots) {
+        if (slot.gamepad
+            && SDL_GetBooleanProperty(SDL_GetGamepadProperties(slot.gamepad),
+                                      SDL_PROP_GAMEPAD_CAP_RUMBLE_BOOLEAN, false))
+            SDL_RumbleGamepad(slot.gamepad, 0, 0, 0);
+    }
+}
+
 void ControllerInput::setInputSuspended(bool suspended)
 {
     if (m_inputSuspended == suspended) return;
     if (suspended) {
+        stopRumble();
         publishConnectedGamepads(true);
         for (int slot = 0; slot < static_cast<int>(m_slots.size()); ++slot)
             releaseShellButtons(slot);
@@ -200,8 +266,10 @@ void ControllerInput::setInputSuspended(bool suspended)
 void ControllerInput::setShellCaptureEnabled(bool enabled)
 {
     if (m_shellCaptureEnabled == enabled) return;
-    if (enabled) publishConnectedGamepads(true);
-    else {
+    if (enabled) {
+        stopRumble();
+        publishConnectedGamepads(true);
+    } else {
         for (int slot = 0; slot < static_cast<int>(m_slots.size()); ++slot)
             releaseShellButtons(slot);
     }
@@ -366,8 +434,10 @@ void ControllerInput::publishGamepad(int slotIndex, bool neutral)
     if (m_inputSuspended && !neutral) return;
     const auto &slot = m_slots[static_cast<std::size_t>(slotIndex)];
     if (!slot.gamepad || !acceptsController(slot.instanceId)) return;
-    const auto left = neutral ? QPair<qint16, qint16>{} : radialDeadzone(slot.rawLeftX, slot.rawLeftY);
-    const auto right = neutral ? QPair<qint16, qint16>{} : radialDeadzone(slot.rawRightX, slot.rawRightY);
+    const auto left = neutral ? QPair<qint16, qint16>{}
+        : radialDeadzone(slot.rawLeftX, slot.rawLeftY, m_leftStickDeadzone);
+    const auto right = neutral ? QPair<qint16, qint16>{}
+        : radialDeadzone(slot.rawRightX, slot.rawRightY, m_rightStickDeadzone);
     emit gamepadSnapshot(m_inputControllerId ? 0 : static_cast<quint8>(slotIndex), gamepadBitmap(),
                          neutral ? 0 : slot.buttons,
                          neutral ? 0 : slot.leftTrigger, neutral ? 0 : slot.rightTrigger,
@@ -422,17 +492,17 @@ quint16 ControllerInput::buttonMask(Uint8 button)
     }
 }
 
-QPair<qint16, qint16> ControllerInput::radialDeadzone(qint16 x, qint16 y)
+QPair<qint16, qint16> ControllerInput::radialDeadzone(qint16 x, qint16 y, int percent)
 {
-    constexpr double deadzone = 0.15;
-    const auto normalizedX = static_cast<double>(x) / 32767.0;
-    const auto normalizedY = static_cast<double>(y) / 32767.0;
+    const auto deadzone = percent / 100.0;
+    const auto normalizedX = std::clamp(static_cast<double>(x) / 32767.0, -1.0, 1.0);
+    const auto normalizedY = std::clamp(static_cast<double>(y) / 32767.0, -1.0, 1.0);
     const auto magnitude = std::hypot(normalizedX, normalizedY);
-    if (magnitude < deadzone) return {};
-    const auto scaled = std::clamp((magnitude - deadzone) / (1.0 - deadzone), 0.0, 1.0);
+    if (magnitude <= deadzone) return {};
+    const auto scaled = (magnitude - deadzone) / (1.0 - deadzone);
     const auto factor = scaled / magnitude;
-    return {static_cast<qint16>(std::round(normalizedX * factor * 32767.0)),
-            static_cast<qint16>(std::round(normalizedY * factor * 32767.0))};
+    return {static_cast<qint16>(std::round(std::clamp(normalizedX * factor, -1.0, 1.0) * 32767.0)),
+            static_cast<qint16>(std::round(std::clamp(normalizedY * factor, -1.0, 1.0) * 32767.0))};
 }
 
 quint8 ControllerInput::triggerValue(qint16 value)

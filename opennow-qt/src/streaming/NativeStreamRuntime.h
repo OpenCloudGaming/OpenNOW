@@ -136,6 +136,9 @@ signals:
     void eventReceived(const QJsonObject &event);
     void frameAvailable();
     void cursorUpdated(const QByteArray &bytes);
+    void controllerRumbleRequested(quint8 controllerId, quint16 lowFrequency,
+                                   quint16 highFrequency, quint32 durationMs);
+    void controllerRumbleStopped();
     void callbacksDropped(int count);
 
 private:
