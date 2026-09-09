@@ -171,21 +171,22 @@ void HdrOutput::updateOutput()
         auto *previousPass = d->rpDescForSwapchain;
         QRhiRenderPassDescriptor *nextPass = nullptr;
         const auto result = createHdrSwapChainWithSdrFallback(format, [&](auto attempt) {
-            sc->destroy();
+            destroyHdrSwapChainPreservingProxy(*sc);
             delete nextPass;
             nextPass = nullptr;
             sc->setFormat(attempt);
+            nextPass = sc->newCompatibleRenderPassDescriptor();
+            if (!nextPass) return false;
+            sc->setRenderPassDescriptor(nextPass);
+            if (!sc->createOrResize()) return false;
 #if defined(Q_OS_MACOS)
             if (d->rhi->backend() == QRhi::Metal && attempt == QRhiSwapChain::SDR
                     && !resetMetalSdrOutput(m_window, sc->proxyData())) {
                 qWarning("Metal SDR recovery could not restore the output layer color space.");
-                return false;
+                m_probeRequested.store(true);
             }
 #endif
-            nextPass = sc->newCompatibleRenderPassDescriptor();
-            if (!nextPass) return false;
-            sc->setRenderPassDescriptor(nextPass);
-            return sc->createOrResize();
+            return true;
         });
         if (!result.created || result.format != format) {
             qWarning("HDR output format change failed; recovery format=%d %s.",

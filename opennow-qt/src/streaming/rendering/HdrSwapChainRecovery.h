@@ -16,6 +16,14 @@ struct HdrSwapChainCreation
     bool created;
 };
 
+template<typename SwapChain>
+void destroyHdrSwapChainPreservingProxy(SwapChain &swapChain)
+{
+    const auto proxy = swapChain.proxyData();
+    swapChain.destroy();
+    swapChain.setProxyData(proxy);
+}
+
 template<typename Create>
 HdrSwapChainCreation createHdrSwapChainWithSdrFallback(QRhiSwapChain::Format requested,
     Create &&create)

@@ -20,10 +20,10 @@ void verifyMetalSdrLayerRecovery()
             layer.colorspace = hdrSpace;
             layer.wantsExtendedDynamicRangeContent = YES;
             QVERIFY(layer.wantsExtendedDynamicRangeContent);
-            QVERIFY(CGColorSpaceEqualToColorSpace(layer.colorspace, hdrSpace));
+            QVERIFY(CFEqual(layer.colorspace, hdrSpace));
             QVERIFY(resetMetalSdrOutput(nullptr, proxy));
             QVERIFY(!layer.wantsExtendedDynamicRangeContent);
-            QVERIFY(CGColorSpaceEqualToColorSpace(layer.colorspace, sdrSpace));
+            QVERIFY(CFEqual(layer.colorspace, sdrSpace));
         }
         CGColorSpaceRelease(hdrSpace);
         CGColorSpaceRelease(sdrSpace);

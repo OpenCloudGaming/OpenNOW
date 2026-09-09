@@ -173,6 +173,29 @@ private slots:
 #endif
     }
 
+    void swapChainProxySurvivesDestructionAndFallback()
+    {
+        struct SwapChain {
+            QRhiSwapChainProxyData proxy;
+            int destructions = 0;
+            QRhiSwapChainProxyData proxyData() const { return proxy; }
+            void setProxyData(const QRhiSwapChainProxyData &value) { proxy = value; }
+            void destroy() { proxy = {}; ++destructions; }
+        } swapChain;
+        swapChain.proxy.reserved[0] = this;
+        QList<void *> layers;
+        const auto result = createHdrSwapChainWithSdrFallback(
+            QRhiSwapChain::HDRExtendedSrgbLinear, [&](auto format) {
+                destroyHdrSwapChainPreservingProxy(swapChain);
+                layers.append(swapChain.proxyData().reserved[0]);
+                return format == QRhiSwapChain::SDR;
+            });
+        QVERIFY(result.created);
+        QCOMPARE(result.format, QRhiSwapChain::SDR);
+        QCOMPARE(swapChain.destructions, 2);
+        QCOMPARE(layers, (QList<void *>{this, this}));
+    }
+
     void linuxOutputRemainsSdr()
     {
 #if defined(Q_OS_LINUX)
