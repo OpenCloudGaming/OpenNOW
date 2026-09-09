@@ -13,7 +13,24 @@ This crate exposes `opennow-streamer-core::Engine` as a C-compatible in-process 
 - `opennow_streamer_destroy` consumes the handle exactly once, waits for the engine and both callback queues to drain, and then returns. No call may race with destroy. A null handle is rejected; reusing a destroyed pointer is caller-side undefined behavior.
 - Every exported function catches Rust panics before they can unwind through the C ABI. A worker-thread panic closes the command queue.
 
-### HDR texture metadata (ABI 6)
+### Optional MetalFX spatial upscaling (ABI 7, render command 2)
+
+ABI 7 requires rebuilding the Qt shell and native runtime together. Version 2 of
+`OpenNowStreamerRecordCommand` appends `upscale_width` and `upscale_height`.
+Set both to zero for normal scaling. On Metal, nonzero values request spatial
+MetalFX at the video viewport's physical pixel size, excluding letterboxing.
+Dimensions must both be zero or each be in `1..=16384`. Other graphics backends
+ignore the target. Unsupported MetalFX configurations fall back to the original
+converted texture without stopping the session.
+
+The Mac producer encodes scaling after YUV-to-RGB conversion in the same borrowed
+command buffer. The returned texture dimensions describe the actual output;
+`OpenNowStreamerFrameInfo` still describes the decoded source. Source sequence,
+timestamps, color precision, frame-slot ownership, and scene-graph retirement
+remain unchanged. Qt must refresh the target after resize, fullscreen, or display
+scale changes, and must not infer source video geometry from upscaled textures.
+
+### HDR texture metadata (introduced in ABI 6)
 
 ABI 6 adds `color_space` to `OpenNowStreamerRecordedFrame` and rejects clients compiled for earlier ABI versions. Rebuild the native runtime and Qt shell together. `texture_format` now accepts `RGBA16F` in addition to `RGBA8` and `RGB10A2`.
 

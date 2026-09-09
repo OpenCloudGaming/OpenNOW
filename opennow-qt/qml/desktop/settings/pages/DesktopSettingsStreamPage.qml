@@ -51,6 +51,19 @@ Column {
             }
         }
         DesktopSettingsRow {
+            objectName: "upscalingSettingsRow"
+            visible: Qt.platform.os === "osx"
+            width: parent.width; paperStyle: true; glyph: "monitor"; title: qsTr("Upscaling")
+            description: qsTr("Spatial upscaling for enlarged video. Uses extra GPU time; falls back to normal scaling when MetalFX is unavailable.")
+            DesktopSettingsSegmented {
+                objectName: "upscalingSelector"
+                readonly property string current: String(page.settingsScreen.valueSetting("upscaling", "off")) === "metalfx" ? "metalfx" : "off"
+                options: [{label: qsTr("Off"), value: "off"}, {label: "MetalFX", value: "metalfx"}]
+                optionWidth: 90; selectedIndex: options.findIndex(item => item.value === current)
+                onSelected: (index,item) => page.settingsScreen.setSetting("upscaling", item.value)
+            }
+        }
+        DesktopSettingsRow {
             width: parent.width; paperStyle: true; glyph: "sun"; title: qsTr("HDR")
             description: HdrOutput.supported && !ShellStore.hdrDecoderAvailable()
                 ? qsTr("HDR requires a supported 10-bit H.265 or AV1 hardware decoder.") : HdrOutput.status

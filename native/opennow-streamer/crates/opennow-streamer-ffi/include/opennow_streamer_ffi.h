@@ -9,10 +9,10 @@
 extern "C" {
 #endif
 
-#define OPENNOW_STREAMER_FFI_ABI_VERSION 6u
+#define OPENNOW_STREAMER_FFI_ABI_VERSION 7u
 #define OPENNOW_STREAMER_VULKAN_DEVICE_INFO_VERSION 1u
 #define OPENNOW_STREAMER_GRAPHICS_CONTEXT_VERSION 2u
-#define OPENNOW_STREAMER_RENDER_COMMAND_VERSION 1u
+#define OPENNOW_STREAMER_RENDER_COMMAND_VERSION 2u
 
 #define OPENNOW_STREAMER_GRAPHICS_API_D3D11 1u
 #define OPENNOW_STREAMER_GRAPHICS_API_VULKAN 2u
@@ -101,6 +101,8 @@ typedef struct OpenNowStreamerRecordCommand {
     size_t struct_size;
     void *command_buffer;
     uint32_t frame_slot;
+    uint32_t upscale_width;
+    uint32_t upscale_height;
 } OpenNowStreamerRecordCommand;
 
 typedef struct OpenNowStreamerFrameInfo {

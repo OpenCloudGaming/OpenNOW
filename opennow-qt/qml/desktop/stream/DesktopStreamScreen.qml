@@ -97,6 +97,7 @@ FocusScope {
         shortcutBindings: ShellStore.streamShortcutBindings()
         videoSize: Qt.size(Number(root.profile.width || 0), Number(root.profile.height || 0))
         frameGeneration: String(ShellStore.settings.frameGeneration || 'off') === '2x'
+        metalFxUpscaling: Qt.platform.os === "osx" && ShellStore.settings.upscaling === "metalfx"
         z: 0
         onLocalShortcutRequested: action => ShellStore.applyStreamShortcutAction(action)
     }

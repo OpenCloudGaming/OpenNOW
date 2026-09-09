@@ -11,7 +11,7 @@ thiserror.workspace = true
 [target.'cfg(target_os = "macos")'.dependencies]
 block2 = "0.6.2"
 libc = "0.2"
-objc2 = "0.6.3"
+objc2 = { version = "0.6.3", features = ["exception"] }
 objc2-app-kit = { version = "0.3.2", features = ["NSEvent"] }
 objc2-audio-toolbox = "0.3.2"
 objc2-core-audio = "0.3.2"
