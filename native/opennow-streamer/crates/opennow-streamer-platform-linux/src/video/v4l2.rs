@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 #[path = "v4l2_ffi.rs"]
-mod ffi;
+pub(super) mod ffi;
 use ffi::*;
 
 use super::VideoDecoder;
@@ -28,25 +28,12 @@ const NV12: u32 = fourcc(*b"NV12");
 const NV12M: u32 = fourcc(*b"NM12");
 const YUV420: u32 = fourcc(*b"YU12");
 const YUV420M: u32 = fourcc(*b"YM12");
-const IOC_WRITE: u64 = 1;
-const IOC_READ: u64 = 2;
-const VIDIOC_DQEVENT: vidioc::_IOC_TYPE =
-    ioctl_code(IOC_READ, 89, mem::size_of::<v4l2_event>() as u64);
-const VIDIOC_SUBSCRIBE_EVENT: vidioc::_IOC_TYPE = ioctl_code(
-    IOC_WRITE,
-    90,
-    mem::size_of::<v4l2_event_subscription>() as u64,
-);
 
 const fn fourcc(bytes: [u8; 4]) -> u32 {
     bytes[0] as u32
         | ((bytes[1] as u32) << 8)
         | ((bytes[2] as u32) << 16)
         | ((bytes[3] as u32) << 24)
-}
-
-const fn ioctl_code(direction: u64, number: u64, size: u64) -> vidioc::_IOC_TYPE {
-    ((direction << 30) | ((b'V' as u64) << 8) | number | (size << 16)) as vidioc::_IOC_TYPE
 }
 
 #[derive(Debug, Clone)]
@@ -100,6 +87,34 @@ struct QueueBuffer {
     queued: bool,
 }
 
+#[derive(Debug, Default)]
+struct CaptureProgress {
+    source_change_pending: bool,
+    last_seen: bool,
+}
+
+impl CaptureProgress {
+    fn needs_reconfigure(&self, streaming: bool) -> bool {
+        self.source_change_pending && (!streaming || self.last_seen)
+    }
+
+    fn can_dequeue(&self, streaming: bool) -> bool {
+        streaming && !self.last_seen
+    }
+
+    fn drain_complete(&self, output_idle: bool) -> bool {
+        output_idle && self.last_seen && !self.source_change_pending
+    }
+
+    fn source_change_eof(&mut self) -> bool {
+        if !self.source_change_pending {
+            return false;
+        }
+        self.last_seen = true;
+        true
+    }
+}
+
 pub(crate) struct V4l2Decoder {
     file: File,
     device: V4l2DeviceInfo,
@@ -111,9 +126,9 @@ pub(crate) struct V4l2Decoder {
     output_streaming: bool,
     capture_streaming: bool,
     capture_format: Option<NegotiatedFormat>,
-    pending_source_change: bool,
-    capture_last_seen: bool,
-    capture_frames_seen: u64,
+    capture_progress: CaptureProgress,
+    submitted_input: bool,
+    drained: bool,
     pending_format_change: Option<StreamFormat>,
 }
 
@@ -168,9 +183,9 @@ impl V4l2Decoder {
             output_streaming: false,
             capture_streaming: false,
             capture_format: None,
-            pending_source_change: false,
-            capture_last_seen: false,
-            capture_frames_seen: 0,
+            capture_progress: CaptureProgress::default(),
+            submitted_input: false,
+            drained: false,
             pending_format_change: None,
         };
         decoder.configure()?;
@@ -180,57 +195,25 @@ impl V4l2Decoder {
     fn configure(&mut self) -> Result<()> {
         let mut subscription: v4l2_event_subscription = zeroed();
         subscription.type_ = V4L2_EVENT_SOURCE_CHANGE;
-        if let Err(error) = ioctl(
+        ioctl(
             self.file.as_raw_fd(),
-            VIDIOC_SUBSCRIBE_EVENT,
+            vidioc::VIDIOC_SUBSCRIBE_EVENT,
             &mut subscription,
-        ) {
-            if error.raw_os_error() != Some(libc::EINVAL) {
-                return Err(Error::io(Subsystem::V4l2, error));
-            }
-        }
+        )
+        .map_err(|error| Error::io(Subsystem::V4l2, error))?;
         set_format(
             self.file.as_raw_fd(),
             self.output_type,
             H264,
-            self.format.width,
-            self.format.height,
+            0,
+            0,
             Some(compressed_buffer_size(
                 self.format.width,
                 self.format.height,
             )),
         )?;
-        let mut negotiated = set_format(
-            self.file.as_raw_fd(),
-            self.capture_type,
-            self.device.capture_fourcc,
-            self.format.width,
-            self.format.height,
-            None,
-        )?;
-        apply_visible_selection(self.file.as_raw_fd(), self.capture_type, &mut negotiated);
-        self.apply_negotiated_format(&negotiated)?;
-
         self.output =
             request_and_map_buffers(self.file.as_raw_fd(), self.output_type, OUTPUT_BUFFER_COUNT)?;
-        self.capture = request_and_map_buffers(
-            self.file.as_raw_fd(),
-            self.capture_type,
-            CAPTURE_BUFFER_COUNT,
-        )?;
-        for index in 0..self.capture.len() {
-            queue_buffer(
-                self.file.as_raw_fd(),
-                self.capture_type,
-                index,
-                &self.capture[index],
-                None,
-                0,
-            )?;
-            self.capture[index].queued = true;
-        }
-        stream_on(self.file.as_raw_fd(), self.capture_type)?;
-        self.capture_streaming = true;
         stream_on(self.file.as_raw_fd(), self.output_type)?;
         self.output_streaming = true;
         Ok(())
@@ -272,6 +255,12 @@ impl V4l2Decoder {
     }
 
     fn submit(&mut self, frame: &EncodedVideoFrame) -> Result<Vec<DecodedVideoFrame>> {
+        if self.drained {
+            return Err(Error::backend(
+                Subsystem::V4l2,
+                "decoder has already been drained",
+            ));
+        }
         let deadline = Instant::now() + Duration::from_millis(100);
         let mut ready = Vec::new();
         let index = loop {
@@ -286,7 +275,7 @@ impl V4l2Decoder {
                     "decoder did not return an output buffer within 100ms",
                 ));
             };
-            self.wait_for_progress(remaining)?;
+            self.wait_for_progress(remaining, true)?;
         };
         let plane = self.output[index]
             .planes
@@ -309,12 +298,13 @@ impl V4l2Decoder {
             frame.timestamp_us,
         )?;
         self.output[index].queued = true;
+        self.submitted_input = true;
         Ok(ready)
     }
 
     fn collect_frames(&mut self) -> Result<Vec<DecodedVideoFrame>> {
         let mut frames = Vec::new();
-        loop {
+        while self.capture_progress.can_dequeue(self.capture_streaming) {
             match dequeue_buffer(
                 self.file.as_raw_fd(),
                 self.capture_type,
@@ -330,22 +320,18 @@ impl V4l2Decoder {
                     }
                     self.capture[index].queued = false;
                     let is_last = dequeued.flags & V4L2_BUF_FLAG_LAST != 0;
-                    let is_error = dequeued.flags & V4L2_BUF_FLAG_ERROR != 0;
-                    let has_data = dequeued.bytes_used.iter().any(|used| *used > 0);
-                    if !is_error && has_data {
+                    let frame = capture_has_frame(&dequeued).and_then(|has_data| {
+                        if !has_data {
+                            return Ok(None);
+                        }
                         let geometry = self.capture_format.as_ref().ok_or_else(|| {
                             Error::backend(Subsystem::V4l2, "capture format is unavailable")
                         })?;
-                        frames.push(copy_capture_frame(
-                            &self.capture[index],
-                            &dequeued,
-                            self.format,
-                            geometry,
-                        )?);
-                        self.capture_frames_seen = self.capture_frames_seen.saturating_add(1);
-                    }
+                        copy_capture_frame(&self.capture[index], &dequeued, self.format, geometry)
+                            .map(Some)
+                    });
                     if is_last {
-                        self.capture_last_seen = true;
+                        self.capture_progress.last_seen = true;
                     } else {
                         queue_buffer(
                             self.file.as_raw_fd(),
@@ -357,12 +343,26 @@ impl V4l2Decoder {
                         )?;
                         self.capture[index].queued = true;
                     }
+                    if let Some(frame) = frame? {
+                        frames.push(frame);
+                    }
                 }
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
+                Err(error) if error.raw_os_error() == Some(libc::EPIPE) => {
+                    self.handle_events()?;
+                    if self.capture_progress.source_change_eof() {
+                        break;
+                    }
+                    return Err(Error::io(Subsystem::V4l2, error));
+                }
                 Err(error) => return Err(Error::io(Subsystem::V4l2, error)),
             }
         }
-        if self.pending_source_change && self.capture_last_seen {
+        self.handle_events()?;
+        if self
+            .capture_progress
+            .needs_reconfigure(self.capture_streaming)
+        {
             self.reconfigure_capture()?;
         }
         Ok(frames)
@@ -383,6 +383,7 @@ impl V4l2Decoder {
                         )
                     })?;
                     buffer.queued = false;
+                    check_buffer_error(&dequeued, "output")?;
                 }
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(()),
                 Err(error) => return Err(Error::io(Subsystem::V4l2, error)),
@@ -390,10 +391,16 @@ impl V4l2Decoder {
         }
     }
 
-    fn wait_for_progress(&mut self, timeout: Duration) -> Result<()> {
+    fn wait_for_progress(&mut self, timeout: Duration, wait_for_output: bool) -> Result<()> {
         let mut descriptor = libc::pollfd {
             fd: self.file.as_raw_fd(),
-            events: libc::POLLIN | libc::POLLOUT | libc::POLLPRI,
+            events: libc::POLLPRI
+                | if self.capture_progress.can_dequeue(self.capture_streaming) {
+                    libc::POLLIN
+                } else {
+                    0
+                }
+                | if wait_for_output { libc::POLLOUT } else { 0 },
             revents: 0,
         };
         let result = unsafe {
@@ -410,14 +417,18 @@ impl V4l2Decoder {
             }
             return Err(Error::io(Subsystem::V4l2, error));
         }
-        if descriptor.revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) != 0 {
+        if result > 0 && descriptor.revents & libc::POLLPRI != 0 {
+            self.handle_events()?;
+        }
+        if descriptor.revents & (libc::POLLHUP | libc::POLLNVAL) != 0
+            || (descriptor.revents & libc::POLLERR != 0
+                && self.capture_streaming
+                && descriptor.revents & libc::POLLPRI == 0)
+        {
             return Err(Error::DeviceLost {
                 subsystem: Subsystem::V4l2,
                 reason: format!("decoder poll failed with revents={:#x}", descriptor.revents),
             });
-        }
-        if result > 0 && descriptor.revents & libc::POLLPRI != 0 {
-            self.handle_events()?;
         }
         Ok(())
     }
@@ -425,18 +436,19 @@ impl V4l2Decoder {
     fn handle_events(&mut self) -> Result<()> {
         loop {
             let mut event: v4l2_event = zeroed();
-            match ioctl(self.file.as_raw_fd(), VIDIOC_DQEVENT, &mut event) {
+            match ioctl(self.file.as_raw_fd(), vidioc::VIDIOC_DQEVENT, &mut event) {
                 Ok(()) => {
                     if event.type_ != V4L2_EVENT_SOURCE_CHANGE {
                         continue;
                     }
                     let changes = unsafe { event.u.src_change.changes };
                     if changes & V4L2_EVENT_SRC_CH_RESOLUTION != 0 {
-                        if self.capture_frames_seen == 0 {
+                        self.capture_progress.source_change_pending = true;
+                        if self
+                            .capture_progress
+                            .needs_reconfigure(self.capture_streaming)
+                        {
                             self.reconfigure_capture()?;
-                        } else {
-                            self.pending_source_change = true;
-                            self.capture_last_seen = false;
                         }
                     }
                 }
@@ -451,9 +463,19 @@ impl V4l2Decoder {
             stream_off(self.file.as_raw_fd(), self.capture_type)?;
             self.capture_streaming = false;
         }
-        self.capture.clear();
-        release_buffers(self.file.as_raw_fd(), self.capture_type)?;
-        let mut negotiated = get_format(self.file.as_raw_fd(), self.capture_type)?;
+        if !self.capture.is_empty() {
+            self.capture.clear();
+            release_buffers(self.file.as_raw_fd(), self.capture_type)?;
+        }
+        let parsed = get_format(self.file.as_raw_fd(), self.capture_type)?;
+        let mut negotiated = set_format(
+            self.file.as_raw_fd(),
+            self.capture_type,
+            self.device.capture_fourcc,
+            parsed.width,
+            parsed.height,
+            None,
+        )?;
         apply_visible_selection(self.file.as_raw_fd(), self.capture_type, &mut negotiated);
         self.apply_negotiated_format(&negotiated)?;
         self.capture = request_and_map_buffers(
@@ -474,9 +496,7 @@ impl V4l2Decoder {
         }
         stream_on(self.file.as_raw_fd(), self.capture_type)?;
         self.capture_streaming = true;
-        self.pending_source_change = false;
-        self.capture_last_seen = false;
-        self.capture_frames_seen = 0;
+        self.capture_progress = CaptureProgress::default();
         Ok(())
     }
 
@@ -499,48 +519,61 @@ impl V4l2Decoder {
 impl VideoDecoder for V4l2Decoder {
     fn decode(&mut self, frame: &EncodedVideoFrame) -> Result<Vec<DecodedVideoFrame>> {
         let mut frames = self.submit(frame)?;
-        self.wait_for_progress(Duration::from_millis(1))?;
+        self.wait_for_progress(Duration::from_millis(1), false)?;
         self.drain_output()?;
         frames.extend(self.collect_frames()?);
         Ok(frames)
     }
 
+    fn poll(&mut self) -> Result<Vec<DecodedVideoFrame>> {
+        if self.drained {
+            return Ok(Vec::new());
+        }
+        self.drain_output()?;
+        self.collect_frames()
+    }
+
     fn flush(&mut self) -> Result<Vec<DecodedVideoFrame>> {
-        let mut command: v4l2_decoder_cmd = zeroed();
-        command.cmd = V4L2_DEC_CMD_STOP;
-        self.pending_source_change = false;
-        self.capture_last_seen = false;
-        let command_supported = match ioctl(
-            self.file.as_raw_fd(),
-            vidioc::VIDIOC_DECODER_CMD,
-            &mut command,
-        ) {
-            Ok(()) => true,
-            Err(error) if matches!(error.raw_os_error(), Some(libc::EINVAL | libc::ENOTTY)) => {
-                false
-            }
-            Err(error) => return Err(Error::io(Subsystem::V4l2, error)),
-        };
+        if self.drained || !self.submitted_input {
+            return Ok(Vec::new());
+        }
         let deadline = Instant::now() + Duration::from_millis(250);
-        let mut last_frame = Instant::now();
+        let mut stop_sent = false;
         let mut frames = Vec::new();
         while Instant::now() < deadline {
-            self.wait_for_progress(Duration::from_millis(10))?;
             self.drain_output()?;
-            let ready = self.collect_frames()?;
-            if !ready.is_empty() {
-                last_frame = Instant::now();
-                frames.extend(ready);
-            }
+            frames.extend(self.collect_frames()?);
             let output_idle = !self.output.iter().any(|buffer| buffer.queued);
-            if output_idle
-                && ((command_supported && self.capture_last_seen)
-                    || (!command_supported && last_frame.elapsed() >= Duration::from_millis(30)))
-            {
-                break;
+            if self.capture_progress.drain_complete(output_idle) {
+                self.drained = true;
+                return Ok(frames);
             }
+            if !stop_sent
+                && self.capture_streaming
+                && !self.capture_progress.source_change_pending
+                && !self.capture_progress.last_seen
+            {
+                let mut command: v4l2_decoder_cmd = zeroed();
+                command.cmd = V4L2_DEC_CMD_STOP;
+                ioctl(
+                    self.file.as_raw_fd(),
+                    vidioc::VIDIOC_DECODER_CMD,
+                    &mut command,
+                )
+                .map_err(|error| Error::io(Subsystem::V4l2, error))?;
+                stop_sent = true;
+            }
+            self.wait_for_progress(
+                deadline
+                    .saturating_duration_since(Instant::now())
+                    .min(Duration::from_millis(10)),
+                !output_idle,
+            )?;
         }
-        Ok(frames)
+        Err(Error::backend(
+            Subsystem::V4l2,
+            "decoder drain did not complete within 250ms",
+        ))
     }
 
     fn take_format_change(&mut self) -> Option<StreamFormat> {
@@ -599,6 +632,15 @@ fn inspect_device(path: PathBuf) -> io::Result<V4l2DeviceInfo> {
             "device does not accept H.264",
         ));
     }
+    set_format(
+        fd,
+        output_type,
+        H264,
+        0,
+        0,
+        Some(compressed_buffer_size(0, 0)),
+    )
+    .map_err(|error| io::Error::other(error.to_string()))?;
     let capture = enum_formats(fd, capture_type)?;
     let capture_fourcc = [NV12, NV12M, YUV420, YUV420M]
         .into_iter()
@@ -618,7 +660,7 @@ fn inspect_device(path: PathBuf) -> io::Result<V4l2DeviceInfo> {
     })
 }
 
-fn open_device(path: &Path) -> io::Result<File> {
+pub(super) fn open_device(path: &Path) -> io::Result<File> {
     OpenOptions::new()
         .read(true)
         .write(true)
@@ -626,7 +668,7 @@ fn open_device(path: &Path) -> io::Result<File> {
         .open(path)
 }
 
-fn enum_formats(fd: RawFd, buffer_type: u32) -> io::Result<Vec<u32>> {
+pub(super) fn enum_formats(fd: RawFd, buffer_type: u32) -> io::Result<Vec<u32>> {
     let mut formats = Vec::new();
     for index in 0..256 {
         let mut description: v4l2_fmtdesc = zeroed();
@@ -648,7 +690,7 @@ struct PlaneGeometry {
 }
 
 #[derive(Debug, Clone)]
-struct NegotiatedFormat {
+pub(super) struct NegotiatedFormat {
     width: u32,
     height: u32,
     visible_left: u32,
@@ -661,7 +703,7 @@ struct NegotiatedFormat {
     color_range: ColorRange,
 }
 
-fn set_format(
+pub(super) fn set_format(
     fd: RawFd,
     buffer_type: u32,
     pixel_format: u32,
@@ -671,30 +713,34 @@ fn set_format(
 ) -> Result<NegotiatedFormat> {
     let mut format: v4l2_format = zeroed();
     format.type_ = buffer_type;
+    if size_image.is_none() {
+        ioctl(fd, vidioc::VIDIOC_G_FMT, &mut format)
+            .map_err(|error| Error::io(Subsystem::V4l2, error))?;
+    }
     if is_multiplanar(buffer_type) {
-        let mut pixel: v4l2_pix_format_mplane = zeroed();
+        let mut pixel = unsafe { format.fmt.pix_mp };
         pixel.width = width;
         pixel.height = height;
         pixel.pixelformat = pixel_format;
         pixel.field = v4l2_field_V4L2_FIELD_NONE;
-        pixel.colorspace = v4l2_colorspace_V4L2_COLORSPACE_REC709;
         pixel.num_planes = match pixel_format {
             NV12M => 2,
             YUV420M => 3,
             _ => 1,
         };
         if let Some(size_image) = size_image {
+            pixel.colorspace = v4l2_colorspace_V4L2_COLORSPACE_REC709;
             pixel.plane_fmt[0].sizeimage = size_image;
         }
         format.fmt.pix_mp = pixel;
     } else {
-        let mut pixel: v4l2_pix_format = zeroed();
+        let mut pixel = unsafe { format.fmt.pix };
         pixel.width = width;
         pixel.height = height;
         pixel.pixelformat = pixel_format;
         pixel.field = v4l2_field_V4L2_FIELD_NONE;
-        pixel.colorspace = v4l2_colorspace_V4L2_COLORSPACE_REC709;
         if let Some(size_image) = size_image {
+            pixel.colorspace = v4l2_colorspace_V4L2_COLORSPACE_REC709;
             pixel.sizeimage = size_image;
         }
         format.fmt.pix = pixel;
@@ -838,6 +884,7 @@ fn map_buffer(fd: RawFd, buffer_type: u32, index: usize) -> Result<QueueBuffer> 
     } else {
         1
     };
+    validate_plane_count(plane_count).map_err(|error| Error::io(Subsystem::V4l2, error))?;
     let mut mappings = Vec::with_capacity(plane_count);
     for plane in planes.iter().take(plane_count) {
         let (length, offset) = unsafe {
@@ -916,6 +963,7 @@ struct DequeuedBuffer {
 }
 
 fn dequeue_buffer(fd: RawFd, buffer_type: u32, plane_count: usize) -> io::Result<DequeuedBuffer> {
+    validate_plane_count(plane_count)?;
     let mut planes = [zeroed::<v4l2_plane>(); MAX_PLANES];
     let mut buffer: v4l2_buffer = zeroed();
     buffer.type_ = buffer_type;
@@ -926,6 +974,13 @@ fn dequeue_buffer(fd: RawFd, buffer_type: u32, plane_count: usize) -> io::Result
     }
     ioctl(fd, vidioc::VIDIOC_DQBUF, &mut buffer)?;
     let (bytes_used, data_offsets) = if is_multiplanar(buffer_type) {
+        validate_plane_count(buffer.length as usize)?;
+        if buffer.length as usize != plane_count {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "driver changed buffer plane count",
+            ));
+        }
         (
             planes[..buffer.length as usize]
                 .iter()
@@ -948,6 +1003,49 @@ fn dequeue_buffer(fd: RawFd, buffer_type: u32, plane_count: usize) -> io::Result
         bytes_used,
         data_offsets,
     })
+}
+
+fn validate_plane_count(count: usize) -> io::Result<()> {
+    if count == 0 || count > MAX_PLANES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "driver returned invalid buffer plane count",
+        ));
+    }
+    Ok(())
+}
+
+fn check_buffer_error(buffer: &DequeuedBuffer, queue: &str) -> Result<()> {
+    if buffer.flags & V4L2_BUF_FLAG_ERROR != 0 {
+        return Err(Error::ReferenceLost {
+            subsystem: Subsystem::V4l2,
+            reason: format!(
+                "driver reported corrupt {queue} buffer {} at timestamp {}us; decoder reference recovery is required",
+                buffer.index, buffer.timestamp_us,
+            ),
+        });
+    }
+    Ok(())
+}
+
+fn capture_has_frame(buffer: &DequeuedBuffer) -> Result<bool> {
+    check_buffer_error(buffer, "capture")?;
+    if buffer.bytes_used.len() != buffer.data_offsets.len()
+        || buffer
+            .bytes_used
+            .iter()
+            .zip(&buffer.data_offsets)
+            .any(|(used, offset)| offset > used)
+    {
+        return Err(Error::InvalidFormat(
+            "capture buffer has invalid plane payload bounds".to_owned(),
+        ));
+    }
+    Ok(buffer
+        .bytes_used
+        .iter()
+        .zip(&buffer.data_offsets)
+        .any(|(used, offset)| used > offset))
 }
 
 fn copy_capture_frame(
@@ -1091,15 +1189,10 @@ fn valid_plane_slice<'a>(
         .get(index)
         .ok_or_else(|| Error::InvalidFormat(format!("capture plane {index} is missing")))?;
     let offset = dequeued.data_offsets.get(index).copied().unwrap_or(0);
-    let used = dequeued
-        .bytes_used
-        .get(index)
-        .copied()
-        .unwrap_or(0)
-        .min(mapping.length);
-    if offset > used {
+    let used = dequeued.bytes_used.get(index).copied().unwrap_or(0);
+    if offset > used || used > mapping.length {
         return Err(Error::InvalidFormat(format!(
-            "capture plane {index} has an invalid data offset"
+            "capture plane {index} has invalid payload bounds"
         )));
     }
     Ok(&mapping.as_slice()[offset..used])
@@ -1174,16 +1267,20 @@ fn release_buffers(fd: RawFd, buffer_type: u32) -> Result<()> {
         .map_err(|error| Error::io(Subsystem::V4l2, error))
 }
 
-fn ioctl<T>(fd: RawFd, request: vidioc::_IOC_TYPE, value: &mut T) -> io::Result<()> {
-    let result = unsafe { libc::ioctl(fd, request, (value as *mut T).cast::<libc::c_void>()) };
-    if result < 0 {
-        Err(io::Error::last_os_error())
-    } else {
-        Ok(())
+pub(super) fn ioctl<T>(fd: RawFd, request: vidioc::_IOC_TYPE, value: &mut T) -> io::Result<()> {
+    loop {
+        let result = unsafe { libc::ioctl(fd, request, (value as *mut T).cast::<libc::c_void>()) };
+        if result >= 0 {
+            return Ok(());
+        }
+        let error = io::Error::last_os_error();
+        if error.kind() != io::ErrorKind::Interrupted {
+            return Err(error);
+        }
     }
 }
 
-fn zeroed<T>() -> T {
+pub(super) fn zeroed<T>() -> T {
     unsafe { mem::zeroed() }
 }
 
@@ -1215,6 +1312,167 @@ fn fourcc_name(value: u32) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn decoder_without_device(drained: bool) -> V4l2Decoder {
+        V4l2Decoder {
+            file: File::open("/dev/null").unwrap(),
+            device: V4l2DeviceInfo {
+                path: PathBuf::from("/dev/null"),
+                driver: String::new(),
+                card: String::new(),
+                multiplanar: true,
+                capture_fourcc: NV12,
+            },
+            format: StreamFormat::h264_default(1920, 1080).unwrap(),
+            output_type: v4l2_buf_type_V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE,
+            capture_type: v4l2_buf_type_V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE,
+            output: Vec::new(),
+            capture: Vec::new(),
+            output_streaming: false,
+            capture_streaming: false,
+            capture_format: None,
+            capture_progress: CaptureProgress::default(),
+            submitted_input: false,
+            drained,
+            pending_format_change: None,
+        }
+    }
+
+    #[test]
+    fn polling_a_drained_decoder_returns_without_accessing_device() {
+        assert!(decoder_without_device(true).poll().unwrap().is_empty());
+    }
+
+    #[test]
+    fn polling_propagates_dequeue_errors() {
+        let error = decoder_without_device(false).poll().unwrap_err();
+        match error {
+            Error::Io {
+                subsystem: Subsystem::V4l2,
+                source,
+            } => {
+                assert_eq!(source.raw_os_error(), Some(libc::ENOTTY));
+            }
+            other => panic!("unexpected polling error: {other}"),
+        }
+    }
+
+    fn capture_buffer(flags: u32, bytes_used: usize, data_offset: usize) -> DequeuedBuffer {
+        DequeuedBuffer {
+            index: 2,
+            flags,
+            timestamp_us: 123_456,
+            bytes_used: vec![bytes_used],
+            data_offsets: vec![data_offset],
+        }
+    }
+
+    #[test]
+    fn startup_waits_for_source_metadata_without_dequeuing_capture() {
+        let mut progress = CaptureProgress::default();
+        assert!(!progress.can_dequeue(false));
+        assert!(!progress.needs_reconfigure(false));
+        progress.source_change_pending = true;
+        assert!(progress.needs_reconfigure(false));
+        assert!(!progress.last_seen);
+    }
+
+    #[test]
+    fn streaming_source_change_waits_for_last_even_before_first_frame() {
+        let mut progress = CaptureProgress {
+            source_change_pending: true,
+            ..CaptureProgress::default()
+        };
+        assert!(!progress.needs_reconfigure(true));
+        assert!(progress.can_dequeue(true));
+        progress.last_seen = true;
+        assert!(!progress.can_dequeue(true));
+        assert!(progress.needs_reconfigure(true));
+    }
+
+    #[test]
+    fn last_before_source_event_is_preserved_until_reconfiguration() {
+        let mut progress = CaptureProgress {
+            last_seen: true,
+            ..CaptureProgress::default()
+        };
+        assert!(!progress.can_dequeue(true));
+        assert!(!progress.needs_reconfigure(true));
+        progress.source_change_pending = true;
+        assert!(progress.needs_reconfigure(true));
+        progress = CaptureProgress::default();
+        assert!(progress.can_dequeue(true));
+        assert!(!progress.needs_reconfigure(true));
+    }
+
+    #[test]
+    fn drain_requires_last_and_all_output_buffers_without_pending_source_change() {
+        let mut progress = CaptureProgress::default();
+        assert!(!progress.drain_complete(true));
+        progress.last_seen = true;
+        assert!(!progress.drain_complete(false));
+        assert!(progress.drain_complete(true));
+        progress.source_change_pending = true;
+        assert!(!progress.drain_complete(true));
+    }
+
+    #[test]
+    fn source_change_eof_accepts_pi_driver_terminal_state_without_last_buffer() {
+        let mut progress = CaptureProgress::default();
+        assert!(!progress.source_change_eof());
+        assert!(!progress.last_seen);
+        progress.source_change_pending = true;
+        assert!(progress.source_change_eof());
+        assert!(!progress.can_dequeue(true));
+        assert!(progress.needs_reconfigure(true));
+        assert!(!progress.drain_complete(true));
+    }
+
+    #[test]
+    fn capture_error_is_reported_even_on_empty_last_buffer() {
+        for bytes_used in [0, 64] {
+            for flags in [
+                V4L2_BUF_FLAG_ERROR,
+                V4L2_BUF_FLAG_ERROR | V4L2_BUF_FLAG_LAST,
+            ] {
+                let error = capture_has_frame(&capture_buffer(flags, bytes_used, 0)).unwrap_err();
+                assert!(matches!(
+                    error,
+                    Error::ReferenceLost {
+                        subsystem: Subsystem::V4l2,
+                        ..
+                    }
+                ));
+                assert!(error.to_string().contains("123456us"));
+            }
+        }
+    }
+
+    #[test]
+    fn output_error_requires_reference_recovery() {
+        assert!(check_buffer_error(&capture_buffer(V4L2_BUF_FLAG_ERROR, 64, 0), "output").is_err());
+    }
+
+    #[test]
+    fn empty_last_is_not_a_frame_but_payload_on_last_is_preserved() {
+        assert!(!capture_has_frame(&capture_buffer(V4L2_BUF_FLAG_LAST, 0, 0)).unwrap());
+        assert!(!capture_has_frame(&capture_buffer(V4L2_BUF_FLAG_LAST, 32, 32)).unwrap());
+        assert!(capture_has_frame(&capture_buffer(V4L2_BUF_FLAG_LAST, 64, 32)).unwrap());
+        assert!(capture_has_frame(&capture_buffer(0, 32, 64)).is_err());
+    }
+
+    #[test]
+    fn buffer_plane_counts_are_bounded_before_array_access() {
+        for count in [0, MAX_PLANES + 1, usize::MAX] {
+            assert_eq!(
+                validate_plane_count(count).unwrap_err().kind(),
+                io::ErrorKind::InvalidData
+            );
+        }
+        for count in 1..=MAX_PLANES {
+            assert!(validate_plane_count(count).is_ok());
+        }
+    }
 
     #[test]
     fn copies_visible_rows_without_coded_padding() {

@@ -103,8 +103,10 @@ public:
                         reportFailure(QStringLiteral("Qt is not using the embedded Vulkan Video device. Restart OpenNOW to recreate the shared graphics device."));
                         return;
                     }
-                } else if (LinuxVulkanGraphics::dmabufImportEnabled(handles->inst, handles->physDev))
-                    context.enabled_capabilities = OPENNOW_STREAMER_GRAPHICS_CAP_VULKAN_DMABUF_IMPORT;
+                } else {
+                    context.enabled_capabilities = LinuxVulkanGraphics::enabledImportCapabilities(
+                        handles->inst, handles->physDev);
+                }
 #endif
                 break;
             }

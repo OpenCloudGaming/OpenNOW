@@ -19,6 +19,33 @@ and the generated Rust dependency section includes the resolved SDL 2 notices.
 
 https://www.libsdl.org/
 
+FFmpeg
+======
+
+Bundled Linux builds statically link FFmpeg through ffmpeg-sys-next. FFmpeg's
+default combined license is LGPL-2.1-or-later; the binding crate's WTFPL does
+not replace FFmpeg's license. These builds do not enable GPL, version3, or
+nonfree components. The complete LGPL 2.1 text and upstream licensing details
+are packaged as FFmpeg-LGPL-2.1.txt and FFmpeg-LICENSE.md.
+
+Linux ARM64 bundled builds use the Raspberry Pi FFmpeg fork at the immutable
+commit f43bd9dafd9349b6824ee1fdcd967662fcc94c20:
+https://github.com/jc-kynesim/rpi-ffmpeg/tree/f43bd9dafd9349b6824ee1fdcd967662fcc94c20
+
+Its SAND and V4L2 request additions also contain BSD-3-Clause and MIT-licensed
+code. Their copyright and license notices are packaged in
+FFmpeg-Raspberry-Pi-NOTICES.txt. Other Linux architectures retain the upstream
+FFmpeg release/9.0 source path: https://github.com/FFmpeg/FFmpeg/tree/release/9.0
+
+The OpenNOW source distribution contains the build configuration in
+native/opennow-streamer/vendor/ffmpeg-sys-next/build.rs and the Qt/Rust build
+files needed to rebuild the application with modified FFmpeg libraries.
+The fetched FFmpeg checkout preserves its original copyright and COPYING
+files. Distributors of a statically linked binary must provide its exact
+corresponding FFmpeg source and the materials required to relink against a
+modified compatible FFmpeg, as required by LGPL 2.1 section 6. A source URL
+or this notice alone does not replace those distribution obligations.
+
 OpenH264
 ========
 

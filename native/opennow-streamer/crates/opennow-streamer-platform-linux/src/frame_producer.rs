@@ -7,6 +7,8 @@ use std::time::Duration;
 
 use ash::vk::{self, Handle};
 
+mod sand;
+
 use crate::{
     DecodedVideoFrame, DmaBufFrame, DmaBufPlane, Error, FramePlane, PixelFormat, Result, Subsystem,
     VulkanVideoFrame,
@@ -32,6 +34,7 @@ pub struct VulkanRenderDevice {
     pub queue: usize,
     pub queue_family: u32,
     pub dmabuf_import_enabled: bool,
+    pub dmabuf_buffer_import_enabled: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -245,6 +248,9 @@ impl LinuxGpuFrameProducer {
 
     pub fn frame(&self, frame: DecodedVideoFrame) -> Result<LinuxGpuFrame> {
         frame.validate()?;
+        if let Some(dmabuf) = frame.dmabuf.as_ref().filter(|frame| sand::is_sand(frame)) {
+            sand::wait_ready(dmabuf, DECODE_WAIT_TIMEOUT)?;
+        }
         // This method runs on opennow-embedded-linux-frame-publisher. Retain the
         // source owner while waiting, without locking render/presentation state.
         if let Some(vulkan) = frame
@@ -387,6 +393,7 @@ impl CpuNv12Frame {
 pub enum PreparedLinuxFrame {
     Vulkan(PreparedVulkanFrame),
     DmaBuf(Arc<ImportedNv12Frame>),
+    Sand(sand::ImportedSandFrame),
     Cpu(CpuNv12Frame),
 }
 
@@ -395,6 +402,7 @@ impl PreparedLinuxFrame {
         match self {
             Self::Vulkan(frame) => frame.source.timestamp_us,
             Self::DmaBuf(frame) => frame.source.timestamp_us,
+            Self::Sand(frame) => frame.source.timestamp_us,
             Self::Cpu(frame) => frame.source.timestamp_us,
         }
     }
@@ -505,6 +513,7 @@ struct FrameSlotResources {
     output_initialized: bool,
     framebuffer: vk::Framebuffer,
     cpu: Option<CpuUploadResources>,
+    sand: Option<sand::SandImages>,
     owned_input_views: Vec<vk::ImageView>,
     frame: Option<PreparedLinuxFrame>,
 }
@@ -703,6 +712,20 @@ impl LinuxFrameProducer {
             }));
         }
         let mut gpu_error = None;
+        if frame
+            .dmabuf
+            .as_ref()
+            .is_some_and(|frame| sand::is_sand(frame))
+        {
+            if !self.render.dmabuf_buffer_import_enabled {
+                return Err(Error::unavailable(
+                    Subsystem::Vulkan,
+                    "SAND DMA-BUF requires Qt Vulkan external buffer import and foreign queue ownership support",
+                ));
+            }
+            return sand::import(&self.instance, self.physical_device, &self.device, frame)
+                .map(PreparedLinuxFrame::Sand);
+        }
         if self.dmabuf_import_supported && frame.dmabuf.is_some() {
             match self.import_dmabuf(Arc::clone(&frame)) {
                 Ok(imported) => return Ok(PreparedLinuxFrame::DmaBuf(imported)),
@@ -1069,6 +1092,7 @@ impl LinuxFrameProducer {
             output_initialized: false,
             framebuffer,
             cpu: None,
+            sand: None,
             owned_input_views: Vec::new(),
             frame: None,
         });
@@ -1098,6 +1122,25 @@ impl LinuxFrameProducer {
                 vk::ImageView::from_raw(frame.luma_view),
                 vk::ImageView::from_raw(frame.chroma_view),
             )),
+            PreparedLinuxFrame::Sand(frame) => {
+                if resources.sand.is_none() {
+                    resources.sand = Some(sand::SandImages::new(
+                        &self.instance,
+                        self.physical_device,
+                        &self.device,
+                        width,
+                        height,
+                    )?);
+                }
+                let images = resources.sand.as_mut().expect("SAND images initialized");
+                images.record(
+                    &self.device,
+                    command_buffer,
+                    self.render.queue_family,
+                    frame,
+                );
+                Ok(images.views())
+            }
             PreparedLinuxFrame::Cpu(frame) => {
                 if resources.cpu.is_none() {
                     resources.cpu = Some(create_cpu_upload_resources(
@@ -1190,7 +1233,7 @@ impl LinuxFrameProducer {
                         .subresource_range(image_color_range()),
                 );
             }
-            PreparedLinuxFrame::Cpu(_) => {}
+            PreparedLinuxFrame::Cpu(_) | PreparedLinuxFrame::Sand(_) => {}
         }
         acquire.push(
             vk::ImageMemoryBarrier::default()
@@ -1335,7 +1378,7 @@ impl LinuxFrameProducer {
                     .image(vk::Image::from_raw(frame.image))
                     .subresource_range(image_color_range()),
             ),
-            PreparedLinuxFrame::Cpu(_) => {}
+            PreparedLinuxFrame::Cpu(_) | PreparedLinuxFrame::Sand(_) => {}
         }
         unsafe {
             self.device.cmd_pipeline_barrier(
@@ -1495,21 +1538,32 @@ fn create_gpu_image(
     }
     .map_err(|error| vk_error("create embedded GPU image", error))?;
     let requirements = unsafe { device.get_image_memory_requirements(image) };
-    let memory_type = find_memory_type(
+    let memory_type = match find_memory_type(
         instance,
         physical_device,
         requirements.memory_type_bits,
         vk::MemoryPropertyFlags::DEVICE_LOCAL,
-    )?;
-    let memory = unsafe {
+    ) {
+        Ok(memory_type) => memory_type,
+        Err(error) => {
+            unsafe { device.destroy_image(image, None) };
+            return Err(error);
+        }
+    };
+    let memory = match unsafe {
         device.allocate_memory(
             &vk::MemoryAllocateInfo::default()
                 .allocation_size(requirements.size)
                 .memory_type_index(memory_type),
             None,
         )
-    }
-    .map_err(|error| vk_error("allocate embedded GPU image", error))?;
+    } {
+        Ok(memory) => memory,
+        Err(error) => {
+            unsafe { device.destroy_image(image, None) };
+            return Err(vk_error("allocate embedded GPU image", error));
+        }
+    };
     if let Err(error) = unsafe { device.bind_image_memory(image, memory, 0) } {
         unsafe {
             device.free_memory(memory, None);
@@ -1521,8 +1575,8 @@ fn create_gpu_image(
         Ok(view) => view,
         Err(error) => {
             unsafe {
-                device.free_memory(memory, None);
                 device.destroy_image(image, None);
+                device.free_memory(memory, None);
             }
             return Err(error);
         }
@@ -2241,6 +2295,7 @@ mod tests {
                 output_initialized: false,
                 framebuffer: vk::Framebuffer::null(),
                 cpu: None,
+                sand: None,
                 owned_input_views: Vec::new(),
                 frame: None,
             };
@@ -2293,6 +2348,7 @@ mod tests {
                 queue: device.get_device_queue(family, 0).as_raw() as usize,
                 queue_family: family,
                 dmabuf_import_enabled: false,
+                dmabuf_buffer_import_enabled: false,
             };
             let mut producer = LinuxFrameProducer::new_with_slots(render, 2).unwrap();
             producer.ensure_renderer(GpuTextureFormat::Rgba8).unwrap();
@@ -2437,6 +2493,7 @@ mod tests {
                         queue: queue.as_raw() as usize,
                         queue_family: family,
                         dmabuf_import_enabled: false,
+                        dmabuf_buffer_import_enabled: false,
                     },
                     commands[0].as_raw() as usize,
                     0,
@@ -2484,6 +2541,7 @@ mod tests {
             queue: 0,
             queue_family: 0,
             dmabuf_import_enabled: false,
+            dmabuf_buffer_import_enabled: false,
         };
         producer.render_resources.state.lock().unwrap().render = Some(previous);
         let frame = LinuxGpuFrame {
@@ -2584,6 +2642,7 @@ mod tests {
             queue: 4,
             queue_family: 0,
             dmabuf_import_enabled: false,
+            dmabuf_buffer_import_enabled: false,
         };
         (frame, format, render)
     }
@@ -2645,6 +2704,7 @@ mod tests {
                 queue: queue.as_raw() as usize,
                 queue_family: family,
                 dmabuf_import_enabled: false,
+                dmabuf_buffer_import_enabled: false,
             };
             for (pixel_format, completed_copy) in [
                 (PixelFormat::Nv12, false),

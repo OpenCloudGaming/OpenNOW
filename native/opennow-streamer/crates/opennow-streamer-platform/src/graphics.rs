@@ -34,6 +34,7 @@ pub struct GraphicsContext {
     pub queue: usize,
     pub queue_family_index: u32,
     pub vulkan_dmabuf_import_enabled: bool,
+    pub vulkan_dmabuf_buffer_import_enabled: bool,
 }
 
 impl GraphicsContext {
@@ -175,6 +176,7 @@ impl GraphicsFrame for opennow_streamer_platform_linux::LinuxGpuFrame {
                     queue: context.queue,
                     queue_family: context.queue_family_index,
                     dmabuf_import_enabled: context.vulkan_dmabuf_import_enabled,
+                    dmabuf_buffer_import_enabled: context.vulkan_dmabuf_buffer_import_enabled,
                 },
                 command.command_buffer,
                 command.frame_slot,
@@ -746,6 +748,7 @@ mod tests {
             queue: 4,
             queue_family_index: 5,
             vulkan_dmabuf_import_enabled: false,
+            vulkan_dmabuf_buffer_import_enabled: false,
         }
     }
 

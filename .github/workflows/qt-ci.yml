@@ -61,6 +61,7 @@ jobs:
           python3 -m unittest discover -s opennow-qt/tests -p test_release_metadata.py
           python3 -m unittest discover -s opennow-qt/tests -p test_nightly_release.py
           python3 -m unittest discover -s opennow-qt/tests -p test_macos_build.py
+          python3 -m unittest discover -s opennow-qt/tests -p test_ffmpeg_build.py
           python3 -m unittest discover -s opennow-qt/tests -p test_windows_test_bundle.py
           python3 -m unittest discover -s opennow-qt/tests -p test_ci_build_cache.py
           python3 -m unittest discover -s opennow-qt/tests -p test_ci_release_trust.py
@@ -287,6 +288,10 @@ jobs:
             pkg-config \
             wayland-protocols \
             xvfb
+
+      - name: Install ARM64 V4L2 request dependencies
+        if: matrix.label == 'linux-arm64'
+        run: sudo apt-get install -y libudev-dev
 
       - name: Cache Rust dependencies and build artifacts
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
