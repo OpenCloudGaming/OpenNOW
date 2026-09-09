@@ -25,7 +25,7 @@ From `geronimo.log` and `geronimo.log.bak` on this machine. `nvbFeatureControl` 
 | NVB type | Log verb | When | Meaning from surrounding lines | OpenNOW command | Payload in this tree |
 |---|---|---|---|---|---|
 | 0 | Enabled / Disabled | Every cursor-info change. Official then hides the remote cursor. | Server-composited cursor in the video | `0x0308` `COMMAND_MOUSE_CURSOR_CAPTURE` | Known. See below. |
-| 6 | Enabled | After `Sending haptics state 1 to server` | Gamepad rumble | `0x0322` `COMMAND_HAPTICS_STATE` | Known. One byte. See test `transport_control_inputs_do_not_disable_native_input`. |
+| 6 | Enabled | After `Sending haptics state 1 to server` | Gamepad rumble | `0x0206` remote input, inner type 13 | Little-endian u16 enable flag in the timestamp envelope. See test `transport_control_inputs_do_not_disable_native_input`. |
 | 8 | Enabled | Once when the session is ready, with type 0 | Track remote cursor image | `0x030d` `COMMAND_TRACK_REMOTE_CURSOR_IMAGE` | Known. See below. |
 | 10 | Update | Next to `Sending SDL mouse settings` or `Sending alt mouse settings (accel=0, speed=10)` | Host mouse accel and speed | none captured | **Not dumped. Do not send a guess.** |
 
@@ -56,6 +56,18 @@ on   0d 03 01 00 01
 ```
 
 Activation sends **on** and leaves it on.
+
+### Type 6 haptics enable
+
+Activation sends remote-input type 13 with body `01 00`, padded and timestamped inside
+the type `0x0e` envelope carried by control command `0x0206`. Disabling uses body
+`00 00`. The earlier mapping to `0x0322` was incorrect: that command controls cursor
+mimic strategy, not haptics.
+
+This mapping follows OpenNOW-Mac revision `666bd4a3391e13b074b37eecfd61d568e9231d34`,
+`GFN/NVST/BifrostFree/NvstRemoteInput.swift` (`hapticsState` and `framed`) and
+`NvstControlCommand.swift` (`mimicCursorStrategy`). Activation and enable/disable
+vectors are checked in `nvst_input.rs`.
 
 ### Type 10 mouse settings — no captured frame
 
@@ -143,7 +155,8 @@ First update in the test. sequence `1`, buttons `0x1000`, timestamp `0x015b171a`
 
 The inner player index is hardcoded `03`. Slot and bitmap from the 38-byte type-12 packet are not copied.
 
-`INPUT_HAPTICS_ENABLED` encodes to `22 03 01 00 01` when the flag is on.
+`INPUT_HAPTICS_ENABLED` uses remote-input type 13 under command `0x0206`, with a
+little-endian u16 enable flag and timestamp envelope; see Type 6 haptics enable above.
 
 ## Media control, not NVB features
 

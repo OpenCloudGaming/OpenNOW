@@ -179,7 +179,7 @@ private slots:
         QVERIFY(snapshots.at(2).at(5).toInt() > 0);
     }
 
-    void disconnectedSelectionDoesNotFallBackToDuplicate()
+    void disconnectedSelectionReturnsToAutomaticInput()
     {
         ControllerInput input;
         QSignalSpy snapshots(&input, &ControllerInput::gamepadSnapshot);
@@ -189,18 +189,24 @@ private slots:
         QTRY_COMPARE(input.controllerCount(), 2);
         input.setInputControllerId(mapped.id);
         input.setShellCaptureEnabled(false);
-        const auto selected = mapped.id;
+        QSignalSpy selectionChanges(&input, &ControllerInput::inputControllerIdChanged);
+        snapshots.clear();
         QVERIFY(SDL_DetachVirtualJoystick(mapped.id));
         mapped.id = 0;
-        QTRY_COMPARE(input.controllerCount(), 0);
+        QTRY_COMPARE(input.availableControllers().size(), 1);
         auto *pollTimer = input.findChild<QTimer *>(QStringLiteral("controllerPollTimer"));
         QVERIFY(pollTimer);
-        QCOMPARE(pollTimer->interval(), 100);
-        QCOMPARE(input.inputControllerId(), selected);
-        QVERIFY(input.controllers().isEmpty());
-        QCOMPARE(input.availableControllers().size(), 1);
-        QCOMPARE(snapshots.last().at(0).toUInt(), 0u);
-        QCOMPARE(snapshots.last().at(1).toUInt(), 0u);
+        QCOMPARE(pollTimer->interval(), 4);
+        QCOMPARE(input.inputControllerId(), 0u);
+        QCOMPARE(selectionChanges.size(), 1);
+        QCOMPARE(input.controllerCount(), 1);
+        QCOMPARE(input.controllers().size(), 1);
+        QVERIFY(!snapshots.isEmpty());
+        QCOMPARE(snapshots.first().at(0).toUInt(), 0u);
+        QCOMPARE(snapshots.first().at(1).toUInt(), 0u);
+        for (int index = 2; index < 9; ++index)
+            QCOMPARE(snapshots.first().at(index).toInt(), 0);
+        QCOMPARE(snapshots.last().at(1).toUInt(), 0x0101u);
         snapshots.clear();
         VirtualPad reconnected;
         QVERIFY(reconnected.id);
@@ -208,12 +214,66 @@ private slots:
         QVERIFY(physical.button(true));
         QVERIFY(reconnected.button(true));
         QTest::qWait(150);
-        QVERIFY(snapshots.isEmpty());
+        QCOMPARE(input.controllerCount(), 2);
+        QVERIFY(!snapshots.isEmpty());
+        for (const auto &snapshot : snapshots)
+            QCOMPARE(snapshot.at(1).toUInt(), 0x0303u);
         input.setInputControllerId(reconnected.id);
         QCOMPARE(input.controllerCount(), 1);
         QCOMPARE(pollTimer->interval(), 4);
         QCOMPARE(snapshots.last().at(0).toUInt(), 0u);
         QCOMPARE(snapshots.last().at(2).toUInt(), 0x1000u);
+    }
+
+    void repeatedReplacementUsesPlayerOne_data()
+    {
+        QTest::addColumn<bool>("selected");
+        QTest::addColumn<bool>("shell");
+        QTest::newRow("automatic-gameplay") << false << false;
+        QTest::newRow("selected-gameplay") << true << false;
+        QTest::newRow("automatic-shell") << false << true;
+        QTest::newRow("selected-shell") << true << true;
+    }
+
+    void repeatedReplacementUsesPlayerOne()
+    {
+        QFETCH(bool, selected);
+        QFETCH(bool, shell);
+        ControllerInput input;
+        SourceKeySink sink;
+        QSignalSpy snapshots(&input, &ControllerInput::gamepadSnapshot);
+        input.setShellCaptureEnabled(shell);
+        SDL_JoystickID previous = 0;
+        for (int cycle = 0; cycle < 3; ++cycle) {
+            VirtualPad pad;
+            QVERIFY(pad.id && pad.id != previous);
+            previous = pad.id;
+            QTRY_COMPARE(input.controllerCount(), 1);
+            QCOMPARE(input.inputControllerId(), 0u);
+            QCOMPARE(input.controllers().first().toMap().value(QStringLiteral("slot")).toInt(), 1);
+            if (selected) input.setInputControllerId(pad.id);
+            QVERIFY(pad.button(true));
+            if (shell) {
+                QTRY_COMPARE(sink.presses.value(Qt::Key_Return), cycle + 1);
+            } else {
+                QTRY_VERIFY(!snapshots.isEmpty() && snapshots.last().at(2).toUInt() == 0x1000u);
+                QCOMPARE(snapshots.last().at(0).toUInt(), 0u);
+                QCOMPARE(snapshots.last().at(1).toUInt(), 0x0101u);
+            }
+            snapshots.clear();
+            QVERIFY(SDL_DetachVirtualJoystick(pad.id));
+            pad.id = 0;
+            QTRY_COMPARE(input.controllerCount(), 0);
+            QCOMPARE(input.inputControllerId(), 0u);
+            QVERIFY(input.controllers().isEmpty());
+            QVERIFY(input.availableControllers().isEmpty());
+            if (shell) QTRY_COMPARE(sink.releases.value(Qt::Key_Return), cycle + 1);
+            QVERIFY(!snapshots.isEmpty());
+            QCOMPARE(snapshots.last().at(0).toUInt(), 0u);
+            QCOMPARE(snapshots.last().at(1).toUInt(), 0u);
+            for (int index = 2; index < 9; ++index)
+                QCOMPARE(snapshots.last().at(index).toInt(), 0);
+        }
     }
 
     void shellButtonsReleaseOnlyAfterLastSourceReleases()

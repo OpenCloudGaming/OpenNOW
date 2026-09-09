@@ -189,7 +189,7 @@ private slots:
         QCOMPARE(pad.lowFrequency, 0);
     }
 
-    void disconnectedSelectedControllerDoesNotRumbleReplacement()
+    void disconnectedSelectedControllerReleasesPlayerOneForReplacement()
     {
         ControllerInput input;
         auto pad = std::make_unique<TuningPad>();
@@ -201,11 +201,15 @@ private slots:
         QCOMPARE(pad->lowFrequency, 5000);
         pad.reset();
         QTRY_COMPARE(input.controllerCount(), 0);
+        QCOMPARE(input.inputControllerId(), 0u);
         TuningPad replacement;
         QVERIFY(replacement.id);
-        QTRY_COMPARE(input.availableControllers().size(), 1);
-        input.playRumble(0, 5000, 9000, 1000);
+        QTRY_COMPARE(input.controllerCount(), 1);
+        QCOMPARE(input.controllers().first().toMap().value(QStringLiteral("slot")).toInt(), 1);
         QCOMPARE(replacement.lowFrequency, 0);
+        input.playRumble(0, 5000, 9000, 1000);
+        QCOMPARE(replacement.lowFrequency, 5000);
+        QCOMPARE(replacement.highFrequency, 9000);
     }
 };
 
