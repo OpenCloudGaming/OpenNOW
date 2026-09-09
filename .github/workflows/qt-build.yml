@@ -326,7 +326,7 @@ jobs:
           tar -xzf "$RUNNER_TEMP/actionlint.tar.gz" -C "$RUNNER_TEMP" actionlint
           "$RUNNER_TEMP/actionlint" -color=false \
             .github/workflows/qt-ci.yml .github/workflows/qt-build.yml \
-            .github/workflows/qt-supporter-build.yml .github/workflows/qt-release-candidate.yml
+            .github/workflows/qt-release-candidate.yml
 
       - name: Rust tests
         if: runner.os == 'Linux'
