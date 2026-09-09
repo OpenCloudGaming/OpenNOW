@@ -346,6 +346,18 @@ if(BUILD_TESTING)
     add_test(NAME opennow-waylandpointer-tests COMMAND opennow-waylandpointer-tests -o -,txt)
     set_tests_properties(opennow-waylandpointer-tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
+    qt_add_executable(opennow-macpointer-tests tests/tst_macpointercapture.cpp)
+    target_link_libraries(opennow-macpointer-tests PRIVATE opennow-platform-input Qt6::Test)
+    add_test(NAME opennow-macpointer-tests COMMAND opennow-macpointer-tests -o -,txt)
+    set_tests_properties(opennow-macpointer-tests PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
+    if(APPLE)
+        add_test(NAME opennow-macpointer-native-tests
+            COMMAND opennow-macpointer-tests nativeCocoaCaptureRestoresCursor -o -,txt)
+        set_tests_properties(opennow-macpointer-native-tests PROPERTIES
+            ENVIRONMENT "QT_QPA_PLATFORM=cocoa" RUN_SERIAL TRUE TIMEOUT 30)
+    endif()
+
     qt_add_executable(opennow-nativestreamruntime-tests
         tests/tst_nativestreamruntime.cpp
         ${OPENNOW_STREAM_RUNTIME_SOURCES}
