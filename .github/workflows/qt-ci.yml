@@ -63,6 +63,7 @@ jobs:
           python3 -m unittest discover -s opennow-qt/tests -p test_macos_build.py
           python3 -m unittest discover -s opennow-qt/tests -p test_windows_test_bundle.py
           python3 -m unittest discover -s opennow-qt/tests -p test_ci_build_cache.py
+          python3 -m unittest discover -s opennow-qt/tests -p test_ci_release_trust.py
       - name: Record immutable nightly identity
         id: version
         shell: bash
@@ -202,8 +203,14 @@ jobs:
 
       - name: Bound Windows Rust compilation
         if: runner.os == 'Windows'
-        shell: bash
-        run: echo "CARGO_BUILD_JOBS=4" >> "$GITHUB_ENV"
+        shell: pwsh
+        run: |
+          "CARGO_BUILD_JOBS=4" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          if ($env:VSCMD_ARG_TGT_ARCH -eq "x64") {
+            $linker = Join-Path $env:VCToolsInstallDir "bin\Hostx64\x64\link.exe"
+            if (-not (Test-Path $linker)) { throw "The MSVC x64 linker is unavailable." }
+            "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=$linker" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          }
 
       - name: Install Windows LLVM
         if: runner.os == 'Windows'
@@ -522,7 +529,6 @@ jobs:
     needs: windows-build
     uses: ./.github/workflows/qt-windows-desktop-tests.yml
     with:
-      source-sha: ${{ github.sha }}
       artifact-name: windows-x64-tests
 
   macos-validate:

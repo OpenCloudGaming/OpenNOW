@@ -27,6 +27,10 @@ matrix, so its desktop tests can start without waiting for Linux or ARM64.
 Unsigned nightly inventory and signed release inventory both require the
 desktop tests to pass. Signed release builds use the same transfer and test
 workflow, with the immutable release source revision.
+Release dispatches must select a branch or tag pointing to `source_commit`;
+preflight rejects a different revision. Build and desktop-test jobs check out
+the workflow's immutable `github.sha`, not an independently supplied ref, so a
+dispatch input cannot select code that writes into the caller's cache scope.
 
 ## Caches
 

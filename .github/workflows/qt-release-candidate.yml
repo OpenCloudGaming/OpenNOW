@@ -45,12 +45,16 @@ jobs:
           set -euo pipefail
           [[ "$RELEASE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
           [[ "$SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          if [[ "$SOURCE_COMMIT" != "$GITHUB_SHA" ]]; then
+            echo "Dispatch this workflow from a branch or tag pointing to source_commit." >&2
+            exit 1
+          fi
           [[ $(printf '%s' "$UPDATE_PUBLIC_KEY" | base64 --decode | wc -c) -eq 32 ]]
 
       - name: Resolve immutable source
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.source_commit }}
+          ref: ${{ github.sha }}
           fetch-depth: 0
 
       - name: Record source commit
@@ -89,7 +93,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ needs.preflight.outputs.source_sha }}
+          ref: ${{ github.sha }}
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -238,7 +242,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ needs.preflight.outputs.source_sha }}
+          ref: ${{ github.sha }}
 
       - name: Map stable Windows workspace
         shell: pwsh
@@ -273,6 +277,14 @@ jobs:
       - uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: ${{ matrix.arch == 'arm64' && 'amd64_arm64' || 'x64' }}
+
+      - name: Pin the Windows x64 Rust linker
+        if: matrix.arch == 'x64'
+        shell: pwsh
+        run: |
+          $linker = Join-Path $env:VCToolsInstallDir "bin\Hostx64\x64\link.exe"
+          if (-not (Test-Path $linker)) { throw "The MSVC x64 linker is unavailable." }
+          "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=$linker" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Install LLVM
         shell: pwsh
@@ -456,7 +468,6 @@ jobs:
     needs: [preflight, windows]
     uses: ./.github/workflows/qt-windows-desktop-tests.yml
     with:
-      source-sha: ${{ needs.preflight.outputs.source_sha }}
       artifact-name: windows-release-x64-tests
 
   inventory:

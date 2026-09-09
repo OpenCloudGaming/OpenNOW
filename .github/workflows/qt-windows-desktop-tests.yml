@@ -3,9 +3,6 @@ name: Qt Windows desktop tests
 on:
   workflow_call:
     inputs:
-      source-sha:
-        type: string
-        required: true
       artifact-name:
         type: string
         required: true
@@ -21,7 +18,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.source-sha }}
+          ref: ${{ github.sha }}
       - name: Map stable Windows workspace
         shell: pwsh
         run: .github/scripts/map-windows-workspace.ps1
@@ -48,7 +45,7 @@ jobs:
       - name: Restore compiled tests and verify inventory
         shell: bash
         env:
-          SOURCE_SHA: ${{ inputs.source-sha }}
+          SOURCE_SHA: ${{ github.sha }}
         run: |
           python .github/scripts/windows-test-bundle.py unpack \
             --archive "$RUNNER_TEMP/windows-tests/windows-tests.zip" \
@@ -79,4 +76,3 @@ jobs:
             build/opennow-qt-release/Testing/Temporary/
             build/opennow-qt-release/Release/opennow-hdrcolor-tests.exe
             build/opennow-qt-release/Release/opennow-hdrcolor-tests.pdb
-
