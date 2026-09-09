@@ -309,16 +309,19 @@ loader discards legacy copies, and the core never saves runtime capability resul
 
 With HDR enabled, the core requires an available hardware HEVC or AV1 decoder whose
 `colorQualities` explicitly includes `10bit_420`, or whose optional per-codec
-`hdrSupported` is `true` when `colorQualities` is absent. Windows reports `hdrSupported`
-from its actual 10-bit decoder probe without changing its existing unknown SDR profiles;
-Linux omits that field and uses explicit color-quality profiles. An explicit false or
+`hdrSupported` is `true` when `colorQualities` is absent. Windows reports explicit SDR
+color-quality lists and HDR support from actual decoded profile fixtures and GPU conversion;
+it no longer infers advanced formats from an eight-bit codec probe. macOS HEVC HDR and
+ten-bit 4:4:4 similarly require hardware-required fixture decode and Metal conversion.
+Linux uses exact attached-device profiles for Vulkan Video. An explicit false or
 malformed `hdrSupported` denies HDR even if 10-bit profiles exist. A true value never
 overrides an explicit empty or incompatible `colorQualities` array. Neither setting
 changes SDR capability filtering. Auto prefers HEVC then AV1. HDR constrains the
 session-local color quality to `10bit_420` without changing the saved
 SDR color preference; 4:4:4 HDR is not negotiated. Explicit H.264, software decoding, missing
 output support, and unavailable 10-bit profiles fail before allocating a seat. Without HDR,
-the existing codec and color selection policy is unchanged. Callers without embedded runtime
+the saved color preference is used, subject to exact hardware profiles and the GFN codec
+restrictions below. Callers without embedded runtime
 capabilities cannot request HDR through the external-streamer probe path.
 
 CloudMatch receives `sessionRequestData.sdrHdrMode=1`, monitor `sdrHdrMode=1`, and
@@ -340,6 +343,18 @@ compatibility RESUME carries the full request and updates its session mode, moni
 requested-content luminance, and `trueHdr` consistently when the server has returned a mode.
 Attachment revalidates the accepted HDR codec/color profile and current window output, so
 moving to an SDR display cannot silently resume an HDR stream as SDR.
+
+Color negotiation overlays each returned `finalizedStreamingFeatures` field on the server's
+returned `sessionRequestData.requestedStreamingFeatures`. An empty or partial finalized object
+must not erase the echoed codec, bit depth, or chroma. Explicit finalized values, including
+invalid values, take precedence; missing values never come from current saved preferences.
+CloudMatch chroma enums are `0` for 4:2:0 and `1` for 4:4:4; NVST chroma-format IDs `2` and
+`3` are not accepted as CloudMatch 4:4:4 values.
+
+Embedded session preflight rejects H.264 with advanced color and AV1 with 4:4:4 before
+allocation, even if a decoder capability lists those formats. These combinations are not
+requested by the supported GFN wire policy. Auto selects HEVC for 4:4:4 rather than silently
+reducing chroma; an explicit incompatible codec remains an error.
 
 The native context preserves the accepted profile, and `MediaStreamConfig.hdr` follows its
 `enableHdr` alone (missing means false). Invalid accepted HDR profiles are rejected before

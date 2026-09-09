@@ -91,8 +91,8 @@ impl GpuTextureFormat {
 
     fn for_pixel_format(format: PixelFormat) -> Result<Self> {
         match format {
-            PixelFormat::Nv12 => Ok(Self::Rgba8),
-            PixelFormat::P010 => Ok(Self::Rgb10A2),
+            PixelFormat::Nv12 | PixelFormat::Nv24 => Ok(Self::Rgba8),
+            PixelFormat::P010 | PixelFormat::P410 => Ok(Self::Rgb10A2),
             _ => Err(Error::InvalidFormat(format!(
                 "unsupported embedded conversion source format {format:?}"
             ))),
@@ -399,11 +399,15 @@ pub enum PreparedLinuxFrame {
 
 impl PreparedLinuxFrame {
     pub fn timestamp_us(&self) -> u64 {
+        self.source().timestamp_us
+    }
+
+    fn source(&self) -> &DecodedVideoFrame {
         match self {
-            Self::Vulkan(frame) => frame.source.timestamp_us,
-            Self::DmaBuf(frame) => frame.source.timestamp_us,
-            Self::Sand(frame) => frame.source.timestamp_us,
-            Self::Cpu(frame) => frame.source.timestamp_us,
+            Self::Vulkan(frame) => &frame.source,
+            Self::DmaBuf(frame) => &frame.source,
+            Self::Sand(frame) => &frame.source,
+            Self::Cpu(frame) => &frame.source,
         }
     }
 }
@@ -681,10 +685,10 @@ impl LinuxFrameProducer {
         }
         if !matches!(
             frame.format.pixel_format,
-            PixelFormat::Nv12 | PixelFormat::P010
+            PixelFormat::Nv12 | PixelFormat::P010 | PixelFormat::Nv24 | PixelFormat::P410
         ) {
             return Err(Error::InvalidFormat(format!(
-                "embedded Linux presentation requires NV12 or P010, received {:?}",
+                "embedded Linux presentation requires NV12, P010, NV24 or P410, received {:?}",
                 frame.format.pixel_format
             )));
         }
@@ -1307,7 +1311,7 @@ impl LinuxFrameProducer {
                 full_range: u32::from(full_range),
                 sample_bits: match prepared {
                     PreparedLinuxFrame::Vulkan(frame)
-                        if frame.source.format.pixel_format == PixelFormat::P010 =>
+                        if frame.source.format.pixel_format.is_ten_bit() =>
                     {
                         if vk::Format::from_raw(frame.images[0].format) == vk::Format::R16_UNORM {
                             16
@@ -1322,7 +1326,9 @@ impl LinuxFrameProducer {
                     }
                     _ => 8,
                 },
-                chroma_offset_x: if chroma_location == crate::ChromaLocation::Left {
+                chroma_offset_x: if chroma_location == crate::ChromaLocation::Left
+                    && !prepared.source().format.pixel_format.is_444()
+                {
                     0.5 / width as f32
                 } else {
                     0.0
@@ -1451,12 +1457,15 @@ fn direct_image_views(
 ) -> Result<(vk::ImageView, vk::ImageView)> {
     if images.len() == 1 {
         let image = vk::Image::from_raw(images[0].image);
-        let p010 = vk::Format::from_raw(images[0].format)
-            == vk::Format::G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16;
+        let ten_bit = matches!(
+            vk::Format::from_raw(images[0].format),
+            vk::Format::G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16
+                | vk::Format::G10X6_B10X6R10X6_2PLANE_444_UNORM_3PACK16
+        );
         let luma = create_image_view(
             device,
             image,
-            if p010 {
+            if ten_bit {
                 vk::Format::R10X6_UNORM_PACK16
             } else {
                 vk::Format::R8_UNORM
@@ -1466,7 +1475,7 @@ fn direct_image_views(
         let chroma = match create_image_view(
             device,
             image,
-            if p010 {
+            if ten_bit {
                 vk::Format::R10X6G10X6_UNORM_2PACK16
             } else {
                 vk::Format::R8G8_UNORM
@@ -1483,7 +1492,7 @@ fn direct_image_views(
     }
     if images.len() != 2 {
         return Err(Error::InvalidFormat(
-            "Vulkan NV12 frame must contain one multiplanar or two plane images".to_owned(),
+            "Vulkan YUV frame must contain one multiplanar or two plane images".to_owned(),
         ));
     }
     let luma = create_image_view(
@@ -1906,13 +1915,20 @@ fn validate_direct_frame(
             "Vulkan output has no initialized image layout".to_owned(),
         ));
     }
-    let p010 = format.pixel_format == PixelFormat::P010;
+    let ten_bit = format.pixel_format.is_ten_bit();
+    let chroma_divisor = if format.pixel_format.is_444() { 1 } else { 2 };
     let valid = match frame.images.as_slice() {
         [image] => {
-            let expected = if p010 {
-                vk::Format::G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16
-            } else {
-                vk::Format::G8_B8R8_2PLANE_420_UNORM
+            let expected = match format.pixel_format {
+                PixelFormat::Nv12 => vk::Format::G8_B8R8_2PLANE_420_UNORM,
+                PixelFormat::P010 => vk::Format::G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16,
+                PixelFormat::Nv24 => vk::Format::G8_B8R8_2PLANE_444_UNORM,
+                PixelFormat::P410 => vk::Format::G10X6_B10X6R10X6_2PLANE_444_UNORM_3PACK16,
+                _ => {
+                    return Err(Error::InvalidFormat(
+                        "unsupported Vulkan YUV format".to_owned(),
+                    ));
+                }
             };
             vk::Format::from_raw(image.format) == expected
                 && image.width == format.width
@@ -1925,7 +1941,7 @@ fn validate_direct_frame(
                 vk::Format::from_raw(luma.format),
                 vk::Format::from_raw(chroma.format),
             );
-            let valid_formats = if p010 {
+            let valid_formats = if ten_bit {
                 formats == (vk::Format::R16_UNORM, vk::Format::R16G16_UNORM)
                     || formats
                         == (
@@ -1939,14 +1955,14 @@ fn validate_direct_frame(
                 && luma.image != chroma.image
                 && luma.width == format.width
                 && luma.height == format.height
-                && chroma.width == format.width / 2
-                && chroma.height == format.height / 2
+                && chroma.width == format.width / chroma_divisor
+                && chroma.height == format.height / chroma_divisor
         }
         _ => false,
     };
     if !valid {
         return Err(Error::InvalidFormat(
-            "unsupported Vulkan NV12/P010 image format, extent, or plane layout".to_owned(),
+            "unsupported Vulkan YUV image format, extent, or plane layout".to_owned(),
         ));
     }
     timeline_waits(frame)?;
@@ -1957,6 +1973,12 @@ fn yuv_dmabuf_layout(
     frame: &DmaBufFrame,
     pixel_format: PixelFormat,
 ) -> Result<(usize, DmaBufPlane, DmaBufPlane)> {
+    if !matches!(pixel_format, PixelFormat::Nv12 | PixelFormat::P010) {
+        return Err(Error::unavailable(
+            Subsystem::Vulkan,
+            "DMA-BUF import supports only NV12 and P010",
+        ));
+    }
     let p010 = pixel_format == PixelFormat::P010;
     let (luma, chroma) = if frame.layers.len() == 1
         && frame.layers[0].format
@@ -2594,7 +2616,8 @@ mod tests {
     fn direct_fixture(
         pixel_format: PixelFormat,
     ) -> (VulkanVideoFrame, crate::StreamFormat, VulkanRenderDevice) {
-        let p010 = pixel_format == PixelFormat::P010;
+        let p010 = pixel_format.is_ten_bit();
+        let chroma_size = if pixel_format.is_444() { 4 } else { 2 };
         let images = [
             (
                 10,
@@ -2608,8 +2631,8 @@ mod tests {
             ),
             (
                 11,
-                2,
-                2,
+                chroma_size,
+                chroma_size,
                 if p010 {
                     vk::Format::R16G16_UNORM
                 } else {
@@ -2711,8 +2734,13 @@ mod tests {
                 (PixelFormat::P010, false),
                 (PixelFormat::Nv12, true),
                 (PixelFormat::P010, true),
+                (PixelFormat::Nv24, false),
+                (PixelFormat::P410, false),
+                (PixelFormat::Nv24, true),
+                (PixelFormat::P410, true),
             ] {
-                let formats = if pixel_format == PixelFormat::P010 {
+                let chroma_size = if pixel_format.is_444() { 4 } else { 2 };
+                let formats = if pixel_format.is_ten_bit() {
                     [vk::Format::R16_UNORM, vk::Format::R16G16_UNORM]
                 } else {
                     [vk::Format::R8_UNORM, vk::Format::R8G8_UNORM]
@@ -2732,8 +2760,8 @@ mod tests {
                         &instance,
                         physical,
                         &device,
-                        2,
-                        2,
+                        chroma_size,
+                        chroma_size,
                         formats[1],
                         vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_DST,
                     )
@@ -2827,8 +2855,8 @@ mod tests {
                     .map(|(index, image)| VulkanImage {
                         image: image.image.as_raw(),
                         format: formats[index].as_raw(),
-                        width: if index == 0 { 4 } else { 2 },
-                        height: if index == 0 { 4 } else { 2 },
+                        width: if index == 0 { 4 } else { chroma_size },
+                        height: if index == 0 { 4 } else { chroma_size },
                         layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL.as_raw(),
                         access: vk::AccessFlags2::SHADER_SAMPLED_READ.as_raw(),
                         semaphore: semaphore.as_raw(),
@@ -2889,7 +2917,7 @@ mod tests {
                     )
                     .unwrap();
                 device.queue_wait_idle(queue).unwrap();
-                if pixel_format == PixelFormat::P010 {
+                if pixel_format.is_ten_bit() {
                     for (slot, transfer, expected_color, expected_texture) in [
                         (
                             1,
@@ -2985,6 +3013,68 @@ mod tests {
     }
 
     #[test]
+    fn direct_444_conversion_requires_full_resolution_matching_chroma() {
+        for pixel_format in [PixelFormat::Nv24, PixelFormat::P410] {
+            let (mut frame, format, render) = direct_fixture(pixel_format);
+            assert!(validate_direct_frame(&frame, format, render).is_ok());
+            frame.images[1].width /= 2;
+            assert!(validate_direct_frame(&frame, format, render).is_err());
+            frame.images[1].width *= 2;
+            frame.images[1].height /= 2;
+            assert!(validate_direct_frame(&frame, format, render).is_err());
+            frame.images[1].height *= 2;
+            frame.images[1].format = vk::Format::R8G8B8A8_UNORM.as_raw();
+            assert!(validate_direct_frame(&frame, format, render).is_err());
+
+            let (mut frame, format, render) = direct_fixture(pixel_format);
+            frame.images.truncate(1);
+            frame.image_flags = vk::ImageCreateFlags::MUTABLE_FORMAT.as_raw();
+            frame.images[0].format = if pixel_format.is_ten_bit() {
+                vk::Format::G10X6_B10X6R10X6_2PLANE_444_UNORM_3PACK16
+            } else {
+                vk::Format::G8_B8R8_2PLANE_444_UNORM
+            }
+            .as_raw();
+            assert!(validate_direct_frame(&frame, format, render).is_ok());
+            frame.images[0].format = if pixel_format.is_ten_bit() {
+                vk::Format::G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16
+            } else {
+                vk::Format::G8_B8R8_2PLANE_420_UNORM
+            }
+            .as_raw();
+            assert!(validate_direct_frame(&frame, format, render).is_err());
+        }
+    }
+
+    #[test]
+    fn p410_hdr_preserves_transfer_and_output_precision() {
+        let mut format = crate::StreamFormat {
+            pixel_format: PixelFormat::P410,
+            ..crate::StreamFormat::video_default(1920, 1080).unwrap()
+        };
+        assert_eq!(
+            GpuTextureFormat::for_stream_format(format).unwrap(),
+            GpuTextureFormat::Rgb10A2
+        );
+        format.color_primaries = crate::ColorPrimaries::Bt2020;
+        format.color_matrix = crate::ColorMatrix::Bt2020;
+        for (transfer, expected) in [
+            (crate::ColorTransfer::Pq, LinuxTextureColorSpace::Pq2020),
+            (crate::ColorTransfer::Hlg, LinuxTextureColorSpace::Hlg2020),
+        ] {
+            format.color_transfer = transfer;
+            assert_eq!(
+                LinuxTextureColorSpace::from_format(format).unwrap(),
+                expected
+            );
+            assert_eq!(
+                GpuTextureFormat::for_stream_format(format).unwrap(),
+                GpuTextureFormat::Rgba16Float
+            );
+        }
+    }
+
+    #[test]
     fn hdr_output_precision_follows_explicit_color_metadata() {
         let mut format = crate::StreamFormat::video_default(3840, 2160).unwrap();
         assert_eq!(
@@ -3047,6 +3137,8 @@ mod tests {
             yuv_dmabuf_layout(&frame, PixelFormat::P010).unwrap(),
             (0, luma, chroma)
         );
+        assert!(yuv_dmabuf_layout(&frame, PixelFormat::Nv24).is_err());
+        assert!(yuv_dmabuf_layout(&frame, PixelFormat::P410).is_err());
         assert!(yuv_dmabuf_layout(&frame, PixelFormat::Nv12).is_err());
         frame.layers = vec![
             crate::DmaBufLayer {

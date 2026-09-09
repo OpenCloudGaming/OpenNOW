@@ -58,7 +58,7 @@ use super::decoder::{DecodedVideoFrame, Decoder, DecoderDevice};
 // entire core. In particular, the final HaveOutput event must be drained even when transport has
 // stopped delivering compressed access units temporarily.
 const DECODER_POLL_INTERVAL: Duration = Duration::from_millis(1);
-const MAX_FRAME_SLOTS: usize = 8;
+pub(super) const MAX_FRAME_SLOTS: usize = 8;
 // A broken driver may never return from codec work. Never join it on Qt's render
 // thread, but also never accumulate unbounded abandoned workers across retries.
 static LIVE_DECODER_WORKERS: AtomicUsize = AtomicUsize::new(0);
@@ -265,6 +265,7 @@ struct ProcessorResources {
 
 struct AdoptedResources {
     device: ID3D11Device,
+    context: ID3D11DeviceContext,
     video_device: ID3D11VideoDevice,
     video_context: ID3D11VideoContext,
     video_context_1: ID3D11VideoContext1,
@@ -272,6 +273,7 @@ struct AdoptedResources {
     format: VideoFormat,
     generation: u64,
     processor: Option<ProcessorResources>,
+    y410: Option<super::y410::Y410Converter>,
 }
 
 impl AdoptedResources {
@@ -315,6 +317,7 @@ impl AdoptedResources {
         }
         Ok(Self {
             device,
+            context,
             video_device,
             video_context,
             video_context_1,
@@ -322,6 +325,7 @@ impl AdoptedResources {
             format,
             generation: 0,
             processor: None,
+            y410: None,
         })
     }
 
@@ -329,6 +333,7 @@ impl AdoptedResources {
         if self.format != format {
             self.format = format;
             self.processor = None;
+            self.y410 = None;
         }
     }
 
@@ -377,12 +382,41 @@ impl AdoptedResources {
         frame
             .aperture
             .validate_extent(input_description.Width, input_description.Height)?;
-        self.reconfigure(frame.format);
         let array_slice = decoder_array_slice(
             frame.subresource,
             input_description.MipLevels,
             input_description.ArraySize,
         )?;
+        self.reconfigure(frame.format);
+        if frame.format.pixel_format == VideoPixelFormat::Y410
+            && frame.format.transfer_function == VideoTransferFunction::Sdr
+        {
+            if self.y410.is_none() {
+                self.y410 = Some(super::y410::Y410Converter::new(
+                    &self.device,
+                    &self.context,
+                    frame.format,
+                )?);
+            }
+            let texture = self
+                .y410
+                .as_mut()
+                .ok_or("no Y410 converter")?
+                .record(slot, frame)?;
+            self.generation = self.generation.wrapping_add(1).max(1);
+            return Ok(D3d11RecordedFrame {
+                texture: texture.as_raw(),
+                texture_format: D3d11TextureFormat::Rgb10A2,
+                color_space: D3d11ColorSpace::Sdr709,
+                width: frame.format.width,
+                height: frame.format.height,
+                frame_slot,
+                generation: self.generation,
+                presentation_time_ns: u64::try_from(frame.timestamp_100ns.max(0))
+                    .unwrap_or(0)
+                    .saturating_mul(100),
+            });
+        }
         self.ensure_processor(
             input_description.Width,
             input_description.Height,
@@ -590,6 +624,7 @@ impl AdoptedResources {
     }
 }
 
+#[cfg(test)]
 pub(super) unsafe fn probe_hdr_conversion(
     adopted: AdoptedD3d11Context,
     format: VideoFormat,
@@ -599,14 +634,37 @@ pub(super) unsafe fn probe_hdr_conversion(
     {
         return Err("HDR10 capability requires actual P010/PQ decoder output".to_owned());
     }
+    unsafe { probe_conversion(adopted, format) }
+}
+
+#[cfg(test)]
+unsafe fn probe_conversion(
+    adopted: AdoptedD3d11Context,
+    format: VideoFormat,
+) -> Result<(), String> {
+    let input_format = match format.pixel_format {
+        VideoPixelFormat::Nv12 => DXGI_FORMAT_NV12,
+        VideoPixelFormat::P010 => DXGI_FORMAT_P010,
+        VideoPixelFormat::Ayuv => DXGI_FORMAT_AYUV,
+        VideoPixelFormat::Y410 => DXGI_FORMAT_Y410,
+    };
     let mut resources = unsafe { AdoptedResources::new(adopted, format)? };
     resources.ensure_processor(
         format.width,
         format.height,
-        DXGI_FORMAT_P010,
+        input_format,
         format.width,
         format.height,
     )
+}
+
+pub(super) unsafe fn probe_decoded_conversion(
+    adopted: AdoptedD3d11Context,
+    frame: &DecodedVideoFrame,
+) -> Result<(), String> {
+    let mut resources = unsafe { AdoptedResources::new(adopted, frame.format)? };
+    resources.record(0, frame)?;
+    Ok(())
 }
 
 fn enable_multithread_protection(context: &ID3D11DeviceContext) -> Result<(), String> {
@@ -1423,6 +1481,9 @@ fn chroma_format(format: VideoPixelFormat) -> crate::VideoChromaFormat {
 mod tests {
     use super::*;
     use crate::{VideoChromaFormat, VideoChromaSiting, VideoColorMatrix};
+    use ::windows::Win32::Graphics::Direct3D11::{
+        D3D11_CPU_ACCESS_READ, D3D11_MAP_READ, D3D11_MAPPED_SUBRESOURCE, D3D11_USAGE_STAGING,
+    };
     use ::windows::Win32::Graphics::Dxgi::Common::{
         DXGI_COLOR_SPACE_YCBCR_FULL_G22_LEFT_P709, DXGI_COLOR_SPACE_YCBCR_FULL_GHLG_TOPLEFT_P2020,
         DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P709,
@@ -1701,6 +1762,328 @@ mod tests {
             Some(BackendEvent::QueueOverflow(Subsystem::VideoDecode))
         );
         assert!(events.try_pop().is_none());
+    }
+
+    #[test]
+    #[ignore = "requires a hardware HEVC Main10 MFT and P010/PQ-to-RGB10A2/PQ conversion"]
+    fn hevc_hdr_hardware_decode_and_conversion_preserve_pq_precision() {
+        let _runtime = EmbeddedMediaRuntime::initialize().expect("Media Foundation");
+        let mut device = None;
+        let mut context = None;
+        unsafe {
+            D3D11CreateDevice(
+                None::<&IDXGIAdapter>,
+                D3D_DRIVER_TYPE_HARDWARE,
+                HMODULE::default(),
+                D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+                Some(&[D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0]),
+                D3D11_SDK_VERSION,
+                Some(&mut device),
+                None,
+                Some(&mut context),
+            )
+            .expect("D3D11 hardware device");
+        }
+        let device = device.unwrap();
+        let context = context.unwrap();
+        let format = VideoFormat {
+            transfer_function: VideoTransferFunction::Pq,
+            color_primaries: crate::VideoColorPrimaries::Bt2020,
+            color_matrix: VideoColorMatrix::Bt2020,
+            ..color_test_format()
+        };
+        let reference = include_bytes!("../../fixtures/probe/hevc-p010-pq-precision-luma.bin")
+            .chunks_exact(2)
+            .map(|bytes| u16::from_le_bytes([bytes[0], bytes[1]]))
+            .collect::<Vec<_>>();
+        assert_eq!(reference.len(), 877);
+        let mut resources = unsafe {
+            AdoptedResources::new(
+                AdoptedD3d11Context {
+                    device: device.as_raw(),
+                    immediate_context: context.as_raw(),
+                },
+                format,
+            )
+        }
+        .unwrap();
+        for restart in 0..3 {
+            resources.reset_decoder_views();
+            let mut decoder =
+                Decoder::new(&resources, format, WindowsDecoderMode::Hardware).unwrap();
+            let frame = decoder
+                .probe_frame(include_bytes!(
+                    "../../fixtures/probe/hevc-p010-pq-precision.hevc"
+                ))
+                .expect("decode valid Main10 PQ precision access unit");
+            assert_eq!(frame.format.pixel_format, VideoPixelFormat::P010);
+            assert_eq!(frame.format.transfer_function, VideoTransferFunction::Pq);
+            let read_row = |texture: &ID3D11Texture2D, subresource: u32| {
+                let mut description = D3D11_TEXTURE2D_DESC::default();
+                unsafe {
+                    texture.GetDesc(&mut description);
+                }
+                description.Usage = D3D11_USAGE_STAGING;
+                description.BindFlags = 0;
+                description.CPUAccessFlags = D3D11_CPU_ACCESS_READ.0 as u32;
+                description.ArraySize = 1;
+                description.MipLevels = 1;
+                description.MiscFlags = 0;
+                let mut staging = None;
+                unsafe {
+                    device
+                        .CreateTexture2D(&description, None, Some(&mut staging))
+                        .unwrap();
+                }
+                let staging = staging.unwrap();
+                let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
+                unsafe {
+                    context.CopySubresourceRegion(&staging, 0, 0, 0, 0, texture, subresource, None);
+                    context
+                        .Map(&staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped))
+                        .unwrap();
+                    let bytes = std::slice::from_raw_parts(
+                        mapped.pData.cast::<u8>(),
+                        877 * if description.Format == DXGI_FORMAT_P010 {
+                            2
+                        } else {
+                            4
+                        },
+                    )
+                    .to_vec();
+                    context.Unmap(&staging, 0);
+                    (description.Format, bytes)
+                }
+            };
+            let (input_format, input) = read_row(&frame.texture, frame.subresource);
+            assert_eq!(input_format, DXGI_FORMAT_P010);
+            for (index, bytes) in input.chunks_exact(2).enumerate() {
+                let actual = u16::from_le_bytes([bytes[0], bytes[1]]);
+                assert_eq!(actual & 63, 0, "P010 sample alignment at {index}");
+                assert_eq!(
+                    actual >> 6,
+                    reference[index],
+                    "Main10 decoded luma at {index}"
+                );
+            }
+            let recorded = resources
+                .record(0, &frame)
+                .expect("convert actual P010/PQ decoder surface");
+            assert_eq!(recorded.texture_format, D3d11TextureFormat::Rgb10A2);
+            assert_eq!(recorded.color_space, D3d11ColorSpace::Pq2020);
+            let output = unsafe { clone_interface::<ID3D11Texture2D>(recorded.texture) }.unwrap();
+            let (output_format, bytes) = read_row(&output, 0);
+            assert_eq!(output_format, DXGI_FORMAT_R10G10B10A2_UNORM);
+            let mut levels = std::collections::HashSet::new();
+            for (index, bytes) in bytes.chunks_exact(4).enumerate() {
+                let pixel = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+                let expected = ((f64::from(reference[index]) - 64.0) * 1023.0 / 876.0)
+                    .round()
+                    .clamp(0.0, 1023.0) as i32;
+                levels.insert(pixel & 1023);
+                for shift in [0, 10, 20] {
+                    let actual = ((pixel >> shift) & 1023) as i32;
+                    assert!(
+                        (actual - expected).abs() <= 2,
+                        "restart={restart} PQ sample={index} channel={shift} actual={actual} expected={expected}"
+                    );
+                }
+            }
+            assert!(
+                levels.len() >= 800,
+                "retained only {} PQ gray levels",
+                levels.len()
+            );
+            eprintln!(
+                "HEVC Main10 PQ restart={restart}: P010 source matches software reference; RGB10A2/PQ retains {} gray levels",
+                levels.len()
+            );
+            drop(frame);
+            decoder.stop();
+        }
+    }
+
+    #[test]
+    #[ignore = "requires a hardware HEVC Main44410 MFT and Y410 UINT shader conversion"]
+    fn hevc_444_hardware_decode_and_conversion_preserve_precision_and_chroma() {
+        let _runtime = EmbeddedMediaRuntime::initialize().expect("Media Foundation");
+        let mut device = None;
+        let mut context = None;
+        unsafe {
+            D3D11CreateDevice(
+                None::<&IDXGIAdapter>,
+                D3D_DRIVER_TYPE_HARDWARE,
+                HMODULE::default(),
+                D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+                Some(&[D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0]),
+                D3D11_SDK_VERSION,
+                Some(&mut device),
+                None,
+                Some(&mut context),
+            )
+            .expect("D3D11 hardware device");
+        }
+        let device = device.unwrap();
+        let context = context.unwrap();
+        let format = VideoFormat {
+            codec: crate::VideoCodec::H265,
+            width: 1920,
+            height: 1080,
+            pixel_format: VideoPixelFormat::Y410,
+            chroma_format: crate::VideoChromaFormat::Cs444,
+            ..color_test_format()
+        };
+        let mut resources = unsafe {
+            AdoptedResources::new(
+                AdoptedD3d11Context {
+                    device: device.as_raw(),
+                    immediate_context: context.as_raw(),
+                },
+                format,
+            )
+        }
+        .expect("adopt D3D11 hardware device");
+        for restart in 0..3 {
+            resources.reset_decoder_views();
+            let mut decoder = Decoder::new(&resources, format, WindowsDecoderMode::Hardware)
+                .expect("configure hardware HEVC Main44410 decoder");
+            let frame = decoder
+                .probe_frame(include_bytes!(
+                    "../../fixtures/probe/hevc-y410-precision.hevc"
+                ))
+                .expect("decode lossless Main44410 precision access unit");
+            assert_eq!(frame.format.pixel_format, VideoPixelFormat::Y410);
+            assert_eq!(frame.format.chroma_format, crate::VideoChromaFormat::Cs444);
+            assert_eq!(frame.format.pixel_format.bit_depth(), 10);
+            assert_eq!(frame.format.transfer_function, VideoTransferFunction::Sdr);
+            let mut input_description = D3D11_TEXTURE2D_DESC::default();
+            unsafe {
+                frame.texture.GetDesc(&mut input_description);
+            }
+            assert_eq!(input_description.Format, DXGI_FORMAT_Y410);
+            let read_rows = |texture: &ID3D11Texture2D, subresource: u32| {
+                let mut description = D3D11_TEXTURE2D_DESC::default();
+                unsafe {
+                    texture.GetDesc(&mut description);
+                }
+                description.Usage = D3D11_USAGE_STAGING;
+                description.BindFlags = 0;
+                description.CPUAccessFlags = D3D11_CPU_ACCESS_READ.0 as u32;
+                description.ArraySize = 1;
+                description.MipLevels = 1;
+                description.MiscFlags = 0;
+                let mut staging = None;
+                unsafe {
+                    device
+                        .CreateTexture2D(&description, None, Some(&mut staging))
+                        .unwrap();
+                }
+                let staging = staging.unwrap();
+                let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
+                unsafe {
+                    context.CopySubresourceRegion(&staging, 0, 0, 0, 0, texture, subresource, None);
+                    context
+                        .Map(&staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped))
+                        .unwrap();
+                    let gray = std::slice::from_raw_parts(mapped.pData.cast::<u32>(), 877).to_vec();
+                    let chroma = std::slice::from_raw_parts(
+                        mapped
+                            .pData
+                            .cast::<u8>()
+                            .add(mapped.RowPitch as usize * 64)
+                            .cast::<u32>(),
+                        1920,
+                    )
+                    .to_vec();
+                    context.Unmap(&staging, 0);
+                    (gray, chroma)
+                }
+            };
+            let decoded_pixels = read_rows(&frame.texture, frame.subresource);
+            let recorded = resources
+                .record(0, &frame)
+                .expect("convert actual Y410 decoder surface");
+            assert_eq!(recorded.texture_format, D3d11TextureFormat::Rgb10A2);
+            assert_eq!(recorded.color_space, D3d11ColorSpace::Sdr709);
+            let output = unsafe { clone_interface::<ID3D11Texture2D>(recorded.texture) }.unwrap();
+            let mut output_description = D3D11_TEXTURE2D_DESC::default();
+            unsafe {
+                output.GetDesc(&mut output_description);
+            }
+            assert_eq!(output_description.Format, DXGI_FORMAT_R10G10B10A2_UNORM);
+            let pixels = read_rows(&output, 0);
+            for (index, pixel) in decoded_pixels.0.iter().copied().enumerate() {
+                assert_eq!(
+                    (pixel >> 10) & 1023,
+                    index as u32 + 64,
+                    "decoder luma precision at {index}"
+                );
+                assert_eq!(pixel & 1023, 512, "decoder neutral U at {index}");
+                assert_eq!((pixel >> 20) & 1023, 512, "decoder neutral V at {index}");
+            }
+            for (index, pixel) in decoded_pixels.1.iter().copied().enumerate() {
+                assert_eq!(
+                    (pixel >> 10) & 1023,
+                    512,
+                    "decoder chroma-row luma at {index}"
+                );
+                assert_eq!(
+                    pixel & 1023,
+                    if index % 2 == 0 { 384 } else { 640 },
+                    "decoder U at {index}"
+                );
+                assert_eq!(
+                    (pixel >> 20) & 1023,
+                    if index % 2 == 0 { 640 } else { 384 },
+                    "decoder V at {index}"
+                );
+            }
+            let mut levels = std::collections::HashSet::new();
+            for (index, pixel) in pixels.0.iter().copied().enumerate() {
+                let expected = (index as f64 * 1023.0 / 876.0).round() as i32;
+                levels.insert(pixel & 1023);
+                for shift in [0, 10, 20] {
+                    let actual = ((pixel >> shift) & 1023) as i32;
+                    assert!(
+                        (actual - expected).abs() <= 2,
+                        "restart={restart} grayscale sample={index} channel={shift} actual={actual} expected={expected}"
+                    );
+                }
+            }
+            assert!(
+                levels.len() >= 800,
+                "restart={restart} retained only {} grayscale levels",
+                levels.len()
+            );
+            for (index, pixel) in pixels.1.iter().copied().enumerate() {
+                let y = (512.0 - 64.0) / 876.0;
+                let u = if index % 2 == 0 {
+                    -128.0 / 896.0
+                } else {
+                    128.0 / 896.0
+                };
+                let v = -u;
+                let expected = [
+                    y + 1.5748 * v,
+                    y - 0.1873242729 * u - 0.4681242729 * v,
+                    y + 1.8556 * u,
+                ];
+                for (channel, expected) in expected.into_iter().enumerate() {
+                    let expected = (expected * 1023.0_f64).round() as i32;
+                    let actual = ((pixel >> (channel * 10)) & 1023) as i32;
+                    assert!(
+                        (actual - expected).abs() <= 4,
+                        "restart={restart} chroma sample={index} channel={channel} actual={actual} expected={expected}"
+                    );
+                }
+            }
+            eprintln!(
+                "HEVC Main44410 hardware restart={restart}: actual Y410 -> RGB10A2, {} distinct gray levels, 1920 alternating chroma pixels verified",
+                levels.len()
+            );
+            drop(frame);
+            decoder.stop();
+        }
     }
 
     #[test]
@@ -2139,6 +2522,35 @@ mod tests {
             color_primaries: crate::VideoColorPrimaries::Bt709,
             color_matrix: VideoColorMatrix::Bt709,
         }
+    }
+
+    #[test]
+    fn packed_444_color_conversion_does_not_require_subsampled_chroma_siting() {
+        for pixel_format in [VideoPixelFormat::Ayuv, VideoPixelFormat::Y410] {
+            for full_range in [false, true] {
+                let format = VideoFormat {
+                    pixel_format,
+                    chroma_format: crate::VideoChromaFormat::Cs444,
+                    full_range,
+                    ..color_test_format()
+                };
+                assert_eq!(
+                    input_color_space(format).unwrap(),
+                    input_color_space(VideoFormat {
+                        chroma_siting: VideoChromaSiting::TopLeft,
+                        ..format
+                    })
+                    .unwrap(),
+                );
+            }
+        }
+        assert!(
+            input_color_space(VideoFormat {
+                chroma_siting: VideoChromaSiting::TopLeft,
+                ..color_test_format()
+            })
+            .is_err()
+        );
     }
 
     #[test]

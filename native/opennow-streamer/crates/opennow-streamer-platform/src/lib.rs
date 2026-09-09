@@ -106,21 +106,31 @@ pub(crate) fn embedded_video_backends_with_device(
     #[cfg(target_os = "linux")]
     for backend in &mut backends {
         if backend.backend == "vulkan" {
-            use opennow_streamer_platform_linux::VideoCodec;
+            use opennow_streamer_platform_linux::{PixelFormat, VideoCodec};
             for codec in &mut backend.codecs {
                 let profile = match codec.codec {
                     "h264" => VideoCodec::H264,
                     "h265" => VideoCodec::H265,
                     _ => VideoCodec::Av1,
                 };
-                let colors = [("8bit_420", false), ("10bit_420", true)]
-                    .into_iter()
-                    .filter_map(|(color, ten_bit)| {
-                        _device
-                            .is_some_and(|device| device.codec_support(profile, ten_bit))
-                            .then_some(color)
-                    })
-                    .collect::<Vec<_>>();
+                let colors = [
+                    ("8bit_420", PixelFormat::Nv12),
+                    ("10bit_420", PixelFormat::P010),
+                    ("8bit_444", PixelFormat::Nv24),
+                    ("10bit_444", PixelFormat::P410),
+                ]
+                .into_iter()
+                .filter(|(color, _)| match codec.codec {
+                    "h264" => *color == "8bit_420",
+                    "av1" => !color.ends_with("444"),
+                    _ => true,
+                })
+                .filter_map(|(color, format)| {
+                    _device
+                        .is_some_and(|device| device.codec_format_support(profile, format))
+                        .then_some(color)
+                })
+                .collect::<Vec<_>>();
                 codec.available = !colors.is_empty();
                 codec.color_qualities = Some(colors);
                 codec.reason = (!codec.available)
@@ -159,6 +169,21 @@ pub(crate) fn embedded_video_backends_with_device(
             }
         }
     }
+    #[cfg(target_os = "linux")]
+    for backend in &mut backends {
+        for codec in &mut backend.codecs {
+            codec.hdr_supported = Some(
+                backend.available
+                    && codec.available
+                    && matches!(backend.backend, "vulkan" | "vaapi")
+                    && matches!(codec.codec, "h265" | "av1")
+                    && codec
+                        .color_qualities
+                        .as_ref()
+                        .is_some_and(|colors| colors.contains(&"10bit_420")),
+            );
+        }
+    }
     #[cfg(target_os = "windows")]
     let mut backends = {
         use opennow_streamer_platform_windows::WindowsGraphicsApi;
@@ -173,13 +198,25 @@ pub(crate) fn embedded_video_backends_with_device(
     #[cfg(target_os = "macos")]
     for backend in &mut backends {
         for codec in &mut backend.codecs {
-            codec.color_qualities = Some(if !codec.available {
+            let mut colors = if !codec.available {
                 Vec::new()
             } else if codec.codec == "h264" {
                 vec!["8bit_420"]
             } else {
                 vec!["8bit_420", "10bit_420"]
-            });
+            };
+            if codec.available
+                && codec.codec == "h265"
+                && opennow_streamer_platform_macos::probe_h265_444_ten_bit_hardware()
+            {
+                colors.push("10bit_444");
+            }
+            codec.hdr_supported = Some(
+                codec.available
+                    && codec.codec == "h265"
+                    && opennow_streamer_platform_macos::probe_h265_hdr_hardware(),
+            );
+            codec.color_qualities = Some(colors);
         }
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
@@ -211,6 +248,8 @@ fn apply_backend_policy(backends: &mut [VideoBackendCapability], requested: Opti
         backend.zero_copy_modes.clear();
         for codec in &mut backend.codecs {
             codec.available = false;
+            codec.hdr_supported = Some(false);
+            codec.color_qualities = Some(Vec::new());
             codec.reason = Some("video backend was disabled by decoder policy");
         }
     }
@@ -240,6 +279,8 @@ fn windows_hardware_backend(
     backend: &'static str,
     zero_copy_mode: &'static str,
 ) -> VideoBackendCapability {
+    use opennow_streamer_platform_windows::{VideoCodec, VideoPixelFormat};
+
     if !runtime::backend_preference_allows(backend) {
         return unavailable_backend(
             backend,
@@ -250,6 +291,19 @@ fn windows_hardware_backend(
     let probe = opennow_streamer_platform_windows::WindowsBackend::probe_for(api);
     let available = probe.bundled_backend_available();
     let media_output_available = probe.d3d11_presentation && probe.wasapi_render;
+    let color_qualities = |codec| {
+        [
+            ("8bit_420", VideoPixelFormat::Nv12),
+            ("10bit_420", VideoPixelFormat::P010),
+            ("8bit_444", VideoPixelFormat::Ayuv),
+            ("10bit_444", VideoPixelFormat::Y410),
+        ]
+        .into_iter()
+        .filter_map(|(color, format)| {
+            (media_output_available && probe.supports_format(codec, format, false)).then_some(color)
+        })
+        .collect::<Vec<_>>()
+    };
     let reason = if available {
         None
     } else {
@@ -261,7 +315,7 @@ fn windows_hardware_backend(
         codecs: vec![
             CodecCapability {
                 hdr_supported: Some(false),
-                color_qualities: None,
+                color_qualities: Some(color_qualities(VideoCodec::H264)),
                 codec: "h264",
                 available: media_output_available && probe.h264_hardware_decode,
                 reason: (!(media_output_available && probe.h264_hardware_decode)).then_some(
@@ -270,7 +324,7 @@ fn windows_hardware_backend(
             },
             CodecCapability {
                 hdr_supported: Some(media_output_available && probe.h265_hdr),
-                color_qualities: None,
+                color_qualities: Some(color_qualities(VideoCodec::H265)),
                 codec: "h265",
                 available: media_output_available && probe.h265_hardware_decode,
                 reason: (!(media_output_available && probe.h265_hardware_decode)).then_some(
@@ -279,7 +333,7 @@ fn windows_hardware_backend(
             },
             CodecCapability {
                 hdr_supported: Some(media_output_available && probe.av1_hdr),
-                color_qualities: None,
+                color_qualities: Some(color_qualities(VideoCodec::Av1)),
                 codec: "av1",
                 available: media_output_available && probe.av1_hardware_decode,
                 reason: (!(media_output_available && probe.av1_hardware_decode)).then_some(
@@ -473,6 +527,30 @@ mod tests {
     }
 
     #[test]
+    fn disabled_backends_do_not_retain_hdr_or_color_profiles() {
+        let mut backends = vec![VideoBackendCapability {
+            backend: "vulkan",
+            platform: "linux",
+            codecs: vec![CodecCapability {
+                codec: "h265",
+                available: true,
+                hdr_supported: Some(true),
+                color_qualities: Some(vec!["8bit_420", "10bit_420"]),
+                reason: None,
+            }],
+            zero_copy_modes: vec!["vulkan"],
+            available: true,
+            reason: None,
+        }];
+        apply_backend_policy(&mut backends, Some("software"));
+        assert!(!backends[0].available);
+        assert!(backends[0].zero_copy_modes.is_empty());
+        assert!(!backends[0].codecs[0].available);
+        assert_eq!(backends[0].codecs[0].hdr_supported, Some(false));
+        assert_eq!(backends[0].codecs[0].color_qualities, Some(Vec::new()));
+    }
+
+    #[test]
     fn advertises_only_the_linked_software_codec() {
         let backends = video_backends();
         let software = backends
@@ -627,6 +705,60 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
+    fn embedded_linux_hdr_requires_an_available_ten_bit_output_path() {
+        for backend in embedded_video_backends_with_device(None) {
+            for codec in backend.codecs {
+                assert_eq!(
+                    codec.hdr_supported,
+                    Some(
+                        backend.available
+                            && codec.available
+                            && matches!(backend.backend, "vulkan" | "vaapi")
+                            && matches!(codec.codec, "h265" | "av1")
+                            && codec
+                                .color_qualities
+                                .as_ref()
+                                .is_some_and(|colors| colors.contains(&"10bit_420"))
+                    )
+                );
+            }
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn embedded_windows_advertises_only_probed_color_profiles() {
+        use opennow_streamer_platform_windows::{
+            VideoCodec, VideoPixelFormat, WindowsBackend, WindowsGraphicsApi,
+        };
+        let probe = WindowsBackend::probe_for(WindowsGraphicsApi::D3d11);
+        for backend in embedded_video_backends() {
+            for codec in backend.codecs {
+                let profile = match codec.codec {
+                    "h264" => VideoCodec::H264,
+                    "h265" => VideoCodec::H265,
+                    _ => VideoCodec::Av1,
+                };
+                let colors = codec.color_qualities.expect("explicit Windows profiles");
+                for (color, format) in [
+                    ("8bit_420", VideoPixelFormat::Nv12),
+                    ("10bit_420", VideoPixelFormat::P010),
+                    ("8bit_444", VideoPixelFormat::Ayuv),
+                    ("10bit_444", VideoPixelFormat::Y410),
+                ] {
+                    assert_eq!(
+                        colors.contains(&color),
+                        codec.available && probe.supports_format(profile, format, false),
+                        "{} {color}",
+                        codec.codec
+                    );
+                }
+            }
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
     fn embedded_linux_reports_explicit_color_profiles_without_claiming_zero_copy() {
         for backend in embedded_video_backends_with_device(None) {
             for codec in backend.codecs {
@@ -651,12 +783,26 @@ mod tests {
                 let colors = codec
                     .color_qualities
                     .expect("embedded macOS color profiles");
+                assert_eq!(
+                    codec.hdr_supported,
+                    Some(
+                        codec.available
+                            && codec.codec == "h265"
+                            && opennow_streamer_platform_macos::probe_h265_hdr_hardware()
+                    )
+                );
                 if !codec.available {
                     assert!(colors.is_empty());
                 } else if codec.codec == "h264" {
                     assert_eq!(colors, ["8bit_420"]);
                 } else {
-                    assert_eq!(colors, ["8bit_420", "10bit_420"]);
+                    let mut expected = vec!["8bit_420", "10bit_420"];
+                    if codec.codec == "h265"
+                        && opennow_streamer_platform_macos::probe_h265_444_ten_bit_hardware()
+                    {
+                        expected.push("10bit_444");
+                    }
+                    assert_eq!(colors, expected);
                 }
             }
         }

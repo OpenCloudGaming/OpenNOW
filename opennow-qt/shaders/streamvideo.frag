@@ -24,7 +24,7 @@ void main()
                       + ((pixel.x ^ pixel.y) & 2u) * 4u + (pixel.y & 2u) * 2u
                       + ((pixel.x ^ pixel.y) & 4u) / 2u + (pixel.y & 4u) / 4u;
             float dither = ((float(rank) + 0.5) / 64.0 - 0.5) * parameters.y;
-            color = clamp(color + vec3(dither), 0.0, 1.0);
+            color = floor(clamp(color + vec3(dither), 0.0, 1.0) * 255.0 + 0.5) / 255.0;
         }
     }
     fragColor = vec4(color * parameters.x, parameters.x);

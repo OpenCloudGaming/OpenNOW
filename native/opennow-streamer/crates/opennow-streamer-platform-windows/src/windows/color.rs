@@ -9,13 +9,23 @@ use ::windows::Win32::Graphics::Dxgi::Common::{
     DXGI_COLOR_SPACE_YCBCR_STUDIO_GHLG_TOPLEFT_P2020,
 };
 
-use crate::{VideoChromaSiting, VideoColorMatrix, VideoFormat, VideoTransferFunction};
+use crate::{
+    VideoChromaFormat, VideoChromaSiting, VideoColorMatrix, VideoFormat, VideoTransferFunction,
+};
 
 pub(super) fn input_color_space(format: VideoFormat) -> Result<DXGI_COLOR_SPACE_TYPE, String> {
     format.validate_color().map_err(|error| error.to_string())?;
+    let chroma_siting = if format.chroma_format == VideoChromaFormat::Cs444 {
+        match format.transfer_function {
+            VideoTransferFunction::Hlg => VideoChromaSiting::TopLeft,
+            _ => VideoChromaSiting::Left,
+        }
+    } else {
+        format.chroma_siting
+    };
     match (
         format.transfer_function,
-        format.chroma_siting,
+        chroma_siting,
         format.color_matrix,
         format.full_range,
     ) {

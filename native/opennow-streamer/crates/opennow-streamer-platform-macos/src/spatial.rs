@@ -38,7 +38,8 @@ impl SpatialConfig {
     ) -> Option<Self> {
         let output_width = usize::try_from(output_width).ok()?;
         let output_height = usize::try_from(output_height).ok()?;
-        if input_width == 0
+        if format == MetalFrameFormat::Rgba16Float
+            || input_width == 0
             || input_height == 0
             || output_width < input_width
             || output_height < input_height
@@ -62,6 +63,13 @@ impl SpatialConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hdr_never_enters_the_perceptual_sdr_scaler() {
+        assert!(
+            SpatialConfig::new(1920, 1080, 3840, 2160, MetalFrameFormat::Rgba16Float).is_none()
+        );
+    }
 
     #[test]
     fn spatial_controls_match_mac_source_stage_uniforms() {

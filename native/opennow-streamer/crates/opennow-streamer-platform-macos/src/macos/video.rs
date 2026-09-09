@@ -21,6 +21,8 @@ use objc2_core_video::{
     kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
     kCVPixelFormatType_420YpCbCr10BiPlanarFullRange,
     kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,
+    kCVPixelFormatType_444YpCbCr10BiPlanarFullRange,
+    kCVPixelFormatType_444YpCbCr10BiPlanarVideoRange,
 };
 use objc2_video_toolbox::{
     VTDecodeFrameFlags, VTDecodeInfoFlags, VTDecompressionOutputCallbackRecord,
@@ -30,7 +32,8 @@ use objc2_video_toolbox::{
 
 use crate::failure::{BackendSubsystem, FailureReporter};
 use crate::format::{
-    Av1Format, FrameTiming, H264Format, H265Format, VideoBitDepth, VideoColorSpace, VideoFormat,
+    Av1Format, FrameTiming, H264Format, H265Format, VideoBitDepth, VideoChroma, VideoColorSpace,
+    VideoFormat, VideoTransfer,
 };
 use crate::queue::{BoundedQueue, PushResult};
 
@@ -41,6 +44,7 @@ use super::{BackendError, Counters};
 pub(super) struct DecodedFrame {
     pub(super) image: CFRetained<CVImageBuffer>,
     pub(super) color_space: VideoColorSpace,
+    pub(super) transfer: VideoTransfer,
     pub(super) minimum_frame_duration_seconds: f64,
     pub(super) timestamp_100ns: i64,
 }
@@ -113,6 +117,8 @@ struct CallbackContext {
     in_flight: Arc<InFlight>,
     color_space: VideoColorSpace,
     bit_depth: VideoBitDepth,
+    chroma: VideoChroma,
+    transfer: VideoTransfer,
 }
 
 pub(super) struct VideoDecoder {
@@ -135,10 +141,30 @@ impl VideoDecoder {
         maximum_in_flight: usize,
     ) -> Result<Self, BackendError> {
         let format_description = create_format_description(format)?;
+        if matches!(&output, DecodedFrameOutput::PresentationQueue(_))
+            && (format.chroma() == VideoChroma::Yuv444 || format.transfer() == VideoTransfer::Pq)
+        {
+            return Err(BackendError::Metal(
+                "HDR and 4:4:4 require embedded Metal presentation".into(),
+            ));
+        }
         let bitstream_depth =
             unsafe { format_description.extension(kCMFormatDescriptionExtension_BitsPerComponent) }
                 .and_then(|value| value.downcast_ref::<CFNumber>().and_then(CFNumber::as_i32));
         let bit_depth = format.destination_bit_depth(bitstream_depth)?;
+        if (format.chroma() == VideoChroma::Yuv444 || format.transfer() == VideoTransfer::Pq)
+            && bit_depth != VideoBitDepth::Ten
+        {
+            return Err(BackendError::Metal(
+                "4:4:4 and HDR require ten-bit output".into(),
+            ));
+        }
+        if format.transfer() == VideoTransfer::Pq && format.color_space() != VideoColorSpace::Bt2020
+        {
+            return Err(BackendError::Metal(
+                "PQ output requires negotiated BT.2020 color".into(),
+            ));
+        }
         let in_flight = Arc::new(InFlight {
             count: AtomicUsize::new(0),
             maximum: maximum_in_flight,
@@ -150,15 +176,20 @@ impl VideoDecoder {
             in_flight: Arc::clone(&in_flight),
             color_space: format.color_space(),
             bit_depth,
+            chroma: format.chroma(),
+            transfer: format.transfer(),
         });
         let callback = VTDecompressionOutputCallbackRecord {
             decompressionOutputCallback: Some(decompression_callback),
             decompressionOutputRefCon: (&mut *callback_context as *mut CallbackContext).cast(),
         };
 
-        let pixel_format = match bit_depth {
-            VideoBitDepth::Eight => kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
-            VideoBitDepth::Ten => kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,
+        let pixel_format = match (bit_depth, format.chroma()) {
+            (VideoBitDepth::Ten, VideoChroma::Yuv444) => {
+                kCVPixelFormatType_444YpCbCr10BiPlanarVideoRange
+            }
+            (VideoBitDepth::Eight, _) => kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+            (VideoBitDepth::Ten, _) => kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,
         } as i32;
         let pixel_format_number = unsafe {
             CFNumber::new(
@@ -352,17 +383,26 @@ unsafe extern "C-unwind" fn decompression_callback(
         if let Some(image_buffer) = NonNull::new(image_buffer) {
             let image = unsafe { CFRetained::retain(image_buffer) };
             let pixel_format = CVPixelBufferGetPixelFormatType(&image);
-            if context.bit_depth == VideoBitDepth::Ten
-                && pixel_format != kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
-                && pixel_format != kCVPixelFormatType_420YpCbCr10BiPlanarFullRange
-            {
+            let preserves_format = match (context.bit_depth, context.chroma) {
+                (VideoBitDepth::Ten, VideoChroma::Yuv444) => {
+                    pixel_format == kCVPixelFormatType_444YpCbCr10BiPlanarVideoRange
+                        || pixel_format == kCVPixelFormatType_444YpCbCr10BiPlanarFullRange
+                }
+                (VideoBitDepth::Ten, VideoChroma::Yuv420) => {
+                    pixel_format == kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
+                        || pixel_format == kCVPixelFormatType_420YpCbCr10BiPlanarFullRange
+                }
+                (VideoBitDepth::Eight, VideoChroma::Yuv420) => true,
+                _ => false,
+            };
+            if !preserves_format {
                 context
                     .counters
                     .video_decode_errors
                     .fetch_add(1, Ordering::Relaxed);
                 context.failures.report_fatal(
                     BackendSubsystem::VideoToolbox,
-                    format!("VideoToolbox did not preserve ten-bit output: pixel format {pixel_format:#010x}"),
+                    format!("VideoToolbox did not preserve negotiated depth/chroma: pixel format {pixel_format:#010x}"),
                 );
                 context.in_flight.release();
                 return;
@@ -370,6 +410,7 @@ unsafe extern "C-unwind" fn decompression_callback(
             let frame = DecodedFrame {
                 image,
                 color_space: context.color_space,
+                transfer: context.transfer,
                 minimum_frame_duration_seconds: frame_duration_seconds(presentation_duration),
                 timestamp_100ns: time_to_100ns(presentation_time_stamp),
             };

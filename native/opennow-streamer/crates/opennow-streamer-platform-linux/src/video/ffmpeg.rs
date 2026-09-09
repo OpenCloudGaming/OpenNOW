@@ -92,15 +92,10 @@ impl FfmpegDecoder {
         format: StreamFormat,
         device: Arc<crate::SharedVulkanDevice>,
     ) -> Result<Self> {
-        if !device.supports(
-            codec,
-            format.pixel_format == PixelFormat::P010,
-            format.width,
-            format.height,
-        ) {
+        if !device.supports_format(codec, format.pixel_format, format.width, format.height) {
             return Err(Error::unavailable(
                 Subsystem::Vulkan,
-                "negotiated codec, bit depth or dimensions are unsupported by the shared Vulkan device",
+                "negotiated codec, depth, chroma or dimensions are unsupported by the shared Vulkan device",
             ));
         }
         Self::open_internal(codec, format, FfmpegMode::Vulkan, Some(device))
@@ -113,12 +108,18 @@ impl FfmpegDecoder {
         shared_device: Option<Arc<crate::SharedVulkanDevice>>,
     ) -> Result<Self> {
         format.validate()?;
+        if format.pixel_format.is_444() && (mode != FfmpegMode::Vulkan || shared_device.is_none()) {
+            return Err(Error::unavailable(
+                Subsystem::Ffmpeg,
+                "4:4:4 requires shared Vulkan Video GPU snapshots; CUDA, VAAPI and CPU conversion are unsupported",
+            ));
+        }
         if mode == FfmpegMode::V4l2Request {
             validate_request_profile(codec, format)?;
             super::v4l2_request::probe()
                 .map_err(|reason| Error::unavailable(Subsystem::V4l2, reason))?;
         }
-        if (format.color_transfer != ColorTransfer::Sdr || format.pixel_format == PixelFormat::P010)
+        if (format.color_transfer != ColorTransfer::Sdr || format.pixel_format.is_ten_bit())
             && matches!(mode, FfmpegMode::Cuda | FfmpegMode::Software)
         {
             return Err(Error::unavailable(
@@ -337,6 +338,20 @@ impl FfmpegDecoder {
                     "embedded Vulkan decoder returned a non-GPU frame",
                 ));
             }
+            let pixel_format = decoded_hardware_pixel_format(decoded)?;
+            if pixel_format != self.configured_format.pixel_format
+                || !device.supports_format(
+                    self.codec,
+                    pixel_format,
+                    decoded.width(),
+                    decoded.height(),
+                )
+            {
+                return Err(Error::unavailable(
+                    Subsystem::Vulkan,
+                    "decoded Vulkan format differs from the supported negotiated profile",
+                ));
+            }
             if self.snapshot_pool.is_none() {
                 self.snapshot_pool =
                     Some(super::vulkan_copy::VulkanCopyPool::new(Arc::clone(device))?);
@@ -346,19 +361,6 @@ impl FfmpegDecoder {
                 .as_mut()
                 .expect("initialized snapshot pool")
                 .copy(decoded, self.last_timestamp_us)?;
-            if output.format.pixel_format != self.configured_format.pixel_format
-                || !device.supports(
-                    self.codec,
-                    output.format.pixel_format == PixelFormat::P010,
-                    output.format.width,
-                    output.format.height,
-                )
-            {
-                return Err(Error::unavailable(
-                    Subsystem::Vulkan,
-                    "decoded Vulkan format differs from the supported negotiated profile",
-                ));
-            }
             output.format = StreamFormat {
                 width: output.format.width,
                 height: output.format.height,
@@ -380,6 +382,15 @@ impl FfmpegDecoder {
         } else {
             decoded.format()
         };
+        if matches!(
+            ffi::AVPixelFormat::from(actual_pixel),
+            ffi::AVPixelFormat::AV_PIX_FMT_NV24 | ffi::AVPixelFormat::AV_PIX_FMT_P410LE
+        ) {
+            return Err(Error::unavailable(
+                Subsystem::Ffmpeg,
+                "4:4:4 hardware output requires shared Vulkan Video GPU snapshots",
+            ));
+        }
         let allow_cpu_conversion = cpu_conversion_allowed(metadata, actual_pixel);
         if matches!(self.mode, FfmpegMode::Vulkan | FfmpegMode::Vaapi) && selected_hardware {
             let output = if self.mode == FfmpegMode::Vulkan && allow_cpu_conversion {
@@ -441,7 +452,7 @@ impl FfmpegDecoder {
         if !allow_cpu_conversion || self.mode == FfmpegMode::Vaapi {
             return Err(Error::unavailable(
                 Subsystem::Ffmpeg,
-                "HDR/10-bit frame has no supported zero-copy decode path",
+                "HDR/10-bit/4:4:4 frame has no supported zero-copy decode path",
             ));
         }
         let software_frame;
@@ -1122,9 +1133,11 @@ fn decoded_hardware_software_format(frame: &frame::Video) -> Result<Pixel> {
 
 fn decoded_hardware_pixel_format(frame: &frame::Video) -> Result<PixelFormat> {
     let pixel = decoded_hardware_software_format(frame)?;
-    match pixel {
-        Pixel::NV12 => Ok(PixelFormat::Nv12),
-        Pixel::P010LE => Ok(PixelFormat::P010),
+    match ffi::AVPixelFormat::from(pixel) {
+        ffi::AVPixelFormat::AV_PIX_FMT_NV12 => Ok(PixelFormat::Nv12),
+        ffi::AVPixelFormat::AV_PIX_FMT_P010LE => Ok(PixelFormat::P010),
+        ffi::AVPixelFormat::AV_PIX_FMT_NV24 => Ok(PixelFormat::Nv24),
+        ffi::AVPixelFormat::AV_PIX_FMT_P410LE => Ok(PixelFormat::P410),
         _ => Err(Error::unavailable(
             Subsystem::Ffmpeg,
             format!("unsupported zero-copy hardware pixel format {pixel:?}"),
@@ -1133,13 +1146,20 @@ fn decoded_hardware_pixel_format(frame: &frame::Video) -> Result<PixelFormat> {
 }
 
 fn cpu_conversion_allowed(metadata: StreamFormat, pixel: Pixel) -> bool {
-    if metadata.color_transfer != ColorTransfer::Sdr || metadata.pixel_format == PixelFormat::P010 {
+    if metadata.color_transfer != ColorTransfer::Sdr
+        || metadata.pixel_format.is_ten_bit()
+        || metadata.pixel_format.is_444()
+    {
         return false;
     }
     let descriptor = unsafe { ffi::av_pix_fmt_desc_get(pixel.into()) };
     !descriptor.is_null()
         && unsafe {
             (*descriptor).nb_components != 0
+                && !((*descriptor).nb_components >= 3
+                    && (*descriptor).log2_chroma_w == 0
+                    && (*descriptor).log2_chroma_h == 0
+                    && (*descriptor).flags & ffi::AV_PIX_FMT_FLAG_RGB as u64 == 0)
                 && (*descriptor)
                     .comp
                     .iter()
@@ -1448,6 +1468,41 @@ mod tests {
     }
 
     #[test]
+    fn four_four_four_never_opens_non_shared_or_cpu_decoders() {
+        for pixel_format in [PixelFormat::Nv24, PixelFormat::P410] {
+            let metadata = StreamFormat {
+                pixel_format,
+                ..StreamFormat::video_default(1920, 1080).unwrap()
+            };
+            for mode in [
+                FfmpegMode::Cuda,
+                FfmpegMode::Vaapi,
+                FfmpegMode::Software,
+                FfmpegMode::Vulkan,
+                FfmpegMode::V4l2Request,
+            ] {
+                let error = FfmpegDecoder::open(VideoCodec::H265, metadata, mode)
+                    .err()
+                    .expect("4:4:4 must reject before device initialization");
+                assert!(
+                    error
+                        .to_string()
+                        .contains("4:4:4 requires shared Vulkan Video")
+                );
+            }
+            assert!(!cpu_conversion_allowed(metadata, Pixel::NV12));
+        }
+        let metadata = StreamFormat::video_default(1920, 1080).unwrap();
+        for pixel in [
+            ffi::AVPixelFormat::AV_PIX_FMT_NV24,
+            ffi::AVPixelFormat::AV_PIX_FMT_P410LE,
+            ffi::AVPixelFormat::AV_PIX_FMT_YUV444P,
+        ] {
+            assert!(!cpu_conversion_allowed(metadata, Pixel::from(pixel)));
+        }
+    }
+
+    #[test]
     fn standalone_cpu_recovery_is_limited_to_actual_eight_bit_sdr() {
         let mut metadata = StreamFormat::video_default(1920, 1080).unwrap();
         assert!(cpu_conversion_allowed(metadata, Pixel::NV12));
@@ -1500,15 +1555,13 @@ mod tests {
     }
 
     #[cfg(feature = "vulkan")]
-    fn shared_hevc_snapshot(ten_bit: bool) {
+    fn shared_hevc_snapshot(pixel_format: PixelFormat) {
         let owner =
             crate::SharedVulkanDevice::create().expect("shared Vulkan device must initialize");
         let mut format = StreamFormat::video_default(256, 144).unwrap();
-        if ten_bit {
-            format.pixel_format = PixelFormat::P010;
-        }
+        format.pixel_format = pixel_format;
         assert!(
-            owner.supports(VideoCodec::H265, ten_bit, 256, 144),
+            owner.supports_format(VideoCodec::H265, pixel_format, 256, 144),
             "requested HEVC profile must be supported"
         );
         let encoded = Command::new("ffmpeg")
@@ -1523,7 +1576,13 @@ mod tests {
                 "-frames:v",
                 "1",
                 "-pix_fmt",
-                if ten_bit { "yuv420p10le" } else { "yuv420p" },
+                match pixel_format {
+                    PixelFormat::Nv12 => "yuv420p",
+                    PixelFormat::P010 => "yuv420p10le",
+                    PixelFormat::Nv24 => "yuv444p",
+                    PixelFormat::P410 => "yuv444p10le",
+                    _ => panic!("unsupported HEVC snapshot fixture"),
+                },
                 "-c:v",
                 "libx265",
                 "-x265-params",
@@ -1554,6 +1613,18 @@ mod tests {
         assert_eq!(vulkan.device, owner.info().device);
         assert!(vulkan.completed_gpu_copy());
         assert_eq!(vulkan.images.len(), 2);
+        let divisor = if pixel_format.is_444() { 1 } else { 2 };
+        assert_eq!(vulkan.images[1].width, format.width / divisor);
+        assert_eq!(vulkan.images[1].height, format.height / divisor);
+        assert_eq!(
+            vulkan.images[1].format,
+            if pixel_format.is_ten_bit() {
+                ash::vk::Format::R16G16_UNORM
+            } else {
+                ash::vk::Format::R8G8_UNORM
+            }
+            .as_raw()
+        );
         assert!(
             vulkan.images.iter().all(
                 |image| image.layout == ash::vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL.as_raw()
@@ -1573,14 +1644,28 @@ mod tests {
     #[test]
     #[ignore = "opt-in: requires a Vulkan Video HEVC GPU with an isolated Qt graphics queue and FFmpeg CLI/libx265"]
     fn shared_vulkan_hevc_nv12_gpu_only() {
-        shared_hevc_snapshot(false);
+        shared_hevc_snapshot(PixelFormat::Nv12);
     }
 
     #[cfg(feature = "vulkan")]
     #[test]
     #[ignore = "opt-in: requires a Vulkan Video HEVC Main10 GPU with an isolated Qt graphics queue and FFmpeg CLI/libx265"]
     fn shared_vulkan_hevc_p010_gpu_only() {
-        shared_hevc_snapshot(true);
+        shared_hevc_snapshot(PixelFormat::P010);
+    }
+
+    #[cfg(feature = "vulkan")]
+    #[test]
+    #[ignore = "opt-in: requires Vulkan Video HEVC Range Extensions 8-bit 4:4:4 GPU support, an isolated Qt graphics queue and FFmpeg CLI/libx265"]
+    fn shared_vulkan_hevc_nv24_gpu_only() {
+        shared_hevc_snapshot(PixelFormat::Nv24);
+    }
+
+    #[cfg(feature = "vulkan")]
+    #[test]
+    #[ignore = "opt-in: requires Vulkan Video HEVC Range Extensions 10-bit 4:4:4 GPU support, an isolated Qt graphics queue and FFmpeg CLI/libx265"]
+    fn shared_vulkan_hevc_p410_gpu_only() {
+        shared_hevc_snapshot(PixelFormat::P410);
     }
 
     #[test]

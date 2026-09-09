@@ -324,6 +324,15 @@ struct SwapChainResources {
     allow_tearing: bool,
 }
 
+struct FormatProbeCache {
+    adapter_luid: (u32, i32),
+    device: ID3D11Device,
+    results: Vec<(VideoCodec, VideoPixelFormat, bool, Result<(), String>)>,
+}
+
+static FORMAT_PROBE_CACHE: std::sync::Mutex<[Option<FormatProbeCache>; 2]> =
+    std::sync::Mutex::new([None, None]);
+
 pub(super) struct Graphics {
     processor: Option<ProcessorResources>,
     swap_chain: IDXGISwapChain1,
@@ -341,33 +350,128 @@ pub(super) struct Graphics {
 
 impl Graphics {
     pub(super) fn probe_hdr(&self, codec: VideoCodec) -> Result<(), String> {
-        if codec == VideoCodec::H264 {
+        self.probe_format(codec, VideoPixelFormat::P010, true)
+    }
+
+    pub(super) fn probe_format(
+        &self,
+        codec: VideoCodec,
+        pixel_format: VideoPixelFormat,
+        hdr: bool,
+    ) -> Result<(), String> {
+        let luid = self.adapter_luid()?;
+        let adapter_luid = (luid.LowPart, luid.HighPart);
+        let mut cache = FORMAT_PROBE_CACHE
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let entry = &mut cache[usize::from(self.resources._d3d12.is_some())];
+        if entry.as_ref().is_some_and(|entry| {
+            entry.adapter_luid != adapter_luid
+                || unsafe { entry.device.GetDeviceRemovedReason() }.is_err()
+        }) {
+            *entry = None;
+        }
+        let entry = entry.get_or_insert_with(|| FormatProbeCache {
+            adapter_luid,
+            device: self.resources.device.clone(),
+            results: Vec::with_capacity(6),
+        });
+        if let Some((_, _, _, result)) =
+            entry
+                .results
+                .iter()
+                .find(|(cached_codec, cached_pixel, cached_hdr, _)| {
+                    (*cached_codec, *cached_pixel, *cached_hdr) == (codec, pixel_format, hdr)
+                })
+        {
+            return result.clone();
+        }
+        let result = self.probe_format_uncached(codec, pixel_format, hdr);
+        if entry.results.len() < 6
+            && !result
+                .as_ref()
+                .is_err_and(|error| error.contains("timed out"))
+        {
+            entry
+                .results
+                .push((codec, pixel_format, hdr, result.clone()));
+        }
+        result
+    }
+
+    fn probe_format_uncached(
+        &self,
+        codec: VideoCodec,
+        pixel_format: VideoPixelFormat,
+        hdr: bool,
+    ) -> Result<(), String> {
+        if hdr && codec == VideoCodec::H264 {
             return Err("H.264 HDR is unsupported".to_owned());
         }
         let format = VideoFormat {
             codec,
-            pixel_format: VideoPixelFormat::P010,
-            chroma_format: VideoChromaFormat::Cs420,
+            pixel_format,
+            chroma_format: chroma_format(pixel_format),
             chroma_siting: crate::VideoChromaSiting::Left,
-            transfer_function: crate::VideoTransferFunction::Pq,
-            color_primaries: crate::VideoColorPrimaries::Bt2020,
-            color_matrix: crate::VideoColorMatrix::Bt2020,
+            transfer_function: if hdr {
+                crate::VideoTransferFunction::Pq
+            } else {
+                crate::VideoTransferFunction::Sdr
+            },
+            color_primaries: if hdr {
+                crate::VideoColorPrimaries::Bt2020
+            } else {
+                crate::VideoColorPrimaries::Bt709
+            },
+            color_matrix: if hdr {
+                crate::VideoColorMatrix::Bt2020
+            } else {
+                crate::VideoColorMatrix::Bt709
+            },
             full_range: false,
             ..self.video_format
         };
         let mut decoder =
             super::decoder::Decoder::new(self, format, crate::WindowsDecoderMode::Hardware)?;
-        let decoded_format = decoder.format();
-        decoder.stop();
-        unsafe {
-            super::embedded::probe_hdr_conversion(
+        let data: &[u8] = match (codec, pixel_format, hdr) {
+            (VideoCodec::H265, VideoPixelFormat::P010, false) => {
+                include_bytes!("../../fixtures/probe/hevc-p010-sdr.hevc")
+            }
+            (VideoCodec::H265, VideoPixelFormat::P010, true) => {
+                include_bytes!("../../fixtures/probe/hevc-p010-pq.hevc")
+            }
+            (VideoCodec::Av1, VideoPixelFormat::P010, false) => {
+                include_bytes!("../../fixtures/probe/av1-p010-sdr.obu")
+            }
+            (VideoCodec::Av1, VideoPixelFormat::P010, true) => {
+                include_bytes!("../../fixtures/probe/av1-p010-pq.obu")
+            }
+            (VideoCodec::H265, VideoPixelFormat::Ayuv, false) => {
+                include_bytes!("../../fixtures/probe/hevc-ayuv-sdr.hevc")
+            }
+            (VideoCodec::H265, VideoPixelFormat::Y410, false) => {
+                include_bytes!("../../fixtures/probe/hevc-y410-sdr.hevc")
+            }
+            _ => return Err("unsupported Windows decoder probe format".to_owned()),
+        };
+        let frame = decoder.probe_frame(data)?;
+        if frame.format.pixel_format != pixel_format
+            || frame.format.transfer_function != format.transfer_function
+        {
+            return Err("decoder did not configure the exact requested probe format".to_owned());
+        }
+        let result = unsafe {
+            super::embedded::probe_decoded_conversion(
                 super::embedded::AdoptedD3d11Context {
                     device: self.resources.device.as_raw(),
                     immediate_context: self.resources.context.as_raw(),
                 },
-                decoded_format,
+                &frame,
             )
-        }
+        };
+        drop(frame);
+        decoder.stop();
+        result
     }
 
     pub(super) fn probe(api: WindowsGraphicsApi) -> Result<Self, String> {

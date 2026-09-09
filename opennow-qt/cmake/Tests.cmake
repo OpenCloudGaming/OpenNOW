@@ -1,9 +1,14 @@
 include(CTest)
 if(BUILD_TESTING)
+    qt_add_executable(opennow-waylandhdroutput-tests tests/tst_waylandhdroutput.cpp)
+    target_link_libraries(opennow-waylandhdroutput-tests PRIVATE Qt6::Test opennow-platform-hdr)
+    add_test(NAME opennow-waylandhdroutput-tests COMMAND opennow-waylandhdroutput-tests -o -,txt)
+    set_tests_properties(opennow-waylandhdroutput-tests PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 15)
     qt_add_executable(opennow-hdrcolor-tests tests/tst_hdrcolor.cpp
         src/streaming/rendering/HdrChromeEffect.cpp src/streaming/rendering/HdrOutput.cpp)
     target_include_directories(opennow-hdrcolor-tests PRIVATE src)
-    target_link_libraries(opennow-hdrcolor-tests PRIVATE Qt6::Test Qt6::GuiPrivate Qt6::Quick Qt6::QuickPrivate)
+    target_link_libraries(opennow-hdrcolor-tests PRIVATE Qt6::Test Qt6::GuiPrivate Qt6::Quick Qt6::QuickPrivate opennow-platform-hdr)
     if(MSVC)
         target_compile_options(opennow-hdrcolor-tests PRIVATE /Zi)
         target_link_options(opennow-hdrcolor-tests PRIVATE /DEBUG)
@@ -286,6 +291,7 @@ if(BUILD_TESTING)
     )
     target_link_libraries(opennow-streamvideo-tests PRIVATE
         opennow-platform-input
+        opennow-platform-hdr
         Qt6::Test Qt6::Core Qt6::Gui Qt6::GuiPrivate Qt6::Qml Qt6::Quick Qt6::QuickPrivate
         opennow-streamer-ffi)
     if(WIN32)
@@ -305,7 +311,7 @@ if(BUILD_TESTING)
             src/streaming/rendering/LinuxVulkanGraphics.cpp)
         target_include_directories(opennow-nativeframegeneration-tests PRIVATE src)
         target_link_libraries(opennow-nativeframegeneration-tests PRIVATE
-            Qt6::Test Qt6::GuiPrivate Qt6::Quick Qt6::QuickPrivate opennow-streamer-ffi)
+            Qt6::Test Qt6::GuiPrivate Qt6::Quick Qt6::QuickPrivate opennow-streamer-ffi opennow-platform-hdr)
         if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
             target_link_libraries(opennow-nativeframegeneration-tests PRIVATE Vulkan::Vulkan)
         endif()
@@ -481,6 +487,7 @@ if(BUILD_TESTING)
         TIMEOUT 30
     )
     set(OPENNOW_CI_UNIT_TEST_TARGETS
+        opennow-waylandhdroutput-tests
         opennow-hdrcolor-tests
         opennow-theme-tests
         opennow-framepacer-tests
@@ -514,6 +521,7 @@ if(BUILD_TESTING)
         # Qt's executable helper defaults to the GUI subsystem on Windows. Keep
         # test runners as console programs so CTest captures QtTest failures.
         set_target_properties(
+            opennow-waylandhdroutput-tests
             opennow-localization-tests
             opennow-qt-tests
             opennow-coreclient-tests
@@ -559,6 +567,7 @@ if(BUILD_TESTING)
             add_dependencies(opennow-qt-test-runtime opennow-msvc-runtime)
         endif()
         foreach(test_target IN ITEMS
+                opennow-waylandhdroutput-tests
                 opennow-hdrcolor-tests
                 opennow-localization-tests
                 opennow-qt-tests

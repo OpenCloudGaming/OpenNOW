@@ -1463,6 +1463,27 @@ fn validate_context(context: &SessionContext, id: &str) -> Result<(), Value> {
             "Session context settings and shortcuts must be objects",
         ));
     }
+    if let Some(profile) = context.session.extra.get("negotiatedStreamProfile") {
+        let codec = profile["codec"]
+            .as_str()
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_uppercase();
+        let color = profile["colorQuality"]
+            .as_str()
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase();
+        if (codec == "H264" && matches!(color.as_str(), "8bit_444" | "10bit_420" | "10bit_444"))
+            || (codec == "AV1" && matches!(color.as_str(), "8bit_444" | "10bit_444"))
+        {
+            return Err(error(
+                Some(id),
+                "invalid-context",
+                "The accepted codec and color profile cannot be preserved by the streamer",
+            ));
+        }
+    }
     if media_stream_config(context).hdr {
         let profile = &context.session.extra["negotiatedStreamProfile"];
         if !matches!(profile["codec"].as_str(), Some("H265" | "HEVC" | "AV1"))
@@ -3665,6 +3686,43 @@ mod tests {
                 .is_none()
         );
         assert_eq!(responses[0]["capabilities"]["supportsVideoPresent"], false);
+    }
+
+    #[test]
+    fn accepted_color_profiles_are_not_silently_downgraded() {
+        let mut value = synthetic_context("accepted-color-profile", json!([]));
+        for (codec, color) in [
+            ("H264", "8bit_444"),
+            ("H264", "10bit_420"),
+            ("H264", "10bit_444"),
+            ("AV1", "8bit_444"),
+            ("AV1", "10bit_444"),
+            (" av1 ", " 10bit_444 "),
+        ] {
+            value["session"]["negotiatedStreamProfile"] = json!({
+                "codec": codec, "colorQuality": color, "enableHdr": false
+            });
+            let context: SessionContext = serde_json::from_value(value.clone()).unwrap();
+            assert!(
+                validate_context(&context, "invalid-color").is_err(),
+                "{codec} {color}"
+            );
+        }
+        for (codec, color) in [
+            ("H264", "8bit_420"),
+            ("H265", "8bit_444"),
+            ("H265", "10bit_444"),
+            ("AV1", "10bit_420"),
+        ] {
+            value["session"]["negotiatedStreamProfile"] = json!({
+                "codec": codec, "colorQuality": color, "enableHdr": false
+            });
+            let context: SessionContext = serde_json::from_value(value.clone()).unwrap();
+            assert!(
+                validate_context(&context, "valid-color").is_ok(),
+                "{codec} {color}"
+            );
+        }
     }
 
     #[test]

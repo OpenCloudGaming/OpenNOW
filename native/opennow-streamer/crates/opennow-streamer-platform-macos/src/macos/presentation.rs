@@ -621,6 +621,11 @@ impl MetalPresenter {
         let color_space = match frame.color_space {
             VideoColorSpace::Bt601 => 0u32,
             VideoColorSpace::Bt709 => 1u32,
+            VideoColorSpace::Bt2020 => {
+                return Err(BackendError::Metal(
+                    "BT.2020 HDR requires embedded Metal presentation".into(),
+                ));
+            }
         };
         unsafe {
             encoder.setFragmentBytes_length_atIndex(

@@ -264,16 +264,20 @@ impl GraphicsFrame for opennow_streamer_platform_macos::MetalFrame {
             )
         }
         .map_err(|error| error.to_string())?;
+        let color_space = macos_frame_color_space(frame.color_space, frame.transfer, frame.format)?;
         Ok(GraphicsRecordedFrame {
             resource: frame.texture as usize as u64,
             resource_view: 0,
-            color_space: GraphicsColorSpace::Sdr709,
+            color_space,
             texture_format: match frame.format {
                 opennow_streamer_platform_macos::MetalFrameFormat::Rgba8Unorm => {
                     GraphicsTextureFormat::Rgba8
                 }
                 opennow_streamer_platform_macos::MetalFrameFormat::Rgb10a2Unorm => {
                     GraphicsTextureFormat::Rgb10A2
+                }
+                opennow_streamer_platform_macos::MetalFrameFormat::Rgba16Float => {
+                    GraphicsTextureFormat::Rgba16Float
                 }
             },
             width: frame.width,
@@ -282,6 +286,30 @@ impl GraphicsFrame for opennow_streamer_platform_macos::MetalFrame {
             generation: frame.generation,
             presentation_time_ns: frame.presentation_time_ns,
         })
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn macos_frame_color_space(
+    color_space: opennow_streamer_platform_macos::VideoColorSpace,
+    transfer: opennow_streamer_platform_macos::VideoTransfer,
+    format: opennow_streamer_platform_macos::MetalFrameFormat,
+) -> Result<GraphicsColorSpace, GraphicsFrameError> {
+    use opennow_streamer_platform_macos::{MetalFrameFormat, VideoColorSpace, VideoTransfer};
+    match (color_space, transfer, format) {
+        (VideoColorSpace::Bt2020, VideoTransfer::Pq, MetalFrameFormat::Rgba16Float) => {
+            Ok(GraphicsColorSpace::Pq2020)
+        }
+        (
+            VideoColorSpace::Bt601 | VideoColorSpace::Bt709,
+            VideoTransfer::Sdr,
+            MetalFrameFormat::Rgba8Unorm | MetalFrameFormat::Rgb10a2Unorm,
+        ) => Ok(GraphicsColorSpace::Sdr709),
+        _ => Err(
+            "Metal frame color metadata does not match its texture format"
+                .to_owned()
+                .into(),
+        ),
     }
 }
 
@@ -574,6 +602,52 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn metal_hdr_metadata_requires_bt2020_pq_float_output() {
+        use opennow_streamer_platform_macos::{MetalFrameFormat, VideoColorSpace, VideoTransfer};
+        assert!(matches!(
+            macos_frame_color_space(
+                VideoColorSpace::Bt2020,
+                VideoTransfer::Pq,
+                MetalFrameFormat::Rgba16Float,
+            ),
+            Ok(GraphicsColorSpace::Pq2020)
+        ));
+        assert!(matches!(
+            macos_frame_color_space(
+                VideoColorSpace::Bt709,
+                VideoTransfer::Sdr,
+                MetalFrameFormat::Rgb10a2Unorm,
+            ),
+            Ok(GraphicsColorSpace::Sdr709)
+        ));
+        for (color, transfer, format) in [
+            (
+                VideoColorSpace::Bt709,
+                VideoTransfer::Pq,
+                MetalFrameFormat::Rgba16Float,
+            ),
+            (
+                VideoColorSpace::Bt2020,
+                VideoTransfer::Sdr,
+                MetalFrameFormat::Rgb10a2Unorm,
+            ),
+            (
+                VideoColorSpace::Bt2020,
+                VideoTransfer::Pq,
+                MetalFrameFormat::Rgb10a2Unorm,
+            ),
+            (
+                VideoColorSpace::Bt2020,
+                VideoTransfer::Pq,
+                MetalFrameFormat::Rgba8Unorm,
+            ),
+        ] {
+            assert!(macos_frame_color_space(color, transfer, format).is_err());
+        }
+    }
 
     struct RetainedResources(Arc<Mutex<Vec<ThreadId>>>);
 

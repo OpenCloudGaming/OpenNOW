@@ -233,15 +233,36 @@ impl MediaRuntime {
             {
                 return Err("HDR requires a negotiated 10-bit HEVC or AV1 stream".to_owned());
             }
-            if !cfg!(any(target_os = "windows", target_os = "linux")) {
+            if stream.color_quality.is_444() {
+                return Err("HDR requires a negotiated 10-bit 4:2:0 stream".to_owned());
+            }
+            if !cfg!(any(
+                target_os = "windows",
+                target_os = "linux",
+                target_os = "macos"
+            )) {
                 return Err(
-                    "HDR is supported only by the Windows and Linux embedded stream view"
+                    "HDR is supported only by the Windows, Linux, and macOS embedded stream view"
                         .to_owned(),
                 );
             }
             if matches!(self.mode, MediaRuntimeMode::Standalone) {
                 return Err("HDR requires the color-managed embedded Qt stream view".to_owned());
             }
+            #[cfg(target_os = "macos")]
+            if stream.codec != crate::MediaVideoCodec::H265
+                || !opennow_streamer_platform_macos::probe_h265_hdr_hardware()
+            {
+                return Err(
+                    "HDR requires a verified HEVC VideoToolbox and Metal output path".to_owned(),
+                );
+            }
+        }
+        if (stream.codec == crate::MediaVideoCodec::H264
+            && stream.color_quality != crate::MediaColorQuality::EightBit420)
+            || (stream.codec == crate::MediaVideoCodec::Av1 && stream.color_quality.is_444())
+        {
+            return Err("The negotiated codec and color profile cannot be preserved by the embedded decoder".to_owned());
         }
         self.output.stop_microphone();
         self.output.reset_microphone_clock();
@@ -1671,6 +1692,66 @@ mod tests {
                 },
             );
             assert!(matches!(result, Err(message) if message.contains("10-bit HEVC or AV1")));
+        }
+        runtime.shutdown();
+    }
+
+    #[test]
+    fn hdr_444_fails_before_decoder_start() {
+        let (_graphics, frames) = crate::RenderThreadGraphics::new(|| {});
+        let runtime = super::create_embedded_runtime(frames);
+        for codec in [crate::MediaVideoCodec::H265, crate::MediaVideoCodec::Av1] {
+            let (feedback, _) = std::sync::mpsc::channel();
+            let result = runtime.start(
+                feedback,
+                crate::MediaStreamConfig {
+                    codec,
+                    color_quality: crate::MediaColorQuality::TenBit444,
+                    hdr: true,
+                    ..Default::default()
+                },
+            );
+            assert!(matches!(result, Err(message) if message.contains("10-bit 4:2:0")));
+        }
+        runtime.shutdown();
+    }
+
+    #[test]
+    fn incompatible_color_profiles_fail_before_decoder_start() {
+        let (_graphics, frames) = crate::RenderThreadGraphics::new(|| {});
+        let runtime = super::create_embedded_runtime(frames);
+        for (codec, color_quality) in [
+            (
+                crate::MediaVideoCodec::H264,
+                crate::MediaColorQuality::EightBit444,
+            ),
+            (
+                crate::MediaVideoCodec::H264,
+                crate::MediaColorQuality::TenBit420,
+            ),
+            (
+                crate::MediaVideoCodec::H264,
+                crate::MediaColorQuality::TenBit444,
+            ),
+            (
+                crate::MediaVideoCodec::Av1,
+                crate::MediaColorQuality::EightBit444,
+            ),
+            (
+                crate::MediaVideoCodec::Av1,
+                crate::MediaColorQuality::TenBit444,
+            ),
+        ] {
+            let (feedback, _) = std::sync::mpsc::channel();
+            let result = runtime.start(
+                feedback,
+                crate::MediaStreamConfig {
+                    codec,
+                    color_quality,
+                    ..Default::default()
+                },
+            );
+            assert!(matches!(result, Err(message) if message.contains("cannot be preserved")));
         }
         runtime.shutdown();
     }

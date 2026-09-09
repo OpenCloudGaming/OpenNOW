@@ -146,11 +146,10 @@ pub(crate) fn select_embedded_video_path(
     };
     if requested == "vulkan"
         || (matches!(requested, "auto" | "hardware")
-            && !stream.color_quality.is_444()
             && device.is_some_and(|device| {
-                device.supports(
+                device.supports_format(
                     codec,
-                    stream.color_quality.bit_depth() == 10,
+                    stream.color_quality.linux_pixel_format(),
                     stream.width,
                     stream.height,
                 )

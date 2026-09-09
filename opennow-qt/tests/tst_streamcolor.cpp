@@ -205,6 +205,40 @@ private slots:
         QCOMPARE(render(renderer, source.get(), *target), patches({0, 255}, false));
     }
 
+    void tenBitRgbPreservesIndependentFullResolutionChannels()
+    {
+        auto source = makeSource({0});
+        QVERIFY(source);
+        QByteArray pixels(tileSize * tileSize * 4, Qt::Uninitialized);
+        for (int pixel = 0; pixel < tileSize * tileSize; ++pixel) {
+            const quint32 red = pixel % 2 ? 513 : 512;
+            const quint32 green = pixel % 2 ? 1023 : 0;
+            const quint32 blue = pixel % 2 ? 0 : 1023;
+            const quint32 packed = red | (green << 10) | (blue << 20) | (3u << 30);
+            std::memcpy(pixels.data() + pixel * 4, &packed, sizeof(packed));
+        }
+        QRhiCommandBuffer *cb = nullptr;
+        QCOMPARE(m_rhi->beginOffscreenFrame(&cb), QRhi::FrameOpSuccess);
+        auto *updates = m_rhi->nextResourceUpdateBatch();
+        updates->uploadTexture(source.get(), QRhiTextureUploadDescription({
+            QRhiTextureUploadEntry(0, 0, QRhiTextureSubresourceUploadDescription(pixels))
+        }));
+        cb->resourceUpdate(updates);
+        QCOMPARE(m_rhi->endOffscreenFrame(), QRhi::FrameOpSuccess);
+        auto target = makeTarget(QRhiTexture::RGBA16F, source->pixelSize());
+        QVERIFY(target);
+        StreamVideoTextureRenderer renderer;
+        const auto data = render(renderer, source.get(), *target);
+        QCOMPARE(data.size(), tileSize * tileSize * 8);
+        const auto *values = reinterpret_cast<const qfloat16 *>(data.constData());
+        for (int pixel = 0; pixel < tileSize * tileSize; ++pixel) {
+            QVERIFY(std::abs(float(values[pixel * 4]) - (pixel % 2 ? 513.0f : 512.0f) / 1023.0f) < 0.0005f);
+            QCOMPARE(float(values[pixel * 4 + 1]), pixel % 2 ? 1.0f : 0.0f);
+            QCOMPARE(float(values[pixel * 4 + 2]), pixel % 2 ? 0.0f : 1.0f);
+            QCOMPARE(float(values[pixel * 4 + 3]), 1.0f);
+        }
+    }
+
     void hdrToneMappingPrecedesFinalSdrDither()
     {
         const QList<int> codes{128, 256, 384, 512, 580, 581, 582, 768, 769, 770, 896};

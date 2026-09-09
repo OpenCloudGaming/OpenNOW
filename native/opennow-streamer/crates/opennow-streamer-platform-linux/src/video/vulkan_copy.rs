@@ -19,6 +19,7 @@ struct Snapshot {
     images: [vk::Image; 2],
     memory: [vk::DeviceMemory; 2],
     formats: [vk::Format; 2],
+    pixel_format: PixelFormat,
     width: u32,
     height: u32,
     initialized: bool,
@@ -244,10 +245,12 @@ impl VulkanCopyPool {
         let pixel_format = match frames.sw_format {
             ffi::AVPixelFormat::AV_PIX_FMT_NV12 => PixelFormat::Nv12,
             ffi::AVPixelFormat::AV_PIX_FMT_P010LE => PixelFormat::P010,
+            ffi::AVPixelFormat::AV_PIX_FMT_NV24 => PixelFormat::Nv24,
+            ffi::AVPixelFormat::AV_PIX_FMT_P410LE => PixelFormat::P410,
             _ => {
                 return Err(Error::unavailable(
                     Subsystem::Vulkan,
-                    "embedded Vulkan supports only NV12 and P010 4:2:0 images",
+                    "embedded Vulkan supports only NV12, P010, NV24 and P410 images",
                 ));
             }
         };
@@ -281,8 +284,13 @@ impl VulkanCopyPool {
             ));
         }
         let (width, height) = (decoded.width(), decoded.height());
-        let mut format = StreamFormat::video_default(width, height)?;
-        format.pixel_format = pixel_format;
+        let format = StreamFormat {
+            width,
+            height,
+            pixel_format,
+            ..StreamFormat::video_default(2, 2)?
+        };
+        format.validate()?;
         if frames.width < width as i32 || frames.height < height as i32 {
             return Err(Error::unavailable(
                 Subsystem::Vulkan,
@@ -293,8 +301,9 @@ impl VulkanCopyPool {
             [width, height],
             [frames.width as u32, frames.height as u32],
             self.transfer_granularity,
+            pixel_format,
         )?;
-        let formats = if pixel_format == PixelFormat::P010 {
+        let formats = if pixel_format.is_ten_bit() {
             [vk::Format::R16_UNORM, vk::Format::R16G16_UNORM]
         } else {
             [vk::Format::R8_UNORM, vk::Format::R8G8_UNORM]
@@ -304,13 +313,16 @@ impl VulkanCopyPool {
                 && slot.width == width
                 && slot.height == height
                 && slot.formats == formats
+                && slot.pixel_format == pixel_format
         });
         let index = match index {
             Some(index) => index,
             None => {
                 self.slots.retain(|slot| {
                     Arc::strong_count(slot) > 1
-                        || (slot.width == width && slot.height == height && slot.formats == formats)
+                        || (slot.width == width
+                            && slot.height == height
+                            && slot.pixel_format == pixel_format)
                 });
                 if self.slots.len() >= MAX_SNAPSHOTS {
                     return Err(Error::backend(
@@ -318,8 +330,12 @@ impl VulkanCopyPool {
                         "bounded Vulkan presentation snapshot pool exhausted",
                     ));
                 }
-                self.slots
-                    .push(Arc::new(self.allocate(width, height, formats)?));
+                self.slots.push(Arc::new(self.allocate(
+                    width,
+                    height,
+                    formats,
+                    pixel_format,
+                )?));
                 self.slots.len() - 1
             }
         };
@@ -382,8 +398,8 @@ impl VulkanCopyPool {
             .map(|(index, image)| VulkanImage {
                 image: image.as_raw(),
                 format: formats[index].as_raw(),
-                width: if index == 0 { width } else { width / 2 },
-                height: if index == 0 { height } else { height / 2 },
+                width: plane_extent(width, height, index, pixel_format).width,
+                height: plane_extent(width, height, index, pixel_format).height,
                 layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL.as_raw(),
                 access: vk::AccessFlags::SHADER_READ.as_raw() as u64,
                 semaphore: slot.semaphore.as_raw(),
@@ -425,7 +441,13 @@ impl VulkanCopyPool {
         Ok(output)
     }
 
-    fn allocate(&self, width: u32, height: u32, formats: [vk::Format; 2]) -> Result<Snapshot> {
+    fn allocate(
+        &self,
+        width: u32,
+        height: u32,
+        formats: [vk::Format; 2],
+        pixel_format: PixelFormat,
+    ) -> Result<Snapshot> {
         let mut slot = Snapshot {
             _owner: Arc::clone(&self.owner),
             _entry: Arc::clone(&self.entry),
@@ -433,6 +455,7 @@ impl VulkanCopyPool {
             images: [vk::Image::null(); 2],
             memory: [vk::DeviceMemory::null(); 2],
             formats,
+            pixel_format,
             width,
             height,
             initialized: false,
@@ -463,11 +486,7 @@ impl VulkanCopyPool {
             let info = vk::ImageCreateInfo::default()
                 .image_type(vk::ImageType::TYPE_2D)
                 .format(format)
-                .extent(vk::Extent3D {
-                    width: if index == 0 { width } else { width / 2 },
-                    height: if index == 0 { height } else { height / 2 },
-                    depth: 1,
-                })
+                .extent(plane_extent(width, height, index, pixel_format))
                 .mip_levels(1)
                 .array_layers(1)
                 .samples(vk::SampleCountFlags::TYPE_1)
@@ -558,7 +577,7 @@ impl VulkanCopyPool {
             }
         }
         let slot = &self.slots[index];
-        validate_source_formats(&frames.format[..count], slot.formats)?;
+        validate_source_formats(&frames.format[..count], slot.pixel_format)?;
         unsafe {
             self.device
                 .reset_fences(&[self.fence])
@@ -656,11 +675,7 @@ impl VulkanCopyPool {
                         .aspect_mask(vk::ImageAspectFlags::COLOR)
                         .layer_count(1),
                 )
-                .extent(vk::Extent3D {
-                    width: if i == 0 { slot.width } else { slot.width / 2 },
-                    height: if i == 0 { slot.height } else { slot.height / 2 },
-                    depth: 1,
-                });
+                .extent(plane_extent(slot.width, slot.height, i, slot.pixel_format));
             unsafe {
                 self.device.cmd_copy_image(
                     self.command,
@@ -790,8 +805,9 @@ fn validate_copy_granularity(
     visible: [u32; 2],
     coded: [u32; 2],
     granularity: vk::Extent3D,
+    pixel_format: PixelFormat,
 ) -> Result<()> {
-    for divisor in [1, 2] {
+    for divisor in [1, if pixel_format.is_444() { 1 } else { 2 }] {
         for (axis, granularity) in [granularity.width, granularity.height]
             .into_iter()
             .enumerate()
@@ -808,30 +824,52 @@ fn validate_copy_granularity(
     Ok(())
 }
 
-fn validate_source_formats(source: &[i32], target: [vk::Format; 2]) -> Result<()> {
-    let multiplane = if target[0] == vk::Format::R16_UNORM {
-        vk::Format::G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16
+fn plane_extent(width: u32, height: u32, index: usize, pixel_format: PixelFormat) -> vk::Extent3D {
+    let divisor = if index == 0 || pixel_format.is_444() {
+        1
     } else {
-        vk::Format::G8_B8R8_2PLANE_420_UNORM
+        2
     };
-    let valid_target = target == [vk::Format::R8_UNORM, vk::Format::R8G8_UNORM]
-        || target == [vk::Format::R16_UNORM, vk::Format::R16G16_UNORM];
-    let packed_p010 = target == [vk::Format::R16_UNORM, vk::Format::R16G16_UNORM]
+    vk::Extent3D {
+        width: width / divisor,
+        height: height / divisor,
+        depth: 1,
+    }
+}
+
+fn validate_source_formats(source: &[i32], pixel_format: PixelFormat) -> Result<()> {
+    let multiplane = match pixel_format {
+        PixelFormat::Nv12 => vk::Format::G8_B8R8_2PLANE_420_UNORM,
+        PixelFormat::P010 => vk::Format::G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16,
+        PixelFormat::Nv24 => vk::Format::G8_B8R8_2PLANE_444_UNORM,
+        PixelFormat::P410 => vk::Format::G10X6_B10X6R10X6_2PLANE_444_UNORM_3PACK16,
+        _ => {
+            return Err(Error::unavailable(
+                Subsystem::Vulkan,
+                "unsupported Vulkan snapshot pixel format",
+            ));
+        }
+    };
+    let target = if pixel_format.is_ten_bit() {
+        [vk::Format::R16_UNORM, vk::Format::R16G16_UNORM]
+    } else {
+        [vk::Format::R8_UNORM, vk::Format::R8G8_UNORM]
+    };
+    let packed_ten_bit = pixel_format.is_ten_bit()
         && source
             == [
                 vk::Format::R10X6_UNORM_PACK16.as_raw(),
                 vk::Format::R10X6G10X6_UNORM_2PACK16.as_raw(),
             ];
-    if valid_target
-        && (source == [multiplane.as_raw()]
-            || source == target.map(|format| format.as_raw())
-            || packed_p010)
+    if source == [multiplane.as_raw()]
+        || source == target.map(|format| format.as_raw())
+        || packed_ten_bit
     {
         Ok(())
     } else {
         Err(Error::unavailable(
             Subsystem::Vulkan,
-            "Vulkan source image formats do not match the negotiated NV12/P010 planes",
+            "Vulkan source image formats do not match the negotiated depth and chroma planes",
         ))
     }
 }
@@ -839,6 +877,78 @@ fn validate_source_formats(source: &[i32], target: [vk::Format; 2]) -> Result<()
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn four_four_four_snapshots_keep_full_resolution_chroma() {
+        for format in [PixelFormat::Nv24, PixelFormat::P410] {
+            assert_eq!(
+                plane_extent(1919, 1079, 1, format),
+                vk::Extent3D {
+                    width: 1919,
+                    height: 1079,
+                    depth: 1
+                }
+            );
+            assert_eq!(
+                plane_extent(1920, 1080, 0, format),
+                plane_extent(1920, 1080, 1, format)
+            );
+            assert_eq!(plane_extent(1920, 1080, 1, format).width, 1920);
+            assert_eq!(plane_extent(1920, 1080, 1, format).height, 1080);
+            let granularity = vk::Extent3D {
+                width: 4,
+                height: 4,
+                depth: 1,
+            };
+            assert!(
+                validate_copy_granularity([1920, 1084], [1920, 1088], granularity, format).is_ok()
+            );
+            assert!(
+                validate_copy_granularity([1920, 1082], [1920, 1088], granularity, format).is_err()
+            );
+        }
+        assert_eq!(plane_extent(1920, 1080, 1, PixelFormat::Nv12).width, 960);
+        assert_eq!(plane_extent(1920, 1080, 1, PixelFormat::P010).height, 540);
+    }
+
+    #[test]
+    fn four_four_four_source_layouts_reject_subsampled_and_wrong_depth_images() {
+        for (format, valid, invalid, planes) in [
+            (
+                PixelFormat::Nv24,
+                vk::Format::G8_B8R8_2PLANE_444_UNORM,
+                vk::Format::G8_B8R8_2PLANE_420_UNORM,
+                [vk::Format::R8_UNORM, vk::Format::R8G8_UNORM],
+            ),
+            (
+                PixelFormat::P410,
+                vk::Format::G10X6_B10X6R10X6_2PLANE_444_UNORM_3PACK16,
+                vk::Format::G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16,
+                [vk::Format::R16_UNORM, vk::Format::R16G16_UNORM],
+            ),
+        ] {
+            assert!(validate_source_formats(&[valid.as_raw()], format).is_ok());
+            assert!(validate_source_formats(&[invalid.as_raw()], format).is_err());
+            assert!(validate_source_formats(&planes.map(|plane| plane.as_raw()), format).is_ok());
+            let other = if format.is_ten_bit() {
+                PixelFormat::Nv24
+            } else {
+                PixelFormat::P410
+            };
+            assert!(validate_source_formats(&[valid.as_raw()], other).is_err());
+            assert!(validate_source_formats(&planes.map(|plane| plane.as_raw()), other).is_err());
+        }
+        assert!(
+            validate_source_formats(
+                &[
+                    vk::Format::R10X6_UNORM_PACK16.as_raw(),
+                    vk::Format::R10X6G10X6_UNORM_2PACK16.as_raw()
+                ],
+                PixelFormat::P410
+            )
+            .is_ok()
+        );
+    }
 
     #[test]
     fn snapshot_waits_deduplicate_shared_semaphores() {
@@ -877,11 +987,23 @@ mod tests {
             height: 4,
             depth: 1,
         };
-        assert!(validate_copy_granularity([1920, 1080], [1920, 1088], granularity).is_ok());
-        assert!(validate_copy_granularity([1920, 1082], [1920, 1088], granularity).is_err());
+        assert!(
+            validate_copy_granularity([1920, 1080], [1920, 1088], granularity, PixelFormat::Nv12)
+                .is_ok()
+        );
+        assert!(
+            validate_copy_granularity([1920, 1082], [1920, 1088], granularity, PixelFormat::Nv12)
+                .is_err()
+        );
         let whole_image = vk::Extent3D::default();
-        assert!(validate_copy_granularity([1920, 1080], [1920, 1080], whole_image).is_ok());
-        assert!(validate_copy_granularity([1920, 1080], [1920, 1088], whole_image).is_err());
+        assert!(
+            validate_copy_granularity([1920, 1080], [1920, 1080], whole_image, PixelFormat::Nv12)
+                .is_ok()
+        );
+        assert!(
+            validate_copy_granularity([1920, 1080], [1920, 1088], whole_image, PixelFormat::Nv12)
+                .is_err()
+        );
     }
 
     #[test]
@@ -968,7 +1090,7 @@ mod tests {
 
     #[test]
     fn snapshot_rejects_mismatched_plane_depth_or_chroma() {
-        let nv12 = [vk::Format::R8_UNORM, vk::Format::R8G8_UNORM];
+        let nv12 = PixelFormat::Nv12;
         assert!(
             validate_source_formats(&[vk::Format::G8_B8R8_2PLANE_420_UNORM.as_raw()], nv12).is_ok()
         );
@@ -986,7 +1108,7 @@ mod tests {
             validate_source_formats(&[vk::Format::G8_B8R8_2PLANE_444_UNORM.as_raw()], nv12)
                 .is_err()
         );
-        let p010 = [vk::Format::R16_UNORM, vk::Format::R16G16_UNORM];
+        let p010 = PixelFormat::P010;
         for source in [
             vec![vk::Format::G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16.as_raw()],
             vec![

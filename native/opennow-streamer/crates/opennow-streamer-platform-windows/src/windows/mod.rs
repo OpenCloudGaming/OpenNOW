@@ -13,6 +13,7 @@ mod color;
 mod decoder;
 mod embedded;
 mod graphics;
+mod y410;
 
 pub use embedded::{
     AdoptedD3d11Context, D3d11ColorSpace, D3d11Frame, D3d11FrameProducer, D3d11FrameSubmitter,
@@ -310,6 +311,10 @@ pub(super) fn probe(api: WindowsGraphicsApi) -> CapabilityProbe {
                 av1_hardware_decode: false,
                 h265_hdr: false,
                 av1_hdr: false,
+                h265_10bit: false,
+                av1_10bit: false,
+                h265_444: false,
+                h265_10bit_444: false,
                 h264_software_decode: false,
                 h265_software_decode: false,
                 av1_software_decode: false,
@@ -388,6 +393,24 @@ pub(super) fn probe(api: WindowsGraphicsApi) -> CapabilityProbe {
         }
         result.is_ok()
     });
+    let format_support = [
+        (VideoCodec::H265, crate::VideoPixelFormat::P010, false),
+        (VideoCodec::Av1, crate::VideoPixelFormat::P010, false),
+        (VideoCodec::H265, crate::VideoPixelFormat::Ayuv, false),
+        (VideoCodec::H265, crate::VideoPixelFormat::Y410, false),
+    ].map(|(codec, pixel_format, hdr)| {
+        let result = graphics
+            .as_ref()
+            .map_err(Clone::clone)
+            .and_then(|graphics| graphics.probe_format(codec, pixel_format, hdr));
+        if let Err(error) = &result {
+            video_log!(
+                "Windows format probe failed api={api:?} codec={} pixelFormat={pixel_format:?} hdr={hdr}: {error}",
+                codec.label()
+            );
+        }
+        result.is_ok()
+    });
     let audio = AudioRenderer::probe().map_err(|error| error.to_string());
     let h264_hardware_decode = h264_decoder.is_ok();
     let h265_hardware_decode = h265_decoder.is_ok();
@@ -404,6 +427,10 @@ pub(super) fn probe(api: WindowsGraphicsApi) -> CapabilityProbe {
         av1_hardware_decode,
         h265_hdr: hdr_support[0],
         av1_hdr: hdr_support[1],
+        h265_10bit: format_support[0],
+        av1_10bit: format_support[1],
+        h265_444: format_support[2],
+        h265_10bit_444: format_support[3],
         h264_software_decode,
         h265_software_decode,
         av1_software_decode,

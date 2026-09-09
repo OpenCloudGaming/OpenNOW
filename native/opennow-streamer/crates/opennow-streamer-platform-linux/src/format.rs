@@ -25,9 +25,21 @@ impl VideoCodec {
 pub enum PixelFormat {
     Nv12,
     P010,
+    Nv24,
+    P410,
     I420,
     Bgra8,
     Rgba8,
+}
+
+impl PixelFormat {
+    pub const fn is_ten_bit(self) -> bool {
+        matches!(self, Self::P010 | Self::P410)
+    }
+
+    pub const fn is_444(self) -> bool {
+        matches!(self, Self::Nv24 | Self::P410)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -99,9 +111,9 @@ impl StreamFormat {
     }
 
     pub fn validate(&self) -> Result<()> {
-        if self.color_transfer != ColorTransfer::Sdr && self.pixel_format != PixelFormat::P010 {
+        if self.color_transfer != ColorTransfer::Sdr && !self.pixel_format.is_ten_bit() {
             return Err(Error::InvalidFormat(
-                "HDR requires actual P010 decode output".to_owned(),
+                "HDR requires actual P010 or P410 decode output".to_owned(),
             ));
         }
         if self.width == 0 || self.height == 0 {
@@ -441,6 +453,11 @@ impl DecodedVideoFrame {
         let width = self.format.width as usize;
         let height = self.format.height as usize;
         match self.format.pixel_format {
+            PixelFormat::Nv24 | PixelFormat::P410 => {
+                return Err(Error::InvalidFormat(
+                    "embedded 4:4:4 requires GPU-backed decode output".to_owned(),
+                ));
+            }
             PixelFormat::Nv12 | PixelFormat::P010 => {
                 if self.planes.len() != 2 {
                     return Err(Error::InvalidFormat(
@@ -500,6 +517,32 @@ impl DecodedVideoFrame {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn full_resolution_chroma_accepts_odd_dimensions_but_requires_gpu_storage() {
+        for pixel_format in [PixelFormat::Nv24, PixelFormat::P410] {
+            let mut format = StreamFormat {
+                width: 3,
+                height: 5,
+                pixel_format,
+                ..StreamFormat::video_default(4, 4).unwrap()
+            };
+            assert!(format.validate().is_ok());
+            for transfer in [ColorTransfer::Pq, ColorTransfer::Hlg] {
+                format.color_transfer = transfer;
+                assert_eq!(format.validate().is_ok(), pixel_format.is_ten_bit());
+            }
+            format.color_transfer = ColorTransfer::Sdr;
+            let frame = DecodedVideoFrame {
+                format,
+                planes: Vec::new(),
+                dmabuf: None,
+                vulkan: None,
+                timestamp_us: 0,
+            };
+            assert!(frame.validate().is_err());
+        }
+    }
 
     #[test]
     fn hdr_rejects_eight_bit_decode_downgrades() {

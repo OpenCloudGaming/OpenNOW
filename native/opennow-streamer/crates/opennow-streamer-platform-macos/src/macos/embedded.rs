@@ -12,12 +12,17 @@ use objc2_core_foundation::{CFRetained, CFString};
 use objc2_core_video::{
     CVMetalTexture, CVMetalTextureCache, CVMetalTextureGetTexture, CVPixelBufferGetHeightOfPlane,
     CVPixelBufferGetIOSurface, CVPixelBufferGetPixelFormatType, CVPixelBufferGetPlaneCount,
-    CVPixelBufferGetWidthOfPlane, kCVImageBufferYCbCrMatrix_ITU_R_601_4,
-    kCVImageBufferYCbCrMatrix_ITU_R_709_2, kCVImageBufferYCbCrMatrixKey,
-    kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
+    CVPixelBufferGetWidthOfPlane, kCVImageBufferColorPrimaries_ITU_R_2020,
+    kCVImageBufferColorPrimariesKey, kCVImageBufferTransferFunction_ITU_R_709_2,
+    kCVImageBufferTransferFunction_SMPTE_ST_2084_PQ, kCVImageBufferTransferFunction_sRGB,
+    kCVImageBufferTransferFunctionKey, kCVImageBufferYCbCrMatrix_ITU_R_601_4,
+    kCVImageBufferYCbCrMatrix_ITU_R_709_2, kCVImageBufferYCbCrMatrix_ITU_R_2020,
+    kCVImageBufferYCbCrMatrixKey, kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
     kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
     kCVPixelFormatType_420YpCbCr10BiPlanarFullRange,
     kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,
+    kCVPixelFormatType_444YpCbCr10BiPlanarFullRange,
+    kCVPixelFormatType_444YpCbCr10BiPlanarVideoRange,
 };
 use objc2_foundation::NSString;
 use objc2_metal::{
@@ -29,7 +34,7 @@ use objc2_metal::{
 
 use crate::color::ConversionParameters;
 use crate::failure::FailureReporter;
-use crate::format::{MetalFrameFormat, VideoBitDepth, VideoColorSpace};
+use crate::format::{MetalFrameFormat, VideoBitDepth, VideoColorSpace, VideoTransfer};
 use crate::spatial::{SpatialConfig, SpatialControls};
 
 use super::mailbox::LatestMailbox;
@@ -38,6 +43,38 @@ use super::video::DecodedFrame;
 use super::{BackendError, Counters};
 
 const MAX_RETAINED_FRAME_SLOTS: usize = 8;
+
+pub(super) fn probe_frame_import(frame: DecodedFrame) -> Result<bool, BackendError> {
+    use objc2_metal::{MTLCommandQueue, MTLCreateSystemDefaultDevice};
+    let Some(device) = MTLCreateSystemDefaultDevice() else {
+        return Ok(false);
+    };
+    let Some(queue) = device.newCommandQueue() else {
+        return Ok(false);
+    };
+    let Some(command) = queue.commandBuffer() else {
+        return Ok(false);
+    };
+    let mut state = MetalState::new(&device, Retained::as_ptr(&device) as usize)?;
+    state.record(
+        frame,
+        &command,
+        0,
+        AdoptedMetalContext {
+            device: Retained::as_ptr(&device).cast_mut().cast(),
+            command_buffer: Retained::as_ptr(&command).cast_mut().cast(),
+            upscale_width: 0,
+            upscale_height: 0,
+            upscale_sharpness: 0,
+            upscale_denoise: 0,
+        },
+        Arc::new(Counters::default()),
+        Arc::new(FailureReporter::default()),
+    )?;
+    command.commit();
+    command.waitUntilCompleted();
+    Ok(command.status() == MTLCommandBufferStatus::Completed)
+}
 
 fn validate_frame_slot(frame_slot: u32) -> Result<(), BackendError> {
     if frame_slot < MAX_RETAINED_FRAME_SLOTS as u32 {
@@ -123,6 +160,8 @@ enum BiPlanarFormat {
     Nv12Full,
     P010Video,
     P010Full,
+    P410Video,
+    P410Full,
 }
 
 impl BiPlanarFormat {
@@ -135,6 +174,10 @@ impl BiPlanarFormat {
             Some(Self::P010Video)
         } else if pixel_format == kCVPixelFormatType_420YpCbCr10BiPlanarFullRange {
             Some(Self::P010Full)
+        } else if pixel_format == kCVPixelFormatType_444YpCbCr10BiPlanarVideoRange {
+            Some(Self::P410Video)
+        } else if pixel_format == kCVPixelFormatType_444YpCbCr10BiPlanarFullRange {
+            Some(Self::P410Full)
         } else {
             None
         }
@@ -143,7 +186,7 @@ impl BiPlanarFormat {
     const fn plane_formats(self) -> (MTLPixelFormat, MTLPixelFormat) {
         match self {
             Self::Nv12Video | Self::Nv12Full => (MTLPixelFormat::R8Unorm, MTLPixelFormat::RG8Unorm),
-            Self::P010Video | Self::P010Full => {
+            Self::P010Video | Self::P010Full | Self::P410Video | Self::P410Full => {
                 (MTLPixelFormat::R16Unorm, MTLPixelFormat::RG16Unorm)
             }
         }
@@ -152,7 +195,9 @@ impl BiPlanarFormat {
     const fn output_format(self) -> MetalFrameFormat {
         match self {
             Self::Nv12Video | Self::Nv12Full => MetalFrameFormat::Rgba8Unorm,
-            Self::P010Video | Self::P010Full => MetalFrameFormat::Rgb10a2Unorm,
+            Self::P010Video | Self::P010Full | Self::P410Video | Self::P410Full => {
+                MetalFrameFormat::Rgb10a2Unorm
+            }
         }
     }
 
@@ -160,9 +205,11 @@ impl BiPlanarFormat {
         ConversionParameters::new(
             match self {
                 Self::Nv12Video | Self::Nv12Full => VideoBitDepth::Eight,
-                Self::P010Video | Self::P010Full => VideoBitDepth::Ten,
+                Self::P010Video | Self::P010Full | Self::P410Video | Self::P410Full => {
+                    VideoBitDepth::Ten
+                }
             },
-            matches!(self, Self::Nv12Full | Self::P010Full),
+            matches!(self, Self::Nv12Full | Self::P010Full | Self::P410Full),
             color_space,
         )
     }
@@ -173,6 +220,7 @@ impl MetalFrameFormat {
         match self {
             Self::Rgba8Unorm => MTLPixelFormat::RGBA8Unorm,
             Self::Rgb10a2Unorm => MTLPixelFormat::RGB10A2Unorm,
+            Self::Rgba16Float => MTLPixelFormat::RGBA16Float,
         }
     }
 
@@ -180,6 +228,7 @@ impl MetalFrameFormat {
         match self {
             Self::Rgba8Unorm => 0,
             Self::Rgb10a2Unorm => 1,
+            Self::Rgba16Float => 2,
         }
     }
 }
@@ -199,11 +248,55 @@ fn frame_color_space(frame: &DecodedFrame) -> Result<VideoColorSpace, BackendErr
         Ok(VideoColorSpace::Bt601)
     } else if matrix == unsafe { kCVImageBufferYCbCrMatrix_ITU_R_709_2 } {
         Ok(VideoColorSpace::Bt709)
+    } else if matrix == unsafe { kCVImageBufferYCbCrMatrix_ITU_R_2020 } {
+        Ok(VideoColorSpace::Bt2020)
     } else {
         Err(BackendError::Metal(format!(
             "unsupported VideoToolbox YCbCr matrix: {matrix}"
         )))
     }
+}
+
+fn validate_frame_color(frame: &DecodedFrame, matrix: VideoColorSpace) -> Result<(), BackendError> {
+    let pq = frame.transfer == VideoTransfer::Pq;
+    if (matrix == VideoColorSpace::Bt2020) != pq {
+        return Err(BackendError::Metal(
+            "only BT.2020 PQ HDR and BT.601/709 SDR are supported".into(),
+        ));
+    }
+    if let Some(value) = unsafe {
+        frame
+            .image
+            .attachment(kCVImageBufferTransferFunctionKey, ptr::null_mut())
+    } {
+        let transfer = value.downcast_ref::<CFString>();
+        let valid = if pq {
+            transfer == Some(unsafe { kCVImageBufferTransferFunction_SMPTE_ST_2084_PQ })
+        } else {
+            transfer == Some(unsafe { kCVImageBufferTransferFunction_ITU_R_709_2 })
+                || transfer == Some(unsafe { kCVImageBufferTransferFunction_sRGB })
+        };
+        if !valid {
+            return Err(BackendError::Metal(
+                "VideoToolbox transfer function conflicts with negotiated output".into(),
+            ));
+        }
+    }
+    if let Some(value) = unsafe {
+        frame
+            .image
+            .attachment(kCVImageBufferColorPrimariesKey, ptr::null_mut())
+    } {
+        let primaries = value.downcast_ref::<CFString>();
+        if primaries.is_none()
+            || (primaries == Some(unsafe { kCVImageBufferColorPrimaries_ITU_R_2020 })) != pq
+        {
+            return Err(BackendError::Metal(
+                "VideoToolbox color primaries conflict with negotiated output".into(),
+            ));
+        }
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -220,6 +313,8 @@ pub struct AdoptedMetalContext {
 pub struct MetalRecordedFrame {
     pub texture: *mut c_void,
     pub format: MetalFrameFormat,
+    pub color_space: VideoColorSpace,
+    pub transfer: VideoTransfer,
     pub width: u32,
     pub height: u32,
     pub frame_slot: u32,
@@ -384,7 +479,7 @@ struct MetalState {
     device_identity: usize,
     _device: Retained<ProtocolObject<dyn MTLDevice>>,
     library: Retained<ProtocolObject<dyn MTLLibrary>>,
-    pipelines: [Option<Retained<ProtocolObject<dyn MTLRenderPipelineState>>>; 2],
+    pipelines: [Option<Retained<ProtocolObject<dyn MTLRenderPipelineState>>>; 3],
     texture_cache: CFRetained<CVMetalTextureCache>,
     slots: HashMap<u32, Retained<ProtocolObject<dyn MTLTexture>>>,
     spatial_slots: HashMap<u32, (SpatialConfig, Option<SpatialResources>)>,
@@ -424,7 +519,7 @@ impl MetalState {
             device_identity,
             _device: device,
             library,
-            pipelines: [None, None],
+            pipelines: [None, None, None],
             texture_cache: unsafe { CFRetained::from_raw(cache_ptr) },
             slots: HashMap::with_capacity(3),
             spatial_slots: HashMap::with_capacity(3),
@@ -457,15 +552,36 @@ impl MetalState {
         let format =
             BiPlanarFormat::from_pixel_format(CVPixelBufferGetPixelFormatType(&frame.image))
                 .ok_or_else(|| {
-                    BackendError::Metal("VideoToolbox returned neither NV12 nor P010".into())
+                    BackendError::Metal("VideoToolbox returned neither NV12, P010 nor P410".into())
                 })?;
-        let output_format = format.output_format();
-        let parameters = format.parameters(frame_color_space(&frame)?);
+        let matrix = frame_color_space(&frame)?;
+        validate_frame_color(&frame, matrix)?;
+        let transfer = frame.transfer;
+        let output_format = if transfer == VideoTransfer::Pq {
+            MetalFrameFormat::Rgba16Float
+        } else {
+            format.output_format()
+        };
+        let parameters = format.parameters(matrix);
         self.ensure_pipeline(output_format)?;
         let width = CVPixelBufferGetWidthOfPlane(&frame.image, 0);
         let height = CVPixelBufferGetHeightOfPlane(&frame.image, 0);
         let chroma_width = CVPixelBufferGetWidthOfPlane(&frame.image, 1);
         let chroma_height = CVPixelBufferGetHeightOfPlane(&frame.image, 1);
+        let divisor = if matches!(format, BiPlanarFormat::P410Video | BiPlanarFormat::P410Full) {
+            1
+        } else {
+            2
+        };
+        if width == 0
+            || height == 0
+            || chroma_width != width.div_ceil(divisor)
+            || chroma_height != height.div_ceil(divisor)
+        {
+            return Err(BackendError::Metal(
+                "VideoToolbox returned invalid chroma plane geometry".into(),
+            ));
+        }
         let (luma_format, chroma_format) = format.plane_formats();
         let luma_cv_texture = self.make_plane_texture(&frame, luma_format, width, height, 0)?;
         let chroma_cv_texture =
@@ -621,6 +737,8 @@ impl MetalState {
         Ok(MetalRecordedFrame {
             texture,
             format: output_format,
+            color_space: matrix,
+            transfer,
             width: u32::try_from(output_width).unwrap_or(u32::MAX),
             height: u32::try_from(output_height).unwrap_or(u32::MAX),
             frame_slot,
@@ -1012,6 +1130,144 @@ mod tests {
         assert!(validate_frame_slot(0).is_ok());
         assert!(validate_frame_slot(7).is_ok());
         assert!(validate_frame_slot(8).is_err());
+    }
+
+    #[test]
+    fn p410_preserves_full_resolution_chroma_and_ten_bit_planes() {
+        for (pixel_format, format) in [
+            (
+                super::kCVPixelFormatType_444YpCbCr10BiPlanarVideoRange,
+                BiPlanarFormat::P410Video,
+            ),
+            (
+                super::kCVPixelFormatType_444YpCbCr10BiPlanarFullRange,
+                BiPlanarFormat::P410Full,
+            ),
+        ] {
+            assert_eq!(
+                BiPlanarFormat::from_pixel_format(pixel_format),
+                Some(format)
+            );
+            assert_eq!(
+                format.plane_formats(),
+                (MTLPixelFormat::R16Unorm, MTLPixelFormat::RG16Unorm)
+            );
+            assert_eq!(format.output_format(), MetalFrameFormat::Rgb10a2Unorm);
+        }
+        assert_eq!(
+            MetalFrameFormat::Rgba16Float.pixel_format(),
+            MTLPixelFormat::RGBA16Float
+        );
+        assert_eq!(MetalFrameFormat::Rgba16Float.pipeline_index(), 2);
+    }
+
+    #[test]
+    #[ignore = "requires macOS Metal shader compilation and GPU readback"]
+    fn hdr_shader_preserves_adjacent_pq_codes_in_rgba16float() {
+        use super::*;
+        use objc2_metal::{
+            MTLBlitCommandEncoder, MTLBuffer, MTLCommandQueue, MTLCreateSystemDefaultDevice,
+            MTLOrigin, MTLRegion, MTLResourceOptions, MTLSize,
+        };
+        let device = MTLCreateSystemDefaultDevice().expect("Metal device");
+        let queue = device.newCommandQueue().unwrap();
+        let mut state = MetalState::new(&device, Retained::as_ptr(&device) as usize).unwrap();
+        state
+            .ensure_pipeline(MetalFrameFormat::Rgba16Float)
+            .unwrap();
+        let size = MTLSize {
+            width: 64,
+            height: 64,
+            depth: 1,
+        };
+        let origin = MTLOrigin { x: 0, y: 0, z: 0 };
+        let texture = |format| {
+            let descriptor = unsafe {
+                MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(
+                    format, 64, 64, false,
+                )
+            };
+            descriptor.setStorageMode(MTLStorageMode::Shared);
+            descriptor.setUsage(MTLTextureUsage::ShaderRead | MTLTextureUsage::RenderTarget);
+            device.newTextureWithDescriptor(&descriptor).unwrap()
+        };
+        let luma = texture(MTLPixelFormat::R16Unorm);
+        let chroma = texture(MTLPixelFormat::RG16Unorm);
+        let output = texture(MTLPixelFormat::RGBA16Float);
+        let parameters =
+            ConversionParameters::new(VideoBitDepth::Ten, false, VideoColorSpace::Bt2020);
+        let neutral = vec![512u16 << 6; 64 * 64 * 2];
+        unsafe {
+            chroma.replaceRegion_mipmapLevel_withBytes_bytesPerRow(
+                MTLRegion { origin, size },
+                0,
+                NonNull::new(neutral.as_ptr().cast_mut().cast()).unwrap(),
+                64 * 4,
+            )
+        };
+        let mut previous = 0;
+        for code in [509u16, 510, 723, 724, 939, 940] {
+            let samples = vec![code << 6; 64 * 64];
+            unsafe {
+                luma.replaceRegion_mipmapLevel_withBytes_bytesPerRow(
+                    MTLRegion { origin, size },
+                    0,
+                    NonNull::new(samples.as_ptr().cast_mut().cast()).unwrap(),
+                    64 * 2,
+                )
+            };
+            let command = queue.commandBuffer().unwrap();
+            let pass = MTLRenderPassDescriptor::renderPassDescriptor();
+            let attachment = unsafe { pass.colorAttachments().objectAtIndexedSubscript(0) };
+            attachment.setTexture(Some(&output));
+            attachment.setLoadAction(MTLLoadAction::DontCare);
+            attachment.setStoreAction(MTLStoreAction::Store);
+            let encoder = command.renderCommandEncoderWithDescriptor(&pass).unwrap();
+            encoder.setRenderPipelineState(state.pipelines[2].as_ref().unwrap());
+            unsafe {
+                encoder.setFragmentTexture_atIndex(Some(&luma), 0);
+                encoder.setFragmentTexture_atIndex(Some(&chroma), 1);
+                encoder.setFragmentBytes_length_atIndex(
+                    NonNull::from(&parameters).cast(),
+                    std::mem::size_of_val(&parameters),
+                    0,
+                );
+                encoder.drawPrimitives_vertexStart_vertexCount(MTLPrimitiveType::Triangle, 0, 3);
+            }
+            encoder.endEncoding();
+            let readback = device
+                .newBufferWithLength_options(64 * 64 * 8, MTLResourceOptions::StorageModeShared)
+                .unwrap();
+            let blit = command.blitCommandEncoder().unwrap();
+            unsafe {
+                blit.copyFromTexture_sourceSlice_sourceLevel_sourceOrigin_sourceSize_toBuffer_destinationOffset_destinationBytesPerRow_destinationBytesPerImage(&output, 0, 0, origin, size, &readback, 0, 64 * 8, 64 * 64 * 8)
+            };
+            blit.endEncoding();
+            command.commit();
+            command.waitUntilCompleted();
+            assert_eq!(command.status(), MTLCommandBufferStatus::Completed);
+            let channels = unsafe {
+                std::slice::from_raw_parts(
+                    readback
+                        .contents()
+                        .cast::<u16>()
+                        .as_ptr()
+                        .add((32 * 64 + 32) * 4),
+                    4,
+                )
+            };
+            assert!(
+                channels[0] > previous,
+                "adjacent ten-bit PQ codes collapsed"
+            );
+            previous = channels[0];
+            for &half in &channels[..3] {
+                let value = 2_f32.powi(i32::from((half >> 10) & 31) - 15)
+                    * (1.0 + f32::from(half & 1023) / 1024.0);
+                assert!((value - f32::from(code - 64) / 876.0).abs() <= 0.0005);
+            }
+            assert_eq!(channels[3], 0x3c00);
+        }
     }
 
     #[test]

@@ -902,12 +902,14 @@ fn session_info(
             (port > 0).then(|| json!({"ip":ip,"port":port,"usage":connection["usage"]}))
         });
     let monitor = &session["sessionRequestData"]["clientRequestMonitorSettings"][0];
-    let features = if session["finalizedStreamingFeatures"].is_object() {
-        &session["finalizedStreamingFeatures"]
-    } else {
-        &session["sessionRequestData"]["requestedStreamingFeatures"]
-    };
-    let mut negotiated = negotiated_profile(monitor, features);
+    let mut features = session["sessionRequestData"]["requestedStreamingFeatures"]
+        .as_object()
+        .cloned()
+        .unwrap_or_default();
+    if let Some(finalized) = session["finalizedStreamingFeatures"].as_object() {
+        features.extend(finalized.clone());
+    }
+    let mut negotiated = negotiated_profile(monitor, &Value::Object(features));
     negotiated["enableHdr"] = json!(accepted_hdr_mode(session) == Some(1));
     let ad_state = normalize_ad_state(session);
     Ok(json!({
@@ -997,7 +999,7 @@ fn negotiated_profile(monitor: &Value, features: &Value) -> Value {
     });
     let chroma = value_i64(&features["chromaFormat"]).and_then(|value| match value {
         0 => Some(0),
-        1..=3 => Some(1),
+        1 => Some(1),
         _ => None,
     });
     let color = match (bit_depth, chroma) {
@@ -1944,6 +1946,55 @@ mod tests {
         let info = session_info(&ready, &base, "auto", "123", "device").unwrap();
         assert_eq!(info["signalingUrl"], "wss://80.1.2.3:443/nvst/");
         assert_eq!(info["serverIp"], "80.1.2.3");
+    }
+
+    #[test]
+    fn partial_finalized_features_preserve_returned_session_color_fields() {
+        let base = Url::parse(DEFAULT_STREAMING_BASE).unwrap();
+        let mut payload = json!({"session":{
+            "sessionId":"color-seat", "status":2, "sdrHdrMode":1,
+            "sessionRequestData":{
+                "clientRequestMonitorSettings":[{"widthInPixels":2560,"heightInPixels":1440}],
+                "requestedStreamingFeatures":{"codec":2,"bitDepth":1,"chromaFormat":0}
+            },
+            "finalizedStreamingFeatures":{}
+        }});
+        for finalized in [
+            json!({}),
+            json!({"maxBitrateKbps":50000}),
+            json!({"codec":2}),
+        ] {
+            payload["session"]["finalizedStreamingFeatures"] = finalized;
+            let info = session_info(&payload, &base, "auto", "123", "device").unwrap();
+            assert_eq!(info["negotiatedStreamProfile"]["codec"], "H265");
+            assert_eq!(info["negotiatedStreamProfile"]["colorQuality"], "10bit_420");
+            assert_eq!(info["negotiatedStreamProfile"]["enableHdr"], true);
+        }
+        payload["session"]["sdrHdrMode"] = json!(0);
+        payload["session"]["finalizedStreamingFeatures"] = json!({"chromaFormat":1});
+        let info = session_info(&payload, &base, "auto", "123", "device").unwrap();
+        assert_eq!(info["negotiatedStreamProfile"]["colorQuality"], "10bit_444");
+        assert_eq!(info["negotiatedStreamProfile"]["enableHdr"], false);
+        payload["session"]["finalizedStreamingFeatures"] = json!({"bitDepth":0});
+        let info = session_info(&payload, &base, "auto", "123", "device").unwrap();
+        assert_eq!(info["negotiatedStreamProfile"]["colorQuality"], "8bit_420");
+        payload["session"]["finalizedStreamingFeatures"] = json!({"bitDepth":null});
+        let info = session_info(&payload, &base, "auto", "123", "device").unwrap();
+        assert!(info["negotiatedStreamProfile"]["colorQuality"].is_null());
+    }
+
+    #[test]
+    fn cloudmatch_chroma_enums_are_not_nvst_chroma_format_ids() {
+        for (chroma, expected) in [
+            (0, json!("10bit_420")),
+            (1, json!("10bit_444")),
+            (2, Value::Null),
+            (3, Value::Null),
+        ] {
+            let profile =
+                negotiated_profile(&json!({}), &json!({"bitDepth":1,"chromaFormat":chroma}));
+            assert_eq!(profile["colorQuality"], expected);
+        }
     }
 
     #[test]

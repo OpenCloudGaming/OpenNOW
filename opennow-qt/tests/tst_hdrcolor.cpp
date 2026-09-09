@@ -117,6 +117,8 @@ private slots:
     void linuxOutputRemainsSdr()
     {
 #if defined(Q_OS_LINUX)
+        if (QGuiApplication::platformName() != QStringLiteral("xcb"))
+            QSKIP("This fallback test requires an X11 surface without Wayland HDR output metadata");
         QQuickWindow window;
         window.setVulkanInstance(&m_instance);
         window.resize(96, 80);
@@ -135,7 +137,7 @@ private slots:
             QVERIFY(!state.supported);
         };
         verifySdr();
-        QCOMPARE(output.status(), QStringLiteral("HDR is temporarily disabled on Linux."));
+        QCOMPARE(output.status(), QStringLiteral("HDR unavailable on this display. Enable HDR in your operating system and use a supported GPU and compositor."));
         window.showFullScreen();
         QTRY_COMPARE(window.visibility(), QWindow::FullScreen);
         verifySdr();
@@ -166,6 +168,38 @@ private slots:
         QTest::addColumn<float>("nits");
         for (float nits : {0.0f, 80.0f, 203.0f, 1000.0f, 4000.0f, 10000.0f})
             QTest::newRow(qPrintable(QString::number(nits))) << nits;
+    }
+
+    void displayReferredOutputUsesSdrWhite()
+    {
+        const auto white = convert({1, 1, 1}, 0, HdrOutput::LinearDisplayReferred);
+        QVERIFY((white - QVector3D(1, 1, 1)).length() < 0.002f);
+        const auto gray = convert({0.5f, 0.5f, 0.5f}, 0, HdrOutput::LinearDisplayReferred);
+        QVERIFY(std::abs(gray.x() - 0.214041f) < 0.002f);
+        for (float nits : {0.0f, 80.0f, 203.0f, 1000.0f, 4000.0f, 10000.0f}) {
+            const auto encoded = pq(nits);
+            const auto result = convert({encoded, encoded, encoded}, 1, HdrOutput::LinearDisplayReferred);
+            QVERIFY(std::abs(result.x() - nits / 203.0f)
+                < std::max(0.004f, nits / 203.0f * 0.002f));
+        }
+        const auto hlg = convert({1, 1, 1}, 2, HdrOutput::LinearDisplayReferred);
+        QVERIFY(std::abs(hlg.x() - 1000.0f / 203.0f) < 0.01f);
+        const auto red = convert({pq(1000), 0, 0}, 1, HdrOutput::LinearDisplayReferred);
+        QVERIFY(red.y() < 0.0f);
+        QVERIFY(red.z() < 0.0f);
+    }
+
+    void displayReferredOutputToneMapsWhenHeadroomIsLost()
+    {
+        float previous = -1;
+        for (float nits : {0.0f, 80.0f, 203.0f, 1000.0f, 4000.0f, 10000.0f}) {
+            const auto encoded = pq(nits);
+            const auto result = convert({encoded, encoded, encoded}, 1,
+                HdrOutput::LinearDisplayReferred, false);
+            QVERIFY(result.x() >= previous);
+            QVERIFY(result.x() >= 0.0f && result.x() <= 1.0f);
+            previous = result.x();
+        }
     }
 
     void pqPreservesHighlightEnergy()
