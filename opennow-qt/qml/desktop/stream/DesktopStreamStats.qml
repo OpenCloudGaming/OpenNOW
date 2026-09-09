@@ -37,7 +37,11 @@ Item {
     function numeric(value) {
         return value === undefined || value === null || value === "" || !Number.isFinite(Number(value)) ? null : Number(value)
     }
-    function read(key) { return telemetryActive ? numeric(live[key]) : null }
+    function read(key) {
+        if (!telemetryActive) return null
+        const drops = ShellStore.streamDropCounts
+        return numeric(drops[key] !== undefined ? drops[key] : live[key])
+    }
     function frameGenerationOutputFps() { return numeric(frameGenerationStats.outputFps) }
     function frameGenerationState() {
         switch (String(frameGenerationStats.status || "unavailable")) {
@@ -84,11 +88,16 @@ Item {
             {key:"Fps", label:qsTr("STREAM FPS"), value:read("framesPerSecond"), unit:"fps", field:"framesPerSecond"},
             {key:"Bitrate", label:qsTr("BITRATE"), value:read("bitrateMbps"), unit:"Mbps", field:"bitrateMbps", decimals:1},
             {key:"Jitter", label:qsTr("JITTER"), value:read("jitterMs"), unit:"ms", field:"jitterMs", decimals:1},
-            {key:"Drops", label:qsTr("QUEUE DROPS"), value:read("queueDropCount"), unit:qsTr("total"), field:"queueDropCount"},
+            {key:"Drops", label:qsTr("VIDEO DROPS"), value:read("videoDropCount"), unit:qsTr("frames"), field:"videoDropCount"},
+            {key:"Drops", label:qsTr("AUDIO DISCARDED"), value:read("audioDiscardedMs"), unit:"ms", field:"audioDiscardedMs", decimals:1},
+            {key:"Drops", label:qsTr("AUDIO QUEUE DROPS"), value:read("audioPacketDropCount"), unit:qsTr("packets / blocks"), field:"audioPacketDropCount"},
+            {key:"Drops", label:qsTr("CALLBACK DROPS"), value:read("callbackDropCount"), unit:qsTr("callbacks"), field:"callbackDropCount"},
             {key:"PacketLoss", label:qsTr("PACKET LOSS"), value:read("packetLossPercent"), unit:"%", field:"packetLossPercent", decimals:1},
             {key:"Decode", label:qsTr("DECODE"), value:read("decodeTimeMs"), unit:"ms", field:"decodeTimeMs", decimals:1},
             {key:"Latency", label:qsTr("LATENCY"), value:read("latencyMs"), unit:"ms", field:"latencyMs"}
         ]
+        if (read("otherQueueDropCount") > 0)
+            cards.push({key:"Drops", label:qsTr("UNCLASSIFIED DROPS"), value:read("otherQueueDropCount"), unit:qsTr("items"), field:"otherQueueDropCount"})
         if (frameGenerationEnabled)
             cards.push({key:"LocalOutputFps", label:qsTr("LOCAL OUTPUT FPS"), value:frameGenerationOutputFps(), unit:"fps", field:"frameGenerationOutputFps"})
         return cards.filter(item => shown(item.key)

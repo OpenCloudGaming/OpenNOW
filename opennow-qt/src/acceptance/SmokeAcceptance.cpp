@@ -143,8 +143,11 @@ int AcceptanceSession::startSmokeWorkload()
                      || m_arguments.contains(u"--smoke-collections"_s)
                      || m_arguments.contains(u"--smoke-steam-big-picture"_s)
                      || m_arguments.contains(u"--smoke-idle-mode"_s)
+                     || m_arguments.contains(u"--smoke-queue-drops"_s)
                      || m_arguments.contains(u"--smoke-stream-recovery"_s))) {
-        QQmlComponent component(&m_engine, QUrl(m_arguments.contains(u"--smoke-microphone"_s)
+        QQmlComponent component(&m_engine, QUrl(m_arguments.contains(u"--smoke-queue-drops"_s)
+            ? u"qrc:/acceptance/QueueDropsAcceptance.qml"_s
+            : m_arguments.contains(u"--smoke-microphone"_s)
             ? u"qrc:/acceptance/MicrophoneAcceptance.qml"_s
             : m_arguments.contains(u"--smoke-audio-output"_s)
             ? u"qrc:/acceptance/AudioOutputAcceptance.qml"_s
@@ -160,12 +163,14 @@ int AcceptanceSession::startSmokeWorkload()
         auto *fixture = component.create();
         if (!fixture) { qCritical() << component.errors(); return EXIT_FAILURE; }
         fixture->setParent(&m_engine);
-        if (m_arguments.contains(u"--smoke-microphone"_s)) {
+        if (m_arguments.contains(u"--smoke-microphone"_s)
+            || m_arguments.contains(u"--smoke-queue-drops"_s)) {
             auto *runtime = fixture->property("runtime").value<QObject *>();
             if (!runtime) return EXIT_FAILURE;
             m_engine.rootContext()->setContextProperty(u"NativeStreamRuntime"_s, runtime);
         }
         if (m_arguments.contains(u"--smoke-stream-recovery"_s)
+            || m_arguments.contains(u"--smoke-queue-drops"_s)
             || m_arguments.contains(u"--smoke-collections"_s)
             || m_arguments.contains(u"--smoke-steam-big-picture"_s)) {
             auto *client = fixture->property("client").value<QObject *>();
@@ -177,7 +182,8 @@ int AcceptanceSession::startSmokeWorkload()
             QVariant passed;
             const bool ok = window && QMetaObject::invokeMethod(fixture, "run", Q_RETURN_ARG(QVariant, passed),
                 Q_ARG(QVariant, QVariant::fromValue(window->contentItem()))) && passed.toBool() && !m_qmlWarningOccurred;
-            if (ok && m_arguments.contains(u"--smoke-collections"_s)) {
+            if (ok && (m_arguments.contains(u"--smoke-collections"_s)
+                       || m_arguments.contains(u"--smoke-queue-drops"_s))) {
                 QTimer::singleShot(250, this, [this, window] {
                     const auto shot = m_arguments.indexOf(u"--screenshot"_s);
                     const bool saved = shot < 0 || (shot + 1 < m_arguments.size()

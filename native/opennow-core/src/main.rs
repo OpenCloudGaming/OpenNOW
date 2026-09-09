@@ -618,7 +618,8 @@ fn dispatch(method: &str, params: &Value, core: &AppCore) -> DispatchResult {
                 "applicationVersion": version::APPLICATION_VERSION,
                 "os": std::env::consts::OS,
                 "cpuArchitecture": std::env::consts::ARCH,
-                "streamer": core.streamer.acceptance_snapshot()
+                "streamer": core.streamer.acceptance_snapshot(),
+                "shell": diagnostics::embedded_drop_evidence(params)
             });
             core.diagnostics
                 .export_with_runtime(Some(&runtime))

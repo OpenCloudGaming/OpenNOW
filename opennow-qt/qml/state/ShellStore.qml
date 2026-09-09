@@ -160,6 +160,21 @@ QtObject {
     property string pinTargetName: qsTr("Profile")
     property string pinMessage: ""
     property var activeSession: null
+    property string dropSessionId: ""
+    property string sessionReportDropId: ""
+    property var streamDropCounts: ({})
+    onActiveSessionChanged: {
+        const sessionId = String(activeSession && activeSession.sessionId || "")
+        if (sessionId !== "" && sessionId !== dropSessionId) {
+            dropSessionId = sessionId
+            streamDropCounts = {videoDropCount: 0, audioDiscardedMs: 0,
+                audioPacketDropCount: 0, callbackDropCount: 0, otherQueueDropCount: 0}
+        }
+    }
+    onStreamDropCountsChanged: {
+        if (lastSessionReport && sessionReportDropId !== "" && sessionReportDropId === dropSessionId)
+            lastSessionReport = Object.assign({}, lastSessionReport, {drops: streamDropCounts})
+    }
     property var remoteSessions: []
     property var pendingLaunchParams: null
     property var pendingDirectLaunch: null
@@ -768,7 +783,10 @@ QtObject {
         if (!ready || diagnosticsExportRequestId !== "")
             return
         diagnosticsMessage = qsTr("Creating redacted diagnostic export…")
-        diagnosticsExportRequestId = CoreClient.request("diagnostics.export", {}, 15000)
+        diagnosticsExportRequestId = CoreClient.request("diagnostics.export", {
+            embeddedStream: {drops: streamDropCounts},
+            lastSessionReport: lastSessionReport ? {drops: lastSessionReport.drops} : null
+        }, 15000)
     }
 
     function recordGuidePage(page) {
@@ -1726,6 +1744,7 @@ QtObject {
         cancelSessionRecovery()
         if (activeSession && streamStartedAtMs > 0) {
             const snapshot = streamer || ({})
+            sessionReportDropId = dropSessionId
             lastSessionReport = {
                 gameTitle: selectedGame && selectedGame.title ? selectedGame.title : "GeForce NOW",
                 durationMs: Math.max(0, Date.now() - streamStartedAtMs),
@@ -1744,6 +1763,7 @@ QtObject {
                 queueDrops: snapshot.queueDropCount !== undefined
                     && snapshot.queueDropCount !== null
                     ? Number(snapshot.queueDropCount) : null,
+                drops: streamDropCounts,
                 recordingCount: snapshot.recordingStopCount !== undefined
                     && snapshot.recordingStopCount !== null
                     ? Number(snapshot.recordingStopCount) : null
@@ -1995,6 +2015,32 @@ QtObject {
         }
     }
 
+    function recordQueueDrop(event) {
+        const count = Number(event.count)
+        if (dropSessionId === "" || !Number.isSafeInteger(count) || count <= 0)
+            return
+        let field = "otherQueueDropCount"
+        let amount = count
+        if (event.unit === "frames") {
+            field = "videoDropCount"
+        } else if (event.unit === "packets") {
+            field = "audioPacketDropCount"
+        } else if (event.unit === "callbacks") {
+            field = "callbackDropCount"
+        } else if (event.unit === "samples") {
+            const rate = Number(event.sampleRate)
+            const channels = Number(event.channels)
+            if (Number.isSafeInteger(rate) && rate > 0 && rate <= 384000
+                    && Number.isSafeInteger(channels) && channels > 0 && channels <= 32) {
+                field = "audioDiscardedMs"
+                amount = count / rate / channels * 1000
+            }
+        }
+        const next = Object.assign({}, streamDropCounts)
+        next[field] = Math.min(Number.MAX_SAFE_INTEGER, Number(next[field] || 0) + amount)
+        streamDropCounts = next
+    }
+
     function acceptNativeEvent(event) {
         const type = String(event && event.type || "")
         const fields = {}
@@ -2038,6 +2084,9 @@ QtObject {
             const key = event.recovered ? "deviceRecoveryCount" : "deviceLossCount"
             fields[key] = Number(streamer && streamer[key] || 0) + 1
         } else if (event.event === "queue-dropped") {
+            if (!Number.isSafeInteger(Number(event.count)) || Number(event.count) <= 0)
+                return
+            recordQueueDrop(event)
             fields.queueDropCount = Number(streamer && streamer.queueDropCount || 0)
                 + Number(event.count || 0)
         }
@@ -2111,6 +2160,7 @@ QtObject {
         function onResponseReceived(response) { root.acceptNativeResponse(response) }
         function onEventReceived(event) { root.acceptNativeEvent(event) }
         function onCallbacksDropped(count) {
+            root.recordQueueDrop({unit: "callbacks", count: count})
             root.updateStreamerFields({queueDropCount:
                 Number(root.streamer && root.streamer.queueDropCount || 0) + Number(count || 0)})
         }

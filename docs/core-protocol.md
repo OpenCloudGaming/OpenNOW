@@ -198,6 +198,16 @@ and artwork only near the viewport, using the section's local category ID
 - `discord.activity.sync`, `discord.activity.clear`
 - `telemetry.sync`, `feedback.submit`, `bug_report.submit`
 
+`diagnostics.export` optionally accepts `embeddedStream.drops` and
+`lastSessionReport.drops` from the Qt session owner. Each contains the cumulative
+`videoDropCount` (frames), `audioDiscardedMs` (decoded audio duration),
+`audioPacketDropCount` (audio packets/PCM blocks with unknown duration),
+`callbackDropCount` (Qt callbacks), and `otherQueueDropCount` (unclassified items).
+The core copies only bounded, non-negative numeric counters into the export's
+`shell` section; it does not export arbitrary caller-provided fields. These
+counters survive embedded-runtime stop and remain separate from the core's
+process-streamer snapshot and its legacy mixed-unit `queueDropCount`.
+
 ### Session resume and reconnect
 
 `session.claim` discovers the session's actual control server, sends the minimal

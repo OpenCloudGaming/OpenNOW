@@ -188,6 +188,8 @@ pub fn message_summary(value: &serde_json::Value) -> String {
         "framesReceived",
         "framesDecoded",
         "framesDropped",
+        "media",
+        "unit",
     ] {
         let Some(value) = value.get(key) else {
             continue;
@@ -206,6 +208,11 @@ pub fn message_summary(value: &serde_json::Value) -> String {
             _ => continue,
         };
         fields.push(format!("{key}={text}"));
+    }
+    for key in ["count", "sampleRate", "channels"] {
+        if let Some(value) = value.get(key).and_then(serde_json::Value::as_u64) {
+            fields.push(format!("{key}={value}"));
+        }
     }
     fields.join(" ")
 }
@@ -302,6 +309,32 @@ mod tests {
         for forbidden in ["secret", "private", "credential", "context", "message"] {
             assert!(!summary.contains(forbidden));
         }
+    }
+
+    #[test]
+    fn queue_drop_summaries_include_only_safe_units_and_numeric_counts() {
+        let summary = message_summary(&serde_json::json!({
+            "type": "log", "event": "queue-dropped", "media": "audio-output",
+            "unit": "samples", "count": 96000, "sampleRate": 48000, "channels": 2,
+            "message": "private payload", "context": {"token": "credential"}
+        }));
+        for field in [
+            "media=audio-output",
+            "unit=samples",
+            "count=96000",
+            "sampleRate=48000",
+            "channels=2",
+        ] {
+            assert!(summary.contains(field), "{summary}");
+        }
+        for forbidden in ["private", "payload", "credential", "context", "message"] {
+            assert!(!summary.contains(forbidden));
+        }
+        let summary = message_summary(&serde_json::json!({
+            "media": "https://private.example", "unit": "invalid\nunit",
+            "count": "credential", "sampleRate": -1, "channels": {"token": "secret"}
+        }));
+        assert!(summary.is_empty(), "{summary}");
     }
 
     #[test]
