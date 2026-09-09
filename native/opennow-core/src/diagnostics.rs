@@ -9,6 +9,104 @@ use std::time::{SystemTime, UNIX_EPOCH};
 const ENTRY_LIMIT: usize = 1_200;
 const LOG_LIMIT_BYTES: u64 = 1_500_000;
 
+pub fn native_runtime_evidence(capabilities: &Value) -> Value {
+    let mut evidence = serde_json::Map::new();
+    for field in [
+        "supportsVideoDecode",
+        "supportsVideoPresent",
+        "nativeHdrSupported",
+    ] {
+        if let Some(value) = capabilities[field].as_bool() {
+            evidence.insert(field.to_owned(), json!(value));
+        }
+    }
+    if let Some(version) = capabilities["protocolVersion"]
+        .as_u64()
+        .filter(|v| *v <= u32::MAX as u64)
+    {
+        evidence.insert("protocolVersion".to_owned(), json!(version));
+    }
+    let mut backends = Vec::new();
+    for backend in capabilities["videoBackends"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .take(16)
+    {
+        let Some(name) = backend["backend"].as_str().filter(|name| {
+            matches!(
+                *name,
+                "vulkan"
+                    | "cuda"
+                    | "vaapi"
+                    | "v4l2"
+                    | "d3d11"
+                    | "d3d12"
+                    | "videotoolbox"
+                    | "software"
+                    | "ffmpeg"
+            )
+        }) else {
+            continue;
+        };
+        let mut entry = serde_json::Map::from_iter([("backend".to_owned(), json!(name))]);
+        if let Some(platform) = backend["platform"]
+            .as_str()
+            .filter(|name| matches!(*name, "linux" | "windows" | "macos" | "cross-platform"))
+        {
+            entry.insert("platform".to_owned(), json!(platform));
+        }
+        if let Some(value) = backend["available"].as_bool() {
+            entry.insert("available".to_owned(), json!(value));
+        }
+        if let Some(reason) = backend["reason"].as_str() {
+            entry.insert("reason".to_owned(), json!(runtime_failure_reason(reason)));
+        }
+        let mut codecs = Vec::new();
+        for codec in backend["codecs"].as_array().into_iter().flatten().take(8) {
+            let Some(name) = codec["codec"]
+                .as_str()
+                .filter(|name| matches!(*name, "h264" | "h265" | "av1"))
+            else {
+                continue;
+            };
+            let mut item = serde_json::Map::from_iter([("codec".to_owned(), json!(name))]);
+            for field in ["available", "hdrSupported"] {
+                if let Some(value) = codec[field].as_bool() {
+                    item.insert(field.to_owned(), json!(value));
+                }
+            }
+            if let Some(reason) = codec["reason"].as_str() {
+                item.insert("reason".to_owned(), json!(runtime_failure_reason(reason)));
+            }
+            codecs.push(Value::Object(item));
+        }
+        entry.insert("codecs".to_owned(), json!(codecs));
+        backends.push(Value::Object(entry));
+    }
+    evidence.insert("videoBackends".to_owned(), json!(backends));
+    Value::Object(evidence)
+}
+
+pub fn runtime_failure_reason(value: &str) -> String {
+    static SENSITIVE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let pattern = SENSITIVE.get_or_init(|| {
+        regex::Regex::new(r#"(?i)(?:https?://|wss://|/home/|/users/|[a-z]:\\+users\\+)\S+|\bbearer\s+[^\s,;]+|\b[a-z_]*(?:token|authorization|password|secret)[a-z_]*\s*[\"']?\s*[:=]?\s*[\"']?\s*(?:bearer\s+)?[^\s,;]+"#).unwrap()
+    });
+    let bounded: String = value
+        .chars()
+        .take(4096)
+        .map(|character| {
+            if character.is_control() {
+                ' '
+            } else {
+                character
+            }
+        })
+        .collect();
+    redact(&pattern.replace_all(&bounded, "[redacted]"), 480)
+}
+
 pub fn embedded_drop_evidence(params: &Value) -> Value {
     let mut evidence = serde_json::Map::new();
     for section in ["embeddedStream", "lastSessionReport"] {
@@ -429,6 +527,111 @@ mod tests {
         assert!(!text.contains("/home/alice"));
         assert!(!text.contains("Alice"));
         assert!(!text.contains("/Users/alice"));
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn native_runtime_evidence_allowlists_bounds_and_redacts_probe_results() {
+        let capabilities = json!({
+            "protocolVersion": 6, "supportsVideoDecode": false, "supportsVideoPresent": "yes",
+            "sessionId": "private-session", "accessToken": "private-access",
+            "videoBackends": [{
+                "backend": "v4l2", "platform": "linux", "available": false,
+                "devicePath": "/home/alice/device", "unknown": "private-extra",
+                "reason": "HEVC topology probe failed path=/home/alice/private Authorization: Bearer abc123 token=xyz password: hunter2 https://example.com user@example.com",
+                "codecs": [{"codec": "h265", "available": false,
+                    "reason": "MEDIA_IOC_G_TOPOLOGY failed", "secret": "private-codec"},
+                    {"codec": "private-unknown-codec", "available": true}]
+            }, {"backend": "private-unknown-backend", "available": true}]
+        });
+        let evidence = native_runtime_evidence(&capabilities);
+        assert_eq!(evidence["supportsVideoDecode"], false);
+        assert!(evidence.get("supportsVideoPresent").is_none());
+        assert_eq!(evidence["videoBackends"].as_array().unwrap().len(), 1);
+        let backend = &evidence["videoBackends"][0];
+        assert_eq!(backend["available"], false);
+        assert_eq!(
+            backend["codecs"],
+            json!([{"codec":"h265", "available":false, "reason":"MEDIA_IOC_G_TOPOLOGY failed"}])
+        );
+        let rendered = evidence.to_string();
+        assert!(rendered.contains("HEVC topology probe failed"));
+        for sensitive in [
+            "private",
+            "alice",
+            "abc123",
+            "xyz",
+            "hunter2",
+            "example.com",
+        ] {
+            assert!(
+                !rendered.contains(sensitive),
+                "{sensitive} leaked: {rendered}"
+            );
+        }
+        let oversized = json!({"protocolVersion": u64::MAX, "videoBackends": vec![json!({
+            "backend":"v4l2", "reason":"x".repeat(10000), "codecs":vec![json!({
+                "codec":"h265", "available":"true", "reason":"y".repeat(10000)
+            }); 100]
+        }); 100]});
+        let evidence = native_runtime_evidence(&oversized);
+        assert!(evidence.get("protocolVersion").is_none());
+        let backends = evidence["videoBackends"].as_array().unwrap();
+        assert_eq!(backends.len(), 16);
+        assert!(backends[0]["reason"].as_str().unwrap().len() <= 483);
+        assert_eq!(backends[0]["codecs"].as_array().unwrap().len(), 8);
+        assert!(backends[0]["codecs"][0].get("available").is_none());
+        assert_eq!(
+            native_runtime_evidence(&Value::Null),
+            json!({"videoBackends":[]})
+        );
+    }
+
+    #[test]
+    fn runtime_failure_reasons_redact_bearer_values_and_quoted_credentials() {
+        for reason in [
+            "probe failed Bearer private-value",
+            r#"probe failed {"Authorization": "Bearer private-value"}"#,
+            r#"probe failed access_token: "private-value""#,
+            r"probe failed device=C:\Users\Alice\video path=/Users/Alice/video",
+        ] {
+            let redacted = runtime_failure_reason(reason);
+            assert!(redacted.starts_with("probe failed"));
+            assert!(!redacted.contains("private-value"));
+            assert!(!redacted.contains("Alice"));
+        }
+        let evidence = native_runtime_evidence(&json!({"videoBackends":[{
+            "backend":"software", "platform":"cross-platform", "available":true,
+            "codecs":[{"codec":"h265","available":true},{"codec":"hevc","available":true}]
+        }]}));
+        assert_eq!(evidence["videoBackends"][0]["platform"], "cross-platform");
+        assert_eq!(
+            evidence["videoBackends"][0]["codecs"],
+            json!([{"codec":"h265","available":true}])
+        );
+    }
+
+    #[test]
+    fn diagnostics_export_includes_native_probe_failures_before_stream_start() {
+        let directory = env::temp_dir().join(format!("opennow-probe-diagnostics-{}", now_ms()));
+        let service = DiagnosticsService::new(&directory).unwrap();
+        let streamer = crate::streamer::StreamerService::new();
+        let runtime = json!({
+            "streamer": streamer.acceptance_snapshot(),
+            "nativeRuntime": native_runtime_evidence(&json!({
+                "protocolVersion": 6, "supportsVideoDecode": false,
+                "videoBackends": [{"backend":"v4l2", "available":false,
+                    "reason":"HEVC probe failed", "codecs":[{"codec":"h265", "available":false,
+                        "reason":"MEDIA_IOC_G_TOPOLOGY failed"}]}]
+            }))
+        });
+        assert_eq!(runtime["streamer"]["status"], "stopped");
+        let exported = service.export_with_runtime(Some(&runtime)).unwrap();
+        let text = fs::read_to_string(exported["path"].as_str().unwrap()).unwrap();
+        assert!(text.contains("\"nativeRuntime\""));
+        assert!(text.contains("\"backend\": \"v4l2\""));
+        assert!(text.contains("\"available\": false"));
+        assert!(text.contains("MEDIA_IOC_G_TOPOLOGY failed"));
         let _ = fs::remove_dir_all(directory);
     }
 

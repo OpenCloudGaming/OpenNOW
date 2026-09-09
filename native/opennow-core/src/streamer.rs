@@ -344,11 +344,32 @@ impl StreamerService {
             .iter()
             .any(|backend| backend["available"].as_bool() == Some(true))
         {
+            let message = if requested_backend == "auto" {
+                "No hardware video backend is available for embedded streaming on this device. Check the hardware drivers and export diagnostics for backend probe failures.".to_owned()
+            } else {
+                let mut message = format!(
+                    "The {} backend is unavailable for embedded streaming on this device. Select Auto in Stream settings.",
+                    crate::diagnostics::runtime_failure_reason(requested_backend)
+                );
+                let evidence = crate::diagnostics::native_runtime_evidence(capabilities);
+                if let Some(reason) = evidence["videoBackends"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .find(|backend| {
+                        backend["backend"] == requested_backend
+                            || (requested_backend == "nvdec" && backend["backend"] == "cuda")
+                    })
+                    .and_then(|backend| backend["reason"].as_str())
+                    .filter(|reason| !reason.is_empty())
+                {
+                    message.push_str(&format!(" {reason}"));
+                }
+                message
+            };
             return Err(StreamerError {
                 code: "streamer_backend_unavailable",
-                message: format!(
-                    "The {requested_backend} backend is unavailable for embedded streaming on this device. Select Auto in Stream settings."
-                ),
+                message,
             });
         }
         let videotoolbox = backends.iter().any(|backend| {
@@ -2034,6 +2055,51 @@ mod tests {
             StreamerService::embedded_session_settings(&json!({"codec":"auto"}), &caps).unwrap()["codec"],
             "h265"
         );
+    }
+
+    #[test]
+    fn unavailable_embedded_backends_distinguish_auto_from_explicit_selection() {
+        let capabilities = json!({"protocolVersion":STREAMER_PROTOCOL_VERSION,"videoBackends":[
+            {"backend":"v4l2", "available":false, "reason":"HEVC topology probe failed: errno 13 (Permission denied) token=private-value"},
+            {"backend":"cuda", "available":false, "reason":"CUDA unavailable"},
+            {"backend":"software", "available":true, "reason":"unused software reason"}
+        ]});
+        for selection in ["auto", "v4l2", "nvdec"] {
+            let error = StreamerService::embedded_session_settings(
+                &json!({"nativeVideoBackend":selection}),
+                &capabilities,
+            )
+            .unwrap_err();
+            assert_eq!(error.code, "streamer_backend_unavailable");
+            assert_eq!(error.message.contains("Select Auto"), selection != "auto");
+            assert_eq!(
+                error
+                    .message
+                    .contains("HEVC topology probe failed: errno 13 (Permission denied)"),
+                selection == "v4l2"
+            );
+            assert_eq!(
+                error.message.contains("CUDA unavailable"),
+                selection == "nvdec"
+            );
+            assert!(!error.message.contains("private-value"));
+            assert!(!error.message.contains("unused software reason"));
+        }
+        let error =
+            StreamerService::embedded_session_settings(&json!({}), &capabilities).unwrap_err();
+        assert!(error.message.starts_with("No hardware video backend"));
+        let mut oversized = capabilities.clone();
+        oversized["videoBackends"][0]["reason"] = json!("failure ".repeat(10000));
+        let concise =
+            StreamerService::embedded_session_settings(&json!({}), &oversized).unwrap_err();
+        assert_eq!(concise.message, error.message);
+        assert!(concise.message.len() < 200);
+        let error = StreamerService::embedded_session_settings(
+            &json!({}),
+            &json!({"protocolVersion":STREAMER_PROTOCOL_VERSION,"videoBackends":[]}),
+        )
+        .unwrap_err();
+        assert!(!error.message.contains("Select Auto"));
     }
 
     #[test]

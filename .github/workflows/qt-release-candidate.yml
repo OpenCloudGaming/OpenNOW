@@ -105,7 +105,7 @@ jobs:
           host: ${{ matrix.qt_host }}
           target: desktop
           arch: ${{ matrix.qt_arch }}
-          modules: qtmultimedia qtshadertools
+          modules: qtmultimedia qtshadertools qtwaylandcompositor
           cache: true
           cache-key-prefix: qt-release-linux-${{ matrix.arch }}
 
@@ -162,7 +162,8 @@ jobs:
         shell: bash
         env:
           APPIMAGE_EXTRACT_AND_RUN: "1"
-          EXTRA_PLATFORM_PLUGINS: libqoffscreen.so
+          EXTRA_PLATFORM_PLUGINS: libqoffscreen.so;libqwayland-egl.so;libqwayland-generic.so
+          EXTRA_QT_MODULES: waylandcompositor
           LINUXDEPLOY_ARCH: ${{ matrix.linuxdeploy_arch }}
           LINUXDEPLOY_SHA256: ${{ matrix.linuxdeploy_sha256 }}
           QT_PLUGIN_SHA256: ${{ matrix.qt_plugin_sha256 }}
@@ -198,6 +199,9 @@ jobs:
           test -f build/AppDir/usr/lib/libva.so.2
           test -f build/AppDir/usr/lib/libva-drm.so.2
           test -f build/AppDir/usr/plugins/platforms/libqoffscreen.so
+          test -f build/AppDir/usr/plugins/platforms/libqwayland-egl.so
+          test -f build/AppDir/usr/plugins/platforms/libqwayland-generic.so
+          test -f build/AppDir/usr/plugins/wayland-shell-integration/libxdg-shell.so
           LD_LIBRARY_PATH="$PWD/build/AppDir/usr/lib:$LD_LIBRARY_PATH" \
             python3 opennow-qt/packaging/verify_linux_package.py build/AppDir/usr/bin
           mv OpenNOW-Qt-*.AppImage build/release-artifacts/

@@ -5,7 +5,8 @@ use crate::{DecodedVideoFrame, EncodedVideoFrame, Result, StreamFormat, VideoCod
 #[cfg(feature = "ffmpeg")]
 mod ffmpeg;
 mod v4l2;
-#[cfg(feature = "ffmpeg")]
+#[cfg(any(feature = "ffmpeg", test))]
+#[cfg_attr(not(feature = "ffmpeg"), allow(dead_code))]
 mod v4l2_request;
 #[cfg(feature = "vaapi")]
 mod vaapi;

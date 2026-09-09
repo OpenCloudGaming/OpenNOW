@@ -44,6 +44,19 @@ QtObject {
     }
 
     function run(parent) {
+        ShellStore.activeSession = null
+        ShellStore.streamer = {status: "stopped"}
+        ShellStore.acceptNativeCapabilities({protocolVersion: 6, supportsVideoDecode: false,
+            videoBackends: [{backend: "v4l2", available: false, reason: "HEVC probe failed",
+                codecs: [{codec: "h265", available: false, reason: "MEDIA_IOC_G_TOPOLOGY failed"}]}]})
+        client.state = "ready"
+        ShellStore.exportDiagnostics()
+        const beforeStart = client.calls[client.calls.length - 1]
+        check(beforeStart.method === "diagnostics.export", "export works before streaming")
+        check(beforeStart.params.runtimeCapabilities.videoBackends[0].codecs[0].reason === "MEDIA_IOC_G_TOPOLOGY failed",
+            "export includes actual native runtime probe failures before start")
+        ShellStore.diagnosticsExportRequestId = ""
+        client.state = "stopped"
         ShellStore.streamerStartRequestId = "fixture-blocked"
         ShellStore.activeSession = {sessionId: "drop-fixture", zone: "Fixture region"}
         ShellStore.streamer = {status: "streaming", framesPerSecond: 60, queueDropCount: 0}

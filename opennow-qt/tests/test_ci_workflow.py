@@ -15,6 +15,20 @@ def jobs(workflow):
 
 
 class CIWorkflowTest(unittest.TestCase):
+    def test_linux_appimages_deploy_wayland_platform_and_shell_plugins(self):
+        for name in ("qt-build.yml", "qt-release-candidate.yml"):
+            with self.subTest(workflow=name):
+                workflow = (WORKFLOWS / name).read_text()
+                self.assertIn("qtwaylandcompositor", workflow)
+                self.assertIn("EXTRA_QT_MODULES: waylandcompositor", workflow)
+                self.assertIn(
+                    "EXTRA_PLATFORM_PLUGINS: libqoffscreen.so;libqwayland-egl.so;libqwayland-generic.so",
+                    workflow,
+                )
+                for plugin in ("platforms/libqwayland-egl.so", "platforms/libqwayland-generic.so",
+                               "wayland-shell-integration/libxdg-shell.so"):
+                    self.assertIn(f"test -f build/AppDir/usr/plugins/{plugin}", workflow)
+
     def test_automatic_events_run_checks_without_packages(self):
         ci = (WORKFLOWS / "qt-ci.yml").read_text()
         entries = jobs(ci)
