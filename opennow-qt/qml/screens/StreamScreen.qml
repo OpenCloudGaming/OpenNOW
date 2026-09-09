@@ -93,6 +93,8 @@ FocusScope {
         videoSize: Qt.size(Number(root.profile.width || 0), Number(root.profile.height || 0))
         frameGeneration: String(ShellStore.settings.frameGeneration || 'off') === '2x'
         metalFxUpscaling: Qt.platform.os === "osx" && ShellStore.settings.upscaling === "metalfx"
+        upscalingSharpness: Number(ShellStore.settings.upscalingSharpness ?? 10)
+        upscalingDenoise: Number(ShellStore.settings.upscalingDenoise ?? 0)
         z: 0
         onLocalShortcutRequested: action => ShellStore.applyStreamShortcutAction(action)
     }

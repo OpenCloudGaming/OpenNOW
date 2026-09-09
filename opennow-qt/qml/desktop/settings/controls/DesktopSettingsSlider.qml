@@ -11,6 +11,7 @@ Row {
     property real trackWidth: DesktopTokens.px(200)
     property string suffix: "%"
     property int decimals: 0
+    property string accessibleName: ""
     signal moved(real value)
     signal committed(real value)
     spacing: 14
@@ -24,6 +25,7 @@ Row {
 
     Slider {
         id: slider
+        Accessible.name: root.accessibleName
         width: root.trackWidth
         height: DesktopTokens.px(28)
         live: true

@@ -19,7 +19,7 @@ use serde_json::Value;
 
 static FIRST_FRAME_LOGGED: AtomicBool = AtomicBool::new(false);
 
-pub const OPENNOW_STREAMER_FFI_ABI_VERSION: u32 = 7;
+pub const OPENNOW_STREAMER_FFI_ABI_VERSION: u32 = 8;
 pub const OPENNOW_STREAMER_VULKAN_DEVICE_INFO_VERSION: u32 = 1;
 const DEFAULT_MAX_COMMAND_BYTES: usize = 1024 * 1024;
 const MAX_QUEUE_CAPACITY: usize = 4096;
@@ -204,7 +204,7 @@ pub enum OpenNowStreamerStatus {
 pub const OPENNOW_STREAMER_GRAPHICS_CONTEXT_VERSION: u32 = 3;
 pub const OPENNOW_STREAMER_GRAPHICS_CAP_VULKAN_DMABUF_IMPORT: u32 = 1;
 pub const OPENNOW_STREAMER_GRAPHICS_CAP_VULKAN_DMABUF_BUFFER_IMPORT: u32 = 2;
-pub const OPENNOW_STREAMER_RENDER_COMMAND_VERSION: u32 = 2;
+pub const OPENNOW_STREAMER_RENDER_COMMAND_VERSION: u32 = 3;
 pub const OPENNOW_STREAMER_GRAPHICS_API_D3D11: u32 = 1;
 pub const OPENNOW_STREAMER_GRAPHICS_API_VULKAN: u32 = 2;
 pub const OPENNOW_STREAMER_GRAPHICS_API_METAL: u32 = 3;
@@ -241,6 +241,8 @@ pub struct OpenNowStreamerRecordCommand {
     pub frame_slot: u32,
     pub upscale_width: u32,
     pub upscale_height: u32,
+    pub upscale_sharpness: u32,
+    pub upscale_denoise: u32,
 }
 
 #[repr(C)]
@@ -626,6 +628,8 @@ fn render_command(
 ) -> Result<GraphicsRecordCommand, OpenNowStreamerStatus> {
     if command.version != OPENNOW_STREAMER_RENDER_COMMAND_VERSION
         || command.struct_size < size_of::<OpenNowStreamerRecordCommand>()
+        || command.upscale_sharpness > 15
+        || command.upscale_denoise > 20
     {
         return Err(OpenNowStreamerStatus::InvalidConfig);
     }
@@ -634,6 +638,8 @@ fn render_command(
         frame_slot: command.frame_slot,
         upscale_width: command.upscale_width,
         upscale_height: command.upscale_height,
+        upscale_sharpness: command.upscale_sharpness,
+        upscale_denoise: command.upscale_denoise,
     })
 }
 
@@ -1492,7 +1498,7 @@ mod tests {
 
     #[test]
     fn abi_five_appends_the_shared_vulkan_owner() {
-        assert_eq!(OPENNOW_STREAMER_FFI_ABI_VERSION, 7);
+        assert_eq!(OPENNOW_STREAMER_FFI_ABI_VERSION, 8);
         assert_eq!(OPENNOW_STREAMER_VULKAN_DEVICE_INFO_VERSION, 1);
         assert_eq!(
             std::mem::offset_of!(OpenNowStreamerConfig, vulkan_device),
@@ -1792,13 +1798,55 @@ mod tests {
             frame_slot: 2,
             upscale_width: 0,
             upscale_height: 0,
+            upscale_sharpness: 10,
+            upscale_denoise: 0,
         }
+    }
+
+    #[test]
+    fn render_command_three_preserves_controls_and_rejects_previous_layout_and_ranges() {
+        let mut command = ffi_render_command();
+        let native = render_command(command).unwrap();
+        assert_eq!(native.upscale_sharpness, 10);
+        assert_eq!(native.upscale_denoise, 0);
+        command.upscale_sharpness = 15;
+        command.upscale_denoise = 20;
+        let native = render_command(command).unwrap();
+        assert_eq!(native.upscale_sharpness, 15);
+        assert_eq!(native.upscale_denoise, 20);
+        command.version = 2;
+        assert_eq!(
+            render_command(command),
+            Err(OpenNowStreamerStatus::InvalidConfig)
+        );
+        command.version = OPENNOW_STREAMER_RENDER_COMMAND_VERSION;
+        command.struct_size = std::mem::offset_of!(OpenNowStreamerRecordCommand, upscale_sharpness);
+        assert_eq!(
+            render_command(command),
+            Err(OpenNowStreamerStatus::InvalidConfig)
+        );
+        for (sharpness, denoise) in [(16, 0), (0, 21), (u32::MAX, u32::MAX)] {
+            command = ffi_render_command();
+            command.upscale_sharpness = sharpness;
+            command.upscale_denoise = denoise;
+            assert_eq!(
+                render_command(command),
+                Err(OpenNowStreamerStatus::InvalidConfig)
+            );
+        }
+        let messages = CallbackMessages::default();
+        let mut config = test_config(&messages);
+        config.abi_version = 7;
+        assert_eq!(
+            validate_config(&config),
+            Err(OpenNowStreamerStatus::InvalidConfig)
+        );
     }
 
     #[test]
     fn render_command_two_preserves_upscaling_and_rejects_old_layouts() {
         let mut command = ffi_render_command();
-        assert_eq!(OPENNOW_STREAMER_RENDER_COMMAND_VERSION, 2);
+        assert_eq!(OPENNOW_STREAMER_RENDER_COMMAND_VERSION, 3);
         assert_eq!(render_command(command).unwrap().upscale_width, 0);
         assert_eq!(render_command(command).unwrap().upscale_height, 0);
         command.upscale_width = 2560;

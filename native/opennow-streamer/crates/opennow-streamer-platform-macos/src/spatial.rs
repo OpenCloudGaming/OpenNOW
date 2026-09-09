@@ -3,6 +3,22 @@ use crate::format::MetalFrameFormat;
 const MAX_SPATIAL_DIMENSION: usize = 8192;
 const MAX_SPATIAL_PIXELS: usize = 7680 * 4320;
 
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct SpatialControls {
+    pub sharpness: f32,
+    pub denoise: f32,
+}
+
+impl SpatialControls {
+    pub fn new(sharpness: u32, denoise: u32) -> Self {
+        Self {
+            sharpness: sharpness.min(15) as f32 / 10.0,
+            denoise: (denoise.min(20) as f32 / 10.0 * 0.65).min(1.0),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct SpatialConfig {
     pub input_width: usize,
@@ -46,6 +62,25 @@ impl SpatialConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn spatial_controls_match_mac_source_stage_uniforms() {
+        assert_eq!(std::mem::size_of::<SpatialControls>(), 8);
+        assert_eq!(std::mem::offset_of!(SpatialControls, denoise), 4);
+        for (sharpness, denoise, expected_sharpness, expected_denoise) in [
+            (0, 0, 0.0, 0.0),
+            (10, 0, 1.0, 0.0),
+            (15, 10, 1.5, 0.65),
+            (5, 15, 0.5, 0.975),
+            (15, 16, 1.5, 1.0),
+            (15, 20, 1.5, 1.0),
+            (u32::MAX, u32::MAX, 1.5, 1.0),
+        ] {
+            let controls = SpatialControls::new(sharpness, denoise);
+            assert!((controls.sharpness - expected_sharpness).abs() < 0.000001);
+            assert!((controls.denoise - expected_denoise).abs() < 0.000001);
+        }
+    }
 
     #[test]
     fn spatial_scaling_requires_enlargement_on_at_least_one_axis() {

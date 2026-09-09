@@ -51,6 +51,15 @@ viewport pixels; pass both as zero to disable scaling. Scaling is attempted only
 axis shrinks and at least one grows. As an allocation safety policy, targets above 8192 on
 either axis or above 7680 × 4320 total pixels use normal conversion instead.
 
+`upscale_sharpness` (0–15, default 10) and `upscale_denoise` (0–20, default 0)
+match OpenNOW-Mac's native spatial shader before MetalFX. The existing source-size
+conversion pass averages four cardinal RGB neighbors, mixes the center toward that
+average by `min(denoise / 10 * 0.65, 1)`, then adds the difference from that average
+multiplied by `sharpness / 10` and clamps to 0–1. The normal non-MetalFX path ignores
+both controls, and zero controls avoid the extra samples. The uniforms are updated
+per recording and are not part of the scaler's dimension/format cache key, so live
+adjustments allocate no textures and rebuild no pipeline or scaler.
+
 MetalFX is dynamically loaded at runtime and checked against the adopted device. It is not a
 required framework at application load time. Unsupported systems, devices, formats, dimensions,
 allocation failures, and Objective-C scaler exceptions fall back to the source-size conversion.
@@ -73,7 +82,11 @@ and [metal-cpp declarations](https://github.com/apple/metal-cpp/blob/main/MetalF
 The focused Linux tests cover sizing, bounds, and format keys. On a MetalFX-capable Mac, run
 `cargo test -p opennow-streamer-platform-macos spatial_ -- --include-ignored` from the native
 streamer workspace to additionally check cache/retirement behavior and GPU constant-color
-preservation for eight- and ten-bit SDR. Only that hardware test reads GPU pixels back to the CPU.
+preservation for eight- and ten-bit SDR.
+The `spatial_source_shader_matches_reference_controls_without_rebuilding_pipeline` hardware
+test also checks zero-control passthrough, independent and combined effects on textured pixels,
+clipping and flat-color preservation at both output depths, and reuse of the same spatial
+textures and pipeline across control changes. GPU readback is confined to these tests.
 
 ## Standalone integration API
 
