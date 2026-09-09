@@ -42,6 +42,7 @@ use super::nvst_control::{
     DEFAULT_FRAME_TIME_US, QOS_REPORT_INTERVAL, QOS_WARM_UP, QosReport, frame_ack,
     frame_pacing_report, idr_request,
 };
+use super::nvst_cursor::{CursorCommand, NvstCursorCapture, valid_cursor_channel_message};
 use super::nvst_input::{
     NvstInputChannelState, NvstInputChannels, NvstInputCodec, native_input_type_is_motion,
     native_input_type_name, native_input_types, next_control_keepalive, server_cursor_messages,
@@ -166,8 +167,6 @@ const MAX_TIMEOUT: Duration = Duration::from_secs(90);
 const MAX_PING_BYTES: usize = 512;
 const PING_INTERVAL_BEFORE_CONNECTION: Duration = Duration::from_millis(20);
 const PING_INTERVAL_AFTER_CONNECTION: Duration = Duration::from_millis(100);
-const CURSOR_CAPTURE_RETRY_INTERVAL: Duration = Duration::from_millis(250);
-const MAX_CURSOR_CAPTURE_ATTEMPTS: u8 = 8;
 const UDP_RECEIVE_POLL_INTERVAL: Duration = Duration::from_millis(10);
 // The WebRTC bundle owns the SCTP input channels. A 10 ms socket wait batches
 // raw mouse reports and makes high-refresh streams feel closer to 100 Hz.
@@ -1539,6 +1538,7 @@ pub enum NvstReceiveEvent {
     InputUnavailable(String),
     MicrophoneError(String),
     Cursor(Vec<u8>),
+    CursorCapture(bool),
     Dropped(NvstDropReason),
     RecoveryNeeded(NvstRecovery),
     Lifecycle(NvstReceiverState),
@@ -5177,9 +5177,7 @@ fn run_nvst_webrtc_bundle(
     let mut input_codec = NvstInputCodec::default();
     let mut last_input_types = Vec::new();
     let mut mouse_motion_packets = 0_u64;
-    let mut server_cursor_hidden = false;
-    let mut cursor_capture_retry_at: Option<Instant> = None;
-    let mut cursor_capture_attempts = 0_u8;
+    let mut cursor_capture = NvstCursorCapture::default();
     let mut control_keepalive_at = next_control_keepalive(Instant::now());
     let mut input_timeout_reported = false;
     let mut audio_receiver = NvstAudioReceiver::default();
@@ -5307,29 +5305,15 @@ fn run_nvst_webrtc_bundle(
             }
             control_keepalive_at = next_control_keepalive(now);
         }
-        if !server_cursor_hidden
-            && cursor_capture_attempts < MAX_CURSOR_CAPTURE_ATTEMPTS
-            && cursor_capture_retry_at.is_some_and(|retry_at| now >= retry_at)
-            && let Some(channels) = input_channels
+        if let Some(channels) = input_channels
+            && cursor_capture.update(now, |command| match command {
+                CursorCommand::Capture(enabled) => {
+                    channels.send_mouse_cursor_capture(&mut rtc, enabled)
+                }
+                CursorCommand::Tracking => channels.send_remote_cursor_tracking(&mut rtc, true),
+            })
         {
-            cursor_capture_attempts += 1;
-            let capture_sent = channels.send_mouse_cursor_capture(&mut rtc, true);
-            let tracking_sent = channels.send_remote_cursor_tracking(&mut rtc, true);
-            if capture_sent && tracking_sent {
-                eprintln!(
-                    "NVST cursor capture tx: channel={} command=0x0308 enabled=true reason=post-play-retry attempt={cursor_capture_attempts}",
-                    channels.label(channels.control_reliable),
-                );
-                eprintln!(
-                    "NVST remote cursor tracking tx: channel={} command=0x030d enabled=true reason=post-play-retry attempt={cursor_capture_attempts}",
-                    channels.label(channels.control_reliable),
-                );
-            } else {
-                eprintln!(
-                    "NVST cursor feature retry could not be queued: attempt={cursor_capture_attempts} captureSent={capture_sent} trackingSent={tracking_sent}"
-                );
-            }
-            cursor_capture_retry_at = Some(now + CURSOR_CAPTURE_RETRY_INTERVAL);
+            let _ = event_sender.send(NvstReceiveEvent::CursorCapture(false));
         }
         if !input_timeout_reported && input_state.handshake_timed_out(sctp_started_at, now) {
             input_timeout_reported = true;
@@ -5663,6 +5647,11 @@ fn run_nvst_webrtc_bundle(
                                 control_partial_open = true;
                             }
                             if let Some(version) = input_state.channel_opened(channels, id) {
+                                if !input_state.activation_sent() {
+                                    cursor_capture.activate(Instant::now());
+                                    let _ =
+                                        event_sender.send(NvstReceiveEvent::CursorCapture(true));
+                                }
                                 if !finish_nvst_input_handshake(
                                     &mut input_state,
                                     channels,
@@ -5674,9 +5663,6 @@ fn run_nvst_webrtc_bundle(
                                 ) {
                                     continue;
                                 }
-                                cursor_capture_attempts = 1;
-                                cursor_capture_retry_at =
-                                    Some(Instant::now() + CURSOR_CAPTURE_RETRY_INTERVAL);
                             }
                         }
                         if Some(id) == rtcp_channel {
@@ -5693,8 +5679,13 @@ fn run_nvst_webrtc_bundle(
                             {
                                 feedback.haptics.receive(&data.data);
                             }
-                            let cursor_messages = server_cursor_messages(&data.data);
+                            let cursor_messages = if data.id == channels.cursor {
+                                Vec::new()
+                            } else {
+                                server_cursor_messages(&data.data)
+                            };
                             for message in cursor_messages {
+                                cursor_capture.notify(Instant::now());
                                 eprintln!(
                                     "NVST cursor wire rx: channel={label} id={:?} command=0x{:04x} offset={} cursorId={:?} position={:?} visible={:?} bytes={} raw={}",
                                     data.id,
@@ -5707,16 +5698,6 @@ fn run_nvst_webrtc_bundle(
                                     diagnostic_hex(&message.raw, 512),
                                 );
                                 if let Some(cursor) = message.normalized {
-                                    cursor_capture_retry_at = None;
-                                    if !server_cursor_hidden
-                                        && channels.send_mouse_cursor_capture(&mut rtc, false)
-                                    {
-                                        server_cursor_hidden = true;
-                                        eprintln!(
-                                            "NVST cursor capture tx: channel={} command=0x0308 enabled=false reason=first-local-cursor",
-                                            channels.label(channels.control_reliable),
-                                        );
-                                    }
                                     eprintln!(
                                         "NVST cursor dispatch: source={label} type={} id={} bytes={} raw={}",
                                         cursor[0],
@@ -5729,16 +5710,14 @@ fn run_nvst_webrtc_bundle(
                             }
 
                             if data.id == channels.cursor {
-                                cursor_capture_retry_at = None;
-                                if !server_cursor_hidden
-                                    && channels.send_mouse_cursor_capture(&mut rtc, false)
-                                {
-                                    server_cursor_hidden = true;
+                                if !valid_cursor_channel_message(&data.data) {
                                     eprintln!(
-                                        "NVST cursor capture tx: channel={} command=0x0308 enabled=false reason=cursor-channel",
-                                        channels.label(channels.control_reliable),
+                                        "NVST malformed cursor-channel notification ignored: bytes={}",
+                                        data.data.len(),
                                     );
+                                    continue;
                                 }
+                                cursor_capture.notify(Instant::now());
                                 eprintln!(
                                     "NVST cursor-channel raw rx: id={:?} bytes={} type={:?} cursorId={:?} raw={}",
                                     data.id,
@@ -5765,6 +5744,10 @@ fn run_nvst_webrtc_bundle(
                             && let Some(version) =
                                 input_state.channel_data(channels, data.id, &data.data)
                         {
+                            if !input_state.activation_sent() {
+                                cursor_capture.activate(Instant::now());
+                                let _ = event_sender.send(NvstReceiveEvent::CursorCapture(true));
+                            }
                             if !finish_nvst_input_handshake(
                                 &mut input_state,
                                 channels,
@@ -5776,9 +5759,6 @@ fn run_nvst_webrtc_bundle(
                             ) {
                                 continue;
                             }
-                            cursor_capture_attempts = 1;
-                            cursor_capture_retry_at =
-                                Some(Instant::now() + CURSOR_CAPTURE_RETRY_INTERVAL);
                         } else if Some(data.id) == rtcp_channel {
                             eprintln!(
                                 "NVST rtcp1 inbound: id={:?} binary={} bytes={}",
@@ -5791,9 +5771,7 @@ fn run_nvst_webrtc_bundle(
                     Event::ChannelClose(id) => {
                         if let Some(channels) = input_channels {
                             if id == channels.control_reliable {
-                                server_cursor_hidden = false;
-                                cursor_capture_retry_at = None;
-                                cursor_capture_attempts = 0;
+                                cursor_capture.reset();
                             }
                             let input_channel_closed = id == channels.input_partial;
                             if input_state.channel_closed(channels, id) || input_channel_closed {
