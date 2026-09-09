@@ -18,6 +18,7 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(2);
 const CONTROL_PING_EXPIRY: Duration = Duration::from_secs(5);
 const CONTROL_IO_TIMEOUT: Duration = Duration::from_millis(100);
+const MAX_REQUEST_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
 const MAX_CONTROL_RESPONSE_BYTES: usize = 64 * 1024;
 const MAX_STREAM_BITRATE_MBPS: u64 = 200;
 // GeForce NOW 2.0.87.131 reports video[0].timeoutLengthMs=8000 and
@@ -156,6 +157,10 @@ impl RtspClient {
         timeout: Duration,
     ) -> Result<RtspResponse, NvstRtspError> {
         let mut stage = opennow_streamer_protocol::log::Stage::begin("rtsps.request");
+        self.socket.set_config(|config| {
+            config.max_message_size = Some(MAX_REQUEST_RESPONSE_BYTES);
+            config.max_frame_size = Some(MAX_REQUEST_RESPONSE_BYTES);
+        });
         self.send_request(method, uri, headers, body)?;
         opennow_streamer_protocol::log::log_line(
             "INFO",
@@ -169,10 +174,13 @@ impl RtspClient {
         );
         let deadline = Instant::now() + timeout;
         loop {
-            if self.buffer.len() > MAX_CONTROL_RESPONSE_BYTES {
+            if self.buffer.len() > MAX_REQUEST_RESPONSE_BYTES {
                 return Err(NvstRtspError::new(
                     "nvst-rtsp-failed",
-                    "RTSPS response exceeds control buffer limit",
+                    format!(
+                        "RTSPS {method} response exceeds request buffer limit: {} bytes (limit {MAX_REQUEST_RESPONSE_BYTES})",
+                        self.buffer.len()
+                    ),
                 ));
             }
             if Instant::now() >= deadline {
@@ -195,8 +203,10 @@ impl RtspClient {
                     "INFO",
                     "rtsps",
                     &format!(
-                        "response method={method} cseq={} status={}",
-                        self.cseq, response.status
+                        "response method={method} cseq={} status={} body_bytes={}",
+                        self.cseq,
+                        response.status,
+                        response.body.len()
                     ),
                 );
                 stage.complete();
@@ -1107,6 +1117,14 @@ fn take_rtsp_response(
     let total = (header_end + separator)
         .checked_add(content_length)
         .ok_or_else(|| NvstRtspError::new("nvst-rtsp-failed", "Invalid RTSPS content length"))?;
+    if total > MAX_REQUEST_RESPONSE_BYTES {
+        return Err(NvstRtspError::new(
+            "nvst-rtsp-failed",
+            format!(
+                "RTSPS response exceeds request buffer limit: {total} bytes (limit {MAX_REQUEST_RESPONSE_BYTES})"
+            ),
+        ));
+    }
     if buffer.len() < total {
         return Ok(None);
     }
