@@ -299,8 +299,7 @@ impl MetalFrame {
             self.frame.clone(),
             command_buffer,
             frame_slot,
-            (adopted.upscale_width, adopted.upscale_height),
-            SpatialControls::new(adopted.upscale_sharpness, adopted.upscale_denoise),
+            adopted,
             Arc::clone(&self.counters),
             Arc::clone(&self.failures),
         )?;
@@ -441,8 +440,7 @@ impl MetalState {
         frame: DecodedFrame,
         command_buffer: &ProtocolObject<dyn MTLCommandBuffer>,
         frame_slot: u32,
-        upscale_size: (u32, u32),
-        controls: SpatialControls,
+        adopted: AdoptedMetalContext,
         counters: Arc<Counters>,
         failures: Arc<FailureReporter>,
     ) -> Result<MetalRecordedFrame, BackendError> {
@@ -479,7 +477,13 @@ impl MetalState {
 
         let spatial = self.spatial_resources(
             frame_slot,
-            SpatialConfig::new(width, height, upscale_size.0, upscale_size.1, output_format),
+            SpatialConfig::new(
+                width,
+                height,
+                adopted.upscale_width,
+                adopted.upscale_height,
+                output_format,
+            ),
         );
         let output = if let Some(spatial) = &spatial {
             spatial.input.clone()
@@ -510,7 +514,7 @@ impl MetalState {
         };
 
         let controls = if spatial.is_some() {
-            controls
+            SpatialControls::new(adopted.upscale_sharpness, adopted.upscale_denoise)
         } else {
             SpatialControls::new(0, 0)
         };
