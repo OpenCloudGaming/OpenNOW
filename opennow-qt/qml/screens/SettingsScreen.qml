@@ -313,7 +313,7 @@ FocusScope {
                 {t:"Display", d:"The Qt stream surface uses the current display", v:"Monitor 1 · current display", info:true},
                 choice("Resolution", "Exact stream size · up / down to browse, A to pick", "resolution", resolutions, resolutionLabels(resolutions)),
                 choice("Frame rate", root.fpsNote(), "fps", frameRates, frameRates.map(value => String(value)), "segments", root.fpsLockedValues()),
-                toggle("Fullscreen on launch", "F11 toggles in-game", "autoFullScreen"),
+                toggle(qsTr("Fullscreen when session is ready"), qsTr("Automatically enter fullscreen when your session is ready. F11 toggles fullscreen during play."), "autoFullScreen"),
                 {t:"Video shader", d:"Post-process on this device after decode", v:["Off","Sharpen","FidelityFX","CRT"][shaderIndex], key:"videoShader", values:shaderValues, labels:["Off","Sharpen","FidelityFX","CRT"], control:"segments", selectedIndex:shaderIndex},
                 choice("Cursor", "Lock the pointer to the game window · F8", "nativeCursorOverlay", [true,false], ["Lock to window","Free"], "segments"),
             ]

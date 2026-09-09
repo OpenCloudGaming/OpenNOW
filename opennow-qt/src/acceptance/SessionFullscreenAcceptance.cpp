@@ -21,6 +21,7 @@ int AcceptanceSession::startSessionFullscreenWorkload()
     auto *store = m_engine.singletonInstance<QObject *>(u"OpenNOW"_s, u"ShellStore"_s);
     if (!window || !store) return EXIT_FAILURE;
     m_controller.navigate(u"home"_s);
+    store->setProperty("settings", QVariantMap{{u"autoFullScreen"_s, false}});
     store->setProperty("streamer", QVariantMap{{u"status"_s, u"streaming"_s}});
     store->setProperty("streamState", u"streaming"_s);
     const auto restoredVisibility = m_arguments.contains(u"--smoke-fullscreen-restore-maximized"_s)
@@ -141,19 +142,56 @@ int AcceptanceSession::startSessionFullscreenWorkload()
             m_controller.directLaunchRequested(u"12345"_s, u"Fullscreen acceptance fixture"_s);
             break;
         case 15:
-            if (!require(window->visibility() == QWindow::FullScreen,
-                         "direct launch did not apply automatic fullscreen")) return;
+            if (!require(window->visibility() == nextSessionVisibility,
+                         "direct launch entered fullscreen before the session was ready")) return;
             m_controller.navigate(u"inserting"_s);
             break;
         case 16:
+            if (!require(window->visibility() == nextSessionVisibility,
+                         "session preparation entered fullscreen before readiness")) return;
             m_controller.navigate(u"stream"_s);
             break;
         case 17:
-            m_controller.navigate(u"home"_s);
+            if (!require(window->visibility() == QWindow::FullScreen,
+                         "ready session did not apply automatic fullscreen")) return;
+            if (!require(QMetaObject::invokeMethod(window, "toggleFullscreen"),
+                         "manual fullscreen override unavailable")) return;
             break;
         case 18:
             if (!require(window->visibility() == nextSessionVisibility,
+                         "manual fullscreen exit did not restore the launch mode")) return;
+            m_controller.showOverlay(u"desktop-stream-menu"_s);
+            break;
+        case 19:
+            if (!require(window->visibility() == nextSessionVisibility,
+                         "overlay reapplied automatic fullscreen")) return;
+            m_controller.showOverlay(QString{});
+            m_controller.navigate(u"joining"_s);
+            break;
+        case 20:
+            m_controller.navigate(u"stream"_s);
+            break;
+        case 21:
+            if (!require(window->visibility() == nextSessionVisibility,
+                         "reconnect overrode the manual window mode")) return;
+            m_controller.navigate(u"home"_s);
+            break;
+        case 22:
+            if (!require(window->visibility() == nextSessionVisibility,
                          "direct launch captured its automatic fullscreen as the initial mode")) return;
+            m_controller.navigate(u"joining"_s);
+            break;
+        case 23:
+            m_controller.navigate(u"stream"_s);
+            break;
+        case 24:
+            if (!require(window->visibility() == QWindow::FullScreen,
+                         "new session did not rearm automatic fullscreen")) return;
+            m_controller.navigate(u"home"_s);
+            break;
+        case 25:
+            if (!require(window->visibility() == nextSessionVisibility,
+                         "automatic fullscreen did not restore the pre-session mode")) return;
             timer->stop();
             m_application.exit(EXIT_SUCCESS);
             break;
