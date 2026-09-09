@@ -87,7 +87,7 @@ private slots:
             const bool wasVisible = CGCursorIsVisible();
             capture->setCapture(&window, true, QRect(QPoint(), window.size()));
             QVERIFY2(capture->locked(), qPrintable(capture->error()));
-            QVERIFY2(!CGCursorIsVisible(), qPrintable([&window, fullscreen] {
+            QVERIFY2(!CGCursorIsVisible(), qPrintable(([&window, fullscreen] {
                 const bool immediate = CGCursorIsVisible();
                 QTest::qWait(100);
                 const bool after100ms = CGCursorIsVisible();
@@ -95,7 +95,7 @@ private slots:
                 return QStringLiteral("Cursor visibility: immediate=%1 after100ms=%2 after1000ms=%3 windowActive=%4 fullscreen=%5")
                     .arg(immediate).arg(after100ms).arg(bool(CGCursorIsVisible()))
                     .arg(window.isActive()).arg(fullscreen);
-            }()));
+            }())));
             capture->release();
             QVERIFY2(capture->error().isEmpty(), qPrintable(capture->error()));
             QVERIFY(!capture->locked());
