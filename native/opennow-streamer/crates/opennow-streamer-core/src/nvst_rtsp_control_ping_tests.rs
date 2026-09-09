@@ -88,6 +88,120 @@ fn wait_until(mut condition: impl FnMut() -> bool) {
 }
 
 #[test]
+fn describe_accepts_large_text_binary_and_split_responses() {
+    for (binary, chunk_size) in [
+        (false, usize::MAX),
+        (true, usize::MAX),
+        (false, 16 * 1024),
+        (true, 16 * 1024),
+    ] {
+        let (mut client, mut server) = socket_pair();
+        let body = "a=x-nv-test:description\r\n".repeat(12_000);
+        assert!(body.len() > MAX_CONTROL_RESPONSE_BYTES);
+        let expected_body = body.clone();
+        let sender = thread::spawn(move || {
+            let Message::Text(request) = server.read().unwrap() else {
+                panic!("expected DESCRIBE request");
+            };
+            assert!(request.starts_with("DESCRIBE "));
+            assert!(request.contains("\r\nCSeq: 8\r\n"));
+            let response = format!(
+                "RTSP/1.0 200 OK\r\nCSeq: 8\r\nContent-Length: {}\r\n\r\n{body}",
+                body.len()
+            );
+            for chunk in response.as_bytes().chunks(chunk_size) {
+                let message = if binary {
+                    Message::Binary(chunk.to_vec().into())
+                } else {
+                    Message::Text(String::from_utf8(chunk.to_vec()).unwrap().into())
+                };
+                server.send(message).unwrap();
+            }
+        });
+        let response = client
+            .request("DESCRIBE", "rtsps://seat.nvidiagrid.net:322", &[], "")
+            .unwrap();
+        assert_eq!(response.status, 200);
+        assert_eq!(response.body, expected_body);
+        assert!(client.buffer.is_empty());
+        sender.join().unwrap();
+    }
+}
+
+#[test]
+fn request_rejects_unbounded_partial_response() {
+    let (mut client, mut server) = socket_pair();
+    let sender = thread::spawn(move || {
+        server.read().unwrap();
+        server
+            .send(Message::Text("x".repeat(MAX_REQUEST_RESPONSE_BYTES).into()))
+            .unwrap();
+        server.send(Message::Text("x".into())).unwrap();
+    });
+    let error = client
+        .request("DESCRIBE", "rtsps://seat.nvidiagrid.net:322", &[], "")
+        .err()
+        .unwrap();
+    assert_eq!(error.code, "nvst-rtsp-failed");
+    assert!(
+        error
+            .message
+            .contains("DESCRIBE response exceeds request buffer limit")
+    );
+    sender.join().unwrap();
+}
+
+#[test]
+fn request_bounds_websocket_message_size() {
+    let (mut client, mut server) = socket_pair();
+    let sender = thread::spawn(move || {
+        server.read().unwrap();
+        let _ = server.send(Message::Text(
+            "x".repeat(MAX_REQUEST_RESPONSE_BYTES + 1).into(),
+        ));
+    });
+    let error = client
+        .request("DESCRIBE", "rtsps://seat.nvidiagrid.net:322", &[], "")
+        .err()
+        .unwrap();
+    assert_eq!(error.code, "nvst-rtsp-failed");
+    assert!(error.message.contains("Space limit exceeded"));
+    assert!(client.buffer.is_empty());
+    sender.join().unwrap();
+}
+
+#[test]
+fn rtsp_parser_accepts_response_at_request_size_limit() {
+    let prefix = "RTSP/1.0 200 OK\r\nCSeq: 8\r\nContent-Length: ";
+    let body_length = MAX_REQUEST_RESPONSE_BYTES
+        - prefix.len()
+        - MAX_REQUEST_RESPONSE_BYTES.to_string().len()
+        - 4;
+    let body = "x".repeat(body_length);
+    let mut buffer = format!("{prefix}{body_length}\r\n\r\n{body}");
+    assert_eq!(buffer.len(), MAX_REQUEST_RESPONSE_BYTES);
+    let response = take_rtsp_response(&mut buffer, 8).unwrap().unwrap();
+    assert_eq!(response.body, body);
+    assert!(buffer.is_empty());
+}
+
+#[test]
+fn rtsp_parser_bounds_declared_response_size_before_receiving_body() {
+    let mut oversized = format!(
+        "RTSP/1.0 200 OK\r\nCSeq: 8\r\nContent-Length: {MAX_REQUEST_RESPONSE_BYTES}\r\n\r\n"
+    );
+    let error = take_rtsp_response(&mut oversized, 8).err().unwrap();
+    assert!(
+        error
+            .message
+            .contains("response exceeds request buffer limit")
+    );
+
+    let mut bounded = "RTSP/1.0 200 OK\r\nCSeq: 8\r\nContent-Length: 262144\r\n\r\n".to_owned();
+    assert!(take_rtsp_response(&mut bounded, 8).unwrap().is_none());
+}
+
+#[test]
 fn control_ping_parser_rejects_overflowing_and_invalid_body_boundaries() {
     let mut overflowing = format!(
         "RTSP/1.0 551 Response\r\nCSeq: 8\r\nContent-Length: {}\r\n\r\n",
