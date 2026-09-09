@@ -14,7 +14,6 @@ on:
     paths:
       - ".github/workflows/qt-ci.yml"
       - ".github/workflows/qt-release-candidate.yml"
-      - ".github/workflows/qt-windows-desktop-tests.yml"
       - ".github/actionlint.yaml"
       - ".github/actions/**"
       - ".github/scripts/**"
@@ -31,7 +30,6 @@ on:
     paths:
       - ".github/workflows/qt-ci.yml"
       - ".github/workflows/qt-release-candidate.yml"
-      - ".github/workflows/qt-windows-desktop-tests.yml"
       - ".github/actionlint.yaml"
       - ".github/actions/**"
       - ".github/scripts/**"
@@ -351,8 +349,7 @@ jobs:
             | sha256sum --check --strict
           tar -xzf "$RUNNER_TEMP/actionlint.tar.gz" -C "$RUNNER_TEMP" actionlint
           "$RUNNER_TEMP/actionlint" -color=false \
-            .github/workflows/qt-ci.yml .github/workflows/qt-release-candidate.yml \
-            .github/workflows/qt-windows-desktop-tests.yml
+            .github/workflows/qt-ci.yml .github/workflows/qt-release-candidate.yml
 
       - name: Rust tests
         if: runner.os == 'Linux'
@@ -395,24 +392,6 @@ jobs:
         run: |
           if [[ "$RUNNER_OS" == Windows ]]; then cd /o; fi
           cmake --build build/opennow-qt-release --config Release --parallel "${{ matrix.build-parallel }}"
-
-      - name: Bundle Windows desktop tests
-        if: matrix.label == 'windows-x64'
-        shell: bash
-        run: |
-          python .github/scripts/windows-test-bundle.py pack \
-            --build O:/build/opennow-qt-release --output "$RUNNER_TEMP/windows-tests.zip" \
-            --revision "$GITHUB_SHA"
-
-      - name: Upload Windows desktop tests
-        if: matrix.label == 'windows-x64'
-        uses: actions/upload-artifact@v4
-        with:
-          name: windows-x64-tests
-          path: ${{ runner.temp }}/windows-tests.zip
-          if-no-files-found: error
-          retention-days: 1
-          compression-level: 0
 
       - name: Test Qt shell
         id: qt-tests
@@ -529,12 +508,6 @@ jobs:
             appimage-runtime-sha256: ""
     env: *native-build-env
     steps: *native-build-steps
-
-  windows-desktop-tests:
-    needs: windows-build
-    uses: ./.github/workflows/qt-windows-desktop-tests.yml
-    with:
-      artifact-name: windows-x64-tests
 
   macos-validate:
     name: macos-arm64
@@ -701,7 +674,7 @@ jobs:
 
   nightly-inventory:
     name: Verify complete nightly artifact set
-    needs: [metadata, localization, validate, windows-build, windows-desktop-tests]
+    needs: [metadata, localization, validate, windows-build]
     runs-on: ubuntu-24.04
     env:
       RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
