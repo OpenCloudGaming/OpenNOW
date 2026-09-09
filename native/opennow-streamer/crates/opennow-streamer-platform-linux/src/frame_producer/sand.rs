@@ -288,11 +288,7 @@ fn import_buffer(
         device: device.clone(),
     };
     let requirements = unsafe { device.get_buffer_memory_requirements(buffer) };
-    if requirements.size > object.size as u64 {
-        return Err(invalid(
-            "DMA-BUF allocation is smaller than Vulkan buffer memory requirements",
-        ));
-    }
+    let allocation_size = import_allocation_size(object, requirements.size)?;
     let loader = ash::khr::external_memory_fd::Device::new(instance, device);
     let mut properties = vk::MemoryFdPropertiesKHR::default();
     unsafe {
@@ -329,7 +325,7 @@ fn import_buffer(
             &vk::MemoryAllocateInfo::default()
                 .push_next(&mut import)
                 .push_next(&mut dedicated)
-                .allocation_size(object.size as u64)
+                .allocation_size(allocation_size)
                 .memory_type_index(memory_type),
             None,
         )
@@ -339,6 +335,39 @@ fn import_buffer(
     unsafe { device.bind_buffer_memory(buffer, imported.memory, 0) }
         .map_err(|error| vk_error("bind SAND DMA-BUF buffer", error))?;
     Ok(imported)
+}
+
+fn import_allocation_size(object: &crate::DmaBufObject, required_size: u64) -> Result<u64> {
+    let size = unsafe { libc::lseek(object.fd, 0, libc::SEEK_END) };
+    if size < 0 {
+        return Err(Error::backend(
+            Subsystem::Vulkan,
+            format!(
+                "query SAND DMA-BUF allocation size failed: {}",
+                std::io::Error::last_os_error()
+            ),
+        ));
+    }
+    if unsafe { libc::lseek(object.fd, 0, libc::SEEK_SET) } < 0 {
+        return Err(Error::backend(
+            Subsystem::Vulkan,
+            format!(
+                "reset SAND DMA-BUF offset failed: {}",
+                std::io::Error::last_os_error()
+            ),
+        ));
+    }
+    let allocation_size = size as u64;
+    if allocation_size == 0
+        || allocation_size < object.size as u64
+        || allocation_size < required_size
+    {
+        return Err(invalid(&format!(
+            "DMA-BUF allocation is too small: allocation_bytes={allocation_size} descriptor_bytes={} required_bytes={required_size}",
+            object.size
+        )));
+    }
+    Ok(allocation_size)
 }
 
 pub(super) struct SandImages {
@@ -558,6 +587,82 @@ impl Drop for SandImages {
 mod tests {
     use super::*;
     use crate::{DmaBufLayer, DmaBufObject, StreamFormat};
+
+    fn sized_fd(size: usize) -> OwnedFd {
+        let fd = unsafe { libc::memfd_create(c"sand-allocation-test".as_ptr(), libc::MFD_CLOEXEC) };
+        assert!(fd >= 0);
+        let fd = unsafe { OwnedFd::from_raw_fd(fd) };
+        assert_eq!(
+            unsafe { libc::ftruncate(fd.as_raw_fd(), size as libc::off_t) },
+            0
+        );
+        fd
+    }
+
+    #[test]
+    fn sand_import_uses_backing_allocation_not_descriptor_extent() {
+        for split in [false, true] {
+            let (frame, format) = fixture(split, 1920, 1080);
+            SandLayout::new(&frame, format).unwrap();
+            for mut object in frame.objects {
+                let aligned_size = object.size.next_multiple_of(4096);
+                assert!(aligned_size > object.size);
+                let fd = sized_fd(aligned_size);
+                object.fd = fd.as_raw_fd();
+                assert_eq!(
+                    import_allocation_size(&object, aligned_size as u64).unwrap(),
+                    aligned_size as u64
+                );
+                assert_eq!(unsafe { libc::lseek(fd.as_raw_fd(), 0, libc::SEEK_CUR) }, 0);
+                assert!(unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GETFD) } >= 0);
+            }
+        }
+    }
+
+    #[test]
+    fn sand_import_rejects_truncated_and_unpadded_allocations() {
+        for (size, descriptor_size, required_size) in
+            [(4096, 4097, 4096), (4095, 4095, 4096), (0, 1, 1)]
+        {
+            let fd = sized_fd(size);
+            let object = DmaBufObject {
+                fd: fd.as_raw_fd(),
+                size: descriptor_size,
+                format_modifier: SAND128,
+            };
+            let error = import_allocation_size(&object, required_size).unwrap_err();
+            let detail = error.to_string();
+            assert!(detail.contains(&format!("allocation_bytes={size}")));
+            assert!(detail.contains(&format!("descriptor_bytes={descriptor_size}")));
+            assert!(detail.contains(&format!("required_bytes={required_size}")));
+        }
+    }
+
+    #[test]
+    fn sand_import_preserves_aligned_allocations() {
+        let fd = sized_fd(8192);
+        let object = DmaBufObject {
+            fd: fd.as_raw_fd(),
+            size: 8192,
+            format_modifier: SAND128,
+        };
+        assert_eq!(import_allocation_size(&object, 8192).unwrap(), 8192);
+    }
+
+    #[test]
+    fn sand_import_rejects_unqueryable_allocation_sizes() {
+        let fd = unsafe { libc::eventfd(0, libc::EFD_CLOEXEC) };
+        assert!(fd >= 0);
+        let fd = unsafe { OwnedFd::from_raw_fd(fd) };
+        for raw in [-1, fd.as_raw_fd()] {
+            let object = DmaBufObject {
+                fd: raw,
+                size: 4096,
+                format_modifier: SAND128,
+            };
+            assert!(import_allocation_size(&object, 4096).is_err());
+        }
+    }
 
     fn fixture(split: bool, width: u32, height: u32) -> (DmaBufFrame, StreamFormat) {
         let columns = width.div_ceil(128) as usize;
