@@ -42,7 +42,7 @@ class CIReleaseTrustTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
 
     def test_release_checkouts_do_not_use_input_refs(self):
-        for name in ("qt-release-candidate.yml", "qt-ci.yml"):
+        for name in ("qt-release-candidate.yml", "qt-build.yml"):
             with self.subTest(workflow=name):
                 refs = [line.strip() for line in (WORKFLOWS / name).read_text().splitlines()
                         if line.strip().startswith("ref:")]

@@ -1,0 +1,19 @@
+name: Qt supporter build (artifacts only)
+run-name: Supporter build from ${{ github.ref_name }} by @${{ github.actor }}
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: qt-supporter-build-${{ github.run_id }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    uses: ./.github/workflows/qt-build.yml
+    with:
+      channel: supporter
+      upload_complete: true

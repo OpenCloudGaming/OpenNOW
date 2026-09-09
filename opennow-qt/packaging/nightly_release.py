@@ -6,16 +6,20 @@ import re
 import shutil
 
 
-def nightly_version(cmake_file, run, attempt):
+def nightly_version(cmake_file, run, attempt, channel="nightly"):
+    if channel not in ("nightly", "supporter"):
+        raise ValueError("Invalid unsigned build channel")
     match = re.search(r"project\(OpenNOWQt VERSION (\d+\.\d+\.\d+) LANGUAGES", cmake_file.read_text())
     if not match or run < 1 or attempt < 1:
         raise ValueError("Expected a project version and positive run/attempt numbers")
-    return f"{match[1]}-nightly.{run}.{attempt}"
+    return f"{match[1]}-{channel}.{run}.{attempt}"
 
 
-def assemble(source, destination, version, commit):
-    if not re.fullmatch(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-nightly\.[1-9][0-9]*\.[1-9][0-9]*", version):
-        raise ValueError("Invalid nightly version")
+def assemble(source, destination, version, commit, channel="nightly"):
+    if channel not in ("nightly", "supporter"):
+        raise ValueError("Invalid unsigned build channel")
+    if not re.fullmatch(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-" + channel + r"\.[1-9][0-9]*\.[1-9][0-9]*", version):
+        raise ValueError(f"Invalid {channel} version")
     if not re.fullmatch(r"[0-9a-f]{40}", commit):
         raise ValueError("Expected an immutable source commit")
     expected = {
@@ -62,16 +66,18 @@ def main():
     version.add_argument("--cmake-file", type=Path, default=Path("opennow-qt/CMakeLists.txt"))
     version.add_argument("--run", type=int, required=True)
     version.add_argument("--attempt", type=int, required=True)
+    version.add_argument("--channel", choices=("nightly", "supporter"), default="nightly")
     collect = commands.add_parser("assemble")
     collect.add_argument("--source", type=Path, required=True)
     collect.add_argument("--destination", type=Path, required=True)
     collect.add_argument("--version", required=True)
     collect.add_argument("--commit", required=True)
+    collect.add_argument("--channel", choices=("nightly", "supporter"), default="nightly")
     args = parser.parse_args()
     if args.command == "version":
-        print(nightly_version(args.cmake_file, args.run, args.attempt))
+        print(nightly_version(args.cmake_file, args.run, args.attempt, args.channel))
     else:
-        assemble(args.source, args.destination, args.version, args.commit)
+        assemble(args.source, args.destination, args.version, args.commit, args.channel)
 
 
 if __name__ == "__main__":

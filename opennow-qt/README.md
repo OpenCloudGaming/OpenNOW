@@ -5,6 +5,29 @@ or newer and uses SDL3 for controller input. A bundled Rust process owns setting
 and is the start of the shell-neutral application core. See
 `docs/qt-migration.md` for the migration history and remaining release checklist.
 
+## Manual supporter builds
+
+In GitHub **Actions → Qt supporter build (artifacts only) → Run workflow**, select
+the branch or tag to build. The workflow must first be present on the default
+branch to appear in the manual-run menu; the selected ref must also contain it.
+This workflow runs only on demand and never creates a tag, release, prerelease,
+or update manifest. Both the caller and shared build jobs have read-only repository
+permissions; nightly publishing remains exclusively in `qt-ci`.
+
+After a successful run, download
+`opennow-qt-<version>-complete-unsigned` from the run's **Artifacts** section.
+Versions use `<project-version>-supporter.<run-number>.<attempt>`, not the nightly
+label. The complete archive contains Windows x64/ARM64 portable ZIPs, Linux
+x64/ARM64 AppImages and DEBs, `SHA256SUMS`, and source-commit metadata. The macOS
+ARM64 validation ZIP is a separate artifact. Artifacts expire after 14 days.
+
+These builds are unsigned and require manual downloads for updates. Windows may
+show a SmartScreen warning; macOS packages are not notarized. Windows ARM64 is
+cross-built rather than runtime-tested. Linux DEBs require Qt 6.8+ and SDL3;
+AppImages are the portable option. Download the files and distribute them through
+your supporter channel. **Actions artifacts in this public repository are not
+private or supporter-access-controlled**, even though they do not appear in Releases.
+
 ## Code organization
 
 `src/main.cpp` only enters `app/ApplicationStartup.cpp`, which composes the application-lifetime

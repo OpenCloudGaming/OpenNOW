@@ -1,11 +1,12 @@
 set(OPENNOW_BUILD_VERSION "${PROJECT_VERSION}" CACHE STRING
-    "OpenNOW version: major.minor.patch or major.minor.patch-nightly.run.attempt")
-if(NOT OPENNOW_BUILD_VERSION MATCHES "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(-nightly\\.[1-9][0-9]*\\.[1-9][0-9]*)?$")
+    "OpenNOW version: major.minor.patch or major.minor.patch-{nightly,supporter}.run.attempt")
+if(NOT OPENNOW_BUILD_VERSION MATCHES "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(-(nightly|supporter)\\.[1-9][0-9]*\\.[1-9][0-9]*)?$")
     message(FATAL_ERROR
-        "OPENNOW_BUILD_VERSION must be major.minor.patch or major.minor.patch-nightly.run.attempt")
+        "OPENNOW_BUILD_VERSION must be major.minor.patch or major.minor.patch-{nightly,supporter}.run.attempt")
 endif()
 set(OPENNOW_NUMERIC_VERSION "${CMAKE_MATCH_1}.${CMAKE_MATCH_2}.${CMAKE_MATCH_3}")
 string(REPLACE "-nightly." "~nightly." OPENNOW_DEBIAN_VERSION "${OPENNOW_BUILD_VERSION}")
+string(REPLACE "-supporter." "~supporter." OPENNOW_DEBIAN_VERSION "${OPENNOW_DEBIAN_VERSION}")
 
 set(OPENNOW_TARGET_PROCESSOR "${CMAKE_SYSTEM_PROCESSOR}")
 if(WIN32 AND CMAKE_CXX_COMPILER_ARCHITECTURE_ID)
