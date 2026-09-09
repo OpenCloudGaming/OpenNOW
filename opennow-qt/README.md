@@ -79,6 +79,33 @@ for GPU readback checks of ten-bit gradients, endpoint and neutral colors, final
 and high-precision render targets. Live acceptance still requires checking gradients and
 black/white levels on the intended GPU and display in windowed and fullscreen modes.
 
+## macOS upscaling
+
+Settings → Stream → Upscaling offers **Off** (default) and **MetalFX** on macOS.
+The console-oriented Stream settings expose the same saved preference. Linux and
+Windows show no upscaling control and never enable MetalFX, even if a settings file
+was copied from a Mac.
+
+MetalFX spatial scaling runs on the decoded image before Qt draws stream chrome.
+It is used only when enlarging the video, leaves the requested stream resolution
+and frame rate unchanged, and adds GPU work rather than improving server rendering
+performance. Quality depends on the game and compression. Unsupported devices or
+scaler configurations retain normal scaling, including ten-bit color precision.
+This does not add temporal reconstruction or macOS HDR support.
+
+Run `ctest --test-dir build/opennow-qt -R 'qml-upscaling|streamvideo-tests|nativestreamruntime' --output-on-failure`
+for settings visibility, live preference binding, source geometry, and render
+viewport checks. On a MetalFX-capable Mac, also run the ignored native spatial
+tests documented in the macOS platform crate, then compare Off/MetalFX with a
+lower-resolution live stream in windowed/fullscreen modes and with overlays open
+and closed. Check resize/display-scale transitions, frame time, and color before
+recommending the option for a particular GPU.
+
+For an account-free settings preview, add `--smoke-upscaling --screenshot <absolute-png-path>`
+to a `--smoke-test --desktop --route settings-streaming` launch. This acceptance-only
+preview reveals the macOS control on any host after verifying its platform gate;
+it does not enable MetalFX on unsupported platforms.
+
 ## Build
 
 Install the Qt ShaderTools development module with Qt Quick and Multimedia; CMake

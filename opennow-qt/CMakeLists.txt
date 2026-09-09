@@ -97,8 +97,9 @@ target_compile_definitions(opennow-qt PRIVATE
     QT_NO_CAST_FROM_ASCII
     QT_NO_CAST_TO_ASCII
     OPENNOW_EMBEDDED_STREAMER
-    OPENNOW_VERSION="${OPENNOW_BUILD_VERSION}"
 )
+set_source_files_properties(src/app/ApplicationStartup.cpp src/core/CoreClient.cpp
+    PROPERTIES COMPILE_DEFINITIONS "OPENNOW_VERSION=\"${OPENNOW_BUILD_VERSION}\"")
 
 include(cmake/NativeRuntime.cmake)
 

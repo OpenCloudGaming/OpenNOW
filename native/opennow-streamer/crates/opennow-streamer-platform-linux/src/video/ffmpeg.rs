@@ -1304,6 +1304,38 @@ mod tests {
     }
 
     #[test]
+    fn ffmpeg_applies_request_frame_padding_before_retention() {
+        let context = codec::Context::new();
+        assert_eq!(unsafe { (*context.as_ptr()).apply_cropping }, 1);
+        let (mut decoded, _file) = request_frame_fixture();
+        decoded.set_width(1920);
+        decoded.set_height(1088);
+        unsafe {
+            let raw = &mut *decoded.as_mut_ptr();
+            raw.crop_bottom = 8;
+            let descriptor = &mut *raw.data[0].cast::<ffi::AVDRMFrameDescriptor>();
+            descriptor.objects[0].size = 15 * 128 * 1632;
+            descriptor.objects[0].format_modifier = 0x0700_0000_0000_0004 | (1632 << 8);
+            descriptor.layers[0].planes[0].pitch = 1920;
+            descriptor.layers[0].planes[1].pitch = 1920;
+            descriptor.layers[0].planes[1].offset = 1088 * 128;
+            assert_eq!(ffi::av_frame_apply_cropping(decoded.as_mut_ptr(), 0), 0);
+            assert_eq!((*decoded.as_ptr()).crop_bottom, 0);
+        }
+        let output = retain_request_frame(
+            &decoded,
+            0,
+            StreamFormat::video_default(1920, 1080).unwrap(),
+        )
+        .unwrap();
+        assert_eq!((output.format.width, output.format.height), (1920, 1080));
+        assert_eq!(
+            output.dmabuf.as_ref().unwrap().layers[0].planes[1].offset,
+            1088 * 128,
+        );
+    }
+
+    #[test]
     fn request_decode_rejects_non_hevc_ten_bit_and_hdr_before_device_probe() {
         let mut format = StreamFormat::video_default(256, 144).unwrap();
         assert!(validate_request_profile(VideoCodec::H265, format).is_ok());

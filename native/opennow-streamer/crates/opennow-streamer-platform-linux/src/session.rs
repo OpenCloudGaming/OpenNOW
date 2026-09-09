@@ -570,13 +570,12 @@ fn run_video_worker(
                     continue;
                 }
                 transition_state(&state, LifecycleState::Reconfiguring, &events);
-                match flush_decoder(&mut decoder) {
-                    Ok(frames) => enqueue_frames(&decoded, &events, frames),
-                    Err(error) => emit(
-                        &events,
-                        BackendEvent::Error(format!("decoder reconfigure drain failed: {error}")),
-                    ),
-                }
+                finish_decoder_drain(
+                    flush_decoder(&mut decoder),
+                    &decoded,
+                    &events,
+                    "reconfigure",
+                );
                 decoded.clear();
                 match open_preferred_decoder(&config, format) {
                     Ok((new_backend, new_decoder)) => {
@@ -722,13 +721,7 @@ fn run_video_worker(
             },
         }
     }
-    match flush_decoder(&mut decoder) {
-        Ok(frames) => enqueue_frames(&decoded, &events, frames),
-        Err(error) => emit(
-            &events,
-            BackendEvent::Error(format!("decoder shutdown drain failed: {error}")),
-        ),
-    }
+    finish_decoder_drain(flush_decoder(&mut decoder), &decoded, &events, "shutdown");
 }
 
 fn run_audio_worker(
@@ -1059,6 +1052,18 @@ fn flush_decoder(decoder: &mut Box<dyn VideoDecoder>) -> Result<Vec<DecodedVideo
     )
 }
 
+fn finish_decoder_drain(
+    result: Result<Vec<DecodedVideoFrame>>,
+    decoded: &BoundedQueue<DecodedVideoFrame>,
+    events: &EventQueue,
+    phase: &str,
+) {
+    match result {
+        Ok(frames) => enqueue_frames(decoded, events, frames),
+        Err(error) => eprintln!("Linux decoder {phase} drain incomplete: {error}"),
+    }
+}
+
 fn panic_message(panic: Box<dyn std::any::Any + Send>) -> String {
     if let Some(message) = panic.downcast_ref::<&str>() {
         (*message).to_owned()
@@ -1172,6 +1177,36 @@ mod tests {
         assert!(recovery.try_recover());
     }
     use super::*;
+
+    #[test]
+    fn incomplete_transition_drains_do_not_emit_fatal_events() {
+        let decoded = BoundedQueue::new(2);
+        let events = Arc::new(BoundedQueue::new(8));
+        for phase in ["reconfigure", "shutdown"] {
+            finish_decoder_drain(
+                Err(Error::backend(Subsystem::V4l2, "decoder drain timed out")),
+                &decoded,
+                &events,
+                phase,
+            );
+            assert!(events.try_pop().is_none());
+            assert!(decoded.try_pop().is_none());
+            finish_decoder_drain(
+                Ok(vec![DecodedVideoFrame {
+                    format: StreamFormat::video_default(2, 2).unwrap(),
+                    timestamp_us: 1234,
+                    planes: Vec::new(),
+                    dmabuf: None,
+                    vulkan: None,
+                }]),
+                &decoded,
+                &events,
+                phase,
+            );
+            assert_eq!(decoded.try_pop().unwrap().timestamp_us, 1234);
+            assert!(events.try_pop().is_none());
+        }
+    }
 
     #[test]
     fn embedded_vulkan_rejection_preserves_configured_fallback_policy() {

@@ -44,6 +44,37 @@ HEVC/AV1 path through P010 and RGB10A2 textures. Ten-bit Auto selection stays on
 H.264 remains eight-bit. Unsupported 4:4:4 requests, including resumed sessions, are rejected
 rather than silently reduced to 4:2:0. macOS HDR output is not advertised.
 
+### Optional MetalFX spatial upscaling
+
+`AdoptedMetalContext::upscale_width` and `upscale_height` request an output size in physical
+viewport pixels; pass both as zero to disable scaling. Scaling is attempted only when neither
+axis shrinks and at least one grows. As an allocation safety policy, targets above 8192 on
+either axis or above 7680 × 4320 total pixels use normal conversion instead.
+
+MetalFX is dynamically loaded at runtime and checked against the adopted device. It is not a
+required framework at application load time. Unsupported systems, devices, formats, dimensions,
+allocation failures, and Objective-C scaler exceptions fall back to the source-size conversion.
+The descriptor uses perceptual SDR processing with matching RGBA8 or RGB10A2 input/output; it
+never reduces P010 to eight-bit or enables HDR processing. An unsupported RGB10A2 scaler keeps
+the normal ten-bit conversion.
+
+Each of the existing eight maximum retired Qt frame slots caches at most one scaler, its input
+texture, and its output texture. Identical configurations reuse these objects; failed creation
+is also cached until that slot's configuration changes. Conversion and scaling encode into the
+same Qt command buffer, with no new queue, commit, GPU wait, CPU copy, or readback in production.
+Completion handlers retain both textures and the scaler even after graphics-surface retirement.
+An encoding exception or failed GPU command buffer disables scaling for that device state. GPU
+failure is asynchronous and cannot repair the already-submitted frame; following frames use
+normal conversion, and persistent failures of that normal path still use the existing fatal
+error policy. Graphics-resource recreation resets this optional-scaler failure state.
+
+The API follows Apple's [spatial scaler contract](https://developer.apple.com/documentation/metalfx/mtlfxspatialscaler)
+and [metal-cpp declarations](https://github.com/apple/metal-cpp/blob/main/MetalFX/MTLFXSpatialScaler.hpp).
+The focused Linux tests cover sizing, bounds, and format keys. On a MetalFX-capable Mac, run
+`cargo test -p opennow-streamer-platform-macos spatial_ -- --include-ignored` from the native
+streamer workspace to additionally check cache/retirement behavior and GPU constant-color
+preservation for eight- and ten-bit SDR. Only that hardware test reads GPU pixels back to the CPU.
+
 ## Standalone integration API
 
 Create `H264ParameterSets` from the current SPS and PPS (or `H265ParameterSets` from VPS, SPS and

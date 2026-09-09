@@ -20,6 +20,7 @@ public:
     virtual void setComposition(const QMatrix4x4 &, const QRectF &, const QRectF &, float) {}
     virtual void setClip(bool, int) {}
     virtual void setFrameGeneration(bool, double) {}
+    virtual void setUpscalingTarget(const QSize &) {}
     virtual bool needsFrame() const { return false; }
     virtual void frameSwapped() {}
     virtual QVariantMap frameGenerationStats() const { return {}; }

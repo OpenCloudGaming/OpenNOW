@@ -154,6 +154,10 @@ public:
         command.version = OPENNOW_STREAMER_RENDER_COMMAND_VERSION;
         command.struct_size = sizeof(command);
         command.frame_slot = static_cast<std::uint32_t>(m_rhi->currentFrameSlot());
+        if (m_rhi->backend() == QRhi::Metal && !m_upscalingTarget.isEmpty()) {
+            command.upscale_width = static_cast<std::uint32_t>(m_upscalingTarget.width());
+            command.upscale_height = static_cast<std::uint32_t>(m_upscalingTarget.height());
+        }
         finishFrame();
         OpenNowStreamerFrameInfo info{};
         OpenNowStreamerRecordedFrame recorded{};
@@ -311,6 +315,14 @@ public:
         m_frameGenerationStatus.store(FrameGenerationState::Active);
     }
 
+    void setUpscalingTarget(const QSize &size) override
+    {
+        const auto target = size.width() > 0 && size.height() > 0
+                && size.width() <= 16384 && size.height() <= 16384 ? size : QSize();
+        if (m_upscalingTarget != target) m_resetFrameGeneration = true;
+        m_upscalingTarget = target;
+    }
+
     void setFrameGeneration(bool enabled, double refreshRate) override
     {
         if (m_frameGeneration != enabled || m_refreshRate != refreshRate)
@@ -433,6 +445,7 @@ private:
     QRhiTexture::Format m_historyFormat = QRhiTexture::UnknownFormat;
     double m_refreshRate = 0;
     bool m_frameGeneration = false;
+    QSize m_upscalingTarget;
     bool m_frameGenerationFailed = false;
     bool m_resetFrameGeneration = false;
     bool m_outputDirty = false;
