@@ -100,6 +100,10 @@ if(BUILD_TESTING)
     endif()
     set_tests_properties(opennow-hdrcolor-tests PROPERTIES TIMEOUT 60)
     set_tests_properties(opennow-frameinterpolator-tests PROPERTIES TIMEOUT 60)
+    if(WIN32)
+        set_tests_properties(opennow-frameinterpolator-tests PROPERTIES
+            RUN_SERIAL TRUE TIMEOUT 180)
+    endif()
     qt_add_executable(opennow-streamcolor-tests tests/tst_streamcolor.cpp)
     target_include_directories(opennow-streamcolor-tests PRIVATE src)
     target_link_libraries(opennow-streamcolor-tests PRIVATE
@@ -540,6 +544,7 @@ if(BUILD_TESTING)
         set_target_properties(
             opennow-controllericons-tests
             opennow-waylandhdroutput-tests
+            opennow-frameinterpolator-tests
             opennow-localization-tests
             opennow-qt-tests
             opennow-coreclient-tests
