@@ -1,0 +1,36 @@
+name: Qt checks
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  contracts:
+    name: Workflow, packaging contracts, and localization
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Lint GitHub workflows
+        shell: bash
+        run: |
+          curl --fail --location --retry 3 \
+            https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz \
+            --output "$RUNNER_TEMP/actionlint.tar.gz"
+          echo "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  $RUNNER_TEMP/actionlint.tar.gz" \
+            | sha256sum --check --strict
+          tar -xzf "$RUNNER_TEMP/actionlint.tar.gz" -C "$RUNNER_TEMP" actionlint
+          "$RUNNER_TEMP/actionlint" -color=false \
+            .github/workflows/qt-ci.yml .github/workflows/qt-checks.yml \
+            .github/workflows/qt-build.yml .github/workflows/qt-release-candidate.yml
+      - name: Test build and packaging contracts
+        run: python3 -m unittest discover -s opennow-qt/tests -p 'test_*.py'
+      - name: Validate localization
+        run: |
+          npm run locales:check
+          node --test scripts/check-translations.test.mjs

@@ -355,7 +355,7 @@ if(BUILD_TESTING)
         add_test(NAME opennow-macpointer-native-tests
             COMMAND opennow-macpointer-tests nativeCocoaCaptureRestoresCursor -o -,txt)
         set_tests_properties(opennow-macpointer-native-tests PROPERTIES
-            ENVIRONMENT "QT_QPA_PLATFORM=cocoa" RUN_SERIAL TRUE TIMEOUT 30)
+            ENVIRONMENT "QT_QPA_PLATFORM=cocoa" RUN_SERIAL TRUE TIMEOUT 30 LABELS "interactive-desktop")
     endif()
 
     qt_add_executable(opennow-nativestreamruntime-tests
@@ -480,6 +480,35 @@ if(BUILD_TESTING)
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
         TIMEOUT 30
     )
+    set(OPENNOW_CI_UNIT_TEST_TARGETS
+        opennow-hdrcolor-tests
+        opennow-theme-tests
+        opennow-framepacer-tests
+        opennow-frameinterpolator-tests
+        opennow-streamcolor-tests
+        opennow-localization-tests
+        opennow-qt-tests
+        opennow-coreclient-tests
+        opennow-waylandpointer-tests
+        opennow-macpointer-tests
+        opennow-embedded-orchestration-tests
+        opennow-singleinstance-tests
+        opennow-thumbnail-tests
+        opennow-controllerinput-tests
+        opennow-controllertuning-tests
+        opennow-controllersources-tests
+        opennow-controllermetadata-tests
+    )
+    if(WIN32)
+        list(REMOVE_ITEM OPENNOW_CI_UNIT_TEST_TARGETS opennow-hdrcolor-tests)
+        set_tests_properties(opennow-hdrcolor-tests PROPERTIES LABELS "interactive-desktop")
+        add_custom_target(opennow-interactive-tests DEPENDS opennow-hdrcolor-tests)
+    elseif(APPLE)
+        add_custom_target(opennow-interactive-tests DEPENDS opennow-macpointer-tests)
+    endif()
+    add_custom_target(opennow-ci-unit-tests DEPENDS ${OPENNOW_CI_UNIT_TEST_TARGETS})
+    set_tests_properties(${OPENNOW_CI_UNIT_TEST_TARGETS} PROPERTIES LABELS "ci-unit")
+
     if(WIN32)
         add_dependencies(opennow-nativeframegeneration-tests opennow-streamer-ffi-test-runtime)
         # Qt's executable helper defaults to the GUI subsystem on Windows. Keep
@@ -530,6 +559,7 @@ if(BUILD_TESTING)
             add_dependencies(opennow-qt-test-runtime opennow-msvc-runtime)
         endif()
         foreach(test_target IN ITEMS
+                opennow-hdrcolor-tests
                 opennow-localization-tests
                 opennow-qt-tests
                 opennow-coreclient-tests

@@ -21,21 +21,12 @@ permissions:
 
 jobs:
   metadata:
-    runs-on: ubuntu-24.04
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
-      - name: Test release metadata and artifact inventory
-        run: |
-          python3 -m unittest discover -s opennow-qt/tests -p test_release_metadata.py
-          python3 -m unittest discover -s opennow-qt/tests -p test_nightly_release.py
-          python3 -m unittest discover -s opennow-qt/tests -p test_supporter_build.py
-          python3 -m unittest discover -s opennow-qt/tests -p test_macos_build.py
-          python3 -m unittest discover -s opennow-qt/tests -p test_ffmpeg_build.py
-          python3 -m unittest discover -s opennow-qt/tests -p test_windows_test_bundle.py
-          python3 -m unittest discover -s opennow-qt/tests -p test_ci_build_cache.py
-          python3 -m unittest discover -s opennow-qt/tests -p test_ci_release_trust.py
       - name: Record immutable build identity
         id: version
         shell: bash
@@ -48,20 +39,11 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
           [[ "$(git rev-parse HEAD)" == "$GITHUB_SHA" ]]
 
-  localization:
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-      - run: npm run locales:check
-      - run: node --test scripts/check-translations.test.mjs
-
-  validate:
-    name: ${{ matrix.label }}
+  packages:
+    name: Package ${{ matrix.label }}
     needs: metadata
     runs-on: ${{ matrix.os }}
+    timeout-minutes: ${{ matrix.label == 'macos-arm64' && 60 || 360 }}
     strategy:
       fail-fast: false
       matrix:
@@ -98,13 +80,34 @@ jobs:
             package-generator: ZIP
             rust-target: aarch64-pc-windows-msvc
             cmake-arch: ARM64
+          - label: windows-x64
+            os: blacksmith-8vcpu-windows-2025
+            build-parallel: 8
+            qt-host: windows
+            qt-arch: win64_msvc2022_64
+            package-generator: ZIP
+            rust-target: ""
+            cmake-arch: ""
+            linuxdeploy-arch: ""
+            linuxdeploy-sha256: ""
+            qt-plugin-sha256: ""
+            appimage-runtime-sha256: ""
+          - label: macos-arm64
+            os: blacksmith-6vcpu-macos-15
+            build-parallel: 3
+            qt-host: mac
+            qt-arch: clang_64
+            package-generator: ZIP
+            rust-target: aarch64-apple-darwin
+            cmake-arch: ""
 
-    env: &native-build-env
+    env:
       CARGO_TERM_COLOR: always
       SDL_VERSION: release-3.2.20
       OPENNOW_BUILD_VERSION: ${{ needs.metadata.outputs.version }}
+      MACOSX_DEPLOYMENT_TARGET: ${{ matrix.label == 'macos-arm64' && '13.0' || '' }}
 
-    steps: &native-build-steps
+    steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
@@ -129,11 +132,6 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: opennow-qt/tests/test_windows_release.ps1
-
-      - name: Test Linux package capability checks
-        if: runner.os == 'Linux'
-        shell: bash
-        run: python3 -m unittest discover -s opennow-qt/tests -p test_linux_package.py
 
       - name: Add package Rust target
         if: matrix.rust-target != ''
@@ -270,8 +268,9 @@ jobs:
       - name: Cache Rust dependencies and build artifacts
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
-          key: qt-ci-${{ matrix.os }}-${{ matrix.label }}
+          shared-key: ${{ runner.os == 'macOS' && 'qt-ci-macos-arm64' || format('qt-ci-{0}-{1}', matrix.os, matrix.label) }}
           cache-bin: false
+          cache-on-failure: true
           workspaces: |
             native/opennow-core -> target
             native/opennow-streamer -> target
@@ -281,7 +280,7 @@ jobs:
       - name: Cache Qt C++ compilation
         uses: hendrikmuhs/ccache-action@5ebbd400eff9e74630f759d94ddd7b6c26299639
         with:
-          key: qt-ci-${{ matrix.os }}-${{ matrix.label }}
+          key: ${{ runner.os == 'macOS' && 'qt-ci-macos-arm64' || format('qt-ci-{0}-{1}', matrix.os, matrix.label) }}
           max-size: 1G
 
       - name: Build and cache SDL3
@@ -291,56 +290,13 @@ jobs:
           target-arch: ${{ endsWith(matrix.label, 'arm64') && 'arm64' || 'x64' }}
           parallel: ${{ matrix.build-parallel }}
 
-      - name: Rust format and lint
-        if: runner.os == 'Linux'
-        shell: bash
-        run: |
-          cargo fmt --manifest-path native/opennow-core/Cargo.toml -- --check
-          cargo clippy --manifest-path native/opennow-core/Cargo.toml --all-targets -- -D warnings
-          cargo fmt --manifest-path native/opennow-streamer/Cargo.toml --all -- --check
-          cargo clippy --manifest-path native/opennow-streamer/Cargo.toml --workspace --all-targets -- -D warnings
-
-      - name: Lint GitHub workflows
-        if: runner.os == 'Linux'
-        shell: bash
-        run: |
-          case "$(uname -m)" in
-            x86_64)
-              actionlint_arch=amd64
-              actionlint_sha256=8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
-              ;;
-            aarch64)
-              actionlint_arch=arm64
-              actionlint_sha256=325e971b6ba9bfa504672e29be93c24981eeb1c07576d730e9f7c8805afff0c6
-              ;;
-            *)
-              echo "Unsupported actionlint architecture: $(uname -m)" >&2
-              exit 1
-              ;;
-          esac
-          curl --fail --location --retry 3 \
-            "https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_${actionlint_arch}.tar.gz" \
-            --output "$RUNNER_TEMP/actionlint.tar.gz"
-          echo "$actionlint_sha256  $RUNNER_TEMP/actionlint.tar.gz" \
-            | sha256sum --check --strict
-          tar -xzf "$RUNNER_TEMP/actionlint.tar.gz" -C "$RUNNER_TEMP" actionlint
-          "$RUNNER_TEMP/actionlint" -color=false \
-            .github/workflows/qt-ci.yml .github/workflows/qt-build.yml \
-            .github/workflows/qt-release-candidate.yml
-
-      - name: Rust tests
-        if: runner.os == 'Linux'
-        shell: bash
-        run: |
-          cargo test --manifest-path native/opennow-core/Cargo.toml
-          cargo test --manifest-path native/opennow-streamer/Cargo.toml --workspace
-
       - name: Windows decoder regression tests
         if: matrix.label == 'windows-x64'
         shell: bash
         run: cargo test --locked --manifest-path native/opennow-streamer/Cargo.toml -p opennow-streamer-platform-windows --lib
 
       - name: Configure Qt release
+        if: runner.os != 'macOS'
         shell: bash
         run: |
           OPENNOW_CMAKE_ARGS=()
@@ -365,6 +321,7 @@ jobs:
             "${OPENNOW_CMAKE_ARGS[@]}"
 
       - name: Build Qt release
+        if: runner.os != 'macOS'
         shell: bash
         run: |
           if [[ "$RUNNER_OS" == Windows ]]; then cd /o; fi
@@ -372,11 +329,12 @@ jobs:
 
       - name: Test Qt shell
         id: qt-tests
-        if: runner.os != 'Windows'
+        if: runner.os == 'Linux'
         shell: bash
-        run: ctest --test-dir build/opennow-qt-release -C Release --output-on-failure --parallel 4
+        run: ctest --test-dir build/opennow-qt-release -C Release --output-on-failure --parallel 4 --no-tests=error -LE interactive-desktop
 
-      - name: Create unsigned validation package
+      - name: Create unsigned package
+        if: runner.os != 'macOS'
         shell: bash
         env:
           PACKAGE_GENERATOR: ${{ matrix.package-generator }}
@@ -451,7 +409,8 @@ jobs:
             "${appimages[0]}" \
             --smoke-test --allow-multiple-instances --route home --reduced-motion
 
-      - name: Upload unsigned validation package
+      - name: Upload unsigned package
+        if: runner.os != 'macOS'
         uses: actions/upload-artifact@v4
         with:
           name: opennow-qt-${{ matrix.label }}-unsigned
@@ -464,78 +423,8 @@ jobs:
           retention-days: 14
           compression-level: 0
 
-  windows-build:
-    name: windows-x64
-    needs: metadata
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        include:
-          - label: windows-x64
-            os: blacksmith-8vcpu-windows-2025
-            build-parallel: 8
-            qt-host: windows
-            qt-arch: win64_msvc2022_64
-            package-generator: ZIP
-            rust-target: ""
-            cmake-arch: ""
-            linuxdeploy-arch: ""
-            linuxdeploy-sha256: ""
-            qt-plugin-sha256: ""
-            appimage-runtime-sha256: ""
-    env: *native-build-env
-    steps: *native-build-steps
-
-  macos-validate:
-    name: macos-arm64
-    needs: metadata
-    runs-on: macos-15
-    timeout-minutes: 60
-    env:
-      CARGO_TERM_COLOR: always
-      SDL_VERSION: release-3.2.20
-      OPENNOW_BUILD_VERSION: ${{ needs.metadata.outputs.version }}
-      MACOSX_DEPLOYMENT_TARGET: "13.0"
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.sha }}
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-apple-darwin
-      - name: Install Qt
-        uses: jurplel/install-qt-action@v4
-        with:
-          version: "6.8.3"
-          host: mac
-          target: desktop
-          arch: clang_64
-          modules: qtmultimedia qtshadertools
-          cache: true
-          cache-key-prefix: qt-target-macos-arm64
-      - name: Cache Rust dependencies and build artifacts
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
-        with:
-          key: qt-ci-macos-arm64
-          cache-bin: false
-          cache-on-failure: true
-          workspaces: |
-            native/opennow-core -> target
-            native/opennow-streamer -> target
-            native/opennow-core -> ../../build/opennow-qt-release/rust-target
-            native/opennow-streamer -> ../../build/opennow-qt-release/streamer-rust-target
-      - name: Cache Qt C++ compilation
-        uses: hendrikmuhs/ccache-action@5ebbd400eff9e74630f759d94ddd7b6c26299639
-        with:
-          key: qt-ci-macos-arm64
-          max-size: 1G
-      - name: Build and cache SDL3
-        uses: ./.github/actions/sdl3
-        with:
-          version: ${{ env.SDL_VERSION }}
-          target-arch: arm64
-          parallel: 3
       - name: Test macOS native contracts
+        if: runner.os == 'macOS'
         shell: bash
         run: |
           [[ "$(uname -m)" == arm64 ]]
@@ -544,6 +433,7 @@ jobs:
           cargo test --manifest-path native/opennow-streamer/Cargo.toml --locked \
             -p opennow-streamer-platform-macos -p opennow-streamer-protocol -p opennow-streamer-ffi
       - name: Configure and build Qt native release
+        if: runner.os == 'macOS'
         shell: bash
         run: |
           cmake -S opennow-qt -B build/opennow-qt-release \
@@ -554,17 +444,20 @@ jobs:
             -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/SDL-install"
           cmake --build build/opennow-qt-release --parallel 3
       - name: Test Qt shell and embedded runtime offscreen
+        if: runner.os == 'macOS'
         shell: bash
         run: |
-          ctest --test-dir build/opennow-qt-release --output-on-failure --parallel 2 \
+          ctest --test-dir build/opennow-qt-release --output-on-failure --parallel 2 --no-tests=error -LE interactive-desktop \
             -R '^opennow-.*-tests$|^opennow-acceptance-verifier-help$|^qml-(desktop-route-(home|settings|stream)|fullscreen-.*stats-shortcut|desktop-stream-.*|streamer-event-contract)$'
       - name: Package unsigned macOS validation bundle
+        if: runner.os == 'macOS'
         shell: bash
         run: |
           mkdir -p build/qt-packages
           cpack --config build/opennow-qt-release/CPackConfig.cmake \
             -G ZIP -B build/qt-packages
       - name: Test relocated bundle without development libraries
+        if: runner.os == 'macOS'
         shell: bash
         run: |
           packages=(build/qt-packages/OpenNOW-Qt-*-Darwin-arm64.zip)
@@ -641,6 +534,7 @@ jobs:
               env={**os.environ, "QT_QPA_PLATFORM": "cocoa"}, check=True, timeout=30)
           PY
       - name: Upload macOS validation package
+        if: runner.os == 'macOS'
         uses: actions/upload-artifact@v4
         with:
           name: opennow-macos-arm64-validation
@@ -651,8 +545,8 @@ jobs:
 
   artifact-inventory:
     name: Verify complete unsigned artifact set
-    needs: [metadata, localization, validate, windows-build]
-    runs-on: ubuntu-24.04
+    needs: [metadata, packages]
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     env:
       RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
       BUILD_CHANNEL: ${{ inputs.channel }}
