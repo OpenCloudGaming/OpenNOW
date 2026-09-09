@@ -1447,6 +1447,9 @@ fn chroma_format(format: VideoPixelFormat) -> crate::VideoChromaFormat {
 mod tests {
     use super::*;
     use crate::{VideoChromaFormat, VideoChromaSiting, VideoColorMatrix};
+    use ::windows::Win32::Graphics::Direct3D11::{
+        D3D11_CPU_ACCESS_READ, D3D11_MAP_READ, D3D11_MAPPED_SUBRESOURCE, D3D11_USAGE_STAGING,
+    };
     use ::windows::Win32::Graphics::Dxgi::Common::{
         DXGI_COLOR_SPACE_YCBCR_FULL_G22_LEFT_P709, DXGI_COLOR_SPACE_YCBCR_FULL_GHLG_TOPLEFT_P2020,
         DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P709,
@@ -1725,6 +1728,157 @@ mod tests {
             Some(BackendEvent::QueueOverflow(Subsystem::VideoDecode))
         );
         assert!(events.try_pop().is_none());
+    }
+
+    #[test]
+    #[ignore = "requires a hardware HEVC Main44410 MFT and Y410-to-RGB10A2 video processing"]
+    fn hevc_444_hardware_decode_and_conversion_preserve_precision_and_chroma() {
+        let _runtime = EmbeddedMediaRuntime::initialize().expect("Media Foundation");
+        let mut device = None;
+        let mut context = None;
+        unsafe {
+            D3D11CreateDevice(
+                None::<&IDXGIAdapter>,
+                D3D_DRIVER_TYPE_HARDWARE,
+                HMODULE::default(),
+                D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+                Some(&[D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0]),
+                D3D11_SDK_VERSION,
+                Some(&mut device),
+                None,
+                Some(&mut context),
+            )
+            .expect("D3D11 hardware device");
+        }
+        let device = device.unwrap();
+        let context = context.unwrap();
+        let format = VideoFormat {
+            codec: crate::VideoCodec::H265,
+            width: 1920,
+            height: 1080,
+            pixel_format: VideoPixelFormat::Y410,
+            chroma_format: crate::VideoChromaFormat::Cs444,
+            ..color_test_format()
+        };
+        let mut resources = unsafe {
+            AdoptedResources::new(
+                AdoptedD3d11Context {
+                    device: device.as_raw(),
+                    immediate_context: context.as_raw(),
+                },
+                format,
+            )
+        }
+        .expect("adopt D3D11 hardware device");
+        for restart in 0..3 {
+            resources.reset_decoder_views();
+            let mut decoder = Decoder::new(&resources, format, WindowsDecoderMode::Hardware)
+                .expect("configure hardware HEVC Main44410 decoder");
+            let frame = decoder
+                .probe_frame(include_bytes!(
+                    "../../fixtures/probe/hevc-y410-precision.hevc"
+                ))
+                .expect("decode lossless Main44410 precision access unit");
+            assert_eq!(frame.format.pixel_format, VideoPixelFormat::Y410);
+            assert_eq!(frame.format.chroma_format, crate::VideoChromaFormat::Cs444);
+            assert_eq!(frame.format.pixel_format.bit_depth(), 10);
+            assert_eq!(frame.format.transfer_function, VideoTransferFunction::Sdr);
+            let mut input_description = D3D11_TEXTURE2D_DESC::default();
+            unsafe {
+                frame.texture.GetDesc(&mut input_description);
+            }
+            assert_eq!(input_description.Format, DXGI_FORMAT_Y410);
+            let recorded = resources
+                .record(0, &frame)
+                .expect("convert actual Y410 decoder surface");
+            assert_eq!(recorded.texture_format, D3d11TextureFormat::Rgb10A2);
+            assert_eq!(recorded.color_space, D3d11ColorSpace::Sdr709);
+            let output = resources.processor.as_ref().unwrap().slots[0]
+                .as_ref()
+                .unwrap()
+                .texture
+                .clone();
+            assert_eq!(recorded.texture, output.as_raw());
+            let mut description = D3D11_TEXTURE2D_DESC::default();
+            unsafe {
+                output.GetDesc(&mut description);
+            }
+            assert_eq!(description.Format, DXGI_FORMAT_R10G10B10A2_UNORM);
+            description.Usage = D3D11_USAGE_STAGING;
+            description.BindFlags = 0;
+            description.CPUAccessFlags = D3D11_CPU_ACCESS_READ.0 as u32;
+            let mut staging = None;
+            unsafe {
+                device
+                    .CreateTexture2D(&description, None, Some(&mut staging))
+                    .unwrap();
+            }
+            let staging = staging.unwrap();
+            let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
+            let pixels = unsafe {
+                context.CopyResource(&staging, &output);
+                context
+                    .Map(&staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped))
+                    .unwrap();
+                let gray = std::slice::from_raw_parts(mapped.pData.cast::<u32>(), 877).to_vec();
+                let chroma = std::slice::from_raw_parts(
+                    mapped
+                        .pData
+                        .cast::<u8>()
+                        .add(mapped.RowPitch as usize * 64)
+                        .cast::<u32>(),
+                    1920,
+                )
+                .to_vec();
+                context.Unmap(&staging, 0);
+                (gray, chroma)
+            };
+            let mut levels = std::collections::HashSet::new();
+            for (index, pixel) in pixels.0.iter().copied().enumerate() {
+                let expected = (index as f64 * 1023.0 / 876.0).round() as i32;
+                levels.insert(pixel & 1023);
+                for shift in [0, 10, 20] {
+                    let actual = ((pixel >> shift) & 1023) as i32;
+                    assert!(
+                        (actual - expected).abs() <= 2,
+                        "restart={restart} grayscale sample={index} channel={shift} actual={actual} expected={expected}"
+                    );
+                }
+            }
+            assert!(
+                levels.len() >= 800,
+                "restart={restart} retained only {} grayscale levels",
+                levels.len()
+            );
+            for (index, pixel) in pixels.1.iter().copied().enumerate() {
+                let y = (512.0 - 64.0) / 876.0;
+                let u = if index % 2 == 0 {
+                    -128.0 / 896.0
+                } else {
+                    128.0 / 896.0
+                };
+                let v = -u;
+                let expected = [
+                    y + 1.5748 * v,
+                    y - 0.1873242729 * u - 0.4681242729 * v,
+                    y + 1.8556 * u,
+                ];
+                for (channel, expected) in expected.into_iter().enumerate() {
+                    let expected = (expected * 1023.0_f64).round() as i32;
+                    let actual = ((pixel >> (channel * 10)) & 1023) as i32;
+                    assert!(
+                        (actual - expected).abs() <= 4,
+                        "restart={restart} chroma sample={index} channel={channel} actual={actual} expected={expected}"
+                    );
+                }
+            }
+            eprintln!(
+                "HEVC Main44410 hardware restart={restart}: actual Y410 -> RGB10A2, {} distinct gray levels, 1920 alternating chroma pixels verified",
+                levels.len()
+            );
+            drop(frame);
+            decoder.stop();
+        }
     }
 
     #[test]

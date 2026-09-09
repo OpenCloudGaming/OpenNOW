@@ -49,3 +49,21 @@ for file in *.hevc *.obu; do
     ffmpeg -v error -i "$file" -frames:v 1 -f null -
 done
 ```
+
+## Non-black hardware precision regression
+
+`hevc-y410-precision.hevc` is a separate lossless Main44410/RExt access unit for the explicit
+hardware regression, not a startup capability probe. The first 32 rows contain gray code values
+64 through 940, repeating every 877 pixels, with neutral chroma. Remaining rows have Y=512,
+alternating U=384/640 and V=640/384 at every pixel. All 6,220,800 decoded Y/U/V samples were
+verified against this source using FFmpeg software decoding. The hardware test allows two RGB
+code values of error for the ramp and four for the chroma matrix conversion; it does not allow
+an 8-bit or chroma-subsampled result.
+
+```sh
+ffmpeg -hide_banner -loglevel error -f lavfi \
+    -i "nullsrc=size=1920x1080:rate=60,format=yuv444p10le,geq=lum='if(lt(Y,32),64+mod(X,877),512)':cb='if(lt(Y,32),512,if(mod(X,2),640,384))':cr='if(lt(Y,32),512,if(mod(X,2),384,640))'" \
+    -frames:v 1 -c:v libx265 -preset ultrafast \
+    -x265-params 'log-level=error:pools=1:frame-threads=1:info=0:keyint=60:bframes=0:repeat-headers=1:lossless=1:colorprim=bt709:transfer=bt709:colormatrix=bt709:chromaloc=0' \
+    -f hevc -y hevc-y410-precision.hevc
+```

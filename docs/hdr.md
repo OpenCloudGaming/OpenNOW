@@ -35,11 +35,12 @@ continues to select 10-bit 4:2:0 for that session without rewriting the saved SD
 - macOS requests VideoToolbox x444 output only after a hardware-required Main44410 fixture
   decodes and completes Metal conversion. A codec-wide HEVC capability is not sufficient.
 - Windows advertises 4:4:4 only if an installed hardware MFT decodes the corresponding
-  AYUV/Y410 fixture and the embedded video processor converts the actual output. Microsoft's
-  built-in HEVC decoder documents Main/Main10 4:2:0 output only. These probes do not add
-  range-extension support to that decoder, and a GPU's 4:4:4 profile alone does not make it
-  available through Media Foundation. A separate native decoder path is still required for
-  Windows GPUs whose installed MFT cannot expose 4:4:4.
+  AYUV/Y410 fixture and the embedded video processor converts the actual output. Older
+  decoder documentation describes only Main/Main10 4:2:0, but the installed
+  `HEVCVideoExtension` on an RTX 3080 successfully decoded the Main44410 fixture through
+  D3D11 during validation. D3D12-on-11 profile availability differed on that same device.
+  Neither a codec-wide capability nor the GPU model substitutes for the exact runtime probe;
+  an installed decoder that cannot expose the profile remains unsupported.
 
 Platform profile and conversion tests are not evidence of a successful GFN session or an HDR
 display's output. The exact GPU, driver, decoder, service tier, and compositor must support

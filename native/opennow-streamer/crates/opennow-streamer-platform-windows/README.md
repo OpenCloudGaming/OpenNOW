@@ -91,12 +91,15 @@ HEVC Video Extensions, in addition to a compatible GPU and driver. The app does 
 separate Windows HEVC decoder. An installed extension alone does not prove that decoder
 activation or D3D11 configuration succeeds.
 
-Microsoft's [HEVC decoder contract](https://learn.microsoft.com/en-us/windows/win32/medfound/h-265---hevc-video-decoder)
-documents Main/Main10 4:2:0 and NV12/P010 output, not RExt 4:4:4. A compatible GPU alone does not
-add AYUV/Y410 to that MFT. HEVC 4:4:4 is available only when both the GPU and the installed MFT
-actually decode the exact 4:4:4 format and the embedded converter accepts it; otherwise the probe
-reports false with its failure stage. AV1 4:4:4 and HDR 4:4:4 are not advertised. This crate does
-not currently bundle an alternative FFmpeg or NVDEC decoder for RExt.
+Microsoft's older [HEVC decoder documentation](https://learn.microsoft.com/en-us/windows/win32/medfound/h-265---hevc-video-decoder)
+lists Main/Main10 4:2:0 and NV12/P010, but that is not an exhaustive description of current
+HEVCVideoExtension MFTs. On an RTX3080 with driver 32.0.16.1047, the D3D11 path decoded actual
+AYUV and Main44410/Y410 access units and completed embedded conversion; the same device's
+D3D12-backed path rejected 4:4:4. Main44410 initially negotiated provisional NV12 before
+producing Y410 after the sequence header. Runtime probing of the selected API, GPU, installed
+MFT, actual decoded texture, and converter is authoritative; neither old documentation nor
+a GPU model name alone establishes support. Unsupported combinations report their failure stage.
+AV1 4:4:4 and HDR 4:4:4 are not advertised. No alternative FFmpeg or NVDEC decoder is bundled.
 
 When Qt disables H.265, `%APPDATA%\OpenNOW\diagnostics\native-streamer.log` records
 `Windows hardware decoder probe failed` with `codec=H.265` and the decoder error, even if H.264
@@ -173,5 +176,15 @@ cargo run --manifest-path native/opennow-streamer/crates/opennow-streamer-platfo
 On a Windows GPU machine, the example prints D3D11 and D3D12-backed capability results and the
 specific failures for unsupported profiles. The Windows-only unit tests exercise Media Foundation
 metadata and D3D11 processing; cross-target `cargo check` compiles but does not execute them.
+
+The explicit hardware precision regression decodes a lossless Main44410/RExt fixture, checks
+the actual Y410 decoder surface, converts it through the embedded video processor, and reads
+back the test-only RGB10A2 target. It verifies at least 800 distinct gray levels, every sample
+of an 877-level gray ramp, and 1920 alternating one-pixel chroma samples across three decoder
+restarts. It has no unsupported-hardware skip once explicitly selected:
+
+```sh
+cargo test --manifest-path native/opennow-streamer/Cargo.toml -p opennow-streamer-platform-windows hevc_444_hardware_decode_and_conversion_preserve_precision_and_chroma -- --ignored --nocapture --test-threads=1
+```
 
 The cross-target checks validate the Win32 bindings for x64 and ARM64. Hardware decode, presentation, audio output, device removal, and endpoint switching still require tests on real Windows hardware.
