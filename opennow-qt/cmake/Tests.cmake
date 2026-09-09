@@ -355,7 +355,7 @@ if(BUILD_TESTING)
         add_test(NAME opennow-macpointer-native-tests
             COMMAND opennow-macpointer-tests nativeCocoaCaptureRestoresCursor -o -,txt)
         set_tests_properties(opennow-macpointer-native-tests PROPERTIES
-            ENVIRONMENT "QT_QPA_PLATFORM=cocoa" RUN_SERIAL TRUE TIMEOUT 30)
+            ENVIRONMENT "QT_QPA_PLATFORM=cocoa" RUN_SERIAL TRUE TIMEOUT 30 LABELS "ci-unit")
     endif()
 
     qt_add_executable(opennow-nativestreamruntime-tests

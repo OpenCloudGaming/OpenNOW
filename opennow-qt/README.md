@@ -8,18 +8,24 @@ and is the start of the shell-neutral application core. See
 ## CI checks and manual builds
 
 Pull requests and pushes to `dev` or `main` run workflow lint, packaging-contract
-tests, localization validation, Rust format/lint/tests, QML syntax checks, and the
-`ci-unit` Qt tests on Linux x64. The Qt check compiles only the
+tests and localization validation, followed by a native test matrix for Linux x64,
+Windows x64, and macOS ARM64. Each platform must pass Rust format/lint/tests, QML
+syntax checks, and the `ci-unit` Qt tests. The Qt check compiles only the
 `opennow-ci-unit-tests` target, not the application or the release streamer with
 bundled FFmpeg. Rust test binaries and the SDL3 test dependency still need compiling;
 Rust, Qt, and SDL caches reduce repeated work.
+General-purpose check and package jobs use Blacksmith runners. The isolated
+release-signing job remains on `opennow-release-signer`.
 
-Full application builds, embedded-runtime/QML acceptance tests, Windows/macOS/ARM64
-platform validation, and package creation run only on manual dispatch. Automatic
-checks do not prove those platform-specific or full-application paths work; run a
-manual build before shipping changes that touch them. Windows and Linux packages
-share one four-platform matrix; macOS has a separate package job because its app
-bundle, relocation, and native test commands differ.
+Full application builds, embedded-runtime/QML acceptance tests, Linux/Windows ARM64
+builds, and package creation run only on manual dispatch. Automatic checks do not
+prove those full-application or ARM64 cross-platform paths work; run a manual build
+before shipping changes that touch them. All five package platforms share one
+matrix, including macOS; platform-specific steps handle its app bundle and relocation.
+
+Required status names are `linux-x64`, `windows-x64`, and `macos-arm64`. Keep all
+three required in the repository's branch rules. Each also fails if shared checks
+fail or are cancelled, and manual packaging waits for every platform to pass.
 
 To run the test-only Qt suite locally after configuring a Debug build:
 
@@ -194,7 +200,7 @@ so it can load outside the build tree.
 The app explicitly links Qt Svg so macdeployqt includes the SVG image plugin used
 by the QML icons; the relocated-bundle check requires that plugin to be present.
 
-The manual `macos-package` job builds and tests the native Apple Silicon
+The manual `macos-arm64` package matrix entry builds and tests the native Apple Silicon
 stack, then checks a relocated ZIP with the development dependencies hidden.
 These are unsigned validation artifacts, not notarized releases, and are not
 part of the Linux/Windows nightly inventory. Offscreen tests cover shell and FFI

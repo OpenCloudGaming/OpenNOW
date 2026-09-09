@@ -9,7 +9,7 @@ permissions:
 jobs:
   contracts:
     name: Workflow, packaging contracts, and localization
-    runs-on: ubuntu-24.04
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -34,76 +34,3 @@ jobs:
         run: |
           npm run locales:check
           node --test scripts/check-translations.test.mjs
-
-  unit-tests:
-    name: Linux Rust and Qt unit tests
-    runs-on: blacksmith-4vcpu-ubuntu-2404
-    timeout-minutes: 30
-    env:
-      CARGO_TERM_COLOR: always
-      CARGO_BUILD_JOBS: "4"
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy, rustfmt
-      - name: Check Rust formatting
-        run: |
-          cargo fmt --manifest-path native/opennow-core/Cargo.toml -- --check
-          cargo fmt --manifest-path native/opennow-streamer/Cargo.toml --all -- --check
-      - name: Install test dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            clang libclang-dev libasound2-dev libdbus-1-dev libdrm-dev libegl1-mesa-dev libgl1-mesa-dev \
-            libpulse-dev libsecret-1-dev libva-dev libvulkan-dev libwayland-dev \
-            libx11-dev libxcb-cursor0 libxcb-icccm4 libxcb-keysyms1 libxcursor-dev libxext-dev libxfixes-dev \
-            libxi-dev libxkbcommon-dev libxkbcommon-x11-0 libxrandr-dev libxrender-dev libxss-dev \
-            mesa-vulkan-drivers nasm ninja-build pkg-config wayland-protocols xvfb
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
-        with:
-          key: qt-checks-linux-x64
-          cache-bin: false
-          workspaces: |
-            native/opennow-core -> target
-            native/opennow-streamer -> target
-      - name: Lint Rust
-        run: |
-          cargo clippy --locked --manifest-path native/opennow-core/Cargo.toml --all-targets -- -D warnings
-          cargo clippy --locked --manifest-path native/opennow-streamer/Cargo.toml --workspace --all-targets -- -D warnings
-      - name: Test Rust
-        run: |
-          cargo test --locked --manifest-path native/opennow-core/Cargo.toml
-          cargo test --locked --manifest-path native/opennow-streamer/Cargo.toml --workspace
-      - name: Install Qt
-        uses: jurplel/install-qt-action@v4
-        with:
-          version: "6.8.3"
-          host: linux
-          target: desktop
-          arch: linux_gcc_64
-          modules: qtmultimedia qtshadertools
-          cache: true
-          cache-key-prefix: qt-target-linux-x64
-      - uses: hendrikmuhs/ccache-action@5ebbd400eff9e74630f759d94ddd7b6c26299639
-        with:
-          key: qt-checks-linux-x64
-          max-size: 1G
-      - name: Build and cache SDL3 test dependency
-        uses: ./.github/actions/sdl3
-        with:
-          version: release-3.2.20
-          target-arch: x64
-          parallel: "4"
-      - name: Check QML syntax
-        shell: bash
-        run: find opennow-qt/qml -name '*.qml' -print0 | xargs -0 -n1 "$QT_ROOT_DIR/bin/qmlformat" > /dev/null
-      - name: Compile Qt unit tests only
-        run: |
-          cmake -S opennow-qt -B build/opennow-qt-checks -G Ninja \
-            -DCMAKE_BUILD_TYPE=Debug \
-            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
-            -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/SDL-install"
-          cmake --build build/opennow-qt-checks --target opennow-ci-unit-tests --parallel 4
-      - name: Run Qt unit tests
-        run: ctest --test-dir build/opennow-qt-checks --output-on-failure --no-tests=error -L ci-unit --parallel 4

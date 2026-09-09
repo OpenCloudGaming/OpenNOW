@@ -31,7 +31,7 @@ env:
 jobs:
   preflight:
     name: release-preflight
-    runs-on: ubuntu-24.04
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     outputs:
       source_sha: ${{ steps.source.outputs.source_sha }}
     steps:

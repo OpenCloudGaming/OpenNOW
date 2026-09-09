@@ -1,5 +1,7 @@
 from pathlib import Path
+import os
 import re
+import subprocess
 import unittest
 
 
@@ -16,11 +18,11 @@ class CIWorkflowTest(unittest.TestCase):
     def test_automatic_events_run_checks_without_packages(self):
         ci = (WORKFLOWS / "qt-ci.yml").read_text()
         entries = jobs(ci)
-        self.assertEqual(set(entries), {"checks", "build", "publish-nightly"})
-        self.assertIn("uses: ./.github/workflows/qt-checks.yml", entries["checks"])
-        self.assertNotIn("    if:", entries["checks"])
+        self.assertEqual(set(entries), {"contracts", "checks", "build", "publish-nightly"})
+        self.assertIn("uses: ./.github/workflows/qt-checks.yml", entries["contracts"])
+        self.assertNotIn("    if:", entries["contracts"])
         self.assertIn("    if: github.event_name == 'workflow_dispatch'\n", entries["build"])
-        self.assertIn("    needs: checks\n", entries["build"])
+        self.assertIn("    needs: [contracts, checks]\n", entries["build"])
         self.assertIn("uses: ./.github/workflows/qt-build.yml", entries["build"])
         self.assertIn("  pull_request:\n", ci)
         self.assertIn("  push:\n", ci)
@@ -28,37 +30,59 @@ class CIWorkflowTest(unittest.TestCase):
 
     def test_manual_packages_cannot_bypass_dispatch_gate(self):
         entries = jobs((WORKFLOWS / "qt-build.yml").read_text())
-        self.assertEqual(set(entries), {"metadata", "packages", "macos-package", "artifact-inventory"})
+        self.assertEqual(set(entries), {"metadata", "packages", "artifact-inventory"})
         self.assertIn("    if: github.event_name == 'workflow_dispatch'\n", entries["metadata"])
-        for name in ("packages", "macos-package"):
-            self.assertIn("    needs: metadata\n", entries[name])
-            self.assertNotIn("always()", entries[name])
+        self.assertIn("    needs: metadata\n", entries["packages"])
+        self.assertNotIn("always()", entries["packages"])
         self.assertIn("    needs: [metadata, packages]\n", entries["artifact-inventory"])
         self.assertIn("        if: inputs.upload_complete\n", entries["artifact-inventory"])
 
-    def test_windows_and_linux_share_one_packaging_matrix(self):
+    def test_all_platforms_share_one_packaging_matrix(self):
         entries = jobs((WORKFLOWS / "qt-build.yml").read_text())
         labels = re.findall(r"^          - label: (.+)$", entries["packages"], re.MULTILINE)
-        self.assertCountEqual(labels, ["linux-x64", "linux-arm64", "windows-x64", "windows-arm64"])
+        self.assertCountEqual(labels, ["linux-x64", "linux-arm64", "windows-x64", "windows-arm64", "macos-arm64"])
         self.assertIn("name: Package ${{ matrix.label }}", entries["packages"])
         self.assertIn("Create Linux AppImage", entries["packages"])
-        self.assertIn("Test relocated bundle without development libraries", entries["macos-package"])
+        self.assertIn("Test relocated bundle without development libraries", entries["packages"])
+
+    def test_all_native_platform_checks_keep_required_status_names(self):
+        checks = jobs((WORKFLOWS / "qt-ci.yml").read_text())["checks"]
+        labels = re.findall(r"^          - label: (.+)$", checks, re.MULTILINE)
+        self.assertCountEqual(labels, ["linux-x64", "windows-x64", "macos-arm64"])
+        self.assertIn("    name: ${{ matrix.label }}\n", checks)
+        self.assertIn("    runs-on: ${{ matrix.os }}\n", checks)
+        self.assertIn("      fail-fast: false\n", checks)
+        self.assertIn("uses: ./.github/actions/qt-unit-tests", checks)
+        self.assertIn("os: blacksmith-4vcpu-windows-2025", checks)
+        self.assertIn("os: blacksmith-6vcpu-macos-15", checks)
+        self.assertNotIn("continue-on-error", checks)
+
+    def test_required_platform_checks_fail_when_shared_checks_do_not_succeed(self):
+        checks = jobs((WORKFLOWS / "qt-ci.yml").read_text())["checks"]
+        self.assertIn("    needs: contracts\n    if: always()\n", checks)
+        self.assertIn("CONTRACTS_RESULT: ${{ needs.contracts.result }}", checks)
+        script = re.search(r"        run: (test .+)\n", checks)[1]
+        for result in ("success", "failure", "cancelled", "skipped", ""):
+            with self.subTest(result=result):
+                process = subprocess.run(["bash", "-c", script], env={**os.environ, "CONTRACTS_RESULT": result})
+                self.assertEqual(process.returncode == 0, result == "success")
 
     def test_checks_compile_tests_without_packaging_or_runtime_targets(self):
-        checks = (WORKFLOWS / "qt-checks.yml").read_text()
-        entries = jobs(checks)
-        self.assertEqual(set(entries), {"contracts", "unit-tests"})
-        self.assertIn("runs-on: ubuntu-24.04", entries["contracts"])
-        self.assertIn("runs-on: blacksmith-4vcpu-ubuntu-2404", entries["unit-tests"])
+        contracts = (WORKFLOWS / "qt-checks.yml").read_text()
+        checks = (ROOT / ".github/actions/qt-unit-tests/action.yml").read_text()
+        entries = jobs(contracts)
+        self.assertEqual(set(entries), {"contracts"})
+        self.assertIn("runs-on: blacksmith-2vcpu-ubuntu-2404", entries["contracts"])
         for forbidden in ("matrix:", "cpack ", "linuxdeploy", "upload-artifact", "--release",
                           "uses: ./.github/workflows/qt-build.yml"):
             self.assertNotIn(forbidden, checks)
-        self.assertIn("--target opennow-ci-unit-tests --parallel 4", checks)
+        self.assertIn('--target opennow-ci-unit-tests --parallel "$BUILD_PARALLEL"', checks)
         self.assertIn("--no-tests=error -L ci-unit", checks)
         self.assertIn("cargo clippy --locked", checks)
         self.assertIn("cargo test --locked", checks)
         self.assertIn("--workspace --all-targets -- -D warnings", checks)
         self.assertIn('"$QT_ROOT_DIR/bin/qmlformat"', checks)
+        self.assertIn("ensure-windows-test-desktop.ps1", checks)
         cmake = (ROOT / "opennow-qt/cmake/Tests.cmake").read_text()
         targets = re.search(r"set\(OPENNOW_CI_UNIT_TEST_TARGETS\s+(.*?)\)", cmake, re.DOTALL)[1].split()
         self.assertEqual(len(targets), 17)
@@ -68,6 +92,17 @@ class CIWorkflowTest(unittest.TestCase):
             self.assertNotIn(forbidden, targets)
         self.assertIn("add_custom_target(opennow-ci-unit-tests DEPENDS ${OPENNOW_CI_UNIT_TEST_TARGETS})", cmake)
         self.assertIn('set_tests_properties(${OPENNOW_CI_UNIT_TEST_TARGETS} PROPERTIES LABELS "ci-unit")', cmake)
+        self.assertIn('ENVIRONMENT "QT_QPA_PLATFORM=cocoa" RUN_SERIAL TRUE TIMEOUT 30 LABELS "ci-unit"', cmake)
+
+    def test_general_purpose_runners_are_blacksmith(self):
+        for workflow in WORKFLOWS.glob("*.yml"):
+            runners = re.findall(r"^\s+(?:runs-on|os|runner): (.+)$", workflow.read_text(), re.MULTILINE)
+            for runner in runners:
+                with self.subTest(workflow=workflow.name, runner=runner):
+                    self.assertTrue(
+                        runner.startswith(("blacksmith-", "${{"))
+                        or runner == "[self-hosted, opennow-release-signer]",
+                    )
 
     def test_publishing_remains_explicitly_opt_in_after_build(self):
         ci = (WORKFLOWS / "qt-ci.yml").read_text()
