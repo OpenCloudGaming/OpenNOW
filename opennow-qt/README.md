@@ -40,6 +40,9 @@ See the repository's `AGENTS.md` for the full ownership map and invariants.
 
 ## Remote streaming diagnostics
 
+For Raspberry Pi 4 and Pi 5, see the [Raspberry Pi OS requirements and hardware
+acceptance checklist](../docs/raspberry-pi.md).
+
 Settings → About → Copy diagnostics exports a bounded report containing both
 `native-streamer.log` and `qt-native.log` from the core's diagnostics directory
 (`%APPDATA%/OpenNOW/diagnostics` on Windows, or `OPENNOW_DATA_DIR/diagnostics`).

@@ -114,6 +114,10 @@ jobs:
             libwayland-dev libxcursor-dev libxext-dev libxfixes-dev libxi-dev \
             libxrandr-dev libxrender-dev libxss-dev make nasm pkg-config wayland-protocols
 
+      - name: Install ARM64 V4L2 request dependencies
+        if: matrix.arch == 'arm64'
+        run: sudo apt-get install -y libudev-dev
+
       - name: Cache Rust dependencies and build artifacts
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:

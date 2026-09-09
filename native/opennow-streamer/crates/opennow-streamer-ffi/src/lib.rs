@@ -201,8 +201,9 @@ pub enum OpenNowStreamerStatus {
     Panic = 255,
 }
 
-pub const OPENNOW_STREAMER_GRAPHICS_CONTEXT_VERSION: u32 = 2;
+pub const OPENNOW_STREAMER_GRAPHICS_CONTEXT_VERSION: u32 = 3;
 pub const OPENNOW_STREAMER_GRAPHICS_CAP_VULKAN_DMABUF_IMPORT: u32 = 1;
+pub const OPENNOW_STREAMER_GRAPHICS_CAP_VULKAN_DMABUF_BUFFER_IMPORT: u32 = 2;
 pub const OPENNOW_STREAMER_RENDER_COMMAND_VERSION: u32 = 1;
 pub const OPENNOW_STREAMER_GRAPHICS_API_D3D11: u32 = 1;
 pub const OPENNOW_STREAMER_GRAPHICS_API_VULKAN: u32 = 2;
@@ -592,7 +593,9 @@ fn graphics_context(
         OPENNOW_STREAMER_GRAPHICS_API_METAL => GraphicsApi::Metal,
         _ => return Err(OpenNowStreamerStatus::InvalidConfig),
     };
-    if context.enabled_capabilities & !OPENNOW_STREAMER_GRAPHICS_CAP_VULKAN_DMABUF_IMPORT != 0
+    let supported_capabilities = OPENNOW_STREAMER_GRAPHICS_CAP_VULKAN_DMABUF_IMPORT
+        | OPENNOW_STREAMER_GRAPHICS_CAP_VULKAN_DMABUF_BUFFER_IMPORT;
+    if context.enabled_capabilities & !supported_capabilities != 0
         || (api != GraphicsApi::Vulkan && context.enabled_capabilities != 0)
     {
         return Err(OpenNowStreamerStatus::InvalidConfig);
@@ -606,6 +609,9 @@ fn graphics_context(
         queue_family_index: context.queue_family_index,
         vulkan_dmabuf_import_enabled: context.enabled_capabilities
             & OPENNOW_STREAMER_GRAPHICS_CAP_VULKAN_DMABUF_IMPORT
+            != 0,
+        vulkan_dmabuf_buffer_import_enabled: context.enabled_capabilities
+            & OPENNOW_STREAMER_GRAPHICS_CAP_VULKAN_DMABUF_BUFFER_IMPORT
             != 0,
     })
 }
@@ -1702,7 +1708,20 @@ mod tests {
                 .unwrap()
                 .vulkan_dmabuf_import_enabled
         );
-        context.enabled_capabilities = 2;
+        assert!(
+            !graphics_context(context)
+                .unwrap()
+                .vulkan_dmabuf_buffer_import_enabled
+        );
+        context.enabled_capabilities = OPENNOW_STREAMER_GRAPHICS_CAP_VULKAN_DMABUF_BUFFER_IMPORT;
+        let buffer_only = graphics_context(context).unwrap();
+        assert!(buffer_only.vulkan_dmabuf_buffer_import_enabled);
+        assert!(!buffer_only.vulkan_dmabuf_import_enabled);
+        context.enabled_capabilities |= OPENNOW_STREAMER_GRAPHICS_CAP_VULKAN_DMABUF_IMPORT;
+        let both = graphics_context(context).unwrap();
+        assert!(both.vulkan_dmabuf_import_enabled);
+        assert!(both.vulkan_dmabuf_buffer_import_enabled);
+        context.enabled_capabilities = 4;
         assert_eq!(
             graphics_context(context),
             Err(OpenNowStreamerStatus::InvalidConfig)
@@ -1713,12 +1732,19 @@ mod tests {
             graphics_context(context),
             Err(OpenNowStreamerStatus::InvalidConfig)
         );
-        context = ffi_graphics_context();
-        context.version = 1;
+        context.enabled_capabilities = OPENNOW_STREAMER_GRAPHICS_CAP_VULKAN_DMABUF_BUFFER_IMPORT;
         assert_eq!(
             graphics_context(context),
             Err(OpenNowStreamerStatus::InvalidConfig)
         );
+        context = ffi_graphics_context();
+        for version in [1, 2] {
+            context.version = version;
+            assert_eq!(
+                graphics_context(context),
+                Err(OpenNowStreamerStatus::InvalidConfig)
+            );
+        }
         context = ffi_graphics_context();
         context.struct_size -= 1;
         assert_eq!(

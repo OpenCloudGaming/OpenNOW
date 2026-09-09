@@ -67,6 +67,15 @@ Shutdown invalidates the context even if resource retirement returns `OPENNOW_ST
 
 `enabled_capabilities` is an explicit logical-device contract, not physical-device discovery. Set `OPENNOW_STREAMER_GRAPHICS_CAP_VULKAN_DMABUF_IMPORT` only when the host created the device with external-memory, external-memory-fd, DMA-BUF, and DRM-modifier support enabled, including their prerequisites. Unknown bits and capabilities on non-Vulkan contexts are rejected; a zero mask disables DMA-BUF import while leaving explicitly CPU-backed NV12 presentation available.
 
+Graphics context version 3 adds the independent
+`OPENNOW_STREAMER_GRAPHICS_CAP_VULKAN_DMABUF_BUFFER_IMPORT` capability. Set it only
+for Vulkan 1.1+ instances/devices with external-memory-fd, DMA-BUF, and
+`VK_EXT_queue_family_foreign` enabled on the logical device. The Pi SAND path
+requires this capability, queries external TRANSFER_SRC buffer import support,
+and transfers ownership from/to the foreign decoder around its GPU copy. It does
+not require SAND image-modifier sampling support. Setting the image-import bit
+alone does not enable this path; zero remains a safe default for both bits.
+
 Qt requests the extensions through `QT_VULKAN_DEVICE_EXTENSIONS` before any window/device creation. Qt 6.8's Vulkan backend enables each requested extension that the selected physical device advertises. The host contract checks both that this startup request was installed and that every non-core extension is requested and supported on the selected device, with Vulkan 1.1 or newer on the instance and physical device. Vulkan 1.1 provides the external-memory, bind-memory, memory-requirements, sampler-YCbCr, and maintenance prerequisites; the request also includes their extension names. `VK_KHR_image_format_list` must be enabled unless both instance and physical device provide Vulkan 1.2. Support is not inferred from advertisement alone. This contract applies to Qt-created devices, not arbitrary adopted devices.
 
 Embedded Linux sessions reject FFmpeg's independent-device Vulkan decoder before opening it. Vulkan decode is available only through the ABI 5 shared owner described above. CUDA/NVDEC remains an explicit CPU-transfer backend, and downloaded/software frames carry CPU planes without foreign Vulkan metadata. No failed GPU import triggers readback in the embedded presenter.

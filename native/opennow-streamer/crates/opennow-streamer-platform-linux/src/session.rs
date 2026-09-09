@@ -505,6 +505,25 @@ fn queue_video_command(
     }
 }
 
+#[derive(Default)]
+struct ReferenceRecovery {
+    attempts_without_output: u8,
+}
+
+impl ReferenceRecovery {
+    fn try_recover(&mut self) -> bool {
+        if self.attempts_without_output >= 3 {
+            return false;
+        }
+        self.attempts_without_output += 1;
+        true
+    }
+
+    fn decoded_output(&mut self) {
+        self.attempts_without_output = 0;
+    }
+}
+
 fn run_video_worker(
     config: SessionConfig,
     state: Arc<Mutex<LifecycleState>>,
@@ -531,24 +550,32 @@ fn run_video_worker(
     // treating the following delta frame as startup input caused an avoidable
     // backend fallback and a large visible hitch.
     let mut need_keyframe = true;
+    let mut reference_recovery = ReferenceRecovery::default();
     emit(&events, BackendEvent::NeedKeyframe);
 
     let mut active_format = config.stream_format;
     let mut active_generation = 0;
     loop {
-        let command = match commands.wait_pop(Duration::from_millis(100)) {
-            QueuePop::Item(command) => command,
-            QueuePop::TimedOut => continue,
-            QueuePop::Closed => break,
-        };
-        match command {
-            VideoCommand::Reconfigure { format, generation } => {
+        let poll_output = backend == DecoderBackend::V4l2 && config.codec == VideoCodec::H264;
+        let command =
+            match commands.wait_pop(Duration::from_millis(if poll_output { 5 } else { 100 })) {
+                QueuePop::Item(command) => Some(command),
+                QueuePop::TimedOut if poll_output => None,
+                QueuePop::TimedOut => continue,
+                QueuePop::Closed => break,
+            };
+        let frame = match command {
+            Some(VideoCommand::Reconfigure { format, generation }) => {
                 if generation < active_generation {
                     continue;
                 }
                 transition_state(&state, LifecycleState::Reconfiguring, &events);
-                if let Ok(frames) = flush_decoder(&mut decoder) {
-                    enqueue_frames(&decoded, &events, frames);
+                match flush_decoder(&mut decoder) {
+                    Ok(frames) => enqueue_frames(&decoded, &events, frames),
+                    Err(error) => emit(
+                        &events,
+                        BackendEvent::Error(format!("decoder reconfigure drain failed: {error}")),
+                    ),
                 }
                 decoded.clear();
                 match open_preferred_decoder(&config, format) {
@@ -577,12 +604,13 @@ fn run_video_worker(
                         return;
                     }
                 }
+                continue;
             }
-            VideoCommand::Decode {
+            Some(VideoCommand::Decode {
                 frame,
                 generation,
                 reset,
-            } => {
+            }) => {
                 if generation < active_generation {
                     continue;
                 }
@@ -614,59 +642,92 @@ fn run_video_worker(
                 if need_keyframe && !frame.keyframe {
                     continue;
                 }
-                match decode_frame(&mut decoder, &frame) {
-                    Ok(frames) => {
-                        need_keyframe = false;
-                        if let Some(format) = decoder.take_format_change() {
-                            active_format = format;
-                            emit(&events, BackendEvent::FormatChanged(format));
-                        }
-                        enqueue_frames(&decoded, &events, frames);
-                    }
-                    Err(error) => match open_fallback_decoder(&config, active_format, backend) {
-                        Ok((new_backend, mut new_decoder)) => {
-                            let reason = error.to_string();
-                            emit(
-                                &events,
-                                BackendEvent::DecoderChanged {
-                                    from: backend,
-                                    to: new_backend,
-                                    reason,
-                                },
-                            );
-                            backend = new_backend;
-                            if frame.keyframe {
-                                match decode_frame(&mut new_decoder, &frame) {
-                                    Ok(frames) => {
-                                        if let Some(format) = new_decoder.take_format_change() {
-                                            active_format = format;
-                                            emit(&events, BackendEvent::FormatChanged(format));
-                                        }
-                                        enqueue_frames(&decoded, &events, frames);
-                                    }
-                                    Err(fallback_error) => {
-                                        report_worker_error(&state, &events, fallback_error);
-                                        return;
-                                    }
-                                }
-                                need_keyframe = false;
-                            } else {
-                                need_keyframe = true;
-                                emit(&events, BackendEvent::NeedKeyframe);
-                            }
-                            decoder = new_decoder;
-                        }
-                        Err(_) => {
-                            report_worker_error(&state, &events, error);
-                            return;
-                        }
-                    },
-                }
+                Some(frame)
             }
+            None => None,
+        };
+        let result = if let Some(frame) = frame.as_ref() {
+            decode_frame(&mut decoder, frame)
+        } else {
+            poll_decoder(&mut decoder)
+        };
+        match result {
+            Ok(frames) => {
+                if frame.is_some() || !frames.is_empty() {
+                    need_keyframe = false;
+                }
+                if !frames.is_empty() {
+                    reference_recovery.decoded_output();
+                }
+                if let Some(format) = decoder.take_format_change() {
+                    active_format = format;
+                    emit(&events, BackendEvent::FormatChanged(format));
+                }
+                enqueue_frames(&decoded, &events, frames);
+            }
+            Err(error @ Error::ReferenceLost { .. }) => {
+                decoded.clear();
+                if !reference_recovery.try_recover() {
+                    report_worker_error(&state, &events, error);
+                    return;
+                }
+                drop(decoder);
+                match open_decoder(&config, active_format, backend) {
+                    Ok(new_decoder) => decoder = new_decoder,
+                    Err(error) => {
+                        report_worker_error(&state, &events, error);
+                        return;
+                    }
+                }
+                need_keyframe = true;
+                emit(&events, BackendEvent::NeedKeyframe);
+            }
+            Err(error) => match open_fallback_decoder(&config, active_format, backend) {
+                Ok((new_backend, mut new_decoder)) => {
+                    let reason = error.to_string();
+                    emit(
+                        &events,
+                        BackendEvent::DecoderChanged {
+                            from: backend,
+                            to: new_backend,
+                            reason,
+                        },
+                    );
+                    backend = new_backend;
+                    if let Some(frame) = frame.as_ref().filter(|frame| frame.keyframe) {
+                        match decode_frame(&mut new_decoder, frame) {
+                            Ok(frames) => {
+                                if let Some(format) = new_decoder.take_format_change() {
+                                    active_format = format;
+                                    emit(&events, BackendEvent::FormatChanged(format));
+                                }
+                                enqueue_frames(&decoded, &events, frames);
+                            }
+                            Err(fallback_error) => {
+                                report_worker_error(&state, &events, fallback_error);
+                                return;
+                            }
+                        }
+                        need_keyframe = false;
+                    } else {
+                        need_keyframe = true;
+                        emit(&events, BackendEvent::NeedKeyframe);
+                    }
+                    decoder = new_decoder;
+                }
+                Err(_) => {
+                    report_worker_error(&state, &events, error);
+                    return;
+                }
+            },
         }
     }
-    if let Ok(frames) = flush_decoder(&mut decoder) {
-        enqueue_frames(&decoded, &events, frames);
+    match flush_decoder(&mut decoder) {
+        Ok(frames) => enqueue_frames(&decoded, &events, frames),
+        Err(error) => emit(
+            &events,
+            BackendEvent::Error(format!("decoder shutdown drain failed: {error}")),
+        ),
     }
 }
 
@@ -851,6 +912,21 @@ fn open_decoder(
         DecoderBackend::V4l2 if config.codec == VideoCodec::H264 => {
             open_v4l2(format, config.v4l2_device.clone())
         }
+        #[cfg(feature = "ffmpeg")]
+        DecoderBackend::V4l2 if config.codec == VideoCodec::H265 => {
+            if !config.embedded_presentation || config.v4l2_device.is_some() {
+                return Err(Error::unavailable(
+                    Subsystem::V4l2,
+                    "HEVC request decode requires embedded Vulkan presentation and automatic media-device selection",
+                ));
+            }
+            crate::video::FfmpegDecoder::open(
+                config.codec,
+                format,
+                crate::video::FfmpegMode::V4l2Request,
+            )
+            .map(|decoder| Box::new(decoder) as Box<dyn VideoDecoder>)
+        }
         DecoderBackend::V4l2 => Err(Error::unavailable(
             Subsystem::V4l2,
             format!(
@@ -961,6 +1037,17 @@ fn decode_frame(
     )
 }
 
+fn poll_decoder(decoder: &mut Box<dyn VideoDecoder>) -> Result<Vec<DecodedVideoFrame>> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| decoder.poll())).unwrap_or_else(
+        |panic| {
+            Err(Error::backend(
+                Subsystem::Session,
+                format!("decoder panicked while polling: {}", panic_message(panic)),
+            ))
+        },
+    )
+}
+
 fn flush_decoder(decoder: &mut Box<dyn VideoDecoder>) -> Result<Vec<DecodedVideoFrame>> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| decoder.flush())).unwrap_or_else(
         |panic| {
@@ -1008,6 +1095,82 @@ fn emit(events: &EventQueue, event: BackendEvent) {
 
 #[cfg(test)]
 mod tests {
+    struct DelayedDecoder {
+        frame: Option<super::DecodedVideoFrame>,
+        reference_lost: bool,
+    }
+
+    impl super::VideoDecoder for DelayedDecoder {
+        fn decode(
+            &mut self,
+            _: &super::EncodedVideoFrame,
+        ) -> super::Result<Vec<super::DecodedVideoFrame>> {
+            Ok(Vec::new())
+        }
+
+        fn poll(&mut self) -> super::Result<Vec<super::DecodedVideoFrame>> {
+            if self.reference_lost {
+                return Err(super::Error::ReferenceLost {
+                    subsystem: super::Subsystem::V4l2,
+                    reason: "delayed capture error".to_owned(),
+                });
+            }
+            Ok(self.frame.take().into_iter().collect())
+        }
+
+        fn flush(&mut self) -> super::Result<Vec<super::DecodedVideoFrame>> {
+            Ok(Vec::new())
+        }
+
+        fn take_format_change(&mut self) -> Option<super::StreamFormat> {
+            None
+        }
+    }
+
+    #[test]
+    fn idle_poll_retrieves_delayed_output_and_preserves_reference_loss() {
+        let format = super::StreamFormat::video_default(2, 2).unwrap();
+        let mut decoder: Box<dyn super::VideoDecoder> = Box::new(DelayedDecoder {
+            frame: Some(super::DecodedVideoFrame {
+                format,
+                timestamp_us: 1234,
+                planes: Vec::new(),
+                dmabuf: None,
+                vulkan: None,
+            }),
+            reference_lost: false,
+        });
+        let input = super::EncodedVideoFrame::new(vec![1], 1234, true).unwrap();
+        assert!(
+            super::decode_frame(&mut decoder, &input)
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            super::poll_decoder(&mut decoder).unwrap()[0].timestamp_us,
+            1234
+        );
+        assert!(super::poll_decoder(&mut decoder).unwrap().is_empty());
+        decoder = Box::new(DelayedDecoder {
+            frame: None,
+            reference_lost: true,
+        });
+        assert!(matches!(
+            super::poll_decoder(&mut decoder),
+            Err(super::Error::ReferenceLost { .. })
+        ));
+    }
+
+    #[test]
+    fn reference_loss_recovery_is_bounded_until_decoded_output() {
+        let mut recovery = super::ReferenceRecovery::default();
+        for _ in 0..3 {
+            assert!(recovery.try_recover());
+        }
+        assert!(!recovery.try_recover());
+        recovery.decoded_output();
+        assert!(recovery.try_recover());
+    }
     use super::*;
 
     #[test]

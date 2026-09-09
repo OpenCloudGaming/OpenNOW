@@ -209,7 +209,34 @@ private slots:
                                         promoted, promoted));
         QVERIFY(!hasDmabufImportContract(QVersionNumber(1, 1), VK_API_VERSION_1_2,
                                          promoted, promoted));
-        QVERIFY(!dmabufImportEnabled(nullptr, VK_NULL_HANDLE));
+        QCOMPARE(enabledImportCapabilities(nullptr, VK_NULL_HANDLE), uint32_t(0));
+#else
+        QSKIP("Linux Vulkan capability contract");
+#endif
+    }
+
+    void linuxSandRequiresExplicitForeignBufferImportSupport()
+    {
+#if defined(Q_OS_LINUX) && QT_CONFIG(vulkan) && __has_include(<vulkan/vulkan.h>)
+        using namespace LinuxVulkanGraphics;
+        const QByteArrayList required = {"VK_KHR_external_memory_fd", "VK_EXT_external_memory_dma_buf",
+                                        "VK_EXT_queue_family_foreign"};
+        QVERIFY(hasDmabufBufferImportContract(QVersionNumber(1, 1), VK_API_VERSION_1_1,
+                                              required, required));
+        QVERIFY(!hasDmabufImportContract(QVersionNumber(1, 1), VK_API_VERSION_1_1,
+                                         required, required));
+        for (const auto &extension : required) {
+            auto missing = required;
+            missing.removeAll(extension);
+            QVERIFY(!hasDmabufBufferImportContract(QVersionNumber(1, 1), VK_API_VERSION_1_1,
+                                                   missing, required));
+            QVERIFY(!hasDmabufBufferImportContract(QVersionNumber(1, 1), VK_API_VERSION_1_1,
+                                                   required, missing));
+        }
+        QVERIFY(!hasDmabufBufferImportContract(QVersionNumber(1, 0), VK_API_VERSION_1_1,
+                                               required, required));
+        QVERIFY(!hasDmabufBufferImportContract(QVersionNumber(1, 1), VK_API_VERSION_1_0,
+                                               required, required));
 #else
         QSKIP("Linux Vulkan capability contract");
 #endif

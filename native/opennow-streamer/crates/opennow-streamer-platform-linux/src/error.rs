@@ -16,6 +16,11 @@ pub enum Subsystem {
 pub enum Error {
     #[error("decoded GPU frame is not ready")]
     FrameNotReady,
+    #[error("{subsystem:?} decoder reference was lost: {reason}")]
+    ReferenceLost {
+        subsystem: Subsystem,
+        reason: String,
+    },
     #[error("{subsystem:?} is unavailable: {reason}")]
     Unavailable {
         subsystem: Subsystem,

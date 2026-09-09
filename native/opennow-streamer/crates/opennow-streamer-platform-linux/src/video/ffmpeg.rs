@@ -21,6 +21,7 @@ pub(crate) enum FfmpegMode {
     Vulkan,
     Cuda,
     Vaapi,
+    V4l2Request,
     Software,
 }
 
@@ -30,6 +31,7 @@ impl FfmpegMode {
             Self::Vulkan => "FFmpeg Vulkan Video",
             Self::Cuda => "FFmpeg CUDA/NVDEC",
             Self::Vaapi => "FFmpeg VAAPI",
+            Self::V4l2Request => "FFmpeg V4L2 HEVC request",
             Self::Software => "FFmpeg software",
         }
     }
@@ -39,6 +41,7 @@ impl FfmpegMode {
             Self::Vulkan => Some(ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_VULKAN),
             Self::Cuda => Some(ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_CUDA),
             Self::Vaapi => Some(ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_VAAPI),
+            Self::V4l2Request => Some(ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_DRM),
             Self::Software => None,
         }
     }
@@ -110,6 +113,11 @@ impl FfmpegDecoder {
         shared_device: Option<Arc<crate::SharedVulkanDevice>>,
     ) -> Result<Self> {
         format.validate()?;
+        if mode == FfmpegMode::V4l2Request {
+            validate_request_profile(codec, format)?;
+            super::v4l2_request::probe()
+                .map_err(|reason| Error::unavailable(Subsystem::V4l2, reason))?;
+        }
         if (format.color_transfer != ColorTransfer::Sdr || format.pixel_format == PixelFormat::P010)
             && matches!(mode, FfmpegMode::Cuda | FfmpegMode::Software)
         {
@@ -136,6 +144,9 @@ impl FfmpegDecoder {
             (*raw).width = format.width as i32;
             (*raw).height = format.height as i32;
             (*raw).thread_count = if mode == FfmpegMode::Software { 0 } else { 1 };
+            if mode == FfmpegMode::V4l2Request {
+                (*raw).extra_hw_frames = 6;
+            }
         }
 
         let mut wanted_hw_format = None;
@@ -167,6 +178,11 @@ impl FfmpegDecoder {
                 })?;
             let mut device = ptr::null_mut();
             let mut options = ptr::null_mut();
+            if mode == FfmpegMode::V4l2Request {
+                unsafe {
+                    ffi::av_dict_set(&mut options, c"v4l2fmts".as_ptr(), c"NC12/Nc12".as_ptr(), 0);
+                }
+            }
             if mode == FfmpegMode::Vulkan {
                 unsafe {
                     ffi::av_dict_set(
@@ -279,21 +295,39 @@ impl FfmpegDecoder {
                 Err(ffmpeg::Error::Other { errno }) if errno == ffmpeg::error::EAGAIN => break,
                 Err(ffmpeg::Error::Eof) if draining => break,
                 Err(error) => {
-                    return Err(Error::backend(
-                        Subsystem::Ffmpeg,
-                        format!(
-                            "{} {} frame receive failed: {error}",
-                            self.mode.label(),
-                            self.codec.label()
-                        ),
-                    ));
+                    return Err(self.decode_error("frame receive", error));
                 }
             }
         }
         Ok(frames)
     }
 
+    fn decode_error(&self, operation: &str, error: ffmpeg::Error) -> Error {
+        let reason = format!(
+            "{} {} {operation} failed: {error}",
+            self.mode.label(),
+            self.codec.label()
+        );
+        if self.mode == FfmpegMode::V4l2Request && error == ffmpeg::Error::InvalidData {
+            Error::ReferenceLost {
+                subsystem: Subsystem::V4l2,
+                reason,
+            }
+        } else {
+            Error::backend(Subsystem::Ffmpeg, reason)
+        }
+    }
+
     fn convert_frame(&mut self, decoded: &frame::Video) -> Result<DecodedVideoFrame> {
+        if self.mode == FfmpegMode::V4l2Request {
+            let output =
+                retain_request_frame(decoded, self.last_timestamp_us, self.negotiated_format)?;
+            if output.format != self.configured_format {
+                self.configured_format = output.format;
+                self.pending_format_change = Some(output.format);
+            }
+            return Ok(output);
+        }
         let metadata = decoded_metadata(decoded, self.negotiated_format)?;
         #[cfg(feature = "vulkan")]
         if let Some(device) = self.shared_device.as_ref() {
@@ -740,6 +774,104 @@ fn map_hardware_frame_to_dmabuf(
             map_result,
         ));
     }
+    let output_format = StreamFormat {
+        width: decoded.width().max(1),
+        height: decoded.height().max(1),
+        pixel_format: decoded_hardware_pixel_format(decoded)?,
+        ..metadata
+    };
+    let timestamp_us = decoded
+        .pts()
+        .and_then(|timestamp| u64::try_from(timestamp).ok())
+        .unwrap_or(fallback_timestamp_us);
+    drm_frame(mapped, timestamp_us, output_format)
+}
+
+fn validate_request_profile(codec: VideoCodec, format: StreamFormat) -> Result<()> {
+    if codec != VideoCodec::H265
+        || format.pixel_format != PixelFormat::Nv12
+        || format.color_transfer != ColorTransfer::Sdr
+    {
+        return Err(Error::unavailable(
+            Subsystem::V4l2,
+            "V4L2 HEVC request decoding supports only HEVC 8-bit 4:2:0 SDR",
+        ));
+    }
+    Ok(())
+}
+
+fn retain_request_frame(
+    decoded: &frame::Video,
+    fallback_timestamp_us: u64,
+    metadata: StreamFormat,
+) -> Result<DecodedVideoFrame> {
+    if decoded.format() != Pixel::DRM_PRIME {
+        return Err(Error::backend(
+            Subsystem::V4l2,
+            "HEVC request decoder returned a non-DRM frame; CPU fallback is disabled",
+        ));
+    }
+    unsafe {
+        let raw = &*decoded.as_ptr();
+        if raw.flags & ffi::AV_FRAME_FLAG_CORRUPT != 0 || raw.decode_error_flags != 0 {
+            return Err(Error::ReferenceLost {
+                subsystem: Subsystem::V4l2,
+                reason: "HEVC request decode failed; refusing a corrupt reference frame".to_owned(),
+            });
+        }
+        if raw.crop_left != 0 || raw.crop_top != 0 {
+            return Err(Error::unavailable(
+                Subsystem::V4l2,
+                "SAND presentation does not support a nonzero crop origin",
+            ));
+        }
+    }
+    let metadata = decoded_metadata(decoded, metadata)?;
+    validate_request_profile(VideoCodec::H265, metadata)?;
+    let mut retained = frame::Video::empty();
+    let result = unsafe { ffi::av_frame_ref(retained.as_mut_ptr(), decoded.as_ptr()) };
+    if result < 0 {
+        return Err(ffmpeg_error("retain HEVC request frame".to_owned(), result));
+    }
+    let timestamp_us = decoded
+        .pts()
+        .and_then(|timestamp| u64::try_from(timestamp).ok())
+        .unwrap_or(fallback_timestamp_us);
+    let output = drm_frame(
+        retained,
+        timestamp_us,
+        StreamFormat {
+            width: decoded.width(),
+            height: decoded.height(),
+            pixel_format: PixelFormat::Nv12,
+            ..metadata
+        },
+    )?;
+    let dmabuf = output
+        .dmabuf
+        .as_ref()
+        .expect("DRM frame has DMA-BUF backing");
+    if dmabuf.layers.len() != 1
+        || dmabuf.layers[0].format != u32::from_le_bytes(*b"NV12")
+        || dmabuf.layers[0].planes.len() != 2
+        || dmabuf
+            .objects
+            .iter()
+            .any(|object| object.format_modifier & 0xff00_0000_0000_00ff != 0x0700_0000_0000_0004)
+    {
+        return Err(Error::unavailable(
+            Subsystem::V4l2,
+            "HEVC request output is not SAND128 NV12; packed P030/10-bit is unsupported",
+        ));
+    }
+    Ok(output)
+}
+
+fn drm_frame(
+    mapped: frame::Video,
+    timestamp_us: u64,
+    output_format: StreamFormat,
+) -> Result<DecodedVideoFrame> {
     let descriptor = unsafe {
         let data = (*mapped.as_ptr()).data[0];
         if data.is_null() {
@@ -800,18 +932,6 @@ fn map_hardware_frame_to_dmabuf(
             planes,
         });
     }
-    let width = decoded.width().max(1);
-    let height = decoded.height().max(1);
-    let output_format = StreamFormat {
-        width,
-        height,
-        pixel_format: decoded_hardware_pixel_format(decoded)?,
-        ..metadata
-    };
-    let timestamp_us = decoded
-        .pts()
-        .and_then(|timestamp| u64::try_from(timestamp).ok())
-        .unwrap_or(fallback_timestamp_us);
     let dmabuf = Arc::new(DmaBufFrame::new(objects, layers, Arc::new(mapped)));
     let frame = DecodedVideoFrame {
         format: output_format,
@@ -833,16 +953,9 @@ impl VideoDecoder for FfmpegDecoder {
         if frame.keyframe {
             packet.set_flags(ffmpeg::packet::Flags::KEY);
         }
-        self.decoder.send_packet(&packet).map_err(|error| {
-            Error::backend(
-                Subsystem::Ffmpeg,
-                format!(
-                    "{} {} packet submission failed: {error}",
-                    self.mode.label(),
-                    self.codec.label()
-                ),
-            )
-        })?;
+        self.decoder
+            .send_packet(&packet)
+            .map_err(|error| self.decode_error("packet submission", error))?;
         self.drain(false)
     }
 
@@ -1085,9 +1198,185 @@ fn decoded_metadata(frame: &frame::Video, defaults: StreamFormat) -> Result<Stre
 
 #[cfg(test)]
 mod tests {
+    use std::fs::File;
+    use std::os::fd::AsRawFd;
     use std::process::Command;
 
     use super::*;
+
+    #[cfg(all(target_arch = "aarch64", feature = "ffmpeg-bundled"))]
+    #[test]
+    fn bundled_arm64_hevc_exposes_request_hwaccel() {
+        initialize_ffmpeg().unwrap();
+        let decoder = ffmpeg::decoder::find_by_name("hevc").expect("HEVC decoder must be bundled");
+        assert_eq!(
+            hardware_pixel_format(decoder, ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_DRM),
+            Some(ffi::AVPixelFormat::AV_PIX_FMT_DRM_PRIME),
+            "bundled ARM64 HEVC requires a DRM_PRIME hardware config with HW_DEVICE_CTX support",
+        );
+    }
+
+    fn request_frame_fixture() -> (frame::Video, File) {
+        let file = File::open("/dev/zero").unwrap();
+        let mut frame = frame::Video::empty();
+        frame.set_format(Pixel::DRM_PRIME);
+        frame.set_width(256);
+        frame.set_height(144);
+        frame.set_pts(Some(123_456));
+        unsafe {
+            let raw = &mut *frame.as_mut_ptr();
+            raw.buf[0] = ffi::av_buffer_alloc(std::mem::size_of::<ffi::AVDRMFrameDescriptor>());
+            assert!(!raw.buf[0].is_null());
+            raw.data[0] = (*raw.buf[0]).data;
+            let descriptor = &mut *raw.data[0].cast::<ffi::AVDRMFrameDescriptor>();
+            *descriptor = std::mem::zeroed();
+            descriptor.nb_objects = 1;
+            descriptor.objects[0].fd = file.as_raw_fd();
+            descriptor.objects[0].size = 256 * 256;
+            descriptor.objects[0].format_modifier = 0x0700_0000_0000_0004 | (256 << 8);
+            descriptor.nb_layers = 1;
+            descriptor.layers[0].format = u32::from_le_bytes(*b"NV12");
+            descriptor.layers[0].nb_planes = 2;
+            descriptor.layers[0].planes[0].pitch = 256;
+            descriptor.layers[0].planes[1].pitch = 256;
+            descriptor.layers[0].planes[1].offset = 144 * 128;
+            raw.hw_frames_ctx = ffi::av_buffer_alloc(std::mem::size_of::<ffi::AVHWFramesContext>());
+            assert!(!raw.hw_frames_ctx.is_null());
+            let hwframes = &mut *(*raw.hw_frames_ctx).data.cast::<ffi::AVHWFramesContext>();
+            *hwframes = std::mem::zeroed();
+            hwframes.sw_format = ffi::AVPixelFormat::AV_PIX_FMT_NB;
+        }
+        (frame, file)
+    }
+
+    #[test]
+    fn request_frame_retains_drm_backing_without_software_pixel_conversion() {
+        let (decoded, _file) = request_frame_fixture();
+        let metadata = StreamFormat::video_default(256, 144).unwrap();
+        let output = retain_request_frame(&decoded, 999, metadata).unwrap();
+        assert_eq!(output.timestamp_us, 123_456);
+        assert_eq!(output.format, metadata);
+        assert!(output.planes.is_empty());
+        assert!(output.vulkan.is_none());
+        assert_eq!(output.dmabuf.as_ref().unwrap().objects.len(), 1);
+        unsafe {
+            assert_eq!(ffi::av_buffer_get_ref_count((*decoded.as_ptr()).buf[0]), 2);
+        }
+        drop(output);
+        unsafe {
+            assert_eq!(ffi::av_buffer_get_ref_count((*decoded.as_ptr()).buf[0]), 1);
+        }
+    }
+
+    #[test]
+    fn request_frame_rejects_corruption_p030_linear_and_cropped_origins() {
+        let metadata = StreamFormat::video_default(256, 144).unwrap();
+        let (mut decoded, _file) = request_frame_fixture();
+        unsafe { (*decoded.as_mut_ptr()).flags |= ffi::AV_FRAME_FLAG_CORRUPT };
+        assert!(matches!(
+            retain_request_frame(&decoded, 0, metadata),
+            Err(Error::ReferenceLost {
+                subsystem: Subsystem::V4l2,
+                ..
+            })
+        ));
+        unsafe {
+            (*decoded.as_mut_ptr()).flags = 0;
+            (*decoded.as_mut_ptr()).crop_left = 2;
+        }
+        assert!(retain_request_frame(&decoded, 0, metadata).is_err());
+        unsafe {
+            (*decoded.as_mut_ptr()).crop_left = 0;
+            let descriptor =
+                &mut *(*decoded.as_mut_ptr()).data[0].cast::<ffi::AVDRMFrameDescriptor>();
+            descriptor.layers[0].format = u32::from_le_bytes(*b"P030");
+        }
+        assert!(retain_request_frame(&decoded, 0, metadata).is_err());
+        unsafe {
+            let descriptor =
+                &mut *(*decoded.as_mut_ptr()).data[0].cast::<ffi::AVDRMFrameDescriptor>();
+            descriptor.layers[0].format = u32::from_le_bytes(*b"NV12");
+            descriptor.objects[0].format_modifier = 0;
+        }
+        assert!(retain_request_frame(&decoded, 0, metadata).is_err());
+        decoded.set_format(Pixel::NV12);
+        assert!(retain_request_frame(&decoded, 0, metadata).is_err());
+    }
+
+    #[test]
+    fn request_decode_rejects_non_hevc_ten_bit_and_hdr_before_device_probe() {
+        let mut format = StreamFormat::video_default(256, 144).unwrap();
+        assert!(validate_request_profile(VideoCodec::H265, format).is_ok());
+        for codec in [VideoCodec::H264, VideoCodec::Av1] {
+            assert!(FfmpegDecoder::open(codec, format, FfmpegMode::V4l2Request).is_err());
+        }
+        format.pixel_format = PixelFormat::P010;
+        assert!(FfmpegDecoder::open(VideoCodec::H265, format, FfmpegMode::V4l2Request).is_err());
+        format.pixel_format = PixelFormat::Nv12;
+        format.color_transfer = ColorTransfer::Pq;
+        assert!(FfmpegDecoder::open(VideoCodec::H265, format, FfmpegMode::V4l2Request).is_err());
+    }
+
+    #[test]
+    #[ignore = "opt-in: requires Raspberry Pi HEVC request hardware, pinned FFmpeg, and FFmpeg CLI/libx265"]
+    fn raspberry_pi_hevc_request_drm_only() {
+        for (width, height) in [(256, 144), (640, 360)] {
+            let encoded = Command::new("ffmpeg")
+                .args([
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    &format!("color=c=blue:size={width}x{height}:rate=60"),
+                    "-frames:v",
+                    "1",
+                    "-pix_fmt",
+                    "yuv420p",
+                    "-c:v",
+                    "libx265",
+                    "-x265-params",
+                    "log-level=error:pools=1",
+                    "-f",
+                    "hevc",
+                    "pipe:1",
+                ])
+                .output()
+                .expect("FFmpeg CLI must start");
+            assert!(
+                encoded.status.success(),
+                "{}",
+                String::from_utf8_lossy(&encoded.stderr)
+            );
+            let format = StreamFormat::video_default(width, height).unwrap();
+            let mut decoder =
+                FfmpegDecoder::open(VideoCodec::H265, format, FfmpegMode::V4l2Request)
+                    .expect("Pi HEVC request decoder must open");
+            let packet = EncodedVideoFrame::new(encoded.stdout, 1_234_567, true).unwrap();
+            let mut frames = decoder.decode(&packet).unwrap();
+            frames.extend(decoder.flush().unwrap());
+            assert_eq!(frames.len(), 1);
+            let frame = frames.remove(0);
+            drop(decoder);
+            frame.validate().unwrap();
+            assert_eq!((frame.format.width, frame.format.height), (width, height));
+            assert_eq!(frame.timestamp_us, packet.timestamp_us);
+            assert_eq!(frame.format.pixel_format, PixelFormat::Nv12);
+            assert!(frame.planes.is_empty());
+            assert!(frame.vulkan.is_none());
+            assert!(frame.dmabuf.is_some());
+            assert!(
+                frame
+                    .dmabuf
+                    .as_ref()
+                    .unwrap()
+                    .objects
+                    .iter()
+                    .all(|object| unsafe { libc::fcntl(object.fd, libc::F_GETFD) >= 0 })
+            );
+        }
+    }
 
     #[test]
     fn unspecified_metadata_uses_negotiation_but_explicit_sdr_overrides_hdr() {

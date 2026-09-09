@@ -11,13 +11,14 @@ extern "C" {
 
 #define OPENNOW_STREAMER_FFI_ABI_VERSION 6u
 #define OPENNOW_STREAMER_VULKAN_DEVICE_INFO_VERSION 1u
-#define OPENNOW_STREAMER_GRAPHICS_CONTEXT_VERSION 2u
+#define OPENNOW_STREAMER_GRAPHICS_CONTEXT_VERSION 3u
 #define OPENNOW_STREAMER_RENDER_COMMAND_VERSION 1u
 
 #define OPENNOW_STREAMER_GRAPHICS_API_D3D11 1u
 #define OPENNOW_STREAMER_GRAPHICS_API_VULKAN 2u
 #define OPENNOW_STREAMER_GRAPHICS_API_METAL 3u
 #define OPENNOW_STREAMER_GRAPHICS_CAP_VULKAN_DMABUF_IMPORT 1u
+#define OPENNOW_STREAMER_GRAPHICS_CAP_VULKAN_DMABUF_BUFFER_IMPORT 2u
 
 #define OPENNOW_STREAMER_TEXTURE_FORMAT_RGBA8 1u
 #define OPENNOW_STREAMER_TEXTURE_FORMAT_RGB10A2 2u
@@ -76,7 +77,9 @@ typedef struct OpenNowStreamerConfig {
  * Vulkan: instance, physical_device, device, queue, and queue_family_index are required.
  * enabled_capabilities describes support enabled on this logical device, not advertised by its
  * physical device. DMA-BUF import requires Vulkan 1.1 and enabled external-memory/fd/dma_buf/
- * drm_format_modifier extensions with their prerequisites. Unknown bits are rejected.
+ * drm_format_modifier extensions with their prerequisites. DMA-BUF buffer import instead requires
+ * Vulkan 1.1 and enabled external-memory-fd, dma_buf, and queue_family_foreign extensions.
+ * The image and buffer capability bits are independent. Unknown bits are rejected.
  * Metal: device is id<MTLDevice> and queue is id<MTLCommandQueue>.
  */
 typedef struct OpenNowStreamerGraphicsContext {
