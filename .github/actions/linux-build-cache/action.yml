@@ -1,0 +1,77 @@
+name: Persistent Linux native build cache
+description: Mount protected Blacksmith build disks with archive fallback until main seeds them
+inputs:
+  key:
+    description: Stable platform and build-profile identity, independent of CPU count and source revision
+    required: true
+  core-target:
+    description: Core Cargo target directory relative to the checkout
+    required: true
+  streamer-target:
+    description: Streamer Cargo target directory relative to the checkout
+    required: true
+outputs:
+  rust-warm:
+    description: Both Cargo target disks contain compiled dependencies
+    value: ${{ steps.inspect.outputs.rust-warm }}
+  ccache-warm:
+    description: The C++ disk contains compiler-cache results
+    value: ${{ steps.inspect.outputs.ccache-warm }}
+runs:
+  using: composite
+  steps:
+    - name: Mount Cargo registry
+      uses: useblacksmith/stickydisk@25e27b93b68733b532d9af6b201df28ffaf7dbfc
+      with:
+        key: opennow-native-v1-${{ inputs.key }}-registry
+        path: ${{ env.CARGO_HOME }}/registry
+        commit: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
+    - name: Mount Cargo git dependencies
+      uses: useblacksmith/stickydisk@25e27b93b68733b532d9af6b201df28ffaf7dbfc
+      with:
+        key: opennow-native-v1-${{ inputs.key }}-git
+        path: ${{ env.CARGO_HOME }}/git
+        commit: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
+    - name: Mount compiled core dependencies
+      uses: useblacksmith/stickydisk@25e27b93b68733b532d9af6b201df28ffaf7dbfc
+      with:
+        key: opennow-native-v1-${{ inputs.key }}-core
+        path: ${{ github.workspace }}/${{ inputs.core-target }}
+        commit: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
+    - name: Mount compiled streamer dependencies
+      uses: useblacksmith/stickydisk@25e27b93b68733b532d9af6b201df28ffaf7dbfc
+      with:
+        key: opennow-native-v1-${{ inputs.key }}-streamer
+        path: ${{ github.workspace }}/${{ inputs.streamer-target }}
+        commit: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
+    - name: Mount C++ compiler cache
+      uses: useblacksmith/stickydisk@25e27b93b68733b532d9af6b201df28ffaf7dbfc
+      with:
+        key: opennow-native-v1-${{ inputs.key }}-ccache
+        path: ${{ github.workspace }}/.ccache
+        commit: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
+    - name: Inspect persistent build artifacts
+      id: inspect
+      shell: bash
+      env:
+        CORE_TARGET: ${{ github.workspace }}/${{ inputs.core-target }}
+        STREAMER_TARGET: ${{ github.workspace }}/${{ inputs.streamer-target }}
+        CXX_CACHE: ${{ github.workspace }}/.ccache
+      run: |
+        rust_warm=false
+        ccache_warm=false
+        if [[ -n "$(find "$CORE_TARGET" -type f -name '*.rlib' -print -quit)" &&
+              -n "$(find "$STREAMER_TARGET" -type f -name '*.rlib' -print -quit)" ]]; then
+          rust_warm=true
+        fi
+        if [[ -n "$(find "$CXX_CACHE" -type f -name '*R' -print -quit)" ]]; then
+          ccache_warm=true
+        fi
+        echo "rust-warm=$rust_warm" >> "$GITHUB_OUTPUT"
+        echo "ccache-warm=$ccache_warm" >> "$GITHUB_OUTPUT"
+        {
+          echo '### Persistent Linux build cache'
+          echo "Compiled Cargo dependencies present: $rust_warm"
+          echo "C++ compiler-cache results present: $ccache_warm"
+          echo 'Empty disks fall back to branch-scoped archive caches. Only default-branch push/manual jobs save disk snapshots.'
+        } >> "$GITHUB_STEP_SUMMARY"

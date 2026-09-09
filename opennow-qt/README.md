@@ -17,10 +17,24 @@ Rust, Qt, and SDL caches reduce repeated work.
 General-purpose check and package jobs use Blacksmith runners. The isolated
 release-signing job remains on `opennow-release-signer`.
 
-The upstream Rust cache action automatically uses Blacksmith's colocated cache.
-Platform-specific shared keys survive job renames, and dependency caches are saved
-even if a later test fails. Check and release-build caches remain separate; each
-still invalidates when the Rust toolchain or dependency configuration changes.
+Linux checks and unsigned packages mount Blacksmith sticky disks for the Cargo registry,
+Git dependencies, both compiled Rust target directories, and the C++ compiler cache.
+Disk keys separate architectures and check/release profiles without changing on each
+commit or runner CPU-count change. Cargo and ccache still validate their inputs; a
+toolchain, dependency, or source change rebuilds the affected outputs.
+
+Keep **Sticky Disks: branch protection** enabled in Blacksmith. Only default-branch
+(`main`) push/manual jobs save these snapshots; PRs and `dev` consume isolated clones.
+After these workflows reach `main`, run **qt-ci** manually on `main`, without publishing,
+to populate both check and package disks. Until then, empty disks fall back to the
+existing branch-scoped archive caches rather than forcing every PR to rebuild cleanly.
+The job summary reports whether compiled Cargo dependencies and C++ results were found.
+
+Windows/macOS and cold Linux disks use the upstream Rust and C++ cache actions, which
+automatically use Blacksmith's colocated archive cache. Platform-specific shared keys
+survive job renames, and Rust dependency caches are saved even if a later test fails.
+Build concurrency is scoped to Rust compile/test steps so it does not invalidate the
+checks archive cache. Warm Linux disks bypass archive cleanup and keep workspace outputs.
 
 Full application builds, embedded-runtime/QML acceptance tests, Linux/Windows ARM64
 builds, and package creation run only on manual dispatch. Automatic checks do not
@@ -30,7 +44,8 @@ matrix, including macOS; platform-specific steps handle its app bundle and reloc
 
 Required status names are `linux-x64`, `windows-x64`, and `macos-arm64`. Keep all
 three required in the repository's branch rules. Each also fails if shared checks
-fail or are cancelled, and manual packaging waits for every platform to pass.
+fail or are cancelled. Manual packaging runs alongside platform checks after shared
+checks pass; nightly publication still waits for every platform and package to pass.
 
 To run the test-only Qt suite locally after configuring a Debug build:
 

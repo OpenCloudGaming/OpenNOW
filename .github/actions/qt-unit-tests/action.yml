@@ -66,7 +66,16 @@ runs:
           libx11-dev libxcb-cursor0 libxcb-icccm4 libxcb-keysyms1 libxcursor-dev libxext-dev libxfixes-dev \
           libxi-dev libxkbcommon-dev libxkbcommon-x11-0 libxrandr-dev libxrender-dev libxss-dev \
           mesa-vulkan-drivers nasm ninja-build pkg-config wayland-protocols xvfb
+    - name: Mount persistent Linux build cache
+      id: sticky-cache
+      if: runner.os == 'Linux'
+      uses: ./.github/actions/linux-build-cache
+      with:
+        key: ubuntu-2404-checks-${{ inputs.label }}
+        core-target: native/opennow-core/target
+        streamer-target: native/opennow-streamer/target
     - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+      if: runner.os != 'Linux' || steps.sticky-cache.outputs.rust-warm != 'true'
       with:
         shared-key: qt-checks-${{ inputs.label }}
         cache-bin: false
@@ -104,6 +113,8 @@ runs:
       with:
         key: qt-checks-${{ inputs.label }}
         max-size: 1G
+        restore: ${{ runner.os != 'Linux' || steps.sticky-cache.outputs.ccache-warm != 'true' }}
+        save: ${{ runner.os != 'Linux' || steps.sticky-cache.outputs.ccache-warm != 'true' }}
     - name: Build and cache SDL3 test dependency
       uses: ./.github/actions/sdl3
       with:

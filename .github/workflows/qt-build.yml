@@ -265,7 +265,17 @@ jobs:
         if: matrix.label == 'linux-arm64'
         run: sudo apt-get install -y libudev-dev
 
+      - name: Mount persistent Linux build cache
+        id: sticky-cache
+        if: runner.os == 'Linux'
+        uses: ./.github/actions/linux-build-cache
+        with:
+          key: ubuntu-2404-release-${{ matrix.label }}
+          core-target: build/opennow-qt-release/rust-target
+          streamer-target: build/opennow-qt-release/streamer-rust-target
+
       - name: Cache Rust dependencies and build artifacts
+        if: runner.os != 'Linux' || steps.sticky-cache.outputs.rust-warm != 'true'
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
           shared-key: ${{ runner.os == 'macOS' && 'qt-ci-macos-arm64' || format('qt-ci-{0}-{1}', matrix.os, matrix.label) }}
@@ -282,6 +292,8 @@ jobs:
         with:
           key: ${{ runner.os == 'macOS' && 'qt-ci-macos-arm64' || format('qt-ci-{0}-{1}', matrix.os, matrix.label) }}
           max-size: 1G
+          restore: ${{ runner.os != 'Linux' || steps.sticky-cache.outputs.ccache-warm != 'true' }}
+          save: ${{ runner.os != 'Linux' || steps.sticky-cache.outputs.ccache-warm != 'true' }}
 
       - name: Build and cache SDL3
         uses: ./.github/actions/sdl3
