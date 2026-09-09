@@ -1,6 +1,7 @@
 #include <QFile>
 #include "streaming/rendering/HdrOutputPass.h"
 #include "streaming/rendering/HdrOutput.h"
+#include "streaming/rendering/HdrSwapChainRecovery.h"
 #include "streaming/rendering/HdrChromeEffect.h"
 #include <QQmlEngine>
 #include <QQmlComponent>
@@ -14,6 +15,10 @@
 #include <rhi/qrhi_platform.h>
 #include <cmath>
 #include <memory>
+
+#if defined(Q_OS_MACOS)
+void verifyMetalSdrLayerRecovery();
+#endif
 
 class HdrColorTest final : public QObject
 {
@@ -113,6 +118,60 @@ private slots:
     }
 
     void cleanupTestCase() { m_rhi.reset(); }
+
+    void outputFormatTracksCurrentDisplaySupport()
+    {
+        QCOMPARE(preferredHdrSwapChainFormat(true, true, false), QRhiSwapChain::HDRExtendedSrgbLinear);
+        QCOMPARE(preferredHdrSwapChainFormat(true, false, false), QRhiSwapChain::SDR);
+        QCOMPARE(preferredHdrSwapChainFormat(true, true, false), QRhiSwapChain::HDRExtendedSrgbLinear);
+        QCOMPARE(preferredHdrSwapChainFormat(true, false, true), QRhiSwapChain::HDR10);
+        QCOMPARE(preferredHdrSwapChainFormat(false, true, true), QRhiSwapChain::SDR);
+    }
+
+    void failedHdrCreationFallsBackToSdr()
+    {
+        for (const auto requested : {QRhiSwapChain::HDRExtendedSrgbLinear, QRhiSwapChain::HDR10}) {
+            QList<QRhiSwapChain::Format> attempts;
+            const auto result = createHdrSwapChainWithSdrFallback(requested, [&](auto format) {
+                attempts.append(format);
+                return format == QRhiSwapChain::SDR;
+            });
+            QVERIFY(result.created);
+            QCOMPARE(result.format, QRhiSwapChain::SDR);
+            QCOMPARE(attempts, (QList<QRhiSwapChain::Format>{requested, QRhiSwapChain::SDR}));
+        }
+    }
+
+    void formatCreationRecoveryIsBounded()
+    {
+        for (const auto requested : {QRhiSwapChain::SDR, QRhiSwapChain::HDRExtendedSrgbLinear}) {
+            int attempts = 0;
+            const auto failed = createHdrSwapChainWithSdrFallback(requested, [&](auto) {
+                ++attempts;
+                return false;
+            });
+            QVERIFY(!failed.created);
+            QCOMPARE(failed.format, QRhiSwapChain::SDR);
+            QCOMPARE(attempts, requested == QRhiSwapChain::SDR ? 1 : 2);
+            attempts = 0;
+            const auto recovered = createHdrSwapChainWithSdrFallback(requested, [&](auto) {
+                ++attempts;
+                return true;
+            });
+            QVERIFY(recovered.created);
+            QCOMPARE(recovered.format, requested);
+            QCOMPARE(attempts, 1);
+        }
+    }
+
+    void metalSdrRecoveryClearsNativeHdrColorState()
+    {
+#if defined(Q_OS_MACOS)
+        verifyMetalSdrLayerRecovery();
+#else
+        QSKIP("Metal layer recovery requires macOS");
+#endif
+    }
 
     void linuxOutputRemainsSdr()
     {

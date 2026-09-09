@@ -1,6 +1,10 @@
 #include "streaming/rendering/HdrOutput.h"
 #include "streaming/rendering/HdrOutputPass.h"
+#include "streaming/rendering/HdrSwapChainRecovery.h"
 #include "streaming/rendering/WaylandHdrOutput.h"
+#if defined(Q_OS_MACOS)
+#include "streaming/rendering/MetalHdrOutput.h"
+#endif
 
 #include <QQuickWindow>
 #include <QQuickRenderTarget>
@@ -141,24 +145,19 @@ void HdrOutput::updateOutput()
     if (!probe && d->hasActiveSwapchain && d->hasRenderableSwapchain
             && (sc->format() != QRhiSwapChain::HDR10
                 || (m_outputPass && m_outputPass->matches(d->rhi, sc)))) return;
-    auto desired = QRhiSwapChain::SDR;
     const auto waylandOutput = m_waylandOutput->state();
 #if defined(Q_OS_LINUX)
     const bool platformReady = waylandOutput.supported;
 #else
     const bool platformReady = true;
 #endif
-    if (platformReady && (d->rhi->backend() == QRhi::D3D11 || d->rhi->backend() == QRhi::Vulkan
-            || d->rhi->backend() == QRhi::Metal)) {
-        if (sc->isFormatSupported(QRhiSwapChain::HDRExtendedSrgbLinear))
-            desired = QRhiSwapChain::HDRExtendedSrgbLinear;
-        else if (sc->isFormatSupported(QRhiSwapChain::HDR10))
-            desired = QRhiSwapChain::HDR10;
-    }
+    const bool outputReady = platformReady && (d->rhi->backend() == QRhi::D3D11
+        || d->rhi->backend() == QRhi::Vulkan || d->rhi->backend() == QRhi::Metal);
+    const bool linearSupported = outputReady
+        && sc->isFormatSupported(QRhiSwapChain::HDRExtendedSrgbLinear);
+    const auto desired = preferredHdrSwapChainFormat(outputReady, linearSupported,
+        outputReady && !linearSupported && sc->isFormatSupported(QRhiSwapChain::HDR10));
     const bool hdrAvailable = desired != QRhiSwapChain::SDR;
-    if (d->rhi->backend() == QRhi::Metal
-            && m_metalLinearOutput)
-        desired = QRhiSwapChain::HDRExtendedSrgbLinear;
     if (desired != QRhiSwapChain::SDR && !m_chromeSynchronized) {
         requestChrome(true);
         m_probeRequested.store(true);
@@ -170,27 +169,27 @@ void HdrOutput::updateOutput()
         d->redirect.commandBuffer = nullptr;
         m_outputPass.reset();
         auto *previousPass = d->rpDescForSwapchain;
-        sc->destroy();
-        sc->setFormat(format);
-        auto *nextPass = sc->newCompatibleRenderPassDescriptor();
-        bool created = false;
-        if (nextPass) {
-            sc->setRenderPassDescriptor(nextPass);
-            created = sc->createOrResize();
-        }
-        if (!created) {
+        QRhiRenderPassDescriptor *nextPass = nullptr;
+        const auto result = createHdrSwapChainWithSdrFallback(format, [&](auto attempt) {
             sc->destroy();
             delete nextPass;
-            const auto fallback = d->rhi->backend() == QRhi::Metal
-                ? format : QRhiSwapChain::SDR;
-            sc->setFormat(fallback);
-            nextPass = sc->newCompatibleRenderPassDescriptor();
-            if (nextPass) {
-                sc->setRenderPassDescriptor(nextPass);
-                created = sc->createOrResize();
+            nextPass = nullptr;
+            sc->setFormat(attempt);
+#if defined(Q_OS_MACOS)
+            if (d->rhi->backend() == QRhi::Metal && attempt == QRhiSwapChain::SDR
+                    && !resetMetalSdrOutput(m_window, sc->proxyData())) {
+                qWarning("Metal SDR recovery could not restore the output layer color space.");
+                return false;
             }
+#endif
+            nextPass = sc->newCompatibleRenderPassDescriptor();
+            if (!nextPass) return false;
+            sc->setRenderPassDescriptor(nextPass);
+            return sc->createOrResize();
+        });
+        if (!result.created || result.format != format) {
             qWarning("HDR output format change failed; recovery format=%d %s.",
-                int(fallback), created ? "active" : "unavailable");
+                int(result.format), result.created ? "active" : "unavailable");
         }
         if (nextPass) {
             d->rpDescForSwapchain = nextPass;
@@ -198,14 +197,20 @@ void HdrOutput::updateOutput()
         } else {
             sc->setRenderPassDescriptor(previousPass);
         }
-        d->hasActiveSwapchain = created;
-        d->hasRenderableSwapchain = created;
-        d->swapchainJustBecameRenderable = !created;
+        d->hasActiveSwapchain = result.created;
+        d->hasRenderableSwapchain = result.created;
+        d->swapchainJustBecameRenderable = !result.created;
     };
-    if (desired != sc->format()) changeFormat(desired);
-    if (d->rhi->backend() == QRhi::Metal
-            && sc->format() == QRhiSwapChain::HDRExtendedSrgbLinear)
-        m_metalLinearOutput = true;
+    if (desired != sc->format() || !d->hasActiveSwapchain || !d->hasRenderableSwapchain)
+        changeFormat(desired);
+#if defined(Q_OS_MACOS)
+    else if (d->rhi->backend() == QRhi::Metal && desired == QRhiSwapChain::SDR
+            && !resetMetalSdrOutput(m_window, sc->proxyData())) {
+        m_probeRequested.store(true);
+        publish({});
+        return;
+    }
+#endif
     if (sc->format() == QRhiSwapChain::HDR10 && d->hasActiveSwapchain && d->hasRenderableSwapchain) {
         if (!m_outputPass || !m_outputPass->matches(d->rhi, sc)) {
             d->rhi->finish();
