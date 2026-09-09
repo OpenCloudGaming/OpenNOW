@@ -4,7 +4,7 @@ import OpenNOW
 
 FocusScope {
     id: root
-    readonly property bool streamPointerLocked: streamVideo.enabled && streamVideo.inputEnabled && streamVideo.relativeMouse
+    readonly property bool streamPointerLocked: streamVideo.captureActive && streamVideo.relativeMouse
     focus: true
     Accessible.role: Accessible.Pane
     Accessible.name: qsTr("Live session")
@@ -117,7 +117,7 @@ FocusScope {
     Connections {
         target: ShellStore
         function onPointerLockToggleRequested() {
-            streamVideo.relativeMouse = !streamVideo.relativeMouse
+            streamVideo.togglePointerLock()
         }
     }
 

@@ -74,6 +74,7 @@ public:
 
     Q_INVOKABLE void requestFrame();
     Q_INVOKABLE void resynchronizeInput();
+    Q_INVOKABLE void togglePointerLock();
 
     [[nodiscard]] static QRect aspectFitRect(const QSize &videoSize,
                                               const QSize &targetSize);
@@ -122,6 +123,8 @@ protected:
 
 private:
     friend class StreamVideoItemTest;
+    StreamVideoItem(std::unique_ptr<class MacPointerCapture> pointerCapture,
+                    bool usesMacPointerCapture, QQuickItem *parent);
     struct PressedKey {
         quint16 virtualKey = 0;
         quint16 modifiers = 0;
@@ -129,6 +132,7 @@ private:
 
     void applyRemoteCursor(const QByteArray &bytes);
     void setRemoteCursorShape(const QCursor &cursor);
+    void updateLocalCursor();
     void syncCaptureState();
     void connectFrameSwaps();
     void releaseInput();
@@ -150,6 +154,8 @@ private:
     QSet<quint8> m_pressedMouseButtons;
     QPointF m_lastMousePosition;
     std::unique_ptr<class WaylandPointerCapture> m_waylandPointer;
+    std::unique_ptr<class MacPointerCapture> m_macPointer;
+    bool m_usesMacPointerCapture = false;
     bool m_inputEnabled = true;
     bool m_frameGeneration = false;
     QTimer m_frameStatsTimer;
@@ -163,6 +169,7 @@ private:
     bool m_remoteCursorVisible = false;
     QCursor m_remoteCursor;
     std::optional<bool> m_pendingRelativeMouse;
+    std::optional<bool> m_manualRelativeMouse;
 };
 
 void registerStreamVideoItemQmlType();

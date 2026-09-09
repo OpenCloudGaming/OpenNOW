@@ -1,6 +1,7 @@
 #include "streaming/StreamVideoItem.h"
 
 #include "input/platform/WaylandPointerCapture.h"
+#include "input/platform/MacPointerCapture.h"
 #include "streaming/NativeStreamRuntime.h"
 #include "streaming/rendering/NativeStreamRenderCallback.h"
 
@@ -17,8 +18,24 @@
 QPointer<NativeStreamRuntime> StreamVideoItem::s_nativeRuntime;
 
 StreamVideoItem::StreamVideoItem(QQuickItem *parent)
-    : QQuickItem(parent), m_waylandPointer(std::make_unique<WaylandPointerCapture>())
+    : StreamVideoItem(std::make_unique<MacPointerCapture>(), MacPointerCapture::isSupported(), parent)
 {
+}
+
+StreamVideoItem::StreamVideoItem(std::unique_ptr<MacPointerCapture> pointerCapture,
+                               bool usesMacPointerCapture, QQuickItem *parent)
+    : QQuickItem(parent), m_waylandPointer(std::make_unique<WaylandPointerCapture>()),
+      m_macPointer(std::move(pointerCapture)), m_usesMacPointerCapture(usesMacPointerCapture)
+{
+    connect(m_macPointer.get(), &MacPointerCapture::stateChanged, this, [this] {
+        syncCaptureState();
+        emit inputCaptureErrorChanged();
+    }, Qt::QueuedConnection);
+    connect(m_macPointer.get(), &MacPointerCapture::relativeMotion, this,
+            [this](qint16 x, qint16 y) {
+        if (m_captureActive && m_inputEnabled && m_relativeMouse && m_macPointer->locked() && s_nativeRuntime)
+            s_nativeRuntime->submitMouseRelative(x, y);
+    });
     connect(m_waylandPointer.get(), &WaylandPointerCapture::stateChanged, this, [this] {
         syncCaptureState();
         emit inputCaptureErrorChanged();
@@ -40,6 +57,7 @@ StreamVideoItem::StreamVideoItem(QQuickItem *parent)
         connect(s_nativeRuntime, &NativeStreamRuntime::inputAllowedChanged,
                 this, &StreamVideoItem::syncCaptureState);
         connect(s_nativeRuntime, &NativeStreamRuntime::inputCaptureReset, this, [this] {
+            m_manualRelativeMouse.reset();
             releaseInput();
             m_rawInputActive = false;
             if (std::exchange(m_captureActive, false)) emit captureActiveChanged();
@@ -51,6 +69,7 @@ StreamVideoItem::StreamVideoItem(QQuickItem *parent)
                 this, &StreamVideoItem::applyRemoteCursor, Qt::QueuedConnection);
         connect(s_nativeRuntime, &NativeStreamRuntime::runningChanged, this, [this] {
             if (!s_nativeRuntime || !s_nativeRuntime->running()) {
+                m_manualRelativeMouse.reset();
                 m_remoteCursorKnown = false;
                 m_remoteCursorVisible = false;
                 m_remoteCursor = QCursor();
@@ -82,6 +101,7 @@ StreamVideoItem::StreamVideoItem(QQuickItem *parent)
 
 StreamVideoItem::~StreamVideoItem()
 {
+    disconnect(this, nullptr, this, nullptr);
     disconnect(m_frameSwapConnection);
     disconnect(m_frameUpdateConnection);
     releaseInput();
@@ -135,7 +155,7 @@ bool StreamVideoItem::captureActive() const
 
 QString StreamVideoItem::inputCaptureError() const
 {
-    return m_waylandPointer->error();
+    return m_usesMacPointerCapture ? m_macPointer->error() : m_waylandPointer->error();
 }
 
 bool StreamVideoItem::relativeMouse() const

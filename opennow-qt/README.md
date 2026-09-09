@@ -127,6 +127,22 @@ part of the Linux/Windows nightly inventory. Offscreen tests cover shell and FFI
 contracts; real VideoToolbox/Metal presentation, audio, input capture, and login
 still require macOS hardware and a GFN account.
 
+Relative mouse mode uses native CoreGraphics pointer capture on macOS, not repeated
+cursor warps. F8 (or the configured pointer-lock shortcut) explicitly locks or
+unlocks the pointer; server cursor notifications do not override that choice until
+the session resets. Unlocked absolute mode deliberately allows the pointer to leave
+the window. Opening input-blocking overlays, switching applications, hiding the
+window, or ending the session releases native capture and restores the Mac cursor.
+While the seat still composites its cursor at startup, OpenNOW hides the local
+cursor over the active video to avoid displaying both.
+
+Run `ctest --test-dir build/opennow-qt --output-on-failure -R 'macpointer|streamvideo-tests'`
+for the capture lifecycle and input-routing regressions. On macOS, the serial
+`opennow-macpointer-native-tests` case uses Cocoa/CoreGraphics to acquire, hide,
+release, and restore the actual system cursor. A live session with two displays is
+still required to verify physical mouse containment, mixed-DPI transitions, and
+the server/client cursor handoff.
+
 Run with the offscreen Qt platform plugin for a startup smoke test:
 
 ```sh
