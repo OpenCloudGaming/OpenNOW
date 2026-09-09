@@ -443,6 +443,22 @@ and `--smoke-test --desktop --route stream --overlay desktop-stream-menu
 `--smoke-microphone` acceptance workload checks state, commands and reconnect mute
 preservation against a mock runtime.
 
+Settings → Controls → **Clipboard paste** enables local-to-stream plain-text paste
+with Ctrl+V (Command+V on macOS). The console Controls page exposes the same persisted
+`clipboardPaste` preference. It is disabled by default and only reads the clipboard
+on an explicit paste shortcut while the stream has input capture. Blocking overlays
+and focus loss prevent paste; custom stream shortcuts take priority.
+
+Paste uses native NVST Unicode text packets, preserving UTF-8 characters and line
+breaks without depending on the remote keyboard layout. Each paste is limited to
+64 KiB of UTF-8; empty, invalid, NUL-containing, oversized, or locally rejected input
+shows a brief nonblocking notice instead of forwarding the paste shortcut or silently
+truncating text. There is no automatic synchronization, image/file transfer, or
+remote-to-local clipboard copying. Network acceptance is not a remote application
+delivery acknowledgement; live GFN paste still needs account-backed validation.
+Run `opennow-streamvideo-tests clipboardPasteRouting` for windowed/fullscreen
+shortcut, Unicode, size-limit, overlay, and focus regression coverage.
+
 If one controller appears as both a physical device and a remapper's virtual device,
 open Settings → Controls → Controller input source (Controllers in the console
 settings) and select one device before starting the stream. The selected device is

@@ -169,7 +169,8 @@ NativeStreamRuntime::NativeStreamRuntime(QObject *parent,
                               &opennow_streamer_submit_gamepad,
                               &opennow_streamer_submit_local_action,
                               &opennow_streamer_set_capture_active,
-                              &opennow_streamer_set_log_file}, parent, vulkanDevice)
+                              &opennow_streamer_set_log_file,
+                              &opennow_streamer_submit_text}, parent, vulkanDevice)
 {
 }
 
@@ -536,6 +537,19 @@ OpenNowStreamerStatus NativeStreamRuntime::submitMouseRelative(std::int16_t delt
     const std::shared_lock lock(d->handleMutex);
     return d->handle && d->api.submitMouseRelative
         ? d->api.submitMouseRelative(d->handle, deltaX, deltaY)
+        : OPENNOW_STREAMER_CLOSED;
+}
+
+OpenNowStreamerStatus NativeStreamRuntime::submitText(const QByteArray &text)
+{
+    if (text.size() > OPENNOW_STREAMER_MAX_TEXT_BYTES) return OPENNOW_STREAMER_MESSAGE_TOO_LARGE;
+    if (text.isEmpty() || text.contains('\0') || !text.isValidUtf8())
+        return OPENNOW_STREAMER_INVALID_CONFIG;
+    const std::shared_lock lock(d->handleMutex);
+    return inputAllowed() && d->handle && d->api.submitText
+        ? d->api.submitText(d->handle,
+                           reinterpret_cast<const std::uint8_t *>(text.constData()),
+                           static_cast<std::size_t>(text.size()))
         : OPENNOW_STREAMER_CLOSED;
 }
 

@@ -86,12 +86,27 @@ impl EmbeddedInputCapture {
         });
     }
 
+    pub fn submit_text(
+        &self,
+        bytes: &[u8],
+    ) -> Result<(), opennow_streamer_protocol::text_input::TextInputError> {
+        let _guard = self
+            .gamepads
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !self.active.load(Ordering::Acquire) {
+            return Err(opennow_streamer_protocol::text_input::TextInputError::Unavailable);
+        }
+        self.queue.submit_text(bytes)
+    }
+
     pub fn set_active(&self, active: bool, relative_mouse: bool, window_handle: usize) -> bool {
         let mut gamepads = self
             .gamepads
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if !active {
+            self.queue.discard_text();
             if self.active.load(Ordering::Acquire) {
                 for (controller_id, bitmap) in gamepads.iter_mut().enumerate() {
                     if let Some(bitmap) = bitmap.take() {
@@ -180,6 +195,87 @@ const fn raw_capture_enabled(active: bool, relative_mouse: bool) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn old_session_teardown_cannot_cancel_or_enable_new_session_text() {
+        use opennow_streamer_protocol::text_input::TextInputError;
+        let queue = std::sync::Arc::new(crate::CapturedInputQueue::default());
+        let capture = super::EmbeddedInputCapture::new(queue.clone());
+        capture.set_active(true, false, 0);
+        queue.set_text_ready(1, true);
+        capture.submit_text(b"old").unwrap();
+        let Some(crate::CapturedInput::Text(old)) = queue.take() else {
+            panic!("missing old paste")
+        };
+        queue.set_text_ready(2, false);
+        assert!(old.is_cancelled());
+        drop(old);
+        queue.set_text_ready(1, true);
+        assert_eq!(
+            capture.submit_text(b"new"),
+            Err(TextInputError::Unavailable)
+        );
+        queue.set_text_ready(2, true);
+        capture.submit_text(b"new").unwrap();
+        queue.set_text_ready(1, false);
+        let Some(crate::CapturedInput::Text(new)) = queue.take() else {
+            panic!("missing new paste")
+        };
+        assert!(!new.is_cancelled());
+    }
+
+    #[test]
+    fn text_requires_capture_and_session_and_cancels_in_flight_on_focus_loss() {
+        use opennow_streamer_protocol::text_input::TextInputError;
+        let queue = std::sync::Arc::new(crate::CapturedInputQueue::default());
+        let capture = super::EmbeddedInputCapture::new(queue.clone());
+        assert_eq!(
+            capture.submit_text(b"paste"),
+            Err(TextInputError::Unavailable)
+        );
+        capture.set_active(true, false, 0);
+        assert_eq!(
+            capture.submit_text(b"paste"),
+            Err(TextInputError::Unavailable)
+        );
+        queue.set_text_ready(1, true);
+        assert_eq!(capture.submit_text(b"paste"), Ok(()));
+        assert_eq!(capture.submit_text(b"again"), Err(TextInputError::Busy));
+        let Some(crate::CapturedInput::Text(text)) = queue.take() else {
+            panic!("missing text")
+        };
+        assert_eq!(capture.submit_text(b"again"), Err(TextInputError::Busy));
+        capture.set_active(false, false, 0);
+        assert!(text.is_cancelled());
+        drop(text);
+        capture.set_active(true, false, 0);
+        assert_eq!(capture.submit_text(b"again"), Ok(()));
+        queue.set_text_ready(1, false);
+        assert!(queue.take().is_none());
+        assert_eq!(
+            capture.submit_text(b"again"),
+            Err(TextInputError::Unavailable)
+        );
+    }
+
+    #[test]
+    fn full_capture_queue_rejects_paste_atomically_without_control_overflow() {
+        use opennow_streamer_protocol::text_input::TextInputError;
+        let queue = std::sync::Arc::new(crate::CapturedInputQueue::default());
+        let capture = super::EmbeddedInputCapture::new(queue.clone());
+        capture.set_active(true, false, 0);
+        queue.set_text_ready(1, true);
+        for _ in 0..256 {
+            capture.submit(crate::CapturedInput::Guide);
+        }
+        assert_eq!(capture.submit_text(b"paste"), Err(TextInputError::Busy));
+        assert!(!queue.take_overflowed());
+        for _ in 0..256 {
+            assert_eq!(queue.take(), Some(crate::CapturedInput::Guide));
+        }
+        assert!(queue.take().is_none());
+        assert_eq!(capture.submit_text(b"paste"), Ok(()));
+    }
+
     use super::*;
 
     fn gamepad(controller_id: u8, bitmap: u16, buttons: u16) -> CapturedInput {

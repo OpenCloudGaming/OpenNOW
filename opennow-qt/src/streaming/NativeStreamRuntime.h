@@ -71,6 +71,7 @@ public:
         SubmitLocalAction submitLocalAction = nullptr;
         SetCaptureActive setCaptureActive = nullptr;
         SetLogFile setLogFile = nullptr;
+        Send submitText = nullptr;
     };
 
     static constexpr int DefaultShutdownTimeoutMs = 1'500;
@@ -112,6 +113,7 @@ public:
     OpenNowStreamerStatus sceneGraphShutdown();
     OpenNowStreamerStatus submitKey(std::uint16_t virtualKey, std::uint16_t modifiers,
                                     bool pressed);
+    OpenNowStreamerStatus submitText(const QByteArray &text);
     OpenNowStreamerStatus submitMouseRelative(std::int16_t deltaX, std::int16_t deltaY);
     OpenNowStreamerStatus submitMouseAbsolute(std::uint16_t x, std::uint16_t y,
                                               std::uint16_t width, std::uint16_t height);

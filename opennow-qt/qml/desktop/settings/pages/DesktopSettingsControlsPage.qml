@@ -103,6 +103,15 @@ Column {
     DesktopSettingsPanel {
         width: parent.width; paperStyle: true
         DesktopSettingsSection { text: qsTr("MOUSE & KEYBOARD") }
+        DesktopSettingsRow {
+            width: parent.width; paperStyle: true; glyph: "keyboard"; title: qsTr("Clipboard paste")
+            description: qsTr("Paste local text into the stream with Ctrl+V (Command+V on macOS). Up to 64 KiB per paste. No automatic clipboard sync.")
+            DesktopSettingsToggle {
+                objectName: "clipboardPasteToggle"
+                checked: controlsRoot.settingsScreen.boolSetting("clipboardPaste", false)
+                onValueChangedByUser: value => controlsRoot.settingsScreen.setSetting("clipboardPaste", value)
+            }
+        }
         DesktopSettingsRow { width: parent.width; paperStyle: true; glyph: "mouse"; title: qsTr("Mouse capture"); description: qsTr("Follows the remote cursor · F8 toggles capture")
             DesktopSettingsSegmented { options: [qsTr("Automatic")]; optionWidth: 112; selectedIndex: 0 }
         }

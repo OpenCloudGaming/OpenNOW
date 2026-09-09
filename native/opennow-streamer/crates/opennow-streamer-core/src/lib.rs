@@ -95,6 +95,11 @@ trait NvstSessionResources {
     fn request_keyframe(&self);
     fn acknowledge_video_frame(&self, frame_index: u32, bytes: u32);
     fn send_captured_input(&self, bytes: Vec<u8>) -> Result<(), String>;
+    fn send_captured_text(
+        &self,
+        text: opennow_streamer_protocol::text_input::UnicodeText,
+        timestamp_us: u64,
+    ) -> Result<(), String>;
     fn apply_cursor(&self, bytes: Vec<u8>);
     fn recover(&self) -> Result<(), String>;
     fn stop(&self);
@@ -135,6 +140,16 @@ impl NvstSessionResources for ActiveNvstResources {
     fn send_captured_input(&self, bytes: Vec<u8>) -> Result<(), String> {
         self.bundle
             .queue_input(bytes, false)
+            .map_err(|error| error.to_string())
+    }
+
+    fn send_captured_text(
+        &self,
+        text: opennow_streamer_protocol::text_input::UnicodeText,
+        timestamp_us: u64,
+    ) -> Result<(), String> {
+        self.bundle
+            .queue_text(text, timestamp_us)
             .map_err(|error| error.to_string())
     }
 
@@ -1596,6 +1611,9 @@ fn forward_nvst_session_events<R: NvstSessionResources>(
         transport: resources,
     } = event_resources;
     let mut feedback_state = NvstMediaFeedbackState::new(false);
+    if let Some(queue) = captured_input.as_ref() {
+        queue.set_text_ready(generation, false);
+    }
     let mut pending_rumble = [None; 4];
     let mut pending_cursor_capture = NvstCursorCaptureOutput {
         start_id: start_id.clone(),
@@ -1702,9 +1720,17 @@ fn forward_nvst_session_events<R: NvstSessionResources>(
         match nvst_events.recv_timeout(NATIVE_INPUT_POLL_INTERVAL) {
             Ok(nvst_event) => {
                 match &nvst_event {
-                    NvstReceiveEvent::InputReady(_) => feedback_state.input_available = true,
+                    NvstReceiveEvent::InputReady(_) => {
+                        feedback_state.input_available = true;
+                        if let Some(queue) = captured_input.as_ref() {
+                            queue.set_text_ready(generation, true);
+                        }
+                    }
                     NvstReceiveEvent::InputUnavailable(_) => {
                         feedback_state.input_available = false;
+                        if let Some(queue) = captured_input.as_ref() {
+                            queue.set_text_ready(generation, false);
+                        }
                     }
                     _ => {}
                 }
@@ -1734,6 +1760,9 @@ fn forward_nvst_session_events<R: NvstSessionResources>(
                 break;
             }
         }
+    }
+    if let Some(queue) = captured_input.as_ref() {
+        queue.set_text_ready(generation, false);
     }
     feedback_state
         .drop_reports
@@ -2182,6 +2211,9 @@ fn forward_nvst_captured_input<R: NvstSessionResources>(
         return Ok(());
     }
     let timestamp_us = u64::try_from(state.input_origin.elapsed().as_micros()).unwrap_or(u64::MAX);
+    if let CapturedInput::Text(text) = input {
+        return resources.send_captured_text(text, timestamp_us);
+    }
     resources.send_captured_input(captured_input_packet(input, timestamp_us))
 }
 
@@ -2207,11 +2239,15 @@ fn forward_nvst_captured_sample<R: NvstSessionResources>(
         .checked_duration_since(state.input_origin)
         .unwrap_or_default();
     let timestamp_us = u64::try_from(captured.as_micros()).unwrap_or(u64::MAX);
+    if let CapturedInput::Text(text) = sample.input {
+        return resources.send_captured_text(text, timestamp_us);
+    }
     resources.send_captured_input(captured_input_packet(sample.input, timestamp_us))
 }
 
 fn captured_input_packet(input: CapturedInput, timestamp_us: u64) -> Vec<u8> {
     match input {
+        CapturedInput::Text(_) => unreachable!("text uses typed transport submission"),
         CapturedInput::Key {
             virtual_key,
             modifiers,
@@ -2824,6 +2860,18 @@ mod tests {
 
         fn apply_cursor(&self, _bytes: Vec<u8>) {}
 
+        fn send_captured_text(
+            &self,
+            text: opennow_streamer_protocol::text_input::UnicodeText,
+            _timestamp_us: u64,
+        ) -> Result<(), String> {
+            self.captured_inputs
+                .lock()
+                .unwrap()
+                .push(text.as_str().as_bytes().to_vec());
+            Ok(())
+        }
+
         fn recover(&self) -> Result<(), String> {
             self.recoveries.fetch_add(1, Ordering::Relaxed);
             Ok(())
@@ -3079,6 +3127,29 @@ mod tests {
         assert_eq!(
             u64::from_be_bytes(inputs[0][14..22].try_into().unwrap()),
             4_242
+        );
+    }
+
+    #[test]
+    fn captured_unicode_text_uses_typed_transport_without_key_expansion() {
+        use opennow_streamer_protocol::text_input::TextInputSlot;
+        let resources = TestNvstResources::default();
+        let state = NvstMediaFeedbackState::new(true);
+        let text = TextInputSlot::default()
+            .submit("é世界🦫".as_bytes())
+            .unwrap();
+        forward_nvst_captured_sample(
+            &resources,
+            CapturedInputSample {
+                input: CapturedInput::Text(text),
+                captured_at: state.input_origin,
+            },
+            &state,
+        )
+        .unwrap();
+        assert_eq!(
+            *resources.captured_inputs.lock().unwrap(),
+            vec!["é世界🦫".as_bytes().to_vec()]
         );
     }
 

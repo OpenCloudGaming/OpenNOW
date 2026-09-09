@@ -29,6 +29,8 @@ class StreamVideoItem : public QQuickItem
     Q_PROPERTY(bool inputEnabled READ inputEnabled WRITE setInputEnabled
                    NOTIFY inputEnabledChanged)
     Q_PROPERTY(bool captureActive READ captureActive NOTIFY captureActiveChanged)
+    Q_PROPERTY(bool clipboardPaste READ clipboardPaste WRITE setClipboardPaste
+                   NOTIFY clipboardPasteChanged)
     Q_PROPERTY(QString inputCaptureError READ inputCaptureError NOTIFY inputCaptureErrorChanged)
     Q_PROPERTY(bool relativeMouse READ relativeMouse WRITE setRelativeMouse
                    NOTIFY relativeMouseChanged)
@@ -64,6 +66,8 @@ public:
     [[nodiscard]] bool inputEnabled() const;
     void setInputEnabled(bool enabled);
     [[nodiscard]] bool captureActive() const;
+    [[nodiscard]] bool clipboardPaste() const;
+    void setClipboardPaste(bool enabled);
     [[nodiscard]] QString inputCaptureError() const;
     [[nodiscard]] bool relativeMouse() const;
     void setRelativeMouse(bool relative);
@@ -111,6 +115,8 @@ signals:
     void renderCallbackAvailableChanged();
     void inputEnabledChanged();
     void captureActiveChanged();
+    void clipboardPasteChanged();
+    void clipboardPasteFailed();
     void inputCaptureErrorChanged();
     void relativeMouseChanged();
     void shortcutBindingsChanged();
@@ -173,6 +179,7 @@ private:
     std::unique_ptr<class MacPointerCapture> m_macPointer;
     bool m_usesMacPointerCapture = false;
     bool m_inputEnabled = true;
+    bool m_clipboardPaste = false;
     bool m_frameGeneration = false;
     bool m_metalFxUpscaling = false;
     int m_upscalingSharpness = 10;

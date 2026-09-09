@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 pub mod log;
+pub mod text_input;
 
 pub const PROTOCOL_VERSION: u64 = 6;
 

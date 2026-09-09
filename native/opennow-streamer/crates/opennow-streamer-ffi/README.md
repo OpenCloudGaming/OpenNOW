@@ -13,6 +13,50 @@ This crate exposes `opennow-streamer-core::Engine` as a C-compatible in-process 
 - `opennow_streamer_destroy` consumes the handle exactly once, waits for the engine and both callback queues to drain, and then returns. No call may race with destroy. A null handle is rejected; reusing a destroyed pointer is caller-side undefined behavior.
 - Every exported function catches Rust panics before they can unwind through the C ABI. A worker-thread panic closes the command queue.
 
+### Clipboard text (ABI 9)
+
+Rebuild Qt and the native library together with ABI version 9. Existing structure
+layouts and the graphics render-command version are unchanged. The new export is
+`opennow_streamer_submit_text(const OpenNowStreamer *, const uint8_t *, size_t)`;
+`OPENNOW_STREAMER_MAX_TEXT_BYTES` is 65,536.
+
+The caller supplies nonempty, strictly valid UTF-8 without embedded NUL or a trailing
+terminator. The library copies the complete text before returning; it never truncates,
+normalizes newlines, interprets text as key combinations, or logs its contents.
+Null pointers return `NULL_POINTER`, empty/invalid/NUL-containing text returns
+`INVALID_CONFIG`, and lengths over the bound return `MESSAGE_TOO_LARGE` before the
+buffer is read. An oversized length takes precedence over a null text pointer.
+
+Admission requires active embedded capture and negotiated session input. Otherwise
+it returns `CLOSED`. One paste occupies a capture-queue entry and retains a single-flight
+reservation through the ordered transport command queue. A second paste or a full
+256-entry capture queue returns `QUEUE_FULL` without admitting any text, evicting
+gameplay input, or triggering the control-overflow shutdown. `OK` acknowledges whole
+local admission, not delivery to or insertion by the remote application.
+
+Capture loss, input unavailability, and session teardown cancel text still pending
+in capture or transport. Readiness changes are generation-scoped, so stale session
+events cannot enable or cancel text belonging to a replacement session. A paste
+already submitted to SCTP cannot be recalled.
+Transport checks capacity for the complete encoded batch across all eight negotiated
+SCTP channels before writing any chunk. This matches str0m 0.23's 128-KiB aggregate
+send-buffer limit; the receive worker owns all writes and does not poll the network
+between chunks. Insufficient capacity rejects the whole batch and emits a payload-free
+diagnostic rather than retrying a paste that might duplicate text. Connection failure
+can interrupt remote delivery; the protocol provides no paste-level acknowledgement
+or rollback.
+
+Each packet uses ordered reliable control command `0x0206` and remote-input type 23,
+with raw UTF-8 bodies of at most `0x3f8` (1,016) bytes. Overflow cuts back to the nearest
+code-point boundary (at most three bytes). The RI header is a big-endian 32-bit length
+of `4 + body bytes`, then little-endian type 23. Following the verified
+`NvstRemoteInput.utf8TextPackets` / `sendFramedRemoteInput` reference contract, inner
+packets up to 1,007 bytes receive a type-14 envelope with zero padding to
+`((inner_length + 8) / 8) * 8 + 8` bytes and one little-endian 64-bit capture timestamp.
+Larger inner packets (text bodies of 1,000–1,016 bytes) are sent bare. The older
+serialized ASCII text command retains its key-stroke conversion for compatibility;
+the typed clipboard path never enters that codec or its raw-input diagnostics.
+
 ### Controller rumble events
 
 The additive `controller-rumble` JSON event uses the existing `event_callback` (no C ABI

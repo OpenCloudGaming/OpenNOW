@@ -1,7 +1,5 @@
 use std::collections::VecDeque;
-#[cfg(target_os = "windows")]
-use std::sync::atomic::AtomicU64;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, RecvError, Sender, SyncSender, TrySendError, sync_channel};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
@@ -403,6 +401,7 @@ pub struct EncodedFrame {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CapturedInput {
+    Text(opennow_streamer_protocol::text_input::UnicodeText),
     Key {
         virtual_key: u16,
         modifiers: u16,
@@ -455,9 +454,60 @@ pub struct CapturedInputSample {
 pub struct CapturedInputQueue {
     pending: Mutex<VecDeque<CapturedInputSample>>,
     overflowed: AtomicBool,
+    text_ready: AtomicBool,
+    text_generation: AtomicU64,
+    text_slot: opennow_streamer_protocol::text_input::TextInputSlot,
 }
 
 impl CapturedInputQueue {
+    pub fn set_text_ready(&self, generation: u64, ready: bool) {
+        let mut pending = self
+            .pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let previous = self.text_generation.load(Ordering::Relaxed);
+        if generation.wrapping_sub(previous) > u64::MAX / 2 {
+            return;
+        }
+        self.text_generation.store(generation, Ordering::Relaxed);
+        self.text_ready.store(ready, Ordering::Release);
+        if !ready || generation != previous {
+            self.text_slot.cancel();
+            pending.retain(|sample| !matches!(sample.input, CapturedInput::Text(_)));
+        }
+    }
+
+    pub(crate) fn submit_text(
+        &self,
+        bytes: &[u8],
+    ) -> Result<(), opennow_streamer_protocol::text_input::TextInputError> {
+        use opennow_streamer_protocol::text_input::TextInputError;
+        let mut pending = self
+            .pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !self.text_ready.load(Ordering::Acquire) {
+            return Err(TextInputError::Unavailable);
+        }
+        if pending.len() >= CAPTURED_INPUT_CAPACITY {
+            return Err(TextInputError::Busy);
+        }
+        let text = self.text_slot.submit(bytes)?;
+        pending.push_back(CapturedInputSample {
+            input: CapturedInput::Text(text),
+            captured_at: Instant::now(),
+        });
+        Ok(())
+    }
+
+    pub(crate) fn discard_text(&self) {
+        self.text_slot.cancel();
+        self.pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|sample| !matches!(sample.input, CapturedInput::Text(_)));
+    }
+
     pub fn push(&self, input: CapturedInput) {
         self.push_sample(CapturedInputSample {
             input,
