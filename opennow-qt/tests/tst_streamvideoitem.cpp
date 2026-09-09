@@ -68,6 +68,12 @@ public:
         ++finishCount;
     }
 
+    void setUpscalingEnhancement(int sharpness, int denoise) override
+    {
+        upscaleSharpness.store(sharpness);
+        upscaleDenoise.store(denoise);
+    }
+
     void releaseResources() override
     {
         ++releaseCount;
@@ -83,6 +89,8 @@ public:
     std::atomic_int viewportHeight = 0;
     std::atomic_int upscaleWidth = 0;
     std::atomic_int upscaleHeight = 0;
+    std::atomic_int upscaleSharpness = 0;
+    std::atomic_int upscaleDenoise = 0;
 };
 
 // Exercise the production import/material with a GPU texture, without a remote
@@ -944,6 +952,33 @@ private slots:
         QVERIFY(!item.frameGeneration());
     }
 
+    void upscalingEnhancementIsBoundedAndPreservesPresenter()
+    {
+        StreamVideoItem item;
+        const auto callback = std::make_shared<TestRenderCallback>();
+        item.setRenderCallback(callback);
+        QSignalSpy sharpnessChanges(&item, &StreamVideoItem::upscalingSharpnessChanged);
+        QSignalSpy denoiseChanges(&item, &StreamVideoItem::upscalingDenoiseChanged);
+        QCOMPARE(item.upscalingSharpness(), 10);
+        QCOMPARE(item.upscalingDenoise(), 0);
+        item.setUpscalingSharpness(10);
+        item.setUpscalingDenoise(0);
+        QCOMPARE(sharpnessChanges.size(), 0);
+        QCOMPARE(denoiseChanges.size(), 0);
+        item.setUpscalingSharpness(100);
+        item.setUpscalingDenoise(100);
+        QCOMPARE(item.upscalingSharpness(), 15);
+        QCOMPARE(item.upscalingDenoise(), 20);
+        item.setUpscalingSharpness(-1);
+        item.setUpscalingDenoise(-1);
+        QCOMPARE(item.upscalingSharpness(), 0);
+        QCOMPARE(item.upscalingDenoise(), 0);
+        QCOMPARE(sharpnessChanges.size(), 2);
+        QCOMPARE(denoiseChanges.size(), 2);
+        QVERIFY(!item.metalFxUpscaling());
+        QCOMPARE(item.renderCallback(), callback);
+    }
+
     void frameGenerationIsOptInAndDoesNotReplaceThePresenter()
     {
         StreamVideoItem item;
@@ -1041,6 +1076,11 @@ private slots:
                 const auto target = (QSizeF(viewport.size()) * window.effectiveDevicePixelRatio()).toSize();
                 QCOMPARE(callback->upscaleWidth.load(), target.width());
                 QCOMPARE(callback->upscaleHeight.load(), target.height());
+                item->setUpscalingSharpness(visible ? 15 : 0);
+                item->setUpscalingDenoise(visible ? 20 : 0);
+                item->requestFrame();
+                QTRY_COMPARE(callback->upscaleSharpness.load(), visible ? 15 : 0);
+                QTRY_COMPARE(callback->upscaleDenoise.load(), visible ? 20 : 0);
                 QCOMPARE(item->renderCallback(), callback);
                 QCOMPARE(item->videoSize(), QSize(320, 180));
             }

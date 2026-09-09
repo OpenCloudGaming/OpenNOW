@@ -157,6 +157,8 @@ public:
         if (m_rhi->backend() == QRhi::Metal && !m_upscalingTarget.isEmpty()) {
             command.upscale_width = static_cast<std::uint32_t>(m_upscalingTarget.width());
             command.upscale_height = static_cast<std::uint32_t>(m_upscalingTarget.height());
+            command.upscale_sharpness = static_cast<std::uint32_t>(m_upscalingSharpness);
+            command.upscale_denoise = static_cast<std::uint32_t>(m_upscalingDenoise);
         }
         finishFrame();
         OpenNowStreamerFrameInfo info{};
@@ -323,6 +325,16 @@ public:
         m_upscalingTarget = target;
     }
 
+    void setUpscalingEnhancement(int sharpness, int denoise) override
+    {
+        sharpness = qBound(0, sharpness, 15);
+        denoise = qBound(0, denoise, 20);
+        if (m_upscalingSharpness == sharpness && m_upscalingDenoise == denoise) return;
+        m_upscalingSharpness = sharpness;
+        m_upscalingDenoise = denoise;
+        if (!m_upscalingTarget.isEmpty()) m_resetFrameGeneration = true;
+    }
+
     void setFrameGeneration(bool enabled, double refreshRate) override
     {
         if (m_frameGeneration != enabled || m_refreshRate != refreshRate)
@@ -446,6 +458,8 @@ private:
     double m_refreshRate = 0;
     bool m_frameGeneration = false;
     QSize m_upscalingTarget;
+    int m_upscalingSharpness = 10;
+    int m_upscalingDenoise = 0;
     bool m_frameGenerationFailed = false;
     bool m_resetFrameGeneration = false;
     bool m_outputDirty = false;

@@ -9,10 +9,10 @@
 extern "C" {
 #endif
 
-#define OPENNOW_STREAMER_FFI_ABI_VERSION 7u
+#define OPENNOW_STREAMER_FFI_ABI_VERSION 8u
 #define OPENNOW_STREAMER_VULKAN_DEVICE_INFO_VERSION 1u
 #define OPENNOW_STREAMER_GRAPHICS_CONTEXT_VERSION 3u
-#define OPENNOW_STREAMER_RENDER_COMMAND_VERSION 2u
+#define OPENNOW_STREAMER_RENDER_COMMAND_VERSION 3u
 
 #define OPENNOW_STREAMER_GRAPHICS_API_D3D11 1u
 #define OPENNOW_STREAMER_GRAPHICS_API_VULKAN 2u
@@ -98,6 +98,7 @@ typedef struct OpenNowStreamerGraphicsContext {
  * One shell-owned in-flight slot and the current QRhi native command buffer.
  * record_frame writes conversion/synchronization commands into this command stream; it never
  * creates, commits, submits, or waits for another command buffer.
+ * Sharpness is 0..15 (default 10), denoise is 0..20 (default 0); both apply before MetalFX.
  */
 typedef struct OpenNowStreamerRecordCommand {
     uint32_t version;
@@ -106,6 +107,8 @@ typedef struct OpenNowStreamerRecordCommand {
     uint32_t frame_slot;
     uint32_t upscale_width;
     uint32_t upscale_height;
+    uint32_t upscale_sharpness;
+    uint32_t upscale_denoise;
 } OpenNowStreamerRecordCommand;
 
 typedef struct OpenNowStreamerFrameInfo {

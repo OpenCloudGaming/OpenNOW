@@ -9,7 +9,11 @@
   },
   "upscalingSettings": {
     "title": "Upscaling",
-    "description": "Spatial upscaling for enlarged video. Uses extra GPU time; falls back to normal scaling when MetalFX is unavailable."
+    "description": "Spatial upscaling for enlarged video. Uses extra GPU time; falls back to normal scaling when MetalFX is unavailable.",
+    "clarity": "Clarity",
+    "clarityDescription": "Sharpen details before MetalFX upscaling. Set to 0 to disable.",
+    "noiseReduction": "Noise Reduction",
+    "noiseReductionDescription": "Smooth noise before MetalFX upscaling. Set to 0 to disable."
   },
   "recordingSettings": {
     "recordingElapsed": "Recording · %1",

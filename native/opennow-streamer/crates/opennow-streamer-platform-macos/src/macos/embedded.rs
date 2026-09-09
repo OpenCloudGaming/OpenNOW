@@ -30,7 +30,7 @@ use objc2_metal::{
 use crate::color::ConversionParameters;
 use crate::failure::FailureReporter;
 use crate::format::{MetalFrameFormat, VideoBitDepth, VideoColorSpace};
-use crate::spatial::SpatialConfig;
+use crate::spatial::{SpatialConfig, SpatialControls};
 
 use super::mailbox::LatestMailbox;
 use super::metalfx::{self, SpatialResources};
@@ -79,21 +79,41 @@ vertex VertexOut embedded_video_vertex(uint vertex_id [[vertex_id]]) {
     return out;
 }
 
-fragment float4 embedded_video_fragment(
-    VertexOut in [[stage_in]],
-    texture2d<float> luma [[texture(0)]],
-    texture2d<float> chroma [[texture(1)]],
-    constant ConversionParameters &parameters [[buffer(0)]]) {
+float3 embedded_video_rgb(
+    texture2d<float> luma,
+    texture2d<float> chroma,
+    float2 uv,
+    constant ConversionParameters &parameters) {
     constexpr sampler linear_sampler(coord::normalized, address::clamp_to_edge, filter::linear);
-    float y = luma.sample(linear_sampler, in.texcoord).r * parameters.sample_scale;
-    float2 cbcr = chroma.sample(linear_sampler, in.texcoord).rg * parameters.sample_scale;
+    float y = luma.sample(linear_sampler, uv).r * parameters.sample_scale;
+    float2 cbcr = chroma.sample(linear_sampler, uv).rg * parameters.sample_scale;
     y = (y - parameters.luma_offset) * parameters.luma_scale;
     cbcr = (cbcr - parameters.chroma_offset) * parameters.chroma_scale;
     float3 rgb = float3(
         y + parameters.red_cr * cbcr.y,
         y + parameters.green_cb * cbcr.x + parameters.green_cr * cbcr.y,
         y + parameters.blue_cb * cbcr.x);
-    return float4(saturate(rgb), 1.0);
+    return saturate(rgb);
+}
+
+fragment float4 embedded_video_fragment(
+    VertexOut in [[stage_in]],
+    texture2d<float> luma [[texture(0)]],
+    texture2d<float> chroma [[texture(1)]],
+    constant ConversionParameters &parameters [[buffer(0)]],
+    constant float2 &controls [[buffer(1)]]) {
+    float3 center = embedded_video_rgb(luma, chroma, in.texcoord, parameters);
+    if (controls.x == 0.0 && controls.y == 0.0) {
+        return float4(center, 1.0);
+    }
+    float2 texel = max(1.0 / float2(luma.get_width(), luma.get_height()), float2(1.0 / 8192.0));
+    float3 blur = (
+        embedded_video_rgb(luma, chroma, in.texcoord + float2(texel.x, 0.0), parameters) +
+        embedded_video_rgb(luma, chroma, in.texcoord - float2(texel.x, 0.0), parameters) +
+        embedded_video_rgb(luma, chroma, in.texcoord + float2(0.0, texel.y), parameters) +
+        embedded_video_rgb(luma, chroma, in.texcoord - float2(0.0, texel.y), parameters)) * 0.25;
+    float3 denoised = mix(center, blur, clamp(controls.y, 0.0, 1.0));
+    return float4(clamp(denoised + (denoised - blur) * controls.x, float3(0.0), float3(1.0)), 1.0);
 }
 "#;
 
@@ -192,6 +212,8 @@ pub struct AdoptedMetalContext {
     pub command_buffer: *mut c_void,
     pub upscale_width: u32,
     pub upscale_height: u32,
+    pub upscale_sharpness: u32,
+    pub upscale_denoise: u32,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -278,6 +300,7 @@ impl MetalFrame {
             command_buffer,
             frame_slot,
             (adopted.upscale_width, adopted.upscale_height),
+            SpatialControls::new(adopted.upscale_sharpness, adopted.upscale_denoise),
             Arc::clone(&self.counters),
             Arc::clone(&self.failures),
         )?;
@@ -419,6 +442,7 @@ impl MetalState {
         command_buffer: &ProtocolObject<dyn MTLCommandBuffer>,
         frame_slot: u32,
         upscale_size: (u32, u32),
+        controls: SpatialControls,
         counters: Arc<Counters>,
         failures: Arc<FailureReporter>,
     ) -> Result<MetalRecordedFrame, BackendError> {
@@ -485,6 +509,12 @@ impl MetalState {
                 })?
         };
 
+        let controls = if spatial.is_some() {
+            controls
+        } else {
+            SpatialControls::new(0, 0)
+        };
+
         let render_pass = MTLRenderPassDescriptor::renderPassDescriptor();
         let attachments = render_pass.colorAttachments();
         let attachment = unsafe { attachments.objectAtIndexedSubscript(0) };
@@ -508,6 +538,11 @@ impl MetalState {
                 NonNull::from(&parameters).cast::<c_void>(),
                 std::mem::size_of_val(&parameters),
                 0,
+            );
+            encoder.setFragmentBytes_length_atIndex(
+                NonNull::from(&controls).cast::<c_void>(),
+                std::mem::size_of_val(&controls),
+                1,
             );
         }
         encoder.setViewport(MTLViewport {
@@ -719,6 +754,186 @@ mod tests {
         kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,
     };
     use objc2_metal::MTLPixelFormat;
+
+    #[test]
+    #[ignore = "requires a Mac with MetalFX spatial scaling and GPU readback"]
+    fn spatial_source_shader_matches_reference_controls_without_rebuilding_pipeline() {
+        use super::*;
+        use objc2_metal::{
+            MTLBlitCommandEncoder, MTLBuffer, MTLCommandQueue, MTLCreateSystemDefaultDevice,
+            MTLOrigin, MTLRegion, MTLResourceOptions, MTLSize,
+        };
+
+        let device = MTLCreateSystemDefaultDevice().expect("Metal device");
+        assert!(metalfx::supports_device(&device));
+        let queue = device.newCommandQueue().unwrap();
+        let mut state = MetalState::new(&device, 1).unwrap();
+        let region = MTLRegion {
+            origin: MTLOrigin { x: 0, y: 0, z: 0 },
+            size: MTLSize {
+                width: 64,
+                height: 64,
+                depth: 1,
+            },
+        };
+        for format in [BiPlanarFormat::Nv12Full, BiPlanarFormat::P010Full] {
+            let output_format = format.output_format();
+            state.ensure_pipeline(output_format).unwrap();
+            let pipeline = state.pipelines[output_format.pipeline_index()]
+                .as_ref()
+                .unwrap()
+                .clone();
+            let config = SpatialConfig::new(64, 64, 128, 128, output_format).unwrap();
+            let spatial = state.spatial_resources(0, Some(config)).unwrap();
+            let parameters = format.parameters(VideoColorSpace::Bt709);
+            let texture = |pixel_format, usage| {
+                let descriptor = unsafe {
+                    MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(
+                        pixel_format,
+                        64,
+                        64,
+                        false,
+                    )
+                };
+                descriptor.setStorageMode(MTLStorageMode::Shared);
+                descriptor.setUsage(usage);
+                device.newTextureWithDescriptor(&descriptor).unwrap()
+            };
+            let luma = texture(MTLPixelFormat::R32Float, MTLTextureUsage::ShaderRead);
+            let chroma = texture(MTLPixelFormat::RG32Float, MTLTextureUsage::ShaderRead);
+            let output = spatial.input.clone();
+            let mut luma_data = vec![0.3 / parameters.sample_scale; 64 * 64];
+            luma_data[32 * 64 + 32] = 0.4 / parameters.sample_scale;
+            luma_data[32 * 64 + 48] = 1.0 / parameters.sample_scale;
+            luma_data[32 * 64 + 16] = 0.0;
+            let chroma_data = vec![parameters.chroma_offset / parameters.sample_scale; 64 * 64 * 2];
+            unsafe {
+                luma.replaceRegion_mipmapLevel_withBytes_bytesPerRow(
+                    region,
+                    0,
+                    NonNull::new(luma_data.as_mut_ptr()).unwrap().cast(),
+                    64 * 4,
+                );
+                chroma.replaceRegion_mipmapLevel_withBytes_bytesPerRow(
+                    region,
+                    0,
+                    NonNull::new(chroma_data.as_ptr().cast_mut())
+                        .unwrap()
+                        .cast(),
+                    64 * 8,
+                );
+            }
+            for (sharpness, denoise, expected) in [
+                (0, 0, 0.4),
+                (10, 0, 0.5),
+                (15, 0, 0.55),
+                (0, 10, 0.335),
+                (10, 10, 0.37),
+                (15, 20, 0.3),
+                (0, 0, 0.4),
+            ] {
+                let controls = SpatialControls::new(sharpness, denoise);
+                let reused = state.spatial_resources(0, Some(config)).unwrap();
+                assert_eq!(
+                    Retained::as_ptr(&spatial.input),
+                    Retained::as_ptr(&reused.input)
+                );
+                assert_eq!(
+                    Retained::as_ptr(&spatial.output),
+                    Retained::as_ptr(&reused.output)
+                );
+                state.ensure_pipeline(output_format).unwrap();
+                assert_eq!(
+                    Retained::as_ptr(&pipeline),
+                    Retained::as_ptr(
+                        state.pipelines[output_format.pipeline_index()]
+                            .as_ref()
+                            .unwrap()
+                    )
+                );
+                let command = queue.commandBuffer().unwrap();
+                let pass = MTLRenderPassDescriptor::renderPassDescriptor();
+                let attachment = unsafe { pass.colorAttachments().objectAtIndexedSubscript(0) };
+                attachment.setTexture(Some(&output));
+                attachment.setLoadAction(MTLLoadAction::DontCare);
+                attachment.setStoreAction(MTLStoreAction::Store);
+                let encoder = command.renderCommandEncoderWithDescriptor(&pass).unwrap();
+                encoder.setRenderPipelineState(&pipeline);
+                unsafe {
+                    encoder.setFragmentTexture_atIndex(Some(&luma), 0);
+                    encoder.setFragmentTexture_atIndex(Some(&chroma), 1);
+                    encoder.setFragmentBytes_length_atIndex(
+                        NonNull::from(&parameters).cast(),
+                        std::mem::size_of_val(&parameters),
+                        0,
+                    );
+                    encoder.setFragmentBytes_length_atIndex(
+                        NonNull::from(&controls).cast(),
+                        std::mem::size_of_val(&controls),
+                        1,
+                    );
+                    encoder.drawPrimitives_vertexStart_vertexCount(
+                        MTLPrimitiveType::Triangle,
+                        0,
+                        3,
+                    );
+                }
+                encoder.endEncoding();
+                assert!(reused.encode(&command));
+                let readback = device
+                    .newBufferWithLength_options(64 * 64 * 4, MTLResourceOptions::StorageModeShared)
+                    .unwrap();
+                let blit = command.blitCommandEncoder().unwrap();
+                unsafe {
+                    blit.copyFromTexture_sourceSlice_sourceLevel_sourceOrigin_sourceSize_toBuffer_destinationOffset_destinationBytesPerRow_destinationBytesPerImage(
+                        &output, 0, 0, region.origin, region.size, &readback, 0, 64 * 4, 64 * 64 * 4,
+                    );
+                }
+                blit.endEncoding();
+                command.commit();
+                command.waitUntilCompleted();
+                assert_eq!(command.status(), MTLCommandBufferStatus::Completed);
+                let maximum = if output_format == MetalFrameFormat::Rgba8Unorm {
+                    255
+                } else {
+                    1023
+                };
+                let shift = if maximum == 255 { 8 } else { 10 };
+                for (x, y, expected) in [
+                    (32, 32, expected),
+                    (0, 0, 0.3),
+                    (
+                        48,
+                        32,
+                        ((1.0 - 0.7 * controls.denoise) * (1.0 + controls.sharpness)
+                            - 0.3 * controls.sharpness)
+                            .clamp(0.0, 1.0),
+                    ),
+                    (
+                        16,
+                        32,
+                        (0.3 * controls.denoise * (1.0 + controls.sharpness)
+                            - 0.3 * controls.sharpness)
+                            .clamp(0.0, 1.0),
+                    ),
+                ] {
+                    let pixel =
+                        unsafe { *readback.contents().cast::<u32>().as_ptr().add(y * 64 + x) };
+                    for channel in [
+                        pixel & maximum,
+                        (pixel >> shift) & maximum,
+                        (pixel >> (2 * shift)) & maximum,
+                    ] {
+                        assert!(
+                            (channel as f32 / maximum as f32 - expected).abs()
+                                <= 1.5 / maximum as f32,
+                            "{format:?} {controls:?} ({x},{y}): {channel}/{maximum} != {expected}"
+                        );
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     #[ignore = "requires a Mac with MetalFX spatial scaling"]

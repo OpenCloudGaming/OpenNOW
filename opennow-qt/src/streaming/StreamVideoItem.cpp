@@ -211,6 +211,34 @@ QVariantMap StreamVideoItem::frameGenerationStats() const
     return m_renderCallback ? m_renderCallback->frameGenerationStats() : QVariantMap{};
 }
 
+int StreamVideoItem::upscalingSharpness() const
+{
+    return m_upscalingSharpness;
+}
+
+void StreamVideoItem::setUpscalingSharpness(int value)
+{
+    value = qBound(0, value, 15);
+    if (m_upscalingSharpness == value) return;
+    m_upscalingSharpness = value;
+    emit upscalingSharpnessChanged();
+    update();
+}
+
+int StreamVideoItem::upscalingDenoise() const
+{
+    return m_upscalingDenoise;
+}
+
+void StreamVideoItem::setUpscalingDenoise(int value)
+{
+    value = qBound(0, value, 20);
+    if (m_upscalingDenoise == value) return;
+    m_upscalingDenoise = value;
+    emit upscalingDenoiseChanged();
+    update();
+}
+
 bool StreamVideoItem::metalFxUpscaling() const
 {
     return m_metalFxUpscaling;

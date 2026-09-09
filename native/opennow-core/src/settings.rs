@@ -261,6 +261,8 @@ impl SettingsStore {
         );
         normalize_choice(&mut self.values, "frameGeneration", &["off", "2x"], "off");
         normalize_choice(&mut self.values, "upscaling", &["off", "metalfx"], "off");
+        clamp_integer(&mut self.values, "upscalingSharpness", 0, 15, 10);
+        clamp_integer(&mut self.values, "upscalingDenoise", 0, 20, 0);
         for key in ["decoderPreference", "encoderPreference"] {
             normalize_choice(
                 &mut self.values,
@@ -768,7 +770,8 @@ fn legacy_data_dirs(primary: &Path) -> Vec<PathBuf> {
 fn defaults() -> Map<String, Value> {
     json!({
         "resolution":"1920x1080", "aspectRatio":"16:9", "posterSizeScale":1.05,
-        "fps":60, "frameGeneration":"off", "upscaling":"off", "maxBitrateMbps":75, "recordingBitrateMbps":null,
+        "fps":60, "frameGeneration":"off", "upscaling":"off", "upscalingSharpness":10, "upscalingDenoise":0,
+        "maxBitrateMbps":75, "recordingBitrateMbps":null,
         "recordingResolution":"720p", "recordingFps":30, "streamClientMode":"native",
         "replayBufferEnabled":false, "replayBufferSeconds":30, "replayBufferMemoryMiB":256,
         "nativeVideoBackend":"auto", "nativeStreamerExecutablePath":"", "audioOutputDevice":"",
@@ -1598,6 +1601,40 @@ mod tests {
         .unwrap();
         let store = SettingsStore::load(Some(directory.clone())).unwrap();
         assert_eq!(store.all()["upscaling"], json!("off"));
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn upscaling_enhancement_defaults_bounds_and_persistence() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = env::temp_dir().join(format!("opennow-upscaling-enhancement-{unique}"));
+        let mut store = SettingsStore::load(Some(directory.clone())).unwrap();
+        for (key, maximum, fallback) in
+            [("upscalingSharpness", 15, 10), ("upscalingDenoise", 20, 0)]
+        {
+            assert_eq!(store.all()[key], json!(fallback));
+            assert_eq!(store.set(key, json!(-1)).unwrap(), json!(0));
+            assert_eq!(store.set(key, json!(maximum + 1)).unwrap(), json!(maximum));
+            for invalid in [json!("7"), json!(true), json!(null), json!(1.5)] {
+                assert_eq!(store.set(key, invalid).unwrap(), json!(fallback));
+            }
+            assert_eq!(store.set(key, json!(7)).unwrap(), json!(7));
+        }
+        let store = SettingsStore::load(Some(directory.clone())).unwrap();
+        assert_eq!(store.all()["upscalingSharpness"], json!(7));
+        assert_eq!(store.all()["upscalingDenoise"], json!(7));
+        fs::write(
+            directory.join("settings.json"),
+            serde_json::to_vec(&json!({"upscalingSharpness": 100, "upscalingDenoise": -2}))
+                .unwrap(),
+        )
+        .unwrap();
+        let store = SettingsStore::load(Some(directory.clone())).unwrap();
+        assert_eq!(store.all()["upscalingSharpness"], json!(15));
+        assert_eq!(store.all()["upscalingDenoise"], json!(0));
         let _ = fs::remove_dir_all(directory);
     }
 

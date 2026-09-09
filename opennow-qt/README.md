@@ -154,6 +154,10 @@ black/white levels on the intended GPU and display in windowed and fullscreen mo
 ## macOS upscaling
 
 Settings → Stream → Upscaling offers **Off** (default) and **MetalFX** on macOS.
+The **Clarity** slider runs from 0–15 (default 10), and **Noise Reduction** from
+0–20 (default 0), matching OpenNOW-Mac. Both are enabled only with MetalFX selected;
+zero disables that enhancement. Values persist when upscaling is turned off and
+update both desktop and console stream surfaces without restarting the session.
 The console-oriented Stream settings expose the same saved preference. Linux and
 Windows show no upscaling control and never enable MetalFX, even if a settings file
 was copied from a Mac.

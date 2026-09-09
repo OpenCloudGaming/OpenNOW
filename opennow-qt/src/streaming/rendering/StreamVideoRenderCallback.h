@@ -21,6 +21,7 @@ public:
     virtual void setClip(bool, int) {}
     virtual void setFrameGeneration(bool, double) {}
     virtual void setUpscalingTarget(const QSize &) {}
+    virtual void setUpscalingEnhancement(int, int) {}
     virtual bool needsFrame() const { return false; }
     virtual void frameSwapped() {}
     virtual QVariantMap frameGenerationStats() const { return {}; }
