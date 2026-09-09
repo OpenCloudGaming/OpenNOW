@@ -155,7 +155,8 @@ First update in the test. sequence `1`, buttons `0x1000`, timestamp `0x015b171a`
 
 The inner player index is hardcoded `03`. Slot and bitmap from the 38-byte type-12 packet are not copied.
 
-`INPUT_HAPTICS_ENABLED` encodes to `22 03 01 00 01` when the flag is on.
+`INPUT_HAPTICS_ENABLED` uses remote-input type 13 under command `0x0206`, with a
+little-endian u16 enable flag and timestamp envelope; see Type 6 haptics enable above.
 
 ## Media control, not NVB features
 
