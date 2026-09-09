@@ -368,7 +368,7 @@ FocusScope {
                 width: parent.width; height: 36; radius: 9
                 color: playHover.hovered ? "#FFFFFF" : "#F2FFFFFF"
                 Text { x: 12; anchors.verticalCenter: parent.verticalCenter; text: "▶  " + qsTr("Play"); color: "#0B0F1A"; font.family: DesktopTokens.bodyFont; font.pixelSize: DesktopTokens.captionSize; font.weight: Font.Black }
-                Text { anchors.right: parent.right; anchors.rightMargin: 12; anchors.verticalCenter: parent.verticalCenter; text: qsTr("Enter"); color: "#5A0B0F1A"; font.family: DesktopTokens.monoFont; font.pixelSize: DesktopTokens.tinySize; font.weight: Font.Bold }
+                KeyboardGlyph { anchors.right: parent.right; anchors.rightMargin: 12; anchors.verticalCenter: parent.verticalCenter; shortcut: "Enter"; keySize: 20; ink: "#0B0F1A"; Accessible.name: qsTr("Enter") }
                 HoverHandler { id: playHover; cursorShape: Qt.PointingHandCursor }
                 TapHandler { onTapped: root.activateContext("play") }
             }
@@ -388,7 +388,8 @@ FocusScope {
                     background: Rectangle { radius: 7; color: parent.hovered || parent.activeFocus || (modelData.action === "collection" && root.collectionOpen) ? "#14FFFFFF" : "transparent" }
                     contentItem: Item {
                         Text { anchors.left: parent.left; anchors.verticalCenter: parent.verticalCenter; text: modelData.label; color: DesktopTokens.textBody; font.family: DesktopTokens.bodyFont; font.pixelSize: DesktopTokens.captionSize }
-                        Text { anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter; text: modelData.key; color: DesktopTokens.textFaint; font.family: DesktopTokens.monoFont; font.pixelSize: DesktopTokens.tinySize }
+                        KeyboardGlyph { visible: modelData.action !== "collection"; anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter; shortcut: modelData.key; keySize: 18; ink: DesktopTokens.textMuted }
+                        Text { visible: modelData.action === "collection"; anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter; text: modelData.key; color: DesktopTokens.textFaint; font.family: DesktopTokens.monoFont; font.pixelSize: DesktopTokens.tinySize }
                     }
                     onClicked: {
                         if (modelData.action === "collection")

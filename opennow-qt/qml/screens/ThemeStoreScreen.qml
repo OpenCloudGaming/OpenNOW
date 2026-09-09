@@ -300,8 +300,8 @@ FocusScope {
         anchors.fill: parent
         title: qsTr("Theme store")
         currentRoute: "store"
-        leftHints: [{glyph:"Y", label:qsTr("Filter")}, {glyph:"−", label:qsTr("Preview")}]
-        rightHints: [{glyph:"A", label:qsTr("Apply")}, {glyph:"+", label:qsTr("Menu")}]
+        leftHints: [{glyph:"Y", label:qsTr("Filter")}, {glyph:"VIEW", label:qsTr("Preview")}]
+        rightHints: [{glyph:"A", label:qsTr("Apply")}, {glyph:"MENU", label:qsTr("Menu")}]
         onRouteRequested: route => AppController.navigate(route)
     }
 }

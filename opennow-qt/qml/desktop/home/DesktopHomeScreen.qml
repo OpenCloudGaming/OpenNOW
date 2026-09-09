@@ -333,10 +333,7 @@ FocusScope {
                                     spacing: 8
                                     DesktopGlyph { width: 10; height: 12; icon: "desktop-play.svg" }
                                     Text { text: qsTr("Start"); color: "#0B0F1A"; font.family: Theme.bodyFont; font.pixelSize: 14; font.weight: Font.ExtraBold }
-                                    Rectangle {
-                                        width: 41; height: 19; radius: 5; color: "#1A0B0F1A"
-                                        Text { anchors.centerIn: parent; text: qsTr("ENTER"); color: "#B80B0F1A"; font.family: Theme.monoFont; font.pixelSize: 9; font.weight: Font.Bold }
-                                    }
+                                    KeyboardGlyph { shortcut: "Enter"; keySize: 20; ink: "#0B0F1A"; Accessible.name: qsTr("ENTER") }
                                 }
                                 HoverHandler { id: startHover; cursorShape: Qt.PointingHandCursor; onHoveredChanged: if (hovered) root.setSelection(0, 0) }
                                 TapHandler { id: startTap; onTapped: root.startHero() }

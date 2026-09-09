@@ -9,10 +9,11 @@ Button {
     property bool compact: false
     property bool menu: false
     property string suffix: ""
+    property string keySequence: ""
 
     implicitHeight: menu ? DesktopTokens.px(40) : compact ? DesktopTokens.px(30) : DesktopTokens.controlHeight
-    implicitWidth: Math.max(compact ? 68 : 84, label.implicitWidth + 28
-        + (menu ? 22 : 0) + (suffix !== "" ? suffixText.implicitWidth + 18 : 0))
+    implicitWidth: Math.max(compact ? 68 : 84, (keySequence !== "" ? bindingGlyph.implicitWidth : label.implicitWidth) + 28
+        + (menu ? 22 : 0) + (suffix !== "" ? suffixGlyph.implicitWidth + 8 : 0))
     hoverEnabled: true
     padding: 0
     leftPadding: 14
@@ -42,9 +43,10 @@ Button {
             spacing: 8
             Text {
                 id: label
+                visible: control.keySequence === ""
                 text: control.text
                 width: Math.max(0, Math.min(implicitWidth, control.availableWidth
-                    - (control.menu ? 22 : 0) - (control.suffix !== "" ? suffixText.implicitWidth + 18 : 0)))
+                    - (control.menu ? 22 : 0) - (control.suffix !== "" ? suffixGlyph.implicitWidth + 8 : 0)))
                 elide: Text.ElideRight
                 color: control.primary ? Theme.focusText : control.danger ? (Theme.lightMode ? "#9F1239" : "#FFC2C2") : Theme.label
                 font.family: Theme.bodyFont
@@ -52,22 +54,21 @@ Button {
                 font.weight: Font.Bold
                 anchors.verticalCenter: parent.verticalCenter
             }
-            Rectangle {
-                visible: control.suffix !== ""
-                width: suffixText.implicitWidth + 10
-                height: 18
-                radius: 5
-                color: control.primary ? Qt.rgba(Theme.focusText.r, Theme.focusText.g, Theme.focusText.b, 0.08) : DesktopTokens.raised
+            KeyboardGlyph {
+                id: bindingGlyph
+                visible: control.keySequence !== ""
+                shortcut: control.keySequence
+                keySize: DesktopTokens.px(22)
+                ink: control.primary ? Theme.focusText : Theme.label
                 anchors.verticalCenter: parent.verticalCenter
-                Text {
-                    id: suffixText
-                    anchors.centerIn: parent
-                    text: control.suffix
-                    color: control.primary ? Theme.focusText : Theme.textMuted
-                    font.family: Theme.monoFont
-                    font.pixelSize: 9
-                    font.weight: Font.Bold
-                }
+            }
+            KeyboardGlyph {
+                id: suffixGlyph
+                visible: control.suffix !== ""
+                shortcut: control.suffix
+                keySize: 18
+                ink: control.primary ? Theme.focusText : Theme.textMuted
+                anchors.verticalCenter: parent.verticalCenter
             }
             DesktopSettingsIcon {
                 visible: control.menu

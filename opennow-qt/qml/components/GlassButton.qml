@@ -5,6 +5,7 @@ import OpenNOW
 Button {
     id: root
     property string glyph: "A"
+    property string shortcutText: ""
     property bool primary: false
     property bool danger: false
     property bool currentItem: false
@@ -14,7 +15,7 @@ Button {
     leftPadding: 14
     rightPadding: 24
     focusPolicy: Qt.StrongFocus
-    Accessible.name: I18n.source(text, I18n.revision)
+    Accessible.name: I18n.source(text, I18n.revision) + (shortcutText !== "" ? " · " + shortcutText : "")
     Accessible.role: Accessible.Button
 
     background: Rectangle {
@@ -30,18 +31,13 @@ Button {
 
     contentItem: Row {
         spacing: 12
-        Rectangle {
+        ControllerGlyph {
             anchors.verticalCenter: parent.verticalCenter
-            width: 28; height: 28; radius: 14
-            color: root.primary ? Theme.faceText : Theme.face
-            Text {
-                anchors.centerIn: parent
-                text: root.glyph
-                color: root.primary ? Theme.face : Theme.faceText
-                font.family: Theme.displayFont
-                font.pixelSize: 12
-                font.weight: Font.Black
-            }
+            visible: root.glyph !== ""
+            glyph: root.glyph
+            label: ""
+            glyphSize: 28
+            glyphColor: root.primary ? Theme.faceText : Theme.face
         }
         Text {
             anchors.verticalCenter: parent.verticalCenter
@@ -50,6 +46,13 @@ Button {
             font.family: Theme.bodyFont
             font.pixelSize: 17
             font.weight: Font.Bold
+        }
+        KeyboardGlyph {
+            visible: root.shortcutText !== ""
+            anchors.verticalCenter: parent.verticalCenter
+            shortcut: root.shortcutText
+            keySize: 26
+            ink: root.primary ? Theme.faceText : Theme.label
         }
     }
 }

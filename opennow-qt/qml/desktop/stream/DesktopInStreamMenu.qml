@@ -134,7 +134,7 @@ FocusScope {
         width: Math.min(760, root.width - 32)
         height: Math.min(460, root.height - 32)
         radius: 20
-        color: "#F00A0E15"
+        color: Theme.lightMode ? Theme.shell : "#F00A0E15"
         border.width: 1
         border.color: "#29FFFFFF"
         opacity: reveal.progress
@@ -281,8 +281,8 @@ FocusScope {
                             width: parent.width - 164
                             anchors.verticalCenter: parent.verticalCenter
                             text: actionButton.modelData.title
-                            color: actionButton.modelData.primary ? DesktopTokens.shell
-                                : actionButton.modelData.danger ? "#FFB4AE" : DesktopTokens.textHigh
+                            color: actionButton.modelData.primary ? "#0B0F1A"
+                                : actionButton.modelData.danger ? (Theme.lightMode ? "#9F1239" : "#FFB4AE") : DesktopTokens.textHigh
                             font.family: DesktopTokens.bodyFont
                             font.pixelSize: 12
                             font.weight: Font.Bold
@@ -292,6 +292,7 @@ FocusScope {
                             anchors.right: parent.right
                             anchors.rightMargin: 14
                             width: 100
+                            visible: actionButton.index === 1 || actionButton.index === 2
                             horizontalAlignment: Text.AlignRight
                             anchors.verticalCenter: parent.verticalCenter
                             text: actionButton.modelData.detail
@@ -301,6 +302,14 @@ FocusScope {
                             font.pixelSize: 8
                             font.weight: Font.Bold
                             font.letterSpacing: 0.7
+                        }
+                        KeyboardGlyph {
+                            visible: actionButton.index === 0 || actionButton.index >= 3
+                            anchors.right: parent.right; anchors.rightMargin: 14
+                            anchors.verticalCenter: parent.verticalCenter
+                            shortcut: visible ? actionButton.modelData.detail : ""
+                            keySize: 18
+                            ink: actionButton.modelData.primary ? "#0B0F1A" : DesktopTokens.textMuted
                         }
                         HoverHandler { id: actionHover; onHoveredChanged: if (hovered) root.selectedIndex = actionButton.index }
                         TapHandler { id: actionTap; onTapped: root.runAction(actionButton.index) }
@@ -387,10 +396,7 @@ FocusScope {
                     border.color: root.selectedIndex === 5 ? DesktopTokens.focus : "#17FFFFFF"
                     Text { x: 14; y: 13; text: qsTr("STREAM STATS OVERLAY"); color: DesktopTokens.textFaint; font.family: DesktopTokens.monoFont; font.pixelSize: 8; font.weight: Font.Bold; font.letterSpacing: 1 }
                     Text { x: 14; y: 39; text: qsTr("See frame rate, latency and bitrate\nwithout leaving the game."); color: DesktopTokens.textBody; font.family: DesktopTokens.bodyFont; font.pixelSize: 11; font.weight: Font.DemiBold; lineHeight: 1.25 }
-                    Rectangle {
-                        x: 14; y: 83; width: 26; height: 21; radius: 6; color: "#12FFFFFF"; border.width: 1; border.color: "#20FFFFFF"
-                        Text { anchors.centerIn: parent; text: "F3"; color: DesktopTokens.textHigh; font.family: DesktopTokens.monoFont; font.pixelSize: 9; font.weight: Font.Bold }
-                    }
+                    KeyboardGlyph { x: 14; y: 83; shortcut: "F3"; keySize: 21; ink: DesktopTokens.textHigh }
                     Text { x: 49; y: 87; text: qsTr("Cycle"); color: DesktopTokens.textMuted; font.family: DesktopTokens.bodyFont; font.pixelSize: 10; font.weight: Font.DemiBold }
                     Text { anchors.right: parent.right; anchors.rightMargin: 14; y: 87; text: qsTr("Hold F3 for details"); color: DesktopTokens.textFaint; font.family: DesktopTokens.bodyFont; font.pixelSize: 10 }
                     HoverHandler { id: statsHover; onHoveredChanged: if (hovered) root.selectedIndex = 5 }
@@ -435,14 +441,12 @@ FocusScope {
         y: panel.y + panel.height - 27
         spacing: 22
         Repeater {
-            model: ["Esc  " + qsTr("Resume"), "Ctrl K  " + qsTr("Commands"), "Ctrl Shift Q  " + qsTr("End session")]
-            delegate: Text {
-                required property string modelData
-                text: modelData
-                color: DesktopTokens.textFaint
-                font.family: DesktopTokens.monoFont
-                font.pixelSize: 9
-                font.weight: Font.DemiBold
+            model: [{key:"Esc",label:qsTr("Resume")}, {key:"Ctrl K",label:qsTr("Commands")}, {key:"Ctrl Shift Q",label:qsTr("End session")}]
+            delegate: DesktopKeyHint {
+                required property var modelData
+                keyText: modelData.key
+                label: modelData.label
+                compact: true
             }
         }
     }

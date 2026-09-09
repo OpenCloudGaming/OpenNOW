@@ -61,7 +61,7 @@ FocusScope {
     }
 
     function shortcut(title, description, key) {
-        return {t:title, d:description, v:shortcutBinding.value(key) || qsTr("Not set"), key:key, action:"shortcut-editor"}
+        return {t:title, d:description, v:shortcutBinding.value(key) || qsTr("Not set"), key:key, action:"shortcut-editor", shortcut:true}
     }
 
     function aspectForResolution(value) {

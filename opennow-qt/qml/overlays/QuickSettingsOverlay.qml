@@ -285,7 +285,7 @@ FocusScope {
                 visible: root.controllers.length === 0
                 color: activeFocus ? "#FFFFFF" : "#14FFFFFF"
                 activeFocusOnTab: visible
-                Rectangle { x: 14; anchors.verticalCenter: parent.verticalCenter; width: 30; height: 30; radius: 15; color: controllerButton.activeFocus ? DesktopTokens.shell : "#FFFFFF"; Text { anchors.centerIn: parent; text: "A"; color: controllerButton.activeFocus ? "#FFFFFF" : DesktopTokens.shell; font.family: DesktopTokens.monoFont; font.pixelSize: 11; font.weight: Font.Black } }
+                ControllerGlyph { x: 14; anchors.verticalCenter: parent.verticalCenter; glyph: "A"; label: ""; glyphSize: 30; glyphColor: controllerButton.activeFocus ? DesktopTokens.shell : "#FFFFFF" }
                 Text { x: 56; anchors.verticalCenter: parent.verticalCenter; text: qsTr("Connect player two"); color: controllerButton.activeFocus ? DesktopTokens.shell : DesktopTokens.textHigh; font.family: DesktopTokens.bodyFont; font.pixelSize: 15; font.weight: Font.ExtraBold }
                 TapHandler { onTapped: { AppController.showOverlay(""); AppController.navigate("joining") } }
             }
@@ -304,12 +304,7 @@ FocusScope {
                         delegate: Row {
                             required property var modelData
                             spacing: 8
-                            Rectangle {
-                                width: modelData.key === "RT" ? 31 : 26; height: 26
-                                radius: modelData.key === "RT" ? 8 : 13
-                                color: "#FFFFFF"
-                                Text { anchors.centerIn: parent; text: modelData.key; color: DesktopTokens.shell; font.family: DesktopTokens.monoFont; font.pixelSize: 11; font.weight: Font.Black }
-                            }
+                            ControllerGlyph { glyph: modelData.key; label: ""; glyphSize: 26; glyphColor: "#FFFFFF" }
                             Text { anchors.verticalCenter: parent.verticalCenter; text: modelData.label; color: DesktopTokens.textMuted; font.family: DesktopTokens.bodyFont; font.pixelSize: 14; font.weight: Font.Bold }
                         }
                     }

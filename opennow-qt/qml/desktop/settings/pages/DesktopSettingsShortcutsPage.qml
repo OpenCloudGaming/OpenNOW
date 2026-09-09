@@ -17,7 +17,7 @@ Column {
             {h:"APP", rows:[{l:"Command palette",k:"Ctrl  K"},{l:"Search this page",k:"/"},{l:"Collapse or expand the sidebar",k:"Ctrl  B"},{l:"Switch to console mode",k:"F10"},{l:"Settings",k:"Ctrl  ,"},{l:"Quit OpenNOW",k:"Ctrl  Q"}]},
             {h:"IN STREAM", rows:[{l:"Session menu",k:"Ctrl+G"},{l:"Stats overlay",k:String(shortcutsPageRoot.settingsScreen.valueSetting("shortcutToggleStats","Ctrl+N"))},{l:"Toggle fullscreen",k:String(shortcutsPageRoot.settingsScreen.valueSetting("shortcutToggleFullscreen","F11"))},{l:"Grab or release the mouse",k:String(shortcutsPageRoot.settingsScreen.valueSetting("shortcutTogglePointerLock","F8"))},{l:"Screenshot the stream",k:String(shortcutsPageRoot.settingsScreen.valueSetting("shortcutScreenshot","Ctrl+F11"))},{l:qsTr("Toggle recording"),k:String(shortcutsPageRoot.settingsScreen.valueSetting("shortcutToggleRecording","F12")),setting:"shortcutToggleRecording"},{l:qsTr("Save replay clip"),k:String(shortcutsPageRoot.settingsScreen.valueSetting("shortcutSaveClip","Ctrl+F12")),setting:"shortcutSaveClip"},{l:"End the session",k:String(shortcutsPageRoot.settingsScreen.valueSetting("shortcutStopStream","Ctrl+Shift+Q"))}]},
             {h:"LIBRARY AND STORE", rows:[{l:"Move through covers",k:"Arrows"},{l:"Play or resume",k:"Enter"},{l:"Game details",k:"Space"},{l:"Toggle favourite",k:"F"},{l:"Context menu",k:"Shift  F10"}]},
-            {h:"GAMEPAD · CONSOLE MODE", rows:[{l:"Select · back",k:"A · B"},{l:"Details · favourite",k:"X · Y"},{l:"Switch tab",k:"LB · RB"},{l:"Stats overlay",k:"Guide"}]}
+            {h:"GAMEPAD · CONSOLE MODE", rows:[{l:"Select · back",k:"A · B",gamepad:true},{l:"Details · favourite",k:"X · Y",gamepad:true},{l:"Switch tab",k:"LB · RB",gamepad:true},{l:"Stats overlay",k:"Guide",gamepad:true}]}
         ]
     }
 
@@ -70,15 +70,19 @@ Column {
                         required property int index
                         width: parent.width; paperStyle: true; glyph: "keyboard"; title: modelData.l
                         rowHeight: DesktopTokens.px(56)
-                        Rectangle {
+                        Row {
                             visible: !modelData.setting
-                            width: Math.max(DesktopTokens.px(72), keyCapText.implicitWidth+28); height: DesktopTokens.px(32)
-                            radius: 10; color: DesktopTokens.raised; border.width: 1; border.color: Theme.seam
-                            Text { id: keyCapText; anchors.centerIn: parent; text: modelData.k; color: Theme.label; font.family: Theme.monoFont; font.pixelSize: DesktopTokens.px(12); font.weight: Font.DemiBold }
+                            spacing: 6
+                            KeyboardGlyph { visible: !modelData.gamepad; shortcut: modelData.gamepad ? "" : modelData.k; keySize: DesktopTokens.px(26) }
+                            Repeater {
+                                model: modelData.gamepad ? modelData.k.toUpperCase().split(" · ") : []
+                                ControllerGlyph { required property string modelData; glyph: modelData; label: ""; glyphSize: DesktopTokens.px(26) }
+                            }
                         }
                         DesktopSettingsButton {
                             visible: Boolean(modelData.setting)
                             text: modelData.k
+                            keySequence: text
                             Accessible.name: modelData.l + ": " + text
                             onClicked: shortcutEditor.edit(modelData.setting, modelData.l)
                         }

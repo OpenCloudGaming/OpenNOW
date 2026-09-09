@@ -279,7 +279,7 @@ FocusScope {
                         DesktopButton {
                             id: primaryAction
                             Layout.fillWidth: true; Layout.preferredHeight: 52
-                            primary: true; glyph: "desktop-play.svg"; text: qsTr("Play"); shortcutText: qsTr("ENTER")
+                            primary: true; glyph: "desktop-play.svg"; text: qsTr("Play"); shortcutText: qsTr("ENTER"); shortcutSequence: "Enter"
                             enabled: root.game !== null && root.gameAvailable
                             onClicked: root.playRequested()
                         }

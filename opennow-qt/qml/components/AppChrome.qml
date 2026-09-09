@@ -8,11 +8,11 @@ Item {
     property bool bottomVisible: true
     property var leftHints: [
         { glyph: "Y", label: qsTr("Search") },
-        { glyph: "−", label: qsTr("Details") }
+        { glyph: "VIEW", label: qsTr("Details") }
     ]
     property var rightHints: [
         { glyph: "A", label: qsTr("Play") },
-        { glyph: "+", label: qsTr("Menu") }
+        { glyph: "MENU", label: qsTr("Menu") }
     ]
     property date now: new Date()
     readonly property var profile: ShellStore.authSession && ShellStore.authSession.user
@@ -101,10 +101,9 @@ Item {
                     font.weight: Font.Bold
                 }
             }
-            Rectangle {
+            ControllerGlyph {
                 anchors.verticalCenter: parent.verticalCenter
-                width: 29; height: 24; radius: 7; color: Theme.face
-                Text { anchors.centerIn: parent; text: "LT"; color: Theme.faceText; font.family: Theme.bodyFont; font.pixelSize: 11; font.weight: Font.Black }
+                glyph: "LT"; label: ""; glyphSize: 28
             }
         }
     }
@@ -141,10 +140,9 @@ Item {
             id: statusRow
             anchors.centerIn: parent
             spacing: 16
-            Rectangle {
+            ControllerGlyph {
                 anchors.verticalCenter: parent.verticalCenter
-                width: 31; height: 24; radius: 7; color: Theme.face
-                Text { anchors.centerIn: parent; text: "RT"; color: Theme.faceText; font.family: Theme.bodyFont; font.pixelSize: 11; font.weight: Font.Black }
+                glyph: "RT"; label: ""; glyphSize: 28
             }
             Row {
                 spacing: 6; anchors.verticalCenter: parent.verticalCenter

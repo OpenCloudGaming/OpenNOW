@@ -31,7 +31,7 @@ FocusScope {
         {label:qsTr("Take screenshot"), action:"screenshot", value:ShellStore.settings.shortcutScreenshot || "Ctrl+F11"},
         {label:ShellStore.streamRecordingActive ? "Stop recording" : "Start recording", action:"recording", value:ShellStore.settings.shortcutToggleRecording || "F12"}
     ] : [
-        {label:qsTr("Guide overlay"), action:"none", value:qsTr("Guide / Ctrl+G")},
+        {label:qsTr("Guide overlay"), action:"none", glyph:"GUIDE", value:"Ctrl+G"},
         {label:qsTr("Toggle fullscreen"), action:"fullscreen", value:ShellStore.settings.shortcutToggleFullscreen || "F11"},
         {label:qsTr("Stats overlay"), action:"stats", value:ShellStore.settings.shortcutToggleStats || "Ctrl+N"},
         {label:qsTr("Pointer lock"), action:"none", value:ShellStore.settings.shortcutTogglePointerLock || "F8"},
@@ -150,8 +150,11 @@ FocusScope {
                     delegate: GlassButton {
                         required property var modelData
                         required property int index
+                        readonly property string shortcutValue: String(modelData.value || "")
+                        shortcutText: shortcutValue !== "" && InputPromptIcons.keysFor(shortcutValue).every(key => InputPromptIcons.keyboardAsset(key) !== "")
+                            ? shortcutValue : ""
                         width: ListView.view.width
-                        text: I18n.source(modelData.label, I18n.revision) + (modelData.value ? "  ·  " + I18n.source(modelData.value, I18n.revision) : "")
+                        text: I18n.source(modelData.label, I18n.revision) + (modelData.value && shortcutText === "" ? "  ·  " + I18n.source(modelData.value, I18n.revision) : "")
                         glyph: modelData.glyph || (index === 0 ? "A" : "")
                         primary: index === 0
                         danger: Boolean(modelData.danger)

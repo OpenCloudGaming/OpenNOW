@@ -156,6 +156,6 @@ FocusScope {
         }
     }
 
-    HintBar { anchors.horizontalCenter: parent.horizontalCenter; y: parent.height - height - 84; hints: [{glyph:"A",label:qsTr("Open")},{glyph:"X",label:qsTr("Export screenshot")},{glyph:"R",label:qsTr("Refresh thumbnail")},{glyph:"Y",label:qsTr("Delete")},{glyph:"B",label:qsTr("Back")}] }
+    HintBar { anchors.horizontalCenter: parent.horizontalCenter; y: parent.height - height - 84; hints: [{glyph:"A",label:qsTr("Open")},{glyph:"X",label:qsTr("Export screenshot")},{glyph:"R",keyboard:true,label:qsTr("Refresh thumbnail")},{glyph:"Y",label:qsTr("Delete")},{glyph:"B",label:qsTr("Back")}] }
     AppChrome { anchors.fill: parent; title: qsTr("Captures"); currentRoute: "media"; onRouteRequested: route => AppController.navigate(route) }
 }
