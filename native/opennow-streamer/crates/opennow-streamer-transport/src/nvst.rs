@@ -51,6 +51,7 @@ use super::{
 };
 
 const RTP_FIXED_HEADER_LEN: usize = 12;
+pub const MAX_NVST_VIDEO_PEER_PORTS: u16 = 16;
 const SRTP_AES_CM_HMAC_SHA1_80_TAG_LEN: usize = 10;
 /// RFC 7714 `AEAD_AES_*_GCM` profiles carry a 16-byte authentication tag.
 const SRTP_AEAD_AES_GCM_TAG_LEN: usize = 16;
@@ -782,6 +783,7 @@ pub type SharedNvstFeedback = Arc<NvstFeedbackState>;
 pub struct NvstVideoConfig {
     client_udp_port: u16,
     video_peer: SocketAddr,
+    video_peer_port_end: Option<u16>,
     bundle_peer: Option<SocketAddr>,
     srtp: NvstSrtpMaterial,
     ping_payload: Vec<u8>,
@@ -816,6 +818,7 @@ impl fmt::Debug for NvstVideoConfig {
             .debug_struct("NvstVideoConfig")
             .field("client_udp_port", &self.client_udp_port)
             .field("video_peer", &self.video_peer)
+            .field("video_peer_port_end", &self.video_peer_port_end)
             .field("bundle_peer", &self.bundle_peer)
             .field("srtp", &self.srtp)
             .field("ping_payload_len", &self.ping_payload.len())
@@ -958,6 +961,14 @@ impl NvstVideoConfig {
         if video_peer_port == 0 {
             return Err(NvstConfigError::OutOfRange {
                 field: "videoPeerPort",
+            });
+        }
+        let video_peer_port_end = optional_u16(object, "videoPeerPortEnd")?;
+        if video_peer_port_end.is_some_and(|end| {
+            end < video_peer_port || end - video_peer_port >= MAX_NVST_VIDEO_PEER_PORTS
+        }) {
+            return Err(NvstConfigError::OutOfRange {
+                field: "videoPeerPortEnd",
             });
         }
         let bundle_peer =
@@ -1133,6 +1144,7 @@ impl NvstVideoConfig {
         Ok(Self {
             client_udp_port,
             video_peer: SocketAddr::new(peer_ip, video_peer_port),
+            video_peer_port_end,
             bundle_peer,
             srtp,
             ping_payload,
@@ -1166,6 +1178,14 @@ impl NvstVideoConfig {
 
     pub fn video_peer(&self) -> SocketAddr {
         self.video_peer
+    }
+
+    fn video_peer_ports(&self) -> std::ops::RangeInclusive<u16> {
+        self.video_peer.port()..=self.video_peer_port_end.unwrap_or(self.video_peer.port())
+    }
+
+    fn accepts_video_source(&self, source: SocketAddr) -> bool {
+        source.ip() == self.video_peer.ip() && self.video_peer_ports().contains(&source.port())
     }
 
     pub fn bundle_peer(&self) -> SocketAddr {
@@ -3533,7 +3553,7 @@ impl NvstVideoReceiver {
         datagram: &[u8],
         now: Instant,
     ) -> Vec<NvstReceiveEvent> {
-        if source != self.config.video_peer {
+        if !self.config.accepts_video_source(source) {
             return vec![NvstReceiveEvent::Dropped(
                 NvstDropReason::UnexpectedSource {
                     expected: self.config.video_peer,
@@ -4648,7 +4668,7 @@ fn log_udp_receiver_start(
 fn log_udp_first_inbound(
     role: &str,
     local_port: u16,
-    peer: SocketAddr,
+    expected_peer: bool,
     source: SocketAddr,
     bytes: usize,
     origin: Instant,
@@ -4657,9 +4677,8 @@ fn log_udp_first_inbound(
         "INFO",
         "nvst-udp",
         &format!(
-            "first-inbound role={role} local_port={local_port} source_port={} expected_peer={} bytes={bytes} elapsed_ms={} authentication=not-yet-checked",
+            "first-inbound role={role} local_port={local_port} source_port={} expected_peer={expected_peer} bytes={bytes} elapsed_ms={} authentication=not-yet-checked",
             source.port(),
-            source == peer,
             origin.elapsed().as_millis()
         ),
     );
@@ -5907,7 +5926,7 @@ fn run_nvst_webrtc_bundle(
                         log_udp_first_inbound(
                             "bundle",
                             local_port,
-                            bundle_peer,
+                            source == bundle_peer,
                             source,
                             length,
                             transport_origin,
@@ -6092,24 +6111,28 @@ fn run_nvst_udp_receiver(
                     &transaction_id,
                 );
                 let sent_at = Instant::now();
-                if let Err(error) = socket.send_to(&ping, receiver.config.video_peer) {
-                    log_udp_error("video-natt-send", local_port, &error);
-                    eprintln!("NVST NATT send failed: {error}");
-                    forward_optional(&event_sender, receiver.stop());
-                    return;
+                for port in receiver.config.video_peer_ports() {
+                    let peer = SocketAddr::new(receiver.config.video_peer.ip(), port);
+                    if let Err(error) = socket.send_to(&ping, peer) {
+                        log_udp_error("video-natt-send", local_port, &error);
+                        eprintln!("NVST NATT send failed: {error}");
+                        forward_optional(&event_sender, receiver.stop());
+                        return;
+                    }
+                    pings_sent += 1;
                 }
                 ping_tracker.sent(transaction_id, sent_at);
-                pings_sent += 1;
             } else {
-                if let Err(error) =
-                    socket.send_to(&receiver.config.ping_payload, receiver.config.video_peer)
-                {
-                    log_udp_error("video-ping-send", local_port, &error);
-                    eprintln!("NVST ping send failed: {error}");
-                    forward_optional(&event_sender, receiver.stop());
-                    return;
+                for port in receiver.config.video_peer_ports() {
+                    let peer = SocketAddr::new(receiver.config.video_peer.ip(), port);
+                    if let Err(error) = socket.send_to(&receiver.config.ping_payload, peer) {
+                        log_udp_error("video-ping-send", local_port, &error);
+                        eprintln!("NVST ping send failed: {error}");
+                        forward_optional(&event_sender, receiver.stop());
+                        return;
+                    }
+                    pings_sent += 1;
                 }
-                pings_sent += 1;
             }
             last_ping = now;
         }
@@ -6121,7 +6144,7 @@ fn run_nvst_udp_receiver(
                     log_udp_first_inbound(
                         "video",
                         local_port,
-                        receiver.config.video_peer,
+                        receiver.config.accepts_video_source(source),
                         source,
                         length,
                         transport_origin,
@@ -6131,12 +6154,11 @@ fn run_nvst_udp_receiver(
                         receiver.config.video_peer
                     );
                 }
-                if source != receiver.config.video_peer {
+                let expected_source = receiver.config.accepts_video_source(source);
+                if !expected_source {
                     wrong_source += 1;
                 }
-                if source == receiver.config.video_peer
-                    && let Some(credentials) = stun_credentials.as_ref()
-                {
+                if expected_source && let Some(credentials) = stun_credentials.as_ref() {
                     let received_at = Instant::now();
                     if let Some(elapsed) =
                         ping_tracker.receive(&datagram[..length], source, credentials, received_at)
@@ -8873,6 +8895,171 @@ mod tests {
                     NvstRecovery::Timeout { .. }
                 ))
             ));
+        }
+    }
+
+    #[test]
+    fn video_peer_range_handoff_is_bounded_and_defaults_to_one_port() {
+        let mut handoff = legacy_handoff();
+        let single = NvstVideoConfig::from_legacy_handoff(&handoff, None).unwrap();
+        assert_eq!(single.video_peer_ports(), 5004..=5004);
+        for end in [5004, 5005, 5019] {
+            handoff["videoPeerPortEnd"] = json!(end);
+            let config = NvstVideoConfig::from_legacy_handoff(&handoff, None).unwrap();
+            assert_eq!(config.video_peer_ports(), 5004..=end);
+        }
+        for invalid in [
+            json!(0),
+            json!(5003),
+            json!(5020),
+            json!(65536),
+            json!(-1),
+            json!("5005"),
+        ] {
+            handoff["videoPeerPortEnd"] = invalid;
+            assert!(NvstVideoConfig::from_legacy_handoff(&handoff, None).is_err());
+        }
+        handoff["videoPeerPort"] = json!(65535);
+        handoff["videoPeerPortEnd"] = json!(65535);
+        assert!(NvstVideoConfig::from_legacy_handoff(&handoff, None).is_ok());
+    }
+
+    #[test]
+    fn video_peer_range_preserves_source_authentication_and_replay_checks() {
+        let mut handoff = legacy_handoff();
+        handoff["videoPeerPortEnd"] = json!(5005);
+        let config = NvstVideoConfig::from_legacy_handoff(&handoff, None).unwrap();
+        let packet = protect_for_test(
+            &test_srtp(&config),
+            build_plaintext_rtp(
+                1,
+                FLAG_SOF | FLAG_EOF | FLAG_CONTAINS_PIC_DATA,
+                1,
+                &[0, 0, 1, 0x65],
+            ),
+            0,
+        );
+        let mut receiver = NvstVideoReceiver::new(config);
+        for source in [
+            SocketAddr::new(peer().ip(), 5003),
+            SocketAddr::new(peer().ip(), 5006),
+            "192.0.2.21:5005".parse().unwrap(),
+        ] {
+            assert!(matches!(
+                receiver
+                    .process_datagram(source, &packet, Instant::now())
+                    .as_slice(),
+                [NvstReceiveEvent::Dropped(
+                    NvstDropReason::UnexpectedSource { .. }
+                )]
+            ));
+        }
+        let alternate = SocketAddr::new(peer().ip(), 5005);
+        let mut corrupted = packet.clone();
+        *corrupted.last_mut().unwrap() ^= 1;
+        assert!(matches!(
+            receiver
+                .process_datagram(alternate, &corrupted, Instant::now())
+                .as_slice(),
+            [NvstReceiveEvent::Dropped(
+                NvstDropReason::AuthenticationFailed
+            )]
+        ));
+        assert!(matches!(
+            receiver
+                .process_datagram(alternate, &packet, Instant::now())
+                .as_slice(),
+            [NvstReceiveEvent::Frame(_)]
+        ));
+        assert!(matches!(
+            receiver
+                .process_datagram(peer(), &packet, Instant::now())
+                .as_slice(),
+            [NvstReceiveEvent::Dropped(NvstDropReason::ReplayRejected)]
+        ));
+    }
+
+    #[test]
+    fn mjolnir_punches_negotiated_ports_before_receiving_video_at_normal_and_vpn_sizes() {
+        for packet_size in [1280, 1232] {
+            for use_second_port in [false, true] {
+                let (second, first) = reserve_nvst_socket_pair().expect("server port pair");
+                let first_port = first.local_addr().unwrap().port();
+                let second_port = second.local_addr().unwrap().port();
+                let server = if use_second_port { &second } else { &first };
+                server
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                let client = UdpSocket::bind("127.0.0.1:0").unwrap();
+                let mut handoff = legacy_handoff();
+                handoff["clientUdpPort"] = json!(client.local_addr().unwrap().port());
+                handoff["videoPeerIp"] = json!("127.0.0.1");
+                handoff["videoPeerPort"] = json!(first_port);
+                if use_second_port {
+                    handoff["videoPeerPortEnd"] = json!(second_port);
+                }
+                handoff["packetSize"] = json!(packet_size);
+                let mut config = NvstVideoConfig::from_legacy_handoff(&handoff, None).unwrap();
+                config.stun_credentials = Some(stun_credentials());
+                config.ping_payload = b"setup-ping".to_vec();
+                let packet = protect_for_test(
+                    &test_srtp(&config),
+                    build_plaintext_rtp(
+                        1,
+                        FLAG_SOF | FLAG_EOF | FLAG_CONTAINS_PIC_DATA,
+                        42,
+                        &[0, 0, 1, 0x65],
+                    ),
+                    0,
+                );
+                let (media_consumer, media_receiver) = mpsc::sync_channel(1);
+                let (event_sender, _event_receiver) = mpsc::channel();
+                let session =
+                    spawn_nvst_mjolnir_receiver(client, config, media_consumer, event_sender)
+                        .unwrap();
+                let mut datagram = [0_u8; 512];
+                let (length, client_address) = server
+                    .recv_from(&mut datagram)
+                    .expect("NAT probe to selected server port");
+                let (_, username) =
+                    find_stun_attribute(&datagram[..length], STUN_ATTR_USERNAME).unwrap();
+                assert_eq!(username, b"setup-ping:loc1");
+                assert!(valid_stun_fingerprint(&datagram[..length]));
+                assert!(valid_stun_message_integrity(
+                    &datagram[..length],
+                    stun_credentials().remote_password.as_bytes()
+                ));
+                let transaction_id = [0x11; 12];
+                let request = build_authenticated_stun_packet(
+                    STUN_BINDING_REQUEST,
+                    &transaction_id,
+                    stun_credentials().local_password.as_bytes(),
+                    &[(STUN_ATTR_USERNAME, b"loc1:remote01".to_vec())],
+                );
+                server.send_to(&request, client_address).unwrap();
+                let deadline = Instant::now() + Duration::from_secs(2);
+                loop {
+                    assert!(Instant::now() < deadline, "STUN reply from negotiated port");
+                    let (length, source) = server.recv_from(&mut datagram).unwrap();
+                    assert_eq!(source, client_address);
+                    if datagram[..2] == STUN_BINDING_SUCCESS_RESPONSE.to_be_bytes() {
+                        assert_eq!(&datagram[8..20], &transaction_id);
+                        assert!(valid_stun_fingerprint(&datagram[..length]));
+                        assert!(valid_stun_message_integrity(
+                            &datagram[..length],
+                            stun_credentials().local_password.as_bytes()
+                        ));
+                        break;
+                    }
+                }
+                server.send_to(&packet, client_address).unwrap();
+                let frame = media_receiver
+                    .recv_timeout(Duration::from_secs(2))
+                    .expect("authenticated video from punched port");
+                assert_eq!(frame.frame_index, Some(42));
+                assert!(frame.keyframe);
+                session.stop();
+            }
         }
     }
 

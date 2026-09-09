@@ -7,6 +7,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use opennow_streamer_protocol::SessionContext;
+use opennow_streamer_transport::nvst::MAX_NVST_VIDEO_PEER_PORTS;
 use opennow_streamer_transport::{ReservedNvstBundle, nvst_video_packet_size};
 use serde_json::{Value, json};
 use tungstenite::client::IntoClientRequest;
@@ -607,12 +608,13 @@ pub fn prepare_owned_nvst(
     let setup = client.request("SETUP", &video_setup, &setup_headers, "")?;
     ensure_rtsp_ok("SETUP", &setup)?;
     let transport = header_value(&setup, "transport").unwrap_or_default();
-    let (video_peer_ip, video_peer_port) = parse_video_peer(transport).ok_or_else(|| {
-        NvstRtspError::new(
-            "missing-video-peer",
-            "SETUP did not return the NVST video peer",
-        )
-    })?;
+    let (video_peer_ip, video_peer_port, video_peer_port_end) = parse_video_peer(transport)
+        .ok_or_else(|| {
+            NvstRtspError::new(
+                "missing-video-peer",
+                "SETUP did not return the NVST video peer",
+            )
+        })?;
     let (bundle_peer_ip, bundle_peer_port) = context
         .session
         .media_connection_info
@@ -693,6 +695,7 @@ pub fn prepare_owned_nvst(
         "mjolnirUdpPort":mjolnir_port,
         "videoPeerIp":video_peer_ip,
         "videoPeerPort":video_peer_port,
+        "videoPeerPortEnd":video_peer_port_end,
         "srtpAesKeyHex":key,
         "srtpKeyId":key_id,
         "srtpSaltHex":salt,
@@ -721,7 +724,7 @@ pub fn prepare_owned_nvst(
         "INFO",
         "nvst-handoff",
         &format!(
-            "video_local_port={mjolnir_port} bundle_local_port={client_port} video_peer_port={video_peer_port} bundle_peer_port={} same_peer_host={} ping_version={ping_version} ping_bytes={} legacy_ping_payload={} srtp_profile={srtp_profile} rtcp_on_sctp={rtcp_on_sctp} sockets_retained=true reachability=unverified",
+            "video_local_port={mjolnir_port} bundle_local_port={client_port} video_peer_port={video_peer_port} video_peer_port_end={video_peer_port_end} bundle_peer_port={} same_peer_host={} ping_version={ping_version} ping_bytes={} legacy_ping_payload={} srtp_profile={srtp_profile} rtcp_on_sctp={rtcp_on_sctp} sockets_retained=true reachability=unverified",
             context
                 .session
                 .media_connection_info
@@ -1257,9 +1260,10 @@ fn official_video_setup_control(control: &str) -> String {
     }
 }
 
-fn parse_video_peer(transport: &str) -> Option<(String, u16)> {
+fn parse_video_peer(transport: &str) -> Option<(String, u16, u16)> {
     let mut ip = None;
     let mut port = None;
+    let mut port_end = None;
     for part in transport.split([';', ',']) {
         let Some((name, value)) = part.trim().split_once('=') else {
             continue;
@@ -1267,10 +1271,21 @@ fn parse_video_peer(transport: &str) -> Option<(String, u16)> {
         if name.eq_ignore_ascii_case("source") {
             ip = Some(value.trim().to_owned());
         } else if name.eq_ignore_ascii_case("X-GS-ServerPort") {
-            port = value.trim().split('-').next()?.parse().ok();
+            let (first, last) = value
+                .trim()
+                .split_once('-')
+                .unwrap_or((value.trim(), value.trim()));
+            let first = first.parse::<u16>().ok().filter(|port| *port != 0)?;
+            port = Some(first);
+            port_end = Some(
+                last.parse::<u16>()
+                    .ok()
+                    .filter(|last| *last >= first && *last - first < MAX_NVST_VIDEO_PEER_PORTS)
+                    .unwrap_or(first),
+            );
         }
     }
-    Some((ip?, port?))
+    Some((ip?, port?, port_end?))
 }
 
 fn increment_hex(value: &str) -> Option<String> {
@@ -1367,6 +1382,39 @@ mod control_ping_tests;
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn video_setup_retains_only_bounded_advertised_port_ranges() {
+        for (ports, expected) in [
+            ("5004", (5004, 5004)),
+            ("5004-5005", (5004, 5005)),
+            ("5004-5019", (5004, 5019)),
+            ("65534-65535", (65534, 65535)),
+            ("65535", (65535, 65535)),
+            ("5005-5004", (5005, 5005)),
+            ("5004-5020", (5004, 5004)),
+            ("5004-65536", (5004, 5004)),
+            ("5004-invalid", (5004, 5004)),
+            ("5004-5005-5006", (5004, 5004)),
+        ] {
+            assert_eq!(
+                parse_video_peer(&format!(
+                    "unicast;X-GS-ServerPort={ports};source=192.0.2.10"
+                )),
+                Some(("192.0.2.10".to_owned(), expected.0, expected.1)),
+                "{ports}"
+            );
+        }
+        for transport in [
+            "source=192.0.2.10",
+            "X-GS-ServerPort=5004-5005",
+            "source=192.0.2.10;X-GS-ServerPort=0-1",
+            "source=192.0.2.10;X-GS-ServerPort=65536",
+            "source=192.0.2.10;X-GS-ServerPort=invalid",
+        ] {
+            assert_eq!(parse_video_peer(transport), None, "{transport}");
+        }
+    }
 
     #[test]
     fn http_503_is_a_control_service_failure_not_a_decoder_failure() {
