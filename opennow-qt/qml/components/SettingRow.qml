@@ -270,7 +270,7 @@ ItemDelegate {
                     Rectangle { x: 16; anchors.verticalCenter: parent.verticalCenter; width: 48; height: 48; radius: 24; color: modelData.connected ? Theme.face : Theme.glass
                         Text { anchors.centerIn: parent; text: String(modelData.slot || "2"); color: modelData.connected ? Theme.faceText : Theme.textMuted; font.family: Theme.bodyFont; font.pixelSize: 18; font.weight: Font.Black }
                     }
-                    Image { x: 76; anchors.verticalCenter: parent.verticalCenter; width: 36; height: 36; source: "qrc:/qt/qml/OpenNOW/res/icons/nav-controller.svg"; opacity: modelData.connected ? 1 : 0.35 }
+                    ControllerGlyph { x: 76; anchors.verticalCenter: parent.verticalCenter; glyph: "controller"; label: ""; glyphSize: 36; opacity: modelData.connected ? 1 : 0.35 }
                     Column { x: 128; anchors.verticalCenter: parent.verticalCenter; width: parent.width - 220
                         Text { width: parent.width; text: modelData.name; color: modelData.connected ? Theme.label : Theme.textMuted; font.family: Theme.bodyFont; font.pixelSize: 17; font.weight: Font.ExtraBold; elide: Text.ElideRight }
                         Text { width: parent.width; text: modelData.connected ? qsTr("Connected") : qsTr("Press a button to join"); color: Theme.textMuted; font.family: Theme.bodyFont; font.pixelSize: 13; font.weight: Font.DemiBold; elide: Text.ElideRight }

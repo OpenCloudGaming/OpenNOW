@@ -30,18 +30,13 @@ Button {
 
     contentItem: Row {
         spacing: 12
-        Rectangle {
+        ControllerGlyph {
             anchors.verticalCenter: parent.verticalCenter
-            width: 28; height: 28; radius: 14
-            color: root.primary ? Theme.faceText : Theme.face
-            Text {
-                anchors.centerIn: parent
-                text: root.glyph
-                color: root.primary ? Theme.face : Theme.faceText
-                font.family: Theme.displayFont
-                font.pixelSize: 12
-                font.weight: Font.Black
-            }
+            visible: root.glyph !== ""
+            glyph: root.glyph
+            label: ""
+            glyphSize: 28
+            glyphColor: root.primary ? Theme.faceText : Theme.face
         }
         Text {
             anchors.verticalCenter: parent.verticalCenter

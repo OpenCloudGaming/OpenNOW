@@ -26,6 +26,16 @@ if(BUILD_TESTING)
     qt_add_shaders(opennow-hdrcolor-tests "opennow-hdrchrome-test-shaders"
         BATCHABLE PREFIX "/opennow/shaders" BASE "shaders" FILES ${OPENNOW_CHROME_SHADERS})
     find_package(Qt6 6.8 REQUIRED COMPONENTS QuickTest)
+    qt_add_executable(opennow-controllericons-tests tests/tst_controllericons.cpp)
+    target_link_libraries(opennow-controllericons-tests PRIVATE Qt6::QuickTest Qt6::Quick)
+    target_compile_definitions(opennow-controllericons-tests PRIVATE
+        OPENNOW_QML_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/qml")
+    qt_add_resources(opennow-controllericons-tests "controller-icon-test-assets"
+        PREFIX "/qt/qml/OpenNOW" FILES ${OPENNOW_CONTROLLER_ICON_FILES})
+    add_test(NAME opennow-controllericons-tests COMMAND opennow-controllericons-tests
+        -input "${CMAKE_CURRENT_SOURCE_DIR}/tests/controllericons")
+    set_tests_properties(opennow-controllericons-tests PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
     qt_add_executable(opennow-theme-tests tests/tst_theme.cpp)
     target_link_libraries(opennow-theme-tests PRIVATE Qt6::QuickTest Qt6::Quick)
     target_compile_definitions(opennow-theme-tests PRIVATE
@@ -493,6 +503,7 @@ if(BUILD_TESTING)
         TIMEOUT 30
     )
     set(OPENNOW_CI_UNIT_TEST_TARGETS
+        opennow-controllericons-tests
         opennow-waylandhdroutput-tests
         opennow-hdrcolor-tests
         opennow-theme-tests
@@ -527,6 +538,7 @@ if(BUILD_TESTING)
         # Qt's executable helper defaults to the GUI subsystem on Windows. Keep
         # test runners as console programs so CTest captures QtTest failures.
         set_target_properties(
+            opennow-controllericons-tests
             opennow-waylandhdroutput-tests
             opennow-localization-tests
             opennow-qt-tests
@@ -552,6 +564,7 @@ if(BUILD_TESTING)
                 "$<TARGET_FILE_DIR:opennow-qt>"
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "$<TARGET_FILE:Qt6::Test>"
+                "$<TARGET_FILE:Qt6::QuickTest>"
                 "$<TARGET_FILE_DIR:opennow-qt>/"
             COMMAND "${WINDEPLOYQT_EXECUTABLE}" ${OPENNOW_WINDEPLOYQT_ARGS}
                 --quick --multimedia --network --test
@@ -573,6 +586,7 @@ if(BUILD_TESTING)
             add_dependencies(opennow-qt-test-runtime opennow-msvc-runtime)
         endif()
         foreach(test_target IN ITEMS
+                opennow-controllericons-tests
                 opennow-waylandhdroutput-tests
                 opennow-hdrcolor-tests
                 opennow-localization-tests

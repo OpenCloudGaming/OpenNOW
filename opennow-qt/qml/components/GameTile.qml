@@ -77,9 +77,7 @@ ItemDelegate {
             color: Theme.face
             Row {
                 anchors.centerIn: parent; spacing: 8
-                Rectangle { width: 24; height: 24; radius: 12; color: Theme.faceText
-                    Text { anchors.centerIn: parent; text: "A"; color: Theme.face; font.family: Theme.bodyFont; font.pixelSize: 11; font.weight: Font.Black }
-                }
+                ControllerGlyph { glyph: "A"; label: ""; glyphSize: 24; glyphColor: Theme.faceText }
                 Text { id: resumeText; anchors.verticalCenter: parent.verticalCenter; text: qsTr("Jump back in!"); color: Theme.faceText; font.family: Theme.bodyFont; font.pixelSize: 14; font.weight: Font.Black }
             }
         }

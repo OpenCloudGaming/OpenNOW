@@ -1,6 +1,36 @@
 set_source_files_properties(qml/theme/Theme.qml PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
 set_source_files_properties(qml/state/ShellStore.qml PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
 set_source_files_properties(qml/desktop/components/DesktopTokens.qml PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
+set_source_files_properties(qml/components/ControllerIcons.qml PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
+
+set(OPENNOW_CONTROLLER_ICON_FILES
+    res/input-prompts/controller_playstation5-dark.svg
+    res/input-prompts/controller_playstation5.svg
+    res/input-prompts/controller_xboxseries-dark.svg
+    res/input-prompts/controller_xboxseries.svg
+    res/input-prompts/xbox_button_a-dark.svg
+    res/input-prompts/xbox_button_a.svg
+    res/input-prompts/xbox_button_b-dark.svg
+    res/input-prompts/xbox_button_b.svg
+    res/input-prompts/xbox_button_menu-dark.svg
+    res/input-prompts/xbox_button_menu.svg
+    res/input-prompts/xbox_button_view-dark.svg
+    res/input-prompts/xbox_button_view.svg
+    res/input-prompts/xbox_button_x-dark.svg
+    res/input-prompts/xbox_button_x.svg
+    res/input-prompts/xbox_button_y-dark.svg
+    res/input-prompts/xbox_button_y.svg
+    res/input-prompts/xbox_guide-dark.svg
+    res/input-prompts/xbox_guide.svg
+    res/input-prompts/xbox_lb-dark.svg
+    res/input-prompts/xbox_lb.svg
+    res/input-prompts/xbox_lt-dark.svg
+    res/input-prompts/xbox_lt.svg
+    res/input-prompts/xbox_rb-dark.svg
+    res/input-prompts/xbox_rb.svg
+    res/input-prompts/xbox_rt-dark.svg
+    res/input-prompts/xbox_rt.svg
+)
 
 qt_add_qml_module(opennow-qt
     URI OpenNOW
@@ -10,6 +40,7 @@ qt_add_qml_module(opennow-qt
         qml/components/AppChrome.qml
         qml/components/ArtworkSource.qml
         qml/components/ControllerGlyph.qml
+        qml/components/ControllerIcons.qml
         qml/components/FilterDropdown.qml
         qml/components/FocusFrame.qml
         qml/components/GameTile.qml
@@ -127,6 +158,7 @@ qt_add_qml_module(opennow-qt
         qml/state/settings/SettingsState.qml
         qml/theme/Theme.qml
     RESOURCES
+        ${OPENNOW_CONTROLLER_ICON_FILES}
         res/icons/nav-home.svg
         res/icons/nav-library.svg
         res/icons/nav-controller.svg

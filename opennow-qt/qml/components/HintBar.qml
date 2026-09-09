@@ -6,7 +6,7 @@ GlassPanel {
     Accessible.ignored: true
     property var hints: [
         { glyph: "Y", label: qsTr("Search") },
-        { glyph: "−", label: qsTr("Details") }
+        { glyph: "VIEW", label: qsTr("Details") }
     ]
     implicitWidth: hintColumn.implicitWidth + 44
     implicitHeight: 96

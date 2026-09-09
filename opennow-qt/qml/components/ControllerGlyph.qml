@@ -1,4 +1,5 @@
 import QtQuick
+import QtQuick.Window
 import OpenNOW
 
 Row {
@@ -10,23 +11,38 @@ Row {
     property real glyphSize: 26
     spacing: 8
 
-    Rectangle {
+    Item {
         width: root.glyphSize
         height: root.glyphSize
-        radius: root.glyph.length > 2 ? 7 : root.glyphSize / 2
-        color: root.glyphColor
 
-        Text {
-            anchors.centerIn: parent
-            text: root.glyph
-            color: Theme.contrastText(root.glyphColor)
-            font.family: Theme.displayFont
-            font.pixelSize: root.glyph.length > 2 ? 11 : 12
-            font.weight: Font.Black
+        Image {
+            id: icon
+            anchors.fill: parent
+            source: ControllerIcons.sourceFor(root.glyph, root.glyphColor)
+            sourceSize: Qt.size(Math.max(1, width * Screen.devicePixelRatio), Math.max(1, height * Screen.devicePixelRatio))
+            fillMode: Image.PreserveAspectFit
+            opacity: root.glyphColor.a
+        }
+
+        Rectangle {
+            anchors.fill: parent
+            visible: icon.source.toString() === "" && root.glyph !== ""
+            radius: root.glyph.length > 2 ? 7 : root.glyphSize / 2
+            color: root.glyphColor
+
+            Text {
+                anchors.centerIn: parent
+                text: root.glyph
+                color: Theme.contrastText(root.glyphColor)
+                font.family: Theme.displayFont
+                font.pixelSize: root.glyph.length > 2 ? 11 : 12
+                font.weight: Font.Black
+            }
         }
     }
 
     Text {
+        visible: root.label !== ""
         anchors.verticalCenter: parent.verticalCenter
         text: I18n.source(root.label, I18n.revision)
         color: Theme.label

@@ -143,11 +143,9 @@ FocusScope {
                 onTextEdited: root.searchQuery = text
                 onAccepted: catalog.forceActiveFocus()
                 background: Rectangle { radius: 26; color: searchField.activeFocus ? Theme.glassStrong : Qt.rgba(1, 1, 1, 0.10); border.color: searchField.activeFocus ? Theme.focus : Theme.seam; border.width: searchField.activeFocus ? 3 : 1 }
-                Rectangle {
+                ControllerGlyph {
                     x: 14; anchors.verticalCenter: parent.verticalCenter
-                    width: 26; height: 26; radius: 13
-                    color: Theme.face
-                    Text { anchors.centerIn: parent; text: "Y"; color: Theme.faceText; font.family: Theme.bodyFont; font.pixelSize: 11; font.weight: Font.Black }
+                    glyph: "Y"; label: ""; glyphSize: 26
                     TapHandler { onTapped: root.showSearchKeyboard() }
                 }
                 Item {

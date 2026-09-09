@@ -19,7 +19,9 @@ Image {
     }
     readonly property real dpr: Math.max(1, Screen.devicePixelRatio)
 
-    source: root.icon === "" ? "" : "qrc:/qt/qml/OpenNOW/res/icons/" + root.fileName
+    source: root.icon === "desktop-gamepad.svg"
+        ? ControllerIcons.sourceFor("controller", DesktopTokens.textHigh)
+        : root.icon === "" ? "" : "qrc:/qt/qml/OpenNOW/res/icons/" + root.fileName
     sourceSize: Qt.size(Math.max(1, Math.round(width * dpr)), Math.max(1, Math.round(height * dpr)))
     fillMode: Image.PreserveAspectFit
     smooth: false
