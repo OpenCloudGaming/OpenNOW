@@ -92,18 +92,16 @@ class SupporterBuildTest(unittest.TestCase):
                     test_release_metadata.BuildMetadataTest().metadata(OPENNOW_BUILD_VERSION=version).returncode, 0,
                 )
 
-    def test_supporter_workflow_is_manual_and_has_no_publishing_path(self):
+    def test_supporter_workflow_is_removed_and_shared_build_has_no_publishing_path(self):
         workflows = ROOT / ".github/workflows"
-        supporter = (workflows / "qt-supporter-build.yml").read_text()
+        self.assertFalse((workflows / "qt-supporter-build.yml").exists())
         build = (workflows / "qt-build.yml").read_text()
         ci = (workflows / "qt-ci.yml").read_text()
-        self.assertEqual(supporter.split("on:\n", 1)[1].split("\n\n", 1)[0], "  workflow_dispatch:")
-        self.assertIn("uses: ./.github/workflows/qt-build.yml", supporter)
-        self.assertIn("      channel: supporter\n      upload_complete: true", supporter)
-        for workflow in (supporter, build):
-            self.assertIn("permissions:\n  contents: read", workflow)
-            for forbidden in ("contents: write", "gh release", "git tag", "publish_nightly", "secrets:", "secrets."):
-                self.assertNotIn(forbidden, workflow)
+        for workflow in (ci, build):
+            self.assertNotIn("qt-supporter-build.yml", workflow)
+        self.assertIn("permissions:\n  contents: read", build)
+        for forbidden in ("contents: write", "gh release", "git tag", "publish_nightly", "secrets:", "secrets."):
+            self.assertNotIn(forbidden, build)
         self.assertIn("if: inputs.upload_complete", build)
         self.assertIn("retention-days: 14", build)
         self.assertIn("--channel \"$BUILD_CHANNEL\"", build)

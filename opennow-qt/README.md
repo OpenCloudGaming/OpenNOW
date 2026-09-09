@@ -5,19 +5,17 @@ or newer and uses SDL3 for controller input. A bundled Rust process owns setting
 and is the start of the shell-neutral application core. See
 `docs/qt-migration.md` for the migration history and remaining release checklist.
 
-## Manual supporter builds
+## Manual artifact-only builds
 
-In GitHub **Actions → Qt supporter build (artifacts only) → Run workflow**, select
-the branch or tag to build. The workflow must first be present on the default
-branch to appear in the manual-run menu; the selected ref must also contain it.
-This workflow runs only on demand and never creates a tag, release, prerelease,
-or update manifest. Both the caller and shared build jobs have read-only repository
-permissions; nightly publishing remains exclusively in `qt-ci`.
+In GitHub **Actions → qt-ci → Run workflow**, select `dev` (or the branch or tag
+to build) and leave **Publish an unsigned nightly prerelease after all checks pass**
+unchecked. The existing workflow uploads build artifacts without creating a release
+or tag. No separate supporter-build workflow is needed.
 
 After a successful run, download
 `opennow-qt-<version>-complete-unsigned` from the run's **Artifacts** section.
-Versions use `<project-version>-supporter.<run-number>.<attempt>`, not the nightly
-label. The complete archive contains Windows x64/ARM64 portable ZIPs, Linux
+Versions use `<project-version>-nightly.<run-number>.<attempt>` even when release
+publishing is disabled. The complete archive contains Windows x64/ARM64 portable ZIPs, Linux
 x64/ARM64 AppImages and DEBs, `SHA256SUMS`, and source-commit metadata. The macOS
 ARM64 validation ZIP is a separate artifact. Artifacts expire after 14 days.
 
