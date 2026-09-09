@@ -191,6 +191,22 @@ QVariantMap StreamVideoItem::frameGenerationStats() const
     return m_renderCallback ? m_renderCallback->frameGenerationStats() : QVariantMap{};
 }
 
+bool StreamVideoItem::metalFxUpscaling() const
+{
+    return m_metalFxUpscaling;
+}
+
+void StreamVideoItem::setMetalFxUpscaling(bool enabled)
+{
+#if !defined(Q_OS_MACOS)
+    enabled = false;
+#endif
+    if (m_metalFxUpscaling == enabled) return;
+    m_metalFxUpscaling = enabled;
+    emit metalFxUpscalingChanged();
+    update();
+}
+
 void StreamVideoItem::connectFrameSwaps()
 {
     disconnect(m_frameSwapConnection);

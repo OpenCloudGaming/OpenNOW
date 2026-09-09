@@ -676,6 +676,8 @@ mod tests {
                     AdoptedMetalContext {
                         device: Retained::as_ptr(&device).cast_mut().cast(),
                         command_buffer: Retained::as_ptr(&command).cast_mut().cast(),
+                        upscale_width: 0,
+                        upscale_height: 0,
                     },
                     0,
                 )
