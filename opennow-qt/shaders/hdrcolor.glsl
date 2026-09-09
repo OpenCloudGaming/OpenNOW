@@ -60,8 +60,9 @@ vec3 toneMapToSdr(vec3 nits, float whiteNits)
     return mix(vec3(gray), mapped, saturation);
 }
 
-vec3 outputColor(vec3 nits709, float outputMode)
+vec3 outputColor(vec3 nits709, float outputMode, float whiteNits)
 {
+    if (outputMode > 2.5) return nits709 / whiteNits;
     if (outputMode > 1.5) return nitsToPq(bt709To2020(nits709));
     return nits709 / 80.0;
 }
@@ -70,12 +71,12 @@ vec3 videoColor(vec3 encoded, float sourceSpace, float outputMode, float whiteNi
 {
     if (sourceSpace < 0.5) {
         if (outputMode < 0.5) return encoded;
-        return outputColor(sdrToLinear(encoded) * whiteNits, outputMode);
+        return outputColor(sdrToLinear(encoded) * whiteNits, outputMode, whiteNits);
     }
     vec3 nits = bt2020To709(sourceSpace < 1.5 ? pqToNits(encoded) : hlgToNits(encoded));
     if (outputMode < 0.5 || hdrSupported < 0.5) {
         vec3 sdr = toneMapToSdr(nits, whiteNits);
-        return outputMode < 0.5 ? linearToSdr(sdr) : outputColor(sdr * whiteNits, outputMode);
+        return outputMode < 0.5 ? linearToSdr(sdr) : outputColor(sdr * whiteNits, outputMode, whiteNits);
     }
-    return outputColor(nits, outputMode);
+    return outputColor(nits, outputMode, whiteNits);
 }

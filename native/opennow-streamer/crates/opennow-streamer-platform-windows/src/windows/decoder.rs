@@ -36,15 +36,16 @@ use ::windows::Win32::Media::MediaFoundation::{
     MFNominalRange_0_255, MFSampleExtension_CleanPoint, MFSampleExtension_FrameCorruption,
     MFT_CATEGORY_VIDEO_DECODER, MFT_ENUM_ADAPTER_LUID, MFT_ENUM_FLAG, MFT_ENUM_FLAG_ASYNCMFT,
     MFT_ENUM_FLAG_HARDWARE, MFT_ENUM_FLAG_SORTANDFILTER, MFT_ENUM_FLAG_SYNCMFT,
-    MFT_ENUM_HARDWARE_URL_Attribute, MFT_FRIENDLY_NAME_Attribute, MFT_MESSAGE_COMMAND_FLUSH,
-    MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, MFT_MESSAGE_NOTIFY_END_OF_STREAM,
-    MFT_MESSAGE_NOTIFY_END_STREAMING, MFT_MESSAGE_NOTIFY_START_OF_STREAM,
-    MFT_MESSAGE_SET_D3D_MANAGER, MFT_OUTPUT_DATA_BUFFER, MFT_OUTPUT_STREAM_CAN_PROVIDE_SAMPLES,
-    MFT_OUTPUT_STREAM_PROVIDES_SAMPLES, MFT_REGISTER_TYPE_INFO, MFTEnum2, MFVideoArea,
-    MFVideoFormat_AV1, MFVideoFormat_AYUV, MFVideoFormat_H264, MFVideoFormat_HEVC,
-    MFVideoFormat_NV12, MFVideoFormat_P010, MFVideoFormat_Y410,
-    MFVideoInterlace_MixedInterlaceOrProgressive, eAVEncH265VProfile_Main_420_8,
-    eAVEncH265VProfile_Main_420_10, eAVEncH265VProfile_Main_444_8, eAVEncH265VProfile_Main_444_10,
+    MFT_ENUM_HARDWARE_URL_Attribute, MFT_FRIENDLY_NAME_Attribute, MFT_MESSAGE_COMMAND_DRAIN,
+    MFT_MESSAGE_COMMAND_FLUSH, MFT_MESSAGE_NOTIFY_BEGIN_STREAMING,
+    MFT_MESSAGE_NOTIFY_END_OF_STREAM, MFT_MESSAGE_NOTIFY_END_STREAMING,
+    MFT_MESSAGE_NOTIFY_START_OF_STREAM, MFT_MESSAGE_SET_D3D_MANAGER, MFT_OUTPUT_DATA_BUFFER,
+    MFT_OUTPUT_STREAM_CAN_PROVIDE_SAMPLES, MFT_OUTPUT_STREAM_PROVIDES_SAMPLES,
+    MFT_REGISTER_TYPE_INFO, MFTEnum2, MFVideoArea, MFVideoFormat_AV1, MFVideoFormat_AYUV,
+    MFVideoFormat_H264, MFVideoFormat_HEVC, MFVideoFormat_NV12, MFVideoFormat_P010,
+    MFVideoFormat_Y410, MFVideoInterlace_MixedInterlaceOrProgressive,
+    eAVEncH265VProfile_Main_420_8, eAVEncH265VProfile_Main_420_10, eAVEncH265VProfile_Main_444_8,
+    eAVEncH265VProfile_Main_444_10,
 };
 use ::windows::Win32::System::Com::CoTaskMemFree;
 use ::windows::core::Interface;
@@ -133,6 +134,7 @@ pub(super) struct Decoder {
     format: VideoFormat,
     aperture: VideoAperture,
     negotiated_format: VideoFormat,
+    output_validated: bool,
     output_provides_samples: bool,
     stopped: bool,
 }
@@ -151,6 +153,7 @@ impl Decoder {
             },
             mode,
         )?;
+        decoder.validate_output()?;
         decoder.stop();
         Ok(())
     }
@@ -201,6 +204,7 @@ impl Decoder {
                         format: output_format,
                         aperture,
                         negotiated_format: format,
+                        output_validated: false,
                         output_provides_samples,
                         stopped: false,
                     });
@@ -233,6 +237,58 @@ impl Decoder {
 
     pub(super) fn format(&self) -> VideoFormat {
         self.format
+    }
+
+    pub(super) fn validate_output(&mut self) -> Result<VideoFormat, String> {
+        let (aperture, format) = output_format(
+            &self.transform,
+            self.output_stream,
+            self.negotiated_format,
+            false,
+        )?;
+        validate_decoded_output_format(
+            decoder_surface_format(format.pixel_format),
+            format.pixel_format,
+            self.negotiated_format.pixel_format,
+        )?;
+        self.aperture = aperture;
+        self.format = format;
+        self.output_validated = true;
+        Ok(format)
+    }
+
+    pub(super) fn probe_frame(&mut self, data: &[u8]) -> Result<DecodedVideoFrame, String> {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
+        let mut frames = VecDeque::new();
+        let events = BoundedQueue::new(16);
+        let mut submitted = false;
+        while std::time::Instant::now() < deadline {
+            self.poll_output(&mut frames, &events)?;
+            if let Some(frame) = frames.pop_front() {
+                return Ok(frame);
+            }
+            if !submitted && self.wants_input() {
+                self.submit(EncodedVideoFrame {
+                    codec: self.negotiated_format.codec,
+                    data: data.to_vec(),
+                    timestamp_100ns: 0,
+                    duration_100ns: self.negotiated_format.frame_duration_100ns(),
+                    key_frame: true,
+                    reset_decoder: false,
+                })?;
+                unsafe {
+                    self.transform
+                        .ProcessMessage(MFT_MESSAGE_COMMAND_DRAIN, 0)
+                        .map_err(|error| format!("drain decoder probe: {error}"))?;
+                }
+                submitted = true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        Err(format!(
+            "decoder probe timed out waiting for {:?} output (submitted={submitted})",
+            self.negotiated_format.pixel_format
+        ))
     }
 
     pub(super) fn submit(&mut self, frame: EncodedVideoFrame) -> Result<(), String> {
@@ -345,10 +401,7 @@ impl Decoder {
             }
             if error.code() == MF_E_TRANSFORM_STREAM_CHANGE {
                 self.select_video_output_type()?;
-                let (aperture, updated) =
-                    output_format(&self.transform, self.output_stream, self.negotiated_format)?;
-                self.format = updated;
-                self.aperture = aperture;
+                let updated = self.validate_output()?;
                 let _ = event_queue.push(BackendEvent::VideoFormatChanged(updated));
                 return Ok(OutputPoll::Produced);
             }
@@ -362,6 +415,9 @@ impl Decoder {
                 "hardware decoder requires caller-allocated output samples".to_owned()
             }
         })?;
+        if !self.output_validated {
+            self.validate_output()?;
+        }
         let frame = DecodedVideoFrame::from_sample(
             sample,
             self.format,
@@ -472,7 +528,7 @@ fn configure_transform<G: DecoderDevice>(
             .SetInputType(input_stream, &input_type, 0)
             .map_err(|error| format!("SetInputType: {error}"))?;
         select_video_output_type(&transform, output_stream, format.pixel_format)?;
-        let (aperture, decoded_format) = output_format(&transform, output_stream, format)?;
+        let (aperture, decoded_format) = output_format(&transform, output_stream, format, true)?;
 
         let stream_info = transform
             .GetOutputStreamInfo(output_stream)
@@ -906,6 +962,7 @@ fn output_format(
     transform: &IMFTransform,
     output_stream: u32,
     fallback: VideoFormat,
+    allow_provisional: bool,
 ) -> Result<(VideoAperture, VideoFormat), String> {
     unsafe {
         let media_type = transform
@@ -917,18 +974,35 @@ fn output_format(
             .map_err(|error| error.to_string())?;
         let pixel_format = pixel_format_from_subtype(subtype)
             .ok_or("decoder output has an unsupported pixel format")?;
-        let format = output_color_format(
+        let format = output_media_format(
             &media_type,
-            VideoFormat {
-                width: aperture.width,
-                height: aperture.height,
-                pixel_format,
-                chroma_format: chroma_format(pixel_format),
-                ..fallback
-            },
+            fallback,
+            aperture,
+            pixel_format,
+            allow_provisional,
         )?;
         Ok((aperture, format))
     }
+}
+
+fn output_media_format(
+    media_type: &IMFMediaType,
+    negotiated: VideoFormat,
+    aperture: VideoAperture,
+    pixel_format: VideoPixelFormat,
+    allow_provisional: bool,
+) -> Result<VideoFormat, String> {
+    let format = VideoFormat {
+        width: aperture.width,
+        height: aperture.height,
+        pixel_format,
+        chroma_format: chroma_format(pixel_format),
+        ..negotiated
+    };
+    if allow_provisional && pixel_format != negotiated.pixel_format {
+        return Ok(format);
+    }
+    output_color_format(media_type, format)
 }
 
 fn output_color_format(
@@ -1105,6 +1179,78 @@ mod tests {
             color_primaries: VideoColorPrimaries::Bt2020,
             color_matrix: VideoColorMatrix::Bt2020,
         }
+    }
+
+    #[test]
+    fn provisional_nv12_allows_hdr_startup_but_never_validated_output() {
+        let _runtime = super::super::MediaRuntime::initialize().unwrap();
+        let negotiated = hdr_test_format();
+        let aperture = VideoAperture::new(negotiated.width, negotiated.height, None).unwrap();
+        let media_type = video_input_type(negotiated).unwrap();
+        let provisional = output_media_format(
+            &media_type,
+            negotiated,
+            aperture,
+            VideoPixelFormat::Nv12,
+            true,
+        )
+        .unwrap();
+        assert_eq!(provisional.pixel_format, VideoPixelFormat::Nv12);
+        assert!(
+            output_media_format(
+                &media_type,
+                negotiated,
+                aperture,
+                VideoPixelFormat::Nv12,
+                false,
+            )
+            .is_err()
+        );
+        assert!(
+            validate_decoded_output_format(
+                DXGI_FORMAT_NV12,
+                provisional.pixel_format,
+                negotiated.pixel_format,
+            )
+            .is_err()
+        );
+        assert_eq!(
+            output_media_format(
+                &media_type,
+                negotiated,
+                aperture,
+                VideoPixelFormat::P010,
+                false,
+            )
+            .unwrap(),
+            negotiated
+        );
+
+        unsafe {
+            media_type
+                .SetUINT32(&MF_MT_TRANSFER_FUNCTION, MFVideoTransFunc_709.0 as u32)
+                .unwrap();
+        }
+        assert!(
+            output_media_format(
+                &media_type,
+                negotiated,
+                aperture,
+                VideoPixelFormat::Nv12,
+                true,
+            )
+            .is_ok()
+        );
+        assert!(
+            output_media_format(
+                &media_type,
+                negotiated,
+                aperture,
+                VideoPixelFormat::P010,
+                false,
+            )
+            .is_err()
+        );
     }
 
     #[test]

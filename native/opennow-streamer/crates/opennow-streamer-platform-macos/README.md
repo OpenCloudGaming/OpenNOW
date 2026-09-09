@@ -6,8 +6,8 @@ This isolated crate implements the macOS media path without GStreamer or FFmpeg:
   temporal units, are copied into CoreMedia sample buffers and decoded asynchronously by
   VideoToolbox. AV1 starts only after a keyframe supplies a valid sequence-header OBU from which
   the `av1C` codec configuration can be derived.
-- VideoToolbox is asked for Metal-compatible, IOSurface-backed NV12 (`420v`) or ten-bit P010
-  (`x420`) pixel buffers. A `CVMetalTextureCache` maps both planes into Metal without a CPU
+- VideoToolbox is asked for Metal-compatible, IOSurface-backed NV12 (`420v`), ten-bit P010
+  (`x420`), or ten-bit P410 (`x444`) pixel buffers. A `CVMetalTextureCache` maps both planes into Metal without a CPU
   pixel copy. The embedded Qt path records conversion into Qt's Metal command buffer; the
   standalone `CAMetalLayer` presenter remains limited to eight-bit NV12.
 - Opus packets are decoded to interleaved `f32` PCM by the reference libopus decoder. The
@@ -39,10 +39,16 @@ and HEVC for 1440p or high bitrate. Selection stays within codecs actually suppo
 The decoder's real-time hint follows its `NvstVideoToolboxDecoder.swift`. These settings do not
 import the reference's Swift/WebRTC runtime or change OpenNOW's NVST transport.
 
-The current Qt path supports SDR 8-bit 4:2:0 and preserves the main application's ten-bit
-HEVC/AV1 path through P010 and RGB10A2 textures. Ten-bit Auto selection stays on HEVC/AV1;
-H.264 remains eight-bit. Unsupported 4:4:4 requests, including resumed sessions, are rejected
-rather than silently reduced to 4:2:0. macOS HDR output is not advertised.
+The embedded path preserves ten-bit SDR through RGB10A2 and BT.2020 PQ HDR through RGBA16F.
+HDR requires ten-bit decode and an HDR-capable Qt output; texture precision alone does not
+prove that a display supports HDR. `probe_h265_hdr_hardware` decodes an actual Main10 PQ
+fixture and completes Metal RGBA16F conversion before permitting HEVC HDR capability.
+P410 preserves full-resolution chroma, but a codec-wide
+hardware query does not establish 4:4:4 support. `probe_h265_444_ten_bit_hardware` decodes a
+real HEVC Main44410 IDR with a hardware-required session and verifies ten-bit, full-resolution
+chroma output with IOSurface backing and successful Metal conversion. Only a successful probe permits advertising that profile.
+Unsupported Macs return false; there is no software fallback or 4:2:0 downgrade. AV1 4:4:4
+remains unadvertised without a separate hardware profile probe, as does AV1 HDR.
 
 ### Optional MetalFX spatial upscaling
 
@@ -148,31 +154,57 @@ HEVC and AV1 have no bundled macOS software decoder, so initialization or fatal 
 either codec stops that media path and disables that codec in later capability replies instead of
 silently mis-negotiating a fallback.
 
-## Embedded SDR color precision
+## Embedded color precision and HDR
 
 H.264/H.265 callers pass negotiated precision with
 `with_bit_depth(VideoBitDepth::Ten)` on initial configuration and reconfiguration. Their existing
 constructors default to eight-bit. AV1 reads precision from its `av1C` record. CoreMedia's
 `BitsPerComponent` metadata can raise the requested output to ten-bit but cannot lower a
 ten-bit request. Unsupported bit depths fail configuration, and a decoder that returns an
-eight-bit buffer for a ten-bit request reports a fatal VideoToolbox failure.
+eight-bit buffer for a ten-bit request reports a fatal VideoToolbox failure. H.264/H.265
+callers pass `with_chroma(VideoChroma::Yuv444)` for ten-bit 4:4:4; AV1 reads chroma from
+`av1C` and rejects monochrome and 4:2:2. Output callbacks reject chroma downgrades. Embedded
+Metal validates both plane dimensions before importing the IOSurface.
 
-The embedded converter maps NV12 to `MetalFrameFormat::Rgba8Unorm` and P010 to
-`MetalFrameFormat::Rgb10a2Unorm`; `MetalRecordedFrame.format` tells Qt which texture format to
-import. The output format does not select HDR or a wide-gamut color space. Conversion honors
-BT.601/BT.709 YCbCr matrix attachments on each decoded buffer; when the attachment is absent,
-it uses the explicitly configured `VideoColorSpace` (the streamer supplies BT.709). Other
-matrix attachments are rejected instead of being treated as BT.709. The pixel-buffer format
-determines full versus video range, independently of bit depth and matrix. This path performs
-SDR matrix conversion, not transfer-function conversion, HDR tone mapping, or gamut mapping.
+The embedded converter maps NV12 SDR to `MetalFrameFormat::Rgba8Unorm` and P010/P410 SDR to
+`MetalFrameFormat::Rgb10a2Unorm`. HDR callers explicitly configure `VideoColorSpace::Bt2020`
+and `with_transfer(VideoTransfer::Pq)`. HDR uses `MetalFrameFormat::Rgba16Float`, containing
+**encoded PQ RGB in BT.2020**, not linear light. `MetalRecordedFrame.color_space` and `transfer`
+retain source color metadata. Qt owns PQ decoding, gamut conversion, HDR display configuration,
+reference-white scaling and tone mapping; the native conversion must not apply these twice.
+Conversion honors BT.601/BT.709/BT.2020 matrix attachments; absent attachments use the negotiated
+matrix. Conflicting transfer or primaries attachments fail rather than displaying HDR as SDR.
+HLG and BT.2020 SDR are not supported by this backend. Pixel-buffer format determines full
+versus video range independently of depth and matrix. The SDR-only MetalFX scaler is bypassed
+for HDR; standalone presentation rejects HDR and 4:4:4 rather than switching output paths.
 
 P010's high-aligned ten-bit values are normalized from R16Unorm before applying the exact
 luma endpoints, chroma midpoint, and range-specific chroma gain. The output pool retains at
-most eight frame slots and two format-specific pipelines. Reusing a slot requires Qt to
+most eight frame slots and three format-specific pipelines. Reusing a slot requires Qt to
 retire its previous GPU work. Slot textures are
 reused only when both dimensions and pixel format match; changing depth does not release
 other slots' in-flight resources. RGB10A2 allocation or pipeline failure is returned as an
-error, never silently retried as RGBA8. Qt owns the final SDR display conversion.
+error, never silently retried as RGBA8. RGBA16F failure likewise never lowers HDR precision.
+
+The bounded Main44410 probe fixture in `src/macos/profile_probe.rs` was generated with:
+
+```sh
+ffmpeg -f lavfi -i 'color=c=gray:s=64x64:r=1,format=yuv444p10le' -frames:v 1 \
+  -c:v libx265 -profile:v main444-10 \
+  -x265-params 'pools=none:frame-threads=1:repeat-headers=1:info=0:log-level=error' \
+  -f hevc main44410.hevc
+```
+
+The probe caches the result once per process and should run off the Qt GUI/render threads.
+It proves profile support, not every stream resolution or level; actual session creation still
+requires hardware and validates each output. On macOS, run
+`cargo test -p opennow-streamer-platform-macos hdr_shader_ -- --include-ignored` to compile
+the actual Metal shader and read back adjacent PQ code values from RGBA16F. The
+`report_main44410_hardware_probe` ignored test reports the real hardware result; false is a
+valid result on hardware without that profile. Linux tests cannot establish hardware support.
+The Main10 HDR fixture uses the same command with `format=yuv420p10le`, `-profile:v main10`,
+and `-color_primaries bt2020 -color_trc smpte2084 -colorspace bt2020nc`. Its hardware result
+is reported by `report_main10_hdr_hardware_probe`.
 
 ## Queue and lifecycle behavior
 

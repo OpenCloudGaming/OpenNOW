@@ -15,6 +15,6 @@ void main()
 {
     vec4 color = texture(sourceTexture, uv);
     if (outputMode > 0.5 && color.a > 0.00001)
-        color.rgb = outputColor(sdrToLinear(color.rgb / color.a) * whiteNits, outputMode) * color.a;
+        color.rgb = outputColor(sdrToLinear(color.rgb / color.a) * whiteNits, outputMode, whiteNits) * color.a;
     fragColor = color * opacity;
 }

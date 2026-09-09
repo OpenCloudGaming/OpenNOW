@@ -16,6 +16,21 @@ pub enum H264Framing {
 pub enum VideoColorSpace {
     Bt601,
     Bt709,
+    Bt2020,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum VideoChroma {
+    #[default]
+    Yuv420,
+    Yuv444,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum VideoTransfer {
+    #[default]
+    Sdr,
+    Pq,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -28,6 +43,7 @@ pub enum VideoBitDepth {
 pub enum MetalFrameFormat {
     Rgba8Unorm,
     Rgb10a2Unorm,
+    Rgba16Float,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -88,6 +104,8 @@ pub struct H264Format {
     pub parameter_sets: H264ParameterSets,
     pub color_space: VideoColorSpace,
     pub bit_depth: VideoBitDepth,
+    pub chroma: VideoChroma,
+    pub transfer: VideoTransfer,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -128,6 +146,8 @@ pub struct H265Format {
     pub parameter_sets: H265ParameterSets,
     pub color_space: VideoColorSpace,
     pub bit_depth: VideoBitDepth,
+    pub chroma: VideoChroma,
+    pub transfer: VideoTransfer,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -137,6 +157,8 @@ pub struct Av1Format {
     height: i32,
     bit_depth: VideoBitDepth,
     pub color_space: VideoColorSpace,
+    chroma: VideoChroma,
+    pub transfer: VideoTransfer,
 }
 
 impl Av1Format {
@@ -173,6 +195,12 @@ impl Av1Format {
             height,
             bit_depth,
             color_space,
+            chroma: match codec_configuration[2] & 0x1c {
+                0x0c => VideoChroma::Yuv420,
+                0 => VideoChroma::Yuv444,
+                _ => return Err(FormatError::UnsupportedVideoChroma),
+            },
+            transfer: VideoTransfer::Sdr,
         })
     }
 
@@ -191,14 +219,31 @@ impl Av1Format {
     pub const fn bit_depth(&self) -> VideoBitDepth {
         self.bit_depth
     }
+
+    pub const fn with_transfer(mut self, transfer: VideoTransfer) -> Self {
+        self.transfer = transfer;
+        self
+    }
 }
 
 impl H265Format {
+    pub const fn with_chroma(mut self, chroma: VideoChroma) -> Self {
+        self.chroma = chroma;
+        self
+    }
+
+    pub const fn with_transfer(mut self, transfer: VideoTransfer) -> Self {
+        self.transfer = transfer;
+        self
+    }
+
     pub const fn new(parameter_sets: H265ParameterSets, color_space: VideoColorSpace) -> Self {
         Self {
             parameter_sets,
             color_space,
             bit_depth: VideoBitDepth::Eight,
+            chroma: VideoChroma::Yuv420,
+            transfer: VideoTransfer::Sdr,
         }
     }
 
@@ -216,6 +261,22 @@ pub enum VideoFormat {
 }
 
 impl VideoFormat {
+    pub const fn chroma(&self) -> VideoChroma {
+        match self {
+            Self::H264(format) => format.chroma,
+            Self::H265(format) => format.chroma,
+            Self::Av1(format) => format.chroma,
+        }
+    }
+
+    pub const fn transfer(&self) -> VideoTransfer {
+        match self {
+            Self::H264(format) => format.transfer,
+            Self::H265(format) => format.transfer,
+            Self::Av1(format) => format.transfer,
+        }
+    }
+
     pub(crate) fn destination_bit_depth(
         &self,
         bitstream_depth: Option<i32>,
@@ -244,6 +305,46 @@ impl VideoFormat {
     }
 }
 
+#[cfg(test)]
+mod hdr_format_tests {
+    use super::*;
+
+    #[test]
+    fn h265_keeps_explicit_hdr_and_chroma_through_the_format_boundary() {
+        let format: VideoFormat = H265Format::new(
+            H265ParameterSets::new([0x40, 1], [0x42, 1], [0x44, 1]).unwrap(),
+            VideoColorSpace::Bt2020,
+        )
+        .with_bit_depth(VideoBitDepth::Ten)
+        .with_chroma(VideoChroma::Yuv444)
+        .with_transfer(VideoTransfer::Pq)
+        .into();
+        assert_eq!(format.bit_depth(), VideoBitDepth::Ten);
+        assert_eq!(format.chroma(), VideoChroma::Yuv444);
+        assert_eq!(format.transfer(), VideoTransfer::Pq);
+        assert_eq!(format.color_space(), VideoColorSpace::Bt2020);
+    }
+
+    #[test]
+    fn av1_chroma_comes_from_av1c_and_rejects_monochrome_and_422() {
+        for (flags, chroma) in [(0x4c, VideoChroma::Yuv420), (0x40, VideoChroma::Yuv444)] {
+            let format: VideoFormat =
+                Av1Format::new([0x81, 0x20, flags, 0], 64, 64, VideoColorSpace::Bt2020)
+                    .unwrap()
+                    .with_transfer(VideoTransfer::Pq)
+                    .into();
+            assert_eq!(format.chroma(), chroma);
+            assert_eq!(format.transfer(), VideoTransfer::Pq);
+        }
+        for flags in [0x48, 0x50, 0x5c] {
+            assert_eq!(
+                Av1Format::new([0x81, 0x40, flags, 0], 64, 64, VideoColorSpace::Bt709),
+                Err(FormatError::UnsupportedVideoChroma)
+            );
+        }
+    }
+}
+
 impl From<H264Format> for VideoFormat {
     fn from(value: H264Format) -> Self {
         Self::H264(value)
@@ -263,11 +364,23 @@ impl From<Av1Format> for VideoFormat {
 }
 
 impl H264Format {
+    pub const fn with_chroma(mut self, chroma: VideoChroma) -> Self {
+        self.chroma = chroma;
+        self
+    }
+
+    pub const fn with_transfer(mut self, transfer: VideoTransfer) -> Self {
+        self.transfer = transfer;
+        self
+    }
+
     pub const fn new(parameter_sets: H264ParameterSets, color_space: VideoColorSpace) -> Self {
         Self {
             parameter_sets,
             color_space,
             bit_depth: VideoBitDepth::Eight,
+            chroma: VideoChroma::Yuv420,
+            transfer: VideoTransfer::Sdr,
         }
     }
 
@@ -595,6 +708,8 @@ pub enum FormatError {
     InvalidAv1Configuration,
     #[error("unsupported video bit depth {0}")]
     UnsupportedVideoBitDepth(i32),
+    #[error("unsupported video chroma subsampling")]
+    UnsupportedVideoChroma,
     #[error("encoded video dimensions must fit positive signed 32-bit values")]
     InvalidVideoDimensions,
     #[error("frame timescale must be positive")]

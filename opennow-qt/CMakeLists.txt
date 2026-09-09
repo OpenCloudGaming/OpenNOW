@@ -51,6 +51,7 @@ set(OPENNOW_RUST_TARGET "" CACHE STRING
 
 qt_standard_project_setup(REQUIRES 6.8)
 include(cmake/PlatformInput.cmake)
+include(cmake/PlatformHdr.cmake)
 
 include(cmake/Sources.cmake)
 
@@ -77,6 +78,7 @@ include(cmake/QmlModule.cmake)
 target_include_directories(opennow-qt PRIVATE src)
 target_link_libraries(opennow-qt PRIVATE
     opennow-platform-input
+    opennow-platform-hdr
     Qt6::Quick
     Qt6::QuickControls2
     Qt6::GuiPrivate

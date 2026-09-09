@@ -163,7 +163,7 @@ It is used only when enlarging the video, leaves the requested stream resolution
 and frame rate unchanged, and adds GPU work rather than improving server rendering
 performance. Quality depends on the game and compression. Unsupported devices or
 scaler configurations retain normal scaling, including ten-bit color precision.
-This does not add temporal reconstruction or macOS HDR support.
+This does not add temporal reconstruction. HDR output is negotiated separately from upscaling.
 
 Run `ctest --test-dir build/opennow-qt -R 'qml-upscaling|streamvideo-tests|nativestreamruntime' --output-on-failure`
 for settings visibility, live preference binding, source geometry, and render
@@ -282,9 +282,7 @@ to verify that session exit restores the pre-session windowed, maximized, or ful
 mode in both desktop and console shells, and F11 still toggles correctly afterward.
 The fixture also checks exit cancellation, launch/reconnect route transitions, and a
 subsequent aborted launch with a different initial window mode, and automatic fullscreen
-once a session is ready (including direct launches). Settings → Stream → Fullscreen when
-session is ready is enabled by default; saved opt-outs are preserved. F11 remains available
-during play, and reconnects or overlays do not reapply fullscreen after a manual override.
+on direct launch.
 
 ### Local frame generation (experimental)
 
@@ -376,6 +374,23 @@ output or the required resources are unavailable. `CoreClient` injects the trans
 `runtimeCapabilities.nativeHdrSupported` flag into session creation and stream preparation;
 the core owns the final decoder/backend gate and persisted `enableHdr` preference.
 
+Windows uses Qt's active DXGI output color space, not the monitor's advertised capability.
+Metal uses Qt's display-referred extended-linear sRGB output: 1.0 is SDR white, unlike
+Windows scRGB's fixed 80-nit reference. PQ/HLG content is normalized to a 203-nit content
+white on Metal, and SDR chrome remains at 1.0. If current EDR headroom disappears, the
+existing linear Metal surface is retained and HDR video is tone-mapped to SDR. This also
+avoids reinterpreting SDR pixels through a CAMetalLayer that retains its linear color space.
+
+Linux requires Vulkan HDR surface-format support and a complete, current Wayland
+`color-management-v1` output description with PQ encoding and target luminance above SDR
+reference white. The protocol XML is pinned in `protocols/` so older distribution build
+hosts still compile the observer; only Wayland client headers and `wayland-scanner` are
+needed to generate its bindings. Vulkan formats, EDID capability, and preferred-image hints alone do not
+enable HDR. The observer does not assign the surface color space; Vulkan WSI owns that.
+X11, missing/older color-management support, incomplete or ICC-only descriptions, and
+configurations with more than one Qt screen remain SDR. This is a conservative configured-output
+check, not a measurement of optical display output.
+
 ABI 6 imported frames carry their PQ/HLG/SDR color space explicitly. The video shader converts
 PQ and HLG BT.2020 to linear scRGB, or performs luminance-based SDR tone mapping after HDR
 output is lost. SDR chrome uses bounded QML layers and `HdrChromeEffect` to decode sRGB before
@@ -393,7 +408,10 @@ discovery before constructing `QGuiApplication`. This keeps the native Windows w
 shader checks independent of the WinRT theme services missing from Windows Server CI runners.
 The Windows x64 CI lane runs on an interactive GitHub-hosted desktop and checks that desktop
 before building; session-0 service runners cannot validate native window exposure or fullscreen.
-These tests do not establish that a physical HDR monitor received HDR. The live Windows/Linux
+These tests do not establish that a physical HDR monitor received HDR. Repeat live validation
+on macOS with current EDR headroom available and exhausted, and on Linux with compositor HDR
+enabled and disabled, including a forced HDR preferred-image hint on an SDR output.
+The live Windows/Linux
 display and reconnect matrix is in [HDR validation](../docs/hdr.md).
 
 ### Native input acceptance

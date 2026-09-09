@@ -6,8 +6,10 @@ Opus.
 
 The backend uses only Windows system APIs:
 
-- Media Foundation hardware MFTs for H.264/HEVC/AV1 decode into NV12 or P010. Hardware selection
-  accepts only adapter-matched hardware transforms. A separate software mode accepts only
+- Media Foundation hardware MFTs for H.264/HEVC/AV1 decode into NV12/P010, or AYUV/Y410 when the
+  installed decoder exposes those exact formats. Hardware selection checks the selected adapter's
+  DXVA profile, output format, and decoder configuration before trying adapter-matched transforms
+  and D3D11-aware registered MFTs. A separate software mode accepts only
   synchronous/asynchronous software MFTs that are D3D11-aware and publish D3D11-backed output;
   the two modes are never silently mixed.
 - A D3D11 video processor and a two-buffer flip-model DXGI swap chain for NV12 conversion, aspect-correct scaling, and presentation. The swap chain can target a caller-owned HWND, or the backend can create and own a child or top-level HWND.
@@ -21,11 +23,22 @@ operation succeed. `WindowsBackend::probe` remains the D3D11 compatibility entry
 Non-Windows builds expose the same typed API but report the backend as unavailable.
 
 `CapabilityProbe.h265_hdr`, `av1_hdr`, and `supports_hdr(codec)` report HDR separately from
-SDR codec support. HDR requires the probe device to support P010 hardware decode, an activatable
-hardware MFT configured for actual P010/PQ output, and the embedded video processor's exact
-P010/PQ-to-RGB10A2/PQ conversion. These checks use the default adapter selected by `probe_for`;
+SDR codec support. `h265_10bit`, `av1_10bit`, `h265_444`, `h265_10bit_444`, and
+`supports_format(codec, pixel_format, hdr)` distinguish each supported depth/chroma combination.
+Advanced-format probes decode a synthetic 1920x1080 access unit through the selected MFT,
+require a D3D11-backed output frame preserving the requested depth, chroma, and transfer,
+then execute the embedded video processor's exact conversion, including `VideoProcessorBlt`.
+An exposed media subtype or provisional startup format alone is not a successful probe.
+The fixtures and their generation/verification commands are in `fixtures/probe/`.
+These checks use the default adapter selected by `probe_for`;
 the Qt-adopted device is checked independently when its decoder and converter are created.
 The capability probe does not establish that a monitor or the Qt swapchain supports HDR.
+Decoded-output polling is bounded to 500 ms per advanced profile, at most three seconds per
+graphics API, excluding Windows API call latency. Results are reused for the same adapter LUID
+and D3D API; device removal or an adapter change invalidates them. Timeouts are not cached.
+Presentation and audio are always checked again. Live session creation independently validates
+the adopted Qt device and actual output, so cached capabilities cannot authorize a downgraded frame.
+Installing a different decoder requires restarting the process to refresh cached MFT failures.
 
 ## Embedded HDR color contract
 
@@ -40,6 +53,9 @@ The embedded renderer publishes `D3d11RecordedFrame` with `texture_format: Rgb10
 convert to PQ only for TOPLEFT siting and explicit driver support; HLG with LEFT siting and
 full-range PQ fail because no exact DXGI input colorspace is available. SDR uses BT.709 RGB,
 with RGBA8 for eight-bit input and RGB10A2 for ten-bit input.
+For packed 4:4:4, chroma exists at every luma pixel, so LEFT and TOPLEFT do not describe different
+sample positions. The converter selects an available DXGI siting label without resampling chroma;
+4:2:0 still requires its exact negotiated siting.
 The standalone HWND presenter explicitly rejects HDR; HDR presentation belongs to the embedded
 Qt path, which must preserve the recorded texture's color interpretation through scan-out.
 ## Embedded Qt SDR conversion
@@ -59,6 +75,9 @@ Media Foundation may temporarily negotiate a lower-precision output type before 
 the first sequence header. That startup compatibility does not permit downgraded frames:
 each decoded surface must match its output media type and preserve at least the negotiated
 bit depth and chroma before entering the decoded queue.
+Provisional startup metadata is not validated as an actual HDR frame before the sequence header
+arrives. The first actual sample and every output-type change undergo strict validation, including
+HDR color metadata; lower-precision frames never reach conversion.
 
 ## HEVC availability in Qt
 
@@ -71,6 +90,13 @@ Windows must have a registered, activatable HEVC Media Foundation decoder, such 
 HEVC Video Extensions, in addition to a compatible GPU and driver. The app does not bundle a
 separate Windows HEVC decoder. An installed extension alone does not prove that decoder
 activation or D3D11 configuration succeeds.
+
+Microsoft's [HEVC decoder contract](https://learn.microsoft.com/en-us/windows/win32/medfound/h-265---hevc-video-decoder)
+documents Main/Main10 4:2:0 and NV12/P010 output, not RExt 4:4:4. A compatible GPU alone does not
+add AYUV/Y410 to that MFT. HEVC 4:4:4 is available only when both the GPU and the installed MFT
+actually decode the exact 4:4:4 format and the embedded converter accepts it; otherwise the probe
+reports false with its failure stage. AV1 4:4:4 and HDR 4:4:4 are not advertised. This crate does
+not currently bundle an alternative FFmpeg or NVDEC decoder for RExt.
 
 When Qt disables H.265, `%APPDATA%\OpenNOW\diagnostics\native-streamer.log` records
 `Windows hardware decoder probe failed` with `codec=H.265` and the decoder error, even if H.264
@@ -141,6 +167,11 @@ The crate is a member of the native streamer workspace and can also be checked d
 cargo test --manifest-path native/opennow-streamer/crates/opennow-streamer-platform-windows/Cargo.toml
 cargo check --manifest-path native/opennow-streamer/crates/opennow-streamer-platform-windows/Cargo.toml --all-targets --target x86_64-pc-windows-msvc
 cargo check --manifest-path native/opennow-streamer/crates/opennow-streamer-platform-windows/Cargo.toml --all-targets --target aarch64-pc-windows-msvc
+cargo run --manifest-path native/opennow-streamer/crates/opennow-streamer-platform-windows/Cargo.toml --example probe
 ```
+
+On a Windows GPU machine, the example prints D3D11 and D3D12-backed capability results and the
+specific failures for unsupported profiles. The Windows-only unit tests exercise Media Foundation
+metadata and D3D11 processing; cross-target `cargo check` compiles but does not execute them.
 
 The cross-target checks validate the Win32 bindings for x64 and ARM64. Hardware decode, presentation, audio output, device removal, and endpoint switching still require tests on real Windows hardware.

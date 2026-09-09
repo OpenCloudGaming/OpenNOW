@@ -108,6 +108,10 @@ pub struct CapabilityProbe {
     pub av1_hardware_decode: bool,
     pub h265_hdr: bool,
     pub av1_hdr: bool,
+    pub h265_10bit: bool,
+    pub av1_10bit: bool,
+    pub h265_444: bool,
+    pub h265_10bit_444: bool,
     pub h264_software_decode: bool,
     pub h265_software_decode: bool,
     pub av1_software_decode: bool,
@@ -117,6 +121,29 @@ pub struct CapabilityProbe {
 }
 
 impl CapabilityProbe {
+    pub const fn supports_format(
+        &self,
+        codec: VideoCodec,
+        pixel_format: VideoPixelFormat,
+        hdr: bool,
+    ) -> bool {
+        if !self.d3d11_presentation {
+            return false;
+        }
+        match (codec, pixel_format, hdr) {
+            (VideoCodec::H264, VideoPixelFormat::Nv12, false) => self.h264_hardware_decode,
+            (VideoCodec::H265, VideoPixelFormat::Nv12, false) => self.h265_hardware_decode,
+            (VideoCodec::Av1, VideoPixelFormat::Nv12, false) => self.av1_hardware_decode,
+            (VideoCodec::H265, VideoPixelFormat::P010, false) => self.h265_10bit,
+            (VideoCodec::Av1, VideoPixelFormat::P010, false) => self.av1_10bit,
+            (VideoCodec::H265, VideoPixelFormat::Ayuv, false) => self.h265_444,
+            (VideoCodec::H265, VideoPixelFormat::Y410, false) => self.h265_10bit_444,
+            (VideoCodec::H265, VideoPixelFormat::P010, true) => self.h265_hdr,
+            (VideoCodec::Av1, VideoPixelFormat::P010, true) => self.av1_hdr,
+            _ => false,
+        }
+    }
+
     pub const fn supports_hdr(&self, codec: VideoCodec) -> bool {
         self.d3d11_presentation
             && match codec {
@@ -267,6 +294,10 @@ impl WindowsBackend {
                 av1_hardware_decode: false,
                 h265_hdr: false,
                 av1_hdr: false,
+                h265_10bit: false,
+                av1_10bit: false,
+                h265_444: false,
+                h265_10bit_444: false,
                 h264_software_decode: false,
                 h265_software_decode: false,
                 av1_software_decode: false,
@@ -632,6 +663,10 @@ mod tests {
             av1_hardware_decode: true,
             h265_hdr: false,
             av1_hdr: false,
+            h265_10bit: false,
+            av1_10bit: false,
+            h265_444: false,
+            h265_10bit_444: false,
             h264_software_decode: true,
             h265_software_decode: true,
             av1_software_decode: true,
@@ -655,6 +690,10 @@ mod tests {
             av1_hardware_decode: true,
             h265_hdr: false,
             av1_hdr: false,
+            h265_10bit: false,
+            av1_10bit: false,
+            h265_444: false,
+            h265_10bit_444: false,
             h264_software_decode: true,
             h265_software_decode: true,
             av1_software_decode: true,
@@ -674,6 +713,53 @@ mod tests {
         assert!(!probe.supports_hdr(VideoCodec::H265));
         probe.d3d11_presentation = false;
         assert!(!probe.supports_hdr(VideoCodec::Av1));
+    }
+
+    #[test]
+    fn format_capabilities_never_infer_depth_or_chroma_from_codec_support() {
+        let mut probe = CapabilityProbe {
+            available: true,
+            h264_hardware_decode: true,
+            h265_hardware_decode: true,
+            av1_hardware_decode: true,
+            h265_hdr: false,
+            av1_hdr: false,
+            h265_10bit: false,
+            av1_10bit: false,
+            h265_444: false,
+            h265_10bit_444: false,
+            h264_software_decode: false,
+            h265_software_decode: false,
+            av1_software_decode: false,
+            d3d11_presentation: true,
+            wasapi_render: true,
+            reason: None,
+        };
+        for codec in [VideoCodec::H264, VideoCodec::H265, VideoCodec::Av1] {
+            assert!(probe.supports_format(codec, VideoPixelFormat::Nv12, false));
+            for pixel_format in [
+                VideoPixelFormat::P010,
+                VideoPixelFormat::Ayuv,
+                VideoPixelFormat::Y410,
+            ] {
+                assert!(!probe.supports_format(codec, pixel_format, false));
+                assert!(!probe.supports_format(codec, pixel_format, true));
+            }
+        }
+        probe.h265_10bit = true;
+        assert!(probe.supports_format(VideoCodec::H265, VideoPixelFormat::P010, false));
+        assert!(!probe.supports_format(VideoCodec::H265, VideoPixelFormat::P010, true));
+        assert!(!probe.supports_format(VideoCodec::Av1, VideoPixelFormat::P010, false));
+        assert!(!probe.supports_format(VideoCodec::H265, VideoPixelFormat::Y410, false));
+        probe.h265_444 = true;
+        assert!(probe.supports_format(VideoCodec::H265, VideoPixelFormat::Ayuv, false));
+        assert!(!probe.supports_format(VideoCodec::H265, VideoPixelFormat::Y410, false));
+        probe.h265_10bit_444 = true;
+        assert!(probe.supports_format(VideoCodec::H265, VideoPixelFormat::Y410, false));
+        assert!(!probe.supports_format(VideoCodec::H265, VideoPixelFormat::Y410, true));
+        assert!(!probe.supports_format(VideoCodec::Av1, VideoPixelFormat::Y410, false));
+        probe.d3d11_presentation = false;
+        assert!(!probe.supports_format(VideoCodec::H265, VideoPixelFormat::Y410, false));
     }
 
     #[test]

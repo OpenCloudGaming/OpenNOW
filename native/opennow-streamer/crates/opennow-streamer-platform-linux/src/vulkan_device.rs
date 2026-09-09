@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use crate::{Error, Result, Subsystem, VideoCodec};
+use crate::{Error, PixelFormat, Result, Subsystem, VideoCodec};
 
 #[derive(Debug, Clone, Copy)]
 pub struct VulkanDeviceInfo {
@@ -19,7 +19,7 @@ pub struct SharedVulkanDevice {
     #[cfg(all(feature = "ffmpeg", feature = "vulkan"))]
     device: *mut ffmpeg_next::ffi::AVBufferRef,
     info: VulkanDeviceInfo,
-    profiles: [Option<ProfileLimits>; 6],
+    profiles: [Option<ProfileLimits>; 12],
     failed: AtomicBool,
     #[cfg(all(feature = "ffmpeg", feature = "vulkan"))]
     copy_queue: (u32, u32),
@@ -52,18 +52,51 @@ impl SharedVulkanDevice {
     }
 
     pub fn codec_support(&self, codec: VideoCodec, ten_bit: bool) -> bool {
+        self.codec_format_support(
+            codec,
+            if ten_bit {
+                PixelFormat::P010
+            } else {
+                PixelFormat::Nv12
+            },
+        )
+    }
+
+    pub fn codec_format_support(&self, codec: VideoCodec, pixel_format: PixelFormat) -> bool {
         !self.failed.load(Ordering::Acquire)
-            && self.profiles[profile_index(codec, ten_bit)].is_some()
+            && format_profile_index(codec, pixel_format)
+                .is_some_and(|index| self.profiles[index].is_some())
     }
 
     pub fn supports(&self, codec: VideoCodec, ten_bit: bool, width: u32, height: u32) -> bool {
+        self.supports_format(
+            codec,
+            if ten_bit {
+                PixelFormat::P010
+            } else {
+                PixelFormat::Nv12
+            },
+            width,
+            height,
+        )
+    }
+
+    pub fn supports_format(
+        &self,
+        codec: VideoCodec,
+        pixel_format: PixelFormat,
+        width: u32,
+        height: u32,
+    ) -> bool {
         !self.failed.load(Ordering::Acquire)
-            && self.profiles[profile_index(codec, ten_bit)].is_some_and(|limits| {
-                width >= limits.minimum[0]
-                    && height >= limits.minimum[1]
-                    && width <= limits.maximum[0]
-                    && height <= limits.maximum[1]
-            })
+            && format_profile_index(codec, pixel_format)
+                .and_then(|index| self.profiles[index])
+                .is_some_and(|limits| {
+                    width >= limits.minimum[0]
+                        && height >= limits.minimum[1]
+                        && width <= limits.maximum[0]
+                        && height <= limits.maximum[1]
+                })
     }
 
     #[cfg(all(feature = "ffmpeg", feature = "vulkan"))]
@@ -89,6 +122,15 @@ fn profile_index(codec: VideoCodec, ten_bit: bool) -> usize {
         VideoCodec::Av1 => 2,
     };
     codec * 2 + usize::from(ten_bit)
+}
+
+fn format_profile_index(codec: VideoCodec, pixel_format: PixelFormat) -> Option<usize> {
+    let offset = match pixel_format {
+        PixelFormat::Nv12 | PixelFormat::P010 => 0,
+        PixelFormat::Nv24 | PixelFormat::P410 => 6,
+        _ => return None,
+    };
+    Some(profile_index(codec, pixel_format.is_ten_bit()) + offset)
 }
 
 #[cfg(all(feature = "ffmpeg", feature = "vulkan"))]
@@ -233,7 +275,7 @@ mod implementation {
             ));
         }
         let video = ash::khr::video_queue::Instance::new(&entry, &instance);
-        let mut profiles = [None; 6];
+        let mut profiles = [None; 12];
         for codec in [VideoCodec::H264, VideoCodec::H265, VideoCodec::Av1] {
             let extension = match codec {
                 VideoCodec::H264 => ash::khr::video_decode_h264::NAME,
@@ -252,8 +294,14 @@ mod implementation {
             {
                 continue;
             }
-            for ten_bit in [false, true] {
-                let formats = if ten_bit {
+            for pixel_format in [
+                PixelFormat::Nv12,
+                PixelFormat::P010,
+                PixelFormat::Nv24,
+                PixelFormat::P410,
+            ] {
+                let index = format_profile_index(codec, pixel_format).unwrap();
+                let formats = if pixel_format.is_ten_bit() {
                     [vk::Format::R16_UNORM, vk::Format::R16G16_UNORM]
                 } else {
                     [vk::Format::R8_UNORM, vk::Format::R8G8_UNORM]
@@ -266,21 +314,27 @@ mod implementation {
                         .optimal_tiling_features
                         .contains(required)
                 }) {
-                    profiles[profile_index(codec, ten_bit)] =
-                        query_profile(&video, physical, codec, ten_bit);
+                    profiles[index] = query_profile(
+                        &video,
+                        physical,
+                        codec,
+                        pixel_format,
+                        enabled(ash::khr::video_encode_queue::NAME)
+                            && enabled(ash::khr::video_maintenance1::NAME),
+                    );
                 }
                 eprintln!(
-                    "embedded Vulkan codec={} depth={} 420_supported={}",
+                    "embedded Vulkan codec={} format={:?} supported={}",
                     codec.label(),
-                    if ten_bit { 10 } else { 8 },
-                    profiles[profile_index(codec, ten_bit)].is_some()
+                    pixel_format,
+                    profiles[index].is_some()
                 );
             }
         }
         if profiles.iter().all(Option::is_none) {
             return Err(Error::unavailable(
                 Subsystem::Vulkan,
-                "shared Vulkan device has no supported 4:2:0 decode profile",
+                "shared Vulkan device has no supported decode profile",
             ));
         }
         let info = VulkanDeviceInfo {
@@ -361,9 +415,11 @@ mod implementation {
         video: &ash::khr::video_queue::Instance,
         physical: vk::PhysicalDevice,
         codec: VideoCodec,
-        ten_bit: bool,
+        pixel_format: PixelFormat,
+        encode_source: bool,
     ) -> Option<ProfileLimits> {
-        if codec == VideoCodec::H264 && ten_bit {
+        let ten_bit = pixel_format.is_ten_bit();
+        if codec == VideoCodec::H264 && (ten_bit || pixel_format.is_444()) {
             return None;
         }
         let depth = if ten_bit {
@@ -372,19 +428,24 @@ mod implementation {
             vk::VideoComponentBitDepthFlagsKHR::TYPE_8
         };
         let mut profile = vk::VideoProfileInfoKHR::default()
-            .chroma_subsampling(vk::VideoChromaSubsamplingFlagsKHR::TYPE_420)
+            .chroma_subsampling(if pixel_format.is_444() {
+                vk::VideoChromaSubsamplingFlagsKHR::TYPE_444
+            } else {
+                vk::VideoChromaSubsamplingFlagsKHR::TYPE_420
+            })
             .luma_bit_depth(depth)
             .chroma_bit_depth(depth);
         let mut h264 = vk::VideoDecodeH264ProfileInfoKHR::default()
             .std_profile_idc(vk::native::StdVideoH264ProfileIdc_STD_VIDEO_H264_PROFILE_IDC_HIGH)
             .picture_layout(vk::VideoDecodeH264PictureLayoutFlagsKHR::PROGRESSIVE);
-        let mut h265 = vk::VideoDecodeH265ProfileInfoKHR::default().std_profile_idc(if ten_bit {
-            vk::native::StdVideoH265ProfileIdc_STD_VIDEO_H265_PROFILE_IDC_MAIN_10
-        } else {
-            vk::native::StdVideoH265ProfileIdc_STD_VIDEO_H265_PROFILE_IDC_MAIN
-        });
+        let mut h265 = vk::VideoDecodeH265ProfileInfoKHR::default()
+            .std_profile_idc(h265_profile(pixel_format));
         let mut av1 = vk::VideoDecodeAV1ProfileInfoKHR::default()
-            .std_profile(vk::native::StdVideoAV1Profile_STD_VIDEO_AV1_PROFILE_MAIN)
+            .std_profile(if pixel_format.is_444() {
+                vk::native::StdVideoAV1Profile_STD_VIDEO_AV1_PROFILE_HIGH
+            } else {
+                vk::native::StdVideoAV1Profile_STD_VIDEO_AV1_PROFILE_MAIN
+            })
             .film_grain_support(true);
         profile = match codec {
             VideoCodec::H264 => profile
@@ -418,22 +479,79 @@ mod implementation {
         };
         let profiles = [profile];
         let mut list = vk::VideoProfileListInfoKHR::default().profiles(&profiles);
-        let mut usage =
-            vk::ImageUsageFlags::VIDEO_DECODE_DST_KHR | vk::ImageUsageFlags::TRANSFER_SRC;
-        if decode
-            .flags
-            .contains(vk::VideoDecodeCapabilityFlagsKHR::DPB_AND_OUTPUT_COINCIDE)
-        {
-            usage |= vk::ImageUsageFlags::VIDEO_DECODE_DPB_KHR;
-        }
+        let (usage, output_usage) = decode_image_usage(decode.flags, encode_source)?;
         let format_info = vk::PhysicalDeviceVideoFormatInfoKHR::default()
             .image_usage(usage)
             .push_next(&mut list);
+        let formats = query_formats(video, physical, &format_info)?;
+        let expected = decode_output_format(pixel_format)?;
+        if !unambiguous_output(&formats, expected) {
+            return None;
+        }
+        if usage != output_usage {
+            let output_info = vk::PhysicalDeviceVideoFormatInfoKHR::default()
+                .image_usage(output_usage)
+                .push_next(&mut list);
+            if !query_formats(video, physical, &output_info)?
+                .iter()
+                .any(|format| {
+                    format.format == expected && format.image_tiling == vk::ImageTiling::OPTIMAL
+                })
+            {
+                return None;
+            }
+        }
+        Some(limits)
+    }
+
+    fn decode_image_usage(
+        flags: vk::VideoDecodeCapabilityFlagsKHR,
+        encode_source: bool,
+    ) -> Option<(vk::ImageUsageFlags, vk::ImageUsageFlags)> {
+        let coincide = flags.contains(vk::VideoDecodeCapabilityFlagsKHR::DPB_AND_OUTPUT_COINCIDE);
+        if !coincide && !flags.contains(vk::VideoDecodeCapabilityFlagsKHR::DPB_AND_OUTPUT_DISTINCT)
+        {
+            return None;
+        }
+        let mut output = vk::ImageUsageFlags::VIDEO_DECODE_DST_KHR
+            | vk::ImageUsageFlags::TRANSFER_SRC
+            | vk::ImageUsageFlags::SAMPLED;
+        if coincide {
+            output |= vk::ImageUsageFlags::VIDEO_DECODE_DPB_KHR;
+        }
+        if encode_source {
+            output |= vk::ImageUsageFlags::VIDEO_ENCODE_SRC_KHR;
+        }
+        Some((
+            if coincide {
+                output
+            } else {
+                vk::ImageUsageFlags::VIDEO_DECODE_DPB_KHR
+            },
+            output,
+        ))
+    }
+
+    fn unambiguous_output(
+        formats: &[vk::VideoFormatPropertiesKHR<'_>],
+        expected: vk::Format,
+    ) -> bool {
+        !formats.is_empty()
+            && formats.iter().all(|format| {
+                format.format == expected && format.image_tiling == vk::ImageTiling::OPTIMAL
+            })
+    }
+
+    fn query_formats(
+        video: &ash::khr::video_queue::Instance,
+        physical: vk::PhysicalDevice,
+        format_info: &vk::PhysicalDeviceVideoFormatInfoKHR<'_>,
+    ) -> Option<Vec<vk::VideoFormatPropertiesKHR<'static>>> {
         let mut count = 0;
         unsafe {
             (video.fp().get_physical_device_video_format_properties_khr)(
                 physical,
-                &format_info,
+                format_info,
                 &mut count,
                 ptr::null_mut(),
             )
@@ -447,29 +565,130 @@ mod implementation {
         unsafe {
             (video.fp().get_physical_device_video_format_properties_khr)(
                 physical,
-                &format_info,
+                format_info,
                 &mut count,
                 formats.as_mut_ptr(),
             )
         }
         .result()
         .ok()?;
-        let expected = if ten_bit {
-            vk::Format::G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16
-        } else {
-            vk::Format::G8_B8R8_2PLANE_420_UNORM
-        };
-        if !formats[..count as usize].iter().any(|format| {
-            format.format == expected && format.image_tiling == vk::ImageTiling::OPTIMAL
-        }) {
+        if count as usize > formats.len() {
             return None;
         }
-        Some(limits)
+        formats.truncate(count as usize);
+        Some(formats)
+    }
+
+    fn h265_profile(pixel_format: PixelFormat) -> vk::native::StdVideoH265ProfileIdc {
+        if pixel_format.is_444() {
+            vk::native::StdVideoH265ProfileIdc_STD_VIDEO_H265_PROFILE_IDC_FORMAT_RANGE_EXTENSIONS
+        } else if pixel_format.is_ten_bit() {
+            vk::native::StdVideoH265ProfileIdc_STD_VIDEO_H265_PROFILE_IDC_MAIN_10
+        } else {
+            vk::native::StdVideoH265ProfileIdc_STD_VIDEO_H265_PROFILE_IDC_MAIN
+        }
+    }
+
+    fn decode_output_format(pixel_format: PixelFormat) -> Option<vk::Format> {
+        Some(match pixel_format {
+            PixelFormat::Nv12 => vk::Format::G8_B8R8_2PLANE_420_UNORM,
+            PixelFormat::P010 => vk::Format::G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16,
+            PixelFormat::Nv24 => vk::Format::G8_B8R8_2PLANE_444_UNORM,
+            PixelFormat::P410 => vk::Format::G10X6_B10X6R10X6_2PLANE_444_UNORM_3PACK16,
+            _ => return None,
+        })
     }
 
     #[cfg(test)]
     mod tests {
         use super::*;
+
+        #[test]
+        fn decoder_output_admission_rejects_competing_planar_formats() {
+            for (expected, competing) in [
+                (
+                    vk::Format::G8_B8R8_2PLANE_444_UNORM,
+                    vk::Format::G8_B8_R8_3PLANE_444_UNORM,
+                ),
+                (
+                    vk::Format::G10X6_B10X6R10X6_2PLANE_444_UNORM_3PACK16,
+                    vk::Format::G16_B16_R16_3PLANE_444_UNORM,
+                ),
+            ] {
+                let supported = vk::VideoFormatPropertiesKHR::default()
+                    .format(expected)
+                    .image_tiling(vk::ImageTiling::OPTIMAL);
+                let alternative = vk::VideoFormatPropertiesKHR::default()
+                    .format(competing)
+                    .image_tiling(vk::ImageTiling::OPTIMAL);
+                assert!(unambiguous_output(&[supported], expected));
+                assert!(unambiguous_output(&[supported, supported], expected));
+                assert!(!unambiguous_output(&[supported, alternative], expected));
+                assert!(!unambiguous_output(&[alternative, supported], expected));
+                assert!(!unambiguous_output(
+                    &[supported.image_tiling(vk::ImageTiling::LINEAR)],
+                    expected
+                ));
+                assert!(!unambiguous_output(&[], expected));
+            }
+        }
+
+        #[test]
+        fn format_queries_match_ffmpeg_dpb_mode_and_enabled_encode_usage() {
+            let dpb = vk::ImageUsageFlags::VIDEO_DECODE_DPB_KHR;
+            let output = vk::ImageUsageFlags::VIDEO_DECODE_DST_KHR
+                | vk::ImageUsageFlags::TRANSFER_SRC
+                | vk::ImageUsageFlags::SAMPLED;
+            let coincide = vk::VideoDecodeCapabilityFlagsKHR::DPB_AND_OUTPUT_COINCIDE;
+            let distinct = vk::VideoDecodeCapabilityFlagsKHR::DPB_AND_OUTPUT_DISTINCT;
+            assert_eq!(
+                decode_image_usage(coincide, false),
+                Some((dpb | output, dpb | output))
+            );
+            assert_eq!(decode_image_usage(distinct, false), Some((dpb, output)));
+            assert_eq!(
+                decode_image_usage(coincide | distinct, false),
+                Some((dpb | output, dpb | output))
+            );
+            let encode = vk::ImageUsageFlags::VIDEO_ENCODE_SRC_KHR;
+            assert_eq!(
+                decode_image_usage(coincide, true),
+                Some((dpb | output | encode, dpb | output | encode))
+            );
+            assert_eq!(
+                decode_image_usage(distinct, true),
+                Some((dpb, output | encode))
+            );
+            assert_eq!(
+                decode_image_usage(vk::VideoDecodeCapabilityFlagsKHR::empty(), false),
+                None
+            );
+        }
+
+        #[test]
+        fn four_four_four_requires_exact_decode_output_and_hevc_rext() {
+            assert_eq!(h265_profile(PixelFormat::Nv24), 4);
+            assert_eq!(h265_profile(PixelFormat::P410), 4);
+            assert_eq!(h265_profile(PixelFormat::Nv12), 1);
+            assert_eq!(h265_profile(PixelFormat::P010), 2);
+            assert_eq!(
+                decode_output_format(PixelFormat::Nv24),
+                Some(vk::Format::G8_B8R8_2PLANE_444_UNORM)
+            );
+            assert_eq!(
+                decode_output_format(PixelFormat::P410),
+                Some(vk::Format::G10X6_B10X6R10X6_2PLANE_444_UNORM_3PACK16)
+            );
+            assert_ne!(
+                decode_output_format(PixelFormat::Nv12),
+                decode_output_format(PixelFormat::Nv24)
+            );
+            assert_ne!(
+                decode_output_format(PixelFormat::P010),
+                decode_output_format(PixelFormat::P410)
+            );
+            assert_eq!(decode_output_format(PixelFormat::I420), None);
+        }
 
         #[test]
         fn graphics_queue_is_excluded_from_every_alias() {
@@ -544,6 +763,26 @@ mod tests {
     use super::*;
 
     #[test]
+    fn chroma_profiles_do_not_alias_and_other_formats_are_not_advertised() {
+        let mut indices = Vec::new();
+        for codec in [VideoCodec::H264, VideoCodec::H265, VideoCodec::Av1] {
+            for format in [
+                PixelFormat::Nv12,
+                PixelFormat::P010,
+                PixelFormat::Nv24,
+                PixelFormat::P410,
+            ] {
+                indices.push(format_profile_index(codec, format).unwrap());
+            }
+            for format in [PixelFormat::I420, PixelFormat::Bgra8, PixelFormat::Rgba8] {
+                assert_eq!(format_profile_index(codec, format), None);
+            }
+        }
+        indices.sort_unstable();
+        assert_eq!(indices, (0..12).collect::<Vec<_>>());
+    }
+
+    #[test]
     fn profiles_do_not_alias_codecs_or_bit_depths() {
         let mut indices = Vec::new();
         for codec in [VideoCodec::H264, VideoCodec::H265, VideoCodec::Av1] {
@@ -556,11 +795,16 @@ mod tests {
 
     #[test]
     fn capability_checks_require_the_exact_profile_dimensions_and_live_device() {
-        let mut profiles = [None; 6];
+        let mut profiles = [None; 12];
         profiles[profile_index(VideoCodec::H265, true)] = Some(ProfileLimits {
             minimum: [64, 64],
             maximum: [3840, 2160],
         });
+        profiles[format_profile_index(VideoCodec::H265, PixelFormat::Nv24).unwrap()] =
+            Some(ProfileLimits {
+                minimum: [128, 128],
+                maximum: [1920, 1080],
+            });
         let owner = SharedVulkanDevice {
             #[cfg(all(feature = "ffmpeg", feature = "vulkan"))]
             device: std::ptr::null_mut(),
@@ -583,7 +827,16 @@ mod tests {
         assert!(!owner.supports(VideoCodec::H265, true, 32, 32));
         assert!(!owner.supports(VideoCodec::H265, false, 1920, 1080));
         assert!(!owner.supports(VideoCodec::H264, true, 1920, 1080));
+        assert!(!owner.codec_format_support(VideoCodec::H265, PixelFormat::P410));
+        assert!(!owner.supports_format(VideoCodec::H265, PixelFormat::P410, 1920, 1080));
+        assert!(!owner.codec_format_support(VideoCodec::H265, PixelFormat::Rgba8));
+        assert!(owner.codec_format_support(VideoCodec::H265, PixelFormat::Nv24));
+        assert!(owner.supports_format(VideoCodec::H265, PixelFormat::Nv24, 1919, 1079));
+        assert!(!owner.supports_format(VideoCodec::H265, PixelFormat::Nv24, 1921, 1080));
+        assert!(!owner.supports_format(VideoCodec::H265, PixelFormat::Nv24, 64, 64));
         owner.failed.store(true, Ordering::Release);
+        assert!(!owner.codec_format_support(VideoCodec::H265, PixelFormat::Nv24));
+        assert!(!owner.supports_format(VideoCodec::H265, PixelFormat::Nv24, 1920, 1080));
         assert!(!owner.codec_support(VideoCodec::H265, true));
         assert!(!owner.supports(VideoCodec::H265, true, 1920, 1080));
     }

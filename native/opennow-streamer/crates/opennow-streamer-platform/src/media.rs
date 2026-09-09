@@ -338,6 +338,17 @@ impl MediaColorQuality {
         matches!(self, Self::EightBit444 | Self::TenBit444)
     }
 
+    #[cfg(target_os = "linux")]
+    pub(crate) const fn linux_pixel_format(self) -> opennow_streamer_platform_linux::PixelFormat {
+        use opennow_streamer_platform_linux::PixelFormat;
+        match self {
+            Self::EightBit420 => PixelFormat::Nv12,
+            Self::EightBit444 => PixelFormat::Nv24,
+            Self::TenBit420 => PixelFormat::P010,
+            Self::TenBit444 => PixelFormat::P410,
+        }
+    }
+
     #[cfg(target_os = "macos")]
     const fn macos_bit_depth(self) -> opennow_streamer_platform_macos::VideoBitDepth {
         use opennow_streamer_platform_macos::VideoBitDepth;
@@ -376,6 +387,42 @@ impl Default for MediaStreamConfig {
             cloud_gsync: false,
             shortcuts: StreamShortcutBindings::default(),
         }
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl MediaStreamConfig {
+    fn macos_color_space(self) -> opennow_streamer_platform_macos::VideoColorSpace {
+        use opennow_streamer_platform_macos::VideoColorSpace;
+        if self.hdr {
+            VideoColorSpace::Bt2020
+        } else {
+            VideoColorSpace::Bt709
+        }
+    }
+
+    fn macos_transfer(self) -> opennow_streamer_platform_macos::VideoTransfer {
+        use opennow_streamer_platform_macos::VideoTransfer;
+        if self.hdr {
+            VideoTransfer::Pq
+        } else {
+            VideoTransfer::Sdr
+        }
+    }
+
+    fn macos_h265_format(
+        self,
+        parameter_sets: opennow_streamer_platform_macos::H265ParameterSets,
+    ) -> opennow_streamer_platform_macos::H265Format {
+        use opennow_streamer_platform_macos::{H265Format, VideoChroma};
+        H265Format::new(parameter_sets, self.macos_color_space())
+            .with_bit_depth(self.color_quality.macos_bit_depth())
+            .with_chroma(if self.color_quality.is_444() {
+                VideoChroma::Yuv444
+            } else {
+                VideoChroma::Yuv420
+            })
+            .with_transfer(self.macos_transfer())
     }
 }
 
@@ -1081,6 +1128,7 @@ impl MediaSession {
         };
         config.decoder_preference = decoder_preference;
         config.embedded_presentation = true;
+        config.stream_format.pixel_format = stream.color_quality.linux_pixel_format();
         if stream.hdr {
             config.stream_format.color_transfer =
                 opennow_streamer_platform_linux::ColorTransfer::Pq;
@@ -1092,16 +1140,27 @@ impl MediaSession {
         if let Some(audio) = config.audio.as_mut() {
             audio.output_device = audio_device.device_name().unwrap_or_default().to_owned();
         }
-        if stream.color_quality.is_444() {
+        if stream.color_quality.is_444()
+            && (decoder_preference
+                != opennow_streamer_platform_linux::DecoderPreference::VulkanOnly
+                || !vulkan_device.as_ref().is_some_and(|device| {
+                    device.supports_format(
+                        config.codec,
+                        config.stream_format.pixel_format,
+                        stream.width,
+                        stream.height,
+                    )
+                }))
+        {
             return Err("embedded Linux decode does not support negotiated 4:4:4 color".to_owned());
         }
         if decoder_preference == opennow_streamer_platform_linux::DecoderPreference::VulkanOnly {
             let device = vulkan_device.as_ref().ok_or_else(|| {
                 "embedded Vulkan decode requires an attached shared device".to_owned()
             })?;
-            if !device.supports(
+            if !device.supports_format(
                 config.codec,
-                stream.color_quality.bit_depth() == 10,
+                config.stream_format.pixel_format,
                 stream.width,
                 stream.height,
             ) {
@@ -1111,9 +1170,6 @@ impl MediaSession {
             && decoder_preference != opennow_streamer_platform_linux::DecoderPreference::VaApiOnly
         {
             return Err("negotiated 10-bit embedded Linux decode requires Vulkan Video or VAAPI P010 import".to_owned());
-        }
-        if stream.color_quality.bit_depth() == 10 {
-            config.stream_format.pixel_format = opennow_streamer_platform_linux::PixelFormat::P010;
         }
         config.vulkan_device = vulkan_device;
         let session = opennow_streamer_platform_linux::LinuxSession::start(config)
@@ -1194,7 +1250,11 @@ impl MediaSession {
         audio_device: &opennow_streamer_protocol::AudioOutputDevice,
         frames: crate::GraphicsFramePublisher,
     ) -> Result<Self, String> {
-        if stream.color_quality.is_444() {
+        if stream.color_quality.is_444()
+            && (stream.codec != MediaVideoCodec::H265
+                || stream.color_quality != MediaColorQuality::TenBit444
+                || !opennow_streamer_platform_macos::probe_h265_444_ten_bit_hardware())
+        {
             return Err(
                 "embedded VideoToolbox decode does not support negotiated 4:4:4 color".to_owned(),
             );
@@ -1221,8 +1281,8 @@ impl MediaSession {
             .name("opennow-embedded-videotoolbox-host".to_owned())
             .spawn(move || {
                 use opennow_streamer_platform_macos::{
-                    AudioFormat, EmbeddedBackendConfig, H264Format, H265Format, MacOsBackend,
-                    QueueLimits, VideoColorSpace,
+                    AudioFormat, EmbeddedBackendConfig, H264Format, MacOsBackend, QueueLimits,
+                    VideoColorSpace,
                 };
 
                 let mut backend: Option<MacOsBackend> = None;
@@ -1274,18 +1334,14 @@ impl MediaSession {
                             parameter_sets,
                             reply,
                         } => {
-                            let result = start(
-                                H265Format::new(parameter_sets, VideoColorSpace::Bt709)
-                                    .with_bit_depth(stream.color_quality.macos_bit_depth())
-                                    .into(),
-                            )
-                            .and_then(|mut started| {
-                                started.set_paused(paused)?;
-                                let sink = started.sink();
-                                backend = Some(started);
-                                Ok(sink)
-                            })
-                            .map_err(|error| error.to_string());
+                            let result = start(stream.macos_h265_format(parameter_sets).into())
+                                .and_then(|mut started| {
+                                    started.set_paused(paused)?;
+                                    let sink = started.sink();
+                                    backend = Some(started);
+                                    Ok(sink)
+                                })
+                                .map_err(|error| error.to_string());
                             let _ = reply.send(result);
                         }
                         HostCommand::ConfigureMacAv1 { format, reply } => {
@@ -3375,9 +3431,7 @@ fn run_macos_h265_video(
     use std::sync::mpsc;
     use std::time::Duration;
 
-    use opennow_streamer_platform_macos::{
-        FrameTiming, H265Format, SubmitOutcome, VideoColorSpace,
-    };
+    use opennow_streamer_platform_macos::{FrameTiming, SubmitOutcome};
 
     let mut tracker = crate::macos_backend::H265ParameterSetTracker::default();
     let mut configured_parameter_sets = None;
@@ -3476,8 +3530,7 @@ fn run_macos_h265_video(
             && configured_parameter_sets.as_ref() != Some(parameter_sets)
             && frame.keyframe
         {
-            let format = H265Format::new(parameter_sets.clone(), VideoColorSpace::Bt709)
-                .with_bit_depth(shared.stream.color_quality.macos_bit_depth());
+            let format = shared.stream.macos_h265_format(parameter_sets.clone());
             let Some(sink) = backend_sink.as_ref() else {
                 return;
             };
@@ -3558,7 +3611,7 @@ fn run_macos_av1_video(
     use std::sync::mpsc;
     use std::time::Duration;
 
-    use opennow_streamer_platform_macos::{Av1Format, FrameTiming, SubmitOutcome, VideoColorSpace};
+    use opennow_streamer_platform_macos::{Av1Format, FrameTiming, SubmitOutcome};
 
     let mut configured_codec_configuration: Option<Vec<u8>> = None;
     let mut backend_sink: Option<opennow_streamer_platform_macos::StreamSink> = None;
@@ -3615,9 +3668,9 @@ fn run_macos_av1_video(
                 &codec_configuration,
                 stream.width,
                 stream.height,
-                VideoColorSpace::Bt709,
+                stream.macos_color_space(),
             ) {
-                Ok(format) => format,
+                Ok(format) => format.with_transfer(stream.macos_transfer()),
                 Err(error) => {
                     let _ = shared.feedback.send(MediaFeedback::DecoderError {
                         codec: "av1",
@@ -3670,9 +3723,9 @@ fn run_macos_av1_video(
                 &codec_configuration,
                 stream.width,
                 stream.height,
-                VideoColorSpace::Bt709,
+                stream.macos_color_space(),
             ) {
-                Ok(format) => format,
+                Ok(format) => format.with_transfer(stream.macos_transfer()),
                 Err(error) => {
                     eprintln!("Rejected AV1 configuration update: {error}");
                     mark_macos_video_desynced(
@@ -3840,6 +3893,37 @@ fn mark_macos_video_desynced(shared: &SharedPipeline, mid: &str, reason: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_color_metadata_tracks_accepted_hdr_without_inference_from_depth() {
+        use opennow_streamer_platform_macos::{VideoColorSpace, VideoTransfer};
+        for color_quality in [MediaColorQuality::TenBit420, MediaColorQuality::TenBit444] {
+            let mut stream = MediaStreamConfig {
+                color_quality,
+                ..Default::default()
+            };
+            assert_eq!(stream.macos_color_space(), VideoColorSpace::Bt709);
+            assert_eq!(stream.macos_transfer(), VideoTransfer::Sdr);
+            stream.hdr = true;
+            assert_eq!(stream.macos_color_space(), VideoColorSpace::Bt2020);
+            assert_eq!(stream.macos_transfer(), VideoTransfer::Pq);
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_stream_color_profiles_preserve_chroma_and_bit_depth() {
+        use opennow_streamer_platform_linux::PixelFormat;
+        for (color, format) in [
+            (MediaColorQuality::EightBit420, PixelFormat::Nv12),
+            (MediaColorQuality::EightBit444, PixelFormat::Nv24),
+            (MediaColorQuality::TenBit420, PixelFormat::P010),
+            (MediaColorQuality::TenBit444, PixelFormat::P410),
+        ] {
+            assert_eq!(color.linux_pixel_format(), format);
+        }
+    }
 
     #[cfg(target_os = "linux")]
     #[test]

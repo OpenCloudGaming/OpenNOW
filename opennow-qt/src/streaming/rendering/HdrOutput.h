@@ -8,6 +8,7 @@
 
 class QQuickWindow;
 class HdrOutputPass;
+class WaylandHdrOutput;
 
 class HdrOutput final : public QObject
 {
@@ -18,6 +19,13 @@ class HdrOutput final : public QObject
     Q_PROPERTY(bool chromeRequired READ chromeRequired NOTIFY changed)
 
 public:
+    enum OutputMode {
+        Sdr = 0,
+        LinearScRgb = 1,
+        Hdr10 = 2,
+        LinearDisplayReferred = 3
+    };
+
     struct State {
         int mode = 0;
         float whiteNits = 203.0f;
@@ -47,7 +55,9 @@ private:
     std::atomic<bool> m_chromeGuiReady{false};
     bool m_chromeSynchronized = false;
     bool m_chromeRequired = false;
+    bool m_metalLinearOutput = false;
     std::unique_ptr<HdrOutputPass> m_outputPass;
+    std::unique_ptr<WaylandHdrOutput> m_waylandOutput;
     bool m_supported = false;
     int m_mode = 0;
     static std::atomic<int> s_mode;

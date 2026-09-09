@@ -27,6 +27,7 @@ impl ConversionParameters {
         let (kr, kb) = match color_space {
             VideoColorSpace::Bt601 => (0.299, 0.114),
             VideoColorSpace::Bt709 => (0.2126, 0.0722),
+            VideoColorSpace::Bt2020 => (0.2627, 0.0593),
         };
         let kg = 1.0 - kr - kb;
         Self {
@@ -164,5 +165,38 @@ mod tests {
     fn metal_uniform_layout_is_nine_packed_floats() {
         assert_eq!(std::mem::size_of::<ConversionParameters>(), 9 * 4);
         assert_eq!(std::mem::align_of::<ConversionParameters>(), 4);
+    }
+
+    #[test]
+    fn bt2020_pq_code_values_preserve_matrix_precision_in_both_ranges() {
+        for (full_range, black, y_range, c_range) in
+            [(false, 64.0, 876.0, 896.0), (true, 0.0, 1023.0, 1023.0)]
+        {
+            let parameters =
+                ConversionParameters::new(VideoBitDepth::Ten, full_range, VideoColorSpace::Bt2020);
+            for rgb in [
+                [0.5080784; 3],
+                [0.7518271; 3],
+                [1.0; 3],
+                [0.7, 0.2, 0.4],
+                [0.2, 0.8, 0.4],
+            ] {
+                let y = 0.2627 * rgb[0] + 0.6780 * rgb[1] + 0.0593 * rgb[2];
+                let cb = (rgb[2] - y) / 1.8814;
+                let cr = (rgb[0] - y) / 1.4746;
+                assert_rgb(
+                    convert_codes(
+                        parameters,
+                        VideoBitDepth::Ten,
+                        [
+                            black + y * y_range,
+                            512.0 + cb * c_range,
+                            512.0 + cr * c_range,
+                        ],
+                    ),
+                    rgb,
+                );
+            }
+        }
     }
 }

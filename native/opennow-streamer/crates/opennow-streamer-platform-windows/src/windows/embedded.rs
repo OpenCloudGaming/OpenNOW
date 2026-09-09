@@ -590,6 +590,7 @@ impl AdoptedResources {
     }
 }
 
+#[cfg(test)]
 pub(super) unsafe fn probe_hdr_conversion(
     adopted: AdoptedD3d11Context,
     format: VideoFormat,
@@ -599,14 +600,37 @@ pub(super) unsafe fn probe_hdr_conversion(
     {
         return Err("HDR10 capability requires actual P010/PQ decoder output".to_owned());
     }
+    unsafe { probe_conversion(adopted, format) }
+}
+
+#[cfg(test)]
+unsafe fn probe_conversion(
+    adopted: AdoptedD3d11Context,
+    format: VideoFormat,
+) -> Result<(), String> {
+    let input_format = match format.pixel_format {
+        VideoPixelFormat::Nv12 => DXGI_FORMAT_NV12,
+        VideoPixelFormat::P010 => DXGI_FORMAT_P010,
+        VideoPixelFormat::Ayuv => DXGI_FORMAT_AYUV,
+        VideoPixelFormat::Y410 => DXGI_FORMAT_Y410,
+    };
     let mut resources = unsafe { AdoptedResources::new(adopted, format)? };
     resources.ensure_processor(
         format.width,
         format.height,
-        DXGI_FORMAT_P010,
+        input_format,
         format.width,
         format.height,
     )
+}
+
+pub(super) unsafe fn probe_decoded_conversion(
+    adopted: AdoptedD3d11Context,
+    frame: &DecodedVideoFrame,
+) -> Result<(), String> {
+    let mut resources = unsafe { AdoptedResources::new(adopted, frame.format)? };
+    resources.record(0, frame)?;
+    Ok(())
 }
 
 fn enable_multithread_protection(context: &ID3D11DeviceContext) -> Result<(), String> {
@@ -2139,6 +2163,35 @@ mod tests {
             color_primaries: crate::VideoColorPrimaries::Bt709,
             color_matrix: VideoColorMatrix::Bt709,
         }
+    }
+
+    #[test]
+    fn packed_444_color_conversion_does_not_require_subsampled_chroma_siting() {
+        for pixel_format in [VideoPixelFormat::Ayuv, VideoPixelFormat::Y410] {
+            for full_range in [false, true] {
+                let format = VideoFormat {
+                    pixel_format,
+                    chroma_format: crate::VideoChromaFormat::Cs444,
+                    full_range,
+                    ..color_test_format()
+                };
+                assert_eq!(
+                    input_color_space(format).unwrap(),
+                    input_color_space(VideoFormat {
+                        chroma_siting: VideoChromaSiting::TopLeft,
+                        ..format
+                    })
+                    .unwrap(),
+                );
+            }
+        }
+        assert!(
+            input_color_space(VideoFormat {
+                chroma_siting: VideoChromaSiting::TopLeft,
+                ..color_test_format()
+            })
+            .is_err()
+        );
     }
 
     #[test]

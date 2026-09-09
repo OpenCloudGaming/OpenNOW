@@ -16,7 +16,11 @@ Standalone presentation stays on the caller's window-system thread. Construct `N
 
 `SharedVulkanDevice::create` creates an owned Vulkan Video device when both `ffmpeg` and `vulkan` are enabled. The Qt shell obtains it through streamer FFI ABI 5, adopts the returned instance, device, and graphics queue, and passes the opaque owner into engine creation. The runtime clones the same `Arc<SharedVulkanDevice>` into `SessionConfig::vulkan_device`; it does not open an unrelated decode device for the embedded session.
 
-Embedded capability reporting uses the attached device's codec profiles. Session creation also checks the negotiated codec, dimensions, and bit depth. Supported 4:2:0 8-bit streams use NV12; supported 4:2:0 10-bit streams use P010. Embedded 4:4:4 is rejected rather than silently converted to 4:2:0. Without a shared owner, embedded Vulkan decode remains unavailable and Auto retains the existing non-Vulkan fallback path. Standalone probe results cannot enable embedded Vulkan.
+Embedded capability reporting uses the attached device's codec profiles. Session creation also checks the negotiated codec, dimensions, bit depth, and chroma subsampling. Supported 4:2:0 8-bit streams use NV12; supported 4:2:0 10-bit streams use P010. Shared Vulkan supports 4:4:4 through NV24 (8-bit) and P410 (10-bit) only when the exact codec profile, two-plane decode output format, and sampled snapshot formats are available on the attached device. Chroma remains full resolution through the GPU snapshot and conversion; unsupported formats are rejected rather than converted to 4:2:0. Without a shared owner, embedded Vulkan decode remains unavailable and Auto retains the existing non-Vulkan fallback path. Standalone probe results cannot enable embedded Vulkan.
+
+The 4:4:4 format mappings and codec profiles follow bundled FFmpeg 9.0's `libavcodec/vulkan_video.c`. This is an implementation capability, not a guarantee that a GPU or provider supports each profile. CUDA/NVDEC does not have an embedded GPU import path here; its CPU transfer cannot enable HDR or 4:4:4. VA-API's supported DMA-BUF path remains NV12/P010 only. Neither decoder availability nor an HDR-capable source establishes HDR display support: Qt must separately enable a suitable output surface. Conversion preserves PQ/HLG with BT.2020 metadata in float textures, while 10-bit SDR uses a 10-bit RGB texture.
+
+The shared-device probe matches FFmpeg's distinct/coincident decoded-picture-buffer usage and conservatively rejects profiles exposing competing output layouts. FFmpeg may prefer three-plane storage over an available two-plane format, so merely finding NV24/P410 in the driver's format list is not enough to advertise support. Such mixed-format devices remain unavailable until their selected storage has an implemented GPU snapshot path.
 
 The hello report carries per-codec `colorQualities` from those same profiles. Qt forwards it to the application core, which checks both Auto and manual codec choices against the user's color quality before CloudMatch allocates a seat. Main10 and 4:4:4 therefore fail at preflight when unsupported, rather than only after transport starts.
 
@@ -45,9 +49,11 @@ The H.264 V4L2 fallback supports both single-planar and multi-planar stateful de
 
 Actual decode tests require `/dev/video*` and, for HEVC Request, `/dev/media*`; VA-API tests require `/dev/dri/renderD*`; Vulkan presentation requires a live X11 or Wayland surface; audio requires an SDL-supported system audio service. The ignored `raspberry_pi_hevc_request_drm_only` test exercises Pi HEVC Request output, and `local_hardware_decodes_all_required_codecs` exercises Vulkan Video and CUDA/NVDEC, when the corresponding hardware and FFmpeg command-line encoder are installed. Ordinary unit tests do not claim those devices exist.
 
-The ignored shared-device HEVC tests exercise the embedded GPU-only snapshot path separately for NV12 and P010. Run them on a Vulkan Video device supporting the corresponding HEVC profiles; compilation and ordinary unit tests do not establish hardware decode support:
+The ignored shared-device HEVC tests exercise the embedded GPU-only snapshot path separately for NV12, P010, NV24, and P410. Run them on a Vulkan Video device supporting the corresponding HEVC profiles; 4:4:4 requires Range Extensions support. Compilation, ordinary unit tests, and synthetic conversion tests on Mesa software Vulkan do not establish hardware decode support:
 
 ```sh
 cargo test -p opennow-streamer-platform-linux --features ffmpeg-bundled shared_vulkan_hevc_nv12_gpu_only -- --ignored --nocapture
 cargo test -p opennow-streamer-platform-linux --features ffmpeg-bundled shared_vulkan_hevc_p010_gpu_only -- --ignored --nocapture
+cargo test -p opennow-streamer-platform-linux --features ffmpeg-bundled shared_vulkan_hevc_nv24_gpu_only -- --ignored --nocapture
+cargo test -p opennow-streamer-platform-linux --features ffmpeg-bundled shared_vulkan_hevc_p410_gpu_only -- --ignored --nocapture
 ```

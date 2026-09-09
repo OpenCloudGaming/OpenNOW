@@ -1,4 +1,4 @@
-# HDR on Windows and Linux
+# HDR and high-precision color
 
 HDR is an opt-in streaming mode in the Qt/native client. It is separate from the existing color-quality setting: a 10-bit SDR stream is still SDR. Enable HDR in the operating system first, then enable **HDR** in OpenNOW's stream settings before starting a new session. The remote game and GeForce NOW service must also allow HDR.
 
@@ -7,13 +7,43 @@ HDR is an opt-in streaming mode in the Qt/native client. It is separate from the
 | Platform | Decode and conversion | Window output |
 | --- | --- | --- |
 | Windows | Media Foundation hardware HEVC/AV1, P010, and a D3D11 video processor that supports PQ BT.2020 to PQ BT.2020 RGB10A2 conversion. | Linear extended sRGB (scRGB) is preferred; HDR10 is available when the window supports it. |
-| Linux | An attached Vulkan Video device supporting the negotiated 10-bit profile, or FFmpeg VAAPI with a verified HEVC Main10/AV1 10-bit profile and supported P010 DMA-BUF import. | A Vulkan surface exposing scRGB or HDR10 through the compositor and driver. An HDR monitor alone does not establish surface support. |
+| macOS | Hardware VideoToolbox HEVC Main10 with a verified PQ decode and IOSurface-to-Metal conversion. Encoded PQ BT.2020 is retained in RGBA16F. | Metal extended-range output; current display headroom and Qt's display-referred luminance contract determine HDR presentation. |
+| Linux | An attached Vulkan Video device supporting the negotiated 10-bit profile, or FFmpeg VAAPI with a verified HEVC Main10/AV1 10-bit profile and supported P010 DMA-BUF import. | A single-screen Wayland desktop with a complete configured PQ output description and HDR target headroom through `color-management-v1`, plus a Vulkan surface exposing scRGB or HDR10. |
 
 H.264, software decoding, CUDA's CPU-download presentation path, and standalone native presenter windows do not support HDR. The application does not enable HDR on an SDR-only desktop or assume that X11 supports it. Linux DMA-BUF layouts requiring disjoint multi-object image import are rejected rather than copied to the CPU.
+
+Linux output detection deliberately remains SDR on X11, multiple-screen configurations,
+missing color-management support, ICC-only descriptions, and incomplete or ambiguous output
+metadata. Advertised Vulkan HDR formats and compositor preferred-image hints alone are not
+evidence that the output is currently HDR. Output changes invalidate previous readiness;
+incomplete protocol replies are bounded and retried rather than reused as stale HDR support.
 
 Frame generation is disabled for HDR sources because the current interpolation path is designed for SDR. Native frames retain their original cadence and HDR precision; enabling HDR does not insert SDR-generated frames into the stream.
 
 HDR requests use 10-bit 4:2:0. Auto prefers HEVC and falls back to AV1 only when the runtime reports the required hardware support. Explicit incompatible codecs or unavailable output produce an actionable error before allocating a new session. An explicit server SDR response remains SDR; a saved HDR preference does not override the accepted session format.
+
+## 10-bit 4:4:4
+
+Ten-bit 4:4:4 is a separate SDR stream profile, not a synonym for HDR. Select Auto or HEVC;
+the supported GFN request policy does not request AV1 4:4:4. Explicit incompatible codec
+choices fail before session allocation instead of silently reducing chroma. Enabling HDR
+continues to select 10-bit 4:2:0 for that session without rewriting the saved SDR preference.
+
+- Linux uses the attached Vulkan Video device's exact HEVC range-extension profile and P410
+  output layout, then retains full-resolution chroma in GPU snapshots and conversion. CUDA,
+  VAAPI DMA-BUF, and CPU conversion do not provide this 4:4:4 path.
+- macOS requests VideoToolbox x444 output only after a hardware-required Main44410 fixture
+  decodes and completes Metal conversion. A codec-wide HEVC capability is not sufficient.
+- Windows advertises 4:4:4 only if an installed hardware MFT decodes the corresponding
+  AYUV/Y410 fixture and the embedded video processor converts the actual output. Microsoft's
+  built-in HEVC decoder documents Main/Main10 4:2:0 output only. These probes do not add
+  range-extension support to that decoder, and a GPU's 4:4:4 profile alone does not make it
+  available through Media Foundation. A separate native decoder path is still required for
+  Windows GPUs whose installed MFT cannot expose 4:4:4.
+
+Platform profile and conversion tests are not evidence of a successful GFN session or an HDR
+display's output. The exact GPU, driver, decoder, service tier, and compositor must support
+the requested mode. Unsupported profiles remain explicit errors rather than CPU fallbacks.
 
 ## Color and ownership contract
 

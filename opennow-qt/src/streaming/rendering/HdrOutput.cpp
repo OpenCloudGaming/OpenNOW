@@ -1,5 +1,6 @@
 #include "streaming/rendering/HdrOutput.h"
 #include "streaming/rendering/HdrOutputPass.h"
+#include "streaming/rendering/WaylandHdrOutput.h"
 
 #include <QQuickWindow>
 #include <QQuickRenderTarget>
@@ -15,6 +16,15 @@ std::atomic<bool> HdrOutput::s_supported{false};
 
 HdrOutput::HdrOutput(QObject *parent) : QObject(parent)
 {
+    m_waylandOutput = std::make_unique<WaylandHdrOutput>();
+    connect(m_waylandOutput.get(), &WaylandHdrOutput::changed, this, [this] {
+        if (!m_waylandOutput->state().supported && m_supported) {
+            m_supported = false;
+            emit changed();
+        }
+        m_probeRequested.store(true);
+        if (m_window) m_window->update();
+    });
     m_probeTimer.setInterval(1500);
     connect(&m_probeTimer, &QTimer::timeout, this, [this] {
         m_probeRequested.store(true);
@@ -28,8 +38,10 @@ void HdrOutput::attach(QQuickWindow *window)
 {
     if (!window || m_window) return;
     const auto api = window->rendererInterface()->graphicsApi();
-    if (api != QSGRendererInterface::Direct3D11 && api != QSGRendererInterface::Vulkan) return;
+    if (api != QSGRendererInterface::Direct3D11 && api != QSGRendererInterface::Vulkan
+            && api != QSGRendererInterface::Metal) return;
     m_window = window;
+    m_waylandOutput->attach(window);
     connect(window, &QQuickWindow::beforeFrameBegin, this,
             &HdrOutput::updateOutput, Qt::DirectConnection);
     connect(window, &QQuickWindow::sceneGraphInvalidated, this, [this] {
@@ -74,12 +86,8 @@ HdrOutput::State HdrOutput::renderState()
 
 QString HdrOutput::status() const
 {
-#if defined(Q_OS_LINUX)
-    return tr("HDR is temporarily disabled on Linux.");
-#else
     return m_supported ? tr("HDR output ready. Applies to the next stream.")
                        : tr("HDR unavailable on this display. Enable HDR in your operating system and use a supported GPU and compositor.");
-#endif
 }
 
 void HdrOutput::publish(State state)
@@ -87,7 +95,10 @@ void HdrOutput::publish(State state)
     s_mode.store(state.mode);
     s_whiteNits.store(state.whiteNits);
     s_supported.store(state.supported);
-    QMetaObject::invokeMethod(this, [this, state] {
+    QMetaObject::invokeMethod(this, [this, state]() mutable {
+#if defined(Q_OS_LINUX)
+        state.supported = state.supported && m_waylandOutput->state().supported;
+#endif
         if (m_supported == state.supported && m_mode == state.outputMode) return;
         m_supported = state.supported;
         m_mode = state.outputMode;
@@ -131,14 +142,23 @@ void HdrOutput::updateOutput()
             && (sc->format() != QRhiSwapChain::HDR10
                 || (m_outputPass && m_outputPass->matches(d->rhi, sc)))) return;
     auto desired = QRhiSwapChain::SDR;
-#if !defined(Q_OS_LINUX)
-    if (d->rhi->backend() == QRhi::D3D11 || d->rhi->backend() == QRhi::Vulkan) {
+    const auto waylandOutput = m_waylandOutput->state();
+#if defined(Q_OS_LINUX)
+    const bool platformReady = waylandOutput.supported;
+#else
+    const bool platformReady = true;
+#endif
+    if (platformReady && (d->rhi->backend() == QRhi::D3D11 || d->rhi->backend() == QRhi::Vulkan
+            || d->rhi->backend() == QRhi::Metal)) {
         if (sc->isFormatSupported(QRhiSwapChain::HDRExtendedSrgbLinear))
             desired = QRhiSwapChain::HDRExtendedSrgbLinear;
         else if (sc->isFormatSupported(QRhiSwapChain::HDR10))
             desired = QRhiSwapChain::HDR10;
     }
-#endif
+    const bool hdrAvailable = desired != QRhiSwapChain::SDR;
+    if (d->rhi->backend() == QRhi::Metal
+            && m_metalLinearOutput)
+        desired = QRhiSwapChain::HDRExtendedSrgbLinear;
     if (desired != QRhiSwapChain::SDR && !m_chromeSynchronized) {
         requestChrome(true);
         m_probeRequested.store(true);
@@ -146,6 +166,9 @@ void HdrOutput::updateOutput()
     }
     const auto changeFormat = [&](QRhiSwapChain::Format format) {
         d->rhi->finish();
+        m_window->setRenderTarget({});
+        d->redirect.commandBuffer = nullptr;
+        m_outputPass.reset();
         auto *previousPass = d->rpDescForSwapchain;
         sc->destroy();
         sc->setFormat(format);
@@ -158,13 +181,16 @@ void HdrOutput::updateOutput()
         if (!created) {
             sc->destroy();
             delete nextPass;
-            sc->setFormat(QRhiSwapChain::SDR);
+            const auto fallback = d->rhi->backend() == QRhi::Metal
+                ? format : QRhiSwapChain::SDR;
+            sc->setFormat(fallback);
             nextPass = sc->newCompatibleRenderPassDescriptor();
             if (nextPass) {
                 sc->setRenderPassDescriptor(nextPass);
                 created = sc->createOrResize();
             }
-            qWarning("HDR output format change failed; SDR fallback %s.", created ? "active" : "unavailable");
+            qWarning("HDR output format change failed; recovery format=%d %s.",
+                int(fallback), created ? "active" : "unavailable");
         }
         if (nextPass) {
             d->rpDescForSwapchain = nextPass;
@@ -177,6 +203,9 @@ void HdrOutput::updateOutput()
         d->swapchainJustBecameRenderable = !created;
     };
     if (desired != sc->format()) changeFormat(desired);
+    if (d->rhi->backend() == QRhi::Metal
+            && sc->format() == QRhiSwapChain::HDRExtendedSrgbLinear)
+        m_metalLinearOutput = true;
     if (sc->format() == QRhiSwapChain::HDR10 && d->hasActiveSwapchain && d->hasRenderableSwapchain) {
         if (!m_outputPass || !m_outputPass->matches(d->rhi, sc)) {
             d->rhi->finish();
@@ -202,21 +231,30 @@ void HdrOutput::updateOutput()
         m_outputPass.reset();
     }
     State state;
-    state.outputMode = sc->format() == QRhiSwapChain::HDRExtendedSrgbLinear ? 1
-               : sc->format() == QRhiSwapChain::HDR10 ? 2 : 0;
-    state.mode = state.outputMode == 0 ? 0 : 1;
-    state.supported = state.mode != 0 && sc->format() == desired
+    const auto info = sc->hdrInfo();
+    state.outputMode = sc->format() == QRhiSwapChain::HDRExtendedSrgbLinear
+        ? (info.luminanceBehavior == QRhiSwapChainHdrInfo::DisplayReferred
+            ? LinearDisplayReferred : LinearScRgb)
+        : sc->format() == QRhiSwapChain::HDR10 ? Hdr10 : Sdr;
+    state.mode = state.outputMode == Hdr10 ? LinearScRgb : state.outputMode;
+    state.supported = hdrAvailable && state.mode != Sdr && sc->format() == desired
         && (state.outputMode != 2 || bool(m_outputPass))
         && d->hasActiveSwapchain && d->hasRenderableSwapchain;
+    if (info.limitsType == QRhiSwapChainHdrInfo::ColorComponentValue)
+        state.supported = state.supported
+            && std::isfinite(info.limits.colorComponentValue.maxColorComponentValue)
+            && info.limits.colorComponentValue.maxColorComponentValue > 1.0f;
     if (!d->hasActiveSwapchain || !d->hasRenderableSwapchain)
         m_probeRequested.store(true);
     if (state.mode == 0) {
         m_chromeSynchronized = false;
         requestChrome(false);
     }
-    const auto info = sc->hdrInfo();
-    if (std::isfinite(info.sdrWhiteLevel) && info.sdrWhiteLevel >= 80.0f
+    if (info.luminanceBehavior == QRhiSwapChainHdrInfo::SceneReferred
+            && std::isfinite(info.sdrWhiteLevel) && info.sdrWhiteLevel >= 80.0f
             && info.sdrWhiteLevel <= 500.0f)
         state.whiteNits = info.sdrWhiteLevel;
+    if (waylandOutput.supported)
+        state.whiteNits = waylandOutput.whiteNits;
     publish(state);
 }
