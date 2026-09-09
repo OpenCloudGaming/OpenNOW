@@ -31,6 +31,38 @@ These corrections do not establish which network condition affected the remote
 PC. A firewall, VPN, router or server can still prevent video UDP delivery. Do
 not disable the firewall or change the user's VPN automatically.
 
+## WARP on/off capture, 2026-09-09
+
+The `1.0.0-nightly.332.1` capture has the same zero-video-datagram failure on both
+routes. The tunnel route reports MTU 1300 and packet size 1232; after the tunnel
+is disabled, the route reports MTU 1500 and packet size 1280. Bundle ICE/DTLS/SCTP
+and audio succeed in both cases. These logs do not establish a regression in
+packet sizing or identify which network device is blocking video.
+
+Comparison with [OpenNOW-Mac's port-range handling](https://github.com/OpenCloudGaming/OpenNOW-Mac/blob/666bd4a3391e13b074b37eecfd61d568e9231d34/GFN/NVST/Rtsp/NvstRtspWireFormat.swift#L334-L348)
+found a separate negotiation gap: the native client
+discarded the upper bound of SETUP's `X-GS-ServerPort` range. It sent NATT probes
+only to the first port and rejected media from any other port. An endpoint-dependent
+NAT can consequently filter a reply from the second advertised port before it
+reaches the receiver. OpenNOW now preserves the advertised range, sends the existing
+authenticated probes to each port, and admits STUN/SRTP from that range on the
+negotiated host. Authentication and replay checks still apply. Bundle routing,
+packet sizing, socket ownership, and recovery limits are unchanged.
+
+The internal `nvstVideo` handoff adds optional `videoPeerPortEnd`, inclusive of the
+upper bound. Omission retains the single `videoPeerPort` behavior. At most 16
+ports are allowed, matching the Mac reference's bound; an invalid SETUP range
+retains only its valid first port, while an invalid handoff range is rejected.
+Diagnostics include the negotiated upper port, without credentials or payloads.
+
+Loopback regression tests require an authenticated NATT probe on the selected
+server port before releasing an authenticated video frame. They cover the
+original single-port behavior and a server answering only on the second port,
+with both packet sizes from the capture. This verifies the port-range correction,
+not live WARP interoperability. The affected PC still needs fresh-session retests
+with WARP enabled and disabled; success requires authenticated video, assembled
+frames, and visible playback in both cases.
+
 ## Verification
 
 Run the native streamer workspace tests and `opennow-embedded-orchestration-tests`.
