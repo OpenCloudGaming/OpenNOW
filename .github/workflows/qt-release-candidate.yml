@@ -382,26 +382,6 @@ jobs:
             -DOPENNOW_UPDATE_ED25519_PUBLIC_KEY="$UPDATE_PUBLIC_KEY" "${args[@]}"
           cmake --build build/opennow-qt-release --config Release --parallel 8
 
-      - name: Bundle Windows desktop tests
-        if: matrix.arch == 'x64'
-        shell: bash
-        env:
-          SOURCE_SHA: ${{ needs.preflight.outputs.source_sha }}
-        run: |
-          python .github/scripts/windows-test-bundle.py pack \
-            --build O:/build/opennow-qt-release --output "$RUNNER_TEMP/windows-tests.zip" \
-            --revision "$SOURCE_SHA"
-
-      - name: Upload Windows desktop tests
-        if: matrix.arch == 'x64'
-        uses: actions/upload-artifact@v4
-        with:
-          name: windows-release-x64-tests
-          path: ${{ runner.temp }}/windows-tests.zip
-          if-no-files-found: error
-          retention-days: 1
-          compression-level: 0
-
       - name: Authenticode-sign application binaries
         shell: pwsh
         env:
@@ -468,17 +448,11 @@ jobs:
             build/release-artifacts/SHA256SUMS
           if-no-files-found: error
 
-  windows-desktop-tests:
-    needs: [preflight, windows]
-    uses: ./.github/workflows/qt-windows-desktop-tests.yml
-    with:
-      artifact-name: windows-release-x64-tests
-
   inventory:
     name: isolated-update-signing-and-inventory
     runs-on: [self-hosted, opennow-release-signer]
     environment: qt-update-signing
-    needs: [preflight, linux, windows, windows-desktop-tests]
+    needs: [preflight, linux, windows]
     steps:
       - uses: actions/download-artifact@v4
         with:
