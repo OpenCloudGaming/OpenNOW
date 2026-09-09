@@ -2,6 +2,7 @@ mod audio;
 mod audio_devices;
 mod embedded;
 mod mailbox;
+mod metalfx;
 mod presentation;
 mod surface;
 mod video;

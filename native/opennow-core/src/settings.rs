@@ -260,6 +260,7 @@ impl SettingsStore {
             "8bit_420",
         );
         normalize_choice(&mut self.values, "frameGeneration", &["off", "2x"], "off");
+        normalize_choice(&mut self.values, "upscaling", &["off", "metalfx"], "off");
         for key in ["decoderPreference", "encoderPreference"] {
             normalize_choice(
                 &mut self.values,
@@ -767,7 +768,7 @@ fn legacy_data_dirs(primary: &Path) -> Vec<PathBuf> {
 fn defaults() -> Map<String, Value> {
     json!({
         "resolution":"1920x1080", "aspectRatio":"16:9", "posterSizeScale":1.05,
-        "fps":60, "frameGeneration":"off", "maxBitrateMbps":75, "recordingBitrateMbps":null,
+        "fps":60, "frameGeneration":"off", "upscaling":"off", "maxBitrateMbps":75, "recordingBitrateMbps":null,
         "recordingResolution":"720p", "recordingFps":30, "streamClientMode":"native",
         "replayBufferEnabled":false, "replayBufferSeconds":30, "replayBufferMemoryMiB":256,
         "nativeVideoBackend":"auto", "nativeStreamerExecutablePath":"", "audioOutputDevice":"",
@@ -1568,6 +1569,35 @@ mod tests {
         .unwrap();
         let store = SettingsStore::load(Some(directory.clone())).unwrap();
         assert_eq!(store.all()["frameGeneration"], json!("off"));
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn upscaling_defaults_off_and_persists_only_supported_choices() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = env::temp_dir().join(format!("opennow-upscaling-{unique}"));
+        let mut store = SettingsStore::load(Some(directory.clone())).unwrap();
+        assert_eq!(store.all()["upscaling"], json!("off"));
+        assert_eq!(
+            store.set("upscaling", json!("metalfx")).unwrap(),
+            json!("metalfx")
+        );
+        let mut store = SettingsStore::load(Some(directory.clone())).unwrap();
+        assert_eq!(store.all()["upscaling"], json!("metalfx"));
+        assert_eq!(store.set("upscaling", json!("off")).unwrap(), json!("off"));
+        for invalid in [json!("unknown"), json!(true), json!(null)] {
+            assert_eq!(store.set("upscaling", invalid).unwrap(), json!("off"));
+        }
+        fs::write(
+            directory.join("settings.json"),
+            serde_json::to_vec(&json!({"upscaling": "invalid"})).unwrap(),
+        )
+        .unwrap();
+        let store = SettingsStore::load(Some(directory.clone())).unwrap();
+        assert_eq!(store.all()["upscaling"], json!("off"));
         let _ = fs::remove_dir_all(directory);
     }
 

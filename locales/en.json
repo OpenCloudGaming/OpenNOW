@@ -7,6 +7,10 @@
     "vibration": "Controller vibration",
     "vibrationDescription": "Scale game vibration on supported controllers. Set to 0% to disable."
   },
+  "upscalingSettings": {
+    "title": "Upscaling",
+    "description": "Spatial upscaling for enlarged video. Uses extra GPU time; falls back to normal scaling when MetalFX is unavailable."
+  },
   "recordingSettings": {
     "recordingElapsed": "Recording · %1",
     "clipFailed": "Clip failed",

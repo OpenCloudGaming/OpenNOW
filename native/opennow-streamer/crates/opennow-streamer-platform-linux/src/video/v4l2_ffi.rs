@@ -300,6 +300,12 @@ pub mod vidioc {
         code(IOC_READ | IOC_WRITE, 17, std::mem::size_of::<v4l2_buffer>());
     pub const VIDIOC_STREAMON: _IOC_TYPE = code(IOC_WRITE, 18, std::mem::size_of::<c_int>());
     pub const VIDIOC_STREAMOFF: _IOC_TYPE = code(IOC_WRITE, 19, std::mem::size_of::<c_int>());
+    pub const VIDIOC_DQEVENT: _IOC_TYPE = code(IOC_READ, 89, std::mem::size_of::<v4l2_event>());
+    pub const VIDIOC_SUBSCRIBE_EVENT: _IOC_TYPE = code(
+        IOC_WRITE,
+        90,
+        std::mem::size_of::<v4l2_event_subscription>(),
+    );
     pub const VIDIOC_DECODER_CMD: _IOC_TYPE = code(
         IOC_READ | IOC_WRITE,
         96,
@@ -339,5 +345,13 @@ mod tests {
         assert_eq!(std::mem::offset_of!(v4l2_buffer, length), 72);
         assert_eq!(std::mem::offset_of!(v4l2_event, u), 8);
         assert_eq!(std::mem::offset_of!(v4l2_event, timestamp), 80);
+    }
+
+    #[test]
+    fn decoder_ioctl_numbers_match_linux_x64_and_arm64() {
+        assert_eq!(vidioc::VIDIOC_DQBUF, 0xc058_5611);
+        assert_eq!(vidioc::VIDIOC_DQEVENT, 0x8088_5659);
+        assert_eq!(vidioc::VIDIOC_SUBSCRIBE_EVENT, 0x4020_565a);
+        assert_eq!(vidioc::VIDIOC_DECODER_CMD, 0xc048_5660);
     }
 }

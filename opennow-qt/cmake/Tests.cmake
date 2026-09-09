@@ -24,6 +24,12 @@ if(BUILD_TESTING)
     set_tests_properties(opennow-theme-tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
     qt_add_resources(opennow-qt "theme-settings-acceptance"
         PREFIX "/acceptance" BASE tests FILES tests/ThemeSettingsAcceptance.qml)
+    qt_add_resources(opennow-qt "upscaling-acceptance"
+        PREFIX "/acceptance" BASE tests FILES tests/UpscalingAcceptance.qml)
+    add_test(NAME qml-upscaling
+        COMMAND opennow-qt --smoke-test --allow-multiple-instances --desktop
+            --route settings-streaming --smoke-upscaling --reduced-motion)
+    set_tests_properties(qml-upscaling PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 10)
     foreach(width 960 1440)
         foreach(mode dark light)
             set(theme_mode_args)
@@ -264,7 +270,6 @@ if(BUILD_TESTING)
     )
     target_include_directories(opennow-coreclient-tests PRIVATE src)
     target_link_libraries(opennow-coreclient-tests PRIVATE Qt6::Test Qt6::Core)
-    target_compile_definitions(opennow-coreclient-tests PRIVATE OPENNOW_VERSION="${OPENNOW_BUILD_VERSION}")
     add_dependencies(opennow-coreclient-tests opennow-fake-core)
     add_test(NAME opennow-coreclient-tests COMMAND opennow-coreclient-tests -o -,txt)
 

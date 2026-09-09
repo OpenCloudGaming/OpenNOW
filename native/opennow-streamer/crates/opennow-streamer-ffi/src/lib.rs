@@ -19,7 +19,7 @@ use serde_json::Value;
 
 static FIRST_FRAME_LOGGED: AtomicBool = AtomicBool::new(false);
 
-pub const OPENNOW_STREAMER_FFI_ABI_VERSION: u32 = 6;
+pub const OPENNOW_STREAMER_FFI_ABI_VERSION: u32 = 7;
 pub const OPENNOW_STREAMER_VULKAN_DEVICE_INFO_VERSION: u32 = 1;
 const DEFAULT_MAX_COMMAND_BYTES: usize = 1024 * 1024;
 const MAX_QUEUE_CAPACITY: usize = 4096;
@@ -201,9 +201,10 @@ pub enum OpenNowStreamerStatus {
     Panic = 255,
 }
 
-pub const OPENNOW_STREAMER_GRAPHICS_CONTEXT_VERSION: u32 = 2;
+pub const OPENNOW_STREAMER_GRAPHICS_CONTEXT_VERSION: u32 = 3;
 pub const OPENNOW_STREAMER_GRAPHICS_CAP_VULKAN_DMABUF_IMPORT: u32 = 1;
-pub const OPENNOW_STREAMER_RENDER_COMMAND_VERSION: u32 = 1;
+pub const OPENNOW_STREAMER_GRAPHICS_CAP_VULKAN_DMABUF_BUFFER_IMPORT: u32 = 2;
+pub const OPENNOW_STREAMER_RENDER_COMMAND_VERSION: u32 = 2;
 pub const OPENNOW_STREAMER_GRAPHICS_API_D3D11: u32 = 1;
 pub const OPENNOW_STREAMER_GRAPHICS_API_VULKAN: u32 = 2;
 pub const OPENNOW_STREAMER_GRAPHICS_API_METAL: u32 = 3;
@@ -238,6 +239,8 @@ pub struct OpenNowStreamerRecordCommand {
     pub struct_size: usize,
     pub command_buffer: *mut c_void,
     pub frame_slot: u32,
+    pub upscale_width: u32,
+    pub upscale_height: u32,
 }
 
 #[repr(C)]
@@ -595,7 +598,9 @@ fn graphics_context(
         OPENNOW_STREAMER_GRAPHICS_API_METAL => GraphicsApi::Metal,
         _ => return Err(OpenNowStreamerStatus::InvalidConfig),
     };
-    if context.enabled_capabilities & !OPENNOW_STREAMER_GRAPHICS_CAP_VULKAN_DMABUF_IMPORT != 0
+    let supported_capabilities = OPENNOW_STREAMER_GRAPHICS_CAP_VULKAN_DMABUF_IMPORT
+        | OPENNOW_STREAMER_GRAPHICS_CAP_VULKAN_DMABUF_BUFFER_IMPORT;
+    if context.enabled_capabilities & !supported_capabilities != 0
         || (api != GraphicsApi::Vulkan && context.enabled_capabilities != 0)
     {
         return Err(OpenNowStreamerStatus::InvalidConfig);
@@ -609,6 +614,9 @@ fn graphics_context(
         queue_family_index: context.queue_family_index,
         vulkan_dmabuf_import_enabled: context.enabled_capabilities
             & OPENNOW_STREAMER_GRAPHICS_CAP_VULKAN_DMABUF_IMPORT
+            != 0,
+        vulkan_dmabuf_buffer_import_enabled: context.enabled_capabilities
+            & OPENNOW_STREAMER_GRAPHICS_CAP_VULKAN_DMABUF_BUFFER_IMPORT
             != 0,
     })
 }
@@ -624,6 +632,8 @@ fn render_command(
     Ok(GraphicsRecordCommand {
         command_buffer: command.command_buffer as usize,
         frame_slot: command.frame_slot,
+        upscale_width: command.upscale_width,
+        upscale_height: command.upscale_height,
     })
 }
 
@@ -1482,7 +1492,7 @@ mod tests {
 
     #[test]
     fn abi_five_appends_the_shared_vulkan_owner() {
-        assert_eq!(OPENNOW_STREAMER_FFI_ABI_VERSION, 6);
+        assert_eq!(OPENNOW_STREAMER_FFI_ABI_VERSION, 7);
         assert_eq!(OPENNOW_STREAMER_VULKAN_DEVICE_INFO_VERSION, 1);
         assert_eq!(
             std::mem::offset_of!(OpenNowStreamerConfig, vulkan_device),
@@ -1729,7 +1739,20 @@ mod tests {
                 .unwrap()
                 .vulkan_dmabuf_import_enabled
         );
-        context.enabled_capabilities = 2;
+        assert!(
+            !graphics_context(context)
+                .unwrap()
+                .vulkan_dmabuf_buffer_import_enabled
+        );
+        context.enabled_capabilities = OPENNOW_STREAMER_GRAPHICS_CAP_VULKAN_DMABUF_BUFFER_IMPORT;
+        let buffer_only = graphics_context(context).unwrap();
+        assert!(buffer_only.vulkan_dmabuf_buffer_import_enabled);
+        assert!(!buffer_only.vulkan_dmabuf_import_enabled);
+        context.enabled_capabilities |= OPENNOW_STREAMER_GRAPHICS_CAP_VULKAN_DMABUF_IMPORT;
+        let both = graphics_context(context).unwrap();
+        assert!(both.vulkan_dmabuf_import_enabled);
+        assert!(both.vulkan_dmabuf_buffer_import_enabled);
+        context.enabled_capabilities = 4;
         assert_eq!(
             graphics_context(context),
             Err(OpenNowStreamerStatus::InvalidConfig)
@@ -1740,12 +1763,19 @@ mod tests {
             graphics_context(context),
             Err(OpenNowStreamerStatus::InvalidConfig)
         );
-        context = ffi_graphics_context();
-        context.version = 1;
+        context.enabled_capabilities = OPENNOW_STREAMER_GRAPHICS_CAP_VULKAN_DMABUF_BUFFER_IMPORT;
         assert_eq!(
             graphics_context(context),
             Err(OpenNowStreamerStatus::InvalidConfig)
         );
+        context = ffi_graphics_context();
+        for version in [1, 2] {
+            context.version = version;
+            assert_eq!(
+                graphics_context(context),
+                Err(OpenNowStreamerStatus::InvalidConfig)
+            );
+        }
         context = ffi_graphics_context();
         context.struct_size -= 1;
         assert_eq!(
@@ -1760,7 +1790,41 @@ mod tests {
             struct_size: size_of::<OpenNowStreamerRecordCommand>(),
             command_buffer: ptr::dangling_mut(),
             frame_slot: 2,
+            upscale_width: 0,
+            upscale_height: 0,
         }
+    }
+
+    #[test]
+    fn render_command_two_preserves_upscaling_and_rejects_old_layouts() {
+        let mut command = ffi_render_command();
+        assert_eq!(OPENNOW_STREAMER_RENDER_COMMAND_VERSION, 2);
+        assert_eq!(render_command(command).unwrap().upscale_width, 0);
+        assert_eq!(render_command(command).unwrap().upscale_height, 0);
+        command.upscale_width = 2560;
+        command.upscale_height = 1440;
+        let native = render_command(command).unwrap();
+        assert_eq!(native.upscale_width, 2560);
+        assert_eq!(native.upscale_height, 1440);
+        assert_eq!(native.frame_slot, command.frame_slot);
+        command.version = 1;
+        assert_eq!(
+            render_command(command),
+            Err(OpenNowStreamerStatus::InvalidConfig)
+        );
+        command.version = OPENNOW_STREAMER_RENDER_COMMAND_VERSION;
+        command.struct_size = std::mem::offset_of!(OpenNowStreamerRecordCommand, upscale_width);
+        assert_eq!(
+            render_command(command),
+            Err(OpenNowStreamerStatus::InvalidConfig)
+        );
+        let messages = CallbackMessages::default();
+        let mut config = test_config(&messages);
+        config.abi_version = 6;
+        assert_eq!(
+            validate_config(&config),
+            Err(OpenNowStreamerStatus::InvalidConfig)
+        );
     }
 
     fn graphics_test_handle(messages: &CallbackMessages) -> OpenNowStreamer {

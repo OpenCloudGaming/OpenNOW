@@ -35,6 +35,7 @@ int AcceptanceSession::startSmokeWorkload()
     if (m_smokeTest && m_arguments.contains(u"--smoke-frame-generation-stats"_s))
         return startFrameGenerationStatsWorkload();
     if (m_smokeTest && (m_arguments.contains(u"--smoke-frame-generation"_s)
+                       || m_arguments.contains(u"--smoke-upscaling"_s)
                        || m_arguments.contains(u"--smoke-stream-stats"_s)
                        || m_arguments.contains(u"--smoke-controller-metadata"_s)
                        || m_arguments.contains(u"--smoke-custom-background"_s))) {
@@ -47,6 +48,8 @@ int AcceptanceSession::startSmokeWorkload()
             ? u"qrc:/acceptance/CustomBackgroundAcceptance.qml"_s
             : streamStats
             ? u"qrc:/acceptance/StreamStatsAcceptance.qml"_s
+            : m_arguments.contains(u"--smoke-upscaling"_s)
+            ? u"qrc:/acceptance/UpscalingAcceptance.qml"_s
             : u"qrc:/acceptance/FrameGenerationAcceptance.qml"_s));
         auto *fixture = component.create();
         if (!fixture) { qCritical() << component.errors(); return EXIT_FAILURE; }

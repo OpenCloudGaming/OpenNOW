@@ -1,7 +1,8 @@
 use crate::VideoCodec;
 use crate::audio::{AudioBackend, probe_audio_backend};
 use crate::video::{
-    probe_ffmpeg_cuda, probe_ffmpeg_software, probe_ffmpeg_vulkan, probe_v4l2_devices, probe_vaapi,
+    probe_ffmpeg_cuda, probe_ffmpeg_software, probe_ffmpeg_vulkan, probe_v4l2_devices,
+    probe_v4l2_request, probe_vaapi,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -83,6 +84,7 @@ pub fn probe_video_capabilities() -> (Vec<BackendCapability>, PresentationCapabi
         vec![
             BackendCapability::from_probe("vaapi-h264", probe_vaapi()),
             BackendCapability::from_probe("v4l2-h264", v4l2),
+            BackendCapability::from_probe("v4l2-h265", probe_v4l2_request()),
             BackendCapability::from_probe(
                 "vulkan-video-h264",
                 probe_ffmpeg_vulkan(VideoCodec::H264),

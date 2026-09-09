@@ -185,6 +185,9 @@ fn select_embedded_fallback(
             ("vaapi", DecoderPreference::VaApiOnly),
             ("v4l2", DecoderPreference::V4l2Only),
         ] {
+            if name == "v4l2" && stream.hdr {
+                continue;
+            }
             if stream.color_quality.bit_depth() == 10 && name != "vaapi" {
                 continue;
             }
@@ -319,7 +322,7 @@ pub(crate) fn video_backends() -> Vec<VideoBackendCapability> {
         multi_codec_capability("vulkan", "vulkan-video", capabilities, window_system, false),
         multi_codec_capability("cuda", "cuda", capabilities, window_system, false),
         h264_capability("vaapi", "vaapi-h264", capabilities, window_system),
-        h264_capability("v4l2", "v4l2-h264", capabilities, window_system),
+        v4l2_capability(capabilities, window_system),
         multi_codec_capability(
             "ffmpeg",
             "ffmpeg-software",
@@ -328,6 +331,42 @@ pub(crate) fn video_backends() -> Vec<VideoBackendCapability> {
             false,
         ),
     ]
+}
+
+fn v4l2_capability(
+    capabilities: &LinuxCapabilitySnapshot,
+    window_system: &str,
+) -> VideoBackendCapability {
+    let mut backend = h264_capability("v4l2", "v4l2-h264", capabilities, window_system);
+    let decoder = capabilities.decoder("v4l2-h265");
+    let presentation = capabilities.presentation_available(window_system);
+    let codec = backend
+        .codecs
+        .iter_mut()
+        .find(|codec| codec.codec == "h265")
+        .unwrap();
+    codec.available = decoder.available && presentation;
+    codec.color_qualities = Some(if codec.available {
+        vec!["8bit_420"]
+    } else {
+        Vec::new()
+    });
+    codec.hdr_supported = Some(false);
+    codec.reason = if !decoder.available {
+        Some(static_reason(decoder.detail))
+    } else if !presentation {
+        Some(static_reason(presentation_unavailable_reason(
+            &capabilities.presentation,
+            window_system,
+        )))
+    } else {
+        None
+    };
+    backend.available = backend.codecs.iter().any(|codec| codec.available);
+    if backend.available {
+        backend.reason = None;
+    }
+    backend
 }
 
 fn multi_codec_capability(
@@ -439,6 +478,51 @@ fn static_reason(reason: String) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hevc_request_is_available_without_stateful_h264_and_never_ten_bit() {
+        let mut capabilities = snapshot(false, false, false, true, vec!["wayland"]);
+        capabilities.decoders.push(capability("v4l2-h265", true));
+        let backend = v4l2_capability(&capabilities, "wayland");
+        assert!(backend.available);
+        assert!(
+            !backend
+                .codecs
+                .iter()
+                .find(|codec| codec.codec == "h264")
+                .unwrap()
+                .available
+        );
+        let codec = backend
+            .codecs
+            .iter()
+            .find(|codec| codec.codec == "h265")
+            .unwrap();
+        assert!(codec.available);
+        assert_eq!(codec.color_qualities, Some(vec!["8bit_420"]));
+        assert_eq!(codec.hdr_supported, Some(false));
+        let mut stream = crate::MediaStreamConfig {
+            codec: crate::MediaVideoCodec::H265,
+            color_quality: crate::MediaColorQuality::EightBit420,
+            ..Default::default()
+        };
+        assert_eq!(
+            select_embedded_fallback("v4l2", stream, std::slice::from_ref(&backend)).path,
+            LinuxVideoPath::Hardware(DecoderPreference::V4l2Only)
+        );
+        stream.color_quality = crate::MediaColorQuality::TenBit420;
+        assert_eq!(
+            select_embedded_fallback("v4l2", stream, std::slice::from_ref(&backend)).path,
+            LinuxVideoPath::Software
+        );
+        stream.color_quality = crate::MediaColorQuality::EightBit420;
+        stream.hdr = true;
+        assert_eq!(
+            select_embedded_fallback("v4l2", stream, &[backend]).path,
+            LinuxVideoPath::Software
+        );
+        assert!(!v4l2_capability(&capabilities, "x11").available);
+    }
 
     #[test]
     fn ten_bit_fallback_uses_only_explicit_vaapi_profiles() {

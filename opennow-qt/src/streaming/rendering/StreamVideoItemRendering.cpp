@@ -27,6 +27,7 @@ public:
             m_callback->setFrameGeneration(item->frameGeneration() && item->isVisible(),
                 m_window->screen() ? m_window->screen()->refreshRate() : 0.0);
         m_viewport = StreamVideoItem::aspectFitRect(item->videoSize(), m_bounds.size().toSize());
+        m_metalFxUpscaling = item->metalFxUpscaling() && item->isVisible();
         markDirty(QSGNode::DirtyGeometry | QSGNode::DirtyMaterial);
     }
 
@@ -38,6 +39,8 @@ public:
         m_initialized = true;
         m_callback->setComposition(*projectionMatrix() * *matrix(), m_bounds, m_viewport,
                                    float(inheritedOpacity()));
+        m_callback->setUpscalingTarget(m_metalFxUpscaling
+            ? (QSizeF(m_viewport.size()) * m_window->effectiveDevicePixelRatio()).toSize() : QSize());
         m_callback->prepareFrame(commandBuffer());
     }
 
@@ -77,6 +80,7 @@ private:
     QRectF m_bounds;
     QRect m_viewport;
     bool m_initialized = false;
+    bool m_metalFxUpscaling = false;
 };
 }
 

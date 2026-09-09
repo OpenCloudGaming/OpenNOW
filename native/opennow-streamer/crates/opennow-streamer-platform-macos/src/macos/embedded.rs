@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::ptr::{self, NonNull};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use block2::RcBlock;
@@ -30,8 +30,10 @@ use objc2_metal::{
 use crate::color::ConversionParameters;
 use crate::failure::FailureReporter;
 use crate::format::{MetalFrameFormat, VideoBitDepth, VideoColorSpace};
+use crate::spatial::SpatialConfig;
 
 use super::mailbox::LatestMailbox;
+use super::metalfx::{self, SpatialResources};
 use super::video::DecodedFrame;
 use super::{BackendError, Counters};
 
@@ -147,7 +149,7 @@ impl BiPlanarFormat {
 }
 
 impl MetalFrameFormat {
-    const fn pixel_format(self) -> MTLPixelFormat {
+    pub(super) const fn pixel_format(self) -> MTLPixelFormat {
         match self {
             Self::Rgba8Unorm => MTLPixelFormat::RGBA8Unorm,
             Self::Rgb10a2Unorm => MTLPixelFormat::RGB10A2Unorm,
@@ -188,6 +190,8 @@ fn frame_color_space(frame: &DecodedFrame) -> Result<VideoColorSpace, BackendErr
 pub struct AdoptedMetalContext {
     pub device: *mut c_void,
     pub command_buffer: *mut c_void,
+    pub upscale_width: u32,
+    pub upscale_height: u32,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -273,6 +277,7 @@ impl MetalFrame {
             self.frame.clone(),
             command_buffer,
             frame_slot,
+            (adopted.upscale_width, adopted.upscale_height),
             Arc::clone(&self.counters),
             Arc::clone(&self.failures),
         )?;
@@ -345,6 +350,7 @@ impl EmbeddedFrameProducer {
 
 struct InFlightResources {
     _output: Retained<ProtocolObject<dyn MTLTexture>>,
+    _spatial: Option<SpatialResources>,
     _frame: DecodedFrame,
     _luma_cv_texture: CFRetained<CVMetalTexture>,
     _chroma_cv_texture: CFRetained<CVMetalTexture>,
@@ -359,6 +365,10 @@ struct MetalState {
     pipelines: [Option<Retained<ProtocolObject<dyn MTLRenderPipelineState>>>; 2],
     texture_cache: CFRetained<CVMetalTextureCache>,
     slots: HashMap<u32, Retained<ProtocolObject<dyn MTLTexture>>>,
+    spatial_slots: HashMap<u32, (SpatialConfig, Option<SpatialResources>)>,
+    spatial_supported: Option<bool>,
+    spatial_initialization_reported: bool,
+    spatial_failed: Arc<AtomicBool>,
     generation: u64,
 }
 
@@ -395,6 +405,10 @@ impl MetalState {
             pipelines: [None, None],
             texture_cache: unsafe { CFRetained::from_raw(cache_ptr) },
             slots: HashMap::with_capacity(3),
+            spatial_slots: HashMap::with_capacity(3),
+            spatial_supported: None,
+            spatial_initialization_reported: false,
+            spatial_failed: Arc::new(AtomicBool::new(false)),
             generation: 0,
         })
     }
@@ -404,6 +418,7 @@ impl MetalState {
         frame: DecodedFrame,
         command_buffer: &ProtocolObject<dyn MTLCommandBuffer>,
         frame_slot: u32,
+        upscale_size: (u32, u32),
         counters: Arc<Counters>,
         failures: Arc<FailureReporter>,
     ) -> Result<MetalRecordedFrame, BackendError> {
@@ -438,36 +453,37 @@ impl MetalState {
         let chroma_texture = CVMetalTextureGetTexture(&chroma_cv_texture)
             .ok_or_else(|| BackendError::Metal("failed to get Metal chroma texture".into()))?;
 
-        let output = self
-            .slots
-            .remove(&frame_slot)
-            .filter(|texture| {
-                texture.width() == width
-                    && texture.height() == height
-                    && texture.pixelFormat() == output_format.pixel_format()
-            })
-            .map_or_else(
-                || {
-                    let descriptor = unsafe {
-                        MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(
-                            output_format.pixel_format(),
-                            width,
-                            height,
-                            false,
-                        )
-                    };
-                    descriptor.setStorageMode(MTLStorageMode::Private);
-                    descriptor.setUsage(
-                        MTLTextureUsage::RenderTarget | MTLTextureUsage::ShaderRead,
-                    );
-                    self._device
-                        .newTextureWithDescriptor(&descriptor)
-                        .ok_or_else(|| {
-                            BackendError::Metal(format!("failed to create embedded {output_format:?} texture"))
-                        })
-                },
-                Ok,
-            )?;
+        let spatial = self.spatial_resources(
+            frame_slot,
+            SpatialConfig::new(width, height, upscale_size.0, upscale_size.1, output_format),
+        );
+        let output = if let Some(spatial) = &spatial {
+            spatial.input.clone()
+        } else if let Some(texture) = self.slots.remove(&frame_slot).filter(|texture| {
+            texture.width() == width
+                && texture.height() == height
+                && texture.pixelFormat() == output_format.pixel_format()
+        }) {
+            texture
+        } else {
+            let descriptor = unsafe {
+                MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(
+                    output_format.pixel_format(),
+                    width,
+                    height,
+                    false,
+                )
+            };
+            descriptor.setStorageMode(MTLStorageMode::Private);
+            descriptor.setUsage(MTLTextureUsage::RenderTarget | MTLTextureUsage::ShaderRead);
+            self._device
+                .newTextureWithDescriptor(&descriptor)
+                .ok_or_else(|| {
+                    BackendError::Metal(format!(
+                        "failed to create embedded {output_format:?} texture"
+                    ))
+                })?
+        };
 
         let render_pass = MTLRenderPassDescriptor::renderPassDescriptor();
         let attachments = render_pass.colorAttachments();
@@ -505,16 +521,33 @@ impl MetalState {
         unsafe { encoder.drawPrimitives_vertexStart_vertexCount(MTLPrimitiveType::Triangle, 0, 3) };
         encoder.endEncoding();
 
-        let texture = Retained::as_ptr(&output).cast_mut().cast::<c_void>();
+        let scaling_attempted = spatial.is_some();
+        let scaled = spatial
+            .as_ref()
+            .is_some_and(|spatial| spatial.encode(command_buffer));
+        if scaling_attempted && !scaled {
+            self.spatial_failed.store(true, Ordering::Release);
+            eprintln!("MetalFX encoding failed; using normal conversion until graphics recreation");
+        }
+        let sampled_output = if scaled {
+            &spatial.as_ref().expect("encoded scaler").output
+        } else {
+            &output
+        };
+        let texture = Retained::as_ptr(sampled_output).cast_mut().cast::<c_void>();
+        let output_width = sampled_output.width();
+        let output_height = sampled_output.height();
         self.slots.insert(frame_slot, output.clone());
         let resources = InFlightResources {
             _output: output,
+            _spatial: spatial,
             _frame: frame,
             _luma_cv_texture: luma_cv_texture,
             _chroma_cv_texture: chroma_cv_texture,
             _luma_texture: luma_texture,
             _chroma_texture: chroma_texture,
         };
+        let spatial_failed = Arc::clone(&self.spatial_failed);
         let completed = RcBlock::new(
             move |command: NonNull<ProtocolObject<dyn MTLCommandBuffer>>| {
                 let _retained_until_completion = &resources;
@@ -532,7 +565,15 @@ impl MetalState {
                         || "Qt Metal command buffer failed without an error description".to_owned(),
                         |error| error.localizedDescription().to_string(),
                     );
-                    failures.metal_failed(message);
+                    if scaling_attempted {
+                        if !spatial_failed.swap(true, Ordering::AcqRel) {
+                            eprintln!(
+                                "Qt command buffer failed with MetalFX enabled; disabling optional scaling: {message}"
+                            );
+                        }
+                    } else {
+                        failures.metal_failed(message);
+                    }
                 }
             },
         );
@@ -541,12 +582,53 @@ impl MetalState {
         Ok(MetalRecordedFrame {
             texture,
             format: output_format,
-            width: u32::try_from(width).unwrap_or(u32::MAX),
-            height: u32::try_from(height).unwrap_or(u32::MAX),
+            width: u32::try_from(output_width).unwrap_or(u32::MAX),
+            height: u32::try_from(output_height).unwrap_or(u32::MAX),
             frame_slot,
             generation: self.generation,
             presentation_time_ns: 0,
         })
+    }
+
+    fn spatial_resources(
+        &mut self,
+        frame_slot: u32,
+        config: Option<SpatialConfig>,
+    ) -> Option<SpatialResources> {
+        let Some(config) = config else {
+            self.spatial_slots.remove(&frame_slot);
+            return None;
+        };
+        if self.spatial_failed.load(Ordering::Acquire) {
+            self.spatial_slots.remove(&frame_slot);
+            return None;
+        }
+        if !*self
+            .spatial_supported
+            .get_or_insert_with(|| {
+                let supported = metalfx::supports_device(&self._device);
+                if !supported {
+                    eprintln!("MetalFX spatial scaling unavailable for this OS/device; using normal conversion");
+                }
+                supported
+            })
+        {
+            return None;
+        }
+        let entry = self
+            .spatial_slots
+            .entry(frame_slot)
+            .or_insert_with(|| (config, SpatialResources::new(&self._device, config)));
+        if entry.0 != config {
+            *entry = (config, SpatialResources::new(&self._device, config));
+        }
+        if entry.1.is_none() && !self.spatial_initialization_reported {
+            self.spatial_initialization_reported = true;
+            eprintln!(
+                "MetalFX spatial resources unavailable for {config:?}; using normal conversion"
+            );
+        }
+        entry.1.clone()
     }
 
     fn ensure_pipeline(&mut self, format: MetalFrameFormat) -> Result<(), BackendError> {
@@ -637,6 +719,52 @@ mod tests {
         kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,
     };
     use objc2_metal::MTLPixelFormat;
+
+    #[test]
+    #[ignore = "requires a Mac with MetalFX spatial scaling"]
+    fn spatial_slots_reuse_resources_and_retire_failed_or_changed_configurations() {
+        use super::*;
+        use objc2_metal::MTLCreateSystemDefaultDevice;
+
+        let device = MTLCreateSystemDefaultDevice().expect("Metal device");
+        assert!(metalfx::supports_device(&device));
+        let mut state = MetalState::new(&device, 1).unwrap();
+        let config = SpatialConfig::new(64, 64, 128, 128, MetalFrameFormat::Rgba8Unorm).unwrap();
+        let first = state.spatial_resources(0, Some(config)).unwrap();
+        let reused = state.spatial_resources(0, Some(config)).unwrap();
+        assert_eq!(
+            Retained::as_ptr(&first.output),
+            Retained::as_ptr(&reused.output)
+        );
+        assert_eq!(
+            Retained::as_ptr(&first.input),
+            Retained::as_ptr(&reused.input)
+        );
+        for slot in 1..MAX_RETAINED_FRAME_SLOTS as u32 {
+            let next = state.spatial_resources(slot, Some(config)).unwrap();
+            assert_ne!(
+                Retained::as_ptr(&first.output),
+                Retained::as_ptr(&next.output)
+            );
+        }
+        assert_eq!(state.spatial_slots.len(), MAX_RETAINED_FRAME_SLOTS);
+        let resized = SpatialConfig::new(64, 64, 256, 256, config.format).unwrap();
+        let replacement = state.spatial_resources(0, Some(resized)).unwrap();
+        assert_ne!(
+            Retained::as_ptr(&first.output),
+            Retained::as_ptr(&replacement.output)
+        );
+        assert!(state.spatial_resources(0, None).is_none());
+        assert!(!state.spatial_slots.contains_key(&0));
+        state.spatial_slots.insert(0, (config, None));
+        assert!(state.spatial_resources(0, Some(config)).is_none());
+        state.spatial_failed.store(true, Ordering::Release);
+        assert!(state.spatial_resources(1, Some(config)).is_none());
+        assert!(!state.spatial_slots.contains_key(&1));
+        drop(state);
+        assert_eq!(first.output.width(), 128);
+        assert_eq!(replacement.output.width(), 256);
+    }
 
     #[test]
     fn accepts_nv12_and_p010_ranges_only() {

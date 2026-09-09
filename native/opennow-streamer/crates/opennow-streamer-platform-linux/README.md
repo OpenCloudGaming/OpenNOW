@@ -41,7 +41,9 @@ rustup target add aarch64-unknown-linux-gnu
 cargo check -p opennow-streamer-platform-linux --target aarch64-unknown-linux-gnu --no-default-features
 ```
 
-The V4L2 fallback supports both single-planar and multi-planar stateful decoder nodes used on x86_64, aarch64, and Raspberry Pi. Actual decode tests require `/dev/video*`; VA-API tests require `/dev/dri/renderD*`; Vulkan presentation requires a live X11 or Wayland surface; audio requires an SDL-supported system audio service. The ignored `local_hardware_decodes_all_required_codecs` test performs real Vulkan Video and CUDA/NVDEC decoding when the FFmpeg command-line encoder is installed. Ordinary unit tests do not claim those devices exist.
+The H.264 V4L2 fallback supports both single-planar and multi-planar stateful decoder nodes used on x86_64, aarch64, and Raspberry Pi 4. Bundled Linux aarch64 builds also include pinned Raspberry Pi FFmpeg support for HEVC V4L2 Request decoding on Pi 4 and Pi 5. That HEVC path is embedded-only, supports 8-bit 4:2:0 SDR, and requires Qt's explicit DMA-BUF buffer-import capability. SAND128 single-object NC12 and split-object Nc12 frames are copied into planar textures entirely on the GPU; packed P030/10-bit is rejected. See [Raspberry Pi requirements and acceptance](../../../../docs/raspberry-pi.md).
+
+Actual decode tests require `/dev/video*` and, for HEVC Request, `/dev/media*`; VA-API tests require `/dev/dri/renderD*`; Vulkan presentation requires a live X11 or Wayland surface; audio requires an SDL-supported system audio service. The ignored `raspberry_pi_hevc_request_drm_only` test exercises Pi HEVC Request output, and `local_hardware_decodes_all_required_codecs` exercises Vulkan Video and CUDA/NVDEC, when the corresponding hardware and FFmpeg command-line encoder are installed. Ordinary unit tests do not claim those devices exist.
 
 The ignored shared-device HEVC tests exercise the embedded GPU-only snapshot path separately for NV12 and P010. Run them on a Vulkan Video device supporting the corresponding HEVC profiles; compilation and ordinary unit tests do not establish hardware decode support:
 
