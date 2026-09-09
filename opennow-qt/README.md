@@ -39,7 +39,7 @@ cmake --build build/opennow-qt --target opennow-ci-unit-tests --parallel 4
 ctest --test-dir build/opennow-qt --output-on-failure --no-tests=error -L ci-unit --parallel 4
 ```
 
-Windows CI runs 16 Qt targets; Linux and macOS run 17. The Windows HDR/native-window
+Windows CI runs 17 Qt targets; Linux and macOS run 18. The Windows HDR/native-window
 test and macOS native cursor-capture test require an interactive desktop, so they
 remain registered under `interactive-desktop` instead of `ci-unit`. Blacksmith
 package jobs also exclude this label. No test assertions are disabled or relaxed.
