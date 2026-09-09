@@ -191,7 +191,8 @@ ItemDelegate {
                 visible: root.controlType === "dropdown" || root.controlType === "button"
                 anchors.right: parent.right
                 anchors.verticalCenter: parent.verticalCenter
-                width: Math.min(420, valueLabel.implicitWidth + (root.controlType === "dropdown" ? 58 : 38))
+                width: Math.min(420, (root.rowData.shortcut ? shortcutValue.implicitWidth : valueLabel.implicitWidth)
+                    + (root.controlType === "dropdown" ? 58 : 38))
                 height: 42
                 radius: 21
                 color: root.rowData.danger ? Qt.rgba(1, 0.3, 0.3, 0.12) : Theme.glassStrong
@@ -199,6 +200,7 @@ ItemDelegate {
                 border.width: 1
                 Text {
                     id: valueLabel
+                    visible: !root.rowData.shortcut
                     anchors.left: parent.left
                     anchors.leftMargin: 19
                     anchors.right: chevron.visible ? chevron.left : parent.right
@@ -210,6 +212,13 @@ ItemDelegate {
                     font.pixelSize: 15
                     font.weight: Font.ExtraBold
                     elide: Text.ElideRight
+                }
+                KeyboardGlyph {
+                    id: shortcutValue
+                    visible: Boolean(root.rowData.shortcut)
+                    anchors.centerIn: parent
+                    shortcut: visible ? root.value : ""
+                    keySize: 26
                 }
                 Text {
                     id: chevron

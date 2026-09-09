@@ -94,6 +94,7 @@ Column {
             description: qsTr("Start or stop a source-quality recording during a stream.")
             DesktopSettingsButton {
                 objectName: "editRecordingShortcut"
+                keySequence: text
                 text: String(page.settingsScreen.valueSetting("shortcutToggleRecording", "F12"))
                 Accessible.name: qsTr("Toggle recording") + ": " + text
                 onClicked: shortcutEditor.edit("shortcutToggleRecording", qsTr("Toggle recording"))
@@ -106,6 +107,7 @@ Column {
             showDivider: false
             DesktopSettingsButton {
                 objectName: "editSaveClipShortcut"
+                keySequence: text
                 text: String(page.settingsScreen.valueSetting("shortcutSaveClip", "Ctrl+F12"))
                 Accessible.name: qsTr("Save replay clip") + ": " + text
                 onClicked: shortcutEditor.edit("shortcutSaveClip", qsTr("Save replay clip"))

@@ -1,7 +1,7 @@
 set_source_files_properties(qml/theme/Theme.qml PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
 set_source_files_properties(qml/state/ShellStore.qml PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
 set_source_files_properties(qml/desktop/components/DesktopTokens.qml PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
-set_source_files_properties(qml/components/ControllerIcons.qml PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
+set_source_files_properties(qml/components/InputPromptIcons.qml PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
 
 set(OPENNOW_CONTROLLER_ICON_FILES
     res/input-prompts/controller_playstation5-dark.svg
@@ -32,6 +32,185 @@ set(OPENNOW_CONTROLLER_ICON_FILES
     res/input-prompts/xbox_rt.svg
 )
 
+set(OPENNOW_KEYBOARD_ICON_FILES
+    res/input-prompts/keyboard-dark.svg
+    res/input-prompts/keyboard.svg
+    res/input-prompts/keyboard_0-dark.svg
+    res/input-prompts/keyboard_0.svg
+    res/input-prompts/keyboard_1-dark.svg
+    res/input-prompts/keyboard_1.svg
+    res/input-prompts/keyboard_2-dark.svg
+    res/input-prompts/keyboard_2.svg
+    res/input-prompts/keyboard_3-dark.svg
+    res/input-prompts/keyboard_3.svg
+    res/input-prompts/keyboard_4-dark.svg
+    res/input-prompts/keyboard_4.svg
+    res/input-prompts/keyboard_5-dark.svg
+    res/input-prompts/keyboard_5.svg
+    res/input-prompts/keyboard_6-dark.svg
+    res/input-prompts/keyboard_6.svg
+    res/input-prompts/keyboard_7-dark.svg
+    res/input-prompts/keyboard_7.svg
+    res/input-prompts/keyboard_8-dark.svg
+    res/input-prompts/keyboard_8.svg
+    res/input-prompts/keyboard_9-dark.svg
+    res/input-prompts/keyboard_9.svg
+    res/input-prompts/keyboard_a-dark.svg
+    res/input-prompts/keyboard_a.svg
+    res/input-prompts/keyboard_alt-dark.svg
+    res/input-prompts/keyboard_alt.svg
+    res/input-prompts/keyboard_apostrophe-dark.svg
+    res/input-prompts/keyboard_apostrophe.svg
+    res/input-prompts/keyboard_arrow_down-dark.svg
+    res/input-prompts/keyboard_arrow_down.svg
+    res/input-prompts/keyboard_arrow_left-dark.svg
+    res/input-prompts/keyboard_arrow_left.svg
+    res/input-prompts/keyboard_arrow_right-dark.svg
+    res/input-prompts/keyboard_arrow_right.svg
+    res/input-prompts/keyboard_arrow_up-dark.svg
+    res/input-prompts/keyboard_arrow_up.svg
+    res/input-prompts/keyboard_arrows-dark.svg
+    res/input-prompts/keyboard_arrows.svg
+    res/input-prompts/keyboard_arrows_vertical-dark.svg
+    res/input-prompts/keyboard_arrows_vertical.svg
+    res/input-prompts/keyboard_b-dark.svg
+    res/input-prompts/keyboard_b.svg
+    res/input-prompts/keyboard_backspace_icon-dark.svg
+    res/input-prompts/keyboard_backspace_icon.svg
+    res/input-prompts/keyboard_bracket_close-dark.svg
+    res/input-prompts/keyboard_bracket_close.svg
+    res/input-prompts/keyboard_bracket_open-dark.svg
+    res/input-prompts/keyboard_bracket_open.svg
+    res/input-prompts/keyboard_c-dark.svg
+    res/input-prompts/keyboard_c.svg
+    res/input-prompts/keyboard_comma-dark.svg
+    res/input-prompts/keyboard_comma.svg
+    res/input-prompts/keyboard_command-dark.svg
+    res/input-prompts/keyboard_command.svg
+    res/input-prompts/keyboard_ctrl-dark.svg
+    res/input-prompts/keyboard_ctrl.svg
+    res/input-prompts/keyboard_d-dark.svg
+    res/input-prompts/keyboard_d.svg
+    res/input-prompts/keyboard_delete-dark.svg
+    res/input-prompts/keyboard_delete.svg
+    res/input-prompts/keyboard_e-dark.svg
+    res/input-prompts/keyboard_e.svg
+    res/input-prompts/keyboard_end-dark.svg
+    res/input-prompts/keyboard_end.svg
+    res/input-prompts/keyboard_enter-dark.svg
+    res/input-prompts/keyboard_enter.svg
+    res/input-prompts/keyboard_equals-dark.svg
+    res/input-prompts/keyboard_equals.svg
+    res/input-prompts/keyboard_escape-dark.svg
+    res/input-prompts/keyboard_escape.svg
+    res/input-prompts/keyboard_f-dark.svg
+    res/input-prompts/keyboard_f.svg
+    res/input-prompts/keyboard_f1-dark.svg
+    res/input-prompts/keyboard_f1.svg
+    res/input-prompts/keyboard_f10-dark.svg
+    res/input-prompts/keyboard_f10.svg
+    res/input-prompts/keyboard_f11-dark.svg
+    res/input-prompts/keyboard_f11.svg
+    res/input-prompts/keyboard_f12-dark.svg
+    res/input-prompts/keyboard_f12.svg
+    res/input-prompts/keyboard_f2-dark.svg
+    res/input-prompts/keyboard_f2.svg
+    res/input-prompts/keyboard_f3-dark.svg
+    res/input-prompts/keyboard_f3.svg
+    res/input-prompts/keyboard_f4-dark.svg
+    res/input-prompts/keyboard_f4.svg
+    res/input-prompts/keyboard_f5-dark.svg
+    res/input-prompts/keyboard_f5.svg
+    res/input-prompts/keyboard_f6-dark.svg
+    res/input-prompts/keyboard_f6.svg
+    res/input-prompts/keyboard_f7-dark.svg
+    res/input-prompts/keyboard_f7.svg
+    res/input-prompts/keyboard_f8-dark.svg
+    res/input-prompts/keyboard_f8.svg
+    res/input-prompts/keyboard_f9-dark.svg
+    res/input-prompts/keyboard_f9.svg
+    res/input-prompts/keyboard_g-dark.svg
+    res/input-prompts/keyboard_g.svg
+    res/input-prompts/keyboard_h-dark.svg
+    res/input-prompts/keyboard_h.svg
+    res/input-prompts/keyboard_home-dark.svg
+    res/input-prompts/keyboard_home.svg
+    res/input-prompts/keyboard_i-dark.svg
+    res/input-prompts/keyboard_i.svg
+    res/input-prompts/keyboard_insert-dark.svg
+    res/input-prompts/keyboard_insert.svg
+    res/input-prompts/keyboard_j-dark.svg
+    res/input-prompts/keyboard_j.svg
+    res/input-prompts/keyboard_k-dark.svg
+    res/input-prompts/keyboard_k.svg
+    res/input-prompts/keyboard_l-dark.svg
+    res/input-prompts/keyboard_l.svg
+    res/input-prompts/keyboard_m-dark.svg
+    res/input-prompts/keyboard_m.svg
+    res/input-prompts/keyboard_minus-dark.svg
+    res/input-prompts/keyboard_minus.svg
+    res/input-prompts/keyboard_n-dark.svg
+    res/input-prompts/keyboard_n.svg
+    res/input-prompts/keyboard_o-dark.svg
+    res/input-prompts/keyboard_o.svg
+    res/input-prompts/keyboard_option-dark.svg
+    res/input-prompts/keyboard_option.svg
+    res/input-prompts/keyboard_p-dark.svg
+    res/input-prompts/keyboard_p.svg
+    res/input-prompts/keyboard_page_down-dark.svg
+    res/input-prompts/keyboard_page_down.svg
+    res/input-prompts/keyboard_page_up-dark.svg
+    res/input-prompts/keyboard_page_up.svg
+    res/input-prompts/keyboard_pause-dark.svg
+    res/input-prompts/keyboard_pause.svg
+    res/input-prompts/keyboard_period-dark.svg
+    res/input-prompts/keyboard_period.svg
+    res/input-prompts/keyboard_plus-dark.svg
+    res/input-prompts/keyboard_plus.svg
+    res/input-prompts/keyboard_printscreen-dark.svg
+    res/input-prompts/keyboard_printscreen.svg
+    res/input-prompts/keyboard_q-dark.svg
+    res/input-prompts/keyboard_q.svg
+    res/input-prompts/keyboard_question-dark.svg
+    res/input-prompts/keyboard_question.svg
+    res/input-prompts/keyboard_r-dark.svg
+    res/input-prompts/keyboard_r.svg
+    res/input-prompts/keyboard_return-dark.svg
+    res/input-prompts/keyboard_return.svg
+    res/input-prompts/keyboard_s-dark.svg
+    res/input-prompts/keyboard_s.svg
+    res/input-prompts/keyboard_semicolon-dark.svg
+    res/input-prompts/keyboard_semicolon.svg
+    res/input-prompts/keyboard_shift_icon-dark.svg
+    res/input-prompts/keyboard_shift_icon.svg
+    res/input-prompts/keyboard_slash_back-dark.svg
+    res/input-prompts/keyboard_slash_back.svg
+    res/input-prompts/keyboard_slash_forward-dark.svg
+    res/input-prompts/keyboard_slash_forward.svg
+    res/input-prompts/keyboard_space_icon-dark.svg
+    res/input-prompts/keyboard_space_icon.svg
+    res/input-prompts/keyboard_t-dark.svg
+    res/input-prompts/keyboard_t.svg
+    res/input-prompts/keyboard_tab_icon-dark.svg
+    res/input-prompts/keyboard_tab_icon.svg
+    res/input-prompts/keyboard_tilde-dark.svg
+    res/input-prompts/keyboard_tilde.svg
+    res/input-prompts/keyboard_u-dark.svg
+    res/input-prompts/keyboard_u.svg
+    res/input-prompts/keyboard_v-dark.svg
+    res/input-prompts/keyboard_v.svg
+    res/input-prompts/keyboard_w-dark.svg
+    res/input-prompts/keyboard_w.svg
+    res/input-prompts/keyboard_win-dark.svg
+    res/input-prompts/keyboard_win.svg
+    res/input-prompts/keyboard_x-dark.svg
+    res/input-prompts/keyboard_x.svg
+    res/input-prompts/keyboard_y-dark.svg
+    res/input-prompts/keyboard_y.svg
+    res/input-prompts/keyboard_z-dark.svg
+    res/input-prompts/keyboard_z.svg
+)
+
 qt_add_qml_module(opennow-qt
     URI OpenNOW
     VERSION 1.0
@@ -40,7 +219,8 @@ qt_add_qml_module(opennow-qt
         qml/components/AppChrome.qml
         qml/components/ArtworkSource.qml
         qml/components/ControllerGlyph.qml
-        qml/components/ControllerIcons.qml
+        qml/components/InputPromptIcons.qml
+        qml/components/KeyboardGlyph.qml
         qml/components/FilterDropdown.qml
         qml/components/FocusFrame.qml
         qml/components/GameTile.qml
@@ -159,6 +339,7 @@ qt_add_qml_module(opennow-qt
         qml/theme/Theme.qml
     RESOURCES
         ${OPENNOW_CONTROLLER_ICON_FILES}
+        ${OPENNOW_KEYBOARD_ICON_FILES}
         res/icons/nav-home.svg
         res/icons/nav-library.svg
         res/icons/nav-controller.svg
@@ -244,10 +425,14 @@ qt_add_qml_module(opennow-qt
         res/icons/desktop-check-focus.svg
         res/icons/desktop-message.svg
         res/icons/desktop-sliders.svg
+        res/icons/desktop-sliders-on-light.svg
         res/icons/desktop-user-plus.svg
+        res/icons/desktop-user-plus-on-light.svg
         res/icons/desktop-logout.svg
+        res/icons/desktop-logout-on-light.svg
         res/icons/desktop-plus-ink.svg
         res/icons/desktop-mic.svg
         res/icons/desktop-mic-off.svg
         res/icons/desktop-play-stroke.svg
+        res/icons/desktop-play-stroke-on-light.svg
 )

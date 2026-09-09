@@ -22,7 +22,7 @@ TestCase {
 
     function test_assets_data() {
         const rows = []
-        for (const glyph of Object.keys(ControllerIcons.assets)) {
+        for (const glyph of Object.keys(InputPromptIcons.assets)) {
             for (const ink of ["white", "#111827"]) {
                 rows.push({tag: glyph + ink, glyph: glyph, ink: ink})
             }
@@ -32,7 +32,7 @@ TestCase {
 
     function test_assets(data) {
         const image = createTemporaryObject(imageComponent, testCase, {
-            source: ControllerIcons.sourceFor(data.glyph, data.ink)
+            source: InputPromptIcons.sourceFor(data.glyph, data.ink)
         })
         verify(image !== null)
         verify(image.source.toString().indexOf("/input-prompts/") >= 0)
@@ -42,10 +42,10 @@ TestCase {
     }
 
     function test_semanticsAndFallbacks() {
-        verify(ControllerIcons.sourceFor("MENU", "white").toString().endsWith("xbox_button_menu.svg"))
-        verify(ControllerIcons.sourceFor("VIEW", "white").toString().endsWith("xbox_button_view.svg"))
+        verify(InputPromptIcons.sourceFor("MENU", "white").toString().endsWith("xbox_button_menu.svg"))
+        verify(InputPromptIcons.sourceFor("VIEW", "white").toString().endsWith("xbox_button_view.svg"))
         for (const glyph of ["F3", "F11", "R", "+", "−", "↻", ""]) {
-            compare(ControllerIcons.sourceFor(glyph, "white").toString(), "")
+            compare(InputPromptIcons.sourceFor(glyph, "white").toString(), "")
             const prompt = createTemporaryObject(glyphComponent, testCase, {glyph: glyph})
             verify(prompt !== null)
             compare(prompt.glyph, glyph)

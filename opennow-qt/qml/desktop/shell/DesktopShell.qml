@@ -112,7 +112,7 @@ FocusScope {
                 background: Rectangle { radius: DesktopTokens.px(10); color: Theme.lightMode ? DesktopTokens.raised : "#59000000"; border.width: 1; border.color: DesktopTokens.seam }
                 onTextChanged: root.searchText = text
                 DesktopGlyph { x: DesktopTokens.px(11); anchors.verticalCenter: parent.verticalCenter; width: DesktopTokens.px(14); height: DesktopTokens.px(14); icon: "desktop-search.svg" }
-                Rectangle { anchors.right: parent.right; anchors.rightMargin: DesktopTokens.px(8); anchors.verticalCenter: parent.verticalCenter; width: DesktopTokens.px(20); height: DesktopTokens.px(20); radius: DesktopTokens.px(6); color: "#1AFFFFFF"; border.width: 1; border.color: DesktopTokens.seam; Text { anchors.centerIn: parent; text: "/"; color: DesktopTokens.textBody; font.family: DesktopTokens.monoFont; font.pixelSize: DesktopTokens.px(11) } }
+                KeyboardGlyph { anchors.right: parent.right; anchors.rightMargin: DesktopTokens.px(8); anchors.verticalCenter: parent.verticalCenter; shortcut: "/"; keySize: DesktopTokens.px(20); ink: DesktopTokens.textBody }
             }
             DesktopButton {
                 id: activeSessionButton
@@ -169,10 +169,10 @@ FocusScope {
             readonly property bool compactHints: true
             Rectangle { width: parent.width; height: 1; color: DesktopTokens.seam }
             Row { id: shortcutHints; x: DesktopTokens.px(24); anchors.verticalCenter: parent.verticalCenter; spacing: DesktopTokens.px(footer.compactHints ? 8 : 16)
-                DesktopKeyHint { compact: footer.compactHints; keyText: qsTr("Arrows"); label: qsTr("Move") }
-                DesktopKeyHint { compact: footer.compactHints; keyText: qsTr("Enter"); label: qsTr("Play") }
+                DesktopKeyHint { compact: footer.compactHints; keyText: qsTr("Arrows"); shortcut: "Arrows"; label: qsTr("Move") }
+                DesktopKeyHint { compact: footer.compactHints; keyText: qsTr("Enter"); shortcut: "Enter"; label: qsTr("Play") }
                 DesktopKeyHint { compact: footer.compactHints; keyText: "/"; label: qsTr("Search") }
-                DesktopKeyHint { compact: footer.compactHints; keyText: qsTr("Ctrl K"); label: qsTr("Commands") }
+                DesktopKeyHint { compact: footer.compactHints; keyText: qsTr("Ctrl K"); shortcut: "Ctrl K"; label: qsTr("Commands") }
                 DesktopKeyHint { compact: footer.compactHints; keyText: "?"; label: qsTr("All shortcuts") }
             }
             Row { anchors.right: parent.right; anchors.rightMargin: DesktopTokens.px(24); anchors.verticalCenter: parent.verticalCenter; spacing: DesktopTokens.px(10)

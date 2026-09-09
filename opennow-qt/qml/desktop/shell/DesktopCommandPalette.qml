@@ -203,7 +203,7 @@ FocusScope {
         width: root.panelWidth
         height: root.panelHeight
         radius: 18
-        color: "#FA0A0E15"
+        color: Theme.lightMode ? Theme.shell : "#FA0A0E15"
         border.width: 1
         border.color: "#2EFFFFFF"
         TapHandler { }
@@ -226,10 +226,10 @@ FocusScope {
                 onAccepted: root.activateAt(root.currentIndex)
                 Keys.onTabPressed: event => { root.cycleScope(); event.accepted = true }
             }
-            Rectangle {
+            KeyboardGlyph {
                 anchors.right: parent.right; anchors.rightMargin: 18; anchors.verticalCenter: parent.verticalCenter
-                width: keyHint.implicitWidth + 20; height: 22; radius: 7; color: "#14FFFFFF"
-                Text { id: keyHint; anchors.centerIn: parent; text: qsTr("Ctrl K"); color: DesktopTokens.textMuted; font.family: DesktopTokens.monoFont; font.pixelSize: DesktopTokens.microSize; font.weight: Font.DemiBold }
+                shortcut: "Ctrl K"; keySize: 22; ink: DesktopTokens.textMuted
+                Accessible.name: qsTr("Ctrl K")
             }
             Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: "#14FFFFFF" }
         }
@@ -319,10 +319,7 @@ FocusScope {
                                     font.weight: Font.Black
                                     font.letterSpacing: 0.6
                                 }
-                                Rectangle {
-                                    width: 46; height: 20; radius: 6; color: "#14FFFFFF"
-                                    Text { anchors.centerIn: parent; text: qsTr("Enter"); color: DesktopTokens.textMuted; font.family: DesktopTokens.monoFont; font.pixelSize: DesktopTokens.tinySize }
-                                }
+                                KeyboardGlyph { shortcut: "Enter"; keySize: 20; ink: DesktopTokens.textMuted; Accessible.name: qsTr("Enter") }
                             }
                         }
                         HoverHandler { cursorShape: Qt.PointingHandCursor }
@@ -373,18 +370,10 @@ FocusScope {
                                 font.pixelSize: DesktopTokens.captionSize
                                 font.weight: Font.DemiBold
                             }
-                            Rectangle {
+                            KeyboardGlyph {
                                 visible: command.modelData.key !== ""
                                 anchors.right: parent.right; anchors.rightMargin: 10; anchors.verticalCenter: parent.verticalCenter
-                                width: keyText.implicitWidth + 14; height: 20; radius: 6; color: "#14FFFFFF"
-                                Text {
-                                    id: keyText
-                                    anchors.centerIn: parent
-                                    text: command.modelData.key
-                                    color: DesktopTokens.textMuted
-                                    font.family: DesktopTokens.monoFont
-                                    font.pixelSize: DesktopTokens.tinySize
-                                }
+                                shortcut: command.modelData.key; keySize: 20; ink: DesktopTokens.textMuted
                             }
                         }
                         HoverHandler { cursorShape: Qt.PointingHandCursor }
@@ -410,12 +399,12 @@ FocusScope {
 
         Rectangle {
             x: 0; y: parent.height - 42; width: parent.width; height: 42
-            color: "#8A04060A"
+            color: Theme.lightMode ? DesktopTokens.raised : "#8A04060A"
             Rectangle { width: parent.width; height: 1; color: "#14FFFFFF" }
             Row {
                 x: 16; anchors.verticalCenter: parent.verticalCenter; spacing: 15
-                DesktopKeyHint { keyText: qsTr("↑ ↓"); label: qsTr("Move") }
-                DesktopKeyHint { keyText: qsTr("Tab"); label: qsTr("Filter type") }
+                DesktopKeyHint { keyText: qsTr("↑ ↓"); shortcut: "↑ ↓"; label: qsTr("Move") }
+                DesktopKeyHint { keyText: qsTr("Tab"); shortcut: "Tab"; label: qsTr("Filter type") }
                 DesktopKeyHint { keyText: "Esc"; label: qsTr("Close") }
             }
             Text {

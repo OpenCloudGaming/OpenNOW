@@ -9,6 +9,7 @@ Row {
     property string label: qsTr("Select")
     property color glyphColor: Theme.face
     property real glyphSize: 26
+    property bool keyboard: false
     spacing: 8
 
     Item {
@@ -18,7 +19,8 @@ Row {
         Image {
             id: icon
             anchors.fill: parent
-            source: ControllerIcons.sourceFor(root.glyph, root.glyphColor)
+            source: root.keyboard ? InputPromptIcons.keyboardSourceFor(root.glyph, root.glyphColor)
+                : InputPromptIcons.sourceFor(root.glyph, root.glyphColor)
             sourceSize: Qt.size(Math.max(1, width * Screen.devicePixelRatio), Math.max(1, height * Screen.devicePixelRatio))
             fillMode: Image.PreserveAspectFit
             opacity: root.glyphColor.a

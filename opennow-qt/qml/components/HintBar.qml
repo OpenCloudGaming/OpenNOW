@@ -22,6 +22,7 @@ GlassPanel {
             ControllerGlyph {
                 required property var modelData
                 glyph: modelData.glyph
+                keyboard: Boolean(modelData.keyboard)
                 label: modelData.label
             }
         }

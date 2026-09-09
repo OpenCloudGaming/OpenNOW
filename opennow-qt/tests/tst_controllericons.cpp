@@ -17,9 +17,13 @@ public slots:
     {
         const auto source = QStringLiteral(OPENNOW_QML_SOURCE_DIR);
         qmlRegisterSingletonType(QUrl::fromLocalFile(source + "/theme/Theme.qml"), "OpenNOW", 1, 0, "Theme");
-        qmlRegisterSingletonType(QUrl::fromLocalFile(source + "/components/ControllerIcons.qml"), "OpenNOW", 1, 0, "ControllerIcons");
+        qmlRegisterSingletonType(QUrl::fromLocalFile(source + "/components/InputPromptIcons.qml"), "OpenNOW", 1, 0, "InputPromptIcons");
         qmlRegisterSingletonType(QUrl::fromLocalFile(source + "/desktop/components/DesktopTokens.qml"), "OpenNOW", 1, 0, "DesktopTokens");
         qmlRegisterType(QUrl::fromLocalFile(source + "/components/ControllerGlyph.qml"), "OpenNOW", 1, 0, "ControllerGlyph");
+        qmlRegisterType(QUrl::fromLocalFile(source + "/components/KeyboardGlyph.qml"), "OpenNOW", 1, 0, "KeyboardGlyph");
+        qmlRegisterType(QUrl::fromLocalFile(source + "/desktop/components/DesktopKeyHint.qml"), "OpenNOW", 1, 0, "DesktopKeyHint");
+        qmlRegisterType(QUrl::fromLocalFile(source + "/desktop/components/DesktopButton.qml"), "OpenNOW", 1, 0, "DesktopButton");
+        qmlRegisterType(QUrl::fromLocalFile(source + "/desktop/settings/controls/DesktopSettingsButton.qml"), "OpenNOW", 1, 0, "DesktopSettingsButton");
         qmlRegisterType(QUrl::fromLocalFile(source + "/components/GlassButton.qml"), "OpenNOW", 1, 0, "GlassButton");
         qmlRegisterType(QUrl::fromLocalFile(source + "/desktop/components/DesktopGlyph.qml"), "OpenNOW", 1, 0, "DesktopGlyph");
         qmlRegisterType(QUrl::fromLocalFile(source + "/desktop/settings/controls/DesktopSettingsIcon.qml"), "OpenNOW", 1, 0, "DesktopSettingsIcon");

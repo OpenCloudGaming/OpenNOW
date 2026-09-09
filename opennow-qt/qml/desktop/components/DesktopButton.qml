@@ -7,6 +7,7 @@ Button {
     property bool primary: false
     property bool danger: false
     property string shortcutText: ""
+    property string shortcutSequence: shortcutText
     property string glyph: ""
     property string themedGlyph: ""
     property int glyphSize: 16
@@ -70,22 +71,13 @@ Button {
                 color: root.primary ? "#0A0D14" : root.danger ? "#FFB4AE" : DesktopTokens.textHigh
                 font: root.font
             }
-            Rectangle {
+            KeyboardGlyph {
                 visible: root.shortcutText !== ""
                 anchors.verticalCenter: parent.verticalCenter
-                width: shortcut.implicitWidth + 10
-                height: 20
-                radius: 5
-                color: root.primary ? "#120B0F1A" : "#12FFFFFF"
-                Text {
-                    id: shortcut
-                    anchors.centerIn: parent
-                    text: root.shortcutText
-                    color: root.primary ? "#990B0F1A" : DesktopTokens.textMuted
-                    font.family: DesktopTokens.monoFont
-                    font.pixelSize: 9
-                    font.weight: Font.DemiBold
-                }
+                shortcut: root.shortcutSequence
+                Accessible.name: root.shortcutText
+                keySize: 20
+                ink: root.primary ? "#0B0F1A" : DesktopTokens.textMuted
             }
         }
     }

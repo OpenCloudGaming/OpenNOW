@@ -30,13 +30,12 @@ Image {
     "clock": "<svg width=\"20\" height=\"20\" viewBox=\"0 0 24 24\" xmlns=\"http://www.w3.org/2000/svg\"><circle cx=\"12\" cy=\"12\" r=\"9\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.9\" stroke-linecap=\"round\" /><path d=\"M12 7v5l3 2\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.9\" stroke-linecap=\"round\" /></svg>",
     "mouse": "<svg width=\"20\" height=\"20\" viewBox=\"0 0 24 24\" xmlns=\"http://www.w3.org/2000/svg\"><rect x=\"7\" y=\"3\" width=\"10\" height=\"18\" rx=\"5\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.9\" stroke-linecap=\"round\" /><path d=\"M12 3v6M7 9h10\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.9\" stroke-linecap=\"round\" /></svg>",
     "arrows": "<svg width=\"20\" height=\"20\" viewBox=\"0 0 24 24\" xmlns=\"http://www.w3.org/2000/svg\"><path d=\"M4 12h16M4 12l4-4M4 12l4 4M20 12l-4-4M20 12l-4 4\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.9\" stroke-linecap=\"round\" /></svg>",
-    "keyboard": "<svg width=\"20\" height=\"20\" viewBox=\"0 0 24 24\" xmlns=\"http://www.w3.org/2000/svg\"><rect x=\"2.5\" y=\"6\" width=\"19\" height=\"12\" rx=\"2.5\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.9\" stroke-linecap=\"round\" stroke-linejoin=\"round\" /><path d=\"M7 10h.01M11 10h.01M15 10h.01M7 14h10\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.9\" stroke-linecap=\"round\" stroke-linejoin=\"round\" /></svg>",
     "crown": "<svg width=\"20\" height=\"20\" viewBox=\"0 0 24 24\" xmlns=\"http://www.w3.org/2000/svg\"><path d=\"M3 8l4.5 4L12 5l4.5 7L21 8l-2 11H5L3 8z\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.9\" stroke-linejoin=\"round\" /></svg>",
     "sliders": "<svg width=\"20\" height=\"20\" viewBox=\"0 0 24 24\" xmlns=\"http://www.w3.org/2000/svg\"><path d=\"M4 7h10M18 7h2M4 17h4M12 17h8\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.9\" stroke-linecap=\"round\" /><circle cx=\"16\" cy=\"7\" r=\"2.2\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.9\" stroke-linecap=\"round\" /><circle cx=\"10\" cy=\"17\" r=\"2.2\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.9\" stroke-linecap=\"round\" /></svg>",
     "chevron": "<svg viewBox=\"0 0 24 24\" xmlns=\"http://www.w3.org/2000/svg\"><path d=\"m9 5 7 7-7 7\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2.4\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/></svg>"
 }
-    source: ControllerIcons.sourceFor(glyph, ink).toString() !== ""
-        ? ControllerIcons.sourceFor(glyph, ink)
+    source: InputPromptIcons.sourceFor(glyph, ink).toString() !== ""
+        ? InputPromptIcons.sourceFor(glyph, ink)
         : "data:image/svg+xml;utf8," + encodeURIComponent(
         String(shapes[glyph] || shapes.monitor).replace("<svg ",
             '<svg color="' + Qt.rgba(ink.r, ink.g, ink.b, 1) + '" '))

@@ -269,8 +269,8 @@ FocusScope {
             anchors.centerIn: parent
             spacing: 22
             ControllerGlyph { glyph: "GUIDE"; label: qsTr("Session") }
-            ControllerGlyph { glyph: "F3"; label: qsTr("Stats") }
-            ControllerGlyph { glyph: "F11"; label: qsTr("Fullscreen") }
+            ControllerGlyph { glyph: "F3"; keyboard: true; label: qsTr("Stats") }
+            ControllerGlyph { glyph: "F11"; keyboard: true; label: qsTr("Fullscreen") }
         }
     }
 

@@ -161,9 +161,10 @@ Item {
                     font.pixelSize: 12 * root.overlayScale; font.weight: Font.DemiBold
                 }
             }
-            Text {
-                text: String(ShellStore.settings.shortcutToggleStats || "Ctrl+N") + " · " + qsTr("more")
-                color: Theme.focus; font.family: Theme.monoFont; font.pixelSize: 12 * root.overlayScale
+            Row {
+                spacing: 6
+                KeyboardGlyph { shortcut: String(ShellStore.settings.shortcutToggleStats || "Ctrl+N"); keySize: 18 * root.overlayScale; ink: Theme.label }
+                Text { anchors.verticalCenter: parent.verticalCenter; text: qsTr("more"); color: Theme.focus; font.family: Theme.monoFont; font.pixelSize: 12 * root.overlayScale }
             }
         }
         HoverHandler { cursorShape: Qt.PointingHandCursor }
@@ -254,10 +255,19 @@ Item {
                     radius: 12; color: DesktopTokens.raised
                     Text { id: videoLabel; x: 12; y: 12; width: parent.width - 24; text: root.videoText; wrapMode: Text.WordWrap; color: Theme.label; font.family: Theme.monoFont; font.pixelSize: 12 * root.overlayScale }
                 }
-                Text {
+                Flow {
                     Layout.fillWidth: true; Layout.margins: 6
-                    text: String(ShellStore.settings.shortcutToggleStats || "Ctrl+N") + " · " + qsTr("bar / panel / off") + "     Shift+F3 · " + qsTr("copy")
-                    wrapMode: Text.WordWrap; color: Theme.textMuted; font.family: Theme.monoFont; font.pixelSize: 11 * root.overlayScale
+                    spacing: 12
+                    Row {
+                        spacing: 6
+                        KeyboardGlyph { shortcut: String(ShellStore.settings.shortcutToggleStats || "Ctrl+N"); keySize: 18 * root.overlayScale; ink: Theme.textMuted }
+                        Text { anchors.verticalCenter: parent.verticalCenter; text: qsTr("bar / panel / off"); color: Theme.textMuted; font.family: Theme.monoFont; font.pixelSize: 11 * root.overlayScale }
+                    }
+                    Row {
+                        spacing: 6
+                        KeyboardGlyph { shortcut: "Shift+F3"; keySize: 18 * root.overlayScale; ink: Theme.textMuted }
+                        Text { anchors.verticalCenter: parent.verticalCenter; text: qsTr("copy"); color: Theme.textMuted; font.family: Theme.monoFont; font.pixelSize: 11 * root.overlayScale }
+                    }
                 }
             }
         }

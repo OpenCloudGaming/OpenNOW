@@ -31,7 +31,7 @@ if(BUILD_TESTING)
     target_compile_definitions(opennow-controllericons-tests PRIVATE
         OPENNOW_QML_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/qml")
     qt_add_resources(opennow-controllericons-tests "controller-icon-test-assets"
-        PREFIX "/qt/qml/OpenNOW" FILES ${OPENNOW_CONTROLLER_ICON_FILES})
+        PREFIX "/qt/qml/OpenNOW" FILES ${OPENNOW_CONTROLLER_ICON_FILES} ${OPENNOW_KEYBOARD_ICON_FILES})
     add_test(NAME opennow-controllericons-tests COMMAND opennow-controllericons-tests
         -input "${CMAKE_CURRENT_SOURCE_DIR}/tests/controllericons")
     set_tests_properties(opennow-controllericons-tests PROPERTIES

@@ -60,7 +60,7 @@ GlassPanel {
                         width: 34
                         height: 34
                         source: destination.modelData.icon === "nav-controller.svg"
-                            ? ControllerIcons.sourceFor("controller", Theme.face)
+                            ? InputPromptIcons.sourceFor("controller", Theme.face)
                             : "qrc:/qt/qml/OpenNOW/res/icons/" + destination.modelData.icon
                         sourceSize: Qt.size(34, 34)
                         fillMode: Image.PreserveAspectFit
