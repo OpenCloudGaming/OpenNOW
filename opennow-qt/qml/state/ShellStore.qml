@@ -259,6 +259,15 @@ QtObject {
     property string streamRecordingStopRequestId: ""
     property string pendingRecordingPath: ""
     property string pendingRecordingThumbnailPath: ""
+    property string mediaClipTargetRequestId: ""
+    property string streamClipRequestId: ""
+    readonly property bool streamClipBusy: mediaClipTargetRequestId !== "" || streamClipRequestId !== ""
+    property bool streamReplayEnabled: false
+    readonly property bool replayBufferRequested: settings.replayBufferEnabled === true
+    onReplayBufferRequestedChanged: {
+        if (!replayBufferRequested)
+            disableStreamReplay()
+    }
     property bool streamRecordingActive: false
     property double streamRecordingElapsedMs: 0
     property double streamRecordingStartedAtMs: 0
@@ -330,6 +339,7 @@ QtObject {
 
     signal fullscreenToggleRequested()
     signal pointerLockToggleRequested()
+    signal streamCaptureAnnounced(string message)
     readonly property var resumableSession: {
         if (root.activeSession) {
             const localStatus = Number(root.activeSession.status || 0)
@@ -1189,6 +1199,7 @@ QtObject {
             streamRecordingElapsedMs = 0
             pendingRecordingPath = ""
             pendingRecordingThumbnailPath = ""
+            resetStreamReplay()
             streamState = "idle"
             streamMessage = qsTr("")
             streamPollTimer.stop()
@@ -1348,6 +1359,9 @@ QtObject {
             return
 
         streamInputStateKnown = false
+        streamReplayEnabled = false
+        mediaClipTargetRequestId = ""
+        streamClipRequestId = ""
         if (streamRecordingActive) {
             streamRecordingActive = false
             streamRecordingElapsedMs = 0
@@ -1630,7 +1644,8 @@ QtObject {
             "toggle-microphone": microphoneToggleAvailable
                 ? [String(settings.shortcutToggleMicrophone || "Ctrl+Shift+M")] : [],
             "screenshot": [String(settings.shortcutScreenshot || "Ctrl+F11")],
-            "toggle-recording": [String(settings.shortcutToggleRecording || "F12")]
+            "toggle-recording": [String(settings.shortcutToggleRecording || "F12")],
+            "save-clip": [String(settings.shortcutSaveClip || "Ctrl+F12")]
         }
     }
 
@@ -1687,6 +1702,8 @@ QtObject {
             captureStreamScreenshot()
         } else if (action === "toggle-recording") {
             toggleStreamRecording()
+        } else if (action === "save-clip") {
+            saveStreamClip()
         } else if (action === "toggle-microphone") {
             toggleMicrophone()
         }
@@ -1698,6 +1715,47 @@ QtObject {
             return
         shortcutActionGeneration = generation
         applyStreamShortcutAction(value.shortcutAction)
+    }
+
+    function resetStreamReplay() {
+        streamReplayEnabled = false
+        mediaClipTargetRequestId = ""
+        streamClipRequestId = ""
+    }
+
+    function disableStreamReplay() {
+        if (!streamReplayEnabled)
+            return
+        if (NativeStreamRuntime.running) {
+            const requestId = sendNativeCommand("replay-stop", {}, "replay-stop")
+            if (requestId === "") {
+                mediaMessage = lastError
+                accessibilityMessage = mediaMessage
+                streamCaptureAnnounced(mediaMessage)
+                return
+            }
+        }
+        streamReplayEnabled = false
+        mediaClipTargetRequestId = ""
+        streamClipRequestId = ""
+    }
+
+    function saveStreamClip() {
+        if (streamClipBusy)
+            return
+        if (!activeSession || !streamer || streamer.status !== "streaming") {
+            mediaMessage = qsTr("Start a native stream before saving a clip")
+        } else if (!streamReplayEnabled || !replayBufferRequested) {
+            mediaMessage = qsTr("Enable replay buffering in Recording settings before starting a session")
+        } else {
+            const title = selectedGame && selectedGame.title ? selectedGame.title : "OpenNOW"
+            mediaClipTargetRequestId = CoreClient.request("media.recording.target", {
+                gameTitle: title + "-clip"
+            }, 5000)
+            mediaMessage = qsTr("Preparing clip…")
+        }
+        accessibilityMessage = mediaMessage
+        streamCaptureAnnounced(mediaMessage)
     }
 
     function toggleStreamRecording() {
@@ -1877,6 +1935,8 @@ QtObject {
         const pending = takeNativeRequest(requestId)
         if (!pending)
             return
+        if (pending.operation === "clip-save" && streamClipRequestId !== requestId)
+            return
         const responseType = String(response.type || "")
         if (pending.operation === "audioDevices") {
             audioOutputDevicesTimeout.stop()
@@ -1924,6 +1984,15 @@ QtObject {
             } else if (pending.operation === "recording-stop") {
                 streamRecordingStopRequestId = ""
                 mediaMessage = message
+            } else if (pending.operation === "clip-save") {
+                streamClipRequestId = ""
+                mediaMessage = message
+                accessibilityMessage = message
+                streamCaptureAnnounced(message)
+            } else if (pending.operation === "replay-stop") {
+                mediaMessage = message
+                accessibilityMessage = message
+                streamCaptureAnnounced(message)
             }
             lastError = message
             return
@@ -1946,6 +2015,9 @@ QtObject {
         } else if (pending.operation === "start") {
             streamerStartRequestId = ""
             if (sessionRecoveryPending) return
+            streamReplayEnabled = response.replayEnabled === true
+            if (!replayBufferRequested)
+                disableStreamReplay()
             updateStreamerFields({
                 status: "streaming",
                 message: qsTr("Native-owned NVST media transport is active"),
@@ -1986,6 +2058,10 @@ QtObject {
                 microphoneRequestId = ""
                 microphoneRecoveryEnabled = pending.enabled === true && pending.microphoneFailed !== true
             }
+        } else if (pending.operation === "clip-save") {
+            mediaMessage = qsTr("Saving clip…")
+            accessibilityMessage = mediaMessage
+            streamCaptureAnnounced(mediaMessage)
         } else if (pending.operation === "recording-start") {
             streamRecordingStartRequestId = ""
             streamRecordingActive = true
@@ -2121,6 +2197,20 @@ QtObject {
             accessibilityMessage = fields.microphoneMessage || qsTr("Microphone state changed")
             if (fields.microphoneState === "error" || fields.microphoneState === "unavailable")
                 streamControlMessage = fields.microphoneMessage || qsTr("Microphone error")
+        } else if (type === "clip-state") {
+            if (streamClipRequestId === "" || String(event.requestId || "") !== streamClipRequestId)
+                return
+            if (event.state === "saved" || event.state === "failed") {
+                streamClipRequestId = ""
+                mediaMessage = event.state === "saved" ? qsTr("Clip saved")
+                    : String(event.message || qsTr("Clip failed"))
+                accessibilityMessage = event.state === "saved"
+                    ? qsTr("Clip saved to %1").arg(String(event.path || "")) : mediaMessage
+                streamCaptureAnnounced(mediaMessage)
+                if (event.state === "failed")
+                    lastError = mediaMessage
+                refreshMedia()
+            }
         } else if (type === "recording-state") {
             if (event.state === "saved" || event.state === "failed") {
                 streamRecordingActive = false
@@ -2182,6 +2272,7 @@ QtObject {
             root.sessionMicrophoneMode = "disabled"
             root.streamRecordingStartRequestId = ""
             root.streamRecordingStopRequestId = ""
+            root.resetStreamReplay()
             if (root.streamer && root.streamer.status !== "stopped"
                     && root.streamer.status !== "error")
                 root.updateStreamerFields({status: "error",
@@ -2375,6 +2466,19 @@ QtObject {
                 root.mediaDeleteRequestId = ""
                 root.mediaMessage = qsTr("Capture deleted")
                 root.refreshMedia()
+            } else if (requestId === root.mediaClipTargetRequestId && requestId !== "") {
+                root.mediaClipTargetRequestId = ""
+                if (!root.streamReplayEnabled || !root.replayBufferRequested
+                        || !root.activeSession || !root.streamer || root.streamer.status !== "streaming")
+                    return
+                root.streamClipRequestId = root.sendNativeCommand("clip-save", {
+                    outputPath: String(result.path || "")
+                }, "clip-save")
+                if (root.streamClipRequestId === "") {
+                    root.mediaMessage = root.lastError
+                    root.accessibilityMessage = root.mediaMessage
+                    root.streamCaptureAnnounced(root.mediaMessage)
+                }
             } else if (requestId === root.mediaRecordingTargetRequestId) {
                 root.mediaRecordingTargetRequestId = ""
                 root.pendingRecordingPath = String(result.path || "")
@@ -2607,6 +2711,11 @@ QtObject {
             } else if (requestId === root.mediaDeleteRequestId) {
                 root.mediaDeleteRequestId = ""
                 root.mediaMessage = message
+            } else if (requestId === root.mediaClipTargetRequestId && requestId !== "") {
+                root.mediaClipTargetRequestId = ""
+                root.mediaMessage = message
+                root.accessibilityMessage = message
+                root.streamCaptureAnnounced(message)
             } else if (requestId === root.mediaRecordingTargetRequestId) {
                 root.mediaRecordingTargetRequestId = ""
                 root.pendingRecordingPath = ""

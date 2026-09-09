@@ -1,5 +1,7 @@
 use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::Duration;
 
 use oxideav_core::{
     CodecId, CodecParameters, Muxer, Packet, Rational, StreamInfo, TimeBase, WriteSeek,
@@ -16,6 +18,70 @@ const VIDEO_STREAM_INDEX: u32 = 0;
 const AUDIO_STREAM_INDEX: u32 = 1;
 const OPUS_SAMPLE_RATE: u32 = 48_000;
 const OPUS_PRE_SKIP: u16 = 312;
+
+pub fn record_replay_matroska(
+    output_path: impl AsRef<Path>,
+    stream: MediaStreamConfig,
+    mut snapshot: crate::replay::ReplaySnapshot,
+    cancelled: &AtomicBool,
+) -> Result<RecordingSummary, String> {
+    static EXPORT_ID: AtomicU64 = AtomicU64::new(0);
+    let output_path = validate_output_path(output_path.as_ref())?;
+    let part_path = output_path.with_extension(format!(
+        "mkv.{}.{}.part",
+        std::process::id(),
+        EXPORT_ID.fetch_add(1, Ordering::Relaxed)
+    ));
+    if output_path.exists() || part_path.exists() {
+        return Err("clip output already exists".to_owned());
+    }
+    let result = (|| {
+        let first = snapshot.frames.front().ok_or("replay buffer is empty")?;
+        let origin = first.time;
+        let channels = snapshot
+            .frames
+            .iter()
+            .find_map(|entry| match entry.frame.codec {
+                MediaCodec::Opus { channels } => Some(channels.clamp(1, 2)),
+                _ => None,
+            })
+            .unwrap_or(2);
+        if cancelled.load(Ordering::Acquire) || snapshot.cancelled.load(Ordering::Acquire) {
+            return Err("clip export cancelled".to_owned());
+        }
+        let mut active = start_muxer(&part_path, stream, channels, &first.frame)?;
+        for entry in &snapshot.frames {
+            if cancelled.load(Ordering::Acquire) || snapshot.cancelled.load(Ordering::Acquire) {
+                return Err("clip export cancelled".to_owned());
+            }
+            if let Some(time) = entry.time.checked_sub(origin) {
+                write_frame_at(&mut active, entry.frame.clone(), Some(time))?;
+            }
+        }
+        active
+            .muxer
+            .write_trailer()
+            .map_err(|error| format!("failed to finalize clip: {error}"))?;
+        drop(active.muxer);
+        if cancelled.load(Ordering::Acquire) || snapshot.cancelled.load(Ordering::Acquire) {
+            return Err("clip export cancelled".to_owned());
+        }
+        std::fs::hard_link(&part_path, &output_path)
+            .map_err(|error| format!("failed to publish clip: {error}"))?;
+        if cancelled.load(Ordering::Acquire) || snapshot.cancelled.load(Ordering::Acquire) {
+            let _ = std::fs::remove_file(&output_path);
+            return Err("clip export cancelled".to_owned());
+        }
+        Ok(RecordingSummary {
+            path: output_path,
+            video_packets: active.video_packets,
+            audio_packets: active.audio_packets,
+        })
+    })();
+    snapshot.frames.clear();
+    let _ = std::fs::remove_file(&part_path);
+    result
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecordingSummary {
@@ -200,6 +266,18 @@ fn start_muxer(
 }
 
 fn write_frame(active: &mut ActiveMuxer, frame: EncodedFrame) -> Result<(), String> {
+    write_frame_at(active, frame, None)
+}
+
+fn write_frame_at(
+    active: &mut ActiveMuxer,
+    frame: EncodedFrame,
+    time: Option<Duration>,
+) -> Result<(), String> {
+    let aligned_pts = time.map(|time| {
+        (time.as_nanos() * u128::from(frame.clock_rate_hz) / 1_000_000_000).min(i64::MAX as u128)
+            as i64
+    });
     let (stream_index, pts, data, keyframe) = match frame.codec {
         MediaCodec::H264 if active.video_codec == MediaVideoCodec::H264 => {
             let repacked = annexb_to_avcc(&frame.data);
@@ -208,7 +286,7 @@ fn write_frame(active: &mut ActiveMuxer, frame: EncodedFrame) -> Result<(), Stri
             }
             (
                 VIDEO_STREAM_INDEX,
-                active.video_clock.pts(frame.timestamp),
+                aligned_pts.unwrap_or_else(|| active.video_clock.pts(frame.timestamp)),
                 repacked.packetized,
                 frame.keyframe,
             )
@@ -220,20 +298,20 @@ fn write_frame(active: &mut ActiveMuxer, frame: EncodedFrame) -> Result<(), Stri
             }
             (
                 VIDEO_STREAM_INDEX,
-                active.video_clock.pts(frame.timestamp),
+                aligned_pts.unwrap_or_else(|| active.video_clock.pts(frame.timestamp)),
                 repacked.packetized,
                 frame.keyframe,
             )
         }
         MediaCodec::Av1 if active.video_codec == MediaVideoCodec::Av1 => (
             VIDEO_STREAM_INDEX,
-            active.video_clock.pts(frame.timestamp),
+            aligned_pts.unwrap_or_else(|| active.video_clock.pts(frame.timestamp)),
             frame.data.to_vec(),
             frame.keyframe,
         ),
         MediaCodec::Opus { .. } => (
             AUDIO_STREAM_INDEX,
-            active.audio_clock.pts(frame.timestamp),
+            aligned_pts.unwrap_or_else(|| active.audio_clock.pts(frame.timestamp)),
             frame.data.to_vec(),
             true,
         ),
@@ -660,6 +738,94 @@ mod tests {
     use oxideav_core::{NullCodecResolver, ReadSeek};
 
     use super::*;
+
+    #[test]
+    fn replay_exports_source_packets_with_shared_audio_offset_and_no_clobber() {
+        let directory = std::env::temp_dir().join(format!(
+            "opennow-replay-test-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let output = directory.join("clip.mkv");
+        let tap = crate::replay::ReplayTap::default();
+        tap.start(
+            opennow_streamer_protocol::ReplayBufferConfig::from_settings(
+                &serde_json::json!({"replayBufferEnabled":true}),
+            ),
+        );
+        let video = frame(MediaCodec::H264, h264_keyframe(), 9_000_000, true);
+        let audio = frame(
+            MediaCodec::Opus { channels: 2 },
+            vec![0x80, 1, 2, 3],
+            400_000,
+            false,
+        );
+        tap.publish(&video);
+        tap.publish(&audio);
+        tap.publish(&frame(
+            MediaCodec::H264,
+            vec![0, 0, 0, 1, 0x41, 0x9a, 0x22],
+            9_018_000,
+            false,
+        ));
+        let mut snapshot = tap.snapshot().unwrap();
+        snapshot.frames[0].time = Duration::from_secs(4);
+        snapshot.frames[1].time = Duration::from_millis(4_100);
+        snapshot.frames[2].time = Duration::from_millis(4_200);
+        assert_eq!(snapshot.frames[1].frame.timestamp, 400_000);
+        assert!(Arc::ptr_eq(&snapshot.frames[0].frame.data, &video.data));
+        let summary = record_replay_matroska(
+            &output,
+            MediaStreamConfig::default(),
+            snapshot,
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        assert_eq!((summary.video_packets, summary.audio_packets), (2, 1));
+        let file: Box<dyn ReadSeek> = Box::new(std::fs::File::open(&output).unwrap());
+        let mut demuxer = oxideav_mkv::demux::open(file, &NullCodecResolver).unwrap();
+        let mut packets = Vec::new();
+        while let Ok(packet) = demuxer.next_packet() {
+            packets.push(packet);
+        }
+        assert_eq!(packets.len(), 3);
+        assert_eq!(packets[0].pts, Some(0));
+        assert_eq!(packets[1].pts, Some(100));
+        assert_eq!(packets[2].pts, Some(200));
+        assert_eq!(packets[1].data.as_slice(), audio.data.as_ref());
+        let original = std::fs::read(&output).unwrap();
+        tap.publish(&frame(MediaCodec::H264, h264_keyframe(), 9_036_000, true));
+        assert!(
+            record_replay_matroska(
+                &output,
+                MediaStreamConfig::default(),
+                tap.snapshot().unwrap(),
+                &AtomicBool::new(false)
+            )
+            .is_err()
+        );
+        assert_eq!(std::fs::read(&output).unwrap(), original);
+        tap.publish(&frame(MediaCodec::H264, h264_keyframe(), 9_054_000, true));
+        let cancelled = tap.snapshot().unwrap();
+        tap.stop();
+        let cancelled_path = directory.join("cancelled.mkv");
+        assert!(
+            record_replay_matroska(
+                &cancelled_path,
+                MediaStreamConfig::default(),
+                cancelled,
+                &AtomicBool::new(false)
+            )
+            .is_err()
+        );
+        assert!(!cancelled_path.exists());
+        assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 1);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
 
     fn frame(codec: MediaCodec, data: Vec<u8>, timestamp: u64, keyframe: bool) -> EncodedFrame {
         let is_audio = matches!(codec, MediaCodec::Opus { .. });

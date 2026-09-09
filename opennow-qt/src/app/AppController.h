@@ -38,6 +38,8 @@ public:
     Q_INVOKABLE bool openLocalPath(const QString &path, bool reveal = false) const;
     Q_INVOKABLE QString readClipboardText() const;
     Q_INVOKABLE bool writeClipboardText(const QString &text) const;
+    Q_INVOKABLE QString shortcutFromKey(int key, int modifiers) const;
+    Q_INVOKABLE QString normalizeShortcut(const QString &shortcut) const;
     Q_INVOKABLE QString normalizeNativeStreamerExecutable(const QString &urlOrPath) const;
     Q_INVOKABLE bool copyScreenshotTo(const QString &sourcePath,
                                       const QString &destinationUrlOrPath) const;

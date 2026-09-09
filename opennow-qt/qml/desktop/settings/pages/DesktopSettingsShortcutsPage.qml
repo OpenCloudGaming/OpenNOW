@@ -15,7 +15,7 @@ Column {
     function allShortcutGroups() {
         return [
             {h:"APP", rows:[{l:"Command palette",k:"Ctrl  K"},{l:"Search this page",k:"/"},{l:"Collapse or expand the sidebar",k:"Ctrl  B"},{l:"Switch to console mode",k:"F10"},{l:"Settings",k:"Ctrl  ,"},{l:"Quit OpenNOW",k:"Ctrl  Q"}]},
-            {h:"IN STREAM", rows:[{l:"Session menu",k:"Esc"},{l:"Stats overlay",k:String(shortcutsPageRoot.settingsScreen.valueSetting("shortcutToggleStats","Ctrl+N"))},{l:"Toggle fullscreen",k:String(shortcutsPageRoot.settingsScreen.valueSetting("shortcutToggleFullscreen","F11"))},{l:"Grab or release the mouse",k:String(shortcutsPageRoot.settingsScreen.valueSetting("shortcutTogglePointerLock","F8"))},{l:"Screenshot the stream",k:String(shortcutsPageRoot.settingsScreen.valueSetting("shortcutScreenshot","Ctrl+F11"))},{l:"End the session",k:String(shortcutsPageRoot.settingsScreen.valueSetting("shortcutStopStream","Ctrl+Shift+Q"))}]},
+            {h:"IN STREAM", rows:[{l:"Session menu",k:"Ctrl+G"},{l:"Stats overlay",k:String(shortcutsPageRoot.settingsScreen.valueSetting("shortcutToggleStats","Ctrl+N"))},{l:"Toggle fullscreen",k:String(shortcutsPageRoot.settingsScreen.valueSetting("shortcutToggleFullscreen","F11"))},{l:"Grab or release the mouse",k:String(shortcutsPageRoot.settingsScreen.valueSetting("shortcutTogglePointerLock","F8"))},{l:"Screenshot the stream",k:String(shortcutsPageRoot.settingsScreen.valueSetting("shortcutScreenshot","Ctrl+F11"))},{l:qsTr("Toggle recording"),k:String(shortcutsPageRoot.settingsScreen.valueSetting("shortcutToggleRecording","F12")),setting:"shortcutToggleRecording"},{l:qsTr("Save replay clip"),k:String(shortcutsPageRoot.settingsScreen.valueSetting("shortcutSaveClip","Ctrl+F12")),setting:"shortcutSaveClip"},{l:"End the session",k:String(shortcutsPageRoot.settingsScreen.valueSetting("shortcutStopStream","Ctrl+Shift+Q"))}]},
             {h:"LIBRARY AND STORE", rows:[{l:"Move through covers",k:"Arrows"},{l:"Play or resume",k:"Enter"},{l:"Game details",k:"Space"},{l:"Toggle favourite",k:"F"},{l:"Context menu",k:"Shift  F10"}]},
             {h:"GAMEPAD · CONSOLE MODE", rows:[{l:"Select · back",k:"A · B"},{l:"Details · favourite",k:"X · Y"},{l:"Switch tab",k:"LB · RB"},{l:"Stats overlay",k:"Guide"}]}
         ]
@@ -71,9 +71,16 @@ Column {
                         width: parent.width; paperStyle: true; glyph: "keyboard"; title: modelData.l
                         rowHeight: DesktopTokens.px(56)
                         Rectangle {
+                            visible: !modelData.setting
                             width: Math.max(DesktopTokens.px(72), keyCapText.implicitWidth+28); height: DesktopTokens.px(32)
                             radius: 10; color: DesktopTokens.raised; border.width: 1; border.color: Theme.seam
                             Text { id: keyCapText; anchors.centerIn: parent; text: modelData.k; color: Theme.label; font.family: Theme.monoFont; font.pixelSize: DesktopTokens.px(12); font.weight: Font.DemiBold }
+                        }
+                        DesktopSettingsButton {
+                            visible: Boolean(modelData.setting)
+                            text: modelData.k
+                            Accessible.name: modelData.l + ": " + text
+                            onClicked: shortcutEditor.edit(modelData.setting, modelData.l)
                         }
                     }
                 }
@@ -86,6 +93,7 @@ Column {
         text: qsTr("No bindings match “%1”.").arg(shortcutsPageRoot.shortcutQuery)
         color: Theme.textMuted; font.family: Theme.bodyFont; font.pixelSize: DesktopTokens.captionSize
     }
+    DesktopSettingsShortcutEditor { id: shortcutEditor }
     DesktopSettingsPanel {
         width: parent.width; paperStyle: true
         DesktopSettingsRow {

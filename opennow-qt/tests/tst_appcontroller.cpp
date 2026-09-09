@@ -12,6 +12,21 @@ class AppControllerTest final : public QObject
     Q_OBJECT
 
 private slots:
+    void shortcutCaptureUsesPortableSingleChords()
+    {
+        AppController controller;
+        QCOMPARE(controller.shortcutFromKey(Qt::Key_F12, Qt::NoModifier), QStringLiteral("F12"));
+        QCOMPARE(controller.shortcutFromKey(Qt::Key_F12, Qt::ControlModifier), QStringLiteral("Ctrl+F12"));
+        QCOMPARE(controller.shortcutFromKey(Qt::Key_PageUp, Qt::AltModifier), QStringLiteral("Alt+PgUp"));
+        QCOMPARE(controller.normalizeShortcut(QStringLiteral("Shift+Ctrl+F9")), QStringLiteral("Ctrl+Shift+F9"));
+        QVERIFY(controller.shortcutFromKey(Qt::Key_Control, Qt::ControlModifier).isEmpty());
+        QVERIFY(controller.shortcutFromKey(Qt::Key_unknown, Qt::NoModifier).isEmpty());
+        QVERIFY(controller.shortcutFromKey(Qt::Key_F12, Qt::KeypadModifier).isEmpty());
+        QVERIFY(controller.normalizeShortcut(QStringLiteral("Ctrl+K, Ctrl+C")).isEmpty());
+        QVERIFY(controller.normalizeShortcut(QStringLiteral("not-a-key")).isEmpty());
+        QVERIFY(controller.normalizeShortcut(QString(81, QChar(u'A'))).isEmpty());
+    }
+
     void directLaunchAssociationIsAvailable()
     {
         AppController controller;

@@ -17,6 +17,53 @@ class EmbeddedOrchestrationTest final : public QObject
     Q_OBJECT
 
 private slots:
+    void replayClippingRequiresAnEnabledSessionAndResetsPendingWork()
+    {
+        const auto shell = source(QStringLiteral("qml/state/ShellStore.qml"));
+        QJSEngine engine;
+        engine.installExtensions(QJSEngine::TranslationExtension);
+        for (const auto &name : {"saveStreamClip", "disableStreamReplay", "resetStreamReplay"}) {
+            const auto match = QRegularExpression(QStringLiteral(
+                "    function %1\\([^\\n]*\\) \\{.*?\\n    \\}").arg(QString::fromLatin1(name)),
+                QRegularExpression::DotMatchesEverythingOption).match(shell);
+            QVERIFY(match.hasMatch());
+            QVERIFY(!engine.evaluate(match.captured()).isError());
+        }
+        QVERIFY(!engine.evaluate(QStringLiteral(R"JS(
+            var streamClipBusy = false, streamReplayEnabled = false, replayBufferRequested = false;
+            var activeSession = {sessionId: "test"}, streamer = {status: "streaming"};
+            var selectedGame = {title: "Test game"};
+            var mediaClipTargetRequestId = "", streamClipRequestId = "";
+            var mediaMessage = "", accessibilityMessage = "", lastError = "send failed";
+            var requests = [], commands = [];
+            var NativeStreamRuntime = {running: true};
+            var CoreClient = {request: function(method, params) {
+                requests.push({method: method, params: params}); return "target-1";
+            }};
+            function sendNativeCommand(type) { commands.push(type); return "native-1"; }
+            function streamCaptureAnnounced(message) {}
+        )JS")).isError());
+        engine.evaluate(QStringLiteral("saveStreamClip()"));
+        QCOMPARE(engine.evaluate(QStringLiteral("requests.length")).toInt(), 0);
+        QVERIFY(engine.evaluate(QStringLiteral("accessibilityMessage.length > 0")).toBool());
+        engine.evaluate(QStringLiteral("replayBufferRequested = true; saveStreamClip()"));
+        QCOMPARE(engine.evaluate(QStringLiteral("requests.length")).toInt(), 0);
+        engine.evaluate(QStringLiteral("streamReplayEnabled = true; saveStreamClip()"));
+        QCOMPARE(engine.evaluate(QStringLiteral("requests.length")).toInt(), 1);
+        QCOMPARE(engine.evaluate(QStringLiteral("requests[0].method")).toString(),
+                 QStringLiteral("media.recording.target"));
+        engine.evaluate(QStringLiteral("streamClipBusy = true; saveStreamClip()"));
+        QCOMPARE(engine.evaluate(QStringLiteral("requests.length")).toInt(), 1);
+        engine.evaluate(QStringLiteral("disableStreamReplay()"));
+        QCOMPARE(engine.evaluate(QStringLiteral("commands[0]")).toString(), QStringLiteral("replay-stop"));
+        QVERIFY(!engine.evaluate(QStringLiteral("streamReplayEnabled")).toBool());
+        QCOMPARE(engine.evaluate(QStringLiteral("mediaClipTargetRequestId")).toString(), QString());
+        engine.evaluate(QStringLiteral("disableStreamReplay()"));
+        QCOMPARE(engine.evaluate(QStringLiteral("commands.length")).toInt(), 1);
+        engine.evaluate(QStringLiteral("streamClipRequestId = 'stale'; resetStreamReplay()"));
+        QCOMPARE(engine.evaluate(QStringLiteral("streamClipRequestId")).toString(), QString());
+    }
+
     void lastPlayedUsesElapsedUnits_data()
     {
         QTest::addColumn<QString>("raw");

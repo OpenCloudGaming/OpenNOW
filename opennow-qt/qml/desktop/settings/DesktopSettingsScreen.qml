@@ -16,7 +16,7 @@ FocusScope {
     property string acceptancePanel: ""
     readonly property var acceptancePanels: ({stats:statsSettingsPage, audio:audioPage,
         interface:interfacePage, console:consolePage, shortcuts:shortcutsPage,
-        controllers:controllersPage, subscription:subscriptionPage})
+        controllers:controllersPage, subscription:subscriptionPage, recording:recordingPage})
     readonly property bool compactNavigation: width < 1050
     readonly property int selectedGroup: sections.findIndex(section => section.page ===
         ([0,1,2].indexOf(selectedSection) >= 0 ? 0 : selectedSection === 10 ? 5 : selectedSection === 7 ? 8 : selectedSection))
@@ -26,6 +26,7 @@ FocusScope {
     readonly property var sections: [
         {label: qsTr("Stream"), detail: qsTr("Picture, codec, bitrate"), icon: "monitor", page: 3, keywords: "resolution fps hdr color audio stats overlay bitrate codec reflex backend gpu directx vulkan steam big picture launch gamepad"},
         {label: qsTr("Audio"), detail: qsTr("Output and stream audio"), icon: "wave", page: 4, keywords: "sound audio volume output microphone"},
+        {label: qsTr("Recording"), detail: qsTr("Capture, replay, shortcuts"), icon: "image", page: 12, keywords: "recording capture clip replay buffer memory duration folder resolution fps quality shortcuts F12"},
         {label: qsTr("Controls"), detail: qsTr("Pads, mouse, shortcuts"), icon: "controller", page: 5, keywords: "controller gyroscope steam sensitivity keyboard language shortcuts"},
         {label: qsTr("Look"), detail: qsTr("Theme, accent, layout"), icon: "palette", page: 8, keywords: "theme accent interface language scale motion console sidebar tiles"},
         {label: qsTr("Console mode"), detail: qsTr("Gamepad-first interface"), icon: "controller", page: 9, keywords: "console fullscreen gamepad startup"},
@@ -33,8 +34,8 @@ FocusScope {
         {label: qsTr("Account"), detail: qsTr("NVIDIA, stores, privacy"), icon: "person", page: 0, keywords: "profile subscription stores steam epic xbox ubisoft battle gaijin privacy"},
         {label: qsTr("About"), detail: qsTr("Updates, diagnostics"), icon: "info", page: 11, keywords: "version release update diagnostics"}
     ]
-    readonly property var pageTitles: [qsTr("Account"), qsTr("Account"), qsTr("Account"), qsTr("Stream"), qsTr("Audio"), qsTr("Controls"), qsTr("Network"), qsTr("Look"), qsTr("Look"), qsTr("Console mode"), qsTr("Controls"), qsTr("About")]
-    readonly property var pageComponents: [accountGroup, subscriptionPage, accountGroup, streamPage, audioPage, controlsGroup, networkPage, lookGroup, lookGroup, consolePage, controlsGroup, aboutPage]
+    readonly property var pageTitles: [qsTr("Account"), qsTr("Account"), qsTr("Account"), qsTr("Stream"), qsTr("Audio"), qsTr("Controls"), qsTr("Network"), qsTr("Look"), qsTr("Look"), qsTr("Console mode"), qsTr("Controls"), qsTr("About"), qsTr("Recording")]
+    readonly property var pageComponents: [accountGroup, subscriptionPage, accountGroup, streamPage, audioPage, controlsGroup, networkPage, lookGroup, lookGroup, consolePage, controlsGroup, aboutPage, recordingPage]
 
     function matchesSection(section) {
         const query = searchQuery.trim().toLowerCase()
@@ -665,6 +666,14 @@ FocusScope {
     Component {
         id: shortcutsPage
         DesktopSettingsShortcutsPage {
+            availableWidth: contentFlick.width
+            settingsScreen: root
+        }
+    }
+
+    Component {
+        id: recordingPage
+        DesktopSettingsRecordingPage {
             availableWidth: contentFlick.width
             settingsScreen: root
         }

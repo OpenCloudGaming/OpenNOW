@@ -255,6 +255,48 @@ codec on resume; it never changes the codec of an already allocated stream. Olde
 this optional object retain the external-streamer probe path. The additive fields do not change
 the JSON protocol version or native FFI ABI.
 
+### Recording and replay capture
+
+The Qt/native recorder and replay exporter preserve the negotiated source video and
+Opus game audio in Matroska without decoding or re-encoding. Recording resolution,
+frame rate and bitrate follow the stream; the retained legacy `recordingResolution`,
+`recordingFps` and `recordingBitrateMbps` preferences do not configure native capture.
+
+`settings.get` / `settings.set` expose `replayBufferEnabled` (default `false`),
+`replayBufferSeconds` (default 30, clamped to 15–120), `replayBufferMemoryMiB`
+(default 256, clamped to 64–512), and `shortcutSaveClip` (default `Ctrl+F12`).
+`streamer.prepare` includes these settings in the session context and maps
+`shortcutSaveClip` to `shortcuts.saveClip`. Enabling replay and changing its limits
+apply to the next native session. Disabling it sends `replay-stop` immediately,
+clears buffered media and cancels an in-progress clip export.
+
+These commands extend the embedded streamer's protocol-6 JSON payload without
+changing the C ABI:
+
+- The `start` response includes `replayEnabled` for the actual session.
+- `clip-save` accepts `id` and an absolute `.mkv` `outputPath` allocated by
+  `media.recording.target`. It returns `clip-saving` promptly or a typed error if
+  replay is disabled, not yet decodable, or another export is still running.
+- A `clip-state` event reports `state` (`saved` or `failed`), `requestId`, `path`
+  and `message`. The shell correlates `requestId` with the outstanding export and
+  ignores completion from a previous session. Cancelled exports do not publish a
+  completed file or a stale success event.
+- `replay-stop` returns `replay-stopped`. A new session is required to enable
+  buffering again.
+
+Replay retains encoded packets with bounded memory, frame count and duration.
+Clips start on a retained video keyframe, so their length may be shorter than the
+requested duration. Export transfers the retained buffer to a single worker;
+buffering rebuilds from a subsequent keyframe within the remaining memory budget.
+There is no assumed periodic-keyframe guarantee: when a whole GOP exceeds the
+configured limit, replay returns `replay-not-ready` until a new source keyframe.
+Capture does not issue periodic keyframe requests that would change stream traffic.
+Discontinuity or producer contention clears replay history rather than blocking
+playback or publishing a clip with missing references. There is no additional
+video encoder or GPU readback. Packet bookkeeping, container muxing and disk I/O
+still consume CPU and bandwidth; zero CPU usage or zero performance impact is not
+a supported guarantee.
+
 ### HDR session contract
 
 `settings.enableHdr` is a persisted boolean with default `false`; HDR requires explicit user

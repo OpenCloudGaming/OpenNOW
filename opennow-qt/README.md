@@ -396,7 +396,31 @@ in process through the runtime library, not in the probe executable. CI produces
 the platform packages from that layout.
 The screenshot shortcut captures the exact stream region, and F12 records the
 negotiated H.264/H.265/AV1 source stream plus Opus audio atomically into Matroska
-before generating a media thumbnail. Microphone capture defaults to disabled;
+before generating a media thumbnail.
+
+Settings → Recording exposes source capture information, the recordings folder,
+editable recording/clipping shortcuts, and an opt-in replay buffer. Replay is off
+by default. Enable it before starting a session, choose a 15/30/60/120-second target
+and a 64/128/256/512 MiB memory cap, then press Ctrl+F12 to save recent gameplay.
+F12 still starts/stops a manual recording. Both bindings also appear under Controls
+→ Shortcuts. Disabling replay immediately clears its history and cancels an export;
+enabling it or changing its limits takes effect next session.
+Both stream interfaces show a recording timer and transient clip results above the
+same video item without taking focus or opening a blocking overlay.
+
+Recording and clips use the incoming resolution, frame rate, codec and bitrate.
+There is no independent scaling or encoding pass; change Stream settings to change
+the source profile. Clips can be shorter than their target when constrained by
+memory, available keyframes, a recent save, or stream recovery. Source passthrough
+avoids video encoding and GPU readback, but packet management and writing files
+still use some CPU and disk bandwidth. Live playback/performance checks on each
+supported OS remain required.
+Clip publication requires hard-link support in the destination filesystem to avoid
+overwriting an existing file; unsupported filesystems report an error without
+publishing a partial clip. A/V timing uses source timestamp deltas with initial
+receive-time anchors because the stream does not expose sender clock correlation.
+
+Microphone capture defaults to disabled;
 Audio settings offers an explicit Open microphone opt-in using the system default
 input. The setting applies to the next session, and supported sessions expose live
 mute/unmute through the stream menu or Ctrl+Shift+M without restarting media.

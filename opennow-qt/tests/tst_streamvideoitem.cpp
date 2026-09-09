@@ -614,6 +614,27 @@ private slots:
         QCOMPARE(changes.size(), 1);
     }
 
+    void recordingAndClipShortcutsRemainDistinct()
+    {
+        const QVariantMap bindings{
+            {QStringLiteral("toggle-recording"), QVariantList{QStringLiteral("F12")}},
+            {QStringLiteral("save-clip"), QVariantList{QStringLiteral("Ctrl+F12")}},
+        };
+        QCOMPARE(StreamVideoItem::shortcutActionForInput(bindings, Qt::Key_F12,
+                     Qt::NoModifier), QStringLiteral("toggle-recording"));
+        QCOMPARE(StreamVideoItem::shortcutActionForInput(bindings, Qt::Key_F12,
+                     Qt::ControlModifier), QStringLiteral("save-clip"));
+        QVERIFY(StreamVideoItem::shortcutActionForInput(bindings, Qt::Key_F12,
+                    Qt::ControlModifier | Qt::ShiftModifier).isEmpty());
+        const QVariantMap custom{
+            {QStringLiteral("save-clip"), QVariantList{QStringLiteral("Alt+F9")}},
+        };
+        QCOMPARE(StreamVideoItem::shortcutActionForInput(custom, Qt::Key_F9,
+                     Qt::AltModifier), QStringLiteral("save-clip"));
+        QVERIFY(StreamVideoItem::shortcutActionForInput(custom, Qt::Key_F12,
+                    Qt::ControlModifier).isEmpty());
+    }
+
     void normalizesVideoSizeAndTracksCallbackAvailability()
     {
         StreamVideoItem item;

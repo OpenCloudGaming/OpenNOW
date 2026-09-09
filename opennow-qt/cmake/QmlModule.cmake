@@ -27,6 +27,7 @@ qt_add_qml_module(opennow-qt
         qml/components/ScreenBackground.qml
         qml/components/SettingRow.qml
         qml/components/StoreBadge.qml
+        qml/components/StreamCaptureStatus.qml
         qml/components/StreamInputNotice.qml
         qml/components/TogglePill.qml
         qml/components/VirtualKeyboard.qml
@@ -51,6 +52,8 @@ qt_add_qml_module(opennow-qt
         qml/desktop/settings/controls/DesktopSettingsDisclosure.qml
         qml/desktop/settings/controls/DesktopSettingsDropdown.qml
         qml/desktop/settings/controls/DesktopSettingsField.qml
+        qml/desktop/settings/controls/DesktopSettingsShortcutBinding.qml
+        qml/desktop/settings/controls/DesktopSettingsShortcutEditor.qml
         qml/desktop/settings/controls/DesktopSettingsIcon.qml
         qml/desktop/settings/controls/DesktopSettingsPanel.qml
         qml/desktop/settings/controls/DesktopSettingsResolution.qml
@@ -70,6 +73,7 @@ qt_add_qml_module(opennow-qt
         qml/desktop/settings/pages/DesktopSettingsLookPage.qml
         qml/desktop/settings/pages/DesktopSettingsNetworkPage.qml
         qml/desktop/settings/pages/DesktopSettingsProfilePage.qml
+        qml/desktop/settings/pages/DesktopSettingsRecordingPage.qml
         qml/desktop/settings/pages/DesktopSettingsShortcutsPage.qml
         qml/desktop/settings/pages/DesktopSettingsStatsPage.qml
         qml/desktop/settings/pages/DesktopSettingsStoresPage.qml

@@ -321,6 +321,8 @@ impl SettingsStore {
         clamp_integer(&mut self.values, "windowWidth", 960, 7680, 1400);
         clamp_integer(&mut self.values, "windowHeight", 540, 4320, 900);
         clamp_integer(&mut self.values, "recordingFps", 30, 60, 30);
+        clamp_integer(&mut self.values, "replayBufferSeconds", 15, 120, 30);
+        clamp_integer(&mut self.values, "replayBufferMemoryMiB", 64, 512, 256);
         clamp_integer(&mut self.values, "antiAfkReminderEveryMinutes", 1, 120, 15);
         clamp_integer(&mut self.values, "antiAfkReminderDurationSeconds", 1, 60, 5);
         clamp_integer(&mut self.values, "sessionClockShowEveryMinutes", 1, 240, 60);
@@ -606,6 +608,7 @@ fn normalize_bounded_strings(values: &mut Map<String, Value>) {
         "shortcutToggleMicrophone",
         "shortcutScreenshot",
         "shortcutToggleRecording",
+        "shortcutSaveClip",
     ] {
         let value = values
             .get(key)
@@ -757,6 +760,7 @@ fn defaults() -> Map<String, Value> {
         "resolution":"1920x1080", "aspectRatio":"16:9", "posterSizeScale":1.05,
         "fps":60, "frameGeneration":"off", "maxBitrateMbps":75, "recordingBitrateMbps":null,
         "recordingResolution":"720p", "recordingFps":30, "streamClientMode":"native",
+        "replayBufferEnabled":false, "replayBufferSeconds":30, "replayBufferMemoryMiB":256,
         "nativeVideoBackend":"auto", "nativeStreamerExecutablePath":"", "audioOutputDevice":"",
         "nativeCloudGsyncMode":"auto", "nativeD3dFullscreenMode":"auto",
         "nativeExternalRenderer":false, "transportMode":"nvst", "showNativeStreamerStats":false,
@@ -769,6 +773,7 @@ fn defaults() -> Map<String, Value> {
         "shortcutToggleFullscreen":"F11", "shortcutStopStream":"Ctrl+Shift+Q",
         "shortcutToggleAntiAfk":"Ctrl+Shift+K", "shortcutToggleMicrophone":"Ctrl+Shift+M",
         "shortcutScreenshot":"Ctrl+F11", "shortcutToggleRecording":"F12",
+        "shortcutSaveClip":"Ctrl+F12",
         "microphoneMode":"disabled", "microphoneDeviceId":"", "hideStreamButtons":false,
         "showAntiAfkIndicator":true, "antiAfkReminderEveryMinutes":15,
         "antiAfkReminderDurationSeconds":5, "showStatsOnLaunch":false,
@@ -809,6 +814,35 @@ fn defaults() -> Map<String, Value> {
 mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn replay_is_opt_in_bounded_and_persisted() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = env::temp_dir().join(format!("opennow-replay-settings-{unique}"));
+        let mut store = SettingsStore::load(Some(directory.clone())).unwrap();
+        assert_eq!(store.all()["replayBufferEnabled"], json!(false));
+        assert_eq!(store.all()["replayBufferSeconds"], json!(30));
+        assert_eq!(store.all()["replayBufferMemoryMiB"], json!(256));
+        assert_eq!(store.all()["shortcutToggleRecording"], json!("F12"));
+        assert_eq!(store.all()["shortcutSaveClip"], json!("Ctrl+F12"));
+        store.set("replayBufferEnabled", json!(true)).unwrap();
+        store.set("replayBufferSeconds", json!(999)).unwrap();
+        store.set("replayBufferMemoryMiB", json!(1)).unwrap();
+        store.set("shortcutSaveClip", json!("Alt+F12")).unwrap();
+        let mut reloaded = SettingsStore::load(Some(directory.clone())).unwrap();
+        assert_eq!(reloaded.all()["replayBufferEnabled"], json!(true));
+        assert_eq!(reloaded.all()["replayBufferSeconds"], json!(120));
+        assert_eq!(reloaded.all()["replayBufferMemoryMiB"], json!(64));
+        assert_eq!(reloaded.all()["shortcutSaveClip"], json!("Alt+F12"));
+        reloaded.set("replayBufferSeconds", json!(-1)).unwrap();
+        reloaded.set("replayBufferMemoryMiB", json!(9999)).unwrap();
+        assert_eq!(reloaded.all()["replayBufferSeconds"], json!(15));
+        assert_eq!(reloaded.all()["replayBufferMemoryMiB"], json!(512));
+        fs::remove_dir_all(directory).unwrap();
+    }
 
     #[test]
     fn microphone_is_opt_in_and_open_mode_survives_reload() {

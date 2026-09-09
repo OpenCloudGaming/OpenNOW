@@ -1,4 +1,5 @@
 use std::net::UdpSocket;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::thread::{self, JoinHandle};
@@ -10,11 +11,12 @@ use opennow_streamer_platform::{
     CapturedInput, CapturedInputQueue, CapturedInputSample, EncodedFrame, MediaCodec,
     MediaColorQuality, MediaControl, MediaFeedback, MediaRuntime, MediaRuntimeControl,
     MediaSession, MediaSink, MediaStreamConfig, MediaVideoCodec, PushOutcome, RecordingSummary,
-    StreamShortcutAction, StreamShortcutBindings, record_matroska, supports_audio_decode,
-    supports_audio_output, video_backends,
+    StreamShortcutAction, StreamShortcutBindings, record_matroska, record_replay_matroska,
+    supports_audio_decode, supports_audio_output, video_backends,
 };
 use opennow_streamer_protocol::{
-    Capabilities, Command, PROTOCOL_VERSION, SessionContext, error, event, response,
+    Capabilities, Command, PROTOCOL_VERSION, ReplayBufferConfig, SessionContext, error, event,
+    response,
 };
 use opennow_streamer_transport::{
     NvstDropReason, NvstReceiveEvent, NvstReceiverState, NvstRecovery, NvstUdpReceiverControl,
@@ -174,6 +176,9 @@ pub struct Engine {
     media_feedback: Option<Receiver<MediaFeedback>>,
     feedback_worker: Option<JoinHandle<PendingMediaFeedback>>,
     recording_worker: Option<JoinHandle<Result<RecordingSummary, String>>>,
+    clip_worker: Option<JoinHandle<()>>,
+    clip_cancelled: Arc<AtomicBool>,
+    replay_budget: Arc<AtomicUsize>,
     microphone: Option<MicrophoneController>,
 }
 
@@ -209,6 +214,9 @@ impl Engine {
             media_feedback: None,
             feedback_worker: None,
             recording_worker: None,
+            clip_worker: None,
+            clip_cancelled: Arc::new(AtomicBool::new(false)),
+            replay_budget: Arc::new(AtomicUsize::new(0)),
             microphone: None,
         }
     }
@@ -244,6 +252,9 @@ impl Engine {
             media_feedback: None,
             feedback_worker: None,
             recording_worker: None,
+            clip_worker: None,
+            clip_cancelled: Arc::new(AtomicBool::new(false)),
+            replay_budget: Arc::new(AtomicUsize::new(0)),
             microphone: None,
         }
     }
@@ -275,6 +286,9 @@ impl Engine {
             media_feedback: None,
             feedback_worker: None,
             recording_worker: None,
+            clip_worker: None,
+            clip_cancelled: Arc::new(AtomicBool::new(false)),
+            replay_budget: Arc::new(AtomicUsize::new(0)),
             microphone: None,
         }
     }
@@ -320,6 +334,11 @@ impl Engine {
             "anti-afk-pulse" => self.anti_afk_pulse(command),
             "recording-start" => self.start_recording(command),
             "recording-stop" => self.stop_recording(command),
+            "clip-save" => self.save_clip(command),
+            "replay-stop" => {
+                self.stop_replay();
+                Ok(vec![response(id, "replay-stopped")])
+            }
             "microphone-set" | "microphone-toggle" => self.set_microphone(command),
             "bitrate" | "update-shortcuts" => Err(error(
                 Some(&id),
@@ -713,6 +732,10 @@ impl Engine {
                     audio_device,
                 )
                 .map_err(|message| error(Some(&command.id), "media-output-unavailable", message))?;
+            session.control().start_replay(
+                ReplayBufferConfig::from_settings(&context.settings),
+                Arc::clone(&self.replay_budget),
+            );
             let sink = session.sink();
             let (media_consumer, media_receiver) =
                 std::sync::mpsc::sync_channel(ENCODED_MEDIA_QUEUE_CAPACITY);
@@ -858,6 +881,8 @@ impl Engine {
             self.nvst_hole_punch_socket = None;
         }
 
+        let replay_enabled = self.media_session.is_some()
+            && ReplayBufferConfig::from_settings(&context.settings).enabled;
         let generation = {
             let mut lifecycle = lock_lifecycle(&self.lifecycle);
             lifecycle.generation = lifecycle.generation.wrapping_add(1);
@@ -957,6 +982,7 @@ impl Engine {
             }),
         ));
         let mut start_response = response(command.id, "ok");
+        start_response["replayEnabled"] = json!(replay_enabled);
         start_response["transport"] = Value::String("nvst".to_owned());
         start_response["capabilities"] = json!({
             "supportsInput": nvst_bundle_available,
@@ -1075,6 +1101,7 @@ impl Engine {
     }
 
     fn stop(&mut self, reason: &str) {
+        self.clip_cancelled.store(true, Ordering::Release);
         let was_active = {
             let mut lifecycle = lock_lifecycle(&self.lifecycle);
             let was_active = lifecycle.state != State::Idle;
@@ -1108,6 +1135,7 @@ impl Engine {
     }
 
     fn stop_media_resources(&mut self) {
+        self.stop_replay();
         self.microphone = None;
         let _ = self.stop_recording_inner();
         if self.media_runtime.is_some() {
@@ -1132,6 +1160,107 @@ impl Engine {
             }
             pending.reports.flush(&self.events, Instant::now(), true);
         }
+    }
+
+    fn stop_replay(&mut self) {
+        {
+            let _lifecycle = lock_lifecycle(&self.lifecycle);
+            self.clip_cancelled.store(true, Ordering::Release);
+        }
+        if let Some(session) = self.media_session.as_ref() {
+            session.control().stop_replay();
+        }
+    }
+
+    fn save_clip(&mut self, command: Command) -> Result<Vec<Value>, Value> {
+        if self
+            .clip_worker
+            .as_ref()
+            .is_some_and(|worker| !worker.is_finished())
+        {
+            return Err(error(
+                Some(&command.id),
+                "clip-already-saving",
+                "A clip export is already in progress",
+            ));
+        }
+        if let Some(worker) = self.clip_worker.take() {
+            let _ = worker.join();
+        }
+        let path = command
+            .output_path
+            .as_deref()
+            .map(std::path::PathBuf::from)
+            .filter(|path| {
+                path.is_absolute()
+                    && path.extension().and_then(|value| value.to_str()) == Some("mkv")
+            })
+            .ok_or_else(|| {
+                error(
+                    Some(&command.id),
+                    "invalid-clip-output",
+                    "Clips require an absolute .mkv output path",
+                )
+            })?;
+        let control = self
+            .media_session
+            .as_ref()
+            .map(MediaSession::control)
+            .ok_or_else(|| {
+                error(
+                    Some(&command.id),
+                    "replay-not-enabled",
+                    "Replay requires an enabled active session",
+                )
+            })?;
+        let (stream, snapshot) = control.replay_snapshot().map_err(|code| {
+            let message = match code {
+                "replay-not-enabled" => {
+                    "Enable replay buffering before starting a session to save clips"
+                }
+                "replay-not-ready" => {
+                    "Waiting for a source video keyframe; previous replay history may have expired"
+                }
+                "clip-already-saving" => "Another clip export is already in progress",
+                _ => "Replay capture is unavailable",
+            };
+            error(Some(&command.id), code, message)
+        })?;
+        let cancelled = Arc::new(AtomicBool::new(false));
+        self.clip_cancelled = Arc::clone(&cancelled);
+        let events = self.events.clone();
+        let lifecycle = Arc::clone(&self.lifecycle);
+        let generation = lock_lifecycle(&lifecycle).generation;
+        let request_id = command.id.clone();
+        let worker_path = path.clone();
+        let worker = thread::Builder::new().name("opennow-replay-export".to_owned()).spawn(move || {
+            let result = record_replay_matroska(&worker_path, stream, snapshot, &cancelled);
+            let saved = result.is_ok();
+            let payload = match result {
+                Ok(summary) => json!({"state":"saved", "path":summary.path, "message":"Clip saved", "requestId":request_id, "videoPackets":summary.video_packets, "audioPackets":summary.audio_packets}),
+                Err(message) => json!({"state":"failed", "path":worker_path, "message":message, "requestId":request_id}),
+            };
+            let completion = event("clip-state", payload);
+            loop {
+                let current = lock_lifecycle(&lifecycle);
+                if current.generation != generation || current.state != State::Connected || cancelled.load(Ordering::Acquire) {
+                    drop(current);
+                    if saved {
+                        let _ = std::fs::remove_file(&worker_path);
+                    }
+                    return;
+                }
+                if events.send(completion.clone()).is_ok() {
+                    return;
+                }
+                drop(current);
+                thread::sleep(Duration::from_millis(10));
+            }
+        }).map_err(|err| error(Some(&command.id), "clip-worker-failed", err.to_string()))?;
+        self.clip_worker = Some(worker);
+        Ok(vec![
+            json!({"id":command.id, "type":"clip-saving", "path":path}),
+        ])
     }
 
     fn start_recording(&mut self, command: Command) -> Result<Vec<Value>, Value> {
@@ -1279,6 +1408,9 @@ impl Engine {
 impl Drop for Engine {
     fn drop(&mut self) {
         self.stop("process closed");
+        if let Some(worker) = self.clip_worker.take() {
+            let _ = worker.join();
+        }
     }
 }
 
@@ -2337,6 +2469,114 @@ mod tests {
 
     fn command(value: Value) -> Command {
         serde_json::from_value(value).expect("command")
+    }
+
+    #[test]
+    fn replay_clip_commands_complete_asynchronously_with_correlated_success_and_failure() {
+        let (host, runtime) = opennow_streamer_platform::create_test_runtime();
+        let (events, received) = std::sync::mpsc::channel();
+        let mut engine = Engine::with_media_runtime(events, runtime.clone());
+        let (feedback, _feedback_receiver) = std::sync::mpsc::channel();
+        let session = runtime
+            .start(feedback, MediaStreamConfig::default())
+            .unwrap();
+        session.control().start_replay(
+            ReplayBufferConfig::from_settings(&json!({"replayBufferEnabled":true})),
+            Arc::clone(&engine.replay_budget),
+        );
+        let sink = session.sink();
+        engine.media_session = Some(session);
+        lock_lifecycle(&engine.lifecycle).state = State::Connected;
+        let directory = std::env::temp_dir().join(format!(
+            "opennow-engine-clip-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        for (id, timestamp, data, expected_state) in [
+            (
+                "saved",
+                90_000,
+                vec![
+                    0, 0, 0, 1, 0x67, 0x64, 0x00, 0x28, 0xde, 0xad, 0, 0, 0, 1, 0x68, 0xee, 0x3c,
+                    0x80, 0, 0, 0, 1, 0x65, 0x88, 0x84, 0x00, 0x10,
+                ],
+                "saved",
+            ),
+            ("failed", 180_000, vec![0, 0, 0, 1, 0x65], "failed"),
+        ] {
+            sink.push(EncodedFrame {
+                mid: "video".to_owned(),
+                codec: MediaCodec::H264,
+                data: Arc::from(data),
+                frame_index: Some(1),
+                timestamp,
+                clock_rate_hz: 90_000,
+                keyframe: true,
+                contiguous: true,
+            });
+            let path = directory.join(format!("{id}.mkv"));
+            let (responses, _) = engine.handle(command(
+                json!({"id":id,"type":"clip-save","outputPath":path}),
+            ));
+            assert_eq!(responses[0]["type"], "clip-saving");
+            assert_eq!(responses[0]["path"], json!(path));
+            let completion = received.recv_timeout(Duration::from_secs(5)).unwrap();
+            assert_eq!(completion["type"], "clip-state");
+            assert_eq!(completion["requestId"], id);
+            assert_eq!(completion["state"], expected_state);
+            assert_eq!(completion["path"], json!(path));
+            assert!(completion["message"].is_string());
+            assert_eq!(path.exists(), expected_state == "saved");
+            engine.clip_worker.take().unwrap().join().unwrap();
+        }
+        engine.stop("test complete");
+        runtime.shutdown();
+        host.join().unwrap();
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn replay_commands_fail_closed_and_stop_cancels_without_waiting_for_export() {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let mut engine = Engine::new(sender);
+        let path = std::env::temp_dir().join("opennow-command-test.mkv");
+        let (responses, _) = engine.handle(command(
+            json!({"id":"disabled","type":"clip-save","outputPath":path}),
+        ));
+        assert_eq!(responses[0]["code"], "replay-not-enabled");
+        let (responses, _) = engine.handle(command(
+            json!({"id":"invalid","type":"clip-save","outputPath":"relative.mkv"}),
+        ));
+        assert_eq!(responses[0]["code"], "invalid-clip-output");
+        let (release, blocked) = std::sync::mpsc::channel();
+        engine.clip_worker = Some(thread::spawn(move || {
+            let _ = blocked.recv();
+        }));
+        engine.clip_cancelled.store(false, Ordering::Release);
+        let (responses, _) = engine.handle(command(
+            json!({"id":"busy","type":"clip-save","outputPath":path}),
+        ));
+        assert_eq!(responses[0]["code"], "clip-already-saving");
+        let (responses, _) = engine.handle(command(json!({"id":"stop","type":"replay-stop"})));
+        assert_eq!(responses[0]["type"], "replay-stopped");
+        assert!(engine.clip_cancelled.load(Ordering::Acquire));
+        assert!(!engine.clip_worker.as_ref().unwrap().is_finished());
+        assert!(receiver.try_recv().is_err());
+        release.send(()).unwrap();
+        engine.clip_worker.take().unwrap().join().unwrap();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        forward_shortcut_action(
+            &EventSender::unbounded(sender),
+            None,
+            StreamShortcutAction::SaveClip,
+        );
+        let action = receiver.recv().unwrap();
+        assert_eq!(action["type"], "shortcut-action");
+        assert_eq!(action["action"], "save-clip");
     }
 
     fn synthetic_context(session_id: &str, ice_servers: Value) -> Value {

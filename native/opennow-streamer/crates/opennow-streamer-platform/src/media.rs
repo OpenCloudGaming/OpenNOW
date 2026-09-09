@@ -90,10 +90,14 @@ impl RecordingTap {
     }
 
     fn publish(&self, frame: &EncodedFrame) {
-        let mut active = self
-            .sender
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Ok(mut active) = self.sender.try_lock() else {
+            self.overflowed.store(true, Ordering::Release);
+            return;
+        };
+        if self.overflowed.load(Ordering::Acquire) {
+            active.take();
+            return;
+        }
         let Some(sender) = active.as_ref() else {
             return;
         };
@@ -207,9 +211,9 @@ fn shortcut_virtual_key(value: &str) -> Option<u16> {
         "delete" | "del" => 0x2e,
         "home" => 0x24,
         "end" => 0x23,
-        "pageup" => 0x21,
-        "pagedown" => 0x22,
-        "printscreen" => 0x2a,
+        "pageup" | "pgup" => 0x21,
+        "pagedown" | "pgdown" => 0x22,
+        "printscreen" | "print" => 0x2a,
         "pause" => 0x13,
         _ => return None,
     })
@@ -224,6 +228,7 @@ pub enum StreamShortcutAction {
     ToggleAntiAfk,
     Screenshot,
     ToggleRecording,
+    SaveClip,
 }
 
 impl StreamShortcutAction {
@@ -236,13 +241,14 @@ impl StreamShortcutAction {
             Self::ToggleAntiAfk => "toggle-anti-afk",
             Self::Screenshot => "screenshot",
             Self::ToggleRecording => "toggle-recording",
+            Self::SaveClip => "save-clip",
         }
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StreamShortcutBindings {
-    bindings: [(StreamShortcutAction, Option<ShortcutChord>); 7],
+    bindings: [(StreamShortcutAction, Option<ShortcutChord>); 8],
 }
 
 impl StreamShortcutBindings {
@@ -284,6 +290,7 @@ impl StreamShortcutBindings {
                     StreamShortcutAction::ToggleRecording,
                     read("toggleRecording", "F12"),
                 ),
+                (StreamShortcutAction::SaveClip, read("saveClip", "Ctrl+F12")),
             ],
         }
     }
@@ -598,6 +605,7 @@ struct SharedPipeline {
     keyframe_requested: AtomicBool,
     stopped: AtomicBool,
     recording_tap: RecordingTap,
+    replay_tap: crate::replay::ReplayTap,
     stream: MediaStreamConfig,
     #[cfg(target_os = "macos")]
     mac_sink: Mutex<Option<opennow_streamer_platform_macos::StreamSink>>,
@@ -631,6 +639,7 @@ impl MediaSink {
         match frame.codec {
             MediaCodec::H264 | MediaCodec::H265 | MediaCodec::Av1 | MediaCodec::Opus { .. } => {
                 self.shared.recording_tap.publish(&frame);
+                self.shared.replay_tap.publish(&frame);
             }
             MediaCodec::Unsupported(_) => {}
         }
@@ -781,6 +790,7 @@ impl MediaSession {
             keyframe_requested: AtomicBool::new(false),
             stopped: AtomicBool::new(false),
             recording_tap: RecordingTap::default(),
+            replay_tap: crate::replay::ReplayTap::default(),
             stream,
             #[cfg(target_os = "macos")]
             mac_sink: Mutex::new(None),
@@ -857,6 +867,7 @@ impl MediaSession {
             keyframe_requested: AtomicBool::new(false),
             stopped: AtomicBool::new(false),
             recording_tap: RecordingTap::default(),
+            replay_tap: crate::replay::ReplayTap::default(),
             stream,
             mac_sink: Mutex::new(None),
             mac_software_fallback: AtomicBool::new(false),
@@ -938,6 +949,7 @@ impl MediaSession {
             keyframe_requested: AtomicBool::new(false),
             stopped: AtomicBool::new(false),
             recording_tap: RecordingTap::default(),
+            replay_tap: crate::replay::ReplayTap::default(),
             stream,
             linux_session: Mutex::new(Some(session)),
             linux_software_fallback: software_fallback,
@@ -1116,6 +1128,7 @@ impl MediaSession {
             keyframe_requested: AtomicBool::new(false),
             stopped: AtomicBool::new(false),
             recording_tap: RecordingTap::default(),
+            replay_tap: crate::replay::ReplayTap::default(),
             stream,
             linux_session: Mutex::new(Some(session)),
             linux_software_fallback: Arc::new(AtomicBool::new(false)),
@@ -1196,6 +1209,7 @@ impl MediaSession {
             keyframe_requested: AtomicBool::new(false),
             stopped: AtomicBool::new(false),
             recording_tap: RecordingTap::default(),
+            replay_tap: crate::replay::ReplayTap::default(),
             stream,
             mac_sink: Mutex::new(None),
             mac_software_fallback: AtomicBool::new(false),
@@ -1392,6 +1406,7 @@ impl MediaSession {
             keyframe_requested: AtomicBool::new(false),
             stopped: AtomicBool::new(false),
             recording_tap: RecordingTap::default(),
+            replay_tap: crate::replay::ReplayTap::default(),
             stream,
             windows_bridge: bridge,
         });
@@ -1571,6 +1586,7 @@ impl MediaSession {
             keyframe_requested: AtomicBool::new(false),
             stopped: AtomicBool::new(false),
             recording_tap: RecordingTap::default(),
+            replay_tap: crate::replay::ReplayTap::default(),
             stream,
             #[cfg(target_os = "macos")]
             mac_sink: Mutex::new(None),
@@ -2121,6 +2137,27 @@ impl crate::GraphicsFrame for PendingD3d11Frame {
 }
 
 impl MediaControl {
+    pub fn start_replay(
+        &self,
+        config: opennow_streamer_protocol::ReplayBufferConfig,
+        reserved: Arc<std::sync::atomic::AtomicUsize>,
+    ) {
+        self.shared.replay_tap.start_with_budget(config, reserved);
+    }
+
+    pub fn stop_replay(&self) {
+        self.shared.replay_tap.stop();
+    }
+
+    pub fn replay_snapshot(
+        &self,
+    ) -> Result<(MediaStreamConfig, crate::replay::ReplaySnapshot), &'static str> {
+        self.shared
+            .replay_tap
+            .snapshot()
+            .map(|snapshot| (self.shared.stream, snapshot))
+    }
+
     pub fn subscribe_recording(
         &self,
     ) -> Result<(MediaStreamConfig, EncodedRecordingReceiver), String> {
@@ -2145,6 +2182,7 @@ impl MediaControl {
         self.shared.video.close();
         self.shared.audio.close();
         self.shared.recording_tap.unsubscribe();
+        self.shared.replay_tap.stop();
         self.shared.output.stop_microphone();
         self.shared.output.clear();
         let _ = self.host_commands.send(HostCommand::Stop);
@@ -4038,6 +4076,66 @@ mod tests {
     }
 
     #[test]
+    fn replay_and_manual_recording_share_payloads_and_stop_independently() {
+        let recording = RecordingTap::default();
+        let receiver = recording.subscribe().unwrap();
+        let replay = crate::replay::ReplayTap::default();
+        replay.start(
+            opennow_streamer_protocol::ReplayBufferConfig::from_settings(
+                &serde_json::json!({"replayBufferEnabled":true}),
+            ),
+        );
+        let frame = EncodedFrame {
+            mid: "video".to_owned(),
+            codec: MediaCodec::H264,
+            data: Arc::from([0_u8, 0, 0, 1, 0x65]),
+            frame_index: Some(7),
+            timestamp: 90_000,
+            clock_rate_hz: 90_000,
+            keyframe: true,
+            contiguous: true,
+        };
+        recording.publish(&frame);
+        replay.publish(&frame);
+        let recorded = receiver.recv().unwrap();
+        let snapshot = replay.snapshot().unwrap();
+        assert!(Arc::ptr_eq(&recorded.data, &snapshot.frames[0].frame.data));
+        assert_eq!(recorded.timestamp, snapshot.frames[0].frame.timestamp);
+        replay.stop();
+        recording.publish(&frame);
+        assert_eq!(receiver.recv().unwrap().frame_index, Some(7));
+        assert!(recording.subscribe().is_err());
+        recording.unsubscribe();
+        assert!(receiver.recv().is_err());
+    }
+
+    #[test]
+    fn replay_shortcut_and_qt_portable_key_aliases_are_supported() {
+        assert_eq!(
+            StreamShortcutBindings::default().action(0x7b, 0x02),
+            Some(StreamShortcutAction::SaveClip)
+        );
+        assert_eq!(
+            StreamShortcutBindings::default().action(0x7b, 0),
+            Some(StreamShortcutAction::ToggleRecording)
+        );
+        assert_eq!(
+            StreamShortcutBindings::from_json(&serde_json::json!({"saveClip":"Alt+C"}))
+                .action(u16::from(b'C'), 0x04),
+            Some(StreamShortcutAction::SaveClip)
+        );
+        assert_eq!(StreamShortcutAction::SaveClip.protocol_name(), "save-clip");
+        for (portable, native) in [
+            ("Ctrl+PgUp", "Ctrl+PageUp"),
+            ("Alt+PgDown", "Alt+PageDown"),
+            ("Print", "PrintScreen"),
+        ] {
+            assert_eq!(ShortcutChord::parse(portable), ShortcutChord::parse(native));
+            assert!(ShortcutChord::parse(portable).is_some());
+        }
+    }
+
+    #[test]
     fn encoded_recording_tap_fails_closed_on_overflow() {
         let tap = RecordingTap::default();
         let receiver = tap.subscribe().expect("recording subscription");
@@ -4179,6 +4277,7 @@ mod tests {
             keyframe_requested: AtomicBool::new(false),
             stopped: AtomicBool::new(false),
             recording_tap: RecordingTap::default(),
+            replay_tap: crate::replay::ReplayTap::default(),
             stream: MediaStreamConfig::default(),
             #[cfg(target_os = "macos")]
             mac_sink: Mutex::new(None),

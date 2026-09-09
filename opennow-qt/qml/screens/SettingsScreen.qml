@@ -36,13 +36,10 @@ FocusScope {
         {name:"Input & controllers", icon:"settings-input.svg", color:Theme.mint},
         {name:"Network", icon:"settings-network.svg", color:Theme.coral},
         {name:"Themes", icon:"settings-themes.svg", color:Theme.face},
-        {name:"Advanced", icon:"settings-advanced.svg", color:"#252A35"}
+        {name:"Advanced", icon:"settings-advanced.svg", color:"#252A35"},
+        {name:qsTr("Recording"), icon:"settings-video.svg", color:Theme.coral}
     ]
-    readonly property var shortcutKeys: [
-        "shortcutToggleStats", "shortcutTogglePointerLock", "shortcutToggleFullscreen",
-        "shortcutStopStream", "shortcutToggleAntiAfk", "shortcutScreenshot",
-        "shortcutToggleRecording"
-    ]
+    DesktopSettingsShortcutBinding { id: shortcutBinding }
 
     function titleCase(value) {
         const words = String(value || "").split("-").join(" ").split("_").join(" ").split(" ")
@@ -64,7 +61,7 @@ FocusScope {
     }
 
     function shortcut(title, description, key) {
-        return {t:title, d:description, v:String(ShellStore.settings[key] || "Not set"), key:key, action:"shortcut-editor"}
+        return {t:title, d:description, v:shortcutBinding.value(key) || qsTr("Not set"), key:key, action:"shortcut-editor"}
     }
 
     function aspectForResolution(value) {
@@ -226,35 +223,6 @@ FocusScope {
             .arg(tier).arg(entitled[entitled.length - 1])
     }
 
-    function shortcutKeyName(key) {
-        if (key >= Qt.Key_F1 && key <= Qt.Key_F24)
-            return "F" + String(key - Qt.Key_F1 + 1)
-        if (key >= Qt.Key_A && key <= Qt.Key_Z)
-            return String.fromCharCode(65 + key - Qt.Key_A)
-        if (key >= Qt.Key_0 && key <= Qt.Key_9)
-            return String.fromCharCode(48 + key - Qt.Key_0)
-        switch (key) {
-        case Qt.Key_Return:
-        case Qt.Key_Enter: return "Enter"
-        case Qt.Key_Backspace: return "Backspace"
-        case Qt.Key_Tab: return "Tab"
-        case Qt.Key_Space: return "Space"
-        case Qt.Key_Left: return "Left"
-        case Qt.Key_Up: return "Up"
-        case Qt.Key_Right: return "Right"
-        case Qt.Key_Down: return "Down"
-        case Qt.Key_Insert: return "Insert"
-        case Qt.Key_Delete: return "Delete"
-        case Qt.Key_Home: return "Home"
-        case Qt.Key_End: return "End"
-        case Qt.Key_PageUp: return "PageUp"
-        case Qt.Key_PageDown: return "PageDown"
-        case Qt.Key_Print: return "PrintScreen"
-        case Qt.Key_Pause: return "Pause"
-        default: return ""
-        }
-    }
-
     function captureShortcut(event) {
         event.accepted = true
         if (event.isAutoRepeat)
@@ -263,38 +231,12 @@ FocusScope {
             shortcutEditorOpen = false
             return
         }
-        const keyName = shortcutKeyName(event.key)
-        if (keyName === "") {
-            shortcutEditorMessage = qsTr("Press a letter, number, function key, or navigation key.")
+        const result = shortcutBinding.validate(shortcutEditorKey, event)
+        if (result.error) {
+            shortcutEditorMessage = result.error
             return
         }
-        const modifiers = []
-        if (event.modifiers & Qt.ControlModifier)
-            modifiers.push("Ctrl")
-        if (event.modifiers & Qt.ShiftModifier)
-            modifiers.push("Shift")
-        if (event.modifiers & Qt.AltModifier)
-            modifiers.push("Alt")
-        if (event.modifiers & Qt.MetaModifier)
-            modifiers.push("Meta")
-        if ((keyName.length === 1) && modifiers.length === 0) {
-            shortcutEditorMessage = qsTr("Add Ctrl, Shift, Alt, or Meta to letter and number shortcuts.")
-            return
-        }
-        modifiers.push(keyName)
-        const chord = modifiers.join("+")
-        if (chord.toLowerCase() === "ctrl+g") {
-            shortcutEditorMessage = qsTr("Ctrl+G is reserved for the in-stream Guide.")
-            return
-        }
-        for (let index = 0; index < shortcutKeys.length; ++index) {
-            const otherKey = shortcutKeys[index]
-            if (otherKey !== shortcutEditorKey && String(ShellStore.settings[otherKey] || "").toLowerCase() === chord.toLowerCase()) {
-                shortcutEditorMessage = qsTr("That shortcut is already assigned.")
-                return
-            }
-        }
-        ShellStore.setSetting(shortcutEditorKey, chord)
+        ShellStore.setSetting(shortcutEditorKey, result.chord)
         shortcutEditorOpen = false
     }
 
@@ -406,7 +348,8 @@ FocusScope {
             rows.push(shortcut("Stop stream", "End the active GeForce NOW session", "shortcutStopStream"))
             rows.push(shortcut("Toggle anti-AFK", "Enable or disable the session activity helper", "shortcutToggleAntiAfk"))
             rows.push(shortcut("Screenshot", "Save the current decoded frame", "shortcutScreenshot"))
-            rows.push(shortcut("Toggle recording", "Start or stop lossless stream capture", "shortcutToggleRecording"))
+            rows.push(shortcut(qsTr("Toggle recording"), qsTr("Start or stop a source-quality recording during a stream."), "shortcutToggleRecording"))
+            rows.push(shortcut(qsTr("Save replay clip"), qsTr("Save the buffered video and audio. Requires the replay buffer to be enabled for this session."), "shortcutSaveClip"))
             return rows
         }
         if (root.selectedSection === 4) {
@@ -450,8 +393,21 @@ FocusScope {
                 toggle("Session report", "Show performance and recovery results after a session ends", "showSessionReport")
             ]
         }
+        if (root.selectedSection === 7) {
+            return [
+                {t:qsTr("Resolution, frame rate and quality"), d:qsTr("Capture follows the incoming stream resolution, frame rate and quality."), v:qsTr("Stream settings"), action:"stream-settings"},
+                {t:qsTr("Source-quality capture"), d:qsTr("Independent downscaling needs re-encoding, unavailable in low-overhead mode."), info:true},
+                {t:qsTr("Recording format"), d:qsTr("Source video and game audio in a Matroska (.mkv) file. No extra video encoder runs while you play."), v:"MKV", info:true},
+                {t:qsTr("Save location"), d:ShellStore.mediaRootPath ? ShellStore.mediaRootPath + "/Recordings" : qsTr("Pictures/OpenNOW/Recordings"), v:qsTr("Open folder"), action:"recordings-folder"},
+                toggle(qsTr("Enable replay buffer"), qsTr("Off by default. Enabling takes effect next session; disabling clears the buffer immediately."), "replayBufferEnabled"),
+                {t:qsTr("Replay duration"), d:qsTr("Target clip length. Memory limits and source keyframes may shorten clips or require waiting for a new keyframe. Changes apply next session."), key:"replayBufferSeconds", v:qsTr("%1 seconds").arg(settings.replayBufferSeconds || 30), values:[15,30,60,120], labels:[15,30,60,120].map(value => qsTr("%1 seconds").arg(value))},
+                {t:qsTr("Replay memory limit"), d:qsTr("Maximum memory for buffered media. Higher stream bitrates fill it sooner. Changes take effect next session."), key:"replayBufferMemoryMiB", v:qsTr("%1 MiB").arg(settings.replayBufferMemoryMiB || 256), values:[64,128,256,512], labels:[64,128,256,512].map(value => qsTr("%1 MiB").arg(value))},
+                shortcut(qsTr("Toggle recording"), qsTr("Start or stop a source-quality recording during a stream."), "shortcutToggleRecording"),
+                shortcut(qsTr("Save replay clip"), qsTr("Save the buffered video and audio. Requires the replay buffer to be enabled for this session."), "shortcutSaveClip")
+            ]
+        }
         return [
-            choice("Recording", "F12 clips · saved to ~/Videos/OpenNOW", "recordingResolution", ["720p","1080p","1440p"], ["720p · 30 FPS","1080p · 60 FPS","1440p · 60 FPS"], "segments"),
+            {t:qsTr("Recording"), d:qsTr("Capture, replay, shortcuts"), v:qsTr("Open"), action:"recording-settings"},
             {t:"Anti-AFK", d:"Nudge the session so GeForce NOW doesn't end it while idle", v:ShellStore.antiAfkEnabled ? "On" : "Off", control:"toggle", toggleState:ShellStore.antiAfkEnabled, action:"anti-afk"},
             choice(qsTr("Microphone"), ShellStore.microphoneCaptureSupported ? ShellStore.microphoneDescription : qsTr("Microphone capture is unavailable in this build."),
                 "microphoneMode", ["disabled", "voice-activity"], [qsTr("Disabled"), qsTr("Open microphone")], "segments",
@@ -523,6 +479,15 @@ FocusScope {
             ShellStore.setSetting(row.key, !Boolean(ShellStore.settings[row.key]))
         } else if (row.values) {
             openChoices(row)
+        } else if (row.action === "recording-settings") {
+            root.selectedSection = 7
+        } else if (row.action === "stream-settings") {
+            root.selectedSection = 1
+        } else if (row.action === "recordings-folder") {
+            if (ShellStore.mediaRootPath)
+                AppController.openLocalPath(ShellStore.mediaRootPath + "/Recordings", false)
+            else
+                ShellStore.refreshMedia()
         } else if (row.action === "refresh-regions") {
             ShellStore.refreshRegions()
         } else if (row.action === "refresh-streamer-capabilities") {
@@ -1011,6 +976,7 @@ FocusScope {
             id: shortcutCapture
             anchors.fill: parent
             focus: root.shortcutEditorOpen
+            Keys.onShortcutOverride: event => { event.accepted = true }
             Keys.onPressed: event => root.captureShortcut(event)
             Column {
                 anchors.fill: parent; anchors.margins: 28; spacing: 16
