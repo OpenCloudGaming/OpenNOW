@@ -719,6 +719,8 @@ mod tests {
                         command_buffer: Retained::as_ptr(&command).cast_mut().cast(),
                         upscale_width: 0,
                         upscale_height: 0,
+                        upscale_sharpness: 10,
+                        upscale_denoise: 0,
                     },
                     0,
                 )

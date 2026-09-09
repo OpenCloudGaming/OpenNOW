@@ -38,6 +38,10 @@ class StreamVideoItem : public QQuickItem
                    NOTIFY frameGenerationChanged)
     Q_PROPERTY(bool metalFxUpscaling READ metalFxUpscaling WRITE setMetalFxUpscaling
                    NOTIFY metalFxUpscalingChanged)
+    Q_PROPERTY(int upscalingSharpness READ upscalingSharpness WRITE setUpscalingSharpness
+                   NOTIFY upscalingSharpnessChanged)
+    Q_PROPERTY(int upscalingDenoise READ upscalingDenoise WRITE setUpscalingDenoise
+                   NOTIFY upscalingDenoiseChanged)
     Q_PROPERTY(QVariantMap frameGenerationStats READ frameGenerationStats
                    NOTIFY frameGenerationStatsChanged)
 
@@ -71,6 +75,10 @@ public:
     void setFrameGeneration(bool enabled);
     bool metalFxUpscaling() const;
     void setMetalFxUpscaling(bool enabled);
+    int upscalingSharpness() const;
+    void setUpscalingSharpness(int value);
+    int upscalingDenoise() const;
+    void setUpscalingDenoise(int value);
     QVariantMap frameGenerationStats() const;
 
     static void setNativeStreamRuntime(NativeStreamRuntime *runtime);
@@ -108,6 +116,8 @@ signals:
     void shortcutBindingsChanged();
     void frameGenerationChanged();
     void metalFxUpscalingChanged();
+    void upscalingSharpnessChanged();
+    void upscalingDenoiseChanged();
     void frameGenerationStatsChanged();
     void localShortcutRequested(const QString &action);
 
@@ -136,6 +146,7 @@ private:
     };
 
     void applyRemoteCursor(const QByteArray &bytes);
+    void resetRemoteCursor();
     void setRemoteCursorShape(const QCursor &cursor);
     void updateLocalCursor();
     void syncCaptureState();
@@ -164,6 +175,8 @@ private:
     bool m_inputEnabled = true;
     bool m_frameGeneration = false;
     bool m_metalFxUpscaling = false;
+    int m_upscalingSharpness = 10;
+    int m_upscalingDenoise = 0;
     QTimer m_frameStatsTimer;
     QMetaObject::Connection m_frameSwapConnection;
     QMetaObject::Connection m_frameUpdateConnection;
@@ -172,6 +185,7 @@ private:
     bool m_rawInputActive = false;
     bool m_cursorConfined = false;
     bool m_remoteCursorKnown = false;
+    bool m_serverCursorComposited = true;
     bool m_remoteCursorVisible = false;
     QCursor m_remoteCursor;
     std::optional<bool> m_pendingRelativeMouse;

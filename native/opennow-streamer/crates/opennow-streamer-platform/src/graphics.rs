@@ -59,6 +59,8 @@ pub struct GraphicsRecordCommand {
     pub frame_slot: u32,
     pub upscale_width: u32,
     pub upscale_height: u32,
+    pub upscale_sharpness: u32,
+    pub upscale_denoise: u32,
 }
 
 impl GraphicsRecordCommand {
@@ -74,6 +76,11 @@ impl GraphicsRecordCommand {
         {
             return Err(GraphicsRuntimeError::InvalidRenderCommand(
                 "upscale dimensions must both be zero or between 1 and 16384",
+            ));
+        }
+        if self.upscale_sharpness > 15 || self.upscale_denoise > 20 {
+            return Err(GraphicsRuntimeError::InvalidRenderCommand(
+                "upscale sharpness must be between 0 and 15 and denoise between 0 and 20",
             ));
         }
         Ok(self)
@@ -250,6 +257,8 @@ impl GraphicsFrame for opennow_streamer_platform_macos::MetalFrame {
                     command_buffer: command.command_buffer as *mut std::ffi::c_void,
                     upscale_width: command.upscale_width,
                     upscale_height: command.upscale_height,
+                    upscale_sharpness: command.upscale_sharpness,
+                    upscale_denoise: command.upscale_denoise,
                 },
                 command.frame_slot,
             )
@@ -832,6 +841,8 @@ mod tests {
             frame_slot: 7,
             upscale_width: 0,
             upscale_height: 0,
+            upscale_sharpness: 10,
+            upscale_denoise: 0,
         }
     }
 
@@ -852,6 +863,29 @@ mod tests {
                 ..command()
             };
             assert_eq!(request.validate().is_ok(), valid, "{width}x{height}");
+        }
+    }
+
+    #[test]
+    fn upscale_controls_are_bounded_even_when_scaling_is_disabled() {
+        for (sharpness, denoise, valid) in [
+            (0, 0, true),
+            (10, 0, true),
+            (15, 20, true),
+            (16, 0, false),
+            (0, 21, false),
+            (u32::MAX, u32::MAX, false),
+        ] {
+            for (width, height) in [(0, 0), (2560, 1440)] {
+                let request = GraphicsRecordCommand {
+                    upscale_width: width,
+                    upscale_height: height,
+                    upscale_sharpness: sharpness,
+                    upscale_denoise: denoise,
+                    ..command()
+                };
+                assert_eq!(request.validate().is_ok(), valid);
+            }
         }
     }
 

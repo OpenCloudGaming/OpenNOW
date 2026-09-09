@@ -42,18 +42,33 @@ overflow, without discarding status or response callbacks. The shell owns
 physical-device routing and shutdown. Individual rumble events are
 not logged on the high-frequency callback path.
 
-### Optional MetalFX spatial upscaling (ABI 7, render command 2)
+### Optional MetalFX spatial upscaling (ABI 8, render command 3)
 
-ABI 7 requires rebuilding the Qt shell and native runtime together. Version 2 of
-`OpenNowStreamerRecordCommand` appends `upscale_width` and `upscale_height`.
-Set both to zero for normal scaling. On Metal, nonzero values request spatial
+ABI 8 requires rebuilding the Qt shell and native runtime together. Version 3 of
+`OpenNowStreamerRecordCommand` appends `upscale_sharpness` and `upscale_denoise`
+after the version-2 `upscale_width` and `upscale_height` fields. Earlier command
+versions and truncated layouts are rejected. Initialize sharpness to 10 and denoise
+to 0; valid inclusive ranges are 0–15 and 0–20 respectively. Invalid controls are
+rejected even when scaling is disabled. Other graphics backends ignore valid controls.
+Set both target dimensions to zero for normal scaling. On Metal, nonzero dimensions request spatial
 MetalFX at the video viewport's physical pixel size, excluding letterboxing.
 Dimensions must both be zero or each be in `1..=16384`. Other graphics backends
 ignore the target. Unsupported MetalFX configurations fall back to the original
 converted texture without stopping the session.
 
 The Mac producer encodes scaling after YUV-to-RGB conversion in the same borrowed
-command buffer. The returned texture dimensions describe the actual output;
+command buffer. Clarity and denoise filter source-resolution RGB in that conversion
+pass, before MetalFX; they are not MetalFX descriptor settings. The four cardinal
+neighbors form `blur`, with `sharpness = value / 10` and
+`denoise = min(value / 10 * 0.65, 1)`. The shader computes
+`denoised = mix(center, blur, denoise)`, then clamps
+`denoised + (denoised - blur) * sharpness` to 0–1, matching OpenNOW-Mac's native
+spatial shader. Zero controls skip the neighborhood samples. Changes update
+uniforms without rebuilding the scaler or restarting the session.
+New control values apply when the next decoded frame is recorded; a retained output
+keeps its existing processing until that frame arrives. Token ownership and the
+single-record contract remain unchanged.
+The returned texture dimensions describe the actual output;
 `OpenNowStreamerFrameInfo` still describes the decoded source. Source sequence,
 timestamps, color precision, frame-slot ownership, and scene-graph retirement
 remain unchanged. Qt must refresh the target after resize, fullscreen, or display

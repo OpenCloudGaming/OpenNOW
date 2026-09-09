@@ -74,6 +74,40 @@ Column {
             }
         }
         DesktopSettingsRow {
+            id: clarityRow
+            objectName: "upscalingSharpnessRow"
+            visible: Qt.platform.os === "osx"
+            enabled: page.settingsScreen.valueSetting("upscaling", "off") === "metalfx"
+            opacity: enabled ? 1 : 0.45
+            width: parent.width; paperStyle: true; glyph: "sun"; title: qsTr("Clarity")
+            description: qsTr("Sharpen details before MetalFX upscaling. Set to 0 to disable.")
+            DesktopSettingsSlider {
+                objectName: "upscalingSharpnessSlider"
+                accessibleName: qsTr("Clarity")
+                trackWidth: Math.max(DesktopTokens.px(160), clarityRow.width - DesktopTokens.px(460))
+                from: 0; to: 15; stepSize: 1; suffix: ""
+                value: Number(page.settingsScreen.valueSetting("upscalingSharpness", 10))
+                onCommitted: value => page.settingsScreen.setSetting("upscalingSharpness", Math.round(value))
+            }
+        }
+        DesktopSettingsRow {
+            id: denoiseRow
+            objectName: "upscalingDenoiseRow"
+            visible: Qt.platform.os === "osx"
+            enabled: page.settingsScreen.valueSetting("upscaling", "off") === "metalfx"
+            opacity: enabled ? 1 : 0.45
+            width: parent.width; paperStyle: true; glyph: "drop"; title: qsTr("Noise Reduction")
+            description: qsTr("Smooth noise before MetalFX upscaling. Set to 0 to disable.")
+            DesktopSettingsSlider {
+                objectName: "upscalingDenoiseSlider"
+                accessibleName: qsTr("Noise Reduction")
+                trackWidth: Math.max(DesktopTokens.px(160), denoiseRow.width - DesktopTokens.px(460))
+                from: 0; to: 20; stepSize: 1; suffix: ""
+                value: Number(page.settingsScreen.valueSetting("upscalingDenoise", 0))
+                onCommitted: value => page.settingsScreen.setSetting("upscalingDenoise", Math.round(value))
+            }
+        }
+        DesktopSettingsRow {
             width: parent.width; paperStyle: true; glyph: "sun"; title: qsTr("HDR")
             description: HdrOutput.supported && !ShellStore.hdrDecoderAvailable()
                 ? qsTr("HDR requires a supported 10-bit H.265 or AV1 hardware decoder.") : HdrOutput.status

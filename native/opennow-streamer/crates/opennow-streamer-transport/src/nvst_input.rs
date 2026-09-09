@@ -444,7 +444,7 @@ pub(crate) fn server_cursor_messages(bytes: &[u8]) -> Vec<NvstServerCursorMessag
                     normalized,
                 });
             }
-            COMMAND_BITMAP_CURSOR => {
+            COMMAND_BITMAP_CURSOR if payload.len() >= 8 => {
                 // Bitmap cursor payloads have a distinct native pixel layout.
                 // Keep detecting them explicitly so they cannot be mistaken for
                 // input/control commands while raw bitmap support is added.

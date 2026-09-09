@@ -113,6 +113,7 @@ struct NativeStreamRuntime::CallbackState final
 
     std::mutex mutex;
     QQueue<Message> pending;
+    QByteArray cursorCapture;
     QPointer<NativeStreamRuntime> target;
     int dropped = 0;
     bool accepting = true;
@@ -143,6 +144,8 @@ struct NativeStreamRuntime::Private {
     std::atomic_bool presentationAllowed{false};
     std::atomic_bool inputAllowed{false};
     bool inputAuthorizationPending = false;
+    bool serverCursorComposited = true;
+    QString cursorStartId;
     QString presentationStartId;
     QString rumbleStartId;
     quint64 rumbleStartEpoch = 0;
@@ -198,6 +201,7 @@ NativeStreamRuntime::~NativeStreamRuntime()
         callbacks->accepting = false;
         callbacks->target.clear();
         callbacks->pending.clear();
+        callbacks->cursorCapture.clear();
         callbacks->framePending = false;
     }
     new std::shared_ptr<CallbackState>(std::move(callbacks));
@@ -235,6 +239,7 @@ void NativeStreamRuntime::invalidatePresentation()
     d->presentationGeneration.fetch_add(1, std::memory_order_acq_rel);
     d->presentationStartId.clear();
     d->rumbleStartId.clear();
+    d->cursorStartId.clear();
     emit controllerRumbleStopped();
     emit frameAvailable(); // Repaint even when the dead transport sends no more frames.
 }
@@ -320,6 +325,11 @@ bool NativeStreamRuntime::start()
     return true;
 }
 
+bool NativeStreamRuntime::serverCursorComposited() const
+{
+    return d->serverCursorComposited;
+}
+
 bool NativeStreamRuntime::send(const QJsonObject &command)
 {
     return sendBytes(QJsonDocument(command).toJson(QJsonDocument::Compact));
@@ -362,14 +372,17 @@ bool NativeStreamRuntime::sendBytes(const QByteArray &command)
     if (type == u"start"_s || type == u"stop"_s) {
         invalidatePresentation();
         if (type == u"start"_s) {
+            d->serverCursorComposited = true;
             d->firstNotification = false;
             d->presentationStartId = object.value(u"id"_s).toString();
+            d->cursorStartId = d->presentationStartId;
             d->rumbleStartId = d->presentationStartId;
             if (d->callbackState) {
                 const std::lock_guard lock(d->callbackState->mutex);
                 d->rumbleStartEpoch = d->callbackState->rumbleEpoch;
             }
             d->inputAuthorizationPending = true;
+            emit cursorStateReset();
         }
     }
     setLastError({});
@@ -641,19 +654,28 @@ void NativeStreamRuntime::enqueueCallback(CallbackState *state, const std::uint8
         return;
     }
 
+    const QByteArray payload(reinterpret_cast<const char *>(bytes), static_cast<qsizetype>(length));
+    bool cursorCapture = false;
+    if (event && payload.size() <= 1024 && payload.contains("\"cursor-capture\"")) {
+        const auto object = QJsonDocument::fromJson(payload).object();
+        cursorCapture = object.value(u"type"_s) == u"cursor-capture"_s
+            && object.value(u"composited"_s).isBool()
+            && object.value(u"startId"_s).isString();
+    }
     const auto sharedState = state->shared_from_this();
     bool shouldSchedule = false;
     {
         const std::lock_guard lock(state->mutex);
         if (!state->accepting) return;
-        if (state->pending.size() >= MaximumPendingCallbacks) {
+        if (cursorCapture) {
+            state->cursorCapture = payload;
+        } else if (state->pending.size() >= MaximumPendingCallbacks) {
             ++state->dropped;
             ++state->rumbleEpoch;
             return;
+        } else {
+            state->pending.enqueue({payload, event, false, state->rumbleEpoch});
         }
-        state->pending.enqueue(
-            {QByteArray(reinterpret_cast<const char *>(bytes), static_cast<qsizetype>(length)),
-             event, false, state->rumbleEpoch});
         if (!state->drainScheduled) {
             state->drainScheduled = true;
             shouldSchedule = true;
@@ -693,6 +715,7 @@ void NativeStreamRuntime::scheduleDrain(const std::shared_ptr<CallbackState> &st
     const std::lock_guard lock(state->mutex);
     state->drainScheduled = false;
     state->pending.clear();
+    state->cursorCapture.clear();
 }
 
 void NativeStreamRuntime::drainCallbacks(const std::shared_ptr<CallbackState> &state)
@@ -710,6 +733,9 @@ void NativeStreamRuntime::drainCallbacks(const std::shared_ptr<CallbackState> &s
     {
         const std::lock_guard lock(state->mutex);
         constexpr qsizetype BatchSize = 64;
+        if (!state->cursorCapture.isEmpty()) {
+            messages.enqueue({std::exchange(state->cursorCapture, {}), true});
+        }
         while (!state->pending.isEmpty() && messages.size() < BatchSize)
             messages.enqueue(state->pending.dequeue());
         dropped = std::exchange(state->dropped, 0);
@@ -752,6 +778,16 @@ void NativeStreamRuntime::drainCallbacks(const std::shared_ptr<CallbackState> &s
         }
         const auto kind = document.object().value(u"type"_s).toString();
         const auto status = document.object().value(u"status"_s).toString();
+        if (message.event && kind == u"cursor-capture"_s) {
+            if (d->cursorStartId.isEmpty()
+                || document.object().value(u"startId"_s).toString() != d->cursorStartId) continue;
+            const auto composited = document.object().value(u"composited"_s);
+            if (composited.isBool() && d->serverCursorComposited != composited.toBool()) {
+                d->serverCursorComposited = composited.toBool();
+                emit cursorCaptureChanged(d->serverCursorComposited);
+                if (!current()) return;
+            }
+        }
         if (message.event && kind == u"controller-rumble"_s) {
             const auto object = document.object();
             if (message.rumbleEpoch != rumbleEpoch || !inputAllowed() || d->rumbleStartId.isEmpty()

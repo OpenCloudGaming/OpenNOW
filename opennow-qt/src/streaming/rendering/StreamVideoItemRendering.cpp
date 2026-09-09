@@ -28,6 +28,8 @@ public:
                 m_window->screen() ? m_window->screen()->refreshRate() : 0.0);
         m_viewport = StreamVideoItem::aspectFitRect(item->videoSize(), m_bounds.size().toSize());
         m_metalFxUpscaling = item->metalFxUpscaling() && item->isVisible();
+        if (m_callback)
+            m_callback->setUpscalingEnhancement(item->upscalingSharpness(), item->upscalingDenoise());
         markDirty(QSGNode::DirtyGeometry | QSGNode::DirtyMaterial);
     }
 

@@ -52,7 +52,7 @@ CloudMatch receives `sdrHdrMode=1`, `trueHdr=true`, and requested-content lumina
 
 Decoder metadata carries transfer function, primaries, matrix, range, and supported chroma location. Explicit metadata takes precedence over negotiated defaults; unspecified fields use those defaults. Unsupported combinations and precision-losing paths fail explicitly. Pixel depth alone never selects an HDR transfer function.
 
-FFI ABI 6 publishes the texture format and encoded RGB color space separately. Windows publishes PQ BT.2020 in RGB10A2; Linux preserves PQ/HLG BT.2020 in RGBA16F. Qt performs the transfer-function and gamut conversion for the actual output. HDR/SDR changes retain per-frame metadata and bounded GPU resource ownership. Build and deploy the Qt shell and native streamer together; an older ABI is rejected.
+The texture format and encoded RGB color space are separate fields introduced in FFI ABI 6 and retained in the current ABI 8. Windows publishes PQ BT.2020 in RGB10A2; Linux preserves PQ/HLG BT.2020 in RGBA16F. Qt performs the transfer-function and gamut conversion for the actual output. HDR/SDR changes retain per-frame metadata and bounded GPU resource ownership. Build and deploy the Qt shell and native streamer together; an older ABI is rejected.
 
 Ten-bit SDR is preserved independently: Windows, Linux, and macOS publish RGB10A2 for supported ten-bit SDR decode instead of first reducing it to RGBA8. When the final Qt output is eight-bit SDR, ordered dithering is applied after color conversion and any HDR-to-SDR tone mapping. Linear HDR output is neither SDR-clamped nor eight-bit dithered.
 
