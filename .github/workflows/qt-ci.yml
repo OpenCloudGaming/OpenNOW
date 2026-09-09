@@ -67,17 +67,17 @@ jobs:
       matrix:
         include:
           - label: linux-x64
-            os: blacksmith-4vcpu-ubuntu-2404
+            os: blacksmith-8vcpu-ubuntu-2404
             qt-host: linux
             qt-arch: linux_gcc_64
             target-arch: x64
-            parallel: "4"
+            parallel: "8"
           - label: windows-x64
-            os: blacksmith-4vcpu-windows-2025
+            os: blacksmith-8vcpu-windows-2025
             qt-host: windows
             qt-arch: win64_msvc2022_64
             target-arch: x64
-            parallel: "4"
+            parallel: "8"
           - label: macos-arm64
             os: blacksmith-6vcpu-macos-15
             qt-host: mac
@@ -86,7 +86,6 @@ jobs:
             parallel: "3"
     env:
       CARGO_TERM_COLOR: always
-      CARGO_BUILD_JOBS: ${{ matrix.parallel }}
       OPENNOW_CHECKOUT: ${{ matrix.label == 'windows-x64' && 'O:/' || github.workspace }}
       MACOSX_DEPLOYMENT_TARGET: ${{ matrix.label == 'macos-arm64' && '13.0' || '' }}
     steps:
@@ -107,7 +106,7 @@ jobs:
   build:
     name: Manual packages
     if: github.event_name == 'workflow_dispatch'
-    needs: [contracts, checks]
+    needs: contracts
     uses: ./.github/workflows/qt-build.yml
     with:
       upload_complete: ${{ github.event_name == 'workflow_dispatch' }}
@@ -115,7 +114,7 @@ jobs:
   publish-nightly:
     name: Publish unsigned nightly prerelease
     if: github.event_name == 'workflow_dispatch' && inputs.publish_nightly
-    needs: build
+    needs: [contracts, checks, build]
     runs-on: blacksmith-2vcpu-ubuntu-2404
     permissions:
       contents: write

@@ -77,12 +77,16 @@ runs:
     - name: Lint Rust
       shell: bash
       working-directory: ${{ env.OPENNOW_CHECKOUT }}
+      env:
+        CARGO_BUILD_JOBS: ${{ inputs.parallel }}
       run: |
         cargo clippy --locked --manifest-path native/opennow-core/Cargo.toml --all-targets -- -D warnings
         cargo clippy --locked --manifest-path native/opennow-streamer/Cargo.toml --workspace --all-targets -- -D warnings
     - name: Test Rust
       shell: bash
       working-directory: ${{ env.OPENNOW_CHECKOUT }}
+      env:
+        CARGO_BUILD_JOBS: ${{ inputs.parallel }}
       run: |
         cargo test --locked --manifest-path native/opennow-core/Cargo.toml
         cargo test --locked --manifest-path native/opennow-streamer/Cargo.toml --workspace

@@ -50,7 +50,7 @@ jobs:
         include:
           - label: linux-x64
             os: blacksmith-8vcpu-ubuntu-2404
-            build-parallel: 6
+            build-parallel: 8
             qt-host: linux
             qt-arch: linux_gcc_64
             package-generator: DEB
@@ -62,7 +62,7 @@ jobs:
             appimage-runtime-sha256: 2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d
           - label: linux-arm64
             os: blacksmith-8vcpu-ubuntu-2404-arm
-            build-parallel: 6
+            build-parallel: 8
             qt-host: linux_arm64
             qt-arch: linux_gcc_arm64
             package-generator: DEB
