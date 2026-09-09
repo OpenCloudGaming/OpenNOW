@@ -804,7 +804,7 @@ fn defaults() -> Map<String, Value> {
         "desktopRailCollapsed":true, "desktopSidebarHover":true, "desktopBackground":"art",
         "desktopBackgroundImage":"", "desktopBackgroundOpacity":30,
         "switchToConsoleOnPad":false, "leaveConsoleOnPointer":true,
-        "autoFullScreen":false, "favoriteGameIds":[], "hiddenGameIds":[], "gameCollections":[], "homeTileSizes":{}, "sessionCounterEnabled":false,
+        "autoFullScreen":true, "favoriteGameIds":[], "hiddenGameIds":[], "gameCollections":[], "homeTileSizes":{}, "sessionCounterEnabled":false,
         "showSessionReport":true, "showSessionTimeRemainingInStatsOverlay":false,
         "sessionClockShowEveryMinutes":60, "sessionClockShowDurationSeconds":30,
         "windowWidth":1400, "windowHeight":900, "keyboardLayout":"en-US",
@@ -1394,6 +1394,28 @@ mod tests {
         assert_eq!(store.all()["desktopBackground"], json!("art"));
         assert_eq!(store.all()["desktopBackgroundImage"], json!(""));
         assert_eq!(store.all()["desktopBackgroundOpacity"], json!(30));
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn automatic_fullscreen_defaults_on_and_preserves_opt_out() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = env::temp_dir().join(format!("opennow-fullscreen-settings-{unique}"));
+        let mut store = SettingsStore::load(Some(directory.clone())).unwrap();
+        assert_eq!(store.all()["autoFullScreen"], json!(true));
+        store.set("autoFullScreen", json!(false)).unwrap();
+        let mut loaded = SettingsStore::load(Some(directory.clone())).unwrap();
+        assert_eq!(loaded.all()["autoFullScreen"], json!(false));
+        loaded.reset().unwrap();
+        assert_eq!(loaded.all()["autoFullScreen"], json!(true));
+        fs::write(directory.join("settings.json"), r#"{"fps":60}"#).unwrap();
+        assert_eq!(
+            SettingsStore::load(Some(directory.clone())).unwrap().all()["autoFullScreen"],
+            json!(true)
+        );
         fs::remove_dir_all(directory).unwrap();
     }
 
