@@ -42,8 +42,9 @@ public:
 
     QString setHidden(bool hidden) override
     {
-        return hidden ? cgError("CGDisplayHideCursor", CGDisplayHideCursor(kCGDirectMainDisplay))
-                      : cgError("CGDisplayShowCursor", CGDisplayShowCursor(kCGDirectMainDisplay));
+        if (hidden) [NSCursor hide];
+        else [NSCursor unhide];
+        return {};
     }
 
     QString startMotion(QWindow *window, std::function<void(QPointF)> callback) override
