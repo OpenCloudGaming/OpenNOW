@@ -45,12 +45,16 @@ jobs:
           set -euo pipefail
           [[ "$RELEASE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
           [[ "$SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          if [[ "$SOURCE_COMMIT" != "$GITHUB_SHA" ]]; then
+            echo "Dispatch this workflow from a branch or tag pointing to source_commit." >&2
+            exit 1
+          fi
           [[ $(printf '%s' "$UPDATE_PUBLIC_KEY" | base64 --decode | wc -c) -eq 32 ]]
 
       - name: Resolve immutable source
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.source_commit }}
+          ref: ${{ github.sha }}
           fetch-depth: 0
 
       - name: Record source commit
@@ -89,7 +93,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ needs.preflight.outputs.source_sha }}
+          ref: ${{ github.sha }}
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -129,22 +133,12 @@ jobs:
           key: qt-release-${{ matrix.runner }}-${{ matrix.arch }}
           max-size: 500M
 
-      - name: Cache SDL3 installation
-        id: sdl-cache
-        uses: actions/cache@v4
+      - name: Build and cache SDL3
+        uses: ./.github/actions/sdl3
         with:
-          path: ${{ runner.temp }}/SDL-install
-          key: qt-release-sdl-v1-${{ matrix.runner }}-${{ matrix.arch }}-${{ env.SDL_VERSION }}-${{ hashFiles('.github/workflows/qt-release-candidate.yml') }}
-
-      - name: Build SDL3
-        if: steps.sdl-cache.outputs.cache-hit != 'true'
-        shell: bash
-        run: |
-          git clone --depth 1 --branch "$SDL_VERSION" https://github.com/libsdl-org/SDL.git "$RUNNER_TEMP/SDL"
-          cmake -S "$RUNNER_TEMP/SDL" -B "$RUNNER_TEMP/SDL-build" -DCMAKE_BUILD_TYPE=Release \
-            -DSDL_SHARED=ON -DSDL_STATIC=OFF -DSDL_TEST_LIBRARY=OFF -DSDL_TESTS=OFF
-          cmake --build "$RUNNER_TEMP/SDL-build" --config Release --parallel 6
-          cmake --install "$RUNNER_TEMP/SDL-build" --config Release --prefix "$RUNNER_TEMP/SDL-install"
+          version: ${{ env.SDL_VERSION }}
+          target-arch: ${{ matrix.arch }}
+          parallel: 6
 
       - name: Configure, build, and test release
         shell: bash
@@ -229,8 +223,10 @@ jobs:
   windows:
     name: windows-${{ matrix.arch }}
     needs: preflight
-    runs-on: blacksmith-4vcpu-windows-2025
+    runs-on: blacksmith-8vcpu-windows-2025
     environment: qt-production-release
+    env:
+      CARGO_BUILD_JOBS: 4
     strategy:
       fail-fast: false
       matrix:
@@ -246,7 +242,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ needs.preflight.outputs.source_sha }}
+          ref: ${{ github.sha }}
+
+      - name: Map stable Windows workspace
+        shell: pwsh
+        run: .github/scripts/map-windows-workspace.ps1
 
       - name: Enable Windows Media Foundation
         shell: pwsh
@@ -277,6 +277,14 @@ jobs:
       - uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: ${{ matrix.arch == 'arm64' && 'amd64_arm64' || 'x64' }}
+
+      - name: Pin the Windows x64 Rust linker
+        if: matrix.arch == 'x64'
+        shell: pwsh
+        run: |
+          $linker = Join-Path $env:VCToolsInstallDir "bin\Hostx64\x64\link.exe"
+          if (-not (Test-Path $linker)) { throw "The MSVC x64 linker is unavailable." }
+          "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=$linker" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Install LLVM
         shell: pwsh
@@ -334,27 +342,21 @@ jobs:
           key: qt-release-windows-2025-${{ matrix.arch }}
           cache-bin: false
           workspaces: |
-            native/opennow-core -> ../../build/qt-release/rust-target
-            native/opennow-streamer -> ../../build/qt-release/streamer-rust-target
+            native/opennow-core -> ../../build/opennow-qt-release/rust-target
+            native/opennow-streamer -> ../../build/opennow-qt-release/streamer-rust-target
 
-      - name: Cache SDL3 installation
-        id: sdl-cache
-        uses: actions/cache@v4
+      - name: Cache Qt C++ compilation
+        uses: hendrikmuhs/ccache-action@5ebbd400eff9e74630f759d94ddd7b6c26299639
         with:
-          path: ${{ runner.temp }}/SDL-install
-          key: qt-release-sdl-v1-windows-2025-${{ matrix.arch }}-${{ env.SDL_VERSION }}-${{ hashFiles('.github/workflows/qt-release-candidate.yml') }}
+          key: qt-release-windows-2025-${{ matrix.arch }}
+          max-size: 1G
 
-      - name: Build SDL3
-        if: steps.sdl-cache.outputs.cache-hit != 'true'
-        shell: bash
-        run: |
-          git clone --depth 1 --branch "$SDL_VERSION" https://github.com/libsdl-org/SDL.git "$RUNNER_TEMP/SDL"
-          args=()
-          if [[ -n "${{ matrix.cmake_arch }}" ]]; then args+=("-A" "${{ matrix.cmake_arch }}"); fi
-          cmake -S "$RUNNER_TEMP/SDL" -B "$RUNNER_TEMP/SDL-build" -DCMAKE_BUILD_TYPE=Release \
-            -DSDL_SHARED=ON -DSDL_STATIC=OFF -DSDL_TEST_LIBRARY=OFF -DSDL_TESTS=OFF "${args[@]}"
-          cmake --build "$RUNNER_TEMP/SDL-build" --config Release --parallel
-          cmake --install "$RUNNER_TEMP/SDL-build" --config Release --prefix "$RUNNER_TEMP/SDL-install"
+      - name: Build and cache SDL3
+        uses: ./.github/actions/sdl3
+        with:
+          version: ${{ env.SDL_VERSION }}
+          target-arch: ${{ matrix.arch }}
+          parallel: 8
 
       - name: Configure and build release
         shell: bash
@@ -362,20 +364,39 @@ jobs:
           RELEASE_VERSION: ${{ inputs.version }}
           UPDATE_PUBLIC_KEY: ${{ inputs.update_public_key }}
         run: |
-          args=()
-          if [[ -n "${{ matrix.cmake_arch }}" ]]; then args+=("-A" "${{ matrix.cmake_arch }}"); fi
+          cd /o
+          args=(-G "Ninja Multi-Config" -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl)
+          if [[ "${{ matrix.cmake_arch }}" == ARM64 ]]; then
+            args+=(-DCMAKE_SYSTEM_NAME=Windows -DCMAKE_SYSTEM_PROCESSOR=ARM64)
+          fi
           if [[ -n "${{ matrix.rust_target }}" ]]; then args+=("-DOPENNOW_RUST_TARGET=${{ matrix.rust_target }}"); fi
           if [[ -n "${OPENNOW_QT_HOST_PATH:-}" ]]; then args+=("-DQT_HOST_PATH=${OPENNOW_QT_HOST_PATH}"); fi
-          cmake -S opennow-qt -B build/qt-release -DCMAKE_BUILD_TYPE=Release \
+          cmake -S opennow-qt -B build/opennow-qt-release -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
             -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/SDL-install" \
             -DOPENNOW_BUILD_VERSION="$RELEASE_VERSION" \
             -DOPENNOW_UPDATE_ED25519_PUBLIC_KEY="$UPDATE_PUBLIC_KEY" "${args[@]}"
-          cmake --build build/qt-release --config Release --parallel
+          cmake --build build/opennow-qt-release --config Release --parallel 8
 
-      - name: Test native x64 release
+      - name: Bundle Windows desktop tests
         if: matrix.arch == 'x64'
         shell: bash
-        run: ctest --test-dir build/qt-release -C Release --output-on-failure --parallel 4
+        env:
+          SOURCE_SHA: ${{ needs.preflight.outputs.source_sha }}
+        run: |
+          python .github/scripts/windows-test-bundle.py pack \
+            --build O:/build/opennow-qt-release --output "$RUNNER_TEMP/windows-tests.zip" \
+            --revision "$SOURCE_SHA"
+
+      - name: Upload Windows desktop tests
+        if: matrix.arch == 'x64'
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-release-x64-tests
+          path: ${{ runner.temp }}/windows-tests.zip
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
 
       - name: Authenticode-sign application binaries
         shell: pwsh
@@ -387,7 +408,7 @@ jobs:
           . ./opennow-qt/packaging/windows-release.ps1
           $pfx = Join-Path $env:RUNNER_TEMP "opennow-signing.pfx"
           [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_PFX_BASE64))
-          $files = @(Get-OpenNowReleaseBinaries -Root build/qt-release/Release)
+          $files = @(Get-OpenNowReleaseBinaries -Root build/opennow-qt-release/Release)
           foreach ($file in $files) {
             Invoke-OpenNowSignTool sign /f $pfx /p $env:WINDOWS_PFX_PASSWORD /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 $file.FullName
             Invoke-OpenNowSignTool verify /pa /all $file.FullName
@@ -402,9 +423,9 @@ jobs:
           $ErrorActionPreference = "Stop"
           . ./opennow-qt/packaging/windows-release.ps1
           New-Item -ItemType Directory -Force build/release-artifacts | Out-Null
-          cpack --config build/qt-release/CPackConfig.cmake -C Release -G WIX -B build/release-artifacts
+          cpack --config build/opennow-qt-release/CPackConfig.cmake -C Release -G WIX -B build/release-artifacts
           if ($LASTEXITCODE -ne 0) { throw "MSI packaging failed with exit code $LASTEXITCODE" }
-          cpack --config build/qt-release/CPackConfig.cmake -C Release -G ZIP -B build/release-artifacts
+          cpack --config build/opennow-qt-release/CPackConfig.cmake -C Release -G ZIP -B build/release-artifacts
           if ($LASTEXITCODE -ne 0) { throw "ZIP packaging failed with exit code $LASTEXITCODE" }
           $pfx = Join-Path $env:RUNNER_TEMP "opennow-signing.pfx"
           $msi = Get-ChildItem build/release-artifacts -Filter *.msi
@@ -414,12 +435,12 @@ jobs:
           $msiExpanded = Join-Path $env:RUNNER_TEMP "msi-expanded"
           $process = Start-Process msiexec.exe -Wait -PassThru -ArgumentList "/a `"$($msi.FullName)`" /qn TARGETDIR=`"$msiExpanded`""
           if ($process.ExitCode -ne 0) { throw "MSI administrative extraction failed" }
-          Assert-OpenNowSignedPackage -Root $msiExpanded -SignedRoot build/qt-release/Release
+          Assert-OpenNowSignedPackage -Root $msiExpanded -SignedRoot build/opennow-qt-release/Release
           $zip = Get-ChildItem build/release-artifacts -Filter *.zip
           if ($zip.Count -ne 1) { throw "Expected one portable ZIP" }
           $expanded = Join-Path $env:RUNNER_TEMP "portable"
           Expand-Archive $zip.FullName $expanded
-          Assert-OpenNowSignedPackage -Root $expanded -SignedRoot build/qt-release/Release
+          Assert-OpenNowSignedPackage -Root $expanded -SignedRoot build/opennow-qt-release/Release
 
       - name: Record artifact checksums
         shell: pwsh
@@ -443,11 +464,17 @@ jobs:
             build/release-artifacts/SHA256SUMS
           if-no-files-found: error
 
+  windows-desktop-tests:
+    needs: [preflight, windows]
+    uses: ./.github/workflows/qt-windows-desktop-tests.yml
+    with:
+      artifact-name: windows-release-x64-tests
+
   inventory:
     name: isolated-update-signing-and-inventory
     runs-on: [self-hosted, opennow-release-signer]
     environment: qt-update-signing
-    needs: [preflight, linux, windows]
+    needs: [preflight, linux, windows, windows-desktop-tests]
     steps:
       - uses: actions/download-artifact@v4
         with:

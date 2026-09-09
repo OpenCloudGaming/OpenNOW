@@ -264,7 +264,6 @@ if(BUILD_TESTING)
     )
     target_include_directories(opennow-coreclient-tests PRIVATE src)
     target_link_libraries(opennow-coreclient-tests PRIVATE Qt6::Test Qt6::Core)
-    target_compile_definitions(opennow-coreclient-tests PRIVATE OPENNOW_VERSION="${OPENNOW_BUILD_VERSION}")
     add_dependencies(opennow-coreclient-tests opennow-fake-core)
     add_test(NAME opennow-coreclient-tests COMMAND opennow-coreclient-tests -o -,txt)
 
