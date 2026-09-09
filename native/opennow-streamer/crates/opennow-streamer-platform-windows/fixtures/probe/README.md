@@ -67,3 +67,26 @@ ffmpeg -hide_banner -loglevel error -f lavfi \
     -x265-params 'log-level=error:pools=1:frame-threads=1:info=0:keyint=60:bframes=0:repeat-headers=1:lossless=1:colorprim=bt709:transfer=bt709:colormatrix=bt709:chromaloc=0' \
     -f hevc -y hevc-y410-precision.hevc
 ```
+
+## Main10 PQ hardware precision regression
+
+`hevc-p010-pq-precision.hevc` was generated with FFmpeg 9.0.1 and libx265. It is Main10
+4:2:0, not lossless RExt: QP0 is used with psychovisual processing, SAO and deblocking disabled.
+The source repeats Y codes64–940 every877 pixels, with neutral Cb/Cr=512. Quantization produces
+875 distinct decoded gray levels and at most two source-code values of codec error. The binary
+`hevc-p010-pq-precision-luma.bin` contains the first877 software-decoded luma values as little-endian
+u16, so the hardware test compares against the actual coded signal and keeps the independent
+RGB conversion tolerance at two codes.
+
+```sh
+ffmpeg -hide_banner -loglevel error -f lavfi \
+    -i "nullsrc=size=1920x1080:rate=60,format=yuv420p10le,geq=lum='64+mod(X,877)':cb=512:cr=512" \
+    -frames:v 1 -c:v libx265 -preset ultrafast \
+    -x265-params 'log-level=error:pools=1:frame-threads=1:info=0:keyint=60:bframes=0:repeat-headers=1:qp=0:psy-rd=0:psy-rdoq=0:sao=0:deblock=0:colorprim=bt2020:transfer=smpte2084:colormatrix=bt2020nc:chromaloc=0' \
+    -f hevc -y hevc-p010-pq-precision.hevc
+ffprobe -v error -show_entries stream=profile,pix_fmt,color_space,color_transfer,color_primaries \
+    -of compact hevc-p010-pq-precision.hevc
+ffmpeg -v error -i hevc-p010-pq-precision.hevc -frames:v 1 -pix_fmt yuv420p10le \
+    -f rawvideo -y pq-decoded.yuv
+python -c "from pathlib import Path; Path('hevc-p010-pq-precision-luma.bin').write_bytes(Path('pq-decoded.yuv').read_bytes()[:877*2])"
+```
