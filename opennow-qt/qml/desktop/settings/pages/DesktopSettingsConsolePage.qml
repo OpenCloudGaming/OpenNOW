@@ -31,11 +31,6 @@ DesktopSettingsPanel {
         DesktopSettingsToggle { checked: page.settingsScreen.boolSetting("leaveConsoleOnPointer",true); onValueChangedByUser: value => page.settingsScreen.setSetting("leaveConsoleOnPointer",value) }
     }
     DesktopSettingsRow {
-        width: parent.width; paperStyle: true; glyph: "monitor"; title: qsTr("Go fullscreen in console mode")
-        description: qsTr("Recommended on a TV · hides the window chrome entirely")
-        DesktopSettingsToggle { checked: page.settingsScreen.boolSetting("autoFullScreen",false); onValueChangedByUser: value => page.settingsScreen.setSetting("autoFullScreen",value) }
-    }
-    DesktopSettingsRow {
         width: parent.width; paperStyle: true; glyph: "person"; title: qsTr("Controller profile picker")
         description: qsTr("Choose a saved profile when console mode starts"); showDivider: false
         DesktopSettingsToggle { checked: page.settingsScreen.boolSetting("consoleProfilePickerOnLaunch",true); onValueChangedByUser: value => page.settingsScreen.setSetting("consoleProfilePickerOnLaunch",value) }

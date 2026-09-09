@@ -358,6 +358,10 @@ void ControllerInput::closeController(SDL_JoystickID id)
     if (accepted)
         emit gamepadSnapshot(m_inputControllerId ? 0 : static_cast<quint8>(slotIndex),
                              gamepadBitmap(), 0, 0, 0, 0, 0, 0, 0);
+    if (m_inputControllerId == id) {
+        setInputControllerId(0);
+        return;
+    }
     emit controllerCountChanged(controllerCount());
     updatePollInterval();
     refreshControllerMetadata();

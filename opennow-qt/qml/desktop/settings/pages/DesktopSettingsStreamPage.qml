@@ -12,6 +12,16 @@ Column {
     DesktopSettingsPanel {
         width: parent.width; paperStyle: true
         DesktopSettingsRow {
+            width: parent.width; paperStyle: true; glyph: "monitor"; title: qsTr("Fullscreen when session is ready")
+            description: qsTr("Automatically enter fullscreen when your session is ready. F11 toggles fullscreen during play.")
+            DesktopSettingsToggle {
+                objectName: "autoFullScreenToggle"
+                checked: page.settingsScreen.boolSetting("autoFullScreen", true)
+                Accessible.name: qsTr("Fullscreen when session is ready")
+                onValueChangedByUser: value => page.settingsScreen.setSetting("autoFullScreen", value)
+            }
+        }
+        DesktopSettingsRow {
             width: parent.width; paperStyle: true; glyph: "controller"; title: qsTr("Steam Big Picture mode")
             description: qsTr("Request gamepad-friendly launchers such as Steam Big Picture. Applies to new GeForce NOW sessions only.")
             showDivider: false

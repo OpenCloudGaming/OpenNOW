@@ -54,6 +54,7 @@ ApplicationWindow {
     property bool lockedStreamDesktopSurface: true
     property int visibilityBeforeFullscreen: ApplicationWindow.Windowed
     property bool sessionWindowModeSaved: false
+    property bool sessionFullscreenApplied: false
     property int visibilityBeforeSession: ApplicationWindow.Windowed
     property int fullscreenRestoreVisibilityBeforeSession: ApplicationWindow.Windowed
     readonly property string configuredStatsShortcut: String(
@@ -241,11 +242,20 @@ ApplicationWindow {
     function updateSessionWindowMode() {
         if (["inserting", "joining", "stream"].indexOf(AppController.route) >= 0) {
             window.saveSessionWindowMode()
+            if (AppController.route === "stream" && !window.sessionFullscreenApplied) {
+                window.sessionFullscreenApplied = true
+                if (ShellStore.settings.autoFullScreen === true
+                        && window.visibility !== ApplicationWindow.FullScreen) {
+                    window.visibilityBeforeFullscreen = window.visibility
+                    window.showFullScreen()
+                }
+            }
             return
         }
         if (!window.sessionWindowModeSaved)
             return
         window.sessionWindowModeSaved = false
+        window.sessionFullscreenApplied = false
         window.visibilityBeforeFullscreen = window.fullscreenRestoreVisibilityBeforeSession
         if (window.visibility === window.visibilityBeforeSession)
             return
@@ -570,12 +580,6 @@ ApplicationWindow {
                     Qt.callLater(() => routeLoader.item.forceActiveFocus())
             }
             function onDirectLaunchRequested(appId, title) {
-                if (ShellStore.settings.autoFullScreen) {
-                    window.saveSessionWindowMode()
-                    if (window.visibility !== ApplicationWindow.FullScreen)
-                        window.visibilityBeforeFullscreen = window.visibility
-                    window.showFullScreen()
-                }
                 ShellStore.acceptDirectLaunch(appId, title)
             }
         }

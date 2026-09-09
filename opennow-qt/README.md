@@ -286,7 +286,9 @@ to verify that session exit restores the pre-session windowed, maximized, or ful
 mode in both desktop and console shells, and F11 still toggles correctly afterward.
 The fixture also checks exit cancellation, launch/reconnect route transitions, and a
 subsequent aborted launch with a different initial window mode, and automatic fullscreen
-on direct launch.
+once a session is ready (including direct launches). Settings → Stream → Fullscreen when
+session is ready is enabled by default; saved opt-outs are preserved. F11 remains available
+during play, and reconnects or overlays do not reapply fullscreen after a manual override.
 
 ### Local frame generation (experimental)
 
