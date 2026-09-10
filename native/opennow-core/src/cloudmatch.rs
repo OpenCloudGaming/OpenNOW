@@ -69,7 +69,7 @@ impl CloudMatchService {
             .json(&body)
             .send()
             .map_err(|error| network("Session creation failed", error))?;
-        let payload = read_cloudmatch_response("Session creation failed", response)?;
+        let payload = read_cloudmatch_response("Session creation failed", response, false)?;
         let zone = params["zone"]
             .as_str()
             .filter(|value| !value.trim().is_empty())
@@ -335,7 +335,6 @@ impl CloudMatchService {
                         .as_array()
                         .into_iter()
                         .flatten()
-                        .filter(|session| matches!(value_i64(&session["status"]), Some(1..=3)))
                         .filter_map(|session| remote_session_info(session, &base))
                         .collect::<Vec<_>>();
                     let mut discovered = self
@@ -406,10 +405,7 @@ impl CloudMatchService {
         let app_id = first_string(&session["sessionRequestData"]["appId"])
             .or_else(|| first_string(&params["appId"]))
             .unwrap_or_else(|| "0".to_owned());
-        // A new native connection needs an explicit claim, even if the cloud
-        // seat still reports ready/streaming after the old connection died.
-        // Launching sessions are polled instead of sending SESSION_NOT_PAUSED.
-        if matches!(initial_status, 2 | 3) {
+        if session_requires_resume(initial_status)? {
             let keyboard_layout = setting_string(settings, "keyboardLayout", "en-US");
             let language = setting_string(settings, "gameLanguage", "en_US");
             let mut url = control_base
@@ -425,9 +421,9 @@ impl CloudMatchService {
                 .json(&body)
                 .send()
                 .map_err(|error| network("Session claim failed", error))?;
-            let _ = read_cloudmatch_response("Session claim failed", response)?;
+            let _ = read_cloudmatch_response("Session claim failed", response, true)?;
             eprintln!(
-                "CloudMatch RESUME accepted; awaiting fresh ready status and stream endpoints"
+                "CloudMatch RESUME handover completed; awaiting fresh ready status and stream endpoints"
             );
         }
 
@@ -506,7 +502,7 @@ impl CloudMatchService {
             .json(&json!({"action":6,"adUpdates":[update]}))
             .send()
             .map_err(|error| network("Session ad update failed", error))?;
-        let payload = read_cloudmatch_response("Session ad update failed", response)?;
+        let payload = read_cloudmatch_response("Session ad update failed", response, false)?;
         let app_id = current
             .as_ref()
             .map(|session| session.app_id.as_str())
@@ -576,7 +572,7 @@ impl CloudMatchService {
                     thread::sleep(Duration::from_millis(if attempt == 0 { 250 } else { 750 }));
                 }
                 Ok(response) => {
-                    return read_cloudmatch_response("Session polling failed", response);
+                    return read_cloudmatch_response("Session polling failed", response, false);
                 }
                 Err(error) => {
                     last_error = Some(error);
@@ -663,7 +659,22 @@ fn requested_streaming_base(
     trusted_cloudmatch_base(raw)
 }
 
+fn session_requires_resume(status: i64) -> Result<bool, ServiceError> {
+    match status {
+        2..=5 => Ok(true),
+        1 | 6 => Ok(false),
+        _ => Err(upstream(
+            "This GeForce NOW session is no longer resumable. End it and launch again.",
+        )),
+    }
+}
+
 fn mark_resume_progress(info: &mut Value) {
+    if !matches!(info["status"].as_i64(), Some(1..=6)) {
+        info["resumePending"] = json!(false);
+        info["phase"] = json!("failed");
+        return;
+    }
     let ready = matches!(info["status"].as_i64(), Some(2 | 3))
         && info["rtspsEndpoints"]
             .as_array()
@@ -1133,13 +1144,33 @@ fn insert_header(
     Ok(())
 }
 
-fn read_cloudmatch_response(context: &str, response: Response) -> Result<Value, ServiceError> {
-    if !response.status().is_success() {
-        return Err(response_error(context, response));
+fn read_cloudmatch_response(
+    context: &str,
+    response: Response,
+    allow_not_paused: bool,
+) -> Result<Value, ServiceError> {
+    let status = response.status();
+    let payload = response.json::<Value>();
+    if allow_not_paused
+        && status != reqwest::StatusCode::UNAUTHORIZED
+        && status != reqwest::StatusCode::FORBIDDEN
+        && payload.as_ref().is_ok_and(|payload| {
+            value_i64(&payload["requestStatus"]["statusCode"]) == Some(34)
+                || payload["requestStatus"]["statusDescription"]
+                    .as_str()
+                    .is_some_and(|description| description.contains("SESSION_NOT_PAUSED"))
+        })
+    {
+        return payload.map_err(|error| network("CloudMatch returned invalid JSON", error));
     }
-    let payload = response
-        .json::<Value>()
-        .map_err(|error| network("CloudMatch returned invalid JSON", error))?;
+    if !status.is_success() {
+        return Err(cloudmatch_http_error(
+            context,
+            status,
+            payload.ok().as_ref(),
+        ));
+    }
+    let payload = payload.map_err(|error| network("CloudMatch returned invalid JSON", error))?;
     if value_i64(&payload["requestStatus"]["statusCode"]) != Some(1) {
         let description = payload["requestStatus"]["statusDescription"]
             .as_str()
@@ -1159,11 +1190,15 @@ fn read_cloudmatch_response(context: &str, response: Response) -> Result<Value, 
 
 fn response_error(context: &str, response: Response) -> ServiceError {
     let status = response.status();
-    let detail = response.json::<Value>().ok().and_then(|payload| {
-        payload["requestStatus"]["statusDescription"]
-            .as_str()
-            .map(ToOwned::to_owned)
-    });
+    cloudmatch_http_error(context, status, response.json::<Value>().ok().as_ref())
+}
+
+fn cloudmatch_http_error(
+    context: &str,
+    status: reqwest::StatusCode,
+    payload: Option<&Value>,
+) -> ServiceError {
+    let detail = payload.and_then(|payload| payload["requestStatus"]["statusDescription"].as_str());
     ServiceError {
         code: if status.as_u16() == 401 || status.as_u16() == 403 {
             "authentication_required"
@@ -1253,6 +1288,9 @@ fn session_server_ip(session: &Value) -> Option<String> {
 fn remote_session_info(session: &Value, base: &Url) -> Option<Value> {
     let session_id = session["sessionId"].as_str()?.to_owned();
     let status = value_i64(&session["status"])?;
+    if !matches!(status, 1..=6) {
+        return None;
+    }
     let app_id = value_i64(&session["sessionRequestData"]["appId"]).unwrap_or_default();
     let server_ip = session_server_ip(session);
     let monitor = session["monitorSettings"]
@@ -1413,7 +1451,8 @@ fn session_phase(status: i64) -> &'static str {
         1 => "preparing",
         2 => "ready",
         3 => "streaming",
-        6 => "stopping",
+        4 | 5 => "paused",
+        6 => "resuming",
         status if status > 3 => "failed",
         _ => "requesting",
     }
@@ -1593,6 +1632,159 @@ fn network(context: &str, error: impl std::fmt::Display) -> ServiceError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn cloudmatch_response(status: u16, body: &str) -> Response {
+        use std::io::{BufRead, BufReader, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let body = body.to_owned();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut reader = BufReader::new(&stream);
+            loop {
+                let mut line = String::new();
+                assert!(reader.read_line(&mut line).unwrap() > 0);
+                if line == "\r\n" {
+                    break;
+                }
+            }
+            write!(stream,
+                "HTTP/1.1 {status} Test\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()).unwrap();
+        });
+        let response = Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap()
+            .get(format!("http://{address}"))
+            .send()
+            .unwrap();
+        server.join().unwrap();
+        response
+    }
+
+    #[test]
+    fn resume_claims_paused_and_live_seats_but_only_polls_transitions() {
+        for status in [2, 3, 4, 5] {
+            assert!(session_requires_resume(status).unwrap(), "status {status}");
+        }
+        for status in [1, 6] {
+            assert!(!session_requires_resume(status).unwrap(), "status {status}");
+        }
+        for status in [0, 7, 8, -1] {
+            assert!(session_requires_resume(status).is_err(), "status {status}");
+        }
+        assert_eq!(session_phase(4), "paused");
+        assert_eq!(session_phase(5), "paused");
+        assert_eq!(session_phase(6), "resuming");
+    }
+
+    #[test]
+    fn resume_discovery_keeps_paused_and_resuming_seats() {
+        let base = trusted_cloudmatch_base(DEFAULT_STREAMING_BASE).unwrap();
+        for status in 0..=8 {
+            let session = json!({"sessionId":"seat", "status":status});
+            let info = remote_session_info(&session, &base);
+            assert_eq!(info.is_some(), (1..=6).contains(&status));
+            if let Some(info) = info {
+                assert_eq!(info["status"], status);
+                assert_eq!(info["phase"], session_phase(status));
+            }
+        }
+    }
+
+    #[test]
+    fn resume_not_paused_response_continues_polling_for_http_and_api_rejections() {
+        for status in [200, 400, 409, 500] {
+            for request_status in [
+                json!({"statusCode":34}),
+                json!({"statusCode":"34"}),
+                json!({"statusCode":0,"statusDescription":"SESSION_NOT_PAUSED"}),
+            ] {
+                let body = json!({"requestStatus":request_status}).to_string();
+                let result = read_cloudmatch_response(
+                    "Session claim failed",
+                    cloudmatch_response(status, &body),
+                    true,
+                );
+                assert!(result.is_ok(), "HTTP {status}: {body}");
+                let result = read_cloudmatch_response(
+                    "Session polling failed",
+                    cloudmatch_response(status, &body),
+                    false,
+                );
+                assert!(
+                    result.is_err(),
+                    "poll must not accept HTTP {status}: {body}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn resume_response_preserves_other_failures_and_success() {
+        for status in [401, 403] {
+            let error = read_cloudmatch_response(
+                "Session claim failed",
+                cloudmatch_response(status, r#"{"requestStatus":{"statusCode":34}}"#),
+                true,
+            )
+            .unwrap_err();
+            assert_eq!(error.code, "authentication_required");
+        }
+        for (status, body, code) in [
+            (
+                200,
+                r#"{"requestStatus":{"statusCode":32,"statusDescription":"SESSION_EXPIRED"}}"#,
+                "session_error",
+            ),
+            (
+                409,
+                r#"{"requestStatus":{"statusCode":32,"statusDescription":"SESSION_EXPIRED"}}"#,
+                "upstream_error",
+            ),
+            (502, "not JSON", "upstream_error"),
+        ] {
+            let error = read_cloudmatch_response(
+                "Session claim failed",
+                cloudmatch_response(status, body),
+                true,
+            )
+            .unwrap_err();
+            assert_eq!(error.code, code);
+        }
+        let response = read_cloudmatch_response(
+            "Session claim failed",
+            cloudmatch_response(200, r#"{"requestStatus":{"statusCode":1}}"#),
+            true,
+        )
+        .unwrap();
+        assert_eq!(response["requestStatus"]["statusCode"], 1);
+    }
+
+    #[test]
+    fn resume_poll_preserves_paused_progress_and_stops_on_terminal_states() {
+        for status in [4, 5] {
+            let mut info = json!({"status":status, "phase":session_phase(status),
+                "rtspsEndpoints":["rtsps://example.invalid:322"]});
+            mark_resume_progress(&mut info);
+            assert_eq!(info["resumePending"], true);
+            assert_eq!(info["phase"], "resuming");
+        }
+        for status in [0, 7, 8] {
+            let mut info = json!({"status":status, "resumePending":true,
+                "rtspsEndpoints":["rtsps://example.invalid:322"]});
+            mark_resume_progress(&mut info);
+            assert_eq!(info["resumePending"], false);
+            assert_eq!(info["phase"], "failed");
+        }
+    }
 
     #[test]
     fn direct_resume_poll_retains_regional_discovery_endpoint() {

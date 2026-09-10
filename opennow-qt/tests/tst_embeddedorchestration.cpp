@@ -17,6 +17,33 @@ class EmbeddedOrchestrationTest final : public QObject
     Q_OBJECT
 
 private slots:
+    void pausedSessionsRemainAvailableToResume()
+    {
+        const auto shell = source(QStringLiteral("qml/state/ShellStore.qml"));
+        const auto binding = QRegularExpression(QStringLiteral(
+            "readonly property var resumableSession: \\{(.*?)\\n    \\}"),
+            QRegularExpression::DotMatchesEverythingOption).match(shell);
+        QVERIFY(binding.hasMatch());
+        QJSEngine engine;
+        QVERIFY(!engine.evaluate(QStringLiteral("function selectedSession() {%1}")
+                                     .arg(binding.captured(1))).isError());
+        for (int status = 1; status <= 7; ++status) {
+            for (const bool local : {false, true}) {
+                QVERIFY(!engine.evaluate(QStringLiteral(
+                    "var seat = {sessionId: 'seat', status: %1};"
+                    "var root = {activeSession: %2, remoteSessions: %3};")
+                    .arg(status)
+                    .arg(local ? QStringLiteral("seat") : QStringLiteral("null"))
+                    .arg(local ? QStringLiteral("[]") : QStringLiteral("[seat]"))).isError());
+                const auto result = engine.evaluate(QStringLiteral("selectedSession()"));
+                QVERIFY2(!result.isError(), qPrintable(result.toString()));
+                QCOMPARE(!result.isNull(), status >= 2 && status <= 5);
+                if (!result.isNull())
+                    QCOMPARE(result.property(QStringLiteral("sessionId")).toString(), QStringLiteral("seat"));
+            }
+        }
+    }
+
     void premiumGamesRequirePaidMembershipBeforeLaunch_data()
     {
         QTest::addColumn<QString>("requiredTier");
