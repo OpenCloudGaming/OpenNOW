@@ -134,8 +134,9 @@ class CIWorkflowTest(unittest.TestCase):
         self.assertIn("ensure-windows-media-foundation.ps1", checks)
         cmake = (ROOT / "opennow-qt/cmake/Tests.cmake").read_text()
         targets = re.search(r"set\(OPENNOW_CI_UNIT_TEST_TARGETS\s+(.*?)\)", cmake, re.DOTALL)[1].split()
-        self.assertEqual(len(targets), 19)
-        self.assertEqual(len(set(targets)), 19)
+        self.assertEqual(len(targets), 20)
+        self.assertEqual(len(set(targets)), 20)
+        self.assertIn("opennow-macawdl-tests", targets)
         self.assertIn("opennow-controllericons-tests", targets)
         self.assertIn("opennow-waylandhdroutput-tests", targets)
         for forbidden in ("opennow-qt", "opennow-streamvideo-tests", "opennow-nativestreamruntime-tests",
