@@ -66,8 +66,11 @@ private slots:
 
     void hardwareEnumerationNeverReturnsSoftwareOrDuplicateLuids()
     {
+        const auto adapters = GraphicsDeviceSelection::detectAdapters();
+        qInfo("Detected %lld hardware graphics adapters", static_cast<long long>(adapters.size()));
         QSet<quint64> seen;
-        for (const auto &adapter : GraphicsDeviceSelection::detectAdapters()) {
+        for (const auto &adapter : adapters) {
+            qInfo("Adapter: %s; persistent identity available: %d", qUtf8Printable(adapter.name), !adapter.id.isEmpty());
             QVERIFY(!adapter.software);
             QVERIFY(adapter.luid != 0);
             QVERIFY(!seen.contains(adapter.luid));
