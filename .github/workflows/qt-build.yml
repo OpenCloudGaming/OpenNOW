@@ -11,6 +11,10 @@ on:
         description: Upload the verified complete package set
         type: boolean
         default: false
+      update_public_key:
+        description: Optional base64 Ed25519 public key pinned into the application core
+        type: string
+        default: ""
     outputs:
       version:
         description: Immutable package version
@@ -77,7 +81,7 @@ jobs:
             build-parallel: 8
             qt-host: windows
             qt-arch: win64_msvc2022_arm64_cross_compiled
-            package-generator: ZIP
+            package-generator: "WIX;ZIP"
             rust-target: aarch64-pc-windows-msvc
             cmake-arch: ARM64
           - label: windows-x64
@@ -85,7 +89,7 @@ jobs:
             build-parallel: 8
             qt-host: windows
             qt-arch: win64_msvc2022_64
-            package-generator: ZIP
+            package-generator: "WIX;ZIP"
             rust-target: ""
             cmake-arch: ""
             linuxdeploy-arch: ""
@@ -97,7 +101,7 @@ jobs:
             build-parallel: 3
             qt-host: mac
             qt-arch: clang_64
-            package-generator: ZIP
+            package-generator: "DragNDrop;ZIP"
             rust-target: aarch64-apple-darwin
             cmake-arch: ""
 
@@ -105,6 +109,7 @@ jobs:
       CARGO_TERM_COLOR: always
       SDL_VERSION: release-3.2.20
       OPENNOW_BUILD_VERSION: ${{ needs.metadata.outputs.version }}
+      OPENNOW_UPDATE_PUBLIC_KEY: ${{ inputs.update_public_key }}
       MACOSX_DEPLOYMENT_TARGET: ${{ matrix.label == 'macos-arm64' && '13.0' || '' }}
 
     steps:
@@ -132,6 +137,24 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: opennow-qt/tests/test_windows_release.ps1
+
+      - name: Install WiX Toolset
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          choco install wixtoolset --version=3.14.1.20250415 -y --no-progress
+          if ($LASTEXITCODE -ne 0) { throw "WiX installation failed" }
+          $wixBin = Join-Path ${env:ProgramFiles(x86)} "WiX Toolset v3.14/bin"
+          foreach ($tool in @("candle.exe", "light.exe")) {
+            if (-not (Test-Path (Join-Path $wixBin $tool))) { throw "WiX is missing $tool" }
+          }
+          $wixBin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Test Windows MSI upgrades and stable isolation
+        if: matrix.label == 'windows-x64'
+        shell: pwsh
+        run: opennow-qt/tests/test_windows_installer.ps1
 
       - name: Add package Rust target
         if: matrix.rust-target != ''
@@ -317,6 +340,7 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
             -DOPENNOW_BUILD_VERSION="$OPENNOW_BUILD_VERSION" \
+            -DOPENNOW_UPDATE_ED25519_PUBLIC_KEY="$OPENNOW_UPDATE_PUBLIC_KEY" \
             -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/SDL-install" \
             "${OPENNOW_CMAKE_ARGS[@]}"
 
@@ -345,6 +369,23 @@ jobs:
             -C Release \
             -G "$PACKAGE_GENERATOR" \
             -B build/qt-packages
+
+      - name: Verify Windows MSI and portable ZIP payloads
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          . ./opennow-qt/packaging/windows-release.ps1
+          $msi = @(Get-ChildItem build/qt-packages -Filter *.msi)
+          $zip = @(Get-ChildItem build/qt-packages -Filter *.zip)
+          if ($msi.Count -ne 1 -or $zip.Count -ne 1) { throw "Expected one MSI and one ZIP" }
+          $msiExpanded = Join-Path $env:RUNNER_TEMP "nightly-msi-expanded"
+          $process = Start-Process msiexec.exe -Wait -PassThru -ArgumentList "/a `"$($msi[0].FullName)`" /qn TARGETDIR=`"$msiExpanded`""
+          if ($process.ExitCode -ne 0) { throw "MSI administrative extraction failed: $($process.ExitCode)" }
+          Assert-OpenNowPackagePayload -Root $msiExpanded -DeploymentRoot build/opennow-qt-release/Release
+          $zipExpanded = Join-Path $env:RUNNER_TEMP "nightly-zip-expanded"
+          Expand-Archive $zip[0].FullName $zipExpanded
+          Assert-OpenNowPackagePayload -Root $zipExpanded -DeploymentRoot build/opennow-qt-release/Release
 
       - name: Create Linux AppImage
         if: runner.os == 'Linux'
@@ -422,6 +463,7 @@ jobs:
             build/qt-packages/*.AppImage
             build/qt-packages/*.deb
             build/qt-packages/*.dmg
+            build/qt-packages/*.msi
             build/qt-packages/*.zip
           if-no-files-found: error
           retention-days: 14
@@ -445,6 +487,7 @@ jobs:
             -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
             -DCMAKE_OSX_DEPLOYMENT_TARGET="$MACOSX_DEPLOYMENT_TARGET" \
             -DOPENNOW_BUILD_VERSION="$OPENNOW_BUILD_VERSION" \
+            -DOPENNOW_UPDATE_ED25519_PUBLIC_KEY="$OPENNOW_UPDATE_PUBLIC_KEY" \
             -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/SDL-install"
           cmake --build build/opennow-qt-release --parallel 3
       - name: Test Qt shell and embedded runtime offscreen
@@ -453,46 +496,58 @@ jobs:
         run: |
           ctest --test-dir build/opennow-qt-release --output-on-failure --parallel 2 --no-tests=error -LE interactive-desktop \
             -R '^opennow-.*-tests$|^opennow-acceptance-verifier-help$|^qml-(desktop-route-(home|settings|stream)|fullscreen-.*stats-shortcut|desktop-stream-.*|streamer-event-contract)$'
-      - name: Package unsigned macOS validation bundle
+      - name: Package unsigned macOS DMG and validation ZIP
         if: runner.os == 'macOS'
         shell: bash
         run: |
           mkdir -p build/qt-packages
           cpack --config build/opennow-qt-release/CPackConfig.cmake \
-            -G ZIP -B build/qt-packages
+            -G 'DragNDrop;ZIP' -B build/qt-packages
       - name: Test relocated bundle without development libraries
         if: runner.os == 'macOS'
         shell: bash
         run: |
           packages=(build/qt-packages/OpenNOW-Qt-*-Darwin-arm64.zip)
           [[ ${#packages[@]} -eq 1 && -f "${packages[0]}" ]]
-          ditto -x -k "${packages[0]}" "$RUNNER_TEMP/relocated"
-          app=$(find "$RUNNER_TEMP/relocated" -name OpenNOW.app -type d -print -quit)
-          [[ -n "$app" ]]
-          bin="$app/Contents/MacOS"
-          for executable in OpenNOW opennow-core opennow-acceptance-verify opennow-streamer; do
-            test -x "$bin/$executable"
-            lipo "$bin/$executable" -verify_arch arm64
-          done
-          test -f "$bin/libopennow_streamer_ffi.dylib"
-          lipo "$bin/libopennow_streamer_ffi.dylib" -verify_arch arm64
-          otool -D build/opennow-qt-release/OpenNOW.app/Contents/MacOS/libopennow_streamer_ffi.dylib \
-            | grep -Fx '@rpath/libopennow_streamer_ffi.dylib'
-          test -f "$app/Contents/Resources/licenses/THIRD_PARTY_NOTICES"
-          test -f "$app/Contents/PlugIns/imageformats/libqsvg.dylib"
-          restore() {
-            for path in "$PWD/build/opennow-qt-release" "$QT_ROOT_DIR" "$RUNNER_TEMP/SDL-install"; do
-              if [[ -d "$path.unavailable" ]]; then mv "$path.unavailable" "$path"; fi
+          ditto -x -k "${packages[0]}" "$RUNNER_TEMP/zip-relocated"
+          zip_app=$(find "$RUNNER_TEMP/zip-relocated" -name OpenNOW.app -type d -print -quit)
+          [[ -n "$zip_app" ]]
+          dmgs=(build/qt-packages/OpenNOW-Qt-*-Darwin-arm64.dmg)
+          [[ ${#dmgs[@]} -eq 1 && -f "${dmgs[0]}" ]]
+          hdiutil verify "${dmgs[0]}"
+          mount="$RUNNER_TEMP/opennow-dmg"
+          mkdir -p "$mount" "$RUNNER_TEMP/dmg-relocated"
+          hdiutil attach "${dmgs[0]}" -readonly -nobrowse -mountpoint "$mount"
+          trap 'hdiutil detach "$mount"' EXIT
+          test -d "$mount/OpenNOW.app"
+          ditto "$mount/OpenNOW.app" "$RUNNER_TEMP/dmg-relocated/OpenNOW.app"
+          hdiutil detach "$mount"
+          trap - EXIT
+          for app in "$zip_app" "$RUNNER_TEMP/dmg-relocated/OpenNOW.app"; do
+            bin="$app/Contents/MacOS"
+            for executable in OpenNOW opennow-core opennow-acceptance-verify opennow-streamer; do
+              test -x "$bin/$executable"
+              lipo "$bin/$executable" -verify_arch arm64
             done
-          }
-          trap restore EXIT
-          mv build/opennow-qt-release build/opennow-qt-release.unavailable
-          mv "$QT_ROOT_DIR" "$QT_ROOT_DIR.unavailable"
-          mv "$RUNNER_TEMP/SDL-install" "$RUNNER_TEMP/SDL-install.unavailable"
-          unset QT_PLUGIN_PATH QT_QPA_PLATFORM_PLUGIN_PATH QML2_IMPORT_PATH QML_IMPORT_PATH
-          unset DYLD_LIBRARY_PATH DYLD_FRAMEWORK_PATH DYLD_FALLBACK_LIBRARY_PATH DYLD_FALLBACK_FRAMEWORK_PATH
-          "$bin/opennow-acceptance-verify" --help
-          python3 - "$bin" <<'PY'
+            test -f "$bin/libopennow_streamer_ffi.dylib"
+            lipo "$bin/libopennow_streamer_ffi.dylib" -verify_arch arm64
+            otool -D "$bin/libopennow_streamer_ffi.dylib" \
+              | grep -Fx '@rpath/libopennow_streamer_ffi.dylib'
+            test -f "$app/Contents/Resources/licenses/THIRD_PARTY_NOTICES"
+            test -f "$app/Contents/PlugIns/imageformats/libqsvg.dylib"
+            restore() {
+              for path in "$PWD/build/opennow-qt-release" "$QT_ROOT_DIR" "$RUNNER_TEMP/SDL-install"; do
+                if [[ -d "$path.unavailable" ]]; then mv "$path.unavailable" "$path"; fi
+              done
+            }
+            trap restore EXIT
+            mv build/opennow-qt-release build/opennow-qt-release.unavailable
+            mv "$QT_ROOT_DIR" "$QT_ROOT_DIR.unavailable"
+            mv "$RUNNER_TEMP/SDL-install" "$RUNNER_TEMP/SDL-install.unavailable"
+            unset QT_PLUGIN_PATH QT_QPA_PLATFORM_PLUGIN_PATH QML2_IMPORT_PATH QML_IMPORT_PATH
+            unset DYLD_LIBRARY_PATH DYLD_FRAMEWORK_PATH DYLD_FALLBACK_LIBRARY_PATH DYLD_FALLBACK_FRAMEWORK_PATH
+            "$bin/opennow-acceptance-verify" --help
+            python3 - "$bin" <<'PY'
           import json
           import os
           from pathlib import Path
@@ -537,12 +592,25 @@ jobs:
                "--desktop", "--route", "home", "--reduced-motion"],
               env={**os.environ, "QT_QPA_PLATFORM": "cocoa"}, check=True, timeout=30)
           PY
+            restore
+            trap - EXIT
+          done
       - name: Upload macOS validation package
         if: runner.os == 'macOS'
         uses: actions/upload-artifact@v4
         with:
           name: opennow-macos-arm64-validation
           path: build/qt-packages/*.zip
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+      - name: Upload unsigned macOS DMG
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: opennow-qt-macos-arm64-unsigned
+          path: build/qt-packages/*.dmg
           if-no-files-found: error
           retention-days: 14
           compression-level: 0
@@ -563,7 +631,7 @@ jobs:
         with:
           pattern: opennow-qt-*-unsigned
           path: unsigned-artifacts
-      - name: Verify all six packages and prepare release checksums
+      - name: Verify all nine packages and prepare release checksums
         shell: bash
         run: |
           python3 opennow-qt/packaging/nightly_release.py assemble \

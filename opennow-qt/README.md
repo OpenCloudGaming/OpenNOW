@@ -66,9 +66,10 @@ or tag. No separate supporter-build workflow is needed.
 After a successful run, download
 `opennow-qt-<version>-complete-unsigned` from the run's **Artifacts** section.
 Versions use `<project-version>-nightly.<run-number>.<attempt>` even when release
-publishing is disabled. The complete archive contains Windows x64/ARM64 portable ZIPs, Linux
-x64/ARM64 AppImages and DEBs, `SHA256SUMS`, and source-commit metadata. The macOS
-ARM64 validation ZIP is a separate artifact. Artifacts expire after 14 days.
+publishing is disabled. The complete archive contains Windows x64/ARM64 MSI installers and
+portable ZIPs, Linux x64/ARM64 AppImages and DEBs, the Apple Silicon macOS DMG, `SHA256SUMS`,
+and source-commit metadata. The macOS ARM64 validation ZIP is a separate artifact.
+Artifacts expire after 14 days.
 
 These builds are unsigned and require manual downloads for updates. Windows may
 show a SmartScreen warning; macOS packages are not notarized. Windows ARM64 is
@@ -215,7 +216,7 @@ cmake -S opennow-qt -B build/opennow-qt -DCMAKE_BUILD_TYPE=Release \
 cmake --build build/opennow-qt --parallel 4
 ctest --test-dir build/opennow-qt --output-on-failure --parallel 2
 ./build/opennow-qt/OpenNOW.app/Contents/MacOS/OpenNOW
-cpack --config build/opennow-qt/CPackConfig.cmake -G ZIP -B build/qt-packages
+cpack --config build/opennow-qt/CPackConfig.cmake -G 'DragNDrop;ZIP' -B build/qt-packages
 ```
 
 CMake selects the matching Rust target; an explicitly supplied
@@ -227,9 +228,12 @@ The app explicitly links Qt Svg so macdeployqt includes the SVG image plugin use
 by the QML icons; the relocated-bundle check requires that plugin to be present.
 
 The manual `macos-arm64` package matrix entry builds and tests the native Apple Silicon
-stack, then checks a relocated ZIP with the development dependencies hidden.
-These are unsigned validation artifacts, not notarized releases, and are not
-part of the Linux/Windows nightly inventory. Offscreen tests cover shell and FFI
+stack, then checks both a relocated ZIP and an app copied from the mounted DMG with development
+dependencies hidden. The Apple Silicon DMG is part of the public nightly inventory; the ZIP
+remains a separate CI validation artifact. These applications have no Developer ID signature or
+notarization and require manual updates. See
+[`qt-nightly-release.md`](../docs/qt-nightly-release.md) for installation warnings and the
+Windows MSI/portable ZIP contract. Offscreen tests cover shell and FFI
 contracts; real VideoToolbox/Metal presentation, audio, input capture, and login
 still require macOS hardware and a GFN account.
 

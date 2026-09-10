@@ -31,6 +31,7 @@ try {
         Copy-Item "$deployment/$name" $package
     }
     Assert-OpenNowSignedPackage -Root "$root/package" -SignedRoot $deployment
+    Assert-OpenNowPackagePayload -Root "$root/package" -DeploymentRoot $deployment
     foreach ($name in $names) {
         if (-not ($script:Verified | Where-Object { [IO.Path]::GetFileName($_) -eq $name })) {
             throw "$name was not signature-verified"
@@ -47,6 +48,7 @@ try {
     foreach ($name in $names) {
         Set-Content "$package/$name" "unsigned Cargo copy"
         Assert-Fails { Assert-OpenNowSignedPackage -Root "$root/package" -SignedRoot $deployment } "differs from the signed deployment copy"
+        Assert-Fails { Assert-OpenNowPackagePayload -Root "$root/package" -DeploymentRoot $deployment } "differs from the deployment copy"
         Copy-Item "$deployment/$name" $package -Force
     }
     foreach ($code in @(1, 2, 7)) {
