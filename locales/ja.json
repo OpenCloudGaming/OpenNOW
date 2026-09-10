@@ -3066,6 +3066,8 @@
     "s_qt_store_page_05": "Loaded %1 of %2 games",
     "s_qt_store_page_06": "Load more",
     "s_qt_store_direct_launch": "Direct launch",
+    "s_qt_membership_launch_unavailable": "Membership details unavailable. Please try again.",
+    "s_qt_membership_launch_required": "This game requires a paid GeForce NOW membership.",
     "s_qt_store_categories": "Categories",
     "s_qt_store_searching": "Searching…",
     "s_qt_audio_navigation": "Output and stream audio",
