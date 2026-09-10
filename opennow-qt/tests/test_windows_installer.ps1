@@ -8,6 +8,7 @@ $policy = (Resolve-Path "$PSScriptRoot/../cmake/WindowsInstaller.cmake").Path.Re
 function Invoke-Installer {
     param([string]$Package, [string]$Destination, [int]$Expected = 0)
 
+    $Destination = [IO.Path]::GetFullPath($Destination)
     $log = Join-Path $root "install-$([Guid]::NewGuid()).log"
     $process = Start-Process msiexec.exe -Wait -PassThru -ArgumentList "/i `"$Package`" /qn /norestart INSTALL_ROOT=`"$Destination`" /l*v `"$log`""
     if ($process.ExitCode -ne $Expected) {
