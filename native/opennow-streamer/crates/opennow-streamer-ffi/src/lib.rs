@@ -1174,9 +1174,10 @@ pub unsafe extern "C" fn opennow_streamer_set_graphics_context(
         if context.api == GraphicsApi::D3d11
             && let Some(configured) = handle.windows_adapter_luid
         {
-            let validation =
-                unsafe { opennow_streamer_platform::d3d11_adapter_luid(context.device) }
-                    .and_then(|actual| validate_windows_adapter_luid(configured, actual));
+            let validation = unsafe {
+                opennow_streamer_platform::d3d11_adapter_luid(context.device as *mut c_void)
+            }
+            .and_then(|actual| validate_windows_adapter_luid(configured, actual));
             if let Err(error) = validation {
                 log::log_line(
                     "WARN",
