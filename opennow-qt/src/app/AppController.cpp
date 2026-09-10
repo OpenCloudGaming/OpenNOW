@@ -413,6 +413,11 @@ void AppController::quitApplication()
     QCoreApplication::quit();
 }
 
+void AppController::restartApplication()
+{
+    emit restartRequested();
+}
+
 bool AppController::handleArguments(const QStringList &arguments)
 {
     static const QStringList appIdFlags{u"--launch-app-id"_s, u"--app-id"_s};

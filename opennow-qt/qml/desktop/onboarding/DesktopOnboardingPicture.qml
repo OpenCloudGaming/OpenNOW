@@ -177,33 +177,12 @@ Column {
             Column {
                 id: rows
                 width: parent.width
-                SettingRow {
-                    width: parent.width; title: qsTr("Resolution"); glyph: "monitor"
-                    description: qsTr("Choose the size of your stream.")
-                    ComboBox {
-                        id: resolutionPicker
-                        objectName: "onboardingResolution"
-                        readonly property var choices: root.store.resolutionItems().filter(item => item.kind !== "heading")
-                        width: DesktopTokens.px(216); height: DesktopTokens.px(40)
-                        model: choices; textRole: "label"; valueRole: "value"
-                        currentIndex: choices.findIndex(item => item.value === root.resolution)
-                        Accessible.name: qsTr("Resolution")
-                        onActivated: index => { if (!choices[index].disabled) root.store.setOnboardingSetting("resolution", choices[index].value) }
-                        background: Rectangle { radius: height / 2; color: DesktopTokens.raised; border.color: resolutionPicker.activeFocus ? Theme.focus : Theme.seam }
-                        contentItem: Text {
-                            leftPadding: DesktopTokens.px(14); rightPadding: DesktopTokens.px(32)
-                            text: resolutionPicker.displayText + "   " + root.resolution.replace("x", "×"); color: Theme.label
-                            font.family: Theme.bodyFont; font.pixelSize: DesktopTokens.px(13); font.weight: Font.ExtraBold
-                            verticalAlignment: Text.AlignVCenter; elide: Text.ElideRight
-                        }
-                        indicator: DesktopSettingsIcon { x: parent.width - width - DesktopTokens.px(12); anchors.verticalCenter: parent.verticalCenter; width: DesktopTokens.px(12); height: width; glyph: "chevron"; rotation: 90; ink: Theme.label }
-                        delegate: ItemDelegate {
-                            required property var modelData
-                            width: resolutionPicker.width; text: modelData.label
-                            enabled: !modelData.disabled
-                            font.family: Theme.bodyFont; font.pixelSize: DesktopTokens.px(13)
-                        }
-                    }
+                DesktopSettingsResolution {
+                    objectName: "onboardingResolution"
+                    width: parent.width
+                    items: root.store.resolutionItems()
+                    value: root.resolution
+                    onSelected: value => root.store.setOnboardingSetting("resolution", value)
                 }
                 SettingRow {
                     width: parent.width; title: qsTr("Frame rate"); glyph: "speed"

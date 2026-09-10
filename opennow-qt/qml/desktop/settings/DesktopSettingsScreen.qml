@@ -32,7 +32,7 @@ FocusScope {
         {label: qsTr("Console mode"), detail: qsTr("Gamepad-first interface"), icon: "controller", page: 9, keywords: "console fullscreen gamepad startup"},
         {label: qsTr("Network"), detail: qsTr("Region, ping, proxy"), icon: "globe", page: 6, keywords: "server region ping proxy l4s"},
         {label: qsTr("Account"), detail: qsTr("NVIDIA, stores, privacy"), icon: "person", page: 0, keywords: "profile subscription stores steam epic xbox ubisoft battle gaijin privacy"},
-        {label: qsTr("About"), detail: qsTr("Updates, diagnostics"), icon: "info", page: 11, keywords: "version release update diagnostics"}
+        {label: qsTr("About"), detail: qsTr("Updates, diagnostics"), icon: "info", page: 11, keywords: "version release update diagnostics onboarding introduction replay setup restart"}
     ]
     readonly property var pageTitles: [qsTr("Account"), qsTr("Account"), qsTr("Account"), qsTr("Stream"), qsTr("Audio"), qsTr("Controls"), qsTr("Network"), qsTr("Look"), qsTr("Look"), qsTr("Console mode"), qsTr("Controls"), qsTr("About"), qsTr("Recording")]
     readonly property var pageComponents: [accountGroup, subscriptionPage, accountGroup, streamPage, audioPage, controlsGroup, networkPage, lookGroup, lookGroup, consolePage, controlsGroup, aboutPage, recordingPage]

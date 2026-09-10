@@ -54,7 +54,30 @@ if(BUILD_TESTING)
     set_tests_properties(opennow-onboarding-tests PROPERTIES
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
     qt_add_resources(opennow-qt "onboarding-acceptance"
-        PREFIX "/acceptance" BASE tests FILES tests/OnboardingAcceptance.qml tests/OnboardingScrollAcceptance.qml tests/OnboardingAwdlAcceptance.qml)
+        PREFIX "/acceptance" BASE tests FILES tests/OnboardingAcceptance.qml tests/OnboardingScrollAcceptance.qml tests/OnboardingAwdlAcceptance.qml tests/OnboardingReplayAcceptance.qml tests/OnboardingUiAcceptance.qml)
+    foreach(width 960 1440)
+        add_test(NAME "qml-onboarding-replay-${width}" COMMAND opennow-qt
+            --smoke-test --allow-multiple-instances --desktop --route settings
+            --smoke-onboarding --onboarding-replay-check --smoke-width ${width} --reduced-motion)
+        set_tests_properties("qml-onboarding-replay-${width}" PROPERTIES
+            ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
+    endforeach()
+    foreach(width 960 1440)
+        foreach(step 0 2 5)
+            add_test(NAME "qml-onboarding-layout-${width}-${step}" COMMAND opennow-qt
+                --smoke-test --allow-multiple-instances --desktop --route home
+                --smoke-onboarding --onboarding-ui-check --onboarding-step ${step}
+                --smoke-width ${width} --smoke-height 900 --onboarding-ui-scale 1.25 --reduced-motion)
+            set_tests_properties("qml-onboarding-layout-${width}-${step}" PROPERTIES
+                ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
+        endforeach()
+        add_test(NAME "qml-onboarding-resolution-${width}" COMMAND opennow-qt
+            --smoke-test --allow-multiple-instances --desktop --route home
+            --smoke-onboarding --onboarding-ui-check --onboarding-step 2 --onboarding-resolution-expanded
+            --smoke-width ${width} --smoke-height 540 --onboarding-ui-scale 1.25 --reduced-motion)
+        set_tests_properties("qml-onboarding-resolution-${width}" PROPERTIES
+            ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
+    endforeach()
     foreach(width 960 1440)
         if(width EQUAL 960)
             set(awdl_height 540)
