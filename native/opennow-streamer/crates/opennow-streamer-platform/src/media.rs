@@ -4124,7 +4124,9 @@ mod tests {
             let mut submission = submission.lock().unwrap();
             assert!(submission.pending.is_empty());
             assert!(submission.submitter.is_none());
-            let outcome = submission.push(embedded_h264_frame(cycle + 1, false)).unwrap();
+            let outcome = submission
+                .push(embedded_h264_frame(cycle + 1, false))
+                .unwrap();
             assert!(outcome.queued && outcome.needs_graphics);
         }
     }
