@@ -367,6 +367,12 @@ invalid values, take precedence; missing values never come from current saved pr
 CloudMatch chroma enums are `0` for 4:2:0 and `1` for 4:4:4; NVST chroma-format IDs `2` and
 `3` are not accepted as CloudMatch 4:4:4 values.
 
+When present, `session.negotiatedStreamProfile.codec` takes precedence over the numeric
+feature-map codec. H.264/AVC and H.265/HEVC names normalize to `H264` and `H265`;
+`AV1` remains unchanged. An explicit null or unsupported codec stays unknown rather
+than falling back to a requested codec. Preparation failures log bounded codec/color
+evidence and a redacted reason, never the full session or credentials.
+
 Embedded session preflight rejects H.264 with advanced color and AV1 with 4:4:4 before
 allocation, even if a decoder capability lists those formats. These combinations are not
 requested by the supported GFN wire policy. Auto selects HEVC for 4:4:4 rather than silently

@@ -911,6 +911,16 @@ fn session_info(
         features.extend(finalized.clone());
     }
     let mut negotiated = negotiated_profile(monitor, &Value::Object(features));
+    if let Some(codec) = session["negotiatedStreamProfile"].get("codec") {
+        negotiated["codec"] = json!(codec.as_str().and_then(|value| {
+            match value.trim().to_ascii_uppercase().as_str() {
+                "H264" | "AVC" => Some("H264"),
+                "H265" | "HEVC" => Some("H265"),
+                "AV1" => Some("AV1"),
+                _ => None,
+            }
+        }));
+    }
     negotiated["enableHdr"] = json!(accepted_hdr_mode(session) == Some(1));
     let ad_state = normalize_ad_state(session);
     Ok(json!({
@@ -2000,6 +2010,61 @@ mod tests {
         let info = session_info(&ready, &base, "auto", "123", "device").unwrap();
         assert_eq!(info["signalingUrl"], "wss://80.1.2.3:443/nvst/");
         assert_eq!(info["serverIp"], "80.1.2.3");
+    }
+
+    #[test]
+    fn nested_negotiated_codec_reaches_hdr_preparation() {
+        let base = Url::parse(DEFAULT_STREAMING_BASE).unwrap();
+        let capabilities = json!({"protocolVersion":6,"nativeHdrSupported":true,"videoBackends":[{
+            "backend":"videotoolbox","platform":"macos","available":true,"codecs":[{
+                "codec":"h265","available":true,"hdrSupported":true,
+                "colorQualities":["10bit_420"],"hdrColorQualities":["10bit_420"]
+            }]
+        }]});
+        let settings = json!({"codec":"h264","colorQuality":"8bit_420","enableHdr":false});
+        for status in [2, 3] {
+            for codec in ["H265", "HEVC", "hevc"] {
+                let payload = json!({"session":{
+                    "sessionId":"nested-codec", "status":status, "sdrHdrMode":1,
+                    "negotiatedStreamProfile":{"codec":codec},
+                    "finalizedStreamingFeatures":{"bitDepth":1,"chromaFormat":0}
+                }});
+                let info = session_info(&payload, &base, "auto", "123", "device").unwrap();
+                assert_eq!(info["negotiatedStreamProfile"]["codec"], "H265");
+                assert_eq!(info["negotiatedStreamProfile"]["colorQuality"], "10bit_420");
+                let prepared = crate::streamer::StreamerService::new()
+                    .prepare_embedded(
+                        &json!({"session":info,"runtimeCapabilities":capabilities}),
+                        &settings,
+                    )
+                    .unwrap();
+                assert_eq!(prepared["context"]["settings"]["codec"], "H265");
+                assert_eq!(prepared["context"]["settings"]["enableHdr"], true);
+            }
+        }
+    }
+
+    #[test]
+    fn nested_negotiated_codec_overrides_feature_hints_without_guessing() {
+        let base = Url::parse(DEFAULT_STREAMING_BASE).unwrap();
+        for (codec, expected) in [
+            (json!("H264"), json!("H264")),
+            (json!("avc"), json!("H264")),
+            (json!("AV1"), json!("AV1")),
+            (json!("unsupported"), Value::Null),
+            (json!(2), Value::Null),
+            (json!(""), Value::Null),
+            (Value::Null, Value::Null),
+        ] {
+            let payload = json!({"session":{
+                "sessionId":"nested-codec", "status":2, "sdrHdrMode":1,
+                "negotiatedStreamProfile":{"codec":codec},
+                "sessionRequestData":{"requestedStreamingFeatures":{"codec":2}},
+                "finalizedStreamingFeatures":{"codec":2,"bitDepth":1,"chromaFormat":0}
+            }});
+            let info = session_info(&payload, &base, "auto", "123", "device").unwrap();
+            assert_eq!(info["negotiatedStreamProfile"]["codec"], expected);
+        }
     }
 
     #[test]
