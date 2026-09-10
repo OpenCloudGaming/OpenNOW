@@ -570,6 +570,18 @@ fn dispatch(method: &str, params: &Value, core: &AppCore) -> DispatchResult {
             let settings = core.settings.lock().expect("settings poisoned").all();
             core.streamer
                 .prepare_embedded(params, &settings)
+                .inspect_err(|error| {
+                    core.diagnostics.record(
+                        "streamer",
+                        "prepare_profile",
+                        diagnostics::stream_profile_evidence(&params["session"]).to_string(),
+                    );
+                    core.diagnostics.record(
+                        "streamer",
+                        "prepare_rejected",
+                        diagnostics::runtime_failure_reason(&error.message),
+                    );
+                })
                 .map(|value| (value, None))
                 .map_err(streamer_error)
         }

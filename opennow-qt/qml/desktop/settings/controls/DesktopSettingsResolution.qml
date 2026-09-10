@@ -24,8 +24,7 @@ Item {
                 const size = item.value.split("x").map(Number)
                 const screenWidth = Screen.width * Screen.devicePixelRatio
                 const screenHeight = Screen.height * Screen.devicePixelRatio
-                if (!fitsMonitor || (size[0] <= screenWidth && size[1] <= screenHeight
-                        && Math.abs(size[0] / size[1] - screenWidth / screenHeight) < 0.03))
+                if (!fitsMonitor || (size[0] <= screenWidth && size[1] <= screenHeight))
                     group.items.push(item)
             }
         }

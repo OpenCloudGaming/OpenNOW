@@ -3,6 +3,7 @@
 #include <string>
 #include <chrono>
 #include <thread>
+#include <unordered_map>
 
 namespace {
 std::string field(const std::string &json, const std::string &name)
@@ -21,6 +22,7 @@ int main(int argc, char **argv)
     std::string eofMarker;
     bool launchInConsoleMode = false;
     int consoleModeWriteCount = 0;
+    std::unordered_map<std::string, int> busyAttempts;
     if (argc == 3 && std::string(argv[1]) == "--eof-marker") {
         eofMarker = argv[2];
     }
@@ -82,6 +84,17 @@ int main(int argc, char **argv)
             std::cout << "{\"type\":\"event\",\"name\":\"streamer.changed\",\"payload\":{\"streamer\":{\"status\":\"streaming\",\"sessionId\":\"fixture-session\"}}}\n";
             std::cout << "{\"type\":\"response\",\"id\":\"" << id
                       << "\",\"ok\":true,\"result\":{}}\n" << std::flush;
+        } else if (method == "test.busy" || method == "test.busy-forever") {
+            const auto attempt = ++busyAttempts[id];
+            if (method == "test.busy-forever" || attempt <= 2) {
+                std::cout << "{\"type\":\"response\",\"id\":\"" << id
+                          << "\",\"ok\":false,\"error\":{\"code\":\"busy\",\"message\":\"Core request limit reached\"}}\n";
+            } else {
+                std::cout << "{\"type\":\"response\",\"id\":\"" << id
+                          << "\",\"ok\":true,\"result\":" << line << "}\n";
+            }
+            std::cout << "{\"type\":\"event\",\"name\":\"test.busy-attempt\",\"payload\":{\"attempt\":"
+                      << attempt << "}}\n" << std::flush;
         } else if (method == "test.echo") {
             std::cout << "{\"type\":\"response\",\"id\":\"" << id
                       << "\",\"ok\":true,\"result\":{\"value\":\"pong\"}}\n" << std::flush;
