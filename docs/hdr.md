@@ -6,7 +6,7 @@ HDR is an opt-in streaming mode in the Qt/native client. It is separate from the
 
 | Platform | Decode and conversion | Window output |
 | --- | --- | --- |
-| Windows | Media Foundation hardware HEVC/AV1, P010, and a D3D11 video processor that supports PQ BT.2020 to PQ BT.2020 RGB10A2 conversion. | Linear extended sRGB (scRGB) is preferred; HDR10 is available when the window supports it. |
+| Windows | Media Foundation hardware HEVC/AV1 P010 with D3D11 video processing, or HEVC Y410 with ten-bit UINT shader conversion. Both retain PQ BT.2020 in RGB10A2. | Linear extended sRGB (scRGB) is preferred; HDR10 is available when the window supports it. |
 | macOS | Hardware VideoToolbox HEVC Main10 with a verified PQ decode and IOSurface-to-Metal conversion. Encoded PQ BT.2020 is retained in RGBA16F. | Metal extended-range output; current display headroom and Qt's display-referred luminance contract determine HDR presentation. |
 | Linux | An attached Vulkan Video device supporting the negotiated 10-bit profile, or FFmpeg VAAPI with a verified HEVC Main10/AV1 10-bit profile and supported P010 DMA-BUF import. | A single-screen Wayland desktop with a complete configured PQ output description and HDR target headroom through `color-management-v1`, plus a Vulkan surface exposing scRGB or HDR10. |
 
@@ -20,14 +20,14 @@ incomplete protocol replies are bounded and retried rather than reused as stale 
 
 Frame generation is disabled for HDR sources because the current interpolation path is designed for SDR. Native frames retain their original cadence and HDR precision; enabling HDR does not insert SDR-generated frames into the stream.
 
-HDR requests use 10-bit 4:2:0. Auto prefers HEVC and falls back to AV1 only when the runtime reports the required hardware support. Explicit incompatible codecs or unavailable output produce an actionable error before allocating a new session. An explicit server SDR response remains SDR; a saved HDR preference does not override the accepted session format.
+HDR requests use ten bits and preserve the selected chroma format. Auto prefers HEVC and falls back to AV1 for 4:2:0 only when the runtime reports the required hardware support. HDR 4:4:4 requires HEVC and a supported ten-bit 4:4:4 decode and conversion path. Explicit incompatible codecs or unavailable output produce an actionable error before allocating a new session. An explicit server SDR response remains SDR; a saved HDR preference does not override the accepted session format.
 
 ## 10-bit 4:4:4
 
-Ten-bit 4:4:4 is a separate SDR stream profile, not a synonym for HDR. Select Auto or HEVC;
+Ten-bit 4:4:4 does not imply HDR. Select Auto or HEVC;
 the supported GFN request policy does not request AV1 4:4:4. Explicit incompatible codec
 choices fail before session allocation instead of silently reducing chroma. Enabling HDR
-continues to select 10-bit 4:2:0 for that session without rewriting the saved SDR preference.
+preserves 4:4:4 and promotes an eight-bit selection to ten bits for that session without rewriting the saved SDR preference.
 
 - Linux uses the attached Vulkan Video device's exact HEVC range-extension profile and P410
   output layout, then retains full-resolution chroma in GPU snapshots and conversion. CUDA,
@@ -43,6 +43,8 @@ continues to select 10-bit 4:2:0 for that session without rewriting the saved SD
   D3D11 during validation. D3D12-on-11 profile availability differed on that same device.
   Neither a codec-wide capability nor the GPU model substitutes for the exact runtime probe;
   an installed decoder that cannot expose the profile remains unsupported.
+  HDR Y410 has a separate PQ fixture probe and uses the BT.2020 conversion matrix while
+  preserving PQ code values for Qt's HDR output conversion.
 
 Platform profile and conversion tests are not evidence of a successful GFN session or an HDR
 display's output. The exact GPU, driver, decoder, service tier, and compositor must support
@@ -72,6 +74,7 @@ Automated shader and native tests cannot prove an HDR monitor's optical output. 
 4. Move the active stream between HDR and SDR displays and toggle OS HDR. Verify deliberate SDR tone mapping on an SDR output, recovery when HDR returns, and no session restart. Repeat with overlays open.
 5. End the session and start another with the opposite HDR setting, then exercise reconnect/resume. Verify that the new or accepted session's color mode wins over stale frame textures and saved preferences.
 6. On Linux, test Vulkan Video and VAAPI separately when available. Check diagnostics for explicit import/decoder failures; audio continuing alone does not prove video health.
+7. Select HEVC, 10-bit 4:4:4, and HDR. Verify that the accepted session and decoded frames retain ten-bit 4:4:4 and PQ BT.2020, then check saturated colors and highlights in the game. Reconnect and resume with saved settings changed to SDR 4:2:0; the accepted HDR 4:4:4 profile must still win. Repeat the window, overlay, and display-transition checks above. An unsupported decoder must fail explicitly rather than reduce chroma or copy frames to the CPU.
 
 When reporting a failure, include the OS/compositor, GPU and driver, display model, HDR setting, codec/backend, window mode, and whether the failure occurred during startup, decoding, presentation, or a display transition. Do not share account tokens or session credentials.
 

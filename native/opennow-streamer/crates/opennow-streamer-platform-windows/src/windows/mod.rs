@@ -315,6 +315,7 @@ pub(super) fn probe(api: WindowsGraphicsApi) -> CapabilityProbe {
                 av1_10bit: false,
                 h265_444: false,
                 h265_10bit_444: false,
+                h265_hdr_444: false,
                 h264_software_decode: false,
                 h265_software_decode: false,
                 av1_software_decode: false,
@@ -398,6 +399,7 @@ pub(super) fn probe(api: WindowsGraphicsApi) -> CapabilityProbe {
         (VideoCodec::Av1, crate::VideoPixelFormat::P010, false),
         (VideoCodec::H265, crate::VideoPixelFormat::Ayuv, false),
         (VideoCodec::H265, crate::VideoPixelFormat::Y410, false),
+        (VideoCodec::H265, crate::VideoPixelFormat::Y410, true),
     ].map(|(codec, pixel_format, hdr)| {
         let result = graphics
             .as_ref()
@@ -431,6 +433,7 @@ pub(super) fn probe(api: WindowsGraphicsApi) -> CapabilityProbe {
         av1_10bit: format_support[1],
         h265_444: format_support[2],
         h265_10bit_444: format_support[3],
+        h265_hdr_444: format_support[4],
         h264_software_decode,
         h265_software_decode,
         av1_software_decode,

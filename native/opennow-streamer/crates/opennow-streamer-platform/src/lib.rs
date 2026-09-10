@@ -172,6 +172,22 @@ pub(crate) fn embedded_video_backends_with_device(
     #[cfg(target_os = "linux")]
     for backend in &mut backends {
         for codec in &mut backend.codecs {
+            codec.hdr_color_qualities = Some(
+                codec
+                    .color_qualities
+                    .as_ref()
+                    .into_iter()
+                    .flatten()
+                    .copied()
+                    .filter(|color| {
+                        backend.available
+                            && codec.available
+                            && matches!(backend.backend, "vulkan" | "vaapi")
+                            && matches!(codec.codec, "h265" | "av1")
+                            && color.starts_with("10bit_")
+                    })
+                    .collect(),
+            );
             codec.hdr_supported = Some(
                 backend.available
                     && codec.available
@@ -216,6 +232,17 @@ pub(crate) fn embedded_video_backends_with_device(
                     && codec.codec == "h265"
                     && opennow_streamer_platform_macos::probe_h265_hdr_hardware(),
             );
+            let mut hdr_colors = Vec::new();
+            if codec.hdr_supported == Some(true) {
+                hdr_colors.push("10bit_420");
+            }
+            if codec.available
+                && codec.codec == "h265"
+                && opennow_streamer_platform_macos::probe_h265_hdr_444_hardware()
+            {
+                hdr_colors.push("10bit_444");
+            }
+            codec.hdr_color_qualities = Some(hdr_colors);
             codec.color_qualities = Some(colors);
         }
     }
@@ -249,6 +276,7 @@ fn apply_backend_policy(backends: &mut [VideoBackendCapability], requested: Opti
         for codec in &mut backend.codecs {
             codec.available = false;
             codec.hdr_supported = Some(false);
+            codec.hdr_color_qualities = Some(Vec::new());
             codec.color_qualities = Some(Vec::new());
             codec.reason = Some("video backend was disabled by decoder policy");
         }
@@ -304,6 +332,17 @@ fn windows_hardware_backend(
         })
         .collect::<Vec<_>>()
     };
+    let hdr_color_qualities = |codec| {
+        [
+            ("10bit_420", VideoPixelFormat::P010),
+            ("10bit_444", VideoPixelFormat::Y410),
+        ]
+        .into_iter()
+        .filter_map(|(color, format)| {
+            (media_output_available && probe.supports_format(codec, format, true)).then_some(color)
+        })
+        .collect::<Vec<_>>()
+    };
     let reason = if available {
         None
     } else {
@@ -315,6 +354,7 @@ fn windows_hardware_backend(
         codecs: vec![
             CodecCapability {
                 hdr_supported: Some(false),
+                hdr_color_qualities: Some(hdr_color_qualities(VideoCodec::H264)),
                 color_qualities: Some(color_qualities(VideoCodec::H264)),
                 codec: "h264",
                 available: media_output_available && probe.h264_hardware_decode,
@@ -324,6 +364,7 @@ fn windows_hardware_backend(
             },
             CodecCapability {
                 hdr_supported: Some(media_output_available && probe.h265_hdr),
+                hdr_color_qualities: Some(hdr_color_qualities(VideoCodec::H265)),
                 color_qualities: Some(color_qualities(VideoCodec::H265)),
                 codec: "h265",
                 available: media_output_available && probe.h265_hardware_decode,
@@ -333,6 +374,7 @@ fn windows_hardware_backend(
             },
             CodecCapability {
                 hdr_supported: Some(media_output_available && probe.av1_hdr),
+                hdr_color_qualities: Some(hdr_color_qualities(VideoCodec::Av1)),
                 color_qualities: Some(color_qualities(VideoCodec::Av1)),
                 codec: "av1",
                 available: media_output_available && probe.av1_hardware_decode,
@@ -369,6 +411,7 @@ fn hardware_backend() -> VideoBackendCapability {
         codecs: vec![
             CodecCapability {
                 hdr_supported: Some(false),
+                hdr_color_qualities: None,
                 color_qualities: Some(vec!["8bit_420"]),
                 codec: "h264",
                 available: h264_available,
@@ -377,6 +420,7 @@ fn hardware_backend() -> VideoBackendCapability {
             },
             CodecCapability {
                 hdr_supported: Some(false),
+                hdr_color_qualities: None,
                 color_qualities: Some(vec!["8bit_420", "10bit_420"]),
                 codec: "h265",
                 available: h265_available,
@@ -385,6 +429,7 @@ fn hardware_backend() -> VideoBackendCapability {
             },
             CodecCapability {
                 hdr_supported: Some(false),
+                hdr_color_qualities: None,
                 color_qualities: Some(vec!["8bit_420", "10bit_420"]),
                 codec: "av1",
                 available: av1_available,
@@ -421,6 +466,7 @@ fn software_backend() -> VideoBackendCapability {
             codecs: vec![
                 CodecCapability {
                     hdr_supported: None,
+                    hdr_color_qualities: None,
                     color_qualities: None,
                     codec: "h264",
                     available: true,
@@ -428,6 +474,7 @@ fn software_backend() -> VideoBackendCapability {
                 },
                 CodecCapability {
                     hdr_supported: None,
+                    hdr_color_qualities: None,
                     color_qualities: None,
                     codec: "h265",
                     available: media_output_available && probe.h265_software_decode,
@@ -437,6 +484,7 @@ fn software_backend() -> VideoBackendCapability {
                 },
                 CodecCapability {
                     hdr_supported: None,
+                    hdr_color_qualities: None,
                     color_qualities: None,
                     codec: "av1",
                     available: media_output_available && probe.av1_software_decode,
@@ -457,6 +505,7 @@ fn software_backend() -> VideoBackendCapability {
         codecs: vec![
             CodecCapability {
                 hdr_supported: None,
+                hdr_color_qualities: None,
                 color_qualities: None,
                 codec: "h264",
                 available: true,
@@ -464,6 +513,7 @@ fn software_backend() -> VideoBackendCapability {
             },
             CodecCapability {
                 hdr_supported: None,
+                hdr_color_qualities: None,
                 color_qualities: None,
                 codec: "h265",
                 available: false,
@@ -471,6 +521,7 @@ fn software_backend() -> VideoBackendCapability {
             },
             CodecCapability {
                 hdr_supported: None,
+                hdr_color_qualities: None,
                 color_qualities: None,
                 codec: "av1",
                 available: false,
@@ -496,6 +547,7 @@ fn unavailable_backend(
             .into_iter()
             .map(|codec| CodecCapability {
                 hdr_supported: None,
+                hdr_color_qualities: None,
                 color_qualities: None,
                 codec,
                 available: false,
@@ -535,6 +587,7 @@ mod tests {
                 codec: "h265",
                 available: true,
                 hdr_supported: Some(true),
+                hdr_color_qualities: None,
                 color_qualities: Some(vec!["8bit_420", "10bit_420"]),
                 reason: None,
             }],

@@ -452,6 +452,9 @@ impl Graphics {
             (VideoCodec::H265, VideoPixelFormat::Y410, false) => {
                 include_bytes!("../../fixtures/probe/hevc-y410-sdr.hevc")
             }
+            (VideoCodec::H265, VideoPixelFormat::Y410, true) => {
+                include_bytes!("../../fixtures/probe/hevc-y410-pq.hevc")
+            }
             _ => return Err("unsupported Windows decoder probe format".to_owned()),
         };
         let frame = decoder.probe_frame(data)?;

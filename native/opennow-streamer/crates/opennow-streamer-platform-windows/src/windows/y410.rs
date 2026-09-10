@@ -1,8 +1,7 @@
 use super::decoder::DecodedVideoFrame;
 use super::embedded::MAX_FRAME_SLOTS;
-use crate::{
-    VideoColorMatrix, VideoColorPrimaries, VideoFormat, VideoPixelFormat, VideoTransferFunction,
-};
+use crate::VideoFormat;
+use crate::y410_color::Y410Constants;
 use ::windows::Win32::Graphics::Direct3D::Fxc::D3DCompile;
 use ::windows::Win32::Graphics::Direct3D::{
     D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST, D3D_SRV_DIMENSION_TEXTURE2D, ID3DBlob,
@@ -35,14 +34,7 @@ impl Y410Converter {
         immediate: &ID3D11DeviceContext,
         format: VideoFormat,
     ) -> Result<Self, String> {
-        format.validate_color().map_err(|error| error.to_string())?;
-        if format.pixel_format != VideoPixelFormat::Y410
-            || format.transfer_function != VideoTransferFunction::Sdr
-            || format.color_primaries != VideoColorPrimaries::Bt709
-            || format.color_matrix != VideoColorMatrix::Bt709
-        {
-            return Err("Y410 shader conversion requires SDR BT.709".to_owned());
-        }
+        let constants = Y410Constants::new(format)?;
         let mut input = None;
         let mut input_view = None;
         let mut deferred = None;
@@ -116,24 +108,19 @@ impl Y410Converter {
                 )
                 .map_err(|error| format!("create Y410 pixel shader: {error}"))?;
         }
-        let scale_bias: [f32; 4] = if format.full_range {
-            [1.0 / 1023.0, 0.0, 1.0 / 1023.0, -512.0 / 1023.0]
-        } else {
-            [1.0 / 876.0, -64.0 / 876.0, 1.0 / 896.0, -512.0 / 896.0]
-        };
         let mut quantization = None;
         let mut rasterizer = None;
         unsafe {
             device
                 .CreateBuffer(
                     &D3D11_BUFFER_DESC {
-                        ByteWidth: 16,
+                        ByteWidth: std::mem::size_of::<Y410Constants>() as u32,
                         Usage: D3D11_USAGE_IMMUTABLE,
                         BindFlags: D3D11_BIND_CONSTANT_BUFFER.0 as u32,
                         ..Default::default()
                     },
                     Some(&D3D11_SUBRESOURCE_DATA {
-                        pSysMem: scale_bias.as_ptr().cast(),
+                        pSysMem: std::ptr::from_ref(&constants).cast(),
                         ..Default::default()
                     }),
                     Some(&mut quantization),

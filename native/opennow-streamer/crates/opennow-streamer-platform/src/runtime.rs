@@ -233,8 +233,8 @@ impl MediaRuntime {
             {
                 return Err("HDR requires a negotiated 10-bit HEVC or AV1 stream".to_owned());
             }
-            if stream.color_quality.is_444() {
-                return Err("HDR requires a negotiated 10-bit 4:2:0 stream".to_owned());
+            if stream.color_quality.is_444() && !self.supports_hdr_444(stream) {
+                return Err("HDR requires a negotiated 10-bit 4:2:0 stream unless HEVC 10-bit 4:4:4 hardware decode and GPU output are supported".to_owned());
             }
             if !cfg!(any(
                 target_os = "windows",
@@ -251,7 +251,11 @@ impl MediaRuntime {
             }
             #[cfg(target_os = "macos")]
             if stream.codec != crate::MediaVideoCodec::H265
-                || !opennow_streamer_platform_macos::probe_h265_hdr_hardware()
+                || !(if stream.color_quality.is_444() {
+                    opennow_streamer_platform_macos::probe_h265_hdr_444_hardware()
+                } else {
+                    opennow_streamer_platform_macos::probe_h265_hdr_hardware()
+                })
             {
                 return Err(
                     "HDR requires a verified HEVC VideoToolbox and Metal output path".to_owned(),
@@ -385,6 +389,29 @@ impl MediaRuntime {
                 Err(error)
             }
         }
+    }
+
+    fn supports_hdr_444(&self, stream: MediaStreamConfig) -> bool {
+        if !self.is_embedded() || stream.codec != crate::MediaVideoCodec::H265 {
+            return false;
+        }
+        #[cfg(target_os = "windows")]
+        {
+            use opennow_streamer_platform_windows::{VideoCodec, VideoPixelFormat, WindowsBackend};
+            WindowsBackend::probe().supports_format(VideoCodec::H265, VideoPixelFormat::Y410, true)
+        }
+        #[cfg(target_os = "linux")]
+        {
+            use opennow_streamer_platform_linux::{PixelFormat, VideoCodec};
+            matches!(&self.mode, MediaRuntimeMode::Embedded(_, Some(device))
+                if device.supports_format(VideoCodec::H265, PixelFormat::P410, stream.width, stream.height))
+        }
+        #[cfg(target_os = "macos")]
+        {
+            opennow_streamer_platform_macos::probe_h265_hdr_444_hardware()
+        }
+        #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
+        false
     }
 
     pub fn update_surface(&self, surface: RenderSurface) -> Result<(), String> {
@@ -1699,7 +1726,8 @@ mod tests {
     #[test]
     fn hdr_444_fails_before_decoder_start() {
         let (_graphics, frames) = crate::RenderThreadGraphics::new(|| {});
-        let runtime = super::create_embedded_runtime(frames);
+        let mut runtime = super::create_embedded_runtime(frames);
+        runtime.mode = super::MediaRuntimeMode::Standalone;
         for codec in [crate::MediaVideoCodec::H265, crate::MediaVideoCodec::Av1] {
             let (feedback, _) = std::sync::mpsc::channel();
             let result = runtime.start(
@@ -1713,6 +1741,24 @@ mod tests {
             );
             assert!(matches!(result, Err(message) if message.contains("10-bit 4:2:0")));
         }
+        runtime.shutdown();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn hdr_444_without_shared_vulkan_device_never_falls_back_to_cpu() {
+        let (_graphics, frames) = crate::RenderThreadGraphics::new(|| {});
+        let runtime = super::create_embedded_runtime(frames);
+        let stream = crate::MediaStreamConfig {
+            codec: crate::MediaVideoCodec::H265,
+            color_quality: crate::MediaColorQuality::TenBit444,
+            hdr: true,
+            ..Default::default()
+        };
+        assert!(!runtime.supports_hdr_444(stream));
+        let (feedback, _) = std::sync::mpsc::channel();
+        assert!(matches!(runtime.start(feedback, stream), Err(message)
+            if message.contains("4:4:4 hardware decode and GPU output")));
         runtime.shutdown();
     }
 

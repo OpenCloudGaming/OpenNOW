@@ -377,10 +377,10 @@ impl StreamerService {
                 && backend["platform"] == "macos"
                 && backend["available"].as_bool() == Some(true)
         });
-        let color = if hdr {
-            "10bit_420"
-        } else {
-            settings["colorQuality"].as_str().unwrap_or("8bit_420")
+        let color = match (hdr, settings["colorQuality"].as_str().unwrap_or("8bit_420")) {
+            (true, "8bit_444" | "10bit_444") => "10bit_444",
+            (true, _) => "10bit_420",
+            (false, color) => color,
         };
         if videotoolbox
             && !matches!(color, "8bit_420" | "10bit_420")
@@ -424,6 +424,15 @@ impl StreamerService {
                     };
                 let supported = wire_supported
                     && (!hdr || hdr_supported != Some(false))
+                    && (!hdr
+                        || match codec.get("hdrColorQualities") {
+                            Some(qualities) => qualities.as_array().is_some_and(|qualities| {
+                                qualities
+                                    .iter()
+                                    .any(|quality| quality.as_str() == Some(color))
+                            }),
+                            None => color == "10bit_420",
+                        })
                     && match codec.get("colorQualities") {
                         Some(qualities) => qualities.as_array().is_some_and(|qualities| {
                             qualities
@@ -431,7 +440,7 @@ impl StreamerService {
                                 .any(|quality| quality.as_str() == Some(color))
                         }),
                         None => {
-                            (hdr && hdr_supported == Some(true))
+                            (hdr && color == "10bit_420" && hdr_supported == Some(true))
                                 || !requires_profiles
                                 || color == "8bit_420"
                         }
@@ -507,15 +516,17 @@ impl StreamerService {
         }
         let mut context = streamer_context(session, settings);
         if context["settings"]["enableHdr"].as_bool() == Some(true)
-            && (context["session"]["negotiatedStreamProfile"]["colorQuality"].as_str()
-                != Some("10bit_420")
-                || !matches!(
+            && !matches!(
+                (
                     context["session"]["negotiatedStreamProfile"]["codec"].as_str(),
-                    Some("H265" | "HEVC" | "AV1")
-                ))
+                    context["session"]["negotiatedStreamProfile"]["colorQuality"].as_str(),
+                ),
+                (Some("H265" | "HEVC"), Some("10bit_420" | "10bit_444"))
+                    | (Some("AV1"), Some("10bit_420"))
+            )
         {
             return Err(invalid(
-                "The accepted HDR session is not a supported 10-bit 4:2:0 stream",
+                "The accepted HDR session requires 10-bit HEVC 4:2:0/4:4:4 or AV1 4:2:0",
             ));
         }
         if context["settings"]["enableHdr"].as_bool() == Some(true)
@@ -1919,6 +1930,132 @@ mod tests {
             .unwrap();
             assert_eq!(resolved["codec"], "h265");
             assert_eq!(resolved["colorQuality"], "10bit_444");
+        }
+    }
+
+    #[test]
+    fn hdr_preserves_requested_chroma_and_requires_explicit_444_support() {
+        let capabilities = json!({"protocolVersion":6,"nativeHdrSupported":true,"videoBackends":[{
+            "backend":"d3d11","platform":"windows","available":true,"codecs":[
+                {"codec":"h265","available":true,"hdrSupported":true,
+                    "colorQualities":["8bit_420","10bit_420","8bit_444","10bit_444"],
+                    "hdrColorQualities":["10bit_420","10bit_444"]},
+                {"codec":"av1","available":true,"hdrSupported":true,
+                    "colorQualities":["8bit_420","10bit_420"]}
+            ]
+        }]});
+        for codec in ["auto", "h265", "hevc"] {
+            for color in ["8bit_444", "10bit_444"] {
+                let settings = json!({"codec":codec,"colorQuality":color,"enableHdr":true});
+                let resolved =
+                    StreamerService::embedded_session_settings(&settings, &capabilities).unwrap();
+                assert_eq!(resolved["codec"], "h265");
+                assert_eq!(resolved["colorQuality"], "10bit_444");
+                assert_eq!(settings["colorQuality"], color);
+                for qualities in [Value::Null, json!([]), json!(["10bit_420"])] {
+                    let mut unsupported = capabilities.clone();
+                    unsupported["videoBackends"][0]["codecs"][0]["colorQualities"] = qualities;
+                    assert!(
+                        StreamerService::embedded_session_settings(&settings, &unsupported)
+                            .is_err()
+                    );
+                }
+                let mut unknown = capabilities.clone();
+                unknown["videoBackends"][0]["codecs"][0]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("colorQualities");
+                assert!(StreamerService::embedded_session_settings(&settings, &unknown).is_err());
+                for qualities in [
+                    Value::Null,
+                    json!([]),
+                    json!(["10bit_420"]),
+                    json!("10bit_444"),
+                ] {
+                    let mut unsupported = capabilities.clone();
+                    unsupported["videoBackends"][0]["codecs"][0]["hdrColorQualities"] = qualities;
+                    assert!(
+                        StreamerService::embedded_session_settings(&settings, &unsupported)
+                            .is_err()
+                    );
+                }
+                let mut unknown = capabilities.clone();
+                unknown["videoBackends"][0]["codecs"][0]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("hdrColorQualities");
+                assert!(StreamerService::embedded_session_settings(&settings, &unknown).is_err());
+                let mut unsupported = capabilities.clone();
+                unsupported["videoBackends"][0]["codecs"][0]["hdrSupported"] = json!(false);
+                assert!(
+                    StreamerService::embedded_session_settings(&settings, &unsupported).is_err()
+                );
+            }
+        }
+        let av1 = json!({"codec":"av1","colorQuality":"10bit_444","enableHdr":true});
+        assert!(StreamerService::embedded_session_settings(&av1, &capabilities).is_err());
+    }
+
+    #[test]
+    fn hdr_444_attachment_preserves_accepted_profile_and_rechecks_capabilities() {
+        let capabilities = json!({"protocolVersion":6,"nativeHdrSupported":true,"videoBackends":[{
+            "backend":"d3d11","platform":"windows","available":true,"codecs":[
+                {"codec":"h265","available":true,"hdrSupported":true,
+                    "colorQualities":["10bit_420","10bit_444"],"hdrColorQualities":["10bit_420","10bit_444"]}
+            ]
+        }]});
+        let settings = json!({"codec":"h264","colorQuality":"8bit_420","enableHdr":false});
+        let service = StreamerService::new();
+        for status in [2, 3] {
+            let params = json!({"session":{"sessionId":"hdr-444","status":status,
+                "negotiatedStreamProfile":{"codec":"H265","colorQuality":"10bit_444","enableHdr":true}},
+                "runtimeCapabilities":capabilities});
+            let prepared = service.prepare_embedded(&params, &settings).unwrap();
+            assert_eq!(prepared["context"]["settings"]["codec"], "H265");
+            assert_eq!(prepared["context"]["settings"]["colorQuality"], "10bit_444");
+            assert_eq!(prepared["context"]["settings"]["enableHdr"], true);
+            assert_eq!(prepared["context"]["settings"]["nativeHdrSupported"], true);
+            for color in ["8bit_420", "8bit_444", "10bit_422"] {
+                let mut unsupported = params.clone();
+                unsupported["session"]["negotiatedStreamProfile"]["colorQuality"] = json!(color);
+                assert!(service.prepare_embedded(&unsupported, &settings).is_err());
+            }
+            let mut unavailable = params.clone();
+            unavailable["runtimeCapabilities"]["videoBackends"][0]["codecs"][0]["colorQualities"] =
+                json!(["10bit_420"]);
+            assert!(service.prepare_embedded(&unavailable, &settings).is_err());
+            unavailable = params.clone();
+            unavailable["runtimeCapabilities"]["videoBackends"][0]["codecs"][0]["hdrColorQualities"] =
+                json!(["10bit_420"]);
+            assert!(service.prepare_embedded(&unavailable, &settings).is_err());
+            unavailable = params.clone();
+            unavailable["runtimeCapabilities"]["nativeHdrSupported"] = json!(false);
+            assert!(service.prepare_embedded(&unavailable, &settings).is_err());
+            unavailable["runtimeCapabilities"] = Value::Null;
+            assert!(service.prepare_embedded(&unavailable, &settings).is_err());
+        }
+    }
+
+    #[test]
+    fn explicit_hdr_profiles_gate_hdr_without_affecting_sdr() {
+        let mut capabilities = json!({"protocolVersion":6,"nativeHdrSupported":true,"videoBackends":[{
+            "backend":"d3d11","available":true,"codecs":[
+                {"codec":"h265","available":true,"hdrSupported":true,
+                    "colorQualities":["8bit_420","10bit_420"],"hdrColorQualities":["10bit_420"]}
+            ]
+        }]});
+        let hdr = json!({"codec":"h265","enableHdr":true});
+        assert!(StreamerService::embedded_session_settings(&hdr, &capabilities).is_ok());
+        for profiles in [
+            Value::Null,
+            json!([]),
+            json!(["10bit_444"]),
+            json!("10bit_420"),
+        ] {
+            capabilities["videoBackends"][0]["codecs"][0]["hdrColorQualities"] = profiles;
+            assert!(StreamerService::embedded_session_settings(&hdr, &capabilities).is_err());
+            let sdr = json!({"codec":"h265","enableHdr":false,"colorQuality":"10bit_420"});
+            assert!(StreamerService::embedded_session_settings(&sdr, &capabilities).is_ok());
         }
     }
 

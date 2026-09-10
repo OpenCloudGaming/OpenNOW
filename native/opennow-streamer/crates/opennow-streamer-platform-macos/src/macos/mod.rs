@@ -33,7 +33,9 @@ pub use self::embedded::{
 };
 use self::mailbox::LatestMailbox;
 use self::presentation::PresenterHandle;
-pub use self::profile_probe::{probe_h265_444_ten_bit_hardware, probe_h265_hdr_hardware};
+pub use self::profile_probe::{
+    probe_h265_444_ten_bit_hardware, probe_h265_hdr_444_hardware, probe_h265_hdr_hardware,
+};
 use self::surface::SurfaceOwner;
 use self::video::{DecodedFrameOutput, VideoDecoder};
 
