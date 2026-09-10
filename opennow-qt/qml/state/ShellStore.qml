@@ -412,14 +412,14 @@ QtObject {
         if (root.activeSession) {
             const localStatus = Number(root.activeSession.status || 0)
             const localPhase = String(root.activeSession.phase || "").toLowerCase()
-            if (localStatus === 2 || localStatus === 3
+            if ((localStatus >= 2 && localStatus <= 5)
                     || localPhase === "ready" || localPhase === "streaming")
                 return root.activeSession
         }
         const sessions = root.remoteSessions || []
         for (let index = 0; index < sessions.length; ++index) {
             const status = Number(sessions[index] && sessions[index].status || 0)
-            if (status === 2 || status === 3)
+            if (status >= 2 && status <= 5)
                 return sessions[index]
         }
         return null

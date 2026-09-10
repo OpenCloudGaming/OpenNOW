@@ -221,16 +221,21 @@ fields or treat an empty process-streamer snapshot as the embedded capabilities.
 ### Session resume and reconnect
 
 `session.claim` discovers the session's actual control server, sends the minimal
-`action: 2, data: "RESUME"` request for a ready/streaming seat, and returns a session
+`action: 2, data: "RESUME"` request for a ready, streaming, or paused seat, and returns a session
 with `resumePending: true` and `phase: "resuming"`. It preserves the stable device
 identity and existing launch mode; it does not renegotiate codec, resolution, FPS,
-or bitrate. A launching/transitioning seat is polled without repeating the mutation.
+or bitrate. An initializing (`1`) or resuming (`6`) seat is polled without repeating
+the mutation. Discovery includes paused (`4`/`5`) and resuming seats so they remain
+available to resume and reconnect. Finished or unknown states reject the claim.
 
 The PUT acknowledgement is not stream readiness. Call `session.poll` until a fresh
 GET has a successful CloudMatch request status (`statusCode: 1`), session status
 `2` or `3`, and nonempty native RTSPS endpoints. Only then does the core clear
 `resumePending` and expose the ready/streaming phase. Transient status `6` continues
-to report `resuming`. Transport/API failures remain typed RPC errors.
+to report `resuming`; finished or unknown poll states clear `resumePending` and
+report `failed`. A RESUME response of `SESSION_NOT_PAUSED` (`statusCode: 34`)
+also proceeds to polling, including on an HTTP error response. Authentication
+failures and other transport/API failures remain typed RPC errors.
 
 Qt polls every 1.5 seconds with only one request outstanding, bounded by 60 polls
 and a 90-second deadline checked between requests. Native connection recovery first
