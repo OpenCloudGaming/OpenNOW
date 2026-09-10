@@ -41,7 +41,7 @@ internal object StreamHdr {
                             MediaCodecInfo.CodecProfileLevel.HEVCProfileMain10,
                             MediaCodecInfo.CodecProfileLevel.HEVCProfileMain10HDR10,
                             MediaCodecInfo.CodecProfileLevel.HEVCProfileMain10HDR10Plus,
-                        ) } && caps.videoCapabilities?.areSizeAndRateSupported(width, height, fps.toDouble()) == true
+                        ) } && (caps.videoCapabilities?.let { it.areSizeAndRateSupported(width, height, fps.toDouble()) || it.isSizeSupported(width, height) } ?: true)
                     }.getOrDefault(false)
             }?.name
         }.getOrNull()
