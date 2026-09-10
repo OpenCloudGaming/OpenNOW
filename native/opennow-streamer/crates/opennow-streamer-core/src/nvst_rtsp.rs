@@ -1381,6 +1381,10 @@ fn set_io_timeout(socket: &mut WebSocket<MaybeTlsStream<TcpStream>>, timeout: Du
 mod control_ping_tests;
 
 #[cfg(test)]
+#[path = "nvst_rtsp_tls_tests.rs"]
+mod tls_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
@@ -1453,6 +1457,21 @@ mod tests {
             "shortcuts": {}
         }))
         .expect("context")
+    }
+
+    #[test]
+    fn rtsps_supports_tls12_and_tls13_without_legacy_versions() {
+        let versions: Vec<_> = rustls::DEFAULT_VERSIONS
+            .iter()
+            .map(|version| version.version)
+            .collect();
+        assert_eq!(
+            versions,
+            vec![
+                rustls::ProtocolVersion::TLSv1_3,
+                rustls::ProtocolVersion::TLSv1_2
+            ]
+        );
     }
 
     #[test]

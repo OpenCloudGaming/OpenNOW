@@ -54,7 +54,7 @@ socket2 = { version = "0.5", features = ["all"] }
 str0m = { version = "0.23", default-features = false }
 subtle = "2"
 thiserror = "2"
-rustls = { version = "0.23", default-features = false, features = ["std", "ring"] }
+rustls = { version = "0.23", default-features = false, features = ["std", "ring", "tls12"] }
 tungstenite = { version = "0.28", default-features = false, features = ["handshake", "rustls-tls-native-roots"] }
 
 [profile.release]
