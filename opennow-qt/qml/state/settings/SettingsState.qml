@@ -197,6 +197,23 @@ QtObject {
             setSetting("fps", clamped)
     }
 
+    function resolutionItems() {
+        const groups = [
+            ["16:9 STANDARD", [["720p","1280x720"],["900p","1600x900"],["1080p","1920x1080"],["1440p","2560x1440"],["1800p","3200x1800"],["4K","3840x2160"],["5K","5120x2880"],["8K","7680x4320"]]],
+            ["16:10 WIDESCREEN", [["800p","1280x800"],["900p","1440x900"],["1050p","1680x1050"],["1200p","1920x1200"],["1600p","2560x1600"],["2400p","3840x2400"]]],
+            ["21:9 ULTRAWIDE", [["UW 1080p","2560x1080"],["UW 1440p","3440x1440"],["UW 1600p","3840x1600"],["UW 1800p","3840x1800"],["UW 2160p","5120x2160"]]],
+            ["32:9 SUPER ULTRAWIDE", [["Dual 1080p","3840x1080"],["Dual 1440p","5120x1440"]]]
+        ]
+        const items = []
+        for (const group of groups) {
+            items.push({kind:"heading",label:group[0]})
+            for (const option of group[1])
+                items.push({kind:"choice",label:option[0],detail:option[1].replace("x","×"),value:option[1],
+                    disabled: Boolean(root.subscription) && root.entitledFpsForResolution(option[1]).length === 0})
+        }
+        return items
+    }
+
     function videoBackendItems() {
         const backends = nativeRuntimeCapabilities.videoBackends || []
         const result = [{label: qsTr("Auto (recommended)"), value: "auto",

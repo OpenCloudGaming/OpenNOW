@@ -422,6 +422,16 @@ Existing microphone device selections are cleared only when explicitly selecting
 microphone; that write likewise reports `"changes":{"microphoneDeviceId":""}` so the
 shell follows the system-default capture selection.
 
+`onboardingCompleted` is a persisted boolean, defaulting to `false` for a new
+profile or an unreadable or malformed settings file. A valid existing settings
+JSON object without the key migrates to `true` and is saved during loading, so
+upgrades do not trigger first-run setup. Explicit `false` and `true` values survive
+reloads and unrelated writes, including startup preferences and window geometry.
+Non-boolean values normalize to `false` under the standard settings type rules.
+`settings.reset` preserves the current completion value while resetting preferences;
+it does not replay onboarding for an existing user. Failed saves leave the previous
+in-memory value and persisted settings unchanged.
+
 `gameCollections` defaults to `[]`. `settings.set` replaces the complete ordered
 array with at most 100 objects of the form
 `{"id":"collection-id","name":"Collection name","gameIds":["game-id"]}`.

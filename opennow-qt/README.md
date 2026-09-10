@@ -249,6 +249,67 @@ release, and restore the actual system cursor. A live session with two displays 
 still required to verify physical mouse containment, mixed-DPI transitions, and
 the server/client cursor handoff.
 
+### First-run onboarding
+
+New profiles enter setup after provider sign-in. The flow covers the 1.0.0 beta
+notice, desktop or console mode, streaming preferences, optional frame generation,
+macOS-only MetalFX upscaling, and optional GitHub Sponsors support. Existing
+profiles migrate with onboarding completed and retain their preferences.
+
+Choices stay in a local draft until **Finish setup** or **Skip setup**. Both actions
+save the current choices, then persist `onboardingCompleted` last. If a write fails,
+setup keeps the draft and presents the error for retry. Selecting console mode does
+not replace the wizard while its settings are being saved. No payment or diagnostic
+upload happens during onboarding.
+
+On macOS, setup requires the `awdl0` interface to be down. Boost offers an explicit,
+confirmed disable action using the macOS administrator prompt. Finish and Skip
+both check the current interface state, with a fresh check before sending the
+completion-marker write after the other settings. Enabled, unreadable and busy
+states block completion and return to Boost without discarding the draft. A
+confirmed absent interface needs no change; other platforms have no AWDL requirement.
+Re-enabling AWDL from the card undoes the network change and blocks completion again.
+OpenNOW never disables AWDL automatically, stores administrator credentials, or
+installs a service. Disabling AWDL can interrupt AirDrop, AirPlay, Sidecar and other
+Continuity features for all users. macOS may re-enable it after the check; OpenNOW
+does not enforce its state after setup. An interface-down reading is not proof of
+zero AWDL radio traffic or a guaranteed fix for streaming stutter.
+
+Run persistence and whole-app acceptance without an account:
+
+```sh
+ctest --test-dir build/opennow-qt -R 'onboarding' --output-on-failure
+QT_QPA_PLATFORM=offscreen build/opennow-qt/opennow-qt \
+  --smoke-test --allow-multiple-instances --desktop --route home \
+  --smoke-onboarding --onboarding-step 0 --smoke-width 1440 \
+  --reduced-motion --screenshot /absolute/path/onboarding.png
+```
+
+`--onboarding-step` accepts 0 through 5. Add `--smoke-light-theme` or
+`--onboarding-ui-scale 1.25` to inspect alternate appearances. For the existing
+provider sign-in screen, replace `--onboarding-step 0` with `--onboarding-login`.
+Add `--onboarding-awdl-check --onboarding-step 3` to exercise the macOS card with an
+injected controller on any platform. This checks confirmation, cancellation,
+restore, busy, error and unsupported states without changing a network interface.
+These switches run only with the smoke fixture; they do not start provider login,
+open donation links, or write account settings. Real provider approval and native
+MetalFX output still require the corresponding account and macOS device.
+
+Capture every setup step in desktop, compact 1.25×, and light appearances, plus
+desktop and compact login, for visual comparison with the Paper design:
+
+```sh
+bash scripts/capture-qt-onboarding.sh build/opennow-qt/opennow-qt /absolute/path/onboarding-review
+```
+
+The compact scroll checks focus every eligible control, verify that the focused
+control fits inside the viewport, and capture the final scrolled position. The
+capture script uses OpenGL and starts Xvfb on headless Linux, so shader-backed
+controls render rather than disappearing under the offscreen software backend.
+It requires a built app and `xvfb-run` on headless Linux. Each PNG has a matching
+acceptance log. The mode cards use the original Paper shell previews; these are
+illustrations, not the signed-in user's library.
+
 Run with the offscreen Qt platform plugin for a startup smoke test:
 
 ```sh

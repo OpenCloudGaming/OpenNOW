@@ -56,6 +56,61 @@ QtObject {
     }
 
     property alias settings: settingsOwner.settings
+    property var onboardingAwdlController: MacAwdl
+    readonly property bool onboardingAwdlReady: !onboardingAwdlController.busy
+        && [MacAwdlController.Unsupported, MacAwdlController.Unavailable, MacAwdlController.Disabled]
+            .indexOf(onboardingAwdlController.state) >= 0
+    property OnboardingState onboardingOwnerState: OnboardingState {
+        id: onboardingOwner
+        coreClient: CoreClient
+        persistedSettings: root.settings
+        ready: root.ready
+        signedIn: root.signedIn
+        checkRequirements: root.checkOnboardingRequirements
+        onRequirementsMissing: root.onboardingRequirementsMissing()
+        onSettingSaved: (key, value, changes) => {
+            settingsOwner.applyCoupledSettings(changes)
+            settingsOwner.applySetting(key, value)
+        }
+        onCompleted: {
+            root.consoleSurfaceRequested(root.settings.launchInConsoleMode === true)
+            root.onboardingCompleted()
+            Qt.callLater(root.resolveDirectLaunch)
+        }
+    }
+    readonly property bool onboardingRequired: onboardingOwner.needed
+    readonly property var onboardingSettings: onboardingOwner.settings
+    readonly property bool onboardingSaving: onboardingOwner.saving
+    readonly property string onboardingError: onboardingOwner.error
+    signal onboardingCompleted()
+    signal onboardingRequirementsMissing()
+
+    function checkOnboardingRequirements() {
+        onboardingAwdlController.refresh()
+        if (onboardingAwdlReady)
+            return ""
+        if (onboardingAwdlController.busy)
+            return qsTr("Wait for macOS authorization to finish before continuing setup.")
+        if (onboardingAwdlController.state === MacAwdlController.Unknown)
+            return qsTr("AWDL status could not be verified. Refresh its status in Boost before continuing setup.")
+        return qsTr("Disable AWDL in Boost before continuing setup on this Mac.")
+    }
+
+    function verifyOnboardingRequirements() {
+        return onboardingOwner.verifyRequirements()
+    }
+
+    function setOnboardingSetting(key, value) {
+        onboardingOwner.setSetting(key, value)
+        if (key === "resolution" || key === "fps")
+            onboardingOwner.setSetting("fps", settingsOwner.resolveEntitledFps(
+                onboardingSettings.resolution, onboardingSettings.fps))
+    }
+
+    function finishOnboarding() {
+        onboardingOwner.finish()
+    }
+
     property alias previewThemePack: settingsOwner.previewThemePack
     property string accessibilityMessage: ""
     property alias settingsRequestId: settingsOwner.settingsRequestId
@@ -679,6 +734,10 @@ QtObject {
         return settingsOwner.videoBackendItems()
     }
 
+    function resolutionItems() {
+        return settingsOwner.resolutionItems()
+    }
+
     function refreshStore(searchQuery, forceRefresh, filters) {
         return catalogOwner.refreshStore(searchQuery, forceRefresh, filters)
     }
@@ -997,6 +1056,9 @@ QtObject {
 
     function resolveDirectLaunch() {
         if (!pendingDirectLaunch)
+            return
+        if (Object.keys(settings).length === 0 || onboardingRequired
+                || onboardingSaving || onboardingError !== "")
             return
         if (catalogState !== "ready") {
             if (ready && catalogRequestId === "")
@@ -2316,10 +2378,13 @@ QtObject {
             }
         }
         function onResponseReceived(requestId, result) {
-            if (root.finishArtworkRequest(requestId, result, false)) {
+            if (onboardingOwner.acceptResponse(requestId, result)) {
+                return
+            } else if (root.finishArtworkRequest(requestId, result, false)) {
                 return
             } else if (requestId === root.settingsRequestId && result.settings) {
                 settingsOwner.acceptSettings(result)
+                root.resolveDirectLaunch()
                 root.syncTelemetry()
                 root.syncDiscordPresence()
                 root.refreshStreamerDetection()
@@ -2659,7 +2724,9 @@ QtObject {
             }
         }
         function onRequestFailed(requestId, code, message) {
-            if (requestId === root.storePresentationRequestId && requestId !== "") {
+            if (onboardingOwner.acceptFailure(requestId, message)) {
+                return
+            } else if (requestId === root.storePresentationRequestId && requestId !== "") {
                 catalogOwner.failStorePresentation(message)
                 return
             }

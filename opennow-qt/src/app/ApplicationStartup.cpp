@@ -1,6 +1,7 @@
 #include "app/AppController.h"
 #include "acceptance/AcceptanceSession.h"
 #include "app/ApplicationStartup.h"
+#include "app/platform/MacAwdlController.h"
 #include "input/ControllerInput.h"
 #include "core/CoreClient.h"
 #include "input/InputModeTracker.h"
@@ -179,6 +180,9 @@ int runApplication(int argc, char *argv[])
         coreClient.setNativeHdrSupported(hdrOutput.supported());
     });
     qmlRegisterType<HdrChromeEffect>("OpenNOW", 1, 0, "HdrChromeEffect");
+    qmlRegisterUncreatableType<MacAwdlController>("OpenNOW", 1, 0, "MacAwdlController",
+                                                u"Use the application-owned MacAwdl instance"_s);
+    MacAwdlController macAwdl;
     QQmlApplicationEngine engine;
     engine.setInitialProperties({{u"visible"_s, false}, {u"visibility"_s, QWindow::Hidden}});
     AcceptanceSession acceptance(application, engine, controller, coreClient, arguments);
@@ -188,6 +192,7 @@ int runApplication(int argc, char *argv[])
     engine.rootContext()->setContextProperty(u"I18n"_s, &localization);
     engine.rootContext()->setContextProperty(u"CoreClient"_s, &coreClient);
     engine.rootContext()->setContextProperty(u"HdrOutput"_s, &hdrOutput);
+    engine.rootContext()->setContextProperty(u"MacAwdl"_s, &macAwdl);
 #ifdef OPENNOW_EMBEDDED_STREAMER
     engine.rootContext()->setContextProperty(u"NativeStreamRuntime"_s,
                                              &nativeStreamRuntime);

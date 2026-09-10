@@ -26,12 +26,17 @@ impl SettingsStore {
         let defaults = defaults();
         let mut values = defaults.clone();
         let mut passthrough = Map::new();
+        let mut migrate_onboarding = false;
         if path.exists() {
             match fs::read_to_string(&path)
                 .ok()
                 .and_then(|text| serde_json::from_str::<Map<String, Value>>(&text).ok())
             {
                 Some(persisted) => {
+                    migrate_onboarding = !persisted.contains_key("onboardingCompleted");
+                    if migrate_onboarding {
+                        values.insert("onboardingCompleted".to_owned(), json!(true));
+                    }
                     for (key, value) in persisted {
                         if defaults.contains_key(&key) {
                             let value = if key == "gameCollections" {
@@ -85,7 +90,7 @@ impl SettingsStore {
                 .insert(CONSOLE_POLICY_VERSION.to_owned(), json!(1));
         }
         store.normalize();
-        if migrate_console_policy && store.path.exists() {
+        if (migrate_console_policy || migrate_onboarding) && store.path.exists() {
             store.save()?;
         }
         Ok(store)
@@ -161,6 +166,10 @@ impl SettingsStore {
     pub fn reset(&mut self) -> Result<Value, String> {
         let previous_values = self.values.clone();
         self.values = defaults();
+        self.values.insert(
+            "onboardingCompleted".to_owned(),
+            previous_values["onboardingCompleted"].clone(),
+        );
         self.normalize();
         if let Err(error) = self.save() {
             self.values = previous_values;
@@ -769,6 +778,7 @@ fn legacy_data_dirs(primary: &Path) -> Vec<PathBuf> {
 
 fn defaults() -> Map<String, Value> {
     json!({
+        "onboardingCompleted":false,
         "resolution":"1920x1080", "aspectRatio":"16:9", "posterSizeScale":1.05,
         "fps":60, "frameGeneration":"off", "upscaling":"off", "upscalingSharpness":10, "upscalingDenoise":0,
         "maxBitrateMbps":75, "recordingBitrateMbps":null,
@@ -829,6 +839,209 @@ fn defaults() -> Map<String, Value> {
 mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn onboarding_new_profile_stays_incomplete_across_unrelated_writes() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = env::temp_dir().join(format!("opennow-onboarding-new-{unique}"));
+        let mut store = SettingsStore::load(Some(directory.clone())).unwrap();
+        assert_eq!(store.all()["onboardingCompleted"], json!(false));
+        assert!(!directory.join("settings.json").exists());
+        for (key, value) in [
+            ("launchInConsoleMode", json!(true)),
+            ("windowWidth", json!(1600)),
+            ("windowHeight", json!(1000)),
+        ] {
+            store.set(key, value).unwrap();
+            store = SettingsStore::load(Some(directory.clone())).unwrap();
+            assert_eq!(store.all()["onboardingCompleted"], json!(false));
+        }
+        store.set("onboardingCompleted", json!(true)).unwrap();
+        assert_eq!(
+            SettingsStore::load(Some(directory.clone())).unwrap().all()["onboardingCompleted"],
+            json!(true)
+        );
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn onboarding_existing_profiles_migrate_and_persist_completion() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = env::temp_dir().join(format!("opennow-onboarding-existing-{unique}"));
+        fs::create_dir_all(&directory).unwrap();
+        for persisted in [
+            json!({}),
+            json!({"qtConsoleModePolicyVersion": 1, "switchToConsoleOnPad": true}),
+        ] {
+            fs::write(
+                directory.join("settings.json"),
+                serde_json::to_vec(&persisted).unwrap(),
+            )
+            .unwrap();
+            let store = SettingsStore::load(Some(directory.clone())).unwrap();
+            assert_eq!(store.all()["onboardingCompleted"], json!(true));
+            if persisted.get("qtConsoleModePolicyVersion").is_some() {
+                assert_eq!(store.all()["switchToConsoleOnPad"], json!(true));
+            }
+            let saved: Value =
+                serde_json::from_slice(&fs::read(directory.join("settings.json")).unwrap())
+                    .unwrap();
+            assert_eq!(saved["onboardingCompleted"], json!(true));
+            assert_eq!(
+                SettingsStore::load(Some(directory.clone())).unwrap().all()["onboardingCompleted"],
+                json!(true)
+            );
+        }
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn onboarding_explicit_values_survive_migration_and_reset() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = env::temp_dir().join(format!("opennow-onboarding-reset-{unique}"));
+        fs::create_dir_all(&directory).unwrap();
+        for completed in [false, true] {
+            fs::write(
+                directory.join("settings.json"),
+                serde_json::to_vec(&json!({"onboardingCompleted": completed})).unwrap(),
+            )
+            .unwrap();
+            let mut store = SettingsStore::load(Some(directory.clone())).unwrap();
+            assert_eq!(store.all()["onboardingCompleted"], json!(completed));
+            store.set("windowWidth", json!(1600)).unwrap();
+            store.set("launchInConsoleMode", json!(true)).unwrap();
+            store = SettingsStore::load(Some(directory.clone())).unwrap();
+            assert_eq!(store.all()["onboardingCompleted"], json!(completed));
+            let reset = store.reset().unwrap();
+            assert_eq!(reset["onboardingCompleted"], json!(completed));
+            assert_eq!(reset["windowWidth"], json!(1400));
+            assert_eq!(reset["launchInConsoleMode"], json!(false));
+            assert_eq!(
+                SettingsStore::load(Some(directory.clone())).unwrap().all(),
+                reset
+            );
+        }
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn onboarding_malformed_files_are_new_profiles() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = env::temp_dir().join(format!("opennow-onboarding-corrupt-{unique}"));
+        fs::create_dir_all(&directory).unwrap();
+        for contents in ["{", "null", "[]", "true"] {
+            fs::write(directory.join("settings.json"), contents).unwrap();
+            let mut store = SettingsStore::load(Some(directory.clone())).unwrap();
+            assert_eq!(store.all()["onboardingCompleted"], json!(false));
+            assert_eq!(
+                fs::read_to_string(directory.join("settings.json.corrupt")).unwrap(),
+                contents
+            );
+            fs::remove_file(directory.join("settings.json.corrupt")).unwrap();
+            store.set("windowWidth", json!(1600)).unwrap();
+            assert_eq!(
+                SettingsStore::load(Some(directory.clone())).unwrap().all()["onboardingCompleted"],
+                json!(false)
+            );
+        }
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn onboarding_requires_boolean_values() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = env::temp_dir().join(format!("opennow-onboarding-types-{unique}"));
+        fs::create_dir_all(&directory).unwrap();
+        for invalid in [json!("true"), json!(1), json!(null), json!([]), json!({})] {
+            fs::write(
+                directory.join("settings.json"),
+                serde_json::to_vec(&json!({"onboardingCompleted": invalid})).unwrap(),
+            )
+            .unwrap();
+            let mut store = SettingsStore::load(Some(directory.clone())).unwrap();
+            assert_eq!(store.all()["onboardingCompleted"], json!(false));
+            store.set("onboardingCompleted", json!(true)).unwrap();
+            assert_eq!(
+                store.set("onboardingCompleted", invalid).unwrap(),
+                json!(false)
+            );
+            assert_eq!(
+                SettingsStore::load(Some(directory.clone())).unwrap().all()["onboardingCompleted"],
+                json!(false)
+            );
+        }
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn onboarding_save_and_reset_failures_preserve_previous_state() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = env::temp_dir().join(format!("opennow-onboarding-save-failure-{unique}"));
+        let mut store = SettingsStore::load(Some(directory.clone())).unwrap();
+        for completed in [false, true] {
+            store.set("onboardingCompleted", json!(completed)).unwrap();
+            store.set("windowWidth", json!(1600)).unwrap();
+            let original = store.all();
+            let persisted = fs::read(directory.join("settings.json")).unwrap();
+            fs::create_dir(directory.join("settings.json.tmp")).unwrap();
+            assert!(store.set("onboardingCompleted", json!(!completed)).is_err());
+            assert_eq!(store.all(), original);
+            assert!(store.reset().is_err());
+            assert_eq!(store.all(), original);
+            assert_eq!(
+                fs::read(directory.join("settings.json")).unwrap(),
+                persisted
+            );
+            assert_eq!(
+                SettingsStore::load(Some(directory.clone())).unwrap().all(),
+                original
+            );
+            fs::remove_dir(directory.join("settings.json.tmp")).unwrap();
+        }
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn onboarding_migration_save_failure_leaves_existing_file_intact() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory =
+            env::temp_dir().join(format!("opennow-onboarding-migration-failure-{unique}"));
+        fs::create_dir_all(directory.join("settings.json.tmp")).unwrap();
+        let persisted = br#"{"qtConsoleModePolicyVersion":1}"#;
+        fs::write(directory.join("settings.json"), persisted).unwrap();
+        assert!(SettingsStore::load(Some(directory.clone())).is_err());
+        assert_eq!(
+            fs::read(directory.join("settings.json")).unwrap(),
+            persisted
+        );
+        fs::remove_dir(directory.join("settings.json.tmp")).unwrap();
+        assert_eq!(
+            SettingsStore::load(Some(directory.clone())).unwrap().all()["onboardingCompleted"],
+            json!(true)
+        );
+        fs::remove_dir_all(directory).unwrap();
+    }
 
     #[test]
     fn replay_is_opt_in_bounded_and_persisted() {

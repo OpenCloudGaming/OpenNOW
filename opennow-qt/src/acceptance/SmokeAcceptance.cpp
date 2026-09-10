@@ -35,14 +35,22 @@ int AcceptanceSession::startSmokeWorkload()
     if (m_smokeTest && m_arguments.contains(u"--smoke-frame-generation-stats"_s))
         return startFrameGenerationStatsWorkload();
     if (m_smokeTest && (m_arguments.contains(u"--smoke-frame-generation"_s)
+                       || m_arguments.contains(u"--smoke-onboarding"_s)
                        || m_arguments.contains(u"--smoke-upscaling"_s)
                        || m_arguments.contains(u"--smoke-stream-stats"_s)
                        || m_arguments.contains(u"--smoke-controller-metadata"_s)
                        || m_arguments.contains(u"--smoke-custom-background"_s))) {
         const bool controllerMetadata = m_arguments.contains(u"--smoke-controller-metadata"_s);
+        const bool onboarding = m_arguments.contains(u"--smoke-onboarding"_s);
         const bool customBackground = m_arguments.contains(u"--smoke-custom-background"_s);
         const bool streamStats = m_arguments.contains(u"--smoke-stream-stats"_s);
-        QQmlComponent component(&m_engine, QUrl(controllerMetadata
+        QQmlComponent component(&m_engine, QUrl(m_arguments.contains(u"--smoke-onboarding"_s)
+            ? m_arguments.contains(u"--onboarding-awdl-check"_s)
+                ? u"qrc:/acceptance/OnboardingAwdlAcceptance.qml"_s
+                : m_arguments.contains(u"--onboarding-scroll-check"_s)
+                ? u"qrc:/acceptance/OnboardingScrollAcceptance.qml"_s
+                : u"qrc:/acceptance/OnboardingAcceptance.qml"_s
+            : controllerMetadata
             ? u"qrc:/acceptance/ControllerMetadataAcceptance.qml"_s
             : customBackground
             ? u"qrc:/acceptance/CustomBackgroundAcceptance.qml"_s
@@ -65,14 +73,14 @@ int AcceptanceSession::startSmokeWorkload()
             fixture->setProperty("imageUrl", QUrl::fromLocalFile(localImage->fileName()).toString());
             localImage->close();
         }
-        QTimer::singleShot(150, this, [this, fixture, customBackground] {
+        QTimer::singleShot(150, this, [this, fixture, customBackground, onboarding] {
             auto *window = qobject_cast<QQuickWindow *>(m_engine.rootObjects().first());
             QVariant passed;
             const bool ok = window && QMetaObject::invokeMethod(fixture, "run", Q_RETURN_ARG(QVariant, passed),
                 Q_ARG(QVariant, QVariant::fromValue(window->contentItem()))) && passed.toBool() && !m_qmlWarningOccurred;
             if (!ok) { m_application.exit(EXIT_FAILURE); return; }
-            const auto finish = [this, window, fixture, customBackground] {
-                if (customBackground) {
+            const auto finish = [this, window, fixture, customBackground, onboarding] {
+                if (customBackground || onboarding) {
                     QVariant verified;
                     if (!QMetaObject::invokeMethod(fixture, "verify", Q_RETURN_ARG(QVariant, verified))
                         || !verified.toBool() || m_qmlWarningOccurred) {
