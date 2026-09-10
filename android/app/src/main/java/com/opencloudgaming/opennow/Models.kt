@@ -992,7 +992,7 @@ internal fun StreamSettings.withHdrAllowed(subscriptionInfo: SubscriptionInfo?, 
 @Suppress("UNUSED_PARAMETER")
 internal fun StreamSettings.hdrAvailableForAndroid(androidTvProfile: Boolean): Boolean {
     val (width, height) = streamResolutionPixels(this)
-    return codec == VideoCodec.H265 && fps <= 120 && width <= 3840 && height <= 2160
+    return codec == VideoCodec.H265 && fps <= 60 && width <= 3840 && height <= 2160
 }
 
 internal fun StreamSettings.withAndroidHdrCompatibility(androidTvProfile: Boolean): StreamSettings =
