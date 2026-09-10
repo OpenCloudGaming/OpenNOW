@@ -128,6 +128,16 @@ if(BUILD_TESTING)
                 ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 20)
         endforeach()
     endforeach()
+    qt_add_executable(opennow-streamtoasts-tests tests/tst_streamtoasts.cpp)
+    target_link_libraries(opennow-streamtoasts-tests PRIVATE Qt6::QuickTest Qt6::Quick)
+    target_compile_definitions(opennow-streamtoasts-tests PRIVATE
+        OPENNOW_QML_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/qml")
+    qt_add_resources(opennow-streamtoasts-tests "stream-toast-test-assets"
+        PREFIX "/qt/qml/OpenNOW" FILES ${OPENNOW_CONTROLLER_ICON_FILES})
+    add_test(NAME opennow-streamtoasts-tests COMMAND opennow-streamtoasts-tests
+        -input "${CMAKE_CURRENT_SOURCE_DIR}/tests/streamtoasts")
+    set_tests_properties(opennow-streamtoasts-tests PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
     qt_add_executable(opennow-controllericons-tests tests/tst_controllericons.cpp)
     target_link_libraries(opennow-controllericons-tests PRIVATE Qt6::QuickTest Qt6::Quick)
     target_compile_definitions(opennow-controllericons-tests PRIVATE
@@ -274,6 +284,15 @@ if(BUILD_TESTING)
         PREFIX "/acceptance" BASE tests FILES tests/CustomBackgroundAcceptance.qml)
     qt_add_resources(opennow-qt "stream-stats-acceptance"
         PREFIX "/acceptance" BASE tests FILES tests/StreamStatsAcceptance.qml)
+    qt_add_resources(opennow-qt "stream-stats-v2-acceptance"
+        PREFIX "/acceptance" BASE tests FILES tests/StreamStatsV2Acceptance.qml)
+    foreach(mode compact expanded degraded scaled)
+        add_test(NAME qml-stream-stats-v2-${mode}
+            COMMAND opennow-qt --smoke-test --allow-multiple-instances --desktop
+                --route stream --smoke-stream-stats-v2 --smoke-stats-${mode} --reduced-motion)
+        set_tests_properties(qml-stream-stats-v2-${mode} PROPERTIES
+            ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 10)
+    endforeach()
     foreach(mode compact expanded)
         add_test(NAME qml-stream-stats-${mode}
             COMMAND opennow-qt --smoke-test --allow-multiple-instances --desktop
@@ -612,6 +631,7 @@ if(BUILD_TESTING)
         opennow-consolelayout-tests
         opennow-macawdl-tests
         opennow-controllericons-tests
+        opennow-streamtoasts-tests
         opennow-waylandhdroutput-tests
         opennow-hdrcolor-tests
         opennow-theme-tests
@@ -649,6 +669,7 @@ if(BUILD_TESTING)
             opennow-consolelayout-tests
             opennow-macawdl-tests
             opennow-controllericons-tests
+            opennow-streamtoasts-tests
             opennow-waylandhdroutput-tests
             opennow-frameinterpolator-tests
             opennow-localization-tests
@@ -699,6 +720,7 @@ if(BUILD_TESTING)
         foreach(test_target IN ITEMS
                 opennow-consolelayout-tests
                 opennow-controllericons-tests
+                opennow-streamtoasts-tests
                 opennow-waylandhdroutput-tests
                 opennow-hdrcolor-tests
                 opennow-localization-tests

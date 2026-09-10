@@ -1,18 +1,14 @@
 pragma ComponentBehavior: Bound
 import QtQuick
-import QtQuick.Controls
 import QtQuick.Layouts
 import OpenNOW
 
-// UI only; never takes gameplay focus or owns media transport.
 Item {
     id: root
     objectName: "desktopStreamStats"
     property bool expanded: false
     property bool pointerLocked: false
     property var frameGenerationStats: ({})
-    // A HUD must never compete with gameplay for hover, taps or wheel input.
-    // Shortcut-driven cycling/copy remains available while pointer input is off.
     enabled: !pointerLocked
     signal cycleRequested()
     signal copyRequested()
@@ -25,8 +21,34 @@ Item {
     readonly property string position: String(ShellStore.settings.statsOverlayPosition || "top-right")
     readonly property bool rightAligned: position.endsWith("right")
     readonly property bool bottomAligned: position.startsWith("bottom")
-    readonly property color surface: Qt.rgba(Theme.shell.r, Theme.shell.g, Theme.shell.b,
+    readonly property real topRightInset: !visible || bottomAligned ? inset
+        : expanded ? (panel.x + panel.width > width - 408 ? panel.y + panel.height + 12 : inset)
+        : Math.max(compact.x + compact.width > width - 408 ? compact.y + compact.height + 12 : inset,
+            clockPill.visible && clockPill.x + clockPill.width > width - 408 ? clockPill.y + clockPill.height + 12 : inset)
+    readonly property color surface: Qt.rgba(14 / 255, 16 / 255, 24 / 255,
         Math.max(0.4, Math.min(1, Number(ShellStore.settings.statsOverlayOpacity || 85) / 100)))
+    readonly property bool degraded: telemetryActive && read("packetLossPercent") > 0
+    readonly property bool healthKnown: telemetryActive && read("packetLossPercent") !== null
+    readonly property color accent: degraded ? "#F5A623" : "#6EE7B7"
+    readonly property color statusColor: !healthKnown || degraded ? "#F5A623" : "#1DB954"
+    readonly property color metricColor: degraded ? accent : "white"
+    readonly property string healthText: !telemetryActive ? qsTr("Waiting for stream")
+        : degraded ? qsTr("Connection unstable") : healthKnown ? qsTr("Stream healthy") : qsTr("Stream statistics")
+    readonly property real allocatedBitrateMbps: Math.max(0, numeric(ShellStore.runtimeStreamProfile.maxBitrateMbps)
+        || numeric(profile.maxBitrateMbps) || numeric(ShellStore.settings.maxBitrateMbps) || 0)
+    readonly property real bitrateUsage: allocatedBitrateMbps > 0 && read("bitrateMbps") !== null
+        ? Math.max(0, Math.min(1, read("bitrateMbps") / allocatedBitrateMbps)) : 0
+    readonly property string toggleShortcut: String(ShellStore.settings.shortcutToggleStats || "Ctrl+N")
+    readonly property var heroCards: ["Fps", "Ping", "Latency"].map(key => cards.find(card => card.key === key)).filter(card => card !== undefined)
+    readonly property var ledgerCards: cards.filter(card => ["Jitter", "Drops", "PacketLoss", "Decode", "LocalOutputFps"].includes(card.key)
+        && (card.key !== "Drops" || card.field === "videoDropCount" || card.value > 0))
+    readonly property var featureBadges: {
+        const badges = []
+        if (shown("Video") && (profile.enableHdr === true || profile.hdr === true)) badges.push({text:"HDR", ink:"#C6A46A"})
+        if (frameGenerationEnabled) badges.push({text:qsTr("FRAME GEN 2×"), ink:"#F5A623"})
+        if (shown("Video") && Qt.platform.os === "osx" && ShellStore.settings.upscaling === "metalfx") badges.push({text:"METALFX", ink:"#7FD4FF"})
+        return badges
+    }
     readonly property bool telemetryActive: live.status === "streaming"
     readonly property bool frameGenerationEnabled: String(ShellStore.settings.frameGeneration || "off") === "2x"
     readonly property var cards: metricCards()
@@ -70,19 +92,24 @@ Item {
         || (typeof session.serverLocation === "string" ? session.serverLocation : "")
         || session.zone || qsTr("Region unavailable"))
     readonly property string rig: String(session.rigName || session.gpuName || session.gpuType || "")
+    readonly property string sessionDescription: [region, typeof session.serverLocation === "string" ? session.serverLocation : "", rig]
+        .filter((value, index, values) => value && values.indexOf(value) === index).join(" · ")
     readonly property string videoText: {
         const parts = []
         if (live.codec || profile.codec) parts.push(String(live.codec || profile.codec).toUpperCase())
-        const w = Number(profile.width || live.outputWidth || 0), h = Number(profile.height || live.outputHeight || 0)
+        const dimensions = String(profile.resolution || "").split("x")
+        const w = Number(profile.width || dimensions[0] || live.outputWidth || 0), h = Number(profile.height || dimensions[1] || live.outputHeight || 0)
         if (w && h) parts.push(w + "×" + h)
-        if (profile.bitDepth) parts.push(profile.bitDepth + "-bit")
-        if (profile.chroma) parts.push(String(profile.chroma))
-        if (profile.hdr === true) parts.push("HDR")
+        const colors = {"8bit_420":"8-bit 4:2:0", "8bit_444":"8-bit 4:4:4", "10bit_420":"10-bit 4:2:0", "10bit_444":"10-bit 4:4:4"}
+        if (colors[profile.colorQuality]) parts.push(colors[profile.colorQuality])
+        else {
+            if (profile.bitDepth) parts.push(profile.bitDepth + "-bit")
+            if (profile.chroma) parts.push(String(profile.chroma))
+        }
+        if (profile.enableHdr === true || profile.hdr === true) parts.push("HDR")
         return parts.length ? parts.join(" · ") : qsTr("Video format unavailable")
     }
     function metricCards() {
-        // A negotiated target is not measured FPS. Discovery ping is not
-        // stream RTT. Unsupported measurements are explicitly unavailable.
         const cards = [
             {key:"Ping", label:qsTr("PING"), value:read("pingMs"), unit:"ms", field:"pingMs"},
             {key:"Fps", label:qsTr("STREAM FPS"), value:read("framesPerSecond"), unit:"fps", field:"framesPerSecond"},
@@ -121,167 +148,283 @@ Item {
         return qsTr("Stream stats:") + "\n" + lines.join("\n")
     }
     function resetHistory() { history = ({}) }
+    function sampleHistory() {
+        const next = ({})
+        for (const card of cards) {
+            const values = (history[card.field] || []).slice(-59)
+            values.push(sample(card)); next[card.field] = values
+        }
+        history = next
+    }
+    function ledgerDetail(card) {
+        if (card.field === "jitterMs") {
+            const samples = (history.jitterMs || []).filter(value => value !== null)
+            return samples.length ? qsTr("max %1 · 60 s").arg(format(Math.max(...samples), 1)) : ""
+        }
+        if (card.field === "videoDropCount") return qsTr("session total")
+        if (card.field === "decodeTimeMs") return telemetryActive ? String(live.mediaBackend || "") : ""
+        return ""
+    }
     onTelemetryActiveChanged: resetHistory()
+    onVisibleChanged: resetHistory()
     Connections { target: ShellStore; function onStreamStartedAtMsChanged() { root.resetHistory() } }
     Timer {
         running: root.visible; repeat: true; interval: 1000
         onTriggered: {
             root.nowMs = Date.now()
-            if (!root.expanded || !root.shown("Graphs") || !root.telemetryActive) return
-            const next = ({})
-            for (const card of root.cards) {
-                const values = (root.history[card.field] || []).slice(-59)
-                values.push(root.sample(card)); next[card.field] = values
+            if (!root.telemetryActive) return
+            root.sampleHistory()
+        }
+    }
+    component Mono: Text {
+        color: "white"
+        font.family: Theme.monoFont
+        font.pixelSize: 13
+        font.weight: Font.DemiBold
+        elide: Text.ElideRight
+    }
+    component Rule: Rectangle { height: 1; color: "#0FFFFFFF" }
+    component Clock: Row {
+        spacing: 6
+        Image {
+            anchors.verticalCenter: parent.verticalCenter
+            source: "qrc:/qt/qml/OpenNOW/res/icons/desktop-clock.svg"
+            width: 12; height: 12; sourceSize: Qt.size(24, 24)
+        }
+        Mono { text: root.elapsedText() }
+    }
+    component Sparkline: Canvas {
+        property var samples: []
+        property color ink: root.accent
+        width: 36; height: 12
+        visible: root.shown("Graphs")
+        onSamplesChanged: requestPaint()
+        onInkChanged: requestPaint()
+        onPaint: {
+            const ctx = getContext("2d")
+            ctx.clearRect(0, 0, width, height)
+            const valid = samples.filter(value => value !== null)
+            if (valid.length < 2) return
+            const low = Math.min(...valid), high = Math.max(...valid)
+            ctx.strokeStyle = ink; ctx.lineWidth = 1.3; ctx.beginPath()
+            let started = false
+            for (let i = 0; i < samples.length; ++i) {
+                if (samples[i] === null) { started = false; continue }
+                const x = i * width / Math.max(1, samples.length - 1)
+                const y = high === low ? height / 2 : height - 2 - (samples[i] - low) / (high - low) * (height - 4)
+                if (started) ctx.lineTo(x, y); else ctx.moveTo(x, y)
+                started = true
             }
-            root.history = next
+            ctx.stroke()
         }
     }
     Rectangle {
         id: compact
         objectName: "compactStatsBar"
         visible: !root.expanded
-        width: Math.min(root.width - root.inset * 2, Math.max(160,
-            (root.compactMetrics.reduce((sum, item) => sum + item.text.length * 7.4 + 12, 0)
-                + String(ShellStore.settings.shortcutToggleStats || "Ctrl+N").length * 7.4 + 62) * root.overlayScale + 24))
-        height: compactFlow.height + 16
+        readonly property real contentScale: Math.min(root.overlayScale, Math.max(0.5, (root.width - root.inset * 2) / (compactRow.implicitWidth + 26)))
+        width: (compactRow.implicitWidth + 26) * contentScale
+        height: 36 * contentScale
         x: root.rightAligned ? root.width - width - root.inset : root.inset
         y: root.bottomAligned ? root.height - height - root.inset : root.inset
-        radius: Math.min(20, height / 2); color: root.surface
-        border.width: 1; border.color: Theme.seam
-        Flow {
-            id: compactFlow
-            x: 12; y: 8
-            width: compact.width - 24
-            spacing: 12 * root.overlayScale
+        radius: height / 2; color: root.surface
+        border.color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.22)
+        Row {
+            id: compactRow
+            x: 13 * compact.contentScale; y: 7 * compact.contentScale
+            scale: compact.contentScale; transformOrigin: Item.TopLeft
+            height: 22; spacing: 10
+            Rectangle { anchors.verticalCenter: parent.verticalCenter; width: 7; height: 7; radius: 4; color: root.statusColor }
             Repeater {
-                model: root.compactMetrics
-                delegate: Text {
+                model: {
+                    const metrics = []
+                    if (root.shown("Fps")) metrics.push({value:root.format(root.read("framesPerSecond")), unit:"fps"})
+                    if (root.shown("Ping")) metrics.push({value:root.format(root.read("pingMs")), unit:"ms"})
+                    if (root.shown("Region")) metrics.push({value:root.region, unit:"", region:true})
+                    if (root.shown("Video")) {
+                        const h = Number(root.profile.height || String(root.profile.resolution || "").split("x")[1] || root.live.outputHeight || 0)
+                        metrics.push({value:String(root.live.codec || root.profile.codec || root.format(null)).toUpperCase(), unit:h ? h + "p" : ""})
+                    }
+                    return metrics
+                }
+                delegate: Row {
+                    id: compactMetric
                     required property var modelData
-                    text: modelData.text; color: Theme.label; font.family: Theme.monoFont
-                    font.pixelSize: 12 * root.overlayScale; font.weight: Font.DemiBold
+                    required property int index
+                    anchors.verticalCenter: parent.verticalCenter
+                    spacing: 10
+                    Rectangle { visible: compactMetric.index > 0; width: 1; height: 14; anchors.verticalCenter: parent.verticalCenter; color: "#1AFFFFFF" }
+                    Row {
+                        spacing: 4
+                        Image { visible: compactMetric.modelData.region === true; anchors.verticalCenter: parent.verticalCenter; width: 11; height: 11; sourceSize: Qt.size(22, 22); source: "qrc:/qt/qml/OpenNOW/res/icons/stats-globe.svg" }
+                        Mono {
+                            id: compactValue
+                            text: compactMetric.modelData.value
+                            width: Math.min(implicitWidth, compactMetric.modelData.region ? 180 : 100)
+                            font.pixelSize: compactMetric.modelData.region ? 10.5 : 12.5
+                            color: compactMetric.modelData.region ? "#B3FFFFFF" : root.metricColor
+                        }
+                        Mono { anchors.baseline: compactValue.baseline; text: compactMetric.modelData.unit; font.pixelSize: 10; color: "#80FFFFFF"; font.weight: Font.Medium }
+                    }
+                }
+            }
+            Repeater {
+                model: root.featureBadges
+                delegate: Rectangle {
+                    id: featureBadge
+                    required property var modelData
+                    width: badge.implicitWidth + 16; height: 22; radius: 6
+                    color: Qt.rgba(badge.color.r, badge.color.g, badge.color.b, 0.14)
+                    Mono { id: badge; anchors.centerIn: parent; text: featureBadge.modelData.text; color: featureBadge.modelData.ink; font.pixelSize: 10; font.weight: Font.Bold; font.letterSpacing: 0.8 }
                 }
             }
             Row {
+                anchors.verticalCenter: parent.verticalCenter
                 spacing: 6
-                KeyboardGlyph { shortcut: String(ShellStore.settings.shortcutToggleStats || "Ctrl+N"); keySize: 18 * root.overlayScale; ink: Theme.label }
-                Text { anchors.verticalCenter: parent.verticalCenter; text: qsTr("more"); color: Theme.focus; font.family: Theme.monoFont; font.pixelSize: 12 * root.overlayScale }
+                KeyboardGlyph { shortcut: root.toggleShortcut; keySize: 20; ink: "white" }
+                Text { anchors.verticalCenter: parent.verticalCenter; text: qsTr("more"); color: "#8CFFFFFF"; font.family: Theme.bodyFont; font.pixelSize: 11; font.weight: Font.DemiBold }
             }
         }
         HoverHandler { cursorShape: Qt.PointingHandCursor }
         TapHandler { onTapped: root.cycleRequested() }
+        Accessible.role: Accessible.Button
+        Accessible.name: qsTr("Expand stream statistics")
+        Accessible.onPressAction: root.cycleRequested()
     }
     Rectangle {
-        id: expandedPanel
+        id: panel
         objectName: "expandedStatsPanel"
         visible: root.expanded
-        width: Math.min(460 * root.overlayScale, root.width - root.inset * 2)
-        height: Math.min(panelContents.implicitHeight + 20, root.height - root.inset * 2)
+        width: Math.min(root.width - root.inset * 2, 420 * root.overlayScale)
+        height: Math.min(root.height - root.inset * 2, (panelContents.implicitHeight + 2) * root.overlayScale)
         x: root.rightAligned ? root.width - width - root.inset : root.inset
         y: root.bottomAligned ? root.height - height - root.inset : root.inset
-        radius: 22; color: root.surface; border.width: 1; border.color: Theme.seam
+        radius: 20 * root.overlayScale; color: root.surface
+        border.color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.18)
         Flickable {
-            interactive: !root.pointerLocked
-            anchors.fill: parent; anchors.margins: 10
+            x: root.overlayScale; y: root.overlayScale
+            width: panel.width / root.overlayScale - 2
+            height: panel.height / root.overlayScale - 2
+            scale: root.overlayScale; transformOrigin: Item.TopLeft
             contentWidth: width; contentHeight: panelContents.implicitHeight
             clip: true; boundsBehavior: Flickable.StopAtBounds
-            ColumnLayout {
+            Column {
                 id: panelContents
-                width: parent.width; spacing: 8
+                width: parent.width
+                Item {
+                    width: parent.width; height: 57
+                    RowLayout {
+                        anchors.fill: parent
+                        anchors.leftMargin: 16; anchors.rightMargin: 16; anchors.topMargin: 14; anchors.bottomMargin: 10
+                        spacing: 10
+                        Rectangle { implicitWidth: 9; implicitHeight: 9; radius: 5; color: root.statusColor }
+                        Column {
+                            Layout.fillWidth: true; spacing: 2
+                            Text { width: parent.width; text: root.healthText; elide: Text.ElideRight; color: root.degraded ? root.accent : "white"; font.family: Theme.bodyFont; font.pixelSize: 15; font.weight: Font.ExtraBold }
+                            Mono { visible: root.shown("Region"); width: parent.width; text: root.sessionDescription; color: "#73FFFFFF"; font.pixelSize: 11; font.weight: Font.Medium }
+                        }
+                        Clock { visible: root.shown("Clock") }
+                    }
+                }
                 RowLayout {
-                    Layout.fillWidth: true; Layout.margins: 6
-                    Rectangle { implicitWidth: 8; implicitHeight: 8; radius: 4; color: root.telemetryActive ? DesktopTokens.green : DesktopTokens.ledAmber }
-                    ColumnLayout {
-                        Layout.fillWidth: true; spacing: 2
-                        Text { text: root.telemetryActive ? qsTr("Stream statistics") : qsTr("Waiting for stream"); color: Theme.label; font.family: Theme.bodyFont; font.pixelSize: 14 * root.overlayScale; font.weight: Font.Bold }
-                        Text { visible: root.shown("Region"); Layout.fillWidth: true; text: root.region + (root.rig ? " · " + root.rig : ""); elide: Text.ElideRight; color: Theme.textMuted; font.family: Theme.bodyFont; font.pixelSize: 12 * root.overlayScale }
-                        Text {
-                            objectName: "expandedFrameGenerationState"
-                            visible: root.frameGenerationEnabled; Layout.fillWidth: true
-                            text: qsTr("FRAME GENERATION") + " · " + root.frameGenerationState()
-                            wrapMode: Text.WordWrap; color: Theme.textMuted
-                            font.family: Theme.bodyFont; font.pixelSize: 12 * root.overlayScale
-                        }
-                    }
-                    Text { visible: root.shown("Clock"); text: root.elapsedText(); color: Theme.label; font.family: Theme.monoFont; font.pixelSize: 12 * root.overlayScale }
-                }
-                GridLayout {
-                    Layout.fillWidth: true; columns: width < 360 ? 1 : 2; columnSpacing: 6; rowSpacing: 6
+                    visible: root.heroCards.length > 0
+                    width: parent.width - 32; x: 16; height: 69
+                    spacing: 26
                     Repeater {
-                        model: root.cards
-                        delegate: Rectangle {
-                            id: card
+                        model: root.heroCards
+                        delegate: Item {
+                            id: hero
                             required property var modelData
-                            Layout.fillWidth: true; Layout.preferredHeight: 82 * root.overlayScale
-                            color: DesktopTokens.raised; radius: 14
-                            Text { x: 12; y: 10; width: parent.width - 24; text: card.modelData.label; elide: Text.ElideRight; color: Theme.textMuted; font.family: Theme.bodyFont; font.pixelSize: 11 * root.overlayScale; font.weight: Font.Bold; font.letterSpacing: 0.5 }
+                            required property int index
+                            Layout.fillWidth: true; Layout.preferredWidth: 111; Layout.fillHeight: true
+                            Rectangle { visible: hero.index > 0; x: -14; y: 8; width: 1; height: 45; color: "#14FFFFFF" }
                             Row {
-                                x: 12; anchors.bottom: parent.bottom; anchors.bottomMargin: 12; spacing: 4
-                                Text { id: metricValue; text: root.format(card.modelData.value, card.modelData.decimals); color: Theme.label; font.family: Theme.monoFont; font.pixelSize: 22 * root.overlayScale; font.weight: Font.DemiBold }
-                                Text { anchors.baseline: metricValue.baseline; text: card.modelData.unit; color: Theme.textMuted; font.family: Theme.bodyFont; font.pixelSize: 11 * root.overlayScale }
+                                y: 6; spacing: 4
+                                Mono { id: heroValue; text: root.format(hero.modelData.value); color: root.metricColor; font.pixelSize: 26 }
+                                Mono { anchors.baseline: heroValue.baseline; text: hero.modelData.unit; color: "#80FFFFFF"; font.pixelSize: 11; font.weight: Font.Medium }
                             }
-                            Canvas {
-                                id: graph
-                                visible: root.shown("Graphs") && card.modelData.value !== null
-                                width: parent.width * 0.32; height: 24
-                                anchors.right: parent.right; anchors.rightMargin: 12
-                                anchors.bottom: parent.bottom; anchors.bottomMargin: 12
-                                readonly property var samples: root.history[card.modelData.field] || []
-                                onSamplesChanged: requestPaint()
-                                onWidthChanged: requestPaint()
-                                Connections { target: Theme; function onFocusChanged() { graph.requestPaint() } }
-                                onPaint: {
-                                    const ctx = getContext("2d")
-                                    ctx.clearRect(0, 0, width, height)
-                                    const valid = samples.filter(v => v !== null)
-                                    if (valid.length < 2) return
-                                    const low = Math.min(...valid), high = Math.max(...valid)
-                                    ctx.strokeStyle = Theme.focus; ctx.lineWidth = 1.5; ctx.beginPath()
-                                    let started = false
-                                    for (let i = 0; i < samples.length; ++i) {
-                                        if (samples[i] === null) { started = false; continue }
-                                        const x = i * width / Math.max(1, samples.length - 1)
-                                        const y = high === low ? height / 2 : height - 3 - (samples[i] - low) / (high - low) * (height - 6)
-                                        if (started) ctx.lineTo(x, y); else ctx.moveTo(x, y)
-                                        started = true
-                                    }
-                                    ctx.stroke()
-                                }
+                            Mono { y: 43; text: hero.modelData.key === "Fps" ? qsTr("FPS") : hero.modelData.label; font.pixelSize: 10; font.letterSpacing: 0.95; color: "#80FFFFFF" }
+                            Sparkline { x: parent.width - width; y: 43; samples: root.history[hero.modelData.field] || [] }
+                        }
+                    }
+                }
+                Item {
+                    visible: root.shown("Bitrate")
+                    width: parent.width; height: 41
+                    Mono { x: 16; y: 2; text: qsTr("BITRATE"); font.pixelSize: 10; font.letterSpacing: 0.95; color: "#80FFFFFF" }
+                    Row {
+                        anchors.right: parent.right; anchors.rightMargin: 16; spacing: 4
+                        Mono { id: bitrateValue; text: root.format(root.read("bitrateMbps"), 1); font.pixelSize: 12; color: root.metricColor }
+                        Mono { anchors.baseline: bitrateValue.baseline; text: "/ " + (root.allocatedBitrateMbps > 0 ? root.format(root.allocatedBitrateMbps) : root.format(null)) + " Mbps"; font.pixelSize: 10; font.weight: Font.Medium; color: "#73FFFFFF" }
+                    }
+                    Rectangle {
+                        objectName: "statsBitrateTrack"
+                        x: 16; y: 23; width: parent.width - 32; height: 4; radius: 2; color: "#1AFFFFFF"
+                        Rectangle { objectName: "statsBitrateFill"; width: parent.width * root.bitrateUsage; height: parent.height; radius: 2; color: root.accent }
+                        Accessible.role: Accessible.ProgressBar
+                        Accessible.name: qsTr("Allocated bitrate usage")
+                        Accessible.description: root.format(root.read("bitrateMbps"), 1) + " / " + root.format(root.allocatedBitrateMbps) + " Mbps"
+                    }
+                }
+                Repeater {
+                    model: root.ledgerCards
+                    delegate: Item {
+                        id: ledger
+                        required property var modelData
+                        width: panelContents.width; height: 33
+                        Rule { width: parent.width }
+                        RowLayout {
+                            anchors.fill: parent; anchors.leftMargin: 16; anchors.rightMargin: 16; spacing: 10
+                            Mono { text: ledger.modelData.field === "videoDropCount" ? qsTr("FRAME DROPS") : ledger.modelData.label; font.pixelSize: 10; font.letterSpacing: 0.8; color: "#8CFFFFFF" }
+                            Mono { Layout.fillWidth: true; text: root.ledgerDetail(ledger.modelData); font.pixelSize: 10; color: "#73FFFFFF"; font.weight: Font.Medium }
+                            Mono {
+                                text: root.format(ledger.modelData.value, ledger.modelData.decimals)
+                                    + (ledger.modelData.field === "videoDropCount" ? "" : ledger.modelData.unit === "%" ? "%" : " " + ledger.modelData.unit)
+                                color: root.degraded && ledger.modelData.key === "PacketLoss" ? "#D15A2C"
+                                    : ledger.modelData.key === "Decode" ? "white" : root.metricColor
                             }
                         }
                     }
                 }
-                Rectangle {
-                    visible: root.shown("Video"); Layout.fillWidth: true; implicitHeight: videoLabel.implicitHeight + 24
-                    radius: 12; color: DesktopTokens.raised
-                    Text { id: videoLabel; x: 12; y: 12; width: parent.width - 24; text: root.videoText; wrapMode: Text.WordWrap; color: Theme.label; font.family: Theme.monoFont; font.pixelSize: 12 * root.overlayScale }
+                Item {
+                    visible: root.frameGenerationEnabled
+                    width: parent.width; height: 33
+                    Rule { width: parent.width }
+                    Mono { objectName: "expandedFrameGenerationState"; x: 16; anchors.verticalCenter: parent.verticalCenter; width: parent.width - 32; text: qsTr("FRAME GENERATION") + " · " + root.frameGenerationState(); font.pixelSize: 10; color: "#8CFFFFFF" }
                 }
-                Flow {
-                    Layout.fillWidth: true; Layout.margins: 6
-                    spacing: 12
-                    Row {
-                        spacing: 6
-                        KeyboardGlyph { shortcut: String(ShellStore.settings.shortcutToggleStats || "Ctrl+N"); keySize: 18 * root.overlayScale; ink: Theme.textMuted }
-                        Text { anchors.verticalCenter: parent.verticalCenter; text: qsTr("bar / panel / off"); color: Theme.textMuted; font.family: Theme.monoFont; font.pixelSize: 11 * root.overlayScale }
-                    }
-                    Row {
-                        spacing: 6
-                        KeyboardGlyph { shortcut: "Shift+F3"; keySize: 18 * root.overlayScale; ink: Theme.textMuted }
-                        Text { anchors.verticalCenter: parent.verticalCenter; text: qsTr("copy"); color: Theme.textMuted; font.family: Theme.monoFont; font.pixelSize: 11 * root.overlayScale }
+                Item {
+                    width: parent.width; height: Math.max(41, footer.implicitHeight + 22)
+                    Rule { width: parent.width }
+                    RowLayout {
+                        id: footer
+                        anchors.fill: parent; anchors.leftMargin: 16; anchors.rightMargin: 16; anchors.topMargin: 10; anchors.bottomMargin: 12
+                        spacing: 10
+                        Mono { Layout.fillWidth: true; text: root.shown("Video") ? root.videoText : ""; font.pixelSize: 10; color: "#8CFFFFFF"; font.weight: Font.Medium; wrapMode: Text.Wrap }
+                        Item {
+                            implicitWidth: cycleKey.implicitWidth; implicitHeight: 18
+                            KeyboardGlyph { id: cycleKey; shortcut: root.toggleShortcut; keySize: 18; ink: "white" }
+                            TapHandler { onTapped: root.cycleRequested() }
+                            Accessible.role: Accessible.Button; Accessible.name: qsTr("Hide stream statistics"); Accessible.onPressAction: root.cycleRequested()
+                        }
+                        Item {
+                            implicitWidth: copyKey.implicitWidth; implicitHeight: 18
+                            KeyboardGlyph { id: copyKey; shortcut: "Shift+F3"; keySize: 18; ink: "white" }
+                            TapHandler { onTapped: root.copyRequested() }
+                            Accessible.role: Accessible.Button; Accessible.name: qsTr("Copy stream statistics"); Accessible.onPressAction: root.copyRequested()
+                        }
                     }
                 }
             }
         }
-        HoverHandler { cursorShape: Qt.PointingHandCursor }
-        TapHandler { onTapped: root.cycleRequested() }
     }
     Rectangle {
         id: clockPill
         visible: !root.expanded && root.shown("Clock")
-        width: clock.implicitWidth + 28; height: clock.implicitHeight + 18; radius: height / 2
+        width: (clock.implicitWidth + 36) * root.overlayScale; height: 40 * root.overlayScale; radius: height / 2
         x: root.rightAligned ? root.inset : root.width - width - root.inset
         y: (root.bottomAligned ? root.height - height - root.inset : root.inset)
             + (root.width < compact.width + width + root.inset * 3 ? (root.bottomAligned ? -compact.height - 8 : compact.height + 8) : 0)
-        color: root.surface; border.width: 1; border.color: Theme.seam
-        Text { id: clock; anchors.centerIn: parent; text: root.elapsedText(); color: Theme.label; font.family: Theme.monoFont; font.pixelSize: 12 * root.overlayScale; font.weight: Font.DemiBold }
+        color: root.surface; border.color: "#24FFFFFF"
+        Clock { id: clock; anchors.centerIn: parent; scale: root.overlayScale }
     }
 }

@@ -38,6 +38,7 @@ int AcceptanceSession::startSmokeWorkload()
                        || m_arguments.contains(u"--smoke-onboarding"_s)
                        || m_arguments.contains(u"--smoke-upscaling"_s)
                        || m_arguments.contains(u"--smoke-stream-stats"_s)
+                       || m_arguments.contains(u"--smoke-stream-stats-v2"_s)
                        || m_arguments.contains(u"--smoke-controller-metadata"_s)
                        || m_arguments.contains(u"--smoke-custom-background"_s))) {
         const bool controllerMetadata = m_arguments.contains(u"--smoke-controller-metadata"_s);
@@ -60,6 +61,8 @@ int AcceptanceSession::startSmokeWorkload()
             ? u"qrc:/acceptance/CustomBackgroundAcceptance.qml"_s
             : streamStats
             ? u"qrc:/acceptance/StreamStatsAcceptance.qml"_s
+            : m_arguments.contains(u"--smoke-stream-stats-v2"_s)
+            ? u"qrc:/acceptance/StreamStatsV2Acceptance.qml"_s
             : m_arguments.contains(u"--smoke-upscaling"_s)
             ? u"qrc:/acceptance/UpscalingAcceptance.qml"_s
             : u"qrc:/acceptance/FrameGenerationAcceptance.qml"_s));

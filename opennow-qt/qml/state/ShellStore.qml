@@ -2716,6 +2716,7 @@ QtObject {
                     codec: String(preparedSettings.codec || "").toUpperCase(),
                     width: Number(preparedSettings.width || root.negotiatedStreamProfile.width || 0),
                     height: Number(preparedSettings.height || root.negotiatedStreamProfile.height || 0),
+                    maxBitrateMbps: Number(preparedSettings.maxBitrateMbps || 0),
                     fps: Number(preparedSettings.fps || root.negotiatedStreamProfile.fps || 0)
                 }
                 root.acceptStreamerSnapshot(Object.assign({}, root.streamer || ({}), {
