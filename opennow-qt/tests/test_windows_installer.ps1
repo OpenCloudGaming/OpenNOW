@@ -49,6 +49,7 @@ try {
 cmake_minimum_required(VERSION 3.24)
 project(InstallerContract VERSION 1.0.0 LANGUAGES NONE)
 set(CMAKE_SYSTEM_PROCESSOR AMD64)
+set(CMAKE_SIZEOF_VOID_P 8)
 set(OPENNOW_BUILD_VERSION "$version")
 include("$metadata")
 set(CPACK_PACKAGE_NAME OpenNOW)
