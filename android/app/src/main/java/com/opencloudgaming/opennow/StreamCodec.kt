@@ -233,7 +233,7 @@ object CodecProbe {
 
     private fun isHardwareCodec(info: MediaCodecInfo): Boolean {
         val name = info.name.lowercase(Locale.US)
-        if (info.isEncoder) return false
+        if (name.contains("google") || name.contains("sw") || name.contains("software")) return false
         if (name.contains(".sw.") || name.contains("software") || name.startsWith("omx.google.") || name.startsWith("c2.android.")) return false
         return if (Build.VERSION.SDK_INT >= 29) {
             info.isHardwareAccelerated
