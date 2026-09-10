@@ -796,7 +796,7 @@ fn build_create_body(app_id: &str, params: &Value, settings: &Value, device_id: 
         "clientDisplayHdrCapabilities":null,
         "surroundAudioInfo":0,
         "remoteControllersBitmap":0,
-        "clientTimezoneOffset":0,
+        "clientTimezoneOffset":chrono::Local::now().offset().utc_minus_local() * 1000,
         "enhancedStreamMode":0,
         "appLaunchMode":app_launch_mode(params),
         "secureRTSPSupported":true,
@@ -1779,6 +1779,20 @@ mod tests {
                 "device-id",
             );
             assert_eq!(body["sessionRequestData"]["appLaunchMode"], expected);
+        }
+    }
+
+    #[test]
+    fn native_session_requests_use_the_current_local_timezone_in_milliseconds() {
+        let offset_before = chrono::Local::now().offset().utc_minus_local() * 1000;
+        let created = build_create_body("12345", &json!({}), &json!({}), "device-id");
+        let resumed = build_resume_body("12345", &json!({}), &json!({}), "device-id");
+        let offset_after = chrono::Local::now().offset().utc_minus_local() * 1000;
+        for body in [created, resumed] {
+            let offset = body["sessionRequestData"]["clientTimezoneOffset"]
+                .as_i64()
+                .unwrap();
+            assert!(offset == i64::from(offset_before) || offset == i64::from(offset_after));
         }
     }
 

@@ -98,6 +98,35 @@ fn stream_ping_bounds_pending_requests_and_expires_late_replies() {
 }
 
 #[test]
+fn stream_ping_keeps_fresh_source_priority_when_other_samples_arrive_later() {
+    let feedback = NvstFeedbackState::default();
+    let start = Instant::now();
+    *feedback.ice_ping.lock().unwrap() = Some((start, Duration::from_millis(10)));
+    feedback.publish_ping(
+        true,
+        start + Duration::from_secs(1),
+        Duration::from_millis(30),
+    );
+    feedback.publish_ping(
+        false,
+        start + Duration::from_secs(2),
+        Duration::from_millis(50),
+    );
+    assert_eq!(feedback.ping_ms(start + Duration::from_secs(2)), Some(10.0));
+    assert_eq!(feedback.ping_ms(start + STREAM_PING_TIMEOUT), Some(30.0));
+    feedback.publish_ping(
+        false,
+        start + STREAM_PING_TIMEOUT,
+        Duration::from_millis(60),
+    );
+    assert_eq!(feedback.ping_ms(start + STREAM_PING_TIMEOUT), Some(30.0));
+    assert_eq!(
+        feedback.ping_ms(start + STREAM_PING_TIMEOUT + Duration::from_secs(1)),
+        Some(60.0)
+    );
+}
+
+#[test]
 fn stream_ping_prefers_video_with_fresh_bundle_fallback_and_resets_per_session() {
     let feedback = NvstFeedbackState::default();
     let start = Instant::now();
