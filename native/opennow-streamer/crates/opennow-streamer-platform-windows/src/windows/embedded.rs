@@ -388,9 +388,7 @@ impl AdoptedResources {
             input_description.ArraySize,
         )?;
         self.reconfigure(frame.format);
-        if frame.format.pixel_format == VideoPixelFormat::Y410
-            && frame.format.transfer_function == VideoTransferFunction::Sdr
-        {
+        if frame.format.pixel_format == VideoPixelFormat::Y410 {
             if self.y410.is_none() {
                 self.y410 = Some(super::y410::Y410Converter::new(
                     &self.device,
@@ -407,7 +405,11 @@ impl AdoptedResources {
             return Ok(D3d11RecordedFrame {
                 texture: texture.as_raw(),
                 texture_format: D3d11TextureFormat::Rgb10A2,
-                color_space: D3d11ColorSpace::Sdr709,
+                color_space: if frame.format.transfer_function == VideoTransferFunction::Pq {
+                    D3d11ColorSpace::Pq2020
+                } else {
+                    D3d11ColorSpace::Sdr709
+                },
                 width: frame.format.width,
                 height: frame.format.height,
                 frame_slot,
@@ -1906,6 +1908,16 @@ mod tests {
     #[test]
     #[ignore = "requires a hardware HEVC Main44410 MFT and Y410 UINT shader conversion"]
     fn hevc_444_hardware_decode_and_conversion_preserve_precision_and_chroma() {
+        verify_hevc_444_hardware_precision(false);
+    }
+
+    #[test]
+    #[ignore = "requires a hardware HEVC Main44410 MFT and Y410 PQ shader conversion"]
+    fn hevc_hdr_444_hardware_decode_and_conversion_preserve_precision_and_chroma() {
+        verify_hevc_444_hardware_precision(true);
+    }
+
+    fn verify_hevc_444_hardware_precision(hdr: bool) {
         let _runtime = EmbeddedMediaRuntime::initialize().expect("Media Foundation");
         let mut device = None;
         let mut context = None;
@@ -1931,6 +1943,21 @@ mod tests {
             height: 1080,
             pixel_format: VideoPixelFormat::Y410,
             chroma_format: crate::VideoChromaFormat::Cs444,
+            transfer_function: if hdr {
+                VideoTransferFunction::Pq
+            } else {
+                VideoTransferFunction::Sdr
+            },
+            color_primaries: if hdr {
+                crate::VideoColorPrimaries::Bt2020
+            } else {
+                crate::VideoColorPrimaries::Bt709
+            },
+            color_matrix: if hdr {
+                VideoColorMatrix::Bt2020
+            } else {
+                VideoColorMatrix::Bt709
+            },
             ..color_test_format()
         };
         let mut resources = unsafe {
@@ -1948,14 +1975,18 @@ mod tests {
             let mut decoder = Decoder::new(&resources, format, WindowsDecoderMode::Hardware)
                 .expect("configure hardware HEVC Main44410 decoder");
             let frame = decoder
-                .probe_frame(include_bytes!(
-                    "../../fixtures/probe/hevc-y410-precision.hevc"
-                ))
+                .probe_frame(if hdr {
+                    include_bytes!("../../fixtures/probe/hevc-y410-pq-precision.hevc")
+                } else {
+                    include_bytes!("../../fixtures/probe/hevc-y410-precision.hevc")
+                })
                 .expect("decode lossless Main44410 precision access unit");
             assert_eq!(frame.format.pixel_format, VideoPixelFormat::Y410);
             assert_eq!(frame.format.chroma_format, crate::VideoChromaFormat::Cs444);
             assert_eq!(frame.format.pixel_format.bit_depth(), 10);
-            assert_eq!(frame.format.transfer_function, VideoTransferFunction::Sdr);
+            assert_eq!(frame.format.transfer_function, format.transfer_function);
+            assert_eq!(frame.format.color_primaries, format.color_primaries);
+            assert_eq!(frame.format.color_matrix, format.color_matrix);
             let mut input_description = D3D11_TEXTURE2D_DESC::default();
             unsafe {
                 frame.texture.GetDesc(&mut input_description);
@@ -2004,7 +2035,14 @@ mod tests {
                 .record(0, &frame)
                 .expect("convert actual Y410 decoder surface");
             assert_eq!(recorded.texture_format, D3d11TextureFormat::Rgb10A2);
-            assert_eq!(recorded.color_space, D3d11ColorSpace::Sdr709);
+            assert_eq!(
+                recorded.color_space,
+                if hdr {
+                    D3d11ColorSpace::Pq2020
+                } else {
+                    D3d11ColorSpace::Sdr709
+                }
+            );
             let output = unsafe { clone_interface::<ID3D11Texture2D>(recorded.texture) }.unwrap();
             let mut output_description = D3D11_TEXTURE2D_DESC::default();
             unsafe {
@@ -2063,11 +2101,19 @@ mod tests {
                     128.0 / 896.0
                 };
                 let v = -u;
-                let expected = [
-                    y + 1.5748 * v,
-                    y - 0.1873242729 * u - 0.4681242729 * v,
-                    y + 1.8556 * u,
-                ];
+                let expected = if hdr {
+                    [
+                        y + 1.4746 * v,
+                        y - 0.1645531268 * u - 0.5713531268 * v,
+                        y + 1.8814 * u,
+                    ]
+                } else {
+                    [
+                        y + 1.5748 * v,
+                        y - 0.1873242729 * u - 0.4681242729 * v,
+                        y + 1.8556 * u,
+                    ]
+                };
                 for (channel, expected) in expected.into_iter().enumerate() {
                     let expected = (expected * 1023.0_f64).round() as i32;
                     let actual = ((pixel >> (channel * 10)) & 1023) as i32;

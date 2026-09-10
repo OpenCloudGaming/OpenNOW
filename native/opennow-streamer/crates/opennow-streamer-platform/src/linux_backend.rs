@@ -407,6 +407,7 @@ fn multi_codec_capability(
             };
             CodecCapability {
                 hdr_supported: None,
+                hdr_color_qualities: None,
                 color_qualities: None,
                 codec,
                 available,
@@ -454,6 +455,7 @@ fn h264_capability(
         codecs: vec![
             CodecCapability {
                 hdr_supported: None,
+                hdr_color_qualities: None,
                 color_qualities: None,
                 codec: "h264",
                 available: h264_available,
@@ -461,6 +463,7 @@ fn h264_capability(
             },
             CodecCapability {
                 hdr_supported: None,
+                hdr_color_qualities: None,
                 color_qualities: None,
                 codec: "h265",
                 available: false,
@@ -468,6 +471,7 @@ fn h264_capability(
             },
             CodecCapability {
                 hdr_supported: None,
+                hdr_color_qualities: None,
                 color_qualities: None,
                 codec: "av1",
                 available: false,
@@ -567,6 +571,7 @@ mod tests {
             codecs: vec![CodecCapability {
                 codec: "h265",
                 available: true,
+                hdr_color_qualities: None,
                 color_qualities: Some(vec!["8bit_420", "10bit_420"]),
                 hdr_supported: None,
                 reason: None,

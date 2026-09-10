@@ -4,6 +4,8 @@
 mod aperture;
 mod format;
 mod queue;
+#[cfg(any(windows, test))]
+mod y410_color;
 
 #[cfg(windows)]
 mod windows;
@@ -112,6 +114,7 @@ pub struct CapabilityProbe {
     pub av1_10bit: bool,
     pub h265_444: bool,
     pub h265_10bit_444: bool,
+    pub h265_hdr_444: bool,
     pub h264_software_decode: bool,
     pub h265_software_decode: bool,
     pub av1_software_decode: bool,
@@ -138,6 +141,7 @@ impl CapabilityProbe {
             (VideoCodec::Av1, VideoPixelFormat::P010, false) => self.av1_10bit,
             (VideoCodec::H265, VideoPixelFormat::Ayuv, false) => self.h265_444,
             (VideoCodec::H265, VideoPixelFormat::Y410, false) => self.h265_10bit_444,
+            (VideoCodec::H265, VideoPixelFormat::Y410, true) => self.h265_hdr_444,
             (VideoCodec::H265, VideoPixelFormat::P010, true) => self.h265_hdr,
             (VideoCodec::Av1, VideoPixelFormat::P010, true) => self.av1_hdr,
             _ => false,
@@ -298,6 +302,7 @@ impl WindowsBackend {
                 av1_10bit: false,
                 h265_444: false,
                 h265_10bit_444: false,
+                h265_hdr_444: false,
                 h264_software_decode: false,
                 h265_software_decode: false,
                 av1_software_decode: false,
@@ -667,6 +672,7 @@ mod tests {
             av1_10bit: false,
             h265_444: false,
             h265_10bit_444: false,
+            h265_hdr_444: false,
             h264_software_decode: true,
             h265_software_decode: true,
             av1_software_decode: true,
@@ -694,6 +700,7 @@ mod tests {
             av1_10bit: false,
             h265_444: false,
             h265_10bit_444: false,
+            h265_hdr_444: false,
             h264_software_decode: true,
             h265_software_decode: true,
             av1_software_decode: true,
@@ -728,6 +735,7 @@ mod tests {
             av1_10bit: false,
             h265_444: false,
             h265_10bit_444: false,
+            h265_hdr_444: false,
             h264_software_decode: false,
             h265_software_decode: false,
             av1_software_decode: false,
@@ -760,6 +768,22 @@ mod tests {
         assert!(!probe.supports_format(VideoCodec::Av1, VideoPixelFormat::Y410, false));
         probe.d3d11_presentation = false;
         assert!(!probe.supports_format(VideoCodec::H265, VideoPixelFormat::Y410, false));
+    }
+
+    #[test]
+    fn hdr_444_requires_its_own_probe_and_live_gpu_presentation() {
+        let mut probe = WindowsBackend::probe();
+        probe.d3d11_presentation = true;
+        probe.h265_hardware_decode = true;
+        probe.h265_hdr = true;
+        probe.h265_10bit_444 = true;
+        probe.h265_hdr_444 = false;
+        assert!(!probe.supports_format(VideoCodec::H265, VideoPixelFormat::Y410, true));
+        probe.h265_hdr_444 = true;
+        assert!(probe.supports_format(VideoCodec::H265, VideoPixelFormat::Y410, true));
+        assert!(!probe.supports_format(VideoCodec::Av1, VideoPixelFormat::Y410, true));
+        probe.d3d11_presentation = false;
+        assert!(!probe.supports_format(VideoCodec::H265, VideoPixelFormat::Y410, true));
     }
 
     #[test]

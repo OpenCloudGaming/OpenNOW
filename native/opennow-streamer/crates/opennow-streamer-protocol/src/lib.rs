@@ -228,10 +228,47 @@ pub struct CodecCapability {
     pub available: bool,
     #[serde(rename = "colorQualities", skip_serializing_if = "Option::is_none")]
     pub color_qualities: Option<Vec<&'static str>>,
+    #[serde(rename = "hdrColorQualities", skip_serializing_if = "Option::is_none")]
+    pub hdr_color_qualities: Option<Vec<&'static str>>,
     #[serde(rename = "hdrSupported", skip_serializing_if = "Option::is_none")]
     pub hdr_supported: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<&'static str>,
+}
+
+#[cfg(test)]
+mod hdr_profile_tests {
+    use super::CodecCapability;
+
+    #[test]
+    fn exact_hdr_profiles_serialize_independently_of_sdr_formats() {
+        let mut codec = CodecCapability {
+            codec: "h265",
+            available: true,
+            color_qualities: Some(vec!["10bit_420", "10bit_444"]),
+            hdr_color_qualities: Some(vec!["10bit_420"]),
+            hdr_supported: Some(true),
+            reason: None,
+        };
+        let value = serde_json::to_value(&codec).unwrap();
+        assert_eq!(value["hdrColorQualities"], serde_json::json!(["10bit_420"]));
+        assert_eq!(
+            value["colorQualities"],
+            serde_json::json!(["10bit_420", "10bit_444"])
+        );
+        codec.hdr_color_qualities = Some(Vec::new());
+        assert_eq!(
+            serde_json::to_value(&codec).unwrap()["hdrColorQualities"],
+            serde_json::json!([])
+        );
+        codec.hdr_color_qualities = None;
+        assert!(
+            serde_json::to_value(&codec)
+                .unwrap()
+                .get("hdrColorQualities")
+                .is_none()
+        );
+    }
 }
 
 pub fn response(id: impl Into<String>, kind: &str) -> Value {
@@ -340,6 +377,7 @@ mod tests {
         let mut codec = CodecCapability {
             codec: "h265",
             available: true,
+            hdr_color_qualities: None,
             color_qualities: None,
             hdr_supported: None,
             reason: None,
@@ -364,6 +402,7 @@ mod tests {
             hdr_supported: None,
             codec: "h265",
             available: true,
+            hdr_color_qualities: None,
             color_qualities: None,
             reason: None,
         };

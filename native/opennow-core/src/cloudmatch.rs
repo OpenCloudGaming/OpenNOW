@@ -721,7 +721,8 @@ fn build_create_body(app_id: &str, params: &Value, settings: &Value, device_id: 
     // while the official Windows client exposes AV1 at 4:2:0 only. Constrain
     // color instead of silently switching an explicit codec back to Auto/HEVC.
     let (bit_depth, chroma) = match codec {
-        _ if hdr => (1, 0),
+        2 if hdr => (1, requested_color.1),
+        3 if hdr => (1, 0),
         1 => (0, 0),
         3 => (requested_color.0, 0),
         _ => requested_color,
@@ -1567,6 +1568,45 @@ mod tests {
             trusted_cloudmatch_base(direct.as_str()).is_err(),
             "arbitrary caller-supplied IPs must remain rejected"
         );
+    }
+
+    #[test]
+    fn hdr_444_request_and_accepted_session_preserve_wire_chroma() {
+        let capabilities = json!({"protocolVersion":6,"nativeHdrSupported":true,"videoBackends":[{
+            "backend":"d3d11","available":true,"codecs":[
+                {"codec":"h265","available":true,"hdrSupported":true,
+                    "colorQualities":["10bit_444"],"hdrColorQualities":["10bit_444"]}
+            ]
+        }]});
+        for color in ["8bit_444", "10bit_444"] {
+            let settings = crate::streamer::StreamerService::embedded_session_settings(
+                &json!({"codec":"h265","enableHdr":true,"colorQuality":color}),
+                &capabilities,
+            )
+            .unwrap();
+            let body = build_create_body("123", &json!({}), &settings, "device");
+            let request = &body["sessionRequestData"];
+            assert_eq!(request["sdrHdrMode"], 1);
+            assert_eq!(request["clientRequestMonitorSettings"][0]["sdrHdrMode"], 1);
+            assert_eq!(request["requestedStreamingFeatures"]["trueHdr"], true);
+            assert_eq!(request["requestedStreamingFeatures"]["codec"], 2);
+            assert_eq!(request["requestedStreamingFeatures"]["bitDepth"], 1);
+            assert_eq!(request["requestedStreamingFeatures"]["chromaFormat"], 1);
+        }
+        let payload = json!({"session":{"sessionId":"hdr-444","status":2,"sdrHdrMode":1,
+            "finalizedStreamingFeatures":{"codec":2,"bitDepth":1,"chromaFormat":1}}});
+        let base = trusted_cloudmatch_base(DEFAULT_STREAMING_BASE).unwrap();
+        let info = session_info(&payload, &base, "auto", "123", "device").unwrap();
+        assert_eq!(info["negotiatedStreamProfile"]["colorQuality"], "10bit_444");
+        assert_eq!(info["negotiatedStreamProfile"]["enableHdr"], true);
+        let prepared = crate::streamer::StreamerService::new()
+            .prepare_embedded(
+                &json!({"session":info,"runtimeCapabilities":capabilities}),
+                &json!({"codec":"auto","colorQuality":"8bit_420","enableHdr":false}),
+            )
+            .unwrap();
+        assert_eq!(prepared["context"]["settings"]["colorQuality"], "10bit_444");
+        assert_eq!(prepared["context"]["settings"]["enableHdr"], true);
     }
 
     #[test]

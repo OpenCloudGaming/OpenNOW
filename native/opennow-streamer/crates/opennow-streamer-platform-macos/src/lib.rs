@@ -63,7 +63,8 @@ pub use macos::{
     AdoptedMetalContext, BackendError, BackendStats, EmbeddedFrameProducer, MacOsBackend,
     MetalFrame, MetalRecordedFrame, NativeSurfaceHandle, StreamSink, SubmitOutcome,
     activate_stream_application, audio_output_devices, probe_av1_hardware, probe_h264_hardware,
-    probe_h265_444_ten_bit_hardware, probe_h265_hardware, probe_h265_hdr_hardware, pump_app_events,
+    probe_h265_444_ten_bit_hardware, probe_h265_hardware, probe_h265_hdr_444_hardware,
+    probe_h265_hdr_hardware, pump_app_events,
 };
 
 #[cfg(test)]

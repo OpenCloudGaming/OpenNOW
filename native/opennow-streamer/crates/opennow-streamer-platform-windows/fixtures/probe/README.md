@@ -25,6 +25,11 @@ ffmpeg -hide_banner -loglevel error \
     -pix_fmt yuv420p10le -c:v libx265 -preset ultrafast \
     -x265-params 'log-level=error:pools=1:frame-threads=1:info=0:keyint=60:bframes=0:repeat-headers=1:colorprim=bt2020:transfer=smpte2084:colormatrix=bt2020nc:chromaloc=0' \
     -f hevc -y hevc-p010-pq.hevc
+ffmpeg -hide_banner -loglevel error \
+    -f lavfi -i 'color=black:size=1920x1080:rate=60' -frames:v 1 \
+    -pix_fmt yuv444p10le -c:v libx265 -preset ultrafast \
+    -x265-params 'log-level=error:pools=1:frame-threads=1:info=0:keyint=60:bframes=0:repeat-headers=1:colorprim=bt2020:transfer=smpte2084:colormatrix=bt2020nc:chromaloc=0' \
+    -f hevc -y hevc-y410-pq.hevc
 for transfer in sdr pq; do
     if [ "$transfer" = pq ]; then
         colors='-color_primaries bt2020 -color_trc smpte2084 -colorspace bt2020nc'
@@ -67,6 +72,20 @@ ffmpeg -hide_banner -loglevel error -f lavfi \
     -x265-params 'log-level=error:pools=1:frame-threads=1:info=0:keyint=60:bframes=0:repeat-headers=1:lossless=1:colorprim=bt709:transfer=bt709:colormatrix=bt709:chromaloc=0' \
     -f hevc -y hevc-y410-precision.hevc
 ```
+
+## Main44410 PQ probes and hardware precision regression
+
+`hevc-y410-pq-precision.hevc` uses the same lossless 4:4:4 precision source and encoder
+options as `hevc-y410-precision.hevc`, replacing `colorprim=bt709:transfer=bt709:colormatrix=bt709`
+with `colorprim=bt2020:transfer=smpte2084:colormatrix=bt2020nc`. The HDR test keeps the same
+decoder precision, chroma, restart, and output precision assertions, uses BT.2020 conversion
+coefficients, and requires PQ/BT.2020 output metadata. Neither this test nor the startup probe
+permits software decoding. GPU readback is used only by the opt-in precision test.
+
+The macOS `profile_probe.rs` HDR444 parameter-set constants and length-prefixed IDR use the
+HDR444 black probe command above with `size=64x64:rate=1`. Each Annex-B NAL is extracted without
+its start code; the IDR is prefixed by its four-byte big-endian length. The decoded frame must
+have two full-sized IOSurface planes and pass the existing PQ/BT.2020 Metal import checks.
 
 ## Main10 PQ hardware precision regression
 

@@ -1492,13 +1492,15 @@ fn validate_context(context: &SessionContext, id: &str) -> Result<(), Value> {
     }
     if media_stream_config(context).hdr {
         let profile = &context.session.extra["negotiatedStreamProfile"];
-        if !matches!(profile["codec"].as_str(), Some("H265" | "HEVC" | "AV1"))
-            || profile["colorQuality"].as_str() != Some("10bit_420")
-        {
+        if !matches!(
+            (profile["codec"].as_str(), profile["colorQuality"].as_str()),
+            (Some("H265" | "HEVC"), Some("10bit_420" | "10bit_444"))
+                | (Some("AV1"), Some("10bit_420"))
+        ) {
             return Err(error(
                 Some(id),
                 "invalid-context",
-                "HDR requires an accepted HEVC/AV1 10-bit 4:2:0 profile",
+                "HDR requires an accepted HEVC/AV1 10-bit profile with supported chroma",
             ));
         }
     }
@@ -3870,12 +3872,29 @@ mod tests {
         for (codec, color) in [
             ("H264", "10bit_420"),
             ("H265", "8bit_420"),
-            ("H265", "10bit_444"),
+            ("AV1", "10bit_444"),
         ] {
             value["session"]["negotiatedStreamProfile"]["codec"] = json!(codec);
             value["session"]["negotiatedStreamProfile"]["colorQuality"] = json!(color);
             let context: SessionContext = serde_json::from_value(value.clone()).unwrap();
             assert!(validate_context(&context, "invalid-hdr").is_err());
+        }
+    }
+
+    #[test]
+    fn accepted_hevc_hdr_444_preserves_bit_depth_chroma_and_hdr() {
+        for codec in ["H265", "HEVC"] {
+            let mut value = synthetic_context("hdr-444-media-config", json!([]));
+            value["settings"] = json!({"enableHdr": false, "colorQuality": "8bit_420"});
+            value["session"]["negotiatedStreamProfile"] = json!({
+                "codec": codec, "colorQuality": "10bit_444", "enableHdr": true
+            });
+            let context: SessionContext = serde_json::from_value(value).unwrap();
+            assert!(validate_context(&context, "hdr-444").is_ok());
+            let stream = media_stream_config(&context);
+            assert_eq!(stream.codec, MediaVideoCodec::H265);
+            assert_eq!(stream.color_quality, MediaColorQuality::TenBit444);
+            assert!(stream.hdr);
         }
     }
 

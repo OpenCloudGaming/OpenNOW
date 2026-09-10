@@ -314,26 +314,32 @@ deny HDR. This value is transient: `settings.set` rejects `nativeHdrSupported`, 
 loader discards legacy copies, and the core never saves runtime capability results.
 
 With HDR enabled, the core requires an available hardware HEVC or AV1 decoder whose
-`colorQualities` explicitly includes `10bit_420`, or whose optional per-codec
-`hdrSupported` is `true` when `colorQualities` is absent. Windows reports explicit SDR
-color-quality lists and HDR support from actual decoded profile fixtures and GPU conversion;
+`colorQualities` explicitly includes the requested ten-bit profile. The optional per-codec
+`hdrSupported: true` permits `10bit_420` when `colorQualities` is absent, but does not establish
+4:4:4 support. The optional per-codec `hdrColorQualities` array lists verified HDR profiles.
+When present, it must contain the requested profile; empty or malformed values deny HDR.
+HDR 4:4:4 requires an explicit `10bit_444` entry in both color-quality arrays.
+Missing `hdrColorQualities` retains the existing HDR 4:2:0 checks only. Windows reports
+explicit SDR color-quality lists and HDR support from actual decoded profile fixtures and GPU conversion;
 it no longer infers advanced formats from an eight-bit codec probe. macOS HEVC HDR and
 ten-bit 4:4:4 similarly require hardware-required fixture decode and Metal conversion.
 Linux uses exact attached-device profiles for Vulkan Video. An explicit false or
 malformed `hdrSupported` denies HDR even if 10-bit profiles exist. A true value never
 overrides an explicit empty or incompatible `colorQualities` array. Neither setting
 changes SDR capability filtering. Auto prefers HEVC then AV1. HDR constrains the
-session-local color quality to `10bit_420` without changing the saved
-SDR color preference; 4:4:4 HDR is not negotiated. Explicit H.264, software decoding, missing
-output support, and unavailable 10-bit profiles fail before allocating a seat. Without HDR,
+session-local color quality to ten bits while preserving the selected chroma format and saved
+SDR color preference. HEVC supports `10bit_420` and `10bit_444`; AV1 remains limited to `10bit_420`.
+Explicit H.264, software decoding, missing output support, and unavailable 10-bit profiles
+fail before allocating a seat. Without HDR,
 the saved color preference is used, subject to exact hardware profiles and the GFN codec
 restrictions below. Callers without embedded runtime
 capabilities cannot request HDR through the external-streamer probe path.
 
 CloudMatch receives `sessionRequestData.sdrHdrMode=1`, monitor `sdrHdrMode=1`, and
 `requestedStreamingFeatures.trueHdr=true` only for this validated HDR request. CloudMatch
-uses bit-depth/chroma enums `1/0` for 10-bit 4:2:0. For HDR, monitor `displayData` requests
-maximum luminance 1000 nits, minimum luminance 0, and maximum frame-average luminance 400 nits,
+uses bit-depth/chroma enums `1/0` for 10-bit 4:2:0 and `1/1` for 10-bit 4:4:4.
+For HDR, monitor `displayData` requests maximum luminance 1000 nits, minimum luminance 0,
+and maximum frame-average luminance 400 nits,
 matching the Mac native session payload. These are fixed requested-content defaults, not
 measurements of the physical display; no caller-supplied luminance is accepted in this
 contract. SDR luminance values and all display primaries remain zero protocol defaults.
