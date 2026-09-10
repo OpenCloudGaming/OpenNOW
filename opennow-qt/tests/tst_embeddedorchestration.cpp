@@ -17,6 +17,81 @@ class EmbeddedOrchestrationTest final : public QObject
     Q_OBJECT
 
 private slots:
+    void premiumGamesRequirePaidMembershipBeforeLaunch_data()
+    {
+        QTest::addColumn<QString>("requiredTier");
+        QTest::addColumn<QString>("subscriptionJson");
+        QTest::addColumn<bool>("allowed");
+        QTest::addColumn<bool>("refreshMembership");
+        QTest::newRow("free-premium") << QStringLiteral("Premium") << QStringLiteral(R"({"membershipTier":"FREE"})") << false << false;
+        QTest::newRow("free-tier-premium") << QStringLiteral("Performance") << QStringLiteral(R"({"membershipTier":" Free Tier "})") << false << false;
+        QTest::newRow("free-hyphen-premium") << QStringLiteral("Ultimate") << QStringLiteral(R"({"membershipTier":"free-tier"})") << false << false;
+        QTest::newRow("paid-premium") << QStringLiteral("Premium") << QStringLiteral(R"({"membershipTier":"PERFORMANCE"})") << true << false;
+        QTest::newRow("alliance-paid-premium") << QStringLiteral("Premium") << QStringLiteral(R"({"membershipTier":"Priority"})") << true << false;
+        QTest::newRow("unrestricted") << QStringLiteral("") << QStringLiteral(R"({"membershipTier":"FREE"})") << true << false;
+        QTest::newRow("blank-requirement") << QStringLiteral("  ") << QStringLiteral("null") << true << false;
+        QTest::newRow("free-requirement") << QStringLiteral(" FREE ") << QStringLiteral(R"({"membershipTier":"FREE"})") << true << false;
+        QTest::newRow("free-tier-requirement") << QStringLiteral("Free Tier") << QStringLiteral("null") << true << false;
+        QTest::newRow("free-hyphen-requirement") << QStringLiteral("free-tier") << QStringLiteral("null") << true << false;
+        QTest::newRow("subscription-loading") << QStringLiteral("Premium") << QStringLiteral("null") << false << true;
+        QTest::newRow("subscription-missing-tier") << QStringLiteral("Premium") << QStringLiteral("{}") << false << true;
+        QTest::newRow("subscription-blank-tier") << QStringLiteral("Premium") << QStringLiteral(R"({"membershipTier":" "})") << false << true;
+    }
+
+    void premiumGamesRequirePaidMembershipBeforeLaunch()
+    {
+        QFETCH(QString, requiredTier);
+        QFETCH(QString, subscriptionJson);
+        QFETCH(bool, allowed);
+        QFETCH(bool, refreshMembership);
+        const auto shell = source(QStringLiteral("qml/state/ShellStore.qml"));
+        QJSEngine engine;
+        engine.installExtensions(QJSEngine::TranslationExtension);
+        for (const auto &name : {"selectedLaunchAppId", "selectedGameMembershipError", "launchSelectedGame"}) {
+            const auto match = QRegularExpression(QStringLiteral(
+                "    function %1\\([^\\n]*\\) \\{.*?\\n    \\}").arg(QString::fromLatin1(name)),
+                QRegularExpression::DotMatchesEverythingOption).match(shell);
+            QVERIFY(match.hasMatch());
+            QVERIFY(!engine.evaluate(match.captured()).isError());
+        }
+        engine.globalObject().setProperty(QStringLiteral("requiredTier"), requiredTier);
+        QVERIFY(!engine.evaluate(QStringLiteral(R"JS(
+            var signedIn = true, ready = true, streamBusy = false;
+            var selectedGame = {launchAppId: "123", title: "Test", membershipTierLabel: requiredTier};
+            var authSession = {user: {membershipTier: "FREE"}};
+            var subscriptionRequestId = "", streamState = "idle", streamMessage = "", lastError = "";
+            var settings = {}, regions = [], pendingLaunchParams = null;
+            var requests = [], routes = [];
+            var CoreClient = {request: function(method, params) {
+                requests.push({method: method, params: params}); return "request-" + requests.length;
+            }};
+            var AppController = {navigate: function(route) { routes.push(route); }};
+        )JS")).isError());
+        QVERIFY(!engine.evaluate(QStringLiteral("var subscription = ") + subscriptionJson).isError());
+        QVERIFY(!engine.evaluate(QStringLiteral("launchSelectedGame(false)")).isError());
+        QCOMPARE(engine.evaluate(QStringLiteral("streamState")).toString(),
+                 allowed ? QStringLiteral("checking") : QStringLiteral("error"));
+        QCOMPARE(engine.evaluate(QStringLiteral("pendingLaunchParams !== null")).toBool(), allowed);
+        QCOMPARE(engine.evaluate(QStringLiteral("requests.length")).toInt(), allowed || refreshMembership ? 1 : 0);
+        if (allowed || refreshMembership) {
+            QCOMPARE(engine.evaluate(QStringLiteral("requests[0].method")).toString(),
+                     allowed ? QStringLiteral("session.remote.list") : QStringLiteral("account.subscription.get"));
+        }
+        QCOMPARE(engine.evaluate(QStringLiteral("routes[0]")).toString(), QStringLiteral("inserting"));
+        if (!allowed) {
+            QVERIFY(!engine.evaluate(QStringLiteral("streamMessage")).toString().isEmpty());
+            QCOMPARE(engine.evaluate(QStringLiteral("lastError")).toString(),
+                     engine.evaluate(QStringLiteral("streamMessage")).toString());
+            QVERIFY(!engine.evaluate(QStringLiteral("launchSelectedGame(true)")).isError());
+            QCOMPARE(engine.evaluate(QStringLiteral("requests.length")).toInt(), refreshMembership ? 1 : 0);
+            QVERIFY(!engine.evaluate(QStringLiteral(
+                "subscription = {membershipTier: 'ULTIMATE'}; launchSelectedGame(true)")).isError());
+            QCOMPARE(engine.evaluate(QStringLiteral("streamState")).toString(), QStringLiteral("checking"));
+            QCOMPARE(engine.evaluate(QStringLiteral("requests[requests.length - 1].method")).toString(),
+                     QStringLiteral("session.remote.list"));
+        }
+    }
+
     void clipboardPasteUsesTheSharedOptInOnBothSurfaces()
     {
         const auto controls = source(QStringLiteral(

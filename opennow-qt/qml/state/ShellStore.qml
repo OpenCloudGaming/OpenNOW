@@ -1037,6 +1037,21 @@ QtObject {
         return /^\d+$/.test(launchId) ? launchId : ""
     }
 
+    function selectedGameMembershipError() {
+        const requiredTier = String(selectedGame.membershipTierLabel || "").trim()
+        if (requiredTier === "" || /^free(?: tier|-tier)?$/i.test(requiredTier))
+            return ""
+        const accountTier = String((subscription && subscription.membershipTier) || "").trim()
+        if (accountTier === "") {
+            if (subscriptionRequestId === "")
+                subscriptionRequestId = CoreClient.request("account.subscription.get", {}, 30000)
+            return qsTr("Membership details unavailable. Please try again.")
+        }
+        if (/^free(?: tier|-tier)?$/i.test(accountTier))
+            return qsTr("This game requires a paid GeForce NOW membership.")
+        return ""
+    }
+
     function launchSelectedGame(directConsoleMode) {
         if (!signedIn) {
             AppController.navigate("sign-in")
@@ -1051,6 +1066,14 @@ QtObject {
         }
         if (!ready || streamBusy)
             return
+        const membershipError = selectedGameMembershipError()
+        if (membershipError !== "") {
+            streamState = "error"
+            streamMessage = membershipError
+            lastError = membershipError
+            AppController.navigate("inserting")
+            return
+        }
         streamerRestartAttempts = 0
         streamerRecoveryExhausted = false
         sessionReconnectAttempts = 0
