@@ -357,7 +357,7 @@ The claim request intentionally omits monitor settings and requested streaming f
 its only copied dynamic-range field is the accepted session `sdrHdrMode`. The initial
 compatibility RESUME carries the full request and updates its session mode, monitor mode,
 requested-content luminance, and `trueHdr` consistently when the server has returned a mode.
-Attachment revalidates the accepted HDR codec/color profile and current window output, so
+Attachment revalidates the session's HDR codec/color profile and current window output, so
 moving to an SDR display cannot silently resume an HDR stream as SDR.
 
 Color negotiation overlays each returned `finalizedStreamingFeatures` field on the server's
@@ -370,15 +370,20 @@ CloudMatch chroma enums are `0` for 4:2:0 and `1` for 4:4:4; NVST chroma-format 
 When present, `session.negotiatedStreamProfile.codec` takes precedence over the numeric
 feature-map codec. H.264/AVC and H.265/HEVC names normalize to `H264` and `H265`;
 `AV1` remains unchanged. An explicit null or unsupported codec stays unknown rather
-than falling back to a requested codec. Preparation failures log bounded codec/color
-evidence and a redacted reason, never the full session or credentials.
+than falling back to a requested codec. When the server omits every codec field, a new
+allocation retains the exact codec sent in that allocation's request. Polling, direct-server
+responses, claims, and ad updates preserve that evidence only for the same session ID.
+`codecSource` distinguishes `request`, `server`, and `unreported`; a reported codec supersedes
+the request and remains authoritative in later partial responses. Unknown discovered sessions
+never borrow a codec from current saved preferences. Preparation failures log bounded
+codec/color evidence and a redacted reason, never the full session or credentials.
 
 Embedded session preflight rejects H.264 with advanced color and AV1 with 4:4:4 before
 allocation, even if a decoder capability lists those formats. These combinations are not
 requested by the supported GFN wire policy. Auto selects HEVC for 4:4:4 rather than silently
 reducing chroma; an explicit incompatible codec remains an error.
 
-The native context preserves the accepted profile, and `MediaStreamConfig.hdr` follows its
+The native context preserves the resolved profile and codec provenance, and `MediaStreamConfig.hdr` follows its
 `enableHdr` alone (missing means false). Invalid accepted HDR profiles are rejected before
 stream startup. NVST ANNOUNCE sends `x-nv-video[0].dynamicRangeMode=1` for HDR and `0` for
 SDR, with literal bit depth `10` or `8`. Its `chromaFormat` uses chroma_format_idc (`1` for

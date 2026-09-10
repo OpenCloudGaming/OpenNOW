@@ -13,6 +13,7 @@ pub fn stream_profile_evidence(session: &Value) -> Value {
     let profile = &session["negotiatedStreamProfile"];
     let mut evidence = json!({
         "codec": profile["codec"].as_str().filter(|value| matches!(*value, "H264" | "H265" | "HEVC" | "AV1")),
+        "codecSource": profile["codecSource"].as_str().filter(|value| matches!(*value, "request" | "server" | "unreported")),
         "colorQuality": profile["colorQuality"].as_str().filter(|value| matches!(*value, "8bit_420" | "8bit_444" | "10bit_420" | "10bit_444")),
         "enableHdr": profile["enableHdr"].as_bool()
     });
@@ -613,12 +614,13 @@ mod tests {
     fn stream_profile_evidence_preserves_only_codec_and_color_fields() {
         let session = json!({
             "sessionId":"private-session", "accessToken":"private-token",
-            "negotiatedStreamProfile":{"codec":"H265", "colorQuality":"10bit_420", "enableHdr":true},
+            "negotiatedStreamProfile":{"codec":"H265", "codecSource":"request", "colorQuality":"10bit_420", "enableHdr":true},
             "requestedStreamingFeatures":{"codec":"2", "bitDepth":1, "chromaFormat":0, "token":"private-token"},
             "finalizedStreamingFeatures":{"bitDepth":null, "chromaFormat":1, "password":"private-password"}
         });
         let evidence = stream_profile_evidence(&session);
         assert_eq!(evidence["codec"], "H265");
+        assert_eq!(evidence["codecSource"], "request");
         assert_eq!(evidence["colorQuality"], "10bit_420");
         assert_eq!(evidence["enableHdr"], true);
         assert_eq!(
@@ -631,10 +633,11 @@ mod tests {
         );
         assert!(!evidence.to_string().contains("private"));
         let invalid = stream_profile_evidence(&json!({
-            "negotiatedStreamProfile":{"codec":"private-token", "colorQuality":"private-token", "enableHdr":"private-token"},
+            "negotiatedStreamProfile":{"codec":"private-token", "codecSource":"private-token", "colorQuality":"private-token", "enableHdr":"private-token"},
             "requestedStreamingFeatures":{"codec":"private-token","bitDepth":{},"chromaFormat":["private-token"]}
         }));
         assert_eq!(invalid["codec"], Value::Null);
+        assert_eq!(invalid["codecSource"], Value::Null);
         assert_eq!(invalid["colorQuality"], Value::Null);
         assert_eq!(invalid["enableHdr"], Value::Null);
         assert!(!invalid.to_string().contains("private"));
