@@ -35,7 +35,21 @@ if(BUILD_TESTING)
     set_tests_properties(opennow-onboarding-tests PROPERTIES
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
     qt_add_resources(opennow-qt "onboarding-acceptance"
-        PREFIX "/acceptance" BASE tests FILES tests/OnboardingAcceptance.qml)
+        PREFIX "/acceptance" BASE tests FILES tests/OnboardingAcceptance.qml tests/OnboardingScrollAcceptance.qml)
+    add_test(NAME qml-onboarding-login-scroll COMMAND opennow-qt
+        --smoke-test --allow-multiple-instances --desktop --route home
+        --smoke-onboarding --onboarding-scroll-check --onboarding-login
+        --smoke-width 960 --smoke-height 540 --reduced-motion)
+    set_tests_properties(qml-onboarding-login-scroll PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 20)
+    foreach(step RANGE 0 5)
+        add_test(NAME "qml-onboarding-scroll-${step}" COMMAND opennow-qt
+            --smoke-test --allow-multiple-instances --desktop --route home
+            --smoke-onboarding --onboarding-scroll-check --onboarding-step ${step}
+            --smoke-width 960 --smoke-height 540 --onboarding-ui-scale 1.25 --reduced-motion)
+        set_tests_properties("qml-onboarding-scroll-${step}" PROPERTIES
+            ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 20)
+    endforeach()
     foreach(width 960 1440)
         add_test(NAME "qml-onboarding-${width}" COMMAND opennow-qt
             --smoke-test --allow-multiple-instances --desktop --route home

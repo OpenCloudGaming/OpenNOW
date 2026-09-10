@@ -7,6 +7,7 @@ Image {
     property string glyph: "monitor"
     property color ink: Theme.label
     readonly property var shapes: {
+    "heart": '<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="m12 21-8-7.8A5.5 5.5 0 0 1 12 5.6a5.5 5.5 0 0 1 8 7.6Z" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>',
     "check": '<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="m5 12 4 4L19 6" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>',
     "star": '<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="m12 3 2.8 5.7 6.2.9-4.5 4.4 1.1 6.2-5.6-3-5.6 3 1.1-6.2L3 9.6l6.2-.9z" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>',
     "folder": '<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M4 7a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2zM12 11v5M9.5 13.5h5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>',

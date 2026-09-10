@@ -279,6 +279,21 @@ These switches run only with the smoke fixture; they do not start provider login
 open donation links, or write account settings. Real provider approval and native
 MetalFX output still require the corresponding account and macOS device.
 
+Capture every setup step in desktop, compact 1.25×, and light appearances, plus
+desktop and compact login, for visual comparison with the Paper design:
+
+```sh
+bash scripts/capture-qt-onboarding.sh build/opennow-qt/opennow-qt /absolute/path/onboarding-review
+```
+
+The compact scroll checks focus every eligible control, verify that the focused
+control fits inside the viewport, and capture the final scrolled position. The
+capture script uses OpenGL and starts Xvfb on headless Linux, so shader-backed
+controls render rather than disappearing under the offscreen software backend.
+It requires a built app and `xvfb-run` on headless Linux. Each PNG has a matching
+acceptance log. The mode cards use the original Paper shell previews; these are
+illustrations, not the signed-in user's library.
+
 Run with the offscreen Qt platform plugin for a startup smoke test:
 
 ```sh

@@ -258,6 +258,8 @@ qt_add_qml_module(opennow-qt
         qml/desktop/library/DesktopCollectionDialog.qml
         qml/desktop/settings/DesktopSettingsScreen.qml
         qml/desktop/onboarding/DesktopOnboardingScreen.qml
+        qml/desktop/onboarding/DesktopOnboardingBackdrop.qml
+        qml/desktop/onboarding/DesktopOnboardingMark.qml
         qml/desktop/onboarding/DesktopOnboardingModeCard.qml
         qml/desktop/onboarding/DesktopOnboardingPicture.qml
         qml/desktop/onboarding/DesktopOnboardingBoost.qml
@@ -371,6 +373,8 @@ qt_add_qml_module(opennow-qt
         res/brand/opennow-mark.png
         res/brand/signin-hero.jpg
         res/brand/desktop-renew.jpg
+        res/onboarding/desktop-preview.png
+        res/onboarding/console-preview.png
         res/fonts/Nunito-Variable.ttf
         res/fonts/IBMPlexMono-Regular.ttf
         res/fonts/IBMPlexMono-Medium.ttf

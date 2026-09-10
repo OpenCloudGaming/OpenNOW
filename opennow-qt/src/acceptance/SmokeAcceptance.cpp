@@ -45,7 +45,9 @@ int AcceptanceSession::startSmokeWorkload()
         const bool customBackground = m_arguments.contains(u"--smoke-custom-background"_s);
         const bool streamStats = m_arguments.contains(u"--smoke-stream-stats"_s);
         QQmlComponent component(&m_engine, QUrl(m_arguments.contains(u"--smoke-onboarding"_s)
-            ? u"qrc:/acceptance/OnboardingAcceptance.qml"_s
+            ? m_arguments.contains(u"--onboarding-scroll-check"_s)
+                ? u"qrc:/acceptance/OnboardingScrollAcceptance.qml"_s
+                : u"qrc:/acceptance/OnboardingAcceptance.qml"_s
             : controllerMetadata
             ? u"qrc:/acceptance/ControllerMetadataAcceptance.qml"_s
             : customBackground
