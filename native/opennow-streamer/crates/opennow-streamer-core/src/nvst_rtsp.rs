@@ -28,6 +28,11 @@ const MAX_STREAM_BITRATE_MBPS: u64 = 200;
 // while audio/control remained alive; use the official receiver timeout so the existing bounded
 // transport recovery runs promptly.
 const VIDEO_TIMEOUT_MS: u64 = 8_000;
+const VIDEO_STARTUP_TIMEOUT_MS: u64 = if cfg!(windows) {
+    60_000
+} else {
+    VIDEO_TIMEOUT_MS
+};
 
 #[derive(Debug)]
 pub struct NvstRtspError {
@@ -714,7 +719,8 @@ pub fn prepare_owned_nvst(
         "microphoneOnBundle":microphone_available,
         "codec":codec,
         "audioTrack":{"payloadType":111,"codec":"opus","clockRateHz":48000,"channels":2,"mid":"0"},
-        "timeoutMs":VIDEO_TIMEOUT_MS
+        "timeoutMs":VIDEO_TIMEOUT_MS,
+        "startupTimeoutMs":VIDEO_STARTUP_TIMEOUT_MS
     });
     if let Some(media) = context.session.media_connection_info.as_ref() {
         handoff["bundlePeerIp"] = json!(media.ip);
@@ -726,7 +732,7 @@ pub fn prepare_owned_nvst(
         "INFO",
         "nvst-handoff",
         &format!(
-            "video_local_port={mjolnir_port} bundle_local_port={client_port} video_peer_port={video_peer_port} video_peer_port_end={video_peer_port_end} bundle_peer_port={} same_peer_host={} ping_version={ping_version} ping_bytes={} legacy_ping_payload={} srtp_profile={srtp_profile} rtcp_on_sctp={rtcp_on_sctp} sockets_retained=true reachability=unverified",
+            "video_local_port={mjolnir_port} bundle_local_port={client_port} video_peer_port={video_peer_port} video_peer_port_end={video_peer_port_end} bundle_peer_port={} same_peer_host={} ping_version={ping_version} ping_bytes={} legacy_ping_payload={} srtp_profile={srtp_profile} rtcp_on_sctp={rtcp_on_sctp} sockets_retained=true reachability=unverified video_startup_timeout_ms={VIDEO_STARTUP_TIMEOUT_MS} video_idle_timeout_ms={VIDEO_TIMEOUT_MS}",
             context
                 .session
                 .media_connection_info

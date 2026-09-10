@@ -63,6 +63,33 @@ not live WARP interoperability. The affected PC still needs fresh-session retest
 with WARP enabled and disabled; success requires authenticated video, assembled
 frames, and visible playback in both cases.
 
+## Windows firewall prompt during startup
+
+The 2026-09-10 Windows AV1 capture negotiated 2560x1440 at 120 FPS and completed
+PLAY, ICE, DTLS and SCTP. Audio arrived, but the video socket received no datagrams
+before the two eight-second timeouts stopped the session. The user reported that
+playback worked after resolving the firewall prompt. This was not an AV1 decoder
+failure.
+
+Windows sessions now allow 60 seconds for the first authenticated video packet
+before attempting transport recovery. The regular eight-second idle timeout
+applies as soon as authenticated video arrives, and after recovery or resume.
+The startup allowance is not renewed by invalid packets or recovery, and audio
+on the separate bundle socket does not end it. Permission is still controlled
+by Windows; OpenNOW does not add firewall rules or bypass a denied permission.
+
+The internal `nvstVideo` handoff carries optional `startupTimeoutMs`, defaulting
+to `timeoutMs`. It must be at least the idle timeout and no more than 90 seconds.
+The native session negotiator supplies 60 seconds on Windows and eight seconds
+elsewhere. This changes neither the external core protocol nor the C ABI.
+
+To verify on Windows, use a new executable path with no existing firewall rule,
+start a session, and leave the Windows permission prompt open for more than
+16 seconds but less than 60 seconds before allowing access. Video should start
+in the same session. Denying access must still produce a bounded timeout.
+After playback starts, a video delivery failure should still enter recovery
+after eight seconds rather than receiving another startup allowance.
+
 ## Verification
 
 Run the native streamer workspace tests and `opennow-embedded-orchestration-tests`.

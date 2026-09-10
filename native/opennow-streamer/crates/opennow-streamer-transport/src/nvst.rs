@@ -804,6 +804,7 @@ pub struct NvstVideoConfig {
     reorder_window_packets: usize,
     max_access_unit_bytes: usize,
     timeout: Duration,
+    startup_timeout: Duration,
     frame_time_us: u32,
     /// Negotiated `x-nv-video[0].packetSize`; FEC shards are this plus 16 RTP bytes.
     video_packet_size: usize,
@@ -836,6 +837,7 @@ impl fmt::Debug for NvstVideoConfig {
             .field("reorder_window_packets", &self.reorder_window_packets)
             .field("max_access_unit_bytes", &self.max_access_unit_bytes)
             .field("timeout", &self.timeout)
+            .field("startup_timeout", &self.startup_timeout)
             .field("frame_time_us", &self.frame_time_us)
             .field("video_packet_size", &self.video_packet_size)
             .finish()
@@ -1128,6 +1130,14 @@ impl NvstVideoConfig {
         if !(MIN_TIMEOUT..=MAX_TIMEOUT).contains(&timeout) {
             return Err(NvstConfigError::OutOfRange { field: "timeoutMs" });
         }
+        let startup_timeout = optional_u64(object, "startupTimeoutMs")?
+            .map(Duration::from_millis)
+            .unwrap_or(timeout);
+        if !(timeout..=MAX_TIMEOUT).contains(&startup_timeout) {
+            return Err(NvstConfigError::OutOfRange {
+                field: "startupTimeoutMs",
+            });
+        }
         let video_packet_size =
             optional_usize(object, "packetSize")?.unwrap_or(DEFAULT_NVST_VIDEO_PACKET_SIZE);
         if !(MIN_NVST_VIDEO_PACKET_SIZE..=MAX_NVST_VIDEO_PACKET_SIZE).contains(&video_packet_size) {
@@ -1160,6 +1170,7 @@ impl NvstVideoConfig {
             reorder_window_packets,
             max_access_unit_bytes,
             timeout,
+            startup_timeout,
             frame_time_us: DEFAULT_FRAME_TIME_US,
             video_packet_size,
             feedback: Arc::new(NvstFeedbackState::default()),
@@ -3447,6 +3458,7 @@ pub struct NvstVideoReceiver {
     packet_gap_recoveries: u64,
     timeout_origin: Instant,
     last_authenticated_packet: Option<Instant>,
+    initial_timeout_pending: bool,
 }
 
 impl NvstVideoReceiver {
@@ -3480,6 +3492,7 @@ impl NvstVideoReceiver {
             packet_gap_recoveries: 0,
             timeout_origin: Instant::now(),
             last_authenticated_packet: None,
+            initial_timeout_pending: true,
         }
     }
 
@@ -3503,6 +3516,7 @@ impl NvstVideoReceiver {
         self.reset_media_state();
         self.last_authenticated_packet = None;
         self.timeout_origin = Instant::now();
+        self.initial_timeout_pending = false;
         self.state = NvstReceiverState::Running;
         Some(NvstReceiveEvent::Lifecycle(self.state))
     }
@@ -3514,6 +3528,7 @@ impl NvstVideoReceiver {
         self.reset_media_state();
         self.last_authenticated_packet = None;
         self.timeout_origin = Instant::now();
+        self.initial_timeout_pending = false;
         self.state = NvstReceiverState::Running;
         Some(NvstReceiveEvent::Lifecycle(self.state))
     }
@@ -3537,7 +3552,12 @@ impl NvstVideoReceiver {
             .last_authenticated_packet
             .unwrap_or(self.timeout_origin);
         let idle_for = now.saturating_duration_since(last_packet);
-        if idle_for < self.config.timeout {
+        let timeout = if self.initial_timeout_pending {
+            self.config.startup_timeout
+        } else {
+            self.config.timeout
+        };
+        if idle_for < timeout {
             return None;
         }
         self.reset_media_state();
@@ -3603,6 +3623,7 @@ impl NvstVideoReceiver {
         }
         self.bound_ssrc.get_or_insert(packet.header.ssrc);
         self.last_authenticated_packet = Some(now);
+        self.initial_timeout_pending = false;
         self.authenticated_packets += 1;
         let sequence = u32::try_from(packet.index & 0xffff_ffff).unwrap_or(u32::MAX);
         self.highest_sequence_received = self.highest_sequence_received.max(sequence);
@@ -3787,6 +3808,7 @@ impl NvstVideoReceiver {
         }
         self.bound_ssrc.get_or_insert(ssrc);
         self.last_authenticated_packet = Some(now);
+        self.initial_timeout_pending = false;
         // The bundle path cannot assemble video: the Mjolnir frame metadata lives
         // in the `0x4753` RTP extension, which str0m does not surface. The official
         // cloud path delivers video exclusively on the raw Mjolnir socket, so bundle
@@ -8958,6 +8980,139 @@ mod tests {
                 ))
             ));
         }
+    }
+
+    #[test]
+    fn startup_timeout_is_optional_and_bounded_by_idle_timeout_and_maximum() {
+        assert_eq!(config().startup_timeout, config().timeout);
+        for milliseconds in [500, 60_000, 90_000] {
+            let mut handoff = legacy_handoff();
+            handoff["startupTimeoutMs"] = json!(milliseconds);
+            let config = NvstVideoConfig::from_legacy_handoff(&handoff, None).unwrap();
+            assert_eq!(config.startup_timeout, Duration::from_millis(milliseconds));
+        }
+        for invalid in [
+            json!(0),
+            json!(499),
+            json!(90_001),
+            json!(-1),
+            json!("60000"),
+        ] {
+            let mut handoff = legacy_handoff();
+            handoff["startupTimeoutMs"] = invalid;
+            assert!(NvstVideoConfig::from_legacy_handoff(&handoff, None).is_err());
+        }
+    }
+
+    #[test]
+    fn startup_grace_waits_for_firewall_without_spending_recovery_budget() {
+        let mut config = config();
+        config.startup_timeout = Duration::from_secs(60);
+        let mut receiver = NvstVideoReceiver::new(config);
+        let origin = receiver.timeout_origin;
+
+        for seconds in [8, 16, 30, 59] {
+            assert_eq!(
+                receiver.poll_timeout(origin + Duration::from_secs(seconds)),
+                None
+            );
+            assert_eq!(receiver.state(), NvstReceiverState::Running);
+        }
+        assert!(matches!(
+            receiver.poll_timeout(origin + Duration::from_secs(60)),
+            Some(NvstReceiveEvent::RecoveryNeeded(
+                NvstRecovery::Timeout { .. }
+            ))
+        ));
+        assert_eq!(
+            receiver.poll_timeout(origin + Duration::from_secs(61)),
+            None
+        );
+        receiver
+            .recover()
+            .expect("bounded recovery after startup grace");
+        assert!(matches!(
+            receiver.poll_timeout(receiver.timeout_origin + receiver.config.timeout),
+            Some(NvstReceiveEvent::RecoveryNeeded(
+                NvstRecovery::Timeout { .. }
+            ))
+        ));
+    }
+
+    #[test]
+    fn authenticated_video_ends_startup_grace_and_keeps_idle_recovery_short() {
+        let mut config = config();
+        config.startup_timeout = Duration::from_secs(60);
+        let packet = protect_for_test(
+            &test_srtp(&config),
+            build_plaintext_rtp(
+                1,
+                FLAG_SOF | FLAG_EOF | FLAG_CONTAINS_PIC_DATA,
+                1,
+                &[0, 0, 1, 0x65],
+            ),
+            0,
+        );
+        let mut receiver = NvstVideoReceiver::new(config);
+        let received_at = receiver.timeout_origin + Duration::from_secs(30);
+        assert_eq!(receiver.poll_timeout(received_at), None);
+        let events = receiver.process_datagram(peer(), &packet, received_at);
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, NvstReceiveEvent::Frame(_)))
+        );
+        assert_eq!(receiver.poll_timeout(received_at), None);
+        assert!(matches!(
+            receiver.poll_timeout(received_at + receiver.config.timeout),
+            Some(NvstReceiveEvent::RecoveryNeeded(
+                NvstRecovery::Timeout { .. }
+            ))
+        ));
+        receiver.recover().expect("recover established stream");
+        assert!(matches!(
+            receiver.poll_timeout(receiver.timeout_origin + receiver.config.timeout),
+            Some(NvstReceiveEvent::RecoveryNeeded(
+                NvstRecovery::Timeout { .. }
+            ))
+        ));
+    }
+
+    #[test]
+    fn invalid_datagrams_do_not_extend_or_end_startup_grace() {
+        let mut config = config();
+        config.startup_timeout = Duration::from_secs(60);
+        let mut receiver = NvstVideoReceiver::new(config);
+        let origin = receiver.timeout_origin;
+        for seconds in [8, 16, 30, 59] {
+            let now = origin + Duration::from_secs(seconds);
+            assert!(matches!(
+                receiver.process_datagram(peer(), &[], now).as_slice(),
+                [NvstReceiveEvent::Dropped(_)]
+            ));
+            assert_eq!(receiver.poll_timeout(now), None);
+        }
+        assert!(matches!(
+            receiver.poll_timeout(origin + Duration::from_secs(60)),
+            Some(NvstReceiveEvent::RecoveryNeeded(
+                NvstRecovery::Timeout { .. }
+            ))
+        ));
+    }
+
+    #[test]
+    fn resume_does_not_regrant_startup_grace() {
+        let mut config = config();
+        config.startup_timeout = Duration::from_secs(60);
+        let mut receiver = NvstVideoReceiver::new(config);
+        receiver.pause().expect("pause during startup");
+        receiver.resume().expect("resume during startup");
+        assert!(matches!(
+            receiver.poll_timeout(receiver.timeout_origin + receiver.config.timeout),
+            Some(NvstReceiveEvent::RecoveryNeeded(
+                NvstRecovery::Timeout { .. }
+            ))
+        ));
     }
 
     #[test]
