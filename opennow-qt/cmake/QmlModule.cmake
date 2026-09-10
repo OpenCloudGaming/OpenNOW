@@ -263,6 +263,7 @@ qt_add_qml_module(opennow-qt
         qml/desktop/onboarding/DesktopOnboardingModeCard.qml
         qml/desktop/onboarding/DesktopOnboardingPicture.qml
         qml/desktop/onboarding/DesktopOnboardingBoost.qml
+        qml/desktop/onboarding/DesktopOnboardingNetwork.qml
         qml/desktop/settings/controls/DesktopSettingsAdvanced.qml
         qml/desktop/settings/controls/DesktopSettingsButton.qml
         qml/desktop/settings/controls/DesktopSettingsChoice.qml

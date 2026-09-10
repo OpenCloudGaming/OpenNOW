@@ -1,5 +1,11 @@
 include(CTest)
 if(BUILD_TESTING)
+    qt_add_executable(opennow-macawdl-tests tests/tst_macawdlcontroller.cpp
+        src/app/platform/MacAwdlController.cpp src/app/platform/MacAwdlController.h)
+    target_include_directories(opennow-macawdl-tests PRIVATE src)
+    target_link_libraries(opennow-macawdl-tests PRIVATE Qt6::Core Qt6::Test)
+    add_test(NAME opennow-macawdl-tests COMMAND opennow-macawdl-tests -o -,txt)
+    set_tests_properties(opennow-macawdl-tests PROPERTIES TIMEOUT 20)
     qt_add_executable(opennow-waylandhdroutput-tests tests/tst_waylandhdroutput.cpp)
     target_link_libraries(opennow-waylandhdroutput-tests PRIVATE Qt6::Test opennow-platform-hdr)
     add_test(NAME opennow-waylandhdroutput-tests COMMAND opennow-waylandhdroutput-tests -o -,txt)
@@ -35,7 +41,29 @@ if(BUILD_TESTING)
     set_tests_properties(opennow-onboarding-tests PROPERTIES
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
     qt_add_resources(opennow-qt "onboarding-acceptance"
-        PREFIX "/acceptance" BASE tests FILES tests/OnboardingAcceptance.qml tests/OnboardingScrollAcceptance.qml)
+        PREFIX "/acceptance" BASE tests FILES tests/OnboardingAcceptance.qml tests/OnboardingScrollAcceptance.qml tests/OnboardingAwdlAcceptance.qml)
+    foreach(width 960 1440)
+        if(width EQUAL 960)
+            set(awdl_height 540)
+            set(awdl_scale 1.25)
+        else()
+            set(awdl_height 900)
+            set(awdl_scale 1)
+        endif()
+        add_test(NAME "qml-onboarding-awdl-${width}" COMMAND opennow-qt
+            --smoke-test --allow-multiple-instances --desktop --route home
+            --smoke-onboarding --onboarding-awdl-check --onboarding-step 3
+            --smoke-width ${width} --smoke-height ${awdl_height}
+            --onboarding-ui-scale ${awdl_scale} --reduced-motion)
+        set_tests_properties("qml-onboarding-awdl-${width}" PROPERTIES
+            ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 20)
+    endforeach()
+    add_test(NAME qml-onboarding-awdl-fullscreen COMMAND opennow-qt
+        --smoke-test --allow-multiple-instances --desktop --route home
+        --smoke-onboarding --onboarding-awdl-check --onboarding-step 3
+        --onboarding-awdl-fullscreen --reduced-motion)
+    set_tests_properties(qml-onboarding-awdl-fullscreen PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 20)
     add_test(NAME qml-onboarding-login-scroll COMMAND opennow-qt
         --smoke-test --allow-multiple-instances --desktop --route home
         --smoke-onboarding --onboarding-scroll-check --onboarding-login
@@ -545,6 +573,7 @@ if(BUILD_TESTING)
         TIMEOUT 30
     )
     set(OPENNOW_CI_UNIT_TEST_TARGETS
+        opennow-macawdl-tests
         opennow-controllericons-tests
         opennow-waylandhdroutput-tests
         opennow-hdrcolor-tests
@@ -580,6 +609,7 @@ if(BUILD_TESTING)
         # Qt's executable helper defaults to the GUI subsystem on Windows. Keep
         # test runners as console programs so CTest captures QtTest failures.
         set_target_properties(
+            opennow-macawdl-tests
             opennow-controllericons-tests
             opennow-waylandhdroutput-tests
             opennow-frameinterpolator-tests

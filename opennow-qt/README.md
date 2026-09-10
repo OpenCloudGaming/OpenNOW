@@ -262,6 +262,15 @@ setup keeps the draft and presents the error for retry. Selecting console mode d
 not replace the wizard while its settings are being saved. No payment or diagnostic
 upload happens during onboarding.
 
+On macOS, Boost includes an AWDL Wi-Fi latency check. It reads the current
+`awdl0` interface state and offers an explicit, confirmed disable or re-enable
+action using the macOS administrator prompt. It never disables AWDL automatically,
+stores administrator credentials, installs a service, or changes the onboarding
+completion rules. Disabling AWDL can interrupt AirDrop, AirPlay, Sidecar and other
+Continuity features for all users. macOS may re-enable it; the page refreshes its
+status while visible. An enabled interface alone does not prove the cause of a
+streaming hitch, so compare sessions before and after the change.
+
 Run persistence and whole-app acceptance without an account:
 
 ```sh
@@ -275,6 +284,9 @@ QT_QPA_PLATFORM=offscreen build/opennow-qt/opennow-qt \
 `--onboarding-step` accepts 0 through 5. Add `--smoke-light-theme` or
 `--onboarding-ui-scale 1.25` to inspect alternate appearances. For the existing
 provider sign-in screen, replace `--onboarding-step 0` with `--onboarding-login`.
+Add `--onboarding-awdl-check --onboarding-step 3` to exercise the macOS card with an
+injected controller on any platform. This checks confirmation, cancellation,
+restore, busy, error and unsupported states without changing a network interface.
 These switches run only with the smoke fixture; they do not start provider login,
 open donation links, or write account settings. Real provider approval and native
 MetalFX output still require the corresponding account and macOS device.

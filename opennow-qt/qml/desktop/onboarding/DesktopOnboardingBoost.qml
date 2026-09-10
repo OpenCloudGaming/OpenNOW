@@ -150,6 +150,8 @@ Column {
         }
     }
 
+    DesktopOnboardingNetwork { width: parent.width }
+
     GridLayout {
         width: parent.width
         columns: root.wide ? 2 : 1

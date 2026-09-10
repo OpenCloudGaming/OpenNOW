@@ -40,6 +40,8 @@ qt_add_executable(opennow-qt
     src/acceptance/SessionLaunchAcceptance.cpp
     src/app/AppController.cpp
     src/app/AppController.h
+    src/app/platform/MacAwdlController.cpp
+    src/app/platform/MacAwdlController.h
     src/app/ApplicationStartup.cpp
     src/app/ApplicationStartup.h
     src/app/SingleInstance.cpp
