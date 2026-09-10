@@ -51,16 +51,18 @@ pub enum SharedVulkanDevice {}
 pub use opennow_streamer_platform_macos::{
     AdoptedMetalContext, EmbeddedFrameProducer, MetalFrame, MetalRecordedFrame,
 };
+pub use opennow_streamer_platform_windows::WindowsAdapterLuid;
 #[cfg(target_os = "windows")]
 pub use opennow_streamer_platform_windows::{
     AdoptedD3d11Context, D3d11Frame, D3d11FrameProducer, D3d11FrameSubmitter, D3d11RecordedFrame,
-    D3d11TextureFormat,
+    D3d11TextureFormat, d3d11_adapter_luid,
 };
 pub use recording::{RecordingSummary, record_matroska, record_replay_matroska};
 pub use replay::ReplaySnapshot;
 pub use runtime::{
-    MainThreadHost, MediaRuntime, MediaRuntimeControl, create_embedded_runtime,
-    create_embedded_runtime_with_input, create_embedded_runtime_with_vulkan_device, create_runtime,
+    EmbeddedRuntimeConfig, MainThreadHost, MediaRuntime, MediaRuntimeControl,
+    create_embedded_runtime, create_embedded_runtime_with_config,
+    create_embedded_runtime_with_input, create_runtime,
 };
 #[cfg(feature = "test-runtime")]
 pub use runtime::{TestMediaRuntimeHost, create_test_runtime};
@@ -78,8 +80,8 @@ pub fn video_backends() -> Vec<VideoBackendCapability> {
     let mut backends = {
         use opennow_streamer_platform_windows::WindowsGraphicsApi;
         vec![
-            windows_hardware_backend(WindowsGraphicsApi::D3d12, "d3d12", "d3d11on12-nv12"),
-            windows_hardware_backend(WindowsGraphicsApi::D3d11, "d3d11", "d3d11-nv12"),
+            windows_hardware_backend(WindowsGraphicsApi::D3d12, "d3d12", "d3d11on12-nv12", None),
+            windows_hardware_backend(WindowsGraphicsApi::D3d11, "d3d11", "d3d11-nv12", None),
             software_backend(),
         ]
     };
@@ -95,11 +97,12 @@ pub fn video_backends() -> Vec<VideoBackendCapability> {
 }
 
 pub fn embedded_video_backends() -> Vec<VideoBackendCapability> {
-    embedded_video_backends_with_device(None)
+    embedded_video_backends_with_config(None, None)
 }
 
-pub(crate) fn embedded_video_backends_with_device(
+pub(crate) fn embedded_video_backends_with_config(
     _device: Option<&SharedVulkanDevice>,
+    _windows_adapter_luid: Option<WindowsAdapterLuid>,
 ) -> Vec<VideoBackendCapability> {
     #[cfg(target_os = "linux")]
     let mut backends = linux_backend::video_backends();
@@ -207,6 +210,7 @@ pub(crate) fn embedded_video_backends_with_device(
             WindowsGraphicsApi::D3d11,
             "d3d11",
             "d3d11-nv12",
+            _windows_adapter_luid,
         )]
     };
     #[cfg(target_os = "macos")]
@@ -306,6 +310,7 @@ fn windows_hardware_backend(
     api: opennow_streamer_platform_windows::WindowsGraphicsApi,
     backend: &'static str,
     zero_copy_mode: &'static str,
+    adapter_luid: Option<WindowsAdapterLuid>,
 ) -> VideoBackendCapability {
     use opennow_streamer_platform_windows::{VideoCodec, VideoPixelFormat};
 
@@ -316,7 +321,7 @@ fn windows_hardware_backend(
             "Direct3D hardware decode was disabled by configuration",
         );
     }
-    let probe = opennow_streamer_platform_windows::WindowsBackend::probe_for(api);
+    let probe = opennow_streamer_platform_windows::WindowsBackend::probe_for(api, adapter_luid);
     let available = probe.bundled_backend_available();
     let media_output_available = probe.d3d11_presentation && probe.wasapi_render;
     let color_qualities = |codec| {
@@ -455,6 +460,7 @@ fn software_backend() -> VideoBackendCapability {
     {
         let probe = opennow_streamer_platform_windows::WindowsBackend::probe_for(
             opennow_streamer_platform_windows::WindowsGraphicsApi::D3d11,
+            None,
         );
         let media_output_available = probe.d3d11_presentation && probe.wasapi_render;
         // OpenH264 is bundled for the guaranteed H.264 path. HEVC and AV1 can
@@ -639,6 +645,7 @@ mod tests {
             use opennow_streamer_platform_windows::WindowsGraphicsApi;
             let software_probe = opennow_streamer_platform_windows::WindowsBackend::probe_for(
                 WindowsGraphicsApi::D3d11,
+                None,
             );
             assert_eq!(
                 software
@@ -670,7 +677,7 @@ mod tests {
                     .iter()
                     .find(|backend| backend.backend == backend_name)
                     .expect("Direct3D backend");
-                let probe = opennow_streamer_platform_windows::WindowsBackend::probe_for(api);
+                let probe = opennow_streamer_platform_windows::WindowsBackend::probe_for(api, None);
                 assert_eq!(hardware.available, probe.bundled_backend_available());
                 assert_eq!(
                     hardware
@@ -759,7 +766,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn embedded_linux_hdr_requires_an_available_ten_bit_output_path() {
-        for backend in embedded_video_backends_with_device(None) {
+        for backend in embedded_video_backends_with_config(None, None) {
             for codec in backend.codecs {
                 assert_eq!(
                     codec.hdr_supported,
@@ -784,7 +791,7 @@ mod tests {
         use opennow_streamer_platform_windows::{
             VideoCodec, VideoPixelFormat, WindowsBackend, WindowsGraphicsApi,
         };
-        let probe = WindowsBackend::probe_for(WindowsGraphicsApi::D3d11);
+        let probe = WindowsBackend::probe_for(WindowsGraphicsApi::D3d11, None);
         for backend in embedded_video_backends() {
             for codec in backend.codecs {
                 let profile = match codec.codec {
@@ -813,7 +820,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn embedded_linux_reports_explicit_color_profiles_without_claiming_zero_copy() {
-        for backend in embedded_video_backends_with_device(None) {
+        for backend in embedded_video_backends_with_config(None, None) {
             for codec in backend.codecs {
                 let colors = codec
                     .color_qualities

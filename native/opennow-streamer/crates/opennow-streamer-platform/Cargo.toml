@@ -20,6 +20,7 @@ base64.workspace = true
 image.workspace = true
 openh264.workspace = true
 opennow-streamer-protocol = { path = "../opennow-streamer-protocol" }
+opennow-streamer-platform-windows = { path = "../opennow-streamer-platform-windows" }
 oxideav-core.workspace = true
 oxideav-mkv.workspace = true
 opus.workspace = true
@@ -28,7 +29,6 @@ scuffle-av1.workspace = true
 serde_json.workspace = true
 
 [target.'cfg(target_os = "windows")'.dependencies]
-opennow-streamer-platform-windows = { path = "../opennow-streamer-platform-windows" }
 raw-window-handle = "0.6"
 # sdl2-sys ships a single checked-in sdl_bindings.rs generated on Linux and
 # copies it for every target unless use-bindgen is on. Its X11 layout assertions

@@ -81,9 +81,11 @@ public:
     static void initializeDiagnostics(Api::SetLogFile setLogFile = &opennow_streamer_set_log_file);
 
     explicit NativeStreamRuntime(QObject *parent = nullptr,
-                                 const OpenNowStreamerVulkanDevice *vulkanDevice = nullptr);
+                                 const OpenNowStreamerVulkanDevice *vulkanDevice = nullptr,
+                                 quint64 windowsAdapterLuid = 0);
     explicit NativeStreamRuntime(Api api, QObject *parent = nullptr,
-                                 const OpenNowStreamerVulkanDevice *vulkanDevice = nullptr);
+                                 const OpenNowStreamerVulkanDevice *vulkanDevice = nullptr,
+                                 quint64 windowsAdapterLuid = 0);
     ~NativeStreamRuntime() override;
 
     [[nodiscard]] bool running() const;

@@ -8,10 +8,11 @@ use std::thread::{self, JoinHandle};
 
 use opennow_streamer_core::{Engine, EventSender};
 use opennow_streamer_platform::{
-    CapturedInput, CapturedInputQueue, EmbeddedInputCapture, EmbeddedLocalAction, GraphicsApi,
-    GraphicsContext, GraphicsFramePublisher, GraphicsFrameToken, GraphicsRecordCommand,
-    GraphicsRecordedFrame, GraphicsRuntimeError, GraphicsTextureFormat, RenderThreadGraphics,
-    SharedVulkanDevice, create_embedded_runtime_with_vulkan_device,
+    CapturedInput, CapturedInputQueue, EmbeddedInputCapture, EmbeddedLocalAction,
+    EmbeddedRuntimeConfig, GraphicsApi, GraphicsContext, GraphicsFramePublisher,
+    GraphicsFrameToken, GraphicsRecordCommand, GraphicsRecordedFrame, GraphicsRuntimeError,
+    GraphicsTextureFormat, RenderThreadGraphics, SharedVulkanDevice, WindowsAdapterLuid,
+    create_embedded_runtime_with_config,
 };
 use opennow_streamer_protocol::log;
 use opennow_streamer_protocol::{Command, error};
@@ -19,7 +20,7 @@ use serde_json::Value;
 
 static FIRST_FRAME_LOGGED: AtomicBool = AtomicBool::new(false);
 
-pub const OPENNOW_STREAMER_FFI_ABI_VERSION: u32 = 9;
+pub const OPENNOW_STREAMER_FFI_ABI_VERSION: u32 = 10;
 pub const OPENNOW_STREAMER_MAX_TEXT_BYTES: usize =
     opennow_streamer_protocol::text_input::MAX_TEXT_BYTES;
 pub const OPENNOW_STREAMER_VULKAN_DEVICE_INFO_VERSION: u32 = 1;
@@ -49,6 +50,7 @@ pub struct OpenNowStreamerConfig {
     pub cursor_callback: OpenNowStreamerCursorCallback,
     pub user_data: *mut c_void,
     pub vulkan_device: *const OpenNowStreamerVulkanDevice,
+    pub windows_adapter_luid: u64,
 }
 
 pub struct OpenNowStreamerVulkanDevice {
@@ -336,6 +338,8 @@ pub struct OpenNowStreamer {
     graphics: RenderThreadGraphics,
     frame_publisher: GraphicsFramePublisher,
     input: EmbeddedInputCapture,
+    #[cfg(target_os = "windows")]
+    windows_adapter_luid: Option<WindowsAdapterLuid>,
 }
 
 impl OpenNowStreamer {
@@ -429,6 +433,8 @@ impl OpenNowStreamer {
             graphics,
             frame_publisher,
             input: EmbeddedInputCapture::new(captured_input),
+            #[cfg(target_os = "windows")]
+            windows_adapter_luid: WindowsAdapterLuid::new(config.windows_adapter_luid),
         })
     }
 
@@ -489,6 +495,21 @@ fn validate_config(config: &OpenNowStreamerConfig) -> Result<(), OpenNowStreamer
         return Err(OpenNowStreamerStatus::InvalidConfig);
     }
     Ok(())
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn validate_windows_adapter_luid(
+    configured: WindowsAdapterLuid,
+    actual: WindowsAdapterLuid,
+) -> Result<(), String> {
+    if configured == actual {
+        return Ok(());
+    }
+    Err(format!(
+        "configured Windows adapter LUID {:#018x} does not match Qt D3D11 device LUID {:#018x}",
+        configured.get(),
+        actual.get(),
+    ))
 }
 
 fn spawn_dispatcher(
@@ -795,6 +816,7 @@ pub unsafe extern "C" fn opennow_streamer_create(
         let config = unsafe { config.read() };
         let vulkan_device =
             unsafe { config.vulkan_device.as_ref() }.map(|owner| Arc::clone(&owner.device));
+        let windows_adapter_luid = WindowsAdapterLuid::new(config.windows_adapter_luid);
         let captured_input = Arc::new(CapturedInputQueue::default());
         let runtime_input = Arc::clone(&captured_input);
         match OpenNowStreamer::create(
@@ -806,11 +828,14 @@ pub unsafe extern "C" fn opennow_streamer_create(
                 });
                 Engine::with_embedded_media_runtime(
                     events,
-                    create_embedded_runtime_with_vulkan_device(
+                    create_embedded_runtime_with_config(
                         frames,
                         runtime_input,
                         Some(cursor_update),
-                        vulkan_device,
+                        EmbeddedRuntimeConfig {
+                            vulkan_device,
+                            windows_adapter_luid,
+                        },
                     ),
                 )
             },
@@ -1144,7 +1169,24 @@ pub unsafe extern "C" fn opennow_streamer_set_graphics_context(
                 return status;
             }
         };
-        let status = unsafe { &*handle }
+        let handle = unsafe { &*handle };
+        #[cfg(target_os = "windows")]
+        if context.api == GraphicsApi::D3d11
+            && let Some(configured) = handle.windows_adapter_luid
+        {
+            let validation =
+                unsafe { opennow_streamer_platform::d3d11_adapter_luid(context.device) }
+                    .and_then(|actual| validate_windows_adapter_luid(configured, actual));
+            if let Err(error) = validation {
+                log::log_line(
+                    "WARN",
+                    "graphics",
+                    &format!("graphics context rejected: {error}"),
+                );
+                return OpenNowStreamerStatus::GraphicsUnavailable;
+            }
+        }
+        let status = handle
             .graphics
             .initialize(context)
             .map_or_else(graphics_status, |()| OpenNowStreamerStatus::Ok);
@@ -1541,7 +1583,6 @@ mod tests {
 
     #[test]
     fn abi_five_appends_the_shared_vulkan_owner() {
-        assert_eq!(OPENNOW_STREAMER_FFI_ABI_VERSION, 9);
         assert_eq!(OPENNOW_STREAMER_VULKAN_DEVICE_INFO_VERSION, 1);
         assert_eq!(
             std::mem::offset_of!(OpenNowStreamerConfig, vulkan_device),
@@ -1569,6 +1610,45 @@ mod tests {
         assert_eq!(
             validate_config(&config),
             Err(OpenNowStreamerStatus::InvalidConfig)
+        );
+    }
+
+    #[test]
+    fn abi_ten_appends_the_windows_adapter_luid() {
+        assert_eq!(OPENNOW_STREAMER_FFI_ABI_VERSION, 10);
+        assert_eq!(
+            std::mem::offset_of!(OpenNowStreamerConfig, windows_adapter_luid),
+            std::mem::offset_of!(OpenNowStreamerConfig, vulkan_device)
+                + size_of::<*const OpenNowStreamerVulkanDevice>(),
+        );
+        let messages = CallbackMessages::default();
+        let mut config = test_config(&messages);
+        config.struct_size = std::mem::offset_of!(OpenNowStreamerConfig, windows_adapter_luid);
+        assert_eq!(
+            validate_config(&config),
+            Err(OpenNowStreamerStatus::InvalidConfig)
+        );
+        config.struct_size = size_of::<OpenNowStreamerConfig>();
+        config.windows_adapter_luid = 0;
+        assert_eq!(WindowsAdapterLuid::new(config.windows_adapter_luid), None);
+        config.windows_adapter_luid = 0x1122_3344_ffff_fffe;
+        assert_eq!(
+            WindowsAdapterLuid::new(config.windows_adapter_luid).map(WindowsAdapterLuid::get),
+            Some(0x1122_3344_ffff_fffe)
+        );
+    }
+
+    #[test]
+    fn configured_windows_adapter_must_match_the_adopted_device() {
+        let configured = WindowsAdapterLuid::new(0x0000_0001_1122_3344).expect("configured LUID");
+        assert_eq!(
+            validate_windows_adapter_luid(configured, configured),
+            Ok(())
+        );
+        let actual = WindowsAdapterLuid::new(0x0000_0002_5566_7788).expect("actual LUID");
+        assert_eq!(
+            validate_windows_adapter_luid(configured, actual),
+            Err("configured Windows adapter LUID 0x0000000111223344 does not match Qt D3D11 device LUID 0x0000000255667788".to_owned())
         );
     }
 
@@ -1658,6 +1738,7 @@ mod tests {
             cursor_callback: None,
             user_data: ptr::from_ref(messages).cast_mut().cast(),
             vulkan_device: ptr::null(),
+            windows_adapter_luid: 0,
         }
     }
 
@@ -2083,9 +2164,10 @@ mod tests {
     }
 
     #[test]
-    fn abi_9_header_and_text_bound_match_rust() {
+    fn abi_10_header_and_text_bound_match_rust() {
         let header = include_str!("../include/opennow_streamer_ffi.h");
-        assert!(header.contains("#define OPENNOW_STREAMER_FFI_ABI_VERSION 9u"));
+        assert!(header.contains("#define OPENNOW_STREAMER_FFI_ABI_VERSION 10u"));
+        assert!(header.contains("uint64_t windows_adapter_luid;"));
         assert!(header.contains("#define OPENNOW_STREAMER_MAX_TEXT_BYTES 65536u"));
         assert_eq!(OPENNOW_STREAMER_MAX_TEXT_BYTES, 65_536);
         assert!(header.contains("opennow_streamer_submit_text("));

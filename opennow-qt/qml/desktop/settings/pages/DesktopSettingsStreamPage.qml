@@ -35,6 +35,21 @@ Column {
     DesktopSettingsPanel {
         width: parent.width; paperStyle: true
         DesktopSettingsSection { text: qsTr("PICTURE") }
+        DesktopSettingsChoice {
+            objectName: "graphicsProcessorSelector"
+            visible: GraphicsDevices.selectorVisible
+            width: parent.width
+            title: qsTr("Graphics processor")
+            description: GraphicsDevices.savedDeviceUnavailable
+                ? qsTr("Saved GPU unavailable; using Automatic. Changes apply after restarting OpenNOW.")
+                : qsTr("Uses the same GPU for decoding and display. Changes apply after restarting OpenNOW.")
+            glyph: "monitor"
+            items: GraphicsDevices.choices
+            maximumColumns: 2
+            readonly property string preferredId: String(page.settingsScreen.valueSetting("windowsGpuDeviceId", ""))
+            value: items.some(item => item.value === preferredId && !item.disabled) ? preferredId : ""
+            onSelected: value => ShellStore.setSetting("windowsGpuDeviceId", value)
+        }
         DesktopSettingsResolution {
             width: parent.width; items: page.settingsScreen.resolutionItems()
             value: page.settingsScreen.currentResolutionValue()
