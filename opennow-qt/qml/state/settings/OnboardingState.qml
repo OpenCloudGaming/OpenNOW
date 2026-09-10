@@ -15,13 +15,20 @@ QtObject {
     property string requestId: ""
     property string requestKey: ""
     property var remainingKeys: []
+    property bool replayAllowed: false
+    property bool replaying: false
+    property string replayRequestId: ""
+    property string replayError: ""
     signal completed()
+    signal restartRequested()
     signal requirementsMissing()
     signal settingSaved(string key, var value, var changes)
 
     onReadyChanged: {
         if (!ready && saving)
             fail(qsTr("The connection was interrupted. Reconnect and try saving again."))
+        if (!ready && replayRequestId !== "")
+            failReplay(qsTr("The connection was interrupted. Reconnect and try again."))
     }
     onSignedInChanged: {
         if (!signedIn) {
@@ -45,7 +52,7 @@ QtObject {
     }
 
     function finish() {
-        if (saving)
+        if (saving || replaying)
             return
         if (!ready || !signedIn) {
             error = qsTr("Connect and sign in before finishing setup.")
@@ -94,6 +101,15 @@ QtObject {
     }
 
     function acceptResponse(id, result) {
+        if (replayRequestId !== "" && id === replayRequestId) {
+            if (result.value !== false) {
+                failReplay(qsTr("Setup could not be reset. Try again."))
+                return true
+            }
+            replayRequestId = ""
+            restartRequested()
+            return true
+        }
         if (!saving || id !== requestId || requestId === "")
             return false
         const key = requestKey
@@ -106,6 +122,10 @@ QtObject {
     }
 
     function acceptFailure(id, message) {
+        if (replayRequestId !== "" && id === replayRequestId) {
+            failReplay(qsTr("Setup could not be reset. %1").arg(message))
+            return true
+        }
         if (!saving || id !== requestId || requestId === "")
             return false
         fail(qsTr("Setup could not be saved. Your choices are still here. %1").arg(message))
@@ -118,5 +138,21 @@ QtObject {
         remainingKeys = []
         saving = false
         error = message
+    }
+
+    function replay() {
+        if (!ready || !replayAllowed || saving || replaying)
+            return
+        replayError = ""
+        replaying = true
+        replayRequestId = coreClient.request("settings.set", {key: "onboardingCompleted", value: false})
+        if (replayRequestId === "")
+            failReplay(qsTr("Setup could not be reset. Try again."))
+    }
+
+    function failReplay(message) {
+        replayRequestId = ""
+        replaying = false
+        replayError = message
     }
 }

@@ -12,6 +12,15 @@ class AppControllerTest final : public QObject
     Q_OBJECT
 
 private slots:
+    void restartIsDelegatedToApplicationLifetimeOwner()
+    {
+        AppController controller;
+        QSignalSpy restart(&controller, &AppController::restartRequested);
+        controller.restartApplication();
+        QCOMPARE(restart.count(), 1);
+        QCOMPARE(controller.route(), QStringLiteral("home"));
+    }
+
     void shortcutCaptureUsesPortableSingleChords()
     {
         AppController controller;

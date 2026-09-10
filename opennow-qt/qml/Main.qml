@@ -41,6 +41,7 @@ ApplicationWindow {
     readonly property bool settingsLoaded: Object.keys(ShellStore.settings || {}).length > 0
     readonly property bool onboardingVisible: ShellStore.signedIn
         && !ShellStore.authRestorePending
+        && !ShellStore.onboardingReplaying
         && (ShellStore.onboardingRequired || ShellStore.onboardingSaving
             || ShellStore.onboardingError !== "")
         && !ShellStore.activeSession

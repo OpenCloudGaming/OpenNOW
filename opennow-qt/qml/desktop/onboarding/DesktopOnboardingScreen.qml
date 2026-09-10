@@ -88,13 +88,21 @@ FocusScope {
             ancestor = ancestor.parent
         if (!ancestor)
             return
-        const point = focused.mapToItem(pageBody, 0, 0)
         const margin = DesktopTokens.px(16)
-        if (point.y < pageScroll.contentY + margin)
-            pageScroll.contentY = Math.max(0, point.y - margin)
-        else if (point.y + focused.height > pageScroll.contentY + pageScroll.height - margin)
-            pageScroll.contentY = Math.min(Math.max(0, pageScroll.contentHeight - pageScroll.height),
-                point.y + focused.height - pageScroll.height + margin)
+        ancestor = focused.parent
+        while (ancestor) {
+            if (ancestor instanceof Flickable) {
+                const point = focused.mapToItem(ancestor.contentItem, 0, 0)
+                if (point.y < ancestor.contentY + margin)
+                    ancestor.contentY = Math.max(0, point.y - margin)
+                else if (point.y + focused.height > ancestor.contentY + ancestor.height - margin)
+                    ancestor.contentY = Math.min(Math.max(0, ancestor.contentHeight - ancestor.height),
+                        point.y + focused.height - ancestor.height + margin)
+            }
+            if (ancestor === pageScroll)
+                break
+            ancestor = ancestor.parent
+        }
     }
 
     onStepIndexChanged: {
@@ -400,8 +408,8 @@ FocusScope {
             ColumnLayout {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
-                Layout.leftMargin: DesktopTokens.px(root.compact ? 20 : 24)
-                Layout.rightMargin: DesktopTokens.px(root.compact ? 20 : 64)
+                Layout.leftMargin: DesktopTokens.px(root.compact ? 20 : 40)
+                Layout.rightMargin: DesktopTokens.px(root.compact ? 20 : 40)
                 spacing: DesktopTokens.px(12)
 
                 RowLayout {
@@ -442,15 +450,17 @@ FocusScope {
                     Layout.fillWidth: true
                     Layout.fillHeight: true
                     contentWidth: width
-                    contentHeight: pageBody.implicitHeight + DesktopTokens.px(24)
+                    readonly property real pageMargin: DesktopTokens.px(root.compact ? 16 : 28)
+                    contentHeight: Math.max(height, pageBody.y + pageBody.implicitHeight + pageMargin)
                     clip: true
                     boundsBehavior: Flickable.StopAtBounds
                     ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
                     Column {
                         id: pageBody
+                        objectName: "onboardingPageBody"
                         width: pageScroll.width
+                        y: Math.max(pageScroll.pageMargin, (pageScroll.height - implicitHeight) / 2)
                         spacing: DesktopTokens.px(28)
-                        topPadding: DesktopTokens.px(root.compact ? 16 : 28)
                         Column {
                             visible: root.stepIndex !== 0
                             width: parent.width
@@ -494,8 +504,8 @@ FocusScope {
         Rectangle {
             visible: root.error !== ""
             Layout.fillWidth: true
-            Layout.leftMargin: DesktopTokens.px(root.compact ? 20 : 260)
-            Layout.rightMargin: DesktopTokens.px(root.compact ? 20 : 64)
+            Layout.leftMargin: DesktopTokens.px(root.compact ? 20 : 276)
+            Layout.rightMargin: DesktopTokens.px(root.compact ? 20 : 40)
             implicitHeight: errorLabel.implicitHeight + DesktopTokens.px(24)
             radius: DesktopTokens.px(10)
             color: Qt.rgba(root.coral.r,root.coral.g,root.coral.b,0.12)

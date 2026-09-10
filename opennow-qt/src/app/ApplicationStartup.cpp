@@ -28,6 +28,7 @@
 #include <QQuickWindow>
 #include <QSGRendererInterface>
 #include <QFileOpenEvent>
+#include <QProcess>
 
 #include <cstdlib>
 
@@ -61,7 +62,7 @@ private:
 };
 }
 
-int runApplication(int argc, char *argv[])
+static int runApplicationSession(int argc, char *argv[], QString &restartExecutable)
 {
     qputenv("QT_TLS_BACKEND", "schannel");
     QElapsedTimer startupTimer;
@@ -108,6 +109,15 @@ int runApplication(int argc, char *argv[])
         return EXIT_SUCCESS;
     }
     AppController controller;
+    QObject::connect(&controller, &AppController::restartRequested, &application, [&] {
+        restartExecutable = QCoreApplication::applicationFilePath();
+#ifdef Q_OS_LINUX
+        const auto appImage = qEnvironmentVariable("APPIMAGE");
+        if (!appImage.isEmpty())
+            restartExecutable = appImage;
+#endif
+        application.quit();
+    });
     if (!controller.ensureDirectLaunchAssociation())
         qWarning("Could not register the opennow:// direct-launch association");
     FileOpenFilter fileOpenFilter(&controller);
@@ -275,5 +285,18 @@ int runApplication(int argc, char *argv[])
                  qUtf8Printable(nativeStreamRuntime.lastError()));
     }
 #endif
+    return exitCode;
+}
+
+int runApplication(int argc, char *argv[])
+{
+    QString restartExecutable;
+    const auto exitCode = runApplicationSession(argc, argv, restartExecutable);
+    if (restartExecutable.isEmpty())
+        return exitCode;
+    if (!QProcess::startDetached(restartExecutable, {}, QFileInfo(restartExecutable).absolutePath())) {
+        qCritical("Could not restart OpenNOW. Reopen the application to continue setup.");
+        return EXIT_FAILURE;
+    }
     return exitCode;
 }
