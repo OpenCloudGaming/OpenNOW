@@ -78,9 +78,13 @@ enum State {
     Connected,
 }
 
-const ENCODED_MEDIA_QUEUE_CAPACITY: usize = 8;
+const ENCODED_AUDIO_INGRESS_BURST_CAPACITY: usize = 50;
 const NVST_RECOVERY_ATTEMPT_LIMIT: usize = 1;
 const NATIVE_INPUT_POLL_INTERVAL: Duration = Duration::from_micros(250);
+
+fn encoded_media_queue_capacity(fps: u32) -> usize {
+    fps.clamp(1, 240).div_ceil(4).max(2) as usize + ENCODED_AUDIO_INGRESS_BURST_CAPACITY
+}
 
 trait NvstSessionResources {
     fn take_rumble(&self) -> ([Option<NvstControllerRumble>; 4], usize) {
@@ -753,7 +757,7 @@ impl Engine {
             );
             let sink = session.sink();
             let (media_consumer, media_receiver) =
-                std::sync::mpsc::sync_channel(ENCODED_MEDIA_QUEUE_CAPACITY);
+                std::sync::mpsc::sync_channel(encoded_media_queue_capacity(stream_config.fps));
             let output = self.events.clone();
             let media_worker = match thread::Builder::new()
                 .name("opennow-media-consumer".to_owned())
@@ -1873,6 +1877,7 @@ fn forward_nvst_event<R: NvstSessionResources>(
                 "log",
                 json!({
                     "level": "warn",
+                    "event": "nvst-packet-gap",
                     "message": format!(
                         "Recovering NVST packet gap with a fresh keyframe: {first_missing_index}..={last_missing_index}"
                     )
@@ -1913,6 +1918,7 @@ fn forward_nvst_event<R: NvstSessionResources>(
                 "log",
                 json!({
                     "level": "warn",
+                    "event": "media-ingress-backpressure",
                     "message": "Dropped a backpressured NVST video frame and requested a fresh keyframe"
                 }),
             ));
@@ -2617,6 +2623,77 @@ mod tests {
 
     fn command(value: Value) -> Command {
         serde_json::from_value(value).expect("command")
+    }
+
+    #[test]
+    fn encoded_ingress_preserves_a_mixed_recovery_burst() {
+        let (sender, receiver) = std::sync::mpsc::sync_channel(encoded_media_queue_capacity(120));
+        let mut expected = Vec::new();
+        for index in 0..80_u32 {
+            let video = index % 8 < 3;
+            let frame = EncodedMediaFrame {
+                mid: if video { "video" } else { "audio" }.to_owned(),
+                codec: if video { "H265" } else { "opus" }.to_owned(),
+                payload: Arc::from(index.to_le_bytes()),
+                frame_index: video.then_some(index),
+                rtp_timestamp: u64::from(index) * 750,
+                clock_rate_hz: if video { 90_000 } else { 48_000 },
+                channels: (!video).then_some(2),
+                received_at_us: u64::from(index) * 1_000,
+                keyframe: index == 0,
+                contiguous: true,
+            };
+            expected.push((frame.codec.clone(), frame.frame_index, frame.rtp_timestamp));
+            assert!(
+                sender.try_send(frame).is_ok(),
+                "ingress dropped burst entry {index}"
+            );
+        }
+        for (codec, frame_index, timestamp) in expected {
+            let frame = receiver.try_recv().unwrap();
+            assert_eq!(frame.codec, codec);
+            assert_eq!(frame.frame_index, frame_index);
+            assert_eq!(frame.rtp_timestamp, timestamp);
+            assert!(frame.contiguous);
+        }
+        assert!(receiver.try_recv().is_err());
+    }
+
+    #[test]
+    fn encoded_ingress_capacity_tracks_fps_and_stays_bounded() {
+        for (fps, expected) in [
+            (0, 52),
+            (1, 52),
+            (30, 58),
+            (60, 65),
+            (120, 80),
+            (240, 110),
+            (u32::MAX, 110),
+        ] {
+            assert_eq!(encoded_media_queue_capacity(fps), expected);
+        }
+    }
+
+    #[test]
+    fn ingress_backpressure_is_identifiable_without_logging_payloads() {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let sender = EventSender::unbounded(sender);
+        let resources = TestNvstResources::default();
+        assert!(!forward_nvst_event(
+            &sender,
+            &connected_lifecycle(),
+            7,
+            &resources,
+            &mut 0,
+            &mut NvstCursorCaptureOutput::default(),
+            NvstReceiveEvent::Dropped(NvstDropReason::MediaConsumerBackpressured),
+        ));
+        let report = receiver.try_recv().unwrap();
+        assert_eq!(report["event"], "media-ingress-backpressure");
+        let summary = opennow_streamer_protocol::log::message_summary(&report);
+        assert!(summary.contains("event=media-ingress-backpressure"));
+        assert!(!summary.contains("message="));
+        assert_eq!(resources.keyframe_requests.load(Ordering::Relaxed), 1);
     }
 
     #[test]
