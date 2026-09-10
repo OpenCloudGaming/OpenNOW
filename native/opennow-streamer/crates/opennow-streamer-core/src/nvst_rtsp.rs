@@ -15,6 +15,9 @@ use tungstenite::http::{HeaderValue, Uri};
 use tungstenite::stream::MaybeTlsStream;
 use tungstenite::{Message, WebSocket, connect};
 
+#[path = "nvst_rtsp_transport_diagnostics.rs"]
+mod transport_diagnostics;
+
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(2);
 #[cfg(test)]
@@ -155,6 +158,17 @@ impl RtspClient {
                     200 => {
                         if let Some(peer) = peer {
                             return Ok(VideoSetup { response, peer });
+                        }
+                        if let Some(transport) = transport {
+                            opennow_streamer_protocol::log::log_line(
+                                "WARN",
+                                "rtsps",
+                                &format!(
+                                    "video-setup-transport candidate={} {}",
+                                    index + 1,
+                                    transport_diagnostics::summarize(transport),
+                                ),
+                            );
                         }
                         missing_peer = true;
                     }
