@@ -57,6 +57,11 @@ struct RtspClient {
     buffer: String,
 }
 
+struct VideoSetup {
+    response: RtspResponse,
+    peer: (String, u16, u16),
+}
+
 #[derive(Clone, Default)]
 struct NvstControlPing {
     sample: Arc<Mutex<Option<(Instant, Duration)>>>,
@@ -90,6 +95,92 @@ impl NvstControlPing {
 }
 
 impl RtspClient {
+    fn setup_video(
+        &mut self,
+        control: &str,
+        target: &str,
+        headers: &[(&str, String)],
+        client_port: u16,
+    ) -> Result<VideoSetup, NvstRtspError> {
+        let candidates = video_setup_candidates(control, target);
+        let deadline = Instant::now() + REQUEST_TIMEOUT;
+        let mut headers = headers.to_vec();
+        headers.push(("Transport", String::new()));
+        let transport_index = headers.len() - 1;
+        let mut missing_peer = false;
+        let mut last_status = 0;
+        for transport in [
+            String::new(),
+            format!(
+                "unicast;X-GS-ClientPort={client_port}-{}",
+                client_port.saturating_add(1)
+            ),
+        ] {
+            let transport_form = if transport.is_empty() {
+                "empty"
+            } else {
+                "client-udp"
+            };
+            headers[transport_index].1 = transport;
+            for (index, candidate) in candidates.iter().enumerate() {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    return Err(NvstRtspError::new(
+                        "nvst-rtsp-timeout",
+                        "RTSPS video SETUP timed out",
+                    ));
+                }
+                let response =
+                    self.request_with_timeout("SETUP", candidate, &headers, "", remaining)?;
+                let transport = header_value(&response, "transport");
+                let peer = transport
+                    .and_then(parse_video_peer)
+                    .filter(|(ip, _, _)| ip.parse::<IpAddr>().is_ok());
+                opennow_streamer_protocol::log::log_line(
+                    "INFO",
+                    "rtsps",
+                    &format!(
+                        "video-setup candidate={}/{} transport_form={transport_form} status={} transport_present={} video_peer_valid={} ping_version_present={} ping_payload_present={}",
+                        index + 1,
+                        candidates.len(),
+                        response.status,
+                        transport.is_some(),
+                        peer.is_some(),
+                        header_value(&response, "x-nv-ping").is_some(),
+                        header_value(&response, "x-nv-ping-payload").is_some(),
+                    ),
+                );
+                last_status = response.status;
+                match response.status {
+                    200 => {
+                        if let Some(peer) = peer {
+                            return Ok(VideoSetup { response, peer });
+                        }
+                        missing_peer = true;
+                    }
+                    400 | 404 | 459 | 460 | 461 => {}
+                    _ => {
+                        return Err(NvstRtspError::new(
+                            "nvst-rtsp-failed",
+                            format!("SETUP failed with status {}", response.status),
+                        ));
+                    }
+                }
+            }
+        }
+        Err(NvstRtspError::new(
+            if missing_peer {
+                "missing-video-peer"
+            } else {
+                "nvst-rtsp-failed"
+            },
+            format!(
+                "SETUP did not return a usable NVST video peer after {} URI forms and 2 Transport forms (last status {last_status})",
+                candidates.len(),
+            ),
+        ))
+    }
+
     fn connect(endpoint: &str, session_id: &str) -> Result<(Self, String), NvstRtspError> {
         let translated = endpoint
             .replacen("rtsps://", "https://", 1)
@@ -160,6 +251,8 @@ impl RtspClient {
         timeout: Duration,
     ) -> Result<RtspResponse, NvstRtspError> {
         let mut stage = opennow_streamer_protocol::log::Stage::begin("rtsps.request");
+        let deadline = Instant::now() + timeout;
+        set_io_timeout(&mut self.socket, timeout);
         self.socket.set_config(|config| {
             config.max_message_size = Some(MAX_REQUEST_RESPONSE_BYTES);
             config.max_frame_size = Some(MAX_REQUEST_RESPONSE_BYTES);
@@ -175,7 +268,6 @@ impl RtspClient {
                 body.len()
             ),
         );
-        let deadline = Instant::now() + timeout;
         loop {
             if self.buffer.len() > MAX_REQUEST_RESPONSE_BYTES {
                 return Err(NvstRtspError::new(
@@ -215,6 +307,12 @@ impl RtspClient {
                 stage.complete();
                 return Ok(response);
             }
+            set_io_timeout(
+                &mut self.socket,
+                deadline
+                    .saturating_duration_since(Instant::now())
+                    .max(Duration::from_millis(1)),
+            );
             match self.socket.read() {
                 Ok(Message::Text(text)) => self.buffer.push_str(text.as_str()),
                 Ok(Message::Binary(bytes)) => {
@@ -582,7 +680,6 @@ pub fn prepare_owned_nvst(
             "DESCRIBE did not include a video control stream",
         )
     })?;
-    let video_setup = official_video_setup_control(&video_control);
     let described_ping_version = sdp_attribute(&describe.body, "general.pingVersion")
         .and_then(|value| value.parse::<u8>().ok())
         .unwrap_or(6);
@@ -606,17 +703,10 @@ pub fn prepare_owned_nvst(
     let mut setup_headers = common_headers.clone();
     setup_headers.push(("Session", rtsp_session.clone()));
     setup_headers.push(("x-nv-ping", described_ping_version.to_string()));
-    setup_headers.push(("Transport", String::new()));
-    let setup = client.request("SETUP", &video_setup, &setup_headers, "")?;
-    ensure_rtsp_ok("SETUP", &setup)?;
-    let transport = header_value(&setup, "transport").unwrap_or_default();
-    let (video_peer_ip, video_peer_port, video_peer_port_end) = parse_video_peer(transport)
-        .ok_or_else(|| {
-            NvstRtspError::new(
-                "missing-video-peer",
-                "SETUP did not return the NVST video peer",
-            )
-        })?;
+    let VideoSetup {
+        response: setup,
+        peer: (video_peer_ip, video_peer_port, video_peer_port_end),
+    } = client.setup_video(&video_control, &target, &setup_headers, mjolnir_port)?;
     let (bundle_peer_ip, bundle_peer_port) = context
         .session
         .media_connection_info
@@ -1262,6 +1352,29 @@ fn official_video_setup_control(control: &str) -> String {
     }
 }
 
+fn video_setup_candidates(control: &str, target: &str) -> Vec<String> {
+    let mut candidates = vec![official_video_setup_control(control)];
+    if candidates[0] != control {
+        candidates.push(control.to_owned());
+    }
+    for index in 0..candidates.len() {
+        let control = &candidates[index];
+        let lower = control.to_ascii_lowercase();
+        if lower.starts_with("rtsps://") || lower.starts_with("rtsp://") {
+            continue;
+        }
+        let absolute = format!(
+            "{}/{}",
+            target.trim_end_matches('/'),
+            control.trim_start_matches('/')
+        );
+        if !candidates.contains(&absolute) {
+            candidates.push(absolute);
+        }
+    }
+    candidates
+}
+
 fn parse_video_peer(transport: &str) -> Option<(String, u16, u16)> {
     let mut ip = None;
     let mut port = None;
@@ -1383,6 +1496,10 @@ mod control_ping_tests;
 #[cfg(test)]
 #[path = "nvst_rtsp_tls_tests.rs"]
 mod tls_tests;
+
+#[cfg(test)]
+#[path = "nvst_rtsp_setup_tests.rs"]
+mod setup_tests;
 
 #[cfg(test)]
 mod tests {
