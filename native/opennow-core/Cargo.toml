@@ -7,6 +7,7 @@ rust-version = "1.85"
 
 [dependencies]
 base64 = "0.22"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 ed25519-dalek = "2.2"
 httpdate = "1"
 md5 = "0.7"
