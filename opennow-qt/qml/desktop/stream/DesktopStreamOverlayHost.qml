@@ -10,8 +10,9 @@ FocusScope {
     property bool inputBlocking: false
     property bool pointerLocked: false
     property var frameGenerationStats: ({})
+    property bool notificationsEnabled: false
     focus: visible && inputBlocking
-    readonly property bool present: menuView.present || exitView.present || statsVisible
+    readonly property bool present: menuView.present || exitView.present || statsVisible || notificationsEnabled
 
     readonly property bool menuVisible: overlay === "desktop-stream-menu"
     readonly property bool exitVisible: overlay === "desktop-stream-exit-confirm"
@@ -80,6 +81,14 @@ FocusScope {
         onCycleRequested: root.cycleStats()
         onCloseRequested: root.closeOverlay()
         onCopyRequested: root.copyStatsToClipboard()
+    }
+
+    DesktopStreamToasts {
+        controllers: ControllerInput.controllers
+        anchors.right: parent.right
+        anchors.rightMargin: 24
+        y: statsView.topRightInset
+        visible: root.notificationsEnabled && !root.inputBlocking && y + 148 <= root.height - 24
     }
 
     Keys.onPressed: event => {

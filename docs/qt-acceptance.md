@@ -5,6 +5,22 @@ smoke test is not release acceptance. The legacy Electron source has been remove
 acceptance still requires every row to be executed on the named hardware, the artifacts to be
 reviewed, and the staged rollout to complete.
 
+## Stream Stats V2 visual check
+
+After building the Qt application, run:
+
+```sh
+ctest --test-dir build/opennow-qt --output-on-failure -R 'stream-stats|streamtoasts|queue-drops|frame-generation-stats|fullscreen.*stats'
+bash scripts/capture-qt-stream-stats.sh build/opennow-qt/opennow-qt build/stats-v2-captures
+```
+
+The capture script renders compact, expanded, degraded, 1.5× scale, and controller/packet-loss
+toast states using synthetic telemetry, without an account or a live session. Compare them with
+OpenNOW Socket → Desktop Renew → Renew 08 and Renew 09a–c in Paper. These images verify layout,
+not network quality or hardware decode. Unsupported FEC recovery and decoder queue values are
+not populated from the design's example numbers. The bitrate bar divides measured Mbps by the
+prepared session's allocation and clamps its fill to 0–100%.
+
 ## Required live matrix
 
 | Platform | Architecture | Window system | Required package |

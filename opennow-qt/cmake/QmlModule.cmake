@@ -312,6 +312,8 @@ qt_add_qml_module(opennow-qt
         qml/desktop/stream/DesktopStreamOverlayHost.qml
         qml/desktop/stream/DesktopStreamScreen.qml
         qml/desktop/stream/DesktopStreamStats.qml
+        qml/desktop/stream/DesktopStreamToast.qml
+        qml/desktop/stream/DesktopStreamToasts.qml
         qml/desktop/updates/DesktopUpdateScreen.qml
         qml/overlays/FriendsOverlay.qml
         qml/overlays/GuideOverlay.qml
@@ -349,6 +351,7 @@ qt_add_qml_module(opennow-qt
         ${OPENNOW_CONTROLLER_ICON_FILES}
         ${OPENNOW_KEYBOARD_ICON_FILES}
         res/icons/nav-home.svg
+        res/icons/stats-globe.svg
         res/icons/nav-library.svg
         res/icons/nav-controller.svg
         res/icons/nav-friends.svg

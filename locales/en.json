@@ -1,4 +1,18 @@
 {
+  "streamStatsV2": {
+    "allocatedBitrate": "Allocated bitrate usage",
+    "unstable": "Connection unstable",
+    "controllerConnected": "Controller connected",
+    "copy": "Copy stream statistics",
+    "expand": "Expand stream statistics",
+    "hide": "Hide stream statistics",
+    "frameDrops": "FRAME DROPS",
+    "frameGeneration": "FRAME GEN 2×",
+    "packetLoss": "Packet loss · %1%",
+    "healthy": "Stream healthy",
+    "maximum": "max %1 · 60 s",
+    "sessionTotal": "session total"
+  },
   "clipboardSettings": {
     "title": "Clipboard paste",
     "description": "Paste local text into the stream with Ctrl+V (Command+V on macOS). Up to 64 KiB per paste. No automatic clipboard sync.",

@@ -668,6 +668,7 @@ ApplicationWindow {
 
     DesktopStreamOverlayHost {
         id: desktopStreamOverlay
+        notificationsEnabled: window.desktopSurfaceActive && window.activeRoute === "stream"
         layer.enabled: HdrOutput.chromeRequired
         layer.effect: HdrChromeEffect {}
         anchors.fill: parent
