@@ -32,6 +32,19 @@ if(BUILD_TESTING)
     qt_add_shaders(opennow-hdrcolor-tests "opennow-hdrchrome-test-shaders"
         BATCHABLE PREFIX "/opennow/shaders" BASE "shaders" FILES ${OPENNOW_CHROME_SHADERS})
     find_package(Qt6 6.8 REQUIRED COMPONENTS QuickTest)
+    qt_add_executable(opennow-consolelayout-tests tests/tst_consolelayout.cpp)
+    target_link_libraries(opennow-consolelayout-tests PRIVATE Qt6::QuickTest Qt6::Quick)
+    target_compile_definitions(opennow-consolelayout-tests PRIVATE
+        OPENNOW_QML_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/qml")
+    qt_add_resources(opennow-consolelayout-tests "console-layout-test-assets"
+        PREFIX "/qt/qml/OpenNOW" FILES ${OPENNOW_CONTROLLER_ICON_FILES}
+        res/fonts/Nunito-Variable.ttf
+        res/icons/nav-home.svg res/icons/nav-library.svg res/icons/nav-friends.svg
+        res/icons/nav-settings.svg res/icons/nav-computer.svg)
+    add_test(NAME opennow-consolelayout-tests COMMAND opennow-consolelayout-tests
+        -input "${CMAKE_CURRENT_SOURCE_DIR}/tests/consolelayout")
+    set_tests_properties(opennow-consolelayout-tests PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
     qt_add_executable(opennow-onboarding-tests tests/tst_onboarding.cpp)
     target_link_libraries(opennow-onboarding-tests PRIVATE Qt6::QuickTest Qt6::Quick)
     target_compile_definitions(opennow-onboarding-tests PRIVATE
@@ -573,6 +586,7 @@ if(BUILD_TESTING)
         TIMEOUT 30
     )
     set(OPENNOW_CI_UNIT_TEST_TARGETS
+        opennow-consolelayout-tests
         opennow-macawdl-tests
         opennow-controllericons-tests
         opennow-waylandhdroutput-tests
@@ -609,6 +623,7 @@ if(BUILD_TESTING)
         # Qt's executable helper defaults to the GUI subsystem on Windows. Keep
         # test runners as console programs so CTest captures QtTest failures.
         set_target_properties(
+            opennow-consolelayout-tests
             opennow-macawdl-tests
             opennow-controllericons-tests
             opennow-waylandhdroutput-tests
@@ -659,6 +674,7 @@ if(BUILD_TESTING)
             add_dependencies(opennow-qt-test-runtime opennow-msvc-runtime)
         endif()
         foreach(test_target IN ITEMS
+                opennow-consolelayout-tests
                 opennow-controllericons-tests
                 opennow-waylandhdroutput-tests
                 opennow-hdrcolor-tests
