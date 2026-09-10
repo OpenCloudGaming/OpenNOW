@@ -51,6 +51,7 @@ public:
     Q_INVOKABLE bool ensureDirectLaunchAssociation() const;
     Q_INVOKABLE void activateWindow();
     Q_INVOKABLE void quitApplication();
+    Q_INVOKABLE void restartApplication();
     Q_INVOKABLE bool handleArguments(const QStringList &arguments);
 
     void setOverlayTransitionGuard(std::function<bool(bool)> guard);
@@ -67,6 +68,7 @@ signals:
     void controllerCountChanged();
     void inputModeChanged();
     void activationRequested();
+    void restartRequested();
     void directLaunchRequested(const QString &appId, const QString &title);
 
 private:

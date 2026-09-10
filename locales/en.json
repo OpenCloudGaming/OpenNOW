@@ -13,6 +13,18 @@
     "maximum": "max %1 · 60 s",
     "sessionTotal": "session total"
   },
+  "onboardingReplay": {
+    "title": "Replay onboarding",
+    "confirmation": "Replay onboarding?",
+    "description": "Restart OpenNOW and walk through setup again. Your preferences are kept.",
+    "sessionActive": "End your streaming session before replaying setup.",
+    "restart": "Restart and replay",
+    "restarting": "Restarting…",
+    "confirmationDescription": "OpenNOW will restart to show the introduction and setup steps. Your saved preferences and account will not be reset.",
+    "disconnected": "The connection was interrupted. Reconnect and try again.",
+    "failed": "Setup could not be reset. Try again.",
+    "failedDetail": "Setup could not be reset. %1"
+  },
   "clipboardSettings": {
     "title": "Clipboard paste",
     "description": "Paste local text into the stream with Ctrl+V (Command+V on macOS). Up to 64 KiB per paste. No automatic clipboard sync.",

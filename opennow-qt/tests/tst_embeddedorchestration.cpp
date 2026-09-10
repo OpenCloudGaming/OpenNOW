@@ -56,7 +56,7 @@ private slots:
         }
         engine.globalObject().setProperty(QStringLiteral("requiredTier"), requiredTier);
         QVERIFY(!engine.evaluate(QStringLiteral(R"JS(
-            var signedIn = true, ready = true, streamBusy = false;
+            var signedIn = true, ready = true, streamBusy = false, onboardingReplaying = false;
             var selectedGame = {launchAppId: "123", title: "Test", membershipTierLabel: requiredTier};
             var authSession = {user: {membershipTier: "FREE"}};
             var subscriptionRequestId = "", streamState = "idle", streamMessage = "", lastError = "";

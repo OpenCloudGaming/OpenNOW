@@ -41,6 +41,7 @@ ApplicationWindow {
     readonly property bool settingsLoaded: Object.keys(ShellStore.settings || {}).length > 0
     readonly property bool onboardingVisible: ShellStore.signedIn
         && !ShellStore.authRestorePending
+        && !ShellStore.onboardingReplaying
         && (ShellStore.onboardingRequired || ShellStore.onboardingSaving
             || ShellStore.onboardingError !== "")
         && !ShellStore.activeSession
@@ -113,9 +114,6 @@ ApplicationWindow {
     readonly property string modePersistenceErrorForSmokeTest: ShellStore.lastError
     readonly property var streamerSnapshotForSmokeTest: ShellStore.streamer
     readonly property bool shellCaptureEnabledForSmokeTest: ControllerInput.shellCaptureEnabled
-    readonly property real designWidth: desktopSurfaceActive ? 1440 : 1920
-    readonly property real designHeight: desktopSurfaceActive ? 900 : 1080
-    readonly property real designScale: Math.min(width / designWidth, height / designHeight)
 
     Timer {
         id: geometrySaveTimer
@@ -528,15 +526,10 @@ ApplicationWindow {
         }
     }
 
-    FocusScope {
+    ShellViewport {
+        desktopSurfaceActive: window.desktopSurfaceActive
         layer.enabled: HdrOutput.chromeRequired && window.activeRoute !== "stream"
         layer.effect: HdrChromeEffect {}
-        x: window.desktopSurfaceActive ? 0 : Math.round((window.width - width * scale) / 2)
-        y: window.desktopSurfaceActive ? 0 : Math.round((window.height - height * scale) / 2)
-        width: window.desktopSurfaceActive ? window.width : window.designWidth
-        height: window.desktopSurfaceActive ? window.height : window.designHeight
-        scale: window.desktopSurfaceActive ? 1 : window.designScale
-        transformOrigin: Item.TopLeft
         focus: true
 
         Loader {

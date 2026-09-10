@@ -67,6 +67,11 @@ QtObject {
         ready: root.ready
         signedIn: root.signedIn
         checkRequirements: root.checkOnboardingRequirements
+        replayAllowed: root.ready && !root.activeSession && !root.streamBusy
+            && root.activeSessionRequestId === "" && root.sessionClaimRequestId === ""
+            && ["idle", "error"].indexOf(root.streamState) >= 0
+            && ["starting", "streaming", "stopping"].indexOf(root.streamerStatus) < 0
+        onRestartRequested: AppController.restartApplication()
         onRequirementsMissing: root.onboardingRequirementsMissing()
         onSettingSaved: (key, value, changes) => {
             settingsOwner.applyCoupledSettings(changes)
@@ -82,6 +87,10 @@ QtObject {
     readonly property var onboardingSettings: onboardingOwner.settings
     readonly property bool onboardingSaving: onboardingOwner.saving
     readonly property string onboardingError: onboardingOwner.error
+    readonly property bool onboardingReplayAvailable: onboardingOwner.replayAllowed
+        && !onboardingOwner.saving && !onboardingOwner.replaying
+    readonly property bool onboardingReplaying: onboardingOwner.replaying
+    readonly property string onboardingReplayError: onboardingOwner.replayError
     signal onboardingCompleted()
     signal onboardingRequirementsMissing()
 
@@ -109,6 +118,10 @@ QtObject {
 
     function finishOnboarding() {
         onboardingOwner.finish()
+    }
+
+    function replayOnboarding() {
+        onboardingOwner.replay()
     }
 
     property alias previewThemePack: settingsOwner.previewThemePack
@@ -1058,7 +1071,7 @@ QtObject {
         if (!pendingDirectLaunch)
             return
         if (Object.keys(settings).length === 0 || onboardingRequired
-                || onboardingSaving || onboardingError !== "")
+                || onboardingSaving || onboardingReplaying || onboardingError !== "")
             return
         if (catalogState !== "ready") {
             if (ready && catalogRequestId === "")
@@ -1126,7 +1139,7 @@ QtObject {
             lastError = streamMessage
             return
         }
-        if (!ready || streamBusy)
+        if (!ready || streamBusy || onboardingReplaying)
             return
         const membershipError = selectedGameMembershipError()
         if (membershipError !== "") {
@@ -1173,7 +1186,7 @@ QtObject {
     }
 
     function createPendingSession() {
-        if (!pendingLaunchParams || !ready || streamCreateRequestId !== "")
+        if (!pendingLaunchParams || !ready || streamCreateRequestId !== "" || onboardingReplaying)
             return
         streamState = "requesting"
         streamMessage = qsTr("Requesting a cloud gaming seat…")

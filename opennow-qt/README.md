@@ -262,6 +262,18 @@ setup keeps the draft and presents the error for retry. Selecting console mode d
 not replace the wizard while its settings are being saved. No payment or diagnostic
 upload happens during onboarding.
 
+To repeat setup, open **Settings → About → Replay onboarding** at the bottom of
+the page, then confirm **Restart and replay**. OpenNOW saves only
+`onboardingCompleted=false` before restarting; other preferences and saved accounts
+are kept. End an active or starting stream first. A failed save leaves the app open
+and allows retrying. The replacement process starts after the old window, core,
+native runtime and single-instance listener have been released.
+
+The Picture step uses the same aspect-ratio groups, monitor filter and resolution
+stepper as Settings. Selection still edits the onboarding draft rather than saving
+immediately. Short pages center within the available content area; longer pages
+remain scrollable, including keyboard focus inside the expanded resolution picker.
+
 On macOS, setup requires the `awdl0` interface to be down. Boost offers an explicit,
 confirmed disable action using the macOS administrator prompt. Finish and Skip
 both check the current interface state, with a fresh check before sending the
@@ -288,6 +300,11 @@ QT_QPA_PLATFORM=offscreen build/opennow-qt/opennow-qt \
 `--onboarding-step` accepts 0 through 5. Add `--smoke-light-theme` or
 `--onboarding-ui-scale 1.25` to inspect alternate appearances. For the existing
 provider sign-in screen, replace `--onboarding-step 0` with `--onboarding-login`.
+Add `--onboarding-ui-check` to verify centering and draft resolution selection, and
+`--onboarding-resolution-expanded --onboarding-step 2` to exercise the expanded
+picker. Use `--onboarding-replay-check` to verify the Settings confirmation,
+cancellation and failed-save retry; add `--onboarding-replay-dialog` for a dialog
+screenshot. These replay UI fixtures do not restart the test process.
 Add `--onboarding-awdl-check --onboarding-step 3` to exercise the macOS card with an
 injected controller on any platform. This checks confirmation, cancellation,
 restore, busy, error and unsupported states without changing a network interface.

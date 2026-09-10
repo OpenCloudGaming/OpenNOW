@@ -88,7 +88,7 @@ Item {
                 font.weight: Font.Bold
                 elide: Text.ElideRight
             }
-            Rectangle { width: 1; height: 20; color: Theme.seam }
+            Rectangle { anchors.verticalCenter: parent.verticalCenter; width: 1; height: 20; color: Theme.seam }
             Row {
                 anchors.verticalCenter: parent.verticalCenter
                 spacing: 6
@@ -132,6 +132,7 @@ Item {
 
     GlassPanel {
         id: statusPanel
+        objectName: "consoleStatusPanel"
         x: parent.width - width - 40; y: 28
         width: Math.max(446, statusRow.implicitWidth + 40); height: 56
         panelRadius: 28
@@ -152,15 +153,17 @@ Item {
                     color: Theme.label; font.family: Theme.bodyFont; font.pixelSize: 16; font.weight: Font.Bold
                 }
             }
-            Rectangle { width: 1; height: 20; color: Theme.seam }
+            Rectangle { anchors.verticalCenter: parent.verticalCenter; width: 1; height: 20; color: Theme.seam }
             Text {
+                objectName: "consoleClock"
+                anchors.verticalCenter: parent.verticalCenter
                 text: Qt.formatDateTime(root.now, "hh:mm | MM/dd")
                 color: Theme.label
                 font.family: Theme.bodyFont
                 font.pixelSize: 16
                 font.weight: Font.Bold
             }
-            Rectangle { width: 1; height: 20; color: Theme.seam }
+            Rectangle { anchors.verticalCenter: parent.verticalCenter; width: 1; height: 20; color: Theme.seam }
             Row {
                 spacing: 6; anchors.verticalCenter: parent.verticalCenter
                 Text {

@@ -69,4 +69,77 @@ Column {
             showDivider: false
         }
     }
+    DesktopSettingsPanel {
+        width: parent.width; paperStyle: true
+        DesktopSettingsRow {
+            width: parent.width; paperStyle: true; glyph: "arrows"
+            title: qsTr("Replay onboarding")
+            description: ShellStore.onboardingReplayError || (ShellStore.activeSession || ShellStore.streamBusy
+                || ["idle", "error"].indexOf(ShellStore.streamState) < 0
+                ? qsTr("End your streaming session before replaying setup.")
+                : qsTr("Restart OpenNOW and walk through setup again. Your preferences are kept."))
+            showDivider: false
+            DesktopSettingsButton {
+                objectName: "replayOnboardingButton"
+                text: ShellStore.onboardingReplaying ? qsTr("Restarting…") : qsTr("Replay onboarding")
+                enabled: ShellStore.onboardingReplayAvailable
+                onClicked: replayConfirmation.open()
+            }
+        }
+    }
+
+    Dialog {
+        id: replayConfirmation
+        objectName: "replayOnboardingConfirmation"
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        width: Math.min(DesktopTokens.px(520), parent.width - DesktopTokens.px(32))
+        contentWidth: width - leftPadding - rightPadding
+        implicitHeight: header.implicitHeight + replayCopy.implicitHeight + footer.implicitHeight
+            + topPadding + bottomPadding
+        padding: DesktopTokens.px(22)
+        modal: true
+        focus: true
+        closePolicy: Popup.CloseOnEscape
+        title: qsTr("Replay onboarding?")
+        header: Text {
+            width: replayConfirmation.width
+            text: replayConfirmation.title
+            padding: DesktopTokens.px(22)
+            bottomPadding: 0
+            color: Theme.label
+            font.family: Theme.bodyFont
+            font.pixelSize: DesktopTokens.px(20)
+            font.weight: Font.ExtraBold
+            wrapMode: Text.WordWrap
+        }
+        background: Rectangle { radius: DesktopTokens.px(16); color: Theme.shell; border.color: Theme.seam }
+        contentItem: Text {
+            id: replayCopy
+            width: replayConfirmation.contentWidth
+            text: qsTr("OpenNOW will restart to show the introduction and setup steps. Your saved preferences and account will not be reset.")
+            color: Theme.textMuted
+            font.family: Theme.bodyFont
+            font.pixelSize: DesktopTokens.bodySize
+            wrapMode: Text.WordWrap
+        }
+        footer: DialogButtonBox {
+            padding: DesktopTokens.px(16)
+            implicitHeight: DesktopTokens.controlHeight + topPadding + bottomPadding
+            background: Item {}
+            DesktopSettingsButton {
+                objectName: "replayOnboardingCancel"
+                text: qsTr("Cancel")
+                DialogButtonBox.buttonRole: DialogButtonBox.RejectRole
+            }
+            DesktopSettingsButton {
+                objectName: "replayOnboardingConfirm"
+                text: qsTr("Restart and replay")
+                primary: true
+                enabled: ShellStore.onboardingReplayAvailable
+                DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole
+            }
+        }
+        onAccepted: ShellStore.replayOnboarding()
+    }
 }
