@@ -56,6 +56,39 @@ QtObject {
     }
 
     property alias settings: settingsOwner.settings
+    property OnboardingState onboardingOwnerState: OnboardingState {
+        id: onboardingOwner
+        coreClient: CoreClient
+        persistedSettings: root.settings
+        ready: root.ready
+        signedIn: root.signedIn
+        onSettingSaved: (key, value, changes) => {
+            settingsOwner.applyCoupledSettings(changes)
+            settingsOwner.applySetting(key, value)
+        }
+        onCompleted: {
+            root.consoleSurfaceRequested(root.settings.launchInConsoleMode === true)
+            root.onboardingCompleted()
+            Qt.callLater(root.resolveDirectLaunch)
+        }
+    }
+    readonly property bool onboardingRequired: onboardingOwner.needed
+    readonly property var onboardingSettings: onboardingOwner.settings
+    readonly property bool onboardingSaving: onboardingOwner.saving
+    readonly property string onboardingError: onboardingOwner.error
+    signal onboardingCompleted()
+
+    function setOnboardingSetting(key, value) {
+        onboardingOwner.setSetting(key, value)
+        if (key === "resolution" || key === "fps")
+            onboardingOwner.setSetting("fps", settingsOwner.resolveEntitledFps(
+                onboardingSettings.resolution, onboardingSettings.fps))
+    }
+
+    function finishOnboarding() {
+        onboardingOwner.finish()
+    }
+
     property alias previewThemePack: settingsOwner.previewThemePack
     property string accessibilityMessage: ""
     property alias settingsRequestId: settingsOwner.settingsRequestId
@@ -679,6 +712,10 @@ QtObject {
         return settingsOwner.videoBackendItems()
     }
 
+    function resolutionItems() {
+        return settingsOwner.resolutionItems()
+    }
+
     function refreshStore(searchQuery, forceRefresh, filters) {
         return catalogOwner.refreshStore(searchQuery, forceRefresh, filters)
     }
@@ -997,6 +1034,9 @@ QtObject {
 
     function resolveDirectLaunch() {
         if (!pendingDirectLaunch)
+            return
+        if (Object.keys(settings).length === 0 || onboardingRequired
+                || onboardingSaving || onboardingError !== "")
             return
         if (catalogState !== "ready") {
             if (ready && catalogRequestId === "")
@@ -2316,10 +2356,13 @@ QtObject {
             }
         }
         function onResponseReceived(requestId, result) {
-            if (root.finishArtworkRequest(requestId, result, false)) {
+            if (onboardingOwner.acceptResponse(requestId, result)) {
+                return
+            } else if (root.finishArtworkRequest(requestId, result, false)) {
                 return
             } else if (requestId === root.settingsRequestId && result.settings) {
                 settingsOwner.acceptSettings(result)
+                root.resolveDirectLaunch()
                 root.syncTelemetry()
                 root.syncDiscordPresence()
                 root.refreshStreamerDetection()
@@ -2659,7 +2702,9 @@ QtObject {
             }
         }
         function onRequestFailed(requestId, code, message) {
-            if (requestId === root.storePresentationRequestId && requestId !== "") {
+            if (onboardingOwner.acceptFailure(requestId, message)) {
+                return
+            } else if (requestId === root.storePresentationRequestId && requestId !== "") {
                 catalogOwner.failStorePresentation(message)
                 return
             }

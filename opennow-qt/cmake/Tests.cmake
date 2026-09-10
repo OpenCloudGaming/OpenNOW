@@ -26,6 +26,30 @@ if(BUILD_TESTING)
     qt_add_shaders(opennow-hdrcolor-tests "opennow-hdrchrome-test-shaders"
         BATCHABLE PREFIX "/opennow/shaders" BASE "shaders" FILES ${OPENNOW_CHROME_SHADERS})
     find_package(Qt6 6.8 REQUIRED COMPONENTS QuickTest)
+    qt_add_executable(opennow-onboarding-tests tests/tst_onboarding.cpp)
+    target_link_libraries(opennow-onboarding-tests PRIVATE Qt6::QuickTest Qt6::Quick)
+    target_compile_definitions(opennow-onboarding-tests PRIVATE
+        OPENNOW_QML_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/qml")
+    add_test(NAME opennow-onboarding-tests COMMAND opennow-onboarding-tests
+        -input "${CMAKE_CURRENT_SOURCE_DIR}/tests/onboarding")
+    set_tests_properties(opennow-onboarding-tests PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
+    qt_add_resources(opennow-qt "onboarding-acceptance"
+        PREFIX "/acceptance" BASE tests FILES tests/OnboardingAcceptance.qml)
+    foreach(width 960 1440)
+        add_test(NAME "qml-onboarding-${width}" COMMAND opennow-qt
+            --smoke-test --allow-multiple-instances --desktop --route home
+            --smoke-onboarding --smoke-width ${width} --reduced-motion)
+        set_tests_properties("qml-onboarding-${width}" PROPERTIES
+            ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 20)
+        foreach(step RANGE 0 5)
+            add_test(NAME "qml-onboarding-render-${width}-${step}" COMMAND opennow-qt
+                --smoke-test --allow-multiple-instances --desktop --route home
+                --smoke-onboarding --onboarding-step ${step} --smoke-width ${width} --reduced-motion)
+            set_tests_properties("qml-onboarding-render-${width}-${step}" PROPERTIES
+                ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 20)
+        endforeach()
+    endforeach()
     qt_add_executable(opennow-controllericons-tests tests/tst_controllericons.cpp)
     target_link_libraries(opennow-controllericons-tests PRIVATE Qt6::QuickTest Qt6::Quick)
     target_compile_definitions(opennow-controllericons-tests PRIVATE

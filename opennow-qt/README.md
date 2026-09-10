@@ -249,6 +249,36 @@ release, and restore the actual system cursor. A live session with two displays 
 still required to verify physical mouse containment, mixed-DPI transitions, and
 the server/client cursor handoff.
 
+### First-run onboarding
+
+New profiles enter setup after provider sign-in. The flow covers the 1.0.0 beta
+notice, desktop or console mode, streaming preferences, optional frame generation,
+macOS-only MetalFX upscaling, and optional GitHub Sponsors support. Existing
+profiles migrate with onboarding completed and retain their preferences.
+
+Choices stay in a local draft until **Finish setup** or **Skip setup**. Both actions
+save the current choices, then persist `onboardingCompleted` last. If a write fails,
+setup keeps the draft and presents the error for retry. Selecting console mode does
+not replace the wizard while its settings are being saved. No payment or diagnostic
+upload happens during onboarding.
+
+Run persistence and whole-app acceptance without an account:
+
+```sh
+ctest --test-dir build/opennow-qt -R 'onboarding' --output-on-failure
+QT_QPA_PLATFORM=offscreen build/opennow-qt/opennow-qt \
+  --smoke-test --allow-multiple-instances --desktop --route home \
+  --smoke-onboarding --onboarding-step 0 --smoke-width 1440 \
+  --reduced-motion --screenshot /absolute/path/onboarding.png
+```
+
+`--onboarding-step` accepts 0 through 5. Add `--smoke-light-theme` or
+`--onboarding-ui-scale 1.25` to inspect alternate appearances. For the existing
+provider sign-in screen, replace `--onboarding-step 0` with `--onboarding-login`.
+These switches run only with the smoke fixture; they do not start provider login,
+open donation links, or write account settings. Real provider approval and native
+MetalFX output still require the corresponding account and macOS device.
+
 Run with the offscreen Qt platform plugin for a startup smoke test:
 
 ```sh

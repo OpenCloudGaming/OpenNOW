@@ -257,6 +257,10 @@ qt_add_qml_module(opennow-qt
         qml/desktop/library/DesktopLibraryScreen.qml
         qml/desktop/library/DesktopCollectionDialog.qml
         qml/desktop/settings/DesktopSettingsScreen.qml
+        qml/desktop/onboarding/DesktopOnboardingScreen.qml
+        qml/desktop/onboarding/DesktopOnboardingModeCard.qml
+        qml/desktop/onboarding/DesktopOnboardingPicture.qml
+        qml/desktop/onboarding/DesktopOnboardingBoost.qml
         qml/desktop/settings/controls/DesktopSettingsAdvanced.qml
         qml/desktop/settings/controls/DesktopSettingsButton.qml
         qml/desktop/settings/controls/DesktopSettingsChoice.qml
@@ -336,6 +340,7 @@ qt_add_qml_module(opennow-qt
         qml/state/catalog/ArtworkState.qml
         qml/state/catalog/CatalogState.qml
         qml/state/settings/SettingsState.qml
+        qml/state/settings/OnboardingState.qml
         qml/theme/Theme.qml
     RESOURCES
         ${OPENNOW_CONTROLLER_ICON_FILES}

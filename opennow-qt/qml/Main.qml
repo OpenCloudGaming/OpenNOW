@@ -39,6 +39,12 @@ ApplicationWindow {
     }
     property bool geometryRestored: false
     readonly property bool settingsLoaded: Object.keys(ShellStore.settings || {}).length > 0
+    readonly property bool onboardingVisible: ShellStore.signedIn
+        && !ShellStore.authRestorePending
+        && (ShellStore.onboardingRequired || ShellStore.onboardingSaving
+            || ShellStore.onboardingError !== "")
+        && !ShellStore.activeSession
+        && ["stream", "inserting", "joining"].indexOf(activeRoute) < 0
     property bool consoleHeldByPad: false
     property bool pointerRecentlyActive: false
     property bool desktopSelectedByPointer: false
@@ -91,7 +97,7 @@ ApplicationWindow {
         "accounts", "profile-pin", "game-accounts", "persistent-storage", "media",
         "diagnostics", "feedback", "theme-store"].indexOf(activeRoute) < 0
     readonly property bool targetDesktopSurface: streamSurfaceLocked
-        ? lockedStreamDesktopSurface : desktopRequested && desktopEligibleRoute
+        ? lockedStreamDesktopSurface : onboardingVisible || (desktopRequested && desktopEligibleRoute)
     readonly property bool streamQmlOverlayActive: (activeRoute === "stream" || activeRoute === "inserting")
         && (AppController.overlay.startsWith("desktop-stream-")
             || AppController.overlay.startsWith("stream-stats"))
@@ -537,8 +543,8 @@ ApplicationWindow {
             id: routeLoader
             objectName: "mainRouteLoader"
             anchors.fill: parent
-            sourceComponent: window.desktopSurfaceActive
-                ? desktopAppScreen : window.componentForRoute(window.activeRoute)
+            sourceComponent: window.onboardingVisible ? onboardingScreen
+                : window.desktopSurfaceActive ? desktopAppScreen : window.componentForRoute(window.activeRoute)
             opacity: 1
 
             onLoaded: {
@@ -587,6 +593,10 @@ ApplicationWindow {
             target: ShellStore
             function onStreamerChanged() { window.showConfiguredStreamStats() }
             function onConsoleSurfaceRequested(enabled) { window.applyConsoleSurface(enabled) }
+            function onOnboardingCompleted() {
+                if (window.activeRoute === "sign-in")
+                    AppController.navigate("home")
+            }
             function onSettingsChanged() {
                 window.initializeStartupMode()
                 window.syncInputOwnership()
@@ -599,6 +609,10 @@ ApplicationWindow {
         }
 
         Keys.onPressed: event => {
+            if (window.onboardingVisible) {
+                event.accepted = true
+                return
+            }
             if (event.key === Qt.Key_F11 && window.activeRoute === "stream") {
                 window.toggleFullscreen()
                 event.accepted = true
@@ -817,6 +831,7 @@ ApplicationWindow {
     }
 
     Component { id: desktopAppScreen; DesktopApp {} }
+    Component { id: onboardingScreen; DesktopOnboardingScreen {} }
     Component { id: homeScreen; HomeScreen {} }
     Component { id: libraryScreen; LibraryScreen {} }
     Component { id: storeScreen; StoreScreen {} }
