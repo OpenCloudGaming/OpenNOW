@@ -39,6 +39,10 @@ The core admits at most eight RPC workers, with at most four background workers
 is reserved for other methods, including session/control operations. Excess
 requests receive `busy`; duplicate active IDs are also rejected. Cancellation
 only tracks active IDs and never frees a worker slot before that worker exits.
+The Qt client keeps requests rejected with `busy` pending and retries the same
+ID and payload after 100 ms, doubling the delay up to one second. Retries do not
+extend the original deadline. Cancellation, shutdown, and process failure discard
+pending retries. Other errors are delivered to the caller without retrying.
 Cancelled requests suppress their response. Store page retries/cache traversal
 and region measurement loops stop at cooperative checkpoints. An already-running
 blocking HTTP, DNS, or TCP operation is not forcibly interrupted; its existing

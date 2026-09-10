@@ -87,10 +87,12 @@ int AcceptanceSession::prepareWindow()
                     {u"https://east.example.invalid"_s,94}});
             }
         }
-        if (m_arguments.contains(u"--smoke-resolution-open"_s)) {
+        if (m_arguments.contains(u"--smoke-resolution-open"_s)
+                || m_arguments.contains(u"--smoke-resolution-fits-monitor"_s)) {
             auto *picker = window ? window->findChild<QObject *>(u"renewResolutionPicker"_s) : nullptr;
             if (!picker) return EXIT_FAILURE;
-            picker->setProperty("expanded", true);
+            if (m_arguments.contains(u"--smoke-resolution-open"_s)) picker->setProperty("expanded", true);
+            if (m_arguments.contains(u"--smoke-resolution-fits-monitor"_s)) picker->setProperty("fitsMonitor", true);
         }
         if (m_arguments.contains(u"--smoke-light-theme"_s)) {
             auto *store = m_engine.singletonInstance<QObject *>(u"OpenNOW"_s, u"ShellStore"_s);
