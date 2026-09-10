@@ -66,7 +66,12 @@ include(CPack)
         cmake -S $source -B "$source/build"
         if ($LASTEXITCODE -ne 0) { throw "MSI fixture configuration failed" }
         cpack --config "$source/build/CPackConfig.cmake" -G WIX -B "$source/packages"
-        if ($LASTEXITCODE -ne 0) { throw "MSI fixture packaging failed" }
+        if ($LASTEXITCODE -ne 0) {
+            Get-ChildItem "$source/packages" -Recurse -Filter wix.log | ForEach-Object {
+                Get-Content $_.FullName | Write-Host
+            }
+            throw "MSI fixture packaging failed"
+        }
         $license = @(Get-ChildItem "$source/packages" -Recurse -Filter License.rtf)
         if ($license.Count -ne 1 -or
             -not (Select-String -Path $license[0].FullName -SimpleMatch "MIT License") -or
