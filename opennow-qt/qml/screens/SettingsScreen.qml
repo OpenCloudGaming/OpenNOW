@@ -909,8 +909,9 @@ FocusScope {
                             anchors.right: parent.right
                             anchors.rightMargin: 12
                             anchors.verticalCenter: parent.verticalCenter
-                            text: String(root.dropdownValues[index]).indexOf("444") >= 0
-                                ? qsTr("H.265") : qsTr("H.265 / AV1")
+                            text: root.dropdownKey === "windowsGpuDeviceId" ? qsTr("Unavailable")
+                                : String(root.dropdownValues[index]).indexOf("444") >= 0
+                                    ? qsTr("H.265") : qsTr("H.265 / AV1")
                             color: Theme.textMuted
                             font.family: Theme.bodyFont
                             font.pixelSize: 12
