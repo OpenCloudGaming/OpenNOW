@@ -12,7 +12,9 @@ use objc2_core_foundation::{CFRetained, CFString};
 use objc2_core_video::{
     CVMetalTexture, CVMetalTextureCache, CVMetalTextureGetTexture, CVPixelBufferGetHeightOfPlane,
     CVPixelBufferGetIOSurface, CVPixelBufferGetPixelFormatType, CVPixelBufferGetPlaneCount,
-    CVPixelBufferGetWidthOfPlane, kCVImageBufferColorPrimaries_ITU_R_2020,
+    CVPixelBufferGetWidthOfPlane, kCVImageBufferColorPrimaries_EBU_3213,
+    kCVImageBufferColorPrimaries_ITU_R_709_2, kCVImageBufferColorPrimaries_ITU_R_2020,
+    kCVImageBufferColorPrimaries_SMPTE_C,
     kCVImageBufferColorPrimariesKey, kCVImageBufferTransferFunction_ITU_R_709_2,
     kCVImageBufferTransferFunction_SMPTE_ST_2084_PQ, kCVImageBufferTransferFunction_sRGB,
     kCVImageBufferTransferFunctionKey, kCVImageBufferYCbCrMatrix_ITU_R_601_4,
@@ -257,30 +259,41 @@ fn frame_color_space(frame: &DecodedFrame) -> Result<VideoColorSpace, BackendErr
     }
 }
 
-fn validate_frame_color(frame: &DecodedFrame, matrix: VideoColorSpace) -> Result<(), BackendError> {
-    let pq = frame.transfer == VideoTransfer::Pq;
-    if (matrix == VideoColorSpace::Bt2020) != pq {
-        return Err(BackendError::Metal(
-            "only BT.2020 PQ HDR and BT.601/709 SDR are supported".into(),
-        ));
-    }
-    if let Some(value) = unsafe {
+fn validate_frame_color(
+    frame: &DecodedFrame,
+    matrix: VideoColorSpace,
+) -> Result<VideoTransfer, BackendError> {
+    let transfer = if let Some(value) = unsafe {
         frame
             .image
             .attachment(kCVImageBufferTransferFunctionKey, ptr::null_mut())
     } {
-        let transfer = value.downcast_ref::<CFString>();
-        let valid = if pq {
-            transfer == Some(unsafe { kCVImageBufferTransferFunction_SMPTE_ST_2084_PQ })
+        let value = value.downcast_ref::<CFString>();
+        if value == Some(unsafe { kCVImageBufferTransferFunction_SMPTE_ST_2084_PQ }) {
+            VideoTransfer::Pq
+        } else if value == Some(unsafe { kCVImageBufferTransferFunction_ITU_R_709_2 })
+            || value == Some(unsafe { kCVImageBufferTransferFunction_sRGB })
+        {
+            VideoTransfer::Sdr
         } else {
-            transfer == Some(unsafe { kCVImageBufferTransferFunction_ITU_R_709_2 })
-                || transfer == Some(unsafe { kCVImageBufferTransferFunction_sRGB })
-        };
-        if !valid {
             return Err(BackendError::Metal(
-                "VideoToolbox transfer function conflicts with negotiated output".into(),
+                "VideoToolbox returned an unsupported transfer function".into(),
             ));
         }
+    } else {
+        frame.transfer
+    };
+    if transfer == VideoTransfer::Pq && frame.transfer != VideoTransfer::Pq {
+        return Err(BackendError::Metal(
+            "VideoToolbox returned PQ HDR for a session that did not negotiate HDR".into(),
+        ));
+    }
+    let pq = transfer == VideoTransfer::Pq;
+    if (matrix == VideoColorSpace::Bt2020) != pq {
+        return Err(BackendError::Metal(format!(
+            "only BT.2020 PQ HDR and BT.601/709 SDR are supported: negotiated={:?}/{:?}, matrix={matrix:?}, transfer={transfer:?}",
+            frame.color_space, frame.transfer,
+        )));
     }
     if let Some(value) = unsafe {
         frame
@@ -288,15 +301,25 @@ fn validate_frame_color(frame: &DecodedFrame, matrix: VideoColorSpace) -> Result
             .attachment(kCVImageBufferColorPrimariesKey, ptr::null_mut())
     } {
         let primaries = value.downcast_ref::<CFString>();
-        if primaries.is_none()
-            || (primaries == Some(unsafe { kCVImageBufferColorPrimaries_ITU_R_2020 })) != pq
-        {
+        let valid = if pq {
+            primaries == Some(unsafe { kCVImageBufferColorPrimaries_ITU_R_2020 })
+        } else {
+            primaries == Some(unsafe { kCVImageBufferColorPrimaries_ITU_R_709_2 })
+                || primaries == Some(unsafe { kCVImageBufferColorPrimaries_EBU_3213 })
+                || primaries == Some(unsafe { kCVImageBufferColorPrimaries_SMPTE_C })
+        };
+        if !valid {
             return Err(BackendError::Metal(
-                "VideoToolbox color primaries conflict with negotiated output".into(),
+                "VideoToolbox color primaries conflict with the frame transfer function".into(),
             ));
         }
+    } else if transfer != frame.transfer {
+        return Err(BackendError::Metal(
+            "VideoToolbox changed the frame transfer function without explicit color primaries"
+                .into(),
+        ));
     }
-    Ok(())
+    Ok(transfer)
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -555,8 +578,7 @@ impl MetalState {
                     BackendError::Metal("VideoToolbox returned neither NV12, P010 nor P410".into())
                 })?;
         let matrix = frame_color_space(&frame)?;
-        validate_frame_color(&frame, matrix)?;
-        let transfer = frame.transfer;
+        let transfer = validate_frame_color(&frame, matrix)?;
         let output_format = if transfer == VideoTransfer::Pq {
             MetalFrameFormat::Rgba16Float
         } else {
@@ -876,6 +898,292 @@ mod tests {
         kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,
     };
     use objc2_metal::MTLPixelFormat;
+
+    fn color_frame(
+        attachments: &[(
+            &objc2_core_foundation::CFString,
+            &objc2_core_foundation::CFType,
+        )],
+    ) -> super::DecodedFrame {
+        use super::*;
+        use objc2_core_foundation::{CFDictionary, CFType};
+        use objc2_core_video::{
+            CVAttachmentMode, CVPixelBufferCreate, kCVPixelBufferIOSurfacePropertiesKey,
+        };
+
+        let surface = CFDictionary::<CFString, CFType>::from_slices(&[], &[]);
+        let attributes = CFDictionary::from_slices(
+            &[unsafe { kCVPixelBufferIOSurfacePropertiesKey }],
+            &[&*surface],
+        );
+        let mut image = ptr::null_mut();
+        assert_eq!(
+            unsafe {
+                CVPixelBufferCreate(
+                    None,
+                    64,
+                    64,
+                    kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,
+                    Some(attributes.as_opaque()),
+                    NonNull::from(&mut image),
+                )
+            },
+            0
+        );
+        let image = unsafe { CFRetained::from_raw(NonNull::new(image).unwrap()) };
+        for (key, value) in attachments {
+            unsafe { image.set_attachment(key, value, CVAttachmentMode::ShouldPropagate) };
+        }
+        DecodedFrame {
+            image,
+            color_space: VideoColorSpace::Bt2020,
+            transfer: VideoTransfer::Pq,
+            minimum_frame_duration_seconds: 1.0 / 120.0,
+            timestamp_100ns: 10_000_000,
+        }
+    }
+
+    #[test]
+    fn hdr_session_accepts_explicit_sdr_frame_metadata() {
+        use super::*;
+        use objc2_core_video::kCVImageBufferColorPrimaries_ITU_R_709_2;
+
+        let frame = color_frame(&unsafe {
+            [
+                (
+                    kCVImageBufferYCbCrMatrixKey,
+                    &**kCVImageBufferYCbCrMatrix_ITU_R_709_2,
+                ),
+                (
+                    kCVImageBufferTransferFunctionKey,
+                    &**kCVImageBufferTransferFunction_ITU_R_709_2,
+                ),
+                (
+                    kCVImageBufferColorPrimariesKey,
+                    &**kCVImageBufferColorPrimaries_ITU_R_709_2,
+                ),
+            ]
+        });
+        let matrix = frame_color_space(&frame).unwrap();
+        assert_eq!(matrix, VideoColorSpace::Bt709);
+        assert_eq!(
+            validate_frame_color(&frame, matrix).unwrap(),
+            VideoTransfer::Sdr
+        );
+        assert_eq!(frame.transfer, VideoTransfer::Pq);
+    }
+
+    #[test]
+    fn missing_color_attachments_use_the_negotiated_profile() {
+        use super::*;
+
+        for (color_space, transfer) in [
+            (VideoColorSpace::Bt2020, VideoTransfer::Pq),
+            (VideoColorSpace::Bt709, VideoTransfer::Sdr),
+        ] {
+            let mut frame = color_frame(&[]);
+            frame.color_space = color_space;
+            frame.transfer = transfer;
+            let matrix = frame_color_space(&frame).unwrap();
+            assert_eq!(matrix, color_space);
+            assert_eq!(validate_frame_color(&frame, matrix).unwrap(), transfer);
+        }
+    }
+
+    #[test]
+    fn hdr_session_rejects_partial_or_conflicting_sdr_metadata() {
+        use super::*;
+        use objc2_core_foundation::CFType;
+
+        let sdr: [(&CFString, &CFType); 3] = unsafe {
+            [
+                (
+                    kCVImageBufferYCbCrMatrixKey,
+                    kCVImageBufferYCbCrMatrix_ITU_R_709_2,
+                ),
+                (
+                    kCVImageBufferTransferFunctionKey,
+                    kCVImageBufferTransferFunction_ITU_R_709_2,
+                ),
+                (
+                    kCVImageBufferColorPrimariesKey,
+                    kCVImageBufferColorPrimaries_ITU_R_709_2,
+                ),
+            ]
+        };
+        let pq: [&CFType; 3] = unsafe {
+            [
+                kCVImageBufferYCbCrMatrix_ITU_R_2020,
+                kCVImageBufferTransferFunction_SMPTE_ST_2084_PQ,
+                kCVImageBufferColorPrimaries_ITU_R_2020,
+            ]
+        };
+        for index in 0..3 {
+            let partial: Vec<_> = sdr
+                .iter()
+                .enumerate()
+                .filter_map(|(i, entry)| (i != index).then_some(*entry))
+                .collect();
+            let frame = color_frame(&partial);
+            let matrix = frame_color_space(&frame).unwrap();
+            assert!(
+                validate_frame_color(&frame, matrix).is_err(),
+                "missing attachment {index}"
+            );
+
+            let mut conflicting = sdr;
+            conflicting[index].1 = pq[index];
+            let frame = color_frame(&conflicting);
+            let matrix = frame_color_space(&frame).unwrap();
+            assert!(
+                validate_frame_color(&frame, matrix).is_err(),
+                "conflicting attachment {index}"
+            );
+        }
+    }
+
+    #[test]
+    fn unsupported_color_attachments_are_rejected() {
+        use super::*;
+        use objc2_core_video::{
+            kCVImageBufferColorPrimaries_P3_D65, kCVImageBufferTransferFunction_ITU_R_2100_HLG,
+            kCVImageBufferYCbCrMatrix_SMPTE_240M_1995,
+        };
+
+        for (key, value) in unsafe {
+            [
+                (
+                    kCVImageBufferYCbCrMatrixKey,
+                    kCVImageBufferYCbCrMatrix_SMPTE_240M_1995,
+                ),
+                (
+                    kCVImageBufferTransferFunctionKey,
+                    kCVImageBufferTransferFunction_ITU_R_2100_HLG,
+                ),
+                (
+                    kCVImageBufferColorPrimariesKey,
+                    kCVImageBufferColorPrimaries_P3_D65,
+                ),
+            ]
+        } {
+            let frame = color_frame(&[(key, value)]);
+            assert!(unsafe { frame.image.attachment(key, ptr::null_mut()) }.is_some());
+            assert!(
+                frame_color_space(&frame)
+                    .and_then(|matrix| validate_frame_color(&frame, matrix))
+                    .is_err(),
+                "key={key:?}, value={value:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn sdr_session_rejects_unnegotiated_pq_frames() {
+        use super::*;
+        use objc2_core_foundation::CFType;
+
+        let attachments: [(&CFString, &CFType); 3] = unsafe {
+            [
+                (
+                    kCVImageBufferYCbCrMatrixKey,
+                    kCVImageBufferYCbCrMatrix_ITU_R_2020,
+                ),
+                (
+                    kCVImageBufferTransferFunctionKey,
+                    kCVImageBufferTransferFunction_SMPTE_ST_2084_PQ,
+                ),
+                (
+                    kCVImageBufferColorPrimariesKey,
+                    kCVImageBufferColorPrimaries_ITU_R_2020,
+                ),
+            ]
+        };
+        let mut frame = color_frame(&attachments);
+        frame.color_space = VideoColorSpace::Bt709;
+        frame.transfer = VideoTransfer::Sdr;
+        let matrix = frame_color_space(&frame).unwrap();
+        assert_eq!(matrix, VideoColorSpace::Bt2020);
+        assert!(validate_frame_color(&frame, matrix).is_err());
+    }
+
+    #[test]
+    #[ignore = "requires macOS IOSurface import and Metal command execution"]
+    fn hdr_session_records_sdr_pq_sdr_transitions_without_relabeling() {
+        use super::*;
+        use objc2_core_foundation::CFType;
+        use objc2_metal::{MTLCommandQueue, MTLCreateSystemDefaultDevice};
+
+        let device = MTLCreateSystemDefaultDevice().expect("Metal device");
+        let queue = device.newCommandQueue().unwrap();
+        let mut state = MetalState::new(&device, Retained::as_ptr(&device) as usize).unwrap();
+        let counters = Arc::new(Counters::default());
+        let failures = Arc::new(FailureReporter::default());
+        for pq in [false, true, false] {
+            let (matrix, transfer, primaries) = unsafe {
+                if pq {
+                    (
+                        kCVImageBufferYCbCrMatrix_ITU_R_2020,
+                        kCVImageBufferTransferFunction_SMPTE_ST_2084_PQ,
+                        kCVImageBufferColorPrimaries_ITU_R_2020,
+                    )
+                } else {
+                    (
+                        kCVImageBufferYCbCrMatrix_ITU_R_709_2,
+                        kCVImageBufferTransferFunction_ITU_R_709_2,
+                        kCVImageBufferColorPrimaries_ITU_R_709_2,
+                    )
+                }
+            };
+            let attachments: [(&CFString, &CFType); 3] = unsafe {
+                [
+                    (kCVImageBufferYCbCrMatrixKey, matrix),
+                    (kCVImageBufferTransferFunctionKey, transfer),
+                    (kCVImageBufferColorPrimariesKey, primaries),
+                ]
+            };
+            let command = queue.commandBuffer().unwrap();
+            let recorded = state
+                .record(
+                    color_frame(&attachments),
+                    &command,
+                    0,
+                    AdoptedMetalContext {
+                        device: Retained::as_ptr(&device).cast_mut().cast(),
+                        command_buffer: Retained::as_ptr(&command).cast_mut().cast(),
+                        upscale_width: 0,
+                        upscale_height: 0,
+                        upscale_sharpness: 10,
+                        upscale_denoise: 0,
+                    },
+                    Arc::clone(&counters),
+                    Arc::clone(&failures),
+                )
+                .unwrap();
+            assert_eq!(
+                (recorded.color_space, recorded.transfer, recorded.format),
+                if pq {
+                    (
+                        VideoColorSpace::Bt2020,
+                        VideoTransfer::Pq,
+                        MetalFrameFormat::Rgba16Float,
+                    )
+                } else {
+                    (
+                        VideoColorSpace::Bt709,
+                        VideoTransfer::Sdr,
+                        MetalFrameFormat::Rgb10a2Unorm,
+                    )
+                }
+            );
+            assert!(!recorded.texture.is_null());
+            command.commit();
+            command.waitUntilCompleted();
+            assert_eq!(command.status(), MTLCommandBufferStatus::Completed);
+        }
+        assert_eq!(counters.snapshot().video_metal_completed, 3);
+        assert_eq!(counters.snapshot().video_present_errors, 0);
+        assert!(failures.fatal_failure().is_none());
+    }
 
     #[test]
     #[ignore = "requires a Mac with MetalFX spatial scaling and GPU readback"]
