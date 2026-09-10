@@ -258,7 +258,7 @@ private slots:
         QFETCH(QStringList, included);
         QFETCH(QStringList, excluded);
 
-        const auto settings = source(QStringLiteral("qml/desktop/settings/DesktopSettingsScreen.qml"));
+        const auto settings = source(QStringLiteral("qml/state/settings/SettingsState.qml"));
         const auto picker = source(QStringLiteral("qml/desktop/settings/controls/DesktopSettingsResolution.qml"));
         const auto itemsMatch = QRegularExpression(QStringLiteral(
             "    function resolutionItems\\([^\\n]*\\) \\{.*?\\n    \\}"),
@@ -279,8 +279,7 @@ private slots:
         };
         QVERIFY(!evaluate(QStringLiteral(R"JS(
             function qsTr(text) { return text; }
-            var root = {fpsEntitlementKnown: function() { return false; }};
-            var ShellStore = {entitledFpsForResolution: function() { return [60]; }};
+            var root = {subscription: null, entitledFpsForResolution: function() { return [60]; }};
         )JS")).isError());
         QVERIFY(!evaluate(itemsMatch.captured()).isError());
         QVERIFY(!evaluate(QStringLiteral(

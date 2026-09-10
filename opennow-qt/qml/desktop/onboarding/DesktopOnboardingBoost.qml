@@ -150,7 +150,7 @@ Column {
         }
     }
 
-    DesktopOnboardingNetwork { width: parent.width }
+    DesktopOnboardingNetwork { width: parent.width; controller: root.store.onboardingAwdlController }
 
     GridLayout {
         width: parent.width

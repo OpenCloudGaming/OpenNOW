@@ -29,7 +29,9 @@ FocusScope {
         qsTr("Welcome to the native Qt build of OpenNOW. This is a beta, so bugs may occur. If something breaks, tell us what happened on GitHub. Let's make the client feel at home on your screen."),
         qsTr("Both shells share one session, one library and one set of settings. Pick the one you'll open most. You can switch any time."),
         qsTr("Choose your stream preferences. Start with the defaults, or make them your own. You can change everything later."),
-        qsTr("Optional, on-device picture processing. Keep it simple now, or experiment with how your stream is presented."),
+        store.onboardingAwdlController.state !== MacAwdlController.Unsupported
+            ? qsTr("Complete the required network setup, then choose optional on-device picture processing.")
+            : qsTr("Optional, on-device picture processing. Keep it simple now, or experiment with how your stream is presented."),
         qsTr("OpenNOW is free and open source. If it helps you, consider supporting its development through GitHub Sponsors. You can also help by reporting bugs or contributing to the project. Sponsoring is entirely optional, and you can continue without donating."),
         qsTr("Here's what you picked. Finish setup to save your preferences, or go back to adjust anything.")]
 
@@ -49,6 +51,7 @@ FocusScope {
     Connections {
         target: root.store
         function onSettingsChanged() { root.updateUiScale() }
+        function onOnboardingRequirementsMissing() { root.goToStep(3) }
     }
 
     function goToStep(index) {
@@ -59,6 +62,8 @@ FocusScope {
 
     function next() {
         if (saving)
+            return
+        if (stepIndex === 3 && !store.verifyOnboardingRequirements())
             return
         if (stepIndex < stepCount - 1) {
             goToStep(stepIndex + 1)
@@ -568,9 +573,10 @@ FocusScope {
                 leftPadding: DesktopTokens.px(22); rightPadding: DesktopTokens.px(root.compact ? 22 : 8)
                 Layout.minimumWidth: DesktopTokens.px(152)
                 text: root.saving ? qsTr("Saving…") : root.stepIndex === 5 ? qsTr("Finish setup")
-                    : root.stepIndex === 0 ? qsTr("Let's set things up") : qsTr("Continue")
+                    : root.stepIndex === 0 ? qsTr("Let's set things up")
+                    : root.stepIndex === 3 && !root.store.onboardingAwdlReady ? qsTr("Disable AWDL to continue") : qsTr("Continue")
                 Layout.maximumWidth: root.compact ? Math.max(DesktopTokens.px(144), root.width - DesktopTokens.px(160)) : Infinity
-                enabled: !root.saving
+                enabled: !root.saving && (root.stepIndex !== 3 || root.store.onboardingAwdlReady)
                 onClicked: root.next()
             }
         }

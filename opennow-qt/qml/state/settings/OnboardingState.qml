@@ -6,6 +6,7 @@ QtObject {
     required property var persistedSettings
     required property bool ready
     required property bool signedIn
+    required property var checkRequirements
     property var draft: ({})
     readonly property var settings: Object.assign({}, persistedSettings, draft)
     readonly property bool needed: persistedSettings.onboardingCompleted === false
@@ -15,6 +16,7 @@ QtObject {
     property string requestKey: ""
     property var remainingKeys: []
     signal completed()
+    signal requirementsMissing()
     signal settingSaved(string key, var value, var changes)
 
     onReadyChanged: {
@@ -49,6 +51,8 @@ QtObject {
             error = qsTr("Connect and sign in before finishing setup.")
             return
         }
+        if (!verifyRequirements())
+            return
         error = ""
         const keys = Object.keys(draft).filter(key => key !== "switchToConsoleOnPad")
         if (draft.switchToConsoleOnPad !== undefined)
@@ -56,6 +60,17 @@ QtObject {
         remainingKeys = keys.concat(["onboardingCompleted"])
         saving = true
         saveNext()
+    }
+
+    function verifyRequirements() {
+        const requirementError = checkRequirements()
+        if (requirementError !== "") {
+            fail(requirementError)
+            requirementsMissing()
+            return false
+        }
+        error = ""
+        return true
     }
 
     function saveNext() {
@@ -67,6 +82,8 @@ QtObject {
             completed()
             return
         }
+        if (remainingKeys[0] === "onboardingCompleted" && !verifyRequirements())
+            return
         requestKey = remainingKeys[0]
         requestId = coreClient.request("settings.set", {
             key: requestKey,

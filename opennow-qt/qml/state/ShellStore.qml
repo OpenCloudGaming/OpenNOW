@@ -56,12 +56,18 @@ QtObject {
     }
 
     property alias settings: settingsOwner.settings
+    property var onboardingAwdlController: MacAwdl
+    readonly property bool onboardingAwdlReady: !onboardingAwdlController.busy
+        && [MacAwdlController.Unsupported, MacAwdlController.Unavailable, MacAwdlController.Disabled]
+            .indexOf(onboardingAwdlController.state) >= 0
     property OnboardingState onboardingOwnerState: OnboardingState {
         id: onboardingOwner
         coreClient: CoreClient
         persistedSettings: root.settings
         ready: root.ready
         signedIn: root.signedIn
+        checkRequirements: root.checkOnboardingRequirements
+        onRequirementsMissing: root.onboardingRequirementsMissing()
         onSettingSaved: (key, value, changes) => {
             settingsOwner.applyCoupledSettings(changes)
             settingsOwner.applySetting(key, value)
@@ -77,6 +83,22 @@ QtObject {
     readonly property bool onboardingSaving: onboardingOwner.saving
     readonly property string onboardingError: onboardingOwner.error
     signal onboardingCompleted()
+    signal onboardingRequirementsMissing()
+
+    function checkOnboardingRequirements() {
+        onboardingAwdlController.refresh()
+        if (onboardingAwdlReady)
+            return ""
+        if (onboardingAwdlController.busy)
+            return qsTr("Wait for macOS authorization to finish before continuing setup.")
+        if (onboardingAwdlController.state === MacAwdlController.Unknown)
+            return qsTr("AWDL status could not be verified. Refresh its status in Boost before continuing setup.")
+        return qsTr("Disable AWDL in Boost before continuing setup on this Mac.")
+    }
+
+    function verifyOnboardingRequirements() {
+        return onboardingOwner.verifyRequirements()
+    }
 
     function setOnboardingSetting(key, value) {
         onboardingOwner.setSetting(key, value)

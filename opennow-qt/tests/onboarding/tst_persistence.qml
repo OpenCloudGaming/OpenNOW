@@ -3,7 +3,11 @@ import QtTest
 import OpenNOW.OnboardingTests
 
 TestCase {
+    id: testCase
     name: "OnboardingPersistence"
+    property string requirementError: ""
+    property int requirementChecks: 0
+    property int rejectAtCheck: 0
 
     QtObject {
         id: core
@@ -22,6 +26,11 @@ TestCase {
         persistedSettings: ({})
         ready: true
         signedIn: true
+        checkRequirements: function() {
+            ++testCase.requirementChecks
+            return testCase.rejectAtCheck > 0 && testCase.requirementChecks >= testCase.rejectAtCheck
+                ? "AWDL was re-enabled" : testCase.requirementError
+        }
         onSettingSaved: (key, value, changes) => {
             const updated = Object.assign({}, persistedSettings, changes)
             updated[key] = value
@@ -30,6 +39,7 @@ TestCase {
     }
 
     SignalSpy { id: completion; target: state; signalName: "completed" }
+    SignalSpy { id: missing; target: state; signalName: "requirementsMissing" }
 
     function init() {
         state.ready = false
@@ -40,7 +50,11 @@ TestCase {
         state.signedIn = true
         core.calls = []
         core.refuse = false
+        requirementError = ""
+        requirementChecks = 0
+        rejectAtCheck = 0
         completion.clear()
+        missing.clear()
     }
 
     function acknowledge(changes) {
@@ -192,5 +206,53 @@ TestCase {
         state.setSetting("errorReportingConsent", "granted")
         compare(Object.keys(state.draft).length, 0)
         verify(state.needed)
+    }
+
+    function test_requirementBlocksFinishAndSkip_data() {
+        return [{tag: "skip-defaults", stage: false}, {tag: "finish-choices", stage: true}]
+    }
+
+    function test_requirementBlocksFinishAndSkip(data) {
+        if (data.stage)
+            state.setSetting("fps", 120)
+        requirementError = "Disable AWDL before finishing"
+        state.finish()
+        compare(core.calls.length, 0)
+        compare(completion.count, 0)
+        compare(missing.count, 1)
+        compare(state.error, requirementError)
+        verify(!state.saving && state.needed)
+        compare(state.settings.fps, data.stage ? 120 : 60)
+    }
+
+    function test_requirementRecheckedBeforeCompletionWrite() {
+        state.setSetting("fps", 120)
+        state.finish()
+        compare(core.calls.length, 1)
+        compare(core.calls[0].params.key, "fps")
+        requirementError = "AWDL was re-enabled"
+        acknowledge()
+        compare(requirementChecks, 2)
+        compare(core.calls.length, 1)
+        compare(completion.count, 0)
+        compare(missing.count, 1)
+        verify(!state.saving && state.needed)
+        compare(state.draft.fps, 120)
+        requirementError = ""
+        state.finish()
+        acknowledge()
+        compare(core.calls[2].params.key, "onboardingCompleted")
+        acknowledge()
+        compare(completion.count, 1)
+        compare(state.error, "")
+    }
+
+    function test_skipRechecksImmediatelyBeforeWrite() {
+        rejectAtCheck = 2
+        state.finish()
+        compare(requirementChecks, 2)
+        compare(core.calls.length, 0)
+        compare(completion.count, 0)
+        verify(!state.saving && state.needed)
     }
 }

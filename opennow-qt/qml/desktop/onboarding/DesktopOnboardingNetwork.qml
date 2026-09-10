@@ -87,7 +87,7 @@ Rectangle {
             }
             Copy {
                 Layout.fillWidth: true
-                text: qsTr("Check macOS Wi-Fi latency")
+                text: qsTr("Required macOS network setup")
                 color: Theme.label
                 font.pixelSize: DesktopTokens.px(20)
                 font.weight: Font.Black
@@ -97,7 +97,7 @@ Rectangle {
         }
 
         Copy {
-            text: qsTr("Apple Wireless Direct Link (AWDL) shares the Wi-Fi radio with AirDrop and related features. On some Macs it can contribute to periodic latency spikes or streaming stutter. If you stream over Wi-Fi, compare a session with AWDL enabled and disabled before treating it as the cause.")
+            text: qsTr("Disable Apple Wireless Direct Link (AWDL) to finish setup on this Mac. AWDL shares the Wi-Fi radio with AirDrop and related features and can contribute to streaming latency spikes. Disabling it is not a guaranteed fix for stutter.")
         }
 
         GridLayout {
@@ -120,7 +120,9 @@ Rectangle {
                     Accessible.role: Accessible.StaticText
                 }
                 Copy {
-                    text: qsTr("Temporary change. macOS may re-enable AWDL, including after sleep or restart. Status is checked while this page is open.")
+                    text: root.controller.state === MacAwdlController.Unavailable
+                        ? qsTr("No AWDL interface is present, so no network change is required.")
+                        : qsTr("macOS may re-enable AWDL after sleep or restart. OpenNOW checks its status here and again before saving setup completion.")
                     font.pixelSize: DesktopTokens.px(12)
                     lineHeight: DesktopTokens.px(16)
                 }
@@ -131,7 +133,7 @@ Rectangle {
                 Action {
                     objectName: "onboardingAwdlChange"
                     primary: true
-                    text: root.awdlDisabled ? qsTr("Re-enable AWDL…") : qsTr("Disable AWDL for a test…")
+                    text: root.awdlDisabled ? qsTr("Re-enable AWDL…") : qsTr("Disable AWDL…")
                     enabled: !root.controller.busy && (root.awdlEnabled || root.awdlDisabled)
                     onClicked: {
                         root.restoring = root.awdlDisabled
@@ -148,7 +150,7 @@ Rectangle {
         }
 
         Copy {
-            text: qsTr("Disabling AWDL affects all users on this Mac and can interrupt AirDrop, AirPlay, Sidecar and other Continuity features. It requires administrator authorization. Re-enable it here to compare or restore those features.")
+            text: qsTr("Disabling AWDL affects all users on this Mac and can interrupt AirDrop, AirPlay, Sidecar and other Continuity features. It requires administrator authorization. Re-enabling it restores access to those features but blocks setup completion until AWDL is disabled again.")
             font.pixelSize: DesktopTokens.px(12)
             lineHeight: DesktopTokens.px(16)
         }
@@ -172,7 +174,7 @@ Rectangle {
         modal: true
         focus: true
         closePolicy: Popup.CloseOnEscape
-        title: root.restoring ? qsTr("Re-enable Apple Wireless Direct Link?") : qsTr("Disable Apple Wireless Direct Link for a test?")
+        title: root.restoring ? qsTr("Re-enable Apple Wireless Direct Link?") : qsTr("Disable Apple Wireless Direct Link?")
         header: Copy {
             text: confirmation.title
             padding: DesktopTokens.px(22)
@@ -186,7 +188,7 @@ Rectangle {
         contentItem: Copy {
             text: root.restoring
                 ? qsTr("macOS will ask for administrator authorization to bring awdl0 up. This lets AirDrop and related Apple features use AWDL again.")
-                : qsTr("macOS will ask for administrator authorization to bring awdl0 down for all users. AirDrop, AirPlay, Sidecar and other Continuity features may stop working. macOS may turn AWDL back on automatically. This is an A/B test, not a guaranteed latency fix.")
+                : qsTr("macOS will ask for administrator authorization to bring awdl0 down for all users. AirDrop, AirPlay, Sidecar and other Continuity features may stop working. AWDL must be down to finish setup. OpenNOW will not keep it disabled in the background.")
         }
         footer: DialogButtonBox {
             padding: DesktopTokens.px(16)

@@ -262,14 +262,18 @@ setup keeps the draft and presents the error for retry. Selecting console mode d
 not replace the wizard while its settings are being saved. No payment or diagnostic
 upload happens during onboarding.
 
-On macOS, Boost includes an AWDL Wi-Fi latency check. It reads the current
-`awdl0` interface state and offers an explicit, confirmed disable or re-enable
-action using the macOS administrator prompt. It never disables AWDL automatically,
-stores administrator credentials, installs a service, or changes the onboarding
-completion rules. Disabling AWDL can interrupt AirDrop, AirPlay, Sidecar and other
-Continuity features for all users. macOS may re-enable it; the page refreshes its
-status while visible. An enabled interface alone does not prove the cause of a
-streaming hitch, so compare sessions before and after the change.
+On macOS, setup requires the `awdl0` interface to be down. Boost offers an explicit,
+confirmed disable action using the macOS administrator prompt. Finish and Skip
+both check the current interface state, with a fresh check before sending the
+completion-marker write after the other settings. Enabled, unreadable and busy
+states block completion and return to Boost without discarding the draft. A
+confirmed absent interface needs no change; other platforms have no AWDL requirement.
+Re-enabling AWDL from the card undoes the network change and blocks completion again.
+OpenNOW never disables AWDL automatically, stores administrator credentials, or
+installs a service. Disabling AWDL can interrupt AirDrop, AirPlay, Sidecar and other
+Continuity features for all users. macOS may re-enable it after the check; OpenNOW
+does not enforce its state after setup. An interface-down reading is not proof of
+zero AWDL radio traffic or a guaranteed fix for streaming stutter.
 
 Run persistence and whole-app acceptance without an account:
 

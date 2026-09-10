@@ -3,6 +3,12 @@ import OpenNOW
 
 QtObject {
     property var contentRoot: null
+    property QtObject network: QtObject {
+        property int state: MacAwdlController.Unsupported
+        property bool busy: false
+        property string error: ""
+        function refresh() {}
+    }
     property QtObject client: QtObject {
         property var requests: []
         function request(method, params) {
@@ -35,6 +41,7 @@ QtObject {
 
     function run(parent) {
         contentRoot = parent
+        ShellStore.onboardingAwdlController = network
         ShellStore.authRestorePending = false
         ShellStore.authSession = {user: {displayName: "New player", userId: "onboarding-fixture"}}
         ShellStore.activeSession = null

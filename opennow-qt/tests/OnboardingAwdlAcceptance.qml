@@ -13,7 +13,14 @@ QtObject {
         property int disableRequests: 0
         property int enableRequests: 0
         property int refreshRequests: 0
-        function refresh() { ++refreshRequests }
+        property int nextState: -1
+        function refresh() {
+            ++refreshRequests
+            if (nextState >= 0) {
+                state = nextState
+                nextState = -1
+            }
+        }
         function disable() { ++disableRequests; busy = true }
         function enable() { ++enableRequests; busy = true }
     }
@@ -37,7 +44,7 @@ QtObject {
         screen.goToStep(3)
         card = acceptance.find(screen, "onboardingMacNetwork")
         acceptance.check(card, "AWDL guidance card is missing")
-        card.controller = controller
+        ShellStore.onboardingAwdlController = controller
         if (Qt.application.arguments.indexOf("--onboarding-awdl-fullscreen") >= 0)
             parent.Window.window.showFullScreen()
         return true
@@ -48,11 +55,13 @@ QtObject {
         if (Qt.application.arguments.indexOf("--onboarding-awdl-fullscreen") >= 0)
             acceptance.check(contentRoot.Window.window.visibility === Window.FullScreen,
                 "AWDL fullscreen fixture did not enter fullscreen")
+        verifyRequirements()
+        card = acceptance.find(contentRoot, "onboardingMacNetwork")
         const change = acceptance.find(card, "onboardingAwdlChange")
         const refresh = acceptance.find(card, "onboardingAwdlRefresh")
         const confirmation = objectIn(card, "onboardingAwdlConfirmation")
         acceptance.check(confirmation, "AWDL confirmation dialog is missing")
-        acceptance.check(card.visible && change.enabled, "active AWDL has no available test action")
+        acceptance.check(card.visible && change.enabled, "active AWDL has no available disable action")
         acceptance.check(controller.disableRequests === 0, "AWDL changed before explicit consent")
         change.clicked()
         acceptance.check(confirmation.visible, "AWDL change did not ask for confirmation")
@@ -66,14 +75,17 @@ QtObject {
         confirm.clicked()
         acceptance.check(controller.disableRequests === 1, "confirmed disable did not reach its controller")
         acceptance.check(!change.enabled && !refresh.enabled, "AWDL allowed duplicate requests while authorizing")
+        acceptance.check(!ShellStore.onboardingAwdlReady, "pending authorization satisfied setup")
         controller.state = MacAwdlController.Disabled
         controller.busy = false
         acceptance.check(change.enabled, "down AWDL has no restore action")
+        acceptance.check(ShellStore.onboardingAwdlReady, "confirmed down AWDL did not satisfy setup")
         change.clicked()
         confirm.clicked()
         acceptance.check(controller.enableRequests === 1, "confirmed restore did not reach its controller")
         controller.busy = false
         controller.state = MacAwdlController.Enabled
+        acceptance.check(!ShellStore.onboardingAwdlReady, "restoring AWDL did not block setup again")
         controller.error = "Authorization canceled by test fixture"
         const error = acceptance.find(card, "onboardingAwdlError")
         acceptance.check(error.visible && error.text === controller.error, "authorization error was hidden")
@@ -100,5 +112,54 @@ QtObject {
         if (Qt.application.arguments.indexOf("--onboarding-awdl-confirmation") >= 0)
             change.clicked()
         return true
+    }
+
+    function verifyRequirements() {
+        const screen = acceptance.find(contentRoot, "desktopOnboardingScreen")
+        const owner = ShellStore.onboardingOwnerState
+        const initialRequests = acceptance.client.requests.length
+        for (const status of [MacAwdlController.Enabled, MacAwdlController.Unknown, MacAwdlController.Disabled]) {
+            controller.state = status
+            controller.busy = status === MacAwdlController.Disabled
+            screen.goToStep(0)
+            screen.skip()
+            acceptance.check(screen.stepIndex === 3 && !owner.saving && owner.needed,
+                "Skip bypassed the AWDL requirement in state " + status)
+            screen.goToStep(5)
+            screen.next()
+            acceptance.check(screen.stepIndex === 3 && !owner.saving && owner.needed,
+                "Finish bypassed the AWDL requirement in state " + status)
+            const next = acceptance.find(screen, "onboardingNext")
+            acceptance.check(!next.enabled, "Boost allowed Continue before the requirement was met")
+            screen.next()
+            acceptance.check(screen.stepIndex === 3, "keyboard Continue bypassed the AWDL requirement")
+        }
+        acceptance.check(acceptance.client.requests.length === initialRequests,
+            "blocked completion wrote settings")
+        controller.busy = false
+        for (const status of [MacAwdlController.Disabled, MacAwdlController.Unavailable, MacAwdlController.Unsupported]) {
+            controller.state = status
+            acceptance.check(ShellStore.verifyOnboardingRequirements(),
+                "down, absent or unsupported AWDL blocked setup")
+        }
+        controller.state = MacAwdlController.Disabled
+        controller.nextState = MacAwdlController.Enabled
+        screen.skip()
+        acceptance.check(!owner.saving && owner.needed,
+            "Skip trusted stale down status instead of refreshing")
+        controller.state = MacAwdlController.Disabled
+        owner.setSetting("fps", 120)
+        screen.goToStep(5)
+        screen.next()
+        acceptance.check(owner.saving, "down AWDL did not allow settings persistence")
+        controller.nextState = MacAwdlController.Enabled
+        acceptance.acknowledge()
+        acceptance.check(!owner.saving && owner.needed && screen.stepIndex === 3,
+            "AWDL re-enabled during saving did not block completion")
+        acceptance.check(acceptance.client.requests.length === initialRequests + 1,
+            "re-enabled AWDL allowed the completion-marker write")
+        acceptance.check(owner.draft.fps === 120, "blocked completion discarded the draft")
+        owner.draft = ({})
+        owner.error = ""
     }
 }
