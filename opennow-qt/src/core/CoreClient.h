@@ -53,8 +53,10 @@ private slots:
 
 private:
     struct PendingRequest {
-        QString method;
+        QJsonObject message;
         qint64 deadlineMs = 0;
+        qint64 retryAtMs = 0;
+        int retryDelayMs = 100;
     };
 
     void setState(const QString &state);

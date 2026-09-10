@@ -226,6 +226,89 @@ private slots:
         QCOMPARE(engine.evaluate(QStringLiteral("root.heroGame = null; heroMeta()")).toString(), QStringLiteral("Sign in and sync your library to continue a game."));
     }
 
+    void resolutionFitsMonitorUsesPhysicalBounds_data()
+    {
+        QTest::addColumn<int>("screenWidth");
+        QTest::addColumn<int>("screenHeight");
+        QTest::addColumn<double>("devicePixelRatio");
+        QTest::addColumn<bool>("fitsMonitor");
+        QTest::addColumn<QStringList>("included");
+        QTest::addColumn<QStringList>("excluded");
+
+        QTest::newRow("mac-retina") << 1512 << 982 << 2.0 << true
+            << QStringList{QStringLiteral("2560x1600"), QStringLiteral("2560x1440"), QStringLiteral("1920x1200")}
+            << QStringList{QStringLiteral("3200x1800"), QStringLiteral("3840x2160"), QStringLiteral("3840x2400")};
+        QTest::newRow("normal-16-9") << 1920 << 1080 << 1.0 << true
+            << QStringList{QStringLiteral("1280x720"), QStringLiteral("1600x900"), QStringLiteral("1920x1080")}
+            << QStringList{QStringLiteral("1920x1200"), QStringLiteral("2560x1440"), QStringLiteral("2560x1080")};
+        QTest::newRow("too-tall-and-wide") << 1440 << 900 << 1.0 << true
+            << QStringList{QStringLiteral("1280x720"), QStringLiteral("1280x800"), QStringLiteral("1440x900")}
+            << QStringList{QStringLiteral("1600x900"), QStringLiteral("1920x1080"), QStringLiteral("1920x1200")};
+        QTest::newRow("all-mode") << 1 << 1 << 1.0 << false
+            << QStringList{QStringLiteral("7680x4320"), QStringLiteral("3840x2400"), QStringLiteral("5120x1440")}
+            << QStringList{};
+    }
+
+    void resolutionFitsMonitorUsesPhysicalBounds()
+    {
+        QFETCH(int, screenWidth);
+        QFETCH(int, screenHeight);
+        QFETCH(double, devicePixelRatio);
+        QFETCH(bool, fitsMonitor);
+        QFETCH(QStringList, included);
+        QFETCH(QStringList, excluded);
+
+        const auto settings = source(QStringLiteral("qml/desktop/settings/DesktopSettingsScreen.qml"));
+        const auto picker = source(QStringLiteral("qml/desktop/settings/controls/DesktopSettingsResolution.qml"));
+        const auto itemsMatch = QRegularExpression(QStringLiteral(
+            "    function resolutionItems\\([^\\n]*\\) \\{.*?\\n    \\}"),
+            QRegularExpression::DotMatchesEverythingOption).match(settings);
+        const auto groupsMatch = QRegularExpression(QStringLiteral(
+            "    readonly property var groups: \\{(?<body>.*?)\\n    \\}\\n    readonly property real revealProgress"),
+            QRegularExpression::DotMatchesEverythingOption).match(picker);
+        QVERIFY(itemsMatch.hasMatch());
+        QVERIFY(groupsMatch.hasMatch());
+
+        QJSEngine engine;
+        engine.installExtensions(QJSEngine::TranslationExtension);
+        auto evaluate = [&engine](const QString &script) {
+            const auto result = engine.evaluate(script);
+            if (result.isError())
+                qWarning().noquote() << result.toString() << result.property("stack").toString();
+            return result;
+        };
+        QVERIFY(!evaluate(QStringLiteral(R"JS(
+            function qsTr(text) { return text; }
+            var root = {fpsEntitlementKnown: function() { return false; }};
+            var ShellStore = {entitledFpsForResolution: function() { return [60]; }};
+        )JS")).isError());
+        QVERIFY(!evaluate(itemsMatch.captured()).isError());
+        QVERIFY(!evaluate(QStringLiteral(
+            "var Screen = {width:%1, height:%2, devicePixelRatio:%3};"
+            "var fitsMonitor = %4;"
+            "var items = resolutionItems();")
+                .arg(screenWidth)
+                .arg(screenHeight)
+                .arg(devicePixelRatio, 0, 'f', 3)
+                .arg(fitsMonitor ? QStringLiteral("true") : QStringLiteral("false"))).isError());
+
+        const auto result = evaluate(QStringLiteral(R"JS(
+            var values = [];
+            var groups = (function() {%1
+            })();
+            for (var i = 0; i < groups.length; i++)
+                for (var j = 0; j < groups[i].items.length; j++)
+                    values.push(groups[i].items[j].value);
+            JSON.stringify(values);
+        )JS").arg(groupsMatch.captured(QStringLiteral("body"))));
+        QVERIFY2(!result.isError(), qPrintable(result.toString()));
+        const auto values = result.toString();
+        for (const auto &value : included)
+            QVERIFY2(values.contains(QStringLiteral("\"%1\"").arg(value)), qPrintable(values));
+        for (const auto &value : excluded)
+            QVERIFY2(!values.contains(QStringLiteral("\"%1\"").arg(value)), qPrintable(values));
+    }
+
     void pendingRecoveryDoesNotHideAStartedVideoSurface()
     {
         for (const auto &path : {"qml/screens/StreamScreen.qml", "qml/desktop/stream/DesktopStreamScreen.qml"}) {

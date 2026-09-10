@@ -25,6 +25,72 @@ class CoreClientTest final : public QObject
     Q_OBJECT
 
 private slots:
+    void retriesAdmissionRejectionsWithoutFailingTheCaller()
+    {
+        CoreClient client;
+        QSignalSpy responses(&client, &CoreClient::responseReceived);
+        QSignalSpy failures(&client, &CoreClient::requestFailed);
+        QSignalSpy events(&client, &CoreClient::eventReceived);
+        QVERIFY(client.start(fakeCorePath()));
+        QTRY_COMPARE_WITH_TIMEOUT(client.state(), QStringLiteral("ready"), 2'000);
+        responses.clear();
+        const QJsonObject params{{QStringLiteral("searchQuery"), QStringLiteral("Library game")},
+                                 {QStringLiteral("limit"), 1000}};
+        const auto id = client.request(QStringLiteral("test.busy"), params, 2'000);
+        QTRY_COMPARE_WITH_TIMEOUT(events.size(), 3, 2'000);
+        QCOMPARE(failures.size(), 0);
+        QCOMPARE(responses.size(), 1);
+        QCOMPARE(responses.first().at(0).toString(), id);
+        QCOMPARE(responses.first().at(1).toJsonObject().value(QStringLiteral("params")).toObject(), params);
+    }
+
+    void busyRetriesKeepTheOriginalDeadline()
+    {
+        CoreClient client;
+        QSignalSpy failures(&client, &CoreClient::requestFailed);
+        QSignalSpy events(&client, &CoreClient::eventReceived);
+        QVERIFY(client.start(fakeCorePath()));
+        QTRY_COMPARE_WITH_TIMEOUT(client.state(), QStringLiteral("ready"), 2'000);
+        const auto id = client.request(QStringLiteral("test.busy-forever"), {}, 500);
+        QTRY_COMPARE_WITH_TIMEOUT(failures.size(), 1, 1'500);
+        QCOMPARE(failures.first().at(0).toString(), id);
+        QCOMPARE(failures.first().at(1).toString(), QStringLiteral("deadline_exceeded"));
+        QVERIFY(events.size() >= 2);
+        const auto attempts = events.size();
+        QTest::qWait(400);
+        QCOMPARE(events.size(), attempts);
+        QCOMPARE(failures.size(), 1);
+    }
+
+    void cancellationAndStopDiscardBusyRetries_data()
+    {
+        QTest::addColumn<bool>("stop");
+        QTest::newRow("cancel") << false;
+        QTest::newRow("stop") << true;
+    }
+
+    void cancellationAndStopDiscardBusyRetries()
+    {
+        QFETCH(bool, stop);
+        CoreClient client;
+        QSignalSpy failures(&client, &CoreClient::requestFailed);
+        QSignalSpy events(&client, &CoreClient::eventReceived);
+        QVERIFY(client.start(fakeCorePath()));
+        QTRY_COMPARE_WITH_TIMEOUT(client.state(), QStringLiteral("ready"), 2'000);
+        const auto id = client.request(QStringLiteral("test.busy-forever"), {}, 2'000);
+        QTRY_COMPARE_WITH_TIMEOUT(events.size(), 1, 1'000);
+        if (stop)
+            client.stop();
+        else
+            QVERIFY(client.cancel(id));
+        QCOMPARE(failures.size(), 1);
+        QCOMPARE(failures.first().at(0).toString(), id);
+        QCOMPARE(failures.first().at(1).toString(), stop ? QStringLiteral("core_stopping") : QStringLiteral("cancelled"));
+        QTest::qWait(400);
+        QCOMPARE(events.size(), 1);
+        QCOMPARE(failures.size(), 1);
+    }
+
     void startsStopped()
     {
         CoreClient client;

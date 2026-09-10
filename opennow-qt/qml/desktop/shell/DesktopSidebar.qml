@@ -339,7 +339,11 @@ FocusScope {
                     ToolTip.visible: hovered
                     ToolTip.text: qsTr("New collection")
                     background: Rectangle { radius: 8; color: createCollectionButton.hovered || createCollectionButton.activeFocus ? DesktopTokens.raised : "transparent" }
-                    contentItem: DesktopGlyph { icon: "desktop-plus.svg" }
+                    contentItem: DesktopGlyph {
+                        width: createCollectionButton.availableWidth
+                        height: createCollectionButton.availableHeight
+                        icon: "desktop-plus.svg"
+                    }
                     onClicked: root.createCollectionRequested()
                 }
             }

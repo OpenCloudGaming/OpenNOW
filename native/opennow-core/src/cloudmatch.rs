@@ -77,6 +77,14 @@ impl CloudMatchService {
             .or_else(|| base.host_str().map(ToOwned::to_owned))
             .unwrap_or_default();
         let mut info = session_info(&payload, &base, &zone, &app_id, device_id)?;
+        let request_codec = json!({
+            "sessionId":info["sessionId"],
+            "negotiatedStreamProfile":{
+                "codec":codec_from_wire(&body["sessionRequestData"]["requestedStreamingFeatures"]["codec"]),
+                "codecSource":"request"
+            }
+        });
+        preserve_session_codec(&mut info, &request_codec);
 
         if let Some(session_id) = info["sessionId"].as_str() {
             let mut resume_url = base
@@ -111,8 +119,7 @@ impl CloudMatchService {
                 .send();
         }
 
-        let active = active_from_info(&info, &base, &zone, &app_id, client)?;
-        *self.active.lock().expect("CloudMatch state poisoned") = Some(active);
+        self.store_active(&mut info, &base, &zone, &app_id, client)?;
         info["phase"] =
             Value::String(session_phase(info["status"].as_i64().unwrap_or_default()).to_owned());
         Ok(json!({"session":info}))
@@ -170,9 +177,10 @@ impl CloudMatchService {
             && !is_zone_hostname(server_ip)
             && let Ok(direct) = trusted_learned_server_base(server_ip)
             && let Ok(direct_payload) = self.get_session(&client, &direct, &session_id, &headers)
-            && let Ok(direct_info) =
+            && let Ok(mut direct_info) =
                 session_info(&direct_payload, &direct, &zone, &app_id, device_id)
         {
+            preserve_session_codec(&mut direct_info, &info);
             info = direct_info;
         }
 
@@ -184,8 +192,7 @@ impl CloudMatchService {
         {
             mark_resume_progress(&mut info);
         }
-        let active = active_from_info(&info, &base, &zone, &app_id, client)?;
-        *self.active.lock().expect("CloudMatch state poisoned") = Some(active);
+        self.store_active(&mut info, &base, &zone, &app_id, client)?;
         Ok(json!({"session":info}))
     }
 
@@ -431,8 +438,7 @@ impl CloudMatchService {
         let mut info = session_info(&initial_payload, &control_base, zone, &app_id, device_id)?;
         info["resumePending"] = json!(true);
         info["phase"] = json!("resuming");
-        let active = active_from_info(&info, &control_base, zone, &app_id, client)?;
-        *self.active.lock().expect("CloudMatch state poisoned") = Some(active);
+        self.store_active(&mut info, &control_base, zone, &app_id, client)?;
         Ok(json!({"session":info}))
     }
 
@@ -512,9 +518,39 @@ impl CloudMatchService {
         let mut info = session_info(&payload, &base, zone, app_id, device_id)?;
         info["phase"] =
             Value::String(session_phase(info["status"].as_i64().unwrap_or_default()).to_owned());
-        let active = active_from_info(&info, &base, zone, app_id, client)?;
-        *self.active.lock().expect("CloudMatch state poisoned") = Some(active);
+        self.store_active(&mut info, &base, zone, app_id, client)?;
         Ok(json!({"session":info}))
+    }
+
+    fn store_active(
+        &self,
+        info: &mut Value,
+        fallback_base: &Url,
+        zone: &str,
+        app_id: &str,
+        client: Client,
+    ) -> Result<(), ServiceError> {
+        let session_id = info["sessionId"]
+            .as_str()
+            .ok_or_else(|| upstream("Session result did not include an ID"))?
+            .to_owned();
+        let mut active = self.active.lock().expect("CloudMatch state poisoned");
+        if let Some(previous) = active.as_ref() {
+            preserve_session_codec(info, &previous.info);
+        }
+        *active = Some(ActiveSession {
+            session_id,
+            control_base: info["streamingBaseUrl"]
+                .as_str()
+                .unwrap_or_else(|| fallback_base.as_str())
+                .to_owned(),
+            server_ip: info["serverIp"].as_str().map(ToOwned::to_owned),
+            zone: zone.to_owned(),
+            app_id: app_id.to_owned(),
+            info: info.clone(),
+            client,
+        });
+        Ok(())
     }
 
     fn get_session(
@@ -910,7 +946,24 @@ fn session_info(
     if let Some(finalized) = session["finalizedStreamingFeatures"].as_object() {
         features.extend(finalized.clone());
     }
+    let codec_reported =
+        session["negotiatedStreamProfile"].get("codec").is_some() || features.contains_key("codec");
     let mut negotiated = negotiated_profile(monitor, &Value::Object(features));
+    if let Some(codec) = session["negotiatedStreamProfile"].get("codec") {
+        negotiated["codec"] = json!(codec.as_str().and_then(|value| {
+            match value.trim().to_ascii_uppercase().as_str() {
+                "H264" | "AVC" => Some("H264"),
+                "H265" | "HEVC" => Some("H265"),
+                "AV1" => Some("AV1"),
+                _ => None,
+            }
+        }));
+    }
+    negotiated["codecSource"] = json!(if codec_reported {
+        "server"
+    } else {
+        "unreported"
+    });
     negotiated["enableHdr"] = json!(accepted_hdr_mode(session) == Some(1));
     let ad_state = normalize_ad_state(session);
     Ok(json!({
@@ -981,18 +1034,40 @@ fn accepted_hdr_mode(session: &Value) -> Option<i64> {
         .map(|mode| i64::from(mode == 1))
 }
 
+fn preserve_session_codec(info: &mut Value, previous: &Value) {
+    let Some(session_id) = info["sessionId"].as_str().filter(|id| !id.is_empty()) else {
+        return;
+    };
+    let profile = &previous["negotiatedStreamProfile"];
+    if previous["sessionId"].as_str() != Some(session_id)
+        || !(info["negotiatedStreamProfile"]["codecSource"] == "unreported"
+            || (info["negotiatedStreamProfile"]["codecSource"] == "request"
+                && profile["codecSource"] == "server"))
+        || !matches!(profile["codec"].as_str(), Some("H264" | "H265" | "AV1"))
+        || !matches!(profile["codecSource"].as_str(), Some("request" | "server"))
+    {
+        return;
+    }
+    info["negotiatedStreamProfile"]["codec"] = profile["codec"].clone();
+    info["negotiatedStreamProfile"]["codecSource"] = profile["codecSource"].clone();
+}
+
+fn codec_from_wire(value: &Value) -> Option<&'static str> {
+    match value_i64(value) {
+        Some(1) => Some("H264"),
+        Some(2) => Some("H265"),
+        Some(3) => Some("AV1"),
+        _ => None,
+    }
+}
+
 fn negotiated_profile(monitor: &Value, features: &Value) -> Value {
     let width = value_i64(&monitor["widthInPixels"]);
     let height = value_i64(&monitor["heightInPixels"]);
     let resolution = width
         .zip(height)
         .map(|(width, height)| format!("{width}x{height}"));
-    let codec = match value_i64(&features["codec"]) {
-        Some(1) => Some("H264"),
-        Some(2) => Some("H265"),
-        Some(3) => Some("AV1"),
-        _ => None,
-    };
+    let codec = codec_from_wire(&features["codec"]);
     let bit_depth = value_i64(&features["bitDepth"]).and_then(|value| match value {
         0 | 8 => Some(0),
         1 | 10 => Some(1),
@@ -1018,31 +1093,6 @@ fn negotiated_profile(monitor: &Value, features: &Value) -> Value {
         "enableL4S":features["enabledL4S"],
         "enableCloudGsync":features["cloudGsync"],
         "enableReflex":features["reflex"]
-    })
-}
-
-fn active_from_info(
-    info: &Value,
-    fallback_base: &Url,
-    zone: &str,
-    app_id: &str,
-    client: Client,
-) -> Result<ActiveSession, ServiceError> {
-    let session_id = info["sessionId"]
-        .as_str()
-        .ok_or_else(|| upstream("Session result did not include an ID"))?
-        .to_owned();
-    Ok(ActiveSession {
-        session_id,
-        control_base: info["streamingBaseUrl"]
-            .as_str()
-            .unwrap_or_else(|| fallback_base.as_str())
-            .to_owned(),
-        server_ip: info["serverIp"].as_str().map(ToOwned::to_owned),
-        zone: zone.to_owned(),
-        app_id: app_id.to_owned(),
-        info: info.clone(),
-        client,
     })
 }
 
@@ -2000,6 +2050,259 @@ mod tests {
         let info = session_info(&ready, &base, "auto", "123", "device").unwrap();
         assert_eq!(info["signalingUrl"], "wss://80.1.2.3:443/nvst/");
         assert_eq!(info["serverIp"], "80.1.2.3");
+    }
+
+    #[test]
+    fn omitted_codec_preserves_the_exact_session_request_through_hdr_preparation() {
+        let base = Url::parse(DEFAULT_STREAMING_BASE).unwrap();
+        let requested = json!({"codec":"h265","colorQuality":"10bit_420","enableHdr":true,"nativeHdrSupported":true});
+        let body = build_create_body("123", &json!({}), &requested, "device");
+        let mut initial = session_info(
+            &json!({"session":{"sessionId":"omitted-codec","status":1,"sdrHdrMode":1}}),
+            &base,
+            "auto",
+            "123",
+            "device",
+        )
+        .unwrap();
+        let request = json!({"sessionId":initial["sessionId"],"negotiatedStreamProfile":{
+            "codec":codec_from_wire(&body["sessionRequestData"]["requestedStreamingFeatures"]["codec"]),
+            "codecSource":"request"
+        }});
+        preserve_session_codec(&mut initial, &request);
+        assert_eq!(initial["negotiatedStreamProfile"]["codec"], "H265");
+        let capabilities = json!({"protocolVersion":6,"nativeHdrSupported":true,"videoBackends":[{
+            "backend":"videotoolbox","platform":"macos","available":true,"codecs":[{
+                "codec":"h265","available":true,"hdrSupported":true,
+                "colorQualities":["10bit_420"],"hdrColorQualities":["10bit_420"]
+            }]
+        }]});
+        for status in [2, 3] {
+            let mut ready = session_info(
+                &json!({"session":{
+                    "sessionId":"omitted-codec","status":status,"sdrHdrMode":1,
+                    "finalizedStreamingFeatures":{"bitDepth":1,"chromaFormat":0}
+                }}),
+                &base,
+                "auto",
+                "123",
+                "device",
+            )
+            .unwrap();
+            assert_eq!(ready["negotiatedStreamProfile"]["codec"], Value::Null);
+            preserve_session_codec(&mut ready, &initial);
+            assert_eq!(ready["negotiatedStreamProfile"]["codec"], "H265");
+            assert_eq!(ready["negotiatedStreamProfile"]["codecSource"], "request");
+            let prepared = crate::streamer::StreamerService::new()
+                .prepare_embedded(
+                    &json!({"session":ready,"runtimeCapabilities":capabilities}),
+                    &json!({"codec":"h264","colorQuality":"8bit_420","enableHdr":false}),
+                )
+                .unwrap();
+            assert_eq!(prepared["context"]["settings"]["codec"], "H265");
+            assert_eq!(prepared["context"]["settings"]["enableHdr"], true);
+        }
+    }
+
+    #[test]
+    fn codec_inheritance_never_crosses_sessions_or_overrides_reported_values() {
+        let base = Url::parse(DEFAULT_STREAMING_BASE).unwrap();
+        let previous = json!({"sessionId":"same-seat","negotiatedStreamProfile":{
+            "codec":"H265","codecSource":"request"
+        }});
+        let mut different = session_info(
+            &json!({"session":{
+                "sessionId":"other-seat","status":2
+            }}),
+            &base,
+            "auto",
+            "123",
+            "device",
+        )
+        .unwrap();
+        preserve_session_codec(&mut different, &previous);
+        assert_eq!(different["negotiatedStreamProfile"]["codec"], Value::Null);
+        for reported in [
+            Value::Null,
+            json!("unsupported"),
+            json!("H264"),
+            json!("AV1"),
+        ] {
+            let mut info = session_info(
+                &json!({"session":{
+                    "sessionId":"same-seat","status":2,"negotiatedStreamProfile":{"codec":reported}
+                }}),
+                &base,
+                "auto",
+                "123",
+                "device",
+            )
+            .unwrap();
+            let before = info.clone();
+            preserve_session_codec(&mut info, &previous);
+            assert_eq!(info, before);
+            assert_eq!(info["negotiatedStreamProfile"]["codecSource"], "server");
+        }
+        for value in [Value::Null, json!(0), json!(99)] {
+            let mut info = session_info(
+                &json!({"session":{
+                    "sessionId":"same-seat","status":2,"finalizedStreamingFeatures":{"codec":value}
+                }}),
+                &base,
+                "auto",
+                "123",
+                "device",
+            )
+            .unwrap();
+            preserve_session_codec(&mut info, &previous);
+            assert_eq!(info["negotiatedStreamProfile"]["codec"], Value::Null);
+            assert_eq!(info["negotiatedStreamProfile"]["codecSource"], "server");
+        }
+    }
+
+    #[test]
+    fn reported_codec_survives_later_partial_responses_without_reverting_to_request() {
+        let base = Url::parse(DEFAULT_STREAMING_BASE).unwrap();
+        let request = json!({"sessionId":"same-seat","negotiatedStreamProfile":{
+            "codec":"H265","codecSource":"request"
+        }});
+        let mut regional = session_info(
+            &json!({"session":{
+                "sessionId":"same-seat","status":2,"negotiatedStreamProfile":{"codec":"AV1"}
+            }}),
+            &base,
+            "auto",
+            "123",
+            "device",
+        )
+        .unwrap();
+        preserve_session_codec(&mut regional, &request);
+        let mut direct = session_info(&json!({"session":{
+            "sessionId":"same-seat","status":2,"finalizedStreamingFeatures":{"bitDepth":1,"chromaFormat":0}
+        }}), &base, "auto", "123", "device").unwrap();
+        preserve_session_codec(&mut direct, &regional);
+        preserve_session_codec(&mut direct, &request);
+        assert_eq!(direct["negotiatedStreamProfile"]["codec"], "AV1");
+        assert_eq!(direct["negotiatedStreamProfile"]["codecSource"], "server");
+        assert_eq!(
+            direct["negotiatedStreamProfile"]["colorQuality"],
+            "10bit_420"
+        );
+    }
+
+    #[test]
+    fn active_updates_use_latest_codec_evidence_and_keep_returned_info_in_sync() {
+        let base = Url::parse(DEFAULT_STREAMING_BASE).unwrap();
+        let client = Client::new();
+        let service = CloudMatchService::new(client.clone());
+        let mut initial = json!({"sessionId":"same-seat","negotiatedStreamProfile":{
+            "codec":"H265","codecSource":"request"
+        }});
+        service
+            .store_active(&mut initial, &base, "auto", "123", client.clone())
+            .unwrap();
+        let mut stale = initial.clone();
+        let mut reported = session_info(
+            &json!({"session":{
+                "sessionId":"same-seat","status":2,"negotiatedStreamProfile":{"codec":"AV1"}
+            }}),
+            &base,
+            "auto",
+            "123",
+            "device",
+        )
+        .unwrap();
+        service
+            .store_active(&mut reported, &base, "auto", "123", client.clone())
+            .unwrap();
+        service
+            .store_active(&mut stale, &base, "auto", "123", client.clone())
+            .unwrap();
+        assert_eq!(stale["negotiatedStreamProfile"]["codec"], "AV1");
+        assert_eq!(stale["negotiatedStreamProfile"]["codecSource"], "server");
+        assert_eq!(service.active.lock().unwrap().as_ref().unwrap().info, stale);
+        let mut invalid = session_info(
+            &json!({"session":{
+                "sessionId":"same-seat","status":2,"negotiatedStreamProfile":{"codec":null}
+            }}),
+            &base,
+            "auto",
+            "123",
+            "device",
+        )
+        .unwrap();
+        service
+            .store_active(&mut invalid, &base, "auto", "123", client.clone())
+            .unwrap();
+        let mut omitted = session_info(
+            &json!({"session":{
+                "sessionId":"same-seat","status":2
+            }}),
+            &base,
+            "auto",
+            "123",
+            "device",
+        )
+        .unwrap();
+        service
+            .store_active(&mut omitted, &base, "auto", "123", client)
+            .unwrap();
+        assert_eq!(omitted["negotiatedStreamProfile"]["codec"], Value::Null);
+    }
+
+    #[test]
+    fn nested_negotiated_codec_reaches_hdr_preparation() {
+        let base = Url::parse(DEFAULT_STREAMING_BASE).unwrap();
+        let capabilities = json!({"protocolVersion":6,"nativeHdrSupported":true,"videoBackends":[{
+            "backend":"videotoolbox","platform":"macos","available":true,"codecs":[{
+                "codec":"h265","available":true,"hdrSupported":true,
+                "colorQualities":["10bit_420"],"hdrColorQualities":["10bit_420"]
+            }]
+        }]});
+        let settings = json!({"codec":"h264","colorQuality":"8bit_420","enableHdr":false});
+        for status in [2, 3] {
+            for codec in ["H265", "HEVC", "hevc"] {
+                let payload = json!({"session":{
+                    "sessionId":"nested-codec", "status":status, "sdrHdrMode":1,
+                    "negotiatedStreamProfile":{"codec":codec},
+                    "finalizedStreamingFeatures":{"bitDepth":1,"chromaFormat":0}
+                }});
+                let info = session_info(&payload, &base, "auto", "123", "device").unwrap();
+                assert_eq!(info["negotiatedStreamProfile"]["codec"], "H265");
+                assert_eq!(info["negotiatedStreamProfile"]["colorQuality"], "10bit_420");
+                let prepared = crate::streamer::StreamerService::new()
+                    .prepare_embedded(
+                        &json!({"session":info,"runtimeCapabilities":capabilities}),
+                        &settings,
+                    )
+                    .unwrap();
+                assert_eq!(prepared["context"]["settings"]["codec"], "H265");
+                assert_eq!(prepared["context"]["settings"]["enableHdr"], true);
+            }
+        }
+    }
+
+    #[test]
+    fn nested_negotiated_codec_overrides_feature_hints_without_guessing() {
+        let base = Url::parse(DEFAULT_STREAMING_BASE).unwrap();
+        for (codec, expected) in [
+            (json!("H264"), json!("H264")),
+            (json!("avc"), json!("H264")),
+            (json!("AV1"), json!("AV1")),
+            (json!("unsupported"), Value::Null),
+            (json!(2), Value::Null),
+            (json!(""), Value::Null),
+            (Value::Null, Value::Null),
+        ] {
+            let payload = json!({"session":{
+                "sessionId":"nested-codec", "status":2, "sdrHdrMode":1,
+                "negotiatedStreamProfile":{"codec":codec},
+                "sessionRequestData":{"requestedStreamingFeatures":{"codec":2}},
+                "finalizedStreamingFeatures":{"codec":2,"bitDepth":1,"chromaFormat":0}
+            }});
+            let info = session_info(&payload, &base, "auto", "123", "device").unwrap();
+            assert_eq!(info["negotiatedStreamProfile"]["codec"], expected);
+        }
     }
 
     #[test]

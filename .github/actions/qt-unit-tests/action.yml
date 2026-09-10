@@ -35,14 +35,13 @@ runs:
       shell: pwsh
       run: |
         $ErrorActionPreference = "Stop"
-        choco install llvm nasm -y --no-progress
-        $llvmBin = Join-Path $env:ProgramFiles "LLVM\bin"
-        if (-not (Test-Path (Join-Path $llvmBin "libclang.dll"))) {
-          throw "LLVM installation is missing libclang.dll"
+        .github/scripts/ensure-windows-llvm.ps1
+        choco install nasm -y --no-progress
+        $nasmBin = Join-Path $env:ProgramFiles "NASM"
+        if (-not (Test-Path (Join-Path $nasmBin "nasm.exe"))) {
+          throw "NASM installation is missing nasm.exe"
         }
-        $llvmBin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-        (Join-Path $env:ProgramFiles "NASM") | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-        "LIBCLANG_PATH=$llvmBin" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+        $nasmBin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
         $linker = Join-Path $env:VCToolsInstallDir "bin\Hostx64\x64\link.exe"
         if (-not (Test-Path $linker)) { throw "MSVC linker is unavailable" }
         "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=$linker" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append

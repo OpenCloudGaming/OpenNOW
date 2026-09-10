@@ -146,6 +146,22 @@ class CIWorkflowTest(unittest.TestCase):
         self.assertIn('set_tests_properties(${OPENNOW_CI_UNIT_TEST_TARGETS} PROPERTIES LABELS "ci-unit")', cmake)
         self.assertIn('ENVIRONMENT "QT_QPA_PLATFORM=cocoa" RUN_SERIAL TRUE TIMEOUT 30 LABELS "interactive-desktop"', cmake)
 
+    def test_windows_checks_use_verified_llvm_fallback(self):
+        action = (ROOT / ".github/actions/qt-unit-tests/action.yml").read_text()
+        llvm = (ROOT / ".github/scripts/ensure-windows-llvm.ps1").read_text()
+        self.assertIn(".github/scripts/ensure-windows-llvm.ps1", action)
+        self.assertNotIn("choco install llvm", action)
+        self.assertIn("choco install nasm -y --no-progress", action)
+        self.assertIn("NASM installation is missing nasm.exe", action)
+        self.assertIn("LLVM-22.1.8-win64.exe", llvm)
+        self.assertIn("16e5709785fef73c854646241c4a92c5cd574318d1b33c63330dd7721903e55c", llvm)
+        self.assertIn("LLVM-22.1.8-woa64.exe", llvm)
+        self.assertIn("76f44ef1ba6eeb5a65904e9500f042f588fade49952778ce48f0374daa934396", llvm)
+        self.assertIn("Get-FileHash -Algorithm SHA256", llvm)
+        self.assertIn("libclang.dll", llvm)
+        self.assertIn("LIBCLANG_PATH=$llvmBin", llvm)
+        self.assertIn("Unsupported Windows LLVM runner architecture", llvm)
+
     def test_interactive_tests_remain_registered_outside_headless_ci(self):
         cmake = (ROOT / "opennow-qt/cmake/Tests.cmake").read_text()
         self.assertIn("list(REMOVE_ITEM OPENNOW_CI_UNIT_TEST_TARGETS opennow-hdrcolor-tests)", cmake)

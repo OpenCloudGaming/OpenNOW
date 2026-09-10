@@ -179,17 +179,18 @@ QString CoreClient::request(const QString &method, const QJsonObject &params, in
     }
     const auto id = QString::number(m_nextRequestId++);
     const auto deadline = QDateTime::currentMSecsSinceEpoch() + qBound(100, timeoutMs, 300'000);
-    m_pending.insert(id, PendingRequest{method, deadline});
     auto runtimeParams = params;
     if (method == u"session.create"_s || method == u"streamer.prepare"_s) {
         auto capabilities = runtimeParams.value(u"runtimeCapabilities"_s).toObject();
         capabilities.insert(u"nativeHdrSupported"_s, m_nativeHdrSupported);
         runtimeParams.insert(u"runtimeCapabilities"_s, capabilities);
     }
-    if (!writeMessage(QJsonObject{{u"type"_s, u"request"_s},
-                                  {u"id"_s, id},
-                                  {u"method"_s, method},
-                                  {u"params"_s, runtimeParams}})) {
+    const QJsonObject message{{u"type"_s, u"request"_s},
+                              {u"id"_s, id},
+                              {u"method"_s, method},
+                              {u"params"_s, runtimeParams}};
+    m_pending.insert(id, PendingRequest{message, deadline});
+    if (!writeMessage(message)) {
         m_pending.remove(id);
         emit requestFailed(id, u"core_not_writable"_s, u"Core transport is not writable"_s);
         return {};
@@ -266,19 +267,31 @@ void CoreClient::processTimeouts()
 {
     const auto now = QDateTime::currentMSecsSinceEpoch();
     QStringList expired;
+    QStringList retries;
     for (auto it = m_pending.cbegin(); it != m_pending.cend(); ++it) {
         if (it->deadlineMs <= now) {
             expired.push_back(it.key());
+        } else if (it->retryAtMs != 0 && it->retryAtMs <= now) {
+            retries.push_back(it.key());
         }
     }
     for (const auto &id : expired) {
-        m_pending.remove(id);
+        if (!m_pending.remove(id)) continue;
         if (id == m_handshakeRequestId) {
             protocolFailure(u"Core handshake timed out"_s);
             return;
         }
         writeMessage(QJsonObject{{u"type"_s, u"cancel"_s}, {u"id"_s, id}});
         emit requestFailed(id, u"deadline_exceeded"_s, u"Core request timed out"_s);
+    }
+    for (const auto &id : retries) {
+        const auto pending = m_pending.find(id);
+        if (pending == m_pending.end()) continue;
+        pending->retryAtMs = 0;
+        if (!writeMessage(pending->message)) {
+            m_pending.erase(pending);
+            emit requestFailed(id, u"core_not_writable"_s, u"Core transport is not writable"_s);
+        }
     }
 }
 
@@ -341,7 +354,15 @@ void CoreClient::processLine(const QByteArray &line)
     const auto type = message.value(u"type"_s).toString();
     if (type == u"response"_s) {
         const auto id = message.value(u"id"_s).toString();
-        if (!m_pending.remove(id)) return;
+        const auto pending = m_pending.find(id);
+        if (pending == m_pending.end()) return;
+        if (!message.value(u"ok"_s).toBool(false)
+            && message.value(u"error"_s).toObject().value(u"code"_s).toString() == u"busy"_s) {
+            pending->retryAtMs = QDateTime::currentMSecsSinceEpoch() + pending->retryDelayMs;
+            pending->retryDelayMs = qMin(pending->retryDelayMs * 2, 1'000);
+            return;
+        }
+        m_pending.erase(pending);
         if (message.value(u"ok"_s).toBool(false)) {
             const auto result = message.value(u"result"_s).toObject();
             if (id == m_handshakeRequestId) {
