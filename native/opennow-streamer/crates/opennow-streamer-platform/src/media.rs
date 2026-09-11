@@ -2207,9 +2207,23 @@ struct PendingD3d11Frame {
 }
 
 #[cfg(target_os = "windows")]
+impl crate::GraphicsRenderResources for Mutex<EmbeddedD3d11State> {
+    fn retire(&self) -> Result<(), String> {
+        let mut state = self.lock().unwrap_or_else(|error| error.into_inner());
+        state.reset();
+        state.keyframe_required = true;
+        Ok(())
+    }
+}
+
+#[cfg(target_os = "windows")]
 impl crate::GraphicsFrame for PendingD3d11Frame {
     fn info(&self) -> crate::GraphicsFrameInfo {
         self.info
+    }
+
+    fn render_resources(&self) -> Option<Arc<dyn crate::GraphicsRenderResources>> {
+        Some(self.state.clone())
     }
 
     fn record(
@@ -4062,6 +4076,58 @@ mod tests {
             duration_100ns: 166_667,
             key_frame,
             reset_decoder: key_frame,
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn embedded_d3d11_retirement_rearms_graphics_and_reference_recovery() {
+        use crate::GraphicsFrame;
+
+        let submission = Arc::new(Mutex::new(EmbeddedD3d11Submission::new()));
+        let state = Arc::new(Mutex::new(EmbeddedD3d11State::new(
+            MediaStreamConfig::default(),
+            Arc::clone(&submission),
+        )));
+        state.lock().unwrap().first_frame_recorded = true;
+        let (shared, _feedback) = software_test_pipeline();
+        let frame = PendingD3d11Frame {
+            state: Arc::clone(&state),
+            shared,
+            mid: "video".to_owned(),
+            info: crate::GraphicsFrameInfo {
+                width: 1920,
+                height: 1080,
+                sequence: 1,
+                presentation_time_ns: 0,
+            },
+        };
+        let resources = frame.render_resources().expect("D3D11 render resources");
+        assert!(Arc::ptr_eq(&resources, &frame.render_resources().unwrap()));
+
+        for cycle in 0..3 {
+            submission
+                .lock()
+                .unwrap()
+                .push(embedded_h264_frame(cycle, true))
+                .unwrap();
+            resources.retire().unwrap();
+            resources.retire().unwrap();
+
+            let mut state = state.lock().unwrap();
+            assert!(state.producer.is_none());
+            assert!(state.take_keyframe_required());
+            assert!(!state.take_keyframe_required());
+            assert!(!state.take_first_recorded_frame(true));
+            drop(state);
+
+            let mut submission = submission.lock().unwrap();
+            assert!(submission.pending.is_empty());
+            assert!(submission.submitter.is_none());
+            let outcome = submission
+                .push(embedded_h264_frame(cycle + 1, false))
+                .unwrap();
+            assert!(outcome.queued && outcome.needs_graphics);
         }
     }
 
