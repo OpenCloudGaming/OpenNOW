@@ -12,6 +12,7 @@ class UbuntuAptTest(unittest.TestCase):
     def test_ubuntu_sources_use_https_without_changing_trust_or_suites(self):
         for uri in ("http://archive.ubuntu.com/ubuntu/",
                     "http://us.archive.ubuntu.com/ubuntu/",
+                    "https://archive.ubuntu.com/ubuntu/",
                     "mirror+file:/etc/apt/blacksmith-ubuntu-mirrors.txt"):
             with self.subTest(uri=uri), tempfile.TemporaryDirectory() as directory:
                 apt = Path(directory)
@@ -35,12 +36,12 @@ class UbuntuAptTest(unittest.TestCase):
 
                 subprocess.run(["bash", str(SCRIPT), str(apt)], check=True)
 
-                expected = original.replace("http://security.ubuntu.com", "https://security.ubuntu.com")
-                if uri.startswith("http:"):
-                    expected = expected.replace(uri, "https://archive.ubuntu.com/ubuntu/")
+                expected = original.replace("http://security.ubuntu.com", "https://mirrors.edge.kernel.org")
+                if uri.startswith("http"):
+                    expected = expected.replace(uri, "https://mirrors.edge.kernel.org/ubuntu/")
                     self.assertFalse(mirrors.exists())
                 else:
-                    self.assertEqual(mirrors.read_text(), "https://archive.ubuntu.com/ubuntu\n")
+                    self.assertEqual(mirrors.read_text(), "https://mirrors.edge.kernel.org/ubuntu\n")
                 self.assertEqual(sources.read_text(), expected)
                 self.assertEqual(other.read_text(), "URIs: https://packages.microsoft.com/ubuntu/24.04/prod\n")
                 subprocess.run(["bash", str(SCRIPT), str(apt)], check=True)
