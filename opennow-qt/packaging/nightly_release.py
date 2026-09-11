@@ -25,8 +25,9 @@ def assemble(source, destination, version, commit, channel="nightly"):
     expected = {
         f"OpenNOW-Qt-{version}-{platform}-{arch}.{extension}"
         for arch in ("x64", "arm64")
-        for platform, extension in (("Windows", "zip"), ("Linux", "AppImage"), ("Linux", "deb"))
+        for platform, extension in (("Windows", "msi"), ("Windows", "zip"), ("Linux", "AppImage"), ("Linux", "deb"))
     }
+    expected.add(f"OpenNOW-Qt-{version}-Darwin-arm64.dmg")
     files = {}
     for path in source.rglob("*"):
         if path.is_symlink():

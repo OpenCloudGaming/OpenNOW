@@ -20,11 +20,15 @@ class NightlyReleaseTest(unittest.TestCase):
         self.commit = "a" * 40
         self.packages = []
         for arch in ("x64", "arm64"):
-            for platform, extension in (("Windows", "zip"), ("Linux", "AppImage"), ("Linux", "deb")):
+            for platform, extension in (("Windows", "msi"), ("Windows", "zip"), ("Linux", "AppImage"), ("Linux", "deb")):
                 package = self.source / f"{platform}-{arch}" / f"OpenNOW-Qt-{self.version}-{platform}-{arch}.{extension}"
                 package.parent.mkdir(parents=True, exist_ok=True)
                 package.write_bytes(f"test fixture {platform} {arch}".encode())
                 self.packages.append(package)
+        package = self.source / "Darwin-arm64" / f"OpenNOW-Qt-{self.version}-Darwin-arm64.dmg"
+        package.parent.mkdir(parents=True)
+        package.write_bytes(b"test fixture Darwin arm64")
+        self.packages.append(package)
 
     def collect(self):
         assemble(self.source, self.destination, self.version, self.commit)
@@ -35,9 +39,9 @@ class NightlyReleaseTest(unittest.TestCase):
         self.assertEqual(metadata["sourceCommit"], self.commit)
         self.assertEqual(metadata["version"], self.version)
         self.assertEqual(metadata["updates"], "manual-download")
-        self.assertEqual(len(metadata["assets"]), 6)
+        self.assertEqual(len(metadata["assets"]), 9)
         sums = (self.destination / "SHA256SUMS").read_text().splitlines()
-        self.assertEqual(len(sums), 7)
+        self.assertEqual(len(sums), 10)
         for line in sums:
             digest, name = line.split("  ")
             self.assertEqual(digest, hashlib.sha256((self.destination / name).read_bytes()).hexdigest())
@@ -52,6 +56,25 @@ class NightlyReleaseTest(unittest.TestCase):
         (self.source / self.packages[0].name).write_bytes(b"duplicate")
         with self.assertRaisesRegex(ValueError, "duplicate"):
             self.collect()
+
+    def test_every_package_is_required(self):
+        for package in self.packages:
+            with self.subTest(package=package.name):
+                content = package.read_bytes()
+                package.unlink()
+                with self.assertRaisesRegex(ValueError, "Missing release artifacts"):
+                    self.collect()
+                self.assertFalse(self.destination.exists())
+                package.write_bytes(content)
+
+    def test_validation_zip_and_intel_mac_are_not_public_assets(self):
+        for suffix in ("Darwin-arm64.zip", "Darwin-x64.dmg"):
+            with self.subTest(suffix=suffix):
+                extra = self.source / f"OpenNOW-Qt-{self.version}-{suffix}"
+                extra.write_bytes(b"not a public package")
+                with self.assertRaisesRegex(ValueError, "Unexpected"):
+                    self.collect()
+                extra.unlink()
 
     def test_wrong_version_and_empty_artifacts_are_rejected(self):
         self.packages[0].write_bytes(b"")
@@ -76,6 +99,16 @@ class NightlyReleaseTest(unittest.TestCase):
         self.assertEqual(nightly_version(project, 123, 2), self.version)
         with self.assertRaises(ValueError):
             nightly_version(project, 0, 1)
+
+    def test_all_platform_configures_forward_optional_update_public_key(self):
+        workflow = (Path(__file__).resolve().parents[2] / ".github/workflows/qt-build.yml").read_text()
+        self.assertIn("      update_public_key:\n", workflow)
+        self.assertIn("OPENNOW_UPDATE_PUBLIC_KEY: ${{ inputs.update_public_key }}", workflow)
+        configures = workflow.split("cmake -S opennow-qt -B build/opennow-qt-release")[1:]
+        self.assertEqual(len(configures), 2)
+        for configure in configures:
+            command = configure.split("\n      - name:", 1)[0]
+            self.assertIn('-DOPENNOW_UPDATE_ED25519_PUBLIC_KEY="$OPENNOW_UPDATE_PUBLIC_KEY"', command)
 
 
 if __name__ == "__main__":

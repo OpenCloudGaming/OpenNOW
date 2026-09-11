@@ -41,3 +41,20 @@ function Assert-OpenNowSignedPackage {
         Invoke-OpenNowSignTool verify /pa /all $_.FullName
     }
 }
+
+function Assert-OpenNowPackagePayload {
+    param(
+        [Parameter(Mandatory)][string]$Root,
+        [Parameter(Mandatory)][string]$DeploymentRoot
+    )
+
+    $deployment = @{}
+    foreach ($file in Get-OpenNowReleaseBinaries -Root $DeploymentRoot) {
+        $deployment[$file.Name] = (Get-FileHash $file.FullName -Algorithm SHA256).Hash
+    }
+    foreach ($file in Get-OpenNowReleaseBinaries -Root $Root) {
+        if ((Get-FileHash $file.FullName -Algorithm SHA256).Hash -ne $deployment[$file.Name]) {
+            throw "Packaged $($file.Name) differs from the deployment copy"
+        }
+    }
+}

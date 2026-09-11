@@ -9,6 +9,23 @@ QT_SOURCE = Path(__file__).resolve().parents[1]
 
 
 class MacOSBuildContractTest(unittest.TestCase):
+    def test_public_dmg_is_copied_before_relocated_smoke(self):
+        workflow = (QT_SOURCE.parent / ".github/workflows/qt-build.yml").read_text()
+        self.assertIn("-G 'DragNDrop;ZIP'", workflow)
+        commands = [
+            'hdiutil verify "${dmgs[0]}"',
+            'hdiutil attach "${dmgs[0]}" -readonly -nobrowse -mountpoint "$mount"',
+            'ditto "$mount/OpenNOW.app" "$RUNNER_TEMP/dmg-relocated/OpenNOW.app"',
+            'hdiutil detach "$mount"\n',
+            'for app in "$zip_app" "$RUNNER_TEMP/dmg-relocated/OpenNOW.app"; do',
+            'mv "$QT_ROOT_DIR" "$QT_ROOT_DIR.unavailable"',
+            '[bin_dir / "OpenNOW", "--smoke-test"',
+        ]
+        positions = [workflow.index(command) for command in commands]
+        self.assertEqual(positions, sorted(positions))
+        self.assertIn("name: opennow-qt-macos-arm64-unsigned", workflow)
+        self.assertIn("name: opennow-macos-arm64-validation", workflow)
+
     def test_architecture_validation_places_input_before_architecture_list(self):
         workflow = QT_SOURCE.parent / ".github/workflows/qt-build.yml"
         commands = [shlex.split(line.strip()) for line in workflow.read_text().splitlines()
@@ -98,6 +115,9 @@ file(GENERATE OUTPUT "${{CMAKE_BINARY_DIR}}/contract.txt" CONTENT
     def test_bundle_explicitly_installs_native_helpers(self):
         result, build = self.configure()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        cpack = (build / "CPackConfig.cmake").read_text()
+        self.assertIn('set(CPACK_GENERATOR "DragNDrop;ZIP")', cpack)
+        self.assertIn('set(CPACK_PACKAGE_FILE_NAME "OpenNOW-Qt-1.0.0-Darwin-arm64")', cpack)
         install = (build / "cmake_install.cmake").read_text()
         self.assertIn("OpenNOW.app/Contents/MacOS", install)
         for helper in ("opennow-core", "opennow-acceptance-verify"):
