@@ -380,7 +380,7 @@ fn bundle_receiver_publishes_ping_from_its_real_udp_keepalive_reply() {
     while Instant::now() < deadline {
         let (length, source) = server.recv_from(&mut packet).unwrap();
         if find_stun_attribute(&packet[..length], STUN_ATTR_USERNAME)
-            .is_some_and(|(_, username)| username == b"ping-fixture:loc1")
+            .is_some_and(|(_, username)| username == b"PING:loc1")
         {
             let transaction_id = packet[8..20].try_into().unwrap();
             server.send_to(&success(transaction_id), source).unwrap();
