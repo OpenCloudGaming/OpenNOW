@@ -23,6 +23,8 @@ FocusScope {
     onSelectedSectionChanged: { advancedOpen = false }
     signal requestConsoleMode(bool enabled)
 
+    TenBitWarningDialog { id: tenBitWarning; settingsStore: ShellStore }
+
     readonly property var sections: [
         {label: qsTr("Stream"), detail: qsTr("Picture, codec, bitrate"), icon: "monitor", page: 3, keywords: "resolution fps hdr color audio stats overlay bitrate codec reflex backend gpu directx vulkan steam big picture launch gamepad fullscreen session ready persistent in-game graphics settings"},
         {label: qsTr("Audio"), detail: qsTr("Output and stream audio"), icon: "wave", page: 4, keywords: "sound audio volume output microphone"},
@@ -74,6 +76,8 @@ FocusScope {
         }
         const currentQuality = String(root.valueSetting("colorQuality", "8bit_420"))
         root.setSetting(key, value)
+        if (key === "colorQuality")
+            tenBitWarning.notifySelection(currentQuality, value)
         if (key === "codec") {
             if (normalized === "h264" && currentQuality !== "8bit_420")
                 root.setSetting("colorQuality", "8bit_420")
