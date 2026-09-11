@@ -61,8 +61,8 @@
   "controllerTuning": {
     "leftDeadzone": "Left stick dead zone",
     "rightDeadzone": "Right stick dead zone",
-    "leftDeadzoneDescription": "Ignore stick drift during gameplay. Default: 24%. The remaining travel is rescaled to full range.",
-    "rightDeadzoneDescription": "Ignore stick drift during gameplay. Default: 27%. Set to 0% to leave dead zones to the game.",
+    "leftDeadzoneDescription": "Ignore stick drift during gameplay. Default: 5%. The remaining travel is rescaled to full range.",
+    "rightDeadzoneDescription": "Ignore stick drift during gameplay. Default: 5%. Set to 0% to leave dead zones to the game.",
     "vibration": "Controller vibration",
     "vibrationDescription": "Scale game vibration on supported controllers. Set to 0% to disable."
   },

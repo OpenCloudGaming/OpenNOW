@@ -71,21 +71,21 @@ Column {
         }
         DesktopSettingsRow {
             width: parent.width; paperStyle: true; glyph: "controller"; title: qsTr("Left stick dead zone")
-            description: qsTr("Ignore stick drift during gameplay. Default: 24%. The remaining travel is rescaled to full range.")
+            description: qsTr("Ignore stick drift during gameplay. Default: 5%. The remaining travel is rescaled to full range.")
             DesktopSettingsSlider {
                 objectName: "controllerLeftStickDeadzoneSlider"
                 from: 0; to: 50; stepSize: 1
-                value: Number(controlsRoot.settingsScreen.valueSetting("controllerLeftStickDeadzone", 24))
+                value: Number(controlsRoot.settingsScreen.valueSetting("controllerLeftStickDeadzone", 5))
                 onCommitted: value => controlsRoot.settingsScreen.setSetting("controllerLeftStickDeadzone", value)
             }
         }
         DesktopSettingsRow {
             width: parent.width; paperStyle: true; glyph: "controller"; title: qsTr("Right stick dead zone")
-            description: qsTr("Ignore stick drift during gameplay. Default: 27%. Set to 0% to leave dead zones to the game.")
+            description: qsTr("Ignore stick drift during gameplay. Default: 5%. Set to 0% to leave dead zones to the game.")
             DesktopSettingsSlider {
                 objectName: "controllerRightStickDeadzoneSlider"
                 from: 0; to: 50; stepSize: 1
-                value: Number(controlsRoot.settingsScreen.valueSetting("controllerRightStickDeadzone", 27))
+                value: Number(controlsRoot.settingsScreen.valueSetting("controllerRightStickDeadzone", 5))
                 onCommitted: value => controlsRoot.settingsScreen.setSetting("controllerRightStickDeadzone", value)
             }
         }

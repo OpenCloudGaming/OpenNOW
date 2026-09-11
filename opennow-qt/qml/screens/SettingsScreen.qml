@@ -354,8 +354,8 @@ FocusScope {
             rows.push(toggle("Gyroscope", "Forward motion data to the rig", "enableGyroscopeControls"))
             rows.push(toggle(qsTr("Clipboard paste"), qsTr("Paste local text into the stream with Ctrl+V (Command+V on macOS). Up to 64 KiB per paste. No automatic clipboard sync."), "clipboardPaste"))
             for (const setting of [
-                {key:"controllerLeftStickDeadzone", title:qsTr("Left stick dead zone"), description:qsTr("Ignore stick drift during gameplay. Default: 24%. The remaining travel is rescaled to full range."), maximum:50, fallback:24},
-                {key:"controllerRightStickDeadzone", title:qsTr("Right stick dead zone"), description:qsTr("Ignore stick drift during gameplay. Default: 27%. Set to 0% to leave dead zones to the game."), maximum:50, fallback:27},
+                {key:"controllerLeftStickDeadzone", title:qsTr("Left stick dead zone"), description:qsTr("Ignore stick drift during gameplay. Default: 5%. The remaining travel is rescaled to full range."), maximum:50, fallback:5},
+                {key:"controllerRightStickDeadzone", title:qsTr("Right stick dead zone"), description:qsTr("Ignore stick drift during gameplay. Default: 5%. Set to 0% to leave dead zones to the game."), maximum:50, fallback:5},
                 {key:"controllerVibrationIntensity", title:qsTr("Controller vibration"), description:qsTr("Scale game vibration on supported controllers. Set to 0% to disable."), maximum:100, fallback:100}
             ]) {
                 const value = Number(settings[setting.key] ?? setting.fallback)

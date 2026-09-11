@@ -98,8 +98,10 @@ private slots:
         TuningPad pad;
         QVERIFY(pad.id);
         QTRY_COMPARE(input.controllerCount(), 1);
-        QCOMPARE(input.leftStickDeadzone(), 24);
-        QCOMPARE(input.rightStickDeadzone(), 27);
+        QCOMPARE(input.leftStickDeadzone(), 5);
+        QCOMPARE(input.rightStickDeadzone(), 5);
+        input.setLeftStickDeadzone(24);
+        input.setRightStickDeadzone(27);
         QVERIFY(pad.axis(SDL_GAMEPAD_AXIS_LEFTX, 8192));
         QVERIFY(pad.axis(SDL_GAMEPAD_AXIS_RIGHTX, 8192));
         SDL_UpdateJoysticks();
