@@ -369,8 +369,8 @@ impl SettingsStore {
             crate::version::update_channel(crate::version::APPLICATION_VERSION),
         );
         clamp_integer(&mut self.values, "mouseAcceleration", 1, 150, 1);
-        clamp_integer(&mut self.values, "controllerLeftStickDeadzone", 0, 50, 24);
-        clamp_integer(&mut self.values, "controllerRightStickDeadzone", 0, 50, 27);
+        clamp_integer(&mut self.values, "controllerLeftStickDeadzone", 0, 50, 5);
+        clamp_integer(&mut self.values, "controllerRightStickDeadzone", 0, 50, 5);
         clamp_integer(
             &mut self.values,
             "controllerVibrationIntensity",
@@ -884,7 +884,7 @@ fn defaults() -> Map<String, Value> {
         "appAccentColor":"green", "appTheme":"auto", "appLanguage":"system", "themePack":"nocturne", "translucentUI":false,
         "showTileLabels":true,
         "controllerMode":true, "controllerModePromptDismissed":false,
-        "controllerLeftStickDeadzone":24, "controllerRightStickDeadzone":27,
+        "controllerLeftStickDeadzone":5, "controllerRightStickDeadzone":5,
         "controllerVibrationIntensity":100,
         "reducedMotion":false,
         "launchInConsoleMode":false, "consoleProfilePickerOnLaunch":true,
@@ -2276,8 +2276,8 @@ mod tests {
         let directory = env::temp_dir().join(format!("opennow-controller-tuning-{unique}"));
         let mut store = SettingsStore::load(Some(directory.clone())).unwrap();
         for (key, default, maximum) in [
-            ("controllerLeftStickDeadzone", 24, 50),
-            ("controllerRightStickDeadzone", 27, 50),
+            ("controllerLeftStickDeadzone", 5, 50),
+            ("controllerRightStickDeadzone", 5, 50),
             ("controllerVibrationIntensity", 100, 100),
         ] {
             assert_eq!(store.all()[key], json!(default));

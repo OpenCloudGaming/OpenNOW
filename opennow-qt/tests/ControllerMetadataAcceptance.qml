@@ -15,8 +15,8 @@ QtObject {
         property int controllerCount: controllers.length
         property bool shellCaptureEnabled: true
         property bool inputSuspended: false
-        property int leftStickDeadzone: 24
-        property int rightStickDeadzone: 27
+        property int leftStickDeadzone: 5
+        property int rightStickDeadzone: 5
         property int vibrationIntensity: 100
         signal controllerActivity()
         signal controllerActivityDetailed(string device, string control, int value)
@@ -39,8 +39,8 @@ QtObject {
             "disabled shell navigation must not transfer controller input or rumble to gameplay")
         ShellStore.applySetting("controllerMode", true)
         for (const setting of [
-            ["controllerLeftStickDeadzone", "leftStickDeadzone", 24, 50],
-            ["controllerRightStickDeadzone", "rightStickDeadzone", 27, 50],
+            ["controllerLeftStickDeadzone", "leftStickDeadzone", 5, 50],
+            ["controllerRightStickDeadzone", "rightStickDeadzone", 5, 50],
             ["controllerVibrationIntensity", "vibrationIntensity", 100, 100]
         ]) {
             const slider = find(page, setting[0] + "Slider")

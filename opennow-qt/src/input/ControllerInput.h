@@ -127,8 +127,8 @@ private:
     bool m_sdlReady = false;
     bool m_shellCaptureEnabled = true;
     bool m_inputSuspended = false;
-    int m_leftStickDeadzone = 24;
-    int m_rightStickDeadzone = 27;
+    int m_leftStickDeadzone = 5;
+    int m_rightStickDeadzone = 5;
     int m_vibrationIntensity = 100;
     qint64 m_lastControllerMetadataAt = 0;
     qint64 m_lastGamepadSnapshotAt = 0;

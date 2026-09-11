@@ -581,7 +581,7 @@ they also duplicate input.
 **Settings → Input & controllers** includes independent left/right stick dead zones
 (0–50%) and controller vibration intensity (0–100%) in both desktop and console mode.
 These global preferences are saved and apply without restarting the session. Defaults
-are 24% left and 27% right, rounded from the XInput-style thresholds used by OpenNOW-Mac.
+are 5% for both sticks. Existing saved preferences are preserved.
 The radial filter suppresses resting drift and rescales the remaining travel, preserving
 full axis and diagonal output. Set either stick to 0% to leave its dead zone to the game;
 shell navigation retains its separate press/release thresholds.
