@@ -1,0 +1,64 @@
+name: Yocto metadata checks
+
+on:
+  pull_request:
+    paths:
+      - 'meta-opennow/**'
+      - 'native/opennow-core/Cargo.lock'
+      - 'native/opennow-streamer/Cargo.lock'
+      - 'LICENSE'
+      - 'opennow-qt/cmake/**'
+      - 'opennow-qt/CMakeLists.txt'
+      - 'opennow-qt/tests/test_prebuilt_native.py'
+      - '.github/workflows/yocto-checks.yml'
+  push:
+    branches: [dev, main]
+    paths:
+      - 'meta-opennow/**'
+      - 'native/opennow-core/Cargo.lock'
+      - 'native/opennow-streamer/Cargo.lock'
+      - 'LICENSE'
+      - 'opennow-qt/cmake/**'
+      - 'opennow-qt/CMakeLists.txt'
+      - 'opennow-qt/tests/test_prebuilt_native.py'
+      - '.github/workflows/yocto-checks.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  source-metadata:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check locked source metadata
+        run: python3 meta-opennow/scripts/update-sources.py --check
+      - name: Test source metadata generation
+        run: python3 -m unittest discover -s meta-opennow/tests -v
+      - name: Install CMake integration test dependencies
+        run: sudo apt-get update && sudo apt-get install -y ninja-build libwayland-dev wayland-protocols
+      - name: Test prebuilt runtime and cross-sysroot installation
+        run: python3 opennow-qt/tests/test_prebuilt_native.py -v
+
+  bitbake-metadata:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      matrix:
+        machine: [qemux86-64, qemuarm64]
+    env:
+      KAS_WORK_DIR: ${{ github.workspace }}/build/yocto
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install BitBake host dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential chrpath cpio diffstat gawk locales lz4 python3-venv zstd
+          sudo localedef -i en_US -f UTF-8 en_US.UTF-8
+          python3 -m venv /tmp/kas
+          /tmp/kas/bin/pip install kas==5.5
+      - name: Parse recipes and resolve the reference image
+        run: /tmp/kas/bin/kas shell meta-opennow/kas/${{ matrix.machine }}.yml -c 'bitbake -g opennow-image'
+      - name: Fetch and unpack the pinned application and Cargo sources
+        if: matrix.machine == 'qemux86-64'
+        run: /tmp/kas/bin/kas shell meta-opennow/kas/qemux86-64.yml -c 'bitbake -c unpack opennow opennow-runtime opennow-license-report-native'
