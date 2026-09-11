@@ -4,6 +4,7 @@
 #include "acceptance/MotionAcceptance.h"
 
 #include <QGuiApplication>
+#include <QKeyEvent>
 #include <QDeadlineTimer>
 #include <QQmlComponent>
 #include <QFileInfo>
@@ -24,6 +25,43 @@ using namespace Qt::StringLiterals;
 int AcceptanceSession::startSmokeWorkload()
 {
     const auto screenshotIndex = m_arguments.indexOf(u"--screenshot"_s);
+    const auto resumeIndex = m_arguments.indexOf(u"--smoke-session-resume"_s);
+    if (m_smokeTest && resumeIndex >= 0 && resumeIndex + 1 < m_arguments.size()) {
+        const auto mode = m_arguments.at(resumeIndex + 1);
+        QTimer::singleShot(350, this, [this, mode] {
+            auto *store = m_engine.singletonInstance<QObject *>(u"OpenNOW"_s, u"ShellStore"_s);
+            auto *window = m_engine.rootObjects().isEmpty() ? nullptr
+                : qobject_cast<QQuickWindow *>(m_engine.rootObjects().first());
+            auto *host = window ? window->findChild<QQuickItem *>(u"fallbackOverlayHost"_s) : nullptr;
+            auto *dialog = window ? window->findChild<QQuickItem *>(u"sessionConflictDialog"_s) : nullptr;
+            const auto expectedState = mode == u"unavailable"_s ? u"error"_s : mode;
+            if (!store || store->property("streamState").toString() != expectedState
+                    || m_controller.route() != u"inserting"_s
+                    || (mode == u"conflict"_s && m_controller.overlay() != u"session-conflict"_s)) {
+                qCritical("Session resume fixture did not reach its expected screen");
+                m_application.exit(EXIT_FAILURE);
+            }
+            if (mode == u"conflict"_s && (!host || !host->isVisible() || host->opacity() <= 0
+                    || !dialog || !dialog->isVisible() || dialog->width() <= 0 || dialog->height() <= 0
+                    || (m_arguments.contains(u"--desktop"_s) && host->scale() != 1))) {
+                qCritical("Session conflict dialog is hidden or incorrectly scaled");
+                m_application.exit(EXIT_FAILURE);
+                return;
+            }
+            if (mode == u"conflict"_s && !m_arguments.contains(u"--screenshot"_s)) {
+                QKeyEvent press(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
+                QGuiApplication::sendEvent(window, &press);
+                QKeyEvent release(QEvent::KeyRelease, Qt::Key_Escape, Qt::NoModifier);
+                QGuiApplication::sendEvent(window, &release);
+                if (!m_controller.overlay().isEmpty() || m_controller.route() == u"inserting"_s
+                        || !store->property("pendingLaunchParams").isNull()
+                        || store->property("remoteSessions").toList().size() != 1) {
+                    qCritical("Cancelling the session conflict did not preserve the running game");
+                    m_application.exit(EXIT_FAILURE);
+                }
+            }
+        });
+    }
     if (m_smokeTest && m_arguments.contains(u"--smoke-gpu-count"_s))
         return startGpuSettingsWorkload();
     if (m_smokeTest && m_arguments.contains(u"--smoke-theme-settings"_s))

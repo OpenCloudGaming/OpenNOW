@@ -272,6 +272,8 @@ QtObject {
     property var pendingLaunchParams: null
     property var pendingDirectLaunch: null
     property var conflictSession: null
+    property bool conflictSessionNeedsRefresh: false
+    property bool launchConflictDetected: false
     property bool forceNewAfterStop: false
     property var streamer: null
     property var streamerDetection: ({available: false, availableCodecs: [], capabilities: ({})})
@@ -429,6 +431,7 @@ QtObject {
         return ""
     }
     readonly property bool streamBusy: streamCreateRequestId !== "" || streamStopRequestId !== ""
+        || remoteSessionsRequestId !== "" || sessionClaimRequestId !== ""
 
     signal fullscreenToggleRequested()
     signal pointerLockToggleRequested()
@@ -578,7 +581,7 @@ QtObject {
     }
 
     function refreshRemoteSessions() {
-        if (!ready || !signedIn || activeSession || remoteSessionDiscoveryRequestId !== ""
+        if (!ready || !signedIn || activeSession || pendingLaunchParams || streamBusy || remoteSessionDiscoveryRequestId !== ""
                 || remoteSessionsRequestId !== "")
             return
         remoteSessionDiscoveryRequestId = CoreClient.request("session.remote.list", {}, 30000)
@@ -606,8 +609,10 @@ QtObject {
         if (!session)
             return
         const title = sessionGameTitle(session)
-        if (!title)
+        if (!title) {
+            selectedGame = {title: qsTr("Your running game"), launchAppId: String(session.appId || "")}
             return
+        }
         const games = catalogGames || []
         for (let index = 0; index < games.length; ++index) {
             if (String(games[index].title || "") === title) {
@@ -630,6 +635,7 @@ QtObject {
             return
         }
         conflictSession = session
+        conflictSessionNeedsRefresh = false
         streamState = "resuming"
         streamMessage = qsTr("Resuming your active GeForce NOW session…")
         sessionClaimIsRecovery = false
@@ -825,8 +831,7 @@ QtObject {
             gameAccountsState = gameAccounts.length ? "refreshing" : "loading"
             gameAccountsRequestId = CoreClient.request("account.connections.list", {}, 30000)
         }
-        if (remoteSessionsRequestId === "" && !activeSession && !pendingLaunchParams)
-            remoteSessionsRequestId = CoreClient.request("session.remote.list", {}, 30000)
+        refreshRemoteSessions()
     }
 
     function refreshRegions() {
@@ -1263,12 +1268,48 @@ QtObject {
             }
         }
         pendingLaunchParams = params
+        launchConflictDetected = false
+        conflictSession = null
+        conflictSessionNeedsRefresh = false
         streamState = "checking"
-        streamMessage = qsTr("Checking for an active GeForce NOW session…")
+        streamMessage = qsTr("Looking for your game on GeForce NOW…")
         lastError = qsTr("")
-        activeSession = null
         remoteSessionsRequestId = CoreClient.request("session.remote.list", params, 30000)
         AppController.navigate("inserting")
+    }
+
+    function checkLaunchSessions() {
+        if (!ready || !pendingLaunchParams || streamBusy)
+            return
+        streamState = "checking"
+        streamMessage = qsTr("Looking for your game on GeForce NOW…")
+        lastError = qsTr("")
+        remoteSessionsRequestId = CoreClient.request("session.remote.list", pendingLaunchParams, 30000)
+    }
+
+    function retrySessionLaunch() {
+        if (streamBusy)
+            return
+        if (activeSession) {
+            retryNativeStreamer()
+            return
+        }
+        if (conflictSession) {
+            resolveSessionConflict("resume")
+            return
+        }
+        checkLaunchSessions()
+    }
+
+    function handleSessionCreateFailure(code, message) {
+        streamPollTimer.stop()
+        if (code === "session_conflict") {
+            launchConflictDetected = true
+            checkLaunchSessions()
+            return
+        }
+        streamState = "error"
+        streamMessage = message
     }
 
     function createPendingSession() {
@@ -1288,10 +1329,14 @@ QtObject {
     }
 
     function resolveSessionConflict(choice) {
+        if (streamBusy)
+            return
         AppController.showOverlay("")
         if (choice === "cancel") {
             pendingLaunchParams = null
             conflictSession = null
+            conflictSessionNeedsRefresh = false
+            launchConflictDetected = false
             streamState = "idle"
             streamMessage = qsTr("")
             AppController.navigateFromLastPrimary("game-detail")
@@ -1300,8 +1345,17 @@ QtObject {
         if (choice === "resume") {
             if (!conflictSession)
                 return
+            if (conflictSessionNeedsRefresh) {
+                streamState = "checking"
+                streamMessage = qsTr("Looking for your game on GeForce NOW…")
+                remoteSessionsRequestId = CoreClient.request("session.remote.list", {
+                    sessionId: conflictSession.sessionId,
+                    streamingBaseUrl: conflictSession.streamingBaseUrl
+                }, 30000)
+                return
+            }
             streamState = "resuming"
-            streamMessage = qsTr("Resuming your existing cloud session…")
+            streamMessage = qsTr("Reconnecting to your running game. You don't need to start again.")
             sessionClaimIsRecovery = false
             sessionClaimRequestId = CoreClient.request("session.claim", {
                 sessionId: conflictSession.sessionId,
@@ -1329,20 +1383,40 @@ QtObject {
 
     function inspectRemoteSessions(result) {
         remoteSessions = result.sessions || []
+        if (conflictSessionNeedsRefresh && conflictSession) {
+            const refreshed = remoteSessions.find(session => String(session.sessionId) === String(conflictSession.sessionId))
+            if (!refreshed) {
+                streamState = "error"
+                streamMessage = qsTr("Your previous game isn't available to reconnect yet. Wait a moment, then try again.")
+                return
+            }
+            conflictSession = refreshed
+            conflictSessionNeedsRefresh = false
+            resolveSessionConflict("resume")
+            return
+        }
+        if (!pendingLaunchParams)
+            return
         if (remoteSessions.length === 0) {
+            if (launchConflictDetected) {
+                streamState = "error"
+                streamMessage = qsTr("GeForce NOW says a game is still running, but it isn't available to reconnect yet. Wait a moment, then try again. If you were playing on another device, disconnect there first.")
+                return
+            }
             createPendingSession()
             return
         }
         const wantedAppId = pendingLaunchParams ? Number(pendingLaunchParams.appId || 0) : 0
         conflictSession = remoteSessions[0]
         for (let index = 0; index < remoteSessions.length; ++index) {
-            if (Number(remoteSessions[index].appId || 0) === wantedAppId) {
+            if (wantedAppId > 0 && Number(remoteSessions[index].appId || 0) === wantedAppId) {
                 conflictSession = remoteSessions[index]
-                break
+                resolveSessionConflict("resume")
+                return
             }
         }
         streamState = "conflict"
-        streamMessage = qsTr("You already have a GeForce NOW session running.")
+        streamMessage = qsTr("Another game is still running on GeForce NOW. You can return to it, or end it to play this game.")
         AppController.showOverlay("session-conflict")
     }
 
@@ -1415,7 +1489,9 @@ QtObject {
             streamPollTimer.stop()
         } else {
             const position = Number(activeSession.queuePosition || 0)
-            streamMessage = position > 0
+            streamMessage = activeSession.resumePending
+                ? qsTr("Reconnecting to your running game. You don't need to start again.")
+                : position > 0
                 ? qsTr("Queue position %1").arg(position)
                 : qsTr("Preparing your cloud gaming seat…")
             streamPollTimer.restart()
@@ -1650,8 +1726,7 @@ QtObject {
 
     function cancelSessionRecovery() {
         streamerRestartTimer.stop()
-        for (const id of [recoveryDiscoveryRequestId, sessionClaimRequestId])
-            if (id !== "") CoreClient.cancel(id)
+        const requestIds = [recoveryDiscoveryRequestId, sessionClaimRequestId]
         recoveryDiscoveryRequestId = ""
         sessionClaimRequestId = ""
         sessionRecoveryPending = false
@@ -1659,6 +1734,8 @@ QtObject {
         recoverySessionId = ""
         resumePollAttempts = 0
         resumePollDeadlineMs = 0
+        for (const id of requestIds)
+            if (id !== "") CoreClient.cancel(id)
     }
 
     function artworkUrl(sourceUrl) {
@@ -1850,6 +1927,12 @@ QtObject {
     function requestStreamExitConfirmation() {
         if (AppController.route !== "stream" && AppController.route !== "inserting")
             return
+        if (AppController.route === "inserting" && (streamState === "error" || streamState === "checking")
+                && !activeSession && streamCreateRequestId === "" && sessionClaimRequestId === ""
+                && streamStopRequestId === "") {
+            stopStreamingSession()
+            return
+        }
         AppController.showOverlay("desktop-stream-exit-confirm")
         accessibilityMessage = qsTr("Confirm ending the cloud session")
     }
@@ -1984,6 +2067,19 @@ QtObject {
     }
 
     function stopStreamingSession() {
+        const discoveryRequestId = remoteSessionsRequestId
+        const createRequestId = streamCreateRequestId
+        remoteSessionsRequestId = ""
+        streamCreateRequestId = ""
+        pendingLaunchParams = null
+        conflictSession = null
+        conflictSessionNeedsRefresh = false
+        launchConflictDetected = false
+        forceNewAfterStop = false
+        if (discoveryRequestId !== "")
+            CoreClient.cancel(discoveryRequestId)
+        if (createRequestId !== "")
+            CoreClient.cancel(createRequestId)
         cancelSessionRecovery()
         if (activeSession && streamStartedAtMs > 0) {
             const snapshot = streamer || ({})
@@ -2753,12 +2849,16 @@ QtObject {
                 root.resumePollAttempts = 0
                 root.resumePollDeadlineMs = Date.now() + 90000
                 root.streamer = null
+                root.selectGameForSession(result.session)
                 root.pendingLaunchParams = null
                 root.conflictSession = null
+                root.conflictSessionNeedsRefresh = false
+                root.launchConflictDetected = false
                 root.remoteSessions = []
                 root.acceptStreamingSession(result.session || null)
             } else if (requestId === root.streamCreateRequestId) {
                 root.streamCreateRequestId = ""
+                root.launchConflictDetected = false
                 root.acceptStreamingSession(result.session || null)
             } else if (requestId === root.streamPollRequestId) {
                 root.streamPollRequestId = ""
@@ -2771,6 +2871,7 @@ QtObject {
                 if (root.forceNewAfterStop) {
                     root.forceNewAfterStop = false
                     root.conflictSession = null
+                    root.conflictSessionNeedsRefresh = false
                     if (root.pendingLaunchParams)
                         root.createPendingSession()
                     else if (AppController.route === "inserting")
@@ -2955,8 +3056,9 @@ QtObject {
                 root.activeSessionRequestId = ""
             } else if (requestId === root.remoteSessionsRequestId) {
                 root.remoteSessionsRequestId = ""
-                root.streamMessage = qsTr("Could not check existing sessions; starting a new one.")
-                root.createPendingSession()
+                root.streamState = "error"
+                root.streamMessage = qsTr("We couldn't check whether your game is still running. Check your connection, then try again.")
+                root.lastError = root.streamMessage
             } else if (requestId === root.recoveryDiscoveryRequestId) {
                 root.recoveryDiscoveryRequestId = ""
                 root.scheduleSessionRecovery(message)
@@ -2967,14 +3069,15 @@ QtObject {
                 if (recovering) {
                     root.scheduleSessionRecovery(message)
                 } else {
-                    root.streamState = "error"
-                    root.streamMessage = message
+                    root.conflictSessionNeedsRefresh = true
+                    root.streamState = "conflict"
+                    root.streamMessage = qsTr("We couldn't reconnect to your game. Try returning to it again, or end it and start over. Ending it may lose unsaved progress.")
+                    root.lastError = root.streamMessage
+                    AppController.showOverlay("session-conflict")
                 }
             } else if (requestId === root.streamCreateRequestId) {
                 root.streamCreateRequestId = ""
-                root.streamState = "error"
-                root.streamMessage = message
-                root.streamPollTimer.stop()
+                root.handleSessionCreateFailure(code, message)
             } else if (requestId === root.streamPollRequestId) {
                 root.streamPollRequestId = ""
                 if (root.activeSession && root.activeSession.resumePending) {
@@ -2991,8 +3094,12 @@ QtObject {
                     root.streamPollTimer.restart()
             } else if (requestId === root.streamStopRequestId) {
                 root.streamStopRequestId = ""
-                root.streamState = "error"
-                root.streamMessage = message
+                root.forceNewAfterStop = false
+                root.streamState = root.conflictSession ? "conflict" : "error"
+                root.streamMessage = qsTr("The previous game hasn't closed. Try again in a moment. We won't start another game until it has ended.")
+                root.lastError = root.streamMessage
+                if (root.conflictSession)
+                    AppController.showOverlay("session-conflict")
             } else if (requestId === root.streamerPrepareRequestId) {
                 root.streamerPrepareRequestId = ""
                 root.acceptStreamerSnapshot({ status: "error", message: message, errorCode: code })

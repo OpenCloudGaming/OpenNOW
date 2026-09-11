@@ -647,11 +647,14 @@ ApplicationWindow {
         id: consoleOverlayHost
         layer.enabled: HdrOutput.chromeRequired
         layer.effect: HdrChromeEffect {}
-        readonly property real consoleScale: Math.min(window.width / 1920, window.height / 1080)
+        readonly property bool desktopSessionConflict: window.desktopSurfaceActive
+            && presentedOverlay === "session-conflict"
+        readonly property real consoleScale: desktopSessionConflict
+            ? 1 : Math.min(window.width / 1920, window.height / 1080)
         x: Math.round((window.width - width * consoleScale) / 2)
         y: Math.round((window.height - height * consoleScale) / 2)
-        width: 1920
-        height: 1080
+        width: desktopSessionConflict ? window.width : 1920
+        height: desktopSessionConflict ? window.height : 1080
         scale: consoleScale
         transformOrigin: Item.TopLeft
         overlay: AppController.overlay

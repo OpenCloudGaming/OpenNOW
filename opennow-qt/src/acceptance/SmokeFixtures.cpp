@@ -30,6 +30,40 @@ int AcceptanceSession::prepareWindow()
         };
         if (window) window->resize(dimension(u"--smoke-width"_s, 1600),
                                    dimension(u"--smoke-height"_s, 900));
+        const auto resumeIndex = m_arguments.indexOf(u"--smoke-session-resume"_s);
+        if (resumeIndex >= 0) {
+            if (resumeIndex + 1 >= m_arguments.size()) return EXIT_FAILURE;
+            const auto mode = m_arguments.at(resumeIndex + 1);
+            if (mode != u"conflict"_s && mode != u"unavailable"_s && mode != u"resuming"_s)
+                return EXIT_FAILURE;
+            auto *store = m_engine.singletonInstance<QObject *>(u"OpenNOW"_s, u"ShellStore"_s);
+            if (!store) return EXIT_FAILURE;
+            const QVariantMap selected{{u"launchAppId"_s, u"123"_s},
+                {u"title"_s, u"Zenless Zone Zero"_s},
+                {u"heroImageUrl"_s, u"qrc:/qt/qml/OpenNOW/res/brand/desktop-renew.jpg"_s}};
+            store->setProperty("selectedGame", selected);
+            store->setProperty("pendingLaunchParams", QVariantMap{
+                {u"appId"_s, u"123"_s}, {u"title"_s, u"Zenless Zone Zero"_s}});
+            store->setProperty("catalogGames", QVariantList{selected, QVariantMap{
+                {u"launchAppId"_s, u"456"_s}, {u"title"_s, u"Genshin Impact"_s}}});
+            m_controller.navigate(u"inserting"_s);
+            if (mode == u"conflict"_s) {
+                const QVariant sessions = QVariantMap{
+                    {u"sessions"_s, QVariantList{QVariantMap{
+                        {u"sessionId"_s, u"resume-visual-fixture"_s},
+                        {u"appId"_s, u"456"_s}, {u"status"_s, 4}}}}};
+                if (!QMetaObject::invokeMethod(store, "inspectRemoteSessions", Q_ARG(QVariant, sessions)))
+                    return EXIT_FAILURE;
+            } else if (mode == u"unavailable"_s) {
+                store->setProperty("launchConflictDetected", true);
+                const QVariant sessions = QVariantMap{{u"sessions"_s, QVariantList{}}};
+                if (!QMetaObject::invokeMethod(store, "inspectRemoteSessions", Q_ARG(QVariant, sessions)))
+                    return EXIT_FAILURE;
+            } else {
+                store->setProperty("streamState", u"resuming"_s);
+                store->setProperty("streamMessage", tr("Reconnecting to your running game. You don't need to start again."));
+            }
+        }
         if (m_arguments.contains(u"--smoke-microphone-supported"_s)
                 || m_arguments.contains(u"--smoke-microphone-muted"_s)) {
             auto *store = m_engine.singletonInstance<QObject *>(u"OpenNOW"_s, u"ShellStore"_s);

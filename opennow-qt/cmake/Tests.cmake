@@ -773,6 +773,16 @@ if(BUILD_TESTING)
             TIMEOUT ${OPENNOW_QT_SMOKE_TIMEOUT}
         )
     endforeach()
+    foreach(surface desktop console)
+        foreach(resume_state conflict unavailable resuming)
+            add_test(NAME "qml-session-resume-${surface}-${resume_state}"
+                COMMAND opennow-qt --smoke-test --allow-multiple-instances
+                    --${surface} --route inserting --reduced-motion
+                    --smoke-width 960 --smoke-height 640 --smoke-session-resume ${resume_state})
+            set_tests_properties("qml-session-resume-${surface}-${resume_state}" PROPERTIES
+                ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT ${OPENNOW_QT_SMOKE_TIMEOUT})
+        endforeach()
+    endforeach()
     foreach(motion_mode normal reduced)
         foreach(motion_window windowed fullscreen)
             set(launch_args --smoke-test --allow-multiple-instances --desktop --route library --smoke-session-launch)

@@ -8,13 +8,17 @@ use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::Mutex;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use url::Url;
 
 const LCARS_CLIENT_ID: &str = "ec7e38d4-03af-4b58-b131-cfb0495903ab";
 const GFN_CLIENT_VERSION: &str = "2.0.87.131";
 const DEFAULT_STREAMING_BASE: &str = "https://prod.cloudmatchbeta.nvidiagrid.net/";
 const DEFAULT_STUN_SERVER: &str = "stun:s1.stun.gamestream.nvidia.com:19308";
+const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(12);
+const DISCOVERY_REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
+const MAX_DISCOVERY_REGIONS: usize = 32;
+const DISCOVERY_CONCURRENCY: usize = 4;
 
 #[derive(Clone)]
 struct ActiveSession {
@@ -27,10 +31,17 @@ struct ActiveSession {
     client: Client,
 }
 
+struct SessionConflict {
+    owner: (String, String),
+    received: Instant,
+    sessions: Vec<Value>,
+}
+
 pub struct CloudMatchService {
     client: Client,
     active: Mutex<Option<ActiveSession>>,
     discovered: Mutex<HashMap<String, Value>>,
+    conflict: Mutex<Option<SessionConflict>>,
 }
 
 impl CloudMatchService {
@@ -39,6 +50,7 @@ impl CloudMatchService {
             client,
             active: Mutex::new(None),
             discovered: Mutex::new(HashMap::new()),
+            conflict: Mutex::new(None),
         }
     }
 
@@ -51,6 +63,10 @@ impl CloudMatchService {
     ) -> Result<Value, ServiceError> {
         let client = client_for_settings(&self.client, settings).map_err(invalid)?;
         let app_id = launch_app_id(params)?;
+        *self
+            .conflict
+            .lock()
+            .expect("CloudMatch conflict state poisoned") = None;
         let token = session_token(auth);
         let requested_base = requested_streaming_base(params, settings, auth)?;
         let base = self.resolve_create_base(&client, &requested_base, token, device_id, true);
@@ -69,7 +85,15 @@ impl CloudMatchService {
             .json(&body)
             .send()
             .map_err(|error| network("Session creation failed", error))?;
-        let payload = read_cloudmatch_response("Session creation failed", response, false)?;
+        let status = response.status();
+        let payload = response.json::<Value>();
+        if let Ok(payload) = &payload
+            && let Some(error) = self.capture_session_conflict(status, payload, &base, auth)
+        {
+            return Err(error);
+        }
+        let payload =
+            validate_cloudmatch_response("Session creation failed", status, payload, false)?;
         let zone = params["zone"]
             .as_str()
             .filter(|value| !value.trim().is_empty())
@@ -273,12 +297,73 @@ impl CloudMatchService {
             .lock()
             .expect("CloudMatch discovery state poisoned")
             .remove(&session_id);
+        if let Some(conflict) = self
+            .conflict
+            .lock()
+            .expect("CloudMatch conflict state poisoned")
+            .as_mut()
+        {
+            conflict
+                .sessions
+                .retain(|session| session["sessionId"] != session_id);
+        }
         Ok(json!({"session":null,"stopped":true,"sessionId":session_id}))
     }
 
     pub fn active(&self) -> Value {
         let state = self.active.lock().expect("CloudMatch state poisoned");
         json!({"session":state.as_ref().map(|session| session.info.clone())})
+    }
+
+    fn capture_session_conflict(
+        &self,
+        status: reqwest::StatusCode,
+        payload: &Value,
+        base: &Url,
+        auth: &AuthSession,
+    ) -> Option<ServiceError> {
+        if status == reqwest::StatusCode::UNAUTHORIZED || !is_session_conflict(payload) {
+            return None;
+        }
+        let sessions = payload["otherUserSessions"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .chain(payload.get("session"))
+            .filter_map(|session| remote_session_info(session, base))
+            .filter(|session| value_i64(&session["appId"]).is_some_and(|id| id > 0))
+            .filter(|session| {
+                session["serverIp"]
+                    .as_str()
+                    .is_some_and(|host| trusted_learned_server_base(host).is_ok())
+            })
+            .take(32)
+            .collect();
+        *self
+            .conflict
+            .lock()
+            .expect("CloudMatch conflict state poisoned") = Some(SessionConflict {
+            owner: (auth.provider.idp_id.clone(), auth.user.user_id.clone()),
+            received: Instant::now(),
+            sessions,
+        });
+        Some(ServiceError {
+            code: "session_conflict",
+            message: "A GeForce NOW session is already active. Resume it or end it before starting another game.".to_owned(),
+        })
+    }
+
+    fn take_conflict_sessions(&self, auth: &AuthSession) -> Option<Vec<Value>> {
+        self.conflict
+            .lock()
+            .expect("CloudMatch conflict state poisoned")
+            .take()
+            .filter(|conflict| {
+                conflict.owner == (auth.provider.idp_id.clone(), auth.user.user_id.clone())
+                    && conflict.received.elapsed() < Duration::from_secs(30)
+                    && !conflict.sessions.is_empty()
+            })
+            .map(|conflict| conflict.sessions)
     }
 
     pub fn remote_sessions(
@@ -289,6 +374,12 @@ impl CloudMatchService {
         device_id: &str,
     ) -> Result<Value, ServiceError> {
         let client = client_for_settings(&self.client, settings).map_err(invalid)?;
+        crate::requests::check()?;
+        if let Some(sessions) = self.take_conflict_sessions(auth) {
+            self.store_discovered(&sessions);
+            return Ok(json!({"sessions":sessions}));
+        }
+        let deadline = Instant::now() + DISCOVERY_TIMEOUT;
         let current = self
             .active
             .lock()
@@ -306,64 +397,80 @@ impl CloudMatchService {
             recovery_region.map_or_else(|| requested_streaming_base(params, settings, auth), Ok)?;
         let headers = cloudmatch_headers(session_token(auth), device_id)?;
         let mut bases = vec![requested.clone()];
-        if let Ok(server_info_url) = requested.join("v2/serverInfo")
-            && let Ok(response) = client.get(server_info_url).headers(headers.clone()).send()
-            && response.status().is_success()
-            && let Ok(payload) = response.json::<Value>()
+        let server_info = client
+            .get(
+                requested
+                    .join("v2/serverInfo")
+                    .map_err(|_| invalid("Invalid server-info URL"))?,
+            )
+            .headers(headers.clone())
+            .timeout(DISCOVERY_REQUEST_TIMEOUT)
+            .send()
+            .map_err(|error| network("Region discovery failed", error))
+            .and_then(|response| {
+                if !response.status().is_success() {
+                    return Err(response_error("Region discovery failed", response));
+                }
+                let payload = response
+                    .json::<Value>()
+                    .map_err(|error| network("Invalid region response", error))?;
+                if payload["metaData"].as_array().is_none()
+                    || (payload.get("requestStatus").is_some()
+                        && value_i64(&payload["requestStatus"]["statusCode"]) != Some(1))
+                {
+                    return Err(upstream("Invalid region response"));
+                }
+                Ok(payload)
+            });
+        if let Err(error) = &server_info
+            && error.code == "authentication_required"
         {
-            for base in regional_bases(&payload) {
+            return Err(error.clone());
+        }
+        if let Ok(payload) = &server_info {
+            for base in regional_bases(payload) {
                 if !bases.contains(&base) {
                     bases.push(base);
                 }
             }
         }
+        let incomplete = server_info.is_err() || bases.len() > MAX_DISCOVERY_REGIONS;
+        bases.truncate(MAX_DISCOVERY_REGIONS);
+        let sessions = discover_sessions(&bases, deadline, incomplete, |base, timeout| {
+            let url = base
+                .join("v2/session")
+                .map_err(|_| invalid("Invalid active-session URL"))?;
+            let response = client
+                .get(url)
+                .headers(headers.clone())
+                .timeout(timeout)
+                .send()
+                .map_err(|error| network("Active-session discovery failed", error))?;
+            let payload =
+                read_cloudmatch_response("Active-session discovery failed", response, false)?;
+            let sessions = payload["sessions"]
+                .as_array()
+                .ok_or_else(|| upstream("Invalid active-session response"))?;
+            Ok(sessions
+                .iter()
+                .filter_map(|session| remote_session_info(session, base))
+                .collect())
+        })?;
+        self.store_discovered(&sessions);
+        Ok(json!({"sessions":sessions}))
+    }
 
-        let mut last_failure = None;
-        for base in bases {
-            let Ok(url) = base.join("v2/session") else {
-                continue;
-            };
-            match client.get(url).headers(headers.clone()).send() {
-                Ok(response) if response.status().is_success() => {
-                    let payload = response
-                        .json::<Value>()
-                        .map_err(|error| network("Invalid active-session response", error))?;
-                    if value_i64(&payload["requestStatus"]["statusCode"]) != Some(1) {
-                        continue;
-                    }
-                    let sessions = payload["sessions"]
-                        .as_array()
-                        .into_iter()
-                        .flatten()
-                        .filter_map(|session| remote_session_info(session, &base))
-                        .collect::<Vec<_>>();
-                    let mut discovered = self
-                        .discovered
-                        .lock()
-                        .expect("CloudMatch discovery state poisoned");
-                    discovered.clear();
-                    for session in &sessions {
-                        if let Some(session_id) = session["sessionId"].as_str() {
-                            discovered.insert(session_id.to_owned(), session.clone());
-                        }
-                    }
-                    return Ok(json!({"sessions":sessions}));
-                }
-                Ok(response) => {
-                    last_failure = Some(response_error("Active-session discovery failed", response))
-                }
-                Err(error) => {
-                    last_failure = Some(network("Active-session discovery failed", error))
-                }
+    fn store_discovered(&self, sessions: &[Value]) {
+        let mut discovered = self
+            .discovered
+            .lock()
+            .expect("CloudMatch discovery state poisoned");
+        discovered.clear();
+        for session in sessions {
+            if let Some(session_id) = session["sessionId"].as_str() {
+                discovered.insert(session_id.to_owned(), session.clone());
             }
         }
-        if let Some(error) = last_failure {
-            eprintln!(
-                "opennow-core: remote session discovery degraded: {}",
-                error.message
-            );
-        }
-        Ok(json!({"sessions":[]}))
     }
 
     pub fn claim(
@@ -393,14 +500,25 @@ impl CloudMatchService {
             .map(trusted_cloudmatch_base)
             .transpose()?
             .unwrap_or(requested);
-        let initial_payload = self.get_session(&client, &zone_base, session_id, &headers)?;
+        let mut initial_base = claim_lookup_base(discovered.as_ref(), &zone_base);
+        let initial_payload = self
+            .get_session(&client, &initial_base, session_id, &headers)
+            .or_else(|error| {
+                if initial_base == zone_base || error.code == "authentication_required" {
+                    Err(error)
+                } else {
+                    let payload = self.get_session(&client, &zone_base, session_id, &headers)?;
+                    initial_base = zone_base.clone();
+                    Ok(payload)
+                }
+            })?;
         let session = &initial_payload["session"];
         let initial_status = value_i64(&session["status"]).unwrap_or_default();
         let learned_server = session_server_ip(session);
         let control_base = learned_server
             .as_deref()
             .and_then(|server| trusted_learned_server_base(server).ok())
-            .unwrap_or_else(|| zone_base.clone());
+            .unwrap_or(initial_base);
 
         let app_id = first_string(&session["sessionRequestData"]["appId"])
             .or_else(|| first_string(&params["appId"]))
@@ -657,6 +775,13 @@ fn requested_streaming_base(
             }
         });
     trusted_cloudmatch_base(raw)
+}
+
+fn claim_lookup_base(discovered: Option<&Value>, zone_base: &Url) -> Url {
+    discovered
+        .and_then(|session| session["serverIp"].as_str())
+        .and_then(|server| trusted_learned_server_base(server).ok())
+        .unwrap_or_else(|| zone_base.clone())
 }
 
 fn session_requires_resume(status: i64) -> Result<bool, ServiceError> {
@@ -1151,6 +1276,15 @@ fn read_cloudmatch_response(
 ) -> Result<Value, ServiceError> {
     let status = response.status();
     let payload = response.json::<Value>();
+    validate_cloudmatch_response(context, status, payload, allow_not_paused)
+}
+
+fn validate_cloudmatch_response(
+    context: &str,
+    status: reqwest::StatusCode,
+    payload: Result<Value, reqwest::Error>,
+    allow_not_paused: bool,
+) -> Result<Value, ServiceError> {
     if allow_not_paused
         && status != reqwest::StatusCode::UNAUTHORIZED
         && status != reqwest::StatusCode::FORBIDDEN
@@ -1186,6 +1320,25 @@ fn read_cloudmatch_response(
         });
     }
     Ok(payload)
+}
+
+fn is_session_conflict(payload: &Value) -> bool {
+    value_i64(&payload["requestStatus"]["statusCode"]) == Some(11)
+        || payload["requestStatus"]["statusDescription"]
+            .as_str()
+            .is_some_and(|description| description.to_ascii_uppercase().contains("SESSION_LIMIT"))
+        || [
+            &payload["requestStatus"]["unifiedErrorCode"],
+            &payload["session"]["errorCode"],
+        ]
+        .iter()
+        .any(|code| {
+            value_i64(code) == Some(0x4AF1201E)
+                || code.as_str().is_some_and(|code| {
+                    code.trim_start_matches("0x")
+                        .eq_ignore_ascii_case("4AF1201E")
+                })
+        })
 }
 
 fn response_error(context: &str, response: Response) -> ServiceError {
@@ -1286,13 +1439,27 @@ fn session_server_ip(session: &Value) -> Option<String> {
 }
 
 fn remote_session_info(session: &Value, base: &Url) -> Option<Value> {
-    let session_id = session["sessionId"].as_str()?.to_owned();
+    let session_id = session["sessionId"]
+        .as_str()
+        .filter(|id| !id.trim().is_empty())?
+        .to_owned();
     let status = value_i64(&session["status"])?;
     if !matches!(status, 1..=6) {
         return None;
     }
     let app_id = value_i64(&session["sessionRequestData"]["appId"]).unwrap_or_default();
-    let server_ip = session_server_ip(session);
+    let server_ip = first_string(&session["sessionControlInfo"]["ip"])
+        .or_else(|| session_server_ip(session))
+        .or_else(|| {
+            session["connectionInfo"]
+                .as_array()?
+                .iter()
+                .filter(|connection| value_i64(&connection["usage"]) == Some(14))
+                .find_map(|connection| {
+                    let url = Url::parse(connection["resourcePath"].as_str()?).ok()?;
+                    url.host_str().map(ToOwned::to_owned)
+                })
+        });
     let monitor = session["monitorSettings"]
         .as_array()
         .and_then(|values| values.first())
@@ -1324,6 +1491,77 @@ fn unix_seconds() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs() as i64
+}
+
+fn discover_sessions(
+    bases: &[Url],
+    deadline: Instant,
+    mut incomplete: bool,
+    fetch: impl Fn(&Url, Duration) -> Result<Vec<Value>, ServiceError> + Sync,
+) -> Result<Vec<Value>, ServiceError> {
+    let fetch = &fetch;
+    let cancellation = crate::requests::current();
+    let mut results = thread::scope(|scope| {
+        let workers = (0..DISCOVERY_CONCURRENCY.min(bases.len()))
+            .map(|worker| {
+                let cancellation = cancellation.clone();
+                scope.spawn(move || {
+                    bases
+                        .iter()
+                        .enumerate()
+                        .skip(worker)
+                        .step_by(DISCOVERY_CONCURRENCY)
+                        .map(|(index, base)| {
+                            let remaining = deadline.saturating_duration_since(Instant::now());
+                            let result = cancellation.check().and_then(|()| {
+                                if remaining.is_zero() {
+                                    Err(discovery_failed())
+                                } else {
+                                    fetch(base, remaining.min(DISCOVERY_REQUEST_TIMEOUT))
+                                }
+                            });
+                            (index, result)
+                        })
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect::<Vec<_>>();
+        workers
+            .into_iter()
+            .flat_map(|worker| worker.join().expect("CloudMatch discovery worker panicked"))
+            .collect::<Vec<_>>()
+    });
+    cancellation.check()?;
+    results.sort_by_key(|(index, _)| *index);
+    let mut sessions = Vec::new();
+    for (_, result) in results {
+        match result {
+            Ok(found) => {
+                for session in found {
+                    if !sessions
+                        .iter()
+                        .any(|known: &Value| known["sessionId"] == session["sessionId"])
+                    {
+                        sessions.push(session);
+                    }
+                }
+            }
+            Err(error) if error.code == "authentication_required" => return Err(error),
+            Err(_) => incomplete = true,
+        }
+    }
+    if sessions.is_empty() && (incomplete || bases.is_empty()) {
+        return Err(discovery_failed());
+    }
+    Ok(sessions)
+}
+
+fn discovery_failed() -> ServiceError {
+    ServiceError {
+        code: "session_discovery_failed",
+        message: "Could not check all GeForce NOW regions for an existing session. Try again."
+            .to_owned(),
+    }
 }
 
 fn regional_bases(payload: &Value) -> Vec<Url> {
@@ -1632,6 +1870,383 @@ fn network(context: &str, error: impl std::fmt::Display) -> ServiceError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn conflict_auth() -> AuthSession {
+        serde_json::from_value(json!({
+            "provider":{"idpId":"provider", "code":"NVIDIA", "displayName":"NVIDIA", "streamingServiceUrl":DEFAULT_STREAMING_BASE, "priority":0},
+            "tokens":{"accessToken":"test-token", "expiresAt":0, "authClientId":"test"},
+            "user":{"userId":"test-user", "displayName":"Test", "membershipTier":""}
+        })).unwrap()
+    }
+
+    fn conflict_payload() -> Value {
+        json!({
+            "requestStatus":{"statusCode":11,"statusDescription":"SESSION_LIMIT_PER_DEVICE_EXCEEDED_STATUS 4AF1201E"},
+            "otherUserSessions":[{
+                "sessionId":"existing-seat", "status":5,
+                "sessionRequestData":{"appId":456},
+                "sessionControlInfo":{"ip":"seat.nvidiagrid.net"}
+            }]
+        })
+    }
+
+    #[test]
+    fn create_conflicts_preserve_resumable_details_for_one_discovery() {
+        for status in [200, 400, 403, 409, 500] {
+            let service = CloudMatchService::new(Client::new());
+            let auth = conflict_auth();
+            let base = trusted_cloudmatch_base(DEFAULT_STREAMING_BASE).unwrap();
+            let error = service
+                .capture_session_conflict(
+                    reqwest::StatusCode::from_u16(status).unwrap(),
+                    &conflict_payload(),
+                    &base,
+                    &auth,
+                )
+                .unwrap();
+            assert_eq!(error.code, "session_conflict");
+            assert!(!error.message.contains("4AF1201E"));
+            assert!(service.active()["session"].is_null());
+            let response = service
+                .remote_sessions(&json!({}), &json!({}), &auth, "device")
+                .unwrap();
+            assert_eq!(response["sessions"][0]["sessionId"], "existing-seat");
+            assert_eq!(response["sessions"][0]["appId"], 456);
+            assert_eq!(response["sessions"][0]["status"], 5);
+            assert_eq!(response["sessions"][0]["serverIp"], "seat.nvidiagrid.net");
+            assert_eq!(
+                response["sessions"][0]["streamingBaseUrl"],
+                base.origin().ascii_serialization()
+            );
+            assert!(
+                service
+                    .discovered
+                    .lock()
+                    .unwrap()
+                    .contains_key("existing-seat")
+            );
+            assert!(service.take_conflict_sessions(&auth).is_none());
+        }
+    }
+
+    #[test]
+    fn conflict_handoff_claims_the_existing_host_instead_of_the_create_region() {
+        let service = CloudMatchService::new(Client::new());
+        let auth = conflict_auth();
+        let create_region = trusted_cloudmatch_base("https://create.nvidiagrid.net").unwrap();
+        for host in ["other-region-seat.nvidiagrid.net", "80.84.160.10"] {
+            let mut payload = conflict_payload();
+            payload["otherUserSessions"][0]["sessionControlInfo"]["ip"] = json!(host);
+            service
+                .capture_session_conflict(
+                    reqwest::StatusCode::FORBIDDEN,
+                    &payload,
+                    &create_region,
+                    &auth,
+                )
+                .unwrap();
+            service
+                .remote_sessions(&json!({}), &json!({}), &auth, "device")
+                .unwrap();
+            let discovered = service.discovered.lock().unwrap();
+            let session = discovered.get("existing-seat");
+            assert_eq!(
+                claim_lookup_base(session, &create_region),
+                trusted_learned_server_base(host).unwrap()
+            );
+        }
+        for session in [
+            None,
+            Some(json!({})),
+            Some(json!({"serverIp":"localhost"})),
+            Some(json!({"serverIp":"https://example.com"})),
+        ] {
+            assert_eq!(
+                claim_lookup_base(session.as_ref(), &create_region),
+                create_region
+            );
+        }
+    }
+
+    #[test]
+    fn conflict_handoff_expires_and_is_scoped_to_the_account() {
+        let service = CloudMatchService::new(Client::new());
+        let auth = conflict_auth();
+        let base = trusted_cloudmatch_base(DEFAULT_STREAMING_BASE).unwrap();
+        for different_account in [false, true] {
+            service
+                .capture_session_conflict(
+                    reqwest::StatusCode::BAD_REQUEST,
+                    &conflict_payload(),
+                    &base,
+                    &auth,
+                )
+                .unwrap();
+            let mut next_auth = auth.clone();
+            if different_account {
+                next_auth.user.user_id = "other-user".to_owned();
+            } else {
+                service.conflict.lock().unwrap().as_mut().unwrap().received =
+                    Instant::now() - Duration::from_secs(31);
+            }
+            assert!(service.take_conflict_sessions(&next_auth).is_none());
+            assert!(service.take_conflict_sessions(&auth).is_none());
+        }
+    }
+
+    #[test]
+    fn conflict_detection_supports_vendor_codes_and_preserves_unauthorized_responses() {
+        for payload in [
+            json!({"requestStatus":{"statusCode":"11"}}),
+            json!({"requestStatus":{"statusDescription":"SESSION_LIMIT_PER_DEVICE_EXCEEDED_STATUS"}}),
+            json!({"requestStatus":{"unifiedErrorCode":"4AF1201E"}}),
+            json!({"session":{"errorCode":0x4AF1201E_i64}}),
+        ] {
+            assert!(is_session_conflict(&payload));
+            let service = CloudMatchService::new(Client::new());
+            let auth = conflict_auth();
+            let base = trusted_cloudmatch_base(DEFAULT_STREAMING_BASE).unwrap();
+            let status = reqwest::StatusCode::UNAUTHORIZED;
+            assert!(
+                service
+                    .capture_session_conflict(status, &payload, &base, &auth)
+                    .is_none()
+            );
+            let error = validate_cloudmatch_response("create", status, Ok(payload.clone()), false)
+                .unwrap_err();
+            assert_eq!(error.code, "authentication_required");
+        }
+        assert!(!is_session_conflict(
+            &json!({"requestStatus":{"statusCode":4,"statusDescription":"INTERNAL_ERROR_STATUS"}})
+        ));
+    }
+
+    #[test]
+    fn forbidden_session_limit_is_a_conflict_but_unrecognized_forbidden_is_authentication() {
+        let service = CloudMatchService::new(Client::new());
+        let auth = conflict_auth();
+        let base = trusted_cloudmatch_base(DEFAULT_STREAMING_BASE).unwrap();
+        let status = reqwest::StatusCode::FORBIDDEN;
+        let payload = json!({"requestStatus":{"statusDescription":"SESSION_LIMIT_PER_DEVICE_EXCEEDED_STATUS 4AF1201E"}});
+        assert_eq!(
+            service
+                .capture_session_conflict(status, &payload, &base, &auth)
+                .unwrap()
+                .code,
+            "session_conflict"
+        );
+        for payload in [
+            json!({"requestStatus":{"statusDescription":"Forbidden"}}),
+            json!({}),
+            json!("SESSION_LIMIT_PER_DEVICE_EXCEEDED_STATUS 4AF1201E"),
+        ] {
+            assert!(
+                service
+                    .capture_session_conflict(status, &payload, &base, &auth)
+                    .is_none()
+            );
+            assert_eq!(
+                validate_cloudmatch_response("create", status, Ok(payload), false)
+                    .unwrap_err()
+                    .code,
+                "authentication_required"
+            );
+        }
+        assert_eq!(
+            read_cloudmatch_response("create", cloudmatch_response(403, "Forbidden"), false)
+                .unwrap_err()
+                .code,
+            "authentication_required"
+        );
+    }
+
+    #[test]
+    fn conflict_handoff_rejects_unusable_seats_and_accepts_signaling_resource_paths() {
+        let service = CloudMatchService::new(Client::new());
+        let auth = conflict_auth();
+        let base = trusted_cloudmatch_base(DEFAULT_STREAMING_BASE).unwrap();
+        for patch in [
+            json!({"sessionId":""}),
+            json!({"status":7}),
+            json!({"sessionRequestData":{"appId":0}}),
+            json!({"sessionControlInfo":{"ip":"localhost"}}),
+        ] {
+            let mut payload = conflict_payload();
+            for (key, value) in patch.as_object().unwrap() {
+                payload["otherUserSessions"][0][key] = value.clone();
+            }
+            assert!(
+                service
+                    .capture_session_conflict(
+                        reqwest::StatusCode::BAD_REQUEST,
+                        &payload,
+                        &base,
+                        &auth
+                    )
+                    .is_some()
+            );
+            assert!(service.take_conflict_sessions(&auth).is_none());
+        }
+        let mut payload = conflict_payload();
+        payload["otherUserSessions"][0]["sessionControlInfo"] = Value::Null;
+        payload["otherUserSessions"][0]["connectionInfo"] =
+            json!([{"usage":14,"resourcePath":"wss://signal.nvidiagrid.net/nvst/"}]);
+        service
+            .capture_session_conflict(reqwest::StatusCode::BAD_REQUEST, &payload, &base, &auth)
+            .unwrap();
+        assert_eq!(
+            service.take_conflict_sessions(&auth).unwrap()[0]["serverIp"],
+            "signal.nvidiagrid.net"
+        );
+    }
+
+    #[test]
+    fn discovery_continues_after_empty_regions_and_deduplicates_sessions() {
+        let bases = [
+            "https://first.nvidiagrid.net",
+            "https://second.nvidiagrid.net",
+            "https://third.nvidiagrid.net",
+        ]
+        .map(|url| trusted_cloudmatch_base(url).unwrap());
+        let calls = std::sync::atomic::AtomicUsize::new(0);
+        let sessions = discover_sessions(
+            &bases,
+            Instant::now() + DISCOVERY_TIMEOUT,
+            false,
+            |base, timeout| {
+                calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                assert!(timeout <= DISCOVERY_REQUEST_TIMEOUT);
+                if base == &bases[0] {
+                    Ok(vec![])
+                } else {
+                    Ok(vec![
+                        json!({"sessionId":"seat", "streamingBaseUrl":base.as_str()}),
+                    ])
+                }
+            },
+        )
+        .unwrap();
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 3);
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0]["streamingBaseUrl"], bases[1].as_str());
+    }
+
+    #[test]
+    fn discovery_reports_incomplete_absence_but_keeps_found_sessions() {
+        let bases = [
+            trusted_cloudmatch_base(DEFAULT_STREAMING_BASE).unwrap(),
+            trusted_cloudmatch_base("https://region.nvidiagrid.net").unwrap(),
+        ];
+        for found in [false, true] {
+            let result = discover_sessions(
+                &bases,
+                Instant::now() + DISCOVERY_TIMEOUT,
+                false,
+                |base, _| {
+                    if base == &bases[0] {
+                        Err(upstream("failed region"))
+                    } else {
+                        Ok(if found {
+                            vec![json!({"sessionId":"seat"})]
+                        } else {
+                            vec![]
+                        })
+                    }
+                },
+            );
+            if found {
+                assert_eq!(result.unwrap().len(), 1);
+            } else {
+                assert_eq!(result.unwrap_err().code, "session_discovery_failed");
+            }
+        }
+        assert!(
+            discover_sessions(
+                &bases,
+                Instant::now() + DISCOVERY_TIMEOUT,
+                false,
+                |_, _| Ok(vec![])
+            )
+            .unwrap()
+            .is_empty()
+        );
+        assert_eq!(
+            discover_sessions(&bases, Instant::now() + DISCOVERY_TIMEOUT, true, |_, _| Ok(
+                vec![]
+            ))
+            .unwrap_err()
+            .code,
+            "session_discovery_failed"
+        );
+        assert_eq!(
+            discover_sessions(&bases, Instant::now() + DISCOVERY_TIMEOUT, false, |_, _| {
+                Err(upstream("failed"))
+            })
+            .unwrap_err()
+            .code,
+            "session_discovery_failed"
+        );
+    }
+
+    #[test]
+    fn discovery_respects_deadline_and_concurrency_bound() {
+        let base = trusted_cloudmatch_base(DEFAULT_STREAMING_BASE).unwrap();
+        assert_eq!(
+            discover_sessions(
+                std::slice::from_ref(&base),
+                Instant::now(),
+                false,
+                |_, _| panic!("expired search must not send requests")
+            )
+            .unwrap_err()
+            .code,
+            "session_discovery_failed"
+        );
+        let active = std::sync::atomic::AtomicUsize::new(0);
+        let peak = std::sync::atomic::AtomicUsize::new(0);
+        let barrier = std::sync::Barrier::new(DISCOVERY_CONCURRENCY);
+        discover_sessions(
+            &vec![base; 8],
+            Instant::now() + DISCOVERY_TIMEOUT,
+            false,
+            |_, _| {
+                let current = active.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+                peak.fetch_max(current, std::sync::atomic::Ordering::SeqCst);
+                barrier.wait();
+                active.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(vec![])
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            peak.load(std::sync::atomic::Ordering::SeqCst),
+            DISCOVERY_CONCURRENCY
+        );
+    }
+
+    #[test]
+    fn discovery_preserves_authentication_failures_and_cancellation() {
+        let bases = [trusted_cloudmatch_base(DEFAULT_STREAMING_BASE).unwrap()];
+        let error = discover_sessions(&bases, Instant::now() + DISCOVERY_TIMEOUT, false, |_, _| {
+            Err(ServiceError {
+                code: "authentication_required",
+                message: "Expired credentials".to_owned(),
+            })
+        })
+        .unwrap_err();
+        assert_eq!(error.code, "authentication_required");
+
+        let requests = std::sync::Arc::new(crate::requests::Requests::default());
+        let permit = requests.admit("discovery", "session.remote.list").unwrap();
+        requests.cancel("discovery");
+        let error = crate::requests::scope(permit.token.clone(), || {
+            discover_sessions(&bases, Instant::now() + DISCOVERY_TIMEOUT, false, |_, _| {
+                panic!("cancelled discovery must not send requests")
+            })
+        })
+        .unwrap_err();
+        assert_eq!(error.code, "cancelled");
+    }
 
     fn cloudmatch_response(status: u16, body: &str) -> Response {
         use std::io::{BufRead, BufReader, Write};

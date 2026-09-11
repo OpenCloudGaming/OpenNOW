@@ -21,6 +21,36 @@ not network quality or hardware decode. Unsupported FEC recovery and decoder que
 not populated from the design's example numbers. The bitrate bar divides measured Mbps by the
 prepared session's allocation and clamps its fill to 0–100%.
 
+## Check existing-session recovery
+
+Run the orchestration and protocol regression tests:
+
+```sh
+ctest --test-dir build/opennow-qt --output-on-failure -R 'embedded-orchestration|qml-session-resume'
+cargo test --manifest-path native/opennow-core/Cargo.toml cloudmatch::tests
+```
+
+After building the app, capture the different-game confirmation without signing in:
+
+```sh
+build/opennow-qt/opennow-qt --smoke-test --allow-multiple-instances \
+  --desktop --route inserting --reduced-motion --smoke-width 960 --smoke-height 640 \
+  --smoke-session-resume conflict --screenshot /absolute/path/session-conflict.png
+```
+
+Replace `conflict` with `unavailable` to check the session-limit retry screen, or with
+`resuming` to check the reconnect message. Repeat in console mode by replacing
+`--desktop` with `--console`. These fixtures use synthetic sessions and do not connect
+to NVIDIA or prove live resume behavior.
+
+With an authorized account, disconnect from a game without ending its cloud session,
+restart OpenNOW, and select Play for the same game. Check that OpenNOW reconnects
+without asking to create another session. Select a different game and verify that
+Cancel preserves the running game, Return to game reconnects to it, and End game and
+start new closes it only after you choose that action. Repeat with the session in a
+different region and while the network is unavailable. A failed lookup must offer a
+retry rather than create another session. Verify windowed and fullscreen presentation.
+
 ## Required live matrix
 
 | Platform | Architecture | Window system | Required package |
