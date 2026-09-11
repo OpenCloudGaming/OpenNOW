@@ -3339,6 +3339,26 @@
     "s_awdl_3d18387481": "The awdl0 interface was not confirmed up; no retry was attempted.",
     "s_awdl_81fb2efd6d": "Waiting for macOS authorization…",
     "s_awdl_70d13d066c": "macOS will ask for administrator authorization to bring awdl0 down for all users. AirDrop, AirPlay, Sidecar and other Continuity features may stop working. AWDL must be down to finish setup. OpenNOW will not keep it disabled in the background.",
-    "s_awdl_02c66e8e2a": "macOS will ask for administrator authorization to bring awdl0 up. This lets AirDrop and related Apple features use AWDL again."
+    "s_awdl_02c66e8e2a": "macOS will ask for administrator authorization to bring awdl0 up. This lets AirDrop and related Apple features use AWDL again.",
+    "session_resume_account_game": "A game is still running on your GeForce NOW account.",
+    "session_resume_other_game": "Another game is still running on GeForce NOW. You can return to it, or end it to play this game.",
+    "session_resume_end": "End game",
+    "session_resume_replace": "End game and start new",
+    "session_resume_end_warning": "Ending the game will close it. Unsaved progress may be lost.",
+    "session_resume_replace_warning": "Ending the running game will close it before starting %1. Unsaved progress may be lost.",
+    "session_resume_unavailable": "GeForce NOW says a game is still running, but it isn't available to reconnect yet. Wait a moment, then try again. If you were playing on another device, disconnect there first.",
+    "session_resume_checking": "Looking for your game on GeForce NOW…",
+    "session_resume_connecting": "Reconnecting to your running game. You don't need to start again.",
+    "session_resume_heading": "Return to your game?",
+    "session_resume_title": "Still running: %1",
+    "session_resume_stop_failed": "The previous game hasn't closed. Try again in a moment. We won't start another game until it has ended.",
+    "session_resume_discovery_failed": "We couldn't check whether your game is still running. Check your connection, then try again.",
+    "session_resume_claim_failed": "We couldn't reconnect to your game. Try returning to it again, or end it and start over. Ending it may lose unsaved progress.",
+    "session_resume_eyebrow": "YOUR GAME IS STILL RUNNING",
+    "session_resume_selected_game": "your selected game",
+    "session_resume_unknown_game": "Your running game",
+    "session_resume_status": "Reconnecting to your game",
+    "session_resume_unavailable_heading": "Your game is still running",
+    "session_resume_retry_unavailable": "Your previous game isn't available to reconnect yet. Wait a moment, then try again."
   }
 }
