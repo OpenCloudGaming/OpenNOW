@@ -901,7 +901,7 @@ fn build_create_body(app_id: &str, params: &Value, settings: &Value, device_id: 
     };
     let cloud_gsync = resolved_cloud_gsync(settings);
     let reflex = cloud_gsync || fps >= 120;
-    let persistence = setting_bool(settings, "enablePersistingInGameSettings", false)
+    let persistence = setting_bool(settings, "enablePersistingInGameSettings", true)
         && params["supportsInGameSettingsPersistence"].as_bool() == Some(true);
     let physical_resolution = json!({
         "horizontalPixels": width,
@@ -2558,6 +2558,46 @@ mod tests {
         );
         assert_eq!(accepted_hdr_mode(&json!({})), None);
         assert_eq!(accepted_hdr_mode(&json!({"sdrHdrMode":2})), Some(0));
+    }
+
+    #[test]
+    fn in_game_settings_persistence_defaults_on_and_requires_game_support() {
+        for preference in [Value::Null, json!(false), json!(true)] {
+            for support in [Value::Null, json!(false), json!(true)] {
+                let mut params = json!({});
+                let mut settings = json!({});
+                if !support.is_null() {
+                    params["supportsInGameSettingsPersistence"] = support.clone();
+                }
+                if !preference.is_null() {
+                    settings["enablePersistingInGameSettings"] = preference.clone();
+                }
+                let body = build_create_body("123", &params, &settings, "stable-device");
+                assert_eq!(
+                    body["sessionRequestData"]["enablePersistingInGameSettings"],
+                    preference != false && support == true
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn resume_preserves_in_game_settings_persistence_despite_preference_changes() {
+        for enabled in [false, true] {
+            let original = json!({"sessionRequestData": {
+                "enablePersistingInGameSettings": enabled
+            }});
+            let body = build_resume_body(
+                "123",
+                &original,
+                &json!({"enablePersistingInGameSettings": !enabled}),
+                "stable-device",
+            );
+            assert_eq!(
+                body["sessionRequestData"]["enablePersistingInGameSettings"],
+                enabled
+            );
+        }
     }
 
     #[test]

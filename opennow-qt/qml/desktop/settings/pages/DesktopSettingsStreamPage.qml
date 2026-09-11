@@ -24,11 +24,21 @@ Column {
         DesktopSettingsRow {
             width: parent.width; paperStyle: true; glyph: "controller"; title: qsTr("Steam Big Picture mode")
             description: qsTr("Request gamepad-friendly launchers such as Steam Big Picture. Applies to new GeForce NOW sessions only.")
-            showDivider: false
             DesktopSettingsToggle {
                 objectName: "steamBigPictureToggle"
                 checked: page.settingsScreen.boolSetting("steamBigPictureMode", false)
                 onValueChangedByUser: value => page.settingsScreen.setSetting("steamBigPictureMode", value)
+            }
+        }
+        DesktopSettingsRow {
+            width: parent.width; paperStyle: true; glyph: "controller"; title: qsTr("Persistent in-game settings")
+            description: qsTr("Keep your in-game graphics settings between sessions for supported games and memberships. Applies to new sessions.")
+            showDivider: false
+            DesktopSettingsToggle {
+                objectName: "persistentInGameSettingsToggle"
+                checked: page.settingsScreen.boolSetting("enablePersistingInGameSettings", true)
+                Accessible.name: qsTr("Persistent in-game settings")
+                onValueChangedByUser: value => page.settingsScreen.setSetting("enablePersistingInGameSettings", value)
             }
         }
     }

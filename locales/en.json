@@ -1,4 +1,8 @@
 {
+  "persistentInGameSettings": {
+    "title": "Persistent in-game settings",
+    "description": "Keep your in-game graphics settings between sessions for supported games and memberships. Applies to new sessions."
+  },
   "graphicsProcessor": {
     "title": "Graphics processor",
     "restartHint": "Uses the same GPU for decoding and display. Changes apply after restarting OpenNOW.",
