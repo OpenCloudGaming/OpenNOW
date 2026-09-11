@@ -69,11 +69,12 @@ QtObject {
                         check(request.method === "session.remote.list", "launch checks existing sessions first")
                         check(request.params.appLaunchMode === (enabled === true ? "gamepadFriendly" : "default"),
                             "only explicit Big Picture opt-in selects gamepad-friendly mode")
-                        ShellStore.createPendingSession()
+                        client.responseReceived(request.id, {sessions:[]})
                         const create = client.calls[client.calls.length - 1]
                         check(create.method === "session.create" && create.params.appLaunchMode === request.params.appLaunchMode,
                             "session creation preserves the selected launch mode")
-                        ShellStore.streamCreateRequestId = ""
+                        client.responseReceived(create.id, {session:null})
+                        check(!ShellStore.streamBusy, "completed requests allow the next launch")
                     }
                 }
             }
