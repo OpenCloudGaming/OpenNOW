@@ -19,6 +19,10 @@ inputs:
 runs:
   using: composite
   steps:
+    - name: Prepare Ubuntu HTTPS mirrors
+      if: inputs.label == 'linux-x64'
+      shell: bash
+      run: sudo python3 .github/scripts/prepare-ubuntu-apt-https.py
     - name: Prepare Windows test dependencies
       if: runner.os == 'Windows'
       shell: pwsh

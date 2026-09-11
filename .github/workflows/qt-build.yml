@@ -118,6 +118,11 @@ jobs:
         with:
           ref: ${{ github.sha }}
 
+      - name: Prepare Ubuntu HTTPS mirrors
+        if: matrix.label == 'linux-x64'
+        shell: bash
+        run: sudo python3 .github/scripts/prepare-ubuntu-apt-https.py
+
       - name: Enable Windows Media Foundation
         if: runner.os == 'Windows'
         shell: pwsh
