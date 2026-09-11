@@ -78,6 +78,7 @@ pub(crate) fn frame_pacing_report(
     }
 }
 
+#[derive(Debug, Default)]
 pub(crate) struct QosReport {
     pub(crate) sequence: u32,
     pub(crate) frames_received: u32,
@@ -99,6 +100,15 @@ impl QosReport {
         put_u16(&mut payload, 32, 1_000);
         put_u16(&mut payload, 34, 12_708);
         put_u32(&mut payload, 36, self.rtp_timestamp);
+        if self.warmed_up {
+            put_u32(
+                &mut payload,
+                44,
+                self.bytes_received
+                    .wrapping_sub(self.previous_bytes_received)
+                    .saturating_mul(8),
+            );
+        }
         put_u32(&mut payload, 48, self.previous_bytes_received);
         NvstControlCommand {
             code: QOS_REPORT_CODE,

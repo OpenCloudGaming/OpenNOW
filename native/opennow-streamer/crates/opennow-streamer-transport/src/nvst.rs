@@ -387,6 +387,7 @@ struct ReceptionTiming {
     first_arrival: Option<Instant>,
     first_rtp_timestamp: u32,
     last_rtp_timestamp: u32,
+    latest_rtp_timestamp: Option<u32>,
     last_transit: i64,
     jitter: f64,
 }
@@ -436,7 +437,6 @@ pub struct NvstFeedbackState {
     pending_nacks: Mutex<VecDeque<PendingNackRange>>,
     completed_frames: AtomicU32,
     completed_frame_bytes: AtomicU64,
-    last_completed_rtp_timestamp: AtomicU32,
     pending_frame_acks: Mutex<VecDeque<CompletedFrameFeedback>>,
 }
 
@@ -457,7 +457,6 @@ impl Default for NvstFeedbackState {
             pending_nacks: Mutex::new(VecDeque::new()),
             completed_frames: AtomicU32::new(0),
             completed_frame_bytes: AtomicU64::new(0),
-            last_completed_rtp_timestamp: AtomicU32::new(0),
             pending_frame_acks: Mutex::new(VecDeque::new()),
         }
     }
@@ -526,6 +525,12 @@ impl NvstFeedbackState {
             .reception_timing
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if timing
+            .latest_rtp_timestamp
+            .is_none_or(|latest| rtp_timestamp.wrapping_sub(latest) as i32 > 0)
+        {
+            timing.latest_rtp_timestamp = Some(rtp_timestamp);
+        }
         let Some(first_arrival) = timing.first_arrival else {
             timing.first_arrival = Some(now);
             timing.first_rtp_timestamp = rtp_timestamp;
@@ -625,8 +630,6 @@ impl NvstFeedbackState {
             u64::try_from(frame.bytes.len()).unwrap_or(u64::MAX),
             Ordering::AcqRel,
         );
-        self.last_completed_rtp_timestamp
-            .store(frame.timestamp, Ordering::Release);
         if frame.keyframe && self.keyframe_needed.swap(false, Ordering::AcqRel) {
             opennow_streamer_protocol::log::log_async(
                 "INFO",
@@ -666,8 +669,24 @@ impl NvstFeedbackState {
         (
             self.completed_frames.load(Ordering::Acquire),
             self.completed_frame_bytes.load(Ordering::Acquire) as u32,
-            self.last_completed_rtp_timestamp.load(Ordering::Acquire),
+            self.reception_timing
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .latest_rtp_timestamp
+                .unwrap_or(0),
         )
+    }
+
+    fn qos_report(&self, previous: &QosReport, warmed_up: bool) -> QosReport {
+        let (frames_received, bytes_received, rtp_timestamp) = self.completed_frame_snapshot();
+        QosReport {
+            sequence: previous.sequence.wrapping_add(1),
+            frames_received,
+            bytes_received,
+            rtp_timestamp,
+            previous_bytes_received: previous.bytes_received,
+            warmed_up,
+        }
     }
 
     /// SSRC + highest sequence for the next Receiver Report, if a stream is bound.
@@ -5267,7 +5286,7 @@ fn run_nvst_webrtc_bundle(
     let mut keyframe_attempts = 0_u64;
     let mut last_keyframe_attempt_log: Option<Instant> = None;
     let mut rtcp_reports_sent = 0_u64;
-    let mut qos_sequence = 0_u32;
+    let mut last_qos_report = QosReport::default();
     let mut last_qos_send = Instant::now() - QOS_REPORT_INTERVAL;
     let mut last_frame_pacing_send = Instant::now() - QOS_REPORT_INTERVAL;
     let control_stats_origin = Instant::now();
@@ -5527,20 +5546,13 @@ fn run_nvst_webrtc_bundle(
             && now.duration_since(last_qos_send) >= QOS_REPORT_INTERVAL
             && let Some(channels) = input_channels
         {
-            let (frames_received, bytes_received, rtp_timestamp) =
-                feedback.completed_frame_snapshot();
-            qos_sequence = qos_sequence.wrapping_add(1);
-            let command = QosReport {
-                sequence: qos_sequence,
-                frames_received,
-                bytes_received,
-                rtp_timestamp,
-                previous_bytes_received: bytes_received,
-                warmed_up: now.saturating_duration_since(transport_origin) >= QOS_WARM_UP,
-            }
-            .command()
-            .encoded();
+            let report = feedback.qos_report(
+                &last_qos_report,
+                now.saturating_duration_since(transport_origin) >= QOS_WARM_UP,
+            );
+            let command = report.command().encoded();
             if channels.send_partial_control(&mut rtc, &command) {
+                last_qos_report = report;
                 qos_reports_sent = qos_reports_sent.saturating_add(1);
             }
             last_qos_send = now;
@@ -6464,6 +6476,9 @@ mod tests {
     }
     mod recovery_tests {
         include!("nvst_recovery_tests.rs");
+    }
+    mod qos_tests {
+        include!("nvst_qos_tests.rs");
     }
     use super::*;
     use serde_json::json;
