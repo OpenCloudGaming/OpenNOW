@@ -9,7 +9,7 @@
 extern "C" {
 #endif
 
-#define OPENNOW_STREAMER_FFI_ABI_VERSION 9u
+#define OPENNOW_STREAMER_FFI_ABI_VERSION 10u
 #define OPENNOW_STREAMER_MAX_TEXT_BYTES 65536u
 #define OPENNOW_STREAMER_VULKAN_DEVICE_INFO_VERSION 1u
 #define OPENNOW_STREAMER_GRAPHICS_CONTEXT_VERSION 3u
@@ -69,6 +69,8 @@ typedef struct OpenNowStreamerConfig {
     OpenNowStreamerCallback cursor_callback;
     void *user_data;
     const OpenNowStreamerVulkanDevice *vulkan_device;
+    /* Packed Windows LUID bits. Zero selects the system default adapter. */
+    uint64_t windows_adapter_luid;
 } OpenNowStreamerConfig;
 
 /*

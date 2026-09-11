@@ -10,8 +10,8 @@ use ::windows::Win32::Foundation::{
     LUID, RECT, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT, WPARAM,
 };
 use ::windows::Win32::Graphics::Direct3D::{
-    D3D_DRIVER_TYPE_HARDWARE, D3D_FEATURE_LEVEL_10_0, D3D_FEATURE_LEVEL_10_1,
-    D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_11_1,
+    D3D_DRIVER_TYPE_HARDWARE, D3D_DRIVER_TYPE_UNKNOWN, D3D_FEATURE_LEVEL_10_0,
+    D3D_FEATURE_LEVEL_10_1, D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_11_1,
 };
 use ::windows::Win32::Graphics::Direct3D10::ID3D10Multithread;
 #[cfg(test)]
@@ -41,11 +41,11 @@ use ::windows::Win32::Graphics::Dxgi::Common::{
     DXGI_FORMAT_Y410, DXGI_RATIONAL, DXGI_SAMPLE_DESC,
 };
 use ::windows::Win32::Graphics::Dxgi::{
-    DXGI_FEATURE_PRESENT_ALLOW_TEARING, DXGI_MWA_NO_ALT_ENTER, DXGI_PRESENT,
+    CreateDXGIFactory1, DXGI_FEATURE_PRESENT_ALLOW_TEARING, DXGI_MWA_NO_ALT_ENTER, DXGI_PRESENT,
     DXGI_PRESENT_ALLOW_TEARING, DXGI_SCALING_STRETCH, DXGI_SWAP_CHAIN_DESC1, DXGI_SWAP_CHAIN_FLAG,
     DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING, DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT,
     DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL, DXGI_USAGE_RENDER_TARGET_OUTPUT, IDXGIAdapter, IDXGIDevice,
-    IDXGIFactory2, IDXGIFactory5, IDXGISwapChain1, IDXGISwapChain2, IDXGISwapChain3,
+    IDXGIFactory2, IDXGIFactory4, IDXGIFactory5, IDXGISwapChain1, IDXGISwapChain2, IDXGISwapChain3,
 };
 use ::windows::Win32::Media::MediaFoundation::{IMFDXGIDeviceManager, MFCreateDXGIDeviceManager};
 use ::windows::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -64,7 +64,7 @@ use ::windows::core::{BOOL, IUnknown, Interface, w};
 
 use crate::{
     Bounds, ExistingWindow, OwnedWindow, SurfaceTarget, VideoChromaFormat, VideoCodec, VideoFormat,
-    VideoPixelFormat, WindowHandle, WindowsGraphicsApi,
+    VideoPixelFormat, WindowHandle, WindowsAdapterLuid, WindowsGraphicsApi,
 };
 
 use super::decoder::DecoderDevice;
@@ -88,10 +88,14 @@ struct D3d12Owners {
 }
 
 impl DeviceResources {
-    fn new(api: WindowsGraphicsApi) -> Result<Self, String> {
+    fn new(
+        api: WindowsGraphicsApi,
+        adapter_luid: Option<WindowsAdapterLuid>,
+    ) -> Result<Self, String> {
+        let adapter = resolve_adapter(adapter_luid)?;
         match api {
-            WindowsGraphicsApi::D3d11 => Self::new_d3d11(),
-            WindowsGraphicsApi::D3d12 => Self::new_d3d12(),
+            WindowsGraphicsApi::D3d11 => Self::new_d3d11(adapter.as_ref()),
+            WindowsGraphicsApi::D3d12 => Self::new_d3d12(adapter.as_ref()),
         }
     }
 
@@ -129,7 +133,7 @@ impl DeviceResources {
         }
     }
 
-    fn new_d3d11() -> Result<Self, String> {
+    fn new_d3d11(adapter: Option<&IDXGIAdapter>) -> Result<Self, String> {
         unsafe {
             let mut device = None;
             let mut context = None;
@@ -140,8 +144,12 @@ impl DeviceResources {
                 D3D_FEATURE_LEVEL_10_0,
             ];
             D3D11CreateDevice(
-                None::<&IDXGIAdapter>,
-                D3D_DRIVER_TYPE_HARDWARE,
+                adapter,
+                if adapter.is_some() {
+                    D3D_DRIVER_TYPE_UNKNOWN
+                } else {
+                    D3D_DRIVER_TYPE_HARDWARE
+                },
                 HMODULE::default(),
                 D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_VIDEO_SUPPORT,
                 Some(&levels),
@@ -159,10 +167,14 @@ impl DeviceResources {
         }
     }
 
-    fn new_d3d12() -> Result<Self, String> {
+    fn new_d3d12(adapter: Option<&IDXGIAdapter>) -> Result<Self, String> {
         unsafe {
+            let adapter = adapter
+                .map(|adapter| adapter.cast::<IUnknown>())
+                .transpose()
+                .map_err(|error| format!("selected D3D12 adapter interface: {error}"))?;
             let mut d3d12_device = None;
-            D3D12CreateDevice(None::<&IUnknown>, D3D_FEATURE_LEVEL_11_0, &mut d3d12_device)
+            D3D12CreateDevice(adapter.as_ref(), D3D_FEATURE_LEVEL_11_0, &mut d3d12_device)
                 .map_err(|error| format!("D3D12CreateDevice: {error}"))?;
             let d3d12_device: ID3D12Device =
                 d3d12_device.ok_or("D3D12CreateDevice returned no device")?;
@@ -204,6 +216,34 @@ impl DeviceResources {
             )
         }
     }
+}
+
+fn resolve_adapter(
+    adapter_luid: Option<WindowsAdapterLuid>,
+) -> Result<Option<IDXGIAdapter>, String> {
+    resolve_adapter_with(adapter_luid, |luid, raw| unsafe {
+        let factory: IDXGIFactory4 = CreateDXGIFactory1().map_err(|error| {
+            format!("create DXGI factory for adapter LUID {raw:#018x}: {error}")
+        })?;
+        factory
+            .EnumAdapterByLuid(luid)
+            .map_err(|error| format!("selected adapter LUID {raw:#018x} is unavailable: {error}"))
+    })
+}
+
+fn resolve_adapter_with(
+    adapter_luid: Option<WindowsAdapterLuid>,
+    resolve: impl FnOnce(LUID, u64) -> Result<IDXGIAdapter, String>,
+) -> Result<Option<IDXGIAdapter>, String> {
+    let Some(adapter_luid) = adapter_luid else {
+        return Ok(None);
+    };
+    let raw = adapter_luid.get();
+    let luid = LUID {
+        LowPart: raw as u32,
+        HighPart: (raw >> 32) as u32 as i32,
+    };
+    resolve(luid, raw).map(Some)
 }
 
 enum RenderWindow {
@@ -477,7 +517,10 @@ impl Graphics {
         result
     }
 
-    pub(super) fn probe(api: WindowsGraphicsApi) -> Result<Self, String> {
+    pub(super) fn probe(
+        api: WindowsGraphicsApi,
+        adapter_luid: Option<WindowsAdapterLuid>,
+    ) -> Result<Self, String> {
         let format = VideoFormat {
             codec: VideoCodec::H264,
             width: 1920,
@@ -495,6 +538,7 @@ impl Graphics {
         };
         Self::new(
             api,
+            adapter_luid,
             SurfaceTarget::Owned(OwnedWindow {
                 parent: None,
                 bounds: Bounds {
@@ -511,11 +555,12 @@ impl Graphics {
 
     pub(super) fn new(
         api: WindowsGraphicsApi,
+        adapter_luid: Option<WindowsAdapterLuid>,
         target: SurfaceTarget,
         video_format: VideoFormat,
     ) -> Result<Self, String> {
         validate_standalone_color(video_format)?;
-        let resources = DeviceResources::new(api)?;
+        let resources = DeviceResources::new(api, adapter_luid)?;
         let window = RenderWindow::new(target)?;
         let swap_size = window.client_size()?;
         let swap_format = swap_chain_format(video_format, true);
@@ -1380,7 +1425,7 @@ mod tests {
 
     #[test]
     fn d3d11_on_12_exposes_video_processing_or_reports_unsupported_hardware() {
-        if let Err(error) = Graphics::probe(WindowsGraphicsApi::D3d12) {
+        if let Err(error) = Graphics::probe(WindowsGraphicsApi::D3d12, None) {
             assert!(
                 is_missing_hardware_video_support(&error),
                 "D3D11-on-12 probe failed unexpectedly: {error}"
@@ -1389,9 +1434,32 @@ mod tests {
     }
 
     #[test]
+    fn selected_adapter_luid_is_routed_without_default_fallback() {
+        let luid = WindowsAdapterLuid::new(0xffff_fffe_1122_3344).expect("non-zero LUID");
+        let result = resolve_adapter_with(Some(luid), |native, raw| {
+            assert_eq!(native.LowPart, 0x1122_3344);
+            assert_eq!(native.HighPart, -2);
+            assert_eq!(raw, luid.get());
+            Err("selected adapter unavailable".to_owned())
+        });
+        let error = match result {
+            Ok(_) => panic!("selected adapter resolution must preserve failure"),
+            Err(error) => error,
+        };
+        assert_eq!(error, "selected adapter unavailable");
+
+        let default = resolve_adapter_with(None, |_, _| -> Result<IDXGIAdapter, String> {
+            panic!("default selection must not resolve an explicit adapter")
+        })
+        .expect("default adapter selection");
+        assert!(default.is_none());
+    }
+
+    #[test]
     fn p010_presentation_selects_a_scanout_or_reports_unsupported_hardware() {
         let result = Graphics::new(
             WindowsGraphicsApi::D3d11,
+            None,
             SurfaceTarget::Owned(OwnedWindow {
                 parent: None,
                 bounds: Bounds {
@@ -1447,6 +1515,7 @@ mod tests {
         }
         let mut graphics = Graphics::new(
             WindowsGraphicsApi::D3d11,
+            None,
             SurfaceTarget::Owned(OwnedWindow {
                 parent: None,
                 bounds: Bounds {

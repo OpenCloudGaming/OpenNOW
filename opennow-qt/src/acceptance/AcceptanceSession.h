@@ -20,12 +20,12 @@ public:
     [[nodiscard]] int prepareWindow();
     [[nodiscard]] int measureStartup(const QElapsedTimer &startupTimer, qint64 qmlReadyMs);
     [[nodiscard]] int startWorkload();
-    [[nodiscard]] bool allowsExplicitCore() const;
-    [[nodiscard]] bool allowsBundledCore() const;
+    static QString coreProgram(const QStringList &arguments);
 
 private:
     [[nodiscard]] int startSmokeWorkload();
     [[nodiscard]] int startThemeSettingsWorkload();
+    [[nodiscard]] int startGpuSettingsWorkload();
     [[nodiscard]] int startFrameGenerationStatsWorkload();
     [[nodiscard]] int startStreamExitWorkload();
     [[nodiscard]] int startSessionFullscreenWorkload();

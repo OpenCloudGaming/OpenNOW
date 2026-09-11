@@ -1,8 +1,11 @@
 #include "acceptance/AcceptanceSession.h"
 #include "acceptance/AcceptanceProfiler.h"
 #include "app/AppController.h"
+#include "app/platform/GraphicsDeviceSelection.h"
 
 #include <QElapsedTimer>
+#include <QDir>
+#include <QFileInfo>
 #include <QGuiApplication>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
@@ -47,20 +50,43 @@ AcceptanceSession::AcceptanceSession(QGuiApplication &application,
                      });
 }
 
-bool AcceptanceSession::allowsExplicitCore() const
+QString AcceptanceSession::coreProgram(const QStringList &arguments)
 {
-    return (!m_smokeTest || m_smokeConsolePersistenceRollback || m_smokeStreamerEvent)
-        && !m_performanceMode;
-}
-
-bool AcceptanceSession::allowsBundledCore() const
-{
-    return !m_smokeTest && !m_performanceMode;
+    const auto performanceIndex = arguments.indexOf(u"--performance-report"_s);
+    if (performanceIndex >= 0 && performanceIndex + 1 < arguments.size()) return {};
+    const bool smoke = arguments.contains(u"--smoke-test"_s);
+    const bool explicitAllowed = !smoke || arguments.contains(u"--smoke-console-persistence-rollback"_s)
+        || arguments.contains(u"--smoke-streamer-event"_s);
+    const auto coreIndex = arguments.indexOf(u"--core"_s);
+    if (explicitAllowed && coreIndex >= 0 && coreIndex + 1 < arguments.size())
+        return arguments.at(coreIndex + 1);
+    if (smoke) return {};
+    const auto bundled = QDir(QCoreApplication::applicationDirPath()).filePath(
+#ifdef Q_OS_WIN
+        u"opennow-core.exe"_s
+#else
+        u"opennow-core"_s
+#endif
+    );
+    return QFileInfo::exists(bundled) ? bundled : QString{};
 }
 
 void AcceptanceSession::configureContext()
 {
     m_engine.rootContext()->setContextProperty(u"SmokeTestMode"_s, m_smokeTest);
+    const auto gpuCountIndex = m_arguments.indexOf(u"--smoke-gpu-count"_s);
+    if (m_smokeTest && gpuCountIndex >= 0 && gpuCountIndex + 1 < m_arguments.size()) {
+        const auto count = qBound(0, m_arguments.at(gpuCountIndex + 1).toInt(), 4);
+        QList<GraphicsDeviceSelection::Adapter> adapters;
+        for (int index = 0; index < count; ++index) {
+            adapters.append({u"fixture-gpu-%1"_s.arg(index),
+                index == 0 ? u"Intel UHD Graphics (fixture)"_s : u"NVIDIA GeForce RTX (fixture %1)"_s.arg(index),
+                quint64(index + 1), index == 0 ? 0ULL : 8ULL << 30, false});
+        }
+        adapters.append({u"fixture-software"_s, u"Software adapter (fixture)"_s, 99, 0, true});
+        auto *devices = new GraphicsDeviceSelection(adapters, {}, &m_engine);
+        m_engine.rootContext()->setContextProperty(u"GraphicsDevices"_s, devices);
+    }
     m_engine.rootContext()->setContextProperty(
         u"SmokeTestGame"_s,
         m_smokeTest ? QVariantMap{

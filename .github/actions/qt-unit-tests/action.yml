@@ -62,6 +62,7 @@ runs:
       if: runner.os == 'Linux'
       shell: bash
       run: |
+        sudo bash .github/scripts/configure-ubuntu-apt.sh
         sudo apt-get update
         sudo apt-get install -y \
           clang libclang-dev libasound2-dev libdbus-1-dev libdrm-dev libegl1-mesa-dev libgl1-mesa-dev \

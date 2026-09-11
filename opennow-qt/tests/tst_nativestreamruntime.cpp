@@ -376,6 +376,25 @@ private slots:
         QVERIFY(!captured.vulkan_device);
     }
 
+    void preservesWindowsAdapterSelectionAcrossRuntimeRestarts()
+    {
+        static OpenNowStreamerConfig captured;
+        auto api = fakeApi();
+        api.create = [](const OpenNowStreamerConfig *config, OpenNowStreamer **output) {
+            captured = *config;
+            return fakeCreate(config, output);
+        };
+        NativeStreamRuntime selected(api, nullptr, nullptr, 0xffffffff00000042ULL);
+        for (int attempt = 0; attempt < 2; ++attempt) {
+            QVERIFY(selected.start());
+            QCOMPARE(captured.windows_adapter_luid, 0xffffffff00000042ULL);
+            QVERIFY(selected.shutdown());
+        }
+        NativeStreamRuntime automatic(api);
+        QVERIFY(automatic.start());
+        QCOMPARE(captured.windows_adapter_luid, 0ULL);
+    }
+
     void rejectedSessionCommandsRestorePreviousInputAuthorization()
     {
         NativeStreamRuntime runtime(fakeApi());

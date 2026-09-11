@@ -6,6 +6,7 @@
 #endif
 
 #include <QDateTime>
+#include <QElapsedTimer>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -14,6 +15,39 @@
 #include <QStandardPaths>
 
 using namespace Qt::StringLiterals;
+
+QString CoreClient::graphicsPreference(const QString &program)
+{
+    if (program.isEmpty()) return {};
+    QProcess process;
+    process.setStandardErrorFile(QProcess::nullDevice());
+    QElapsedTimer elapsed;
+    elapsed.start();
+    process.start(program, {u"--graphics-preferences"_s});
+    QByteArray output;
+    bool bounded = process.waitForStarted(500);
+    while (bounded && process.state() != QProcess::NotRunning && elapsed.elapsed() < 2'000) {
+        process.waitForReadyRead(int(qBound(qint64(0), 2'000 - elapsed.elapsed(), qint64(50))));
+        output += process.read(8'193 - output.size());
+        bounded = output.size() <= 8'192;
+    }
+    if (!bounded || process.state() != QProcess::NotRunning) {
+        process.kill();
+        process.waitForFinished(1'000);
+        qWarning("Graphics preference bootstrap failed; using Automatic");
+        return {};
+    }
+    output += process.read(8'193 - output.size());
+    const auto document = QJsonDocument::fromJson(output);
+    const auto preference = document.object().value(u"windowsGpuDeviceId"_s);
+    if (output.size() > 8'192 || process.exitStatus() != QProcess::NormalExit || process.exitCode() != 0
+        || document.object().value(u"version"_s).toInt() != 1 || !preference.isString()
+        || preference.toString().toUtf8().size() > 1'024 || preference.toString().contains(QChar::Null)) {
+        qWarning("Graphics preference bootstrap returned invalid data; using Automatic");
+        return {};
+    }
+    return preference.toString();
+}
 
 namespace {
 QString safeText(const QJsonValue &value, const QString &fallback)

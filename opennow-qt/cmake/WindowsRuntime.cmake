@@ -1,5 +1,5 @@
 if(WIN32)
-    target_link_libraries(opennow-qt PRIVATE user32)
+    target_link_libraries(opennow-qt PRIVATE user32 dxgi)
     add_custom_command(TARGET opennow-qt POST_BUILD
         COMMAND "${CMAKE_COMMAND}" -E copy_if_different
                 "$<TARGET_FILE:${OPENNOW_SDL3_RUNTIME_TARGET}>"

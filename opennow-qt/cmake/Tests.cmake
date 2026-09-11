@@ -1,5 +1,15 @@
 include(CTest)
 if(BUILD_TESTING)
+    qt_add_executable(opennow-graphicsdevices-tests tests/tst_graphicsdeviceselection.cpp
+        src/app/platform/GraphicsDeviceSelection.cpp src/app/platform/GraphicsDeviceSelection.h)
+    target_include_directories(opennow-graphicsdevices-tests PRIVATE src)
+    target_link_libraries(opennow-graphicsdevices-tests PRIVATE Qt6::Test Qt6::Quick)
+    if(WIN32)
+        target_link_libraries(opennow-graphicsdevices-tests PRIVATE user32 dxgi)
+    endif()
+    add_test(NAME opennow-graphicsdevices-tests COMMAND opennow-graphicsdevices-tests -o -,txt)
+    set_tests_properties(opennow-graphicsdevices-tests PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 20)
     qt_add_executable(opennow-macawdl-tests tests/tst_macawdlcontroller.cpp
         src/app/platform/MacAwdlController.cpp src/app/platform/MacAwdlController.h)
     target_include_directories(opennow-macawdl-tests PRIVATE src)
@@ -157,6 +167,17 @@ if(BUILD_TESTING)
     set_tests_properties(opennow-theme-tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
     qt_add_resources(opennow-qt "theme-settings-acceptance"
         PREFIX "/acceptance" BASE tests FILES tests/ThemeSettingsAcceptance.qml)
+    qt_add_resources(opennow-qt "gpu-settings-acceptance"
+        PREFIX "/acceptance" BASE tests FILES tests/GpuSettingsAcceptance.qml)
+    foreach(surface desktop console)
+        foreach(count 0 1 2 3)
+            add_test(NAME "qml-gpu-settings-${surface}-${count}"
+                COMMAND opennow-qt --smoke-test --allow-multiple-instances --${surface}
+                    --route settings-video --smoke-gpu-count ${count} --reduced-motion)
+            set_tests_properties("qml-gpu-settings-${surface}-${count}" PROPERTIES
+                ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 20)
+        endforeach()
+    endforeach()
     qt_add_resources(opennow-qt "upscaling-acceptance"
         PREFIX "/acceptance" BASE tests FILES tests/UpscalingAcceptance.qml)
     add_test(NAME qml-upscaling
@@ -628,6 +649,7 @@ if(BUILD_TESTING)
         TIMEOUT 30
     )
     set(OPENNOW_CI_UNIT_TEST_TARGETS
+        opennow-graphicsdevices-tests
         opennow-consolelayout-tests
         opennow-macawdl-tests
         opennow-controllericons-tests
@@ -666,6 +688,7 @@ if(BUILD_TESTING)
         # Qt's executable helper defaults to the GUI subsystem on Windows. Keep
         # test runners as console programs so CTest captures QtTest failures.
         set_target_properties(
+            opennow-graphicsdevices-tests
             opennow-consolelayout-tests
             opennow-macawdl-tests
             opennow-controllericons-tests
@@ -718,6 +741,7 @@ if(BUILD_TESTING)
             add_dependencies(opennow-qt-test-runtime opennow-msvc-runtime)
         endif()
         foreach(test_target IN ITEMS
+                opennow-graphicsdevices-tests
                 opennow-consolelayout-tests
                 opennow-controllericons-tests
                 opennow-streamtoasts-tests

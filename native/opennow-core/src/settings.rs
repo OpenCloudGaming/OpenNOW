@@ -3,11 +3,20 @@ use serde_json::{Map, Value, json};
 use std::collections::HashSet;
 use std::env;
 use std::fs;
-use std::io;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
 const NATIVE_TRANSPORT: &str = "nvst";
 const CONSOLE_POLICY_VERSION: &str = "qtConsoleModePolicyVersion";
+const WINDOWS_GPU_DEVICE_ID: &str = "windowsGpuDeviceId";
+const MAXIMUM_WINDOWS_GPU_DEVICE_ID_BYTES: usize = 1024;
+const MAXIMUM_BOOTSTRAP_SETTINGS_BYTES: u64 = 1024 * 1024;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LoadPolicy {
+    ReadWrite,
+    ReadOnly,
+}
 
 pub struct SettingsStore {
     path: PathBuf,
@@ -20,6 +29,18 @@ pub struct SettingsStore {
 
 impl SettingsStore {
     pub fn load(data_dir: Option<PathBuf>) -> io::Result<Self> {
+        Self::load_with_policy(data_dir, LoadPolicy::ReadWrite)
+    }
+
+    pub(super) fn windows_gpu_device_id_read_only(data_dir: Option<PathBuf>) -> io::Result<String> {
+        let store = Self::load_with_policy(data_dir, LoadPolicy::ReadOnly)?;
+        Ok(store.values[WINDOWS_GPU_DEVICE_ID]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned())
+    }
+
+    fn load_with_policy(data_dir: Option<PathBuf>, policy: LoadPolicy) -> io::Result<Self> {
         let path = data_dir
             .unwrap_or_else(default_data_dir)
             .join("settings.json");
@@ -28,22 +49,30 @@ impl SettingsStore {
         let mut passthrough = Map::new();
         let mut migrate_onboarding = false;
         if path.exists() {
-            match fs::read_to_string(&path)
-                .ok()
-                .and_then(|text| serde_json::from_str::<Map<String, Value>>(&text).ok())
-            {
+            match read_persisted_settings(&path, policy) {
                 Some(persisted) => {
-                    migrate_onboarding = !persisted.contains_key("onboardingCompleted");
+                    migrate_onboarding = policy == LoadPolicy::ReadWrite
+                        && !persisted.contains_key("onboardingCompleted");
                     if migrate_onboarding {
                         values.insert("onboardingCompleted".to_owned(), json!(true));
                     }
                     for (key, value) in persisted {
                         if defaults.contains_key(&key) {
                             let value = if key == "gameCollections" {
-                                normalize_game_collections(value).map_err(|error| {
-                                    io::Error::new(io::ErrorKind::InvalidData, error)
-                                })?
-                            } else if key == "mouseAcceleration" {
+                                match normalize_game_collections(value) {
+                                    Ok(value) => value,
+                                    Err(_) if policy == LoadPolicy::ReadOnly => {
+                                        defaults["gameCollections"].clone()
+                                    }
+                                    Err(error) => {
+                                        return Err(io::Error::new(
+                                            io::ErrorKind::InvalidData,
+                                            error,
+                                        ));
+                                    }
+                                }
+                            } else if policy == LoadPolicy::ReadWrite && key == "mouseAcceleration"
+                            {
                                 value.as_bool().map_or(value.clone(), |enabled| {
                                     Value::Number((if enabled { 100 } else { 1 }).into())
                                 })
@@ -52,7 +81,8 @@ impl SettingsStore {
                             };
                             values.insert(key, value);
                         } else if key != "nativeHdrSupported" {
-                            if key == "sessionTimeRemainingDisplay"
+                            if policy == LoadPolicy::ReadWrite
+                                && key == "sessionTimeRemainingDisplay"
                                 && matches!(value.as_str(), Some("stats" | "both"))
                             {
                                 values.insert(
@@ -65,8 +95,10 @@ impl SettingsStore {
                     }
                 }
                 None => {
-                    let corrupt_path = path.with_extension("json.corrupt");
-                    let _ = fs::rename(&path, corrupt_path);
+                    if policy == LoadPolicy::ReadWrite {
+                        let corrupt_path = path.with_extension("json.corrupt");
+                        let _ = fs::rename(&path, corrupt_path);
+                    }
                 }
             }
         }
@@ -75,12 +107,14 @@ impl SettingsStore {
             values,
             passthrough,
         };
-        store.migrate_native_fullscreen_shortcut();
+        if policy == LoadPolicy::ReadWrite {
+            store.migrate_native_fullscreen_shortcut();
+        }
         // Old builds enabled automatic switching by default, so an existing
         // true value is not reliable evidence of opt-in. Reset that policy once;
         // subsequent explicit opt-ins survive every restart.
-        let migrate_console_policy =
-            store.passthrough.get(CONSOLE_POLICY_VERSION) != Some(&json!(1));
+        let migrate_console_policy = policy == LoadPolicy::ReadWrite
+            && store.passthrough.get(CONSOLE_POLICY_VERSION) != Some(&json!(1));
         if migrate_console_policy {
             store
                 .values
@@ -90,7 +124,10 @@ impl SettingsStore {
                 .insert(CONSOLE_POLICY_VERSION.to_owned(), json!(1));
         }
         store.normalize();
-        if (migrate_console_policy || migrate_onboarding) && store.path.exists() {
+        if policy == LoadPolicy::ReadWrite
+            && (migrate_console_policy || migrate_onboarding)
+            && store.path.exists()
+        {
             store.save()?;
         }
         Ok(store)
@@ -105,15 +142,10 @@ impl SettingsStore {
             return Err(format!("Unknown setting: {key}"));
         }
         if key == "audioOutputDevice" {
-            let device = value
-                .as_str()
-                .ok_or_else(|| "audioOutputDevice must be a string".to_owned())?;
-            if device.len() > 1024 || device.contains('\0') {
-                return Err(
-                    "audioOutputDevice must be at most 1024 bytes without NUL characters"
-                        .to_owned(),
-                );
-            }
+            validate_bounded_string(&value, key, 1024)?;
+        }
+        if key == WINDOWS_GPU_DEVICE_ID {
+            validate_bounded_string(&value, key, MAXIMUM_WINDOWS_GPU_DEVICE_ID_BYTES)?;
         }
         if key == "gameCollections" {
             value = normalize_game_collections(value)?;
@@ -186,6 +218,15 @@ impl SettingsStore {
         {
             self.values
                 .insert("audioOutputDevice".to_owned(), json!(""));
+        }
+        if self.values[WINDOWS_GPU_DEVICE_ID]
+            .as_str()
+            .is_some_and(|device| {
+                device.len() > MAXIMUM_WINDOWS_GPU_DEVICE_ID_BYTES || device.contains('\0')
+            })
+        {
+            self.values
+                .insert(WINDOWS_GPU_DEVICE_ID.to_owned(), json!(""));
         }
         normalize_resolution(&mut self.values);
         normalize_choice(
@@ -415,6 +456,38 @@ impl SettingsStore {
         }
         Ok(())
     }
+}
+
+fn read_persisted_settings(path: &Path, policy: LoadPolicy) -> Option<Map<String, Value>> {
+    match policy {
+        LoadPolicy::ReadWrite => fs::read_to_string(path)
+            .ok()
+            .and_then(|text| serde_json::from_str(&text).ok()),
+        LoadPolicy::ReadOnly => {
+            let mut data = Vec::new();
+            fs::File::open(path)
+                .ok()?
+                .take(MAXIMUM_BOOTSTRAP_SETTINGS_BYTES + 1)
+                .read_to_end(&mut data)
+                .ok()?;
+            if data.len() as u64 > MAXIMUM_BOOTSTRAP_SETTINGS_BYTES {
+                return None;
+            }
+            serde_json::from_slice(&data).ok()
+        }
+    }
+}
+
+fn validate_bounded_string(value: &Value, key: &str, maximum_bytes: usize) -> Result<(), String> {
+    let value = value
+        .as_str()
+        .ok_or_else(|| format!("{key} must be a string"))?;
+    if value.len() > maximum_bytes || value.contains('\0') {
+        return Err(format!(
+            "{key} must be at most {maximum_bytes} bytes without NUL characters"
+        ));
+    }
+    Ok(())
 }
 
 fn normalize_game_collections(mut value: Value) -> Result<Value, String> {
@@ -785,6 +858,7 @@ fn defaults() -> Map<String, Value> {
         "recordingResolution":"720p", "recordingFps":30, "streamClientMode":"native",
         "replayBufferEnabled":false, "replayBufferSeconds":30, "replayBufferMemoryMiB":256,
         "nativeVideoBackend":"auto", "nativeStreamerExecutablePath":"", "audioOutputDevice":"",
+        "windowsGpuDeviceId":"",
         "nativeCloudGsyncMode":"auto", "nativeD3dFullscreenMode":"auto",
         "nativeExternalRenderer":false, "transportMode":"nvst", "showNativeStreamerStats":false,
         "codec":"auto", "fallbackCodec":"auto", "decoderPreference":"auto",
@@ -1632,6 +1706,137 @@ mod tests {
             SettingsStore::load(Some(directory.clone())).unwrap().all()["autoFullScreen"],
             json!(true)
         );
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn windows_gpu_device_preference_roundtrips_and_resets() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = env::temp_dir().join(format!("opennow-windows-gpu-{unique}"));
+        let mut store = SettingsStore::load(Some(directory.clone())).unwrap();
+        assert_eq!(store.all()[WINDOWS_GPU_DEVICE_ID], json!(""));
+
+        let device_id = "é".repeat(MAXIMUM_WINDOWS_GPU_DEVICE_ID_BYTES / 2);
+        assert_eq!(device_id.len(), MAXIMUM_WINDOWS_GPU_DEVICE_ID_BYTES);
+        assert_eq!(
+            store
+                .set(WINDOWS_GPU_DEVICE_ID, json!(device_id.clone()))
+                .unwrap(),
+            json!(device_id)
+        );
+        assert_eq!(
+            SettingsStore::load(Some(directory.clone())).unwrap().all()[WINDOWS_GPU_DEVICE_ID],
+            json!(device_id)
+        );
+
+        let reset = store.reset().unwrap();
+        assert_eq!(reset[WINDOWS_GPU_DEVICE_ID], json!(""));
+        assert_eq!(
+            SettingsStore::load(Some(directory.clone())).unwrap().all()[WINDOWS_GPU_DEVICE_ID],
+            json!("")
+        );
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn windows_gpu_device_preference_rejects_invalid_set_values() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = env::temp_dir().join(format!("opennow-windows-gpu-invalid-{unique}"));
+        let mut store = SettingsStore::load(Some(directory.clone())).unwrap();
+        store
+            .set(WINDOWS_GPU_DEVICE_ID, json!("valid-device"))
+            .unwrap();
+
+        for invalid in [
+            json!(null),
+            json!(false),
+            json!(42),
+            json!(["device"]),
+            json!({"device":"id"}),
+            json!("x".repeat(MAXIMUM_WINDOWS_GPU_DEVICE_ID_BYTES + 1)),
+            json!("device\0id"),
+        ] {
+            assert!(store.set(WINDOWS_GPU_DEVICE_ID, invalid).is_err());
+            assert_eq!(store.all()[WINDOWS_GPU_DEVICE_ID], json!("valid-device"));
+        }
+        assert_eq!(
+            SettingsStore::load(Some(directory.clone())).unwrap().all()[WINDOWS_GPU_DEVICE_ID],
+            json!("valid-device")
+        );
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn windows_gpu_device_preference_normalizes_invalid_saved_values() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = env::temp_dir().join(format!("opennow-windows-gpu-saved-{unique}"));
+        fs::create_dir_all(&directory).unwrap();
+
+        for invalid in [
+            json!(null),
+            json!(123),
+            json!("x".repeat(MAXIMUM_WINDOWS_GPU_DEVICE_ID_BYTES + 1)),
+            json!("device\0id"),
+        ] {
+            fs::write(
+                directory.join("settings.json"),
+                serde_json::to_vec(&json!({"windowsGpuDeviceId":invalid})).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(
+                SettingsStore::load(Some(directory.clone())).unwrap().all()[WINDOWS_GPU_DEVICE_ID],
+                json!("")
+            );
+        }
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn read_only_gpu_preference_load_never_migrates_or_renames_settings() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = env::temp_dir().join(format!("opennow-windows-gpu-read-only-{unique}"));
+        let path = directory.join("settings.json");
+        fs::create_dir_all(&directory).unwrap();
+
+        let legacy = br#"{"windowsGpuDeviceId":"legacy-device","mouseAcceleration":true,"gameCollections":[{"invalid":true}]}"#;
+        fs::write(&path, legacy).unwrap();
+        assert_eq!(
+            SettingsStore::windows_gpu_device_id_read_only(Some(directory.clone())).unwrap(),
+            "legacy-device"
+        );
+        assert_eq!(fs::read(&path).unwrap(), legacy);
+        assert!(!directory.join("settings.json.bak").exists());
+        assert!(!directory.join("settings.json.tmp").exists());
+
+        let corrupt = b"{";
+        fs::write(&path, corrupt).unwrap();
+        assert_eq!(
+            SettingsStore::windows_gpu_device_id_read_only(Some(directory.clone())).unwrap(),
+            ""
+        );
+        assert_eq!(fs::read(&path).unwrap(), corrupt);
+        assert!(!directory.join("settings.json.corrupt").exists());
+
+        let oversized = vec![b' '; MAXIMUM_BOOTSTRAP_SETTINGS_BYTES as usize + 1];
+        fs::write(&path, &oversized).unwrap();
+        assert_eq!(
+            SettingsStore::windows_gpu_device_id_read_only(Some(directory.clone())).unwrap(),
+            ""
+        );
+        assert_eq!(fs::read(&path).unwrap(), oversized);
+        assert!(!directory.join("settings.json.corrupt").exists());
         fs::remove_dir_all(directory).unwrap();
     }
 

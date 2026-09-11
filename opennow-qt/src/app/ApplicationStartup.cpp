@@ -1,4 +1,5 @@
 #include "app/AppController.h"
+#include "app/platform/GraphicsDeviceSelection.h"
 #include "acceptance/AcceptanceSession.h"
 #include "app/ApplicationStartup.h"
 #include "app/platform/MacAwdlController.h"
@@ -127,6 +128,16 @@ static int runApplicationSession(int argc, char *argv[], QString &restartExecuta
     Localization localization;
     application.installTranslator(&localization);
     CoreClient coreClient;
+    const auto coreProgram = AcceptanceSession::coreProgram(arguments);
+    GraphicsDeviceSelection graphicsDevices(GraphicsDeviceSelection::detectAdapters(),
+#ifdef Q_OS_WIN
+                                             CoreClient::graphicsPreference(coreProgram)
+#else
+                                             QString{}
+#endif
+    );
+    QObject::connect(&localization, &Localization::localeChanged,
+                     &graphicsDevices, &GraphicsDeviceSelection::choicesChanged);
 #if defined(Q_OS_LINUX) && QT_CONFIG(vulkan) && __has_include(<vulkan/vulkan.h>)
     NativeStreamRuntime::initializeDiagnostics();
     LinuxVulkanGraphics::Device vulkanDevice;
@@ -136,10 +147,13 @@ static int runApplicationSession(int argc, char *argv[], QString &restartExecuta
                  qUtf8Printable(vulkanDevice.lastError()));
 #endif
 #ifdef OPENNOW_EMBEDDED_STREAMER
-    NativeStreamRuntime nativeStreamRuntime(nullptr
+    NativeStreamRuntime nativeStreamRuntime(nullptr,
 #if defined(Q_OS_LINUX) && QT_CONFIG(vulkan) && __has_include(<vulkan/vulkan.h>)
-                                           , vulkanDevice.handle()
+                                           vulkanDevice.handle(),
+#else
+                                           nullptr,
 #endif
+                                           graphicsDevices.adapterLuid()
     );
     if (!nativeStreamRuntime.start())
         qWarning("Could not start the embedded streamer runtime: %s",
@@ -201,6 +215,7 @@ static int runApplicationSession(int argc, char *argv[], QString &restartExecuta
     engine.rootContext()->setContextProperty(u"ThumbnailGenerator"_s, &thumbnailGenerator);
     engine.rootContext()->setContextProperty(u"I18n"_s, &localization);
     engine.rootContext()->setContextProperty(u"CoreClient"_s, &coreClient);
+    engine.rootContext()->setContextProperty(u"GraphicsDevices"_s, &graphicsDevices);
     engine.rootContext()->setContextProperty(u"HdrOutput"_s, &hdrOutput);
     engine.rootContext()->setContextProperty(u"MacAwdl"_s, &macAwdl);
 #ifdef OPENNOW_EMBEDDED_STREAMER
@@ -220,6 +235,10 @@ static int runApplicationSession(int argc, char *argv[], QString &restartExecuta
     engine.loadFromModule(u"OpenNOW"_s, u"Main"_s);
     auto *rootWindow = engine.rootObjects().isEmpty() ? nullptr
         : qobject_cast<QQuickWindow *>(engine.rootObjects().first());
+    if (!graphicsDevices.applyTo(rootWindow)) {
+        qCritical("Could not select the graphics adapter before scene-graph initialization");
+        return EXIT_FAILURE;
+    }
     hdrOutput.attach(rootWindow);
 #if defined(Q_OS_LINUX) && QT_CONFIG(vulkan) && __has_include(<vulkan/vulkan.h>)
     if (vulkanDevice.handle() && !vulkanDevice.adopt(rootWindow)) {
@@ -256,22 +275,7 @@ static int runApplicationSession(int argc, char *argv[], QString &restartExecuta
     if (acceptance.measureStartup(startupTimer, qmlReadyMs) != EXIT_SUCCESS)
         return EXIT_FAILURE;
 
-    const auto coreIndex = arguments.indexOf(u"--core"_s);
-    if (acceptance.allowsExplicitCore()
-            && coreIndex >= 0 && coreIndex + 1 < arguments.size()) {
-        coreClient.start(arguments.at(coreIndex + 1));
-    } else if (acceptance.allowsBundledCore()) {
-        const auto bundledCore = QDir(QCoreApplication::applicationDirPath()).filePath(
-#ifdef Q_OS_WIN
-            u"opennow-core.exe"_s
-#else
-            u"opennow-core"_s
-#endif
-        );
-        if (QFileInfo::exists(bundledCore)) {
-            coreClient.start(bundledCore);
-        }
-    }
+    if (!coreProgram.isEmpty()) coreClient.start(coreProgram);
 
     if (acceptance.startWorkload() != EXIT_SUCCESS) return EXIT_FAILURE;
 
