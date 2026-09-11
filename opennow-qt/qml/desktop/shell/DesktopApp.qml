@@ -160,7 +160,8 @@ FocusScope {
         focus: enabled
         z: 90
         onCancelRequested: ShellStore.requestStreamExitConfirmation()
-        onRetryRequested: ShellStore.retryNativeStreamer()
+        onRetryRequested: root.route === "stream"
+            ? ShellStore.retryNativeStreamer() : ShellStore.retrySessionLaunch()
     }
 
     DesktopStreamScreen {

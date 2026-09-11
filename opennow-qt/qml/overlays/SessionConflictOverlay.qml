@@ -4,6 +4,7 @@ import OpenNOW
 
 FocusScope {
     id: root
+    objectName: "sessionConflictDialog"
     anchors.fill: parent
     focus: true
     Accessible.name: qsTr("Existing GeForce NOW session")
@@ -13,14 +14,9 @@ FocusScope {
         const session = ShellStore.conflictSession
         if (!session)
             return qsTr("OpenNOW found another session on your NVIDIA account.")
-        const parts = []
-        if (session.appId)
-            parts.push(qsTr("App %1").arg(String(session.appId)))
-        if (session.resolution)
-            parts.push(String(session.resolution))
-        if (Number(session.fps || 0) > 0)
-            parts.push(qsTr("%1 FPS").arg(Number(session.fps)))
-        return parts.length ? parts.join(" · ") : qsTr("Session details unavailable")
+        const title = ShellStore.sessionGameTitle(session)
+        return title ? qsTr("Still running: %1").arg(title)
+                     : qsTr("A game is still running on your GeForce NOW account.")
     }
 
     Rectangle {
@@ -30,18 +26,20 @@ FocusScope {
 
     GlassPanel {
         id: card
+        strong: true
         anchors.centerIn: parent
         width: Math.min(parent.width - 64, 660)
-        height: 390
+        height: content.height + 64
         // OverlayHost owns the single reveal transform.
 
         Column {
-            anchors.fill: parent
-            anchors.margins: 42
+            id: content
+            anchors.centerIn: parent
+            width: parent.width - 64
             spacing: 18
 
             Text {
-                text: qsTr("SESSION ALREADY ACTIVE")
+                text: qsTr("YOUR GAME IS STILL RUNNING")
                 color: Theme.mint
                 font.family: Theme.monoFont
                 font.pixelSize: 13
@@ -50,9 +48,7 @@ FocusScope {
             }
             Text {
                 width: parent.width
-                text: ShellStore.pendingLaunchParams
-                      ? qsTr("Pick up where you left off?")
-                      : qsTr("A cloud session is still running")
+                text: qsTr("Return to your game?")
                 color: Theme.label
                 font.family: Theme.displayFont
                 font.pixelSize: 34
@@ -65,15 +61,35 @@ FocusScope {
                 color: Theme.textMuted
                 font.family: Theme.bodyFont
                 font.pixelSize: 18
+                wrapMode: Text.WordWrap
+            }
+            Text {
+                width: parent.width
+                text: ShellStore.streamMessage
+                color: Theme.textMuted
+                font.family: Theme.bodyFont
+                font.pixelSize: 16
+                wrapMode: Text.WordWrap
+            }
+            Text {
+                width: parent.width
+                text: ShellStore.pendingLaunchParams
+                    ? qsTr("Ending the running game will close it before starting %1. Unsaved progress may be lost.").arg(ShellStore.pendingLaunchParams.title || qsTr("your selected game"))
+                    : qsTr("Ending the game will close it. Unsaved progress may be lost.")
+                color: Theme.textMuted
+                font.family: Theme.bodyFont
+                font.pixelSize: 14
+                wrapMode: Text.WordWrap
             }
 
             Item { width: 1; height: 8 }
 
-            Row {
+            Flow {
+                width: parent.width
                 spacing: 14
                 GlassButton {
                     id: resumeButton
-                    text: qsTr("Resume")
+                    text: qsTr("Return to game")
                     glyph: "A"
                     primary: true
                     focus: true
@@ -82,7 +98,7 @@ FocusScope {
                 }
                 GlassButton {
                     id: newButton
-                    text: ShellStore.pendingLaunchParams ? qsTr("Start new") : qsTr("End session")
+                    text: ShellStore.pendingLaunchParams ? qsTr("End game and start new") : qsTr("End game")
                     glyph: "X"
                     danger: true
                     onClicked: ShellStore.resolveSessionConflict("new")

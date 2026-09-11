@@ -10,6 +10,7 @@ FocusScope {
     property string presentedOverlay: ""
     readonly property bool present: reveal.present
     onOverlayChanged: if (requested) presentedOverlay = overlay
+    onRequestedChanged: if (requested) presentedOverlay = overlay
     Component.onCompleted: if (requested) presentedOverlay = overlay
     MotionProgress {
         id: reveal
@@ -26,7 +27,12 @@ FocusScope {
 
     Keys.onPressed: event => {
         if (event.key === Qt.Key_Escape || event.key === Qt.Key_Back) {
-            event.accepted = AppController.goBack()
+            if (root.presentedOverlay === "session-conflict") {
+                ShellStore.resolveSessionConflict("cancel")
+                event.accepted = true
+            } else {
+                event.accepted = AppController.goBack()
+            }
         } else if (root.presentedOverlay.startsWith("guide-") && event.key === Qt.Key_PageUp) {
             event.accepted = AppController.cycleGuidePage(-1)
         } else if (root.presentedOverlay.startsWith("guide-") && event.key === Qt.Key_PageDown) {

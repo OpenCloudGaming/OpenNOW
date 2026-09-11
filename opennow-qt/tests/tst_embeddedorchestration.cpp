@@ -17,6 +17,181 @@ class EmbeddedOrchestrationTest final : public QObject
     Q_OBJECT
 
 private slots:
+    void existingSessionLaunchFlow_data()
+    {
+        QTest::addColumn<QString>("sessions");
+        QTest::addColumn<bool>("conflictDetected");
+        QTest::addColumn<QString>("expectedState");
+        QTest::addColumn<QString>("expectedMethod");
+        QTest::newRow("new-game") << QStringLiteral("[]") << false
+            << QStringLiteral("requesting") << QStringLiteral("session.create");
+        QTest::newRow("same-game") << QStringLiteral(R"([{sessionId:'same',appId:'123',streamingBaseUrl:'https://region'}])") << false
+            << QStringLiteral("resuming") << QStringLiteral("session.claim");
+        QTest::newRow("same-game-after-conflict") << QStringLiteral(R"([{sessionId:'same',appId:123,streamingBaseUrl:'https://region'}])") << true
+            << QStringLiteral("resuming") << QStringLiteral("session.claim");
+        QTest::newRow("same-game-in-second-region") << QStringLiteral(R"([{sessionId:'other',appId:456},{sessionId:'same',appId:123,streamingBaseUrl:'https://region'}])") << false
+            << QStringLiteral("resuming") << QStringLiteral("session.claim");
+        QTest::newRow("different-game") << QStringLiteral(R"([{sessionId:'other',appId:456}])") << false
+            << QStringLiteral("conflict") << QString();
+        QTest::newRow("unknown-game") << QStringLiteral(R"([{sessionId:'unknown'}])") << false
+            << QStringLiteral("conflict") << QString();
+        QTest::newRow("conflict-not-discoverable") << QStringLiteral("[]") << true
+            << QStringLiteral("error") << QString();
+    }
+
+    void existingSessionLaunchFlow()
+    {
+        QFETCH(QString, sessions);
+        QFETCH(bool, conflictDetected);
+        QFETCH(QString, expectedState);
+        QFETCH(QString, expectedMethod);
+        const auto shell = source(QStringLiteral("qml/state/ShellStore.qml"));
+        QJSEngine engine;
+        engine.installExtensions(QJSEngine::TranslationExtension);
+        for (const auto &name : {"inspectRemoteSessions", "resolveSessionConflict", "createPendingSession",
+                                 "checkLaunchSessions", "handleSessionCreateFailure", "retrySessionLaunch"}) {
+            const auto match = QRegularExpression(QStringLiteral(
+                "    function %1\\([^\\n]*\\) \\{.*?\\n    \\}").arg(QString::fromLatin1(name)),
+                QRegularExpression::DotMatchesEverythingOption).match(shell);
+            QVERIFY(match.hasMatch());
+            QVERIFY(!engine.evaluate(match.captured()).isError());
+        }
+        QVERIFY(!engine.evaluate(QStringLiteral(R"JS(
+            var ready = true, streamBusy = false, onboardingReplaying = false;
+            var nativeRuntimeReady = true, nativeRuntimeCapabilities = {};
+            var streamCreateRequestId = '', remoteSessionsRequestId = '', sessionClaimRequestId = '';
+            var pendingLaunchParams = {appId:'123',title:'Selected game'};
+            var conflictSession = null, activeSession = null, remoteSessions = [], streamState = 'checking', streamMessage = '';
+            var requests = [], overlays = [], created = 0, pollStops = 0;
+            var streamPollTimer = {stop: function() { ++pollStops; }};
+            var CoreClient = {request: function(method, params) {
+                requests.push({method:method,params:params}); return 'request-' + requests.length;
+            }};
+            var AppController = {showOverlay: function(name) {overlays.push(name);},
+                navigateFromLastPrimary: function() {}};
+        )JS")).isError());
+        engine.globalObject().setProperty(QStringLiteral("launchConflictDetected"), conflictDetected);
+        const auto result = engine.evaluate(QStringLiteral("inspectRemoteSessions({sessions:%1})").arg(sessions));
+        QVERIFY2(!result.isError(), qPrintable(result.toString()));
+        QCOMPARE(engine.evaluate(QStringLiteral("streamState")).toString(), expectedState);
+        QCOMPARE(engine.evaluate(QStringLiteral("requests.length")).toInt(), expectedMethod.isEmpty() ? 0 : 1);
+        if (!expectedMethod.isEmpty())
+            QCOMPARE(engine.evaluate(QStringLiteral("requests[0].method")).toString(), expectedMethod);
+        if (expectedMethod == QStringLiteral("session.claim")) {
+            QCOMPARE(engine.evaluate(QStringLiteral("requests[0].params.sessionId")).toString(), QStringLiteral("same"));
+            QCOMPARE(engine.evaluate(QStringLiteral("requests[0].params.streamingBaseUrl")).toString(), QStringLiteral("https://region"));
+            QVERIFY(engine.evaluate(QStringLiteral("requests[0].params.recoveryMode")).toBool());
+            QVERIFY(!engine.evaluate(QStringLiteral("streamBusy = true; resolveSessionConflict('resume')")).isError());
+            QCOMPARE(engine.evaluate(QStringLiteral("requests.length")).toInt(), 1);
+        } else if (expectedState == QStringLiteral("conflict")) {
+            QCOMPARE(engine.evaluate(QStringLiteral("overlays[0]")).toString(), QStringLiteral("session-conflict"));
+            QVERIFY(!engine.evaluate(QStringLiteral("resolveSessionConflict('new')")).isError());
+            QCOMPARE(engine.evaluate(QStringLiteral("requests[0].method")).toString(), QStringLiteral("session.stop"));
+            QVERIFY(engine.evaluate(QStringLiteral("forceNewAfterStop")).toBool());
+        } else if (conflictDetected) {
+            QVERIFY(!engine.evaluate(QStringLiteral("retrySessionLaunch()")).isError());
+            QCOMPARE(engine.evaluate(QStringLiteral("requests[0].method")).toString(), QStringLiteral("session.remote.list"));
+            QVERIFY(!engine.evaluate(QStringLiteral("inspectRemoteSessions({sessions:[]})")).isError());
+            QCOMPARE(engine.evaluate(QStringLiteral("requests.length")).toInt(), 1);
+        }
+    }
+
+    void sessionCreationConflictTriggersDiscoveryInsteadOfAnotherCreate()
+    {
+        const auto shell = source(QStringLiteral("qml/state/ShellStore.qml"));
+        QJSEngine engine;
+        engine.installExtensions(QJSEngine::TranslationExtension);
+        for (const auto &name : {"handleSessionCreateFailure", "checkLaunchSessions"}) {
+            const auto match = QRegularExpression(QStringLiteral(
+                "    function %1\\([^\\n]*\\) \\{.*?\\n    \\}").arg(QString::fromLatin1(name)),
+                QRegularExpression::DotMatchesEverythingOption).match(shell);
+            QVERIFY(match.hasMatch());
+            QVERIFY(!engine.evaluate(match.captured()).isError());
+        }
+        QVERIFY(!engine.evaluate(QStringLiteral(R"JS(
+            var ready = true, streamBusy = false, pendingLaunchParams = {appId:'123'};
+            var launchConflictDetected = false, requests = [], streamState = 'requesting', streamMessage = '';
+            var streamPollTimer = {stop:function(){}};
+            var CoreClient = {request:function(method,params){requests.push(method);return 'discovery';}};
+            handleSessionCreateFailure('session_conflict','SESSION_LIMIT_PER_DEVICE_EXCEEDED_STATUS');
+        )JS")).isError());
+        QCOMPARE(engine.evaluate(QStringLiteral("requests.join(',')")).toString(), QStringLiteral("session.remote.list"));
+        QCOMPARE(engine.evaluate(QStringLiteral("streamState")).toString(), QStringLiteral("checking"));
+        QVERIFY(engine.evaluate(QStringLiteral("launchConflictDetected")).toBool());
+        QVERIFY(!engine.evaluate(QStringLiteral("handleSessionCreateFailure('unauthorized','Sign in again')")).isError());
+        QCOMPARE(engine.evaluate(QStringLiteral("requests.length")).toInt(), 1);
+        QCOMPARE(engine.evaluate(QStringLiteral("streamMessage")).toString(), QStringLiteral("Sign in again"));
+    }
+
+    void cancelledLaunchDiscoveryCannotCreateASession()
+    {
+        const auto shell = source(QStringLiteral("qml/state/ShellStore.qml"));
+        QJSEngine engine;
+        engine.installExtensions(QJSEngine::TranslationExtension);
+        for (const auto &name : {"stopStreamingSession", "inspectRemoteSessions"}) {
+            const auto match = QRegularExpression(QStringLiteral(
+                "    function %1\\([^\\n]*\\) \\{.*?\\n    \\}").arg(QString::fromLatin1(name)),
+                QRegularExpression::DotMatchesEverythingOption).match(shell);
+            QVERIFY(match.hasMatch());
+            QVERIFY(!engine.evaluate(match.captured()).isError());
+        }
+        const auto result = engine.evaluate(QStringLiteral(R"JS(
+            var remoteSessionsRequestId = 'discovery', streamCreateRequestId = 'create';
+            var activeSession = null, streamPollRequestId = '', pendingLaunchParams = {appId:'123'};
+            var conflictSession = {}, forceNewAfterStop = true, launchConflictDetected = true;
+            var cancelled = [], creates = 0;
+            function cancelSessionRecovery() {}
+            function stopNativeStreamer() {}
+            function createPendingSession() { ++creates; }
+            var streamPollTimer = {stop:function(){}};
+            var AppController = {navigateFromLastPrimary:function(){}};
+            var CoreClient = {cancel:function(id) {
+                if (remoteSessionsRequestId !== '' || streamCreateRequestId !== '') throw Error('live request ID');
+                cancelled.push(id);
+            }};
+            stopStreamingSession();
+            inspectRemoteSessions({sessions:[]});
+        )JS"));
+        QVERIFY2(!result.isError(), qPrintable(result.toString()));
+        QCOMPARE(engine.evaluate(QStringLiteral("cancelled.join(',')")).toString(), QStringLiteral("discovery,create"));
+        QCOMPARE(engine.evaluate(QStringLiteral("creates")).toInt(), 0);
+        QVERIFY(engine.evaluate(QStringLiteral("pendingLaunchParams === null && conflictSession === null && !forceNewAfterStop")).toBool());
+    }
+
+    void dismissingSessionConflictPreservesTheRunningGame()
+    {
+        const auto shell = source(QStringLiteral("qml/state/ShellStore.qml"));
+        const auto overlay = source(QStringLiteral("qml/overlays/OverlayHost.qml"));
+        const auto resolve = QRegularExpression(QStringLiteral(
+            "    function resolveSessionConflict\\([^\\n]*\\) \\{.*?\\n    \\}"),
+            QRegularExpression::DotMatchesEverythingOption).match(shell);
+        const auto keyHandler = QRegularExpression(QStringLiteral(
+            "    Keys.onPressed: event => \\{(.*?)\\n    \\}"),
+            QRegularExpression::DotMatchesEverythingOption).match(overlay);
+        QVERIFY(resolve.hasMatch());
+        QVERIFY(keyHandler.hasMatch());
+        for (const int key : {Qt::Key_Escape, Qt::Key_Back}) {
+            QJSEngine engine;
+            engine.installExtensions(QJSEngine::TranslationExtension);
+            QVERIFY(!engine.evaluate(resolve.captured()).isError());
+            QVERIFY(!engine.evaluate(QStringLiteral(R"JS(
+                var streamBusy = false, pendingLaunchParams = {appId:'123'}, conflictSession = {sessionId:'running'};
+                var remoteSessions = [conflictSession], launchConflictDetected = true, requests = 0, left = false;
+                var AppController = {showOverlay:function(){},navigateFromLastPrimary:function(){left=true;}};
+                var CoreClient = {request:function(){++requests;}};
+                var ShellStore = {resolveSessionConflict:resolveSessionConflict};
+                var root = {presentedOverlay:'session-conflict'};
+            )JS")).isError());
+            QVERIFY(!engine.evaluate(QStringLiteral("var Qt = {Key_Escape:%1,Key_Back:%2}; var event = {key:%3,accepted:false};")
+                .arg(Qt::Key_Escape).arg(Qt::Key_Back).arg(key)).isError());
+            const auto result = engine.evaluate(keyHandler.captured(1));
+            QVERIFY2(!result.isError(), qPrintable(result.toString()));
+            QVERIFY(engine.evaluate(QStringLiteral("event.accepted && left && pendingLaunchParams === null && conflictSession === null")).toBool());
+            QCOMPARE(engine.evaluate(QStringLiteral("requests")).toInt(), 0);
+            QCOMPARE(engine.evaluate(QStringLiteral("remoteSessions[0].sessionId")).toString(), QStringLiteral("running"));
+        }
+    }
+
     void pausedSessionsRemainAvailableToResume()
     {
         const auto shell = source(QStringLiteral("qml/state/ShellStore.qml"));

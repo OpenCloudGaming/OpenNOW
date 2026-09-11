@@ -220,6 +220,31 @@ fields or treat an empty process-streamer snapshot as the embedded capabilities.
 
 ### Session resume and reconnect
 
+`session.remote.list` checks the selected endpoint and the regions advertised by
+CloudMatch instead of treating the first empty regional response as authoritative.
+Discovery deduplicates session IDs and uses at most four concurrent requests, a
+three-second per-request timeout, a 12-second total budget (including region
+discovery), and at most 32 regional endpoints. If no sessions were found but a
+region failed, returned invalid data, or could not be checked within these bounds,
+the request fails with `session_discovery_failed` rather than returning an empty
+list. Authentication failures remain `authentication_required`. A found session
+can be returned even when another region fails; an empty successful list means
+all discovered regions were checked successfully. Callers must not create a new
+session after a discovery failure.
+
+`session.create` reports an existing-session limit as `session_conflict`, including
+CloudMatch status `11`, `SESSION_LIMIT` descriptions, and unified error
+`4AF1201E`, including structured session-limit responses with HTTP 403. An
+unrecognized HTTP 403 or an HTTP 401 remains `authentication_required`. The
+rejected request never becomes an active local session. The shell
+should call `session.remote.list` once and offer to resume or end the existing
+session instead of displaying the raw vendor error or retrying creation. When the
+create response supplies usable `otherUserSessions` or `session` details, the core
+normalizes them to the ordinary discovery descriptors and hands them to the next
+list request without another network lookup. This handoff is account-scoped,
+consumed once, and expires after 30 seconds; it is not a persistent discovery
+fallback. The code/message error envelope and protocol version are unchanged.
+
 `session.claim` discovers the session's actual control server, sends the minimal
 `action: 2, data: "RESUME"` request for a ready, streaming, or paused seat, and returns a session
 with `resumePending: true` and `phase: "resuming"`. It preserves the stable device
