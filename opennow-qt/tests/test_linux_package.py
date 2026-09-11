@@ -6,7 +6,7 @@ import tempfile
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "packaging"))
-from verify_linux_package import verify_capabilities
+from verify_linux_package import verify_capabilities, verify_package
 
 
 class LinuxPackageDependenciesTest(unittest.TestCase):
@@ -54,6 +54,18 @@ file(WRITE "{source.as_posix()}/architecture.txt" "${{CPACK_DEBIAN_PACKAGE_ARCHI
                 dependencies = (source / "dependencies.txt").read_text().split(",")
                 self.assertIn("qt6-svg-plugins (>= 6.8)", [item.strip() for item in dependencies])
                 self.assertEqual((source / "architecture.txt").read_text(), architecture)
+                self.assertIn("opennow-update-helper", (build / "cmake_install.cmake").read_text())
+
+    def test_missing_or_nonexecutable_helper_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            bin_dir = Path(directory)
+            with self.assertRaisesRegex(ValueError, "executable update helper"):
+                verify_package(bin_dir)
+            helper = bin_dir / "opennow-update-helper"
+            helper.write_bytes(b"test helper")
+            helper.chmod(0o600)
+            with self.assertRaisesRegex(ValueError, "executable update helper"):
+                verify_package(bin_dir)
 
 
 class LinuxPackageCapabilitiesTest(unittest.TestCase):

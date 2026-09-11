@@ -419,6 +419,7 @@ ApplicationWindow {
     }
 
     Component.onCompleted: {
+        Qt.callLater(() => CoreClient.markUiReady())
         initializeStartupMode()
         updateSessionWindowMode()
         updateStreamSurfaceLock()

@@ -2,6 +2,8 @@ from pathlib import Path
 import os
 import re
 import subprocess
+import tempfile
+import textwrap
 import unittest
 
 
@@ -32,11 +34,11 @@ class CIWorkflowTest(unittest.TestCase):
     def test_automatic_events_run_checks_without_packages(self):
         ci = (WORKFLOWS / "qt-ci.yml").read_text()
         entries = jobs(ci)
-        self.assertEqual(set(entries), {"contracts", "checks", "build", "publish-nightly"})
+        self.assertEqual(set(entries), {"preflight", "contracts", "checks", "build", "sign-nightly", "publish-nightly"})
         self.assertIn("uses: ./.github/workflows/qt-checks.yml", entries["contracts"])
         self.assertNotIn("    if:", entries["contracts"])
         self.assertIn("    if: github.event_name == 'workflow_dispatch'\n", entries["build"])
-        self.assertIn("    needs: contracts\n", entries["build"])
+        self.assertIn("    needs: [contracts, preflight]\n", entries["build"])
         self.assertIn("uses: ./.github/workflows/qt-build.yml", entries["build"])
         self.assertIn("  pull_request:\n", ci)
         self.assertIn("  push:\n", ci)
@@ -58,6 +60,46 @@ class CIWorkflowTest(unittest.TestCase):
         self.assertIn("name: Package ${{ matrix.label }}", entries["packages"])
         self.assertIn("Create Linux AppImage", entries["packages"])
         self.assertIn("Test relocated bundle without development libraries", entries["packages"])
+
+    def test_windows_packaging_failure_prints_bounded_logs_and_preserves_status(self):
+        workflow = (WORKFLOWS / "qt-build.yml").read_text()
+        step = workflow.split("      - name: Create unsigned package\n", 1)[1].split("      - name:", 1)[0]
+        script = textwrap.dedent(step.split("        run: |\n", 1)[1])
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for index in range(6):
+                log = root / f"build/qt-packages/log folder {index}/wix.log"
+                log.parent.mkdir(parents=True)
+                log.write_text("first-line-must-be-truncated\n" + ("x" * 1024 + "\n") * 300 + "WiX failure detail\n")
+            prelude = 'cd() { return 0; }\ncpack() { return "$CPACK_STATUS"; }\n'
+            for platform, status in (("Windows", 37), ("Windows", 0), ("Linux", 37)):
+                with self.subTest(platform=platform, status=status):
+                    result = subprocess.run(["bash", "-euo", "pipefail", "-c", prelude + script],
+                                            cwd=root, env={**os.environ, "RUNNER_OS": platform,
+                                                           "CPACK_STATUS": str(status), "PACKAGE_GENERATOR": "WIX;ZIP"},
+                                            capture_output=True, text=True)
+                    self.assertEqual(result.returncode, status, result.stderr)
+                    if platform == "Windows" and status:
+                        self.assertEqual(result.stdout.count("--- WiX packaging log:"), 4)
+                        self.assertEqual(result.stdout.count("WiX failure detail"), 4)
+                        self.assertNotIn("first-line-must-be-truncated", result.stdout)
+                        self.assertLess(len(result.stdout), 4 * 65536 + 4096)
+                    else:
+                        self.assertEqual(result.stdout, "")
+            result = subprocess.run(["bash", "-euo", "pipefail", "-c",
+                                     prelude + 'tail() { return 11; }\n' + script],
+                                    cwd=root, env={**os.environ, "RUNNER_OS": "Windows",
+                                                   "CPACK_STATUS": "37", "PACKAGE_GENERATOR": "WIX;ZIP"},
+                                    capture_output=True, text=True)
+            self.assertEqual(result.returncode, 37, result.stderr)
+            for log in root.rglob("wix.log"):
+                log.unlink()
+            result = subprocess.run(["bash", "-euo", "pipefail", "-c", prelude + script],
+                                    cwd=root, env={**os.environ, "RUNNER_OS": "Windows",
+                                                   "CPACK_STATUS": "37", "PACKAGE_GENERATOR": "WIX;ZIP"},
+                                    capture_output=True, text=True)
+            self.assertEqual(result.returncode, 37, result.stderr)
+            self.assertIn("No generated WiX logs found.", result.stdout)
 
     def test_all_native_platform_checks_keep_required_status_names(self):
         checks = jobs((WORKFLOWS / "qt-ci.yml").read_text())["checks"]
@@ -97,9 +139,10 @@ class CIWorkflowTest(unittest.TestCase):
 
     def test_manual_packages_overlap_checks_without_bypassing_publication_gates(self):
         entries = jobs((WORKFLOWS / "qt-ci.yml").read_text())
-        self.assertIn("    needs: contracts\n", entries["build"])
+        self.assertIn("    needs: [contracts, preflight]\n", entries["build"])
         self.assertIn("    if: github.event_name == 'workflow_dispatch'\n", entries["build"])
-        self.assertIn("    needs: [contracts, checks, build]\n", entries["publish-nightly"])
+        self.assertIn("    needs: [preflight, contracts, checks, build]\n", entries["sign-nightly"])
+        self.assertIn("    needs: [contracts, checks, build, sign-nightly]\n", entries["publish-nightly"])
         self.assertNotIn("always()", entries["build"])
         self.assertNotIn("always()", entries["publish-nightly"])
         self.assertNotIn("continue-on-error", entries["checks"])
@@ -148,6 +191,29 @@ class CIWorkflowTest(unittest.TestCase):
         self.assertIn("add_custom_target(opennow-ci-unit-tests DEPENDS ${OPENNOW_CI_UNIT_TEST_TARGETS})", cmake)
         self.assertIn('set_tests_properties(${OPENNOW_CI_UNIT_TEST_TARGETS} PROPERTIES LABELS "ci-unit")', cmake)
         self.assertIn('ENVIRONMENT "QT_QPA_PLATFORM=cocoa" RUN_SERIAL TRUE TIMEOUT 30 LABELS "interactive-desktop"', cmake)
+
+    def test_signed_helper_integration_runs_on_every_platform_check_not_signers(self):
+        action = (ROOT / ".github/actions/qt-unit-tests/action.yml").read_text()
+        marker = "    - name: Test signed update helper integration\n"
+        before, after = action.split(marker, 1)
+        step = after.split("    - name:", 1)[0]
+        for setup in ("uses: ilammy/msvc-dev-cmd@v1", "uses: dtolnay/rust-toolchain@stable",
+                      "name: Install Linux test dependencies", "name: Test Rust"):
+            self.assertIn(setup, before)
+        self.assertNotIn("      if:", step)
+        self.assertNotIn("continue-on-error", step)
+        self.assertIn("working-directory: ${{ env.OPENNOW_CHECKOUT }}", step)
+        self.assertIn("CARGO_BUILD_JOBS: ${{ inputs.parallel }}", step)
+        self.assertIn("python opennow-qt/tests/run_update_helper_integration.py", step)
+        self.assertIn("python3 opennow-qt/tests/run_update_helper_integration.py", step)
+        self.assertNotIn("secrets.", step)
+        ci = jobs((WORKFLOWS / "qt-ci.yml").read_text())
+        for label in ("linux-x64", "windows-x64", "macos-arm64"):
+            self.assertIn(f"label: {label}", ci["checks"])
+        self.assertIn("uses: ./.github/actions/qt-unit-tests", ci["checks"])
+        self.assertNotIn("run_update_helper_integration.py", ci["sign-nightly"])
+        candidate = jobs((WORKFLOWS / "qt-release-candidate.yml").read_text())
+        self.assertNotIn("run_update_helper_integration.py", candidate["inventory"])
 
     def test_windows_checks_use_verified_llvm_fallback(self):
         action = (ROOT / ".github/actions/qt-unit-tests/action.yml").read_text()
@@ -202,7 +268,7 @@ class CIWorkflowTest(unittest.TestCase):
         self.assertIn("        type: boolean\n        default: false", ci)
         publish = jobs(ci)["publish-nightly"]
         self.assertIn("if: github.event_name == 'workflow_dispatch' && inputs.publish_nightly", publish)
-        self.assertIn("    needs: [contracts, checks, build]\n", publish)
+        self.assertIn("    needs: [contracts, checks, build, sign-nightly]\n", publish)
 
 
 if __name__ == "__main__":

@@ -6,6 +6,25 @@ FocusScope {
     id: root
     readonly property var state: ShellStore.updaterState || ({})
     readonly property bool available: state.status === "available"
+    Component.onCompleted: ShellStore.acknowledgeUpdateHighlights()
+
+    Dialog {
+        id: installConfirmation
+        objectName: "updateInstallConfirmation"
+        anchors.centerIn: parent
+        width: Math.min(parent.width - 48, 500)
+        implicitHeight: 220
+        height: Math.min(root.height - 48, implicitHeight)
+        modal: true
+        focus: true
+        title: root.state.downloadedVersion ? qsTr("Install %1 and restart").arg(root.state.downloadedVersion) : qsTr("Install and restart")
+        standardButtons: Dialog.Ok | Dialog.Cancel
+        onAccepted: ShellStore.installUpdate(true)
+        contentItem: Label {
+            wrapMode: Text.WordWrap
+            text: qsTr("OpenNOW will prepare the verified update, close, replace this installation, and restart. Continue?")
+        }
+    }
 
     ScreenBackground { tint: "#16263D" }
     GlassPanel {
@@ -16,7 +35,7 @@ FocusScope {
                 width: parent.width; height: 62; spacing: 20
                 Rectangle {
                     width: 62; height: 62; radius: 20; color: root.available ? Theme.mint : Theme.violet
-                    Text { anchors.centerIn: parent; text: root.available ? "↑" : "✓"; color: Theme.contrastText(root.available ? Theme.mint : Theme.violet); font.pixelSize: 30; font.weight: Font.Black }
+                    Text { anchors.centerIn: parent; text: root.state.status === "succeeded" ? "✓" : root.available ? "↑" : "↓"; color: Theme.contrastText(root.available ? Theme.mint : Theme.violet); font.pixelSize: 30; font.weight: Font.Black }
                 }
                 Column {
                     anchors.verticalCenter: parent.verticalCenter; spacing: 3
@@ -26,11 +45,27 @@ FocusScope {
             }
             Text {
                 width: parent.width; wrapMode: Text.WordWrap
-                text: root.state.message || qsTr("Check GitHub Releases for a newer OpenNOW build.")
+                text: ShellStore.updaterError || root.state.message || qsTr("Check GitHub Releases for a newer OpenNOW build.")
                 color: Theme.label; font.family: Theme.bodyFont; font.pixelSize: 17
+                Accessible.role: Accessible.StaticText
+                Accessible.name: text
+            }
+            ProgressBar {
+                width: parent.width
+                visible: ShellStore.updaterBusy
+                indeterminate: true
+                Accessible.name: root.state.message || qsTr("Update in progress")
+            }
+            Text {
+                width: parent.width; wrapMode: Text.WordWrap
+                visible: !ShellStore.updaterSessionSafe
+                text: qsTr("End your streaming session before installing an update. Background updates will wait.")
+                color: Theme.textMuted; font.family: Theme.bodyFont; font.pixelSize: 14
+                Accessible.role: Accessible.StaticText
+                Accessible.name: text
             }
             GlassPanel {
-                width: parent.width; height: 310; panelRadius: 26
+                width: parent.width; height: 240; panelRadius: 26
                 Flickable {
                     anchors.fill: parent; anchors.margins: 22; contentHeight: notes.height; clip: true
                     ReleaseNotes {
@@ -40,34 +75,37 @@ FocusScope {
                     }
                 }
             }
-            Row {
+            Flow {
+                width: parent.width
                 spacing: 12
                 GlassButton {
-                    id: checkButton; width: 276
+                    id: checkButton; width: 250
                     text: root.state.status === "checking" ? qsTr("Checking…") : qsTr("Check for updates")
-                    primary: true; glyph: "A"; enabled: root.state.status !== "checking"
+                    primary: true; glyph: "A"; enabled: !ShellStore.updaterBusy && root.state.canCheck === true
                     onClicked: ShellStore.checkForUpdates()
                     Component.onCompleted: forceActiveFocus()
                 }
                 GlassButton {
-                    width: 276; text: qsTr("Open releases"); glyph: "↗"
+                    width: 250; text: qsTr("Open releases"); glyph: "↗"
                     enabled: Boolean(root.state.releaseUrl)
                     onClicked: AppController.openExternalUrl(root.state.releaseUrl || "")
                 }
                 GlassButton {
-                    width: 276
+                    width: 250
                     visible: Boolean(root.state.canDownload)
                     text: root.state.status === "downloading" ? qsTr("Downloading…") : qsTr("Download verified update")
                     glyph: "↓"; primary: true
-                    enabled: root.state.status !== "downloading"
+                    enabled: !ShellStore.updaterBusy && root.state.canDownload === true
                     onClicked: ShellStore.downloadUpdate()
                 }
                 GlassButton {
-                    width: 276
+                    width: 250
+                    objectName: "updateInstallButton"
                     visible: Boolean(root.state.canInstall)
-                    text: qsTr("Install and restart")
+                    text: root.state.downloadedVersion ? qsTr("Install %1 and restart").arg(root.state.downloadedVersion) : qsTr("Install and restart")
                     glyph: "↑"; primary: true
-                    onClicked: ShellStore.installUpdate()
+                    enabled: ShellStore.updaterCanInstall
+                    onClicked: installConfirmation.open()
                 }
             }
         }

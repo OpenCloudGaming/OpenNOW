@@ -366,7 +366,7 @@ impl SettingsStore {
             &mut self.values,
             "updateChannel",
             &["stable", "nightly"],
-            "stable",
+            crate::version::update_channel(crate::version::APPLICATION_VERSION),
         );
         clamp_integer(&mut self.values, "mouseAcceleration", 1, 150, 1);
         clamp_integer(&mut self.values, "controllerLeftStickDeadzone", 0, 50, 24);
@@ -898,7 +898,8 @@ fn defaults() -> Map<String, Value> {
         "gameLanguage":"en_US", "enablePersistingInGameSettings":false, "enableL4S":false,
         "identifyAsSteamDeck":false, "steamBigPictureMode":false,
         "enableCloudGsync":false, "discordRichPresence":false,
-        "autoCheckForUpdates":true, "updateChannel":"stable",
+        "autoCheckForUpdates":true, "autoDownloadUpdates":false,
+        "updateChannel":crate::version::update_channel(crate::version::APPLICATION_VERSION),
         "allowEscapeToExitFullscreen":false, "lastSeenReleaseHighlightsVersion":"",
         "videoShader":{"enabled":false,"sharpen":40,"saturation":100,"contrast":100,"brightness":100,"vibrance":0,"filmGrain":0},
         "frameInterpolation":{"enabled":false,"factor":2,"quality":480},
@@ -913,6 +914,28 @@ fn defaults() -> Map<String, Value> {
 mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn updater_preferences_are_independent_and_preserved() {
+        let directory =
+            env::temp_dir().join(format!("opennow-update-settings-{}", rand::random::<u64>()));
+        let mut store = SettingsStore::load(Some(directory.clone())).unwrap();
+        assert_eq!(store.all()["autoDownloadUpdates"], json!(false));
+        assert_eq!(
+            store.all()["updateChannel"],
+            json!(crate::version::update_channel(
+                crate::version::APPLICATION_VERSION
+            ))
+        );
+        store.set("autoCheckForUpdates", json!(false)).unwrap();
+        store.set("autoDownloadUpdates", json!(true)).unwrap();
+        store.set("updateChannel", json!("stable")).unwrap();
+        let settings = SettingsStore::load(Some(directory.clone())).unwrap().all();
+        assert_eq!(settings["autoCheckForUpdates"], json!(false));
+        assert_eq!(settings["autoDownloadUpdates"], json!(true));
+        assert_eq!(settings["updateChannel"], json!("stable"));
+        fs::remove_dir_all(directory).unwrap();
+    }
 
     #[test]
     fn onboarding_new_profile_stays_incomplete_across_unrelated_writes() {

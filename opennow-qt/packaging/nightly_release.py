@@ -15,7 +15,7 @@ def nightly_version(cmake_file, run, attempt, channel="nightly"):
     return f"{match[1]}-{channel}.{run}.{attempt}"
 
 
-def assemble(source, destination, version, commit, channel="nightly"):
+def expected_packages(version, commit, channel="nightly"):
     if channel not in ("nightly", "supporter"):
         raise ValueError("Invalid unsigned build channel")
     if not re.fullmatch(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-" + channel + r"\.[1-9][0-9]*\.[1-9][0-9]*", version):
@@ -28,6 +28,11 @@ def assemble(source, destination, version, commit, channel="nightly"):
         for platform, extension in (("Windows", "msi"), ("Windows", "zip"), ("Linux", "AppImage"), ("Linux", "deb"))
     }
     expected.add(f"OpenNOW-Qt-{version}-Darwin-arm64.dmg")
+    return expected
+
+
+def assemble(source, destination, version, commit, channel="nightly"):
+    expected = expected_packages(version, commit, channel)
     files = {}
     for path in source.rglob("*"):
         if path.is_symlink():

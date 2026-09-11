@@ -14,9 +14,16 @@ function Assert-Fails {
 
 $script:SignToolExitCode = 0
 $script:Verified = @()
+$script:Inspected = @()
 function signtool {
     $script:Verified += $args[-1]
     & (Join-Path $PSHOME "pwsh") -NoProfile -Command "exit $script:SignToolExitCode"
+}
+
+function dumpbin {
+    $script:Inspected += $args[-1]
+    $global:LASTEXITCODE = 0
+    "    KERNEL32.dll"
 }
 
 $root = Join-Path ([IO.Path]::GetTempPath()) "opennow-package-test-$([Guid]::NewGuid())"
@@ -24,7 +31,7 @@ try {
     $deployment = New-Item -ItemType Directory "$root/deployment"
     $package = New-Item -ItemType Directory "$root/package/bin"
     $names = @(Get-Content "$PSScriptRoot/../packaging/windows-release-binaries.txt")
-    $expected = @("OpenNOW.exe", "opennow-core.exe", "opennow-acceptance-verify.exe", "opennow-streamer.exe", "opennow_streamer_ffi.dll")
+    $expected = @("OpenNOW.exe", "opennow-core.exe", "opennow-acceptance-verify.exe", "opennow-update-helper.exe", "opennow-streamer.exe", "opennow_streamer_ffi.dll")
     if (Compare-Object $names $expected) { throw "Unexpected first-party binary contract" }
     foreach ($name in $names) {
         Set-Content "$deployment/$name" "signed $name"
@@ -32,6 +39,10 @@ try {
     }
     Assert-OpenNowSignedPackage -Root "$root/package" -SignedRoot $deployment
     Assert-OpenNowPackagePayload -Root "$root/package" -DeploymentRoot $deployment
+    if ($script:Inspected.Count -eq 0 -or
+        @($script:Inspected | Where-Object { [IO.Path]::GetFileName($_) -ne "opennow-update-helper.exe" }).Count -ne 0) {
+        throw "Package validation did not inspect the update helper dependencies"
+    }
     foreach ($name in $names) {
         if (-not ($script:Verified | Where-Object { [IO.Path]::GetFileName($_) -eq $name })) {
             throw "$name was not signature-verified"
@@ -93,4 +104,5 @@ include(CPack)
 } finally {
     Remove-Item $root -Recurse -Force
     Remove-Item Function:signtool
+    Remove-Item Function:dumpbin
 }

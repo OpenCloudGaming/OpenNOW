@@ -27,6 +27,7 @@ mod updater;
 mod version;
 
 use gfn::GfnService;
+use opennow_core::update_apply;
 use rand::RngCore;
 use serde_json::{Value, json};
 use settings::{SettingsStore, resolve_data_dir};
@@ -42,6 +43,7 @@ const PROTOCOL_VERSION: i64 = 1;
 const MAXIMUM_LINE_BYTES: usize = 1024 * 1024;
 
 struct AppCore {
+    session_update_gate: Mutex<()>,
     artwork: artwork_cache::ArtworkCache,
     settings: Mutex<SettingsStore>,
     gfn: GfnService,
@@ -88,6 +90,7 @@ fn run() -> Result<(), String> {
         })
         .map_err(|error| error.to_string())?;
     let core = Arc::new(AppCore {
+        session_update_gate: Mutex::new(()),
         artwork: artwork_cache::ArtworkCache::new(&data_dir, output_tx.clone()),
         settings: Mutex::new(
             SettingsStore::load(Some(data_dir.clone())).map_err(|error| error.to_string())?,
@@ -161,6 +164,12 @@ fn run() -> Result<(), String> {
                 format!("outcome={outcome} durationMs={}", started.elapsed().as_millis()),
             );
             let was_cancelled = permit.token.cancelled();
+            if matches!(method.as_str(), "updater.check" | "updater.download" | "updater.install") {
+                if let Err((_, message)) = &result {
+                    worker_core.updater.request_failed(message);
+                }
+                let _ = worker_output.send(json!({"type":"event", "name":"updater.changed", "payload":worker_core.updater.state()}));
+            }
             if !was_cancelled {
                 match result {
                     Ok((value, event)) => {
@@ -181,6 +190,14 @@ fn run() -> Result<(), String> {
 }
 
 type DispatchResult = Result<(Value, Option<(&'static str, Value)>), (String, String)>;
+
+fn update_session_idle(session: &Value, streamer: &Value) -> bool {
+    session.get("session") == Some(&Value::Null)
+        && matches!(
+            streamer["streamer"]["status"].as_str(),
+            Some("stopped" | "error")
+        )
+}
 
 fn unix_time_millis() -> u128 {
     SystemTime::now()
@@ -264,6 +281,26 @@ fn acceptance_shell_evidence(params: &Value) -> Result<Value, (String, String)> 
 }
 
 fn dispatch(method: &str, params: &Value, core: &AppCore) -> DispatchResult {
+    let session_transition = matches!(
+        method,
+        "session.create" | "session.claim" | "session.poll" | "streamer.start" | "streamer.prepare"
+    );
+    let _session_update_guard = if session_transition || method == "updater.install" {
+        Some(core.session_update_gate.try_lock().map_err(|_| {
+            (
+                "session_update_busy".to_owned(),
+                "A session transition or update preparation is in progress".to_owned(),
+            )
+        })?)
+    } else {
+        None
+    };
+    if session_transition && core.updater.installation_pending() {
+        return Err((
+            "update_pending".to_owned(),
+            "An update is waiting for OpenNOW to exit".to_owned(),
+        ));
+    }
     match method {
         "core.hello" => {
             if params["protocolVersion"].as_i64() != Some(PROTOCOL_VERSION) {
@@ -742,12 +779,17 @@ fn dispatch(method: &str, params: &Value, core: &AppCore) -> DispatchResult {
             .map(|value| (value, None))
             .map_err(|message| ("community_proxy_failed".to_owned(), message)),
         "updater.state.get" => Ok((core.updater.state(), None)),
+        "updater.startup.ack" => {
+            update_apply::acknowledge_startup_from_env(version::APPLICATION_VERSION)
+                .map(|acknowledged| (json!({"acknowledged":acknowledged}), None))
+                .map_err(|message| ("update_startup_ack_failed".to_owned(), message))
+        }
         "updater.check" => {
             let value = core
                 .updater
                 .check(params)
                 .map_err(|message| ("update_check_failed".to_owned(), message))?;
-            Ok((value.clone(), Some(("updater.changed", value))))
+            Ok((value, None))
         }
         "updater.highlights.get" => {
             let highlights = core.updater.highlights();
@@ -797,13 +839,21 @@ fn dispatch(method: &str, params: &Value, core: &AppCore) -> DispatchResult {
         "updater.download" => core
             .updater
             .download()
-            .map(|value| (value.clone(), Some(("updater.changed", value))))
+            .map(|value| (value, None))
             .map_err(|message| ("update_download_failed".to_owned(), message)),
-        "updater.install" => core
-            .updater
-            .install(params)
-            .map(|value| (value.clone(), Some(("updater.changed", value))))
-            .map_err(|message| ("update_install_failed".to_owned(), message)),
+        "updater.install" => {
+            let session = core.gfn.active_session().map_err(gfn_error)?;
+            if !update_session_idle(&session, &core.streamer.status()) {
+                return Err((
+                    "update_session_active".to_owned(),
+                    "End the active session before installing an update".to_owned(),
+                ));
+            }
+            core.updater
+                .install(params)
+                .map(|value| (value, None))
+                .map_err(|message| ("update_install_failed".to_owned(), message))
+        }
         "discord.activity.sync" => core
             .discord
             .sync(params)
@@ -907,6 +957,38 @@ fn argument_value(name: &str) -> Option<String> {
 #[cfg(test)]
 mod acceptance_tests {
     use super::*;
+
+    #[test]
+    fn updates_require_no_session_and_a_terminal_streamer() {
+        for status in ["stopped", "error"] {
+            assert!(update_session_idle(
+                &json!({"session":null}),
+                &json!({"streamer":{"status":status}})
+            ));
+        }
+        for status in [
+            "starting",
+            "streaming",
+            "recovering",
+            "negotiating",
+            "unknown",
+        ] {
+            assert!(!update_session_idle(
+                &json!({"session":null}),
+                &json!({"streamer":{"status":status}})
+            ));
+        }
+        for session in [
+            json!({}),
+            json!({"session":{"phase":"queued"}}),
+            json!({"session":{"phase":"ready"}}),
+        ] {
+            assert!(!update_session_idle(
+                &session,
+                &json!({"streamer":{"status":"stopped"}})
+            ));
+        }
+    }
 
     #[test]
     fn shell_acceptance_evidence_is_bounded_normalized_and_complete() {

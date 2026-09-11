@@ -108,7 +108,8 @@ class SupporterBuildTest(unittest.TestCase):
         self.assertIn("--channel \"$BUILD_CHANNEL\"", build)
         self.assertIn("uses: ./.github/workflows/qt-build.yml", ci)
         self.assertIn("if: github.event_name == 'workflow_dispatch' && inputs.publish_nightly", ci)
-        self.assertIn("needs: [contracts, checks, build]", ci)
+        self.assertIn("needs: [preflight, contracts, checks, build]", ci)
+        self.assertIn("needs: [contracts, checks, build, sign-nightly]", ci)
         self.assertIn("gh release create", ci)
 
 

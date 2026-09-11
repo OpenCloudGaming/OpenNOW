@@ -44,6 +44,157 @@ private slots:
         }
     }
 
+    void updaterPollsManagedPendingWithoutRequiringAnotherApplicationRestart()
+    {
+        QJSEngine engine;
+        QVERIFY(initializeUpdaterEngine(engine));
+        QVERIFY(!engine.evaluate(QStringLiteral("acceptUpdaterState({status:'managed-pending',canCheck:false})")).isError());
+        QVERIFY(engine.evaluate(QStringLiteral("updaterNeedsReconciliation")).toBool());
+        QVERIFY(!engine.evaluate(QStringLiteral("updaterInstallConfirmed")).toBool());
+        QVERIFY(!engine.evaluate(QStringLiteral("acceptUpdaterState({status:'failed',canCheck:true})")).isError());
+        QVERIFY(!engine.evaluate(QStringLiteral("updaterNeedsReconciliation")).toBool());
+        QVERIFY(engine.evaluate(QStringLiteral("updaterState.canCheck")).toBool());
+        QCOMPARE(engine.evaluate(QStringLiteral("callbacks.length")).toInt(), 0);
+    }
+
+    void updaterFreshStartupPollsUntilHelperReportsItsOutcome()
+    {
+        QJSEngine engine;
+        QVERIFY(initializeUpdaterEngine(engine));
+        QVERIFY(!engine.evaluate(QStringLiteral("acceptUpdaterState({status:'restarting',canCheck:false})")).isError());
+        QVERIFY(!engine.evaluate(QStringLiteral("updaterInstallConfirmed")).toBool());
+        QVERIFY(engine.evaluate(QStringLiteral("updaterNeedsReconciliation")).toBool());
+        QVERIFY(!engine.evaluate(QStringLiteral("acceptUpdaterState({status:'succeeded',canCheck:true})")).isError());
+        QVERIFY(!engine.evaluate(QStringLiteral("updaterNeedsReconciliation")).toBool());
+        QCOMPARE(engine.evaluate(QStringLiteral("callbacks.length")).toInt(), 0);
+    }
+
+    void updaterReconciliationPreservesRejectedOperationFeedback()
+    {
+        QJSEngine engine;
+        QVERIFY(initializeUpdaterEngine(engine));
+        QVERIFY(!engine.evaluate(QStringLiteral(R"JS(
+            reconcileUpdaterFailure('End your active session first');
+            acceptUpdaterState({status:'downloaded',canInstall:true,canCheck:true});
+        )JS")).isError());
+        QCOMPARE(engine.evaluate(QStringLiteral("updaterError")).toString(), QStringLiteral("End your active session first"));
+        QVERIFY(!engine.evaluate(QStringLiteral("installUpdate(true)")).isError());
+        QCOMPARE(engine.evaluate(QStringLiteral("updaterError")).toString(), QString{});
+        QVERIFY(!engine.evaluate(QStringLiteral(R"JS(
+            reconcileUpdaterFailure('Preparation timed out');
+            acceptUpdaterState({status:'awaiting-exit',exitRequired:true});
+        )JS")).isError());
+        QCOMPARE(engine.evaluate(QStringLiteral("updaterError")).toString(), QString{});
+    }
+
+    void updaterRequiresConsentAndAuthoritativeExit()
+    {
+        QJSEngine engine;
+        QVERIFY(initializeUpdaterEngine(engine));
+        QVERIFY(!engine.evaluate(QStringLiteral("installUpdate(); installUpdate(false)")).isError());
+        QCOMPARE(engine.evaluate(QStringLiteral("requests.length")).toInt(), 0);
+        QVERIFY(!engine.evaluate(QStringLiteral("installUpdate(true)")).isError());
+        QCOMPARE(engine.evaluate(QStringLiteral("requests[0].method")).toString(), QStringLiteral("updater.install"));
+        QVERIFY(engine.evaluate(QStringLiteral("requests[0].params.confirmed")).toBool());
+        QVERIFY(!engine.evaluate(QStringLiteral("acceptUpdaterState({status:'preparing',exitRequired:true})")).isError());
+        QCOMPARE(engine.evaluate(QStringLiteral("callbacks.length")).toInt(), 0);
+        QVERIFY(!engine.evaluate(QStringLiteral("acceptUpdaterState({status:'awaiting-exit',exitRequired:false})")).isError());
+        QCOMPARE(engine.evaluate(QStringLiteral("callbacks.length")).toInt(), 0);
+        QVERIFY(!engine.evaluate(QStringLiteral("acceptUpdaterState({status:'awaiting-exit',exitRequired:true}); callbacks.shift()()")).isError());
+        QCOMPARE(engine.evaluate(QStringLiteral("quits")).toInt(), 1);
+        QVERIFY(initializeUpdaterEngine(engine));
+        QVERIFY(!engine.evaluate(QStringLiteral("acceptUpdaterState({status:'awaiting-exit',exitRequired:true})")).isError());
+        QCOMPARE(engine.evaluate(QStringLiteral("callbacks.length")).toInt(), 0);
+        QVERIFY(!engine.evaluate(QStringLiteral("updaterInstallConfirmed = true; acceptUpdaterState({status:'awaiting-exit',exitRequired:true}); activeSession = {sessionId:'new'}; callbacks.shift()()")).isError());
+        QCOMPARE(engine.evaluate(QStringLiteral("quits")).toInt(), 0);
+    }
+
+    void updaterDefersForSessions_data()
+    {
+        QTest::addColumn<QString>("sessionState");
+        QTest::newRow("active") << QStringLiteral("activeSession = {sessionId:'live'}");
+        QTest::newRow("starting") << QStringLiteral("streamerStartRequestId = 'start'");
+        QTest::newRow("recovering") << QStringLiteral("sessionRecoveryPending = true");
+        QTest::newRow("discovering") << QStringLiteral("activeSessionRequestId = 'discover'");
+        QTest::newRow("queued-launch") << QStringLiteral("pendingLaunchParams = {appId:'1'}");
+        QTest::newRow("streaming") << QStringLiteral("streamerStatus = 'streaming'");
+        QTest::newRow("negotiating-streamer") << QStringLiteral("streamerStatus = 'negotiating'");
+        QTest::newRow("recovering-streamer") << QStringLiteral("streamerStatus = 'recovering'");
+        QTest::newRow("unknown-streamer") << QStringLiteral("streamerStatus = 'unknown'");
+    }
+
+    void updaterDefersForSessions()
+    {
+        QFETCH(QString, sessionState);
+        QJSEngine engine;
+        QVERIFY(initializeUpdaterEngine(engine));
+        QVERIFY(!engine.evaluate(sessionState).isError());
+        QVERIFY(!engine.evaluate(QStringLiteral("installUpdate(true); runAutomaticUpdates()")).isError());
+        QCOMPARE(engine.evaluate(QStringLiteral("requests.length")).toInt(), 0);
+        QVERIFY(!engine.evaluate(QStringLiteral("updaterInstallConfirmed = true; acceptUpdaterState({status:'awaiting-exit',exitRequired:true})")).isError());
+        QCOMPARE(engine.evaluate(QStringLiteral("callbacks.length")).toInt(), 0);
+    }
+
+    void updaterReconcilesTimeoutWithoutInventingCapabilities()
+    {
+        QJSEngine engine;
+        QVERIFY(initializeUpdaterEngine(engine));
+        QVERIFY(!engine.evaluate(QStringLiteral(R"JS(
+            installUpdate(true);
+            acceptUpdaterState({status:'preparing',canInstall:false,canCheck:false});
+            updaterInstallRequestId = '';
+            reconcileUpdaterFailure('Timed out');
+            installUpdate(true);
+        )JS")).isError());
+        QCOMPARE(engine.evaluate(QStringLiteral("requests.length")).toInt(), 2);
+        QCOMPARE(engine.evaluate(QStringLiteral("requests[1].method")).toString(), QStringLiteral("updater.state.get"));
+        QVERIFY(engine.evaluate(QStringLiteral("updaterInstallConfirmed")).toBool());
+        QVERIFY(!engine.evaluate(QStringLiteral("updaterState.canInstall")).toBool());
+        QVERIFY(!engine.evaluate(QStringLiteral("acceptUpdaterState({status:'awaiting-exit',exitRequired:true}); callbacks.shift()()")).isError());
+        QCOMPARE(engine.evaluate(QStringLiteral("quits")).toInt(), 1);
+
+        QVERIFY(initializeUpdaterEngine(engine));
+        QVERIFY(!engine.evaluate(QStringLiteral(R"JS(
+            installUpdate(true); updaterInstallRequestId = '';
+            reconcileUpdaterFailure('Failed');
+            acceptUpdaterState({status:'failed',canCheck:true,canDownload:false,canInstall:true});
+            installUpdate(true);
+        )JS")).isError());
+        QCOMPARE(engine.evaluate(QStringLiteral("requests.length")).toInt(), 3);
+        QCOMPARE(engine.evaluate(QStringLiteral("requests[2].method")).toString(), QStringLiteral("updater.install"));
+        QCOMPARE(engine.evaluate(QStringLiteral("quits")).toInt(), 0);
+    }
+
+    void updaterBackgroundPreferencesAreIndependent()
+    {
+        QJSEngine engine;
+        QVERIFY(initializeUpdaterEngine(engine));
+        QVERIFY(!engine.evaluate(QStringLiteral(R"JS(
+            settings = {autoCheckForUpdates:false,autoDownloadUpdates:true};
+            updaterState = {status:'available',canCheck:true,canDownload:true,availableVersion:'2'};
+            runAutomaticUpdates();
+        )JS")).isError());
+        QCOMPARE(engine.evaluate(QStringLiteral("requests[0].method")).toString(), QStringLiteral("updater.download"));
+        QVERIFY(!engine.evaluate(QStringLiteral(R"JS(
+            updaterDownloadRequestId = ''; runAutomaticUpdates();
+        )JS")).isError());
+        QCOMPARE(engine.evaluate(QStringLiteral("requests.length")).toInt(), 1);
+        QVERIFY(!engine.evaluate(QStringLiteral(R"JS(
+            settings = {autoCheckForUpdates:true,autoDownloadUpdates:false};
+            runAutomaticUpdates(); updaterCheckRequestId = ''; runAutomaticUpdates();
+        )JS")).isError());
+        QCOMPARE(engine.evaluate(QStringLiteral("requests.length")).toInt(), 2);
+        QCOMPARE(engine.evaluate(QStringLiteral("requests[1].method")).toString(), QStringLiteral("updater.check"));
+        const auto shell = source(QStringLiteral("qml/state/ShellStore.qml"));
+        const auto highlights = shell.mid(shell.indexOf(QStringLiteral("else if (name === \"updater.highlights.show\")")));
+        QVERIFY(!highlights.contains(QStringLiteral("AppController.navigate")));
+        for (const auto &path : {"qml/screens/UpdateScreen.qml", "qml/desktop/updates/DesktopUpdateScreen.qml"}) {
+            const auto screen = source(QString::fromLatin1(path));
+            QVERIFY(screen.contains(QStringLiteral("onAccepted: ShellStore.installUpdate(true)")));
+            QVERIFY(screen.contains(QStringLiteral("onClicked: installConfirmation.open()")));
+        }
+    }
+
     void premiumGamesRequirePaidMembershipBeforeLaunch_data()
     {
         QTest::addColumn<QString>("requiredTier");
@@ -712,6 +863,43 @@ private slots:
             "if (!m_captureActive || m_relativeMouse)")));
         QVERIFY(implementation.contains(QStringLiteral(
             "submitAbsoluteMouse(event->position());")));
+    }
+private:
+    static bool initializeUpdaterEngine(QJSEngine &engine)
+    {
+        engine.installExtensions(QJSEngine::TranslationExtension);
+        const auto shell = source(QStringLiteral("qml/state/ShellStore.qml"));
+        const auto setup = engine.evaluate(QStringLiteral(R"JS(
+            var ready = true, activeSession = null, streamBusy = false, sessionRecoveryPending = false;
+            var activeSessionRequestId = '', sessionClaimRequestId = '', streamCreateRequestId = '';
+            var streamerStartRequestId = '', streamerPrepareRequestId = '', streamerStopRequestId = '';
+            var pendingLaunchParams = null, pendingDirectLaunch = null, streamState = 'idle', streamerStatus = 'stopped';
+            var updaterCheckRequestId = '', updaterDownloadRequestId = '', updaterInstallRequestId = '', updaterStateRequestId = '';
+            var updaterError = '', accessibilityMessage = '', updaterInstallConfirmed = false, updaterExitScheduled = false, updaterReconciling = false;
+            var lastAutoUpdateCheckMs = 0, autoDownloadAttempt = '';
+            var updaterState = {status:'downloaded',canInstall:true,canCheck:true};
+            var settings = {autoCheckForUpdates:true,autoDownloadUpdates:true};
+            var requests = [], callbacks = [], quits = 0;
+            var CoreClient = {request:function(method,params) { requests.push({method:method,params:params}); return 'request-' + requests.length; }};
+            var AppController = {quitApplication:function() { ++quits; }};
+            var Qt = {callLater:function(callback) { callbacks.push(callback); }};
+        )JS"));
+        if (setup.isError()) return false;
+        for (const auto *name : {"updaterSessionSafe", "updaterBusy", "updaterCanInstall", "updaterNeedsReconciliation"}) {
+            const auto match = QRegularExpression(QStringLiteral(
+                "    readonly property bool %1: (.*?)(?=\\n    (?:property|readonly|on[A-Z]))").arg(QString::fromLatin1(name)),
+                QRegularExpression::DotMatchesEverythingOption).match(shell);
+            if (!match.hasMatch()) return false;
+            if (engine.evaluate(QStringLiteral("Object.defineProperty(this,'%1',{configurable:true,get:function(){return %2;}})")
+                    .arg(QString::fromLatin1(name), match.captured(1))).isError()) return false;
+        }
+        for (const auto *name : {"installUpdate", "acceptUpdaterState", "refreshUpdaterState", "reconcileUpdaterFailure", "runAutomaticUpdates", "checkForUpdates", "downloadUpdate"}) {
+            const auto match = QRegularExpression(QStringLiteral(
+                "    function %1\\([^\\n]*\\) \\{.*?\\n    \\}").arg(QString::fromLatin1(name)),
+                QRegularExpression::DotMatchesEverythingOption).match(shell);
+            if (!match.hasMatch() || engine.evaluate(match.captured()).isError()) return false;
+        }
+        return true;
     }
 };
 

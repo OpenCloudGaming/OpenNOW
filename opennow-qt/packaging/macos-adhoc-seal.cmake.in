@@ -1,0 +1,15 @@
+set(bundle "$ENV{DESTDIR}${CMAKE_INSTALL_PREFIX}/@OPENNOW_EXECUTABLE_NAME@.app")
+execute_process(
+    COMMAND /usr/bin/codesign --force --sign - --identifier "@OPENNOW_MACOS_BUNDLE_IDENTIFIER@" "${bundle}"
+    RESULT_VARIABLE sign_result
+    ERROR_VARIABLE sign_error)
+if(NOT sign_result EQUAL 0)
+    message(FATAL_ERROR "Could not seal the deployed macOS bundle: ${sign_error}")
+endif()
+execute_process(
+    COMMAND /usr/bin/codesign --verify --deep --strict "${bundle}"
+    RESULT_VARIABLE verify_result
+    ERROR_VARIABLE verify_error)
+if(NOT verify_result EQUAL 0)
+    message(FATAL_ERROR "The deployed macOS bundle failed signature verification: ${verify_error}")
+endif()

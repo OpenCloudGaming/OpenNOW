@@ -6,22 +6,25 @@ FocusScope {
     id: root
     objectName: "desktopUpdateScreen"
     readonly property var state: ShellStore.updaterState || ({})
-    readonly property bool busy: state.status === "checking" || state.status === "downloading"
+    readonly property bool busy: ShellStore.updaterBusy
+    Component.onCompleted: ShellStore.acknowledgeUpdateHighlights()
 
     Dialog {
         id: installConfirmation
+        objectName: "updateInstallConfirmation"
         anchors.centerIn: parent
         width: Math.min(parent.width - 48, 440)
         // Bound the dialog independently of the style's header/footer sizing.
         implicitHeight: DesktopTokens.px(220)
         height: Math.min(root.height - 48, implicitHeight)
         modal: true
-        title: qsTr("Install and restart")
+        focus: true
+        title: root.state.downloadedVersion ? qsTr("Install %1 and restart").arg(root.state.downloadedVersion) : qsTr("Install and restart")
         standardButtons: Dialog.Ok | Dialog.Cancel
-        onAccepted: ShellStore.installUpdate()
+        onAccepted: ShellStore.installUpdate(true)
         contentItem: Label {
             wrapMode: Text.WordWrap
-            text: qsTr("OpenNOW will close to install the verified update. Continue?")
+            text: qsTr("OpenNOW will prepare the verified update, close, replace this installation, and restart. Continue?")
         }
     }
 
@@ -67,12 +70,38 @@ FocusScope {
                     }
                     Text {
                         width: parent.width
-                        text: root.state.message || qsTr("Check GitHub Releases for a newer OpenNOW build.")
+                        visible: Boolean(root.state.availableVersion)
+                        text: qsTr("Available version: %1").arg(root.state.availableVersion || "")
+                        color: Theme.textMuted
+                        font.family: Theme.bodyFont
+                        font.pixelSize: DesktopTokens.px(13)
+                        wrapMode: Text.WordWrap
+                    }
+                    Text {
+                        width: parent.width
+                        text: ShellStore.updaterError || root.state.message || qsTr("Check GitHub Releases for a newer OpenNOW build.")
                         textFormat: Text.PlainText
                         color: Theme.label
                         font.family: Theme.bodyFont
                         font.pixelSize: DesktopTokens.px(14)
                         wrapMode: Text.WordWrap
+                        Accessible.role: Accessible.StaticText
+                        Accessible.name: text
+                    }
+                    ProgressBar {
+                        width: parent.width
+                        visible: root.busy
+                        indeterminate: true
+                        Accessible.name: root.state.message || qsTr("Update in progress")
+                    }
+                    Text {
+                        width: parent.width
+                        visible: !ShellStore.updaterSessionSafe
+                        text: qsTr("End your streaming session before installing an update. Background updates will wait.")
+                        color: Theme.textMuted
+                        wrapMode: Text.WordWrap
+                        Accessible.role: Accessible.StaticText
+                        Accessible.name: text
                     }
                     Flow {
                         width: parent.width
@@ -80,7 +109,7 @@ FocusScope {
                         DesktopSettingsButton {
                             text: root.state.status === "checking" ? qsTr("Checking…") : qsTr("Check for updates")
                             primary: true
-                            enabled: !root.busy
+                            enabled: !root.busy && root.state.canCheck === true
                             onClicked: ShellStore.checkForUpdates()
                         }
                         DesktopSettingsButton {
@@ -91,14 +120,15 @@ FocusScope {
                         DesktopSettingsButton {
                             visible: Boolean(root.state.canDownload)
                             text: root.state.status === "downloading" ? qsTr("Downloading…") : qsTr("Download verified update")
-                            enabled: !root.busy
+                            enabled: !root.busy && root.state.canDownload === true
                             onClicked: ShellStore.downloadUpdate()
                         }
                         DesktopSettingsButton {
                             visible: Boolean(root.state.canInstall)
-                            text: qsTr("Install and restart")
+                            text: root.state.downloadedVersion ? qsTr("Install %1 and restart").arg(root.state.downloadedVersion) : qsTr("Install and restart")
                             primary: true
-                            enabled: !root.busy
+                            objectName: "updateInstallButton"
+                            enabled: ShellStore.updaterCanInstall
                             onClicked: installConfirmation.open()
                         }
                     }

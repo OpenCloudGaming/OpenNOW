@@ -3,6 +3,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+import xml.etree.ElementTree as ET
 
 
 MODULE = Path(__file__).resolve().parents[1] / "cmake" / "BuildMetadata.cmake"
@@ -26,6 +27,12 @@ class BuildMetadataTest(unittest.TestCase):
                 + f'include("{(MODULE.parent / "WindowsInstaller.cmake").as_posix()}")\n'
                 + 'message("MSI=${CPACK_PACKAGE_VERSION}|${CPACK_PACKAGE_NAME}|${CPACK_PACKAGE_INSTALL_DIRECTORY}|${CPACK_WIX_UPGRADE_GUID}")\n'
                 + 'message("LAUNCHER=${CPACK_PACKAGE_EXECUTABLES}")\n'
+                + 'message("WIXPATCH=${CPACK_WIX_PATCH_FILE}")\n'
+                + 'if(DEFINED CPACK_WIX_PROPERTY_ARPINSTALLLOCATION)\n'
+                + 'message("ARPINSTALLLOCATION=OVERRIDDEN")\n'
+                + 'else()\n'
+                + 'message("ARPINSTALLLOCATION=UNSET")\n'
+                + 'endif()\n'
                 + 'if(CPACK_RESOURCE_FILE_LICENSE)\n'
                 + 'file(SHA256 "${CPACK_RESOURCE_FILE_LICENSE}" license_hash)\n'
                 + 'message("LICENSE=${license_hash}")\n'
@@ -94,6 +101,33 @@ class BuildMetadataTest(unittest.TestCase):
                 result = self.metadata(WIN32="TRUE", OPENNOW_BUILD_VERSION=version)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn("MSI", result.stderr)
+
+    def test_existing_upgrade_families_remain_stable_across_architectures(self):
+        families = {
+            "1.0.0": "6E81F7AE-B19D-4E87-A94A-2B2F01EBF762",
+            "1.0.0-nightly.256.1": "9661F4F8-656C-4B64-9035-01B04F4822B1",
+            "1.0.0-supporter.256.1": "B3AF8A40-5F44-445A-AD99-CECE00593601",
+        }
+        for version, guid in families.items():
+            for arch in ("x64", "ARM64"):
+                with self.subTest(version=version, arch=arch):
+                    result = self.metadata(WIN32="TRUE", OPENNOW_BUILD_VERSION=version,
+                                           CMAKE_CXX_COMPILER_ARCHITECTURE_ID=arch)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    identity = next(line for line in result.stderr.splitlines() if line.startswith("MSI="))
+                    self.assertTrue(identity.endswith("|" + guid), identity)
+
+    def test_msi_records_the_resolved_install_root_after_costing(self):
+        result = self.metadata(WIN32="TRUE")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("ARPINSTALLLOCATION=UNSET", result.stderr)
+        patches = next(line.removeprefix("WIXPATCH=") for line in result.stderr.splitlines()
+                       if line.startswith("WIXPATCH="))
+        for patch in filter(None, patches.split(";")):
+            root = ET.parse(patch).getroot()
+            self.assertFalse(root.findall(".//SetProperty[@Id='ARPINSTALLLOCATION']"))
+        policy = (MODULE.parent / "WindowsInstaller.cmake").read_text()
+        self.assertNotIn("CPACK_WIX_PRODUCT_GUID", policy)
 
     def test_msi_launcher_label_and_license_follow_the_package(self):
         license_digest = hashlib.sha256((MODULE.parents[2] / "LICENSE").read_bytes()).hexdigest()

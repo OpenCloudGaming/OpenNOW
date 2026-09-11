@@ -5,6 +5,47 @@ $testNamespace = [Guid]::NewGuid().ToString()
 $metadata = (Resolve-Path "$PSScriptRoot/../cmake/BuildMetadata.cmake").Path.Replace('\', '/')
 $policy = (Resolve-Path "$PSScriptRoot/../cmake/WindowsInstaller.cmake").Path.Replace('\', '/')
 
+function Assert-Registration {
+    param([string]$Package, [string]$Destination)
+
+    $installer = New-Object -ComObject WindowsInstaller.Installer
+    $objects = [Collections.Generic.List[object]]::new()
+    $objects.Add($installer)
+    try {
+        $database = $installer.GetType().InvokeMember("OpenDatabase", "InvokeMethod", $null, $installer, @($Package, 0))
+        $objects.Add($database)
+        $properties = @{}
+        foreach ($property in @("ProductCode", "UpgradeCode")) {
+            $view = $database.GetType().InvokeMember("OpenView", "InvokeMethod", $null, $database,
+                @("SELECT ``Value`` FROM ``Property`` WHERE ``Property`` = '$property'"))
+            $objects.Add($view)
+            $view.GetType().InvokeMember("Execute", "InvokeMethod", $null, $view, $null)
+            $record = $view.GetType().InvokeMember("Fetch", "InvokeMethod", $null, $view, $null)
+            $objects.Add($record)
+            $properties[$property] = $record.GetType().InvokeMember("StringData", "GetProperty", $null, $record, @(1))
+            $view.GetType().InvokeMember("Close", "InvokeMethod", $null, $view, $null)
+        }
+        $location = $installer.GetType().InvokeMember("ProductInfo", "GetProperty", $null, $installer,
+            @($properties.ProductCode, "InstallLocation"))
+        if ([string]::IsNullOrWhiteSpace($location) -or
+            [IO.Path]::GetFullPath($location).TrimEnd('\') -ne [IO.Path]::GetFullPath($Destination).TrimEnd('\')) {
+            throw "MSI InstallLocation does not match the resolved installation root"
+        }
+        $related = $installer.GetType().InvokeMember("RelatedProducts", "GetProperty", $null, $installer,
+            @($properties.UpgradeCode))
+        $objects.Add($related)
+        $count = $related.GetType().InvokeMember("Count", "GetProperty", $null, $related, $null)
+        if ($count -ne 1) { throw "Expected one registered product after a channel upgrade, found $count" }
+        $product = $related.GetType().InvokeMember("Item", "GetProperty", $null, $related, @(0))
+        if ($product -ne $properties.ProductCode) { throw "The registered product is not the newly installed MSI" }
+    } finally {
+        $objects.Reverse()
+        foreach ($instance in $objects) {
+            [Runtime.InteropServices.Marshal]::FinalReleaseComObject($instance) | Out-Null
+        }
+    }
+}
+
 function Invoke-Installer {
     param([string]$Package, [string]$Destination, [int]$Expected = 0)
 
@@ -18,6 +59,7 @@ function Invoke-Installer {
     if ($Expected -ne 0 -and -not (Select-String -Path $log -SimpleMatch "A later version")) {
         throw "Older MSI failed without the expected downgrade rejection"
     }
+    if ($Expected -eq 0) { Assert-Registration $Package $Destination }
 }
 
 function Assert-Payload {
@@ -73,6 +115,31 @@ include(CPack)
                 Get-Content $_.FullName | Write-Host
             }
             throw "MSI fixture packaging failed"
+        }
+        $propertiesFiles = @(Get-ChildItem "$source/packages" -Recurse -Filter properties.wxi)
+        if ($propertiesFiles.Count -ne 1) { throw "Expected one generated WiX properties include" }
+        $wixDirectory = $propertiesFiles[0].Directory.FullName
+        [xml]$propertiesXml = Get-Content $propertiesFiles[0].FullName -Raw
+        [xml]$fragmentXml = Get-Content (Join-Path $wixDirectory "product_fragment.wxi") -Raw
+        $actionQuery = "//*[local-name()='SetProperty' and @Id='ARPINSTALLLOCATION']"
+        $actions = @($propertiesXml.SelectNodes($actionQuery)) + @($fragmentXml.SelectNodes($actionQuery))
+        if ($actions.Count -ne 1 -or $propertiesXml.SelectNodes($actionQuery).Count -ne 1) {
+            throw "CPack must own exactly one ARPINSTALLLOCATION action"
+        }
+        if ($actions[0].GetAttribute("Value") -ne "[INSTALL_ROOT]" -or
+            $actions[0].GetAttribute("After") -ne "CostFinalize" -or
+            $actions[0].GetAttribute("Sequence") -notin @("", "both", "execute")) {
+            throw "Install-location registration must use the resolved root in the execute sequence"
+        }
+        $installRoot = $propertiesXml.SelectSingleNode("//*[local-name()='Property' and @Id='INSTALL_ROOT']")
+        $previousLocation = $propertiesXml.SelectSingleNode("//*[local-name()='RegistrySearch' and @Id='FindInstallLocation']")
+        if ($null -eq $installRoot -or $installRoot.GetAttribute("Secure") -ne "yes" -or
+            $null -eq $previousLocation -or $previousLocation.ParentNode -ne $installRoot -or
+            $previousLocation.GetAttribute("Root") -ne "HKLM" -or
+            $previousLocation.GetAttribute("Key") -ne 'Software\Microsoft\Windows\CurrentVersion\Uninstall\[WIX_UPGRADE_DETECTED]' -or
+            $previousLocation.GetAttribute("Name") -ne "InstallLocation" -or
+            $previousLocation.GetAttribute("Type") -ne "raw") {
+            throw "CPack must preserve the previous product's registered installation root during upgrades"
         }
         $license = @(Get-ChildItem "$source/packages" -Recurse -Filter License.rtf)
         if ($license.Count -ne 1 -or

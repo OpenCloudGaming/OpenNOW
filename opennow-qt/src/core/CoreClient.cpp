@@ -7,12 +7,14 @@
 
 #include <QDateTime>
 #include <QElapsedTimer>
+#include <QCoreApplication>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonDocument>
 #include <QJsonParseError>
 #include <QStandardPaths>
+#include <QProcessEnvironment>
 
 using namespace Qt::StringLiterals;
 
@@ -111,6 +113,25 @@ void CoreClient::logShellDiagnostic(const QString &message)
 CoreClient::CoreClient(QObject *parent)
     : QObject(parent)
 {
+    for (const auto *name : {"OPENNOW_UPDATE_PLAN", "OPENNOW_UPDATE_NONCE"}) {
+        if (qEnvironmentVariableIsSet(name))
+            m_updateStartupEnvironment.insert(QString::fromLatin1(name), qEnvironmentVariable(name));
+        qunsetenv(name);
+    }
+    if (!m_updateStartupEnvironment.isEmpty()) m_updateStartupElapsed.start();
+    connect(this, &CoreClient::responseReceived, this, [this](const QString &id, const QJsonObject &result) {
+        if (id != m_updateStartupRequestId || id.isEmpty()) return;
+        m_updateStartupRequestId.clear();
+        if (result.value(u"acknowledged"_s).toBool())
+            m_updateStartupEnvironment.clear();
+        else
+            QTimer::singleShot(1'000, this, &CoreClient::acknowledgeUpdateStartup);
+    });
+    connect(this, &CoreClient::requestFailed, this, [this](const QString &id, const QString &, const QString &) {
+        if (id != m_updateStartupRequestId || id.isEmpty()) return;
+        m_updateStartupRequestId.clear();
+        QTimer::singleShot(1'000, this, &CoreClient::acknowledgeUpdateStartup);
+    });
     m_process.setProcessChannelMode(QProcess::SeparateChannels);
     connect(&m_process, &QProcess::readyReadStandardOutput, this, &CoreClient::processStdout);
     connect(&m_process, &QProcess::readyReadStandardError, this, &CoreClient::processStderr);
@@ -179,8 +200,31 @@ bool CoreClient::start(const QString &program, const QStringList &arguments)
     m_droppedEvents = 0;
     setLastError({});
     setState(u"starting"_s);
+    auto environment = QProcessEnvironment::systemEnvironment();
+    environment.remove(u"OPENNOW_UPDATE_PLAN"_s);
+    environment.remove(u"OPENNOW_UPDATE_NONCE"_s);
+    environment.insert(m_updateStartupEnvironment);
+    environment.insert(u"OPENNOW_APP_EXECUTABLE"_s,
+                       QFileInfo(QCoreApplication::applicationFilePath()).canonicalFilePath());
+    environment.insert(u"OPENNOW_APP_PID"_s, QString::number(QCoreApplication::applicationPid()));
+    m_process.setProcessEnvironment(environment);
     m_process.start(program, arguments, QIODevice::ReadWrite | QIODevice::Unbuffered);
     return true;
+}
+
+void CoreClient::markUiReady()
+{
+    m_uiReady = true;
+    acknowledgeUpdateStartup();
+}
+
+void CoreClient::acknowledgeUpdateStartup()
+{
+    if (m_updateStartupElapsed.isValid() && m_updateStartupElapsed.hasExpired(90'000))
+        m_updateStartupEnvironment.clear();
+    if (!m_uiReady || m_state != u"ready"_s || m_updateStartupEnvironment.isEmpty()
+        || !m_updateStartupRequestId.isEmpty()) return;
+    m_updateStartupRequestId = request(u"updater.startup.ack"_s, {}, 5'000);
 }
 
 void CoreClient::stop()
@@ -407,6 +451,7 @@ void CoreClient::processLine(const QByteArray &line)
                 }
                 m_restartAttempts = 0;
                 setState(u"ready"_s);
+                acknowledgeUpdateStartup();
             }
             emit responseReceived(id, result);
         } else {

@@ -212,8 +212,33 @@ QtObject {
     property string mediaMessage: ""
     property var diagnostics: ({entries: []})
     property string diagnosticsMessage: ""
-    property var updaterState: ({status: "idle", currentVersion: Qt.application.version, canCheck: true})
+    property var updaterState: ({status: "idle", currentVersion: Qt.application.version, canCheck: false})
+    property string updaterError: ""
+    property bool updaterInstallConfirmed: false
+    property bool updaterExitScheduled: false
+    property bool updaterReconciling: false
+    property double lastAutoUpdateCheckMs: 0
+    property string autoDownloadAttempt: ""
+    readonly property bool updaterSessionSafe: !activeSession && !streamBusy && !sessionRecoveryPending
+        && activeSessionRequestId === "" && sessionClaimRequestId === "" && streamCreateRequestId === ""
+        && streamerStartRequestId === "" && streamerPrepareRequestId === "" && streamerStopRequestId === ""
+        && !pendingLaunchParams && !pendingDirectLaunch
+        && ["idle", "error"].indexOf(streamState) >= 0
+        && ["stopped", "error"].indexOf(streamerStatus) >= 0
+    readonly property bool updaterBusy: updaterReconciling || updaterCheckRequestId !== ""
+        || updaterDownloadRequestId !== "" || updaterInstallRequestId !== ""
+        || ["checking", "downloading", "preparing", "awaiting-exit", "applying", "restarting"].indexOf(updaterState.status) >= 0
+    readonly property bool updaterCanInstall: ready && updaterSessionSafe && !updaterBusy && updaterState.canInstall === true
+    readonly property bool updaterNeedsReconciliation: updaterReconciling || updaterInstallConfirmed
+        || ["preparing", "awaiting-exit", "applying", "restarting", "managed-pending"].indexOf(updaterState.status) >= 0
+    onUpdaterSessionSafeChanged: {
+        if (updaterSessionSafe && releaseHighlightsPending) {
+            accessibilityMessage = qsTr("Release notes are available in Updates.")
+            releaseHighlightsPending = false
+        }
+    }
     property var releaseHighlights: ({})
+    property bool releaseHighlightsPending: false
     property var socialCapabilities: ({
         friendsAvailable: false,
         presenceAvailable: false,
@@ -513,9 +538,17 @@ QtObject {
     }
 
     property Timer autoUpdateCheckTimer: Timer {
-        interval: 15000
-        repeat: false
-        onTriggered: root.checkForUpdates()
+        interval: root.lastAutoUpdateCheckMs === 0 ? 15000 : 60000
+        repeat: true
+        running: root.ready && (root.settings.autoCheckForUpdates === true || root.settings.autoDownloadUpdates === true)
+        onTriggered: root.runAutomaticUpdates()
+    }
+
+    property Timer updaterReconcileTimer: Timer {
+        interval: 2000
+        repeat: true
+        running: root.ready && root.updaterNeedsReconciliation
+        onTriggered: root.refreshUpdaterState()
     }
 
     function refreshSettings() {
@@ -894,34 +927,87 @@ QtObject {
     }
 
     function checkForUpdates() {
-        if (!ready || updaterCheckRequestId !== "")
+        if (!ready || updaterBusy || updaterState.canCheck !== true)
             return
-        updaterState = Object.assign({}, updaterState, {
-            status: "checking",
-            message: qsTr("Checking GitHub Releases…"),
-            canCheck: false
-        })
+        updaterError = ""
         updaterCheckRequestId = CoreClient.request("updater.check", {
             channel: settings.updateChannel || "stable"
         }, 30000)
     }
 
     function downloadUpdate() {
-        if (!ready || updaterDownloadRequestId !== "" || !updaterState.canDownload)
+        if (!ready || updaterBusy || updaterState.canDownload !== true)
             return
+        updaterError = ""
         updaterDownloadRequestId = CoreClient.request("updater.download", {}, 300000)
-        updaterState = Object.assign({}, updaterState, {
-            status: "downloading",
-            message: qsTr("Downloading and verifying the signed update…"),
-            canDownload: false,
-            canCheck: false
-        })
     }
 
-    function installUpdate() {
-        if (!ready || updaterInstallRequestId !== "" || !updaterState.canInstall)
+    function installUpdate(confirmed) {
+        if (confirmed !== true || !updaterCanInstall)
             return
+        updaterError = ""
+        updaterInstallConfirmed = true
         updaterInstallRequestId = CoreClient.request("updater.install", {confirmed: true}, 30000)
+    }
+
+    function refreshUpdaterState() {
+        if (ready && updaterStateRequestId === "")
+            updaterStateRequestId = CoreClient.request("updater.state.get", {})
+    }
+
+    function acceptUpdaterState(state) {
+        if (state.status !== updaterState.status
+                || ["error", "failed", "rolled-back", "succeeded", "managed-pending", "reboot-required"].indexOf(state.status) >= 0)
+            updaterError = ""
+        updaterState = state
+        updaterReconciling = false
+        if (state.message)
+            accessibilityMessage = state.message
+        if (updaterInstallConfirmed && state.status === "awaiting-exit" && state.exitRequired === true
+                && updaterSessionSafe && !updaterExitScheduled) {
+            updaterExitScheduled = true
+            Qt.callLater(function() {
+                if (updaterInstallConfirmed && updaterState.status === "awaiting-exit"
+                        && updaterState.exitRequired === true && updaterSessionSafe)
+                    AppController.quitApplication()
+                else
+                    updaterExitScheduled = false
+            })
+        } else if (["failed", "rolled-back", "succeeded", "managed-pending", "reboot-required"].indexOf(state.status) >= 0
+                || (state.canInstall === true && updaterInstallRequestId === "")) {
+            updaterInstallConfirmed = false
+        }
+    }
+
+    function reconcileUpdaterFailure(message) {
+        updaterError = message
+        accessibilityMessage = message
+        updaterReconciling = true
+        refreshUpdaterState()
+    }
+
+    function runAutomaticUpdates() {
+        if (!ready || !updaterSessionSafe || updaterBusy)
+            return
+        if (settings.autoDownloadUpdates === true && updaterState.canDownload === true) {
+            const release = String(updaterState.availableVersion || updaterState.releaseUrl || "")
+                + ":" + String(settings.updateChannel || "stable")
+            if (release !== autoDownloadAttempt) {
+                autoDownloadAttempt = release
+                downloadUpdate()
+                return
+            }
+        }
+        if (settings.autoCheckForUpdates === true && updaterState.canCheck === true
+                && (lastAutoUpdateCheckMs === 0 || Date.now() - lastAutoUpdateCheckMs >= 21600000)) {
+            lastAutoUpdateCheckMs = Date.now()
+            checkForUpdates()
+        }
+    }
+
+    function acknowledgeUpdateHighlights() {
+        if (ready && releaseHighlights.version)
+            CoreClient.request("updater.highlights.ack", {version: releaseHighlights.version})
     }
 
     function syncTelemetry() {
@@ -2401,8 +2487,6 @@ QtObject {
                 root.syncTelemetry()
                 root.syncDiscordPresence()
                 root.refreshStreamerDetection()
-                if (result.settings.autoCheckForUpdates && root.updaterCheckRequestId === "")
-                    root.autoUpdateCheckTimer.restart()
             } else if (requestId === root.consoleSurfaceRequestId) {
                 settingsOwner.acceptConsoleSurface(result)
             } else if (requestId === root.providersRequestId) {
@@ -2609,23 +2693,20 @@ QtObject {
                 AppController.openLocalPath(result.path, true)
             } else if (requestId === root.updaterStateRequestId) {
                 root.updaterStateRequestId = ""
-                root.updaterState = result
+                root.acceptUpdaterState(result)
             } else if (requestId === root.updaterCheckRequestId) {
                 root.updaterCheckRequestId = ""
-                root.updaterState = result
+                root.acceptUpdaterState(result)
                 root.updaterHighlightsRequestId = CoreClient.request("updater.highlights.get", {})
             } else if (requestId === root.updaterHighlightsRequestId) {
                 root.updaterHighlightsRequestId = ""
                 root.releaseHighlights = result
             } else if (requestId === root.updaterDownloadRequestId) {
                 root.updaterDownloadRequestId = ""
-                root.updaterState = result
-                root.accessibilityMessage = qsTr("Signed update downloaded and verified")
+                root.acceptUpdaterState(result)
             } else if (requestId === root.updaterInstallRequestId) {
                 root.updaterInstallRequestId = ""
-                root.updaterState = result
-                root.accessibilityMessage = qsTr("Verified update installer launched")
-                Qt.callLater(() => AppController.quitApplication())
+                root.acceptUpdaterState(result)
             } else if (requestId === root.socialCapabilitiesRequestId) {
                 root.socialCapabilitiesRequestId = ""
                 root.socialCapabilities = result
@@ -2837,25 +2918,19 @@ QtObject {
                 root.diagnosticsMessage = message
             } else if (requestId === root.updaterStateRequestId) {
                 root.updaterStateRequestId = ""
+                root.updaterError = message
+                root.updaterReconciling = true
             } else if (requestId === root.updaterCheckRequestId) {
                 root.updaterCheckRequestId = ""
-                root.updaterState = Object.assign({}, root.updaterState, {
-                    status: "error",
-                    message: message,
-                    canCheck: true
-                })
+                root.reconcileUpdaterFailure(message)
             } else if (requestId === root.updaterHighlightsRequestId) {
                 root.updaterHighlightsRequestId = ""
             } else if (requestId === root.updaterDownloadRequestId) {
                 root.updaterDownloadRequestId = ""
-                root.updaterState = Object.assign({}, root.updaterState, {
-                    status: "available", message: message, canCheck: true
-                })
+                root.reconcileUpdaterFailure(message)
             } else if (requestId === root.updaterInstallRequestId) {
                 root.updaterInstallRequestId = ""
-                root.updaterState = Object.assign({}, root.updaterState, {
-                    status: "downloaded", message: message, canInstall: true, canCheck: true
-                })
+                root.reconcileUpdaterFailure(message)
             } else if (requestId === root.socialCapabilitiesRequestId) {
                 root.socialCapabilitiesRequestId = ""
                 root.socialCapabilities = Object.assign({}, root.socialCapabilities, {
@@ -2942,11 +3017,12 @@ QtObject {
             else if (name === "artwork.ready")
                 root.acceptArtworkResult(payload)
             else if (name === "updater.changed")
-                root.updaterState = payload
+                root.acceptUpdaterState(payload)
             else if (name === "updater.highlights.show") {
                 root.releaseHighlights = payload
-                AppController.navigate("updates")
-                CoreClient.request("updater.highlights.ack", {version: payload.version || ""})
+                root.releaseHighlightsPending = !root.updaterSessionSafe
+                if (root.updaterSessionSafe)
+                    root.accessibilityMessage = qsTr("Release notes are available in Updates.")
             }
         }
     }

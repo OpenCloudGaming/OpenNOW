@@ -1,9 +1,11 @@
 #pragma once
 
 #include <QHash>
+#include <QElapsedTimer>
 #include <QJsonObject>
 #include <QObject>
 #include <QProcess>
+#include <QProcessEnvironment>
 #include <QQueue>
 #include <QStringList>
 #include <QTimer>
@@ -35,6 +37,7 @@ public:
                                 int timeoutMs = 15'000);
     Q_INVOKABLE bool cancel(const QString &requestId);
     Q_INVOKABLE void logShellDiagnostic(const QString &message);
+    Q_INVOKABLE void markUiReady();
     void setNativeHdrSupported(bool supported) { m_nativeHdrSupported = supported; }
 
 signals:
@@ -67,8 +70,13 @@ private:
     void failAll(const QString &code, const QString &message);
     void protocolFailure(const QString &message);
     void scheduleRestart();
+    void acknowledgeUpdateStartup();
 
     QProcess m_process;
+    QProcessEnvironment m_updateStartupEnvironment;
+    QElapsedTimer m_updateStartupElapsed;
+    QString m_updateStartupRequestId;
+    bool m_uiReady = false;
     QTimer m_timeoutTimer;
     QByteArray m_stdoutBuffer;
     QByteArray m_stderrBuffer;
