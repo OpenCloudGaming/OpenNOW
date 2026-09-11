@@ -141,19 +141,35 @@ void AppControllerTest::cyclesPrimaryRoutesDeterministically()
         QStringLiteral("library"),
         QStringLiteral("store"),
         QStringLiteral("friends"),
-        QStringLiteral("controllers"),
         QStringLiteral("settings"),
     };
 
     QCOMPARE(controller.route(), expectedRoutes.constFirst());
     for (qsizetype index = 1; index < expectedRoutes.size(); ++index) {
         QVERIFY(controller.cyclePrimaryRoute(1));
-        QCOMPARE(controller.route(), expectedRoutes.at(index));
+        if (expectedRoutes.at(index) == QStringLiteral("friends")) {
+            QCOMPARE(controller.route(), QStringLiteral("store"));
+            QCOMPARE(controller.overlay(), QStringLiteral("friends"));
+        } else {
+            QCOMPARE(controller.route(), expectedRoutes.at(index));
+            QVERIFY(controller.overlay().isEmpty());
+        }
     }
     QVERIFY(controller.cyclePrimaryRoute(1));
     QCOMPARE(controller.route(), expectedRoutes.constFirst());
     QVERIFY(controller.cyclePrimaryRoute(-1));
     QCOMPARE(controller.route(), expectedRoutes.constLast());
+    QVERIFY(controller.cyclePrimaryRoute(-1));
+    QCOMPARE(controller.overlay(), QStringLiteral("friends"));
+    QVERIFY(controller.cyclePrimaryRoute(1));
+    QCOMPARE(controller.route(), QStringLiteral("settings"));
+    QVERIFY(controller.overlay().isEmpty());
+    QVERIFY(controller.navigate(QStringLiteral("settings-input")));
+    QVERIFY(controller.cyclePrimaryRoute(1));
+    QCOMPARE(controller.route(), QStringLiteral("home"));
+    QVERIFY(controller.navigate(QStringLiteral("controllers")));
+    QVERIFY(controller.cyclePrimaryRoute(-1));
+    QCOMPARE(controller.overlay(), QStringLiteral("friends"));
 }
 
 void AppControllerTest::cyclesGuidePagesDeterministically()

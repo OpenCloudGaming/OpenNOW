@@ -158,6 +158,22 @@ if(BUILD_TESTING)
         -input "${CMAKE_CURRENT_SOURCE_DIR}/tests/controllericons")
     set_tests_properties(opennow-controllericons-tests PROPERTIES
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
+    qt_add_executable(opennow-consoleactions-tests
+        tests/tst_consoleactions.cpp src/app/AppController.cpp src/app/AppController.h)
+    target_include_directories(opennow-consoleactions-tests PRIVATE src)
+    target_link_libraries(opennow-consoleactions-tests PRIVATE Qt6::QuickTest Qt6::Quick)
+    target_compile_definitions(opennow-consoleactions-tests PRIVATE
+        OPENNOW_QML_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/qml"
+        OPENNOW_CONSOLE_ACTION_TEST_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/consoleactions")
+    qt_add_resources(opennow-consoleactions-tests "console-action-test-assets"
+        PREFIX "/qt/qml/OpenNOW" FILES ${OPENNOW_CONTROLLER_ICON_FILES} ${OPENNOW_KEYBOARD_ICON_FILES}
+        res/fonts/Nunito-Variable.ttf res/icons/nav-home.svg res/icons/nav-library.svg
+        res/icons/nav-friends.svg res/icons/nav-settings.svg res/icons/nav-computer.svg
+        res/icons/store-steam.svg)
+    add_test(NAME opennow-consoleactions-tests COMMAND opennow-consoleactions-tests
+        -input "${CMAKE_CURRENT_SOURCE_DIR}/tests/consoleactions")
+    set_tests_properties(opennow-consoleactions-tests PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software" TIMEOUT 30)
     qt_add_executable(opennow-theme-tests tests/tst_theme.cpp)
     target_link_libraries(opennow-theme-tests PRIVATE Qt6::QuickTest Qt6::Quick)
     target_compile_definitions(opennow-theme-tests PRIVATE
@@ -665,6 +681,7 @@ if(BUILD_TESTING)
     set(OPENNOW_CI_UNIT_TEST_TARGETS
         opennow-graphicsdevices-tests
         opennow-consolelayout-tests
+        opennow-consoleactions-tests
         opennow-macawdl-tests
         opennow-controllericons-tests
         opennow-streamtoasts-tests
@@ -705,6 +722,7 @@ if(BUILD_TESTING)
         set_target_properties(
             opennow-graphicsdevices-tests
             opennow-consolelayout-tests
+            opennow-consoleactions-tests
             opennow-macawdl-tests
             opennow-controllericons-tests
             opennow-streamtoasts-tests
@@ -759,6 +777,7 @@ if(BUILD_TESTING)
         foreach(test_target IN ITEMS
                 opennow-graphicsdevices-tests
                 opennow-consolelayout-tests
+                opennow-consoleactions-tests
                 opennow-controllericons-tests
                 opennow-streamtoasts-tests
                 opennow-waylandhdroutput-tests

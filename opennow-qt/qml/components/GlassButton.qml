@@ -18,6 +18,14 @@ Button {
     Accessible.name: I18n.source(text, I18n.revision) + (shortcutText !== "" ? " · " + shortcutText : "")
     Accessible.role: Accessible.Button
 
+    Keys.onPressed: event => {
+        if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+            if (!event.isAutoRepeat)
+                root.click()
+            event.accepted = true
+        }
+    }
+
     background: Rectangle {
         radius: height / 2
         color: root.primary ? Theme.face

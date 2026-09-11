@@ -10,6 +10,19 @@ FocusScope {
     readonly property string artwork: game.heroImageUrl || game.imageUrl || ""
     readonly property bool canLaunch: Boolean(previewGame) || !ShellStore.signedIn || ShellStore.selectedLaunchAppId() !== ""
 
+    Keys.onPressed: event => {
+        if (platformPicker.expanded)
+            return
+        if (event.key === Qt.Key_Y) {
+            if (!event.isAutoRepeat)
+                ShellStore.toggleFavorite(root.game)
+        } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+            if (!event.isAutoRepeat)
+                play.click()
+        } else return
+        event.accepted = true
+    }
+
     function aspectLabel(resolution) {
         const parts = String(resolution || "").split("x")
         if (parts.length !== 2)
@@ -134,13 +147,21 @@ FocusScope {
         }
         Row {
             x: 28; y: 378; width: 504; spacing: 10
-            GlassButton { id: play; width: 215; height: 56; text: ShellStore.signedIn ? (root.canLaunch ? qsTr("Play") : qsTr("Unavailable")) : qsTr("Sign in"); glyph: "A"; primary: true; enabled: root.canLaunch; KeyNavigation.up: platformPicker; onClicked: { if (!root.previewGame) ShellStore.launchSelectedGame() } Component.onCompleted: forceActiveFocus() }
-            GlassButton { width: 279; height: 56; text: ShellStore.isFavorite(root.game) ? qsTr("Remove from My games") : qsTr("Add to My games"); glyph: "Y"; onClicked: ShellStore.toggleFavorite(root.game) }
+            GlassButton { id: play; objectName: "consolePlayButton"; width: 215; height: 56; text: ShellStore.signedIn ? (root.canLaunch ? qsTr("Play") : qsTr("Unavailable")) : qsTr("Sign in"); glyph: "A"; primary: true; enabled: root.canLaunch; KeyNavigation.up: platformPicker; KeyNavigation.right: favoriteButton; onClicked: { if (!root.previewGame) ShellStore.launchSelectedGame() } Component.onCompleted: forceActiveFocus() }
+            GlassButton { id: favoriteButton; objectName: "consoleFavoriteButton"; width: 279; height: 56; text: ShellStore.isFavorite(root.game) ? qsTr("Remove from My games") : qsTr("Add to My games"); glyph: "Y"; KeyNavigation.left: play; onClicked: ShellStore.toggleFavorite(root.game) }
         }
     }
     Component.onCompleted: {
         if (initialPlatformOpen)
             Qt.callLater(platformPicker.openMenu)
     }
-    AppChrome { anchors.fill: parent; title: root.game.title; currentRoute: "home"; onRouteRequested: route => AppController.navigate(route) }
+    AppChrome {
+        anchors.fill: parent
+        title: root.game.title
+        currentRoute: "home"
+        leftHints: [{glyph: "Y", label: favoriteButton.text},
+                    {glyph: "B", label: qsTr("Back")}]
+        rightHints: [{glyph: "A", label: play.text}]
+        onRouteRequested: route => AppController.navigate(route)
+    }
 }
