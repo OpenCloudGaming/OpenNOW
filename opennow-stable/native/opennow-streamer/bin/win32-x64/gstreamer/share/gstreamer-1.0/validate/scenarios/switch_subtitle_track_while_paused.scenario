@@ -1,7 +1,0 @@
-description, summary="Change subtitle track while pipeline is PAUSED", min-subtitle-track=2, duration=5.0, handles-states=true, need-clock-sync=true, needs_preroll=true
-pause;
-wait, duration=0.5
-switch-track, type=text, index=(string)+1
-wait, duration=0.5
-play;
-stop, playback-time=5.0

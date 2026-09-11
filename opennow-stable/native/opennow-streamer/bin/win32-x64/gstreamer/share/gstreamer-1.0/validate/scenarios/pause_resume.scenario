@@ -1,6 +1,0 @@
-description, duration=14.0, min-media-duration=7.0
-pause, name=First-pause,  playback-time=1.0, duration=1.0
-pause, name=Second-pause, playback-time=3.0, duration=5.0
-pause, name=Third-pause,  playback-time=5.0, duration=1.0
-eos,   name=Done-testing, playback-time=7.0
-stop, playback-time=7.0

@@ -1,1 +1,0 @@
-Patched gstvkwindow_win32: VkSurface on internal GSTVULKAN hwnd (not Electron parent).

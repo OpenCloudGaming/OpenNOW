@@ -1,4 +1,0 @@
-opennow-stable/src/main/platforms/gfn/games.ts whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol
-opennow-stable/src/main/ipc/accountCatalogHandlers.ts whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol
-opennow-stable/src/renderer/src/components/HomePage.tsx whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol
-*.patch text eol=lf

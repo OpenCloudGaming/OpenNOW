@@ -1,0 +1,155 @@
+name: Qt and Rust unit tests
+description: Run native platform checks without compiling or packaging the desktop application
+inputs:
+  label:
+    description: Platform cache identity
+    required: true
+  qt-host:
+    description: Qt installer host
+    required: true
+  qt-arch:
+    description: Qt installer architecture
+    required: true
+  target-arch:
+    description: SDL target architecture
+    required: true
+  parallel:
+    description: Maximum concurrent build jobs
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Prepare Ubuntu HTTPS mirrors
+      if: inputs.label == 'linux-x64'
+      shell: bash
+      run: sudo python3 .github/scripts/prepare-ubuntu-apt-https.py
+    - name: Prepare Windows test dependencies
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: |
+        .github/scripts/map-windows-workspace.ps1
+        .github/scripts/ensure-windows-media-foundation.ps1
+    - name: Setup Windows build tools
+      if: runner.os == 'Windows'
+      uses: ilammy/msvc-dev-cmd@v1
+      with:
+        arch: x64
+    - name: Install Windows native test dependencies
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = "Stop"
+        .github/scripts/ensure-windows-llvm.ps1
+        choco install nasm -y --no-progress
+        $nasmBin = Join-Path $env:ProgramFiles "NASM"
+        if (-not (Test-Path (Join-Path $nasmBin "nasm.exe"))) {
+          throw "NASM installation is missing nasm.exe"
+        }
+        $nasmBin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+        $linker = Join-Path $env:VCToolsInstallDir "bin\Hostx64\x64\link.exe"
+        if (-not (Test-Path $linker)) { throw "MSVC linker is unavailable" }
+        "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=$linker" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+    - uses: dtolnay/rust-toolchain@stable
+      with:
+        components: clippy, rustfmt
+    - name: Check Rust formatting
+      shell: bash
+      working-directory: ${{ env.OPENNOW_CHECKOUT }}
+      run: |
+        cargo fmt --manifest-path native/opennow-core/Cargo.toml -- --check
+        cargo fmt --manifest-path native/opennow-streamer/Cargo.toml --all -- --check
+    - name: Install Linux test dependencies
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        sudo bash .github/scripts/configure-ubuntu-apt.sh
+        sudo apt-get update
+        sudo apt-get install -y \
+          clang libclang-dev libasound2-dev libdbus-1-dev libdrm-dev libegl1-mesa-dev libgl1-mesa-dev \
+          libpulse-dev libsecret-1-dev libva-dev libvulkan-dev libwayland-dev \
+          libx11-dev libxcb-cursor0 libxcb-icccm4 libxcb-keysyms1 libxcursor-dev libxext-dev libxfixes-dev \
+          libxi-dev libxkbcommon-dev libxkbcommon-x11-0 libxrandr-dev libxrender-dev libxss-dev \
+          mesa-vulkan-drivers nasm ninja-build pkg-config wayland-protocols xvfb
+    - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+      with:
+        shared-key: qt-checks-${{ inputs.label }}
+        cache-bin: false
+        cache-on-failure: true
+        workspaces: |
+          native/opennow-core -> target
+          native/opennow-streamer -> target
+    - name: Lint Rust
+      shell: bash
+      working-directory: ${{ env.OPENNOW_CHECKOUT }}
+      env:
+        CARGO_BUILD_JOBS: ${{ inputs.parallel }}
+      run: |
+        cargo clippy --locked --manifest-path native/opennow-core/Cargo.toml --all-targets -- -D warnings
+        cargo clippy --locked --manifest-path native/opennow-streamer/Cargo.toml --workspace --all-targets -- -D warnings
+    - name: Test Rust
+      shell: bash
+      working-directory: ${{ env.OPENNOW_CHECKOUT }}
+      env:
+        CARGO_BUILD_JOBS: ${{ inputs.parallel }}
+      run: |
+        cargo test --locked --manifest-path native/opennow-core/Cargo.toml
+        cargo test --locked --manifest-path native/opennow-streamer/Cargo.toml --workspace
+    - name: Test signed update helper integration
+      shell: bash
+      working-directory: ${{ env.OPENNOW_CHECKOUT }}
+      env:
+        CARGO_BUILD_JOBS: ${{ inputs.parallel }}
+      run: |
+        if [[ "$RUNNER_OS" == Windows ]]; then
+          python opennow-qt/tests/run_update_helper_integration.py
+        else
+          python3 opennow-qt/tests/run_update_helper_integration.py
+        fi
+    - name: Install Qt
+      uses: jurplel/install-qt-action@v4
+      with:
+        version: "6.8.3"
+        host: ${{ inputs.qt-host }}
+        target: desktop
+        arch: ${{ inputs.qt-arch }}
+        modules: qtmultimedia qtshadertools
+        cache: true
+        cache-key-prefix: qt-target-${{ inputs.label }}
+    - uses: hendrikmuhs/ccache-action@5ebbd400eff9e74630f759d94ddd7b6c26299639
+      with:
+        key: qt-checks-${{ inputs.label }}
+        max-size: 1G
+    - name: Build and cache SDL3 test dependency
+      uses: ./.github/actions/sdl3
+      with:
+        version: release-3.2.20
+        target-arch: ${{ inputs.target-arch }}
+        parallel: ${{ inputs.parallel }}
+    - name: Check QML syntax
+      shell: bash
+      working-directory: ${{ env.OPENNOW_CHECKOUT }}
+      run: find opennow-qt/qml -name '*.qml' -print0 | xargs -0 -n1 "$QT_ROOT_DIR/bin/qmlformat" > /dev/null
+    - name: Compile Qt unit tests only
+      shell: bash
+      working-directory: ${{ env.OPENNOW_CHECKOUT }}
+      env:
+        BUILD_PARALLEL: ${{ inputs.parallel }}
+        TARGET_ARCH: ${{ inputs.target-arch }}
+      run: |
+        args=()
+        if [[ "$RUNNER_OS" == Windows ]]; then
+          args+=(-DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl)
+        elif [[ "$RUNNER_OS" == macOS ]]; then
+          args+=("-DCMAKE_OSX_ARCHITECTURES=$TARGET_ARCH" "-DCMAKE_OSX_DEPLOYMENT_TARGET=$MACOSX_DEPLOYMENT_TARGET")
+        fi
+        cmake -S opennow-qt -B build/opennow-qt-checks -G Ninja \
+          -DCMAKE_BUILD_TYPE=Debug \
+          -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+          -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/SDL-install" "${args[@]}"
+        cmake --build build/opennow-qt-checks --target opennow-ci-unit-tests --parallel "$BUILD_PARALLEL"
+    - name: Run Qt unit tests
+      shell: bash
+      working-directory: ${{ env.OPENNOW_CHECKOUT }}
+      env:
+        BUILD_PARALLEL: ${{ inputs.parallel }}
+      run: ctest --test-dir build/opennow-qt-checks --output-on-failure --no-tests=error -L ci-unit --parallel "$BUILD_PARALLEL"

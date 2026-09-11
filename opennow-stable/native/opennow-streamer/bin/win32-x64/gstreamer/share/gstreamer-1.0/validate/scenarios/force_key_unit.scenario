@@ -1,4 +1,0 @@
-description, duration=2.0
-video-request-key-unit, playback-time=1.0, direction=upstream, running_time=-1.0, all-header=true, count=1
-eos, playback-time=2.0
-stop, playback-time=2.0

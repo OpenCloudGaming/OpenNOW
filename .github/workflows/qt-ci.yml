@@ -1,0 +1,226 @@
+name: qt-ci
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish_nightly:
+        description: Publish a nightly with signed update manifests after all checks pass
+        type: boolean
+        default: false
+      public_key:
+        description: Canonical base64 Ed25519 public key (32 bytes; required to publish)
+        type: string
+        default: ""
+  pull_request:
+    branches:
+      - dev
+      - main
+    paths:
+      - ".github/workflows/qt-ci.yml"
+      - ".github/workflows/qt-build.yml"
+      - ".github/workflows/qt-checks.yml"
+      - ".github/workflows/qt-release-candidate.yml"
+      - ".github/actionlint.yaml"
+      - ".github/actions/**"
+      - ".github/scripts/**"
+      - "opennow-qt/**"
+      - "native/opennow-core/**"
+      - "native/opennow-streamer/**"
+      - "locales/**"
+      - "scripts/**"
+      - "package.json"
+  push:
+    branches:
+      - dev
+      - main
+    paths:
+      - ".github/workflows/qt-ci.yml"
+      - ".github/workflows/qt-build.yml"
+      - ".github/workflows/qt-checks.yml"
+      - ".github/workflows/qt-release-candidate.yml"
+      - ".github/actionlint.yaml"
+      - ".github/actions/**"
+      - ".github/scripts/**"
+      - "opennow-qt/**"
+      - "native/opennow-core/**"
+      - "native/opennow-streamer/**"
+      - "locales/**"
+      - "scripts/**"
+      - "package.json"
+
+concurrency:
+  group: qt-ci-${{ github.event_name == 'workflow_dispatch' && github.run_id || github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
+
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    name: Validate nightly update key
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Require a pinned public key for publication
+        env:
+          OPENNOW_UPDATE_PUBLIC_KEY: ${{ inputs.public_key }}
+          PUBLISH_NIGHTLY: ${{ inputs.publish_nightly }}
+        run: python3 opennow-qt/packaging/sign_nightly_release.py preflight
+
+  contracts:
+    name: Shared checks
+    uses: ./.github/workflows/qt-checks.yml
+
+  checks:
+    name: ${{ matrix.label }}
+    needs: contracts
+    if: always()
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: linux-x64
+            os: blacksmith-8vcpu-ubuntu-2404
+            qt-host: linux
+            qt-arch: linux_gcc_64
+            target-arch: x64
+            parallel: "8"
+          - label: windows-x64
+            os: blacksmith-8vcpu-windows-2025
+            qt-host: windows
+            qt-arch: win64_msvc2022_64
+            target-arch: x64
+            parallel: "8"
+          - label: macos-arm64
+            os: blacksmith-6vcpu-macos-15
+            qt-host: mac
+            qt-arch: clang_64
+            target-arch: arm64
+            parallel: "3"
+    env:
+      CARGO_TERM_COLOR: always
+      OPENNOW_CHECKOUT: ${{ matrix.label == 'windows-x64' && 'O:/' || github.workspace }}
+      MACOSX_DEPLOYMENT_TARGET: ${{ matrix.label == 'macos-arm64' && '13.0' || '' }}
+    steps:
+      - name: Require shared checks to pass
+        shell: bash
+        env:
+          CONTRACTS_RESULT: ${{ needs.contracts.result }}
+        run: test "$CONTRACTS_RESULT" = success
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/qt-unit-tests
+        with:
+          label: ${{ matrix.label }}
+          qt-host: ${{ matrix.qt-host }}
+          qt-arch: ${{ matrix.qt-arch }}
+          target-arch: ${{ matrix.target-arch }}
+          parallel: ${{ matrix.parallel }}
+
+  build:
+    name: Manual packages
+    if: github.event_name == 'workflow_dispatch'
+    needs: [contracts, preflight]
+    uses: ./.github/workflows/qt-build.yml
+    with:
+      upload_complete: ${{ github.event_name == 'workflow_dispatch' }}
+      update_public_key: ${{ inputs.public_key }}
+
+  sign-nightly:
+    name: Isolated nightly update signing
+    if: github.event_name == 'workflow_dispatch' && inputs.publish_nightly
+    needs: [preflight, contracts, checks, build]
+    runs-on: [self-hosted, opennow-release-signer]
+    environment: qt-update-signing
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          sparse-checkout: opennow-qt/packaging
+      - uses: actions/download-artifact@v4
+        with:
+          name: opennow-qt-${{ needs.build.outputs.version }}-complete-unsigned
+          path: unsigned-release
+      - name: Sign and verify the immutable nine-package inventory
+        env:
+          OPENNOW_UPDATE_PUBLIC_KEY: ${{ inputs.public_key }}
+          OPENNOW_UPDATE_ED25519_PRIVATE_KEY: ${{ secrets.OPENNOW_UPDATE_ED25519_PRIVATE_KEY }}
+          RELEASE_VERSION: ${{ needs.build.outputs.version }}
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          python3 opennow-qt/packaging/sign_nightly_release.py sign \
+            --source unsigned-release --destination signed-release \
+            --version "$RELEASE_VERSION" --commit "$SOURCE_SHA"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: opennow-qt-${{ needs.build.outputs.version }}-complete-update-signed
+          path: signed-release/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+      - name: Remove signing workspace artifacts
+        if: always()
+        run: rm -rf unsigned-release signed-release
+
+  publish-nightly:
+    name: Publish update-signed nightly prerelease
+    if: github.event_name == 'workflow_dispatch' && inputs.publish_nightly
+    needs: [contracts, checks, build, sign-nightly]
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    permissions:
+      contents: write
+    env:
+      RELEASE_VERSION: ${{ needs.build.outputs.version }}
+      SOURCE_SHA: ${{ github.sha }}
+      OPENNOW_UPDATE_PUBLIC_KEY: ${{ inputs.public_key }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          sparse-checkout: opennow-qt/packaging
+      - uses: actions/download-artifact@v4
+        with:
+          name: opennow-qt-${{ needs.build.outputs.version }}-complete-update-signed
+          path: nightly-release
+      - name: Verify signed inventory and prepare release notes
+        shell: bash
+        run: |
+          python3 opennow-qt/packaging/sign_nightly_release.py verify \
+            --source nightly-release --version "$RELEASE_VERSION" --commit "$SOURCE_SHA"
+          (cd nightly-release && sha256sum --check --strict SHA256SUMS)
+          cat > nightly-notes.md <<EOF
+          Experimental OpenNOW Qt/native nightly from commit \`$SOURCE_SHA\`.
+
+          **Platform packages remain unsigned; update manifests are Ed25519-signed.** Windows may display a SmartScreen or unknown-publisher warning.
+          Windows x64 and ARM64 downloads include MSI installers and portable ZIPs.
+          The MSI installs OpenNOW Nightly separately from stable OpenNOW. For the portable ZIP, extract the entire archive and run \`bin/OpenNOW.exe\`.
+          The macOS DMG supports Apple Silicon on macOS 13+: open it and drag OpenNOW into Applications.
+          The Mac app is not notarized and Gatekeeper may block it. Use System Settings → Privacy & Security → Open Anyway if macOS offers it; do not disable Gatekeeper globally.
+          Linux AppImages are the recommended portable download; mark the file executable before launching it.
+          DEBs require a distribution providing Qt 6.8+ and SDL3; stock Ubuntu 24.04 does not satisfy those requirements.
+
+          These builds pin the update-signing public key and include a verified manifest for every package.
+          If your installed nightly has no pinned key, manually install this release once; that older build cannot securely bootstrap trust from the update feed.
+          SHA256SUMS detects corrupted downloads; it is not a cryptographic publisher signature.
+          Intel macOS is not included. Windows ARM64 is cross-built, not runtime-tested by CI.
+          **Known issue: Alliance Partners are not working correctly in this build.**
+          EOF
+      - name: Publish only after the complete upload succeeds
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "v$RELEASE_VERSION" nightly-release/* \
+            --repo "$GITHUB_REPOSITORY" --target "$SOURCE_SHA" \
+            --title "OpenNOW v$RELEASE_VERSION" --notes-file nightly-notes.md \
+            --draft --prerelease --latest=false
+          gh release edit "v$RELEASE_VERSION" --repo "$GITHUB_REPOSITORY" \
+            --draft=false --prerelease --latest=false

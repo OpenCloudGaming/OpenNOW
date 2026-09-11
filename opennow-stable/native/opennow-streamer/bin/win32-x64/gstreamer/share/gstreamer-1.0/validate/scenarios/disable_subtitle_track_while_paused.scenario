@@ -1,6 +1,0 @@
-description, summary="Disable subtitle track while pipeline is PAUSED", min-subtitle-track=2, duration=5.0, handles-states=true, needs_preroll=true
-pause;
-switch-track, name="Disable subtitle", type=text, disable=true
-wait, duration=0.5
-play;
-stop, playback-time=2.0

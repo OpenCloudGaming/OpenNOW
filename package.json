@@ -1,18 +1,21 @@
 {
   "name": "opennow-workspace",
   "private": true,
-  "description": "OpenNOW Electron workspace",
+  "description": "OpenNOW Qt/native desktop workspace and repository tooling",
+  "engines": {
+    "node": ">=22.22.0"
+  },
   "scripts": {
-    "dev": "npm --prefix opennow-stable run dev",
-    "build": "npm --prefix opennow-stable run build",
-    "native:check": "npm --prefix opennow-stable run native:check",
-    "native:build": "npm --prefix opennow-stable run native:build",
-    "locales:check": "node opennow-stable/scripts/check-translations.mjs",
-    "lint": "npm --prefix opennow-stable run lint",
-    "test": "npm --prefix opennow-stable test",
-    "typecheck": "npm --prefix opennow-stable run typecheck",
-    "dist": "npm --prefix opennow-stable run dist",
-    "dist:signed": "npm --prefix opennow-stable run dist:signed",
+    "build": "npm run qt:configure && npm run qt:build",
+    "qt:configure": "cmake -S opennow-qt -B build/opennow-qt -DCMAKE_BUILD_TYPE=Debug",
+    "qt:build": "cmake --build build/opennow-qt",
+    "qt:test": "ctest --test-dir build/opennow-qt --output-on-failure",
+    "qt:package": "cmake --build build/opennow-qt --config Release --target package",
+    "native:check": "cargo check --manifest-path native/opennow-core/Cargo.toml && cargo check --manifest-path native/opennow-streamer/Cargo.toml --workspace",
+    "native:build": "cargo build --manifest-path native/opennow-core/Cargo.toml && cargo build --manifest-path native/opennow-streamer/Cargo.toml -p opennow-streamer-ffi",
+    "locales:check": "node scripts/check-translations.mjs",
+    "test": "npm run qt:test",
+    "dist": "npm run qt:package",
     "crowdin:upload": "crowdin upload sources",
     "crowdin:download": "crowdin download"
   }

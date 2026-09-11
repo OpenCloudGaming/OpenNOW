@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.opencloudgaming.OpenNOW</id>
+  <name>OpenNOW</name>
+  <summary>A controller-first GeForce NOW client</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <description>
+    <p>OpenNOW is a lightweight, controller-first desktop client for GeForce NOW.</p>
+  </description>
+  <launchable type="desktop-id">io.github.opencloudgaming.OpenNOW.desktop</launchable>
+  <url type="homepage">https://github.com/OpenCloudGaming/OpenNOW</url>
+  <provides>
+    <binary>opennow-qt</binary>
+  </provides>
+</component>
