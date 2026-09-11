@@ -38,6 +38,15 @@ normal KMS desktop configuration. Vulkan rendering support is separate from
 Vulkan Video decoding support: the Pi HEVC decoder uses V4L2 Request, not Vulkan
 Video. Do not force Qt to use OpenGL or software rendering.
 
+Use Mesa V3DV **25.1.6 or newer**, or a distribution package that backports its
+imported-buffer sizing fix. Mesa 25.0.7 adds read-ahead padding to the requested
+DMA-BUF import size and can reject a valid decoded frame with
+`ERROR_INVALID_EXTERNAL_HANDLE`. Updating OpenNOW alone does not fix that driver
+regression. Check `vulkaninfo --summary` for the active V3DV version and
+`apt-cache policy mesa-vulkan-drivers` for packages offered by your configured
+Raspberry Pi OS repositories; do not mix graphics packages from another Debian
+release.
+
 The user running OpenNOW must be able to open the decoder's `/dev/video*` and
 `/dev/media*` nodes and the GPU's `/dev/dri/renderD*` node. Device numbers can
 change; do not assume that the decoder is always `/dev/video19`. Fix missing
@@ -139,6 +148,11 @@ Pi HEVC path. Do not install CUDA or replace the Pi GPU driver to fix those prob
 
 References:
 
+- [Mesa 25.1.6 release notes](https://docs.mesa3d.org/relnotes/25.1.6.html)
+  include the V3DV correction, "Do not increase TFU READAHEAD for imported buffers
+  size." OpenNOW still validates the driver's reported buffer memory requirements
+  against the real allocation; decoder allocation padding is not exposed as
+  video payload in the Vulkan transfer buffer.
 - [Linux media-device registration](https://github.com/raspberrypi/linux/blob/rpi-6.18.y/drivers/media/mc/mc-devnode.c)
   registers the media bus rather than a media class.
 - [Media topology API](https://docs.kernel.org/userspace-api/media/mediactl/media-ioc-g-topology.html)
