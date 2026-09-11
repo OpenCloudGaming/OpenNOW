@@ -4,6 +4,7 @@
 #include <chrono>
 #include <thread>
 #include <unordered_map>
+#include <cstdlib>
 
 namespace {
 std::string field(const std::string &json, const std::string &name)
@@ -19,6 +20,15 @@ std::string field(const std::string &json, const std::string &name)
 
 int main(int argc, char **argv)
 {
+    if (argc == 2 && std::string(argv[1]) == "--graphics-preferences") {
+        const auto *payload = std::getenv("OPENNOW_TEST_GPU_BOOTSTRAP");
+        if (payload && std::string(payload) == "delay") {
+            std::this_thread::sleep_for(std::chrono::seconds(5));
+            return 0;
+        }
+        std::cout << (payload ? payload : "{\"version\":1,\"windowsGpuDeviceId\":\"fixture-gpu\"}") << '\n';
+        return 0;
+    }
     std::string eofMarker;
     bool launchInConsoleMode = false;
     int consoleModeWriteCount = 0;

@@ -5,6 +5,7 @@ import OpenNOW
 
 FocusScope {
     id: root
+    objectName: "consoleSettingsScreen"
     MotionProgress { id: proxyMotion; shown: root.proxyEditorOpen }
     MotionProgress { id: shortcutMotion; shown: root.shortcutEditorOpen }
     property int initialSection: 1
@@ -53,7 +54,7 @@ FocusScope {
     function choice(title, description, key, values, labels, control, disabledValues) {
         const current = key === "controllerInputSource" ? ControllerInput.inputControllerId : ShellStore.settings[key]
         const index = values.indexOf(current)
-        return {t:title, d:description, v:index >= 0 ? labels[index] : key === "controllerInputSource" ? qsTr("Selected controller disconnected") : root.titleCase(current), key:key, values:values, labels:labels, control:control || "dropdown", disabledValues:disabledValues || []}
+        return {t:title, d:description, v:index >= 0 ? labels[index] : key === "controllerInputSource" ? qsTr("Selected controller disconnected") : key === "windowsGpuDeviceId" ? qsTr("Automatic") : root.titleCase(current), key:key, values:values, labels:labels, control:control || "dropdown", disabledValues:disabledValues || []}
     }
 
     function toggle(title, description, key, onLabel, offLabel) {
@@ -319,6 +320,13 @@ FocusScope {
             ]
             const shaderIndex = shader.enabled ? (Number(shader.filmGrain || 0) > 0 ? 3 : Number(shader.vibrance || 0) > 0 ? 2 : 1) : 0
             return [
+                ...(GraphicsDevices.selectorVisible ? [choice(qsTr("Graphics processor"),
+                    GraphicsDevices.savedDeviceUnavailable
+                        ? qsTr("Saved GPU unavailable; using Automatic. Changes apply after restarting OpenNOW.")
+                        : qsTr("Uses the same GPU for decoding and display. Changes apply after restarting OpenNOW."),
+                    "windowsGpuDeviceId", GraphicsDevices.choices.map(item => item.value),
+                    GraphicsDevices.choices.map(item => item.label), "dropdown",
+                    GraphicsDevices.choices.filter(item => item.disabled).map(item => item.value))] : []),
                 toggle(qsTr("Steam Big Picture mode"), qsTr("Request gamepad-friendly launchers such as Steam Big Picture. Applies to new GeForce NOW sessions only."), "steamBigPictureMode"),
                 {t:"Display", d:"The Qt stream surface uses the current display", v:"Monitor 1 · current display", info:true},
                 choice("Resolution", "Exact stream size · up / down to browse, A to pick", "resolution", resolutions, resolutionLabels(resolutions)),
@@ -901,8 +909,9 @@ FocusScope {
                             anchors.right: parent.right
                             anchors.rightMargin: 12
                             anchors.verticalCenter: parent.verticalCenter
-                            text: String(root.dropdownValues[index]).indexOf("444") >= 0
-                                ? qsTr("H.265") : qsTr("H.265 / AV1")
+                            text: root.dropdownKey === "windowsGpuDeviceId" ? qsTr("Unavailable")
+                                : String(root.dropdownValues[index]).indexOf("444") >= 0
+                                    ? qsTr("H.265") : qsTr("H.265 / AV1")
                             color: Theme.textMuted
                             font.family: Theme.bodyFont
                             font.pixelSize: 12

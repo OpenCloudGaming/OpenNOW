@@ -35,6 +35,7 @@ qt_add_executable(opennow-qt
     src/acceptance/SmokeAcceptance.cpp
     src/acceptance/SmokeFixtures.cpp
     src/acceptance/FrameGenerationStatsAcceptance.cpp
+    src/acceptance/GpuSettingsAcceptance.cpp
     src/acceptance/StreamExitAcceptance.cpp
     src/acceptance/SessionFullscreenAcceptance.cpp
     src/acceptance/SessionLaunchAcceptance.cpp
@@ -42,6 +43,8 @@ qt_add_executable(opennow-qt
     src/app/AppController.h
     src/app/platform/MacAwdlController.cpp
     src/app/platform/MacAwdlController.h
+    src/app/platform/GraphicsDeviceSelection.cpp
+    src/app/platform/GraphicsDeviceSelection.h
     src/app/ApplicationStartup.cpp
     src/app/ApplicationStartup.h
     src/app/SingleInstance.cpp

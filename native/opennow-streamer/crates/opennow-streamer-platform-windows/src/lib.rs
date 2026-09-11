@@ -16,6 +16,7 @@ pub use windows::{
     D3d11RecordedFrame, D3d11TextureFormat,
 };
 
+use std::num::NonZeroU64;
 use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread::JoinHandle;
@@ -85,6 +86,35 @@ pub enum WindowsGraphicsApi {
 pub enum WindowsDecoderMode {
     Hardware,
     Software,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(transparent)]
+pub struct WindowsAdapterLuid(NonZeroU64);
+
+impl WindowsAdapterLuid {
+    pub const fn new(raw: u64) -> Option<Self> {
+        match NonZeroU64::new(raw) {
+            Some(raw) => Some(Self(raw)),
+            None => None,
+        }
+    }
+
+    pub const fn get(self) -> u64 {
+        self.0.get()
+    }
+}
+
+#[cfg(windows)]
+/// Reads the DXGI adapter LUID from a borrowed D3D11 device.
+///
+/// # Safety
+///
+/// `device` must point to a live `ID3D11Device` for the duration of the call.
+pub unsafe fn d3d11_adapter_luid(
+    device: *mut std::ffi::c_void,
+) -> Result<WindowsAdapterLuid, String> {
+    unsafe { windows::d3d11_adapter_luid(device) }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -280,17 +310,20 @@ pub struct WindowsBackend {
 
 impl WindowsBackend {
     pub fn probe() -> CapabilityProbe {
-        Self::probe_for(WindowsGraphicsApi::D3d11)
+        Self::probe_for(WindowsGraphicsApi::D3d11, None)
     }
 
-    pub fn probe_for(api: WindowsGraphicsApi) -> CapabilityProbe {
+    pub fn probe_for(
+        api: WindowsGraphicsApi,
+        adapter_luid: Option<WindowsAdapterLuid>,
+    ) -> CapabilityProbe {
         #[cfg(windows)]
         {
-            windows::probe(api)
+            windows::probe(api, adapter_luid)
         }
         #[cfg(not(windows))]
         {
-            let _ = api;
+            let _ = (api, adapter_luid);
             CapabilityProbe {
                 available: false,
                 h264_hardware_decode: false,
@@ -591,6 +624,13 @@ impl Drop for WindowsBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn adapter_luid_models_zero_as_no_selection() {
+        assert_eq!(WindowsAdapterLuid::new(0), None);
+        let luid = WindowsAdapterLuid::new(0xffff_fffe_1122_3344).expect("non-zero LUID");
+        assert_eq!(luid.get(), 0xffff_fffe_1122_3344);
+    }
 
     fn test_backend(state: LifecycleState) -> (WindowsBackend, Arc<Shared>) {
         let (control_sender, _control_receiver) = mpsc::channel();

@@ -64,6 +64,15 @@ fn main() {
 
 fn run() -> Result<(), String> {
     let data_dir = resolve_data_dir(argument_value("--data-dir").map(PathBuf::from));
+    if env::args_os().any(|argument| argument == "--graphics-preferences") {
+        let windows_gpu_device_id = SettingsStore::windows_gpu_device_id_read_only(Some(data_dir))
+            .map_err(|error| error.to_string())?;
+        let stdout = io::stdout();
+        return write_json(
+            &mut stdout.lock(),
+            &json!({"version":1,"windowsGpuDeviceId":windows_gpu_device_id}),
+        );
+    }
     let (output_tx, output_rx) = mpsc::channel::<Value>();
     thread::Builder::new()
         .name("opennow-core-writer".to_owned())

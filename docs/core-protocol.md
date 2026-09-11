@@ -270,6 +270,40 @@ codec on resume; it never changes the codec of an already allocated stream. Olde
 this optional object retain the external-streamer probe path. The additive fields do not change
 the JSON protocol version or native FFI ABI.
 
+### Windows graphics preference
+
+`settings.get`, `settings.set`, and `settings.reset` expose `windowsGpuDeviceId`.
+The default empty string selects Automatic. Explicit values are opaque device
+identities, limited to 1024 UTF-8 bytes with no NUL characters. Invalid persisted
+values normalize to Automatic; invalid writes are rejected without changing the
+saved preference.
+
+Before creating the Qt graphics device, the shell may run:
+
+```text
+opennow-core --graphics-preferences
+```
+
+This mode emits one JSON line, then exits without initializing account, network,
+catalog, telemetry, or streaming services:
+
+```json
+{"version":1,"windowsGpuDeviceId":""}
+```
+
+It uses the normal data-directory resolution, including `--data-dir`,
+`OPENNOW_DATA_DIR`, and legacy-directory discovery. The read is limited to 1 MiB
+and never saves migrations, creates directories, or renames corrupt settings.
+Missing, corrupt, or oversized input selects Automatic. Qt bounds the subprocess
+and its output and also uses Automatic if bootstrap fails.
+
+Qt resolves the saved identity to a current-boot Windows adapter LUID. The same
+LUID selects Qt's D3D11 adapter and the native runtime's capability probes; LUIDs
+are not persisted. A missing saved GPU falls back for that launch without
+erasing the preference. The settings selector appears only with at least two
+detected hardware adapters, excluding software adapters. Saving a different GPU
+affects the next application launch, not the active graphics device or session.
+
 ### Recording and replay capture
 
 The Qt/native recorder and replay exporter preserve the negotiated source video and

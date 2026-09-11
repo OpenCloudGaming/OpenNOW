@@ -13,6 +13,26 @@ This crate exposes `opennow-streamer-core::Engine` as a C-compatible in-process 
 - `opennow_streamer_destroy` consumes the handle exactly once, waits for the engine and both callback queues to drain, and then returns. No call may race with destroy. A null handle is rejected; reusing a destroyed pointer is caller-side undefined behavior.
 - Every exported function catches Rust panics before they can unwind through the C ABI. A worker-thread panic closes the command queue.
 
+### Windows adapter selection (ABI 10)
+
+ABI 10 appends `uint64_t windows_adapter_luid` to `OpenNowStreamerConfig`; rebuild the Qt shell
+and native library together. Initialize it to zero on non-Windows platforms and when Windows
+should use the system default adapter. A nonzero value contains the packed bits of the Windows
+adapter `LUID` selected by the shell.
+
+Engine creation copies the selection into its embedded media runtime. Windows hardware capability
+and HDR/profile probes resolve that exact `IDXGIAdapter`, create their D3D device with
+`D3D_DRIVER_TYPE_UNKNOWN`, and report the backend unavailable when the LUID cannot be resolved.
+They never retry against the default adapter. The selection is immutable for the engine lifetime;
+changing it requires destroying and recreating the engine. Standalone runtime paths retain their
+default-adapter behavior.
+
+The live embedded decoder still adopts the D3D11 device and immediate context supplied by Qt in
+`OpenNowStreamerGraphicsContext`. Before installing a D3D11 context, the FFI reads that device's
+DXGI adapter LUID and rejects a mismatch with `OPENNOW_STREAMER_GRAPHICS_UNAVAILABLE`, with both
+LUIDs in the native graphics diagnostic. The configured LUID does not replace, wrap, or switch
+the borrowed Qt graphics device.
+
 ### Clipboard text (ABI 9)
 
 Rebuild Qt and the native library together with ABI version 9. Existing structure

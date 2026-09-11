@@ -626,6 +626,32 @@ impl AdoptedResources {
     }
 }
 
+pub(super) unsafe fn d3d11_adapter_luid(
+    device: *mut c_void,
+) -> Result<crate::WindowsAdapterLuid, String> {
+    if device.is_null() {
+        return Err("Qt supplied a null D3D11 device".to_owned());
+    }
+    let device = unsafe { clone_interface::<ID3D11Device>(device)? };
+    let dxgi_device: IDXGIDevice = device
+        .cast()
+        .map_err(|error| format!("Qt D3D11 DXGI device: {error}"))?;
+    let adapter = unsafe {
+        dxgi_device
+            .GetAdapter()
+            .map_err(|error| format!("Qt D3D11 adapter: {error}"))?
+    };
+    let description = unsafe {
+        adapter
+            .GetDesc()
+            .map_err(|error| format!("Qt D3D11 adapter description: {error}"))?
+    };
+    let raw = u64::from(description.AdapterLuid.LowPart)
+        | ((description.AdapterLuid.HighPart as u32 as u64) << 32);
+    crate::WindowsAdapterLuid::new(raw)
+        .ok_or_else(|| "Qt D3D11 device reported a zero adapter LUID".to_owned())
+}
+
 #[cfg(test)]
 pub(super) unsafe fn probe_hdr_conversion(
     adopted: AdoptedD3d11Context,

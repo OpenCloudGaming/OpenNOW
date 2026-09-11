@@ -164,7 +164,7 @@ pub(crate) fn select_embedded_video_path(
     select_embedded_fallback(
         requested,
         stream,
-        &crate::embedded_video_backends_with_device(device),
+        &crate::embedded_video_backends_with_config(device, None),
     )
 }
 

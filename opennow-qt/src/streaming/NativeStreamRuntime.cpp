@@ -130,6 +130,7 @@ struct NativeStreamRuntime::Private {
 
     Api api;
     const OpenNowStreamerVulkanDevice *vulkanDevice = nullptr;
+    quint64 windowsAdapterLuid = 0;
     // FFI input queues and render-thread graphics state are independent and thread-safe. An
     // exclusive mutex here made every GUI input/overlay call wait behind Media Foundation and
     // D3D work performed by the render thread. Keep lifetime/scene-graph transitions exclusive,
@@ -152,7 +153,8 @@ struct NativeStreamRuntime::Private {
 };
 
 NativeStreamRuntime::NativeStreamRuntime(QObject *parent,
-                                         const OpenNowStreamerVulkanDevice *vulkanDevice)
+                                         const OpenNowStreamerVulkanDevice *vulkanDevice,
+                                         quint64 windowsAdapterLuid)
     : NativeStreamRuntime(Api{&opennow_streamer_create,
                               &opennow_streamer_send,
                               &opennow_streamer_destroy,
@@ -170,16 +172,18 @@ NativeStreamRuntime::NativeStreamRuntime(QObject *parent,
                               &opennow_streamer_submit_local_action,
                               &opennow_streamer_set_capture_active,
                               &opennow_streamer_set_log_file,
-                              &opennow_streamer_submit_text}, parent, vulkanDevice)
+                              &opennow_streamer_submit_text}, parent, vulkanDevice, windowsAdapterLuid)
 {
 }
 
 NativeStreamRuntime::NativeStreamRuntime(Api api, QObject *parent,
-                                         const OpenNowStreamerVulkanDevice *vulkanDevice)
+                                         const OpenNowStreamerVulkanDevice *vulkanDevice,
+                                         quint64 windowsAdapterLuid)
     : QObject(parent)
     , d(std::make_unique<Private>(api))
 {
     d->vulkanDevice = vulkanDevice;
+    d->windowsAdapterLuid = windowsAdapterLuid;
 }
 
 const OpenNowStreamerVulkanDevice *NativeStreamRuntime::vulkanDevice() const
@@ -305,6 +309,7 @@ bool NativeStreamRuntime::start()
     config.cursor_callback = &NativeStreamRuntime::cursorCallback;
     config.user_data = callbacks.get();
     config.vulkan_device = d->vulkanDevice;
+    config.windows_adapter_luid = d->windowsAdapterLuid;
 
     OpenNowStreamer *handle = nullptr;
     const auto status = d->api.create(&config, &handle);

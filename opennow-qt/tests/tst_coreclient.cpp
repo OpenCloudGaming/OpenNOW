@@ -5,6 +5,8 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QElapsedTimer>
+#include <QRegularExpression>
 #include <QTemporaryDir>
 #include <QTest>
 
@@ -25,6 +27,44 @@ class CoreClientTest final : public QObject
     Q_OBJECT
 
 private slots:
+    void readsGraphicsPreferencesBeforeStartingTheCore()
+    {
+        QCOMPARE(CoreClient::graphicsPreference(fakeCorePath()), QStringLiteral("fixture-gpu"));
+        QCOMPARE(CoreClient::graphicsPreference({}), QString{});
+    }
+
+    void rejectsInvalidGraphicsPreferences_data()
+    {
+        QTest::addColumn<QByteArray>("payload");
+        QTest::newRow("version") << QByteArray(R"({"version":2,"windowsGpuDeviceId":"gpu"})");
+        QTest::newRow("type") << QByteArray(R"({"version":1,"windowsGpuDeviceId":42})");
+        QTest::newRow("nul") << QByteArray(R"({"version":1,"windowsGpuDeviceId":"gpu\u0000"})");
+        QTest::newRow("malformed") << QByteArray("not json");
+        QTest::newRow("oversized") << QByteArray(8193, 'x');
+    }
+
+    void rejectsInvalidGraphicsPreferences()
+    {
+        QFETCH(QByteArray, payload);
+        qputenv("OPENNOW_TEST_GPU_BOOTSTRAP", payload);
+        QTest::ignoreMessage(QtWarningMsg, QRegularExpression(QStringLiteral("Graphics preference bootstrap.*Automatic")));
+        const auto preference = CoreClient::graphicsPreference(fakeCorePath());
+        qunsetenv("OPENNOW_TEST_GPU_BOOTSTRAP");
+        QVERIFY(preference.isEmpty());
+    }
+
+    void boundsGraphicsPreferenceStartupTime()
+    {
+        qputenv("OPENNOW_TEST_GPU_BOOTSTRAP", "delay");
+        QTest::ignoreMessage(QtWarningMsg, "Graphics preference bootstrap failed; using Automatic");
+        QElapsedTimer elapsed;
+        elapsed.start();
+        const auto preference = CoreClient::graphicsPreference(fakeCorePath());
+        qunsetenv("OPENNOW_TEST_GPU_BOOTSTRAP");
+        QVERIFY(preference.isEmpty());
+        QVERIFY(elapsed.elapsed() < 4'000);
+    }
+
     void retriesAdmissionRejectionsWithoutFailingTheCaller()
     {
         CoreClient client;

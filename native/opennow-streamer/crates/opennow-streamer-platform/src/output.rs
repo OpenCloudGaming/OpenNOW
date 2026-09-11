@@ -2983,7 +2983,7 @@ fn selected_windows_graphics_api(codec: crate::media::MediaVideoCodec) -> Window
         codec,
         d3d12_allowed,
         d3d11_allowed,
-        WindowsBackend::probe_for(WindowsGraphicsApi::D3d12).bundled_backend_available(),
+        WindowsBackend::probe_for(WindowsGraphicsApi::D3d12, None).bundled_backend_available(),
     )
 }
 

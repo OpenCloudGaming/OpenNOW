@@ -24,6 +24,8 @@ using namespace Qt::StringLiterals;
 int AcceptanceSession::startSmokeWorkload()
 {
     const auto screenshotIndex = m_arguments.indexOf(u"--screenshot"_s);
+    if (m_smokeTest && m_arguments.contains(u"--smoke-gpu-count"_s))
+        return startGpuSettingsWorkload();
     if (m_smokeTest && m_arguments.contains(u"--smoke-theme-settings"_s))
         return startThemeSettingsWorkload();
     if (m_smokeTest && m_arguments.contains(u"--smoke-session-launch"_s))
