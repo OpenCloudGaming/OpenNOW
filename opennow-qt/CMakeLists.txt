@@ -43,7 +43,7 @@ elseif(TARGET SDL3::SDL3-static)
 else()
     set(OPENNOW_SDL3_RUNTIME_TARGET SDL3::SDL3)
 endif()
-find_program(CARGO_EXECUTABLE cargo REQUIRED)
+include(cmake/NativeArtifacts.cmake)
 set(OPENNOW_UPDATE_ED25519_PUBLIC_KEY "" CACHE STRING
     "Base64 Ed25519 public key pinned into release builds for update manifests")
 set(OPENNOW_RUST_TARGET "" CACHE STRING

@@ -152,6 +152,7 @@ Start at [opennow.zortos.me](https://opennow.zortos.me) for setup and configurat
 | [Getting started](https://opennow.zortos.me/guides/getting-started/) | [Development guide](https://opennow.zortos.me/development/) |
 | [Configuration](https://opennow.zortos.me/reference/configuration/) | [Qt application](opennow-qt/README.md) |
 | [Native streamer](https://opennow.zortos.me/reference/native-streamer/) | [Protocol, release, and acceptance docs](docs/) |
+| | [Yocto layer and reference image](meta-opennow/README.md) |
 
 ### Repository map
 
@@ -159,6 +160,7 @@ Start at [opennow.zortos.me](https://opennow.zortos.me) for setup and configurat
 opennow-qt/               Qt Quick desktop app, C++ integration, and Qt tests
 native/opennow-core/      Rust accounts, settings, catalog, and session services
 native/opennow-streamer/  Native NVST transport, media, input, and Qt FFI
+meta-opennow/            Yocto recipes and a Weston reference image
 locales/                 English source and Crowdin-managed translations
 docs/                    Architecture, protocols, acceptance, and release guides
 scripts/                 Repository-only localization tooling

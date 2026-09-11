@@ -1,0 +1,6 @@
+header:
+  version: 14
+  includes:
+    - meta-opennow/kas/qemux86-64.yml
+
+machine: qemuarm64
