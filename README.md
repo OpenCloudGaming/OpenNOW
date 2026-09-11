@@ -61,17 +61,22 @@ If there's no published Qt nightly, sign in to GitHub and download the artifacts
 
 | Platform | Qt package | How to run it |
 | --- | --- | --- |
-| Windows x64 / ARM64 | Portable `.zip` | Extract the entire archive, then run `bin/OpenNOW.exe`. |
+| Windows x64 / ARM64 | `.msi`, portable `.zip` | Install the MSI, or extract the entire ZIP and run `bin/OpenNOW.exe`. |
 | Linux x64 / ARM64 | `.AppImage`, recommended | Make the file executable, then launch it. |
 | Linux x64 / ARM64 | `.deb` | Your distribution must provide Qt 6.8+ and SDL3. Use the AppImage on stock Ubuntu 24.04. |
-| macOS | No Qt nightly package | See the separate [OpenNOW-Mac](https://github.com/OpenCloudGaming/OpenNOW-Mac) project. |
+| macOS Apple Silicon, macOS 13+ | `.dmg`, nightlies | Open the DMG and drag OpenNOW into Applications. Intel Macs are not included. |
 
-Nightlies are unsigned. Windows may show an unknown-publisher warning, and you'll
-need to download updates yourself. Checksums help detect corrupted downloads;
-they don't verify who published a package.
+Nightly platform packages are unsigned. Windows may show an unknown-publisher warning.
+The macOS app is not notarized; if Gatekeeper blocks it, use System Settings → Privacy &
+Security → Open Anyway when offered. Do not disable Gatekeeper globally.
+Published update-enabled nightlies use signed update manifests. Older builds without a
+pinned signing key need one manual upgrade. Checksums alone detect corrupted downloads;
+they do not verify who published a package.
 
-The [nightly guide](docs/qt-nightly-release.md) covers these packages. For signed
-builds and verified updates, read the [release-candidate guide](docs/qt-release-candidate.md).
+The [nightly guide](docs/qt-nightly-release.md) covers these packages. The signed
+1.0.0 candidate workflow currently builds Windows and Linux only; see the
+[release-candidate guide](docs/qt-release-candidate.md). The separate
+[OpenNOW-Mac](https://github.com/OpenCloudGaming/OpenNOW-Mac) project is also available.
 
 ### Other platforms
 
