@@ -80,8 +80,20 @@ pub fn video_backends() -> Vec<VideoBackendCapability> {
     let mut backends = {
         use opennow_streamer_platform_windows::WindowsGraphicsApi;
         vec![
-            windows_hardware_backend(WindowsGraphicsApi::D3d12, "d3d12", "d3d11on12-nv12", None),
-            windows_hardware_backend(WindowsGraphicsApi::D3d11, "d3d11", "d3d11-nv12", None),
+            windows_hardware_backend(
+                WindowsGraphicsApi::D3d12,
+                "d3d12",
+                "d3d11on12-nv12",
+                None,
+                WindowsOutputMode::Standalone,
+            ),
+            windows_hardware_backend(
+                WindowsGraphicsApi::D3d11,
+                "d3d11",
+                "d3d11-nv12",
+                None,
+                WindowsOutputMode::Standalone,
+            ),
             software_backend(),
         ]
     };
@@ -211,6 +223,7 @@ pub(crate) fn embedded_video_backends_with_config(
             "d3d11",
             "d3d11-nv12",
             _windows_adapter_luid,
+            WindowsOutputMode::Embedded,
         )]
     };
     #[cfg(target_os = "macos")]
@@ -305,15 +318,21 @@ pub const fn supports_audio_output() -> bool {
     true
 }
 
+#[cfg(any(target_os = "windows", test))]
+#[derive(Clone, Copy)]
+enum WindowsOutputMode {
+    Embedded,
+    Standalone,
+}
+
 #[cfg(target_os = "windows")]
 fn windows_hardware_backend(
     api: opennow_streamer_platform_windows::WindowsGraphicsApi,
     backend: &'static str,
     zero_copy_mode: &'static str,
     adapter_luid: Option<WindowsAdapterLuid>,
+    output_mode: WindowsOutputMode,
 ) -> VideoBackendCapability {
-    use opennow_streamer_platform_windows::{VideoCodec, VideoPixelFormat};
-
     if !runtime::backend_preference_allows(backend) {
         return unavailable_backend(
             backend,
@@ -322,8 +341,22 @@ fn windows_hardware_backend(
         );
     }
     let probe = opennow_streamer_platform_windows::WindowsBackend::probe_for(api, adapter_luid);
-    let available = probe.bundled_backend_available();
-    let media_output_available = probe.d3d11_presentation && probe.wasapi_render;
+    windows_hardware_capability(&probe, backend, zero_copy_mode, output_mode)
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn windows_hardware_capability(
+    probe: &opennow_streamer_platform_windows::CapabilityProbe,
+    backend: &'static str,
+    zero_copy_mode: &'static str,
+    output_mode: WindowsOutputMode,
+) -> VideoBackendCapability {
+    use opennow_streamer_platform_windows::{VideoCodec, VideoPixelFormat};
+
+    let media_output_available = probe.d3d11_presentation
+        && (matches!(output_mode, WindowsOutputMode::Embedded) || probe.wasapi_render);
+    let available = media_output_available
+        && (probe.h264_hardware_decode || probe.h265_hardware_decode || probe.av1_hardware_decode);
     let color_qualities = |codec| {
         [
             ("8bit_420", VideoPixelFormat::Nv12),
@@ -351,7 +384,14 @@ fn windows_hardware_backend(
     let reason = if available {
         None
     } else {
-        Some("Direct3D hardware decode, presentation, or WASAPI output is unavailable")
+        Some(match output_mode {
+            WindowsOutputMode::Embedded => {
+                "Direct3D hardware decode or presentation is unavailable"
+            }
+            WindowsOutputMode::Standalone => {
+                "Direct3D hardware decode, presentation, or WASAPI output is unavailable"
+            }
+        })
     };
     VideoBackendCapability {
         backend,
@@ -607,6 +647,95 @@ mod tests {
         assert!(!backends[0].codecs[0].available);
         assert_eq!(backends[0].codecs[0].hdr_supported, Some(false));
         assert_eq!(backends[0].codecs[0].color_qualities, Some(Vec::new()));
+    }
+
+    #[test]
+    fn windows_embedded_video_capabilities_do_not_require_standalone_audio() {
+        use opennow_streamer_platform_windows::CapabilityProbe;
+
+        let mut probe = CapabilityProbe {
+            available: false,
+            h264_hardware_decode: true,
+            h265_hardware_decode: false,
+            av1_hardware_decode: false,
+            h265_hdr: false,
+            av1_hdr: false,
+            h265_10bit: false,
+            av1_10bit: false,
+            h265_444: false,
+            h265_10bit_444: false,
+            h265_hdr_444: false,
+            h264_software_decode: true,
+            h265_software_decode: false,
+            av1_software_decode: false,
+            d3d11_presentation: true,
+            wasapi_render: false,
+            reason: Some("WASAPI failed to start".to_owned()),
+        };
+        let capability = |probe: &CapabilityProbe, mode| {
+            windows_hardware_capability(probe, "d3d11", "d3d11-nv12", mode)
+        };
+
+        let embedded = capability(&probe, WindowsOutputMode::Embedded);
+        assert!(embedded.available);
+        assert_eq!(embedded.reason, None);
+        assert_eq!(embedded.zero_copy_modes, vec!["d3d11-nv12"]);
+        assert!(embedded.codecs[0].available);
+        assert_eq!(embedded.codecs[0].reason, None);
+        assert_eq!(embedded.codecs[0].color_qualities, Some(vec!["8bit_420"]));
+        assert!(embedded.codecs[1..].iter().all(|codec| !codec.available));
+
+        let standalone = capability(&probe, WindowsOutputMode::Standalone);
+        assert!(!standalone.available);
+        assert!(standalone.zero_copy_modes.is_empty());
+        assert!(standalone.codecs.iter().all(|codec| !codec.available));
+
+        probe.wasapi_render = true;
+        assert_eq!(
+            serde_json::to_value(capability(&probe, WindowsOutputMode::Embedded)).unwrap(),
+            serde_json::to_value(embedded).unwrap(),
+        );
+        assert!(capability(&probe, WindowsOutputMode::Standalone).available);
+
+        probe.wasapi_render = false;
+        probe.h265_hardware_decode = true;
+        probe.h265_10bit = true;
+        probe.h265_hdr = true;
+        let hdr = capability(&probe, WindowsOutputMode::Embedded);
+        assert!(hdr.codecs[1].available);
+        assert_eq!(hdr.codecs[1].hdr_supported, Some(true));
+        assert_eq!(
+            hdr.codecs[1].color_qualities,
+            Some(vec!["8bit_420", "10bit_420"])
+        );
+        assert_eq!(hdr.codecs[1].hdr_color_qualities, Some(vec!["10bit_420"]));
+        assert!(!hdr.codecs[2].available);
+
+        probe.d3d11_presentation = false;
+        for mode in [WindowsOutputMode::Embedded, WindowsOutputMode::Standalone] {
+            let unavailable = capability(&probe, mode);
+            assert!(!unavailable.available);
+            assert!(unavailable.reason.is_some());
+            assert!(unavailable.zero_copy_modes.is_empty());
+            for codec in unavailable.codecs {
+                assert!(!codec.available);
+                assert_eq!(codec.hdr_supported, Some(false));
+                assert_eq!(codec.color_qualities, Some(vec![]));
+                assert_eq!(codec.hdr_color_qualities, Some(vec![]));
+            }
+        }
+
+        probe.d3d11_presentation = true;
+        probe.h264_hardware_decode = false;
+        probe.h265_hardware_decode = false;
+        probe.h265_10bit = false;
+        probe.h265_hdr = false;
+        assert!(!capability(&probe, WindowsOutputMode::Embedded).available);
+        probe.av1_hardware_decode = true;
+        let av1 = capability(&probe, WindowsOutputMode::Embedded);
+        assert!(av1.available);
+        assert!(!av1.codecs[0].available);
+        assert!(av1.codecs[2].available);
     }
 
     #[test]
