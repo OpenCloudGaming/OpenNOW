@@ -54,6 +54,7 @@ installed and a host supported by Wrynose:
 
 ```sh
 export KAS_WORK_DIR="$PWD/build/yocto"
+mkdir -p "$KAS_WORK_DIR"
 kas build meta-opennow/kas/qemux86-64.yml
 kas shell meta-opennow/kas/qemux86-64.yml -c 'runqemu qemux86-64 slirp'
 ```

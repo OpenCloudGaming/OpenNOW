@@ -28,7 +28,7 @@ permissions:
 
 jobs:
   source-metadata:
-    runs-on: ubuntu-24.04
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@v4
       - name: Check locked source metadata
@@ -41,9 +41,10 @@ jobs:
         run: python3 opennow-qt/tests/test_prebuilt_native.py -v
 
   bitbake-metadata:
-    runs-on: ubuntu-24.04
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     timeout-minutes: 30
     strategy:
+      fail-fast: false
       matrix:
         machine: [qemux86-64, qemuarm64]
     env:
@@ -57,6 +58,7 @@ jobs:
           sudo localedef -i en_US -f UTF-8 en_US.UTF-8
           python3 -m venv /tmp/kas
           /tmp/kas/bin/pip install kas==5.5
+          mkdir -p "$KAS_WORK_DIR"
       - name: Parse recipes and resolve the reference image
         run: /tmp/kas/bin/kas shell meta-opennow/kas/${{ matrix.machine }}.yml -c 'bitbake -g opennow-image'
       - name: Fetch and unpack the pinned application and Cargo sources
