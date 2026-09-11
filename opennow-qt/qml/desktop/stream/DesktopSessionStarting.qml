@@ -182,7 +182,7 @@ FocusScope {
             spacing: 12
             DesktopButton {
                 visible: root.failed && (root.connecting || ShellStore.activeSession !== null
-                    || ShellStore.pendingLaunchParams !== null)
+                    || ShellStore.pendingLaunchParams !== null || ShellStore.conflictSession !== null)
                 enabled: !ShellStore.streamBusy
                 text: root.connecting ? qsTr("Retry connection") : qsTr("Try again")
                 primary: true

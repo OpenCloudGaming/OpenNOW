@@ -3346,6 +3346,7 @@
     "session_resume_selected_game": "your selected game",
     "session_resume_unknown_game": "Your running game",
     "session_resume_status": "Reconnecting to your game",
-    "session_resume_unavailable_heading": "Your game is still running"
+    "session_resume_unavailable_heading": "Your game is still running",
+    "session_resume_retry_unavailable": "Your previous game isn't available to reconnect yet. Wait a moment, then try again."
   }
 }

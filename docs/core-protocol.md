@@ -245,6 +245,12 @@ list request without another network lookup. This handoff is account-scoped,
 consumed once, and expires after 30 seconds; it is not a persistent discovery
 fallback. The code/message error envelope and protocol version are unchanged.
 
+`session.claim` first queries the trusted seat host returned by discovery, including
+conflict-response handoffs whose create region may not own the existing session.
+If that host fails for a reason other than authentication, it falls back to the regional
+endpoint. The shell refreshes the chosen session's descriptor before retrying a failed
+claim, without substituting another game or silently creating a new session.
+
 `session.claim` discovers the session's actual control server, sends the minimal
 `action: 2, data: "RESUME"` request for a ready, streaming, or paused seat, and returns a session
 with `resumePending: true` and `phase: "resuming"`. It preserves the stable device

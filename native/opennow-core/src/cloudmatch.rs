@@ -500,14 +500,25 @@ impl CloudMatchService {
             .map(trusted_cloudmatch_base)
             .transpose()?
             .unwrap_or(requested);
-        let initial_payload = self.get_session(&client, &zone_base, session_id, &headers)?;
+        let mut initial_base = claim_lookup_base(discovered.as_ref(), &zone_base);
+        let initial_payload = self
+            .get_session(&client, &initial_base, session_id, &headers)
+            .or_else(|error| {
+                if initial_base == zone_base || error.code == "authentication_required" {
+                    Err(error)
+                } else {
+                    let payload = self.get_session(&client, &zone_base, session_id, &headers)?;
+                    initial_base = zone_base.clone();
+                    Ok(payload)
+                }
+            })?;
         let session = &initial_payload["session"];
         let initial_status = value_i64(&session["status"]).unwrap_or_default();
         let learned_server = session_server_ip(session);
         let control_base = learned_server
             .as_deref()
             .and_then(|server| trusted_learned_server_base(server).ok())
-            .unwrap_or_else(|| zone_base.clone());
+            .unwrap_or(initial_base);
 
         let app_id = first_string(&session["sessionRequestData"]["appId"])
             .or_else(|| first_string(&params["appId"]))
@@ -764,6 +775,13 @@ fn requested_streaming_base(
             }
         });
     trusted_cloudmatch_base(raw)
+}
+
+fn claim_lookup_base(discovered: Option<&Value>, zone_base: &Url) -> Url {
+    discovered
+        .and_then(|session| session["serverIp"].as_str())
+        .and_then(|server| trusted_learned_server_base(server).ok())
+        .unwrap_or_else(|| zone_base.clone())
 }
 
 fn session_requires_resume(status: i64) -> Result<bool, ServiceError> {
@@ -1908,6 +1926,45 @@ mod tests {
                     .contains_key("existing-seat")
             );
             assert!(service.take_conflict_sessions(&auth).is_none());
+        }
+    }
+
+    #[test]
+    fn conflict_handoff_claims_the_existing_host_instead_of_the_create_region() {
+        let service = CloudMatchService::new(Client::new());
+        let auth = conflict_auth();
+        let create_region = trusted_cloudmatch_base("https://create.nvidiagrid.net").unwrap();
+        for host in ["other-region-seat.nvidiagrid.net", "80.84.160.10"] {
+            let mut payload = conflict_payload();
+            payload["otherUserSessions"][0]["sessionControlInfo"]["ip"] = json!(host);
+            service
+                .capture_session_conflict(
+                    reqwest::StatusCode::FORBIDDEN,
+                    &payload,
+                    &create_region,
+                    &auth,
+                )
+                .unwrap();
+            service
+                .remote_sessions(&json!({}), &json!({}), &auth, "device")
+                .unwrap();
+            let discovered = service.discovered.lock().unwrap();
+            let session = discovered.get("existing-seat");
+            assert_eq!(
+                claim_lookup_base(session, &create_region),
+                trusted_learned_server_base(host).unwrap()
+            );
+        }
+        for session in [
+            None,
+            Some(json!({})),
+            Some(json!({"serverIp":"localhost"})),
+            Some(json!({"serverIp":"https://example.com"})),
+        ] {
+            assert_eq!(
+                claim_lookup_base(session.as_ref(), &create_region),
+                create_region
+            );
         }
     }
 

@@ -62,6 +62,7 @@ private slots:
             var streamCreateRequestId = '', remoteSessionsRequestId = '', sessionClaimRequestId = '';
             var pendingLaunchParams = {appId:'123',title:'Selected game'};
             var conflictSession = null, activeSession = null, remoteSessions = [], streamState = 'checking', streamMessage = '';
+            var conflictSessionNeedsRefresh = false;
             var requests = [], overlays = [], created = 0, pollStops = 0;
             var streamPollTimer = {stop: function() { ++pollStops; }};
             var CoreClient = {request: function(method, params) {
@@ -190,6 +191,91 @@ private slots:
             QCOMPARE(engine.evaluate(QStringLiteral("requests")).toInt(), 0);
             QCOMPARE(engine.evaluate(QStringLiteral("remoteSessions[0].sessionId")).toString(), QStringLiteral("running"));
         }
+    }
+
+    void accountSessionDiscoveryDoesNotOwnTheLaunchSlotOrFailTheLaunch()
+    {
+        const auto shell = source(QStringLiteral("qml/state/ShellStore.qml"));
+        QJSEngine engine;
+        engine.installExtensions(QJSEngine::TranslationExtension);
+        for (const auto &name : {"refreshAccountServices", "refreshRemoteSessions", "launchSelectedGame"}) {
+            const auto match = QRegularExpression(QStringLiteral(
+                "    function %1\\([^\\n]*\\) \\{.*?\\n    \\}").arg(QString::fromLatin1(name)),
+                QRegularExpression::DotMatchesEverythingOption).match(shell);
+            QVERIFY(match.hasMatch());
+            QVERIFY(!engine.evaluate(match.captured()).isError());
+        }
+        const auto busy = QRegularExpression(QStringLiteral(
+            "    readonly property bool streamBusy: (.*?)\\n\\n"),
+            QRegularExpression::DotMatchesEverythingOption).match(shell);
+        const auto failed = QRegularExpression(QStringLiteral(
+            "        function onRequestFailed\\([^\\n]*\\) \\{(.*?)\\n        \\}"),
+            QRegularExpression::DotMatchesEverythingOption).match(shell);
+        QVERIFY(busy.hasMatch());
+        QVERIFY(failed.hasMatch());
+        QVERIFY(!engine.evaluate(QStringLiteral(R"JS(
+            var root = this, ready = true, signedIn = true, activeSession = null, pendingLaunchParams = null;
+            var remoteSessionsRequestId = '', remoteSessionDiscoveryRequestId = '', remoteSessions = [];
+            var streamCreateRequestId = '', streamStopRequestId = '', sessionClaimRequestId = '';
+            var subscriptionRequestId = 'subscription', regionsRequestId = 'regions', accountsRequestId = 'accounts';
+            var gameAccountsRequestId = 'connections', streamState = 'idle', streamMessage = '', lastError = '';
+            var requests = [], selectedGame = {title:'Game'}, settings = {}, regions = [], onboardingReplaying = false;
+            var CoreClient = {request:function(method,params){requests.push(method);return 'request-'+requests.length;}};
+            var AppController = {navigate:function(){}};
+            var onboardingOwner = {acceptFailure:function(){return false;}};
+            function finishArtworkRequest(){return false;}
+            function selectedLaunchAppId(){return '123';}
+            function selectedGameMembershipError(){return '';}
+        )JS")).isError());
+        QVERIFY(!engine.evaluate(QStringLiteral("Object.defineProperty(this,'streamBusy',{get:function(){return %1;}});")
+            .arg(busy.captured(1))).isError());
+        QVERIFY(!engine.evaluate(QStringLiteral("function fail(requestId,code,message){%1}").arg(failed.captured(1))).isError());
+        QVERIFY(!engine.evaluate(QStringLiteral("refreshAccountServices()")).isError());
+        QCOMPARE(engine.evaluate(QStringLiteral("remoteSessionDiscoveryRequestId")).toString(), QStringLiteral("request-1"));
+        QVERIFY(!engine.evaluate(QStringLiteral("streamBusy")).toBool());
+        QVERIFY(!engine.evaluate(QStringLiteral("fail('request-1','session_discovery_failed','Background lookup failed')")).isError());
+        QCOMPARE(engine.evaluate(QStringLiteral("streamState")).toString(), QStringLiteral("idle"));
+        QCOMPARE(engine.evaluate(QStringLiteral("lastError")).toString(), QString());
+        QVERIFY(!engine.evaluate(QStringLiteral("refreshAccountServices(); launchSelectedGame(false)")).isError());
+        QCOMPARE(engine.evaluate(QStringLiteral("streamState")).toString(), QStringLiteral("checking"));
+        QCOMPARE(engine.evaluate(QStringLiteral("remoteSessionsRequestId")).toString(), QStringLiteral("request-3"));
+        QVERIFY(engine.evaluate(QStringLiteral("streamBusy")).toBool());
+    }
+
+    void failedResumeRefreshesTheChosenSessionBeforeClaimingAgain()
+    {
+        const auto shell = source(QStringLiteral("qml/state/ShellStore.qml"));
+        QJSEngine engine;
+        engine.installExtensions(QJSEngine::TranslationExtension);
+        for (const auto &name : {"resolveSessionConflict", "inspectRemoteSessions"}) {
+            const auto match = QRegularExpression(QStringLiteral(
+                "    function %1\\([^\\n]*\\) \\{.*?\\n    \\}").arg(QString::fromLatin1(name)),
+                QRegularExpression::DotMatchesEverythingOption).match(shell);
+            QVERIFY(match.hasMatch());
+            QVERIFY(!engine.evaluate(match.captured()).isError());
+        }
+        const auto result = engine.evaluate(QStringLiteral(R"JS(
+            var streamBusy = false, conflictSessionNeedsRefresh = true, pendingLaunchParams = null;
+            var conflictSession = {sessionId:'chosen',appId:'456',streamingBaseUrl:'https://old.nvidiagrid.net'};
+            var requests = [], creates = 0;
+            var AppController = {showOverlay:function(){}};
+            var CoreClient = {request:function(method,params){requests.push({method:method,params:params});return 'request';}};
+            function createPendingSession(){++creates;}
+            resolveSessionConflict('resume');
+            inspectRemoteSessions({sessions:[]});
+        )JS"));
+        QVERIFY2(!result.isError(), qPrintable(result.toString()));
+        QCOMPARE(engine.evaluate(QStringLiteral("requests[0].method")).toString(), QStringLiteral("session.remote.list"));
+        QCOMPARE(engine.evaluate(QStringLiteral("streamState")).toString(), QStringLiteral("error"));
+        QCOMPARE(engine.evaluate(QStringLiteral("creates")).toInt(), 0);
+        QVERIFY(!engine.evaluate(QStringLiteral(R"JS(
+            inspectRemoteSessions({sessions:[{sessionId:'other',appId:'123'},
+                {sessionId:'chosen',appId:'456',streamingBaseUrl:'https://fresh.nvidiagrid.net'}]});
+        )JS")).isError());
+        QCOMPARE(engine.evaluate(QStringLiteral("requests[1].method")).toString(), QStringLiteral("session.claim"));
+        QCOMPARE(engine.evaluate(QStringLiteral("requests[1].params.sessionId")).toString(), QStringLiteral("chosen"));
+        QCOMPARE(engine.evaluate(QStringLiteral("requests[1].params.streamingBaseUrl")).toString(), QStringLiteral("https://fresh.nvidiagrid.net"));
+        QVERIFY(!engine.evaluate(QStringLiteral("conflictSessionNeedsRefresh")).toBool());
     }
 
     void pausedSessionsRemainAvailableToResume()
