@@ -90,6 +90,45 @@ in the same session. Denying access must still produce a bounded timeout.
 After playback starts, a video delivery failure should still enter recovery
 after eight seconds rather than receiving another startup allowance.
 
+## Separate bundle and video NATT identities
+
+The 2026-09-11 Pi 5 capture from `1.0.0-nightly.413.1` completed PLAY,
+DTLS, SCTP, and audio reception. The video socket received zero datagrams
+through both eight-second timeouts. The advertised video port range was already
+preserved, so the earlier port-range correction does not explain this capture.
+
+The Rust bundle worker sent the raw VIDEO SETUP `X-Nv-Ping-Payload` in its
+authenticated NATT keepalive, just like the separate video worker. Both sockets
+therefore advertised the video identity to the server. This violates the role
+separation in the Mac reference:
+
+- [The production Mac bundle](https://github.com/OpenCloudGaming/openNOW-Mac/blob/f95fde8ed79cedd8f7e4333e195ecfd7a701a04b/OPN/Stream/NvstWebRtcBundle.swift#L10-L15)
+  uses the incremented remote ICE identity, while video uses the raw SETUP payload.
+- [The Mac bundle probe](https://github.com/OpenCloudGaming/openNOW-Mac/blob/f95fde8ed79cedd8f7e4333e195ecfd7a701a04b/GFN/NVST/BifrostFree/NvstBundleIceProbe.swift#L137-L155)
+  sends the additional NATT keepalive as `PING:<localUfrag>`, never as the video
+  payload. This is an authenticated STUN request, not a plaintext `PING` datagram.
+
+Rust now uses `PING` for the bundle NATT identity. Its bundle ICE identity,
+video SETUP payload, authentication, negotiated endpoints, and timeout policy
+remain unchanged. Startup diagnostics report the payload length for each role.
+The Android branch at `d8e509e64818` contains the same duplicate-identity behavior,
+so it is not an independent reference for this part of the protocol.
+
+The `bundle_keepalives_do_not_claim_the_video_routing_identity` regression test
+runs both real UDP workers against one loopback server endpoint. It checks
+repeated authenticated probes from each socket and delivery of an authenticated
+video frame. It fails before the correction because the bundle claims the video
+identity. This proves the wire correction, not a server-side routing overwrite
+or recovery on the affected Pi and Windows machines. A fresh-session retest must
+show incoming authenticated video, assembled frames, and visible playback.
+
+Startup ordering remains a separate lead. Android starts its UDP workers before
+ANNOUNCE. Mac also explicitly starts video punches before PLAY and records a
+[late-punch failure on high-RTT seats](https://github.com/OpenCloudGaming/openNOW-Mac/blob/f95fde8ed79cedd8f7e4333e195ecfd7a701a04b/OPN/Stream/NvstBifrostFreeVideo.swift#L274-L284).
+Rust starts the workers after ANNOUNCE and before PLAY, but does not wait for
+their first send. The supplied logs do not timestamp that first send, so they
+cannot establish whether this race occurred. No timing delay is added by this fix.
+
 ## Verification
 
 Run the native streamer workspace tests and `opennow-embedded-orchestration-tests`.

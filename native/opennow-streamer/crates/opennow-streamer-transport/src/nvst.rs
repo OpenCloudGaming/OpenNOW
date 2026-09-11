@@ -4732,6 +4732,7 @@ fn log_udp_receiver_start(
     socket: &UdpSocket,
     peer: SocketAddr,
     config: &NvstVideoConfig,
+    ping_payload: &[u8],
 ) {
     opennow_streamer_protocol::log::log_async(
         "INFO",
@@ -4742,7 +4743,7 @@ fn log_udp_receiver_start(
             peer.port(),
             peer.is_ipv4(),
             config.ping_version,
-            config.ping_payload.len(),
+            ping_payload.len(),
             config.stun_credentials.is_some(),
             config.video_peer.ip() == config.bundle_peer().ip()
         ),
@@ -5218,9 +5219,9 @@ fn run_nvst_webrtc_bundle(
     } = outputs;
     let bundle_peer = config.bundle_peer();
     let local_port = socket.local_addr().map_or(0, |addr| addr.port());
-    log_udp_receiver_start("bundle", &socket, bundle_peer, &config);
+    let ping_payload = b"PING";
+    log_udp_receiver_start("bundle", &socket, bundle_peer, &config, ping_payload);
     let stun_credentials = config.stun_credentials.clone();
-    let ping_payload = config.ping_payload.clone();
     // Feedback plane shared with the Mjolnir video receiver: it publishes the
     // stream SSRC/sequence and recovery requests; this bundle sends the RTCP
     // Receiver Reports / NACK / PLI over the `rtcp1` SCTP data channel.
@@ -5461,7 +5462,7 @@ fn run_nvst_webrtc_bundle(
             let natt = if getrandom::fill(&mut natt_tid).is_ok() {
                 let natt = build_natt_hole_punch_request(
                     &credentials.local_username_fragment,
-                    &ping_payload,
+                    ping_payload,
                     &credentials.remote_password,
                     &natt_tid,
                 );
@@ -6120,7 +6121,13 @@ fn run_nvst_udp_receiver(
         return;
     }
     let local_port = socket.local_addr().map_or(0, |addr| addr.port());
-    log_udp_receiver_start("video", &socket, config.video_peer, &config);
+    log_udp_receiver_start(
+        "video",
+        &socket,
+        config.video_peer,
+        &config,
+        &config.ping_payload,
+    );
     let NvstReceiverOutputs {
         media_consumer,
         event_sender,
@@ -9331,6 +9338,86 @@ mod tests {
                 session.stop();
             }
         }
+    }
+
+    #[test]
+    fn bundle_keepalives_do_not_claim_the_video_routing_identity() {
+        let server = UdpSocket::bind("127.0.0.1:0").unwrap();
+        server
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let bundle = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let video = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let bundle_address = bundle.local_addr().unwrap();
+        let video_address = video.local_addr().unwrap();
+        let mut remote = create_nvst_bundle_rtc(&server).unwrap();
+        let mut config = config();
+        config.client_udp_port = bundle_address.port();
+        config.mjolnir_udp_port = Some(video_address.port());
+        config.video_peer = server.local_addr().unwrap();
+        config.remote_dtls_fingerprint =
+            Some(nvst_local_bundle_identity(&mut remote).dtls_fingerprint);
+        config.stun_credentials = Some(stun_credentials());
+        config.ping_payload = b"setup-ping".to_vec();
+        let packet = protect_for_test(
+            &test_srtp(&config),
+            build_plaintext_rtp(
+                1,
+                FLAG_SOF | FLAG_EOF | FLAG_CONTAINS_PIC_DATA,
+                42,
+                &[0, 0, 1, 0x65],
+            ),
+            0,
+        );
+        let (media_consumer, media_receiver) = mpsc::sync_channel(1);
+        let (event_sender, _event_receiver) = mpsc::channel();
+        let bundle_session = spawn_nvst_udp_receiver_with_socket(
+            config.clone(),
+            media_consumer.clone(),
+            event_sender.clone(),
+            Some(bundle),
+            None,
+        )
+        .unwrap();
+        let video_session =
+            spawn_nvst_mjolnir_receiver(video, config, media_consumer, event_sender).unwrap();
+        let mut datagram = [0_u8; 2048];
+        let mut bundle_keepalives = 0;
+        let mut bundle_ice_checks = 0;
+        let mut video_keepalives = 0;
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while bundle_keepalives < 3 || bundle_ice_checks < 3 || video_keepalives < 3 {
+            assert!(
+                Instant::now() < deadline,
+                "both socket roles must send probes"
+            );
+            let (length, source) = server.recv_from(&mut datagram).unwrap();
+            let packet = &datagram[..length];
+            assert!(valid_stun_fingerprint(packet));
+            assert!(valid_stun_message_integrity(
+                packet,
+                stun_credentials().remote_password.as_bytes()
+            ));
+            let (_, username) = find_stun_attribute(packet, STUN_ATTR_USERNAME).unwrap();
+            if source == video_address {
+                assert_eq!(username, b"setup-ping:loc1");
+                video_keepalives += 1;
+            } else {
+                assert_eq!(source, bundle_address);
+                assert_ne!(username, b"setup-ping:loc1", "bundle must not claim video");
+                match username {
+                    b"remote01:loc1" => bundle_ice_checks += 1,
+                    b"PING:loc1" => bundle_keepalives += 1,
+                    _ => panic!("unexpected bundle probe identity"),
+                }
+            }
+        }
+        server.send_to(&packet, video_address).unwrap();
+        let frame = media_receiver.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(frame.frame_index, Some(42));
+        assert!(frame.keyframe);
+        video_session.stop();
+        bundle_session.stop();
     }
 
     #[test]
