@@ -87,6 +87,51 @@ struct StreamPingTracker {
     pending: VecDeque<([u8; 12], Instant)>,
 }
 
+#[derive(Default)]
+struct IceResponseTracker {
+    requests: VecDeque<([u8; 12], bool)>,
+}
+
+impl IceResponseTracker {
+    fn sent(&mut self, packet: &[u8]) {
+        if !looks_like_stun(packet) || packet[..2] != STUN_BINDING_REQUEST.to_be_bytes() {
+            return;
+        }
+        let transaction_id = packet[8..20].try_into().expect("STUN header checked");
+        if self.requests.iter().any(|(id, _)| *id == transaction_id) {
+            return;
+        }
+        if self.requests.len() == MAX_PENDING_STREAM_PINGS {
+            self.requests.pop_front();
+        }
+        self.requests.push_back((transaction_id, false));
+    }
+
+    fn accept(&mut self, packet: &[u8], remote_password: &str) -> bool {
+        if !looks_like_stun(packet)
+            || packet[..2] != STUN_BINDING_SUCCESS_RESPONSE.to_be_bytes()
+            || STUN_HEADER_LEN + usize::from(u16::from_be_bytes([packet[2], packet[3]]))
+                != packet.len()
+        {
+            return true;
+        }
+        let Some((_, completed)) = self
+            .requests
+            .iter_mut()
+            .find(|(id, _)| id.as_slice() == &packet[8..20])
+        else {
+            return true;
+        };
+        if !valid_stun_message_integrity(packet, remote_password.as_bytes())
+            || (find_stun_attribute(packet, STUN_ATTR_FINGERPRINT).is_some()
+                && !valid_stun_fingerprint(packet))
+        {
+            return true;
+        }
+        !std::mem::replace(completed, true)
+    }
+}
+
 impl StreamPingTracker {
     fn sent(&mut self, transaction_id: [u8; 12], now: Instant) {
         self.pending
@@ -5202,6 +5247,7 @@ fn run_nvst_webrtc_bundle(
     let mut outbound_datagrams = 0_u64;
     let mut hole_punch_pings = 0_u64;
     let mut ping_tracker = StreamPingTracker::default();
+    let mut ice_responses = IceResponseTracker::default();
     let mut ice_ping_responses = 0;
     let mut last_hole_punch = Instant::now() - PING_INTERVAL_BEFORE_CONNECTION;
     let mut seen_ssrcs = HashSet::new();
@@ -5666,6 +5712,7 @@ fn run_nvst_webrtc_bundle(
                         forward_optional(&event_sender, receiver.stop());
                         return;
                     }
+                    ice_responses.sent(&transmit.contents);
                     // Official ICE-on WebRtcTransport skips setupDtls until a real
                     // inbound STUN. Do not synthesize Binding Success — that only
                     // unblocks str0m and sends ClientHello before GFN has a pair.
@@ -6011,6 +6058,11 @@ fn run_nvst_webrtc_bundle(
                             continue;
                         }
                     };
+                    if let Some(credentials) = stun_credentials.as_ref()
+                        && !ice_responses.accept(&datagram[..length], &credentials.remote_password)
+                    {
+                        continue;
+                    }
                     if let Err(error) = rtc.handle_input(Input::Receive(
                         Instant::now(),
                         Receive {
