@@ -4,7 +4,7 @@ on:
   workflow_call:
     inputs:
       channel:
-        description: Unsigned build channel (nightly or supporter)
+        description: Unsigned build channel (nightly, supporter, or stable)
         type: string
         default: nightly
       upload_complete:
