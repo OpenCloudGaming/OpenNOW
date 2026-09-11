@@ -606,6 +606,20 @@ if(BUILD_TESTING)
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
         TIMEOUT 8
     )
+    qt_add_executable(opennow-controllernavigation-tests
+        tests/tst_controllernavigation.cpp
+        src/input/ControllerInput.cpp
+        src/input/ControllerInput.h
+    )
+    target_include_directories(opennow-controllernavigation-tests PRIVATE src)
+    target_link_libraries(opennow-controllernavigation-tests PRIVATE
+        Qt6::Test Qt6::Quick SDL3::SDL3)
+    add_test(NAME opennow-controllernavigation-tests
+             COMMAND opennow-controllernavigation-tests -o -,txt)
+    set_tests_properties(opennow-controllernavigation-tests PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software"
+        TIMEOUT 15
+    )
     qt_add_executable(opennow-controllertuning-tests
         tests/tst_controllertuning.cpp
         src/input/ControllerInput.cpp
@@ -669,6 +683,7 @@ if(BUILD_TESTING)
         opennow-singleinstance-tests
         opennow-thumbnail-tests
         opennow-controllerinput-tests
+        opennow-controllernavigation-tests
         opennow-controllertuning-tests
         opennow-controllersources-tests
         opennow-controllermetadata-tests
@@ -706,6 +721,7 @@ if(BUILD_TESTING)
             opennow-singleinstance-tests
             opennow-thumbnail-tests
             opennow-controllerinput-tests
+            opennow-controllernavigation-tests
             opennow-controllersources-tests
             opennow-controllermetadata-tests
             PROPERTIES WIN32_EXECUTABLE FALSE)
@@ -758,6 +774,7 @@ if(BUILD_TESTING)
                 opennow-singleinstance-tests
                 opennow-thumbnail-tests
                 opennow-controllerinput-tests
+                opennow-controllernavigation-tests
                 opennow-controllersources-tests
                 opennow-controllermetadata-tests)
             add_dependencies(${test_target} opennow-qt-test-runtime)

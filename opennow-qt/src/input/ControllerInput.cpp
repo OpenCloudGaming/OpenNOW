@@ -4,6 +4,7 @@
 #include <QGuiApplication>
 #include <QKeyEvent>
 #include <QVariantMap>
+#include <QWindow>
 
 #include <algorithm>
 #include <cmath>
@@ -566,7 +567,7 @@ void ControllerInput::handleShellButton(int slotIndex, int key, bool pressed)
 {
     auto &keys = m_slots[static_cast<std::size_t>(slotIndex)].shellKeys;
     if (keys.contains(key) == pressed) return;
-    QPointer<QObject> target = pressed ? QPointer<QObject>(QGuiApplication::focusObject()) : keys.take(key);
+    QPointer<QObject> target = pressed ? QPointer<QObject>(QGuiApplication::focusWindow()) : keys.take(key);
     if (pressed && !target) target = QCoreApplication::instance();
     for (const auto &slot : m_slots) {
         if (!slot.shellKeys.contains(key)) continue;
@@ -586,7 +587,7 @@ void ControllerInput::releaseShellButtons(int slotIndex)
 void ControllerInput::postKey(int key, bool pressed, bool autoRepeat, QObject *target)
 {
     if (!m_shellCaptureEnabled || m_inputSuspended) return;
-    if (!target) target = QGuiApplication::focusObject();
+    if (!target) target = QGuiApplication::focusWindow();
     if (!target) target = QCoreApplication::instance();
     const auto type = pressed ? QEvent::KeyPress : QEvent::KeyRelease;
     QCoreApplication::postEvent(
