@@ -77,7 +77,10 @@ fn main() {
     if std::env::args().any(|argument| argument == "--hold") {
         std::thread::sleep(std::time::Duration::from_secs(180));
     } else if let Some(directory) = std::env::var_os("OPENNOW_DATA_DIR") {
-        std::fs::write(std::path::Path::new(&directory).join("previous-restarted"), b"1.0.0").unwrap();
+        let path = std::path::Path::new(&directory).join("previous-restarted");
+        let temporary = path.with_extension("tmp");
+        std::fs::write(&temporary, b"1.0.0").unwrap();
+        std::fs::rename(temporary, path).unwrap();
     }
 }
 ''', encoding="utf-8")

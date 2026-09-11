@@ -174,7 +174,10 @@ fn fixture_executable() -> &'static Path {
             r#"fn main() {
                 if let Ok(path) = std::env::var("OPENNOW_FIXTURE_CHILD_PID") {
                     let child = std::process::Command::new(std::env::current_exe().unwrap()).env_remove("OPENNOW_FIXTURE_CHILD_PID").spawn().unwrap();
-                    std::fs::write(path, child.id().to_string()).unwrap();
+                    let path = std::path::PathBuf::from(path);
+                    let temporary = path.with_extension("tmp");
+                    std::fs::write(&temporary, child.id().to_string()).unwrap();
+                    std::fs::rename(temporary, path).unwrap();
                 }
                 let lifetime = std::env::var("OPENNOW_FIXTURE_LIFETIME_MS").ok().and_then(|value| value.parse().ok()).unwrap_or(900);
                 std::thread::sleep(std::time::Duration::from_millis(lifetime));
