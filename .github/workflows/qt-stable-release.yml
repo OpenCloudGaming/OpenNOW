@@ -1,0 +1,144 @@
+name: Qt unsigned stable release
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_commit:
+        description: Exact reviewed main commit to release
+        required: true
+        type: string
+
+concurrency:
+  group: qt-stable-release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Require the exact main revision
+        env:
+          SOURCE_COMMIT: ${{ inputs.source_commit }}
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF" == refs/heads/main ]]
+          [[ "$SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$SOURCE_COMMIT" == "$GITHUB_SHA" ]]
+          [[ "$(git rev-parse HEAD)" == "$SOURCE_COMMIT" ]]
+
+  contracts:
+    needs: preflight
+    uses: ./.github/workflows/qt-checks.yml
+
+  checks:
+    needs: contracts
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: linux-x64
+            os: blacksmith-8vcpu-ubuntu-2404
+            qt-host: linux
+            qt-arch: linux_gcc_64
+            target-arch: x64
+            parallel: "8"
+          - label: windows-x64
+            os: blacksmith-8vcpu-windows-2025
+            qt-host: windows
+            qt-arch: win64_msvc2022_64
+            target-arch: x64
+            parallel: "8"
+          - label: macos-arm64
+            os: blacksmith-6vcpu-macos-15
+            qt-host: mac
+            qt-arch: clang_64
+            target-arch: arm64
+            parallel: "3"
+    env:
+      CARGO_TERM_COLOR: always
+      OPENNOW_CHECKOUT: ${{ matrix.label == 'windows-x64' && 'O:/' || github.workspace }}
+      MACOSX_DEPLOYMENT_TARGET: ${{ matrix.label == 'macos-arm64' && '13.0' || '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/qt-unit-tests
+        with:
+          label: ${{ matrix.label }}
+          qt-host: ${{ matrix.qt-host }}
+          qt-arch: ${{ matrix.qt-arch }}
+          target-arch: ${{ matrix.target-arch }}
+          parallel: ${{ matrix.parallel }}
+
+  build:
+    needs: contracts
+    uses: ./.github/workflows/qt-build.yml
+    with:
+      channel: stable
+      upload_complete: true
+      update_public_key: ""
+
+  publish:
+    needs: [preflight, contracts, checks, build]
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    permissions:
+      contents: write
+    env:
+      RELEASE_VERSION: ${{ needs.build.outputs.version }}
+      SOURCE_SHA: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: opennow-qt-${{ needs.build.outputs.version }}-complete-unsigned
+          path: downloaded
+      - name: Verify package inventory and checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd downloaded && sha256sum --check --strict SHA256SUMS)
+          mkdir packages
+          find downloaded -maxdepth 1 -type f \( -name '*.msi' -o -name '*.zip' -o -name '*.dmg' -o -name '*.deb' -o -name '*.AppImage' \) -exec cp {} packages/ \;
+          python3 opennow-qt/packaging/nightly_release.py assemble \
+            --source packages --destination release --version "$RELEASE_VERSION" \
+            --commit "$SOURCE_SHA" --channel stable
+          cmp downloaded/RELEASE-INFO.json release/RELEASE-INFO.json
+          cmp downloaded/SHA256SUMS release/SHA256SUMS
+      - name: Prepare public release notes
+        run: |
+          cat > release-notes.md <<EOF
+          OpenNOW $RELEASE_VERSION replaces the Electron desktop client with Qt Quick and a native Rust streaming engine.
+
+          Includes desktop and controller layouts, onboarding, library collections, stream overlays and statistics, screenshots, and recording.
+
+          **These packages are unsigned. Updates require a manual download and installation.**
+          Windows may show SmartScreen or an unknown-publisher warning. Install the MSI, or extract the entire portable ZIP and run \`bin/OpenNOW.exe\`.
+          The Apple Silicon DMG requires macOS 13+. Drag OpenNOW into Applications. It is not notarized; if blocked, use System Settings → Privacy & Security → Open Anyway when offered. Do not disable Gatekeeper globally.
+          Linux AppImages are recommended; make the file executable before launching. DEBs require Qt 6.8+ and SDL3, which stock Ubuntu 24.04 does not provide.
+
+          Intel macOS is not included. Windows ARM64 is cross-built, not runtime-tested by CI.
+          **Known issue: Alliance Partners may not work correctly.** Hardware-specific gameplay acceptance is not implied by CI passing.
+          SHA256SUMS detects corrupted downloads; it does not authenticate the publisher.
+
+          Source commit: \`$SOURCE_SHA\`.
+          EOF
+      - name: Upload as draft before publishing the complete release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release create "v$RELEASE_VERSION" release/* \
+            --repo "$GITHUB_REPOSITORY" --target "$SOURCE_SHA" \
+            --title "OpenNOW v$RELEASE_VERSION" --notes-file release-notes.md \
+            --draft --latest=false
+          gh release edit "v$RELEASE_VERSION" --repo "$GITHUB_REPOSITORY" \
+            --draft=false --prerelease=false --latest

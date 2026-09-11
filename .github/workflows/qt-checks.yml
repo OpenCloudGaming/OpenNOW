@@ -27,7 +27,8 @@ jobs:
           tar -xzf "$RUNNER_TEMP/actionlint.tar.gz" -C "$RUNNER_TEMP" actionlint
           "$RUNNER_TEMP/actionlint" -color=false \
             .github/workflows/qt-ci.yml .github/workflows/qt-checks.yml \
-            .github/workflows/qt-build.yml .github/workflows/qt-release-candidate.yml
+            .github/workflows/qt-build.yml .github/workflows/qt-release-candidate.yml \
+            .github/workflows/qt-stable-release.yml
       - name: Test build and packaging contracts
         run: python3 -m unittest discover -s opennow-qt/tests -p 'test_*.py'
       - name: Validate localization
