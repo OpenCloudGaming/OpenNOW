@@ -721,16 +721,6 @@ private fun SettingsContent(
     CategorySettingsSection(selectedCategory, SettingsCategory.Advanced, searchQuery, stringResource(R.string.settings_nerd_mode), "advanced", "advanced options", "nerd", "experimental", "diagnostics") {
                 AdvancedOptionsSettings(settings = settings, viewModel = viewModel)
             }
-    CategorySettingsSection(selectedCategory, SettingsCategory.General, searchQuery, "Privacy", "privacy", "analytics", "telemetry", "posthog", "usage", "tracking", "opt out") {
-                SettingSwitch("Share usage analytics", settings.analyticsSharingEnabled) { enabled ->
-                    viewModel.updateSettings(
-                        settings.copy(
-                            analyticsConsentAsked = true,
-                            analyticsOptOut = !enabled,
-                        ),
-                    )
-                }
-            }
     CategorySettingsSection(selectedCategory, SettingsCategory.Stream, searchQuery, stringResource(R.string.settings_section_stream_quality), "stream", "quality", "preset", "data saver", "low", "medium", "high", "custom", "resolution", "aspect ratio", "fps", "bitrate") {
                 ChoiceMenuRow(
                     label = stringResource(R.string.settings_stream_preset),
@@ -1570,12 +1560,19 @@ private fun SettingsContent(
                     showTitle = false,
                 )
             }
-    CategorySettingsSection(selectedCategory, SettingsCategory.Advanced, searchQuery, stringResource(R.string.settings_experimental_streaming), "experimental", "stream", "l4s", "session", "launch", "failure") {
+    CategorySettingsSection(selectedCategory, SettingsCategory.Advanced, searchQuery, stringResource(R.string.settings_experimental_streaming), "experimental", "stream", "nvst", "l4s", "session", "launch", "failure") {
                 Text(
                     stringResource(R.string.settings_experimental_streaming_warning),
                     color = SettingsTextMuted,
                     style = MaterialTheme.typography.labelSmall,
                 )
+                SettingSwitch(
+                    label = "NVST transport (Experimental)",
+                    checked = settings.stream.experimentalNvst,
+                    description = "Try native NVST streaming for new sessions. Off by default while compatibility and stability issues are investigated.",
+                ) {
+                    viewModel.updateStreamSettings { s -> s.copy(experimentalNvst = it) }
+                }
                 SettingSwitch(
                     label = stringResource(R.string.settings_l4s),
                     checked = settings.stream.enableL4S,
@@ -1704,6 +1701,7 @@ private fun CatalogBackgroundSettings(settings: AppSettings, viewModel: OpenNowV
         AppBackgroundChoice.Default to stringResource(R.string.setup_background_default),
         AppBackgroundChoice.Nothing to stringResource(R.string.setup_background_nothing),
         AppBackgroundChoice.Wallpaper to stringResource(R.string.settings_background_wallpaper),
+        AppBackgroundChoice.SystemWallpaper to stringResource(R.string.settings_background_system_wallpaper),
     )
     ChoiceRow(
         label = stringResource(R.string.settings_background_style),

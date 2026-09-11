@@ -24,6 +24,7 @@ class AppSettingsDefaultsTest {
         assertFalse(settings.localAppsEnabled)
         assertFalse(settings.stretchStreamToFit)
         assertTrue(settings.ambientBackgroundEnabled)
+        assertFalse(settings.systemWallpaperBackground)
         assertTrue(settings.localAppPackageNames.isEmpty())
         // The shelf opens on first sight; folding it is a choice the reader makes and keeps.
         assertFalse(settings.localAppsCollapsed)
@@ -69,9 +70,7 @@ class AppSettingsDefaultsTest {
         assertTrue(settings.externalMousePointerLock)
         assertEquals(StreamKeyboardButtonPosition(), settings.streamKeyboardButtonPosition)
         assertEquals(CatalogBackgroundPreset.ColorfulAbstract, settings.catalogBackgroundPreset)
-        assertFalse(settings.analyticsConsentAsked)
-        assertTrue(settings.analyticsOptOut)
-        assertFalse(settings.analyticsSharingEnabled)
+        assertFalse(settings.systemWallpaperBackground)
         assertFalse(settings.showFavoriteIconOnGameCards)
         assertFalse(settings.liveSelectedOutlines)
         assertFalse(settings.absoluteCinemaEffects)
@@ -252,9 +251,6 @@ class AppSettingsDefaultsTest {
         assertEquals(IntroMusicStartMode.Muted, settings.streamIntroStartMode)
         assertFalse(settings.queueReadyMusic)
         assertFalse(settings.showSessionReportAfterStream)
-        assertFalse(settings.analyticsConsentAsked)
-        assertTrue(settings.analyticsOptOut)
-        assertFalse(settings.analyticsSharingEnabled)
         assertFalse(settings.stream.streamSharpeningEnabled)
     }
 
@@ -322,11 +318,12 @@ class AppSettingsDefaultsTest {
     }
 
     @Test
-    fun legacyAnalyticsPreferenceDoesNotOptInWithoutConsent() {
-        val settings = OpenNowJson.decodeFromString<AppSettings>("""{"analyticsOptOut":false}""")
-
-        assertFalse(settings.analyticsConsentAsked)
-        assertFalse(settings.analyticsSharingEnabled)
+    fun retiredAnalyticsKeysDoNotDiscardExistingSettings() {
+        val settings = OpenNowJson.decodeFromString<AppSettings>(
+            """{"analyticsOptOut":false,"analyticsConsentAsked":true,"setupFlowCompletedVersion":2,"showSessionReportAfterStream":false}""",
+        )
+        assertEquals(2, settings.setupFlowCompletedVersion)
+        assertFalse(settings.showSessionReportAfterStream)
     }
 
     @Test

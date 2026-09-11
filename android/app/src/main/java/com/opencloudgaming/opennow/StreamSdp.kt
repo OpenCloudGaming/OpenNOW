@@ -73,6 +73,10 @@ object SdpTools {
         rtxApt.forEach { (rtx, apt) ->
             if (apt in preferred && codecByPt[rtx] == "RTX") allowed += rtx
         }
+        // FlexFEC repairs the selected video stream regardless of its codec. The receiver
+        // supports it, but removing it here prevents negotiation even when the server offers
+        // repair packets and applyVideoCodecPreferences retains the receiver capability.
+        allowed += codecByPt.filterValues { it == "FLEXFEC-03" }.keys
         val output = mutableListOf<String>()
         inVideo = false
         lines.forEach { line ->
@@ -86,7 +90,8 @@ object SdpTools {
             if (line.startsWith("m=") && inVideo) inVideo = false
             if (inVideo && (line.startsWith("a=rtpmap:") || line.startsWith("a=fmtp:") || line.startsWith("a=rtcp-fb:"))) {
                 val pt = line.substringAfter(":").substringBefore(" ")
-                if (pt !in allowed) return@forEach
+                val wildcardFeedback = line.startsWith("a=rtcp-fb:*") && pt == "*"
+                if (pt !in allowed && !wildcardFeedback) return@forEach
             }
             output += line
         }

@@ -378,6 +378,8 @@ internal fun AppSettings.normalizedForAndroid(): AppSettings {
             if (sessionReportDefaultVersion < SESSION_REPORT_DEFAULT_VERSION) false
             else showSessionReportAfterStream,
         sessionReportDefaultVersion = SESSION_REPORT_DEFAULT_VERSION,
+        nerdCatalogBackground = nerdCatalogBackground && !systemWallpaperBackground,
+        ambientBackgroundEnabled = ambientBackgroundEnabled && !systemWallpaperBackground,
         nerdCatalogBackgroundUri = nerdCatalogBackgroundUri?.trim()?.takeIf { it.isNotBlank() },
         localAppPackageNames = normalizeLocalAppPackageNames(localAppPackageNames),
         absoluteCinemaEverywhere = absoluteCinemaEffects && absoluteCinemaEverywhere,
@@ -429,8 +431,12 @@ class SettingsStore(context: Context) {
     }
 
     private fun load(): AppSettings {
-        val raw = prefs.getString(KEY_SETTINGS, null) ?: return AppSettings()
-        return runCatching { OpenNowJson.decodeFromString<AppSettings>(raw) }.getOrElse { AppSettings() }
+        val raw = prefs.getString(KEY_SETTINGS, null)
+        // Persist the migration even if no setting is changed this launch. The regular writer
+        // deliberately skips the initial StateFlow value, so it cannot save this reset for us.
+        return loadSettingsWithNvstDefault(raw) { migrated ->
+            prefs.edit().putString(KEY_SETTINGS, OpenNowJson.encodeToString(migrated)).apply()
+        }
     }
 
     fun update(transform: (AppSettings) -> AppSettings) {
@@ -446,7 +452,7 @@ class SettingsStore(context: Context) {
     }
 
     fun reset() {
-        replace(AppSettings())
+        replace(loadSettingsWithNvstDefault(null))
     }
 }
 

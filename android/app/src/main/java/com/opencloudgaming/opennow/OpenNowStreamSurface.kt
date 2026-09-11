@@ -355,7 +355,7 @@ internal fun StreamScreen(
         NativeStreamInputRouter.setAndroidTvProfile(tvProfile)
         onDispose {
             if (Build.VERSION.SDK_INT >= 26) {
-                decor?.releasePointerCapture()
+                decor?.let(AndroidPointerCapture::release)
             }
             NativeStreamInputRouter.clearUiTouchPassthroughBounds()
             NativeStreamInputRouter.clearStreamPanelTouchPassthroughBounds()
@@ -1698,31 +1698,12 @@ private fun androidNullPointerIcon(view: android.view.View): PointerIcon? =
 
 private fun View.configureAndroidMousePointerCapture(enabled: Boolean, onCaptureInput: () -> Unit = {}, onMotion: (MotionEvent) -> Boolean) {
     if (Build.VERSION.SDK_INT < 26) return
-    if (!enabled) {
-        clearAndroidMousePointerCapture()
-        return
-    }
-    setOnCapturedPointerListener { _, event ->
-        onCaptureInput()
-        onMotion(event)
-    }
-    post {
-        if (isAttachedToWindow && hasWindowFocus() && !hasPointerCapture()) {
-            isFocusable = true
-            isFocusableInTouchMode = true
-            requestFocus()
-            onCaptureInput()
-            runCatching { requestPointerCapture() }
-                .onFailure { error -> NativeInputDiagnostics.add("pointer capture request failed error=${error.javaClass.simpleName}") }
-        }
-    }
+    AndroidPointerCapture.configure(this, enabled, onCaptureInput, onMotion)
 }
 
 private fun View.clearAndroidMousePointerCapture() {
     if (Build.VERSION.SDK_INT < 26) return
-    setOnCapturedPointerListener(null)
-    runCatching { releasePointerCapture() }
-        .onFailure { error -> NativeInputDiagnostics.add("pointer capture release failed error=${error.javaClass.simpleName}") }
+    AndroidPointerCapture.clear(this)
 }
 
 private fun android.view.View.hideAndroidPointerTree() {

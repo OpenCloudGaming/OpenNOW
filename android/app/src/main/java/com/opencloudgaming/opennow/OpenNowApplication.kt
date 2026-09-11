@@ -38,18 +38,18 @@ class OpenNowApplication : Application(), SingletonImageLoader.Factory {
             }
 
         startupScope.launch {
-            val settings = runCatching {
+            runCatching {
                 SettingsStore(this@OpenNowApplication).settings.value.also {
                     // Warm secure auth and run its one-time migration on the same background path.
                     authStore.state.value
                 }
-            }.getOrElse { AppSettings() }
+            }
             startupDataReady.complete(Unit)
             if (isTelevisionDevice()) {
                 delay(TV_BACKGROUND_SERVICE_START_DELAY_MS)
             }
             withContext(Dispatchers.Main) {
-                initializeBackgroundServices(settings)
+                initializeBackgroundServices()
             }
         }
     }
@@ -92,8 +92,7 @@ class OpenNowApplication : Application(), SingletonImageLoader.Factory {
         super.onTerminate()
     }
 
-    private fun initializeBackgroundServices(settings: AppSettings) {
-        OpenNowAnalytics.setup(this, settings)
+    private fun initializeBackgroundServices() {
         AndroidAuthRefreshScheduler.schedule(this)
     }
 

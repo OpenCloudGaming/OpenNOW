@@ -281,52 +281,24 @@ private fun DrawScope.drawTouchDpad(
             // Keep the stroke inside the canvas and reuse this one union for fill, clipping and
             // outline. D-pad presses only invalidate paint; they should not rebuild extra paths.
             val cross = crossPath(borderWidth / 2f)
-            if (colors.dpadFill.alpha > 0f) drawPath(cross, colors.dpadFill)
-
-            val pressedPath = Path()
-            if (up) {
-                pressedPath.addRect(
-                    Rect(
-                        left = (width - armPx) / 2f,
-                        top = 0f,
-                        right = (width + armPx) / 2f,
-                        bottom = center.y,
-                    ),
-                )
+            // Give each direction a disjoint quadrant. Rectangle halves overlap at the
+            // hub on diagonals, and painting over the resting fill compounds its alpha.
+            val corners = listOf(Offset.Zero, Offset(width, 0f), Offset(width, height), Offset(0f, height))
+            val pressedPath = Path().apply {
+                pressedFlags.forEachIndexed { index, pressed ->
+                    if (pressed) {
+                        moveTo(center.x, center.y)
+                        lineTo(corners[index].x, corners[index].y)
+                        val next = corners[(index + 1) % corners.size]
+                        lineTo(next.x, next.y)
+                        close()
+                    }
+                }
             }
-            if (down) {
-                pressedPath.addRect(
-                    Rect(
-                        left = (width - armPx) / 2f,
-                        top = center.y,
-                        right = (width + armPx) / 2f,
-                        bottom = height,
-                    ),
-                )
-            }
-            if (left) {
-                pressedPath.addRect(
-                    Rect(
-                        left = 0f,
-                        top = (height - armPx) / 2f,
-                        right = center.x,
-                        bottom = (height + armPx) / 2f,
-                    ),
-                )
-            }
-            if (right) {
-                pressedPath.addRect(
-                    Rect(
-                        left = center.x,
-                        top = (height - armPx) / 2f,
-                        right = width,
-                        bottom = (height + armPx) / 2f,
-                    ),
-                )
-            }
-            clipPath(cross) {
-                drawPath(pressedPath, colors.pressedFill)
-            }
+            val resting = Path.combine(PathOperation.Difference, cross, pressedPath)
+            val active = Path.combine(PathOperation.Intersect, cross, pressedPath)
+            drawPath(resting, colors.dpadFill)
+            drawPath(active, colors.pressedFill)
             drawPath(cross, border, style = Stroke(width = borderWidth))
         }
 
@@ -426,13 +398,17 @@ private fun DrawScope.drawTouchDpad(
             else -> armDistance
         }
         pressedFlags.forEachIndexed { index, isPressed ->
-            drawDirectionMark(
-                center = Offset(center.x, center.y - markDistance),
-                rotationDegrees = 90f * index,
-                extent = markExtent,
-                color = colors.glyphFor(isPressed),
-                style = form.dpadArrow,
-            )
+            // Rotate the position around the pad hub as well as the arrow itself.
+            // Rotating around the arrow's own center stacks all four into a star.
+            rotate(90f * index, center) {
+                drawDirectionMark(
+                    center = Offset(center.x, center.y - markDistance),
+                    rotationDegrees = 0f,
+                    extent = markExtent,
+                    color = colors.glyphFor(isPressed),
+                    style = form.dpadArrow,
+                )
+            }
         }
     }
 }

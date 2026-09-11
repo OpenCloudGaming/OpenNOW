@@ -169,6 +169,7 @@ internal fun rememberCatalogBackgroundImagePicker(
             currentOnSettingsChange(
                 currentSettings.copy(
                     nerdCatalogBackground = true,
+                    systemWallpaperBackground = false,
                     nerdCatalogBackgroundUri = newUri,
                 ),
             )
@@ -197,6 +198,7 @@ internal fun applyCatalogBackgroundPreset(
     onSettingsChange(
         settings.copy(
             nerdCatalogBackground = true,
+            systemWallpaperBackground = false,
             catalogBackgroundPreset = preset,
             nerdCatalogBackgroundUri = null,
         ),

@@ -125,8 +125,6 @@ private const val DEBUG_EVENT_MESSAGE_LIMIT = 640
 private const val DEBUG_PAYLOAD_LIMIT = 12
 private const val DEBUG_PAYLOAD_BODY_LIMIT = 8_000
 private const val LOGIN_PHASE_GETTING_TOKENS = "Getting sign-in tokens"
-private const val STREAM_RUNTIME_STATS_EVENT_INTERVAL_MS = 30_000L
-private const val SESSION_REPORT_NETWORK_SAMPLE_INTERVAL_MS = 5_000L
 private const val ACTIVE_DIAGNOSTIC_SNAPSHOT_INTERVAL_MS = 10_000L
 private const val IDLE_DIAGNOSTIC_SNAPSHOT_INTERVAL_MS = 60_000L
 
@@ -480,10 +478,15 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     private val authRestoreMutex = Mutex()
     @Volatile
     private var latestStreamRuntimeStats: TimedStreamRuntimeStats? = null
-    private var lastRuntimeStatsEventAtMs: Long = 0L
     private var streamReportLaunchProfile: StreamReportLaunchProfile? = null
     private var streamSessionReportAccumulator: StreamSessionReportAccumulator? = null
-    private var lastSessionReportNetworkSampleAtMs: Long = 0L
+    private val streamRuntimeDiagnosticsSampler = StreamRuntimeDiagnosticsSampler(
+        scope = viewModelScope,
+        readSnapshot = { includeDevice ->
+            if (includeDevice) AndroidRuntimeDiagnostics.snapshot(application)
+            else AndroidRuntimeDiagnostics.networkSnapshot(application)
+        },
+    )
     private var sessionReportFinalizedForStop: Boolean = false
     private var deviceRecommendation: AndroidDeviceRecommendation? = null
     /**
@@ -558,7 +561,6 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     init {
         viewModelScope.launch {
             settingsStore.settings.collect { next ->
-                OpenNowAnalytics.applyOptOut(!next.analyticsSharingEnabled)
                 _state.update { it.copy(settings = next) }
             }
         }
@@ -844,7 +846,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             val recommendation = recommendedAndroidStreamProfile(getApplication(), codecReport)
             deviceRecommendation = recommendation
             val currentSettings = settingsStore.settings.value
-            val recommendedStream = recommendation.stream.withMicrophoneSettingsFrom(currentSettings.stream)
+            val recommendedStream = recommendation.stream.withUserStreamOptionsFrom(currentSettings.stream)
             if (
                 currentSettings.streamPreset == StreamPreset.Recommended &&
                 currentSettings.stream != recommendedStream
@@ -1325,7 +1327,12 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 ?.takeIf { it in setOf(30, 60, 120) }
                 ?.let { fps -> updateStreamSettings { it.copy(fps = fps) } }
             "set_background" -> request.value?.toBooleanStrictOrNull()?.let { enabled ->
-                settingsStore.update { it.copy(nerdCatalogBackground = enabled) }
+                settingsStore.update {
+                    it.copy(
+                        nerdCatalogBackground = enabled,
+                        systemWallpaperBackground = false,
+                    )
+                }
             }
             "set_ui_sounds" -> request.value?.toBooleanStrictOrNull()?.let { enabled ->
                 settingsStore.update { it.copy(controllerUiSounds = enabled) }
@@ -1539,7 +1546,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 loginWithDeviceCode(provider)
             }
                 .onSuccess { session ->
-                    completeLogin(session, loginMethod = "device_code")
+                    completeLogin(session)
                 }
                 .onFailure { error ->
                     if (error is CancellationException) return@onFailure
@@ -1560,7 +1567,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 )
             }
             runCatching { authRepository.loginWithToken(provider, tokenInput) }
-                .onSuccess { session -> completeLogin(session, loginMethod = "token") }
+                .onSuccess { session -> completeLogin(session) }
                 .onFailure { error ->
                     if (error is CancellationException) return@onFailure
                     _state.update {
@@ -1574,7 +1581,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    private suspend fun completeLogin(session: AuthSession, loginMethod: String? = null) {
+    private suspend fun completeLogin(session: AuthSession) {
         _state.update {
             it.copy(
                 authSession = session,
@@ -1587,14 +1594,6 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 loginToolsVisible = false,
             )
         }
-        OpenNowAnalytics.capture(
-            event = "user_logged_in",
-            properties = buildMap {
-                put("provider", session.provider.code)
-                put("membership_tier", session.user.membershipTier)
-                loginMethod?.let { put("login_method", it) }
-            },
-        )
         refreshAfterAuth(session)
     }
 
@@ -1656,8 +1655,6 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     fun logout() {
         viewModelScope.launch {
             pendingActiveSessionLaunch = null
-            OpenNowAnalytics.capture(event = "user_logged_out")
-            OpenNowAnalytics.reset()
             authRepository.logout()
             val nextSession = authStore.activeSession()
             _state.update {
@@ -1759,13 +1756,6 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                         settingsRefreshing = false,
                     )
                 }
-                OpenNowAnalytics.capture(
-                    event = "account_switched",
-                    properties = mapOf(
-                        "provider" to session.provider.code,
-                        "membership_tier" to session.user.membershipTier,
-                    ),
-                )
                 refreshAfterAuth(session)
             } catch (e: Exception) {
                 if (e is CancellationException) throw e
@@ -1817,12 +1807,6 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
 
     fun setCatalogSearch(query: String) {
         _state.update { it.copy(catalogSearch = query, catalogQueryLoading = true) }
-        if (query.isNotBlank()) {
-            OpenNowAnalytics.capture(
-                event = "catalog_searched",
-                properties = mapOf("query" to query),
-            )
-        }
         refreshCatalogDebounced()
     }
 
@@ -1858,19 +1842,11 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun toggleCatalogFilter(filterId: String) {
-        val adding = filterId !in state.value.catalogFilterIds
         val nextFilters = state.value.catalogFilterIds.let { current ->
             if (filterId in current) current - filterId else current + filterId
         }
         _state.update { it.copy(catalogFilterIds = nextFilters, catalogQueryLoading = true) }
         settingsStore.update { it.copy(catalogFilterIds = nextFilters) }
-        OpenNowAnalytics.capture(
-            event = "catalog_filter_applied",
-            properties = mapOf(
-                "filter_id" to filterId,
-                "action" to if (adding) "add" else "remove",
-            ),
-        )
         refreshCatalogDebounced()
     }
 
@@ -1883,17 +1859,6 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     fun selectGame(game: GameInfo) {
         gameDetailsJob?.cancel()
         _state.update { it.copy(selectedGame = game) }
-        // PostHog may flush on release builds. Keep that work off the main thread so the state
-        // update, destination artwork, and activation haptic can all land in the next frame.
-        viewModelScope.launch(Dispatchers.IO) {
-            OpenNowAnalytics.capture(
-                event = "game_selected",
-                properties = mapOf(
-                    "game_id" to game.id,
-                    "game_title" to game.title,
-                ),
-            )
-        }
         if (!shouldHydrateGameDetails(game)) return
         val auth = state.value.authSession ?: return
         val selectedKey = gameTrackingKey(game)
@@ -1972,7 +1937,6 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
 
     fun downloadAndroidUpdate() {
         if (androidUpdateJob?.isActive == true || !state.value.androidUpdate.canDownload) return
-        OpenNowAnalytics.capture(event = "app_update_downloaded")
         androidUpdateJob = viewModelScope.launch {
             appUpdater.downloadUpdate()
         }
@@ -1981,13 +1945,6 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     fun performAndroidUpdatePrimaryAction() {
         val update = state.value.androidUpdate
         if (update.canOpenPlayStore) {
-            OpenNowAnalytics.capture(
-                event = "app_update_opened_play_store",
-                properties = buildMap {
-                    put("current_version_code", update.currentVersionCode)
-                    update.availableVersionCode?.let { put("available_version_code", it) }
-                },
-            )
             appUpdater.openPlayStoreListing()
         } else {
             downloadAndroidUpdate()
@@ -2249,7 +2206,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                     .withoutExperimentalTransportRequests()
             } else {
                 settings.stream.applyingStreamPreset(preset)
-            }).withMicrophoneSettingsFrom(settings.stream)
+            }).withUserStreamOptionsFrom(settings.stream)
             settings.copy(
                 streamPreset = preset,
                 stream = presetStream
@@ -2262,18 +2219,10 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun updateFavorites(gameId: String) {
-        val adding = gameId !in settingsStore.settings.value.favoriteGameIds
         settingsStore.update {
             val next = if (gameId in it.favoriteGameIds) it.favoriteGameIds - gameId else it.favoriteGameIds + gameId
             it.copy(favoriteGameIds = next)
         }
-        OpenNowAnalytics.capture(
-            event = "favorite_toggled",
-            properties = mapOf(
-                "game_id" to gameId,
-                "action" to if (adding) "add" else "remove",
-            ),
-        )
     }
 
     fun setDefaultGameVariant(gameId: String, variantId: String?) {
@@ -2296,13 +2245,6 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     fun continuePastMembershipNotice() {
         val pending = state.value.pendingMembershipNotice ?: return
         _state.update { it.copy(pendingMembershipNotice = null) }
-        OpenNowAnalytics.capture(
-            event = "membership_gate_overridden",
-            properties = mapOf(
-                "game_id" to pending.game.id,
-                "required_plan" to pending.requirement.requiredPlanLabel,
-            ),
-        )
         play(
             game = pending.game,
             streamingBaseUrlOverride = pending.streamingBaseUrlOverride,
@@ -2354,14 +2296,6 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                     "launch",
                     "Membership gate game=${game.title} requires=${requirement.requiredPlanLabel} " +
                         "current=${requirement.currentPlanLabel}",
-                )
-                OpenNowAnalytics.capture(
-                    event = "membership_gate_shown",
-                    properties = mapOf(
-                        "game_id" to game.id,
-                        "required_plan" to requirement.requiredPlanLabel,
-                        "current_plan" to requirement.currentPlanLabel,
-                    ),
                 )
                 _state.update {
                     it.copy(
@@ -2448,16 +2382,6 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 "Starting launch game=${game.title} base=${hostForDebug(baseUrl)} settings=${settings.debugSummary()} override=${streamingBaseUrlOverride != null}",
             )
             recordQueuedGame(game)
-            OpenNowAnalytics.capture(
-                event = "stream_started",
-                properties = mapOf(
-                    "game_id" to game.id,
-                    "game_title" to game.title,
-                    "resolution" to settings.resolution,
-                    "fps" to settings.fps,
-                    "codec" to settings.codec.name,
-                ),
-            )
             _state.update {
                 it.copy(
                     streamStatus = "queue",
@@ -2630,7 +2554,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             initialSettings = initialSettings,
         )
         streamSessionReportAccumulator = null
-        lastSessionReportNetworkSampleAtMs = 0L
+        streamRuntimeDiagnosticsSampler.reset()
         sessionReportFinalizedForStop = false
     }
 
@@ -2646,7 +2570,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             initialSettings = initialSettings,
         ).also { streamReportLaunchProfile = it }
         streamSessionReportAccumulator = StreamSessionReportAccumulator(profile, startedAtMs = nowMs)
-        lastSessionReportNetworkSampleAtMs = 0L
+        streamRuntimeDiagnosticsSampler.reset()
     }
 
     private fun finishSessionReport(nowMs: Long = System.currentTimeMillis()): SessionReport? {
@@ -2663,7 +2587,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         }
         streamSessionReportAccumulator = null
         streamReportLaunchProfile = null
-        lastSessionReportNetworkSampleAtMs = 0L
+        streamRuntimeDiagnosticsSampler.reset()
         return report
     }
 
@@ -2710,13 +2634,6 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                     recordDebugEvent("stream", "No cloud session found to stop")
                 }
             }
-            OpenNowAnalytics.capture(
-                event = "stream_stopped",
-                properties = mapOf(
-                    "game_title" to (state.value.streamGame?.title ?: ""),
-                    "game_id" to (state.value.streamGame?.id ?: ""),
-                ),
-            )
             _state.update {
                 it.copy(
                     streamSession = null,
@@ -3212,16 +3129,6 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         ensureSessionReportAccumulator()
         if (state.value.streamStatus == "streaming") return
         recordDebugEvent("stream", "Native stream connected session=${state.value.streamSession?.shortDebugId().orEmpty()} game=${state.value.streamGame?.title.orEmpty()}")
-        OpenNowAnalytics.capture(
-            event = "stream_connected",
-            properties = mapOf(
-                "game_title" to (state.value.streamGame?.title ?: ""),
-                "game_id" to (state.value.streamGame?.id ?: ""),
-                "resolution" to (state.value.activeStreamSettings?.resolution ?: ""),
-                "fps" to (state.value.activeStreamSettings?.fps ?: 0),
-                "codec" to (state.value.activeStreamSettings?.codec?.name ?: ""),
-            ),
-        )
         _state.update { it.copy(streamStatus = "streaming", launchPhase = "") }
     }
 
@@ -3235,40 +3142,37 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         if (!stats.hasDebugValues()) return
         val now = System.currentTimeMillis()
         ensureSessionReportAccumulator(now)
-        val reportNetwork = if (now - lastSessionReportNetworkSampleAtMs >= SESSION_REPORT_NETWORK_SAMPLE_INTERVAL_MS) {
-            lastSessionReportNetworkSampleAtMs = now
-            AndroidRuntimeDiagnostics.networkSnapshot(getApplication())
-        } else {
-            null
-        }
-        streamSessionReportAccumulator?.record(stats, reportNetwork)
+        val accumulator = streamSessionReportAccumulator
+        // Record every media sample immediately. Binder diagnostics must not delay input/UI work
+        // or reorder the consecutive samples used to detect decoder overload.
+        accumulator?.record(stats)
+        val sessionId = state.value.streamSession?.sessionId
         latestStreamRuntimeStats = TimedStreamRuntimeStats(
             capturedAtMs = now,
-            sessionId = state.value.streamSession?.sessionId,
+            sessionId = sessionId,
             stats = stats,
         )
-        if (now - lastRuntimeStatsEventAtMs >= STREAM_RUNTIME_STATS_EVENT_INTERVAL_MS) {
-            lastRuntimeStatsEventAtMs = now
-            val requestedSettings = streamSettingsBeforeDeviceAdjustment()
-            val transportSettings = state.value.activeStreamSettings ?: requestedSettings
-            recordDebugEvent(
-                "runtime",
-                "stats requestedMaxBitrateMbps=${requestedSettings.maxBitrateMbps} transportMaxBitrateMbps=${transportSettings.maxBitrateMbps} " +
-                    "${stats.debugSummary()} device=${AndroidRuntimeDiagnostics.snapshot(getApplication()).debugSummary()}",
-            )
+        if (accumulator == null || sessionId == null) return
+        streamRuntimeDiagnosticsSampler.sampleIfDue { diagnostics, includeDevice ->
+            // A completed sample belongs only to the session/report that requested it.
+            if (state.value.streamSession?.sessionId != sessionId || streamSessionReportAccumulator !== accumulator) {
+                return@sampleIfDue
+            }
+            accumulator.recordNetwork(diagnostics)
+            if (includeDevice) {
+                val requestedSettings = streamSettingsBeforeDeviceAdjustment()
+                val transportSettings = state.value.activeStreamSettings ?: requestedSettings
+                recordDebugEvent(
+                    "runtime",
+                    "stats requestedMaxBitrateMbps=${requestedSettings.maxBitrateMbps} transportMaxBitrateMbps=${transportSettings.maxBitrateMbps} " +
+                        "${stats.debugSummary()} device=${diagnostics.debugSummary()}",
+                )
+            }
         }
     }
 
     fun markStreamError(message: String) {
         recordDebugEvent("stream", "Native stream error message=${message.take(DEBUG_EVENT_MESSAGE_LIMIT)} session=${state.value.streamSession?.shortDebugId().orEmpty()}")
-        OpenNowAnalytics.capture(
-            event = "stream_error",
-            properties = mapOf(
-                "error_message" to message,
-                "game_title" to (state.value.streamGame?.title ?: ""),
-                "game_id" to (state.value.streamGame?.id ?: ""),
-            ),
-        )
         _state.update { it.copy(error = message, streamStatus = "idle", activeStreamSettings = null, launchPhase = "") }
     }
 
@@ -4363,12 +4267,10 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
      * a session created as GAMEPAD_FRIENDLY has no touchscreen, and will silently drop perfectly
      * well-formed touch packets.
      */
-    private fun appLaunchModeFor(game: GameInfo?, settings: StreamSettings): Int =
-        if (resolveStreamInputModeAtLaunch(game, settings) == StreamInputMode.NativeTouch) {
-            GfnAppLaunchMode.TOUCH_FRIENDLY
-        } else {
-            GfnAppLaunchMode.GAMEPAD_FRIENDLY
-        }
+    private fun appLaunchModeFor(game: GameInfo?, settings: StreamSettings): Int {
+        val nativeTouch = resolveStreamInputModeAtLaunch(game, settings) == StreamInputMode.NativeTouch
+        return if (nativeTouch) GfnAppLaunchMode.TOUCH_FRIENDLY else GfnAppLaunchMode.GAMEPAD_FRIENDLY
+    }
 
     private fun resolveStreamInputModeAtLaunch(game: GameInfo?, settings: StreamSettings): StreamInputMode {
         _state.value.streamInputModeAtLaunch?.let { return it }
@@ -4667,7 +4569,7 @@ private fun Throwable.debugMessage(): String {
 }
 
 private fun StreamSettings.debugSummary(): String =
-    "res=$resolution aspect=$aspectRatio fps=$fps bitrate=$maxBitrateMbps codec=$codec color=${colorQuality.name} hdr=$hdrEnabled l4s=$enableL4S sharp=$streamSharpeningEnabled"
+    "res=$resolution aspect=$aspectRatio fps=$fps bitrate=$maxBitrateMbps codec=$codec color=${colorQuality.name} hdr=$hdrEnabled l4s=$enableL4S nvst=$experimentalNvst sharp=$streamSharpeningEnabled"
 
 private fun StreamRuntimeStats.hasDebugValues(): Boolean =
     bitrateKbps != null ||

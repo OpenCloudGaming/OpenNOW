@@ -28,6 +28,15 @@ class AndroidTvUiBehaviorTest {
     }
 
     @Test
+    fun systemWallpaperIsVisibleOnlyOutsideTheStreamSurface() {
+        val systemWallpaper = AppSettings(systemWallpaperBackground = true)
+
+        assertTrue(shouldShowSystemWallpaperBackground(systemWallpaper, inStream = false))
+        assertFalse(shouldShowSystemWallpaperBackground(systemWallpaper, inStream = true))
+        assertFalse(shouldShowCatalogWallpaper(systemWallpaper))
+    }
+
+    @Test
     fun settingsFocusScrollLeavesRoomBelowTheWholeFocusedCard() {
         assertEquals(
             30f,
@@ -197,6 +206,27 @@ class AndroidTvUiBehaviorTest {
                 controllerFocused = true,
                 borderEffectsEnabled = false,
             ),
+        )
+    }
+
+    @Test
+    fun gameArtworkUsesThinBordersExceptForTheStaticControllerFocusCue() {
+        assertEquals(1f, catalogCardBorderWidthDp(), 0f)
+        assertEquals(
+            3f,
+            catalogCardBorderWidthDp(
+                controllerFocused = true,
+                borderEffectsEnabled = false,
+            ),
+            0f,
+        )
+        assertEquals(
+            1f,
+            catalogCardBorderWidthDp(
+                controllerFocused = true,
+                borderEffectsEnabled = true,
+            ),
+            0f,
         )
     }
 

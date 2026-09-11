@@ -38,8 +38,30 @@ class StreamKeyboardBehaviorTest {
     }
 
     @Test
-    fun editingInTheMiddleReplacesTheRemoteField() {
-        assertEquals(StreamKeyboardEdit.Replace("hallo"), streamKeyboardEdit("hello", "hallo"))
+    fun editingInTheMiddleRewindsOnlyTheChangedSuffix() {
+        assertEquals(StreamKeyboardEdit.ReplaceSuffix(4, "allo"), streamKeyboardEdit("hello", "hallo"))
+    }
+
+    @Test
+    fun imeEmailCorrectionDoesNotSelectAllOrClearTheRemoteField() {
+        assertEquals(
+            StreamKeyboardEdit.ReplaceSuffix(5, "il.com"),
+            streamKeyboardEdit("user@gmal.com", "user@gmail.com"),
+        )
+    }
+
+    @Test
+    fun composingReplacementCountsUnicodeCharactersInsteadOfSurrogateHalves() {
+        assertEquals(StreamKeyboardEdit.ReplaceSuffix(2, "🙃x"), streamKeyboardEdit("a🙂x", "a🙃x"))
+    }
+
+    @Test
+    fun typingAnEmailAndPastingItProduceTheSameRemoteText() {
+        val email = "a.b+test@gmail.com"
+        val typed = email.indices.joinToString("") { index ->
+            (streamKeyboardEdit(email.take(index), email.take(index + 1)) as StreamKeyboardEdit.Append).text
+        }
+        assertEquals(StreamKeyboardEdit.Append(typed), streamKeyboardEdit(null, email))
     }
 
     @Test

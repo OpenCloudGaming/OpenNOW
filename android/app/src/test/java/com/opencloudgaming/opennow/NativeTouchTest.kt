@@ -18,6 +18,88 @@ import org.junit.Test
  */
 class NativeTouchTest {
 
+    // -- Motion stability --------------------------------------------------------------------
+
+    @Test
+    fun movementInsideTapGuardIsSuppressed() {
+        val tracker = NativeTouchMotionTracker()
+        tracker.begin(pointerId = 1, x = 100f, y = 100f)
+
+        assertNull(
+            tracker.move(
+                pointerId = 1,
+                x = 100f,
+                y = 107f,
+                movementScale = 1f,
+                jitterThresholdPx = 8f,
+            ),
+        )
+    }
+
+    @Test
+    fun firstMovementPastTapGuardStartsWithoutAJump() {
+        val tracker = NativeTouchMotionTracker()
+        tracker.begin(pointerId = 1, x = 100f, y = 100f)
+
+        val firstMove = tracker.move(
+            pointerId = 1,
+            x = 100f,
+            y = 109f,
+            movementScale = 1f,
+            jitterThresholdPx = 8f,
+        )
+
+        assertNotNull(firstMove)
+        assertEquals(100f, firstMove!!.x, 0f)
+        assertEquals(101f, firstMove.y, 0.001f)
+    }
+
+    @Test
+    fun committedMovementStaysContinuous() {
+        val tracker = NativeTouchMotionTracker()
+        tracker.begin(pointerId = 1, x = 40f, y = 80f)
+
+        val firstMove = tracker.move(1, 40f, 89f, movementScale = 1f, jitterThresholdPx = 8f)
+        val secondMove = tracker.move(1, 40f, 90f, movementScale = 1f, jitterThresholdPx = 8f)
+
+        assertEquals(81f, firstMove!!.y, 0.001f)
+        assertEquals(82f, secondMove!!.y, 0.001f)
+    }
+
+    @Test
+    fun scaledDragDoesNotSnapBackOnRelease() {
+        val tracker = NativeTouchMotionTracker()
+        tracker.begin(pointerId = 1, x = 20f, y = 20f)
+
+        val move = tracker.move(1, 20f, 38f, movementScale = 0.5f, jitterThresholdPx = 8f)
+        val up = tracker.end(1, 20f, 38f, movementScale = 0.5f, jitterThresholdPx = 8f)
+
+        assertEquals(25f, move!!.y, 0.001f)
+        assertEquals(move.y, up.y, 0.001f)
+    }
+
+    @Test
+    fun tapReleaseRemainsAtTheDownPosition() {
+        val tracker = NativeTouchMotionTracker()
+        tracker.begin(pointerId = 1, x = 50f, y = 60f)
+
+        val up = tracker.end(1, 53f, 64f, movementScale = 1f, jitterThresholdPx = 8f)
+
+        assertEquals(50f, up.x, 0f)
+        assertEquals(60f, up.y, 0f)
+    }
+
+    @Test
+    fun zeroTapGuardPreservesRawMovement() {
+        val tracker = NativeTouchMotionTracker()
+        tracker.begin(pointerId = 1, x = 10f, y = 10f)
+
+        val move = tracker.move(1, 14f, 16f, movementScale = 1f, jitterThresholdPx = 0f)
+
+        assertEquals(14f, move!!.x, 0.001f)
+        assertEquals(16f, move.y, 0.001f)
+    }
+
     // -- Local UI ownership -----------------------------------------------------------------
 
     @Test

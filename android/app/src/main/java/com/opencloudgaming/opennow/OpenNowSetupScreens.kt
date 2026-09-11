@@ -6,6 +6,9 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.SizeTransform
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.BorderStroke
@@ -30,6 +33,7 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -56,6 +60,14 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.expand
+import androidx.compose.ui.semantics.collapse
+import androidx.compose.ui.semantics.ProgressBarRangeInfo
+import androidx.compose.ui.semantics.progressBarRangeInfo
+import androidx.compose.ui.text.style.TextAlign
+import com.opencloudgaming.opennow.ui.theme.LocalReduceMotion
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.focus.FocusRequester
@@ -109,31 +121,18 @@ internal fun SetupFlowScreen(state: OpenNowUiState, viewModel: OpenNowViewModel)
     val controllerNavigationEnabled = tvProfile || rememberPhysicalControllerConnected(enabled = true)
     val focusManager = LocalFocusManager.current
     val primaryFocusRequester = remember { FocusRequester() }
-    val scrollState = rememberScrollState()
+    val reduceMotion = LocalReduceMotion.current
     var step by rememberSaveable { mutableStateOf(SetupStep.Welcome) }
-    var furthestStepOrdinal by rememberSaveable { mutableStateOf(SetupStep.Welcome.ordinal) }
-    val furthestStep = SetupStep.entries[furthestStepOrdinal]
-
-    fun finish(skipped: Boolean) {
-        OpenNowAnalytics.capture(
-            event = "setup_flow_finished",
-            properties = mapOf(
-                "skipped" to skipped,
-                "last_step" to step.name,
-                "furthest_step" to furthestStep.name,
-            ),
-        )
-        viewModel.updateSettings(settings.completingSetupFlow(furthestStep))
+    fun finish() {
+        viewModel.updateSettings(settings.completingSetupFlow())
     }
 
     BackHandler(enabled = step != SetupStep.Welcome) {
         setupStepBefore(step)?.let { step = it }
     }
-    // Land on the primary action, not on "Skip" — which is what a D-pad's first key press would
-    // otherwise reach, since it comes first in the footer. The requester is not attached until the
-    // step has been laid out, so retry rather than betting on a single delay.
+    // Land on the primary action rather than the header's Skip button. The requester attaches once
+    // the step is laid out, so retry rather than betting on a single delay.
     LaunchedEffect(step) {
-        scrollState.scrollTo(0)
         repeat(6) { attempt ->
             if (runCatching { primaryFocusRequester.requestFocus() }.isSuccess) return@LaunchedEffect
             if (attempt < 5) delay(80)
@@ -160,7 +159,10 @@ internal fun SetupFlowScreen(state: OpenNowUiState, viewModel: OpenNowViewModel)
     ) {
         BoxWithConstraints(Modifier.fillMaxSize()) {
             val wideLayout = maxWidth >= 720.dp
-            Box(Modifier.matchParentSize().background(MaterialTheme.colorScheme.background))
+            val systemWallpaperVisible = shouldShowSystemWallpaperBackground(settings, inStream = false)
+            if (!systemWallpaperVisible) {
+                Box(Modifier.matchParentSize().background(MaterialTheme.colorScheme.background))
+            }
             if (settings.nerdCatalogBackground) {
                 CatalogWallpaperBackdrop(
                     settings = settings,
@@ -206,21 +208,30 @@ internal fun SetupFlowScreen(state: OpenNowUiState, viewModel: OpenNowViewModel)
                         .onPreviewKeyEvent { handleVerticalDpadFocusMove(it, focusManager) },
                     verticalArrangement = Arrangement.spacedBy(OpenNowSpacing.md),
                 ) {
-                    SetupProgressBar(step)
+                    SetupProgressBar(step, onSkip = { finish() })
                     Box(Modifier.weight(1f).fillMaxWidth()) {
                         AnimatedContent(
                             targetState = step,
-                            transitionSpec = { fadeIn(tween(160)) togetherWith fadeOut(tween(120)) },
+                            modifier = Modifier.fillMaxSize(),
+                            transitionSpec = {
+                                val direction = if (targetState.ordinal > initialState.ordinal) 1 else -1
+                                if (reduceMotion) {
+                                    fadeIn(tween(0)) togetherWith fadeOut(tween(0))
+                                } else {
+                                    ((fadeIn(tween(220, delayMillis = 60)) +
+                                        slideInHorizontally(tween(280)) { direction * it / 12 }) togetherWith
+                                        (fadeOut(tween(100)) +
+                                            slideOutHorizontally(tween(220)) { -direction * it / 12 }))
+                                        .using(SizeTransform(clip = true))
+                                }
+                            },
                             label = "setup-step",
                         ) { currentStep ->
-                            // The hero centres itself in the viewport, so it must not be inside a
-                            // scroll container — that would measure it against an infinite height
-                            // and vertical centring would resolve to "hug the top".
                             if (currentStep == SetupStep.Welcome) {
                                 SetupWelcomeStep(wideLayout = wideLayout)
                             } else {
                                 Column(
-                                    Modifier.fillMaxSize().verticalScroll(scrollState),
+                                    Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
                                     verticalArrangement = Arrangement.spacedBy(OpenNowSpacing.md),
                                 ) {
                                     SetupStepHeading(currentStep)
@@ -238,11 +249,12 @@ internal fun SetupFlowScreen(state: OpenNowUiState, viewModel: OpenNowViewModel)
                                             tvProfile = tvProfile,
                                             onSettingsChange = viewModel::updateSettings,
                                         )
-                                        SetupStep.Feedback -> SetupFeedbackStep(
-                                            settings = settings,
-                                            onSettingsChange = viewModel::updateSettings,
-                                        )
-                                        else -> SetupReadyStep(settings = settings, tvProfile = tvProfile)
+                                        else -> {
+                                            SetupReadyStep(settings = settings, tvProfile = tvProfile)
+                                            SetupExpandableSection(stringResource(R.string.setup_feedback_reporter_title)) {
+                                                SetupFeedbackStep(settings, viewModel::updateSettings)
+                                            }
+                                        }
                                     }
                                     Spacer(Modifier.height(OpenNowSpacing.sm))
                                 }
@@ -253,14 +265,12 @@ internal fun SetupFlowScreen(state: OpenNowUiState, viewModel: OpenNowViewModel)
                         step = step,
                         primaryFocusRequester = primaryFocusRequester,
                         onBack = { setupStepBefore(step)?.let { step = it } },
-                        onSkip = { finish(skipped = true) },
                         onNext = {
                             val next = setupStepAfter(step)
                             if (next == null) {
-                                finish(skipped = false)
+                                finish()
                             } else {
                                 step = next
-                                if (next.ordinal > furthestStepOrdinal) furthestStepOrdinal = next.ordinal
                             }
                         },
                     )
@@ -271,22 +281,48 @@ internal fun SetupFlowScreen(state: OpenNowUiState, viewModel: OpenNowViewModel)
 }
 
 @Composable
-private fun SetupProgressBar(step: SetupStep) {
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-        setupSteps().forEach { candidate ->
-            Box(
-                Modifier
-                    .weight(1f)
-                    .height(3.dp)
-                    .clip(CircleShape)
-                    .background(
-                        if (candidate.ordinal <= step.ordinal) {
-                            MaterialTheme.colorScheme.primary
-                        } else {
-                            MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.22f)
-                        },
-                    ),
+private fun SetupProgressBar(step: SetupStep, onSkip: () -> Unit) {
+    Column(verticalArrangement = Arrangement.spacedBy(OpenNowSpacing.sm)) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            OpenNowMark(size = 24.dp)
+            Spacer(Modifier.width(OpenNowSpacing.sm))
+            Text(
+                stringResource(R.string.app_name),
+                modifier = Modifier.weight(1f),
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold,
             )
+            Text(
+                "${step.ordinal + 1} / ${setupSteps().size}",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            if (!isFinalSetupStep(step)) {
+                Spacer(Modifier.width(OpenNowSpacing.sm))
+                TextButton(onClick = onSkip) {
+                    Text(stringResource(R.string.setup_action_skip))
+                }
+            }
+        }
+        Row(Modifier.fillMaxWidth().semantics {
+            progressBarRangeInfo = ProgressBarRangeInfo(
+                current = (step.ordinal + 1).toFloat(),
+                range = 0f..setupSteps().size.toFloat(),
+                steps = setupSteps().size - 1,
+            )
+        }, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            setupSteps().forEach { candidate ->
+                Box(
+                    Modifier
+                        .weight(1f)
+                        .height(3.dp)
+                        .clip(CircleShape)
+                        .background(
+                            if (candidate.ordinal <= step.ordinal) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.18f),
+                        ),
+                )
+            }
         }
     }
 }
@@ -296,8 +332,9 @@ private fun SetupStepHeading(step: SetupStep) {
     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
         Text(
             stringResource(step.titleRes),
+            modifier = Modifier.semantics { heading() },
             color = MaterialTheme.colorScheme.onBackground,
-            style = MaterialTheme.typography.headlineSmall,
+            style = MaterialTheme.typography.headlineMedium,
             fontWeight = FontWeight.Bold,
         )
         Text(
@@ -315,62 +352,128 @@ private fun SetupStepFooter(
     step: SetupStep,
     primaryFocusRequester: FocusRequester,
     onBack: () -> Unit,
-    onSkip: () -> Unit,
     onNext: () -> Unit,
 ) {
-    Row(
-        Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(OpenNowSpacing.sm),
-        verticalAlignment = Alignment.CenterVertically,
+    Surface(
+        color = MaterialTheme.colorScheme.surface,
+        shape = RoundedCornerShape(OpenNowRadius.lg),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)),
     ) {
-        if (step != SetupStep.Welcome) {
-            TextButton(onClick = onBack) {
-                Text(stringResource(R.string.setup_action_back))
+        Row(
+            Modifier.fillMaxWidth().padding(OpenNowSpacing.sm),
+            horizontalArrangement = Arrangement.spacedBy(OpenNowSpacing.xs),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            if (step != SetupStep.Welcome) {
+                TextButton(onClick = onBack) {
+                    Text(stringResource(R.string.setup_action_back))
+                }
             }
-        }
-        Spacer(Modifier.weight(1f))
-        if (!isFinalSetupStep(step)) {
-            TextButton(onClick = onSkip) {
-                Text(stringResource(R.string.setup_action_skip), maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Spacer(Modifier.weight(1f))
+            Button(
+                onClick = onNext,
+                modifier = Modifier.widthIn(min = 112.dp).focusRequester(primaryFocusRequester),
+            ) {
+                Text(
+                    stringResource(
+                        when {
+                            step == SetupStep.Welcome -> R.string.setup_action_start
+                            isFinalSetupStep(step) -> R.string.setup_action_finish
+                            else -> R.string.setup_action_next
+                        },
+                    ),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
             }
-        }
-        Button(onClick = onNext, modifier = Modifier.focusRequester(primaryFocusRequester)) {
-            Text(
-                stringResource(
-                    when {
-                        step == SetupStep.Welcome -> R.string.setup_action_start
-                        isFinalSetupStep(step) -> R.string.setup_action_finish
-                        else -> R.string.setup_action_next
-                    },
-                ),
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
         }
     }
 }
 
 @Composable
 private fun SetupWelcomeStep(wideLayout: Boolean) {
-    Column(
-        Modifier.fillMaxSize(),
-        verticalArrangement = Arrangement.Center,
-        horizontalAlignment = Alignment.CenterHorizontally,
-    ) {
-        OpenNowMark(size = if (wideLayout) 88.dp else 64.dp)
-        Spacer(Modifier.height(OpenNowSpacing.lg))
-        Text(
-            stringResource(R.string.app_name),
-            color = MaterialTheme.colorScheme.onBackground,
-            style = MaterialTheme.typography.displaySmall,
-            fontWeight = FontWeight.Bold,
-        )
-        Spacer(Modifier.height(OpenNowSpacing.xs))
-        Text(
-            stringResource(R.string.setup_welcome_tagline),
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            style = MaterialTheme.typography.titleMedium,
-        )
+    // Scroll on short landscape displays and with large text instead of clipping the hero.
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+        Column(
+            Modifier.fillMaxWidth().verticalScroll(rememberScrollState())
+                .heightIn(min = maxHeight).padding(vertical = OpenNowSpacing.lg),
+            verticalArrangement = Arrangement.spacedBy(OpenNowSpacing.lg, Alignment.CenterVertically),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Surface(
+                shape = RoundedCornerShape(32.dp),
+                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.1f),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.2f)),
+            ) {
+                Box(Modifier.padding(24.dp)) {
+                    OpenNowMark(size = if (wideLayout) 80.dp else 64.dp)
+                }
+            }
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(OpenNowSpacing.sm),
+            ) {
+                Text(
+                    stringResource(R.string.app_name),
+                    modifier = Modifier.semantics { heading() },
+                    color = MaterialTheme.colorScheme.onBackground,
+                    style = MaterialTheme.typography.displaySmall,
+                    fontWeight = FontWeight.Bold,
+                )
+                Text(
+                    stringResource(R.string.setup_welcome_tagline),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.titleMedium,
+                    textAlign = TextAlign.Center,
+                )
+            }
+            Surface(
+                modifier = Modifier.widthIn(max = 440.dp).fillMaxWidth(),
+                shape = RoundedCornerShape(OpenNowRadius.lg),
+                color = MaterialTheme.colorScheme.surface,
+            ) {
+                Column(
+                    Modifier.padding(OpenNowSpacing.lg),
+                    verticalArrangement = Arrangement.spacedBy(OpenNowSpacing.md),
+                ) {
+                    listOf(SetupStep.Appearance, SetupStep.Streaming, SetupStep.Play).forEachIndexed { index, next ->
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                "0${index + 1}",
+                                color = MaterialTheme.colorScheme.primary,
+                                style = MaterialTheme.typography.labelLarge,
+                                modifier = Modifier.width(40.dp),
+                            )
+                            Text(stringResource(next.titleRes), style = MaterialTheme.typography.titleMedium)
+                        }
+                    }
+                }
+            }
+            Text(
+                stringResource(R.string.setup_ready_subtitle),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                style = MaterialTheme.typography.bodySmall,
+                textAlign = TextAlign.Center,
+            )
+        }
+    }
+}
+
+@Composable
+private fun SetupExpandableSection(title: String, content: @Composable () -> Unit) {
+    var expanded by rememberSaveable { mutableStateOf(false) }
+    Column(verticalArrangement = Arrangement.spacedBy(OpenNowSpacing.sm)) {
+        TextButton(
+            onClick = { expanded = !expanded },
+            modifier = Modifier.fillMaxWidth().semantics {
+                if (expanded) collapse { expanded = false; true }
+                else expand { expanded = true; true }
+            },
+        ) {
+            Text(title, modifier = Modifier.weight(1f), textAlign = TextAlign.Start)
+            Text(if (expanded) "−" else "+", style = MaterialTheme.typography.titleLarge)
+        }
+        if (expanded) content()
     }
 }
 
@@ -385,6 +488,8 @@ private fun SetupAppearanceStep(state: OpenNowUiState, onSettingsChange: (AppSet
             stringResource(R.string.setup_background_default)
         appBackgroundChoiceFor(settings) == AppBackgroundChoice.Nothing ->
             stringResource(R.string.setup_background_nothing)
+        appBackgroundChoiceFor(settings) == AppBackgroundChoice.SystemWallpaper ->
+            stringResource(R.string.settings_background_system_wallpaper)
         customUri != null -> stringResource(R.string.settings_catalog_background_image_custom)
         else -> catalogBackgroundPresetLabel(settings.catalogBackgroundPreset)
     }
@@ -418,6 +523,19 @@ private fun SetupAppearanceStep(state: OpenNowUiState, onSettingsChange: (AppSet
                     Box(Modifier.matchParentSize().background(MaterialTheme.colorScheme.background))
                     Text(
                         stringResource(R.string.setup_background_nothing),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.labelMedium,
+                    )
+                }
+                SetupTile(
+                    width = tileWidth,
+                    selected = appBackgroundChoiceFor(settings) == AppBackgroundChoice.SystemWallpaper,
+                    onClick = {
+                        onSettingsChange(settings.withAppBackgroundChoice(AppBackgroundChoice.SystemWallpaper))
+                    },
+                ) {
+                    Text(
+                        stringResource(R.string.settings_background_system_wallpaper),
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         style = MaterialTheme.typography.labelMedium,
                     )
@@ -485,75 +603,75 @@ private fun SetupAppearanceStep(state: OpenNowUiState, onSettingsChange: (AppSet
             }
         }
 
-        // Everything below changes the preview above. That is the point of putting them here
-        // rather than leaving them to be discovered in Settings > Interface much later.
-        Column(verticalArrangement = Arrangement.spacedBy(OpenNowSpacing.sm)) {
-            SetupSectionLabel(
-                stringResource(R.string.setup_appearance_layout),
-                stringResource(R.string.setup_appearance_layout_hint),
-            )
-            SettingSwitch(
-                label = stringResource(R.string.setup_appearance_titles),
-                checked = settings.showCardTitles,
-                description = stringResource(R.string.setup_appearance_titles_desc),
-            ) {
-                onSettingsChange(settings.copy(showCardTitles = it))
-            }
-            SettingSwitch(
-                label = stringResource(R.string.setup_appearance_compact),
-                checked = settings.compactGameCards,
-                description = stringResource(R.string.setup_appearance_compact_desc),
-            ) {
-                onSettingsChange(settings.copy(compactGameCards = it))
-            }
-            SettingSwitch(
-                label = stringResource(R.string.setup_appearance_favorite_icon),
-                checked = settings.showFavoriteIconOnGameCards,
-                description = stringResource(R.string.setup_appearance_favorite_icon_desc),
-            ) {
-                onSettingsChange(settings.copy(showFavoriteIconOnGameCards = it))
-            }
-            SettingSwitch(
-                label = stringResource(R.string.setup_appearance_expressive),
-                checked = settings.expressiveUi,
-                description = stringResource(R.string.setup_appearance_expressive_desc),
-            ) {
-                onSettingsChange(settings.copy(expressiveUi = it))
-            }
-            SettingSwitch(
-                label = stringResource(R.string.settings_live_selected_outlines),
-                checked = settings.liveSelectedOutlines,
-                description = stringResource(R.string.settings_live_selected_outlines_desc),
-            ) {
-                onSettingsChange(settings.copy(liveSelectedOutlines = it))
-            }
-            SettingSwitch(
-                label = stringResource(R.string.settings_absolute_cinema_effects),
-                checked = settings.absoluteCinemaEffects,
-                description = stringResource(R.string.settings_absolute_cinema_effects_desc),
-            ) { enabled ->
-                onSettingsChange(
-                    settings.copy(
-                        absoluteCinemaEffects = enabled,
-                        absoluteCinemaEverywhere = settings.absoluteCinemaEverywhere && enabled,
-                    ),
+        SetupExpandableSection(stringResource(R.string.setup_appearance_layout)) {
+            Column(verticalArrangement = Arrangement.spacedBy(OpenNowSpacing.sm)) {
+                SetupSectionLabel(
+                    stringResource(R.string.setup_appearance_layout),
+                    stringResource(R.string.setup_appearance_layout_hint),
                 )
-            }
-            SettingSwitch(
-                label = stringResource(R.string.settings_im_crazy),
-                checked = settings.absoluteCinemaEverywhere,
-                enabled = settings.absoluteCinemaEffects,
-                description = stringResource(R.string.settings_im_crazy_desc),
-                indentLevel = 1,
-            ) {
-                onSettingsChange(settings.copy(absoluteCinemaEverywhere = it))
-            }
-            SettingSwitch(
-                label = stringResource(R.string.setup_appearance_animations),
-                checked = settings.controllerBackgroundAnimations,
-                description = stringResource(R.string.setup_appearance_animations_desc),
-            ) {
-                onSettingsChange(settings.copy(controllerBackgroundAnimations = it))
+                SettingSwitch(
+                    label = stringResource(R.string.setup_appearance_titles),
+                    checked = settings.showCardTitles,
+                    description = stringResource(R.string.setup_appearance_titles_desc),
+                ) {
+                    onSettingsChange(settings.copy(showCardTitles = it))
+                }
+                SettingSwitch(
+                    label = stringResource(R.string.setup_appearance_compact),
+                    checked = settings.compactGameCards,
+                    description = stringResource(R.string.setup_appearance_compact_desc),
+                ) {
+                    onSettingsChange(settings.copy(compactGameCards = it))
+                }
+                SettingSwitch(
+                    label = stringResource(R.string.setup_appearance_favorite_icon),
+                    checked = settings.showFavoriteIconOnGameCards,
+                    description = stringResource(R.string.setup_appearance_favorite_icon_desc),
+                ) {
+                    onSettingsChange(settings.copy(showFavoriteIconOnGameCards = it))
+                }
+                SettingSwitch(
+                    label = stringResource(R.string.setup_appearance_expressive),
+                    checked = settings.expressiveUi,
+                    description = stringResource(R.string.setup_appearance_expressive_desc),
+                ) {
+                    onSettingsChange(settings.copy(expressiveUi = it))
+                }
+                SettingSwitch(
+                    label = stringResource(R.string.settings_live_selected_outlines),
+                    checked = settings.liveSelectedOutlines,
+                    description = stringResource(R.string.settings_live_selected_outlines_desc),
+                ) {
+                    onSettingsChange(settings.copy(liveSelectedOutlines = it))
+                }
+                SettingSwitch(
+                    label = stringResource(R.string.settings_absolute_cinema_effects),
+                    checked = settings.absoluteCinemaEffects,
+                    description = stringResource(R.string.settings_absolute_cinema_effects_desc),
+                ) { enabled ->
+                    onSettingsChange(
+                        settings.copy(
+                            absoluteCinemaEffects = enabled,
+                            absoluteCinemaEverywhere = settings.absoluteCinemaEverywhere && enabled,
+                        ),
+                    )
+                }
+                SettingSwitch(
+                    label = stringResource(R.string.settings_im_crazy),
+                    checked = settings.absoluteCinemaEverywhere,
+                    enabled = settings.absoluteCinemaEffects,
+                    description = stringResource(R.string.settings_im_crazy_desc),
+                    indentLevel = 1,
+                ) {
+                    onSettingsChange(settings.copy(absoluteCinemaEverywhere = it))
+                }
+                SettingSwitch(
+                    label = stringResource(R.string.setup_appearance_animations),
+                    checked = settings.controllerBackgroundAnimations,
+                    description = stringResource(R.string.setup_appearance_animations_desc),
+                ) {
+                    onSettingsChange(settings.copy(controllerBackgroundAnimations = it))
+                }
             }
         }
 
@@ -624,9 +742,13 @@ private fun SetupAppearancePreview(state: OpenNowUiState) {
         Surface(
             modifier = Modifier.fillMaxWidth(),
             shape = windowShape,
-            // Opaque, and outlined: this is meant to read as a screenshot of the app sitting on the
-            // wallpaper, not as another translucent panel belonging to setup.
-            color = MaterialTheme.colorScheme.background,
+            // The system-wallpaper choice is a real preview: this surface becomes transparent and
+            // Android keeps drawing the user's static or live wallpaper underneath it.
+            color = if (settings.systemWallpaperBackground) {
+                Color.Transparent
+            } else {
+                MaterialTheme.colorScheme.background
+            },
             border = BorderStroke(1.dp, MaterialTheme.colorScheme.onBackground.copy(alpha = 0.14f)),
         ) {
             Column(Modifier.fillMaxWidth()) {
@@ -667,9 +789,13 @@ private fun SetupAppearancePreview(state: OpenNowUiState) {
                                             .matchParentSize()
                                             .clip(cardShape)
                                             .then(
-                                                if (selected && !LocalAbsoluteCinemaEffects.current) {
+                                                if (
+                                                    selected &&
+                                                    settings.liveSelectedOutlines &&
+                                                    !LocalAbsoluteCinemaEffects.current
+                                                ) {
                                                     Modifier.border(
-                                                        2.dp,
+                                                        1.dp,
                                                         LocalSelectionTintColor.current,
                                                         cardShape,
                                                     )
@@ -1019,41 +1145,43 @@ private fun SetupPlayStep(
         ) { enabled ->
             onSettingsChange(settings.copy(showStatsOnLaunch = enabled))
         }
-        AnimatedVisibility(visible = settings.showStatsOnLaunch) {
-            Column(verticalArrangement = Arrangement.spacedBy(OpenNowSpacing.sm)) {
-                ChoiceMenuRow(
-                    label = stringResource(R.string.stream_statusbar_appearance),
-                    options = StreamStatsStyle.entries.map { style ->
-                        ChoiceMenuOption(value = style.name, label = style.label)
-                    },
-                    selectedLabel = settings.streamStatsStyle.label,
-                ) { value ->
-                    StreamStatsStyle.entries.firstOrNull { it.name == value }?.let { style ->
-                        onSettingsChange(settings.copy(streamStatsStyle = style))
+        if (settings.showStatsOnLaunch) {
+            SetupExpandableSection(stringResource(R.string.stream_statusbar_items)) {
+                Column(verticalArrangement = Arrangement.spacedBy(OpenNowSpacing.sm)) {
+                    ChoiceMenuRow(
+                        label = stringResource(R.string.stream_statusbar_appearance),
+                        options = StreamStatsStyle.entries.map { style ->
+                            ChoiceMenuOption(value = style.name, label = style.label)
+                        },
+                        selectedLabel = settings.streamStatsStyle.label,
+                    ) { value ->
+                        StreamStatsStyle.entries.firstOrNull { it.name == value }?.let { style ->
+                            onSettingsChange(settings.copy(streamStatsStyle = style))
+                        }
                     }
-                }
-                ChoiceMenuRow(
-                    label = stringResource(R.string.setup_play_status_position),
-                    options = StreamStatsPosition.entries.map { position ->
-                        ChoiceMenuOption(value = position.name, label = position.label)
-                    },
-                    selectedLabel = settings.streamStatsPosition.label,
-                ) { value ->
-                    StreamStatsPosition.entries.firstOrNull { it.name == value }?.let { position ->
-                        onSettingsChange(settings.copy(streamStatsPosition = position))
+                    ChoiceMenuRow(
+                        label = stringResource(R.string.setup_play_status_position),
+                        options = StreamStatsPosition.entries.map { position ->
+                            ChoiceMenuOption(value = position.name, label = position.label)
+                        },
+                        selectedLabel = settings.streamStatsPosition.label,
+                    ) { value ->
+                        StreamStatsPosition.entries.firstOrNull { it.name == value }?.let { position ->
+                            onSettingsChange(settings.copy(streamStatsPosition = position))
+                        }
                     }
+                    SetupSectionLabel(
+                        title = stringResource(R.string.stream_statusbar_items),
+                        value = stringResource(
+                            R.string.setup_play_status_items_selected,
+                            StreamStatusItem.entries.count { it.enabledIn(settings) },
+                        ),
+                    )
+                    SetupStreamStatusItems(
+                        settings = settings,
+                        onSettingsChange = onSettingsChange,
+                    )
                 }
-                SetupSectionLabel(
-                    title = stringResource(R.string.stream_statusbar_items),
-                    value = stringResource(
-                        R.string.setup_play_status_items_selected,
-                        StreamStatusItem.entries.count { it.enabledIn(settings) },
-                    ),
-                )
-                SetupStreamStatusItems(
-                    settings = settings,
-                    onSettingsChange = onSettingsChange,
-                )
             }
         }
     }
@@ -1721,13 +1849,6 @@ private fun SetupFeedbackStep(settings: AppSettings, onSettingsChange: (AppSetti
         ) {
             onSettingsChange(settings.copy(showSessionReportAfterStream = it))
         }
-        SettingSwitch(
-            label = stringResource(R.string.setup_feedback_analytics),
-            checked = settings.analyticsSharingEnabled,
-            description = stringResource(R.string.setup_feedback_analytics_desc),
-        ) { enabled ->
-            onSettingsChange(settings.copy(analyticsConsentAsked = true, analyticsOptOut = !enabled))
-        }
         DiscordCommunityLink(
             summary = stringResource(R.string.discord_community_bug_report_summary),
             containerColor = MaterialTheme.colorScheme.surfaceVariant,
@@ -1742,6 +1863,8 @@ private fun SetupReadyStep(settings: AppSettings, tvProfile: Boolean) {
             stringResource(R.string.setup_background_default)
         appBackgroundChoiceFor(settings) == AppBackgroundChoice.Nothing ->
             stringResource(R.string.setup_background_nothing)
+        appBackgroundChoiceFor(settings) == AppBackgroundChoice.SystemWallpaper ->
+            stringResource(R.string.settings_background_system_wallpaper)
         !settings.nerdCatalogBackgroundUri.isNullOrBlank() ->
             stringResource(R.string.settings_catalog_background_image_custom)
         else -> catalogBackgroundPresetLabel(settings.catalogBackgroundPreset)
@@ -1763,13 +1886,6 @@ private fun SetupReadyStep(settings: AppSettings, tvProfile: Boolean) {
             stringResource(R.string.setup_summary_status),
             if (settings.showStatsOnLaunch) settings.streamStatsPosition.label
             else stringResource(R.string.setup_summary_off),
-        )
-        SetupSummaryRow(
-            stringResource(R.string.setup_feedback_analytics),
-            stringResource(
-                if (settings.analyticsSharingEnabled) R.string.setup_summary_on
-                else R.string.setup_summary_off,
-            ),
         )
     }
 }
@@ -1959,7 +2075,6 @@ private val SetupStep.titleRes: Int
         SetupStep.Appearance -> R.string.setup_appearance_title
         SetupStep.Streaming -> R.string.setup_streaming_title
         SetupStep.Play -> R.string.setup_play_title
-        SetupStep.Feedback -> R.string.setup_feedback_title
         SetupStep.Ready -> R.string.setup_ready_title
     }
 
@@ -1969,6 +2084,5 @@ private val SetupStep.subtitleRes: Int
         SetupStep.Appearance -> R.string.setup_appearance_subtitle
         SetupStep.Streaming -> R.string.setup_streaming_subtitle
         SetupStep.Play -> R.string.setup_play_subtitle
-        SetupStep.Feedback -> R.string.setup_feedback_subtitle
         SetupStep.Ready -> R.string.setup_ready_subtitle
     }

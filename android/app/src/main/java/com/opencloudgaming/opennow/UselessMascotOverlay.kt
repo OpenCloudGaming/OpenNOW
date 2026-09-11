@@ -1,6 +1,9 @@
 package com.opencloudgaming.opennow
 
 import android.os.SystemClock
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -29,6 +32,7 @@ import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
@@ -54,6 +58,12 @@ import kotlin.random.Random
 @Composable
 internal fun UselessMascotOverlay(settings: AppSettings, allowed: Boolean) {
     val activity = LocalMascotActivity.current ?: return
+    val overlayInstance = remember { Any() }
+    DisposableEffect(activity, overlayInstance) {
+        activity.attachOverlay(overlayInstance)
+        onDispose { activity.detachOverlay(overlayInstance) }
+    }
+    if (activity.overlayOwner !== overlayInstance) return
     val enabled = settings.uselessMascotEnabled && allowed
     val foreground = activity.resumed && activity.focused
     val delayMillis = normalizeMascotDelaySeconds(settings.uselessMascotDelaySeconds) * 1_000L
@@ -112,6 +122,11 @@ private fun BouncingMascot() {
         var rotationZ by remember(motion) { mutableFloatStateOf(0f) }
         var messageIndex by remember { mutableIntStateOf(Random.nextInt(messages.size)) }
         var bubbleSize by remember { mutableStateOf(IntSize.Zero) }
+        val bubbleScale = remember { Animatable(1f) }
+        LaunchedEffect(messageIndex) {
+            bubbleScale.snapTo(0.94f)
+            bubbleScale.animateTo(1f, tween(durationMillis = 420, easing = FastOutSlowInEasing))
+        }
         LaunchedEffect(motion) {
             var previousFrame = withFrameNanos { it }
             var nextSpin = previousFrame + 800_000_000L
@@ -166,7 +181,16 @@ private fun BouncingMascot() {
                     val bubbleY = if (above) y - bubbleHeightDp - 10f else y + MASCOT_SIZE_DP + 10f
                     translationX = bubbleX.dp.toPx()
                     translationY = bubbleY.coerceIn(0f, (height - bubbleHeightDp).coerceAtLeast(0f)).dp.toPx()
+                    scaleX = bubbleScale.value
+                    scaleY = bubbleScale.value
                 }
+                .shadow(
+                    elevation = 8.dp,
+                    shape = bubbleShape,
+                    clip = false,
+                    ambientColor = Color(0x3328D86E),
+                    spotColor = Color(0x5528D86E),
+                )
                 .drawBehind {
                     val above = y.dp.toPx() >= size.height + 12.dp.toPx()
                     val edgeY = if (above) size.height else 0f

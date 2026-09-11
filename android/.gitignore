@@ -6,3 +6,4 @@ captures/
 *.iml
 app/build/
 app/release/
+.kotlin/

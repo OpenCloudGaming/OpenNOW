@@ -6,6 +6,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import kotlin.math.hypot
 import kotlin.math.sign
 import kotlin.random.Random
 
@@ -13,19 +14,21 @@ class MascotMotionTest {
     @Test
     fun eachEdgeAndCornerReflectsInward() {
         val random = Random(42)
+        val minX = mascotMinX(200f)
+        val maxX = mascotMaxX(200f)
         val cases = listOf(
-            listOf(0f, 50f, -300f, 200f, 1f, 1f),
-            listOf(155f, 50f, 300f, 200f, -1f, 1f),
+            listOf(minX, 50f, -300f, 200f, 1f, 1f),
+            listOf(maxX, 50f, 300f, 200f, -1f, 1f),
             listOf(50f, 0f, 300f, -200f, 1f, 1f),
             listOf(50f, 155f, 300f, 200f, 1f, -1f),
-            listOf(155f, 155f, 300f, 200f, -1f, -1f),
+            listOf(maxX, 155f, 300f, 200f, -1f, -1f),
         )
         cases.forEach { values ->
             val motion = MascotMotion(values[0], values[1], values[2], values[3])
             assertTrue(motion.advance(200f, 200f, 0.016f, random))
             assertEquals(values[4], sign(motion.vx))
             assertEquals(values[5], sign(motion.vy))
-            assertTrue(motion.x in 0f..155f && motion.y in 0f..155f)
+            assertTrue(motion.x in minX..maxX && motion.y in 0f..155f)
         }
     }
 
@@ -37,9 +40,43 @@ class MascotMotionTest {
             val width = if (index % 300 < 10) 30f else 500f
             val height = if (index % 300 < 10) 20f else 300f
             motion.advance(width, height, if (index % 100 == 0) 20f else 1f / 60f, random)
-            assertTrue(motion.x in 0f..(width - MASCOT_SIZE_DP).coerceAtLeast(0f))
+            assertTrue(motion.x in mascotMinX(width)..mascotMaxX(width))
             assertTrue(motion.y in 0f..(height - MASCOT_SIZE_DP).coerceAtLeast(0f))
             assertTrue(motion.vx.isFinite() && motion.vy.isFinite())
+        }
+    }
+
+    @Test
+    fun horizontalBounceHoldsMascotPartlyVisibleBeforeReturning() {
+        val width = 200f
+        val maxX = mascotMaxX(width)
+        val motion = MascotMotion(maxX - 1f, 80f, 300f, 100f)
+
+        assertTrue(motion.advance(width, 200f, 0.016f, Random(42)))
+        assertEquals(maxX, motion.x, 0f)
+        assertEquals(MASCOT_SIDE_PEEK_VISIBLE_DP, width - motion.x, 0f)
+        assertTrue(motion.isSidePeeking)
+
+        val heldY = motion.y
+        repeat(13) {
+            assertFalse(motion.advance(width, 200f, 0.05f, Random(42)))
+            assertEquals(maxX, motion.x, 0f)
+            assertEquals(heldY, motion.y, 0f)
+        }
+        assertFalse(motion.isSidePeeking)
+        motion.advance(width, 200f, 0.016f, Random(42))
+        assertTrue(motion.x < maxX)
+    }
+
+    @Test
+    fun randomizedMotionUsesTheSlowerSpeedRange() {
+        val motion = MascotMotion(0f, 0f, 0f, 0f)
+        val random = Random(42)
+        repeat(1_000) {
+            motion.randomizeVelocity(random)
+            val speed = hypot(motion.vx, motion.vy)
+            assertTrue(speed >= MASCOT_MIN_SPEED_DP_PER_SECOND)
+            assertTrue(speed <= MASCOT_MAX_SPEED_DP_PER_SECOND + 0.001f)
         }
     }
 

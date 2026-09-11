@@ -7,6 +7,57 @@ import org.junit.Test
 
 class SdpToolsTest {
     @Test
+    fun codecSelectionPreservesOfferedFlexfecAndMatchingRetransmissionForEveryCodec() {
+        for ((codec, payload) in listOf(VideoCodec.H264 to 99, VideoCodec.H265 to 103, VideoCodec.AV1 to 96)) {
+            for (lineEnding in listOf("\n", "\r\n")) {
+                val audio = "m=audio 47998 UDP/TLS/RTP/SAVPF 111${lineEnding}a=rtpmap:111 opus/48000/2"
+                val application = "m=application 47998 UDP/DTLS/SCTP webrtc-datachannel"
+                val offer = listOf(
+                    audio,
+                    "m=video 47998 UDP/TLS/RTP/SAVPF 99 100 103 104 96 97 98",
+                    "a=rtpmap:99 H264/90000",
+                    "a=rtpmap:100 rtx/90000",
+                    "a=fmtp:100 apt=99",
+                    "a=rtpmap:103 H265/90000",
+                    "a=fmtp:103 profile-id=1;level-id=153;tier-flag=0",
+                    "a=rtpmap:104 rtx/90000",
+                    "a=fmtp:104 apt=103",
+                    "a=rtpmap:96 AV1/90000",
+                    "a=rtpmap:97 rtx/90000",
+                    "a=fmtp:97 apt=96",
+                    "a=rtpmap:98 flexfec-03/90000",
+                    "a=fmtp:98 repair-window=10000000",
+                    "a=rtcp-fb:98 transport-cc",
+                    "a=rtcp-fb:* nack",
+                    "a=ssrc-group:FEC-FR 1234 5678",
+                    "a=ssrc:1234 cname:video",
+                    "a=ssrc:5678 cname:video",
+                    application,
+                ).joinToString(lineEnding)
+
+                val filtered = SdpTools.preferCodec(offer, codec)
+                val lines = filtered.split(lineEnding)
+                assertTrue(lines.contains("m=video 47998 UDP/TLS/RTP/SAVPF $payload ${payload + 1} 98"))
+                assertTrue(lines.contains("a=fmtp:${payload + 1} apt=$payload"))
+                assertTrue(lines.contains("a=rtpmap:98 flexfec-03/90000"))
+                assertTrue(lines.contains("a=fmtp:98 repair-window=10000000"))
+                assertTrue(lines.contains("a=rtcp-fb:98 transport-cc"))
+                assertTrue(lines.contains("a=rtcp-fb:* nack"))
+                assertTrue(lines.contains("a=ssrc-group:FEC-FR 1234 5678"))
+                assertTrue(lines.contains("a=ssrc:5678 cname:video"))
+                assertTrue(filtered.startsWith(audio + lineEnding))
+                assertTrue(filtered.endsWith(application))
+                for (other in listOf(99, 103, 96).filter { it != payload }) {
+                    assertFalse(filtered.contains("a=rtpmap:$other "))
+                    assertFalse(filtered.contains("a=rtpmap:${other + 1} "))
+                    assertFalse(filtered.contains("a=fmtp:${other + 1} "))
+                }
+                assertEquals(filtered, SdpTools.preferCodec(filtered, codec))
+            }
+        }
+    }
+
+    @Test
     fun partiallyReliableGamepadMaskDefaultsToAllControllerSlots() {
         assertEquals(0x0f, SdpTools.parsePartiallyReliableGamepadMask("v=0\n"))
     }

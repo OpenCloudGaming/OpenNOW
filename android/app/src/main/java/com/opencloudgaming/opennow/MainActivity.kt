@@ -67,6 +67,7 @@ class MainActivity : ComponentActivity() {
     private var phoneStreamOrientationLocked = false
     private var streamPictureInPictureReady = false
     private var streamPictureInPictureAspectRatio = Rational(16, 9)
+    private var systemWallpaperWindowVisible: Boolean? = null
     private var startupDataReady = false
     private var pendingExternalLaunchIntent: Intent? = null
     private var pendingLocalNetworkIntent: Intent? = null
@@ -124,6 +125,12 @@ class MainActivity : ComponentActivity() {
                 queueStatusNotifier.update(state)
                 streamKeepAliveNotifier.update(state)
                 val streamActive = state.page == AppPage.Stream && state.streamStatus != "idle"
+                applySystemWallpaperWindow(
+                    shouldShowSystemWallpaperBackground(
+                        settings = state.settings,
+                        inStream = state.page == AppPage.Stream,
+                    ),
+                )
                 applyPhoneStreamOrientationLock(
                     shouldLockPhoneStreamLandscape(state, resources.configuration.smallestScreenWidthDp),
                 )
@@ -136,6 +143,23 @@ class MainActivity : ComponentActivity() {
                 applyStreamSystemUi(streamActive)
                 applyStreamDisplayRefreshRate(streamActive, state.activeStreamSettings?.fps ?: state.settings.stream.fps)
             }
+        }
+    }
+
+    /**
+     * Lets Android's wallpaper service remain the owner of static, live, and motion wallpapers.
+     * Copying a wallpaper bitmap here would freeze live/4D effects and can consume significant
+     * memory, so OpenNOW instead makes only its app-shell window transparent. The theme keeps the
+     * window surface transparent from creation; changing its pixel format after Compose has attached
+     * does not reliably recreate the surface on OEM Android builds.
+     */
+    private fun applySystemWallpaperWindow(visible: Boolean) {
+        if (systemWallpaperWindowVisible == visible) return
+        systemWallpaperWindowVisible = visible
+        if (visible) {
+            window.addFlags(WindowManager.LayoutParams.FLAG_SHOW_WALLPAPER)
+        } else {
+            window.clearFlags(WindowManager.LayoutParams.FLAG_SHOW_WALLPAPER)
         }
     }
 
@@ -286,7 +310,7 @@ class MainActivity : ComponentActivity() {
                 streamActive = streamSystemUiActive,
                 captureEnabled = NativeStreamInputRouter.isExternalMousePointerCaptureEnabled(),
                 windowFocused = decorView.hasWindowFocus(),
-                hasPointerCapture = decorView.hasPointerCapture(),
+                hasPointerCapture = AndroidPointerCapture.hasCapture(decorView),
                 mouseLikePointer = true,
             ) || externalMousePointerCaptureRequestPending
         ) {
@@ -305,7 +329,7 @@ class MainActivity : ComponentActivity() {
                     streamActive = streamSystemUiActive,
                     captureEnabled = NativeStreamInputRouter.isExternalMousePointerCaptureEnabled(),
                     windowFocused = decorView.hasWindowFocus(),
-                    hasPointerCapture = decorView.hasPointerCapture(),
+                    hasPointerCapture = AndroidPointerCapture.hasCapture(decorView),
                     mouseLikePointer = true,
                 )
             ) {
@@ -316,8 +340,8 @@ class MainActivity : ComponentActivity() {
             decorView.requestFocus()
             // Compose/SurfaceView can move focus to a descendant after capture starts. Refresh the
             // listener across the current tree so the focused child keeps forwarding deltas.
-            decorView.applyCapturedPointerListenerRecursive(streamCapturedPointerListener)
-            runCatching { decorView.requestPointerCapture() }
+            AndroidPointerCapture.installRecursively(decorView, ::dispatchCapturedStreamPointer)
+            runCatching { AndroidPointerCapture.request(decorView) }
                 .onSuccess {
                     NativeInputDiagnostics.addRetained(
                         key = "mouse.pointer-capture",
@@ -439,11 +463,13 @@ class MainActivity : ComponentActivity() {
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val decorView = window.decorView
-            decorView.applyCapturedPointerListenerRecursive(
-                if (active) streamCapturedPointerListener else null,
-            )
+            if (active) {
+                AndroidPointerCapture.installRecursively(decorView, ::dispatchCapturedStreamPointer)
+            } else {
+                AndroidPointerCapture.clearRecursively(decorView)
+            }
             if (!active) {
-                runCatching { decorView.releasePointerCapture() }
+                runCatching { AndroidPointerCapture.release(decorView) }
             }
         }
 
@@ -469,10 +495,6 @@ class MainActivity : ComponentActivity() {
         }
         enforceStreamSystemUiFromInput()
         return NativeStreamInputRouter.dispatchMotion(event)
-    }
-
-    private val streamCapturedPointerListener = View.OnCapturedPointerListener { _, event ->
-        dispatchCapturedStreamPointer(event)
     }
 
     /** Reapplies only immersive bars; pointer-icon traversal and window flags are state changes. */
@@ -781,16 +803,6 @@ class MainActivity : ComponentActivity() {
         if (this is ViewGroup) {
             for (index in 0 until childCount) {
                 getChildAt(index).applyPointerIconRecursive(icon)
-            }
-        }
-    }
-
-    private fun View.applyCapturedPointerListenerRecursive(listener: View.OnCapturedPointerListener?) {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
-        setOnCapturedPointerListener(listener)
-        if (this is ViewGroup) {
-            for (index in 0 until childCount) {
-                getChildAt(index).applyCapturedPointerListenerRecursive(listener)
             }
         }
     }

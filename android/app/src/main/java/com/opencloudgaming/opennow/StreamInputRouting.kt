@@ -226,11 +226,7 @@ object NativeStreamInputRouter {
     @Volatile
     private var nativeTouchEnabled = false
     private val touchSlots = TouchSlotAllocator()
-    /**
-     * Tracks the initial DOWN position per pointer ID for jitter guard in native touch mode.
-     * Entries are added on DOWN and removed on UP/CANCEL.
-     */
-    private val nativeTouchDownPoints = mutableMapOf<Int, Pair<Float, Float>>()
+    private val nativeTouchMotionTracker = NativeTouchMotionTracker()
     /** Native touch settings synced from [AndroidTouchSettings]. */
     @Volatile private var nativeTouchScrollScale: Float = 1.0f
     @Volatile private var nativeTouchJitterThresholdPx: Float = 0f
@@ -258,7 +254,6 @@ object NativeStreamInputRouter {
         client?.releasePhysicalInputForLifecycle(reason)
         touchMouseState.reset(client)
         releaseAllNativeTouches()
-        nativeTouchDownPoints.clear()
         nativeUiTouchRouting.endPointerGesture()
     }
 
@@ -279,7 +274,6 @@ object NativeStreamInputRouter {
         nativeTouchEnabled = enabled
         // Leaving the mode mid-gesture would otherwise strand whatever fingers are down.
         releaseAllNativeTouches()
-        nativeTouchDownPoints.clear()
         nativeUiTouchRouting.endPointerGesture()
         touchMouseState.reset(client)
     }
@@ -369,7 +363,6 @@ object NativeStreamInputRouter {
             // host will not receive that finger's eventual UP once UI routing takes over, so cancel
             // it at the transition instead of leaving a stuck press in the game.
             releaseAllNativeTouches()
-            nativeTouchDownPoints.clear()
             touchMouseState.reset(client)
             client?.releasePhysicalInputForLifecycle("stream-ui-opened")
         }
@@ -569,64 +562,45 @@ object NativeStreamInputRouter {
         val scrollScale = nativeTouchScrollScale.coerceIn(0.25f, 2.0f)
         val jitterThresholdPx = nativeTouchJitterThresholdPx.coerceAtLeast(0f)
 
+        var hasGameTouchPointer = false
         val pointers = indices.mapNotNull { index ->
             if (index !in 0 until event.pointerCount) return@mapNotNull null
             val pointerId = event.getPointerId(index)
             // Fingers on our own chrome belong to the overlay, not the game.
             if (nativeUiTouchRouting.ownsPointer(pointerId)) return@mapNotNull null
+            hasGameTouchPointer = true
 
             val rawX = event.getX(index)
             val rawY = event.getY(index)
 
-            when (phase) {
-                TouchPhase.DOWN -> {
-                    // Record the starting position for jitter guard.
-                    nativeTouchDownPoints[pointerId] = rawX to rawY
-                }
-                TouchPhase.MOVE -> {
-                    val down = nativeTouchDownPoints[pointerId]
-                    if (down != null && jitterThresholdPx > 0f) {
-                        val dx = rawX - down.first
-                        val dy = rawY - down.second
-                        val distance = kotlin.math.sqrt(dx * dx + dy * dy)
-                        // Suppress MOVE events until the finger has moved far enough from its
-                        // initial touch point. This eliminates sensor jitter being interpreted
-                        // as a micro-swipe that triggers a double-click or unintended scroll.
-                        if (distance < jitterThresholdPx) return@mapNotNull null
-                    }
-                }
-                TouchPhase.UP, TouchPhase.CANCEL -> {
-                    nativeTouchDownPoints.remove(pointerId)
-                }
+            val stabilized = when (phase) {
+                TouchPhase.DOWN -> nativeTouchMotionTracker.begin(pointerId, rawX, rawY)
+                TouchPhase.MOVE -> nativeTouchMotionTracker.move(
+                    pointerId = pointerId,
+                    x = rawX,
+                    y = rawY,
+                    movementScale = scrollScale,
+                    jitterThresholdPx = jitterThresholdPx,
+                ) ?: return@mapNotNull null
+                TouchPhase.UP, TouchPhase.CANCEL -> nativeTouchMotionTracker.end(
+                    pointerId = pointerId,
+                    x = rawX,
+                    y = rawY,
+                    movementScale = scrollScale,
+                    jitterThresholdPx = jitterThresholdPx,
+                )
+                else -> return@mapNotNull null
             }
 
-            // Apply scroll-scale to MOVE positions by interpolating from the DOWN point.
-            // This scales the apparent velocity of gesture without clamping coordinates.
-            val scaledX: Float
-            val scaledY: Float
-            if (phase == TouchPhase.MOVE && scrollScale != 1.0f) {
-                val down = nativeTouchDownPoints[pointerId]
-                if (down != null) {
-                    scaledX = down.first + (rawX - down.first) * scrollScale
-                    scaledY = down.second + (rawY - down.second) * scrollScale
-                } else {
-                    scaledX = rawX
-                    scaledY = rawY
-                }
-            } else {
-                scaledX = rawX
-                scaledY = rawY
-            }
-
-            TouchPointerSample(
-                pointerId = pointerId,
-                x = scaledX,
-                y = scaledY,
+            stabilized.copy(
                 radiusX = event.getTouchMajor(index) / 2f,
                 radiusY = event.getTouchMinor(index) / 2f,
             )
         }
-        if (pointers.isEmpty()) return false
+        // A MOVE inside the tap guard deliberately emits no packet, but the native-touch path
+        // still owns that finger. Report it handled so Activity.dispatchTouchEvent does not offer
+        // the middle of an already-captured gesture to Compose and then dispatch it here again.
+        if (pointers.isEmpty()) return hasGameTouchPointer
 
         val settingsResolution = streamResolutionPixels(client.settings)
         val decodedResolution = decodedStreamResolution
@@ -667,6 +641,7 @@ object NativeStreamInputRouter {
             if (records.isNotEmpty()) current.sendNativeTouch(records)
         }
         touchSlots.clear()
+        nativeTouchMotionTracker.clear()
     }
 
     fun dispatchExternalMouseTouch(event: MotionEvent, width: Int, height: Int): Boolean {
@@ -1292,7 +1267,7 @@ internal data class GamepadRumbleCommand(
 )
 
 internal object HapticsPacketParser {
-    fun parse(bytes: ByteArray): GamepadRumbleCommand? {
+    fun parse(bytes: ByteArray, controllerBase: Int = 6): GamepadRumbleCommand? {
         if (bytes.size < 2) return null
         val view = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
         val firstWord = view.getShort(0).toInt() and 0xffff
@@ -1301,7 +1276,7 @@ internal object HapticsPacketParser {
         }
 
         return when (firstWord and 0xff) {
-            WRAPPER_SINGLE_EVENT -> parseSubMessage(view, 1)
+            WRAPPER_SINGLE_EVENT -> parseSubMessage(view, 1, controllerBase)
             WRAPPER_BATCHED_EVENT,
             WRAPPER_LEGACY_INPUT,
             WRAPPER_TIMESTAMPED_SINGLE,
@@ -1312,12 +1287,12 @@ internal object HapticsPacketParser {
         }
     }
 
-    private fun parseSubMessage(view: ByteBuffer, offset: Int): GamepadRumbleCommand? {
+    private fun parseSubMessage(view: ByteBuffer, offset: Int, controllerBase: Int): GamepadRumbleCommand? {
         if (offset < 0 || offset + 4 > view.limit()) return null
         val type = view.getInt(offset)
         return when (type) {
             LEGACY_HAPTIC_SUBMESSAGE_TYPE -> parseLegacy(view, offset + 4)
-            OC_HAPTIC_SUBMESSAGE_TYPE -> parseOc(view, offset + 4)
+            OC_HAPTIC_SUBMESSAGE_TYPE -> parseOc(view, offset + 4, controllerBase)
             else -> null
         }
     }
@@ -1335,15 +1310,15 @@ internal object HapticsPacketParser {
         )
     }
 
-    private fun parseOc(view: ByteBuffer, offset: Int): GamepadRumbleCommand? {
+    private fun parseOc(view: ByteBuffer, offset: Int, controllerBase: Int): GamepadRumbleCommand? {
         if (offset < 0 || offset + 9 > view.limit()) return null
         val controllerByte = view.get(offset).toInt() and 0xff
-        if (controllerByte !in 6 until 10) return null
+        if (controllerByte !in controllerBase until controllerBase + 4) return null
         val reportKind = view.get(offset + 3).toInt() and 0xff
         val flags = view.get(offset + 4).toInt() and 0xff
         if (reportKind != 5 || (flags and 0xfe) != 0) return null
         return GamepadRumbleCommand(
-            controllerId = controllerByte - 6,
+            controllerId = controllerByte - controllerBase,
             weakMagnitude = (view.get(offset + 7).toInt() and 0xff) shl 8,
             strongMagnitude = (view.get(offset + 8).toInt() and 0xff) shl 8,
         )

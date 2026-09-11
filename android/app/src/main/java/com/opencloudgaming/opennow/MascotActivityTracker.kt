@@ -14,6 +14,9 @@ internal val LocalMascotActivity = staticCompositionLocalOf<MascotActivityTracke
 
 /** Observes Activity input without consuming it or publishing every move into Compose state. */
 internal class MascotActivityTracker {
+    private val overlayInstances = LinkedHashSet<Any>()
+    var overlayOwner: Any? by mutableStateOf(null)
+        private set
     var enabled = false
     var visible by mutableStateOf(false)
     var resumed by mutableStateOf(false)
@@ -26,6 +29,20 @@ internal class MascotActivityTracker {
     private var touching = false
     private var joystickActive = false
     val inputHeld: Boolean get() = touching || joystickActive || heldKeys.isNotEmpty()
+
+    /**
+     * Keeps transient duplicate compositions (for example, during a screen transition) from
+     * rendering independent mascots. Ownership passes to the next live composition when needed.
+     */
+    fun attachOverlay(instance: Any) {
+        if (!overlayInstances.add(instance)) return
+        if (overlayOwner == null) overlayOwner = instance
+    }
+
+    fun detachOverlay(instance: Any) {
+        if (!overlayInstances.remove(instance)) return
+        if (overlayOwner === instance) overlayOwner = overlayInstances.firstOrNull()
+    }
 
     fun recordInput() {
         lastInputMillis = SystemClock.uptimeMillis()

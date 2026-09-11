@@ -249,7 +249,8 @@ internal class StreamSessionReportAccumulator(
         )
     }
 
-    private fun recordNetwork(network: AndroidRuntimeDiagnosticsSnapshot) {
+    /** Records a completed service query without advancing media counts or overload detection. */
+    fun recordNetwork(network: AndroidRuntimeDiagnosticsSnapshot) {
         networkKindCounts[network.networkKind] = (networkKindCounts[network.networkKind] ?: 0) + 1
         if (network.networkKind == AndroidNetworkKind.Wifi) {
             wifiBandCounts[network.wifiBand] = (wifiBandCounts[network.wifiBand] ?: 0) + 1

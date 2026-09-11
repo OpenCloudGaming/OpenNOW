@@ -1,0 +1,48 @@
+[workspace]
+members = [".", "crates/opennow-streamer-protocol", "crates/opennow-streamer-transport"]
+resolver = "2"
+[workspace.package]
+version = "0.2.0"
+edition = "2024"
+license = "MIT"
+rust-version = "1.85"
+[workspace.dependencies]
+aes = "0.8"
+base64 = "0.22"
+ctr = "0.9"
+crc32fast = "1"
+getrandom = "0.3"
+ghash = "0.5"
+hmac = "0.12"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha1 = "0.10"
+socket2 = { version = "0.5", features = ["all"] }
+str0m = { version = "0.23", default-features = false }
+subtle = "2"
+thiserror = "2"
+rustls = { version = "0.23", default-features = false, features = ["std", "ring"] }
+tungstenite = { version = "0.28", default-features = false, features = ["handshake", "rustls-tls-webpki-roots"] }
+
+[package]
+name = "opennow-nvst-android"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+[lib]
+name = "opennow_nvst"
+crate-type = ["cdylib", "rlib"]
+[dependencies]
+opus = "0.3.1"
+audiopus_sys = { version = "0.2.2", features = ["static"] }
+opennow-streamer-protocol = { path = "crates/opennow-streamer-protocol" }
+opennow-streamer-transport = { path = "crates/opennow-streamer-transport" }
+jni = "0.21"
+serde_json.workspace = true
+getrandom.workspace = true
+rustls.workspace = true
+tungstenite.workspace = true
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

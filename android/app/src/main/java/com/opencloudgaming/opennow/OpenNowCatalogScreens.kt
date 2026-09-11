@@ -1246,7 +1246,7 @@ private fun StoreHeroSkeleton(
                 .fillMaxWidth()
                 .aspectRatio(heroAspectRatio(tvProfile, landscapeLayout))
                 .border(
-                    2.dp,
+                    1.dp,
                     storeHeroBorderColor(LocalGameCardBordersEnabled.current),
                     shape,
                 ),
@@ -1368,7 +1368,7 @@ private fun StoreRailGameCardSkeleton(
             .padding(vertical = if (tvProfile) CATALOG_CONTROLLER_FOCUS_INSET else 0.dp)
             .aspectRatio(if (portraitCard) GAME_BOX_ART_ASPECT_RATIO else 1f)
             .border(
-                2.dp,
+                1.dp,
                 catalogCardBorderColor(
                     LocalActiveSelectionColor.current,
                     LocalGameCardBordersEnabled.current,
@@ -2167,7 +2167,10 @@ private fun StoreComingNextCarousel(
                         .onFocusChanged { focused = it.isFocused || it.hasFocus }
                         .focusMoveHaptics()
                         .border(
-                            width = if (focused) 3.dp else 2.dp,
+                            width = catalogCardBorderWidthDp(
+                                controllerFocused = enhancedControllerFocus,
+                                borderEffectsEnabled = LocalAbsoluteCinemaEffects.current,
+                            ).dp,
                             color = storeHeroBorderColor(
                                 gameBorderEnabled = LocalGameCardBordersEnabled.current,
                                 controllerFocused = enhancedControllerFocus,
@@ -2509,7 +2512,10 @@ private fun StoreRailGameCard(
                 .onFocusChanged { focused = it.isFocused || it.hasFocus }
                 .focusMoveHaptics()
                 .border(
-                    width = if (focused) 3.dp else 2.dp,
+                    width = catalogCardBorderWidthDp(
+                        controllerFocused = enhancedControllerFocus,
+                        borderEffectsEnabled = LocalAbsoluteCinemaEffects.current,
+                    ).dp,
                     color = catalogCardBorderColor(
                         selectionColor = LocalSelectionTintColor.current,
                         gameBorderEnabled = LocalGameCardBordersEnabled.current,
@@ -3052,7 +3058,10 @@ private fun GameCard(
                     .onFocusChanged { focused = it.isFocused || it.hasFocus }
                     .focusMoveHaptics()
                     .border(
-                        width = if (focused) 3.dp else 2.dp,
+                        width = catalogCardBorderWidthDp(
+                            controllerFocused = enhancedControllerFocus,
+                            borderEffectsEnabled = LocalAbsoluteCinemaEffects.current,
+                        ).dp,
                         color = catalogCardBorderColor(
                             selectionColor = LocalSelectionTintColor.current,
                             gameBorderEnabled = LocalGameCardBordersEnabled.current,
@@ -3615,7 +3624,7 @@ private fun GameDetailsLandscapeContent(
                     .fillMaxSize()
                     .gameDetailsArtworkEntrance(game.id)
                     .border(
-                        width = if (gameFocused) 3.dp else 1.dp,
+                        width = 1.dp,
                         color = catalogCardBorderColor(
                             LocalActiveSelectionColor.current,
                             LocalGameCardBordersEnabled.current,
@@ -3833,7 +3842,7 @@ private fun GameDetailsScrollableContent(
                             .fillMaxSize()
                             .gameDetailsArtworkEntrance(game.id)
                             .border(
-                                width = if (gameFocused) 3.dp else 1.dp,
+                                width = 1.dp,
                                 color = catalogCardBorderColor(
                                     LocalActiveSelectionColor.current,
                                     LocalGameCardBordersEnabled.current,

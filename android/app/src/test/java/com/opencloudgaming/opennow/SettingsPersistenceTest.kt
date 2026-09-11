@@ -2,6 +2,7 @@ package com.opencloudgaming.opennow
 
 import kotlinx.serialization.encodeToString
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -11,6 +12,19 @@ import org.junit.Test
  * the round trip is lossless now that the write is conflated.
  */
 class SettingsPersistenceTest {
+    @Test
+    fun `system wallpaper normalization disables OpenNOW backgrounds`() {
+        val normalized = AppSettings(
+            nerdCatalogBackground = true,
+            ambientBackgroundEnabled = true,
+            systemWallpaperBackground = true,
+        ).normalizedForAndroid()
+
+        assertTrue(normalized.systemWallpaperBackground)
+        assertFalse(normalized.nerdCatalogBackground)
+        assertFalse(normalized.ambientBackgroundEnabled)
+    }
+
     @Test
     fun aRealisticSettingsObjectIsNotACheapEncode() {
         val settings = AppSettings(

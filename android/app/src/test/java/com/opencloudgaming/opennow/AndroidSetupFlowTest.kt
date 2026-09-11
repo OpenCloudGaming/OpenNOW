@@ -13,6 +13,7 @@ class AndroidSetupFlowTest {
         val defaults = AppSettings()
         val nothing = defaults.withAppBackgroundChoice(AppBackgroundChoice.Nothing)
         val wallpaper = defaults.withAppBackgroundChoice(AppBackgroundChoice.Wallpaper)
+        val systemWallpaper = defaults.withAppBackgroundChoice(AppBackgroundChoice.SystemWallpaper)
 
         assertEquals(AppBackgroundChoice.Default, appBackgroundChoiceFor(defaults))
         assertTrue(defaults.ambientBackgroundEnabled)
@@ -21,13 +22,20 @@ class AndroidSetupFlowTest {
         assertFalse(nothing.nerdCatalogBackground)
         assertEquals(AppBackgroundChoice.Wallpaper, appBackgroundChoiceFor(wallpaper))
         assertTrue(wallpaper.nerdCatalogBackground)
+        assertFalse(wallpaper.systemWallpaperBackground)
+        assertEquals(AppBackgroundChoice.SystemWallpaper, appBackgroundChoiceFor(systemWallpaper))
+        assertTrue(systemWallpaper.systemWallpaperBackground)
+        assertFalse(systemWallpaper.nerdCatalogBackground)
+        assertFalse(systemWallpaper.ambientBackgroundEnabled)
+        assertFalse(shouldShowSystemWallpaperBackground(systemWallpaper, inStream = true))
+        assertTrue(shouldShowSystemWallpaperBackground(systemWallpaper, inStream = false))
     }
 
     @Test
     fun `a fresh install runs setup and a finished one does not`() {
         assertTrue(shouldShowSetupFlow(AppSettings()))
         assertTrue(shouldShowSetupFlow(OpenNowJson.decodeFromString<AppSettings>("{}")))
-        assertFalse(shouldShowSetupFlow(AppSettings().completingSetupFlow(SetupStep.Ready)))
+        assertFalse(shouldShowSetupFlow(AppSettings().completingSetupFlow()))
     }
 
     @Test
@@ -43,9 +51,7 @@ class AndroidSetupFlowTest {
             uiAccent = UiAccent.Violet,
             nerdCatalogBackground = true,
             catalogBackgroundPreset = CatalogBackgroundPreset.AbsoluteCinema,
-            analyticsConsentAsked = true,
-            analyticsOptOut = false,
-        ).completingSetupFlow(SetupStep.Ready)
+        ).completingSetupFlow()
 
         val restarted = configured.restartingSetupFlow()
 
@@ -61,7 +67,6 @@ class AndroidSetupFlowTest {
                 SetupStep.Appearance,
                 SetupStep.Streaming,
                 SetupStep.Play,
-                SetupStep.Feedback,
                 SetupStep.Ready,
             ),
             setupSteps(),
@@ -69,7 +74,7 @@ class AndroidSetupFlowTest {
         assertNull(setupStepBefore(SetupStep.Welcome))
         assertNull(setupStepAfter(SetupStep.Ready))
         assertTrue(isFinalSetupStep(SetupStep.Ready))
-        assertFalse(isFinalSetupStep(SetupStep.Feedback))
+        assertFalse(isFinalSetupStep(SetupStep.Play))
 
         var step = SetupStep.Welcome
         val walked = mutableListOf(step)
@@ -78,47 +83,7 @@ class AndroidSetupFlowTest {
             walked += step
         }
         assertEquals(setupSteps(), walked)
-        assertEquals(SetupStep.Feedback, setupStepBefore(SetupStep.Ready))
-    }
-
-    @Test
-    fun `leaving before the diagnostics step still lets the consent dialog ask`() {
-        listOf(
-            SetupStep.Welcome,
-            SetupStep.Appearance,
-            SetupStep.Streaming,
-            SetupStep.Play,
-            SetupStep.Feedback,
-        )
-            .forEach { furthest ->
-                val settings = AppSettings().completingSetupFlow(furthest)
-
-                assertFalse(
-                    "furthest=$furthest should leave analytics consent unasked",
-                    settings.analyticsConsentAsked,
-                )
-                assertFalse(shouldShowSetupFlow(settings))
-            }
-    }
-
-    @Test
-    fun `walking past the diagnostics step counts as answering it`() {
-        val settings = AppSettings().completingSetupFlow(SetupStep.Ready)
-
-        assertTrue(settings.analyticsConsentAsked)
-        // Reaching the step is consent to have been asked, not consent to share.
-        assertTrue(settings.analyticsOptOut)
-        assertFalse(settings.analyticsSharingEnabled)
-    }
-
-    @Test
-    fun `an answer given during setup survives skipping out afterwards`() {
-        val optedIn = AppSettings(analyticsConsentAsked = true, analyticsOptOut = false)
-
-        val settings = optedIn.completingSetupFlow(SetupStep.Feedback)
-
-        assertTrue(settings.analyticsConsentAsked)
-        assertTrue(settings.analyticsSharingEnabled)
+        assertEquals(SetupStep.Play, setupStepBefore(SetupStep.Ready))
     }
 
     @Test
@@ -249,11 +214,9 @@ class AndroidSetupFlowTest {
             streamPreset = StreamPreset.LowDataSaver,
             showStatsOnLaunch = false,
             showSessionReportAfterStream = false,
-            analyticsConsentAsked = true,
-            analyticsOptOut = false,
         )
 
-        val after = before.completingSetupFlow(SetupStep.Ready)
+        val after = before.completingSetupFlow()
 
         assertEquals(
             before,

@@ -8,6 +8,26 @@ import org.junit.Test
 
 class SessionReportTest {
     @Test
+    fun delayedNetworkSamplesDoNotDuplicateOrInterruptMediaStatistics() {
+        val settings = StreamSettings(fps = 60)
+        val accumulator = StreamSessionReportAccumulator(
+            StreamReportLaunchProfile("Test Game", settings, settings, settings),
+            startedAtMs = 0L,
+        )
+        repeat(3) {
+            accumulator.record(StreamRuntimeStats(pingMs = 20, receivedFps = 60, decodedFps = 30, decodeMs = 40.0))
+            accumulator.recordNetwork(
+                AndroidRuntimeDiagnosticsSnapshot(networkKind = AndroidNetworkKind.Wifi, wifiBand = AndroidWifiBand.FiveGhz),
+            )
+        }
+        val report = accumulator.finish(3_000L)!!
+        assertEquals(3, report.sampleCount)
+        assertEquals(20, report.averagePingMs)
+        assertEquals(AndroidWifiBand.FiveGhz, report.wifiBand)
+        assertTrue(report.recommendations.any { it.title == "Decoder could not keep up" })
+    }
+
+    @Test
     fun healthySessionScoresOneHundred() {
         assertEquals(
             100,

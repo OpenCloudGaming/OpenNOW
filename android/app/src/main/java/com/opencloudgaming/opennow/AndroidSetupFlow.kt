@@ -27,9 +27,6 @@ internal enum class SetupStep {
     /** Touch-mouse behavior and the small status line shown over a stream. */
     Play,
 
-    /** Bug reporter, session reports, and diagnostics sharing. */
-    Feedback,
-
     /** Recap of the choices, and where to change them later. */
     Ready,
 }
@@ -74,22 +71,9 @@ internal fun setupStepBefore(step: SetupStep): SetupStep? =
 
 internal fun isFinalSetupStep(step: SetupStep): Boolean = setupStepAfter(step) == null
 
-/**
- * Whether reaching [furthestStep] counts as having answered the diagnostics question.
- *
- * Analytics consent has its own dialog outside setup. Setup only claims to have asked once the
- * user has moved *past* [SetupStep.Feedback] — seeing the switch and leaving it alone is an
- * answer, but skipping out before it is not, and those users still get the dialog.
- */
-internal fun setupFlowRecordedAnalyticsConsent(furthestStep: SetupStep): Boolean =
-    setupStepIndex(furthestStep) > setupStepIndex(SetupStep.Feedback)
-
-/** Marks setup as done. [furthestStep] is the deepest step the user actually reached. */
-internal fun AppSettings.completingSetupFlow(furthestStep: SetupStep): AppSettings =
-    copy(
-        setupFlowCompletedVersion = SETUP_FLOW_VERSION,
-        analyticsConsentAsked = analyticsConsentAsked || setupFlowRecordedAnalyticsConsent(furthestStep),
-    )
+/** Marks setup as done without changing any choices. */
+internal fun AppSettings.completingSetupFlow(): AppSettings =
+    copy(setupFlowCompletedVersion = SETUP_FLOW_VERSION)
 
 /** Sends the user back through setup from Settings without touching any of their choices. */
 internal fun AppSettings.restartingSetupFlow(): AppSettings = copy(setupFlowCompletedVersion = 0)
@@ -147,9 +131,11 @@ internal enum class AppBackgroundChoice {
     Default,
     Nothing,
     Wallpaper,
+    SystemWallpaper,
 }
 
 internal fun appBackgroundChoiceFor(settings: AppSettings): AppBackgroundChoice = when {
+    settings.systemWallpaperBackground -> AppBackgroundChoice.SystemWallpaper
     settings.nerdCatalogBackground -> AppBackgroundChoice.Wallpaper
     settings.ambientBackgroundEnabled -> AppBackgroundChoice.Default
     else -> AppBackgroundChoice.Nothing
@@ -160,10 +146,24 @@ internal fun AppSettings.withAppBackgroundChoice(choice: AppBackgroundChoice): A
         AppBackgroundChoice.Default -> copy(
             nerdCatalogBackground = false,
             ambientBackgroundEnabled = true,
+            systemWallpaperBackground = false,
         )
         AppBackgroundChoice.Nothing -> copy(
             nerdCatalogBackground = false,
             ambientBackgroundEnabled = false,
+            systemWallpaperBackground = false,
         )
-        AppBackgroundChoice.Wallpaper -> copy(nerdCatalogBackground = true)
+        AppBackgroundChoice.Wallpaper -> copy(
+            nerdCatalogBackground = true,
+            systemWallpaperBackground = false,
+        )
+        AppBackgroundChoice.SystemWallpaper -> copy(
+            nerdCatalogBackground = false,
+            ambientBackgroundEnabled = false,
+            systemWallpaperBackground = true,
+        )
     }
+
+/** System wallpaper is an app-shell treatment; a stream surface must always stay opaque. */
+internal fun shouldShowSystemWallpaperBackground(settings: AppSettings, inStream: Boolean): Boolean =
+    settings.systemWallpaperBackground && !inStream

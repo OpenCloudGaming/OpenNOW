@@ -74,15 +74,6 @@ internal fun AppSettings.resettingControllerPrompt(): AppSettings =
     copy(androidPhysicalControllerPromptDismissed = false)
 
 /**
- * Puts the analytics consent question back.
- *
- * Deliberately also opts out until it is answered again: re-asking while still counted as
- * consenting would make the prompt cosmetic.
- */
-internal fun AppSettings.resettingAnalyticsConsent(): AppSettings =
-    copy(analyticsConsentAsked = false, analyticsOptOut = true)
-
-/**
  * Replays the one-time migrations that run on upgrade.
  *
  * These versions gate the presentation and TV-layout defaults applied once per install, so zeroing
@@ -128,6 +119,7 @@ internal fun AppSettings.resettingInterface(): AppSettings {
         controllerBackgroundAnimations = defaults.controllerBackgroundAnimations,
         nerdCatalogBackground = defaults.nerdCatalogBackground,
         ambientBackgroundEnabled = defaults.ambientBackgroundEnabled,
+        systemWallpaperBackground = defaults.systemWallpaperBackground,
         catalogBackgroundPreset = defaults.catalogBackgroundPreset,
         nerdCatalogBackgroundUri = null,
         compactGameCards = defaults.compactGameCards,
@@ -153,6 +145,5 @@ internal fun AppSettings.replayingFirstLaunch(): AppSettings =
     restartingSetupFlow()
         .resettingStreamGuide()
         .resettingControllerPrompt()
-        .resettingAnalyticsConsent()
         .resettingProfileMigrations()
         .resettingCatalogBrowsing()

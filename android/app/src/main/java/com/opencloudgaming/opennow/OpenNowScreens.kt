@@ -537,6 +537,10 @@ fun OpenNowApp(
     }
     val musicControlsEnabled = state.settings.streamIntroMusic || state.settings.queueReadyMusic
     val streamActive = state.page == AppPage.Stream || state.streamStatus != "idle"
+    val systemWallpaperVisible = shouldShowSystemWallpaperBackground(
+        settings = state.settings,
+        inStream = state.page == AppPage.Stream,
+    )
     val gameDetailsTransitionRegistry = remember { GameDetailsTransitionRegistry() }
     var launchIntroStarted by remember { mutableStateOf(false) }
     var launchMusicMuted by remember { mutableStateOf(introStartsMutedOnLaunch) }
@@ -550,20 +554,17 @@ fun OpenNowApp(
     // After sign-in, not before: the appearance step previews the user's own box art, and there is
     // no catalog to draw from until an account is attached.
     val showSetupFlow = state.authSession != null && shouldShowSetupFlow(state.settings)
-    val showAnalyticsConsent = !showSetupFlow && !state.settings.analyticsConsentAsked
     val diagnosticDialogVisible = state.diagnosticShare.awaitingConsent ||
         state.diagnosticShare.uploading ||
         state.diagnosticShare.pasteUrl != null
-    val showCompletedSessionBugReport = completedSessionBugReportOpen && !showAnalyticsConsent && !diagnosticDialogVisible
+    val showCompletedSessionBugReport = completedSessionBugReportOpen && !diagnosticDialogVisible
     val showSessionReport = state.sessionReport != null &&
         state.settings.showSessionReportAfterStream &&
-        !showAnalyticsConsent &&
         !diagnosticDialogVisible &&
         !showCompletedSessionBugReport
     val showUpdatePrompt = updatePromptKey != null &&
         updatePromptKey != hiddenUpdatePromptKey &&
         !showSetupFlow &&
-        !showAnalyticsConsent &&
         !showSessionReport &&
         !showCompletedSessionBugReport &&
         !diagnosticDialogVisible &&
@@ -695,18 +696,25 @@ fun OpenNowApp(
             Box(
                 Modifier
                     .fillMaxSize()
-                    .background(MaterialTheme.colorScheme.background)
+                    .background(
+                        if (systemWallpaperVisible) Color.Transparent
+                        else MaterialTheme.colorScheme.background,
+                    )
                     .drawWithCache {
-                        val brush = Brush.radialGradient(
-                            colors = listOf(
-                                primaryColor.copy(alpha = 0.15f),
-                                Color.Transparent
-                            ),
-                            center = Offset(size.width, 0f),
-                            radius = size.width.coerceAtLeast(size.height) * 0.8f
-                        )
-                        onDrawBehind {
-                            drawRect(brush)
+                        if (systemWallpaperVisible) {
+                            onDrawBehind { }
+                        } else {
+                            val brush = Brush.radialGradient(
+                                colors = listOf(
+                                    primaryColor.copy(alpha = 0.15f),
+                                    Color.Transparent,
+                                ),
+                                center = Offset(size.width, 0f),
+                                radius = size.width.coerceAtLeast(size.height) * 0.8f,
+                            )
+                            onDrawBehind {
+                                drawRect(brush)
+                            }
                         }
                     }
             ) {
@@ -796,26 +804,6 @@ fun OpenNowApp(
                             viewModel.openAndroidUpdateSettings()
                         },
                         onDismiss = viewModel::dismissAndroidUpdateNotice,
-                    )
-                }
-                if (showAnalyticsConsent) {
-                    AnalyticsConsentDialog(
-                        onAllow = {
-                            viewModel.updateSettings(
-                                state.settings.copy(
-                                    analyticsConsentAsked = true,
-                                    analyticsOptOut = false,
-                                ),
-                            )
-                        },
-                        onDecline = {
-                            viewModel.updateSettings(
-                                state.settings.copy(
-                                    analyticsConsentAsked = true,
-                                    analyticsOptOut = true,
-                                ),
-                            )
-                        },
                     )
                 }
                 UselessMascotOverlay(
@@ -943,7 +931,10 @@ private fun MainShell(
                 phoneLandscapeScrollChromeHidden = false
             }
         }
-        Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background))
+        val systemWallpaperVisible = shouldShowSystemWallpaperBackground(state.settings, inStream)
+        if (!systemWallpaperVisible) {
+            Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background))
+        }
         // A chosen app wallpaper stays visible through Settings as well as Store and Library.
         // Stream surfaces remain opaque so custom art can never compete with video or overlays.
         val wallpaperVisible = shouldShowAppWallpaper(state.page, inStream, state.settings)
@@ -1034,7 +1025,8 @@ private fun MainShell(
                             state = state,
                             activeSearchTarget = visibleSearchTarget,
                             largeIcons = phoneLandscapeChrome,
-                            darkenForCatalogBackground = state.settings.nerdCatalogBackground && wallpaperPage,
+                            darkenForCatalogBackground =
+                                (state.settings.nerdCatalogBackground || systemWallpaperVisible) && wallpaperPage,
                             showSettingsBack = shouldShowSettingsBackRail(
                                 tvProfile = tvProfile,
                                 settingsPageOpen = state.page == AppPage.Settings,
@@ -1963,23 +1955,26 @@ private fun TopBarMusicButton(control: TopBarMusicControl) {
 
 @Composable
 private fun MusicBars(playing: Boolean, modifier: Modifier = Modifier) {
-    val transition = rememberInfiniteTransition(label = "top-bar-music-bars")
-    val phase by transition.animateFloat(
-        initialValue = 0f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 820, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart,
-        ),
-        label = "top-bar-music-bars-phase",
-    )
+    val phase = if (playing && !LocalReduceMotion.current) {
+        rememberInfiniteTransition(label = "top-bar-music-bars").animateFloat(
+            initialValue = 0f,
+            targetValue = 1f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(durationMillis = 820, easing = LinearEasing),
+                repeatMode = RepeatMode.Restart,
+            ),
+            label = "top-bar-music-bars-phase",
+        )
+    } else {
+        null
+    }
     val color = MaterialTheme.colorScheme.primary
     Canvas(modifier.size(width = 18.dp, height = 16.dp)) {
         val barWidth = size.width / 5.8f
         val gap = (size.width - barWidth * 3f) / 2f
         repeat(3) { index ->
-            val wave = if (playing) {
-                ((sin((phase.toDouble() * 6.283185307179586) + index * 1.35) + 1.0) / 2.0).toFloat()
+            val wave = if (phase != null) {
+                ((sin((phase.value.toDouble() * 6.283185307179586) + index * 1.35) + 1.0) / 2.0).toFloat()
             } else {
                 0.36f + index * 0.12f
             }

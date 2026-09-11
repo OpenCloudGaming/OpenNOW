@@ -95,7 +95,9 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import java.util.Locale
 import com.opencloudgaming.opennow.ui.theme.OpenNowPalette
 import com.opencloudgaming.opennow.ui.theme.OpenNowRadius
@@ -168,7 +170,11 @@ internal fun StreamKeyboardBar(
                     focusedContainerColor = Color.Black.copy(alpha = 0.52f),
                     unfocusedContainerColor = Color.Black.copy(alpha = 0.42f),
                 ),
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text, imeAction = ImeAction.Send),
+                keyboardOptions = KeyboardOptions(
+                    keyboardType = KeyboardType.Text,
+                    autoCorrectEnabled = false,
+                    imeAction = ImeAction.Send,
+                ),
                 keyboardActions = KeyboardActions(onSend = { onEnter() }),
             )
             TextButton(
@@ -982,10 +988,10 @@ private data class CompactStreamDeviceStatus(
 private fun rememberCompactStreamDeviceStatus(): CompactStreamDeviceStatus {
     val context = LocalContext.current
     val appContext = remember(context) { context.applicationContext }
-    var status by remember(appContext) { mutableStateOf(readCompactStreamDeviceStatus(appContext)) }
+    var status by remember(appContext) { mutableStateOf(CompactStreamDeviceStatus()) }
     LaunchedEffect(appContext) {
         while (true) {
-            status = readCompactStreamDeviceStatus(appContext)
+            status = withContext(Dispatchers.IO) { readCompactStreamDeviceStatus(appContext) }
             delay(COMPACT_STREAM_DEVICE_STATUS_REFRESH_MS)
         }
     }

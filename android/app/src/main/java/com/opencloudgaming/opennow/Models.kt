@@ -206,6 +206,7 @@ data class StreamSettings(
     val sessionProxyEnabled: Boolean = false,
     val sessionProxyUrl: String = "",
     val enableL4S: Boolean = false,
+    val experimentalNvst: Boolean = false,
     val mouseSensitivity: Float = 1f,
     val mouseAcceleration: Int = 1,
     val streamSharpeningEnabled: Boolean = false,
@@ -215,10 +216,11 @@ data class StreamSettings(
     val mouseScrollSensitivity: Int = 30,
 )
 
-internal fun StreamSettings.withMicrophoneSettingsFrom(source: StreamSettings): StreamSettings =
+internal fun StreamSettings.withUserStreamOptionsFrom(source: StreamSettings): StreamSettings =
     copy(
         microphoneMode = source.microphoneMode,
         microphoneDeviceId = source.microphoneDeviceId,
+        experimentalNvst = source.experimentalNvst,
     )
 
 /**
@@ -497,6 +499,8 @@ data class AppSettings(
     val nerdCatalogBackground: Boolean = false,
     /** The subtle accent-colour wash used when no catalogue wallpaper is selected. */
     val ambientBackgroundEnabled: Boolean = true,
+    /** Reveals the device's static or live wallpaper behind OpenNOW's non-stream UI. */
+    val systemWallpaperBackground: Boolean = false,
     val catalogBackgroundPreset: CatalogBackgroundPreset = CatalogBackgroundPreset.ColorfulAbstract,
     val nerdCatalogBackgroundUri: String? = null,
     val tvSafeAreaPaddingDp: Float = 16f,
@@ -583,6 +587,8 @@ data class AppSettings(
     val showSessionReportAfterStream: Boolean = false,
     /** One-time migration that makes post-stream reports opt-in instead of upgrade-persistent. */
     val sessionReportDefaultVersion: Int = 0,
+    /** 1.6.4 resets the previously automatic NVST opt-in once, including APK upgrades. */
+    val nvstOptInVersion: Int = 0,
     val sessionClockShowEveryMinutes: Int = 60,
     val sessionClockShowDurationSeconds: Int = 30,
     val clipboardPaste: Boolean = true,
@@ -591,8 +597,6 @@ data class AppSettings(
     val androidPhysicalControllerPromptDismissed: Boolean = false,
     val discordRichPresence: Boolean = false,
     val autoCheckForUpdates: Boolean = true,
-    val analyticsOptOut: Boolean = true,
-    val analyticsConsentAsked: Boolean = false,
     val allowEscapeToExitFullscreen: Boolean = false,
     val nativeLowLatencyDecoder: Boolean = false,
     /**
@@ -630,9 +634,6 @@ internal fun AppSettings.withCurrentStreamPresentationDefaults(): AppSettings {
     )
 }
 
-internal val AppSettings.analyticsSharingEnabled: Boolean
-    get() = analyticsConsentAsked && !analyticsOptOut
-
 internal fun streamResolutionPixels(settings: StreamSettings): Pair<Int, Int> {
     if (!isKnownStreamResolution(settings.resolution)) {
         parseResolutionPixelsOrNull(settings.resolution)?.let { return it }
@@ -644,7 +645,7 @@ internal fun StreamSettings.requiresNativeDesktopCloudMatchMode(): Boolean {
     val (width, height) = streamResolutionPixels(this)
     // CloudMatch's browser allocation rejects HDR even at 1080p and caps the high-resolution
     // matrix. The caller selects a platform-appropriate native identity (including Android TV).
-    return hdrEnabled || fps > 60 || width > 1920 || height > 1200
+    return experimentalNvst || hdrEnabled || fps > 60 || width > 1920 || height > 1200
 }
 
 internal data class StreamResolutionMismatch(
@@ -852,7 +853,7 @@ internal fun streamSettingsSessionSignature(settings: StreamSettings): String {
         "l4s=${if (compatible.enableL4S) 1 else 0}",
         "keyboard=${compatible.keyboardLayout.trim()}",
         "language=${compatible.gameLanguage.trim()}",
-    ).joinToString(";")
+    ).joinToString(";").let { if (settings.experimentalNvst) "$it;transport=nvst" else it }
 }
 
 internal data class StreamResolutionOption(
@@ -1860,6 +1861,7 @@ data class SessionInfo(
     val serverIp: String,
     val signalingServer: String,
     val signalingUrl: String,
+    val rtspsEndpoints: List<String> = emptyList(),
     val gpuType: String? = null,
     val iceServers: List<IceServer> = emptyList(),
     val mediaConnectionInfo: MediaConnectionInfo? = null,
@@ -1883,6 +1885,7 @@ internal data class NativeStreamTransportIdentity(
     val serverIp: String,
     val signalingServer: String,
     val signalingUrl: String,
+    val rtspsEndpoints: List<String>,
     val iceServers: List<IceServer>,
     val mediaConnectionInfo: MediaConnectionInfo?,
 )
@@ -1893,6 +1896,7 @@ internal fun SessionInfo.nativeStreamTransportIdentity(): NativeStreamTransportI
         serverIp = serverIp,
         signalingServer = signalingServer,
         signalingUrl = signalingUrl,
+        rtspsEndpoints = rtspsEndpoints,
         iceServers = iceServers,
         mediaConnectionInfo = mediaConnectionInfo,
     )

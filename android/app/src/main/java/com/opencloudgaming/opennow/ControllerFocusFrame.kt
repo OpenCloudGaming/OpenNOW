@@ -66,6 +66,12 @@ internal fun catalogCardBorderColor(
     else -> Color.Transparent
 }
 
+/** Resting artwork follows the theme's thin stroke; only the fallback controller cue is bold. */
+internal fun catalogCardBorderWidthDp(
+    controllerFocused: Boolean = false,
+    borderEffectsEnabled: Boolean = false,
+): Float = if (controllerFocused && !borderEffectsEnabled) 3f else 1f
+
 internal fun cinemaBorderColor(
     absoluteCinemaEnabled: Boolean,
     cinemaColor: Color,
@@ -143,7 +149,7 @@ internal fun BoxScope.ControllerFocusFrame(
             repeatMode = RepeatMode.Restart,
         ),
         label = "controller-focus-energy-orbit",
-    ).value
+    )
 
     Canvas(Modifier.matchParentSize()) {
         // The path is centered on the parent's exact bounds. Callers place this Canvas beside the
@@ -156,7 +162,8 @@ internal fun BoxScope.ControllerFocusFrame(
             2f * (borderSize.width + borderSize.height - 4f * radius) +
                 2f * PI.toFloat() * radius
             ).coerceAtLeast(1f)
-        val progress = orbitProgress
+        // Observe the clock only while drawing; animation frames do not need recomposition.
+        val progress = orbitProgress.value
         val orbitPhase = controllerFocusOrbitPhasePx(progress, perimeter)
         val arcIntervals = floatArrayOf(perimeter * 0.44f, perimeter * 0.56f)
         val blueArc = PathEffect.dashPathEffect(arcIntervals, orbitPhase)
@@ -176,7 +183,7 @@ internal fun BoxScope.ControllerFocusFrame(
             ).toComposePathEffect(),
             fireArc,
         )
-        val flicker = controllerFocusFlickerAlpha(orbitProgress)
+        val flicker = controllerFocusFlickerAlpha(progress)
         val topLeft = Offset(0f, insetPx)
         val roundedCorner = CornerRadius(radius, radius)
 

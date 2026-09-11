@@ -41,7 +41,7 @@ class MicrophoneSupportTest {
         )
 
         val updated = StreamSettings(resolution = "1280x720")
-            .withMicrophoneSettingsFrom(source)
+            .withUserStreamOptionsFrom(source)
 
         assertTrue(updated.microphoneMode == MicrophoneMode.VoiceActivity)
         assertTrue(updated.microphoneDeviceId == "preferred-device")

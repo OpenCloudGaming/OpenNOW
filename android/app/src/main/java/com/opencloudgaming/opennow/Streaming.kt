@@ -299,8 +299,9 @@ class NativeStreamClient(
     private var peerConnection: PeerConnection? = null
     private val remoteIceCandidates = RemoteIceCandidateBuffer()
     private var signaling: GfnSignalingClient? = null
-    @Volatile
-    private var reliableInput: DataChannel? = null
+    @Volatile private var nvstTransport: NvstTransport? = null
+    private var lastNvstError: String? = null
+    @Volatile private var reliableInput: DataChannel? = null
     @Volatile
     private var partiallyReliableInput: DataChannel? = null
     @Volatile
@@ -1170,7 +1171,7 @@ class NativeStreamClient(
      * 500 Hz device from creating 500 SCTP packets and sender coroutines per second.
      */
     private fun sendBurstLimitedMouseMove(dx: Int, dy: Int, partiallyReliable: Boolean): Boolean {
-        if (openInputChannel(partiallyReliable, fallbackToReliable = true) == null) return false
+        if (!canSendInput(partiallyReliable, fallbackToReliable = true)) return false
         if (dx == 0 && dy == 0) return true
         return synchronized(mouseMoveBurstLock) {
             val batch = mouseMoveBurstLimiter.offer(
@@ -1517,7 +1518,7 @@ class NativeStreamClient(
                     partiallyReliableHidMask = partiallyReliableHidMask,
                     inputType = InputEncoder.INPUT_MOUSE_ABS,
                 )
-        if (openInputChannel(usePartiallyReliable, fallbackToReliable = true) == null) return false
+        if (!canSendInput(usePartiallyReliable, fallbackToReliable = true)) return false
         if (dx == 0 && dy == 0) return true
         return synchronized(externalMouseMoveBurstLock) {
             val batch = externalMouseMoveBurstLimiter.offer(
@@ -1638,8 +1639,10 @@ class NativeStreamClient(
                     is StreamKeyboardEdit.Backspace -> repeat(edit.count.coerceAtMost(STREAM_TEXT_SEND_MAX_CHARS)) {
                         if (!sendTextKeyStroke(KeyEvent.KEYCODE_DEL)) return@withLock
                     }
-                    is StreamKeyboardEdit.Replace -> {
-                        if (!selectAllAndDeleteRemoteText()) return@withLock
+                    is StreamKeyboardEdit.ReplaceSuffix -> {
+                        repeat(edit.backspaces.coerceAtMost(STREAM_TEXT_SEND_MAX_CHARS)) {
+                            if (!sendTextKeyStroke(KeyEvent.KEYCODE_DEL)) return@withLock
+                        }
                         sendTextLocked(edit.text.take(STREAM_TEXT_SEND_MAX_CHARS))
                     }
                 }
@@ -1736,6 +1739,7 @@ class NativeStreamClient(
 
     fun setAudioMuted(muted: Boolean) {
         audioMuted = muted
+        nvstTransport?.muted = muted
         audioDeviceModule.setSpeakerMute(muted)
         val generation = transportGeneration
         enqueueNativeLifecycleOperation("audio-track-mute") {
@@ -1746,6 +1750,7 @@ class NativeStreamClient(
 
     fun setMicrophoneEnabled(enabled: Boolean) {
         microphoneMuted = !enabled
+        nvstTransport?.setMicrophoneEnabled(enabled)
         audioDeviceModule.setMicrophoneMute(!enabled)
         val generation = transportGeneration
         enqueueNativeLifecycleOperation("microphone-track-mute") {
@@ -1782,7 +1787,9 @@ class NativeStreamClient(
             button,
         )
         val reliableSent = sendInput(packet, partiallyReliable = false)
-        val partialSent = sendInput(packet, partiallyReliable = true)
+        // NVST maps mouse buttons to its one reliable control stream. Sending the WebRTC
+        // compatibility copy there would deliver the same button edge twice.
+        val partialSent = nvstTransport == null && sendInput(packet, partiallyReliable = true)
         NativeInputDiagnostics.add(
             "$source button=$button ${if (pressed) "down" else "up"} reliableSent=$reliableSent partialSent=$partialSent ${inputChannelStateSummary()}",
         )
@@ -2060,6 +2067,58 @@ class NativeStreamClient(
         recordStreamDiagnostic(
             "transport start generation=$generation reconnectAttempts=$reconnectAttempts session=${streamDiagnosticId(session.sessionId)} iceServers=${session.iceServers.size} media=${session.mediaConnectionInfo?.let { "${it.ip}:${it.port}" } ?: "unknown"}",
         )
+        if (settings.experimentalNvst) {
+            if (session.rtspsEndpoints.isEmpty()) {
+                failStream("The session has no NVST endpoint. Disable experimental NVST to use WebRTC, or launch a new session. The cloud session is retained.", generation)
+                return
+            }
+            emitState("Connecting experimental NVST")
+            runCatching {
+                NvstTransport(appContext, session, settings,
+                    OpenNowVideoDecoderFactory(eglBase.eglBaseContext,
+                        nativeLowLatencyDecoderEnabled = SettingsStore(appContext).settings.value.nativeLowLatencyDecoder,
+                        requestedFps = { settings.fps }, hdrEnabled = { settings.hdrEnabled },
+                        hdrSurface = { renderer?.hdrTarget }),
+                    sink = { renderer },
+                    event = { kind, detail -> scope.launch {
+                        if (generation == transportGeneration) when (kind) {
+                            "connected" -> emitState("Waiting for NVST video")
+                            "streaming" -> {
+                                transportHasStableMedia = true
+                                emitState("Streaming")
+                            }
+                            "input-ready" -> {
+                                inputEncoder.setProtocolVersion(detail.toIntOrNull() ?: DEFAULT_INPUT_PROTOCOL_VERSION)
+                                inputEncoder.resetGamepadSequences()
+                                startInputSessionClock()
+                                inputHandshakeReady = true
+                                updateHapticsAdvertisement(force = true)
+                                startGamepadKeepalive()
+                            }
+                            "input-unavailable" -> inputHandshakeReady = false
+                            "microphone-error" -> recordStreamDiagnostic("NVST microphone failed: $detail")
+                            "error" -> {
+                                lastNvstError = detail
+                                recordStreamDiagnostic("NVST attachment failed: $detail")
+                                scheduleTransportReconnect("NVST attachment failed", SIGNALING_RECONNECT_DELAY_MS, generation)
+                            }
+                        }
+                    } },
+                    stats = { value -> scope.launch { if (generation == transportGeneration) emitStats(value) } },
+                    rumble = { command -> scope.launch {
+                        if (generation == transportGeneration && !released) {
+                            applyGamepadRumble(command.controllerId, command.weakMagnitude, command.strongMagnitude)
+                        }
+                    } },
+                ).also { transport ->
+                    transport.muted = audioMuted
+                    transport.setMicrophoneEnabled(!microphoneMuted)
+                    nvstTransport = transport
+                    enqueueNativeLifecycleOperation("nvst-start") { transport.start() }
+                }
+            }.onFailure { failStream("NVST startup failed: ${it.javaClass.simpleName}", generation) }
+            return
+        }
         emitState(if (reconnectAttempts > 0) "Reconnecting signaling" else "Connecting signaling")
         signaling = GfnSignalingClient(session, settings = settings) { event ->
             // OkHttp invokes WebSocket callbacks on its own threads. Keep transport state on the
@@ -2070,6 +2129,9 @@ class NativeStreamClient(
     }
 
     private fun closeTransport(clearInputState: Boolean, cancelRecovery: Boolean = true) {
+        val closingNvst = nvstTransport
+        closingNvst?.stop()
+        nvstTransport = null
         if (peerConnection != null || signaling != null || reliableInput != null || partiallyReliableInput != null) {
             recordStreamDiagnostic("transport close clearInput=$clearInputState cancelRecovery=$cancelRecovery lastIce=${lastIceState?.name ?: "none"}")
         }
@@ -2117,6 +2179,7 @@ class NativeStreamClient(
         lastHapticsAdvertisementAtMs = 0L
         if (clearInputState) resetInputState()
         enqueueNativeLifecycleOperation("transport-close") {
+            closingNvst?.awaitStopped()
             remoteIceCandidates.clear()
             // Peer creation, SDP/ICE/stats JNI calls, and this detach/dispose step share this one
             // executor. Capturing the peer here (instead of on the caller thread) closes the race
@@ -2807,7 +2870,13 @@ class NativeStreamClient(
         }
         if (consumeReconnectAttempt && reconnectAttempts >= MAX_TRANSPORT_RECONNECT_ATTEMPTS) {
             recordStreamDiagnostic("reconnect limit reached reason=$reason attempts=$reconnectAttempts")
-            requestSessionRecovery("$reason. Stream reconnect failed after $MAX_TRANSPORT_RECONNECT_ATTEMPTS attempts.")
+            if (currentSettings.experimentalNvst) {
+                // A successful CloudMatch ready poll does not prove media recovered. Reclaiming
+                // here recreates this client and resets the retry budget indefinitely.
+                failStream("${lastNvstError ?: reason}. NVST could not reconnect after $MAX_TRANSPORT_RECONNECT_ATTEMPTS retries. Your cloud session is still running; retry when ready.")
+            } else {
+                requestSessionRecovery("$reason. Stream reconnect failed after $MAX_TRANSPORT_RECONNECT_ATTEMPTS attempts.")
+            }
             return
         }
         if (consumeReconnectAttempt) reconnectAttempts += 1
@@ -3680,7 +3749,7 @@ class NativeStreamClient(
     }
 
     private fun sendBurstLimitedGamepadState(controllerId: Int = activeControllerId): Boolean {
-        if (openInputChannel(partiallyReliable = false, fallbackToReliable = true) == null) return false
+        if (!canSendInput(partiallyReliable = false, fallbackToReliable = true)) return false
         val immediateControllerId = synchronized(gamepadStateBurstLock) {
             val immediate = gamepadStateBurstLimiter.offer(
                 controllerId = controllerId,
@@ -3889,6 +3958,7 @@ class NativeStreamClient(
         fallbackToReliable: Boolean,
         resultDiagnosticKey: String? = null,
     ): Boolean {
+        nvstTransport?.let { return it.sendInput(bytes, partiallyReliable) }
         val queuedChannel = openInputChannel(partiallyReliable, fallbackToReliable)
         if (queuedChannel == null) {
             resultDiagnosticKey?.let { key ->
@@ -3955,14 +4025,20 @@ class NativeStreamClient(
             else -> null
         }
 
+    // Rate limiters must check the active transport, not require a WebRTC DataChannel:
+    // NVST owns its SCTP channels in Rust and has no Java DataChannel objects.
+    private fun canSendInput(partiallyReliable: Boolean, fallbackToReliable: Boolean): Boolean =
+        nvstTransport?.inputReady ?: (openInputChannel(partiallyReliable, fallbackToReliable) != null)
+
     private fun hasOpenInputChannel(): Boolean =
-        reliableInputState == DataChannel.State.OPEN ||
-            partiallyReliableInputState == DataChannel.State.OPEN
+        nvstTransport?.inputReady ?: (reliableInputState == DataChannel.State.OPEN ||
+            partiallyReliableInputState == DataChannel.State.OPEN)
 
     private fun hasReadyInputChannel(): Boolean = inputHandshakeReady && hasOpenInputChannel()
 
     private fun inputChannelStateSummary(): String =
-        "reliable=${reliableInputState?.name ?: "none"} partial=${partiallyReliableInputState?.name ?: "none"}"
+        nvstTransport?.let { "nvst=${if (it.inputReady) "ready" else "waiting"}" }
+            ?: "reliable=${reliableInputState?.name ?: "none"} partial=${partiallyReliableInputState?.name ?: "none"}"
 
     private fun sendInputOnWorker(
         channel: DataChannel,
@@ -4186,7 +4262,7 @@ class NativeStreamClient(
     }
 
     private fun updateHapticsAdvertisement(force: Boolean = false) {
-        if (!inputHandshakeReady || reliableInputState != DataChannel.State.OPEN) return
+        if (!inputHandshakeReady || (reliableInputState != DataChannel.State.OPEN && nvstTransport?.inputReady != true)) return
         val now = SystemClock.elapsedRealtime()
         // Periodically re-advertise: the controller can connect (or start reporting a vibrator)
         // after the session began, and once advertised with enabled=false the server keeps

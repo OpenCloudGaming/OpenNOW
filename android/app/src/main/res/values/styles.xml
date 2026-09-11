@@ -10,7 +10,13 @@
         <item name="android:windowNoTitle">true</item>
         <item name="android:windowFullscreen">false</item>
         <item name="android:windowLightStatusBar">false</item>
-        <item name="android:windowBackground">@color/opennow_background</item>
+        <!--
+          Keep the window itself transparent from creation so FLAG_SHOW_WALLPAPER can reveal the
+          system wallpaper service, including live/motion wallpapers. Compose paints the normal
+          opaque app background whenever that option is not selected and while streaming.
+        -->
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:windowShowWallpaper">true</item>
         <item name="android:windowDisablePreview">false</item>
         <item name="android:colorAccent">@color/opennow_accent</item>
     </style>

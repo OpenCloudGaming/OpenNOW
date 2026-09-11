@@ -1,51 +1,9 @@
-import java.util.Properties
-
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.plugin.compose")
     id("org.jetbrains.kotlin.plugin.serialization")
 }
 
-val localProperties = Properties().apply {
-    rootProject.file("local.properties").takeIf { it.exists() }?.inputStream()?.use { load(it) }
-}
-fun Sequence<String?>.firstNonBlankOrNull(): String? =
-    mapNotNull { value -> value?.trim()?.takeIf { it.isNotEmpty() } }.firstOrNull()
-
-fun gradlePropertyValue(vararg names: String): String? =
-    names.asSequence().map { name -> providers.gradleProperty(name).orNull }.firstNonBlankOrNull()
-
-fun localPropertyValue(vararg names: String): String? =
-    names.asSequence().map { name -> localProperties.getProperty(name) }.firstNonBlankOrNull()
-
-fun environmentValue(vararg names: String): String? =
-    names.asSequence().map { name -> providers.environmentVariable(name).orNull }.firstNonBlankOrNull()
-
-fun firstNonBlankValue(vararg values: String?): String =
-    values.asSequence().firstNonBlankOrNull().orEmpty()
-
-fun buildConfigString(value: String): String =
-    "\"" + value
-        .replace("\\", "\\\\")
-        .replace("\"", "\\\"")
-        .replace("\n", "\\n")
-        .replace("\r", "\\r") + "\""
-
-val defaultPostHogProjectToken = "phc_pdob6BhBvbayfd7BA6zXBkty8o6EkxKYY7sF3ZwLymk3"
-val defaultPostHogHost = "https://aa.printedwaste.com"
-
-val postHogProjectToken = firstNonBlankValue(
-    gradlePropertyValue("posthog.apiKey", "posthog.projectToken"),
-    environmentValue("POSTHOG_API_KEY", "POSTHOG_PROJECT_TOKEN"),
-    localPropertyValue("posthog.apiKey", "posthog.projectToken"),
-    defaultPostHogProjectToken,
-)
-val postHogHost = firstNonBlankValue(
-    gradlePropertyValue("posthog.host"),
-    environmentValue("POSTHOG_HOST"),
-    localPropertyValue("posthog.host"),
-    defaultPostHogHost,
-)
 val buildingPlayReleaseBundle =
     providers.gradleProperty("distribution").orNull.equals("play-store", ignoreCase = true) ||
         gradle.startParameter.taskNames.any { taskName ->
@@ -62,12 +20,10 @@ android {
         // Android 17 target changes are audited; LAN access is permission-gated at its feature boundary.
         //noinspection EditedTargetSdkVersion
         targetSdk = 37
-        versionCode = 118
-        versionName = "1.6.2"
+        versionCode = 121
+        versionName = "1.6.5"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
-        buildConfigField("String", "POSTHOG_PROJECT_TOKEN", buildConfigString(postHogProjectToken))
-        buildConfigField("String", "POSTHOG_HOST", buildConfigString(postHogHost))
         buildConfigField("boolean", "APK_UPDATES_SUPPORTED", "true")
         buildConfigField("boolean", "PLAY_STORE_RELEASE", "false")
         buildConfigField("boolean", "LOCAL_APP_LAUNCHER_SUPPORTED", "true")
@@ -138,6 +94,22 @@ android {
     }
 }
 
+val nvstJniOutput = layout.buildDirectory.dir("generated/nvstJniLibs")
+val buildNvst by tasks.registering(Exec::class) {
+    inputs.files(fileTree(rootProject.file("nvst")) { exclude("target/**") })
+    inputs.file(rootProject.file("scripts/build_nvst.py"))
+    outputs.dir(nvstJniOutput)
+    val ndkDirectory = androidComponents.sdkComponents.ndkDirectory
+    commandLine(
+        if (System.getProperty("os.name").startsWith("Windows")) "python" else "python3",
+        rootProject.file("scripts/build_nvst.py").absolutePath,
+        ndkDirectory.get().asFile.absolutePath,
+        nvstJniOutput.get().asFile.absolutePath,
+    )
+}
+android.sourceSets.getByName("main").jniLibs.srcDir(nvstJniOutput.get().asFile)
+tasks.named("preBuild").configure { dependsOn(buildNvst) }
+
 kotlin {
     jvmToolchain(17)
     compilerOptions {
@@ -184,7 +156,6 @@ dependencies {
     implementation("io.github.webrtc-sdk:android:144.7559.14")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.11.0")
-    implementation("com.posthog:posthog-android:3.60.7")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")

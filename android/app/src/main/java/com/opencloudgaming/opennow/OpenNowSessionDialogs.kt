@@ -673,39 +673,6 @@ internal fun DiagnosticShareDialog(
 }
 
 @Composable
-internal fun AnalyticsConsentDialog(
-    onAllow: () -> Unit,
-    onDecline: () -> Unit,
-) {
-    AlertDialog(
-        onDismissRequest = onDecline,
-        title = { Text(stringResource(R.string.analytics_consent_title)) },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text(
-                    stringResource(R.string.analytics_consent_body),
-                )
-                Text(
-                    stringResource(R.string.analytics_consent_caveat),
-                    color = MaterialTheme.colorScheme.error,
-                    style = MaterialTheme.typography.bodySmall,
-                )
-            }
-        },
-        confirmButton = {
-            Button(onClick = onAllow) {
-                Text(stringResource(R.string.analytics_consent_allow))
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDecline) {
-                Text(stringResource(R.string.analytics_consent_decline))
-            }
-        },
-    )
-}
-
-@Composable
 internal fun AndroidUpdatePromptDialog(
     update: AndroidUpdateState,
     onPrimary: () -> Unit,

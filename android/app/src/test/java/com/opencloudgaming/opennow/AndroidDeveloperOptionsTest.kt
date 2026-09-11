@@ -61,8 +61,6 @@ class AndroidDeveloperOptionsTest {
             setupFlowCompletedVersion = SETUP_FLOW_VERSION,
             androidStreamGuideDismissed = true,
             androidPhysicalControllerPromptDismissed = true,
-            analyticsConsentAsked = true,
-            analyticsOptOut = false,
             streamPresentationProfileVersion = STREAM_PRESENTATION_PROFILE_VERSION,
             catalogFilterIds = listOf(CATALOG_FILTER_TOUCHSCREEN),
             librarySortId = LIBRARY_SORT_TITLE,
@@ -75,8 +73,6 @@ class AndroidDeveloperOptionsTest {
         assertEquals(0, replayed.setupFlowCompletedVersion)
         assertFalse(replayed.androidStreamGuideDismissed)
         assertFalse(replayed.androidPhysicalControllerPromptDismissed)
-        assertFalse(replayed.analyticsConsentAsked)
-        assertTrue(replayed.analyticsOptOut)
         assertEquals(0, replayed.streamPresentationProfileVersion)
         assertEquals(emptyList<String>(), replayed.catalogFilterIds)
         assertEquals(AppSettings().librarySortId, replayed.librarySortId)
@@ -86,22 +82,12 @@ class AndroidDeveloperOptionsTest {
     }
 
     @Test
-    fun resettingAnalyticsConsentOptsOutUntilItIsAnsweredAgain() {
-        val consented = AppSettings(analyticsConsentAsked = true, analyticsOptOut = false)
-        assertTrue(consented.analyticsSharingEnabled)
-
-        val reset = consented.resettingAnalyticsConsent()
-
-        assertFalse(reset.analyticsConsentAsked)
-        assertFalse(reset.analyticsSharingEnabled)
-    }
-
-    @Test
     fun resettingInterfaceLeavesAccountAndStreamAlone() {
         val customized = AppSettings(
             uiAccent = UiAccent.HotPink,
             absoluteCinemaEffects = true,
             nerdCatalogBackground = true,
+            systemWallpaperBackground = true,
             nerdCatalogBackgroundUri = "file:///data/wallpaper",
             posterSizeScale = MAX_GAME_CARD_SCALE,
             stream = StreamSettings(resolution = "3840x2160", fps = 120),
@@ -113,6 +99,7 @@ class AndroidDeveloperOptionsTest {
         assertEquals(AppSettings().uiAccent, reset.uiAccent)
         assertFalse(reset.absoluteCinemaEffects)
         assertFalse(reset.nerdCatalogBackground)
+        assertFalse(reset.systemWallpaperBackground)
         assertEquals(null, reset.nerdCatalogBackgroundUri)
         assertEquals(AppSettings().posterSizeScale, reset.posterSizeScale)
         assertEquals(customized.stream, reset.stream)

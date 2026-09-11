@@ -93,12 +93,21 @@ internal fun DeveloperOptionsPanel(state: OpenNowUiState, viewModel: OpenNowView
         ControlSection(stringResource(R.string.dev_section_flows)) {
             ControlActionRow(
                 label = stringResource(R.string.dev_replay_first_launch),
-                value = stringResource(R.string.dev_replay_first_launch_desc),
+                value = listOf(
+                    stringResource(R.string.dev_section_flows),
+                    stringResource(R.string.dev_section_catalog),
+                ).joinToString(" · "),
                 actionLabel = stringResource(R.string.dev_action_replay),
                 onClick = {
                     pendingDestructive = DeveloperDestructiveAction(
                         title = context.getString(R.string.dev_replay_first_launch),
-                        body = context.getString(R.string.dev_replay_first_launch_confirm),
+                        body = listOf(
+                            R.string.dev_reset_setup,
+                            R.string.dev_reset_stream_guide,
+                            R.string.dev_reset_controller_prompt,
+                            R.string.dev_reset_migrations,
+                            R.string.dev_reset_browsing,
+                        ).joinToString("\n") { context.getString(it) },
                         confirmLabel = context.getString(R.string.dev_action_replay),
                     ) {
                         update({ it.replayingFirstLaunch() }, context.getString(R.string.dev_toast_first_launch))
@@ -123,14 +132,6 @@ internal fun DeveloperOptionsPanel(state: OpenNowUiState, viewModel: OpenNowView
                 actionLabel = stringResource(R.string.dev_action_reset),
                 onClick = {
                     update({ it.resettingControllerPrompt() }, context.getString(R.string.dev_toast_controller_prompt))
-                },
-            )
-            ControlActionRow(
-                label = stringResource(R.string.dev_reset_analytics_consent),
-                value = stringResource(R.string.dev_reset_analytics_consent_desc),
-                actionLabel = stringResource(R.string.dev_action_reset),
-                onClick = {
-                    update({ it.resettingAnalyticsConsent() }, context.getString(R.string.dev_toast_analytics_consent))
                 },
             )
             ControlActionRow(

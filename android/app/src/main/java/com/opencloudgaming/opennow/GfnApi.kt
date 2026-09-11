@@ -21,6 +21,7 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonObjectBuilder
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonArray
@@ -486,7 +487,33 @@ private fun requestedStreamingFeatures(settings: StreamSettings, profile: Stream
         put("hudStreamingMode", 0)
         put("sdrColorSpace", 2)
         put("hdrColorSpace", if (profile.hdrEnabled) 4 else 0)
+        if (settings.experimentalNvst) {
+            put("codec", when (settings.codec) {
+                VideoCodec.H264 -> 1
+                VideoCodec.H265 -> 2
+                VideoCodec.AV1 -> 3
+            })
+            put("maxBitrateKbps", settings.maxBitrateMbps * 1000)
+            put("vsync", false)
+            put("audioChannelCount", 2)
+            put("qosPolicy", 0)
+            put("touchSupport", true)
+            put("dynamicStreamingMode", 0)
+        }
     }
+
+/** CloudMatch's native allocation must agree with the subsequent NVST RTSP handshake. */
+private fun JsonObjectBuilder.putStreamTransportRequest(settings: StreamSettings?) {
+    val nvst = settings?.experimentalNvst == true
+    if (nvst) put("streamerVersion", "14") else put("streamerVersion", 1)
+    put("sdkVersion", if (nvst) "2.0" else "1.0")
+    put("enhancedStreamMode", if (nvst) 0 else 1)
+    put("secureRTSPSupported", nvst)
+    if (nvst) {
+        put("requestedAudioFormat", 0)
+        put("transport", JsonNull)
+    }
+}
 
 private fun baseWebRtcSessionMetadata(): JsonArray = buildJsonArray {
     add(metadataEntry("SubSessionId", UUID.randomUUID().toString()))
@@ -497,12 +524,14 @@ private fun baseWebRtcSessionMetadata(): JsonArray = buildJsonArray {
     add(metadataEntry("surroundAudioInfo", "2"))
 }
 
-private fun webRtcSessionMetadata(
+private fun streamSessionMetadata(
     settings: StreamSettings,
     profile: StreamRequestProfile,
     physicalDisplayResolution: Pair<Int, Int>? = null,
 ): JsonArray = buildJsonArray {
-    baseWebRtcSessionMetadata().forEach { add(it) }
+    baseWebRtcSessionMetadata().forEach { entry ->
+        if (!settings.experimentalNvst || entry.jsonObject["key"]?.jsonPrimitive?.content != "GSStreamerType") add(entry)
+    }
     val requestedResolution = profile.width to profile.height
     val (physicalWidth, physicalHeight) = physicalDisplayResolution
         ?.takeIf { (width, height) ->
@@ -613,6 +642,7 @@ internal fun buildMinimalClaimRequestBody(
                 controllerCapabilities.supportedControllerTypes.forEach { add(JsonPrimitive(it)) }
             }
             put("clientVersion", "30.0")
+            putStreamTransportRequest(settings)
             put("deviceHashId", deviceId)
             put("internalTitle", JsonNull)
             put("clientPlatformName", if (appLaunchMode == GfnAppLaunchMode.TOUCH_FRIENDLY) "android" else identity.platformName)
@@ -624,7 +654,7 @@ internal fun buildMinimalClaimRequestBody(
             put(
                 "metaData",
                 if (settings != null && profile != null) {
-                    webRtcSessionMetadata(settings, profile, physicalDisplayResolution)
+                    streamSessionMetadata(settings, profile, physicalDisplayResolution)
                 } else {
                     baseWebRtcSessionMetadata()
                 },
@@ -634,16 +664,12 @@ internal fun buildMinimalClaimRequestBody(
             put("clientIdentification", "GFN-PC")
             put("parentSessionId", JsonNull)
             put("appId", appId.toIntOrNull() ?: 0)
-            put("streamerVersion", 1)
             put("appLaunchMode", appLaunchMode)
-            put("sdkVersion", "1.0")
-            put("enhancedStreamMode", 1)
             put("useOps", true)
             put("clientDisplayHdrCapabilities", if (profile?.hdrEnabled == true) hdrCapabilitiesJson() else JsonNull)
             put("accountLinked", true)
             put("partnerCustomData", "")
             put("enablePersistingInGameSettings", identity.persistGameSettings)
-            put("secureRTSPSupported", false)
             put("userAge", 26)
             if (settings != null && profile != null) {
                 put("requestedStreamingFeatures", requestedStreamingFeatures(settings, profile))
@@ -3370,23 +3396,20 @@ class GfnSessionRepository(
                 put("clientIdentification", "GFN-PC")
                 put("deviceHashId", deviceId)
                 put("clientVersion", "30.0")
-                put("sdkVersion", "1.0")
-                put("streamerVersion", 1)
+                putStreamTransportRequest(settings)
                 put("clientPlatformName", if (appLaunchMode == GfnAppLaunchMode.TOUCH_FRIENDLY) "android" else identity.platformName)
                 putJsonArray("clientRequestMonitorSettings") {
                     add(monitorSettings(profile, settings.fps, identity))
                 }
                 put("useOps", true)
                 put("audioMode", 2)
-                put("metaData", webRtcSessionMetadata(settings, profile, physicalDisplayResolution))
+                put("metaData", streamSessionMetadata(settings, profile, physicalDisplayResolution))
                 put("sdrHdrMode", if (profile.hdrEnabled) 1 else 0)
                 put("clientDisplayHdrCapabilities", if (profile.hdrEnabled) hdrCapabilitiesJson() else JsonNull)
                 put("surroundAudioInfo", 0)
                 put("remoteControllersBitmap", controllerCapabilities.remoteControllersBitmap)
                 put("clientTimezoneOffset", java.util.TimeZone.getDefault().getOffset(System.currentTimeMillis()))
-                put("enhancedStreamMode", 1)
                 put("appLaunchMode", appLaunchMode)
-                put("secureRTSPSupported", false)
                 put("partnerCustomData", "")
                 put("accountLinked", accountLinked)
                 put("enablePersistingInGameSettings", identity.persistGameSettings)
@@ -3448,6 +3471,7 @@ class GfnSessionRepository(
             gpuType = session.string("gpuType"),
             iceServers = normalizeIceServers(payload),
             mediaConnectionInfo = signaling?.mediaConnectionInfo,
+            rtspsEndpoints = nvstRtspEndpoints(session.arr("connectionInfo")),
             negotiatedStreamProfile = extractNegotiatedStreamProfile(session),
             monitorSnapshot = extractSessionMonitorSnapshot(session),
             requestedStreamingFeatures = normalizeStreamingFeatures(session.obj("sessionRequestData")?.obj("requestedStreamingFeatures")),
@@ -3623,7 +3647,7 @@ class GfnSessionRepository(
                 if (ip != null && port > 0) return MediaConnectionInfo(ip, port)
             }
         }
-        connections.filter { it.int("usage") == 14 }.sortedByDescending { it.int("port") ?: 0 }.forEach {
+        webRtcMediaFallbackConnections(connections).forEach {
             val port = extractPort(it)
             if (port > 0) return MediaConnectionInfo(extractIp(it) ?: serverIp, port)
         }

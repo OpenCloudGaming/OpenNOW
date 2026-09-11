@@ -616,7 +616,7 @@
     <string name="settings_expressive_ui">Expressive card styling</string>
     <string name="settings_expressive_ui_desc">Uses brighter card surfaces and softer corners. Turn it off for a flatter, quieter Material style.</string>
     <string name="settings_live_selected_outlines">Add games border</string>
-    <string name="settings_live_selected_outlines_desc">Show a bold static outline around game artwork. This can be turned off without disabling border effects.</string>
+    <string name="settings_live_selected_outlines_desc">Show a thin static outline around game artwork. This can be turned off without disabling border effects.</string>
     <string name="settings_absolute_cinema_effects">Enable effects on borders</string>
     <string name="settings_absolute_cinema_effects_desc">Animate the outer border effect independently from the static game outline.</string>
     <string name="settings_im_crazy">Effects Bonanza everywhere</string>
@@ -713,6 +713,7 @@
     <string name="setup_background_nothing">Nothing</string>
     <string name="settings_background_style">App background</string>
     <string name="settings_background_wallpaper">Wallpaper</string>
+    <string name="settings_background_system_wallpaper">System wallpaper</string>
     <string name="setup_background_your_image">Your image</string>
 
     <string name="setup_streaming_title">Stream quality</string>

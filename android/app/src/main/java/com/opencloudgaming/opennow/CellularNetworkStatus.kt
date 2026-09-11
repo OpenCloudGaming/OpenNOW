@@ -41,7 +41,7 @@ internal object CellularNetworkStatus {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 registerModernCallback(context, telephony)
             } else {
-                registerAndroid11Listener(telephony)
+                registerAndroid11Listener(context, telephony)
             }
         }.onFailure {
             monitoringStarted = false
@@ -62,8 +62,10 @@ internal object CellularNetworkStatus {
 
     @Suppress("DEPRECATION")
     @android.annotation.TargetApi(Build.VERSION_CODES.R)
-    private fun registerAndroid11Listener(telephony: TelephonyManager) {
-        val listener = object : PhoneStateListener() {
+    private fun registerAndroid11Listener(context: Context, telephony: TelephonyManager) {
+        // Diagnostics may start on an IO worker, which has no Looper. Deliver callbacks through
+        // the main executor just like the Android 12+ registration path.
+        val listener = object : PhoneStateListener(context.mainExecutor) {
             override fun onDisplayInfoChanged(displayInfo: TelephonyDisplayInfo) {
                 displayLabel = cellularGenerationLabel(displayInfo.networkType, displayInfo.overrideNetworkType)
             }
