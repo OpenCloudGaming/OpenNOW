@@ -32,12 +32,13 @@ QtObject {
         client.state = "ready"
         ShellStore.settings = ({})
         const toggle = find(parent, "persistentInGameSettingsToggle")
-        check(toggle && !toggle.checked, "desktop preference defaults off")
+        check(toggle && toggle.checked, "desktop preference defaults on")
+        ShellStore.settings = {enablePersistingInGameSettings:true}
         const consolePage = consoleSettings.createObject(parent)
         const row = consolePage.settingsModel().find(item => item.key === "enablePersistingInGameSettings")
-        check(row && row.toggle && row.v === "Off" && row.t === "Persistent in-game settings",
+        check(row && row.toggle && row.v === "On" && row.t === "Persistent in-game settings",
             "console exposes in-game settings rather than cloud saves")
-        for (const enabled of [true, false]) {
+        for (const enabled of [false, true, false]) {
             toggle.clicked()
             const write = client.calls[client.calls.length - 1]
             check(write.method === "settings.set" && write.params.key === "enablePersistingInGameSettings"

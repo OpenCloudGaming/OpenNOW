@@ -36,7 +36,7 @@ Column {
             showDivider: false
             DesktopSettingsToggle {
                 objectName: "persistentInGameSettingsToggle"
-                checked: page.settingsScreen.boolSetting("enablePersistingInGameSettings", false)
+                checked: page.settingsScreen.boolSetting("enablePersistingInGameSettings", true)
                 Accessible.name: qsTr("Persistent in-game settings")
                 onValueChangedByUser: value => page.settingsScreen.setSetting("enablePersistingInGameSettings", value)
             }

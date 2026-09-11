@@ -901,7 +901,7 @@ fn build_create_body(app_id: &str, params: &Value, settings: &Value, device_id: 
     };
     let cloud_gsync = resolved_cloud_gsync(settings);
     let reflex = cloud_gsync || fps >= 120;
-    let persistence = setting_bool(settings, "enablePersistingInGameSettings", false)
+    let persistence = setting_bool(settings, "enablePersistingInGameSettings", true)
         && params["supportsInGameSettingsPersistence"].as_bool() == Some(true);
     let physical_resolution = json!({
         "horizontalPixels": width,
@@ -2561,7 +2561,7 @@ mod tests {
     }
 
     #[test]
-    fn in_game_settings_persistence_requires_opt_in_and_game_support() {
+    fn in_game_settings_persistence_defaults_on_and_requires_game_support() {
         for preference in [Value::Null, json!(false), json!(true)] {
             for support in [Value::Null, json!(false), json!(true)] {
                 let mut params = json!({});
@@ -2575,7 +2575,7 @@ mod tests {
                 let body = build_create_body("123", &params, &settings, "stable-device");
                 assert_eq!(
                     body["sessionRequestData"]["enablePersistingInGameSettings"],
-                    preference == true && support == true
+                    preference != false && support == true
                 );
             }
         }

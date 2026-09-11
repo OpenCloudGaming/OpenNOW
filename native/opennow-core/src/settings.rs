@@ -895,7 +895,7 @@ fn defaults() -> Map<String, Value> {
         "showSessionReport":true, "showSessionTimeRemainingInStatsOverlay":false,
         "sessionClockShowEveryMinutes":60, "sessionClockShowDurationSeconds":30,
         "windowWidth":1400, "windowHeight":900, "keyboardLayout":"en-US",
-        "gameLanguage":"en_US", "enablePersistingInGameSettings":false, "enableL4S":false,
+        "gameLanguage":"en_US", "enablePersistingInGameSettings":true, "enableL4S":false,
         "identifyAsSteamDeck":false, "steamBigPictureMode":false,
         "enableCloudGsync":false, "discordRichPresence":false,
         "autoCheckForUpdates":true, "autoDownloadUpdates":false,
@@ -1310,7 +1310,10 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let load = || SettingsStore::load(Some(directory.path().to_owned())).unwrap();
         let mut store = load();
-        assert_eq!(store.all()["enablePersistingInGameSettings"], false);
+        assert_eq!(store.all()["enablePersistingInGameSettings"], true);
+        fs::write(directory.path().join("settings.json"), br#"{"fps":120}"#).unwrap();
+        store = load();
+        assert_eq!(store.all()["enablePersistingInGameSettings"], true);
         for enabled in [true, false, true] {
             store
                 .set("enablePersistingInGameSettings", json!(enabled))
@@ -1330,8 +1333,11 @@ mod tests {
         assert_eq!(store.all()["enablePersistingInGameSettings"], true);
         assert_eq!(load().all()["enablePersistingInGameSettings"], true);
         fs::remove_dir(directory.path().join("settings.json.tmp")).unwrap();
+        store
+            .set("enablePersistingInGameSettings", json!(false))
+            .unwrap();
         store.reset().unwrap();
-        assert_eq!(load().all()["enablePersistingInGameSettings"], false);
+        assert_eq!(load().all()["enablePersistingInGameSettings"], true);
     }
 
     #[test]
