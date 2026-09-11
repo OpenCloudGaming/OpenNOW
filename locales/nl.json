@@ -1,4 +1,12 @@
 {
+  "graphicsProcessor": {
+    "title": "Graphics processor",
+    "restartHint": "Uses the same GPU for decoding and display. Changes apply after restarting OpenNOW.",
+    "unavailableHint": "Saved GPU unavailable; using Automatic. Changes apply after restarting OpenNOW.",
+    "identityUnavailable": "Device identity unavailable",
+    "dedicatedMemory": "%1 GB dedicated memory",
+    "sharedMemory": "Shared graphics memory"
+  },
   "streamStatsV2": {
     "allocatedBitrate": "Allocated bitrate usage",
     "unstable": "Connection unstable",
