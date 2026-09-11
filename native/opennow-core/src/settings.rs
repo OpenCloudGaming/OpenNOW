@@ -1306,6 +1306,35 @@ mod tests {
     }
 
     #[test]
+    fn in_game_settings_persistence_survives_restart_and_resets() {
+        let directory = tempfile::tempdir().unwrap();
+        let load = || SettingsStore::load(Some(directory.path().to_owned())).unwrap();
+        let mut store = load();
+        assert_eq!(store.all()["enablePersistingInGameSettings"], false);
+        for enabled in [true, false, true] {
+            store
+                .set("enablePersistingInGameSettings", json!(enabled))
+                .unwrap();
+            store = load();
+            assert_eq!(store.all()["enablePersistingInGameSettings"], enabled);
+            store.set("fps", json!(120)).unwrap();
+            store = load();
+            assert_eq!(store.all()["enablePersistingInGameSettings"], enabled);
+        }
+        fs::create_dir(directory.path().join("settings.json.tmp")).unwrap();
+        assert!(
+            store
+                .set("enablePersistingInGameSettings", json!(false))
+                .is_err()
+        );
+        assert_eq!(store.all()["enablePersistingInGameSettings"], true);
+        assert_eq!(load().all()["enablePersistingInGameSettings"], true);
+        fs::remove_dir(directory.path().join("settings.json.tmp")).unwrap();
+        store.reset().unwrap();
+        assert_eq!(load().all()["enablePersistingInGameSettings"], false);
+    }
+
+    #[test]
     fn steam_big_picture_is_opt_in_and_persists_independently() {
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)

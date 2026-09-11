@@ -266,7 +266,7 @@ FocusScope {
                 {t:"Profile", control:"profile", height:121, initial:accountName.slice(0,1).toUpperCase(), name:accountName, tier:membership.toUpperCase(), subtitle:ShellStore.signedIn ? qsTr("NVIDIA account · signed in on this PC") : qsTr("Connect securely with NVIDIA"), meta:ShellStore.sessionPersistence === "os-credential-store" ? qsTr("Protected by the operating system credential store") : qsTr("Session-only profile"), v:ShellStore.signedIn ? qsTr("Manage on nvidia.com") : qsTr("Sign in"), route:ShellStore.signedIn ? "accounts" : "sign-in"},
                 {t:"Profiles", d:"Each profile has its own My games shelf and settings", v:qsTr("%1 saved").arg(ShellStore.savedAccounts.length), route:"accounts"},
                 {t:"Profile PIN", d:"Ask for a 4-digit PIN when switching to this profile", v:"Set up", route:"profile-pin"},
-                toggle("Cloud saves", "Sync Steam / Epic / Ubisoft saves before each session", "enablePersistingInGameSettings"),
+                toggle(qsTr("Persistent in-game settings"), qsTr("Keep your in-game graphics settings between sessions for supported games and memberships. Applies to new sessions."), "enablePersistingInGameSettings"),
                 toggle("Discord Rich Presence", "Show what you're playing on Discord", "discordRichPresence"),
                 choice("Error reporting", "Send anonymous crash reports to help fix OpenNOW", "errorReportingConsent", ["denied","granted"], ["Off","Anonymous"], "segments"),
                 {t:"Sign out", d:"Removes the NVIDIA token from this PC; My games stay", v:"Sign out of NVIDIA", action:"sign-out", danger:true},

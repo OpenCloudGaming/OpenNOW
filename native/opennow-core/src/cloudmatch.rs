@@ -2561,6 +2561,46 @@ mod tests {
     }
 
     #[test]
+    fn in_game_settings_persistence_requires_opt_in_and_game_support() {
+        for preference in [Value::Null, json!(false), json!(true)] {
+            for support in [Value::Null, json!(false), json!(true)] {
+                let mut params = json!({});
+                let mut settings = json!({});
+                if !support.is_null() {
+                    params["supportsInGameSettingsPersistence"] = support.clone();
+                }
+                if !preference.is_null() {
+                    settings["enablePersistingInGameSettings"] = preference.clone();
+                }
+                let body = build_create_body("123", &params, &settings, "stable-device");
+                assert_eq!(
+                    body["sessionRequestData"]["enablePersistingInGameSettings"],
+                    preference == true && support == true
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn resume_preserves_in_game_settings_persistence_despite_preference_changes() {
+        for enabled in [false, true] {
+            let original = json!({"sessionRequestData": {
+                "enablePersistingInGameSettings": enabled
+            }});
+            let body = build_resume_body(
+                "123",
+                &original,
+                &json!({"enablePersistingInGameSettings": !enabled}),
+                "stable-device",
+            );
+            assert_eq!(
+                body["sessionRequestData"]["enablePersistingInGameSettings"],
+                enabled
+            );
+        }
+    }
+
+    #[test]
     fn resume_does_not_renegotiate_allocated_video_parameters() {
         let original = json!({"sessionRequestData": {
             "appLaunchMode":2, "enablePersistingInGameSettings":true,
