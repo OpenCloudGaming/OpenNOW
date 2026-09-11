@@ -35,6 +35,11 @@ OpenNOW is a community-built GeForce NOW client. The desktop app uses Qt Quick f
 the interface and Rust for account services and streaming. Use a keyboard and mouse,
 or switch to the console layout for a controller. Both layouts run in the same app.
 
+> [!NOTE]
+> OpenNOW 1.0.0 rebuilds the desktop client with Qt Quick and a native Rust streaming
+> engine. It replaces the retired Electron app. See the
+> [announcement post](https://x.com/Zortosdev/status/2093023076191440963) for a first look at the new UI.
+
 > [!IMPORTANT]
 > You need your own GeForce NOW account. Your subscription, region, and hardware
 > determine which games and stream settings you can use. OpenNOW is not affiliated
@@ -119,7 +124,7 @@ explains the graphics backends and how Qt uses them.
 
 ## Build from source
 
-Use the `dev` branch for the Qt app. Before building, install:
+Use `main` for the release source or `dev` for ongoing development. Before building, install:
 
 - Qt 6.8+ with Quick, Multimedia, and ShaderTools.
 - CMake 3.24+ and a C++20 toolchain.
@@ -129,7 +134,7 @@ Linux also needs `pkg-config`, `libwayland-dev`, and `wayland-protocols`, even f
 X11 builds. Check the [build guide](opennow-qt/README.md#build) for platform-specific details.
 
 ```sh
-git clone --branch dev https://github.com/OpenCloudGaming/OpenNOW.git
+git clone --branch main https://github.com/OpenCloudGaming/OpenNOW.git
 cd OpenNOW
 cmake -S opennow-qt -B build/opennow-qt -DCMAKE_BUILD_TYPE=Debug
 cmake --build build/opennow-qt
@@ -183,11 +188,11 @@ You can also ask for help on [Discord](https://discord.gg/8EJYaJcNfD).
 ## Star history
 
 <a href="https://www.star-history.com/?repos=OpenCloudGaming%2FOpenNOW&type=date&legend=top-left">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/image?repos=OpenCloudGaming/OpenNOW&type=date&theme=dark&legend=top-left" />
-    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/image?repos=OpenCloudGaming/OpenNOW&type=date&legend=top-left" />
-    <img alt="OpenNOW star history chart" src="https://api.star-history.com/image?repos=OpenCloudGaming/OpenNOW&type=date&legend=top-left" />
-  </picture>
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=OpenCloudGaming/OpenNOW&type=date&theme=dark&legend=top-left&sealed_token=13YQdHqPNeJl_PZ60Tn1heFHwLWvLm3sH5u-7HePhBdXpG1poEyGeM3QG_jf08kKYWxfy65fe7OZDjBzuhznLOS5gdEMLDUXY6D7NCLdFIpOTHrmG_JN8Q" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=OpenCloudGaming/OpenNOW&type=date&legend=top-left&sealed_token=13YQdHqPNeJl_PZ60Tn1heFHwLWvLm3sH5u-7HePhBdXpG1poEyGeM3QG_jf08kKYWxfy65fe7OZDjBzuhznLOS5gdEMLDUXY6D7NCLdFIpOTHrmG_JN8Q" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=OpenCloudGaming/OpenNOW&type=date&legend=top-left&sealed_token=13YQdHqPNeJl_PZ60Tn1heFHwLWvLm3sH5u-7HePhBdXpG1poEyGeM3QG_jf08kKYWxfy65fe7OZDjBzuhznLOS5gdEMLDUXY6D7NCLdFIpOTHrmG_JN8Q" />
+ </picture>
 </a>
 
 ## License
