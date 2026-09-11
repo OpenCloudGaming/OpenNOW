@@ -25,6 +25,7 @@ QtObject {
         signal responseReceived(string requestId, var result)
         signal requestFailed(string requestId, string code, string message)
         signal eventReceived(string name, var payload)
+        function markUiReady() {}
         function logShellDiagnostic(message) {}
         function request(method, params, timeout) {
             const id = "drop-fixture-" + (calls.length + 1)

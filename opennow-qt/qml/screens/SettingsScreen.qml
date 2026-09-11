@@ -443,6 +443,8 @@ FocusScope {
                 "microphoneMode", ["disabled", "voice-activity"], [qsTr("Disabled"), qsTr("Open microphone")], "segments",
                 ShellStore.microphoneCaptureSupported ? [] : ["voice-activity"]),
             choice("Updates", qsTr("OpenNOW %1 · signed update feed").arg(ShellStore.updaterState.currentVersion || ""), "updateChannel", ["stable","nightly"], ["Stable","Nightly"], "segments"),
+            toggle(qsTr("Automatically check for updates"), qsTr("Check every six hours while no streaming session is active."), "autoCheckForUpdates"),
+            toggle(qsTr("Automatically download updates"), qsTr("Download verified updates while idle. Installation always requires your confirmation."), "autoDownloadUpdates"),
             {t:"Reset all settings", d:"Keeps your account and My games", v:"Reset to defaults", action:"reset", danger:true}
         ]
     }

@@ -1,6 +1,8 @@
-use base64::Engine as _;
-use base64::engine::general_purpose::STANDARD as BASE64;
-use ed25519_dalek::{Signature, VerifyingKey};
+use crate::update_apply;
+use crate::update_apply::verification::{
+    MAXIMUM_MANIFEST_BYTES, MAXIMUM_UPDATE_BYTES, UpdateManifest, embedded_update_key,
+    safe_asset_name, verify_manifest,
+};
 use reqwest::blocking::{Client, Response};
 use reqwest::header::{ACCEPT, USER_AGENT};
 use semver::Version;
@@ -10,7 +12,6 @@ use sha2::{Digest, Sha256};
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -18,8 +19,6 @@ const RELEASES_URL: &str =
     "https://api.github.com/repos/OpenCloudGaming/OpenNOW/releases?per_page=20";
 const RELEASES_PAGE: &str = "https://github.com/OpenCloudGaming/OpenNOW/releases";
 const RELEASE_ASSET_PREFIX: &str = "https://github.com/OpenCloudGaming/OpenNOW/releases/download/";
-const MAXIMUM_MANIFEST_BYTES: u64 = 64 * 1024;
-const MAXIMUM_UPDATE_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 
 #[derive(Clone)]
 struct AvailableUpdate {
@@ -48,6 +47,7 @@ struct State {
     last_checked_at: Option<u128>,
     available: Option<AvailableUpdate>,
     downloaded: Option<DownloadedUpdate>,
+    transaction: Option<update_apply::PreparedUpdate>,
 }
 
 #[derive(Deserialize)]
@@ -67,20 +67,10 @@ struct Asset {
     size: u64,
 }
 
-#[derive(Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct UpdateManifest {
-    schema_version: u32,
-    version: String,
-    asset: String,
-    size: u64,
-    sha256: String,
-    signature: String,
-}
-
 pub struct UpdaterService {
     client: Client,
     staging_dir: PathBuf,
+    data_dir: PathBuf,
     operation: Mutex<()>,
     state: Mutex<State>,
 }
@@ -95,37 +85,85 @@ impl UpdaterService {
         let staging_dir = data_dir.join("updates");
         fs::create_dir_all(&staging_dir)
             .map_err(|error| format!("Could not create the update staging directory: {error}"))?;
+        let (transaction, status, message) = match read_prepared_update(&staging_dir) {
+            Ok(transaction) => (
+                transaction,
+                "idle",
+                "Ready to check GitHub Releases".to_owned(),
+            ),
+            Err(error) => (
+                None,
+                "failed",
+                format!("Could not recover update status: {error}"),
+            ),
+        };
         Ok(Self {
             client,
             staging_dir,
+            data_dir: data_dir.to_path_buf(),
             operation: Mutex::new(()),
             state: Mutex::new(State {
-                status: "idle",
+                status,
                 available_version: None,
                 release_url: None,
                 notes_version: None,
                 notes: None,
-                message: "Ready to check GitHub Releases".to_owned(),
+                message,
                 last_checked_at: None,
                 available: None,
                 downloaded: None,
+                transaction,
             }),
         })
     }
 
     pub fn state(&self) -> Value {
-        state_json(&self.state.lock().expect("updater state poisoned"))
+        let mut state = self.state.lock().expect("updater state poisoned");
+        reconcile_transaction(&mut state, &self.staging_dir);
+        state_json(&state)
+    }
+
+    pub fn installation_pending(&self) -> bool {
+        self.state();
+        matches!(
+            self.state.lock().expect("updater state poisoned").status,
+            "preparing"
+                | "awaiting-exit"
+                | "applying"
+                | "restarting"
+                | "installing"
+                | "managed-pending"
+        )
+    }
+
+    pub fn request_failed(&self, message: &str) {
+        let mut state = self.state.lock().expect("updater state poisoned");
+        if !matches!(
+            state.status,
+            "checking"
+                | "downloading"
+                | "preparing"
+                | "awaiting-exit"
+                | "applying"
+                | "restarting"
+                | "installing"
+        ) {
+            state.message = message.to_owned();
+        }
     }
 
     pub fn check(&self, params: &Value) -> Result<Value, String> {
         let _operation = self.begin_operation()?;
-        let channel = params["channel"].as_str().unwrap_or("stable");
+        let channel = params["channel"]
+            .as_str()
+            .unwrap_or_else(|| crate::version::update_channel(crate::version::APPLICATION_VERSION));
         if !matches!(channel, "stable" | "nightly") {
             return Err("Unsupported update channel".to_owned());
         }
         {
             let mut state = self.state.lock().expect("updater state poisoned");
             state.status = "checking";
+            state.transaction = None;
             state.message = "Checking GitHub Releases…".to_owned();
         }
         let releases = self
@@ -160,7 +198,6 @@ impl UpdaterService {
         let release = select_release(&releases, channel, current);
         let mut state = self.state.lock().expect("updater state poisoned");
         state.last_checked_at = Some(now_ms());
-        state.downloaded = None;
         // Reading release notes is independent of installing a newer version.
         // A development build can be ahead of every published release.
         update_highlights(&mut state, select_latest_release(&releases, channel));
@@ -205,6 +242,7 @@ impl UpdaterService {
             state.available = None;
             state.message = "OpenNOW is up to date.".to_owned();
         }
+        restore_downloaded_status(&mut state);
         Ok(state_json(&state))
     }
 
@@ -218,6 +256,7 @@ impl UpdaterService {
                 .ok_or_else(|| "No signed update package is available".to_owned())?;
             embedded_update_key()?;
             state.status = "downloading";
+            state.transaction = None;
             state.message = format!("Downloading OpenNOW {}…", available.version);
             available
         };
@@ -236,7 +275,6 @@ impl UpdaterService {
                 let mut state = self.state.lock().expect("updater state poisoned");
                 state.status = "available";
                 state.message = format!("Update download failed verification: {error}");
-                state.downloaded = None;
                 Err(error)
             }
         }
@@ -254,12 +292,48 @@ impl UpdaterService {
             .downloaded
             .clone()
             .ok_or_else(|| "No verified update has been downloaded".to_owned())?;
-        verify_downloaded_file(&downloaded)?;
-        let action = launch_verified_update(&downloaded.path)?;
-        let mut state = self.state.lock().expect("updater state poisoned");
-        state.status = "installing";
-        state.message = format!("Verified update launched ({action}). OpenNOW will close.");
-        Ok(state_json(&state))
+        {
+            let mut state = self.state.lock().expect("updater state poisoned");
+            state.status = "preparing";
+            state.message =
+                "Verifying and preparing a complete replacement before shutdown.".to_owned();
+            state.transaction = None;
+        }
+        let result = (|| {
+            verify_downloaded_file(&downloaded)?;
+            let application = std::env::var_os("OPENNOW_APP_EXECUTABLE")
+                .map(PathBuf::from)
+                .ok_or("The Qt application executable identity is unavailable")?;
+            let application_pid = std::env::var("OPENNOW_APP_PID")
+                .map_err(|_| "The Qt application process identity is unavailable")?
+                .parse::<u32>()
+                .map_err(|_| "The Qt application process identity is invalid")?;
+            let kind = update_apply::detect_install_kind(&application, &downloaded.path)?;
+            let prepared = update_apply::prepare_update(update_apply::PrepareRequest {
+                package: downloaded.path.clone(),
+                expected_version: downloaded.version.clone(),
+                application_executable: application,
+                application_pid,
+                core_pid: std::process::id(),
+                kind,
+                data_dir: self.data_dir.clone(),
+            })?;
+            save_prepared_update(&self.staging_dir, &prepared)?;
+            self.state
+                .lock()
+                .expect("updater state poisoned")
+                .transaction = Some(prepared.clone());
+            update_apply::launch_prepared_update(&prepared)?;
+            Ok::<(), String>(())
+        })();
+        if let Err(error) = result {
+            let mut state = self.state.lock().expect("updater state poisoned");
+            state.status = "failed";
+            state.message = format!("Update preparation failed; OpenNOW remains open: {error}");
+            state.transaction = None;
+            return Err(error);
+        }
+        Ok(self.state())
     }
 
     pub fn highlights(&self) -> Value {
@@ -277,8 +351,11 @@ impl UpdaterService {
             .operation
             .try_lock()
             .map_err(|_| "An update operation is already in progress".to_owned())?;
-        if self.state.lock().expect("updater state poisoned").status == "installing" {
+        if self.installation_pending() {
             return Err("Update installation is already in progress".to_owned());
+        }
+        if self.state.lock().expect("updater state poisoned").status == "reboot-required" {
+            return Err("Restart your system before starting another update operation.".to_owned());
         }
         Ok(operation)
     }
@@ -326,6 +403,12 @@ impl UpdaterService {
         }
         fs::rename(&partial_path, &final_path)
             .map_err(|error| format!("Could not finalize the staged update: {error}"))?;
+        fs::write(
+            self.staging_dir
+                .join(format!("{}.manifest.json", manifest.asset)),
+            manifest_bytes,
+        )
+        .map_err(|error| format!("Could not preserve signed update metadata: {error}"))?;
         Ok(DownloadedUpdate {
             version: available.version.clone(),
             asset_name: manifest.asset,
@@ -337,8 +420,15 @@ impl UpdaterService {
 }
 
 fn state_json(state: &State) -> Value {
-    let can_download =
-        state.status == "available" && state.available.is_some() && embedded_update_key().is_ok();
+    let can_download = matches!(state.status, "available" | "error" | "downloaded")
+        && state.available.is_some()
+        && embedded_update_key().is_ok()
+        && state.available.as_ref().is_some_and(|available| {
+            state
+                .downloaded
+                .as_ref()
+                .is_none_or(|downloaded| downloaded.asset_name != available.asset.name)
+        });
     json!({
         "status": state.status,
         "currentVersion": crate::version::APPLICATION_VERSION,
@@ -347,12 +437,185 @@ fn state_json(state: &State) -> Value {
         "releaseUrl": state.release_url,
         "message": state.message,
         "lastCheckedAt": state.last_checked_at.map(|value| value.to_string()),
-        "canCheck": !matches!(state.status, "checking" | "downloading" | "installing"),
+        "canCheck": !matches!(state.status, "checking" | "downloading" | "preparing" | "awaiting-exit" | "applying" | "restarting" | "installing" | "managed-pending" | "reboot-required"),
         "canDownload": can_download,
-        "canInstall": state.status == "downloaded" && state.downloaded.is_some(),
+        "canInstall": matches!(state.status, "downloaded" | "error" | "available" | "not-available" | "failed" | "rolled-back") && state.downloaded.is_some(),
+        "exitRequired": state.status == "awaiting-exit",
+        "installVersion": state.transaction.as_ref().map(|transaction| &transaction.version),
         "updateSource": "github-releases",
         "signaturePolicy": if embedded_update_key().is_ok() { "ed25519-pinned" } else { "unconfigured-fail-closed" }
     })
+}
+
+fn read_prepared_update(directory: &Path) -> Result<Option<update_apply::PreparedUpdate>, String> {
+    let path = directory.join("active-apply.json");
+    let file = match fs::File::open(&path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("Could not read update transaction: {error}")),
+    };
+    let bytes = read_bounded(file, MAXIMUM_MANIFEST_BYTES)?;
+    let prepared: update_apply::PreparedUpdate =
+        serde_json::from_slice(&bytes).map_err(|_| "Persisted update transaction is malformed")?;
+    if !prepared.plan_path.is_absolute()
+        || !prepared.outcome_path.is_absolute()
+        || prepared
+            .plan_path
+            .file_name()
+            .is_none_or(|name| name != "plan.json")
+        || prepared
+            .outcome_path
+            .file_name()
+            .is_none_or(|name| name != "outcome.json")
+        || prepared.plan_path.parent() != prepared.outcome_path.parent()
+        || parse_version(&prepared.version).is_none()
+    {
+        return Err("Persisted update transaction paths or version are invalid".to_owned());
+    }
+    Ok(Some(prepared))
+}
+
+fn save_prepared_update(
+    directory: &Path,
+    prepared: &update_apply::PreparedUpdate,
+) -> Result<(), String> {
+    let temporary = directory.join(format!(".active-apply-{:016x}.part", rand::random::<u64>()));
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temporary)
+        .map_err(|error| error.to_string())?;
+    let result = (|| {
+        file.write_all(&serde_json::to_vec(prepared).map_err(|error| error.to_string())?)
+            .and_then(|_| file.sync_all())
+            .map_err(|error| error.to_string())?;
+        drop(file);
+        let destination = directory.join("active-apply.json");
+        match fs::remove_file(&destination) {
+            Ok(()) => (),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+            Err(error) => return Err(error.to_string()),
+        }
+        fs::rename(&temporary, destination).map_err(|error| error.to_string())?;
+        #[cfg(unix)]
+        fs::File::open(directory)
+            .and_then(|file| file.sync_all())
+            .map_err(|error| error.to_string())?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(temporary);
+    }
+    result
+}
+
+fn reconcile_transaction(state: &mut State, staging_dir: &Path) {
+    let Some(transaction) = &state.transaction else {
+        return;
+    };
+    let outcome = update_apply::read_outcome(&transaction.outcome_path);
+    let outcome = match outcome {
+        Ok(Some(outcome)) if outcome.version == transaction.version => outcome,
+        Ok(None) | Ok(Some(_)) => {
+            state.status = "failed";
+            state.message =
+                "The update helper outcome is missing or does not match the prepared version."
+                    .to_owned();
+            return;
+        }
+        Err(error) => {
+            state.status = "failed";
+            state.message = error;
+            return;
+        }
+    };
+    use update_apply::OutcomeStatus;
+    if matches!(
+        outcome.status,
+        OutcomeStatus::ManagedPending | OutcomeStatus::RebootRequired
+    ) {
+        match update_apply::recover_managed_update(
+            transaction,
+            &outcome,
+            crate::version::APPLICATION_VERSION,
+        ) {
+            Ok(update_apply::ManagedRecovery::Pending(message)) => {
+                state.status = "managed-pending";
+                state.message = message;
+                return;
+            }
+            Ok(update_apply::ManagedRecovery::RebootRequired(message)) => {
+                state.status = "reboot-required";
+                state.message = message;
+                return;
+            }
+            Ok(update_apply::ManagedRecovery::Finished(result)) => {
+                state.status = if result.status == OutcomeStatus::Completed {
+                    "succeeded"
+                } else {
+                    "failed"
+                };
+                state.message = result.message;
+            }
+            Err(error) => {
+                state.status = "failed";
+                state.message = format!("Could not recover native update completion: {error}");
+            }
+        }
+        state.transaction = None;
+        match fs::remove_file(staging_dir.join("active-apply.json")) {
+            Ok(()) => (),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+            Err(error) => state.message.push_str(&format!(
+                "; could not remove the completed update transaction: {error}"
+            )),
+        }
+        return;
+    }
+    if matches!(
+        outcome.status,
+        OutcomeStatus::WaitingForExit
+            | OutcomeStatus::BackingUp
+            | OutcomeStatus::Installing
+            | OutcomeStatus::AwaitingStartup
+    ) || (outcome.status == OutcomeStatus::Prepared && state.status != "preparing")
+    {
+        match update_apply::helper_is_running(transaction) {
+            Ok(true) => (),
+            Ok(false) => {
+                state.status = "failed";
+                state.message = "The update helper stopped before completing the transaction. OpenNOW will not close automatically.".to_owned();
+                return;
+            }
+            Err(error) => {
+                state.status = "failed";
+                state.message = format!("Could not confirm update helper ownership: {error}");
+                return;
+            }
+        }
+    }
+    state.status = match outcome.status {
+        OutcomeStatus::Prepared => "preparing",
+        OutcomeStatus::WaitingForExit => "awaiting-exit",
+        OutcomeStatus::BackingUp | OutcomeStatus::Installing => "applying",
+        OutcomeStatus::AwaitingStartup => "restarting",
+        OutcomeStatus::Completed => "succeeded",
+        OutcomeStatus::RolledBack => "rolled-back",
+        OutcomeStatus::Failed => "failed",
+        OutcomeStatus::ManagedPending => "managed-pending",
+        OutcomeStatus::RebootRequired => "reboot-required",
+    };
+    state.message = outcome.message;
+}
+
+fn restore_downloaded_status(state: &mut State) {
+    if let Some(downloaded) = &state.downloaded {
+        state.status = "downloaded";
+        state.message = format!(
+            "OpenNOW {} remains downloaded and verified. Ready to install.",
+            downloaded.version
+        );
+    }
 }
 
 fn select_release<'a>(
@@ -400,6 +663,7 @@ fn update_highlights(state: &mut State, release: Option<&Release>) {
 }
 
 fn compatible_asset(assets: &[Asset]) -> Option<&Asset> {
+    let extension = update_apply::compatible_package_extension().ok()?;
     let os_aliases: &[&str] = if cfg!(target_os = "windows") {
         &["win", "windows"]
     } else if cfg!(target_os = "macos") {
@@ -414,13 +678,9 @@ fn compatible_asset(assets: &[Asset]) -> Option<&Asset> {
     };
     assets.iter().find(|asset| {
         let name = asset.name.to_ascii_lowercase();
-        let package = if cfg!(target_os = "windows") {
-            name.ends_with(".msi") || name.ends_with(".exe")
-        } else if cfg!(target_os = "macos") {
-            name.ends_with(".dmg") || name.ends_with(".pkg")
-        } else {
-            name.ends_with(".appimage") || name.ends_with(".deb")
-        };
+        let package = name
+            .rsplit_once('.')
+            .is_some_and(|(_, suffix)| suffix == extension);
         trusted_asset_url(asset)
             && safe_asset_name(&asset.name)
             && name.contains("qt")
@@ -432,24 +692,6 @@ fn compatible_asset(assets: &[Asset]) -> Option<&Asset> {
     })
 }
 
-fn embedded_update_key() -> Result<VerifyingKey, String> {
-    let encoded = option_env!("OPENNOW_UPDATE_ED25519_PUBLIC_KEY")
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| "This build has no pinned update signing key".to_owned())?;
-    decode_verifying_key(encoded)
-}
-
-fn decode_verifying_key(encoded: &str) -> Result<VerifyingKey, String> {
-    let bytes = BASE64
-        .decode(encoded)
-        .map_err(|_| "Pinned update signing key is not valid base64".to_owned())?;
-    let bytes: [u8; 32] = bytes
-        .try_into()
-        .map_err(|_| "Pinned update signing key has the wrong length".to_owned())?;
-    VerifyingKey::from_bytes(&bytes).map_err(|_| "Pinned update signing key is invalid".to_owned())
-}
-
 fn manifest_matches_release(manifest: &UpdateManifest, available: &AvailableUpdate) -> bool {
     parse_version(&manifest.version)
         .is_some_and(|version| Some(version) == parse_version(&available.version))
@@ -457,39 +699,6 @@ fn manifest_matches_release(manifest: &UpdateManifest, available: &AvailableUpda
         && manifest.size == available.asset.size
         && manifest.size > 0
         && manifest.size <= MAXIMUM_UPDATE_BYTES
-}
-
-fn verify_manifest(manifest: &UpdateManifest, key: &VerifyingKey) -> Result<(), String> {
-    if manifest.schema_version != 1
-        || parse_version(&manifest.version).is_none()
-        || !safe_asset_name(&manifest.asset)
-        || manifest.size == 0
-        || manifest.size > MAXIMUM_UPDATE_BYTES
-        || manifest.sha256.len() != 64
-        || !manifest
-            .sha256
-            .bytes()
-            .all(|value| value.is_ascii_hexdigit())
-    {
-        return Err("Signed update metadata fields are invalid".to_owned());
-    }
-    let signature_bytes = BASE64
-        .decode(&manifest.signature)
-        .map_err(|_| "Update signature is not valid base64".to_owned())?;
-    let signature = Signature::from_slice(&signature_bytes)
-        .map_err(|_| "Update signature has the wrong length".to_owned())?;
-    key.verify_strict(signature_payload(manifest).as_bytes(), &signature)
-        .map_err(|_| "Update manifest signature is invalid".to_owned())
-}
-
-fn signature_payload(manifest: &UpdateManifest) -> String {
-    format!(
-        "OpenNOW update manifest v1\nversion={}\nasset={}\nsize={}\nsha256={}\n",
-        manifest.version.trim_start_matches('v'),
-        manifest.asset,
-        manifest.size,
-        manifest.sha256.to_ascii_lowercase()
-    )
 }
 
 fn write_verified_asset(
@@ -531,113 +740,24 @@ fn write_verified_asset(
 }
 
 fn verify_downloaded_file(downloaded: &DownloadedUpdate) -> Result<(), String> {
-    if !safe_asset_name(&downloaded.asset_name) || !downloaded.path.is_file() {
-        return Err("The verified update package is no longer available".to_owned());
-    }
-    let metadata = fs::metadata(&downloaded.path)
-        .map_err(|_| "The verified update package is unavailable".to_owned())?;
-    if metadata.len() != downloaded.size {
+    let manifest = fs::File::open(
+        downloaded
+            .path
+            .with_file_name(format!("{}.manifest.json", downloaded.asset_name)),
+    )
+    .map_err(|_| "The staged update manifest could not be read".to_owned())?;
+    let manifest = update_apply::verification::verify_signed_manifest(&read_bounded(
+        manifest,
+        MAXIMUM_MANIFEST_BYTES,
+    )?)?;
+    if manifest.version.trim_start_matches('v') != downloaded.version
+        || manifest.asset != downloaded.asset_name
+        || manifest.size != downloaded.size
+        || !manifest.sha256.eq_ignore_ascii_case(&downloaded.sha256)
+    {
         return Err("The staged update package changed after verification".to_owned());
     }
-    let mut input = fs::File::open(&downloaded.path)
-        .map_err(|_| "The staged update package could not be read".to_owned())?;
-    let mut hasher = Sha256::new();
-    std::io::copy(&mut input, &mut hasher)
-        .map_err(|_| "The staged update package could not be verified".to_owned())?;
-    if !format!("{:x}", hasher.finalize()).eq_ignore_ascii_case(&downloaded.sha256) {
-        return Err("The staged update package changed after verification".to_owned());
-    }
-    Ok(())
-}
-
-fn launch_verified_update(path: &Path) -> Result<&'static str, String> {
-    #[cfg(target_os = "windows")]
-    {
-        let extension = path
-            .extension()
-            .and_then(|value| value.to_str())
-            .unwrap_or_default();
-        let child = if extension.eq_ignore_ascii_case("msi") {
-            Command::new("msiexec.exe")
-                .arg("/i")
-                .arg(path)
-                .arg("/passive")
-                .spawn()
-        } else {
-            Command::new(path).spawn()
-        };
-        child.map_err(|error| format!("Could not launch the verified installer: {error}"))?;
-        Ok("installer")
-    }
-    #[cfg(target_os = "macos")]
-    {
-        Command::new("open")
-            .arg(path)
-            .spawn()
-            .map_err(|error| format!("Could not open the verified update package: {error}"))?;
-        Ok("package-opened")
-    }
-    #[cfg(all(unix, not(target_os = "macos")))]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        if path
-            .extension()
-            .and_then(|value| value.to_str())
-            .is_some_and(|value| value.eq_ignore_ascii_case("appimage"))
-        {
-            fs::set_permissions(path, fs::Permissions::from_mode(0o755)).map_err(|error| {
-                format!("Could not mark the verified AppImage executable: {error}")
-            })?;
-            if let Some(current) = std::env::var_os("APPIMAGE").map(PathBuf::from) {
-                if current.is_absolute() && current.is_file() {
-                    return replace_running_appimage(&current, path);
-                }
-            }
-            Command::new(path)
-                .spawn()
-                .map_err(|error| format!("Could not launch the verified AppImage: {error}"))?;
-            return Ok("appimage-launched");
-        }
-        Command::new("xdg-open")
-            .arg(path)
-            .spawn()
-            .map_err(|error| format!("Could not open the verified update package: {error}"))?;
-        Ok("package-opened")
-    }
-}
-
-#[cfg(all(unix, not(target_os = "macos")))]
-fn replace_running_appimage(current: &Path, staged: &Path) -> Result<&'static str, String> {
-    use std::os::unix::fs::PermissionsExt as _;
-    let parent = current
-        .parent()
-        .ok_or_else(|| "Running AppImage has no parent directory".to_owned())?;
-    let name = current
-        .file_name()
-        .and_then(|value| value.to_str())
-        .ok_or_else(|| "Running AppImage name is invalid".to_owned())?;
-    let replacement = parent.join(format!(".{name}.new"));
-    let backup = parent.join(format!(".{name}.previous"));
-    fs::copy(staged, &replacement)
-        .map_err(|error| format!("Could not stage the AppImage replacement: {error}"))?;
-    fs::set_permissions(&replacement, fs::Permissions::from_mode(0o755))
-        .map_err(|error| format!("Could not set AppImage permissions: {error}"))?;
-    let _ = fs::remove_file(&backup);
-    fs::rename(current, &backup)
-        .map_err(|error| format!("Could not preserve the previous AppImage: {error}"))?;
-    if let Err(error) = fs::rename(&replacement, current) {
-        let _ = fs::rename(&backup, current);
-        return Err(format!("Could not install the AppImage update: {error}"));
-    }
-    if let Err(error) = Command::new(current).spawn() {
-        let failed = parent.join(format!(".{name}.failed"));
-        let _ = fs::rename(current, &failed);
-        let _ = fs::rename(&backup, current);
-        return Err(format!(
-            "Updated AppImage could not restart; rolled back: {error}"
-        ));
-    }
-    Ok("appimage-replaced")
+    update_apply::verification::verify_package(&downloaded.path, &manifest)
 }
 
 fn ensure_asset_response(response: &Response, maximum: u64) -> Result<(), String> {
@@ -656,7 +776,7 @@ fn ensure_asset_response(response: &Response, maximum: u64) -> Result<(), String
     Ok(())
 }
 
-fn read_bounded(mut response: Response, maximum: u64) -> Result<Vec<u8>, String> {
+fn read_bounded(mut response: impl Read, maximum: u64) -> Result<Vec<u8>, String> {
     let mut bytes = Vec::new();
     response
         .by_ref()
@@ -672,16 +792,6 @@ fn read_bounded(mut response: Response, maximum: u64) -> Result<Vec<u8>, String>
 fn trusted_asset_url(asset: &Asset) -> bool {
     asset.browser_download_url.starts_with(RELEASE_ASSET_PREFIX)
         && !asset.browser_download_url[RELEASE_ASSET_PREFIX.len()..].is_empty()
-}
-
-fn safe_asset_name(value: &str) -> bool {
-    !value.is_empty()
-        && value.len() <= 240
-        && !value.contains(['/', '\\'])
-        && !value.contains("..")
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
 }
 
 fn parse_version(value: &str) -> Option<Version> {
@@ -717,7 +827,291 @@ fn now_ms() -> u128 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::update_apply::verification::{decode_verifying_key, signature_payload};
+    use base64::Engine as _;
+    use base64::engine::general_purpose::STANDARD as BASE64;
     use ed25519_dalek::{Signer as _, SigningKey};
+
+    fn persisted_managed_fixture(
+        directory: &Path,
+        status: update_apply::OutcomeStatus,
+        installer: Option<update_apply::ProcessIdentity>,
+    ) -> update_apply::PreparedUpdate {
+        let updates = directory.join("updates");
+        fs::create_dir_all(&updates).unwrap();
+        let prepared = update_apply::PreparedUpdate {
+            plan_path: directory.join("plan.json"),
+            outcome_path: directory.join("outcome.json"),
+            version: "1.1.0".to_owned(),
+        };
+        save_prepared_update(&updates, &prepared).unwrap();
+        fs::write(&prepared.plan_path, serde_json::to_vec(&json!({
+            "schemaVersion": 1,
+            "version": prepared.version,
+            "kind": if status == update_apply::OutcomeStatus::RebootRequired || cfg!(windows) { "windowsMsi" } else { "debianPackage" },
+            "package": directory.join("update-package"),
+            "target": directory.join("installed"),
+            "applicationExecutable": directory.join("installed/OpenNOW"),
+            "dataDir": directory.join("data"),
+            "processes": [],
+            "nonce": "a".repeat(64),
+            "managedIdentity": {
+                "package": if cfg!(windows) { "{00000000-0000-0000-0000-000000000000}" } else { "opennow-recovery-test-missing" },
+                "version": "1.1.0", "architecture": "amd64", "installed_product": "opennow-recovery-test-missing"
+            }
+        })).unwrap()).unwrap();
+        fs::write(
+            &prepared.outcome_path,
+            serde_json::to_vec(&update_apply::UpdateOutcome {
+                schema_version: 1,
+                version: prepared.version.clone(),
+                status,
+                message: "Native installation completion is pending".to_owned(),
+                installed_version: None,
+                restarted_process: installer,
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        prepared
+    }
+
+    #[test]
+    fn a_live_native_installer_keeps_persisted_updates_blocking() {
+        for status in [
+            update_apply::OutcomeStatus::ManagedPending,
+            update_apply::OutcomeStatus::RebootRequired,
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            persisted_managed_fixture(
+                directory.path(),
+                status,
+                Some(update_apply::ProcessIdentity::capture(std::process::id()).unwrap()),
+            );
+            let updater = UpdaterService::new(directory.path()).unwrap();
+            assert_eq!(updater.state()["status"], "managed-pending");
+            assert_eq!(updater.state()["canCheck"], false);
+            assert!(updater.installation_pending());
+            assert!(directory.path().join("updates/active-apply.json").exists());
+        }
+    }
+
+    #[test]
+    fn a_live_helper_keeps_native_recovery_blocking() {
+        use fs2::FileExt;
+        let directory = tempfile::tempdir().unwrap();
+        let mut installer = update_apply::ProcessIdentity::capture(std::process::id()).unwrap();
+        installer.started = installer.started.wrapping_add(1);
+        persisted_managed_fixture(
+            directory.path(),
+            update_apply::OutcomeStatus::ManagedPending,
+            Some(installer),
+        );
+        let lock = fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .read(true)
+            .open(directory.path().join("apply.lock"))
+            .unwrap();
+        lock.try_lock_exclusive().unwrap();
+        let updater = UpdaterService::new(directory.path()).unwrap();
+        assert!(updater.installation_pending());
+        assert_eq!(updater.state()["canCheck"], false);
+        drop(lock);
+        assert!(!updater.installation_pending());
+        assert_eq!(updater.state()["canCheck"], true);
+    }
+
+    #[test]
+    fn finished_native_installer_verification_failure_unblocks_and_clears_persistence() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut installer = update_apply::ProcessIdentity::capture(std::process::id()).unwrap();
+        installer.started = installer.started.wrapping_add(1);
+        let prepared = persisted_managed_fixture(
+            directory.path(),
+            update_apply::OutcomeStatus::ManagedPending,
+            Some(installer),
+        );
+        let updater = UpdaterService::new(directory.path()).unwrap();
+        assert_eq!(updater.state()["status"], "failed");
+        assert_eq!(updater.state()["canCheck"], true);
+        assert!(!updater.installation_pending());
+        assert!(updater.begin_operation().is_ok());
+        assert!(!directory.path().join("updates/active-apply.json").exists());
+        assert_eq!(
+            update_apply::read_outcome(&prepared.outcome_path)
+                .unwrap()
+                .unwrap()
+                .status,
+            update_apply::OutcomeStatus::Failed
+        );
+        let restarted = UpdaterService::new(directory.path()).unwrap();
+        assert!(!restarted.installation_pending());
+        assert_eq!(restarted.state()["canCheck"], true);
+    }
+
+    #[cfg(any(windows, target_os = "linux"))]
+    #[test]
+    fn missing_native_installer_identity_requires_a_proven_reboot_before_recovery() {
+        let directory = tempfile::tempdir().unwrap();
+        persisted_managed_fixture(
+            directory.path(),
+            update_apply::OutcomeStatus::ManagedPending,
+            None,
+        );
+        let updater = UpdaterService::new(directory.path()).unwrap();
+        assert!(updater.installation_pending());
+        assert_eq!(updater.state()["canCheck"], false);
+        assert!(
+            updater.state()["message"]
+                .as_str()
+                .unwrap()
+                .contains("Restart your system")
+        );
+        assert!(directory.path().join("updates/active-apply.json").exists());
+        assert!(directory.path().join("install-boot.json").exists());
+        fs::write(
+            directory.path().join("install-boot.json"),
+            br#"{"schemaVersion":1,"bootId":"previous-boot"}"#,
+        )
+        .unwrap();
+        let restarted = UpdaterService::new(directory.path()).unwrap();
+        assert!(!restarted.installation_pending());
+        assert_eq!(restarted.state()["status"], "failed");
+        assert_eq!(restarted.state()["canCheck"], true);
+        assert!(!directory.path().join("updates/active-apply.json").exists());
+    }
+
+    #[cfg(any(windows, target_os = "linux"))]
+    #[test]
+    fn reboot_warning_allows_sessions_but_blocks_update_operations_until_boot_change() {
+        let directory = tempfile::tempdir().unwrap();
+        persisted_managed_fixture(
+            directory.path(),
+            update_apply::OutcomeStatus::RebootRequired,
+            None,
+        );
+        let updater = UpdaterService::new(directory.path()).unwrap();
+        assert_eq!(updater.state()["status"], "reboot-required");
+        assert_eq!(updater.state()["canCheck"], false);
+        assert!(!updater.installation_pending());
+        assert!(
+            updater
+                .begin_operation()
+                .unwrap_err()
+                .contains("Restart your system")
+        );
+        assert!(directory.path().join("updates/active-apply.json").exists());
+        fs::write(
+            directory.path().join("install-boot.json"),
+            br#"{"schemaVersion":1,"bootId":"previous-boot"}"#,
+        )
+        .unwrap();
+        let restarted = UpdaterService::new(directory.path()).unwrap();
+        assert_eq!(restarted.state()["status"], "failed");
+        assert!(!restarted.installation_pending());
+        assert_eq!(restarted.state()["canCheck"], true);
+        assert!(!directory.path().join("updates/active-apply.json").exists());
+    }
+
+    #[test]
+    fn persisted_apply_outcomes_require_a_live_helper_before_quit() {
+        let directory = tempfile::tempdir().unwrap();
+        let updates = directory.path().join("updates");
+        fs::create_dir(&updates).unwrap();
+        let prepared = update_apply::PreparedUpdate {
+            plan_path: directory.path().join("plan.json"),
+            outcome_path: directory.path().join("outcome.json"),
+            version: "1.1.0".to_owned(),
+        };
+        save_prepared_update(&updates, &prepared).unwrap();
+        assert_eq!(
+            read_prepared_update(&updates).unwrap().unwrap().version,
+            "1.1.0"
+        );
+        for status in [
+            update_apply::OutcomeStatus::Prepared,
+            update_apply::OutcomeStatus::WaitingForExit,
+            update_apply::OutcomeStatus::BackingUp,
+            update_apply::OutcomeStatus::Installing,
+            update_apply::OutcomeStatus::AwaitingStartup,
+        ] {
+            fs::write(
+                &prepared.outcome_path,
+                serde_json::to_vec(&update_apply::UpdateOutcome {
+                    schema_version: 1,
+                    version: prepared.version.clone(),
+                    status,
+                    message: "A stale helper snapshot".to_owned(),
+                    installed_version: None,
+                    restarted_process: None,
+                })
+                .unwrap(),
+            )
+            .unwrap();
+            let updater = UpdaterService::new(directory.path()).unwrap();
+            assert_eq!(updater.state()["status"], "failed");
+            assert_eq!(updater.state()["exitRequired"], false);
+            assert!(!updater.installation_pending());
+        }
+    }
+
+    #[test]
+    fn corrupt_update_status_does_not_prevent_core_startup() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::create_dir(directory.path().join("updates")).unwrap();
+        fs::write(
+            directory.path().join("updates/active-apply.json"),
+            b"partial JSON",
+        )
+        .unwrap();
+        let updater = UpdaterService::new(directory.path()).unwrap();
+        assert_eq!(updater.state()["status"], "failed");
+        assert_eq!(updater.state()["exitRequired"], false);
+        assert_eq!(updater.state()["canCheck"], true);
+    }
+
+    #[test]
+    fn checks_and_errors_preserve_verified_install_capability() {
+        let mut state = notes_state();
+        state.downloaded = Some(DownloadedUpdate {
+            version: "1.1.0".to_owned(),
+            asset_name: "OpenNOW-Qt-linux-x64.AppImage".to_owned(),
+            path: PathBuf::from("/not-read-by-state"),
+            size: 123,
+            sha256: "ab".repeat(32),
+        });
+        for status in ["available", "not-available", "error"] {
+            state.status = status;
+            assert_eq!(state_json(&state)["canInstall"], true);
+            restore_downloaded_status(&mut state);
+            assert_eq!(state.status, "downloaded");
+            assert_eq!(state_json(&state)["downloadedVersion"], "1.1.0");
+        }
+        for status in ["checking", "downloading", "installing"] {
+            state.status = status;
+            assert_eq!(state_json(&state)["canInstall"], false);
+        }
+    }
+
+    #[test]
+    fn install_requires_consent_before_accessing_packages() {
+        let path =
+            std::env::temp_dir().join(format!("opennow-update-consent-{}", rand::random::<u64>()));
+        let updater = UpdaterService::new(&path).unwrap();
+        for params in [
+            json!({}),
+            json!({"confirmed":false}),
+            json!({"confirmed":"true"}),
+        ] {
+            assert_eq!(
+                updater.install(&params).unwrap_err(),
+                "Update installation requires explicit confirmation"
+            );
+        }
+        fs::remove_dir_all(path).unwrap();
+    }
 
     #[test]
     fn overlapping_update_operations_are_rejected_without_mutating_state() {
@@ -798,6 +1192,7 @@ mod tests {
             last_checked_at: None,
             available: None,
             downloaded: None,
+            transaction: None,
         }
     }
 
@@ -1094,37 +1489,5 @@ mod tests {
         verify_manifest(&manifest, &key).unwrap();
         manifest.size += 1;
         assert!(verify_manifest(&manifest, &key).is_err());
-    }
-
-    #[cfg(all(unix, not(target_os = "macos")))]
-    #[test]
-    fn failed_appimage_restart_restores_previous_binary() {
-        use std::os::unix::fs::PermissionsExt as _;
-        use std::time::{SystemTime, UNIX_EPOCH};
-
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let directory = std::env::temp_dir().join(format!(
-            "opennow-update-rollback-{}-{unique}",
-            std::process::id()
-        ));
-        fs::create_dir_all(&directory).unwrap();
-        let current = directory.join("OpenNOW.AppImage");
-        let staged = directory.join("OpenNOW-new.AppImage");
-        fs::write(&current, b"previous release").unwrap();
-        fs::write(&staged, b"not an executable image").unwrap();
-        fs::set_permissions(&current, fs::Permissions::from_mode(0o755)).unwrap();
-        fs::set_permissions(&staged, fs::Permissions::from_mode(0o755)).unwrap();
-
-        let error = replace_running_appimage(&current, &staged).unwrap_err();
-        assert!(error.contains("rolled back"));
-        assert_eq!(fs::read(&current).unwrap(), b"previous release");
-        assert_eq!(
-            fs::read(directory.join(".OpenNOW.AppImage.failed")).unwrap(),
-            b"not an executable image"
-        );
-        fs::remove_dir_all(directory).unwrap();
     }
 }

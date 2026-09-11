@@ -4,6 +4,10 @@ Qt updates fail closed unless the application core was compiled with a pinned
 Ed25519 public key. GitHub ownership, HTTPS and an asset checksum alone are not
 treated as an update signature.
 
+Public nightly publication requires the protected signing environment. See
+[Activate nightly update signing](update-signing-setup.md) for the current activation
+blocker and the first manual upgrade from a nightly without a pinned key.
+
 ## Release key boundary
 
 - Keep the 32-byte Ed25519 private seed only in the protected `qt-update-signing` environment secret
@@ -43,25 +47,95 @@ size=<decimal byte count>
 sha256=<lowercase digest>
 ```
 
-Generate a manifest on the isolated release runner after packaging and platform
-code signing:
+`qt-ci.yml` generates nightly manifests only after the shared checks, platform checks,
+and complete build succeed. The signing job uses `qt-update-signing` on the isolated
+`[self-hosted, opennow-release-signer]` runner. Its reviewed Python signing script and
+the runner's OpenSSL tools read packages as data. The signer never compiles source,
+extracts packages, or executes candidate binaries, including `opennow-update-manifest`.
+The checkout is pinned to the workflow's immutable `github.sha`, with Git credentials
+disabled. Environment approval covers that revision, including its signing scripts.
 
-```sh
-OPENNOW_UPDATE_ED25519_PRIVATE_KEY="$RELEASE_SECRET" \
-OPENNOW_UPDATE_ED25519_PUBLIC_KEY="$PINNED_PUBLIC_KEY" \
-  cargo run --manifest-path native/opennow-core/Cargo.toml \
-  --bin opennow-update-manifest -- \
-  build/OpenNOW-Qt-linux-x64.AppImage 0.6.0
-```
+The public `qt-ci` input `public_key` must be canonical base64 encoding of exactly
+32 bytes when `publish_nightly` is enabled. `qt-build` passes that same value through
+its optional `update_public_key` input to both CMake configurations. Artifact-only
+builds may omit the key and retain the core's unconfigured, fail-closed update policy.
 
-The generator refuses to write a manifest unless the supplied public key matches the private seed
-and the freshly generated signature verifies with that public key. Use the same public-key value
-for the CMake `OPENNOW_UPDATE_ED25519_PUBLIC_KEY` option and manifest generation; this prevents a
-signed release whose client cannot verify its own update feed.
+`opennow-qt/packaging/sign_nightly_release.py` checks the unsigned inventory's source
+commit, version, complete package names, sizes, and checksums before signing. It derives
+the public key from the private seed and requires an exact match with the build's key.
+Every generated signature is verified against its package before the final directory
+becomes available. A separate publisher job verifies the complete signed inventory
+again, without receiving the seed, before creating a draft prerelease. Only a complete
+upload is made public.
 
-Publish the package and its manifest together. The updater pins the repository,
-release-download URL, platform/architecture, asset name, manifest signature,
-declared size and SHA-256 digest before atomically staging anything executable.
-It re-hashes the staged file immediately before install. AppImage replacement
-keeps a `.previous` rollback copy and restores it if the updated image cannot
-restart; native installers remain responsible for their platform rollback.
+For version `<version>`, the public nightly inventory contains exactly these packages:
+
+- `OpenNOW-Qt-<version>-Windows-x64.msi`
+- `OpenNOW-Qt-<version>-Windows-x64.zip`
+- `OpenNOW-Qt-<version>-Windows-arm64.msi`
+- `OpenNOW-Qt-<version>-Windows-arm64.zip`
+- `OpenNOW-Qt-<version>-Linux-x64.AppImage`
+- `OpenNOW-Qt-<version>-Linux-x64.deb`
+- `OpenNOW-Qt-<version>-Linux-arm64.AppImage`
+- `OpenNOW-Qt-<version>-Linux-arm64.deb`
+- `OpenNOW-Qt-<version>-Darwin-arm64.dmg`
+
+Each package has its exact sibling manifest. `RELEASE-INFO.json` retains the immutable
+package inventory and changes `updates` from `manual-download` to `signed-manifest`.
+`platformSigning` remains `unsigned`: update signatures do not provide Authenticode
+or macOS notarization. Final `SHA256SUMS` covers all nine packages, all nine manifests,
+and the rewritten release metadata. The validation-only macOS ZIP is never published.
+
+The production `qt-release-candidate.yml` contract remains separate: eight Linux and
+Windows packages, platform signing, isolated update signing, and a candidate artifact.
+This nightly follow-up does not add a macOS production candidate or alter that contract.
+Nightly release notes retain the Alliance Partners warning and do not claim a compatibility fix.
+
+Nightly macOS packaging enables `OPENNOW_MACOS_ADHOC_SIGN`. Qt deployment signs nested
+code with `macdeployqt -codesign=-`, then the final install script seals the complete
+bundle with the target's stable `io.github.opencloudgaming.OpenNOW` identifier. This
+explicit final seal avoids inheriting a linker's temporary Mach-O identifier. Packaging
+fails if `codesign --verify --deep --strict` fails after deployment. Both relocated
+DMG and validation-ZIP bundles must also pass strict verification and report the same
+bundle identifier, `Signature=adhoc`, and `TeamIdentifier=not set` before any smoke test.
+Ad-hoc sealing provides no publisher identity or notarization; release warnings remain
+in place. This option is off by default and does not change production candidate signing.
+
+The updater pins the repository, release-download URL, platform/architecture, asset
+name, manifest signature, declared size, and SHA-256 digest before atomically staging
+anything executable. It re-hashes the staged file immediately before install.
+AppImage replacement keeps a `.previous` rollback copy and restores it if the updated
+image cannot restart; native installers remain responsible for their platform rollback.
+
+## Windows installation identity
+
+`opennow-qt/cmake/WindowsInstaller.cmake` preserves the existing MSI UpgradeCodes:
+
+- Stable: `6E81F7AE-B19D-4E87-A94A-2B2F01EBF762`
+- Nightly: `9661F4F8-656C-4B64-9035-01B04F4822B1`
+- Supporter: `B3AF8A40-5F44-445A-AD99-CECE00593601`
+
+Each channel's code is shared by x64 and ARM64 for compatibility with installed
+packages. It identifies an upgrade family, not an architecture. The helper must also
+validate the incoming MSI's SummaryInformation architecture and match an installed
+related product's registered root to the running installation. Portable ZIPs do not
+create an MSI product registration. A product registered elsewhere does not make a
+portable copy an MSI installation.
+
+CPack's WiX generator sets `ARPINSTALLLOCATION` to the resolved `[INSTALL_ROOT]`
+after `CostFinalize`. The installer policy leaves `CPACK_WIX_PROPERTY_ARPINSTALLLOCATION`
+unset so CPack also restores the previous product's registered root through its secure
+`INSTALL_ROOT` property. Do not add a second `SetARPINSTALLLOCATION` action in a product
+patch. Windows Installer stores the resolved value as `InstallLocation`, including
+custom installation paths.
+CPack still generates a new ProductCode for each MSI package and uses its existing
+`MajorUpgrade` behavior. The Windows installer integration test checks the registered
+root and requires exactly one related product after each successful channel upgrade.
+
+The Windows update helper builds separately in `update-helper-rust-target` with
+`RUSTFLAGS=-C target-feature=+crt-static` and an explicit Rust target. That invocation
+clears inherited encoded Rust flags without changing core or streamer builds. The
+helper is deployed as the usual sibling `opennow-update-helper.exe`. Final Windows
+MSI and ZIP validation rejects helper imports outside an explicit Windows system-DLL
+list, so Qt libraries and a separately installed Visual C++ runtime cannot mask a
+dependency that would break the helper when it runs outside the installation.

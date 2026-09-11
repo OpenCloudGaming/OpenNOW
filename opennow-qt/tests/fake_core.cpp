@@ -5,6 +5,7 @@
 #include <thread>
 #include <unordered_map>
 #include <cstdlib>
+#include <iomanip>
 
 namespace {
 std::string field(const std::string &json, const std::string &name)
@@ -32,6 +33,7 @@ int main(int argc, char **argv)
     std::string eofMarker;
     bool launchInConsoleMode = false;
     int consoleModeWriteCount = 0;
+    int startupAcknowledgements = 0;
     std::unordered_map<std::string, int> busyAttempts;
     if (argc == 3 && std::string(argv[1]) == "--eof-marker") {
         eofMarker = argv[2];
@@ -43,6 +45,19 @@ int main(int argc, char **argv)
         if (method == "core.hello") {
             std::cout << "{\"type\":\"response\",\"id\":\"" << id
                       << "\",\"ok\":true,\"result\":{\"protocolVersion\":1,\"capabilities\":[\"settings\",\"nativeStreamer.v6\",\"nativeStreamer.ownedNvstNegotiation\"]}}\n" << std::flush;
+        } else if (method == "updater.startup.ack") {
+            ++startupAcknowledgements;
+            std::cout << "{\"type\":\"response\",\"id\":\"" << id
+                      << "\",\"ok\":true,\"result\":{\"acknowledged\":true}}\n" << std::flush;
+        } else if (method == "test.app-context") {
+            const auto executable = std::getenv("OPENNOW_APP_EXECUTABLE");
+            const auto pid = std::getenv("OPENNOW_APP_PID");
+            std::cout << "{\"type\":\"response\",\"id\":\"" << id
+                      << "\",\"ok\":true,\"result\":{\"executable\":" << std::quoted(executable ? executable : "")
+                      << ",\"pid\":" << std::quoted(pid ? pid : "")
+                      << ",\"startupAcknowledgements\":" << startupAcknowledgements
+                      << ",\"hasUpdateEnvironment\":" << (std::getenv("OPENNOW_UPDATE_PLAN") && std::getenv("OPENNOW_UPDATE_NONCE") ? "true" : "false")
+                      << "}}\n" << std::flush;
         } else if (method == "session.create" || method == "streamer.prepare") {
             std::cout << "{\"type\":\"response\",\"id\":\"" << id
                       << "\",\"ok\":true,\"result\":" << line << "}\n" << std::flush;

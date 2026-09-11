@@ -159,7 +159,9 @@ jobs:
       - name: Test Windows MSI upgrades and stable isolation
         if: matrix.label == 'windows-x64'
         shell: pwsh
-        run: opennow-qt/tests/test_windows_installer.ps1
+        run: |
+          opennow-qt/tests/test_windows_installer.ps1
+          opennow-qt/tests/test_windows_helper_dependencies.ps1
 
       - name: Add package Rust target
         if: matrix.rust-target != ''
@@ -303,6 +305,7 @@ jobs:
             native/opennow-core -> target
             native/opennow-streamer -> target
             native/opennow-core -> ../../build/opennow-qt-release/rust-target
+            native/opennow-core -> ../../build/opennow-qt-release/update-helper-rust-target
             native/opennow-streamer -> ../../build/opennow-qt-release/streamer-rust-target
 
       - name: Cache Qt C++ compilation
@@ -373,7 +376,23 @@ jobs:
           cpack --config build/opennow-qt-release/CPackConfig.cmake \
             -C Release \
             -G "$PACKAGE_GENERATOR" \
-            -B build/qt-packages
+            -B build/qt-packages || {
+              status=$?
+              if [[ "$RUNNER_OS" == Windows ]]; then
+                log_count=0
+                while IFS= read -r -d '' log; do
+                  printf '\n--- WiX packaging log: %s (last 200 lines, at most 64 KiB) ---\n' "$log"
+                  tail -n 200 "$log" | tail -c 65536 || true
+                  log_count=$((log_count + 1))
+                  if [[ "$log_count" -ge 4 ]]; then
+                    echo "WiX diagnostics limited to four logs."
+                    break
+                  fi
+                done < <(find build/qt-packages -maxdepth 6 -type f -iname wix.log -print0)
+                if [[ "$log_count" -eq 0 ]]; then echo "No generated WiX logs found."; fi
+              fi
+              exit "$status"
+            }
 
       - name: Verify Windows MSI and portable ZIP payloads
         if: runner.os == 'Windows'
@@ -491,6 +510,7 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=arm64 \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
             -DCMAKE_OSX_DEPLOYMENT_TARGET="$MACOSX_DEPLOYMENT_TARGET" \
+            -DOPENNOW_MACOS_ADHOC_SIGN=ON \
             -DOPENNOW_BUILD_VERSION="$OPENNOW_BUILD_VERSION" \
             -DOPENNOW_UPDATE_ED25519_PUBLIC_KEY="$OPENNOW_UPDATE_PUBLIC_KEY" \
             -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/SDL-install"
@@ -529,8 +549,14 @@ jobs:
           hdiutil detach "$mount"
           trap - EXIT
           for app in "$zip_app" "$RUNNER_TEMP/dmg-relocated/OpenNOW.app"; do
+            /usr/bin/codesign --verify --deep --strict "$app"
+            [[ $(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Contents/Info.plist") == io.github.opencloudgaming.OpenNOW ]]
+            identity=$(/usr/bin/codesign --display --verbose=4 "$app" 2>&1)
+            printf '%s\n' "$identity" | grep -Fx 'Identifier=io.github.opencloudgaming.OpenNOW'
+            printf '%s\n' "$identity" | grep -Fx 'Signature=adhoc'
+            printf '%s\n' "$identity" | grep -Fx 'TeamIdentifier=not set'
             bin="$app/Contents/MacOS"
-            for executable in OpenNOW opennow-core opennow-acceptance-verify opennow-streamer; do
+            for executable in OpenNOW opennow-core opennow-acceptance-verify opennow-update-helper opennow-streamer; do
               test -x "$bin/$executable"
               lipo "$bin/$executable" -verify_arch arm64
             done
@@ -563,7 +589,7 @@ jobs:
 
           bin_dir = Path(sys.argv[1])
           for name in ("OpenNOW", "opennow-core", "opennow-acceptance-verify",
-                       "opennow-streamer", "libopennow_streamer_ffi.dylib"):
+                       "opennow-update-helper", "opennow-streamer", "libopennow_streamer_ffi.dylib"):
               dependencies = subprocess.check_output(["otool", "-L", bin_dir / name], text=True)
               for line in dependencies.splitlines()[1:]:
                   dependency = line.strip().split(" (", 1)[0]

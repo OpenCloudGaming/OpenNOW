@@ -94,6 +94,17 @@ runs:
       run: |
         cargo test --locked --manifest-path native/opennow-core/Cargo.toml
         cargo test --locked --manifest-path native/opennow-streamer/Cargo.toml --workspace
+    - name: Test signed update helper integration
+      shell: bash
+      working-directory: ${{ env.OPENNOW_CHECKOUT }}
+      env:
+        CARGO_BUILD_JOBS: ${{ inputs.parallel }}
+      run: |
+        if [[ "$RUNNER_OS" == Windows ]]; then
+          python opennow-qt/tests/run_update_helper_integration.py
+        else
+          python3 opennow-qt/tests/run_update_helper_integration.py
+        fi
     - name: Install Qt
       uses: jurplel/install-qt-action@v4
       with:

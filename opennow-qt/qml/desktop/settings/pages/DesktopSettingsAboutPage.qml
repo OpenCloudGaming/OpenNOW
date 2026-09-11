@@ -17,7 +17,7 @@ Column {
             leadingIcon: "qrc:/qt/qml/OpenNOW/res/brand/opennow-mark.png"
             title: "OpenNOW " + String(ShellStore.updaterState.currentVersion || qsTr("unknown"))
             description: qsTr("Your games, anywhere.")
-            DesktopSettingsButton { text: ShellStore.updaterState.status === "checking" ? qsTr("Checking…") : qsTr("Check for updates"); primary: true; enabled: ShellStore.updaterState.status !== "checking"; onClicked: ShellStore.checkForUpdates() }
+            DesktopSettingsButton { text: ShellStore.updaterState.status === "checking" ? qsTr("Checking…") : qsTr("Check for updates"); primary: true; enabled: !ShellStore.updaterBusy && ShellStore.updaterState.canCheck === true; onClicked: ShellStore.checkForUpdates() }
         }
         DesktopSettingsRow {
             width: parent.width; paperStyle: true; glyph: "arrows"; title: qsTr("Update channel")
@@ -27,6 +27,26 @@ Column {
                 objectName: "renewUpdateChannel"
                 optionWidth: 96; selectedIndex: options.findIndex(item => item.value === page.settingsScreen.valueSetting("updateChannel","stable"))
                 onSelected: (index,item) => page.settingsScreen.setChoice("updateChannel",item.value)
+            }
+        }
+        DesktopSettingsRow {
+            width: parent.width; paperStyle: true; title: qsTr("Automatically check for updates")
+            description: qsTr("Check every six hours while no streaming session is active.")
+            DesktopSettingsToggle {
+                objectName: "autoCheckUpdatesToggle"
+                Accessible.name: qsTr("Automatically check for updates")
+                checked: page.settingsScreen.boolSetting("autoCheckForUpdates", false)
+                onValueChangedByUser: value => page.settingsScreen.setSetting("autoCheckForUpdates", value)
+            }
+        }
+        DesktopSettingsRow {
+            width: parent.width; paperStyle: true; title: qsTr("Automatically download updates")
+            description: qsTr("Download verified updates while idle. Installation always requires your confirmation.")
+            DesktopSettingsToggle {
+                objectName: "autoDownloadUpdatesToggle"
+                Accessible.name: qsTr("Automatically download updates")
+                checked: page.settingsScreen.boolSetting("autoDownloadUpdates", false)
+                onValueChangedByUser: value => page.settingsScreen.setSetting("autoDownloadUpdates", value)
             }
         }
         DesktopSettingsRow {

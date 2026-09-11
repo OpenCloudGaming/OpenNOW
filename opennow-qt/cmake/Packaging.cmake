@@ -20,6 +20,7 @@ elseif(NOT APPLE)
     install(PROGRAMS
         "$<TARGET_FILE_DIR:opennow-qt>/opennow-core${OPENNOW_CORE_SUFFIX}"
         "$<TARGET_FILE_DIR:opennow-qt>/opennow-acceptance-verify${OPENNOW_CORE_SUFFIX}"
+        "$<TARGET_FILE_DIR:opennow-qt>/opennow-update-helper${OPENNOW_CORE_SUFFIX}"
         DESTINATION "${CMAKE_INSTALL_BINDIR}"
     )
     install(PROGRAMS "${OPENNOW_STREAMER_FFI_RUNTIME}"
@@ -30,6 +31,7 @@ else()
     install(PROGRAMS
         "${OPENNOW_CORE_ARTIFACT_ROOT}/${OPENNOW_CORE_PROFILE}/opennow-core${OPENNOW_CORE_SUFFIX}"
         "${OPENNOW_CORE_ARTIFACT_ROOT}/${OPENNOW_CORE_PROFILE}/opennow-acceptance-verify${OPENNOW_CORE_SUFFIX}"
+        "${OPENNOW_CORE_ARTIFACT_ROOT}/${OPENNOW_CORE_PROFILE}/opennow-update-helper${OPENNOW_CORE_SUFFIX}"
         DESTINATION "${OPENNOW_EXECUTABLE_NAME}.app/Contents/MacOS")
     install(FILES "${OPENNOW_STREAMER_FFI_RUNTIME}"
         DESTINATION "${OPENNOW_EXECUTABLE_NAME}.app/Contents/MacOS")
@@ -63,10 +65,15 @@ if(UNIX AND NOT APPLE)
 endif()
 
 if(APPLE)
+    option(OPENNOW_MACOS_ADHOC_SIGN "Ad-hoc seal deployed macOS bundles without a signing identity" OFF)
     set(OPENNOW_QT_DEPLOY_TOOL_ARGS DEPLOY_TOOL_OPTIONS
         "-executable=${OPENNOW_EXECUTABLE_NAME}.app/Contents/MacOS/opennow-core"
         "-executable=${OPENNOW_EXECUTABLE_NAME}.app/Contents/MacOS/opennow-acceptance-verify"
+        "-executable=${OPENNOW_EXECUTABLE_NAME}.app/Contents/MacOS/opennow-update-helper"
         "-executable=${OPENNOW_EXECUTABLE_NAME}.app/Contents/MacOS/opennow-streamer")
+    if(OPENNOW_MACOS_ADHOC_SIGN)
+        list(APPEND OPENNOW_QT_DEPLOY_TOOL_ARGS "-codesign=-")
+    endif()
 endif()
 
 if(WIN32 OR APPLE)
@@ -77,6 +84,15 @@ if(WIN32 OR APPLE)
         ${OPENNOW_QT_DEPLOY_TOOL_ARGS}
     )
     install(SCRIPT "${opennow_deploy_script}")
+    if(APPLE AND OPENNOW_MACOS_ADHOC_SIGN)
+        get_target_property(OPENNOW_MACOS_BUNDLE_IDENTIFIER opennow-qt MACOSX_BUNDLE_GUI_IDENTIFIER)
+        if(NOT OPENNOW_MACOS_BUNDLE_IDENTIFIER)
+            message(FATAL_ERROR "Ad-hoc bundle signing requires a stable macOS bundle identifier")
+        endif()
+        configure_file("${CMAKE_CURRENT_LIST_DIR}/../packaging/macos-adhoc-seal.cmake.in"
+            "${CMAKE_CURRENT_BINARY_DIR}/macos-adhoc-seal.cmake" @ONLY)
+        install(SCRIPT "${CMAKE_CURRENT_BINARY_DIR}/macos-adhoc-seal.cmake")
+    endif()
 endif()
 
 set(CPACK_PACKAGE_NAME "OpenNOW")

@@ -25,6 +25,9 @@ def verify_capabilities(message):
 
 
 def verify_package(bin_dir):
+    helper = bin_dir / "opennow-update-helper"
+    if not helper.is_file() or not os.access(helper, os.X_OK):
+        raise ValueError("The package is missing its executable update helper")
     for name in ("opennow-streamer", "libopennow_streamer_ffi.so"):
         binary = bin_dir / name
         dependencies = subprocess.check_output(["readelf", "-d", binary], text=True)

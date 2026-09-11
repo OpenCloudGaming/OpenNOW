@@ -196,7 +196,7 @@ and artwork only near the viewport, using the section's local category ID
 - `cache.delete`
 - `queue.status.get`, `queue.serverMapping.get`
 - `thanks.data.get`, `communityProxy.provision`
-- `updater.state.get`, `updater.check`, `updater.download`, `updater.install`
+- `updater.state.get`, `updater.check`, `updater.download`, `updater.install`, `updater.startup.ack`
 - `updater.highlights.get`, `updater.highlights.ack`
 - `social.capabilities.get`
 - `discord.activity.sync`, `discord.activity.clear`
@@ -437,6 +437,71 @@ release, independently of `updater.state.get.availableVersion`. Historical notes
 do not emit `updater.highlights.show` or enable downloading a downgrade. Missing
 release bodies and empty channels return an explanatory note instead of the
 pre-check placeholder.
+
+Updater preferences are independent. `autoCheckForUpdates` defaults to `true`;
+`autoDownloadUpdates` defaults to `false` and requires an explicit opt-in. Neither
+preference authorizes installation or application shutdown. New profiles use the
+nightly update channel when the embedded application version has a `nightly`
+prerelease identifier; existing persisted channel choices are preserved.
+
+`updater.install` requires the boolean parameter `confirmed: true`. The core
+serializes update preparation against session creation, claiming, polling, and
+streamer startup. It rejects installation while a CloudMatch session exists or
+the streamer is starting, negotiating, streaming, or recovering. The shell must
+also check its local native-runtime state before requesting installation.
+
+`updater.state.get` is authoritative after an error or request timeout. The core
+emits `updater.changed` after update operations even if the original request was
+cancelled, because cancellation does not undo an installation already prepared
+by the native helper. Clients must not synthesize `canDownload`, `canInstall`, or
+`canCheck` from an error message. A failed check or a later release check does not
+discard an already verified download.
+
+The additive updater state fields `exitRequired` and `installVersion` describe
+the prepared installation, separately from `availableVersion` and
+`downloadedVersion`. The shell may quit for an update only after a confirmed
+install request in that same shell process, with authoritative
+`status: "awaiting-exit"` and `exitRequired: true`, and while the local session
+remains inactive. `preparing`, `applying`, and `restarting` are not permission to
+quit. Terminal outcomes are `succeeded`, `rolled-back`, and `failed`;
+`managed-pending` and `reboot-required` require native package-manager or operating
+system completion. Spawning an installer or the replacement application never
+counts as success.
+
+On a later launch, the core reconciles these managed outcomes against the native
+package registration and its running version. A known live installer keeps
+`managed-pending` active. A completed installer resolves to `succeeded` or
+`failed`, and the core clears the persisted active transaction. An MSI reboot
+warning remains until Windows' per-boot sequence number changes. Sessions
+remain available, but another update must wait for the required reboot so it
+cannot overlap pending Windows file replacements. Reopening the app before
+reboot does not count as successful installation.
+
+If an installer process cannot be identified, the core keeps the transaction
+pending until a recorded boot change proves that the previous installer has
+stopped. Legacy transactions without a boot marker establish a baseline and may
+require one additional restart rather than guessing that installation finished.
+
+Windows portable replacement requires a volume with persistent ACL support;
+FAT/exFAT installations are refused before shutdown because private staging
+cannot be enforced there. Preserved portable profile data retains its ownership
+and effective access permissions. Preparation also fails before shutdown if the
+replacement overlaps user data or exceeds the bounded copy limits. MSI packages
+use Windows Installer registration and preserve the registered installation root;
+they are not treated as portable directories.
+
+`updater.startup.ack` accepts no parameters and returns `{ "acknowledged": true }`
+only for a valid helper-launched update attempt. A normal launch returns
+`acknowledged: false`. The shell calls it after its UI and core connection are
+ready. The core validates the prepared version, per-attempt nonce, and running
+Qt application identity before acknowledging startup to the waiting helper.
+These changes are additive within protocol version 1; they do not change the
+native streamer ABI.
+
+`updater.highlights.show` announces unread release notes, not a navigation
+command. The shell keeps the current stream and its video item alive, defers the
+announcement during sessions, and acknowledges the notes only when the user
+opens them.
 
 Setting `themePack` applies its default appearance (`light` for Bone/Cobalt, `dark`
 for the other built-in packs) and clears `themeAccentOverride` in the same save.

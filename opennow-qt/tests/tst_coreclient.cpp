@@ -9,6 +9,7 @@
 #include <QRegularExpression>
 #include <QTemporaryDir>
 #include <QTest>
+#include <algorithm>
 
 namespace {
 QString fakeCorePath()
@@ -63,6 +64,68 @@ private slots:
         qunsetenv("OPENNOW_TEST_GPU_BOOTSTRAP");
         QVERIFY(preference.isEmpty());
         QVERIFY(elapsed.elapsed() < 4'000);
+    }
+
+    void acknowledgesUpdateOnlyAfterUiAndCoreAreReady_data()
+    {
+        QTest::addColumn<bool>("uiFirst");
+        QTest::newRow("ui-first") << true;
+        QTest::newRow("core-first") << false;
+    }
+
+    void acknowledgesUpdateOnlyAfterUiAndCoreAreReady()
+    {
+        QFETCH(bool, uiFirst);
+        qputenv("OPENNOW_UPDATE_PLAN", "/fixture/update/plan.json");
+        qputenv("OPENNOW_UPDATE_NONCE", "fixture-nonce");
+        CoreClient client;
+        QVERIFY(!qEnvironmentVariableIsSet("OPENNOW_UPDATE_PLAN"));
+        QVERIFY(!qEnvironmentVariableIsSet("OPENNOW_UPDATE_NONCE"));
+        QSignalSpy responses(&client, &CoreClient::responseReceived);
+        if (uiFirst) client.markUiReady();
+        QVERIFY(client.start(fakeCorePath()));
+        QTRY_COMPARE_WITH_TIMEOUT(client.state(), QStringLiteral("ready"), 2'000);
+        if (!uiFirst) {
+            responses.clear();
+            const auto id = client.request(QStringLiteral("test.app-context"));
+            QTRY_COMPARE_WITH_TIMEOUT(responses.size(), 1, 2'000);
+            QCOMPARE(responses.first().at(0).toString(), id);
+            const auto context = qvariant_cast<QJsonObject>(responses.first().at(1));
+            QCOMPARE(context.value(QStringLiteral("startupAcknowledgements")).toInt(), 0);
+            QVERIFY(context.value(QStringLiteral("hasUpdateEnvironment")).toBool());
+            client.markUiReady();
+        }
+        QTRY_VERIFY_WITH_TIMEOUT(std::any_of(responses.begin(), responses.end(), [](const auto &response) {
+            return qvariant_cast<QJsonObject>(response.at(1)).value(QStringLiteral("acknowledged")).toBool();
+        }), 2'000);
+        client.stop();
+        QVERIFY(client.start(fakeCorePath()));
+        QTRY_COMPARE_WITH_TIMEOUT(client.state(), QStringLiteral("ready"), 2'000);
+        responses.clear();
+        client.request(QStringLiteral("test.app-context"));
+        QTRY_COMPARE_WITH_TIMEOUT(responses.size(), 1, 2'000);
+        const auto context = qvariant_cast<QJsonObject>(responses.first().at(1));
+        QCOMPARE(context.value(QStringLiteral("startupAcknowledgements")).toInt(), 0);
+        QVERIFY(!context.value(QStringLiteral("hasUpdateEnvironment")).toBool());
+    }
+
+    void passesCanonicalApplicationIdentityToCore()
+    {
+        CoreClient client;
+        client.markUiReady();
+        QSignalSpy responses(&client, &CoreClient::responseReceived);
+        QVERIFY(client.start(fakeCorePath()));
+        QTRY_COMPARE_WITH_TIMEOUT(client.state(), QStringLiteral("ready"), 2'000);
+        responses.clear();
+        const auto id = client.request(QStringLiteral("test.app-context"));
+        QTRY_COMPARE_WITH_TIMEOUT(responses.size(), 1, 2'000);
+        QCOMPARE(responses.first().at(0).toString(), id);
+        const auto context = qvariant_cast<QJsonObject>(responses.first().at(1));
+        QCOMPARE(context.value(QStringLiteral("executable")).toString(),
+                 QFileInfo(QCoreApplication::applicationFilePath()).canonicalFilePath());
+        QCOMPARE(context.value(QStringLiteral("pid")).toString(),
+                 QString::number(QCoreApplication::applicationPid()));
+        QCOMPARE(context.value(QStringLiteral("startupAcknowledgements")).toInt(), 0);
     }
 
     void retriesAdmissionRejectionsWithoutFailingTheCaller()

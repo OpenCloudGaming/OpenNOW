@@ -59,9 +59,10 @@ ctest --test-dir build/opennow-qt -C Debug --output-on-failure --no-tests=error 
 ### Manual artifact-only builds
 
 In GitHub **Actions → qt-ci → Run workflow**, select `dev` (or the branch or tag
-to build) and leave **Publish an unsigned nightly prerelease after all checks pass**
-unchecked. The existing workflow uploads build artifacts without creating a release
-or tag. No separate supporter-build workflow is needed.
+to build) and leave **Publish a nightly with signed update manifests after all checks pass**
+unchecked. Leave the `public_key` input empty for a no-key artifact-only build. The workflow
+uploads build artifacts without creating a release, tag, or updater manifests, and requires
+no signing environment. No separate supporter-build workflow is needed.
 
 After a successful run, download
 `opennow-qt-<version>-complete-unsigned` from the run's **Artifacts** section.
@@ -71,9 +72,13 @@ portable ZIPs, Linux x64/ARM64 AppImages and DEBs, the Apple Silicon macOS DMG, 
 and source-commit metadata. The macOS ARM64 validation ZIP is a separate artifact.
 Artifacts expire after 14 days.
 
-These builds are unsigned and require manual downloads for updates. Windows may
-show a SmartScreen warning; macOS packages are not notarized. Windows ARM64 is
-cross-built rather than runtime-tested. Linux DEBs require Qt 6.8+ and SDL3;
+These default no-key builds have no platform publisher signatures and require manual downloads
+for updates. Public publishing instead requires a pinned public key and the protected isolated
+signer described in the [signing setup guide](../docs/update-signing-setup.md); see the
+[nightly release runbook](../docs/qt-nightly-release.md) for the publishing command. Users of
+earlier no-key nightlies must manually install an update-enabled build once before verified
+in-app updates can work. Windows may show a SmartScreen warning; macOS packages are not notarized.
+Windows ARM64 is cross-built rather than runtime-tested. Linux DEBs require Qt 6.8+ and SDL3;
 AppImages are the portable option. Download the files and distribute them through
 your supporter channel. **Actions artifacts in this public repository are not
 private or supporter-access-controlled**, even though they do not appear in Releases.

@@ -1,5 +1,6 @@
 OpenNOW.exe
 opennow-core.exe
 opennow-acceptance-verify.exe
+opennow-update-helper.exe
 opennow-streamer.exe
 opennow_streamer_ffi.dll

@@ -351,6 +351,7 @@ jobs:
           cache-bin: false
           workspaces: |
             native/opennow-core -> ../../build/opennow-qt-release/rust-target
+            native/opennow-core -> ../../build/opennow-qt-release/update-helper-rust-target
             native/opennow-streamer -> ../../build/opennow-qt-release/streamer-rust-target
 
       - name: Cache Qt C++ compilation
