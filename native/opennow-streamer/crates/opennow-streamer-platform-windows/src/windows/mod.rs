@@ -430,6 +430,9 @@ pub(super) fn probe(
     let av1_software_decode = av1_software_decoder.is_ok();
     let d3d11_presentation = graphics.is_ok();
     let wasapi_render = audio.is_ok();
+    if let Err(error) = &audio {
+        video_log!("Windows standalone WASAPI output probe failed: {error}");
+    }
     let mut probe = CapabilityProbe {
         available: false,
         h264_hardware_decode,
