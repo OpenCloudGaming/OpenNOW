@@ -176,14 +176,22 @@ bool AppController::applyOverlay(const QString &overlay)
 bool AppController::cyclePrimaryRoute(int direction)
 {
     const auto &items = primaryRoutes();
-    auto index = items.indexOf(m_route);
+    const auto current = m_overlay == u"friends"_s ? u"friends"_s
+        : m_route.startsWith(u"settings"_s) || m_route == u"controllers"_s
+            ? u"settings"_s : m_route;
+    auto index = items.indexOf(current);
     if (index < 0) {
         index = 0;
     } else {
         const auto delta = direction < 0 ? -1 : 1;
         index = (index + delta + items.size()) % items.size();
     }
-    return navigate(items.at(index));
+    const auto &target = items.at(index);
+    if (target == u"friends"_s)
+        return showOverlay(target);
+    if (target == m_route)
+        return showOverlay({});
+    return navigate(target);
 }
 
 bool AppController::cycleGuidePage(int direction)
@@ -548,7 +556,6 @@ const QStringList &AppController::primaryRoutes()
         u"library"_s,
         u"store"_s,
         u"friends"_s,
-        u"controllers"_s,
         u"settings"_s,
     };
     return value;

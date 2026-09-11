@@ -108,10 +108,21 @@ FocusScope {
     }
 
     Keys.onPressed: event => {
-        if (event.key === Qt.Key_Y && !virtualKeyboard.presented) {
+        if (virtualKeyboard.presented)
+            return
+        if (event.key === Qt.Key_Back) {
             root.showSearchKeyboard()
-            event.accepted = true
-        }
+        } else if (event.key === Qt.Key_Y) {
+            if (!event.isAutoRepeat && root.selectedGame !== null)
+                ShellStore.toggleFavorite(root.selectedGame)
+        } else if (event.key === Qt.Key_X) {
+            if (!event.isAutoRepeat)
+                detailsButton.click()
+        } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+            if (!event.isAutoRepeat)
+                detailsButton.click()
+        } else return
+        event.accepted = true
     }
 
     ScreenBackground { tint: "#354016" }
@@ -145,7 +156,7 @@ FocusScope {
                 background: Rectangle { radius: 26; color: searchField.activeFocus ? Theme.glassStrong : Qt.rgba(1, 1, 1, 0.10); border.color: searchField.activeFocus ? Theme.focus : Theme.seam; border.width: searchField.activeFocus ? 3 : 1 }
                 ControllerGlyph {
                     x: 14; anchors.verticalCenter: parent.verticalCenter
-                    glyph: "Y"; label: ""; glyphSize: 26
+                    glyph: "VIEW"; label: ""; glyphSize: 26
                     TapHandler { onTapped: root.showSearchKeyboard() }
                 }
                 Item {
@@ -285,6 +296,7 @@ FocusScope {
                 }
             }
             GlassButton {
+                id: favoriteButton
                 width: parent.width
                 text: root.selectedGame && ShellStore.isFavorite(root.selectedGame)
                     ? qsTr("Remove from My games") : qsTr("Add to My games")
@@ -293,13 +305,23 @@ FocusScope {
                 enabled: root.selectedGame !== null
                 onClicked: ShellStore.toggleFavorite(root.selectedGame)
             }
-            GlassButton { width: parent.width; text: ShellStore.signedIn ? qsTr("Play now") : qsTr("Sign in to play"); glyph: "X"; enabled: root.selectedGame !== null; onClicked: ShellStore.signedIn ? ShellStore.openGame(root.selectedGame) : AppController.navigate("sign-in") }
+            GlassButton { id: detailsButton; width: parent.width; text: qsTr("Details"); glyph: "X"; enabled: root.selectedGame !== null; onClicked: ShellStore.openGame(root.selectedGame) }
         }
     }
 
-    AppChrome { anchors.fill: parent; title: qsTr("GeForce NOW library"); currentRoute: "library"; onRouteRequested: route => AppController.navigate(route) }
+    AppChrome {
+        anchors.fill: parent
+        title: qsTr("GeForce NOW library")
+        currentRoute: "library"
+        leftHints: [{glyph: "VIEW", label: qsTr("Search")},
+                    {glyph: "Y", label: favoriteButton.text}]
+        rightHints: [{glyph: "A", label: qsTr("Details")},
+                     {glyph: "B", label: qsTr("Back")}]
+        onRouteRequested: route => AppController.navigate(route)
+    }
     VirtualKeyboard {
         id: virtualKeyboard
+        objectName: "consoleLibraryKeyboard"
         anchors.fill: parent
         onAccepted: value => {
             root.searchQuery = value

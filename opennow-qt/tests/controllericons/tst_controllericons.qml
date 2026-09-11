@@ -86,6 +86,22 @@ TestCase {
         compare(prompt.visible, false)
     }
 
+    function test_consoleButtonReturnActivation_data() {
+        return [{tag: "return", key: Qt.Key_Return}, {tag: "enter", key: Qt.Key_Enter}]
+    }
+
+    function test_consoleButtonReturnActivation(data) {
+        const button = createTemporaryObject(buttonComponent, testCase, {width: 200})
+        let clicks = 0
+        button.clicked.connect(() => ++clicks)
+        button.forceActiveFocus()
+        keyClick(data.key)
+        compare(clicks, 1)
+        button.enabled = false
+        keyClick(data.key)
+        compare(clicks, 1)
+    }
+
     function test_desktopControllerIcons() {
         for (const glyph of ["controller", "xbox", "playstation"]) {
             const icon = createTemporaryObject(settingsComponent, testCase, {glyph: glyph})
