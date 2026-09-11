@@ -28,6 +28,7 @@ struct PlaneCopy {
 #[derive(Debug)]
 struct SandLayout {
     planes: [PlaneCopy; 2],
+    buffer_sizes: Vec<u64>,
 }
 
 impl SandLayout {
@@ -78,6 +79,7 @@ impl SandLayout {
         }
         let mut copies = Vec::with_capacity(2);
         let mut plane_ranges = Vec::with_capacity(2);
+        let mut buffer_sizes = vec![0; frame.objects.len()];
         for (index, plane) in [luma, chroma].into_iter().enumerate() {
             let object = &frame.objects[plane.object_index];
             let column_height = if y_height == 0 {
@@ -115,6 +117,7 @@ impl SandLayout {
                 if end > object.size as u64 {
                     return Err(invalid("column copy exceeds DMA-BUF object size"));
                 }
+                buffer_sizes[plane.object_index] = buffer_sizes[plane.object_index].max(end);
                 regions.push(
                     vk::BufferImageCopy::default()
                         .buffer_offset(offset)
@@ -149,6 +152,7 @@ impl SandLayout {
         }
         Ok(Self {
             planes: copies.try_into().expect("two planes"),
+            buffer_sizes,
         })
     }
 }
@@ -254,7 +258,8 @@ pub(super) fn import(
     let buffers = frame
         .objects
         .iter()
-        .map(|object| import_buffer(instance, physical, device, object))
+        .zip(&layout.buffer_sizes)
+        .map(|(object, &size)| import_buffer(instance, physical, device, object, size))
         .collect::<Result<Vec<_>>>()?;
     Ok(ImportedSandFrame {
         buffers,
@@ -268,6 +273,7 @@ fn import_buffer(
     physical: vk::PhysicalDevice,
     device: &ash::Device,
     object: &crate::DmaBufObject,
+    size: u64,
 ) -> Result<ImportedBuffer> {
     let mut external = vk::ExternalMemoryBufferCreateInfo::default()
         .handle_types(vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT);
@@ -275,7 +281,7 @@ fn import_buffer(
         device.create_buffer(
             &vk::BufferCreateInfo::default()
                 .push_next(&mut external)
-                .size(object.size as u64)
+                .size(size)
                 .usage(vk::BufferUsageFlags::TRANSFER_SRC)
                 .sharing_mode(vk::SharingMode::EXCLUSIVE),
             None,
@@ -647,6 +653,58 @@ mod tests {
             format_modifier: SAND128,
         };
         assert_eq!(import_allocation_size(&object, 8192).unwrap(), 8192);
+    }
+
+    #[test]
+    fn sand_transfer_buffers_leave_decoder_padding_for_driver_read_ahead() {
+        let (mut frame, format) = fixture(true, 1920, 1080);
+        frame.layers[0].planes[0].pitch = 1088;
+        frame.layers[0].planes[1].pitch = 544;
+        let allocations = [sized_fd(2_097_152), sized_fd(1_048_576)];
+        for (object, fd) in frame.objects.iter_mut().zip(&allocations) {
+            object.fd = fd.as_raw_fd();
+            object.size = unsafe { libc::lseek(object.fd, 0, libc::SEEK_END) } as usize;
+        }
+        let layout = SandLayout::new(&frame, format).unwrap();
+        assert_eq!(layout.buffer_sizes, [2_087_936, 1_043_968]);
+        for (object, &size) in frame.objects.iter().zip(&layout.buffer_sizes) {
+            let required_size = (size + 64).next_multiple_of(256);
+            assert_eq!(
+                import_allocation_size(object, required_size).unwrap(),
+                object.size as u64
+            );
+            assert!(
+                import_allocation_size(object, (object.size as u64 + 64).next_multiple_of(256))
+                    .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn sand_transfer_buffer_extents_cover_both_planes_and_partial_columns() {
+        for split in [false, true] {
+            for (width, height) in [(2, 2), (128, 64), (130, 66), (1920, 1080)] {
+                let (frame, format) = fixture(split, width, height);
+                let layout = SandLayout::new(&frame, format).unwrap();
+                let mut extents = vec![0; frame.objects.len()];
+                for (index, plane) in layout.planes.iter().enumerate() {
+                    for region in &plane.regions {
+                        let end = region.buffer_offset
+                            + u64::from(region.image_extent.height - 1) * 128
+                            + (u64::from(region.image_extent.width) << index);
+                        assert!(end <= layout.buffer_sizes[plane.object]);
+                        extents[plane.object] = extents[plane.object].max(end);
+                    }
+                }
+                assert_eq!(layout.buffer_sizes, extents);
+                for (object, &size) in frame.objects.iter().zip(&layout.buffer_sizes) {
+                    assert!(size > 0 && size <= object.size as u64);
+                }
+                if !split {
+                    assert!(layout.buffer_sizes[0] < frame.objects[0].size as u64);
+                }
+            }
+        }
     }
 
     #[test]
