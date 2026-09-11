@@ -7,6 +7,18 @@
     "dedicatedMemory": "%1 GB dedicated memory",
     "sharedMemory": "Shared graphics memory"
   },
+  "safeUpdates": {
+    "installVersion": "Install %1 and restart",
+    "availableVersion": "Available version: %1",
+    "confirmation": "OpenNOW will prepare the verified update, close, replace this installation, and restart. Continue?",
+    "sessionDeferred": "End your streaming session before installing an update. Background updates will wait.",
+    "progress": "Update in progress",
+    "highlights": "Release notes are available in Updates.",
+    "autoCheck": "Automatically check for updates",
+    "autoCheckDescription": "Check every six hours while no streaming session is active.",
+    "autoDownload": "Automatically download updates",
+    "autoDownloadDescription": "Download verified updates while idle. Installation always requires your confirmation."
+  },
   "streamStatsV2": {
     "allocatedBitrate": "Allocated bitrate usage",
     "unstable": "Connection unstable",
