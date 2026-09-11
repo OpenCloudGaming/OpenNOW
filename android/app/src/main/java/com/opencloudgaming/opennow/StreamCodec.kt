@@ -233,7 +233,12 @@ object CodecProbe {
 
     private fun isHardwareCodec(info: MediaCodecInfo): Boolean {
         val name = info.name.lowercase(Locale.US)
-        if (name.contains("google") || name.contains("sw") || name.contains("software")) return false
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+        if (!info.isHardwareAccelerated) return false
+    } else {
+        if (name.startsWith("omx.google.") || name.startsWith("c2.android.") || name.contains("sw") || name.contains("software")) return false
+    }
+        if (name.contains(".sw.") || name.contains("software") || name.startsWith("omx.google.") || name.startsWith("c2.android.")) return false
         return if (Build.VERSION.SDK_INT >= 29) {
             info.isHardwareAccelerated
         } else {
@@ -244,7 +249,7 @@ object CodecProbe {
     internal fun isOpenNowHardwareDecoderAllowed(info: MediaCodecInfo): Boolean {
         if (!isHardwareCodec(info)) return false
         val name = info.name.lowercase(Locale.US)
-        if (name.contains("google") || name.contains("software") || name.contains("sw")) return false
+        if (name.contains("software") || name.contains(".sw.") || name.startsWith("omx.google.")) return false
         if (name.contains("exynos")) {
             val hevcProfiles = runCatching {
                 info.getCapabilitiesForType(HEVC_MIME_TYPE)
@@ -267,7 +272,7 @@ object CodecProbe {
         return when (codec) {
             VideoCodec.H264 -> true
             VideoCodec.H265 -> !name.contains("exynos") || isOpenNowHardwareDecoderAllowed(info)
-            VideoCodec.AV1 -> !name.contains("google")
+            VideoCodec.AV1 -> isOpenNowHardwareDecoderAllowed(info)
         }
     }
 
