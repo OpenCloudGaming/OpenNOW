@@ -62,6 +62,11 @@ if(UNIX AND NOT APPLE)
         DESTINATION "${CMAKE_INSTALL_DATADIR}/metainfo")
     install(FILES packaging/io.github.opencloudgaming.OpenNOW.svg
         DESTINATION "${CMAKE_INSTALL_DATADIR}/icons/hicolor/scalable/apps")
+    foreach(size IN LISTS OPENNOW_APPLICATION_ICON_SIZES)
+        install(FILES "packaging/icons/opennow-${size}.png"
+            DESTINATION "${CMAKE_INSTALL_DATADIR}/icons/hicolor/${size}x${size}/apps"
+            RENAME io.github.opencloudgaming.OpenNOW.png)
+    endforeach()
 endif()
 
 if(APPLE)

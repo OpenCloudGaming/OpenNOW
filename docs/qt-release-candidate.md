@@ -4,8 +4,11 @@ For certificate-free Windows/Linux nightlies, use the manual `qt-ci` publishing 
 in [`qt-nightly-release.md`](qt-nightly-release.md). This signed candidate workflow is separate.
 
 The `qt-release-candidate` workflow builds one immutable Qt/Rust source commit for Windows and
-Linux, each on x64 and ARM64. macOS builds are temporarily disabled in Actions. The workflow does not publish a GitHub release;
+Linux, each on x64 and ARM64, and macOS on ARM64. The workflow does not publish a GitHub release;
 it produces protected candidate artifacts that must still pass the live matrix and staged rollout.
+
+For credential provisioning and the first release, follow
+[Set up signed Qt releases](qt-release-signing-setup.md).
 
 ## Protected environment
 
@@ -26,9 +29,10 @@ only `OPENNOW_UPDATE_ED25519_PRIVATE_KEY`; restrict it to a dedicated self-hoste
 | `OPENNOW_APPLE_API_KEY_ID` | Notarization API key ID |
 | `OPENNOW_APPLE_API_ISSUER_ID` | Notarization issuer ID |
 
-The macOS/Apple secrets are only needed when macOS builds are re-enabled. To restore macOS,
-restore its release job from Git history, its inventory dependency and the 12-artifact checks,
-and both macOS entries in the `qt-ci` matrix together.
+The Windows workflow currently uses exportable PFX credentials. New publicly trusted
+certificates normally use non-exportable hardware-backed keys. If your provider uses a
+token, HSM, or cloud signing service, integrate its signing client before dispatching.
+The PFX inputs are not a way to export a hardware-protected private key.
 
 The matching Ed25519 public key is a workflow input, not a secret. The workflow embeds that exact
 value into every core. Ordinary Linux, Windows and macOS build workers never receive the update
@@ -51,8 +55,10 @@ ephemeral or reset after each approved release operation.
   streamer DLL. CPack installs the signed deployment copies; extracted MSI and ZIP payloads must
   pass signature verification and match those copies byte-for-byte. Every nonzero `signtool` exit
   fails the workflow.
-- Current candidates do not include macOS packages. Re-enabling macOS must restore its Developer
-  ID signing, notarization, and stapling steps along with the build job.
+- macOS ARM64 candidates use Developer ID signing, notarization, and stapled tickets.
+  The final DMG and ZIP contain the signed, stapled application. Intel Mac candidates
+  are not included. The application retains only the hardened-runtime exceptions
+  needed for QML JIT compilation and microphone input. Library validation stays enabled.
 - Linux x64/ARM64 DEB and checksum-pinned AppImage builds use native runners. Both the probe and
   embedded streamer enable `linux-vaapi` and `linux-ffmpeg-bundled`. Native VAAPI supports H.264
   only; HEVC/AV1 remain available through other backends, including bundled FFmpeg software decode.
@@ -62,7 +68,7 @@ ephemeral or reset after each approved release operation.
   requiring a GPU on the build runner.
 - Every installable artifact receives a sibling Ed25519 update manifest after platform signing.
 - The inventory job fails unless it finds both Windows MSI/ZIP pairs, both Linux AppImage/DEB pairs,
-  no macOS DMGs, and exactly one manifest per artifact (eight artifacts total). It records the immutable commit and
+  the macOS ARM64 DMG/ZIP pair, and exactly one manifest per artifact (ten artifacts total). It records the immutable commit and
   SHA-256 of every candidate file.
 
 Run the workflow manually with an exact reviewed 40-character source commit, version, and public
