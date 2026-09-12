@@ -3224,7 +3224,8 @@ mod tests {
                     {"id":"1001","appStore":"Steam","gfn":{"library":{"status":"NOT_OWNED"}}},
                     {"id":"1003","appStore":"Xbox","gfn":{"library":{"status":status}}}
                 ]
-            })).unwrap();
+            }))
+            .unwrap();
             assert_eq!(game["selectedVariantIndex"], 1);
             assert_eq!(game["launchAppId"], "1003");
         }
@@ -3253,7 +3254,8 @@ mod tests {
                 {"id":"1001","appStore":"Steam"},
                 {"id":"1003","appStore":"Xbox"}
             ]
-        })).unwrap();
+        }))
+        .unwrap();
         assert_eq!(game["selectedVariantIndex"], 0);
         assert_eq!(game["launchAppId"], "1001");
     }
