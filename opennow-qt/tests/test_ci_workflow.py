@@ -180,6 +180,9 @@ class CIWorkflowTest(unittest.TestCase):
         self.assertEqual(len(targets), 27)
         self.assertEqual(len(set(targets)), 27)
         self.assertIn("opennow-fsrupscaler-tests", targets)
+        self.assertRegex(cmake, r'if\(WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Linux"\)\s+'
+                         r'set_tests_properties\(opennow-frameinterpolator-tests opennow-fsrupscaler-tests\s+'
+                         r'PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen"\)')
         self.assertIn("opennow-tenbitwarning-tests", targets)
         self.assertIn("opennow-consoleactions-tests", targets)
         self.assertIn("opennow-controllernavigation-tests", targets)
