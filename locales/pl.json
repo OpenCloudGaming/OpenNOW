@@ -1,4 +1,10 @@
 {
+  "tenBitWarning": {
+    "title": "10-bit color",
+    "description": "10-bit color may cause stuttering on some systems. If you notice stuttering, switch back to 8-bit.",
+    "dontNotify": "Don't notify me again",
+    "dismiss": "Got it"
+  },
   "persistentInGameSettings": {
     "title": "Persistent in-game settings",
     "description": "Keep your in-game graphics settings between sessions for supported games and memberships. Applies to new sessions."
