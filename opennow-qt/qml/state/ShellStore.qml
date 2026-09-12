@@ -12,7 +12,7 @@ QtObject {
         applicationActive: Qt.application.state === Qt.ApplicationActive
         streaming: root.activeSession !== null && root.streamerStatus === "streaming"
         nativeRuntimeReady: root.nativeRuntimeReady
-        sendNativeCommand: root.sendNativeCommand
+        onAudioMuteRequested: muted => root.sendNativeCommand("setAudioMuted", {muted: muted})
         onReminderRequested: root.backgroundStreamReminderRequested()
     }
     property CatalogState catalogOwnerState: CatalogState {

@@ -6,8 +6,9 @@ QtObject {
     required property bool applicationActive
     required property bool streaming
     required property bool nativeRuntimeReady
-    required property var sendNativeCommand
+    signal audioMuteRequested(bool muted)
     signal reminderRequested()
+    property bool lastRequestedMute: false
 
     readonly property bool audioMuted: settings.muteWhenOutOfFocus === true && !applicationActive
     readonly property bool reminderRunning: settings.backgroundStreamReminder === true
@@ -17,8 +18,10 @@ QtObject {
     onNativeRuntimeReadyChanged: syncAudioMute()
 
     function syncAudioMute() {
-        if (nativeRuntimeReady)
-            sendNativeCommand("setAudioMuted", {muted: audioMuted}, "setAudioMuted")
+        if (!nativeRuntimeReady || (!audioMuted && !lastRequestedMute))
+            return
+        lastRequestedMute = audioMuted
+        audioMuteRequested(audioMuted)
     }
 
     property Timer reminderTimer: Timer {

@@ -11,10 +11,7 @@ QtObject {
         applicationActive: true
         streaming: false
         nativeRuntimeReady: false
-        sendNativeCommand: function(type, params, operation) {
-            fixture.commands.push({type: type, muted: params.muted, operation: operation})
-            return "background-test"
-        }
+        onAudioMuteRequested: muted => fixture.commands.push(muted)
         onReminderRequested: fixture.reminders += 1
     }
     property Component pageComponent: Component {
@@ -41,7 +38,7 @@ QtObject {
         }
         return null
     }
-    function lastMuted() { return commands[commands.length - 1].muted }
+    function lastMuted() { return commands[commands.length - 1] }
 
     function run(parent) {
         const page = pageComponent.createObject(parent)
@@ -49,13 +46,16 @@ QtObject {
         const mute = find(page, "muteWhenOutOfFocusToggle")
         const reminder = find(page, "backgroundStreamReminderToggle")
         check(!mute.checked && !reminder.checked, "both settings must default off")
+        policy.nativeRuntimeReady = true
+        check(commands.length === 0, "disabled policy must not send playback commands")
+        policy.nativeRuntimeReady = false
         policy.applicationActive = false
         check(commands.length === 0 && !policy.reminderTimer.running, "disabled policy must stay idle")
         mute.clicked()
         check(savedSettings.muteWhenOutOfFocus === true && mute.checked, "mute toggle must persist")
         check(policy.audioMuted && commands.length === 0, "remember mute before runtime starts")
         policy.nativeRuntimeReady = true
-        check(lastMuted() && commands[0].type === "setAudioMuted", "apply mute on runtime readiness")
+        check(lastMuted(), "apply mute on runtime readiness")
         policy.streaming = true
         check(!policy.reminderTimer.running, "mute must not enable reminders")
         policy.applicationActive = true
