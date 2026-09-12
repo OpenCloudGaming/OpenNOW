@@ -18,6 +18,7 @@
 #include <QStandardPaths>
 #include <QUrl>
 #include <QUrlQuery>
+#include <QWindow>
 
 #include <utility>
 
@@ -409,6 +410,13 @@ bool AppController::ensureDirectLaunchAssociation() const
 #else
     return true;
 #endif
+}
+
+void AppController::requestWindowAttention(QWindow *window) const
+{
+    if (window && !window->isActive()
+        && QGuiApplication::applicationState() != Qt::ApplicationActive)
+        window->alert(5000);
 }
 
 void AppController::activateWindow()

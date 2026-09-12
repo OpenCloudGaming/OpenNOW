@@ -202,6 +202,7 @@ int AcceptanceSession::startSmokeWorkload()
     } else if (m_smokeTest && (m_arguments.contains(u"--smoke-backend-availability"_s)
                      || m_arguments.contains(u"--smoke-microphone"_s)
                      || m_arguments.contains(u"--smoke-audio-output"_s)
+                     || m_arguments.contains(u"--smoke-background-stream"_s)
                      || m_arguments.contains(u"--smoke-recording"_s)
                      || m_arguments.contains(u"--smoke-collections"_s)
                      || m_arguments.contains(u"--smoke-steam-big-picture"_s)
@@ -215,6 +216,8 @@ int AcceptanceSession::startSmokeWorkload()
             ? u"qrc:/acceptance/MicrophoneAcceptance.qml"_s
             : m_arguments.contains(u"--smoke-audio-output"_s)
             ? u"qrc:/acceptance/AudioOutputAcceptance.qml"_s
+            : m_arguments.contains(u"--smoke-background-stream"_s)
+            ? u"qrc:/acceptance/BackgroundStreamAcceptance.qml"_s
             : m_arguments.contains(u"--smoke-recording"_s)
             ? u"qrc:/acceptance/RecordingAcceptance.qml"_s
             : m_arguments.contains(u"--smoke-collections"_s)

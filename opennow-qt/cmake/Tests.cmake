@@ -321,6 +321,12 @@ if(BUILD_TESTING)
         COMMAND opennow-qt --smoke-test --allow-multiple-instances --desktop
             --route settings-audio --smoke-audio-output --reduced-motion)
     set_tests_properties(qml-audio-output PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 10)
+    qt_add_resources(opennow-qt "background-stream-acceptance"
+        PREFIX "/acceptance" BASE tests FILES tests/BackgroundStreamAcceptance.qml)
+    add_test(NAME qml-background-stream
+        COMMAND opennow-qt --smoke-test --allow-multiple-instances --desktop
+            --route settings-audio --smoke-background-stream --reduced-motion)
+    set_tests_properties(qml-background-stream PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 10)
     foreach(width 960 1440)
         add_test(NAME "qml-collections-${width}"
             COMMAND opennow-qt --smoke-test --allow-multiple-instances --desktop

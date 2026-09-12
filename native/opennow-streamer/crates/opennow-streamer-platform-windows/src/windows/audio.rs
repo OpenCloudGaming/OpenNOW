@@ -184,7 +184,11 @@ impl AudioRenderer {
         Ok(self.endpoint_tracker.observe(endpoint_id))
     }
 
-    pub(super) fn render(&mut self, queue: &BoundedQueue<PcmFrame>) -> Result<bool, String> {
+    pub(super) fn render(
+        &mut self,
+        queue: &BoundedQueue<PcmFrame>,
+        muted: &std::sync::atomic::AtomicBool,
+    ) -> Result<bool, String> {
         let mut dropped = false;
         while let Some(frame) = queue.try_pop() {
             if frame.format != self.format {
@@ -239,10 +243,12 @@ impl AudioRenderer {
                 .render
                 .GetBuffer(write_frames)
                 .map_err(|error| error.to_string())? as *mut f32;
+            let muted = muted.load(std::sync::atomic::Ordering::Acquire);
             for index in 0..sample_count {
+                let sample = self.pending.pop_front().unwrap_or(0.0);
                 destination
                     .add(index)
-                    .write(self.pending.pop_front().unwrap_or(0.0));
+                    .write(if muted { 0.0 } else { sample });
             }
             self.render
                 .ReleaseBuffer(write_frames, 0)

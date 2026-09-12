@@ -34,6 +34,7 @@ pub enum AudioBackendPreference {
 
 #[derive(Debug, Clone)]
 pub struct AudioConfig {
+    pub muted: Arc<std::sync::atomic::AtomicBool>,
     pub sample_rate: u32,
     pub channels: u8,
     pub queue_depth: usize,
@@ -45,6 +46,7 @@ pub struct AudioConfig {
 impl Default for AudioConfig {
     fn default() -> Self {
         Self {
+            muted: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             sample_rate: 48_000,
             channels: 2,
             queue_depth: 12,
@@ -320,6 +322,8 @@ type SndPcmClose = unsafe extern "C" fn(*mut c_void) -> c_int;
 type SndStrError = unsafe extern "C" fn(c_int) -> *const c_char;
 
 struct AlsaSink {
+    muted: Arc<std::sync::atomic::AtomicBool>,
+    silence: Vec<f32>,
     _library: Library,
     handle: NonNull<c_void>,
     writei: SndPcmWriteI,
@@ -391,6 +395,14 @@ impl AlsaSink {
             }
             Ok(Self {
                 _library: library,
+                muted: Arc::clone(&config.muted),
+                silence: vec![
+                    0.0;
+                    config.sample_rate as usize
+                        * config.channels as usize
+                        * OPUS_MAX_FRAME_MS
+                        / 1000
+                ],
                 handle,
                 writei,
                 recover,
@@ -414,11 +426,17 @@ impl AudioSink for AlsaSink {
             if cancelled() {
                 return Err(Error::QueueClosed);
             }
-            let frames = (pcm.len() - offset) / self.channels;
+            let samples = &pcm[offset..pcm.len().min(offset + self.silence.len())];
+            let samples = if self.muted.load(std::sync::atomic::Ordering::Acquire) {
+                &self.silence[..samples.len()]
+            } else {
+                samples
+            };
+            let frames = samples.len() / self.channels;
             let written = unsafe {
                 (self.writei)(
                     self.handle.as_ptr(),
-                    pcm[offset..].as_ptr().cast(),
+                    samples.as_ptr().cast(),
                     frames as libc::c_ulong,
                 )
             };
@@ -474,6 +492,8 @@ unsafe fn alsa_error(strerror: SndStrError, code: c_int) -> String {
 }
 
 struct PipeWireSink {
+    muted: Arc<std::sync::atomic::AtomicBool>,
+    silence: Vec<u8>,
     child: Child,
     stdin: ChildStdin,
 }
@@ -552,7 +572,17 @@ impl PipeWireSink {
                 format!("pw-cat exited during startup with {status}"),
             ));
         }
-        Ok(Self { child, stdin })
+        Ok(Self {
+            child,
+            stdin,
+            muted: Arc::clone(&config.muted),
+            silence: vec![
+                0;
+                config.sample_rate as usize * config.channels as usize * OPUS_MAX_FRAME_MS
+                    / 1000
+                    * mem::size_of::<f32>()
+            ],
+        })
     }
 }
 
@@ -562,35 +592,58 @@ impl AudioSink for PipeWireSink {
     }
 
     fn write(&mut self, pcm: &[f32], cancelled: &dyn Fn() -> bool) -> Result<()> {
-        let bytes =
-            unsafe { slice::from_raw_parts(pcm.as_ptr().cast::<u8>(), mem::size_of_val(pcm)) };
-        let mut offset = 0;
-        while offset < bytes.len() {
-            if cancelled() {
-                return Err(Error::QueueClosed);
+        write_pipewire_pcm(&mut self.stdin, pcm, &self.silence, &self.muted, cancelled)
+    }
+}
+
+fn write_pipewire_pcm(
+    writer: &mut impl Write,
+    pcm: &[f32],
+    silence: &[u8],
+    muted: &std::sync::atomic::AtomicBool,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<()> {
+    let bytes = unsafe { slice::from_raw_parts(pcm.as_ptr().cast::<u8>(), mem::size_of_val(pcm)) };
+    let mut offset = 0;
+    let mut sample_muted = false;
+    while offset < bytes.len() {
+        if cancelled() {
+            return Err(Error::QueueClosed);
+        }
+        let partial_sample_bytes = offset % mem::size_of::<f32>();
+        let end = if partial_sample_bytes == 0 {
+            sample_muted = muted.load(std::sync::atomic::Ordering::Acquire);
+            bytes.len().min(offset + silence.len())
+        } else {
+            offset + mem::size_of::<f32>() - partial_sample_bytes
+        };
+        let chunk = &bytes[offset..end];
+        let chunk = if sample_muted {
+            &silence[..chunk.len()]
+        } else {
+            chunk
+        };
+        match writer.write(chunk) {
+            Ok(0) => {
+                return Err(Error::DeviceLost {
+                    subsystem: Subsystem::PipeWire,
+                    reason: "pw-cat closed its input".to_owned(),
+                });
             }
-            match self.stdin.write(&bytes[offset..]) {
-                Ok(0) => {
-                    return Err(Error::DeviceLost {
-                        subsystem: Subsystem::PipeWire,
-                        reason: "pw-cat closed its input".to_owned(),
-                    });
-                }
-                Ok(written) => offset += written,
-                Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
-                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                    std::thread::sleep(std::time::Duration::from_millis(2));
-                }
-                Err(error) => {
-                    return Err(Error::DeviceLost {
-                        subsystem: Subsystem::PipeWire,
-                        reason: error.to_string(),
-                    });
-                }
+            Ok(written) => offset += written,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+            Err(error) => {
+                return Err(Error::DeviceLost {
+                    subsystem: Subsystem::PipeWire,
+                    reason: error.to_string(),
+                });
             }
         }
-        Ok(())
     }
+    Ok(())
 }
 
 impl Drop for PipeWireSink {
@@ -616,6 +669,62 @@ fn find_in_path(executable: &str) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pipewire_playback_mute_preserves_source_and_consumes_silently() {
+        let config = AudioConfig::default();
+        let mut bytes = Vec::new();
+        let samples = [0.25_f32, -0.25, 0.5, -0.5, 0.75, -0.75];
+        config
+            .muted
+            .store(true, std::sync::atomic::Ordering::Release);
+        write_pipewire_pcm(&mut bytes, &samples, &[0; 16], &config.muted, &|| false)
+            .expect("muted PCM");
+        config
+            .muted
+            .store(false, std::sync::atomic::Ordering::Release);
+        write_pipewire_pcm(&mut bytes, &samples, &[0; 16], &config.muted, &|| false)
+            .expect("audible PCM");
+        assert!(bytes[..24].iter().all(|value| *value == 0));
+        let expected: Vec<_> = samples.into_iter().flat_map(f32::to_ne_bytes).collect();
+        assert_eq!(&bytes[24..], expected);
+        assert_eq!(samples, [0.25, -0.25, 0.5, -0.5, 0.75, -0.75]);
+    }
+
+    #[test]
+    fn pipewire_mute_changes_never_split_a_partially_written_sample() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        struct PartialWriter<'a> {
+            bytes: Vec<u8>,
+            muted: &'a AtomicBool,
+        }
+
+        impl Write for PartialWriter<'_> {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                self.bytes.push(bytes[0]);
+                self.muted.store(self.bytes.len() <= 4, Ordering::Release);
+                Ok(1)
+            }
+
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let muted = AtomicBool::new(false);
+        let mut writer = PartialWriter {
+            bytes: Vec::new(),
+            muted: &muted,
+        };
+        write_pipewire_pcm(&mut writer, &[0.375, -0.375], &[0; 8], &muted, &|| false)
+            .expect("partial PCM writes");
+        let expected: Vec<_> = [0.375_f32, 0.0]
+            .into_iter()
+            .flat_map(f32::to_ne_bytes)
+            .collect();
+        assert_eq!(writer.bytes, expected);
+    }
 
     #[test]
     fn fixed_audio_output_validates_backend_and_forbids_fallback() {

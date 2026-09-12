@@ -129,6 +129,10 @@ pub struct EmbeddedRuntimeConfig {
 }
 
 impl MediaRuntime {
+    pub fn set_audio_muted(&self, muted: bool) {
+        self.output.audio_muted.store(muted, Ordering::Release);
+    }
+
     pub const fn is_embedded(&self) -> bool {
         matches!(self.mode, MediaRuntimeMode::Embedded { .. })
     }
@@ -1868,6 +1872,38 @@ mod tests {
         );
         assert!(matches!(result, Err(message) if message.contains("embedded")));
         runtime.shutdown();
+    }
+
+    #[cfg(feature = "test-runtime")]
+    #[test]
+    fn audio_mute_survives_session_restart_without_pausing_media_or_microphone() {
+        use std::sync::atomic::Ordering;
+
+        let (host, runtime) = super::create_test_runtime();
+        runtime.set_audio_muted(true);
+        for _ in 0..2 {
+            let (feedback, _) = std::sync::mpsc::channel();
+            let media = runtime
+                .start(feedback, crate::MediaStreamConfig::default())
+                .unwrap();
+            assert!(runtime.output.audio_muted.load(Ordering::Acquire));
+            assert!(!runtime.paused.load(Ordering::Acquire));
+            let shared = crate::microphone::MicrophoneShared::new();
+            let microphone = crate::MicrophoneSession::from_shared(std::sync::Arc::clone(&shared));
+            runtime.output.set_microphone(&shared);
+            let clock = runtime.output.microphone_clock();
+            for muted in [false, true] {
+                runtime.set_audio_muted(muted);
+                assert_eq!(runtime.output.audio_muted.load(Ordering::Acquire), muted);
+                assert!(!runtime.paused.load(Ordering::Acquire));
+                assert!(microphone.receiver().status().enabled);
+                assert_eq!(runtime.output.microphone_clock(), clock);
+            }
+            media.stop();
+            assert!(runtime.output.audio_muted.load(Ordering::Acquire));
+        }
+        runtime.shutdown();
+        host.join().unwrap();
     }
 
     #[cfg(feature = "test-runtime")]

@@ -436,6 +436,7 @@ impl StreamSink {
         *audio = Some(AudioPipeline::start(
             format,
             self.shared.audio_output_device.as_deref(),
+            Arc::clone(&self.shared.audio_muted),
             self.shared.opus_packets,
             self.shared.pcm_milliseconds,
             Arc::clone(&self.shared.counters),
@@ -462,6 +463,7 @@ impl StreamSink {
 }
 
 struct Shared {
+    audio_muted: Arc<AtomicBool>,
     lifecycle: Lifecycle,
     paused: AtomicBool,
     counters: Arc<Counters>,
@@ -546,12 +548,14 @@ impl MacOsBackend {
         let audio = AudioPipeline::start(
             config.audio,
             config.audio_output_device.as_deref(),
+            Arc::clone(&config.audio_muted),
             config.queues.opus_packets,
             config.queues.pcm_milliseconds,
             Arc::clone(&counters),
             Arc::clone(&failures),
         )?;
         let shared = Arc::new(Shared {
+            audio_muted: config.audio_muted,
             lifecycle: Lifecycle::running(),
             paused: AtomicBool::new(false),
             counters,
@@ -636,12 +640,14 @@ impl MacOsBackend {
         let audio = AudioPipeline::start(
             config.audio,
             config.audio_output_device.as_deref(),
+            Arc::clone(&config.audio_muted),
             config.queues.opus_packets,
             config.queues.pcm_milliseconds,
             Arc::clone(&counters),
             Arc::clone(&failures),
         )?;
         let shared = Arc::new(Shared {
+            audio_muted: config.audio_muted,
             lifecycle: Lifecycle::running(),
             paused: AtomicBool::new(false),
             counters,

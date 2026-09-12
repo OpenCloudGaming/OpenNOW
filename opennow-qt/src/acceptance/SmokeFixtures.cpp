@@ -73,7 +73,7 @@ int AcceptanceSession::prepareWindow()
             store->setProperty("streamInputPauseRequestId", u"microphone-visual-fixture"_s);
             store->setProperty("nativeRuntimeReady", true);
             store->setProperty("nativeRuntimeCapabilities", QVariantMap{
-                {u"protocolVersion"_s, 6}, {u"supportsMicrophone"_s, true}});
+                {u"protocolVersion"_s, 7}, {u"supportsMicrophone"_s, true}});
             store->setProperty("settings", QVariantMap{
                 {u"microphoneMode"_s, muted ? u"voice-activity"_s : u"disabled"_s}});
             if (muted) {

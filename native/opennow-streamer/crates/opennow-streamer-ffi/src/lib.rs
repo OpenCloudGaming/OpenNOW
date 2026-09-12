@@ -2491,7 +2491,7 @@ mod tests {
         let command = serde_json::to_vec(&json!({
             "id": "hello-1",
             "type": "hello",
-            "protocolVersion": 6
+            "protocolVersion": 7
         }))
         .expect("hello command");
 
@@ -2510,6 +2510,41 @@ mod tests {
     }
 
     #[test]
+    fn audio_mute_round_trips_before_start_and_after_stop() {
+        let messages = Box::new(CallbackMessages::default());
+        let (mut handle, host) = create_with_test_runtime(&messages);
+        for (id, command) in [
+            (
+                "mute-before-start",
+                json!({"type": "setAudioMuted", "muted": true}),
+            ),
+            ("stop-muted", json!({"type": "stop"})),
+            (
+                "unmute-after-stop",
+                json!({"type": "setAudioMuted", "muted": false}),
+            ),
+        ] {
+            let mut command = command;
+            command["id"] = json!(id);
+            assert_eq!(
+                handle.send(&serde_json::to_vec(&command).unwrap()),
+                OpenNowStreamerStatus::Ok
+            );
+            assert_eq!(messages.wait_for_id(id)["type"], "ok");
+        }
+        assert_eq!(
+            handle.send(br#"{"id":"missing-muted","type":"setAudioMuted"}"#),
+            OpenNowStreamerStatus::Ok
+        );
+        assert_eq!(
+            messages.wait_for_id("missing-muted")["code"],
+            "missing-muted"
+        );
+        handle.shutdown();
+        host.join().expect("test media runtime");
+    }
+
+    #[test]
     fn audio_devices_round_trips_without_changing_the_media_runtime() {
         let messages = Box::new(CallbackMessages::default());
         let (mut handle, host) = create_with_test_runtime(&messages);
@@ -2521,7 +2556,7 @@ mod tests {
         assert_eq!(response["type"], "audioDevices");
         assert_eq!(response["devices"], json!([]));
         assert_eq!(
-            handle.send(br#"{"id":"hello-after-audio","type":"hello","protocolVersion":6}"#),
+            handle.send(br#"{"id":"hello-after-audio","type":"hello","protocolVersion":7}"#),
             OpenNowStreamerStatus::Ok
         );
         assert_eq!(messages.wait_for_id("hello-after-audio")["type"], "ready");
@@ -2542,7 +2577,7 @@ mod tests {
         let command = serde_json::to_vec(&json!({
             "id": "hello-production",
             "type": "hello",
-            "protocolVersion": 6
+            "protocolVersion": 7
         }))
         .expect("hello command");
         assert_eq!(

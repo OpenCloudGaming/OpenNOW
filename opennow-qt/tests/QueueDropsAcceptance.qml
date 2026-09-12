@@ -47,7 +47,7 @@ QtObject {
     function run(parent) {
         ShellStore.activeSession = null
         ShellStore.streamer = {status: "stopped"}
-        ShellStore.acceptNativeCapabilities({protocolVersion: 6, supportsVideoDecode: false,
+        ShellStore.acceptNativeCapabilities({protocolVersion: 7, supportsVideoDecode: false,
             videoBackends: [{backend: "v4l2", available: false, reason: "HEVC probe failed",
                 codecs: [{codec: "h265", available: false, reason: "MEDIA_IOC_G_TOPOLOGY failed"}]}]})
         client.state = "ready"

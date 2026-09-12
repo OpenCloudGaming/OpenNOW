@@ -4,6 +4,7 @@
 #include <QString>
 #include <QStringList>
 #include <QVector>
+#include <QWindow>
 
 #include <functional>
 
@@ -50,6 +51,7 @@ public:
                                            const QString &outputPath) const;
     Q_INVOKABLE bool ensureDirectLaunchAssociation() const;
     Q_INVOKABLE void activateWindow();
+    Q_INVOKABLE void requestWindowAttention(QWindow *window) const;
     Q_INVOKABLE void quitApplication();
     Q_INVOKABLE void restartApplication();
     Q_INVOKABLE bool handleArguments(const QStringList &arguments);

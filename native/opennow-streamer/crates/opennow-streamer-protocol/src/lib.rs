@@ -4,7 +4,7 @@ use serde_json::{Map, Value};
 pub mod log;
 pub mod text_input;
 
-pub const PROTOCOL_VERSION: u64 = 6;
+pub const PROTOCOL_VERSION: u64 = 7;
 
 #[derive(Debug, Clone, Copy)]
 pub struct ReplayBufferConfig {
@@ -78,6 +78,8 @@ pub struct Command {
     pub context: Option<Value>,
     #[serde(default)]
     pub paused: Option<bool>,
+    #[serde(default)]
+    pub muted: Option<bool>,
     #[serde(default)]
     pub enabled: Option<bool>,
     #[serde(default)]
@@ -295,6 +297,28 @@ pub fn event(kind: &str, fields: Value) -> Value {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn audio_mute_command_accepts_only_boolean_states() {
+        use super::Command;
+        use serde_json::json;
+
+        for muted in [false, true] {
+            let command: Command = serde_json::from_value(json!({
+                "id": "mute", "type": "setAudioMuted", "muted": muted
+            }))
+            .unwrap();
+            assert_eq!(command.muted, Some(muted));
+        }
+        for muted in [json!("true"), json!(1), json!({}), json!([])] {
+            assert!(
+                serde_json::from_value::<Command>(json!({
+                    "id": "mute", "type": "setAudioMuted", "muted": muted
+                }))
+                .is_err()
+            );
+        }
+    }
+
     #[test]
     fn replay_settings_are_opt_in_and_bounded_and_commands_are_additive() {
         use super::{Command, ReplayBufferConfig};

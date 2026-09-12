@@ -12,6 +12,19 @@ class AppControllerTest final : public QObject
     Q_OBJECT
 
 private slots:
+    void backgroundAttentionDoesNotActivateOrShowWindow()
+    {
+        AppController controller;
+        QWindow window;
+        QSignalSpy activation(&controller, &AppController::activationRequested);
+        controller.requestWindowAttention(nullptr);
+        controller.requestWindowAttention(&window);
+        QVERIFY(!window.isVisible());
+        QVERIFY(!window.isActive());
+        QCOMPARE(activation.count(), 0);
+        QCOMPARE(controller.route(), QStringLiteral("home"));
+    }
+
     void restartIsDelegatedToApplicationLifetimeOwner()
     {
         AppController controller;
