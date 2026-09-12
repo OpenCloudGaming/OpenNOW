@@ -13,6 +13,7 @@ public:
     ThemeTestShell() : QQmlPropertyMap(this, nullptr) {}
 
     Q_INVOKABLE QString artworkUrl(const QString &source) const { return source; }
+    Q_INVOKABLE bool isFavorite(const QVariant &) const { return false; }
     Q_INVOKABLE bool streamOverlayBlocksGameplayInput(const QString &overlay) const { return !overlay.isEmpty(); }
 
 signals:
@@ -37,6 +38,9 @@ public slots:
             qmlRegisterSingletonType(QUrl::fromLocalFile(source + "/" + entry.second), "OpenNOW", 1, 0, entry.first);
         }
         for (const auto &entry : {std::pair{"DesktopSessionStarting", "desktop/stream/DesktopSessionStarting.qml"},
+                                 {"DesktopGameModal", "desktop/components/DesktopGameModal.qml"},
+                                 {"MotionProgress", "components/MotionProgress.qml"},
+                                 {"RoundedArtwork", "components/RoundedArtwork.qml"},
                                  {"DesktopButton", "desktop/components/DesktopButton.qml"},
                                  {"DesktopGlyph", "desktop/components/DesktopGlyph.qml"},
                                  {"DesktopSettingsIcon", "desktop/settings/controls/DesktopSettingsIcon.qml"},
@@ -56,6 +60,10 @@ public slots:
         m_shell.insert("selectedGame", QVariantMap{{"title", "Dead by Daylight"}});
         m_shell.insert("activeSession", QVariantMap{{"queuePosition", 21}});
         m_shell.insert("streamer", QVariantMap{});
+        m_shell.insert("subscription", QVariantMap{});
+        m_shell.insert("authSession", QVariantMap{});
+        m_shell.insert("socialCapabilities", QVariantMap{});
+        m_shell.insert("regions", QVariantList{});
         m_shell.insert("streamState", "preparing");
         m_shell.insert("streamerRestartAttempts", 0);
         m_shell.insert("sessionReconnectAttempts", 0);

@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
+import QtQuick.Window
 import OpenNOW
 
 FocusScope {
@@ -8,6 +9,7 @@ FocusScope {
     property var game: ShellStore.selectedGame
     signal closeRequested()
     signal playRequested()
+    signal variantSelected(int index)
     objectName: "desktopGameModal"
     property bool opened: false
     visible: reveal.present
@@ -271,6 +273,76 @@ FocusScope {
                         }
                     }
                 }
+                Column {
+                    x: DesktopTokens.px(24)
+                    width: parent.width - DesktopTokens.px(48)
+                    spacing: DesktopTokens.px(8)
+                    visible: storeVariants.count > 1
+                    height: visible ? implicitHeight + DesktopTokens.px(16) : 0
+                    Text {
+                        text: qsTr("PLATFORM")
+                        color: Theme.textMuted
+                        font.family: Theme.bodyFont
+                        font.pixelSize: DesktopTokens.smallSize
+                        font.weight: Font.Bold
+                    }
+                    Flow {
+                        width: parent.width
+                        spacing: DesktopTokens.px(8)
+                        Repeater {
+                            id: storeVariants
+                            model: root.game ? root.game.variants || [] : []
+                            DesktopButton {
+                                id: platformButton
+                                required property var modelData
+                                required property int index
+                                objectName: "desktopStoreVariant" + index
+                                text: String(modelData.store || qsTr("Unknown"))
+                                height: DesktopTokens.px(36)
+                                leftPadding: DesktopTokens.px(14)
+                                rightPadding: DesktopTokens.px(14)
+                                font.pixelSize: DesktopTokens.captionSize
+                                implicitWidth: platformContents.implicitWidth + leftPadding + rightPadding
+                                checkable: true
+                                autoExclusive: true
+                                checked: root.game ? index === Number(root.game.selectedVariantIndex || 0) : false
+                                primary: checked
+                                Accessible.description: modelData.inLibrary ? qsTr("Owned") : qsTr("Not owned")
+                                onClicked: root.variantSelected(index)
+                                Keys.onReturnPressed: root.variantSelected(index)
+                                Keys.onEnterPressed: root.variantSelected(index)
+                                contentItem: Row {
+                                    id: platformContents
+                                    spacing: DesktopTokens.px(8)
+                                    Rectangle {
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        width: DesktopTokens.px(26)
+                                        height: width
+                                        radius: DesktopTokens.px(5)
+                                        visible: platformLogo.source.toString() !== ""
+                                        color: platformButton.checked || Theme.lightMode ? "#202634" : "transparent"
+                                        Image {
+                                            id: platformLogo
+                                            objectName: "desktopStoreLogo" + platformButton.index
+                                            anchors.centerIn: parent
+                                            width: DesktopTokens.px(20)
+                                            height: width
+                                            source: DesktopTokens.storeIconUrl(platformButton.modelData.store)
+                                            sourceSize: Qt.size(width * Screen.devicePixelRatio, height * Screen.devicePixelRatio)
+                                            fillMode: Image.PreserveAspectFit
+                                        }
+                                    }
+                                    Text {
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        text: platformButton.text
+                                        font: platformButton.font
+                                        color: platformButton.checked ? "#0A0D14" : Theme.label
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
                 Item {
                     width: parent.width; height: actionRow.height + 24
                     RowLayout {
@@ -278,6 +350,7 @@ FocusScope {
                         x: 24; y: 4; width: parent.width - 48; spacing: 10
                         DesktopButton {
                             id: primaryAction
+                            objectName: "desktopGamePlay"
                             Layout.fillWidth: true; Layout.preferredHeight: 52
                             primary: true; glyph: "desktop-play.svg"; text: qsTr("Play"); shortcutText: qsTr("ENTER"); shortcutSequence: "Enter"
                             enabled: root.game !== null && root.gameAvailable
