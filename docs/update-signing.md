@@ -89,7 +89,8 @@ and the rewritten release metadata. The validation-only macOS ZIP is never publi
 The production `qt-release-candidate.yml` contract remains separate: eight Linux and
 Windows packages, platform signing, isolated update signing, and a candidate artifact.
 This nightly follow-up does not add a macOS production candidate or alter that contract.
-Nightly release notes retain the Alliance Partners warning and do not claim a compatibility fix.
+Nightly release notes use GitHub-generated changelogs. Installation guidance and known
+limitations are documented in [`qt-nightly-release.md`](qt-nightly-release.md).
 
 Nightly macOS packaging enables `OPENNOW_MACOS_ADHOC_SIGN`. Qt deployment signs nested
 code with `macdeployqt -codesign=-`, then the final install script seals the complete

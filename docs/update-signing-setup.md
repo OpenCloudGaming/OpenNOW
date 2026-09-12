@@ -57,9 +57,10 @@ learn a trust key from release metadata. Do not bypass signature checks to boots
 Later updates require manifests signed by the already pinned key.
 
 Update-manifest signing does not remove Windows publisher warnings or macOS Gatekeeper
-warnings. The platform packages remain unsigned. Keep the Alliance Partners release
-warning: **Known issue: Alliance Partners are not working correctly in this build.**
-Update signing does not fix partner authentication or streaming compatibility.
+warnings. The platform packages remain unsigned. Nightly release notes use GitHub-generated
+changelogs; installation guidance and known limitations are documented in
+[`qt-nightly-release.md`](qt-nightly-release.md). Update signing does not fix partner
+authentication or streaming compatibility.
 
 ## Verify the repository contract without production credentials
 
