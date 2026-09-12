@@ -242,6 +242,7 @@ qt_add_qml_module(opennow-qt
         qml/components/StreamCaptureStatus.qml
         qml/components/StreamInputNotice.qml
         qml/components/TogglePill.qml
+        qml/components/TenBitWarningDialog.qml
         qml/components/VirtualKeyboard.qml
         qml/desktop/auth/DesktopSignInScreen.qml
         qml/desktop/components/DesktopBackdrop.qml
