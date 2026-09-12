@@ -109,7 +109,8 @@ public:
                                                         const QSize &videoSize,
                                                         const QSizeF &itemSize);
     [[nodiscard]] static quint16 windowsVirtualKey(
-        int key, Qt::KeyboardModifiers modifiers = Qt::NoModifier);
+        int key, Qt::KeyboardModifiers modifiers = Qt::NoModifier,
+        quint32 nativeVirtualKey = 0);
     [[nodiscard]] static quint16 inputModifiers(Qt::KeyboardModifiers modifiers, int key);
     [[nodiscard]] static QString shortcutActionForInput(
         const QVariantMap &bindings, int key, Qt::KeyboardModifiers modifiers);
@@ -168,6 +169,7 @@ private:
     [[nodiscard]] static QRect cursorConfinementRect(const QRect &viewport, bool rawRelative);
     void releaseCursorConfinement();
     void submitAbsoluteMouse(const QPointF &position);
+    [[nodiscard]] static quint16 eventVirtualKey(const QKeyEvent *event);
     [[nodiscard]] quint32 keyIdentity(const QKeyEvent *event) const;
     [[nodiscard]] static quint8 mouseButton(Qt::MouseButton button);
 
