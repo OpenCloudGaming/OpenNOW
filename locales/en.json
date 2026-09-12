@@ -164,7 +164,7 @@
     "keepLocation": "Keep the image in its original location",
     "formats": "Choose a local PNG, JPEG, WebP or BMP image",
     "choose": "Choose image…",
-      "remove": "Remove",
+    "remove": "Remove",
     "opacity": "Image opacity",
     "opacityDescription": "0% hides the image · 100% shows the full image"
   },
