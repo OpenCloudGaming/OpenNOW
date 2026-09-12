@@ -7,8 +7,6 @@
 
 namespace {
 // Native conversion is recorded in prepare(), before Qt begins its scene pass.
-// The converted surface is sampled directly in that pass: no item-sized color
-// target, extra blit, CPU readback, or second presentation window.
 class StreamVideoNode final : public QSGRenderNode
 {
 public:
@@ -28,6 +26,8 @@ public:
                 m_window->screen() ? m_window->screen()->refreshRate() : 0.0);
         m_viewport = StreamVideoItem::aspectFitRect(item->videoSize(), m_bounds.size().toSize());
         m_metalFxUpscaling = item->metalFxUpscaling() && item->isVisible();
+        m_fsrUpscaling = item->fsrUpscaling() && item->isVisible();
+        if (m_callback) m_callback->setFsrUpscaling(m_fsrUpscaling);
         if (m_callback)
             m_callback->setUpscalingEnhancement(item->upscalingSharpness(), item->upscalingDenoise());
         markDirty(QSGNode::DirtyGeometry | QSGNode::DirtyMaterial);
@@ -41,7 +41,7 @@ public:
         m_initialized = true;
         m_callback->setComposition(*projectionMatrix() * *matrix(), m_bounds, m_viewport,
                                    float(inheritedOpacity()));
-        m_callback->setUpscalingTarget(m_metalFxUpscaling
+        m_callback->setUpscalingTarget(m_metalFxUpscaling || m_fsrUpscaling
             ? (QSizeF(m_viewport.size()) * m_window->effectiveDevicePixelRatio()).toSize() : QSize());
         m_callback->prepareFrame(commandBuffer());
     }
@@ -83,6 +83,7 @@ private:
     QRect m_viewport;
     bool m_initialized = false;
     bool m_metalFxUpscaling = false;
+    bool m_fsrUpscaling = false;
 };
 }
 

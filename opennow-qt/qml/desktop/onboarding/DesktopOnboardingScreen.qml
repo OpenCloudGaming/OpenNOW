@@ -985,7 +985,7 @@ FocusScope {
                         {glyph:"controller",label:qsTr("Mode"),step:1,value:(root.settings.launchInConsoleMode === true ? qsTr("Console") : qsTr("Desktop"))
                             + (root.settings.switchToConsoleOnPad === true ? qsTr(" · switch on gamepad input") : "")},
                         {glyph:"bolt",label:qsTr("Boost"),step:3,value:(root.settings.frameGeneration === "2x" ? qsTr("Frame generation 2× · Experimental") : qsTr("Frame generation off"))
-                            + (Qt.platform.os === "osx" ? (root.settings.upscaling === "metalfx" ? qsTr(" · MetalFX · clarity %1 · noise reduction %2").arg(root.settings.upscalingSharpness ?? 10).arg(root.settings.upscalingDenoise ?? 0) : qsTr(" · upscaling off")) : "")},
+                            + (Qt.platform.os === "osx" ? (root.settings.upscaling === "metalfx" ? qsTr(" · MetalFX · clarity %1 · noise reduction %2").arg(root.settings.upscalingSharpness ?? 10).arg(root.settings.upscalingDenoise ?? 0) : qsTr(" · upscaling off")) : (root.settings.upscaling === "fsr1" ? qsTr(" · FSR 1 · clarity %1").arg(root.settings.upscalingSharpness ?? 10) : qsTr(" · upscaling off")))},
                         {glyph:"info",label:qsTr("Beta"),step:0,value:qsTr("Beta · report bugs on GitHub")},
                         {glyph:"heart",label:qsTr("Support"),step:4,value:qsTr("Optional · GitHub Sponsors")}
                     ]

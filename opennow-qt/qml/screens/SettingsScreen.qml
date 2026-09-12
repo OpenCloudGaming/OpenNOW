@@ -292,17 +292,20 @@ FocusScope {
                 {t:qsTr("HDR"), d:hdrDescription, v:Boolean(settings.enableHdr) ? qsTr("On") : qsTr("Off"), key:"enableHdr", values:[false,true], labels:[qsTr("Off"),qsTr("On")], control:"segments", selectedIndex:Boolean(settings.enableHdr) ? 1 : 0, disabledValues:hdrAvailable ? [] : [true]},
                 {t:"Max bitrate", d:"Maximum requested stream bitrate", v:Number(settings.maxBitrateMbps || 75) + " Mbps", key:"maxBitrateMbps", values:[25,50,75,100,150,200], labels:["25 Mbps","50 Mbps","75 Mbps","100 Mbps","150 Mbps","200 Mbps"], control:"slider", sliderPercent:Number(settings.maxBitrateMbps || 75) / 106},
                 {t:qsTr("Frame generation (Experimental)"), d:qsTr("Targets 120 displayed FPS from a 60 FPS stream. Requires a fast GPU and 120 Hz display; adds latency and artifacts."), v:frameGeneration ? qsTr("2×") : qsTr("Off"), key:"frameGeneration", values:["off","2x"], labels:[qsTr("Off"),qsTr("2×")], control:"segments", selectedIndex:frameGeneration ? 1 : 0},
-                ...(Qt.platform.os === "osx" ? [choice(qsTr("Upscaling"), qsTr("Spatial upscaling for enlarged video. Uses extra GPU time; falls back to normal scaling when MetalFX is unavailable."), "upscaling", ["off", "metalfx"], [qsTr("Off"), "MetalFX"], "segments")] : []),
-                ...(Qt.platform.os === "osx" ? [
-                    {key:"upscalingSharpness", title:qsTr("Clarity"), description:qsTr("Sharpen details before MetalFX upscaling. Set to 0 to disable."), maximum:15, fallback:10},
-                    {key:"upscalingDenoise", title:qsTr("Noise Reduction"), description:qsTr("Smooth noise before MetalFX upscaling. Set to 0 to disable."), maximum:20, fallback:0}
+                choice(qsTr("Upscaling"), Qt.platform.os === "osx"
+                    ? qsTr("Spatial upscaling for enlarged video. Uses extra GPU time; falls back to normal scaling when MetalFX is unavailable.")
+                    : qsTr("FSR 1 upscales enlarged SDR video on the GPU. Uses extra GPU time; HDR and unavailable effects use normal scaling."),
+                    "upscaling", ["off", Qt.platform.os === "osx" ? "metalfx" : "fsr1"], [qsTr("Off"), Qt.platform.os === "osx" ? "MetalFX" : "FSR 1"], "segments"),
+                ...[
+                    {key:"upscalingSharpness", title:qsTr("Clarity"), description:Qt.platform.os === "osx" ? qsTr("Sharpen details before MetalFX upscaling. Set to 0 to disable.") : qsTr("Sharpen details after FSR 1 upscaling. Set to 0 to disable."), maximum:15, fallback:10},
+                    ...(Qt.platform.os === "osx" ? [{key:"upscalingDenoise", title:qsTr("Noise Reduction"), description:qsTr("Smooth noise before MetalFX upscaling. Set to 0 to disable."), maximum:20, fallback:0}] : [])
                 ].map(setting => {
                     const value = Number(settings[setting.key] ?? setting.fallback)
                     const values = Array.from({length:setting.maximum + 1}, (_, index) => index)
                     return {t:setting.title, d:setting.description, v:String(value), key:setting.key,
                         values:values, labels:values.map(String), control:"slider", sliderPercent:value / setting.maximum,
-                        info:settings.upscaling !== "metalfx"}
-                }) : []),
+                        info:settings.upscaling !== (Qt.platform.os === "osx" ? "metalfx" : "fsr1")}
+                }),
                 toggle("Cloud G-Sync", "Variable refresh on G-Sync and FreeSync displays", "enableCloudGsync"),
                 toggle("Stats overlay on launch", "Ctrl+N toggles it in-game", "showStatsOnLaunch"),
                 choice("Stats overlay position", "FPS, RTT, loss and bitrate readout", "statsOverlayPosition", ["top-right","top-left","bottom-right","bottom-left"], ["Top-right","Top-left","Bottom-right","Bottom-left"])

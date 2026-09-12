@@ -9,7 +9,7 @@ Column {
     id: root
     required property var store
     readonly property var settings: store.onboardingSettings
-    readonly property bool metalFx: settings.upscaling === "metalfx"
+    readonly property bool upscalingEnabled: settings.upscaling === (mac ? "metalfx" : "fsr1")
     readonly property bool mac: Qt.platform.os === "osx"
     readonly property bool wide: width >= DesktopTokens.px(1000)
     readonly property color mint: Theme.accentColor("green")
@@ -270,21 +270,19 @@ Column {
             id: upscalingCard
             Layout.fillWidth: true; Layout.preferredWidth: DesktopTokens.px(546); Layout.minimumWidth: 0
             Layout.alignment: Qt.AlignTop
-            implicitHeight: Math.max(DesktopTokens.px(366), root.mac ? metalContents.implicitHeight + DesktopTokens.px(2) : unavailable.implicitHeight + DesktopTokens.px(56))
+            implicitHeight: Math.max(DesktopTokens.px(366), upscaleContents.implicitHeight + DesktopTokens.px(2))
             Layout.minimumHeight: root.wide ? generationCard.implicitHeight : 0
-            radius: DesktopTokens.px(16); border.color: Theme.seam; border.width: root.mac ? 1 : 0
-            color: root.mac ? root.panelColor : Theme.lightMode ? Theme.glass : "#800B0F1A"
-            DashedOutline { anchors.fill: parent; visible: !root.mac; cornerRadius: DesktopTokens.px(16) }
+            radius: DesktopTokens.px(16); border.color: Theme.seam; border.width: 1
+            color: root.panelColor
             Column {
-                id: metalContents
-                visible: root.mac
+                id: upscaleContents
                 x: 1; y: 1; width: parent.width - 2
                 Item {
                     width: parent.width; height: DesktopTokens.px(126)
                     RowLayout {
                         x: DesktopTokens.px(20); y: DesktopTokens.px(20); width: parent.width - DesktopTokens.px(40)
                         Eyebrow { text: qsTr("SPATIAL UPSCALING"); Layout.fillWidth: true }
-                        Badge { text: qsTr("macOS ONLY"); ink: root.blue }
+                        Badge { text: root.mac ? qsTr("macOS ONLY") : qsTr("SDR ONLY"); ink: root.blue }
                     }
                     Row {
                         x: DesktopTokens.px(20); y: DesktopTokens.px(54); spacing: DesktopTokens.px(10)
@@ -292,7 +290,7 @@ Column {
                         Text { anchors.verticalCenter: parent.verticalCenter; text: qsTr("bilinear"); color: Theme.textMuted; font.family: Theme.monoFont; font.pixelSize: DesktopTokens.px(10) }
                         Text { anchors.verticalCenter: parent.verticalCenter; text: "⟶"; color: Theme.textMuted; font.pixelSize: DesktopTokens.px(30) }
                         Checker { enhanced: true }
-                        Text { anchors.verticalCenter: parent.verticalCenter; text: qsTr("MetalFX spatial"); color: root.blue; font.family: Theme.monoFont; font.pixelSize: DesktopTokens.px(10) }
+                        Text { anchors.verticalCenter: parent.verticalCenter; text: root.mac ? qsTr("MetalFX spatial") : "FSR 1"; color: root.blue; font.family: Theme.monoFont; font.pixelSize: DesktopTokens.px(10) }
                     }
                     Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: DesktopTokens.seamSoft }
                 }
@@ -306,22 +304,24 @@ Column {
                         Column {
                             Layout.fillWidth: true; Layout.minimumWidth: 0; spacing: DesktopTokens.px(4)
                             Copy { text: qsTr("Upscaling"); color: Theme.label; font.pixelSize: DesktopTokens.px(20); font.weight: Font.Black }
-                            Copy { width: parent.width; text: qsTr("Spatial upscaling for enlarged video. Uses extra GPU time and falls back to normal scaling when MetalFX is unavailable.") }
+                            Copy { width: parent.width; text: root.mac
+                                ? qsTr("Spatial upscaling for enlarged video. Uses extra GPU time and falls back to normal scaling when MetalFX is unavailable.")
+                                : qsTr("FSR 1 upscales enlarged SDR video on the GPU. Uses extra GPU time; HDR and unavailable effects use normal scaling.") }
                         }
                         Segments {
                             objectName: "onboardingUpscaling"
                             Layout.alignment: Qt.AlignVCenter | Qt.AlignRight
                             implicitHeight: DesktopTokens.px(36)
-                            options: [{label:qsTr("Off"),value:"off"},{label:"MetalFX",value:"metalfx"}]
+                            options: [{label:qsTr("Off"),value:"off"},{label:root.mac ? "MetalFX" : "FSR 1",value:root.mac ? "metalfx" : "fsr1"}]
                             optionWidth: 70
-                            selectedIndex: root.metalFx ? 1 : 0
+                            selectedIndex: root.upscalingEnabled ? 1 : 0
                             onSelected: (index, item) => root.store.setOnboardingSetting("upscaling", item.value)
                         }
                     }
                 }
                 Repeater {
-                    model: [{key:"upscalingSharpness",label:qsTr("Clarity"),description:qsTr("Sharpen details before upscaling. 0 disables."),maximum:15,fallback:10},
-                        {key:"upscalingDenoise",label:qsTr("Noise reduction"),description:qsTr("Smooth noise before upscaling. 0 disables."),maximum:20,fallback:0}]
+                    model: [{key:"upscalingSharpness",label:qsTr("Clarity"),description:root.mac ? qsTr("Sharpen details before upscaling. 0 disables.") : qsTr("Sharpen details after FSR 1 upscaling. Set to 0 to disable."),maximum:15,fallback:10},
+                        ...(root.mac ? [{key:"upscalingDenoise",label:qsTr("Noise reduction"),description:qsTr("Smooth noise before upscaling. 0 disables."),maximum:20,fallback:0}] : [])]
                     delegate: Item {
                         id: tuningControl
                         required property var modelData
@@ -332,7 +332,7 @@ Column {
                             id: tuningRow
                             x: DesktopTokens.px(20); anchors.verticalCenter: parent.verticalCenter; width: parent.width - DesktopTokens.px(40)
                             spacing: DesktopTokens.px(16)
-                            enabled: root.metalFx; opacity: enabled ? 1 : 0.45
+                            enabled: root.upscalingEnabled; opacity: enabled ? 1 : 0.45
                             Column {
                                 Layout.fillWidth: true; Layout.minimumWidth: 0; spacing: DesktopTokens.px(3)
                                 Copy { width: parent.width; text: tuningControl.modelData.label; color: Theme.label; font.weight: Font.ExtraBold }
@@ -349,20 +349,6 @@ Column {
                         }
                     }
                 }
-            }
-            Column {
-                id: unavailable
-                visible: !root.mac
-                x: DesktopTokens.px(28); anchors.verticalCenter: parent.verticalCenter
-                width: parent.width - DesktopTokens.px(56)
-                spacing: DesktopTokens.px(14)
-                Badge { text: qsTr("NOT ON THIS PLATFORM") }
-                Column {
-                    width: parent.width; spacing: DesktopTokens.px(6)
-                    Copy { text: qsTr("Upscaling"); font.pixelSize: DesktopTokens.px(20); font.weight: Font.Black }
-                    Copy { width: parent.width; text: qsTr("MetalFX is a macOS feature. On Windows and Linux, the GPU scales the stream normally. Enlarging a lower-resolution stream can soften the picture. Choose a resolution that matches your display on the previous step.") }
-                }
-                Copy { width: parent.width; text: qsTr("You can change your stream resolution later in Settings."); color: root.blue; font.weight: Font.Bold }
             }
         }
     }

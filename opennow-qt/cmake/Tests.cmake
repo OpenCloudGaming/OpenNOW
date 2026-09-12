@@ -218,6 +218,13 @@ if(BUILD_TESTING)
     target_include_directories(opennow-framepacer-tests PRIVATE src)
     target_link_libraries(opennow-framepacer-tests PRIVATE Qt6::Test)
     add_test(NAME opennow-framepacer-tests COMMAND opennow-framepacer-tests -o -,txt)
+    qt_add_executable(opennow-fsrupscaler-tests tests/tst_fsrupscaler.cpp)
+    target_include_directories(opennow-fsrupscaler-tests PRIVATE src)
+    target_link_libraries(opennow-fsrupscaler-tests PRIVATE Qt6::Test Qt6::Gui Qt6::GuiPrivate)
+    qt_add_shaders(opennow-fsrupscaler-tests "opennow-fsr-composition-test-shaders"
+        PREFIX "/opennow/shaders" BASE "shaders"
+        FILES shaders/framegen.vert shaders/streamvideo.vert shaders/streamvideo.frag)
+    opennow_add_fsr_shaders(opennow-fsrupscaler-tests)
     qt_add_executable(opennow-frameinterpolator-tests
         tests/tst_frameinterpolator.cpp
         src/streaming/rendering/StreamFrameInterpolator.cpp)
@@ -230,6 +237,9 @@ if(BUILD_TESTING)
         find_program(OPENNOW_XVFB_RUN xvfb-run)
     endif()
     if(OPENNOW_XVFB_RUN)
+        add_test(NAME opennow-fsrupscaler-tests
+            COMMAND "${OPENNOW_XVFB_RUN}" -a "$<TARGET_FILE:opennow-fsrupscaler-tests>" -o -,txt)
+        set_tests_properties(opennow-fsrupscaler-tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=xcb")
         add_test(NAME opennow-hdrcolor-tests
             COMMAND "${OPENNOW_XVFB_RUN}" -a "$<TARGET_FILE:opennow-hdrcolor-tests>" -o -,txt)
         set_tests_properties(opennow-hdrcolor-tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=xcb")
@@ -237,6 +247,10 @@ if(BUILD_TESTING)
             COMMAND "${OPENNOW_XVFB_RUN}" -a "$<TARGET_FILE:opennow-frameinterpolator-tests>" -o -,txt)
         set_tests_properties(opennow-frameinterpolator-tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=xcb")
     else()
+        add_test(NAME opennow-fsrupscaler-tests COMMAND opennow-fsrupscaler-tests -o -,txt)
+        if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+            set_tests_properties(opennow-fsrupscaler-tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+        endif()
         add_test(NAME opennow-hdrcolor-tests COMMAND opennow-hdrcolor-tests -o -,txt)
         add_test(NAME opennow-frameinterpolator-tests COMMAND opennow-frameinterpolator-tests -o -,txt)
         if(WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
@@ -249,6 +263,7 @@ if(BUILD_TESTING)
     endif()
     set_tests_properties(opennow-hdrcolor-tests PROPERTIES TIMEOUT 60)
     set_tests_properties(opennow-frameinterpolator-tests PROPERTIES TIMEOUT 60)
+    set_tests_properties(opennow-fsrupscaler-tests PROPERTIES TIMEOUT 60)
     if(WIN32)
         set_tests_properties(opennow-frameinterpolator-tests PROPERTIES
             RUN_SERIAL TRUE TIMEOUT 180)
@@ -466,6 +481,7 @@ if(BUILD_TESTING)
         ${OPENNOW_STREAM_PRESENTATION_SOURCES}
     )
     target_include_directories(opennow-streamvideo-tests PRIVATE src)
+    opennow_add_fsr_shaders(opennow-streamvideo-tests)
     qt_add_shaders(opennow-streamvideo-tests "opennow-stream-test-shaders"
         PREFIX "/opennow/shaders"
         BASE "shaders"
@@ -492,6 +508,7 @@ if(BUILD_TESTING)
             src/streaming/rendering/StreamFrameInterpolator.cpp
             src/streaming/rendering/LinuxVulkanGraphics.cpp)
         target_include_directories(opennow-nativeframegeneration-tests PRIVATE src)
+        opennow_add_fsr_shaders(opennow-nativeframegeneration-tests)
         target_link_libraries(opennow-nativeframegeneration-tests PRIVATE
             Qt6::Test Qt6::GuiPrivate Qt6::Quick Qt6::QuickPrivate opennow-streamer-ffi opennow-platform-hdr)
         if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
@@ -694,6 +711,7 @@ if(BUILD_TESTING)
         opennow-theme-tests
         opennow-framepacer-tests
         opennow-frameinterpolator-tests
+        opennow-fsrupscaler-tests
         opennow-streamcolor-tests
         opennow-localization-tests
         opennow-qt-tests
@@ -732,6 +750,7 @@ if(BUILD_TESTING)
             opennow-streamtoasts-tests
             opennow-waylandhdroutput-tests
             opennow-frameinterpolator-tests
+            opennow-fsrupscaler-tests
             opennow-localization-tests
             opennow-qt-tests
             opennow-coreclient-tests
@@ -786,6 +805,7 @@ if(BUILD_TESTING)
                 opennow-streamtoasts-tests
                 opennow-waylandhdroutput-tests
                 opennow-hdrcolor-tests
+                opennow-fsrupscaler-tests
                 opennow-localization-tests
                 opennow-qt-tests
                 opennow-coreclient-tests

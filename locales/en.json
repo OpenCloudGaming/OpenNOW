@@ -1,4 +1,10 @@
 {
+  "fsrUpscaling": {
+    "description": "FSR 1 upscales enlarged SDR video on the GPU. Uses extra GPU time; HDR and unavailable effects use normal scaling.",
+    "clarityDescription": "Sharpen details after FSR 1 upscaling. Set to 0 to disable.",
+    "sdrOnly": "SDR ONLY",
+    "summary": " · FSR 1 · clarity %1"
+  },
   "persistentInGameSettings": {
     "title": "Persistent in-game settings",
     "description": "Keep your in-game graphics settings between sessions for supported games and memberships. Applies to new sessions."

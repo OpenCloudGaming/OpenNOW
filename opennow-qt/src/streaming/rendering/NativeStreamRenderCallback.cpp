@@ -136,6 +136,16 @@ public:
 
     void prepareFrame(QRhiCommandBuffer *commandBuffer) override
     {
+        prepareNativeFrame(commandBuffer);
+        if (!m_runtime || !m_runtime->presentationAllowed()
+            || m_presentationGeneration != m_runtime->presentationGeneration()
+            || !m_graphicsReady || !m_rhi || !commandBuffer) return;
+        m_textures.prepareUpscaling(commandBuffer, m_upscalingTarget, m_fsrUpscaling,
+            m_sourceColorSpace == OPENNOW_STREAMER_COLOR_SPACE_SDR709, m_upscalingSharpness);
+    }
+
+    void prepareNativeFrame(QRhiCommandBuffer *commandBuffer)
+    {
         if (!m_runtime || !m_runtime->presentationAllowed()
                 || m_presentationGeneration != m_runtime->presentationGeneration()) return;
         if (!m_graphicsReady || !m_rhi || !commandBuffer) return;
@@ -154,7 +164,7 @@ public:
         command.version = OPENNOW_STREAMER_RENDER_COMMAND_VERSION;
         command.struct_size = sizeof(command);
         command.frame_slot = static_cast<std::uint32_t>(m_rhi->currentFrameSlot());
-        if (m_rhi->backend() == QRhi::Metal && !m_upscalingTarget.isEmpty()) {
+        if (m_rhi->backend() == QRhi::Metal && !m_fsrUpscaling && !m_upscalingTarget.isEmpty()) {
             command.upscale_width = static_cast<std::uint32_t>(m_upscalingTarget.width());
             command.upscale_height = static_cast<std::uint32_t>(m_upscalingTarget.height());
             command.upscale_sharpness = static_cast<std::uint32_t>(m_upscalingSharpness);
@@ -321,8 +331,14 @@ public:
     {
         const auto target = size.width() > 0 && size.height() > 0
                 && size.width() <= 16384 && size.height() <= 16384 ? size : QSize();
-        if (m_upscalingTarget != target) m_resetFrameGeneration = true;
+        if (m_upscalingTarget != target && m_rhi && m_rhi->backend() == QRhi::Metal)
+            m_resetFrameGeneration = true;
         m_upscalingTarget = target;
+    }
+
+    void setFsrUpscaling(bool enabled) override
+    {
+        m_fsrUpscaling = enabled;
     }
 
     void setUpscalingEnhancement(int sharpness, int denoise) override
@@ -332,7 +348,8 @@ public:
         if (m_upscalingSharpness == sharpness && m_upscalingDenoise == denoise) return;
         m_upscalingSharpness = sharpness;
         m_upscalingDenoise = denoise;
-        if (!m_upscalingTarget.isEmpty()) m_resetFrameGeneration = true;
+        if (!m_upscalingTarget.isEmpty() && m_rhi && m_rhi->backend() == QRhi::Metal)
+            m_resetFrameGeneration = true;
     }
 
     void setFrameGeneration(bool enabled, double refreshRate) override
@@ -458,6 +475,7 @@ private:
     double m_refreshRate = 0;
     bool m_frameGeneration = false;
     QSize m_upscalingTarget;
+    bool m_fsrUpscaling = false;
     int m_upscalingSharpness = 10;
     int m_upscalingDenoise = 0;
     bool m_frameGenerationFailed = false;

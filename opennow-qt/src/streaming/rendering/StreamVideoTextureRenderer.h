@@ -1,5 +1,7 @@
 #pragma once
 
+#include "streaming/rendering/StreamFsrUpscaler.h"
+
 #include <QFile>
 #include <QMatrix4x4>
 #include <QRectF>
@@ -94,6 +96,7 @@ public:
         auto &entry = m_imports[slot];
         if (!entry.texture || entry.resource != native.object || entry.format != format
             || entry.texture->pixelSize() != size) {
+            m_fsr.forgetSource(entry.texture.get());
             entry.bindings.reset();
             entry.texture.reset(m_rhi->newTexture(format, size, 1));
             if (!entry.texture->createFrom(native)) { entry.texture.reset(); return false; }
@@ -161,6 +164,7 @@ public:
 
     void clearExternalTextures()
     {
+        clearUpscaling();
         for (auto &entry : m_external) {
             entry.bindings.reset();
             entry.texture = nullptr;
@@ -168,10 +172,39 @@ public:
         m_externalSlot = -1;
     }
 
+    void prepareUpscaling(QRhiCommandBuffer *cb, const QSize &target, bool enabled,
+                          bool sdr, int sharpness)
+    {
+        auto *source = m_externalSlot >= 0 ? m_external[m_externalSlot].texture
+                                          : importedTexture();
+        if (!m_uniforms || !m_sampler) return;
+        if (!enabled || !sdr || !m_fsr.matchesConfiguration(m_rhi, source, target)) {
+            m_fsrBinding.reset();
+            m_fsrOutputId = 0;
+        }
+        auto *output = m_fsr.render(m_rhi, cb, source, target, enabled, sdr, sharpness);
+        if (!output || output == source) {
+            m_fsrBinding.reset();
+            m_fsrOutputId = 0;
+            return;
+        }
+        if (m_fsrBinding && m_fsrOutputId == output->globalResourceId()) return;
+        m_fsrBinding.reset(m_rhi->newShaderResourceBindings());
+        m_fsrBinding->setBindings({
+            QRhiShaderResourceBinding::uniformBuffer(0,
+                QRhiShaderResourceBinding::VertexStage | QRhiShaderResourceBinding::FragmentStage,
+                m_uniforms.get()),
+            QRhiShaderResourceBinding::sampledTexture(1,
+                QRhiShaderResourceBinding::FragmentStage, output, m_sampler.get())});
+        if (!m_fsrBinding->create()) { m_fsrBinding.reset(); return; }
+        m_fsrOutputId = output->globalResourceId();
+    }
+
     void render(QRhiCommandBuffer *cb, bool stencil, int reference)
     {
         auto *pipeline = m_pipelines[stencil ? 1 : 0].get();
-        auto *bindings = m_externalSlot >= 0 ? m_external[m_externalSlot].bindings.get()
+        auto *bindings = m_fsrBinding ? m_fsrBinding.get()
+                         : m_externalSlot >= 0 ? m_external[m_externalSlot].bindings.get()
                                            : m_imports[m_currentSlot].bindings.get();
         if (!pipeline || !bindings) return;
         cb->setGraphicsPipeline(pipeline);
@@ -209,6 +242,13 @@ public:
     }
 
 private:
+    void clearUpscaling()
+    {
+        m_fsrBinding.reset();
+        m_fsrOutputId = 0;
+        m_fsr.release();
+    }
+
     static QShader loadShader(const char *path)
     {
         QFile file(QString::fromLatin1(path));
@@ -263,6 +303,9 @@ private:
     QRhiRenderTarget *m_target = nullptr;
     std::array<ImportedFrame, 8> m_imports;
     std::array<ExternalFrame, 3> m_external;
+    StreamFsrUpscaler m_fsr;
+    std::unique_ptr<QRhiShaderResourceBindings> m_fsrBinding;
+    quint64 m_fsrOutputId = 0;
     std::array<std::unique_ptr<QRhiGraphicsPipeline>, 2> m_pipelines;
     std::unique_ptr<QRhiSampler> m_sampler;
     std::unique_ptr<QRhiBuffer> m_uniforms;
