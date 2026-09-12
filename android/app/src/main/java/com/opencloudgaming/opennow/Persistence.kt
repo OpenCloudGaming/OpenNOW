@@ -352,16 +352,6 @@ internal fun AppSettings.normalizedForAndroid(): AppSettings {
             leftOffsetYDp = androidTouch.leftOffsetYDp.finiteIn(-160f, 160f, touchDefaults.leftOffsetYDp),
             rightOffsetXDp = androidTouch.rightOffsetXDp.finiteIn(-220f, 220f, touchDefaults.rightOffsetXDp),
             rightOffsetYDp = androidTouch.rightOffsetYDp.finiteIn(-160f, 160f, touchDefaults.rightOffsetYDp),
-            nativeTouchScrollScale = androidTouch.nativeTouchScrollScale.finiteIn(
-                0.25f,
-                2f,
-                touchDefaults.nativeTouchScrollScale,
-            ),
-            nativeTouchJitterThresholdDp = androidTouch.nativeTouchJitterThresholdDp.finiteIn(
-                0f,
-                24f,
-                touchDefaults.nativeTouchJitterThresholdDp,
-            ),
             offsets = androidTouch.offsets.mapValues { (_, offset) ->
                 TouchOffset(
                     x = offset.x.finiteIn(-320f, 320f, 0f),

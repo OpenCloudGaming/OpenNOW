@@ -239,6 +239,7 @@
     <string name="queue_checking">Checking</string>
     <string name="queue_best_route">Best available route</string>
     <string name="queue_higher_ping_warning">You have selected a server that has less queue but more ping. The amount of complaints I get about lag is because of this. Press default if you want the server closest to you.</string>
+    <string name="queue_higher_ping_dont_show_again">I understand, don\'t show me again</string>
     <string name="queue_metric_ahead">Ahead</string>
     <string name="queue_metric_wait">Wait</string>
     <string name="session_timer">Session timer</string>

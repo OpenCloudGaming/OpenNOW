@@ -1088,39 +1088,6 @@ private fun SettingsContent(
                             style = MaterialTheme.typography.bodySmall,
                         )
                     }
-                    if (effectiveNativeTouchMode != NativeTouchMode.Off) {
-                        Box(Modifier.padding(start = 24.dp)) {
-                            Column {
-                                val scrollSpeedLabel = when {
-                                    settings.androidTouch.nativeTouchScrollScale <= 0.5f -> "Very slow"
-                                    settings.androidTouch.nativeTouchScrollScale <= 0.8f -> "Slow"
-                                    settings.androidTouch.nativeTouchScrollScale <= 1.2f -> "Normal"
-                                    settings.androidTouch.nativeTouchScrollScale <= 1.6f -> "Fast"
-                                    else -> "Very fast"
-                                }
-                                NumberSlider(
-                                    label = "Native touch scroll speed",
-                                    value = settings.androidTouch.nativeTouchScrollScale,
-                                    min = 0.25f,
-                                    max = 2.0f,
-                                    step = 0.05f,
-                                    unit = " ($scrollSpeedLabel)",
-                                ) { value ->
-                                    viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(nativeTouchScrollScale = value)))
-                                }
-                                NumberSlider(
-                                    label = "Native touch tap stability",
-                                    value = settings.androidTouch.nativeTouchJitterThresholdDp,
-                                    min = 0f,
-                                    max = 24f,
-                                    step = 1f,
-                                    unit = "dp",
-                                ) { value ->
-                                    viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(nativeTouchJitterThresholdDp = value)))
-                                }
-                            }
-                        }
-                    }
                 }
                 SettingSwitch(stringResource(R.string.stream_panel_finger_mouse), settings.androidTouch.mousePad) { enabled -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(mousePad = enabled))) }
                 if (settings.androidTouch.mousePad) {

@@ -18,86 +18,49 @@ import org.junit.Test
  */
 class NativeTouchTest {
 
-    // -- Motion stability --------------------------------------------------------------------
+    // -- MOVE traffic shaping ---------------------------------------------------------------
 
     @Test
-    fun movementInsideTapGuardIsSuppressed() {
-        val tracker = NativeTouchMotionTracker()
-        tracker.begin(pointerId = 1, x = 100f, y = 100f)
+    fun nativeTouchMoveLimiterSendsLeadingAndLatestSnapshotsOnly() {
+        val limiter = NativeTouchMoveLimiter()
+        val first = listOf(TouchRecord(slot = 0, phase = TouchPhase.MOVE, x = 10, y = 20))
+        val middle = listOf(TouchRecord(slot = 0, phase = TouchPhase.MOVE, x = 20, y = 30))
+        val latest = listOf(TouchRecord(slot = 0, phase = TouchPhase.MOVE, x = 30, y = 40))
 
-        assertNull(
-            tracker.move(
-                pointerId = 1,
-                x = 100f,
-                y = 107f,
-                movementScale = 1f,
-                jitterThresholdPx = 8f,
-            ),
+        assertEquals(first, limiter.offer(first, nowMs = 100L, minimumIntervalMs = 16L))
+        assertNull(limiter.offer(middle, nowMs = 104L, minimumIntervalMs = 16L))
+        assertNull(limiter.offer(latest, nowMs = 108L, minimumIntervalMs = 16L))
+        assertEquals(8L, limiter.delayUntilFlushMs(nowMs = 108L, minimumIntervalMs = 16L))
+        assertEquals(latest, limiter.flush(nowMs = 116L))
+        assertFalse(limiter.hasPendingMove)
+    }
+
+    @Test
+    fun nativeTouchMoveLimiterResetsBetweenTransports() {
+        val limiter = NativeTouchMoveLimiter()
+        val move = listOf(TouchRecord(slot = 0, phase = TouchPhase.MOVE, x = 10, y = 20))
+        limiter.offer(move, nowMs = 100L, minimumIntervalMs = 16L)
+        limiter.offer(move, nowMs = 104L, minimumIntervalMs = 16L)
+
+        limiter.reset()
+
+        assertFalse(limiter.hasPendingMove)
+        assertEquals(move, limiter.offer(move, nowMs = 105L, minimumIntervalMs = 16L))
+    }
+
+    @Test
+    fun nativeTouchMoveLimiterDropsRepeatedCoordinatesEvenWhenContactSizeChanges() {
+        val limiter = NativeTouchMoveLimiter()
+        val first = listOf(
+            TouchRecord(slot = 0, phase = TouchPhase.MOVE, x = 10, y = 20, radiusX = 4, radiusY = 5),
         )
-    }
-
-    @Test
-    fun firstMovementPastTapGuardStartsWithoutAJump() {
-        val tracker = NativeTouchMotionTracker()
-        tracker.begin(pointerId = 1, x = 100f, y = 100f)
-
-        val firstMove = tracker.move(
-            pointerId = 1,
-            x = 100f,
-            y = 109f,
-            movementScale = 1f,
-            jitterThresholdPx = 8f,
+        val samePosition = listOf(
+            TouchRecord(slot = 0, phase = TouchPhase.MOVE, x = 10, y = 20, radiusX = 8, radiusY = 9),
         )
 
-        assertNotNull(firstMove)
-        assertEquals(100f, firstMove!!.x, 0f)
-        assertEquals(101f, firstMove.y, 0.001f)
-    }
-
-    @Test
-    fun committedMovementStaysContinuous() {
-        val tracker = NativeTouchMotionTracker()
-        tracker.begin(pointerId = 1, x = 40f, y = 80f)
-
-        val firstMove = tracker.move(1, 40f, 89f, movementScale = 1f, jitterThresholdPx = 8f)
-        val secondMove = tracker.move(1, 40f, 90f, movementScale = 1f, jitterThresholdPx = 8f)
-
-        assertEquals(81f, firstMove!!.y, 0.001f)
-        assertEquals(82f, secondMove!!.y, 0.001f)
-    }
-
-    @Test
-    fun scaledDragDoesNotSnapBackOnRelease() {
-        val tracker = NativeTouchMotionTracker()
-        tracker.begin(pointerId = 1, x = 20f, y = 20f)
-
-        val move = tracker.move(1, 20f, 38f, movementScale = 0.5f, jitterThresholdPx = 8f)
-        val up = tracker.end(1, 20f, 38f, movementScale = 0.5f, jitterThresholdPx = 8f)
-
-        assertEquals(25f, move!!.y, 0.001f)
-        assertEquals(move.y, up.y, 0.001f)
-    }
-
-    @Test
-    fun tapReleaseRemainsAtTheDownPosition() {
-        val tracker = NativeTouchMotionTracker()
-        tracker.begin(pointerId = 1, x = 50f, y = 60f)
-
-        val up = tracker.end(1, 53f, 64f, movementScale = 1f, jitterThresholdPx = 8f)
-
-        assertEquals(50f, up.x, 0f)
-        assertEquals(60f, up.y, 0f)
-    }
-
-    @Test
-    fun zeroTapGuardPreservesRawMovement() {
-        val tracker = NativeTouchMotionTracker()
-        tracker.begin(pointerId = 1, x = 10f, y = 10f)
-
-        val move = tracker.move(1, 14f, 16f, movementScale = 1f, jitterThresholdPx = 0f)
-
-        assertEquals(14f, move!!.x, 0.001f)
-        assertEquals(16f, move.y, 0.001f)
+        assertEquals(first, limiter.offer(first, nowMs = 100L, minimumIntervalMs = 8L))
+        assertNull(limiter.offer(samePosition, nowMs = 108L, minimumIntervalMs = 8L))
+        assertFalse(limiter.hasPendingMove)
     }
 
     // -- Local UI ownership -----------------------------------------------------------------

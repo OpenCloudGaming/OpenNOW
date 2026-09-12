@@ -29,6 +29,7 @@ class AppSettingsDefaultsTest {
         // The shelf opens on first sight; folding it is a choice the reader makes and keeps.
         assertFalse(settings.localAppsCollapsed)
         assertTrue(settings.landscapeNewGamesHero)
+        assertFalse(settings.higherPingWarningDismissed)
         // Rumble routing stays automatic until someone's hardware proves it needs forcing.
         assertEquals(HapticsOutputPreference.Auto, settings.hapticsOutput)
         assertEquals(TouchControllerStyle.V1, settings.androidTouch.touchControllerStyle)
@@ -79,6 +80,7 @@ class AppSettingsDefaultsTest {
         assertFalse(settings.stretchStreamToFit)
         assertTrue(settings.localAppPackageNames.isEmpty())
         assertTrue(settings.landscapeNewGamesHero)
+        assertFalse(settings.higherPingWarningDismissed)
         // Developer options are a hidden gesture, never a shipped or migrated-in default.
         assertFalse(settings.developerOptionsUnlocked)
         assertFalse(settings.showSessionReportAfterStream)
@@ -87,6 +89,26 @@ class AppSettingsDefaultsTest {
         assertEquals(0f, settings.androidTouch.joystickDeadZone, 0.0001f)
         assertEquals(TouchControlGroup.entries.toSet(), settings.androidTouch.visibleControlGroups)
         assertEquals(TouchExtraButtonAction.Guide, settings.androidTouch.extraButtonAction(0))
+    }
+
+    @Test
+    fun higherPingWarningDefaultsOnAndPreservesDismissal() {
+        val defaulted = OpenNowJson.decodeFromString<AppSettings>("{}")
+        val dismissed = OpenNowJson.decodeFromString<AppSettings>(
+            """{"higherPingWarningDismissed":true}""",
+        )
+
+        assertFalse(defaulted.higherPingWarningDismissed)
+        assertTrue(dismissed.higherPingWarningDismissed)
+    }
+
+    @Test
+    fun removedNativeTouchMotionOverridesDoNotBreakExistingSettings() {
+        val restored = OpenNowJson.decodeFromString<AppSettings>(
+            """{"androidTouch":{"nativeTouchMode":"Always","nativeTouchScrollScale":0.5,"nativeTouchJitterThresholdDp":24.0}}""",
+        )
+
+        assertEquals(NativeTouchMode.Always, restored.androidTouch.nativeTouchMode)
     }
 
     @Test
@@ -380,8 +402,6 @@ class AppSettingsDefaultsTest {
             tvSafeAreaPaddingDp = Float.NEGATIVE_INFINITY,
             androidTouch = AndroidTouchSettings(
                 opacity = Float.NaN,
-                nativeTouchScrollScale = Float.POSITIVE_INFINITY,
-                nativeTouchJitterThresholdDp = Float.NaN,
                 offsets = mapOf("bad" to TouchOffset(Float.NaN, Float.POSITIVE_INFINITY)),
             ),
         ).normalizedForAndroid()
@@ -391,8 +411,6 @@ class AppSettingsDefaultsTest {
         assertEquals(1f, normalized.posterSizeScale, 0f)
         assertEquals(16f, normalized.tvSafeAreaPaddingDp, 0f)
         assertEquals(AndroidTouchSettings().opacity, normalized.androidTouch.opacity, 0f)
-        assertEquals(1f, normalized.androidTouch.nativeTouchScrollScale, 0f)
-        assertEquals(8f, normalized.androidTouch.nativeTouchJitterThresholdDp, 0f)
         assertEquals(TouchOffset(), normalized.androidTouch.offsets["bad"])
     }
 

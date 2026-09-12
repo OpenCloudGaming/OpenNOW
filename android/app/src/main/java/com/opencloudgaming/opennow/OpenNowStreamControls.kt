@@ -722,8 +722,6 @@ internal fun StreamControlsPanel(
     onOpacityChange: (Float) -> Unit,
     onMouseSensitivityChange: (Float) -> Unit,
     onMouseScrollSensitivityChange: (Int) -> Unit,
-    onNativeTouchScrollScaleChange: (Float) -> Unit,
-    onNativeTouchJitterThresholdChange: (Float) -> Unit,
     onTouchEdgePaddingChange: (Float) -> Unit,
     onTouchBottomPaddingChange: (Float) -> Unit,
     onTouchLeftOffsetChange: (Float) -> Unit,
@@ -1144,8 +1142,6 @@ internal fun StreamControlsPanel(
                     onControllerMouseEmulationToggle = onControllerMouseEmulationToggle,
                     onMouseSensitivityChange = onMouseSensitivityChange,
                     onMouseScrollSensitivityChange = onMouseScrollSensitivityChange,
-                    onNativeTouchScrollScaleChange = onNativeTouchScrollScaleChange,
-                    onNativeTouchJitterThresholdChange = onNativeTouchJitterThresholdChange,
                     onButtonTone = onButtonTone,
                 )
                 StreamControlsPage.ReportProblem -> {
@@ -2562,8 +2558,6 @@ private fun LazyListScope.mouseModePageItems(
     onControllerMouseEmulationToggle: () -> Unit,
     onMouseSensitivityChange: (Float) -> Unit,
     onMouseScrollSensitivityChange: (Int) -> Unit,
-    onNativeTouchScrollScaleChange: (Float) -> Unit,
-    onNativeTouchJitterThresholdChange: (Float) -> Unit,
     onButtonTone: () -> Unit,
 ) {
     item {
@@ -2604,37 +2598,6 @@ private fun LazyListScope.mouseModePageItems(
                 step = 5f,
                 onChange = { onMouseScrollSensitivityChange(it.toInt()) },
                 descriptionProvider = { "Speed: $scrollHint" }
-            )
-        }
-    }
-    if (settings.androidTouch.effectiveNativeTouchMode() != NativeTouchMode.Off) {
-        item {
-            val scrollSpeedLabel = when {
-                settings.androidTouch.nativeTouchScrollScale <= 0.5f -> "Very slow"
-                settings.androidTouch.nativeTouchScrollScale <= 0.8f -> "Slow"
-                settings.androidTouch.nativeTouchScrollScale <= 1.2f -> "Normal"
-                settings.androidTouch.nativeTouchScrollScale <= 1.6f -> "Fast"
-                else -> "Very fast"
-            }
-            ControlSliderRow(
-                label = "Touch scroll speed",
-                value = settings.androidTouch.nativeTouchScrollScale,
-                min = 0.25f,
-                max = 2.0f,
-                step = 0.05f,
-                onChange = onNativeTouchScrollScaleChange,
-                descriptionProvider = { scrollSpeedLabel }
-            )
-        }
-        item {
-            ControlSliderRow(
-                label = "Touch tap stability",
-                value = settings.androidTouch.nativeTouchJitterThresholdDp,
-                min = 0f,
-                max = 24f,
-                step = 1f,
-                onChange = onNativeTouchJitterThresholdChange,
-                valueFormatter = { "${it.toInt()}dp" }
             )
         }
     }

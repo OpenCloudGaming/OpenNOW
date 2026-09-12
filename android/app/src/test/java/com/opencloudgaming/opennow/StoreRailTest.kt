@@ -150,6 +150,14 @@ class StoreRailTest {
     }
 
     @Test
+    fun catalogShimmerKeepsAnimatingWhileImageRequestsArePaused() {
+        assertFalse(shouldStartCatalogImageRequest(requestsPaused = true, imageAlreadyLoaded = false))
+        assertTrue(shouldAnimateCatalogLoading(loadingImageCount = 1, reduceMotion = false))
+        assertFalse(shouldAnimateCatalogLoading(loadingImageCount = 0, reduceMotion = false))
+        assertFalse(shouldAnimateCatalogLoading(loadingImageCount = 1, reduceMotion = true))
+    }
+
+    @Test
     fun storeHeroAnimationStopsWhileTheStoreIsMoving() {
         assertTrue(shouldAnimateStoreHero(pageCount = 6, focused = false, reduceMotion = false, storeScrolling = false))
         assertFalse(shouldAnimateStoreHero(pageCount = 6, focused = false, reduceMotion = false, storeScrolling = true))

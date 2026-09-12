@@ -681,7 +681,6 @@ internal fun StreamScreen(
                 serverNegotiatedResolution = session.monitorSnapshot?.returnedResolution
                     ?: session.negotiatedStreamProfile?.resolution,
                 serverFinalSelectedResolution = session.monitorSnapshot?.finalSelectedResolution,
-                androidTouch = state.settings.androidTouch,
                 hideExternalMousePointer = externalMousePointerCaptureActive,
                 touchMouseEnabled =
                     touchMouseActive,
@@ -1148,12 +1147,6 @@ internal fun StreamScreen(
                     onMouseScrollSensitivityChange = { value ->
                         viewModel.updateStreamSettings { s -> s.copy(mouseScrollSensitivity = value) }
                     },
-                    onNativeTouchScrollScaleChange = { value ->
-                        viewModel.updateSettings(state.settings.copy(androidTouch = state.settings.androidTouch.copy(nativeTouchScrollScale = value)))
-                    },
-                    onNativeTouchJitterThresholdChange = { value ->
-                        viewModel.updateSettings(state.settings.copy(androidTouch = state.settings.androidTouch.copy(nativeTouchJitterThresholdDp = value)))
-                    },
                     onTouchEdgePaddingChange = { value ->
                         viewModel.updateSettings(state.settings.copy(androidTouch = state.settings.androidTouch.copy(edgePaddingDp = value)))
                     },
@@ -1386,7 +1379,6 @@ private fun StreamVideoSurface(
     decodedResolution: String?,
     serverNegotiatedResolution: String?,
     serverFinalSelectedResolution: String?,
-    androidTouch: AndroidTouchSettings,
     hideExternalMousePointer: Boolean,
     touchMouseEnabled: Boolean,
     pinchZoomEnabled: Boolean,
@@ -1495,15 +1487,6 @@ private fun StreamVideoSurface(
     }
     LaunchedEffect(streamAspectRatio) {
         NativeStreamInputRouter.setRenderingAspectRatio(streamAspectRatio)
-    }
-    LaunchedEffect(
-        androidTouch.nativeTouchScrollScale,
-        androidTouch.nativeTouchJitterThresholdDp,
-    ) {
-        NativeStreamInputRouter.setNativeTouchSettings(
-            scrollScale = androidTouch.nativeTouchScrollScale,
-            jitterThresholdDp = androidTouch.nativeTouchJitterThresholdDp,
-        )
     }
     DisposableEffect(client, rootView, pointerRootView, hideExternalMousePointer) {
         NativeStreamInputRouter.setExternalMousePointerCaptureEnabled(hideExternalMousePointer)

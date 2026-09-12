@@ -660,6 +660,18 @@ fn build_announce(context: &SessionContext, params: AnnounceParams<'_>) -> Strin
         .unwrap_or(75)
         .clamp(1, MAX_STREAM_BITRATE_MBPS)
         * 1000;
+    // Android owns the adaptation policy. Clamp its transport values to the negotiated
+    // ceiling here, and retain compatibility with contexts from older callers.
+    let adaptation = &context.settings["networkAdaptation"];
+    let dynamic_mode = u8::from(adaptation["dynamicStreamingMode"].as_u64() == Some(1));
+    let minimum_bitrate = adaptation["minimumBitrateKbps"]
+        .as_u64()
+        .unwrap_or(1000)
+        .clamp(1, bitrate);
+    let initial_bitrate = adaptation["initialBitrateKbps"]
+        .as_u64()
+        .unwrap_or(bitrate)
+        .clamp(minimum_bitrate, bitrate);
     let codec = negotiated_codec(context);
     let format = if codec.eq_ignore_ascii_case("AV1") {
         2
@@ -708,8 +720,8 @@ fn build_announce(context: &SessionContext, params: AnnounceParams<'_>) -> Strin
         "a=x-nv-video[0].encoderHdrCscMode:4".to_owned(),
         "a=x-nv-video[0].mapRtpTimestampsToFrames:0".to_owned(),
         format!("a=x-nv-video[0].maxFPS:{fps}"),
-        format!("a=x-nv-video[0].initialBitrateKbps:{bitrate}"),
-        format!("a=x-nv-video[0].initialPeakBitrateKbps:{bitrate}"),
+        format!("a=x-nv-video[0].initialBitrateKbps:{initial_bitrate}"),
+        format!("a=x-nv-video[0].initialPeakBitrateKbps:{initial_bitrate}"),
         format!("a=x-nv-vqos[0].bitStreamFormat:{format}"),
         "a=x-nv-vqos[0].fec.enable:1".to_owned(),
         "a=x-nv-vqos[0].fec.rateDropWindow:10".to_owned(),
@@ -719,14 +731,14 @@ fn build_announce(context: &SessionContext, params: AnnounceParams<'_>) -> Strin
         "a=x-nv-vqos[0].fec.repairMaxPercent:35".to_owned(),
         "a=x-nv-vqos[0].bllFec.enable:0".to_owned(),
         "a=x-nv-vqos[0].grc.enable:7".to_owned(),
-        "a=x-nv-vqos[0].drc.enable:0".to_owned(),
+        format!("a=x-nv-vqos[0].drc.enable:{dynamic_mode}"),
         "a=x-nv-vqos[0].dfc.adjustResAndFps:0".to_owned(),
         "a=x-nv-vqos[0].calculateAvgVideoStreamingBitrate:1".to_owned(),
         format!("a=x-nv-vqos[0].bw.maximumBitrateKbps:{bitrate}"),
-        "a=x-nv-vqos[0].bw.minimumBitrateKbps:1000".to_owned(),
+        format!("a=x-nv-vqos[0].bw.minimumBitrateKbps:{minimum_bitrate}"),
         "a=x-nv-vqos[0].drc.bitrateIirFilterFactor:128".to_owned(),
         "a=x-nv-vqos[0].resControl.bitrateIirFilterFactor:128".to_owned(),
-        "a=x-nv-vqos[0].dynamicStreamingMode:0".to_owned(),
+        format!("a=x-nv-vqos[0].dynamicStreamingMode:{dynamic_mode}"),
         "a=x-nv-packetPacing.version:3".to_owned(),
         "a=x-nv-packetPacing.mode:1".to_owned(),
         "a=x-nv-packetPacing.numGroups:5".to_owned(),
@@ -1254,6 +1266,54 @@ mod tests {
         assert!(sdp.contains("a=x-nv-general.rtcDataChannelOnNativeBundle:1"));
         assert!(sdp.contains("a=x-nv-runtime.encryptionKey:"));
         assert!(sdp.contains("m=video 5004"));
+    }
+
+    #[test]
+    fn announce_uses_android_adaptation_without_exceeding_the_user_ceiling() {
+        for (maximum_mbps, minimum, initial, expected_minimum, expected_initial) in [
+            (1, 250, 250, 250, 250),
+            (3, 750, 750, 750, 750),
+            (75, 1000, 18750, 1000, 18750),
+            // Clamp inconsistent JNI inputs before writing the server request.
+            (3, 9000, 12000, 3000, 3000),
+            (3, 750, 100, 750, 750),
+        ] {
+            let mut value = context();
+            value.settings["maxBitrateMbps"] = json!(maximum_mbps);
+            value.settings["networkAdaptation"] = json!({
+                "dynamicStreamingMode": 1,
+                "minimumBitrateKbps": minimum,
+                "initialBitrateKbps": initial,
+            });
+            let sdp = build_announce(
+                &value,
+                AnnounceParams {
+                    key: &"01".repeat(32),
+                    key_id: 7,
+                    port: 49006,
+                    address: "192.0.2.10",
+                    ufrag: "abcd",
+                    password: "abcdefghijklmnopqrstuv",
+                    fingerprint: "AA:BB",
+                    video_port: 5004,
+                    rtcp_on_sctp: true,
+                },
+            );
+            assert!(sdp.contains("a=x-nv-vqos[0].dynamicStreamingMode:1\r\n"));
+            assert!(sdp.contains("a=x-nv-vqos[0].drc.enable:1\r\n"));
+            assert!(sdp.contains(&format!(
+                "a=x-nv-vqos[0].bw.minimumBitrateKbps:{expected_minimum}\r\n"
+            )));
+            assert!(sdp.contains(&format!(
+                "a=x-nv-video[0].initialBitrateKbps:{expected_initial}\r\n"
+            )));
+            assert!(sdp.contains(&format!(
+                "a=x-nv-vqos[0].bw.maximumBitrateKbps:{}\r\n",
+                maximum_mbps * 1000
+            )));
+            assert!(sdp.contains("a=x-nv-video[0].maxFPS:120\r\n"));
+            assert_eq!(value.settings["maxBitrateMbps"], json!(maximum_mbps));
+        }
     }
 
     #[test]

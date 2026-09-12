@@ -2,7 +2,6 @@ package com.opencloudgaming.opennow
 
 import java.net.InetAddress
 import java.util.Locale
-import kotlin.math.max
 
 object SdpTools {
     data class RewriteResult(val sdp: String, val replacements: Int)
@@ -310,14 +309,11 @@ object SdpTools {
         val hidDeviceMask = parseHidDeviceMask(offerSdp)
         val partiallyReliableHidMask = parsePartiallyReliableHidMask(offerSdp)
         val bitDepth = if (settings.hdrEnabled || settings.colorQuality == ColorQuality.TenBit420 || settings.colorQuality == ColorQuality.TenBit444) 10 else 8
-        // The settings UI intentionally allows 1-3 Mbps for severely constrained links. Keep the
-        // usual NVIDIA 4 Mbps floor for normal profiles, but never let that floor exceed the
-        // user's maximum or the server will continue sending above the selected cap.
-        val maxBitrate = max(MIN_CONFIGURABLE_BITRATE_KBPS, settings.maxBitrateMbps * 1000)
-        val minBitrate = minOf(OFFICIAL_MIN_BITRATE_KBPS, maxBitrate)
-        val initialBitrate = max(minBitrate, maxBitrate / 4)
+        val bitrate = StreamNetworkAdaptation.bitrateRange(settings.maxBitrateMbps)
+        val maxBitrate = bitrate.maximumKbps
+        val minBitrate = bitrate.minimumKbps
+        val initialBitrate = bitrate.initialKbps
         val isHighFps = settings.fps > 60
-        val isAtLeast120Fps = settings.fps >= 120
         val is90Fps = settings.fps == 90
         val is120Fps = settings.fps == 120
         val isAtLeast240Fps = settings.fps >= 240
@@ -340,8 +336,10 @@ object SdpTools {
             add("a=vqos.fec.repairPercent:5")
             add("a=vqos.fec.repairMaxPercent:35")
             add("a=vqos.bllFec.enable:0")
-            add("a=vqos.dynamicStreamingMode:0")
-            add("a=vqos.drc.enable:0")
+            add("a=vqos.dynamicStreamingMode:${StreamNetworkAdaptation.DYNAMIC_STREAMING_MODE}")
+            add("a=vqos.drc.enable:1")
+            add("a=vqos.dfc.enable:0")
+            add("a=vqos.dfc.adjustResAndFps:0")
             add("a=vqos.calculateAvgVideoStreamingBitrate:1")
             add("a=video.dx9EnableNv12:1")
             add("a=video.dx9EnableHdr:${if (settings.hdrEnabled) 1 else 0}")
@@ -382,13 +380,7 @@ object SdpTools {
             add("a=vqos.qpDelta.qpDeltaIirFactor:60")
             add("a=vqos.qpDelta.qpDeltaThrottlePercent:100")
             if (isHighFps) {
-                add("a=vqos.dfc.enable:1")
-                add("a=vqos.dfc.decodeFpsAdjPercent:85")
-                add("a=vqos.dfc.targetDownCooldownMs:250")
-                add("a=vqos.dfc.dfcAlgoVersion:${if (isAtLeast120Fps) 2 else 1}")
-                add("a=vqos.dfc.minTargetFps:${if (isAtLeast120Fps) 100 else 60}")
                 add("a=vqos.resControl.dfc.useClientFpsPerf:0")
-                add("a=vqos.dfc.adjustResAndFps:0")
                 add("a=bwe.iirFilterFactor:8")
                 add("a=video.encoderFeatureSetting:47")
                 add("a=video.encoderPreset:6")
@@ -403,9 +395,6 @@ object SdpTools {
                     add("a=vqos.resControl.cpmRtc.decodeTimeThresholdMs:$decodeThresholdMs")
                 }
                 add("a=vqos.maxStreamFpsEstimate:${settings.fps}")
-            } else {
-                add("a=vqos.dfc.enable:0")
-                add("a=vqos.dfc.adjustResAndFps:0")
             }
             if (isAtLeast240Fps) {
                 add("a=video.enableNextCaptureMode:1")
@@ -420,8 +409,6 @@ object SdpTools {
             add("a=vqos.resControl.perfHistory.rtcIgnoreOutOfFocusWindowState:1")
             add("a=vqos.resControl.cpmRtc.featureMask:0")
             add("a=vqos.resControl.cpmRtc.enable:0")
-            add("a=vqos.resControl.cpmRtc.minResolutionPercent:100")
-            add("a=vqos.resControl.cpmRtc.resolutionChangeHoldonMs:999999")
             add("a=packetPacing.numGroups:${if (is120Fps) 3 else 5}")
             add("a=packetPacing.maxDelayUs:1000")
             add("a=packetPacing.minNumPacketsFrame:10")
@@ -471,9 +458,8 @@ object SdpTools {
             add("a=video.encoderCscMode:3")
             add("a=video.dynamicRangeMode:0")
             add("a=video.bitDepth:$bitDepth")
-            // Keep the encoded geometry fixed for every codec. AV1 value 1 was
-            // added during the June SDP expansion and permits the horizontal
-            // scaling seen as 1366x768 -> 1230x768 in affected sessions.
+            // Keep codec-specific horizontal scaling disabled. Network resolution
+            // adaptation is owned by DRC above, with the requested viewport retained.
             add("a=video.scalingFeature1:0")
             add("a=video.prefilterParams.prefilterModel:0")
             add("m=audio 0 RTP/AVP")
@@ -543,8 +529,6 @@ object SdpTools {
         return parsed ?: fallback
     }
 
-    private const val OFFICIAL_MIN_BITRATE_KBPS = 4000
-    private const val MIN_CONFIGURABLE_BITRATE_KBPS = 1000
     private const val HIGH_RESOLUTION_AV1_SPLIT_ENCODE_PIXELS = 2_764_800
     private const val PARTIALLY_RELIABLE_GAMEPAD_MASK_ALL = 0x0f
     private const val HID_DEVICE_MASK_ALL = -1

@@ -233,14 +233,14 @@ class SdpToolsTest {
 
         assertTrue(nvst.contains("a=video.clientViewportWd:1680"))
         assertTrue(nvst.contains("a=video.clientViewportHt:720"))
-        assertTrue(nvst.contains("a=vqos.dynamicStreamingMode:0"))
-        assertTrue(nvst.contains("a=vqos.drc.enable:0"))
+        assertTrue(nvst.contains("a=vqos.dynamicStreamingMode:1"))
+        assertTrue(nvst.contains("a=vqos.drc.enable:1"))
         assertTrue(nvst.contains("a=vqos.dfc.adjustResAndFps:0"))
         assertTrue(nvst.contains("a=vqos.adjustStreamingFpsDuringOutOfFocus:0"))
         assertFalse(nvst.contains("a=vqos.adjustStreamingFpsDuringOutOfFocus:1"))
         assertTrue(nvst.contains("a=vqos.resControl.cpmRtc.enable:0"))
-        assertTrue(nvst.contains("a=vqos.resControl.cpmRtc.minResolutionPercent:100"))
-        assertTrue(nvst.contains("a=vqos.resControl.cpmRtc.resolutionChangeHoldonMs:999999"))
+        assertFalse(nvst.contains("a=vqos.resControl.cpmRtc.minResolutionPercent:100"))
+        assertFalse(nvst.contains("a=vqos.resControl.cpmRtc.resolutionChangeHoldonMs:999999"))
         assertTrue(nvst.contains("a=vqos.grc.enable:0"))
         assertTrue(nvst.contains("a=video.scalingFeature1:0"))
         assertFalse(nvst.contains("a=video.clientViewportWd:1920"))
@@ -250,31 +250,54 @@ class SdpToolsTest {
     fun nvstSdpHonorsConfiguredBitrateBelowTheNormalFourMbpsFloor() {
         val nvst = buildNvstSdp(StreamSettings(maxBitrateMbps = 1))
 
-        assertTrue(nvst.contains("a=video.initialBitrateKbps:1000"))
-        assertTrue(nvst.contains("a=video.initialPeakBitrateKbps:1000"))
+        assertTrue(nvst.contains("a=video.initialBitrateKbps:250"))
+        assertTrue(nvst.contains("a=video.initialPeakBitrateKbps:250"))
         assertTrue(nvst.contains("a=vqos.bw.maximumBitrateKbps:1000"))
-        assertTrue(nvst.contains("a=vqos.bw.minimumBitrateKbps:1000"))
+        assertTrue(nvst.contains("a=vqos.bw.minimumBitrateKbps:250"))
         assertTrue(nvst.contains("a=vqos.bw.peakBitrateKbps:1000"))
         assertTrue(nvst.contains("a=vqos.bw.serverPeakBitrateKbps:1000"))
     }
 
     @Test
-    fun nvstSdpKeepsTheNormalFourMbpsMinimumForHigherBitrateProfiles() {
-        val nvst = buildNvstSdp(StreamSettings(maxBitrateMbps = 18))
-
-        assertTrue(nvst.contains("a=vqos.bw.maximumBitrateKbps:18000"))
-        assertTrue(nvst.contains("a=vqos.bw.minimumBitrateKbps:4000"))
+    fun everyBitrateCeilingHasCongestionHeadroomAndABoundedStartupRate() {
+        for (mbps in 1..200) {
+            val range = StreamNetworkAdaptation.bitrateRange(mbps)
+            assertEquals(mbps * 1000, range.maximumKbps)
+            assertTrue("$mbps Mbps needs headroom", range.minimumKbps in 1 until range.maximumKbps)
+            assertTrue("$mbps Mbps startup out of bounds", range.initialKbps in range.minimumKbps..range.maximumKbps)
+        }
+        assertEquals(1000, StreamNetworkAdaptation.bitrateRange(Int.MIN_VALUE).maximumKbps)
+        assertEquals(200000, StreamNetworkAdaptation.bitrateRange(Int.MAX_VALUE).maximumKbps)
     }
 
     @Test
-    fun everyResolutionCodecAndSupportedFpsProducesFixedGeometrySdp() {
+    fun threeMbpsReportProfileCanAdaptWithoutChangingItsCeiling() {
+        val settings = StreamSettings(resolution = "1280x720", fps = 30, maxBitrateMbps = 3)
+        val nvst = buildNvstSdp(settings)
+        assertTrue(nvst.lineSequence().contains("a=vqos.bw.minimumBitrateKbps:750"))
+        assertTrue(nvst.lineSequence().contains("a=vqos.bw.maximumBitrateKbps:3000"))
+        assertTrue(nvst.lineSequence().contains("a=video.maxFPS:30"))
+        assertEquals(3, settings.maxBitrateMbps)
+        assertEquals("1280x720", settings.resolution)
+    }
+
+    @Test
+    fun nvstSdpAllowsHigherBitrateProfilesToBackOffDuringCongestion() {
+        val nvst = buildNvstSdp(StreamSettings(maxBitrateMbps = 18))
+
+        assertTrue(nvst.contains("a=vqos.bw.maximumBitrateKbps:18000"))
+        assertTrue(nvst.contains("a=vqos.bw.minimumBitrateKbps:1000"))
+    }
+
+    @Test
+    fun everyResolutionCodecAndSupportedFpsAllowsAdaptationWithinTheRequestedProfile() {
         val modes = STREAM_RESOLUTION_OPTIONS.map { option ->
             Triple(option.value, option.aspectRatio, parseResolutionPixels(option.value))
         }
 
         for ((resolution, aspectRatio, pixels) in modes) {
             for (codec in VideoCodec.entries) {
-                for (fps in listOf(60, 120, 240, 360)) {
+                for (fps in listOf(30, 60, 90, 120, 240, 360)) {
                     val settings = StreamSettings(
                         resolution = resolution,
                         aspectRatio = aspectRatio,
@@ -298,6 +321,9 @@ class SdpToolsTest {
                     assertTrue("$case width missing", nvst.contains("a=video.clientViewportWd:${pixels.first}"))
                     assertTrue("$case height missing", nvst.contains("a=video.clientViewportHt:${pixels.second}"))
                     assertTrue("$case fps missing", nvst.contains("a=video.maxFPS:$fps"))
+                    assertTrue("$case must prioritize FPS", nvst.contains("a=vqos.dynamicStreamingMode:1"))
+                    assertTrue("$case must permit resolution adaptation", nvst.contains("a=vqos.drc.enable:1"))
+                    assertTrue("$case must not reduce FPS", nvst.contains("a=vqos.dfc.enable:0"))
                     if (fps > 60) {
                         assertTrue("$case FPS estimate missing", nvst.contains("a=vqos.maxStreamFpsEstimate:$fps"))
                     }

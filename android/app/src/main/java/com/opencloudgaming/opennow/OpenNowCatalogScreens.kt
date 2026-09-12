@@ -1030,14 +1030,18 @@ internal const val SHIMMER_CYCLE_DURATION_MS = 760
 internal fun shouldStartCatalogImageRequest(requestsPaused: Boolean, imageAlreadyLoaded: Boolean): Boolean =
     !requestsPaused || imageAlreadyLoaded
 
+/** Keep the lightweight shared placeholder clock independent from image request throttling. */
+internal fun shouldAnimateCatalogLoading(loadingImageCount: Int, reduceMotion: Boolean): Boolean =
+    loadingImageCount > 0 && !reduceMotion
+
 /**
- * One loading animation drives every visible poster. During a fling the placeholders stay flat so
- * bitmap upload and list movement get the frame budget instead of a stack of shimmer transitions.
+ * One loading animation drives every visible poster. Fetch/decode work can pause during a fling
+ * without freezing the lightweight shared shimmer that tells the user those posters are loading.
  */
 @Composable
 private fun CatalogImageLoadingAnimationProvider(
     tvProfile: Boolean,
-    animationsEnabled: Boolean,
+    imageRequestsPaused: Boolean,
     content: @Composable () -> Unit,
 ) {
     var loadingImageCount by remember { mutableIntStateOf(0) }
@@ -1047,7 +1051,7 @@ private fun CatalogImageLoadingAnimationProvider(
     // The previous shared transition lived for as long as the grid was composed, even after every
     // image had loaded. On a 120 Hz display that kept the entire app scheduling frames while idle.
     // Start the one shared clock only while at least one visible image actually shows a shimmer.
-    val animate = animationsEnabled && loadingImageCount > 0 && !LocalReduceMotion.current
+    val animate = shouldAnimateCatalogLoading(loadingImageCount, LocalReduceMotion.current)
     val driver: State<Float>? = if (animate) {
         val transition = rememberInfiniteTransition(label = "catalog-image-loading")
         transition.animateFloat(
@@ -1067,7 +1071,7 @@ private fun CatalogImageLoadingAnimationProvider(
     }
     CompositionLocalProvider(
         LocalImageLoadingAnimationsEnabled provides animate,
-        LocalCatalogImageRequestsPaused provides !animationsEnabled,
+        LocalCatalogImageRequestsPaused provides imageRequestsPaused,
         LocalImageLoadingTracker provides updateLoadingImageCount,
         LocalShimmerOffset provides driver.takeUnless { tvProfile },
         LocalTvLoadingPulse provides driver.takeIf { tvProfile },
@@ -1564,8 +1568,8 @@ private fun GameGrid(
     val physicalControllerConnected = rememberPhysicalControllerConnected(enabled = tvProfile || landscapeLayout)
     val controllerActionMode = catalogControllerActionMode(tvProfile, landscapeLayout, physicalControllerConnected)
     val artworkOnly = shouldUseArtworkOnlyCatalogCards(tvProfile, controllerActionMode)
-    val imageLoadingAnimationsEnabled by remember(gridState) {
-        derivedStateOf { !gridState.isScrollInProgress }
+    val imageRequestsPaused by remember(gridState) {
+        derivedStateOf { gridState.isScrollInProgress }
     }
     val favoriteIdSet = remember(favoriteIds) { favoriteIds.toHashSet() }
     val density = LocalDensity.current
@@ -1581,7 +1585,7 @@ private fun GameGrid(
         val firstRowGameIds = remember(games, gridSpec.columnCount) {
             games.take(gridSpec.columnCount).mapTo(mutableSetOf()) { it.id }
         }
-        CatalogImageLoadingAnimationProvider(tvProfile, imageLoadingAnimationsEnabled) {
+        CatalogImageLoadingAnimationProvider(tvProfile, imageRequestsPaused) {
             CatalogFocusScope(enabled = tvProfile) {
                 LazyVerticalGrid(
                     modifier = Modifier.fillMaxSize(),
@@ -1681,8 +1685,8 @@ private fun StoreGameGrid(
         searchActive = state.catalogSearch.isNotBlank(),
         filterActive = state.catalogFilterIds.isNotEmpty(),
     )
-    val imageLoadingAnimationsEnabled by remember(gridState) {
-        derivedStateOf { !gridState.isScrollInProgress }
+    val imageRequestsPaused by remember(gridState) {
+        derivedStateOf { gridState.isScrollInProgress }
     }
     val favoriteIdSet = remember(favoriteIds) { favoriteIds.toHashSet() }
     val density = LocalDensity.current
@@ -1700,7 +1704,7 @@ private fun StoreGameGrid(
         val firstRowGameIds = remember(games, gridSpec.columnCount) {
             games.take(gridSpec.columnCount).mapTo(mutableSetOf()) { it.id }
         }
-        CatalogImageLoadingAnimationProvider(tvProfile, imageLoadingAnimationsEnabled) {
+        CatalogImageLoadingAnimationProvider(tvProfile, imageRequestsPaused) {
             CatalogFocusScope(enabled = tvProfile) {
                 LazyVerticalGrid(
                     modifier = Modifier.fillMaxSize(),
@@ -2374,9 +2378,6 @@ private fun StoreRailSection(
         derivedStateOf { railState.isScrollInProgress }
     }
     val parentImageRequestsPaused = LocalCatalogImageRequestsPaused.current
-    val parentImageAnimationsEnabled = LocalImageLoadingAnimationsEnabled.current
-    val parentShimmer = LocalShimmerOffset.current
-    val parentTvPulse = LocalTvLoadingPulse.current
     val favoriteIdSet = remember(favoriteIds) { favoriteIds.toHashSet() }
     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(OpenNowSpacing.sm)) {
         SectionHeader(title = title)
@@ -2397,9 +2398,6 @@ private fun StoreRailSection(
             )
             CompositionLocalProvider(
                 LocalCatalogImageRequestsPaused provides (parentImageRequestsPaused || railScrolling),
-                LocalImageLoadingAnimationsEnabled provides (parentImageAnimationsEnabled && !railScrolling),
-                LocalShimmerOffset provides parentShimmer.takeUnless { railScrolling },
-                LocalTvLoadingPulse provides parentTvPulse.takeUnless { railScrolling },
             ) {
                 CatalogFocusScope(enabled = tvProfile) {
                     LazyRow(

@@ -226,10 +226,6 @@ object NativeStreamInputRouter {
     @Volatile
     private var nativeTouchEnabled = false
     private val touchSlots = TouchSlotAllocator()
-    private val nativeTouchMotionTracker = NativeTouchMotionTracker()
-    /** Native touch settings synced from [AndroidTouchSettings]. */
-    @Volatile private var nativeTouchScrollScale: Float = 1.0f
-    @Volatile private var nativeTouchJitterThresholdPx: Float = 0f
 
     fun attach(next: NativeStreamClient) {
         client = next
@@ -276,12 +272,6 @@ object NativeStreamInputRouter {
         releaseAllNativeTouches()
         nativeUiTouchRouting.endPointerGesture()
         touchMouseState.reset(client)
-    }
-
-    fun setNativeTouchSettings(scrollScale: Float, jitterThresholdDp: Float) {
-        val density = android.content.res.Resources.getSystem().displayMetrics.density
-        nativeTouchScrollScale = scrollScale
-        nativeTouchJitterThresholdPx = jitterThresholdDp * density
     }
 
     fun setStretchToFit(enabled: Boolean) {
@@ -559,70 +549,65 @@ object NativeStreamInputRouter {
             index..index
         }
 
-        val scrollScale = nativeTouchScrollScale.coerceIn(0.25f, 2.0f)
-        val jitterThresholdPx = nativeTouchJitterThresholdPx.coerceAtLeast(0f)
-
-        var hasGameTouchPointer = false
-        val pointers = indices.mapNotNull { index ->
-            if (index !in 0 until event.pointerCount) return@mapNotNull null
-            val pointerId = event.getPointerId(index)
-            // Fingers on our own chrome belong to the overlay, not the game.
-            if (nativeUiTouchRouting.ownsPointer(pointerId)) return@mapNotNull null
-            hasGameTouchPointer = true
-
-            val rawX = event.getX(index)
-            val rawY = event.getY(index)
-
-            val stabilized = when (phase) {
-                TouchPhase.DOWN -> nativeTouchMotionTracker.begin(pointerId, rawX, rawY)
-                TouchPhase.MOVE -> nativeTouchMotionTracker.move(
-                    pointerId = pointerId,
-                    x = rawX,
-                    y = rawY,
-                    movementScale = scrollScale,
-                    jitterThresholdPx = jitterThresholdPx,
-                ) ?: return@mapNotNull null
-                TouchPhase.UP, TouchPhase.CANCEL -> nativeTouchMotionTracker.end(
-                    pointerId = pointerId,
-                    x = rawX,
-                    y = rawY,
-                    movementScale = scrollScale,
-                    jitterThresholdPx = jitterThresholdPx,
-                )
-                else -> return@mapNotNull null
-            }
-
-            stabilized.copy(
-                radiusX = event.getTouchMajor(index) / 2f,
-                radiusY = event.getTouchMinor(index) / 2f,
-            )
-        }
-        // A MOVE inside the tap guard deliberately emits no packet, but the native-touch path
-        // still owns that finger. Report it handled so Activity.dispatchTouchEvent does not offer
-        // the middle of an already-captured gesture to Compose and then dispatch it here again.
-        if (pointers.isEmpty()) return hasGameTouchPointer
-
         val settingsResolution = streamResolutionPixels(client.settings)
         val decodedResolution = decodedStreamResolution
         val transform = presentationTransform
         val streamWidth = decodedResolution.first.takeIf { it > 0 } ?: settingsResolution.first
         val streamHeight = decodedResolution.second.takeIf { it > 0 } ?: settingsResolution.second
-        val records = buildTouchBatch(
-            allocator = touchSlots,
-            phase = phase,
-            pointers = pointers,
-            viewWidth = width,
-            viewHeight = height,
-            streamWidth = streamWidth,
-            streamHeight = streamHeight,
-            stretchToFit = stretchToFit,
-            renderingAspectRatio = inputContentAspectRatio(decodedResolution),
-            presentationZoomScale = transform.zoomScale,
-            presentationTranslationX = transform.translationX,
-            presentationTranslationY = transform.translationY,
-        )
-        if (records.isEmpty()) return false
-        return client.sendNativeTouch(records)
+
+        fun recordsAt(historyIndex: Int?): Pair<Boolean, List<TouchRecord>> {
+            var hasGameTouchPointer = false
+            val pointers = indices.mapNotNull { index ->
+                if (index !in 0 until event.pointerCount) return@mapNotNull null
+                val pointerId = event.getPointerId(index)
+                // Fingers on our own chrome belong to the overlay, not the game.
+                if (nativeUiTouchRouting.ownsPointer(pointerId)) return@mapNotNull null
+                hasGameTouchPointer = true
+
+                TouchPointerSample(
+                    pointerId = pointerId,
+                    x = historyIndex?.let { event.getHistoricalX(index, it) } ?: event.getX(index),
+                    y = historyIndex?.let { event.getHistoricalY(index, it) } ?: event.getY(index),
+                    radiusX = (historyIndex?.let { event.getHistoricalTouchMajor(index, it) }
+                        ?: event.getTouchMajor(index)) / 2f,
+                    radiusY = (historyIndex?.let { event.getHistoricalTouchMinor(index, it) }
+                        ?: event.getTouchMinor(index)) / 2f,
+                )
+            }
+            if (pointers.isEmpty()) return hasGameTouchPointer to emptyList()
+            return hasGameTouchPointer to buildTouchBatch(
+                allocator = touchSlots,
+                phase = phase,
+                pointers = pointers,
+                viewWidth = width,
+                viewHeight = height,
+                streamWidth = streamWidth,
+                streamHeight = streamHeight,
+                stretchToFit = stretchToFit,
+                renderingAspectRatio = inputContentAspectRatio(decodedResolution),
+                presentationZoomScale = transform.zoomScale,
+                presentationTranslationX = transform.translationX,
+                presentationTranslationY = transform.translationY,
+            )
+        }
+
+        // Android batches several digitizer samples into one MOVE under load. Jumping directly to
+        // the current coordinate makes a fast drag freeze at DOWN and then teleport, while a slow
+        // drag looks fine. Feed the history oldest-first; the client's latest-state limiter sends
+        // the leading position immediately and retains only the newest trailing position.
+        val historyIndices: List<Int?> = if (phase == TouchPhase.MOVE) {
+            (0 until event.historySize).map<Int, Int?> { it } + null
+        } else {
+            listOf(null)
+        }
+        var handled = false
+        var sent = false
+        historyIndices.forEach { historyIndex ->
+            val (hasGameTouchPointer, records) = recordsAt(historyIndex)
+            handled = handled || hasGameTouchPointer
+            if (records.isNotEmpty()) sent = client.sendNativeTouch(records) || sent
+        }
+        return sent || handled
     }
 
     /**
@@ -641,7 +626,6 @@ object NativeStreamInputRouter {
             if (records.isNotEmpty()) current.sendNativeTouch(records)
         }
         touchSlots.clear()
-        nativeTouchMotionTracker.clear()
     }
 
     fun dispatchExternalMouseTouch(event: MotionEvent, width: Int, height: Int): Boolean {

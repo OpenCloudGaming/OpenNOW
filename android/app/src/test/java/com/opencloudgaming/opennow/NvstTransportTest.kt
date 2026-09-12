@@ -86,6 +86,10 @@ class NvstTransportTest {
             val streamer = request["metaData"]!!.jsonArray.firstOrNull { it.jsonObject["key"]?.jsonPrimitive?.content == "GSStreamerType" }
             assertEquals(!nvst, streamer != null)
             assertEquals(nvst, settings.requiresNativeDesktopCloudMatchMode())
+            if (nvst) {
+                val features = request["requestedStreamingFeatures"]!!.jsonObject
+                assertEquals(1, features["dynamicStreamingMode"]!!.jsonPrimitive.int)
+            }
         }
     }
 
@@ -135,6 +139,10 @@ class NvstTransportTest {
         assertEquals(49003, context["session"]!!.jsonObject["mediaConnectionInfo"]!!.jsonObject["port"]!!.jsonPrimitive.int)
         assertEquals(360, context["settings"]!!.jsonObject["fps"]!!.jsonPrimitive.int)
         assertEquals("10bit_420", context["settings"]!!.jsonObject["colorQuality"]!!.jsonPrimitive.content)
+        val adaptation = context["settings"]!!.jsonObject["networkAdaptation"]!!.jsonObject
+        assertEquals(1, adaptation["dynamicStreamingMode"]!!.jsonPrimitive.int)
+        assertEquals(1000, adaptation["minimumBitrateKbps"]!!.jsonPrimitive.int)
+        assertEquals(18750, adaptation["initialBitrateKbps"]!!.jsonPrimitive.int)
         assertEquals(session.rtspsEndpoints.first(), context["session"]!!.jsonObject["rtspsEndpoints"]!!.jsonArray.first().jsonPrimitive.content)
     }
 }

@@ -547,9 +547,14 @@ internal fun PrintedWasteSelector(
     var pendingHigherPingLaunch by remember(game.id) {
         mutableStateOf<PrintedWasteZoneOption?>(null)
     }
+    var dismissHigherPingWarning by remember(game.id) { mutableStateOf(false) }
     val launchSelectedZone: () -> Unit = {
         selectedZone?.let { zone ->
-            if (hasHigherPingThanClosestPrintedWasteZone(zone, selectableZones)) {
+            if (
+                !state.settings.higherPingWarningDismissed &&
+                hasHigherPingThanClosestPrintedWasteZone(zone, selectableZones)
+            ) {
+                dismissHigherPingWarning = false
                 pendingHigherPingLaunch = zone
             } else {
                 viewModel.launchWithPrintedWaste(zone.routingUrl)
@@ -656,17 +661,46 @@ internal fun PrintedWasteSelector(
 
     pendingHigherPingLaunch?.let { zone ->
         AlertDialog(
-            onDismissRequest = { pendingHigherPingLaunch = null },
+            onDismissRequest = {
+                dismissHigherPingWarning = false
+                pendingHigherPingLaunch = null
+            },
             text = {
-                Text(
-                    stringResource(R.string.queue_higher_ping_warning),
-                    color = Color(0xffff8d8d),
-                    fontWeight = FontWeight.Bold,
-                )
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text(
+                        stringResource(R.string.queue_higher_ping_warning),
+                        color = Color(0xffff8d8d),
+                        fontWeight = FontWeight.Bold,
+                    )
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .clickable { dismissHigherPingWarning = !dismissHigherPingWarning }
+                            .padding(horizontal = 8.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Checkbox(
+                            checked = dismissHigherPingWarning,
+                            onCheckedChange = { dismissHigherPingWarning = it },
+                        )
+                        Text(
+                            stringResource(R.string.queue_higher_ping_dont_show_again),
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                    }
+                }
             },
             confirmButton = {
                 Button(
                     onClick = {
+                        if (dismissHigherPingWarning) {
+                            viewModel.updateSettings(
+                                state.settings.copy(higherPingWarningDismissed = true),
+                            )
+                        }
+                        dismissHigherPingWarning = false
                         pendingHigherPingLaunch = null
                         viewModel.launchWithPrintedWaste(zone.routingUrl)
                     },
@@ -675,7 +709,12 @@ internal fun PrintedWasteSelector(
                 }
             },
             dismissButton = {
-                TextButton(onClick = { pendingHigherPingLaunch = null }) {
+                TextButton(
+                    onClick = {
+                        dismissHigherPingWarning = false
+                        pendingHigherPingLaunch = null
+                    },
+                ) {
                     Text(stringResource(R.string.action_cancel))
                 }
             },

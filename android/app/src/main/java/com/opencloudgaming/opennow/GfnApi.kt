@@ -498,7 +498,7 @@ private fun requestedStreamingFeatures(settings: StreamSettings, profile: Stream
             put("audioChannelCount", 2)
             put("qosPolicy", 0)
             put("touchSupport", true)
-            put("dynamicStreamingMode", 0)
+            put("dynamicStreamingMode", StreamNetworkAdaptation.DYNAMIC_STREAMING_MODE)
         }
     }
 

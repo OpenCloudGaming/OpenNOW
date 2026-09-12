@@ -412,6 +412,9 @@ class NativeStreamClient(
     private val externalMouseMoveBurstLock = Any()
     private val externalMouseMoveBurstLimiter = MouseMoveBurstLimiter(MOUSE_MOVE_MIN_SEND_INTERVAL_MS)
     private var externalMouseMoveBurstFlushJob: Job? = null
+    private val nativeTouchMoveLock = Any()
+    private val nativeTouchMoveLimiter = NativeTouchMoveLimiter()
+    private var nativeTouchMoveFlushJob: Job? = null
     private val gamepadStateBurstLock = Any()
     private val gamepadStateBurstLimiter = GamepadStateBurstLimiter(GAMEPAD_STATE_MIN_SEND_INTERVAL_MS)
     private var gamepadStateBurstFlushJob: Job? = null
@@ -903,6 +906,11 @@ class NativeStreamClient(
         recordStreamDiagnostic(
             "start session=${streamDiagnosticId(session.sessionId)} status=${session.status} server=${session.serverIp.take(96)} signaling=${signalingUrlForDiagnostics(session.signalingUrl, session.sessionId)} settings=${settings.resolution}/${settings.fps}/${settings.codec} bitrate=${settings.maxBitrateMbps} microphone=${settings.microphoneMode.name}",
         )
+        val bitrate = StreamNetworkAdaptation.bitrateRange(settings.maxBitrateMbps)
+        recordStreamDiagnostic(
+            "network adaptation=prefer_fps minimumKbps=${bitrate.minimumKbps} " +
+                "initialKbps=${bitrate.initialKbps} maximumKbps=${bitrate.maximumKbps}",
+        )
         startTransport(session, settings, transportGeneration)
         updateControllerMouseLoop()
     }
@@ -1142,11 +1150,84 @@ class NativeStreamClient(
         return sendBurstLimitedMouseMove(dx, dy, partiallyReliable = false)
     }
 
-    /** Sends one batch of finger updates. Reliable: a dropped lift leaves a finger stuck down. */
+    /** Sends one batch of finger updates, coalescing replaceable MOVE snapshots. */
     internal fun sendNativeTouch(touches: List<TouchRecord>): Boolean {
-        val packet = inputEncoder.encodeTouchBatch(touches) ?: return false
-        return sendReliableInput(packet)
+        if (touches.isEmpty()) return false
+        if (touches.all { it.phase == TouchPhase.MOVE }) {
+            if (!hasOpenInputChannel()) return false
+            val immediate = synchronized(nativeTouchMoveLock) {
+                nativeTouchMoveLimiter.offer(
+                    touches = touches,
+                    nowMs = SystemClock.elapsedRealtime(),
+                    minimumIntervalMs = nativeTouchMoveIntervalMs(),
+                ).also { batch ->
+                    if (
+                        batch == null &&
+                        nativeTouchMoveLimiter.hasPendingMove &&
+                        nativeTouchMoveFlushJob?.isActive != true
+                    ) {
+                        scheduleNativeTouchMoveFlushLocked()
+                    }
+                }
+            }
+            return immediate?.let(::sendNativeTouchBatch) ?: true
+        }
+
+        // A final pending position must reach the ordered channel before the lift/cancel edge.
+        val pendingMove = synchronized(nativeTouchMoveLock) {
+            nativeTouchMoveFlushJob?.cancel()
+            nativeTouchMoveFlushJob = null
+            nativeTouchMoveLimiter.flush(SystemClock.elapsedRealtime())
+        }
+        // The pending absolute position is sent before the edge below on the same ordered channel,
+        // so the host cannot observe a lift before the last drag position.
+        if (pendingMove != null && !sendNativeTouchBatch(pendingMove)) return false
+        return sendNativeTouchBatch(touches)
     }
+
+    /** Must be called with [nativeTouchMoveLock] held. */
+    private fun scheduleNativeTouchMoveFlushLocked() {
+        nativeTouchMoveFlushJob = scope.launch {
+            while (true) {
+                val waitMs = synchronized(nativeTouchMoveLock) {
+                    nativeTouchMoveLimiter.delayUntilFlushMs(
+                        nowMs = SystemClock.elapsedRealtime(),
+                        minimumIntervalMs = nativeTouchMoveIntervalMs(),
+                    ).also { if (it == null) nativeTouchMoveFlushJob = null }
+                } ?: return@launch
+                if (waitMs > 0L) delay(waitMs)
+
+                val flushed = synchronized(nativeTouchMoveLock) {
+                    val nowMs = SystemClock.elapsedRealtime()
+                    if (
+                        (nativeTouchMoveLimiter.delayUntilFlushMs(
+                            nowMs = nowMs,
+                            minimumIntervalMs = nativeTouchMoveIntervalMs(),
+                        ) ?: 0L) > 0L
+                    ) {
+                        null
+                    } else {
+                        nativeTouchMoveLimiter.flush(nowMs).also { nativeTouchMoveFlushJob = null }
+                    }
+                }
+                if (flushed != null) {
+                    sendNativeTouchBatch(flushed)
+                    return@launch
+                }
+            }
+        }
+    }
+
+    private fun sendNativeTouchBatch(touches: List<TouchRecord>): Boolean {
+        val packet = inputEncoder.encodeTouchBatch(touches) ?: return false
+        val isMove = touches.all { it.phase == TouchPhase.MOVE }
+        return sendReliableInput(
+            bytes = packet,
+            resultDiagnosticKey = if (isMove) "touch.move" else "touch.edge",
+        )
+    }
+
+    private fun nativeTouchMoveIntervalMs(): Long = NATIVE_TOUCH_MOVE_MIN_SEND_INTERVAL_MS
 
     fun sendTouchMouseMove(dx: Int, dy: Int): Boolean {
         var adjustedDx = dx * settings.mouseSensitivity
@@ -1241,6 +1322,14 @@ class NativeStreamClient(
             externalMouseMoveBurstFlushJob?.cancel()
             externalMouseMoveBurstFlushJob = null
             externalMouseMoveBurstLimiter.reset()
+        }
+    }
+
+    private fun resetNativeTouchMoveLimiter() {
+        synchronized(nativeTouchMoveLock) {
+            nativeTouchMoveFlushJob?.cancel()
+            nativeTouchMoveFlushJob = null
+            nativeTouchMoveLimiter.reset()
         }
     }
 
@@ -2154,6 +2243,7 @@ class NativeStreamClient(
         statsJob = null
         offerTimeoutJob = null
         resetMouseMoveBurstLimiter()
+        resetNativeTouchMoveLimiter()
         resetGamepadStateBurstLimiter()
         lastStatsSample = null
         packetLossWindow.reset()
@@ -3943,9 +4033,21 @@ class NativeStreamClient(
     private fun sendInput(bytes: ByteArray, partiallyReliable: Boolean): Boolean =
         sendInput(bytes, partiallyReliable, fallbackToReliable = true)
 
-    private fun sendReliableInput(bytes: ByteArray): Boolean {
-        if (sendInput(bytes, partiallyReliable = false)) return true
-        val sentPartial = sendInput(bytes, partiallyReliable = true, fallbackToReliable = false)
+    private fun sendReliableInput(bytes: ByteArray, resultDiagnosticKey: String? = null): Boolean {
+        if (
+            sendInput(
+                bytes = bytes,
+                partiallyReliable = false,
+                fallbackToReliable = true,
+                resultDiagnosticKey = resultDiagnosticKey,
+            )
+        ) return true
+        val sentPartial = sendInput(
+            bytes = bytes,
+            partiallyReliable = true,
+            fallbackToReliable = false,
+            resultDiagnosticKey = resultDiagnosticKey,
+        )
         if (sentPartial) {
             NativeInputDiagnostics.add("reliable input used partial fallback ${inputChannelStateSummary()} bytes=${bytes.size}")
         }
@@ -4699,6 +4801,7 @@ class NativeStreamClient(
         private const val GAMEPAD_PACKET_DIAGNOSTIC_INTERVAL_MS = 1_000L
         private const val INPUT_BACKPRESSURE_DIAGNOSTIC_INTERVAL_MS = 1_000L
         private const val MOUSE_MOVE_MIN_SEND_INTERVAL_MS = 8L
+        private const val NATIVE_TOUCH_MOVE_MIN_SEND_INTERVAL_MS = 8L
         private const val GAMEPAD_STATE_MIN_SEND_INTERVAL_MS = 16L
         private const val MAX_PENDING_INPUT_SENDS = 256
         // State inputs are superseded by newer packets, so they are dropped well before the queue
