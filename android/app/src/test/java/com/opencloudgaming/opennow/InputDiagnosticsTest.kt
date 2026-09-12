@@ -1,11 +1,68 @@
 package com.opencloudgaming.opennow
 
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class InputDiagnosticsTest {
+    @Test(timeout = 10_000)
+    fun stalledLogcatDoesNotBlockProducerAndBacklogIsBounded() {
+        val started = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val drained = CountDownLatch(3)
+        val written = mutableListOf<String>()
+        val caller = Thread.currentThread()
+        val writer = InputDiagnosticsLogWriter(maxPendingLines = 2) { line ->
+            assertFalse("Logcat ran on the input caller", Thread.currentThread() === caller)
+            if (line == "first") {
+                started.countDown()
+                check(release.await(5, TimeUnit.SECONDS))
+            }
+            written += line
+            drained.countDown()
+        }
+        try {
+            writer.offer("first")
+            assertTrue(started.await(5, TimeUnit.SECONDS))
+            repeat(100) { writer.offer("pending $it") }
+            release.countDown()
+            assertTrue(drained.await(5, TimeUnit.SECONDS))
+            assertEquals(listOf("first", "pending 0", "pending 1"), written)
+        } finally {
+            release.countDown()
+            writer.close()
+        }
+    }
+
+    @Test
+    fun logcatFailureDoesNotPreventLaterWrites() {
+        val delivered = CountDownLatch(1)
+        val writer = InputDiagnosticsLogWriter { line ->
+            if (line == "fails") throw IllegalStateException("Logcat unavailable")
+            delivered.countDown()
+        }
+        try {
+            writer.offer("fails")
+            writer.offer("next")
+            assertTrue(delivered.await(5, TimeUnit.SECONDS))
+        } finally {
+            writer.close()
+        }
+    }
+
+    @Test
+    fun snapshotCanBeFormattedAfterBufferChanges() {
+        val buffer = InputDiagnosticsBuffer(1, 1) { 10L }
+        buffer.addRetained("state", "before")
+        val captured = buffer.capture()
+        buffer.addRetained("state", "after")
+        assertEquals("input.state:\nstate 10 before\ninput.diagnostics:\n10 before", captured.format())
+        assertFalse(captured.format().contains("after"))
+    }
+
     @Test
     fun retainedControllerStateSurvivesRecentEventOverflow() {
         var now = 100L

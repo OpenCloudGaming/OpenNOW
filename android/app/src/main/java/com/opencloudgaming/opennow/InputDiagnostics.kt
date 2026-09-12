@@ -2,6 +2,52 @@ package com.opencloudgaming.opennow
 
 import android.os.SystemClock
 import android.util.Log
+import java.util.concurrent.ArrayBlockingQueue
+import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.TimeUnit
+
+/** Best-effort logcat mirroring must never block input or grow an unbounded backlog. */
+internal class InputDiagnosticsLogWriter(
+    maxPendingLines: Int = 64,
+    private val writeLine: (String) -> Unit,
+) : AutoCloseable {
+    private val executor = ThreadPoolExecutor(
+        0, 1, 30L, TimeUnit.SECONDS, ArrayBlockingQueue<Runnable>(maxPendingLines),
+        { task -> Thread(task, "OpenNOWInputLog").apply { isDaemon = true } },
+        ThreadPoolExecutor.DiscardPolicy(),
+    )
+
+    fun offer(message: String) {
+        executor.execute {
+            try {
+                writeLine(message)
+            } catch (_: Exception) {
+                // The in-memory diagnostic entry is already retained if logcat is unavailable.
+            }
+        }
+    }
+
+    override fun close() { executor.shutdownNow() }
+}
+
+internal data class InputDiagnosticsSnapshot(
+    val retained: List<Pair<String, String>>,
+    val recent: List<String>,
+) {
+    fun format(): String {
+        if (retained.isEmpty() && recent.isEmpty()) return "input.diagnostics=empty"
+        return buildString {
+            if (retained.isNotEmpty()) {
+                appendLine("input.state:")
+                retained.forEach { (key, line) -> appendLine("$key $line") }
+            }
+            if (recent.isNotEmpty()) {
+                appendLine("input.diagnostics:")
+                recent.forEach { appendLine(it) }
+            }
+        }.trimEnd()
+    }
+}
 
 internal class InputDiagnosticsBuffer(
     private val maxRecentLines: Int,
@@ -71,21 +117,10 @@ internal class InputDiagnosticsBuffer(
         return retainAt(key, now, message())
     }
 
-    fun snapshot(): String {
-        if (retainedLines.isEmpty() && recentLines.isEmpty()) {
-            return "input.diagnostics=empty"
-        }
-        return buildString {
-            if (retainedLines.isNotEmpty()) {
-                appendLine("input.state:")
-                retainedLines.forEach { (key, line) -> appendLine("$key $line") }
-            }
-            if (recentLines.isNotEmpty()) {
-                appendLine("input.diagnostics:")
-                recentLines.forEach { appendLine(it) }
-            }
-        }.trimEnd()
-    }
+    fun capture(): InputDiagnosticsSnapshot =
+        InputDiagnosticsSnapshot(retainedLines.toList(), recentLines.toList())
+
+    fun snapshot(): String = capture().format()
 
     private fun retainAt(key: String, now: Long, message: String): String {
         val line = formatLine(now, message)
@@ -118,22 +153,21 @@ object NativeInputDiagnostics {
     private const val MAX_RECENT_LINES = 240
     private const val MAX_RETAINED_LINES = 48
     private const val TAG = "OpenNOWInput"
+    private val logWriter = InputDiagnosticsLogWriter { Log.d(TAG, it) }
     private val buffer = InputDiagnosticsBuffer(
         maxRecentLines = MAX_RECENT_LINES,
         maxRetainedLines = MAX_RETAINED_LINES,
         elapsedRealtime = SystemClock::elapsedRealtime,
     )
 
-    @Synchronized
     fun add(message: String) {
-        buffer.add(message)
-        Log.d(TAG, message)
+        synchronized(this) { buffer.add(message) }
+        logWriter.offer(message)
     }
 
-    @Synchronized
     fun addRetained(key: String, message: String) {
-        buffer.addRetained(key, message)
-        Log.d(TAG, message)
+        synchronized(this) { buffer.addRetained(key, message) }
+        logWriter.offer(message)
     }
 
     @Synchronized
@@ -161,6 +195,5 @@ object NativeInputDiagnostics {
         buffer.retainCounted("touch-route.$key", message)
     }
 
-    @Synchronized
-    fun snapshot(): String = buffer.snapshot()
+    fun snapshot(): String = synchronized(this) { buffer.capture() }.format()
 }

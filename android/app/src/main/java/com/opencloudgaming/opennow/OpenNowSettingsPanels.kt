@@ -1734,25 +1734,25 @@ internal fun DebugLogsPanel(state: OpenNowUiState, viewModel: OpenNowViewModel) 
     var diagnosticActionInProgress by remember { mutableStateOf(false) }
     val saveLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/plain")) { uri ->
         if (uri == null) {
+            pendingLogText = ""
             diagnosticActionInProgress = false
             return@rememberLauncherForActivityResult
         }
         val logText = pendingLogText
+        pendingLogText = ""
         scope.launch {
-            val result = withContext(Dispatchers.IO) {
-                runCatching {
+            runDiagnosticAction(
+                onFailure = { saveError = it.message ?: "Could not save logs" },
+                onFinished = { diagnosticActionInProgress = false },
+            ) {
+                withContext(Dispatchers.IO) {
                     context.contentResolver.openOutputStream(uri)?.use { output ->
                         output.write(logText.toByteArray(Charsets.UTF_8))
                     } ?: error("Could not open log file")
                 }
-            }
-            result.onSuccess {
                 saved = true
                 saveError = null
-            }.onFailure { error ->
-                saveError = error.message ?: "Could not save logs"
             }
-            diagnosticActionInProgress = false
         }
     }
     Text(
@@ -1776,17 +1776,17 @@ internal fun DebugLogsPanel(state: OpenNowUiState, viewModel: OpenNowViewModel) 
             Button(
                 onClick = {
                     diagnosticActionInProgress = true
+                    copied = false
                     saveError = null
                     scope.launch {
-                        runCatching { viewModel.sanitizedDebugLogText() }
-                            .onSuccess { logs ->
-                                clipboard.setText(AnnotatedString(logs))
-                                copied = true
-                            }
-                            .onFailure { error ->
-                                saveError = error.message ?: "Could not copy logs"
-                            }
-                        diagnosticActionInProgress = false
+                        runDiagnosticAction(
+                            onFailure = { saveError = it.message ?: "Could not copy logs" },
+                            onFinished = { diagnosticActionInProgress = false },
+                        ) {
+                            val logs = viewModel.sanitizedDebugLogText()
+                            clipboard.setText(AnnotatedString(logs))
+                            copied = true
+                        }
                     }
                 },
                 enabled = !diagnosticActionInProgress,
@@ -1800,15 +1800,20 @@ internal fun DebugLogsPanel(state: OpenNowUiState, viewModel: OpenNowViewModel) 
                     saved = false
                     saveError = null
                     scope.launch {
-                        runCatching { viewModel.sanitizedDebugLogText() }
-                            .onSuccess { logs ->
-                                pendingLogText = logs
-                                saveLauncher.launch(viewModel.debugLogFileName())
-                            }
-                            .onFailure { error ->
-                                saveError = error.message ?: "Could not prepare logs"
-                                diagnosticActionInProgress = false
-                            }
+                        var waitingForDocument = false
+                        runDiagnosticAction(
+                            onFailure = { saveError = it.message ?: "Could not prepare logs" },
+                            onFinished = {
+                                if (!waitingForDocument) {
+                                    pendingLogText = ""
+                                    diagnosticActionInProgress = false
+                                }
+                            },
+                        ) {
+                            pendingLogText = viewModel.sanitizedDebugLogText()
+                            saveLauncher.launch(viewModel.debugLogFileName())
+                            waitingForDocument = true
+                        }
                     }
                 },
                 enabled = !diagnosticActionInProgress,
@@ -1821,9 +1826,20 @@ internal fun DebugLogsPanel(state: OpenNowUiState, viewModel: OpenNowViewModel) 
     state.error?.let { error ->
         OutlinedButton(
             onClick = {
-                clipboard.setText(AnnotatedString(error))
-                copied = true
+                diagnosticActionInProgress = true
+                copied = false
+                saveError = null
+                scope.launch {
+                    runDiagnosticAction(
+                        onFailure = { saveError = it.message ?: "Could not copy logs" },
+                        onFinished = { diagnosticActionInProgress = false },
+                    ) {
+                        clipboard.setText(AnnotatedString(error))
+                        copied = true
+                    }
+                }
             },
+            enabled = !diagnosticActionInProgress,
         ) {
             Text(stringResource(R.string.action_copy_error))
         }
