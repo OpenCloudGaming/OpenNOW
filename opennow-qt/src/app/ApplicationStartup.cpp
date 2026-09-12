@@ -18,6 +18,7 @@
 #include "media/ThumbnailGenerator.h"
 
 #include <QGuiApplication>
+#include <QIcon>
 #include <QElapsedTimer>
 #include <QFont>
 #include <QFontDatabase>
@@ -84,6 +85,11 @@ static int runApplicationSession(int argc, char *argv[], QString &restartExecuta
     QQuickStyle::setStyle(u"Basic"_s);
 
     QGuiApplication application(argc, argv);
+    QGuiApplication::setDesktopFileName(u"io.github.opencloudgaming.OpenNOW"_s);
+    QIcon applicationIcon;
+    for (const int size : {16, 24, 32, 48, 64, 128, 256, 512, 1024})
+        applicationIcon.addFile(u":/icons/opennow-%1.png"_s.arg(size), QSize(size, size));
+    QGuiApplication::setWindowIcon(applicationIcon);
 #if defined(Q_OS_LINUX) && QT_CONFIG(vulkan) && __has_include(<vulkan/vulkan.h>)
     LinuxVulkanGraphics::requestDeviceExtensions();
 #endif

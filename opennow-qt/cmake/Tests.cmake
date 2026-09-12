@@ -1,5 +1,11 @@
 include(CTest)
 if(BUILD_TESTING)
+    qt_add_executable(opennow-applicationicons-tests tests/tst_applicationicons.cpp)
+    target_link_libraries(opennow-applicationicons-tests PRIVATE Qt6::Test Qt6::Gui)
+    opennow_add_application_icons(opennow-applicationicons-tests)
+    add_test(NAME opennow-applicationicons-tests COMMAND opennow-applicationicons-tests -o -,txt)
+    set_tests_properties(opennow-applicationicons-tests PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 20)
     qt_add_executable(opennow-graphicsdevices-tests tests/tst_graphicsdeviceselection.cpp
         src/app/platform/GraphicsDeviceSelection.cpp src/app/platform/GraphicsDeviceSelection.h)
     target_include_directories(opennow-graphicsdevices-tests PRIVATE src)
@@ -733,6 +739,7 @@ if(BUILD_TESTING)
         TIMEOUT 30
     )
     set(OPENNOW_CI_UNIT_TEST_TARGETS
+        opennow-applicationicons-tests
         opennow-tenbitwarning-tests
         opennow-graphicsdevices-tests
         opennow-consolelayout-tests
@@ -776,6 +783,7 @@ if(BUILD_TESTING)
         # Qt's executable helper defaults to the GUI subsystem on Windows. Keep
         # test runners as console programs so CTest captures QtTest failures.
         set_target_properties(
+            opennow-applicationicons-tests
             opennow-tenbitwarning-tests
             opennow-graphicsdevices-tests
             opennow-consolelayout-tests
@@ -833,6 +841,7 @@ if(BUILD_TESTING)
             add_dependencies(opennow-qt-test-runtime opennow-msvc-runtime)
         endif()
         foreach(test_target IN ITEMS
+                opennow-applicationicons-tests
                 opennow-tenbitwarning-tests
                 opennow-graphicsdevices-tests
                 opennow-consolelayout-tests

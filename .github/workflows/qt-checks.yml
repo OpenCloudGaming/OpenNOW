@@ -30,7 +30,10 @@ jobs:
             .github/workflows/qt-build.yml .github/workflows/qt-release-candidate.yml \
             .github/workflows/qt-flatpak.yml
       - name: Test build and packaging contracts
-        run: python3 -m unittest discover -s opennow-qt/tests -p 'test_*.py'
+        run: |
+          python3 -m venv "$RUNNER_TEMP/qt-contracts"
+          "$RUNNER_TEMP/qt-contracts/bin/python" -m pip install -r opennow-qt/packaging/icon-requirements.txt
+          "$RUNNER_TEMP/qt-contracts/bin/python" -m unittest discover -s opennow-qt/tests -p 'test_*.py'
       - name: Validate localization
         run: |
           npm run locales:check

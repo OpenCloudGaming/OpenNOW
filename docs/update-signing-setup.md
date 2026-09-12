@@ -67,7 +67,9 @@ authentication or streaming compatibility.
 Run the packaging and workflow tests:
 
 ```sh
-python3 -m unittest discover -s opennow-qt/tests -p 'test_*.py'
+python3 -m venv build/icon-tools
+build/icon-tools/bin/python -m pip install -r opennow-qt/packaging/icon-requirements.txt
+build/icon-tools/bin/python -m unittest discover -s opennow-qt/tests -p 'test_*.py'
 actionlint -color=false .github/workflows/qt-ci.yml .github/workflows/qt-checks.yml \
   .github/workflows/qt-build.yml .github/workflows/qt-release-candidate.yml
 ```

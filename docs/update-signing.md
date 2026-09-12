@@ -86,9 +86,10 @@ package inventory and changes `updates` from `manual-download` to `signed-manife
 or macOS notarization. Final `SHA256SUMS` covers all nine packages, all nine manifests,
 and the rewritten release metadata. The validation-only macOS ZIP is never published.
 
-The production `qt-release-candidate.yml` contract remains separate: eight Linux and
-Windows packages, platform signing, isolated update signing, and a candidate artifact.
-This nightly follow-up does not add a macOS production candidate or alter that contract.
+The production `qt-release-candidate.yml` contract remains separate: ten Linux, Windows,
+and macOS packages, platform signing on Windows and macOS, isolated update signing,
+and a candidate artifact. See [Set up signed Qt releases](qt-release-signing-setup.md)
+for production credentials and first-release instructions.
 Nightly release notes use GitHub-generated changelogs. Installation guidance and known
 limitations are documented in [`qt-nightly-release.md`](qt-nightly-release.md).
 
