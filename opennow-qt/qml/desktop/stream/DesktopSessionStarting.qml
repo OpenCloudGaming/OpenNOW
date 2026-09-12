@@ -94,7 +94,7 @@ FocusScope {
         }
         Text {
             text: "OpenNOW"
-            color: DesktopTokens.text
+            color: Theme.mediaForeground
             font.family: DesktopTokens.displayFont
             font.pixelSize: 16
             font.weight: Font.Black
@@ -109,7 +109,7 @@ FocusScope {
         Text {
             text: root.stopping ? qsTr("ENDING SESSION")
                 : root.failed ? qsTr("SESSION INTERRUPTED") : qsTr("STARTING SESSION")
-            color: root.failed ? DesktopTokens.danger : DesktopTokens.focus
+            color: root.failed ? DesktopTokens.danger : Theme.mediaAccent
             font.family: DesktopTokens.monoFont
             font.pixelSize: 11
             font.weight: Font.Bold
@@ -119,7 +119,7 @@ FocusScope {
             width: parent.width
             topPadding: 10
             text: String(root.game.title || qsTr("GeForce NOW"))
-            color: DesktopTokens.text
+            color: Theme.mediaForeground
             font.family: DesktopTokens.displayFont
             font.pixelSize: root.width < 800 ? 34 : 44
             font.weight: Font.Black
@@ -145,7 +145,7 @@ FocusScope {
                         anchors.horizontalCenter: parent.horizontalCenter
                         y: -1
                         width: 6; height: 6; radius: 3
-                        color: DesktopTokens.focus
+                        color: Theme.mediaAccent
                     }
                     RotationAnimation on rotation {
                         from: 0; to: 360; duration: 1400; loops: Animation.Infinite
@@ -157,7 +157,7 @@ FocusScope {
                 objectName: "sessionLaunchStatus"
                 width: parent.width - (root.failed ? 0 : 32)
                 text: root.statusText
-                color: root.failed ? DesktopTokens.danger : DesktopTokens.text
+                color: root.failed ? DesktopTokens.danger : Theme.mediaForeground
                 font.family: DesktopTokens.bodyFont
                 font.pixelSize: 19
                 font.weight: Font.DemiBold
@@ -168,7 +168,7 @@ FocusScope {
             width: parent.width
             topPadding: 10
             text: root.detailText
-            color: DesktopTokens.textBody
+            color: Theme.mediaMuted
             font.family: DesktopTokens.bodyFont
             font.pixelSize: 14
             lineHeight: 1.4
@@ -181,6 +181,7 @@ FocusScope {
             width: parent.width
             spacing: 12
             DesktopButton {
+                onMediaBackground: true
                 visible: root.failed && (root.connecting || ShellStore.activeSession !== null
                     || ShellStore.pendingLaunchParams !== null || ShellStore.conflictSession !== null)
                 enabled: !ShellStore.streamBusy
@@ -190,6 +191,7 @@ FocusScope {
             }
             DesktopButton {
                 id: cancelButton
+                onMediaBackground: true
                 enabled: !root.stopping
                 text: root.failed && !ShellStore.activeSession ? qsTr("Back") : qsTr("Cancel session")
                 shortcutText: qsTr("Esc")

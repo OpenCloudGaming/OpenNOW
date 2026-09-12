@@ -29,14 +29,16 @@ QtObject {
     // Artwork scrims and dark store-color fallbacks always need a light foreground,
     // independently of the shell's light/dark mode.
     readonly property color mediaForeground: "#FFFFFF"
+    readonly property color mediaMuted: Qt.rgba(mediaForeground.r, mediaForeground.g, mediaForeground.b, 0.64)
+    readonly property color mediaAccent: accentOverridden ? accentColor(accent, false) : (pack.darkAccent || pack.accent)
     readonly property color seam: lightMode ? Qt.rgba(0.04, 0.06, 0.10, 0.14) : Qt.rgba(1, 1, 1, 0.14)
     readonly property color label: lightMode ? "#111827" : "#FFFFFF"
     readonly property color textMuted: lightMode ? Qt.rgba(0.04, 0.06, 0.10, 0.64) : Qt.rgba(1, 1, 1, 0.64)
     readonly property var accentChoices: ["green", "blue", "violet", "rose", "coral", "amber", "white"]
-    function accentColor(value) {
+    function accentColor(value, forLightMode = lightMode) {
         const dark = {green:"#6EE7B7", blue:"#7FD4FF", violet:"#A78BFA", rose:"#FF8A9A", coral:"#FF8A80", amber:"#FFD166", white:"#FFFFFF"}
         const light = {green:"#126B4E", blue:"#12638C", violet:"#7042BA", rose:"#AA285B", coral:"#A9362C", amber:"#806017", white:"#374151"}
-        return (lightMode ? light : dark)[value] || (lightMode ? light.blue : dark.blue)
+        return (forLightMode ? light : dark)[value] || (forLightMode ? light.blue : dark.blue)
     }
     readonly property color customAccent: accentColor(accent)
     readonly property color packAccent: lightMode ? (pack.lightAccent || pack.accent) : (pack.darkAccent || pack.accent)
