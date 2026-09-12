@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
+import QtQuick.Window
 import OpenNOW
 
 FocusScope {
@@ -292,6 +293,7 @@ FocusScope {
                             id: storeVariants
                             model: root.game ? root.game.variants || [] : []
                             DesktopButton {
+                                id: platformButton
                                 required property var modelData
                                 required property int index
                                 objectName: "desktopStoreVariant" + index
@@ -300,6 +302,7 @@ FocusScope {
                                 leftPadding: DesktopTokens.px(14)
                                 rightPadding: DesktopTokens.px(14)
                                 font.pixelSize: DesktopTokens.captionSize
+                                implicitWidth: platformContents.implicitWidth + leftPadding + rightPadding
                                 checkable: true
                                 autoExclusive: true
                                 checked: root.game ? index === Number(root.game.selectedVariantIndex || 0) : false
@@ -308,6 +311,34 @@ FocusScope {
                                 onClicked: root.variantSelected(index)
                                 Keys.onReturnPressed: root.variantSelected(index)
                                 Keys.onEnterPressed: root.variantSelected(index)
+                                contentItem: Row {
+                                    id: platformContents
+                                    spacing: DesktopTokens.px(8)
+                                    Rectangle {
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        width: DesktopTokens.px(26)
+                                        height: width
+                                        radius: DesktopTokens.px(5)
+                                        visible: platformLogo.source.toString() !== ""
+                                        color: platformButton.checked || Theme.lightMode ? "#202634" : "transparent"
+                                        Image {
+                                            id: platformLogo
+                                            objectName: "desktopStoreLogo" + platformButton.index
+                                            anchors.centerIn: parent
+                                            width: DesktopTokens.px(20)
+                                            height: width
+                                            source: DesktopTokens.storeIconUrl(platformButton.modelData.store)
+                                            sourceSize: Qt.size(width * Screen.devicePixelRatio, height * Screen.devicePixelRatio)
+                                            fillMode: Image.PreserveAspectFit
+                                        }
+                                    }
+                                    Text {
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        text: platformButton.text
+                                        font: platformButton.font
+                                        color: platformButton.checked ? "#0A0D14" : Theme.label
+                                    }
+                                }
                             }
                         }
                     }

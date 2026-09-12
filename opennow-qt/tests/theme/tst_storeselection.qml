@@ -24,6 +24,7 @@ TestCase {
 
     function init() {
         DesktopTokens.uiScale = 1
+        ShellStore.settings = {appTheme: "dark"}
         modal.game = {title: "Multi Store Game", isAvailable: true, selectedVariantIndex: 0,
             variants: [{id: "1001", store: "Steam", inLibrary: false},
                        {id: "1003", store: "Xbox", inLibrary: true}]}
@@ -81,6 +82,26 @@ TestCase {
         tryVerify(() => findChild(modal, "desktopStoreVariant0") === null)
         compare(modal.selectedVariant, null)
         verify(!findChild(modal, "desktopGamePlay").enabled)
+    }
+
+    function test_storeLogos_data() {
+        return [{tag: "dark", theme: "dark"}, {tag: "light", theme: "light"}]
+    }
+
+    function test_storeLogos(data) {
+        ShellStore.settings = {appTheme: data.theme}
+        modal.game = {title: "Multi Store Game", isAvailable: true, selectedVariantIndex: 2,
+            variants: [{id: "1001", store: "Steam"}, {id: "1002", store: "Epic Games Store"},
+                       {id: "1003", store: "Xbox", inLibrary: true}]}
+        waitForRendering(modal)
+        for (let index = 0; index < 3; ++index) {
+            const logo = findChild(modal, "desktopStoreLogo" + index)
+            verify(logo.visible)
+            tryCompare(logo, "status", Image.Ready)
+            compare(logo.source.toString(), DesktopTokens.storeIconUrl(modal.game.variants[index].store))
+            if (index === 2 || data.theme === "light")
+                compare(logo.parent.color, Qt.color("#202634"))
+        }
     }
 
     function test_scaledPicker_data() {
