@@ -189,7 +189,9 @@ class SignedNightlyReleaseTest(unittest.TestCase):
         for forbidden in ("cargo ", "cmake ", "unsigned-release/", "signed-release/"):
             self.assertNotIn("run: " + forbidden, signer)
         self.assertIn("update_public_key: ${{ inputs.public_key }}", workflow)
-        self.assertIn("**Known issue: Alliance Partners are not working correctly in this build.**", publisher)
+        self.assertIn('--title "OpenNOW v$RELEASE_VERSION" --generate-notes', publisher)
+        self.assertNotIn("--notes-file", publisher)
+        self.assertNotIn("nightly-notes.md", publisher)
         preflight = workflow.split("  preflight:\n", 1)[1].split("  contracts:\n", 1)[0]
         self.assertIn("if: github.event_name == 'workflow_dispatch'", preflight)
         outside_signer = workflow.replace(signer, "")

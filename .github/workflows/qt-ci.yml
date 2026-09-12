@@ -190,29 +190,12 @@ jobs:
         with:
           name: opennow-qt-${{ needs.build.outputs.version }}-complete-update-signed
           path: nightly-release
-      - name: Verify signed inventory and prepare release notes
+      - name: Verify signed inventory
         shell: bash
         run: |
           python3 opennow-qt/packaging/sign_nightly_release.py verify \
             --source nightly-release --version "$RELEASE_VERSION" --commit "$SOURCE_SHA"
           (cd nightly-release && sha256sum --check --strict SHA256SUMS)
-          cat > nightly-notes.md <<EOF
-          Experimental OpenNOW Qt/native nightly from commit \`$SOURCE_SHA\`.
-
-          **Platform packages remain unsigned; update manifests are Ed25519-signed.** Windows may display a SmartScreen or unknown-publisher warning.
-          Windows x64 and ARM64 downloads include MSI installers and portable ZIPs.
-          The MSI installs OpenNOW Nightly separately from stable OpenNOW. For the portable ZIP, extract the entire archive and run \`bin/OpenNOW.exe\`.
-          The macOS DMG supports Apple Silicon on macOS 13+: open it and drag OpenNOW into Applications.
-          The Mac app is not notarized and Gatekeeper may block it. Use System Settings → Privacy & Security → Open Anyway if macOS offers it; do not disable Gatekeeper globally.
-          Linux AppImages are the recommended portable download; mark the file executable before launching it.
-          DEBs require a distribution providing Qt 6.8+ and SDL3; stock Ubuntu 24.04 does not satisfy those requirements.
-
-          These builds pin the update-signing public key and include a verified manifest for every package.
-          If your installed nightly has no pinned key, manually install this release once; that older build cannot securely bootstrap trust from the update feed.
-          SHA256SUMS detects corrupted downloads; it is not a cryptographic publisher signature.
-          Intel macOS is not included. Windows ARM64 is cross-built, not runtime-tested by CI.
-          **Known issue: Alliance Partners are not working correctly in this build.**
-          EOF
       - name: Publish only after the complete upload succeeds
         shell: bash
         env:
@@ -220,7 +203,7 @@ jobs:
         run: |
           gh release create "v$RELEASE_VERSION" nightly-release/* \
             --repo "$GITHUB_REPOSITORY" --target "$SOURCE_SHA" \
-            --title "OpenNOW v$RELEASE_VERSION" --notes-file nightly-notes.md \
+            --title "OpenNOW v$RELEASE_VERSION" --generate-notes \
             --draft --prerelease --latest=false
           gh release edit "v$RELEASE_VERSION" --repo "$GITHUB_REPOSITORY" \
             --draft=false --prerelease --latest=false
