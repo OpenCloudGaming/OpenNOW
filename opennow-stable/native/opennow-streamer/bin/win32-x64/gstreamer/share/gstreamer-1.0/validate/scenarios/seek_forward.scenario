@@ -1,6 +1,0 @@
-description, seek=true, duration=20, need-clock-sync=true, ignore-eos=true
-include,location=includes/default-seek-flags.scenario
-seek, name=First-forward-seek, playback-time="min(5.0, ($(duration)/8))", start="min(10, 2*($(duration)/8))", flags="$(default_flags)"
-seek, name=Second-forward-seek, playback-time="min(15.0, 3*($(duration)/8))", start="min(20, 4*($(duration)/8))", flags="$(default_flags)"
-seek, name=Third-forward-seek, playback-time="min(25, 5*($(duration)/8))", start="min(30.0, 6*($(duration)/8))", flags="$(default_flags)"
-stop, playback-time="min($(duration) - 1, 35)", on-message=eos

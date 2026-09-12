@@ -1,0 +1,7 @@
+prefix=${pcfiledir}/../..
+includedir=${prefix}/include
+
+Name: ffnvcodec
+Description: Bundled FFmpeg NVIDIA codec interface headers
+Version: 13.1.15.0.1
+Cflags: -I${includedir}

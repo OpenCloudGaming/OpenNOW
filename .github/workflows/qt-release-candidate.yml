@@ -1,0 +1,539 @@
+name: qt-release-candidate
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Numeric signed-candidate version (for example 1.0.0; use qt-ci for unsigned nightlies)
+        required: true
+        type: string
+      source_commit:
+        description: Exact reviewed 40-character commit SHA to build
+        required: true
+        type: string
+      update_public_key:
+        description: Base64 Ed25519 public key pinned into every build
+        required: true
+        type: string
+
+concurrency:
+  group: qt-release-candidate-${{ inputs.version }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  QT_VERSION: 6.8.3
+  SDL_VERSION: release-3.2.20
+  CARGO_TERM_COLOR: always
+
+jobs:
+  preflight:
+    name: release-preflight
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    outputs:
+      source_sha: ${{ steps.source.outputs.source_sha }}
+    steps:
+      - name: Validate release inputs
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+          SOURCE_COMMIT: ${{ inputs.source_commit }}
+          UPDATE_PUBLIC_KEY: ${{ inputs.update_public_key }}
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          [[ "$SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          if [[ "$SOURCE_COMMIT" != "$GITHUB_SHA" ]]; then
+            echo "Dispatch this workflow from a branch or tag pointing to source_commit." >&2
+            exit 1
+          fi
+          [[ $(printf '%s' "$UPDATE_PUBLIC_KEY" | base64 --decode | wc -c) -eq 32 ]]
+
+      - name: Resolve immutable source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Record source commit
+        id: source
+        shell: bash
+        env:
+          SOURCE_COMMIT: ${{ inputs.source_commit }}
+        run: |
+          actual=$(git rev-parse HEAD)
+          [[ "$actual" == "$SOURCE_COMMIT" ]]
+          echo "source_sha=$actual" >> "$GITHUB_OUTPUT"
+
+  linux:
+    name: linux-${{ matrix.arch }}
+    needs: preflight
+    runs-on: ${{ matrix.runner }}
+    environment: qt-production-release
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: blacksmith-8vcpu-ubuntu-2404
+            qt_host: linux
+            qt_arch: linux_gcc_64
+            linuxdeploy_arch: x86_64
+            linuxdeploy_sha256: c20cd71e3a4e3b80c3483cef793cda3f4e990aca14014d23c544ca3ce1270b4d
+            qt_plugin_sha256: 15106be885c1c48a021198e7e1e9a48ce9d02a86dd0a1848f00bdbf3c1c92724
+          - arch: arm64
+            runner: blacksmith-8vcpu-ubuntu-2404-arm
+            qt_host: linux_arm64
+            qt_arch: linux_gcc_arm64
+            linuxdeploy_arch: aarch64
+            linuxdeploy_sha256: 620095110d693282b8ebeb244a95b5e911cf8f65f76c88b4b47d16ae6346fcff
+            qt_plugin_sha256: bf1c24aff6d749b5cf423afad6f15abd4440f81dec1aab95706b25f6667cdcf1
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          host: ${{ matrix.qt_host }}
+          target: desktop
+          arch: ${{ matrix.qt_arch }}
+          modules: qtmultimedia qtshadertools qtwaylandcompositor
+          cache: true
+          cache-key-prefix: qt-release-linux-${{ matrix.arch }}
+
+      - name: Install native build dependencies
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang libclang-dev libasound2-dev libdbus-1-dev libdrm-dev libpulse-dev libsecret-1-dev \
+            libgstreamer-plugins-bad1.0-0 libgstreamer-plugins-good1.0-0 libva-dev libvulkan-dev libx11-dev \
+            libwayland-dev libxcursor-dev libxext-dev libxfixes-dev libxi-dev \
+            libxrandr-dev libxrender-dev libxss-dev make nasm pkg-config wayland-protocols
+
+      - name: Install ARM64 V4L2 request dependencies
+        if: matrix.arch == 'arm64'
+        run: sudo apt-get install -y libudev-dev
+
+      - name: Cache Rust dependencies and build artifacts
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          key: qt-release-${{ matrix.runner }}-${{ matrix.arch }}
+          cache-bin: false
+          workspaces: |
+            native/opennow-core -> ../../build/qt-release/rust-target
+            native/opennow-streamer -> ../../build/qt-release/streamer-rust-target
+
+      - name: Cache Qt C++ compilation
+        uses: hendrikmuhs/ccache-action@5ebbd400eff9e74630f759d94ddd7b6c26299639
+        with:
+          key: qt-release-${{ matrix.runner }}-${{ matrix.arch }}
+          max-size: 500M
+
+      - name: Build and cache SDL3
+        uses: ./.github/actions/sdl3
+        with:
+          version: ${{ env.SDL_VERSION }}
+          target-arch: ${{ matrix.arch }}
+          parallel: 6
+
+      - name: Configure, build, and test release
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+          UPDATE_PUBLIC_KEY: ${{ inputs.update_public_key }}
+        run: |
+          cmake -S opennow-qt -B build/qt-release -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/SDL-install" \
+            -DOPENNOW_BUILD_VERSION="$RELEASE_VERSION" \
+            -DOPENNOW_UPDATE_ED25519_PUBLIC_KEY="$UPDATE_PUBLIC_KEY"
+          cmake --build build/qt-release --config Release --parallel 6
+          ctest --test-dir build/qt-release -C Release --output-on-failure --parallel 4
+
+      - name: Build DEB and AppImage
+        shell: bash
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+          EXTRA_PLATFORM_PLUGINS: libqoffscreen.so;libqwayland-egl.so;libqwayland-generic.so
+          EXTRA_QT_MODULES: waylandcompositor
+          LINUXDEPLOY_ARCH: ${{ matrix.linuxdeploy_arch }}
+          LINUXDEPLOY_SHA256: ${{ matrix.linuxdeploy_sha256 }}
+          QT_PLUGIN_SHA256: ${{ matrix.qt_plugin_sha256 }}
+        run: |
+          export LD_LIBRARY_PATH="$RUNNER_TEMP/SDL-install/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          mkdir -p build/release-artifacts
+          cpack --config build/qt-release/CPackConfig.cmake -C Release -G DEB -B build/release-artifacts
+          cmake --install build/qt-release --config Release --prefix "$PWD/build/AppDir/usr"
+          test -f build/AppDir/usr/bin/libopennow_streamer_ffi.so
+          test -x build/AppDir/usr/bin/opennow-streamer
+          deb=$(find build/release-artifacts -maxdepth 1 -type f -name '*.deb' -print -quit)
+          dpkg-deb --fsys-tarfile "$deb" | tar -tf - | grep -Fx './usr/bin/libopennow_streamer_ffi.so'
+          dpkg-deb --fsys-tarfile "$deb" | tar -tf - | grep -Fx './usr/bin/opennow-streamer'
+          python3 opennow-qt/packaging/verify_linux_package.py build/AppDir/usr/bin --deb "$deb"
+          curl --fail --location --retry 3 \
+            "https://github.com/linuxdeploy/linuxdeploy/releases/download/1-alpha-20251107-1/linuxdeploy-${LINUXDEPLOY_ARCH}.AppImage" \
+            --output "build/linuxdeploy-${LINUXDEPLOY_ARCH}.AppImage"
+          curl --fail --location --retry 3 \
+            "https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/1-alpha-20250213-1/linuxdeploy-plugin-qt-${LINUXDEPLOY_ARCH}.AppImage" \
+            --output "build/linuxdeploy-plugin-qt-${LINUXDEPLOY_ARCH}.AppImage"
+          echo "$LINUXDEPLOY_SHA256  build/linuxdeploy-${LINUXDEPLOY_ARCH}.AppImage" | sha256sum --check --strict
+          echo "$QT_PLUGIN_SHA256  build/linuxdeploy-plugin-qt-${LINUXDEPLOY_ARCH}.AppImage" | sha256sum --check --strict
+          chmod +x build/linuxdeploy-*.AppImage build/linuxdeploy-plugin-qt-*.AppImage
+          QMAKE="$QT_ROOT_DIR/bin/qmake" QML_SOURCES_PATHS="$PWD/opennow-qt/qml" \
+          OUTPUT="OpenNOW-Qt-${{ inputs.version }}-Linux-${{ matrix.arch }}.AppImage" \
+            "build/linuxdeploy-${LINUXDEPLOY_ARCH}.AppImage" \
+              --appdir build/AppDir \
+              --desktop-file build/AppDir/usr/share/applications/io.github.opencloudgaming.OpenNOW.desktop \
+              --icon-file build/AppDir/usr/share/icons/hicolor/scalable/apps/io.github.opencloudgaming.OpenNOW.svg \
+              --library "$(pkg-config --variable=libdir libva)/libva.so.2" \
+              --library "$(pkg-config --variable=libdir libva-drm)/libva-drm.so.2" \
+              --plugin qt --output appimage
+          test -f build/AppDir/usr/lib/libva.so.2
+          test -f build/AppDir/usr/lib/libva-drm.so.2
+          test -f build/AppDir/usr/plugins/platforms/libqoffscreen.so
+          test -f build/AppDir/usr/plugins/platforms/libqwayland-egl.so
+          test -f build/AppDir/usr/plugins/platforms/libqwayland-generic.so
+          test -f build/AppDir/usr/plugins/wayland-shell-integration/libxdg-shell.so
+          LD_LIBRARY_PATH="$PWD/build/AppDir/usr/lib:$LD_LIBRARY_PATH" \
+            python3 opennow-qt/packaging/verify_linux_package.py build/AppDir/usr/bin
+          mv OpenNOW-Qt-*.AppImage build/release-artifacts/
+
+      - name: Smoke release artifacts and record checksums
+        shell: bash
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          set -euo pipefail
+          appimage=$(find build/release-artifacts -maxdepth 1 -type f -name '*.AppImage' -print -quit)
+          env -u QT_PLUGIN_PATH -u QT_QPA_PLATFORM_PLUGIN_PATH \
+            -u QML2_IMPORT_PATH -u QML_IMPORT_PATH -u LD_LIBRARY_PATH \
+            "$appimage" --smoke-test --allow-multiple-instances --route home --reduced-motion
+          (cd build/release-artifacts && sha256sum -- *.AppImage *.deb > SHA256SUMS)
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: opennow-qt-${{ inputs.version }}-linux-${{ matrix.arch }}-signed
+          path: |
+            build/release-artifacts/*.AppImage
+            build/release-artifacts/*.deb
+            build/release-artifacts/SHA256SUMS
+          if-no-files-found: error
+
+  windows:
+    name: windows-${{ matrix.arch }}
+    needs: preflight
+    runs-on: blacksmith-8vcpu-windows-2025
+    environment: qt-production-release
+    env:
+      CARGO_BUILD_JOBS: 4
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            qt_arch: win64_msvc2022_64
+            rust_target: ""
+            cmake_arch: ""
+          - arch: arm64
+            qt_arch: win64_msvc2022_arm64_cross_compiled
+            rust_target: aarch64-pc-windows-msvc
+            cmake_arch: ARM64
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Map stable Windows workspace
+        shell: pwsh
+        run: .github/scripts/map-windows-workspace.ps1
+
+      - name: Enable Windows Media Foundation
+        shell: pwsh
+        run: .github/scripts/ensure-windows-media-foundation.ps1
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install ARM64 compiler and Rust target
+        if: matrix.arch == 'arm64'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          rustup target add "${{ matrix.rust_target }}"
+          $installerRoot = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer"
+          $installPath = & "$installerRoot\vswhere.exe" -latest -products * -property installationPath
+          $compiler = Get-ChildItem "$installPath\VC\Tools\MSVC\*\bin\Hostx64\arm64\cl.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $compiler) {
+            $arguments = "modify --installPath `"$installPath`" --quiet --norestart --add Microsoft.VisualStudio.Component.VC.Tools.ARM64"
+            $install = Start-Process "$installerRoot\vs_installer.exe" -Wait -PassThru -ArgumentList $arguments
+            if ($install.ExitCode -notin 0, 3010) { throw "ARM64 compiler installation failed" }
+            $compiler = Get-ChildItem "$installPath\VC\Tools\MSVC\*\bin\Hostx64\arm64\cl.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+          }
+          if (-not $compiler) { throw "ARM64 compiler is unavailable after installation" }
+          $linker = Join-Path $compiler.Directory.FullName "link.exe"
+          if (-not (Test-Path $linker)) { throw "ARM64 linker is unavailable after installation" }
+          "CARGO_TARGET_AARCH64_PC_WINDOWS_MSVC_LINKER=$linker" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: ${{ matrix.arch == 'arm64' && 'amd64_arm64' || 'x64' }}
+
+      - name: Pin the Windows x64 Rust linker
+        if: matrix.arch == 'x64'
+        shell: pwsh
+        run: |
+          $linker = Join-Path $env:VCToolsInstallDir "bin\Hostx64\x64\link.exe"
+          if (-not (Test-Path $linker)) { throw "The MSVC x64 linker is unavailable." }
+          "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=$linker" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Install LLVM
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          choco install llvm -y --no-progress
+          $llvmBin = Join-Path $env:ProgramFiles "LLVM\bin"
+          if (-not (Test-Path (Join-Path $llvmBin "clang.exe")) -or
+              -not (Test-Path (Join-Path $llvmBin "libclang.dll"))) {
+            throw "LLVM installation is missing libclang.dll"
+          }
+          $llvmBin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          "LIBCLANG_PATH=$llvmBin" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Install WiX Toolset
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          choco install wixtoolset -y --no-progress
+          if (-not (Get-Command candle.exe -ErrorAction SilentlyContinue)) {
+            throw "WiX Toolset was not added to PATH"
+          }
+
+      - name: Install host Qt tools for ARM64
+        if: matrix.arch == 'arm64'
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          host: windows
+          target: desktop
+          arch: win64_msvc2022_64
+          modules: qtshadertools
+          dir: ${{ runner.temp }}/qt-host
+          cache: true
+          cache-key-prefix: qt-release-windows-host-x64
+
+      - name: Remember host Qt path
+        if: matrix.arch == 'arm64'
+        shell: bash
+        run: echo "OPENNOW_QT_HOST_PATH=$QT_ROOT_DIR" >> "$GITHUB_ENV"
+
+      - uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          host: windows
+          target: desktop
+          arch: ${{ matrix.qt_arch }}
+          modules: qtmultimedia qtshadertools
+          cache: true
+          cache-key-prefix: qt-release-windows-${{ matrix.arch }}
+
+      - name: Cache Rust dependencies and build artifacts
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          key: qt-release-windows-2025-${{ matrix.arch }}
+          cache-bin: false
+          workspaces: |
+            native/opennow-core -> ../../build/opennow-qt-release/rust-target
+            native/opennow-core -> ../../build/opennow-qt-release/update-helper-rust-target
+            native/opennow-streamer -> ../../build/opennow-qt-release/streamer-rust-target
+
+      - name: Cache Qt C++ compilation
+        uses: hendrikmuhs/ccache-action@5ebbd400eff9e74630f759d94ddd7b6c26299639
+        with:
+          key: qt-release-windows-2025-${{ matrix.arch }}
+          max-size: 1G
+
+      - name: Build and cache SDL3
+        uses: ./.github/actions/sdl3
+        with:
+          version: ${{ env.SDL_VERSION }}
+          target-arch: ${{ matrix.arch }}
+          parallel: 8
+
+      - name: Configure and build release
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+          UPDATE_PUBLIC_KEY: ${{ inputs.update_public_key }}
+        run: |
+          cd /o
+          args=(-G "Ninja Multi-Config" -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl)
+          if [[ "${{ matrix.cmake_arch }}" == ARM64 ]]; then
+            args+=(-DCMAKE_SYSTEM_NAME=Windows -DCMAKE_SYSTEM_PROCESSOR=ARM64)
+          fi
+          if [[ -n "${{ matrix.rust_target }}" ]]; then args+=("-DOPENNOW_RUST_TARGET=${{ matrix.rust_target }}"); fi
+          if [[ -n "${OPENNOW_QT_HOST_PATH:-}" ]]; then args+=("-DQT_HOST_PATH=${OPENNOW_QT_HOST_PATH}"); fi
+          cmake -S opennow-qt -B build/opennow-qt-release -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/SDL-install" \
+            -DOPENNOW_BUILD_VERSION="$RELEASE_VERSION" \
+            -DOPENNOW_UPDATE_ED25519_PUBLIC_KEY="$UPDATE_PUBLIC_KEY" "${args[@]}"
+          cmake --build build/opennow-qt-release --config Release --parallel 8
+
+      - name: Authenticode-sign application binaries
+        shell: pwsh
+        env:
+          WINDOWS_PFX_BASE64: ${{ secrets.OPENNOW_WINDOWS_SIGNING_PFX_BASE64 }}
+          WINDOWS_PFX_PASSWORD: ${{ secrets.OPENNOW_WINDOWS_SIGNING_PFX_PASSWORD }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          . ./opennow-qt/packaging/windows-release.ps1
+          $pfx = Join-Path $env:RUNNER_TEMP "opennow-signing.pfx"
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_PFX_BASE64))
+          $files = @(Get-OpenNowReleaseBinaries -Root build/opennow-qt-release/Release)
+          foreach ($file in $files) {
+            Invoke-OpenNowSignTool sign /f $pfx /p $env:WINDOWS_PFX_PASSWORD /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 $file.FullName
+            Invoke-OpenNowSignTool verify /pa /all $file.FullName
+          }
+
+      - name: Create and sign MSI and portable ZIP
+        shell: pwsh
+        env:
+          WINDOWS_PFX_BASE64: ${{ secrets.OPENNOW_WINDOWS_SIGNING_PFX_BASE64 }}
+          WINDOWS_PFX_PASSWORD: ${{ secrets.OPENNOW_WINDOWS_SIGNING_PFX_PASSWORD }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          . ./opennow-qt/packaging/windows-release.ps1
+          New-Item -ItemType Directory -Force build/release-artifacts | Out-Null
+          cpack --config build/opennow-qt-release/CPackConfig.cmake -C Release -G WIX -B build/release-artifacts
+          if ($LASTEXITCODE -ne 0) { throw "MSI packaging failed with exit code $LASTEXITCODE" }
+          cpack --config build/opennow-qt-release/CPackConfig.cmake -C Release -G ZIP -B build/release-artifacts
+          if ($LASTEXITCODE -ne 0) { throw "ZIP packaging failed with exit code $LASTEXITCODE" }
+          $pfx = Join-Path $env:RUNNER_TEMP "opennow-signing.pfx"
+          $msi = Get-ChildItem build/release-artifacts -Filter *.msi
+          if ($msi.Count -ne 1) { throw "Expected one MSI" }
+          Invoke-OpenNowSignTool sign /f $pfx /p $env:WINDOWS_PFX_PASSWORD /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 $msi.FullName
+          Invoke-OpenNowSignTool verify /pa /all $msi.FullName
+          $msiExpanded = Join-Path $env:RUNNER_TEMP "msi-expanded"
+          $process = Start-Process msiexec.exe -Wait -PassThru -ArgumentList "/a `"$($msi.FullName)`" /qn TARGETDIR=`"$msiExpanded`""
+          if ($process.ExitCode -ne 0) { throw "MSI administrative extraction failed" }
+          Assert-OpenNowSignedPackage -Root $msiExpanded -SignedRoot build/opennow-qt-release/Release
+          $zip = Get-ChildItem build/release-artifacts -Filter *.zip
+          if ($zip.Count -ne 1) { throw "Expected one portable ZIP" }
+          $expanded = Join-Path $env:RUNNER_TEMP "portable"
+          Expand-Archive $zip.FullName $expanded
+          Assert-OpenNowSignedPackage -Root $expanded -SignedRoot build/opennow-qt-release/Release
+
+      - name: Record artifact checksums
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          Get-ChildItem build/release-artifacts -File | Where-Object { $_.Extension -in ".msi", ".zip" } | Get-FileHash -Algorithm SHA256 |
+            ForEach-Object { "$($_.Hash.ToLower())  $([IO.Path]::GetFileName($_.Path))" } |
+            Set-Content build/release-artifacts/SHA256SUMS
+
+      - name: Remove Windows signing certificate
+        if: always()
+        shell: pwsh
+        run: Remove-Item "$env:RUNNER_TEMP/opennow-signing.pfx" -Force -ErrorAction SilentlyContinue
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: opennow-qt-${{ inputs.version }}-windows-${{ matrix.arch }}-signed
+          path: |
+            build/release-artifacts/*.msi
+            build/release-artifacts/*.zip
+            build/release-artifacts/SHA256SUMS
+          if-no-files-found: error
+
+  inventory:
+    name: isolated-update-signing-and-inventory
+    runs-on: [self-hosted, opennow-release-signer]
+    environment: qt-update-signing
+    needs: [preflight, linux, windows]
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: opennow-qt-${{ inputs.version }}-*
+          path: candidate
+      - name: Verify complete platform artifact set and produce inventory
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+          SOURCE_SHA: ${{ needs.preflight.outputs.source_sha }}
+          UPDATE_PUBLIC_KEY: ${{ inputs.update_public_key }}
+          UPDATE_PRIVATE_KEY: ${{ secrets.OPENNOW_UPDATE_ED25519_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          if find candidate -type l -print -quit | grep -q .; then
+            echo "Candidate contains a symbolic link" >&2
+            exit 1
+          fi
+          [[ $(find candidate -type f -name '*.msi' | wc -l) -eq 2 ]]
+          [[ $(find candidate -type f -name '*.dmg' | wc -l) -eq 0 ]]
+          [[ $(find candidate -type f -name '*.AppImage' | wc -l) -eq 2 ]]
+          [[ $(find candidate -type f -name '*.deb' | wc -l) -eq 2 ]]
+          [[ $(find candidate -type f -name '*.zip' | wc -l) -eq 2 ]]
+          assets=$(find candidate -type f \( -name '*.msi' -o -name '*.dmg' -o -name '*.AppImage' \
+            -o -name '*.deb' -o -name '*.zip' \) | wc -l)
+          [[ "$assets" -eq 8 ]]
+
+          signing_dir=$(mktemp -d "$RUNNER_TEMP/opennow-update-signing.XXXXXX")
+          trap 'rm -rf "$signing_dir"' EXIT
+          printf '%s' "$UPDATE_PRIVATE_KEY" | openssl base64 -d -A > "$signing_dir/seed.bin"
+          [[ $(wc -c < "$signing_dir/seed.bin") -eq 32 ]]
+          printf '\x30\x2e\x02\x01\x00\x30\x05\x06\x03\x2b\x65\x70\x04\x22\x04\x20' \
+            > "$signing_dir/private.der"
+          cat "$signing_dir/seed.bin" >> "$signing_dir/private.der"
+          openssl pkey -inform DER -in "$signing_dir/private.der" -out "$signing_dir/private.pem"
+          openssl pkey -in "$signing_dir/private.pem" -pubout -out "$signing_dir/public.pem"
+          openssl pkey -in "$signing_dir/private.pem" -pubout -outform DER \
+            | tail -c 32 | openssl base64 -A > "$signing_dir/derived-public.txt"
+          [[ $(cat "$signing_dir/derived-public.txt") == "$UPDATE_PUBLIC_KEY" ]]
+
+          while IFS= read -r -d '' asset; do
+            name=$(basename "$asset")
+            [[ "$name" =~ ^[A-Za-z0-9._+-]+$ && "$name" != *..* ]]
+            size=$(wc -c < "$asset")
+            [[ "$size" -gt 0 ]]
+            digest=$(sha256sum "$asset" | cut -d' ' -f1)
+            payload="$signing_dir/payload"
+            printf 'OpenNOW update manifest v1\nversion=%s\nasset=%s\nsize=%s\nsha256=%s\n' \
+              "$RELEASE_VERSION" "$name" "$size" "$digest" > "$payload"
+            openssl pkeyutl -sign -rawin -inkey "$signing_dir/private.pem" \
+              -in "$payload" -out "$signing_dir/signature"
+            openssl pkeyutl -verify -rawin -pubin -inkey "$signing_dir/public.pem" \
+              -in "$payload" -sigfile "$signing_dir/signature"
+            signature=$(openssl base64 -A -in "$signing_dir/signature")
+            manifest="$asset.manifest.json"
+            temporary="$manifest.tmp"
+            jq -n --arg version "$RELEASE_VERSION" --arg asset "$name" \
+              --argjson size "$size" --arg sha256 "$digest" --arg signature "$signature" \
+              '{schemaVersion:1,version:$version,asset:$asset,size:$size,sha256:$sha256,signature:$signature}' \
+              > "$temporary"
+            mv "$temporary" "$manifest"
+          done < <(find candidate -type f \( -name '*.msi' -o -name '*.dmg' -o -name '*.AppImage' \
+            -o -name '*.deb' -o -name '*.zip' \) -print0)
+
+          manifests=$(find candidate -type f -name '*.manifest.json' | wc -l)
+          [[ "$manifests" -eq "$assets" ]]
+          inventory="$RUNNER_TEMP/RELEASE-CANDIDATE-INVENTORY.txt"
+          {
+            echo "OpenNOW Qt release candidate"
+            echo "version=$RELEASE_VERSION"
+            echo "sourceCommit=$SOURCE_SHA"
+            find candidate -type f -print0 | sort -z | xargs -0 sha256sum
+          } > "$inventory"
+          mv "$inventory" candidate/RELEASE-CANDIDATE-INVENTORY.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: opennow-qt-${{ inputs.version }}-complete-candidate
+          path: candidate/
+          if-no-files-found: error

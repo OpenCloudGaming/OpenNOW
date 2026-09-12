@@ -1,0 +1,39 @@
+[package]
+name = "opennow-core"
+version = "1.0.0"
+edition = "2024"
+license = "MIT"
+rust-version = "1.85"
+
+[dependencies]
+base64 = "0.22"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+ed25519-dalek = "2.2"
+httpdate = "1"
+md5 = "0.7"
+keyring = { version = "3.6", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }
+qrcode = { version = "0.14", default-features = false }
+rand = "0.9"
+regex = "1"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "multipart", "rustls-tls", "socks"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+scrypt = "0.11"
+semver = "1"
+subtle = "2"
+url = "2"
+zip = { version = "2.4", default-features = false, features = ["deflate"] }
+fs2 = "0.4"
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_System_Threading", "Win32_System_JobObjects", "Win32_System_ProcessStatus", "Win32_System_ApplicationInstallationAndServicing", "Win32_System_SystemServices", "Win32_Storage_FileSystem", "Wdk_System_Threading"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

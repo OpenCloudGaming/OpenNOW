@@ -1,8 +1,0 @@
-node_modules
-dist
-dist-electron
-dist-release
-*.log
-
-# Framegen weights copied at postinstall (non-commercial; see third_party/framegen)
-src/renderer/public/framegen-weights/

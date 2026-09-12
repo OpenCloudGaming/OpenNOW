@@ -1,0 +1,72 @@
+name: CI
+
+on: [push, pull_request]
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os || 'ubuntu-latest' }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        name:
+          - stable
+          - beta
+          - nightly
+          - macOS
+          - Windows
+
+        include:
+          - name: beta
+            toolchain: beta
+          - name: nightly
+            toolchain: nightly
+          - name: macOS
+            os: macOS-latest
+          - name: Windows
+            os: windows-latest
+
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v2
+        with:
+          submodules: 'recursive'
+
+      - name: Install toolchain
+        id: tc
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: ${{ matrix.toolchain || 'stable' }}
+          profile: minimal
+          override: true
+
+      - name: Install dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libopus-dev
+
+      - name: Setup cache
+        if: runner.os != 'macOS'
+        uses: actions/cache@v2
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ matrix.os }}-test-${{ steps.tc.outputs.rustc_hash }}-${{ hashFiles('**/Cargo.toml') }}
+
+      - name: Build static
+        run: cargo build --features "static"
+
+      - name: Build dynamic
+        run: cargo build --features "dynamic"
+
+      # TODO: Fix for CI environment.
+      #- name: Generate bindings
+      # run: cargo build --features "generate_binding"
+
+      - name: Test all features
+      # TODO: Once "generate_binding" is fixed, replace with `--all-features`
+      # again.
+        run: cargo test --features "static dynamic"

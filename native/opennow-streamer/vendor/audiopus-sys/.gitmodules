@@ -1,0 +1,3 @@
+[submodule "opus"]
+	path = opus
+	url = https://github.com/xiph/opus/

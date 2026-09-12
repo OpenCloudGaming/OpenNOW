@@ -1,0 +1,20 @@
+[package]
+name = "opennow-streamer-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+base64.workspace = true
+getrandom.workspace = true
+opennow-streamer-platform = { path = "../opennow-streamer-platform" }
+opennow-streamer-protocol = { path = "../opennow-streamer-protocol" }
+opennow-streamer-transport = { path = "../opennow-streamer-transport" }
+rustls.workspace = true
+serde_json.workspace = true
+tungstenite.workspace = true
+
+[dev-dependencies]
+opennow-streamer-platform = { path = "../opennow-streamer-platform", features = ["test-runtime"] }
+rcgen = { version = "0.14", default-features = false, features = ["crypto", "ring"] }

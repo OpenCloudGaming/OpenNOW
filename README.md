@@ -1,136 +1,205 @@
+<p align="center">
+  <img src="opennow-qt/res/brand/opennow-mark.png" alt="OpenNOW cloud logo" width="96" height="52" />
+</p>
+
 <h1 align="center">OpenNOW</h1>
 
+<p align="center"><strong>An open-source desktop client for GeForce NOW.</strong></p>
+
 <p align="center">
-  <img src="logo.png" alt="OpenNOW logo" width="180" />
+  <a href="https://github.com/OpenCloudGaming/OpenNOW/releases"><img src="https://img.shields.io/badge/Download-Desktop_builds-56E6A5?style=for-the-badge&labelColor=101916" alt="Download desktop builds" /></a>
+  <a href="https://opennow.zortos.me"><img src="https://img.shields.io/badge/Read_the-Docs-FFFFFF?style=for-the-badge&labelColor=101916" alt="Read the documentation" /></a>
+  <a href="https://discord.gg/8EJYaJcNfD"><img src="https://img.shields.io/badge/Join-Discord-5865F2?style=for-the-badge&labelColor=101916" alt="Join Discord" /></a>
 </p>
 
 <p align="center">
-  <strong>An open-source desktop client for GeForce NOW.</strong>
+  <a href="https://github.com/OpenCloudGaming/OpenNOW/releases"><img src="https://img.shields.io/github/downloads/OpenCloudGaming/OpenNOW/total?style=for-the-badge&label=Downloads&color=56E6A5&labelColor=101916" alt="Total GitHub release downloads" /></a>
+  <a href="https://github.com/OpenCloudGaming/OpenNOW/stargazers"><img src="https://img.shields.io/github/stars/OpenCloudGaming/OpenNOW?style=for-the-badge&label=Stars&color=7FD4FF&labelColor=101916" alt="GitHub stars" /></a>
 </p>
 
 <p align="center">
-  Browse the catalog, tune your stream, and launch sessions from a community-built app.
+  <a href="#get-opennow">Downloads</a> ·
+  <a href="#inside-the-client">Features</a> ·
+  <a href="#how-it-works">Architecture</a> ·
+  <a href="#build-from-source">Build from source</a> ·
+  <a href="#contributing">Contribute</a>
 </p>
 
 <p align="center">
-  <a href="https://github.com/OpenCloudGaming/OpenNOW/releases">
-    <img src="https://img.shields.io/github/v/tag/OpenCloudGaming/OpenNOW?style=for-the-badge&label=Download&color=brightgreen" alt="Download">
-  </a>
-  <a href="https://testflight.apple.com/join/u1XPJKH2">
-    <img src="https://img.shields.io/badge/iOS-TestFlight-0A84FF?style=for-the-badge&logo=apple&logoColor=white" alt="Download OpenNOW on TestFlight">
-  </a>
-  <a href="https://play.google.com/store/apps/details?id=com.opencloudgaming.opennow">
-    <img src="https://img.shields.io/badge/Android-Google%20Play-3DDC84?style=for-the-badge&logo=android&logoColor=white" alt="Download Android from Google Play">
-  </a>
-  <a href="https://github.com/OpenCloudGaming/OpenNOW-Switch/releases/latest">
-    <img src="https://img.shields.io/github/v/release/OpenCloudGaming/OpenNOW-Switch?style=for-the-badge&label=Nintendo%20Switch&color=E60012&logo=nintendoswitch&logoColor=white" alt="Download OpenNOW for Nintendo Switch">
-  </a>
-  <a href="https://opennow.zortos.me">
-    <img src="https://img.shields.io/badge/Docs-opennow.zortos.me-blue?style=for-the-badge" alt="Documentation">
-  </a>
-  <a href="https://github.com/OpenCloudGaming/OpenNOW/actions/workflows/auto-build.yml">
-    <img src="https://img.shields.io/github/actions/workflow/status/OpenCloudGaming/OpenNOW/auto-build.yml?style=for-the-badge&label=Auto%20Build" alt="Auto Build">
-  </a>
-  <a href="https://discord.gg/8EJYaJcNfD">
-    <img src="https://img.shields.io/badge/Discord-Join%20Us-7289da?style=for-the-badge&logo=discord&logoColor=white" alt="Discord">
-  </a>
+  <img src="docs/assets/readme/desktop-home.webp" alt="Paper design preview of current OpenNOW Home, with a compact sidebar, full-width continue-playing card, and favourites." width="100%" />
 </p>
 
-<p align="center">
-  <a href="https://github.com/OpenCloudGaming/OpenNOW/stargazers">
-    <img src="https://img.shields.io/github/stars/OpenCloudGaming/OpenNOW?style=flat-square" alt="Stars">
-  </a>
-  <a href="https://github.com/OpenCloudGaming/OpenNOW/releases">
-    <img src="https://img.shields.io/github/downloads/OpenCloudGaming/OpenNOW/total?style=flat-square" alt="Downloads">
-  </a>
-  <a href="LICENSE">
-    <img src="https://img.shields.io/github/license/OpenCloudGaming/OpenNOW?style=flat-square" alt="License">
-  </a>
-</p>
+<p align="center"><em>Desktop Home, from the OpenNOW Paper design.</em></p>
 
-<p align="center">
-  <img src="img.png" alt="OpenNOW application preview" />
-</p>
+OpenNOW is a community-built GeForce NOW client. The desktop app uses Qt Quick for
+the interface and Rust for account services and streaming. Use a keyboard and mouse,
+or switch to the console layout for a controller. Both layouts run in the same app.
 
-> [!WARNING]
-> OpenNOW is under active development. Expect occasional bugs, rough edges, and platform-specific issues while the client matures.
->
-> Native streamer / native streaming is experimental. It defaults to the web streamer path unless enabled, issues can be platform-specific, and users may see fallback to Chromium/WebRTC. Report native-streamer problems on [GitHub Issues](https://github.com/OpenCloudGaming/OpenNOW/issues) or [Discord](https://discord.gg/8EJYaJcNfD).
+> [!NOTE]
+> OpenNOW 1.0.0 rebuilds the desktop client with Qt Quick and a native Rust streaming
+> engine. It replaces the retired Electron app. See the
+> [announcement post](https://x.com/Zortosdev/status/2093023076191440963) for a first look at the new UI.
 
 > [!IMPORTANT]
-> OpenNOW is an independent community project and is not affiliated with, endorsed by, or sponsored by NVIDIA. NVIDIA and GeForce NOW are trademarks of NVIDIA Corporation. You must use your own GeForce NOW account.
+> You need your own GeForce NOW account. Your subscription, region, and hardware
+> determine which games and stream settings you can use. OpenNOW is not affiliated
+> with, endorsed by, or sponsored by NVIDIA. NVIDIA and GeForce NOW are trademarks
+> of NVIDIA Corporation.
 
-## Overview
+> [!WARNING]
+> The Qt app is still under development. Expect bugs, including platform-specific
+> streaming and GPU issues. It has no Chromium/WebRTC fallback. Publishing a build
+> does not mean it has passed every check in the [acceptance checklist](docs/qt-acceptance.md).
 
-OpenNOW is a community-built Electron app for playing GeForce NOW from an open-source desktop client. The active desktop implementation lives in [`opennow-stable/`](opennow-stable).
+## Get OpenNOW
 
-## Downloads
+Look for packages starting with `OpenNOW-Qt-` in
+[GitHub Releases](https://github.com/OpenCloudGaming/OpenNOW/releases). Older releases
+may contain the retired Electron app, so check the release notes before downloading.
+If there's no published Qt nightly, sign in to GitHub and download the artifacts from a successful
+[`qt-ci` run on `dev`](https://github.com/OpenCloudGaming/OpenNOW/actions/workflows/qt-ci.yml?query=branch%3Adev).
 
-Grab the latest desktop build from [GitHub Releases](https://github.com/OpenCloudGaming/OpenNOW/releases).
+| Platform | Qt package | How to run it |
+| --- | --- | --- |
+| Windows x64 / ARM64 | `.msi`, portable `.zip` | Install the MSI, or extract the entire ZIP and run `bin/OpenNOW.exe`. |
+| Linux x64 / ARM64 | `.AppImage`, recommended | Make the file executable, then launch it. |
+| Linux x64 / ARM64 | `.deb` | Your distribution must provide Qt 6.8+ and SDL3. Use the AppImage on stock Ubuntu 24.04. |
+| macOS Apple Silicon, macOS 13+ | `.dmg`, nightlies | Open the DMG and drag OpenNOW into Applications. Intel Macs are not included. |
 
-### Run two instances on Windows
+Nightly platform packages are unsigned. Windows may show an unknown-publisher warning.
+The macOS app is not notarized; if Gatekeeper blocks it, use System Settings → Privacy &
+Security → Open Anyway when offered. Do not disable Gatekeeper globally.
+Published update-enabled nightlies use signed update manifests. Older builds without a
+pinned signing key need one manual upgrade. Checksums alone detect corrupted downloads;
+they do not verify who published a package.
 
-OpenNOW remains single-instance by default. To open one additional, independent client, start the installed executable with the `--secondary` switch from PowerShell or a shortcut:
+The [nightly guide](docs/qt-nightly-release.md) covers these packages. The signed
+1.0.0 candidate workflow currently builds Windows and Linux only; see the
+[release-candidate guide](docs/qt-release-candidate.md). The separate
+[OpenNOW-Mac](https://github.com/OpenCloudGaming/OpenNOW-Mac) project is also available.
 
-```powershell
-& "C:\path\to\OpenNOW.exe" --secondary
+### Other platforms
+
+These projects are separate from the Qt desktop app.
+
+- Try the iOS beta through [TestFlight](https://testflight.apple.com/join/u1XPJKH2).
+  The SwiftUI prototype is on the [`kief5555/ios` branch](https://github.com/OpenCloudGaming/OpenNOW/tree/kief5555/ios/ios/OpenNOWiOS).
+- Get the Android app from [Google Play](https://play.google.com/store/apps/details?id=com.opencloudgaming.opennow).
+- Get [OpenNOW-Switch](https://github.com/OpenCloudGaming/OpenNOW-Switch/releases/latest)
+  for a modded Nintendo Switch. It runs as native Horizon OS homebrew.
+
+## Inside the client
+
+These images come from the [OpenNOW Paper design](https://app.paper.design/file/01M11SPTRPMYQB9S9AX948A6WH/4-0).
+The boards follow the current Qt layouts, but they aren't app screenshots. The games,
+account details, and statistics are sample content, not proof of game availability or performance.
+
+### Desktop library
+
+![Paper design preview of the current desktop Library, showing the compact sidebar, collection controls, store filters, and larger game covers.](docs/assets/readme/desktop-library.webp)
+
+### Controller-first console layout
+
+![Paper design preview of console Home, showing a controller-focused game grid, navigation dock, and button prompts.](docs/assets/readme/console-home.webp)
+
+You can:
+
+- Browse the catalog, save favorites, and organize your library into collections.
+- Set the resolution, frame rate, bitrate, and codec your account and device support.
+- Open stream menus and statistics without leaving the video.
+- Take screenshots and record the source stream to Matroska files. Find both in Media.
+- Export a diagnostic report through Settings → About → Copy diagnostics when something breaks.
+
+The [Qt app guide](opennow-qt/README.md) lists hardware requirements, experimental
+features, and platform limitations.
+
+## How it works
+
+Qt draws the interface and handles windows, navigation, focus, and overlays.
+The Rust core runs in a separate process. It manages accounts, settings, and catalog
+requests, then prepares the session. Qt talks to it over a
+[versioned JSON protocol](docs/core-protocol.md).
+
+The native Rust streamer handles NVST transport, decoding, audio, gameplay input,
+and recording. Qt loads it in the desktop process through a
+[versioned C ABI](native/opennow-streamer/crates/opennow-streamer-ffi/README.md).
+Video stays on the GPU, and Qt draws menus over it in the same window. The app doesn't
+embed a browser or open a separate video window. The [streamer guide](native/opennow-streamer/README.md)
+explains the graphics backends and how Qt uses them.
+
+## Build from source
+
+Use `main` for the release source or `dev` for ongoing development. Before building, install:
+
+- Qt 6.8+ with Quick, Multimedia, and ShaderTools.
+- CMake 3.24+ and a C++20 toolchain.
+- SDL3, Cargo, and the media dependencies for your platform.
+
+Linux also needs `pkg-config`, `libwayland-dev`, and `wayland-protocols`, even for
+X11 builds. Check the [build guide](opennow-qt/README.md#build) for platform-specific details.
+
+```sh
+git clone --branch main https://github.com/OpenCloudGaming/OpenNOW.git
+cd OpenNOW
+cmake -S opennow-qt -B build/opennow-qt -DCMAKE_BUILD_TYPE=Debug
+cmake --build build/opennow-qt
+ctest --test-dir build/opennow-qt --output-on-failure
 ```
 
-The secondary window is titled **OpenNOW — Secondary** and uses a separate persistent profile ending in `-secondary`, including its own sign-in, settings, cookies, cache, device ID, and native-streamer runtime state. Launching the same command again focuses the existing secondary window, so at most one primary and one secondary profile run concurrently. Update OpenNOW from the primary instance; updates are disabled in the secondary instance to avoid competing over the installed application. Screenshots and recordings remain shared under `Pictures\OpenNOW` and use collision-resistant filenames.
+You don't need Node.js or npm to build or run the desktop app. The repository uses
+JavaScript for tools such as the localization checker.
 
-Each simultaneous cloud stream must be allowed by its GeForce NOW account. In practice, use separate accounts when running two sessions because GeForce NOW can reject or replace concurrent sessions from the same account. Only one window can be focused for keyboard and mouse input at a time; Discord Rich Presence can show only one activity when both profiles enable it.
-
-- iOS beta: [join TestFlight](https://testflight.apple.com/join/u1XPJKH2). The SwiftUI prototype currently lives on the [`kief5555/ios` branch](https://github.com/OpenCloudGaming/OpenNOW/tree/kief5555/ios/ios/OpenNOWiOS) under `ios/OpenNOWiOS/`; that folder is not present on this branch.
-- Android: download from [Google Play](https://play.google.com/store/apps/details?id=com.opencloudgaming.opennow).
-- Nintendo Switch: download the latest native Horizon OS homebrew build from [OpenNOW-Switch Releases](https://github.com/OpenCloudGaming/OpenNOW-Switch/releases/latest). It supports controller-first catalog browsing and native WebRTC streaming with H.264 video, Opus audio, and low-latency input on modded Switch systems.
-
-For macOS users looking for a more performant OpenNOW version, Jayian1890 maintains the separate [OpenNOW-Mac](https://github.com/OpenCloudGaming/OpenNOW-Mac) repository.
+Testing login and gameplay requires a GeForce NOW account. Without one, you can
+run the smoke tests, screenshot fixtures, and performance checks in the
+[Qt app guide](opennow-qt/README.md) and [acceptance runbook](docs/qt-acceptance.md).
 
 ## Documentation
 
-Canonical documentation lives at [opennow.zortos.me](https://opennow.zortos.me):
+Start at [opennow.zortos.me](https://opennow.zortos.me) for setup and configuration help.
 
-- [Getting Started](https://opennow.zortos.me/guides/getting-started/)
-- [Development](https://opennow.zortos.me/development/)
-- [Configuration](https://opennow.zortos.me/reference/configuration/)
-- [WebRTC](https://opennow.zortos.me/reference/webrtc/)
-- [Native Streamer](https://opennow.zortos.me/reference/native-streamer/)
-- [Project Website](https://opennow.zortos.me/)
+| For players | For contributors |
+| --- | --- |
+| [Getting started](https://opennow.zortos.me/guides/getting-started/) | [Development guide](https://opennow.zortos.me/development/) |
+| [Configuration](https://opennow.zortos.me/reference/configuration/) | [Qt application](opennow-qt/README.md) |
+| [Native streamer](https://opennow.zortos.me/reference/native-streamer/) | [Protocol, release, and acceptance docs](docs/) |
 
-This repository intentionally does not carry duplicate long-form product, setup, development, native streamer, GStreamer packaging, or release workflow documentation.
-
-## Repository Layout
+### Repository map
 
 ```text
-.
-├── opennow-stable/          Active Electron desktop client
-├── native/opennow-streamer/ Native Rust streaming infrastructure
-├── locales/                 Crowdin-managed localization files
-├── .github/                 Workflows, templates, and contributor metadata
-├── AGENTS.md                Repository instructions for AI agents and contributors
-├── LICENSE                  Project license
-├── logo.png                 Project logo
-└── img.png                  App preview image
+opennow-qt/               Qt Quick desktop app, C++ integration, and Qt tests
+native/opennow-core/      Rust accounts, settings, catalog, and session services
+native/opennow-streamer/  Native NVST transport, media, input, and Qt FFI
+locales/                 English source and Crowdin-managed translations
+docs/                    Architecture, protocols, acceptance, and release guides
+scripts/                 Repository-only localization tooling
+.github/                 CI workflows and contributor guidance
 ```
-
-## Sponsors
-
-OpenNOW's CI usage is generously sponsored by [Blacksmith](https://www.blacksmith.sh/), helping keep builds and releases fast for the open-source project.
 
 ## Contributing
 
-Contributions are welcome. Read the [contributing guide](.github/CONTRIBUTING.md), keep changes focused, and explain user-facing impact clearly. When changing localized copy, edit only `locales/en.json`; Crowdin manages the other locale files.
+For code changes, read the [contributing guide](.github/CONTRIBUTING.md) and
+[repository guidance](AGENTS.md). Keep pull requests focused on one change.
+For translations, edit only `locales/en.json`. Crowdin manages the other locale files.
 
-## Star History
+Found a bug? Open a [GitHub issue](https://github.com/OpenCloudGaming/OpenNOW/issues)
+with your build, OS, GPU, and steps to reproduce it. For streaming bugs, include a
+diagnostic export. Check attachments for personal information before posting them.
+You can also ask for help on [Discord](https://discord.gg/8EJYaJcNfD).
+
+## Sponsors
+
+[Blacksmith](https://www.blacksmith.sh/) sponsors OpenNOW's CI.
+
+## Star history
 
 <a href="https://www.star-history.com/?repos=OpenCloudGaming%2FOpenNOW&type=date&legend=top-left">
  <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/image?repos=OpenCloudGaming/OpenNOW&type=date&theme=dark&legend=top-left" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/image?repos=OpenCloudGaming/OpenNOW&type=date&legend=top-left" />
-   <img alt="Star History Chart" src="https://api.star-history.com/image?repos=OpenCloudGaming/OpenNOW&type=date&legend=top-left" />
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=OpenCloudGaming/OpenNOW&type=date&theme=dark&legend=top-left&sealed_token=13YQdHqPNeJl_PZ60Tn1heFHwLWvLm3sH5u-7HePhBdXpG1poEyGeM3QG_jf08kKYWxfy65fe7OZDjBzuhznLOS5gdEMLDUXY6D7NCLdFIpOTHrmG_JN8Q" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=OpenCloudGaming/OpenNOW&type=date&legend=top-left&sealed_token=13YQdHqPNeJl_PZ60Tn1heFHwLWvLm3sH5u-7HePhBdXpG1poEyGeM3QG_jf08kKYWxfy65fe7OZDjBzuhznLOS5gdEMLDUXY6D7NCLdFIpOTHrmG_JN8Q" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=OpenCloudGaming/OpenNOW&type=date&legend=top-left&sealed_token=13YQdHqPNeJl_PZ60Tn1heFHwLWvLm3sH5u-7HePhBdXpG1poEyGeM3QG_jf08kKYWxfy65fe7OZDjBzuhznLOS5gdEMLDUXY6D7NCLdFIpOTHrmG_JN8Q" />
  </picture>
 </a>
 
 ## License
 
-OpenNOW is licensed under the [MIT License](LICENSE).
+OpenNOW uses the [MIT License](LICENSE).

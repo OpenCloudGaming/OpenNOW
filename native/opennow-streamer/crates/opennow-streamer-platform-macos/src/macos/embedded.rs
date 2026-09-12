@@ -1,0 +1,1608 @@
+use std::collections::HashMap;
+use std::ffi::c_void;
+use std::ptr::{self, NonNull};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+
+use block2::RcBlock;
+use objc2::Message;
+use objc2::rc::Retained;
+use objc2::runtime::ProtocolObject;
+use objc2_core_foundation::{CFRetained, CFString};
+use objc2_core_video::{
+    CVMetalTexture, CVMetalTextureCache, CVMetalTextureGetTexture, CVPixelBufferGetHeightOfPlane,
+    CVPixelBufferGetIOSurface, CVPixelBufferGetPixelFormatType, CVPixelBufferGetPlaneCount,
+    CVPixelBufferGetWidthOfPlane, kCVImageBufferColorPrimaries_EBU_3213,
+    kCVImageBufferColorPrimaries_ITU_R_709_2, kCVImageBufferColorPrimaries_ITU_R_2020,
+    kCVImageBufferColorPrimaries_SMPTE_C, kCVImageBufferColorPrimariesKey,
+    kCVImageBufferTransferFunction_ITU_R_709_2, kCVImageBufferTransferFunction_SMPTE_ST_2084_PQ,
+    kCVImageBufferTransferFunction_sRGB, kCVImageBufferTransferFunctionKey,
+    kCVImageBufferYCbCrMatrix_ITU_R_601_4, kCVImageBufferYCbCrMatrix_ITU_R_709_2,
+    kCVImageBufferYCbCrMatrix_ITU_R_2020, kCVImageBufferYCbCrMatrixKey,
+    kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
+    kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+    kCVPixelFormatType_420YpCbCr10BiPlanarFullRange,
+    kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,
+    kCVPixelFormatType_444YpCbCr10BiPlanarFullRange,
+    kCVPixelFormatType_444YpCbCr10BiPlanarVideoRange,
+};
+use objc2_foundation::NSString;
+use objc2_metal::{
+    MTLCommandBuffer, MTLCommandBufferStatus, MTLCommandEncoder, MTLDevice, MTLLibrary,
+    MTLLoadAction, MTLPixelFormat, MTLPrimitiveType, MTLRenderCommandEncoder,
+    MTLRenderPassDescriptor, MTLRenderPipelineDescriptor, MTLRenderPipelineState, MTLStorageMode,
+    MTLStoreAction, MTLTexture, MTLTextureDescriptor, MTLTextureUsage, MTLViewport,
+};
+
+use crate::color::ConversionParameters;
+use crate::failure::FailureReporter;
+use crate::format::{MetalFrameFormat, VideoBitDepth, VideoColorSpace, VideoTransfer};
+use crate::spatial::{SpatialConfig, SpatialControls};
+
+use super::mailbox::LatestMailbox;
+use super::metalfx::{self, SpatialResources};
+use super::video::DecodedFrame;
+use super::{BackendError, Counters};
+
+const MAX_RETAINED_FRAME_SLOTS: usize = 8;
+
+pub(super) fn probe_frame_import(frame: DecodedFrame) -> Result<bool, BackendError> {
+    use objc2_metal::{MTLCommandQueue, MTLCreateSystemDefaultDevice};
+    let Some(device) = MTLCreateSystemDefaultDevice() else {
+        return Ok(false);
+    };
+    let Some(queue) = device.newCommandQueue() else {
+        return Ok(false);
+    };
+    let Some(command) = queue.commandBuffer() else {
+        return Ok(false);
+    };
+    let mut state = MetalState::new(&device, Retained::as_ptr(&device) as usize)?;
+    state.record(
+        frame,
+        &command,
+        0,
+        AdoptedMetalContext {
+            device: Retained::as_ptr(&device).cast_mut().cast(),
+            command_buffer: Retained::as_ptr(&command).cast_mut().cast(),
+            upscale_width: 0,
+            upscale_height: 0,
+            upscale_sharpness: 0,
+            upscale_denoise: 0,
+        },
+        Arc::new(Counters::default()),
+        Arc::new(FailureReporter::default()),
+    )?;
+    command.commit();
+    command.waitUntilCompleted();
+    Ok(command.status() == MTLCommandBufferStatus::Completed)
+}
+
+fn validate_frame_slot(frame_slot: u32) -> Result<(), BackendError> {
+    if frame_slot < MAX_RETAINED_FRAME_SLOTS as u32 {
+        Ok(())
+    } else {
+        Err(BackendError::Metal(format!(
+            "Metal frame slot {frame_slot} exceeds the eight-slot limit"
+        )))
+    }
+}
+
+const SHADER_SOURCE: &str = r#"
+#include <metal_stdlib>
+using namespace metal;
+
+struct VertexOut {
+    float4 position [[position]];
+    float2 texcoord;
+};
+
+struct ConversionParameters {
+    float sample_scale;
+    float luma_offset;
+    float luma_scale;
+    float chroma_offset;
+    float chroma_scale;
+    float red_cr;
+    float green_cb;
+    float green_cr;
+    float blue_cb;
+};
+
+vertex VertexOut embedded_video_vertex(uint vertex_id [[vertex_id]]) {
+    const float2 positions[3] = { float2(-1.0, -1.0), float2(3.0, -1.0), float2(-1.0, 3.0) };
+    const float2 texcoords[3] = { float2(0.0, 1.0), float2(2.0, 1.0), float2(0.0, -1.0) };
+    VertexOut out;
+    out.position = float4(positions[vertex_id], 0.0, 1.0);
+    out.texcoord = texcoords[vertex_id];
+    return out;
+}
+
+float3 embedded_video_rgb(
+    texture2d<float> luma,
+    texture2d<float> chroma,
+    float2 uv,
+    constant ConversionParameters &parameters) {
+    constexpr sampler linear_sampler(coord::normalized, address::clamp_to_edge, filter::linear);
+    float y = luma.sample(linear_sampler, uv).r * parameters.sample_scale;
+    float2 cbcr = chroma.sample(linear_sampler, uv).rg * parameters.sample_scale;
+    y = (y - parameters.luma_offset) * parameters.luma_scale;
+    cbcr = (cbcr - parameters.chroma_offset) * parameters.chroma_scale;
+    float3 rgb = float3(
+        y + parameters.red_cr * cbcr.y,
+        y + parameters.green_cb * cbcr.x + parameters.green_cr * cbcr.y,
+        y + parameters.blue_cb * cbcr.x);
+    return saturate(rgb);
+}
+
+fragment float4 embedded_video_fragment(
+    VertexOut in [[stage_in]],
+    texture2d<float> luma [[texture(0)]],
+    texture2d<float> chroma [[texture(1)]],
+    constant ConversionParameters &parameters [[buffer(0)]],
+    constant float2 &controls [[buffer(1)]]) {
+    float3 center = embedded_video_rgb(luma, chroma, in.texcoord, parameters);
+    if (controls.x == 0.0 && controls.y == 0.0) {
+        return float4(center, 1.0);
+    }
+    float2 texel = max(1.0 / float2(luma.get_width(), luma.get_height()), float2(1.0 / 8192.0));
+    float3 blur = (
+        embedded_video_rgb(luma, chroma, in.texcoord + float2(texel.x, 0.0), parameters) +
+        embedded_video_rgb(luma, chroma, in.texcoord - float2(texel.x, 0.0), parameters) +
+        embedded_video_rgb(luma, chroma, in.texcoord + float2(0.0, texel.y), parameters) +
+        embedded_video_rgb(luma, chroma, in.texcoord - float2(0.0, texel.y), parameters)) * 0.25;
+    float3 denoised = mix(center, blur, clamp(controls.y, 0.0, 1.0));
+    return float4(clamp(denoised + (denoised - blur) * controls.x, float3(0.0), float3(1.0)), 1.0);
+}
+"#;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BiPlanarFormat {
+    Nv12Video,
+    Nv12Full,
+    P010Video,
+    P010Full,
+    P410Video,
+    P410Full,
+}
+
+impl BiPlanarFormat {
+    fn from_pixel_format(pixel_format: u32) -> Option<Self> {
+        if pixel_format == kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange {
+            Some(Self::Nv12Video)
+        } else if pixel_format == kCVPixelFormatType_420YpCbCr8BiPlanarFullRange {
+            Some(Self::Nv12Full)
+        } else if pixel_format == kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange {
+            Some(Self::P010Video)
+        } else if pixel_format == kCVPixelFormatType_420YpCbCr10BiPlanarFullRange {
+            Some(Self::P010Full)
+        } else if pixel_format == kCVPixelFormatType_444YpCbCr10BiPlanarVideoRange {
+            Some(Self::P410Video)
+        } else if pixel_format == kCVPixelFormatType_444YpCbCr10BiPlanarFullRange {
+            Some(Self::P410Full)
+        } else {
+            None
+        }
+    }
+
+    const fn plane_formats(self) -> (MTLPixelFormat, MTLPixelFormat) {
+        match self {
+            Self::Nv12Video | Self::Nv12Full => (MTLPixelFormat::R8Unorm, MTLPixelFormat::RG8Unorm),
+            Self::P010Video | Self::P010Full | Self::P410Video | Self::P410Full => {
+                (MTLPixelFormat::R16Unorm, MTLPixelFormat::RG16Unorm)
+            }
+        }
+    }
+
+    const fn output_format(self) -> MetalFrameFormat {
+        match self {
+            Self::Nv12Video | Self::Nv12Full => MetalFrameFormat::Rgba8Unorm,
+            Self::P010Video | Self::P010Full | Self::P410Video | Self::P410Full => {
+                MetalFrameFormat::Rgb10a2Unorm
+            }
+        }
+    }
+
+    fn parameters(self, color_space: VideoColorSpace) -> ConversionParameters {
+        ConversionParameters::new(
+            match self {
+                Self::Nv12Video | Self::Nv12Full => VideoBitDepth::Eight,
+                Self::P010Video | Self::P010Full | Self::P410Video | Self::P410Full => {
+                    VideoBitDepth::Ten
+                }
+            },
+            matches!(self, Self::Nv12Full | Self::P010Full | Self::P410Full),
+            color_space,
+        )
+    }
+}
+
+impl MetalFrameFormat {
+    pub(super) const fn pixel_format(self) -> MTLPixelFormat {
+        match self {
+            Self::Rgba8Unorm => MTLPixelFormat::RGBA8Unorm,
+            Self::Rgb10a2Unorm => MTLPixelFormat::RGB10A2Unorm,
+            Self::Rgba16Float => MTLPixelFormat::RGBA16Float,
+        }
+    }
+
+    const fn pipeline_index(self) -> usize {
+        match self {
+            Self::Rgba8Unorm => 0,
+            Self::Rgb10a2Unorm => 1,
+            Self::Rgba16Float => 2,
+        }
+    }
+}
+
+fn frame_color_space(frame: &DecodedFrame) -> Result<VideoColorSpace, BackendError> {
+    let Some(attachment) = (unsafe {
+        frame
+            .image
+            .attachment(kCVImageBufferYCbCrMatrixKey, ptr::null_mut())
+    }) else {
+        return Ok(frame.color_space);
+    };
+    let matrix = attachment.downcast_ref::<CFString>().ok_or_else(|| {
+        BackendError::Metal("VideoToolbox returned an invalid YCbCr matrix attachment".into())
+    })?;
+    if matrix == unsafe { kCVImageBufferYCbCrMatrix_ITU_R_601_4 } {
+        Ok(VideoColorSpace::Bt601)
+    } else if matrix == unsafe { kCVImageBufferYCbCrMatrix_ITU_R_709_2 } {
+        Ok(VideoColorSpace::Bt709)
+    } else if matrix == unsafe { kCVImageBufferYCbCrMatrix_ITU_R_2020 } {
+        Ok(VideoColorSpace::Bt2020)
+    } else {
+        Err(BackendError::Metal(format!(
+            "unsupported VideoToolbox YCbCr matrix: {matrix}"
+        )))
+    }
+}
+
+fn validate_frame_color(
+    frame: &DecodedFrame,
+    matrix: VideoColorSpace,
+) -> Result<VideoTransfer, BackendError> {
+    let transfer = if let Some(value) = unsafe {
+        frame
+            .image
+            .attachment(kCVImageBufferTransferFunctionKey, ptr::null_mut())
+    } {
+        let value = value.downcast_ref::<CFString>();
+        if value == Some(unsafe { kCVImageBufferTransferFunction_SMPTE_ST_2084_PQ }) {
+            VideoTransfer::Pq
+        } else if value == Some(unsafe { kCVImageBufferTransferFunction_ITU_R_709_2 })
+            || value == Some(unsafe { kCVImageBufferTransferFunction_sRGB })
+        {
+            VideoTransfer::Sdr
+        } else {
+            return Err(BackendError::Metal(
+                "VideoToolbox returned an unsupported transfer function".into(),
+            ));
+        }
+    } else {
+        frame.transfer
+    };
+    if transfer == VideoTransfer::Pq && frame.transfer != VideoTransfer::Pq {
+        return Err(BackendError::Metal(
+            "VideoToolbox returned PQ HDR for a session that did not negotiate HDR".into(),
+        ));
+    }
+    let pq = transfer == VideoTransfer::Pq;
+    if (matrix == VideoColorSpace::Bt2020) != pq {
+        return Err(BackendError::Metal(format!(
+            "only BT.2020 PQ HDR and BT.601/709 SDR are supported: negotiated={:?}/{:?}, matrix={matrix:?}, transfer={transfer:?}",
+            frame.color_space, frame.transfer,
+        )));
+    }
+    if let Some(value) = unsafe {
+        frame
+            .image
+            .attachment(kCVImageBufferColorPrimariesKey, ptr::null_mut())
+    } {
+        let primaries = value.downcast_ref::<CFString>();
+        let valid = if pq {
+            primaries == Some(unsafe { kCVImageBufferColorPrimaries_ITU_R_2020 })
+        } else {
+            primaries == Some(unsafe { kCVImageBufferColorPrimaries_ITU_R_709_2 })
+                || primaries == Some(unsafe { kCVImageBufferColorPrimaries_EBU_3213 })
+                || primaries == Some(unsafe { kCVImageBufferColorPrimaries_SMPTE_C })
+        };
+        if !valid {
+            return Err(BackendError::Metal(
+                "VideoToolbox color primaries conflict with the frame transfer function".into(),
+            ));
+        }
+    } else if transfer != frame.transfer {
+        return Err(BackendError::Metal(
+            "VideoToolbox changed the frame transfer function without explicit color primaries"
+                .into(),
+        ));
+    }
+    Ok(transfer)
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct AdoptedMetalContext {
+    pub device: *mut c_void,
+    pub command_buffer: *mut c_void,
+    pub upscale_width: u32,
+    pub upscale_height: u32,
+    pub upscale_sharpness: u32,
+    pub upscale_denoise: u32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MetalRecordedFrame {
+    pub texture: *mut c_void,
+    pub format: MetalFrameFormat,
+    pub color_space: VideoColorSpace,
+    pub transfer: VideoTransfer,
+    pub width: u32,
+    pub height: u32,
+    pub frame_slot: u32,
+    pub generation: u64,
+    pub presentation_time_ns: u64,
+}
+
+pub struct MetalFrame {
+    frame: DecodedFrame,
+    state: Arc<Mutex<Option<MetalState>>>,
+    counters: Arc<Counters>,
+    failures: Arc<FailureReporter>,
+    sequence: u64,
+}
+
+impl MetalFrame {
+    pub fn width(&self) -> u32 {
+        u32::try_from(CVPixelBufferGetWidthOfPlane(&self.frame.image, 0)).unwrap_or(0)
+    }
+
+    pub fn height(&self) -> u32 {
+        u32::try_from(CVPixelBufferGetHeightOfPlane(&self.frame.image, 0)).unwrap_or(0)
+    }
+
+    pub const fn sequence(&self) -> u64 {
+        self.sequence
+    }
+
+    pub fn presentation_time_ns(&self) -> u64 {
+        u64::try_from(self.frame.timestamp_100ns.max(0))
+            .unwrap_or(0)
+            .saturating_mul(100)
+    }
+
+    /// Records IOSurface plane sampling and YUV-to-RGBA conversion into a retained slot texture.
+    ///
+    /// The function creates no command queue and does not commit or wait for the command buffer.
+    /// It must run before Qt begins the render pass that samples the returned texture.
+    ///
+    /// # Safety
+    ///
+    /// Both pointers must identify live Metal objects from the same Qt QRhi frame, and the command
+    /// buffer must be open for encoding. `frame_slot` may be reused only when Qt has retired its
+    /// previous GPU work for that slot.
+    pub unsafe fn record(
+        &self,
+        adopted: AdoptedMetalContext,
+        frame_slot: u32,
+    ) -> Result<MetalRecordedFrame, BackendError> {
+        if adopted.device.is_null() || adopted.command_buffer.is_null() {
+            return Err(BackendError::Metal(
+                "Qt supplied a null Metal device or command buffer".into(),
+            ));
+        }
+        validate_frame_slot(frame_slot)?;
+        let device_ptr = NonNull::new(adopted.device)
+            .expect("validated device")
+            .cast::<ProtocolObject<dyn MTLDevice>>();
+        let command_buffer_ptr = NonNull::new(adopted.command_buffer)
+            .expect("validated command buffer")
+            .cast::<ProtocolObject<dyn MTLCommandBuffer>>();
+        let device = unsafe { device_ptr.as_ref() };
+        let command_buffer = unsafe { command_buffer_ptr.as_ref() };
+
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let device_identity = device as *const _ as *const () as usize;
+        if state
+            .as_ref()
+            .is_none_or(|state| state.device_identity != device_identity)
+        {
+            *state = Some(MetalState::new(device, device_identity)?);
+        }
+        let recorded = state.as_mut().expect("initialized Metal state").record(
+            self.frame.clone(),
+            command_buffer,
+            frame_slot,
+            adopted,
+            Arc::clone(&self.counters),
+            Arc::clone(&self.failures),
+        )?;
+        self.counters
+            .video_metal_submitted
+            .fetch_add(1, Ordering::Relaxed);
+        Ok(MetalRecordedFrame {
+            presentation_time_ns: self.presentation_time_ns(),
+            ..recorded
+        })
+    }
+}
+
+#[derive(Clone)]
+pub struct EmbeddedFrameProducer {
+    mailbox: Arc<LatestMailbox<DecodedFrame>>,
+    state: Arc<Mutex<Option<MetalState>>>,
+    sequence: Arc<AtomicU64>,
+    counters: Arc<Counters>,
+    failures: Arc<FailureReporter>,
+}
+
+impl EmbeddedFrameProducer {
+    pub(super) fn new(
+        mailbox: Arc<LatestMailbox<DecodedFrame>>,
+        counters: Arc<Counters>,
+        failures: Arc<FailureReporter>,
+    ) -> Self {
+        Self {
+            mailbox,
+            state: Arc::new(Mutex::new(None)),
+            sequence: Arc::new(AtomicU64::new(0)),
+            counters,
+            failures,
+        }
+    }
+
+    pub fn acquire_latest(&self) -> Option<MetalFrame> {
+        let frame = self.mailbox.take()?;
+        let sequence = self.sequence.fetch_add(1, Ordering::AcqRel) + 1;
+        Some(MetalFrame {
+            frame,
+            state: Arc::clone(&self.state),
+            counters: Arc::clone(&self.counters),
+            failures: Arc::clone(&self.failures),
+            sequence,
+        })
+    }
+
+    pub fn clear(&self) -> bool {
+        self.mailbox.clear()
+    }
+
+    /// Releases device-bound caches after Qt has invalidated and drained its scene graph.
+    pub fn release_graphics_resources(&self) {
+        *self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+    }
+
+    pub(super) fn mailbox(&self) -> &Arc<LatestMailbox<DecodedFrame>> {
+        &self.mailbox
+    }
+
+    pub(super) fn counters(&self) -> &Arc<Counters> {
+        &self.counters
+    }
+}
+
+struct InFlightResources {
+    _output: Retained<ProtocolObject<dyn MTLTexture>>,
+    _spatial: Option<SpatialResources>,
+    _frame: DecodedFrame,
+    _luma_cv_texture: CFRetained<CVMetalTexture>,
+    _chroma_cv_texture: CFRetained<CVMetalTexture>,
+    _luma_texture: Retained<ProtocolObject<dyn MTLTexture>>,
+    _chroma_texture: Retained<ProtocolObject<dyn MTLTexture>>,
+}
+
+struct MetalState {
+    device_identity: usize,
+    _device: Retained<ProtocolObject<dyn MTLDevice>>,
+    library: Retained<ProtocolObject<dyn MTLLibrary>>,
+    pipelines: [Option<Retained<ProtocolObject<dyn MTLRenderPipelineState>>>; 3],
+    texture_cache: CFRetained<CVMetalTextureCache>,
+    slots: HashMap<u32, Retained<ProtocolObject<dyn MTLTexture>>>,
+    spatial_slots: HashMap<u32, (SpatialConfig, Option<SpatialResources>)>,
+    spatial_supported: Option<bool>,
+    spatial_initialization_reported: bool,
+    spatial_failed: Arc<AtomicBool>,
+    generation: u64,
+}
+
+unsafe impl Send for MetalState {}
+
+impl MetalState {
+    fn new(
+        device: &ProtocolObject<dyn MTLDevice>,
+        device_identity: usize,
+    ) -> Result<Self, BackendError> {
+        let device = device.retain();
+        let source = NSString::from_str(SHADER_SOURCE);
+        let library = device
+            .newLibraryWithSource_options_error(&source, None)
+            .map_err(|error| BackendError::Metal(error.localizedDescription().to_string()))?;
+        let mut cache_ptr = ptr::null_mut();
+        let status = unsafe {
+            CVMetalTextureCache::create(None, None, &device, None, NonNull::from(&mut cache_ptr))
+        };
+        if status != 0 {
+            return Err(BackendError::AppleApi {
+                api: "CVMetalTextureCacheCreate",
+                status,
+            });
+        }
+        let cache_ptr = NonNull::new(cache_ptr).ok_or(BackendError::AppleApi {
+            api: "CVMetalTextureCacheCreate",
+            status: -1,
+        })?;
+        Ok(Self {
+            device_identity,
+            _device: device,
+            library,
+            pipelines: [None, None, None],
+            texture_cache: unsafe { CFRetained::from_raw(cache_ptr) },
+            slots: HashMap::with_capacity(3),
+            spatial_slots: HashMap::with_capacity(3),
+            spatial_supported: None,
+            spatial_initialization_reported: false,
+            spatial_failed: Arc::new(AtomicBool::new(false)),
+            generation: 0,
+        })
+    }
+
+    fn record(
+        &mut self,
+        frame: DecodedFrame,
+        command_buffer: &ProtocolObject<dyn MTLCommandBuffer>,
+        frame_slot: u32,
+        adopted: AdoptedMetalContext,
+        counters: Arc<Counters>,
+        failures: Arc<FailureReporter>,
+    ) -> Result<MetalRecordedFrame, BackendError> {
+        if CVPixelBufferGetPlaneCount(&frame.image) != 2 {
+            return Err(BackendError::Metal(
+                "VideoToolbox returned a non-bi-planar pixel buffer".into(),
+            ));
+        }
+        if CVPixelBufferGetIOSurface(Some(&frame.image)).is_none() {
+            return Err(BackendError::Metal(
+                "VideoToolbox returned a pixel buffer without IOSurface backing".into(),
+            ));
+        }
+        let format =
+            BiPlanarFormat::from_pixel_format(CVPixelBufferGetPixelFormatType(&frame.image))
+                .ok_or_else(|| {
+                    BackendError::Metal("VideoToolbox returned neither NV12, P010 nor P410".into())
+                })?;
+        let matrix = frame_color_space(&frame)?;
+        let transfer = validate_frame_color(&frame, matrix)?;
+        let output_format = if transfer == VideoTransfer::Pq {
+            MetalFrameFormat::Rgba16Float
+        } else {
+            format.output_format()
+        };
+        let parameters = format.parameters(matrix);
+        self.ensure_pipeline(output_format)?;
+        let width = CVPixelBufferGetWidthOfPlane(&frame.image, 0);
+        let height = CVPixelBufferGetHeightOfPlane(&frame.image, 0);
+        let chroma_width = CVPixelBufferGetWidthOfPlane(&frame.image, 1);
+        let chroma_height = CVPixelBufferGetHeightOfPlane(&frame.image, 1);
+        let divisor = if matches!(format, BiPlanarFormat::P410Video | BiPlanarFormat::P410Full) {
+            1
+        } else {
+            2
+        };
+        if width == 0
+            || height == 0
+            || chroma_width != width.div_ceil(divisor)
+            || chroma_height != height.div_ceil(divisor)
+        {
+            return Err(BackendError::Metal(
+                "VideoToolbox returned invalid chroma plane geometry".into(),
+            ));
+        }
+        let (luma_format, chroma_format) = format.plane_formats();
+        let luma_cv_texture = self.make_plane_texture(&frame, luma_format, width, height, 0)?;
+        let chroma_cv_texture =
+            self.make_plane_texture(&frame, chroma_format, chroma_width, chroma_height, 1)?;
+        let luma_texture = CVMetalTextureGetTexture(&luma_cv_texture)
+            .ok_or_else(|| BackendError::Metal("failed to get Metal luma texture".into()))?;
+        let chroma_texture = CVMetalTextureGetTexture(&chroma_cv_texture)
+            .ok_or_else(|| BackendError::Metal("failed to get Metal chroma texture".into()))?;
+
+        let spatial = self.spatial_resources(
+            frame_slot,
+            SpatialConfig::new(
+                width,
+                height,
+                adopted.upscale_width,
+                adopted.upscale_height,
+                output_format,
+            ),
+        );
+        let output = if let Some(spatial) = &spatial {
+            spatial.input.clone()
+        } else if let Some(texture) = self.slots.remove(&frame_slot).filter(|texture| {
+            texture.width() == width
+                && texture.height() == height
+                && texture.pixelFormat() == output_format.pixel_format()
+        }) {
+            texture
+        } else {
+            let descriptor = unsafe {
+                MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(
+                    output_format.pixel_format(),
+                    width,
+                    height,
+                    false,
+                )
+            };
+            descriptor.setStorageMode(MTLStorageMode::Private);
+            descriptor.setUsage(MTLTextureUsage::RenderTarget | MTLTextureUsage::ShaderRead);
+            self._device
+                .newTextureWithDescriptor(&descriptor)
+                .ok_or_else(|| {
+                    BackendError::Metal(format!(
+                        "failed to create embedded {output_format:?} texture"
+                    ))
+                })?
+        };
+
+        let controls = if spatial.is_some() {
+            SpatialControls::new(adopted.upscale_sharpness, adopted.upscale_denoise)
+        } else {
+            SpatialControls::new(0, 0)
+        };
+
+        let render_pass = MTLRenderPassDescriptor::renderPassDescriptor();
+        let attachments = render_pass.colorAttachments();
+        let attachment = unsafe { attachments.objectAtIndexedSubscript(0) };
+        attachment.setTexture(Some(&output));
+        attachment.setLoadAction(MTLLoadAction::DontCare);
+        attachment.setStoreAction(MTLStoreAction::Store);
+        let encoder = command_buffer
+            .renderCommandEncoderWithDescriptor(&render_pass)
+            .ok_or_else(|| BackendError::Metal("failed to create embedded Metal encoder".into()))?;
+        encoder.setRenderPipelineState(
+            self.pipelines[output_format.pipeline_index()]
+                .as_ref()
+                .expect("initialized pipeline"),
+        );
+        unsafe {
+            encoder.setFragmentTexture_atIndex(Some(&luma_texture), 0);
+            encoder.setFragmentTexture_atIndex(Some(&chroma_texture), 1);
+        }
+        unsafe {
+            encoder.setFragmentBytes_length_atIndex(
+                NonNull::from(&parameters).cast::<c_void>(),
+                std::mem::size_of_val(&parameters),
+                0,
+            );
+            encoder.setFragmentBytes_length_atIndex(
+                NonNull::from(&controls).cast::<c_void>(),
+                std::mem::size_of_val(&controls),
+                1,
+            );
+        }
+        encoder.setViewport(MTLViewport {
+            originX: 0.0,
+            originY: 0.0,
+            width: width as f64,
+            height: height as f64,
+            znear: 0.0,
+            zfar: 1.0,
+        });
+        unsafe { encoder.drawPrimitives_vertexStart_vertexCount(MTLPrimitiveType::Triangle, 0, 3) };
+        encoder.endEncoding();
+
+        let scaling_attempted = spatial.is_some();
+        let scaled = spatial
+            .as_ref()
+            .is_some_and(|spatial| spatial.encode(command_buffer));
+        if scaling_attempted && !scaled {
+            self.spatial_failed.store(true, Ordering::Release);
+            eprintln!("MetalFX encoding failed; using normal conversion until graphics recreation");
+        }
+        let sampled_output = if scaled {
+            &spatial.as_ref().expect("encoded scaler").output
+        } else {
+            &output
+        };
+        let texture = Retained::as_ptr(sampled_output).cast_mut().cast::<c_void>();
+        let output_width = sampled_output.width();
+        let output_height = sampled_output.height();
+        self.slots.insert(frame_slot, output.clone());
+        let resources = InFlightResources {
+            _output: output,
+            _spatial: spatial,
+            _frame: frame,
+            _luma_cv_texture: luma_cv_texture,
+            _chroma_cv_texture: chroma_cv_texture,
+            _luma_texture: luma_texture,
+            _chroma_texture: chroma_texture,
+        };
+        let spatial_failed = Arc::clone(&self.spatial_failed);
+        let completed = RcBlock::new(
+            move |command: NonNull<ProtocolObject<dyn MTLCommandBuffer>>| {
+                let _retained_until_completion = &resources;
+                let command = unsafe { command.as_ref() };
+                if command.status() == MTLCommandBufferStatus::Completed {
+                    counters
+                        .video_metal_completed
+                        .fetch_add(1, Ordering::Relaxed);
+                    failures.metal_succeeded();
+                } else {
+                    counters
+                        .video_present_errors
+                        .fetch_add(1, Ordering::Relaxed);
+                    let message = command.error().map_or_else(
+                        || "Qt Metal command buffer failed without an error description".to_owned(),
+                        |error| error.localizedDescription().to_string(),
+                    );
+                    if scaling_attempted {
+                        if !spatial_failed.swap(true, Ordering::AcqRel) {
+                            eprintln!(
+                                "Qt command buffer failed with MetalFX enabled; disabling optional scaling: {message}"
+                            );
+                        }
+                    } else {
+                        failures.metal_failed(message);
+                    }
+                }
+            },
+        );
+        unsafe { command_buffer.addCompletedHandler(RcBlock::as_ptr(&completed)) };
+        self.generation = self.generation.wrapping_add(1);
+        Ok(MetalRecordedFrame {
+            texture,
+            format: output_format,
+            color_space: matrix,
+            transfer,
+            width: u32::try_from(output_width).unwrap_or(u32::MAX),
+            height: u32::try_from(output_height).unwrap_or(u32::MAX),
+            frame_slot,
+            generation: self.generation,
+            presentation_time_ns: 0,
+        })
+    }
+
+    fn spatial_resources(
+        &mut self,
+        frame_slot: u32,
+        config: Option<SpatialConfig>,
+    ) -> Option<SpatialResources> {
+        let Some(config) = config else {
+            self.spatial_slots.remove(&frame_slot);
+            return None;
+        };
+        if self.spatial_failed.load(Ordering::Acquire) {
+            self.spatial_slots.remove(&frame_slot);
+            return None;
+        }
+        if !*self
+            .spatial_supported
+            .get_or_insert_with(|| {
+                let supported = metalfx::supports_device(&self._device);
+                if !supported {
+                    eprintln!("MetalFX spatial scaling unavailable for this OS/device; using normal conversion");
+                }
+                supported
+            })
+        {
+            return None;
+        }
+        let entry = self
+            .spatial_slots
+            .entry(frame_slot)
+            .or_insert_with(|| (config, SpatialResources::new(&self._device, config)));
+        if entry.0 != config {
+            *entry = (config, SpatialResources::new(&self._device, config));
+        }
+        if entry.1.is_none() && !self.spatial_initialization_reported {
+            self.spatial_initialization_reported = true;
+            eprintln!(
+                "MetalFX spatial resources unavailable for {config:?}; using normal conversion"
+            );
+        }
+        entry.1.clone()
+    }
+
+    fn ensure_pipeline(&mut self, format: MetalFrameFormat) -> Result<(), BackendError> {
+        let pipeline = &mut self.pipelines[format.pipeline_index()];
+        if pipeline.is_some() {
+            return Ok(());
+        }
+        let vertex = self
+            .library
+            .newFunctionWithName(&NSString::from_str("embedded_video_vertex"))
+            .ok_or_else(|| BackendError::Metal("embedded_video_vertex shader is missing".into()))?;
+        let fragment = self
+            .library
+            .newFunctionWithName(&NSString::from_str("embedded_video_fragment"))
+            .ok_or_else(|| {
+                BackendError::Metal("embedded_video_fragment shader is missing".into())
+            })?;
+        let descriptor = MTLRenderPipelineDescriptor::new();
+        descriptor.setVertexFunction(Some(&vertex));
+        descriptor.setFragmentFunction(Some(&fragment));
+        let attachments = descriptor.colorAttachments();
+        let attachment = unsafe { attachments.objectAtIndexedSubscript(0) };
+        attachment.setPixelFormat(format.pixel_format());
+        *pipeline = Some(
+            self._device
+                .newRenderPipelineStateWithDescriptor_error(&descriptor)
+                .map_err(|error| {
+                    BackendError::Metal(format!(
+                        "failed to create {format:?} pipeline: {}",
+                        error.localizedDescription()
+                    ))
+                })?,
+        );
+        Ok(())
+    }
+
+    fn make_plane_texture(
+        &self,
+        frame: &DecodedFrame,
+        pixel_format: MTLPixelFormat,
+        width: usize,
+        height: usize,
+        plane: usize,
+    ) -> Result<CFRetained<CVMetalTexture>, BackendError> {
+        let mut texture_ptr = ptr::null_mut();
+        let status = unsafe {
+            CVMetalTextureCache::create_texture_from_image(
+                None,
+                &self.texture_cache,
+                &frame.image,
+                None,
+                pixel_format,
+                width,
+                height,
+                plane,
+                NonNull::from(&mut texture_ptr),
+            )
+        };
+        if status != 0 {
+            return Err(BackendError::AppleApi {
+                api: "CVMetalTextureCacheCreateTextureFromImage",
+                status,
+            });
+        }
+        let texture_ptr = NonNull::new(texture_ptr).ok_or(BackendError::AppleApi {
+            api: "CVMetalTextureCacheCreateTextureFromImage",
+            status: -1,
+        })?;
+        Ok(unsafe { CFRetained::from_raw(texture_ptr) })
+    }
+}
+
+impl Drop for MetalState {
+    fn drop(&mut self) {
+        self.slots.clear();
+        self.texture_cache.flush(0);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{BiPlanarFormat, MAX_RETAINED_FRAME_SLOTS, validate_frame_slot};
+    use crate::format::MetalFrameFormat;
+    use objc2_core_video::{
+        kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
+        kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+        kCVPixelFormatType_420YpCbCr10BiPlanarFullRange,
+        kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,
+    };
+    use objc2_metal::MTLPixelFormat;
+
+    fn color_frame(
+        attachments: &[(
+            &objc2_core_foundation::CFString,
+            &objc2_core_foundation::CFType,
+        )],
+    ) -> super::DecodedFrame {
+        use super::*;
+        use objc2_core_foundation::{CFDictionary, CFType};
+        use objc2_core_video::{
+            CVAttachmentMode, CVPixelBufferCreate, kCVPixelBufferIOSurfacePropertiesKey,
+        };
+
+        let surface = CFDictionary::<CFString, CFType>::from_slices(&[], &[]);
+        let attributes = CFDictionary::from_slices(
+            &[unsafe { kCVPixelBufferIOSurfacePropertiesKey }],
+            &[&*surface],
+        );
+        let mut image = ptr::null_mut();
+        assert_eq!(
+            unsafe {
+                CVPixelBufferCreate(
+                    None,
+                    64,
+                    64,
+                    kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,
+                    Some(attributes.as_opaque()),
+                    NonNull::from(&mut image),
+                )
+            },
+            0
+        );
+        let image = unsafe { CFRetained::from_raw(NonNull::new(image).unwrap()) };
+        for (key, value) in attachments {
+            unsafe { image.set_attachment(key, value, CVAttachmentMode::ShouldPropagate) };
+        }
+        DecodedFrame {
+            image,
+            color_space: VideoColorSpace::Bt2020,
+            transfer: VideoTransfer::Pq,
+            minimum_frame_duration_seconds: 1.0 / 120.0,
+            timestamp_100ns: 10_000_000,
+        }
+    }
+
+    #[test]
+    fn hdr_session_accepts_explicit_sdr_frame_metadata() {
+        use super::*;
+        use objc2_core_video::kCVImageBufferColorPrimaries_ITU_R_709_2;
+
+        let frame = color_frame(&unsafe {
+            [
+                (
+                    kCVImageBufferYCbCrMatrixKey,
+                    &**kCVImageBufferYCbCrMatrix_ITU_R_709_2,
+                ),
+                (
+                    kCVImageBufferTransferFunctionKey,
+                    &**kCVImageBufferTransferFunction_ITU_R_709_2,
+                ),
+                (
+                    kCVImageBufferColorPrimariesKey,
+                    &**kCVImageBufferColorPrimaries_ITU_R_709_2,
+                ),
+            ]
+        });
+        let matrix = frame_color_space(&frame).unwrap();
+        assert_eq!(matrix, VideoColorSpace::Bt709);
+        assert_eq!(
+            validate_frame_color(&frame, matrix).unwrap(),
+            VideoTransfer::Sdr
+        );
+        assert_eq!(frame.transfer, VideoTransfer::Pq);
+    }
+
+    #[test]
+    fn missing_color_attachments_use_the_negotiated_profile() {
+        use super::*;
+
+        for (color_space, transfer) in [
+            (VideoColorSpace::Bt2020, VideoTransfer::Pq),
+            (VideoColorSpace::Bt709, VideoTransfer::Sdr),
+        ] {
+            let mut frame = color_frame(&[]);
+            frame.color_space = color_space;
+            frame.transfer = transfer;
+            let matrix = frame_color_space(&frame).unwrap();
+            assert_eq!(matrix, color_space);
+            assert_eq!(validate_frame_color(&frame, matrix).unwrap(), transfer);
+        }
+    }
+
+    #[test]
+    fn hdr_session_rejects_partial_or_conflicting_sdr_metadata() {
+        use super::*;
+        use objc2_core_foundation::CFType;
+
+        let sdr: [(&CFString, &CFType); 3] = unsafe {
+            [
+                (
+                    kCVImageBufferYCbCrMatrixKey,
+                    kCVImageBufferYCbCrMatrix_ITU_R_709_2,
+                ),
+                (
+                    kCVImageBufferTransferFunctionKey,
+                    kCVImageBufferTransferFunction_ITU_R_709_2,
+                ),
+                (
+                    kCVImageBufferColorPrimariesKey,
+                    kCVImageBufferColorPrimaries_ITU_R_709_2,
+                ),
+            ]
+        };
+        let pq: [&CFType; 3] = unsafe {
+            [
+                kCVImageBufferYCbCrMatrix_ITU_R_2020,
+                kCVImageBufferTransferFunction_SMPTE_ST_2084_PQ,
+                kCVImageBufferColorPrimaries_ITU_R_2020,
+            ]
+        };
+        for index in 0..3 {
+            let partial: Vec<_> = sdr
+                .iter()
+                .enumerate()
+                .filter_map(|(i, entry)| (i != index).then_some(*entry))
+                .collect();
+            let frame = color_frame(&partial);
+            let matrix = frame_color_space(&frame).unwrap();
+            assert!(
+                validate_frame_color(&frame, matrix).is_err(),
+                "missing attachment {index}"
+            );
+
+            let mut conflicting = sdr;
+            conflicting[index].1 = pq[index];
+            let frame = color_frame(&conflicting);
+            let matrix = frame_color_space(&frame).unwrap();
+            assert!(
+                validate_frame_color(&frame, matrix).is_err(),
+                "conflicting attachment {index}"
+            );
+        }
+    }
+
+    #[test]
+    fn unsupported_color_attachments_are_rejected() {
+        use super::*;
+        use objc2_core_video::{
+            kCVImageBufferColorPrimaries_P3_D65, kCVImageBufferTransferFunction_ITU_R_2100_HLG,
+            kCVImageBufferYCbCrMatrix_SMPTE_240M_1995,
+        };
+
+        for (key, value) in unsafe {
+            [
+                (
+                    kCVImageBufferYCbCrMatrixKey,
+                    kCVImageBufferYCbCrMatrix_SMPTE_240M_1995,
+                ),
+                (
+                    kCVImageBufferTransferFunctionKey,
+                    kCVImageBufferTransferFunction_ITU_R_2100_HLG,
+                ),
+                (
+                    kCVImageBufferColorPrimariesKey,
+                    kCVImageBufferColorPrimaries_P3_D65,
+                ),
+            ]
+        } {
+            let frame = color_frame(&[(key, value)]);
+            assert!(unsafe { frame.image.attachment(key, ptr::null_mut()) }.is_some());
+            assert!(
+                frame_color_space(&frame)
+                    .and_then(|matrix| validate_frame_color(&frame, matrix))
+                    .is_err(),
+                "key={key:?}, value={value:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn sdr_session_rejects_unnegotiated_pq_frames() {
+        use super::*;
+        use objc2_core_foundation::CFType;
+
+        let attachments: [(&CFString, &CFType); 3] = unsafe {
+            [
+                (
+                    kCVImageBufferYCbCrMatrixKey,
+                    kCVImageBufferYCbCrMatrix_ITU_R_2020,
+                ),
+                (
+                    kCVImageBufferTransferFunctionKey,
+                    kCVImageBufferTransferFunction_SMPTE_ST_2084_PQ,
+                ),
+                (
+                    kCVImageBufferColorPrimariesKey,
+                    kCVImageBufferColorPrimaries_ITU_R_2020,
+                ),
+            ]
+        };
+        let mut frame = color_frame(&attachments);
+        frame.color_space = VideoColorSpace::Bt709;
+        frame.transfer = VideoTransfer::Sdr;
+        let matrix = frame_color_space(&frame).unwrap();
+        assert_eq!(matrix, VideoColorSpace::Bt2020);
+        assert!(validate_frame_color(&frame, matrix).is_err());
+    }
+
+    #[test]
+    #[ignore = "requires macOS IOSurface import and Metal command execution"]
+    fn hdr_session_records_sdr_pq_sdr_transitions_without_relabeling() {
+        use super::*;
+        use objc2_core_foundation::CFType;
+        use objc2_metal::{MTLCommandQueue, MTLCreateSystemDefaultDevice};
+
+        let device = MTLCreateSystemDefaultDevice().expect("Metal device");
+        let queue = device.newCommandQueue().unwrap();
+        let mut state = MetalState::new(&device, Retained::as_ptr(&device) as usize).unwrap();
+        let counters = Arc::new(Counters::default());
+        let failures = Arc::new(FailureReporter::default());
+        for pq in [false, true, false] {
+            let (matrix, transfer, primaries) = unsafe {
+                if pq {
+                    (
+                        kCVImageBufferYCbCrMatrix_ITU_R_2020,
+                        kCVImageBufferTransferFunction_SMPTE_ST_2084_PQ,
+                        kCVImageBufferColorPrimaries_ITU_R_2020,
+                    )
+                } else {
+                    (
+                        kCVImageBufferYCbCrMatrix_ITU_R_709_2,
+                        kCVImageBufferTransferFunction_ITU_R_709_2,
+                        kCVImageBufferColorPrimaries_ITU_R_709_2,
+                    )
+                }
+            };
+            let attachments: [(&CFString, &CFType); 3] = unsafe {
+                [
+                    (kCVImageBufferYCbCrMatrixKey, matrix),
+                    (kCVImageBufferTransferFunctionKey, transfer),
+                    (kCVImageBufferColorPrimariesKey, primaries),
+                ]
+            };
+            let command = queue.commandBuffer().unwrap();
+            let recorded = state
+                .record(
+                    color_frame(&attachments),
+                    &command,
+                    0,
+                    AdoptedMetalContext {
+                        device: Retained::as_ptr(&device).cast_mut().cast(),
+                        command_buffer: Retained::as_ptr(&command).cast_mut().cast(),
+                        upscale_width: 0,
+                        upscale_height: 0,
+                        upscale_sharpness: 10,
+                        upscale_denoise: 0,
+                    },
+                    Arc::clone(&counters),
+                    Arc::clone(&failures),
+                )
+                .unwrap();
+            assert_eq!(
+                (recorded.color_space, recorded.transfer, recorded.format),
+                if pq {
+                    (
+                        VideoColorSpace::Bt2020,
+                        VideoTransfer::Pq,
+                        MetalFrameFormat::Rgba16Float,
+                    )
+                } else {
+                    (
+                        VideoColorSpace::Bt709,
+                        VideoTransfer::Sdr,
+                        MetalFrameFormat::Rgb10a2Unorm,
+                    )
+                }
+            );
+            assert!(!recorded.texture.is_null());
+            command.commit();
+            command.waitUntilCompleted();
+            assert_eq!(command.status(), MTLCommandBufferStatus::Completed);
+        }
+        assert_eq!(counters.snapshot().video_metal_completed, 3);
+        assert_eq!(counters.snapshot().video_present_errors, 0);
+        assert!(failures.fatal_failure().is_none());
+    }
+
+    #[test]
+    #[ignore = "requires a Mac with MetalFX spatial scaling and GPU readback"]
+    fn spatial_source_shader_matches_reference_controls_without_rebuilding_pipeline() {
+        use super::*;
+        use objc2_metal::{
+            MTLBlitCommandEncoder, MTLBuffer, MTLCommandQueue, MTLCreateSystemDefaultDevice,
+            MTLOrigin, MTLRegion, MTLResourceOptions, MTLSize,
+        };
+
+        let device = MTLCreateSystemDefaultDevice().expect("Metal device");
+        assert!(metalfx::supports_device(&device));
+        let queue = device.newCommandQueue().unwrap();
+        let mut state = MetalState::new(&device, 1).unwrap();
+        let region = MTLRegion {
+            origin: MTLOrigin { x: 0, y: 0, z: 0 },
+            size: MTLSize {
+                width: 64,
+                height: 64,
+                depth: 1,
+            },
+        };
+        for format in [BiPlanarFormat::Nv12Full, BiPlanarFormat::P010Full] {
+            let output_format = format.output_format();
+            state.ensure_pipeline(output_format).unwrap();
+            let pipeline = state.pipelines[output_format.pipeline_index()]
+                .as_ref()
+                .unwrap()
+                .clone();
+            let config = SpatialConfig::new(64, 64, 128, 128, output_format).unwrap();
+            let spatial = state.spatial_resources(0, Some(config)).unwrap();
+            let parameters = format.parameters(VideoColorSpace::Bt709);
+            let texture = |pixel_format, usage| {
+                let descriptor = unsafe {
+                    MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(
+                        pixel_format,
+                        64,
+                        64,
+                        false,
+                    )
+                };
+                descriptor.setStorageMode(MTLStorageMode::Shared);
+                descriptor.setUsage(usage);
+                device.newTextureWithDescriptor(&descriptor).unwrap()
+            };
+            let luma = texture(MTLPixelFormat::R32Float, MTLTextureUsage::ShaderRead);
+            let chroma = texture(MTLPixelFormat::RG32Float, MTLTextureUsage::ShaderRead);
+            let output = spatial.input.clone();
+            let mut luma_data = vec![0.3 / parameters.sample_scale; 64 * 64];
+            luma_data[32 * 64 + 32] = 0.4 / parameters.sample_scale;
+            luma_data[32 * 64 + 48] = 1.0 / parameters.sample_scale;
+            luma_data[32 * 64 + 16] = 0.0;
+            let chroma_data = vec![parameters.chroma_offset / parameters.sample_scale; 64 * 64 * 2];
+            unsafe {
+                luma.replaceRegion_mipmapLevel_withBytes_bytesPerRow(
+                    region,
+                    0,
+                    NonNull::new(luma_data.as_mut_ptr()).unwrap().cast(),
+                    64 * 4,
+                );
+                chroma.replaceRegion_mipmapLevel_withBytes_bytesPerRow(
+                    region,
+                    0,
+                    NonNull::new(chroma_data.as_ptr().cast_mut())
+                        .unwrap()
+                        .cast(),
+                    64 * 8,
+                );
+            }
+            for (sharpness, denoise, expected) in [
+                (0, 0, 0.4),
+                (10, 0, 0.5),
+                (15, 0, 0.55),
+                (0, 10, 0.335),
+                (10, 10, 0.37),
+                (15, 20, 0.3),
+                (0, 0, 0.4),
+            ] {
+                let controls = SpatialControls::new(sharpness, denoise);
+                let reused = state.spatial_resources(0, Some(config)).unwrap();
+                assert_eq!(
+                    Retained::as_ptr(&spatial.input),
+                    Retained::as_ptr(&reused.input)
+                );
+                assert_eq!(
+                    Retained::as_ptr(&spatial.output),
+                    Retained::as_ptr(&reused.output)
+                );
+                state.ensure_pipeline(output_format).unwrap();
+                assert_eq!(
+                    Retained::as_ptr(&pipeline),
+                    Retained::as_ptr(
+                        state.pipelines[output_format.pipeline_index()]
+                            .as_ref()
+                            .unwrap()
+                    )
+                );
+                let command = queue.commandBuffer().unwrap();
+                let pass = MTLRenderPassDescriptor::renderPassDescriptor();
+                let attachment = unsafe { pass.colorAttachments().objectAtIndexedSubscript(0) };
+                attachment.setTexture(Some(&output));
+                attachment.setLoadAction(MTLLoadAction::DontCare);
+                attachment.setStoreAction(MTLStoreAction::Store);
+                let encoder = command.renderCommandEncoderWithDescriptor(&pass).unwrap();
+                encoder.setRenderPipelineState(&pipeline);
+                unsafe {
+                    encoder.setFragmentTexture_atIndex(Some(&luma), 0);
+                    encoder.setFragmentTexture_atIndex(Some(&chroma), 1);
+                    encoder.setFragmentBytes_length_atIndex(
+                        NonNull::from(&parameters).cast(),
+                        std::mem::size_of_val(&parameters),
+                        0,
+                    );
+                    encoder.setFragmentBytes_length_atIndex(
+                        NonNull::from(&controls).cast(),
+                        std::mem::size_of_val(&controls),
+                        1,
+                    );
+                    encoder.drawPrimitives_vertexStart_vertexCount(
+                        MTLPrimitiveType::Triangle,
+                        0,
+                        3,
+                    );
+                }
+                encoder.endEncoding();
+                assert!(reused.encode(&command));
+                let readback = device
+                    .newBufferWithLength_options(64 * 64 * 4, MTLResourceOptions::StorageModeShared)
+                    .unwrap();
+                let blit = command.blitCommandEncoder().unwrap();
+                unsafe {
+                    blit.copyFromTexture_sourceSlice_sourceLevel_sourceOrigin_sourceSize_toBuffer_destinationOffset_destinationBytesPerRow_destinationBytesPerImage(
+                        &output, 0, 0, region.origin, region.size, &readback, 0, 64 * 4, 64 * 64 * 4,
+                    );
+                }
+                blit.endEncoding();
+                command.commit();
+                command.waitUntilCompleted();
+                assert_eq!(command.status(), MTLCommandBufferStatus::Completed);
+                let maximum = if output_format == MetalFrameFormat::Rgba8Unorm {
+                    255
+                } else {
+                    1023
+                };
+                let shift = if maximum == 255 { 8 } else { 10 };
+                for (x, y, expected) in [
+                    (32, 32, expected),
+                    (0, 0, 0.3),
+                    (
+                        48,
+                        32,
+                        ((1.0 - 0.7 * controls.denoise) * (1.0 + controls.sharpness)
+                            - 0.3 * controls.sharpness)
+                            .clamp(0.0, 1.0),
+                    ),
+                    (
+                        16,
+                        32,
+                        (0.3 * controls.denoise * (1.0 + controls.sharpness)
+                            - 0.3 * controls.sharpness)
+                            .clamp(0.0, 1.0),
+                    ),
+                ] {
+                    let pixel =
+                        unsafe { *readback.contents().cast::<u32>().as_ptr().add(y * 64 + x) };
+                    for channel in [
+                        pixel & maximum,
+                        (pixel >> shift) & maximum,
+                        (pixel >> (2 * shift)) & maximum,
+                    ] {
+                        assert!(
+                            (channel as f32 / maximum as f32 - expected).abs()
+                                <= 1.5 / maximum as f32,
+                            "{format:?} {controls:?} ({x},{y}): {channel}/{maximum} != {expected}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "requires a Mac with MetalFX spatial scaling"]
+    fn spatial_slots_reuse_resources_and_retire_failed_or_changed_configurations() {
+        use super::*;
+        use objc2_metal::MTLCreateSystemDefaultDevice;
+
+        let device = MTLCreateSystemDefaultDevice().expect("Metal device");
+        assert!(metalfx::supports_device(&device));
+        let mut state = MetalState::new(&device, 1).unwrap();
+        let config = SpatialConfig::new(64, 64, 128, 128, MetalFrameFormat::Rgba8Unorm).unwrap();
+        let first = state.spatial_resources(0, Some(config)).unwrap();
+        let reused = state.spatial_resources(0, Some(config)).unwrap();
+        assert_eq!(
+            Retained::as_ptr(&first.output),
+            Retained::as_ptr(&reused.output)
+        );
+        assert_eq!(
+            Retained::as_ptr(&first.input),
+            Retained::as_ptr(&reused.input)
+        );
+        for slot in 1..MAX_RETAINED_FRAME_SLOTS as u32 {
+            let next = state.spatial_resources(slot, Some(config)).unwrap();
+            assert_ne!(
+                Retained::as_ptr(&first.output),
+                Retained::as_ptr(&next.output)
+            );
+        }
+        assert_eq!(state.spatial_slots.len(), MAX_RETAINED_FRAME_SLOTS);
+        let resized = SpatialConfig::new(64, 64, 256, 256, config.format).unwrap();
+        let replacement = state.spatial_resources(0, Some(resized)).unwrap();
+        assert_ne!(
+            Retained::as_ptr(&first.output),
+            Retained::as_ptr(&replacement.output)
+        );
+        assert!(state.spatial_resources(0, None).is_none());
+        assert!(!state.spatial_slots.contains_key(&0));
+        state.spatial_slots.insert(0, (config, None));
+        assert!(state.spatial_resources(0, Some(config)).is_none());
+        state.spatial_failed.store(true, Ordering::Release);
+        assert!(state.spatial_resources(1, Some(config)).is_none());
+        assert!(!state.spatial_slots.contains_key(&1));
+        drop(state);
+        assert_eq!(first.output.width(), 128);
+        assert_eq!(replacement.output.width(), 256);
+    }
+
+    #[test]
+    fn accepts_nv12_and_p010_ranges_only() {
+        assert_eq!(
+            BiPlanarFormat::from_pixel_format(kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange),
+            Some(BiPlanarFormat::Nv12Video)
+        );
+        assert_eq!(
+            BiPlanarFormat::from_pixel_format(kCVPixelFormatType_420YpCbCr8BiPlanarFullRange),
+            Some(BiPlanarFormat::Nv12Full)
+        );
+        assert_eq!(
+            BiPlanarFormat::from_pixel_format(kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange),
+            Some(BiPlanarFormat::P010Video)
+        );
+        assert_eq!(
+            BiPlanarFormat::from_pixel_format(kCVPixelFormatType_420YpCbCr10BiPlanarFullRange),
+            Some(BiPlanarFormat::P010Full)
+        );
+        assert_eq!(BiPlanarFormat::from_pixel_format(0), None);
+    }
+
+    #[test]
+    fn retained_slot_bound_matches_public_embedded_limit() {
+        assert_eq!(MAX_RETAINED_FRAME_SLOTS, 8);
+        assert!(validate_frame_slot(0).is_ok());
+        assert!(validate_frame_slot(7).is_ok());
+        assert!(validate_frame_slot(8).is_err());
+    }
+
+    #[test]
+    fn p410_preserves_full_resolution_chroma_and_ten_bit_planes() {
+        for (pixel_format, format) in [
+            (
+                super::kCVPixelFormatType_444YpCbCr10BiPlanarVideoRange,
+                BiPlanarFormat::P410Video,
+            ),
+            (
+                super::kCVPixelFormatType_444YpCbCr10BiPlanarFullRange,
+                BiPlanarFormat::P410Full,
+            ),
+        ] {
+            assert_eq!(
+                BiPlanarFormat::from_pixel_format(pixel_format),
+                Some(format)
+            );
+            assert_eq!(
+                format.plane_formats(),
+                (MTLPixelFormat::R16Unorm, MTLPixelFormat::RG16Unorm)
+            );
+            assert_eq!(format.output_format(), MetalFrameFormat::Rgb10a2Unorm);
+        }
+        assert_eq!(
+            MetalFrameFormat::Rgba16Float.pixel_format(),
+            MTLPixelFormat::RGBA16Float
+        );
+        assert_eq!(MetalFrameFormat::Rgba16Float.pipeline_index(), 2);
+    }
+
+    #[test]
+    #[ignore = "requires macOS Metal shader compilation and GPU readback"]
+    fn hdr_shader_preserves_adjacent_pq_codes_in_rgba16float() {
+        use super::*;
+        use objc2_metal::{
+            MTLBlitCommandEncoder, MTLBuffer, MTLCommandQueue, MTLCreateSystemDefaultDevice,
+            MTLOrigin, MTLRegion, MTLResourceOptions, MTLSize,
+        };
+        let device = MTLCreateSystemDefaultDevice().expect("Metal device");
+        let queue = device.newCommandQueue().unwrap();
+        let mut state = MetalState::new(&device, Retained::as_ptr(&device) as usize).unwrap();
+        state
+            .ensure_pipeline(MetalFrameFormat::Rgba16Float)
+            .unwrap();
+        let size = MTLSize {
+            width: 64,
+            height: 64,
+            depth: 1,
+        };
+        let origin = MTLOrigin { x: 0, y: 0, z: 0 };
+        let texture = |format| {
+            let descriptor = unsafe {
+                MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(
+                    format, 64, 64, false,
+                )
+            };
+            descriptor.setStorageMode(MTLStorageMode::Shared);
+            descriptor.setUsage(MTLTextureUsage::ShaderRead | MTLTextureUsage::RenderTarget);
+            device.newTextureWithDescriptor(&descriptor).unwrap()
+        };
+        let luma = texture(MTLPixelFormat::R16Unorm);
+        let chroma = texture(MTLPixelFormat::RG16Unorm);
+        let output = texture(MTLPixelFormat::RGBA16Float);
+        let parameters =
+            ConversionParameters::new(VideoBitDepth::Ten, false, VideoColorSpace::Bt2020);
+        let neutral = vec![512u16 << 6; 64 * 64 * 2];
+        unsafe {
+            chroma.replaceRegion_mipmapLevel_withBytes_bytesPerRow(
+                MTLRegion { origin, size },
+                0,
+                NonNull::new(neutral.as_ptr().cast_mut().cast()).unwrap(),
+                64 * 4,
+            )
+        };
+        let mut previous = 0;
+        for code in [509u16, 510, 723, 724, 939, 940] {
+            let samples = vec![code << 6; 64 * 64];
+            unsafe {
+                luma.replaceRegion_mipmapLevel_withBytes_bytesPerRow(
+                    MTLRegion { origin, size },
+                    0,
+                    NonNull::new(samples.as_ptr().cast_mut().cast()).unwrap(),
+                    64 * 2,
+                )
+            };
+            let command = queue.commandBuffer().unwrap();
+            let pass = MTLRenderPassDescriptor::renderPassDescriptor();
+            let attachment = unsafe { pass.colorAttachments().objectAtIndexedSubscript(0) };
+            attachment.setTexture(Some(&output));
+            attachment.setLoadAction(MTLLoadAction::DontCare);
+            attachment.setStoreAction(MTLStoreAction::Store);
+            let encoder = command.renderCommandEncoderWithDescriptor(&pass).unwrap();
+            encoder.setRenderPipelineState(state.pipelines[2].as_ref().unwrap());
+            unsafe {
+                encoder.setFragmentTexture_atIndex(Some(&luma), 0);
+                encoder.setFragmentTexture_atIndex(Some(&chroma), 1);
+                encoder.setFragmentBytes_length_atIndex(
+                    NonNull::from(&parameters).cast(),
+                    std::mem::size_of_val(&parameters),
+                    0,
+                );
+                encoder.drawPrimitives_vertexStart_vertexCount(MTLPrimitiveType::Triangle, 0, 3);
+            }
+            encoder.endEncoding();
+            let readback = device
+                .newBufferWithLength_options(64 * 64 * 8, MTLResourceOptions::StorageModeShared)
+                .unwrap();
+            let blit = command.blitCommandEncoder().unwrap();
+            unsafe {
+                blit.copyFromTexture_sourceSlice_sourceLevel_sourceOrigin_sourceSize_toBuffer_destinationOffset_destinationBytesPerRow_destinationBytesPerImage(&output, 0, 0, origin, size, &readback, 0, 64 * 8, 64 * 64 * 8)
+            };
+            blit.endEncoding();
+            command.commit();
+            command.waitUntilCompleted();
+            assert_eq!(command.status(), MTLCommandBufferStatus::Completed);
+            let channels = unsafe {
+                std::slice::from_raw_parts(
+                    readback
+                        .contents()
+                        .cast::<u16>()
+                        .as_ptr()
+                        .add((32 * 64 + 32) * 4),
+                    4,
+                )
+            };
+            assert!(
+                channels[0] > previous,
+                "adjacent ten-bit PQ codes collapsed"
+            );
+            previous = channels[0];
+            for &half in &channels[..3] {
+                let value = 2_f32.powi(i32::from((half >> 10) & 31) - 15)
+                    * (1.0 + f32::from(half & 1023) / 1024.0);
+                assert!((value - f32::from(code - 64) / 876.0).abs() <= 0.0005);
+            }
+            assert_eq!(channels[3], 0x3c00);
+        }
+    }
+
+    #[test]
+    fn ten_bit_planes_always_select_rgb10a2_texture_and_pipeline() {
+        for format in [BiPlanarFormat::Nv12Video, BiPlanarFormat::Nv12Full] {
+            assert_eq!(format.output_format(), MetalFrameFormat::Rgba8Unorm);
+            assert_eq!(
+                format.output_format().pixel_format(),
+                MTLPixelFormat::RGBA8Unorm
+            );
+            assert_eq!(format.output_format().pipeline_index(), 0);
+            assert_eq!(
+                format.plane_formats(),
+                (MTLPixelFormat::R8Unorm, MTLPixelFormat::RG8Unorm)
+            );
+        }
+        for format in [BiPlanarFormat::P010Video, BiPlanarFormat::P010Full] {
+            assert_eq!(format.output_format(), MetalFrameFormat::Rgb10a2Unorm);
+            assert_eq!(
+                format.output_format().pixel_format(),
+                MTLPixelFormat::RGB10A2Unorm
+            );
+            assert_eq!(format.output_format().pipeline_index(), 1);
+            assert_eq!(
+                format.plane_formats(),
+                (MTLPixelFormat::R16Unorm, MTLPixelFormat::RG16Unorm)
+            );
+        }
+    }
+}

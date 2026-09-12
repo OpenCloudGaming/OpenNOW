@@ -1,0 +1,179 @@
+$ErrorActionPreference = "Stop"
+$root = Join-Path ([IO.Path]::GetTempPath()) "opennow-msi-test-$([Guid]::NewGuid())"
+$packages = @()
+$testNamespace = [Guid]::NewGuid().ToString()
+$metadata = (Resolve-Path "$PSScriptRoot/../cmake/BuildMetadata.cmake").Path.Replace('\', '/')
+$policy = (Resolve-Path "$PSScriptRoot/../cmake/WindowsInstaller.cmake").Path.Replace('\', '/')
+
+function Assert-Registration {
+    param([string]$Package, [string]$Destination)
+
+    $installer = New-Object -ComObject WindowsInstaller.Installer
+    $objects = [Collections.Generic.List[object]]::new()
+    $objects.Add($installer)
+    try {
+        $database = $installer.GetType().InvokeMember("OpenDatabase", "InvokeMethod", $null, $installer, @($Package, 0))
+        $objects.Add($database)
+        $properties = @{}
+        foreach ($property in @("ProductCode", "UpgradeCode")) {
+            $view = $database.GetType().InvokeMember("OpenView", "InvokeMethod", $null, $database,
+                @("SELECT ``Value`` FROM ``Property`` WHERE ``Property`` = '$property'"))
+            $objects.Add($view)
+            $view.GetType().InvokeMember("Execute", "InvokeMethod", $null, $view, $null)
+            $record = $view.GetType().InvokeMember("Fetch", "InvokeMethod", $null, $view, $null)
+            $objects.Add($record)
+            $properties[$property] = $record.GetType().InvokeMember("StringData", "GetProperty", $null, $record, @(1))
+            $view.GetType().InvokeMember("Close", "InvokeMethod", $null, $view, $null)
+        }
+        $location = $installer.GetType().InvokeMember("ProductInfo", "GetProperty", $null, $installer,
+            @($properties.ProductCode, "InstallLocation"))
+        if ([string]::IsNullOrWhiteSpace($location) -or
+            [IO.Path]::GetFullPath($location).TrimEnd('\') -ne [IO.Path]::GetFullPath($Destination).TrimEnd('\')) {
+            throw "MSI InstallLocation does not match the resolved installation root"
+        }
+        $related = $installer.GetType().InvokeMember("RelatedProducts", "GetProperty", $null, $installer,
+            @($properties.UpgradeCode))
+        $objects.Add($related)
+        $count = $related.GetType().InvokeMember("Count", "GetProperty", $null, $related, $null)
+        if ($count -ne 1) { throw "Expected one registered product after a channel upgrade, found $count" }
+        $product = $related.GetType().InvokeMember("Item", "GetProperty", $null, $related, @(0))
+        if ($product -ne $properties.ProductCode) { throw "The registered product is not the newly installed MSI" }
+    } finally {
+        $objects.Reverse()
+        foreach ($instance in $objects) {
+            [Runtime.InteropServices.Marshal]::FinalReleaseComObject($instance) | Out-Null
+        }
+    }
+}
+
+function Invoke-Installer {
+    param([string]$Package, [string]$Destination, [int]$Expected = 0)
+
+    $Destination = [IO.Path]::GetFullPath($Destination)
+    $log = Join-Path $root "install-$([Guid]::NewGuid()).log"
+    $process = Start-Process msiexec.exe -Wait -PassThru -ArgumentList "/i `"$Package`" /qn /norestart INSTALL_ROOT=`"$Destination`" /l*v `"$log`""
+    if ($process.ExitCode -ne $Expected) {
+        Get-Content $log | Write-Host
+        throw "MSI install returned $($process.ExitCode), expected $Expected"
+    }
+    if ($Expected -ne 0 -and -not (Select-String -Path $log -SimpleMatch "A later version")) {
+        throw "Older MSI failed without the expected downgrade rejection"
+    }
+    if ($Expected -eq 0) { Assert-Registration $Package $Destination }
+}
+
+function Assert-Payload {
+    param([string]$Directory, [string]$Version)
+    if ((Get-Content (Join-Path $Directory "fixture.txt") -Raw).Trim() -ne $Version) {
+        throw "Installed payload does not match $Version"
+    }
+    $label = if ($Version -like "*-nightly.*") { "OpenNOW Nightly" } else { "OpenNOW" }
+    $menu = "OpenNOW MSI Contract $testNamespace $label"
+    $links = @(@("CommonPrograms", "Programs") | ForEach-Object {
+        $path = Join-Path ([Environment]::GetFolderPath($_)) "$menu/$label.lnk"
+        if (Test-Path $path) { $path }
+    } | Select-Object -Unique)
+    if ($links.Count -ne 1) { throw "Expected one installed Start Menu launcher for $label" }
+    $shell = New-Object -ComObject WScript.Shell
+    $shortcut = $shell.CreateShortcut($links[0])
+    $workingDirectory = [IO.Path]::GetFullPath($shortcut.WorkingDirectory).TrimEnd([IO.Path]::DirectorySeparatorChar)
+    if ($shortcut.TargetPath -ne [IO.Path]::GetFullPath("$Directory/bin/OpenNOW.exe") -or
+        $workingDirectory -ne [IO.Path]::GetFullPath("$Directory/bin")) {
+        throw "Start Menu launcher does not target the installed bin/OpenNOW.exe"
+    }
+}
+
+try {
+    New-Item -ItemType Directory $root | Out-Null
+    foreach ($version in @("1.0.0-nightly.255.1", "1.0.0-nightly.256.1", "1.0.0-nightly.256.2", "1.0.0")) {
+        $source = New-Item -ItemType Directory "$root/$version"
+        Set-Content "$source/fixture.txt" $version
+        @"
+cmake_minimum_required(VERSION 3.24)
+project(InstallerContract VERSION 1.0.0 LANGUAGES NONE)
+set(CMAKE_SYSTEM_PROCESSOR AMD64)
+set(CMAKE_SIZEOF_VOID_P 8)
+set(OPENNOW_BUILD_VERSION "$version")
+include("$metadata")
+set(CPACK_PACKAGE_NAME OpenNOW)
+set(CPACK_PACKAGE_VENDOR OpenCloudGaming)
+set(CPACK_PACKAGE_FILE_NAME "fixture-$version")
+include("$policy")
+set(CPACK_WIX_PROGRAM_MENU_FOLDER "OpenNOW MSI Contract $testNamespace `${CPACK_PACKAGE_NAME}")
+string(UUID CPACK_WIX_UPGRADE_GUID NAMESPACE "$testNamespace"
+    NAME "`${CPACK_WIX_UPGRADE_GUID}" TYPE SHA1 UPPER)
+set(CPACK_PACKAGE_NAME "OpenNOW MSI Contract `${CPACK_PACKAGE_NAME}")
+install(FILES "`${CMAKE_CURRENT_SOURCE_DIR}/fixture.txt" DESTINATION .)
+install(FILES "`${CMAKE_CURRENT_SOURCE_DIR}/fixture.txt" DESTINATION bin RENAME OpenNOW.exe)
+include(CPack)
+"@ | Set-Content "$source/CMakeLists.txt"
+        cmake -S $source -B "$source/build"
+        if ($LASTEXITCODE -ne 0) { throw "MSI fixture configuration failed" }
+        cpack --config "$source/build/CPackConfig.cmake" -G WIX -B "$source/packages"
+        if ($LASTEXITCODE -ne 0) {
+            Get-ChildItem "$source/packages" -Recurse -Filter wix.log | ForEach-Object {
+                Get-Content $_.FullName | Write-Host
+            }
+            throw "MSI fixture packaging failed"
+        }
+        $propertiesFiles = @(Get-ChildItem "$source/packages" -Recurse -Filter properties.wxi)
+        if ($propertiesFiles.Count -ne 1) { throw "Expected one generated WiX properties include" }
+        $wixDirectory = $propertiesFiles[0].Directory.FullName
+        [xml]$propertiesXml = Get-Content $propertiesFiles[0].FullName -Raw
+        [xml]$fragmentXml = Get-Content (Join-Path $wixDirectory "product_fragment.wxi") -Raw
+        $actionQuery = "//*[local-name()='SetProperty' and @Id='ARPINSTALLLOCATION']"
+        $actions = @($propertiesXml.SelectNodes($actionQuery)) + @($fragmentXml.SelectNodes($actionQuery))
+        if ($actions.Count -ne 1 -or $propertiesXml.SelectNodes($actionQuery).Count -ne 1) {
+            throw "CPack must own exactly one ARPINSTALLLOCATION action"
+        }
+        if ($actions[0].GetAttribute("Value") -ne "[INSTALL_ROOT]" -or
+            $actions[0].GetAttribute("After") -ne "CostFinalize" -or
+            $actions[0].GetAttribute("Sequence") -notin @("", "both", "execute")) {
+            throw "Install-location registration must use the resolved root in the execute sequence"
+        }
+        $installRoot = $propertiesXml.SelectSingleNode("//*[local-name()='Property' and @Id='INSTALL_ROOT']")
+        $previousLocation = $propertiesXml.SelectSingleNode("//*[local-name()='RegistrySearch' and @Id='FindInstallLocation']")
+        if ($null -eq $installRoot -or $installRoot.GetAttribute("Secure") -ne "yes" -or
+            $null -eq $previousLocation -or $previousLocation.ParentNode -ne $installRoot -or
+            $previousLocation.GetAttribute("Root") -ne "HKLM" -or
+            $previousLocation.GetAttribute("Key") -ne 'Software\Microsoft\Windows\CurrentVersion\Uninstall\[WIX_UPGRADE_DETECTED]' -or
+            $previousLocation.GetAttribute("Name") -ne "InstallLocation" -or
+            $previousLocation.GetAttribute("Type") -ne "raw") {
+            throw "CPack must preserve the previous product's registered installation root during upgrades"
+        }
+        $license = @(Get-ChildItem "$source/packages" -Recurse -Filter License.rtf)
+        if ($license.Count -ne 1 -or
+            -not (Select-String -Path $license[0].FullName -SimpleMatch "MIT License") -or
+            -not (Select-String -Path $license[0].FullName -SimpleMatch "Zortos")) {
+            throw "WiX did not receive the project's MIT license"
+        }
+        $msi = @(Get-ChildItem "$source/packages" -Filter *.msi)
+        if ($msi.Count -ne 1) { throw "Expected one fixture MSI" }
+        $packages += $msi[0].FullName
+    }
+    $nightly = "$root/installed/OpenNOW Nightly"
+    $stable = "$root/installed/OpenNOW"
+    Invoke-Installer $packages[0] $nightly
+    Assert-Payload $nightly "1.0.0-nightly.255.1"
+    Invoke-Installer $packages[3] $stable
+    Assert-Payload $stable "1.0.0"
+    Assert-Payload $nightly "1.0.0-nightly.255.1"
+    Invoke-Installer $packages[1] $nightly
+    Assert-Payload $nightly "1.0.0-nightly.256.1"
+    Invoke-Installer $packages[2] $nightly
+    Assert-Payload $nightly "1.0.0-nightly.256.2"
+    Invoke-Installer $packages[1] $nightly 1603
+    Invoke-Installer $packages[0] $nightly 1603
+    Assert-Payload $nightly "1.0.0-nightly.256.2"
+    Assert-Payload $stable "1.0.0"
+    Write-Host "Windows MSI run, retry, downgrade, stable isolation, and Start Menu launcher tests passed"
+} finally {
+    [array]::Reverse($packages)
+    foreach ($package in $packages) {
+        $process = Start-Process msiexec.exe -Wait -PassThru -ArgumentList "/x `"$package`" /qn /norestart"
+        if ($process.ExitCode -notin 0, 1605) {
+            Write-Warning "MSI fixture cleanup returned $($process.ExitCode) for $package"
+        }
+    }
+    Remove-Item $root -Recurse -Force -ErrorAction SilentlyContinue
+}

@@ -1,0 +1,59 @@
+{
+  "schemaVersion": 1,
+  "kind": "opennow.acceptance-attestations",
+  "releaseCandidate": "v0.5.4-rc1",
+  "applicationVersion": "0.5.4",
+  "matrixRow": "linux-x64-wayland",
+  "machineLabel": "baseline-machine-id",
+  "checks": {
+    "deviceLogin": false,
+    "accountSwitching": false,
+    "subscriptionRefresh": false,
+    "regionRefresh": false,
+    "guideVideoOrdering": false,
+    "keyboardInput": false,
+    "relativeMouseInput": false,
+    "controllerInput": false,
+    "controllerNeutralState": false,
+    "windowResize": false,
+    "fullscreen": false,
+    "displayMigration": false,
+    "highestRefreshRate": false,
+    "microphoneUpstream": false,
+    "screenshotVisible": false,
+    "recordingPlayback": false,
+    "thumbnailGenerated": false,
+    "mediaReveal": false,
+    "networkRecovery": false,
+    "streamerRecovery": false,
+    "terminalErrorUsable": false,
+    "installUpgradeUninstall": false,
+    "desktopAndProtocolAssociations": false
+  },
+  "displayCapabilities": {
+    "hdr": {
+      "status": "not-supported",
+      "evidence": "Replace with the display capability result or capture hash."
+    },
+    "vrr": {
+      "status": "not-supported",
+      "evidence": "Replace with the display capability result or capture hash."
+    }
+  },
+  "packages": [
+    {
+      "fileName": "OpenNOW-Qt-0.5.4-Linux-x86_64.AppImage",
+      "sizeBytes": 0,
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "signingVerified": false,
+      "updateManifestVerified": false
+    },
+    {
+      "fileName": "opennow_0.5.4_amd64.deb",
+      "sizeBytes": 0,
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "signingVerified": false,
+      "updateManifestVerified": false
+    }
+  ]
+}

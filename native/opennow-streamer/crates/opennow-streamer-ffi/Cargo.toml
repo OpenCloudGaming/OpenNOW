@@ -1,0 +1,24 @@
+[package]
+name = "opennow-streamer-ffi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = []
+linux-vaapi = ["opennow-streamer-platform/linux-vaapi"]
+linux-ffmpeg = ["opennow-streamer-platform/linux-ffmpeg"]
+linux-ffmpeg-bundled = ["opennow-streamer-platform/linux-ffmpeg-bundled"]
+
+[dependencies]
+opennow-streamer-core = { path = "../opennow-streamer-core" }
+opennow-streamer-platform = { path = "../opennow-streamer-platform" }
+opennow-streamer-protocol = { path = "../opennow-streamer-protocol" }
+serde_json.workspace = true
+
+[dev-dependencies]
+opennow-streamer-platform = { path = "../opennow-streamer-platform", features = ["test-runtime"] }

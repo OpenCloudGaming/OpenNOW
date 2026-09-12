@@ -1,8 +1,0 @@
-description, seek=true, handles-states=true, needs_preroll=true
-include,location=includes/default-seek-flags.scenario
-pause, playback-time=0.0
-seek, playback-time=0.0, start="$(duration) - 0.5", flags="$(default_flags)"
-seek, playback-time=0.0, start=position-0.1, repeat="min(10, ($(duration) - 0.6))/0.1", flags="$(default_flags)"
-play, playback-time=0.0
-stop, playback-time=1.0
-
