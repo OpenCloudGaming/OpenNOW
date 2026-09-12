@@ -173,6 +173,25 @@ fn search() -> PathBuf {
 }
 
 fn fetch() -> io::Result<()> {
+    if let Some(archive) = env::var_os("OPENNOW_FFMPEG_ARCHIVE") {
+        let source_dir = source();
+        if source_dir.exists() {
+            fs::remove_dir_all(&source_dir)?;
+        }
+        fs::create_dir_all(&source_dir)?;
+        let status = Command::new("tar")
+            .arg("--extract")
+            .arg("--file")
+            .arg(archive)
+            .arg("--strip-components=1")
+            .arg("--directory")
+            .arg(&source_dir)
+            .status()?;
+        if !status.success() || !source_dir.join("configure").is_file() {
+            return Err(io::Error::other("offline FFmpeg source extraction failed"));
+        }
+        return Ok(());
+    }
     if use_v4l2_request() {
         let source_dir = source();
         if source_dir.exists() {
@@ -1195,6 +1214,13 @@ fn link_to_libraries(statik: bool, target_os: &str) {
 
 fn main() {
     println!("cargo:rerun-if-env-changed=FFMPEG_DIR");
+    println!("cargo:rerun-if-env-changed=OPENNOW_FFMPEG_ARCHIVE");
+    if let Some(archive) = env::var_os("OPENNOW_FFMPEG_ARCHIVE") {
+        println!(
+            "cargo:rerun-if-changed={}",
+            PathBuf::from(archive).display()
+        );
+    }
 
     let statik = env::var("CARGO_FEATURE_STATIC").is_ok();
     let ffmpeg_major_version: u32 = env!("CARGO_PKG_VERSION_MAJOR").parse().unwrap();
@@ -1210,7 +1236,12 @@ fn main() {
             search().join("lib").to_string_lossy()
         );
         link_to_libraries(statik, &target_os);
-        if fs::metadata(search().join("lib").join("libavutil.a")).is_err() {
+        let offline_archive = env::var_os("OPENNOW_FFMPEG_ARCHIVE").is_some();
+        if offline_archive || fs::metadata(search().join("lib").join("libavutil.a")).is_err() {
+            if offline_archive && search().exists() {
+                fs::remove_dir_all(search())
+                    .expect("failed to remove previous offline FFmpeg build");
+            }
             fs::create_dir_all(output()).expect("failed to create build directory");
             fetch().unwrap();
             build(sysroot.as_deref()).unwrap();

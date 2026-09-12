@@ -5,6 +5,9 @@ or newer and uses SDL3 for controller input. A bundled Rust process owns setting
 and is the start of the shell-neutral application core. See
 `docs/qt-migration.md` for the migration history and remaining release checklist.
 
+For a sandboxed Linux x86_64 package, follow [Build and install the Flatpak](packaging/flatpak/README.md).
+The separate **Qt Flatpak build** workflow produces an installable bundle without publishing a release.
+
 ## CI checks and manual builds
 
 Pull requests and pushes to `dev` or `main` run workflow lint, packaging-contract
