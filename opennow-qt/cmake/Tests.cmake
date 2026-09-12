@@ -42,6 +42,14 @@ if(BUILD_TESTING)
     qt_add_shaders(opennow-hdrcolor-tests "opennow-hdrchrome-test-shaders"
         BATCHABLE PREFIX "/opennow/shaders" BASE "shaders" FILES ${OPENNOW_CHROME_SHADERS})
     find_package(Qt6 6.8 REQUIRED COMPONENTS QuickTest)
+    qt_add_executable(opennow-hevchelp-tests tests/tst_hevchelp.cpp)
+    target_link_libraries(opennow-hevchelp-tests PRIVATE Qt6::QuickTest Qt6::Quick)
+    target_compile_definitions(opennow-hevchelp-tests PRIVATE
+        OPENNOW_QML_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/qml")
+    add_test(NAME opennow-hevchelp-tests COMMAND opennow-hevchelp-tests
+        -input "${CMAKE_CURRENT_SOURCE_DIR}/tests/hevchelp")
+    set_tests_properties(opennow-hevchelp-tests PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
     qt_add_executable(opennow-tenbitwarning-tests tests/tst_tenbitwarning.cpp)
     target_link_libraries(opennow-tenbitwarning-tests PRIVATE Qt6::QuickTest Qt6::Quick)
     target_compile_definitions(opennow-tenbitwarning-tests PRIVATE

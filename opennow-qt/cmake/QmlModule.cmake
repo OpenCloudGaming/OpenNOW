@@ -268,6 +268,7 @@ qt_add_qml_module(opennow-qt
         qml/desktop/onboarding/DesktopOnboardingNetwork.qml
         qml/desktop/settings/controls/DesktopSettingsAdvanced.qml
         qml/desktop/settings/controls/DesktopSettingsButton.qml
+        qml/desktop/settings/controls/DesktopSettingsHevcHelp.qml
         qml/desktop/settings/controls/DesktopSettingsChoice.qml
         qml/desktop/settings/controls/DesktopSettingsDisclosure.qml
         qml/desktop/settings/controls/DesktopSettingsDropdown.qml

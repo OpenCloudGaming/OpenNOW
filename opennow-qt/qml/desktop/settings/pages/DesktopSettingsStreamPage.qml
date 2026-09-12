@@ -181,6 +181,12 @@ Column {
                 onSelected: (index,item) => page.settingsScreen.setChoice("codec",item.value)
             }
         }
+        DesktopSettingsHevcHelp {
+            width: parent.width
+            runtimeReady: ShellStore.nativeRuntimeReady
+            capabilities: ShellStore.nativeRuntimeCapabilities
+            onOpenStoreRequested: url => Qt.openUrlExternally(url)
+        }
         DesktopSettingsRow {
             id: bitrateRow
             width: parent.width; paperStyle: true; glyph: "wave"; title: qsTr("Bitrate"); description: qsTr("Maximum requested bitrate")
