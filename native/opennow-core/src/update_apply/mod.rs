@@ -110,7 +110,34 @@ struct Acknowledgement {
     application: ProcessIdentity,
 }
 
+pub fn external_update_message() -> Option<&'static str> {
+    if cfg!(target_os = "linux")
+        && is_flatpak_installation(
+            std::env::var_os("FLATPAK_ID").as_deref(),
+            Path::new("/.flatpak-info"),
+        )
+    {
+        Some(
+            "OpenNOW is managed by Flatpak. Update it through your software manager or run `flatpak update io.github.opencloudgaming.OpenNOW` on the host, then restart OpenNOW.",
+        )
+    } else {
+        None
+    }
+}
+
+fn is_flatpak_installation(flatpak_id: Option<&std::ffi::OsStr>, info_path: &Path) -> bool {
+    flatpak_id.is_some_and(|id| !id.is_empty()) || info_path.exists()
+}
+
+fn require_native_updates() -> Result<(), String> {
+    match external_update_message() {
+        Some(message) => Err(message.to_owned()),
+        None => Ok(()),
+    }
+}
+
 pub fn detect_install_kind(application: &Path, package: &Path) -> Result<InstallKind, String> {
+    require_native_updates()?;
     let extension = package
         .extension()
         .and_then(|value| value.to_str())
@@ -136,6 +163,7 @@ pub fn detect_install_kind(application: &Path, package: &Path) -> Result<Install
 }
 
 pub fn compatible_package_extension() -> Result<&'static str, String> {
+    require_native_updates()?;
     #[cfg(target_os = "linux")]
     {
         Ok(if std::env::var_os("APPIMAGE").is_some() {
@@ -163,6 +191,7 @@ pub fn compatible_package_extension() -> Result<&'static str, String> {
 }
 
 pub fn prepare_update(request: PrepareRequest) -> Result<PreparedUpdate, String> {
+    require_native_updates()?;
     let package = canonical_file(&request.package)?;
     let manifest = read_manifest(&package)?;
     if manifest.version.trim_start_matches('v') != request.expected_version.trim_start_matches('v')
@@ -277,6 +306,7 @@ pub fn prepare_update(request: PrepareRequest) -> Result<PreparedUpdate, String>
 }
 
 pub fn launch_prepared_update(prepared: &PreparedUpdate) -> Result<u32, String> {
+    require_native_updates()?;
     let directory = prepared
         .plan_path
         .parent()
@@ -440,6 +470,7 @@ pub fn acknowledge_startup_from_env(application_version: &str) -> Result<bool, S
 }
 
 pub fn run_helper(plan_path: &Path) -> Result<(), String> {
+    require_native_updates()?;
     let plan_path = canonical_file(plan_path)?;
     let directory = plan_path.parent().ok_or("Invalid update plan path")?;
     let lock = OpenOptions::new()
