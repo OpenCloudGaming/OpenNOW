@@ -793,7 +793,7 @@ impl Worker {
             let audio_result = self
                 .audio
                 .as_mut()
-                .map(|audio| audio.render(&self.shared.audio));
+                .map(|audio| audio.render(&self.shared.audio, &self.shared.audio_muted));
             match audio_result {
                 Some(Ok(true)) => {
                     did_work = true;

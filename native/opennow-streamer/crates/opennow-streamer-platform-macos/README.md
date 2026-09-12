@@ -110,6 +110,7 @@ use opennow_streamer_platform_macos::{
 
 let parameter_sets = H264ParameterSets::new(sps, pps)?;
 let mut backend = MacOsBackend::start(BackendConfig {
+    audio_muted: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
     surface: SurfaceTarget::OwnedOverlay(OwnedOverlayConfig::new(
         ScreenRect::new(120.0, 80.0, 1280.0, 720.0),
         true,

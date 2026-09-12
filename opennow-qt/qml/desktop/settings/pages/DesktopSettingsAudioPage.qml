@@ -29,6 +29,26 @@ DesktopSettingsPanel {
 
     width: page.availableWidth; paperStyle: true
     DesktopSettingsSection { text: qsTr("AUDIO") }
+    DesktopSettingsRow {
+        width: parent.width; paperStyle: true; glyph: "wave"
+        title: qsTr("Mute when out of focus")
+        description: qsTr("Silence stream audio while using another app. Audio returns when you switch back to OpenNOW.")
+        DesktopSettingsToggle {
+            objectName: "muteWhenOutOfFocusToggle"
+            checked: page.settingsScreen.valueSetting("muteWhenOutOfFocus", false) === true
+            onValueChangedByUser: value => page.settingsScreen.setSetting("muteWhenOutOfFocus", value)
+        }
+    }
+    DesktopSettingsRow {
+        width: parent.width; paperStyle: true; glyph: "info"
+        title: qsTr("Background stream reminder")
+        description: qsTr("Request taskbar or dock attention every 5 minutes while a stream runs in the background. Availability depends on your desktop. Does not prevent AFK timeouts.")
+        DesktopSettingsToggle {
+            objectName: "backgroundStreamReminderToggle"
+            checked: page.settingsScreen.valueSetting("backgroundStreamReminder", false) === true
+            onValueChangedByUser: value => page.settingsScreen.setSetting("backgroundStreamReminder", value)
+        }
+    }
     DesktopSettingsChoice {
         objectName: "audioOutputDeviceChoice"
         width: parent.width; glyph: "wave"; title: qsTr("Output device")

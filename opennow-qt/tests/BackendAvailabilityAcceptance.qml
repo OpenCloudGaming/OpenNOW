@@ -25,7 +25,7 @@ QtObject {
     function run(parent) {
         ShellStore.settings = {codec:"av1",nativeVideoBackend:"auto"}
         ShellStore.nativeRuntimeReady = true
-        ShellStore.acceptNativeCapabilities({protocolVersion:6,videoBackends:[{
+        ShellStore.acceptNativeCapabilities({protocolVersion:7,videoBackends:[{
             backend:"d3d11",available:true,codecs:[
                 {codec:"h264",available:true},{codec:"h265",available:true},{codec:"av1",available:false}]
         }]})
@@ -48,7 +48,7 @@ QtObject {
             check(!dx11.enabled && dx11.opacity < 0.5 && !dx11.chosen, "persisted backend must gray out during probe")
         }
         ShellStore.nativeRuntimeReady = true
-        ShellStore.acceptNativeCapabilities({protocolVersion:6,videoBackends:[{
+        ShellStore.acceptNativeCapabilities({protocolVersion:7,videoBackends:[{
             backend:"d3d11",available:true,codecs:[{codec:"h264",available:true},{codec:"av1",available:true}]
         }]})
         check(find(codecs, "settingsOption-av1").enabled && find(codecs, "settingsOption-av1").opacity === 1,
@@ -57,15 +57,15 @@ QtObject {
         check(!ShellStore.codecAvailable("av1"), "backend changes must immediately update codec support")
         ShellStore.settings = {codec:"av1", nativeVideoBackend:"auto"}
         check(!ShellStore.hdrDecoderAvailable(), "missing ten-bit capabilities must not enable HDR")
-        ShellStore.acceptNativeCapabilities({protocolVersion:6,videoBackends:[{
+        ShellStore.acceptNativeCapabilities({protocolVersion:7,videoBackends:[{
             backend:"vaapi",available:true,codecs:[{codec:"av1",available:true,colorQualities:["8bit_420","10bit_420"]}]
         }]})
         check(ShellStore.hdrDecoderAvailable(), "advertised Linux ten-bit decode must enable HDR")
-        ShellStore.acceptNativeCapabilities({protocolVersion:6,videoBackends:[{
+        ShellStore.acceptNativeCapabilities({protocolVersion:7,videoBackends:[{
             backend:"d3d11",available:true,codecs:[{codec:"h265",available:true,hdrSupported:false,colorQualities:["10bit_420"]}]
         }]})
         check(!ShellStore.hdrDecoderAvailable(), "explicit HDR rejection must override ten-bit decode")
-        ShellStore.acceptNativeCapabilities({protocolVersion:6,videoBackends:[{
+        ShellStore.acceptNativeCapabilities({protocolVersion:7,videoBackends:[{
             backend:"d3d11",available:true,codecs:[{codec:"h265",available:true,hdrSupported:true}]
         }]})
         check(ShellStore.hdrDecoderAvailable(), "advertised Windows HDR conversion must enable HDR")

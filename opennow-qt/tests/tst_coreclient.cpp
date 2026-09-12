@@ -221,7 +221,7 @@ private slots:
                 responses.clear();
                 client.setNativeHdrSupported(supported);
                 const QJsonObject capabilities{{QStringLiteral("nativeHdrSupported"), !supported},
-                                               {QStringLiteral("protocolVersion"), 6}};
+                                               {QStringLiteral("protocolVersion"), 7}};
                 const QJsonObject params{{QStringLiteral("runtimeCapabilities"), capabilities},
                                          {QStringLiteral("appId"), QStringLiteral("123")}};
                 QVERIFY(!client.request(method, params).isEmpty());
@@ -231,7 +231,7 @@ private slots:
                 QCOMPARE(actual.value(QStringLiteral("appId")), params.value(QStringLiteral("appId")));
                 const auto runtime = actual.value(QStringLiteral("runtimeCapabilities")).toObject();
                 QCOMPARE(runtime.value(QStringLiteral("nativeHdrSupported")).toBool(), supported);
-                QCOMPARE(runtime.value(QStringLiteral("protocolVersion")).toInt(), 6);
+                QCOMPARE(runtime.value(QStringLiteral("protocolVersion")).toInt(), 7);
                 QVERIFY(!actual.contains(QStringLiteral("settings")));
                 QCOMPARE(params.value(QStringLiteral("runtimeCapabilities")).toObject(), capabilities);
             }

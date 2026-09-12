@@ -281,7 +281,7 @@ recovery. A native stop stalled for 30 seconds reports an error without launchin
 another transport over the still-owned resources.
 
 For the embedded Qt client, `session.create` and `streamer.prepare` accept an optional
-`runtimeCapabilities` object copied from the in-process streamer's protocol-6 `hello` response.
+`runtimeCapabilities` object copied from the in-process streamer's protocol-7 `hello` response.
 The core filters its available `videoBackends` by the persisted `nativeVideoBackend` preference
 and resolves codec `auto` to AV1, HEVC, then H.264 (subject to requested color mode) before
 CloudMatch allocation. This resolution is session-local: the saved preference stays `auto`.
@@ -350,7 +350,7 @@ frame rate and bitrate follow the stream; the retained legacy `recordingResoluti
 apply to the next native session. Disabling it sends `replay-stop` immediately,
 clears buffered media and cancels an in-progress clip export.
 
-These commands extend the embedded streamer's protocol-6 JSON payload without
+These commands use the embedded streamer's protocol-7 JSON payload without
 changing the C ABI:
 
 - The `start` response includes `replayEnabled` for the actual session.

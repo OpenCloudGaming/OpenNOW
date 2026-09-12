@@ -556,7 +556,7 @@ mod tests {
     #[test]
     fn native_runtime_evidence_allowlists_bounds_and_redacts_probe_results() {
         let capabilities = json!({
-            "protocolVersion": 6, "supportsVideoDecode": false, "supportsVideoPresent": "yes",
+            "protocolVersion": 7, "supportsVideoDecode": false, "supportsVideoPresent": "yes",
             "sessionId": "private-session", "accessToken": "private-access",
             "videoBackends": [{
                 "backend": "v4l2", "platform": "linux", "available": false,
@@ -675,7 +675,7 @@ mod tests {
         let runtime = json!({
             "streamer": streamer.acceptance_snapshot(),
             "nativeRuntime": native_runtime_evidence(&json!({
-                "protocolVersion": 6, "supportsVideoDecode": false,
+                "protocolVersion": 7, "supportsVideoDecode": false,
                 "videoBackends": [{"backend":"v4l2", "available":false,
                     "reason":"HEVC probe failed", "codecs":[{"codec":"h265", "available":false,
                         "reason":"MEDIA_IOC_G_TOPOLOGY failed"}]}]

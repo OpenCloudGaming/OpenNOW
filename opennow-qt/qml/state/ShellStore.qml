@@ -6,6 +6,15 @@ import "account"
 
 QtObject {
     id: root
+    signal backgroundStreamReminderRequested()
+    property BackgroundStreamState backgroundStreamState: BackgroundStreamState {
+        settings: root.settings
+        applicationActive: Qt.application.state === Qt.ApplicationActive
+        streaming: root.activeSession !== null && root.streamerStatus === "streaming"
+        nativeRuntimeReady: root.nativeRuntimeReady
+        sendNativeCommand: root.sendNativeCommand
+        onReminderRequested: root.backgroundStreamReminderRequested()
+    }
     property CatalogState catalogOwnerState: CatalogState {
         id: catalogOwner
         coreClient: CoreClient
@@ -386,7 +395,7 @@ QtObject {
     property string streamControlMessage: ""
     property rect streamCaptureRect: Qt.rect(0, 0, 0, 0)
     property bool nativeRuntimeReady: false
-    readonly property int nativeProtocolVersion: 6
+    readonly property int nativeProtocolVersion: 7
     property var nativeRuntimeCapabilities: ({})
     property var audioOutputDevices: []
     property bool audioOutputDevicesBusy: false

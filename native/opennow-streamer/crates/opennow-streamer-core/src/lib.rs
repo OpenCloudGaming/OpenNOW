@@ -326,6 +326,7 @@ impl Engine {
         let result = match command.kind.as_str() {
             "hello" => self.hello(&command),
             "audioDevices" => self.audio_devices(&command),
+            "setAudioMuted" => self.set_audio_muted(command),
             "nvst-bind" => self.nvst_bind(command),
             "nvst-unbind" => self.nvst_unbind(command),
             "nvst-send" => self.nvst_send(command),
@@ -1038,6 +1039,25 @@ impl Engine {
         microphone
             .set_enabled(enabled)
             .map_err(|message| error(Some(&command.id), "microphone-failed", message))?;
+        Ok(vec![response(command.id, "ok")])
+    }
+
+    fn set_audio_muted(&self, command: Command) -> Result<Vec<Value>, Value> {
+        let muted = command.muted.ok_or_else(|| {
+            error(
+                Some(&command.id),
+                "missing-muted",
+                "Audio mute command requires muted state",
+            )
+        })?;
+        let runtime = self.media_runtime.as_ref().ok_or_else(|| {
+            error(
+                Some(&command.id),
+                "unsupported-command",
+                "Native streamer has no audio playback runtime",
+            )
+        })?;
+        runtime.set_audio_muted(muted);
         Ok(vec![response(command.id, "ok")])
     }
 
@@ -2748,6 +2768,20 @@ mod tests {
 
     fn lifecycle_state(engine: &Engine) -> State {
         lock_lifecycle(&engine.lifecycle).state
+    }
+
+    #[test]
+    fn audio_mute_without_playback_runtime_fails_without_changing_lifecycle() {
+        let (sender, _receiver) = std::sync::mpsc::channel();
+        let mut engine = Engine::new(sender);
+        let (responses, keep_running) = engine.handle(command(json!({
+            "type": "setAudioMuted", "id": "mute", "muted": true
+        })));
+        assert!(keep_running);
+        assert_eq!(responses[0]["type"], "error");
+        assert_eq!(responses[0]["id"], "mute");
+        assert_eq!(responses[0]["code"], "unsupported-command");
+        assert_eq!(lifecycle_state(&engine), State::Idle);
     }
 
     #[test]

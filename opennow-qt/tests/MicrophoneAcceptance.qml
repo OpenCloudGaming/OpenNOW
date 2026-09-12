@@ -34,11 +34,11 @@ QtObject {
         ShellStore.activeSession = {sessionId: "microphone-fixture", phase: "ready", status: 2}
         ShellStore.settings = {microphoneMode: "voice-activity"}
         ShellStore.nativeRuntimeReady = true
-        ShellStore.acceptNativeCapabilities({protocolVersion: 6, supportsMicrophone: false})
+        ShellStore.acceptNativeCapabilities({protocolVersion: 7, supportsMicrophone: false})
         const audio = audioComponent.createObject(parent)
         const open = find(audio, "settingsOption-voice-activity")
         check(open && !open.enabled, "unsupported builds must not offer capture")
-        ShellStore.acceptNativeCapabilities({protocolVersion: 6, supportsMicrophone: true})
+        ShellStore.acceptNativeCapabilities({protocolVersion: 7, supportsMicrophone: true})
         check(find(audio, "settingsOption-voice-activity").enabled, "supported builds must offer opt-in")
         check(runtime.commands.length === 1 && runtime.commands[0].type === "audioDevices",
             "opening Audio settings must only discover output devices")

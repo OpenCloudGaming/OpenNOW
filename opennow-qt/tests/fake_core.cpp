@@ -44,7 +44,7 @@ int main(int argc, char **argv)
         const auto method = field(line, "method");
         if (method == "core.hello") {
             std::cout << "{\"type\":\"response\",\"id\":\"" << id
-                      << "\",\"ok\":true,\"result\":{\"protocolVersion\":1,\"capabilities\":[\"settings\",\"nativeStreamer.v6\",\"nativeStreamer.ownedNvstNegotiation\"]}}\n" << std::flush;
+                      << "\",\"ok\":true,\"result\":{\"protocolVersion\":1,\"capabilities\":[\"settings\",\"nativeStreamer.v7\",\"nativeStreamer.ownedNvstNegotiation\"]}}\n" << std::flush;
         } else if (method == "updater.startup.ack") {
             ++startupAcknowledgements;
             std::cout << "{\"type\":\"response\",\"id\":\"" << id

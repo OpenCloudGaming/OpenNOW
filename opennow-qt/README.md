@@ -551,6 +551,21 @@ and `--smoke-test --desktop --route stream --overlay desktop-stream-menu
 `--smoke-microphone` acceptance workload checks state, commands and reconnect mute
 preservation against a mock runtime.
 
+Settings → Audio contains two independent, default-off background options.
+**Mute when out of focus** silences local playback while another app is active and
+restores it on return. It does not pause video, microphone capture, or recording.
+**Background stream reminder** requests taskbar or dock attention every five minutes
+while a session is streaming in the background. Returning to OpenNOW, ending the
+stream, or disabling the option stops the timer. Desktop support determines how
+the attention request appears; this is not an AFK-timeout warning or anti-AFK control.
+
+Run `ctest --test-dir build/opennow-qt -R qml-background-stream --output-on-failure`
+to check toggles, focus transitions, reminder cancellation, and runtime restart state.
+For live acceptance, enable both options and switch apps during a stream in windowed
+and fullscreen modes, with the stream menu open and closed. Check silence on leaving,
+audio restoration on return, uninterrupted video and recording, and attention after
+five minutes away. Repeat with each option disabled independently.
+
 Settings → Controls → **Clipboard paste** enables local-to-stream plain-text paste
 with Ctrl+V (Command+V on macOS). The console Controls page exposes the same persisted
 `clipboardPaste` preference. It is disabled by default and only reads the clipboard
@@ -649,7 +664,7 @@ The versioned Rust core owns settings, NVIDIA device login and token refresh,
 OS-protected accounts, PINs, catalogs, subscriptions, regions and latency tests,
 account connections, persistent storage, CloudMatch lifecycle/recovery/ads,
 NVST session orchestration, diagnostics, media listing, Discord, telemetry,
-feedback and update discovery. The protocol-v6 native streamer is linked into
+feedback and update discovery. The protocol-v7 native streamer is linked into
 the Qt executable as an in-process Rust library. It owns NVST RTSPS negotiation,
 Mjolnir video, the ICE/DTLS/SCTP control bundle, decode, audio and native input.
 Qt/QML owns stream status, stats, menus, recovery, failure and fullscreen

@@ -2,7 +2,7 @@ use std::ffi::c_void;
 use std::mem;
 use std::ptr::{self, NonNull};
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
 
 use objc2_audio_toolbox::{
@@ -41,6 +41,7 @@ impl AudioPipeline {
     pub(super) fn start(
         format: AudioFormat,
         audio_output_device: Option<&str>,
+        muted: Arc<AtomicBool>,
         packet_capacity: usize,
         pcm_milliseconds: u32,
         counters: Arc<Counters>,
@@ -107,15 +108,20 @@ impl AudioPipeline {
             })
             .map_err(|_| BackendError::Thread("Opus decoder"))?;
 
-        let output =
-            match AudioOutput::start(format, audio_output_device, Arc::clone(&ring), counters) {
-                Ok(output) => output,
-                Err(error) => {
-                    packets.close();
-                    let _ = worker.join();
-                    return Err(error);
-                }
-            };
+        let output = match AudioOutput::start(
+            format,
+            audio_output_device,
+            muted,
+            Arc::clone(&ring),
+            counters,
+        ) {
+            Ok(output) => output,
+            Err(error) => {
+                packets.close();
+                let _ = worker.join();
+                return Err(error);
+            }
+        };
         Ok(Self {
             packets,
             ring,
@@ -160,6 +166,7 @@ impl Drop for AudioPipeline {
 }
 
 struct AudioCallbackContext {
+    muted: Arc<AtomicBool>,
     ring: Arc<PcmRing>,
     counters: Arc<Counters>,
     channels: usize,
@@ -180,6 +187,7 @@ impl AudioOutput {
     fn start(
         format: AudioFormat,
         audio_output_device: Option<&str>,
+        muted: Arc<AtomicBool>,
         ring: Arc<PcmRing>,
         counters: Arc<Counters>,
     ) -> Result<Self, BackendError> {
@@ -220,6 +228,7 @@ impl AudioOutput {
             initialized: false,
             started: false,
             callback_context: Box::new(AudioCallbackContext {
+                muted,
                 ring,
                 counters,
                 channels: usize::from(format.channels),
@@ -361,6 +370,9 @@ unsafe extern "C-unwind" fn render_callback(
     };
     let output = unsafe { std::slice::from_raw_parts_mut(data.as_ptr(), sample_count) };
     let read = context.ring.pop_into(output);
+    if context.muted.load(Ordering::Acquire) {
+        output.fill(0.0);
+    }
     output[read..].fill(0.0);
     if read < requested {
         context.counters.pcm_underrun_frames.fetch_add(

@@ -157,6 +157,9 @@ ApplicationWindow {
 
     Connections {
         target: ShellStore
+        function onBackgroundStreamReminderRequested() {
+            AppController.requestWindowAttention(window)
+        }
         function onFullscreenToggleRequested() {
             if (window.activeRoute === "stream")
                 window.toggleFullscreen()

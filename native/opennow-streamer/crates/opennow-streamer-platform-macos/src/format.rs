@@ -640,8 +640,9 @@ pub enum SurfaceTarget {
     NsWindow(WindowSurfaceConfig),
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct BackendConfig {
+    pub audio_muted: std::sync::Arc<std::sync::atomic::AtomicBool>,
     pub surface: SurfaceTarget,
     pub video: VideoFormat,
     pub audio: AudioFormat,
@@ -649,8 +650,9 @@ pub struct BackendConfig {
     pub queues: QueueLimits,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct EmbeddedBackendConfig {
+    pub audio_muted: std::sync::Arc<std::sync::atomic::AtomicBool>,
     pub video: VideoFormat,
     pub audio: AudioFormat,
     pub audio_output_device: Option<String>,
