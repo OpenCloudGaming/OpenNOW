@@ -197,7 +197,7 @@ if(BUILD_TESTING)
         OPENNOW_QML_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/qml")
     qt_add_resources(opennow-theme-tests "theme-test-assets"
         PREFIX "/qt/qml/OpenNOW" FILES ${OPENNOW_KEYBOARD_ICON_FILES}
-        res/brand/opennow-mark.png)
+        res/brand/opennow-mark.png res/icons/desktop-play.svg)
     add_test(NAME opennow-theme-tests COMMAND opennow-theme-tests
         -input "${CMAKE_CURRENT_SOURCE_DIR}/tests/theme")
     set_tests_properties(opennow-theme-tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)

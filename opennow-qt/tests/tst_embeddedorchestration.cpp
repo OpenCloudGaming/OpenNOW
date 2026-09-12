@@ -17,6 +17,43 @@ class EmbeddedOrchestrationTest final : public QObject
     Q_OBJECT
 
 private slots:
+    void desktopStoreSelectionUsesTheSelectedLaunchVariant()
+    {
+        const auto desktop = source(QStringLiteral("qml/desktop/shell/DesktopApp.qml"));
+        QVERIFY(desktop.contains(QStringLiteral("onVariantSelected: index => ShellStore.selectGameVariant(index)")));
+        const auto shell = source(QStringLiteral("qml/state/ShellStore.qml"));
+        const auto catalog = source(QStringLiteral("qml/state/catalog/CatalogState.qml"));
+        QJSEngine engine;
+        engine.installExtensions(QJSEngine::TranslationExtension);
+        for (const auto &name : {"selectGameVariant", "selectedLaunchAppId", "selectedGameMembershipError", "launchSelectedGame"}) {
+            const auto match = QRegularExpression(QStringLiteral(
+                "    function %1\\([^\\n]*\\) \\{.*?\\n    \\}").arg(QString::fromLatin1(name)),
+                QRegularExpression::DotMatchesEverythingOption).match(
+                    QString::fromLatin1(name) == "selectGameVariant" ? catalog : shell);
+            QVERIFY(match.hasMatch());
+            QVERIFY(!engine.evaluate(match.captured()).isError());
+        }
+        QVERIFY(!engine.evaluate(QStringLiteral(R"JS(
+            var signedIn = true, ready = true, streamBusy = false, onboardingReplaying = false;
+            var selectedGame = {launchAppId: '1001', title: 'Multi Store Game', selectedVariantIndex: 0,
+                variants: [{id: '1001', store: 'Steam', inLibrary: false},
+                           {id: '1003', store: 'Xbox', inLibrary: true}]};
+            var settings = {}, regions = [], requests = [], pendingLaunchParams = null;
+            var CoreClient = {request: function(method, params) {
+                requests.push({method: method, params: params}); return 'request';
+            }};
+            var AppController = {navigate: function(route) {}};
+            function accessibilityAnnounced(message) {}
+            selectGameVariant(1);
+            launchSelectedGame(false);
+        )JS")).isError());
+        QCOMPARE(engine.evaluate(QStringLiteral("requests[0].params.appId")).toString(), QStringLiteral("1003"));
+        QVERIFY(engine.evaluate(QStringLiteral("requests[0].params.accountLinked")).toBool());
+        QVERIFY(!engine.evaluate(QStringLiteral("selectGameVariant(0); launchSelectedGame(false);")).isError());
+        QCOMPARE(engine.evaluate(QStringLiteral("requests[1].params.appId")).toString(), QStringLiteral("1001"));
+        QVERIFY(!engine.evaluate(QStringLiteral("requests[1].params.accountLinked")).toBool());
+    }
+
     void existingSessionLaunchFlow_data()
     {
         QTest::addColumn<QString>("sessions");

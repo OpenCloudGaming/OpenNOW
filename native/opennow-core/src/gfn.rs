@@ -2091,6 +2091,11 @@ fn app_to_game(app: &Value) -> Option<Value> {
     let selected_index = variants
         .iter()
         .position(|variant| variant["librarySelected"].as_bool() == Some(true))
+        .or_else(|| {
+            variants
+                .iter()
+                .position(|variant| variant["inLibrary"].as_bool() == Some(true))
+        })
         .unwrap_or(0);
     let launch_id = variants
         .get(selected_index)
@@ -3208,6 +3213,49 @@ mod tests {
         assert_eq!(game["variants"][0]["inLibrary"], true);
         assert_eq!(game["variants"][1]["inLibrary"], false);
         assert_eq!(game["variants"][2]["inLibrary"], true);
+    }
+
+    #[test]
+    fn account_library_mapping_prefers_owned_variant_without_saved_selection() {
+        for status in ["MANUAL", "PLATFORM_SYNC", "IN_LIBRARY"] {
+            let game = app_to_game(&json!({
+                "id":"cms-multi-store", "title":"Multi Store Game",
+                "variants":[
+                    {"id":"1001","appStore":"Steam","gfn":{"library":{"status":"NOT_OWNED"}}},
+                    {"id":"1003","appStore":"Xbox","gfn":{"library":{"status":status}}}
+                ]
+            })).unwrap();
+            assert_eq!(game["selectedVariantIndex"], 1);
+            assert_eq!(game["launchAppId"], "1003");
+        }
+    }
+
+    #[test]
+    fn account_library_mapping_preserves_saved_selection_over_ownership() {
+        for selected in [false, true] {
+            let game = app_to_game(&json!({
+                "id":"cms-multi-store", "title":"Multi Store Game",
+                "variants":[
+                    {"id":"1001","appStore":"Steam","gfn":{"library":{"status":"NOT_OWNED","selected":selected}}},
+                    {"id":"1003","appStore":"Xbox","gfn":{"library":{"status":"MANUAL"}}}
+                ]
+            })).unwrap();
+            assert_eq!(game["selectedVariantIndex"], if selected { 0 } else { 1 });
+            assert_eq!(game["launchAppId"], if selected { "1001" } else { "1003" });
+        }
+    }
+
+    #[test]
+    fn account_library_mapping_keeps_first_variant_when_none_owned() {
+        let game = app_to_game(&json!({
+            "id":"cms-multi-store", "title":"Multi Store Game",
+            "variants":[
+                {"id":"1001","appStore":"Steam"},
+                {"id":"1003","appStore":"Xbox"}
+            ]
+        })).unwrap();
+        assert_eq!(game["selectedVariantIndex"], 0);
+        assert_eq!(game["launchAppId"], "1001");
     }
 
     #[test]
