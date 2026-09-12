@@ -20,6 +20,13 @@ qt_add_shaders(opennow-qt "opennow-stream-shaders"
     BASE "shaders"
     FILES ${OPENNOW_STREAM_SHADERS}
 )
+function(opennow_add_fsr_shaders target)
+    qt_add_shaders(${target} "${target}-fsr-shaders"
+        PREFIX "/opennow/shaders" BASE "shaders"
+        GLSL "440,410,310es" HLSL 50 MSL 12
+        FILES shaders/fsr_easu.frag shaders/fsr_rcas.frag)
+endfunction()
+opennow_add_fsr_shaders(opennow-qt)
 set(OPENNOW_CHROME_SHADERS shaders/hdrchrome.vert shaders/hdrchrome.frag)
 qt_add_shaders(opennow-qt "opennow-chrome-shaders"
     BATCHABLE PREFIX "/opennow/shaders" BASE "shaders" FILES ${OPENNOW_CHROME_SHADERS})

@@ -177,8 +177,12 @@ class CIWorkflowTest(unittest.TestCase):
         self.assertIn("ensure-windows-media-foundation.ps1", checks)
         cmake = (ROOT / "opennow-qt/cmake/Tests.cmake").read_text()
         targets = re.search(r"set\(OPENNOW_CI_UNIT_TEST_TARGETS\s+(.*?)\)", cmake, re.DOTALL)[1].split()
-        self.assertEqual(len(targets), 26)
-        self.assertEqual(len(set(targets)), 26)
+        self.assertEqual(len(targets), 27)
+        self.assertEqual(len(set(targets)), 27)
+        self.assertIn("opennow-fsrupscaler-tests", targets)
+        self.assertRegex(cmake, r'if\(WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Linux"\)\s+'
+                         r'set_tests_properties\(opennow-frameinterpolator-tests opennow-fsrupscaler-tests\s+'
+                         r'PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen"\)')
         self.assertIn("opennow-tenbitwarning-tests", targets)
         self.assertIn("opennow-consoleactions-tests", targets)
         self.assertIn("opennow-controllernavigation-tests", targets)

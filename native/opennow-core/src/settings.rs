@@ -310,7 +310,12 @@ impl SettingsStore {
             "8bit_420",
         );
         normalize_choice(&mut self.values, "frameGeneration", &["off", "2x"], "off");
-        normalize_choice(&mut self.values, "upscaling", &["off", "metalfx"], "off");
+        normalize_choice(
+            &mut self.values,
+            "upscaling",
+            &["off", "metalfx", "fsr1"],
+            "off",
+        );
         clamp_integer(&mut self.values, "upscalingSharpness", 0, 15, 10);
         clamp_integer(&mut self.values, "upscalingDenoise", 0, 20, 0);
         for key in ["decoderPreference", "encoderPreference"] {
@@ -2154,6 +2159,32 @@ mod tests {
             serde_json::to_vec(&json!({"upscaling": "invalid"})).unwrap(),
         )
         .unwrap();
+        let store = SettingsStore::load(Some(directory.clone())).unwrap();
+        assert_eq!(store.all()["upscaling"], json!("off"));
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn fsr_upscaling_persists_without_changing_stream_or_metalfx_preferences() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = env::temp_dir().join(format!("opennow-fsr-upscaling-{unique}"));
+        let mut store = SettingsStore::load(Some(directory.clone())).unwrap();
+        let fps = store.all()["fps"].clone();
+        let resolution = store.all()["resolution"].clone();
+        store.set("upscalingDenoise", json!(7)).unwrap();
+        assert_eq!(
+            store.set("upscaling", json!("fsr1")).unwrap(),
+            json!("fsr1")
+        );
+        let mut store = SettingsStore::load(Some(directory.clone())).unwrap();
+        assert_eq!(store.all()["upscaling"], json!("fsr1"));
+        assert_eq!(store.all()["fps"], fps);
+        assert_eq!(store.all()["resolution"], resolution);
+        assert_eq!(store.all()["upscalingDenoise"], json!(7));
+        store.set("upscaling", json!("off")).unwrap();
         let store = SettingsStore::load(Some(directory.clone())).unwrap();
         assert_eq!(store.all()["upscaling"], json!("off"));
         let _ = fs::remove_dir_all(directory);

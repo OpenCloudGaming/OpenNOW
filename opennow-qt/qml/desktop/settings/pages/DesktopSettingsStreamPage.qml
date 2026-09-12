@@ -87,13 +87,15 @@ Column {
         }
         DesktopSettingsRow {
             objectName: "upscalingSettingsRow"
-            visible: Qt.platform.os === "osx"
             width: parent.width; paperStyle: true; glyph: "monitor"; title: qsTr("Upscaling")
-            description: qsTr("Spatial upscaling for enlarged video. Uses extra GPU time; falls back to normal scaling when MetalFX is unavailable.")
+            description: Qt.platform.os === "osx"
+                ? qsTr("Spatial upscaling for enlarged video. Uses extra GPU time; falls back to normal scaling when MetalFX is unavailable.")
+                : qsTr("FSR 1 upscales enlarged SDR video on the GPU. Uses extra GPU time; HDR and unavailable effects use normal scaling.")
             DesktopSettingsSegmented {
                 objectName: "upscalingSelector"
-                readonly property string current: String(page.settingsScreen.valueSetting("upscaling", "off")) === "metalfx" ? "metalfx" : "off"
-                options: [{label: qsTr("Off"), value: "off"}, {label: "MetalFX", value: "metalfx"}]
+                readonly property string mode: Qt.platform.os === "osx" ? "metalfx" : "fsr1"
+                readonly property string current: String(page.settingsScreen.valueSetting("upscaling", "off")) === mode ? mode : "off"
+                options: [{label: qsTr("Off"), value: "off"}, {label: Qt.platform.os === "osx" ? "MetalFX" : "FSR 1", value: mode}]
                 optionWidth: 90; selectedIndex: options.findIndex(item => item.value === current)
                 onSelected: (index,item) => page.settingsScreen.setSetting("upscaling", item.value)
             }
@@ -101,11 +103,12 @@ Column {
         DesktopSettingsRow {
             id: clarityRow
             objectName: "upscalingSharpnessRow"
-            visible: Qt.platform.os === "osx"
-            enabled: page.settingsScreen.valueSetting("upscaling", "off") === "metalfx"
+            enabled: page.settingsScreen.valueSetting("upscaling", "off") === (Qt.platform.os === "osx" ? "metalfx" : "fsr1")
             opacity: enabled ? 1 : 0.45
             width: parent.width; paperStyle: true; glyph: "sun"; title: qsTr("Clarity")
-            description: qsTr("Sharpen details before MetalFX upscaling. Set to 0 to disable.")
+            description: Qt.platform.os === "osx"
+                ? qsTr("Sharpen details before MetalFX upscaling. Set to 0 to disable.")
+                : qsTr("Sharpen details after FSR 1 upscaling. Set to 0 to disable.")
             DesktopSettingsSlider {
                 objectName: "upscalingSharpnessSlider"
                 accessibleName: qsTr("Clarity")

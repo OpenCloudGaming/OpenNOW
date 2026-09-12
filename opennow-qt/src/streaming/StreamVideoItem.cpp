@@ -273,6 +273,19 @@ void StreamVideoItem::setMetalFxUpscaling(bool enabled)
     update();
 }
 
+bool StreamVideoItem::fsrUpscaling() const
+{
+    return m_fsrUpscaling;
+}
+
+void StreamVideoItem::setFsrUpscaling(bool enabled)
+{
+    if (m_fsrUpscaling == enabled) return;
+    m_fsrUpscaling = enabled;
+    emit fsrUpscalingChanged();
+    update();
+}
+
 void StreamVideoItem::connectFrameSwaps()
 {
     disconnect(m_frameSwapConnection);

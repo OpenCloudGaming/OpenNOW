@@ -5,6 +5,32 @@ smoke test is not release acceptance. The legacy Electron source has been remove
 acceptance still requires every row to be executed on the named hardware, the artifacts to be
 reviewed, and the staged rollout to complete.
 
+## FSR 1 upscaling on Windows and Linux
+
+Stream settings and onboarding offer Off or FSR 1 on Windows and Linux. macOS retains
+MetalFX. FSR 1 runs AMD's EASU spatial upscaler and optional RCAS sharpening on the existing
+GPU video textures. Clarity controls sharpening; zero disables RCAS, not EASU. This does not
+change the requested stream resolution or frame rate. Noise Reduction remains MetalFX-only.
+
+FSR 1 applies only when enlarging SDR video on D3D11 or Vulkan. HDR, native-size video,
+downscaling, and unsupported resources retain normal scaling. It adds GPU work and can
+emphasize compression artifacts, so compare it with Off on the same stream before enabling
+it permanently.
+
+After building, run the settings and presenter checks:
+
+```sh
+ctest --test-dir build/opennow-qt --output-on-failure -R 'fsrupscaler|qml-upscaling|qml-onboarding|opennow-streamvideo-tests'
+cargo test --manifest-path native/opennow-core/Cargo.toml upscaling
+```
+
+On Windows D3D11 and Linux Vulkan hardware, enlarge an SDR stream and switch between Off
+and FSR 1 at Clarity 0 and 15. Check windowed and fullscreen modes, display-scale changes,
+F3 statistics, and Ctrl+G overlays. Repeat with frame generation enabled and after a session
+restart. Confirm that video and audio continue, pointer mapping follows the viewport, and
+HDR and native-size video remain unchanged. Synthetic tests do not establish live GPU cost
+or image quality on these devices.
+
 ## Stream Stats V2 visual check
 
 After building the Qt application, run:

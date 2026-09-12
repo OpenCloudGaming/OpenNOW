@@ -66,6 +66,11 @@ public:
         upscaleHeight.store(target.height());
     }
 
+    void setFsrUpscaling(bool enabled) override
+    {
+        fsrUpscaling.store(enabled);
+    }
+
     void finishFrame() override
     {
         ++finishCount;
@@ -83,6 +88,7 @@ public:
     }
 
     std::atomic_bool validContext = false;
+    std::atomic_bool fsrUpscaling = false;
     std::atomic_int initializeCount = 0;
     std::atomic_int frameCount = 0;
     std::atomic_int prepareCount = 0;
@@ -1240,6 +1246,28 @@ private slots:
         QVERIFY(!item.frameGeneration());
     }
 
+    void fsrUpscalingPreservesPresenterAndSourceSettings()
+    {
+        StreamVideoItem item;
+        const auto callback = std::make_shared<TestRenderCallback>();
+        item.setRenderCallback(callback);
+        item.setVideoSize(QSize(1920, 1080));
+        QSignalSpy changes(&item, &StreamVideoItem::fsrUpscalingChanged);
+        QVERIFY(!item.fsrUpscaling());
+        item.setFsrUpscaling(true);
+        QVERIFY(item.fsrUpscaling());
+        QCOMPARE(changes.size(), 1);
+        item.setFsrUpscaling(true);
+        QCOMPARE(changes.size(), 1);
+        item.setFsrUpscaling(false);
+        QVERIFY(!item.fsrUpscaling());
+        QCOMPARE(changes.size(), 2);
+        QCOMPARE(item.renderCallback(), callback);
+        QCOMPARE(item.videoSize(), QSize(1920, 1080));
+        QVERIFY(!item.frameGeneration());
+        QVERIFY(!item.metalFxUpscaling());
+    }
+
     void upscalingEnhancementIsBoundedAndPreservesPresenter()
     {
         StreamVideoItem item;
@@ -1333,8 +1361,16 @@ private slots:
         StreamVideoItem::setNativeStreamRuntime(nullptr);
     }
 
+    void upscalingTargetTracksViewportAcrossOverlaysAndWindowChanges_data()
+    {
+        QTest::addColumn<bool>("fsr");
+        QTest::newRow("MetalFX") << false;
+        QTest::newRow("FSR1") << true;
+    }
+
     void upscalingTargetTracksViewportAcrossOverlaysAndWindowChanges()
     {
+        QFETCH(bool, fsr);
         if (QGuiApplication::platformName() == QStringLiteral("offscreen"))
             QSKIP("The offscreen platform plugin does not create a QRhi.");
         const auto callback = std::make_shared<TestRenderCallback>();
@@ -1342,7 +1378,8 @@ private slots:
         window.resize(640, 480);
         auto *item = new StreamVideoItem(window.contentItem());
         item->setVideoSize(QSize(320, 180));
-        item->m_metalFxUpscaling = true;
+        item->m_metalFxUpscaling = !fsr;
+        item->setFsrUpscaling(fsr);
         item->setRenderCallback(callback);
         QQuickItem overlay(window.contentItem());
         overlay.setZ(10);
@@ -1364,6 +1401,7 @@ private slots:
                 const auto target = (QSizeF(viewport.size()) * window.effectiveDevicePixelRatio()).toSize();
                 QCOMPARE(callback->upscaleWidth.load(), target.width());
                 QCOMPARE(callback->upscaleHeight.load(), target.height());
+                QCOMPARE(callback->fsrUpscaling.load(), fsr);
                 item->setUpscalingSharpness(visible ? 15 : 0);
                 item->setUpscalingDenoise(visible ? 20 : 0);
                 item->requestFrame();
@@ -1374,9 +1412,11 @@ private slots:
             }
         }
         item->setMetalFxUpscaling(false);
+        item->setFsrUpscaling(false);
         item->requestFrame();
         QTRY_COMPARE(callback->upscaleWidth.load(), -1);
         QTRY_COMPARE(callback->upscaleHeight.load(), -1);
+        QTRY_VERIFY(!callback->fsrUpscaling.load());
     }
 
     void drivesCallbackThroughRhiSceneGraph()
