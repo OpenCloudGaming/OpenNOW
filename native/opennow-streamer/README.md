@@ -48,6 +48,24 @@ The Qt path does not create an SDL video window or a child streamer process. `Na
 
 The FFI exposes no CPU image, encoded-frame callback, swap chain, window or Qt object. See `crates/opennow-streamer-ffi/README.md` for ownership and threading details.
 
+### Local playback mute
+
+Protocol 7 accepts `{"type":"setAudioMuted","id":"audio-mute-1","muted":true}`
+and returns the correlated `ok` response. `muted` must be a boolean; omitting it
+returns `missing-muted`. Set it to `false` to restore speaker playback.
+
+The mute state belongs to the media runtime, defaults to false, and can be set
+before starting a session. It survives stops, reconnects, backend fallback, and
+audio device recovery within that runtime. Creating a new runtime resets it, so
+the shell must resend its desired state when its native runtime becomes ready.
+The FFI ABI is unchanged.
+
+Mute replaces samples with silence only at SDL, ALSA/PipeWire, CoreAudio, and
+WASAPI playback boundaries. Playback queues keep draining; transport, Opus decode,
+recording, replay capture, microphone capture, and video remain active. Samples
+already handed to the operating system or device may finish playing during its
+existing bounded output latency; mute does not stop or flush those devices.
+
 ### Audio output selection
 
 Protocol 5 accepts the additive request `{"type":"audioDevices","id":"audio-1"}`
@@ -148,7 +166,7 @@ polling timer when no capture is active. Output enumeration and input-pause
 commands never open, mute, or restart capture. The actual audio-device-aware
 stream-start entry point resets the microphone clock; mute/unmute does not.
 
-The local JSON protocol is version 6; the C ABI is unchanged. `hello` exposes
+The local JSON protocol is version 7; the C ABI is unchanged. `hello` exposes
 `supportsMicrophone` for runtime capture support, while the `start` response
 reports the negotiated session capability. `microphone-set` requires a boolean
 `enabled`; `microphone-toggle` toggles the current capture state. Both require an

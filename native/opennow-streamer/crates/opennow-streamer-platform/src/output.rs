@@ -2,9 +2,7 @@
 use std::collections::VecDeque;
 use std::collections::{HashMap, HashSet};
 use std::io::Cursor as IoCursor;
-#[cfg(target_os = "windows")]
 use std::sync::atomic::AtomicBool;
-#[cfg(target_os = "windows")]
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -145,6 +143,7 @@ pub(crate) struct OutputBuffers {
     #[cfg(target_os = "linux")]
     linux_video: Mutex<VecDeque<QueuedLinuxVideoFrame>>,
     audio: Mutex<AudioPlayoutBuffer>,
+    pub(crate) audio_muted: Arc<AtomicBool>,
     captured_input: Arc<CapturedInputQueue>,
     microphone: Mutex<Option<std::sync::Weak<crate::microphone::MicrophoneShared>>>,
     microphone_clock: Mutex<Instant>,
@@ -248,6 +247,7 @@ impl OutputBuffers {
             audio: Mutex::new(AudioPlayoutBuffer::new(
                 AUDIO_SAMPLE_RATE as usize * AUDIO_CHANNELS as usize * MAX_AUDIO_LATENCY_MS / 1_000,
             )),
+            audio_muted: Arc::new(AtomicBool::new(false)),
             captured_input,
             microphone: Mutex::new(None),
             microphone_clock: Mutex::new(Instant::now()),
@@ -390,6 +390,9 @@ impl OutputBuffers {
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .fill(destination);
+        if self.audio_muted.load(Ordering::Acquire) {
+            destination.fill(0.0);
+        }
     }
 }
 
@@ -2341,9 +2344,13 @@ impl ActiveOutput {
         } = config;
         #[cfg(target_os = "macos")]
         if use_hardware {
-            return crate::macos_backend::MacOutput::initialize(stream, audio_device)
-                .map(Box::new)
-                .map(Self::Mac);
+            return crate::macos_backend::MacOutput::initialize(
+                stream,
+                audio_device,
+                Arc::clone(&output.audio_muted),
+            )
+            .map(Box::new)
+            .map(Self::Mac);
         }
         #[cfg(target_os = "windows")]
         if use_hardware || stream.codec != crate::media::MediaVideoCodec::H264 {
@@ -2853,6 +2860,7 @@ impl WindowsOutput {
                     // maximum jitter-buffer target without becoming unbounded.
                     audio_queue_capacity: 10,
                 },
+                Arc::clone(&output.audio_muted),
             )
             .map_err(|error| error.to_string())?,
         );
@@ -3194,12 +3202,36 @@ mod tests {
     }
 
     #[test]
+    fn playback_mute_drains_queued_audio_and_resumes_without_replay() {
+        let output = Arc::new(OutputBuffers::new());
+        let mut callback = StreamAudioCallback {
+            output: Arc::clone(&output),
+        };
+        let mut samples = [1.0; 4];
+        output.push_audio(&[0.25, -0.25, 0.5, -0.5]);
+        output.audio_muted.store(true, Ordering::Release);
+        callback.callback(&mut samples);
+        assert_eq!(samples, [0.0; 4]);
+        assert!(!output.audio_samples_pending());
+        output.clear();
+        assert!(output.audio_muted.load(Ordering::Acquire));
+        output.push_audio(&[0.75, -0.75]);
+        callback.callback(&mut samples);
+        assert_eq!(samples, [0.0; 4]);
+        output.audio_muted.store(false, Ordering::Release);
+        output.push_audio(&[0.125, -0.125]);
+        callback.callback(&mut samples);
+        assert_eq!(samples, [0.125, -0.125, 0.0, 0.0]);
+    }
+
+    #[test]
     fn audio_buffer_drops_oldest_samples() {
         let output = OutputBuffers {
             video: Mutex::new(None),
             #[cfg(target_os = "linux")]
             linux_video: Mutex::new(VecDeque::with_capacity(LINUX_VIDEO_QUEUE_CAPACITY)),
             audio: Mutex::new(AudioPlayoutBuffer::new(4)),
+            audio_muted: Arc::new(AtomicBool::new(false)),
             captured_input: Arc::new(CapturedInputQueue::default()),
             microphone: Mutex::new(None),
             microphone_clock: Mutex::new(Instant::now()),

@@ -242,6 +242,7 @@ qt_add_qml_module(opennow-qt
         qml/components/StreamCaptureStatus.qml
         qml/components/StreamInputNotice.qml
         qml/components/TogglePill.qml
+        qml/components/TenBitWarningDialog.qml
         qml/components/VirtualKeyboard.qml
         qml/desktop/auth/DesktopSignInScreen.qml
         qml/desktop/components/DesktopBackdrop.qml
@@ -346,6 +347,7 @@ qt_add_qml_module(opennow-qt
         qml/state/catalog/ArtworkState.qml
         qml/state/catalog/CatalogState.qml
         qml/state/settings/SettingsState.qml
+        qml/state/BackgroundStreamState.qml
         qml/state/settings/OnboardingState.qml
         qml/theme/Theme.qml
     RESOURCES

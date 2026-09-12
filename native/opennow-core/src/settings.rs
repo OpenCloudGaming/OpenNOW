@@ -868,6 +868,7 @@ fn defaults() -> Map<String, Value> {
         "nativeExternalRenderer":false, "transportMode":"nvst", "showNativeStreamerStats":false,
         "codec":"auto", "fallbackCodec":"auto", "decoderPreference":"auto",
         "encoderPreference":"auto", "colorQuality":"8bit_420", "enableHdr":false, "region":"",
+        "suppressTenBitWarning":false,
         "sessionProxyEnabled":false, "sessionProxyUrl":"", "clipboardPaste":false,
         "enableGyroscopeControls":false, "steamControllerCompatibilityMode":false,
         "nativeCursorOverlay":true, "mouseSensitivity":1, "mouseAcceleration":1,
@@ -877,6 +878,7 @@ fn defaults() -> Map<String, Value> {
         "shortcutScreenshot":"Ctrl+F11", "shortcutToggleRecording":"F12",
         "shortcutSaveClip":"Ctrl+F12",
         "microphoneMode":"disabled", "microphoneDeviceId":"", "hideStreamButtons":false,
+        "muteWhenOutOfFocus":false, "backgroundStreamReminder":false,
         "showAntiAfkIndicator":true, "antiAfkReminderEveryMinutes":15,
         "antiAfkReminderDurationSeconds":5, "showStatsOnLaunch":false,
         "statsOverlayPosition":"top-right", "hideServerSelector":false,
@@ -1087,6 +1089,61 @@ mod tests {
                 json!(false)
             );
         }
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn background_stream_preferences_are_opt_in_and_persisted() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = env::temp_dir().join(format!("opennow-background-stream-{unique}"));
+        let mut store = SettingsStore::load(Some(directory.clone())).unwrap();
+        for key in ["muteWhenOutOfFocus", "backgroundStreamReminder"] {
+            assert_eq!(store.all()[key], json!(false));
+            store.set(key, json!(true)).unwrap();
+        }
+        let mut store = SettingsStore::load(Some(directory.clone())).unwrap();
+        for key in ["muteWhenOutOfFocus", "backgroundStreamReminder"] {
+            assert_eq!(store.all()[key], json!(true));
+            for invalid in [json!("true"), json!(1), json!(null), json!([])] {
+                assert_eq!(store.set(key, invalid).unwrap(), json!(false));
+            }
+        }
+        let store = SettingsStore::load(Some(directory.clone())).unwrap();
+        assert_eq!(store.all()["muteWhenOutOfFocus"], json!(false));
+        assert_eq!(store.all()["backgroundStreamReminder"], json!(false));
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn ten_bit_warning_opt_out_is_typed_persisted_and_resettable() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = env::temp_dir().join(format!("opennow-ten-bit-warning-{unique}"));
+        let mut store = SettingsStore::load(Some(directory.clone())).unwrap();
+        assert_eq!(store.all()["suppressTenBitWarning"], json!(false));
+        store.set("suppressTenBitWarning", json!(true)).unwrap();
+        store = SettingsStore::load(Some(directory.clone())).unwrap();
+        assert_eq!(store.all()["suppressTenBitWarning"], json!(true));
+        for invalid in [json!("true"), json!(1), json!(null), json!([])] {
+            assert_eq!(
+                store.set("suppressTenBitWarning", invalid).unwrap(),
+                json!(false)
+            );
+        }
+        store.set("suppressTenBitWarning", json!(true)).unwrap();
+        assert_eq!(
+            store.reset().unwrap()["suppressTenBitWarning"],
+            json!(false)
+        );
+        assert_eq!(
+            SettingsStore::load(Some(directory.clone())).unwrap().all()["suppressTenBitWarning"],
+            json!(false)
+        );
         fs::remove_dir_all(directory).unwrap();
     }
 

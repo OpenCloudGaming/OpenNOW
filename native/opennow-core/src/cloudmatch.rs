@@ -2429,7 +2429,7 @@ mod tests {
 
     #[test]
     fn hdr_444_request_and_accepted_session_preserve_wire_chroma() {
-        let capabilities = json!({"protocolVersion":6,"nativeHdrSupported":true,"videoBackends":[{
+        let capabilities = json!({"protocolVersion":7,"nativeHdrSupported":true,"videoBackends":[{
             "backend":"d3d11","available":true,"codecs":[
                 {"codec":"h265","available":true,"hdrSupported":true,
                     "colorQualities":["10bit_444"],"hdrColorQualities":["10bit_444"]}
@@ -2468,7 +2468,7 @@ mod tests {
 
     #[test]
     fn hdr_request_requires_resolved_runtime_opt_in_and_uses_cloudmatch_enums() {
-        let capabilities = json!({"protocolVersion":6,"nativeHdrSupported":true,"videoBackends":[{
+        let capabilities = json!({"protocolVersion":7,"nativeHdrSupported":true,"videoBackends":[{
             "backend":"d3d11","available":true,"codecs":[
                 {"codec":"h265","available":true,"colorQualities":["8bit_420","10bit_420"]}
             ]
@@ -2918,7 +2918,7 @@ mod tests {
         }});
         preserve_session_codec(&mut initial, &request);
         assert_eq!(initial["negotiatedStreamProfile"]["codec"], "H265");
-        let capabilities = json!({"protocolVersion":6,"nativeHdrSupported":true,"videoBackends":[{
+        let capabilities = json!({"protocolVersion":7,"nativeHdrSupported":true,"videoBackends":[{
             "backend":"videotoolbox","platform":"macos","available":true,"codecs":[{
                 "codec":"h265","available":true,"hdrSupported":true,
                 "colorQualities":["10bit_420"],"hdrColorQualities":["10bit_420"]
@@ -3100,7 +3100,7 @@ mod tests {
     #[test]
     fn nested_negotiated_codec_reaches_hdr_preparation() {
         let base = Url::parse(DEFAULT_STREAMING_BASE).unwrap();
-        let capabilities = json!({"protocolVersion":6,"nativeHdrSupported":true,"videoBackends":[{
+        let capabilities = json!({"protocolVersion":7,"nativeHdrSupported":true,"videoBackends":[{
             "backend":"videotoolbox","platform":"macos","available":true,"codecs":[{
                 "codec":"h265","available":true,"hdrSupported":true,
                 "colorQualities":["10bit_420"],"hdrColorQualities":["10bit_420"]

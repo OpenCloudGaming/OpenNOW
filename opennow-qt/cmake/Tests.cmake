@@ -42,6 +42,23 @@ if(BUILD_TESTING)
     qt_add_shaders(opennow-hdrcolor-tests "opennow-hdrchrome-test-shaders"
         BATCHABLE PREFIX "/opennow/shaders" BASE "shaders" FILES ${OPENNOW_CHROME_SHADERS})
     find_package(Qt6 6.8 REQUIRED COMPONENTS QuickTest)
+    qt_add_executable(opennow-tenbitwarning-tests tests/tst_tenbitwarning.cpp)
+    target_link_libraries(opennow-tenbitwarning-tests PRIVATE Qt6::QuickTest Qt6::Quick)
+    target_compile_definitions(opennow-tenbitwarning-tests PRIVATE
+        OPENNOW_QML_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/qml")
+    add_test(NAME opennow-tenbitwarning-tests COMMAND opennow-tenbitwarning-tests
+        -input "${CMAKE_CURRENT_SOURCE_DIR}/tests/tenbitwarning")
+    set_tests_properties(opennow-tenbitwarning-tests PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
+    qt_add_resources(opennow-qt "ten-bit-warning-acceptance"
+        PREFIX "/acceptance" BASE tests FILES tests/TenBitWarningAcceptance.qml)
+    foreach(surface desktop console)
+        add_test(NAME qml-ten-bit-warning-${surface} COMMAND opennow-qt
+            --smoke-test --allow-multiple-instances --${surface} --route settings-streaming
+            --smoke-ten-bit-warning --reduced-motion)
+        set_tests_properties(qml-ten-bit-warning-${surface} PROPERTIES
+            ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 15)
+    endforeach()
     qt_add_executable(opennow-consolelayout-tests tests/tst_consolelayout.cpp)
     target_link_libraries(opennow-consolelayout-tests PRIVATE Qt6::QuickTest Qt6::Quick)
     target_compile_definitions(opennow-consolelayout-tests PRIVATE
@@ -178,6 +195,9 @@ if(BUILD_TESTING)
     target_link_libraries(opennow-theme-tests PRIVATE Qt6::QuickTest Qt6::Quick)
     target_compile_definitions(opennow-theme-tests PRIVATE
         OPENNOW_QML_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/qml")
+    qt_add_resources(opennow-theme-tests "theme-test-assets"
+        PREFIX "/qt/qml/OpenNOW" FILES ${OPENNOW_KEYBOARD_ICON_FILES}
+        res/brand/opennow-mark.png)
     add_test(NAME opennow-theme-tests COMMAND opennow-theme-tests
         -input "${CMAKE_CURRENT_SOURCE_DIR}/tests/theme")
     set_tests_properties(opennow-theme-tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
@@ -316,6 +336,12 @@ if(BUILD_TESTING)
         COMMAND opennow-qt --smoke-test --allow-multiple-instances --desktop
             --route settings-audio --smoke-audio-output --reduced-motion)
     set_tests_properties(qml-audio-output PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 10)
+    qt_add_resources(opennow-qt "background-stream-acceptance"
+        PREFIX "/acceptance" BASE tests FILES tests/BackgroundStreamAcceptance.qml)
+    add_test(NAME qml-background-stream
+        COMMAND opennow-qt --smoke-test --allow-multiple-instances --desktop
+            --route settings-audio --smoke-background-stream --reduced-motion)
+    set_tests_properties(qml-background-stream PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 10)
     foreach(width 960 1440)
         add_test(NAME "qml-collections-${width}"
             COMMAND opennow-qt --smoke-test --allow-multiple-instances --desktop
@@ -700,6 +726,7 @@ if(BUILD_TESTING)
         TIMEOUT 30
     )
     set(OPENNOW_CI_UNIT_TEST_TARGETS
+        opennow-tenbitwarning-tests
         opennow-graphicsdevices-tests
         opennow-consolelayout-tests
         opennow-consoleactions-tests
@@ -742,6 +769,7 @@ if(BUILD_TESTING)
         # Qt's executable helper defaults to the GUI subsystem on Windows. Keep
         # test runners as console programs so CTest captures QtTest failures.
         set_target_properties(
+            opennow-tenbitwarning-tests
             opennow-graphicsdevices-tests
             opennow-consolelayout-tests
             opennow-consoleactions-tests
@@ -798,6 +826,7 @@ if(BUILD_TESTING)
             add_dependencies(opennow-qt-test-runtime opennow-msvc-runtime)
         endif()
         foreach(test_target IN ITEMS
+                opennow-tenbitwarning-tests
                 opennow-graphicsdevices-tests
                 opennow-consolelayout-tests
                 opennow-consoleactions-tests

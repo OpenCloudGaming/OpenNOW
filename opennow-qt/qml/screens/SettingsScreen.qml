@@ -41,6 +41,11 @@ FocusScope {
         {name:qsTr("Recording"), icon:"settings-video.svg", color:Theme.coral}
     ]
     DesktopSettingsShortcutBinding { id: shortcutBinding }
+    TenBitWarningDialog {
+        id: tenBitWarning
+        settingsStore: ShellStore
+        onClosed: settingsList.forceActiveFocus()
+    }
 
     function titleCase(value) {
         const words = String(value || "").split("-").join(" ").split("_").join(" ").split(" ")
@@ -503,6 +508,8 @@ FocusScope {
                 ShellStore.setSetting("colorQuality", currentQuality.replace("444", "420"))
         }
         root.closeDropdown()
+        if (key === "colorQuality")
+            tenBitWarning.notifySelection(currentQuality, value)
     }
 
     function activate(row) {
@@ -620,7 +627,8 @@ FocusScope {
         repeat: false
         onTriggered: {
             root.dropdownPresented = false
-            settingsList.forceActiveFocus()
+            if (!tenBitWarning.visible)
+                settingsList.forceActiveFocus()
         }
     }
 

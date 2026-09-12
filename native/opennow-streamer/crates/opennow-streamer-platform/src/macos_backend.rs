@@ -66,6 +66,7 @@ fn av1_availability() -> &'static AtomicBool {
 }
 
 pub(crate) struct MacOutput {
+    audio_muted: std::sync::Arc<std::sync::atomic::AtomicBool>,
     backend: Option<MacOsBackend>,
     audio_output_device: Option<String>,
     // The backend must detach its CAMetalLayer before SDL destroys the NSView.
@@ -81,6 +82,7 @@ impl MacOutput {
     pub(crate) fn initialize(
         stream: MediaStreamConfig,
         audio_device: &opennow_streamer_protocol::AudioOutputDevice,
+        audio_muted: std::sync::Arc<std::sync::atomic::AtomicBool>,
     ) -> Result<Self, String> {
         if let Some(id) = audio_device.device_name() {
             let devices = opennow_streamer_platform_macos::audio_output_devices()
@@ -94,6 +96,7 @@ impl MacOutput {
             .transpose()?;
         Ok(Self {
             backend: None,
+            audio_muted,
             audio_output_device: audio_device.device_name().map(str::to_owned),
             external_surface,
             screen_rect: HIDDEN_SURFACE,
@@ -128,6 +131,7 @@ impl MacOutput {
             )),
         };
         let mut backend = MacOsBackend::start(BackendConfig {
+            audio_muted: self.audio_muted.clone(),
             surface,
             video: H264Format::new(parameter_sets, VideoColorSpace::Bt709).into(),
             audio: AudioFormat::OPUS_STEREO_48KHZ,
@@ -160,6 +164,7 @@ impl MacOutput {
         let mut backend = MacOsBackend::start(BackendConfig {
             surface,
             video: H265Format::new(parameter_sets, VideoColorSpace::Bt709).into(),
+            audio_muted: self.audio_muted.clone(),
             audio: AudioFormat::OPUS_STEREO_48KHZ,
             audio_output_device: self.audio_output_device.clone(),
             queues: QueueLimits::default(),
@@ -187,6 +192,7 @@ impl MacOutput {
         let mut backend = MacOsBackend::start(BackendConfig {
             surface,
             video: format.into(),
+            audio_muted: self.audio_muted.clone(),
             audio: AudioFormat::OPUS_STEREO_48KHZ,
             audio_output_device: self.audio_output_device.clone(),
             queues: QueueLimits::default(),

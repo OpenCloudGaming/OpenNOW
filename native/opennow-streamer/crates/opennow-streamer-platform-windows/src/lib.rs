@@ -280,6 +280,8 @@ enum Control {
 
 #[derive(Debug)]
 struct Shared {
+    #[cfg(windows)]
+    audio_muted: Arc<std::sync::atomic::AtomicBool>,
     video: BoundedQueue<EncodedVideoFrame>,
     audio: BoundedQueue<PcmFrame>,
     video_format: Mutex<VideoFormat>,
@@ -351,13 +353,19 @@ impl WindowsBackend {
     }
 
     pub fn start_for(api: WindowsGraphicsApi, config: BackendConfig) -> Result<Self, BackendError> {
-        Self::start_for_mode(api, WindowsDecoderMode::Hardware, config)
+        Self::start_for_mode(
+            api,
+            WindowsDecoderMode::Hardware,
+            config,
+            Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        )
     }
 
     pub fn start_for_mode(
         api: WindowsGraphicsApi,
         decoder_mode: WindowsDecoderMode,
         config: BackendConfig,
+        audio_muted: Arc<std::sync::atomic::AtomicBool>,
     ) -> Result<Self, BackendError> {
         config.validate()?;
         #[cfg(windows)]
@@ -382,7 +390,7 @@ impl WindowsBackend {
         #[cfg(not(windows))]
         {
             let _ = api;
-            let _ = (decoder_mode, config);
+            let _ = (decoder_mode, config, audio_muted);
             log::log_line(
                 "WARN",
                 "decode",
@@ -395,6 +403,7 @@ impl WindowsBackend {
         {
             log::log_line("INFO", "decode", &describe());
             let shared = Arc::new(Shared {
+                audio_muted,
                 video: BoundedQueue::new(config.video_queue_capacity),
                 audio: BoundedQueue::new(config.audio_queue_capacity),
                 video_format: Mutex::new(config.video),
@@ -667,6 +676,8 @@ mod tests {
                 visible: false,
             })),
             state: AtomicU8::new(state as u8),
+            #[cfg(windows)]
+            audio_muted: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             paused: std::sync::atomic::AtomicBool::new(false),
             events: BoundedQueue::new(8),
             presented_frames: AtomicU64::new(0),

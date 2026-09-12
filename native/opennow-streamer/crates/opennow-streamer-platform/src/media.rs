@@ -1188,6 +1188,7 @@ impl MediaSession {
                 opennow_streamer_platform_linux::ColorMatrix::Bt2020;
         }
         if let Some(audio) = config.audio.as_mut() {
+            audio.muted = Arc::clone(&output.audio_muted);
             audio.output_device = audio_device.device_name().unwrap_or_default().to_owned();
         }
         if stream.color_quality.is_444()
@@ -1325,6 +1326,7 @@ impl MediaSession {
             mac_software_fallback: AtomicBool::new(false),
         });
         let audio_output_device = audio_device.device_name().map(str::to_owned);
+        let audio_muted = Arc::clone(&shared.output.audio_muted);
         let (host_commands, host_receiver) = std::sync::mpsc::channel();
         let embedded_frames = frames.clone();
         let embedded_host_worker = thread::Builder::new()
@@ -1342,6 +1344,7 @@ impl MediaSession {
                         let publisher = frames.clone();
                         MacOsBackend::start_embedded_with_publisher(
                             EmbeddedBackendConfig {
+                                audio_muted: Arc::clone(&audio_muted),
                                 video,
                                 audio: AudioFormat::OPUS_STEREO_48KHZ,
                                 audio_output_device: audio_output_device.clone(),

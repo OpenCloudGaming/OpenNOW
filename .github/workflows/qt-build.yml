@@ -597,7 +597,7 @@ jobs:
                       ("/System/Library/", "/usr/lib/")), (name, dependency)
           probe = subprocess.run(
               [bin_dir / "opennow-streamer"],
-              input='{"id":"package-probe","type":"hello","protocolVersion":6}\n'
+              input='{"id":"package-probe","type":"hello","protocolVersion":7}\n'
                     '{"id":"package-shutdown","type":"shutdown"}\n',
               text=True, capture_output=True, check=True, timeout=30)
           messages = [json.loads(line) for line in probe.stdout.splitlines()]
