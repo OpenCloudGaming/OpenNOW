@@ -6,6 +6,7 @@ Button {
     id: root
     property bool primary: false
     property bool danger: false
+    property bool onMediaBackground: false
     property string shortcutText: ""
     property string shortcutSequence: shortcutText
     property string glyph: ""
@@ -36,7 +37,7 @@ Button {
             radius: parent.radius + 2
             color: "transparent"
             border.width: 2
-            border.color: DesktopTokens.focus
+            border.color: root.onMediaBackground ? Theme.mediaAccent : DesktopTokens.focus
             visible: root.activeFocus
         }
     }
@@ -61,14 +62,15 @@ Button {
                 width: root.glyphSize; height: root.glyphSize
                 sourceComponent: DesktopSettingsIcon {
                     glyph: root.themedGlyph
-                    ink: root.primary ? "#0A0D14" : Theme.label
+                    ink: root.primary ? "#0A0D14" : root.onMediaBackground ? Theme.mediaForeground : Theme.label
                 }
             }
             Text {
                 visible: root.text !== ""
                 anchors.verticalCenter: parent.verticalCenter
                 text: root.text
-                color: root.primary ? "#0A0D14" : root.danger ? "#FFB4AE" : DesktopTokens.textHigh
+                color: root.primary ? "#0A0D14" : root.danger ? "#FFB4AE"
+                    : root.onMediaBackground ? Theme.mediaForeground : DesktopTokens.textHigh
                 font: root.font
             }
             KeyboardGlyph {
@@ -77,7 +79,7 @@ Button {
                 shortcut: root.shortcutSequence
                 Accessible.name: root.shortcutText
                 keySize: 20
-                ink: root.primary ? "#0B0F1A" : DesktopTokens.textMuted
+                ink: root.primary ? "#0B0F1A" : root.onMediaBackground ? Theme.mediaMuted : DesktopTokens.textMuted
             }
         }
     }
