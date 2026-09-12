@@ -78,8 +78,8 @@ signer described in the [signing setup guide](../docs/update-signing-setup.md); 
 [nightly release runbook](../docs/qt-nightly-release.md) for the publishing command. Users of
 earlier no-key nightlies must manually install an update-enabled build once before verified
 in-app updates can work. Windows may show a SmartScreen warning; macOS packages are not notarized.
-Windows ARM64 is cross-built rather than runtime-tested. Linux DEBs require Qt 6.8+ and SDL3;
-AppImages are the portable option. Download the files and distribute them through
+Windows ARM64 is cross-built rather than runtime-tested. Release Linux DEBs bundle Qt and SDL3
+for Ubuntu 24.04 / Linux Mint 22.x; AppImages are the portable option. Download the files and distribute them through
 your supporter channel. **Actions artifacts in this public repository are not
 private or supporter-access-controlled**, even though they do not appear in Releases.
 

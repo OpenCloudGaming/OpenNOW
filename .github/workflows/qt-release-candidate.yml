@@ -170,14 +170,10 @@ jobs:
         run: |
           export LD_LIBRARY_PATH="$RUNNER_TEMP/SDL-install/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
           mkdir -p build/release-artifacts
-          cpack --config build/qt-release/CPackConfig.cmake -C Release -G DEB -B build/release-artifacts
           cmake --install build/qt-release --config Release --prefix "$PWD/build/AppDir/usr"
           test -f build/AppDir/usr/bin/libopennow_streamer_ffi.so
           test -x build/AppDir/usr/bin/opennow-streamer
-          deb=$(find build/release-artifacts -maxdepth 1 -type f -name '*.deb' -print -quit)
-          dpkg-deb --fsys-tarfile "$deb" | tar -tf - | grep -Fx './usr/bin/libopennow_streamer_ffi.so'
-          dpkg-deb --fsys-tarfile "$deb" | tar -tf - | grep -Fx './usr/bin/opennow-streamer'
-          python3 opennow-qt/packaging/verify_linux_package.py build/AppDir/usr/bin --deb "$deb"
+          python3 opennow-qt/packaging/verify_linux_package.py build/AppDir/usr/bin
           curl --fail --location --retry 3 \
             "https://github.com/linuxdeploy/linuxdeploy/releases/download/1-alpha-20251107-1/linuxdeploy-${LINUXDEPLOY_ARCH}.AppImage" \
             --output "build/linuxdeploy-${LINUXDEPLOY_ARCH}.AppImage"
@@ -205,6 +201,13 @@ jobs:
           LD_LIBRARY_PATH="$PWD/build/AppDir/usr/lib:$LD_LIBRARY_PATH" \
             python3 opennow-qt/packaging/verify_linux_package.py build/AppDir/usr/bin
           mv OpenNOW-Qt-*.AppImage build/release-artifacts/
+          cpack --config build/qt-release/CPackConfig.cmake \
+            -D "CPACK_PROJECT_CONFIG_FILE=$PWD/opennow-qt/packaging/LinuxBundledDeb.cmake" \
+            -D "OPENNOW_APPDIR=$PWD/build/AppDir" \
+            -C Release -G DEB -B build/release-artifacts
+          debs=(build/release-artifacts/*.deb)
+          [[ ${#debs[@]} -eq 1 && -f "${debs[0]}" ]]
+          bash opennow-qt/packaging/verify_bundled_deb.sh "${debs[0]}"
 
       - name: Smoke release artifacts and record checksums
         shell: bash

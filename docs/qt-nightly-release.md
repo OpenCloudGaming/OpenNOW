@@ -65,8 +65,11 @@ Each release contains nine packages with distinct version/platform/architecture 
   Newer runs and retries upgrade the nightly installation; older nightlies are rejected.
 - `OpenNOW-Qt-<version>-Linux-x64.AppImage` and `...-Linux-arm64.AppImage` are the recommended
   portable Linux downloads. Make the downloaded file executable before starting it.
-- `OpenNOW-Qt-<version>-Linux-x64.deb` and `...-Linux-arm64.deb` require distribution-provided
-  Qt 6.8+ and SDL3. Stock Ubuntu 24.04 does not provide those versions; use the AppImage there.
+- `OpenNOW-Qt-<version>-Linux-x64.deb` and `...-Linux-arm64.deb` bundle the AppImage's deployed
+  Qt, QML plugins, SDL3, and media runtime privately under `/opt/opennow`. Ubuntu 24.04 and
+  Linux Mint 22.x do not need a Qt upgrade or third-party repositories. Install the downloaded
+  package with `sudo apt install ./OpenNOW-Qt-<version>-Linux-x64.deb` so APT installs the
+  remaining system dependencies. The desktop entry and `opennow-qt` command use that private runtime.
   The internal Debian version uses `1.0.0~nightly.<run>.<attempt>` so a later stable `1.0.0`
   correctly supersedes it.
 - `OpenNOW-Qt-<version>-Darwin-arm64.dmg` contains the Apple Silicon application for macOS 13+.
@@ -84,6 +87,12 @@ missing platforms, duplicate basenames, wrong versions, empty files, and unexpec
 before any release upload.
 AppImage smoke tests use the packaged offscreen plugin with host Qt plugin, QML, and library
 search paths removed, so the installed CI toolkit cannot hide missing bundled dependencies.
+Release DEBs are assembled from that same deployed AppDir, then installed in a clean Ubuntu 24.04
+container on each native architecture. Checks reject distribution Qt/SDL3 dependencies, check
+library resolution before adding test tools, run offscreen and X11 smoke tests and native capability
+probes, and exercise reinstall/removal. Run `bash opennow-qt/packaging/verify_bundled_deb.sh <package.deb>`
+to repeat these checks locally with Docker. Direct developer CPack builds without the
+`LinuxBundledDeb.cmake` project configuration still require distribution Qt 6.8+ and SDL3.
 macOS checks mount the actual DMG, copy the app out, detach the image, and smoke both that app
 and the validation ZIP with development Qt, SDL3, and build directories hidden. Windows checks
 extract MSI and ZIP payloads and compare every binary in the

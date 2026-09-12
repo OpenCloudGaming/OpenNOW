@@ -56,10 +56,11 @@ ephemeral or reset after each approved release operation.
 - Linux x64/ARM64 DEB and checksum-pinned AppImage builds use native runners. Both the probe and
   embedded streamer enable `linux-vaapi` and `linux-ffmpeg-bundled`. Native VAAPI supports H.264
   only; HEVC/AV1 remain available through other backends, including bundled FFmpeg software decode.
-  Builds require libva/libva-drm development headers and libclang for generated bindings. DEBs
-  require `libva2` and `libva-drm2`; usable GPU hardware and a host VAAPI driver are still required
-  for hardware decode. Package checks validate dependency resolution and capabilities without
-  requiring a GPU on the build runner.
+  Builds require libva/libva-drm development headers and libclang for generated bindings. Release
+  DEBs reuse the deployed AppImage runtime, including Qt, SDL3, libva, and libva-drm, under
+  `/opt/opennow`; usable GPU hardware and a host VAAPI driver are still required for hardware decode.
+  Clean Ubuntu 24.04 container checks install the DEB without distribution Qt/SDL3, verify
+  offscreen/X11 startup and capabilities, and exercise reinstall/removal without a GPU.
 - Every installable artifact receives a sibling Ed25519 update manifest after platform signing.
 - The inventory job fails unless it finds both Windows MSI/ZIP pairs, both Linux AppImage/DEB pairs,
   no macOS DMGs, and exactly one manifest per artifact (eight artifacts total). It records the immutable commit and
