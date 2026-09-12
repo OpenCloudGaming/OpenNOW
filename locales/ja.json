@@ -1,4 +1,10 @@
 {
+  "backgroundStream": {
+    "muteTitle": "Mute when out of focus",
+    "muteDescription": "Silence stream audio while using another app. Audio returns when you switch back to OpenNOW.",
+    "reminderTitle": "Background stream reminder",
+    "reminderDescription": "Request taskbar or dock attention every 5 minutes while a stream runs in the background. Availability depends on your desktop. Does not prevent AFK timeouts."
+  },
   "tenBitWarning": {
     "title": "10-bit color",
     "description": "10-bit color may cause stuttering on some systems. If you notice stuttering, switch back to 8-bit.",
