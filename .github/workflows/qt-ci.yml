@@ -80,7 +80,7 @@ jobs:
   checks:
     name: ${{ matrix.label }}
     needs: contracts
-    if: always()
+    if: ${{ !cancelled() && needs.contracts.result != 'cancelled' }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:

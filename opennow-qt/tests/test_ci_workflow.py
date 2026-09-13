@@ -150,10 +150,10 @@ class CIWorkflowTest(unittest.TestCase):
 
     def test_required_platform_checks_fail_when_shared_checks_do_not_succeed(self):
         checks = jobs((WORKFLOWS / "qt-ci.yml").read_text())["checks"]
-        self.assertIn("    needs: contracts\n    if: always()\n", checks)
+        self.assertIn("    needs: contracts\n    if: ${{ !cancelled() && needs.contracts.result != 'cancelled' }}\n", checks)
         self.assertIn("CONTRACTS_RESULT: ${{ needs.contracts.result }}", checks)
         script = re.search(r"        run: (test .+)\n", checks)[1]
-        for result in ("success", "failure", "cancelled", "skipped", ""):
+        for result in ("success", "failure", "skipped", ""):
             with self.subTest(result=result):
                 process = subprocess.run(["bash", "-c", script], env={**os.environ, "CONTRACTS_RESULT": result})
                 self.assertEqual(process.returncode == 0, result == "success")
@@ -168,7 +168,8 @@ class CIWorkflowTest(unittest.TestCase):
                           "uses: ./.github/workflows/qt-build.yml"):
             self.assertNotIn(forbidden, checks)
         self.assertIn('--target opennow-ci-unit-tests --parallel "$BUILD_PARALLEL"', checks)
-        self.assertIn("--no-tests=error -L ci-unit", checks)
+        self.assertIn("--no-tests=error", checks)
+        self.assertIn('-L ci-unit --parallel "$BUILD_PARALLEL" --output-junit qt-unit-tests.xml', checks)
         self.assertIn("cargo clippy --locked", checks)
         self.assertIn("cargo test --locked", checks)
         self.assertIn("--workspace --all-targets -- -D warnings", checks)
@@ -211,6 +212,7 @@ class CIWorkflowTest(unittest.TestCase):
         self.assertNotIn("continue-on-error", step)
         self.assertIn("working-directory: ${{ env.OPENNOW_CHECKOUT }}", step)
         self.assertIn("CARGO_BUILD_JOBS: ${{ inputs.parallel }}", step)
+        self.assertIn("OPENNOW_UPDATE_TEST_TARGET_DIR: ${{ env.OPENNOW_CHECKOUT }}/native/opennow-core/target", step)
         self.assertIn("python opennow-qt/tests/run_update_helper_integration.py", step)
         self.assertIn("python3 opennow-qt/tests/run_update_helper_integration.py", step)
         self.assertNotIn("secrets.", step)
@@ -227,7 +229,11 @@ class CIWorkflowTest(unittest.TestCase):
         llvm = (ROOT / ".github/scripts/ensure-windows-llvm.ps1").read_text()
         self.assertIn(".github/scripts/ensure-windows-llvm.ps1", action)
         self.assertNotIn("choco install llvm", action)
-        self.assertIn("choco install nasm -y --no-progress", action)
+        self.assertIn("key: windows-nasm-3.2.0", action)
+        self.assertIn("choco install nasm --version=3.2.0 -y --no-progress", action)
+        self.assertIn("NASM_CACHE_HIT: ${{ steps.windows-nasm.outputs.cache-hit }}", action)
+        self.assertIn("NASM installation failed with exit code", action)
+        self.assertIn("Expected NASM 3.02 from Chocolatey package 3.2.0", action)
         self.assertIn("NASM installation is missing nasm.exe", action)
         self.assertIn("LLVM-22.1.8-win64.exe", llvm)
         self.assertIn("16e5709785fef73c854646241c4a92c5cd574318d1b33c63330dd7721903e55c", llvm)
@@ -269,6 +275,19 @@ class CIWorkflowTest(unittest.TestCase):
                 self.assertIn("cache-on-failure: true", cache)
                 self.assertIn("native/opennow-core -> target", cache)
                 self.assertIn("native/opennow-streamer -> target", cache)
+
+    def test_qt_compile_cache_restores_previous_timestamped_entries(self):
+        action = (ROOT / ".github/actions/qt-unit-tests/action.yml").read_text()
+        cache = action.split("uses: hendrikmuhs/ccache-action@", 1)[1].split("\n    - name:", 1)[0]
+        self.assertIn("key: qt-checks-${{ inputs.label }}", cache)
+        self.assertIn("restore-keys: qt-checks-${{ inputs.label }}", cache)
+        self.assertIn("verbose: 1", cache)
+        cmake = (ROOT / "opennow-qt/CMakeLists.txt").read_text()
+        self.assertIn("cmake_policy(SET CMP0141 NEW)", cmake)
+        self.assertIn('set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT "$<$<CONFIG:Debug,RelWithDebInfo>:Embedded>")', cmake)
+        tests = (ROOT / "opennow-qt/cmake/Tests.cmake").read_text()
+        self.assertIn("set_property(TARGET opennow-hdrcolor-tests PROPERTY MSVC_DEBUG_INFORMATION_FORMAT Embedded)", tests)
+        self.assertIn("target_compile_options(opennow-hdrcolor-tests PRIVATE /Zi)", tests)
 
     def test_publishing_remains_explicitly_opt_in_after_build(self):
         ci = (WORKFLOWS / "qt-ci.yml").read_text()
