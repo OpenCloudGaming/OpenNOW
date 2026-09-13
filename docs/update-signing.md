@@ -12,7 +12,7 @@ blocker and the first manual upgrade from a nightly without a pinned key.
 
 - Keep the 32-byte Ed25519 private seed only in the protected `qt-update-signing` environment secret
   `OPENNOW_UPDATE_ED25519_PRIVATE_KEY`, encoded as base64. Only the isolated
-  `opennow-release-signer` runner may receive it; platform build workers must not.
+  Blacksmith update-signing job may receive it; platform build workers must not.
 - Configure the matching 32-byte public key as base64 through CMake's
   `OPENNOW_UPDATE_ED25519_PUBLIC_KEY` cache variable. It is compiled into the
   Rust core and is safe to publish.
@@ -48,8 +48,8 @@ sha256=<lowercase digest>
 ```
 
 `qt-ci.yml` generates nightly manifests only after the shared checks, platform checks,
-and complete build succeed. The signing job uses `qt-update-signing` on the isolated
-`[self-hosted, opennow-release-signer]` runner. Its reviewed Python signing script and
+and complete build succeed. The signing job uses `qt-update-signing` on a separate
+`blacksmith-2vcpu-ubuntu-2404` job with no workspace cache. Its reviewed Python signing script and
 the runner's OpenSSL tools read packages as data. The signer never compiles source,
 extracts packages, or executes candidate binaries, including `opennow-update-manifest`.
 The checkout is pinned to the workflow's immutable `github.sha`, with Git credentials

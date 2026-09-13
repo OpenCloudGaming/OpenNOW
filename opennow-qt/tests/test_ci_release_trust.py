@@ -92,6 +92,19 @@ class CIReleaseTrustTest(unittest.TestCase):
         self.assertIn("environment: qt-update-signing", inventory)
         self.assertIn("secrets.OPENNOW_UPDATE_ED25519_PRIVATE_KEY", inventory)
 
+    def test_candidate_update_key_is_isolated_in_a_blacksmith_signing_job(self):
+        workflow = (WORKFLOWS / "qt-release-candidate.yml").read_text()
+        builds, signer = workflow.split("  inventory:\n", 1)
+        self.assertIn("runs-on: blacksmith-2vcpu-ubuntu-2404", signer)
+        self.assertIn("environment: qt-update-signing", signer)
+        self.assertIn("needs: [preflight, linux, windows, macos]", signer)
+        self.assertIn("timeout-minutes: 30", signer)
+        self.assertIn("name: Verify signing tools", signer)
+        self.assertEqual(signer.count("secrets.OPENNOW_UPDATE_ED25519_PRIVATE_KEY"), 1)
+        self.assertNotIn("OPENNOW_UPDATE_ED25519_PRIVATE_KEY", builds)
+        for forbidden in ("actions/cache", "actions/checkout", "cargo ", "cmake ", "cpack "):
+            self.assertNotIn(forbidden, signer)
+
 
 if __name__ == "__main__":
     unittest.main()

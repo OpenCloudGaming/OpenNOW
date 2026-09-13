@@ -1,9 +1,9 @@
 # Activate nightly update signing
 
-Publication is blocked until a repository administrator configures signing. At the
-time of this implementation, the `qt-update-signing` GitHub environment does not exist,
-and the available API credentials return HTTP 403 for its configuration. The workflow
-change does not create an environment, provision a runner, or install a production key.
+Publication requires a protected `qt-update-signing` environment and an installed
+production key. Each signing job runs separately on `blacksmith-2vcpu-ubuntu-2404`;
+no manually registered `opennow-release-signer` is needed. The workflow does not
+create the environment, configure its protections, or install a production key.
 
 ## Configure the protected signer
 
@@ -13,12 +13,11 @@ change does not create an environment, provision a runner, or install a producti
 3. Restrict deployment branches and tags to the protected release refs your reviewers
    approve. For nightly dispatches from `dev`, explicitly allow protected `dev`.
    Do not allow unreviewed feature branches or pull-request refs.
-4. Provision a dedicated Linux runner with both `self-hosted` and
-   `opennow-release-signer` labels. Restrict its runner group to approved release
-   workflows in this repository. Do not assign these labels to platform build workers.
-5. Install Python 3.11 or newer and OpenSSL 3 on that runner. Reset the runner after
-   every signing job, including failures and cancellations, before accepting another job.
-   Do not run pull-request jobs or candidate programs on it.
+4. Enable Blacksmith for this repository and retain the separate signing jobs on
+   `blacksmith-2vcpu-ubuntu-2404`. Do not combine signing with platform build or test jobs.
+5. Keep signing workspaces uncached. Each signing job checks for Python 3.11 or newer,
+   OpenSSL 3, `jq`, and GNU checksum tools before accessing the seed. Do not execute
+   candidate programs on the signer. Both jobs have a 30-minute deadline.
 6. Generate and retain a production Ed25519 key outside CI. Add only its canonical
    base64-encoded 32-byte private seed as the environment secret
    `OPENNOW_UPDATE_ED25519_PRIVATE_KEY`. Do not put the seed in repository secrets,

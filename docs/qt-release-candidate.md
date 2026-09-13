@@ -15,8 +15,8 @@ For credential provisioning and the first release, follow
 
 Create a GitHub environment named `qt-production-release`, require reviewer approval, and define
 the platform-signing secrets below. Create a second environment named `qt-update-signing` containing
-only `OPENNOW_UPDATE_ED25519_PRIVATE_KEY`; restrict it to a dedicated self-hosted runner carrying the
-`opennow-release-signer` label.
+only `OPENNOW_UPDATE_ED25519_PRIVATE_KEY`. The separate inventory-signing job runs on
+`blacksmith-2vcpu-ubuntu-2404`, without a workspace cache or any platform build steps.
 
 | Secret | Purpose |
 | --- | --- |
@@ -45,9 +45,9 @@ them without executing any candidate program, derives the Ed25519 public key fro
 seed, compares it byte-for-byte with the embedded public-key input, signs the canonical payload with
 OpenSSL and verifies every signature before producing a manifest.
 
-The signing runner requires Bash, OpenSSL with Ed25519 `pkeyutl` support, `jq`, GNU coreutils,
-and the GitHub Actions runner. It should have no general development credentials and should be
-ephemeral or reset after each approved release operation.
+The signing job checks Python, OpenSSL 3, `jq`, and GNU checksum tools before accessing
+the seed. It has a 30-minute deadline, receives only the job-scoped GitHub token and
+the update-signing seed, and does not require a manually registered runner.
 
 ## Candidate guarantees
 

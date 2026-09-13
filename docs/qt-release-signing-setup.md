@@ -35,9 +35,10 @@ that a new release immediately avoids SmartScreen reputation warnings.
 3. Create `qt-update-signing` for the update-signing seed only.
 4. Require reviewers, prevent self-review, and restrict both environments to approved
    protected release refs. Disable administrator bypass where the repository plan permits it.
-5. Configure the isolated `opennow-release-signer` runner as described in
+5. Retain the separate Blacksmith signing jobs as described in
    [Activate nightly update signing](update-signing-setup.md#configure-the-protected-signer).
-   It must never execute downloaded packages or run pull-request builds.
+   They must never execute downloaded packages, share build caches, or run pull-request builds.
+   No manually registered signing runner is required.
 
 Refer to [the candidate secret table](qt-release-candidate.md#protected-environment)
 for the exact secret names. Store private values in environment secrets, not workflow

@@ -264,8 +264,7 @@ class CIWorkflowTest(unittest.TestCase):
             for runner in runners:
                 with self.subTest(workflow=workflow.name, runner=runner):
                     self.assertTrue(
-                        runner.startswith(("blacksmith-", "${{"))
-                        or runner == "[self-hosted, opennow-release-signer]",
+                        runner.startswith(("blacksmith-", "${{")),
                     )
 
     def test_rust_caches_survive_job_renames_and_later_test_failures(self):
