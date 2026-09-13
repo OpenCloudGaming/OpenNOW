@@ -163,6 +163,18 @@ class MacOSReleaseTest(unittest.TestCase):
         self.assertLess(self.calls.index(updates[0]), self.calls.index(imported))
         self.assertEqual(self.calls[-1], updates[1])
 
+    def test_every_certificate_check_uses_an_inline_developer_id_requirement(self):
+        self.package()
+        checked = [call[call.index("-R") + 1] for call in self.calls
+                   if call[:2] == ["codesign", "--verify"] and "-R" in call]
+        self.assertTrue(checked)
+        expected = ('=anchor apple generic and certificate leaf[subject.OU] = "ABCDEFGHIJ" '
+                    'and certificate leaf[field.1.2.840.113635.100.6.1.13] exists')
+        self.assertEqual(set(checked), {expected})
+        if sys.platform == "darwin":
+            subprocess.run(["csreq", "-r", expected, "-t"],
+                           check=True, capture_output=True, text=True, timeout=30)
+
     def test_missing_or_broadened_signed_entitlements_prevent_promotion(self):
         expected = self.entitlements.copy()
         for changed in ({}, {**expected, "com.apple.security.get-task-allow": True},

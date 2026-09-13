@@ -106,7 +106,7 @@ def package(build, output, version):
     match = re.fullmatch(r"Developer ID Application: .+ \(([A-Z0-9]{10})\)", identity)
     if not match:
         raise ValueError("An exact Developer ID Application identity is required")
-    requirement = (f'anchor apple generic and certificate leaf[subject.OU] = "{match[1]}" '
+    requirement = (f'=anchor apple generic and certificate leaf[subject.OU] = "{match[1]}" '
                    'and certificate leaf[field.1.2.840.113635.100.6.1.13] exists')
     output.mkdir(parents=True, exist_ok=True)
     name = f"OpenNOW-Qt-{version}-Darwin-arm64"
