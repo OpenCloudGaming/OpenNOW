@@ -38,7 +38,17 @@ def run(*args):
     except subprocess.TimeoutExpired:
         raise RuntimeError(f"{args[0]} {args[1]} timed out") from None
     if result.returncode:
-        raise RuntimeError(f"{args[0]} {args[1]} failed (exit {result.returncode})")
+        message = f"{args[0]} {args[1]} failed (exit {result.returncode})"
+        if args[0] == "codesign":
+            detail = result.stderr
+            values = sorted((os.environ[name] for name in SECRET_NAMES if os.environ.get(name)),
+                            key=len, reverse=True)
+            for value in values:
+                detail = detail.replace(value, "[redacted]")
+            detail = " ".join(detail.split())[:4000]
+            if detail:
+                message += f": {detail}"
+        raise RuntimeError(message)
     return result.stdout
 
 
@@ -119,6 +129,7 @@ def package(build, output, version):
             run("security", "create-keychain", "-p", password, keychain)
             run("security", "set-keychain-settings", "-lut", "21600", keychain)
             run("security", "unlock-keychain", "-p", password, keychain)
+            run("security", "list-keychains", "-d", "user", "-s", keychain, *original_keychains)
             run("security", "import", certificate, "-k", keychain, "-P",
                 values["OPENNOW_MACOS_DEVELOPER_ID_P12_PASSWORD"], "-T", "/usr/bin/codesign")
             run("security", "set-key-partition-list", "-S", "apple-tool:,apple:,codesign:",

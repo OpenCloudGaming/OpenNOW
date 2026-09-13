@@ -150,6 +150,19 @@ class MacOSReleaseTest(unittest.TestCase):
         for location in ("stage", "zip-extracted", "dmg-extracted"):
             self.assertTrue(any(f"/{location}/OpenNOW.app/Contents/MacOS/OpenNOW" in path for path in inspected))
 
+    def test_temporary_signing_keychain_is_searchable_before_signing_and_restored(self):
+        self.package()
+        updates = [call for call in self.calls
+                   if call[:5] == ["security", "list-keychains", "-d", "user", "-s"]]
+        self.assertEqual(len(updates), 2)
+        self.assertTrue(updates[0][5].endswith("/signing.keychain-db"))
+        original = ["/Users/fixture/Library/Keychains/login.keychain-db"]
+        self.assertEqual(updates[0][6:], original)
+        self.assertEqual(updates[1][5:], original)
+        imported = next(call for call in self.calls if call[:2] == ["security", "import"])
+        self.assertLess(self.calls.index(updates[0]), self.calls.index(imported))
+        self.assertEqual(self.calls[-1], updates[1])
+
     def test_missing_or_broadened_signed_entitlements_prevent_promotion(self):
         expected = self.entitlements.copy()
         for changed in ({}, {**expected, "com.apple.security.get-task-allow": True},
@@ -211,6 +224,17 @@ class MacOSReleaseTest(unittest.TestCase):
 
 
 class MacOSSigningCommandTest(unittest.TestCase):
+    def test_codesign_failure_keeps_diagnostics_without_signing_secrets(self):
+        values = {name: f"private-fixture-{index}" for index, name in enumerate(RELEASE.SECRET_NAMES)}
+        detail = "unable to build chain to self-signed root\n" + "\n".join(values.values())
+        result = subprocess.CompletedProcess([], 1, "", detail)
+        with patch.dict(os.environ, values), patch.object(RELEASE.subprocess, "run", return_value=result):
+            with self.assertRaisesRegex(RuntimeError, "unable to build chain") as error:
+                RELEASE.run("codesign", "--force", "--sign", values["OPENNOW_MACOS_SIGN_IDENTITY"], "app")
+        for value in values.values():
+            self.assertNotIn(value, str(error.exception))
+        self.assertNotIn("\n", str(error.exception))
+
     def test_timeout_does_not_expose_command_arguments_or_captured_secrets(self):
         password = "fixture-private-password"
         args = ["security", "import", "certificate.p12", "-P", password]
