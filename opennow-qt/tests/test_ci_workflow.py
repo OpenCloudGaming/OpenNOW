@@ -109,14 +109,14 @@ class CIWorkflowTest(unittest.TestCase):
         self.assertIn("    runs-on: ${{ matrix.os }}\n", checks)
         self.assertIn("      fail-fast: false\n", checks)
         self.assertIn("uses: ./.github/actions/qt-unit-tests", checks)
-        self.assertIn("os: blacksmith-8vcpu-windows-2025", checks)
+        self.assertIn("os: blacksmith-16vcpu-windows-2025", checks)
         self.assertIn("os: blacksmith-6vcpu-macos-15", checks)
         self.assertNotIn("continue-on-error", checks)
 
-    def test_linux_and_windows_checks_use_eight_core_build_parallelism(self):
+    def test_linux_and_windows_checks_use_sixteen_core_runners(self):
         checks = jobs((WORKFLOWS / "qt-ci.yml").read_text())["checks"]
-        for label, runner in (("linux-x64", "blacksmith-8vcpu-ubuntu-2404"),
-                              ("windows-x64", "blacksmith-8vcpu-windows-2025")):
+        for label, runner in (("linux-x64", "blacksmith-16vcpu-ubuntu-2404"),
+                              ("windows-x64", "blacksmith-16vcpu-windows-2025")):
             with self.subTest(label=label):
                 entry = checks.split(f"          - label: {label}\n", 1)[1].split("          - label:", 1)[0]
                 self.assertIn(f"            os: {runner}\n", entry)

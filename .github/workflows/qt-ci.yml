@@ -88,13 +88,13 @@ jobs:
       matrix:
         include:
           - label: linux-x64
-            os: blacksmith-8vcpu-ubuntu-2404
+            os: blacksmith-16vcpu-ubuntu-2404
             qt-host: linux
             qt-arch: linux_gcc_64
             target-arch: x64
             parallel: "8"
           - label: windows-x64
-            os: blacksmith-8vcpu-windows-2025
+            os: blacksmith-16vcpu-windows-2025
             qt-host: windows
             qt-arch: win64_msvc2022_64
             target-arch: x64
