@@ -16,6 +16,17 @@ def run(command, environment):
     subprocess.run(command, cwd=ROOT, env=environment, check=True, timeout=1200)
 
 
+def target_directory_for(directory, environment):
+    configured = environment.get("OPENNOW_UPDATE_TEST_TARGET_DIR")
+    return Path(configured) if configured else directory / "target"
+
+
+def build_update_helper(environment):
+    if "OPENNOW_UPDATE_TEST_TARGET_DIR" in environment:
+        run(["cargo", "clean", "--manifest-path", str(MANIFEST), "-p", "opennow-core"], environment)
+    run(["cargo", "build", "--locked", "--manifest-path", str(MANIFEST), "--lib", "--bin", "opennow-update-helper"], environment)
+
+
 def build_fixtures(directory, environment):
     manifest = directory / "Cargo.toml"
     manifest.write_text('''[package]
@@ -61,14 +72,14 @@ def main():
         if len(public_der) != 44 or public_der[:12] != bytes.fromhex("302a300506032b6570032100"):
             raise RuntimeError("OpenSSL returned an unexpected Ed25519 public key encoding")
         environment = os.environ.copy()
-        environment["CARGO_TARGET_DIR"] = str(directory / "target")
+        environment["CARGO_TARGET_DIR"] = str(target_directory_for(directory, environment))
         environment["OPENNOW_UPDATE_ED25519_PUBLIC_KEY"] = base64.b64encode(public_der[12:]).decode("ascii")
         environment["OPENNOW_TEST_UPDATE_SEED_FILE"] = str(seed_file)
         for name in ("OPENNOW_UPDATE_PLAN", "OPENNOW_UPDATE_NONCE", "APPIMAGE", "APPDIR", "ARGV0"):
             environment.pop(name, None)
-        run(["cargo", "build", "--locked", "--manifest-path", str(MANIFEST), "--lib", "--bin", "opennow-update-helper"], environment)
+        build_update_helper(environment)
         suffix = ".exe" if os.name == "nt" else ""
-        debug = directory / "target/debug"
+        debug = Path(environment["CARGO_TARGET_DIR"]) / "debug"
         previous = debug / ("previous" + suffix)
         candidate = debug / ("candidate" + suffix)
         previous_source = directory / "previous.rs"

@@ -19,6 +19,7 @@ on:
       - ".github/workflows/qt-ci.yml"
       - ".github/workflows/qt-build.yml"
       - ".github/workflows/qt-checks.yml"
+      - ".github/workflows/qt-flatpak.yml"
       - ".github/workflows/qt-release-candidate.yml"
       - ".github/actionlint.yaml"
       - ".github/actions/**"
@@ -37,6 +38,7 @@ on:
       - ".github/workflows/qt-ci.yml"
       - ".github/workflows/qt-build.yml"
       - ".github/workflows/qt-checks.yml"
+      - ".github/workflows/qt-flatpak.yml"
       - ".github/workflows/qt-release-candidate.yml"
       - ".github/actionlint.yaml"
       - ".github/actions/**"
@@ -78,7 +80,7 @@ jobs:
   checks:
     name: ${{ matrix.label }}
     needs: contracts
-    if: always()
+    if: ${{ !cancelled() && needs.contracts.result != 'cancelled' }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
@@ -86,13 +88,13 @@ jobs:
       matrix:
         include:
           - label: linux-x64
-            os: blacksmith-8vcpu-ubuntu-2404
+            os: blacksmith-16vcpu-ubuntu-2404
             qt-host: linux
             qt-arch: linux_gcc_64
             target-arch: x64
             parallel: "8"
           - label: windows-x64
-            os: blacksmith-8vcpu-windows-2025
+            os: blacksmith-16vcpu-windows-2025
             qt-host: windows
             qt-arch: win64_msvc2022_64
             target-arch: x64

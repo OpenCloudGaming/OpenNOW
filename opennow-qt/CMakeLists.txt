@@ -1,5 +1,8 @@
 cmake_minimum_required(VERSION 3.24)
 
+if(POLICY CMP0141)
+    cmake_policy(SET CMP0141 NEW)
+endif()
 if(POLICY CMP0207)
     cmake_policy(SET CMP0207 NEW)
 endif()
@@ -12,6 +15,9 @@ include(cmake/BuildMetadata.cmake)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+if(MSVC AND CMAKE_VERSION VERSION_GREATER_EQUAL 3.25)
+    set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT "$<$<CONFIG:Debug,RelWithDebInfo>:Embedded>")
+endif()
 set(CMAKE_AUTOMOC ON)
 # CMake's MinGW AutoMoc predefine probe is unreliable when invoked through
 # cmake_autogen on Windows. All required platform and Qt definitions are already

@@ -1,0 +1,104 @@
+{
+    "app-id": "io.github.opencloudgaming.OpenNOW",
+    "runtime": "org.kde.Platform",
+    "runtime-version": "6.10",
+    "sdk": "org.kde.Sdk",
+    "sdk-extensions": [
+        "org.freedesktop.Sdk.Extension.rust-stable",
+        "org.freedesktop.Sdk.Extension.llvm20"
+    ],
+    "command": "opennow-qt",
+    "finish-args": [
+        "--share=network",
+        "--share=ipc",
+        "--socket=wayland",
+        "--socket=fallback-x11",
+        "--socket=pulseaudio",
+        "--device=all",
+        "--filesystem=xdg-run/pipewire-0",
+        "--filesystem=xdg-pictures/OpenNOW:create",
+        "--talk-name=org.freedesktop.secrets"
+    ],
+    "modules": [
+        {
+            "name": "sdl3",
+            "buildsystem": "cmake-ninja",
+            "config-opts": [
+                "-DSDL_SHARED=ON",
+                "-DSDL_STATIC=OFF",
+                "-DSDL_TESTS=OFF",
+                "-DSDL_EXAMPLES=OFF"
+            ],
+            "cleanup": ["/include", "/lib/cmake", "/lib/pkgconfig"],
+            "sources": [
+                {
+                    "type": "archive",
+                    "url": "https://github.com/libsdl-org/SDL/releases/download/release-3.2.20/SDL3-3.2.20.tar.gz",
+                    "sha256": "467600ae090dd28616fa37369faf4e3143198ff1da37729b552137e47f751a67"
+                }
+            ]
+        },
+        {
+            "name": "opennow",
+            "buildsystem": "cmake-ninja",
+            "subdir": "opennow-qt",
+            "builddir": true,
+            "config-opts": [
+                "-DCMAKE_BUILD_TYPE=Release"
+            ],
+            "build-options": {
+                "append-path": "/usr/lib/sdk/rust-stable/bin:/usr/lib/sdk/llvm20/bin",
+                "env": {
+                    "CARGO_HOME": "/run/build/opennow/cargo",
+                    "CARGO_NET_OFFLINE": "true",
+                    "LIBCLANG_PATH": "/usr/lib/sdk/llvm20/lib",
+                    "OPENNOW_FFMPEG_ARCHIVE": "/run/build/opennow/ffmpeg-source.tar.xz"
+                }
+            },
+            "sources": [
+                {
+                    "type": "dir",
+                    "path": "../..",
+                    "dest": "opennow-qt",
+                    "skip": ["_flatpak_build"]
+                },
+                {
+                    "type": "dir",
+                    "path": "../../../native/opennow-core",
+                    "dest": "native/opennow-core",
+                    "skip": ["target"]
+                },
+                {
+                    "type": "dir",
+                    "path": "../../../native/opennow-streamer",
+                    "dest": "native/opennow-streamer",
+                    "skip": ["target", "target2", "target3", "bin"]
+                },
+                {
+                    "type": "dir",
+                    "path": "../../../locales",
+                    "dest": "locales"
+                },
+                {
+                    "type": "file",
+                    "path": "../../../LICENSE"
+                },
+                {
+                    "type": "file",
+                    "path": "../../../THIRD_PARTY_NOTICES"
+                },
+                {
+                    "type": "dir",
+                    "path": "../../../build/flatpak/cargo",
+                    "dest": "cargo"
+                },
+                {
+                    "type": "file",
+                    "url": "https://ffmpeg.org/releases/ffmpeg-9.0.tar.xz",
+                    "sha256": "7f607a00dd0d28a729d5a4811205812eef01cf6ef6155025febb6f36a9062d52",
+                    "dest-filename": "ffmpeg-source.tar.xz"
+                }
+            ]
+        }
+    ]
+}

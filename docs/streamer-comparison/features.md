@@ -240,6 +240,16 @@ id 0 lock-style  0f 01 04 00 00 00 00 00
 
 Normalized extract for id 1 is `00 01 00 00 00 00 00 0c 80 16 80`. OpenNOW treats type 0 and cursor id 0 as hidden relative.
 
+Cursor extraction walks the little-endian command code and payload length at each
+command boundary, as the Mac reference's `NvstControlCommand.parse` does. It skips
+non-cursor payloads intact and stops at a truncated command. It must not scan inside
+those payloads for cursor-looking bytes: doing so can manufacture lock/unlock
+notifications from unrelated traffic. Complete cursor commands before a truncated
+tail, and cursor commands following an unrelated complete command, still dispatch.
+The `unrelated_control_payloads_cannot_toggle_cursor_lock` and
+`truncated_control_payloads_cannot_invent_cursor_notifications` transport tests
+exercise these boundaries without a live session.
+
 ## What is missing on purpose
 
 - Feature type 10 on-wire bytes. Logs and DLL names prove it is mouse accel/speed. They do not dump the frame.

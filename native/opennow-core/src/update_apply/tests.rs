@@ -5,6 +5,27 @@ use sha2::{Digest, Sha256};
 use std::sync::OnceLock;
 use tempfile::TempDir;
 
+#[test]
+fn flatpak_detection_accepts_environment_or_sandbox_marker() {
+    use std::ffi::OsStr;
+
+    let directory = tempfile::tempdir().unwrap();
+    let info = directory.path().join(".flatpak-info");
+    assert!(!is_flatpak_installation(None, &info));
+    assert!(!is_flatpak_installation(Some(OsStr::new("")), &info));
+    assert!(is_flatpak_installation(
+        Some(OsStr::new("io.github.opencloudgaming.OpenNOW")),
+        &info
+    ));
+    fs::write(
+        &info,
+        b"[Application]\nname=io.github.opencloudgaming.OpenNOW\n",
+    )
+    .unwrap();
+    assert!(is_flatpak_installation(None, &info));
+    assert!(is_flatpak_installation(Some(OsStr::new("")), &info));
+}
+
 fn signed_manifest(asset: &str, bytes: &[u8]) -> (verification::UpdateManifest, SigningKey) {
     let key = SigningKey::from_bytes(&[91; 32]);
     let mut manifest = verification::UpdateManifest {

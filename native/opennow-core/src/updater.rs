@@ -85,18 +85,23 @@ impl UpdaterService {
         let staging_dir = data_dir.join("updates");
         fs::create_dir_all(&staging_dir)
             .map_err(|error| format!("Could not create the update staging directory: {error}"))?;
-        let (transaction, status, message) = match read_prepared_update(&staging_dir) {
-            Ok(transaction) => (
-                transaction,
-                "idle",
-                "Ready to check GitHub Releases".to_owned(),
-            ),
-            Err(error) => (
-                None,
-                "failed",
-                format!("Could not recover update status: {error}"),
-            ),
-        };
+        let (transaction, status, message) =
+            if let Some(message) = update_apply::external_update_message() {
+                (None, "unsupported", message.to_owned())
+            } else {
+                match read_prepared_update(&staging_dir) {
+                    Ok(transaction) => (
+                        transaction,
+                        "idle",
+                        "Ready to check GitHub Releases".to_owned(),
+                    ),
+                    Err(error) => (
+                        None,
+                        "failed",
+                        format!("Could not recover update status: {error}"),
+                    ),
+                }
+            };
         Ok(Self {
             client,
             staging_dir,
@@ -140,7 +145,8 @@ impl UpdaterService {
         let mut state = self.state.lock().expect("updater state poisoned");
         if !matches!(
             state.status,
-            "checking"
+            "unsupported"
+                | "checking"
                 | "downloading"
                 | "preparing"
                 | "awaiting-exit"
@@ -153,6 +159,9 @@ impl UpdaterService {
     }
 
     pub fn check(&self, params: &Value) -> Result<Value, String> {
+        if update_apply::external_update_message().is_some() {
+            return Ok(self.state());
+        }
         let _operation = self.begin_operation()?;
         let channel = params["channel"]
             .as_str()
@@ -347,6 +356,9 @@ impl UpdaterService {
     }
 
     fn begin_operation(&self) -> Result<std::sync::MutexGuard<'_, ()>, String> {
+        if let Some(message) = update_apply::external_update_message() {
+            return Err(message.to_owned());
+        }
         let operation = self
             .operation
             .try_lock()
@@ -437,12 +449,12 @@ fn state_json(state: &State) -> Value {
         "releaseUrl": state.release_url,
         "message": state.message,
         "lastCheckedAt": state.last_checked_at.map(|value| value.to_string()),
-        "canCheck": !matches!(state.status, "checking" | "downloading" | "preparing" | "awaiting-exit" | "applying" | "restarting" | "installing" | "managed-pending" | "reboot-required"),
+        "canCheck": !matches!(state.status, "unsupported" | "checking" | "downloading" | "preparing" | "awaiting-exit" | "applying" | "restarting" | "installing" | "managed-pending" | "reboot-required"),
         "canDownload": can_download,
         "canInstall": matches!(state.status, "downloaded" | "error" | "available" | "not-available" | "failed" | "rolled-back") && state.downloaded.is_some(),
         "exitRequired": state.status == "awaiting-exit",
         "installVersion": state.transaction.as_ref().map(|transaction| &transaction.version),
-        "updateSource": "github-releases",
+        "updateSource": if state.status == "unsupported" { "flatpak" } else { "github-releases" },
         "signaturePolicy": if embedded_update_key().is_ok() { "ed25519-pinned" } else { "unconfigured-fail-closed" }
     })
 }
@@ -831,6 +843,104 @@ mod tests {
     use base64::Engine as _;
     use base64::engine::general_purpose::STANDARD as BASE64;
     use ed25519_dalek::{Signer as _, SigningKey};
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn flatpak_updates_are_external_even_with_cached_native_updates() {
+        if std::env::var_os("OPENNOW_FLATPAK_UPDATER_TEST").is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "updater::tests::flatpak_updates_are_external_even_with_cached_native_updates",
+                    "--nocapture",
+                ])
+                .env("OPENNOW_FLATPAK_UPDATER_TEST", "1")
+                .env("FLATPAK_ID", "io.github.opencloudgaming.OpenNOW")
+                .env("APPIMAGE", "/host/OpenNOW.AppImage")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+
+        let directory = tempfile::tempdir().unwrap();
+        let updates = directory.path().join("updates");
+        fs::create_dir(&updates).unwrap();
+        let persisted = updates.join("active-apply.json");
+        fs::write(&persisted, b"partial host update transaction").unwrap();
+        let updater = UpdaterService::new(directory.path()).unwrap();
+        let message = update_apply::external_update_message().unwrap();
+        assert!(message.contains("flatpak update io.github.opencloudgaming.OpenNOW"));
+        assert!(!updater.installation_pending());
+        for state in [updater.state(), updater.check(&json!({})).unwrap()] {
+            assert_eq!(state["status"], "unsupported");
+            assert_eq!(state["updateSource"], "flatpak");
+            assert_eq!(state["message"], message);
+            for capability in ["canCheck", "canDownload", "canInstall", "exitRequired"] {
+                assert_eq!(state[capability], false);
+            }
+            assert!(state["installVersion"].is_null());
+        }
+        updater.request_failed("A generic failure must not replace the update instruction");
+        assert_eq!(updater.state()["message"], message);
+        assert_eq!(updater.download().unwrap_err(), message);
+        assert_eq!(
+            updater.install(&json!({"confirmed": true})).unwrap_err(),
+            message
+        );
+        assert_eq!(
+            fs::read(&persisted).unwrap(),
+            b"partial host update transaction"
+        );
+        assert_eq!(fs::read_dir(&updates).unwrap().count(), 1);
+        assert_eq!(
+            update_apply::compatible_package_extension().unwrap_err(),
+            message
+        );
+        for (name, kind) in [
+            ("OpenNOW.AppImage", update_apply::InstallKind::AppImage),
+            ("OpenNOW.deb", update_apply::InstallKind::DebianPackage),
+        ] {
+            let package = directory.path().join(name);
+            let application = directory.path().join("OpenNOW");
+            assert_eq!(
+                update_apply::detect_install_kind(&application, &package).unwrap_err(),
+                message
+            );
+            assert_eq!(
+                update_apply::prepare_update(update_apply::PrepareRequest {
+                    package,
+                    expected_version: "1.2.3".to_owned(),
+                    application_executable: application,
+                    application_pid: std::process::id(),
+                    core_pid: std::process::id(),
+                    kind,
+                    data_dir: directory.path().to_path_buf(),
+                })
+                .unwrap_err(),
+                message
+            );
+        }
+        let prepared = update_apply::PreparedUpdate {
+            plan_path: directory.path().join("plan.json"),
+            outcome_path: directory.path().join("outcome.json"),
+            version: "1.2.3".to_owned(),
+        };
+        assert_eq!(
+            update_apply::launch_prepared_update(&prepared).unwrap_err(),
+            message
+        );
+        assert_eq!(
+            update_apply::run_helper(&prepared.plan_path).unwrap_err(),
+            message
+        );
+        assert!(!directory.path().join("apply.lock").exists());
+    }
 
     fn persisted_managed_fixture(
         directory: &Path,

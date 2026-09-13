@@ -7,9 +7,12 @@
 #include <QFileInfo>
 #include <QElapsedTimer>
 #include <QRegularExpression>
+#include <QScopeGuard>
+#include <QStandardPaths>
 #include <QTemporaryDir>
 #include <QTest>
 #include <algorithm>
+#include <utility>
 
 namespace {
 QString fakeCorePath()
@@ -28,6 +31,65 @@ class CoreClientTest final : public QObject
     Q_OBJECT
 
 private slots:
+#ifdef Q_OS_LINUX
+    void passesFlatpakPicturesDirectoryToCore_data()
+    {
+        QTest::addColumn<QByteArray>("flatpakId");
+        QTest::addColumn<QByteArray>("picturesOverride");
+        QTest::newRow("flatpak-xdg-pictures") << QByteArray("io.github.opencloudgaming.OpenNOW") << QByteArray{};
+        QTest::newRow("flatpak-explicit-override") << QByteArray("io.github.opencloudgaming.OpenNOW") << QByteArray("/custom/captures");
+        QTest::newRow("flatpak-empty-override") << QByteArray("io.github.opencloudgaming.OpenNOW") << QByteArray("");
+        QTest::newRow("no-flatpak-environment") << QByteArray{} << QByteArray{};
+        QTest::newRow("native-explicit-override") << QByteArray{} << QByteArray("/custom/captures");
+    }
+
+    void passesFlatpakPicturesDirectoryToCore()
+    {
+        QFETCH(QByteArray, flatpakId);
+        QFETCH(QByteArray, picturesOverride);
+        const auto previousFlatpakId = qgetenv("FLATPAK_ID");
+        const auto previousPictures = qgetenv("OPENNOW_PICTURES_DIR");
+        const auto previousConfig = qgetenv("XDG_CONFIG_HOME");
+        const auto restoreEnvironment = qScopeGuard([&] {
+            for (const auto &[name, value] : {
+                     std::pair{"FLATPAK_ID", previousFlatpakId},
+                     std::pair{"OPENNOW_PICTURES_DIR", previousPictures},
+                     std::pair{"XDG_CONFIG_HOME", previousConfig}}) {
+                if (value.isNull()) qunsetenv(name);
+                else qputenv(name, value);
+            }
+        });
+        QTemporaryDir config;
+        QVERIFY(config.isValid());
+        const auto customPictures = config.filePath(QStringLiteral("Bilder und Aufnahmen"));
+        QFile userDirs(config.filePath(QStringLiteral("user-dirs.dirs")));
+        QVERIFY(userDirs.open(QIODevice::WriteOnly));
+        const auto content = "XDG_PICTURES_DIR=\"" + customPictures.toUtf8() + "\"\n";
+        QCOMPARE(userDirs.write(content), content.size());
+        userDirs.close();
+        qputenv("XDG_CONFIG_HOME", config.path().toUtf8());
+        if (flatpakId.isNull()) qunsetenv("FLATPAK_ID");
+        else qputenv("FLATPAK_ID", flatpakId);
+        if (picturesOverride.isNull()) qunsetenv("OPENNOW_PICTURES_DIR");
+        else qputenv("OPENNOW_PICTURES_DIR", picturesOverride);
+        QCOMPARE(QStandardPaths::writableLocation(QStandardPaths::PicturesLocation), customPictures);
+
+        CoreClient client;
+        QSignalSpy responses(&client, &CoreClient::responseReceived);
+        QVERIFY(client.start(fakeCorePath()));
+        QTRY_COMPARE_WITH_TIMEOUT(client.state(), QStringLiteral("ready"), 2'000);
+        responses.clear();
+        client.request(QStringLiteral("test.app-context"));
+        QTRY_COMPARE_WITH_TIMEOUT(responses.size(), 1, 2'000);
+        const auto context = qvariant_cast<QJsonObject>(responses.first().at(1));
+        const auto flatpak = !flatpakId.isEmpty() || QFileInfo::exists(QStringLiteral("/.flatpak-info"));
+        const auto expected = !picturesOverride.isNull() ? QString::fromUtf8(picturesOverride)
+            : flatpak ? customPictures : QString{};
+        QCOMPARE(context.value(QStringLiteral("picturesDirectory")).toString(), expected);
+        QCOMPARE(context.value(QStringLiteral("hasPicturesDirectory")).toBool(), flatpak || !picturesOverride.isNull());
+    }
+#endif
+
     void readsGraphicsPreferencesBeforeStartingTheCore()
     {
         QCOMPARE(CoreClient::graphicsPreference(fakeCorePath()), QStringLiteral("fixture-gpu"));

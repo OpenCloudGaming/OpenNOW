@@ -5,6 +5,9 @@ or newer and uses SDL3 for controller input. A bundled Rust process owns setting
 and is the start of the shell-neutral application core. See
 `docs/qt-migration.md` for the migration history and remaining release checklist.
 
+For a sandboxed Linux x86_64 package, follow [Build and install the Flatpak](packaging/flatpak/README.md).
+The separate **Qt Flatpak build** workflow produces an installable bundle without publishing a release.
+
 ## CI checks and manual builds
 
 Pull requests and pushes to `dev` or `main` run workflow lint, packaging-contract
@@ -78,8 +81,8 @@ signer described in the [signing setup guide](../docs/update-signing-setup.md); 
 [nightly release runbook](../docs/qt-nightly-release.md) for the publishing command. Users of
 earlier no-key nightlies must manually install an update-enabled build once before verified
 in-app updates can work. Windows may show a SmartScreen warning; macOS packages are not notarized.
-Windows ARM64 is cross-built rather than runtime-tested. Linux DEBs require Qt 6.8+ and SDL3;
-AppImages are the portable option. Download the files and distribute them through
+Windows ARM64 is cross-built rather than runtime-tested. Release Linux DEBs bundle Qt and SDL3
+for Ubuntu 24.04 / Linux Mint 22.x; AppImages are the portable option. Download the files and distribute them through
 your supporter channel. **Actions artifacts in this public repository are not
 private or supporter-access-controlled**, even though they do not appear in Releases.
 

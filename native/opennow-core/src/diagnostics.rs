@@ -1,13 +1,13 @@
 use serde_json::{Value, json};
 use std::collections::VecDeque;
 use std::fs::{self, OpenOptions};
-use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const ENTRY_LIMIT: usize = 1_200;
-const LOG_LIMIT_BYTES: u64 = 1_500_000;
+const LOG_LIMIT_BYTES: u64 = 5 * 1024 * 1024;
 
 pub fn stream_profile_evidence(session: &Value) -> Value {
     let profile = &session["negotiatedStreamProfile"];
@@ -179,19 +179,43 @@ impl DiagnosticsService {
         fs::create_dir_all(&directory)?;
         let current_path = directory.join("current.log");
         let previous_path = directory.join("previous.log");
-        if current_path
-            .metadata()
-            .is_ok_and(|metadata| metadata.len() > LOG_LIMIT_BYTES)
-        {
-            let _ = fs::remove_file(&previous_path);
-            fs::rename(&current_path, &previous_path)?;
-        }
-        Ok(Self {
+        let service = Self {
             directory,
             current_path,
             previous_path,
             entries: Mutex::new(VecDeque::with_capacity(ENTRY_LIMIT)),
-        })
+        };
+        service.rotate_log(0)?;
+        Ok(service)
+    }
+
+    fn rotate_log(&self, incoming_bytes: u64) -> io::Result<()> {
+        let size = match self.current_path.metadata() {
+            Ok(metadata) => metadata.len(),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(error),
+        };
+        if size.saturating_add(incoming_bytes) <= LOG_LIMIT_BYTES {
+            return Ok(());
+        }
+        match fs::remove_file(&self.previous_path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+        if size <= LOG_LIMIT_BYTES {
+            return fs::rename(&self.current_path, &self.previous_path);
+        }
+        let mut current = fs::File::open(&self.current_path)?;
+        current.seek(SeekFrom::Start(size.saturating_sub(LOG_LIMIT_BYTES)))?;
+        let mut tail = BufReader::new(current.take(LOG_LIMIT_BYTES));
+        tail.skip_until(b'\n')?;
+        let mut previous = fs::File::create(&self.previous_path)?;
+        io::copy(&mut tail, &mut previous)?;
+        OpenOptions::new()
+            .write(true)
+            .open(&self.current_path)?
+            .set_len(0)
     }
 
     pub fn record(&self, area: &str, event: &str, detail: impl AsRef<str>) {
@@ -201,14 +225,15 @@ impl DiagnosticsService {
             event: clean(event, 72),
             detail: redact(detail.as_ref(), 480),
         };
-        {
-            let mut entries = self.entries.lock().expect("diagnostics poisoned");
-            if entries.len() == ENTRY_LIMIT {
-                entries.pop_front();
-            }
-            entries.push_back(entry.clone());
+        let mut entries = self.entries.lock().expect("diagnostics poisoned");
+        if entries.len() == ENTRY_LIMIT {
+            entries.pop_front();
         }
+        entries.push_back(entry.clone());
         let line = format_entry(&entry);
+        if self.rotate_log(line.len() as u64).is_err() {
+            return;
+        }
         if let Ok(mut file) = OpenOptions::new()
             .create(true)
             .append(true)
@@ -479,6 +504,114 @@ fn redact_lines(value: &str, limit: usize) -> String {
 mod tests {
     use super::*;
     use std::env;
+
+    #[test]
+    fn diagnostics_rotate_during_a_session_and_replace_the_previous_log() {
+        let directory = tempfile::tempdir().unwrap();
+        let service = DiagnosticsService::new(directory.path()).unwrap();
+        for marker in *b"abc" {
+            let mut current = fs::File::create(&service.current_path).unwrap();
+            current.set_len(LOG_LIMIT_BYTES).unwrap();
+            current.seek(SeekFrom::End(-1)).unwrap();
+            current.write_all(&[marker]).unwrap();
+            drop(current);
+
+            service.record("test", "rotation", "new entry");
+
+            let previous = fs::read(&service.previous_path).unwrap();
+            assert_eq!(previous.len() as u64, LOG_LIMIT_BYTES);
+            assert_eq!(previous.last(), Some(&marker));
+            let current = fs::read_to_string(&service.current_path).unwrap();
+            assert!(current.contains("new entry"));
+            assert!((current.len() as u64) < LOG_LIMIT_BYTES);
+            assert_eq!(fs::read_dir(&service.directory).unwrap().count(), 2);
+        }
+    }
+
+    #[test]
+    fn diagnostics_startup_retains_a_bounded_tail_of_an_oversized_log() {
+        let directory = tempfile::tempdir().unwrap();
+        let diagnostics = directory.path().join("diagnostics");
+        fs::create_dir_all(&diagnostics).unwrap();
+        let mut current = fs::File::create(diagnostics.join("current.log")).unwrap();
+        current.set_len(LOG_LIMIT_BYTES * 2).unwrap();
+        current.seek(SeekFrom::Start(LOG_LIMIT_BYTES - 1)).unwrap();
+        current.write_all("é\n".as_bytes()).unwrap();
+        current.seek(SeekFrom::End(-5)).unwrap();
+        current.write_all(b"tail\n").unwrap();
+        drop(current);
+
+        let service = DiagnosticsService::new(directory.path()).unwrap();
+
+        let previous = fs::read_to_string(&service.previous_path).unwrap();
+        assert_eq!(previous.len() as u64, LOG_LIMIT_BYTES - 2);
+        assert!(previous.ends_with("tail\n"));
+        assert_eq!(service.current_path.metadata().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn diagnostics_rotation_failure_does_not_grow_the_log() {
+        let directory = tempfile::tempdir().unwrap();
+        let service = DiagnosticsService::new(directory.path()).unwrap();
+        fs::File::create(&service.current_path)
+            .unwrap()
+            .set_len(LOG_LIMIT_BYTES)
+            .unwrap();
+        fs::create_dir(&service.previous_path).unwrap();
+
+        service.record("test", "rotation", "still available in memory");
+
+        assert_eq!(
+            service.current_path.metadata().unwrap().len(),
+            LOG_LIMIT_BYTES
+        );
+        assert_eq!(service.entries.lock().unwrap().len(), 1);
+        fs::remove_dir(&service.previous_path).unwrap();
+        service.record("test", "recovered", "disk logging resumed");
+        assert!(
+            fs::read_to_string(&service.current_path)
+                .unwrap()
+                .contains("disk logging resumed")
+        );
+    }
+
+    #[test]
+    fn diagnostics_concurrent_writers_rotate_without_losing_entries() {
+        let directory = tempfile::tempdir().unwrap();
+        let service = DiagnosticsService::new(directory.path()).unwrap();
+        fs::File::create(&service.current_path)
+            .unwrap()
+            .set_len(LOG_LIMIT_BYTES - 1)
+            .unwrap();
+
+        std::thread::scope(|scope| {
+            for worker in 0..8 {
+                let service = &service;
+                scope.spawn(move || {
+                    for entry in 0..100 {
+                        service.record(
+                            "test",
+                            "concurrent",
+                            format!("worker-{worker}-entry-{entry}"),
+                        );
+                    }
+                });
+            }
+        });
+
+        let current = fs::read_to_string(&service.current_path).unwrap();
+        assert_eq!(current.lines().count(), 800);
+        for worker in 0..8 {
+            for entry in 0..100 {
+                assert!(current.contains(&format!("worker-{worker}-entry-{entry}\n")));
+            }
+        }
+        assert!((current.len() as u64) <= LOG_LIMIT_BYTES);
+        assert_eq!(
+            service.previous_path.metadata().unwrap().len(),
+            LOG_LIMIT_BYTES - 1
+        );
+    }
 
     #[test]
     fn diagnostics_export_includes_bounded_redacted_native_log() {

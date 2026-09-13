@@ -207,6 +207,15 @@ bool CoreClient::start(const QString &program, const QStringList &arguments)
     environment.insert(u"OPENNOW_APP_EXECUTABLE"_s,
                        QFileInfo(QCoreApplication::applicationFilePath()).canonicalFilePath());
     environment.insert(u"OPENNOW_APP_PID"_s, QString::number(QCoreApplication::applicationPid()));
+#ifdef Q_OS_LINUX
+    if ((!environment.value(u"FLATPAK_ID"_s).isEmpty() || QFileInfo::exists(u"/.flatpak-info"_s))
+        && !environment.contains(u"OPENNOW_PICTURES_DIR"_s)) {
+        const auto pictures = QStandardPaths::writableLocation(QStandardPaths::PicturesLocation);
+        if (!pictures.isEmpty()) {
+            environment.insert(u"OPENNOW_PICTURES_DIR"_s, pictures);
+        }
+    }
+#endif
     m_process.setProcessEnvironment(environment);
     m_process.start(program, arguments, QIODevice::ReadWrite | QIODevice::Unbuffered);
     return true;

@@ -366,7 +366,7 @@ jobs:
         run: ctest --test-dir build/opennow-qt-release -C Release --output-on-failure --parallel 4 --no-tests=error -LE interactive-desktop
 
       - name: Create unsigned package
-        if: runner.os != 'macOS'
+        if: runner.os == 'Windows'
         shell: bash
         env:
           PACKAGE_GENERATOR: ${{ matrix.package-generator }}
@@ -424,10 +424,10 @@ jobs:
           APPIMAGE_RUNTIME_SHA256: ${{ matrix.appimage-runtime-sha256 }}
         run: |
           export LD_LIBRARY_PATH="$RUNNER_TEMP/SDL-install/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          mkdir -p build/qt-packages
           cmake --install build/opennow-qt-release --config Release \
             --prefix "$PWD/build/AppDir/usr"
-          deb=$(find build/qt-packages -maxdepth 1 -type f -name '*.deb' -print -quit)
-          python3 opennow-qt/packaging/verify_linux_package.py build/AppDir/usr/bin --deb "$deb"
+          python3 opennow-qt/packaging/verify_linux_package.py build/AppDir/usr/bin
           curl --fail --location --retry 3 \
             "https://github.com/linuxdeploy/linuxdeploy/releases/download/1-alpha-20251107-1/linuxdeploy-${LINUXDEPLOY_ARCH}.AppImage" \
             --output "build/linuxdeploy-${LINUXDEPLOY_ARCH}.AppImage"
@@ -463,6 +463,18 @@ jobs:
           LD_LIBRARY_PATH="$PWD/build/AppDir/usr/lib:$LD_LIBRARY_PATH" \
             python3 opennow-qt/packaging/verify_linux_package.py build/AppDir/usr/bin
           mv OpenNOW-Qt-*.AppImage build/qt-packages/
+
+      - name: Create bundled Linux DEB
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          cpack --config build/opennow-qt-release/CPackConfig.cmake \
+            -D "CPACK_PROJECT_CONFIG_FILE=$PWD/opennow-qt/packaging/LinuxBundledDeb.cmake" \
+            -D "OPENNOW_APPDIR=$PWD/build/AppDir" \
+            -C Release -G DEB -B build/qt-packages
+          debs=(build/qt-packages/*.deb)
+          [[ ${#debs[@]} -eq 1 && -f "${debs[0]}" ]]
+          bash opennow-qt/packaging/verify_bundled_deb.sh "${debs[0]}"
 
       - name: Smoke-test Linux AppImage
         if: runner.os == 'Linux'

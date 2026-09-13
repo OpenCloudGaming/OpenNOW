@@ -1,6 +1,8 @@
 import os
+import io
 from pathlib import Path
 import subprocess
+import tarfile
 import tempfile
 import unittest
 
@@ -58,6 +60,36 @@ class FFmpegBuildContractTest(unittest.TestCase):
                 self.assertEqual(selected, str(rpi).lower())
                 self.assertEqual(Path(source).name, f"ffmpeg-rpi-{REVISION}" if rpi else "ffmpeg-9.0")
                 self.assertEqual(Path(install).name, f"dist-rpi-{REVISION}" if rpi else "dist")
+
+    def test_offline_archive_extracts_into_private_output_and_replaces_stale_sources(self):
+        archive = self.scratch / "ffmpeg.tar.xz"
+        with tarfile.open(archive, "w:xz") as output:
+            entry = tarfile.TarInfo("ffmpeg-9.0/configure")
+            data = b"#!/bin/sh\nexit 0\n"
+            entry.size = len(data)
+            entry.mode = 0o755
+            output.addfile(entry, io.BytesIO(data))
+        source = self.scratch / "ffmpeg-9.0"
+        source.mkdir(exist_ok=True)
+        (source / "stale").write_text("old source")
+        result = self.policy_run("linux", "x86_64", TEST_FETCH="1", OPENNOW_FFMPEG_ARCHIVE=str(archive))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((source / "configure").read_bytes(), data)
+        self.assertFalse((source / "stale").exists())
+
+    def test_offline_archive_errors_do_not_fall_back_to_network_fetch(self):
+        for name in ("absent.tar.xz", "invalid.tar.xz", "empty.tar.xz"):
+            with self.subTest(name=name):
+                archive = self.scratch / name
+                if name == "invalid.tar.xz":
+                    archive.write_bytes(b"not an archive")
+                elif name == "empty.tar.xz":
+                    with tarfile.open(archive, "w:xz"):
+                        pass
+                result = self.policy_run("linux", "x86_64", TEST_FETCH="1",
+                                         OPENNOW_FFMPEG_ARCHIVE=str(archive))
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("offline FFmpeg source extraction failed", result.stderr)
 
     def test_fetch_uses_exact_commit_and_stops_on_failure(self):
         fake_bin = self.scratch / "bin"

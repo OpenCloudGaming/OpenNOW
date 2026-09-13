@@ -421,10 +421,6 @@ pub(crate) struct NvstServerCursorMessage {
     pub(crate) normalized: Option<Vec<u8>>,
 }
 
-/// Scans a data-channel message for cursor commands instead of assuming that
-/// the host always places them at byte zero on `control_channel_reliable`.
-/// This is deliberately cursor-specific: arbitrary custom-channel payloads
-/// must not be interpreted as general NVST control traffic.
 pub(crate) fn server_cursor_messages(bytes: &[u8]) -> Vec<NvstServerCursorMessage> {
     let mut updates = Vec::new();
     let mut offset = 0_usize;
@@ -436,12 +432,10 @@ pub(crate) fn server_cursor_messages(bytes: &[u8]) -> Vec<NvstServerCursorMessag
             break;
         };
         if payload_end > bytes.len() {
-            offset += 1;
-            continue;
+            break;
         }
         let payload = &bytes[payload_start..payload_end];
         match code {
-            super::nvst_haptics::HAPTIC_COMMAND_CODE => {}
             COMMAND_SYSTEM_CURSOR if payload.len() >= 4 => {
                 let cursor_id =
                     u32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]);
@@ -490,10 +484,7 @@ pub(crate) fn server_cursor_messages(bytes: &[u8]) -> Vec<NvstServerCursorMessag
                     normalized: None,
                 });
             }
-            _ => {
-                offset += 1;
-                continue;
-            }
+            _ => {}
         }
         offset = payload_end;
     }
@@ -1388,6 +1379,63 @@ mod tests {
         assert_eq!(cursors.len(), 1);
         assert_eq!(cursors[0].offset, 16);
         assert_eq!(cursors[0].cursor_id, Some(1));
+    }
+
+    #[test]
+    fn unrelated_control_payloads_cannot_toggle_cursor_lock() {
+        for code in [0x010a, 0x0111, 0x0200, 0xffff] {
+            let mut bytes = control_command(COMMAND_SYSTEM_CURSOR, &0_u32.to_le_bytes());
+            let unrelated = control_command(
+                code,
+                &hex("0f010400010000000f01040000000000100108000000000000000000"),
+            );
+            bytes.extend_from_slice(&unrelated);
+            let visible_offset = bytes.len();
+            bytes.extend_from_slice(&control_command(
+                COMMAND_SYSTEM_CURSOR,
+                &12_u32.to_le_bytes(),
+            ));
+
+            let cursors = server_cursor_messages(&bytes);
+            assert_eq!(cursors.len(), 2, "outer command {code:#06x}");
+            assert_eq!(cursors[0].offset, 0);
+            assert_eq!(cursors[0].normalized, Some(hex("00000000000000")));
+            assert_eq!(cursors[1].offset, visible_offset);
+            assert_eq!(cursors[1].normalized, Some(hex("000c0000000000")));
+        }
+    }
+
+    #[test]
+    fn truncated_control_payloads_cannot_invent_cursor_notifications() {
+        for code in [0x010a, COMMAND_SYSTEM_CURSOR, COMMAND_BITMAP_CURSOR] {
+            let mut bytes = control_command(COMMAND_SYSTEM_CURSOR, &0_u32.to_le_bytes());
+            bytes.extend_from_slice(&code.to_le_bytes());
+            bytes.extend_from_slice(&100_u16.to_le_bytes());
+            bytes.extend_from_slice(&hex("0f01040001000000100108000000000000000000"));
+
+            let cursors = server_cursor_messages(&bytes);
+            assert_eq!(cursors.len(), 1, "truncated command {code:#06x}");
+            assert_eq!(cursors[0].offset, 0);
+            assert_eq!(cursors[0].normalized, Some(hex("00000000000000")));
+        }
+    }
+
+    #[test]
+    fn short_cursor_payloads_do_not_consume_following_commands() {
+        for (code, minimum_length) in [(COMMAND_SYSTEM_CURSOR, 4), (COMMAND_BITMAP_CURSOR, 8)] {
+            for length in 0..minimum_length {
+                let mut bytes = control_command(code, &vec![0x0f; length]);
+                let visible_offset = bytes.len();
+                bytes.extend_from_slice(&control_command(
+                    COMMAND_SYSTEM_CURSOR,
+                    &1_u32.to_le_bytes(),
+                ));
+                let cursors = server_cursor_messages(&bytes);
+                assert_eq!(cursors.len(), 1);
+                assert_eq!(cursors[0].offset, visible_offset);
+                assert_eq!(cursors[0].normalized, Some(hex("00010000000000")));
+            }
+        }
     }
 
     #[test]

@@ -44,8 +44,9 @@ use super::nvst_control::{
 };
 use super::nvst_cursor::{CursorCommand, NvstCursorCapture, valid_cursor_channel_message};
 use super::nvst_input::{
-    NvstInputChannelState, NvstInputChannels, NvstInputCodec, native_input_type_is_motion,
-    native_input_type_name, native_input_types, next_control_keepalive, server_cursor_messages,
+    NvstEncodedInput, NvstInputChannelState, NvstInputChannels, NvstInputCodec,
+    native_input_type_is_motion, native_input_type_name, native_input_types,
+    next_control_keepalive, server_cursor_messages,
 };
 use super::{
     EncodedMediaFrame, MediaConsumer, TransportError, deliver_media_frame, install_crypto,
@@ -5222,6 +5223,53 @@ fn finish_nvst_input_handshake(
     true
 }
 
+fn send_nvst_captured_input(
+    codec: &mut NvstInputCodec,
+    bytes: &[u8],
+    timestamp_us: u64,
+    reply: Option<mpsc::SyncSender<Result<(), TransportError>>>,
+    input_ready: &AtomicBool,
+    event_sender: &Sender<NvstReceiveEvent>,
+    mut send: impl FnMut(&NvstEncodedInput) -> bool,
+) -> bool {
+    let previous_codec = codec.clone();
+    let result = codec
+        .encode(bytes, timestamp_us)
+        .map_err(|error| error.to_string())
+        .and_then(|messages| {
+            for message in messages {
+                if !send(&message) {
+                    return Err(format!(
+                        "input packet could not be queued on {:?}",
+                        message.route
+                    ));
+                }
+            }
+            Ok(())
+        });
+    let failed = result.is_err();
+    if let Err(error) = &result {
+        *codec = previous_codec;
+        eprintln!("NVST input packet rejected: {error}");
+    }
+    if let Some(reply) = reply {
+        let _ = reply.send(result.map_err(|_| TransportError::InputNotReady));
+        return true;
+    }
+    if !failed
+        || native_input_types(bytes).is_ok_and(|types| {
+            !types.is_empty() && types.into_iter().all(native_input_type_is_motion)
+        })
+    {
+        return true;
+    }
+    input_ready.store(false, Ordering::Release);
+    let _ = event_sender.send(NvstReceiveEvent::InputUnavailable(
+        "discrete input delivery failed; stopping to prevent stuck input".to_owned(),
+    ));
+    false
+}
+
 fn run_nvst_webrtc_bundle(
     socket: UdpSocket,
     config: NvstVideoConfig,
@@ -5325,7 +5373,6 @@ fn run_nvst_webrtc_bundle(
                     }
                 }
                 Ok(UdpReceiverCommand::SendInput { bytes, reply }) => {
-                    let mut sent = true;
                     if input_state.is_ready()
                         && let Some(channels) = input_channels
                     {
@@ -5379,43 +5426,31 @@ fn run_nvst_webrtc_bundle(
                             .as_micros()
                             .try_into()
                             .unwrap_or(u64::MAX);
-                        let previous_input_codec = input_codec.clone();
-                        match input_codec.encode(&bytes, timestamp_us) {
-                            Ok(messages) => {
-                                for message in messages {
-                                    if should_log {
-                                        eprintln!(
-                                            "NVST encoded input tx: route={:?} bytes={} raw={}",
-                                            message.route,
-                                            message.bytes.len(),
-                                            diagnostic_hex(&message.bytes, 128),
-                                        );
-                                    }
-                                    if !channels.send_encoded(&mut rtc, &message) {
-                                        sent = false;
-                                        input_codec = previous_input_codec;
-                                        eprintln!(
-                                            "NVST input packet could not be queued on {:?}",
-                                            message.route
-                                        );
-                                        break;
-                                    }
+                        if !send_nvst_captured_input(
+                            &mut input_codec,
+                            &bytes,
+                            timestamp_us,
+                            reply,
+                            &input_ready,
+                            &event_sender,
+                            |message| {
+                                if should_log {
+                                    eprintln!(
+                                        "NVST encoded input tx: route={:?} bytes={} raw={}",
+                                        message.route,
+                                        message.bytes.len(),
+                                        diagnostic_hex(&message.bytes, 128),
+                                    );
                                 }
-                            }
-                            Err(error) => {
-                                sent = false;
-                                eprintln!("NVST input packet rejected: {error}");
-                            }
+                                channels.send_encoded(&mut rtc, message)
+                            },
+                        ) {
+                            rtc.disconnect();
+                            forward_optional(&event_sender, receiver.stop());
+                            return;
                         }
-                    } else {
-                        sent = false;
-                    }
-                    if let Some(reply) = reply {
-                        let _ = reply.send(if sent {
-                            Ok(())
-                        } else {
-                            Err(TransportError::InputNotReady)
-                        });
+                    } else if let Some(reply) = reply {
+                        let _ = reply.send(Err(TransportError::InputNotReady));
                     }
                 }
                 Ok(UdpReceiverCommand::Stop) | Err(TryRecvError::Disconnected) => {
@@ -6486,6 +6521,202 @@ mod tests {
     const TEST_KEY: &str = "000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F";
     const TEST_SALT: &str = "000102030405060708090A0B0C0D";
     const TEST_PEER: &str = "192.0.2.20";
+
+    #[test]
+    fn asynchronous_discrete_input_write_rejection_requests_terminal_shutdown() {
+        for input_type in [3_u32, 4, 8, 9, 10] {
+            let mut packet = vec![0; if input_type == 10 { 22 } else { 18 }];
+            packet[..4].copy_from_slice(&input_type.to_le_bytes());
+            let mut codec = NvstInputCodec::default();
+            let ready = AtomicBool::new(true);
+            let (events, received) = mpsc::channel();
+            let mut writes = 0;
+            assert!(!send_nvst_captured_input(
+                &mut codec,
+                &packet,
+                1,
+                None,
+                &ready,
+                &events,
+                |message| {
+                    writes += 1;
+                    assert_eq!(
+                        message.route,
+                        super::super::nvst_input::NvstInputRoute::ControlReliable
+                    );
+                    false
+                },
+            ));
+            assert_eq!(writes, 1);
+            assert!(!ready.load(Ordering::Acquire));
+            assert!(
+                matches!(received.try_recv().unwrap(), NvstReceiveEvent::InputUnavailable(reason)
+                if reason.contains("discrete input delivery failed"))
+            );
+            assert!(received.try_recv().is_err());
+        }
+    }
+
+    #[test]
+    fn asynchronous_motion_write_rejection_remains_nonterminal() {
+        for (input_type, length) in [(5_u32, 26), (7, 22)] {
+            let mut packet = vec![0; length];
+            packet[..4].copy_from_slice(&input_type.to_le_bytes());
+            let ready = AtomicBool::new(true);
+            let (events, received) = mpsc::channel();
+            let mut writes = 0;
+            assert!(send_nvst_captured_input(
+                &mut NvstInputCodec::default(),
+                &packet,
+                1,
+                None,
+                &ready,
+                &events,
+                |_| {
+                    writes += 1;
+                    false
+                },
+            ));
+            assert_eq!(writes, 1);
+            assert!(ready.load(Ordering::Acquire));
+            assert!(received.try_recv().is_err());
+        }
+    }
+
+    #[test]
+    fn synchronous_input_write_rejection_preserves_error_reply() {
+        let mut packet = vec![0; 18];
+        packet[..4].copy_from_slice(&4_u32.to_le_bytes());
+        let ready = AtomicBool::new(true);
+        let (events, received) = mpsc::channel();
+        let (reply, result) = mpsc::sync_channel(1);
+        assert!(send_nvst_captured_input(
+            &mut NvstInputCodec::default(),
+            &packet,
+            1,
+            Some(reply),
+            &ready,
+            &events,
+            |_| false,
+        ));
+        assert!(matches!(
+            result.try_recv().unwrap(),
+            Err(TransportError::InputNotReady)
+        ));
+        assert!(ready.load(Ordering::Acquire));
+        assert!(received.try_recv().is_err());
+    }
+
+    #[test]
+    fn asynchronous_discrete_input_success_keeps_session_ready() {
+        let mut packet = vec![0; 18];
+        packet[..4].copy_from_slice(&4_u32.to_le_bytes());
+        let ready = AtomicBool::new(true);
+        let (events, received) = mpsc::channel();
+        let mut writes = 0;
+        assert!(send_nvst_captured_input(
+            &mut NvstInputCodec::default(),
+            &packet,
+            1,
+            None,
+            &ready,
+            &events,
+            |_| {
+                writes += 1;
+                true
+            },
+        ));
+        assert_eq!(writes, 1);
+        assert!(ready.load(Ordering::Acquire));
+        assert!(received.try_recv().is_err());
+    }
+
+    #[test]
+    fn asynchronous_malformed_input_requests_shutdown_without_channel_write() {
+        let ready = AtomicBool::new(true);
+        let (events, received) = mpsc::channel();
+        assert!(!send_nvst_captured_input(
+            &mut NvstInputCodec::default(),
+            &[4, 0, 0, 0],
+            1,
+            None,
+            &ready,
+            &events,
+            |_| panic!("malformed input must not reach the channel"),
+        ));
+        assert!(!ready.load(Ordering::Acquire));
+        assert!(matches!(
+            received.try_recv().unwrap(),
+            NvstReceiveEvent::InputUnavailable(_)
+        ));
+    }
+
+    #[test]
+    fn input_write_rejection_restores_gamepad_codec_after_partial_batch() {
+        let mut packet = vec![0; 38];
+        packet[..4].copy_from_slice(&12_u32.to_le_bytes());
+        packet[4..6].copy_from_slice(&26_u16.to_le_bytes());
+        packet[8..10].copy_from_slice(&0x0101_u16.to_le_bytes());
+        let expected = NvstInputCodec::default().encode(&packet, 1).unwrap();
+        assert_eq!(expected.len(), 2);
+        let mut codec = NvstInputCodec::default();
+        let ready = AtomicBool::new(true);
+        let (events, received) = mpsc::channel();
+        let mut writes = 0;
+        assert!(!send_nvst_captured_input(
+            &mut codec,
+            &packet,
+            1,
+            None,
+            &ready,
+            &events,
+            |_| {
+                writes += 1;
+                writes == 1
+            },
+        ));
+        assert_eq!(writes, 2);
+        assert!(!ready.load(Ordering::Acquire));
+        assert!(matches!(
+            received.try_recv().unwrap(),
+            NvstReceiveEvent::InputUnavailable(_)
+        ));
+        assert_eq!(codec.encode(&packet, 1).unwrap(), expected);
+    }
+
+    #[test]
+    fn input_encoding_rejection_restores_gamepad_codec_after_partial_mutation() {
+        let mut gamepad = vec![0; 38];
+        gamepad[..4].copy_from_slice(&12_u32.to_le_bytes());
+        gamepad[4..6].copy_from_slice(&26_u16.to_le_bytes());
+        gamepad[8..10].copy_from_slice(&0x0101_u16.to_le_bytes());
+        let expected = NvstInputCodec::default().encode(&gamepad, 1).unwrap();
+        let mut packet = vec![0x23];
+        packet.extend_from_slice(&1_u64.to_be_bytes());
+        for event in [&gamepad[..], &4_u32.to_le_bytes()[..]] {
+            packet.push(0x21);
+            packet.extend_from_slice(&(event.len() as u16).to_be_bytes());
+            packet.extend_from_slice(event);
+        }
+        let mut codec = NvstInputCodec::default();
+        let ready = AtomicBool::new(true);
+        let (events, received) = mpsc::channel();
+        assert!(!send_nvst_captured_input(
+            &mut codec,
+            &packet,
+            1,
+            None,
+            &ready,
+            &events,
+            |_| panic!("invalid batch must not reach the channel"),
+        ));
+        assert!(!ready.load(Ordering::Acquire));
+        assert!(matches!(
+            received.try_recv().unwrap(),
+            NvstReceiveEvent::InputUnavailable(_)
+        ));
+        assert_eq!(codec.encode(&gamepad, 1).unwrap(), expected);
+    }
 
     #[test]
     fn startup_keyframe_control_request_does_not_wait_for_video_ssrc() {

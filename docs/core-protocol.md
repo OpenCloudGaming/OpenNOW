@@ -488,6 +488,14 @@ by the native helper. Clients must not synthesize `canDownload`, `canInstall`, o
 `canCheck` from an error message. A failed check or a later release check does not
 discard an already verified download.
 
+Inside Flatpak, the updater reports `status: "unsupported"` and
+`updateSource: "flatpak"`. `canCheck`, `canDownload`, `canInstall`, and
+`exitRequired` are false. `updater.check` returns that state without contacting
+GitHub. Download and install requests fail with the package-manager instruction
+in `message`. The core does not recover native update transactions inside the
+sandbox, and the native update helper rejects execution there. Flatpak owns
+package replacement and updates.
+
 The additive updater state fields `exitRequired` and `installVersion` describe
 the prepared installation, separately from `availableVersion` and
 `downloadedVersion`. The shell may quit for an update only after a confirmed

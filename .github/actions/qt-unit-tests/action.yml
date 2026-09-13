@@ -34,16 +34,33 @@ runs:
       uses: ilammy/msvc-dev-cmd@v1
       with:
         arch: x64
+    - name: Cache Windows NASM
+      if: runner.os == 'Windows'
+      id: windows-nasm
+      uses: actions/cache@v4
+      with:
+        path: C:\Program Files\NASM
+        key: windows-nasm-3.2.0
     - name: Install Windows native test dependencies
       if: runner.os == 'Windows'
       shell: pwsh
+      env:
+        NASM_CACHE_HIT: ${{ steps.windows-nasm.outputs.cache-hit }}
       run: |
         $ErrorActionPreference = "Stop"
         .github/scripts/ensure-windows-llvm.ps1
-        choco install nasm -y --no-progress
+        if ($env:NASM_CACHE_HIT -ne "true") {
+          choco install nasm --version=3.2.0 -y --no-progress
+          if ($LASTEXITCODE -ne 0) { throw "NASM installation failed with exit code $LASTEXITCODE" }
+        }
         $nasmBin = Join-Path $env:ProgramFiles "NASM"
-        if (-not (Test-Path (Join-Path $nasmBin "nasm.exe"))) {
+        $nasm = Join-Path $nasmBin "nasm.exe"
+        if (-not (Test-Path $nasm)) {
           throw "NASM installation is missing nasm.exe"
+        }
+        $version = & $nasm -v
+        if ($LASTEXITCODE -ne 0 -or $version -notmatch '^NASM version 3\.02(?:\s|$)') {
+          throw "Expected NASM 3.02 from Chocolatey package 3.2.0, got: $version"
         }
         $nasmBin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
         $linker = Join-Path $env:VCToolsInstallDir "bin\Hostx64\x64\link.exe"
@@ -99,6 +116,7 @@ runs:
       working-directory: ${{ env.OPENNOW_CHECKOUT }}
       env:
         CARGO_BUILD_JOBS: ${{ inputs.parallel }}
+        OPENNOW_UPDATE_TEST_TARGET_DIR: ${{ env.OPENNOW_CHECKOUT }}/native/opennow-core/target
       run: |
         if [[ "$RUNNER_OS" == Windows ]]; then
           python opennow-qt/tests/run_update_helper_integration.py
@@ -118,7 +136,9 @@ runs:
     - uses: hendrikmuhs/ccache-action@5ebbd400eff9e74630f759d94ddd7b6c26299639
       with:
         key: qt-checks-${{ inputs.label }}
+        restore-keys: qt-checks-${{ inputs.label }}
         max-size: 1G
+        verbose: 1
     - name: Build and cache SDL3 test dependency
       uses: ./.github/actions/sdl3
       with:
@@ -152,4 +172,6 @@ runs:
       working-directory: ${{ env.OPENNOW_CHECKOUT }}
       env:
         BUILD_PARALLEL: ${{ inputs.parallel }}
-      run: ctest --test-dir build/opennow-qt-checks --output-on-failure --no-tests=error -L ci-unit --parallel "$BUILD_PARALLEL"
+      run: |
+        ctest --test-dir build/opennow-qt-checks --output-on-failure --no-tests=error \
+          -L ci-unit --parallel "$BUILD_PARALLEL" --output-junit qt-unit-tests.xml

@@ -851,6 +851,152 @@ private slots:
         QCOMPARE(StreamVideoItem::inputModifiers(Qt::ShiftModifier, Qt::Key_Shift), quint16(0));
     }
 
+    void preservesWindowsVirtualKeysAcrossLayouts_data()
+    {
+        QTest::addColumn<int>("key");
+        QTest::addColumn<quint32>("nativeKey");
+        QTest::addColumn<quint16>("expected");
+        QTest::newRow("cyrillic-w") << 0x0426 << quint32(0x57) << quint16(0x57);
+        QTest::newRow("cyrillic-a") << 0x0424 << quint32(0x41) << quint16(0x41);
+        QTest::newRow("cyrillic-s") << 0x042b << quint32(0x53) << quint16(0x53);
+        QTest::newRow("cyrillic-d") << 0x0412 << quint32(0x44) << quint16(0x44);
+        QTest::newRow("french-number-row") << int(Qt::Key_Eacute) << quint32(0x32) << quint16(0x32);
+        QTest::newRow("numpad-one") << int(Qt::Key_1) << quint32(0x61) << quint16(0x61);
+        QTest::newRow("right-shift") << int(Qt::Key_Shift) << quint32(0xa1) << quint16(0xa1);
+        QTest::newRow("generic-control") << int(Qt::Key_Control) << quint32(0x11) << quint16(0xa2);
+        QTest::newRow("synthetic-w") << int(Qt::Key_W) << quint32(0) << quint16(0x57);
+        QTest::newRow("invalid-native") << int(Qt::Key_W) << quint32(0x10057) << quint16(0x57);
+    }
+
+    void preservesWindowsVirtualKeysAcrossLayouts()
+    {
+        QFETCH(int, key);
+        QFETCH(quint32, nativeKey);
+        QFETCH(quint16, expected);
+        QCOMPARE(StreamVideoItem::windowsVirtualKey(key, Qt::NoModifier, nativeKey), expected);
+    }
+
+    void nativeKeyboardEventsPreserveGameplayKeys_data()
+    {
+        QTest::addColumn<bool>("fullscreen");
+        QTest::newRow("windowed") << false;
+        QTest::newRow("fullscreen") << true;
+    }
+
+    void nativeKeyboardEventsPreserveGameplayKeys()
+    {
+        QFETCH(bool, fullscreen);
+        static QList<QList<quint16>> inputCalls;
+        static QList<QByteArray> textCalls;
+        inputCalls.clear();
+        textCalls.clear();
+        auto api = CursorSession::api();
+        api.submitKey = [](const OpenNowStreamer *, std::uint16_t vk,
+                           std::uint16_t modifiers, bool pressed) {
+            inputCalls.append(QList<quint16>{vk, modifiers, quint16(pressed)});
+            return OPENNOW_STREAMER_OK;
+        };
+        api.submitText = [](const OpenNowStreamer *, const std::uint8_t *text, std::size_t size) {
+            textCalls.append(QByteArray(reinterpret_cast<const char *>(text), qsizetype(size)));
+            return OPENNOW_STREAMER_OK;
+        };
+        NativeStreamRuntime runtime(api);
+        QVERIFY(runtime.start());
+        StreamVideoItem::setNativeStreamRuntime(&runtime);
+        const auto reset = qScopeGuard([] { StreamVideoItem::setNativeStreamRuntime(nullptr); });
+        QVERIFY(runtime.send({{QStringLiteral("type"), QStringLiteral("start")},
+                              {QStringLiteral("id"), QStringLiteral("native-keyboard")}}));
+        const QByteArray ready = R"({"id":"native-keyboard","type":"ok"})";
+        CursorSession::callbacks.response_callback(
+            reinterpret_cast<const std::uint8_t *>(ready.constData()), ready.size(),
+            CursorSession::callbacks.user_data);
+        QTRY_VERIFY(runtime.inputAllowed());
+        QQuickWindow window;
+        window.resize(640, 480);
+        auto *item = new StreamVideoItem(window.contentItem());
+        item->setRenderCallback({});
+        item->setSize(window.size());
+        auto *overlay = new QQuickItem(window.contentItem());
+        if (fullscreen) window.showFullScreen();
+        else window.showNormal();
+        window.requestActivate();
+        QTRY_VERIFY(window.isActive());
+        item->forceActiveFocus();
+        QTRY_VERIFY(item->captureActive());
+        const struct {
+            int key;
+            quint32 scanCode;
+            quint32 nativeKey;
+            quint16 expected;
+        } keys[] = {
+#if defined(Q_OS_WIN)
+            {0x0426, 0x11, 0x57, 0x57},
+            {0x0424, 0x1e, 0x41, 0x41},
+            {0x042b, 0x1f, 0x53, 0x53},
+            {0x0412, 0x20, 0x44, 0x44},
+#else
+            {Qt::Key_W, 25, 0x77, 0x57},
+            {Qt::Key_A, 38, 0x61, 0x41},
+            {Qt::Key_S, 39, 0x73, 0x53},
+            {Qt::Key_D, 40, 0x64, 0x44},
+#endif
+        };
+        for (const auto &key : keys) {
+            inputCalls.clear();
+            QKeyEvent press(QEvent::KeyPress, key.key, Qt::NoModifier,
+                            key.scanCode, key.nativeKey, 0);
+            QCoreApplication::sendEvent(&window, &press);
+            QCOMPARE(inputCalls, (QList<QList<quint16>>{{key.expected, 0, 1}}));
+            QKeyEvent release(QEvent::KeyRelease, Qt::Key_unknown, Qt::NoModifier,
+                              key.scanCode, 0, 0);
+            QCoreApplication::sendEvent(&window, &release);
+            QCOMPARE(inputCalls, (QList<QList<quint16>>{
+                {key.expected, 0, 1}, {key.expected, 0, 0}}));
+            QCoreApplication::sendEvent(&window, &press);
+            item->setInputEnabled(false);
+            overlay->forceActiveFocus();
+            QCOMPARE(inputCalls.last(), (QList<quint16>{key.expected, 0, 0}));
+            inputCalls.clear();
+            QCoreApplication::sendEvent(&window, &press);
+            QCoreApplication::sendEvent(&window, &release);
+            QVERIFY(inputCalls.isEmpty());
+            item->setInputEnabled(true);
+            item->forceActiveFocus();
+            QTRY_VERIFY(item->captureActive());
+            QCoreApplication::sendEvent(&window, &press);
+            QCoreApplication::sendEvent(&window, &release);
+            QCOMPARE(inputCalls, (QList<QList<quint16>>{
+                {key.expected, 0, 1}, {key.expected, 0, 0}}));
+        }
+#if defined(Q_OS_WIN)
+        item->setShortcutBindings({{QStringLiteral("menu"), QStringLiteral("Ctrl+G")}});
+        QSignalSpy shortcuts(item, &StreamVideoItem::localShortcutRequested);
+        inputCalls.clear();
+        QKeyEvent shortcutPress(QEvent::KeyPress, 0x041f, Qt::ControlModifier, 0x22, 0x47, 0);
+        QKeyEvent shortcutRelease(QEvent::KeyRelease, 0x041f, Qt::ControlModifier, 0x22, 0x47, 0);
+        QCoreApplication::sendEvent(&window, &shortcutPress);
+        QCoreApplication::sendEvent(&window, &shortcutRelease);
+        QCOMPARE(shortcuts.size(), 1);
+        QCOMPARE(shortcuts.first().first().toString(), QStringLiteral("menu"));
+        QVERIFY(inputCalls.isEmpty());
+        auto *clipboard = QGuiApplication::clipboard();
+        const auto previousText = clipboard->text();
+        const auto restoreClipboard = qScopeGuard([&] { clipboard->setText(previousText); });
+        clipboard->setText(QStringLiteral("native keyboard paste"));
+        item->setClipboardPaste(true);
+        QKeyEvent controlPress(QEvent::KeyPress, Qt::Key_Control, Qt::ControlModifier,
+                               0x11d, 0xa3, 0);
+        QCoreApplication::sendEvent(&window, &controlPress);
+        QKeyEvent pastePress(QEvent::KeyPress, 0x041c, Qt::ControlModifier, 0x2f, 0x56, 0);
+        QKeyEvent pasteRelease(QEvent::KeyRelease, 0x041c, Qt::ControlModifier, 0x2f, 0x56, 0);
+        QCoreApplication::sendEvent(&window, &pastePress);
+        QCoreApplication::sendEvent(&window, &pasteRelease);
+        QCOMPARE(textCalls, (QList<QByteArray>{"native keyboard paste"}));
+        QCOMPARE(inputCalls, (QList<QList<quint16>>{{0xa3, 0, 1}, {0xa3, 0, 0}}));
+        QVERIFY(item->m_pressedKeys.isEmpty());
+#endif
+    }
+
     void tabDoesNotStealGameplayFocus_data()
     {
         QTest::addColumn<int>("key");

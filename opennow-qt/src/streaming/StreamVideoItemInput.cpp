@@ -30,8 +30,17 @@
 #include <windows.h>
 #endif
 
-quint16 StreamVideoItem::windowsVirtualKey(int key, Qt::KeyboardModifiers modifiers)
+quint16 StreamVideoItem::windowsVirtualKey(int key, Qt::KeyboardModifiers modifiers,
+                                          quint32 nativeVirtualKey)
 {
+    if (nativeVirtualKey > 0 && nativeVirtualKey < 0xff) {
+        switch (nativeVirtualKey) {
+        case 0x10: return 0xa0;
+        case 0x11: return 0xa2;
+        case 0x12: return 0xa4;
+        default: return static_cast<quint16>(nativeVirtualKey);
+        }
+    }
     if (key >= Qt::Key_A && key <= Qt::Key_Z) return static_cast<quint16>(key);
     if (key >= Qt::Key_0 && key <= Qt::Key_9) return static_cast<quint16>(key);
     if (key >= Qt::Key_F1 && key <= Qt::Key_F24)
@@ -152,10 +161,19 @@ void StreamVideoItem::focusOutEvent(QFocusEvent *event)
     QQuickItem::focusOutEvent(event);
 }
 
+quint16 StreamVideoItem::eventVirtualKey(const QKeyEvent *event)
+{
+#if defined(Q_OS_WIN)
+    return windowsVirtualKey(event->key(), event->modifiers(), event->nativeVirtualKey());
+#else
+    return windowsVirtualKey(event->key(), event->modifiers());
+#endif
+}
+
 quint32 StreamVideoItem::keyIdentity(const QKeyEvent *event) const
 {
     if (event->nativeScanCode() != 0) return event->nativeScanCode();
-    const auto virtualKey = windowsVirtualKey(event->key(), event->modifiers());
+    const auto virtualKey = eventVirtualKey(event);
     return virtualKey != 0 ? virtualKey : static_cast<quint32>(event->key());
 }
 
@@ -173,8 +191,15 @@ void StreamVideoItem::keyPressEvent(QKeyEvent *event)
         return;
     }
     const auto identity = keyIdentity(event);
-    const auto shortcutAction = shortcutActionForInput(
+    const auto virtualKey = eventVirtualKey(event);
+    const QKeyEvent shortcutEvent(QEvent::KeyPress,
+        virtualKey >= 0x41 && virtualKey <= 0x5a ? virtualKey : event->key(), event->modifiers());
+    auto shortcutAction = shortcutActionForInput(
         m_shortcutBindings, event->key(), event->modifiers());
+    if (shortcutAction.isEmpty() && shortcutEvent.key() != event->key()) {
+        shortcutAction = shortcutActionForInput(
+            m_shortcutBindings, shortcutEvent.key(), event->modifiers());
+    }
     if (!shortcutAction.isEmpty()) {
         // A fullscreen transition can prevent Windows from delivering the key-up
         // that belongs to the key which initiated it.  Keep the identity only so
@@ -190,7 +215,8 @@ void StreamVideoItem::keyPressEvent(QKeyEvent *event)
         event->ignore();
         return;
     }
-    if (m_clipboardPaste && event->matches(QKeySequence::Paste)) {
+    if (m_clipboardPaste && (event->matches(QKeySequence::Paste)
+                            || shortcutEvent.matches(QKeySequence::Paste))) {
         m_pressedShortcuts.insert(identity);
         event->accept();
         const auto *clipboard = QGuiApplication::clipboard();
@@ -207,7 +233,7 @@ void StreamVideoItem::keyPressEvent(QKeyEvent *event)
         }
         for (auto key = m_pressedKeys.begin(); key != m_pressedKeys.end();) {
             const auto vk = key->virtualKey;
-            if (vk == 0xa0 || vk == 0xa2 || vk == 0xa4 || vk == 0x5b) {
+            if ((vk >= 0xa0 && vk <= 0xa5) || vk == 0x5b || vk == 0x5c) {
                 s_nativeRuntime->submitKey(vk, 0, false);
                 key = m_pressedKeys.erase(key);
             } else {
@@ -218,7 +244,6 @@ void StreamVideoItem::keyPressEvent(QKeyEvent *event)
             emit clipboardPasteFailed();
         return;
     }
-    const auto virtualKey = windowsVirtualKey(event->key(), event->modifiers());
     if (virtualKey == 0) {
         event->ignore();
         return;
