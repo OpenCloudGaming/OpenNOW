@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: Numeric signed-candidate version (for example 1.0.0; use qt-ci for unsigned nightlies)
+        description: Numeric update-signed candidate version (for example 1.0.0)
         required: true
         type: string
       source_commit:
@@ -15,6 +15,14 @@ on:
         description: Base64 Ed25519 public key pinned into every build
         required: true
         type: string
+      windows_signing_mode:
+        description: Windows platform signing (Ed25519 update signing is always required)
+        required: true
+        type: choice
+        default: unsigned
+        options:
+          - unsigned
+          - authenticode
 
 concurrency:
   group: qt-release-candidate-${{ inputs.version }}
@@ -41,6 +49,7 @@ jobs:
           RELEASE_VERSION: ${{ inputs.version }}
           SOURCE_COMMIT: ${{ inputs.source_commit }}
           UPDATE_PUBLIC_KEY: ${{ inputs.update_public_key }}
+          WINDOWS_SIGNING_MODE: ${{ inputs.windows_signing_mode }}
         run: |
           set -euo pipefail
           [[ "$RELEASE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
@@ -50,6 +59,10 @@ jobs:
             exit 1
           fi
           [[ $(printf '%s' "$UPDATE_PUBLIC_KEY" | base64 --decode | wc -c) -eq 32 ]]
+          case "$WINDOWS_SIGNING_MODE" in
+            unsigned|authenticode) ;;
+            *) echo "Invalid Windows signing mode" >&2; exit 1 ;;
+          esac
 
       - name: Resolve immutable source
         uses: actions/checkout@v4
@@ -388,6 +401,7 @@ jobs:
           cmake --build build/opennow-qt-release --config Release --parallel 8
 
       - name: Authenticode-sign application binaries
+        if: inputs.windows_signing_mode == 'authenticode'
         shell: pwsh
         env:
           WINDOWS_PFX_BASE64: ${{ secrets.OPENNOW_WINDOWS_SIGNING_PFX_BASE64 }}
@@ -395,6 +409,10 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           . ./opennow-qt/packaging/windows-release.ps1
+          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_PFX_BASE64) -or
+              [string]::IsNullOrEmpty($env:WINDOWS_PFX_PASSWORD)) {
+            throw "Authenticode mode requires the Windows PFX and password secrets"
+          }
           $pfx = Join-Path $env:RUNNER_TEMP "opennow-signing.pfx"
           [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_PFX_BASE64))
           $files = @(Get-OpenNowReleaseBinaries -Root build/opennow-qt-release/Release)
@@ -403,33 +421,57 @@ jobs:
             Invoke-OpenNowSignTool verify /pa /all $file.FullName
           }
 
-      - name: Create and sign MSI and portable ZIP
+      - name: Create MSI and portable ZIP
         shell: pwsh
-        env:
-          WINDOWS_PFX_BASE64: ${{ secrets.OPENNOW_WINDOWS_SIGNING_PFX_BASE64 }}
-          WINDOWS_PFX_PASSWORD: ${{ secrets.OPENNOW_WINDOWS_SIGNING_PFX_PASSWORD }}
         run: |
           $ErrorActionPreference = "Stop"
-          . ./opennow-qt/packaging/windows-release.ps1
           New-Item -ItemType Directory -Force build/release-artifacts | Out-Null
           cpack --config build/opennow-qt-release/CPackConfig.cmake -C Release -G WIX -B build/release-artifacts
           if ($LASTEXITCODE -ne 0) { throw "MSI packaging failed with exit code $LASTEXITCODE" }
           cpack --config build/opennow-qt-release/CPackConfig.cmake -C Release -G ZIP -B build/release-artifacts
           if ($LASTEXITCODE -ne 0) { throw "ZIP packaging failed with exit code $LASTEXITCODE" }
+
+      - name: Authenticode-sign MSI
+        if: inputs.windows_signing_mode == 'authenticode'
+        shell: pwsh
+        env:
+          WINDOWS_PFX_PASSWORD: ${{ secrets.OPENNOW_WINDOWS_SIGNING_PFX_PASSWORD }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          . ./opennow-qt/packaging/windows-release.ps1
           $pfx = Join-Path $env:RUNNER_TEMP "opennow-signing.pfx"
           $msi = Get-ChildItem build/release-artifacts -Filter *.msi
           if ($msi.Count -ne 1) { throw "Expected one MSI" }
           Invoke-OpenNowSignTool sign /f $pfx /p $env:WINDOWS_PFX_PASSWORD /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 $msi.FullName
           Invoke-OpenNowSignTool verify /pa /all $msi.FullName
+
+      - name: Verify MSI and portable ZIP payloads
+        shell: pwsh
+        env:
+          WINDOWS_SIGNING_MODE: ${{ inputs.windows_signing_mode }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          . ./opennow-qt/packaging/windows-release.ps1
+          if ($env:WINDOWS_SIGNING_MODE -notin @("unsigned", "authenticode")) {
+            throw "Invalid Windows signing mode"
+          }
+          $msi = Get-ChildItem build/release-artifacts -Filter *.msi
+          if ($msi.Count -ne 1) { throw "Expected one MSI" }
           $msiExpanded = Join-Path $env:RUNNER_TEMP "msi-expanded"
           $process = Start-Process msiexec.exe -Wait -PassThru -ArgumentList "/a `"$($msi.FullName)`" /qn TARGETDIR=`"$msiExpanded`""
           if ($process.ExitCode -ne 0) { throw "MSI administrative extraction failed" }
-          Assert-OpenNowSignedPackage -Root $msiExpanded -SignedRoot build/opennow-qt-release/Release
+          Assert-OpenNowPackagePayload -Root $msiExpanded -DeploymentRoot build/opennow-qt-release/Release
+          if ($env:WINDOWS_SIGNING_MODE -eq "authenticode") {
+            Assert-OpenNowSignedPackage -Root $msiExpanded -SignedRoot build/opennow-qt-release/Release
+          }
           $zip = Get-ChildItem build/release-artifacts -Filter *.zip
           if ($zip.Count -ne 1) { throw "Expected one portable ZIP" }
           $expanded = Join-Path $env:RUNNER_TEMP "portable"
           Expand-Archive $zip.FullName $expanded
-          Assert-OpenNowSignedPackage -Root $expanded -SignedRoot build/opennow-qt-release/Release
+          Assert-OpenNowPackagePayload -Root $expanded -DeploymentRoot build/opennow-qt-release/Release
+          if ($env:WINDOWS_SIGNING_MODE -eq "authenticode") {
+            Assert-OpenNowSignedPackage -Root $expanded -SignedRoot build/opennow-qt-release/Release
+          }
 
       - name: Record artifact checksums
         shell: pwsh
@@ -440,13 +482,13 @@ jobs:
             Set-Content build/release-artifacts/SHA256SUMS
 
       - name: Remove Windows signing certificate
-        if: always()
+        if: always() && inputs.windows_signing_mode == 'authenticode'
         shell: pwsh
         run: Remove-Item "$env:RUNNER_TEMP/opennow-signing.pfx" -Force -ErrorAction SilentlyContinue
 
       - uses: actions/upload-artifact@v4
         with:
-          name: opennow-qt-${{ inputs.version }}-windows-${{ matrix.arch }}-signed
+          name: opennow-qt-${{ inputs.version }}-windows-${{ matrix.arch }}-${{ inputs.windows_signing_mode }}
           path: |
             build/release-artifacts/*.msi
             build/release-artifacts/*.zip
@@ -676,6 +718,7 @@ jobs:
         env:
           RELEASE_VERSION: ${{ inputs.version }}
           SOURCE_SHA: ${{ needs.preflight.outputs.source_sha }}
+          WINDOWS_SIGNING_MODE: ${{ inputs.windows_signing_mode }}
           UPDATE_PUBLIC_KEY: ${{ inputs.update_public_key }}
           UPDATE_PRIVATE_KEY: ${{ secrets.OPENNOW_UPDATE_ED25519_PRIVATE_KEY }}
         run: |
@@ -742,6 +785,7 @@ jobs:
             echo "OpenNOW Qt release candidate"
             echo "version=$RELEASE_VERSION"
             echo "sourceCommit=$SOURCE_SHA"
+            echo "windowsSigningMode=$WINDOWS_SIGNING_MODE"
             find candidate -type f -print0 | sort -z | xargs -0 sha256sum
           } > "$inventory"
           mv "$inventory" candidate/RELEASE-CANDIDATE-INVENTORY.txt

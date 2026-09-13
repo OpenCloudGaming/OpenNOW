@@ -11,15 +11,17 @@ the separate `OpenNOW-Mac` Swift app. Configure the release credentials before r
 2. For macOS, use an Apple Developer Program membership and a Developer ID Application
    certificate. Use the same Apple team for later releases. Do not change the Qt bundle
    identifier, `io.github.opencloudgaming.OpenNOW`.
-3. For Windows, choose a publicly trusted Authenticode signing provider before buying
-   a certificate. The current candidate workflow accepts a PFX with its private key.
+3. For Windows, keep the default `windows_signing_mode=unsigned` if you do not have a paid
+   signing identity. Ed25519 update manifests are still required. For optional Authenticode,
+   choose a publicly trusted signing provider before buying a certificate and select
+   `windows_signing_mode=authenticode`. The current workflow accepts a PFX with its private key.
    Newly issued public code-signing certificates normally require non-exportable keys
    in a hardware token, HSM, or cloud signing service. Those services need a provider
    integration in the workflow; do not try to export a protected private key into a PFX.
 4. For Linux, use the Ed25519 manifests for OpenNOW's built-in updater. No paid platform
    certificate is required. This does not create an APT repository or sign its metadata.
 
-For a new Windows setup, consider [Azure Artifact Signing][windows-signing] if your
+If you later add Windows Authenticode signing, consider [Azure Artifact Signing][windows-signing] if your
 publisher is eligible. Microsoft's current eligibility includes organizations in the
 US, Canada, the EU, and the UK, and individuals in the US and Canada. Otherwise, choose
 a CA with a CI-compatible hardware-backed signing service. Confirm eligibility and
@@ -102,12 +104,20 @@ certificate. See Apple's [certificate instructions][apple-certificates] and
 
 ## Configure Windows signing
 
+No Windows signing secrets are needed for the default `windows_signing_mode=unsigned`.
+Both MSI and ZIP payloads still pass deployment-integrity and standalone update-helper checks.
+The isolated signer still creates and verifies every Ed25519 update manifest. Windows may show
+SmartScreen or unknown-publisher warnings because this mode supplies no Authenticode publisher
+identity. It does not change Apple signing or notarization requirements.
+
 If you already have an appropriate exportable signing identity supported by the current
 workflow, add its base64 PFX as `OPENNOW_WINDOWS_SIGNING_PFX_BASE64` and its password as
-`OPENNOW_WINDOWS_SIGNING_PFX_PASSWORD` in `qt-production-release`.
+`OPENNOW_WINDOWS_SIGNING_PFX_PASSWORD` in `qt-production-release`, then select
+`windows_signing_mode=authenticode`. Missing credentials or failed signing stop the candidate;
+the workflow never silently downgrades that request to unsigned.
 
 If your provider uses a hardware token, HSM, or cloud signing account, stop before dispatching
-the production workflow. Integrate that provider's supported signing command and authentication
+the production workflow in `authenticode` mode. Integrate that provider's supported signing command and authentication
 first. Preserve the existing binary allowlist, timestamping, signature verification, and
 extracted MSI and ZIP checks. A self-signed certificate can test the mechanics but does not
 provide a publicly trusted Windows publisher identity.
@@ -118,11 +128,13 @@ provide a publicly trusted Windows publisher identity.
    numeric version newer than the installed stable version, for example `1.0.1` after `1.0.0`.
 2. Open **Actions → qt-release-candidate → Run workflow**. Select a ref pointing to that
    exact commit. Enter the version, full 40-character `source_commit`, and public update key.
+   Keep `windows_signing_mode=unsigned` unless you have configured the optional Authenticode path.
 3. Approve the platform signing environment only after reviewing the dispatched revision.
 4. After the platform jobs pass, inspect the full package set before approving
    `qt-update-signing`. The signer checks that the private seed matches the embedded public key.
 5. Download the complete candidate artifact. Run the hardware acceptance and staged-rollout
-   checks in [Qt production release candidates](qt-release-candidate.md).
+   checks in [Qt production release candidates](qt-release-candidate.md). Confirm the inventory's
+   `windowsSigningMode` matches the requested mode before promotion.
 6. Only after acceptance and release approval, create a draft release in this repository
    with tag `v<version>` at the reviewed commit. Upload every candidate package and its exact
    `.manifest.json` sibling. Keep their filenames and bytes unchanged.
