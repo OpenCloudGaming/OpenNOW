@@ -506,6 +506,10 @@ if(BUILD_TESTING)
         PREFIX "/acceptance" BASE tests FILES tests/QueueDropsAcceptance.qml)
     qt_add_resources(opennow-qt "color-format-acceptance"
         PREFIX "/acceptance" BASE tests FILES tests/ColorFormatAcceptance.qml)
+    set(color_format_environment "QT_QPA_PLATFORM=offscreen")
+    if(WIN32)
+        set(color_format_environment "QT_QPA_PLATFORM=windows;QT_FORCE_STDERR_LOGGING=1")
+    endif()
     foreach(surface desktop console)
         foreach(source decoder server)
             foreach(mode windowed fullscreen)
@@ -520,7 +524,7 @@ if(BUILD_TESTING)
                     COMMAND opennow-qt --smoke-test --allow-multiple-instances --${surface}
                         --route stream --smoke-color-format --reduced-motion ${color_format_args})
                 set_tests_properties("qml-color-format-${surface}-${source}-${mode}" PROPERTIES
-                    ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 15)
+                    ENVIRONMENT "${color_format_environment}" TIMEOUT 15)
             endforeach()
         endforeach()
     endforeach()
@@ -534,7 +538,7 @@ if(BUILD_TESTING)
                 --route stream --smoke-color-format --smoke-color-format-overlay
                 --reduced-motion ${color_format_args})
         set_tests_properties("qml-color-format-menu-${mode}" PROPERTIES
-            ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 15)
+            ENVIRONMENT "${color_format_environment}" TIMEOUT 15)
     endforeach()
     foreach(width 960 1440)
         foreach(view stats report)
