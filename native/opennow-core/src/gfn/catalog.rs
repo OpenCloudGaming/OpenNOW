@@ -810,6 +810,7 @@ pub(super) fn app_to_game(app: &Value) -> Option<Value> {
             &variant["gfn"]["features"],
             "IN_GAME_SETTINGS_PERSISTENCE_ENABLED",
         );
+        let subscription = &variant["gfn"]["library"]["subscription"];
         Some(json!({
             "id":variant_id,
             "store":store,
@@ -821,7 +822,7 @@ pub(super) fn app_to_game(app: &Value) -> Option<Value> {
             "lastPlayedDate":variant["gfn"]["library"]["lastPlayedDate"],
             "playStatus":variant["gfn"]["library"]["playStatus"],
             "installed":variant["gfn"]["library"]["installed"],
-            "subscription":variant["gfn"]["library"]["subscription"],
+            "subscription":if subscription == "NONE" { &Value::Null } else { subscription },
             "paymentModels":variant["paymentModels"],
             "subscriptions":variant["subscriptions"],
             "supportedLanguages":variant["gfn"]["supportedLanguages"],

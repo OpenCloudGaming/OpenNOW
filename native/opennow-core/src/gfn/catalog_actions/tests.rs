@@ -102,6 +102,37 @@ fn nullable_variant_scope_preserves_required_account_linking() {
 }
 
 #[test]
+fn no_subscription_sentinel_is_normalized_without_bypassing_real_subscriptions() {
+    for subscription in [
+        Value::Null,
+        json!("NONE"),
+        json!("STORE_PASS"),
+        json!("UNKNOWN_PASS"),
+    ] {
+        let mut metadata = app("PLATFORM_SYNC", true, false);
+        metadata["variants"][0]["gfn"]["library"]["subscription"] = subscription.clone();
+        let game = app_to_game(&metadata).unwrap();
+        let requires_subscription = subscription.is_string() && subscription != "NONE";
+        assert_eq!(
+            game["variants"][0]["subscription"],
+            if requires_subscription {
+                subscription
+            } else {
+                Value::Null
+            }
+        );
+        assert_eq!(
+            decision(&game, "parent-app", "123", &Value::Null).status,
+            if requires_subscription {
+                LaunchStatus::SubscriptionRequired
+            } else {
+                LaunchStatus::Ready
+            }
+        );
+    }
+}
+
+#[test]
 fn exact_selected_variant_policy_never_infers_ownership_from_aggregate_or_labels() {
     let mut game = app_to_game(&app("MANUAL", true, true)).unwrap();
     for key in ["isInLibrary", "accountLinked", "favorited"] {
