@@ -8,12 +8,13 @@ Rectangle {
     property string subtitle: ""
     property string controllerFamily: "controller"
     property bool warning: false
+    property bool formatNotice: false
     property int batteryPercent: -1
     property var history: []
     property real lifetimeFraction: 1
     readonly property color accent: warning ? "#F5A623" : "#1DB954"
     width: 384
-    height: 68
+    height: formatNotice ? Math.max(68, textColumn.height + 28) : 68
     radius: 20
     color: "#F00E1018"
     border.color: "#24FFFFFF"
@@ -30,7 +31,7 @@ Rectangle {
         Image {
             anchors.centerIn: parent
             width: 22; height: 22
-            visible: !root.warning
+            visible: !root.warning && !root.formatNotice
             source: root.warning ? "" : InputPromptIcons.sourceFor(root.controllerFamily, "white")
             sourceSize: Qt.size(width * Screen.devicePixelRatio, height * Screen.devicePixelRatio)
             fillMode: Image.PreserveAspectFit
@@ -38,19 +39,22 @@ Rectangle {
         Shape {
             anchors.centerIn: parent
             width: 19; height: 19
-            visible: root.warning
+            visible: root.warning || root.formatNotice
             ShapePath {
                 strokeColor: root.accent
                 strokeWidth: 1.35
                 fillColor: "transparent"
                 capStyle: ShapePath.RoundCap
                 joinStyle: ShapePath.RoundJoin
-                PathSvg { path: "M9.5 15.83h.01 M6.73 13a3.96 3.96 0 0 1 5.54 0 M3.96 10.18a7.92 7.92 0 0 1 4.1-2.13 M15.04 10.18a7.92 7.92 0 0 0-1.59-1.21 M1.58 6.98a11.88 11.88 0 0 1 3.31-2.09 M17.42 6.98a11.88 11.88 0 0 0-8.94-2.98 M1.58 1.58l15.84 15.84" }
+                PathSvg { path: root.formatNotice
+                    ? "M2 2h15v11H2z M9.5 13v4 M5 17h9"
+                    : "M9.5 15.83h.01 M6.73 13a3.96 3.96 0 0 1 5.54 0 M3.96 10.18a7.92 7.92 0 0 1 4.1-2.13 M15.04 10.18a7.92 7.92 0 0 0-1.59-1.21 M1.58 6.98a11.88 11.88 0 0 1 3.31-2.09 M17.42 6.98a11.88 11.88 0 0 0-8.94-2.98 M1.58 1.58l15.84 15.84" }
             }
         }
     }
 
     Column {
+        id: textColumn
         x: 66
         anchors.verticalCenter: parent.verticalCenter
         width: Math.max(0, root.width - x - 16 - (trailing.width > 0 ? trailing.width + 12 : 0))
@@ -67,6 +71,7 @@ Rectangle {
         Text {
             width: parent.width
             text: root.subtitle
+            wrapMode: root.formatNotice ? Text.WordWrap : Text.NoWrap
             color: "#A8FFFFFF"
             font.family: Theme.bodyFont
             font.pixelSize: 13

@@ -2348,15 +2348,24 @@ mod tests {
             VideoPixelFormat::Ayuv,
             VideoPixelFormat::Y410,
         ] {
-            let error = DecodedVideoFrame::from_sample(
+            let decoded = DecodedVideoFrame::from_sample(
                 sample.clone(),
                 format,
                 crate::aperture::VideoAperture::new(format.width, format.height, None).unwrap(),
                 preferred,
-            )
-            .err()
-            .expect("startup fallback must not publish a downgraded frame");
-            assert!(error.contains("produced Nv12 output below negotiated"));
+            );
+            if preferred == VideoPixelFormat::Ayuv {
+                let frame = decoded.expect("eight-bit chroma fallback retains its actual format");
+                assert_eq!(frame.format.pixel_format, VideoPixelFormat::Nv12);
+                assert_eq!(frame.format.chroma_format, VideoChromaFormat::Cs420);
+                assert_eq!(sample_ref_count(&sample), baseline_refs + 1);
+                drop(frame);
+            } else {
+                let error = decoded
+                    .err()
+                    .expect("startup fallback must not lose bit depth");
+                assert!(error.contains("produced Nv12 output below negotiated"));
+            }
             assert_eq!(sample_ref_count(&sample), baseline_refs);
         }
         let error = DecodedVideoFrame::from_sample(

@@ -101,7 +101,10 @@ Item {
         const w = Number(profile.width || dimensions[0] || live.outputWidth || 0), h = Number(profile.height || dimensions[1] || live.outputHeight || 0)
         if (w && h) parts.push(w + "×" + h)
         const colors = {"8bit_420":"8-bit 4:2:0", "8bit_444":"8-bit 4:4:4", "10bit_420":"10-bit 4:2:0", "10bit_444":"10-bit 4:4:4"}
-        if (colors[profile.colorQuality]) parts.push(colors[profile.colorQuality])
+        const observed = ShellStore.streamColorFormat
+        const colorQuality = observed && observed.sessionId === String(session.sessionId || "")
+            ? observed.actualColorQuality : profile.colorQuality
+        if (colors[colorQuality]) parts.push(colors[colorQuality])
         else {
             if (profile.bitDepth) parts.push(profile.bitDepth + "-bit")
             if (profile.chroma) parts.push(String(profile.chroma))

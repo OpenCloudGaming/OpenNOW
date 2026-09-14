@@ -979,6 +979,7 @@ private slots:
         };
         QVERIFY(!evaluate(QStringLiteral(R"JS(
             var ready = true, activeSession = {sessionId: 'seat', phase: 'ready'};
+            var streamColorProfileObserved = false, streamRequestedColorQuality = '', streamColorFormat = null;
             var streamer = {status: 'starting', sessionId: 'seat'};
             var runtimeStreamProfile = {}, streamMessage = '', streamState = '', lastError = '';
             var streamerRestartAttempts = 0, sessionReconnectAttempts = 0;
@@ -1024,7 +1025,8 @@ private slots:
                                 "scheduleSessionRecovery", "discoverRecoverySession", "acceptRecoverySessions",
                                 "normalizedStreamingSession", "acceptStreamingSession",
                                 "isRemoteSessionTermination", "finishRemoteSession", "cancelSessionRecovery",
-                                "startNativeStreamer", "retryNativeStreamer", "acceptNativeEvent"}) {
+                                "startNativeStreamer", "retryNativeStreamer", "acceptNativeEvent",
+                                "observeNegotiatedColorFormat", "acceptStreamColorFormat"}) {
             const QRegularExpression function(QStringLiteral(
                 "    function %1\\([^\\n]*\\) \\{.*?\\n    \\}").arg(QString::fromLatin1(name)),
                 QRegularExpression::DotMatchesEverythingOption);

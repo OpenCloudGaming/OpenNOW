@@ -504,6 +504,38 @@ if(BUILD_TESTING)
     set_tests_properties(qml-stream-recovery PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 10)
     qt_add_resources(opennow-qt "queue-drop-acceptance"
         PREFIX "/acceptance" BASE tests FILES tests/QueueDropsAcceptance.qml)
+    qt_add_resources(opennow-qt "color-format-acceptance"
+        PREFIX "/acceptance" BASE tests FILES tests/ColorFormatAcceptance.qml)
+    foreach(surface desktop console)
+        foreach(source decoder server)
+            foreach(mode windowed fullscreen)
+                set(color_format_args)
+                if(source STREQUAL "server")
+                    list(APPEND color_format_args --smoke-color-format-server)
+                endif()
+                if(mode STREQUAL "fullscreen")
+                    list(APPEND color_format_args --smoke-color-format-fullscreen)
+                endif()
+                add_test(NAME "qml-color-format-${surface}-${source}-${mode}"
+                    COMMAND opennow-qt --smoke-test --allow-multiple-instances --${surface}
+                        --route stream --smoke-color-format --reduced-motion ${color_format_args})
+                set_tests_properties("qml-color-format-${surface}-${source}-${mode}" PROPERTIES
+                    ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 15)
+            endforeach()
+        endforeach()
+    endforeach()
+    foreach(mode windowed fullscreen)
+        set(color_format_args)
+        if(mode STREQUAL "fullscreen")
+            list(APPEND color_format_args --smoke-color-format-fullscreen)
+        endif()
+        add_test(NAME "qml-color-format-menu-${mode}"
+            COMMAND opennow-qt --smoke-test --allow-multiple-instances --desktop
+                --route stream --smoke-color-format --smoke-color-format-overlay
+                --reduced-motion ${color_format_args})
+        set_tests_properties("qml-color-format-menu-${mode}" PROPERTIES
+            ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 15)
+    endforeach()
     foreach(width 960 1440)
         foreach(view stats report)
             set(queue_drop_args)

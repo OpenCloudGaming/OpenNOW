@@ -232,9 +232,12 @@ int AcceptanceSession::startSmokeWorkload()
                      || m_arguments.contains(u"--smoke-persistent-in-game-settings"_s)
                      || m_arguments.contains(u"--smoke-idle-mode"_s)
                      || m_arguments.contains(u"--smoke-queue-drops"_s)
+                     || m_arguments.contains(u"--smoke-color-format"_s)
                      || m_arguments.contains(u"--smoke-stream-recovery"_s))) {
         QQmlComponent component(&m_engine, QUrl(m_arguments.contains(u"--smoke-command-search"_s)
             ? u"qrc:/acceptance/CommandSearchAcceptance.qml"_s
+            : m_arguments.contains(u"--smoke-color-format"_s)
+            ? u"qrc:/acceptance/ColorFormatAcceptance.qml"_s
             : m_arguments.contains(u"--smoke-ownership"_s)
             ? u"qrc:/acceptance/OwnershipAcceptance.qml"_s
             : m_arguments.contains(u"--smoke-catalog-sync"_s)
@@ -285,9 +288,19 @@ int AcceptanceSession::startSmokeWorkload()
         }
         QTimer::singleShot(150, this, [this, fixture] {
             auto *window = qobject_cast<QQuickWindow *>(m_engine.rootObjects().first());
+            if (window && m_arguments.contains(u"--smoke-color-format-fullscreen"_s))
+                window->showFullScreen();
             QVariant passed;
             const bool ok = window && QMetaObject::invokeMethod(fixture, "run", Q_RETURN_ARG(QVariant, passed),
                 Q_ARG(QVariant, QVariant::fromValue(window->contentItem()))) && passed.toBool() && !m_qmlWarningOccurred;
+            if (ok && m_arguments.contains(u"--smoke-color-format"_s)) {
+                QTimer::singleShot(150, this, [this, window, fixture] {
+                    QVariant notified;
+                    if (!QMetaObject::invokeMethod(fixture, "notify", Q_RETURN_ARG(QVariant, notified),
+                            Q_ARG(QVariant, QVariant::fromValue(window->contentItem()))) || !notified.toBool())
+                        m_application.exit(EXIT_FAILURE);
+                });
+            }
             if (ok && m_arguments.contains(u"--smoke-command-search"_s)) {
                 auto *timer = new QTimer(this);
                 timer->setInterval(25);
@@ -319,9 +332,11 @@ int AcceptanceSession::startSmokeWorkload()
             if (ok && (m_arguments.contains(u"--smoke-collections"_s)
                        || m_arguments.contains(u"--smoke-ownership"_s)
                        || m_arguments.contains(u"--smoke-catalog-sync"_s)
+                       || m_arguments.contains(u"--smoke-color-format"_s)
                        || m_arguments.contains(u"--smoke-queue-drops"_s))) {
                 QTimer::singleShot(250, this, [this, window, fixture] {
-                    if (m_arguments.contains(u"--smoke-ownership"_s)) {
+                    if (m_arguments.contains(u"--smoke-ownership"_s)
+                        || m_arguments.contains(u"--smoke-color-format"_s)) {
                         QVariant verified;
                         if (!QMetaObject::invokeMethod(fixture, "verifyRendered", Q_RETURN_ARG(QVariant, verified),
                                 Q_ARG(QVariant, QVariant::fromValue(window->contentItem()))) || !verified.toBool()) {

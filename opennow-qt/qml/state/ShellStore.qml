@@ -310,11 +310,26 @@ QtObject {
     property string pinTargetName: qsTr("Profile")
     property string pinMessage: ""
     property var activeSession: null
+    property string colorFormatSessionId: ""
+    property string pendingRequestedColorQuality: ""
+    property string streamRequestedColorQuality: ""
+    property var streamColorFormat: null
+    property var streamColorNotice: null
+    property bool streamColorNoticeShown: false
+    property bool streamColorProfileObserved: false
     property string dropSessionId: ""
     property string sessionReportDropId: ""
     property var streamDropCounts: ({})
     onActiveSessionChanged: {
         const sessionId = String(activeSession && activeSession.sessionId || "")
+        if (sessionId !== colorFormatSessionId) {
+            colorFormatSessionId = sessionId
+            streamRequestedColorQuality = ""
+            streamColorFormat = null
+            streamColorNotice = null
+            streamColorNoticeShown = false
+            streamColorProfileObserved = false
+        }
         if (sessionId !== "" && sessionId !== dropSessionId) {
             dropSessionId = sessionId
             streamDropCounts = {videoDropCount: 0, audioDiscardedMs: 0,
@@ -461,6 +476,7 @@ QtObject {
                 }, 35000)
             } else if (stage === "create") {
                 root.streamState = "requesting"
+                root.pendingRequestedColorQuality = String(root.settings.colorQuality || "8bit_420")
                 root.streamCreateRequestId = CoreClient.request("session.create",
                     Object.assign({}, root.pendingLaunchParams, {runtimeCapabilities: root.nativeRuntimeCapabilities}), 60000)
             }
@@ -1758,6 +1774,7 @@ QtObject {
             recordingStopCount: 0,
             queueDropCount: 0
         }
+        streamColorFormat = null
         microphoneRequestId = ""
         sessionMicrophoneMode = "disabled"
         streamInputStateKnown = false
@@ -2720,8 +2737,47 @@ QtObject {
         streamDropCounts = next
     }
 
+    function acceptStreamColorFormat(requested, actual, source, eventSessionId) {
+        const sessionId = String(activeSession && activeSession.sessionId || "")
+        if (!sessionId || !streamer || streamer.sessionId !== sessionId
+                || ["starting", "streaming"].indexOf(streamer.status) < 0
+                || streamerStopExpected || streamStopRequestId !== ""
+                || (eventSessionId && eventSessionId !== sessionId)) return
+        const supported = ["8bit_420", "8bit_444", "10bit_420", "10bit_444"]
+        if (supported.indexOf(requested) < 0 || supported.indexOf(actual) < 0
+                || ["decoder", "server"].indexOf(source) < 0) return
+        const requestedColor = source === "decoder" && supported.indexOf(streamRequestedColorQuality) >= 0
+            ? streamRequestedColorQuality : requested
+        streamColorFormat = {sessionId: sessionId, requestedColorQuality: requestedColor,
+            actualColorQuality: actual, source: source}
+        if (requestedColor !== actual && !streamColorNotice && !streamColorNoticeShown)
+            streamColorNotice = streamColorFormat
+    }
+
+    function observeNegotiatedColorFormat() {
+        if (streamColorProfileObserved) return
+        streamColorProfileObserved = true
+        const profile = activeSession && activeSession.negotiatedStreamProfile
+        if (!profile || !streamRequestedColorQuality) return
+        const requestedDepth = streamRequestedColorQuality.startsWith("10bit_") ? 10 : 8
+        const requestedChroma = streamRequestedColorQuality.endsWith("_444") ? 1 : 0
+        const depthChanged = profile.bitDepth !== requestedDepth
+        const chromaChanged = profile.chromaFormat !== requestedChroma
+        if ((!depthChanged && !chromaChanged)
+                || (depthChanged && profile.bitDepthSource !== "finalized")
+                || (chromaChanged && profile.chromaFormatSource !== "finalized")) return
+        acceptStreamColorFormat(streamRequestedColorQuality, profile.colorQuality, "server", "")
+    }
+
     function acceptNativeEvent(event) {
         const type = String(event && event.type || "")
+        if (event && event.event === "color-format-changed") {
+            if (type === "log" && event.source === "decoder"
+                    && typeof event.sessionId === "string" && event.sessionId !== "")
+                acceptStreamColorFormat(event.requestedColorQuality, event.actualColorQuality,
+                    event.source, event.sessionId)
+            return
+        }
         const fields = {}
         if (event.framesPerSecond !== undefined)
             fields.framesPerSecond = Number(event.framesPerSecond)
@@ -2753,6 +2809,8 @@ QtObject {
                     Date.now() - Number(streamer.sessionStartedAtMs || Date.now()))
             }
             fields.mediaBackend = String(event.backend || "")
+            if (!event.sessionId || event.sessionId === String(activeSession.sessionId))
+                observeNegotiatedColorFormat()
         } else if (event.event === "backend-fallback") {
             fields.backendFallbackCount = Number(streamer && streamer.backendFallbackCount || 0) + 1
         } else if (event.event === "decoder-error") {
@@ -3230,6 +3288,9 @@ QtObject {
                 root.streamCreateRequestId = ""
                 root.launchConflictDetected = false
                 root.acceptStreamingSession(result.session || null)
+                if (root.activeSession)
+                    root.streamRequestedColorQuality = root.pendingRequestedColorQuality
+                root.pendingRequestedColorQuality = ""
             } else if (requestId === root.streamPollRequestId) {
                 root.streamPollRequestId = ""
                 if (!root.acceptsSessionScope(result.scope)) return

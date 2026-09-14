@@ -11,6 +11,7 @@ FocusScope {
     property bool pointerLocked: false
     property var frameGenerationStats: ({})
     property bool notificationsEnabled: false
+    property bool connectionNotificationsEnabled: true
     focus: visible && inputBlocking
     readonly property bool present: menuView.present || exitView.present || statsVisible || notificationsEnabled
 
@@ -84,6 +85,7 @@ FocusScope {
     }
 
     DesktopStreamToasts {
+        connectionNotificationsEnabled: root.connectionNotificationsEnabled
         controllers: ControllerInput.controllers
         anchors.right: parent.right
         anchors.rightMargin: 24
