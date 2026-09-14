@@ -26,8 +26,7 @@ pub enum StoreFeature {
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LinkingMetadata {
-    #[serde(default)]
-    pub supported_variant_ids: Vec<String>,
+    pub supported_variant_ids: Option<Vec<String>>,
     pub is_supported: Option<bool>,
     pub is_required: Option<bool>,
     pub label: Option<String>,
@@ -79,8 +78,7 @@ pub struct SubscriptionDefinition {
     #[serde(rename = "buySubscriptionURL")]
     pub buy_subscription_url: Option<String>,
     pub primary_store: Option<String>,
-    #[serde(default)]
-    pub additional_stores: Vec<SubscriptionStore>,
+    pub additional_stores: Option<Vec<SubscriptionStore>>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -209,4 +207,63 @@ pub fn filter_expression(value: &Value) -> Option<Value> {
         merge(&mut output, parsed, 0)?;
     }
     Some(output)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn store_definitions_preserve_nullable_variant_scope_and_link_requirements() {
+        for variants in [Value::Null, json!([]), json!(["123"])] {
+            let input = json!([{"store":"XBOX","label":"Xbox","features":[],
+                "accountLinkingMetadata":{"supportedVariantIds":variants,"isRequired":true}}]);
+            let parsed = parse_list::<StoreDefinition>(&input).unwrap();
+            let store: StoreDefinition = serde_json::from_value(parsed[0].clone()).unwrap();
+            let connection = store.connection_definition();
+            assert_eq!(
+                connection["accountLinkingMetadata"]["supportedVariantIds"],
+                variants
+            );
+            assert_eq!(connection["isRequired"], true);
+        }
+        for invalid in [json!("123"), json!([123]), json!([null])] {
+            assert!(
+                parse_list::<StoreDefinition>(&json!([{"store":"XBOX","label":"Xbox",
+                "accountLinkingMetadata":{"supportedVariantIds":invalid}}]))
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn subscription_definitions_accept_null_but_reject_invalid_additional_stores() {
+        for stores in [Value::Null, json!([]), json!([{"store":"UPLAY"}])] {
+            let parsed = parse_list::<SubscriptionDefinition>(&json!([{
+                "subscription":"STORE_PASS","label":"Store Pass","additionalStores":stores
+            }]))
+            .unwrap();
+            assert_eq!(parsed[0]["additionalStores"].is_null(), stores.is_null());
+            if let Some(stores) = stores.as_array() {
+                assert_eq!(
+                    parsed[0]["additionalStores"].as_array().unwrap().len(),
+                    stores.len()
+                );
+                for (index, store) in stores.iter().enumerate() {
+                    assert_eq!(
+                        parsed[0]["additionalStores"][index]["store"],
+                        store["store"]
+                    );
+                }
+            }
+        }
+        for invalid in [json!("UPLAY"), json!(["UPLAY"]), json!([null])] {
+            assert!(
+                parse_list::<SubscriptionDefinition>(&json!([{
+                    "subscription":"STORE_PASS","label":"Store Pass","additionalStores":invalid
+                }]))
+                .is_err()
+            );
+        }
+    }
 }
