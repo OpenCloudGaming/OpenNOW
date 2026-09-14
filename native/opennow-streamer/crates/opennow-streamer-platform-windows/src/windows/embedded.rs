@@ -822,6 +822,10 @@ unsafe impl Send for D3d11Frame {}
 unsafe impl Sync for D3d11Frame {}
 
 impl D3d11Frame {
+    pub fn format(&self) -> VideoFormat {
+        self.frame.format
+    }
+
     pub fn width(&self) -> u32 {
         self.frame.aperture.width
     }
@@ -1929,6 +1933,100 @@ mod tests {
             drop(frame);
             decoder.stop();
         }
+    }
+
+    #[test]
+    #[ignore = "requires a hardware HEVC Main44410 MFT accepting P010 output and RGB10A2 conversion"]
+    fn hevc_444_request_accepts_p010_output_without_decoder_restart() {
+        let mut device = None;
+        let mut context = None;
+        unsafe {
+            D3D11CreateDevice(
+                None::<&IDXGIAdapter>,
+                D3D_DRIVER_TYPE_HARDWARE,
+                HMODULE::default(),
+                D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+                Some(&[D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0]),
+                D3D11_SDK_VERSION,
+                Some(&mut device),
+                None,
+                Some(&mut context),
+            )
+            .expect("D3D11 hardware device");
+        }
+        let device = device.unwrap();
+        let context = context.unwrap();
+        let adopted = AdoptedD3d11Context {
+            device: device.as_raw(),
+            immediate_context: context.as_raw(),
+        };
+        let requested = VideoFormat {
+            pixel_format: VideoPixelFormat::Y410,
+            chroma_format: VideoChromaFormat::Cs444,
+            ..color_test_format()
+        };
+        let (ready_sender, ready_receiver) = sync_channel(1);
+        let (producer, submitter) = unsafe {
+            D3d11FrameProducer::new(
+                adopted,
+                requested,
+                WindowsDecoderMode::Hardware,
+                Arc::new(move || {
+                    let _ = ready_sender.try_send(());
+                }),
+            )
+        }
+        .expect("adopt D3D11 device with a requested Y410 decoder");
+        submitter
+            .submit_video(EncodedVideoFrame {
+                codec: requested.codec,
+                data: include_bytes!("../../fixtures/probe/hevc-p010-sdr.hevc").to_vec(),
+                timestamp_100ns: 0,
+                duration_100ns: requested.frame_duration_100ns(),
+                key_frame: true,
+                reset_decoder: false,
+            })
+            .expect("submit HEVC P010 SDR access unit");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let frame = loop {
+            let frame = producer
+                .acquire_latest()
+                .expect("acquire validated decoder output");
+            while let Some(event) = producer.try_event() {
+                assert!(
+                    matches!(event, BackendEvent::VideoFormatChanged(_)),
+                    "unexpected decoder recovery event: {event:?}"
+                );
+            }
+            if let Some(frame) = frame {
+                break frame;
+            }
+            ready_receiver
+                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                .expect("P010 output must arrive without a replacement keyframe");
+        };
+        let actual = frame.format();
+        assert_eq!(actual.pixel_format, VideoPixelFormat::P010);
+        assert_eq!(actual.chroma_format, VideoChromaFormat::Cs420);
+        assert_eq!(actual.pixel_format.bit_depth(), 10);
+        assert_eq!(actual.transfer_function, VideoTransferFunction::Sdr);
+        assert_eq!(actual.color_primaries, requested.color_primaries);
+        assert_eq!(actual.color_matrix, requested.color_matrix);
+        assert_eq!(
+            producer.state.lock().unwrap().presented_decoder_generation,
+            1,
+            "chroma fallback must not restart the decoder"
+        );
+        let recorded = unsafe { frame.record(adopted, 0) }
+            .expect("convert validated P010 output into the adopted RGB10A2 frame slot");
+        assert_eq!(recorded.texture_format, D3d11TextureFormat::Rgb10A2);
+        assert_eq!(recorded.color_space, D3d11ColorSpace::Sdr709);
+        let output = unsafe { clone_interface::<ID3D11Texture2D>(recorded.texture) }.unwrap();
+        let mut description = D3D11_TEXTURE2D_DESC::default();
+        unsafe {
+            output.GetDesc(&mut description);
+        }
+        assert_eq!(description.Format, DXGI_FORMAT_R10G10B10A2_UNORM);
     }
 
     #[test]

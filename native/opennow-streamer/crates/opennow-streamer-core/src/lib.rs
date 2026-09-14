@@ -2196,6 +2196,33 @@ fn forward_nvst_media_feedback<R: NvstSessionResources>(
                 }),
             ));
         }
+        MediaFeedback::ColorFormatChanged { requested, actual } => {
+            let lifecycle = lock_lifecycle(lifecycle);
+            if lifecycle.generation != generation {
+                return;
+            }
+            let Some(context) = &lifecycle.context else {
+                return;
+            };
+            let session_id = context.session.session_id.clone();
+            drop(lifecycle);
+            let _ = output.send(event(
+                "log",
+                json!({
+                    "event": "color-format-changed",
+                    "requestedColorQuality": requested.protocol_name(),
+                    "actualColorQuality": actual.protocol_name(),
+                    "sessionId": session_id,
+                    "source": "decoder",
+                    "level": if requested == actual { "info" } else { "warn" },
+                    "message": if requested == actual {
+                        "The decoded video color format matches the requested format"
+                    } else {
+                        "The decoded video color format differs from the requested format"
+                    }
+                }),
+            ));
+        }
         MediaFeedback::RequestKeyframe { reason, .. } => {
             resources.request_keyframe();
             let _ = output.send(event(
@@ -2988,6 +3015,65 @@ mod tests {
                 .as_str()
                 .is_some_and(|message| message.contains("decoder reference loss"))
         );
+    }
+
+    #[test]
+    fn color_format_feedback_reports_actual_output_without_restarting_media() {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let sender = EventSender::unbounded(sender);
+        let lifecycle = connected_lifecycle();
+        let resources = TestNvstResources::default();
+        let mut state = NvstMediaFeedbackState::new(true);
+        for generation in [6, 7] {
+            forward_nvst_media_feedback(
+                &sender,
+                &lifecycle,
+                generation,
+                &resources,
+                MediaFeedback::ColorFormatChanged {
+                    requested: MediaColorQuality::TenBit444,
+                    actual: MediaColorQuality::TenBit420,
+                },
+                &mut state,
+            );
+            if generation == 6 {
+                assert!(receiver.try_recv().is_err());
+            }
+        }
+        let message = receiver.try_recv().expect("color format notification");
+        assert_eq!(message["type"], "log");
+        assert_eq!(message["event"], "color-format-changed");
+        assert_eq!(message["source"], "decoder");
+        assert_eq!(
+            message["sessionId"],
+            lock_lifecycle(&lifecycle)
+                .context
+                .as_ref()
+                .unwrap()
+                .session
+                .session_id
+        );
+        assert_eq!(message["requestedColorQuality"], "10bit_444");
+        assert_eq!(message["actualColorQuality"], "10bit_420");
+        assert_eq!(message["level"], "warn");
+        forward_nvst_media_feedback(
+            &sender,
+            &lifecycle,
+            7,
+            &resources,
+            MediaFeedback::ColorFormatChanged {
+                requested: MediaColorQuality::TenBit444,
+                actual: MediaColorQuality::TenBit444,
+            },
+            &mut state,
+        );
+        let restored = receiver.try_recv().expect("restored color format");
+        assert_eq!(restored["actualColorQuality"], "10bit_444");
+        assert_eq!(restored["level"], "info");
+        assert_eq!(resources.keyframe_requests.load(Ordering::Relaxed), 0);
+        assert_eq!(resources.recoveries.load(Ordering::Relaxed), 0);
+        assert_eq!(resources.stops.load(Ordering::Relaxed), 0);
+        assert!(receiver.try_recv().is_err());
     }
 
     #[test]
