@@ -1,6 +1,6 @@
 //! Compact local title/facet index. Full game records stay in the page cache;
 //! only the selected page is materialized for Qt or the command palette.
-use crate::{gfn::ServiceError, store_catalog_page};
+use crate::{catalog_page, gfn::ServiceError};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -171,7 +171,7 @@ impl StoreIndex {
         params: &Value,
         mut read: impl FnMut(&Value) -> Option<Value>,
     ) -> Result<Value, ServiceError> {
-        let page = store_catalog_page::PageRequest::parse(params)?;
+        let page = catalog_page::PageRequest::parse(params)?;
         let query = normalized(&page.search);
         let tokens: Vec<_> = query.split_whitespace().take(8).collect();
         let filter = |name: &str| -> Result<String, ServiceError> {
@@ -260,7 +260,7 @@ impl StoreIndex {
                     })
             })
             .collect::<Result<_, _>>()?;
-        store_catalog_page::fetch_bounded_page(page.limit.min(60), |limit| {
+        catalog_page::fetch_bounded_page(page.limit.min(60), |limit| {
             let count = selected.len().min(limit);
             let next = offset + count;
             let more = next < matches.len() || !self.complete;

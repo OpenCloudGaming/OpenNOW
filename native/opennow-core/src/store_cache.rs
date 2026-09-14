@@ -1,6 +1,6 @@
 //! Bounded, account/provider-scoped Store responses persisted across core restarts.
 //! Only successful protocol-sized results are cached; credentials never enter files.
-use crate::{gfn::ServiceError, store_catalog_page::RESULT_BUDGET};
+use crate::{catalog_page::RESULT_BUDGET, gfn::ServiceError};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -90,7 +90,7 @@ impl StoreCache {
         let mut value = fetch()?;
         crate::requests::check()?;
         value["cacheHit"] = Value::Bool(false);
-        let value = crate::store_catalog_page::bounded_result(value)?;
+        let value = crate::catalog_page::bounded_result(value)?;
         let current = self.epoch.lock().expect("Store cache poisoned");
         if epoch == *current {
             // Cache failures must not turn a successful catalog fetch into an

@@ -150,7 +150,7 @@ FocusScope {
                 rightPadding: 20
                 Accessible.name: qsTr("Search games")
                 KeyNavigation.right: platformFilter
-                KeyNavigation.down: catalog
+                KeyNavigation.down: libraryErrorRow.visible ? libraryRetry : catalog
                 onTextEdited: root.searchQuery = text
                 onAccepted: catalog.forceActiveFocus()
                 background: Rectangle { radius: 26; color: searchField.activeFocus ? Theme.glassStrong : Qt.rgba(1, 1, 1, 0.10); border.color: searchField.activeFocus ? Theme.focus : Theme.seam; border.width: searchField.activeFocus ? 3 : 1 }
@@ -174,7 +174,7 @@ FocusScope {
                 width: 157; height: 52
                 KeyNavigation.left: searchField
                 KeyNavigation.right: genreFilter
-                KeyNavigation.down: catalog
+                KeyNavigation.down: libraryErrorRow.visible ? libraryRetry : catalog
                 onExpandedChanged: if (expanded) { genreFilter.expanded = false; sortFilter.expanded = false }
                 onOptionSelected: index => root.platformIndex = index
             }
@@ -186,7 +186,7 @@ FocusScope {
                 width: 137; height: 52
                 KeyNavigation.left: platformFilter
                 KeyNavigation.right: sortFilter
-                KeyNavigation.down: catalog
+                KeyNavigation.down: libraryErrorRow.visible ? libraryRetry : catalog
                 onExpandedChanged: if (expanded) { platformFilter.expanded = false; sortFilter.expanded = false }
                 onOptionSelected: index => root.genreIndex = index
             }
@@ -197,21 +197,57 @@ FocusScope {
                 currentIndex: root.sortIndex
                 width: 160; height: 52
                 KeyNavigation.left: genreFilter
-                KeyNavigation.down: catalog
+                KeyNavigation.down: libraryErrorRow.visible ? libraryRetry : catalog
                 onExpandedChanged: if (expanded) { platformFilter.expanded = false; genreFilter.expanded = false }
                 onOptionSelected: index => root.sortIndex = index
             }
         }
 
         Item {
+            id: libraryErrorRow
+            x: 28; y: 90
+            width: parent.width - 56
+            height: visible ? Math.max(libraryErrorText.implicitHeight, libraryRetry.height) : 0
+            visible: ShellStore.catalogState === "error"
+            Text {
+                id: libraryErrorText
+                objectName: "libraryErrorText"
+                width: parent.width - libraryRetry.width - 20
+                anchors.verticalCenter: parent.verticalCenter
+                text: ShellStore.catalogGames.length > 0
+                    ? qsTr("Loaded %1 games. %2").arg(ShellStore.catalogGames.length).arg(ShellStore.catalogError)
+                    : ShellStore.catalogError
+                textFormat: Text.PlainText
+                wrapMode: Text.WordWrap
+                color: Theme.label
+                font.family: Theme.bodyFont
+                font.pixelSize: 16
+            }
+            GlassButton {
+                id: libraryRetry
+                objectName: "libraryRetry"
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                text: qsTr("Try again")
+                glyph: "A"
+                primary: true
+                enabled: !ShellStore.catalogLoading
+                KeyNavigation.down: catalog
+                KeyNavigation.up: searchField
+                onClicked: ShellStore.retryCatalog()
+            }
+        }
+
+        Item {
             // The focus ring and selected scale both extend outside the tile.
             // Reserve a real gutter inside the clipped viewport for that motion.
-            x: 12; y: 76
+            x: 12; y: libraryErrorRow.visible ? libraryErrorRow.y + libraryErrorRow.height : 76
             width: parent.width - 24
-            height: parent.height - 92
+            height: parent.height - y - 16
             clip: true
             GridView {
                 id: catalog
+                objectName: "libraryGameGrid"
                 x: 16; y: 28
                 width: 1092
                 height: parent.height - 44
@@ -222,7 +258,7 @@ FocusScope {
                 Component.onCompleted: currentIndex = ShellStore.focusIndex("library")
                 onCurrentIndexChanged: ShellStore.rememberFocus("library", currentIndex)
                 focus: true
-                KeyNavigation.up: platformFilter
+                KeyNavigation.up: libraryErrorRow.visible ? libraryRetry : platformFilter
                 keyNavigationWraps: false
                 delegate: Item {
                     id: gameDelegate
@@ -255,10 +291,9 @@ FocusScope {
         Column {
             anchors.centerIn: parent
             spacing: 12
-            visible: root.games.length === 0
-            Text { anchors.horizontalCenter: parent.horizontalCenter; text: ShellStore.catalogState === "error" ? qsTr("Couldn’t reach the catalog") : qsTr("Loading GeForce NOW games…"); color: Theme.label; font.family: Theme.displayFont; font.pixelSize: 24; font.weight: Font.Black }
-            Text { anchors.horizontalCenter: parent.horizontalCenter; text: ShellStore.catalogGames.length > 0 ? qsTr("No games match these filters.") : (ShellStore.catalogState === "error" ? ShellStore.lastError : qsTr("The shell stays responsive while the Rust core fetches NVIDIA’s public list.")); color: Theme.textMuted; font.family: Theme.bodyFont; font.pixelSize: 14 }
-            GlassButton { anchors.horizontalCenter: parent.horizontalCenter; visible: ShellStore.catalogState === "error"; text: qsTr("Try again"); glyph: "A"; primary: true; onClicked: ShellStore.refreshCatalog("") }
+            visible: root.games.length === 0 && ShellStore.catalogState !== "error"
+            Text { anchors.horizontalCenter: parent.horizontalCenter; text: qsTr("Loading GeForce NOW games…"); color: Theme.label; font.family: Theme.displayFont; font.pixelSize: 24; font.weight: Font.Black }
+            Text { anchors.horizontalCenter: parent.horizontalCenter; text: ShellStore.catalogGames.length > 0 ? qsTr("No games match these filters.") : qsTr("The shell stays responsive while the Rust core fetches NVIDIA’s public list."); color: Theme.textMuted; font.family: Theme.bodyFont; font.pixelSize: 14 }
         }
     }
 

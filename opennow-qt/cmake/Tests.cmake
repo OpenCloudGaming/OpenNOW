@@ -1,5 +1,26 @@
 include(CTest)
 if(BUILD_TESTING)
+    find_package(Qt6 ${Qt6_VERSION} EXACT REQUIRED COMPONENTS QuickTest)
+    qt_add_executable(opennow-catalogpaging-tests tests/tst_catalogpaging.cpp)
+    target_link_libraries(opennow-catalogpaging-tests PRIVATE Qt6::QuickTest)
+    add_test(NAME qml-library-paging COMMAND opennow-catalogpaging-tests
+        -input "${CMAKE_CURRENT_SOURCE_DIR}/tests/catalogpaging")
+    set_tests_properties(qml-library-paging PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 60)
+    qt_add_resources(opennow-qt "library-error-acceptance"
+        PREFIX "/acceptance" BASE tests FILES tests/LibraryErrorAcceptance.qml)
+    foreach(surface desktop console)
+        add_test(NAME qml-library-error-${surface}
+            COMMAND opennow-qt --smoke-test --allow-multiple-instances --${surface}
+                --route library --smoke-library-error --reduced-motion)
+        set_tests_properties(qml-library-error-${surface} PROPERTIES
+            ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 15)
+    endforeach()
+    add_test(NAME qml-library-error-desktop-compact-light
+        COMMAND opennow-qt --smoke-test --allow-multiple-instances --desktop
+            --route library --smoke-library-error --smoke-width 960 --smoke-light-theme --reduced-motion)
+    set_tests_properties(qml-library-error-desktop-compact-light PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 15)
     qt_add_executable(opennow-applicationicons-tests tests/tst_applicationicons.cpp)
     target_link_libraries(opennow-applicationicons-tests PRIVATE Qt6::Test Qt6::Gui)
     opennow_add_application_icons(opennow-applicationicons-tests)

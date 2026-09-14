@@ -184,10 +184,7 @@ fn paywall_headers(token: &str) -> Result<HeaderMap, ServiceError> {
 }
 
 fn session_token(auth: &AuthSession) -> Result<&str, ServiceError> {
-    auth.tokens
-        .id_token
-        .as_deref()
-        .or(Some(auth.tokens.access_token.as_str()))
+    Some(auth.tokens.session_token())
         .filter(|value| !value.is_empty())
         .ok_or_else(|| ServiceError {
             code: "authentication_required",

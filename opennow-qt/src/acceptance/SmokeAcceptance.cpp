@@ -205,6 +205,7 @@ int AcceptanceSession::startSmokeWorkload()
                      || m_arguments.contains(u"--smoke-background-stream"_s)
                      || m_arguments.contains(u"--smoke-recording"_s)
                      || m_arguments.contains(u"--smoke-collections"_s)
+                     || m_arguments.contains(u"--smoke-library-error"_s)
                      || m_arguments.contains(u"--smoke-steam-big-picture"_s)
                      || m_arguments.contains(u"--smoke-persistent-in-game-settings"_s)
                      || m_arguments.contains(u"--smoke-idle-mode"_s)
@@ -222,6 +223,8 @@ int AcceptanceSession::startSmokeWorkload()
             ? u"qrc:/acceptance/RecordingAcceptance.qml"_s
             : m_arguments.contains(u"--smoke-collections"_s)
             ? u"qrc:/acceptance/CollectionsAcceptance.qml"_s
+            : m_arguments.contains(u"--smoke-library-error"_s)
+            ? u"qrc:/acceptance/LibraryErrorAcceptance.qml"_s
             : m_arguments.contains(u"--smoke-steam-big-picture"_s)
             ? u"qrc:/acceptance/SteamBigPictureAcceptance.qml"_s
             : m_arguments.contains(u"--smoke-persistent-in-game-settings"_s)
@@ -245,6 +248,7 @@ int AcceptanceSession::startSmokeWorkload()
             || m_arguments.contains(u"--smoke-recording"_s)
             || m_arguments.contains(u"--smoke-queue-drops"_s)
             || m_arguments.contains(u"--smoke-collections"_s)
+            || m_arguments.contains(u"--smoke-library-error"_s)
             || m_arguments.contains(u"--smoke-steam-big-picture"_s)
             || m_arguments.contains(u"--smoke-persistent-in-game-settings"_s)) {
             auto *client = fixture->property("client").value<QObject *>();
@@ -257,6 +261,7 @@ int AcceptanceSession::startSmokeWorkload()
             const bool ok = window && QMetaObject::invokeMethod(fixture, "run", Q_RETURN_ARG(QVariant, passed),
                 Q_ARG(QVariant, QVariant::fromValue(window->contentItem()))) && passed.toBool() && !m_qmlWarningOccurred;
             if (ok && (m_arguments.contains(u"--smoke-collections"_s)
+                       || m_arguments.contains(u"--smoke-library-error"_s)
                        || m_arguments.contains(u"--smoke-queue-drops"_s))) {
                 QTimer::singleShot(250, this, [this, window] {
                     const auto shot = m_arguments.indexOf(u"--screenshot"_s);

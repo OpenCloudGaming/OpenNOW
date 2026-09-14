@@ -1697,10 +1697,7 @@ fn session_phase(status: i64) -> &'static str {
 }
 
 fn session_token(auth: &AuthSession) -> &str {
-    auth.tokens
-        .id_token
-        .as_deref()
-        .unwrap_or(&auth.tokens.access_token)
+    auth.tokens.session_token()
 }
 
 fn parse_resolution(value: &str) -> (i64, i64) {

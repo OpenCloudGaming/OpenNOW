@@ -216,11 +216,13 @@ pub struct Endpoints {
     pub client_token: String,
     pub userinfo: String,
     pub public_catalog: String,
+    pub library_catalog: String,
 }
 
 impl Default for Endpoints {
     fn default() -> Self {
         Self {
+            library_catalog: GRAPHQL_URL.to_owned(),
             service_urls: "https://pcs.geforcenow.com/v1/serviceUrls".to_owned(),
             device_authorize: "https://login.nvidia.com/device/authorize".to_owned(),
             token: "https://login.nvidia.com/token".to_owned(),
@@ -278,6 +280,26 @@ pub struct AuthTokens {
     pub client_token_expires_at: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub client_token_lifetime_ms: Option<u64>,
+}
+
+impl AuthTokens {
+    fn id_token_expires_at(&self) -> Option<u64> {
+        jwt_claims(self.id_token.as_deref()?)?["exp"]
+            .as_u64()?
+            .checked_mul(1000)
+    }
+
+    pub(crate) fn session_token(&self) -> &str {
+        self.id_token
+            .as_deref()
+            .filter(|token| {
+                !token.trim().is_empty()
+                    && self
+                        .id_token_expires_at()
+                        .is_none_or(|expires| expires > now_ms())
+            })
+            .unwrap_or(&self.access_token)
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -752,7 +774,12 @@ impl GfnService {
             }));
         };
 
-        let needs_refresh = current.tokens.expires_at <= now_ms() + TOKEN_REFRESH_WINDOW_MS;
+        let refresh_deadline = now_ms() + TOKEN_REFRESH_WINDOW_MS;
+        let needs_refresh = current.tokens.expires_at <= refresh_deadline
+            || current
+                .tokens
+                .id_token_expires_at()
+                .is_some_and(|expires| expires <= refresh_deadline);
         let needs_client_token = current
             .tokens
             .client_token
@@ -1145,41 +1172,24 @@ impl GfnService {
     }
 
     pub fn library_catalog(&self, params: &Value, settings: &Value) -> Result<Value, ServiceError> {
+        let page = crate::catalog_page::PageRequest::parse(params)?;
         let client = client_for_settings(&self.client, settings).map_err(ServiceError::invalid)?;
-        let session_payload = self.session()?;
-        let session = serde_json::from_value::<AuthSession>(session_payload["session"].clone())
-            .map_err(|_| ServiceError {
-                code: "authentication_required",
-                message: "Sign in to load your GeForce NOW library".to_owned(),
-            })?;
-        let token = session
-            .tokens
-            .id_token
-            .as_deref()
-            .unwrap_or(&session.tokens.access_token);
-        let vpc_id = self.vpc_id(&session, token, None)?;
-        let limit = params["limit"].as_u64().unwrap_or(600).clamp(1, 2000) as usize;
-        let search = params["searchQuery"]
-            .as_str()
-            .unwrap_or("")
-            .trim()
-            .to_lowercase();
-        let mut cursor = String::new();
-        let mut games = Vec::new();
-        let mut total_count = 0_u64;
-
-        for _ in 0..25 {
+        let session = self.authenticated_session("Sign in to load your GeForce NOW library")?;
+        let token = session.tokens.session_token();
+        let vpc_id = self.vpc_id(&session, token, settings, None)?;
+        let search = page.search.to_lowercase();
+        crate::catalog_page::fetch_bounded_page(page.limit, |fetch_count| {
             crate::requests::check()?;
             let variables = json!({
                 "vpcId":vpc_id,
                 "locale":"en_US",
                 "sortString":"variants.gfn.library.lastPlayedDate:DESC,computedValues.libraryAddedDate:DESC,sortName:ASC",
-                "fetchCount":200,
-                "cursor":cursor,
+                "fetchCount":fetch_count,
+                "cursor":page.cursor,
                 "filters":{"variants":{"gfn":{"library":{"status":{"notEquals":"NOT_OWNED"}}}}}
             });
             let response = client
-                .post(GRAPHQL_URL)
+                .post(&self.endpoints.library_catalog)
                 .headers(graphql_headers(token)?)
                 .json(&json!({"query":LIBRARY_QUERY,"variables":variables}))
                 .send()
@@ -1197,41 +1207,36 @@ impl GfnService {
                 });
             }
             let apps = &payload["data"]["apps"];
-            total_count = apps["pageInfo"]["totalCount"]
-                .as_u64()
-                .unwrap_or(total_count);
-            for app in apps["items"].as_array().into_iter().flatten() {
-                if let Some(game) = app_to_game(app) {
-                    if search.is_empty()
-                        || game["searchText"]
-                            .as_str()
-                            .is_some_and(|text| text.contains(&search))
-                    {
-                        games.push(game);
-                    }
-                }
-                if games.len() >= limit {
-                    break;
-                }
+            let items = apps["items"].as_array().ok_or_else(|| ServiceError {
+                code: "invalid_upstream_response",
+                message: "Library response has no games array".to_owned(),
+            })?;
+            if items.len() > fetch_count {
+                return Err(ServiceError {
+                    code: "invalid_upstream_response",
+                    message: "Library response exceeds the requested page size".to_owned(),
+                });
             }
-            if games.len() >= limit || !apps["pageInfo"]["hasNextPage"].as_bool().unwrap_or(false) {
-                break;
-            }
-            let Some(next_cursor) = apps["pageInfo"]["endCursor"].as_str() else {
-                break;
-            };
-            if next_cursor.is_empty() || next_cursor == cursor {
-                break;
-            }
-            cursor = next_cursor.to_owned();
-        }
-        Ok(json!({
-            "games":games,
-            "count":games.len(),
-            "totalCount":total_count.max(games.len() as u64),
-            "source":"account-library",
-            "fetchedAt":now_ms()
-        }))
+            let mut games: Vec<Value> = items.iter().filter_map(app_to_game).collect();
+            let mapped_count = games.len();
+            games.retain(|game| {
+                search.is_empty()
+                    || game["searchText"]
+                        .as_str()
+                        .is_some_and(|text| text.contains(&search))
+            });
+            let mut result =
+                crate::catalog_page::page_result(&page.cursor, games, &apps["pageInfo"], now_ms())?;
+            result["source"] = json!("account-library");
+            eprintln!(
+                "catalog.library.page upstream={} mapped={} returned={} hasNextPage={}",
+                items.len(),
+                mapped_count,
+                result["count"],
+                result["hasNextPage"],
+            );
+            Ok(result)
+        })
     }
 
     pub fn store_local_catalog(
@@ -1268,23 +1273,20 @@ impl GfnService {
 
     pub fn store_catalog(&self, params: &Value, settings: &Value) -> Result<Value, ServiceError> {
         crate::requests::check()?;
-        let page = crate::store_catalog_page::PageRequest::parse(params)?;
+        let page = crate::catalog_page::PageRequest::parse(params)?;
         let client = client_for_settings(&self.client, settings).map_err(ServiceError::invalid)?;
         let session =
             self.authenticated_session("Sign in to browse the GeForce NOW store catalog")?;
-        let token = session
-            .tokens
-            .id_token
-            .as_deref()
-            .unwrap_or(&session.tokens.access_token);
+        let token = session.tokens.session_token();
         let scope = self.store_cache_scope(&session, settings)?;
         let key = json!(["page", page.limit, page.cursor, page.search]);
         let refresh = params["refresh"].as_bool() == Some(true) && page.cursor.is_empty();
         self.store_cache.load_or_fetch(&scope, &key, refresh, || {
-            let vpc_id = self.vpc_id(&session, token, Some(&self.store_cache.requests))?;
+            let vpc_id =
+                self.vpc_id(&session, token, settings, Some(&self.store_cache.requests))?;
             // Each retry starts at the SAME cursor. Never truncate a fetched page:
             // doing so would skip games when returning NVIDIA's end cursor.
-            crate::store_catalog_page::fetch_bounded_page(page.limit, |fetch_count| {
+            crate::catalog_page::fetch_bounded_page(page.limit, |fetch_count| {
                 let searching = !page.search.is_empty();
                 let query = if searching {
                     STORE_SEARCH_QUERY
@@ -1324,12 +1326,7 @@ impl GfnService {
                     message: "Store response has no games array".to_owned(),
                 })?;
                 let games: Vec<Value> = items.iter().filter_map(app_to_game).collect();
-                crate::store_catalog_page::page_result(
-                    &page.cursor,
-                    games,
-                    &apps["pageInfo"],
-                    now_ms(),
-                )
+                crate::catalog_page::page_result(&page.cursor, games, &apps["pageInfo"], now_ms())
             })
         })
     }
@@ -1370,12 +1367,9 @@ impl GfnService {
             &json!(["presentation", section]),
             false,
             || {
-                let token = session
-                    .tokens
-                    .id_token
-                    .as_deref()
-                    .unwrap_or(&session.tokens.access_token);
-                let vpc_id = self.vpc_id(&session, token, Some(&self.store_cache.requests))?;
+                let token = session.tokens.session_token();
+                let vpc_id =
+                    self.vpc_id(&session, token, settings, Some(&self.store_cache.requests))?;
                 let (variables, request_type, sha, query) = match section {
                     "panels" => (
                         json!({"vpcId":vpc_id,"locale":"en_US","panelNames":["MAIN"]}),
@@ -1444,7 +1438,7 @@ impl GfnService {
                 };
                 // Optional chrome must not enlarge the games response or restart the core.
                 // An oversized/failed section is reported independently by the shell.
-                crate::store_catalog_page::bounded_result(json!({"section":section,"items":items}))
+                crate::catalog_page::bounded_result(json!({"section":section,"items":items}))
             },
         )?;
         if section == "panels" && params["metadataOnly"] == true {
@@ -1461,11 +1455,7 @@ impl GfnService {
 
     pub fn regions(&self) -> Result<Value, ServiceError> {
         let session = self.authenticated_session("Sign in to discover streaming regions")?;
-        let token = session
-            .tokens
-            .id_token
-            .as_deref()
-            .unwrap_or(&session.tokens.access_token);
+        let token = session.tokens.session_token();
         let base = trusted_streaming_base(&session.provider.streaming_service_url)?;
         let url = base
             .join("v2/serverInfo")
@@ -1494,17 +1484,13 @@ impl GfnService {
                 .unwrap_or("")
                 .cmp(right["name"].as_str().unwrap_or(""))
         });
-        Ok(json!({"regions":regions,"vpcId":payload["requestStatus"]["serverId"]}))
+        Ok(json!({"regions":regions,"vpcId":server_catalog_vpc(&payload)}))
     }
 
     pub fn subscription(&self, settings: &Value) -> Result<Value, ServiceError> {
         let session = self.authenticated_session("Sign in to load subscription details")?;
-        let token = session
-            .tokens
-            .id_token
-            .as_deref()
-            .unwrap_or(&session.tokens.access_token);
-        let vpc_id = self.vpc_id(&session, token, None)?;
+        let token = session.tokens.session_token();
+        let vpc_id = self.vpc_id(&session, token, settings, None)?;
         let steam_deck = settings["identifyAsSteamDeck"].as_bool().unwrap_or(false);
         let mut url = url::Url::parse(MES_URL).expect("MES URL is valid");
         url.query_pairs_mut()
@@ -1512,8 +1498,8 @@ impl GfnService {
             .append_pair("languageCode", "en_US")
             .append_pair("vpcId", &vpc_id)
             .append_pair("userId", &session.user.user_id);
-        let response = self
-            .client
+        let response = client_for_settings(&self.client, settings)
+            .map_err(ServiceError::invalid)?
             .get(url)
             .headers(lcars_headers(
                 token,
@@ -1662,6 +1648,7 @@ impl GfnService {
         &self,
         session: &AuthSession,
         token: &str,
+        settings: &Value,
         requests: Option<&crate::store_requests::StoreRequests>,
     ) -> Result<String, ServiceError> {
         let Ok(base) = trusted_streaming_base(&session.provider.streaming_service_url) else {
@@ -1673,9 +1660,16 @@ impl GfnService {
         let Ok(headers) = lcars_headers(token, "NATIVE", "NVIDIA-CLASSIC", false) else {
             return Ok("GFN-PC".to_owned());
         };
+        let proxy = config_from_settings(settings).map_err(ServiceError::invalid)?;
+        let route = proxy
+            .map(|config| config.cache_scope)
+            .unwrap_or_else(|| "direct".to_owned());
+        let scope = json!([base.as_str(), route]).to_string();
         self.server_vpc_cache
-            .resolve(base.as_str(), &session.user.user_id, token, || {
-                let request = self.client.get(url).headers(headers);
+            .resolve(&scope, &session.user.user_id, token, || {
+                let client =
+                    client_for_settings(&self.client, settings).map_err(ServiceError::invalid)?;
+                let request = client.get(url).headers(headers);
                 let response = match requests {
                     Some(requests) => requests.send(request, "Store server info failed"),
                     None => request
@@ -1692,21 +1686,15 @@ impl GfnService {
                 if !response.status().is_success() {
                     return Ok(None);
                 }
-                Ok(response.json::<Value>().ok().and_then(|payload| {
-                    payload["requestStatus"]["serverId"]
-                        .as_str()
-                        .map(ToOwned::to_owned)
-                }))
+                Ok(response
+                    .json::<Value>()
+                    .ok()
+                    .and_then(|payload| server_catalog_vpc(&payload)))
             })
     }
 
     fn fetch_user_info(&self, tokens: &AuthTokens) -> Result<AuthUser, ServiceError> {
-        if let Some(user) = tokens
-            .id_token
-            .as_deref()
-            .or(Some(tokens.access_token.as_str()))
-            .and_then(user_from_jwt)
-        {
+        if let Some(user) = user_from_jwt(tokens.session_token()) {
             if user.email.is_some() || user.avatar_url.is_some() {
                 return Ok(user);
             }
@@ -1895,8 +1883,16 @@ impl GfnService {
                 .or_else(|| session.tokens.refresh_token.clone()),
             id_token: payload["id_token"]
                 .as_str()
+                .filter(|token| !token.trim().is_empty())
                 .map(ToOwned::to_owned)
-                .or_else(|| session.tokens.id_token.clone()),
+                .or_else(|| {
+                    session.tokens.id_token.clone().filter(|_| {
+                        session
+                            .tokens
+                            .id_token_expires_at()
+                            .is_none_or(|expires| expires > now_ms())
+                    })
+                }),
             expires_at: now_ms() + payload["expires_in"].as_u64().unwrap_or(86_400) * 1000,
             auth_client_id: session.tokens.auth_client_id.clone(),
             client_token: payload["client_token"]
@@ -2057,17 +2053,39 @@ fn public_game_to_info(item: &Value) -> Option<Value> {
     }))
 }
 
+fn server_catalog_vpc(payload: &Value) -> Option<String> {
+    [
+        &payload["vpcId"],
+        &payload["vpc_id"],
+        &payload["requestStatus"]["serverId"],
+    ]
+    .into_iter()
+    .find_map(catalog_id)
+}
+
+fn catalog_id(value: &Value) -> Option<String> {
+    match value {
+        Value::String(value) if !value.trim().is_empty() => Some(value.trim().to_owned()),
+        Value::Number(value) => value.as_u64().map(|value| value.to_string()),
+        _ => None,
+    }
+}
+
 fn app_to_game(app: &Value) -> Option<Value> {
-    let id = app["id"].as_str()?.to_owned();
+    let id = catalog_id(&app["id"])?;
     let title = app["title"].as_str()?.trim().to_owned();
     if title.is_empty() {
         return None;
     }
     let variants = app["variants"].as_array().into_iter().flatten().filter_map(|variant| {
-        let variant_id = variant["id"].as_str()?.to_owned();
+        let variant_id = catalog_id(&variant["id"])?;
         let store = variant["appStore"].as_str().unwrap_or("Unknown").to_owned();
         let library_status = variant["gfn"]["library"]["status"].as_str().map(ToOwned::to_owned);
-        let in_library = library_status.as_deref().is_some_and(|status| matches!(status, "MANUAL" | "PLATFORM_SYNC" | "IN_LIBRARY"));
+        let in_library = variant["gfn"]["library"]["selected"].as_bool() == Some(true)
+            || library_status.as_deref().is_some_and(|status| {
+                let status = status.trim();
+                !status.is_empty() && !status.eq_ignore_ascii_case("NOT_OWNED")
+            });
         let supports_persistence = gfn_feature_enabled(
             &variant["gfn"]["features"],
             "IN_GAME_SETTINGS_PERSISTENCE_ENABLED",
@@ -2586,12 +2604,16 @@ fn lcars_headers(
     Ok(headers)
 }
 
-fn user_from_jwt(token: &str) -> Option<AuthUser> {
+fn jwt_claims(token: &str) -> Option<Value> {
     let encoded = token.split('.').nth(1)?;
     let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .decode(encoded)
         .ok()?;
-    let payload = serde_json::from_slice::<Value>(&decoded).ok()?;
+    serde_json::from_slice::<Value>(&decoded).ok()
+}
+
+fn user_from_jwt(token: &str) -> Option<AuthUser> {
+    let payload = jwt_claims(token)?;
     let user_id = payload["sub"].as_str()?.to_owned();
     let email = payload["email"].as_str().map(ToOwned::to_owned);
     let avatar_url = payload["picture"]
@@ -2687,6 +2709,10 @@ fn required_string(payload: &Value, key: &str) -> Result<String, ServiceError> {
             message: format!("Response did not include {key}"),
         })
 }
+
+#[cfg(test)]
+#[path = "gfn_catalog_tests.rs"]
+mod catalog_tests;
 
 #[cfg(test)]
 mod tests {

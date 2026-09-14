@@ -60,6 +60,31 @@ the shell falls back to `imageUrl`, then `heroImageUrl`. Older cached objects an
 public-catalog games may omit `keyArtUrl`; it is an optional, additive field in
 protocol 1 and does not change the handshake or existing artwork fields.
 
+### Account library pagination (`catalog.libraryPages.v1`)
+
+`catalog.library.list` returns one complete upstream page, not the whole account
+library. The capability advertises this contract; the protocol-1 envelope and
+1 MiB line limit are unchanged. The Qt shell
+and core must be deployed together for this paged contract.
+
+Request: `{ "limit":100, "cursor":"", "searchQuery":"" }`. The limit defaults
+to 100 and is capped at 100; cursor and search limits match Store pagination
+below. Response: `{ "games":[], "count":0, "totalCount":0,
+"hasNextPage":false, "nextCursor":"", "source":"account-library",
+"fetchedAt":0 }`.
+
+Keep the search unchanged and pass `nextCursor` to the next request while
+`hasNextPage` is true. Search is applied to each mapped account-library page, so
+an empty filtered page can still have a continuation. `totalCount` is the
+upstream account-library count before that local search filter.
+
+Library and Store share the 768 KiB encoded result budget and same-cursor
+oversize retry policy. Missing apps/items or invalid pagination are errors,
+not an empty library. The shell appends and deduplicates pages progressively,
+cancels them on account changes/disconnection, and reports an error if a cursor
+cycles or the 150-page limit is reached before completion. Partial games remain
+visible alongside the error; they are not presented as a completed library.
+
 ### Store pagination (`catalog.storePages.v1`)
 
 The protocol-1 envelope and 1 MiB limit are unchanged. This additive capability

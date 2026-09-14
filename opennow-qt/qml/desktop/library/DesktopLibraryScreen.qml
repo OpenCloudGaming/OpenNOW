@@ -261,12 +261,45 @@ FocusScope {
         font.letterSpacing: 0.7
     }
 
+    Item {
+        id: libraryErrorRow
+        x: 24
+        y: filterRow.y + filterRow.height + 14
+        width: parent.width - 48
+        height: visible ? Math.max(libraryErrorText.implicitHeight, libraryRetry.height) : 0
+        visible: ShellStore.catalogState === "error"
+        Text {
+            id: libraryErrorText
+            objectName: "libraryErrorText"
+            width: parent.width - libraryRetry.width - 16
+            anchors.verticalCenter: parent.verticalCenter
+            text: ShellStore.catalogGames.length > 0
+                ? qsTr("Loaded %1 games. %2").arg(ShellStore.catalogGames.length).arg(ShellStore.catalogError)
+                : ShellStore.catalogError
+            textFormat: Text.PlainText
+            wrapMode: Text.WordWrap
+            color: Theme.accentColor("coral")
+            font.family: DesktopTokens.bodyFont
+            font.pixelSize: DesktopTokens.captionSize
+        }
+        DesktopButton {
+            id: libraryRetry
+            objectName: "libraryRetry"
+            anchors.right: parent.right
+            anchors.verticalCenter: parent.verticalCenter
+            text: qsTr("Try again")
+            enabled: !ShellStore.catalogLoading
+            onClicked: ShellStore.retryCatalog()
+        }
+    }
+
     GridView {
         id: grid
+        objectName: "libraryGameGrid"
         // The delegate keeps a six-pixel focus/scale gutter. Offset the view by
         // that gutter so the artwork remains on Paper's 24/64 alignment lane.
         x: 18
-        y: filterRow.y + filterRow.height + 14
+        y: libraryErrorRow.y + (libraryErrorRow.visible ? libraryErrorRow.height + 14 : 0)
         width: parent.width - 36
         height: parent.height - y
         clip: true
@@ -302,7 +335,7 @@ FocusScope {
         anchors.centerIn: grid
         width: Math.min(grid.width - 48, 460)
         spacing: 12
-        visible: root.games.length === 0
+        visible: root.games.length === 0 && ShellStore.catalogState !== "error"
         Text {
             width: parent.width
             text: root.collection ? qsTr("No games in this view") : qsTr("No games found")

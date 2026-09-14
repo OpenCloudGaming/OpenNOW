@@ -10,6 +10,7 @@ QtObject {
     required property var setSetting
     required property var applySetting
     signal accessibilityAnnounced(string message)
+    signal errorReported(string message)
     signal storeSessionReset()
     property var catalogGames: []
     property var selectedGame: null
@@ -17,6 +18,17 @@ QtObject {
     property string catalogState: "idle"
     property string catalogSource: "public"
     property string catalogRequestId: ""
+    property string catalogError: ""
+    property string catalogSearchQuery: ""
+    property string catalogNextCursor: ""
+    property int catalogPageCount: 0
+    property var catalogSeenCursors: Object.create(null)
+    property var catalogSeenGames: Object.create(null)
+    readonly property bool catalogLoading: catalogRequestId !== "" || catalogPageTimer.running
+    property Timer catalogPageTimer: Timer {
+        interval: 1
+        onTriggered: root.requestCatalogPage()
+    }
     readonly property var gameCollections: settings.gameCollections || []
     property string activeCollectionId: ""
     readonly property var activeCollection: collectionById(activeCollectionId)
@@ -31,11 +43,16 @@ QtObject {
             activeCollectionId = ""
     }
     onReadyChanged: {
+        if (!ready && catalogSource === "account-library")
+            resetCatalog()
+        else if (!ready)
+            cancelCatalogRequests()
         if (!ready && collectionsBusy) {
             collectionRequestId = ""
             collectionError = qsTr("The collection could not be saved. Reconnect and try again.")
         }
     }
+    onSignedInChanged: resetCatalog()
 
     property Connections collectionResponses: Connections {
         target: root.coreClient
@@ -194,23 +211,69 @@ QtObject {
     }
 
     function refreshCatalog(searchQuery) {
-        if (!ready || catalogRequestId !== "")
+        const query = String(searchQuery || "")
+        if (!ready || (catalogLoading && (!signedIn || query === catalogSearchQuery)))
             return
+        cancelCatalogRequests()
+        catalogError = ""
+        catalogSearchQuery = query
+        catalogNextCursor = ""
+        catalogPageCount = 0
+        catalogSeenCursors = Object.create(null)
+        catalogSeenGames = Object.create(null)
         catalogState = catalogGames.length > 0 ? "refreshing" : "loading"
         catalogSource = signedIn ? "account-library" : "public"
-        catalogRequestId = coreClient.request(signedIn ? "catalog.library.list" : "catalog.public.list", {
-            limit: signedIn ? 1000 : 360,
-            searchQuery: searchQuery || ""
+        if (signedIn) {
+            requestCatalogPage()
+        } else {
+            catalogRequestId = coreClient.request("catalog.public.list", {
+                limit: 360, searchQuery: query
+            }, 30000)
+            if (!catalogRequestId)
+                failCatalog(qsTr("Could not start the library request. Try again."))
+        }
+    }
+
+    function requestCatalogPage() {
+        if (!ready || !signedIn || catalogSource !== "account-library" || catalogRequestId !== ""
+                || (catalogState !== "loading" && catalogState !== "refreshing"))
+            return
+        catalogRequestId = coreClient.request("catalog.library.list", {
+            limit: 100, cursor: catalogNextCursor, searchQuery: catalogSearchQuery
         }, 30000)
+        if (!catalogRequestId)
+            failCatalog(qsTr("Could not start the library request. Try again."))
+    }
+
+    function retryCatalog() {
+        refreshCatalog(catalogSearchQuery)
+    }
+
+    function cancelCatalogRequests() {
+        catalogPageTimer.stop()
+        const requestId = catalogRequestId
+        catalogRequestId = ""
+        if (requestId)
+            coreClient.cancel(requestId)
+    }
+
+    function resetCatalog() {
+        cancelCatalogRequests()
+        catalogGames = []
+        selectedGame = null
+        catalogTotalCount = 0
+        catalogState = "idle"
+        catalogSource = "public"
+        catalogError = ""
+        catalogSearchQuery = ""
+        catalogNextCursor = ""
+        catalogPageCount = 0
+        catalogSeenCursors = Object.create(null)
+        catalogSeenGames = Object.create(null)
     }
 
     function reloadCatalogForSession() {
-        if (catalogRequestId !== "") {
-            coreClient.cancel(catalogRequestId)
-            catalogRequestId = ""
-        }
-        catalogGames = []
-        catalogState = "idle"
+        resetCatalog()
         refreshCatalog("")
         reloadStoreForSession()
     }
@@ -522,6 +585,41 @@ QtObject {
     }
 
     function acceptCatalog(result) {
+        if (catalogSource === "account-library") {
+            catalogRequestId = ""
+            if (!result || !Array.isArray(result.games) || result.games.length > 100
+                    || typeof result.hasNextPage !== "boolean" || typeof result.nextCursor !== "string"
+                    || (result.hasNextPage && (!result.nextCursor.trim()
+                        || catalogSeenCursors[result.nextCursor]))) {
+                failCatalog(qsTr("The library returned an invalid page. Try again."))
+                return
+            }
+            const merged = catalogPageCount === 0 ? [] : catalogGames.slice()
+            for (const game of result.games) {
+                const key = gameIdentity(game)
+                if (key && !catalogSeenGames[key]) {
+                    merged.push(game)
+                    catalogSeenGames[key] = true
+                }
+            }
+            catalogGames = merged
+            catalogTotalCount = Math.max(merged.length, Number(result.totalCount || 0))
+            catalogPageCount += 1
+            if (!selectedGame && merged.length > 0)
+                selectedGame = merged[0]
+            if (!result.hasNextPage) {
+                catalogState = "ready"
+                return
+            }
+            if (catalogPageCount >= 150) {
+                failCatalog(qsTr("The library exceeded the page limit. Some games may be missing. Try again."))
+                return
+            }
+            catalogNextCursor = result.nextCursor
+            catalogSeenCursors[result.nextCursor] = true
+            catalogPageTimer.restart()
+            return
+        }
         root.catalogGames = result.games || []
         root.catalogTotalCount = Number(result.totalCount || root.catalogGames.length)
         if (!root.selectedGame && root.catalogGames.length > 0)
@@ -540,8 +638,11 @@ QtObject {
     }
 
     function failCatalog(message) {
+        root.catalogPageTimer.stop()
         root.catalogState = "error"
         root.catalogRequestId = ""
+        root.catalogError = message
+        root.errorReported(message)
     }
 
     function failStore(message) {

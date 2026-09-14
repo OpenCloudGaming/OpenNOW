@@ -25,6 +25,7 @@ QtObject {
         setSetting: root.setSetting
         applySetting: root.applySetting
         onAccessibilityAnnounced: message => root.accessibilityMessage = message
+        onErrorReported: message => root.lastError = message
         onStoreSessionReset: root.storeSessionReset()
     }
 
@@ -164,6 +165,8 @@ QtObject {
     property alias selectedGame: catalogOwner.selectedGame
     property alias catalogTotalCount: catalogOwner.catalogTotalCount
     property alias catalogState: catalogOwner.catalogState
+    property alias catalogError: catalogOwner.catalogError
+    property alias catalogLoading: catalogOwner.catalogLoading
     property alias catalogSource: catalogOwner.catalogSource
     property alias storeGames: catalogOwner.storeGames
     property alias storeFacets: catalogOwner.storeFacets
@@ -781,6 +784,10 @@ QtObject {
 
     function refreshCatalog(searchQuery) {
         return catalogOwner.refreshCatalog(searchQuery)
+    }
+
+    function retryCatalog() {
+        return catalogOwner.retryCatalog()
     }
 
     function reloadCatalogForSession() {
@@ -2605,7 +2612,7 @@ QtObject {
                 root.authRestorePending = false
                 if (root.sessionPersistenceMessage !== "")
                     root.accessibilityMessage = root.sessionPersistenceMessage
-                if (root.authSession && root.catalogSource !== "account-library")
+                if (root.authSession || root.catalogState === "idle")
                     root.reloadCatalogForSession()
                 if (root.authSession)
                     root.refreshAccountServices()
@@ -2616,7 +2623,8 @@ QtObject {
                 root.resolveDirectLaunch()
             } else if (requestId === root.catalogRequestId) {
                 catalogOwner.acceptCatalog(result)
-                root.resolveDirectLaunch()
+                if (root.catalogState === "ready")
+                    root.resolveDirectLaunch()
             } else if (requestId === root.storeRequestId) {
                 root.acceptStorePage(result)
             } else if (requestId === root.storePresentationRequestId) {

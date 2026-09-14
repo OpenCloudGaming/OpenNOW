@@ -1,4 +1,4 @@
-//! One Store RPC contains one complete upstream page, never an entire catalog.
+//! One catalog RPC contains one complete upstream page, never an entire catalog.
 use crate::gfn::ServiceError;
 use serde_json::{Value, json};
 
@@ -21,14 +21,14 @@ impl PageRequest {
                 _ => {
                     return Err(error(
                         "invalid_params",
-                        "Store cursor and search must be strings",
+                        "Catalog cursor and search must be strings",
                     ));
                 }
             };
             if value.len() > max {
                 return Err(error(
                     "invalid_params",
-                    "Store cursor or search exceeds its size limit",
+                    "Catalog cursor or search exceeds its size limit",
                 ));
             }
             Ok(value.to_owned())
@@ -54,7 +54,7 @@ fn encoded_size(value: &Value) -> Result<usize, ServiceError> {
         .map_err(|_| {
             error(
                 "invalid_upstream_response",
-                "Store result could not be encoded",
+                "Catalog result could not be encoded",
             )
         })
 }
@@ -63,7 +63,7 @@ pub fn bounded_result(value: Value) -> Result<Value, ServiceError> {
     if encoded_size(&value)? > RESULT_BUDGET {
         return Err(error(
             "catalog_response_too_large",
-            "Store response exceeds the safe page size",
+            "Catalog response exceeds the safe page size",
         ));
     }
     Ok(value)
@@ -84,7 +84,7 @@ pub fn fetch_bounded_page(
         if count == 1 {
             return Err(error(
                 "catalog_response_too_large",
-                "A Store game exceeds the safe page size",
+                "A catalog game exceeds the safe page size",
             ));
         }
         count = (count / 2).max(1);
@@ -100,14 +100,14 @@ pub fn page_result(
     let has_more = info["hasNextPage"].as_bool().ok_or_else(|| {
         error(
             "invalid_upstream_response",
-            "Store response has no pagination state",
+            "Catalog response has no pagination state",
         )
     })?;
     let next = info["endCursor"].as_str().unwrap_or("");
     if has_more && (next.is_empty() || next == cursor || next.len() > MAX_CURSOR_BYTES) {
         return Err(error(
             "invalid_upstream_response",
-            "Store pagination did not advance",
+            "Catalog pagination did not advance",
         ));
     }
     Ok(json!({
