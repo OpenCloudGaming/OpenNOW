@@ -8,6 +8,9 @@ and is the start of the shell-neutral application core. See
 For a sandboxed Linux x86_64 package, follow [Build and install the Flatpak](packaging/flatpak/README.md).
 The separate **Qt Flatpak build** workflow produces an installable bundle without publishing a release.
 
+If Linux Stream settings show no usable video backend, follow
+[Troubleshoot unavailable Linux video backends](../docs/linux-video-backends.md).
+
 ## CI checks and manual builds
 
 Pull requests and pushes to `dev` or `main` run workflow lint, packaging-contract

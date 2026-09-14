@@ -196,6 +196,8 @@ jobs:
           echo "$LINUXDEPLOY_SHA256  build/linuxdeploy-${LINUXDEPLOY_ARCH}.AppImage" | sha256sum --check --strict
           echo "$QT_PLUGIN_SHA256  build/linuxdeploy-plugin-qt-${LINUXDEPLOY_ARCH}.AppImage" | sha256sum --check --strict
           chmod +x build/linuxdeploy-*.AppImage build/linuxdeploy-plugin-qt-*.AppImage
+          install -Dm644 opennow-qt/packaging/opennow-vaapi-hook.sh \
+            build/AppDir/apprun-hooks/opennow-vaapi-hook.sh
           QMAKE="$QT_ROOT_DIR/bin/qmake" QML_SOURCES_PATHS="$PWD/opennow-qt/qml" \
           OUTPUT="OpenNOW-Qt-${{ inputs.version }}-Linux-${{ matrix.arch }}.AppImage" \
             "build/linuxdeploy-${LINUXDEPLOY_ARCH}.AppImage" \
@@ -212,7 +214,7 @@ jobs:
           test -f build/AppDir/usr/plugins/platforms/libqwayland-generic.so
           test -f build/AppDir/usr/plugins/wayland-shell-integration/libxdg-shell.so
           LD_LIBRARY_PATH="$PWD/build/AppDir/usr/lib:$LD_LIBRARY_PATH" \
-            python3 opennow-qt/packaging/verify_linux_package.py build/AppDir/usr/bin
+            python3 opennow-qt/packaging/verify_linux_package.py build/AppDir/usr/bin --appdir build/AppDir
           mv OpenNOW-Qt-*.AppImage build/release-artifacts/
           cpack --config build/qt-release/CPackConfig.cmake \
             -D "CPACK_PROJECT_CONFIG_FILE=$PWD/opennow-qt/packaging/LinuxBundledDeb.cmake" \

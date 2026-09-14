@@ -24,6 +24,15 @@ def verify_capabilities(message):
         raise ValueError("The packaged FFmpeg software fallback is unavailable")
 
 
+def verify_apprun(appdir):
+    hook = "opennow-vaapi-hook.sh"
+    deployed = appdir / "apprun-hooks" / hook
+    if not deployed.is_file() or deployed.read_bytes() != Path(__file__).with_name(hook).read_bytes():
+        raise ValueError("The deployed VAAPI driver-search hook is missing or stale")
+    if f'source "$this_dir"/apprun-hooks/"{hook}"' not in (appdir / "AppRun").read_text():
+        raise ValueError("AppRun does not source the VAAPI driver-search hook")
+
+
 def verify_package(bin_dir):
     helper = bin_dir / "opennow-update-helper"
     if not helper.is_file() or not os.access(helper, os.X_OK):
@@ -58,7 +67,10 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("bin_dir", type=Path)
     parser.add_argument("--deb", type=Path)
+    parser.add_argument("--appdir", type=Path)
     args = parser.parse_args()
+    if args.appdir:
+        verify_apprun(args.appdir.resolve())
     verify_package(args.bin_dir.resolve())
     if args.deb:
         dependencies = subprocess.check_output(["dpkg-deb", "-f", args.deb, "Depends"], text=True)

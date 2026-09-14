@@ -442,6 +442,8 @@ jobs:
             --output "build/appimage-runtime-${LINUXDEPLOY_ARCH}"
           echo "$APPIMAGE_RUNTIME_SHA256  build/appimage-runtime-${LINUXDEPLOY_ARCH}" | sha256sum --check --strict
           chmod +x "build/linuxdeploy-${LINUXDEPLOY_ARCH}.AppImage" "build/linuxdeploy-plugin-qt-${LINUXDEPLOY_ARCH}.AppImage"
+          install -Dm644 opennow-qt/packaging/opennow-vaapi-hook.sh \
+            build/AppDir/apprun-hooks/opennow-vaapi-hook.sh
           QMAKE="$QT_ROOT_DIR/bin/qmake" \
           QML_SOURCES_PATHS="$PWD/opennow-qt/qml" \
           LDAI_RUNTIME_FILE="$PWD/build/appimage-runtime-${LINUXDEPLOY_ARCH}" \
@@ -461,7 +463,7 @@ jobs:
           test -f build/AppDir/usr/plugins/platforms/libqwayland-generic.so
           test -f build/AppDir/usr/plugins/wayland-shell-integration/libxdg-shell.so
           LD_LIBRARY_PATH="$PWD/build/AppDir/usr/lib:$LD_LIBRARY_PATH" \
-            python3 opennow-qt/packaging/verify_linux_package.py build/AppDir/usr/bin
+            python3 opennow-qt/packaging/verify_linux_package.py build/AppDir/usr/bin --appdir build/AppDir
           mv OpenNOW-Qt-*.AppImage build/qt-packages/
 
       - name: Create bundled Linux DEB
