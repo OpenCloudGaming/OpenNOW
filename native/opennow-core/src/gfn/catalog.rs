@@ -460,6 +460,36 @@ impl GfnService {
                 .json(&json!({"query":query,"variables":variables})),
             "Catalog query failed",
         )?;
+        if !response.status().is_success() {
+            let status = response.status();
+            let mut bytes = Vec::new();
+            let payload = response
+                .take(16 * 1024 + 1)
+                .read_to_end(&mut bytes)
+                .ok()
+                .filter(|_| bytes.len() <= 16 * 1024)
+                .and_then(|_| serde_json::from_slice::<Value>(&bytes).ok());
+            let messages = payload
+                .as_ref()
+                .into_iter()
+                .flat_map(|value| value["errors"].as_array().into_iter().flatten())
+                .take(4)
+                .filter_map(|error| error["message"].as_str())
+                .map(|message| {
+                    crate::diagnostics::runtime_failure_reason(
+                        &message.replace(token, "[redacted]"),
+                    )
+                })
+                .collect::<Vec<_>>();
+            return Err(ServiceError {
+                code: if status.as_u16() == 401 {
+                    "http_unauthorized"
+                } else {
+                    "upstream_error"
+                },
+                message: format!("Catalog query failed ({status}): {}", messages.join("; ")),
+            });
+        }
         catalog_payload(response)
     }
 
