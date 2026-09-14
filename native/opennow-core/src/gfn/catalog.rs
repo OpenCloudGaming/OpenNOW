@@ -210,7 +210,7 @@ impl GfnService {
             let response = self.store_cache.requests.send(client.post(&self.endpoints.public_graphql)
                 .header(ACCEPT, "application/json")
                 .json(&json!({"query":"{ overallGfnSupportedLanguages { language } }"})), "Supported-language query failed")?;
-            let payload = catalog_payload(response)?;
+            let payload = catalog_payload(response, None)?;
             let items = payload["data"]["overallGfnSupportedLanguages"].as_array()
                 .filter(|items| !items.is_empty() && items.len() <= 512).ok_or_else(crate::catalog_types::invalid_metadata)?;
             let mut languages = Vec::new();
@@ -460,37 +460,7 @@ impl GfnService {
                 .json(&json!({"query":query,"variables":variables})),
             "Catalog query failed",
         )?;
-        if !response.status().is_success() {
-            let status = response.status();
-            let mut bytes = Vec::new();
-            let payload = response
-                .take(16 * 1024 + 1)
-                .read_to_end(&mut bytes)
-                .ok()
-                .filter(|_| bytes.len() <= 16 * 1024)
-                .and_then(|_| serde_json::from_slice::<Value>(&bytes).ok());
-            let messages = payload
-                .as_ref()
-                .into_iter()
-                .flat_map(|value| value["errors"].as_array().into_iter().flatten())
-                .take(4)
-                .filter_map(|error| error["message"].as_str())
-                .map(|message| {
-                    crate::diagnostics::runtime_failure_reason(
-                        &message.replace(token, "[redacted]"),
-                    )
-                })
-                .collect::<Vec<_>>();
-            return Err(ServiceError {
-                code: if status.as_u16() == 401 {
-                    "http_unauthorized"
-                } else {
-                    "upstream_error"
-                },
-                message: format!("Catalog query failed ({status}): {}", messages.join("; ")),
-            });
-        }
-        catalog_payload(response)
+        catalog_payload(response, Some(token))
     }
 
     pub fn store_local_catalog(
@@ -638,7 +608,7 @@ impl GfnService {
                             .json(&json!({"query":query,"variables":variables})),
                         "GFN store query failed",
                     )?;
-                    let payload = catalog_payload(response)?;
+                    let payload = catalog_payload(response, Some(token))?;
                     let apps = &payload["data"]["apps"];
                     let items = apps["items"].as_array().ok_or_else(|| ServiceError {
                         code: "invalid_upstream_response",
@@ -997,9 +967,53 @@ fn stale_catalog_scope() -> ServiceError {
     }
 }
 
-pub(crate) fn catalog_payload(response: Response) -> Result<Value, ServiceError> {
+pub(crate) fn catalog_payload(
+    response: Response,
+    token: Option<&str>,
+) -> Result<Value, ServiceError> {
     if !response.status().is_success() {
-        return Err(ServiceError::response("Catalog query failed", response));
+        let status = response.status();
+        let mut bytes = Vec::new();
+        let payload = response
+            .take(16 * 1024 + 1)
+            .read_to_end(&mut bytes)
+            .ok()
+            .filter(|_| bytes.len() <= 16 * 1024)
+            .and_then(|_| serde_json::from_slice::<Value>(&bytes).ok());
+        let messages = payload
+            .as_ref()
+            .into_iter()
+            .flat_map(|value| value["errors"].as_array().into_iter().flatten())
+            .take(4)
+            .filter_map(|error| error["message"].as_str())
+            .map(|message| {
+                let message = match token.filter(|token| !token.is_empty()) {
+                    Some(token) => message.replace(token, "[redacted]"),
+                    None => message.to_owned(),
+                };
+                crate::diagnostics::runtime_failure_reason(&message)
+            })
+            .collect::<Vec<_>>();
+        let context = format!("Catalog query failed ({status})");
+        let auth_error = payload
+            .as_ref()
+            .and_then(|payload| payload["error"].as_str())
+            .filter(|_| matches!(status.as_u16(), 400 | 401))
+            .filter(|error| matches!(*error, "invalid_grant" | "invalid_token" | "token_revoked"));
+        return Err(ServiceError {
+            code: if status.as_u16() == 401 {
+                "http_unauthorized"
+            } else {
+                "upstream_error"
+            },
+            message: if let Some(auth_error) = auth_error {
+                format!("{context}: {auth_error}")
+            } else if messages.is_empty() {
+                context
+            } else {
+                format!("{context}: {}", messages.join("; "))
+            },
+        });
     }
     let mut bytes = Vec::new();
     response
@@ -1093,4 +1107,92 @@ fn complete_games(items: &Value) -> Result<Vec<Value>, ServiceError> {
         }
     }
     Ok(games)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn catalog_http_error_details_are_redacted_and_bounded() {
+        let (url, worker) = crate::gfn::tests::mock_requests(
+            vec![(
+                400,
+                json!({"errors":[
+                    {"message":"Syntax error: fixture-access-value Bearer fixture-bearer https://example.invalid/private fixture@example.invalid\nnext"},
+                    {"message":"x".repeat(2_000)},
+                    {"message":"third"},
+                    {"message":"fourth"},
+                    {"message":"fifth-must-not-appear"}
+                ]}),
+            )],
+            |_, _| {},
+        );
+        let response = Client::builder()
+            .no_proxy()
+            .build()
+            .unwrap()
+            .get(url)
+            .send()
+            .unwrap();
+        let error = catalog_payload(response, Some("fixture-access-value")).unwrap_err();
+        assert_eq!(error.code, "upstream_error");
+        assert!(error.message.contains("Syntax error:"));
+        assert!(error.message.contains("fourth"));
+        for private in [
+            "fixture-access-value",
+            "fixture-bearer",
+            "example.invalid",
+            "fifth-must-not-appear",
+            "\n",
+        ] {
+            assert!(!error.message.contains(private));
+        }
+        assert!(error.message.chars().count() <= 4 * 480 + 100);
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn catalog_http_error_fallback_preserves_status_without_raw_bodies() {
+        for (status, body, code, suffix) in [
+            (
+                401,
+                json!({"error":"invalid_token"}),
+                "http_unauthorized",
+                ": invalid_token",
+            ),
+            (
+                400,
+                json!({"error":"invalid_grant"}),
+                "upstream_error",
+                ": invalid_grant",
+            ),
+            (400, json!("private-raw-body"), "upstream_error", ""),
+            (
+                400,
+                json!({"errors":[{"message":"x".repeat(16 * 1024)}]}),
+                "upstream_error",
+                "",
+            ),
+        ] {
+            let (url, worker) = crate::gfn::tests::mock_requests(vec![(status, body)], |_, _| {});
+            let response = Client::builder()
+                .no_proxy()
+                .build()
+                .unwrap()
+                .get(url)
+                .send()
+                .unwrap();
+            let error = catalog_payload(response, None).unwrap_err();
+            assert_eq!(error.code, code);
+            assert_eq!(
+                error.message,
+                format!(
+                    "Catalog query failed ({}){suffix}",
+                    reqwest::StatusCode::from_u16(status).unwrap()
+                )
+            );
+            worker.join().unwrap();
+        }
+    }
 }

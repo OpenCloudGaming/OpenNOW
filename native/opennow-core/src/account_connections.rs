@@ -130,15 +130,16 @@ impl AccountConnectionsService {
 
     pub fn list(&self, context: &AccountContext<'_>) -> Result<Value, ServiceError> {
         (context.check)()?;
+        let token = session_token(context.auth)?;
         let response = context.requests.send(
             context
                 .client
                 .post(context.graphql)
-                .headers(graphql_headers(session_token(context.auth)?)?)
+                .headers(graphql_headers(token)?)
                 .json(&json!({"query":USER_ACCOUNT_QUERY})),
             "Game-account discovery failed",
         )?;
-        let payload = crate::gfn::catalog::catalog_payload(response)?;
+        let payload = crate::gfn::catalog::catalog_payload(response, Some(token))?;
         (context.check)()?;
         let account = &payload["data"]["userAccount"];
         let stores = account["storesData"]
@@ -736,10 +737,7 @@ fn observed_sync_phase(baseline: &Value, current: Option<&Value>) -> &'static st
 
 fn graphql_headers(token: &str) -> Result<HeaderMap, ServiceError> {
     let mut headers = base_headers()?;
-    headers.insert(
-        CONTENT_TYPE,
-        HeaderValue::from_static("application/graphql"),
-    );
+    headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
     headers.insert(
         ORIGIN,
         HeaderValue::from_static("https://play.geforcenow.com"),
@@ -891,6 +889,51 @@ mod tests {
         json!({"data":{"userAccount":{"subscriptions":[{"id":"store-subscription"}],"storesData":[{
             "store":"STEAM","accountLinkingData":{"userDisplayName":"Fixture","accountSyncingData":{
                 "syncDate":date,"syncState":state,"totalNumberOfSyncedGfnGames":5}}}]}}})
+    }
+
+    #[test]
+    fn account_discovery_posts_a_json_graphql_document() {
+        let (url, worker) = crate::gfn::tests::mock_requests(
+            vec![(200, account("2026-09-14T00:00:00Z", "SYNC_SUCCESS"))],
+            |_, request| {
+                assert!(request.starts_with("POST / HTTP/1.1\r\n"));
+                let (headers, body) = request.split_once("\r\n\r\n").unwrap();
+                assert!(
+                    headers
+                        .to_ascii_lowercase()
+                        .contains("\r\ncontent-type: application/json\r\n")
+                );
+                assert_eq!(
+                    serde_json::from_str::<Value>(body).unwrap(),
+                    json!({"query":USER_ACCOUNT_QUERY})
+                );
+            },
+        );
+        let client = Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_secs(3))
+            .build()
+            .unwrap();
+        let auth = crate::gfn::tests::auth_fixture("account-a");
+        let definitions = json!({"stores":{"status":"success","items":[{"store":"STEAM","label":"Steam",
+            "features":[{"__typename":"AccountGamesSyncing","supported":true}]}]}});
+        let requests = crate::store_requests::StoreRequests::default();
+        let context = AccountContext {
+            client: &client,
+            auth: &auth,
+            generation: 1,
+            graphql: &url,
+            als: &url,
+            definitions: &definitions,
+            requests: &requests,
+            check: &|| Ok(()),
+        };
+        let result = AccountConnectionsService::new().list(&context).unwrap();
+        assert_eq!(
+            result["subscriptions"],
+            json!([{"id":"store-subscription"}])
+        );
+        worker.join().unwrap();
     }
 
     #[test]
