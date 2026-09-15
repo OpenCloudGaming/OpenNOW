@@ -298,8 +298,8 @@ private slots:
             else qputenv("OPENNOW_TEST_OLD_CORE", previous);
         });
         qputenv("OPENNOW_TEST_OLD_CORE", "1");
-        CoreClient client;
         QStringList errors;
+        CoreClient client;
         connect(&client, &CoreClient::lastErrorChanged, &client, [&] { errors.append(client.lastError()); });
         QSignalSpy responses(&client, &CoreClient::responseReceived);
         QVERIFY(client.start(fakeCorePath()));
@@ -307,6 +307,30 @@ private slots:
         QVERIFY(errors.contains(QStringLiteral("Core protocol version is incompatible")));
         QVERIFY(client.request(QStringLiteral("catalog.library.list")).isEmpty());
         QVERIFY(responses.isEmpty());
+    }
+
+    void rejectsCatalogRequestsDuringHandshakeAndProtocolFailure()
+    {
+        const auto previous = qgetenv("OPENNOW_TEST_OLD_CORE");
+        const auto restore = qScopeGuard([previous] {
+            if (previous.isNull()) qunsetenv("OPENNOW_TEST_OLD_CORE");
+            else qputenv("OPENNOW_TEST_OLD_CORE", previous);
+        });
+        qputenv("OPENNOW_TEST_OLD_CORE", "1");
+        QStringList observedStates;
+        QStringList admittedStates;
+        CoreClient client;
+        connect(&client, &CoreClient::stateChanged, &client, [&] {
+            const auto state = client.state();
+            if (state != QStringLiteral("handshaking") && state != QStringLiteral("failed")) return;
+            observedStates.append(state);
+            if (!client.request(QStringLiteral("catalog.library.list")).isEmpty())
+                admittedStates.append(state);
+        });
+        QVERIFY(client.start(fakeCorePath()));
+        QTRY_VERIFY_WITH_TIMEOUT(observedStates.contains(QStringLiteral("failed")), 2'000);
+        QVERIFY(observedStates.contains(QStringLiteral("handshaking")));
+        QVERIFY2(admittedStates.isEmpty(), qPrintable(admittedStates.join(QStringLiteral(", "))));
     }
 
     void rejectsInvalidStartAndRequest()

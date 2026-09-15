@@ -262,7 +262,8 @@ void CoreClient::stop()
 
 QString CoreClient::request(const QString &method, const QJsonObject &params, int timeoutMs)
 {
-    if (method.trimmed().isEmpty() || m_process.state() != QProcess::Running) {
+    if (method.trimmed().isEmpty() || m_process.state() != QProcess::Running
+        || (m_state != u"ready"_s && !(m_state == u"handshaking"_s && method == u"core.hello"_s))) {
         return {};
     }
     const auto id = QString::number(m_nextRequestId++);
