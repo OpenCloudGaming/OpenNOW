@@ -29,6 +29,9 @@ public slots:
         m_shell.insert("previewThemePack", QString{});
         m_shell.insert("streamer", QVariantMap{{"status", "streaming"}});
         m_shell.insert("activeSession", QVariantMap{{"sessionId", "test-session"}});
+        m_shell.insert("streamColorNotice", QVariant{});
+        m_shell.insert("streamColorNoticeShown", false);
+        m_shell.insert("streamerStopExpected", false);
         m_input.insert("controllers", QVariantList{});
         m_controller.insert("reducedMotion", true);
         engine->rootContext()->setContextProperty("ShellStore", &m_shell);

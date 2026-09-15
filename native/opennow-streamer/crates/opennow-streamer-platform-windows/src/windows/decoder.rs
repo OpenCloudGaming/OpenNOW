@@ -926,10 +926,7 @@ fn validate_decoded_output_format(
             surface_format.0
         ));
     }
-    if output.bit_depth() < preferred.bit_depth()
-        || (chroma_format(preferred) == VideoChromaFormat::Cs444
-            && chroma_format(output) != VideoChromaFormat::Cs444)
-    {
+    if !preferred.supports_decoded_output(output) {
         return Err(format!(
             "Media Foundation decoder produced {output:?} output below negotiated {preferred:?} precision or chroma"
         ));
@@ -1251,6 +1248,63 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn chroma_fallback_validates_actual_output_color_metadata() {
+        let _runtime = super::super::MediaRuntime::initialize().unwrap();
+        let negotiated = VideoFormat {
+            pixel_format: VideoPixelFormat::Y410,
+            chroma_format: VideoChromaFormat::Cs444,
+            ..hdr_test_format()
+        };
+        let aperture = VideoAperture::new(negotiated.width, negotiated.height, None).unwrap();
+        let media_type = video_input_type(negotiated).unwrap();
+        unsafe {
+            media_type
+                .SetUINT32(&MF_MT_TRANSFER_FUNCTION, MFVideoTransFunc_HLG.0 as u32)
+                .unwrap();
+            media_type
+                .SetUINT32(&MF_MT_VIDEO_NOMINAL_RANGE, MFNominalRange_0_255.0 as u32)
+                .unwrap();
+        }
+        let output = output_media_format(
+            &media_type,
+            negotiated,
+            aperture,
+            VideoPixelFormat::P010,
+            false,
+        )
+        .unwrap();
+        assert_eq!(output.pixel_format, VideoPixelFormat::P010);
+        assert_eq!(output.chroma_format, VideoChromaFormat::Cs420);
+        assert_eq!(output.transfer_function, VideoTransferFunction::Hlg);
+        assert!(output.full_range);
+        assert!(
+            validate_decoded_output_format(
+                DXGI_FORMAT_P010,
+                output.pixel_format,
+                negotiated.pixel_format,
+            )
+            .is_ok()
+        );
+        for transfer in [MFVideoTransFunc_709.0, 999] {
+            unsafe {
+                media_type
+                    .SetUINT32(&MF_MT_TRANSFER_FUNCTION, transfer as u32)
+                    .unwrap();
+            }
+            assert!(
+                output_media_format(
+                    &media_type,
+                    negotiated,
+                    aperture,
+                    VideoPixelFormat::P010,
+                    false,
+                )
+                .is_err()
+            );
+        }
     }
 
     #[test]
@@ -1700,8 +1754,8 @@ mod tests {
         for (preferred, accepted) in [
             (VideoPixelFormat::Nv12, [true, true, true, true]),
             (VideoPixelFormat::P010, [false, true, false, true]),
-            (VideoPixelFormat::Ayuv, [false, false, true, true]),
-            (VideoPixelFormat::Y410, [false, false, false, true]),
+            (VideoPixelFormat::Ayuv, [true, false, true, true]),
+            (VideoPixelFormat::Y410, [false, true, false, true]),
         ] {
             for (output, accepted) in [
                 VideoPixelFormat::Nv12,
@@ -1726,6 +1780,27 @@ mod tests {
                     let error = result.unwrap_err();
                     assert!(error.contains(&format!("produced {output:?}")));
                     assert!(error.contains(&format!("negotiated {preferred:?}")));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn chroma_fallback_rejects_mismatched_decoder_surfaces() {
+        for (preferred, output) in [
+            (VideoPixelFormat::Ayuv, VideoPixelFormat::Nv12),
+            (VideoPixelFormat::Y410, VideoPixelFormat::P010),
+        ] {
+            for surface in [
+                DXGI_FORMAT_NV12,
+                DXGI_FORMAT_P010,
+                DXGI_FORMAT_AYUV,
+                DXGI_FORMAT_Y410,
+            ] {
+                let result = validate_decoded_output_format(surface, output, preferred);
+                assert_eq!(result.is_ok(), surface == decoder_surface_format(output));
+                if let Err(error) = result {
+                    assert!(error.contains("does not match output media format"));
                 }
             }
         }

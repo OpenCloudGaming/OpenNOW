@@ -39,8 +39,10 @@ The capability probe does not establish that a monitor or the Qt swapchain suppo
 Decoded-output polling is bounded to 500 ms per advanced profile, at most three seconds per
 graphics API, excluding Windows API call latency. Results are reused for the same adapter LUID
 and D3D API; device removal or an adapter change invalidates them. Timeouts are not cached.
-Presentation and audio are always checked again. Live session creation independently validates
-the adopted Qt device and actual output, so cached capabilities cannot authorize a downgraded frame.
+Presentation and audio are always checked again. Live playback independently validates the adopted
+Qt device and actual output. It permits AYUV-to-NV12 and Y410-to-P010 chroma-only fallback at unchanged
+bit depth; capability probes still require the exact requested output format. The parent shell
+notifies the user using the validated actual format exposed by the acquired `D3d11Frame`.
 Installing a different decoder requires restarting the process to refresh cached MFT failures.
 
 ## Embedded HDR color contract
@@ -78,9 +80,10 @@ with RGBA8 or rely on legacy driver color defaults. Format, range, and extent ch
 invalidate the processor, cached input views, and frame slots before conversion resumes.
 
 Media Foundation may temporarily negotiate a lower-precision output type before reading
-the first sequence header. That startup compatibility does not permit downgraded frames:
+the first sequence header. That startup compatibility does not permit lower-bit-depth frames:
 each decoded surface must match its output media type and preserve at least the negotiated
-bit depth and chroma before entering the decoded queue.
+bit depth before entering the decoded queue. Chroma loss is limited to the two same-depth
+fallbacks above, and conversion uses the validated actual format and color metadata.
 Provisional startup metadata is not validated as an actual HDR frame before the sequence header
 arrives. The first actual sample and every output-type change undergo strict validation, including
 HDR color metadata; lower-precision frames never reach conversion.

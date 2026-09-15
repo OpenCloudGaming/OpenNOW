@@ -20,6 +20,72 @@ TestCase {
         ControllerInput.controllers = []
         ShellStore.streamer = {status: "streaming"}
         ShellStore.activeSession = {sessionId: "test-session"}
+        ShellStore.streamColorNotice = null
+        ShellStore.streamColorNoticeShown = false
+        ShellStore.streamerStopExpected = false
+    }
+
+    function test_colorFormatLifetimeAndRecovery() {
+        const stack = createTemporaryObject(stackComponent, testCase)
+        verify(stack !== null)
+        ShellStore.streamColorNotice = {sessionId: "test-session", source: "decoder",
+            requestedColorQuality: "10bit_444", actualColorQuality: "10bit_420"}
+        const toast = findChild(stack, "streamColorFormatToast")
+        verify(toast.visible)
+        verify(!toast.activeFocus && !stack.activeFocus)
+        compare(toast.subtitle, "Video output is 10-bit 4:2:0 instead of 10-bit 4:4:4.")
+        verify(ShellStore.streamColorNoticeShown)
+        tryCompare(stack, "colorNotice", false, 5000)
+        ShellStore.streamer = {status: "reconnecting"}
+        ShellStore.streamer = {status: "streaming"}
+        verify(!toast.visible)
+        stack.observeColorFormat()
+        verify(!toast.visible)
+    }
+
+    function test_colorFormatWaitsForStreamingAndRejectsStaleSession() {
+        ShellStore.streamer = {status: "starting"}
+        const stack = createTemporaryObject(stackComponent, testCase)
+        ShellStore.streamColorNotice = {sessionId: "old-session", source: "decoder",
+            requestedColorQuality: "10bit_444", actualColorQuality: "10bit_420"}
+        ShellStore.streamer = {status: "streaming"}
+        verify(!stack.colorNotice)
+        ShellStore.streamer = {status: "starting"}
+        ShellStore.streamColorNotice = {sessionId: "test-session", source: "server",
+            requestedColorQuality: "10bit_444", actualColorQuality: "10bit_420"}
+        verify(!stack.colorNotice)
+        ShellStore.streamer = {status: "streaming"}
+        verify(stack.colorNotice)
+        const toast = findChild(stack, "streamColorFormatToast")
+        compare(toast.subtitle, "The server negotiated 10-bit 4:2:0 instead of 10-bit 4:4:4.")
+        ShellStore.streamerStopExpected = true
+        verify(!toast.visible)
+    }
+
+    function test_colorFormatWaitsForOverlayWithoutReplaying() {
+        const stack = createTemporaryObject(stackComponent, testCase)
+        stack.visible = false
+        ShellStore.streamColorNotice = {sessionId: "test-session", source: "decoder",
+            requestedColorQuality: "10bit_444", actualColorQuality: "10bit_420"}
+        verify(!ShellStore.streamColorNoticeShown)
+        stack.visible = true
+        verify(stack.colorNotice)
+        stack.visible = false
+        verify(!stack.colorNotice)
+        stack.visible = true
+        verify(!stack.colorNotice)
+    }
+
+    function test_consoleShowsOnlyColorNotice() {
+        const stack = createTemporaryObject(stackComponent, testCase)
+        stack.connectionNotificationsEnabled = false
+        ControllerInput.controllers = [controller(1, 82)]
+        ShellStore.streamer = {status: "streaming", packetLossPercent: 2}
+        ShellStore.streamColorNotice = {sessionId: "test-session", source: "decoder",
+            requestedColorQuality: "10bit_444", actualColorQuality: "10bit_420"}
+        verify(findChild(stack, "streamColorFormatToast").visible)
+        verify(!findChild(stack, "streamControllerToast").visible)
+        verify(!findChild(stack, "streamPacketLossToast").visible)
     }
 
     function test_controllerChanges() {

@@ -325,6 +325,15 @@ pub enum MediaColorQuality {
 }
 
 impl MediaColorQuality {
+    pub const fn protocol_name(self) -> &'static str {
+        match self {
+            Self::EightBit420 => "8bit_420",
+            Self::EightBit444 => "8bit_444",
+            Self::TenBit420 => "10bit_420",
+            Self::TenBit444 => "10bit_444",
+        }
+    }
+
     pub const fn bit_depth(self) -> u8 {
         match self {
             Self::EightBit420 | Self::EightBit444 => 8,
@@ -660,6 +669,10 @@ pub enum MediaFeedback {
         from: &'static str,
         to: &'static str,
         reason: String,
+    },
+    ColorFormatChanged {
+        requested: MediaColorQuality,
+        actual: MediaColorQuality,
     },
     RequestKeyframe {
         mid: String,
@@ -1844,6 +1857,7 @@ struct EmbeddedD3d11State {
     frame_ready: Arc<dyn Fn() + Send + Sync>,
     keyframe_required: bool,
     first_frame_recorded: bool,
+    reported_pixel_format: Option<opennow_streamer_platform_windows::VideoPixelFormat>,
 }
 
 #[cfg(target_os = "windows")]
@@ -1917,6 +1931,7 @@ impl EmbeddedD3d11State {
             frame_ready: Arc::new(|| {}),
             keyframe_required: false,
             first_frame_recorded: false,
+            reported_pixel_format: None,
         }
     }
 
@@ -1941,7 +1956,8 @@ impl EmbeddedD3d11State {
         &mut self,
         context: crate::GraphicsContext,
         command: crate::GraphicsRecordCommand,
-    ) -> Result<crate::GraphicsRecordedFrame, crate::GraphicsFrameError> {
+    ) -> Result<(crate::GraphicsRecordedFrame, Option<MediaFeedback>), crate::GraphicsFrameError>
+    {
         use opennow_streamer_platform_windows::{
             AdoptedD3d11Context, D3d11FrameProducer, WindowsDecoderMode,
         };
@@ -2003,6 +2019,7 @@ impl EmbeddedD3d11State {
             .acquire_latest()
             .map_err(|error| error.to_string())?
             .ok_or(crate::GraphicsFrameError::NotReady)?;
+        let actual_format = frame.format();
         let recorded = unsafe {
             frame.record(
                 AdoptedD3d11Context {
@@ -2013,24 +2030,43 @@ impl EmbeddedD3d11State {
             )
         }
         .map_err(|error| error.to_string())?;
-        Ok(crate::GraphicsRecordedFrame {
-            resource: recorded.texture as usize as u64,
-            resource_view: 0,
-            color_space: recorded.color_space.into(),
-            texture_format: match recorded.texture_format {
-                opennow_streamer_platform_windows::D3d11TextureFormat::Rgba8 => {
-                    crate::GraphicsTextureFormat::Rgba8
-                }
-                opennow_streamer_platform_windows::D3d11TextureFormat::Rgb10A2 => {
-                    crate::GraphicsTextureFormat::Rgb10A2
-                }
+        let color_change = if self.reported_pixel_format != Some(actual_format.pixel_format) {
+            use opennow_streamer_platform_windows::VideoPixelFormat;
+            let quality = |format| match format {
+                VideoPixelFormat::Nv12 => MediaColorQuality::EightBit420,
+                VideoPixelFormat::P010 => MediaColorQuality::TenBit420,
+                VideoPixelFormat::Ayuv => MediaColorQuality::EightBit444,
+                VideoPixelFormat::Y410 => MediaColorQuality::TenBit444,
+            };
+            self.reported_pixel_format = Some(actual_format.pixel_format);
+            Some(MediaFeedback::ColorFormatChanged {
+                requested: quality(self.format.pixel_format),
+                actual: quality(actual_format.pixel_format),
+            })
+        } else {
+            None
+        };
+        Ok((
+            crate::GraphicsRecordedFrame {
+                resource: recorded.texture as usize as u64,
+                resource_view: 0,
+                color_space: recorded.color_space.into(),
+                texture_format: match recorded.texture_format {
+                    opennow_streamer_platform_windows::D3d11TextureFormat::Rgba8 => {
+                        crate::GraphicsTextureFormat::Rgba8
+                    }
+                    opennow_streamer_platform_windows::D3d11TextureFormat::Rgb10A2 => {
+                        crate::GraphicsTextureFormat::Rgb10A2
+                    }
+                },
+                width: recorded.width,
+                height: recorded.height,
+                frame_slot: recorded.frame_slot,
+                generation: recorded.generation,
+                presentation_time_ns: recorded.presentation_time_ns,
             },
-            width: recorded.width,
-            height: recorded.height,
-            frame_slot: recorded.frame_slot,
-            generation: recorded.generation,
-            presentation_time_ns: recorded.presentation_time_ns,
-        })
+            color_change,
+        ))
     }
 }
 
@@ -2235,7 +2271,11 @@ impl crate::GraphicsFrame for PendingD3d11Frame {
         command: crate::GraphicsRecordCommand,
     ) -> Result<crate::GraphicsRecordedFrame, crate::GraphicsFrameError> {
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-        let result = state.record(context, command);
+        let mut color_change = None;
+        let result = state.record(context, command).map(|(frame, change)| {
+            color_change = change;
+            frame
+        });
         let first_frame = state.take_first_recorded_frame(result.is_ok());
         let keyframe_required = state.take_keyframe_required();
         drop(state);
@@ -2243,6 +2283,9 @@ impl crate::GraphicsFrame for PendingD3d11Frame {
             let _ = self.shared.feedback.send(MediaFeedback::PlaybackStarted {
                 backend: "D3D11/Qt",
             });
+        }
+        if let Some(change) = color_change {
+            let _ = self.shared.feedback.send(change);
         }
         if keyframe_required {
             invalidate_embedded_video(
