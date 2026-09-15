@@ -838,6 +838,7 @@ mod tests {
             clock_rate_hz: if is_audio { 48_000 } else { 90_000 },
             keyframe,
             contiguous: true,
+            ssrc: None,
         }
     }
 

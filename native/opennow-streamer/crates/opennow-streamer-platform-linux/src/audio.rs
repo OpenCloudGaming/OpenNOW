@@ -13,6 +13,9 @@ use crate::{Error, Result, Subsystem};
 
 const OPUS_OK: c_int = 0;
 const OPUS_MAX_FRAME_MS: usize = 120;
+const OPUS_RESET_STATE: c_int = 4028;
+const MAX_PLC_MS: usize = 100;
+const PLC_CHUNK_TENTHS_MS: [usize; 6] = [600, 400, 200, 100, 50, 25];
 const SND_PCM_STREAM_PLAYBACK: c_int = 0;
 const SND_PCM_ACCESS_RW_INTERLEAVED: c_int = 3;
 const SND_PCM_FORMAT_FLOAT_LE: c_int = 14;
@@ -100,13 +103,25 @@ impl AudioConfig {
 #[derive(Debug, Clone)]
 pub struct AudioPacket {
     pub data: Arc<[u8]>,
-    pub timestamp_us: u64,
+    pub rtp_timestamp: u32,
+    pub clock_rate_hz: u32,
+    pub ssrc: u32,
 }
 
 impl AudioPacket {
-    pub fn new(data: impl Into<Arc<[u8]>>, timestamp_us: u64) -> Result<Self> {
+    pub fn new(
+        data: impl Into<Arc<[u8]>>,
+        rtp_timestamp: u32,
+        clock_rate_hz: u32,
+        ssrc: u32,
+    ) -> Result<Self> {
         let data = data.into();
-        let packet = Self { data, timestamp_us };
+        let packet = Self {
+            data,
+            rtp_timestamp,
+            clock_rate_hz,
+            ssrc,
+        };
         packet.validate()?;
         Ok(packet)
     }
@@ -120,6 +135,11 @@ impl AudioPacket {
                 "Opus packet exceeds the maximum packet size".to_owned(),
             ));
         }
+        if self.clock_rate_hz == 0 {
+            return Err(Error::InvalidFormat(
+                "Opus RTP clock rate cannot be zero".to_owned(),
+            ));
+        }
         Ok(())
     }
 }
@@ -127,6 +147,7 @@ impl AudioPacket {
 type OpusDecoderCreate = unsafe extern "C" fn(c_int, c_int, *mut c_int) -> *mut c_void;
 type OpusDecodeFloat =
     unsafe extern "C" fn(*mut c_void, *const u8, c_int, *mut f32, c_int, c_int) -> c_int;
+type OpusDecoderCtl = unsafe extern "C" fn(*mut c_void, c_int, ...) -> c_int;
 type OpusDecoderDestroy = unsafe extern "C" fn(*mut c_void);
 type OpusStrError = unsafe extern "C" fn(c_int) -> *const c_char;
 
@@ -134,11 +155,15 @@ pub(crate) struct OpusDecoder {
     _library: Library,
     handle: NonNull<c_void>,
     decode_float: OpusDecodeFloat,
+    decoder_ctl: OpusDecoderCtl,
     destroy: OpusDecoderDestroy,
     strerror: OpusStrError,
     sample_rate: u32,
     channels: usize,
     pcm: Vec<f32>,
+    last_ssrc: Option<u32>,
+    last_timestamp: Option<u32>,
+    last_frame_samples_per_channel: usize,
 }
 
 impl OpusDecoder {
@@ -153,6 +178,9 @@ impl OpusDecoder {
                 .map_err(|error| Error::unavailable(Subsystem::Opus, error.to_string()))?;
             let decode_float: OpusDecodeFloat = *library
                 .get(b"opus_decode_float\0")
+                .map_err(|error| Error::unavailable(Subsystem::Opus, error.to_string()))?;
+            let decoder_ctl: OpusDecoderCtl = *library
+                .get(b"opus_decoder_ctl\0")
                 .map_err(|error| Error::unavailable(Subsystem::Opus, error.to_string()))?;
             let destroy: OpusDecoderDestroy = *library
                 .get(b"opus_decoder_destroy\0")
@@ -180,16 +208,23 @@ impl OpusDecoder {
                 _library: library,
                 handle,
                 decode_float,
+                decoder_ctl,
                 destroy,
                 strerror,
                 sample_rate: config.sample_rate,
                 channels,
                 pcm: vec![0.0; config.sample_rate as usize * OPUS_MAX_FRAME_MS / 1000 * channels],
+                last_ssrc: None,
+                last_timestamp: None,
+                last_frame_samples_per_channel: 0,
             })
         }
     }
 
     pub fn decode<'a>(&'a mut self, packet: &AudioPacket) -> Result<&'a [f32]> {
+        if self.source_changed(packet.ssrc) {
+            self.reset_decoder_state()?;
+        }
         let max_samples_per_channel = self.sample_rate as usize * OPUS_MAX_FRAME_MS / 1000;
         let samples_per_channel = unsafe {
             (self.decode_float)(
@@ -206,8 +241,101 @@ impl OpusDecoder {
                 opus_error(self.strerror, samples_per_channel)
             }));
         }
-        Ok(&self.pcm[..samples_per_channel as usize * self.channels])
+        let samples_per_channel = samples_per_channel as usize;
+        if samples_per_channel > 0 {
+            self.last_frame_samples_per_channel = samples_per_channel;
+        }
+        self.last_ssrc = Some(packet.ssrc);
+        self.last_timestamp = Some(packet.rtp_timestamp);
+        Ok(&self.pcm[..samples_per_channel * self.channels])
     }
+
+    pub fn conceal_before<'a>(&'a mut self, packet: &AudioPacket) -> Result<&'a [f32]> {
+        if self.source_changed(packet.ssrc) {
+            self.reset_decoder_state()?;
+            return Ok(&self.pcm[..0]);
+        }
+        let Some(previous) = self.last_timestamp else {
+            return Ok(&self.pcm[..0]);
+        };
+        let span = packet.rtp_timestamp.wrapping_sub(previous);
+        if span >= 1 << 31 {
+            return Ok(&self.pcm[..0]);
+        }
+        let frame_samples = self.last_frame_samples_per_channel;
+        if frame_samples == 0 {
+            return Ok(&self.pcm[..0]);
+        }
+        let missing_samples = ticks_to_samples(span, packet.clock_rate_hz, self.sample_rate)
+            .saturating_sub(frame_samples);
+        if missing_samples == 0 {
+            return Ok(&self.pcm[..0]);
+        }
+        let budget_samples = self.sample_rate as usize * MAX_PLC_MS / 1000;
+        let capacity = self.pcm.len() / self.channels;
+        let mut remaining = missing_samples.min(budget_samples).min(capacity);
+        let decode_float = self.decode_float;
+        let mut produced = 0;
+        while remaining > 0 {
+            let chunk = plc_chunk_samples(remaining, self.sample_rate);
+            if chunk == 0 {
+                break;
+            }
+            let offset = produced * self.channels;
+            let samples_per_channel = unsafe {
+                (decode_float)(
+                    self.handle.as_ptr(),
+                    std::ptr::null(),
+                    0,
+                    self.pcm[offset..].as_mut_ptr(),
+                    chunk as c_int,
+                    0,
+                )
+            };
+            if samples_per_channel < 0 {
+                return Err(Error::backend(Subsystem::Opus, unsafe {
+                    opus_error(self.strerror, samples_per_channel)
+                }));
+            }
+            let samples_per_channel = samples_per_channel as usize;
+            if samples_per_channel == 0 {
+                break;
+            }
+            let samples_per_channel = samples_per_channel.min(chunk);
+            produced += samples_per_channel;
+            remaining = remaining.saturating_sub(samples_per_channel);
+        }
+        Ok(&self.pcm[..produced * self.channels])
+    }
+
+    fn source_changed(&self, ssrc: u32) -> bool {
+        self.last_ssrc.is_some_and(|last| last != ssrc)
+    }
+
+    fn reset_decoder_state(&mut self) -> Result<()> {
+        let status = unsafe { (self.decoder_ctl)(self.handle.as_ptr(), OPUS_RESET_STATE) };
+        if status != OPUS_OK {
+            return Err(Error::backend(Subsystem::Opus, unsafe {
+                opus_error(self.strerror, status)
+            }));
+        }
+        self.last_ssrc = None;
+        self.last_timestamp = None;
+        self.last_frame_samples_per_channel = 0;
+        Ok(())
+    }
+}
+
+fn ticks_to_samples(ticks: u32, clock_rate_hz: u32, sample_rate: u32) -> usize {
+    (u64::from(ticks) * u64::from(sample_rate) / u64::from(clock_rate_hz)) as usize
+}
+
+fn plc_chunk_samples(remaining: usize, sample_rate: u32) -> usize {
+    PLC_CHUNK_TENTHS_MS
+        .iter()
+        .map(|tenths| sample_rate as usize * tenths / 10_000)
+        .find(|chunk| *chunk > 0 && *chunk <= remaining)
+        .unwrap_or(0)
 }
 
 impl Drop for OpusDecoder {
@@ -669,6 +797,307 @@ fn find_in_path(executable: &str) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use opus::{Application, Channels, Encoder as OpusEncoder};
+
+    fn encoded_frame(
+        encoder: &mut OpusEncoder,
+        samples_per_channel: usize,
+        frequency: f32,
+    ) -> Arc<[u8]> {
+        let input: Vec<f32> = (0..samples_per_channel * 2)
+            .map(|sample| {
+                let seconds = (sample / 2) as f32 / 48_000.0;
+                (seconds * frequency * std::f32::consts::TAU).sin() * 0.25
+            })
+            .collect();
+        let mut buffer = vec![0_u8; 4_000];
+        let len = encoder
+            .encode_float(&input, &mut buffer)
+            .expect("encode frame");
+        Arc::from(&buffer[..len])
+    }
+
+    fn audio_packet(data: Arc<[u8]>, rtp_timestamp: u32) -> AudioPacket {
+        AudioPacket::new(data, rtp_timestamp, 48_000, 7).expect("audio packet")
+    }
+
+    fn decoder_and_encoder() -> (OpusDecoder, OpusEncoder) {
+        let decoder = OpusDecoder::open(&AudioConfig::default()).expect("decoder");
+        let encoder =
+            OpusEncoder::new(48_000, Channels::Stereo, Application::Audio).expect("encoder");
+        (decoder, encoder)
+    }
+
+    #[test]
+    fn tick_spans_scale_by_the_clock_and_decoder_rates() {
+        assert_eq!(ticks_to_samples(960, 48_000, 48_000), 960);
+        assert_eq!(ticks_to_samples(960, 48_000, 24_000), 480);
+        assert_eq!(ticks_to_samples(1_440, 48_000, 24_000), 720);
+        assert_eq!(ticks_to_samples(0, 48_000, 48_000), 0);
+    }
+
+    #[test]
+    fn packet_rejects_an_empty_payload_and_a_zero_clock_rate() {
+        assert!(AudioPacket::new(Arc::<[u8]>::from([0xf8]), 0, 0, 7).is_err());
+        assert!(AudioPacket::new(Arc::<[u8]>::from([]), 0, 48_000, 7).is_err());
+    }
+
+    #[test]
+    fn concealment_matches_the_gap_measured_from_rtp_timestamps() {
+        let (mut decoder, mut encoder) = decoder_and_encoder();
+        let first = audio_packet(encoded_frame(&mut encoder, 960, 440.0), 0);
+        assert_eq!(decoder.decode(&first).expect("decode").len(), 1_920);
+
+        let contiguous = audio_packet(encoded_frame(&mut encoder, 960, 440.0), 960);
+        assert!(
+            decoder
+                .conceal_before(&contiguous)
+                .expect("contiguous gap")
+                .is_empty()
+        );
+        assert_eq!(decoder.decode(&contiguous).expect("decode").len(), 1_920);
+
+        let one_lost = audio_packet(encoded_frame(&mut encoder, 960, 440.0), 2_880);
+        let concealed = decoder.conceal_before(&one_lost).expect("concealment");
+        assert_eq!(concealed.len(), 1_920);
+        assert!(concealed.iter().all(|sample| sample.is_finite()));
+        assert!(concealed.iter().any(|sample| sample.abs() > 0.001));
+        assert_eq!(decoder.decode(&one_lost).expect("decode").len(), 1_920);
+    }
+
+    #[test]
+    fn burst_losses_conceal_every_missing_frame_duration() {
+        let (mut decoder, mut encoder) = decoder_and_encoder();
+        let first = audio_packet(encoded_frame(&mut encoder, 960, 440.0), 0);
+        decoder.decode(&first).expect("decode");
+
+        for missing in 1_u32..=4 {
+            let concealed = decoder
+                .conceal_before(&audio_packet(
+                    encoded_frame(&mut encoder, 960, 440.0),
+                    (missing + 1) * 960,
+                ))
+                .expect("concealment");
+            assert_eq!(concealed.len(), missing as usize * 1_920);
+        }
+    }
+
+    #[test]
+    fn concealment_is_bounded_by_the_configured_time_budget() {
+        let (mut decoder, mut encoder) = decoder_and_encoder();
+        let first = audio_packet(encoded_frame(&mut encoder, 960, 440.0), 0);
+        decoder.decode(&first).expect("decode");
+
+        let concealed = decoder
+            .conceal_before(&audio_packet(
+                encoded_frame(&mut encoder, 960, 440.0),
+                960_000,
+            ))
+            .expect("concealment");
+        let budget_frames = 48_000 * MAX_PLC_MS / 1000 / 960;
+        assert_eq!(concealed.len(), budget_frames * 1_920);
+    }
+
+    #[test]
+    fn concealment_follows_the_last_decoded_frame_duration() {
+        let (mut decoder, mut encoder) = decoder_and_encoder();
+        let ten_ms = audio_packet(encoded_frame(&mut encoder, 480, 440.0), 0);
+        assert_eq!(decoder.decode(&ten_ms).expect("decode").len(), 960);
+
+        let concealed = decoder
+            .conceal_before(&audio_packet(
+                encoded_frame(&mut encoder, 960, 440.0),
+                1_920,
+            ))
+            .expect("concealment");
+        assert_eq!(concealed.len(), 2_880);
+    }
+
+    #[test]
+    fn concealment_covers_a_partial_frame_gap_exactly() {
+        let (mut decoder, mut encoder) = decoder_and_encoder();
+        let prior = audio_packet(encoded_frame(&mut encoder, 960, 440.0), 0);
+        decoder.decode(&prior).expect("decode");
+
+        let concealed = decoder
+            .conceal_before(&audio_packet(
+                encoded_frame(&mut encoder, 960, 440.0),
+                1_200,
+            ))
+            .expect("concealment");
+        assert_eq!(concealed.len(), 240 * 2);
+        assert!(concealed.iter().all(|sample| sample.is_finite()));
+    }
+
+    #[test]
+    fn concealment_covers_a_shorter_gap_after_a_long_frame() {
+        let (mut decoder, mut encoder) = decoder_and_encoder();
+        let prior = audio_packet(encoded_frame(&mut encoder, 2_880, 440.0), 0);
+        assert_eq!(decoder.decode(&prior).expect("decode").len(), 5_760);
+
+        let concealed = decoder
+            .conceal_before(&audio_packet(
+                encoded_frame(&mut encoder, 960, 440.0),
+                3_840,
+            ))
+            .expect("concealment");
+        assert_eq!(concealed.len(), 960 * 2);
+        assert!(concealed.iter().all(|sample| sample.is_finite()));
+    }
+
+    #[test]
+    fn a_source_change_makes_the_decoder_match_a_fresh_one() {
+        let (_, mut encoder) = decoder_and_encoder();
+        let mut other =
+            OpusEncoder::new(48_000, Channels::Stereo, Application::Audio).expect("encoder");
+        let poison = encoded_frame(&mut encoder, 960, 220.0);
+        let target = encoded_frame(&mut other, 960, 880.0);
+
+        let mut fresh = OpusDecoder::open(&AudioConfig::default()).expect("decoder");
+        let expected = fresh
+            .decode(&audio_packet(Arc::clone(&target), 0))
+            .expect("decode")
+            .to_vec();
+
+        let mut poisoned = OpusDecoder::open(&AudioConfig::default()).expect("decoder");
+        for timestamp in [0, 960, 1_920] {
+            poisoned
+                .decode(&audio_packet(Arc::clone(&poison), timestamp))
+                .expect("decode");
+        }
+        let changed = AudioPacket::new(Arc::clone(&target), 4_000_000, 48_000, 9).expect("packet");
+        assert!(
+            poisoned
+                .conceal_before(&changed)
+                .expect("source change")
+                .is_empty()
+        );
+        let actual = poisoned.decode(&changed).expect("decode").to_vec();
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn a_dropped_first_packet_from_a_new_source_still_resets() {
+        let (_, mut encoder) = decoder_and_encoder();
+        let mut other =
+            OpusEncoder::new(48_000, Channels::Stereo, Application::Audio).expect("encoder");
+        let mut fresh = OpusDecoder::open(&AudioConfig::default()).expect("decoder");
+        let mut poisoned = OpusDecoder::open(&AudioConfig::default()).expect("decoder");
+
+        let old_source = encoded_frame(&mut encoder, 960, 220.0);
+        for timestamp in [0, 960, 1_920] {
+            poisoned
+                .decode(&audio_packet(Arc::clone(&old_source), timestamp))
+                .expect("decode");
+        }
+
+        let new_source = encoded_frame(&mut other, 960, 880.0);
+        let second =
+            AudioPacket::new(Arc::clone(&new_source), 4_000_960, 48_000, 9).expect("packet");
+        assert!(
+            poisoned
+                .conceal_before(&second)
+                .expect("no concealment")
+                .is_empty()
+        );
+        let actual = poisoned.decode(&second).expect("decode").to_vec();
+
+        let fresh_second =
+            AudioPacket::new(Arc::clone(&new_source), 4_000_960, 48_000, 9).expect("packet");
+        let expected = fresh.decode(&fresh_second).expect("decode").to_vec();
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn backward_timestamps_are_discontinuities_not_gaps() {
+        let (mut decoder, mut encoder) = decoder_and_encoder();
+        let prior = audio_packet(encoded_frame(&mut encoder, 960, 440.0), 1_920);
+        decoder.decode(&prior).expect("decode");
+
+        let reordered = audio_packet(encoded_frame(&mut encoder, 960, 440.0), 960);
+        assert!(
+            decoder
+                .conceal_before(&reordered)
+                .expect("backward timestamp")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn redundancy_recovered_packets_are_not_concealed_again() {
+        let (mut decoder, mut encoder) = decoder_and_encoder();
+        let first = audio_packet(encoded_frame(&mut encoder, 960, 440.0), 0);
+        decoder.decode(&first).expect("decode");
+
+        let recovered_older = audio_packet(encoded_frame(&mut encoder, 960, 440.0), 1_920);
+        let concealed = decoder
+            .conceal_before(&recovered_older)
+            .expect("concealment");
+        assert_eq!(concealed.len(), 1_920);
+        decoder.decode(&recovered_older).expect("decode");
+
+        let recovered_newer = audio_packet(encoded_frame(&mut encoder, 960, 440.0), 2_880);
+        assert!(
+            decoder
+                .conceal_before(&recovered_newer)
+                .expect("recovered gap")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_source_change_resets_instead_of_concealing() {
+        let (mut decoder, mut encoder) = decoder_and_encoder();
+        let first = audio_packet(encoded_frame(&mut encoder, 960, 440.0), 0);
+        decoder.decode(&first).expect("decode");
+
+        let changed = AudioPacket::new(
+            encoded_frame(&mut encoder, 960, 440.0),
+            4_000_000,
+            48_000,
+            9,
+        )
+        .expect("packet");
+        assert!(
+            decoder
+                .conceal_before(&changed)
+                .expect("source change")
+                .is_empty()
+        );
+        decoder.decode(&changed).expect("decode");
+
+        let next = audio_packet(encoded_frame(&mut encoder, 960, 440.0), 4_000_960);
+        assert!(
+            decoder
+                .conceal_before(&next)
+                .expect("rebased gap")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_fresh_decoder_fabricates_nothing() {
+        let mut decoder = OpusDecoder::open(&AudioConfig::default()).expect("decoder");
+        let packet = audio_packet(Arc::from([0xf8]), 960_000);
+        assert!(
+            decoder
+                .conceal_before(&packet)
+                .expect("no reference")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn wrap_around_timestamps_keep_the_gap_measurable() {
+        let (mut decoder, mut encoder) = decoder_and_encoder();
+        let first = audio_packet(encoded_frame(&mut encoder, 960, 440.0), u32::MAX - 959);
+        decoder.decode(&first).expect("decode");
+
+        let concealed = decoder
+            .conceal_before(&audio_packet(encoded_frame(&mut encoder, 960, 440.0), 960))
+            .expect("concealment");
+        assert_eq!(concealed.len(), 1_920);
+    }
 
     #[test]
     fn pipewire_playback_mute_preserves_source_and_consumes_silently() {

@@ -51,7 +51,7 @@ Opus RTP on the DTLS bundle
   → preroll 15 ms, plus 5 ms per underrun, cap 60 ms
 ```
 
-Timestamps and `contiguous` are ignored at decode. They exist for recording. A gap with `contiguous == false` aborts an in-progress recording.
+Timestamps drive audio decode: the embedded Linux backend measures each pipeline gap from the sender's RTP timestamps and conceals it before the next packet decodes. `contiguous` reports whether a discontinuity exists; a source change resets instead. A gap with `contiguous == false` also aborts an in-progress recording.
 
 NVST backpressure drops the audio packet and stays up. The comment says queued audio is worse than a short gap.
 
@@ -79,7 +79,7 @@ Official has a dedicated audio renderer lifecycle. Pause, destroy render client,
 
 **Official.** Underruns increase `TimestampAudioBuffer` depth up to a cap. Overflow flushes. RED can fill a lost primary. This session used RED with zero decode failures and still saw thousands of stale drops.
 
-**OpenNOW.** No PLC. No empty-packet decode. No audio NACK envelope. Encoded and PCM queues drop oldest. WASAPI `padding == 0` stops and resets the client, then waits for a larger preroll. That is a hole, not concealment.
+**OpenNOW.** A gap conceals with libopus before the next packet decodes. The shared decoder synthesizes one frame duration per gap. The embedded Linux backend measures the gap in samples from the sender's RTP timestamps, subtracting the last decoded frame duration, and synthesizes that duration capped at 100 ms per gap; past the cap it stops fabricating and the next decoded packet re-establishes the timeline. Redundantly recovered packets carry their own timestamps and are never concealed twice, and a new sender source resets the measurement instead of concealing. No audio NACK envelope. Encoded and PCM queues drop oldest. WASAPI `padding == 0` stops and resets the client, then waits for a larger preroll.
 
 There is no A/V sync. Video uses `PresentationClock`. Audio is decode-and-push.
 
@@ -93,6 +93,7 @@ Official logs `NVST:OpusAudioEncoderWrapper` payload 20 ms, 2 channels, `mVoiceB
 
 - WASAPI. `native/opennow-streamer/crates/opennow-streamer-platform-windows/src/windows/audio.rs`
 - Opus decode. `native/opennow-streamer/crates/opennow-streamer-platform/src/media.rs`
+- Embedded Linux audio and Opus PLC. `native/opennow-streamer/crates/opennow-streamer-platform-linux/src/audio.rs`
 - NVST audio and RED strip. `native/opennow-streamer/crates/opennow-streamer-transport/src/nvst.rs`
 - ANNOUNCE audio attrs. `native/opennow-streamer/crates/opennow-streamer-core/src/nvst_rtsp.rs`
 - CloudMatch stereo. `native/opennow-core/src/cloudmatch.rs`

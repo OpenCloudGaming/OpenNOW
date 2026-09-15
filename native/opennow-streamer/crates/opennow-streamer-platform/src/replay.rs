@@ -175,6 +175,7 @@ mod tests {
             clock_rate_hz: 1,
             keyframe,
             contiguous: true,
+            ssrc: None,
         }
     }
 

@@ -22,7 +22,7 @@ fn public_media_inputs_are_typed_and_validated() {
     let config = SessionConfig::new(format);
     assert_eq!(config.stream_format, format);
     assert!(EncodedVideoFrame::new(Arc::<[u8]>::from([]), 0, true).is_err());
-    assert!(AudioPacket::new(Arc::<[u8]>::from([]), 0).is_err());
+    assert!(AudioPacket::new(Arc::<[u8]>::from([]), 0, 48_000, 7).is_err());
     assert!(AudioConfig::default().validate().is_ok());
 }
 

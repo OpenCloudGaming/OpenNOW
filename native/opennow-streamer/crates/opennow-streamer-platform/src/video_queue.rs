@@ -158,6 +158,7 @@ mod tests {
             clock_rate_hz: 90_000,
             keyframe,
             contiguous: true,
+            ssrc: None,
         }
     }
 

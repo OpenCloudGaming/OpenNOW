@@ -65,6 +65,7 @@ fn ordered_audio_preserves_payload_and_sender_metadata() {
         assert_eq!(frame.channels, Some(2));
         assert_eq!(frame.received_at_us, 123_456);
         assert!(frame.contiguous);
+        assert_eq!(frame.ssrc, Some(42));
     }
 }
 
@@ -75,12 +76,14 @@ fn late_originals_and_duplicates_never_replay_recovered_audio_or_rewind_sequence
     let recovered = red_packet(&mut receiver, 12, 2_880, 1);
     assert_eq!(recovered.len(), 2);
     assert!(recovered.iter().all(|frame| frame.contiguous));
+    assert!(recovered.iter().all(|frame| frame.ssrc == Some(42)));
     for sequence in [11, 12, 10] {
         assert!(red_packet(&mut receiver, sequence, u32::from(sequence) * 240, 1).is_empty());
     }
     let next = red_packet(&mut receiver, 13, 3_120, 1);
     assert_eq!(next.len(), 1);
     assert!(next[0].contiguous);
+    assert_eq!(next[0].ssrc, Some(42));
 }
 
 #[test]
@@ -103,6 +106,7 @@ fn partial_red_recovery_marks_the_gap_before_the_first_recovered_packet() {
             .collect::<Vec<_>>(),
         [2_880, 3_120, 3_360]
     );
+    assert!(frames.iter().all(|frame| frame.ssrc == Some(42)));
     for (index, frame) in frames.iter().enumerate() {
         assert_eq!(&*frame.payload, &[index as u8]);
     }
@@ -117,7 +121,64 @@ fn gaps_beyond_red_capacity_remain_discontinuous_and_bounded() {
         assert_eq!(frames.len(), redundant_blocks + 1);
         assert!(!frames[0].contiguous);
         assert!(frames[1..].iter().all(|frame| frame.contiguous));
+        assert!(frames.iter().all(|frame| frame.ssrc == Some(42)));
     }
+}
+
+#[test]
+fn burst_losses_stay_measurable_from_the_preserved_timestamps() {
+    let mut receiver = NvstAudioReceiver::default();
+    let mut sequence = 1_000_u16;
+    red_packet(&mut receiver, sequence, u32::from(sequence) * 240, 0);
+    for jump in [2_u16, 4, 6, 20] {
+        sequence = sequence.wrapping_add(jump);
+        let frames = receiver
+            .depacketize(
+                &track(),
+                &header(sequence),
+                Arc::from([0xf8]),
+                123_456,
+            )
+            .unwrap();
+        assert_eq!(frames.len(), 1);
+        assert!(!frames[0].contiguous);
+        assert_eq!(frames[0].ssrc, Some(42));
+        assert_eq!(frames[0].rtp_timestamp, u64::from(sequence) * 240);
+    }
+    let frames = receiver
+        .depacketize(&track(), &header(sequence + 1), Arc::from([0xf8]), 123_456)
+        .unwrap();
+    assert!(frames[0].contiguous);
+    assert_eq!(frames[0].ssrc, Some(42));
+}
+
+#[test]
+fn redundantly_recovered_packets_are_never_flagged_for_concealment() {
+    let mut fully_recovered = NvstAudioReceiver::default();
+    red_packet(&mut fully_recovered, 40, 9_600, 0);
+    let frames = red_packet(&mut fully_recovered, 44, 10_560, 3);
+    assert_eq!(frames.len(), 4);
+    assert!(frames.iter().all(|frame| frame.contiguous));
+    assert!(frames.iter().all(|frame| frame.ssrc == Some(42)));
+
+    let mut partly_recovered = NvstAudioReceiver::default();
+    red_packet(&mut partly_recovered, 40, 9_600, 0);
+    let frames = red_packet(&mut partly_recovered, 44, 10_560, 2);
+    assert_eq!(frames.len(), 3);
+    assert_eq!(
+        frames
+            .iter()
+            .map(|frame| (frame.contiguous, frame.ssrc))
+            .collect::<Vec<_>>(),
+        [(false, Some(42)), (true, Some(42)), (true, Some(42))]
+    );
+    assert_eq!(
+        frames
+            .iter()
+            .map(|frame| frame.rtp_timestamp)
+            .collect::<Vec<_>>(),
+        [10_080, 10_320, 10_560]
+    );
 }
 
 #[test]
@@ -129,6 +190,7 @@ fn plain_opus_gaps_are_marked_without_fabricating_packets() {
         .unwrap();
     assert_eq!(frames.len(), 1);
     assert!(!frames[0].contiguous);
+    assert_eq!(frames[0].ssrc, Some(42));
 }
 
 #[test]
@@ -138,6 +200,7 @@ fn sequence_and_timestamp_wrap_preserve_recovery_order() {
     let frames = red_packet(&mut receiver, 1, 480, 2);
     assert_eq!(frames.len(), 3);
     assert!(frames.iter().all(|frame| frame.contiguous));
+    assert!(frames.iter().all(|frame| frame.ssrc == Some(42)));
     assert_eq!(
         frames
             .iter()
@@ -154,6 +217,7 @@ fn sequence_and_timestamp_wrap_preserve_recovery_order() {
     assert_eq!(frames[0].rtp_timestamp, u64::from(u32::MAX - 239));
     assert_eq!(frames[1].rtp_timestamp, 0);
     assert!(frames.iter().all(|frame| frame.contiguous));
+    assert!(frames.iter().all(|frame| frame.ssrc == Some(42)));
 }
 
 #[test]
@@ -170,6 +234,7 @@ fn malformed_red_does_not_prevent_recovery_from_the_next_packet() {
     assert_eq!(frames.len(), 2);
     assert!(frames.iter().all(|frame| frame.contiguous));
     assert_eq!(frames[0].rtp_timestamp, 2_640);
+    assert!(frames.iter().all(|frame| frame.ssrc == Some(42)));
 }
 
 #[test]
@@ -196,6 +261,7 @@ fn consumer_backpressure_marks_the_next_recovered_frame_not_the_primary() {
         receiver.deliver(&consumer, frame).unwrap();
         let frame = delivered.recv().unwrap();
         assert_eq!(frame.contiguous, index != 0);
+        assert_eq!(frame.ssrc, Some(42));
     }
     drop(delivered);
     let frame = red_packet(&mut receiver, 14, 3_360, 0).pop().unwrap();
@@ -217,5 +283,6 @@ fn a_new_source_starts_a_discontinuous_sequence_baseline() {
             .unwrap();
         assert_eq!(frames.len(), 1);
         assert_eq!(frames[0].contiguous, sequence == 2);
+        assert_eq!(frames[0].ssrc, Some(43));
     }
 }

@@ -1718,6 +1718,7 @@ dependencies = [
  "ffmpeg-sys-next",
  "libc",
  "libloading",
+ "opus",
  "raw-window-handle",
  "serde_json",
  "static_assertions",

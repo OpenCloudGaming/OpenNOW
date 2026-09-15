@@ -453,6 +453,7 @@ pub struct EncodedFrame {
     pub clock_rate_hz: u32,
     pub keyframe: bool,
     pub contiguous: bool,
+    pub ssrc: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2958,9 +2959,27 @@ fn run_embedded_linux_audio(shared: Arc<SharedPipeline>) {
         let MediaCodec::Opus { .. } = frame.codec else {
             continue;
         };
+        let Some(ssrc) = frame.ssrc else {
+            let _ = shared.feedback.send(MediaFeedback::DecoderError {
+                codec: "opus",
+                message: "embedded Linux audio frame carries no sender source identifier"
+                    .to_owned(),
+            });
+            continue;
+        };
+        let Ok(rtp_timestamp) = u32::try_from(frame.timestamp) else {
+            let _ = shared.feedback.send(MediaFeedback::DecoderError {
+                codec: "opus",
+                message: "embedded Linux audio frame carries an out-of-range RTP timestamp"
+                    .to_owned(),
+            });
+            continue;
+        };
         let packet = match opennow_streamer_platform_linux::AudioPacket::new(
             Arc::clone(&frame.data),
-            media_timestamp_us(frame.timestamp, frame.clock_rate_hz),
+            rtp_timestamp,
+            frame.clock_rate_hz,
+            ssrc,
         ) {
             Ok(packet) => packet,
             Err(error) => {
@@ -4340,6 +4359,7 @@ mod tests {
             clock_rate_hz: 90_000,
             keyframe: true,
             contiguous: true,
+            ssrc: None,
         };
         recording.publish(&frame);
         replay.publish(&frame);
@@ -4394,6 +4414,7 @@ mod tests {
             clock_rate_hz: 90_000,
             keyframe: true,
             contiguous: true,
+            ssrc: None,
         };
         for _ in 0..=RECORDING_TAP_QUEUE_CAPACITY {
             tap.publish(&frame);
@@ -4566,6 +4587,7 @@ mod tests {
                 clock_rate_hz: 90_000,
                 keyframe: true,
                 contiguous: true,
+                ssrc: None,
             }),
         );
         let decoded = output.take_video().expect("decoded pending frame");
@@ -4606,6 +4628,7 @@ mod tests {
                 clock_rate_hz: 90_000,
                 keyframe: true,
                 contiguous: false,
+                ssrc: None,
             }),
         );
         let decoded = output.take_video().expect("recovered IDR");
@@ -4651,6 +4674,7 @@ mod tests {
                 clock_rate_hz: 90_000,
                 keyframe: false,
                 contiguous: false,
+                ssrc: None,
             }),
         );
         assert!(shared.video_desynced.load(Ordering::Acquire));
@@ -4738,6 +4762,7 @@ mod tests {
                 clock_rate_hz: 90_000,
                 keyframe: false,
                 contiguous: true,
+                ssrc: None,
             }),
             PushOutcome::Paused
         );
@@ -4752,6 +4777,7 @@ mod tests {
                 clock_rate_hz: 90_000,
                 keyframe: false,
                 contiguous: true,
+                ssrc: None,
             }),
             PushOutcome::Closed
         );
@@ -4789,6 +4815,7 @@ mod tests {
                 clock_rate_hz: 90_000,
                 keyframe: false,
                 contiguous: true,
+                ssrc: None,
             }),
             PushOutcome::DroppedOldest
         );

@@ -2040,6 +2040,7 @@ mod tests {
                 clock_rate_hz: 90_000,
                 keyframe: true,
                 contiguous: true,
+                ssrc: None,
             }),
             PushOutcome::Queued
         );

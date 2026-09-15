@@ -754,6 +754,33 @@ fn run_audio_worker(
             QueuePop::TimedOut => continue,
             QueuePop::Closed => break,
         };
+        let cancelled = || packets.is_closed();
+        let concealed = match opus.conceal_before(&packet) {
+            Ok(pcm) => pcm,
+            Err(error) => {
+                packets.close();
+                report_worker_error(&state, &events, error);
+                return;
+            }
+        };
+        if !concealed.is_empty() {
+            match write_audio(
+                &mut sink,
+                &mut backend,
+                &config,
+                &events,
+                concealed,
+                &cancelled,
+            ) {
+                Ok(()) => {}
+                Err(AudioWriteError::Closed) => return,
+                Err(AudioWriteError::Failed(error)) => {
+                    packets.close();
+                    report_worker_error(&state, &events, error);
+                    return;
+                }
+            }
+        }
         let pcm = match opus.decode(&packet) {
             Ok(pcm) => pcm,
             Err(error) => {
@@ -762,38 +789,58 @@ fn run_audio_worker(
                 return;
             }
         };
-        let cancelled = || packets.is_closed();
-        if let Err(error) = sink.write(pcm, &cancelled) {
-            if packets.is_closed() {
+        match write_audio(&mut sink, &mut backend, &config, &events, pcm, &cancelled) {
+            Ok(()) => {}
+            Err(AudioWriteError::Closed) => return,
+            Err(AudioWriteError::Failed(error)) => {
+                packets.close();
+                report_worker_error(&state, &events, error);
                 return;
             }
-            match open_audio_fallback(&config, backend) {
-                Ok(mut fallback) => {
-                    if let Err(fallback_error) = fallback.write(pcm, &cancelled) {
-                        if packets.is_closed() {
-                            return;
-                        }
-                        packets.close();
-                        report_worker_error(&state, &events, fallback_error);
-                        return;
-                    }
-                    backend = fallback.backend();
-                    sink = fallback;
-                    emit(&events, BackendEvent::AudioSelected(backend));
-                    continue;
-                }
-                Err(fallback_error) => {
-                    emit(
-                        &events,
-                        BackendEvent::Error(format!("audio fallback failed: {fallback_error}")),
-                    );
-                }
-            }
-            packets.close();
-            report_worker_error(&state, &events, error);
-            return;
         }
     }
+}
+
+enum AudioWriteError {
+    Closed,
+    Failed(Error),
+}
+
+fn write_audio(
+    sink: &mut Box<dyn AudioSink + Send>,
+    backend: &mut AudioBackend,
+    config: &AudioConfig,
+    events: &EventQueue,
+    pcm: &[f32],
+    cancelled: &dyn Fn() -> bool,
+) -> std::result::Result<(), AudioWriteError> {
+    if let Err(error) = sink.write(pcm, cancelled) {
+        if cancelled() {
+            return Err(AudioWriteError::Closed);
+        }
+        match open_audio_fallback(config, *backend) {
+            Ok(mut fallback) => {
+                if let Err(fallback_error) = fallback.write(pcm, cancelled) {
+                    if cancelled() {
+                        return Err(AudioWriteError::Closed);
+                    }
+                    return Err(AudioWriteError::Failed(fallback_error));
+                }
+                *backend = fallback.backend();
+                *sink = fallback;
+                emit(events, BackendEvent::AudioSelected(*backend));
+                return Ok(());
+            }
+            Err(fallback_error) => {
+                emit(
+                    events,
+                    BackendEvent::Error(format!("audio fallback failed: {fallback_error}")),
+                );
+            }
+        }
+        return Err(AudioWriteError::Failed(error));
+    }
+    Ok(())
 }
 
 fn open_preferred_decoder(

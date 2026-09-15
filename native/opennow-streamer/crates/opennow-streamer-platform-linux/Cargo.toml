@@ -36,6 +36,9 @@ raw-window-handle = { version = "0.6", optional = true }
 thiserror = "2"
 
 [dev-dependencies]
+# The Linux backend loads libopus at runtime; tests use the workspace encoder to
+# produce packets the runtime-loaded decoder can conceal around.
+opus.workspace = true
 static_assertions = "1"
 
 [lints.rust]
