@@ -371,6 +371,46 @@ private slots:
         client.stop();
     }
 
+    void injectsValidatedNativeHdrDisplayCapability()
+    {
+        CoreClient client;
+        QSignalSpy responses(&client, &CoreClient::responseReceived);
+        QVERIFY(client.start(fakeCorePath()));
+        QTRY_COMPARE_WITH_TIMEOUT(client.state(), QStringLiteral("ready"), 2'000);
+        for (const auto &method : {QStringLiteral("session.create"), QStringLiteral("streamer.prepare"),
+                                  QStringLiteral("settings.choices.get")}) {
+            responses.clear();
+            CoreClient::NativeHdrDisplay display;
+            display.available = true;
+            display.minimumNits = 0.005;
+            display.maximumNits = 620;
+            client.setNativeHdrDisplay(display);
+            QVERIFY(!client.request(method, {{QStringLiteral("appId"), QStringLiteral("123")}}).isEmpty());
+            QTRY_COMPARE_WITH_TIMEOUT(responses.size(), 1, 2'000);
+            const auto runtime = responses.first().at(1).toJsonObject()
+                .value(QStringLiteral("params")).toObject()
+                .value(QStringLiteral("runtimeCapabilities")).toObject();
+            const auto injected = runtime.value(QStringLiteral("nativeHdrDisplay")).toObject();
+            QCOMPARE(injected.value(QStringLiteral("minimumNits")).toDouble(), 0.005);
+            QCOMPARE(injected.value(QStringLiteral("maximumNits")).toDouble(), 620.0);
+            responses.clear();
+            client.setNativeHdrDisplay({});
+            const QJsonObject stale{
+                {QStringLiteral("runtimeCapabilities"),
+                 QJsonObject{{QStringLiteral("nativeHdrDisplay"),
+                              QJsonObject{{QStringLiteral("minimumNits"), 0.005},
+                                          {QStringLiteral("maximumNits"), 620}}},
+                             {QStringLiteral("protocolVersion"), 7}}}};
+            QVERIFY(!client.request(method, stale).isEmpty());
+            QTRY_COMPARE_WITH_TIMEOUT(responses.size(), 1, 2'000);
+            const auto absent = responses.first().at(1).toJsonObject()
+                .value(QStringLiteral("params")).toObject()
+                .value(QStringLiteral("runtimeCapabilities")).toObject();
+            QVERIFY(!absent.contains(QStringLiteral("nativeHdrDisplay")));
+        }
+        client.stop();
+    }
+
     void injectedHdrOutputControlsRealCoreColorDescriptors()
     {
         QTemporaryDir directory;
@@ -388,6 +428,11 @@ private slots:
         QTRY_COMPARE_WITH_TIMEOUT(responses.size(), 1, 5'000);
         for (bool supported : {false, true, false}) {
             client.setNativeHdrSupported(supported);
+            CoreClient::NativeHdrDisplay display;
+            display.available = true;
+            display.minimumNits = 0.005;
+            display.maximumNits = 620;
+            client.setNativeHdrDisplay(display);
             const auto capabilities = QJsonDocument::fromJson(R"({"protocolVersion":7,
                 "videoBackends":[{"backend":"vaapi","available":true,"codecs":[
                     {"codec":"h265","available":true,"hdrSupported":true,

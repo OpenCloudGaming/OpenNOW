@@ -42,6 +42,13 @@ public:
     QString status() const;
     static State renderState();
 
+    struct DisplayData {
+        bool available = false;
+        double minimumNits = 0.0;
+        double maximumNits = 0.0;
+    };
+    [[nodiscard]] DisplayData displayData() const;
+
 signals:
     void changed();
 
@@ -59,6 +66,7 @@ private:
     std::unique_ptr<WaylandHdrOutput> m_waylandOutput;
     bool m_supported = false;
     int m_mode = 0;
+    DisplayData m_display;
     static std::atomic<int> s_mode;
     static std::atomic<float> s_whiteNits;
     static std::atomic<bool> s_supported;

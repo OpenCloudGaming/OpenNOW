@@ -209,6 +209,12 @@ static int runApplicationSession(int argc, char *argv[], QString &restartExecuta
     QObject::connect(&localization, &Localization::localeChanged, &hdrOutput, &HdrOutput::changed);
     QObject::connect(&hdrOutput, &HdrOutput::changed, &coreClient, [&] {
         coreClient.setNativeHdrSupported(hdrOutput.supported());
+        const auto display = hdrOutput.displayData();
+        CoreClient::NativeHdrDisplay snapshot;
+        snapshot.available = display.available;
+        snapshot.minimumNits = display.minimumNits;
+        snapshot.maximumNits = display.maximumNits;
+        coreClient.setNativeHdrDisplay(snapshot);
     });
     qmlRegisterType<HdrChromeEffect>("OpenNOW", 1, 0, "HdrChromeEffect");
     qmlRegisterType<QTimer>("OpenNOW", 1, 0, "NativeTimer");

@@ -290,7 +290,7 @@ impl CloudMatchService {
                 resume["sessionRequestData"]["clientRequestMonitorSettings"][0]["sdrHdrMode"] =
                     json!(hdr_mode);
                 resume["sessionRequestData"]["clientRequestMonitorSettings"][0]["displayData"] =
-                    monitor_display_data(hdr_mode == 1);
+                    monitor_display_data(hdr_mode == 1, settings);
                 resume["sessionRequestData"]["requestedStreamingFeatures"]["trueHdr"] =
                     json!(hdr_mode == 1);
             }
@@ -1279,14 +1279,29 @@ fn build_resume_body(app_id: &str, session: &Value, settings: &Value, device_id:
         "metaData":null, "adUpdates":null})
 }
 
-fn monitor_display_data(hdr: bool) -> Value {
-    json!({
+fn measured_display_luminance(settings: &Value, hdr: bool) -> Option<(f64, f64)> {
+    if !hdr {
+        return None;
+    }
+    crate::streamer::validated_native_hdr_display(&settings["nativeHdrDisplay"])
+}
+
+fn monitor_display_data(hdr: bool, settings: &Value) -> Value {
+    let mut data = json!({
         "displayPrimaryX0":0,"displayPrimaryY0":0,"displayPrimaryX1":0,"displayPrimaryY1":0,
         "displayPrimaryX2":0,"displayPrimaryY2":0,"displayWhitePointX":0,"displayWhitePointY":0,
         "desiredContentMaxLuminance":if hdr { 1000 } else { 0 },
         "desiredContentMinLuminance":0,
         "desiredContentMaxFrameAverageLuminance":if hdr { 400 } else { 0 }
-    })
+    });
+    if let Some((minimum, maximum)) = measured_display_luminance(settings, hdr) {
+        data["desiredContentMaxLuminance"] = json!(maximum);
+        data["desiredContentMinLuminance"] = json!(minimum);
+        if let Some(object) = data.as_object_mut() {
+            object.remove("desiredContentMaxFrameAverageLuminance");
+        }
+    }
+    data
 }
 
 fn build_create_body(app_id: &str, params: &Value, settings: &Value, device_id: &str) -> Value {
@@ -1372,7 +1387,7 @@ fn build_create_body(app_id: &str, params: &Value, settings: &Value, device_id: 
             "monitorId":0,"positionX":0,"positionY":0,
             "widthInPixels":width,"heightInPixels":height,"framesPerSecond":fps,
             "sdrHdrMode":if hdr { 1 } else { 0 },
-            "displayData":monitor_display_data(hdr),
+            "displayData":monitor_display_data(hdr, settings),
             "hdr10PlusGamingData":null,
             "dpi":if cfg!(target_os = "macos") { 144 } else { 96 }
         }],
@@ -3740,6 +3755,171 @@ mod tests {
                 false
             );
         }
+    }
+
+    #[test]
+    fn validated_display_luminance_replaces_requested_content_defaults() {
+        let capabilities = json!({"protocolVersion":7,"nativeHdrSupported":true,"videoBackends":[{
+            "backend":"vaapi","available":true,"codecs":[
+                {"codec":"h265","available":true,"colorQualities":["8bit_420","10bit_420"]}
+            ]
+        }],"nativeHdrDisplay":{"minimumNits":0.005,"maximumNits":620}});
+        let settings = crate::streamer::StreamerService::embedded_session_settings(
+            &json!({"enableHdr":true}),
+            &capabilities,
+        )
+        .unwrap();
+        let body = build_create_body("123", &json!({}), &settings, "device");
+        let display_data =
+            &body["sessionRequestData"]["clientRequestMonitorSettings"][0]["displayData"];
+        assert_eq!(display_data["desiredContentMaxLuminance"], 620.0);
+        assert_eq!(display_data["desiredContentMinLuminance"], 0.005);
+        assert!(
+            display_data
+                .get("desiredContentMaxFrameAverageLuminance")
+                .is_none()
+        );
+        assert_eq!(display_data["displayPrimaryX0"], 0);
+        assert_eq!(display_data["displayWhitePointY"], 0);
+        assert_eq!(body["sessionRequestData"]["sdrHdrMode"], 1);
+        let sdr = build_create_body(
+            "123",
+            &json!({}),
+            &json!({"enableHdr":false,"nativeHdrDisplay":{"minimumNits":0.005,"maximumNits":620}}),
+            "device",
+        );
+        let sdr_data = &sdr["sessionRequestData"]["clientRequestMonitorSettings"][0]["displayData"];
+        assert_eq!(sdr_data["desiredContentMaxLuminance"], 0);
+        assert_eq!(sdr_data["desiredContentMaxFrameAverageLuminance"], 0);
+        assert_eq!(sdr_data["desiredContentMinLuminance"], 0);
+    }
+
+    #[test]
+    fn malformed_display_luminance_keeps_documented_defaults() {
+        for display in [
+            json!({"minimumNits":600.0,"maximumNits":400.0}),
+            json!({"minimumNits":-1.0,"maximumNits":400.0}),
+            json!({"minimumNits":0.0,"maximumNits":10001.0}),
+            json!({"minimumNits":0.0}),
+            json!({"minimumNits":"0","maximumNits":400.0}),
+            json!([0.0, 400.0]),
+        ] {
+            let settings = json!({"enableHdr":true,"nativeHdrSupported":true,
+                "codec":"h265","nativeHdrDisplay":display});
+            let body = build_create_body("123", &json!({}), &settings, "device");
+            let display_data =
+                &body["sessionRequestData"]["clientRequestMonitorSettings"][0]["displayData"];
+            assert_eq!(display_data["desiredContentMaxLuminance"], 1000);
+            assert_eq!(display_data["desiredContentMinLuminance"], 0);
+            assert_eq!(display_data["desiredContentMaxFrameAverageLuminance"], 400);
+        }
+    }
+
+    #[test]
+    fn native_hdr_display_capability_requires_a_validated_pair() {
+        let capabilities = |display: Value| {
+            json!({"protocolVersion":7,"nativeHdrSupported":true,"videoBackends":[{
+                "backend":"vaapi","available":true,"codecs":[
+                    {"codec":"h265","available":true,"colorQualities":["8bit_420","10bit_420"]}
+                ]
+            }],"nativeHdrDisplay":display})
+        };
+        for (display, minimum, maximum) in [
+            (json!({"minimumNits":0.005,"maximumNits":620}), 0.005, 620.0),
+            (json!({"minimumNits":0,"maximumNits":400}), 0.0, 400.0),
+        ] {
+            let resolved = crate::streamer::StreamerService::embedded_session_settings(
+                &json!({"enableHdr":true,"nativeHdrSupported":true}),
+                &capabilities(display),
+            )
+            .unwrap();
+            assert_eq!(resolved["nativeHdrDisplay"]["minimumNits"], minimum);
+            assert_eq!(resolved["nativeHdrDisplay"]["maximumNits"], maximum);
+        }
+        for display in [
+            json!({"minimumNits":400.0,"maximumNits":400.0}),
+            json!({"minimumNits":0.0,"maximumNits":10001.0}),
+            json!({"maximumNits":620}),
+            json!({"minimumNits":0.005}),
+            json!("620"),
+        ] {
+            let resolved = crate::streamer::StreamerService::embedded_session_settings(
+                &json!({"enableHdr":true,"nativeHdrSupported":true}),
+                &capabilities(display),
+            )
+            .unwrap();
+            assert!(resolved.get("nativeHdrDisplay").is_none());
+        }
+    }
+
+    #[test]
+    fn stale_display_snapshot_is_dropped_across_output_transitions() {
+        let capabilities = |display: Value| {
+            json!({"protocolVersion":7,"nativeHdrSupported":true,"videoBackends":[{
+                "backend":"vaapi","available":true,"codecs":[
+                    {"codec":"h265","available":true,"colorQualities":["8bit_420","10bit_420"]}
+                ]
+            }],"nativeHdrDisplay":display})
+        };
+        let previous = json!({"enableHdr":true,"nativeHdrSupported":true,"codec":"h265",
+            "nativeHdrDisplay":{"minimumNits":0.005,"maximumNits":620}});
+        let resolved = crate::streamer::StreamerService::embedded_session_settings(
+            &previous,
+            &json!({"protocolVersion":7,"nativeHdrSupported":true,"videoBackends":[{
+                "backend":"vaapi","available":true,"codecs":[
+                    {"codec":"h265","available":true,"colorQualities":["8bit_420","10bit_420"]}
+                ]
+            }]}),
+        )
+        .unwrap();
+        assert!(resolved.get("nativeHdrDisplay").is_none());
+        let body = build_create_body("123", &json!({}), &resolved, "device");
+        let display_data =
+            &body["sessionRequestData"]["clientRequestMonitorSettings"][0]["displayData"];
+        assert_eq!(display_data["desiredContentMaxLuminance"], 1000);
+        assert_eq!(display_data["desiredContentMinLuminance"], 0);
+        assert_eq!(display_data["desiredContentMaxFrameAverageLuminance"], 400);
+        for invalid in [
+            json!({"minimumNits":620,"maximumNits":620}),
+            json!({"minimumNits":0.005,"maximumNits":10001}),
+            json!("unavailable"),
+        ] {
+            let stale = crate::streamer::StreamerService::embedded_session_settings(
+                &previous,
+                &capabilities(invalid),
+            )
+            .unwrap();
+            assert!(stale.get("nativeHdrDisplay").is_none());
+            let body = build_create_body("123", &json!({}), &stale, "device");
+            let display_data =
+                &body["sessionRequestData"]["clientRequestMonitorSettings"][0]["displayData"];
+            assert_eq!(display_data["desiredContentMaxLuminance"], 1000);
+            assert_eq!(display_data["desiredContentMinLuminance"], 0);
+            assert_eq!(display_data["desiredContentMaxFrameAverageLuminance"], 400);
+        }
+        let migrated = crate::streamer::StreamerService::embedded_session_settings(
+            &previous,
+            &capabilities(json!({"minimumNits":0.0005,"maximumNits":400})),
+        )
+        .unwrap();
+        let body = build_create_body("123", &json!({}), &migrated, "device");
+        let display_data =
+            &body["sessionRequestData"]["clientRequestMonitorSettings"][0]["displayData"];
+        assert_eq!(display_data["desiredContentMaxLuminance"], 400.0);
+        assert_eq!(display_data["desiredContentMinLuminance"], 0.0005);
+        assert!(
+            display_data
+                .get("desiredContentMaxFrameAverageLuminance")
+                .is_none()
+        );
+        let resume = build_resume_body(
+            "123",
+            &json!({"sessionId":"s","status":2,
+                "sessionRequestData":{"sdrHdrMode":1,"clientRequestMonitorSettings":[{"sdrHdrMode":1}]}}),
+            &resolved,
+            "device",
+        );
+        assert!(resume.to_string().find("desiredContent").is_none());
     }
 
     #[test]

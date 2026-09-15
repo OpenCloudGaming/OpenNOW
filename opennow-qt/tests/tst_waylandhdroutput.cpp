@@ -19,6 +19,7 @@ class WaylandHdrOutputTest : public QObject
         value.maximum = 10000;
         value.white = 203;
         value.targetMaximum = 1000;
+        value.primariesValue = {0.68, 0.32, 0.265, 0.69, 0.15, 0.06, 0.3127, 0.329};
         return value;
     }
 
@@ -90,6 +91,67 @@ private slots:
         auto value = hdrDescription();
         value.targetMaximum = 10001;
         QVERIFY(!WaylandHdrOutput::stateForDescription(value).supported);
+    }
+
+    void publishedLuminancesAndTargetPrimariesCarryMeasuredValues()
+    {
+        auto value = hdrDescription();
+        value.minimum = 0.005;
+        value.maximum = 10000;
+        value.white = 203;
+        value.targetMinimum = 0.0005;
+        value.targetMaximum = 620;
+        const auto state = WaylandHdrOutput::stateForDescription(value);
+        QVERIFY(state.supported);
+        QCOMPARE(state.whiteNits, 203.0f);
+        QCOMPARE(state.minimumNits, 0.005f);
+        QCOMPARE(state.maximumNits, 10000.0f);
+        QCOMPARE(state.targetMinimumNits, 0.0005f);
+        QCOMPARE(state.targetMaximumNits, 620.0f);
+        QCOMPARE(state.targetPrimaries[0], 0.68);
+        QCOMPARE(state.targetPrimaries[7], 0.329);
+    }
+
+    void targetPrimariesOverrideTheEncodingVolume()
+    {
+        auto value = hdrDescription();
+        value.targetPrimaries = true;
+        value.targetPrimariesValue = {0.708, 0.292, 0.17, 0.797, 0.131, 0.046, 0.3127, 0.329};
+        const auto state = WaylandHdrOutput::stateForDescription(value);
+        QVERIFY(state.supported);
+        QCOMPARE(state.targetPrimaries[0], 0.708);
+        auto withoutTarget = hdrDescription();
+        const auto encodingVolume = WaylandHdrOutput::stateForDescription(withoutTarget);
+        QVERIFY(encodingVolume.supported);
+        QCOMPARE(encodingVolume.targetPrimaries[0], 0.68);
+    }
+
+    void invalidPrimariesFailClosed()
+    {
+        const double nan = std::numeric_limits<double>::quiet_NaN();
+        const double infinity = std::numeric_limits<double>::infinity();
+        for (size_t index = 0; index < 8; ++index) {
+            for (double invalid : {nan, infinity, -0.1, 1.5}) {
+                auto value = hdrDescription();
+                value.targetPrimaries = true;
+                value.targetPrimariesValue[index] = invalid;
+                QVERIFY(!WaylandHdrOutput::stateForDescription(value).supported);
+                auto encoding = hdrDescription();
+                encoding.primariesValue[index] = invalid;
+                QVERIFY(!WaylandHdrOutput::stateForDescription(encoding).supported);
+            }
+        }
+    }
+
+    void unsupportedDescriptionsPublishNoMeasuredValues()
+    {
+        const auto state = WaylandHdrOutput::stateForDescription({});
+        QVERIFY(!state.supported);
+        QCOMPARE(state.minimumNits, 0.0f);
+        QCOMPARE(state.maximumNits, 0.0f);
+        QCOMPARE(state.targetMinimumNits, 0.0f);
+        QCOMPARE(state.targetMaximumNits, 0.0f);
+        for (double coordinate : state.targetPrimaries) QCOMPARE(coordinate, 0.0);
     }
 
     void nonWaylandAndWindowLifecycleFailClosed()

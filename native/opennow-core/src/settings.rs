@@ -80,7 +80,8 @@ impl SettingsStore {
                                 value
                             };
                             values.insert(key, value);
-                        } else if key != "nativeHdrSupported" {
+                        } else if !matches!(key.as_str(), "nativeHdrSupported" | "nativeHdrDisplay")
+                        {
                             if policy == LoadPolicy::ReadWrite
                                 && key == "sessionTimeRemainingDisplay"
                                 && matches!(value.as_str(), Some("stats" | "both"))
@@ -1854,6 +1855,14 @@ mod tests {
         let mut store = SettingsStore::load(Some(directory.clone())).unwrap();
         assert_eq!(store.all()["enableHdr"], false);
         assert!(store.set("nativeHdrSupported", json!(true)).is_err());
+        assert!(
+            store
+                .set(
+                    "nativeHdrDisplay",
+                    json!({"minimumNits":0.005,"maximumNits":620})
+                )
+                .is_err()
+        );
         assert_eq!(store.set("enableHdr", json!(true)).unwrap(), true);
         assert_eq!(
             SettingsStore::load(Some(directory.clone())).unwrap().all()["enableHdr"],
@@ -1862,12 +1871,15 @@ mod tests {
         let path = directory.join("settings.json");
         let mut persisted: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
         persisted["nativeHdrSupported"] = json!(true);
+        persisted["nativeHdrDisplay"] = json!({"minimumNits":0.005,"maximumNits":620});
         fs::write(&path, serde_json::to_vec(&persisted).unwrap()).unwrap();
         let mut loaded = SettingsStore::load(Some(directory.clone())).unwrap();
         assert!(loaded.all().get("nativeHdrSupported").is_none());
+        assert!(loaded.all().get("nativeHdrDisplay").is_none());
         loaded.set("enableHdr", json!(true)).unwrap();
         let persisted: Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
         assert!(persisted.get("nativeHdrSupported").is_none());
+        assert!(persisted.get("nativeHdrDisplay").is_none());
         fs::remove_dir_all(directory).unwrap();
     }
 

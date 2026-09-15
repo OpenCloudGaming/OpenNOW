@@ -508,6 +508,14 @@ impl StreamerService {
                 .as_bool()
                 .unwrap_or(false)
         );
+        if let Some(object) = resolved.as_object_mut() {
+            object.remove("nativeHdrDisplay");
+        }
+        if let Some((minimum, maximum)) =
+            validated_native_hdr_display(&capabilities["nativeHdrDisplay"])
+        {
+            resolved["nativeHdrDisplay"] = json!({"minimumNits":minimum, "maximumNits":maximum});
+        }
         if hdr {
             resolved["colorQuality"] = json!(color);
         }
@@ -1406,6 +1414,21 @@ fn apply_child_telemetry(message: &Value, state: &Arc<Mutex<Snapshot>>) {
         }
         _ => {}
     }
+}
+
+pub(crate) fn validated_native_hdr_display(display: &Value) -> Option<(f64, f64)> {
+    let display = display.as_object()?;
+    let minimum = display.get("minimumNits")?.as_f64()?;
+    let maximum = display.get("maximumNits")?.as_f64()?;
+    if !minimum.is_finite()
+        || !maximum.is_finite()
+        || minimum < 0.0
+        || maximum > 10_000.0
+        || maximum <= minimum
+    {
+        return None;
+    }
+    Some((minimum, maximum))
 }
 
 fn streamer_context(mut session: Value, settings: &Value) -> Value {

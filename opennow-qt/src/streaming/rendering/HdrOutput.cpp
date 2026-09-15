@@ -100,14 +100,31 @@ void HdrOutput::publish(State state)
     s_whiteNits.store(state.whiteNits);
     s_supported.store(state.supported);
     QMetaObject::invokeMethod(this, [this, state]() mutable {
+        const auto wayland = m_waylandOutput->state();
 #if defined(Q_OS_LINUX)
-        state.supported = state.supported && m_waylandOutput->state().supported;
+        state.supported = state.supported && wayland.supported;
 #endif
-        if (m_supported == state.supported && m_mode == state.outputMode) return;
+        DisplayData next;
+        if (wayland.supported) {
+            next.available = true;
+            next.minimumNits = double(wayland.targetMinimumNits);
+            next.maximumNits = double(wayland.targetMaximumNits);
+        }
+        const bool displayChanged = next.available != m_display.available
+            || next.minimumNits != m_display.minimumNits
+            || next.maximumNits != m_display.maximumNits;
+        m_display = next;
+        if (m_supported == state.supported && m_mode == state.outputMode && !displayChanged) return;
         m_supported = state.supported;
         m_mode = state.outputMode;
         emit changed();
     }, Qt::QueuedConnection);
+}
+
+HdrOutput::DisplayData HdrOutput::displayData() const
+{
+    if (!m_supported) return {};
+    return m_display;
 }
 
 void HdrOutput::requestChrome(bool required)

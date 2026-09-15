@@ -52,7 +52,7 @@ the requested mode. Unsupported profiles remain explicit errors rather than CPU 
 
 ## Color and ownership contract
 
-CloudMatch receives `sdrHdrMode=1`, `trueHdr=true`, and requested-content luminance defaults of 1000 nits maximum, 400 nits frame average, and zero minimum. These are requested content characteristics, not measurements of the physical display. The accepted HDR mode is carried through resume, stream preparation, and NVST's dynamic-range and bit-depth settings.
+CloudMatch receives `sdrHdrMode=1` and `trueHdr=true`. With a validated output snapshot, the monitor's requested-content luminance carries the display's own target luminance range; otherwise HDR requests keep the documented requested-content defaults of 1000 nits maximum, 400 nits frame average, and zero minimum. The requested-content defaults are not measurements of the physical display. The Wayland color-management target luminance range is the only output metadata either contract accepts, because a PQ description cannot report a display peak in its primary color volume luminance and the description exposes no sustained full-frame value. The accepted HDR mode is carried through resume, stream preparation, and NVST's dynamic-range and bit-depth settings.
 
 Decoder metadata carries transfer function, primaries, matrix, range, and supported chroma location. Explicit metadata takes precedence over negotiated defaults; unspecified fields use those defaults. Unsupported combinations and precision-losing paths fail explicitly. Pixel depth alone never selects an HDR transfer function.
 

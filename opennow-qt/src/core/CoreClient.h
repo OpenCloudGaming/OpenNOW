@@ -30,6 +30,12 @@ public:
     [[nodiscard]] QString lastError() const;
     [[nodiscard]] int protocolVersion() const;
 
+    struct NativeHdrDisplay {
+        bool available = false;
+        double minimumNits = 0.0;
+        double maximumNits = 0.0;
+    };
+
     Q_INVOKABLE bool start(const QString &program, const QStringList &arguments = {});
     Q_INVOKABLE void stop();
     Q_INVOKABLE QString request(const QString &method,
@@ -39,6 +45,7 @@ public:
     Q_INVOKABLE void logShellDiagnostic(const QString &message);
     Q_INVOKABLE void markUiReady();
     void setNativeHdrSupported(bool supported) { m_nativeHdrSupported = supported; }
+    void setNativeHdrDisplay(const NativeHdrDisplay &display) { m_nativeHdrDisplay = display; }
 
 signals:
     void stateChanged();
@@ -94,4 +101,5 @@ private:
     int m_restartAttempts = 0;
     bool m_manualStop = false;
     bool m_nativeHdrSupported = false;
+    NativeHdrDisplay m_nativeHdrDisplay;
 };

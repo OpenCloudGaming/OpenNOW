@@ -214,6 +214,7 @@ private slots:
             QVERIFY(!output.supported());
             QCOMPARE(output.outputMode(), 0);
             QVERIFY(!output.chromeRequired());
+            QVERIFY(!output.displayData().available);
             const auto state = HdrOutput::renderState();
             QCOMPARE(state.mode, 0);
             QVERIFY(!state.supported);

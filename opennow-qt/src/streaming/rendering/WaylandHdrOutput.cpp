@@ -36,7 +36,12 @@ struct WaylandHdrOutput::Private
     {
         {
             QMutexLocker lock(&mutex);
-            if (snapshot.supported == value.supported && snapshot.whiteNits == value.whiteNits)
+            if (snapshot.supported == value.supported && snapshot.whiteNits == value.whiteNits
+                && snapshot.minimumNits == value.minimumNits
+                && snapshot.maximumNits == value.maximumNits
+                && snapshot.targetMinimumNits == value.targetMinimumNits
+                && snapshot.targetMaximumNits == value.targetMaximumNits
+                && snapshot.targetPrimaries == value.targetPrimaries)
                 return;
             snapshot = value;
         }
@@ -142,6 +147,15 @@ struct WaylandHdrOutput::Private
         else schedule();
     }
 
+    static std::array<double, 8> chromaticities(int32_t r_x, int32_t r_y, int32_t g_x,
+        int32_t g_y, int32_t b_x, int32_t b_y, int32_t w_x, int32_t w_y)
+    {
+        constexpr double scale = 1'000'000.0;
+        return {double(r_x) / scale, double(r_y) / scale, double(g_x) / scale,
+            double(g_y) / scale, double(b_x) / scale, double(b_y) / scale,
+            double(w_x) / scale, double(w_y) / scale};
+    }
+
     static void informationDone(void *data, wp_image_description_info_v1 *)
     {
         static_cast<Private *>(data)->finishRequest(true);
@@ -166,8 +180,13 @@ struct WaylandHdrOutput::Private
                 close(fd);
                 static_cast<Private *>(data)->metadata.icc = true;
             },
-            [](void *data, wp_image_description_info_v1 *, int32_t, int32_t, int32_t, int32_t,
-               int32_t, int32_t, int32_t, int32_t) { static_cast<Private *>(data)->metadata.primaries = true; },
+            [](void *data, wp_image_description_info_v1 *, int32_t r_x, int32_t r_y,
+               int32_t g_x, int32_t g_y, int32_t b_x, int32_t b_y, int32_t w_x, int32_t w_y) {
+                auto *d = static_cast<Private *>(data);
+                d->metadata.primaries = true;
+                d->metadata.primariesValue =
+                    chromaticities(r_x, r_y, g_x, g_y, b_x, b_y, w_x, w_y);
+            },
             [](void *, wp_image_description_info_v1 *, uint32_t) {},
             [](void *data, wp_image_description_info_v1 *, uint32_t) {
                 static_cast<Private *>(data)->metadata.power = true;
@@ -182,8 +201,13 @@ struct WaylandHdrOutput::Private
                 d->metadata.maximum = max;
                 d->metadata.white = ref;
             },
-            [](void *, wp_image_description_info_v1 *, int32_t, int32_t, int32_t, int32_t,
-               int32_t, int32_t, int32_t, int32_t) {},
+            [](void *data, wp_image_description_info_v1 *, int32_t r_x, int32_t r_y,
+               int32_t g_x, int32_t g_y, int32_t b_x, int32_t b_y, int32_t w_x, int32_t w_y) {
+                auto *d = static_cast<Private *>(data);
+                d->metadata.targetPrimaries = true;
+                d->metadata.targetPrimariesValue =
+                    chromaticities(r_x, r_y, g_x, g_y, b_x, b_y, w_x, w_y);
+            },
             [](void *data, wp_image_description_info_v1 *, uint32_t min, uint32_t max) {
                 auto *d = static_cast<Private *>(data);
                 d->metadata.targetLuminance = true;
@@ -363,7 +387,18 @@ WaylandHdrOutput::State WaylandHdrOutput::stateForDescription(const Description 
         || value.targetMinimum >= value.white || !std::isfinite(value.targetMaximum)
         || value.targetMaximum <= value.white || value.targetMaximum > 10000.0)
         return {};
-    return {true, float(value.white)};
+    const auto &primaries = value.targetPrimaries ? value.targetPrimariesValue : value.primariesValue;
+    for (double coordinate : primaries)
+        if (!std::isfinite(coordinate) || coordinate < 0.0 || coordinate > 1.0) return {};
+    State state;
+    state.supported = true;
+    state.whiteNits = float(value.white);
+    state.minimumNits = float(value.minimum);
+    state.maximumNits = float(value.maximum);
+    state.targetMinimumNits = float(value.targetMinimum);
+    state.targetMaximumNits = float(value.targetMaximum);
+    state.targetPrimaries = primaries;
+    return state;
 }
 
 bool WaylandHdrOutput::eventFilter(QObject *watched, QEvent *event)

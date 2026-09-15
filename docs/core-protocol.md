@@ -655,11 +655,37 @@ capabilities cannot request HDR through the external-streamer probe path.
 CloudMatch receives `sessionRequestData.sdrHdrMode=1`, monitor `sdrHdrMode=1`, and
 `requestedStreamingFeatures.trueHdr=true` only for this validated HDR request. CloudMatch
 uses bit-depth/chroma enums `1/0` for 10-bit 4:2:0 and `1/1` for 10-bit 4:4:4.
-For HDR, monitor `displayData` requests maximum luminance 1000 nits, minimum luminance 0,
-and maximum frame-average luminance 400 nits,
-matching the Mac native session payload. These are fixed requested-content defaults, not
-measurements of the physical display; no caller-supplied luminance is accepted in this
-contract. SDR luminance values and all display primaries remain zero protocol defaults.
+For HDR, monitor `displayData` carries the output's validated HDR static metadata
+when the current output reports it. `desiredContentMaxLuminance` and
+`desiredContentMinLuminance` come from the Wayland color-management target luminance
+range in cd/m²; this mirrors the official client's feature-gated mirroring of its
+system display properties into the same fields. `desiredContentMaxFrameAverageLuminance`
+is omitted while a validated output snapshot is in use, because the output description
+exposes no comparable sustained full-frame value and no permitted capture establishes
+that mapping.
+
+Without a validated output snapshot, HDR requests keep the fixed requested-content
+defaults of maximum luminance 1000 nits, minimum luminance 0, and maximum frame-average
+luminance 400 nits, matching the Mac native session payload. Those defaults are requested
+content characteristics rather than measurements of the physical display and are not
+presented as calibration. SDR luminance values and all display primaries remain zero
+protocol defaults; the official typed `displayData` schema contains no primaries or white
+point fields, and no permitted capture establishes a scale for measured chromaticities.
+
+The validated snapshot travels from Qt in `runtimeCapabilities.nativeHdrDisplay` as
+`minimumNits` and `maximumNits` in cd/m², omitting either value the output does not
+report. The core validates the pair again and drops it when the bounds are not finite,
+negative, above 10000 cd/m², or not strictly increasing. The snapshot is transient:
+`settings.set` rejects it, the settings loader discards persisted copies, and the core
+never saves runtime capability results.
+
+Stale snapshots are discarded rather than reused. Qt injects the snapshot only while the
+current output reports a validated range and removes any caller-supplied or previously
+injected value when it does not; the core strips any earlier snapshot from the resolved
+settings before carrying the current capability, so a display change that invalidates the
+output falls back to the requested-content defaults instead of replaying the previous
+display's luminance. Claim and resume requests do not carry monitor settings at all, so
+they cannot replay one either.
 
 The normalized server response carries `negotiatedStreamProfile.enableHdr: boolean`. It
 comes from the returned session's `sdrHdrMode`, then the returned monitor's mode, then the
@@ -1011,7 +1037,9 @@ streamer protocol 7 are unchanged.
 
 CoreClient injects the current native window's `nativeHdrSupported` into
 `runtimeCapabilities`, overriding any caller-supplied flag, just as it does for
-`session.create` and `streamer.prepare`. SettingsState observes
+`session.create` and `streamer.prepare`. It injects `nativeHdrDisplay` alongside it only
+when the output reported a validated luminance range, so an unavailable snapshot is
+omitted rather than sent as zero. SettingsState observes
 `HdrOutput.supported` only to cancel and refetch choices when the display changes;
 it does not author the wire capability or expose platform handles.
 

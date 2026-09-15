@@ -273,6 +273,13 @@ QString CoreClient::request(const QString &method, const QJsonObject &params, in
             || method == u"settings.choices.get"_s) {
         auto capabilities = runtimeParams.value(u"runtimeCapabilities"_s).toObject();
         capabilities.insert(u"nativeHdrSupported"_s, m_nativeHdrSupported);
+        if (m_nativeHdrDisplay.available) {
+            capabilities.insert(u"nativeHdrDisplay"_s,
+                QJsonObject{{u"minimumNits"_s, m_nativeHdrDisplay.minimumNits},
+                            {u"maximumNits"_s, m_nativeHdrDisplay.maximumNits}});
+        } else {
+            capabilities.remove(u"nativeHdrDisplay"_s);
+        }
         runtimeParams.insert(u"runtimeCapabilities"_s, capabilities);
     }
     const QJsonObject message{{u"type"_s, u"request"_s},
