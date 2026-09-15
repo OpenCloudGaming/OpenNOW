@@ -287,6 +287,7 @@ internal fun StreamFirstLaunchGuide(
     step: StreamGuideStep,
     controlsOpen: Boolean,
     touchControlsEnabled: Boolean,
+    streamMenuShortcut: String,
     onOpenControls: () -> Unit,
     onSkip: () -> Unit,
 ) {
@@ -314,13 +315,24 @@ internal fun StreamFirstLaunchGuide(
     ) {
         val landscape = maxWidth > maxHeight
         if (step == StreamGuideStep.OpenControls) {
+            val keyboardShortcut = streamMenuShortcut.takeUnless {
+                it.equals(DISABLED_ANDROID_STREAM_MENU_SHORTCUT, ignoreCase = true)
+            }?.let(::androidKeyboardShortcutDisplay)
             StreamGuideEdgeCue(Modifier.align(Alignment.CenterStart))
             StreamGuideCard(
                 stepLabel = "Step 1 of 2",
                 title = "Open the stream menu",
-                body = "Press Android Back, Menu, or swipe from the left edge. That opens the menu without exiting the stream.",
+                body = if (keyboardShortcut == null) {
+                    "Press Android Back or swipe from the left edge. That opens the menu without exiting the stream."
+                } else {
+                    "Press Android Back, $keyboardShortcut, or swipe from the left edge. That opens the menu without exiting the stream."
+                },
                 details = listOf(
-                    "Back or the left-edge gesture opens controls.",
+                    if (keyboardShortcut == null) {
+                        "Back or the left-edge gesture opens controls."
+                    } else {
+                        "Back, $keyboardShortcut, or the left-edge gesture opens controls."
+                    },
                     if (touchControlsEnabled) {
                         "Touch controls pause while this guide is up."
                     } else {
@@ -505,12 +517,14 @@ internal fun StreamInputModeSwitchDialog(
     prompt: StreamInputModePrompt,
     onStay: () -> Unit,
     onSwitch: () -> Unit,
+    onDismiss: () -> Unit = onStay,
+    atLaunch: Boolean = false,
 ) {
     val title = when (prompt) {
         StreamInputModePrompt.SwitchToKeyboardMouse -> R.string.stream_keyboard_mouse_detected
         StreamInputModePrompt.SwitchToNativeTouch -> R.string.stream_keyboard_mouse_disconnected
     }
-    val body = when (prompt) {
+    val body = if (atLaunch) R.string.stream_input_choose_at_launch_body else when (prompt) {
         StreamInputModePrompt.SwitchToKeyboardMouse -> R.string.stream_keyboard_mouse_detected_body
         StreamInputModePrompt.SwitchToNativeTouch -> R.string.stream_keyboard_mouse_disconnected_body
     }
@@ -523,7 +537,7 @@ internal fun StreamInputModeSwitchDialog(
         StreamInputModePrompt.SwitchToNativeTouch -> R.string.stream_input_keep_keyboard_mouse
     }
     AlertDialog(
-        onDismissRequest = onStay,
+        onDismissRequest = onDismiss,
         title = { Text(stringResource(title)) },
         text = {
             Text(
@@ -728,6 +742,7 @@ internal fun StreamControlsPanel(
     onTouchRightOffsetChange: (Float) -> Unit,
     onTouchLayoutReset: () -> Unit,
     onTouchSettingsChange: (AndroidTouchSettings) -> Unit,
+    onTouchPresetsChange: (List<TouchControlPreset>) -> Unit,
     onBugReportSubmit: (String, String, String?) -> Unit,
     onBugReportReset: () -> Unit,
     onBugReportVersionCheck: () -> Unit,
@@ -952,6 +967,12 @@ internal fun StreamControlsPanel(
                         }
                     }
                     item {
+                        if (!touchLayoutEditing) {
+                            TouchControlPresetEditor(settings.androidTouch, settings.touchControlPresets, onTouchSettingsChange, onTouchPresetsChange)
+                        }
+                        TouchButtonAppearanceEditor(settings.androidTouch, onTouchSettingsChange)
+                    }
+                    item {
                         ControlSection(stringResource(R.string.settings_touch_visible_controls)) {
                             Text(
                                 text = stringResource(R.string.settings_touch_visible_controls_desc),
@@ -1150,6 +1171,7 @@ internal fun StreamControlsPanel(
                             submission = bugReportSubmission,
                             versionCheck = bugReportVersionCheck,
                             update = update,
+                            experimentalNvstEnabled = settings.stream.experimentalNvst,
                             onSubmit = onBugReportSubmit,
                             onReset = onBugReportReset,
                             onVersionCheck = onBugReportVersionCheck,
@@ -1737,6 +1759,34 @@ private fun BugReportSubmissionRequirements(modifier: Modifier = Modifier) {
 }
 
 @Composable
+internal fun NvstBugReportWarning(
+    experimentalNvstEnabled: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    val warning = androidBugReportNvstWarning(experimentalNvstEnabled) ?: return
+    Surface(
+        modifier = modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(10.dp),
+        color = Color(0xffffc266).copy(alpha = 0.14f),
+        contentColor = TextPrimary,
+        border = BorderStroke(1.dp, Color(0xffffc266).copy(alpha = 0.48f)),
+    ) {
+        Column(
+            modifier = Modifier.padding(10.dp),
+            verticalArrangement = Arrangement.spacedBy(3.dp),
+        ) {
+            Text(
+                "Experimental NVST enabled",
+                color = Color(0xffffc266),
+                fontWeight = FontWeight.Bold,
+                style = MaterialTheme.typography.labelLarge,
+            )
+            Text(warning, style = MaterialTheme.typography.bodyMedium)
+        }
+    }
+}
+
+@Composable
 internal fun BugReportLocaleGateCard(modifier: Modifier = Modifier) {
     val context = LocalContext.current
     Surface(
@@ -2225,6 +2275,7 @@ private fun StreamBugReporter(
     submission: BugReportSubmissionState,
     versionCheck: AndroidBugReportVersionCheckState,
     update: AndroidUpdateState,
+    experimentalNvstEnabled: Boolean,
     onSubmit: (String, String, String?) -> Unit,
     onReset: () -> Unit,
     onVersionCheck: () -> Unit,
@@ -2350,6 +2401,8 @@ private fun StreamBugReporter(
             )
             return@ControlSection
         }
+
+        NvstBugReportWarning(experimentalNvstEnabled)
 
         if (!preflightReviewed) {
             val deck = preflightDeck
@@ -2519,6 +2572,7 @@ private fun StreamBugReporter(
                         Text(block.title, color = Color(0xffffc266), fontWeight = FontWeight.Bold)
                         Text(block.action, color = TextMuted, style = MaterialTheme.typography.bodySmall)
                     }
+                    NvstBugReportWarning(experimentalNvstEnabled)
                     BugReportSubmissionRequirements()
                     BugReportDataDisclosure(includeTypedTextWarning = true)
                 }

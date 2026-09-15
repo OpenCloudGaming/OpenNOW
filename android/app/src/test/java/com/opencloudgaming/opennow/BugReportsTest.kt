@@ -10,6 +10,15 @@ class BugReportsTest {
     private val reporterId = androidBugReportReporterId("test-gfn-device-id")
 
     @Test
+    fun nvstWarningIsShownOnlyForTheExperimentalTransport() {
+        assertEquals(ANDROID_BUG_REPORT_NVST_WARNING, androidBugReportNvstWarning(true))
+        assertEquals(null, androidBugReportNvstWarning(false))
+        assertTrue(ANDROID_BUG_REPORT_NVST_WARNING.contains("bugs are expected"))
+        assertTrue(ANDROID_BUG_REPORT_NVST_WARNING.contains("rude"))
+        assertTrue(ANDROID_BUG_REPORT_NVST_WARNING.contains("will be ignored"))
+    }
+
+    @Test
     fun buildsPrintedWasteMultipartReportWithRedactedLogAttachment() {
         val request = buildAndroidBugReportRequest(
             AndroidBugReport(

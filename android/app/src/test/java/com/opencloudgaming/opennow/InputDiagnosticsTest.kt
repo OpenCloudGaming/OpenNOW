@@ -59,7 +59,7 @@ class InputDiagnosticsTest {
         buffer.addRetained("state", "before")
         val captured = buffer.capture()
         buffer.addRetained("state", "after")
-        assertEquals("input.state:\nstate 10 before\ninput.diagnostics:\n10 before", captured.format())
+        assertEquals("input.state:\nstate 10 before", captured.format())
         assertFalse(captured.format().contains("after"))
     }
 
@@ -150,7 +150,7 @@ class InputDiagnosticsTest {
         }
 
         val snapshot = buffer.snapshot()
-        assertTrue(snapshot.contains("touch-route.activity 52 count=3 touch consumed by view"))
+        assertTrue(snapshot.contains("touch-route.activity 50 count=3 lastSeenUptimeMs=52 touch consumed by view"))
         assertFalse(snapshot.contains("input.diagnostics:"))
     }
 
@@ -172,5 +172,39 @@ class InputDiagnosticsTest {
         assertTrue(snapshot.contains("heartbeat.input.failure 100 count=1 path=worker"))
         assertTrue(snapshot.contains("heartbeat.input.success 200 count=1 path=worker"))
         assertFalse(snapshot.contains("input.diagnostics:"))
+    }
+
+    @Test
+    fun thousandHzCountersPreserveEveryEventButFormatOnlyOncePerSecond() {
+        var now = 0L
+        var formats = 0
+        val buffer = InputDiagnosticsBuffer(2, 4) { now }
+        repeat(10_000) {
+            buffer.retainCounted("mouse.motion") { formats++; "motion" }
+            now++
+        }
+        assertEquals(10, formats)
+        val snapshot = buffer.snapshot()
+        assertTrue(snapshot.contains("count=10000"))
+        assertTrue(snapshot.contains("lastSeenUptimeMs=9999"))
+    }
+
+    @Test
+    fun highRateSuccessesDoNotHideImmediateFailureOrRecovery() {
+        var now = 0L
+        var formats = 0
+        val buffer = InputDiagnosticsBuffer(2, 4) { now }
+        repeat(500) {
+            buffer.retainResult("input.send", true) { formats++; "accepted" }
+            now++
+        }
+        buffer.retainResult("input.send", false) { formats++; "backpressure" }
+        now++
+        buffer.retainResult("input.send", true) { formats++; "recovered" }
+        assertEquals(3, formats)
+        val snapshot = buffer.snapshot()
+        assertTrue(snapshot.contains("input.send.failure 500 count=1 backpressure"))
+        assertTrue(snapshot.contains("input.send.success 501 count=501 recovered"))
+        assertTrue(snapshot.contains("input.send.last 501 count=502 success=true recovered"))
     }
 }

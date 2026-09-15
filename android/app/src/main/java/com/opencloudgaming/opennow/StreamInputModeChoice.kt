@@ -11,8 +11,8 @@ internal enum class StreamInputModePrompt {
 }
 
 /**
- * A device already attached when streaming starts is an explicit enough signal to start in
- * keyboard/mouse mode. Later connection changes require confirmation and stay session-local.
+ * Fallback for sessions without a saved launch choice. New launches use
+ * [chooseStreamInputModeAtStart] before provisioning the host input devices.
  */
 internal fun streamInputModeAtStart(
     nativeTouchAvailable: Boolean,
@@ -21,6 +21,17 @@ internal fun streamInputModeAtStart(
     StreamInputMode.NativeTouch
 } else {
     StreamInputMode.KeyboardMouse
+}
+
+/** Wait for a choice before CloudMatch creates a session with a mouse attached. */
+internal suspend fun chooseStreamInputModeAtStart(
+    nativeTouchAvailable: Boolean,
+    keyboardMouseConnected: Boolean,
+    choose: suspend () -> StreamInputMode,
+): StreamInputMode = if (nativeTouchAvailable && keyboardMouseConnected) {
+    choose()
+} else {
+    streamInputModeAtStart(nativeTouchAvailable, keyboardMouseConnected)
 }
 
 internal fun streamInputModePromptForConnectionChange(

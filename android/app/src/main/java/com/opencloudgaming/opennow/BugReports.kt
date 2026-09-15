@@ -23,6 +23,8 @@ internal const val ANDROID_BUG_REPORT_ENDPOINT =
 internal const val ANDROID_BUG_REPORT_MAX_FILES = 5
 internal const val ANDROID_BUG_REPORT_MAX_FILE_BYTES = 10L * 1024L * 1024L
 internal const val ANDROID_BUG_REPORT_REPORTER_ID_PREFIX = "br1_"
+internal const val ANDROID_BUG_REPORT_NVST_WARNING =
+    "NVST is experimental, so bugs are expected while it is enabled. Bug reports containing rude, insulting, or abusive language will be ignored."
 
 enum class AndroidBugReportVersionCheckStatus {
     NotChecked,
@@ -36,6 +38,9 @@ data class AndroidBugReportVersionCheckState(
     val status: AndroidBugReportVersionCheckStatus = AndroidBugReportVersionCheckStatus.NotChecked,
     val message: String? = null,
 )
+
+internal fun androidBugReportNvstWarning(experimentalNvstEnabled: Boolean): String? =
+    ANDROID_BUG_REPORT_NVST_WARNING.takeIf { experimentalNvstEnabled }
 
 internal fun androidBugReportsAllowed(
     update: AndroidUpdateState,

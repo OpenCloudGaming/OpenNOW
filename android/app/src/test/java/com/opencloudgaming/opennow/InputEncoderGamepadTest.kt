@@ -106,6 +106,7 @@ class InputEncoderGamepadTest {
         assertFalse(AndroidControllerInput.isControllerDevice(misleadingSources, "SEMICO USB Keyboard System Control"))
         assertFalse(AndroidControllerInput.isControllerDevice(misleadingSources, "BT5.2 Mouse"))
         assertFalse(AndroidControllerInput.isControllerDevice(misleadingSources, "Gaming KB Gaming KB Keyboard"))
+        assertFalse(AndroidControllerInput.isControllerDevice(misleadingSources, "Logitech USB Receiver"))
         assertFalse(AndroidControllerInput.isControllerDevice(misleadingSources, "uinput-goodix"))
         assertFalse(AndroidControllerInput.isControllerDevice(misleadingSources, "uinput-fpc"))
         assertFalse(AndroidControllerInput.isControllerDevice(misleadingSources, "Fingerprint Sensor"))
@@ -425,10 +426,44 @@ class InputEncoderGamepadTest {
     }
 
     @Test
-    fun reservesOnlyNonControllerMenuForStreamControls() {
-        assertTrue(NativeStreamInputRouter.shouldOpenStreamSystemMenuKey(KeyEvent.KEYCODE_MENU, controllerInputDevice = false))
-        assertFalse(NativeStreamInputRouter.shouldOpenStreamSystemMenuKey(KeyEvent.KEYCODE_MENU, controllerInputDevice = true))
-        assertFalse(NativeStreamInputRouter.shouldOpenStreamSystemMenuKey(KeyEvent.KEYCODE_BUTTON_START, controllerInputDevice = true))
+    fun streamControlsShortcutIsConfigurableWithoutTakingControllerButtons() {
+        assertTrue(
+            NativeStreamInputRouter.shouldOpenStreamSystemMenuKey(
+                KeyEvent.KEYCODE_G,
+                controllerInputDevice = false,
+                ctrlPressed = true,
+                shiftPressed = true,
+            ),
+        )
+        assertFalse(
+            NativeStreamInputRouter.shouldOpenStreamSystemMenuKey(
+                KeyEvent.KEYCODE_MENU,
+                controllerInputDevice = false,
+                shiftPressed = true,
+            ),
+        )
+        assertTrue(
+            NativeStreamInputRouter.shouldOpenStreamSystemMenuKey(
+                KeyEvent.KEYCODE_MENU,
+                controllerInputDevice = false,
+                configuredShortcut = "Shift+Menu",
+                shiftPressed = true,
+            ),
+        )
+        assertFalse(
+            NativeStreamInputRouter.shouldOpenStreamSystemMenuKey(
+                KeyEvent.KEYCODE_G,
+                controllerInputDevice = true,
+                ctrlPressed = true,
+                shiftPressed = true,
+            ),
+        )
+        assertFalse(
+            NativeStreamInputRouter.shouldOpenStreamSystemMenuKey(
+                KeyEvent.KEYCODE_BUTTON_START,
+                controllerInputDevice = true,
+            ),
+        )
     }
 
     @Test

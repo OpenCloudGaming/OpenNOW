@@ -85,6 +85,19 @@ class DiagnosticHistoryStoreTest {
     }
 
     @Test
+    fun persistenceLimitNeverCutsThroughParserJsonOrChangesApiIndexes() {
+        val original = "Header\n<parser>\n" +
+            """{"schemaVersion":2,"api":[{"statusCode":500,"response":{"detail":"${"x".repeat(10_000)}"}}]}""" + "\n</parser>"
+        val bounded = boundDiagnosticSnapshot(original, 2048)
+        val parser = OpenNowJson.parseToJsonElement(bounded.substringAfter("<parser>\n").substringBefore("\n</parser>"))
+        val data = parser as kotlinx.serialization.json.JsonObject
+        val api = data.getValue("api") as kotlinx.serialization.json.JsonArray
+        assertTrue(api[0].toString().contains("500"))
+        assertTrue(api[0].toString().contains("persisted_snapshot_limit"))
+        assertTrue(bounded.length <= 2048)
+    }
+
+    @Test
     fun exportedLogLabelsPreviousRunWithoutChangingCurrentSection() {
         val current = "OpenNOW Android diagnostics\nstreamStatus=idle"
         val merged = appendPreviousDiagnosticSnapshot(

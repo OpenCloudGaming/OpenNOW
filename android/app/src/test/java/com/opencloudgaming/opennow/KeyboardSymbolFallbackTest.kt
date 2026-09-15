@@ -1,5 +1,6 @@
 package com.opencloudgaming.opennow
 
+import android.view.KeyEvent
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
@@ -33,9 +34,8 @@ class KeyboardSymbolFallbackTest {
     }
 
     @Test
-    fun anOrdinaryMappedKeyIsLeftOnTheKeyPath() {
-        // Symbols use committed text; letter controls retain their real scancode.
-        assertEquals('@', fallback(unicodeChar = '@'.code, mapped = true))
+    fun ordinaryMappedKeysStayOnThePhysicalKeyPath() {
+        assertNull(fallback(unicodeChar = '@'.code, mapped = true))
         assertNull(fallback(unicodeChar = 'a'.code, mapped = true))
     }
 
@@ -69,6 +69,19 @@ class KeyboardSymbolFallbackTest {
     }
 
     @Test
+    fun mappedPhysicalSpaceStaysOnTheGameplayKeyPath() {
+        assertNull(
+            InputEncoder.keyboardTextFallbackChar(
+                unicodeChar = ' '.code,
+                baseUnicodeChar = ' '.code,
+                mapped = true,
+                altGraph = false,
+                keyCode = KeyEvent.KEYCODE_SPACE,
+            ),
+        )
+    }
+
+    @Test
     fun everyAsciiSymbolSurvivesTheUnmappedPath() {
         val symbols = "!@#$%^&*()_+-=[]{}|;':\",./<>?`~"
         symbols.forEach { symbol ->
@@ -82,9 +95,9 @@ class KeyboardSymbolFallbackTest {
         assertNull(fallback(unicodeChar = 0x1F600, mapped = false))
     }
     @Test
-    fun mappedSymbolsAlsoUseTextForHostLayoutIndependence() {
+    fun mappedSymbolsStayOnThePhysicalKeyPath() {
         "!@#$%^&*()_+-=[]{}|;':\",./<>?`~".forEach {
-            assertEquals(it, fallback(it.code, mapped = true))
+            assertNull("symbol $it", fallback(it.code, mapped = true))
         }
     }
 
@@ -96,7 +109,7 @@ class KeyboardSymbolFallbackTest {
 
     @Test
     fun dedicatedSymbolKeysWorkEvenWithoutAndroidUnicodeMetadata() {
-        assertEquals('@', InputEncoder.keyboardTextFallbackChar(0, 0, true, false,
+        assertEquals('@', InputEncoder.keyboardTextFallbackChar(0, 0, false, false,
             keyCode = android.view.KeyEvent.KEYCODE_AT))
     }
 }

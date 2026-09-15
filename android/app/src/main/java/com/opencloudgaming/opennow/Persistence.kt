@@ -288,7 +288,6 @@ private fun Float.finiteIn(minimum: Float, maximum: Float, fallback: Float): Flo
 
 internal fun AppSettings.normalizedForAndroid(): AppSettings {
     val streamDefaults = StreamSettings()
-    val touchDefaults = AndroidTouchSettings()
     val compatibleStream = stream.withAndroidSettingsAvailability()
     val lowPowerSafe = compatibleStream.copy(
         codec = compatibleStream.codec,
@@ -318,54 +317,20 @@ internal fun AppSettings.normalizedForAndroid(): AppSettings {
         stream = lowPowerSafe,
         posterSizeScale = posterSizeScale.finiteIn(MIN_GAME_CARD_SCALE, MAX_GAME_CARD_SCALE, 1f),
         uselessMascotDelaySeconds = normalizeMascotDelaySeconds(uselessMascotDelaySeconds),
+        streamMenuShortcut = androidKeyboardShortcutDisplay(streamMenuShortcut),
         streamKeyboardButtonPosition = streamKeyboardButtonPosition.normalized(),
-        androidTouch = androidTouch.copy(
-            touchSkinTint = androidTouch.touchSkinTint.withoutRemovedWarmTint(),
-            opacity = androidTouch.opacity.finiteIn(0f, 1f, touchDefaults.opacity),
-            scale = androidTouch.scale.finiteIn(0.6f, 1.4f, touchDefaults.scale),
-            buttonScale = androidTouch.buttonScale.finiteIn(0.65f, 1.5f, touchDefaults.buttonScale),
-            stickScale = androidTouch.stickScale.finiteIn(0.65f, 1.5f, touchDefaults.stickScale),
-            faceButtonScale = androidTouch.faceButtonScale.finiteIn(0.6f, 1.5f, touchDefaults.faceButtonScale),
-            dpadScale = androidTouch.dpadScale.finiteIn(0.6f, 1.5f, touchDefaults.dpadScale),
-            shoulderButtonScale = androidTouch.shoulderButtonScale.finiteIn(0.6f, 1.5f, touchDefaults.shoulderButtonScale),
-            centerButtonScale = androidTouch.centerButtonScale.finiteIn(0.6f, 1.5f, touchDefaults.centerButtonScale),
-            leftStickScale = androidTouch.leftStickScale.finiteIn(0.6f, 1.5f, touchDefaults.leftStickScale),
-            rightStickScale = androidTouch.rightStickScale.finiteIn(0.6f, 1.5f, touchDefaults.rightStickScale),
-            stickKnobScale = androidTouch.stickKnobScale.finiteIn(0.28f, 0.72f, touchDefaults.stickKnobScale),
-            extraButtonActions = List(TOUCH_EXTRA_BUTTON_COUNT) { index ->
-                androidTouch.extraButtonAction(index)
-            },
-            extraButtonScale = androidTouch.extraButtonScale.finiteIn(0.6f, 1.6f, touchDefaults.extraButtonScale),
-            aimZoneScale = androidTouch.aimZoneScale.finiteIn(0.5f, 1.5f, touchDefaults.aimZoneScale),
-            aimZoneSensitivity = androidTouch.aimZoneSensitivity.finiteIn(
-                0.25f,
-                3f,
-                touchDefaults.aimZoneSensitivity,
-            ),
-            joystickDeadZone = androidTouch.joystickDeadZone.finiteIn(0f, 0.3f, touchDefaults.joystickDeadZone),
-            gyroscopeSensitivity = androidTouch.gyroscopeSensitivity.finiteIn(0.25f, 3f, touchDefaults.gyroscopeSensitivity),
-            gyroscopeDeadZone = androidTouch.gyroscopeDeadZone.finiteIn(0f, 0.2f, touchDefaults.gyroscopeDeadZone),
-            gyroscopeSmoothing = androidTouch.gyroscopeSmoothing.finiteIn(0f, 0.9f, touchDefaults.gyroscopeSmoothing),
-            edgePaddingDp = androidTouch.edgePaddingDp.finiteIn(0f, 72f, touchDefaults.edgePaddingDp),
-            bottomPaddingDp = androidTouch.bottomPaddingDp.finiteIn(0f, 120f, touchDefaults.bottomPaddingDp),
-            leftOffsetXDp = androidTouch.leftOffsetXDp.finiteIn(-220f, 220f, touchDefaults.leftOffsetXDp),
-            leftOffsetYDp = androidTouch.leftOffsetYDp.finiteIn(-160f, 160f, touchDefaults.leftOffsetYDp),
-            rightOffsetXDp = androidTouch.rightOffsetXDp.finiteIn(-220f, 220f, touchDefaults.rightOffsetXDp),
-            rightOffsetYDp = androidTouch.rightOffsetYDp.finiteIn(-160f, 160f, touchDefaults.rightOffsetYDp),
-            offsets = androidTouch.offsets.mapValues { (_, offset) ->
-                TouchOffset(
-                    x = offset.x.finiteIn(-320f, 320f, 0f),
-                    y = offset.y.finiteIn(-320f, 320f, 0f),
-                )
-            },
-        ),
+        touchControlPresets = touchControlPresets.take(MAX_TOUCH_PRESETS)
+            .distinctBy { it.id }
+            .map { it.copy(name = it.name.filterNot(Char::isISOControl).trim().take(64), controls = it.controls.normalizedPresetControls()) }
+            .filter { it.id.isNotBlank() && it.name.isNotBlank() },
+        androidTouch = androidTouch.normalizedTouchControls(),
         streamIntroMusic = streamIntroMusic,
         queueReadyMusic = queueReadyMusic,
         legacyCropStreamToFill = false,
         stretchStreamToFit = stretchStreamToFit,
         streamPresentationProfileVersion = streamPresentationProfileVersion.coerceAtLeast(STREAM_PRESENTATION_PROFILE_VERSION),
         showSessionReportAfterStream =
-            if (sessionReportDefaultVersion < SESSION_REPORT_DEFAULT_VERSION) false
+            if (sessionReportDefaultVersion < SESSION_REPORT_DEFAULT_VERSION) true
             else showSessionReportAfterStream,
         sessionReportDefaultVersion = SESSION_REPORT_DEFAULT_VERSION,
         nerdCatalogBackground = nerdCatalogBackground && !systemWallpaperBackground,
@@ -801,4 +766,52 @@ class AndroidUpdateNoticeStore(context: Context) {
     fun dismiss(key: String) {
         prefs.edit().putString(KEY_ANDROID_UPDATE_DISMISSED_NOTICE, key).apply()
     }
+}
+
+internal fun AndroidTouchSettings.normalizedTouchControls(): AndroidTouchSettings {
+    val touchDefaults = AndroidTouchSettings()
+    return copy(
+        touchSkinTint = touchSkinTint.withoutRemovedWarmTint(),
+        buttonAppearances = buttonAppearances
+            .filterKeys { it in touchButtonKeys }
+            .mapValues { (_, appearance) -> appearance.normalized() }
+            .filterValues { it != TouchButtonAppearance() },
+        opacity = opacity.finiteIn(0f, 1f, touchDefaults.opacity),
+        scale = scale.finiteIn(0.6f, 1.4f, touchDefaults.scale),
+        buttonScale = buttonScale.finiteIn(0.65f, 1.5f, touchDefaults.buttonScale),
+        stickScale = stickScale.finiteIn(0.65f, 1.5f, touchDefaults.stickScale),
+        faceButtonScale = faceButtonScale.finiteIn(0.6f, 1.5f, touchDefaults.faceButtonScale),
+        dpadScale = dpadScale.finiteIn(0.6f, 1.5f, touchDefaults.dpadScale),
+        shoulderButtonScale = shoulderButtonScale.finiteIn(0.6f, 1.5f, touchDefaults.shoulderButtonScale),
+        centerButtonScale = centerButtonScale.finiteIn(0.6f, 1.5f, touchDefaults.centerButtonScale),
+        leftStickScale = leftStickScale.finiteIn(0.6f, 1.5f, touchDefaults.leftStickScale),
+        rightStickScale = rightStickScale.finiteIn(0.6f, 1.5f, touchDefaults.rightStickScale),
+        stickKnobScale = stickKnobScale.finiteIn(0.28f, 0.72f, touchDefaults.stickKnobScale),
+        extraButtonActions = List(TOUCH_EXTRA_BUTTON_COUNT) { index ->
+            extraButtonAction(index)
+        },
+        extraButtonScale = extraButtonScale.finiteIn(0.6f, 1.6f, touchDefaults.extraButtonScale),
+        aimZoneScale = aimZoneScale.finiteIn(0.5f, 1.5f, touchDefaults.aimZoneScale),
+        aimZoneSensitivity = aimZoneSensitivity.finiteIn(
+            0.25f,
+            3f,
+            touchDefaults.aimZoneSensitivity,
+        ),
+        joystickDeadZone = joystickDeadZone.finiteIn(0f, 0.3f, touchDefaults.joystickDeadZone),
+        gyroscopeSensitivity = gyroscopeSensitivity.finiteIn(0.25f, 3f, touchDefaults.gyroscopeSensitivity),
+        gyroscopeDeadZone = gyroscopeDeadZone.finiteIn(0f, 0.2f, touchDefaults.gyroscopeDeadZone),
+        gyroscopeSmoothing = gyroscopeSmoothing.finiteIn(0f, 0.9f, touchDefaults.gyroscopeSmoothing),
+        edgePaddingDp = edgePaddingDp.finiteIn(0f, 72f, touchDefaults.edgePaddingDp),
+        bottomPaddingDp = bottomPaddingDp.finiteIn(0f, 120f, touchDefaults.bottomPaddingDp),
+        leftOffsetXDp = leftOffsetXDp.finiteIn(-220f, 220f, touchDefaults.leftOffsetXDp),
+        leftOffsetYDp = leftOffsetYDp.finiteIn(-160f, 160f, touchDefaults.leftOffsetYDp),
+        rightOffsetXDp = rightOffsetXDp.finiteIn(-220f, 220f, touchDefaults.rightOffsetXDp),
+        rightOffsetYDp = rightOffsetYDp.finiteIn(-160f, 160f, touchDefaults.rightOffsetYDp),
+        offsets = offsets.mapValues { (_, offset) ->
+            TouchOffset(
+                x = offset.x.takeIf { it.isFinite() } ?: 0f,
+                y = offset.y.takeIf { it.isFinite() } ?: 0f,
+            )
+        },
+    )
 }

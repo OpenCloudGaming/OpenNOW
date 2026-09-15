@@ -1,12 +1,63 @@
 package com.opencloudgaming.opennow
 
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.async
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class StreamInputModeChoiceTest {
     @Test
-    fun connectedKeyboardOrMouseWinsOnlyAtStreamStart() {
+    fun attachedMouseWaitsForEitherExplicitChoiceBeforeProvisioning() = runBlocking {
+        for (choice in StreamInputMode.entries) {
+            val answer = CompletableDeferred<StreamInputMode>()
+            var provisioned: StreamInputMode? = null
+            val launch = async(start = CoroutineStart.UNDISPATCHED) {
+                chooseStreamInputModeAtStart(true, true) { answer.await() }
+                    .also { provisioned = it }
+            }
+            assertFalse(launch.isCompleted)
+            assertNull(provisioned)
+            answer.complete(choice)
+            assertEquals(choice, launch.await())
+            assertEquals(choice, provisioned)
+        }
+    }
+
+    @Test
+    fun cancellationWhileChoosingDoesNotProvisionAHost() = runBlocking {
+        val answer = CompletableDeferred<StreamInputMode>()
+        var provisioned = false
+        val launch = async(start = CoroutineStart.UNDISPATCHED) {
+            chooseStreamInputModeAtStart(true, true) { answer.await() }
+            provisioned = true
+        }
+        launch.cancelAndJoin()
+        answer.complete(StreamInputMode.NativeTouch)
+        assertTrue(launch.isCancelled)
+        assertFalse(provisioned)
+    }
+
+    @Test
+    fun disconnectedMouseAndUnavailableTouchDoNotPrompt() = runBlocking {
+        for (touch in listOf(false, true)) {
+            for (mouse in listOf(false, true)) {
+                if (touch && mouse) continue
+                assertEquals(
+                    if (touch) StreamInputMode.NativeTouch else StreamInputMode.KeyboardMouse,
+                    chooseStreamInputModeAtStart(touch, mouse) { error("Unexpected prompt") },
+                )
+            }
+        }
+    }
+
+    @Test
+    fun legacySessionFallbackUsesTheAttachedDevice() {
         assertEquals(
             StreamInputMode.KeyboardMouse,
             streamInputModeAtStart(nativeTouchAvailable = true, keyboardMouseConnected = true),

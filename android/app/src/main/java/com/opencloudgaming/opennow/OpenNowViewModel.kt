@@ -31,6 +31,12 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
+import kotlinx.serialization.json.encodeToJsonElement
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonObject
@@ -38,7 +44,6 @@ import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import java.text.SimpleDateFormat
-import java.text.DateFormat
 import java.util.Date
 import java.util.Locale
 
@@ -122,11 +127,9 @@ internal const val ANDROID_UPDATE_PERIODIC_CHECK_INTERVAL_MS = 6L * 60L * 60L * 
 private const val ANDROID_UPDATE_STREAMING_RETRY_DELAY_MS = 30_000L
 private const val DEBUG_EVENT_LIMIT = 140
 private const val DEBUG_EVENT_MESSAGE_LIMIT = 640
-private const val DEBUG_PAYLOAD_LIMIT = 12
-private const val DEBUG_PAYLOAD_BODY_LIMIT = 8_000
 private const val LOGIN_PHASE_GETTING_TOKENS = "Getting sign-in tokens"
-private const val ACTIVE_DIAGNOSTIC_SNAPSHOT_INTERVAL_MS = 10_000L
-private const val IDLE_DIAGNOSTIC_SNAPSHOT_INTERVAL_MS = 60_000L
+private const val ACTIVE_DIAGNOSTIC_SNAPSHOT_INTERVAL_MS = 30_000L
+private const val IDLE_DIAGNOSTIC_SNAPSHOT_INTERVAL_MS = 300_000L
 
 internal class StreamSessionRecoveryTracker {
     private var sessionId: String? = null
@@ -180,16 +183,6 @@ private data class DebugLogEvent(
     val timestampMs: Long,
     val category: String,
     val message: String,
-)
-
-private data class DebugPayloadEvent(
-    val timestampMs: Long,
-    val operation: String,
-    val method: String,
-    val url: String,
-    val statusCode: Int,
-    val requestBody: String,
-    val body: String,
 )
 
 private data class TimedStreamRuntimeStats(
@@ -271,6 +264,7 @@ data class OpenNowUiState(
     val manuallySelectedServerForReport: Boolean = false,
     val activeStreamSettings: StreamSettings? = null,
     val streamInputModeAtLaunch: StreamInputMode? = null,
+    val awaitingLaunchInputModeChoice: Boolean = false,
     val streamGame: GameInfo? = null,
     val streamLaunchMinimized: Boolean = false,
     val streamReturnPage: AppPage? = null,
@@ -473,13 +467,14 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     private val runtimeResolutionNoticeKeys = mutableSetOf<String>()
     private val debugEventsLock = Any()
     private val debugEvents = ArrayDeque<DebugLogEvent>()
-    private val debugPayloadsLock = Any()
-    private val debugPayloads = ArrayDeque<DebugPayloadEvent>()
     private val authRestoreMutex = Mutex()
     @Volatile
     private var latestStreamRuntimeStats: TimedStreamRuntimeStats? = null
     private var streamReportLaunchProfile: StreamReportLaunchProfile? = null
-    private var streamSessionReportAccumulator: StreamSessionReportAccumulator? = null
+    private val diagnosticStreamHistory = DiagnosticStreamHistory()
+    @Volatile private var lastDiagnosticSession: SessionInfo? = null
+    @Volatile private var lastDiagnosticSessionReport: SessionReport? = null
+    @Volatile private var streamSessionReportAccumulator: StreamSessionReportAccumulator? = null
     private val streamRuntimeDiagnosticsSampler = StreamRuntimeDiagnosticsSampler(
         scope = viewModelScope,
         readSnapshot = { includeDevice ->
@@ -543,6 +538,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     private var launchJob: Job? = null
     private var activeSubscriptionJob: Job? = null
     private var pendingActiveSessionLaunch: PendingActiveSessionLaunch? = null
+    private var launchInputModeChoice: CompletableDeferred<StreamInputMode>? = null
     private var loginJob: Job? = null
     private var androidUpdateJob: Job? = null
     private var androidUpdateAutoJob: Job? = null
@@ -662,7 +658,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     private suspend fun persistCurrentDiagnosticSnapshot() {
         withContext(Dispatchers.IO) {
             runCatching {
-                val current = sanitizeDiagnosticExport(currentDebugLogText())
+                val current = currentDebugLogText()
                 diagnosticHistoryStore.saveCurrent(current)
             }
                 .onFailure { error ->
@@ -687,43 +683,16 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 debugEvents.removeFirst()
             }
         }
-        Log.d(OPENNOW_DEBUG_LOG_TAG, "${event.category}: ${event.message}")
+        if (BuildConfig.DEBUG) Log.d(OPENNOW_DEBUG_LOG_TAG, "${event.category}: ${event.message}")
     }
 
     private fun debugEventSnapshot(): List<DebugLogEvent> =
         synchronized(debugEventsLock) { debugEvents.toList() }
 
     private fun recordSessionDiagnosticResponse(response: GfnSessionDiagnosticResponse) {
-        val sanitizedBody = sanitizeDiagnosticLogPayload(response.responseBody, DEBUG_PAYLOAD_BODY_LIMIT)
-        val event = DebugPayloadEvent(
-            timestampMs = System.currentTimeMillis(),
-            operation = response.operation,
-            method = response.method,
-            url = response.url,
-            statusCode = response.statusCode,
-            requestBody = response.requestBody
-                .takeIf { it.isNotBlank() }
-                ?.let { sanitizeDiagnosticLogPayload(it, DEBUG_PAYLOAD_BODY_LIMIT) }
-                .orEmpty(),
-            body = sanitizedBody,
-        )
-        synchronized(debugPayloadsLock) {
-            debugPayloads.addLast(event)
-            while (debugPayloads.size > DEBUG_PAYLOAD_LIMIT) {
-                debugPayloads.removeFirst()
-            }
-        }
-        recoverySessionProbeDebugSummary(response)?.let { summary ->
-            recordDebugEvent("recovery", summary)
-        }
-        Log.d(
-            OPENNOW_DEBUG_LOG_TAG,
-            "gfn-json: ${response.operation} ${response.method} http=${response.statusCode} requestBytes=${response.requestBody.length} responseBytes=${response.responseBody.length} captured=${sanitizedBody.length} host=${hostForDebug(response.url)}",
-        )
+        // API bodies have a single bounded owner; avoid parsing/pretty-printing every poll twice.
+        recoverySessionProbeDebugSummary(response)?.let { summary -> recordDebugEvent("recovery", summary) }
     }
-
-    private fun debugPayloadSnapshot(): List<DebugPayloadEvent> =
-        synchronized(debugPayloadsLock) { debugPayloads.toList() }
 
     private fun defaultLaunchAppPage(settings: AppSettings = settingsStore.settings.value): AppPage =
         when (settings.launchPage) {
@@ -1653,6 +1622,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun logout() {
+        if (launchInputModeChoice != null) cancelLaunchInputModeChoice()
         viewModelScope.launch {
             pendingActiveSessionLaunch = null
             authRepository.logout()
@@ -1686,6 +1656,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun switchAccount(userId: String) {
+        if (launchInputModeChoice != null) cancelLaunchInputModeChoice()
         viewModelScope.launch {
             pendingActiveSessionLaunch = null
             _state.update { it.copy(settingsRefreshing = true, error = null) }
@@ -2073,6 +2044,37 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    /** Re-checks only the account data needed by the final setup screen. */
+    fun refreshGfnMembership() {
+        val session = state.value.authSession ?: return
+        if (activeSubscriptionJob?.isActive == true) return
+        _state.update { current ->
+            if (current.authSession?.user?.userId == session.user.userId) {
+                current.copy(subscriptionInfo = null)
+            } else {
+                current
+            }
+        }
+        activeSubscriptionJob = viewModelScope.launch {
+            try {
+                refreshSettingsAccountData(session)
+            } catch (error: CancellationException) {
+                throw error
+            } catch (_: Exception) {
+                _state.update { current ->
+                    if (
+                        current.authSession?.user?.userId == session.user.userId &&
+                        current.subscriptionInfo == null
+                    ) {
+                        current.copy(subscriptionInfo = SubscriptionInfo(membershipTier = ""))
+                    } else {
+                        current
+                    }
+                }
+            }
+        }
+    }
+
     private suspend fun refreshAccountConnectors(session: AuthSession) {
         accountConnectorRefreshMutex.withLock {
             val token = accountConnectorAuthToken(session)
@@ -2111,7 +2113,9 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                         ?.let { enrichedSession }
                         ?: current.authSession,
                     savedAccounts = savedAccountsSnapshot(),
-                    subscriptionInfo = fetchedSubscription ?: current.subscriptionInfo,
+                    subscriptionInfo = fetchedSubscription
+                        ?: current.subscriptionInfo
+                        ?: SubscriptionInfo(membershipTier = ""),
                     regions = fetchedRegions.ifEmpty { current.regions },
                 )
             }
@@ -2371,7 +2375,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 )
             }
             val token = auth.tokens.idToken ?: auth.tokens.accessToken
-            val baseUrl = streamingBaseUrlOverride ?: effectiveStreamingBaseUrl()
+            var baseUrl = streamingBaseUrlOverride ?: effectiveStreamingBaseUrl()
             val manuallySelectedServer = manuallySelectedServerForReport(
                 streamingBaseUrlOverride = streamingBaseUrlOverride,
                 configuredRegion = requestedSettings.region,
@@ -2421,7 +2425,28 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                         ?: launchGame.variants.getOrNull(launchGame.selectedVariantIndex)
                         ?: launchGame.variants.firstOrNull()
                 }.onFailure { error ->
+                    if (error is CancellationException) throw error
                     recordDebugEvent("launch", "Game access refresh failed; using cached metadata error=${error.debugMessage()}")
+                }
+                val route = resolveGfnLaunchRoute(
+                    game = launchGame,
+                    providerCode = auth.provider.code,
+                    subscription = state.value.subscriptionInfo,
+                    defaultBaseUrl = baseUrl,
+                    regions = state.value.regions,
+                    refreshRegions = {
+                        withContext(Dispatchers.IO) {
+                            fetchDynamicRegions(http, token, auth.provider.streamingServiceUrl).first
+                        }
+                    },
+                )
+                baseUrl = route.baseUrl
+                if (route.storageRegion != null) {
+                    recordDebugEvent(
+                        "launch",
+                        "Using persistent storage region=${route.storageRegion} base=${hostForDebug(baseUrl)} game=${launchGame.title}",
+                    )
+                    _state.update { it.copy(manuallySelectedServerForReport = false) }
                 }
                 if (shouldMarkVariantOwnedBeforeLaunch(selectedVariant)) {
                     val unownedVariant = checkNotNull(selectedVariant)
@@ -2547,6 +2572,10 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         eligibleSettings: StreamSettings,
         initialSettings: StreamSettings,
     ) {
+        lastDiagnosticSessionReport = null
+        lastDiagnosticSession = null
+        latestStreamRuntimeStats = null
+        diagnosticStreamHistory.clear()
         streamReportLaunchProfile = StreamReportLaunchProfile(
             gameTitle = gameTitle,
             selectedSettings = selectedSettings,
@@ -2576,7 +2605,9 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     private fun finishSessionReport(nowMs: Long = System.currentTimeMillis()): SessionReport? {
         if (sessionReportFinalizedForStop) return null
         sessionReportFinalizedForStop = true
+        lastDiagnosticSession = state.value.streamSession ?: lastDiagnosticSession
         val report = streamSessionReportAccumulator?.finish(nowMs)
+        lastDiagnosticSessionReport = report
         if (report != null) {
             recordDebugEvent(
                 "stream",
@@ -2746,6 +2777,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 )
             }
             runCatching {
+                val appLaunchMode = appLaunchModeFor(pending.game, pending.settings)
                 runCatching { sessionRepository.stopActiveSession(token, pending.activeSession, pending.settings) }
                     .onSuccess {
                         sessionTimerAnchorStore.clear(pending.activeSession.sessionId)
@@ -2761,7 +2793,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                     zone = "prod",
                     settings = pending.settings,
                     accountLinked = pending.accountLinked,
-                    appLaunchMode = appLaunchModeFor(pending.game, pending.settings),
+                    appLaunchMode = appLaunchMode,
                 )
                 recordDebugEvent("queue", "Created replacement session ${created.debugSummary()}")
                 pollUntilReady(token, created, pending.settings)
@@ -3146,6 +3178,8 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         // Record every media sample immediately. Binder diagnostics must not delay input/UI work
         // or reorder the consecutive samples used to detect decoder overload.
         accumulator?.record(stats)
+        diagnosticStreamHistory.record(now, stats)
+        lastDiagnosticSession = state.value.streamSession ?: lastDiagnosticSession
         val sessionId = state.value.streamSession?.sessionId
         latestStreamRuntimeStats = TimedStreamRuntimeStats(
             capturedAtMs = now,
@@ -3165,7 +3199,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 recordDebugEvent(
                     "runtime",
                     "stats requestedMaxBitrateMbps=${requestedSettings.maxBitrateMbps} transportMaxBitrateMbps=${transportSettings.maxBitrateMbps} " +
-                        "${stats.debugSummary()} device=${diagnostics.debugSummary()}",
+                        "${stats.debugSummary()} runtime ${diagnostics.debugSummary()}",
                 )
             }
         }
@@ -3539,77 +3573,156 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         val snapshot = state.value
         val session = snapshot.streamSession
         val codecReport = snapshot.codecReport
-        return buildString {
-            appendLine("OpenNOW Android diagnostics")
+        val now = System.currentTimeMillis()
+        val anchor = DiagnosticTimeAnchor(now, SystemClock.elapsedRealtime())
+        val device = AndroidDeviceDiagnostics.snapshot(getApplication())
+        val runtime = AndroidRuntimeDiagnostics.snapshot(getApplication())
+        val events = debugEventSnapshot()
+        val apiSnapshot = OpenNowHttpDiagnostics.snapshot()
+        val api = apiSnapshot.entries
+        val streamHistory = diagnosticStreamHistory.capture()
+        val input = NativeInputDiagnostics.capture()
+        val cpu = ProcessCpuDiagnostics.capture()
+        val latest = latestStreamRuntimeStats
+        val touch = snapshot.settings.androidTouch
+        val storage = snapshot.subscriptionInfo?.storageAddon
+        val reportAccumulator = streamSessionReportAccumulator
+        val scoreReport = reportAccumulator?.finish(now) ?: lastDiagnosticSessionReport
+        val scoreData = diagnosticSessionScore(scoreReport,
+            if (reportAccumulator != null) "active" else "completed", snapshot.settings.showSessionReportAfterStream)
+        val exitHistory = AndroidProcessExitDiagnostics.snapshot(getApplication())
+        val assessment = diagnosticFailureAssessment(api, snapshot.error, scoreReport, exitHistory.records)
+        val parser = buildJsonObject {
+            put("schemaVersion", 2)
+            put("retention", buildJsonObject {
+                put("api", apiSnapshot.retentionJson())
+                put("stream", buildJsonObject {
+                    put("sampleLimit", streamHistory.capacity)
+                    put("totalSamples", streamHistory.totalSamples)
+                    put("retainedSamples", streamHistory.samples.size)
+                    put("evictedSamples", streamHistory.evictedSamples)
+                })
+            })
+            put("sessionScore", scoreData)
+            put("failureAssessment", assessment)
+            put("processExitHistory", OpenNowJson.encodeToJsonElement(exitHistory))
+            put("capturedAt", diagnosticTimestamp(now))
+            put("capturedAtEpochMs", now)
+            put("uptimeMs", anchor.elapsedMs)
+            put("timezone", "UTC")
+            put("app", buildJsonObject {
+                put("version", snapshot.androidUpdate.currentVersionName)
+                put("build", snapshot.androidUpdate.currentVersionCode)
+                put("debug", BuildConfig.DEBUG)
+                put("distribution", snapshot.androidUpdate.installSource.distributionKind)
+                put("provider", snapshot.authSession?.provider?.code)
+                put("membershipTier", snapshot.subscriptionInfo?.membershipTier ?: snapshot.authSession?.user?.membershipTier)
+            })
+            put("device", OpenNowJson.encodeToJsonElement(device))
+            put("deviceRuntime", OpenNowJson.encodeToJsonElement(runtime))
+            put("stream", buildJsonObject {
+                put("state", snapshot.streamStatus)
+                (session ?: lastDiagnosticSession)?.let { put("session", OpenNowJson.encodeToJsonElement(it)) }
+                put("samples", OpenNowJson.encodeToJsonElement(streamHistory.samples))
+                put("game", snapshot.streamGame?.title)
+                put("launchPhase", snapshot.launchPhase)
+                put("queuePosition", snapshot.queuePosition)
+                put("error", snapshot.error)
+                put("providerDefaultUrl", snapshot.authSession?.provider?.streamingServiceUrl)
+                put("sessionBaseUrl", session?.streamingBaseUrl)
+                put("settings", OpenNowJson.encodeToJsonElement(snapshot.settings.stream))
+                snapshot.activeStreamSettings?.let { put("activeSettings", OpenNowJson.encodeToJsonElement(it)) }
+                storage?.let { put("storage", OpenNowJson.encodeToJsonElement(it)) }
+                latest?.let {
+                    put("latestStatsCapturedAt", diagnosticTimestamp(it.capturedAtMs))
+                    put("latestStats", OpenNowJson.encodeToJsonElement(it.stats.finiteDiagnosticValues()))
+                }
+            })
+            put("inputSettings", buildJsonObject {
+                put("mouseLock", snapshot.settings.externalMousePointerLock)
+                put("touch", OpenNowJson.encodeToJsonElement(touch))
+            })
+            codecReport?.let { put("codecs", OpenNowJson.encodeToJsonElement(it)) }
+            put("cpuBuckets", OpenNowJson.encodeToJsonElement(cpuDiagnosticBuckets(cpu)))
+            put("cpuSamples", OpenNowJson.encodeToJsonElement(cpu))
+            put("input", input.toJson(anchor))
+            put("events", JsonArray(events.map { event -> buildJsonObject {
+                put("timestamp", diagnosticTimestamp(event.timestampMs))
+                put("category", event.category)
+                put("message", event.message)
+            } }))
+            put("api", JsonArray(api.map(DiagnosticApiEntry::toJson)))
+        }
+        val human = buildString {
+            appendLine("OpenNOW Android diagnostics | format=2")
+            appendLine("Captured: ${diagnosticTimestamp(now)} | timezone=UTC | uptimeMs=${anchor.elapsedMs}")
+            appendLine("Input/CPU wall times are anchored at export; uptime preserves event ordering.")
+            appendLine()
+            appendLine("[Overview]")
             appendLine(snapshot.androidUpdate.debugHeaderLine())
-            appendLine(AndroidDeviceDiagnostics.snapshot(getApplication()).debugSummary())
-            appendLine("page=${snapshot.page} initializing=${snapshot.initializing} loadingGames=${snapshot.loadingGames}")
-            appendLine("user=${snapshot.authSession?.user?.displayName.orEmpty()} tier=${snapshot.subscriptionInfo?.membershipTier ?: snapshot.authSession?.user?.membershipTier.orEmpty()} provider=${snapshot.authSession?.provider?.code.orEmpty()}")
-            appendLine("streamStatus=${snapshot.streamStatus} launchPhase=${snapshot.launchPhase} queuePosition=${snapshot.queuePosition}")
-            appendLine("streamGame=${snapshot.streamGame?.title.orEmpty()} selectedGame=${snapshot.selectedGame?.title.orEmpty()}")
-            appendLine("sessionId=${session?.sessionId.orEmpty()} sessionStatus=${session?.status} seatSetupStep=${session?.seatSetupStep} serverIp=${session?.serverIp.orEmpty()} base=${session?.streamingBaseUrl.orEmpty()}")
-            appendLine("adsRequired=${isSessionAdsRequired(session?.adState)} ads=${sessionAdItems(session?.adState).size} activeAd=${snapshot.queueAdActiveId.orEmpty()} queuePaused=${session?.adState?.isQueuePaused}")
-            appendLine("adMessage=${session?.adState?.message.orEmpty()} grace=${session?.adState?.gracePeriodSeconds} serverSentEmptyAds=${session?.adState?.serverSentEmptyAds}")
-            appendLine("negotiated=${session?.negotiatedStreamProfile?.debugSummary().orEmpty()} monitors=${session?.monitorSnapshot?.debugSummary().orEmpty()} requestedFeatures=${session?.requestedStreamingFeatures?.debugSummary().orEmpty()} finalizedFeatures=${session?.finalizedStreamingFeatures?.debugSummary().orEmpty()}")
-            appendLine("printedWaste.loading=${snapshot.printedWasteLoading} queueZones=${snapshot.printedWasteQueue.size} mappingZones=${snapshot.printedWasteMapping.size} pings=${snapshot.printedWastePings.size} error=${snapshot.printedWasteError.orEmpty()}")
-            appendLine("settings.resolution=${snapshot.settings.stream.resolution} fps=${snapshot.settings.stream.fps} codec=${snapshot.settings.stream.codec} bitrate=${snapshot.settings.stream.maxBitrateMbps}")
-            appendLine("settings.preset=${snapshot.settings.streamPreset} recommendation=${deviceRecommendation?.debugSummary() ?: "pending"}")
-            snapshot.activeStreamSettings?.let { active ->
-                appendLine("active.resolution=${active.resolution} fps=${active.fps} codec=${active.codec} bitrate=${active.maxBitrateMbps}")
+            appendLine("Game: ${snapshot.streamGame?.title ?: "none"} | state=${snapshot.streamStatus} | page=${snapshot.page}")
+            appendLine("Provider: ${snapshot.authSession?.provider?.code.orEmpty()} | tier=${snapshot.subscriptionInfo?.membershipTier ?: snapshot.authSession?.user?.membershipTier.orEmpty()}")
+            snapshot.error?.let { appendLine("ERROR: $it") }
+            if (snapshot.launchPhase.isNotBlank()) appendLine("Launch: ${snapshot.launchPhase} | queue=${snapshot.queuePosition ?: "none"}")
+            appendLine()
+            appendLine("[Device]")
+            appendLine(device.debugSummary())
+            appendLine(runtime.debugSummary())
+            appendLine()
+            appendLine("[Stream & routing]")
+            appendLine("Provider default: ${snapshot.authSession?.provider?.streamingServiceUrl.orEmpty()}")
+            appendLine("Configured server: ${snapshot.settings.stream.region.ifBlank { "Automatic" }}")
+            storage?.let { appendLine("Storage: region=${it.regionName} metro=${it.regionCode} status=${it.status} usedGb=${it.usedGb} totalGb=${it.sizeGb}") }
+            appendLine("Selected: ${snapshot.settings.stream.debugSummary()}")
+            snapshot.activeStreamSettings?.let { appendLine("Active: ${it.debugSummary()}") }
+            session?.let {
+                appendLine("Session: ${it.debugSummary()}")
+                appendLine("Negotiated: ${it.negotiatedStreamProfile?.debugSummary().orEmpty()} monitors=${it.monitorSnapshot?.debugSummary().orEmpty()}")
+                appendLine("Features: requested=${it.requestedStreamingFeatures?.debugSummary().orEmpty()} finalized=${it.finalizedStreamingFeatures?.debugSummary().orEmpty()}")
             }
-            appendLine(
-                "input.keyboardLayout=${snapshot.settings.stream.keyboardLayout} " +
-                    "mouseLock=${snapshot.settings.externalMousePointerLock} touch=${snapshot.settings.androidTouch}",
-            )
-            appendLine("codec.native=${codecReport?.nativeRuntimeSummary.orEmpty()} lowPower=${codecReport?.lowPowerGpuProfile} constrained=${codecReport?.constrainedRuntimeProfile} tv=${codecReport?.androidTvProfile}")
-            appendLine("device.runtime=${AndroidRuntimeDiagnostics.snapshot(getApplication()).debugSummary()}")
-            appendLine("stream.runtime.latest=${latestStreamRuntimeStats?.debugSummary(System.currentTimeMillis()) ?: "empty"}")
-            appendLine(ProcessCpuDiagnostics.snapshot())
+            appendLine("Input: keyboard=${snapshot.settings.stream.keyboardLayout} mouseLock=${snapshot.settings.externalMousePointerLock} touchEnabled=${touch.enabled} mousePad=${touch.mousePad} nativeTouch=${touch.nativeTouchMode} aim=${touch.aimMode} gyro=${touch.gyroscopeEnabled}")
+            appendLine()
+            appendLine("[Runtime & CPU — 10-second buckets]")
+            appendLine("Latest: ${latest?.debugSummary(now) ?: "No stream samples recorded"}")
+            appendLine(formatCpuProfile(cpu, anchor))
             codecReport?.capabilities?.forEach { cap ->
-                appendLine("codec.${cap.codec}: decoder=${cap.decoderName ?: "none"} hardware=${cap.hardwareDecoder} nativeAvailable=${cap.nativeDecoderAvailable ?: "unknown"} webRtc=${cap.webRtcDecoderName ?: "none"} webRtcAvailable=${cap.webRtcDecoderAvailable ?: "unknown"} webRtcHardware=${cap.webRtcHardwareDecoderAvailable ?: "unknown"} encoder=${cap.encoderName ?: "none"}")
+                appendLine("${cap.codec}: decoder=${cap.webRtcDecoderName ?: cap.decoderName ?: "none"} hardware=${cap.hardwareDecoder} available=${cap.webRtcDecoderAvailable}")
             }
             appendLine(DisplayRefreshDiagnostics.snapshot())
-            appendLine(NativeInputDiagnostics.snapshot())
-            appendLine(OpenNowHttpDiagnostics.snapshot())
-            snapshot.error?.let { appendLine("error=$it") }
-            val events = debugEventSnapshot()
-            appendLine("events.count=${events.size} max=$DEBUG_EVENT_LIMIT")
-            if (events.isEmpty()) {
-                appendLine("events=(empty)")
-            } else {
-                val formatter = DateFormat.getTimeInstance(DateFormat.MEDIUM, Locale.US)
-                events.forEachIndexed { index, event ->
-                    appendLine("event.${index + 1} ${formatter.format(Date(event.timestampMs))} [${event.category}] ${event.message}")
-                }
+            appendLine()
+            appendLine("[Session score]")
+            if (scoreReport == null) appendLine("Unavailable — no measured stream samples.") else {
+                appendLine("${scoreReport.score}/100 ${scoreReport.rating.label} | phase=${if (reportAccumulator != null) "active" else "completed"} | samples=${scoreReport.sampleCount} | limitedData=${scoreReport.limitedData}")
+                scoreReport.recommendations.forEach { appendLine("${it.reasonCode}: ${it.title} — ${it.detail}") }
             }
-            val payloads = debugPayloadSnapshot()
-            appendLine("advancedJson.count=${payloads.size} max=$DEBUG_PAYLOAD_LIMIT")
-            if (payloads.isEmpty()) {
-                appendLine("advancedJson=(empty)")
-            } else {
-                val formatter = DateFormat.getTimeInstance(DateFormat.MEDIUM, Locale.US)
-                payloads.forEachIndexed { index, payload ->
-                    appendLine("advancedJson.${index + 1} ${formatter.format(Date(payload.timestampMs))} [${payload.operation}] ${payload.method} http=${payload.statusCode} url=${payload.url}")
-                    if (payload.requestBody.isNotBlank()) {
-                        appendLine("request:")
-                        appendLine(payload.requestBody)
-                    }
-                    appendLine("response:")
-                    appendLine(payload.body)
-                }
+            appendLine()
+            appendLine("[Failure clues — not a confirmed crash diagnosis]")
+            assessment["findings"]?.jsonArray?.filter { it.jsonObject["category"]?.jsonPrimitive?.content != "session_quality" }?.forEach { finding ->
+                val fields = finding.jsonObject
+                appendLine("${fields["reasonCode"]?.jsonPrimitive?.content}: ${fields["possibleReason"]?.jsonPrimitive?.content} | evidence=${fields["evidencePaths"]}")
             }
+            appendLine()
+            appendLine("[Input state & events]")
+            appendLine(input.format(anchor::formatElapsed))
+            appendLine()
+            appendLine("[Timeline — ${events.size} events]")
+            events.forEach { appendLine("${diagnosticTimestamp(it.timestampMs)} [${it.category}] ${it.message}") }
+            appendLine()
+            appendLine("[API — ${api.size} records; full payloads in parser block]")
+            appendLine("Retention: evicted=${apiSnapshot.evictedRecords} oversizedBodies=${api.sumOf { it.truncatedBodies }} streamSamples=${streamHistory.samples.size} streamEvicted=${streamHistory.evictedSamples}")
+            api.forEachIndexed { index, entry -> appendLine("api.${index + 1} ${entry.summary()}") }
+            appendLine()
+            appendLine("[Machine-readable JSON — schema 2]")
         }
+        return renderDiagnosticReport(human, parser)
     }
 
     fun debugLogText(): String = appendPreviousDiagnosticSnapshot(
         current = currentDebugLogText(),
-        previous = diagnosticHistoryStore.previousSnapshot(),
+        previous = diagnosticHistoryStore.previousSnapshot()?.let { it.copy(text = sanitizeDiagnosticExport(it.text)) },
     )
 
-    suspend fun sanitizedDebugLogText(): String {
-        val raw = withContext(Dispatchers.IO) { debugLogText() }
-        return withContext(Dispatchers.Default) { sanitizeDiagnosticExport(raw) }
-    }
+    suspend fun sanitizedDebugLogText(): String = withContext(Dispatchers.IO) { debugLogText() }
 
     fun debugLogFileName(): String {
         val timestamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
@@ -3737,7 +3850,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                         ?.let { enrichedSession }
                         ?: current.authSession,
                     savedAccounts = savedAccountsSnapshot(),
-                    subscriptionInfo = sub,
+                    subscriptionInfo = sub ?: SubscriptionInfo(membershipTier = ""),
                 )
             }
         }
@@ -4267,22 +4380,63 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
      * a session created as GAMEPAD_FRIENDLY has no touchscreen, and will silently drop perfectly
      * well-formed touch packets.
      */
-    private fun appLaunchModeFor(game: GameInfo?, settings: StreamSettings): Int {
+    private suspend fun appLaunchModeFor(game: GameInfo?, settings: StreamSettings): Int {
         val nativeTouch = resolveStreamInputModeAtLaunch(game, settings) == StreamInputMode.NativeTouch
         return if (nativeTouch) GfnAppLaunchMode.TOUCH_FRIENDLY else GfnAppLaunchMode.GAMEPAD_FRIENDLY
     }
 
-    private fun resolveStreamInputModeAtLaunch(game: GameInfo?, settings: StreamSettings): StreamInputMode {
+    fun chooseLaunchInputMode(mode: StreamInputMode) {
+        launchInputModeChoice?.complete(mode)
+    }
+
+    fun cancelLaunchInputModeChoice() {
+        val choice = launchInputModeChoice ?: return
+        if (choice.isCompleted) return
+        choice.cancel()
+        _state.update { current ->
+            current.copy(
+                awaitingLaunchInputModeChoice = false,
+                streamStatus = "idle",
+                streamInputModeAtLaunch = null,
+                activeStreamSettings = null,
+                streamSession = null,
+                streamGame = null,
+                launchPhase = "",
+                queuePosition = null,
+                queueAdActiveId = null,
+                streamLaunchMinimized = false,
+                page = current.streamReturnPage ?: AppPage.Home,
+                streamReturnPage = null,
+            )
+        }
+    }
+
+    private suspend fun resolveStreamInputModeAtLaunch(game: GameInfo?, settings: StreamSettings): StreamInputMode {
         _state.value.streamInputModeAtLaunch?.let { return it }
         val nativeTouchAvailable = !androidTvProfile && shouldUseNativeTouch(
             _state.value.settings.androidTouch.effectiveNativeTouchMode(),
             game,
             settings,
         )
-        val mode = streamInputModeAtStart(
+        val connection = connectedPhysicalKeyboardMouse()
+        val mode = chooseStreamInputModeAtStart(
             nativeTouchAvailable = nativeTouchAvailable,
-            keyboardMouseConnected = hasConnectedPhysicalKeyboardOrMouse(),
-        )
+            keyboardMouseConnected = connection.connected,
+        ) {
+            val choice = CompletableDeferred<StreamInputMode>()
+            launchInputModeChoice = choice
+            _state.update { it.copy(awaitingLaunchInputModeChoice = true) }
+            try {
+                choice.await()
+            } finally {
+                if (launchInputModeChoice === choice) {
+                    launchInputModeChoice = null
+                    _state.update { it.copy(awaitingLaunchInputModeChoice = false) }
+                }
+                choice.cancel()
+            }
+        }
+        recordDebugEvent("input", "Launch input mode=$mode mouse=${connection.mouseConnected} keyboard=${connection.keyboardConnected} nativeTouchAvailable=$nativeTouchAvailable")
         _state.update { current -> current.copy(streamInputModeAtLaunch = mode) }
         return mode
     }
@@ -4585,15 +4739,14 @@ private fun StreamRuntimeStats.hasDebugValues(): Boolean =
 private fun StreamRuntimeStats.debugSummary(): String =
     "bitrateKbps=${bitrateKbps ?: 0} availableIncomingBitrateKbps=${availableIncomingBitrateKbps ?: -1} " +
         "pingMs=${pingMs ?: -1} fps=${fps ?: 0} receivedFps=${receivedFps ?: 0} decodedFps=${decodedFps ?: 0} " +
-        "decodeMs=${decodeMs ?: -1.0} jitterMs=${jitterMs ?: -1.0} packetLossPct=${packetLossPct ?: -1.0} " +
+        "decodeMs=${decodeMs.diagnosticMetric()} jitterMs=${jitterMs.diagnosticMetric()} packetLossPct=${packetLossPct.diagnosticMetric()} " +
         "packetsLostDelta=${packetsLostDelta ?: -1} packetsReceivedDelta=${packetsReceivedDelta ?: -1} " +
-        "processCpuPct=${processCpuPercent ?: -1.0} deviceCpuCapacityPct=${deviceCpuCapacityPercent ?: -1.0} cpuCores=${cpuLogicalCoreCount ?: 0} " +
+        "processCpuPct=${processCpuPercent.diagnosticMetric()} deviceCpuCapacityPct=${deviceCpuCapacityPercent.diagnosticMetric()} cpuCores=${cpuLogicalCoreCount ?: 0} " +
         "resolution=${resolution.orEmpty()} codec=${codec.orEmpty()}"
 
 private fun TimedStreamRuntimeStats.debugSummary(nowMs: Long): String {
-    val formatter = DateFormat.getTimeInstance(DateFormat.MEDIUM, Locale.US)
     val ageMs = (nowMs - capturedAtMs).coerceAtLeast(0L)
-    return "capturedAt=${formatter.format(Date(capturedAtMs))} ageMs=$ageMs session=${shortDebugId(sessionId)} ${stats.debugSummary()}"
+    return "capturedAt=${diagnosticTimestamp(capturedAtMs)} ageMs=$ageMs session=${shortDebugId(sessionId)} ${stats.debugSummary()}"
 }
 
 private fun SessionInfo.shortDebugId(): String = shortDebugId(sessionId)
@@ -4615,3 +4768,6 @@ private fun SessionMonitorSnapshot.debugSummary(): String =
 
 private fun StreamingFeatures.debugSummary(): String =
     "reflex=$reflex bitDepth=$bitDepth chroma=$chromaFormat l4s=$enabledL4S hdr=$trueHdr"
+
+private fun Double?.diagnosticMetric(): String =
+    this?.takeIf(Double::isFinite)?.let { (kotlin.math.round(it * 10.0) / 10.0).toString() } ?: "unknown"

@@ -355,7 +355,7 @@ class GfnApiTest {
                     colorQuality = if (codec == VideoCodec.H264) ColorQuality.EightBit420 else ColorQuality.TenBit420,
                 )
                 val body = buildMinimalClaimRequestBody(appId = "123", deviceId = "device", settings = settings)
-                val nativeDesktopMode = settings.requiresNativeDesktopCloudMatchMode()
+                val nativeDesktopMode = settings.requiresNativeDesktopCloudMatchMode() || settings.requiresNativeAndroidCloudMatchMode()
                 val sessionRequestData = body.getValue("sessionRequestData").jsonObject
                 val metadata = sessionRequestData.getValue("metaData").jsonArray
                 val monitor = sessionRequestData.getValue("clientRequestMonitorSettings").jsonArray.single().jsonObject
@@ -599,6 +599,52 @@ class GfnApiTest {
         assertTrue(headers["User-Agent"].orEmpty().contains("GFN-PC/22.0"))
         assertTrue(headers["User-Agent"].orEmpty().contains("Android"))
         assertEquals("https://play.geforcenow.com", headers["Origin"])
+    }
+
+    @Test
+    fun freePortalLaunchAndClaimUseNativeAndroidIdentityWithExactGeometry() {
+        val settings = StreamSettings(resolution = "1376x640", aspectRatio = "19.5:9", fps = 120)
+            .eligibleForAndroidLaunch(SubscriptionInfo(membershipTier = "FREE"), null, androidTvProfile = false)
+        for (baseUrl in listOf(
+            "https://np-lax-01.cloudmatchbeta.nvidiagrid.net",
+            "https://my-yes.yes.geforcenow.nvidiagrid.net",
+        )) {
+            for (launchMode in listOf(GfnAppLaunchMode.GAMEPAD_FRIENDLY, GfnAppLaunchMode.TOUCH_FRIENDLY)) {
+                val headers = cloudMatchHeaders(
+                    token = "token",
+                    clientId = "client",
+                    deviceId = "device",
+                    includeOrigin = true,
+                    streamingBaseUrl = baseUrl,
+                    appLaunchMode = launchMode,
+                    preferNativeDesktopMode = settings.requiresNativeDesktopCloudMatchMode(),
+                    preferNativeAndroidMode = settings.requiresNativeAndroidCloudMatchMode(),
+                )
+                assertEquals("ANDROID", headers["nv-device-os"])
+                assertEquals("NATIVE", headers["nv-client-type"])
+                assertEquals("NVIDIA-CLASSIC", headers["nv-client-streamer"])
+                assertTrue(headers["User-Agent"].orEmpty().startsWith("GFN-PC/22.0 (Android"))
+                assertEquals(
+                    if (launchMode == GfnAppLaunchMode.TOUCH_FRIENDLY) "TABLET" else "PHONE",
+                    headers["nv-device-type"],
+                )
+
+                val data = buildMinimalClaimRequestBody(
+                    appId = "123",
+                    deviceId = "device",
+                    settings = settings,
+                    streamingBaseUrl = baseUrl,
+                    appLaunchMode = launchMode,
+                ).getValue("sessionRequestData").jsonObject
+                val monitor = data.getValue("clientRequestMonitorSettings").jsonArray.single().jsonObject
+                assertEquals("android", data.getValue("clientPlatformName").jsonPrimitive.content)
+                assertEquals(launchMode, data.getValue("appLaunchMode").jsonPrimitive.int)
+                assertEquals(1376, monitor.getValue("widthInPixels").jsonPrimitive.int)
+                assertEquals(640, monitor.getValue("heightInPixels").jsonPrimitive.int)
+                assertEquals(60, monitor.getValue("framesPerSecond").jsonPrimitive.int)
+                assertEquals(100, monitor.getValue("dpi").jsonPrimitive.int)
+            }
+        }
     }
 
     @Test

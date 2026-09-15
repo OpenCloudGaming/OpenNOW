@@ -20,8 +20,8 @@ android {
         // Android 17 target changes are audited; LAN access is permission-gated at its feature boundary.
         //noinspection EditedTargetSdkVersion
         targetSdk = 37
-        versionCode = 124
-        versionName = "1.6.8"
+        versionCode = 129
+        versionName = "1.7.3"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         buildConfigField("boolean", "APK_UPDATES_SUPPORTED", "true")
@@ -93,6 +93,29 @@ android {
         checkReleaseBuilds = false
     }
 }
+
+// New Android copy stays in the shared English source; Android XML is generated.
+val touchButtonResources = layout.buildDirectory.dir("generated/touchButtonResources")
+val touchButtonEnglishSource = rootProject.file("../locales/en.json")
+val generateTouchButtonResources by tasks.registering {
+    inputs.file(touchButtonEnglishSource)
+    outputs.dir(touchButtonResources)
+    doLast {
+        val source = groovy.json.JsonSlurper().parse(inputs.files.singleFile) as Map<*, *>
+        val strings = (source["androidTouchButtons"] as Map<*, *>) +
+            (source["androidStreamInput"] as Map<*, *>) +
+            (source["androidSetup"] as Map<*, *>)
+        fun xml(value: String) = value.replace("&", "&amp;").replace("<", "&lt;")
+            .replace(">", "&gt;").replace("\"", "\\\"").replace("'", "\\'")
+        val output = outputs.files.singleFile.resolve("values/touch_buttons.xml")
+        output.parentFile.mkdirs()
+        output.writeText("<resources>\n" + strings.entries.joinToString("\n") { (key, value) ->
+            "    <string name=\"$key\">${xml(value as String)}</string>"
+        } + "\n</resources>\n")
+    }
+}
+android.sourceSets.getByName("main").res.srcDir(touchButtonResources.get().asFile)
+tasks.named("preBuild").configure { dependsOn(generateTouchButtonResources) }
 
 val nvstJniOutput = layout.buildDirectory.dir("generated/nvstJniLibs")
 val buildNvst by tasks.registering(Exec::class) {

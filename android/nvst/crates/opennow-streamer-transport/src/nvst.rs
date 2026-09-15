@@ -47,6 +47,9 @@ use super::{
     EncodedMediaFrame, MediaConsumer, TransportError, deliver_media_frame, install_crypto,
 };
 
+#[path = "nvst_stun_rtt.rs"]
+mod stun_rtt;
+
 const RTP_FIXED_HEADER_LEN: usize = 12;
 const SRTP_AES_CM_HMAC_SHA1_80_TAG_LEN: usize = 10;
 /// RFC 7714 `AEAD_AES_*_GCM` profiles carry a 16-byte authentication tag.
@@ -1428,7 +1431,10 @@ pub enum NvstReceiveEvent {
     InputUnavailable(String),
     Cursor(Vec<u8>),
     ServerInput(Vec<u8>),
-    RoundTripTime(Option<Duration>),
+    RoundTripTime {
+        rtt: Option<Duration>,
+        duplicate_responses: u64,
+    },
     Dropped(NvstDropReason),
     RecoveryNeeded(NvstRecovery),
     Lifecycle(NvstReceiverState),
@@ -4963,6 +4969,7 @@ fn run_nvst_webrtc_bundle(
     let mut input_queue_max_us = 0_u128;
     let mut input_packets = 0_u64;
     let mut socket_timeout = None;
+    let mut stun_response_guard = stun_rtt::StunResponseGuard::default();
     let mut mouse_motion_packets = 0_u64;
     let mut server_cursor_confirmed = false;
     let mut cursor_capture_retry_at: Option<Instant> = None;
@@ -5283,9 +5290,10 @@ fn run_nvst_webrtc_bundle(
                 ),
             );
             eprintln!(
-                "NVST control-stats elapsed={:.1}s frameAck={frame_acks_sent} lastAck={last_ack_frame:?} pacing={frame_pacing_reports_sent} qos={qos_reports_sent}",
+                "NVST control-stats elapsed={:.1}s frameAck={frame_acks_sent} lastAck={last_ack_frame:?} pacing={frame_pacing_reports_sent} qos={qos_reports_sent} duplicateStunResponses={}",
                 now.saturating_duration_since(control_stats_origin)
                     .as_secs_f64(),
+                stun_response_guard.duplicates,
             );
             if input_packets > 0 {
                 opennow_streamer_protocol::log::log_async(
@@ -5414,6 +5422,7 @@ fn run_nvst_webrtc_bundle(
                         forward_optional(&event_sender, receiver.stop());
                         return;
                     }
+                    stun_response_guard.sent(&transmit.contents, Instant::now());
                     // Official ICE-on WebRtcTransport skips setupDtls until a real
                     // inbound STUN. Do not synthesize Binding Success — that only
                     // unblocks str0m and sends ClientHello before GFN has a pair.
@@ -5423,7 +5432,10 @@ fn run_nvst_webrtc_bundle(
                         let rtt = stats
                             .selected_candidate_pair
                             .and_then(|pair| pair.current_round_trip_time);
-                        let _ = event_sender.send(NvstReceiveEvent::RoundTripTime(rtt));
+                        let _ = event_sender.send(NvstReceiveEvent::RoundTripTime {
+                            rtt,
+                            duplicate_responses: stun_response_guard.duplicates,
+                        });
                     }
                     Event::IceConnectionStateChange(state) => {
                         opennow_streamer_protocol::log::log_async(
@@ -5795,6 +5807,11 @@ fn run_nvst_webrtc_bundle(
                             forward_optional(&event_sender, receiver.stop());
                             return;
                         }
+                        continue;
+                    }
+                    if stun_credentials.as_ref().is_some_and(|credentials| {
+                        stun_response_guard.duplicate(&datagram[..length], credentials, Instant::now())
+                    }) {
                         continue;
                     }
                     if looks_like_rtp(&datagram[..length])

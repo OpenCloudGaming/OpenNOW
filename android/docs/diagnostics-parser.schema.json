@@ -1,0 +1,2848 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "title": "OpenNOW Android diagnostic parser format 2",
+    "anyOf": [
+        {
+            "type": "object",
+            "properties": {
+                "schemaVersion": {
+                    "const": 2
+                },
+                "capturedAt": {
+                    "type": "string"
+                },
+                "capturedAtEpochMs": {
+                    "type": "integer"
+                },
+                "uptimeMs": {
+                    "type": "integer"
+                },
+                "timezone": {
+                    "const": "UTC"
+                },
+                "app": {
+                    "type": "object",
+                    "properties": {
+                        "version": {
+                            "type": "string"
+                        },
+                        "build": {
+                            "type": "integer"
+                        },
+                        "debug": {
+                            "type": "boolean"
+                        },
+                        "distribution": {
+                            "type": "string"
+                        },
+                        "provider": {
+                            "anyOf": [
+                                {
+                                    "type": "string"
+                                },
+                                {
+                                    "type": "null"
+                                }
+                            ]
+                        },
+                        "membershipTier": {
+                            "anyOf": [
+                                {
+                                    "type": "string"
+                                },
+                                {
+                                    "type": "null"
+                                }
+                            ]
+                        }
+                    },
+                    "required": [
+                        "version",
+                        "build",
+                        "debug",
+                        "distribution",
+                        "provider",
+                        "membershipTier"
+                    ],
+                    "additionalProperties": true
+                },
+                "device": {
+                    "$ref": "#/$defs/AndroidDeviceDiagnosticsSnapshot"
+                },
+                "deviceRuntime": {
+                    "$ref": "#/$defs/AndroidRuntimeDiagnosticsSnapshot"
+                },
+                "stream": {
+                    "type": "object",
+                    "properties": {
+                        "state": {
+                            "type": "string"
+                        },
+                        "game": {
+                            "anyOf": [
+                                {
+                                    "type": "string"
+                                },
+                                {
+                                    "type": "null"
+                                }
+                            ]
+                        },
+                        "launchPhase": {
+                            "type": "string"
+                        },
+                        "queuePosition": {
+                            "anyOf": [
+                                {
+                                    "type": "integer"
+                                },
+                                {
+                                    "type": "null"
+                                }
+                            ]
+                        },
+                        "error": {
+                            "anyOf": [
+                                {
+                                    "type": "string"
+                                },
+                                {
+                                    "type": "null"
+                                }
+                            ]
+                        },
+                        "providerDefaultUrl": {
+                            "anyOf": [
+                                {
+                                    "type": "string"
+                                },
+                                {
+                                    "type": "null"
+                                }
+                            ]
+                        },
+                        "sessionBaseUrl": {
+                            "anyOf": [
+                                {
+                                    "type": "string"
+                                },
+                                {
+                                    "type": "null"
+                                }
+                            ]
+                        },
+                        "settings": {
+                            "$ref": "#/$defs/StreamSettings"
+                        },
+                        "activeSettings": {
+                            "$ref": "#/$defs/StreamSettings"
+                        },
+                        "storage": {
+                            "$ref": "#/$defs/StorageAddon"
+                        },
+                        "latestStatsCapturedAt": {
+                            "type": "string"
+                        },
+                        "latestStats": {
+                            "$ref": "#/$defs/StreamRuntimeStats"
+                        },
+                        "session": {
+                            "$ref": "#/$defs/SessionInfo"
+                        },
+                        "samples": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/$defs/DiagnosticStreamSample"
+                            }
+                        }
+                    },
+                    "required": [
+                        "state",
+                        "game",
+                        "launchPhase",
+                        "queuePosition",
+                        "error",
+                        "providerDefaultUrl",
+                        "sessionBaseUrl",
+                        "settings"
+                    ],
+                    "additionalProperties": true
+                },
+                "inputSettings": {
+                    "type": "object",
+                    "properties": {
+                        "mouseLock": {
+                            "type": "boolean"
+                        },
+                        "touch": {
+                            "$ref": "#/$defs/AndroidTouchSettings"
+                        }
+                    },
+                    "required": [
+                        "mouseLock",
+                        "touch"
+                    ],
+                    "additionalProperties": true
+                },
+                "codecs": {
+                    "$ref": "#/$defs/RuntimeCodecReport"
+                },
+                "cpuBuckets": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/$defs/CpuDiagnosticBucket"
+                    }
+                },
+                "cpuSamples": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/$defs/ProcessCpuUsageSample"
+                    }
+                },
+                "retention": {
+                    "type": "object",
+                    "properties": {
+                        "api": {
+                            "type": "object",
+                            "properties": {
+                                "mode": {
+                                    "const": "individual_requests"
+                                },
+                                "totalRecorded": {
+                                    "type": "integer"
+                                },
+                                "retainedRecords": {
+                                    "type": "integer"
+                                },
+                                "evictedRecords": {
+                                    "type": "integer"
+                                },
+                                "recordLimit": {
+                                    "type": "integer"
+                                },
+                                "capturedChars": {
+                                    "type": "integer"
+                                },
+                                "characterLimit": {
+                                    "type": "integer"
+                                },
+                                "bodyCharacterLimit": {
+                                    "type": "integer"
+                                },
+                                "truncatedBodies": {
+                                    "type": "integer"
+                                }
+                            },
+                            "required": [
+                                "mode",
+                                "totalRecorded",
+                                "retainedRecords",
+                                "evictedRecords",
+                                "recordLimit",
+                                "capturedChars",
+                                "characterLimit",
+                                "bodyCharacterLimit",
+                                "truncatedBodies"
+                            ],
+                            "additionalProperties": true
+                        },
+                        "stream": {
+                            "type": "object",
+                            "properties": {
+                                "sampleLimit": {
+                                    "type": "integer"
+                                },
+                                "totalSamples": {
+                                    "type": "integer"
+                                },
+                                "retainedSamples": {
+                                    "type": "integer"
+                                },
+                                "evictedSamples": {
+                                    "type": "integer"
+                                }
+                            },
+                            "required": [
+                                "sampleLimit",
+                                "totalSamples",
+                                "retainedSamples",
+                                "evictedSamples"
+                            ],
+                            "additionalProperties": true
+                        }
+                    },
+                    "required": [
+                        "api",
+                        "stream"
+                    ],
+                    "additionalProperties": true
+                },
+                "input": {
+                    "type": "object",
+                    "properties": {
+                        "state": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "object",
+                                "properties": {
+                                    "timestamp": {
+                                        "type": "string"
+                                    },
+                                    "uptimeMs": {
+                                        "type": "integer"
+                                    },
+                                    "lastSeenUptimeMs": {
+                                        "type": "integer"
+                                    },
+                                    "message": {
+                                        "type": "string"
+                                    },
+                                    "count": {
+                                        "type": "integer"
+                                    }
+                                },
+                                "required": [
+                                    "timestamp",
+                                    "uptimeMs",
+                                    "lastSeenUptimeMs",
+                                    "message"
+                                ],
+                                "additionalProperties": true
+                            }
+                        },
+                        "events": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "timestamp": {
+                                        "type": "string"
+                                    },
+                                    "uptimeMs": {
+                                        "type": "integer"
+                                    },
+                                    "lastSeenUptimeMs": {
+                                        "type": "integer"
+                                    },
+                                    "message": {
+                                        "type": "string"
+                                    },
+                                    "count": {
+                                        "type": "integer"
+                                    }
+                                },
+                                "required": [
+                                    "timestamp",
+                                    "uptimeMs",
+                                    "lastSeenUptimeMs",
+                                    "message"
+                                ],
+                                "additionalProperties": true
+                            }
+                        }
+                    },
+                    "required": [
+                        "state",
+                        "events"
+                    ],
+                    "additionalProperties": true
+                },
+                "events": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "timestamp": {
+                                "type": "string"
+                            },
+                            "category": {
+                                "type": "string"
+                            },
+                            "message": {
+                                "type": "string"
+                            }
+                        },
+                        "required": [
+                            "timestamp",
+                            "category",
+                            "message"
+                        ],
+                        "additionalProperties": true
+                    }
+                },
+                "api": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "timestamp": {
+                                "type": "string"
+                            },
+                            "firstTimestamp": {
+                                "type": "string"
+                            },
+                            "count": {
+                                "type": "integer"
+                            },
+                            "method": {
+                                "type": "string"
+                            },
+                            "url": {
+                                "type": "string"
+                            },
+                            "statusCode": {
+                                "anyOf": [
+                                    {
+                                        "type": "integer"
+                                    },
+                                    {
+                                        "type": "null"
+                                    }
+                                ]
+                            },
+                            "elapsedMs": {
+                                "type": "integer"
+                            },
+                            "requestBytes": {
+                                "type": "integer"
+                            },
+                            "responseChars": {
+                                "type": "integer"
+                            },
+                            "request": {},
+                            "response": {},
+                            "error": {
+                                "type": "string"
+                            },
+                            "requestQuery": {
+                                "type": "object"
+                            },
+                            "requestHeaders": {
+                                "type": "object"
+                            },
+                            "responseHeaders": {
+                                "type": "object"
+                            },
+                            "truncatedBodies": {
+                                "type": "integer"
+                            }
+                        },
+                        "required": [
+                            "timestamp",
+                            "firstTimestamp",
+                            "count",
+                            "method",
+                            "url",
+                            "statusCode",
+                            "elapsedMs",
+                            "responseChars"
+                        ],
+                        "additionalProperties": true
+                    }
+                },
+                "sessionScore": {
+                    "type": "object",
+                    "properties": {
+                        "available": {
+                            "type": "boolean"
+                        },
+                        "phase": {
+                            "enum": [
+                                "active",
+                                "completed",
+                                "unavailable"
+                            ]
+                        },
+                        "showAfterStream": {
+                            "type": "boolean"
+                        },
+                        "scale": {
+                            "const": 100
+                        },
+                        "algorithmVersion": {
+                            "type": "integer"
+                        },
+                        "gaugeFraction": {
+                            "type": "number",
+                            "minimum": 0,
+                            "maximum": 1
+                        },
+                        "unavailableReason": {
+                            "type": "string"
+                        },
+                        "report": {
+                            "$ref": "#/$defs/SessionReport"
+                        },
+                        "components": {
+                            "type": "object",
+                            "properties": {
+                                "latency": {
+                                    "type": "object",
+                                    "properties": {
+                                        "available": {
+                                            "type": "boolean"
+                                        },
+                                        "score": {
+                                            "anyOf": [
+                                                {
+                                                    "type": "integer"
+                                                },
+                                                {
+                                                    "type": "null"
+                                                }
+                                            ]
+                                        },
+                                        "weight": {
+                                            "type": "integer"
+                                        }
+                                    },
+                                    "required": [
+                                        "available",
+                                        "score",
+                                        "weight"
+                                    ],
+                                    "additionalProperties": true
+                                },
+                                "packetLoss": {
+                                    "type": "object",
+                                    "properties": {
+                                        "available": {
+                                            "type": "boolean"
+                                        },
+                                        "score": {
+                                            "anyOf": [
+                                                {
+                                                    "type": "integer"
+                                                },
+                                                {
+                                                    "type": "null"
+                                                }
+                                            ]
+                                        },
+                                        "weight": {
+                                            "type": "integer"
+                                        }
+                                    },
+                                    "required": [
+                                        "available",
+                                        "score",
+                                        "weight"
+                                    ],
+                                    "additionalProperties": true
+                                },
+                                "jitter": {
+                                    "type": "object",
+                                    "properties": {
+                                        "available": {
+                                            "type": "boolean"
+                                        },
+                                        "score": {
+                                            "anyOf": [
+                                                {
+                                                    "type": "integer"
+                                                },
+                                                {
+                                                    "type": "null"
+                                                }
+                                            ]
+                                        },
+                                        "weight": {
+                                            "type": "integer"
+                                        }
+                                    },
+                                    "required": [
+                                        "available",
+                                        "score",
+                                        "weight"
+                                    ],
+                                    "additionalProperties": true
+                                },
+                                "frameRate": {
+                                    "type": "object",
+                                    "properties": {
+                                        "available": {
+                                            "type": "boolean"
+                                        },
+                                        "score": {
+                                            "anyOf": [
+                                                {
+                                                    "type": "integer"
+                                                },
+                                                {
+                                                    "type": "null"
+                                                }
+                                            ]
+                                        },
+                                        "weight": {
+                                            "type": "integer"
+                                        }
+                                    },
+                                    "required": [
+                                        "available",
+                                        "score",
+                                        "weight"
+                                    ],
+                                    "additionalProperties": true
+                                },
+                                "decode": {
+                                    "type": "object",
+                                    "properties": {
+                                        "available": {
+                                            "type": "boolean"
+                                        },
+                                        "score": {
+                                            "anyOf": [
+                                                {
+                                                    "type": "integer"
+                                                },
+                                                {
+                                                    "type": "null"
+                                                }
+                                            ]
+                                        },
+                                        "weight": {
+                                            "type": "integer"
+                                        }
+                                    },
+                                    "required": [
+                                        "available",
+                                        "score",
+                                        "weight"
+                                    ],
+                                    "additionalProperties": true
+                                }
+                            },
+                            "required": [
+                                "latency",
+                                "packetLoss",
+                                "jitter",
+                                "frameRate",
+                                "decode"
+                            ],
+                            "additionalProperties": true
+                        }
+                    },
+                    "required": [
+                        "available",
+                        "phase",
+                        "showAfterStream",
+                        "scale",
+                        "algorithmVersion"
+                    ],
+                    "additionalProperties": true
+                },
+                "processExitHistory": {
+                    "$ref": "#/$defs/DiagnosticProcessExitHistory"
+                },
+                "failureAssessment": {
+                    "type": "object",
+                    "properties": {
+                        "rulesVersion": {
+                            "type": "integer"
+                        },
+                        "crashConclusion": {
+                            "const": "not_established"
+                        },
+                        "crashEvidence": {
+                            "type": "string"
+                        },
+                        "scope": {
+                            "const": "retained_run_records"
+                        },
+                        "limitations": {
+                            "type": "string"
+                        },
+                        "findings": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "reasonCode": {
+                                        "type": "string"
+                                    },
+                                    "category": {
+                                        "type": "string"
+                                    },
+                                    "confidence": {
+                                        "type": "string"
+                                    },
+                                    "possibleReason": {
+                                        "type": "string"
+                                    },
+                                    "evidencePaths": {
+                                        "type": "array",
+                                        "items": {
+                                            "type": "string"
+                                        }
+                                    },
+                                    "timestamp": {
+                                        "type": "string"
+                                    },
+                                    "httpStatus": {
+                                        "anyOf": [
+                                            {
+                                                "type": "integer"
+                                            },
+                                            {
+                                                "type": "null"
+                                            }
+                                        ]
+                                    },
+                                    "providerStatus": {
+                                        "type": "object"
+                                    },
+                                    "error": {
+                                        "type": "string"
+                                    }
+                                },
+                                "required": [
+                                    "reasonCode",
+                                    "category",
+                                    "confidence",
+                                    "possibleReason",
+                                    "evidencePaths"
+                                ],
+                                "additionalProperties": true
+                            }
+                        }
+                    },
+                    "required": [
+                        "rulesVersion",
+                        "crashConclusion",
+                        "crashEvidence",
+                        "scope",
+                        "limitations",
+                        "findings"
+                    ],
+                    "additionalProperties": true
+                }
+            },
+            "required": [
+                "schemaVersion",
+                "capturedAt",
+                "capturedAtEpochMs",
+                "uptimeMs",
+                "timezone",
+                "app",
+                "device",
+                "deviceRuntime",
+                "stream",
+                "inputSettings",
+                "cpuBuckets",
+                "cpuSamples",
+                "retention",
+                "input",
+                "events",
+                "api",
+                "sessionScore",
+                "processExitHistory",
+                "failureAssessment"
+            ],
+            "additionalProperties": true
+        },
+        {
+            "type": "object",
+            "properties": {
+                "schemaVersion": {
+                    "const": 2
+                },
+                "incomplete": {
+                    "const": true
+                },
+                "persistence": {
+                    "type": "object",
+                    "properties": {
+                        "truncated": {
+                            "const": true
+                        },
+                        "originalCharacters": {
+                            "type": "integer"
+                        },
+                        "characterLimit": {
+                            "type": "integer"
+                        }
+                    },
+                    "required": [
+                        "truncated",
+                        "originalCharacters",
+                        "characterLimit"
+                    ],
+                    "additionalProperties": true
+                }
+            },
+            "required": [
+                "schemaVersion",
+                "incomplete",
+                "persistence"
+            ],
+            "additionalProperties": true
+        }
+    ],
+    "$defs": {
+        "SessionReport": {
+            "type": "object",
+            "properties": {
+                "gameTitle": {
+                    "type": "string"
+                },
+                "score": {
+                    "type": "integer"
+                },
+                "rating": {
+                    "type": "string",
+                    "enum": [
+                        "Excellent",
+                        "Good",
+                        "Fair",
+                        "Poor"
+                    ]
+                },
+                "durationSeconds": {
+                    "type": "integer"
+                },
+                "sampleCount": {
+                    "type": "integer"
+                },
+                "limitedData": {
+                    "type": "boolean"
+                },
+                "averagePingMs": {
+                    "anyOf": [
+                        {
+                            "type": "integer"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "peakPingMs": {
+                    "anyOf": [
+                        {
+                            "type": "integer"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "averageBitrateKbps": {
+                    "anyOf": [
+                        {
+                            "type": "integer"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "peakBitrateKbps": {
+                    "anyOf": [
+                        {
+                            "type": "integer"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "packetLossPct": {
+                    "anyOf": [
+                        {
+                            "type": "number"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "averageJitterMs": {
+                    "anyOf": [
+                        {
+                            "type": "number"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "averageFps": {
+                    "anyOf": [
+                        {
+                            "type": "number"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "targetFps": {
+                    "type": "integer"
+                },
+                "averageDecodeMs": {
+                    "anyOf": [
+                        {
+                            "type": "number"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "requestedResolution": {
+                    "type": "string"
+                },
+                "deliveredResolution": {
+                    "anyOf": [
+                        {
+                            "type": "string"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "requestedCodec": {
+                    "type": "string",
+                    "enum": [
+                        "H264",
+                        "H265",
+                        "AV1"
+                    ]
+                },
+                "deliveredCodec": {
+                    "anyOf": [
+                        {
+                            "type": "string"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "networkKind": {
+                    "type": "string",
+                    "enum": [
+                        "Wifi",
+                        "Cellular",
+                        "Ethernet",
+                        "Other",
+                        "None",
+                        "Unknown"
+                    ]
+                },
+                "wifiBand": {
+                    "type": "string",
+                    "enum": [
+                        "TwoPointFourGhz",
+                        "FiveGhz",
+                        "SixGhz",
+                        "Unknown"
+                    ]
+                },
+                "estimatedLinkDownstreamKbps": {
+                    "anyOf": [
+                        {
+                            "type": "integer"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "downgrades": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/$defs/SessionReportFinding"
+                    }
+                },
+                "recommendations": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/$defs/SessionReportFinding"
+                    }
+                }
+            },
+            "required": [
+                "gameTitle",
+                "score",
+                "rating",
+                "durationSeconds",
+                "sampleCount",
+                "limitedData",
+                "targetFps",
+                "requestedResolution",
+                "requestedCodec",
+                "networkKind",
+                "wifiBand",
+                "downgrades",
+                "recommendations"
+            ],
+            "additionalProperties": true
+        },
+        "SessionReportFinding": {
+            "type": "object",
+            "properties": {
+                "title": {
+                    "type": "string"
+                },
+                "detail": {
+                    "type": "string"
+                },
+                "kind": {
+                    "type": "string",
+                    "enum": [
+                        "Info",
+                        "Warning"
+                    ]
+                },
+                "reasonCode": {
+                    "type": "string"
+                }
+            },
+            "required": [
+                "title",
+                "detail"
+            ],
+            "additionalProperties": true
+        },
+        "AndroidDeviceDiagnosticsSnapshot": {
+            "type": "object",
+            "properties": {
+                "manufacturer": {
+                    "type": "string"
+                },
+                "brand": {
+                    "type": "string"
+                },
+                "model": {
+                    "type": "string"
+                },
+                "deviceCodename": {
+                    "type": "string"
+                },
+                "product": {
+                    "type": "string"
+                },
+                "hardware": {
+                    "type": "string"
+                },
+                "board": {
+                    "type": "string"
+                },
+                "androidRelease": {
+                    "type": "string"
+                },
+                "androidCodename": {
+                    "type": "string"
+                },
+                "androidSdk": {
+                    "type": "integer"
+                },
+                "targetSdk": {
+                    "type": "integer"
+                },
+                "securityPatch": {
+                    "type": "string"
+                },
+                "supportedAbis": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "is64BitRuntime": {
+                    "type": "boolean"
+                },
+                "processorCount": {
+                    "type": "integer"
+                },
+                "totalMemoryMiB": {
+                    "anyOf": [
+                        {
+                            "type": "integer"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "lowRamDevice": {
+                    "anyOf": [
+                        {
+                            "type": "boolean"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "displayWidthPixels": {
+                    "type": "integer"
+                },
+                "displayHeightPixels": {
+                    "type": "integer"
+                },
+                "densityDpi": {
+                    "type": "integer"
+                },
+                "smallestScreenWidthDp": {
+                    "type": "integer"
+                },
+                "formFactor": {
+                    "type": "string"
+                },
+                "emulator": {
+                    "type": "boolean"
+                }
+            },
+            "required": [
+                "manufacturer",
+                "brand",
+                "model",
+                "deviceCodename",
+                "product",
+                "hardware",
+                "board",
+                "androidRelease",
+                "androidCodename",
+                "androidSdk",
+                "targetSdk",
+                "securityPatch",
+                "supportedAbis",
+                "is64BitRuntime",
+                "processorCount",
+                "displayWidthPixels",
+                "displayHeightPixels",
+                "densityDpi",
+                "smallestScreenWidthDp",
+                "formFactor",
+                "emulator"
+            ],
+            "additionalProperties": true
+        },
+        "AndroidRuntimeDiagnosticsSnapshot": {
+            "type": "object",
+            "properties": {
+                "batteryPercent": {
+                    "anyOf": [
+                        {
+                            "type": "integer"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "batteryCharging": {
+                    "type": "boolean"
+                },
+                "batteryTemperatureC": {
+                    "anyOf": [
+                        {
+                            "type": "number"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "thermalStatus": {
+                    "type": "string",
+                    "enum": [
+                        "Unknown",
+                        "None",
+                        "Light",
+                        "Moderate",
+                        "Severe",
+                        "Critical",
+                        "Emergency",
+                        "Shutdown"
+                    ]
+                },
+                "networkKind": {
+                    "type": "string",
+                    "enum": [
+                        "Wifi",
+                        "Cellular",
+                        "Ethernet",
+                        "Other",
+                        "None",
+                        "Unknown"
+                    ]
+                },
+                "networkSignalBars": {
+                    "anyOf": [
+                        {
+                            "type": "integer"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "cellularGeneration": {
+                    "anyOf": [
+                        {
+                            "type": "string"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "networkDownstreamKbps": {
+                    "anyOf": [
+                        {
+                            "type": "integer"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "wifiFrequencyMhz": {
+                    "anyOf": [
+                        {
+                            "type": "integer"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "wifiBand": {
+                    "type": "string",
+                    "enum": [
+                        "TwoPointFourGhz",
+                        "FiveGhz",
+                        "SixGhz",
+                        "Unknown"
+                    ]
+                }
+            },
+            "required": [],
+            "additionalProperties": true
+        },
+        "StreamSettings": {
+            "type": "object",
+            "properties": {
+                "resolution": {
+                    "type": "string"
+                },
+                "aspectRatio": {
+                    "type": "string"
+                },
+                "fps": {
+                    "type": "integer"
+                },
+                "maxBitrateMbps": {
+                    "type": "integer"
+                },
+                "codec": {
+                    "type": "string",
+                    "enum": [
+                        "H264",
+                        "H265",
+                        "AV1"
+                    ]
+                },
+                "colorQuality": {
+                    "type": "string",
+                    "enum": [
+                        "8bit_420",
+                        "8bit_444",
+                        "10bit_420",
+                        "10bit_444"
+                    ]
+                },
+                "hdrEnabled": {
+                    "type": "boolean"
+                },
+                "region": {
+                    "type": "string"
+                },
+                "keyboardLayout": {
+                    "type": "string"
+                },
+                "gameLanguage": {
+                    "type": "string"
+                },
+                "sessionProxyEnabled": {
+                    "type": "boolean"
+                },
+                "sessionProxyUrl": {
+                    "type": "string"
+                },
+                "enableL4S": {
+                    "type": "boolean"
+                },
+                "experimentalNvst": {
+                    "type": "boolean"
+                },
+                "mouseSensitivity": {
+                    "type": "number"
+                },
+                "mouseAcceleration": {
+                    "type": "integer"
+                },
+                "streamSharpeningEnabled": {
+                    "type": "boolean"
+                },
+                "streamSharpeningAmount": {
+                    "type": "number"
+                },
+                "microphoneMode": {
+                    "type": "string",
+                    "enum": [
+                        "disabled",
+                        "push-to-talk",
+                        "voice-activity"
+                    ]
+                },
+                "microphoneDeviceId": {
+                    "type": "string"
+                },
+                "mouseScrollSensitivity": {
+                    "type": "integer"
+                }
+            },
+            "required": [],
+            "additionalProperties": true
+        },
+        "StorageAddon": {
+            "type": "object",
+            "properties": {
+                "type": {
+                    "type": "string"
+                },
+                "sizeGb": {
+                    "anyOf": [
+                        {
+                            "type": "number"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "usedGb": {
+                    "anyOf": [
+                        {
+                            "type": "number"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "regionName": {
+                    "anyOf": [
+                        {
+                            "type": "string"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "regionCode": {
+                    "anyOf": [
+                        {
+                            "type": "string"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "status": {
+                    "anyOf": [
+                        {
+                            "type": "string"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "subType": {
+                    "anyOf": [
+                        {
+                            "type": "string"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "autoPayEnabled": {
+                    "anyOf": [
+                        {
+                            "type": "boolean"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                }
+            },
+            "required": [],
+            "additionalProperties": true
+        },
+        "StreamRuntimeStats": {
+            "type": "object",
+            "properties": {
+                "bitrateKbps": {
+                    "anyOf": [
+                        {
+                            "type": "integer"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "availableIncomingBitrateKbps": {
+                    "anyOf": [
+                        {
+                            "type": "integer"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "pingMs": {
+                    "anyOf": [
+                        {
+                            "type": "integer"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "fps": {
+                    "anyOf": [
+                        {
+                            "type": "integer"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "gameFps": {
+                    "anyOf": [
+                        {
+                            "type": "integer"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "receivedFps": {
+                    "anyOf": [
+                        {
+                            "type": "integer"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "decodedFps": {
+                    "anyOf": [
+                        {
+                            "type": "integer"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "resolution": {
+                    "anyOf": [
+                        {
+                            "type": "string"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "codec": {
+                    "anyOf": [
+                        {
+                            "type": "string"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "decodeMs": {
+                    "anyOf": [
+                        {
+                            "type": "number"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "jitterMs": {
+                    "anyOf": [
+                        {
+                            "type": "number"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "packetLossPct": {
+                    "anyOf": [
+                        {
+                            "type": "number"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "packetsLostDelta": {
+                    "anyOf": [
+                        {
+                            "type": "integer"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "packetsReceivedDelta": {
+                    "anyOf": [
+                        {
+                            "type": "integer"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "processCpuPercent": {
+                    "anyOf": [
+                        {
+                            "type": "number"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "deviceCpuCapacityPercent": {
+                    "anyOf": [
+                        {
+                            "type": "number"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "cpuLogicalCoreCount": {
+                    "anyOf": [
+                        {
+                            "type": "integer"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                }
+            },
+            "required": [],
+            "additionalProperties": true
+        },
+        "SessionInfo": {
+            "type": "object",
+            "properties": {
+                "sessionId": {
+                    "type": "string"
+                },
+                "status": {
+                    "type": "integer"
+                },
+                "timerStartedAtMs": {
+                    "anyOf": [
+                        {
+                            "type": "integer"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "queuePosition": {
+                    "anyOf": [
+                        {
+                            "type": "integer"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "seatSetupStep": {
+                    "anyOf": [
+                        {
+                            "type": "integer"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "adState": {
+                    "anyOf": [
+                        {
+                            "$ref": "#/$defs/SessionAdState"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "zone": {
+                    "type": "string"
+                },
+                "assignedZone": {
+                    "anyOf": [
+                        {
+                            "type": "string"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "streamingBaseUrl": {
+                    "anyOf": [
+                        {
+                            "type": "string"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "serverIp": {
+                    "type": "string"
+                },
+                "signalingServer": {
+                    "type": "string"
+                },
+                "signalingUrl": {
+                    "type": "string"
+                },
+                "rtspsEndpoints": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "gpuType": {
+                    "anyOf": [
+                        {
+                            "type": "string"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "iceServers": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/$defs/IceServer"
+                    }
+                },
+                "mediaConnectionInfo": {
+                    "anyOf": [
+                        {
+                            "$ref": "#/$defs/MediaConnectionInfo"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "negotiatedStreamProfile": {
+                    "anyOf": [
+                        {
+                            "$ref": "#/$defs/NegotiatedStreamProfile"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "monitorSnapshot": {
+                    "anyOf": [
+                        {
+                            "$ref": "#/$defs/SessionMonitorSnapshot"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "requestedStreamingFeatures": {
+                    "anyOf": [
+                        {
+                            "$ref": "#/$defs/StreamingFeatures"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "finalizedStreamingFeatures": {
+                    "anyOf": [
+                        {
+                            "$ref": "#/$defs/StreamingFeatures"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "clientId": {
+                    "anyOf": [
+                        {
+                            "type": "string"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "deviceId": {
+                    "anyOf": [
+                        {
+                            "type": "string"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                }
+            },
+            "required": [
+                "sessionId",
+                "status",
+                "serverIp",
+                "signalingServer",
+                "signalingUrl"
+            ],
+            "additionalProperties": true
+        },
+        "SessionAdState": {
+            "type": "object",
+            "properties": {
+                "isAdsRequired": {
+                    "type": "boolean"
+                },
+                "sessionAdsRequired": {
+                    "anyOf": [
+                        {
+                            "type": "boolean"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "isQueuePaused": {
+                    "anyOf": [
+                        {
+                            "type": "boolean"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "gracePeriodSeconds": {
+                    "anyOf": [
+                        {
+                            "type": "integer"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "message": {
+                    "anyOf": [
+                        {
+                            "type": "string"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "sessionAds": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/$defs/SessionAdInfo"
+                    }
+                },
+                "ads": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/$defs/SessionAdInfo"
+                    }
+                },
+                "opportunity": {
+                    "anyOf": [
+                        {
+                            "$ref": "#/$defs/SessionOpportunityInfo"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "serverSentEmptyAds": {
+                    "type": "boolean"
+                }
+            },
+            "required": [],
+            "additionalProperties": true
+        },
+        "SessionAdInfo": {
+            "type": "object",
+            "properties": {
+                "adId": {
+                    "type": "string"
+                },
+                "state": {
+                    "anyOf": [
+                        {
+                            "type": "integer"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "adState": {
+                    "anyOf": [
+                        {
+                            "type": "integer"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "adUrl": {
+                    "anyOf": [
+                        {
+                            "type": "string"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "mediaUrl": {
+                    "anyOf": [
+                        {
+                            "type": "string"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "adMediaFiles": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/$defs/SessionAdMediaFile"
+                    }
+                },
+                "clickThroughUrl": {
+                    "anyOf": [
+                        {
+                            "type": "string"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "adLengthInSeconds": {
+                    "anyOf": [
+                        {
+                            "type": "number"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "durationMs": {
+                    "anyOf": [
+                        {
+                            "type": "integer"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "title": {
+                    "anyOf": [
+                        {
+                            "type": "string"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "description": {
+                    "anyOf": [
+                        {
+                            "type": "string"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                }
+            },
+            "required": [
+                "adId"
+            ],
+            "additionalProperties": true
+        },
+        "SessionAdMediaFile": {
+            "type": "object",
+            "properties": {
+                "mediaFileUrl": {
+                    "anyOf": [
+                        {
+                            "type": "string"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "encodingProfile": {
+                    "anyOf": [
+                        {
+                            "type": "string"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                }
+            },
+            "required": [],
+            "additionalProperties": true
+        },
+        "SessionOpportunityInfo": {
+            "type": "object",
+            "properties": {
+                "state": {
+                    "anyOf": [
+                        {
+                            "type": "string"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "queuePaused": {
+                    "anyOf": [
+                        {
+                            "type": "boolean"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "gracePeriodSeconds": {
+                    "anyOf": [
+                        {
+                            "type": "integer"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "message": {
+                    "anyOf": [
+                        {
+                            "type": "string"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "title": {
+                    "anyOf": [
+                        {
+                            "type": "string"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "description": {
+                    "anyOf": [
+                        {
+                            "type": "string"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                }
+            },
+            "required": [],
+            "additionalProperties": true
+        },
+        "IceServer": {
+            "type": "object",
+            "properties": {
+                "urls": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "username": {
+                    "anyOf": [
+                        {
+                            "type": "string"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "credential": {
+                    "anyOf": [
+                        {
+                            "type": "string"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                }
+            },
+            "required": [
+                "urls"
+            ],
+            "additionalProperties": true
+        },
+        "MediaConnectionInfo": {
+            "type": "object",
+            "properties": {
+                "ip": {
+                    "type": "string"
+                },
+                "port": {
+                    "type": "integer"
+                }
+            },
+            "required": [
+                "ip",
+                "port"
+            ],
+            "additionalProperties": true
+        },
+        "NegotiatedStreamProfile": {
+            "type": "object",
+            "properties": {
+                "resolution": {
+                    "anyOf": [
+                        {
+                            "type": "string"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "fps": {
+                    "anyOf": [
+                        {
+                            "type": "integer"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "codec": {
+                    "anyOf": [
+                        {
+                            "type": "string",
+                            "enum": [
+                                "H264",
+                                "H265",
+                                "AV1"
+                            ]
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "colorQuality": {
+                    "anyOf": [
+                        {
+                            "type": "string",
+                            "enum": [
+                                "8bit_420",
+                                "8bit_444",
+                                "10bit_420",
+                                "10bit_444"
+                            ]
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "enableL4S": {
+                    "anyOf": [
+                        {
+                            "type": "boolean"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "enableReflex": {
+                    "anyOf": [
+                        {
+                            "type": "boolean"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                }
+            },
+            "required": [],
+            "additionalProperties": true
+        },
+        "SessionMonitorSnapshot": {
+            "type": "object",
+            "properties": {
+                "requestedResolution": {
+                    "anyOf": [
+                        {
+                            "type": "string"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "requestedFps": {
+                    "anyOf": [
+                        {
+                            "type": "integer"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "returnedResolution": {
+                    "anyOf": [
+                        {
+                            "type": "string"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "returnedFps": {
+                    "anyOf": [
+                        {
+                            "type": "integer"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "finalSelectedResolution": {
+                    "anyOf": [
+                        {
+                            "type": "string"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                }
+            },
+            "required": [],
+            "additionalProperties": true
+        },
+        "StreamingFeatures": {
+            "type": "object",
+            "properties": {
+                "reflex": {
+                    "anyOf": [
+                        {
+                            "type": "boolean"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "bitDepth": {
+                    "anyOf": [
+                        {
+                            "type": "integer"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "chromaFormat": {
+                    "anyOf": [
+                        {
+                            "type": "integer"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "enabledL4S": {
+                    "anyOf": [
+                        {
+                            "type": "boolean"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "trueHdr": {
+                    "anyOf": [
+                        {
+                            "type": "boolean"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                }
+            },
+            "required": [],
+            "additionalProperties": true
+        },
+        "DiagnosticStreamSample": {
+            "type": "object",
+            "properties": {
+                "capturedAtEpochMs": {
+                    "type": "integer"
+                },
+                "stats": {
+                    "$ref": "#/$defs/StreamRuntimeStats"
+                }
+            },
+            "required": [
+                "capturedAtEpochMs",
+                "stats"
+            ],
+            "additionalProperties": true
+        },
+        "AndroidTouchSettings": {
+            "type": "object",
+            "properties": {
+                "enabled": {
+                    "type": "boolean"
+                },
+                "mousePad": {
+                    "type": "boolean"
+                },
+                "opacity": {
+                    "type": "number"
+                },
+                "scale": {
+                    "type": "number"
+                },
+                "buttonScale": {
+                    "type": "number"
+                },
+                "stickScale": {
+                    "type": "number"
+                },
+                "faceButtonScale": {
+                    "type": "number"
+                },
+                "dpadScale": {
+                    "type": "number"
+                },
+                "shoulderButtonScale": {
+                    "type": "number"
+                },
+                "centerButtonScale": {
+                    "type": "number"
+                },
+                "leftStickScale": {
+                    "type": "number"
+                },
+                "rightStickScale": {
+                    "type": "number"
+                },
+                "stickKnobScale": {
+                    "type": "number"
+                },
+                "visibleControlGroups": {
+                    "type": "array",
+                    "items": {
+                        "type": "string",
+                        "enum": [
+                            "FaceButtons",
+                            "Dpad",
+                            "LeftStick",
+                            "RightStick",
+                            "ShoulderButtons",
+                            "ThumbButtons",
+                            "MenuButtons"
+                        ]
+                    }
+                },
+                "extraButtonActions": {
+                    "type": "array",
+                    "items": {
+                        "type": "string",
+                        "enum": [
+                            "None",
+                            "Guide",
+                            "A",
+                            "B",
+                            "X",
+                            "Y",
+                            "DpadUp",
+                            "DpadDown",
+                            "DpadLeft",
+                            "DpadRight",
+                            "LeftBumper",
+                            "RightBumper",
+                            "LeftTrigger",
+                            "RightTrigger",
+                            "LeftStickClick",
+                            "RightStickClick",
+                            "Start",
+                            "Select"
+                        ]
+                    }
+                },
+                "extraButtonScale": {
+                    "type": "number"
+                },
+                "joystickMode": {
+                    "type": "string",
+                    "enum": [
+                        "Fixed",
+                        "Dynamic"
+                    ]
+                },
+                "aimMode": {
+                    "type": "string",
+                    "enum": [
+                        "LockJoystick",
+                        "LockZone"
+                    ]
+                },
+                "aimZoneScale": {
+                    "type": "number"
+                },
+                "aimZoneSensitivity": {
+                    "type": "number"
+                },
+                "joystickDeadZone": {
+                    "type": "number"
+                },
+                "gyroscopeEnabled": {
+                    "type": "boolean"
+                },
+                "gyroscopeSensitivity": {
+                    "type": "number"
+                },
+                "gyroscopeDeadZone": {
+                    "type": "number"
+                },
+                "gyroscopeSmoothing": {
+                    "type": "number"
+                },
+                "gyroscopeInvertHorizontal": {
+                    "type": "boolean"
+                },
+                "gyroscopeInvertVertical": {
+                    "type": "boolean"
+                },
+                "edgePaddingDp": {
+                    "type": "number"
+                },
+                "bottomPaddingDp": {
+                    "type": "number"
+                },
+                "leftOffsetXDp": {
+                    "type": "number"
+                },
+                "leftOffsetYDp": {
+                    "type": "number"
+                },
+                "rightOffsetXDp": {
+                    "type": "number"
+                },
+                "rightOffsetYDp": {
+                    "type": "number"
+                },
+                "mouseDirectClick": {
+                    "type": "boolean"
+                },
+                "nativeTouchMode": {
+                    "type": "string",
+                    "enum": [
+                        "Auto",
+                        "Off",
+                        "Always"
+                    ]
+                },
+                "nativeTouchOptedIn": {
+                    "type": "boolean"
+                },
+                "offsets": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "$ref": "#/$defs/TouchOffset"
+                    }
+                },
+                "touchControllerStyle": {
+                    "type": "string",
+                    "enum": [
+                        "V1",
+                        "V2",
+                        "Neon",
+                        "Frost",
+                        "Contrast",
+                        "Retro",
+                        "Arcade"
+                    ]
+                },
+                "touchSkinTint": {
+                    "anyOf": [
+                        {
+                            "$ref": "#/$defs/ControllerThemeRgb"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "touchButtonLabels": {
+                    "type": "boolean"
+                },
+                "buttonAppearances": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "$ref": "#/$defs/TouchButtonAppearance"
+                    }
+                }
+            },
+            "required": [],
+            "additionalProperties": true
+        },
+        "TouchOffset": {
+            "type": "object",
+            "properties": {
+                "x": {
+                    "type": "number"
+                },
+                "y": {
+                    "type": "number"
+                }
+            },
+            "required": [],
+            "additionalProperties": true
+        },
+        "ControllerThemeRgb": {
+            "type": "object",
+            "properties": {
+                "r": {
+                    "type": "integer"
+                },
+                "g": {
+                    "type": "integer"
+                },
+                "b": {
+                    "type": "integer"
+                }
+            },
+            "required": [],
+            "additionalProperties": true
+        },
+        "TouchButtonAppearance": {
+            "type": "object",
+            "properties": {
+                "label": {
+                    "type": "string"
+                },
+                "icon": {
+                    "anyOf": [
+                        {
+                            "type": "string"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "shape": {
+                    "type": "string",
+                    "enum": [
+                        "Theme",
+                        "Circle",
+                        "Square",
+                        "Rounded",
+                        "Hexagon",
+                        "Trigger"
+                    ]
+                },
+                "toggle": {
+                    "type": "boolean"
+                }
+            },
+            "required": [],
+            "additionalProperties": true
+        },
+        "RuntimeCodecReport": {
+            "type": "object",
+            "properties": {
+                "capabilities": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/$defs/CodecCapability"
+                    }
+                },
+                "nativeRuntimeSummary": {
+                    "type": "string"
+                },
+                "androidTvProfile": {
+                    "type": "boolean"
+                },
+                "lowPowerGpuProfile": {
+                    "type": "boolean"
+                },
+                "constrainedRuntimeProfile": {
+                    "type": "boolean"
+                }
+            },
+            "required": [
+                "capabilities",
+                "nativeRuntimeSummary",
+                "androidTvProfile",
+                "lowPowerGpuProfile"
+            ],
+            "additionalProperties": true
+        },
+        "CodecCapability": {
+            "type": "object",
+            "properties": {
+                "codec": {
+                    "type": "string",
+                    "enum": [
+                        "H264",
+                        "H265",
+                        "AV1"
+                    ]
+                },
+                "decoderAvailable": {
+                    "type": "boolean"
+                },
+                "encoderAvailable": {
+                    "type": "boolean"
+                },
+                "hardwareDecoder": {
+                    "type": "boolean"
+                },
+                "hardwareEncoder": {
+                    "type": "boolean"
+                },
+                "decoderName": {
+                    "anyOf": [
+                        {
+                            "type": "string"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "encoderName": {
+                    "anyOf": [
+                        {
+                            "type": "string"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "realtimeSafe": {
+                    "type": "boolean"
+                },
+                "nativeDecoderAvailable": {
+                    "anyOf": [
+                        {
+                            "type": "boolean"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "webRtcDecoderAvailable": {
+                    "anyOf": [
+                        {
+                            "type": "boolean"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "webRtcHardwareDecoderAvailable": {
+                    "anyOf": [
+                        {
+                            "type": "boolean"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "webRtcDecoderName": {
+                    "anyOf": [
+                        {
+                            "type": "string"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "webRtcCodecProfiles": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "maxSupportedWidth": {
+                    "anyOf": [
+                        {
+                            "type": "integer"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "maxSupportedHeight": {
+                    "anyOf": [
+                        {
+                            "type": "integer"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                }
+            },
+            "required": [
+                "codec",
+                "decoderAvailable",
+                "encoderAvailable",
+                "hardwareDecoder",
+                "hardwareEncoder"
+            ],
+            "additionalProperties": true
+        },
+        "CpuDiagnosticBucket": {
+            "type": "object",
+            "properties": {
+                "startElapsedMs": {
+                    "type": "integer"
+                },
+                "endElapsedMs": {
+                    "type": "integer"
+                },
+                "samples": {
+                    "type": "integer"
+                },
+                "processAvgPct": {
+                    "type": "number"
+                },
+                "processPeakPct": {
+                    "type": "number"
+                },
+                "deviceCapacityAvgPct": {
+                    "type": "number"
+                },
+                "deviceCapacityPeakPct": {
+                    "type": "number"
+                }
+            },
+            "required": [
+                "startElapsedMs",
+                "endElapsedMs",
+                "samples",
+                "processAvgPct",
+                "processPeakPct",
+                "deviceCapacityAvgPct",
+                "deviceCapacityPeakPct"
+            ],
+            "additionalProperties": true
+        },
+        "ProcessCpuUsageSample": {
+            "type": "object",
+            "properties": {
+                "capturedAtElapsedRealtimeMs": {
+                    "type": "integer"
+                },
+                "windowMs": {
+                    "type": "integer"
+                },
+                "processCpuPercent": {
+                    "type": "number"
+                },
+                "deviceCpuCapacityPercent": {
+                    "type": "number"
+                },
+                "logicalCoreCount": {
+                    "type": "integer"
+                }
+            },
+            "required": [
+                "capturedAtElapsedRealtimeMs",
+                "windowMs",
+                "processCpuPercent",
+                "deviceCpuCapacityPercent",
+                "logicalCoreCount"
+            ],
+            "additionalProperties": true
+        },
+        "DiagnosticProcessExitHistory": {
+            "type": "object",
+            "properties": {
+                "availability": {
+                    "type": "string"
+                },
+                "scope": {
+                    "type": "string"
+                },
+                "records": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/$defs/DiagnosticProcessExit"
+                    }
+                }
+            },
+            "required": [
+                "availability"
+            ],
+            "additionalProperties": true
+        },
+        "DiagnosticProcessExit": {
+            "type": "object",
+            "properties": {
+                "timestamp": {
+                    "type": "string"
+                },
+                "timestampEpochMs": {
+                    "type": "integer"
+                },
+                "reason": {
+                    "type": "integer"
+                },
+                "reasonCode": {
+                    "type": "string"
+                },
+                "status": {
+                    "type": "integer"
+                },
+                "description": {
+                    "anyOf": [
+                        {
+                            "type": "string"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "pssKiB": {
+                    "anyOf": [
+                        {
+                            "type": "integer"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "rssKiB": {
+                    "anyOf": [
+                        {
+                            "type": "integer"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                }
+            },
+            "required": [
+                "timestamp",
+                "timestampEpochMs",
+                "reason",
+                "reasonCode",
+                "status"
+            ],
+            "additionalProperties": true
+        }
+    }
+}

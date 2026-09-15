@@ -162,6 +162,14 @@ private val NVIDIA_NATIVE_TOUCH_CLOUD_MATCH_IDENTITY = CloudMatchClientIdentity(
     desktopMonitorDescriptor = true,
 )
 
+// Portal-sized gamepad sessions require the native Android mode matrix as well, while
+// keeping controller provisioning independent from the selected resolution.
+private val NVIDIA_NATIVE_ANDROID_CLOUD_MATCH_IDENTITY = NVIDIA_NATIVE_TOUCH_CLOUD_MATCH_IDENTITY.copy(
+    platformName = "android",
+    deviceType = "PHONE",
+    userAgent = GFN_USER_AGENT,
+)
+
 // Default high-quality allocation for Android TVs other than an explicitly detected SHIELD.
 private val NVIDIA_NATIVE_TV_CLOUD_MATCH_IDENTITY = CloudMatchClientIdentity(
     platformName = "android",
@@ -200,6 +208,7 @@ private fun cloudMatchClientIdentity(
     preferNativeDesktopMode: Boolean = false,
     isAndroidTv: Boolean = false,
     useDesktopNativeTvIdentity: Boolean = false,
+    preferNativeAndroidMode: Boolean = false,
 ): CloudMatchClientIdentity {
     // Touch sessions use the desktop-native CloudMatch identity (NVIDIA-CLASSIC / NATIVE)
     // with Android os + TABLET device type, so the server allocates the full desktop
@@ -207,6 +216,9 @@ private fun cloudMatchClientIdentity(
     // native touch digitizer on the host.
     if (appLaunchMode == GfnAppLaunchMode.TOUCH_FRIENDLY) {
         return NVIDIA_NATIVE_TOUCH_CLOUD_MATCH_IDENTITY
+    }
+    if (appLaunchMode != null && preferNativeAndroidMode) {
+        return if (isAndroidTv) NVIDIA_NATIVE_TV_CLOUD_MATCH_IDENTITY else NVIDIA_NATIVE_ANDROID_CLOUD_MATCH_IDENTITY
     }
     val requestedNativeIdentity = when {
         appLaunchMode == null || !preferNativeDesktopMode -> null
@@ -625,6 +637,7 @@ internal fun buildMinimalClaimRequestBody(
         streamingBaseUrl = streamingBaseUrl,
         appLaunchMode = appLaunchMode,
         preferNativeDesktopMode = if (appLaunchMode == GfnAppLaunchMode.TOUCH_FRIENDLY) false else settings?.requiresNativeDesktopCloudMatchMode() == true,
+        preferNativeAndroidMode = settings?.requiresNativeAndroidCloudMatchMode() == true,
         isAndroidTv = isAndroidTv,
         useDesktopNativeTvIdentity = useDesktopNativeTvIdentity,
     )
@@ -841,6 +854,7 @@ private suspend fun OkHttpClient.awaitText(request: Request): Pair<Int, String> 
                     requestBody = requestBody,
                     statusCode = response.code,
                     responseBody = text,
+                    responseHeaders = response.headers,
                     elapsedMs = SystemClock.elapsedRealtime() - startedAtMs,
                 )
                 response.code to text
@@ -912,11 +926,13 @@ internal fun cloudMatchHeaders(
     preferNativeDesktopMode: Boolean = false,
     isAndroidTv: Boolean = false,
     useDesktopNativeTvIdentity: Boolean = false,
+    preferNativeAndroidMode: Boolean = false,
 ): Headers {
     val identity = cloudMatchClientIdentity(
         streamingBaseUrl = streamingBaseUrl,
         appLaunchMode = appLaunchMode,
         preferNativeDesktopMode = preferNativeDesktopMode,
+        preferNativeAndroidMode = preferNativeAndroidMode,
         isAndroidTv = isAndroidTv,
         useDesktopNativeTvIdentity = useDesktopNativeTvIdentity,
     )
@@ -954,7 +970,7 @@ internal fun cloudMatchHeaders(
         .build()
 }
 
-private fun normalizeStreamingServiceUrl(value: String): String? {
+internal fun normalizeStreamingServiceUrl(value: String): String? {
     val url = value.trim().toHttpUrlOrNull() ?: return null
     if (url.scheme != "https") return null
     val host = url.host
@@ -2660,7 +2676,9 @@ class GfnSubscriptionRepository(
             .headers(Headers.Builder().putDesktopLcars(token).build())
             .build()
         val (code, text) = http.awaitText(request)
-        if (code !in 200..299) return SubscriptionInfo()
+        // Do not turn a failed entitlement request into a confirmed Free membership. The setup
+        // flow must be able to distinguish "Free and playable" from "not verified".
+        if (code !in 200..299) return SubscriptionInfo(membershipTier = "")
         val data = OpenNowJson.parseToJsonElement(text).jsonObject
         val allotted = data.double("allottedTimeInMinutes") ?: 0.0
         val purchased = data.double("purchasedTimeInMinutes") ?: 0.0
@@ -2681,7 +2699,7 @@ class GfnSubscriptionRepository(
             ?.firstOrNull(::isActivePersistentStorageAddon)
             ?.let(::parseStorageAddon)
         return SubscriptionInfo(
-            membershipTier = data.string("membershipTier") ?: "FREE",
+            membershipTier = data.string("membershipTier").orEmpty(),
             subscriptionType = data.string("type"),
             subscriptionSubType = data.string("subType"),
             allottedHours = allotted / 60.0,
@@ -3060,6 +3078,7 @@ class GfnSessionRepository(
                     streamingBaseUrl = base,
                     appLaunchMode = appLaunchMode,
                     preferNativeDesktopMode = if (appLaunchMode == GfnAppLaunchMode.TOUCH_FRIENDLY) false else settings.requiresNativeDesktopCloudMatchMode(),
+                    preferNativeAndroidMode = settings.requiresNativeAndroidCloudMatchMode(),
                     isAndroidTv = isAndroidTv,
                     useDesktopNativeTvIdentity = useDesktopNativeTvIdentity,
                 ),
@@ -3248,6 +3267,7 @@ class GfnSessionRepository(
                         streamingBaseUrl = active.streamingBaseUrl,
                         appLaunchMode = appLaunchMode,
                         preferNativeDesktopMode = if (appLaunchMode == GfnAppLaunchMode.TOUCH_FRIENDLY) false else settings.requiresNativeDesktopCloudMatchMode(),
+                        preferNativeAndroidMode = settings.requiresNativeAndroidCloudMatchMode(),
                         isAndroidTv = isAndroidTv,
                         useDesktopNativeTvIdentity = useDesktopNativeTvIdentity,
                     ),
@@ -3358,7 +3378,8 @@ class GfnSessionRepository(
                     method = request.method,
                     url = request.url.toString(),
                     statusCode = statusCode,
-                    requestBody = OpenNowHttpDiagnostics.captureRequestBody(request),
+                    // The HTTP diagnostics owner already captured the request once.
+                    requestBody = "",
                     responseBody = responseBody,
                 ),
             )
@@ -3379,6 +3400,7 @@ class GfnSessionRepository(
             streamingBaseUrl = streamingBaseUrl,
             appLaunchMode = appLaunchMode,
             preferNativeDesktopMode = if (appLaunchMode == GfnAppLaunchMode.TOUCH_FRIENDLY) false else settings.requiresNativeDesktopCloudMatchMode(),
+            preferNativeAndroidMode = settings.requiresNativeAndroidCloudMatchMode(),
             isAndroidTv = isAndroidTv,
             useDesktopNativeTvIdentity = useDesktopNativeTvIdentity,
         )
@@ -3776,7 +3798,10 @@ suspend fun fetchDynamicRegions(
             if (key == "gfn-regions" || key.startsWith("gfn-")) null else StreamRegion(key, regionUrl)
         }?.sortedBy { it.name }.orEmpty()
         regions to vpcId
-    }.getOrDefault(emptyList<StreamRegion>() to null)
+    }.getOrElse { error ->
+        if (error is CancellationException) throw error
+        emptyList<StreamRegion>() to null
+    }
 }
 
 private val NON_ALNUM_RUN = Regex("[^a-z0-9]+")

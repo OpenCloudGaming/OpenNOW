@@ -3,6 +3,14 @@ package com.opencloudgaming.opennow
 import androidx.activity.compose.BackHandler
 import android.content.res.Configuration
 import android.os.Build
+import androidx.compose.foundation.Canvas
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.semantics.ProgressBarRangeInfo
+import androidx.compose.ui.semantics.progressBarRangeInfo
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.border
@@ -182,14 +190,7 @@ private fun SessionReportSummary(report: SessionReport, scoreColor: Color) {
                         style = MaterialTheme.typography.bodySmall,
                     )
                 }
-                Column(horizontalAlignment = Alignment.End) {
-                    Text(
-                        stringResource(R.string.session_report_score, report.score),
-                        color = scoreColor,
-                        style = MaterialTheme.typography.headlineMedium.numeric(),
-                    )
-                    Text(report.rating.label, color = scoreColor, style = MaterialTheme.typography.labelMedium)
-                }
+                SessionScoreGauge(report, scoreColor)
             }
         }
         if (report.limitedData) {
@@ -199,6 +200,33 @@ private fun SessionReportSummary(report: SessionReport, scoreColor: Color) {
                 style = MaterialTheme.typography.bodySmall,
             )
         }
+    }
+}
+
+@Composable
+private fun SessionScoreGauge(report: SessionReport, scoreColor: Color) {
+    val score = report.score.coerceIn(0, 100)
+    val scoreLabel = stringResource(R.string.session_report_score, score)
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Box(
+            modifier = Modifier.width(124.dp).height(78.dp).semantics(mergeDescendants = true) {
+                progressBarRangeInfo = ProgressBarRangeInfo(score / 100f, 0f..1f)
+            },
+            contentAlignment = Alignment.BottomCenter,
+        ) {
+            Canvas(Modifier.fillMaxSize()) {
+                val stroke = 8.dp.toPx()
+                val diameter = size.width - stroke
+                val origin = Offset(stroke / 2, stroke / 2)
+                val arcSize = Size(diameter, diameter)
+                drawArc(scoreColor.copy(alpha = 0.18f), 180f, 180f, false,
+                    topLeft = origin, size = arcSize, style = Stroke(stroke, cap = StrokeCap.Round))
+                if (score > 0) drawArc(scoreColor, 180f, sessionScoreSweepDegrees(score), false,
+                    topLeft = origin, size = arcSize, style = Stroke(stroke, cap = StrokeCap.Round))
+            }
+            Text(scoreLabel, color = scoreColor, style = MaterialTheme.typography.titleLarge.numeric())
+        }
+        Text(report.rating.label, color = scoreColor, style = MaterialTheme.typography.labelMedium)
     }
 }
 
@@ -312,6 +340,7 @@ internal fun CompletedSessionBugReportDialog(
     submission: BugReportSubmissionState,
     versionCheck: AndroidBugReportVersionCheckState,
     update: AndroidUpdateState,
+    experimentalNvstEnabled: Boolean,
     onSubmit: (String, String, String?) -> Unit,
     onReset: () -> Unit,
     onVersionCheck: () -> Unit,
@@ -377,6 +406,7 @@ internal fun CompletedSessionBugReportDialog(
                         onOpenUpdate = onOpenUpdate,
                     )
                     else -> {
+                        NvstBugReportWarning(experimentalNvstEnabled)
                         Text(
                             stringResource(R.string.bug_report_describe_english),
                             color = TextMuted,
@@ -498,6 +528,7 @@ internal fun CompletedSessionBugReportDialog(
                         Text(block.title, color = Color(0xffffc266), fontWeight = FontWeight.Bold)
                         Text(block.action, color = TextMuted, style = MaterialTheme.typography.bodySmall)
                     }
+                    NvstBugReportWarning(experimentalNvstEnabled)
                     Text(stringResource(R.string.bug_report_confirm_body))
                 }
             },

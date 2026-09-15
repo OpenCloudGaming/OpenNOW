@@ -420,6 +420,7 @@ data class AndroidTouchSettings(
     val touchSkinTint: ControllerThemeRgb? = null,
     /** Off leaves the caps blank — the layout is muscle memory once it is learned. */
     val touchButtonLabels: Boolean = true,
+    val buttonAppearances: Map<String, TouchButtonAppearance> = emptyMap(),
 ) {
     fun getOffset(key: String): TouchOffset = offsets[key] ?: TouchOffset()
 
@@ -552,6 +553,8 @@ data class AppSettings(
     val controllerMouseEmulation: Boolean = false,
     /** Capture an external mouse during gameplay so Android system edges cannot steal it. */
     val externalMousePointerLock: Boolean = true,
+    /** Physical-keyboard shortcut used to open Stream Controls during a session. */
+    val streamMenuShortcut: String = DEFAULT_ANDROID_STREAM_MENU_SHORTCUT,
     val controllerBackgroundAnimations: Boolean = true,
     val controllerThemeStyle: String = "aurora",
     val controllerThemeColor: ControllerThemeRgb = ControllerThemeRgb(),
@@ -575,8 +578,8 @@ data class AppSettings(
     val favoriteGameIds: List<String> = emptyList(),
     val defaultGameVariantIds: Map<String, String> = emptyMap(),
     val sessionCounterEnabled: Boolean = true,
-    val showSessionReportAfterStream: Boolean = false,
-    /** One-time migration that makes post-stream reports opt-in instead of upgrade-persistent. */
+    val showSessionReportAfterStream: Boolean = true,
+    /** One-time migration enabling the score report; subsequent user opt-outs are preserved. */
     val sessionReportDefaultVersion: Int = 0,
     /** 1.6.4 resets the previously automatic NVST opt-in once, including APK upgrades. */
     val nvstOptInVersion: Int = 0,
@@ -584,6 +587,7 @@ data class AppSettings(
     val sessionClockShowDurationSeconds: Int = 30,
     val clipboardPaste: Boolean = true,
     val androidTouch: AndroidTouchSettings = AndroidTouchSettings(),
+    val touchControlPresets: List<TouchControlPreset> = emptyList(),
     val androidStreamGuideDismissed: Boolean = false,
     val androidPhysicalControllerPromptDismissed: Boolean = false,
     val discordRichPresence: Boolean = false,
@@ -608,7 +612,7 @@ data class AppSettings(
 internal const val MIN_GAME_CARD_SCALE = 0.75f
 internal const val MAX_GAME_CARD_SCALE = 1.4f
 internal const val STREAM_PRESENTATION_PROFILE_VERSION = 3
-internal const val SESSION_REPORT_DEFAULT_VERSION = 1
+internal const val SESSION_REPORT_DEFAULT_VERSION = 2
 
 /**
  * Re-asserts the stream presentation defaults once per profile version.
@@ -631,6 +635,9 @@ internal fun streamResolutionPixels(settings: StreamSettings): Pair<Int, Int> {
     }
     return parseResolutionPixels(normalizeStreamResolutionForAspect(settings.resolution, settings.aspectRatio))
 }
+
+internal fun StreamSettings.requiresNativeAndroidCloudMatchMode(): Boolean =
+    streamResolutionPixels(this) == parseResolutionPixels(PORTAL_STREAM_RESOLUTION)
 
 internal fun StreamSettings.requiresNativeDesktopCloudMatchMode(): Boolean {
     val (width, height) = streamResolutionPixels(this)
@@ -1006,24 +1013,10 @@ internal fun ColorQuality.availableForCodec(codec: VideoCodec): Boolean =
         (codec != VideoCodec.AV1 || !isTenBit())
 
 internal fun StreamSettings.withAndroidSettingsAvailability(): StreamSettings {
-    val providerCompatible = withProviderCompatibleUltrawideGeometry()
-    val availableCodec = if (providerCompatible.codec.availableForAndroidSettings()) providerCompatible.codec else VideoCodec.H264
-    val normalized = if (availableCodec == providerCompatible.codec) providerCompatible else providerCompatible.copy(codec = availableCodec)
+    val availableCodec = if (codec.availableForAndroidSettings()) codec else VideoCodec.H264
+    val normalized = if (availableCodec == codec) this else copy(codec = availableCodec)
     return normalized.withCodecColorCompatibility()
 }
-
-/**
- * The old Portal-sized option used the panel's 1376x640 dimensions, but GFN does not expose that
- * low 19.5:9 mode. CloudMatch selected 1680x720 and the cloud streamer then cropped it to 1376x590.
- * Treat the observed 21:9 mode as the user's requested geometry so launch, negotiation, decoding,
- * input mapping, and profile-change reporting all describe the same stream.
- */
-private fun StreamSettings.withProviderCompatibleUltrawideGeometry(): StreamSettings =
-    if (resolution == LEGACY_PORTAL_STREAM_RESOLUTION && aspectRatio == LEGACY_PORTAL_STREAM_ASPECT) {
-        copy(resolution = LOW_ULTRAWIDE_STREAM_RESOLUTION, aspectRatio = "21:9")
-    } else {
-        this
-    }
 
 internal fun StreamSettings.withCodecColorCompatibility(): StreamSettings {
     val compatibleHdr = hdrEnabled && codec != VideoCodec.AV1
@@ -1061,10 +1054,6 @@ internal fun StreamSettings.withoutExperimentalTransportRequests(): StreamSettin
     if (!enableL4S) this else copy(enableL4S = false)
 
 internal fun StreamSettings.withResolutionAllowed(subscriptionInfo: SubscriptionInfo?, fallbackMembershipTier: String?): StreamSettings {
-    val providerCompatible = withProviderCompatibleUltrawideGeometry()
-    if (providerCompatible != this) {
-        return providerCompatible.withResolutionAllowed(subscriptionInfo, fallbackMembershipTier)
-    }
     val customResolution = customStreamResolutionOrNull(resolution)
     if (customResolution != null && customResolutionAllowedForPlan(customResolution, subscriptionInfo, fallbackMembershipTier)) {
         val normalizedResolution = "${customResolution.first}x${customResolution.second}"
@@ -1101,7 +1090,6 @@ private fun customStreamResolutionOrNull(resolution: String): Pair<Int, Int>? =
     }
 
 private val UNSUPPORTED_LEGACY_STREAM_RESOLUTIONS = setOf(
-    "1376x640",
     "1600x720",
     "2400x1080",
     "3200x1440",
@@ -1125,6 +1113,8 @@ private fun customResolutionAllowedForPlan(
         pixels <= availableChoices.maxOf { it.width * it.height }
 }
 
+private const val PORTAL_STREAM_RESOLUTION = "1376x640"
+
 internal val STREAM_RESOLUTION_OPTIONS = listOf(
     StreamResolutionOption("1280x720", "16:9", "720"),
     StreamResolutionOption("1366x768", "16:9", "768"),
@@ -1138,6 +1128,7 @@ internal val STREAM_RESOLUTION_OPTIONS = listOf(
     StreamResolutionOption("1112x834", "4:3", "834"),
     StreamResolutionOption("1600x1200", "4:3", "1080"),
     StreamResolutionOption("1280x1024", "5:4", "1050"),
+    StreamResolutionOption(PORTAL_STREAM_RESOLUTION, "19.5:9", "720"),
     StreamResolutionOption("1376x590", "21:9", "720"),
     StreamResolutionOption("1680x720", "21:9", "720"),
     StreamResolutionOption("2340x1080", "19.5:9", "1080", StreamResolutionPlan.Priority),
@@ -1155,7 +1146,7 @@ internal val STREAM_RESOLUTION_OPTIONS = listOf(
 )
 
 private val PREFERRED_RESOLUTION_BY_TIER_AND_ASPECT = mapOf(
-    "720" to mapOf("16:9" to "1280x720", "16:10" to "1280x800", "4:3" to "1024x768", "21:9" to "1680x720"),
+    "720" to mapOf("16:9" to "1280x720", "16:10" to "1280x800", "4:3" to "1024x768", "19.5:9" to PORTAL_STREAM_RESOLUTION, "21:9" to "1680x720"),
     "768" to mapOf("16:9" to "1366x768", "4:3" to "1024x768"),
     "834" to mapOf("4:3" to "1112x834"),
     "900" to mapOf("16:9" to "1600x900", "16:10" to "1440x900"),
@@ -1972,6 +1963,7 @@ internal fun parseResolutionPixelsOrNull(value: String?): Pair<Int, Int>? {
     return if (width != null && height != null && width > 0 && height > 0) width to height else null
 }
 
+@Serializable
 data class CodecCapability(
     val codec: VideoCodec,
     val decoderAvailable: Boolean,
@@ -1990,6 +1982,7 @@ data class CodecCapability(
     val maxSupportedHeight: Int? = null,
 )
 
+@Serializable
 data class RuntimeCodecReport(
     val capabilities: List<CodecCapability>,
     val nativeRuntimeSummary: String,
@@ -1998,6 +1991,7 @@ data class RuntimeCodecReport(
     val constrainedRuntimeProfile: Boolean = false,
 )
 
+@Serializable
 data class StreamRuntimeStats(
     val bitrateKbps: Int? = null,
     val availableIncomingBitrateKbps: Int? = null,
@@ -2194,8 +2188,7 @@ private fun StreamSettings.androidWebRtcColorQuality(): ColorQuality {
 
 private fun StreamSettings.withStableAndroidCloudMatchProfile(): StreamSettings {
     val normalizedResolution = normalizeStreamResolutionForAspect(resolution, aspectRatio)
-    // The provider's low 21:9 mode was observed at 60 FPS. Requesting the retired 1376x640 panel
-    // geometry at high refresh made CloudMatch select 1680x720 before the streamer cropped it.
+    // Keep the observed low 21:9 mode at its supported 60 FPS profile.
     val geometryCompatibleFps = if (normalizedResolution == LOW_ULTRAWIDE_STREAM_RESOLUTION) {
         LOW_ULTRAWIDE_STREAM_MAX_FPS
     } else {
@@ -2239,8 +2232,6 @@ private fun StreamResolutionOption.pixelCount(): Int {
 }
 
 private const val LOW_POWER_TV_FPS_CAP = 60
-private const val LEGACY_PORTAL_STREAM_RESOLUTION = "1376x640"
-private const val LEGACY_PORTAL_STREAM_ASPECT = "19.5:9"
 private const val LOW_ULTRAWIDE_STREAM_RESOLUTION = "1376x590"
 private const val LOW_ULTRAWIDE_STREAM_MAX_FPS = 60
 private const val MAX_STANDARD_STREAM_FPS = 60

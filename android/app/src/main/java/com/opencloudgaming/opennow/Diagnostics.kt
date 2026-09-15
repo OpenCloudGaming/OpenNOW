@@ -1,7 +1,5 @@
 package com.opencloudgaming.opennow
 
-import android.os.SystemClock
-import android.util.Log
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -9,6 +7,8 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.Request
 import okhttp3.MediaType.Companion.toMediaType
@@ -22,9 +22,7 @@ import kotlinx.coroutines.withContext
 internal const val OPENNOW_DEBUG_LOG_TAG = "OpenNOWDebug"
 
 private const val DIAGNOSTIC_PAYLOAD_BODY_LIMIT = 20_000
-private const val HTTP_DIAGNOSTIC_LIMIT = 80
-private const val HTTP_DIAGNOSTIC_BODY_LIMIT = 4_000
-private const val HTTP_DIAGNOSTIC_MAX_REQUEST_CAPTURE_BYTES = 48_000L
+private const val HTTP_DIAGNOSTIC_MAX_REQUEST_CAPTURE_BYTES = 262_144L
 
 private val DIAGNOSTIC_SENSITIVE_TEXT_PATTERN = Regex(
     """(?i)\b(authorization|access[_-]?token|id[_-]?token|refresh[_-]?token|client[_-]?token|device[_-]?code|user[_-]?code|verification[_-]?uri[_-]?complete|credential|password|secret|cookie|code|sub)(\s*[=:]\s*)([^\s,;&]+)""",
@@ -42,7 +40,7 @@ private val DIAGNOSTIC_EMAIL_PATTERN = Regex(
 )
 private val DIAGNOSTIC_IPV4_PATTERN = Regex("""\b(?:\d{1,3}\.){3}\d{1,3}\b""")
 private val DIAGNOSTIC_IPV6_FULL_PATTERN = Regex(
-    """(?i)(?<![A-F0-9:])(?:[A-F0-9]{1,4}:){2,7}[A-F0-9]{1,4}(?![A-F0-9:])""",
+    """(?i)(?<![A-F0-9:])(?:[A-F0-9]{1,4}:){7}[A-F0-9]{1,4}(?![A-F0-9:])""",
 )
 private val DIAGNOSTIC_IPV6_COMPRESSED_PATTERN = Regex(
     """(?i)(?<![A-F0-9:])(?:(?:[A-F0-9]{1,4}:){1,7}:(?:[A-F0-9]{1,4}(?::[A-F0-9]{1,4}){0,6})?|::(?:[A-F0-9]{1,4}(?::[A-F0-9]{1,4}){0,6})?)(?![A-F0-9:])""",
@@ -60,9 +58,8 @@ private val DebugPayloadJson = Json {
 }
 
 internal object OpenNowHttpDiagnostics {
-    private val lines = ArrayDeque<String>()
+    private val buffer = DiagnosticApiBuffer()
 
-    @Synchronized
     fun record(
         request: Request,
         requestBody: String,
@@ -70,52 +67,31 @@ internal object OpenNowHttpDiagnostics {
         responseBody: String,
         elapsedMs: Long,
         error: Throwable? = null,
+        responseHeaders: okhttp3.Headers? = null,
     ) {
-        val status = statusCode?.toString() ?: "ERR:${error?.javaClass?.simpleName ?: "unknown"}"
-        val requestBytes = request.body?.safeContentLength()?.takeIf { it >= 0 }?.toString() ?: "none"
-        val responseBytes = if (responseBody.isBlank() && error != null) "none" else responseBody.length.toString()
-        val requestPreview = requestBody.takeIf { it.isNotBlank() }?.let(::singleLineDiagnosticPreview)
-        val responsePreview = responseBody.takeIf { it.isNotBlank() }?.let(::singleLineDiagnosticPreview)
-        val errorMessage = error?.let { "${it.javaClass.simpleName}: ${it.message.orEmpty()}".take(320) }
-        val line = buildString {
-            append(SystemClock.elapsedRealtime())
-            append(' ')
-            append(request.method)
-            append(' ')
-            append(redactDiagnosticUrl(request.url.toString()))
-            append(" -> http=")
-            append(status)
-            append(" elapsedMs=")
-            append(elapsedMs)
-            append(" reqBytes=")
-            append(requestBytes)
-            append(" respBytes=")
-            append(responseBytes)
-            if (!requestPreview.isNullOrBlank()) {
-                append(" request=")
-                append(requestPreview)
-            }
-            if (!responsePreview.isNullOrBlank()) {
-                append(" response=")
-                append(responsePreview)
-            }
-            if (!errorMessage.isNullOrBlank()) {
-                append(" error=")
-                append(errorMessage)
-            }
-        }
-        lines.addLast(line)
-        while (lines.size > HTTP_DIAGNOSTIC_LIMIT) {
-            lines.removeFirst()
-        }
-        Log.d(OPENNOW_DEBUG_LOG_TAG, "http: $line")
+        val entry = DiagnosticApiEntry(
+            timestampMs = System.currentTimeMillis(),
+            method = request.method,
+            url = request.url.newBuilder().username("").password("").query(null).build().toString(),
+            requestQuery = DiagnosticApiBody(diagnosticRequestQuery(request), decodeQueryJson = true),
+            requestHeaders = DiagnosticApiBody(diagnosticHeaders(request.headers)),
+            responseHeaders = DiagnosticApiBody(responseHeaders?.let(::diagnosticHeaders).orEmpty()),
+            statusCode = statusCode,
+            elapsedMs = elapsedMs,
+            requestBytes = request.body?.safeContentLength()?.takeIf { it >= 0 },
+            responseChars = responseBody.length,
+            request = DiagnosticApiBody(requestBody),
+            response = DiagnosticApiBody(responseBody, stripCatalogText = true),
+            error = error?.let { "${it.javaClass.simpleName}: ${it.message.orEmpty()}".take(320) },
+        )
+        buffer.record(entry)
     }
 
     fun captureRequestBody(request: Request): String {
         val body = request.body ?: return ""
         val contentLength = body.safeContentLength()
-        if (contentLength > HTTP_DIAGNOSTIC_MAX_REQUEST_CAPTURE_BYTES) {
-            return "(request body omitted ${contentLength}B)"
+        if (contentLength < 0 || contentLength > HTTP_DIAGNOSTIC_MAX_REQUEST_CAPTURE_BYTES) {
+            return "(request body omitted: unknown or excessive size)"
         }
         if (body.isDuplex()) return "(duplex request body omitted)"
         if (body.isOneShot()) return "(one-shot request body omitted)"
@@ -123,25 +99,24 @@ internal object OpenNowHttpDiagnostics {
             val buffer = Buffer()
             body.writeTo(buffer)
             buffer.readUtf8()
-        }.getOrElse { error ->
-            "(request body unavailable ${error.javaClass.simpleName})"
-        }
+        }.getOrElse { error -> "(request body unavailable ${error.javaClass.simpleName})" }
     }
 
-    @Synchronized
-    fun snapshot(): String =
-        if (lines.isEmpty()) {
-            "network.diagnostics=empty"
-        } else {
-            buildString {
-                appendLine("network.diagnostics:")
-                lines.forEachIndexed { index, line ->
-                    appendLine("network.${index + 1} $line")
-                }
-            }.trimEnd()
-        }
-
+    fun capture(): List<DiagnosticApiEntry> = buffer.capture()
+    fun snapshot(): DiagnosticApiSnapshot = buffer.snapshot()
 }
+
+internal fun diagnosticRequestQuery(request: Request): String = buildJsonObject {
+    request.url.queryParameterNames.forEach { name ->
+        put(name, JsonArray(request.url.queryParameterValues(name).map { value ->
+            if (value == null) kotlinx.serialization.json.JsonNull else JsonPrimitive(value)
+        }))
+    }
+}.toString()
+
+internal fun diagnosticHeaders(headers: okhttp3.Headers): String = buildJsonObject {
+    headers.names().forEach { name -> put(name, JsonArray(headers.values(name).map(::JsonPrimitive))) }
+}.toString()
 
 internal fun sanitizeDiagnosticLogPayload(
     raw: String,
@@ -175,7 +150,7 @@ internal fun redactDiagnosticUrl(raw: String): String {
     return builder.build().toString()
 }
 
-private fun redactDiagnosticJsonElement(element: JsonElement, keyHint: String? = null): JsonElement =
+internal fun redactDiagnosticJsonElement(element: JsonElement, keyHint: String? = null): JsonElement =
     when {
         keyHint != null && shouldRedactDiagnosticKey(keyHint) -> JsonPrimitive("[redacted]")
         element is JsonObject -> JsonObject(element.mapValues { (key, value) -> redactDiagnosticJsonElement(value, key) })
@@ -208,8 +183,46 @@ private fun redactDiagnosticText(text: String): String {
     }
 }
 
+private val DIAGNOSTIC_PARSER_BLOCK = Regex("(?ms)^<parser>\\r?\\n(.*?)^</parser>$")
+private val DIAGNOSTIC_JSON_SECRET_PATTERN = Regex(
+    """(?i)(["'](?:authorization|access[_-]?token|id[_-]?token|refresh[_-]?token|client[_-]?token|credential|password|secret|cookie|device[_-]?code|user[_-]?code|verification[_-]?uri[_-]?complete)["']\s*:\s*)("(?:\\.|[^"\\])*(?:"|$)|[^,}\r\n]+)""",
+)
+
+/** Sanitize JSON structurally so redaction can never break a parser block's quoting. */
 internal fun sanitizeDiagnosticExport(raw: String): String {
+    val blocks = DIAGNOSTIC_PARSER_BLOCK.findAll(raw).toList()
+    if (blocks.isEmpty()) return sanitizeDiagnosticText(raw)
+    return buildString {
+        var offset = 0
+        for (block in blocks) {
+            append(sanitizeDiagnosticText(raw.substring(offset, block.range.first)))
+            val data = runCatching { OpenNowJson.parseToJsonElement(block.groupValues[1]) }
+                .getOrElse { buildJsonObject { put("error", "Invalid diagnostic parser block omitted") } }
+            append(diagnosticParserBlock(sanitizeDiagnosticParserJson(data)))
+            offset = block.range.last + 1
+        }
+        append(sanitizeDiagnosticText(raw.substring(offset)))
+    }
+}
+
+internal fun sanitizeDiagnosticParserJson(element: JsonElement): JsonElement = when (element) {
+    is JsonObject -> JsonObject(element.mapValues { (key, value) ->
+        val normalized = key.lowercase(Locale.US).filter(Char::isLetterOrDigit)
+        if (shouldRedactDiagnosticKey(key) || normalized in setOf(
+                "sessionid", "serverip", "displayname", "username", "accountid", "profileid", "ipaddress", "devicename",
+            )) JsonPrimitive("[redacted]") else sanitizeDiagnosticParserJson(value)
+    })
+    is JsonArray -> JsonArray(element.map(::sanitizeDiagnosticParserJson))
+    is JsonPrimitive -> if (element.isString) JsonPrimitive(sanitizeDiagnosticText(element.content)) else element
+    else -> element
+}
+
+internal fun diagnosticParserBlock(data: JsonElement): String =
+    "<parser>\n${data.toString().replace("<", "\\u003c")}\n</parser>"
+
+private fun sanitizeDiagnosticText(raw: String): String {
     var sanitized = DIAGNOSTIC_BEARER_PATTERN.replace(raw, "Bearer [redacted]")
+    sanitized = DIAGNOSTIC_JSON_SECRET_PATTERN.replace(sanitized) { "${it.groupValues[1]}\"[redacted]\"" }
     sanitized = redactDiagnosticText(sanitized)
     sanitized = DIAGNOSTIC_JSON_IDENTITY_PATTERN.replace(sanitized) { match ->
         "${match.groupValues[1]}\"[redacted]\""
@@ -255,20 +268,9 @@ internal suspend fun uploadAndroidDiagnosticPaste(
     }
 }
 
-private fun singleLineDiagnosticPreview(raw: String): String {
-    // Parsing and pretty-printing multi-hundred-kilobyte catalog responses used to run
-    // before the preview was truncated. Keep diagnostics bounded before any JSON work.
-    val bounded = if (raw.length > HTTP_DIAGNOSTIC_BODY_LIMIT * 2) {
-        raw.take(HTTP_DIAGNOSTIC_BODY_LIMIT * 2) +
-            "\n... omitted ${raw.length - (HTTP_DIAGNOSTIC_BODY_LIMIT * 2)} chars before formatting ..."
-    } else {
-        raw
-    }
-    return redactDiagnosticText(sanitizeDiagnosticLogPayload(bounded, HTTP_DIAGNOSTIC_BODY_LIMIT))
-        .lineSequence()
-        .joinToString(" ") { it.trim() }
-        .take(HTTP_DIAGNOSTIC_BODY_LIMIT)
-}
-
 private fun okhttp3.RequestBody.safeContentLength(): Long =
     runCatching { contentLength() }.getOrDefault(-1L)
+
+/** Render from the existing JSON tree; do not serialize then parse it again just to redact it. */
+internal fun renderDiagnosticReport(humanText: String, data: JsonObject): String =
+    sanitizeDiagnosticText(humanText).trimEnd() + "\n\n" + diagnosticParserBlock(sanitizeDiagnosticParserJson(data))

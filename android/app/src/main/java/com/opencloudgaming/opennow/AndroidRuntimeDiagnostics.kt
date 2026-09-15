@@ -12,7 +12,9 @@ import android.os.BatteryManager
 import android.os.Build
 import android.os.PowerManager
 import kotlin.math.roundToInt
+import kotlinx.serialization.Serializable
 
+@Serializable
 internal data class AndroidDeviceDiagnosticsSnapshot(
     val manufacturer: String,
     val brand: String,
@@ -136,6 +138,7 @@ private fun isProbablyAndroidEmulator(): Boolean {
         product.contains("simulator")
 }
 
+@Serializable
 internal data class AndroidRuntimeDiagnosticsSnapshot(
     val batteryPercent: Int? = null,
     val batteryCharging: Boolean = false,
@@ -154,6 +157,7 @@ internal data class AndroidRuntimeDiagnosticsSnapshot(
     }
 }
 
+@Serializable
 enum class AndroidNetworkKind(val label: String, val logValue: String) {
     Wifi("WiFi", "wifi"),
     Cellular("Cell", "cellular"),
@@ -163,6 +167,7 @@ enum class AndroidNetworkKind(val label: String, val logValue: String) {
     Unknown("Net", "unknown"),
 }
 
+@Serializable
 enum class AndroidWifiBand(val label: String, val logValue: String) {
     TwoPointFourGhz("2.4 GHz", "2.4ghz"),
     FiveGhz("5 GHz", "5ghz"),
@@ -177,7 +182,8 @@ internal fun androidWifiBandForFrequency(frequencyMhz: Int?): AndroidWifiBand = 
     else -> AndroidWifiBand.Unknown
 }
 
-internal enum class AndroidThermalStatus(val logValue: String) {
+internal @Serializable
+enum class AndroidThermalStatus(val logValue: String) {
     Unknown("unknown"),
     None("none"),
     Light("light"),

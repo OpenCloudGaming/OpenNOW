@@ -48,6 +48,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -162,7 +163,7 @@ internal fun StreamScreen(
         nativeTouchAvailable = nativeTouchAvailable,
         keyboardMouseConnected = physicalKeyboardMouseConnected,
     )
-    var streamInputMode by remember(session?.sessionId) { mutableStateOf(launchInputMode) }
+    var streamInputMode by remember(session?.sessionId, launchInputMode) { mutableStateOf(launchInputMode) }
     val nativeTouchProvisionedForSession = launchInputMode == StreamInputMode.NativeTouch
     var keyboardMouseBaselineCaptured by remember(session?.sessionId) { mutableStateOf(false) }
     var previousKeyboardMouseConnected by remember(session?.sessionId) {
@@ -362,6 +363,7 @@ internal fun StreamScreen(
             NativeStreamInputRouter.setSystemMenuHandler(null)
             NativeStreamInputRouter.setSystemBackHandler(null)
             NativeStreamInputRouter.setAndroidTvProfile(false)
+            NativeStreamInputRouter.setStreamMenuShortcut(DEFAULT_ANDROID_STREAM_MENU_SHORTCUT)
             NativeStreamInputRouter.setStreamUiActive(false)
             NativeStreamInputRouter.setTouchControllerVisible(false)
             client.setVirtualControllerVisible(false)
@@ -389,6 +391,10 @@ internal fun StreamScreen(
     LaunchedEffect(client, tvProfile) {
         client.updateAndroidTvProfile(tvProfile)
         client.updateControllerMouseAssistAutoArm(tvProfile)
+    }
+
+    LaunchedEffect(state.settings.streamMenuShortcut) {
+        NativeStreamInputRouter.setStreamMenuShortcut(state.settings.streamMenuShortcut)
     }
 
     // StreamScreen owns the effective controller/mouse modes even when TouchOverlay is absent.
@@ -456,9 +462,8 @@ internal fun StreamScreen(
         if (!keyboardMouseBaselineCaptured) {
             keyboardMouseBaselineCaptured = true
             previousKeyboardMouseConnected = physicalKeyboardMouseConnected
-            if (physicalKeyboardMouseConnected) {
-                streamInputMode = StreamInputMode.KeyboardMouse
-            }
+            // The pre-launch choice already provisioned the host. Do not override it merely
+            // because the mouse that triggered that choice is still attached.
             return@LaunchedEffect
         }
         if (physicalKeyboardMouseConnected == previousKeyboardMouseConnected) {
@@ -739,12 +744,18 @@ internal fun StreamScreen(
             if (touchControlsVisible) {
                 TouchOverlay(
                     client = client,
+                    inputResetKey = streamState,
                     touch = state.settings.androidTouch.copy(enabled = true),
                     // FLAG_IGNORE_GLOBAL_SETTING stopped working in Android 13, so the on-screen
                     // buttons went silent on any device with system touch feedback off. Drive the
                     // vibrator directly instead — see OpenNowHaptics.
                     onButtonTone = { openNowHaptics?.play(HapticCue.Activate) },
                     layoutEditing = touchLayoutEditing,
+                    onButtonAppearanceChange = { button, appearance ->
+                        viewModel.updateSettings(state.settings.copy(
+                            androidTouch = state.settings.androidTouch.withButtonAppearance(button, appearance),
+                        ))
+                    },
                     onSaveAllOffsets = { allOffsets ->
                         var touch = state.settings.androidTouch
                         allOffsets.forEach { (key, offset) ->
@@ -768,11 +779,15 @@ internal fun StreamScreen(
             }
             if (touchLayoutEditing) {
                 val doneButtonTone = playButtonTone
-                Box(
+                Column(
                     Modifier
                         .align(Alignment.Center),
-                    contentAlignment = Alignment.Center,
+                    horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
+                    Surface(shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.surface.copy(alpha = 0.9f)) {
+                        Text(stringResource(R.string.touch_layout_edit_hint),
+                            modifier = Modifier.padding(12.dp), style = MaterialTheme.typography.bodySmall)
+                    }
                     Button(
                         onClick = {
                             doneButtonTone()
@@ -814,6 +829,7 @@ internal fun StreamScreen(
                         step = streamGuideStep,
                         controlsOpen = controlsOpen,
                         touchControlsEnabled = touchControlsVisible,
+                        streamMenuShortcut = state.settings.streamMenuShortcut,
                         onOpenControls = {
                             playButtonTone()
                             openControlsForGuide()
@@ -1165,6 +1181,9 @@ internal fun StreamScreen(
                                 androidTouch = state.settings.androidTouch.withResetOffsets()
                             )
                         )
+                    },
+                    onTouchPresetsChange = { presets ->
+                        viewModel.updateSettings(state.settings.copy(touchControlPresets = presets))
                     },
                     onTouchSettingsChange = { touch ->
                         viewModel.updateSettings(state.settings.copy(androidTouch = touch))

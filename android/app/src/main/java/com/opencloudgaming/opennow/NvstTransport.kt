@@ -18,13 +18,21 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.roundToInt
 
-internal data class NvstNetworkMetrics(val jitterMs: Double?, val lossPct: Double?, val pingMs: Int?)
+internal data class NvstNetworkMetrics(
+    val jitterMs: Double?,
+    val lossPct: Double?,
+    val pingMs: Int?,
+    val duplicateStunResponses: Long? = null,
+)
 
 internal fun parseNvstNetworkMetrics(detail: String): NvstNetworkMetrics {
     val values = detail.split(',')
     fun value(index: Int) = values.getOrNull(index)?.toDoubleOrNull()?.takeIf { it.isFinite() && it >= 0 }
-    return NvstNetworkMetrics(value(0), value(1)?.takeIf { it <= 100 },
-        value(2)?.takeIf { it <= Int.MAX_VALUE }?.roundToInt())
+    return NvstNetworkMetrics(
+        value(0), value(1)?.takeIf { it <= 100 },
+        value(2)?.takeIf { it <= Int.MAX_VALUE }?.roundToInt(),
+        values.getOrNull(3)?.toLongOrNull()?.takeIf { it >= 0 },
+    )
 }
 
 internal const val NVST_OPT_IN_VERSION = 1
@@ -242,6 +250,12 @@ internal class NvstTransport(
             }
             val seconds = ((now - statsAt) / 1000.0).coerceAtLeast(0.001)
             val network = parseNvstNetworkMetrics(detail)
+            network.duplicateStunResponses?.let { duplicates ->
+                NativeInputDiagnostics.retain(
+                    "nvst.rtt",
+                    "NVST ping source=ice-first-response duplicateResponsesIgnored=$duplicates",
+                )
+            }
             val decodedFps = (decodedFrames.getAndSet(0) / seconds).toInt()
             stats(StreamRuntimeStats(
                 codec = codecName,

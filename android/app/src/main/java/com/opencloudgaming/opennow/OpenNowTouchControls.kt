@@ -1,11 +1,17 @@
 package com.opencloudgaming.opennow
 
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.absoluteOffset
+import androidx.compose.ui.layout.positionInRoot
+import androidx.compose.ui.layout.findRootCoordinates
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
@@ -26,6 +32,10 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -56,6 +66,16 @@ import kotlin.math.min
 import kotlin.math.roundToInt
 import kotlin.math.sqrt
 
+internal val LocalTouchButtonEdit = staticCompositionLocalOf<((String) -> Unit)?> { null }
+
+@Composable
+internal fun Modifier.editTouchButtonOnTap(button: String): Modifier {
+    val onEdit = LocalTouchButtonEdit.current ?: return this
+    return clickable(onClickLabel = stringResource(R.string.touch_button_edit, button)) { onEdit(button) }
+}
+
+private val LocalTouchInputEnabled = staticCompositionLocalOf { true }
+
 @Composable
 internal fun TouchOverlay(
     client: NativeStreamClient,
@@ -63,8 +83,18 @@ internal fun TouchOverlay(
     onButtonTone: () -> Unit,
     layoutEditing: Boolean,
     onSaveAllOffsets: (Map<String, TouchOffset>) -> Unit,
+    onButtonAppearanceChange: (String, TouchButtonAppearance) -> Unit,
+    inputResetKey: Any = Unit,
     modifier: Modifier = Modifier,
 ) {
+    var editingButton by remember(layoutEditing) { mutableStateOf<String?>(null) }
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    var foreground by remember(lifecycle) { mutableStateOf(lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) }
+    DisposableEffect(lifecycle) {
+        val observer = LifecycleEventObserver { _, _ -> foreground = lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED) }
+        lifecycle.addObserver(observer)
+        onDispose { lifecycle.removeObserver(observer) }
+    }
     val opacity = touch.opacity
     val layoutScale = touch.scale
     val buttonScale = touch.buttonScale
@@ -118,82 +148,95 @@ internal fun TouchOverlay(
         LocalTouchSkin provides skin,
         LocalTouchSkinForm provides skinForm,
         LocalTouchButtonLabels provides touch.touchButtonLabels,
+        LocalTouchButtonAppearances provides touch.buttonAppearances,
+        LocalTouchButtonEdit provides if (layoutEditing) ({ button: String -> editingButton = button }) else null,
         LocalTouchStickKnobScale provides touch.stickKnobScale,
+        LocalTouchInputEnabled provides (!layoutEditing && foreground),
     ) {
-        BoxWithConstraints(
-            modifier
-                .fillMaxSize()
-                .padding(
-                    start = touch.edgePaddingDp.dp,
-                    top = 10.dp,
-                    end = touch.edgePaddingDp.dp,
-                    bottom = touch.bottomPaddingDp.dp,
-                ),
-        ) {
-            if (touch.enabled) {
-                val landscape = maxWidth > maxHeight
-                val suffix = if (landscape) "_landscape" else "_portrait"
-                val getOrientationLocalOffset = { key: String -> getLocalOffset(key + suffix) }
-                val onOrientationLocalOffsetChange = { key: String, x: Float, y: Float ->
-                    onLocalOffsetChange(key + suffix, x, y)
-                }
+        key(client, touch, layoutEditing, inputResetKey) {
+            BoxWithConstraints(
+                modifier
+                    .fillMaxSize()
+                    .padding(
+                        start = touch.edgePaddingDp.dp,
+                        top = 10.dp,
+                        end = touch.edgePaddingDp.dp,
+                        bottom = touch.bottomPaddingDp.dp,
+                    ),
+            ) {
+                if (touch.enabled) {
+                    val landscape = maxWidth > maxHeight
+                    val suffix = if (landscape) "_landscape" else "_portrait"
+                    val getOrientationLocalOffset = { key: String -> getLocalOffset(key + suffix) }
+                    val onOrientationLocalOffsetChange = { key: String, x: Float, y: Float ->
+                        onLocalOffsetChange(key + suffix, x, y)
+                    }
 
-                if (landscape) {
-                    LandscapeTouchControls(
-                        client = client,
-                        opacity = opacity,
-                        layoutScale = layoutScale,
-                        buttonScale = buttonScale,
-                        stickScale = stickScale,
-                        faceButtonScale = touch.faceButtonScale,
-                        dpadScale = touch.dpadScale,
-                        shoulderButtonScale = touch.shoulderButtonScale,
-                        centerButtonScale = touch.centerButtonScale,
-                        leftStickScale = touch.leftStickScale,
-                        rightStickScale = touch.rightStickScale,
-                        visibleControlGroups = touch.visibleControlGroups,
-                        extraButtonActions = List(TOUCH_EXTRA_BUTTON_COUNT, touch::extraButtonAction),
-                        extraButtonScale = touch.extraButtonScale,
-                        joystickMode = touch.joystickMode,
-                        aimMode = touch.aimMode,
-                        aimZoneScale = touch.aimZoneScale,
-                        aimZoneSensitivity = touch.aimZoneSensitivity,
-                        joystickDeadZone = touch.joystickDeadZone,
-                        viewportHeight = maxHeight,
-                        layoutEditing = layoutEditing,
-                        getLocalOffset = getOrientationLocalOffset,
-                        onLocalOffsetChange = onOrientationLocalOffsetChange,
-                        onButtonTone = onButtonTone,
-                    )
-                } else {
-                    PortraitTouchControls(
-                        client = client,
-                        opacity = opacity,
-                        layoutScale = layoutScale,
-                        buttonScale = buttonScale,
-                        stickScale = stickScale,
-                        faceButtonScale = touch.faceButtonScale,
-                        dpadScale = touch.dpadScale,
-                        shoulderButtonScale = touch.shoulderButtonScale,
-                        centerButtonScale = touch.centerButtonScale,
-                        leftStickScale = touch.leftStickScale,
-                        rightStickScale = touch.rightStickScale,
-                        visibleControlGroups = touch.visibleControlGroups,
-                        extraButtonActions = List(TOUCH_EXTRA_BUTTON_COUNT, touch::extraButtonAction),
-                        extraButtonScale = touch.extraButtonScale,
-                        joystickMode = touch.joystickMode,
-                        aimMode = touch.aimMode,
-                        aimZoneScale = touch.aimZoneScale,
-                        aimZoneSensitivity = touch.aimZoneSensitivity,
-                        joystickDeadZone = touch.joystickDeadZone,
-                        layoutEditing = layoutEditing,
-                        getLocalOffset = getOrientationLocalOffset,
-                        onLocalOffsetChange = onOrientationLocalOffsetChange,
-                        onButtonTone = onButtonTone,
-                    )
+                    if (landscape) {
+                        LandscapeTouchControls(
+                            client = client,
+                            opacity = opacity,
+                            layoutScale = layoutScale,
+                            buttonScale = buttonScale,
+                            stickScale = stickScale,
+                            faceButtonScale = touch.faceButtonScale,
+                            dpadScale = touch.dpadScale,
+                            shoulderButtonScale = touch.shoulderButtonScale,
+                            centerButtonScale = touch.centerButtonScale,
+                            leftStickScale = touch.leftStickScale,
+                            rightStickScale = touch.rightStickScale,
+                            visibleControlGroups = touch.visibleControlGroups,
+                            extraButtonActions = List(TOUCH_EXTRA_BUTTON_COUNT, touch::extraButtonAction),
+                            extraButtonScale = touch.extraButtonScale,
+                            joystickMode = touch.joystickMode,
+                            aimMode = touch.aimMode,
+                            aimZoneScale = touch.aimZoneScale,
+                            aimZoneSensitivity = touch.aimZoneSensitivity,
+                            joystickDeadZone = touch.joystickDeadZone,
+                            viewportHeight = maxHeight,
+                            layoutEditing = layoutEditing,
+                            getLocalOffset = getOrientationLocalOffset,
+                            onLocalOffsetChange = onOrientationLocalOffsetChange,
+                            onButtonTone = onButtonTone,
+                        )
+                    } else {
+                        PortraitTouchControls(
+                            client = client,
+                            opacity = opacity,
+                            layoutScale = layoutScale,
+                            buttonScale = buttonScale,
+                            stickScale = stickScale,
+                            faceButtonScale = touch.faceButtonScale,
+                            dpadScale = touch.dpadScale,
+                            shoulderButtonScale = touch.shoulderButtonScale,
+                            centerButtonScale = touch.centerButtonScale,
+                            leftStickScale = touch.leftStickScale,
+                            rightStickScale = touch.rightStickScale,
+                            visibleControlGroups = touch.visibleControlGroups,
+                            extraButtonActions = List(TOUCH_EXTRA_BUTTON_COUNT, touch::extraButtonAction),
+                            extraButtonScale = touch.extraButtonScale,
+                            joystickMode = touch.joystickMode,
+                            aimMode = touch.aimMode,
+                            aimZoneScale = touch.aimZoneScale,
+                            aimZoneSensitivity = touch.aimZoneSensitivity,
+                            joystickDeadZone = touch.joystickDeadZone,
+                            layoutEditing = layoutEditing,
+                            getLocalOffset = getOrientationLocalOffset,
+                            onLocalOffsetChange = onOrientationLocalOffsetChange,
+                            onButtonTone = onButtonTone,
+                        )
+                    }
                 }
             }
         }
+    }
+    if (layoutEditing) editingButton?.let { button ->
+        TouchButtonAppearanceDialog(button, touch,
+            onChange = { updated ->
+                onButtonAppearanceChange(button, updated.buttonAppearances[button] ?: TouchButtonAppearance())
+            },
+            onDismiss = { editingButton = null },
+        )
     }
 }
 
@@ -234,18 +277,27 @@ private fun PortraitTouchControls(
         Modifier.fillMaxSize().padding(horizontal = 32.dp, vertical = 24.dp)
     ) {
         if (aimMode == TouchAimMode.LockZone && TouchControlGroup.RightStick in visibleControlGroups) {
-            LockZoneAimSurface(
-                id = "portrait-aim-zone",
-                client = client,
-                opacity = opacity,
-                deadZone = joystickDeadZone,
-                sensitivity = aimZoneSensitivity,
-                enabled = !layoutEditing,
-                modifier = Modifier
-                    .align(Alignment.BottomEnd)
+            val aimOffset = getLocalOffset("aimzone")
+            TouchControlGroup(
+                id = "portrait-aim-zone-group",
+                layoutEditing = layoutEditing,
+                offsetX = aimOffset.x.dp,
+                offsetY = aimOffset.y.dp,
+                onOffsetChange = { x, y -> onLocalOffsetChange("aimzone", x, y) },
+                modifier = Modifier.align(Alignment.BottomEnd)
                     .fillMaxWidth(scaledAimZoneFraction(0.54f, aimZoneScale))
                     .fillMaxHeight(scaledAimZoneFraction(0.48f, aimZoneScale)),
-            )
+            ) {
+                LockZoneAimSurface(
+                    id = "portrait-aim-zone",
+                    client = client,
+                    opacity = opacity,
+                    deadZone = joystickDeadZone,
+                    sensitivity = aimZoneSensitivity,
+                    enabled = !layoutEditing,
+                    modifier = Modifier.fillMaxSize(),
+                )
+            }
         }
         val shoulderScale = buttonScale * shoulderButtonScale * layoutScale
         val triggerWidth = 64.dp * shoulderScale
@@ -481,18 +533,27 @@ private fun BoxScope.LandscapeTouchControls(
     val topControlClearance = landscapeTouchTopControlClearanceDp(viewportHeight.value, shoulderScale).dp
     Box(Modifier.fillMaxSize().padding(horizontal = 24.dp, vertical = 24.dp)) {
         if (aimMode == TouchAimMode.LockZone && TouchControlGroup.RightStick in visibleControlGroups) {
-            LockZoneAimSurface(
-                id = "landscape-aim-zone",
-                client = client,
-                opacity = opacity,
-                deadZone = joystickDeadZone,
-                sensitivity = aimZoneSensitivity,
-                enabled = !layoutEditing,
-                modifier = Modifier
-                    .align(Alignment.CenterEnd)
+            val aimOffset = getLocalOffset("aimzone")
+            TouchControlGroup(
+                id = "landscape-aim-zone-group",
+                layoutEditing = layoutEditing,
+                offsetX = aimOffset.x.dp,
+                offsetY = aimOffset.y.dp,
+                onOffsetChange = { x, y -> onLocalOffsetChange("aimzone", x, y) },
+                modifier = Modifier.align(Alignment.CenterEnd)
                     .fillMaxWidth(scaledAimZoneFraction(0.48f, aimZoneScale))
                     .fillMaxHeight(scaledAimZoneFraction(0.72f, aimZoneScale)),
-            )
+            ) {
+                LockZoneAimSurface(
+                    id = "landscape-aim-zone",
+                    client = client,
+                    opacity = opacity,
+                    deadZone = joystickDeadZone,
+                    sensitivity = aimZoneSensitivity,
+                    enabled = !layoutEditing,
+                    modifier = Modifier.fillMaxSize(),
+                )
+            }
         }
         val triggerWidth = 76.dp * shoulderScale
         val bumperHeight = 36.dp * shoulderScale
@@ -815,6 +876,7 @@ private fun BoxScope.ExtraTouchButtons(
             ) {
                 GamepadActionButton(
                     action = action,
+                    appearanceKey = controlKey,
                     sourceId = "touch-$orientation-$controlKey",
                     client = client,
                     size = 44.dp * scale,
@@ -826,7 +888,7 @@ private fun BoxScope.ExtraTouchButtons(
 }
 
 @Composable
-private fun TouchControlGroup(
+internal fun TouchControlGroup(
     id: String,
     layoutEditing: Boolean,
     offsetX: Dp,
@@ -839,10 +901,40 @@ private fun TouchControlGroup(
     val currentOffsetX by rememberUpdatedState(offsetX)
     val currentOffsetY by rememberUpdatedState(offsetY)
     val currentOnOffsetChange by rememberUpdatedState(onOffsetChange)
+    var controlBounds by remember { mutableStateOf(Rect.Zero) }
+    var viewportSize by remember { mutableStateOf(IntSize.Zero) }
     Box(
         modifier
-            .offset(x = offsetX, y = offsetY)
+            .absoluteOffset(x = offsetX, y = offsetY)
+            .pointerInput(layoutEditing) {
+                if (!layoutEditing) return@pointerInput
+                var start = TouchOffset()
+                var bounds = Rect.Zero
+                var viewport = IntSize.Zero
+                var travel = Offset.Zero
+                detectDragGestures(onDragStart = {
+                    start = TouchOffset(currentOffsetX.value, currentOffsetY.value)
+                    bounds = controlBounds
+                    viewport = viewportSize
+                    travel = Offset.Zero
+                }) { change, dragAmount ->
+                    change.consume()
+                    travel += dragAmount
+                    with(density) {
+                        currentOnOffsetChange(
+                            draggedTouchOffset(start.x, travel.x.toDp().value,
+                                bounds.left.toDp().value, bounds.right.toDp().value, viewport.width.toDp().value),
+                            draggedTouchOffset(start.y, travel.y.toDp().value,
+                                bounds.top.toDp().value, bounds.bottom.toDp().value, viewport.height.toDp().value),
+                        )
+                    }
+                }
+            }
             .onGloballyPositioned { coordinates ->
+                controlBounds = Rect(coordinates.positionInRoot(), androidx.compose.ui.geometry.Size(
+                    coordinates.size.width.toFloat(), coordinates.size.height.toFloat(),
+                ))
+                viewportSize = coordinates.findRootCoordinates().size
                 val bounds = coordinates.boundsInRoot()
                 NativeStreamInputRouter.setTouchControllerPassthroughBound(
                     id,
@@ -861,24 +953,12 @@ private fun TouchControlGroup(
                     .matchParentSize()
                     .clip(RoundedCornerShape(18.dp))
                     .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.16f))
-                    .border(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.72f), RoundedCornerShape(18.dp))
-                    .pointerInput(Unit) {
-                        detectDragGestures { change, dragAmount ->
-                            change.consume()
-                            val deltaXDp = with(density) { dragAmount.x.toDp().value }
-                            val deltaYDp = with(density) { dragAmount.y.toDp().value }
-                            currentOnOffsetChange(
-                                (currentOffsetX.value + deltaXDp).coerceIn(-280f, 280f),
-                                (currentOffsetY.value + deltaYDp).coerceIn(-280f, 280f),
-                            )
-                        }
-                    },
+                    .border(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.72f), RoundedCornerShape(18.dp)),
                 contentAlignment = Alignment.TopCenter,
             ) {
-                Surface(
-                    color = MaterialTheme.colorScheme.primary.copy(alpha = 0.9f),
-                    shape = RoundedCornerShape(999.dp),
-                    modifier = Modifier.padding(top = 4.dp),
+                Box(
+                    modifier = Modifier.padding(top = 4.dp).clip(RoundedCornerShape(999.dp))
+                        .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.9f)),
                 ) {
                     Text(
                         stringResource(R.string.touch_drag_label),
@@ -1088,6 +1168,7 @@ private fun VirtualStick(
     deadZone: Float,
     onChange: (Float, Float) -> Unit,
 ) {
+    val inputEnabled = LocalTouchInputEnabled.current
     val currentOnChange by rememberUpdatedState(onChange)
     var knobOffset by remember { mutableStateOf(Offset.Zero) }
     var baseOffset by remember { mutableStateOf(Offset.Zero) }
@@ -1101,7 +1182,8 @@ private fun VirtualStick(
     Box(
         Modifier
             .size(diameter)
-            .pointerInput(client, mode, deadZone) {
+            .pointerInput(client, mode, deadZone, inputEnabled) {
+                if (!inputEnabled) return@pointerInput
                 awaitEachGesture {
                     val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
                     val fixedCenter = Offset(size.width / 2f, size.height / 2f)
@@ -1147,8 +1229,12 @@ private const val LOCK_ZONE_MAX_TRAVEL_DP = 72f
 @Composable
 private fun FaceButtonCluster(client: NativeStreamClient, scale: Float, onButtonTone: () -> Unit) {
     val buttonSize = 54.dp * scale
-    val distance = buttonSize * 1.05f
-    val boxSize = distance * 2 + buttonSize
+    val appearances = LocalTouchButtonAppearances.current
+    val largestButton = listOf("A", "B", "X", "Y").maxOf { button ->
+        (buttonSize * (appearances[button]?.effectiveSizeScale() ?: 1f)).coerceAtLeast(48.dp)
+    }
+    val distance = maxOf(buttonSize, largestButton) * 1.05f
+    val boxSize = distance * 2 + largestButton
     Box(Modifier.size(boxSize)) {
         Box(Modifier.align(Alignment.Center).offset(y = -distance)) {
             GamepadButton("Y", 0x8000, client, buttonSize, onButtonTone)
@@ -1167,6 +1253,7 @@ private fun FaceButtonCluster(client: NativeStreamClient, scale: Float, onButton
 
 @Composable
 private fun DpadCluster(client: NativeStreamClient, scale: Float, onButtonTone: () -> Unit) {
+    val inputEnabled = LocalTouchInputEnabled.current
     val currentOnButtonTone by rememberUpdatedState(onButtonTone)
     val buttonSize = 54.dp * scale
     val boxSize = touchDpadBoxSize(buttonSize)
@@ -1188,7 +1275,8 @@ private fun DpadCluster(client: NativeStreamClient, scale: Float, onButtonTone: 
     Box(
         Modifier
             .size(boxSize)
-            .pointerInput(client) {
+            .pointerInput(client, inputEnabled) {
+                if (!inputEnabled) return@pointerInput
                 awaitEachGesture {
                     val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
 
@@ -1257,28 +1345,38 @@ private fun DpadCluster(client: NativeStreamClient, scale: Float, onButtonTone: 
     }
 }
 
-private fun Modifier.virtualPressInput(
-    client: NativeStreamClient,
+internal fun Modifier.virtualPressInput(
+    inputOwner: Any,
     controlKey: Any,
     onPressedChange: State<(Boolean) -> Unit>,
-): Modifier = pointerInput(client, controlKey) {
-    awaitEachGesture {
-        val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
-        onPressedChange.value(true)
-        try {
-            down.consume()
-            while (true) {
-                val event = awaitPointerEvent(PointerEventPass.Initial)
-                val change = event.changes.firstOrNull { it.id == down.id } ?: break
-                if (!change.pressed) {
+    toggle: Boolean,
+    enabled: Boolean,
+): Modifier = pointerInput(inputOwner, controlKey, toggle, enabled) {
+    if (!enabled) return@pointerInput
+    val press = TouchButtonPressState(toggle)
+    try {
+        awaitEachGesture {
+            val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+            onPressedChange.value(press.down())
+            var completed = false
+            try {
+                down.consume()
+                while (true) {
+                    val event = awaitPointerEvent(PointerEventPass.Initial)
+                    val change = event.changes.firstOrNull { it.id == down.id } ?: break
                     change.consume()
-                    break
+                    if (!change.pressed) {
+                        completed = true
+                        break
+                    }
                 }
-                change.consume()
+            } finally {
+                onPressedChange.value(if (completed) press.up() else press.cancel())
             }
-        } finally {
-            onPressedChange.value(false)
         }
+    } finally {
+        // Disposal, editing, backgrounding and configuration changes release latched inputs too.
+        onPressedChange.value(press.cancel())
     }
 }
 
@@ -1301,9 +1399,10 @@ private fun GamepadTriggerButton(
     }
     Box(
         Modifier
-            .width(width)
             .heightIn(min = 48.dp)
-            .virtualPressInput(client, left, currentOnPressedChange),
+            .editTouchButtonOnTap(label)
+            .virtualPressInput(client, left, currentOnPressedChange,
+                LocalTouchButtonAppearances.current[label]?.toggle == true, LocalTouchInputEnabled.current),
         contentAlignment = Alignment.TopCenter,
     ) {
         TouchShoulderFace(label = label, pressed = pressed, width = width, height = height)
@@ -1334,9 +1433,9 @@ private fun GamepadBumperButton(
     }
     Box(
         Modifier
-            .width(width)
-            .height(height)
-            .virtualPressInput(client, mask, currentOnPressedChange),
+            .editTouchButtonOnTap(label)
+            .virtualPressInput(client, mask, currentOnPressedChange,
+                LocalTouchButtonAppearances.current[label]?.toggle == true, LocalTouchInputEnabled.current),
         contentAlignment = Alignment.Center,
     ) {
         TouchShoulderFace(label = label, pressed = pressed, width = width, height = height)
@@ -1351,6 +1450,7 @@ private fun GamepadBumperButton(
 @Composable
 private fun GamepadActionButton(
     action: TouchExtraButtonAction,
+    appearanceKey: String,
     sourceId: String,
     client: NativeStreamClient,
     size: Dp,
@@ -1379,10 +1479,12 @@ private fun GamepadActionButton(
     Box(
         Modifier
             .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
-            .virtualPressInput(client, "$sourceId-${action.name}", currentOnPressedChange),
+            .editTouchButtonOnTap(appearanceKey)
+            .virtualPressInput(client, "$sourceId-${action.name}", currentOnPressedChange,
+                LocalTouchButtonAppearances.current[appearanceKey]?.toggle == true, LocalTouchInputEnabled.current),
         contentAlignment = Alignment.Center,
     ) {
-        TouchCapFace(label = touchExtraButtonCapLabel(action), pressed = pressed, diameter = size)
+        TouchCapFace(label = touchExtraButtonCapLabel(action), pressed = pressed, diameter = size, appearanceKey = appearanceKey)
     }
     DisposableEffect(client, action, sourceId) {
         onDispose { dispatch(false) }
@@ -1409,7 +1511,9 @@ private fun GamepadButton(
     Box(
         Modifier
             .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
-            .virtualPressInput(client, mask, currentOnPressedChange),
+            .editTouchButtonOnTap(label)
+            .virtualPressInput(client, mask, currentOnPressedChange,
+                LocalTouchButtonAppearances.current[label]?.toggle == true, LocalTouchInputEnabled.current),
         contentAlignment = Alignment.Center,
     ) {
         TouchCapFace(label = label, pressed = pressed, diameter = size)
@@ -1441,9 +1545,9 @@ private fun GamepadPillButton(
     }
     Box(
         Modifier
-            .width(width)
-            .height(height)
-            .virtualPressInput(client, mask, currentOnPressedChange),
+            .editTouchButtonOnTap(label)
+            .virtualPressInput(client, mask, currentOnPressedChange,
+                LocalTouchButtonAppearances.current[label]?.toggle == true, LocalTouchInputEnabled.current),
         contentAlignment = Alignment.Center,
     ) {
         TouchShoulderFace(label = label, pressed = pressed, width = width, height = height)

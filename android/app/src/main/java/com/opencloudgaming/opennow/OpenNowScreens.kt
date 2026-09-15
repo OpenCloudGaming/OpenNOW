@@ -730,6 +730,15 @@ fun OpenNowApp(
                         else -> LoginScreen(state, viewModel)
                     }
                 }
+                if (state.awaitingLaunchInputModeChoice) {
+                    StreamInputModeSwitchDialog(
+                        prompt = StreamInputModePrompt.SwitchToKeyboardMouse,
+                        onStay = { viewModel.chooseLaunchInputMode(StreamInputMode.NativeTouch) },
+                        onSwitch = { viewModel.chooseLaunchInputMode(StreamInputMode.KeyboardMouse) },
+                        onDismiss = viewModel::cancelLaunchInputModeChoice,
+                        atLaunch = true,
+                    )
+                }
                 state.sessionReport?.takeIf { showSessionReport }?.let { report ->
                     SessionReportDialog(
                         report = report,
@@ -757,6 +766,7 @@ fun OpenNowApp(
                         submission = state.bugReportSubmission,
                         versionCheck = state.bugReportVersionCheck,
                         update = state.androidUpdate,
+                        experimentalNvstEnabled = state.settings.stream.experimentalNvst,
                         onSubmit = { title, description, knownIssueOverrideKey ->
                             viewModel.submitBugReport(title, description, knownIssueOverrideKey)
                         },

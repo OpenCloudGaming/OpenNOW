@@ -1,7 +1,9 @@
 package com.opencloudgaming.opennow
 
 import kotlin.math.roundToInt
+import kotlinx.serialization.Serializable
 
+@Serializable
 enum class SessionReportRating(val label: String) {
     Excellent("Excellent"),
     Good("Good"),
@@ -9,15 +11,18 @@ enum class SessionReportRating(val label: String) {
     Poor("Needs work"),
 }
 
+@Serializable
 enum class SessionReportFindingKind {
     Info,
     Warning,
 }
 
+@Serializable
 data class SessionReportFinding(
     val title: String,
     val detail: String,
     val kind: SessionReportFindingKind = SessionReportFindingKind.Info,
+    val reasonCode: String = "unspecified",
 )
 
 internal data class StreamReportLaunchProfile(
@@ -27,6 +32,7 @@ internal data class StreamReportLaunchProfile(
     val initialSettings: StreamSettings,
 )
 
+@Serializable
 data class SessionReport(
     val gameTitle: String,
     val score: Int,
@@ -93,6 +99,7 @@ internal class StreamSessionReportAccumulator(
     private var recoveryReason: String? = null
     private var activeMode: ActiveStreamModeStatus? = null
 
+    @Synchronized
     fun record(stats: StreamRuntimeStats, network: AndroidRuntimeDiagnosticsSnapshot? = null) {
         if (stats.hasSessionReportValues()) {
             sampleCount += 1
@@ -107,7 +114,7 @@ internal class StreamSessionReportAccumulator(
             bitrateTotal += value
             peakBitrateKbps = maxOf(peakBitrateKbps ?: value, value)
         }
-        stats.jitterMs?.takeIf { it >= 0.0 }?.let { value ->
+        stats.jitterMs?.takeIf { it.isFinite() && it >= 0.0 }?.let { value ->
             jitterCount += 1
             jitterTotal += value
         }
@@ -123,7 +130,7 @@ internal class StreamSessionReportAccumulator(
             decodedFpsCount += 1
             decodedFpsTotal += value
         }
-        stats.decodeMs?.takeIf { it >= 0.0 }?.let { value ->
+        stats.decodeMs?.takeIf { it.isFinite() && it >= 0.0 }?.let { value ->
             decodeCount += 1
             decodeTotal += value
         }
@@ -144,7 +151,7 @@ internal class StreamSessionReportAccumulator(
             packetsLost += lostDelta
             packetsReceived += receivedDelta
         } else {
-            stats.packetLossPct?.takeIf { it >= 0.0 }?.let { value ->
+            stats.packetLossPct?.takeIf { it.isFinite() && it >= 0.0 }?.let { value ->
                 packetLossSampleCount += 1
                 packetLossSampleTotal += value
             }
@@ -154,11 +161,13 @@ internal class StreamSessionReportAccumulator(
         network?.let(::recordNetwork)
     }
 
+    @Synchronized
     fun recordRecovery(reason: String, settings: StreamSettings) {
         recoveryReason = reason.trim().takeIf { it.isNotEmpty() }
         finalSettings = settings
     }
 
+    @Synchronized
     fun recordActiveMode(status: ActiveStreamModeStatus) {
         activeMode = status
         if (status.safeVideoRecoveryActive) {
@@ -166,6 +175,7 @@ internal class StreamSessionReportAccumulator(
         }
     }
 
+    @Synchronized
     fun finish(finishedAtMs: Long): SessionReport? {
         if (sampleCount == 0) return null
         val averagePingMs = averageLong(pingTotal, pingCount)?.roundToInt()
@@ -250,6 +260,7 @@ internal class StreamSessionReportAccumulator(
     }
 
     /** Records a completed service query without advancing media counts or overload detection. */
+    @Synchronized
     fun recordNetwork(network: AndroidRuntimeDiagnosticsSnapshot) {
         networkKindCounts[network.networkKind] = (networkKindCounts[network.networkKind] ?: 0) + 1
         if (network.networkKind == AndroidNetworkKind.Wifi) {
@@ -396,6 +407,7 @@ private fun buildSessionDowngrades(
     ) {
         add(
             SessionReportFinding(
+                reasonCode = "account_session_limit",
                 title = "Account or session limit",
                 detail = "Your saved ${profileSummary(selected)} profile was limited to ${profileSummary(eligible)} before launch based on the features available to this session.",
                 kind = SessionReportFindingKind.Warning,
@@ -405,6 +417,7 @@ private fun buildSessionDowngrades(
     if (selected.codec != eligible.codec || selected.colorQuality != eligible.colorQuality) {
         add(
             SessionReportFinding(
+                reasonCode = "android_format_compatibility",
                 title = "Android format compatibility",
                 detail = "The selected ${selected.codec.name}/${selected.colorQuality.name} format was normalized to ${eligible.codec.name}/${eligible.colorQuality.name} so Android and WebRTC could decode it reliably.",
                 kind = SessionReportFindingKind.Warning,
@@ -414,6 +427,7 @@ private fun buildSessionDowngrades(
     if (!eligible.hasSameSessionReportProfile(initial)) {
         add(
             SessionReportFinding(
+                reasonCode = "device_compatibility_adjustment",
                 title = "Device compatibility adjustment",
                 detail = "The device probe changed ${profileSummary(eligible)} to ${profileSummary(initial)} to stay within the detected decoder and performance limits.",
                 kind = SessionReportFindingKind.Warning,
@@ -423,6 +437,7 @@ private fun buildSessionDowngrades(
     if (recoveryReason != null || !finalSettings.hasSameSessionReportProfile(initial)) {
         add(
             SessionReportFinding(
+                reasonCode = "safe_video_recovery",
                 title = "Safe video recovery",
                 detail = buildString {
                     append("OpenNOW changed the live transport from ${profileSummary(initial)} to ${profileSummary(finalSettings)} to keep the session connected")
@@ -446,6 +461,7 @@ private fun buildSessionDowngrades(
         }
         add(
             SessionReportFinding(
+                reasonCode = "delivered_resolution_changed",
                 title = "Delivered resolution changed",
                 detail = "$source $normalizedDeliveredResolution instead of the requested $initialResolution. This reflects the cloud/game runtime mode, not a silent change to your saved setting.",
                 kind = SessionReportFindingKind.Warning,
@@ -460,6 +476,7 @@ private fun buildSessionDowngrades(
     ) {
         add(
             SessionReportFinding(
+                reasonCode = "delivered_codec_changed",
                 title = "Delivered codec changed",
                 detail = "WebRTC reported $deliveredCodec instead of the requested ${finalSettings.codec.name}. The negotiated transport codec determines what the device actually decoded.",
                 kind = SessionReportFindingKind.Warning,
@@ -488,6 +505,7 @@ internal fun buildSessionRecommendations(
     when {
         networkKind == AndroidNetworkKind.Wifi && wifiBand == AndroidWifiBand.TwoPointFourGhz -> add(
             SessionReportFinding(
+                reasonCode = "prefer_high_band_wifi",
                 title = "Use 5 GHz or 6 GHz Wi-Fi",
                 detail = "This session used 2.4 GHz Wi-Fi, which is usually busier and more prone to interference. Use 5/6 GHz when you are near the router; Ethernet is the most consistent option.",
                 kind = SessionReportFindingKind.Warning,
@@ -497,6 +515,7 @@ internal fun buildSessionRecommendations(
             wifiBand in setOf(AndroidWifiBand.FiveGhz, AndroidWifiBand.SixGhz) &&
             lowestNetworkBars != null && lowestNetworkBars <= 2 -> add(
                 SessionReportFinding(
+                    reasonCode = "weak_wifi_signal",
                     title = "Move closer to the Wi-Fi access point",
                     detail = "5/6 GHz can provide lower latency and more capacity, but its range is shorter. The session saw a weak signal, so reducing walls and distance may help.",
                     kind = SessionReportFindingKind.Warning,
@@ -505,6 +524,7 @@ internal fun buildSessionRecommendations(
         networkKind == AndroidNetworkKind.Wifi && wifiBand == AndroidWifiBand.Unknown &&
             ((averagePingMs ?: 0) > 60 || (packetLossPct ?: 0.0) > 0.5) -> add(
                 SessionReportFinding(
+                    reasonCode = "check_wifi_band",
                     title = "Check your Wi-Fi band",
                     detail = "Android did not expose the current band. When you are near the router, prefer 5 GHz or 6 GHz over 2.4 GHz; use Ethernet for the most predictable latency.",
                     kind = SessionReportFindingKind.Warning,
@@ -512,6 +532,7 @@ internal fun buildSessionRecommendations(
             )
         networkKind == AndroidNetworkKind.Cellular -> add(
             SessionReportFinding(
+                reasonCode = "cellular_variability",
                 title = "Prefer Wi-Fi or Ethernet",
                 detail = "Cellular latency and capacity can change quickly as signal and tower load vary. Stable 5/6 GHz Wi-Fi or Ethernet is usually better for cloud gaming.",
                 kind = SessionReportFindingKind.Warning,
@@ -521,6 +542,7 @@ internal fun buildSessionRecommendations(
     if ((packetLossPct ?: 0.0) > 1.0) {
         add(
             SessionReportFinding(
+                reasonCode = "packet_loss",
                 title = "Reduce packet loss",
                 detail = "Packet loss above 1% can cause blur, stutter, or recovery events. Pause competing uploads, reduce wireless interference, or try Ethernet.",
                 kind = SessionReportFindingKind.Warning,
@@ -530,6 +552,7 @@ internal fun buildSessionRecommendations(
     if ((averagePingMs ?: 0) > 80 || (averageJitterMs ?: 0.0) > 20.0) {
         add(
             SessionReportFinding(
+                reasonCode = "latency_jitter",
                 title = "Stabilize latency",
                 detail = "Choose the closest available server, disable VPN routing, and pause background downloads. Consistent latency matters as much as raw download speed.",
                 kind = SessionReportFindingKind.Warning,
@@ -543,6 +566,7 @@ internal fun buildSessionRecommendations(
         val actual = averageBitrateKbps?.let { " The stream averaged ${formatMbps(it)} Mbps." }.orEmpty()
         add(
             SessionReportFinding(
+                reasonCode = "link_capacity",
                 title = "Lower the maximum bitrate",
                 detail = "Android estimated about ${formatMbps(estimatedLinkDownstreamKbps)} Mbps of link capacity for a $targetBitrateMbps Mbps profile.$actual Leave headroom for network variation.",
                 kind = SessionReportFindingKind.Warning,
@@ -564,6 +588,7 @@ internal fun buildSessionRecommendations(
     ) {
         add(
             SessionReportFinding(
+                reasonCode = "decoder_bottleneck",
                 title = "Decoder could not keep up",
                 detail = buildString {
                     append("OpenNOW detected a sustained local decoder bottleneck")
@@ -582,6 +607,7 @@ internal fun buildSessionRecommendations(
     if (isEmpty()) {
         add(
             SessionReportFinding(
+                reasonCode = "healthy_connection",
                 title = "Connection looked healthy",
                 detail = "No specific network or decoder issue crossed the report thresholds. Keep the same server and network setup for similarly consistent sessions.",
             ),
@@ -642,3 +668,6 @@ private fun formatMbps(kbps: Int): String =
 private const val MIN_CONFIDENT_SESSION_REPORT_SAMPLES = 10
 private const val MAX_SESSION_REPORT_RECOMMENDATIONS = 4
 private const val STREAM_NETWORK_HEADROOM_KBPS_PER_MBPS = 1_200
+
+/** Upper semicircle: empty at 0, completely filled at 100. */
+internal fun sessionScoreSweepDegrees(score: Int): Float = score.coerceIn(0, 100) * 1.8f

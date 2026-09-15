@@ -17,6 +17,7 @@ class AppSettingsDefaultsTest {
         assertFalse(settings.hideStreamButtons)
         assertFalse(settings.streamKeyboardClearConfirmationDisabled)
         assertTrue(settings.externalMousePointerLock)
+        assertEquals(DEFAULT_ANDROID_STREAM_MENU_SHORTCUT, settings.streamMenuShortcut)
         assertFalse(settings.showFavoriteIconOnGameCards)
         assertFalse(settings.liveSelectedOutlines)
         assertFalse(settings.absoluteCinemaEffects)
@@ -69,6 +70,7 @@ class AppSettingsDefaultsTest {
         assertFalse(settings.hideStreamButtons)
         assertFalse(settings.streamKeyboardClearConfirmationDisabled)
         assertTrue(settings.externalMousePointerLock)
+        assertEquals(DEFAULT_ANDROID_STREAM_MENU_SHORTCUT, settings.streamMenuShortcut)
         assertEquals(StreamKeyboardButtonPosition(), settings.streamKeyboardButtonPosition)
         assertEquals(CatalogBackgroundPreset.ColorfulAbstract, settings.catalogBackgroundPreset)
         assertFalse(settings.systemWallpaperBackground)
@@ -83,7 +85,7 @@ class AppSettingsDefaultsTest {
         assertFalse(settings.higherPingWarningDismissed)
         // Developer options are a hidden gesture, never a shipped or migrated-in default.
         assertFalse(settings.developerOptionsUnlocked)
-        assertFalse(settings.showSessionReportAfterStream)
+        assertTrue(settings.showSessionReportAfterStream)
         assertEquals(TouchJoystickMode.Fixed, settings.androidTouch.joystickMode)
         assertEquals(TouchAimMode.LockJoystick, settings.androidTouch.aimMode)
         assertEquals(0f, settings.androidTouch.joystickDeadZone, 0.0001f)
@@ -272,7 +274,7 @@ class AppSettingsDefaultsTest {
         assertFalse(settings.streamIntroMusic)
         assertEquals(IntroMusicStartMode.Muted, settings.streamIntroStartMode)
         assertFalse(settings.queueReadyMusic)
-        assertFalse(settings.showSessionReportAfterStream)
+        assertTrue(settings.showSessionReportAfterStream)
         assertFalse(settings.stream.streamSharpeningEnabled)
     }
 
@@ -358,13 +360,28 @@ class AppSettingsDefaultsTest {
     }
 
     @Test
-    fun legacySessionReportOptInIsMigratedOffOnce() {
+    fun legacySessionReportIsEnabledOnce() {
         val migrated = OpenNowJson.decodeFromString<AppSettings>(
             """{"showSessionReportAfterStream":true}""",
         ).normalizedForAndroid()
 
-        assertFalse(migrated.showSessionReportAfterStream)
+        assertTrue(migrated.showSessionReportAfterStream)
         assertEquals(SESSION_REPORT_DEFAULT_VERSION, migrated.sessionReportDefaultVersion)
+    }
+
+    @Test
+    fun currentSessionReportOptOutRemainsOffAfterNormalization() {
+        val settings = AppSettings(showSessionReportAfterStream = false,
+            sessionReportDefaultVersion = SESSION_REPORT_DEFAULT_VERSION).normalizedForAndroid()
+        assertFalse(settings.showSessionReportAfterStream)
+        assertFalse(settings.normalizedForAndroid().showSessionReportAfterStream)
+    }
+
+    @Test
+    fun previousDefaultOffIsEnabledOnUpgrade() {
+        val settings = AppSettings(showSessionReportAfterStream = false,
+            sessionReportDefaultVersion = 1).normalizedForAndroid()
+        assertTrue(settings.showSessionReportAfterStream)
     }
 
     @Test
@@ -377,7 +394,7 @@ class AppSettingsDefaultsTest {
     }
 
     @Test
-    fun legacyPortalStreamModeMigratesToProviderTwentyOneByNineGeometry() {
+    fun persistedPortalStreamModePreservesSelectedGeometry() {
         val normalized = AppSettings(
             stream = StreamSettings(
                 resolution = "1376x640",
@@ -386,8 +403,8 @@ class AppSettingsDefaultsTest {
             ),
         ).normalizedForAndroid()
 
-        assertEquals("1376x590", normalized.stream.resolution)
-        assertEquals("21:9", normalized.stream.aspectRatio)
+        assertEquals("1376x640", normalized.stream.resolution)
+        assertEquals("19.5:9", normalized.stream.aspectRatio)
         assertEquals(120, normalized.stream.fps)
     }
 

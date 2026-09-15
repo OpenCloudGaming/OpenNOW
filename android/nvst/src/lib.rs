@@ -248,11 +248,16 @@ fn run(
     event(env, callback, "connected", "NVST encrypted UDP").map_err(|e| e.to_string())?;
     let mut last_stats = Instant::now();
     let mut round_trip_ms = None;
+    let mut duplicate_stun_responses = 0;
     while !state.stopped.load(Ordering::Acquire) {
         for notification in events.try_iter().take(128) {
             match notification {
-                NvstReceiveEvent::RoundTripTime(rtt) => {
+                NvstReceiveEvent::RoundTripTime {
+                    rtt,
+                    duplicate_responses,
+                } => {
                     round_trip_ms = rtt.map(|value| value.as_secs_f64() * 1000.0);
+                    duplicate_stun_responses = duplicate_responses;
                 }
                 NvstReceiveEvent::ServerInput(bytes) => {
                     env.with_local_frame(4, |env| -> jni::errors::Result<()> {
@@ -336,7 +341,7 @@ fn run(
                 .map(|(jitter, loss)| format!("{jitter},{loss}"))
                 .unwrap_or_else(|| ",".into());
             let detail = format!(
-                "{metrics},{}",
+                "{metrics},{},{duplicate_stun_responses}",
                 round_trip_ms.map(|rtt| rtt.to_string()).unwrap_or_default()
             );
             event(env, callback, "network", &detail).map_err(|e| e.to_string())?;

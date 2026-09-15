@@ -12,6 +12,8 @@ class NvstTransportTest {
         assertEquals(NvstNetworkMetrics(0.4, 0.0, null), parseNvstNetworkMetrics("0.4,0,"))
         assertEquals(NvstNetworkMetrics(null, null, null), parseNvstNetworkMetrics("NaN,101,Infinity"))
         assertEquals(NvstNetworkMetrics(null, null, null), parseNvstNetworkMetrics("-1,-1,-1"))
+        assertEquals(NvstNetworkMetrics(0.4, 0.0, 3407, 12), parseNvstNetworkMetrics("0.4,0,3407,12"))
+        assertEquals(NvstNetworkMetrics(null, null, 23), parseNvstNetworkMetrics(",,23,-1"))
     }
 
     @Test fun newAndLegacyProfilesDefaultOff() {

@@ -350,8 +350,10 @@ class InputEncoder {
             } else unicodeChar
             if (resolved < 0x20 || resolved == 0x7f || resolved > Char.MAX_VALUE.code) return null
             val char = resolved.toChar()
-            val symbol = char in textBaseKeyCodes || char in textShiftedKeyCodes
-            return char.takeIf { !mapped || symbol || (altGraph && resolved != baseUnicodeChar) }
+            // Mapped physical keys must retain their down/up semantics for gameplay and ordinary
+            // typing. Unicode is only the fallback for keys with no usable mapping or for an
+            // AltGr composition whose committed character differs from the physical base key.
+            return char.takeIf { !mapped || (altGraph && resolved != baseUnicodeChar) }
         }
 
         internal fun mapTextCharToKeySpec(char: Char): TextKeySpec? {

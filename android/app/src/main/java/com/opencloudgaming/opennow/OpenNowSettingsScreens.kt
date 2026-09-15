@@ -657,6 +657,7 @@ private fun SettingsContent(
     val deviceHasBattery = rememberDeviceHasBattery()
     val fallbackMembershipTier = state.authSession?.user?.membershipTier
     var pendingMicrophoneMode by remember { mutableStateOf<MicrophoneMode?>(null) }
+    var showStreamMenuShortcutDialog by remember { mutableStateOf(false) }
     val microphonePermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) { granted ->
@@ -675,6 +676,16 @@ private fun SettingsContent(
                 Toast.LENGTH_LONG,
             ).show()
         }
+    }
+    if (showStreamMenuShortcutDialog) {
+        AndroidStreamMenuShortcutDialog(
+            currentShortcut = settings.streamMenuShortcut,
+            onShortcutChange = { shortcut ->
+                viewModel.updateSettings(settings.copy(streamMenuShortcut = shortcut))
+                showStreamMenuShortcutDialog = false
+            },
+            onDismiss = { showStreamMenuShortcutDialog = false },
+        )
     }
     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
     CategorySettingsSection(selectedCategory, SettingsCategory.General, searchQuery, "App updates", "update", "updates", "disable update checking", "checking", "check", "download", "install", "apk") {
@@ -1020,6 +1031,25 @@ private fun SettingsContent(
                 ChoiceOptionRow(stringResource(R.string.settings_keyboard_layout), keyboardLayoutOptions, settings.stream.keyboardLayout) {
                     viewModel.updateStreamSettings { s -> s.copy(keyboardLayout = it) }
                 }
+                ControlActionRow(
+                    label = stringResource(R.string.stream_menu_shortcut),
+                    actionLabel = stringResource(R.string.stream_menu_shortcut_configure),
+                    value = if (settings.streamMenuShortcut.equals(
+                            DISABLED_ANDROID_STREAM_MENU_SHORTCUT,
+                            ignoreCase = true,
+                        )
+                    ) {
+                        stringResource(R.string.stream_menu_shortcut_disabled)
+                    } else {
+                        androidKeyboardShortcutDisplay(settings.streamMenuShortcut)
+                    },
+                    onClick = { showStreamMenuShortcutDialog = true },
+                )
+                Text(
+                    text = stringResource(R.string.stream_menu_shortcut_description),
+                    color = SettingsTextMuted,
+                    style = MaterialTheme.typography.bodySmall,
+                )
                 ChoiceOptionRow(stringResource(R.string.settings_game_language), gameLanguageOptions, settings.stream.gameLanguage) {
                     viewModel.updateStreamSettings { s -> s.copy(gameLanguage = it) }
                 }
@@ -1170,6 +1200,15 @@ private fun SettingsContent(
                     viewModel.updateSettings(
                         settings.copy(androidTouch = settings.androidTouch.copy(touchButtonLabels = enabled)),
                     )
+                }
+                TouchControlPresetEditor(
+                    touch = settings.androidTouch,
+                    presets = settings.touchControlPresets,
+                    onTouchChange = { viewModel.updateSettings(settings.copy(androidTouch = it)) },
+                    onPresetsChange = { viewModel.updateSettings(settings.copy(touchControlPresets = it)) },
+                )
+                TouchButtonAppearanceEditor(settings.androidTouch) { touch ->
+                    viewModel.updateSettings(settings.copy(androidTouch = touch))
                 }
                 Text(
                     text = stringResource(R.string.settings_touch_visible_controls),

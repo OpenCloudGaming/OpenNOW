@@ -52,7 +52,19 @@ class ProcessCpuProfilerTest {
         assertTrue(snapshot.contains("samples=2"))
         assertTrue(snapshot.contains("processAvgPct=50.0"))
         assertTrue(snapshot.contains("processPeakPct=60.0"))
-        assertTrue(snapshot.contains("cpu.1 uptimeMs=2000"))
-        assertTrue(snapshot.contains("cpu.2 uptimeMs=3000"))
+        assertTrue(snapshot.contains("cpu.1 uptimeMs=3000 samples=2"))
+        assertEquals(1, cpuDiagnosticBuckets(profile.capture()).size)
+    }
+
+    @Test
+    fun tenSecondBucketsKeepBriefCpuPeaks() {
+        val samples = (1L..180L).map { second ->
+            ProcessCpuUsageSample(second * 1_000L, 1_000L, if (second == 45L) 600.0 else 80.0, if (second == 45L) 75.0 else 10.0, 8)
+        }
+        val buckets = cpuDiagnosticBuckets(samples)
+        assertTrue(buckets.size <= 19)
+        assertEquals(180, buckets.sumOf { it.samples })
+        assertEquals(600.0, buckets.maxOf { it.processPeakPct }, 0.001)
+        assertEquals(75.0, buckets.maxOf { it.deviceCapacityPeakPct }, 0.001)
     }
 }

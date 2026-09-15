@@ -444,10 +444,21 @@ class StreamResolutionTest {
         assertEquals("1680x720", selectedWhd.resolution)
         assertEquals("21:9", selectedWhd.aspectRatio)
 
-        val selectedLegacyPortalMode = StreamSettings(resolution = "1376x640", aspectRatio = "19.5:9")
+        val selectedPortalMode = StreamSettings(resolution = "1376x640", aspectRatio = "19.5:9")
             .withResolutionAllowed(freeSubscription, null)
-        assertEquals("1376x590", selectedLegacyPortalMode.resolution)
-        assertEquals("21:9", selectedLegacyPortalMode.aspectRatio)
+        assertEquals("1376x640", selectedPortalMode.resolution)
+        assertEquals("19.5:9", selectedPortalMode.aspectRatio)
+    }
+
+    @Test
+    fun freePlanPhoneResolutionFallbackPreservesAspectAndUsesAndroidIdentity() {
+        val adjusted = StreamSettings(resolution = "2340x1080", aspectRatio = "19.5:9", fps = 120)
+            .eligibleForAndroidLaunch(SubscriptionInfo(membershipTier = "FREE"), null, androidTvProfile = false)
+
+        assertEquals("1376x640", adjusted.resolution)
+        assertEquals("19.5:9", adjusted.aspectRatio)
+        assertEquals(60, adjusted.fps)
+        assertTrue(adjusted.requiresNativeAndroidCloudMatchMode())
     }
 
     @Test
@@ -513,13 +524,13 @@ class StreamResolutionTest {
     }
 
     @Test
-    fun legacyPortalGeometryMigratesToProviderCompatibleTwentyOneByNineMode() {
+    fun portalGeometrySurvivesAndroidSettingsNormalization() {
         val settings = StreamSettings(resolution = "1376x640", aspectRatio = "19.5:9")
 
-        val migrated = settings.withAndroidSettingsAvailability()
-        assertEquals("1376x590", migrated.resolution)
-        assertEquals("21:9", migrated.aspectRatio)
-        assertEquals(1376 to 590, streamResolutionPixels(migrated))
+        val normalized = settings.withAndroidSettingsAvailability()
+        assertEquals("1376x640", normalized.resolution)
+        assertEquals("19.5:9", normalized.aspectRatio)
+        assertEquals(1376 to 640, streamResolutionPixels(normalized))
     }
 
     @Test
@@ -530,7 +541,7 @@ class StreamResolutionTest {
         )
         assertEquals(listOf("1024x768", "1112x834", "1600x1200"), streamResolutionOptionsForAspect("4:3"))
         assertEquals(listOf("1280x1024"), streamResolutionOptionsForAspect("5:4"))
-        assertEquals(listOf("2340x1080"), streamResolutionOptionsForAspect("19.5:9"))
+        assertEquals(listOf("1376x640", "2340x1080"), streamResolutionOptionsForAspect("19.5:9"))
         assertEquals(emptyList<String>(), streamResolutionOptionsForAspect("20:9"))
         assertEquals(listOf("1376x590", "1680x720", "2560x1080", "3440x1440", "5120x2160"), streamResolutionOptionsForAspect("21:9"))
         assertEquals(listOf("3840x1080", "5120x1440"), streamResolutionOptionsForAspect("32:9"))
@@ -549,7 +560,9 @@ class StreamResolutionTest {
         val prioritySubscription = SubscriptionInfo(membershipTier = "PRIORITY")
         val ultimateSubscription = SubscriptionInfo(membershipTier = "ULTIMATE")
         val fhd = streamResolutionChoicesForAspect("16:9").first { it.value == "1920x1080" }
-        val phoneFhd = streamResolutionChoicesForAspect("19.5:9").single()
+        val phoneFhd = streamResolutionChoicesForAspect("19.5:9").first { it.value == "2340x1080" }
+        val portal = streamResolutionChoicesForAspect("19.5:9").first { it.value == "1376x640" }
+        assertTrue(portal.isAvailableFor(freeSubscription, null))
         val lowUltrawide = streamResolutionChoicesForAspect("21:9").first { it.value == "1376x590" }
         val whd = streamResolutionChoicesForAspect("21:9").first { it.value == "1680x720" }
         val wfhd = streamResolutionChoicesForAspect("21:9").first { it.value == "2560x1080" }

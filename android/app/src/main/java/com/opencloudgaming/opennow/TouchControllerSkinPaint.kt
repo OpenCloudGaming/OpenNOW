@@ -13,11 +13,13 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
@@ -96,6 +98,35 @@ private fun capPath(bounds: Size, form: TouchSkinForm, inset: Float): Path {
         // Flat-topped, so a two-letter legend still has the widest part of the cap to sit in.
         TouchCapShape.Hexagon -> path.addPolygon(rect.center, width / 2f, height / 2f, sides = 6, startDegrees = 0f)
     }
+    return path
+}
+
+/** Overrides only the selected button, retaining its skin shading and input bounds. */
+private fun buttonPath(bounds: Size, form: TouchSkinForm, inset: Float, shape: TouchButtonShape, shoulder: Boolean): Path {
+    if (shape == TouchButtonShape.Theme) return if (shoulder) shoulderPath(bounds, form, inset) else capPath(bounds, form, inset)
+    val extent = min(bounds.width, bounds.height)
+    val centered = Size(extent, extent)
+    val path = when (shape) {
+        TouchButtonShape.Trigger -> Path().apply {
+            val left = inset
+            val right = extent - inset
+            val bottom = extent - inset
+            moveTo(left, inset)
+            lineTo(right, inset)
+            lineTo(right - (right - left) * 0.2f, bottom)
+            quadraticTo(left, bottom, left, extent * 0.5f)
+            close()
+        }
+        else -> capPath(centered, form.copy(
+            capShape = when (shape) {
+                TouchButtonShape.Circle -> TouchCapShape.Circle
+                TouchButtonShape.Hexagon -> TouchCapShape.Hexagon
+                else -> TouchCapShape.Rounded
+            },
+            capCornerPercent = if (shape == TouchButtonShape.Square) 0 else 30,
+        ), inset)
+    }
+    path.translate(Offset((bounds.width - extent) / 2f, (bounds.height - extent) / 2f))
     return path
 }
 
@@ -565,16 +596,26 @@ private fun DrawScope.drawTouchStick(
 
 /** Blank caps are a supported look; the d-pad arrowheads are not optional, a bare cross is unusable. */
 @Composable
-private fun TouchButtonLabel(label: String, pressed: Boolean, sizeSp: Float) {
+private fun TouchButtonLabel(label: String, pressed: Boolean, sizeSp: Float, appearanceKey: String, availableWidth: Dp) {
     if (!LocalTouchButtonLabels.current) return
     val colors = LocalTouchSkin.current
     val form = LocalTouchSkinForm.current
+    val appearance = LocalTouchButtonAppearances.current[appearanceKey]
+    val icon = TouchButtonIcon.entries.firstOrNull { it.name == appearance?.icon }
+    if (icon != null) {
+        Icon(icon.vector, contentDescription = appearance?.label?.takeIf { it.isNotBlank() } ?: stringResource(icon.labelRes),
+            tint = colors.glyphFor(pressed), modifier = Modifier.size((sizeSp * 1.5f).dp))
+        return
+    }
+    val text = appearance?.label?.takeIf { it.isNotBlank() } ?: label
     Text(
-        text = if (form.glyphUppercase) label.uppercase() else label,
+        text = if (appearance?.label.isNullOrBlank() && form.glyphUppercase) text.uppercase() else text,
+        modifier = Modifier.width(availableWidth),
+        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
         color = colors.glyphFor(pressed),
         fontFamily = form.glyphFamily,
         fontWeight = form.glyphWeight,
-        fontSize = (sizeSp * form.glyphScale).sp,
+        fontSize = (sizeSp * form.glyphScale * (4f / text.length.coerceAtLeast(4)).coerceAtLeast(0.5f)).sp,
         letterSpacing = form.glyphLetterSpacing,
         maxLines = 1,
         overflow = TextOverflow.Ellipsis,
@@ -588,24 +629,27 @@ internal fun TouchCapFace(
     pressed: Boolean,
     diameter: Dp,
     modifier: Modifier = Modifier,
+    appearanceKey: String = label,
 ) {
     val colors = LocalTouchSkin.current
     val form = LocalTouchSkinForm.current
+    val shape = LocalTouchButtonAppearances.current[appearanceKey]?.shape ?: TouchButtonShape.Theme
+    val sizeScale = LocalTouchButtonAppearances.current[appearanceKey]?.effectiveSizeScale() ?: 1f
     val scale = if (pressed) form.pressScale else 1f
     Box(
         modifier
-            .size(diameter)
+            .size(diameter * sizeScale)
             .graphicsLayer {
                 scaleX = scale
                 scaleY = scale
             }
             .drawBehind {
-                drawTouchSurface(colors, form, pressed) { inset -> capPath(size, form, inset) }
+                drawTouchSurface(colors, form, pressed) { inset -> buttonPath(size, form, inset, shape, shoulder = false) }
             },
         contentAlignment = Alignment.Center,
     ) {
         // The legend tracks the cap so the size sliders move the whole control, not just its outline.
-        TouchButtonLabel(label, pressed, sizeSp = (diameter.value * 0.3f).coerceIn(7f, 20f))
+        TouchButtonLabel(label, pressed, sizeSp = (diameter.value * sizeScale * 0.3f).coerceIn(7f, 20f), appearanceKey = appearanceKey, availableWidth = diameter * sizeScale * 0.8f)
     }
 }
 
@@ -617,26 +661,29 @@ internal fun TouchShoulderFace(
     width: Dp,
     height: Dp,
     modifier: Modifier = Modifier,
+    appearanceKey: String = label,
 ) {
     val colors = LocalTouchSkin.current
     val form = LocalTouchSkinForm.current
+    val shape = LocalTouchButtonAppearances.current[appearanceKey]?.shape ?: TouchButtonShape.Theme
+    val sizeScale = LocalTouchButtonAppearances.current[appearanceKey]?.effectiveSizeScale() ?: 1f
     val scale = if (pressed) form.pressScale else 1f
     Box(
         modifier
-            .width(width)
-            .height(height)
+            .width(width * sizeScale)
+            .height(height * sizeScale)
             .graphicsLayer {
                 scaleX = scale
                 scaleY = scale
             }
             .drawBehind {
                 drawTouchSurface(colors, form, pressed, rim = false) { inset ->
-                    shoulderPath(size, form, inset)
+                    buttonPath(size, form, inset, shape, shoulder = true)
                 }
             },
         contentAlignment = Alignment.Center,
     ) {
-        TouchButtonLabel(label, pressed, sizeSp = (height.value * 0.44f).coerceIn(7f, 18f))
+        TouchButtonLabel(label, pressed, sizeSp = (height.value * sizeScale * 0.44f).coerceIn(7f, 18f), appearanceKey = appearanceKey, availableWidth = width * sizeScale * 0.82f)
     }
 }
 

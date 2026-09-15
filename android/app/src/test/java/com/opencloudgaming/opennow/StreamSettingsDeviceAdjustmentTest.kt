@@ -945,7 +945,7 @@ class StreamSettingsDeviceAdjustmentTest {
     }
 
     @Test
-    fun legacyPortalGeometryUsesProviderTwentyOneByNineSixtyFpsProfile() {
+    fun portalGeometryPreservesSelectedResolutionAndFps() {
         val adjusted = StreamSettings(
             resolution = "1376x640",
             aspectRatio = "19.5:9",
@@ -953,9 +953,9 @@ class StreamSettingsDeviceAdjustmentTest {
             codec = VideoCodec.H265,
         ).adjustedForDevice(report = null)
 
-        assertEquals("1376x590", adjusted.resolution)
-        assertEquals("21:9", adjusted.aspectRatio)
-        assertEquals(60, adjusted.fps)
+        assertEquals("1376x640", adjusted.resolution)
+        assertEquals("19.5:9", adjusted.aspectRatio)
+        assertEquals(120, adjusted.fps)
         assertEquals(VideoCodec.H265, adjusted.codec)
     }
 

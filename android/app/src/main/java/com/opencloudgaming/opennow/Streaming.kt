@@ -4373,9 +4373,12 @@ class NativeStreamClient(
         val enabled = hapticsOutputAvailable()
         if (hapticsAdvertised == enabled && now - lastHapticsAdvertisementAtMs < HAPTICS_ADVERTISEMENT_REFRESH_MS) return
         if (sendReliableInput(inputEncoder.encodeHapticsEnabled(enabled))) {
+            val changed = hapticsAdvertised != enabled
             hapticsAdvertised = enabled
             lastHapticsAdvertisementAtMs = now
-            NativeInputDiagnostics.add("gamepad haptics advertised enabled=$enabled force=$force")
+            if (changed || force) {
+                NativeInputDiagnostics.addRetained("haptics.advertisement", "gamepad haptics advertised enabled=$enabled force=$force")
+            }
         }
     }
 

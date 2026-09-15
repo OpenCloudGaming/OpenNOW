@@ -185,6 +185,12 @@ object NativeStreamInputRouter {
         androidTvProfile = enabled
     }
     @Volatile
+    private var streamMenuShortcut = DEFAULT_ANDROID_STREAM_MENU_SHORTCUT
+
+    fun setStreamMenuShortcut(shortcut: String) {
+        streamMenuShortcut = shortcut
+    }
+    @Volatile
     private var externalMousePointerCaptureEnabled = false
 
     fun setExternalMousePointerCaptureEnabled(enabled: Boolean) {
@@ -687,6 +693,11 @@ object NativeStreamInputRouter {
             keyCode = keyCode,
             controllerInputDevice = isControllerInputDevice(),
             androidTvProfile = androidTvProfile,
+            configuredShortcut = streamMenuShortcut,
+            ctrlPressed = isCtrlPressed,
+            altPressed = isAltPressed,
+            shiftPressed = isShiftPressed,
+            metaPressed = isMetaPressed,
         )
 
     private fun KeyEvent.isStreamControlsShortcutKey(): Boolean =
@@ -711,8 +722,20 @@ object NativeStreamInputRouter {
         keyCode: Int,
         controllerInputDevice: Boolean,
         androidTvProfile: Boolean = false,
+        configuredShortcut: String = DEFAULT_ANDROID_STREAM_MENU_SHORTCUT,
+        ctrlPressed: Boolean = false,
+        altPressed: Boolean = false,
+        shiftPressed: Boolean = false,
+        metaPressed: Boolean = false,
     ): Boolean =
-        (keyCode == KeyEvent.KEYCODE_MENU && !controllerInputDevice) ||
+        (!controllerInputDevice && matchesAndroidKeyboardShortcut(
+            keyCode = keyCode,
+            ctrlPressed = ctrlPressed,
+            altPressed = altPressed,
+            shiftPressed = shiftPressed,
+            metaPressed = metaPressed,
+            configuredShortcut = configuredShortcut,
+        )) ||
             // Android TV remotes usually have no MENU key and many are reported as controller
             // devices; the Guide button is the only dedicated "open menu" affordance there.
             (androidTvProfile && keyCode == KeyEvent.KEYCODE_BUTTON_MODE)
@@ -1043,6 +1066,7 @@ internal object AndroidControllerInput {
             normalized.contains("mouse") ||
             normalized.contains("touchpad") ||
             normalized.contains("trackpad") ||
+            normalized == "logitech usb receiver" ||
             normalized.contains("uinput-goodix") ||
             normalized.contains("fingerprint") ||
             normalized.contains("uinput-fpc")

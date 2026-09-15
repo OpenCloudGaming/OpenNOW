@@ -2,9 +2,48 @@ package com.opencloudgaming.opennow
 
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
+import org.junit.Assert.assertEquals
+import kotlinx.serialization.json.*
 import org.junit.Test
 
 class DiagnosticsSanitizationTest {
+    @Test
+    fun timestampsSurviveWhileBothIpv6FormsAreRedacted() {
+        val raw = "2026-09-13T08:37:17.123Z old=8:37:17 AM ipv6=2001:0db8:0000:0000:0000:0000:0000:1234 compressed=2001:db8::1234"
+        val sanitized = sanitizeDiagnosticExport(raw)
+        assertTrue(sanitized.contains("2026-09-13T08:37:17.123Z"))
+        assertTrue(sanitized.contains("8:37:17 AM"))
+        assertFalse(sanitized.contains("2001:"))
+        assertEquals("1970-01-01T00:00:01.234Z", diagnosticTimestamp(1234))
+        assertEquals("1970-01-01T00:00:09.000Z uptimeMs=4000", DiagnosticTimeAnchor(10000, 5000).formatElapsed(4000))
+    }
+
+    @Test
+    fun parserBlockRemainsValidJsonAfterRedactingNestedDataAndTruncatedPreviews() {
+        val data = buildJsonObject {
+            put("schemaVersion", 2)
+            put("capturedAt", "2026-09-13T08:37:17.123Z")
+            put("device", buildJsonObject { put("model", "SM-A245F"); put("androidSdk", 36) })
+            put("api", buildJsonArray { add(buildJsonObject {
+                put("password", "secret-value")
+                put("sessionId", "private-session")
+                put("statusCode", 89)
+                put("preview", "{\"accessToken\":\"private-token\",\"deviceId\":\"private-device\",\"password\":\"private-password\"}")
+                put("message", "literal </parser> text and ipv6=2001:db8::1234")
+            }) })
+        }
+        val sanitized = sanitizeDiagnosticExport("Report\n" + diagnosticParserBlock(data))
+        val parsed = OpenNowJson.parseToJsonElement(sanitized.substringAfter("<parser>\n").substringBefore("\n</parser>")).jsonObject
+        assertEquals(2, parsed.getValue("schemaVersion").jsonPrimitive.int)
+        assertEquals("SM-A245F", parsed.getValue("device").jsonObject.getValue("model").jsonPrimitive.content)
+        assertEquals(89, parsed.getValue("api").jsonArray[0].jsonObject.getValue("statusCode").jsonPrimitive.int)
+        assertTrue(sanitized.contains("2026-09-13T08:37:17.123Z"))
+        for (secret in listOf("secret-value", "private-session", "private-token", "private-device", "private-password", "2001:db8")) {
+            assertFalse("Leaked $secret", sanitized.contains(secret))
+        }
+        assertEquals(sanitized, sanitizeDiagnosticExport(sanitized))
+    }
+
     @Test
     fun exportKeepsNonUniqueDeviceAndAndroidSupportContext() {
         val raw = """

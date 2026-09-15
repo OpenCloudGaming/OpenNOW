@@ -68,12 +68,14 @@ class AndroidSetupFlowTest {
                 SetupStep.Streaming,
                 SetupStep.Play,
                 SetupStep.Ready,
+                SetupStep.GeForceNow,
             ),
             setupSteps(),
         )
         assertNull(setupStepBefore(SetupStep.Welcome))
-        assertNull(setupStepAfter(SetupStep.Ready))
-        assertTrue(isFinalSetupStep(SetupStep.Ready))
+        assertNull(setupStepAfter(SetupStep.GeForceNow))
+        assertTrue(isFinalSetupStep(SetupStep.GeForceNow))
+        assertFalse(isFinalSetupStep(SetupStep.Ready))
         assertFalse(isFinalSetupStep(SetupStep.Play))
 
         var step = SetupStep.Welcome
@@ -83,7 +85,35 @@ class AndroidSetupFlowTest {
             walked += step
         }
         assertEquals(setupSteps(), walked)
-        assertEquals(SetupStep.Play, setupStepBefore(SetupStep.Ready))
+        assertEquals(SetupStep.Ready, setupStepBefore(SetupStep.GeForceNow))
+    }
+
+    @Test
+    fun `final setup check trusts gameplay entitlement instead of the tier label`() {
+        assertEquals(
+            SetupGfnMembershipStatus.Checking,
+            setupGfnMembershipStatus(null),
+        )
+        assertEquals(
+            SetupGfnMembershipStatus.Playable,
+            setupGfnMembershipStatus(
+                SubscriptionInfo(membershipTier = "FREE", isGamePlayAllowed = true),
+            ),
+        )
+        assertEquals(
+            SetupGfnMembershipStatus.Missing,
+            setupGfnMembershipStatus(
+                SubscriptionInfo(membershipTier = "FREE", isGamePlayAllowed = false),
+            ),
+        )
+        assertEquals(
+            SetupGfnMembershipStatus.Unverified,
+            setupGfnMembershipStatus(SubscriptionInfo(membershipTier = "FREE")),
+        )
+        assertEquals(
+            SetupGfnMembershipStatus.Unverified,
+            setupGfnMembershipStatus(SubscriptionInfo(membershipTier = "")),
+        )
     }
 
     @Test

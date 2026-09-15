@@ -1,5 +1,6 @@
 package com.opencloudgaming.opennow
 
+import kotlinx.serialization.json.*
 import java.io.BufferedReader
 import java.io.File
 import java.io.InputStreamReader
@@ -129,10 +130,49 @@ private class FastGzipOutputStream(output: OutputStream) : GZIPOutputStream(outp
 
 internal fun boundDiagnosticSnapshot(
     text: String,
-    maxCharacters: Int = 1_500_000,
+    maxCharacters: Int = 16_777_216,
 ): String {
     require(maxCharacters >= 256)
     if (text.length <= maxCharacters) return text
+    // Never splice through JSON: that would destroy all machine-readable evidence in the run.
+    val parserStart = text.indexOf("<parser>\n")
+    val parserEnd = text.lastIndexOf("\n</parser>")
+    if (parserStart >= 0 && parserEnd > parserStart) {
+        val parsed = runCatching { OpenNowJson.parseToJsonElement(text.substring(parserStart + 9, parserEnd)).jsonObject }.getOrNull()
+        if (parsed != null) {
+            val prefix = text.take(minOf(parserStart, maxCharacters / 4, 32_000)) + "\n[persisted snapshot reduced to fit retention limit]\n"
+            val data = parsed.toMutableMap()
+            data["persistence"] = buildJsonObject {
+                put("truncated", true); put("originalCharacters", text.length); put("characterLimit", maxCharacters)
+            }
+            // Keep request records/statuses and evidence pointers; only replace oversized bodies.
+            val api = (data["api"] as? JsonArray)?.toMutableList()
+            if (api != null) {
+                var estimatedSize = JsonObject(data).toString().length + prefix.length + 32
+                val payloads = api.flatMapIndexed { index, entry ->
+                    (entry as? JsonObject)?.filterKeys { it in setOf("request", "response", "requestQuery", "requestHeaders", "responseHeaders") }
+                        ?.map { (key, value) -> Triple(index, key, value.toString().length) }.orEmpty()
+                }.sortedByDescending { it.third }
+                for ((index, key, length) in payloads) {
+                    if (estimatedSize <= maxCharacters) break
+                    if (length <= 160) continue
+                    val marker = buildJsonObject { put("omitted", true); put("reason", "persisted_snapshot_limit"); put("originalCharacters", length) }
+                    api[index] = JsonObject(api[index].jsonObject + (key to marker))
+                    estimatedSize -= length - marker.toString().length
+                }
+                data["api"] = JsonArray(api)
+            }
+            val reduced = prefix + diagnosticParserBlock(JsonObject(data))
+            if (reduced.length <= maxCharacters) return reduced
+        }
+        // An exceptional non-API oversized snapshot must still be parseable and explicit about loss.
+        return diagnosticParserBlock(buildJsonObject {
+            put("schemaVersion", 2); put("incomplete", true)
+            put("persistence", buildJsonObject {
+                put("truncated", true); put("originalCharacters", text.length); put("characterLimit", maxCharacters)
+            })
+        })
+    }
     val marker = "\n... persisted diagnostic snapshot truncated ${text.length - maxCharacters} characters ...\n"
     val available = (maxCharacters - marker.length).coerceAtLeast(2)
     val headLength = available / 2
@@ -151,6 +191,7 @@ internal fun appendPreviousDiagnosticSnapshot(
         appendLine()
         appendLine("previousAppRun.diagnostics:")
         appendLine("previousAppRun.capturedAtEpochMs=${previous.capturedAtEpochMs}")
+        appendLine("previousAppRun.capturedAt=${diagnosticTimestamp(previous.capturedAtEpochMs)}")
         appendLine("----- BEGIN PREVIOUS APP RUN -----")
         appendLine(previous.text.trimEnd())
         append("----- END PREVIOUS APP RUN -----")

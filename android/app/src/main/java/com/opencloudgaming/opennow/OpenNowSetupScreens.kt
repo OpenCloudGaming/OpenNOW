@@ -123,6 +123,7 @@ internal fun SetupFlowScreen(state: OpenNowUiState, viewModel: OpenNowViewModel)
     val primaryFocusRequester = remember { FocusRequester() }
     val reduceMotion = LocalReduceMotion.current
     var step by rememberSaveable { mutableStateOf(SetupStep.Welcome) }
+    val membershipStatus = setupGfnMembershipStatus(state.subscriptionInfo)
     fun finish() {
         viewModel.updateSettings(settings.completingSetupFlow())
     }
@@ -208,7 +209,8 @@ internal fun SetupFlowScreen(state: OpenNowUiState, viewModel: OpenNowViewModel)
                         .onPreviewKeyEvent { handleVerticalDpadFocusMove(it, focusManager) },
                     verticalArrangement = Arrangement.spacedBy(OpenNowSpacing.md),
                 ) {
-                    SetupProgressBar(step, onSkip = { finish() })
+                    // Skip bypasses preference tuning, never the service/membership explanation.
+                    SetupProgressBar(step, onSkip = { step = SetupStep.GeForceNow })
                     Box(Modifier.weight(1f).fillMaxWidth()) {
                         AnimatedContent(
                             targetState = step,
@@ -249,12 +251,18 @@ internal fun SetupFlowScreen(state: OpenNowUiState, viewModel: OpenNowViewModel)
                                             tvProfile = tvProfile,
                                             onSettingsChange = viewModel::updateSettings,
                                         )
-                                        else -> {
+                                        SetupStep.Ready -> {
                                             SetupReadyStep(settings = settings, tvProfile = tvProfile)
                                             SetupExpandableSection(stringResource(R.string.setup_feedback_reporter_title)) {
                                                 SetupFeedbackStep(settings, viewModel::updateSettings)
                                             }
                                         }
+                                        SetupStep.GeForceNow -> SetupGeForceNowStep(
+                                            state = state,
+                                            membershipStatus = membershipStatus,
+                                            onCheckAgain = viewModel::refreshGfnMembership,
+                                        )
+                                        SetupStep.Welcome -> Unit
                                     }
                                     Spacer(Modifier.height(OpenNowSpacing.sm))
                                 }
@@ -263,6 +271,7 @@ internal fun SetupFlowScreen(state: OpenNowUiState, viewModel: OpenNowViewModel)
                     }
                     SetupStepFooter(
                         step = step,
+                        membershipStatus = membershipStatus,
                         primaryFocusRequester = primaryFocusRequester,
                         onBack = { setupStepBefore(step)?.let { step = it } },
                         onNext = {
@@ -350,6 +359,7 @@ private fun SetupStepHeading(step: SetupStep) {
 @Composable
 private fun SetupStepFooter(
     step: SetupStep,
+    membershipStatus: SetupGfnMembershipStatus,
     primaryFocusRequester: FocusRequester,
     onBack: () -> Unit,
     onNext: () -> Unit,
@@ -372,12 +382,18 @@ private fun SetupStepFooter(
             Spacer(Modifier.weight(1f))
             Button(
                 onClick = onNext,
+                enabled = step != SetupStep.GeForceNow ||
+                    membershipStatus == SetupGfnMembershipStatus.Playable ||
+                    membershipStatus == SetupGfnMembershipStatus.Unverified,
                 modifier = Modifier.widthIn(min = 112.dp).focusRequester(primaryFocusRequester),
             ) {
                 Text(
                     stringResource(
                         when {
                             step == SetupStep.Welcome -> R.string.setup_action_start
+                            step == SetupStep.GeForceNow &&
+                                membershipStatus == SetupGfnMembershipStatus.Unverified ->
+                                R.string.setup_action_finish_anyway
                             isFinalSetupStep(step) -> R.string.setup_action_finish
                             else -> R.string.setup_action_next
                         },
@@ -1890,6 +1906,121 @@ private fun SetupReadyStep(settings: AppSettings, tvProfile: Boolean) {
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun SetupGeForceNowStep(
+    state: OpenNowUiState,
+    membershipStatus: SetupGfnMembershipStatus,
+    onCheckAgain: () -> Unit,
+) {
+    val context = LocalContext.current
+    val providerName = state.authSession?.provider?.displayName?.takeIf { it.isNotBlank() }
+        ?: stringResource(R.string.setup_gfn_provider_default)
+    val planLabel = streamPlanEntitlements(
+        state.subscriptionInfo,
+        state.authSession?.user?.membershipTier,
+    ).planLabel
+
+    Column(
+        Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(OpenNowSpacing.md),
+    ) {
+        SetupPointsCard(
+            title = stringResource(R.string.setup_gfn_boundaries_title),
+            points = listOf(
+                stringResource(R.string.setup_gfn_client_point),
+                stringResource(R.string.setup_gfn_servers_point, providerName),
+                stringResource(R.string.setup_gfn_queues_point),
+            ),
+        )
+
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(OpenNowRadius.lg),
+            color = when (membershipStatus) {
+                SetupGfnMembershipStatus.Playable -> MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)
+                SetupGfnMembershipStatus.Missing -> MaterialTheme.colorScheme.errorContainer
+                else -> MaterialTheme.colorScheme.surfaceVariant
+            },
+            border = BorderStroke(
+                1.dp,
+                when (membershipStatus) {
+                    SetupGfnMembershipStatus.Playable -> MaterialTheme.colorScheme.primary.copy(alpha = 0.55f)
+                    SetupGfnMembershipStatus.Missing -> MaterialTheme.colorScheme.error.copy(alpha = 0.5f)
+                    else -> MaterialTheme.colorScheme.outlineVariant
+                },
+            ),
+        ) {
+            Column(
+                Modifier.fillMaxWidth().padding(OpenNowSpacing.md),
+                verticalArrangement = Arrangement.spacedBy(OpenNowSpacing.sm),
+            ) {
+                Text(
+                    stringResource(R.string.setup_gfn_membership_check_title),
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Text(
+                    stringResource(
+                        when (membershipStatus) {
+                            SetupGfnMembershipStatus.Checking -> R.string.setup_gfn_checking_title
+                            SetupGfnMembershipStatus.Playable -> R.string.setup_gfn_playable_title
+                            SetupGfnMembershipStatus.Missing -> R.string.setup_gfn_missing_title
+                            SetupGfnMembershipStatus.Unverified -> R.string.setup_gfn_unverified_title
+                        },
+                    ),
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = if (membershipStatus == SetupGfnMembershipStatus.Missing) {
+                        MaterialTheme.colorScheme.onErrorContainer
+                    } else {
+                        MaterialTheme.colorScheme.onSurface
+                    },
+                )
+                Text(
+                    when (membershipStatus) {
+                        SetupGfnMembershipStatus.Checking -> stringResource(R.string.setup_gfn_checking_body)
+                        SetupGfnMembershipStatus.Playable ->
+                            stringResource(R.string.setup_gfn_playable_body, planLabel, providerName)
+                        SetupGfnMembershipStatus.Missing ->
+                            stringResource(R.string.setup_gfn_missing_body, providerName)
+                        SetupGfnMembershipStatus.Unverified -> stringResource(R.string.setup_gfn_unverified_body)
+                    },
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = if (membershipStatus == SetupGfnMembershipStatus.Missing) {
+                        MaterialTheme.colorScheme.onErrorContainer
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    },
+                )
+
+                FlowRow(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(OpenNowSpacing.xs),
+                    verticalArrangement = Arrangement.spacedBy(OpenNowSpacing.xs),
+                ) {
+                    TextButton(onClick = { openExternalUrl(context, GFN_FAQ_URL) }) {
+                        Text(stringResource(R.string.setup_gfn_action_faq))
+                    }
+                    if (
+                        membershipStatus == SetupGfnMembershipStatus.Missing ||
+                        membershipStatus == SetupGfnMembershipStatus.Unverified
+                    ) {
+                        Button(onClick = { openExternalUrl(context, GFN_MEMBERSHIP_URL) }) {
+                            Text(stringResource(R.string.setup_gfn_action_membership))
+                        }
+                    }
+                    if (membershipStatus != SetupGfnMembershipStatus.Checking) {
+                        TextButton(onClick = onCheckAgain) {
+                            Text(stringResource(R.string.setup_gfn_action_recheck))
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 @Composable
 private fun SetupSectionLabel(title: String, value: String) {
     Row(
@@ -2068,6 +2199,8 @@ private const val SETUP_TILE_PEEK_COUNT = 2.6f
 private val SetupPeekFadeWidth = 36.dp
 private val SetupPeekFadeColor = Color.Black.copy(alpha = 0.55f)
 private const val SETUP_PREVIEW_CARD_COUNT = 3
+private const val GFN_FAQ_URL = "https://www.nvidia.com/en-us/geforce-now/faq/"
+private const val GFN_MEMBERSHIP_URL = "https://www.nvidia.com/en-us/geforce-now/memberships/"
 
 private val SetupStep.titleRes: Int
     get() = when (this) {
@@ -2076,6 +2209,7 @@ private val SetupStep.titleRes: Int
         SetupStep.Streaming -> R.string.setup_streaming_title
         SetupStep.Play -> R.string.setup_play_title
         SetupStep.Ready -> R.string.setup_ready_title
+        SetupStep.GeForceNow -> R.string.setup_gfn_title
     }
 
 private val SetupStep.subtitleRes: Int
@@ -2085,4 +2219,5 @@ private val SetupStep.subtitleRes: Int
         SetupStep.Streaming -> R.string.setup_streaming_subtitle
         SetupStep.Play -> R.string.setup_play_subtitle
         SetupStep.Ready -> R.string.setup_ready_subtitle
+        SetupStep.GeForceNow -> R.string.setup_gfn_subtitle
     }
