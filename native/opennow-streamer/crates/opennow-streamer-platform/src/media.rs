@@ -683,6 +683,15 @@ pub enum MediaFeedback {
         codec: &'static str,
         message: String,
     },
+    AudioDecoderError {
+        message: String,
+        consecutive: u32,
+    },
+    AudioUnavailable {
+        backend: &'static str,
+        reason: String,
+        rejected: u64,
+    },
     QueueDropped {
         media: &'static str,
         count: usize,
@@ -2881,6 +2890,9 @@ fn run_linux_video(shared: Arc<SharedPipeline>, host_commands: Sender<HostComman
                 }
             }
             Ok(opennow_streamer_platform_linux::PushOutcome::Paused) => {}
+            Ok(opennow_streamer_platform_linux::PushOutcome::AudioDisabled) => {
+                unreachable!("audio-disabled outcomes are not produced by video submission")
+            }
             Err(reason) => trigger_linux_fallback(
                 &shared,
                 &host_commands,
@@ -2939,6 +2951,9 @@ fn run_embedded_linux_video(shared: Arc<SharedPipeline>) {
                 request_linux_keyframe(&shared, "embedded Linux decoder queue overflow");
             }
             Ok(opennow_streamer_platform_linux::PushOutcome::Paused) => {}
+            Ok(opennow_streamer_platform_linux::PushOutcome::AudioDisabled) => {
+                unreachable!("audio-disabled outcomes are not produced by video submission")
+            }
             Err(message) => {
                 let _ = shared.feedback.send(MediaFeedback::DecoderError {
                     codec: shared.linux_codec.label(),
@@ -3009,7 +3024,8 @@ fn run_embedded_linux_audio(shared: Arc<SharedPipeline>) {
                 });
             }
             Ok(opennow_streamer_platform_linux::PushOutcome::Queued)
-            | Ok(opennow_streamer_platform_linux::PushOutcome::Paused) => {}
+            | Ok(opennow_streamer_platform_linux::PushOutcome::Paused)
+            | Ok(opennow_streamer_platform_linux::PushOutcome::AudioDisabled) => {}
             Err(message) => {
                 let _ = shared.feedback.send(MediaFeedback::DecoderError {
                     codec: "opus",
@@ -3127,6 +3143,36 @@ fn run_embedded_linux_monitor(
                     stop_linux_session(&shared);
                     return;
                 }
+                opennow_streamer_platform_linux::BackendEvent::AudioDecodeError {
+                    message,
+                    consecutive,
+                } => {
+                    let _ = shared.feedback.send(MediaFeedback::AudioDecoderError {
+                        message,
+                        consecutive,
+                    });
+                }
+                opennow_streamer_platform_linux::BackendEvent::AudioOutputError {
+                    backend,
+                    message,
+                } => {
+                    let _ = shared.feedback.send(MediaFeedback::DeviceLost {
+                        subsystem: linux_audio_backend_name(backend),
+                        recovered: false,
+                        message: Some(message),
+                    });
+                }
+                opennow_streamer_platform_linux::BackendEvent::AudioUnavailable {
+                    backend,
+                    reason,
+                    rejected,
+                } => {
+                    let _ = shared.feedback.send(MediaFeedback::AudioUnavailable {
+                        backend: linux_audio_backend_name(backend),
+                        reason,
+                        rejected,
+                    });
+                }
                 opennow_streamer_platform_linux::BackendEvent::StateChanged(_)
                 | opennow_streamer_platform_linux::BackendEvent::DecoderSelected(_)
                 | opennow_streamer_platform_linux::BackendEvent::AudioSelected(_)
@@ -3219,6 +3265,36 @@ fn run_linux_monitor(shared: Arc<SharedPipeline>, host_commands: Sender<HostComm
                     &host_commands,
                     "Linux hardware media session failed".to_owned(),
                 ),
+                opennow_streamer_platform_linux::BackendEvent::AudioDecodeError {
+                    message,
+                    consecutive,
+                } => {
+                    let _ = shared.feedback.send(MediaFeedback::AudioDecoderError {
+                        message,
+                        consecutive,
+                    });
+                }
+                opennow_streamer_platform_linux::BackendEvent::AudioOutputError {
+                    backend,
+                    message,
+                } => {
+                    let _ = shared.feedback.send(MediaFeedback::DeviceLost {
+                        subsystem: linux_audio_backend_name(backend),
+                        recovered: false,
+                        message: Some(message),
+                    });
+                }
+                opennow_streamer_platform_linux::BackendEvent::AudioUnavailable {
+                    backend,
+                    reason,
+                    rejected,
+                } => {
+                    let _ = shared.feedback.send(MediaFeedback::AudioUnavailable {
+                        backend: linux_audio_backend_name(backend),
+                        reason,
+                        rejected,
+                    });
+                }
                 opennow_streamer_platform_linux::BackendEvent::StateChanged(_)
                 | opennow_streamer_platform_linux::BackendEvent::DecoderSelected(_)
                 | opennow_streamer_platform_linux::BackendEvent::AudioSelected(_)
@@ -3293,6 +3369,16 @@ const fn linux_decoder_name(
         opennow_streamer_platform_linux::DecoderBackend::VaApi => "VA-API/Vulkan",
         opennow_streamer_platform_linux::DecoderBackend::V4l2 => "V4L2/Vulkan",
         opennow_streamer_platform_linux::DecoderBackend::Ffmpeg => "FFmpeg software/Vulkan",
+    }
+}
+
+#[cfg(target_os = "linux")]
+const fn linux_audio_backend_name(
+    backend: opennow_streamer_platform_linux::AudioBackend,
+) -> &'static str {
+    match backend {
+        opennow_streamer_platform_linux::AudioBackend::PipeWire => "PipeWire",
+        opennow_streamer_platform_linux::AudioBackend::Alsa => "ALSA",
     }
 }
 

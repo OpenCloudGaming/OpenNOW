@@ -2246,6 +2246,39 @@ fn forward_nvst_media_feedback<R: NvstSessionResources>(
                 }),
             ));
         }
+        MediaFeedback::AudioDecoderError {
+            message,
+            consecutive,
+        } => {
+            let _ = output.send(event(
+                "log",
+                json!({
+                    "event": "decoder-error",
+                    "codec": "opus",
+                    "consecutive": consecutive,
+                    "level": "warn",
+                    "message": format!("Opus decoder error: {message}")
+                }),
+            ));
+        }
+        MediaFeedback::AudioUnavailable {
+            backend,
+            reason,
+            rejected,
+        } => {
+            let message = format!("Audio is unavailable for the rest of this session: {reason}");
+            opennow_streamer_protocol::log::log_line("WARN", "media-audio", &message);
+            let _ = output.send(event(
+                "log",
+                json!({
+                    "event": "audio-unavailable",
+                    "backend": backend,
+                    "rejectedPackets": rejected,
+                    "level": "warn",
+                    "message": message
+                }),
+            ));
+        }
         MediaFeedback::OutputError { message } => {
             let _ = output.send(event(
                 "error",
@@ -3017,6 +3050,92 @@ mod tests {
                 .as_str()
                 .is_some_and(|message| message.contains("decoder reference loss"))
         );
+    }
+
+    #[test]
+    fn audio_decode_feedback_stays_non_fatal_and_audio_scoped() {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let sender = EventSender::unbounded(sender);
+        let lifecycle = connected_lifecycle();
+        let resources = TestNvstResources::default();
+        let mut state = NvstMediaFeedbackState::new(true);
+
+        forward_nvst_media_feedback(
+            &sender,
+            &lifecycle,
+            7,
+            &resources,
+            MediaFeedback::AudioDecoderError {
+                message: "corrupted stream".to_owned(),
+                consecutive: 3,
+            },
+            &mut state,
+        );
+
+        let message = receiver.recv().expect("audio decode log");
+        assert_eq!(message["type"], "log");
+        assert_eq!(message["event"], "decoder-error");
+        assert_eq!(message["codec"], "opus");
+        assert_eq!(message["level"], "warn");
+        assert_eq!(message["consecutive"], 3);
+        assert!(
+            message["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("corrupted stream"))
+        );
+
+        forward_nvst_media_feedback(
+            &sender,
+            &lifecycle,
+            7,
+            &resources,
+            MediaFeedback::AudioUnavailable {
+                backend: "ALSA",
+                reason: "audio output was lost".to_owned(),
+                rejected: 0,
+            },
+            &mut state,
+        );
+
+        let message = receiver.recv().expect("audio unavailable log");
+        assert_eq!(message["type"], "log");
+        assert_eq!(message["event"], "audio-unavailable");
+        assert_eq!(message["backend"], "ALSA");
+        assert_eq!(message["rejectedPackets"], 0);
+        assert_eq!(message["level"], "warn");
+        assert_eq!(resources.stops.load(Ordering::Relaxed), 0);
+        assert_eq!(resources.keyframe_requests.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn audio_output_device_loss_feedback_stays_non_fatal() {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let sender = EventSender::unbounded(sender);
+        let lifecycle = connected_lifecycle();
+        let resources = TestNvstResources::default();
+        let mut state = NvstMediaFeedbackState::new(true);
+
+        forward_nvst_media_feedback(
+            &sender,
+            &lifecycle,
+            7,
+            &resources,
+            MediaFeedback::DeviceLost {
+                subsystem: "ALSA",
+                recovered: false,
+                message: Some("Alsa device was lost: Broken pipe (os error 32)".to_owned()),
+            },
+            &mut state,
+        );
+
+        let message = receiver.recv().expect("device state log");
+        assert_eq!(message["type"], "log");
+        assert_eq!(message["event"], "device-state");
+        assert_eq!(message["subsystem"], "ALSA");
+        assert_eq!(message["recovered"], false);
+        assert_eq!(message["level"], "warn");
+        assert_eq!(resources.stops.load(Ordering::Relaxed), 0);
+        assert_eq!(resources.keyframe_requests.load(Ordering::Relaxed), 0);
     }
 
     #[test]

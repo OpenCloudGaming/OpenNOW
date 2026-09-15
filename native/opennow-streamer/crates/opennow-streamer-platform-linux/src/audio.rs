@@ -250,6 +250,17 @@ impl OpusDecoder {
         Ok(&self.pcm[..samples_per_channel * self.channels])
     }
 
+    pub fn record_dropped_packet(&mut self, packet: &AudioPacket) {
+        let frame_samples = self.last_frame_samples_per_channel;
+        if frame_samples == 0 {
+            return;
+        }
+        let frame_ticks =
+            (frame_samples as u64) * u64::from(packet.clock_rate_hz) / u64::from(self.sample_rate);
+        self.last_ssrc = Some(packet.ssrc);
+        self.last_timestamp = Some(packet.rtp_timestamp.wrapping_sub(frame_ticks as u32));
+    }
+
     pub fn conceal_before<'a>(&'a mut self, packet: &AudioPacket) -> Result<&'a [f32]> {
         if self.source_changed(packet.ssrc) {
             self.reset_decoder_state()?;
@@ -863,6 +874,33 @@ mod tests {
         assert!(concealed.iter().all(|sample| sample.is_finite()));
         assert!(concealed.iter().any(|sample| sample.abs() > 0.001));
         assert_eq!(decoder.decode(&one_lost).expect("decode").len(), 1_920);
+    }
+
+    #[test]
+    fn dropped_packet_is_concealed_once_by_the_next_gap() {
+        let (mut decoder, mut encoder) = decoder_and_encoder();
+        let first = audio_packet(encoded_frame(&mut encoder, 960, 440.0), 0);
+        assert_eq!(decoder.decode(&first).expect("decode").len(), 1_920);
+
+        let malformed = AudioPacket::new(Arc::<[u8]>::from(vec![0xff; 40]), 1_920, 48_000, 7)
+            .expect("malformed packet");
+        let first_concealment = decoder.conceal_before(&malformed).expect("concealment");
+        assert_eq!(first_concealment.len(), 1_920);
+        assert!(decoder.decode(&malformed).is_err());
+        decoder.record_dropped_packet(&malformed);
+
+        let next = audio_packet(encoded_frame(&mut encoder, 960, 440.0), 2_880);
+        let second_concealment = decoder.conceal_before(&next).expect("concealment");
+        assert_eq!(second_concealment.len(), 1_920);
+        assert_eq!(decoder.decode(&next).expect("decode").len(), 1_920);
+
+        let contiguous = audio_packet(encoded_frame(&mut encoder, 960, 440.0), 3_840);
+        assert!(
+            decoder
+                .conceal_before(&contiguous)
+                .expect("contiguous")
+                .is_empty()
+        );
     }
 
     #[test]

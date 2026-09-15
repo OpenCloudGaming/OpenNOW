@@ -129,6 +129,7 @@ pub enum PushOutcome {
     Queued,
     DroppedOldest,
     Paused,
+    AudioDisabled,
 }
 
 #[derive(Debug)]
@@ -141,6 +142,19 @@ pub enum BackendEvent {
         reason: String,
     },
     AudioSelected(AudioBackend),
+    AudioDecodeError {
+        message: String,
+        consecutive: u32,
+    },
+    AudioOutputError {
+        backend: AudioBackend,
+        message: String,
+    },
+    AudioUnavailable {
+        backend: AudioBackend,
+        reason: String,
+        rejected: u64,
+    },
     FormatChanged(StreamFormat),
     NeedKeyframe,
     QueueOverflow {
@@ -173,6 +187,7 @@ pub struct LinuxSession {
     video_commands: Arc<BoundedQueue<VideoCommand>>,
     decoded_frames: Arc<BoundedQueue<DecodedVideoFrame>>,
     audio_packets: Option<Arc<BoundedQueue<AudioPacket>>>,
+    audio_unavailable: Arc<AtomicBool>,
     events: EventQueue,
     video_generation: AtomicU64,
     video_needs_keyframe: AtomicBool,
@@ -225,17 +240,18 @@ impl LinuxSession {
             }
         }
 
+        let audio_unavailable = Arc::new(AtomicBool::new(false));
         let (audio_packets, audio_worker) = if let Some(audio_config) = config.audio.clone() {
             let queue = Arc::new(BoundedQueue::new(audio_config.queue_depth));
             let (audio_start_tx, audio_start_rx) = mpsc::sync_channel(1);
             let worker = {
                 let queue = Arc::clone(&queue);
                 let events = Arc::clone(&events);
-                let state = Arc::clone(&state);
+                let unavailable = Arc::clone(&audio_unavailable);
                 match thread::Builder::new()
                     .name("opennow-linux-audio".to_owned())
                     .spawn(move || {
-                        run_audio_worker(audio_config, queue, state, events, audio_start_tx)
+                        run_audio_worker(audio_config, queue, events, unavailable, audio_start_tx)
                     }) {
                     Ok(worker) => worker,
                     Err(error) => {
@@ -275,6 +291,7 @@ impl LinuxSession {
             video_commands,
             decoded_frames,
             audio_packets,
+            audio_unavailable,
             events,
             video_generation: AtomicU64::new(0),
             video_needs_keyframe: AtomicBool::new(false),
@@ -318,21 +335,16 @@ impl LinuxSession {
         if self.state() != LifecycleState::Running {
             return Err(Error::NotRunning);
         }
+        if self.audio_unavailable.load(Ordering::Acquire) {
+            return Ok(PushOutcome::AudioDisabled);
+        }
         if self.paused.load(Ordering::Acquire) {
             return Ok(PushOutcome::Paused);
         }
         let queue = self.audio_packets.as_ref().ok_or_else(|| {
             Error::unavailable(Subsystem::Session, "audio is disabled for this session")
         })?;
-        match queue.push_latest(packet) {
-            QueuePush::Added => Ok(PushOutcome::Queued),
-            QueuePush::DroppedOldest => {
-                emit(&self.events, BackendEvent::QueueOverflow { media: "audio" });
-                Ok(PushOutcome::DroppedOldest)
-            }
-            QueuePush::Full => unreachable!(),
-            QueuePush::Closed => Err(Error::QueueClosed),
-        }
+        submit_audio_packet(queue, &self.audio_unavailable, &self.events, packet)
     }
 
     pub fn reconfigure(&self, format: StreamFormat) -> Result<()> {
@@ -724,11 +736,96 @@ fn run_video_worker(
     finish_decoder_drain(flush_decoder(&mut decoder), &decoded, &events, "shutdown");
 }
 
+const AUDIO_DECODE_STRIKES_BEFORE_RESET: u32 = 8;
+const AUDIO_DECODER_RESET_LIMIT: u32 = 2;
+
+struct AudioRecovery {
+    consecutive_rejections: u32,
+    rejections: u64,
+    resets: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AudioRecoveryAction {
+    Skip,
+    ResetDecoder,
+    GiveUp,
+}
+
+impl AudioRecovery {
+    fn record_decoded(&mut self) {
+        self.consecutive_rejections = 0;
+    }
+
+    fn record_rejection(&mut self) -> AudioRecoveryAction {
+        self.consecutive_rejections += 1;
+        self.rejections += 1;
+        if self.consecutive_rejections < AUDIO_DECODE_STRIKES_BEFORE_RESET {
+            return AudioRecoveryAction::Skip;
+        }
+        if self.resets >= AUDIO_DECODER_RESET_LIMIT {
+            return AudioRecoveryAction::GiveUp;
+        }
+        AudioRecoveryAction::ResetDecoder
+    }
+
+    fn record_reset(&mut self) {
+        self.consecutive_rejections = 0;
+        self.resets += 1;
+    }
+}
+
+fn audio_unavailable(
+    packets: &BoundedQueue<AudioPacket>,
+    events: &EventQueue,
+    unavailable: &AtomicBool,
+    backend: AudioBackend,
+    recovery: &AudioRecovery,
+    reason: String,
+) {
+    unavailable.store(true, Ordering::Release);
+    packets.close();
+    emit(
+        events,
+        BackendEvent::AudioUnavailable {
+            backend,
+            reason,
+            rejected: recovery.rejections,
+        },
+    );
+}
+
+fn submit_audio_packet(
+    queue: &BoundedQueue<AudioPacket>,
+    unavailable: &AtomicBool,
+    events: &EventQueue,
+    packet: AudioPacket,
+) -> Result<PushOutcome> {
+    if unavailable.load(Ordering::Acquire) {
+        return Ok(PushOutcome::AudioDisabled);
+    }
+    match queue.push_latest(packet) {
+        QueuePush::Added => Ok(PushOutcome::Queued),
+        QueuePush::DroppedOldest => {
+            emit(events, BackendEvent::QueueOverflow { media: "audio" });
+            Ok(PushOutcome::DroppedOldest)
+        }
+        QueuePush::Full => unreachable!(),
+        QueuePush::Closed => {
+            if unavailable.load(Ordering::Acquire) {
+                Ok(PushOutcome::AudioDisabled)
+            } else {
+                Err(Error::QueueClosed)
+            }
+        }
+    }
+}
+
 fn run_audio_worker(
     config: AudioConfig,
     packets: Arc<BoundedQueue<AudioPacket>>,
-    state: Arc<Mutex<LifecycleState>>,
     events: EventQueue,
+    unavailable: Arc<AtomicBool>,
     startup: mpsc::SyncSender<Result<AudioBackend>>,
 ) {
     let mut opus = match OpusDecoder::open(&config) {
@@ -748,7 +845,33 @@ fn run_audio_worker(
     let mut backend = sink.backend();
     let _ = startup.send(Ok(backend));
     emit(&events, BackendEvent::AudioSelected(backend));
+    let mut recovery = AudioRecovery {
+        consecutive_rejections: 0,
+        rejections: 0,
+        resets: 0,
+    };
+    let mut rebuild_decoder = false;
     loop {
+        if rebuild_decoder {
+            rebuild_decoder = false;
+            match OpusDecoder::open(&config) {
+                Ok(decoder) => {
+                    opus = decoder;
+                    recovery.record_reset();
+                }
+                Err(error) => {
+                    audio_unavailable(
+                        &packets,
+                        &events,
+                        &unavailable,
+                        backend,
+                        &recovery,
+                        format!("the Opus decoder could not be rebuilt: {error}"),
+                    );
+                    return;
+                }
+            }
+        }
         let packet = match packets.wait_pop(Duration::from_millis(100)) {
             QueuePop::Item(packet) => packet,
             QueuePop::TimedOut => continue,
@@ -758,9 +881,23 @@ fn run_audio_worker(
         let concealed = match opus.conceal_before(&packet) {
             Ok(pcm) => pcm,
             Err(error) => {
-                packets.close();
-                report_worker_error(&state, &events, error);
-                return;
+                opus.record_dropped_packet(&packet);
+                match record_audio_decode_failure(&events, &mut recovery, error.to_string()) {
+                    AudioRecoveryAction::Skip => {}
+                    AudioRecoveryAction::ResetDecoder => rebuild_decoder = true,
+                    AudioRecoveryAction::GiveUp => {
+                        audio_unavailable(
+                            &packets,
+                            &events,
+                            &unavailable,
+                            backend,
+                            &recovery,
+                            format!("the audio decoder rejected {} packets", recovery.rejections),
+                        );
+                        return;
+                    }
+                }
+                continue;
             }
         };
         if !concealed.is_empty() {
@@ -774,36 +911,84 @@ fn run_audio_worker(
             ) {
                 Ok(()) => {}
                 Err(AudioWriteError::Closed) => return,
-                Err(AudioWriteError::Failed(error)) => {
-                    packets.close();
-                    report_worker_error(&state, &events, error);
+                Err(AudioWriteError::Failed { backend, reason }) => {
+                    audio_unavailable(
+                        &packets,
+                        &events,
+                        &unavailable,
+                        backend,
+                        &recovery,
+                        format!("audio output was lost and could not be replaced: {reason}"),
+                    );
                     return;
                 }
             }
         }
         let pcm = match opus.decode(&packet) {
-            Ok(pcm) => pcm,
+            Ok(pcm) => {
+                recovery.record_decoded();
+                pcm
+            }
             Err(error) => {
-                packets.close();
-                report_worker_error(&state, &events, error);
-                return;
+                opus.record_dropped_packet(&packet);
+                match record_audio_decode_failure(&events, &mut recovery, error.to_string()) {
+                    AudioRecoveryAction::Skip => {}
+                    AudioRecoveryAction::ResetDecoder => rebuild_decoder = true,
+                    AudioRecoveryAction::GiveUp => {
+                        audio_unavailable(
+                            &packets,
+                            &events,
+                            &unavailable,
+                            backend,
+                            &recovery,
+                            format!("the audio decoder rejected {} packets", recovery.rejections),
+                        );
+                        return;
+                    }
+                }
+                continue;
             }
         };
         match write_audio(&mut sink, &mut backend, &config, &events, pcm, &cancelled) {
             Ok(()) => {}
             Err(AudioWriteError::Closed) => return,
-            Err(AudioWriteError::Failed(error)) => {
-                packets.close();
-                report_worker_error(&state, &events, error);
+            Err(AudioWriteError::Failed { backend, reason }) => {
+                audio_unavailable(
+                    &packets,
+                    &events,
+                    &unavailable,
+                    backend,
+                    &recovery,
+                    format!("audio output was lost and could not be replaced: {reason}"),
+                );
                 return;
             }
         }
     }
 }
 
+fn record_audio_decode_failure(
+    events: &EventQueue,
+    recovery: &mut AudioRecovery,
+    message: String,
+) -> AudioRecoveryAction {
+    let action = recovery.record_rejection();
+    emit(
+        events,
+        BackendEvent::AudioDecodeError {
+            message,
+            consecutive: recovery.consecutive_rejections,
+        },
+    );
+    action
+}
+
 enum AudioWriteError {
     Closed,
-    Failed(Error),
+    Failed {
+        backend: AudioBackend,
+        reason: String,
+    },
 }
 
 fn write_audio(
@@ -818,15 +1003,34 @@ fn write_audio(
         if cancelled() {
             return Err(AudioWriteError::Closed);
         }
+        let message = error.to_string();
+        emit(
+            events,
+            BackendEvent::AudioOutputError {
+                backend: *backend,
+                message: message.clone(),
+            },
+        );
         match open_audio_fallback(config, *backend) {
             Ok(mut fallback) => {
+                let fallback_backend = fallback.backend();
                 if let Err(fallback_error) = fallback.write(pcm, cancelled) {
                     if cancelled() {
                         return Err(AudioWriteError::Closed);
                     }
-                    return Err(AudioWriteError::Failed(fallback_error));
+                    emit(
+                        events,
+                        BackendEvent::AudioOutputError {
+                            backend: fallback_backend,
+                            message: fallback_error.to_string(),
+                        },
+                    );
+                    return Err(AudioWriteError::Failed {
+                        backend: fallback_backend,
+                        reason: fallback_error.to_string(),
+                    });
                 }
-                *backend = fallback.backend();
+                *backend = fallback_backend;
                 *sink = fallback;
                 emit(events, BackendEvent::AudioSelected(*backend));
                 return Ok(());
@@ -834,11 +1038,17 @@ fn write_audio(
             Err(fallback_error) => {
                 emit(
                     events,
-                    BackendEvent::Error(format!("audio fallback failed: {fallback_error}")),
+                    BackendEvent::AudioOutputError {
+                        backend: *backend,
+                        message: fallback_error.to_string(),
+                    },
                 );
             }
         }
-        return Err(AudioWriteError::Failed(error));
+        return Err(AudioWriteError::Failed {
+            backend: *backend,
+            reason: message,
+        });
     }
     Ok(())
 }
@@ -1414,5 +1624,434 @@ mod tests {
         assert!(!frame.keyframe);
         assert!(!reset);
         assert_eq!(inter_generation, keyframe_generation);
+    }
+
+    const VALID_OPUS_PACKET: [u8; 1] = [0x08];
+    const MALFORMED_OPUS_PACKET: [u8; 40] = [0xff; 40];
+
+    fn audio_worker_config(
+        alsa_device: &str,
+        preference: crate::AudioBackendPreference,
+    ) -> super::AudioConfig {
+        super::AudioConfig {
+            alsa_device: alsa_device.to_owned(),
+            preference,
+            ..super::AudioConfig::default()
+        }
+    }
+
+    fn audio_packet(data: &[u8], rtp_timestamp: u32) -> super::AudioPacket {
+        super::AudioPacket::new(Arc::<[u8]>::from(data.to_vec()), rtp_timestamp, 48_000, 7)
+            .expect("valid audio packet input")
+    }
+
+    fn spawn_audio_worker(
+        config: super::AudioConfig,
+    ) -> (
+        Arc<super::BoundedQueue<super::AudioPacket>>,
+        Arc<AtomicBool>,
+        super::EventQueue,
+        thread::JoinHandle<()>,
+    ) {
+        unsafe {
+            std::env::set_var(
+                "ALSA_CONFIG_PATH",
+                concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/tests/fixtures/audio-failure.conf"
+                ),
+            )
+        };
+        let packets = Arc::new(super::BoundedQueue::new(64));
+        let unavailable = Arc::new(AtomicBool::new(false));
+        let events: super::EventQueue = Arc::new(super::BoundedQueue::new(512));
+        let (startup_tx, startup_rx) = mpsc::sync_channel(1);
+        let worker = {
+            let packets = Arc::clone(&packets);
+            let unavailable = Arc::clone(&unavailable);
+            let events = Arc::clone(&events);
+            thread::Builder::new()
+                .name("opennow-test-audio-policy".to_owned())
+                .spawn(move || {
+                    super::run_audio_worker(config, packets, events, unavailable, startup_tx)
+                })
+                .expect("audio worker")
+        };
+        let startup = startup_rx.recv_timeout(Duration::from_secs(3));
+        assert!(
+            matches!(startup, Ok(Ok(_))),
+            "audio worker startup: {startup:?}"
+        );
+        (packets, unavailable, events, worker)
+    }
+
+    fn collect_events(events: &super::EventQueue) -> Vec<super::BackendEvent> {
+        let mut collected = Vec::new();
+        while let Some(event) = events.try_pop() {
+            collected.push(event);
+        }
+        collected
+    }
+
+    fn wait_for_event(
+        events: &super::EventQueue,
+        timeout: Duration,
+        predicate: impl Fn(&super::BackendEvent) -> bool,
+    ) -> Vec<super::BackendEvent> {
+        let deadline = std::time::Instant::now() + timeout;
+        let mut collected = Vec::new();
+        loop {
+            match events.wait_pop(Duration::from_millis(5)) {
+                super::QueuePop::Item(event) => {
+                    let matched = predicate(&event);
+                    collected.push(event);
+                    if matched {
+                        break;
+                    }
+                }
+                super::QueuePop::TimedOut => {
+                    if std::time::Instant::now() >= deadline {
+                        break;
+                    }
+                }
+                super::QueuePop::Closed => break,
+            }
+        }
+        collected.extend(collect_events(events));
+        collected
+    }
+
+    #[test]
+    fn terminal_audio_state_is_observed_across_queue_closure() {
+        let events: super::EventQueue = Arc::new(super::BoundedQueue::new(8));
+        let queue = super::BoundedQueue::new(4);
+        let unavailable = AtomicBool::new(false);
+        queue.close();
+        unavailable.store(true, Ordering::Release);
+        assert_eq!(
+            super::submit_audio_packet(
+                &queue,
+                &unavailable,
+                &events,
+                audio_packet(&VALID_OPUS_PACKET, 0),
+            )
+            .expect("terminal audio state"),
+            super::PushOutcome::AudioDisabled
+        );
+        assert!(collect_events(&events).is_empty());
+
+        let queue = super::BoundedQueue::new(4);
+        let unavailable = AtomicBool::new(false);
+        queue.close();
+        assert!(
+            super::submit_audio_packet(
+                &queue,
+                &unavailable,
+                &events,
+                audio_packet(&VALID_OPUS_PACKET, 0),
+            )
+            .is_err(),
+            "a closed queue without a terminal audio state stays an error"
+        );
+
+        let queue = super::BoundedQueue::new(4);
+        let unavailable = AtomicBool::new(true);
+        assert_eq!(
+            super::submit_audio_packet(
+                &queue,
+                &unavailable,
+                &events,
+                audio_packet(&VALID_OPUS_PACKET, 0),
+            )
+            .expect("terminal audio state"),
+            super::PushOutcome::AudioDisabled
+        );
+    }
+
+    #[test]
+    fn concurrent_audio_submission_never_reports_a_queue_error() {
+        let queue = Arc::new(super::BoundedQueue::new(8));
+        let unavailable = Arc::new(AtomicBool::new(false));
+        let events: super::EventQueue = Arc::new(super::BoundedQueue::new(64));
+        let publisher = {
+            let queue = Arc::clone(&queue);
+            let unavailable = Arc::clone(&unavailable);
+            thread::spawn(move || {
+                unavailable.store(true, Ordering::Release);
+                queue.close();
+            })
+        };
+        let mut outcomes = Vec::new();
+        let mut attempts = 0_u32;
+        while !queue.is_closed() && attempts < 100_000 {
+            outcomes.push(super::submit_audio_packet(
+                &queue,
+                &unavailable,
+                &events,
+                audio_packet(&VALID_OPUS_PACKET, 0),
+            ));
+            attempts += 1;
+        }
+        publisher.join().expect("publisher thread");
+        for _ in 0..8 {
+            outcomes.push(super::submit_audio_packet(
+                &queue,
+                &unavailable,
+                &events,
+                audio_packet(&VALID_OPUS_PACKET, 0),
+            ));
+        }
+        assert!(
+            outcomes.iter().all(|outcome| outcome.is_ok()),
+            "a submitter racing the terminal audio state must not see a queue error: {outcomes:?}"
+        );
+        assert!(
+            outcomes
+                .iter()
+                .rev()
+                .take(8)
+                .all(|outcome| *outcome.as_ref().expect("terminal outcome")
+                    == super::PushOutcome::AudioDisabled),
+            "after the terminal audio state the submitter must report disabled: {outcomes:?}"
+        );
+    }
+
+    #[test]
+    fn audio_recovery_policy_bounds_decoder_rebuilds_and_gives_up() {
+        let mut recovery = super::AudioRecovery {
+            consecutive_rejections: 0,
+            rejections: 0,
+            resets: 0,
+        };
+        for expected_consecutive in 1..super::AUDIO_DECODE_STRIKES_BEFORE_RESET {
+            assert_eq!(
+                recovery.record_rejection(),
+                super::AudioRecoveryAction::Skip
+            );
+            assert_eq!(recovery.consecutive_rejections, expected_consecutive);
+        }
+        assert_eq!(
+            recovery.record_rejection(),
+            super::AudioRecoveryAction::ResetDecoder
+        );
+        assert_eq!(recovery.rejections, 8);
+        recovery.record_reset();
+        assert_eq!(recovery.consecutive_rejections, 0);
+        assert_eq!(recovery.resets, 1);
+
+        recovery.record_decoded();
+        assert_eq!(recovery.consecutive_rejections, 0);
+        for _ in 1..super::AUDIO_DECODE_STRIKES_BEFORE_RESET {
+            assert_eq!(
+                recovery.record_rejection(),
+                super::AudioRecoveryAction::Skip
+            );
+        }
+        assert_eq!(
+            recovery.record_rejection(),
+            super::AudioRecoveryAction::ResetDecoder
+        );
+        recovery.record_reset();
+        for _ in 1..super::AUDIO_DECODE_STRIKES_BEFORE_RESET {
+            assert_eq!(
+                recovery.record_rejection(),
+                super::AudioRecoveryAction::Skip
+            );
+        }
+        assert_eq!(
+            recovery.record_rejection(),
+            super::AudioRecoveryAction::GiveUp
+        );
+        assert_eq!(
+            recovery.rejections,
+            3 * u64::from(super::AUDIO_DECODE_STRIKES_BEFORE_RESET)
+        );
+        assert_eq!(recovery.resets, super::AUDIO_DECODER_RESET_LIMIT);
+    }
+
+    #[test]
+    fn malformed_opus_does_not_fail_the_shared_session() {
+        let (packets, unavailable, events, worker) = spawn_audio_worker(audio_worker_config(
+            "opennow_test_output",
+            crate::AudioBackendPreference::AlsaOnly,
+        ));
+        packets.push(audio_packet(&VALID_OPUS_PACKET, 0));
+        packets.push(audio_packet(&[0x0c], 960));
+        thread::sleep(Duration::from_millis(50));
+        let startup = collect_events(&events);
+        assert!(
+            startup
+                .iter()
+                .all(|event| matches!(event, super::BackendEvent::AudioSelected(_))),
+            "valid Opus packets must not raise errors, saw {startup:?}"
+        );
+
+        packets.push(audio_packet(&MALFORMED_OPUS_PACKET, 1920));
+        let observed = wait_for_event(&events, Duration::from_secs(3), |event| {
+            matches!(event, super::BackendEvent::AudioDecodeError { .. })
+        });
+        assert!(
+            observed.iter().any(|event| matches!(
+                event,
+                super::BackendEvent::AudioDecodeError { message, consecutive }
+                    if message.contains("corrupted stream") && *consecutive == 1
+            )),
+            "expected an Opus-scoped decode error, saw {observed:?}"
+        );
+        assert!(
+            !observed
+                .iter()
+                .any(|event| matches!(event, super::BackendEvent::StateChanged(_))),
+            "audio decode errors must not change the shared session state, saw {observed:?}"
+        );
+        assert!(!packets.is_closed(), "audio must keep running");
+        assert!(!unavailable.load(Ordering::Acquire));
+
+        packets.push(audio_packet(&VALID_OPUS_PACKET, 2880));
+        thread::sleep(Duration::from_millis(50));
+        assert!(
+            collect_events(&events).is_empty(),
+            "audio must decode normally after a rejected packet"
+        );
+        assert!(!packets.is_closed());
+
+        packets.close();
+        worker.join().expect("audio worker thread");
+    }
+
+    #[test]
+    fn continuous_opus_rejections_disable_audio_only() {
+        let (packets, unavailable, events, worker) = spawn_audio_worker(audio_worker_config(
+            "opennow_test_output",
+            crate::AudioBackendPreference::AlsaOnly,
+        ));
+        let rejections = 3 * super::AUDIO_DECODE_STRIKES_BEFORE_RESET;
+        for index in 0..rejections {
+            packets.push(audio_packet(&MALFORMED_OPUS_PACKET, index * 960));
+        }
+        let observed = wait_for_event(&events, Duration::from_secs(5), |event| {
+            matches!(event, super::BackendEvent::AudioUnavailable { .. })
+        });
+        let decode_errors = observed
+            .iter()
+            .filter(|event| matches!(event, super::BackendEvent::AudioDecodeError { .. }))
+            .count();
+        assert_eq!(
+            decode_errors, rejections as usize,
+            "every rejected packet is reported, saw {observed:?}"
+        );
+        assert!(
+            observed.iter().any(|event| matches!(
+                event,
+                super::BackendEvent::AudioUnavailable { backend, rejected, .. }
+                    if *backend == crate::AudioBackend::Alsa
+                        && *rejected == u64::from(rejections)
+            )),
+            "expected an audio-only escalation, saw {observed:?}"
+        );
+        assert!(
+            !observed
+                .iter()
+                .any(|event| matches!(event, super::BackendEvent::StateChanged(_))),
+            "audio escalation must not fail the shared session, saw {observed:?}"
+        );
+        assert!(packets.is_closed());
+        assert!(unavailable.load(Ordering::Acquire));
+        worker.join().expect("audio worker thread");
+    }
+
+    fn drive_until_audio_unavailable(
+        packets: &Arc<super::BoundedQueue<super::AudioPacket>>,
+        events: &super::EventQueue,
+    ) -> Vec<super::BackendEvent> {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let mut observed = Vec::new();
+        let mut pushed = 0_u64;
+        while std::time::Instant::now() < deadline {
+            observed.extend(collect_events(events));
+            if observed
+                .iter()
+                .any(|event| matches!(event, super::BackendEvent::AudioUnavailable { .. }))
+            {
+                break;
+            }
+            if pushed < 64 {
+                packets.push(audio_packet(&VALID_OPUS_PACKET, (pushed as u32) * 960));
+                pushed += 1;
+            }
+            thread::sleep(Duration::from_millis(2));
+        }
+        observed.extend(collect_events(events));
+        observed
+    }
+
+    #[test]
+    fn failing_audio_output_disables_audio_only() {
+        let (packets, unavailable, events, worker) = spawn_audio_worker(audio_worker_config(
+            "opennow_test_failing_output",
+            crate::AudioBackendPreference::AlsaOnly,
+        ));
+        let observed = drive_until_audio_unavailable(&packets, &events);
+        assert!(
+            observed.iter().any(|event| matches!(
+                event,
+                super::BackendEvent::AudioOutputError { backend, message }
+                    if *backend == crate::AudioBackend::Alsa
+                        && message.contains("Input/output error")
+            )),
+            "expected an audio output error, saw {observed:?}"
+        );
+        assert!(
+            observed.iter().any(|event| matches!(
+                event,
+                super::BackendEvent::AudioUnavailable { backend, .. }
+                    if *backend == crate::AudioBackend::Alsa
+            )),
+            "expected audio to be disabled, saw {observed:?}"
+        );
+        assert!(
+            !observed
+                .iter()
+                .any(|event| matches!(event, super::BackendEvent::StateChanged(_))),
+            "an audio output failure must not fail the shared session, saw {observed:?}"
+        );
+        assert!(packets.is_closed());
+        assert!(unavailable.load(Ordering::Acquire));
+        worker.join().expect("audio worker thread");
+    }
+
+    #[test]
+    fn fixed_audio_output_never_falls_back_and_stays_isolated() {
+        let config = super::AudioConfig {
+            output_device: "alsa:opennow_test_failing_output".to_owned(),
+            ..audio_worker_config("unused", crate::AudioBackendPreference::AlsaOnly)
+        };
+        let (packets, unavailable, events, worker) = spawn_audio_worker(config);
+        let observed = drive_until_audio_unavailable(&packets, &events);
+        assert!(
+            observed.iter().any(|event| matches!(
+                event,
+                super::BackendEvent::AudioOutputError { message, .. }
+                    if message.contains("forbids fallback")
+            )),
+            "a fixed route must refuse fallback, saw {observed:?}"
+        );
+        assert_eq!(
+            observed
+                .iter()
+                .filter(|event| matches!(event, super::BackendEvent::AudioSelected(_)))
+                .count(),
+            1,
+            "a fixed route must never select another sink, saw {observed:?}"
+        );
+        assert!(
+            !observed
+                .iter()
+                .any(|event| matches!(event, super::BackendEvent::StateChanged(_))),
+            "a fixed output failure must not fail the shared session, saw {observed:?}"
+        );
+        assert!(packets.is_closed());
+        assert!(unavailable.load(Ordering::Acquire));
+        worker.join().expect("audio worker thread");
     }
 }
