@@ -1,5 +1,26 @@
 package com.opencloudgaming.opennow
 
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
+
+// Leave a synthetic press visible for more than one 60 Hz game-input poll.
+internal const val STREAM_KEY_PRESS_DURATION_MS = 32L
+
+/** Always release an accepted synthetic press, including when its caller is cancelled. */
+internal suspend fun sendStreamKeyboardKeyStroke(send: suspend (pressed: Boolean) -> Boolean): Boolean {
+    if (!send(true)) return false
+    val released: Boolean
+    try {
+        delay(STREAM_KEY_PRESS_DURATION_MS)
+    } finally {
+        released = withContext(NonCancellable) { send(false) }
+    }
+    // Repeated Backspace presses also need a visible release between them.
+    if (released) delay(STREAM_KEY_PRESS_DURATION_MS)
+    return released
+}
+
 /** A minimal remote edit that keeps the host field aligned with the locally mirrored draft. */
 internal sealed interface StreamKeyboardEdit {
     data object None : StreamKeyboardEdit

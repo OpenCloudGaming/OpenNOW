@@ -27,11 +27,13 @@ import androidx.core.content.ContextCompat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.JsonObject
@@ -251,6 +253,24 @@ class NativeStreamClient(
             .setUseStereoOutput(true)
             .setUseHardwareAcousticEchoCanceler(true)
             .setUseHardwareNoiseSuppressor(true)
+            .setAudioTrackErrorCallback(
+                object : JavaAudioDeviceModule.AudioTrackErrorCallback {
+                    override fun onWebRtcAudioTrackInitError(errorMessage: String?) {
+                        recordStreamDiagnostic("audio playback init failed error=${errorMessage.orEmpty()}")
+                    }
+
+                    override fun onWebRtcAudioTrackStartError(
+                        errorCode: JavaAudioDeviceModule.AudioTrackStartErrorCode?,
+                        errorMessage: String?,
+                    ) {
+                        recordStreamDiagnostic("audio playback start failed code=${errorCode?.name.orEmpty()} error=${errorMessage.orEmpty()}")
+                    }
+
+                    override fun onWebRtcAudioTrackError(errorMessage: String?) {
+                        recordStreamDiagnostic("audio playback runtime failed error=${errorMessage.orEmpty()}")
+                    }
+                },
+            )
             .setAudioRecordErrorCallback(
                 object : JavaAudioDeviceModule.AudioRecordErrorCallback {
                     override fun onWebRtcAudioRecordInitError(errorMessage: String?) {
@@ -1703,37 +1723,34 @@ class NativeStreamClient(
     }
 
     fun sendKeyCode(keyCode: Int) {
-        val down = KeyEvent(SystemClock.uptimeMillis(), SystemClock.uptimeMillis(), KeyEvent.ACTION_DOWN, keyCode, 0)
-        val up = KeyEvent(SystemClock.uptimeMillis(), SystemClock.uptimeMillis(), KeyEvent.ACTION_UP, keyCode, 0)
-        val mapped = InputEncoder.mapKeyEvent(down)
-        val downQueued = dispatchKey(down)
-        val upQueued = dispatchKey(up)
-        NativeInputDiagnostics.add(
-            "overlay keyboard key=$keyCode mapped=${mapped != null} " +
-                "vk=${mapped?.keycode} scan=${mapped?.scancode} " +
-                "downQueued=$downQueued upQueued=$upQueued " +
-                inputChannelStateSummary(),
-        )
+        sendTextControlKey(keyCode)
+    }
+
+    private fun queueKeyboardInput(action: suspend (generation: Int) -> Unit) {
+        val generation = transportGeneration
+        scope.launch {
+            textSendMutex.withLock {
+                if (!released && generation == transportGeneration) action(generation)
+            }
+        }
     }
 
     /** Applies each Android IME edit immediately while preserving input packet order. */
     fun syncText(syncedText: String?, draft: String) {
         val edit = streamKeyboardEdit(syncedText, draft)
         if (edit == StreamKeyboardEdit.None) return
-        scope.launch {
-            textSendMutex.withLock {
-                when (edit) {
-                    StreamKeyboardEdit.None -> Unit
-                    is StreamKeyboardEdit.Append -> sendTextLocked(edit.text.take(STREAM_TEXT_SEND_MAX_CHARS))
-                    is StreamKeyboardEdit.Backspace -> repeat(edit.count.coerceAtMost(STREAM_TEXT_SEND_MAX_CHARS)) {
-                        if (!sendTextKeyStroke(KeyEvent.KEYCODE_DEL)) return@withLock
+        queueKeyboardInput { generation ->
+            when (edit) {
+                StreamKeyboardEdit.None -> Unit
+                is StreamKeyboardEdit.Append -> sendTextLocked(edit.text.take(STREAM_TEXT_SEND_MAX_CHARS), generation)
+                is StreamKeyboardEdit.Backspace -> repeat(edit.count.coerceAtMost(STREAM_TEXT_SEND_MAX_CHARS)) {
+                    if (!sendTextKeyStroke(KeyEvent.KEYCODE_DEL, generation)) return@queueKeyboardInput
+                }
+                is StreamKeyboardEdit.ReplaceSuffix -> {
+                    repeat(edit.backspaces.coerceAtMost(STREAM_TEXT_SEND_MAX_CHARS)) {
+                        if (!sendTextKeyStroke(KeyEvent.KEYCODE_DEL, generation)) return@queueKeyboardInput
                     }
-                    is StreamKeyboardEdit.ReplaceSuffix -> {
-                        repeat(edit.backspaces.coerceAtMost(STREAM_TEXT_SEND_MAX_CHARS)) {
-                            if (!sendTextKeyStroke(KeyEvent.KEYCODE_DEL)) return@withLock
-                        }
-                        sendTextLocked(edit.text.take(STREAM_TEXT_SEND_MAX_CHARS))
-                    }
+                    sendTextLocked(edit.text.take(STREAM_TEXT_SEND_MAX_CHARS), generation)
                 }
             }
         }
@@ -1741,20 +1758,12 @@ class NativeStreamClient(
 
     /** Clears the focused remote field without dismissing the Android stream keyboard. */
     fun clearText() {
-        scope.launch {
-            textSendMutex.withLock {
-                selectAllAndDeleteRemoteText()
-            }
-        }
+        queueKeyboardInput { generation -> selectAllAndDeleteRemoteText(generation) }
     }
 
     /** Queues editor control keys behind any text currently being replayed to the host. */
     fun sendTextControlKey(keyCode: Int) {
-        scope.launch {
-            textSendMutex.withLock {
-                sendTextKeyStroke(keyCode)
-            }
-        }
+        queueKeyboardInput { generation -> sendTextKeyStroke(keyCode, generation) }
     }
 
     // Enqueue physical text synchronously, just like physical keys. Launching a separate
@@ -1763,13 +1772,13 @@ class NativeStreamClient(
         inputEncoder.encodeTextInput(char.toString()).forEach(::sendReliableInput)
     }
 
-    private suspend fun sendTextLocked(text: String) {
+    private suspend fun sendTextLocked(text: String, generation: Int) {
         inputEncoder.encodeTextInput(text).forEach { packet ->
-            if (!sendTextPacketWithRetry(packet)) return
+            if (!sendTextPacketWithRetry(packet, generation)) return
         }
     }
 
-    private suspend fun selectAllAndDeleteRemoteText(): Boolean {
+    private suspend fun selectAllAndDeleteRemoteText(generation: Int): Boolean {
         val ctrl = InputEncoder.mapKeyboardPayload(KeyEvent.KEYCODE_CTRL_LEFT, unicode = 0, scanCode = 0)
             ?: return false
         val selectAll = InputEncoder.mapKeyboardPayload(
@@ -1778,26 +1787,39 @@ class NativeStreamClient(
             scanCode = 0,
             ctrl = true,
         ) ?: return false
-        val ctrlPressed = sendKeyboardPayloadWithRetry(ctrl.copy(modifiers = 0x02), isDown = true)
+        val ctrlPressed = sendKeyboardPayloadWithRetry(ctrl.copy(modifiers = 0x02), isDown = true, generation)
         if (!ctrlPressed) return false
-        val selected = sendKeyboardPayloadWithRetry(selectAll, isDown = true) &&
-            sendKeyboardPayloadWithRetry(selectAll, isDown = false)
-        val ctrlReleased = sendKeyboardPayloadWithRetry(ctrl.copy(modifiers = 0), isDown = false)
+        val selected: Boolean
+        val ctrlReleased: Boolean
+        try {
+            selected = sendStreamKeyboardKeyStroke { pressed ->
+                sendKeyboardPayloadWithRetry(selectAll, pressed, generation)
+            }
+        } finally {
+            ctrlReleased = withContext(NonCancellable) {
+                sendKeyboardPayloadWithRetry(ctrl.copy(modifiers = 0), isDown = false, generation)
+            }
+        }
         if (!selected || !ctrlReleased) return false
-        return sendTextKeyStroke(KeyEvent.KEYCODE_DEL)
+        return sendTextKeyStroke(KeyEvent.KEYCODE_DEL, generation)
     }
 
-    private suspend fun sendTextKeyStroke(keyCode: Int): Boolean {
+    private suspend fun sendTextKeyStroke(keyCode: Int, generation: Int): Boolean {
         val payload = InputEncoder.mapKeyboardPayload(keyCode, unicode = 0, scanCode = 0) ?: return false
-        return sendKeyboardPayloadWithRetry(payload, isDown = true) &&
-            sendKeyboardPayloadWithRetry(payload, isDown = false)
+        return sendStreamKeyboardKeyStroke { pressed ->
+            sendKeyboardPayloadWithRetry(payload, pressed, generation)
+        }
     }
 
-    private fun sendKeyboardPayload(payload: InputEncoder.KeyboardPayload, isDown: Boolean): Boolean =
-        sendReliableInput(if (isDown) inputEncoder.encodeKeyDown(payload) else inputEncoder.encodeKeyUp(payload))
+    private fun sendKeyboardPayload(payload: InputEncoder.KeyboardPayload, isDown: Boolean): Boolean {
+        // Press/release and retries occur at different times; do not reuse the press timestamp.
+        val current = payload.copy(timestampUs = timestampUs())
+        return sendReliableInput(if (isDown) inputEncoder.encodeKeyDown(current) else inputEncoder.encodeKeyUp(current))
+    }
 
-    private suspend fun sendTextPacketWithRetry(packet: ByteArray): Boolean {
+    private suspend fun sendTextPacketWithRetry(packet: ByteArray, generation: Int): Boolean {
         repeat(STREAM_TEXT_SEND_ATTEMPTS) { attempt ->
+            if (released || generation != transportGeneration) return false
             if (sendReliableInput(packet)) {
                 delay(STREAM_TEXT_PACKET_DELAY_MS)
                 return true
@@ -1810,10 +1832,10 @@ class NativeStreamClient(
         return false
     }
 
-    private suspend fun sendKeyboardPayloadWithRetry(payload: InputEncoder.KeyboardPayload, isDown: Boolean): Boolean {
+    private suspend fun sendKeyboardPayloadWithRetry(payload: InputEncoder.KeyboardPayload, isDown: Boolean, generation: Int): Boolean {
         repeat(STREAM_TEXT_SEND_ATTEMPTS) { attempt ->
+            if (released || generation != transportGeneration) return false
             if (sendKeyboardPayload(payload, isDown)) {
-                delay(STREAM_TEXT_PACKET_DELAY_MS)
                 return true
             }
             if (attempt < STREAM_TEXT_SEND_ATTEMPTS - 1) {

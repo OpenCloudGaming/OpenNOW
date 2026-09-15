@@ -2544,6 +2544,9 @@
                 },
                 "toggle": {
                     "type": "boolean"
+                },
+                "sizeScale": {
+                    "type": "number"
                 }
             },
             "required": [],
