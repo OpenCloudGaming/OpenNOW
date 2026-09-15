@@ -324,7 +324,26 @@ if(BUILD_TESTING)
     endif()
     set_tests_properties(opennow-streamcolor-tests PROPERTIES TIMEOUT 60)
     qt_add_resources(opennow-qt "region-ping-acceptance"
-        PREFIX "/acceptance" BASE tests FILES tests/CatalogSyncAcceptance.qml tests/OwnershipAcceptance.qml tests/CommandSearchAcceptance.qml)
+        PREFIX "/acceptance" BASE tests FILES tests/CatalogSyncAcceptance.qml tests/OwnershipAcceptance.qml tests/CommandSearchAcceptance.qml tests/GameDetailsLayoutAcceptance.qml)
+    foreach(details_size normal short)
+        if(details_size STREQUAL "normal")
+            set(details_width 1440)
+            set(details_height 900)
+        else()
+            set(details_width 960)
+            set(details_height 540)
+        endif()
+        foreach(details_scale 1 1.25 1.5)
+            foreach(details_state owned unowned)
+                add_test(NAME qml-game-details-${details_size}-${details_scale}-${details_state} COMMAND opennow-qt
+                    --smoke-test --allow-multiple-instances --desktop --route home --reduced-motion
+                    --smoke-game-details-layout --details-${details_state} --details-scale ${details_scale}
+                    --smoke-width ${details_width} --smoke-height ${details_height})
+                set_tests_properties(qml-game-details-${details_size}-${details_scale}-${details_state} PROPERTIES
+                    ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
+            endforeach()
+        endforeach()
+    endforeach()
     foreach(search_case compact normal scaled-light)
         if(search_case STREQUAL "normal")
             set(search_width 1440)

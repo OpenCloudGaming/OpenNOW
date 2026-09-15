@@ -221,6 +221,7 @@ int AcceptanceSession::startSmokeWorkload()
         });
     } else if (m_smokeTest && (m_arguments.contains(u"--smoke-backend-availability"_s)
                      || m_arguments.contains(u"--smoke-command-search"_s)
+                     || m_arguments.contains(u"--smoke-game-details-layout"_s)
                      || m_arguments.contains(u"--smoke-ownership"_s)
                      || m_arguments.contains(u"--smoke-catalog-sync"_s)
                      || m_arguments.contains(u"--smoke-microphone"_s)
@@ -236,6 +237,8 @@ int AcceptanceSession::startSmokeWorkload()
                      || m_arguments.contains(u"--smoke-stream-recovery"_s))) {
         QQmlComponent component(&m_engine, QUrl(m_arguments.contains(u"--smoke-command-search"_s)
             ? u"qrc:/acceptance/CommandSearchAcceptance.qml"_s
+            : m_arguments.contains(u"--smoke-game-details-layout"_s)
+            ? u"qrc:/acceptance/GameDetailsLayoutAcceptance.qml"_s
             : m_arguments.contains(u"--smoke-color-format"_s)
             ? u"qrc:/acceptance/ColorFormatAcceptance.qml"_s
             : m_arguments.contains(u"--smoke-ownership"_s)
@@ -275,6 +278,7 @@ int AcceptanceSession::startSmokeWorkload()
         }
         if (m_arguments.contains(u"--smoke-stream-recovery"_s)
             || m_arguments.contains(u"--smoke-command-search"_s)
+            || m_arguments.contains(u"--smoke-game-details-layout"_s)
             || m_arguments.contains(u"--smoke-ownership"_s)
             || m_arguments.contains(u"--smoke-catalog-sync"_s)
             || m_arguments.contains(u"--smoke-recording"_s)
@@ -301,7 +305,11 @@ int AcceptanceSession::startSmokeWorkload()
                         m_application.exit(EXIT_FAILURE);
                 });
             }
-            if (ok && m_arguments.contains(u"--smoke-command-search"_s)) {
+            if (ok && (m_arguments.contains(u"--smoke-command-search"_s)
+                       || m_arguments.contains(u"--smoke-game-details-layout"_s))) {
+                if (m_arguments.contains(u"--smoke-game-details-layout"_s)
+                    && m_arguments.contains(u"--details-interactive"_s))
+                    return;
                 auto *timer = new QTimer(this);
                 timer->setInterval(25);
                 connect(timer, &QTimer::timeout, this, [this, fixture, window, timer, deadline = QDeadlineTimer(15000)] {
@@ -323,7 +331,7 @@ int AcceptanceSession::startSmokeWorkload()
                     if (success && shot >= 0)
                         success = shot + 1 < m_arguments.size() && QFileInfo(m_arguments.at(shot + 1)).isAbsolute()
                             && window->grabWindow().save(m_arguments.at(shot + 1));
-                    if (!success) qCritical("Command search acceptance failed");
+                    if (!success) qCritical("Interactive shell acceptance failed");
                     m_application.exit(success ? EXIT_SUCCESS : EXIT_FAILURE);
                 });
                 timer->start();
