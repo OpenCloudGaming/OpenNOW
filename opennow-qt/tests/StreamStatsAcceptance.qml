@@ -44,6 +44,48 @@ QtObject {
         ShellStore.acceptNativeEvent({type: "telemetry", decodeTimeMs: 2.5, latencyMs: 18})
         checkMetric(stats, "Decode", qsTr("DECODE"), 2.5)
         checkMetric(stats, "Latency", qsTr("LATENCY"), 18)
+        function residenceCard() {
+            return stats.cards.find(item => item.field === "decoderResidenceMs")
+        }
+        check(residenceCard() === undefined,
+            "decoder residence stays unavailable until the decoder measures it")
+        ShellStore.acceptNativeEvent({type: "telemetry", decoderResidenceMs: 6.5})
+        check(residenceCard() && residenceCard().value === 6.5,
+            "a measured decoder residence reaches the overlay")
+        check(stats.report().split("\n").includes(qsTr("DECODER RESIDENCE") + ": 6.5 ms"),
+            "the stats report names decoder residence")
+        ShellStore.acceptNativeEvent({type: "telemetry", decoderResidenceMs: null})
+        check(residenceCard() === undefined,
+            "decoder residence clears when the native side stops measuring it")
+        ShellStore.acceptNativeEvent({type: "telemetry", decoderResidenceMs: 6.5})
+        function swapCard() {
+            return stats.cards.find(item => item.field === "qtSubmitToSwapMs")
+        }
+        check(swapCard() === undefined,
+            "Qt submit timing stays unavailable until a frame is swapped")
+        stats.swapStats = ({p50Ms: 4.25, p95Ms: 9.5, maxMs: 12, windowSamples: 240,
+            swappedFramesTotal: 5120, gated: false})
+        check(swapCard() && swapCard().value === 4.25,
+            "a measured Qt submit-to-swap percentile reaches the overlay")
+        check(stats.report().split("\n").includes(qsTr("QT SUBMIT TO SWAP") + ": 4.3 ms"),
+            "the stats report names the Qt submit-to-swap measurement")
+        stats.swapStats = ({gated: true, gateSource: "minimized"})
+        check(swapCard() && swapCard().value === null,
+            "an intentionally gated swap reports no fabricated duration")
+        check(stats.compactMetrics.some(item => item.text === qsTr("QT SUBMIT TO SWAP") + " " + qsTr("N/A") + " ms"),
+            "the gated card renders as unavailable rather than a measured duration")
+        check(stats.report().split("\n").includes(qsTr("QT SUBMIT TO SWAP") + ": " + qsTr("N/A") + " ms"),
+            "the gated card stays unavailable in the copied report")
+        check(stats.report().split("\n").includes(qsTr("SWAP GATE") + ": " + qsTr("Window minimized")),
+            "the stats report names the gate source")
+        stats.swapStats = ({p50Ms: 4.25, swappedFramesTotal: 6400, gated: true, gateSource: "hidden"})
+        check(swapCard().value === 4.25,
+            "a retained measurement stays available while the window is hidden")
+        stats.swapStats = ({p50Ms: 4.25, swappedFramesTotal: 6400, gated: false})
+        check(!stats.report().split("\n").some(line => line.startsWith(qsTr("SWAP GATE"))),
+            "clearing the gate removes the report line")
+        stats.swapStats = ({})
+        check(swapCard() === undefined, "cleared swap stats drop the card again")
         ShellStore.settings = Object.assign({}, ShellStore.settings, {
             statsShowPing: false, statsShowDecode: false, statsShowLatency: false
         })

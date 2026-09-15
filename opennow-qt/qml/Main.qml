@@ -20,6 +20,8 @@ ApplicationWindow {
     property string activeRoute: AppController.route
     readonly property var frameGenerationStats: activeRoute === "stream" && routeLoader.item
         ? (routeLoader.item.frameGenerationStats || ({})) : ({})
+    readonly property var swapStats: activeRoute === "stream" && routeLoader.item
+        ? (routeLoader.item.swapStats || ({})) : ({})
     readonly property string frameGenerationStatus: String(frameGenerationStats.status || "")
     readonly property string frameGenerationDiagnosticKey: [frameGenerationStatus,
         frameGenerationStats.timingSource || "none", frameGenerationStats.rejectionReason || "none",
@@ -674,6 +676,7 @@ ApplicationWindow {
         layer.effect: HdrChromeEffect {}
         anchors.fill: parent
         frameGenerationStats: window.frameGenerationStats
+        swapStats: window.swapStats
         pointerLocked: window.activeRoute === "stream" && routeLoader.item
             && routeLoader.item.streamPointerLocked === true
         overlay: AppController.overlay

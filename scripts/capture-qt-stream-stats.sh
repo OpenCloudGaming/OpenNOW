@@ -19,7 +19,7 @@ if [[ $(uname -s) == Linux ]]; then
     fi
 fi
 
-for mode in compact expanded degraded scaled toasts; do
+for mode in compact expanded degraded scaled toasts gated; do
     if ! "${runner[@]}" env "${platform[@]}" QSG_RHI_BACKEND=opengl "$app" \
         --smoke-test --allow-multiple-instances --desktop --route stream \
         --smoke-stream-stats-v2 --smoke-stats-"$mode" --reduced-motion \

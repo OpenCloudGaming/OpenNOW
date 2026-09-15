@@ -188,9 +188,10 @@ class CIWorkflowTest(unittest.TestCase):
         self.assertIn("ensure-windows-media-foundation.ps1", checks)
         cmake = (ROOT / "opennow-qt/cmake/Tests.cmake").read_text()
         targets = re.search(r"set\(OPENNOW_CI_UNIT_TEST_TARGETS\s+(.*?)\)", cmake, re.DOTALL)[1].split()
-        self.assertEqual(len(targets), 28)
-        self.assertEqual(len(set(targets)), 28)
+        self.assertEqual(len(targets), 29)
+        self.assertEqual(len(set(targets)), 29)
         self.assertIn("opennow-applicationicons-tests", targets)
+        self.assertIn("opennow-streampresenttimings-tests", targets)
         self.assertIn("opennow-fsrupscaler-tests", targets)
         self.assertRegex(cmake, r'if\(WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Linux"\)\s+'
                          r'set_tests_properties\(opennow-frameinterpolator-tests opennow-fsrupscaler-tests\s+'

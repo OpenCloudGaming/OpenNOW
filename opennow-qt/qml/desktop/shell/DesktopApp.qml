@@ -27,6 +27,7 @@ FocusScope {
     readonly property bool streamVisible: !signInVisible && route === "stream"
     readonly property bool streamPointerLocked: streamVisible && desktopStream.streamPointerLocked
     readonly property var frameGenerationStats: streamVisible ? desktopStream.frameGenerationStats : ({})
+    readonly property var swapStats: streamVisible ? desktopStream.swapStats : ({})
     readonly property bool shellVisible: !signInVisible && !sessionStartingVisible && !streamVisible
 
     function titleForRoute(value) {

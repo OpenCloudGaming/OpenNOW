@@ -5,6 +5,7 @@ use std::sync::mpsc::{SyncSender, TrySendError};
 use str0m::crypto::from_feature_flags;
 use thiserror::Error;
 
+mod frame_stage_timing;
 pub mod nvst;
 mod nvst_control;
 mod nvst_cursor;
@@ -13,6 +14,7 @@ mod nvst_input;
 mod nvst_microphone;
 mod nvst_network;
 
+pub use frame_stage_timing::{FrameStageTimings, StageSummary};
 pub use nvst_haptics::{NvstControllerRumble, NvstHaptics};
 
 pub use nvst::{

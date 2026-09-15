@@ -257,6 +257,10 @@ if(BUILD_TESTING)
     target_include_directories(opennow-framepacer-tests PRIVATE src)
     target_link_libraries(opennow-framepacer-tests PRIVATE Qt6::Test)
     add_test(NAME opennow-framepacer-tests COMMAND opennow-framepacer-tests -o -,txt)
+    qt_add_executable(opennow-streampresenttimings-tests tests/tst_streampresenttimings.cpp)
+    target_include_directories(opennow-streampresenttimings-tests PRIVATE src)
+    target_link_libraries(opennow-streampresenttimings-tests PRIVATE Qt6::Test)
+    add_test(NAME opennow-streampresenttimings-tests COMMAND opennow-streampresenttimings-tests -o -,txt)
     qt_add_executable(opennow-fsrupscaler-tests tests/tst_fsrupscaler.cpp)
     target_include_directories(opennow-fsrupscaler-tests PRIVATE src)
     target_link_libraries(opennow-fsrupscaler-tests PRIVATE Qt6::Test Qt6::Gui Qt6::GuiPrivate)
@@ -885,6 +889,7 @@ if(BUILD_TESTING)
         opennow-hdrcolor-tests
         opennow-theme-tests
         opennow-framepacer-tests
+        opennow-streampresenttimings-tests
         opennow-frameinterpolator-tests
         opennow-fsrupscaler-tests
         opennow-streamcolor-tests

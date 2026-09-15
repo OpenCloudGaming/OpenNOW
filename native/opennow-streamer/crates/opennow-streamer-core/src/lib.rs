@@ -8,21 +8,21 @@ use std::time::{Duration, Instant};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use opennow_streamer_platform::{
-    CapturedInput, CapturedInputQueue, CapturedInputSample, EncodedFrame, MediaCodec,
-    MediaColorQuality, MediaControl, MediaFeedback, MediaRuntime, MediaRuntimeControl,
-    MediaSession, MediaSink, MediaStreamConfig, MediaVideoCodec, PushOutcome, RecordingSummary,
-    StreamShortcutAction, StreamShortcutBindings, record_matroska, record_replay_matroska,
-    supports_audio_decode, supports_audio_output, video_backends,
+    CapturedInput, CapturedInputQueue, CapturedInputSample, DecodeStageTimings,
+    DecodeTimingsReport, EncodedFrame, MediaCodec, MediaColorQuality, MediaControl, MediaFeedback,
+    MediaRuntime, MediaRuntimeControl, MediaSession, MediaSink, MediaStreamConfig, MediaVideoCodec,
+    PushOutcome, RecordingSummary, StreamShortcutAction, StreamShortcutBindings, record_matroska,
+    record_replay_matroska, supports_audio_decode, supports_audio_output, video_backends,
 };
 use opennow_streamer_protocol::{
     Capabilities, Command, PROTOCOL_VERSION, ReplayBufferConfig, SessionContext, error, event,
     response,
 };
 use opennow_streamer_transport::{
-    NvstControllerRumble, NvstDropReason, NvstReceiveEvent, NvstReceiverState, NvstRecovery,
-    NvstUdpReceiverControl, NvstUdpReceiverSession, ReservedNvstBundle, SharedNvstFeedback,
-    parse_nvst_video_handoff, reserve_nvst_mjolnir_udp_socket, spawn_nvst_mjolnir_receiver,
-    spawn_nvst_udp_receiver_with_socket,
+    FrameStageTimings, NvstControllerRumble, NvstDropReason, NvstReceiveEvent, NvstReceiverState,
+    NvstRecovery, NvstUdpReceiverControl, NvstUdpReceiverSession, ReservedNvstBundle,
+    SharedNvstFeedback, parse_nvst_video_handoff, reserve_nvst_mjolnir_udp_socket,
+    spawn_nvst_mjolnir_receiver, spawn_nvst_udp_receiver_with_socket,
 };
 use serde_json::{Value, json};
 
@@ -92,6 +92,9 @@ trait NvstSessionResources {
     fn network_metrics(&self) -> Option<(f64, f64)> {
         None
     }
+    fn frame_stage_timings(&self) -> Option<FrameStageTimings> {
+        None
+    }
     fn request_keyframe(&self);
     fn acknowledge_video_frame(&self, frame_index: u32, bytes: u32);
     fn send_captured_input(&self, bytes: Vec<u8>) -> Result<(), String>;
@@ -121,6 +124,10 @@ impl NvstSessionResources for ActiveNvstResources {
     }
     fn network_metrics(&self) -> Option<(f64, f64)> {
         self.feedback.recent_network_metrics(Instant::now())
+    }
+    fn frame_stage_timings(&self) -> Option<FrameStageTimings> {
+        let timings = self.feedback.frame_stage_timings();
+        (!timings.is_empty()).then_some(timings)
     }
     fn request_keyframe(&self) {
         self.feedback.request_keyframe();
@@ -2092,6 +2099,61 @@ fn emit_nvst_terminal<R: NvstSessionResources>(
     true
 }
 
+fn frame_stage_timings_event(timings: Option<FrameStageTimings>) -> Value {
+    let Some(timings) = timings else {
+        return Value::Null;
+    };
+    let stage = |summary: Option<opennow_streamer_transport::StageSummary>| match summary {
+        Some(summary) => json!({
+            "p50": summary.p50_ms,
+            "p95": summary.p95_ms,
+            "max": summary.max_ms,
+        }),
+        None => Value::Null,
+    };
+    json!({
+        "deliveryToAdmissionMs": stage(timings.delivery_to_admission),
+        "admissionToControlQueueMs": stage(timings.admission_to_control_queue),
+        "assembledToControlQueueMs": stage(timings.assembled_to_control_queue),
+        "deliveryWindowSamples": timings.delivery_window_samples,
+        "ackWindowSamples": timings.ack_window_samples,
+        "assembledFramesTotal": timings.assembled_frames_total,
+        "admittedFramesTotal": timings.admitted_frames_total,
+        "queuedAckFramesTotal": timings.queued_ack_frames_total,
+        "undeliveredFramesTotal": timings.undelivered_frames_total,
+        "pendingDeliveries": timings.pending_deliveries,
+        "unmatchedDeliveries": timings.unmatched_deliveries,
+        "unmatchedAdmissions": timings.unmatched_admissions,
+    })
+}
+
+fn decode_timings_event(timings: Option<DecodeTimingsReport>) -> Value {
+    let Some(timings) = timings else {
+        return Value::Null;
+    };
+    let stage = |stage: Option<DecodeStageTimings>| match stage {
+        Some(stage) => json!({
+            "p50": stage.p50_us as f64 / 1_000.0,
+            "p95": stage.p95_us as f64 / 1_000.0,
+            "max": stage.max_us as f64 / 1_000.0,
+        }),
+        None => Value::Null,
+    };
+    json!({
+        "call": stage(timings.call),
+        "residence": stage(timings.residence),
+        "callWindowSamples": timings.call_window_samples,
+        "residenceWindowSamples": timings.residence_window_samples,
+        "submissionsTotal": timings.submissions_total,
+        "outputsTotal": timings.outputs_total,
+        "outputCallsTotal": timings.output_calls_total,
+        "inFlight": timings.in_flight,
+        "epoch": timings.epoch,
+        "unmatchedOutputs": timings.unmatched_outputs,
+        "unmatchedSubmissions": timings.unmatched_submissions,
+    })
+}
+
 struct NvstMediaFeedbackState {
     drop_reports: QueueDropReports,
     recovery_attempts: usize,
@@ -2101,6 +2163,7 @@ struct NvstMediaFeedbackState {
     telemetry_frames: u64,
     telemetry_bytes: u64,
     peak_bitrate_mbps: f64,
+    decode_timings: Option<DecodeTimingsReport>,
 }
 
 impl NvstMediaFeedbackState {
@@ -2114,8 +2177,45 @@ impl NvstMediaFeedbackState {
             telemetry_frames: 0,
             telemetry_bytes: 0,
             peak_bitrate_mbps: 0.0,
+            decode_timings: None,
         }
     }
+}
+
+fn flush_nvst_telemetry<R: NvstSessionResources>(
+    output: &EventSender,
+    resources: &R,
+    state: &mut NvstMediaFeedbackState,
+) {
+    let elapsed = state.telemetry_window_started.elapsed();
+    if elapsed < Duration::from_secs(1) {
+        return;
+    }
+    let elapsed_seconds = elapsed.as_secs_f64();
+    let frames_per_second = state.telemetry_frames as f64 / elapsed_seconds;
+    let bitrate_mbps = state.telemetry_bytes as f64 * 8.0 / elapsed_seconds / 1_000_000.0;
+    state.peak_bitrate_mbps = state.peak_bitrate_mbps.max(bitrate_mbps);
+    let network = resources.network_metrics();
+    let _ = output.send(event(
+        "telemetry",
+        json!({
+            "framesPerSecond": frames_per_second,
+            "bitrateMbps": bitrate_mbps,
+            "peakBitrateMbps": state.peak_bitrate_mbps,
+            "pingMs": resources.ping_ms(),
+            "jitterMs": network.map(|metrics| metrics.0),
+            "packetLossPercent": network.map(|metrics| metrics.1),
+            "frameStageTimings": frame_stage_timings_event(resources.frame_stage_timings()),
+            "decodeTimeMs": state.decode_timings.and_then(|timings| timings.call)
+                .map(|stage| stage.p50_us as f64 / 1_000.0),
+            "decoderResidenceMs": state.decode_timings.and_then(|timings| timings.residence)
+                .map(|stage| stage.p50_us as f64 / 1_000.0),
+            "decodeTimings": decode_timings_event(state.decode_timings),
+        }),
+    ));
+    state.telemetry_window_started = Instant::now();
+    state.telemetry_frames = 0;
+    state.telemetry_bytes = 0;
 }
 
 fn forward_nvst_media_feedback<R: NvstSessionResources>(
@@ -2148,29 +2248,7 @@ fn forward_nvst_media_feedback<R: NvstSessionResources>(
             }
             state.telemetry_frames = state.telemetry_frames.saturating_add(1);
             state.telemetry_bytes = state.telemetry_bytes.saturating_add(u64::from(bytes));
-            let elapsed = state.telemetry_window_started.elapsed();
-            if elapsed >= Duration::from_secs(1) {
-                let elapsed_seconds = elapsed.as_secs_f64();
-                let frames_per_second = state.telemetry_frames as f64 / elapsed_seconds;
-                let bitrate_mbps =
-                    state.telemetry_bytes as f64 * 8.0 / elapsed_seconds / 1_000_000.0;
-                state.peak_bitrate_mbps = state.peak_bitrate_mbps.max(bitrate_mbps);
-                let network = resources.network_metrics();
-                let _ = output.send(event(
-                    "telemetry",
-                    json!({
-                        "framesPerSecond": frames_per_second,
-                        "bitrateMbps": bitrate_mbps,
-                        "peakBitrateMbps": state.peak_bitrate_mbps,
-                        "pingMs": resources.ping_ms(),
-                        "jitterMs": network.map(|metrics| metrics.0),
-                        "packetLossPercent": network.map(|metrics| metrics.1),
-                    }),
-                ));
-                state.telemetry_window_started = Instant::now();
-                state.telemetry_frames = 0;
-                state.telemetry_bytes = 0;
-            }
+            flush_nvst_telemetry(output, resources, state);
         }
         MediaFeedback::PlaybackStarted { backend } => {
             let _ = output.send(event(
@@ -2270,6 +2348,10 @@ fn forward_nvst_media_feedback<R: NvstSessionResources>(
                     ))
                 }),
             ));
+        }
+        MediaFeedback::DecodeTimings(timings) => {
+            state.decode_timings = Some(timings);
+            flush_nvst_telemetry(output, resources, state);
         }
         MediaFeedback::QueueDropped { .. } => unreachable!(),
     }
@@ -2916,6 +2998,7 @@ mod tests {
     struct TestNvstResources {
         rumble: Arc<Mutex<[Option<NvstControllerRumble>; 4]>>,
         ping_ms: Option<f64>,
+        frame_stage_timings: Option<FrameStageTimings>,
         keyframe_requests: AtomicUsize,
         acknowledged_frames: AtomicUsize,
         acknowledged_frame_data: Mutex<Vec<(u32, u32)>>,
@@ -2930,6 +3013,10 @@ mod tests {
         }
         fn ping_ms(&self) -> Option<f64> {
             self.ping_ms
+        }
+
+        fn frame_stage_timings(&self) -> Option<FrameStageTimings> {
+            self.frame_stage_timings
         }
 
         fn request_keyframe(&self) {
@@ -3176,7 +3263,411 @@ mod tests {
             assert_eq!(telemetry["type"], "telemetry");
             assert!(telemetry.get("pingMs").is_some());
             assert_eq!(telemetry["pingMs"], json!(ping_ms));
+            assert_eq!(telemetry["frameStageTimings"], json!(null));
         }
+    }
+
+    #[test]
+    fn telemetry_reports_only_measured_frame_stage_timings() {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let sender = EventSender::unbounded(sender);
+        let resources = TestNvstResources {
+            frame_stage_timings: Some(FrameStageTimings {
+                delivery_to_admission: Some(opennow_streamer_transport::StageSummary {
+                    p50_ms: 3.5,
+                    p95_ms: 8.25,
+                    max_ms: 11.0,
+                }),
+                admission_to_control_queue: Some(opennow_streamer_transport::StageSummary {
+                    p50_ms: 1.5,
+                    p95_ms: 4.0,
+                    max_ms: 6.0,
+                }),
+                assembled_to_control_queue: Some(opennow_streamer_transport::StageSummary {
+                    p50_ms: 5.0,
+                    p95_ms: 12.0,
+                    max_ms: 17.0,
+                }),
+                delivery_window_samples: 42,
+                ack_window_samples: 40,
+                assembled_frames_total: 900,
+                admitted_frames_total: 897,
+                queued_ack_frames_total: 896,
+                pending_deliveries: 2,
+                unmatched_deliveries: 1,
+                unmatched_admissions: 3,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut state = NvstMediaFeedbackState::new(true);
+        state.telemetry_window_started = Instant::now() - Duration::from_secs(1);
+        forward_nvst_media_feedback(
+            &sender,
+            &connected_lifecycle(),
+            7,
+            &resources,
+            MediaFeedback::VideoFrameAccepted {
+                frame_index: Some(73),
+                timestamp: 90_000,
+                bytes: 125_000,
+                keyframe: false,
+            },
+            &mut state,
+        );
+        let telemetry = receiver
+            .try_recv()
+            .expect("frame stage telemetry for the completed window");
+        let timings = &telemetry["frameStageTimings"];
+        assert_eq!(timings["deliveryToAdmissionMs"]["p50"], json!(3.5));
+        assert_eq!(timings["deliveryToAdmissionMs"]["p95"], json!(8.25));
+        assert_eq!(timings["admissionToControlQueueMs"]["max"], json!(6.0));
+        assert_eq!(timings["assembledToControlQueueMs"]["p95"], json!(12.0));
+        assert_eq!(timings["deliveryWindowSamples"], json!(42));
+        assert_eq!(timings["ackWindowSamples"], json!(40));
+        assert_eq!(timings["assembledFramesTotal"], json!(900));
+        assert_eq!(timings["admittedFramesTotal"], json!(897));
+        assert_eq!(timings["queuedAckFramesTotal"], json!(896));
+        assert_eq!(timings["pendingDeliveries"], json!(2));
+        assert_eq!(timings["unmatchedDeliveries"], json!(1));
+        assert_eq!(timings["unmatchedAdmissions"], json!(3));
+    }
+
+    #[test]
+    fn decode_timings_feedback_reaches_telemetry_with_totals_and_measured_stages() {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let sender = EventSender::unbounded(sender);
+        let lifecycle = connected_lifecycle();
+        let resources = TestNvstResources::default();
+        let mut state = NvstMediaFeedbackState::new(true);
+        let submitted_at = Instant::now();
+        forward_nvst_media_feedback(
+            &sender,
+            &lifecycle,
+            7,
+            &resources,
+            MediaFeedback::DecodeTimings(DecodeTimingsReport {
+                call: Some(DecodeStageTimings {
+                    p50_us: 2_400,
+                    p95_us: 5_000,
+                    max_us: 7_500,
+                }),
+                residence: Some(DecodeStageTimings {
+                    p50_us: 9_000,
+                    p95_us: 14_000,
+                    max_us: 21_000,
+                }),
+                call_window_samples: 256,
+                residence_window_samples: 256,
+                submissions_total: 4_096,
+                outputs_total: 4_090,
+                output_calls_total: 4_090,
+                last_submission_at: Some(submitted_at),
+                last_output_at: Some(submitted_at),
+                in_flight: 0,
+                oldest_in_flight_at: None,
+                epoch: 0,
+                epoch_started_at: None,
+                unmatched_outputs: 1,
+                unmatched_submissions: 2,
+            }),
+            &mut state,
+        );
+        assert!(
+            receiver.try_recv().is_err(),
+            "timings stay for the next telemetry window"
+        );
+        state.telemetry_window_started = Instant::now() - Duration::from_secs(1);
+        forward_nvst_media_feedback(
+            &sender,
+            &lifecycle,
+            7,
+            &resources,
+            MediaFeedback::VideoFrameAccepted {
+                frame_index: Some(74),
+                timestamp: 90_000,
+                bytes: 125_000,
+                keyframe: false,
+            },
+            &mut state,
+        );
+        let telemetry = receiver
+            .try_recv()
+            .expect("decode timings telemetry for the completed window");
+        assert_eq!(telemetry["decodeTimeMs"], json!(2.4));
+        assert_eq!(telemetry["decoderResidenceMs"], json!(9.0));
+        let timings = &telemetry["decodeTimings"];
+        assert_eq!(timings["call"]["p50"], json!(2.4));
+        assert_eq!(timings["call"]["p95"], json!(5.0));
+        assert_eq!(timings["residence"]["max"], json!(21.0));
+        assert_eq!(timings["callWindowSamples"], json!(256));
+        assert_eq!(timings["residenceWindowSamples"], json!(256));
+        assert_eq!(timings["submissionsTotal"], json!(4_096));
+        assert_eq!(timings["outputsTotal"], json!(4_090));
+        assert_eq!(timings["outputCallsTotal"], json!(4_090));
+        assert_eq!(timings["unmatchedOutputs"], json!(1));
+        assert_eq!(timings["unmatchedSubmissions"], json!(2));
+        assert_eq!(timings["inFlight"], json!(0));
+        assert_eq!(timings["epoch"], json!(0));
+    }
+
+    #[test]
+    fn decode_timings_report_input_work_before_any_output() {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let sender = EventSender::unbounded(sender);
+        let lifecycle = connected_lifecycle();
+        let resources = TestNvstResources::default();
+        let mut state = NvstMediaFeedbackState::new(true);
+        let submitted_at = Instant::now();
+        forward_nvst_media_feedback(
+            &sender,
+            &lifecycle,
+            7,
+            &resources,
+            MediaFeedback::DecodeTimings(DecodeTimingsReport {
+                call: None,
+                residence: None,
+                call_window_samples: 0,
+                residence_window_samples: 0,
+                submissions_total: 1,
+                outputs_total: 0,
+                output_calls_total: 0,
+                last_submission_at: Some(submitted_at),
+                last_output_at: None,
+                in_flight: 1,
+                oldest_in_flight_at: Some(submitted_at),
+                epoch: 2,
+                epoch_started_at: Some(submitted_at),
+                unmatched_outputs: 0,
+                unmatched_submissions: 0,
+            }),
+            &mut state,
+        );
+        state.telemetry_window_started = Instant::now() - Duration::from_secs(1);
+        forward_nvst_media_feedback(
+            &sender,
+            &lifecycle,
+            7,
+            &resources,
+            MediaFeedback::VideoFrameAccepted {
+                frame_index: Some(76),
+                timestamp: 90_000,
+                bytes: 125_000,
+                keyframe: false,
+            },
+            &mut state,
+        );
+        let telemetry = receiver
+            .try_recv()
+            .expect("decode telemetry for outstanding input");
+        assert_eq!(telemetry["decodeTimeMs"], json!(null));
+        assert_eq!(telemetry["decoderResidenceMs"], json!(null));
+        let timings = &telemetry["decodeTimings"];
+        assert_eq!(timings["call"], json!(null));
+        assert_eq!(timings["residence"], json!(null));
+        assert_eq!(timings["submissionsTotal"], json!(1));
+        assert_eq!(timings["outputsTotal"], json!(0));
+        assert_eq!(timings["inFlight"], json!(1));
+        assert_eq!(timings["epoch"], json!(2));
+    }
+
+    #[test]
+    fn telemetry_publishes_outstanding_decoder_input_without_a_new_accepted_frame() {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let sender = EventSender::unbounded(sender);
+        let resources = TestNvstResources::default();
+        let mut state = NvstMediaFeedbackState::new(true);
+        let submitted_at = Instant::now();
+        state.telemetry_window_started = Instant::now() - Duration::from_secs(1);
+        forward_nvst_media_feedback(
+            &sender,
+            &connected_lifecycle(),
+            7,
+            &resources,
+            MediaFeedback::DecodeTimings(DecodeTimingsReport {
+                call: None,
+                residence: None,
+                call_window_samples: 0,
+                residence_window_samples: 0,
+                submissions_total: 1,
+                outputs_total: 0,
+                output_calls_total: 0,
+                last_submission_at: Some(submitted_at),
+                last_output_at: None,
+                in_flight: 1,
+                oldest_in_flight_at: Some(submitted_at),
+                epoch: 3,
+                epoch_started_at: Some(submitted_at),
+                unmatched_outputs: 0,
+                unmatched_submissions: 0,
+            }),
+            &mut state,
+        );
+        let telemetry = receiver
+            .try_recv()
+            .expect("a decoder hung on its only submission still publishes telemetry");
+        assert_eq!(telemetry["type"], json!("telemetry"));
+        let timings = &telemetry["decodeTimings"];
+        assert_eq!(timings["submissionsTotal"], json!(1));
+        assert_eq!(timings["outputsTotal"], json!(0));
+        assert_eq!(timings["inFlight"], json!(1));
+        assert_eq!(timings["epoch"], json!(3));
+        assert_eq!(
+            telemetry["decodeTimeMs"],
+            json!(null),
+            "an unmeasured decode duration stays null instead of zero"
+        );
+        assert_eq!(telemetry["decoderResidenceMs"], json!(null));
+        assert_eq!(
+            telemetry["framesPerSecond"],
+            json!(0.0),
+            "the window truly contained no accepted frames"
+        );
+        assert_eq!(telemetry["bitrateMbps"], json!(0.0));
+        assert_eq!(telemetry["peakBitrateMbps"], json!(0.0));
+        forward_nvst_media_feedback(
+            &sender,
+            &connected_lifecycle(),
+            7,
+            &resources,
+            MediaFeedback::DecodeTimings(DecodeTimingsReport {
+                call: None,
+                residence: None,
+                call_window_samples: 0,
+                residence_window_samples: 0,
+                submissions_total: 1,
+                outputs_total: 0,
+                output_calls_total: 0,
+                last_submission_at: Some(submitted_at),
+                last_output_at: None,
+                in_flight: 1,
+                oldest_in_flight_at: Some(submitted_at),
+                epoch: 3,
+                epoch_started_at: Some(submitted_at),
+                unmatched_outputs: 0,
+                unmatched_submissions: 0,
+            }),
+            &mut state,
+        );
+        assert!(
+            receiver.try_recv().is_err(),
+            "a report inside the open window cannot repeat the previous rates"
+        );
+    }
+
+    #[test]
+    fn telemetry_rates_are_per_window_and_not_repeated_from_a_stale_window() {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let sender = EventSender::unbounded(sender);
+        let resources = TestNvstResources::default();
+        let mut state = NvstMediaFeedbackState::new(true);
+        state.telemetry_window_started = Instant::now() - Duration::from_secs(1);
+        forward_nvst_media_feedback(
+            &sender,
+            &connected_lifecycle(),
+            7,
+            &resources,
+            MediaFeedback::VideoFrameAccepted {
+                frame_index: Some(11),
+                timestamp: 90_000,
+                bytes: 1_000_000,
+                keyframe: false,
+            },
+            &mut state,
+        );
+        let measured = receiver.try_recv().expect("frame window telemetry");
+        assert!(
+            measured["framesPerSecond"].as_f64().expect("rate") > 0.0,
+            "a window with an accepted frame reports a measured rate"
+        );
+        assert!(measured["bitrateMbps"].as_f64().expect("bitrate") > 0.0);
+        state.telemetry_window_started = Instant::now() - Duration::from_secs(1);
+        forward_nvst_media_feedback(
+            &sender,
+            &connected_lifecycle(),
+            7,
+            &resources,
+            MediaFeedback::DecodeTimings(DecodeTimingsReport {
+                call: Some(DecodeStageTimings {
+                    p50_us: 2_400,
+                    p95_us: 5_000,
+                    max_us: 7_500,
+                }),
+                residence: None,
+                call_window_samples: 1,
+                residence_window_samples: 0,
+                submissions_total: 2,
+                outputs_total: 1,
+                output_calls_total: 1,
+                last_submission_at: Some(Instant::now()),
+                last_output_at: Some(Instant::now()),
+                in_flight: 0,
+                oldest_in_flight_at: None,
+                epoch: 0,
+                epoch_started_at: None,
+                unmatched_outputs: 0,
+                unmatched_submissions: 0,
+            }),
+            &mut state,
+        );
+        let stalled = receiver.try_recv().expect("decode window telemetry");
+        assert_eq!(
+            stalled["framesPerSecond"],
+            json!(0.0),
+            "the refreshed window reports its own frames, not the previous window's rate"
+        );
+        assert_eq!(stalled["bitrateMbps"], json!(0.0));
+        assert_eq!(stalled["decodeTimeMs"], json!(2.4));
+        assert_eq!(stalled["decoderResidenceMs"], json!(null));
+    }
+
+    #[test]
+    fn decode_timings_stay_unavailable_until_the_decoder_reports() {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let sender = EventSender::unbounded(sender);
+        let resources = TestNvstResources::default();
+        let mut state = NvstMediaFeedbackState::new(true);
+        state.telemetry_window_started = Instant::now() - Duration::from_secs(1);
+        forward_nvst_media_feedback(
+            &sender,
+            &connected_lifecycle(),
+            7,
+            &resources,
+            MediaFeedback::VideoFrameAccepted {
+                frame_index: Some(75),
+                timestamp: 90_000,
+                bytes: 125_000,
+                keyframe: false,
+            },
+            &mut state,
+        );
+        let telemetry = receiver
+            .try_recv()
+            .expect("decode telemetry with unavailable stages");
+        assert_eq!(telemetry["decodeTimeMs"], json!(null));
+        assert_eq!(telemetry["decoderResidenceMs"], json!(null));
+        assert_eq!(telemetry["decodeTimings"], json!(null));
+        assert_eq!(decode_timings_event(None), json!(null));
+    }
+
+    #[test]
+    fn frame_stage_timings_event_keeps_unmeasured_stages_null() {
+        assert_eq!(frame_stage_timings_event(None), json!(null));
+        let timings = frame_stage_timings_event(Some(FrameStageTimings {
+            admission_to_control_queue: Some(opennow_streamer_transport::StageSummary {
+                p50_ms: 2.0,
+                p95_ms: 2.5,
+                max_ms: 3.0,
+            }),
+            ack_window_samples: 1,
+            ..Default::default()
+        }));
+        assert_eq!(timings["deliveryToAdmissionMs"], json!(null));
+        assert_eq!(timings["assembledToControlQueueMs"], json!(null));
+        assert_eq!(timings["admissionToControlQueueMs"]["p50"], json!(2.0));
+        assert_eq!(timings["deliveryWindowSamples"], json!(0));
+        assert_eq!(timings["assembledFramesTotal"], json!(0));
+        assert_eq!(timings["pendingDeliveries"], json!(0));
     }
 
     #[test]

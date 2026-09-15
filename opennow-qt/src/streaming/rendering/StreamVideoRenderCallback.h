@@ -26,6 +26,8 @@ public:
     virtual bool needsFrame() const { return false; }
     virtual void frameSwapped() {}
     virtual QVariantMap frameGenerationStats() const { return {}; }
+    virtual QVariantMap swapStats() const { return {}; }
+    virtual void setSwapGated(bool, const QString &) {}
     virtual void recordFrame(QRhiCommandBuffer *commandBuffer,
                              const QRect &videoViewport) = 0;
     virtual void finishFrame() = 0;

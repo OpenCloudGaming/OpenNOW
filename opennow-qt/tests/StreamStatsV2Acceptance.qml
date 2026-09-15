@@ -138,7 +138,8 @@ QtObject {
         ShellStore.runtimeStreamProfile = {maxBitrateMbps:75}
         ShellStore.streamStartedAtMs = Date.now() - 6130000
         ShellStore.streamer = {status:"streaming", framesPerSecond:120, pingMs:9, latencyMs:31,
-            bitrateMbps:74.6, jitterMs:1.2, packetLossPercent:0, decodeTimeMs:2.1, mediaBackend:"Vulkan"}
+            bitrateMbps:74.6, jitterMs:1.2, packetLossPercent:0, decodeTimeMs:2.1, decoderResidenceMs:6.4,
+            mediaBackend:"Vulkan"}
         ShellStore.connectionHealth.clock = () => fixture.sampleTime
         sample(0)
         const stats = statsComponent.createObject(parent, {width:parent.width, height:parent.height})
@@ -208,6 +209,24 @@ QtObject {
             const renderedStats = find(host, "desktopStreamStats")
             check(renderedStats !== null, "production overlay is mounted")
             renderedStats.history = samples
+            check(renderedStats.swapStats.gated !== true,
+                "an open overlay never gates the Qt swap measurement")
+            ShellStore.currentStreamInputPaused = true
+            check(renderedStats.swapStats.gated !== true,
+                "suspended input for a local overlay never gates the Qt swap measurement")
+            ShellStore.currentStreamInputPaused = false
+            if (Qt.application.arguments.indexOf("--smoke-stats-gated") >= 0) {
+                renderedStats.swapStats = ({gated: true, gateSource: "minimized"})
+                check(renderedStats.report().split("\n").includes(qsTr("SWAP GATE") + ": " + qsTr("Window minimized")),
+                    "a minimized window names the gate source instead of a duration")
+            } else {
+                renderedStats.swapStats = ({p50Ms: 4.2, p95Ms: 9.6, maxMs: 14.1, windowSamples: 256,
+                    swappedFramesTotal: 12345, gated: false})
+                check(renderedStats.report().split("\n").includes(qsTr("QT SUBMIT TO SWAP") + ": 4.2 ms"),
+                    "the production overlay renders the measured Qt submit-to-swap value")
+                check(renderedStats.swapStats.swappedFramesTotal === 12345 && renderedStats.swapStats.p95Ms === 9.6,
+                    "the production overlay carries the cumulative swap total and percentiles")
+            }
             if (Qt.application.arguments.indexOf("--smoke-stats-toasts") >= 0) {
                 ShellStore.acceptNativeEvent({type:"telemetry", packetLossPercent:0})
                 const toasts = find(host, "desktopStreamToasts")

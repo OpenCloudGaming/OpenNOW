@@ -654,6 +654,32 @@ impl CapturedInputQueue {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DecodeStageTimings {
+    pub p50_us: u64,
+    pub p95_us: u64,
+    pub max_us: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DecodeTimingsReport {
+    pub call: Option<DecodeStageTimings>,
+    pub residence: Option<DecodeStageTimings>,
+    pub call_window_samples: usize,
+    pub residence_window_samples: usize,
+    pub submissions_total: u64,
+    pub outputs_total: u64,
+    pub output_calls_total: u64,
+    pub last_submission_at: Option<Instant>,
+    pub last_output_at: Option<Instant>,
+    pub in_flight: usize,
+    pub oldest_in_flight_at: Option<Instant>,
+    pub epoch: u64,
+    pub epoch_started_at: Option<Instant>,
+    pub unmatched_outputs: u64,
+    pub unmatched_submissions: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MediaFeedback {
     VideoFrameAccepted {
@@ -694,6 +720,7 @@ pub enum MediaFeedback {
         recovered: bool,
         message: Option<String>,
     },
+    DecodeTimings(DecodeTimingsReport),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3010,8 +3037,10 @@ fn run_embedded_linux_monitor(
     use std::time::Duration;
 
     let mut playback_started = false;
+    let mut last_decode_timings_report = Instant::now();
     while !shared.stopped.load(Ordering::Acquire) {
-        let (frames, events) = {
+        let report_decode_timings = last_decode_timings_report.elapsed() >= Duration::from_secs(1);
+        let (frames, events, decode_timings) = {
             let session = shared
                 .linux_session
                 .lock()
@@ -3027,8 +3056,40 @@ fn run_embedded_linux_monitor(
             while let Some(event) = session.try_recv_event() {
                 events.push(event);
             }
-            (decoded, events)
+            let decode_timings = report_decode_timings.then(|| session.decode_timings());
+            (decoded, events, decode_timings)
         };
+        if let Some(timings) = decode_timings {
+            last_decode_timings_report = Instant::now();
+            if timings.has_observable_state() {
+                let stage = |stage: opennow_streamer_platform_linux::DecodeStagePercentiles| {
+                    DecodeStageTimings {
+                        p50_us: stage.p50_us,
+                        p95_us: stage.p95_us,
+                        max_us: stage.max_us,
+                    }
+                };
+                let _ = shared
+                    .feedback
+                    .send(MediaFeedback::DecodeTimings(DecodeTimingsReport {
+                        call: timings.call.map(stage),
+                        residence: timings.residence.map(stage),
+                        call_window_samples: timings.call_window_samples,
+                        residence_window_samples: timings.residence_window_samples,
+                        submissions_total: timings.submissions_total,
+                        outputs_total: timings.outputs_total,
+                        output_calls_total: timings.output_calls_total,
+                        last_submission_at: timings.last_submission_at,
+                        last_output_at: timings.last_output_at,
+                        in_flight: timings.in_flight,
+                        oldest_in_flight_at: timings.oldest_in_flight_at,
+                        epoch: timings.epoch,
+                        epoch_started_at: timings.epoch_started_at,
+                        unmatched_outputs: timings.unmatched_outputs,
+                        unmatched_submissions: timings.unmatched_submissions,
+                    }));
+            }
+        }
         if !shared.paused.load(Ordering::Acquire) {
             for decoded in frames {
                 let Some(lease) = publisher.context() else {

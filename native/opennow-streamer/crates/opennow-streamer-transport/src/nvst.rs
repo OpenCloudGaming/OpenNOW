@@ -38,6 +38,7 @@ use str0m::rtp::{RtpHeader as BundleRtpHeader, Ssrc};
 use str0m::stats::CandidatePairStats;
 use str0m::{Candidate, Event, IceCreds, Input, Output, Rtc, RtcConfig};
 
+use super::frame_stage_timing::FrameStageTimingsAccumulator;
 use super::nvst_control::{
     DEFAULT_FRAME_TIME_US, QOS_REPORT_INTERVAL, QOS_WARM_UP, QosReport, frame_ack,
     frame_pacing_report, idr_request,
@@ -407,6 +408,7 @@ struct CompletedFrameFeedback {
     frame_number: u32,
     bytes: u32,
     accepted_at: Instant,
+    assembled_at: Option<Instant>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -493,6 +495,7 @@ pub struct NvstFeedbackState {
     completed_frames: AtomicU32,
     completed_frame_bytes: AtomicU64,
     pending_frame_acks: Mutex<VecDeque<CompletedFrameFeedback>>,
+    frame_stage_timings: Mutex<FrameStageTimingsAccumulator>,
 }
 
 impl Default for NvstFeedbackState {
@@ -514,6 +517,7 @@ impl Default for NvstFeedbackState {
             completed_frames: AtomicU32::new(0),
             completed_frame_bytes: AtomicU64::new(0),
             pending_frame_acks: Mutex::new(VecDeque::new()),
+            frame_stage_timings: Mutex::new(FrameStageTimingsAccumulator::default()),
         }
     }
 }
@@ -699,7 +703,26 @@ impl NvstFeedbackState {
         }
     }
 
+    pub fn publish_assembled_frame(&self, frame_number: u32, assembled_at: Instant) {
+        self.frame_stage_timings
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .record_assembly(frame_number, assembled_at);
+    }
+
+    pub fn retire_undelivered_frame(&self, frame_number: u32) {
+        self.frame_stage_timings
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retire_undelivered(frame_number);
+    }
+
     pub fn publish_accepted_frame(&self, frame_number: u32, bytes: u32, accepted_at: Instant) {
+        let assembled_at = self
+            .frame_stage_timings
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .record_admission(frame_number, accepted_at);
         let mut pending = self
             .pending_frame_acks
             .lock()
@@ -711,7 +734,22 @@ impl NvstFeedbackState {
             frame_number,
             bytes,
             accepted_at,
+            assembled_at,
         });
+    }
+
+    pub fn frame_stage_timings(&self) -> crate::FrameStageTimings {
+        self.frame_stage_timings
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .snapshot()
+    }
+
+    pub fn reset_frame_stage_epoch(&self) {
+        self.frame_stage_timings
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .reset_epoch(Instant::now());
     }
 
     fn take_completed_frame(&self) -> Option<CompletedFrameFeedback> {
@@ -3968,6 +4006,7 @@ impl NvstVideoReceiver {
         self.assembler.reset();
         self.last_stream_packet_index = None;
         self.next_frame_contiguous = false;
+        self.config.feedback().reset_frame_stage_epoch();
     }
 }
 
@@ -5646,12 +5685,16 @@ fn run_nvst_webrtc_bundle(
                     client_time_ms,
                     frame.bytes,
                     frame_time_us,
-                    None,
                 )
                 .encoded();
                 if !channels.send_partial_control(&mut rtc, &ack) {
                     break;
                 }
+                feedback
+                    .frame_stage_timings
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .record_ack_queued(frame.assembled_at, frame.accepted_at, now);
                 frame_acks_sent = frame_acks_sent.saturating_add(1);
                 last_ack_frame = Some(frame.frame_number);
             }
@@ -5687,6 +5730,10 @@ fn run_nvst_webrtc_bundle(
                 "NVST control-stats elapsed={:.1}s frameAck={frame_acks_sent} lastAck={last_ack_frame:?} pacing={frame_pacing_reports_sent} qos={qos_reports_sent}",
                 now.saturating_duration_since(control_stats_origin)
                     .as_secs_f64(),
+            );
+            eprintln!(
+                "NVST frame-stage-timings {}",
+                feedback.frame_stage_timings().log_line()
             );
             last_control_stats_log = now;
         }
@@ -6083,6 +6130,7 @@ fn run_nvst_webrtc_bundle(
                                 if !forward_receive_event(
                                     &media_consumer,
                                     &event_sender,
+                                    &feedback,
                                     transport_origin,
                                     &mut video_delivery_gap,
                                     event,
@@ -6260,6 +6308,7 @@ fn run_nvst_udp_receiver(
         event_sender,
         ..
     } = outputs;
+    let feedback = config.feedback();
     let mut receiver = NvstVideoReceiver::new(config);
     let mut video_delivery_gap = false;
     let stun_credentials = receiver.config.stun_credentials.clone();
@@ -6406,6 +6455,7 @@ fn run_nvst_udp_receiver(
                     if !forward_receive_event(
                         &media_consumer,
                         &event_sender,
+                        &feedback,
                         transport_origin,
                         &mut video_delivery_gap,
                         event,
@@ -6483,11 +6533,13 @@ fn forward_optional(sender: &Sender<NvstReceiveEvent>, event: Option<NvstReceive
 fn forward_receive_event(
     media_consumer: &MediaConsumer,
     event_sender: &Sender<NvstReceiveEvent>,
+    feedback: &SharedNvstFeedback,
     transport_origin: Instant,
     delivery_gap: &mut bool,
     event: NvstReceiveEvent,
 ) -> bool {
     if let NvstReceiveEvent::Frame(frame) = event {
+        let delivered_at = Instant::now();
         let media_frame = EncodedMediaFrame {
             mid: "nvst-video-0".to_owned(),
             codec: frame.codec.label().to_owned(),
@@ -6504,12 +6556,15 @@ fn forward_receive_event(
             keyframe: frame.keyframe,
             contiguous: frame.contiguous && !*delivery_gap,
         };
+        let frame_index = frame.frame_index;
+        feedback.publish_assembled_frame(frame_index, delivered_at);
         let (reason, keep_running) = match deliver_media_frame(media_consumer, media_frame) {
             Ok(()) => {
                 *delivery_gap = false;
                 return true;
             }
             Err(TransportError::MediaConsumerBackpressured) => {
+                feedback.retire_undelivered_frame(frame_index);
                 // This is loss AFTER assembly. Preserve it until a frame really
                 // reaches the decoder; requesting an IDR alone leaves dependent
                 // frames decoding against a missing reference in the meantime.
@@ -6517,9 +6572,13 @@ fn forward_receive_event(
                 (NvstDropReason::MediaConsumerBackpressured, true)
             }
             Err(TransportError::MediaConsumerClosed) => {
+                feedback.retire_undelivered_frame(frame_index);
                 (NvstDropReason::MediaConsumerClosed, false)
             }
-            Err(_) => (NvstDropReason::MediaConsumerClosed, false),
+            Err(_) => {
+                feedback.retire_undelivered_frame(frame_index);
+                (NvstDropReason::MediaConsumerClosed, false)
+            }
         };
         let _ = event_sender.send(NvstReceiveEvent::Dropped(reason));
         return keep_running;
@@ -7125,9 +7184,11 @@ mod tests {
     fn video_delivery_preserves_the_server_frame_index_for_feedback() {
         let (media_consumer, media_receiver) = std::sync::mpsc::sync_channel(1);
         let (event_sender, _event_receiver) = std::sync::mpsc::channel();
+        let feedback: SharedNvstFeedback = Arc::new(NvstFeedbackState::default());
         assert!(forward_receive_event(
             &media_consumer,
             &event_sender,
+            &feedback,
             Instant::now(),
             &mut false,
             NvstReceiveEvent::Frame(EncodedVideoAccessUnit {
@@ -7142,19 +7203,73 @@ mod tests {
         ));
         let delivered = media_receiver.recv().expect("video frame");
         assert_eq!(delivered.frame_index, Some(2_417));
+        assert_eq!(feedback.frame_stage_timings().pending_deliveries, 1);
+    }
+
+    #[test]
+    fn consumer_admission_before_the_assembly_call_returns_still_matches() {
+        const FRAMES: u32 = 64;
+        let (media_consumer, media_receiver) =
+            std::sync::mpsc::sync_channel(usize::try_from(FRAMES).expect("frame count"));
+        let (event_sender, _event_receiver) = std::sync::mpsc::channel();
+        let feedback: SharedNvstFeedback = Arc::new(NvstFeedbackState::default());
+        let consumer_feedback = Arc::clone(&feedback);
+        std::thread::scope(|scope| {
+            scope.spawn(move || {
+                for _ in 0..FRAMES {
+                    let frame: EncodedMediaFrame = media_receiver.recv().expect("video frame");
+                    consumer_feedback.publish_accepted_frame(
+                        frame.frame_index.expect("sender frame index"),
+                        frame.payload.len() as u32,
+                        Instant::now(),
+                    );
+                }
+            });
+            for frame_index in 1..=FRAMES {
+                let mut delivery_gap = false;
+                assert!(forward_receive_event(
+                    &media_consumer,
+                    &event_sender,
+                    &feedback,
+                    Instant::now(),
+                    &mut delivery_gap,
+                    NvstReceiveEvent::Frame(EncodedVideoAccessUnit {
+                        codec: NvstVideoCodec::H265,
+                        timestamp: frame_index * 3_000,
+                        frame_index,
+                        first_stream_packet_index: frame_index,
+                        keyframe: frame_index == 1,
+                        contiguous: true,
+                        bytes: vec![0, 0, 0, 1, 0x26],
+                    }),
+                ));
+            }
+        });
+        let timings = feedback.frame_stage_timings();
+        assert_eq!(
+            timings.unmatched_admissions, 0,
+            "an admission that lands before the assembly call returns must still match"
+        );
+        assert_eq!(timings.admitted_frames_total, u64::from(FRAMES));
+        assert_eq!(timings.pending_deliveries, 0);
+        let delivery = timings
+            .delivery_to_admission
+            .expect("every delivery produced a matched sample");
+        assert!(delivery.max_ms >= 0.0);
     }
 
     #[test]
     fn transient_video_consumer_backpressure_does_not_stop_receiver() {
         let (media_consumer, media_receiver) = std::sync::mpsc::sync_channel(1);
         let (event_sender, event_receiver) = std::sync::mpsc::channel();
+        let feedback: SharedNvstFeedback = Arc::new(NvstFeedbackState::default());
         let mut delivery_gap = false;
-        let frame = || {
+        let frame = |frame_index: u32| {
             NvstReceiveEvent::Frame(EncodedVideoAccessUnit {
                 codec: NvstVideoCodec::H265,
-                timestamp: 90_000,
-                frame_index: 1,
-                first_stream_packet_index: 1,
+                timestamp: frame_index * 3_000,
+                frame_index,
+                first_stream_packet_index: frame_index,
                 keyframe: true,
                 contiguous: true,
                 bytes: vec![0, 0, 0, 1, 0x26],
@@ -7164,16 +7279,18 @@ mod tests {
         assert!(forward_receive_event(
             &media_consumer,
             &event_sender,
+            &feedback,
             Instant::now(),
             &mut delivery_gap,
-            frame(),
+            frame(1),
         ));
         assert!(forward_receive_event(
             &media_consumer,
             &event_sender,
+            &feedback,
             Instant::now(),
             &mut delivery_gap,
-            frame(),
+            frame(2),
         ));
         assert!(matches!(
             event_receiver.recv().expect("backpressure event"),
@@ -7181,21 +7298,33 @@ mod tests {
         ));
         assert!(delivery_gap);
         assert!(media_receiver.recv().unwrap().contiguous);
+        let timings = feedback.frame_stage_timings();
+        assert_eq!(
+            timings.pending_deliveries, 1,
+            "the delivered frame is still awaiting admission feedback"
+        );
+        assert_eq!(timings.assembled_frames_total, 2);
+        assert_eq!(
+            timings.undelivered_frames_total, 1,
+            "an assembled frame the consumer refused is counted, not left pending"
+        );
         assert!(forward_receive_event(
             &media_consumer,
             &event_sender,
+            &feedback,
             Instant::now(),
             &mut delivery_gap,
-            frame(),
+            frame(3),
         ));
         assert!(!media_receiver.recv().unwrap().contiguous);
         assert!(!delivery_gap);
         assert!(forward_receive_event(
             &media_consumer,
             &event_sender,
+            &feedback,
             Instant::now(),
             &mut delivery_gap,
-            frame(),
+            frame(4),
         ));
         assert!(media_receiver.recv().unwrap().contiguous);
     }

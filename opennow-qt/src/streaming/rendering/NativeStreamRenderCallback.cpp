@@ -3,6 +3,7 @@
 
 #include "streaming/NativeStreamRuntime.h"
 #include "streaming/rendering/LinuxVulkanGraphics.h"
+#include "streaming/rendering/StreamPresentTimings.h"
 #include "streaming/rendering/StreamVideoRenderCallback.h"
 #include "streaming/rendering/StreamVideoTextureRenderer.h"
 #include "streaming/rendering/StreamFrameInterpolator.h"
@@ -366,10 +367,38 @@ public:
         return m_needsFrame.load() && m_runtime && m_runtime->presentationAllowed();
     }
 
+    QVariantMap swapStats() const override
+    {
+        const auto snapshot = m_swapTimings.snapshot();
+        QVariantMap stats;
+        stats.insert(QStringLiteral("available"), snapshot.available);
+        if (snapshot.available) {
+            stats.insert(QStringLiteral("p50Ms"), double(snapshot.submitToSwap.p50Ns) / 1.0e6);
+            stats.insert(QStringLiteral("p95Ms"), double(snapshot.submitToSwap.p95Ns) / 1.0e6);
+            stats.insert(QStringLiteral("maxMs"), double(snapshot.submitToSwap.maxNs) / 1.0e6);
+        }
+        stats.insert(QStringLiteral("windowSamples"), int(snapshot.windowSamples));
+        stats.insert(QStringLiteral("swappedFramesTotal"),
+                     qulonglong(snapshot.swappedFramesTotal));
+        stats.insert(QStringLiteral("epoch"), qulonglong(snapshot.epoch));
+        if (snapshot.hasLastSwap)
+            stats.insert(QStringLiteral("sinceLastSwapMs"),
+                         double(clockNs() - snapshot.lastSwapNs) / 1.0e6);
+        return stats;
+    }
+
+    void setSwapGated(bool gated, const QString &) override
+    {
+        m_swapTimings.setGated(gated);
+    }
+
     void frameSwapped() override
     {
         const int kind = m_submittedKind.exchange(0);
-        if (kind) ++m_outputCount;
+        if (kind) {
+            ++m_outputCount;
+            m_swapTimings.markSwap(clockNs());
+        }
         if (kind == 2) m_midpointSwapped.store(true);
         const auto now = clockNs();
         const auto start = m_sampleStart.load();
@@ -425,6 +454,7 @@ public:
         if (m_outputDirty) {
             m_submittedKind.store(m_outputKind);
             m_outputDirty = false;
+            if (m_outputKind == 1) m_swapTimings.markSubmit(clockNs());
         }
     }
 
@@ -441,6 +471,7 @@ public:
         m_textures.release();
         m_interpolator.release();
         m_pacer.reset();
+        m_swapTimings.reset();
         updateTimingStats();
         m_needsFrame.store(false);
         m_submittedKind.store(0);
@@ -467,6 +498,7 @@ private:
     std::uint32_t m_reportedColorSpace = 0;
     int m_reportedOutputBits = 0;
     StreamVideoTextureRenderer m_textures;
+    StreamPresentTimings m_swapTimings;
     int m_sourceColorSpace = OPENNOW_STREAMER_COLOR_SPACE_SDR709;
     StreamFrameInterpolator m_interpolator;
     StreamFramePacer m_pacer;

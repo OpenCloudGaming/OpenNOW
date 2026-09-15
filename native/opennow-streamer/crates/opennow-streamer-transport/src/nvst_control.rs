@@ -38,18 +38,12 @@ pub(crate) fn frame_ack(
     client_time_ms: f64,
     frame_bytes: u32,
     frame_time_us: u32,
-    measured_stage_ms: Option<f32>,
 ) -> NvstControlCommand {
     let mut payload = vec![0; FRAME_ACK_PAYLOAD_LEN];
     put_u16(&mut payload, 0, 1);
     put_u16(&mut payload, 2, 9);
     put_u32(&mut payload, 4, frame_number);
     put_u64(&mut payload, 12, client_time_ms.to_bits());
-    if let Some(stage_ms) = measured_stage_ms.filter(|value| value.is_finite() && *value >= 0.0) {
-        for offset in (28..=44).step_by(4) {
-            put_u32(&mut payload, offset, stage_ms.to_bits());
-        }
-    }
     put_u32(&mut payload, 48, (-1.0_f32).to_bits());
     put_u32(&mut payload, 72, frame_bytes);
     put_u32(&mut payload, 84, 16_384);
@@ -173,7 +167,7 @@ mod tests {
 
     #[test]
     fn frame_ack_places_only_source_pinned_fields() {
-        let command = frame_ack(42, 20_320.16, 15_168, 16_667, Some(4.5));
+        let command = frame_ack(42, 20_320.16, 15_168, 16_667);
         assert_eq!(command.code, FRAME_ACK_CODE);
         assert_eq!(command.payload.len(), FRAME_ACK_PAYLOAD_LEN);
         assert_eq!(&command.payload[0..4], &[1, 0, 9, 0]);
@@ -185,12 +179,7 @@ mod tests {
             u64::from_le_bytes(command.payload[12..20].try_into().unwrap()),
             20_320.16_f64.to_bits()
         );
-        for offset in (28..=44).step_by(4) {
-            assert_eq!(
-                u32::from_le_bytes(command.payload[offset..offset + 4].try_into().unwrap()),
-                4.5_f32.to_bits()
-            );
-        }
+        assert!(command.payload[28..48].iter().all(|byte| *byte == 0));
         assert_eq!(
             u32::from_le_bytes(command.payload[48..52].try_into().unwrap()),
             (-1.0_f32).to_bits()
@@ -211,14 +200,14 @@ mod tests {
         assert_eq!(
             command.payload,
             hex(
-                "010009002a00000000000000d7a3703d0ad8d34000000000000000000000904000009040000090400000904000009040000080bf0000000000000000000000000000000000000000403b000000000000000000000040000000000000000000001b4100000000"
+                "010009002a00000000000000d7a3703d0ad8d34000000000000000000000000000000000000000000000000000000000000080bf0000000000000000000000000000000000000000403b000000000000000000000040000000000000000000001b4100000000"
             )
         );
     }
 
     #[test]
-    fn frame_ack_leaves_unavailable_stage_metrics_zero() {
-        let command = frame_ack(1, 0.0, 7, DEFAULT_FRAME_TIME_US, None);
+    fn frame_ack_never_writes_a_measured_value_into_unpinned_stage_slots() {
+        let command = frame_ack(1, 0.0, 7, DEFAULT_FRAME_TIME_US);
         assert!(command.payload[28..48].iter().all(|byte| *byte == 0));
     }
 

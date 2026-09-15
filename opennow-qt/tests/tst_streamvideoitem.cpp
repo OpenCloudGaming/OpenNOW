@@ -87,7 +87,17 @@ public:
         ++releaseCount;
     }
 
+    void setSwapGated(bool gated, const QString &source) override
+    {
+        ++gateSetCount;
+        swapGated.store(gated);
+        gateSource = source;
+    }
+
     std::atomic_bool validContext = false;
+    std::atomic_bool swapGated = false;
+    std::atomic_int gateSetCount = 0;
+    QString gateSource;
     std::atomic_bool fsrUpscaling = false;
     std::atomic_int initializeCount = 0;
     std::atomic_int frameCount = 0;
@@ -522,6 +532,57 @@ private slots:
         delete item;
         QVERIFY(pointer.associated);
         QVERIFY(!pointer.hidden);
+    }
+
+    void hiddenWindowSynchronizesANewlyAttachedCallbackGate()
+    {
+        QQuickWindow window;
+        window.resize(320, 240);
+        auto *item = new StreamVideoItem(window.contentItem());
+        item->setWidth(320);
+        item->setHeight(240);
+        window.show();
+        QTRY_VERIFY(window.isVisible());
+        window.hide();
+        QTRY_VERIFY(!window.isVisible());
+        auto callback = std::make_shared<TestRenderCallback>();
+        item->setRenderCallback(callback);
+        QCOMPARE(callback->gateSetCount.load(), 1);
+        QVERIFY(callback->swapGated.load());
+        QCOMPARE(callback->gateSource, QStringLiteral("hidden"));
+        QCOMPARE(item->swapStats().value(QStringLiteral("gated")).toBool(), true);
+        QCOMPARE(item->swapStats().value(QStringLiteral("gateSource")).toString(),
+                 QStringLiteral("hidden"));
+        window.show();
+        QTRY_VERIFY(window.isVisible());
+        QTRY_COMPARE(callback->gateSetCount.load(), 2);
+        QVERIFY(!callback->swapGated.load());
+        QCOMPARE(item->swapStats().value(QStringLiteral("gated")).toBool(), false);
+        QVERIFY(!item->swapStats().contains(QStringLiteral("gateSource")));
+    }
+
+    void hidingAWindowGatesTheAttachedCallbackAndShowingReleasesIt()
+    {
+        QQuickWindow window;
+        window.resize(320, 240);
+        auto *item = new StreamVideoItem(window.contentItem());
+        item->setWidth(320);
+        item->setHeight(240);
+        window.show();
+        QTRY_VERIFY(window.isVisible());
+        auto callback = std::make_shared<TestRenderCallback>();
+        item->setRenderCallback(callback);
+        QCOMPARE(callback->gateSetCount.load(), 1);
+        QVERIFY(!callback->swapGated.load());
+        window.hide();
+        QTRY_VERIFY(!window.isVisible());
+        QTRY_COMPARE(callback->gateSetCount.load(), 2);
+        QVERIFY(callback->swapGated.load());
+        QCOMPARE(callback->gateSource, QStringLiteral("hidden"));
+        item->setRenderCallback(nullptr);
+        window.show();
+        QTRY_VERIFY(window.isVisible());
+        QCOMPARE(callback->gateSetCount.load(), 2);
     }
 
     void manualPointerLockOutranksServerCursorMessages()

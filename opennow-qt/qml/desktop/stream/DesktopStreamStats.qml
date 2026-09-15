@@ -9,6 +9,7 @@ Item {
     property bool expanded: false
     property bool pointerLocked: false
     property var frameGenerationStats: ({})
+    property var swapStats: ({})
     enabled: !pointerLocked
     signal cycleRequested()
     signal copyRequested()
@@ -40,7 +41,8 @@ Item {
         ? Math.max(0, Math.min(1, read("bitrateMbps") / allocatedBitrateMbps)) : 0
     readonly property string toggleShortcut: String(ShellStore.settings.shortcutToggleStats || "Ctrl+N")
     readonly property var heroCards: ["Fps", "Ping", "Latency"].map(key => cards.find(card => card.key === key)).filter(card => card !== undefined)
-    readonly property var ledgerCards: cards.filter(card => ["Jitter", "Drops", "PacketLoss", "Decode", "LocalOutputFps"].includes(card.key)
+    readonly property var unmeasuredKeys: ["Decode", "Residence", "Latency", "Swap"]
+    readonly property var ledgerCards: cards.filter(card => ["Jitter", "Drops", "PacketLoss", "Decode", "Residence", "Swap", "LocalOutputFps"].includes(card.key)
         && (card.key !== "Drops" || card.field === "videoDropCount" || card.value > 0))
     readonly property var featureBadges: {
         const badges = []
@@ -66,6 +68,16 @@ Item {
         return numeric(drops[key] !== undefined ? drops[key] : live[key])
     }
     function frameGenerationOutputFps() { return numeric(frameGenerationStats.outputFps) }
+    function qtSubmitToSwapP50Ms() { return numeric(swapStats.p50Ms) }
+    readonly property bool swapGated: swapStats.gated === true
+    readonly property string swapGateSource: String(swapStats.gateSource || "")
+    function swapGateText() {
+        switch (swapGateSource) {
+        case "minimized": return qsTr("Window minimized")
+        case "hidden": return qsTr("Window hidden")
+        default: return qsTr("Unavailable")
+        }
+    }
     function frameGenerationState() {
         switch (String(frameGenerationStats.status || "unavailable")) {
         case "off": return qsTr("Off")
@@ -80,8 +92,9 @@ Item {
         }
     }
     function sample(card) {
-        return card.field === "frameGenerationOutputFps"
-            ? frameGenerationOutputFps() : read(card.field)
+        if (card.field === "frameGenerationOutputFps") return frameGenerationOutputFps()
+        if (card.field === "qtSubmitToSwapMs") return qtSubmitToSwapP50Ms()
+        return read(card.field)
     }
     function format(value, decimals) { return numeric(value) === null ? qsTr("N/A") : Number(value).toFixed(decimals || 0) }
     function elapsedText() {
@@ -125,6 +138,8 @@ Item {
             {key:"Drops", label:qsTr("CALLBACK DROPS"), value:read("callbackDropCount"), unit:qsTr("callbacks"), field:"callbackDropCount"},
             {key:"PacketLoss", label:qsTr("PACKET LOSS"), value:read("packetLossPercent"), unit:"%", field:"packetLossPercent", decimals:1},
             {key:"Decode", label:qsTr("DECODE"), value:read("decodeTimeMs"), unit:"ms", field:"decodeTimeMs", decimals:1},
+            {key:"Residence", label:qsTr("DECODER RESIDENCE"), value:read("decoderResidenceMs"), unit:"ms", field:"decoderResidenceMs", decimals:1},
+            {key:"Swap", label:qsTr("QT SUBMIT TO SWAP"), value:qtSubmitToSwapP50Ms(), unit:"ms", field:"qtSubmitToSwapMs", decimals:1},
             {key:"Latency", label:qsTr("LATENCY"), value:read("latencyMs"), unit:"ms", field:"latencyMs"}
         ]
         if (read("otherQueueDropCount") > 0)
@@ -132,7 +147,8 @@ Item {
         if (frameGenerationEnabled)
             cards.push({key:"LocalOutputFps", label:qsTr("LOCAL OUTPUT FPS"), value:frameGenerationOutputFps(), unit:"fps", field:"frameGenerationOutputFps"})
         return cards.filter(item => shown(item.key)
-            && ((item.key !== "Decode" && item.key !== "Latency") || item.value !== null))
+            && (!unmeasuredKeys.includes(item.key) || item.value !== null
+                || (item.key === "Swap" && swapGated)))
     }
     function compactItems() {
         const items = cards.map(item => ({text:item.label + " " + format(item.value, item.decimals) + " " + item.unit}))
@@ -146,6 +162,8 @@ Item {
         const lines = cards.map(item => item.label + ": " + format(item.value, item.decimals) + " " + item.unit)
         if (frameGenerationEnabled)
             lines.push(qsTr("FRAME GENERATION") + ": " + frameGenerationState())
+        if (swapGated)
+            lines.push(qsTr("SWAP GATE") + ": " + swapGateText())
         if (shown("Region")) lines.unshift(region + (rig ? " · " + rig : ""))
         if (shown("Video")) lines.push(videoText)
         if (shown("Clock")) lines.push(qsTr("Session: ") + elapsedText())
@@ -167,6 +185,7 @@ Item {
         }
         if (card.field === "videoDropCount") return qsTr("session total")
         if (card.field === "decodeTimeMs") return telemetryActive ? String(live.mediaBackend || "") : ""
+        if (card.field === "qtSubmitToSwapMs") return swapGated ? swapGateText() : ""
         return ""
     }
     onTelemetryActiveChanged: resetHistory()
@@ -385,7 +404,8 @@ Item {
                                 text: root.format(ledger.modelData.value, ledger.modelData.decimals)
                                     + (ledger.modelData.field === "videoDropCount" ? "" : ledger.modelData.unit === "%" ? "%" : " " + ledger.modelData.unit)
                                 color: root.degraded && ledger.modelData.key === "PacketLoss" ? "#D15A2C"
-                                    : ledger.modelData.key === "Decode" ? "white" : root.metricColor
+                                    : ledger.modelData.key === "Decode" || ledger.modelData.key === "Residence"
+                                        || ledger.modelData.key === "Swap" ? "white" : root.metricColor
                             }
                         }
                     }

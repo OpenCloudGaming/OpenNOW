@@ -23,6 +23,8 @@ mod queue;
 #[cfg(target_os = "linux")]
 mod session;
 #[cfg(target_os = "linux")]
+mod timing;
+#[cfg(target_os = "linux")]
 mod video;
 #[cfg(target_os = "linux")]
 mod vulkan_device;
@@ -62,3 +64,5 @@ pub use session::{
     BackendEvent, DecoderBackend, DecoderPreference, LifecycleState, LinuxSession, PushOutcome,
     SessionConfig,
 };
+#[cfg(target_os = "linux")]
+pub use timing::{DecodeStagePercentiles, DecodeTimingProbe, DecodeTimings};

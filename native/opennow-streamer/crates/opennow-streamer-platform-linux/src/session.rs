@@ -3,10 +3,11 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::audio::{AudioSink, OpusDecoder, open_audio_fallback, open_audio_sink};
 use crate::queue::{BoundedQueue, QueuePop, QueuePush};
+use crate::timing::{DecodeTimingProbe, DecodeTimings};
 use crate::video::{VideoDecoder, open_v4l2};
 use crate::{
     AudioBackend, AudioConfig, AudioPacket, DecodedVideoFrame, EncodedVideoFrame, Error, Result,
@@ -178,6 +179,7 @@ pub struct LinuxSession {
     video_needs_keyframe: AtomicBool,
     paused: AtomicBool,
     video_submit: Mutex<()>,
+    decode_timings: DecodeTimingProbe,
     video_worker: Option<JoinHandle<()>>,
     audio_worker: Option<JoinHandle<()>>,
 }
@@ -190,16 +192,26 @@ impl LinuxSession {
         let decoded_frames = Arc::new(BoundedQueue::new(config.decoded_queue_depth));
         let events = Arc::new(BoundedQueue::new(64));
         let (startup_tx, startup_rx) = mpsc::sync_channel(1);
+        let decode_timings = DecodeTimingProbe::default();
         let video_worker = {
             let config = config.clone();
             let state = Arc::clone(&state);
             let commands = Arc::clone(&video_commands);
             let decoded = Arc::clone(&decoded_frames);
             let events = Arc::clone(&events);
+            let decode_timings = decode_timings.clone();
             thread::Builder::new()
                 .name("opennow-linux-video".to_owned())
                 .spawn(move || {
-                    run_video_worker(config, state, commands, decoded, events, startup_tx)
+                    run_video_worker(
+                        config,
+                        state,
+                        commands,
+                        decoded,
+                        events,
+                        decode_timings,
+                        startup_tx,
+                    )
                 })
                 .map_err(|error| Error::io(Subsystem::Session, error))?
         };
@@ -280,6 +292,7 @@ impl LinuxSession {
             video_needs_keyframe: AtomicBool::new(false),
             paused: AtomicBool::new(false),
             video_submit: Mutex::new(()),
+            decode_timings,
             video_worker: Some(video_worker),
             audio_worker,
         })
@@ -290,6 +303,10 @@ impl LinuxSession {
             .state
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
+    }
+
+    pub fn decode_timings(&self) -> DecodeTimings {
+        self.decode_timings.snapshot()
     }
 
     pub fn submit_video(&self, frame: EncodedVideoFrame) -> Result<PushOutcome> {
@@ -530,6 +547,7 @@ fn run_video_worker(
     commands: Arc<BoundedQueue<VideoCommand>>,
     decoded: Arc<BoundedQueue<DecodedVideoFrame>>,
     events: EventQueue,
+    decode_timings: DecodeTimingProbe,
     startup: mpsc::SyncSender<Result<DecoderBackend>>,
 ) {
     let (mut backend, mut decoder) = match open_preferred_decoder(&config, config.stream_format) {
@@ -574,9 +592,11 @@ fn run_video_worker(
                     flush_decoder(&mut decoder),
                     &decoded,
                     &events,
+                    &decode_timings,
                     "reconfigure",
                 );
                 decoded.clear();
+                decode_timings.clear();
                 match open_preferred_decoder(&config, format) {
                     Ok((new_backend, new_decoder)) => {
                         if new_backend != backend {
@@ -615,6 +635,7 @@ fn run_video_worker(
                 }
                 if reset || generation > active_generation {
                     decoded.clear();
+                    decode_timings.clear();
                     match open_preferred_decoder(&config, active_format) {
                         Ok((new_backend, new_decoder)) => {
                             if new_backend != backend {
@@ -645,11 +666,16 @@ fn run_video_worker(
             }
             None => None,
         };
+        if let Some(frame) = frame.as_ref() {
+            decode_timings.record_submission(frame.timestamp_us);
+        }
+        let call_started = Instant::now();
         let result = if let Some(frame) = frame.as_ref() {
             decode_frame(&mut decoder, frame)
         } else {
             poll_decoder(&mut decoder)
         };
+        let call_duration = call_started.elapsed();
         match result {
             Ok(frames) => {
                 if frame.is_some() || !frames.is_empty() {
@@ -662,6 +688,8 @@ fn run_video_worker(
                     active_format = format;
                     emit(&events, BackendEvent::FormatChanged(format));
                 }
+                record_decoded_outputs(&decode_timings, &frames);
+                decode_timings.record_call(call_duration, !frames.is_empty());
                 enqueue_frames(&decoded, &events, frames);
             }
             Err(error @ Error::ReferenceLost { .. }) => {
@@ -678,6 +706,7 @@ fn run_video_worker(
                         return;
                     }
                 }
+                decode_timings.clear();
                 need_keyframe = true;
                 emit(&events, BackendEvent::NeedKeyframe);
             }
@@ -693,13 +722,19 @@ fn run_video_worker(
                         },
                     );
                     backend = new_backend;
+                    decode_timings.clear();
                     if let Some(frame) = frame.as_ref().filter(|frame| frame.keyframe) {
+                        decode_timings.record_submission(frame.timestamp_us);
+                        let retry_started = Instant::now();
                         match decode_frame(&mut new_decoder, frame) {
                             Ok(frames) => {
                                 if let Some(format) = new_decoder.take_format_change() {
                                     active_format = format;
                                     emit(&events, BackendEvent::FormatChanged(format));
                                 }
+                                record_decoded_outputs(&decode_timings, &frames);
+                                decode_timings
+                                    .record_call(retry_started.elapsed(), !frames.is_empty());
                                 enqueue_frames(&decoded, &events, frames);
                             }
                             Err(fallback_error) => {
@@ -721,7 +756,13 @@ fn run_video_worker(
             },
         }
     }
-    finish_decoder_drain(flush_decoder(&mut decoder), &decoded, &events, "shutdown");
+    finish_decoder_drain(
+        flush_decoder(&mut decoder),
+        &decoded,
+        &events,
+        &decode_timings,
+        "shutdown",
+    );
 }
 
 fn run_audio_worker(
@@ -1016,6 +1057,12 @@ fn enqueue_frames(
     }
 }
 
+fn record_decoded_outputs(probe: &DecodeTimingProbe, frames: &[DecodedVideoFrame]) {
+    for frame in frames {
+        probe.record_output(frame.timestamp_us);
+    }
+}
+
 fn decode_frame(
     decoder: &mut Box<dyn VideoDecoder>,
     frame: &EncodedVideoFrame,
@@ -1056,10 +1103,14 @@ fn finish_decoder_drain(
     result: Result<Vec<DecodedVideoFrame>>,
     decoded: &BoundedQueue<DecodedVideoFrame>,
     events: &EventQueue,
+    decode_timings: &DecodeTimingProbe,
     phase: &str,
 ) {
     match result {
-        Ok(frames) => enqueue_frames(decoded, events, frames),
+        Ok(frames) => {
+            record_decoded_outputs(decode_timings, &frames);
+            enqueue_frames(decoded, events, frames)
+        }
         Err(error) => eprintln!("Linux decoder {phase} drain incomplete: {error}"),
     }
 }
@@ -1182,11 +1233,13 @@ mod tests {
     fn incomplete_transition_drains_do_not_emit_fatal_events() {
         let decoded = BoundedQueue::new(2);
         let events = Arc::new(BoundedQueue::new(8));
+        let decode_timings = DecodeTimingProbe::default();
         for phase in ["reconfigure", "shutdown"] {
             finish_decoder_drain(
                 Err(Error::backend(Subsystem::V4l2, "decoder drain timed out")),
                 &decoded,
                 &events,
+                &decode_timings,
                 phase,
             );
             assert!(events.try_pop().is_none());
@@ -1201,6 +1254,7 @@ mod tests {
                 }]),
                 &decoded,
                 &events,
+                &decode_timings,
                 phase,
             );
             assert_eq!(decoded.try_pop().unwrap().timestamp_us, 1234);

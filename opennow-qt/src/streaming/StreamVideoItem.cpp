@@ -53,6 +53,10 @@ StreamVideoItem::StreamVideoItem(std::unique_ptr<MacPointerCapture> pointerCaptu
     m_frameStatsTimer.setInterval(1000);
     connect(&m_frameStatsTimer, &QTimer::timeout,
             this, &StreamVideoItem::frameGenerationStatsChanged);
+    m_swapStatsTimer.setInterval(1000);
+    connect(&m_swapStatsTimer, &QTimer::timeout, this, &StreamVideoItem::swapStatsChanged);
+    connect(this, &QQuickItem::visibleChanged, this, &StreamVideoItem::updateSwapGate,
+            Qt::UniqueConnection);
     if (s_nativeRuntime) {
         m_serverCursorComposited = s_nativeRuntime->serverCursorComposited();
         connect(s_nativeRuntime, &NativeStreamRuntime::cursorCaptureChanged, this,
@@ -88,6 +92,8 @@ StreamVideoItem::StreamVideoItem(std::unique_ptr<MacPointerCapture> pointerCaptu
         if (currentWindow) {
             connect(currentWindow, &QWindow::activeChanged,
                     this, &StreamVideoItem::syncCaptureState, Qt::UniqueConnection);
+            connect(currentWindow, &QWindow::visibilityChanged,
+                    this, &StreamVideoItem::updateSwapGate, Qt::UniqueConnection);
             connect(currentWindow, &QWindow::xChanged,
                     this, &StreamVideoItem::updateCursorConfinement, Qt::UniqueConnection);
             connect(currentWindow, &QWindow::yChanged,
@@ -100,6 +106,7 @@ StreamVideoItem::StreamVideoItem(std::unique_ptr<MacPointerCapture> pointerCaptu
                     this, &StreamVideoItem::resynchronizeInput, Qt::UniqueConnection);
         }
         syncCaptureState();
+        updateSwapGate();
     };
     connect(this, &QQuickItem::windowChanged, this, attachWindow);
     attachWindow(window());
@@ -203,7 +210,10 @@ void StreamVideoItem::setRenderCallback(std::shared_ptr<StreamVideoRenderCallbac
     if (m_renderCallback == callback) return;
     const auto wasAvailable = renderCallbackAvailable();
     m_renderCallback = std::move(callback);
+    if (m_renderCallback) m_swapStatsTimer.start();
+    else m_swapStatsTimer.stop();
     connectFrameSwaps();
+    syncSwapGate();
     if (wasAvailable != renderCallbackAvailable()) emit renderCallbackAvailableChanged();
     update();
 }
@@ -227,6 +237,49 @@ void StreamVideoItem::setFrameGeneration(bool enabled)
 QVariantMap StreamVideoItem::frameGenerationStats() const
 {
     return m_renderCallback ? m_renderCallback->frameGenerationStats() : QVariantMap{};
+}
+
+QVariantMap StreamVideoItem::swapStats() const
+{
+    QVariantMap stats = m_renderCallback ? m_renderCallback->swapStats() : QVariantMap{};
+    stats.insert(QStringLiteral("gated"), !m_swapGateSource.isEmpty());
+    if (!m_swapGateSource.isEmpty())
+        stats.insert(QStringLiteral("gateSource"), m_swapGateSource);
+    return stats;
+}
+
+QString StreamVideoItem::currentSwapGateSource() const
+{
+    if (const auto *currentWindow = window();
+               currentWindow
+               && (!currentWindow->isVisible()
+                   || currentWindow->visibility() == QWindow::Minimized)) {
+        return currentWindow->isVisible() ? QStringLiteral("minimized")
+                                          : QStringLiteral("hidden");
+    }
+    if (!isVisible()) return QStringLiteral("hidden");
+    return {};
+}
+
+void StreamVideoItem::pushSwapGate()
+{
+    if (m_renderCallback)
+        m_renderCallback->setSwapGated(!m_swapGateSource.isEmpty(), m_swapGateSource);
+    emit swapStatsChanged();
+}
+
+void StreamVideoItem::updateSwapGate()
+{
+    const auto source = currentSwapGateSource();
+    if (source == m_swapGateSource) return;
+    m_swapGateSource = source;
+    pushSwapGate();
+}
+
+void StreamVideoItem::syncSwapGate()
+{
+    m_swapGateSource = currentSwapGateSource();
+    pushSwapGate();
 }
 
 int StreamVideoItem::upscalingSharpness() const
