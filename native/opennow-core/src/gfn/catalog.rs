@@ -424,7 +424,7 @@ impl GfnService {
         })
     }
 
-    fn check_catalog_revision(&self, revision: u64) -> Result<(), ServiceError> {
+    pub(super) fn check_catalog_revision(&self, revision: u64) -> Result<(), ServiceError> {
         if self
             .catalog_revision
             .load(std::sync::atomic::Ordering::Acquire)
@@ -1046,7 +1046,7 @@ pub(crate) fn catalog_payload(
     Ok(payload)
 }
 
-fn complete_games(items: &Value) -> Result<Vec<Value>, ServiceError> {
+pub(super) fn complete_games(items: &Value) -> Result<Vec<Value>, ServiceError> {
     let items = items.as_array().ok_or_else(|| ServiceError {
         code: "invalid_upstream_response",
         message: "Catalog response has no games array".into(),

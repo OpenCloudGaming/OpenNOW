@@ -105,7 +105,7 @@ private slots:
         const auto shell = source(QStringLiteral("qml/state/ShellStore.qml"));
         QJSEngine engine;
         QVERIFY(prepareLaunchGuards(engine));
-        for (const auto &name : {"acceptAuthEnvelope", "cancelDeviceLogin", "pollDeviceLogin"}) {
+        for (const auto &name : {"acceptAuthEnvelope", "cancelDeviceLogin", "pollDeviceLogin", "invalidateStoreLaunch"}) {
             const auto match = QRegularExpression(QStringLiteral(
                 "    function %1\\([^\\n]*\\) \\{.*?\\n    \\}").arg(QString::fromLatin1(name)),
                 QRegularExpression::DotMatchesEverythingOption).match(shell);
@@ -117,6 +117,8 @@ private slots:
             var root = this, activeSession = null, remoteSessions = [], pendingLaunchParams = null, conflictSession = null;
             var remoteSessionsRequestId = '', remoteSessionDiscoveryRequestId = '', sessionClaimRequestId = '', streamCreateRequestId = '', streamerPrepareRequestId = '';
             var accountServicesOwner = {invalidateAccount: function() {}}, Qt = {callLater: function() {}};
+            var storeLaunchRequestId = '', storeLaunchTarget = null, storeLaunchFailed = false,
+                storeLaunchDecision = {status: 'metadata_unconfirmed', message: ''};
             function reloadCatalogForSession() {} function refreshAccountServices() {}
             var ready = true, signedIn = false, authState = 'waiting', authSessionRequestId = '';
             var deviceStartRequestId = 'start', devicePollRequestId = 'poll', deviceCompleteRequestId = 'complete';
@@ -141,7 +143,16 @@ private slots:
             acceptAuthEnvelope({generation:6,session:{user:{userId:'new'},provider:{idpId:'alliance'}}});
         )JS")).isError());
         QCOMPARE(engine.evaluate(QStringLiteral("streamerPrepareRequestId")).toString(), QStringLiteral("current-owner-prepare"));
-        QVERIFY(!engine.evaluate(QStringLiteral("acceptAuthEnvelope({generation:7,session:{user:{userId:'other'},provider:{idpId:'alliance'}}})")).isError());
+        QVERIFY(!engine.evaluate(QStringLiteral(R"JS(
+            storeLaunchRequestId='store-launch-in-flight';
+            storeLaunchTarget={appId:'previous-account'};
+            storeLaunchFailed=true;
+            acceptAuthEnvelope({generation:7,session:{user:{userId:'other'},provider:{idpId:'alliance'}}});
+        )JS")).isError());
+        QCOMPARE(engine.evaluate(QStringLiteral("storeLaunchRequestId")).toString(), QString());
+        QVERIFY(engine.evaluate(QStringLiteral("storeLaunchTarget === null")).toBool());
+        QVERIFY(!engine.evaluate(QStringLiteral("storeLaunchFailed")).toBool());
+        QVERIFY(engine.evaluate(QStringLiteral("cancelled.indexOf('store-launch-in-flight') >= 0")).toBool());
         QCOMPARE(engine.evaluate(QStringLiteral("streamerPrepareRequestId")).toString(), QString());
         QVERIFY(!shell.contains(QStringLiteral("deviceCode")));
         const auto timer = shell.section(QStringLiteral("property Timer devicePollTimer:"), 1).section(QStringLiteral("property Timer streamPollTimer:"), 0, 0);
@@ -171,6 +182,7 @@ private slots:
                 variants: [{id: '1001', store: 'Steam', inLibrary: false},
                            {id: '1003', store: 'Xbox', inLibrary: true}]};
             var settings = {}, selectedRegion = '', regions = [], requests = [], pendingLaunchParams = null;
+            var storeLaunchTarget = null;
             var CoreClient = {request: function(method, params) {
                 requests.push({method: method, params: params}); return 'request';
             }};
@@ -186,6 +198,12 @@ private slots:
         QCOMPARE(engine.evaluate(QStringLiteral("requests[1].method")).toString(), QStringLiteral("catalog.launch.inspect"));
         QCOMPARE(engine.evaluate(QStringLiteral("requests[1].params.variantId")).toString(), QStringLiteral("1001"));
         QVERIFY(!engine.evaluate(QStringLiteral("pendingLaunchParams.accountLinked")).toBool());
+        QVERIFY(!engine.evaluate(QStringLiteral(
+            "launchInspectRequestId=''; storeLaunchTarget={appId:'parent',variantId:'1001'}; launchSelectedGame(false);")).isError());
+        QVERIFY(engine.evaluate(QStringLiteral("requests[2].params.storeLaunch")).toBool());
+        QVERIFY(!engine.evaluate(QStringLiteral(
+            "launchInspectRequestId=''; pendingLaunchParams=null; storeLaunchTarget={appId:'parent',variantId:'1003'}; selectGameVariant(0); launchSelectedGame(false);")).isError());
+        QVERIFY(engine.evaluate(QStringLiteral("requests[3].params.storeLaunch")).isUndefined());
     }
 
     void existingSessionLaunchFlow_data()
@@ -396,6 +414,7 @@ private slots:
             var subscriptionRequestId = 'subscription', regionsRequestId = 'regions', accountsRequestId = 'accounts';
             var gameAccountsRequestId = 'connections', streamState = 'idle', streamMessage = '', lastError = '';
             var requests = [], selectedGame = {title:'Game'}, settings = {}, selectedRegion = '', regions = [], onboardingReplaying = false;
+            var storeLaunchTarget = null;
             var CoreClient = {request:function(method,params){requests.push(method);return 'request-'+requests.length;}};
             var AppController = {navigate:function(){}};
             var onboardingOwner = {acceptFailure:function(){return false;}};
@@ -689,6 +708,7 @@ private slots:
             var subscriptionRequestId = "", streamState = "idle", streamMessage = "", lastError = "";
             var settings = {}, selectedRegion = '', regions = [], pendingLaunchParams = null;
             var requests = [], routes = [];
+            var storeLaunchTarget = null;
             var CoreClient = {request: function(method, params) {
                 requests.push({method: method, params: params}); return "request-" + requests.length;
             }};

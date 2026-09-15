@@ -385,7 +385,7 @@ if(BUILD_TESTING)
         endforeach()
     endforeach()
     qt_add_resources(opennow-qt "store-paging-acceptance"
-        PREFIX "/acceptance" BASE tests FILES tests/RegionPingAcceptance.qml tests/RegionChoicesAcceptance.qml tests/StorePagingAcceptance.qml tests/BackendAvailabilityAcceptance.qml tests/StreamRecoveryAcceptance.qml tests/IdleModeAcceptance.qml tests/FrameGenerationAcceptance.qml tests/AudioOutputAcceptance.qml tests/CollectionsAcceptance.qml tests/SteamBigPictureAcceptance.qml tests/PersistentInGameSettingsAcceptance.qml tests/ControllerMetadataAcceptance.qml tests/MicrophoneAcceptance.qml tests/RecordingAcceptance.qml)
+        PREFIX "/acceptance" BASE tests FILES tests/RegionPingAcceptance.qml tests/RegionChoicesAcceptance.qml tests/StorePagingAcceptance.qml tests/BackendAvailabilityAcceptance.qml tests/StreamRecoveryAcceptance.qml tests/IdleModeAcceptance.qml tests/FrameGenerationAcceptance.qml tests/AudioOutputAcceptance.qml tests/CollectionsAcceptance.qml tests/SteamBigPictureAcceptance.qml tests/PersistentInGameSettingsAcceptance.qml tests/StoreLaunchAcceptance.qml tests/ControllerMetadataAcceptance.qml tests/MicrophoneAcceptance.qml tests/RecordingAcceptance.qml)
     add_test(NAME qml-recording
         COMMAND opennow-qt --smoke-test --allow-multiple-instances --desktop
             --route settings --smoke-recording --reduced-motion)
@@ -502,6 +502,20 @@ if(BUILD_TESTING)
         COMMAND opennow-qt --smoke-test --allow-multiple-instances --desktop
             --route settings-streaming --smoke-persistent-in-game-settings --reduced-motion)
     set_tests_properties(qml-persistent-in-game-settings PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 10)
+    foreach(width 960 1600)
+        foreach(mode windowed fullscreen)
+            set(store_launch_args)
+            if(mode STREQUAL "fullscreen")
+                list(APPEND store_launch_args --smoke-store-launch-fullscreen)
+            endif()
+            add_test(NAME qml-store-launch-${width}-${mode}
+                COMMAND opennow-qt --smoke-test --allow-multiple-instances --desktop
+                    --route settings-account --smoke-store-launch --smoke-width ${width}
+                    --reduced-motion ${store_launch_args})
+            set_tests_properties(qml-store-launch-${width}-${mode} PROPERTIES
+                ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 10)
+        endforeach()
+    endforeach()
     add_test(NAME qml-frame-generation
         COMMAND opennow-qt --smoke-test --allow-multiple-instances --desktop
             --route settings-streaming --smoke-frame-generation --reduced-motion)

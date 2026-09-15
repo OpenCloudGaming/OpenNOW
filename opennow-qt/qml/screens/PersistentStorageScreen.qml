@@ -7,6 +7,9 @@ FocusScope {
     property bool confirmReset: false
     readonly property var selectedLocation: locationList.currentIndex >= 0 && locationList.currentIndex < ShellStore.storageLocations.length
         ? ShellStore.storageLocations[locationList.currentIndex] : null
+    readonly property bool storeLaunchReady: ShellStore.storeLaunchTarget !== null
+    readonly property bool storeLaunchBusy: ShellStore.pendingLaunchParams !== null
+        && ShellStore.pendingLaunchParams.storeLaunch === true && ShellStore.streamBusy
 
     ScreenBackground { tint: "#1B2338" }
 
@@ -56,7 +59,7 @@ FocusScope {
     }
 
     GlassPanel {
-        x: root.width * 0.7; y: 175; width: root.width * 0.23; height: 460; panelRadius: 36; strong: true
+        x: root.width * 0.7; y: 175; width: root.width * 0.23; height: 560; panelRadius: 36; strong: true
         Column {
             anchors.fill: parent; anchors.margins: 26; spacing: 14
             Text { width: parent.width; text: root.selectedLocation ? root.selectedLocation.name : qsTr("Cloud storage"); wrapMode: Text.WordWrap; color: Theme.label; font.family: Theme.displayFont; font.pixelSize: 27; font.weight: Font.Black }
@@ -76,10 +79,59 @@ FocusScope {
                 Component.onCompleted: forceActiveFocus()
             }
             GlassButton { width: parent.width; glyph: "↻"; text: qsTr("Refresh locations"); onClicked: { root.confirmReset = false; ShellStore.refreshStorageLocations() } }
+            GlassButton {
+                objectName: "persistentStorageStoreLaunch"
+                width: parent.width
+                glyph: ShellStore.storeLaunchFailed ? "↻" : ""
+                text: ShellStore.storeLaunchFailed ? qsTr("Retry") : qsTr("Launch Steam")
+                enabled: ShellStore.storeLaunchFailed
+                    || (root.storeLaunchReady && ShellStore.storeLaunchRequestId === ""
+                        && !root.storeLaunchBusy)
+                onClicked: {
+                    root.confirmReset = false
+                    if (ShellStore.storeLaunchFailed) ShellStore.inspectStoreLaunch()
+                    else ShellStore.launchStoreGame()
+                }
+            }
+            Text {
+                objectName: "persistentStorageStoreLaunchStatus"
+                width: parent.width
+                text: ShellStore.storeLaunchRequestId !== ""
+                    ? qsTr("Checking the Steam store launch…")
+                    : root.storeLaunchBusy
+                        ? qsTr("Starting the Steam store session…")
+                        : root.storeLaunchReady
+                            ? qsTr("Opens the %1 store with your persistent storage.").arg(ShellStore.storeLaunchTarget.title)
+                            : ShellStore.storeLaunchDecision.message
+                wrapMode: Text.WordWrap
+                color: root.storeLaunchReady ? Theme.textMuted : Theme.coral
+                font.family: Theme.bodyFont; font.pixelSize: 14; lineHeight: 1.2
+            }
             GlassButton { width: parent.width; glyph: "B"; text: qsTr("Back to settings"); onClicked: AppController.navigate("settings-account") }
         }
     }
 
-    Component.onCompleted: ShellStore.refreshStorageLocations()
+
+    property Connections storeLaunchLifecycle: Connections {
+        target: ShellStore
+        function onReadyChanged() {
+            if (ShellStore.ready && ShellStore.signedIn)
+                ShellStore.inspectStoreLaunch()
+        }
+        function onSignedInChanged() {
+            if (ShellStore.ready && ShellStore.signedIn)
+                ShellStore.inspectStoreLaunch()
+        }
+        function onAuthGenerationChanged() {
+            if (ShellStore.ready && ShellStore.signedIn)
+                ShellStore.inspectStoreLaunch()
+        }
+    }
+
+    Component.onCompleted: {
+        ShellStore.refreshStorageLocations()
+        if (!ShellStore.storeLaunchFailed)
+            ShellStore.inspectStoreLaunch()
+    }
     AppChrome { anchors.fill: parent; title: qsTr("Persistent storage"); currentRoute: "settings"; onRouteRequested: route => AppController.navigate(route) }
 }

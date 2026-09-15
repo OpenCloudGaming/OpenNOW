@@ -351,6 +351,10 @@ QtObject {
     property string launchInspectStage: ""
     property string launchInspectSeatId: ""
     property string directLookupRequestId: ""
+    property var storeLaunchTarget: null
+    property string storeLaunchRequestId: ""
+    property var storeLaunchDecision: ({status:"metadata_unconfirmed", message:""})
+    property bool storeLaunchFailed: false
     property alias ownershipConfirmation: catalogOwner.ownershipConfirmation
     property alias selectedLaunchDecision: catalogOwner.selectedLaunchDecision
     property alias cloudMutationBusy: catalogOwner.mutationBusy
@@ -403,9 +407,48 @@ QtObject {
         }
         launchInspectStage = stage
         launchInspectSeatId = stage === "stop" && conflictSession ? String(conflictSession.sessionId) : ""
-        launchInspectRequestId = CoreClient.request("catalog.launch.inspect", {
+        const inspectParams = {
             appId:pendingLaunchParams.catalogAppId, variantId:pendingLaunchParams.variantId
-        }, 30000)
+        }
+        if (pendingLaunchParams.storeLaunch === true)
+            inspectParams.storeLaunch = true
+        launchInspectRequestId = CoreClient.request("catalog.launch.inspect", inspectParams, 30000)
+    }
+    function invalidateStoreLaunch() {
+        const id = storeLaunchRequestId
+        storeLaunchRequestId = ""
+        storeLaunchTarget = null
+        storeLaunchFailed = false
+        storeLaunchDecision = {status:"metadata_unconfirmed", message:""}
+        if (id !== "") CoreClient.cancel(id)
+    }
+    function failStoreLaunch(decision) {
+        storeLaunchTarget = null
+        storeLaunchFailed = true
+        storeLaunchDecision = decision
+        if (AppController.route !== "persistent-storage")
+            AppController.navigate("persistent-storage")
+    }
+    function inspectStoreLaunch() {
+        if (!ready || !signedIn || storeLaunchRequestId !== "")
+            return
+        storeLaunchFailed = false
+        storeLaunchRequestId = CoreClient.request("catalog.launch.store.inspect", {}, 30000)
+    }
+    function launchStoreGame() {
+        const target = storeLaunchTarget
+        if (!target || storeLaunchDecision.status !== "ready" || !target.game)
+            return
+        if (!signedIn) {
+            AppController.navigate("sign-in")
+            return
+        }
+        const variants = target.game.variants || []
+        const index = variants.findIndex(variant => String(variant.id) === String(target.variantId))
+        if (index < 0)
+            return
+        selectedGame = Object.assign({}, target.game, {selectedVariantIndex:index})
+        launchSelectedGame(false)
     }
     property Connections launchInspectionResponses: Connections {
         target: CoreClient
@@ -425,17 +468,41 @@ QtObject {
                 root.launchSelectedGame(true)
                 return
             }
+            if (id !== "" && id === root.storeLaunchRequestId) {
+                root.storeLaunchRequestId = ""
+                root.storeLaunchFailed = false
+                if (!root.matchesAuthScope(result.scope)) {
+                    root.storeLaunchTarget = null
+                    root.storeLaunchDecision = {status:"metadata_unconfirmed",
+                        message:qsTr("The account changed. Refresh the store launch and try again.")}
+                    return
+                }
+                root.storeLaunchDecision = result.decision || {status:"metadata_unconfirmed", message:""}
+                const ready = result.decision && result.decision.status === "ready"
+                    && result.game && result.appId && result.variantId
+                root.storeLaunchTarget = ready ? {
+                    appId:String(result.appId), variantId:String(result.variantId),
+                    title:String(result.game.title || "Steam"), game:result.game
+                } : null
+                return
+            }
             if (id === "" || id !== root.launchInspectRequestId) return
             const stage = root.launchInspectStage
             const seatId = root.launchInspectSeatId
             root.launchInspectRequestId = ""
             root.launchInspectStage = ""
             root.launchInspectSeatId = ""
+            const storeOriginated = root.pendingLaunchParams
+                && root.pendingLaunchParams.storeLaunch === true
             if (!root.launchIntentCurrent() || !root.matchesAuthScope(result.scope)
                     || result.appId !== root.pendingLaunchParams.catalogAppId || result.variantId !== root.pendingLaunchParams.variantId) {
                 root.streamState = "error"
                 root.streamMessage = qsTr("The selected game or account changed. Choose the store version again.")
                 root.lastError = root.streamMessage
+                if (storeOriginated) {
+                    root.pendingLaunchParams = null
+                    root.failStoreLaunch({status:"metadata_unconfirmed", message:root.streamMessage})
+                }
                 return
             }
             const variant = result.game && result.game.id === root.pendingLaunchParams.catalogAppId
@@ -444,6 +511,10 @@ QtObject {
                 root.streamState = "error"
                 root.streamMessage = qsTr("The exact requested store version was not returned.")
                 root.lastError = root.streamMessage
+                if (storeOriginated) {
+                    root.pendingLaunchParams = null
+                    root.failStoreLaunch({status:"metadata_unconfirmed", message:root.streamMessage})
+                }
                 return
             }
             catalogOwner.adoptGame(result.game)
@@ -458,7 +529,10 @@ QtObject {
                 root.streamMessage = root.selectedLaunchDecision.message || qsTr("Availability could not be confirmed. Refresh and try again.")
                 root.lastError = root.streamMessage
                 root.pendingLaunchParams = null
-                AppController.navigateFromLastPrimary("game-detail")
+                if (storeOriginated)
+                    root.failStoreLaunch(root.selectedLaunchDecision)
+                else
+                    AppController.navigateFromLastPrimary("game-detail")
                 return
             }
             if (stage === "discover") {
@@ -498,6 +572,15 @@ QtObject {
                 root.streamState = "error"
                 root.streamMessage = message
                 root.lastError = message
+                if (root.pendingLaunchParams && root.pendingLaunchParams.storeLaunch === true) {
+                    root.pendingLaunchParams = null
+                    root.failStoreLaunch({status:"metadata_unconfirmed", message:message})
+                }
+            } else if (id !== "" && id === root.storeLaunchRequestId) {
+                root.storeLaunchRequestId = ""
+                root.storeLaunchTarget = null
+                root.storeLaunchFailed = true
+                root.storeLaunchDecision = {status:"metadata_unconfirmed", message:message}
             }
         }
     }
@@ -1489,6 +1572,9 @@ QtObject {
             appLaunchMode: settings.steamBigPictureMode === true
                 ? "gamepadFriendly" : "default"
         }
+        if (storeLaunchTarget && String(storeLaunchTarget.appId) === String(selectedGame.id)
+                && String(storeLaunchTarget.variantId) === appId)
+            params.storeLaunch = true
         const configuredRegion = selectedRegion
         for (let index = 0; index < regions.length; ++index) {
             const region = regions[index]
@@ -2476,6 +2562,7 @@ QtObject {
             remoteSessions = []
             pendingLaunchParams = null
             conflictSession = null
+            invalidateStoreLaunch()
         }
         authGeneration = generation
         authSession = payload.session || null
@@ -2959,9 +3046,12 @@ QtObject {
                 root.authGeneration = 0
                 root.initializeServices()
             }
-            else if (CoreClient.state === "failed") {
-                root.lastError = CoreClient.lastError
-                root.authRestorePending = false
+            else {
+                root.invalidateStoreLaunch()
+                if (CoreClient.state === "failed") {
+                    root.lastError = CoreClient.lastError
+                    root.authRestorePending = false
+                }
             }
         }
         function onResponseReceived(requestId, result) {

@@ -22,12 +22,15 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 pub(crate) mod catalog;
 mod catalog_actions;
+mod store_launch;
 use catalog::*;
 
 #[cfg(test)]
 mod catalog_tests;
 #[cfg(test)]
 mod routing_tests;
+#[cfg(test)]
+mod store_launch_tests;
 
 const DEFAULT_IDP_ID: &str = "PDiAhv2kJTFeQ7WOPqiQ2tRZ7lGhR2X11dXvM4TZSxg";
 const DEFAULT_STREAMING_URL: &str = "https://prod.cloudmatchbeta.nvidiagrid.net/";
@@ -1605,8 +1608,11 @@ impl GfnService {
             });
         }
         let _catalog_action = self.admit_catalog_action(&intent_session, app_id)?;
-        let inspection =
-            self.catalog_launch_inspect(&json!({"appId":app_id,"variantId":variant_id}), settings)?;
+        let store_launch = store_launch::store_launch_intent(params)?;
+        let inspection = self.catalog_launch_inspect(
+            &json!({"appId":app_id,"variantId":variant_id,"storeLaunch":store_launch}),
+            settings,
+        )?;
         if inspection["decision"]["status"] != "ready" {
             return Err(ServiceError {
                 code: "launch_not_ready",

@@ -231,6 +231,7 @@ int AcceptanceSession::startSmokeWorkload()
                      || m_arguments.contains(u"--smoke-collections"_s)
                      || m_arguments.contains(u"--smoke-steam-big-picture"_s)
                      || m_arguments.contains(u"--smoke-persistent-in-game-settings"_s)
+                     || m_arguments.contains(u"--smoke-store-launch"_s)
                      || m_arguments.contains(u"--smoke-idle-mode"_s)
                      || m_arguments.contains(u"--smoke-queue-drops"_s)
                      || m_arguments.contains(u"--smoke-color-format"_s)
@@ -261,6 +262,8 @@ int AcceptanceSession::startSmokeWorkload()
             ? u"qrc:/acceptance/SteamBigPictureAcceptance.qml"_s
             : m_arguments.contains(u"--smoke-persistent-in-game-settings"_s)
             ? u"qrc:/acceptance/PersistentInGameSettingsAcceptance.qml"_s
+            : m_arguments.contains(u"--smoke-store-launch"_s)
+            ? u"qrc:/acceptance/StoreLaunchAcceptance.qml"_s
             : m_arguments.contains(u"--smoke-idle-mode"_s)
             ? u"qrc:/acceptance/IdleModeAcceptance.qml"_s
             : m_arguments.contains(u"--smoke-stream-recovery"_s)
@@ -285,14 +288,16 @@ int AcceptanceSession::startSmokeWorkload()
             || m_arguments.contains(u"--smoke-queue-drops"_s)
             || m_arguments.contains(u"--smoke-collections"_s)
             || m_arguments.contains(u"--smoke-steam-big-picture"_s)
-            || m_arguments.contains(u"--smoke-persistent-in-game-settings"_s)) {
+            || m_arguments.contains(u"--smoke-persistent-in-game-settings"_s)
+            || m_arguments.contains(u"--smoke-store-launch"_s)) {
             auto *client = fixture->property("client").value<QObject *>();
             if (!client) return EXIT_FAILURE;
             m_engine.rootContext()->setContextProperty(u"CoreClient"_s, client);
         }
         QTimer::singleShot(150, this, [this, fixture] {
             auto *window = qobject_cast<QQuickWindow *>(m_engine.rootObjects().first());
-            if (window && m_arguments.contains(u"--smoke-color-format-fullscreen"_s))
+            if (window && (m_arguments.contains(u"--smoke-color-format-fullscreen"_s)
+                    || m_arguments.contains(u"--smoke-store-launch-fullscreen"_s)))
                 window->showFullScreen();
             QVariant passed;
             const bool ok = window && QMetaObject::invokeMethod(fixture, "run", Q_RETURN_ARG(QVariant, passed),
@@ -341,10 +346,12 @@ int AcceptanceSession::startSmokeWorkload()
                        || m_arguments.contains(u"--smoke-ownership"_s)
                        || m_arguments.contains(u"--smoke-catalog-sync"_s)
                        || m_arguments.contains(u"--smoke-color-format"_s)
-                       || m_arguments.contains(u"--smoke-queue-drops"_s))) {
+                       || m_arguments.contains(u"--smoke-queue-drops"_s)
+                       || m_arguments.contains(u"--smoke-store-launch"_s))) {
                 QTimer::singleShot(250, this, [this, window, fixture] {
                     if (m_arguments.contains(u"--smoke-ownership"_s)
-                        || m_arguments.contains(u"--smoke-color-format"_s)) {
+                        || m_arguments.contains(u"--smoke-color-format"_s)
+                        || m_arguments.contains(u"--smoke-store-launch"_s)) {
                         QVariant verified;
                         if (!QMetaObject::invokeMethod(fixture, "verifyRendered", Q_RETURN_ARG(QVariant, verified),
                                 Q_ARG(QVariant, QVariant::fromValue(window->contentItem()))) || !verified.toBool()) {

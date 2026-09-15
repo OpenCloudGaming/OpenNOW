@@ -5,7 +5,7 @@ mod tests;
 
 #[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-enum LaunchStatus {
+pub(super) enum LaunchStatus {
     Ready,
     OwnershipRequired,
     SelectionRequired,
@@ -18,9 +18,14 @@ enum LaunchStatus {
 }
 
 #[derive(Serialize)]
-struct LaunchDecision {
-    status: LaunchStatus,
-    message: &'static str,
+pub(super) struct LaunchDecision {
+    pub(super) status: LaunchStatus,
+    pub(super) message: &'static str,
+}
+
+pub(super) enum PlayabilityMetadata {
+    Required,
+    WhenPresent,
 }
 
 pub(super) fn selected_variant<'a>(game: &'a Value, variant_id: &str) -> Option<&'a Value> {
@@ -28,6 +33,187 @@ pub(super) fn selected_variant<'a>(game: &'a Value, variant_id: &str) -> Option<
         .as_array()?
         .iter()
         .find(|variant| variant["id"] == variant_id)
+}
+
+pub(super) fn readiness_decision(
+    game: &Value,
+    variant: &Value,
+    playability: PlayabilityMetadata,
+) -> Option<LaunchDecision> {
+    use LaunchStatus::*;
+    let decide = |status, message| LaunchDecision { status, message };
+    match game["playabilityState"].as_str() {
+        Some("PLAYABLE") => (),
+        Some("UNPLAYABLE_DUE_TO_UPGRADE" | "UNPLAYABLE_DUE_TO_TIME_CAPPED_LIMIT") => {
+            return Some(decide(
+                SubscriptionRequired,
+                "Your GeForce NOW membership does not currently allow this game. Check your membership and available playtime.",
+            ));
+        }
+        Some("UNKNOWN") => {
+            return Some(decide(
+                MetadataUnconfirmed,
+                "Game availability could not be confirmed. Refresh and try again.",
+            ));
+        }
+        None if matches!(playability, PlayabilityMetadata::Required) => {
+            return Some(decide(
+                MetadataUnconfirmed,
+                "Game availability could not be confirmed. Refresh and try again.",
+            ));
+        }
+        None => (),
+        _ => {
+            return Some(decide(
+                Unavailable,
+                "This game is currently unavailable on GeForce NOW.",
+            ));
+        }
+    }
+    match variant["stateDetails"]["__typename"].as_str() {
+        Some("VariantGfnAutoPatchingMetadata" | "VariantGfnManualPatchingMetadata") => {
+            return Some(decide(
+                Patching,
+                "This store version is being patched. Try again after the patch finishes.",
+            ));
+        }
+        Some("VariantGfnMaintenanceMetadata") => {
+            return Some(decide(
+                Maintenance,
+                "This store version is under maintenance.",
+            ));
+        }
+        _ => (),
+    }
+    match variant["gfnStatus"].as_str() {
+        Some("AVAILABLE") => (),
+        Some("PATCHING") => {
+            return Some(decide(
+                Patching,
+                "This store version is being patched. Try again later.",
+            ));
+        }
+        Some("SERVER_MAINTENANCE") => {
+            return Some(decide(
+                Maintenance,
+                "This store version is under maintenance.",
+            ));
+        }
+        None | Some("UNKNOWN") => {
+            return Some(decide(
+                MetadataUnconfirmed,
+                "Store version readiness could not be confirmed. Refresh and try again.",
+            ));
+        }
+        _ => {
+            return Some(decide(
+                Unavailable,
+                "This store version is currently unavailable.",
+            ));
+        }
+    }
+    if variant["playStatus"] == "NOT_PLAYABLE" {
+        return Some(decide(
+            Unavailable,
+            "This store version cannot currently be played. Check your store account, subscription, and library sync.",
+        ));
+    }
+    None
+}
+
+pub(super) fn account_decision(
+    game: &Value,
+    variant: &Value,
+    variant_id: &str,
+    access: &Value,
+    subscription: &Value,
+) -> Option<LaunchDecision> {
+    use LaunchStatus::*;
+    let decide = |status, message| LaunchDecision { status, message };
+    if access["definitions"]["stores"]["status"] != "success" {
+        return Some(decide(
+            MetadataUnconfirmed,
+            "Store account requirements could not be confirmed. Refresh and try again.",
+        ));
+    }
+    let store =
+        crate::catalog_types::normalize_store(variant["store"].as_str().unwrap_or_default());
+    let Some(account) = access["accounts"]
+        .as_array()
+        .and_then(|accounts| accounts.iter().find(|account| account["provider"] == store))
+    else {
+        return Some(decide(
+            MetadataUnconfirmed,
+            "The selected store's account requirements are unavailable. Refresh and try again.",
+        ));
+    };
+    let linking = &account["accountLinkingMetadata"];
+    let applies = linking["supportedVariantIds"]
+        .as_array()
+        .is_none_or(|ids| ids.is_empty() || ids.iter().any(|id| id == variant_id));
+    if applies
+        && account["isRequired"] == true
+        && (account["isConnected"] != true || account["status"] == "expired")
+    {
+        return Some(decide(
+            LinkRequired,
+            "Link or reconnect the selected store account in Settings before launching this version.",
+        ));
+    }
+    if applies && account["supportsLinking"] == true && !account["isRequired"].is_boolean() {
+        return Some(decide(
+            MetadataUnconfirmed,
+            "The selected store's linking requirement could not be confirmed.",
+        ));
+    }
+    if let Some(id) = variant["subscription"].as_str().filter(|id| !id.is_empty()) {
+        if !access["subscriptions"]
+            .as_array()
+            .is_some_and(|subscriptions| {
+                subscriptions
+                    .iter()
+                    .any(|subscription| subscription["id"] == id)
+            })
+        {
+            return Some(decide(
+                SubscriptionRequired,
+                "The store subscription recorded for this version is not active. Check your store account and sync your library.",
+            ));
+        }
+    }
+    if game["membershipTierLabel"].as_str().is_some_and(|tier| {
+        !tier.trim().is_empty() && !tier.trim().to_ascii_lowercase().starts_with("free")
+    }) {
+        match subscription["membershipTier"]
+            .as_str()
+            .filter(|tier| !tier.trim().is_empty())
+        {
+            None => {
+                return Some(decide(
+                    MetadataUnconfirmed,
+                    "Membership details could not be confirmed. Refresh and try again.",
+                ));
+            }
+            Some(tier) if tier.trim().to_ascii_lowercase().starts_with("free") => {
+                return Some(decide(
+                    SubscriptionRequired,
+                    "This game requires a paid GeForce NOW membership.",
+                ));
+            }
+            _ => (),
+        }
+        if let Some(decision) = game_play_denial(subscription) {
+            return Some(decision);
+        }
+    }
+    None
+}
+
+pub(super) fn game_play_denial(subscription: &Value) -> Option<LaunchDecision> {
+    (subscription["isGamePlayAllowed"] == false).then_some(LaunchDecision {
+        status: LaunchStatus::SubscriptionRequired,
+        message: "Your membership does not currently allow gameplay. Check your available playtime.",
+    })
 }
 
 fn launch_decision(
@@ -51,63 +237,8 @@ fn launch_decision(
             "The selected store version is no longer available. Choose a store version again.",
         );
     };
-    match game["playabilityState"].as_str() {
-        Some("PLAYABLE") => (),
-        Some("UNPLAYABLE_DUE_TO_UPGRADE" | "UNPLAYABLE_DUE_TO_TIME_CAPPED_LIMIT") => {
-            return decide(
-                SubscriptionRequired,
-                "Your GeForce NOW membership does not currently allow this game. Check your membership and available playtime.",
-            );
-        }
-        Some("UNKNOWN") | None => {
-            return decide(
-                MetadataUnconfirmed,
-                "Game availability could not be confirmed. Refresh and try again.",
-            );
-        }
-        _ => {
-            return decide(
-                Unavailable,
-                "This game is currently unavailable on GeForce NOW.",
-            );
-        }
-    }
-    match variant["stateDetails"]["__typename"].as_str() {
-        Some("VariantGfnAutoPatchingMetadata" | "VariantGfnManualPatchingMetadata") => {
-            return decide(
-                Patching,
-                "This store version is being patched. Try again after the patch finishes.",
-            );
-        }
-        Some("VariantGfnMaintenanceMetadata") => {
-            return decide(Maintenance, "This store version is under maintenance.");
-        }
-        _ => (),
-    }
-    match variant["gfnStatus"].as_str() {
-        Some("AVAILABLE") => (),
-        Some("PATCHING") => {
-            return decide(
-                Patching,
-                "This store version is being patched. Try again later.",
-            );
-        }
-        Some("SERVER_MAINTENANCE") => {
-            return decide(Maintenance, "This store version is under maintenance.");
-        }
-        None | Some("UNKNOWN") => {
-            return decide(
-                MetadataUnconfirmed,
-                "Store version readiness could not be confirmed. Refresh and try again.",
-            );
-        }
-        _ => return decide(Unavailable, "This store version is currently unavailable."),
-    }
-    if variant["playStatus"] == "NOT_PLAYABLE" {
-        return decide(
-            Unavailable,
-            "This store version cannot currently be played. Check your store account, subscription, and library sync.",
-        );
+    if let Some(decision) = readiness_decision(game, variant, PlayabilityMetadata::Required) {
+        return decision;
     }
     match variant["libraryStatus"].as_str() {
         Some("MANUAL" | "PLATFORM_SYNC") => (),
@@ -124,84 +255,8 @@ fn launch_decision(
             );
         }
     }
-    if access["definitions"]["stores"]["status"] != "success" {
-        return decide(
-            MetadataUnconfirmed,
-            "Store account requirements could not be confirmed. Refresh and try again.",
-        );
-    }
-    let store =
-        crate::catalog_types::normalize_store(variant["store"].as_str().unwrap_or_default());
-    let Some(account) = access["accounts"]
-        .as_array()
-        .and_then(|accounts| accounts.iter().find(|account| account["provider"] == store))
-    else {
-        return decide(
-            MetadataUnconfirmed,
-            "The selected store's account requirements are unavailable. Refresh and try again.",
-        );
-    };
-    let linking = &account["accountLinkingMetadata"];
-    let applies = linking["supportedVariantIds"]
-        .as_array()
-        .is_none_or(|ids| ids.is_empty() || ids.iter().any(|id| id == variant_id));
-    if applies
-        && account["isRequired"] == true
-        && (account["isConnected"] != true || account["status"] == "expired")
-    {
-        return decide(
-            LinkRequired,
-            "Link or reconnect the selected store account in Settings before launching this version.",
-        );
-    }
-    if applies && account["supportsLinking"] == true && !account["isRequired"].is_boolean() {
-        return decide(
-            MetadataUnconfirmed,
-            "The selected store's linking requirement could not be confirmed.",
-        );
-    }
-    if let Some(id) = variant["subscription"].as_str().filter(|id| !id.is_empty()) {
-        if !access["subscriptions"]
-            .as_array()
-            .is_some_and(|subscriptions| {
-                subscriptions
-                    .iter()
-                    .any(|subscription| subscription["id"] == id)
-            })
-        {
-            return decide(
-                SubscriptionRequired,
-                "The store subscription recorded for this version is not active. Check your store account and sync your library.",
-            );
-        }
-    }
-    if game["membershipTierLabel"].as_str().is_some_and(|tier| {
-        !tier.trim().is_empty() && !tier.trim().to_ascii_lowercase().starts_with("free")
-    }) {
-        match subscription["membershipTier"]
-            .as_str()
-            .filter(|tier| !tier.trim().is_empty())
-        {
-            None => {
-                return decide(
-                    MetadataUnconfirmed,
-                    "Membership details could not be confirmed. Refresh and try again.",
-                );
-            }
-            Some(tier) if tier.trim().to_ascii_lowercase().starts_with("free") => {
-                return decide(
-                    SubscriptionRequired,
-                    "This game requires a paid GeForce NOW membership.",
-                );
-            }
-            _ => (),
-        }
-        if subscription["isGamePlayAllowed"] == false {
-            return decide(
-                SubscriptionRequired,
-                "Your membership does not currently allow gameplay. Check your available playtime.",
-            );
-        }
+    if let Some(decision) = account_decision(game, variant, variant_id, access, subscription) {
+        return decision;
     }
     if variant["librarySelected"] == false {
         return decide(
@@ -329,6 +384,9 @@ impl GfnService {
     ) -> Result<Value, ServiceError> {
         let app_id = bounded_id(params, "appId", true)?;
         let variant_id = bounded_id(params, "variantId", true)?;
+        if super::store_launch::store_launch_intent(params)? {
+            return self.store_launch_inspect(params, Some((&app_id, &variant_id)), settings);
+        }
         let mut result = self.catalog_game(&json!({"appId":app_id}), settings)?;
         let subscription = if result["game"]["membershipTierLabel"]
             .as_str()

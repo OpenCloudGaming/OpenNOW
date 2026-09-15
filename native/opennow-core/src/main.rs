@@ -531,6 +531,13 @@ fn dispatch(method: &str, params: &Value, core: &AppCore) -> DispatchResult {
                 .map(|value| (value, None))
                 .map_err(gfn_error)
         }
+        "catalog.launch.store.inspect" => {
+            let settings = core.settings.lock().expect("settings poisoned").all();
+            core.gfn
+                .store_launch_inspect(params, None, &settings)
+                .map(|value| (value, None))
+                .map_err(gfn_error)
+        }
         "catalog.favorites.list" => {
             let settings = core.settings.lock().expect("settings poisoned").all();
             core.gfn

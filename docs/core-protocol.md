@@ -40,6 +40,44 @@ Recorded store-subscription IDs must match the account's active subscriptions.
 App playability, variant readiness, patch metadata, and membership restrictions
 remain independent checks. Unknown metadata is not a positive authorization.
 
+`catalog.launch.store.inspect({store?})` resolves the platform-client apps for the
+current streaming region with a `PLATFORM_CLIENT` type filter and returns
+`{store, appId, variantId, game, scope, decision, catalogRevision, fetchedAt,
+freshness}`. The resolved `appId`, `variantId`, and `game` are the values the
+platform-client query returned for this account. `store` defaults to `STEAM`,
+the only supported store-client launch, and any other value is `invalid_params`.
+The eligible target is the first game exposing a variant whose exact `appStore`
+value matches the store and whose `id` is a bounded identifier; extra variants and
+extra platform-client apps are searched, not rejected.
+
+The store-launch decision reuses the shared decision vocabulary. It requires the
+exact parent identity and variant identity, the exact store on the resolved
+variant, a present `gfn.status` of `AVAILABLE`, and any patching or maintenance
+metadata the server returns. It then requires the persistent-storage entitlement:
+the subscription `addons` entry whose `type` is `STORAGE` and whose `subType` is
+`PERMANENT_STORAGE` and whose `status` is `OK`, which the core publishes as
+`subscription.storageAddon`. An ephemeral storage add-on, including
+`EPHEMERAL_STORAGE`, does not authorize a store launch. Store-account linking
+requirements, recorded store subscriptions, membership tier, and
+`isGamePlayAllowed` apply from the same account metadata the ordinary launch path
+uses.
+
+A platform client that the ordinary catalog resolution also returns is judged by
+that resolution's metadata, so catalog `playabilityState` and patch state are
+enforced there. When the ordinary resolution does not return the app, the store
+query's own `gfn.status` is the readiness field, because that query selects no
+catalog playability. When the ordinary resolution returns the app but not the
+discovered variant, the two sources disagree and the decision is
+`metadata_unconfirmed` rather than a guess.
+
+`catalog.launch.inspect` and `session.create` accept `storeLaunch: true`, a
+boolean that selects the platform-client resolution source and the
+persistent-storage requirement. The flag grants nothing: the same mutation
+admission, scope, catalog revision, active-seat, and exact-variant checks run, and
+a store intent that names a target the platform-client resolution does not return
+is not ready. Missing, non-boolean, or mismatched values do not fall back to
+another target.
+
 All five mutation RPCs require a bounded nonempty parent `appId` and the current
 `scope: {generation, userId, providerIdpId}`. Ownership mutations also require the
 exact `variantId`. `catalog.ownership.add` requires
@@ -318,6 +356,7 @@ and artwork only near the viewport, using the section's local category ID
 - `catalog.library.list` returns one bounded upstream page, not an aggregate library.
 - `catalog.game.get`, `catalog.definitions.get`, `catalog.languages.get`
 - `catalog.launch.inspect`, `catalog.favorites.list`
+- `catalog.launch.store.inspect` resolves the eligible Steam store-client launch target.
 - `catalog.favorites.add`, `catalog.favorites.remove`
 - `catalog.ownership.add`, `catalog.ownership.remove`, `catalog.ownership.select`
 - `catalog.store.list`, `catalog.store.local`, `catalog.store.presentation`
