@@ -233,14 +233,14 @@ class SdpToolsTest {
 
         assertTrue(nvst.contains("a=video.clientViewportWd:1680"))
         assertTrue(nvst.contains("a=video.clientViewportHt:720"))
-        assertTrue(nvst.contains("a=vqos.dynamicStreamingMode:1"))
-        assertTrue(nvst.contains("a=vqos.drc.enable:1"))
+        assertTrue(nvst.contains("a=vqos.dynamicStreamingMode:0"))
+        assertTrue(nvst.contains("a=vqos.drc.enable:0"))
         assertTrue(nvst.contains("a=vqos.dfc.adjustResAndFps:0"))
         assertTrue(nvst.contains("a=vqos.adjustStreamingFpsDuringOutOfFocus:0"))
         assertFalse(nvst.contains("a=vqos.adjustStreamingFpsDuringOutOfFocus:1"))
         assertTrue(nvst.contains("a=vqos.resControl.cpmRtc.enable:0"))
-        assertFalse(nvst.contains("a=vqos.resControl.cpmRtc.minResolutionPercent:100"))
-        assertFalse(nvst.contains("a=vqos.resControl.cpmRtc.resolutionChangeHoldonMs:999999"))
+        assertTrue(nvst.contains("a=vqos.resControl.cpmRtc.minResolutionPercent:100"))
+        assertTrue(nvst.contains("a=vqos.resControl.cpmRtc.resolutionChangeHoldonMs:999999"))
         assertTrue(nvst.contains("a=vqos.grc.enable:0"))
         assertTrue(nvst.contains("a=video.scalingFeature1:0"))
         assertFalse(nvst.contains("a=video.clientViewportWd:1920"))
@@ -290,7 +290,7 @@ class SdpToolsTest {
     }
 
     @Test
-    fun everyResolutionCodecAndSupportedFpsAllowsAdaptationWithinTheRequestedProfile() {
+    fun everyResolutionCodecAndSupportedFpsKeepsTheRequestedProfileStable() {
         val modes = STREAM_RESOLUTION_OPTIONS.map { option ->
             Triple(option.value, option.aspectRatio, parseResolutionPixels(option.value))
         }
@@ -321,8 +321,8 @@ class SdpToolsTest {
                     assertTrue("$case width missing", nvst.contains("a=video.clientViewportWd:${pixels.first}"))
                     assertTrue("$case height missing", nvst.contains("a=video.clientViewportHt:${pixels.second}"))
                     assertTrue("$case fps missing", nvst.contains("a=video.maxFPS:$fps"))
-                    assertTrue("$case must prioritize FPS", nvst.contains("a=vqos.dynamicStreamingMode:1"))
-                    assertTrue("$case must permit resolution adaptation", nvst.contains("a=vqos.drc.enable:1"))
+                    assertTrue("$case must disable dynamic streaming", nvst.contains("a=vqos.dynamicStreamingMode:0"))
+                    assertTrue("$case must keep resolution fixed", nvst.contains("a=vqos.drc.enable:0"))
                     assertTrue("$case must not reduce FPS", nvst.contains("a=vqos.dfc.enable:0"))
                     if (fps > 60) {
                         assertTrue("$case FPS estimate missing", nvst.contains("a=vqos.maxStreamFpsEstimate:$fps"))

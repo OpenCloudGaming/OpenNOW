@@ -1270,49 +1270,53 @@ mod tests {
 
     #[test]
     fn announce_uses_android_adaptation_without_exceeding_the_user_ceiling() {
-        for (maximum_mbps, minimum, initial, expected_minimum, expected_initial) in [
-            (1, 250, 250, 250, 250),
-            (3, 750, 750, 750, 750),
-            (75, 1000, 18750, 1000, 18750),
-            // Clamp inconsistent JNI inputs before writing the server request.
-            (3, 9000, 12000, 3000, 3000),
-            (3, 750, 100, 750, 750),
-        ] {
-            let mut value = context();
-            value.settings["maxBitrateMbps"] = json!(maximum_mbps);
-            value.settings["networkAdaptation"] = json!({
-                "dynamicStreamingMode": 1,
-                "minimumBitrateKbps": minimum,
-                "initialBitrateKbps": initial,
-            });
-            let sdp = build_announce(
-                &value,
-                AnnounceParams {
-                    key: &"01".repeat(32),
-                    key_id: 7,
-                    port: 49006,
-                    address: "192.0.2.10",
-                    ufrag: "abcd",
-                    password: "abcdefghijklmnopqrstuv",
-                    fingerprint: "AA:BB",
-                    video_port: 5004,
-                    rtcp_on_sctp: true,
-                },
-            );
-            assert!(sdp.contains("a=x-nv-vqos[0].dynamicStreamingMode:1\r\n"));
-            assert!(sdp.contains("a=x-nv-vqos[0].drc.enable:1\r\n"));
-            assert!(sdp.contains(&format!(
-                "a=x-nv-vqos[0].bw.minimumBitrateKbps:{expected_minimum}\r\n"
-            )));
-            assert!(sdp.contains(&format!(
-                "a=x-nv-video[0].initialBitrateKbps:{expected_initial}\r\n"
-            )));
-            assert!(sdp.contains(&format!(
-                "a=x-nv-vqos[0].bw.maximumBitrateKbps:{}\r\n",
-                maximum_mbps * 1000
-            )));
-            assert!(sdp.contains("a=x-nv-video[0].maxFPS:120\r\n"));
-            assert_eq!(value.settings["maxBitrateMbps"], json!(maximum_mbps));
+        for dynamic_mode in [0, 1] {
+            for (maximum_mbps, minimum, initial, expected_minimum, expected_initial) in [
+                (1, 250, 250, 250, 250),
+                (3, 750, 750, 750, 750),
+                (75, 1000, 18750, 1000, 18750),
+                // Clamp inconsistent JNI inputs before writing the server request.
+                (3, 9000, 12000, 3000, 3000),
+                (3, 750, 100, 750, 750),
+            ] {
+                let mut value = context();
+                value.settings["maxBitrateMbps"] = json!(maximum_mbps);
+                value.settings["networkAdaptation"] = json!({
+                    "dynamicStreamingMode": dynamic_mode,
+                    "minimumBitrateKbps": minimum,
+                    "initialBitrateKbps": initial,
+                });
+                let sdp = build_announce(
+                    &value,
+                    AnnounceParams {
+                        key: &"01".repeat(32),
+                        key_id: 7,
+                        port: 49006,
+                        address: "192.0.2.10",
+                        ufrag: "abcd",
+                        password: "abcdefghijklmnopqrstuv",
+                        fingerprint: "AA:BB",
+                        video_port: 5004,
+                        rtcp_on_sctp: true,
+                    },
+                );
+                assert!(sdp.contains(&format!(
+                    "a=x-nv-vqos[0].dynamicStreamingMode:{dynamic_mode}\r\n"
+                )));
+                assert!(sdp.contains(&format!("a=x-nv-vqos[0].drc.enable:{dynamic_mode}\r\n")));
+                assert!(sdp.contains(&format!(
+                    "a=x-nv-vqos[0].bw.minimumBitrateKbps:{expected_minimum}\r\n"
+                )));
+                assert!(sdp.contains(&format!(
+                    "a=x-nv-video[0].initialBitrateKbps:{expected_initial}\r\n"
+                )));
+                assert!(sdp.contains(&format!(
+                    "a=x-nv-vqos[0].bw.maximumBitrateKbps:{}\r\n",
+                    maximum_mbps * 1000
+                )));
+                assert!(sdp.contains("a=x-nv-video[0].maxFPS:120\r\n"));
+                assert_eq!(value.settings["maxBitrateMbps"], json!(maximum_mbps));
+            }
         }
     }
 
