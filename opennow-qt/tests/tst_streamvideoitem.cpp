@@ -997,6 +997,367 @@ private slots:
 #endif
     }
 
+    void mapsLinuxScanCodesToPhysicalVirtualKeys_data()
+    {
+        QTest::addColumn<quint32>("scanCode");
+        QTest::addColumn<quint16>("virtualKey");
+        const struct {
+            const char *name;
+            quint32 scanCode;
+            quint16 virtualKey;
+        } cases[] = {
+            {"tlde", 49, 0xc0},
+            {"ae01", 10, 0x31},
+            {"ae02", 11, 0x32},
+            {"ae03", 12, 0x33},
+            {"ae04", 13, 0x34},
+            {"ae05", 14, 0x35},
+            {"ae06", 15, 0x36},
+            {"ae07", 16, 0x37},
+            {"ae08", 17, 0x38},
+            {"ae09", 18, 0x39},
+            {"ae10", 19, 0x30},
+            {"ae11", 20, 0xbd},
+            {"ae12", 21, 0xbb},
+            {"ad01", 24, 0x51},
+            {"ad02", 25, 0x57},
+            {"ad03", 26, 0x45},
+            {"ad04", 27, 0x52},
+            {"ad05", 28, 0x54},
+            {"ad06", 29, 0x59},
+            {"ad07", 30, 0x55},
+            {"ad08", 31, 0x49},
+            {"ad09", 32, 0x4f},
+            {"ad10", 33, 0x50},
+            {"ad11", 34, 0xdb},
+            {"ad12", 35, 0xdd},
+            {"ac01", 38, 0x41},
+            {"ac02", 39, 0x53},
+            {"ac03", 40, 0x44},
+            {"ac04", 41, 0x46},
+            {"ac05", 42, 0x47},
+            {"ac06", 43, 0x48},
+            {"ac07", 44, 0x4a},
+            {"ac08", 45, 0x4b},
+            {"ac09", 46, 0x4c},
+            {"ac10", 47, 0xba},
+            {"ac11", 48, 0xde},
+            {"bksl", 51, 0xdc},
+            {"ab01", 52, 0x5a},
+            {"ab02", 53, 0x58},
+            {"ab03", 54, 0x43},
+            {"ab04", 55, 0x56},
+            {"ab05", 56, 0x42},
+            {"ab06", 57, 0x4e},
+            {"ab07", 58, 0x4d},
+            {"ab08", 59, 0xbc},
+            {"ab09", 60, 0xbe},
+            {"ab10", 61, 0xbf},
+            {"lsgt", 94, 0xe2},
+            {"lfsh", 50, 0xa0},
+            {"rtsh", 62, 0xa1},
+            {"lctl", 37, 0xa2},
+            {"rctl", 105, 0xa3},
+            {"lalt", 64, 0xa4},
+            {"ralt", 108, 0xa5},
+            {"lwin", 133, 0x5b},
+            {"rwin", 134, 0x5c},
+            {"escape", 9, 0},
+            {"backspace", 22, 0},
+            {"tab", 23, 0},
+            {"return", 36, 0},
+            {"caps-lock", 66, 0},
+            {"space", 65, 0},
+            {"f1", 67, 0},
+            {"num-lock", 77, 0},
+            {"scroll-lock", 78, 0},
+            {"kp0", 90, 0},
+            {"kp-enter", 104, 0},
+            {"print", 107, 0},
+            {"home", 110, 0},
+            {"up", 111, 0},
+            {"insert", 118, 0},
+            {"delete", 119, 0},
+            {"pause", 127, 0},
+            {"unspecified", 0, 0},
+            {"out-of-range", 240, 0},
+        };
+        for (const auto &entry : cases)
+            QTest::newRow(entry.name) << entry.scanCode << entry.virtualKey;
+    }
+
+    void mapsLinuxScanCodesToPhysicalVirtualKeys()
+    {
+        QFETCH(quint32, scanCode);
+        QFETCH(quint16, virtualKey);
+        QCOMPARE(StreamVideoItem::linuxPhysicalVirtualKey(scanCode), virtualKey);
+    }
+
+    void preservesPhysicalGameplayKeysAcrossLayouts_data()
+    {
+        QTest::addColumn<bool>("fullscreen");
+        QTest::addColumn<int>("key");
+        QTest::addColumn<quint32>("scanCode");
+        QTest::addColumn<quint16>("virtualKey");
+        const struct {
+            const char *name;
+            int key;
+            quint32 scanCode;
+            quint16 virtualKey;
+        } layouts[] = {
+            {"us-w", Qt::Key_W, 25, 0x57},
+            {"us-a", Qt::Key_A, 38, 0x41},
+            {"us-s", Qt::Key_S, 39, 0x53},
+            {"us-d", Qt::Key_D, 40, 0x44},
+            {"qwertz-z-at-us-y", Qt::Key_Z, 29, 0x59},
+            {"qwertz-y-at-us-z", Qt::Key_Y, 52, 0x5a},
+            {"azerty-z-at-us-w", Qt::Key_Z, 25, 0x57},
+            {"azerty-q-at-us-a", Qt::Key_Q, 38, 0x41},
+            {"azerty-w-at-us-z", Qt::Key_W, 52, 0x5a},
+            {"azerty-m-at-us-semicolon", Qt::Key_M, 47, 0xba},
+            {"azerty-eacute-at-us-2", Qt::Key_Eacute, 11, 0x32},
+            {"ru-tse-at-us-w", 0x0446, 25, 0x57},
+            {"ru-ef-at-us-a", 0x0444, 38, 0x41},
+            {"ru-yeru-at-us-s", 0x044b, 39, 0x53},
+            {"ru-ve-at-us-d", 0x0432, 40, 0x44},
+            {"ru-softsign-at-us-m", 0x044c, 58, 0x4d},
+            {"ru-ya-at-us-z", 0x044f, 52, 0x5a},
+            {"ru-io-at-us-tilde", 0x0451, 49, 0xc0},
+            {"dead-acute-at-us-apostrophe", Qt::Key_Dead_Acute, 48, 0xde},
+            {"fallback-backslash-at-xkb-97", Qt::Key_Backslash, 97, 0xdc},
+            {"altgr-at-at-us-q", Qt::Key_At, 24, 0x51},
+        };
+        for (const bool fullscreen : {false, true}) {
+            const auto mode = fullscreen ? QStringLiteral("fullscreen") : QStringLiteral("windowed");
+            for (const auto &layout : layouts) {
+                QTest::newRow(qPrintable(QStringLiteral("%1-%2").arg(layout.name, mode)))
+                    << fullscreen << layout.key << layout.scanCode << layout.virtualKey;
+            }
+        }
+    }
+
+    void preservesPhysicalGameplayKeysAcrossLayouts()
+    {
+        QFETCH(bool, fullscreen);
+        QFETCH(int, key);
+        QFETCH(quint32, scanCode);
+        QFETCH(quint16, virtualKey);
+        static OpenNowStreamerConfig callbacks;
+        static QList<QList<quint16>> inputCalls;
+        inputCalls.clear();
+        NativeStreamRuntime::Api api{};
+        api.create = [](const OpenNowStreamerConfig *config, OpenNowStreamer **output) {
+            callbacks = *config;
+            *output = reinterpret_cast<OpenNowStreamer *>(new int(1));
+            return OPENNOW_STREAMER_OK;
+        };
+        api.destroy = [](OpenNowStreamer *handle) {
+            delete reinterpret_cast<int *>(handle);
+            return OPENNOW_STREAMER_OK;
+        };
+        api.send = [](const OpenNowStreamer *, const std::uint8_t *, std::size_t) {
+            return OPENNOW_STREAMER_OK;
+        };
+        api.setCaptureActive = [](const OpenNowStreamer *, bool, bool, std::uintptr_t, bool *raw) {
+            *raw = false;
+            return OPENNOW_STREAMER_OK;
+        };
+        api.submitKey = [](const OpenNowStreamer *, std::uint16_t vk,
+                           std::uint16_t modifiers, bool pressed) {
+            inputCalls.append(QList<quint16>{vk, modifiers, quint16(pressed)});
+            return OPENNOW_STREAMER_OK;
+        };
+        NativeStreamRuntime runtime(api);
+        QVERIFY(runtime.start());
+        StreamVideoItem::setNativeStreamRuntime(&runtime);
+        const auto reset = qScopeGuard([] { StreamVideoItem::setNativeStreamRuntime(nullptr); });
+        QVERIFY(runtime.send({{QStringLiteral("type"), QStringLiteral("start")},
+                              {QStringLiteral("id"), QStringLiteral("physical-layout")}}));
+        const QByteArray ready = R"({"id":"physical-layout","type":"ok"})";
+        callbacks.response_callback(reinterpret_cast<const std::uint8_t *>(ready.constData()),
+                                    ready.size(), callbacks.user_data);
+        QTRY_VERIFY(runtime.inputAllowed());
+        QQuickWindow window;
+        window.resize(640, 480);
+        auto *item = new StreamVideoItem(window.contentItem());
+        item->setRenderCallback({});
+        item->setSize(window.size());
+        auto *overlay = new QQuickItem(window.contentItem());
+        overlay->setVisible(false);
+        if (fullscreen) window.showFullScreen();
+        else window.showNormal();
+        window.requestActivate();
+        QTRY_VERIFY(window.isActive());
+        item->forceActiveFocus();
+        QTRY_VERIFY(item->captureActive());
+#if defined(Q_OS_LINUX)
+        QKeyEvent press(QEvent::KeyPress, key, Qt::NoModifier, scanCode, 0, 0);
+        QCoreApplication::sendEvent(&window, &press);
+        QVERIFY(press.isAccepted());
+        QCOMPARE(inputCalls, (QList<QList<quint16>>{{virtualKey, 0, 1}}));
+        QKeyEvent release(QEvent::KeyRelease, Qt::Key_unknown, Qt::NoModifier, scanCode, 0, 0);
+        QCoreApplication::sendEvent(&window, &release);
+        QVERIFY(release.isAccepted());
+        QCOMPARE(inputCalls, (QList<QList<quint16>>{{virtualKey, 0, 1}, {virtualKey, 0, 0}}));
+        QVERIFY(item->m_pressedKeys.isEmpty());
+        inputCalls.clear();
+        QKeyEvent held(QEvent::KeyPress, key, Qt::NoModifier, scanCode, 0, 0);
+        QCoreApplication::sendEvent(&window, &held);
+        overlay->setVisible(true);
+        overlay->forceActiveFocus();
+        QTRY_VERIFY(!item->captureActive());
+        QCOMPARE(inputCalls, (QList<QList<quint16>>{{virtualKey, 0, 1}, {virtualKey, 0, 0}}));
+        QVERIFY(item->m_pressedKeys.isEmpty());
+        QKeyEvent blocked(QEvent::KeyPress, key, Qt::NoModifier, scanCode, 0, 0);
+        QCoreApplication::sendEvent(&window, &blocked);
+        QCOMPARE(inputCalls.size(), 2);
+        overlay->setVisible(false);
+        item->forceActiveFocus();
+        QTRY_VERIFY(item->captureActive());
+        QKeyEvent resumed(QEvent::KeyPress, key, Qt::NoModifier, scanCode, 0, 0);
+        QCoreApplication::sendEvent(&window, &resumed);
+        QCOMPARE(inputCalls.last(), (QList<quint16>{virtualKey, 0, 1}));
+        item->releaseInput();
+        QCOMPARE(inputCalls, (QList<QList<quint16>>{
+            {virtualKey, 0, 1}, {virtualKey, 0, 0}, {virtualKey, 0, 1}, {virtualKey, 0, 0}}));
+#else
+        QSKIP("Physical key codes come from the XKB layout on Linux.");
+#endif
+    }
+
+    void keepsAltGrDeadKeysAndModifierSidesPhysical()
+    {
+        static OpenNowStreamerConfig callbacks;
+        static QList<QList<quint16>> inputCalls;
+        static QList<QByteArray> textCalls;
+        inputCalls.clear();
+        textCalls.clear();
+        NativeStreamRuntime::Api api{};
+        api.create = [](const OpenNowStreamerConfig *config, OpenNowStreamer **output) {
+            callbacks = *config;
+            *output = reinterpret_cast<OpenNowStreamer *>(new int(1));
+            return OPENNOW_STREAMER_OK;
+        };
+        api.destroy = [](OpenNowStreamer *handle) {
+            delete reinterpret_cast<int *>(handle);
+            return OPENNOW_STREAMER_OK;
+        };
+        api.send = [](const OpenNowStreamer *, const std::uint8_t *, std::size_t) {
+            return OPENNOW_STREAMER_OK;
+        };
+        api.setCaptureActive = [](const OpenNowStreamer *, bool, bool, std::uintptr_t, bool *raw) {
+            *raw = false;
+            return OPENNOW_STREAMER_OK;
+        };
+        api.submitKey = [](const OpenNowStreamer *, std::uint16_t vk,
+                           std::uint16_t modifiers, bool pressed) {
+            inputCalls.append(QList<quint16>{vk, modifiers, quint16(pressed)});
+            return OPENNOW_STREAMER_OK;
+        };
+        api.submitText = [](const OpenNowStreamer *, const std::uint8_t *text, std::size_t size) {
+            textCalls.append(QByteArray(reinterpret_cast<const char *>(text), qsizetype(size)));
+            return OPENNOW_STREAMER_OK;
+        };
+        NativeStreamRuntime runtime(api);
+        QVERIFY(runtime.start());
+        StreamVideoItem::setNativeStreamRuntime(&runtime);
+        const auto reset = qScopeGuard([] { StreamVideoItem::setNativeStreamRuntime(nullptr); });
+        QVERIFY(runtime.send({{QStringLiteral("type"), QStringLiteral("start")},
+                              {QStringLiteral("id"), QStringLiteral("altgr")}}));
+        const QByteArray ready = R"({"id":"altgr","type":"ok"})";
+        callbacks.response_callback(reinterpret_cast<const std::uint8_t *>(ready.constData()),
+                                    ready.size(), callbacks.user_data);
+        QTRY_VERIFY(runtime.inputAllowed());
+        QQuickWindow window;
+        window.resize(640, 480);
+        auto *item = new StreamVideoItem(window.contentItem());
+        item->setRenderCallback({});
+        item->setSize(window.size());
+        window.showNormal();
+        window.requestActivate();
+        QTRY_VERIFY(window.isActive());
+        item->forceActiveFocus();
+        QTRY_VERIFY(item->captureActive());
+#if defined(Q_OS_LINUX)
+        const auto send = [&](QEvent::Type type, int key, Qt::KeyboardModifiers modifiers,
+                              quint32 scanCode) {
+            QKeyEvent event(type, key, modifiers, scanCode, 0, 0);
+            QCoreApplication::sendEvent(&window, &event);
+            return event.isAccepted();
+        };
+        QVERIFY(send(QEvent::KeyPress, Qt::Key_AltGr,
+                     Qt::ControlModifier | Qt::AltModifier, 108));
+        QVERIFY(send(QEvent::KeyPress, Qt::Key_At,
+                     Qt::ControlModifier | Qt::AltModifier, 24));
+        QVERIFY(send(QEvent::KeyRelease, Qt::Key_At,
+                     Qt::ControlModifier | Qt::AltModifier, 24));
+        QVERIFY(send(QEvent::KeyRelease, Qt::Key_AltGr, Qt::NoModifier, 108));
+        QCOMPARE(inputCalls, (QList<QList<quint16>>{
+            {0xa5, 0x06, 1}, {0x51, 0x06, 1}, {0x51, 0x06, 0}, {0xa5, 0x00, 0}}));
+        QVERIFY(item->m_pressedKeys.isEmpty());
+        inputCalls.clear();
+        QVERIFY(send(QEvent::KeyPress, Qt::Key_Dead_Acute, Qt::NoModifier, 48));
+        QVERIFY(send(QEvent::KeyRelease, Qt::Key_Dead_Acute, Qt::NoModifier, 48));
+        QCOMPARE(inputCalls, (QList<QList<quint16>>{{0xde, 0, 1}, {0xde, 0, 0}}));
+        inputCalls.clear();
+        const struct {
+            int key;
+            quint32 scanCode;
+            quint16 virtualKey;
+        } sides[] = {
+            {Qt::Key_Shift, 62, 0xa1},
+            {Qt::Key_Control, 105, 0xa3},
+            {Qt::Key_Alt, 108, 0xa5},
+            {Qt::Key_Meta, 134, 0x5c},
+        };
+        for (const auto &side : sides) {
+            QKeyEvent press(QEvent::KeyPress, side.key, Qt::NoModifier, side.scanCode, 0, 0);
+            QCoreApplication::sendEvent(&window, &press);
+            QVERIFY(press.isAccepted());
+            QCOMPARE(inputCalls, (QList<QList<quint16>>{{side.virtualKey, 0, 1}}));
+            QKeyEvent release(QEvent::KeyRelease, side.key, Qt::NoModifier, side.scanCode, 0, 0);
+            QCoreApplication::sendEvent(&window, &release);
+            QVERIFY(release.isAccepted());
+            QCOMPARE(inputCalls, (QList<QList<quint16>>{
+                {side.virtualKey, 0, 1}, {side.virtualKey, 0, 0}}));
+            QVERIFY(item->m_pressedKeys.isEmpty());
+            inputCalls.clear();
+        }
+        item->setShortcutBindings({{QStringLiteral("guide"), QStringLiteral("Ctrl+G")}});
+        QSignalSpy shortcuts(item, &StreamVideoItem::localShortcutRequested);
+        QKeyEvent shortcutPress(QEvent::KeyPress, 0x043f, Qt::ControlModifier, 42, 0, 0);
+        QCoreApplication::sendEvent(&window, &shortcutPress);
+        QVERIFY(shortcutPress.isAccepted());
+        QCOMPARE(shortcuts.size(), 1);
+        QCOMPARE(shortcuts.first().first().toString(), QStringLiteral("guide"));
+        QKeyEvent shortcutRelease(QEvent::KeyRelease, 0x043f, Qt::ControlModifier, 42, 0, 0);
+        QCoreApplication::sendEvent(&window, &shortcutRelease);
+        QCOMPARE(inputCalls.size(), 0);
+        QVERIFY(item->m_pressedKeys.isEmpty());
+        QVERIFY(item->m_pressedShortcuts.isEmpty());
+        item->setShortcutBindings({});
+        auto *clipboard = QGuiApplication::clipboard();
+        const auto previousText = clipboard->text();
+        const auto restoreClipboard = qScopeGuard([&] { clipboard->setText(previousText); });
+        clipboard->setText(QStringLiteral("physical layout paste"));
+        item->setClipboardPaste(true);
+        QKeyEvent controlPress(QEvent::KeyPress, Qt::Key_Control, Qt::ControlModifier, 37, 0, 0);
+        QCoreApplication::sendEvent(&window, &controlPress);
+        QVERIFY(send(QEvent::KeyPress, 0x043c, Qt::ControlModifier, 55));
+        QVERIFY(send(QEvent::KeyRelease, 0x043c, Qt::ControlModifier, 55));
+        QKeyEvent controlRelease(QEvent::KeyRelease, Qt::Key_Control, Qt::NoModifier, 37, 0, 0);
+        QCoreApplication::sendEvent(&window, &controlRelease);
+        QCOMPARE(textCalls, QList<QByteArray>{QByteArray("physical layout paste")});
+        QVERIFY(std::none_of(inputCalls.cbegin(), inputCalls.cend(), [](const auto &call) {
+            return call[0] == 0x56;
+        }));
+        QVERIFY(item->m_pressedKeys.isEmpty());
+        item->setClipboardPaste(false);
+#else
+        QSKIP("Physical key codes come from the XKB layout on Linux.");
+#endif
+    }
+
     void tabDoesNotStealGameplayFocus_data()
     {
         QTest::addColumn<int>("key");
@@ -1100,36 +1461,40 @@ private slots:
         QTest::addColumn<int>("key");
         QTest::addColumn<int>("baseKey");
         QTest::addColumn<quint16>("virtualKey");
+        QTest::addColumn<quint32>("scanCode");
         const struct {
             const char *name;
             Qt::Key key;
             Qt::Key baseKey;
             quint16 virtualKey;
+            quint32 scanCode;
         } cases[] = {
-            {"!", Qt::Key_Exclam, Qt::Key_1, 0x31},
-            {"@", Qt::Key_At, Qt::Key_2, 0x32},
-            {"#", Qt::Key_NumberSign, Qt::Key_3, 0x33},
-            {"$", Qt::Key_Dollar, Qt::Key_4, 0x34},
-            {"%", Qt::Key_Percent, Qt::Key_5, 0x35},
-            {"^", Qt::Key_AsciiCircum, Qt::Key_6, 0x36},
-            {"&", Qt::Key_Ampersand, Qt::Key_7, 0x37},
-            {"*", Qt::Key_Asterisk, Qt::Key_8, 0x38},
-            {"(", Qt::Key_ParenLeft, Qt::Key_9, 0x39},
-            {")", Qt::Key_ParenRight, Qt::Key_0, 0x30},
-            {"_", Qt::Key_Underscore, Qt::Key_Minus, 0xbd},
-            {"+", Qt::Key_Plus, Qt::Key_Equal, 0xbb},
-            {"{", Qt::Key_BraceLeft, Qt::Key_BracketLeft, 0xdb},
-            {"}", Qt::Key_BraceRight, Qt::Key_BracketRight, 0xdd},
-            {"|", Qt::Key_Bar, Qt::Key_Backslash, 0xdc},
-            {":", Qt::Key_Colon, Qt::Key_Semicolon, 0xba},
-            {"\"", Qt::Key_QuoteDbl, Qt::Key_Apostrophe, 0xde},
-            {"<", Qt::Key_Less, Qt::Key_Comma, 0xbc},
-            {">", Qt::Key_Greater, Qt::Key_Period, 0xbe},
-            {"?", Qt::Key_Question, Qt::Key_Slash, 0xbf},
-            {"~", Qt::Key_AsciiTilde, Qt::Key_QuoteLeft, 0xc0},
+            {"!", Qt::Key_Exclam, Qt::Key_1, 0x31, 10},
+            {"@", Qt::Key_At, Qt::Key_2, 0x32, 11},
+            {"#", Qt::Key_NumberSign, Qt::Key_3, 0x33, 12},
+            {"$", Qt::Key_Dollar, Qt::Key_4, 0x34, 13},
+            {"%", Qt::Key_Percent, Qt::Key_5, 0x35, 14},
+            {"^", Qt::Key_AsciiCircum, Qt::Key_6, 0x36, 15},
+            {"&", Qt::Key_Ampersand, Qt::Key_7, 0x37, 16},
+            {"*", Qt::Key_Asterisk, Qt::Key_8, 0x38, 17},
+            {"(", Qt::Key_ParenLeft, Qt::Key_9, 0x39, 18},
+            {")", Qt::Key_ParenRight, Qt::Key_0, 0x30, 19},
+            {"_", Qt::Key_Underscore, Qt::Key_Minus, 0xbd, 20},
+            {"+", Qt::Key_Plus, Qt::Key_Equal, 0xbb, 21},
+            {"{", Qt::Key_BraceLeft, Qt::Key_BracketLeft, 0xdb, 34},
+            {"}", Qt::Key_BraceRight, Qt::Key_BracketRight, 0xdd, 35},
+            {"|", Qt::Key_Bar, Qt::Key_Backslash, 0xdc, 51},
+            {":", Qt::Key_Colon, Qt::Key_Semicolon, 0xba, 47},
+            {"\"", Qt::Key_QuoteDbl, Qt::Key_Apostrophe, 0xde, 48},
+            {"<", Qt::Key_Less, Qt::Key_Comma, 0xbc, 59},
+            {">", Qt::Key_Greater, Qt::Key_Period, 0xbe, 60},
+            {"?", Qt::Key_Question, Qt::Key_Slash, 0xbf, 61},
+            {"~", Qt::Key_AsciiTilde, Qt::Key_QuoteLeft, 0xc0, 49},
         };
-        for (const auto &entry : cases)
-            QTest::newRow(entry.name) << int(entry.key) << int(entry.baseKey) << entry.virtualKey;
+        for (const auto &entry : cases) {
+            QTest::newRow(entry.name) << int(entry.key) << int(entry.baseKey)
+                                      << entry.virtualKey << entry.scanCode;
+        }
     }
 
     void forwardsShiftedPunctuation()
@@ -1137,6 +1502,7 @@ private slots:
         QFETCH(int, key);
         QFETCH(int, baseKey);
         QFETCH(quint16, virtualKey);
+        QFETCH(quint32, scanCode);
         QCOMPARE(StreamVideoItem::windowsVirtualKey(key, Qt::ShiftModifier), virtualKey);
         QCOMPARE(StreamVideoItem::windowsVirtualKey(baseKey), virtualKey);
 
@@ -1189,20 +1555,20 @@ private slots:
             QTRY_VERIFY(window.isActive());
             item->forceActiveFocus();
             QTRY_VERIFY(item->captureActive());
-            for (const quint32 scanCode : {0u, 39u}) {
+            for (const quint32 candidate : {0u, scanCode}) {
                 for (const bool shiftReleasedFirst : {false, true}) {
                     inputCalls.clear();
-                    QKeyEvent press(QEvent::KeyPress, key, Qt::ShiftModifier, scanCode, 0, 0);
+                    QKeyEvent press(QEvent::KeyPress, key, Qt::ShiftModifier, candidate, 0, 0);
                     QCoreApplication::sendEvent(&window, &press);
                     QVERIFY(press.isAccepted());
                     QCOMPARE(inputCalls, (QList<QList<quint16>>{{virtualKey, 1, 1}}));
                     QKeyEvent repeat(QEvent::KeyPress, key, Qt::ShiftModifier,
-                                     scanCode, 0, 0, {}, true);
+                                     candidate, 0, 0, {}, true);
                     QCoreApplication::sendEvent(&window, &repeat);
                     QCOMPARE(inputCalls.size(), 1);
                     const auto modifiers = shiftReleasedFirst ? Qt::NoModifier : Qt::ShiftModifier;
                     QKeyEvent release(QEvent::KeyRelease, shiftReleasedFirst ? baseKey : key,
-                                      modifiers, scanCode, 0, 0);
+                                      modifiers, candidate, 0, 0);
                     QCoreApplication::sendEvent(&window, &release);
                     QVERIFY(release.isAccepted());
                     QCOMPARE(inputCalls, (QList<QList<quint16>>{

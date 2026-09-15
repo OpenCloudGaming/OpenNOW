@@ -109,6 +109,76 @@ quint16 StreamVideoItem::windowsVirtualKey(int key, Qt::KeyboardModifiers modifi
     }
 }
 
+quint16 StreamVideoItem::linuxPhysicalVirtualKey(quint32 nativeScanCode)
+{
+    switch (nativeScanCode) {
+    case 49: return windowsVirtualKey(Qt::Key_QuoteLeft);
+
+    case 10: return windowsVirtualKey(Qt::Key_1);
+    case 11: return windowsVirtualKey(Qt::Key_2);
+    case 12: return windowsVirtualKey(Qt::Key_3);
+    case 13: return windowsVirtualKey(Qt::Key_4);
+    case 14: return windowsVirtualKey(Qt::Key_5);
+    case 15: return windowsVirtualKey(Qt::Key_6);
+    case 16: return windowsVirtualKey(Qt::Key_7);
+    case 17: return windowsVirtualKey(Qt::Key_8);
+    case 18: return windowsVirtualKey(Qt::Key_9);
+    case 19: return windowsVirtualKey(Qt::Key_0);
+    case 20: return windowsVirtualKey(Qt::Key_Minus);
+    case 21: return windowsVirtualKey(Qt::Key_Equal);
+
+    case 24: return windowsVirtualKey(Qt::Key_Q);
+    case 25: return windowsVirtualKey(Qt::Key_W);
+    case 26: return windowsVirtualKey(Qt::Key_E);
+    case 27: return windowsVirtualKey(Qt::Key_R);
+    case 28: return windowsVirtualKey(Qt::Key_T);
+    case 29: return windowsVirtualKey(Qt::Key_Y);
+    case 30: return windowsVirtualKey(Qt::Key_U);
+    case 31: return windowsVirtualKey(Qt::Key_I);
+    case 32: return windowsVirtualKey(Qt::Key_O);
+    case 33: return windowsVirtualKey(Qt::Key_P);
+    case 34: return windowsVirtualKey(Qt::Key_BracketLeft);
+    case 35: return windowsVirtualKey(Qt::Key_BracketRight);
+
+    case 38: return windowsVirtualKey(Qt::Key_A);
+    case 39: return windowsVirtualKey(Qt::Key_S);
+    case 40: return windowsVirtualKey(Qt::Key_D);
+    case 41: return windowsVirtualKey(Qt::Key_F);
+    case 42: return windowsVirtualKey(Qt::Key_G);
+    case 43: return windowsVirtualKey(Qt::Key_H);
+    case 44: return windowsVirtualKey(Qt::Key_J);
+    case 45: return windowsVirtualKey(Qt::Key_K);
+    case 46: return windowsVirtualKey(Qt::Key_L);
+    case 47: return windowsVirtualKey(Qt::Key_Semicolon);
+    case 48: return windowsVirtualKey(Qt::Key_Apostrophe);
+    case 51: return windowsVirtualKey(Qt::Key_Backslash);
+
+    case 52: return windowsVirtualKey(Qt::Key_Z);
+    case 53: return windowsVirtualKey(Qt::Key_X);
+    case 54: return windowsVirtualKey(Qt::Key_C);
+    case 55: return windowsVirtualKey(Qt::Key_V);
+    case 56: return windowsVirtualKey(Qt::Key_B);
+    case 57: return windowsVirtualKey(Qt::Key_N);
+    case 58: return windowsVirtualKey(Qt::Key_M);
+    case 59: return windowsVirtualKey(Qt::Key_Comma);
+    case 60: return windowsVirtualKey(Qt::Key_Period);
+    case 61: return windowsVirtualKey(Qt::Key_Slash);
+
+    case 50: return 0xa0;
+    case 62: return 0xa1;
+    case 37: return 0xa2;
+    case 105: return 0xa3;
+    case 64: return 0xa4;
+    case 108: return 0xa5;
+    case 133: return 0x5b;
+    case 134: return 0x5c;
+
+    case 94: return 0xe2;
+
+    default: return 0;
+    }
+}
+
 quint16 StreamVideoItem::inputModifiers(Qt::KeyboardModifiers modifiers, int key)
 {
     quint16 result = 0;
@@ -165,6 +235,10 @@ quint16 StreamVideoItem::eventVirtualKey(const QKeyEvent *event)
 {
 #if defined(Q_OS_WIN)
     return windowsVirtualKey(event->key(), event->modifiers(), event->nativeVirtualKey());
+#elif defined(Q_OS_LINUX)
+    const auto physical = linuxPhysicalVirtualKey(event->nativeScanCode());
+    if (physical != 0) return physical;
+    return windowsVirtualKey(event->key(), event->modifiers());
 #else
     return windowsVirtualKey(event->key(), event->modifiers());
 #endif
